@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render } from "@testing-library/react";
 import { OfficeMap } from "./OfficeMap";
 
 describe("OfficeMap", () => {
@@ -7,12 +7,12 @@ describe("OfficeMap", () => {
     expect(() => render(<OfficeMap />)).not.toThrow();
   });
 
-  it("renders the floorplan image with the expected src fragment", () => {
-    render(<OfficeMap />);
-    const img = screen.getByAltText("Offshorly virtual office floorplan");
-    expect(img).toBeInTheDocument();
-    expect(img.tagName).toBe("IMG");
-    expect((img as HTMLImageElement).src).toContain("floorplan");
+  it("renders the layered office stage with multiple images", () => {
+    const { container } = render(<OfficeMap />);
+    const images = container.querySelectorAll("img");
+    // 27 layers from the manifest: floor + rooms + decor + characters.
+    // (25 original - reception-accent removed + central-hub + statue + arisha).
+    expect(images.length).toBe(27);
   });
 
   it("mounts the TransformWrapper wrapper div", () => {

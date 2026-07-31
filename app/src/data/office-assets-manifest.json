@@ -1,0 +1,275 @@
+[
+  {
+    "id": "floor",
+    "kind": "floor",
+    "path": "assets/office/floor.png",
+    "x": 0,
+    "y": 0,
+    "width": 1440,
+    "height": 1244,
+    "transform": null
+  },
+  {
+    "id": "vendo-machine-left",
+    "kind": "decor",
+    "path": "assets/office/decor/vendo-machine-left.png",
+    "x": 340.61,
+    "y": 17.48,
+    "width": 160.532,
+    "height": 211.326,
+    "transform": null,
+    "blendMode": "darken"
+  },
+  {
+    "id": "vendo-machine-right",
+    "kind": "decor",
+    "path": "assets/office/decor/vendo-machine-right.png",
+    "x": 955.31,
+    "y": 17.48,
+    "width": 160.532,
+    "height": 211.326,
+    "transform": null,
+    "blendMode": "darken"
+  },
+  {
+    "id": "ai-room",
+    "kind": "room",
+    "path": "assets/office/rooms/ai-room.png",
+    "x": 7.97,
+    "y": 8.01,
+    "width": 336.26,
+    "height": 290.566,
+    "transform": null
+  },
+  {
+    "id": "executive-room",
+    "kind": "room",
+    "path": "assets/office/rooms/executive-room.png",
+    "x": 493.72,
+    "y": 8,
+    "width": 465.57,
+    "height": 306.19,
+    "transform": null
+  },
+  {
+    "id": "alex",
+    "kind": "character",
+    "path": "assets/office/characters/alex.png",
+    "x": 576.95,
+    "y": 73.93,
+    "width": 20.56,
+    "height": 28.137,
+    "transform": null
+  },
+  {
+    "id": "chris",
+    "kind": "character",
+    "path": "assets/office/characters/chris.png",
+    "x": 852.96,
+    "y": 74.94,
+    "width": 24.466,
+    "height": 27.265,
+    "transform": null
+  },
+  {
+    "id": "dev-room",
+    "kind": "room",
+    "path": "assets/office/rooms/dev-room.png",
+    "x": 1111.13,
+    "y": 8.01,
+    "width": 320.622,
+    "height": 323.058,
+    "transform": null
+  },
+  {
+    "id": "cyrus",
+    "kind": "character",
+    "path": "assets/office/characters/cyrus.png",
+    "x": 1326.5,
+    "y": 46.55,
+    "width": 16.162,
+    "height": 19.456,
+    "transform": null
+  },
+  {
+    "id": "cms-room",
+    "kind": "room",
+    "path": "assets/office/rooms/cms-room.png",
+    "x": 1140.89,
+    "y": 346.98,
+    "width": 291.266,
+    "height": 257.348,
+    "transform": null
+  },
+  {
+    "id": "cms-shadow",
+    "kind": "decor",
+    "path": "assets/office/decor/cms-shadow.png",
+    "x": 1141.13,
+    "y": 595.02,
+    "width": 290.646,
+    "height": 11.554,
+    "transform": null
+  },
+  {
+    "id": "jona",
+    "kind": "character",
+    "path": "assets/office/characters/jona.png",
+    "x": 1176.93,
+    "y": 429.88,
+    "width": 25.279,
+    "height": 24.743,
+    "transform": null
+  },
+  {
+    "id": "qa-room",
+    "kind": "room",
+    "path": "assets/office/rooms/qa-room.png",
+    "x": 8.08,
+    "y": 596.5,
+    "width": 320.217,
+    "height": 258.649,
+    "transform": null
+  },
+  {
+    "id": "qa-shadow",
+    "kind": "decor",
+    "path": "assets/office/decor/qa-shadow.png",
+    "x": 321.07,
+    "y": 840.35,
+    "width": 7.273,
+    "height": 14.732,
+    "transform": null
+  },
+  {
+    "id": "design-room",
+    "kind": "room",
+    "path": "assets/office/rooms/design-room.png",
+    "x": 9.14,
+    "y": 316.02,
+    "width": 309.53,
+    "height": 262.902,
+    "transform": null
+  },
+  {
+    "id": "angelo",
+    "kind": "character",
+    "path": "assets/office/characters/angelo.png",
+    "x": 126.31,
+    "y": 490.07,
+    "width": 22.149,
+    "height": 31.323,
+    "transform": null
+  },
+  {
+    "id": "micah",
+    "kind": "character",
+    "path": "assets/office/characters/micah.png",
+    "x": 71.25,
+    "y": 349.95,
+    "width": 22.756,
+    "height": 36.526,
+    "transform": "rotate(177.88deg) scaleY(-1)"
+  },
+  {
+    "id": "bon",
+    "kind": "character",
+    "path": "assets/office/characters/bon.png",
+    "x": 236.81,
+    "y": 486.45,
+    "width": 23.514,
+    "height": 38.582,
+    "transform": "rotate(-0.85deg)"
+  },
+  {
+    "id": "clang",
+    "kind": "character",
+    "path": "assets/office/characters/clang.png",
+    "x": 266.3,
+    "y": 344.24,
+    "width": 25.314,
+    "height": 36.549,
+    "transform": "rotate(-173.86deg) scaleY(-1)"
+  },
+  {
+    "id": "france",
+    "kind": "character",
+    "path": "assets/office/characters/france.png",
+    "x": 36.7,
+    "y": 437.99,
+    "width": 21.819,
+    "height": 38.559,
+    "transform": "rotate(-0.86deg)"
+  },
+  {
+    "id": "gaming-room",
+    "kind": "room",
+    "path": "assets/office/rooms/gaming-room.png",
+    "x": 1111.28,
+    "y": 622.35,
+    "width": 320.718,
+    "height": 236.872,
+    "transform": null
+  },
+  {
+    "id": "project-room",
+    "kind": "room",
+    "path": "assets/office/rooms/project-room.png",
+    "x": 1079.857,
+    "y": 842.53,
+    "width": 352.143,
+    "height": 395.53,
+    "transform": null
+  },
+  {
+    "id": "meeting-room",
+    "kind": "room",
+    "path": "assets/office/rooms/meeting-room.png",
+    "x": 8,
+    "y": 863.21,
+    "width": 324.453,
+    "height": 374.845,
+    "transform": null
+  },
+  {
+    "id": "reception-room",
+    "kind": "room",
+    "path": "assets/office/rooms/reception-room.png",
+    "x": 332.33,
+    "y": 838.47,
+    "width": 748.955,
+    "height": 399.102,
+    "transform": null
+  },
+  {
+    "id": "central-hub",
+    "kind": "room",
+    "path": "assets/office/rooms/central-hub.png",
+    "x": 476.24462890625,
+    "y": 427.5089308619499,
+    "width": 500.51861572265625,
+    "height": 323.4443054199219,
+    "transform": null,
+    "blendMode": "darken"
+  },
+  {
+    "id": "statue",
+    "kind": "decor",
+    "path": "assets/office/decor/statue.png",
+    "x": 661.8847351074219,
+    "y": 536.408203125,
+    "width": 129.23838806152344,
+    "height": 122.04019165039062,
+    "transform": null
+  },
+  {
+    "id": "arisha",
+    "kind": "character",
+    "path": "assets/office/characters/arisha.png",
+    "x": 714.883056640625,
+    "y": 997.5905151367188,
+    "width": 24.460498809814453,
+    "height": 26.615234375,
+    "transform": null
+  }
+]

@@ -13,12 +13,3 @@
 .dragging {
   cursor: grabbing;
 }
-
-.floorplan {
-  display: block;
-  width: 1024px;
-  height: 885px;
-  max-width: none;
-  user-select: none;
-  pointer-events: none;
-}

@@ -1,0 +1,24 @@
+.stage {
+  position: relative;
+}
+
+.layer {
+  position: absolute;
+}
+
+.floor {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.layer img,
+.floor img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+  user-select: none;
+}
