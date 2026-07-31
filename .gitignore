@@ -1,0 +1,32 @@
+.claude/usage.csv
+.claude/.parsed_sessions.json
+.claude/sonar.env
+.claude/settings.local.json
+.claude/backups/
+.scannerwork/
+
+# Vite app (app/)
+app/node_modules
+app/dist
+app/dist-ssr
+app/*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*

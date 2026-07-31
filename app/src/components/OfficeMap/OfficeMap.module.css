@@ -1,0 +1,24 @@
+.viewport {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: #1a1a1a;
+  cursor: grab;
+}
+
+.viewport:active {
+  cursor: grabbing;
+}
+
+.dragging {
+  cursor: grabbing;
+}
+
+.floorplan {
+  display: block;
+  width: 1024px;
+  height: 885px;
+  max-width: none;
+  user-select: none;
+  pointer-events: none;
+}
