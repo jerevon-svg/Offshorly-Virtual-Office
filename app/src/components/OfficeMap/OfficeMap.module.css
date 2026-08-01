@@ -13,3 +13,10 @@
 .dragging {
   cursor: grabbing;
 }
+
+.toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  z-index: 15; background: rgba(26,26,26,0.9); color: #f0f0f0;
+  padding: 10px 18px; border-radius: 999px; font-family: system-ui, sans-serif;
+  font-size: 14px; backdrop-filter: blur(4px);
+}

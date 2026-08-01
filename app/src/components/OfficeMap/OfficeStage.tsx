@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import {
   ASSET_PATH_TO_SRC,
   FRAME_HEIGHT,
@@ -20,7 +21,21 @@ const sortedLayers = [...officeAssetLayers].sort(
   (a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind],
 );
 
-export function OfficeStage() {
+type CharacterOverrides = Record<string, { x: number; y: number }>;
+
+type OfficeStageProps = {
+  characterOverrides?: CharacterOverrides;
+  characterSrcOverrides?: Record<string, string>;
+  onCharacterClick?: (layer: AssetLayer, anchor: { clientX: number; clientY: number }) => void;
+};
+
+export function OfficeStage({
+  characterOverrides,
+  characterSrcOverrides,
+  onCharacterClick,
+}: OfficeStageProps = {}) {
+  const downRef = useRef<{ x: number; y: number } | null>(null);
+
   return (
     <div
       className={styles.stage}
@@ -30,7 +45,9 @@ export function OfficeStage() {
       }}
     >
       {sortedLayers.map((layer) => {
-        const src = ASSET_PATH_TO_SRC[layer.path];
+        const isChar = layer.kind === "character";
+        const srcOverride = isChar ? characterSrcOverrides?.[layer.id] : undefined;
+        const src = srcOverride ?? ASSET_PATH_TO_SRC[layer.path];
 
         if (layer.kind === "floor") {
           return (
@@ -40,13 +57,22 @@ export function OfficeStage() {
           );
         }
 
+        const ov = isChar ? characterOverrides?.[layer.id] : undefined;
+        const x = ov?.x ?? layer.x;
+        const y = ov?.y ?? layer.y;
+        const isClickable = isChar && layer.id !== "bon";
+
+        const className = [styles.layer, isClickable ? styles.characterLayer : ""]
+          .filter(Boolean)
+          .join(" ");
+
         return (
           <div
             key={layer.id}
-            className={styles.layer}
+            className={className}
             style={{
-              left: `${(layer.x / FRAME_WIDTH) * 100}%`,
-              top: `${(layer.y / FRAME_HEIGHT) * 100}%`,
+              left: `${(x / FRAME_WIDTH) * 100}%`,
+              top: `${(y / FRAME_HEIGHT) * 100}%`,
               width: `${(layer.width / FRAME_WIDTH) * 100}%`,
               height: `${(layer.height / FRAME_HEIGHT) * 100}%`,
               ...(layer.transform ? { transform: layer.transform } : {}),
@@ -54,6 +80,24 @@ export function OfficeStage() {
                 ? { mixBlendMode: layer.blendMode as React.CSSProperties["mixBlendMode"] }
                 : {}),
             }}
+            {...(isClickable
+              ? {
+                  onPointerDown: (e: React.PointerEvent) => {
+                    downRef.current = { x: e.clientX, y: e.clientY };
+                  },
+                  onPointerUp: (e: React.PointerEvent) => {
+                    const d = downRef.current;
+                    if (d) {
+                      const dist = Math.hypot(e.clientX - d.x, e.clientY - d.y);
+                      if (dist < 6) {
+                        e.stopPropagation();
+                        onCharacterClick?.(layer, { clientX: e.clientX, clientY: e.clientY });
+                      }
+                    }
+                    downRef.current = null;
+                  },
+                }
+              : {})}
           >
             <img src={src} alt="" />
           </div>

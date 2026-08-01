@@ -22,3 +22,12 @@
   pointer-events: none;
   user-select: none;
 }
+
+.characterLayer {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.characterLayer img {
+  pointer-events: none;
+}

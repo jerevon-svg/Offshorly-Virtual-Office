@@ -1,0 +1,13 @@
+.backdrop { position: fixed; inset: 0; z-index: 20; }
+.menu {
+  position: fixed; z-index: 21; min-width: 180px;
+  background: rgba(26,26,26,0.95); border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px; padding: 8px; backdrop-filter: blur(4px);
+  font-family: system-ui, sans-serif; display: flex; flex-direction: column; gap: 2px;
+}
+.title { color: rgba(240,240,240,0.6); font-size: 12px; padding: 4px 8px 6px; }
+.item {
+  all: unset; cursor: pointer; color: #f0f0f0; font-size: 14px;
+  padding: 8px 10px; border-radius: 6px;
+}
+.item:hover { background: rgba(255,255,255,0.12); }

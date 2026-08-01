@@ -169,7 +169,7 @@
     "y": 349.95,
     "width": 22.756,
     "height": 36.526,
-    "transform": "rotate(177.88deg) scaleY(-1)"
+    "transform": null
   },
   {
     "id": "bon",
@@ -179,7 +179,7 @@
     "y": 486.45,
     "width": 23.514,
     "height": 38.582,
-    "transform": "rotate(-0.85deg)"
+    "transform": null
   },
   {
     "id": "clang",
@@ -189,7 +189,7 @@
     "y": 344.24,
     "width": 25.314,
     "height": 36.549,
-    "transform": "rotate(-173.86deg) scaleY(-1)"
+    "transform": null
   },
   {
     "id": "france",
@@ -199,7 +199,7 @@
     "y": 437.99,
     "width": 21.819,
     "height": 38.559,
-    "transform": "rotate(-0.86deg)"
+    "transform": null
   },
   {
     "id": "gaming-room",

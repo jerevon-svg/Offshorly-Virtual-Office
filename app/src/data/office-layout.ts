@@ -140,6 +140,9 @@ export const characterLayers: AssetLayer[] = officeAssetLayers.filter(
   (l) => l.kind === "character",
 );
 
+export const bonLayer = characterLayers.find((l) => l.id === "bon")!;
+export const npcCharacterLayers = characterLayers.filter((l) => l.id !== "bon");
+
 export function formatCharacterName(layer: Pick<AssetLayer, "id" | "name">): string {
   if (layer.name) return layer.name;
   return layer.id

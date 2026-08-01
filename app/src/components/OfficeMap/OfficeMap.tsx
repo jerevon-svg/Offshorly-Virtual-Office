@@ -4,9 +4,14 @@ import {
   TransformComponent,
   type ReactZoomPanPinchRef,
 } from "react-zoom-pan-pinch";
-import { FRAME_HEIGHT, FRAME_WIDTH } from "../../data/office-layout";
+import { FRAME_HEIGHT, FRAME_WIDTH, bonLayer, formatCharacterName } from "../../data/office-layout";
+import { findPath, roomOf } from "../../data/officePathfinding";
+import type { AssetLayer } from "../../types/office";
 import { OfficeStage } from "./OfficeStage";
 import { CharacterSearch } from "./CharacterSearch";
+import { CharacterActionMenu } from "./CharacterActionMenu";
+import { useCharacterWalk } from "./useCharacterWalk";
+import { bonSprite } from "../../data/bonWalkFrames";
 import styles from "./OfficeMap.module.css";
 
 function computeCoverScale(): number {
@@ -29,6 +34,45 @@ export function OfficeMap() {
   const [isDragging, setIsDragging] = useState(false);
   const transformRef = useRef<ReactZoomPanPinchRef | null>(null);
 
+  const [menu, setMenu] = useState<{ layer: AssetLayer; clientX: number; clientY: number } | null>(
+    null,
+  );
+  const [toast, setToast] = useState<string | null>(null);
+  const { pos: bonPos, isWalking, isPatting, direction, frameIndex, walkTo, playPat } = useCharacterWalk({
+    x: bonLayer.x,
+    y: bonLayer.y,
+  });
+  const bonSpriteSrc = bonSprite(isPatting ? "pat" : isWalking ? "walk" : "idle", direction, frameIndex);
+
+  function handleChoose(action: "chat" | "call" | "pat") {
+    if (!menu) return;
+    const target = menu.layer;
+    const name = formatCharacterName(target);
+    setMenu(null);
+    if (action === "pat") {
+      const bw = bonLayer.width;
+      const bh = bonLayer.height;
+      const bc = { x: bonPos.x + bw / 2, y: bonPos.y + bh / 2 };
+      const tc = { x: target.x + target.width / 2, y: target.y + target.height / 2 };
+      const dx = tc.x - bc.x;
+      const dy = tc.y - bc.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const ux = dx / len;
+      const uy = dy / len;
+      const standoff = target.width / 2 + bw / 2 + 4;
+      const goal = { x: tc.x - ux * standoff - bw / 2, y: tc.y - uy * standoff - bh / 2 };
+      const startRoomId = roomOf(bc)?.id ?? null;
+      const goalRoomId = roomOf(tc)?.id ?? null;
+      const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, goalRoomId);
+      walkTo(path, () => {
+        playPat();
+      });
+    } else {
+      setToast(action === "chat" ? `Chat with ${name} — coming soon` : `Calling ${name}… — coming soon`);
+      setTimeout(() => setToast(null), 1800);
+    }
+  }
+
   return (
     <div className={`${styles.viewport} ${isDragging ? styles.dragging : ""}`}>
       <TransformWrapper
@@ -41,16 +85,32 @@ export function OfficeMap() {
         wheel={{ step: 0.1 }}
         pinch={{ step: 5 }}
         doubleClick={{ disabled: true }}
-        onPanningStart={() => setIsDragging(true)}
+        onPanningStart={() => {
+          setIsDragging(true);
+          setMenu(null);
+        }}
         onPanningStop={() => setIsDragging(false)}
       >
         <TransformComponent
           wrapperStyle={{ width: "100%", height: "100%" }}
         >
-          <OfficeStage />
+          <OfficeStage
+            characterOverrides={{ bon: bonPos }}
+            characterSrcOverrides={{ bon: bonSpriteSrc }}
+            onCharacterClick={(layer, anchor) => setMenu({ layer, ...anchor })}
+          />
         </TransformComponent>
       </TransformWrapper>
       <CharacterSearch transformRef={transformRef} targetScale={maxScale} />
+      {menu && (
+        <CharacterActionMenu
+          layer={menu.layer}
+          anchor={menu}
+          onChoose={handleChoose}
+          onClose={() => setMenu(null)}
+        />
+      )}
+      {toast && <div className={styles.toast}>{toast}</div>}
     </div>
   );
 }
