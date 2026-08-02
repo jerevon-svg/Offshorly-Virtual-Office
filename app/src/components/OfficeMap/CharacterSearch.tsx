@@ -8,9 +8,10 @@ import styles from "./CharacterSearch.module.css";
 type CharacterSearchProps = {
   transformRef: React.RefObject<ReactZoomPanPinchRef | null>;
   targetScale: number;
+  onLocate?: (layer: AssetLayer) => void;
 };
 
-export function CharacterSearch({ transformRef, targetScale }: CharacterSearchProps) {
+export function CharacterSearch({ transformRef, targetScale, onLocate }: CharacterSearchProps) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(0);
@@ -28,6 +29,7 @@ export function CharacterSearch({ transformRef, targetScale }: CharacterSearchPr
     if (!ref || !wrapper) return;
     const rect = wrapper.getBoundingClientRect();
     const { x, y } = computeCenterTransform(layer, targetScale, rect.width, rect.height);
+    onLocate?.(layer);
     ref.setTransform(x, y, targetScale, 500, "easeOut");
     setQuery(formatCharacterName(layer));
     setOpen(false);

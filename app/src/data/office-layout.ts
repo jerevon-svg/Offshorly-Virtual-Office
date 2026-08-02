@@ -150,3 +150,58 @@ export function formatCharacterName(layer: Pick<AssetLayer, "id" | "name">): str
     .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
     .join(" ");
 }
+
+// Room layers used for click-to-view-roster (kept separate from the legacy
+// `rooms` flat-rect export above, which uses different ids).
+export const roomLayers: AssetLayer[] = officeAssetLayers.filter(
+  (l) => l.kind === "room",
+);
+
+// Maps each room id to the NPC character layers whose center point falls
+// inside that room's bounding box. Every room in roomLayers gets an entry,
+// even if empty. `bon` is excluded via npcCharacterLayers (dynamic player
+// avatar, not a static roster member).
+// Returns the first room in roomLayers whose bounding box contains `point`,
+// or null if the point falls outside every room. Used both for the static
+// roomMembersById derivation below and for live (dynamic) point lookups,
+// e.g. bon's current walking position.
+export function roomContainingPoint(point: { x: number; y: number }): AssetLayer | null {
+  const room = roomLayers.find(
+    (r) =>
+      point.x >= r.x &&
+      point.x <= r.x + r.width &&
+      point.y >= r.y &&
+      point.y <= r.y + r.height,
+  );
+  return room ?? null;
+}
+
+export const roomMembersById: Record<string, AssetLayer[]> = (() => {
+  const result: Record<string, AssetLayer[]> = {};
+  for (const room of roomLayers) {
+    result[room.id] = [];
+  }
+  for (const npc of npcCharacterLayers) {
+    const cx = npc.x + npc.width / 2;
+    const cy = npc.y + npc.height / 2;
+    const room = roomContainingPoint({ x: cx, y: cy });
+    if (room) {
+      result[room.id].push(npc);
+    }
+  }
+  return result;
+})();
+
+const ROOM_NAME_OVERRIDES: Record<string, string> = {
+  "ai-room": "AI Room",
+  "cms-room": "CMS Room",
+  "qa-room": "QA Room",
+};
+
+export function formatRoomName(id: string): string {
+  if (ROOM_NAME_OVERRIDES[id]) return ROOM_NAME_OVERRIDES[id];
+  return id
+    .split("-")
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(" ");
+}
