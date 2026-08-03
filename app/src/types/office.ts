@@ -9,7 +9,7 @@ export type Room = {
 
 export type AssetLayer = {
   id: string;
-  kind: "floor" | "room" | "character" | "decor";
+  kind: "floor" | "room" | "character" | "decor" | "furniture" | "sidewalk";
   path: string;
   x: number;
   y: number;
@@ -18,4 +18,5 @@ export type AssetLayer = {
   transform: string | null;
   blendMode?: string | null;
   name?: string | null;
+  imgCrop?: { wPct: number; hPct: number; leftPct: number; topPct: number } | null;
 };

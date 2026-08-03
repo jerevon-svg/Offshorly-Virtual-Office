@@ -9,15 +9,20 @@ import {
   FRAME_WIDTH,
   bonLayer,
   formatCharacterName,
+  npcCharacterLayers,
   roomContainingPoint,
+  roomLayers,
   roomMembersById,
 } from "../../data/office-layout";
 import { findPath, roomOf } from "../../data/officePathfinding";
+import { cellToWorld, nearestWalkableConnectedTo, worldToCell } from "../../data/officeGrid";
 import type { AssetLayer } from "../../types/office";
 import { OfficeStage } from "./OfficeStage";
 import { CharacterSearch } from "./CharacterSearch";
 import { CharacterActionMenu } from "./CharacterActionMenu";
 import { RoomSidebar } from "./RoomSidebar";
+import { CheckinModal } from "./CheckinModal";
+import { RoomPickerModal } from "./RoomPickerModal";
 import {
   computeCenterTransform,
   computeRoomFocusTransform,
@@ -26,6 +31,18 @@ import {
 import { useCharacterWalk } from "./useCharacterWalk";
 import { bonSprite } from "../../data/bonWalkFrames";
 import styles from "./OfficeMap.module.css";
+
+// On-load onboarding sequence: bon spawns outside, offers a check-in walk to
+// reception, greets, then lets the user pick a room. Every state other than
+// "done" suppresses normal interactions (room/character clicks, search) —
+// see the guards on those handlers below.
+type OnboardingState =
+  | "checkinPrompt"
+  | "walkingToReception"
+  | "greeting"
+  | "roomSelect"
+  | "walkingToRoom"
+  | "done";
 
 function computeCoverScale(): number {
   if (typeof window === "undefined") return 0.5;
@@ -54,10 +71,16 @@ export function OfficeMap() {
     null,
   );
   const [toast, setToast] = useState<string | null>(null);
-  const [greeting, setGreeting] = useState<{ characterId: string; nonce: number } | null>(null);
+  const [greeting, setGreeting] = useState<{ characterId: string; nonce: number; text?: string } | null>(
+    null,
+  );
   const greetTimerRef = useRef<number | undefined>(undefined);
   const greetNonceRef = useRef(0);
   const charMenuTimerRef = useRef<number | undefined>(undefined);
+
+  // Onboarding state machine — replays from "checkinPrompt" on every full
+  // page load (no persistence), per explicit product requirement.
+  const [onboarding, setOnboarding] = useState<OnboardingState>("checkinPrompt");
 
   useEffect(() => {
     return () => {
@@ -71,6 +94,124 @@ export function OfficeMap() {
     y: bonLayer.y,
   });
   const bonSpriteSrc = bonSprite(isPatting ? "pat" : isWalking ? "walk" : "idle", direction, frameIndex);
+
+  // Frame the camera on bon's outside spawn on mount. Runs once — does not
+  // rely on TransformWrapper's own centerOnInit/computeCoverScale framing,
+  // since the default cover-fit view may not show the bottom band of the
+  // frame where bon now spawns on some viewport aspect ratios.
+  useEffect(() => {
+    const ref = transformRef.current;
+    const wrapper = ref?.instance.wrapperComponent;
+    if (!ref || !wrapper) return;
+    const rect = wrapper.getBoundingClientRect();
+    // Close-in, animated zoom on bon at mount — matches the room-focus /
+    // character-click zoom feel rather than the flat, instant cover framing.
+    const focusScale = initialScale * 2.5;
+    const { x, y } = computeCenterTransform(bonLayer, focusScale, rect.width, rect.height);
+    ref.setTransform(x, y, focusScale, 600, "easeOut");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Plays a sequence of greeting bubbles one at a time, each fully dismissing
+  // before the next appears. Reuses the existing greeting/greetTimerRef
+  // mechanism — each beat clears any pending timer, bumps the nonce, sets the
+  // bubble, then schedules clearing it and advancing to the next beat (or
+  // running `onDone` after the last beat clears).
+  function playGreetingBeats(
+    beats: { characterId: string; text: string; durationMs: number }[],
+    onDone: () => void,
+  ) {
+    function playAt(index: number) {
+      const beat = beats[index];
+      if (!beat) {
+        onDone();
+        return;
+      }
+      window.clearTimeout(greetTimerRef.current);
+      greetNonceRef.current += 1;
+      setGreeting({ characterId: beat.characterId, nonce: greetNonceRef.current, text: beat.text });
+      greetTimerRef.current = window.setTimeout(() => {
+        setGreeting(null);
+        playAt(index + 1);
+      }, beat.durationMs);
+    }
+    playAt(0);
+  }
+
+  function startCheckin() {
+    const arisha = npcCharacterLayers.find((l) => l.id === "arisha");
+    if (!arisha) {
+      // No reception NPC found (shouldn't happen) — skip straight to done
+      // rather than getting stuck mid-onboarding.
+      setOnboarding("done");
+      return;
+    }
+    const bw = bonLayer.width;
+    const bh = bonLayer.height;
+    const bc = { x: bonPos.x + bw / 2, y: bonPos.y + bh / 2 };
+    const tc = { x: arisha.x + arisha.width / 2, y: arisha.y + arisha.height / 2 };
+    const dx = tc.x - bc.x;
+    const dy = tc.y - bc.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len;
+    const uy = dy / len;
+    const standoff = arisha.width / 2 + bw / 2 + 4;
+    const goal = { x: tc.x - ux * standoff - bw / 2, y: tc.y - uy * standoff - bh / 2 };
+    const startRoomId = roomOf(bc)?.id ?? null;
+    const goalRoomId = roomOf(tc)?.id ?? null;
+    const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, goalRoomId);
+
+    setOnboarding("walkingToReception");
+    walkTo(path, () => {
+      setOnboarding("greeting");
+      // Three sequential beats — a proper greet/respond/prompt exchange
+      // rather than one static bubble. Each beat fully dismisses before the
+      // next appears; the last beat advances to the room-picker popup.
+      playGreetingBeats(
+        [
+          { characterId: arisha.id, text: `Hi ${formatCharacterName(bonLayer)}!`, durationMs: 1500 },
+          { characterId: bonLayer.id, text: `Hi ${formatCharacterName(arisha)}!`, durationMs: 1500 },
+          { characterId: arisha.id, text: "Where would you like to go?", durationMs: 1500 },
+        ],
+        () => setOnboarding("roomSelect"),
+      );
+    });
+  }
+
+  function chooseRoom(layer: AssetLayer) {
+    // Dismiss the room picker (it only renders during "roomSelect") and hold
+    // bon still while the camera zooms out slowly, THEN walk — a deliberate
+    // "zoom out to see more of the office, then watch bon walk" sequence
+    // rather than an instant cut + concurrent walk.
+    setOnboarding("walkingToRoom");
+    const zoomOutMs = 1000;
+    resetToInitialView(zoomOutMs);
+    window.setTimeout(() => {
+      const bw = bonLayer.width;
+      const bh = bonLayer.height;
+      const startCenter = { x: bonPos.x + bw / 2, y: bonPos.y + bh / 2 };
+      const roomCenter = { x: layer.x + layer.width / 2, y: layer.y + layer.height / 2 };
+      const startCell = worldToCell(startCenter);
+      const roomCell = worldToCell(roomCenter);
+      // Snap the room's center to the nearest walkable cell in bon's connected
+      // region, mirroring the connectivity-aware goal snapping findPath itself
+      // relies on internally — avoids handing findPath a goal buried in an
+      // unreachable furniture pocket.
+      const snapped = nearestWalkableConnectedTo(roomCell.cx, roomCell.cy, startCell.cx, startCell.cy);
+      const snappedWorld = cellToWorld(snapped.cx, snapped.cy);
+      const goal = { x: snappedWorld.x - bw / 2, y: snappedWorld.y - bh / 2 };
+      const startRoomId = roomOf(startCenter)?.id ?? null;
+      const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, layer.id);
+
+      walkTo(path, () => {
+        window.clearTimeout(greetTimerRef.current);
+        greetNonceRef.current += 1;
+        setGreeting({ characterId: bonLayer.id, nonce: greetNonceRef.current, text: "Hi team!" });
+        greetTimerRef.current = window.setTimeout(() => setGreeting(null), 3000);
+        setOnboarding("done");
+      });
+    }, zoomOutMs);
+  }
 
   function handleChoose(action: "chat" | "call" | "pat") {
     if (!menu) return;
@@ -121,7 +262,7 @@ export function OfficeMap() {
     ref.setTransform(x, y, scale, 500, "easeOut");
   }
 
-  function resetToInitialView() {
+  function resetToInitialView(durationMs = 400) {
     const ref = transformRef.current;
     const wrapper = ref?.instance.wrapperComponent;
     if (!ref || !wrapper) return;
@@ -132,7 +273,7 @@ export function OfficeMap() {
       rect.width,
       rect.height,
     );
-    ref.setTransform(x, y, initialScale, 400, "easeOut");
+    ref.setTransform(x, y, initialScale, durationMs, "easeOut");
   }
 
   function closeRoomSidebar() {
@@ -146,6 +287,9 @@ export function OfficeMap() {
   }
 
   function handleCharacterClick(layer: AssetLayer, anchor: { clientX: number; clientY: number }) {
+    // Onboarding sequence must complete before normal character-click
+    // interactions resume — every non-"done" state suppresses this handler.
+    if (onboarding !== "done") return;
     // Closing the room sidebar here is fine even though this handler now
     // drives its own zoom: whichever setTransform call happens last (this
     // one) wins on the shared transformRef, so no double-animation fight.
@@ -221,6 +365,9 @@ export function OfficeMap() {
             characterSrcOverrides={{ bon: bonSpriteSrc }}
             onCharacterClick={handleCharacterClick}
             onRoomClick={(layer) => {
+              // Onboarding sequence must complete before normal room-click
+              // interactions resume — every non-"done" state suppresses this.
+              if (onboarding !== "done") return;
               setMenu(null);
               const side = layer.x + layer.width / 2 > FRAME_WIDTH / 2 ? "left" : "right";
               focusRoom(layer, side);
@@ -228,6 +375,7 @@ export function OfficeMap() {
             }}
             greetingCharacterId={greeting?.characterId ?? null}
             greetingNonce={greeting?.nonce}
+            greetingText={greeting?.text}
           />
         </TransformComponent>
       </TransformWrapper>
@@ -235,6 +383,9 @@ export function OfficeMap() {
         transformRef={transformRef}
         targetScale={maxScale}
         onLocate={(layer) => {
+          // Onboarding sequence must complete before normal search-locate
+          // interactions resume — every non-"done" state suppresses this.
+          if (onboarding !== "done") return;
           setRoomSidebar(null);
           setMenu(null);
           window.clearTimeout(greetTimerRef.current);
@@ -259,6 +410,10 @@ export function OfficeMap() {
         onClose={closeRoomSidebar}
       />
       {toast && <div className={styles.toast}>{toast}</div>}
+      {onboarding === "checkinPrompt" && (
+        <CheckinModal onYes={startCheckin} onNotNow={() => setOnboarding("done")} />
+      )}
+      {onboarding === "roomSelect" && <RoomPickerModal rooms={roomLayers} onChoose={chooseRoom} />}
     </div>
   );
 }

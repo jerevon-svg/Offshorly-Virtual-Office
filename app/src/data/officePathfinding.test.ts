@@ -197,9 +197,28 @@ describe("findPath — real bon spawn to real NPC seats (regression for the repo
   // "known good" start) is what actually exercises the real reported bug.
   const bonStart = { x: bonLayer.x, y: bonLayer.y };
 
-  it("covers all 9 NPCs", () => {
+  it("covers all 18 NPCs", () => {
     expect(npcCharacterLayers.map((l) => l.id).sort()).toEqual(
-      ["alex", "angelo", "arisha", "chris", "clang", "cyrus", "france", "jona", "micah"].sort(),
+      [
+        "alex",
+        "angelo",
+        "arisha",
+        "bhong",
+        "chris",
+        "clang",
+        "cyrus",
+        "eson",
+        "france",
+        "ivory",
+        "jona",
+        "kael",
+        "karen",
+        "kylle",
+        "lalaine",
+        "micah",
+        "nicole",
+        "rhendel",
+      ].sort(),
     );
   });
 

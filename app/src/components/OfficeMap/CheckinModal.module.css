@@ -1,0 +1,80 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: rgba(0, 0, 0, 0.35);
+}
+.panel {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 31;
+  min-width: 280px;
+  max-width: 360px;
+  background: rgba(26, 26, 26, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 20px;
+  backdrop-filter: blur(4px);
+  font-family: system-ui, sans-serif;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  text-align: center;
+}
+.title {
+  color: #f0f0f0;
+  font-size: 16px;
+  font-weight: 600;
+}
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.primary {
+  all: unset;
+  cursor: pointer;
+  color: #1a1a1a;
+  background: #f0f0f0;
+  font-size: 14px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-weight: 600;
+  text-align: center;
+}
+.primary:hover {
+  background: #ffffff;
+}
+.secondary {
+  all: unset;
+  cursor: pointer;
+  color: rgba(240, 240, 240, 0.75);
+  font-size: 13px;
+  padding: 8px 14px;
+  border-radius: 6px;
+  text-align: center;
+}
+.secondary:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.roomList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.roomItem {
+  all: unset;
+  cursor: pointer;
+  color: #f0f0f0;
+  font-size: 14px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  text-align: left;
+}
+.roomItem:hover {
+  background: rgba(255, 255, 255, 0.12);
+}

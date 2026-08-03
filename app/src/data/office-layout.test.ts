@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { formatRoomName, roomContainingPoint, roomMembersById } from "./office-layout";
+import { formatRoomName, officeAssetLayers, roomContainingPoint, roomMembersById } from "./office-layout";
+
+// Count derived from the Figma-verified furniture-crop table used to seed
+// imgCrop on the manifest (Fix A) — kept in sync manually with that source.
+const EXPECTED_IMG_CROP_COUNT = 103;
 
 describe("roomMembersById", () => {
   it("assigns npcs whose center point falls inside design-room's bounding box", () => {
@@ -45,5 +49,30 @@ describe("formatRoomName", () => {
   it("titlecases non-override ids", () => {
     expect(formatRoomName("dev-room")).toBe("Dev Room");
     expect(formatRoomName("central-hub")).toBe("Central Hub");
+  });
+});
+
+describe("imgCrop (Fix A: per-instance furniture crop fidelity)", () => {
+  it("has a valid shape wherever present in the manifest", () => {
+    for (const layer of officeAssetLayers) {
+      if (layer.imgCrop == null) continue;
+      expect(typeof layer.imgCrop.wPct).toBe("number");
+      expect(typeof layer.imgCrop.hPct).toBe("number");
+      expect(typeof layer.imgCrop.leftPct).toBe("number");
+      expect(typeof layer.imgCrop.topPct).toBe("number");
+    }
+  });
+
+  it("never appears on a floor-kind layer", () => {
+    for (const layer of officeAssetLayers) {
+      if (layer.kind === "floor") {
+        expect(layer.imgCrop).toBeUndefined();
+      }
+    }
+  });
+
+  it("is present on exactly the number of entries in the crop table", () => {
+    const count = officeAssetLayers.filter((l) => l.imgCrop != null).length;
+    expect(count).toBe(EXPECTED_IMG_CROP_COUNT);
   });
 });

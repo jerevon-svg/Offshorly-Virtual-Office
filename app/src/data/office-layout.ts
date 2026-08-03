@@ -12,6 +12,7 @@ export const FRAME_HEIGHT = 1244;
 // manifest only carries relative path strings, so every image referenced by
 // the manifest needs an explicit import below, mapped by its manifest path.
 import floor from "../assets/office/floor.png";
+import sidewalk from "../assets/office/decor/sidewalk.png";
 import vendoMachineLeft from "../assets/office/decor/vendo-machine-left.png";
 import vendoMachineRight from "../assets/office/decor/vendo-machine-right.png";
 import cmsShadow from "../assets/office/decor/cms-shadow.png";
@@ -38,10 +39,57 @@ import bon from "../assets/office/characters/bon.png";
 import clang from "../assets/office/characters/clang.png";
 import france from "../assets/office/characters/france.png";
 import arisha from "../assets/office/characters/arisha.png";
+import karen from "../assets/office/characters/karen.png";
+import kylle from "../assets/office/characters/kylle.png";
+import lalaine from "../assets/office/characters/lalaine.png";
+import rhendel from "../assets/office/characters/rhendel.png";
+import nicole from "../assets/office/characters/nicole.png";
+import kael from "../assets/office/characters/kael.png";
+import eson from "../assets/office/characters/eson.png";
+import bhong from "../assets/office/characters/bhong.png";
+import ivory from "../assets/office/characters/ivory.png";
+import aiMemberDesk1 from "../assets/office/furniture/ai-team/ai-member-desk-1.png";
+import aiLeadDesk from "../assets/office/furniture/ai-team/ai-lead-desk.png";
+import aiMemberChair from "../assets/office/furniture/ai-team/ai-member-chair.png";
+import aiLeadChair from "../assets/office/furniture/ai-team/ai-lead-chair.png";
+import devChair from "../assets/office/furniture/dev-team/dev-chair.png";
+import ceoDesk from "../assets/office/furniture/executive-team/ceo-desk.png";
+import ctoDesk from "../assets/office/furniture/executive-team/cto-desk.png";
+import centerDesk from "../assets/office/furniture/executive-team/center-desk.png";
+import hrSdesk from "../assets/office/furniture/executive-team/hr-sdesk.png";
+import hrLdesk from "../assets/office/furniture/executive-team/hr-ldesk.png";
+import bottomLeftDesk from "../assets/office/furniture/executive-team/bottom-left-desk.png";
+import hrChair from "../assets/office/furniture/executive-team/hr-chair.png";
+import whiteSofa from "../assets/office/furniture/executive-team/white-sofa.png";
+import plantSmall from "../assets/office/furniture/executive-team/plant-small.png";
+import hrFloormat from "../assets/office/furniture/executive-team/hr-floormat.png";
+import execChair from "../assets/office/furniture/executive-team/exec-chair.png";
+import execVisitorChair from "../assets/office/furniture/executive-team/exec-visitor-chair.png";
+import bottomCenterSofa from "../assets/office/furniture/executive-team/bottom-center-sofa.png";
+import topCenterSofa from "../assets/office/furniture/executive-team/top-center-sofa.png";
+import devLeadDesk from "../assets/office/furniture/dev-team/dev-lead-desk.png";
+import devBayDesk from "../assets/office/furniture/dev-team/dev-bay-desk.png";
+import devSideDesk from "../assets/office/furniture/dev-team/dev-side-desk.png";
+import devVisitorChair from "../assets/office/furniture/dev-team/dev-visitor-chair.png";
+import devSidePlant from "../assets/office/furniture/dev-team/dev-side-plant.png";
+import devSideMat from "../assets/office/furniture/dev-team/dev-side-mat.png";
+import devSideSofa from "../assets/office/furniture/dev-team/dev-side-sofa.png";
+import designLeadDesk from "../assets/office/furniture/design-team/design-lead-desk.png";
+import designMemberDesk from "../assets/office/furniture/design-team/design-member-desk.png";
+import designCurveDesk from "../assets/office/furniture/design-team/design-curve-desk.png";
+import designDeskPanel from "../assets/office/furniture/design-team/design-desk-panel.png";
+import designSideDesk from "../assets/office/furniture/design-team/design-side-desk.png";
+import designSideSofa from "../assets/office/furniture/design-team/design-side-sofa.png";
+import designSideBeanbag from "../assets/office/furniture/design-team/design-side-beanbag.png";
+import designSideMat from "../assets/office/furniture/design-team/design-side-mat.png";
+import designLeadChair from "../assets/office/furniture/design-team/design-lead-chair.png";
+import designMemberChairA from "../assets/office/furniture/design-team/design-member-chair-a.png";
+import designMemberChairB from "../assets/office/furniture/design-team/design-member-chair-b.png";
 
 // Maps each manifest `path` string to its Vite-resolved asset URL.
 export const ASSET_PATH_TO_SRC: Record<string, string> = {
   "assets/office/floor.png": floor,
+  "assets/office/decor/sidewalk.png": sidewalk,
   "assets/office/decor/vendo-machine-left.png": vendoMachineLeft,
   "assets/office/decor/vendo-machine-right.png": vendoMachineRight,
   "assets/office/decor/cms-shadow.png": cmsShadow,
@@ -68,6 +116,52 @@ export const ASSET_PATH_TO_SRC: Record<string, string> = {
   "assets/office/characters/clang.png": clang,
   "assets/office/characters/france.png": france,
   "assets/office/characters/arisha.png": arisha,
+  "assets/office/characters/karen.png": karen,
+  "assets/office/characters/kylle.png": kylle,
+  "assets/office/characters/lalaine.png": lalaine,
+  "assets/office/characters/rhendel.png": rhendel,
+  "assets/office/characters/nicole.png": nicole,
+  "assets/office/characters/kael.png": kael,
+  "assets/office/characters/eson.png": eson,
+  "assets/office/characters/bhong.png": bhong,
+  "assets/office/characters/ivory.png": ivory,
+  "assets/office/furniture/ai-team/ai-member-desk-1.png": aiMemberDesk1,
+  "assets/office/furniture/ai-team/ai-lead-desk.png": aiLeadDesk,
+  "assets/office/furniture/ai-team/ai-member-chair.png": aiMemberChair,
+  "assets/office/furniture/ai-team/ai-lead-chair.png": aiLeadChair,
+  "assets/office/furniture/dev-team/dev-chair.png": devChair,
+  "assets/office/furniture/executive-team/ceo-desk.png": ceoDesk,
+  "assets/office/furniture/executive-team/cto-desk.png": ctoDesk,
+  "assets/office/furniture/executive-team/center-desk.png": centerDesk,
+  "assets/office/furniture/executive-team/hr-sdesk.png": hrSdesk,
+  "assets/office/furniture/executive-team/hr-ldesk.png": hrLdesk,
+  "assets/office/furniture/executive-team/bottom-left-desk.png": bottomLeftDesk,
+  "assets/office/furniture/executive-team/hr-chair.png": hrChair,
+  "assets/office/furniture/executive-team/white-sofa.png": whiteSofa,
+  "assets/office/furniture/executive-team/plant-small.png": plantSmall,
+  "assets/office/furniture/executive-team/hr-floormat.png": hrFloormat,
+  "assets/office/furniture/executive-team/exec-chair.png": execChair,
+  "assets/office/furniture/executive-team/exec-visitor-chair.png": execVisitorChair,
+  "assets/office/furniture/executive-team/bottom-center-sofa.png": bottomCenterSofa,
+  "assets/office/furniture/executive-team/top-center-sofa.png": topCenterSofa,
+  "assets/office/furniture/dev-team/dev-lead-desk.png": devLeadDesk,
+  "assets/office/furniture/dev-team/dev-bay-desk.png": devBayDesk,
+  "assets/office/furniture/dev-team/dev-side-desk.png": devSideDesk,
+  "assets/office/furniture/dev-team/dev-visitor-chair.png": devVisitorChair,
+  "assets/office/furniture/dev-team/dev-side-plant.png": devSidePlant,
+  "assets/office/furniture/dev-team/dev-side-mat.png": devSideMat,
+  "assets/office/furniture/dev-team/dev-side-sofa.png": devSideSofa,
+  "assets/office/furniture/design-team/design-lead-desk.png": designLeadDesk,
+  "assets/office/furniture/design-team/design-member-desk.png": designMemberDesk,
+  "assets/office/furniture/design-team/design-curve-desk.png": designCurveDesk,
+  "assets/office/furniture/design-team/design-desk-panel.png": designDeskPanel,
+  "assets/office/furniture/design-team/design-side-desk.png": designSideDesk,
+  "assets/office/furniture/design-team/design-side-sofa.png": designSideSofa,
+  "assets/office/furniture/design-team/design-side-beanbag.png": designSideBeanbag,
+  "assets/office/furniture/design-team/design-side-mat.png": designSideMat,
+  "assets/office/furniture/design-team/design-lead-chair.png": designLeadChair,
+  "assets/office/furniture/design-team/design-member-chair-a.png": designMemberChairA,
+  "assets/office/furniture/design-team/design-member-chair-b.png": designMemberChairB,
 };
 
 export const officeAssetLayers = manifestJson as AssetLayer[];

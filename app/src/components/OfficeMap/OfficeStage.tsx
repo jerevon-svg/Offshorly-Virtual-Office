@@ -7,21 +7,9 @@ import {
   officeAssetLayers,
 } from "../../data/office-layout";
 import type { AssetLayer } from "../../types/office";
+import { depthCompare } from "./depthSort";
 import { GreetingBubble } from "./GreetingBubble";
 import styles from "./OfficeStage.module.css";
-
-// Render order: floor first (base), then room/decor images, then character
-// images last so characters always sit above their room.
-const KIND_ORDER: Record<AssetLayer["kind"], number> = {
-  floor: 0,
-  room: 1,
-  decor: 1,
-  character: 2,
-};
-
-const sortedLayers = [...officeAssetLayers].sort(
-  (a, b) => KIND_ORDER[a.kind] - KIND_ORDER[b.kind],
-);
 
 type CharacterOverrides = Record<string, { x: number; y: number }>;
 
@@ -32,6 +20,9 @@ type OfficeStageProps = {
   onRoomClick?: (layer: AssetLayer, anchor: { clientX: number; clientY: number }) => void;
   greetingCharacterId?: string | null;
   greetingNonce?: number;
+  // Custom greeting text (e.g. onboarding's "Welcome to Offshorly!" instead
+  // of the search-locate default "Hi there, I'm {name}!").
+  greetingText?: string;
 };
 
 // Shared click-vs-drag threshold logic: only fires onClick when pointer
@@ -65,18 +56,22 @@ export function OfficeStage({
   onRoomClick,
   greetingCharacterId,
   greetingNonce,
+  greetingText,
 }: OfficeStageProps = {}) {
   const characterClick = useClickVsDrag(onCharacterClick);
   const roomClick = useClickVsDrag(onRoomClick);
 
-  const greetedLayer = greetingCharacterId
-    ? sortedLayers.find((l) => l.id === greetingCharacterId)
+  // Resolve live character positions (e.g. bon's walking override) BEFORE
+  // sorting, so depth ordering reflects true current feet-Y each render.
+  const resolved = officeAssetLayers.map((l) => {
+    const ov = l.kind === "character" ? characterOverrides?.[l.id] : undefined;
+    return ov ? { ...l, x: ov.x, y: ov.y } : l;
+  });
+  const sorted = resolved.slice().sort(depthCompare);
+
+  const resolvedGreetedLayer = greetingCharacterId
+    ? resolved.find((l) => l.id === greetingCharacterId)
     : undefined;
-  const greetedOverride = greetedLayer ? characterOverrides?.[greetedLayer.id] : undefined;
-  const resolvedGreetedLayer =
-    greetedLayer && greetedOverride
-      ? { ...greetedLayer, x: greetedOverride.x, y: greetedOverride.y }
-      : greetedLayer;
 
   return (
     <div
@@ -86,7 +81,7 @@ export function OfficeStage({
         aspectRatio: `${FRAME_WIDTH} / ${FRAME_HEIGHT}`,
       }}
     >
-      {sortedLayers.map((layer) => {
+      {sorted.map((layer) => {
         const isChar = layer.kind === "character";
         const srcOverride = isChar ? characterSrcOverrides?.[layer.id] : undefined;
         const src = srcOverride ?? ASSET_PATH_TO_SRC[layer.path];
@@ -99,9 +94,6 @@ export function OfficeStage({
           );
         }
 
-        const ov = isChar ? characterOverrides?.[layer.id] : undefined;
-        const x = ov?.x ?? layer.x;
-        const y = ov?.y ?? layer.y;
         const isClickable = isChar && layer.id !== "bon";
         const isRoomClickable = layer.kind === "room";
 
@@ -114,8 +106,8 @@ export function OfficeStage({
             key={layer.id}
             className={className}
             style={{
-              left: `${(x / FRAME_WIDTH) * 100}%`,
-              top: `${(y / FRAME_HEIGHT) * 100}%`,
+              left: `${(layer.x / FRAME_WIDTH) * 100}%`,
+              top: `${(layer.y / FRAME_HEIGHT) * 100}%`,
               width: `${(layer.width / FRAME_WIDTH) * 100}%`,
               height: `${(layer.height / FRAME_HEIGHT) * 100}%`,
               ...(layer.transform ? { transform: layer.transform } : {}),
@@ -135,7 +127,22 @@ export function OfficeStage({
                   }
                 : {})}
           >
-            <img src={src} alt="" />
+            <img
+              src={src}
+              alt=""
+              style={
+                layer.imgCrop
+                  ? {
+                      position: "absolute",
+                      width: `${layer.imgCrop.wPct}%`,
+                      height: `${layer.imgCrop.hPct}%`,
+                      left: `${layer.imgCrop.leftPct}%`,
+                      top: `${layer.imgCrop.topPct}%`,
+                      maxWidth: "none",
+                    }
+                  : undefined
+              }
+            />
           </div>
         );
       })}
@@ -143,7 +150,7 @@ export function OfficeStage({
         <GreetingBubble
           key={greetingNonce}
           layer={resolvedGreetedLayer}
-          text={`Hi there, I'm ${formatCharacterName(resolvedGreetedLayer)}!`}
+          text={greetingText ?? `Hi there, I'm ${formatCharacterName(resolvedGreetedLayer)}!`}
         />
       )}
     </div>

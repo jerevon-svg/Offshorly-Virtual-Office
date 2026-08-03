@@ -4,6 +4,7 @@
 
 .layer {
   position: absolute;
+  overflow: hidden;
 }
 
 .floor {

@@ -10,9 +10,9 @@ describe("OfficeMap", () => {
   it("renders the layered office stage with multiple images", () => {
     const { container } = render(<OfficeMap />);
     const images = container.querySelectorAll("img");
-    // 27 layers from the manifest: floor + rooms + decor + characters.
-    // (25 original - reception-accent removed + central-hub + statue + arisha).
-    expect(images.length).toBe(27);
+    // 140 layers from the manifest: floor + rooms + decor + characters +
+    // furniture + the new sidewalk layer (139 previous + 1 sidewalk).
+    expect(images.length).toBe(140);
   });
 
   it("mounts the TransformWrapper wrapper div", () => {
