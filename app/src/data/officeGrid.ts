@@ -9,19 +9,22 @@ function idx(cx: number, cy: number): number {
 
 // Decodes WALK_ROWS (parsed from the hand-authored walkability reference
 // image, see app/scripts/parse-walkable.cjs) into the grid's Uint8Array
-// format: walkable = 1 for '.' (floor) and '+' (door) cells, blocked = 0 for
-// '#' (wall/furniture) and 'o' (interaction point) cells. Also collects every
-// 'o' cell into INTERACTION_CELLS for potential future use.
-function buildGrid(): { grid: Uint8Array; interactionCells: Set<string> } {
+// format: walkable = 1 for '.' (floor), '+' (door), and 's' (stand-here)
+// cells, blocked = 0 for '#' (wall/furniture) and 'o' (interaction point)
+// cells. Also collects every 'o' cell into INTERACTION_CELLS and every 's'
+// cell into STAND_CELLS for potential future use.
+function buildGrid(): { grid: Uint8Array; interactionCells: Set<string>; standCells: Set<string> } {
   const g = new Uint8Array(COLS * ROWS);
   const interactionCells = new Set<string>();
+  const standCells = new Set<string>();
 
   for (let cy = 0; cy < ROWS; cy++) {
     const row = WALK_ROWS[cy] ?? "";
     for (let cx = 0; cx < COLS; cx++) {
       const sym = row[cx];
-      if (sym === "." || sym === "+") {
+      if (sym === "." || sym === "+" || sym === "s") {
         g[idx(cx, cy)] = 1;
+        if (sym === "s") standCells.add(`${cx},${cy}`);
       } else {
         g[idx(cx, cy)] = 0;
         if (sym === "o") interactionCells.add(`${cx},${cy}`);
@@ -29,12 +32,13 @@ function buildGrid(): { grid: Uint8Array; interactionCells: Set<string> } {
     }
   }
 
-  return { grid: g, interactionCells };
+  return { grid: g, interactionCells, standCells };
 }
 
 const built = buildGrid();
 export const grid = built.grid;
 export const INTERACTION_CELLS: Set<string> = built.interactionCells;
+export const STAND_CELLS: Set<string> = built.standCells;
 
 export function worldToCell(p: Pt): { cx: number; cy: number } {
   return { cx: Math.floor(p.x / CELL), cy: Math.floor(p.y / CELL) };
@@ -123,4 +127,45 @@ export function floodFillFrom(start: { cx: number; cy: number }): Set<string> {
     }
   }
   return seen;
+}
+
+export function isStandHere(cx: number, cy: number): boolean {
+  return STAND_CELLS.has(`${cx},${cy}`);
+}
+
+export function getStandSpots(): { cx: number; cy: number }[] {
+  return [...STAND_CELLS].map((k) => {
+    const [cx, cy] = k.split(",").map(Number);
+    return { cx, cy };
+  });
+}
+
+// Connectivity-aware nearest "stand-here" (purple) spot: finds the closest
+// STAND_CELLS entry to (cx,cy) that's in the same flood-fill-connected region
+// as (fromCx,fromCy) and within maxCells Chebyshev distance of the target.
+// Mirrors nearestWalkableConnectedTo's region-membership approach. Returns
+// null when no stand cells exist or none qualify (caller falls back to the
+// existing geometric standoff calculation).
+export function nearestStandSpotConnectedTo(
+  cx: number,
+  cy: number,
+  fromCx: number,
+  fromCy: number,
+  maxCells = 6,
+): { cx: number; cy: number } | null {
+  if (STAND_CELLS.size === 0) return null;
+  const startCell = isWalkable(fromCx, fromCy) ? { cx: fromCx, cy: fromCy } : nearestWalkable(fromCx, fromCy);
+  const region = floodFillFrom(startCell);
+  let best: { cx: number; cy: number } | null = null;
+  let bestD = Infinity;
+  for (const k of STAND_CELLS) {
+    if (!region.has(k)) continue;
+    const [sx, sy] = k.split(",").map(Number);
+    const d = Math.max(Math.abs(sx - cx), Math.abs(sy - cy));
+    if (d <= maxCells && d < bestD) {
+      bestD = d;
+      best = { cx: sx, cy: sy };
+    }
+  }
+  return best;
 }

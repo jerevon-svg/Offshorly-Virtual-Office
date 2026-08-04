@@ -80,10 +80,11 @@ describe("findPath", () => {
 
   it("returns a multi-point path when a straight line would cross known furniture", () => {
     // design-room: a line between two open interior cells (grid cols/rows
-    // 1,10 and 8,11 in the walkability grid parsed from the reference image)
-    // that passes through furniture in between.
-    const start = { x: 36, y: 317 };
-    const goal = { x: 260, y: 349 };
+    // 5,15 and 9,12 in the walkability grid parsed from the reference image,
+    // post design-room Figma grid update) that passes through furniture in
+    // between.
+    const start = { x: 176, y: 496 };
+    const goal = { x: 304, y: 400 };
     expect(roomOf(start)?.id).toBe("design-room");
     expect(roomOf(goal)?.id).toBe("design-room");
 
@@ -115,7 +116,7 @@ describe("findPath", () => {
     // design-room interior -> dev-room interior (both verified reachable
     // from the open corridor, see interiorPoints below): straight line would
     // cross executive-room and/or central-hub.
-    const start = { x: 144, y: 400 };
+    const start = { x: 208, y: 496 };
     const goal = { x: 1168, y: 176 };
     const startRoomId = roomOf(start)?.id ?? null;
     const goalRoomId = roomOf(goal)?.id ?? null;
@@ -161,8 +162,8 @@ describe("officeGrid connectivity (flood-fill)", () => {
     "executive-room": { x: 720, y: 144 },
     "dev-room": { x: 1168, y: 176 },
     "cms-room": { x: 1232, y: 528 },
-    "qa-room": { x: 144, y: 720 },
-    "design-room": { x: 144, y: 400 },
+    "qa-room": { x: 170, y: 630 },
+    "design-room": { x: 208, y: 496 },
     "gaming-room": { x: 1232, y: 720 },
     "project-room": { x: 1232, y: 1008 },
     "meeting-room": { x: 176, y: 1008 },

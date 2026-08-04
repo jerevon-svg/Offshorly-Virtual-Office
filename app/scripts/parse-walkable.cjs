@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * Parses the hand-authored walkability reference image
- * (`~/Downloads/walkable.png`, a 45x39 grid overlay on the office floor plan)
+ * (`~/Downloads/walkable.png`, a COLS x ROWS grid overlay on the office floor
+ * plan, where COLS/ROWS are derived from FRAME_WIDTH/FRAME_HEIGHT / CELL)
  * into a precise walkability grid, then applies a wall-ring safety backstop
  * (since the reference doesn't reliably tint room perimeter walls) and
  * writes the final grid to `src/data/officeWalkabilityGrid.ts`.
@@ -29,9 +30,15 @@ const REFERENCE_PNG = "/Users/lekoffshorly/Downloads/walkable.png";
 const MANIFEST_PATH = path.join(APP_ROOT, "src", "data", "office-assets-manifest.json");
 const OUT_TS_PATH = path.join(APP_ROOT, "src", "data", "officeWalkabilityGrid.ts");
 
+// COLS/ROWS derive from the real office frame size (see office-layout.ts
+// FRAME_WIDTH/FRAME_HEIGHT) divided by CELL, so changing CELL alone
+// re-derives the grid dimensions correctly instead of leaving them stale.
+const FRAME_WIDTH = 1440;
+const FRAME_HEIGHT = 1244;
+
 const CELL = 32;
-const COLS = 45;
-const ROWS = 39;
+const COLS = Math.ceil(FRAME_WIDTH / CELL);
+const ROWS = Math.ceil(FRAME_HEIGHT / CELL);
 
 // ---- Calibration rect within walkable.png (see task brief) --------------
 // Adjust these if the Step-1 self-check overlay shows drift.
@@ -45,6 +52,7 @@ const LEGEND_RGB = {
   R: [223, 74, 76], // blocked
   B: [56, 136, 233], // interaction
   Y: [249, 205, 57], // door
+  P: [150, 80, 200], // purple — stand-here
 };
 
 function rgb2hsv(r, g, b) {
@@ -117,11 +125,11 @@ function classifyPixel(rgb) {
 // breaker: the highest-precedence color that clears SIGNIFICANCE_MIN wins
 // outright, even if a lower-precedence color has more raw votes. Only when
 // no color clears the floor do we fall back to plain plurality.
-const PRECEDENCE = ["Y", "B", "R", "G"];
+const PRECEDENCE = ["Y", "B", "P", "R", "G"];
 const SIGNIFICANCE_MIN_FRACTION = 0.12; // ~10 of 81 samples
 
 function classifyCell(samples) {
-  const votes = { G: 0, R: 0, B: 0, Y: 0 };
+  const votes = { G: 0, R: 0, B: 0, Y: 0, P: 0 };
   let classifiedCount = 0;
   let sumRGB = 0;
   for (const rgb of samples) {
@@ -141,7 +149,7 @@ function classifyCell(samples) {
     return meanSum < 110 ? "#" : ".";
   }
 
-  const SYMBOL = { G: ".", R: "#", B: "o", Y: "+" };
+  const SYMBOL = { G: ".", R: "#", B: "o", Y: "+", P: "s" };
   const significanceMin = SIGNIFICANCE_MIN_FRACTION * total;
   for (const k of PRECEDENCE) {
     if (votes[k] >= significanceMin) return SYMBOL[k];
@@ -338,7 +346,7 @@ function applyWallRingBackstop(rawGrid, manifest) {
   for (const rect of ringedRooms) {
     const stamp = (cx, cy) => {
       if (cx < 0 || cx >= COLS || cy < 0 || cy >= ROWS) return;
-      if (g[cy][cx] === "+") return; // never overwrite a door (human-placed or projected)
+      if (g[cy][cx] === "+" || g[cy][cx] === "s") return; // never overwrite a door or hand-painted stand cell
       g[cy][cx] = "#";
     };
 
@@ -404,7 +412,7 @@ function connectRoomInterior(g, rect) {
   const interior = [];
   for (let cy = rect.cy1 + 1; cy < rect.cy2; cy++) {
     for (let cx = rect.cx1 + 1; cx < rect.cx2; cx++) {
-      if (g[cy][cx] === "." || g[cy][cx] === "+") interior.push([cx, cy]);
+      if (g[cy][cx] === "." || g[cy][cx] === "+" || g[cy][cx] === "s") interior.push([cx, cy]);
     }
   }
   if (DEBUG) console.log(rect.id, "interior count", interior.length);
@@ -492,7 +500,7 @@ function connectRoomInterior(g, rect) {
         if (!inBounds(nx, ny)) continue;
         const nk = key(nx, ny);
         if (visited.has(nk)) continue;
-        const stepCost = g[ny][nx] === "." || g[ny][nx] === "+" ? 0 : 1;
+        const stepCost = g[ny][nx] === "." || g[ny][nx] === "+" || g[ny][nx] === "s" ? 0 : 1;
         const nd = curDist + stepCost;
         if (!dist.has(nk) || nd < dist.get(nk)) {
           dist.set(nk, nd);
@@ -545,7 +553,8 @@ function connectDoorsToMainRegion(g, anchor) {
 
   function floodFillMain() {
     const seen = new Set();
-    if (g[anchor.cy][anchor.cx] !== "." && g[anchor.cy][anchor.cx] !== "+") return seen;
+    if (g[anchor.cy][anchor.cx] !== "." && g[anchor.cy][anchor.cx] !== "+" && g[anchor.cy][anchor.cx] !== "s")
+      return seen;
     const stack = [[anchor.cx, anchor.cy]];
     seen.add(key(anchor.cx, anchor.cy));
     while (stack.length) {
@@ -556,7 +565,7 @@ function connectDoorsToMainRegion(g, anchor) {
         if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS) continue;
         const nk = key(nx, ny);
         if (seen.has(nk)) continue;
-        if (g[ny][nx] !== "." && g[ny][nx] !== "+") continue;
+        if (g[ny][nx] !== "." && g[ny][nx] !== "+" && g[ny][nx] !== "s") continue;
         seen.add(nk);
         stack.push([nx, ny]);
       }
@@ -608,7 +617,7 @@ function connectDoorsToMainRegion(g, anchor) {
           // carveable blocked cells here — treat both as cost-1 steps so a
           // shortest path through an 'o' cell can actually be opened below
           // (matches connectRoomInterior's carve semantics).
-          const stepCost = g[ny][nx] === "." || g[ny][nx] === "+" ? 0 : 1;
+          const stepCost = g[ny][nx] === "." || g[ny][nx] === "+" || g[ny][nx] === "s" ? 0 : 1;
           const nd = curDist + stepCost;
           if (!dist.has(nk) || nd < dist.get(nk)) {
             dist.set(nk, nd);
@@ -638,6 +647,7 @@ const OVERLAY_RGBA = {
   "#": [244, 67, 54, 102], // red
   o: [33, 150, 243, 102], // blue
   "+": [255, 193, 7, 102], // yellow/amber
+  s: [156, 39, 176, 102], // purple — stand-here
 };
 
 async function renderOverlayOnReference(grid, outPath) {
@@ -671,9 +681,6 @@ async function renderOverlayOnReference(grid, outPath) {
 }
 
 async function renderOverlayOnRealAssets(grid, manifest, outPath) {
-  const FRAME_WIDTH = 1440;
-  const FRAME_HEIGHT = 1244;
-
   const floorPath = path.join(APP_ROOT, "src", "assets", "office", "floor.png");
   const baseCanvas = await sharp(floorPath)
     .resize(FRAME_WIDTH, FRAME_HEIGHT, { fit: "fill" })
@@ -718,14 +725,14 @@ function writeOfficeWalkabilityGridTs(rows) {
   const lines = [];
   lines.push("// AUTO-GENERATED by app/scripts/parse-walkable.cjs — do not hand-edit.");
   lines.push("// Parsed from the hand-authored walkability reference image");
-  lines.push("// (~/Downloads/walkable.png), a 45x39 grid overlay on the office floor plan,");
+  lines.push(`// (~/Downloads/walkable.png), a ${COLS}x${ROWS} grid overlay on the office floor plan,`);
   lines.push("// with a wall-ring safety backstop applied (see parse-walkable.cjs Step 2).");
   lines.push("");
-  lines.push("export const CELL = 32;");
-  lines.push("export const COLS = 45;");
-  lines.push("export const ROWS = 39;");
+  lines.push(`export const CELL = ${CELL};`);
+  lines.push(`export const COLS = ${COLS};`);
+  lines.push(`export const ROWS = ${ROWS};`);
   lines.push("");
-  lines.push("// '.' walkable  '#' blocked  'o' interaction  '+' door");
+  lines.push("// '.' walkable  '#' blocked  'o' interaction  '+' door  's' stand-here");
   lines.push("export const WALK_ROWS: string[] = [");
   for (const row of rows) {
     lines.push(`  ${JSON.stringify(row)},`);
@@ -763,7 +770,7 @@ async function main() {
   );
 
   // Stats
-  let counts = { ".": 0, "#": 0, o: 0, "+": 0 };
+  let counts = { ".": 0, "#": 0, o: 0, "+": 0, s: 0 };
   for (const row of finalGrid) for (const c of row) counts[c]++;
   console.log("Final grid symbol counts:", counts);
   console.log("Done.");

@@ -15,7 +15,7 @@ import {
   roomMembersById,
 } from "../../data/office-layout";
 import { findPath, roomOf } from "../../data/officePathfinding";
-import { cellToWorld, nearestWalkableConnectedTo, worldToCell } from "../../data/officeGrid";
+import { cellToWorld, nearestStandSpotConnectedTo, nearestWalkableConnectedTo, worldToCell } from "../../data/officeGrid";
 import type { AssetLayer } from "../../types/office";
 import { OfficeStage } from "./OfficeStage";
 import { CharacterSearch } from "./CharacterSearch";
@@ -95,6 +95,23 @@ export function OfficeMap() {
   });
   const bonSpriteSrc = bonSprite(isPatting ? "pat" : isWalking ? "walk" : "idle", direction, frameIndex);
 
+  // Mini-camera PiP side: decided ONCE per walk action (not per-frame), based
+  // on where that action's interaction target sits relative to bon's
+  // starting position — target to the right -> PiP sits bottom-left (out of
+  // his path); target to the left -> bottom-right. Set by each walkTo call
+  // site below and held fixed for the whole walk; never mutated mid-walk.
+  const pipSideRef = useRef<"left" | "right">("left");
+
+  const PIP_WIDTH = 240;
+  const PIP_HEIGHT = 180;
+  const pipScale = initialScale * 2.5;
+  const pipTransform = computeCenterTransform(
+    { x: bonPos.x, y: bonPos.y, width: bonLayer.width, height: bonLayer.height },
+    pipScale,
+    PIP_WIDTH,
+    PIP_HEIGHT,
+  );
+
   // Frame the camera on bon's outside spawn on mount. Runs once — does not
   // rely on TransformWrapper's own centerOnInit/computeCoverScale framing,
   // since the default cover-fit view may not show the bottom band of the
@@ -156,12 +173,34 @@ export function OfficeMap() {
     const ux = dx / len;
     const uy = dy / len;
     const standoff = arisha.width / 2 + bw / 2 + 4;
-    const goal = { x: tc.x - ux * standoff - bw / 2, y: tc.y - uy * standoff - bh / 2 };
+    const bcCell = worldToCell(bc);
+    const tcCell = worldToCell(tc);
+    const standSpot = nearestStandSpotConnectedTo(tcCell.cx, tcCell.cy, bcCell.cx, bcCell.cy);
+    const goal = standSpot
+      ? (() => {
+          const w = cellToWorld(standSpot.cx, standSpot.cy);
+          return { x: w.x - bw / 2, y: w.y - bh / 2 };
+        })()
+      : { x: tc.x - ux * standoff - bw / 2, y: tc.y - uy * standoff - bh / 2 };
     const startRoomId = roomOf(bc)?.id ?? null;
     const goalRoomId = roomOf(tc)?.id ?? null;
     const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, goalRoomId);
 
     setOnboarding("walkingToReception");
+    // Static camera focus on Arisha — bon may walk off-screen while
+    // approaching; the mini-camera PiP (rendered while isWalking) tracks him
+    // instead. Mirrors the mount-focus effect above.
+    {
+      const ref = transformRef.current;
+      const wrapper = ref?.instance.wrapperComponent;
+      if (ref && wrapper) {
+        const rect = wrapper.getBoundingClientRect();
+        const focusScale = initialScale * 2.5;
+        const { x, y } = computeCenterTransform(arisha, focusScale, rect.width, rect.height);
+        ref.setTransform(x, y, focusScale, 600, "easeOut");
+      }
+    }
+    pipSideRef.current = arisha.x > bonPos.x ? "left" : "right";
     walkTo(path, () => {
       setOnboarding("greeting");
       // Three sequential beats — a proper greet/respond/prompt exchange
@@ -203,6 +242,7 @@ export function OfficeMap() {
       const startRoomId = roomOf(startCenter)?.id ?? null;
       const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, layer.id);
 
+      pipSideRef.current = roomCenter.x > startCenter.x ? "left" : "right";
       walkTo(path, () => {
         window.clearTimeout(greetTimerRef.current);
         greetNonceRef.current += 1;
@@ -229,13 +269,33 @@ export function OfficeMap() {
       const ux = dx / len;
       const uy = dy / len;
       const standoff = target.width / 2 + bw / 2 + 4;
-      const goal = { x: tc.x - ux * standoff - bw / 2, y: tc.y - uy * standoff - bh / 2 };
+      const bcCell = worldToCell(bc);
+      const tcCell = worldToCell(tc);
+      const standSpot = nearestStandSpotConnectedTo(tcCell.cx, tcCell.cy, bcCell.cx, bcCell.cy);
+      const goal = standSpot
+        ? (() => {
+            const w = cellToWorld(standSpot.cx, standSpot.cy);
+            return { x: w.x - bw / 2, y: w.y - bh / 2 };
+          })()
+        : { x: tc.x - ux * standoff - bw / 2, y: tc.y - uy * standoff - bh / 2 };
       const startRoomId = roomOf(bc)?.id ?? null;
       const goalRoomId = roomOf(tc)?.id ?? null;
       const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, goalRoomId);
 
-      // View stays exactly where it is — no zoom/pan on Pat. bon simply
-      // walks toward the target, potentially entering from off-screen.
+      // Static camera focus on the pat target — bon may walk off-screen
+      // while approaching; the mini-camera PiP (rendered while isWalking)
+      // tracks him instead.
+      {
+        const ref = transformRef.current;
+        const wrapper = ref?.instance.wrapperComponent;
+        if (ref && wrapper) {
+          const rect = wrapper.getBoundingClientRect();
+          const focusScale = initialScale * 2.5;
+          const { x, y } = computeCenterTransform(target, focusScale, rect.width, rect.height);
+          ref.setTransform(x, y, focusScale, 600, "easeOut");
+        }
+      }
+      pipSideRef.current = target.x > bonPos.x ? "left" : "right";
       walkTo(path, () => {
         playPat();
       });
@@ -379,6 +439,19 @@ export function OfficeMap() {
           />
         </TransformComponent>
       </TransformWrapper>
+      {isWalking && (
+        <div
+          className={styles.pip}
+          style={pipSideRef.current === "left" ? { left: 16, bottom: 16 } : { right: 16, bottom: 16 }}
+        >
+          <div
+            className={styles.pipInner}
+            style={{ transform: `translate(${pipTransform.x}px, ${pipTransform.y}px) scale(${pipScale})` }}
+          >
+            <OfficeStage characterOverrides={{ bon: bonPos }} characterSrcOverrides={{ bon: bonSpriteSrc }} />
+          </div>
+        </div>
+      )}
       <CharacterSearch
         transformRef={transformRef}
         targetScale={maxScale}

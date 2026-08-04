@@ -68,7 +68,7 @@ export function useCharacterWalk(initial: Pt) {
       return;
     }
 
-    const dur = Math.min(3500, Math.max(500, totalDist * 2.2));
+    const dur = Math.min(3500, Math.max(500, totalDist * 3.4));
     const t0 = performance.now();
     setIsWalking(true);
     setFrameIndex(0);

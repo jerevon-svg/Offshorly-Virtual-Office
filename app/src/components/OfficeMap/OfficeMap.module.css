@@ -14,6 +14,26 @@
   cursor: grabbing;
 }
 
+.pip {
+  position: fixed;
+  width: 240px;
+  height: 180px;
+  overflow: hidden;
+  pointer-events: none;
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+  z-index: 16;
+  background: #1a1a1a;
+}
+
+.pipInner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+}
+
 .toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
   z-index: 15; background: rgba(26,26,26,0.9); color: #f0f0f0;
