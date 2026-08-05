@@ -15,7 +15,13 @@ import {
   roomMembersById,
 } from "../../data/office-layout";
 import { findPath, roomOf } from "../../data/officePathfinding";
-import { cellToWorld, nearestStandSpotConnectedTo, nearestWalkableConnectedTo, worldToCell } from "../../data/officeGrid";
+import {
+  cellToWorld,
+  findRoomDoorCell,
+  nearestStandSpotConnectedTo,
+  nearestWalkableConnectedTo,
+  worldToCell,
+} from "../../data/officeGrid";
 import type { AssetLayer } from "../../types/office";
 import { OfficeStage } from "./OfficeStage";
 import { CharacterSearch } from "./CharacterSearch";
@@ -30,12 +36,26 @@ import {
 } from "./panMath";
 import { useCharacterWalk } from "./useCharacterWalk";
 import { bonSprite } from "../../data/bonWalkFrames";
+import { useOfficePhase } from "./useOfficePhase";
+import { OfficePhaseDebugControl } from "./OfficePhaseDebugControl";
+import { useCheckoutFlow } from "./useCheckoutFlow";
+import { WorkingStatusIndicator } from "./checkout/WorkingStatusIndicator";
+import { CheckoutReminderToast } from "./checkout/CheckoutReminderToast";
+import { CheckoutConfirmModal } from "./checkout/CheckoutConfirmModal";
+import { TimeSummaryPanel } from "./checkout/TimeSummaryPanel";
+import { TimeLogForm } from "./checkout/TimeLogForm";
+import { TimeLogReview } from "./checkout/TimeLogReview";
+import { SubmissionFailedPanel } from "./checkout/SubmissionFailedPanel";
+import { CheckoutSuccessCard } from "./checkout/CheckoutSuccessCard";
+import { CheckoutDebugPanel } from "./checkout/CheckoutDebugPanel";
+import checkoutStyles from "./checkout/checkout.module.css";
 import styles from "./OfficeMap.module.css";
 
-// On-load onboarding sequence: bon spawns outside, offers a check-in walk to
-// reception, greets, then lets the user pick a room. Every state other than
-// "done" suppresses normal interactions (room/character clicks, search) —
-// see the guards on those handlers below.
+// Check-in sequence: bon spawns outside with no popup. Clicking Arisha (while
+// not yet checked in) offers a check-in walk to reception, greets, then lets
+// the user pick a room. Every state other than "done" suppresses normal
+// interactions (room/character clicks, search) — see the guards on those
+// handlers below.
 type OnboardingState =
   | "checkinPrompt"
   | "walkingToReception"
@@ -55,6 +75,7 @@ function computeCoverScale(): number {
 }
 
 export function OfficeMap() {
+  const { phase, hourDecimal, overrideHour, setOverrideHour } = useOfficePhase();
   const [initialScale] = useState(computeCoverScale);
   const minScale = initialScale;
   // Multiplier (not additive) of initialScale so zoom depth scales with the
@@ -78,9 +99,15 @@ export function OfficeMap() {
   const greetNonceRef = useRef(0);
   const charMenuTimerRef = useRef<number | undefined>(undefined);
 
-  // Onboarding state machine — replays from "checkinPrompt" on every full
-  // page load (no persistence), per explicit product requirement.
-  const [onboarding, setOnboarding] = useState<OnboardingState>("checkinPrompt");
+  // Onboarding state machine — starts "done" (no auto-popup on load); moves
+  // through the check-in states only once the user deliberately clicks
+  // Arisha and picks "Check in" from her action menu.
+  const [onboarding, setOnboarding] = useState<OnboardingState>("done");
+  // Tracks whether the check-in flow has been completed at least once —
+  // gates the "Check in" option on Arisha's menu (hidden once already
+  // checked in). Declining the "Want to check in?" modal ("Not now") does
+  // NOT count as checked-in, so the option stays available to retry.
+  const [hasCheckedIn, setHasCheckedIn] = useState(false);
 
   useEffect(() => {
     return () => {
@@ -89,11 +116,190 @@ export function OfficeMap() {
     };
   }, []);
 
-  const { pos: bonPos, isWalking, isPatting, direction, frameIndex, walkTo, playPat } = useCharacterWalk({
+  const {
+    pos: bonPos,
+    isWalking,
+    isPatting,
+    direction,
+    frameIndex,
+    walkTo,
+    playPat,
+    cancel: cancelWalk,
+    resetPos: resetBonPos,
+  } = useCharacterWalk({
     x: bonLayer.x,
     y: bonLayer.y,
   });
   const bonSpriteSrc = bonSprite(isPatting ? "pat" : isWalking ? "walk" : "idle", direction, frameIndex);
+
+  // Checkout flow — stamped once the onboarding sequence reaches "done"
+  // (whichever path got there: skipped check-in, or walked to a room).
+  const [timeInMs, setTimeInMs] = useState<number | null>(null);
+  useEffect(() => {
+    if (onboarding === "done" && timeInMs === null) {
+      setTimeInMs(Date.now());
+    }
+  }, [onboarding, timeInMs]);
+
+  // Debug-only override: lets the dev debug panel set a synthetic "hours
+  // worked" so the 8h checkout reminder (workedMinutes >= 480) can be tested
+  // without waiting. null = use the real check-in timestamp.
+  const [debugHoursWorked, setDebugHoursWorked] = useState<number | null>(null);
+  const effectiveTimeInMs =
+    debugHoursWorked !== null ? Date.now() - debugHoursWorked * 3600_000 : timeInMs;
+
+  const checkoutFlow = useCheckoutFlow({
+    employeeId: "bon",
+    hourDecimal,
+    timeInMs: effectiveTimeInMs,
+  });
+  const checkoutBusy =
+    checkoutFlow.state === "SAYING_GOODBYE" ||
+    checkoutFlow.state === "WALKING_TO_RECEPTION" ||
+    checkoutFlow.state === "WALKING_TO_EXIT";
+  const exitTriggeredRef = useRef(false);
+  const [frozenCheckoutAtMs, setFrozenCheckoutAtMs] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (checkoutFlow.submissionResult?.submittedAt) {
+      setFrozenCheckoutAtMs(new Date(checkoutFlow.submissionResult.submittedAt).getTime());
+    }
+  }, [checkoutFlow.submissionResult]);
+
+  // Debug-only full reset — wired to the debug panel's "Clear worked-time
+  // override" action. Clearing the override (h === null) also lets the dev
+  // re-test check-in without a hard refresh: resets the checkout state
+  // machine + today's storage, re-arms Arisha's "Check in" menu option, and
+  // snaps bon back to his manifest spawn position/visibility in case the
+  // checkout exit walk had hidden or moved him.
+  function handleSetDebugHoursWorked(h: number | null) {
+    setDebugHoursWorked(h);
+    if (h !== null) return;
+    checkoutFlow.resetToday();
+    setHasCheckedIn(false);
+    setOnboarding("done");
+    setFrozenCheckoutAtMs(null);
+    window.clearTimeout(greetTimerRef.current);
+    setGreeting(null);
+    cancelWalk();
+    resetBonPos({ x: bonLayer.x, y: bonLayer.y });
+  }
+
+  // SAYING_GOODBYE/WALKING_TO_RECEPTION: goodbye bubble, then walk to Arisha
+  // using the same standoff-goal logic as startCheckin.
+  function handleConfirmStartCheckout() {
+    checkoutFlow.confirmStartCheckout();
+    window.clearTimeout(greetTimerRef.current);
+    greetNonceRef.current += 1;
+    setGreeting({ characterId: bonLayer.id, nonce: greetNonceRef.current, text: "Bye, everyone! 👋" });
+    greetTimerRef.current = window.setTimeout(() => {
+      setGreeting(null);
+      beginWalkToReception();
+    }, 2000);
+  }
+
+  function beginWalkToReception() {
+    const arisha = npcCharacterLayers.find((l) => l.id === "arisha");
+    if (!arisha) {
+      checkoutFlow.arrivedAtReception();
+      return;
+    }
+    const bw = bonLayer.width;
+    const bh = bonLayer.height;
+    const bc = { x: bonPos.x + bw / 2, y: bonPos.y + bh / 2 };
+    const tc = { x: arisha.x + arisha.width / 2, y: arisha.y + arisha.height / 2 };
+    const dx = tc.x - bc.x;
+    const dy = tc.y - bc.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len;
+    const uy = dy / len;
+    const standoff = arisha.width / 2 + bw / 2 + 4;
+    const bcCell = worldToCell(bc);
+    const tcCell = worldToCell(tc);
+    const standSpot = nearestStandSpotConnectedTo(tcCell.cx, tcCell.cy, bcCell.cx, bcCell.cy);
+    const goal = standSpot
+      ? (() => {
+          const w = cellToWorld(standSpot.cx, standSpot.cy);
+          return { x: w.x - bw / 2, y: w.y - bh / 2 };
+        })()
+      : { x: tc.x - ux * standoff - bw / 2, y: tc.y - uy * standoff - bh / 2 };
+    const startRoomId = roomOf(bc)?.id ?? null;
+    const goalRoomId = roomOf(tc)?.id ?? null;
+    const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, goalRoomId);
+
+    {
+      const ref = transformRef.current;
+      const wrapper = ref?.instance.wrapperComponent;
+      if (ref && wrapper) {
+        const rect = wrapper.getBoundingClientRect();
+        const focusScale = initialScale * 2.5;
+        const { x, y } = computeCenterTransform(arisha, focusScale, rect.width, rect.height);
+        ref.setTransform(x, y, focusScale, 600, "easeOut");
+      }
+    }
+    pipSideRef.current = arisha.x > bonPos.x ? "left" : "right";
+    walkTo(path, () => {
+      checkoutFlow.arrivedAtReception();
+      const ref = transformRef.current;
+      const wrapper = ref?.instance.wrapperComponent;
+      if (ref && wrapper) {
+        const rect = wrapper.getBoundingClientRect();
+        const focusScale = initialScale * 3;
+        const { x, y } = computeCenterTransform(arisha, focusScale, rect.width, rect.height);
+        ref.setTransform(x, y, focusScale, 500, "easeOut");
+      }
+    });
+  }
+
+  function handleCancelCheckoutWalk() {
+    cancelWalk();
+    checkoutFlow.cancelWalkToReception();
+    resetToInitialView();
+  }
+
+  // CHECKOUT_SUCCESS -> Arisha speaks the "You're all set" bubble (matches
+  // check-in greeting beat timing), THEN bon walks back to his original
+  // outside spawn point (bonLayer's initial x/y — the same spot the
+  // onboarding mount-focus effect above frames), then finish.
+  useEffect(() => {
+    if (checkoutFlow.state !== "CHECKOUT_SUCCESS") {
+      exitTriggeredRef.current = false;
+      return;
+    }
+    if (exitTriggeredRef.current) return;
+    exitTriggeredRef.current = true;
+
+    function proceedWithExitWalk() {
+      checkoutFlow.startExitWalk();
+      const startCenter = { x: bonPos.x + bonLayer.width / 2, y: bonPos.y + bonLayer.height / 2 };
+      const goal = { x: bonLayer.x, y: bonLayer.y };
+      const goalCenter = { x: goal.x + bonLayer.width / 2, y: goal.y + bonLayer.height / 2 };
+      const startRoomId = roomOf(startCenter)?.id ?? null;
+      const goalRoomId = roomOf(goalCenter)?.id ?? null;
+      const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, goalRoomId);
+      pipSideRef.current = goal.x > bonPos.x ? "left" : "right";
+      walkTo(path, () => {
+        window.clearTimeout(greetTimerRef.current);
+        greetNonceRef.current += 1;
+        setGreeting({ characterId: bonLayer.id, nonce: greetNonceRef.current, text: "Bye, everyone! 👋" });
+        greetTimerRef.current = window.setTimeout(() => {
+          setGreeting(null);
+          checkoutFlow.finishExit();
+        }, 1500);
+      });
+    }
+
+    const arisha = npcCharacterLayers.find((l) => l.id === "arisha");
+    if (arisha) {
+      playGreetingBeats(
+        [{ characterId: arisha.id, text: "You're all set. Have a great evening! 👋", durationMs: 1800 }],
+        proceedWithExitWalk,
+      );
+    } else {
+      proceedWithExitWalk();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checkoutFlow.state]);
 
   // Mini-camera PiP side: decided ONCE per walk action (not per-frame), based
   // on where that action's interaction target sits relative to bon's
@@ -232,11 +438,15 @@ export function OfficeMap() {
       const roomCenter = { x: layer.x + layer.width / 2, y: layer.y + layer.height / 2 };
       const startCell = worldToCell(startCenter);
       const roomCell = worldToCell(roomCenter);
-      // Snap the room's center to the nearest walkable cell in bon's connected
-      // region, mirroring the connectivity-aware goal snapping findPath itself
-      // relies on internally — avoids handing findPath a goal buried in an
-      // unreachable furniture pocket.
-      const snapped = nearestWalkableConnectedTo(roomCell.cx, roomCell.cy, startCell.cx, startCell.cy);
+      // Prefer the room's hand-painted door ('+') cell as the true arrival
+      // point — e.g. design-room's doorway, pixel-precise from Figma data —
+      // over a geometric room-center that can land bon behind desks. Falls
+      // back to the old center-snapping heuristic for rooms without a
+      // mapped door cell.
+      const doorCell = findRoomDoorCell(layer);
+      const snapped = doorCell
+        ? nearestWalkableConnectedTo(doorCell.cx, doorCell.cy, startCell.cx, startCell.cy)
+        : nearestWalkableConnectedTo(roomCell.cx, roomCell.cy, startCell.cx, startCell.cy);
       const snappedWorld = cellToWorld(snapped.cx, snapped.cy);
       const goal = { x: snappedWorld.x - bw / 2, y: snappedWorld.y - bh / 2 };
       const startRoomId = roomOf(startCenter)?.id ?? null;
@@ -249,14 +459,25 @@ export function OfficeMap() {
         setGreeting({ characterId: bonLayer.id, nonce: greetNonceRef.current, text: "Hi team!" });
         greetTimerRef.current = window.setTimeout(() => setGreeting(null), 3000);
         setOnboarding("done");
+        setHasCheckedIn(true);
       });
     }, zoomOutMs);
   }
 
-  function handleChoose(action: "chat" | "call" | "pat") {
+  function handleChoose(action: "chat" | "call" | "pat" | "checkin") {
     if (!menu) return;
     const target = menu.layer;
     const name = formatCharacterName(target);
+    if (action === "checkin") {
+      // Re-triggers the same "Want to check in?" prompt the old mount effect
+      // used to auto-show — now started deliberately from Arisha's menu.
+      // Close the menu WITHOUT resetting the camera (unlike closeCharacterMenu)
+      // so the view stays exactly as-is while CheckinModal appears; the zoom
+      // only happens in startCheckin, once the user confirms.
+      setMenu(null);
+      setOnboarding("checkinPrompt");
+      return;
+    }
     if (action === "pat") {
       setMenu(null);
       const bw = bonLayer.width;
@@ -349,7 +570,8 @@ export function OfficeMap() {
   function handleCharacterClick(layer: AssetLayer, anchor: { clientX: number; clientY: number }) {
     // Onboarding sequence must complete before normal character-click
     // interactions resume — every non-"done" state suppresses this handler.
-    if (onboarding !== "done") return;
+    // checkoutBusy locks manual interaction while bon is mid-checkout-walk.
+    if (onboarding !== "done" || checkoutBusy) return;
     // Closing the room sidebar here is fine even though this handler now
     // drives its own zoom: whichever setTransform call happens last (this
     // one) wins on the shared transformRef, so no double-animation fight.
@@ -421,13 +643,15 @@ export function OfficeMap() {
           wrapperStyle={{ width: "100%", height: "100%" }}
         >
           <OfficeStage
+            phase={phase}
             characterOverrides={{ bon: bonPos }}
             characterSrcOverrides={{ bon: bonSpriteSrc }}
             onCharacterClick={handleCharacterClick}
+            hiddenCharacterIds={checkoutFlow.state === "CHECKED_OUT" ? ["bon"] : undefined}
             onRoomClick={(layer) => {
               // Onboarding sequence must complete before normal room-click
               // interactions resume — every non-"done" state suppresses this.
-              if (onboarding !== "done") return;
+              if (onboarding !== "done" || checkoutBusy) return;
               setMenu(null);
               const side = layer.x + layer.width / 2 > FRAME_WIDTH / 2 ? "left" : "right";
               focusRoom(layer, side);
@@ -448,9 +672,115 @@ export function OfficeMap() {
             className={styles.pipInner}
             style={{ transform: `translate(${pipTransform.x}px, ${pipTransform.y}px) scale(${pipScale})` }}
           >
-            <OfficeStage characterOverrides={{ bon: bonPos }} characterSrcOverrides={{ bon: bonSpriteSrc }} />
+            <OfficeStage
+              phase={phase}
+              characterOverrides={{ bon: bonPos }}
+              characterSrcOverrides={{ bon: bonSpriteSrc }}
+              hiddenCharacterIds={checkoutFlow.state === "CHECKED_OUT" ? ["bon"] : undefined}
+            />
           </div>
         </div>
+      )}
+      {checkoutBusy && checkoutFlow.state === "WALKING_TO_RECEPTION" && (
+        <div className={checkoutStyles.walkIndicator}>
+          <span>Checking out… Heading to Reception</span>
+          <button className={checkoutStyles.walkIndicatorCancel} onClick={handleCancelCheckoutWalk}>
+            Cancel
+          </button>
+        </div>
+      )}
+      <WorkingStatusIndicator state={checkoutFlow.state} workedLabel={checkoutFlow.workedLabel} />
+      <CheckoutReminderToast
+        visible={checkoutFlow.reminderVisible}
+        onLater={checkoutFlow.dismissReminderForLater}
+        onStartCheckout={checkoutFlow.startCheckout}
+      />
+      <CheckoutConfirmModal
+        visible={checkoutFlow.state === "CHECKOUT_CONFIRMATION"}
+        onNotYet={checkoutFlow.cancelConfirmation}
+        onStartCheckout={handleConfirmStartCheckout}
+      />
+      {(checkoutFlow.state === "AT_RECEPTION" ||
+        checkoutFlow.state === "EDITING_TIME_LOG" ||
+        checkoutFlow.state === "REVIEWING") && (
+        <div className={checkoutStyles.backdrop}>
+          <div className={checkoutStyles.panel}>
+            <TimeSummaryPanel
+              timeInMs={timeInMs}
+              breakMinutes={checkoutFlow.breakMinutes}
+              workedLabel={checkoutFlow.workedLabel}
+              frozenCheckoutAtMs={frozenCheckoutAtMs}
+            />
+            {checkoutFlow.state === "AT_RECEPTION" && (
+              <div className={checkoutStyles.actions}>
+                <button className={checkoutStyles.primary} onClick={checkoutFlow.continueToTimeLog}>
+                  Log today's work
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      {checkoutFlow.state === "EDITING_TIME_LOG" && (
+        <div className={checkoutStyles.backdrop}>
+          <TimeLogForm
+            entries={checkoutFlow.entries}
+            projects={checkoutFlow.projects}
+            tasks={checkoutFlow.tasks}
+            allocation={checkoutFlow.allocation}
+            workedLabel={checkoutFlow.workedLabel}
+            error={checkoutFlow.error}
+            onUpdateEntry={checkoutFlow.updateEntry}
+            onAddEntry={checkoutFlow.addEntry}
+            onRemoveEntry={checkoutFlow.removeEntry}
+            onContinue={checkoutFlow.goToReview}
+          />
+        </div>
+      )}
+      {checkoutFlow.state === "REVIEWING" && (
+        <div className={checkoutStyles.backdrop}>
+          <TimeLogReview
+            entries={checkoutFlow.entries}
+            allocation={checkoutFlow.allocation}
+            workedLabel={checkoutFlow.workedLabel}
+            onBack={checkoutFlow.backToEditing}
+            onSubmit={() => void checkoutFlow.submit()}
+          />
+        </div>
+      )}
+      <SubmissionFailedPanel
+        visible={checkoutFlow.state === "SUBMISSION_FAILED"}
+        error={checkoutFlow.error}
+        onTryAgain={() => void checkoutFlow.retrySubmit()}
+        onSaveAndReturnLater={checkoutFlow.saveAndReturnLater}
+      />
+      <CheckoutSuccessCard
+        state={checkoutFlow.state}
+        workedLabel={checkoutFlow.workedLabel}
+        entries={checkoutFlow.entries}
+        submissionResult={checkoutFlow.submissionResult}
+      />
+      {import.meta.env.DEV && (
+        <OfficePhaseDebugControl
+          phase={phase}
+          hourDecimal={hourDecimal}
+          overrideHour={overrideHour}
+          setOverrideHour={setOverrideHour}
+        />
+      )}
+      {(import.meta.env.DEV ||
+        new URLSearchParams(window.location.search).get("checkoutDebug") === "true") && (
+        <CheckoutDebugPanel
+          state={checkoutFlow.state}
+          overrideHour={overrideHour}
+          debugHoursWorked={debugHoursWorked}
+          setDebugHoursWorked={handleSetDebugHoursWorked}
+          startCheckout={checkoutFlow.startCheckout}
+          confirmStartCheckout={handleConfirmStartCheckout}
+          submit={checkoutFlow.submit}
+          retrySubmit={checkoutFlow.retrySubmit}
+          resetToday={checkoutFlow.resetToday}
+        />
       )}
       <CharacterSearch
         transformRef={transformRef}
@@ -458,7 +788,7 @@ export function OfficeMap() {
         onLocate={(layer) => {
           // Onboarding sequence must complete before normal search-locate
           // interactions resume — every non-"done" state suppresses this.
-          if (onboarding !== "done") return;
+          if (onboarding !== "done" || checkoutBusy) return;
           setRoomSidebar(null);
           setMenu(null);
           window.clearTimeout(greetTimerRef.current);
@@ -473,6 +803,7 @@ export function OfficeMap() {
           anchor={menu}
           onChoose={handleChoose}
           onClose={closeCharacterMenu}
+          showCheckin={menu.layer.id === "arisha" && !hasCheckedIn}
         />
       )}
       <RoomSidebar

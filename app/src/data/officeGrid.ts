@@ -13,10 +13,16 @@ function idx(cx: number, cy: number): number {
 // cells, blocked = 0 for '#' (wall/furniture) and 'o' (interaction point)
 // cells. Also collects every 'o' cell into INTERACTION_CELLS and every 's'
 // cell into STAND_CELLS for potential future use.
-function buildGrid(): { grid: Uint8Array; interactionCells: Set<string>; standCells: Set<string> } {
+function buildGrid(): {
+  grid: Uint8Array;
+  interactionCells: Set<string>;
+  standCells: Set<string>;
+  doorCells: Set<string>;
+} {
   const g = new Uint8Array(COLS * ROWS);
   const interactionCells = new Set<string>();
   const standCells = new Set<string>();
+  const doorCells = new Set<string>();
 
   for (let cy = 0; cy < ROWS; cy++) {
     const row = WALK_ROWS[cy] ?? "";
@@ -25,6 +31,7 @@ function buildGrid(): { grid: Uint8Array; interactionCells: Set<string>; standCe
       if (sym === "." || sym === "+" || sym === "s") {
         g[idx(cx, cy)] = 1;
         if (sym === "s") standCells.add(`${cx},${cy}`);
+        if (sym === "+") doorCells.add(`${cx},${cy}`);
       } else {
         g[idx(cx, cy)] = 0;
         if (sym === "o") interactionCells.add(`${cx},${cy}`);
@@ -32,13 +39,14 @@ function buildGrid(): { grid: Uint8Array; interactionCells: Set<string>; standCe
     }
   }
 
-  return { grid: g, interactionCells, standCells };
+  return { grid: g, interactionCells, standCells, doorCells };
 }
 
 const built = buildGrid();
 export const grid = built.grid;
 export const INTERACTION_CELLS: Set<string> = built.interactionCells;
 export const STAND_CELLS: Set<string> = built.standCells;
+export const DOOR_CELLS: Set<string> = built.doorCells;
 
 export function worldToCell(p: Pt): { cx: number; cy: number } {
   return { cx: Math.floor(p.x / CELL), cy: Math.floor(p.y / CELL) };
@@ -165,6 +173,48 @@ export function nearestStandSpotConnectedTo(
     if (d <= maxCells && d < bestD) {
       bestD = d;
       best = { cx: sx, cy: sy };
+    }
+  }
+  return best;
+}
+
+export function getDoorSpots(): { cx: number; cy: number }[] {
+  return [...DOOR_CELLS].map((k) => {
+    const [cx, cy] = k.split(",").map(Number);
+    return { cx, cy };
+  });
+}
+
+// Finds the hand-painted door ('+') cell that marks a room's true arrival
+// point — e.g. design-room's doorway cell, positioned just inside the room
+// near its real Figma-derived entrance, rather than a geometric room-center
+// that can land bon behind desks/furniture. Scans DOOR_CELLS for cells whose
+// world coordinates fall within the room's manifest rect (with a small pixel
+// margin so a door painted right on the boundary still counts), and returns
+// the one closest to the room's centroid. Returns null when the room has no
+// door cell mapped yet (caller falls back to the existing geometric
+// heuristic — not every room's grid is as precisely painted as design-room's).
+export function findRoomDoorCell(room: { x: number; y: number; width: number; height: number }): {
+  cx: number;
+  cy: number;
+} | null {
+  const margin = CELL; // allow a door painted one cell outside the rect to still count
+  const minX = room.x - margin;
+  const maxX = room.x + room.width + margin;
+  const minY = room.y - margin;
+  const maxY = room.y + room.height + margin;
+  const centroid = { x: room.x + room.width / 2, y: room.y + room.height / 2 };
+
+  let best: { cx: number; cy: number } | null = null;
+  let bestD = Infinity;
+  for (const k of DOOR_CELLS) {
+    const [cx, cy] = k.split(",").map(Number);
+    const world = cellToWorld(cx, cy);
+    if (world.x < minX || world.x > maxX || world.y < minY || world.y > maxY) continue;
+    const d = Math.hypot(world.x - centroid.x, world.y - centroid.y);
+    if (d < bestD) {
+      bestD = d;
+      best = { cx, cy };
     }
   }
   return best;

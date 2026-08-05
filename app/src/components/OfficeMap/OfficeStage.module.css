@@ -32,3 +32,72 @@
 .characterLayer img {
   pointer-events: none;
 }
+
+/* Day/night phase overlay — last child of .stage, sits above every layer but
+   is scoped to the stage's own stacking context so it never covers UI that
+   renders outside .stage (modals, sidebars, menus). */
+.phaseOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  pointer-events: none;
+}
+
+.phaseTint {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 4s ease;
+}
+
+.phaseActive {
+  opacity: 1;
+}
+
+.phaseMorning {
+  background: linear-gradient(180deg, rgba(255, 176, 100, 0.16), rgba(255, 140, 80, 0.08));
+  mix-blend-mode: soft-light;
+}
+
+.phaseDay {
+  background: rgba(255, 255, 255, 0.02);
+  mix-blend-mode: normal;
+}
+
+.phaseSunset {
+  background: linear-gradient(180deg, rgba(255, 130, 60, 0.28), rgba(220, 90, 120, 0.16));
+  mix-blend-mode: overlay;
+}
+
+.phaseNight {
+  background: linear-gradient(180deg, rgba(30, 25, 90, 0.55), rgba(15, 15, 45, 0.4));
+  mix-blend-mode: multiply;
+}
+
+/* Extra darkening on the sidewalk strip specifically, layered above the
+   global night tint — only visible during night. */
+.sidewalkNightDarken {
+  position: absolute;
+  background: rgba(5, 5, 20, 0.35);
+  mix-blend-mode: multiply;
+  opacity: 0;
+  transition: opacity 4s ease;
+}
+
+/* Soft warm/vibrant glow divs for reception / fountain / gaming during
+   night — approximate room-light art via radial gradients (no baked
+   window/LED layers exist to relight). */
+.nightGlow {
+  position: absolute;
+  opacity: 0;
+  transition: opacity 4s ease;
+  mix-blend-mode: screen;
+}
+
+.nightGlowWarm {
+  background: radial-gradient(ellipse at center, rgba(255, 200, 120, 0.35) 0%, rgba(255, 180, 100, 0.12) 55%, transparent 80%);
+}
+
+.nightGlowGaming {
+  background: radial-gradient(ellipse at center, rgba(140, 90, 255, 0.55) 0%, rgba(80, 220, 255, 0.28) 45%, transparent 80%);
+}

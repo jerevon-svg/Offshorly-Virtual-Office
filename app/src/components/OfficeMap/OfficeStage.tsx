@@ -7,15 +7,22 @@ import {
   officeAssetLayers,
 } from "../../data/office-layout";
 import type { AssetLayer } from "../../types/office";
+import type { Phase } from "../../data/officePhase";
 import { depthCompare } from "./depthSort";
 import { GreetingBubble } from "./GreetingBubble";
+import { OfficePhaseOverlay } from "./OfficePhaseOverlay";
 import styles from "./OfficeStage.module.css";
 
 type CharacterOverrides = Record<string, { x: number; y: number }>;
 
 type OfficeStageProps = {
+  // Day/night tint — defaults to "day" (near-neutral) so existing callers
+  // that don't pass it (e.g. tests) render unaffected.
+  phase?: Phase;
   characterOverrides?: CharacterOverrides;
   characterSrcOverrides?: Record<string, string>;
+  // Character ids to omit entirely from render (e.g. bon once CHECKED_OUT).
+  hiddenCharacterIds?: string[];
   onCharacterClick?: (layer: AssetLayer, anchor: { clientX: number; clientY: number }) => void;
   onRoomClick?: (layer: AssetLayer, anchor: { clientX: number; clientY: number }) => void;
   greetingCharacterId?: string | null;
@@ -50,8 +57,10 @@ function useClickVsDrag(
 }
 
 export function OfficeStage({
+  phase = "day",
   characterOverrides,
   characterSrcOverrides,
+  hiddenCharacterIds,
   onCharacterClick,
   onRoomClick,
   greetingCharacterId,
@@ -63,10 +72,12 @@ export function OfficeStage({
 
   // Resolve live character positions (e.g. bon's walking override) BEFORE
   // sorting, so depth ordering reflects true current feet-Y each render.
-  const resolved = officeAssetLayers.map((l) => {
-    const ov = l.kind === "character" ? characterOverrides?.[l.id] : undefined;
-    return ov ? { ...l, x: ov.x, y: ov.y } : l;
-  });
+  const resolved = officeAssetLayers
+    .filter((l) => !(l.kind === "character" && hiddenCharacterIds?.includes(l.id)))
+    .map((l) => {
+      const ov = l.kind === "character" ? characterOverrides?.[l.id] : undefined;
+      return ov ? { ...l, x: ov.x, y: ov.y } : l;
+    });
   const sorted = resolved.slice().sort(depthCompare);
 
   const resolvedGreetedLayer = greetingCharacterId
@@ -153,6 +164,7 @@ export function OfficeStage({
           text={greetingText ?? `Hi there, I'm ${formatCharacterName(resolvedGreetedLayer)}!`}
         />
       )}
+      <OfficePhaseOverlay phase={phase} />
     </div>
   );
 }

@@ -137,11 +137,37 @@ export function useCharacterWalk(initial: Pt) {
     rafRef.current = requestAnimationFrame(step);
   }
 
+  // Aborts an in-progress walk: stops the rAF loop where bon currently stands,
+  // clears isWalking, and does NOT call the pending walkTo's onArrive.
+  function cancel() {
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = undefined;
+    }
+    setIsWalking(false);
+  }
+
+  // Debug-only escape hatch: hard-snaps position back to a given point
+  // (e.g. the manifest spawn coords), cancelling any in-flight walk/pat
+  // first. Not part of the normal walk API — used by the checkout debug
+  // panel's full-reset action.
+  function resetPos(p: Pt) {
+    cancel();
+    if (patIntervalRef.current) clearInterval(patIntervalRef.current);
+    if (patTimeoutRef.current) clearTimeout(patTimeoutRef.current);
+    patIntervalRef.current = undefined;
+    patTimeoutRef.current = undefined;
+    setIsPatting(false);
+    setFrameIndex(0);
+    posRef.current = p;
+    setPos(p);
+  }
+
   useEffect(() => () => {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     if (patIntervalRef.current) clearInterval(patIntervalRef.current);
     if (patTimeoutRef.current) clearTimeout(patTimeoutRef.current);
   }, []);
 
-  return { pos, isWalking, isPatting, direction, frameIndex, walkTo, playPat };
+  return { pos, isWalking, isPatting, direction, frameIndex, walkTo, playPat, cancel, resetPos };
 }

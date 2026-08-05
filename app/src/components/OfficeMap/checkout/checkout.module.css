@@ -1,0 +1,300 @@
+/* Shared dark-translucent palette for the checkout flow — matches
+   CheckinModal/CharacterActionMenu conventions. */
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.panel {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 31;
+  min-width: 320px;
+  max-width: 480px;
+  max-height: 80vh;
+  overflow-y: auto;
+  background: rgba(26, 26, 26, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 20px;
+  backdrop-filter: blur(4px);
+  font-family: system-ui, sans-serif;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  color: #f0f0f0;
+}
+
+.title {
+  font-size: 16px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.body {
+  font-size: 13px;
+  color: rgba(240, 240, 240, 0.75);
+  text-align: center;
+  line-height: 1.5;
+}
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.actionsRow {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  justify-content: center;
+}
+
+.primary {
+  all: unset;
+  cursor: pointer;
+  color: #1a1a1a;
+  background: #f0f0f0;
+  font-size: 14px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-weight: 600;
+  text-align: center;
+}
+.primary:hover {
+  background: #ffffff;
+}
+.primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.secondary {
+  all: unset;
+  cursor: pointer;
+  color: rgba(240, 240, 240, 0.75);
+  font-size: 13px;
+  padding: 8px 14px;
+  border-radius: 6px;
+  text-align: center;
+}
+.secondary:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* Working status badge — small persistent pill, top-right, below any other
+   top-center controls. */
+.statusBadge {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 25;
+  background: rgba(26, 26, 26, 0.9);
+  color: #f0f0f0;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+/* Corner reminder toast. */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 26;
+  min-width: 260px;
+  max-width: 320px;
+  background: rgba(26, 26, 26, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 14px 16px;
+  backdrop-filter: blur(4px);
+  font-family: system-ui, sans-serif;
+  color: #f0f0f0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.toastText {
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+/* Small "Checking out..." walk indicator. */
+.walkIndicator {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 15;
+  background: rgba(26, 26, 26, 0.9);
+  color: #f0f0f0;
+  padding: 10px 16px;
+  border-radius: 999px;
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.walkIndicatorCancel {
+  all: unset;
+  cursor: pointer;
+  color: rgba(240, 240, 240, 0.75);
+  font-size: 12px;
+  text-decoration: underline;
+}
+
+/* Time-log form. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.label {
+  font-size: 12px;
+  color: rgba(240, 240, 240, 0.6);
+}
+.select,
+.input,
+.textarea {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  color: #f0f0f0;
+  font-size: 13px;
+  padding: 8px 10px;
+  font-family: system-ui, sans-serif;
+}
+.textarea {
+  resize: vertical;
+  min-height: 48px;
+}
+.entryCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.entryHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.entryHeader span {
+  font-size: 12px;
+  color: rgba(240, 240, 240, 0.6);
+}
+.removeBtn {
+  all: unset;
+  cursor: pointer;
+  color: rgba(240, 120, 120, 0.85);
+  font-size: 12px;
+}
+.addBtn {
+  all: unset;
+  cursor: pointer;
+  color: rgba(240, 240, 240, 0.85);
+  font-size: 13px;
+  border: 1px dashed rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  padding: 8px;
+  text-align: center;
+}
+.addBtn:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.allocationLine {
+  font-size: 12px;
+  color: rgba(240, 240, 240, 0.7);
+  text-align: center;
+}
+.allocationLine.warn {
+  color: rgba(240, 180, 90, 0.95);
+}
+.loadingHint {
+  font-size: 11px;
+  color: rgba(240, 240, 240, 0.5);
+}
+
+/* Time summary panel — read-only grid. */
+.summaryGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  font-size: 13px;
+}
+.summaryLabel {
+  color: rgba(240, 240, 240, 0.6);
+}
+.summaryValue {
+  color: #f0f0f0;
+  font-weight: 600;
+  text-align: right;
+}
+
+.error {
+  font-size: 12px;
+  color: rgba(240, 120, 120, 0.9);
+}
+
+/* Debug panel. */
+.debugPanel {
+  position: fixed;
+  top: 64px;
+  left: 12px;
+  z-index: 100;
+  background: rgba(26, 26, 26, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  padding: 10px;
+  font-family: system-ui, sans-serif;
+  color: #f0f0f0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 220px;
+}
+.debugPanel summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+.debugRow {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.debugBtn {
+  all: unset;
+  cursor: pointer;
+  color: #f0f0f0;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+  padding: 6px 8px;
+  border-radius: 4px;
+}
+.debugBtn:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+.debugBtn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.debugHint {
+  font-size: 10px;
+  color: rgba(240, 240, 240, 0.5);
+}
