@@ -1,0 +1,176 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(0, 0, 0, 0.5);
+}
+.panel {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 41;
+  min-width: 320px;
+  max-width: 420px;
+  width: 90vw;
+  max-height: 85vh;
+  overflow-y: auto;
+  background: rgba(26, 26, 26, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 22px;
+  backdrop-filter: blur(4px);
+  font-family: system-ui, sans-serif;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.title {
+  color: #f0f0f0;
+  font-size: 17px;
+  font-weight: 600;
+  text-align: center;
+}
+.subtitle {
+  color: rgba(240, 240, 240, 0.65);
+  font-size: 13px;
+  text-align: center;
+}
+.closeButton {
+  all: unset;
+  cursor: pointer;
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  color: rgba(240, 240, 240, 0.6);
+  font-size: 16px;
+}
+.closeButton:hover {
+  color: #ffffff;
+}
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.row {
+  display: flex;
+  gap: 8px;
+}
+.primary {
+  all: unset;
+  cursor: pointer;
+  color: #1a1a1a;
+  background: #f0f0f0;
+  font-size: 14px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-weight: 600;
+  text-align: center;
+  flex: 1;
+}
+.primary:hover {
+  background: #ffffff;
+}
+.primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.secondary {
+  all: unset;
+  cursor: pointer;
+  color: rgba(240, 240, 240, 0.85);
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 14px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  text-align: center;
+  flex: 1;
+}
+.secondary:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+.fileInput {
+  color: rgba(240, 240, 240, 0.85);
+  font-size: 13px;
+}
+.previewThumb {
+  width: 100%;
+  max-height: 220px;
+  object-fit: contain;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.nameInput {
+  all: unset;
+  color: #f0f0f0;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+.spinner {
+  align-self: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.15);
+  border-top-color: #f0f0f0;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.confidenceBadge {
+  align-self: center;
+  color: #1a1a1a;
+  background: #8fd19e;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+.outfitGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.outfitTile {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 6px;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background: rgba(255, 255, 255, 0.05);
+}
+.outfitTile:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+.outfitTileSelected {
+  border-color: #f0f0f0;
+  background: rgba(255, 255, 255, 0.15);
+}
+.outfitSwatch {
+  width: 40px;
+  height: 40px;
+  border-radius: 6px;
+}
+.outfitLabel {
+  color: rgba(240, 240, 240, 0.85);
+  font-size: 11px;
+  text-align: center;
+}
+.savedCard {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+}

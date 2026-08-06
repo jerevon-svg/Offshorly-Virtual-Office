@@ -38,6 +38,7 @@ import { useCharacterWalk } from "./useCharacterWalk";
 import { bonSprite } from "../../data/bonWalkFrames";
 import { useOfficePhase } from "./useOfficePhase";
 import { OfficePhaseDebugControl } from "./OfficePhaseDebugControl";
+import { AvatarCreator } from "../AvatarCreator/AvatarCreator";
 import { useCheckoutFlow } from "./useCheckoutFlow";
 import { WorkingStatusIndicator } from "./checkout/WorkingStatusIndicator";
 import { CheckoutReminderToast } from "./checkout/CheckoutReminderToast";
@@ -92,6 +93,7 @@ export function OfficeMap() {
     null,
   );
   const [toast, setToast] = useState<string | null>(null);
+  const [isAvatarCreatorOpen, setIsAvatarCreatorOpen] = useState(false);
   const [greeting, setGreeting] = useState<{ characterId: string; nonce: number; text?: string } | null>(
     null,
   );
@@ -818,6 +820,16 @@ export function OfficeMap() {
         <CheckinModal onYes={startCheckin} onNotNow={() => setOnboarding("done")} />
       )}
       {onboarding === "roomSelect" && <RoomPickerModal rooms={roomLayers} onChoose={chooseRoom} />}
+      <button
+        type="button"
+        className={styles.addEmployeeButton}
+        onClick={() => setIsAvatarCreatorOpen(true)}
+      >
+        + Add Employee
+      </button>
+      {isAvatarCreatorOpen && (
+        <AvatarCreator onClose={() => setIsAvatarCreatorOpen(false)} />
+      )}
     </div>
   );
 }

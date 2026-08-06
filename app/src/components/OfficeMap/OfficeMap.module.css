@@ -41,6 +41,28 @@
   font-size: 14px; backdrop-filter: blur(4px);
 }
 
+/* Always-visible entry point for the standalone avatar creator — top-left. */
+.addEmployeeButton {
+  all: unset;
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 100;
+  cursor: pointer;
+  background: rgba(20, 20, 20, 0.85);
+  color: #f0f0f0;
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+.addEmployeeButton:hover {
+  background: rgba(35, 35, 35, 0.9);
+}
+
 /* Dev-only day/night debug scrubber — top-center panel. */
 .phaseDebug {
   position: fixed;
