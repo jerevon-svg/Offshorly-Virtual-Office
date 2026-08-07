@@ -1,0 +1,121 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.panel {
+  position: relative;
+  z-index: 31;
+  width: 360px;
+  max-width: calc(100vw - 32px);
+  height: 480px;
+  max-height: calc(100vh - 32px);
+  background: rgba(26, 26, 26, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  backdrop-filter: blur(4px);
+  font-family: system-ui, sans-serif;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.title {
+  color: #f0f0f0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.closeButton {
+  all: unset;
+  cursor: pointer;
+  color: rgba(240, 240, 240, 0.75);
+  font-size: 20px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+
+.closeButton:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.message {
+  max-width: 75%;
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 14px;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.own {
+  align-self: flex-end;
+  background: #3b82f6;
+  color: #fff;
+}
+
+.peer {
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.1);
+  color: #f0f0f0;
+}
+
+.composer {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.textarea {
+  flex: 1;
+  resize: none;
+  min-height: 36px;
+  max-height: 96px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.05);
+  color: #f0f0f0;
+  font-size: 14px;
+  padding: 8px 10px;
+  font-family: inherit;
+}
+
+.sendButton {
+  all: unset;
+  cursor: pointer;
+  align-self: flex-end;
+  color: #1a1a1a;
+  background: #f0f0f0;
+  font-size: 14px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-weight: 600;
+}
+
+.sendButton:hover {
+  background: #ffffff;
+}

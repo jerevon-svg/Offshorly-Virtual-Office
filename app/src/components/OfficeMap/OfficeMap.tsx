@@ -23,6 +23,7 @@ import {
   worldToCell,
 } from "../../data/officeGrid";
 import type { AssetLayer } from "../../types/office";
+import type { ChatMessage } from "../../services/chat";
 import { OfficeStage } from "./OfficeStage";
 import { CharacterSearch } from "./CharacterSearch";
 import { CharacterActionMenu } from "./CharacterActionMenu";
@@ -48,6 +49,8 @@ import { CheckoutReminderToast } from "./checkout/CheckoutReminderToast";
 import { CheckoutConfirmModal } from "./checkout/CheckoutConfirmModal";
 import { TimeSummaryPanel } from "./checkout/TimeSummaryPanel";
 import { TimeLogForm } from "./checkout/TimeLogForm";
+import { ConversationView } from "../Chat/ConversationView";
+import { CURRENT_USER_ID } from "../../data/currentUser";
 import { TimeLogReview } from "./checkout/TimeLogReview";
 import { SubmissionFailedPanel } from "./checkout/SubmissionFailedPanel";
 import { CheckoutSuccessCard } from "./checkout/CheckoutSuccessCard";
@@ -122,6 +125,26 @@ export function OfficeMap() {
   const greetNonceRef = useRef(0);
   const charMenuTimerRef = useRef<number | undefined>(undefined);
 
+  // Chat feature state — fully separate from the greeting system above.
+  const [talkingIds, setTalkingIds] = useState<string[]>([]);
+  const [openChat, setOpenChat] = useState<AssetLayer | null>(null);
+  // Latest sent message text per character id, shown in their talking bubble
+  // until it expires (falls back to the looping dots otherwise).
+  const [talkingTextById, setTalkingTextById] = useState<Record<string, string>>({});
+  const talkingTimersRef = useRef<Record<string, number>>({});
+
+  function handleTalkingMessage(msg: ChatMessage) {
+    window.clearTimeout(talkingTimersRef.current[msg.senderId]);
+    setTalkingTextById((prev) => ({ ...prev, [msg.senderId]: msg.text }));
+    talkingTimersRef.current[msg.senderId] = window.setTimeout(() => {
+      setTalkingTextById((prev) => {
+        const next = { ...prev };
+        delete next[msg.senderId];
+        return next;
+      });
+    }, 4500);
+  }
+
   // Onboarding state machine — starts "done" (no auto-popup on load); moves
   // through the check-in states only once the user deliberately clicks
   // Arisha and picks "Check in" from her action menu.
@@ -136,6 +159,9 @@ export function OfficeMap() {
     return () => {
       window.clearTimeout(greetTimerRef.current);
       window.clearTimeout(charMenuTimerRef.current);
+      for (const timerId of Object.values(talkingTimersRef.current)) {
+        window.clearTimeout(timerId);
+      }
     };
   }, []);
 
@@ -172,7 +198,7 @@ export function OfficeMap() {
     debugHoursWorked !== null ? Date.now() - debugHoursWorked * 3600_000 : timeInMs;
 
   const checkoutFlow = useCheckoutFlow({
-    employeeId: "bon",
+    employeeId: CURRENT_USER_ID,
     hourDecimal,
     timeInMs: effectiveTimeInMs,
   });
@@ -543,9 +569,54 @@ export function OfficeMap() {
       walkTo(path, () => {
         playPat();
       });
+    } else if (action === "chat") {
+      // setMenu(null) rather than closeCharacterMenu() — avoid resetting the
+      // camera view when opening the chat panel.
+      setMenu(null);
+      const bw = bonLayer.width;
+      const bh = bonLayer.height;
+      const bc = { x: bonPos.x + bw / 2, y: bonPos.y + bh / 2 };
+      const tc = { x: target.x + target.width / 2, y: target.y + target.height / 2 };
+      const dx = tc.x - bc.x;
+      const dy = tc.y - bc.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const ux = dx / len;
+      const uy = dy / len;
+      const standoff = target.width / 2 + bw / 2 + 4;
+      const bcCell = worldToCell(bc);
+      const tcCell = worldToCell(tc);
+      const standSpot = nearestStandSpotConnectedTo(tcCell.cx, tcCell.cy, bcCell.cx, bcCell.cy);
+      const goal = standSpot
+        ? (() => {
+            const w = cellToWorld(standSpot.cx, standSpot.cy);
+            return { x: w.x - bw / 2, y: w.y - bh / 2 };
+          })()
+        : { x: tc.x - ux * standoff - bw / 2, y: tc.y - uy * standoff - bh / 2 };
+      const startRoomId = roomOf(bc)?.id ?? null;
+      const goalRoomId = roomOf(tc)?.id ?? null;
+      const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, goalRoomId);
+
+      // Static camera focus on the chat target — bon may walk off-screen
+      // while approaching; the mini-camera PiP (rendered while isWalking)
+      // tracks him instead.
+      {
+        const ref = transformRef.current;
+        const wrapper = ref?.instance.wrapperComponent;
+        if (ref && wrapper) {
+          const rect = wrapper.getBoundingClientRect();
+          const focusScale = initialScale * 2.5;
+          const { x, y } = computeCenterTransform(target, focusScale, rect.width, rect.height);
+          ref.setTransform(x, y, focusScale, 600, "easeOut");
+        }
+      }
+      pipSideRef.current = target.x > bonPos.x ? "left" : "right";
+      walkTo(path, () => {
+        setOpenChat(target);
+        setTalkingIds([CURRENT_USER_ID, target.id]);
+      });
     } else {
       closeCharacterMenu();
-      setToast(action === "chat" ? `Chat with ${name} — coming soon` : `Calling ${name}… — coming soon`);
+      setToast(`Calling ${name}… — coming soon`);
       setTimeout(() => setToast(null), 1800);
     }
   }
@@ -685,6 +756,8 @@ export function OfficeMap() {
             greetingCharacterId={greeting?.characterId ?? null}
             greetingNonce={greeting?.nonce}
             greetingText={greeting?.text}
+            talkingCharacterIds={talkingIds}
+            talkingTextById={talkingTextById}
           />
         </TransformComponent>
       </TransformWrapper>
@@ -704,6 +777,8 @@ export function OfficeMap() {
               extraCharacterLayers={extraCharacterLayers}
               extraCharacterSrcById={extraCharacterSrcById}
               hiddenCharacterIds={checkoutFlow.state === "CHECKED_OUT" ? ["bon"] : undefined}
+              talkingCharacterIds={talkingIds}
+              talkingTextById={talkingTextById}
             />
           </div>
         </div>
@@ -840,6 +915,22 @@ export function OfficeMap() {
         members={roomSidebarMembers}
         onClose={closeRoomSidebar}
       />
+      {openChat && (
+        <ConversationView
+          peer={openChat}
+          selfId={CURRENT_USER_ID}
+          onIncomingMessage={handleTalkingMessage}
+          onClose={() => {
+            setOpenChat(null);
+            setTalkingIds([]);
+            for (const timerId of Object.values(talkingTimersRef.current)) {
+              window.clearTimeout(timerId);
+            }
+            talkingTimersRef.current = {};
+            setTalkingTextById({});
+          }}
+        />
+      )}
       {toast && <div className={styles.toast}>{toast}</div>}
       {onboarding === "checkinPrompt" && (
         <CheckinModal onYes={startCheckin} onNotNow={() => setOnboarding("done")} />
