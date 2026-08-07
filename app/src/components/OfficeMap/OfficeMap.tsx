@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   TransformWrapper,
   TransformComponent,
@@ -8,6 +8,7 @@ import {
   FRAME_HEIGHT,
   FRAME_WIDTH,
   bonLayer,
+  charactersInRoom,
   formatCharacterName,
   npcCharacterLayers,
   roomContainingPoint,
@@ -36,7 +37,8 @@ import {
   SIDEBAR_WIDTH,
 } from "./panMath";
 import { useCharacterWalk } from "./useCharacterWalk";
-import { bonSprite, characterSprite } from "../../data/bonWalkFrames";
+import { SavedAvatarWalker, type SavedAvatarWalkApi, type SavedAvatarWalkState } from "./SavedAvatarWalker";
+import { ALEX_SPRITE_SET, MICAH_SPRITE_SET, bonSprite, characterSprite } from "../../data/bonWalkFrames";
 import { useOfficePhase } from "./useOfficePhase";
 import { OfficePhaseDebugControl } from "./OfficePhaseDebugControl";
 import { AvatarCreator } from "../AvatarCreator/AvatarCreator";
@@ -245,6 +247,120 @@ export function OfficeMap() {
     y: bonLayer.y,
   });
   const bonSpriteSrc = bonSprite(isPatting ? "pat" : isWalking ? "walk" : "idle", direction, frameIndex);
+
+  // Alex/Micah demo-walk instances — same useCharacterWalk hook as bon,
+  // seeded from each NPC's actual current manifest position so their demo
+  // loop starts exactly where they normally stand.
+  const alexLayer = npcCharacterLayers.find((l) => l.id === "alex");
+  const micahLayer = npcCharacterLayers.find((l) => l.id === "micah");
+  const {
+    pos: alexPos,
+    isWalking: alexIsWalking,
+    isPatting: alexIsPatting,
+    direction: alexDirection,
+    frameIndex: alexFrameIndex,
+    walkTo: alexWalkTo,
+    playPat: alexPlayPat,
+  } = useCharacterWalk({ x: alexLayer?.x ?? 0, y: alexLayer?.y ?? 0 });
+  const {
+    pos: micahPos,
+    isWalking: micahIsWalking,
+    isPatting: micahIsPatting,
+    direction: micahDirection,
+    frameIndex: micahFrameIndex,
+    walkTo: micahWalkTo,
+    playPat: micahPlayPat,
+  } = useCharacterWalk({ x: micahLayer?.x ?? 0, y: micahLayer?.y ?? 0 });
+  const alexSpriteSrc = characterSprite(
+    ALEX_SPRITE_SET,
+    alexIsPatting ? "pat" : alexIsWalking ? "walk" : "idle",
+    alexDirection,
+    alexFrameIndex,
+  );
+  const micahSpriteSrc = characterSprite(
+    MICAH_SPRITE_SET,
+    micahIsPatting ? "pat" : micahIsWalking ? "walk" : "idle",
+    micahDirection,
+    micahFrameIndex,
+  );
+
+  // Saved-avatar (e.g. Lui, generated via "Add Employee") walk/pat registry —
+  // generalizes the alex/micah demo mechanism above to ANY character with a
+  // populated spriteSet, not just the 3 hardcoded NPCs. React can't call
+  // useCharacterWalk a dynamic number of times directly, so each qualifying
+  // avatar gets its own headless <SavedAvatarWalker> instance (rendered
+  // below) that owns the hook and reports in/out through this registry:
+  // - savedAvatarWalkState: live pos+src per layer id, merged into
+  //   characterOverrides/characterSrcOverrides so the avatar animates on-map
+  //   exactly like alex/micah do.
+  // - savedAvatarApiRef: walkTo/playPat lookup by layer id, used by
+  //   runWalkDemo/runPatDemo below.
+  const [savedAvatarWalkState, setSavedAvatarWalkState] = useState<
+    Record<string, SavedAvatarWalkState>
+  >({});
+  const savedAvatarApiRef = useRef<Map<string, SavedAvatarWalkApi>>(new Map());
+
+  const registerSavedAvatarApi = useCallback((layerId: string, api: SavedAvatarWalkApi | null) => {
+    if (api) savedAvatarApiRef.current.set(layerId, api);
+    else savedAvatarApiRef.current.delete(layerId);
+  }, []);
+
+  const handleSavedAvatarUpdate = useCallback((layerId: string, state: SavedAvatarWalkState) => {
+    setSavedAvatarWalkState((prev) => ({ ...prev, [layerId]: state }));
+  }, []);
+
+  // Any saved avatar (customAvatars) with a populated spriteSet gets its own
+  // <SavedAvatarWalker> below — same real 20-pose sprite set the pipeline
+  // already generates for every "Add Employee" avatar. Excludes still-
+  // generating placeholders (generationStatus === "pending") — those carry
+  // PLACEHOLDER_SPRITE_SET (truthy) but shouldn't be walk/pat-demoable until
+  // the real result swaps in (mirrors savedAvatarsToLayers' `animatable`
+  // gate, which CharacterActionMenu's showDemos reads).
+  const avatarsWithSpriteSet = useMemo(
+    () => customAvatars.filter((a) => a.spriteSet && a.generationStatus !== "pending"),
+    [customAvatars],
+  );
+
+  const savedAvatarOverridePos = useMemo(() => {
+    const map: Record<string, { x: number; y: number }> = {};
+    for (const [id, s] of Object.entries(savedAvatarWalkState)) map[id] = s.pos;
+    return map;
+  }, [savedAvatarWalkState]);
+
+  const savedAvatarOverrideSrc = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const [id, s] of Object.entries(savedAvatarWalkState)) map[id] = s.src;
+    return map;
+  }, [savedAvatarWalkState]);
+
+  // "Walk demo" / "Pat demo" — action-menu items available to alex/micah
+  // (their own dedicated useCharacterWalk instances above) AND any saved
+  // avatar with a populated spriteSet (via savedAvatarApiRef). Scripts a
+  // small in-view closed-loop walk (out ~1-2 tiles, then back) exercising
+  // multiple directions, then plays the pat frames. Does not touch bon or his
+  // own walk/pat mechanism (see handleChoose's existing "pat"/"chat" branches).
+  function runWalkDemo(layer: AssetLayer) {
+    const walkTo =
+      layer.id === "alex"
+        ? alexWalkTo
+        : layer.id === "micah"
+          ? micahWalkTo
+          : savedAvatarApiRef.current.get(layer.id)?.walkTo ?? null;
+    if (!walkTo) return;
+    const start = { x: layer.x, y: layer.y };
+    const out = { x: start.x + 40, y: start.y + 32 };
+    walkTo([out, start]);
+  }
+
+  function runPatDemo(layer: AssetLayer) {
+    const playPat =
+      layer.id === "alex"
+        ? alexPlayPat
+        : layer.id === "micah"
+          ? micahPlayPat
+          : savedAvatarApiRef.current.get(layer.id)?.playPat ?? null;
+    playPat?.();
+  }
 
   // Checkout flow — stamped once the onboarding sequence reaches "done"
   // (whichever path got there: skipped check-in, or walked to a room).
@@ -578,10 +694,20 @@ export function OfficeMap() {
     }, zoomOutMs);
   }
 
-  function handleChoose(action: "chat" | "call" | "pat" | "checkin") {
+  function handleChoose(action: "chat" | "call" | "pat" | "checkin" | "walkDemo" | "patDemo") {
     if (!menu) return;
     const target = menu.layer;
     const name = formatCharacterName(target);
+    if (action === "walkDemo") {
+      setMenu(null);
+      runWalkDemo(target);
+      return;
+    }
+    if (action === "patDemo") {
+      setMenu(null);
+      runPatDemo(target);
+      return;
+    }
     if (action === "checkin") {
       // Re-triggers the same "Want to check in?" prompt the old mount effect
       // used to auto-show — now started deliberately from Arisha's menu.
@@ -773,8 +899,24 @@ export function OfficeMap() {
   const bonCenter = { x: bonPos.x + bonLayer.width / 2, y: bonPos.y + bonLayer.height / 2 };
   const bonRoom = roomContainingPoint(bonCenter);
   const bonIsHere = roomSidebar !== null && bonRoom?.id === roomSidebar.layer.id;
+  // Saved avatars (extraCharacterLayers) aren't part of the static
+  // roomMembersById map — that's derived once from the Figma-manifest NPC
+  // roster and has no awareness of dynamically-saved employees. Match each
+  // saved avatar into the currently-open room by its actual on-map position
+  // (same geometry roomMembersById itself is built from), rather than by
+  // roomId string equality — SavedAvatar.roomId uses the legacy
+  // `rooms`/teamRooms naming (e.g. "dev-team"), which differs from the
+  // manifest room ids used here (e.g. "dev-room"), so geometry is the only
+  // stable link between the two id schemes.
+  const savedAvatarsInRoom = roomSidebar
+    ? charactersInRoom(roomSidebar.layer.id, extraCharacterLayers)
+    : [];
   const roomSidebarMembers = roomSidebar
-    ? [...roomMembersById[roomSidebar.layer.id], ...(bonIsHere ? [bonLayer] : [])]
+    ? [
+        ...roomMembersById[roomSidebar.layer.id],
+        ...savedAvatarsInRoom,
+        ...(bonIsHere ? [bonLayer] : []),
+      ]
     : [];
 
   return (
@@ -803,8 +945,13 @@ export function OfficeMap() {
         >
           <OfficeStage
             phase={phase}
-            characterOverrides={{ bon: bonPos }}
-            characterSrcOverrides={{ bon: bonSpriteSrc }}
+            characterOverrides={{ bon: bonPos, alex: alexPos, micah: micahPos, ...savedAvatarOverridePos }}
+            characterSrcOverrides={{
+              bon: bonSpriteSrc,
+              alex: alexSpriteSrc,
+              micah: micahSpriteSrc,
+              ...savedAvatarOverrideSrc,
+            }}
             extraCharacterLayers={extraCharacterLayers}
             extraCharacterSrcById={extraCharacterSrcById}
             onCharacterClick={handleCharacterClick}
@@ -837,8 +984,13 @@ export function OfficeMap() {
           >
             <OfficeStage
               phase={phase}
-              characterOverrides={{ bon: bonPos }}
-              characterSrcOverrides={{ bon: bonSpriteSrc }}
+              characterOverrides={{ bon: bonPos, alex: alexPos, micah: micahPos, ...savedAvatarOverridePos }}
+              characterSrcOverrides={{
+                bon: bonSpriteSrc,
+                alex: alexSpriteSrc,
+                micah: micahSpriteSrc,
+                ...savedAvatarOverrideSrc,
+              }}
               extraCharacterLayers={extraCharacterLayers}
               extraCharacterSrcById={extraCharacterSrcById}
               hiddenCharacterIds={checkoutFlow.state === "CHECKED_OUT" ? ["bon"] : undefined}
@@ -971,8 +1123,26 @@ export function OfficeMap() {
           onChoose={handleChoose}
           onClose={closeCharacterMenu}
           showCheckin={menu.layer.id === "arisha" && !hasCheckedIn}
+          showDemos={
+            menu.layer.id === "alex" || menu.layer.id === "micah" || Boolean(menu.layer.animatable)
+          }
         />
       )}
+      {avatarsWithSpriteSet.map((avatar) => {
+        const layerId = `saved-avatar-${avatar.avatarId}`;
+        const layer = extraCharacterLayers.find((l) => l.id === layerId);
+        if (!layer || !avatar.spriteSet) return null;
+        return (
+          <SavedAvatarWalker
+            key={avatar.avatarId}
+            layerId={layerId}
+            initial={{ x: layer.x, y: layer.y }}
+            spriteSet={avatar.spriteSet}
+            onUpdate={handleSavedAvatarUpdate}
+            registerApi={registerSavedAvatarApi}
+          />
+        );
+      })}
       <RoomSidebar
         open={roomSidebar !== null}
         layer={roomSidebar?.layer ?? null}

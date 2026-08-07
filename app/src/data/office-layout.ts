@@ -270,18 +270,24 @@ export function roomContainingPoint(point: { x: number; y: number }): AssetLayer
   return room ?? null;
 }
 
+// Filters `layers` down to whichever ones' center point falls inside the
+// room-manifest layer identified by `roomLayerId`. Shared by roomMembersById
+// (static NPC roster, below) and by callers needing to place *dynamic*
+// layers — e.g. saved avatars — into a room roster by actual on-map
+// position rather than by comparing roomId strings from a different id
+// scheme (SavedAvatar.roomId uses the legacy `rooms`/teamRooms naming, e.g.
+// "dev-team", which doesn't match manifest room ids like "dev-room").
+export function charactersInRoom(roomLayerId: string, layers: AssetLayer[]): AssetLayer[] {
+  return layers.filter((layer) => {
+    const center = { x: layer.x + layer.width / 2, y: layer.y + layer.height / 2 };
+    return roomContainingPoint(center)?.id === roomLayerId;
+  });
+}
+
 export const roomMembersById: Record<string, AssetLayer[]> = (() => {
   const result: Record<string, AssetLayer[]> = {};
   for (const room of roomLayers) {
-    result[room.id] = [];
-  }
-  for (const npc of npcCharacterLayers) {
-    const cx = npc.x + npc.width / 2;
-    const cy = npc.y + npc.height / 2;
-    const room = roomContainingPoint({ x: cx, y: cy });
-    if (room) {
-      result[room.id].push(npc);
-    }
+    result[room.id] = charactersInRoom(room.id, npcCharacterLayers);
   }
   return result;
 })();

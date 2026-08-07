@@ -49,8 +49,13 @@ export function savedAvatarsToLayers(avatars: SavedAvatar[]): AssetLayer[] {
       // Marks whether OfficeMap can resolve this layer's src through
       // characterSprite() (idle-front frame) instead of the static
       // previewUrl portrait. Full walk-cycle animation for NPCs is out of
-      // scope for this slice — this only flags the capability.
-      animatable: Boolean(avatar.spriteSet),
+      // scope for this slice — this only flags the capability. Excludes
+      // still-generating placeholders (generationStatus === "pending") even
+      // though they carry a truthy PLACEHOLDER_SPRITE_SET (see
+      // AvatarCreator.tsx's savePlaceholderAvatar) — the blank base-chibi
+      // placeholder frames shouldn't be walk/pat-demoable before the real
+      // sprite set swaps in.
+      animatable: Boolean(avatar.spriteSet) && avatar.generationStatus !== "pending",
     };
     return [layer];
   });

@@ -65,10 +65,10 @@
     "id": "alex",
     "kind": "character",
     "path": "assets/office/characters/alex.png",
-    "x": 579.89,
-    "y": 70.44,
-    "width": 17.05,
-    "height": 29.38,
+    "x": 578.42,
+    "y": 67.9,
+    "width": 20,
+    "height": 34.46,
     "transform": null
   },
   {
