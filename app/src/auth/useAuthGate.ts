@@ -12,12 +12,13 @@ import { apiFetch, AuthRedirectError, HOME_PATH } from "../services/api/client";
 // MUST independently enforce can_view_virtual_office on every office API
 // endpoint — this gate provides zero security on its own.
 //
-// TODO(atlas): confirm the exact response shape for can_view_virtual_office.
-// Unconfirmed as of writing whether it is top-level
-// (`{ can_view_virtual_office: true }`) or nested under a permissions
-// object (`{ permissions: { can_view_virtual_office: true } }`). Read
-// defensively below until Atlas confirms; update once their OpenAPI schema
-// lands.
+// Atlas confirmed (per spec): GET /api/v1/auth/me returns the flag NESTED
+// under `permissions` — `{ permissions: { can_view_virtual_office: true } }`.
+// They also documented GET /api/v1/auth/permissions, which returns the same
+// permissions object UNNESTED — `{ can_view_virtual_office: true }`.
+// extractCanViewVirtualOffice below stays defensive (checks both shapes)
+// rather than narrowing to nested-only: that's what makes it already
+// compatible with /auth/permissions if we ever switch endpoints.
 // "denied"         -> gate itself decides to bounce to HOME_PATH (permission
 //                      flag false, or a non-401 request error — see below).
 // "unauthenticated" -> apiFetch already redirected to LOGIN_PATH (no token,
