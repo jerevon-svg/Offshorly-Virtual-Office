@@ -1,0 +1,111 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import { useAuthGate } from "./useAuthGate";
+import { HOME_PATH, LOGIN_PATH } from "../services/api/client";
+
+function GateProbe() {
+  const status = useAuthGate();
+  return <div data-testid="status">{status}</div>;
+}
+
+describe("useAuthGate", () => {
+  const originalLocation = window.location;
+
+  beforeEach(() => {
+    import.meta.env.VITE_API_URL = "https://atlas-api.offshorly.com";
+    window.localStorage.clear();
+    window.localStorage.setItem("token", "valid-token");
+    window.localStorage.setItem("user", "some-user-json");
+    window.localStorage.setItem("checkout:draft", "keep-me");
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...originalLocation, href: "https://atlas.offshorly.com/virtual-office" },
+    });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: originalLocation,
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("redirects to / when can_view_virtual_office is false", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ can_view_virtual_office: false }), { status: 200 }),
+      ),
+    );
+
+    render(<GateProbe />);
+
+    await waitFor(() => expect(window.location.href).toBe(HOME_PATH));
+  });
+
+  it("renders allowed (children path) when can_view_virtual_office is true", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ can_view_virtual_office: true }), { status: 200 }),
+      ),
+    );
+
+    render(<GateProbe />);
+
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("allowed"));
+  });
+
+  it("treats a nested permissions.can_view_virtual_office shape as allowed too", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ permissions: { can_view_virtual_office: true } }), {
+          status: 200,
+        }),
+      ),
+    );
+
+    render(<GateProbe />);
+
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("allowed"));
+  });
+
+  it("treats a non-401 request error as unauthorized and redirects to / (not /login)", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+
+    render(<GateProbe />);
+
+    await waitFor(() => expect(window.location.href).toBe(HOME_PATH));
+    expect(window.location.href).not.toBe(LOGIN_PATH);
+  });
+
+  it("redirects to /login (not /) when no token is present", async () => {
+    window.localStorage.removeItem("token");
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    render(<GateProbe />);
+
+    await waitFor(() => expect(window.location.href).toBe(LOGIN_PATH));
+    expect(window.location.href).not.toBe(HOME_PATH);
+    // apiFetch must short-circuit before ever hitting the network.
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("on 401, clears only token+user, keeps checkout:* keys, and ends at /login (not /)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(null, { status: 401 })),
+    );
+
+    render(<GateProbe />);
+
+    await waitFor(() => expect(window.location.href).toBe(LOGIN_PATH));
+    expect(window.location.href).not.toBe(HOME_PATH);
+    expect(window.localStorage.getItem("token")).toBeNull();
+    expect(window.localStorage.getItem("user")).toBeNull();
+    expect(window.localStorage.getItem("checkout:draft")).toBe("keep-me");
+  });
+});
