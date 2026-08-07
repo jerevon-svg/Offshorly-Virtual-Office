@@ -21,6 +21,52 @@ import patFront2 from "../assets/office/characters/bon-pat-norm/front-2.png";
 import patBack1 from "../assets/office/characters/bon-pat-norm/back-1.png";
 import patBack2 from "../assets/office/characters/bon-pat-norm/back-2.png";
 
+import alexWalkLeft1 from "../assets/office/characters/alex-walk-norm/left-1.png";
+import alexWalkLeft2 from "../assets/office/characters/alex-walk-norm/left-2.png";
+import alexWalkRight1 from "../assets/office/characters/alex-walk-norm/right-1.png";
+import alexWalkRight2 from "../assets/office/characters/alex-walk-norm/right-2.png";
+import alexWalkFront1 from "../assets/office/characters/alex-walk-norm/front-1.png";
+import alexWalkFront2 from "../assets/office/characters/alex-walk-norm/front-2.png";
+import alexWalkBack1 from "../assets/office/characters/alex-walk-norm/back-1.png";
+import alexWalkBack2 from "../assets/office/characters/alex-walk-norm/back-2.png";
+
+import alexIdleLeft from "../assets/office/characters/alex-idle-norm/left.png";
+import alexIdleRight from "../assets/office/characters/alex-idle-norm/right.png";
+import alexIdleFront from "../assets/office/characters/alex-idle-norm/front.png";
+import alexIdleBack from "../assets/office/characters/alex-idle-norm/back.png";
+
+import alexPatLeft1 from "../assets/office/characters/alex-pat-norm/left-1.png";
+import alexPatLeft2 from "../assets/office/characters/alex-pat-norm/left-2.png";
+import alexPatRight1 from "../assets/office/characters/alex-pat-norm/right-1.png";
+import alexPatRight2 from "../assets/office/characters/alex-pat-norm/right-2.png";
+import alexPatFront1 from "../assets/office/characters/alex-pat-norm/front-1.png";
+import alexPatFront2 from "../assets/office/characters/alex-pat-norm/front-2.png";
+import alexPatBack1 from "../assets/office/characters/alex-pat-norm/back-1.png";
+import alexPatBack2 from "../assets/office/characters/alex-pat-norm/back-2.png";
+
+import micahWalkLeft1 from "../assets/office/characters/micah-walk-norm/left-1.png";
+import micahWalkLeft2 from "../assets/office/characters/micah-walk-norm/left-2.png";
+import micahWalkRight1 from "../assets/office/characters/micah-walk-norm/right-1.png";
+import micahWalkRight2 from "../assets/office/characters/micah-walk-norm/right-2.png";
+import micahWalkFront1 from "../assets/office/characters/micah-walk-norm/front-1.png";
+import micahWalkFront2 from "../assets/office/characters/micah-walk-norm/front-2.png";
+import micahWalkBack1 from "../assets/office/characters/micah-walk-norm/back-1.png";
+import micahWalkBack2 from "../assets/office/characters/micah-walk-norm/back-2.png";
+
+import micahIdleLeft from "../assets/office/characters/micah-idle-norm/left.png";
+import micahIdleRight from "../assets/office/characters/micah-idle-norm/right.png";
+import micahIdleFront from "../assets/office/characters/micah-idle-norm/front.png";
+import micahIdleBack from "../assets/office/characters/micah-idle-norm/back.png";
+
+import micahPatLeft1 from "../assets/office/characters/micah-pat-norm/left-1.png";
+import micahPatLeft2 from "../assets/office/characters/micah-pat-norm/left-2.png";
+import micahPatRight1 from "../assets/office/characters/micah-pat-norm/right-1.png";
+import micahPatRight2 from "../assets/office/characters/micah-pat-norm/right-2.png";
+import micahPatFront1 from "../assets/office/characters/micah-pat-norm/front-1.png";
+import micahPatFront2 from "../assets/office/characters/micah-pat-norm/front-2.png";
+import micahPatBack1 from "../assets/office/characters/micah-pat-norm/back-1.png";
+import micahPatBack2 from "../assets/office/characters/micah-pat-norm/back-2.png";
+
 import type { AvatarSpriteSet } from "../services/avatar/types";
 
 export type WalkDirection = "left" | "right" | "front" | "back";
@@ -54,6 +100,63 @@ export const BON_SPRITE_SET: AvatarSpriteSet = {
   walk: BON_WALK_FRAMES,
   idle: BON_IDLE_FRAMES,
   pat: BON_PAT_FRAMES,
+};
+
+// Alex and Micah — same normalized production-v2 pipeline output, packaged
+// identically to Bon's sprite set so they can run through the same
+// characterSprite() selector / useCharacterWalk hook.
+export const ALEX_WALK_FRAMES: Record<WalkDirection, readonly [string, string]> = {
+  left: [alexWalkLeft1, alexWalkLeft2],
+  right: [alexWalkRight1, alexWalkRight2],
+  front: [alexWalkFront1, alexWalkFront2],
+  back: [alexWalkBack1, alexWalkBack2],
+};
+
+export const ALEX_IDLE_FRAMES: Record<WalkDirection, string> = {
+  left: alexIdleLeft,
+  right: alexIdleRight,
+  front: alexIdleFront,
+  back: alexIdleBack,
+};
+
+export const ALEX_PAT_FRAMES: Record<WalkDirection, readonly [string, string]> = {
+  left: [alexPatLeft1, alexPatLeft2],
+  right: [alexPatRight1, alexPatRight2],
+  front: [alexPatFront1, alexPatFront2],
+  back: [alexPatBack1, alexPatBack2],
+};
+
+export const ALEX_SPRITE_SET: AvatarSpriteSet = {
+  walk: ALEX_WALK_FRAMES,
+  idle: ALEX_IDLE_FRAMES,
+  pat: ALEX_PAT_FRAMES,
+};
+
+export const MICAH_WALK_FRAMES: Record<WalkDirection, readonly [string, string]> = {
+  left: [micahWalkLeft1, micahWalkLeft2],
+  right: [micahWalkRight1, micahWalkRight2],
+  front: [micahWalkFront1, micahWalkFront2],
+  back: [micahWalkBack1, micahWalkBack2],
+};
+
+export const MICAH_IDLE_FRAMES: Record<WalkDirection, string> = {
+  left: micahIdleLeft,
+  right: micahIdleRight,
+  front: micahIdleFront,
+  back: micahIdleBack,
+};
+
+export const MICAH_PAT_FRAMES: Record<WalkDirection, readonly [string, string]> = {
+  left: [micahPatLeft1, micahPatLeft2],
+  right: [micahPatRight1, micahPatRight2],
+  front: [micahPatFront1, micahPatFront2],
+  back: [micahPatBack1, micahPatBack2],
+};
+
+export const MICAH_SPRITE_SET: AvatarSpriteSet = {
+  walk: MICAH_WALK_FRAMES,
+  idle: MICAH_IDLE_FRAMES,
+  pat: MICAH_PAT_FRAMES,
 };
 
 // Generic sprite selector: picks the frame for a given sprite set's

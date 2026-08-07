@@ -14,13 +14,20 @@ export function SavedStep({ savedAvatar, onDone }: Props) {
   const roomLabel =
     teamRooms.find((r) => r.id === savedAvatar.roomId)?.name ?? savedAvatar.roomId;
 
+  const isPending = savedAvatar.generationStatus === "pending";
+
   return (
     <div className={styles.savedCard}>
-      <div className={styles.title}>Avatar saved!</div>
+      <div className={styles.title}>{isPending ? "Placed!" : "Avatar saved!"}</div>
       <img src={savedAvatar.previewUrl} alt="Saved avatar preview" className={styles.previewThumb} />
       <div className={styles.subtitle}>{savedAvatar.nickname}</div>
       <div className={styles.subtitle}>Outfit: {outfitLabel}</div>
       <div className={styles.subtitle}>Team: {roomLabel}</div>
+      {isPending && (
+        <div className={styles.subtitle}>
+          {savedAvatar.nickname}&apos;s character will fill in shortly.
+        </div>
+      )}
       <div className={styles.actions}>
         <button className={styles.primary} onClick={onDone}>
           Done

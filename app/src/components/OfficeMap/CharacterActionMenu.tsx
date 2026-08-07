@@ -6,15 +6,22 @@ import styles from "./CharacterActionMenu.module.css";
 type Props = {
   layer: AssetLayer;
   anchor: { clientX: number; clientY: number };
-  onChoose: (action: "chat" | "call" | "pat" | "checkin") => void;
+  onChoose: (action: "chat" | "call" | "pat" | "checkin" | "walkDemo" | "patDemo") => void;
   onClose: () => void;
   // Arisha-only, and only while the user hasn't checked in yet — lets the
   // check-in flow (previously an on-load auto-popup) be triggered deliberately
   // by clicking her instead.
   showCheckin?: boolean;
+  // Demo triggers for any character with a populated sprite set — alex/micah
+  // (hardcoded NPCs) plus any saved avatar (e.g. "Lui") generated via the
+  // real "Add Employee" pipeline, each with its own useCharacterWalk
+  // instance (see OfficeMap.tsx's savedAvatarApiRef/SavedAvatarWalker).
+  // Exercises walk/pat animations independent of bon's own walk/pat
+  // mechanism.
+  showDemos?: boolean;
 };
 
-export function CharacterActionMenu({ layer, anchor, onChoose, onClose, showCheckin }: Props) {
+export function CharacterActionMenu({ layer, anchor, onChoose, onClose, showCheckin, showDemos }: Props) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
@@ -34,6 +41,12 @@ export function CharacterActionMenu({ layer, anchor, onChoose, onClose, showChec
         <button className={styles.item} onClick={() => onChoose("chat")}>Chat</button>
         <button className={styles.item} onClick={() => onChoose("call")}>Call</button>
         <button className={styles.item} onClick={() => onChoose("pat")}>Pat on the head</button>
+        {showDemos && (
+          <>
+            <button className={styles.item} onClick={() => onChoose("walkDemo")}>Walk demo</button>
+            <button className={styles.item} onClick={() => onChoose("patDemo")}>Pat demo</button>
+          </>
+        )}
       </div>
     </div>
   );

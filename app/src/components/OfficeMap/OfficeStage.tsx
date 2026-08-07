@@ -10,6 +10,7 @@ import type { AssetLayer } from "../../types/office";
 import type { Phase } from "../../data/officePhase";
 import { depthCompare } from "./depthSort";
 import { GreetingBubble } from "./GreetingBubble";
+import { TalkingBubble } from "./TalkingBubble";
 import { OfficePhaseOverlay } from "./OfficePhaseOverlay";
 import styles from "./OfficeStage.module.css";
 
@@ -37,6 +38,13 @@ type OfficeStageProps = {
   // Custom greeting text (e.g. onboarding's "Welcome to Offshorly!" instead
   // of the search-locate default "Hi there, I'm {name}!").
   greetingText?: string;
+  // Character ids to render a looping "talking" indicator above — fully
+  // separate from the greeting system (used by the chat feature).
+  talkingCharacterIds?: string[];
+  // Text to show inside the talking bubble for a given character id, when
+  // that character has recently sent a chat message (falls back to the
+  // looping dots when absent).
+  talkingTextById?: Record<string, string>;
 };
 
 // Shared click-vs-drag threshold logic: only fires onClick when pointer
@@ -75,6 +83,8 @@ export function OfficeStage({
   greetingText,
   extraCharacterLayers,
   extraCharacterSrcById,
+  talkingCharacterIds,
+  talkingTextById,
 }: OfficeStageProps = {}) {
   const characterClick = useClickVsDrag(onCharacterClick);
   const roomClick = useClickVsDrag(onRoomClick);
@@ -176,6 +186,19 @@ export function OfficeStage({
           text={greetingText ?? `Hi there, I'm ${formatCharacterName(resolvedGreetedLayer)}!`}
         />
       )}
+      {talkingCharacterIds?.map((id, index) => {
+        const layer = resolved.find((l) => l.id === id);
+        if (!layer) return null;
+        // Participants standing close together (e.g. bon walked up next to
+        // the peer for chat) can land almost-identical bubble anchors —
+        // nudge each participant's bubble to its own side so overlapping
+        // text stays readable instead of garbling together.
+        const sideOffset =
+          talkingCharacterIds.length > 1 ? (index - (talkingCharacterIds.length - 1) / 2) * 130 : 0;
+        return (
+          <TalkingBubble key={id} layer={layer} text={talkingTextById?.[id]} sideOffset={sideOffset} />
+        );
+      })}
       <OfficePhaseOverlay phase={phase} />
     </div>
   );
