@@ -21,6 +21,8 @@ import patFront2 from "../assets/office/characters/bon-pat-norm/front-2.png";
 import patBack1 from "../assets/office/characters/bon-pat-norm/back-1.png";
 import patBack2 from "../assets/office/characters/bon-pat-norm/back-2.png";
 
+import type { AvatarSpriteSet } from "../services/avatar/types";
+
 export type WalkDirection = "left" | "right" | "front" | "back";
 
 // index 0 = stride frame 1, index 1 = stride frame 2
@@ -45,13 +47,35 @@ export const BON_PAT_FRAMES: Record<WalkDirection, readonly [string, string]> = 
   back: [patBack1, patBack2],
 };
 
-// Selects bon's current sprite for the given state/direction/frame.
+// Bon's frames repackaged into the generic AvatarSpriteSet shape (see
+// services/avatar/types.ts) so he can be run through the same
+// characterSprite() selector as any future per-employee sprite set.
+export const BON_SPRITE_SET: AvatarSpriteSet = {
+  walk: BON_WALK_FRAMES,
+  idle: BON_IDLE_FRAMES,
+  pat: BON_PAT_FRAMES,
+};
+
+// Generic sprite selector: picks the frame for a given sprite set's
+// state/direction/frame. idle has only one frame per direction, so
+// frameIndex is ignored for "idle" (matches the original bonSprite behavior).
+export function characterSprite(
+  set: AvatarSpriteSet,
+  state: "idle" | "walk" | "pat",
+  direction: WalkDirection,
+  frameIndex: 0 | 1 = 0,
+): string {
+  if (state === "walk") return set.walk[direction][frameIndex];
+  if (state === "pat") return set.pat[direction][frameIndex];
+  return set.idle[direction];
+}
+
+// Backward-compatible wrapper — selects bon's current sprite for the given
+// state/direction/frame. Kept so existing callers don't need to change.
 export function bonSprite(
   state: "idle" | "walk" | "pat",
   direction: WalkDirection,
   frameIndex: 0 | 1 = 0,
 ): string {
-  if (state === "walk") return BON_WALK_FRAMES[direction][frameIndex];
-  if (state === "pat") return BON_PAT_FRAMES[direction][frameIndex];
-  return BON_IDLE_FRAMES[direction];
+  return characterSprite(BON_SPRITE_SET, state, direction, frameIndex);
 }

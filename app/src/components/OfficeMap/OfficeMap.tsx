@@ -35,7 +35,7 @@ import {
   SIDEBAR_WIDTH,
 } from "./panMath";
 import { useCharacterWalk } from "./useCharacterWalk";
-import { bonSprite } from "../../data/bonWalkFrames";
+import { bonSprite, characterSprite } from "../../data/bonWalkFrames";
 import { useOfficePhase } from "./useOfficePhase";
 import { OfficePhaseDebugControl } from "./OfficePhaseDebugControl";
 import { AvatarCreator } from "../AvatarCreator/AvatarCreator";
@@ -105,7 +105,13 @@ export function OfficeMap() {
   const extraCharacterSrcById = useMemo(() => {
     const map: Record<string, string> = {};
     for (const avatar of customAvatars) {
-      map[`saved-avatar-${avatar.avatarId}`] = avatar.previewUrl;
+      // Avatars with a populated spriteSet resolve through the same
+      // characterSprite() selector Bon uses (idle-front frame only — no
+      // per-NPC walk animation/pathfinding in this slice). Everyone else
+      // keeps falling back to the static preview portrait, unchanged.
+      map[`saved-avatar-${avatar.avatarId}`] = avatar.spriteSet
+        ? characterSprite(avatar.spriteSet, "idle", "front")
+        : avatar.previewUrl;
     }
     return map;
   }, [customAvatars]);

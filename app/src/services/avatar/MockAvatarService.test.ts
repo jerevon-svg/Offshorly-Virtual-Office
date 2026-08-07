@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { MockAvatarService } from "./MockAvatarService";
+import { loadSavedAvatars, MockAvatarService } from "./MockAvatarService";
 
 beforeEach(() => {
   window.localStorage.clear();
@@ -103,5 +103,29 @@ describe("MockAvatarService.saveAvatar", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("loadSavedAvatars — legacy records without spriteSet", () => {
+  it("loads a SavedAvatar JSON object without spriteSet without crashing", () => {
+    const legacy = {
+      avatarId: "avatar-legacy",
+      previewUrl: "preview.png",
+      confidence: 0.9,
+      seed: "seed-legacy",
+      generatedAt: new Date().toISOString(),
+      outfitId: "polo",
+      employeeName: "Legacy Employee",
+      nickname: "Legacy",
+      roomId: "qa-room",
+      savedAt: new Date().toISOString(),
+      // no spriteSet field — mirrors every record saved before this slice
+    };
+    window.localStorage.setItem("offshorly.avatars", JSON.stringify([legacy]));
+
+    const loaded = loadSavedAvatars();
+    expect(loaded).toHaveLength(1);
+    expect(loaded[0].spriteSet).toBeUndefined();
+    expect(loaded[0].previewUrl).toBe("preview.png");
   });
 });
