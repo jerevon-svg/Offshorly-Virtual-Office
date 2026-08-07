@@ -23,6 +23,13 @@ type OfficeStageProps = {
   characterSrcOverrides?: Record<string, string>;
   // Character ids to omit entirely from render (e.g. bon once CHECKED_OUT).
   hiddenCharacterIds?: string[];
+  // Additional static-portrait character layers to render alongside the
+  // manifest's fixed roster — used for avatars saved via AvatarCreator and
+  // positioned in their chosen team room. Each entry's `src` comes from
+  // `extraCharacterSrcById` (a data URL / mock preview import), not
+  // ASSET_PATH_TO_SRC, since these aren't part of the static asset manifest.
+  extraCharacterLayers?: AssetLayer[];
+  extraCharacterSrcById?: Record<string, string>;
   onCharacterClick?: (layer: AssetLayer, anchor: { clientX: number; clientY: number }) => void;
   onRoomClick?: (layer: AssetLayer, anchor: { clientX: number; clientY: number }) => void;
   greetingCharacterId?: string | null;
@@ -66,6 +73,8 @@ export function OfficeStage({
   greetingCharacterId,
   greetingNonce,
   greetingText,
+  extraCharacterLayers,
+  extraCharacterSrcById,
 }: OfficeStageProps = {}) {
   const characterClick = useClickVsDrag(onCharacterClick);
   const roomClick = useClickVsDrag(onRoomClick);
@@ -74,6 +83,7 @@ export function OfficeStage({
   // sorting, so depth ordering reflects true current feet-Y each render.
   const resolved = officeAssetLayers
     .filter((l) => !(l.kind === "character" && hiddenCharacterIds?.includes(l.id)))
+    .concat(extraCharacterLayers ?? [])
     .map((l) => {
       const ov = l.kind === "character" ? characterOverrides?.[l.id] : undefined;
       return ov ? { ...l, x: ov.x, y: ov.y } : l;
@@ -94,7 +104,9 @@ export function OfficeStage({
     >
       {sorted.map((layer) => {
         const isChar = layer.kind === "character";
-        const srcOverride = isChar ? characterSrcOverrides?.[layer.id] : undefined;
+        const srcOverride = isChar
+          ? (characterSrcOverrides?.[layer.id] ?? extraCharacterSrcById?.[layer.id])
+          : undefined;
         const src = srcOverride ?? ASSET_PATH_TO_SRC[layer.path];
 
         if (layer.kind === "floor") {

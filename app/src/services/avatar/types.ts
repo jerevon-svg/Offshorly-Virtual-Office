@@ -27,11 +27,20 @@ export interface SaveAvatarRequest {
   avatar: GeneratedAvatar;
   outfitId: OutfitId;
   employeeName: string;
+  // Employee-chosen display name shown around the Virtual Office app.
+  // Distinct from `employeeName` (an optional label used only during mock
+  // generation) — nickname is required identity, collected in its own step.
+  nickname: string;
+  // One of the 6 real team-home room ids from data/office-layout.ts `rooms`
+  // (ai-room, executive-team, dev-team, cms-team, qa-room, design-team).
+  roomId: string;
 }
 
 export interface SavedAvatar extends GeneratedAvatar {
   outfitId: OutfitId;
   employeeName: string;
+  nickname: string;
+  roomId: string;
   savedAt: string;
 }
 

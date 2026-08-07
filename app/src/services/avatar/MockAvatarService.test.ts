@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MockAvatarService } from "./MockAvatarService";
 
 beforeEach(() => {
@@ -40,10 +40,14 @@ describe("MockAvatarService.saveAvatar", () => {
       avatar,
       outfitId: "hoodie",
       employeeName: "Test Employee",
+      nickname: "Testy",
+      roomId: "design-team",
     });
 
     expect(saved.outfitId).toBe("hoodie");
     expect(saved.employeeName).toBe("Test Employee");
+    expect(saved.nickname).toBe("Testy");
+    expect(saved.roomId).toBe("design-team");
     expect(saved.savedAt).toBeTruthy();
     expect(saved.avatarId).toBe(avatar.avatarId);
 
@@ -56,14 +60,48 @@ describe("MockAvatarService.saveAvatar", () => {
   });
 
   it("appends multiple saved avatars rather than overwriting", async () => {
-    const service = new MockAvatarService();
-    const avatar1 = await service.generateAvatar({ photoDataUrl: "data:image/png;base64,abc" });
-    await service.saveAvatar({ avatar: avatar1, outfitId: "polo", employeeName: "A" });
-    const avatar2 = await service.generateAvatar({ photoDataUrl: "data:image/png;base64,abc" });
-    await service.saveAvatar({ avatar: avatar2, outfitId: "uniform", employeeName: "B" });
+    // MockAvatarService uses randomized real-time delays (up to 2000ms per
+    // generate/regenerate + 800ms per save). Two full round trips can exceed
+    // vitest's default 5000ms testTimeout depending on the random draw,
+    // causing intermittent failures. Fake timers remove the wall-clock
+    // dependency entirely.
+    vi.useFakeTimers();
+    try {
+      const service = new MockAvatarService();
 
-    const raw = window.localStorage.getItem("offshorly.avatars");
-    const stored = JSON.parse(raw as string);
-    expect(stored).toHaveLength(2);
+      const generate1 = service.generateAvatar({ photoDataUrl: "data:image/png;base64,abc" });
+      await vi.advanceTimersByTimeAsync(2000);
+      const avatar1 = await generate1;
+
+      const save1 = service.saveAvatar({
+        avatar: avatar1,
+        outfitId: "polo",
+        employeeName: "A",
+        nickname: "Nick A",
+        roomId: "qa-room",
+      });
+      await vi.advanceTimersByTimeAsync(800);
+      await save1;
+
+      const generate2 = service.generateAvatar({ photoDataUrl: "data:image/png;base64,abc" });
+      await vi.advanceTimersByTimeAsync(2000);
+      const avatar2 = await generate2;
+
+      const save2 = service.saveAvatar({
+        avatar: avatar2,
+        outfitId: "uniform",
+        employeeName: "B",
+        nickname: "Nick B",
+        roomId: "dev-team",
+      });
+      await vi.advanceTimersByTimeAsync(800);
+      await save2;
+
+      const raw = window.localStorage.getItem("offshorly.avatars");
+      const stored = JSON.parse(raw as string);
+      expect(stored).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

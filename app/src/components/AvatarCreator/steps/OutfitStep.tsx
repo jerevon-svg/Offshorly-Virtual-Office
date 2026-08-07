@@ -1,38 +1,14 @@
-import { useState } from "react";
 import styles from "../AvatarCreator.module.css";
 import { OUTFIT_OPTIONS } from "../outfitOptions";
-import { avatarService } from "../../../services/avatar/index";
-import type { GeneratedAvatar, OutfitId, SavedAvatar } from "../../../services/avatar/types";
+import type { OutfitId } from "../../../services/avatar/types";
 
 type Props = {
-  avatar: GeneratedAvatar;
-  employeeName: string;
   outfitId: OutfitId | null;
   setOutfitId: (id: OutfitId) => void;
-  onSaved: (saved: SavedAvatar) => void;
+  onNext: () => void;
 };
 
-export function OutfitStep({ avatar, employeeName, outfitId, setOutfitId, onSaved }: Props) {
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function handleSave() {
-    if (!outfitId) return;
-    setSaving(true);
-    setError(null);
-    try {
-      const result = await avatarService.saveAvatar({
-        avatar,
-        outfitId,
-        employeeName: employeeName || "Unnamed",
-      });
-      onSaved(result);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save avatar");
-      setSaving(false);
-    }
-  }
-
+export function OutfitStep({ outfitId, setOutfitId, onNext }: Props) {
   return (
     <>
       <div className={styles.title}>Pick an outfit</div>
@@ -52,10 +28,9 @@ export function OutfitStep({ avatar, employeeName, outfitId, setOutfitId, onSave
           </button>
         ))}
       </div>
-      {error && <div className={styles.subtitle}>{error}</div>}
       <div className={styles.actions}>
-        <button className={styles.primary} disabled={!outfitId || saving} onClick={handleSave}>
-          {saving ? "Saving…" : "Save"}
+        <button className={styles.primary} disabled={!outfitId} onClick={onNext}>
+          Continue
         </button>
       </div>
     </>

@@ -13,7 +13,20 @@ import type {
 // wired up. Cycled by seed so "Regenerate" visibly returns a different one.
 const PREVIEW_IMAGES = [alex, arisha, angelo];
 
-const STORAGE_KEY = "offshorly.avatars";
+export const AVATAR_STORAGE_KEY = "offshorly.avatars";
+
+// Shared read helper — the office map reads the same localStorage-backed list
+// to place saved avatars as static character layers in their chosen room.
+export function loadSavedAvatars(): SavedAvatar[] {
+  if (typeof window === "undefined" || typeof window.localStorage === "undefined") return [];
+  const raw = window.localStorage.getItem(AVATAR_STORAGE_KEY);
+  if (!raw) return [];
+  try {
+    return JSON.parse(raw) as SavedAvatar[];
+  } catch {
+    return [];
+  }
+}
 
 function delay(minMs: number, maxMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, minMs + Math.random() * (maxMs - minMs)));
@@ -69,14 +82,16 @@ export class MockAvatarService implements AvatarGenerationService {
       ...req.avatar,
       outfitId: req.outfitId,
       employeeName: req.employeeName,
+      nickname: req.nickname,
+      roomId: req.roomId,
       savedAt: new Date().toISOString(),
     };
 
     if (typeof window !== "undefined" && typeof window.localStorage !== "undefined") {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
+      const raw = window.localStorage.getItem(AVATAR_STORAGE_KEY);
       const existing: SavedAvatar[] = raw ? (JSON.parse(raw) as SavedAvatar[]) : [];
       existing.push(saved);
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(existing));
+      window.localStorage.setItem(AVATAR_STORAGE_KEY, JSON.stringify(existing));
     }
 
     return saved;

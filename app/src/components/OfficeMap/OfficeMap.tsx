@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   TransformWrapper,
   TransformComponent,
@@ -39,6 +39,9 @@ import { bonSprite } from "../../data/bonWalkFrames";
 import { useOfficePhase } from "./useOfficePhase";
 import { OfficePhaseDebugControl } from "./OfficePhaseDebugControl";
 import { AvatarCreator } from "../AvatarCreator/AvatarCreator";
+import { loadSavedAvatars } from "../../services/avatar/MockAvatarService";
+import type { SavedAvatar } from "../../services/avatar/types";
+import { savedAvatarsToLayers } from "../../data/savedAvatarLayers";
 import { useCheckoutFlow } from "./useCheckoutFlow";
 import { WorkingStatusIndicator } from "./checkout/WorkingStatusIndicator";
 import { CheckoutReminderToast } from "./checkout/CheckoutReminderToast";
@@ -94,6 +97,18 @@ export function OfficeMap() {
   );
   const [toast, setToast] = useState<string | null>(null);
   const [isAvatarCreatorOpen, setIsAvatarCreatorOpen] = useState(false);
+  // Avatars saved via AvatarCreator (Track 2) — loaded once from
+  // localStorage on mount, then appended to live as each new one is saved
+  // so it appears in its chosen room without a page refresh.
+  const [customAvatars, setCustomAvatars] = useState<SavedAvatar[]>(() => loadSavedAvatars());
+  const extraCharacterLayers = useMemo(() => savedAvatarsToLayers(customAvatars), [customAvatars]);
+  const extraCharacterSrcById = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const avatar of customAvatars) {
+      map[`saved-avatar-${avatar.avatarId}`] = avatar.previewUrl;
+    }
+    return map;
+  }, [customAvatars]);
   const [greeting, setGreeting] = useState<{ characterId: string; nonce: number; text?: string } | null>(
     null,
   );
@@ -648,6 +663,8 @@ export function OfficeMap() {
             phase={phase}
             characterOverrides={{ bon: bonPos }}
             characterSrcOverrides={{ bon: bonSpriteSrc }}
+            extraCharacterLayers={extraCharacterLayers}
+            extraCharacterSrcById={extraCharacterSrcById}
             onCharacterClick={handleCharacterClick}
             hiddenCharacterIds={checkoutFlow.state === "CHECKED_OUT" ? ["bon"] : undefined}
             onRoomClick={(layer) => {
@@ -678,6 +695,8 @@ export function OfficeMap() {
               phase={phase}
               characterOverrides={{ bon: bonPos }}
               characterSrcOverrides={{ bon: bonSpriteSrc }}
+              extraCharacterLayers={extraCharacterLayers}
+              extraCharacterSrcById={extraCharacterSrcById}
               hiddenCharacterIds={checkoutFlow.state === "CHECKED_OUT" ? ["bon"] : undefined}
             />
           </div>
@@ -828,7 +847,10 @@ export function OfficeMap() {
         + Add Employee
       </button>
       {isAvatarCreatorOpen && (
-        <AvatarCreator onClose={() => setIsAvatarCreatorOpen(false)} />
+        <AvatarCreator
+          onClose={() => setIsAvatarCreatorOpen(false)}
+          onAvatarSaved={(saved) => setCustomAvatars((prev) => [...prev, saved])}
+        />
       )}
     </div>
   );

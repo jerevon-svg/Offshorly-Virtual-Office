@@ -299,3 +299,23 @@ export function formatRoomName(id: string): string {
     .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
     .join(" ");
 }
+
+// The 6 real team-home rooms an employee can be assigned to in the avatar
+// creator's room picker (the other 4 rooms in `rooms` — gaming/project/
+// meeting/reception — are shared/common spaces, not valid team picks).
+// Filtered from `rooms` rather than duplicated so the picker list and the
+// flat-rect room data can never drift apart.
+const TEAM_ROOM_IDS = [
+  "ai-room",
+  "executive-team",
+  "dev-team",
+  "cms-team",
+  "qa-room",
+  "design-team",
+] as const;
+
+export const teamRooms: Room[] = TEAM_ROOM_IDS.map((id) => {
+  const room = rooms.find((r) => r.id === id);
+  if (!room) throw new Error(`teamRooms: missing room "${id}" in rooms[]`);
+  return room;
+});
