@@ -10,6 +10,8 @@ app/node_modules
 app/dist
 app/dist-ssr
 app/*.local
+app/.env
+app/.env.local
 
 # Editor directories and files
 .vscode/*

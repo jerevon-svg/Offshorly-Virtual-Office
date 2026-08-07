@@ -1,32 +1,25 @@
 import { useState } from "react";
 import styles from "../AvatarCreator.module.css";
 import { teamRooms } from "../../../data/office-layout";
-import { avatarService } from "../../../services/avatar/index";
-import type { GeneratedAvatar, OutfitId, SavedAvatar } from "../../../services/avatar/types";
+import type { SavedAvatar } from "../../../services/avatar/types";
 
 type Props = {
-  avatar: GeneratedAvatar;
-  employeeName: string;
   nickname: string;
-  outfitId: OutfitId;
   roomId: string | null;
   setRoomId: (id: string) => void;
+  // Persistence itself is built by the caller (AvatarCreator.tsx) — mock
+  // mode and real mode's non-blocking placeholder flow build very different
+  // SaveAvatarRequest shapes, so RoomStep only owns the room-picker UI and
+  // the saving/error state around calling whichever closure it's handed.
+  onSave: (roomId: string) => Promise<SavedAvatar>;
   onSaved: (saved: SavedAvatar) => void;
 };
 
 // Final step — team/room assignment, then persists the avatar (nickname +
-// roomId included) via the avatar service. Placing the resulting character
-// on the office map itself happens in OfficeMap, which reads saved avatars
-// back out of storage.
-export function RoomStep({
-  avatar,
-  employeeName,
-  nickname,
-  outfitId,
-  roomId,
-  setRoomId,
-  onSaved,
-}: Props) {
+// roomId included) via onSave. Placing the resulting character on the office
+// map itself happens in OfficeMap, which reads saved avatars back out of
+// storage.
+export function RoomStep({ nickname, roomId, setRoomId, onSave, onSaved }: Props) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -35,13 +28,7 @@ export function RoomStep({
     setSaving(true);
     setError(null);
     try {
-      const result = await avatarService.saveAvatar({
-        avatar,
-        outfitId,
-        employeeName: employeeName || "Unnamed",
-        nickname,
-        roomId,
-      });
+      const result = await onSave(roomId);
       onSaved(result);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to save avatar");

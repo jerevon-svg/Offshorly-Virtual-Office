@@ -41,6 +41,8 @@ import { useOfficePhase } from "./useOfficePhase";
 import { OfficePhaseDebugControl } from "./OfficePhaseDebugControl";
 import { AvatarCreator } from "../AvatarCreator/AvatarCreator";
 import { loadSavedAvatars } from "../../services/avatar/MockAvatarService";
+import { updateSavedAvatar } from "../../services/avatar/avatarStorage";
+import { realAvatarService } from "../../services/avatar/RealAvatarService";
 import type { SavedAvatar } from "../../services/avatar/types";
 import { savedAvatarsToLayers } from "../../data/savedAvatarLayers";
 import { useCheckoutFlow } from "./useCheckoutFlow";
@@ -118,6 +120,69 @@ export function OfficeMap() {
     }
     return map;
   }, [customAvatars]);
+  // Placeholder-swap flow (Track 2 real mode): jobIds currently being
+  // polled, deduped so a job saved via onAvatarSaved and the mount-scan
+  // effect below never start a second concurrent poll for the same job.
+  const pollingJobIdsRef = useRef<Set<string>>(new Set());
+
+  // Awaits one background generation job through to completion (or failure)
+  // and patches the matching SavedAvatar in localStorage + in-memory state
+  // in place — same avatarId/layer id throughout, so the character on the
+  // map just swaps from placeholder to real result via extraCharacterSrcById.
+  function startPollingJob(avatar: SavedAvatar) {
+    const jobId = avatar.jobId;
+    if (!jobId || pollingJobIdsRef.current.has(jobId)) return;
+    pollingJobIdsRef.current.add(jobId);
+
+    realAvatarService
+      .finishJob(jobId)
+      .then((result) => {
+        const updated = updateSavedAvatar(avatar.avatarId, {
+          previewUrl: result.previewUrl,
+          spriteSet: result.spriteSet,
+          generationStatus: "ready",
+        });
+        if (updated) {
+          setCustomAvatars((prev) => prev.map((a) => (a.avatarId === updated.avatarId ? updated : a)));
+        }
+        // Clear only this call's own message — a functional update guards
+        // against clobbering a different toast set by another job that
+        // finished in the same ~3s window (each timer only clears the toast
+        // it itself set, never one set later by an overlapping completion).
+        const readyMsg = `${avatar.nickname}'s character is ready!`;
+        setToast(readyMsg);
+        window.setTimeout(() => setToast((current) => (current === readyMsg ? null : current)), 3000);
+      })
+      .catch(() => {
+        // Covers both a real pipeline failure and a resumed job the
+        // gen-server no longer recognizes (e.g. restarted, lost its
+        // in-memory registry) — either way the placeholder would otherwise
+        // sit stuck forever with no indication anything went wrong.
+        const updated = updateSavedAvatar(avatar.avatarId, { generationStatus: "error" });
+        if (updated) {
+          setCustomAvatars((prev) => prev.map((a) => (a.avatarId === updated.avatarId ? updated : a)));
+        }
+        const failMsg = `${avatar.nickname}'s character generation failed`;
+        setToast(failMsg);
+        window.setTimeout(() => setToast((current) => (current === failMsg ? null : current)), 3000);
+      })
+      .finally(() => {
+        pollingJobIdsRef.current.delete(jobId);
+      });
+  }
+
+  // On mount (page load/refresh): resume polling any avatar already sitting
+  // in localStorage as "pending" — handles the browser being closed/
+  // refreshed mid-generation. Deliberately reads the initial customAvatars
+  // snapshot only (not a live dependency) — this is a one-time resume scan,
+  // not a subscription.
+  useEffect(() => {
+    for (const avatar of customAvatars) {
+      if (avatar.generationStatus === "pending") startPollingJob(avatar);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const [greeting, setGreeting] = useState<{ characterId: string; nonce: number; text?: string } | null>(
     null,
   );
@@ -946,7 +1011,10 @@ export function OfficeMap() {
       {isAvatarCreatorOpen && (
         <AvatarCreator
           onClose={() => setIsAvatarCreatorOpen(false)}
-          onAvatarSaved={(saved) => setCustomAvatars((prev) => [...prev, saved])}
+          onAvatarSaved={(saved) => {
+            setCustomAvatars((prev) => [...prev, saved]);
+            if (saved.generationStatus === "pending") startPollingJob(saved);
+          }}
         />
       )}
     </div>

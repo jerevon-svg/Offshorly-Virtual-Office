@@ -28,9 +28,21 @@ export interface OutfitOption {
   colorHex: string;
 }
 
+// Live progress update during real generation (anchor step + 20-slot loop).
+// `slot` is "anchor" during the raw-photo->anchor step, then one of the 20
+// SLOT_NAMES values from the avatar-pipeline scripts during the pose loop.
+export interface AvatarGenerationProgress {
+  done: number;
+  total: number;
+  slot: string;
+}
+
 export interface GenerateAvatarRequest {
   photoDataUrl: string;
   employeeName?: string;
+  // Optional — only RealAvatarService uses this to report live progress as
+  // the anchor + 20-slot pipeline runs. MockAvatarService ignores it.
+  onProgress?: (progress: AvatarGenerationProgress) => void;
 }
 
 export interface GeneratedAvatar {
@@ -65,6 +77,18 @@ export interface SavedAvatar extends GeneratedAvatar {
   nickname: string;
   roomId: string;
   savedAt: string;
+  // Non-blocking real-mode flow (Track 2 placeholder-swap): "pending" means
+  // this record is a placeholder standing in for a still-running background
+  // generation job; "ready" means previewUrl/spriteSet are the real result;
+  // "error" means the background job failed/was lost (e.g. gen-server
+  // restarted) and the placeholder is stuck permanently. Optional — every
+  // avatar saved before this field existed (mock mode, or any avatar already
+  // in localStorage) simply omits it and is treated as already-final.
+  generationStatus?: "pending" | "ready" | "error";
+  // The RealAvatarService job id backing a "pending" record, used to resume
+  // polling (e.g. after a page refresh). Optional for the same
+  // backward-compatibility reason as generationStatus.
+  jobId?: string;
 }
 
 export interface AvatarGenerationService {

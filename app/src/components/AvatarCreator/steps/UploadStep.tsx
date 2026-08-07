@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import styles from "../AvatarCreator.module.css";
-import { avatarService } from "../../../services/avatar/index";
-import type { GeneratedAvatar } from "../../../services/avatar/types";
+import { avatarGenerationMode, avatarService } from "../../../services/avatar/index";
+import { realAvatarService } from "../../../services/avatar/RealAvatarService";
+import type { AvatarGenerationProgress, GeneratedAvatar } from "../../../services/avatar/types";
 
 type Props = {
   photoDataUrl: string | null;
@@ -10,6 +11,12 @@ type Props = {
   onPhotoChosen: (dataUrl: string) => void;
   onGenerating: () => void;
   onGenerated: (avatar: GeneratedAvatar) => void;
+  onProgress?: (progress: AvatarGenerationProgress) => void;
+  // Real mode only (non-blocking flow) — fired the moment a background
+  // generation job starts, with just its jobId; the caller advances straight
+  // to the nickname step without waiting (see AvatarCreator.tsx). Mock mode
+  // never calls this.
+  onJobStarted?: (jobId: string) => void;
 };
 
 export function UploadStep({
@@ -19,8 +26,13 @@ export function UploadStep({
   onPhotoChosen,
   onGenerating,
   onGenerated,
+  onProgress,
+  onJobStarted,
 }: Props) {
   const [error, setError] = useState<string | null>(null);
+  // Guards against double-clicking "Generate" spawning a second, equally
+  // expensive (~21-call) job while one is already in flight.
+  const isSubmittingRef = useRef(false);
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -35,17 +47,32 @@ export function UploadStep({
   }
 
   async function handleGenerate() {
-    if (!photoDataUrl) return;
+    if (!photoDataUrl || isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
     setError(null);
-    onGenerating();
     try {
-      const result = await avatarService.generateAvatar({
-        photoDataUrl,
-        employeeName: employeeName || undefined,
-      });
-      onGenerated(result);
+      if (avatarGenerationMode === "real" && onJobStarted) {
+        // Non-blocking flow: kick off the background job and hand its jobId
+        // straight back — don't await completion here. The caller (real
+        // mode only) skips the Analyzing/Review steps entirely.
+        const jobId = await realAvatarService.startGenerationJob(
+          photoDataUrl,
+          employeeName || undefined,
+        );
+        onJobStarted(jobId);
+      } else {
+        onGenerating();
+        const result = await avatarService.generateAvatar({
+          photoDataUrl,
+          employeeName: employeeName || undefined,
+          onProgress,
+        });
+        onGenerated(result);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to generate avatar");
+    } finally {
+      isSubmittingRef.current = false;
     }
   }
 

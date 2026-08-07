@@ -8,25 +8,16 @@ import type {
   SaveAvatarRequest,
   SavedAvatar,
 } from "./types";
+import { AVATAR_STORAGE_KEY, loadSavedAvatars, persistSavedAvatar } from "./avatarStorage";
 
 // Stand-in "generated" portraits until a real image-generation provider is
 // wired up. Cycled by seed so "Regenerate" visibly returns a different one.
 const PREVIEW_IMAGES = [alex, arisha, angelo];
 
-export const AVATAR_STORAGE_KEY = "offshorly.avatars";
-
-// Shared read helper — the office map reads the same localStorage-backed list
-// to place saved avatars as static character layers in their chosen room.
-export function loadSavedAvatars(): SavedAvatar[] {
-  if (typeof window === "undefined" || typeof window.localStorage === "undefined") return [];
-  const raw = window.localStorage.getItem(AVATAR_STORAGE_KEY);
-  if (!raw) return [];
-  try {
-    return JSON.parse(raw) as SavedAvatar[];
-  } catch {
-    return [];
-  }
-}
+// Re-exported for backward compatibility — persistence itself now lives in
+// avatarStorage.ts (shared with RealAvatarService) so both services persist
+// identically without duplicating the logic.
+export { AVATAR_STORAGE_KEY, loadSavedAvatars };
 
 function delay(minMs: number, maxMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, minMs + Math.random() * (maxMs - minMs)));
@@ -78,23 +69,7 @@ export class MockAvatarService implements AvatarGenerationService {
 
   async saveAvatar(req: SaveAvatarRequest): Promise<SavedAvatar> {
     await delay(500, 800);
-    const saved: SavedAvatar = {
-      ...req.avatar,
-      outfitId: req.outfitId,
-      employeeName: req.employeeName,
-      nickname: req.nickname,
-      roomId: req.roomId,
-      savedAt: new Date().toISOString(),
-    };
-
-    if (typeof window !== "undefined" && typeof window.localStorage !== "undefined") {
-      const raw = window.localStorage.getItem(AVATAR_STORAGE_KEY);
-      const existing: SavedAvatar[] = raw ? (JSON.parse(raw) as SavedAvatar[]) : [];
-      existing.push(saved);
-      window.localStorage.setItem(AVATAR_STORAGE_KEY, JSON.stringify(existing));
-    }
-
-    return saved;
+    return persistSavedAvatar(req);
   }
 }
 
