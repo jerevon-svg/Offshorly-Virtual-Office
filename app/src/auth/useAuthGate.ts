@@ -46,13 +46,31 @@ function extractCanViewVirtualOffice(body: unknown): boolean {
   return false;
 }
 
+// Local-dev escape hatch. This gate is the ONLY thing in the app that talks
+// to Atlas (everything else — Zoho data, avatar generation — defaults to
+// mock), so without it nobody lacking an Atlas account or the
+// can_view_virtual_office flag can run the office at all. Set
+// VITE_AUTH_GATE=off in app/.env.local to short-circuit to "allowed".
+//
+// Double-guarded on import.meta.env.DEV: `vite build` sets DEV=false, so the
+// branch is dead code the bundler drops entirely. A stray VITE_AUTH_GATE=off
+// in a deploy env therefore cannot open the gate on atlas.offshorly.com.
+// This weakens nothing that was ever a security boundary — see the UX-ONLY
+// note above; Atlas enforces the flag server-side on every office endpoint.
+function isGateBypassed(): boolean {
+  return import.meta.env.DEV && import.meta.env.VITE_AUTH_GATE === "off";
+}
+
 export function useAuthGate(): AuthGateStatus {
-  const [status, setStatus] = useState<AuthGateStatus>("pending");
+  const [status, setStatus] = useState<AuthGateStatus>(() =>
+    isGateBypassed() ? "allowed" : "pending",
+  );
 
   useEffect(() => {
     let cancelled = false;
 
     async function checkAccess() {
+      if (isGateBypassed()) return;
       try {
         const response = await apiFetch("/api/v1/auth/me");
         if (response.status === 401) {

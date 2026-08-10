@@ -13,6 +13,10 @@ describe("useAuthGate", () => {
 
   beforeEach(() => {
     import.meta.env.VITE_API_URL = "https://atlas-api.offshorly.com";
+    // Vitest loads .env.local like any Vite mode, and DEV is true here — so a
+    // developer's local VITE_AUTH_GATE=off would silently bypass the gate and
+    // pass every test below vacuously. Pin it off for the real-gate specs.
+    import.meta.env.VITE_AUTH_GATE = "";
     window.localStorage.clear();
     window.localStorage.setItem("token", "valid-token");
     window.localStorage.setItem("user", "some-user-json");
@@ -92,6 +96,20 @@ describe("useAuthGate", () => {
     expect(window.location.href).not.toBe(HOME_PATH);
     // apiFetch must short-circuit before ever hitting the network.
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("VITE_AUTH_GATE=off allows immediately without any network call", async () => {
+    import.meta.env.VITE_AUTH_GATE = "off";
+    window.localStorage.removeItem("token");
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+
+    render(<GateProbe />);
+
+    expect(screen.getByTestId("status").textContent).toBe("allowed");
+    await waitFor(() => expect(fetchSpy).not.toHaveBeenCalled());
+    // No token, yet no bounce to /login — the bypass must not redirect.
+    expect(window.location.href).toBe("https://atlas.offshorly.com/virtual-office");
   });
 
   it("on 401, clears only token+user, keeps checkout:* keys, and ends at /login (not /)", async () => {
