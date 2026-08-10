@@ -11,7 +11,7 @@ import type { SavedAvatar } from "../services/avatar/types";
 
 // Count derived from the Figma-verified furniture-crop table used to seed
 // imgCrop on the manifest (Fix A) — kept in sync manually with that source.
-const EXPECTED_IMG_CROP_COUNT = 103;
+const EXPECTED_IMG_CROP_COUNT = 123;
 
 describe("roomMembersById", () => {
   it("assigns npcs whose center point falls inside design-room's bounding box", () => {

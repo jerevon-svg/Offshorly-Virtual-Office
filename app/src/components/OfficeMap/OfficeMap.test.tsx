@@ -10,9 +10,11 @@ describe("OfficeMap", () => {
   it("renders the layered office stage with multiple images", () => {
     const { container } = render(<OfficeMap />);
     const images = container.querySelectorAll("img");
-    // 140 layers from the manifest: floor + rooms + decor + characters +
-    // furniture + the new sidewalk layer (139 previous + 1 sidewalk).
-    expect(images.length).toBe(140);
+    // 160 layers from the manifest: floor + rooms + decor + characters +
+    // furniture (140 previous + 20 cms-team furniture pieces added when
+    // cms-team's room background/furniture were split, mirroring the
+    // ai-team/executive-team/dev-team/design-team migration).
+    expect(images.length).toBe(160);
   });
 
   it("mounts the TransformWrapper wrapper div", () => {

@@ -85,6 +85,10 @@ import designSideMat from "../assets/office/furniture/design-team/design-side-ma
 import designLeadChair from "../assets/office/furniture/design-team/design-lead-chair.png";
 import designMemberChairA from "../assets/office/furniture/design-team/design-member-chair-a.png";
 import designMemberChairB from "../assets/office/furniture/design-team/design-member-chair-b.png";
+import cmsLeadDesk from "../assets/office/furniture/cms-team/cms-lead-desk.png";
+import cmsLeadChair from "../assets/office/furniture/cms-team/cms-lead-chair.png";
+import cmsMemberDesk from "../assets/office/furniture/cms-team/cms-member-desk.png";
+import cmsMemberChair from "../assets/office/furniture/cms-team/cms-member-chair.png";
 
 // Maps each manifest `path` string to its Vite-resolved asset URL.
 export const ASSET_PATH_TO_SRC: Record<string, string> = {
@@ -162,6 +166,10 @@ export const ASSET_PATH_TO_SRC: Record<string, string> = {
   "assets/office/furniture/design-team/design-lead-chair.png": designLeadChair,
   "assets/office/furniture/design-team/design-member-chair-a.png": designMemberChairA,
   "assets/office/furniture/design-team/design-member-chair-b.png": designMemberChairB,
+  "assets/office/furniture/cms-team/cms-lead-desk.png": cmsLeadDesk,
+  "assets/office/furniture/cms-team/cms-lead-chair.png": cmsLeadChair,
+  "assets/office/furniture/cms-team/cms-member-desk.png": cmsMemberDesk,
+  "assets/office/furniture/cms-team/cms-member-chair.png": cmsMemberChair,
 };
 
 export const officeAssetLayers = manifestJson as AssetLayer[];

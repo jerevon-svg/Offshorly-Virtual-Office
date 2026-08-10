@@ -54,7 +54,7 @@ import { CheckoutConfirmModal } from "./checkout/CheckoutConfirmModal";
 import { TimeSummaryPanel } from "./checkout/TimeSummaryPanel";
 import { TimeLogForm } from "./checkout/TimeLogForm";
 import { ConversationView } from "../Chat/ConversationView";
-import { CURRENT_USER_ID } from "../../data/currentUser";
+import { getCurrentUserId } from "../../data/currentUser";
 import { TimeLogReview } from "./checkout/TimeLogReview";
 import { SubmissionFailedPanel } from "./checkout/SubmissionFailedPanel";
 import { CheckoutSuccessCard } from "./checkout/CheckoutSuccessCard";
@@ -379,7 +379,7 @@ export function OfficeMap() {
     debugHoursWorked !== null ? Date.now() - debugHoursWorked * 3600_000 : timeInMs;
 
   const checkoutFlow = useCheckoutFlow({
-    employeeId: CURRENT_USER_ID,
+    employeeId: getCurrentUserId(),
     hourDecimal,
     timeInMs: effectiveTimeInMs,
   });
@@ -803,7 +803,7 @@ export function OfficeMap() {
       pipSideRef.current = target.x > bonPos.x ? "left" : "right";
       walkTo(path, () => {
         setOpenChat(target);
-        setTalkingIds([CURRENT_USER_ID, target.id]);
+        setTalkingIds([getCurrentUserId(), target.id]);
       });
     } else {
       closeCharacterMenu();
@@ -1153,7 +1153,7 @@ export function OfficeMap() {
       {openChat && (
         <ConversationView
           peer={openChat}
-          selfId={CURRENT_USER_ID}
+          selfId={getCurrentUserId()}
           onIncomingMessage={handleTalkingMessage}
           onClose={() => {
             setOpenChat(null);

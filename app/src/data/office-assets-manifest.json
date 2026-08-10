@@ -125,11 +125,331 @@
     "id": "jona",
     "kind": "character",
     "path": "assets/office/characters/jona.png",
-    "x": 1176.93,
-    "y": 429.88,
-    "width": 25.279,
-    "height": 24.743,
+    "x": 1230.86,
+    "y": 395.66,
+    "width": 19,
+    "height": 31.19,
     "transform": null
+  },
+  {
+    "id": "cms-lead1-desk",
+    "kind": "furniture",
+    "path": "assets/office/furniture/cms-team/cms-lead-desk.png",
+    "x": 1219.7,
+    "y": 419.95,
+    "width": 41.71,
+    "height": 27.77,
+    "transform": null,
+    "imgCrop": {
+      "wPct": 106.07,
+      "hPct": 144.89,
+      "leftPct": -3.09,
+      "topPct": -26.82
+    }
+  },
+  {
+    "id": "cms-lead2-desk",
+    "kind": "furniture",
+    "path": "assets/office/furniture/cms-team/cms-lead-desk.png",
+    "x": 1311.59,
+    "y": 419.95,
+    "width": 41.71,
+    "height": 27.77,
+    "transform": null,
+    "imgCrop": {
+      "wPct": 106.07,
+      "hPct": 144.89,
+      "leftPct": -3.09,
+      "topPct": -26.82
+    }
+  },
+  {
+    "id": "cms-lead1-chair",
+    "kind": "furniture",
+    "path": "assets/office/furniture/cms-team/cms-lead-chair.png",
+    "x": 1232.02,
+    "y": 407.3,
+    "width": 17.07,
+    "height": 25.29,
+    "transform": null,
+    "imgCrop": {
+      "wPct": 170.49,
+      "hPct": 115.09,
+      "leftPct": -34.17,
+      "topPct": -4.99
+    }
+  },
+  {
+    "id": "cms-lead2-chair",
+    "kind": "furniture",
+    "path": "assets/office/furniture/cms-team/cms-lead-chair.png",
+    "x": 1323.91,
+    "y": 407.3,
+    "width": 17.07,
+    "height": 25.29,
+    "transform": null,
+    "imgCrop": {
+      "wPct": 170.49,
+      "hPct": 115.09,
+      "leftPct": -34.17,
+      "topPct": -4.99
+    }
+  },
+  {
+    "id": "cms-member-desk-1",
+    "kind": "furniture",
+    "path": "assets/office/furniture/cms-team/cms-member-desk.png",
+    "x": 1183.23,
+    "y": 462.92,
+    "width": 32.43,
+    "height": 33.17,
+    "transform": null,
+    "imgCrop": {
+      "wPct": 127.26,
+      "hPct": 124.43,
+      "leftPct": -13.74,
+      "topPct": -12.02
+    }
+  },
+  {
+    "id": "cms-member-desk-2",
+    "kind": "furniture",
+    "path": "assets/office/furniture/cms-team/cms-member-desk.png",
+    "x": 1226.76,
+    "y": 462.92,
+    "width": 32.43,
+    "height": 33.17,
+    "transform": null,
+    "imgCrop": {
+      "wPct": 127.26,
+      "hPct": 124.43,
+      "leftPct": -13.74,
+      "topPct": -12.02
+    }
+  },
+  {
+    "id": "cms-member-desk-3",
+    "kind": "furniture",
+    "path": "assets/office/furniture/cms-team/cms-member-desk.png",
+    "x": 1270.29,
+    "y": 462.92,
+    "width": 32.43,
+    "height": 33.17,
+    "transform": null,
+    "imgCrop": {
+      "wPct": 127.26,
+      "hPct": 124.43,
+      "leftPct": -13.74,
+      "topPct": -12.02
+    }
+  },
+  {
+    "id": "cms-member-desk-4",
+    "kind": "furniture",
+    "path": "assets/office/furniture/cms-team/cms-member-desk.png",
+    "x": 1313.81,
+    "y": 462.92,
+    "width": 32.43,
+    "height": 33.17,
+    "transform": null,
+    "imgCrop": {
+      "wPct": 127.26,
+      "hPct": 124.43,
+      "leftPct": -13.74,
+      "topPct": -12.02
+    }
+  },
+  {
+    "id": "cms-member-desk-5",
+    "kind": "furniture",
+    "path": "assets/office/furniture/cms-team/cms-member-desk.png",
+    "x": 1357.34,
+    "y": 462.92,
+    "width": 32.43,
+    "height": 33.17,
+    "transform": null,
+    "imgCrop": {
+      "wPct": 127.26,
+      "hPct": 124.43,
+      "leftPct": -13.74,
+      "topPct": -12.02
+    }
+  },
+  {
+    "id": "cms-member-desk-back-3",
+    "kind": "furniture",
+    "path": "assets/office/furniture/cms-team/cms-member-desk.png",
+    "x": 1270.29,
+    "y": 518.83,
+    "width": 32.43,
+    "height": 33.17,
+    "transform": null,
+    "imgCrop": {
+      "wPct": 127.26,
+      "hPct": 124.43,
+      "leftPct": -13.74,
+      "topPct": -12.02
+    }
+  },
+  {
+    "id": "cms-member-desk-back-4",
+    "kind": "furniture",
+    "path": "assets/office/furniture/cms-team/cms-member-desk.png",
+    "x": 1313.81,
+    "y": 518.83,
+    "width": 32.43,
+    "height": 33.17,
+    "transform": null,
+    "imgCrop": {
+      "wPct": 127.26,
+      "hPct": 124.43,
+      "leftPct": -13.74,
+      "topPct": -12.02
+    }
+  },
+  {
+    "id": "cms-member-desk-back-5",
+    "kind": "furniture",
+    "path": "assets/office/furniture/cms-team/cms-member-desk.png",
+    "x": 1357.34,
+    "y": 518.83,
+    "width": 32.43,
+    "height": 33.17,
+    "transform": null,
+    "imgCrop": {
+      "wPct": 127.26,
+      "hPct": 124.43,
+      "leftPct": -13.74,
+      "topPct": -12.02
+    }
+  },
+  {
+    "id": "cms-member-chair-1",
+    "kind": "furniture",
+    "path": "assets/office/furniture/cms-team/cms-member-chair.png",
+    "x": 1189.69,
+    "y": 486.49,
+    "width": 15.07,
+    "height": 17.09,
+    "transform": null,
+    "imgCrop": {
+      "wPct": 148.04,
+      "hPct": 130.57,
+      "leftPct": -22.45,
+      "topPct": -13.59
+    }
+  },
+  {
+    "id": "cms-member-chair-2",
+    "kind": "furniture",
+    "path": "assets/office/furniture/cms-team/cms-member-chair.png",
+    "x": 1233.22,
+    "y": 486.54,
+    "width": 15.07,
+    "height": 17.09,
+    "transform": null,
+    "imgCrop": {
+      "wPct": 148.04,
+      "hPct": 130.57,
+      "leftPct": -22.45,
+      "topPct": -13.59
+    }
+  },
+  {
+    "id": "cms-member-chair-3",
+    "kind": "furniture",
+    "path": "assets/office/furniture/cms-team/cms-member-chair.png",
+    "x": 1276.74,
+    "y": 486.54,
+    "width": 15.07,
+    "height": 17.09,
+    "transform": null,
+    "imgCrop": {
+      "wPct": 148.04,
+      "hPct": 130.57,
+      "leftPct": -22.45,
+      "topPct": -13.59
+    }
+  },
+  {
+    "id": "cms-member-chair-4",
+    "kind": "furniture",
+    "path": "assets/office/furniture/cms-team/cms-member-chair.png",
+    "x": 1320.27,
+    "y": 486.54,
+    "width": 15.07,
+    "height": 17.09,
+    "transform": null,
+    "imgCrop": {
+      "wPct": 148.04,
+      "hPct": 130.57,
+      "leftPct": -22.45,
+      "topPct": -13.59
+    }
+  },
+  {
+    "id": "cms-member-chair-5",
+    "kind": "furniture",
+    "path": "assets/office/furniture/cms-team/cms-member-chair.png",
+    "x": 1363.8,
+    "y": 486.54,
+    "width": 15.07,
+    "height": 17.09,
+    "transform": null,
+    "imgCrop": {
+      "wPct": 148.04,
+      "hPct": 130.57,
+      "leftPct": -22.45,
+      "topPct": -13.59
+    }
+  },
+  {
+    "id": "cms-member-chair-back-3",
+    "kind": "furniture",
+    "path": "assets/office/furniture/cms-team/cms-member-chair.png",
+    "x": 1276.74,
+    "y": 542.46,
+    "width": 15.07,
+    "height": 17.09,
+    "transform": null,
+    "imgCrop": {
+      "wPct": 148.04,
+      "hPct": 130.57,
+      "leftPct": -22.45,
+      "topPct": -13.59
+    }
+  },
+  {
+    "id": "cms-member-chair-back-4",
+    "kind": "furniture",
+    "path": "assets/office/furniture/cms-team/cms-member-chair.png",
+    "x": 1320.27,
+    "y": 542.46,
+    "width": 15.07,
+    "height": 17.09,
+    "transform": null,
+    "imgCrop": {
+      "wPct": 148.04,
+      "hPct": 130.57,
+      "leftPct": -22.45,
+      "topPct": -13.59
+    }
+  },
+  {
+    "id": "cms-member-chair-back-5",
+    "kind": "furniture",
+    "path": "assets/office/furniture/cms-team/cms-member-chair.png",
+    "x": 1363.8,
+    "y": 542.46,
+    "width": 15.07,
+    "height": 17.09,
+    "transform": null,
+    "imgCrop": {
+      "wPct": 148.04,
+      "hPct": 130.57,
+      "leftPct": -22.45,
+      "topPct": -13.59
+    }
   },
   {
     "id": "qa-room",
