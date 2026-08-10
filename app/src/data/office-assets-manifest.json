@@ -502,6 +502,16 @@
     "transform": null
   },
   {
+    "id": "lui",
+    "kind": "character",
+    "path": "assets/office/characters/lui.png",
+    "x": 1165.71,
+    "y": 135.34,
+    "width": 22,
+    "height": 34,
+    "transform": null
+  },
+  {
     "id": "bon",
     "kind": "character",
     "path": "assets/office/characters/bon.png",

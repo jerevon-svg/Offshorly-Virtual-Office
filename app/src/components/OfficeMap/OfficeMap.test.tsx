@@ -10,11 +10,10 @@ describe("OfficeMap", () => {
   it("renders the layered office stage with multiple images", () => {
     const { container } = render(<OfficeMap />);
     const images = container.querySelectorAll("img");
-    // 160 layers from the manifest: floor + rooms + decor + characters +
-    // furniture (140 previous + 20 cms-team furniture pieces added when
-    // cms-team's room background/furniture were split, mirroring the
-    // ai-team/executive-team/dev-team/design-team migration).
-    expect(images.length).toBe(160);
+    // 161 layers from the manifest: floor + rooms + decor + characters +
+    // furniture (160 previous + 1 for Lui's new hardcoded character layer,
+    // promoted from a test-only SavedAvatar to a full manifest NPC).
+    expect(images.length).toBe(161);
   });
 
   it("mounts the TransformWrapper wrapper div", () => {

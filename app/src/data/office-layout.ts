@@ -35,6 +35,7 @@ import cyrus from "../assets/office/characters/cyrus.png";
 import jona from "../assets/office/characters/jona.png";
 import angelo from "../assets/office/characters/angelo.png";
 import micah from "../assets/office/characters/micah.png";
+import lui from "../assets/office/characters/lui.png";
 import bon from "../assets/office/characters/bon.png";
 import clang from "../assets/office/characters/clang.png";
 import france from "../assets/office/characters/france.png";
@@ -116,6 +117,7 @@ export const ASSET_PATH_TO_SRC: Record<string, string> = {
   "assets/office/characters/jona.png": jona,
   "assets/office/characters/angelo.png": angelo,
   "assets/office/characters/micah.png": micah,
+  "assets/office/characters/lui.png": lui,
   "assets/office/characters/bon.png": bon,
   "assets/office/characters/clang.png": clang,
   "assets/office/characters/france.png": france,

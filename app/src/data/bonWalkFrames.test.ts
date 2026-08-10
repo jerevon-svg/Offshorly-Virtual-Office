@@ -8,6 +8,10 @@ import {
   BON_PAT_FRAMES,
   BON_SPRITE_SET,
   BON_WALK_FRAMES,
+  LUI_IDLE_FRAMES,
+  LUI_PAT_FRAMES,
+  LUI_SPRITE_SET,
+  LUI_WALK_FRAMES,
   MICAH_IDLE_FRAMES,
   MICAH_PAT_FRAMES,
   MICAH_SPRITE_SET,
@@ -73,6 +77,7 @@ describe("bonSprite (backward-compat shim)", () => {
 describe.each([
   ["ALEX_SPRITE_SET", ALEX_SPRITE_SET, ALEX_WALK_FRAMES, ALEX_IDLE_FRAMES, ALEX_PAT_FRAMES],
   ["MICAH_SPRITE_SET", MICAH_SPRITE_SET, MICAH_WALK_FRAMES, MICAH_IDLE_FRAMES, MICAH_PAT_FRAMES],
+  ["LUI_SPRITE_SET", LUI_SPRITE_SET, LUI_WALK_FRAMES, LUI_IDLE_FRAMES, LUI_PAT_FRAMES],
 ] as const)("characterSprite with %s", (_label, spriteSet, walkFrames, idleFrames, patFrames) => {
   it("returns the correct walk frame per direction/frameIndex", () => {
     for (const dir of DIRECTIONS) {

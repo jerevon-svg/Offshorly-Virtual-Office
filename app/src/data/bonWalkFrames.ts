@@ -67,6 +67,29 @@ import micahPatFront2 from "../assets/office/characters/micah-pat-norm/front-2.p
 import micahPatBack1 from "../assets/office/characters/micah-pat-norm/back-1.png";
 import micahPatBack2 from "../assets/office/characters/micah-pat-norm/back-2.png";
 
+import luiWalkLeft1 from "../assets/office/characters/lui-walk-norm/left-1.png";
+import luiWalkLeft2 from "../assets/office/characters/lui-walk-norm/left-2.png";
+import luiWalkRight1 from "../assets/office/characters/lui-walk-norm/right-1.png";
+import luiWalkRight2 from "../assets/office/characters/lui-walk-norm/right-2.png";
+import luiWalkFront1 from "../assets/office/characters/lui-walk-norm/front-1.png";
+import luiWalkFront2 from "../assets/office/characters/lui-walk-norm/front-2.png";
+import luiWalkBack1 from "../assets/office/characters/lui-walk-norm/back-1.png";
+import luiWalkBack2 from "../assets/office/characters/lui-walk-norm/back-2.png";
+
+import luiIdleLeft from "../assets/office/characters/lui-idle-norm/left.png";
+import luiIdleRight from "../assets/office/characters/lui-idle-norm/right.png";
+import luiIdleFront from "../assets/office/characters/lui-idle-norm/front.png";
+import luiIdleBack from "../assets/office/characters/lui-idle-norm/back.png";
+
+import luiPatLeft1 from "../assets/office/characters/lui-pat-norm/left-1.png";
+import luiPatLeft2 from "../assets/office/characters/lui-pat-norm/left-2.png";
+import luiPatRight1 from "../assets/office/characters/lui-pat-norm/right-1.png";
+import luiPatRight2 from "../assets/office/characters/lui-pat-norm/right-2.png";
+import luiPatFront1 from "../assets/office/characters/lui-pat-norm/front-1.png";
+import luiPatFront2 from "../assets/office/characters/lui-pat-norm/front-2.png";
+import luiPatBack1 from "../assets/office/characters/lui-pat-norm/back-1.png";
+import luiPatBack2 from "../assets/office/characters/lui-pat-norm/back-2.png";
+
 import type { AvatarSpriteSet } from "../services/avatar/types";
 
 export type WalkDirection = "left" | "right" | "front" | "back";
@@ -157,6 +180,36 @@ export const MICAH_SPRITE_SET: AvatarSpriteSet = {
   walk: MICAH_WALK_FRAMES,
   idle: MICAH_IDLE_FRAMES,
   pat: MICAH_PAT_FRAMES,
+};
+
+// Lui — same normalized production-v3 pipeline output, packaged
+// identically to Bon/Alex/Micah's sprite sets so he can run through the
+// same characterSprite() selector / useCharacterWalk hook.
+export const LUI_WALK_FRAMES: Record<WalkDirection, readonly [string, string]> = {
+  left: [luiWalkLeft1, luiWalkLeft2],
+  right: [luiWalkRight1, luiWalkRight2],
+  front: [luiWalkFront1, luiWalkFront2],
+  back: [luiWalkBack1, luiWalkBack2],
+};
+
+export const LUI_IDLE_FRAMES: Record<WalkDirection, string> = {
+  left: luiIdleLeft,
+  right: luiIdleRight,
+  front: luiIdleFront,
+  back: luiIdleBack,
+};
+
+export const LUI_PAT_FRAMES: Record<WalkDirection, readonly [string, string]> = {
+  left: [luiPatLeft1, luiPatLeft2],
+  right: [luiPatRight1, luiPatRight2],
+  front: [luiPatFront1, luiPatFront2],
+  back: [luiPatBack1, luiPatBack2],
+};
+
+export const LUI_SPRITE_SET: AvatarSpriteSet = {
+  walk: LUI_WALK_FRAMES,
+  idle: LUI_IDLE_FRAMES,
+  pat: LUI_PAT_FRAMES,
 };
 
 // Generic sprite selector: picks the frame for a given sprite set's
