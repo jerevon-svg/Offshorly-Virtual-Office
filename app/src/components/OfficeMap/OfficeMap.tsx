@@ -38,7 +38,13 @@ import {
 } from "./panMath";
 import { useCharacterWalk } from "./useCharacterWalk";
 import { SavedAvatarWalker, type SavedAvatarWalkApi, type SavedAvatarWalkState } from "./SavedAvatarWalker";
-import { ALEX_SPRITE_SET, MICAH_SPRITE_SET, bonSprite, characterSprite } from "../../data/bonWalkFrames";
+import {
+  ALEX_SPRITE_SET,
+  LUI_SPRITE_SET,
+  MICAH_SPRITE_SET,
+  bonSprite,
+  characterSprite,
+} from "../../data/bonWalkFrames";
 import { useOfficePhase } from "./useOfficePhase";
 import { OfficePhaseDebugControl } from "./OfficePhaseDebugControl";
 import { AvatarCreator } from "../AvatarCreator/AvatarCreator";
@@ -248,11 +254,12 @@ export function OfficeMap() {
   });
   const bonSpriteSrc = bonSprite(isPatting ? "pat" : isWalking ? "walk" : "idle", direction, frameIndex);
 
-  // Alex/Micah demo-walk instances — same useCharacterWalk hook as bon,
+  // Alex/Micah/Lui demo-walk instances — same useCharacterWalk hook as bon,
   // seeded from each NPC's actual current manifest position so their demo
   // loop starts exactly where they normally stand.
   const alexLayer = npcCharacterLayers.find((l) => l.id === "alex");
   const micahLayer = npcCharacterLayers.find((l) => l.id === "micah");
+  const luiLayer = npcCharacterLayers.find((l) => l.id === "lui");
   const {
     pos: alexPos,
     isWalking: alexIsWalking,
@@ -271,6 +278,15 @@ export function OfficeMap() {
     walkTo: micahWalkTo,
     playPat: micahPlayPat,
   } = useCharacterWalk({ x: micahLayer?.x ?? 0, y: micahLayer?.y ?? 0 });
+  const {
+    pos: luiPos,
+    isWalking: luiIsWalking,
+    isPatting: luiIsPatting,
+    direction: luiDirection,
+    frameIndex: luiFrameIndex,
+    walkTo: luiWalkTo,
+    playPat: luiPlayPat,
+  } = useCharacterWalk({ x: luiLayer?.x ?? 0, y: luiLayer?.y ?? 0 });
   const alexSpriteSrc = characterSprite(
     ALEX_SPRITE_SET,
     alexIsPatting ? "pat" : alexIsWalking ? "walk" : "idle",
@@ -282,6 +298,12 @@ export function OfficeMap() {
     micahIsPatting ? "pat" : micahIsWalking ? "walk" : "idle",
     micahDirection,
     micahFrameIndex,
+  );
+  const luiSpriteSrc = characterSprite(
+    LUI_SPRITE_SET,
+    luiIsPatting ? "pat" : luiIsWalking ? "walk" : "idle",
+    luiDirection,
+    luiFrameIndex,
   );
 
   // Saved-avatar (e.g. Lui, generated via "Add Employee") walk/pat registry —
@@ -333,7 +355,7 @@ export function OfficeMap() {
     return map;
   }, [savedAvatarWalkState]);
 
-  // "Walk demo" / "Pat demo" — action-menu items available to alex/micah
+  // "Walk demo" / "Pat demo" — action-menu items available to alex/micah/lui
   // (their own dedicated useCharacterWalk instances above) AND any saved
   // avatar with a populated spriteSet (via savedAvatarApiRef). Scripts a
   // small in-view closed-loop walk (out ~1-2 tiles, then back) exercising
@@ -345,7 +367,9 @@ export function OfficeMap() {
         ? alexWalkTo
         : layer.id === "micah"
           ? micahWalkTo
-          : savedAvatarApiRef.current.get(layer.id)?.walkTo ?? null;
+          : layer.id === "lui"
+            ? luiWalkTo
+            : savedAvatarApiRef.current.get(layer.id)?.walkTo ?? null;
     if (!walkTo) return;
     const start = { x: layer.x, y: layer.y };
     const out = { x: start.x + 40, y: start.y + 32 };
@@ -358,7 +382,9 @@ export function OfficeMap() {
         ? alexPlayPat
         : layer.id === "micah"
           ? micahPlayPat
-          : savedAvatarApiRef.current.get(layer.id)?.playPat ?? null;
+          : layer.id === "lui"
+            ? luiPlayPat
+            : savedAvatarApiRef.current.get(layer.id)?.playPat ?? null;
     playPat?.();
   }
 
@@ -945,11 +971,18 @@ export function OfficeMap() {
         >
           <OfficeStage
             phase={phase}
-            characterOverrides={{ bon: bonPos, alex: alexPos, micah: micahPos, ...savedAvatarOverridePos }}
+            characterOverrides={{
+              bon: bonPos,
+              alex: alexPos,
+              micah: micahPos,
+              lui: luiPos,
+              ...savedAvatarOverridePos,
+            }}
             characterSrcOverrides={{
               bon: bonSpriteSrc,
               alex: alexSpriteSrc,
               micah: micahSpriteSrc,
+              lui: luiSpriteSrc,
               ...savedAvatarOverrideSrc,
             }}
             extraCharacterLayers={extraCharacterLayers}
@@ -984,11 +1017,18 @@ export function OfficeMap() {
           >
             <OfficeStage
               phase={phase}
-              characterOverrides={{ bon: bonPos, alex: alexPos, micah: micahPos, ...savedAvatarOverridePos }}
+              characterOverrides={{
+                bon: bonPos,
+                alex: alexPos,
+                micah: micahPos,
+                lui: luiPos,
+                ...savedAvatarOverridePos,
+              }}
               characterSrcOverrides={{
                 bon: bonSpriteSrc,
                 alex: alexSpriteSrc,
                 micah: micahSpriteSrc,
+                lui: luiSpriteSrc,
                 ...savedAvatarOverrideSrc,
               }}
               extraCharacterLayers={extraCharacterLayers}
@@ -1124,7 +1164,10 @@ export function OfficeMap() {
           onClose={closeCharacterMenu}
           showCheckin={menu.layer.id === "arisha" && !hasCheckedIn}
           showDemos={
-            menu.layer.id === "alex" || menu.layer.id === "micah" || Boolean(menu.layer.animatable)
+            menu.layer.id === "alex" ||
+            menu.layer.id === "micah" ||
+            menu.layer.id === "lui" ||
+            Boolean(menu.layer.animatable)
           }
         />
       )}
