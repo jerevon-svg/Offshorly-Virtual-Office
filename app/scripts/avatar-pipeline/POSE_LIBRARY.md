@@ -40,7 +40,7 @@ employee's original uploaded avatar once a master exists (the upload was
 already used to create the master; the master is now the canonical source for
 every pose).
 
-## The 12 poses
+## The 13 poses
 
 1. **Idle / Standing** — neutral relaxed stand, feet slightly apart, arms
    resting naturally, neutral friendly expression. This is the master pose
@@ -88,6 +88,23 @@ every pose).
     other arm relaxed, upright and casual. Supports coffee cup, mug, phone, or
     small office item — place the requested object naturally into the
     prepared hand position.
+13. **Sitting — Typing / Keyboard** — a desk-work variant of Sitting Neutral
+    (#4): upright-but-relaxed torso, hips as if resting on a seat, knees bent
+    naturally, feet toward the floor. Differs from #4 only in the arms/hands:
+    both upper arms rest close to the sides, elbows bent ~90°, both forearms
+    raised forward to desk height, hands out in front at lower-chest/waist
+    height with fingers gently curled and slightly spread as if resting on /
+    typing on a keyboard, wrists neutral (not drooped, not raised).
+    Focused-but-friendly neutral expression, gaze forward-down toward the
+    implied work surface (no upward head tilt — camera lock still applies).
+    Generate in 4 directional variants — front, back, left, right — as a
+    turnaround, same as the idle/walk sets. Back variant follows the standard
+    no-face rule (back/crown only, identity via head covering/build/clothing;
+    for a bald master keep it bald). **Character only — do not generate a
+    chair, desk, keyboard, or any furniture/props** (same rule as #4); seating
+    and keyboard are composited later. Character lock, camera lock, and
+    source discipline (one-hop edit from that employee's own master only)
+    apply exactly as for every other pose.
 
 ## Generation workflow (calibration phase)
 

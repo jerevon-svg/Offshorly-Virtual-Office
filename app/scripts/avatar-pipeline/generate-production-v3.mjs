@@ -34,7 +34,7 @@
  * can't leak the key.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import sharp from "sharp";
@@ -142,10 +142,27 @@ const SLOTS_V3 = {
 // by construction instead of hoping two independent AI calls agree.
 const RIGHT_FROM_LEFT = {
   "idle-right": "idle-left",
-  "walk-right-1": "walk-left-1",
-  "walk-right-2": "walk-left-2",
-  "pat-right-1": "pat-left-1",
-  "pat-right-2": "pat-left-2",
+};
+
+// BUGFIX (moonwalk — confirmed via direct visual inspection comparing
+// idle-left, known correct, against walk-left/pat-left): idle's "-left" AI
+// generation reliably faces left (correct — hence RIGHT_FROM_LEFT above still
+// mirrors idle-right from idle-left). But for walk and pat specifically, the
+// AI generation requested for the "-left" slot (walk-left-1, walk-left-2,
+// pat-left-1, pat-left-2) reliably comes back facing RIGHT instead. Mirroring
+// that backwards raw output into "-right" (the old RIGHT_FROM_LEFT behavior
+// for these 4 slots) just produced left-facing content mislabeled as
+// "-right" and right-facing content mislabeled as "-left" — the classic
+// moonwalk bug. Fix: for these 4 slots only, treat the raw AI output as the
+// "-right" content (write it straight to the "-right" counterpart file) and
+// derive the "-left" file (the slot's own designated output path) via
+// sharp().flop() of that raw output. Idle's generation/labeling is
+// completely untouched by this map.
+const LEFT_SLOT_IS_ACTUALLY_RIGHT_FACING = {
+  "walk-left-1": "walk-right-1",
+  "walk-left-2": "walk-right-2",
+  "pat-left-1": "pat-right-1",
+  "pat-left-2": "pat-right-2",
 };
 
 // BUGFIX (walk-2 chaining, master-approved fix): walk-front-2/walk-left-2
@@ -182,9 +199,12 @@ const WALK_LEFT_FRAME2_CHAIN_PROMPT =
   "Here is frame 1 of a LEFT-facing walk cycle (character faces the LEFT edge of the image). In this frame one leg reaches FORWARD toward the LEFT edge (knee bent, heel down) and the other trails BACK toward the RIGHT edge (toe only). Generate frame 2, the opposite stride phase: the leg now reaching toward the LEFT edge must swing BACK toward the RIGHT edge, and the leg now trailing toward the RIGHT edge must swing FORWARD toward the LEFT edge; swap the arms to match. This is a LARGE, deliberate change to leg and arm positions — they MUST clearly differ from frame 1, not a copy. Keep ONLY identity, face, clothing, colors, art style, camera angle, and scale identical; the pose itself must change.";
 
 // Force-regenerate ONLY walk-front-2/walk-left-2 (the two slots this chaining
-// fix touches) and the mirrored "-right" slots (free sharp().flop() derives,
-// no API cost — walk-right-2 must be rebuilt since its walk-left-2 source
-// just changed; the other mirrors are harmless/idempotent to redo too).
+// fix touches) and the mirror-derived "idle-right" slot (free sharp().flop()
+// derive, no API cost). walk-right-2/pat-right-* are NOT listed here — they
+// are never independent generation targets at all (see
+// RIGHT_SLOTS_WRITTEN_BY_LEFT_HANDLER below); walk-right-2 is rebuilt
+// unconditionally as a side effect whenever walk-left-2 runs, since its
+// source just changed.
 // walk-front-1, walk-left-1, walk-back-1/2, and every idle/pat slot are
 // already valid on disk from the earlier (completed, verified) wording-fix
 // pass and must NOT be force-regenerated again here — walk-front-1/walk-left-1
@@ -195,7 +215,24 @@ const FORCE_REGENERATE_SLOTS = new Set([
   "walk-front-2",
   "walk-left-2",
   ...Object.keys(RIGHT_FROM_LEFT),
+  ...Object.keys(LEFT_SLOT_IS_ACTUALLY_RIGHT_FACING),
+  // NOTE: the "-right" counterparts (walk-right-1/2, pat-right-1/2 — the
+  // Object.values() of LEFT_SLOT_IS_ACTUALLY_RIGHT_FACING) are deliberately
+  // NOT listed here. They are written ONLY as a side effect of processing
+  // their "-left" slot (raw AI output written straight to the "-right" path,
+  // then flopped into "-left" — see the LEFT_SLOT_IS_ACTUALLY_RIGHT_FACING
+  // handler below). The main loop explicitly skips them (see
+  // RIGHT_SLOTS_WRITTEN_BY_LEFT_HANDLER check below) so they can never be
+  // independently regenerated via their own AI call, which would silently
+  // overwrite the correct flopped file with a fresh, non-deterministic
+  // generation (previously wasted 16 extra API calls/run and made the
+  // "guaranteed mirror pair" safety not actually apply to "-right").
 ]);
+
+// Reverse lookup: "-right" slot -> its "-left" source. Used solely to make
+// the main loop skip these slots as independent generation targets — they
+// are only ever written by the "-left" handler's flop step above.
+const RIGHT_SLOTS_WRITTEN_BY_LEFT_HANDLER = new Set(Object.values(LEFT_SLOT_IS_ACTUALLY_RIGHT_FACING));
 
 // Cheap validity check for a resumed output file: must exist, be non-trivially
 // sized (rules out empty/truncated writes), and decode as a real PNG with
@@ -248,9 +285,21 @@ const PEOPLE = [
   { name: "lui", master: path.join(MASTERS_DIR, "Lui_Master.png") },
 ];
 
-// idle-front is a direct copy of the Master (see header note); every other
-// slot is generated fresh, one-hop edit off the SAME Master.
-const MASTER_COPY_SLOT = "idle-front";
+// BUGFIX (idle-front background artifact, found during this bugfix pass's
+// own regeneration/normalize test): idle-front used to be a free direct copy
+// of the Master image (see prior header note) rather than a fresh
+// generation. That was harmless under the OLD normalizer (which sampled
+// each image's own corner color at runtime), but masters/{Name}_Master.png
+// is locked and never regenerated — it still carries the OLD "clean
+// white/light-gray studio background" from before the chroma-key prompt fix
+// (see generate-production-v2.mjs). frame-normalize.mjs now keys ONLY
+// against the fixed magenta (#FF00FF) chroma color, so a Master-copied
+// idle-front's light-gray background never gets keyed at all, leaving a
+// fully opaque background box in the final sprite. Fix: idle-front is now
+// generated fresh via the API like every other slot (SLOTS_V3["idle-front"]
+// already has prompt text, inherited unmodified from generate-production-v2.mjs's
+// SLOTS), so it gets the new chroma-key background like everything else.
+// This constant/shortcut is intentionally removed, not just disabled.
 
 async function main() {
   if (!existsSync(ENV_PATH)) throw new Error(`.env not found at ${ENV_PATH}`);
@@ -278,14 +327,6 @@ async function main() {
 
     for (const slotName of SLOT_NAMES) {
       const outPath = path.join(personDir, `${slotName}.png`);
-
-      if (slotName === MASTER_COPY_SLOT) {
-        // Free (no API call) — always (re)do to guarantee freshness/validity.
-        copyFileSync(person.master, outPath);
-        console.log(`-- ${person.name}/${slotName}: copied directly from Master (3/4-front-ish idle already matches) --`);
-        generated.push({ person: person.name, slot: slotName, mode: "master-copy" });
-        continue;
-      }
 
       if (RIGHT_FROM_LEFT[slotName]) {
         // Mirror path (no API call): derive this "-right" frame from the
@@ -319,6 +360,20 @@ async function main() {
             process.exit(1);
           }
         }
+        continue;
+      }
+
+      if (RIGHT_SLOTS_WRITTEN_BY_LEFT_HANDLER.has(slotName)) {
+        // walk-right-*/pat-right-* are written ONLY as the flop side effect
+        // of processing their "-left" counterpart above (SLOT_NAMES orders
+        // "-left" before "-right" within each pose group, so that write has
+        // already happened earlier in this same loop by the time we reach
+        // this slot). Never enter a generation branch for these — doing so
+        // would independently regenerate via a fresh AI call and overwrite
+        // the correct, deterministic flopped file (the moonwalk-fix bug).
+        console.log(`-- ${person.name}/${slotName}: SKIPPED (written via flop by its -left handler, not independently generated) --`);
+        skippedCount++;
+        skipped.push({ person: person.name, slot: slotName });
         continue;
       }
 
@@ -364,7 +419,20 @@ async function main() {
         }
 
         const buf = await withRetry(() => generateOne(apiKey, prompt, anchorBlob, label), label);
-        writeFileSync(outPath, buf);
+        const rightCounterpart = LEFT_SLOT_IS_ACTUALLY_RIGHT_FACING[slotName];
+        if (rightCounterpart) {
+          // Raw AI output for this "-left" slot is actually right-facing
+          // (moonwalk bug — see LEFT_SLOT_IS_ACTUALLY_RIGHT_FACING above).
+          // Write it directly as the "-right" counterpart, then flop it to
+          // produce this slot's own ("-left") correctly-facing output.
+          const rightPath = path.join(personDir, `${rightCounterpart}.png`);
+          writeFileSync(rightPath, buf);
+          const flopped = await sharp(buf).flop().toBuffer();
+          writeFileSync(outPath, flopped);
+          console.log(`  (raw output written as ${rightCounterpart}.png; flopped into ${slotName}.png)`);
+        } else {
+          writeFileSync(outPath, buf);
+        }
         successCount++;
         consecutiveFailures = 0;
         generated.push({ person: person.name, slot: slotName, mode: "generated" });

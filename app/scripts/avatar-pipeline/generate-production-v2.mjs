@@ -82,8 +82,11 @@ export const OFFSHORLY_CHIBI_PROMPT_BASE_SINGLE = `Transform the uploaded avatar
 Character Style
 Create a premium soft-3D chibi character with a collectible designer-toy aesthetic.
 Maintain the exact identity of the original avatar while simplifying it into a cute stylized character.
-The character should have: Very large rounded head (approximately 55–60% of total height), Extremely squishy proportions, Tiny compact torso, Very short legs, Very short arms, Small rounded hands, Chunky oversized shoes, Almost no visible neck, Rounded soft silhouette everywhere, Slightly padded clothing, Matte plastic / vinyl style material, Soft ambient occlusion, Studio-quality lighting, Soft ground shadow, Clean white/light gray background.
+The character should have: Very large rounded head (approximately 55–60% of total height), Extremely squishy proportions, Tiny compact torso, Very short legs, Very short arms, Small rounded hands, Chunky oversized shoes, Almost no visible neck, Rounded soft silhouette everywhere, Slightly padded clothing, Matte plastic / vinyl style material, Soft ambient occlusion, Studio-quality lighting, NO cast/drop/ground shadow of any kind — the character must appear to float free of any shadow beneath or around it, Solid flat chroma-key background in pure magenta (#FF00FF), completely uniform with zero gradient, zero vignette, and no shadow of any kind cast onto it.
 The character should feel like a premium collectible figure rather than an anime character.
+
+Background & Shadow (Highest Priority)
+Render the character against a completely flat, solid, uniform pure magenta (#FF00FF) background — a chroma-key color that never appears in skin, hair, or clothing. Do NOT render any drop shadow, cast shadow, contact shadow, or ambient-occlusion shading on the ground/floor beneath or around the character. The character should read as floating cleanly over the flat color with no shadow artifact of any kind.
 
 Face Preservation (Highest Priority)
 Preserve the person's identity as accurately as possible. Do NOT redesign the face.
@@ -102,8 +105,11 @@ Keep the fixed high-overhead isometric camera. Approximately 50–60° downward.
 Perspective
 Keep the top of the head clearly visible where the pose allows. Show a noticeable amount of crown of the head, hair volume, shoulders. The character should feel viewed from above. Almost approaching an orthographic camera while still retaining a small amount of perspective. Never use eye-level, low-angle, or dramatic perspective. The character must appear small within the frame, matching the input image's scale and padding — not zoomed in close on the face/torso.
 
+Framing (Highest Priority)
+The ENTIRE character must be fully inside the frame with a clearly visible margin of empty background on all four sides — top, bottom, left, right. The full crown/top of the head and both feet must be completely visible, never touching, clipped, or cropped by any edge of the image. Leave generous headroom above the crown and footroom below the feet. If the pose would otherwise run close to an edge, shrink the character slightly within the frame rather than letting any part leave the visible image area.
+
 Consistency Rules
-Preserve identical proportions, head size, body size, camera height, camera rotation, lighting, floor shadow, rendering quality, material style, scale, framing as the input image.
+Preserve identical proportions, head size, body size, camera height, camera rotation, lighting, rendering quality, material style, scale, framing as the input image. Do not preserve or reintroduce any ground/cast shadow.
 
 Important
 Prioritize preserving the facial/build/clothing likeness of the input image over making the character generically cute. The identity of the original person should remain immediately recognizable in every pose where the pose itself allows it.
