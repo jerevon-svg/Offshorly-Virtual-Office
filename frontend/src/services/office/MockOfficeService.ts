@@ -1,5 +1,4 @@
-import { characterLayers, formatCharacterName, teamRooms } from "../../data/office-layout";
-import { mockEmailForAvatarId } from "../../data/avatarIdentity";
+import { characterLayers, formatCharacterName } from "../../data/office-layout";
 import type {
   FloorPerson,
   MapPerson,
@@ -13,13 +12,15 @@ import type {
 // Offline implementation — lets the whole app run with the Atlas backend
 // stopped, which is what keeps art/animation work unblocked by API changes.
 //
-// The cast is derived from the office manifest's own character layers
-// rather than a separate hand-written fixture list, so mock people can
-// never drift out of sync with the sprites that actually exist. Emails are
-// synthesized from the layer id by mockEmailForAvatarId(), which is the
-// exact inverse of the localpart fallback in avatarIdForPerson() — so the
-// identity join is exercised in mock mode too, instead of being a code path
-// that only ever runs against the real API.
+// The cast is the 4 real people this app is bound to (Bon, Micah, Alex,
+// Lui), keyed by their real @offshorly.com addresses — the same addresses
+// EMAIL_TO_AVATAR_ID / EMAIL_TO_ROOM_ID key off of — rather than a roster
+// derived from every character layer in the manifest. The manifest still
+// has ~16 other fictional characters for onboarding/checkout flows and
+// future hires, but they are not real people and should not appear on the
+// mock floor. Room placement for these 4 is forced by roomIdForPerson()'s
+// email override regardless of the departmentName below, so the department
+// names here are just reasonable labels, not load-bearing.
 
 // Atlas's PresenceStatus values verbatim — the wire format is the bare
 // uppercase enum name. Deterministic spread, not Math.random(), so
@@ -32,20 +33,41 @@ function statusFor(index: number): PresenceStatusValue {
   return "ONLINE";
 }
 
-// Departments cycle through the six team rooms so mock people spread
-// across the floor instead of piling into the fallback room. The names are
-// the room ids themselves, which also exercises the slug fallback in
-// roomIdForDepartment() — mock mode therefore runs the same placement path
-// real data does, rather than a shortcut around it.
-const mockDepartments = teamRooms.map((room) => room.id);
+function displayNameFor(layerId: string): string {
+  const layer = characterLayers.find((l) => l.id === layerId);
+  return layer ? formatCharacterName(layer) : layerId;
+}
 
-const mockPeople = characterLayers.map((layer, index) => ({
-  layerId: layer.id,
-  email: mockEmailForAvatarId(layer.id),
-  displayName: formatCharacterName(layer),
-  status: statusFor(index),
-  departmentName: mockDepartments[index % mockDepartments.length] ?? null,
-}));
+const mockPeople = [
+  {
+    layerId: "bon",
+    email: "jerevon@offshorly.com",
+    displayName: displayNameFor("bon"),
+    status: statusFor(0),
+    departmentName: "Design",
+  },
+  {
+    layerId: "micah",
+    email: "micah@offshorly.com",
+    displayName: displayNameFor("micah"),
+    status: statusFor(1),
+    departmentName: "Design",
+  },
+  {
+    layerId: "alex",
+    email: "alex@offshorly.com",
+    displayName: displayNameFor("alex"),
+    status: statusFor(2),
+    departmentName: "Management",
+  },
+  {
+    layerId: "lui",
+    email: "lui@offshorly.com",
+    displayName: displayNameFor("lui"),
+    status: statusFor(3),
+    departmentName: "Dev",
+  },
+];
 
 export class MockOfficeService implements OfficeService {
   getPresence(): Promise<Presence[]> {

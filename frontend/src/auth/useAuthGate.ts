@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { apiFetch, AuthRedirectError, HOME_PATH } from "../services/api/client";
-import { setCurrentUserFromMeResponse } from "./currentUserStore";
+import { getCurrentUser, setCurrentUserFromMeResponse } from "./currentUserStore";
 
 // Boot-time permission gate for the Virtual Office. Calls Atlas's
 // GET /api/v1/auth/me and checks the can_view_virtual_office flag.
@@ -117,10 +117,38 @@ function isGateBypassed(): boolean {
   return import.meta.env.DEV && import.meta.env.VITE_AUTH_GATE === "off";
 }
 
+// When the gate is bypassed, no real /auth/me call ever happens, so
+// currentUserStore is otherwise left with no identity at all (email null
+// forever). That breaks anything keyed off "who is the viewer" — notably
+// OfficeMap's roster de-dup, which drops the signed-in viewer's own static
+// roster portrait by matching their email; with no email, the filter never
+// matches and the viewer's roster entry renders alongside their animated
+// player sprite (two Bons on screen). Bon's real email is hardcoded here
+// deliberately (matches FALLBACK_USER_ID's/FALLBACK_AVATAR_ID's "bon"
+// convention and avatarIdentity.ts's EMAIL_TO_AVATAR_ID override) — local
+// dev with the gate off is meant to behave as "you are Bon", same as it
+// always has. Keep this in sync with that override if it ever changes.
+const DEV_BYPASS_EMAIL = "jerevon@offshorly.com";
+
+function seedDevBypassIdentity(): void {
+  if (getCurrentUser()) return;
+  setCurrentUserFromMeResponse({
+    id: FALLBACK_USER_ID,
+    email: DEV_BYPASS_EMAIL,
+    full_name: "Bon",
+    role: "",
+    team: null,
+  });
+}
+
 export function useAuthGate(): AuthGateStatus {
-  const [status, setStatus] = useState<AuthGateStatus>(() =>
-    isGateBypassed() ? "allowed" : "pending",
-  );
+  const [status, setStatus] = useState<AuthGateStatus>(() => {
+    if (isGateBypassed()) {
+      seedDevBypassIdentity();
+      return "allowed";
+    }
+    return "pending";
+  });
 
   useEffect(() => {
     let cancelled = false;

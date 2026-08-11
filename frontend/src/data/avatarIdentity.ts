@@ -29,7 +29,10 @@ const OFFICE_EMAIL_DOMAIN = "offshorly.com";
 // Keys MUST be lowercase; lookups lowercase the incoming address, since
 // email localparts are not reliably case-consistent between systems.
 const EMAIL_TO_AVATAR_ID: Record<string, string> = {
-  // "jan.michael@offshorly.com": "bon",
+  // Bon's real Zoho/Atlas email localpart ("jerevon") does not match his
+  // sprite id ("bon"), unlike micah/alex/lui whose localparts already match
+  // by convention and need no entry here.
+  "jerevon@offshorly.com": "bon",
 };
 
 const KNOWN_AVATAR_IDS = new Set(characterLayers.map((layer) => layer.id));

@@ -102,6 +102,37 @@ export function roomIdForDepartment(
   return null;
 }
 
+// Explicit per-person overrides, checked before the department table above.
+// This exists for the same reason EMAIL_TO_AVATAR_ID exists in
+// avatarIdentity.ts: a handful of real people need to land in a specific
+// hand-drawn room regardless of what their department string says (or even
+// when there is no department string at all, e.g. mock data). Add a row
+// here whenever a person's home room should be pinned by email.
+//
+// Keys MUST be lowercase; lookups lowercase the incoming address, matching
+// the convention in avatarIdentity.ts.
+const EMAIL_TO_ROOM_ID: Record<string, string> = {
+  "jerevon@offshorly.com": "design-team",
+  "micah@offshorly.com": "design-team",
+  "lui@offshorly.com": "dev-team",
+  "alex@offshorly.com": "executive-team",
+};
+
+// A person's home desk, with the per-person override applied first. Falls
+// back to roomIdForDepartment() when the person has no override, so this is
+// a strict superset of that function's behavior — safe to call in any spot
+// that currently calls roomIdForDepartment() and also has an email on hand.
+export function roomIdForPerson(
+  email: string | null | undefined,
+  departmentName: string | null | undefined,
+): string | null {
+  if (email) {
+    const override = EMAIL_TO_ROOM_ID[email.trim().toLowerCase()];
+    if (override && isKnownRoomId(override)) return override;
+  }
+  return roomIdForDepartment(departmentName);
+}
+
 // An Atlas room id -> hand-drawn room, for the CUSTOM rooms that have a
 // twin. Null means "this room does not exist on the canvas", which is the
 // correct answer for every PROJECT and CLIQ_CHANNEL room.

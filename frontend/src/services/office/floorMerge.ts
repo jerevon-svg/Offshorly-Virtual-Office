@@ -2,7 +2,7 @@ import { avatarIdForEmail } from "../../data/avatarIdentity";
 import {
   FALLBACK_ROOM_ID,
   roomIdForAtlasRoom,
-  roomIdForDepartment,
+  roomIdForPerson,
 } from "../../data/roomIdentity";
 import type { FloorPerson, LastMessage, Presence, PresenceStatusValue } from "./types";
 
@@ -58,8 +58,9 @@ export function resolveRoomId(
   status: PresenceStatusValue,
   currentRoomId: string | null,
   departmentName: string | null,
+  email: string | null = null,
 ): { roomId: string; inEphemeralRoom: boolean } {
-  const deskRoomId = roomIdForDepartment(departmentName);
+  const deskRoomId = roomIdForPerson(email, departmentName);
 
   if (status === "ONLINE" && currentRoomId) {
     const liveRoomId = roomIdForAtlasRoom(currentRoomId);
@@ -102,6 +103,7 @@ export function mergeFloorWithPresence(
       status,
       currentRoomId,
       person.department_name,
+      person.user_email,
     );
 
     return {

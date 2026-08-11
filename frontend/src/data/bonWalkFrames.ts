@@ -266,6 +266,20 @@ export const LUI_SPRITE_SET: AvatarSpriteSet = {
   sitType: LUI_SIT_TYPE_FRAMES,
 };
 
+// Lookup by avatar id — lets a caller that only has "which sprite id is the
+// viewer" (e.g. from avatarIdentity.ts's join) resolve straight to the
+// AvatarSpriteSet, instead of hardcoding which BON_SPRITE_SET-shaped
+// constant to use. Keys must stay in sync with the avatar ids that
+// EMAIL_TO_AVATAR_ID / the localpart convention can actually produce for a
+// real person; anything not listed here has no animated sprite set yet and
+// callers should fall back to "bon".
+export const SPRITE_SET_BY_AVATAR_ID: Record<string, AvatarSpriteSet> = {
+  bon: BON_SPRITE_SET,
+  alex: ALEX_SPRITE_SET,
+  micah: MICAH_SPRITE_SET,
+  lui: LUI_SPRITE_SET,
+};
+
 // Generic sprite selector: picks the frame for a given sprite set's
 // state/direction/frame. idle and sitType have only one frame per
 // direction, so frameIndex is ignored for both (matches the original

@@ -29,14 +29,21 @@ import projectRoom from "../assets/office/rooms/project-room.png";
 import meetingRoom from "../assets/office/rooms/meeting-room.png";
 import receptionRoom from "../assets/office/rooms/reception-room.png";
 import centralHub from "../assets/office/rooms/central-hub.png";
-import alex from "../assets/office/characters/alex.png";
+// Alex/Micah/Lui render as static SEATED portraits when they are not the
+// logged-in viewer, so their manifest entry uses a sit/idle-style frame from
+// the new sprite pipeline rather than a mid-stride walk frame (which would
+// look wrong held static). Bon's entry sources from his own idle-norm
+// frame, matching how BON_IDLE_FRAMES/bonWalkFrames.ts already sources
+// bon's idle art — his manifest layer is only ever drawn when someone else
+// is logged in, since Step 3 makes the viewer bypass this path entirely.
+import alex from "../assets/office/characters/alex-sit-type-norm/front.png";
 import chris from "../assets/office/characters/chris.png";
 import cyrus from "../assets/office/characters/cyrus.png";
 import jona from "../assets/office/characters/jona.png";
 import angelo from "../assets/office/characters/angelo.png";
-import micah from "../assets/office/characters/micah.png";
-import lui from "../assets/office/characters/lui.png";
-import bon from "../assets/office/characters/bon.png";
+import micah from "../assets/office/characters/micah-sit-type-norm/front.png";
+import lui from "../assets/office/characters/lui-sit-type-norm/front.png";
+import bon from "../assets/office/characters/bon-idle-norm/front.png";
 import clang from "../assets/office/characters/clang.png";
 import france from "../assets/office/characters/france.png";
 import arisha from "../assets/office/characters/arisha.png";
