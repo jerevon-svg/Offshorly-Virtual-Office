@@ -1094,7 +1094,23 @@ export function OfficeMap() {
           </button>
         </div>
       )}
-      <WorkingStatusIndicator state={checkoutFlow.state} workedLabel={checkoutFlow.workedLabel} />
+      {/* Dev-only until time-logging reaches Zoho for real (D3 — see
+          docs/OFFICE_TIMELOG_IMPLEMENTATION.md in the Atlas repo).
+
+          The whole flow runs on MockZohoService: the project/task pickers
+          are hardcoded constants, and submitTimeLogs waits a fake delay and
+          returns success with a deterministic id. So in production an
+          employee logs their day, gets a success card with a submission id,
+          and is marked checked out in localStorage — while no time entry
+          exists in Zoho Projects. It fails by succeeding, which is why this
+          is hidden rather than left to look broken.
+
+          The entry points (status chip, 8h reminder) are inside the guard,
+          so the flow cannot be started at all. Re-enable together with
+          VITE_ZOHO_INTEGRATION_MODE=real once AtlasZohoService lands. */}
+      {import.meta.env.DEV && (
+        <>
+          <WorkingStatusIndicator state={checkoutFlow.state} workedLabel={checkoutFlow.workedLabel} />
       <CheckoutReminderToast
         visible={checkoutFlow.reminderVisible}
         onLater={checkoutFlow.dismissReminderForLater}
@@ -1159,12 +1175,14 @@ export function OfficeMap() {
         onTryAgain={() => void checkoutFlow.retrySubmit()}
         onSaveAndReturnLater={checkoutFlow.saveAndReturnLater}
       />
-      <CheckoutSuccessCard
-        state={checkoutFlow.state}
-        workedLabel={checkoutFlow.workedLabel}
-        entries={checkoutFlow.entries}
-        submissionResult={checkoutFlow.submissionResult}
-      />
+          <CheckoutSuccessCard
+            state={checkoutFlow.state}
+            workedLabel={checkoutFlow.workedLabel}
+            entries={checkoutFlow.entries}
+            submissionResult={checkoutFlow.submissionResult}
+          />
+        </>
+      )}
       {import.meta.env.DEV && (
         <RosterDebugPanel
           people={roster.people}
@@ -1184,8 +1202,14 @@ export function OfficeMap() {
           setOverrideHour={setOverrideHour}
         />
       )}
-      {(import.meta.env.DEV ||
-        new URLSearchParams(window.location.search).get("checkoutDebug") === "true") && (
+      {/* DEV only. The ?checkoutDebug=true escape hatch was removed
+          deliberately: this panel holds direct handles to startCheckout,
+          confirmStartCheckout and submit, so in production it was a
+          one-query-param route straight into the mock submission path —
+          bypassing the guard on the checkout UI above and writing a
+          "logged" day that never reaches Zoho. Restore the query-param
+          gate only once time-logging is real (D3). */}
+      {import.meta.env.DEV && (
         <CheckoutDebugPanel
           state={checkoutFlow.state}
           overrideHour={overrideHour}
