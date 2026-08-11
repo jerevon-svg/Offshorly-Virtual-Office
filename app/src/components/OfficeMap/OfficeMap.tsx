@@ -54,7 +54,10 @@ import { CheckoutConfirmModal } from "./checkout/CheckoutConfirmModal";
 import { TimeSummaryPanel } from "./checkout/TimeSummaryPanel";
 import { TimeLogForm } from "./checkout/TimeLogForm";
 import { ConversationView } from "../Chat/ConversationView";
-import { CURRENT_USER_ID } from "../../data/currentUser";
+import { useCurrentUserAvatarId } from "../../data/currentUser";
+import { useCurrentUser } from "../../auth/currentUserStore";
+import { useOfficeRoster } from "../../services/office/useOfficeRoster";
+import { officePeopleToLayers, rosterSrcById } from "../../data/rosterLayers";
 import { TimeLogReview } from "./checkout/TimeLogReview";
 import { SubmissionFailedPanel } from "./checkout/SubmissionFailedPanel";
 import { CheckoutSuccessCard } from "./checkout/CheckoutSuccessCard";
@@ -108,9 +111,36 @@ export function OfficeMap() {
   // localStorage on mount, then appended to live as each new one is saved
   // so it appears in its chosen room without a page refresh.
   const [customAvatars, setCustomAvatars] = useState<SavedAvatar[]>(() => loadSavedAvatars());
-  const extraCharacterLayers = useMemo(() => savedAvatarsToLayers(customAvatars), [customAvatars]);
+  // Live roster from Atlas. Empty in mock mode's absence of a backend and
+  // on the first paint, which is what keeps the static cast rendering until
+  // real people actually arrive — see rosterActive below.
+  const roster = useOfficeRoster();
+  const currentUser = useCurrentUser();
+
+  // The signed-in viewer is drawn as the animated player (Bon's sprite set,
+  // the only one with walk/pat frames), so their static roster portrait is
+  // dropped to avoid rendering the same person twice.
+  const rosterLayers = useMemo(() => {
+    const viewerEmail = currentUser?.email.trim().toLowerCase() ?? null;
+    const others = viewerEmail
+      ? roster.people.filter((person) => person.email.trim().toLowerCase() !== viewerEmail)
+      : roster.people;
+    return officePeopleToLayers(others);
+  }, [roster.people, currentUser]);
+
+  // Once real people are on the floor, the manifest's fictional cast is
+  // hidden — otherwise employees and characters share the office. Bon is
+  // exempt: that layer IS the viewer's avatar, not an NPC.
+  // (hiddenCharacterIds is derived further down — it also depends on
+  // checkoutFlow, which is declared after the walk hooks.)
+  const rosterActive = rosterLayers.length > 0;
+
+  const extraCharacterLayers = useMemo(
+    () => [...savedAvatarsToLayers(customAvatars), ...rosterLayers],
+    [customAvatars, rosterLayers],
+  );
   const extraCharacterSrcById = useMemo(() => {
-    const map: Record<string, string> = {};
+    const map: Record<string, string> = { ...rosterSrcById(rosterLayers) };
     for (const avatar of customAvatars) {
       // Avatars with a populated spriteSet resolve through the same
       // characterSprite() selector Bon uses (idle-front frame only — no
@@ -121,7 +151,7 @@ export function OfficeMap() {
         : avatar.previewUrl;
     }
     return map;
-  }, [customAvatars]);
+  }, [customAvatars, rosterLayers]);
   // Placeholder-swap flow (Track 2 real mode): jobIds currently being
   // polled, deduped so a job saved via onAvatarSaved and the mount-scan
   // effect below never start a second concurrent poll for the same job.
@@ -378,11 +408,25 @@ export function OfficeMap() {
   const effectiveTimeInMs =
     debugHoursWorked !== null ? Date.now() - debugHoursWorked * 3600_000 : timeInMs;
 
+  // Which sprite is "you". Falls back to the default body on the first
+  // paint and re-renders once Atlas's /auth/me identity lands, so this must
+  // not be captured into anything that only reads it once.
+  const currentUserId = useCurrentUserAvatarId();
+
   const checkoutFlow = useCheckoutFlow({
-    employeeId: CURRENT_USER_ID,
+    employeeId: currentUserId,
     hourDecimal,
     timeInMs: effectiveTimeInMs,
   });
+  // Once real people are on the floor, the manifest's fictional cast is
+  // hidden — otherwise employees and characters share the office. Bon is
+  // exempt: that layer IS the viewer's avatar, not an NPC, and is hidden
+  // only after checkout, as before.
+  const hiddenCharacterIds = useMemo(() => {
+    const hidden = rosterActive ? npcCharacterLayers.map((layer) => layer.id) : [];
+    return checkoutFlow.state === "CHECKED_OUT" ? [...hidden, "bon"] : hidden;
+  }, [rosterActive, checkoutFlow.state]);
+
   const checkoutBusy =
     checkoutFlow.state === "SAYING_GOODBYE" ||
     checkoutFlow.state === "WALKING_TO_RECEPTION" ||
@@ -428,8 +472,28 @@ export function OfficeMap() {
     }, 2000);
   }
 
+  // Who the viewer walks up to on the way out. With a live roster the
+  // scripted receptionist (Arisha) is hidden, so target a real person in
+  // reception instead; fall back to her layer only when the roster is empty
+  // (mock mode, or before the first load settles).
+  function receptionGreetTarget(): AssetLayer | undefined {
+    if (rosterActive) {
+      const inReception = rosterLayers.find((layer) =>
+        roomContainingPoint({
+          x: layer.x + layer.width / 2,
+          y: layer.y + layer.height / 2,
+        })?.id.includes("reception"),
+      );
+      // Nobody in reception is a normal state, not an error — the flow
+      // below already handles a missing target by skipping the walk.
+      if (inReception) return inReception;
+      return undefined;
+    }
+    return npcCharacterLayers.find((l) => l.id === "arisha");
+  }
+
   function beginWalkToReception() {
-    const arisha = npcCharacterLayers.find((l) => l.id === "arisha");
+    const arisha = receptionGreetTarget();
     if (!arisha) {
       checkoutFlow.arrivedAtReception();
       return;
@@ -803,7 +867,7 @@ export function OfficeMap() {
       pipSideRef.current = target.x > bonPos.x ? "left" : "right";
       walkTo(path, () => {
         setOpenChat(target);
-        setTalkingIds([CURRENT_USER_ID, target.id]);
+        setTalkingIds([currentUserId, target.id]);
       });
     } else {
       closeCharacterMenu();
@@ -955,7 +1019,7 @@ export function OfficeMap() {
             extraCharacterLayers={extraCharacterLayers}
             extraCharacterSrcById={extraCharacterSrcById}
             onCharacterClick={handleCharacterClick}
-            hiddenCharacterIds={checkoutFlow.state === "CHECKED_OUT" ? ["bon"] : undefined}
+            hiddenCharacterIds={hiddenCharacterIds}
             onRoomClick={(layer) => {
               // Onboarding sequence must complete before normal room-click
               // interactions resume — every non-"done" state suppresses this.
@@ -993,7 +1057,7 @@ export function OfficeMap() {
               }}
               extraCharacterLayers={extraCharacterLayers}
               extraCharacterSrcById={extraCharacterSrcById}
-              hiddenCharacterIds={checkoutFlow.state === "CHECKED_OUT" ? ["bon"] : undefined}
+              hiddenCharacterIds={hiddenCharacterIds}
               talkingCharacterIds={talkingIds}
               talkingTextById={talkingTextById}
             />
@@ -1153,7 +1217,7 @@ export function OfficeMap() {
       {openChat && (
         <ConversationView
           peer={openChat}
-          selfId={CURRENT_USER_ID}
+          selfId={currentUserId}
           onIncomingMessage={handleTalkingMessage}
           onClose={() => {
             setOpenChat(null);

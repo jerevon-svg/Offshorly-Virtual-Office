@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { apiFetch, AuthRedirectError, HOME_PATH } from "../services/api/client";
+import { setCurrentUserFromMeResponse } from "./currentUserStore";
 
 // Boot-time permission gate for the Virtual Office. Calls Atlas's
 // GET /api/v1/auth/me and checks the can_view_virtual_office flag.
@@ -90,6 +91,11 @@ export function useAuthGate(): AuthGateStatus {
           return;
         }
         const body: unknown = await response.json();
+        // Same response also carries the signed-in user's identity, so the
+        // app learns who it is here rather than issuing a second /auth/me.
+        // Stored before the permission check deliberately: a denied user is
+        // navigating away, and the store is harmless either way.
+        setCurrentUserFromMeResponse(body);
         const allowed = extractCanViewVirtualOffice(body);
         if (!cancelled) setStatus(allowed ? "allowed" : "denied");
       } catch (err) {
