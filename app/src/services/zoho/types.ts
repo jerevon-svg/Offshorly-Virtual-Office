@@ -18,6 +18,17 @@ export interface TimeLogEntry {
   category: string | null;
   timeSpentMinutes: number;
   workDescription: string;
+  // Optional so existing callers (and MockZohoService) are unaffected;
+  // AtlasZohoService sends `true` when unset, matching the backend default.
+  billable?: boolean;
+}
+
+/** One entry Zoho rejected while others succeeded. Zoho has no
+ *  transaction, so a partial submission keeps what worked and reports the
+ *  rest — the UI must not show a success card when this is non-empty. */
+export interface TimeLogFailure {
+  taskId: string;
+  error: string;
 }
 
 export interface SubmitTimeLogsRequest {
@@ -32,6 +43,8 @@ export interface SubmitTimeLogsResult {
   submittedAt?: string;
   entriesCreated?: number;
   error?: string;
+  /** Populated by AtlasZohoService on a partial failure. */
+  failures?: TimeLogFailure[];
 }
 
 export interface ZohoTimeLoggingService {

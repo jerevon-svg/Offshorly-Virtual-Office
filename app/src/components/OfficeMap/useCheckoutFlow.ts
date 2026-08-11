@@ -18,7 +18,7 @@ import {
   saveResult,
 } from "../../data/checkoutStorage";
 import { computeWorkedMinutes, formatDuration, validateAllocation } from "../../data/workedTime";
-import { zohoService } from "../../services/zoho";
+import { isAlreadySubmittedError, zohoService } from "../../services/zoho";
 import type { MockSubmitOptions } from "../../services/zoho/MockZohoService";
 import type {
   SubmitTimeLogsResult,
@@ -288,10 +288,31 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
           breakMinutes,
           savedAt: new Date().toISOString(),
         });
+        // Keep the result on a FAILURE too: a partial submission carries
+        // per-entry failures and a count of what did land, and the panel
+        // needs both to warn that retrying would double-log the successes.
+        setSubmissionResult(result);
         setError(result.error ?? "Submission failed.");
         goTo("SUBMISSION_FAILED");
       }
     } catch (err) {
+      // A duplicate is a normal outcome, not a failure: the server rejected
+      // a second submission for this date because one already exists. Show
+      // that prior submission rather than an error panel — and record it
+      // locally, since this branch is reached exactly when local state has
+      // drifted from the server (cleared storage, another browser).
+      if (isAlreadySubmittedError(err)) {
+        const recovered: SubmitTimeLogsResult = {
+          success: true,
+          submissionId: err.submissionId,
+          entriesCreated: err.entriesCreated,
+        };
+        saveResult(employeeId, workDate, recovered);
+        setSubmissionResult(recovered);
+        goTo("CHECKOUT_SUCCESS");
+        return;
+      }
+
       saveDraft(employeeId, workDate, {
         entries,
         breakMinutes,

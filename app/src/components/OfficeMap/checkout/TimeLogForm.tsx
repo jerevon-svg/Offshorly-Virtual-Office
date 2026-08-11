@@ -143,6 +143,21 @@ export function TimeLogForm({
                 onChange={(e) => onUpdateEntry(index, { workDescription: e.target.value })}
               />
             </div>
+
+            {/* Billable defaults to ON: it is the common case, and Zoho's
+                own default. `?? true` rather than a plain read, because
+                entries created before this field existed have it
+                undefined and must not silently become non-billable. */}
+            <div className={styles.field}>
+              <label className={styles.label} style={{ display: "flex", gap: 8 }}>
+                <input
+                  type="checkbox"
+                  checked={entry.billable ?? true}
+                  onChange={(e) => onUpdateEntry(index, { billable: e.target.checked })}
+                />
+                Billable
+              </label>
+            </div>
           </div>
         );
       })}

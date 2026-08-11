@@ -25,6 +25,7 @@ import {
 } from "../../data/officeGrid";
 import type { AssetLayer } from "../../types/office";
 import type { ChatMessage } from "../../services/chat";
+import { isRealZohoMode } from "../../services/zoho";
 import { OfficeStage } from "./OfficeStage";
 import { CharacterSearch } from "./CharacterSearch";
 import { CharacterActionMenu } from "./CharacterActionMenu";
@@ -1106,9 +1107,16 @@ export function OfficeMap() {
           is hidden rather than left to look broken.
 
           The entry points (status chip, 8h reminder) are inside the guard,
-          so the flow cannot be started at all. Re-enable together with
-          VITE_ZOHO_INTEGRATION_MODE=real once AtlasZohoService lands. */}
-      {import.meta.env.DEV && (
+          so the flow cannot be started at all.
+
+          UPDATE: now gated on isRealZohoMode() as well, so the flow appears
+          in production the moment VITE_ZOHO_INTEGRATION_MODE=real is set
+          and disappears again if it is ever unset. Tying visibility to
+          whether submissions actually reach Zoho — rather than to a
+          hand-maintained DEV flag — is what stops this from silently
+          regressing to "logs into the void" on a future deploy. DEV stays
+          in the condition so mock-mode development still exercises the UI. */}
+      {(import.meta.env.DEV || isRealZohoMode()) && (
         <>
           <WorkingStatusIndicator state={checkoutFlow.state} workedLabel={checkoutFlow.workedLabel} />
       <CheckoutReminderToast
@@ -1172,6 +1180,7 @@ export function OfficeMap() {
       <SubmissionFailedPanel
         visible={checkoutFlow.state === "SUBMISSION_FAILED"}
         error={checkoutFlow.error}
+        result={checkoutFlow.submissionResult}
         onTryAgain={() => void checkoutFlow.retrySubmit()}
         onSaveAndReturnLater={checkoutFlow.saveAndReturnLater}
       />
