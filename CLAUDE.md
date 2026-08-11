@@ -41,7 +41,7 @@ Route every task to a subagent. Never wait to be asked. Never make the user type
 6. Trivial one-line or single-file edits with no design impact go straight to `worker`.
 7. All git mutations + gh ops route to `commit` agent. `master`/`worker` may still read git state (diff/log/status) for review context — they must not execute git mutations.
 8. `commit` agent owns its human gate (push/rebase/reset-hard/discard/PR create+merge). Do not duplicate gate logic here.
-9. When unsure which agent fits, default to `master` to decide.
+9. When unsure which agent fits for genuinely non-trivial work, default to `master` to decide. This is not a catch-all: quick factual checks, clarifying questions, and simple confirmations get answered directly in the main thread (no agent dispatch at all), and trivial edits still go to `worker` per rule 6. `master`'s high reasoning effort is the most expensive routing tier — invoke it only when the task actually needs planning/review/debugging-level reasoning, not reflexively on every prompt.
 10. `master` plans, reviews, and debugs — it never writes code. `worker` writes code — it never approves its own work.
 11. Surface `master`'s Decision Points to the human before proceeding on critical or destructive changes.
 12. For strategy/advisory/how-to questions, route to `master` for reasoning first; the main thread does not answer directly.
@@ -56,8 +56,7 @@ Route every task to a subagent. Never wait to be asked. Never make the user type
 17. **SonarQube scan → `sonar`, then feed `master`.** After `worker` finishes a non-trivial change, route to `sonar` to scan and report the quality gate + issues. `sonar` never decides — it hands the findings to `master`, who folds them into the APPROVED / NEEDS FIXES verdict alongside `/dw review` (same evidence-not-verdict role diffwarden plays). `sonar` runs read-only; it never edits or commits. Community-edition caveat: scans cover the main branch only, not worker's isolated diff — `sonar` states this when a per-diff check is implied.
 
 ### Always
-@ORCHESTRATION_GUIDE.md
-@WORKSPACE_TEMPLATE.md
+See [ORCHESTRATION_GUIDE.md](./ORCHESTRATION_GUIDE.md) for conceptual depth and [WORKSPACE_TEMPLATE.md](./WORKSPACE_TEMPLATE.md) for replication steps — read these on demand (new agent setup, routing questions), not auto-loaded into every message's context.
 - Pass full context (files, paths, errors, plan) to the chosen agent.
 - Prefer absolute paths in all handoffs.
 - Keep the user out of routing decisions; just delegate.
