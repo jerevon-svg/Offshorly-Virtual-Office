@@ -10,7 +10,7 @@ a Static Site gives always-on CDN serving with no cold starts.
 | Setting            | Value                                                    |
 |---------------------|----------------------------------------------------------|
 | Service type         | Static Site                                              |
-| Root Directory       | `app` (repo root has no `package.json` — omitting this breaks the build) |
+| Root Directory       | `frontend` (repo root has no `package.json` — omitting this breaks the build) |
 | Build Command        | `npm ci && npm run build`                                 |
 | Publish Directory     | `dist`                                                     |
 | Region               | same region as Atlas                                       |
@@ -30,10 +30,15 @@ presents as the app silently bouncing to home, with the real cause visible
 only in the browser console. If you see an unexplained redirect to `/`,
 check this env var first.
 
-### Why `dist` (not `app/dist`) as Publish Directory
+> **Action required (external, not a repo change):** Render's dashboard
+> still has Root Directory set to `app` from before the repo reorg
+> (`app/` → `frontend/`). Bon needs to manually update this setting in the
+> Render dashboard to `frontend`; it cannot be changed from the repo.
 
-Render's Root Directory is already `app`, so the Publish Directory path is
-relative to that — `dist`, not `app/dist`. `vite.config.ts` sets
+### Why `dist` (not `frontend/dist`) as Publish Directory
+
+Render's Root Directory is already `frontend`, so the Publish Directory path
+is relative to that — `dist`, not `frontend/dist`. `vite.config.ts` sets
 `build.outDir: "dist/virtual-office"` (see comment there), so the real
 build output Render finds under `dist` is `dist/virtual-office/`, containing
 `index.html` and `assets/`.

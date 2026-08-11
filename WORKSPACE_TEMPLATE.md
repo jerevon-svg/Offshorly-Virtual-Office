@@ -23,8 +23,8 @@ CLAUDE.md                          ← routing rules; customize for your project
 .claude/hooks/session_end.sh       ← runs parse_usage.py --transcript on session close
 .claude/scripts/parse_usage.py     ← JSONL → usage.csv parser
 .claude/scripts/sonar_scan.sh      ← runs scan and reports gate/issues
-sonarqube/docker-compose.yml       ← local SonarQube + PostgreSQL stack
-sonarqube/INSTALL.md               ← one-time SonarQube and token setup
+tools/sonarqube/docker-compose.yml ← local SonarQube + PostgreSQL stack
+tools/sonarqube/INSTALL.md         ← one-time SonarQube and token setup
 .gitignore                         ← merge orchestration entries; do not replace
 .claude/.gitignore                 ← merge bootstrap-marker entry; do not replace
 .gitattributes                     ← preserves LF endings for scripts
@@ -35,7 +35,7 @@ existing files. Preserve all project-specific ignore rules and avoid duplicate
 entries.
 
 After copying, create `.claude/sonar.env` locally by following
-`sonarqube/INSTALL.md`. It contains the scanner token and must never be committed.
+`tools/sonarqube/INSTALL.md`. It contains the scanner token and must never be committed.
 Docker with Compose is required because Sonar is part of the core baseline.
 
 ### Optional (reference only)
@@ -248,7 +248,7 @@ Modes:
 
 Runs the Dockerized Sonar scanner, waits for analysis, and prints the quality
 gate and open issues. It reads `.claude/sonar.env`; create that untracked file
-using `sonarqube/INSTALL.md`.
+using `tools/sonarqube/INSTALL.md`.
 
 Use one stable project key per project so SonarQube retains analysis history:
 
@@ -258,10 +258,10 @@ bash .claude/scripts/sonar_scan.sh "$(pwd)" <project-key> .
 
 ---
 
-### `sonarqube/` — KEEP, COMPLETE ONE-TIME SETUP
+### `tools/sonarqube/` — KEEP, COMPLETE ONE-TIME SETUP
 
-`sonarqube/docker-compose.yml` runs SonarQube Community and PostgreSQL locally.
-Follow `sonarqube/INSTALL.md` to start the stack, change the default password,
+`tools/sonarqube/docker-compose.yml` runs SonarQube Community and PostgreSQL locally.
+Follow `tools/sonarqube/INSTALL.md` to start the stack, change the default password,
 generate a scanner token, and create `.claude/sonar.env`.
 
 SonarQube Community analyzes the main branch rather than an isolated PR diff.

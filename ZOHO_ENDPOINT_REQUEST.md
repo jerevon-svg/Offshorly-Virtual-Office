@@ -1,9 +1,9 @@
 # Request: Atlas Endpoints for Zoho Employee Data (Read-Only)
 
-Bon builds and runs the standalone Virtual Office frontend (`app/`), a Vite/React
+Bon builds and runs the standalone Virtual Office frontend (`frontend/`), a Vite/React
 SPA with no backend of its own — Atlas (`https://atlas-api.offshorly.com`) is
 the only real backend it talks to. The frontend today has a mocked Zoho
-time-logging integration (`app/src/services/zoho/`) and needs real Zoho-backed
+time-logging integration (`frontend/src/services/zoho/`) and needs real Zoho-backed
 **employee profile** and **resourcing** data for two reasons: (1) to replace
 mock data with a real end-to-end data flow for testing, and (2) to seed the
 existing avatar-generation pipeline with a real employee's name/photo instead
@@ -37,7 +37,7 @@ negotiable — use whatever's natural given your existing Zoho People client):
 Returns the calling employee's current project/resourcing assignments —
 intended to be a superset of what the frontend already models for time
 logging (`ZohoProject { id, name }`, `ZohoTask { id, projectId, name }`, see
-`app/src/services/zoho/types.ts`). Rough shape:
+`frontend/src/services/zoho/types.ts`). Rough shape:
 
 ```json
 {

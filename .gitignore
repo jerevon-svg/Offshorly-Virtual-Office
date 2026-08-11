@@ -5,13 +5,13 @@
 .claude/backups/
 .scannerwork/
 
-# Vite app (app/)
-app/node_modules
-app/dist
-app/dist-ssr
-app/*.local
-app/.env
-app/.env.local
+# Vite app (frontend/)
+frontend/node_modules
+frontend/dist
+frontend/dist-ssr
+frontend/*.local
+frontend/.env
+frontend/.env.local
 
 # Editor directories and files
 .vscode/*

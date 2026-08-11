@@ -17,7 +17,7 @@ phase by phase — same plan → implement → review loop as the rest of this p
 
 ## Context a fresh session needs
 
-App = pure **Vite + React 19** frontend at `app/`. **No backend, no realtime** —
+App = pure **Vite + React 19** frontend at `frontend/`. **No backend, no realtime** —
 confirmed via repo grep (`websocket|WebSocket|EventSource|fetch(|firebase|supabase|/api/|pusher|ably`
 → zero hits in `src`, non-test). The only persistence today is `localStorage`.
 
@@ -25,16 +25,16 @@ confirmed via repo grep (`websocket|WebSocket|EventSource|fetch(|firebase|supaba
 
 - **The ephemeral-bubble-over-head mechanism is ~90% built already**, as the existing
   "greeting" system:
-  - `app/src/components/OfficeMap/GreetingBubble.tsx` — speech bubble, `<KeepScale>`
+  - `frontend/src/components/OfficeMap/GreetingBubble.tsx` — speech bubble, `<KeepScale>`
     keeps it a constant size under zoom, positioned via `greetingAnchor(layer)`.
-  - `app/src/components/OfficeMap/panMath.ts` (`greetingAnchor()`, ~line 30) — returns
+  - `frontend/src/components/OfficeMap/panMath.ts` (`greetingAnchor()`, ~line 30) — returns
     left/top percentages placing a bubble above a character's head. Has test coverage
     in `panMath.test.ts`.
-  - `app/src/components/OfficeMap/GreetingBubble.module.css` — bubble + tail + pop-in
+  - `frontend/src/components/OfficeMap/GreetingBubble.module.css` — bubble + tail + pop-in
     keyframe animation.
-  - `app/src/components/OfficeMap/OfficeStage.tsx` (~line 172) renders `<GreetingBubble>`
+  - `frontend/src/components/OfficeMap/OfficeStage.tsx` (~line 172) renders `<GreetingBubble>`
     keyed off a `greetingCharacterId` prop.
-  - `app/src/components/OfficeMap/OfficeMap.tsx` — `greeting` state
+  - `frontend/src/components/OfficeMap/OfficeMap.tsx` — `greeting` state
     (`{characterId, nonce, text}`), `greetTimerRef`, `greetNonceRef`,
     `playGreetingBeats()` (~line 366) drives timed, one-at-a-time bubbles.
   - **Limitation to work around:** the greeting system assumes exactly ONE active
@@ -52,17 +52,17 @@ confirmed via repo grep (`websocket|WebSocket|EventSource|fetch(|firebase|supaba
   target, then plays a transient pat animation. Same shape the talking indicator
   should follow.
 - **The service-seam pattern to copy** (this is the established blueprint for mocking
-  a backend in this codebase): `app/src/services/avatar/` = `types.ts` +
-  `MockAvatarService.ts` + `RealAvatarService.ts` + `index.ts`; `app/src/services/zoho/`
+  a backend in this codebase): `frontend/src/services/avatar/` = `types.ts` +
+  `MockAvatarService.ts` + `RealAvatarService.ts` + `index.ts`; `frontend/src/services/zoho/`
   uses the same shape (Mock + Mcp + index). `MockAvatarService` persists to
-  `localStorage` under `offshorly.avatars`; `app/src/data/checkoutStorage.ts` shows the
+  `localStorage` under `offshorly.avatars`; `frontend/src/data/checkoutStorage.ts` shows the
   same localStorage idiom. **Chat should follow this exact pattern.**
 - **Identity data already available**: `AssetLayer` has `id` + `name`;
-  `formatCharacterName()` lives in `app/src/data/office-layout.ts`. The local user is
+  `formatCharacterName()` lives in `frontend/src/data/office-layout.ts`. The local user is
   currently hardcoded as the string `"bon"` (see `useCheckoutFlow({employeeId:"bon"})`).
   Everyone else is either a static NPC (alex/arisha/angelo + 16 more) or a saved avatar
   (id `saved-avatar-${avatarId}`, carries `nickname` + `roomId`, from
-  `app/src/services/avatar/types.ts`'s `SavedAvatar`). A chat "partner" = any character
+  `frontend/src/services/avatar/types.ts`'s `SavedAvatar`). A chat "partner" = any character
   id from either group.
 
 ### What's genuinely missing
@@ -81,18 +81,18 @@ no new infrastructure. Phase 3 needs infrastructure that doesn't exist yet and i
 gated on a decision below — don't start it without that decision made.
 
 **Phase 0 — data model + service seam (pure frontend)**
-1. New `app/src/services/chat/types.ts`:
+1. New `frontend/src/services/chat/types.ts`:
    `ChatMessage { id, conversationId, senderId, text, sentAt }`,
    `Conversation { id, participantIds: string[], lastMessageAt }`, and a `ChatService`
    interface: `listConversations()`, `getMessages(conversationId)`,
    `sendMessage({conversationId, senderId, text})`, `openConversationWith(peerId, selfId)`,
    plus a subscribe hook `onMessage(cb)` (so a future Real implementation can push).
-2. New `app/src/services/chat/MockChatService.ts`: localStorage-backed
+2. New `frontend/src/services/chat/MockChatService.ts`: localStorage-backed
    (key `offshorly.chat`), same idioms as `MockAvatarService`/`checkoutStorage`.
    Deterministic conversation id derived from sorted participant ids. `sendMessage`
    appends + persists. Optionally: a short-delayed scripted/echo "reply" from the peer
    so a thread looks alive (see Decision Point 2 — must stay clearly labeled as mock).
-3. New `app/src/services/chat/index.ts`: exports a singleton
+3. New `frontend/src/services/chat/index.ts`: exports a singleton
    (`chatService = mockChatService`) — the one line Phase 3 flips to Real.
 
 **Phase 1 — in-scene "talking" indicator (pure frontend, reuses the greeting mechanism)**
@@ -102,7 +102,7 @@ gated on a decision below — don't start it without that decision made.
    `greetingAnchor` positioning — animated (e.g. typing-dots), **no avatar thumbnail**
    (explicitly not wanted), **no auto-dismiss timer** (persists while the exchange is
    actually live).
-5. New `app/src/components/OfficeMap/TalkingBubble.tsx` (+ `.module.css`) — cloned from
+5. New `frontend/src/components/OfficeMap/TalkingBubble.tsx` (+ `.module.css`) — cloned from
    `GreetingBubble` but with a looping dots animation instead of a one-shot pop. Reuse
    `<KeepScale>` + `greetingAnchor`.
 6. In `OfficeMap.tsx`: add `talking` state (e.g. a `Set<characterId>` or a `{a, b}`
@@ -113,10 +113,10 @@ gated on a decision below — don't start it without that decision made.
    bubble if this prop isn't passed to both.
 
 **Phase 2 — chat history / conversation view (pure frontend, local-only)**
-7. New `app/src/components/Chat/ConversationView.tsx` (+ `.module.css`): header (peer
+7. New `frontend/src/components/Chat/ConversationView.tsx` (+ `.module.css`): header (peer
    name via `formatCharacterName`), scrollable message list (scrollback, own-vs-peer
    alignment), composer (textarea + send button). Reads/writes through `chatService`.
-8. New `app/src/components/Chat/ConversationList.tsx` — optional for this phase; a list
+8. New `frontend/src/components/Chat/ConversationList.tsx` — optional for this phase; a list
    of existing threads. MVP can skip this and open straight into the single
    conversation from the character action menu.
 9. Rewire `OfficeMap.handleChoose('chat')` (~lines 546-550): replace the coming-soon
@@ -131,7 +131,7 @@ gated on a decision below — don't start it without that decision made.
 
 **Phase 3 — real cross-user delivery (REQUIRES A BACKEND — do not start without the
 Decision Point below being resolved)**
-11. New `app/src/services/chat/RealChatService.ts` implementing the same Phase-0
+11. New `frontend/src/services/chat/RealChatService.ts` implementing the same Phase-0
     interface against whichever realtime backend is chosen (a websocket server, or a
     hosted service like Firebase / Supabase / Ably / Pusher). Needs presence,
     server-side persistence, and message push via `onMessage`. Flip the `index.ts`
@@ -208,10 +208,10 @@ been seen/demoed.
 
 ## Files already investigated (for a fresh session's reference)
 
-- `app/src/components/OfficeMap/OfficeMap.tsx`
-- `app/src/components/OfficeMap/OfficeStage.tsx`
-- `app/src/components/OfficeMap/GreetingBubble.tsx` + `.module.css`
-- `app/src/components/OfficeMap/CharacterActionMenu.tsx`
-- `app/src/components/OfficeMap/panMath.ts`
-- `app/src/services/avatar/{types.ts,MockAvatarService.ts,index.ts}`
-- `app/src/data/{savedAvatarLayers.ts,checkoutStorage.ts,office-layout.ts}`
+- `frontend/src/components/OfficeMap/OfficeMap.tsx`
+- `frontend/src/components/OfficeMap/OfficeStage.tsx`
+- `frontend/src/components/OfficeMap/GreetingBubble.tsx` + `.module.css`
+- `frontend/src/components/OfficeMap/CharacterActionMenu.tsx`
+- `frontend/src/components/OfficeMap/panMath.ts`
+- `frontend/src/services/avatar/{types.ts,MockAvatarService.ts,index.ts}`
+- `frontend/src/data/{savedAvatarLayers.ts,checkoutStorage.ts,office-layout.ts}`
