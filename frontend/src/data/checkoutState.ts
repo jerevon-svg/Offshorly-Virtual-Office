@@ -18,7 +18,10 @@ export type CheckoutState =
 // Adjacency list encoding the legal flow order from the spec, including the
 // "Later"/"Not yet"/cancel escape hatches and the retry loop on failure.
 const TRANSITIONS: Record<CheckoutState, CheckoutState[]> = {
-  IDLE: ["REMINDER_SHOWN"],
+  // CHECKOUT_CONFIRMATION is reachable directly from IDLE (not just via the
+  // 8h reminder) so checkout can be triggered on demand from the reception
+  // room's action menu at any time, not only after the reminder fires.
+  IDLE: ["REMINDER_SHOWN", "CHECKOUT_CONFIRMATION"],
   REMINDER_SHOWN: ["CHECKOUT_CONFIRMATION", "IDLE"], // "Later" -> IDLE, re-triggerable after snooze
   CHECKOUT_CONFIRMATION: ["SAYING_GOODBYE", "IDLE"], // "Not yet" -> IDLE
   SAYING_GOODBYE: ["WALKING_TO_RECEPTION"],

@@ -11,10 +11,12 @@ import {
   charactersInRoom,
   formatCharacterName,
   npcCharacterLayers,
+  rooms,
   roomContainingPoint,
   roomLayers,
   roomMembersById,
 } from "../../data/office-layout";
+import { FALLBACK_ROOM_ID, roomIdForPerson } from "../../data/roomIdentity";
 import { findPath, roomOf } from "../../data/officePathfinding";
 import {
   cellToWorld,
@@ -31,7 +33,7 @@ import { CharacterSearch } from "./CharacterSearch";
 import { CharacterActionMenu } from "./CharacterActionMenu";
 import { RoomSidebar } from "./RoomSidebar";
 import { CheckinModal } from "./CheckinModal";
-import { RoomPickerModal } from "./RoomPickerModal";
+import { ReceptionActionMenu } from "./ReceptionActionMenu";
 import {
   computeCenterTransform,
   computeRoomFocusTransform,
@@ -43,12 +45,11 @@ import {
   ALEX_SPRITE_SET,
   LUI_SPRITE_SET,
   MICAH_SPRITE_SET,
-  bonSprite,
+  SPRITE_SET_BY_AVATAR_ID,
   characterSprite,
 } from "../../data/bonWalkFrames";
 import { useOfficePhase } from "./useOfficePhase";
 import { OfficePhaseDebugControl } from "./OfficePhaseDebugControl";
-import { RosterDebugPanel } from "./RosterDebugPanel";
 import { AvatarCreator } from "../AvatarCreator/AvatarCreator";
 import { loadSavedAvatars } from "../../services/avatar/MockAvatarService";
 import { updateSavedAvatar } from "../../services/avatar/avatarStorage";
@@ -73,16 +74,16 @@ import { CheckoutDebugPanel } from "./checkout/CheckoutDebugPanel";
 import checkoutStyles from "./checkout/checkout.module.css";
 import styles from "./OfficeMap.module.css";
 
-// Check-in sequence: bon spawns outside with no popup. Clicking Arisha (while
-// not yet checked in) offers a check-in walk to reception, greets, then lets
-// the user pick a room. Every state other than "done" suppresses normal
-// interactions (room/character clicks, search) — see the guards on those
-// handlers below.
+// Check-in sequence: bon spawns outside with no popup. Clicking the
+// reception room (while not yet checked in) opens an action menu offering
+// "Check In", which offers a check-in walk to reception, greets, then
+// automatically walks the viewer to their own assigned department room — no
+// room picker. Every state other than "done" suppresses normal interactions
+// (room/character clicks, search) — see the guards on those handlers below.
 type OnboardingState =
   | "checkinPrompt"
   | "walkingToReception"
   | "greeting"
-  | "roomSelect"
   | "walkingToRoom"
   | "done";
 
@@ -110,6 +111,12 @@ export function OfficeMap() {
   const [menu, setMenu] = useState<{ layer: AssetLayer; clientX: number; clientY: number } | null>(
     null,
   );
+  // Anchored action menu opened by clicking the reception room itself — the
+  // sole entry point for check-in/check-out now that Arisha's own menu no
+  // longer offers "Check in" and the room-picker step is gone.
+  const [receptionMenu, setReceptionMenu] = useState<{ clientX: number; clientY: number } | null>(
+    null,
+  );
   const [roomSidebar, setRoomSidebar] = useState<{ layer: AssetLayer; side: "left" | "right" } | null>(
     null,
   );
@@ -124,6 +131,25 @@ export function OfficeMap() {
   // real people actually arrive — see rosterActive below.
   const roster = useOfficeRoster();
   const currentUser = useCurrentUser();
+
+  // Which sprite is "you". Falls back to the default body on the first
+  // paint and re-renders once Atlas's /auth/me identity lands, so this must
+  // not be captured into anything that only reads it once. Moved up here
+  // (out of its old spot next to checkoutFlow) because playerLayerId is
+  // needed by the walk hook/sprite-src computation below, which runs before
+  // checkoutFlow is declared.
+  const currentUserId = useCurrentUserAvatarId();
+  // Generalizes what used to be a hardcoded "bon" for the viewer's own
+  // animated sprite — anyone with an entry in SPRITE_SET_BY_AVATAR_ID gets
+  // their own walk/pat/idle art; anyone else (no sprite set built yet)
+  // still renders as Bon so the viewer always has a body.
+  const playerLayerId = SPRITE_SET_BY_AVATAR_ID[currentUserId] ? currentUserId : "bon";
+  const viewerSpriteSet = SPRITE_SET_BY_AVATAR_ID[playerLayerId];
+  // The manifest layer for whichever sprite is playing "you" — used for
+  // name formatting/geometry the same way bonLayer used to be used
+  // unconditionally.
+  const playerCharacterLayer =
+    playerLayerId === "bon" ? bonLayer : npcCharacterLayers.find((l) => l.id === playerLayerId) ?? bonLayer;
 
   // The signed-in viewer is drawn as the animated player (Bon's sprite set,
   // the only one with walk/pat frames), so their static roster portrait is
@@ -257,13 +283,20 @@ export function OfficeMap() {
   }
 
   // Onboarding state machine — starts "done" (no auto-popup on load); moves
-  // through the check-in states only once the user deliberately clicks
-  // Arisha and picks "Check in" from her action menu.
+  // through the check-in states only once the user deliberately clicks the
+  // reception room and picks "Check In" from its action menu.
   const [onboarding, setOnboarding] = useState<OnboardingState>("done");
   // Tracks whether the check-in flow has been completed at least once —
-  // gates the "Check in" option on Arisha's menu (hidden once already
-  // checked in). Declining the "Want to check in?" modal ("Not now") does
-  // NOT count as checked-in, so the option stays available to retry.
+  // gates the "Check In" option on the reception menu (hidden once already
+  // checked in; "Check Out" appears instead). Declining the "Want to check
+  // in?" modal ("Not now") does NOT count as checked-in, so the option stays
+  // available to retry.
+  //
+  // Deliberately NOT derived from timeInMs !== null: timeInMs is stamped as
+  // soon as onboarding is "done" — which is also the mount-time DEFAULT, so
+  // it goes non-null on page load before any deliberate check-in — making it
+  // unusable as an "already checked in" signal. hasCheckedIn is the
+  // pre-existing, purpose-built flag for this exact gate.
   const [hasCheckedIn, setHasCheckedIn] = useState(false);
 
   useEffect(() => {
@@ -290,7 +323,12 @@ export function OfficeMap() {
     x: bonLayer.x,
     y: bonLayer.y,
   });
-  const bonSpriteSrc = bonSprite(isPatting ? "pat" : isWalking ? "walk" : "idle", direction, frameIndex);
+  const playerSpriteSrc = characterSprite(
+    viewerSpriteSet,
+    isPatting ? "pat" : isWalking ? "walk" : "idle",
+    direction,
+    frameIndex,
+  );
 
   // Move the player to the viewer's own desk once identity resolves. The
   // walk hook is seeded at mount from the manifest's spawn point, which is
@@ -457,24 +495,25 @@ export function OfficeMap() {
   const effectiveTimeInMs =
     debugHoursWorked !== null ? Date.now() - debugHoursWorked * 3600_000 : timeInMs;
 
-  // Which sprite is "you". Falls back to the default body on the first
-  // paint and re-renders once Atlas's /auth/me identity lands, so this must
-  // not be captured into anything that only reads it once.
-  const currentUserId = useCurrentUserAvatarId();
-
   const checkoutFlow = useCheckoutFlow({
     employeeId: getCurrentUserId(),
     hourDecimal,
     timeInMs: effectiveTimeInMs,
   });
   // Once real people are on the floor, the manifest's fictional cast is
-  // hidden — otherwise employees and characters share the office. Bon is
-  // exempt: that layer IS the viewer's avatar, not an NPC, and is hidden
-  // only after checkout, as before.
+  // hidden — otherwise employees and characters share the office. The
+  // viewer's own manifest layer (playerLayerId — not necessarily "bon" any
+  // more) is exempt: that layer IS the viewer's avatar, not an NPC, and is
+  // hidden only after checkout, as before. npcCharacterLayers itself only
+  // excludes "bon" by construction, so when the viewer is alex/micah/lui we
+  // still have to filter their id out here explicitly, or their own
+  // manifest layer would get hidden right along with the fictional cast.
   const hiddenCharacterIds = useMemo(() => {
-    const hidden = rosterActive ? npcCharacterLayers.map((layer) => layer.id) : [];
-    return checkoutFlow.state === "CHECKED_OUT" ? [...hidden, "bon"] : hidden;
-  }, [rosterActive, checkoutFlow.state]);
+    const hidden = rosterActive
+      ? npcCharacterLayers.filter((layer) => layer.id !== playerLayerId).map((layer) => layer.id)
+      : [];
+    return checkoutFlow.state === "CHECKED_OUT" ? [...hidden, playerLayerId] : hidden;
+  }, [rosterActive, checkoutFlow.state, playerLayerId]);
 
   const checkoutBusy =
     checkoutFlow.state === "SAYING_GOODBYE" ||
@@ -514,7 +553,7 @@ export function OfficeMap() {
     checkoutFlow.confirmStartCheckout();
     window.clearTimeout(greetTimerRef.current);
     greetNonceRef.current += 1;
-    setGreeting({ characterId: bonLayer.id, nonce: greetNonceRef.current, text: "Bye, everyone! 👋" });
+    setGreeting({ characterId: playerLayerId, nonce: greetNonceRef.current, text: "Bye, everyone! 👋" });
     greetTimerRef.current = window.setTimeout(() => {
       setGreeting(null);
       beginWalkToReception();
@@ -547,8 +586,8 @@ export function OfficeMap() {
       checkoutFlow.arrivedAtReception();
       return;
     }
-    const bw = bonLayer.width;
-    const bh = bonLayer.height;
+    const bw = playerCharacterLayer.width;
+    const bh = playerCharacterLayer.height;
     const bc = { x: bonPos.x + bw / 2, y: bonPos.y + bh / 2 };
     const tc = { x: arisha.x + arisha.width / 2, y: arisha.y + arisha.height / 2 };
     const dx = tc.x - bc.x;
@@ -614,9 +653,9 @@ export function OfficeMap() {
 
     function proceedWithExitWalk() {
       checkoutFlow.startExitWalk();
-      const startCenter = { x: bonPos.x + bonLayer.width / 2, y: bonPos.y + bonLayer.height / 2 };
+      const startCenter = { x: bonPos.x + playerCharacterLayer.width / 2, y: bonPos.y + playerCharacterLayer.height / 2 };
       const goal = { x: bonLayer.x, y: bonLayer.y };
-      const goalCenter = { x: goal.x + bonLayer.width / 2, y: goal.y + bonLayer.height / 2 };
+      const goalCenter = { x: goal.x + playerCharacterLayer.width / 2, y: goal.y + playerCharacterLayer.height / 2 };
       const startRoomId = roomOf(startCenter)?.id ?? null;
       const goalRoomId = roomOf(goalCenter)?.id ?? null;
       const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, goalRoomId);
@@ -624,7 +663,7 @@ export function OfficeMap() {
       walkTo(path, () => {
         window.clearTimeout(greetTimerRef.current);
         greetNonceRef.current += 1;
-        setGreeting({ characterId: bonLayer.id, nonce: greetNonceRef.current, text: "Bye, everyone! 👋" });
+        setGreeting({ characterId: playerLayerId, nonce: greetNonceRef.current, text: "Bye, everyone! 👋" });
         greetTimerRef.current = window.setTimeout(() => {
           setGreeting(null);
           checkoutFlow.finishExit();
@@ -655,25 +694,34 @@ export function OfficeMap() {
   const PIP_HEIGHT = 180;
   const pipScale = initialScale * 2.5;
   const pipTransform = computeCenterTransform(
-    { x: bonPos.x, y: bonPos.y, width: bonLayer.width, height: bonLayer.height },
+    { x: bonPos.x, y: bonPos.y, width: playerCharacterLayer.width, height: playerCharacterLayer.height },
     pipScale,
     PIP_WIDTH,
     PIP_HEIGHT,
   );
 
-  // Frame the camera on bon's outside spawn on mount. Runs once — does not
-  // rely on TransformWrapper's own centerOnInit/computeCoverScale framing,
-  // since the default cover-fit view may not show the bottom band of the
-  // frame where bon now spawns on some viewport aspect ratios.
+  // Frame the camera on the viewer's outside spawn on mount. Runs once —
+  // does not rely on TransformWrapper's own centerOnInit/computeCoverScale
+  // framing, since the default cover-fit view may not show the bottom band
+  // of the frame where the viewer now spawns on some viewport aspect
+  // ratios. The spawn POSITION (bonLayer.x/y) is a fixed physical entrance
+  // point shared by whoever is viewing, not an identity — only the framing
+  // box's width/height comes from the viewer's own sprite dimensions.
   useEffect(() => {
     const ref = transformRef.current;
     const wrapper = ref?.instance.wrapperComponent;
     if (!ref || !wrapper) return;
     const rect = wrapper.getBoundingClientRect();
-    // Close-in, animated zoom on bon at mount — matches the room-focus /
-    // character-click zoom feel rather than the flat, instant cover framing.
+    // Close-in, animated zoom on the viewer at mount — matches the
+    // room-focus / character-click zoom feel rather than the flat, instant
+    // cover framing.
     const focusScale = initialScale * 2.5;
-    const { x, y } = computeCenterTransform(bonLayer, focusScale, rect.width, rect.height);
+    const { x, y } = computeCenterTransform(
+      { x: bonLayer.x, y: bonLayer.y, width: playerCharacterLayer.width, height: playerCharacterLayer.height },
+      focusScale,
+      rect.width,
+      rect.height,
+    );
     ref.setTransform(x, y, focusScale, 600, "easeOut");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -712,8 +760,8 @@ export function OfficeMap() {
       setOnboarding("done");
       return;
     }
-    const bw = bonLayer.width;
-    const bh = bonLayer.height;
+    const bw = playerCharacterLayer.width;
+    const bh = playerCharacterLayer.height;
     const bc = { x: bonPos.x + bw / 2, y: bonPos.y + bh / 2 };
     const tc = { x: arisha.x + arisha.width / 2, y: arisha.y + arisha.height / 2 };
     const dx = tc.x - bc.x;
@@ -754,29 +802,43 @@ export function OfficeMap() {
       setOnboarding("greeting");
       // Three sequential beats — a proper greet/respond/prompt exchange
       // rather than one static bubble. Each beat fully dismisses before the
-      // next appears; the last beat advances to the room-picker popup.
+      // next appears; the last beat now walks straight to the viewer's own
+      // assigned department room (no room-picker step).
       playGreetingBeats(
         [
-          { characterId: arisha.id, text: `Hi ${formatCharacterName(bonLayer)}!`, durationMs: 1500 },
-          { characterId: bonLayer.id, text: `Hi ${formatCharacterName(arisha)}!`, durationMs: 1500 },
-          { characterId: arisha.id, text: "Where would you like to go?", durationMs: 1500 },
+          { characterId: arisha.id, text: `Hi ${formatCharacterName(playerCharacterLayer)}!`, durationMs: 1500 },
+          { characterId: playerLayerId, text: `Hi ${formatCharacterName(arisha)}!`, durationMs: 1500 },
+          { characterId: arisha.id, text: "Come on, I'll show you to your desk!", durationMs: 1500 },
         ],
-        () => setOnboarding("roomSelect"),
+        () => walkToAssignedDepartment(),
       );
     });
   }
 
-  function chooseRoom(layer: AssetLayer) {
-    // Dismiss the room picker (it only renders during "roomSelect") and hold
-    // bon still while the camera zooms out slowly, THEN walk — a deliberate
-    // "zoom out to see more of the office, then watch bon walk" sequence
-    // rather than an instant cut + concurrent walk.
+  // Bridges the `rooms`/`teamRooms` namespace roomIdForPerson() returns
+  // (e.g. "design-team", "executive-team") into the `roomLayers`/manifest
+  // namespace (e.g. "design-room", "executive-room") used by the walk/zoom
+  // logic below — via that room's flat-rect CENTER point run through
+  // roomContainingPoint(), the existing documented convention for crossing
+  // these two id schemes (see office-layout.ts).
+  function resolveAssignedRoomLayer(): AssetLayer {
+    const roomId = roomIdForPerson(currentUser?.email, currentUser?.team ?? null) ?? FALLBACK_ROOM_ID;
+    const flatRoom = rooms.find((r) => r.id === roomId) ?? rooms.find((r) => r.id === FALLBACK_ROOM_ID)!;
+    const center = { x: flatRoom.x + flatRoom.width / 2, y: flatRoom.y + flatRoom.height / 2 };
+    return roomContainingPoint(center) ?? roomLayers.find((l) => l.id === FALLBACK_ROOM_ID)!;
+  }
+
+  function walkToAssignedDepartment() {
+    const layer = resolveAssignedRoomLayer();
+    // Hold bon still while the camera zooms out slowly, THEN walk — a
+    // deliberate "zoom out to see more of the office, then watch bon walk"
+    // sequence rather than an instant cut + concurrent walk.
     setOnboarding("walkingToRoom");
     const zoomOutMs = 1000;
     resetToInitialView(zoomOutMs);
     window.setTimeout(() => {
-      const bw = bonLayer.width;
-      const bh = bonLayer.height;
+      const bw = playerCharacterLayer.width;
+      const bh = playerCharacterLayer.height;
       const startCenter = { x: bonPos.x + bw / 2, y: bonPos.y + bh / 2 };
       const roomCenter = { x: layer.x + layer.width / 2, y: layer.y + layer.height / 2 };
       const startCell = worldToCell(startCenter);
@@ -799,7 +861,7 @@ export function OfficeMap() {
       walkTo(path, () => {
         window.clearTimeout(greetTimerRef.current);
         greetNonceRef.current += 1;
-        setGreeting({ characterId: bonLayer.id, nonce: greetNonceRef.current, text: "Hi team!" });
+        setGreeting({ characterId: playerLayerId, nonce: greetNonceRef.current, text: "Hi team!" });
         greetTimerRef.current = window.setTimeout(() => setGreeting(null), 3000);
         setOnboarding("done");
         setHasCheckedIn(true);
@@ -807,7 +869,7 @@ export function OfficeMap() {
     }, zoomOutMs);
   }
 
-  function handleChoose(action: "chat" | "call" | "pat" | "checkin" | "walkDemo" | "patDemo") {
+  function handleChoose(action: "chat" | "call" | "pat" | "walkDemo" | "patDemo") {
     if (!menu) return;
     const target = menu.layer;
     const name = formatCharacterName(target);
@@ -821,20 +883,10 @@ export function OfficeMap() {
       runPatDemo(target);
       return;
     }
-    if (action === "checkin") {
-      // Re-triggers the same "Want to check in?" prompt the old mount effect
-      // used to auto-show — now started deliberately from Arisha's menu.
-      // Close the menu WITHOUT resetting the camera (unlike closeCharacterMenu)
-      // so the view stays exactly as-is while CheckinModal appears; the zoom
-      // only happens in startCheckin, once the user confirms.
-      setMenu(null);
-      setOnboarding("checkinPrompt");
-      return;
-    }
     if (action === "pat") {
       setMenu(null);
-      const bw = bonLayer.width;
-      const bh = bonLayer.height;
+      const bw = playerCharacterLayer.width;
+      const bh = playerCharacterLayer.height;
       const bc = { x: bonPos.x + bw / 2, y: bonPos.y + bh / 2 };
       const tc = { x: target.x + target.width / 2, y: target.y + target.height / 2 };
       const dx = tc.x - bc.x;
@@ -877,8 +929,8 @@ export function OfficeMap() {
       // setMenu(null) rather than closeCharacterMenu() — avoid resetting the
       // camera view when opening the chat panel.
       setMenu(null);
-      const bw = bonLayer.width;
-      const bh = bonLayer.height;
+      const bw = playerCharacterLayer.width;
+      const bh = playerCharacterLayer.height;
       const bc = { x: bonPos.x + bw / 2, y: bonPos.y + bh / 2 };
       const tc = { x: target.x + target.width / 2, y: target.y + target.height / 2 };
       const dx = tc.x - bc.x;
@@ -1007,11 +1059,15 @@ export function OfficeMap() {
     }
   }
 
-  // Recomputed on every render (e.g. while bon walks with the sidebar open)
-  // so the roster reflects bon's live position, not a stale snapshot.
-  const bonCenter = { x: bonPos.x + bonLayer.width / 2, y: bonPos.y + bonLayer.height / 2 };
-  const bonRoom = roomContainingPoint(bonCenter);
-  const bonIsHere = roomSidebar !== null && bonRoom?.id === roomSidebar.layer.id;
+  // Recomputed on every render (e.g. while the viewer walks with the
+  // sidebar open) so the roster reflects the viewer's live position, not a
+  // stale snapshot.
+  const viewerCenter = {
+    x: bonPos.x + playerCharacterLayer.width / 2,
+    y: bonPos.y + playerCharacterLayer.height / 2,
+  };
+  const viewerRoom = roomContainingPoint(viewerCenter);
+  const viewerIsHere = roomSidebar !== null && viewerRoom?.id === roomSidebar.layer.id;
   // Saved avatars (extraCharacterLayers) aren't part of the static
   // roomMembersById map — that's derived once from the Figma-manifest NPC
   // roster and has no awareness of dynamically-saved employees. Match each
@@ -1028,7 +1084,7 @@ export function OfficeMap() {
     ? [
         ...roomMembersById[roomSidebar.layer.id],
         ...savedAvatarsInRoom,
-        ...(bonIsHere ? [bonLayer] : []),
+        ...(viewerIsHere ? [playerCharacterLayer] : []),
       ]
     : [];
 
@@ -1059,28 +1115,48 @@ export function OfficeMap() {
           <OfficeStage
             phase={phase}
             characterOverrides={{
-              bon: bonPos,
               alex: alexPos,
               micah: micahPos,
               lui: luiPos,
               ...savedAvatarOverridePos,
+              // Player's own override comes last, so it wins any key
+              // collision with the alex/micah/lui demo entries above when
+              // the viewer IS one of them.
+              [playerLayerId]: bonPos,
             }}
             characterSrcOverrides={{
-              bon: bonSpriteSrc,
               alex: alexSpriteSrc,
               micah: micahSpriteSrc,
               lui: luiSpriteSrc,
               ...savedAvatarOverrideSrc,
+              [playerLayerId]: playerSpriteSrc,
             }}
             extraCharacterLayers={extraCharacterLayers}
             extraCharacterSrcById={extraCharacterSrcById}
             onCharacterClick={handleCharacterClick}
             hiddenCharacterIds={hiddenCharacterIds}
-            onRoomClick={(layer) => {
+            onRoomClick={(layer, anchor) => {
               // Onboarding sequence must complete before normal room-click
               // interactions resume — every non-"done" state suppresses this.
               if (onboarding !== "done" || checkoutBusy) return;
               setMenu(null);
+              // Reception is the sole entry point for check-in/check-out —
+              // intercept its click to open the reception action menu
+              // instead of the normal room sidebar. If neither action is
+              // currently relevant (e.g. mid-reminder, mid-confirmation),
+              // fall through to the normal sidebar rather than popping an
+              // empty menu.
+              if (layer.id === "reception-room") {
+                const canCheckIn = !hasCheckedIn && checkoutFlow.state === "IDLE";
+                const canCheckOut =
+                  hasCheckedIn &&
+                  checkoutFlow.state === "IDLE" &&
+                  (import.meta.env.DEV || isRealZohoMode());
+                if (canCheckIn || canCheckOut) {
+                  setReceptionMenu(anchor);
+                  return;
+                }
+              }
               const side = layer.x + layer.width / 2 > FRAME_WIDTH / 2 ? "left" : "right";
               focusRoom(layer, side);
               setRoomSidebar({ layer, side });
@@ -1105,18 +1181,18 @@ export function OfficeMap() {
             <OfficeStage
               phase={phase}
               characterOverrides={{
-                bon: bonPos,
                 alex: alexPos,
                 micah: micahPos,
                 lui: luiPos,
                 ...savedAvatarOverridePos,
+                [playerLayerId]: bonPos,
               }}
               characterSrcOverrides={{
-                bon: bonSpriteSrc,
                 alex: alexSpriteSrc,
                 micah: micahSpriteSrc,
                 lui: luiSpriteSrc,
                 ...savedAvatarOverrideSrc,
+                [playerLayerId]: playerSpriteSrc,
               }}
               extraCharacterLayers={extraCharacterLayers}
               extraCharacterSrcById={extraCharacterSrcById}
@@ -1233,17 +1309,6 @@ export function OfficeMap() {
         </>
       )}
       {import.meta.env.DEV && (
-        <RosterDebugPanel
-          people={roster.people}
-          loading={roster.loading}
-          error={roster.error}
-          live={roster.live}
-          viewerEmail={currentUser?.email ?? null}
-          floorCount={roster.floorCount}
-          presenceCount={roster.presenceCount}
-        />
-      )}
-      {import.meta.env.DEV && (
         <OfficePhaseDebugControl
           phase={phase}
           hourDecimal={hourDecimal}
@@ -1292,7 +1357,6 @@ export function OfficeMap() {
           anchor={menu}
           onChoose={handleChoose}
           onClose={closeCharacterMenu}
-          showCheckin={menu.layer.id === "arisha" && !hasCheckedIn}
           showDemos={
             menu.layer.id === "alex" ||
             menu.layer.id === "micah" ||
@@ -1353,7 +1417,26 @@ export function OfficeMap() {
       {onboarding === "checkinPrompt" && (
         <CheckinModal onYes={startCheckin} onNotNow={() => setOnboarding("done")} />
       )}
-      {onboarding === "roomSelect" && <RoomPickerModal rooms={roomLayers} onChoose={chooseRoom} />}
+      {receptionMenu && (
+        <ReceptionActionMenu
+          anchor={receptionMenu}
+          onClose={() => setReceptionMenu(null)}
+          showCheckIn={!hasCheckedIn && checkoutFlow.state === "IDLE"}
+          showCheckOut={
+            hasCheckedIn &&
+            checkoutFlow.state === "IDLE" &&
+            (import.meta.env.DEV || isRealZohoMode())
+          }
+          onCheckIn={() => {
+            setReceptionMenu(null);
+            setOnboarding("checkinPrompt");
+          }}
+          onCheckOut={() => {
+            setReceptionMenu(null);
+            checkoutFlow.startCheckout();
+          }}
+        />
+      )}
       {/* Dev-only until avatar generation has a server-side home (D2).
           The creator runs on MockAvatarService, so in production it does
           not fail — it quietly succeeds, writing invented colleagues into

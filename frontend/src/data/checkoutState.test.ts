@@ -4,6 +4,7 @@ import { assertTransition, canTransition, type CheckoutState } from "./checkoutS
 describe("canTransition", () => {
   it.each([
     ["IDLE", "REMINDER_SHOWN"],
+    ["IDLE", "CHECKOUT_CONFIRMATION"],
     ["REMINDER_SHOWN", "CHECKOUT_CONFIRMATION"],
     ["REMINDER_SHOWN", "IDLE"],
     ["CHECKOUT_CONFIRMATION", "SAYING_GOODBYE"],
@@ -26,7 +27,6 @@ describe("canTransition", () => {
   });
 
   it.each([
-    ["IDLE", "CHECKOUT_CONFIRMATION"],
     ["IDLE", "AT_RECEPTION"],
     ["AT_RECEPTION", "WALKING_TO_RECEPTION"],
     ["EDITING_TIME_LOG", "AT_RECEPTION"],

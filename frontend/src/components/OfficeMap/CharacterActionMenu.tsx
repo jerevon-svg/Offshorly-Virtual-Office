@@ -6,12 +6,8 @@ import styles from "./CharacterActionMenu.module.css";
 type Props = {
   layer: AssetLayer;
   anchor: { clientX: number; clientY: number };
-  onChoose: (action: "chat" | "call" | "pat" | "checkin" | "walkDemo" | "patDemo") => void;
+  onChoose: (action: "chat" | "call" | "pat" | "walkDemo" | "patDemo") => void;
   onClose: () => void;
-  // Arisha-only, and only while the user hasn't checked in yet — lets the
-  // check-in flow (previously an on-load auto-popup) be triggered deliberately
-  // by clicking her instead.
-  showCheckin?: boolean;
   // Demo triggers for any character with a populated sprite set — alex/micah
   // (hardcoded NPCs) plus any saved avatar (e.g. "Lui") generated via the
   // real "Add Employee" pipeline, each with its own useCharacterWalk
@@ -21,7 +17,7 @@ type Props = {
   showDemos?: boolean;
 };
 
-export function CharacterActionMenu({ layer, anchor, onChoose, onClose, showCheckin, showDemos }: Props) {
+export function CharacterActionMenu({ layer, anchor, onChoose, onClose, showDemos }: Props) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
@@ -35,9 +31,6 @@ export function CharacterActionMenu({ layer, anchor, onChoose, onClose, showChec
     <div className={styles.backdrop} onClick={onClose}>
       <div className={styles.menu} style={{ left, top }} onClick={(e) => e.stopPropagation()}>
         <div className={styles.title}>{formatCharacterName(layer)}</div>
-        {showCheckin && (
-          <button className={styles.item} onClick={() => onChoose("checkin")}>Check in</button>
-        )}
         <button className={styles.item} onClick={() => onChoose("chat")}>Chat</button>
         <button className={styles.item} onClick={() => onChoose("call")}>Call</button>
         <button className={styles.item} onClick={() => onChoose("pat")}>Pat on the head</button>
