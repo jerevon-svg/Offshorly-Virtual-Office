@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { formatCharacterName, formatRoomName } from "../../data/office-layout";
 import type { AssetLayer } from "../../types/office";
+import type { OfficePerson } from "../../services/office/floorMerge";
 import styles from "./RoomSidebar.module.css";
 
 type Props = {
@@ -9,9 +10,34 @@ type Props = {
   side: "left" | "right";
   members: AssetLayer[];
   onClose: () => void;
+  /** Real occupants from Atlas. When present these replace `members`
+   *  entirely — with a live roster the manifest's fictional cast is hidden
+   *  on the canvas, so listing it here would contradict what's on screen. */
+  people?: OfficePerson[];
+  /** Atlas room id -> display name, so someone whose live room has no
+   *  hand-drawn twin reads as "in Design Sprint" rather than a raw id. */
+  roomNames?: Map<string, string>;
 };
 
-export function RoomSidebar({ open, layer, side, members, onClose }: Props) {
+// Shown as a coloured dot rather than a word: the list is names, and a
+// status label per row would compete with them for attention.
+const STATUS_COLOR: Record<string, string> = {
+  ONLINE: "#3ec46d",
+  IN_MEETING: "#e0a53a",
+  AWAY: "#c9a227",
+  ON_LEAVE: "#8a8a8a",
+  OFFLINE: "#6b6b6b",
+};
+
+export function RoomSidebar({
+  open,
+  layer,
+  side,
+  members,
+  onClose,
+  people,
+  roomNames,
+}: Props) {
   // Cache the last non-null layer so content doesn't blank during the
   // close slide-out animation (component stays mounted; only CSS toggles).
   const lastLayerRef = useRef<AssetLayer | null>(null);
@@ -28,6 +54,13 @@ export function RoomSidebar({ open, layer, side, members, onClose }: Props) {
   const lastMembersRef = useRef<AssetLayer[]>([]);
   if (layer) lastMembersRef.current = members;
   const displayMembers = layer ? members : lastMembersRef.current;
+
+  // Same close-animation caching as `members` above. Undefined (not empty)
+  // means "no live roster — fall back to the manifest list", so the two
+  // states stay distinguishable during the slide-out.
+  const lastPeopleRef = useRef<OfficePerson[] | undefined>(undefined);
+  if (layer) lastPeopleRef.current = people;
+  const displayPeople = layer ? people : lastPeopleRef.current;
 
   useEffect(() => {
     if (!open) return;
@@ -49,7 +82,42 @@ export function RoomSidebar({ open, layer, side, members, onClose }: Props) {
         </button>
       </div>
       <div className={styles.body}>
-        {displayMembers.length === 0 ? (
+        {displayPeople ? (
+          displayPeople.length === 0 ? (
+            <div className={styles.empty}>No employees in this room</div>
+          ) : (
+            displayPeople.map((person) => {
+              // Someone ONLINE in a Cliq channel or project room is drawn
+              // at their desk (those rooms have no art), so the sidebar is
+              // the only place that can say where they actually are.
+              const elsewhere = person.inEphemeralRoom
+                ? (person.atlasRoomId && roomNames?.get(person.atlasRoomId)) ?? "elsewhere"
+                : null;
+              return (
+                <div key={person.email} className={styles.item}>
+                  <span
+                    aria-hidden
+                    style={{
+                      display: "inline-block",
+                      width: 7,
+                      height: 7,
+                      borderRadius: "50%",
+                      marginRight: 8,
+                      background: STATUS_COLOR[person.status] ?? STATUS_COLOR.OFFLINE,
+                    }}
+                  />
+                  {person.displayName}
+                  {elsewhere && (
+                    <span style={{ opacity: 0.6 }}> · in {elsewhere}</span>
+                  )}
+                  {person.currentActivity && (
+                    <span style={{ opacity: 0.6 }}> · {person.currentActivity}</span>
+                  )}
+                </div>
+              );
+            })
+          )
+        ) : displayMembers.length === 0 ? (
           <div className={styles.empty}>No employees in this room</div>
         ) : (
           displayMembers.map((member) => (

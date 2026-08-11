@@ -41,6 +41,7 @@ import { SavedAvatarWalker, type SavedAvatarWalkApi, type SavedAvatarWalkState }
 import { ALEX_SPRITE_SET, MICAH_SPRITE_SET, bonSprite, characterSprite } from "../../data/bonWalkFrames";
 import { useOfficePhase } from "./useOfficePhase";
 import { OfficePhaseDebugControl } from "./OfficePhaseDebugControl";
+import { RosterDebugPanel } from "./RosterDebugPanel";
 import { AvatarCreator } from "../AvatarCreator/AvatarCreator";
 import { loadSavedAvatars } from "../../services/avatar/MockAvatarService";
 import { updateSavedAvatar } from "../../services/avatar/avatarStorage";
@@ -120,12 +121,18 @@ export function OfficeMap() {
   // The signed-in viewer is drawn as the animated player (Bon's sprite set,
   // the only one with walk/pat frames), so their static roster portrait is
   // dropped to avoid rendering the same person twice.
-  const rosterLayers = useMemo(() => {
+  // Seat EVERYONE including the viewer, then split their layer out — the
+  // viewer occupies a seat in their room like anyone else, so excluding
+  // them before seating would hand their slot to the next person and draw
+  // the two on top of each other.
+  const { rosterLayers, viewerLayer } = useMemo(() => {
     const viewerEmail = currentUser?.email.trim().toLowerCase() ?? null;
-    const others = viewerEmail
-      ? roster.people.filter((person) => person.email.trim().toLowerCase() !== viewerEmail)
-      : roster.people;
-    return officePeopleToLayers(others);
+    const seated = officePeopleToLayers(roster.people);
+    if (!viewerEmail) return { rosterLayers: seated, viewerLayer: null };
+    return {
+      rosterLayers: seated.filter((layer) => layer.id.toLowerCase() !== viewerEmail),
+      viewerLayer: seated.find((layer) => layer.id.toLowerCase() === viewerEmail) ?? null,
+    };
   }, [roster.people, currentUser]);
 
   // Once real people are on the floor, the manifest's fictional cast is
@@ -277,6 +284,21 @@ export function OfficeMap() {
     y: bonLayer.y,
   });
   const bonSpriteSrc = bonSprite(isPatting ? "pat" : isWalking ? "walk" : "idle", direction, frameIndex);
+
+  // Move the player to the viewer's own desk once identity resolves. The
+  // walk hook is seeded at mount from the manifest's spawn point, which is
+  // the only position known before /auth/me and /floor land.
+  //
+  // Fires ONCE, and never mid-walk: yanking someone out of a walk they
+  // started would cancel it silently and strand the pathfinder's target.
+  // If they've already moved, the spawn point stopped being meaningful
+  // anyway, so leave them where they are.
+  const spawnMovedRef = useRef(false);
+  useEffect(() => {
+    if (spawnMovedRef.current || !viewerLayer || isWalking) return;
+    spawnMovedRef.current = true;
+    resetBonPos({ x: viewerLayer.x, y: viewerLayer.y });
+  }, [viewerLayer, isWalking, resetBonPos]);
 
   // Alex/Micah demo-walk instances — same useCharacterWalk hook as bon,
   // seeded from each NPC's actual current manifest position so their demo
@@ -1144,6 +1166,15 @@ export function OfficeMap() {
         submissionResult={checkoutFlow.submissionResult}
       />
       {import.meta.env.DEV && (
+        <RosterDebugPanel
+          people={roster.people}
+          loading={roster.loading}
+          error={roster.error}
+          live={roster.live}
+          viewerEmail={currentUser?.email ?? null}
+        />
+      )}
+      {import.meta.env.DEV && (
         <OfficePhaseDebugControl
           phase={phase}
           hourDecimal={hourDecimal}
@@ -1212,6 +1243,16 @@ export function OfficeMap() {
         layer={roomSidebar?.layer ?? null}
         side={roomSidebar?.side ?? "right"}
         members={roomSidebarMembers}
+        // Real occupants take over the list once the roster is live —
+        // otherwise the sidebar would name the fictional cast the canvas
+        // has just stopped drawing. Undefined (not []) when there is no
+        // roster, so the manifest fallback still applies.
+        people={
+          rosterActive && roomSidebar
+            ? roster.people.filter((person) => person.roomId === roomSidebar.layer.id)
+            : undefined
+        }
+        roomNames={roster.roomNames}
         onClose={closeRoomSidebar}
       />
       {openChat && (
