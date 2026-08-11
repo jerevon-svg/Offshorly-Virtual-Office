@@ -1278,13 +1278,22 @@ export function OfficeMap() {
         <CheckinModal onYes={startCheckin} onNotNow={() => setOnboarding("done")} />
       )}
       {onboarding === "roomSelect" && <RoomPickerModal rooms={roomLayers} onChoose={chooseRoom} />}
-      <button
-        type="button"
-        className={styles.addEmployeeButton}
-        onClick={() => setIsAvatarCreatorOpen(true)}
-      >
-        + Add Employee
-      </button>
+      {/* Dev-only until avatar generation has a server-side home (D2).
+          The creator runs on MockAvatarService, so in production it does
+          not fail — it quietly succeeds, writing invented colleagues into
+          one viewer's localStorage. In a directory of real employees
+          that reads as data corruption rather than a demo, and nobody
+          else can see the result anyway. Re-enable once generated avatars
+          are persisted server-side and belong to a real person. */}
+      {import.meta.env.DEV && (
+        <button
+          type="button"
+          className={styles.addEmployeeButton}
+          onClick={() => setIsAvatarCreatorOpen(true)}
+        >
+          + Add Employee
+        </button>
+      )}
       {isAvatarCreatorOpen && (
         <AvatarCreator
           onClose={() => setIsAvatarCreatorOpen(false)}
