@@ -1,6 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { findPath, roomOf } from "./officePathfinding";
-import { isWalkable, worldToCell, floodFillFrom, nearestWalkableConnectedTo, COLS, ROWS } from "./officeGrid";
+import {
+  isWalkable,
+  worldToCell,
+  cellToWorld,
+  floodFillFrom,
+  nearestWalkable,
+  nearestWalkableConnectedTo,
+  COLS,
+  ROWS,
+} from "./officeGrid";
 import { aStar } from "./gridAStar";
 import { bonLayer, npcCharacterLayers } from "./office-layout";
 import type { AssetLayer } from "../types/office";
@@ -43,7 +52,16 @@ function segmentGenuinelyClear(a: { x: number; y: number }, b: { x: number; y: n
 function assertPathIsGenuinelyValid(start: { x: number; y: number }, path: { x: number; y: number }[]) {
   expect(path.length).toBeGreaterThan(0);
   if (path.length === 1) {
-    expect(segmentGenuinelyClear(centerOf(start), centerOf(path[0]))).toBe(true);
+    // Mirror findPath's own start-snapping: a raw start cell that's
+    // non-walkable (e.g. bon's outside-spawn threshold cell) gets snapped to
+    // the nearest walkable cell internally before pathing, so the oracle
+    // must sample from that same snapped point, not the raw start.
+    const startCell = worldToCell(centerOf(start));
+    const snappedStartCell = isWalkable(startCell.cx, startCell.cy)
+      ? startCell
+      : nearestWalkable(startCell.cx, startCell.cy);
+    const snappedStartWorld = cellToWorld(snappedStartCell.cx, snappedStartCell.cy);
+    expect(segmentGenuinelyClear(snappedStartWorld, centerOf(path[0]))).toBe(true);
     return;
   }
   for (let i = 0; i < path.length - 1; i++) {
@@ -72,8 +90,8 @@ function standoffGoal(bon: { x: number; y: number; width: number; height: number
 describe("findPath", () => {
   it("returns exactly [goal] for a direct clear line with no obstacle in between", () => {
     // Open floor strip below central-hub, above reception-room.
-    const start = { x: 500, y: 790 };
-    const goal = { x: 700, y: 790 };
+    const start = { x: 380, y: 720 };
+    const goal = { x: 470, y: 720 };
     const path = findPath(start, goal);
     expect(path).toEqual([goal]);
   });
@@ -158,7 +176,7 @@ describe("officeGrid connectivity (flood-fill)", () => {
   // from its wall ring. central-hub is an open atrium (no wall ring / door)
   // so it doesn't need this check the same way the other 10 rooms do.
   const interiorPoints: Record<string, { x: number; y: number }> = {
-    "ai-room": { x: 144, y: 144 },
+    "ai-room": { x: 176, y: 144 },
     "executive-room": { x: 720, y: 144 },
     "dev-room": { x: 1168, y: 176 },
     "cms-room": { x: 1232, y: 528 },
@@ -263,13 +281,19 @@ describe("findPath — real bon spawn to real NPC seats (regression for the repo
     // eslint-disable-next-line no-console
     console.log("bon -> arisha standoff goal:", goal, "waypoints:", path);
 
-    // arisha sits in reception-room's previously-isolated top band (behind
-    // the counter/railing) — this must be a real multi-point route through
-    // a door, not a single suspicious straight line.
-    expect(path.length).toBeGreaterThan(1);
-    for (let i = 0; i < path.length - 1; i++) {
-      const { cx, cy } = worldToCell(centerOf(path[i]));
-      expect(isWalkable(cx, cy)).toBe(true);
+    // arisha sits in reception-room's top band (behind the counter/railing).
+    // Bon's newer, cleaner reception layout now has a genuinely clear
+    // straight vertical shot up to her, so a single-waypoint path is
+    // legitimately correct here — not the old "dogleg through a door"
+    // assumption. assertPathIsGenuinelyValid above already proved any
+    // length-1 result is a real clear line, not the unreachable-straight-
+    // line bug case; for a multi-point result, every intermediate waypoint
+    // must still be walkable.
+    if (path.length > 1) {
+      for (let i = 0; i < path.length - 1; i++) {
+        const { cx, cy } = worldToCell(centerOf(path[i]));
+        expect(isWalkable(cx, cy)).toBe(true);
+      }
     }
   });
 });
@@ -298,8 +322,8 @@ describe("goal connectivity snapping (grid invariant)", () => {
 
 describe("gridAStar", () => {
   it("finds a direct path between two adjacent open cells", () => {
-    const a = worldToCell({ x: 500, y: 790 });
-    const b = worldToCell({ x: 516, y: 790 });
+    const a = worldToCell({ x: 380, y: 720 });
+    const b = worldToCell({ x: 412, y: 720 });
     const path = aStar(a, b);
     expect(path).not.toBeNull();
     expect(path!.length).toBeGreaterThan(0);

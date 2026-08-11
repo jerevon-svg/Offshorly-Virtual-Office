@@ -25,6 +25,7 @@ import {
 } from "../../data/officeGrid";
 import type { AssetLayer } from "../../types/office";
 import type { ChatMessage } from "../../services/chat";
+import { isRealZohoMode } from "../../services/zoho";
 import { OfficeStage } from "./OfficeStage";
 import { CharacterSearch } from "./CharacterSearch";
 import { CharacterActionMenu } from "./CharacterActionMenu";
@@ -47,6 +48,7 @@ import {
 } from "../../data/bonWalkFrames";
 import { useOfficePhase } from "./useOfficePhase";
 import { OfficePhaseDebugControl } from "./OfficePhaseDebugControl";
+import { RosterDebugPanel } from "./RosterDebugPanel";
 import { AvatarCreator } from "../AvatarCreator/AvatarCreator";
 import { loadSavedAvatars } from "../../services/avatar/MockAvatarService";
 import { updateSavedAvatar } from "../../services/avatar/avatarStorage";
@@ -60,7 +62,10 @@ import { CheckoutConfirmModal } from "./checkout/CheckoutConfirmModal";
 import { TimeSummaryPanel } from "./checkout/TimeSummaryPanel";
 import { TimeLogForm } from "./checkout/TimeLogForm";
 import { ConversationView } from "../Chat/ConversationView";
-import { getCurrentUserId } from "../../data/currentUser";
+import { getCurrentUserId, useCurrentUserAvatarId } from "../../data/currentUser";
+import { useCurrentUser } from "../../auth/currentUserStore";
+import { useOfficeRoster } from "../../services/office/useOfficeRoster";
+import { officePeopleToLayers, rosterSrcById } from "../../data/rosterLayers";
 import { TimeLogReview } from "./checkout/TimeLogReview";
 import { SubmissionFailedPanel } from "./checkout/SubmissionFailedPanel";
 import { CheckoutSuccessCard } from "./checkout/CheckoutSuccessCard";
@@ -114,9 +119,42 @@ export function OfficeMap() {
   // localStorage on mount, then appended to live as each new one is saved
   // so it appears in its chosen room without a page refresh.
   const [customAvatars, setCustomAvatars] = useState<SavedAvatar[]>(() => loadSavedAvatars());
-  const extraCharacterLayers = useMemo(() => savedAvatarsToLayers(customAvatars), [customAvatars]);
+  // Live roster from Atlas. Empty in mock mode's absence of a backend and
+  // on the first paint, which is what keeps the static cast rendering until
+  // real people actually arrive — see rosterActive below.
+  const roster = useOfficeRoster();
+  const currentUser = useCurrentUser();
+
+  // The signed-in viewer is drawn as the animated player (Bon's sprite set,
+  // the only one with walk/pat frames), so their static roster portrait is
+  // dropped to avoid rendering the same person twice.
+  // Seat EVERYONE including the viewer, then split their layer out — the
+  // viewer occupies a seat in their room like anyone else, so excluding
+  // them before seating would hand their slot to the next person and draw
+  // the two on top of each other.
+  const { rosterLayers, viewerLayer } = useMemo(() => {
+    const viewerEmail = currentUser?.email.trim().toLowerCase() ?? null;
+    const seated = officePeopleToLayers(roster.people);
+    if (!viewerEmail) return { rosterLayers: seated, viewerLayer: null };
+    return {
+      rosterLayers: seated.filter((layer) => layer.id.toLowerCase() !== viewerEmail),
+      viewerLayer: seated.find((layer) => layer.id.toLowerCase() === viewerEmail) ?? null,
+    };
+  }, [roster.people, currentUser]);
+
+  // Once real people are on the floor, the manifest's fictional cast is
+  // hidden — otherwise employees and characters share the office. Bon is
+  // exempt: that layer IS the viewer's avatar, not an NPC.
+  // (hiddenCharacterIds is derived further down — it also depends on
+  // checkoutFlow, which is declared after the walk hooks.)
+  const rosterActive = rosterLayers.length > 0;
+
+  const extraCharacterLayers = useMemo(
+    () => [...savedAvatarsToLayers(customAvatars), ...rosterLayers],
+    [customAvatars, rosterLayers],
+  );
   const extraCharacterSrcById = useMemo(() => {
-    const map: Record<string, string> = {};
+    const map: Record<string, string> = { ...rosterSrcById(rosterLayers) };
     for (const avatar of customAvatars) {
       // Avatars with a populated spriteSet resolve through the same
       // characterSprite() selector Bon uses (idle-front frame only — no
@@ -127,7 +165,7 @@ export function OfficeMap() {
         : avatar.previewUrl;
     }
     return map;
-  }, [customAvatars]);
+  }, [customAvatars, rosterLayers]);
   // Placeholder-swap flow (Track 2 real mode): jobIds currently being
   // polled, deduped so a job saved via onAvatarSaved and the mount-scan
   // effect below never start a second concurrent poll for the same job.
@@ -253,6 +291,21 @@ export function OfficeMap() {
     y: bonLayer.y,
   });
   const bonSpriteSrc = bonSprite(isPatting ? "pat" : isWalking ? "walk" : "idle", direction, frameIndex);
+
+  // Move the player to the viewer's own desk once identity resolves. The
+  // walk hook is seeded at mount from the manifest's spawn point, which is
+  // the only position known before /auth/me and /floor land.
+  //
+  // Fires ONCE, and never mid-walk: yanking someone out of a walk they
+  // started would cancel it silently and strand the pathfinder's target.
+  // If they've already moved, the spawn point stopped being meaningful
+  // anyway, so leave them where they are.
+  const spawnMovedRef = useRef(false);
+  useEffect(() => {
+    if (spawnMovedRef.current || !viewerLayer || isWalking) return;
+    spawnMovedRef.current = true;
+    resetBonPos({ x: viewerLayer.x, y: viewerLayer.y });
+  }, [viewerLayer, isWalking, resetBonPos]);
 
   // Alex/Micah/Lui demo-walk instances — same useCharacterWalk hook as bon,
   // seeded from each NPC's actual current manifest position so their demo
@@ -404,11 +457,25 @@ export function OfficeMap() {
   const effectiveTimeInMs =
     debugHoursWorked !== null ? Date.now() - debugHoursWorked * 3600_000 : timeInMs;
 
+  // Which sprite is "you". Falls back to the default body on the first
+  // paint and re-renders once Atlas's /auth/me identity lands, so this must
+  // not be captured into anything that only reads it once.
+  const currentUserId = useCurrentUserAvatarId();
+
   const checkoutFlow = useCheckoutFlow({
     employeeId: getCurrentUserId(),
     hourDecimal,
     timeInMs: effectiveTimeInMs,
   });
+  // Once real people are on the floor, the manifest's fictional cast is
+  // hidden — otherwise employees and characters share the office. Bon is
+  // exempt: that layer IS the viewer's avatar, not an NPC, and is hidden
+  // only after checkout, as before.
+  const hiddenCharacterIds = useMemo(() => {
+    const hidden = rosterActive ? npcCharacterLayers.map((layer) => layer.id) : [];
+    return checkoutFlow.state === "CHECKED_OUT" ? [...hidden, "bon"] : hidden;
+  }, [rosterActive, checkoutFlow.state]);
+
   const checkoutBusy =
     checkoutFlow.state === "SAYING_GOODBYE" ||
     checkoutFlow.state === "WALKING_TO_RECEPTION" ||
@@ -454,8 +521,28 @@ export function OfficeMap() {
     }, 2000);
   }
 
+  // Who the viewer walks up to on the way out. With a live roster the
+  // scripted receptionist (Arisha) is hidden, so target a real person in
+  // reception instead; fall back to her layer only when the roster is empty
+  // (mock mode, or before the first load settles).
+  function receptionGreetTarget(): AssetLayer | undefined {
+    if (rosterActive) {
+      const inReception = rosterLayers.find((layer) =>
+        roomContainingPoint({
+          x: layer.x + layer.width / 2,
+          y: layer.y + layer.height / 2,
+        })?.id.includes("reception"),
+      );
+      // Nobody in reception is a normal state, not an error — the flow
+      // below already handles a missing target by skipping the walk.
+      if (inReception) return inReception;
+      return undefined;
+    }
+    return npcCharacterLayers.find((l) => l.id === "arisha");
+  }
+
   function beginWalkToReception() {
-    const arisha = npcCharacterLayers.find((l) => l.id === "arisha");
+    const arisha = receptionGreetTarget();
     if (!arisha) {
       checkoutFlow.arrivedAtReception();
       return;
@@ -829,7 +916,7 @@ export function OfficeMap() {
       pipSideRef.current = target.x > bonPos.x ? "left" : "right";
       walkTo(path, () => {
         setOpenChat(target);
-        setTalkingIds([getCurrentUserId(), target.id]);
+        setTalkingIds([currentUserId, target.id]);
       });
     } else {
       closeCharacterMenu();
@@ -988,7 +1075,7 @@ export function OfficeMap() {
             extraCharacterLayers={extraCharacterLayers}
             extraCharacterSrcById={extraCharacterSrcById}
             onCharacterClick={handleCharacterClick}
-            hiddenCharacterIds={checkoutFlow.state === "CHECKED_OUT" ? ["bon"] : undefined}
+            hiddenCharacterIds={hiddenCharacterIds}
             onRoomClick={(layer) => {
               // Onboarding sequence must complete before normal room-click
               // interactions resume — every non-"done" state suppresses this.
@@ -1033,7 +1120,7 @@ export function OfficeMap() {
               }}
               extraCharacterLayers={extraCharacterLayers}
               extraCharacterSrcById={extraCharacterSrcById}
-              hiddenCharacterIds={checkoutFlow.state === "CHECKED_OUT" ? ["bon"] : undefined}
+              hiddenCharacterIds={hiddenCharacterIds}
               talkingCharacterIds={talkingIds}
               talkingTextById={talkingTextById}
             />
@@ -1048,7 +1135,30 @@ export function OfficeMap() {
           </button>
         </div>
       )}
-      <WorkingStatusIndicator state={checkoutFlow.state} workedLabel={checkoutFlow.workedLabel} />
+      {/* Dev-only until time-logging reaches Zoho for real (D3 — see
+          docs/OFFICE_TIMELOG_IMPLEMENTATION.md in the Atlas repo).
+
+          The whole flow runs on MockZohoService: the project/task pickers
+          are hardcoded constants, and submitTimeLogs waits a fake delay and
+          returns success with a deterministic id. So in production an
+          employee logs their day, gets a success card with a submission id,
+          and is marked checked out in localStorage — while no time entry
+          exists in Zoho Projects. It fails by succeeding, which is why this
+          is hidden rather than left to look broken.
+
+          The entry points (status chip, 8h reminder) are inside the guard,
+          so the flow cannot be started at all.
+
+          UPDATE: now gated on isRealZohoMode() as well, so the flow appears
+          in production the moment VITE_ZOHO_INTEGRATION_MODE=real is set
+          and disappears again if it is ever unset. Tying visibility to
+          whether submissions actually reach Zoho — rather than to a
+          hand-maintained DEV flag — is what stops this from silently
+          regressing to "logs into the void" on a future deploy. DEV stays
+          in the condition so mock-mode development still exercises the UI. */}
+      {(import.meta.env.DEV || isRealZohoMode()) && (
+        <>
+          <WorkingStatusIndicator state={checkoutFlow.state} workedLabel={checkoutFlow.workedLabel} />
       <CheckoutReminderToast
         visible={checkoutFlow.reminderVisible}
         onLater={checkoutFlow.dismissReminderForLater}
@@ -1110,15 +1220,29 @@ export function OfficeMap() {
       <SubmissionFailedPanel
         visible={checkoutFlow.state === "SUBMISSION_FAILED"}
         error={checkoutFlow.error}
+        result={checkoutFlow.submissionResult}
         onTryAgain={() => void checkoutFlow.retrySubmit()}
         onSaveAndReturnLater={checkoutFlow.saveAndReturnLater}
       />
-      <CheckoutSuccessCard
-        state={checkoutFlow.state}
-        workedLabel={checkoutFlow.workedLabel}
-        entries={checkoutFlow.entries}
-        submissionResult={checkoutFlow.submissionResult}
-      />
+          <CheckoutSuccessCard
+            state={checkoutFlow.state}
+            workedLabel={checkoutFlow.workedLabel}
+            entries={checkoutFlow.entries}
+            submissionResult={checkoutFlow.submissionResult}
+          />
+        </>
+      )}
+      {import.meta.env.DEV && (
+        <RosterDebugPanel
+          people={roster.people}
+          loading={roster.loading}
+          error={roster.error}
+          live={roster.live}
+          viewerEmail={currentUser?.email ?? null}
+          floorCount={roster.floorCount}
+          presenceCount={roster.presenceCount}
+        />
+      )}
       {import.meta.env.DEV && (
         <OfficePhaseDebugControl
           phase={phase}
@@ -1127,8 +1251,14 @@ export function OfficeMap() {
           setOverrideHour={setOverrideHour}
         />
       )}
-      {(import.meta.env.DEV ||
-        new URLSearchParams(window.location.search).get("checkoutDebug") === "true") && (
+      {/* DEV only. The ?checkoutDebug=true escape hatch was removed
+          deliberately: this panel holds direct handles to startCheckout,
+          confirmStartCheckout and submit, so in production it was a
+          one-query-param route straight into the mock submission path —
+          bypassing the guard on the checkout UI above and writing a
+          "logged" day that never reaches Zoho. Restore the query-param
+          gate only once time-logging is real (D3). */}
+      {import.meta.env.DEV && (
         <CheckoutDebugPanel
           state={checkoutFlow.state}
           overrideHour={overrideHour}
@@ -1191,12 +1321,22 @@ export function OfficeMap() {
         layer={roomSidebar?.layer ?? null}
         side={roomSidebar?.side ?? "right"}
         members={roomSidebarMembers}
+        // Real occupants take over the list once the roster is live —
+        // otherwise the sidebar would name the fictional cast the canvas
+        // has just stopped drawing. Undefined (not []) when there is no
+        // roster, so the manifest fallback still applies.
+        people={
+          rosterActive && roomSidebar
+            ? roster.people.filter((person) => person.roomId === roomSidebar.layer.id)
+            : undefined
+        }
+        roomNames={roster.roomNames}
         onClose={closeRoomSidebar}
       />
       {openChat && (
         <ConversationView
           peer={openChat}
-          selfId={getCurrentUserId()}
+          selfId={currentUserId}
           onIncomingMessage={handleTalkingMessage}
           onClose={() => {
             setOpenChat(null);
@@ -1214,13 +1354,22 @@ export function OfficeMap() {
         <CheckinModal onYes={startCheckin} onNotNow={() => setOnboarding("done")} />
       )}
       {onboarding === "roomSelect" && <RoomPickerModal rooms={roomLayers} onChoose={chooseRoom} />}
-      <button
-        type="button"
-        className={styles.addEmployeeButton}
-        onClick={() => setIsAvatarCreatorOpen(true)}
-      >
-        + Add Employee
-      </button>
+      {/* Dev-only until avatar generation has a server-side home (D2).
+          The creator runs on MockAvatarService, so in production it does
+          not fail — it quietly succeeds, writing invented colleagues into
+          one viewer's localStorage. In a directory of real employees
+          that reads as data corruption rather than a demo, and nobody
+          else can see the result anyway. Re-enable once generated avatars
+          are persisted server-side and belong to a real person. */}
+      {import.meta.env.DEV && (
+        <button
+          type="button"
+          className={styles.addEmployeeButton}
+          onClick={() => setIsAvatarCreatorOpen(true)}
+        >
+          + Add Employee
+        </button>
+      )}
       {isAvatarCreatorOpen && (
         <AvatarCreator
           onClose={() => setIsAvatarCreatorOpen(false)}

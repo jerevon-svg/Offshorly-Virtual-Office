@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { findPath, roomOf } from "./officePathfinding";
-import { cellToWorld, isWalkable, nearestWalkableConnectedTo, worldToCell } from "./officeGrid";
+import { cellToWorld, isWalkable, nearestWalkable, nearestWalkableConnectedTo, worldToCell } from "./officeGrid";
 import { bonLayer, npcCharacterLayers, roomLayers } from "./office-layout";
 import type { AssetLayer } from "../types/office";
 
@@ -29,7 +29,16 @@ function segmentGenuinelyClear(a: { x: number; y: number }, b: { x: number; y: n
 function assertPathIsGenuinelyValid(start: { x: number; y: number }, path: { x: number; y: number }[]) {
   expect(path.length).toBeGreaterThan(0);
   if (path.length === 1) {
-    expect(segmentGenuinelyClear(centerOf(start), centerOf(path[0]))).toBe(true);
+    // Mirror findPath's own start-snapping: a raw start cell that's
+    // non-walkable (e.g. bon's outside-spawn threshold cell) gets snapped to
+    // the nearest walkable cell internally before pathing, so the oracle
+    // must sample from that same snapped point, not the raw start.
+    const startCell = worldToCell(centerOf(start));
+    const snappedStartCell = isWalkable(startCell.cx, startCell.cy)
+      ? startCell
+      : nearestWalkable(startCell.cx, startCell.cy);
+    const snappedStartWorld = cellToWorld(snappedStartCell.cx, snappedStartCell.cy);
+    expect(segmentGenuinelyClear(snappedStartWorld, centerOf(path[0]))).toBe(true);
     return;
   }
   for (let i = 0; i < path.length - 1; i++) {

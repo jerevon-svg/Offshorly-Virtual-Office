@@ -41,12 +41,17 @@
   font-size: 14px; backdrop-filter: blur(4px);
 }
 
-/* Always-visible entry point for the standalone avatar creator — top-left. */
+/* Always-visible entry point for the standalone avatar creator, sitting to
+   the RIGHT of the character search on the same row. */
 .addEmployeeButton {
   all: unset;
   position: fixed;
   top: 12px;
-  left: 12px;
+  /* Clears CharacterSearch, which occupies left:16px + width:240px (see
+     CharacterSearch.module.css). This button carries the higher z-index, so
+     the two overlapping never looked like a collision — the button simply
+     covered the search input, leaving a sliver of placeholder text showing. */
+  left: 272px;
   z-index: 100;
   cursor: pointer;
   background: rgba(20, 20, 20, 0.85);
