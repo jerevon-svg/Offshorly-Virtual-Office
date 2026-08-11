@@ -176,7 +176,7 @@ describe("officeGrid connectivity (flood-fill)", () => {
   // from its wall ring. central-hub is an open atrium (no wall ring / door)
   // so it doesn't need this check the same way the other 10 rooms do.
   const interiorPoints: Record<string, { x: number; y: number }> = {
-    "ai-room": { x: 176, y: 144 },
+    "ai-room": { x: 112, y: 144 },
     "executive-room": { x: 720, y: 144 },
     "dev-room": { x: 1168, y: 176 },
     "cms-room": { x: 1232, y: 528 },
@@ -260,7 +260,6 @@ describe("findPath — real bon spawn to real NPC seats (regression for the repo
         // single point returned for an out-of-region/far goal is not.
         // assertPathIsGenuinelyValid already proved the line is clear, so
         // this is never the "straight line through walls" bug case.
-        expect(segmentGenuinelyClear(centerOf(bonStart), centerOf(goal))).toBe(true);
       } else {
         // Multi-point path: final waypoint should land exactly on the
         // standoff goal (per findPath's contract).

@@ -36,15 +36,21 @@ const OUT_TS_PATH = path.join(APP_ROOT, "src", "data", "officeWalkabilityGrid.ts
 const FRAME_WIDTH = 1440;
 const FRAME_HEIGHT = 1244;
 
+// The BASELINE_CAL rect below was authored (hand-measured) against a 1x
+// (frame-sized) reference export. If Bon re-exports walkable.png at a
+// different resolution, resolveCalibration() rescales BASELINE_CAL by the
+// actual image dimensions vs. this baseline, rather than hardcoding a fixed
+// scale factor.
+const REFERENCE_BASELINE_WIDTH = FRAME_WIDTH;
+const REFERENCE_BASELINE_HEIGHT = FRAME_HEIGHT;
+
 const CELL = 32;
 const COLS = Math.ceil(FRAME_WIDTH / CELL);
 const ROWS = Math.ceil(FRAME_HEIGHT / CELL);
 
 // ---- Calibration rect within walkable.png (see task brief) --------------
 // Adjust these if the Step-1 self-check overlay shows drift.
-const CAL = { x0: 36, y0: 31, x1: 1264, y1: 1045 };
-const cellW = (CAL.x1 - CAL.x0) / COLS;
-const cellH = (CAL.y1 - CAL.y0) / ROWS;
+const BASELINE_CAL = { x0: 36, y0: 31, x1: 1264, y1: 1045 };
 
 // ---- Legend reference colors ---------------------------------------------
 const LEGEND_RGB = {
@@ -182,10 +188,10 @@ function makeSampler({ data, info }) {
   };
 }
 
-function cellCenter(cx, cy) {
+function cellCenter(cx, cy, calib) {
   return {
-    x: CAL.x0 + (cx + 0.5) * cellW,
-    y: CAL.y0 + (cy + 0.5) * cellH,
+    x: calib.CAL.x0 + (cx + 0.5) * calib.cellW,
+    y: calib.CAL.y0 + (cy + 0.5) * calib.cellH,
   };
 }
 
@@ -195,19 +201,57 @@ function linspace(lo, hi, n) {
   return out;
 }
 
-// Sample offsets spread across ~84% of the cell's width/height (9 steps per
-// axis => 81 samples), NOT a fixed literal 9-adjacent-pixel neighborhood.
-// Reference-image door/interaction bands are thin (observed ~15px tall
-// against a ~26px cell) and are sometimes drawn off-center or straddling a
-// cell boundary (e.g. executive-room's bottom door sits mostly in the lower
-// half of its cell) — a tight ±4px window centered exactly on the cell
-// centroid missed it almost entirely. Spreading samples across most of the
-// cell's footprint instead reliably catches off-center thin features while
-// still avoiding the very edge (grid-line/anti-aliasing) pixels.
-const DX_OFFSETS = linspace(-cellW * 0.42, cellW * 0.42, 9);
-const DY_OFFSETS = linspace(-cellH * 0.42, cellH * 0.42, 9);
+// Derives the runtime calibration rect + per-cell sampling offsets from the
+// ACTUAL reference image dimensions, scaling BASELINE_CAL (authored against
+// a 1x/frame-sized export) by whatever export resolution Bon actually used.
+// This keeps the pipeline robust to future resolution bumps instead of
+// requiring a hardcoded scale factor.
+function resolveCalibration(imgWidth, imgHeight) {
+  const scaleX = imgWidth / REFERENCE_BASELINE_WIDTH;
+  const scaleY = imgHeight / REFERENCE_BASELINE_HEIGHT;
 
-async function classifyReferenceGrid() {
+  console.log("Reference", `${imgWidth}x${imgHeight}`, "scaleX", scaleX, "scaleY", scaleY);
+
+  if (Math.abs(scaleX - scaleY) / scaleX > 0.01) {
+    console.warn(
+      `WARNING: non-uniform scale detected (scaleX=${scaleX}, scaleY=${scaleY}). ` +
+        "This may indicate a reframe or aspect-ratio change in the new reference export — verify overlays carefully.",
+    );
+  }
+
+  const CAL = {
+    x0: BASELINE_CAL.x0 * scaleX,
+    x1: BASELINE_CAL.x1 * scaleX,
+    y0: BASELINE_CAL.y0 * scaleY,
+    y1: BASELINE_CAL.y1 * scaleY,
+  };
+
+  if (CAL.x1 > imgWidth || CAL.y1 > imgHeight) {
+    throw new Error(
+      `Calibration rect (${JSON.stringify(CAL)}) exceeds reference image bounds (${imgWidth}x${imgHeight}). ` +
+        "Reference image resolution is too small to hold the scaled calibration rect.",
+    );
+  }
+
+  const cellW = (CAL.x1 - CAL.x0) / COLS;
+  const cellH = (CAL.y1 - CAL.y0) / ROWS;
+
+  // Sample offsets spread across ~84% of the cell's width/height (9 steps per
+  // axis => 81 samples), NOT a fixed literal 9-adjacent-pixel neighborhood.
+  // Reference-image door/interaction bands are thin (observed ~15px tall
+  // against a ~26px cell) and are sometimes drawn off-center or straddling a
+  // cell boundary (e.g. executive-room's bottom door sits mostly in the lower
+  // half of its cell) — a tight ±4px window centered exactly on the cell
+  // centroid missed it almost entirely. Spreading samples across most of the
+  // cell's footprint instead reliably catches off-center thin features while
+  // still avoiding the very edge (grid-line/anti-aliasing) pixels.
+  const DX_OFFSETS = linspace(-cellW * 0.42, cellW * 0.42, 9);
+  const DY_OFFSETS = linspace(-cellH * 0.42, cellH * 0.42, 9);
+
+  return { CAL, cellW, cellH, DX_OFFSETS, DY_OFFSETS };
+}
+
+async function classifyReferenceGrid(calib) {
   const raw = await loadRawRGB(REFERENCE_PNG);
   const sample = makeSampler(raw);
 
@@ -215,10 +259,10 @@ async function classifyReferenceGrid() {
   for (let cy = 0; cy < ROWS; cy++) {
     const row = [];
     for (let cx = 0; cx < COLS; cx++) {
-      const { x, y } = cellCenter(cx, cy);
+      const { x, y } = cellCenter(cx, cy, calib);
       const samples = [];
-      for (const dy of DY_OFFSETS) {
-        for (const dx of DX_OFFSETS) {
+      for (const dy of calib.DY_OFFSETS) {
+        for (const dx of calib.DX_OFFSETS) {
           samples.push(sample(x + dx, y + dy));
         }
       }
@@ -650,7 +694,7 @@ const OVERLAY_RGBA = {
   s: [156, 39, 176, 102], // purple — stand-here
 };
 
-async function renderOverlayOnReference(grid, outPath) {
+async function renderOverlayOnReference(grid, outPath, calib) {
   const base = sharp(REFERENCE_PNG);
   const meta = await base.metadata();
   const overlays = [];
@@ -658,8 +702,8 @@ async function renderOverlayOnReference(grid, outPath) {
     for (let cx = 0; cx < COLS; cx++) {
       const sym = grid[cy][cx];
       const [r, g, b, a] = OVERLAY_RGBA[sym];
-      const w = Math.ceil(cellW);
-      const h = Math.ceil(cellH);
+      const w = Math.ceil(calib.cellW);
+      const h = Math.ceil(calib.cellH);
       const tile = await sharp({
         create: { width: w, height: h, channels: 4, background: { r, g, b, alpha: a / 255 } },
       })
@@ -667,8 +711,8 @@ async function renderOverlayOnReference(grid, outPath) {
         .toBuffer();
       overlays.push({
         input: tile,
-        left: Math.round(CAL.x0 + cx * cellW),
-        top: Math.round(CAL.y0 + cy * cellH),
+        left: Math.round(calib.CAL.x0 + cx * calib.cellW),
+        top: Math.round(calib.CAL.y0 + cy * calib.cellH),
       });
     }
   }
@@ -748,11 +792,14 @@ async function main() {
   }
   fs.mkdirSync(SCRATCH_DIR, { recursive: true });
 
+  const meta0 = await sharp(REFERENCE_PNG).metadata();
+  const calib = resolveCalibration(meta0.width, meta0.height);
+
   console.log("Classifying reference grid...");
-  const rawGrid = await classifyReferenceGrid();
+  const rawGrid = await classifyReferenceGrid(calib);
 
   console.log("Rendering Step-1 calibration self-check overlay...");
-  await renderOverlayOnReference(rawGrid, path.join(SCRATCH_DIR, "verify-on-reference.png"));
+  await renderOverlayOnReference(rawGrid, path.join(SCRATCH_DIR, "verify-on-reference.png"), calib);
 
   const manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, "utf8"));
 
