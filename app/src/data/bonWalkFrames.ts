@@ -90,6 +90,26 @@ import luiPatFront2 from "../assets/office/characters/lui-pat-norm/front-2.png";
 import luiPatBack1 from "../assets/office/characters/lui-pat-norm/back-1.png";
 import luiPatBack2 from "../assets/office/characters/lui-pat-norm/back-2.png";
 
+import sitTypeFront from "../assets/office/characters/bon-sit-type-norm/front.png";
+import sitTypeBack from "../assets/office/characters/bon-sit-type-norm/back.png";
+import sitTypeLeft from "../assets/office/characters/bon-sit-type-norm/left.png";
+import sitTypeRight from "../assets/office/characters/bon-sit-type-norm/right.png";
+
+import alexSitTypeFront from "../assets/office/characters/alex-sit-type-norm/front.png";
+import alexSitTypeBack from "../assets/office/characters/alex-sit-type-norm/back.png";
+import alexSitTypeLeft from "../assets/office/characters/alex-sit-type-norm/left.png";
+import alexSitTypeRight from "../assets/office/characters/alex-sit-type-norm/right.png";
+
+import micahSitTypeFront from "../assets/office/characters/micah-sit-type-norm/front.png";
+import micahSitTypeBack from "../assets/office/characters/micah-sit-type-norm/back.png";
+import micahSitTypeLeft from "../assets/office/characters/micah-sit-type-norm/left.png";
+import micahSitTypeRight from "../assets/office/characters/micah-sit-type-norm/right.png";
+
+import luiSitTypeFront from "../assets/office/characters/lui-sit-type-norm/front.png";
+import luiSitTypeBack from "../assets/office/characters/lui-sit-type-norm/back.png";
+import luiSitTypeLeft from "../assets/office/characters/lui-sit-type-norm/left.png";
+import luiSitTypeRight from "../assets/office/characters/lui-sit-type-norm/right.png";
+
 import type { AvatarSpriteSet } from "../services/avatar/types";
 
 export type WalkDirection = "left" | "right" | "front" | "back";
@@ -116,6 +136,15 @@ export const BON_PAT_FRAMES: Record<WalkDirection, readonly [string, string]> = 
   back: [patBack1, patBack2],
 };
 
+// Pose #13 "Sitting — Typing / Keyboard" (see POSE_LIBRARY.md) — one frame
+// per direction, same shape as BON_IDLE_FRAMES (no stride/gesture pair).
+export const BON_SIT_TYPE_FRAMES: Record<WalkDirection, string> = {
+  left: sitTypeLeft,
+  right: sitTypeRight,
+  front: sitTypeFront,
+  back: sitTypeBack,
+};
+
 // Bon's frames repackaged into the generic AvatarSpriteSet shape (see
 // services/avatar/types.ts) so he can be run through the same
 // characterSprite() selector as any future per-employee sprite set.
@@ -123,6 +152,7 @@ export const BON_SPRITE_SET: AvatarSpriteSet = {
   walk: BON_WALK_FRAMES,
   idle: BON_IDLE_FRAMES,
   pat: BON_PAT_FRAMES,
+  sitType: BON_SIT_TYPE_FRAMES,
 };
 
 // Alex and Micah — same normalized production-v2 pipeline output, packaged
@@ -149,10 +179,18 @@ export const ALEX_PAT_FRAMES: Record<WalkDirection, readonly [string, string]> =
   back: [alexPatBack1, alexPatBack2],
 };
 
+export const ALEX_SIT_TYPE_FRAMES: Record<WalkDirection, string> = {
+  left: alexSitTypeLeft,
+  right: alexSitTypeRight,
+  front: alexSitTypeFront,
+  back: alexSitTypeBack,
+};
+
 export const ALEX_SPRITE_SET: AvatarSpriteSet = {
   walk: ALEX_WALK_FRAMES,
   idle: ALEX_IDLE_FRAMES,
   pat: ALEX_PAT_FRAMES,
+  sitType: ALEX_SIT_TYPE_FRAMES,
 };
 
 export const MICAH_WALK_FRAMES: Record<WalkDirection, readonly [string, string]> = {
@@ -176,10 +214,18 @@ export const MICAH_PAT_FRAMES: Record<WalkDirection, readonly [string, string]> 
   back: [micahPatBack1, micahPatBack2],
 };
 
+export const MICAH_SIT_TYPE_FRAMES: Record<WalkDirection, string> = {
+  left: micahSitTypeLeft,
+  right: micahSitTypeRight,
+  front: micahSitTypeFront,
+  back: micahSitTypeBack,
+};
+
 export const MICAH_SPRITE_SET: AvatarSpriteSet = {
   walk: MICAH_WALK_FRAMES,
   idle: MICAH_IDLE_FRAMES,
   pat: MICAH_PAT_FRAMES,
+  sitType: MICAH_SIT_TYPE_FRAMES,
 };
 
 // Lui — same normalized production-v3 pipeline output, packaged
@@ -206,30 +252,42 @@ export const LUI_PAT_FRAMES: Record<WalkDirection, readonly [string, string]> = 
   back: [luiPatBack1, luiPatBack2],
 };
 
+export const LUI_SIT_TYPE_FRAMES: Record<WalkDirection, string> = {
+  left: luiSitTypeLeft,
+  right: luiSitTypeRight,
+  front: luiSitTypeFront,
+  back: luiSitTypeBack,
+};
+
 export const LUI_SPRITE_SET: AvatarSpriteSet = {
   walk: LUI_WALK_FRAMES,
   idle: LUI_IDLE_FRAMES,
   pat: LUI_PAT_FRAMES,
+  sitType: LUI_SIT_TYPE_FRAMES,
 };
 
 // Generic sprite selector: picks the frame for a given sprite set's
-// state/direction/frame. idle has only one frame per direction, so
-// frameIndex is ignored for "idle" (matches the original bonSprite behavior).
+// state/direction/frame. idle and sitType have only one frame per
+// direction, so frameIndex is ignored for both (matches the original
+// bonSprite behavior for idle). sitType falls back to idle's frame for that
+// direction if the sprite set predates pose #13 and has no sitType entry
+// (see AvatarSpriteSet.sitType's optionality note in services/avatar/types.ts).
 export function characterSprite(
   set: AvatarSpriteSet,
-  state: "idle" | "walk" | "pat",
+  state: "idle" | "walk" | "pat" | "sitType",
   direction: WalkDirection,
   frameIndex: 0 | 1 = 0,
 ): string {
   if (state === "walk") return set.walk[direction][frameIndex];
   if (state === "pat") return set.pat[direction][frameIndex];
+  if (state === "sitType") return set.sitType?.[direction] ?? set.idle[direction];
   return set.idle[direction];
 }
 
 // Backward-compatible wrapper — selects bon's current sprite for the given
 // state/direction/frame. Kept so existing callers don't need to change.
 export function bonSprite(
-  state: "idle" | "walk" | "pat",
+  state: "idle" | "walk" | "pat" | "sitType",
   direction: WalkDirection,
   frameIndex: 0 | 1 = 0,
 ): string {

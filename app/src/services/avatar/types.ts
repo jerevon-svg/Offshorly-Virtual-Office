@@ -12,14 +12,19 @@ export type OutfitId = "business-suit" | "smart-casual" | "polo" | "hoodie" | "b
 
 // A full per-employee sprite set matching Bon's real asset shape exactly:
 // 8 walk frames (2 per direction x4), 4 idle frames (1 per direction x4),
-// 8 pat frames (2 per direction x4) = 20 slots total. Optional on
-// GeneratedAvatar/SavedAvatar — Slice 1 has no generator producing these yet,
-// so every avatar today (and every record already in localStorage) simply
-// omits it and keeps rendering as a static portrait.
+// 8 pat frames (2 per direction x4), 4 sitType frames (1 per direction x4,
+// pose #13 "Sitting — Typing / Keyboard" in POSE_LIBRARY.md) = 24 slots
+// total. Optional on GeneratedAvatar/SavedAvatar — Slice 1 has no generator
+// producing these yet, so every avatar today (and every record already in
+// localStorage) simply omits it and keeps rendering as a static portrait.
+// sitType is itself optional within AvatarSpriteSet — it was added after
+// walk/idle/pat, so any sprite set built before this pose existed can omit
+// it and callers must treat it as "no seated-typing frame available".
 export interface AvatarSpriteSet {
   walk: Record<WalkDirection, readonly [string, string]>;
   idle: Record<WalkDirection, string>;
   pat: Record<WalkDirection, readonly [string, string]>;
+  sitType?: Record<WalkDirection, string>;
 }
 
 export interface OutfitOption {

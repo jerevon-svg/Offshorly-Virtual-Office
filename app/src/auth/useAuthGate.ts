@@ -32,6 +32,14 @@ interface MeResponseShape {
   permissions?: {
     can_view_virtual_office?: boolean;
   };
+  id?: string;
+  employee_id?: string;
+  employeeId?: string;
+  user?: {
+    id?: string;
+    employee_id?: string;
+    employeeId?: string;
+  };
 }
 
 function extractCanViewVirtualOffice(body: unknown): boolean {
@@ -44,6 +52,53 @@ function extractCanViewVirtualOffice(body: unknown): boolean {
     return shaped.permissions.can_view_virtual_office;
   }
   return false;
+}
+
+// Fallback identity used when the gate is bypassed (VITE_AUTH_GATE=off, no
+// network call happens) or when a real /auth/me response has no recognizable
+// id field. Matches the office sprite/asset this app was originally built
+// around; see app/src/data/office-layout.ts.
+const FALLBACK_USER_ID = "bon";
+
+// UNCONFIRMED WITH ATLAS: unlike can_view_virtual_office (spec-confirmed
+// shape), nobody has confirmed which field on GET /api/v1/auth/me actually
+// carries the real user/employee id. This tries several plausible shapes
+// (top-level id/employee_id/employeeId, or nested under `user`) and falls
+// back to FALLBACK_USER_ID if none match. Tighten this once Atlas confirms
+// the real field name/shape.
+function extractCurrentUserId(body: unknown): string {
+  if (typeof body !== "object" || body === null) return FALLBACK_USER_ID;
+  const shaped = body as MeResponseShape;
+  const candidate =
+    shaped.id ??
+    shaped.employee_id ??
+    shaped.employeeId ??
+    shaped.user?.id ??
+    shaped.user?.employee_id ??
+    shaped.user?.employeeId;
+  // Atlas's field shape is UNCONFIRMED — a numeric employee id (e.g. `id: 42`)
+  // is a plausible real-world shape and must not silently fall through to
+  // FALLBACK_USER_ID (that would mask a real employee as "bon").
+  const normalized =
+    typeof candidate === "number" && Number.isFinite(candidate) ? String(candidate) : candidate;
+  return typeof normalized === "string" && normalized.length > 0 ? normalized : FALLBACK_USER_ID;
+}
+
+// Module-level value set once the gate resolves. OfficeMap (and everything
+// else that needs "who am I") only ever renders after the gate reaches
+// "allowed", so a plain module-level variable — read via getCurrentUserId()
+// — is sufficient; no context/state plumbing needed.
+let currentUserId: string = FALLBACK_USER_ID;
+
+export function getCurrentUserId(): string {
+  return currentUserId;
+}
+
+// Test-only reset hook. Production code never calls this — currentUserId is
+// meant to persist for the lifetime of the tab. Tests need it to avoid
+// state leaking across cases via the shared module singleton.
+export function __resetCurrentUserIdForTest(): void {
+  currentUserId = FALLBACK_USER_ID;
 }
 
 // Local-dev escape hatch. This gate is the ONLY thing in the app that talks
@@ -91,6 +146,21 @@ export function useAuthGate(): AuthGateStatus {
         }
         const body: unknown = await response.json();
         const allowed = extractCanViewVirtualOffice(body);
+        if (allowed) {
+          const resolvedId = extractCurrentUserId(body);
+          currentUserId = resolvedId;
+          if (resolvedId === FALLBACK_USER_ID) {
+            // Atlas responded and the gate is allowed, but no recognizable
+            // id field was found in the body (see UNCONFIRMED note above).
+            // Surface this — silently returning "bon" for every real
+            // employee would look like success while being wrong.
+            console.warn(
+              "[useAuthGate] /api/v1/auth/me returned no recognizable user id field; " +
+                "falling back to FALLBACK_USER_ID. Update extractCurrentUserId() once Atlas " +
+                "confirms the real field name/shape.",
+            );
+          }
+        }
         if (!cancelled) setStatus(allowed ? "allowed" : "denied");
       } catch (err) {
         if (err instanceof AuthRedirectError) {
