@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { officeService } from "./index";
 import { mergePresenceRow } from "./officeSse";
 import { openPresenceStream } from "./presenceStream";
@@ -33,6 +33,12 @@ export interface OfficeRosterState {
    *  Sprint" instead of leaking a raw room id. Empty when rooms could not
    *  be loaded — the UI degrades to "elsewhere", it does not break. */
   roomNames: Map<string, string>;
+  /** Raw /floor row count. `people` is derived from this feed, so an empty
+   *  floor means an empty office however healthy the stream is — these two
+   *  counts are what tell "nobody is in" apart from "the roster failed". */
+  floorCount: number;
+  /** Raw /presence row count. Grows as live events arrive. */
+  presenceCount: number;
 }
 
 // Mock mode has no backend to stream from; opening a stream against it
@@ -68,44 +74,68 @@ export function useOfficeRoster(): OfficeRosterState {
     };
   }, []);
 
-  // Lets the stream's onConnected refetch the snapshot without being a
-  // dependency of the effect that owns the stream (which would tear the
-  // stream down and reopen it on every reload).
-  const reloadRef = useRef<() => void>(() => {});
-
+  // Lifecycle flag as a ref rather than a per-effect `cancelled` local.
+  //
+  // load() is reachable from the SSE stream's onConnected (via reloadRef),
+  // so it outlives the effect that created it. Closing over a per-effect
+  // flag meant a load could resolve against a closure whose flag had been
+  // set by StrictMode's mount -> cleanup -> remount cycle, silently
+  // dropping its result AND its setLoading(false) — presenting as a
+  // permanent "loading…" with no error, which is indistinguishable from an
+  // empty office. Reset to true on mount so the remount re-arms it.
+  const mountedRef = useRef(true);
   useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      try {
-        // Parallel: the endpoints are independent, and serializing them
-        // doubles the time the floor sits empty.
-        const [nextFloor, nextPresence] = await Promise.all([
-          officeService.getFloor(),
-          officeService.getPresence(),
-        ]);
-        if (cancelled) return;
-        setFloor(nextFloor);
-        setPresence(nextPresence);
-        setError(null);
-      } catch (err) {
-        if (cancelled) return;
-        // apiFetch has already navigated away on a 401, so this is a
-        // genuine failure — surface it rather than rendering an empty
-        // office as though nobody were in.
-        setError(err instanceof Error ? err : new Error(String(err)));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-
-    reloadRef.current = () => void load();
-    void load();
-
+    mountedRef.current = true;
     return () => {
-      cancelled = true;
+      mountedRef.current = false;
     };
   }, []);
+
+  const load = useCallback(async () => {
+    try {
+      // Parallel: the endpoints are independent, and serializing them
+      // doubles the time the floor sits empty.
+      const [nextFloor, nextPresence] = await Promise.all([
+        officeService.getFloor(),
+        officeService.getPresence(),
+      ]);
+      if (!mountedRef.current) return;
+      setFloor(nextFloor);
+      setPresence(nextPresence);
+      setError(null);
+    } catch (err) {
+      if (!mountedRef.current) return;
+      // apiFetch has already navigated away on a 401, so this is a
+      // genuine failure — surface it rather than rendering an empty
+      // office as though nobody were in.
+      setError(err instanceof Error ? err : new Error(String(err)));
+    } finally {
+      if (mountedRef.current) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+
+    // A request that neither resolves nor rejects would otherwise pin
+    // `loading` forever with nothing to show for it. An empty office and a
+    // hung fetch look identical on the canvas, so make the hang say so.
+    const watchdog = setTimeout(() => {
+      if (!mountedRef.current) return;
+      setLoading((stillLoading) => {
+        if (stillLoading) {
+          setError(
+            new Error(
+              "Roster request did not complete within 15s — /office/floor may be hanging.",
+            ),
+          );
+        }
+        return stillLoading;
+      });
+    }, 15_000);
+
+    return () => clearTimeout(watchdog);
+  }, [load]);
 
   useEffect(() => {
     if (!isRealMode()) return;
@@ -117,18 +147,29 @@ export function useOfficeRoster(): OfficeRosterState {
         // Resync on every (re)connect. Events broadcast while we were
         // disconnected are gone — the stream has no replay for presence —
         // so without this a reconnected tab silently shows stale rooms.
-        reloadRef.current();
+        void load();
       },
       onError: () => setLive(false),
     });
 
     return () => stream.close();
-  }, []);
+  }, [load]);
 
   const people = useMemo(
     () => mergeFloorWithPresence(floor, presence),
     [floor, presence],
   );
 
-  return { people, loading, error, live, roomNames };
+  // Raw feed sizes, exposed for diagnostics. `people` is derived from
+  // /floor, so an empty floor yields an empty office no matter how healthy
+  // the stream is — worth being able to see the two apart.
+  return {
+    people,
+    loading,
+    error,
+    live,
+    roomNames,
+    floorCount: floor.length,
+    presenceCount: presence.length,
+  };
 }

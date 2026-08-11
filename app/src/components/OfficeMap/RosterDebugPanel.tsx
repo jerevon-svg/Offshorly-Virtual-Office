@@ -17,9 +17,19 @@ interface Props {
   error: Error | null;
   live: boolean;
   viewerEmail: string | null;
+  floorCount: number;
+  presenceCount: number;
 }
 
-export function RosterDebugPanel({ people, loading, error, live, viewerEmail }: Props) {
+export function RosterDebugPanel({
+  people,
+  loading,
+  error,
+  live,
+  viewerEmail,
+  floorCount,
+  presenceCount,
+}: Props) {
   // Counts events by watching the roster identity change — enough to prove
   // updates are landing without threading a counter through the stream.
   const [updates, setUpdates] = useState(0);
@@ -59,6 +69,11 @@ export function RosterDebugPanel({ people, loading, error, live, viewerEmail }: 
     >
       <div style={{ fontWeight: 700, marginBottom: 4 }}>roster</div>
       <div>people: {loading ? "loading…" : people.length}</div>
+      {/* Split out because the office is derived from /floor: floor 0 with
+          presence > 0 is a roster failure, not an empty office. */}
+      <div style={{ opacity: 0.75 }}>
+        floor: {floorCount} · presence: {presenceCount}
+      </div>
       <div>
         stream:{" "}
         <span style={{ color: live ? "#7ddb7d" : "#ff8a8a" }}>

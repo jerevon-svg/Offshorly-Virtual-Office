@@ -1172,6 +1172,8 @@ export function OfficeMap() {
           error={roster.error}
           live={roster.live}
           viewerEmail={currentUser?.email ?? null}
+          floorCount={roster.floorCount}
+          presenceCount={roster.presenceCount}
         />
       )}
       {import.meta.env.DEV && (
