@@ -80,6 +80,7 @@ export interface UseCheckoutFlowResult {
   startExitWalk: () => void;
   finishExit: () => void;
   resetToday: () => void;
+  forceCheckedOut: () => void;
 }
 
 const EMPTY_ENTRY: TimeLogEntry = {
@@ -96,25 +97,33 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
   const { employeeId, timeInMs } = params;
   const workDate = useMemo(() => manilaWorkDate(), []);
 
-  const [state, setState] = useState<CheckoutState>("IDLE");
+  // Resume-from-storage is read synchronously via lazy initializers (not an
+  // effect) so `state`/`submissionResult` are already correct on the VERY
+  // FIRST render if the employee already checked out today. Consumers (e.g.
+  // OfficeMap's mount-seat effect, which decides desk vs. sidewalk spawn)
+  // read checkoutFlow.state on their own first render too — if resume were
+  // an effect instead, state would still read "IDLE" on that first pass and
+  // a one-shot mount effect elsewhere could act on stale state before this
+  // hook's own effect corrected it.
+  const [state, setState] = useState<CheckoutState>(() =>
+    loadResult(employeeId, workDate)?.success ? "CHECKED_OUT" : "IDLE",
+  );
   const [laterUntilMs, setLaterUntilMs] = useState<number | null>(null);
   const [projects, setProjects] = useState<ZohoProject[]>([]);
   const [tasks, setTasks] = useState<ZohoTask[]>([]);
   const [entries, setEntries] = useState<TimeLogEntry[]>([]);
   const [breakMinutes, setBreakMinutes] = useState<number>(0);
-  const [submissionResult, setSubmissionResult] = useState<SubmitTimeLogsResult | null>(null);
+  const [submissionResult, setSubmissionResult] = useState<SubmitTimeLogsResult | null>(
+    () => loadResult(employeeId, workDate) ?? null,
+  );
   const [error, setError] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
-  // Resume from storage on mount: if already checked out today, don't
-  // re-show the flow from IDLE; if a draft exists, restore it.
+  // Restore an in-progress draft on mount. The "already checked out" case is
+  // now handled above by the lazy initializers, so this effect only needs to
+  // cover the draft-restore path.
   useEffect(() => {
-    const existingResult = loadResult(employeeId, workDate);
-    if (existingResult?.success) {
-      setSubmissionResult(existingResult);
-      setState("CHECKED_OUT");
-      return;
-    }
+    if (loadResult(employeeId, workDate)?.success) return;
     const draft = loadDraft(employeeId, workDate);
     if (draft) {
       setEntries(draft.entries);
@@ -369,6 +378,23 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
     setState("IDLE");
   }
 
+  // Dev-only preview escape hatch — jumps straight to CHECKED_OUT (a fake
+  // but well-formed submission result is stored so a page refresh keeps
+  // previewing the same "already checked out" resume path this unlocks).
+  // Bypasses goTo() intentionally, same rationale as resetToday(). The only
+  // caller is a DEV-gated query-param check in OfficeMap; never wired into
+  // any production code path.
+  function forceCheckedOut() {
+    const fakeResult: SubmitTimeLogsResult = {
+      success: true,
+      submissionId: "dev-preview-checked-out",
+      entriesCreated: 0,
+    };
+    saveResult(employeeId, workDate, fakeResult);
+    setSubmissionResult(fakeResult);
+    setState("CHECKED_OUT");
+  }
+
   return {
     state,
     workedMinutes,
@@ -400,5 +426,6 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
     startExitWalk,
     finishExit,
     resetToday,
+    forceCheckedOut,
   };
 }

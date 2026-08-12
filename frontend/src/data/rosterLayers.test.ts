@@ -106,9 +106,15 @@ describe("crowded rooms", () => {
   });
 
   it("shrinks seats once a room genuinely cannot fit everyone", () => {
+    // AI Room has real painted chairs (seatsForRoomId), and the first N
+    // people (sorted by email) sit on those at full size — only the
+    // OVERFLOW remainder past the real chair count shrinks to fit. p0 sits
+    // on a real chair either way, so check the guaranteed-overflow person
+    // (email-sorted last) instead of index 0.
     const solo = officePeopleToLayers(crowd("ai-room", 1));
     const packed = officePeopleToLayers(crowd("ai-room", 200));
-    expect(packed[0].width).toBeLessThan(solo[0].width);
+    const overflowPerson = packed.find((l) => l.id === "p99@offshorly.com")!;
+    expect(overflowPerson.width).toBeLessThan(solo[0].width);
   });
 
   it("scales each room independently", () => {
@@ -116,9 +122,12 @@ describe("crowded rooms", () => {
       ...crowd("ai-room", 200),
       person({ email: "solo@offshorly.com", roomId: "qa-room" }),
     ]);
-    const inAi = layers.find((l) => l.id === "p0@offshorly.com")!;
+    // p0 sits on a real ai-room chair at full size regardless of headcount
+    // (only overflow shrinks), so compare against a guaranteed-overflow
+    // person instead to actually exercise the per-room shrink scaling.
+    const overflowInAi = layers.find((l) => l.id === "p99@offshorly.com")!;
     const inQa = layers.find((l) => l.id === "solo@offshorly.com")!;
-    expect(inQa.width).toBeGreaterThan(inAi.width);
+    expect(inQa.width).toBeGreaterThan(overflowInAi.width);
   });
 
   it("still gives everyone a distinct seat when packed", () => {

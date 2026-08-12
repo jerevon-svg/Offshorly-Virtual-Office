@@ -30,7 +30,7 @@ function centerOf(p: { x: number; y: number }) {
 // goal, which the old code did via a blind `return [goal]` fallback).
 function segmentGenuinelyClear(a: { x: number; y: number }, b: { x: number; y: number }): boolean {
   const dist = Math.hypot(b.x - a.x, b.y - a.y);
-  const step = 16; // CELL/2, CELL === 32
+  const step = 8; // CELL/2, CELL === 16
   const steps = Math.max(1, Math.ceil(dist / step));
   for (let i = 0; i <= steps; i++) {
     const t = i / steps;
@@ -89,9 +89,12 @@ function standoffGoal(bon: { x: number; y: number; width: number; height: number
 
 describe("findPath", () => {
   it("returns exactly [goal] for a direct clear line with no obstacle in between", () => {
-    // Open floor strip below central-hub, above reception-room.
-    const start = { x: 380, y: 720 };
-    const goal = { x: 470, y: 720 };
+    // Open floor strip along grid row 24 (verified against the new
+    // solid-color-tile source image — the exact-tile pipeline replaced the
+    // old fuzzy-classified reference, so this anchor is re-picked directly
+    // against the new tilemap rather than reused from the prior image).
+    const start = { x: 360, y: 392 };
+    const goal = { x: 552, y: 392 };
     const path = findPath(start, goal);
     expect(path).toEqual([goal]);
   });
@@ -175,17 +178,22 @@ describe("officeGrid connectivity (flood-fill)", () => {
   // closest to that room's center, i.e. clearly inside the room and away
   // from its wall ring. central-hub is an open atrium (no wall ring / door)
   // so it doesn't need this check the same way the other 10 rooms do.
+  // Anchors re-picked directly against the new exact-tile solid-color
+  // reference image (each point verified to be a floor/stand-here cell,
+  // inside its own room, and flood-fill-reachable from the open corridor
+  // anchor — see scripts/parse-walkable.cjs's connectivity validator, which
+  // performs the same reachability check at generation time).
   const interiorPoints: Record<string, { x: number; y: number }> = {
-    "ai-room": { x: 112, y: 144 },
-    "executive-room": { x: 720, y: 144 },
-    "dev-room": { x: 1168, y: 176 },
-    "cms-room": { x: 1232, y: 528 },
-    "qa-room": { x: 170, y: 630 },
-    "design-room": { x: 208, y: 496 },
-    "gaming-room": { x: 1232, y: 720 },
-    "project-room": { x: 1232, y: 1008 },
-    "meeting-room": { x: 176, y: 1008 },
-    "reception-room": { x: 688, y: 1136 },
+    "ai-room": { x: 168, y: 136 },
+    "executive-room": { x: 712, y: 168 },
+    "dev-room": { x: 1272, y: 168 },
+    "cms-room": { x: 1288, y: 472 },
+    "qa-room": { x: 168, y: 728 },
+    "design-room": { x: 168, y: 440 },
+    "gaming-room": { x: 1240, y: 728 },
+    "project-room": { x: 1256, y: 1080 },
+    "meeting-room": { x: 152, y: 1048 },
+    "reception-room": { x: 712, y: 1016 },
   };
 
   it("reaches every room's interior floor point from the open corridor", () => {

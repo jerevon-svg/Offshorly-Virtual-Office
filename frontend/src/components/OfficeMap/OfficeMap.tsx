@@ -25,6 +25,7 @@ import {
   nearestWalkableConnectedTo,
   worldToCell,
 } from "../../data/officeGrid";
+import { doorStandForRoom } from "../../data/doorStandPoints";
 import type { AssetLayer } from "../../types/office";
 import type { ChatMessage } from "../../services/chat";
 import { isRealZohoMode } from "../../services/zoho";
@@ -86,6 +87,24 @@ type OnboardingState =
   | "greeting"
   | "walkingToRoom"
   | "done";
+
+// Door stand-point gating (walkToAssignedDepartment only, for now): when a
+// destination room has a complete in/out stand-point pair painted around its
+// door (see doorStandPoints.ts), the walk stops just outside, "waits" for the
+// door to open, steps through, then stops just inside for a close beat —
+// instead of walking straight to one goal point. No door art/animation
+// exists yet, so onDoorOpen/onDoorClose are intentionally no-ops; they're
+// timing hooks for whenever that art lands. DOOR_ANIM_MS is a placeholder
+// pause standing in for that not-yet-built slide-open animation.
+const DOOR_ANIM_MS = 500;
+
+function onDoorOpen(_roomId: string): void {
+  // no-op placeholder — hook for future door slide-open animation
+}
+
+function onDoorClose(_roomId: string): void {
+  // no-op placeholder — hook for future door slide-close animation
+}
 
 function computeCoverScale(): number {
   if (typeof window === "undefined") return 0.5;
@@ -303,6 +322,8 @@ export function OfficeMap() {
     return () => {
       window.clearTimeout(greetTimerRef.current);
       window.clearTimeout(charMenuTimerRef.current);
+      window.clearTimeout(approachDoorTimerRef.current);
+      window.clearTimeout(checkoutDoorTimerRef.current);
       for (const timerId of Object.values(talkingTimersRef.current)) {
         window.clearTimeout(timerId);
       }
@@ -338,12 +359,12 @@ export function OfficeMap() {
   // started would cancel it silently and strand the pathfinder's target.
   // If they've already moved, the spawn point stopped being meaningful
   // anyway, so leave them where they are.
+  //
+  // The actual seat/desk-vs-sidewalk decision is made further below, once
+  // checkoutFlow is available (see the effect right after its declaration) —
+  // this ref is declared here so it stays adjacent to the other
+  // useCharacterWalk-related refs, but is only ever flipped by that effect.
   const spawnMovedRef = useRef(false);
-  useEffect(() => {
-    if (spawnMovedRef.current || !viewerLayer || isWalking) return;
-    spawnMovedRef.current = true;
-    resetBonPos({ x: viewerLayer.x, y: viewerLayer.y });
-  }, [viewerLayer, isWalking, resetBonPos]);
 
   // Alex/Micah/Lui demo-walk instances — same useCharacterWalk hook as bon,
   // seeded from each NPC's actual current manifest position so their demo
@@ -500,20 +521,52 @@ export function OfficeMap() {
     hourDecimal,
     timeInMs: effectiveTimeInMs,
   });
+
+  // Dev-only preview affordance: ?checkedOut=1 jumps straight into
+  // CHECKED_OUT on load, so Bon can preview "avatar standing on the
+  // sidewalk after checkout" without walking the whole flow every time.
+  // Gated the same way CheckoutDebugPanel already is (import.meta.env.DEV);
+  // never wired into any non-dev code path, and doesn't touch the default
+  // resume-from-storage behavior for regular users.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    if (new URLSearchParams(window.location.search).get("checkedOut") !== "1") return;
+    checkoutFlow.forceCheckedOut();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Seat the player once identity resolves: at their own desk normally, or
+  // at the sidewalk-adjacent exit spawn (bonLayer) if the checkout flow
+  // resumed straight into CHECKED_OUT (already checked out today, page
+  // reloaded). checkoutFlow.state is safe to read here on the very first
+  // render — useCheckoutFlow resolves CHECKED_OUT via a lazy useState
+  // initializer (synchronous storage read), not an effect, so there's no
+  // "state still says IDLE" race regardless of hook/effect ordering.
+  //
+  // Still fires ONCE (spawnMovedRef guard) and never mid-walk (isWalking
+  // guard) — an in-progress exit-walk animation is left alone.
+  useEffect(() => {
+    if (spawnMovedRef.current || !viewerLayer || isWalking) return;
+    spawnMovedRef.current = true;
+    const seatAt = checkoutFlow.state === "CHECKED_OUT" ? bonLayer : viewerLayer;
+    resetBonPos({ x: seatAt.x, y: seatAt.y });
+  }, [viewerLayer, isWalking, resetBonPos, checkoutFlow.state]);
+
   // Once real people are on the floor, the manifest's fictional cast is
   // hidden — otherwise employees and characters share the office. The
   // viewer's own manifest layer (playerLayerId — not necessarily "bon" any
-  // more) is exempt: that layer IS the viewer's avatar, not an NPC, and is
-  // hidden only after checkout, as before. npcCharacterLayers itself only
-  // excludes "bon" by construction, so when the viewer is alex/micah/lui we
-  // still have to filter their id out here explicitly, or their own
-  // manifest layer would get hidden right along with the fictional cast.
+  // more) is exempt: that layer IS the viewer's avatar, not an NPC, and stays
+  // visible after checkout too — checkout auto-walks it to the sidewalk
+  // (bonLayer) and it should remain standing there, not vanish.
+  // npcCharacterLayers itself only excludes "bon" by construction, so when
+  // the viewer is alex/micah/lui we still have to filter their id out here
+  // explicitly, or their own manifest layer would get hidden right along
+  // with the fictional cast.
   const hiddenCharacterIds = useMemo(() => {
-    const hidden = rosterActive
+    return rosterActive
       ? npcCharacterLayers.filter((layer) => layer.id !== playerLayerId).map((layer) => layer.id)
       : [];
-    return checkoutFlow.state === "CHECKED_OUT" ? [...hidden, playerLayerId] : hidden;
-  }, [rosterActive, checkoutFlow.state, playerLayerId]);
+  }, [rosterActive, playerLayerId]);
 
   const checkoutBusy =
     checkoutFlow.state === "SAYING_GOODBYE" ||
@@ -544,6 +597,9 @@ export function OfficeMap() {
     window.clearTimeout(greetTimerRef.current);
     setGreeting(null);
     cancelWalk();
+    window.clearTimeout(checkoutDoorTimerRef.current);
+    checkoutDoorTimerRef.current = undefined;
+    checkoutDoorNonceRef.current += 1;
     resetBonPos({ x: bonLayer.x, y: bonLayer.y });
   }
 
@@ -604,10 +660,19 @@ export function OfficeMap() {
           const w = cellToWorld(standSpot.cx, standSpot.cy);
           return { x: w.x - bw / 2, y: w.y - bh / 2 };
         })()
-      : { x: tc.x - ux * standoff - bw / 2, y: tc.y - uy * standoff - bh / 2 };
-    const startRoomId = roomOf(bc)?.id ?? null;
+      : (() => {
+          // No hand-painted stand spot nearby — fall back to pure geometry,
+          // but the geometric offset has no awareness of walls/furniture, so
+          // it can land on a blocked tile with the finer 16px grid. Snap to
+          // the nearest walkable cell connected to bon's own region before
+          // using it as a walk target.
+          const raw = { x: tc.x - ux * standoff - bw / 2, y: tc.y - uy * standoff - bh / 2 };
+          const rawCell = worldToCell({ x: raw.x + bw / 2, y: raw.y + bh / 2 });
+          const snapped = nearestWalkableConnectedTo(rawCell.cx, rawCell.cy, bcCell.cx, bcCell.cy);
+          const w = cellToWorld(snapped.cx, snapped.cy);
+          return { x: w.x - bw / 2, y: w.y - bh / 2 };
+        })();
     const goalRoomId = roomOf(tc)?.id ?? null;
-    const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, goalRoomId);
 
     {
       const ref = transformRef.current;
@@ -620,7 +685,10 @@ export function OfficeMap() {
       }
     }
     pipSideRef.current = arisha.x > bonPos.x ? "left" : "right";
-    walkTo(path, () => {
+    // Door-gated on the way OUT of whatever room bon is currently in (his
+    // own department, typically) — falls through to the single walk above
+    // unchanged when that room has no complete door pair.
+    walkOutOfRoomThenTo(goal, goalRoomId, () => {
       checkoutFlow.arrivedAtReception();
       const ref = transformRef.current;
       const wrapper = ref?.instance.wrapperComponent;
@@ -635,6 +703,9 @@ export function OfficeMap() {
 
   function handleCancelCheckoutWalk() {
     cancelWalk();
+    window.clearTimeout(checkoutDoorTimerRef.current);
+    checkoutDoorTimerRef.current = undefined;
+    checkoutDoorNonceRef.current += 1;
     checkoutFlow.cancelWalkToReception();
     resetToInitialView();
   }
@@ -653,14 +724,16 @@ export function OfficeMap() {
 
     function proceedWithExitWalk() {
       checkoutFlow.startExitWalk();
-      const startCenter = { x: bonPos.x + playerCharacterLayer.width / 2, y: bonPos.y + playerCharacterLayer.height / 2 };
       const goal = { x: bonLayer.x, y: bonLayer.y };
       const goalCenter = { x: goal.x + playerCharacterLayer.width / 2, y: goal.y + playerCharacterLayer.height / 2 };
-      const startRoomId = roomOf(startCenter)?.id ?? null;
       const goalRoomId = roomOf(goalCenter)?.id ?? null;
-      const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, goalRoomId);
       pipSideRef.current = goal.x > bonPos.x ? "left" : "right";
-      walkTo(path, () => {
+      // Door-gated on the way OUT of reception (bon's current room at this
+      // point) — a no-op today since doorStandForRoom("reception-team")
+      // (or whatever reception's flat id resolves to) returns null until its
+      // stand-point pair is painted, but wired correctly for when that
+      // lands. Falls through to the single walk unchanged in the meantime.
+      walkOutOfRoomThenTo(goal, goalRoomId, () => {
         window.clearTimeout(greetTimerRef.current);
         greetNonceRef.current += 1;
         setGreeting({ characterId: playerLayerId, nonce: greetNonceRef.current, text: "Bye, everyone! 👋" });
@@ -689,6 +762,24 @@ export function OfficeMap() {
   // his path); target to the left -> bottom-right. Set by each walkTo call
   // site below and held fixed for the whole walk; never mutated mid-walk.
   const pipSideRef = useRef<"left" | "right">("left");
+  // Pending door-open/door-close timeout for an in-flight approachCharacter
+  // door-gated walk (pat/chat) — cleared whenever a new approach starts or
+  // the component unmounts, so a stale callback can't fire after the fact.
+  // Unlike walkToAssignedDepartment's single onboarding-locked walk, pat/chat
+  // can be re-triggered repeatedly during normal play, so this guard matters
+  // here.
+  const approachDoorTimerRef = useRef<number | undefined>(undefined);
+  const approachNonceRef = useRef(0);
+  // Pending door-open/door-close timeout for checkout's OUTWARD (room-exit)
+  // door-gated walks — beginWalkToReception (leaving the department) and
+  // proceedWithExitWalk (leaving reception, once its stand-point pair is
+  // painted). Kept separate from approachDoorTimerRef (which gates pat/chat's
+  // INWARD walks) so the two independent flows never clash over a shared
+  // timer/nonce. Unlike pat/chat, checkout's mid-pause is user-cancelable
+  // (handleCancelCheckoutWalk, the debug hours-reset path), so this guard is
+  // required here, not just a nice-to-have.
+  const checkoutDoorTimerRef = useRef<number | undefined>(undefined);
+  const checkoutDoorNonceRef = useRef(0);
 
   const PIP_WIDTH = 240;
   const PIP_HEIGHT = 180;
@@ -778,7 +869,18 @@ export function OfficeMap() {
           const w = cellToWorld(standSpot.cx, standSpot.cy);
           return { x: w.x - bw / 2, y: w.y - bh / 2 };
         })()
-      : { x: tc.x - ux * standoff - bw / 2, y: tc.y - uy * standoff - bh / 2 };
+      : (() => {
+          // No hand-painted stand spot nearby — fall back to pure geometry,
+          // but the geometric offset has no awareness of walls/furniture, so
+          // it can land on a blocked tile with the finer 16px grid. Snap to
+          // the nearest walkable cell connected to bon's own region before
+          // using it as a walk target.
+          const raw = { x: tc.x - ux * standoff - bw / 2, y: tc.y - uy * standoff - bh / 2 };
+          const rawCell = worldToCell({ x: raw.x + bw / 2, y: raw.y + bh / 2 });
+          const snapped = nearestWalkableConnectedTo(rawCell.cx, rawCell.cy, bcCell.cx, bcCell.cy);
+          const w = cellToWorld(snapped.cx, snapped.cy);
+          return { x: w.x - bw / 2, y: w.y - bh / 2 };
+        })();
     const startRoomId = roomOf(bc)?.id ?? null;
     const goalRoomId = roomOf(tc)?.id ?? null;
     const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, goalRoomId);
@@ -830,6 +932,11 @@ export function OfficeMap() {
 
   function walkToAssignedDepartment() {
     const layer = resolveAssignedRoomLayer();
+    // Flat rooms/teamRooms-namespace id (e.g. "design-team"), needed to look
+    // up a door stand-point pairing — doorStandPoints.ts classifies stand
+    // points against office-layout.ts's flat `rooms` rects, which use this
+    // id scheme, not the manifest `layer.id` scheme (e.g. "design-room").
+    const flatRoomId = roomIdForPerson(currentUser?.email, currentUser?.team ?? null) ?? FALLBACK_ROOM_ID;
     // Hold bon still while the camera zooms out slowly, THEN walk — a
     // deliberate "zoom out to see more of the office, then watch bon walk"
     // sequence rather than an instant cut + concurrent walk.
@@ -843,30 +950,251 @@ export function OfficeMap() {
       const roomCenter = { x: layer.x + layer.width / 2, y: layer.y + layer.height / 2 };
       const startCell = worldToCell(startCenter);
       const roomCell = worldToCell(roomCenter);
-      // Prefer the room's hand-painted door ('+') cell as the true arrival
-      // point — e.g. design-room's doorway, pixel-precise from Figma data —
-      // over a geometric room-center that can land bon behind desks. Falls
-      // back to the old center-snapping heuristic for rooms without a
-      // mapped door cell.
-      const doorCell = findRoomDoorCell(layer);
-      const snapped = doorCell
-        ? nearestWalkableConnectedTo(doorCell.cx, doorCell.cy, startCell.cx, startCell.cy)
-        : nearestWalkableConnectedTo(roomCell.cx, roomCell.cy, startCell.cx, startCell.cy);
-      const snappedWorld = cellToWorld(snapped.cx, snapped.cy);
-      const goal = { x: snappedWorld.x - bw / 2, y: snappedWorld.y - bh / 2 };
       const startRoomId = roomOf(startCenter)?.id ?? null;
-      const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, layer.id);
 
-      pipSideRef.current = roomCenter.x > startCenter.x ? "left" : "right";
-      walkTo(path, () => {
+      function finishArrival() {
         window.clearTimeout(greetTimerRef.current);
         greetNonceRef.current += 1;
         setGreeting({ characterId: playerLayerId, nonce: greetNonceRef.current, text: "Hi team!" });
         greetTimerRef.current = window.setTimeout(() => setGreeting(null), 3000);
         setOnboarding("done");
         setHasCheckedIn(true);
-      });
+      }
+
+      pipSideRef.current = roomCenter.x > startCenter.x ? "left" : "right";
+
+      // Two-leg door-gated walk: stop just outside the room's door, "wait"
+      // for it to open, step through, stop just inside for a close beat.
+      // Only used when this room's door has a complete hand-painted in/out
+      // stand-point pair (see doorStandPoints.ts) — most rooms don't have
+      // one painted yet, so this is the exception path, not the norm.
+      const doorPair = doorStandForRoom(flatRoomId);
+      if (doorPair) {
+        const outGoal = { x: doorPair.outStand.x - bw / 2, y: doorPair.outStand.y - bh / 2 };
+        const inGoal = { x: doorPair.inStand.x - bw / 2, y: doorPair.inStand.y - bh / 2 };
+        const pathToOutStand = findPath({ x: bonPos.x, y: bonPos.y }, outGoal, startRoomId, layer.id);
+
+        walkTo(pathToOutStand, () => {
+          onDoorOpen(flatRoomId);
+          window.setTimeout(() => {
+            const pathToInStand = findPath(outGoal, inGoal, layer.id, layer.id);
+            walkTo(pathToInStand, () => {
+              onDoorClose(flatRoomId);
+              finishArrival();
+            });
+          }, DOOR_ANIM_MS);
+        });
+        return;
+      }
+
+      // Fallback: no complete door stand-point pairing painted for this room
+      // yet (tilemap authoring in progress) — existing single-goal walk
+      // behavior, unchanged. Prefers the room's hand-painted door ('+') cell
+      // as the true arrival point — e.g. design-room's doorway, pixel-precise
+      // from Figma data — over a geometric room-center that can land bon
+      // behind desks. Falls back further to the old center-snapping
+      // heuristic for rooms without a mapped door cell at all.
+      const doorCell = findRoomDoorCell(layer);
+      const snapped = doorCell
+        ? nearestWalkableConnectedTo(doorCell.cx, doorCell.cy, startCell.cx, startCell.cy)
+        : nearestWalkableConnectedTo(roomCell.cx, roomCell.cy, startCell.cx, startCell.cy);
+      const snappedWorld = cellToWorld(snapped.cx, snapped.cy);
+      const goal = { x: snappedWorld.x - bw / 2, y: snappedWorld.y - bh / 2 };
+      const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, layer.id);
+
+      walkTo(path, finishArrival);
     }, zoomOutMs);
+  }
+
+  // Looks up the flat rects/teamRooms-namespace room id (e.g. "design-team")
+  // containing `point`, or null if outside every flat room. This is the same
+  // id scheme doorStandForRoom/doorStandPoints.ts classifies stand points
+  // against — NOT the roomLayers/manifest scheme (e.g. "design-room") that
+  // roomOf()/findPath's goalRoomId use. Mirrors the flat-rect containment
+  // check doorStandPoints.ts itself uses internally.
+  function flatRoomIdAt(point: { x: number; y: number }): string | null {
+    const room = rooms.find(
+      (r) => point.x >= r.x && point.x <= r.x + r.width && point.y >= r.y && point.y <= r.y + r.height,
+    );
+    return room?.id ?? null;
+  }
+
+  // Checkout's OUTWARD door-gate: used by beginWalkToReception (leaving the
+  // viewer's own department) and proceedWithExitWalk (leaving reception, once
+  // its stand-point pair is painted). Mirrors approachCharacter's 3-leg
+  // in/out stand-point gate, but keyed off bon's CURRENT room (the one he's
+  // leaving) rather than a target character's room — checkout always walks
+  // to a fixed goal point, not a person, so this takes the final goal + its
+  // manifest room hint directly instead of resolving them from an AssetLayer.
+  //
+  // Sequence when bon's current room has a complete door pair: start ->
+  // inStand (near side, the side he's coming FROM) -> onDoorOpen -> pause
+  // DOOR_ANIM_MS -> outStand (far side) -> onDoorClose -> finalGoal ->
+  // onArrive. "Walk to the door, it opens, step through, it closes behind
+  // you, then continue on your way" — not a close-then-reopen pattern.
+  // Falls back to the existing single-goal walk, unchanged, when bon isn't
+  // currently in a room with a complete pair (open corridor, or a room whose
+  // door isn't fully painted yet).
+  function walkOutOfRoomThenTo(
+    finalGoal: { x: number; y: number },
+    finalGoalRoomId: string | null,
+    onArrive: () => void,
+  ) {
+    const bw = playerCharacterLayer.width;
+    const bh = playerCharacterLayer.height;
+    const bc = { x: bonPos.x + bw / 2, y: bonPos.y + bh / 2 };
+    const startRoomId = roomOf(bc)?.id ?? null;
+    const flatStartRoomId = flatRoomIdAt(bc);
+    const doorPair = flatStartRoomId ? doorStandForRoom(flatStartRoomId) : null;
+
+    // Cancel any pending door timer from a previous checkout walk that hasn't
+    // finished yet, and bump the nonce so its in-flight callbacks become
+    // no-ops — checkout's mid-pause is user-cancelable (handleCancelCheckoutWalk,
+    // the debug hours-reset path), unlike walkToAssignedDepartment's
+    // onboarding-locked walk.
+    window.clearTimeout(checkoutDoorTimerRef.current);
+    checkoutDoorTimerRef.current = undefined;
+    checkoutDoorNonceRef.current += 1;
+    const nonce = checkoutDoorNonceRef.current;
+
+    if (doorPair) {
+      const inGoal = { x: doorPair.inStand.x - bw / 2, y: doorPair.inStand.y - bh / 2 };
+      const outGoal = { x: doorPair.outStand.x - bw / 2, y: doorPair.outStand.y - bh / 2 };
+      const pathToInStand = findPath({ x: bonPos.x, y: bonPos.y }, inGoal, startRoomId, startRoomId);
+
+      walkTo(pathToInStand, () => {
+        if (checkoutDoorNonceRef.current !== nonce) return;
+        onDoorOpen(flatStartRoomId!);
+        checkoutDoorTimerRef.current = window.setTimeout(() => {
+          checkoutDoorTimerRef.current = undefined;
+          if (checkoutDoorNonceRef.current !== nonce) return;
+          const pathToOutStand = findPath(inGoal, outGoal, startRoomId, startRoomId);
+          walkTo(pathToOutStand, () => {
+            if (checkoutDoorNonceRef.current !== nonce) return;
+            onDoorClose(flatStartRoomId!);
+            const pathToGoal = findPath(outGoal, finalGoal, startRoomId, finalGoalRoomId);
+            walkTo(pathToGoal, () => {
+              if (checkoutDoorNonceRef.current !== nonce) return;
+              onArrive();
+            });
+          });
+        }, DOOR_ANIM_MS);
+      });
+      return;
+    }
+
+    // Fallback: bon isn't currently in a room with a complete door pair —
+    // existing single-goal walk behavior, unchanged.
+    const path = findPath({ x: bonPos.x, y: bonPos.y }, finalGoal, startRoomId, finalGoalRoomId);
+    walkTo(path, onArrive);
+  }
+
+  // Shared "walk up to a character to interact with them" logic — used by
+  // both `pat` and `chat` (checkout's walk-to-reception has its own
+  // call site and is intentionally NOT routed through this, since Arisha's
+  // room has no complete door-stand pairing anyway).
+  //
+  // Computes the same near-target stand-spot goal both actions always have,
+  // then — only when bon is currently OUTSIDE the target's room AND that
+  // room has a complete hand-painted door in/out stand-point pair (see
+  // doorStandPoints.ts) — inserts a 3-leg door-gated walk in front of it:
+  // stand outside the door, "wait" for it to open, step inside, "wait" for
+  // it to close, then continue to the actual near-person stand spot.
+  // Otherwise (already in the same room, or no door pairing painted yet for
+  // that room) falls back to the single existing walk, unchanged.
+  function approachCharacter(target: AssetLayer, onArrive: () => void) {
+    const bw = playerCharacterLayer.width;
+    const bh = playerCharacterLayer.height;
+    const bc = { x: bonPos.x + bw / 2, y: bonPos.y + bh / 2 };
+    const tc = { x: target.x + target.width / 2, y: target.y + target.height / 2 };
+    const dx = tc.x - bc.x;
+    const dy = tc.y - bc.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len;
+    const uy = dy / len;
+    const standoff = target.width / 2 + bw / 2 + 4;
+    const bcCell = worldToCell(bc);
+    const tcCell = worldToCell(tc);
+    const standSpot = nearestStandSpotConnectedTo(tcCell.cx, tcCell.cy, bcCell.cx, bcCell.cy);
+    const goal = standSpot
+      ? (() => {
+          const w = cellToWorld(standSpot.cx, standSpot.cy);
+          return { x: w.x - bw / 2, y: w.y - bh / 2 };
+        })()
+      : (() => {
+          // No hand-painted stand spot nearby — fall back to pure
+          // geometry, but the geometric offset has no awareness of
+          // walls/furniture, so it can land on a blocked tile with the
+          // finer 16px grid. Snap to the nearest walkable cell connected
+          // to bon's own region before using it as a walk target.
+          const raw = { x: tc.x - ux * standoff - bw / 2, y: tc.y - uy * standoff - bh / 2 };
+          const rawCell = worldToCell({ x: raw.x + bw / 2, y: raw.y + bh / 2 });
+          const snapped = nearestWalkableConnectedTo(rawCell.cx, rawCell.cy, bcCell.cx, bcCell.cy);
+          const w = cellToWorld(snapped.cx, snapped.cy);
+          return { x: w.x - bw / 2, y: w.y - bh / 2 };
+        })();
+    const startRoomId = roomOf(bc)?.id ?? null;
+    const goalRoomId = roomOf(tc)?.id ?? null;
+
+    // Static camera focus on the target — bon may walk off-screen while
+    // approaching; the mini-camera PiP (rendered while isWalking) tracks
+    // him instead.
+    {
+      const ref = transformRef.current;
+      const wrapper = ref?.instance.wrapperComponent;
+      if (ref && wrapper) {
+        const rect = wrapper.getBoundingClientRect();
+        const focusScale = initialScale * 2.5;
+        const { x, y } = computeCenterTransform(target, focusScale, rect.width, rect.height);
+        ref.setTransform(x, y, focusScale, 600, "easeOut");
+      }
+    }
+    pipSideRef.current = target.x > bonPos.x ? "left" : "right";
+
+    // Cancel any pending door-open/close timer from a previous approach that
+    // hasn't finished yet, and bump the nonce so its in-flight callbacks
+    // become no-ops — pat/chat can be re-triggered mid-walk, unlike the
+    // onboarding-locked check-in flow.
+    window.clearTimeout(approachDoorTimerRef.current);
+    approachDoorTimerRef.current = undefined;
+    approachNonceRef.current += 1;
+    const nonce = approachNonceRef.current;
+
+    const flatStartRoomId = flatRoomIdAt(bc);
+    const flatGoalRoomId = flatRoomIdAt(tc);
+    const doorPair =
+      flatGoalRoomId && flatGoalRoomId !== flatStartRoomId ? doorStandForRoom(flatGoalRoomId) : null;
+
+    if (doorPair) {
+      const outGoal = { x: doorPair.outStand.x - bw / 2, y: doorPair.outStand.y - bh / 2 };
+      const inGoal = { x: doorPair.inStand.x - bw / 2, y: doorPair.inStand.y - bh / 2 };
+      const pathToOutStand = findPath({ x: bonPos.x, y: bonPos.y }, outGoal, startRoomId, goalRoomId);
+
+      walkTo(pathToOutStand, () => {
+        if (approachNonceRef.current !== nonce) return;
+        onDoorOpen(flatGoalRoomId);
+        approachDoorTimerRef.current = window.setTimeout(() => {
+          approachDoorTimerRef.current = undefined;
+          if (approachNonceRef.current !== nonce) return;
+          const pathToInStand = findPath(outGoal, inGoal, goalRoomId, goalRoomId);
+          walkTo(pathToInStand, () => {
+            if (approachNonceRef.current !== nonce) return;
+            onDoorClose(flatGoalRoomId);
+            const pathToStandSpot = findPath(inGoal, goal, goalRoomId, goalRoomId);
+            walkTo(pathToStandSpot, () => {
+              if (approachNonceRef.current !== nonce) return;
+              onArrive();
+            });
+          });
+        }, DOOR_ANIM_MS);
+      });
+      return;
+    }
+
+    // Fallback: same room already, or no complete door stand-point pairing
+    // painted for this room yet — existing single-goal walk, unchanged.
+    const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, goalRoomId);
+    walkTo(path, onArrive);
   }
 
   function handleChoose(action: "chat" | "call" | "pat" | "walkDemo" | "patDemo") {
@@ -885,88 +1213,14 @@ export function OfficeMap() {
     }
     if (action === "pat") {
       setMenu(null);
-      const bw = playerCharacterLayer.width;
-      const bh = playerCharacterLayer.height;
-      const bc = { x: bonPos.x + bw / 2, y: bonPos.y + bh / 2 };
-      const tc = { x: target.x + target.width / 2, y: target.y + target.height / 2 };
-      const dx = tc.x - bc.x;
-      const dy = tc.y - bc.y;
-      const len = Math.hypot(dx, dy) || 1;
-      const ux = dx / len;
-      const uy = dy / len;
-      const standoff = target.width / 2 + bw / 2 + 4;
-      const bcCell = worldToCell(bc);
-      const tcCell = worldToCell(tc);
-      const standSpot = nearestStandSpotConnectedTo(tcCell.cx, tcCell.cy, bcCell.cx, bcCell.cy);
-      const goal = standSpot
-        ? (() => {
-            const w = cellToWorld(standSpot.cx, standSpot.cy);
-            return { x: w.x - bw / 2, y: w.y - bh / 2 };
-          })()
-        : { x: tc.x - ux * standoff - bw / 2, y: tc.y - uy * standoff - bh / 2 };
-      const startRoomId = roomOf(bc)?.id ?? null;
-      const goalRoomId = roomOf(tc)?.id ?? null;
-      const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, goalRoomId);
-
-      // Static camera focus on the pat target — bon may walk off-screen
-      // while approaching; the mini-camera PiP (rendered while isWalking)
-      // tracks him instead.
-      {
-        const ref = transformRef.current;
-        const wrapper = ref?.instance.wrapperComponent;
-        if (ref && wrapper) {
-          const rect = wrapper.getBoundingClientRect();
-          const focusScale = initialScale * 2.5;
-          const { x, y } = computeCenterTransform(target, focusScale, rect.width, rect.height);
-          ref.setTransform(x, y, focusScale, 600, "easeOut");
-        }
-      }
-      pipSideRef.current = target.x > bonPos.x ? "left" : "right";
-      walkTo(path, () => {
+      approachCharacter(target, () => {
         playPat();
       });
     } else if (action === "chat") {
       // setMenu(null) rather than closeCharacterMenu() — avoid resetting the
       // camera view when opening the chat panel.
       setMenu(null);
-      const bw = playerCharacterLayer.width;
-      const bh = playerCharacterLayer.height;
-      const bc = { x: bonPos.x + bw / 2, y: bonPos.y + bh / 2 };
-      const tc = { x: target.x + target.width / 2, y: target.y + target.height / 2 };
-      const dx = tc.x - bc.x;
-      const dy = tc.y - bc.y;
-      const len = Math.hypot(dx, dy) || 1;
-      const ux = dx / len;
-      const uy = dy / len;
-      const standoff = target.width / 2 + bw / 2 + 4;
-      const bcCell = worldToCell(bc);
-      const tcCell = worldToCell(tc);
-      const standSpot = nearestStandSpotConnectedTo(tcCell.cx, tcCell.cy, bcCell.cx, bcCell.cy);
-      const goal = standSpot
-        ? (() => {
-            const w = cellToWorld(standSpot.cx, standSpot.cy);
-            return { x: w.x - bw / 2, y: w.y - bh / 2 };
-          })()
-        : { x: tc.x - ux * standoff - bw / 2, y: tc.y - uy * standoff - bh / 2 };
-      const startRoomId = roomOf(bc)?.id ?? null;
-      const goalRoomId = roomOf(tc)?.id ?? null;
-      const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, goalRoomId);
-
-      // Static camera focus on the chat target — bon may walk off-screen
-      // while approaching; the mini-camera PiP (rendered while isWalking)
-      // tracks him instead.
-      {
-        const ref = transformRef.current;
-        const wrapper = ref?.instance.wrapperComponent;
-        if (ref && wrapper) {
-          const rect = wrapper.getBoundingClientRect();
-          const focusScale = initialScale * 2.5;
-          const { x, y } = computeCenterTransform(target, focusScale, rect.width, rect.height);
-          ref.setTransform(x, y, focusScale, 600, "easeOut");
-        }
-      }
-      pipSideRef.current = target.x > bonPos.x ? "left" : "right";
-      walkTo(path, () => {
+      approachCharacter(target, () => {
         setOpenChat(target);
         setTalkingIds([currentUserId, target.id]);
       });

@@ -1,4 +1,5 @@
 import { ASSET_PATH_TO_SRC, bonLayer, characterLayers, rooms } from "./office-layout";
+import { seatsForRoomId } from "./roomSeats";
 import type { AssetLayer } from "../types/office";
 import type { OfficePerson } from "../services/office/floorMerge";
 
@@ -109,55 +110,95 @@ export function rosterSrcById(layers: AssetLayer[]): Record<string, string> {
   return map;
 }
 
-export function officePeopleToLayers(people: OfficePerson[]): AssetLayer[] {
-  // First pass counts occupancy, because seat size depends on how many
-  // people share the room — it cannot be decided one person at a time.
-  const countByRoom = new Map<string, number>();
+// Groups people by room and sorts each group by email — a stable identity
+// that never reshuffles who sits where across re-renders/reorderings of the
+// upstream roster array, unlike array order (which the API/merge is free to
+// change call to call).
+function groupByRoomSortedByEmail(people: OfficePerson[]): Map<string, OfficePerson[]> {
+  const byRoom = new Map<string, OfficePerson[]>();
   for (const person of people) {
-    countByRoom.set(person.roomId, (countByRoom.get(person.roomId) ?? 0) + 1);
+    const list = byRoom.get(person.roomId);
+    if (list) list.push(person);
+    else byRoom.set(person.roomId, [person]);
+  }
+  for (const list of byRoom.values()) {
+    list.sort((a, b) => a.email.localeCompare(b.email));
+  }
+  return byRoom;
+}
+
+export function officePeopleToLayers(people: OfficePerson[]): AssetLayer[] {
+  const peopleByRoom = groupByRoomSortedByEmail(people);
+
+  // Seating for the OVERFLOW remainder only (people beyond the room's real
+  // painted chairs) depends on how many of THOSE there are, per room — it
+  // cannot be decided one person at a time, same reasoning as before.
+  const overflowSeatingByRoom = new Map<string, RoomSeating | null>();
+  for (const [roomId, roomPeople] of peopleByRoom) {
+    const seatCount = seatsForRoomId(roomId).length;
+    const overflowCount = Math.max(0, roomPeople.length - seatCount);
+    overflowSeatingByRoom.set(roomId, overflowCount > 0 ? roomSeating(roomId, overflowCount) : null);
   }
 
-  const seatingByRoom = new Map<string, RoomSeating | null>();
-  for (const [roomId, count] of countByRoom) {
-    seatingByRoom.set(roomId, roomSeating(roomId, count));
-  }
-
-  const seatIndexByRoom = new Map<string, number>();
   const layers: AssetLayer[] = [];
 
-  for (const person of people) {
-    const room = roomsById.get(person.roomId);
-    const seating = seatingByRoom.get(person.roomId);
-    if (!room || !seating) continue;
+  for (const [roomId, roomPeople] of peopleByRoom) {
+    const room = roomsById.get(roomId);
+    if (!room) continue;
 
-    const index = seatIndexByRoom.get(person.roomId) ?? 0;
-    seatIndexByRoom.set(person.roomId, index + 1);
+    const seats = seatsForRoomId(roomId);
+    const seatedCount = Math.min(roomPeople.length, seats.length);
+    const overflowSeating = overflowSeatingByRoom.get(roomId);
 
-    const column = index % seating.columns;
-    const row = Math.floor(index / seating.columns);
-    const position = {
-      x: room.x + ROOM_PADDING_X + column * (seating.seatWidth + SEAT_GAP_X),
-      y: room.y + ROOM_PADDING_TOP + row * (seating.seatHeight + SEAT_GAP_Y),
-    };
+    let overflowIndex = 0;
 
-    const art = artByAvatarId.get(person.avatarId) ?? bonLayer;
+    roomPeople.forEach((person, i) => {
+      const art = artByAvatarId.get(person.avatarId) ?? bonLayer;
 
-    layers.push({
-      id: person.email,
-      kind: "character",
-      path: art.path,
-      x: position.x,
-      y: position.y,
-      width: seating.seatWidth,
-      height: seating.seatHeight,
-      transform: null,
-      name: person.displayName,
-      imgCrop: art.imgCrop ?? null,
-      // Deliberately not inheriting art.animatable: the walk/idle sprite
-      // sets are keyed to the authored character ids, and a borrowed body
-      // has no guarantee of a matching frame set. Static portrait until
-      // avatar generation covers real people (see rollout plan, D2).
-      animatable: false,
+      let position: { x: number; y: number };
+      let width: number;
+      let height: number;
+
+      if (i < seatedCount) {
+        // Real painted chair: center the sprite on the seat centroid.
+        const seat = seats[i];
+        width = SEAT_WIDTH;
+        height = SEAT_HEIGHT;
+        position = { x: seat.x - width / 2, y: seat.y - height / 2 };
+      } else {
+        // Overflow: no real chair left for this person, fall back to the
+        // existing generic packed-grid logic for just the remainder.
+        if (!overflowSeating) return; // shouldn't happen (seatedCount < length implies overflow > 0)
+        const index = overflowIndex;
+        overflowIndex += 1;
+
+        const column = index % overflowSeating.columns;
+        const row = Math.floor(index / overflowSeating.columns);
+        width = overflowSeating.seatWidth;
+        height = overflowSeating.seatHeight;
+        position = {
+          x: room.x + ROOM_PADDING_X + column * (width + SEAT_GAP_X),
+          y: room.y + ROOM_PADDING_TOP + row * (height + SEAT_GAP_Y),
+        };
+      }
+
+      layers.push({
+        id: person.email,
+        kind: "character",
+        path: art.path,
+        x: position.x,
+        y: position.y,
+        width,
+        height,
+        transform: null,
+        name: person.displayName,
+        imgCrop: art.imgCrop ?? null,
+        // Deliberately not inheriting art.animatable: the walk/idle sprite
+        // sets are keyed to the authored character ids, and a borrowed body
+        // has no guarantee of a matching frame set. Static portrait until
+        // avatar generation covers real people (see rollout plan, D2).
+        animatable: false,
+      });
     });
   }
 

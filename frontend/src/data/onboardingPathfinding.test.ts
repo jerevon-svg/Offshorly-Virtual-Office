@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { findPath, roomOf } from "./officePathfinding";
-import { cellToWorld, isWalkable, nearestWalkable, nearestWalkableConnectedTo, worldToCell } from "./officeGrid";
+import {
+  cellToWorld,
+  isWalkable,
+  nearestStandSpotConnectedTo,
+  nearestWalkable,
+  nearestWalkableConnectedTo,
+  worldToCell,
+} from "./officeGrid";
 import { bonLayer, npcCharacterLayers, roomLayers } from "./office-layout";
 import type { AssetLayer } from "../types/office";
 
@@ -14,7 +21,7 @@ function centerOf(p: { x: number; y: number }) {
 
 function segmentGenuinelyClear(a: { x: number; y: number }, b: { x: number; y: number }): boolean {
   const dist = Math.hypot(b.x - a.x, b.y - a.y);
-  const step = 16; // CELL/2, CELL === 32
+  const step = 8; // CELL/2, CELL === 16
   const steps = Math.max(1, Math.ceil(dist / step));
   for (let i = 0; i <= steps; i++) {
     const t = i / steps;
@@ -48,7 +55,9 @@ function assertPathIsGenuinelyValid(start: { x: number; y: number }, path: { x: 
 }
 
 // Replicates OfficeMap.tsx's startCheckin standoff-point calculation (same
-// geometry as handleChoose's "pat" branch) — real geometry, not a
+// geometry as handleChoose's "pat" branch), including the stand-spot-first /
+// walkability-snapped-geometry-fallback logic OfficeMap.tsx now applies
+// before using the point as a walk target — real production logic, not a
 // hand-picked reachable point.
 function standoffGoal(bon: { x: number; y: number; width: number; height: number }, target: AssetLayer) {
   const bw = bon.width;
@@ -61,7 +70,18 @@ function standoffGoal(bon: { x: number; y: number; width: number; height: number
   const ux = dx / len;
   const uy = dy / len;
   const standoff = target.width / 2 + bw / 2 + 4;
-  return { x: tc.x - ux * standoff - bw / 2, y: tc.y - uy * standoff - bh / 2 };
+  const bcCell = worldToCell(bc);
+  const tcCell = worldToCell(tc);
+  const standSpot = nearestStandSpotConnectedTo(tcCell.cx, tcCell.cy, bcCell.cx, bcCell.cy);
+  if (standSpot) {
+    const w = cellToWorld(standSpot.cx, standSpot.cy);
+    return { x: w.x - bw / 2, y: w.y - bh / 2 };
+  }
+  const raw = { x: tc.x - ux * standoff - bw / 2, y: tc.y - uy * standoff - bh / 2 };
+  const rawCell = worldToCell({ x: raw.x + bw / 2, y: raw.y + bh / 2 });
+  const snapped = nearestWalkableConnectedTo(rawCell.cx, rawCell.cy, bcCell.cx, bcCell.cy);
+  const w = cellToWorld(snapped.cx, snapped.cy);
+  return { x: w.x - bw / 2, y: w.y - bh / 2 };
 }
 
 // Replicates OfficeMap.tsx's chooseRoom snapped-goal calculation.

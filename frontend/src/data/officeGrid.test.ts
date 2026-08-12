@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { STAND_CELLS, isWalkable, isStandHere, floodFillFrom, nearestWalkableConnectedTo } from "./officeGrid";
+import { STAND_CELLS, CELL, isWalkable, isStandHere, floodFillFrom, nearestWalkableConnectedTo } from "./officeGrid";
 
-// Known-open corridor anchor (world px 500,790 -> cell 15,24), same anchor
-// used by parse-walkable.cjs's connectDoorsToMainRegion and the existing
-// officePathfinding/officeGrid connectivity checks.
-const ANCHOR = { cx: 15, cy: 24 };
+// Known-open corridor anchor (world px 500,790), same anchor used by
+// parse-walkable.cjs's connectivity validator and the existing
+// officePathfinding/officeGrid connectivity checks. Cell index is derived
+// from the world point / CELL rather than hardcoded, so it stays correct
+// across CELL-size changes.
+const ANCHOR = { cx: Math.floor(500 / CELL), cy: Math.floor(790 / CELL) };
 
 describe("STAND_CELLS invariant", () => {
   it("every stand-here (purple) cell is walkable and reachable from the anchor", () => {

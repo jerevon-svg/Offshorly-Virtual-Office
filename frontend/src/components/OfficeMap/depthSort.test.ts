@@ -208,4 +208,81 @@ describe("depthCompare", () => {
       expect(Number.isFinite(l.y + l.height)).toBe(true);
     }
   });
+
+  describe("cms-room occlusion-line override", () => {
+    // Real dev-room corridor crossing: character feet-baseline ~351-363.
+    it("sorts a corridor character (feet-baseline 355, below the 390 line) behind cms-room", () => {
+      const cmsRoom = layer({ id: "cms-room", kind: "room", y: 100, height: 500 }); // real bbox baseline 600, irrelevant here
+      const corridorCharacter = layer({ id: "walker", kind: "character", y: 345, height: 10 }); // baseline 355
+
+      const sorted = [corridorCharacter, cmsRoom].sort(depthCompare);
+
+      expect(sorted.map((l) => l.id)).toEqual(["walker", "cms-room"]);
+    });
+
+    // Real cms-room occupant: jona, feet ~426.9.
+    it("sorts jona (feet-baseline ~426.9, above the 390 line) in front of cms-room", () => {
+      const cmsRoom = layer({ id: "cms-room", kind: "room", y: 100, height: 500 });
+      const jona = layer({ id: "jona", kind: "character", y: 400, height: 26.9 }); // baseline 426.9
+
+      const sorted = [jona, cmsRoom].sort(depthCompare);
+
+      expect(sorted.map((l) => l.id)).toEqual(["cms-room", "jona"]);
+    });
+
+    it("applies the occlusion line against furniture the same way as against characters", () => {
+      const cmsRoom = layer({ id: "cms-room", kind: "room", y: 100, height: 500 });
+      const lowDesk = layer({ id: "cms-desk", kind: "furniture", y: 300, height: 50 }); // baseline 350
+
+      const sorted = [lowDesk, cmsRoom].sort(depthCompare);
+
+      expect(sorted.map((l) => l.id)).toEqual(["cms-desk", "cms-room"]);
+    });
+
+    it("does not affect a room with no override entry (dev-room), regardless of character baseline", () => {
+      const devRoom = layer({ id: "dev-room", kind: "room", y: 100, height: 500 });
+      const belowLine = layer({ id: "walker-low", kind: "character", y: 345, height: 10 }); // baseline 355
+      const aboveLine = layer({ id: "walker-high", kind: "character", y: 1000, height: 10 }); // baseline 1010
+
+      const sortedLow = [belowLine, devRoom].sort(depthCompare);
+      const sortedHigh = [aboveLine, devRoom].sort(depthCompare);
+
+      // Original fixed-bucket rule: room (bucket 1) always before character (bucket 3),
+      // unchanged by baseline in either direction.
+      expect(sortedLow.map((l) => l.id)).toEqual(["dev-room", "walker-low"]);
+      expect(sortedHigh.map((l) => l.id)).toEqual(["dev-room", "walker-high"]);
+    });
+
+    it("does not affect a second room with no override entry (executive-room), regardless of character baseline", () => {
+      const execRoom = layer({ id: "executive-room", kind: "room", y: 0, height: 50 });
+      const belowLine = layer({ id: "alex-low", kind: "character", y: 60, height: 10 }); // baseline 70
+      const aboveLine = layer({ id: "alex-high", kind: "character", y: 500, height: 10 }); // baseline 510
+
+      const sortedLow = [belowLine, execRoom].sort(depthCompare);
+      const sortedHigh = [aboveLine, execRoom].sort(depthCompare);
+
+      expect(sortedLow.map((l) => l.id)).toEqual(["executive-room", "alex-low"]);
+      expect(sortedHigh.map((l) => l.id)).toEqual(["executive-room", "alex-high"]);
+    });
+
+    it("leaves cms-room vs another room comparison on the original fixed-bucket rule (room override never applies room-to-room)", () => {
+      const cmsRoom = layer({ id: "cms-room", kind: "room", y: 100, height: 500 });
+      const devRoom = layer({ id: "dev-room", kind: "room", y: 0, height: 10 });
+
+      const sorted = [devRoom, cmsRoom].sort(depthCompare);
+
+      // Same fixed bucket (1); stable sort preserves input order.
+      expect(sorted.map((l) => l.id)).toEqual(["dev-room", "cms-room"]);
+    });
+
+    it("leaves cms-room vs floor and cms-room vs decor comparisons on the original fixed-bucket rule", () => {
+      const cmsRoom = layer({ id: "cms-room", kind: "room", y: 100, height: 500 });
+      const floor = layer({ id: "floor-1", kind: "floor", y: 5000, height: 5000 });
+      const decor = layer({ id: "decor-1", kind: "decor", y: 0, height: 1 });
+
+      const sorted = [cmsRoom, decor, floor].sort(depthCompare);
+
+      expect(sorted.map((l) => l.id)).toEqual(["floor-1", "cms-room", "decor-1"]);
+    });
+  });
 });
