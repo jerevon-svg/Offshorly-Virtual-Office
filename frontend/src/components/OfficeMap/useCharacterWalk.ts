@@ -7,6 +7,17 @@ function ease(t: number): number {
   return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
 }
 
+// Pure helper: derive the facing direction from `from` toward `to`, using the
+// same axis convention as the segment-based walk direction below (y grows
+// downward → +dy = facing viewer = "front").
+export function directionBetween(from: Pt, to: Pt): WalkDirection {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  return Math.abs(dx) > Math.abs(dy)
+    ? (dx > 0 ? "right" : "left")
+    : (dy > 0 ? "front" : "back");
+}
+
 export function useCharacterWalk(initial: Pt) {
   const [pos, setPos] = useState(initial);
   const [isWalking, setIsWalking] = useState(false);
@@ -147,6 +158,13 @@ export function useCharacterWalk(initial: Pt) {
     setIsWalking(false);
   }
 
+  // Forces a facing direction without moving — used by callers to snap the
+  // character to face whoever they just walked up to.
+  function face(dir: WalkDirection) {
+    dirRef.current = dir;
+    setDirection(dir);
+  }
+
   // Debug-only escape hatch: hard-snaps position back to a given point
   // (e.g. the manifest spawn coords), cancelling any in-flight walk/pat
   // first. Not part of the normal walk API — used by the checkout debug
@@ -169,5 +187,5 @@ export function useCharacterWalk(initial: Pt) {
     if (patTimeoutRef.current) clearTimeout(patTimeoutRef.current);
   }, []);
 
-  return { pos, isWalking, isPatting, direction, frameIndex, walkTo, playPat, cancel, resetPos };
+  return { pos, isWalking, isPatting, direction, frameIndex, walkTo, playPat, face, cancel, resetPos };
 }
