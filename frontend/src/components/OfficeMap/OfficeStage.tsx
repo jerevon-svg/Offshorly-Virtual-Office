@@ -145,6 +145,7 @@ export function OfficeStage({
           <div
             key={layer.id}
             className={className}
+            {...(isRoomClickable ? { "data-room-id": layer.id } : {})}
             style={{
               left: `${(layer.x / FRAME_WIDTH) * 100}%`,
               top: `${(layer.y / FRAME_HEIGHT) * 100}%`,

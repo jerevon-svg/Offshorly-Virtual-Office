@@ -42,6 +42,7 @@ import {
   SIDEBAR_WIDTH,
 } from "./panMath";
 import { useCharacterWalk, directionBetween } from "./useCharacterWalk";
+import type { WalkDirection } from "../../data/bonWalkFrames";
 import { SavedAvatarWalker, type SavedAvatarWalkApi, type SavedAvatarWalkState } from "./SavedAvatarWalker";
 import {
   ALEX_SPRITE_SET,
@@ -405,6 +406,7 @@ export function OfficeMap() {
     frameIndex: alexFrameIndex,
     walkTo: alexWalkTo,
     playPat: alexPlayPat,
+    face: alexFace,
   } = useCharacterWalk({ x: alexLayer?.x ?? 0, y: alexLayer?.y ?? 0 });
   const {
     pos: micahPos,
@@ -414,6 +416,7 @@ export function OfficeMap() {
     frameIndex: micahFrameIndex,
     walkTo: micahWalkTo,
     playPat: micahPlayPat,
+    face: micahFace,
   } = useCharacterWalk({ x: micahLayer?.x ?? 0, y: micahLayer?.y ?? 0 });
   const {
     pos: luiPos,
@@ -423,7 +426,19 @@ export function OfficeMap() {
     frameIndex: luiFrameIndex,
     walkTo: luiWalkTo,
     playPat: luiPlayPat,
+    face: luiFace,
   } = useCharacterWalk({ x: luiLayer?.x ?? 0, y: luiLayer?.y ?? 0 });
+
+  // Pat-back lookup — only alex/micah/lui have their own useCharacterWalk
+  // instance (and thus their own `face`) above; plain static roster people
+  // and not-yet-generalized saved avatars have no directional capability, so
+  // this resolves to null for them and the pat handler below no-ops.
+  function facerFor(id: string): ((dir: WalkDirection) => void) | null {
+    if (id === "alex") return alexFace;
+    if (id === "micah") return micahFace;
+    if (id === "lui") return luiFace;
+    return null;
+  }
   const alexSpriteSrc = characterSprite(
     ALEX_SPRITE_SET,
     alexIsPatting ? "pat" : alexIsWalking ? "walk" : "idle",
@@ -1148,7 +1163,14 @@ export function OfficeMap() {
   // it to close, then continue to the actual near-person stand spot.
   // Otherwise (already in the same room, or no door pairing painted yet for
   // that room) falls back to the single existing walk, unchanged.
-  function approachCharacter(target: AssetLayer, onArrive: () => void) {
+  // `onArrive` receives the resolved arriveCenter/targetCenter pair (the same
+  // ones used for bon's own `face(directionBetween(arriveCenter, tc))` calls
+  // below) so callers that also need to turn the TARGET to face bon (e.g. the
+  // pat handler, for alex/micah/lui) don't have to recompute them.
+  function approachCharacter(
+    target: AssetLayer,
+    onArrive: (arriveCenter: { x: number; y: number }, targetCenter: { x: number; y: number }) => void,
+  ) {
     const bw = playerCharacterLayer.width;
     const bh = playerCharacterLayer.height;
     const bc = { x: bonPos.x + bw / 2, y: bonPos.y + bh / 2 };
@@ -1251,7 +1273,7 @@ export function OfficeMap() {
             walkTo(pathToStandSpot, () => {
               if (approachNonceRef.current !== nonce) return;
               face(directionBetween(arriveCenter, tc));
-              onArrive();
+              onArrive(arriveCenter, tc);
             });
           });
         }, DOOR_ANIM_MS);
@@ -1264,7 +1286,7 @@ export function OfficeMap() {
     const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, goalRoomId);
     walkTo(path, () => {
       face(directionBetween(arriveCenter, tc));
-      onArrive();
+      onArrive(arriveCenter, tc);
     });
   }
 
@@ -1284,8 +1306,15 @@ export function OfficeMap() {
     }
     if (action === "pat") {
       setMenu(null);
-      approachCharacter(target, () => {
+      approachCharacter(target, (arriveCenter, targetCenter) => {
         playPat();
+        // Turn the patted NPC to face bon back, if it has its own
+        // useCharacterWalk instance (alex/micah/lui) — plain static roster
+        // people have no directional capability, so facerFor returns null
+        // and this is a no-op for them. Left facing bon rather than reverted
+        // on a timer — the next time that NPC's own demo/movement runs it
+        // recomputes its own direction from its next segment anyway.
+        facerFor(target.id)?.(directionBetween(targetCenter, arriveCenter));
       });
     } else if (action === "chat") {
       // setMenu(null) rather than closeCharacterMenu() — avoid resetting the
@@ -1434,6 +1463,19 @@ export function OfficeMap() {
         ...(viewerIsHere ? [playerCharacterLayer] : []),
       ]
     : [];
+  // Real roster people are keyed by the flat rooms/teamRooms namespace
+  // (e.g. "dev-team"), not the manifest room id the sidebar was opened
+  // with (e.g. "dev-room") — same id-scheme split flatRoomIdAt/
+  // savedAvatarsInRoom above bridge via geometry. Resolve the flat id
+  // once here from the room layer's center so the filter below compares
+  // like-for-like instead of silently matching nothing for the "-team"
+  // rooms whose flat/manifest ids don't happen to coincide.
+  const roomSidebarFlatId = roomSidebar
+    ? flatRoomIdAt({
+        x: roomSidebar.layer.x + roomSidebar.layer.width / 2,
+        y: roomSidebar.layer.y + roomSidebar.layer.height / 2,
+      })
+    : null;
 
   return (
     <div className={`${styles.viewport} ${isDragging ? styles.dragging : ""}`}>
@@ -1740,7 +1782,9 @@ export function OfficeMap() {
         // roster, so the manifest fallback still applies.
         people={
           rosterActive && roomSidebar
-            ? roster.people.filter((person) => person.roomId === roomSidebar.layer.id)
+            ? roster.people.filter(
+                (person) => roomSidebarFlatId !== null && person.roomId === roomSidebarFlatId,
+              )
             : undefined
         }
         roomNames={roster.roomNames}
