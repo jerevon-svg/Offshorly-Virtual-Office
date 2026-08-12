@@ -10,10 +10,10 @@ describe("OfficeMap", () => {
   it("renders the layered office stage with multiple images", () => {
     const { container } = render(<OfficeMap />);
     const images = container.querySelectorAll("img");
-    // 161 layers from the manifest: floor + rooms + decor + characters +
-    // furniture (160 previous + 1 for Lui's new hardcoded character layer,
-    // promoted from a test-only SavedAvatar to a full manifest NPC).
-    expect(images.length).toBe(161);
+    // 164 layers from the manifest: floor + rooms + decor + characters +
+    // furniture (161 previous + 3 for the new ai-door / executive-door-left /
+    // executive-door-right visual door assets from Bon's Figma redesign).
+    expect(images.length).toBe(164);
   });
 
   it("mounts the TransformWrapper wrapper div", () => {
