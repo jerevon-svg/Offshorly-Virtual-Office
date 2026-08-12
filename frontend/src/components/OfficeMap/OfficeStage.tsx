@@ -8,6 +8,7 @@ import {
 } from "../../data/office-layout";
 import type { AssetLayer } from "../../types/office";
 import type { Phase } from "../../data/officePhase";
+import { DOOR_ANIM_MS, DOOR_SLIDE_DIRECTION } from "../../data/officeDoors";
 import { depthCompare } from "./depthSort";
 import { GreetingBubble } from "./GreetingBubble";
 import { TalkingBubble } from "./TalkingBubble";
@@ -45,6 +46,11 @@ type OfficeStageProps = {
   // that character has recently sent a chat message (falls back to the
   // looping dots when absent).
   talkingTextById?: Record<string, string>;
+  // Door art layer ids currently slid open (see officeDoors.ts). Layers not
+  // present here render at rest (translateX(0)/no override) — omitting the
+  // prop entirely means "no doors open," matching existing callers/tests
+  // that don't pass it.
+  openDoorLayerIds?: Set<string>;
 };
 
 // Shared click-vs-drag threshold logic: only fires onClick when pointer
@@ -85,6 +91,7 @@ export function OfficeStage({
   extraCharacterSrcById,
   talkingCharacterIds,
   talkingTextById,
+  openDoorLayerIds,
 }: OfficeStageProps = {}) {
   const characterClick = useClickVsDrag(onCharacterClick);
   const roomClick = useClickVsDrag(onRoomClick);
@@ -163,8 +170,8 @@ export function OfficeStage({
             <img
               src={src}
               alt=""
-              style={
-                layer.imgCrop
+              style={(() => {
+                const cropStyle: React.CSSProperties | undefined = layer.imgCrop
                   ? {
                       position: "absolute",
                       width: `${layer.imgCrop.wPct}%`,
@@ -173,8 +180,20 @@ export function OfficeStage({
                       top: `${layer.imgCrop.topPct}%`,
                       maxWidth: "none",
                     }
-                  : undefined
-              }
+                  : undefined;
+                const slideDir = DOOR_SLIDE_DIRECTION[layer.id];
+                if (!slideDir) return cropStyle;
+                const isOpen = openDoorLayerIds?.has(layer.id) ?? false;
+                return {
+                  ...cropStyle,
+                  transition: `transform ${DOOR_ANIM_MS}ms ease-in-out`,
+                  transform: isOpen
+                    ? slideDir === "left"
+                      ? "translateX(-100%)"
+                      : "translateX(100%)"
+                    : "translateX(0)",
+                };
+              })()}
             />
           </div>
         );
