@@ -1,0 +1,92 @@
+/* Minimal/functional — Bon will restyle once the feature works. */
+
+.wrapper {
+  position: fixed;
+  top: 12px;
+  right: 16px;
+  z-index: 100;
+  font-family: system-ui, sans-serif;
+}
+
+.iconButton {
+  all: unset;
+  position: relative;
+  cursor: pointer;
+  background: rgba(20, 20, 20, 0.85);
+  color: #f0f0f0;
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  backdrop-filter: blur(4px);
+}
+
+.iconButton:hover {
+  background: rgba(35, 35, 35, 0.9);
+}
+
+.badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #e5484d;
+  color: #fff;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  font-weight: 700;
+}
+
+.dropdown {
+  position: absolute;
+  top: 44px;
+  right: 0;
+  width: 240px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: rgba(26, 26, 26, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 4px;
+}
+
+.emptyRow {
+  padding: 8px;
+  color: #aaa;
+  font-size: 13px;
+}
+
+.row {
+  all: unset;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  box-sizing: border-box;
+  cursor: pointer;
+  padding: 8px;
+  border-radius: 6px;
+  color: #f0f0f0;
+  font-size: 13px;
+}
+
+.row:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.rowCount {
+  background: #e5484d;
+  color: #fff;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 6px;
+}

@@ -28,7 +28,10 @@ import {
 import { doorStandForRoom } from "../../data/doorStandPoints";
 import { DOOR_ANIM_MS, DOOR_LAYERS_BY_ROOM } from "../../data/officeDoors";
 import type { AssetLayer } from "../../types/office";
+import { chatMode } from "../../services/chat";
 import type { ChatMessage } from "../../services/chat";
+import { useUnreadTotal } from "../../services/chat/useUnreadTotal";
+import { MessageNotificationBadge } from "../Chat/MessageNotificationBadge";
 import { isRealZohoMode } from "../../services/zoho";
 import { OfficeStage } from "./OfficeStage";
 import { CharacterSearch } from "./CharacterSearch";
@@ -208,6 +211,31 @@ export function OfficeMap() {
   // (hiddenCharacterIds is derived further down — it also depends on
   // checkoutFlow, which is declared after the walk hooks.)
   const rosterActive = rosterLayers.length > 0;
+
+  // Chat identity (Phase 3): keyed on EMAIL, never a sprite/layer id — see
+  // frontend/src/services/chat/RealChatService.ts and backend/README.md.
+  // Falls back to playerLayerId only pre-boot (currentUser not resolved
+  // yet) or in mock mode, where the sprite id is harmless.
+  const selfChatId = currentUser?.email?.trim().toLowerCase() || playerLayerId;
+
+  // Unread-message notification badge (Phase 3, functional placeholder —
+  // Bon will restyle it once this is confirmed working). Real-mode-only,
+  // same gating precedent as resolvePeerChatId/chatDisabled below.
+  const { total: unreadTotal, unreadConversations } = useUnreadTotal(selfChatId);
+
+  // A person's real email is only known when they're a live roster entry
+  // (officePeopleToLayers keys AssetLayer.id on person.email — see
+  // frontend/src/data/rosterLayers.ts). The static manifest cast (bon,
+  // alex, lui, ...) and any roster person who fell back to the unmapped
+  // placeholder sprite have no stable per-human identity to route real
+  // chat on, so a click on one of those returns null rather than silently
+  // treating their sprite id as if it were an email — ConversationView
+  // disables opening a real chat for a null peerChatId instead.
+  function resolvePeerChatId(target: AssetLayer): string | null {
+    const email = target.id.toLowerCase();
+    const isRosterPerson = roster.people.some((person) => person.email.toLowerCase() === email);
+    return isRosterPerson ? email : null;
+  }
 
   const extraCharacterLayers = useMemo(
     () => [...savedAvatarsToLayers(customAvatars), ...rosterLayers],
@@ -1438,6 +1466,33 @@ export function OfficeMap() {
     setMenu(null);
   }
 
+  // Placeholder click-through for the unread-notification badge — opens the
+  // conversation directly (no walk-up-and-approach beat, unlike the normal
+  // "chat" action-menu path) since this is a simple testing affordance, not
+  // the polished entry point. Prefers the peer's real on-map layer (for
+  // name/avatar) when they're currently a rendered character; falls back to
+  // a minimal synthetic layer (id-derived display name) otherwise, since the
+  // conversation can still be opened by email even if they're not currently
+  // visible on the floor.
+  function openChatWithPeerEmail(peerEmail: string) {
+    const email = peerEmail.toLowerCase();
+    const layer =
+      extraCharacterLayers.find((l) => l.id.toLowerCase() === email) ??
+      npcCharacterLayers.find((l) => l.id.toLowerCase() === email) ??
+      ({
+        id: email,
+        kind: "character",
+        path: "",
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        transform: null,
+      } as AssetLayer);
+    setOpenChat(layer);
+    setTalkingIds([playerLayerId, layer.id]);
+  }
+
   function handleCharacterClick(layer: AssetLayer, anchor: { clientX: number; clientY: number }) {
     // Onboarding sequence must complete before normal character-click
     // interactions resume — every non-"done" state suppresses this handler.
@@ -1838,7 +1893,8 @@ export function OfficeMap() {
       {openChat && (
         <ConversationView
           peer={openChat}
-          selfId={playerLayerId}
+          selfId={selfChatId}
+          peerChatId={resolvePeerChatId(openChat)}
           onIncomingMessage={handleTalkingMessage}
           onClose={() => {
             setOpenChat(null);
@@ -1849,6 +1905,13 @@ export function OfficeMap() {
             talkingTimersRef.current = {};
             setTalkingTextById({});
           }}
+        />
+      )}
+      {chatMode === "real" && (
+        <MessageNotificationBadge
+          total={unreadTotal}
+          unreadConversations={unreadConversations}
+          onSelectPeer={openChatWithPeerEmail}
         />
       )}
       {toast && <div className={styles.toast}>{toast}</div>}

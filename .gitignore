@@ -13,6 +13,11 @@ frontend/*.local
 frontend/.env
 frontend/.env.local
 
+# Chat backend (backend/)
+backend/node_modules
+backend/dist
+backend/.env
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
