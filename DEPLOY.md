@@ -5,6 +5,13 @@ Atlas at `https://atlas.offshorly.com/virtual-office`. Deploy target is a
 Render **Static Site** (not a Web Service) — the build output is static, so
 a Static Site gives always-on CDN serving with no cold starts.
 
+> **Scope note:** the root `render.yaml` only manages the backend API
+> (`virtual-office-api`, rootDir `backend`) and its Postgres database
+> (`virtual-office-db`). The frontend Static Site described in this doc
+> remains dashboard-managed and is intentionally not represented in
+> `render.yaml`. `render.yaml` also isn't auto-applied — it only takes
+> effect once explicitly connected as a Blueprint in the Render dashboard.
+
 ## Render service settings
 
 | Setting            | Value                                                    |
