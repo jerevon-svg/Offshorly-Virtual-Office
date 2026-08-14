@@ -1,0 +1,56 @@
+services:
+  - type: web
+    name: virtual-office-api
+    runtime: python
+    # FREE tier — deliberate for the demo phase (unlike OffshorlyLMS's render.yaml, which pins
+    # `plan: starter` because its uploads disk requires a paid instance). Virtual Office has no
+    # persistent disk, so that constraint doesn't apply here and free is viable.
+    # Tradeoffs to know before "fixing" this back to paid:
+    #   - Spins down after 15 min with no inbound traffic; first request after idle takes ~1 min to wake.
+    #   - Workspace-wide free-instance-hours budget: 750 hrs/month shared across ALL free services in
+    #     this Render workspace. Exhausting it suspends every free web service until next month.
+    #   - Filesystem is ephemeral (not currently used since there's no disk — but don't add file
+    #     uploads on this plan without moving to paid first).
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    # Apply pending DB migrations before booting the server (runs on every deploy; no-op when up to date).
+    startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: APP_NAME
+        value: Virtual Office
+      - key: APP_ENV
+        value: production
+      - key: DEBUG
+        value: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: virtual-office-db
+          property: connectionString
+      # Domain-dependent values are NOT managed here — they are maintained in the Render dashboard
+      # (Environment tab) and differ per environment. A Blueprint sync overwrites any `value:` it
+      # declares, so leaving stale domains in this file would silently revert the live config
+      # (broken CORS) as a side effect of an unrelated sync. `sync: false` = "keep whatever the
+      # dashboard has".
+      - key: CORS_ORIGINS
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+
+databases:
+  - name: virtual-office-db
+    databaseName: virtual_office
+    user: virtual_office
+    # FREE tier — DELIBERATE and TEMPORARY, chosen for the demo phase only. READ BEFORE TOUCHING:
+    #   - Free Render Postgres EXPIRES 30 days after creation, then a 14-day grace period to upgrade.
+    #     After that, Render DELETES the database and ALL its data. There is no silent auto-renew.
+    #   - MUST upgrade to a paid plan (prior value here was `basic-256mb`) before the 30-day expiry
+    #     if any real avatar/chat data needs to be kept.
+    #   - Only ONE free Postgres may be active per Render workspace. Offshorlyreporting's render.yaml
+    #     declares `offshorly-reporting-db` with `plan: free` — if that instance is live in this same
+    #     workspace, this Blueprint sync will FAIL and this database must go paid instead.
+    #   - Free Postgres: 1 GB fixed storage, no backups, no managed connection pooling.
+    plan: free
+
