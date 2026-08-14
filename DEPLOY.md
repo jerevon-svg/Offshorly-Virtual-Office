@@ -37,10 +37,14 @@ a Static Site gives always-on CDN serving with no cold starts.
 runtime env on a static bundle. Changing it requires a rebuild + redeploy on
 Render, not just an env var flip.
 
-`VITE_CHAT_MODE` **must** be set to `real`. If it's unset (or anything other
-than `real`), `frontend/src/services/chat/index.ts` silently defaults to
-`mock` — the app builds and runs fine, chat just never talks to the real
-backend, with no error anywhere.
+`VITE_CHAT_MODE` is now optional in practice: setting `VITE_CHAT_SOCKET_URL`
+(non-empty, after trimming) is sufficient on its own to make
+`frontend/src/services/chat/index.ts` resolve to `real` mode. `VITE_CHAT_MODE`
+only needs to be set explicitly when you want to **override** that inference
+— e.g. `VITE_CHAT_MODE=mock` forces mock chat even with a socket URL
+configured. Leaving both unset, or leaving `VITE_CHAT_SOCKET_URL` empty,
+still silently falls back to `mock` — the app builds and runs fine, chat just
+never talks to the real backend, with no error anywhere.
 
 `VITE_CHAT_SOCKET_URL` must be an `https://` base with **no trailing slash**
 and **no `ws://`/`wss://` scheme** — Socket.IO negotiates `wss://` on its own
