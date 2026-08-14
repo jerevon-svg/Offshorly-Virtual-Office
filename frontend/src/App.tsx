@@ -1,5 +1,6 @@
 import { OfficeMap } from "./components/OfficeMap/OfficeMap";
 import { useAuthGate } from "./auth/useAuthGate";
+import { BackgroundMusicControl } from "./audio/BackgroundMusicControl";
 
 function App() {
   const status = useAuthGate();
@@ -14,7 +15,12 @@ function App() {
     return null;
   }
 
-  return <OfficeMap />;
+  return (
+    <>
+      <OfficeMap />
+      <BackgroundMusicControl />
+    </>
+  );
 }
 
 export default App;

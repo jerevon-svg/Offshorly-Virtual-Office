@@ -25,6 +25,12 @@ type Props = {
   // — lets the office map place the resulting character on the map
   // immediately without waiting for the modal to close.
   onAvatarSaved?: (saved: SavedAvatar) => void;
+  // The signed-in viewer's email, stamped onto the saved record so it can be
+  // found again by email next session (see avatarStorage.ts's
+  // findSavedAvatarByOwnerEmail). Omitted when this flow is used to generate
+  // a COLLEAGUE on someone else's behalf (the dev-only "+ Add Employee"
+  // button) rather than the viewer's own character.
+  ownerEmail?: string | null;
 };
 
 // Standalone avatar-creator flow. Mock mode is mocked end-to-end (see
@@ -35,7 +41,7 @@ type Props = {
 // placed on the map immediately — the Analyzing/Review steps are skipped
 // entirely, and OfficeMap swaps the placeholder for the real result once the
 // background job finishes (see OfficeMap.tsx's poll-on-mount/on-save logic).
-export function AvatarCreator({ onClose, onAvatarSaved }: Props) {
+export function AvatarCreator({ onClose, onAvatarSaved, ownerEmail }: Props) {
   const [step, setStep] = useState<Step>("upload");
   const [photoDataUrl, setPhotoDataUrl] = useState<string | null>(null);
   const [employeeName, setEmployeeName] = useState("");
@@ -62,6 +68,7 @@ export function AvatarCreator({ onClose, onAvatarSaved }: Props) {
       employeeName: employeeName || "Unnamed",
       nickname,
       roomId: pickedRoomId,
+      ownerEmail: ownerEmail ?? undefined,
     });
   }
 
@@ -82,6 +89,7 @@ export function AvatarCreator({ onClose, onAvatarSaved }: Props) {
       employeeName: employeeName || "Unnamed",
       nickname,
       roomId: pickedRoomId,
+      ownerEmail: ownerEmail ?? undefined,
     });
     // saveAvatar's return type doesn't carry generationStatus/jobId — patch
     // them onto the just-persisted record in one localStorage write.

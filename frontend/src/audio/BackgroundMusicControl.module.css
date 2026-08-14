@@ -1,0 +1,37 @@
+/* Ambient background-music control — matches the existing top-bar pill
+   convention (see OfficeMap.module.css .addEmployeeButton / .phaseDebug).
+   Top-right corner is free real estate: other controls occupy
+   top-left (CharacterSearch) / top-center (phase debug). */
+.pill {
+  position: fixed;
+  top: 12px;
+  right: 16px;
+  z-index: 100;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  background: rgba(20, 20, 20, 0.85);
+  color: #f0f0f0;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-family: system-ui, sans-serif;
+  font-size: 13px;
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.muteButton {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #f0f0f0;
+}
+
+.slider {
+  width: 80px;
+  accent-color: #f0f0f0;
+  cursor: pointer;
+}

@@ -24,7 +24,13 @@ export const CURRENT_USER_ID = FALLBACK_AVATAR_ID;
 // Re-renders once the gate's /auth/me response lands, so a component that
 // paints before identity is known corrects itself instead of staying on the
 // fallback sprite for the rest of the session.
-export function useCurrentUserAvatarId(): string {
+//
+// Returns null when identity IS known but no registry entry (nor localpart
+// convention) matches it — a real "this person has no character yet"
+// signal, distinct from the pre-identity loading state below. Callers
+// (OfficeMap) are expected to render the faceless placeholder for null, not
+// silently fall back to Bon.
+export function useCurrentUserAvatarId(): string | null {
   const user = useCurrentUser();
   return user ? avatarIdForEmail(user.email) : CURRENT_USER_ID;
 }

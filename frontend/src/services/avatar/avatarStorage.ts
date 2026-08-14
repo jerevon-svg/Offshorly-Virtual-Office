@@ -31,6 +31,7 @@ export function persistSavedAvatar(req: SaveAvatarRequest): SavedAvatar {
     nickname: req.nickname,
     roomId: req.roomId,
     savedAt: new Date().toISOString(),
+    ownerEmail: req.ownerEmail,
   };
 
   if (typeof window !== "undefined" && typeof window.localStorage !== "undefined") {
@@ -40,6 +41,20 @@ export function persistSavedAvatar(req: SaveAvatarRequest): SavedAvatar {
   }
 
   return saved;
+}
+
+// Finds a previously saved avatar belonging to `email`, matched by
+// ownerEmail (case-/whitespace-insensitive, matching the convention every
+// other email-keyed lookup in this app uses — see avatarIdentity.ts /
+// roomIdentity.ts). Used to decide whether a signed-in user already has a
+// generated character before routing them into the creation flow again.
+// Returns null for a legacy record with no ownerEmail (saved before this
+// field existed) — such a record simply can't be claimed by email lookup.
+export function findSavedAvatarByOwnerEmail(email: string | null | undefined): SavedAvatar | null {
+  if (!email) return null;
+  const normalized = email.trim().toLowerCase();
+  const existing = loadSavedAvatars();
+  return existing.find((a) => a.ownerEmail?.trim().toLowerCase() === normalized) ?? null;
 }
 
 // Patches an existing stored record in place, matched by avatarId — used by

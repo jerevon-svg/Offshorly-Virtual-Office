@@ -1013,6 +1013,16 @@
     }
   },
   {
+    "id": "ai-door",
+    "kind": "furniture",
+    "path": "assets/office/furniture/ai-team/ai-door.png",
+    "x": 302.52,
+    "y": 280.83,
+    "width": 31.504,
+    "height": 18.108,
+    "transform": null
+  },
+  {
     "id": "ceo-desk",
     "kind": "furniture",
     "path": "assets/office/furniture/executive-team/ceo-desk.png",
@@ -1427,6 +1437,26 @@
       "leftPct": -25.67,
       "topPct": -15.56
     }
+  },
+  {
+    "id": "executive-door-left",
+    "kind": "furniture",
+    "path": "assets/office/furniture/executive-team/executive-door-left.png",
+    "x": 690.14,
+    "y": 291.25,
+    "width": 34.349,
+    "height": 21.94,
+    "transform": null
+  },
+  {
+    "id": "executive-door-right",
+    "kind": "furniture",
+    "path": "assets/office/furniture/executive-team/executive-door-right.png",
+    "x": 724.49,
+    "y": 291.25,
+    "width": 33.735,
+    "height": 21.94,
+    "transform": null
   },
   {
     "id": "dev-lead1-desk",

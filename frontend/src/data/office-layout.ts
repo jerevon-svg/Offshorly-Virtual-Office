@@ -60,6 +60,7 @@ import aiMemberDesk1 from "../assets/office/furniture/ai-team/ai-member-desk-1.p
 import aiLeadDesk from "../assets/office/furniture/ai-team/ai-lead-desk.png";
 import aiMemberChair from "../assets/office/furniture/ai-team/ai-member-chair.png";
 import aiLeadChair from "../assets/office/furniture/ai-team/ai-lead-chair.png";
+import aiDoor from "../assets/office/furniture/ai-team/ai-door.png";
 import devChair from "../assets/office/furniture/dev-team/dev-chair.png";
 import ceoDesk from "../assets/office/furniture/executive-team/ceo-desk.png";
 import ctoDesk from "../assets/office/furniture/executive-team/cto-desk.png";
@@ -75,6 +76,8 @@ import execChair from "../assets/office/furniture/executive-team/exec-chair.png"
 import execVisitorChair from "../assets/office/furniture/executive-team/exec-visitor-chair.png";
 import bottomCenterSofa from "../assets/office/furniture/executive-team/bottom-center-sofa.png";
 import topCenterSofa from "../assets/office/furniture/executive-team/top-center-sofa.png";
+import executiveDoorLeft from "../assets/office/furniture/executive-team/executive-door-left.png";
+import executiveDoorRight from "../assets/office/furniture/executive-team/executive-door-right.png";
 import devLeadDesk from "../assets/office/furniture/dev-team/dev-lead-desk.png";
 import devBayDesk from "../assets/office/furniture/dev-team/dev-bay-desk.png";
 import devSideDesk from "../assets/office/furniture/dev-team/dev-side-desk.png";
@@ -142,6 +145,7 @@ export const ASSET_PATH_TO_SRC: Record<string, string> = {
   "assets/office/furniture/ai-team/ai-lead-desk.png": aiLeadDesk,
   "assets/office/furniture/ai-team/ai-member-chair.png": aiMemberChair,
   "assets/office/furniture/ai-team/ai-lead-chair.png": aiLeadChair,
+  "assets/office/furniture/ai-team/ai-door.png": aiDoor,
   "assets/office/furniture/dev-team/dev-chair.png": devChair,
   "assets/office/furniture/executive-team/ceo-desk.png": ceoDesk,
   "assets/office/furniture/executive-team/cto-desk.png": ctoDesk,
@@ -157,6 +161,8 @@ export const ASSET_PATH_TO_SRC: Record<string, string> = {
   "assets/office/furniture/executive-team/exec-visitor-chair.png": execVisitorChair,
   "assets/office/furniture/executive-team/bottom-center-sofa.png": bottomCenterSofa,
   "assets/office/furniture/executive-team/top-center-sofa.png": topCenterSofa,
+  "assets/office/furniture/executive-team/executive-door-left.png": executiveDoorLeft,
+  "assets/office/furniture/executive-team/executive-door-right.png": executiveDoorRight,
   "assets/office/furniture/dev-team/dev-lead-desk.png": devLeadDesk,
   "assets/office/furniture/dev-team/dev-bay-desk.png": devBayDesk,
   "assets/office/furniture/dev-team/dev-side-desk.png": devSideDesk,

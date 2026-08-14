@@ -26,6 +26,7 @@ import {
   worldToCell,
 } from "../../data/officeGrid";
 import { doorStandForRoom } from "../../data/doorStandPoints";
+import { DOOR_ANIM_MS, DOOR_LAYERS_BY_ROOM } from "../../data/officeDoors";
 import type { AssetLayer } from "../../types/office";
 import type { ChatMessage } from "../../services/chat";
 import { isRealZohoMode } from "../../services/zoho";
@@ -40,7 +41,8 @@ import {
   computeRoomFocusTransform,
   SIDEBAR_WIDTH,
 } from "./panMath";
-import { useCharacterWalk } from "./useCharacterWalk";
+import { useCharacterWalk, directionBetween } from "./useCharacterWalk";
+import type { WalkDirection } from "../../data/bonWalkFrames";
 import { SavedAvatarWalker, type SavedAvatarWalkApi, type SavedAvatarWalkState } from "./SavedAvatarWalker";
 import {
   ALEX_SPRITE_SET,
@@ -53,9 +55,10 @@ import { useOfficePhase } from "./useOfficePhase";
 import { OfficePhaseDebugControl } from "./OfficePhaseDebugControl";
 import { AvatarCreator } from "../AvatarCreator/AvatarCreator";
 import { loadSavedAvatars } from "../../services/avatar/MockAvatarService";
-import { updateSavedAvatar } from "../../services/avatar/avatarStorage";
+import { findSavedAvatarByOwnerEmail, updateSavedAvatar } from "../../services/avatar/avatarStorage";
 import { realAvatarService } from "../../services/avatar/RealAvatarService";
-import type { SavedAvatar } from "../../services/avatar/types";
+import { PLACEHOLDER_SPRITE_SET } from "../../services/avatar/placeholder";
+import type { AvatarSpriteSet, SavedAvatar } from "../../services/avatar/types";
 import { savedAvatarsToLayers } from "../../data/savedAvatarLayers";
 import { useCheckoutFlow } from "./useCheckoutFlow";
 import { WorkingStatusIndicator } from "./checkout/WorkingStatusIndicator";
@@ -92,19 +95,10 @@ type OnboardingState =
 // destination room has a complete in/out stand-point pair painted around its
 // door (see doorStandPoints.ts), the walk stops just outside, "waits" for the
 // door to open, steps through, then stops just inside for a close beat —
-// instead of walking straight to one goal point. No door art/animation
-// exists yet, so onDoorOpen/onDoorClose are intentionally no-ops; they're
-// timing hooks for whenever that art lands. DOOR_ANIM_MS is a placeholder
-// pause standing in for that not-yet-built slide-open animation.
-const DOOR_ANIM_MS = 500;
-
-function onDoorOpen(_roomId: string): void {
-  // no-op placeholder — hook for future door slide-open animation
-}
-
-function onDoorClose(_roomId: string): void {
-  // no-op placeholder — hook for future door slide-close animation
-}
+// instead of walking straight to one goal point. onDoorOpen/onDoorClose
+// (below) drive the door slide animation for rooms that have door art;
+// DOOR_ANIM_MS (shared with OfficeStage's slide transition) is the pause
+// standing in for that animation's duration.
 
 function computeCoverScale(): number {
   if (typeof window === "undefined") return 0.5;
@@ -115,6 +109,13 @@ function computeCoverScale(): number {
   // viewport — zooming out can never reveal the viewport background.
   return Math.max(fitW, fitH);
 }
+
+// Camera stages between full-map/tight-on-character and the current
+// tight-focus multiplier (2.5x/3x) — wide enough to show a whole room
+// (+ its door) while a character walks through it, used by focusRoomFit
+// below for every door-gated walk (check-in, chat/pat approach, checkout
+// exit).
+export const ROOM_FIT_MULTIPLIER = 1.6;
 
 export function OfficeMap() {
   const { phase, hourDecimal, overrideHour, setOverrideHour } = useOfficePhase();
@@ -160,10 +161,24 @@ export function OfficeMap() {
   const currentUserId = useCurrentUserAvatarId();
   // Generalizes what used to be a hardcoded "bon" for the viewer's own
   // animated sprite — anyone with an entry in SPRITE_SET_BY_AVATAR_ID gets
-  // their own walk/pat/idle art; anyone else (no sprite set built yet)
-  // still renders as Bon so the viewer always has a body.
-  const playerLayerId = SPRITE_SET_BY_AVATAR_ID[currentUserId] ? currentUserId : "bon";
-  const viewerSpriteSet = SPRITE_SET_BY_AVATAR_ID[playerLayerId];
+  // their own walk/pat/idle art. Two distinct "no real sprite set" cases,
+  // both now handled the same way (the faceless placeholder), NOT a
+  // silent fallback to Bon's identity:
+  //   - currentUserId === null: avatarIdForEmail found no registry/localpart
+  //     match at all (a genuinely new/unmapped person).
+  //   - currentUserId is a known id but SPRITE_SET_BY_AVATAR_ID has no entry
+  //     for it (e.g. registry points at a real person with only a static
+  //     portrait, no animated set built yet).
+  const knownSpriteSet = currentUserId !== null ? SPRITE_SET_BY_AVATAR_ID[currentUserId] : undefined;
+  const hasOwnSpriteSet = Boolean(knownSpriteSet);
+  // Not a real character-layer id (never matches a manifest layer, an NPC,
+  // or a sprite-set entry) — deliberately, so the existing
+  // `npcCharacterLayers.find(...) ?? bonLayer` geometry fallback below still
+  // resolves to bonLayer's position/size for the placeholder case, without
+  // that fallback needing to know this id exists.
+  const noCharacterPlayerId = "__no_character__";
+  const playerLayerId = hasOwnSpriteSet ? (currentUserId as string) : noCharacterPlayerId;
+  const viewerSpriteSet = hasOwnSpriteSet ? (knownSpriteSet as AvatarSpriteSet) : PLACEHOLDER_SPRITE_SET;
   // The manifest layer for whichever sprite is playing "you" — used for
   // name formatting/geometry the same way bonLayer used to be used
   // unconditionally.
@@ -274,6 +289,36 @@ export function OfficeMap() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // "No character yet" -> creation flow (interim, no-backend v1): the
+  // faceless placeholder (wired above via hasOwnSpriteSet) is the IMMEDIATE
+  // stand-in for a signed-in viewer with no registry mapping and no
+  // previously saved avatar of their own — not a dead end. The first time
+  // identity resolves to that state, this auto-opens the existing
+  // AvatarCreator flow (same "Add Employee" generation pipeline, just
+  // scoped to the viewer's own email via ownerEmail) instead of leaving
+  // them on the placeholder with no path forward. Fires at most once per
+  // page load (promptedOwnAvatarRef) — closing the modal without saving
+  // does not reopen it; the viewer stays the placeholder until they refresh
+  // or re-open "+ Add Employee" themselves.
+  //
+  // DEV-only, same guard as the "+ Add Employee" button below: the creator
+  // runs on MockAvatarService with no server-side persistence yet, so in
+  // production auto-opening it would quietly write an invented character
+  // into one viewer's localStorage — invisible to everyone else, lost on
+  // cache-clear/device-switch. In production an unmapped user just sees the
+  // faceless placeholder until real backend-based character assignment
+  // exists.
+  const promptedOwnAvatarRef = useRef(false);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    if (promptedOwnAvatarRef.current) return;
+    if (!currentUser?.email) return; // identity not resolved yet
+    if (hasOwnSpriteSet) return; // already has a real/registry-mapped character
+    if (findSavedAvatarByOwnerEmail(currentUser.email)) return; // already generated one
+    promptedOwnAvatarRef.current = true;
+    setIsAvatarCreatorOpen(true);
+  }, [currentUser, hasOwnSpriteSet]);
+
   const [greeting, setGreeting] = useState<{ characterId: string; nonce: number; text?: string } | null>(
     null,
   );
@@ -288,6 +333,31 @@ export function OfficeMap() {
   // until it expires (falls back to the looping dots otherwise).
   const [talkingTextById, setTalkingTextById] = useState<Record<string, string>>({});
   const talkingTimersRef = useRef<Record<string, number>>({});
+
+  // Door art layer ids currently slid open (see officeDoors.ts). Rooms
+  // without a DOOR_LAYERS_BY_ROOM entry have no door art yet, so
+  // onDoorOpen/onDoorClose below simply no-op for them.
+  const [openDoorLayerIds, setOpenDoorLayerIds] = useState<Set<string>>(() => new Set());
+
+  function onDoorOpen(roomId: string): void {
+    const ids = DOOR_LAYERS_BY_ROOM[roomId];
+    if (!ids) return;
+    setOpenDoorLayerIds((prev) => {
+      const next = new Set(prev);
+      ids.forEach((id) => next.add(id));
+      return next;
+    });
+  }
+
+  function onDoorClose(roomId: string): void {
+    const ids = DOOR_LAYERS_BY_ROOM[roomId];
+    if (!ids) return;
+    setOpenDoorLayerIds((prev) => {
+      const next = new Set(prev);
+      ids.forEach((id) => next.delete(id));
+      return next;
+    });
+  }
 
   function handleTalkingMessage(msg: ChatMessage) {
     window.clearTimeout(talkingTimersRef.current[msg.senderId]);
@@ -338,6 +408,7 @@ export function OfficeMap() {
     frameIndex,
     walkTo,
     playPat,
+    face,
     cancel: cancelWalk,
     resetPos: resetBonPos,
   } = useCharacterWalk({
@@ -380,6 +451,7 @@ export function OfficeMap() {
     frameIndex: alexFrameIndex,
     walkTo: alexWalkTo,
     playPat: alexPlayPat,
+    face: alexFace,
   } = useCharacterWalk({ x: alexLayer?.x ?? 0, y: alexLayer?.y ?? 0 });
   const {
     pos: micahPos,
@@ -389,6 +461,7 @@ export function OfficeMap() {
     frameIndex: micahFrameIndex,
     walkTo: micahWalkTo,
     playPat: micahPlayPat,
+    face: micahFace,
   } = useCharacterWalk({ x: micahLayer?.x ?? 0, y: micahLayer?.y ?? 0 });
   const {
     pos: luiPos,
@@ -398,7 +471,19 @@ export function OfficeMap() {
     frameIndex: luiFrameIndex,
     walkTo: luiWalkTo,
     playPat: luiPlayPat,
+    face: luiFace,
   } = useCharacterWalk({ x: luiLayer?.x ?? 0, y: luiLayer?.y ?? 0 });
+
+  // Pat-back lookup — only alex/micah/lui have their own useCharacterWalk
+  // instance (and thus their own `face`) above; plain static roster people
+  // and not-yet-generalized saved avatars have no directional capability, so
+  // this resolves to null for them and the pat handler below no-ops.
+  function facerFor(id: string): ((dir: WalkDirection) => void) | null {
+    if (id === "alex") return alexFace;
+    if (id === "micah") return micahFace;
+    if (id === "lui") return luiFace;
+    return null;
+  }
   const alexSpriteSrc = characterSprite(
     ALEX_SPRITE_SET,
     alexIsPatting ? "pat" : alexIsWalking ? "walk" : "idle",
@@ -685,10 +770,12 @@ export function OfficeMap() {
       }
     }
     pipSideRef.current = arisha.x > bonPos.x ? "left" : "right";
+    const arriveCenter = { x: goal.x + bw / 2, y: goal.y + bh / 2 };
     // Door-gated on the way OUT of whatever room bon is currently in (his
     // own department, typically) — falls through to the single walk above
     // unchanged when that room has no complete door pair.
     walkOutOfRoomThenTo(goal, goalRoomId, () => {
+      face(directionBetween(arriveCenter, tc));
       checkoutFlow.arrivedAtReception();
       const ref = transformRef.current;
       const wrapper = ref?.instance.wrapperComponent;
@@ -734,6 +821,7 @@ export function OfficeMap() {
       // stand-point pair is painted, but wired correctly for when that
       // lands. Falls through to the single walk unchanged in the meantime.
       walkOutOfRoomThenTo(goal, goalRoomId, () => {
+        face("front");
         window.clearTimeout(greetTimerRef.current);
         greetNonceRef.current += 1;
         setGreeting({ characterId: playerLayerId, nonce: greetNonceRef.current, text: "Bye, everyone! 👋" });
@@ -900,7 +988,9 @@ export function OfficeMap() {
       }
     }
     pipSideRef.current = arisha.x > bonPos.x ? "left" : "right";
+    const arriveCenter = { x: goal.x + bw / 2, y: goal.y + bh / 2 };
     walkTo(path, () => {
+      face(directionBetween(arriveCenter, tc));
       setOnboarding("greeting");
       // Three sequential beats — a proper greet/respond/prompt exchange
       // rather than one static bubble. Each beat fully dismisses before the
@@ -953,6 +1043,7 @@ export function OfficeMap() {
       const startRoomId = roomOf(startCenter)?.id ?? null;
 
       function finishArrival() {
+        face("front");
         window.clearTimeout(greetTimerRef.current);
         greetNonceRef.current += 1;
         setGreeting({ characterId: playerLayerId, nonce: greetNonceRef.current, text: "Hi team!" });
@@ -975,6 +1066,12 @@ export function OfficeMap() {
         const pathToOutStand = findPath({ x: bonPos.x, y: bonPos.y }, outGoal, startRoomId, layer.id);
 
         walkTo(pathToOutStand, () => {
+          // The full-map reveal (resetToInitialView above) has done its job
+          // by now (bon has walked all the way to the door) — narrow to
+          // room-fit right as the door is about to slide open, so the
+          // animation is actually visible, then hold room-fit through the
+          // door crossing + arrival greeting.
+          focusRoomFit(flatRoomId);
           onDoorOpen(flatRoomId);
           window.setTimeout(() => {
             const pathToInStand = findPath(outGoal, inGoal, layer.id, layer.id);
@@ -1062,6 +1159,15 @@ export function OfficeMap() {
       const outGoal = { x: doorPair.outStand.x - bw / 2, y: doorPair.outStand.y - bh / 2 };
       const pathToInStand = findPath({ x: bonPos.x, y: bonPos.y }, inGoal, startRoomId, startRoomId);
 
+      // Room-fit on the room being LEFT, right before the door-crossing legs
+      // begin — overrides whichever caller-set tight zoom (on Arisha, at
+      // walk-start) ran in the same tick, since this runs synchronously
+      // inside walkOutOfRoomThenTo itself and setTransform calls simply
+      // apply in call order on the shared transformRef. The caller's
+      // tight-zoom-at-ARRIVAL call (on Arisha, once bon reaches her) is
+      // untouched — that's the correct "zoom back in" moment for this flow.
+      focusRoomFit(flatStartRoomId!, 600);
+
       walkTo(pathToInStand, () => {
         if (checkoutDoorNonceRef.current !== nonce) return;
         onDoorOpen(flatStartRoomId!);
@@ -1102,7 +1208,14 @@ export function OfficeMap() {
   // it to close, then continue to the actual near-person stand spot.
   // Otherwise (already in the same room, or no door pairing painted yet for
   // that room) falls back to the single existing walk, unchanged.
-  function approachCharacter(target: AssetLayer, onArrive: () => void) {
+  // `onArrive` receives the resolved arriveCenter/targetCenter pair (the same
+  // ones used for bon's own `face(directionBetween(arriveCenter, tc))` calls
+  // below) so callers that also need to turn the TARGET to face bon (e.g. the
+  // pat handler, for alex/micah/lui) don't have to recompute them.
+  function approachCharacter(
+    target: AssetLayer,
+    onArrive: (arriveCenter: { x: number; y: number }, targetCenter: { x: number; y: number }) => void,
+  ) {
     const bw = playerCharacterLayer.width;
     const bh = playerCharacterLayer.height;
     const bc = { x: bonPos.x + bw / 2, y: bonPos.y + bh / 2 };
@@ -1135,11 +1248,23 @@ export function OfficeMap() {
         })();
     const startRoomId = roomOf(bc)?.id ?? null;
     const goalRoomId = roomOf(tc)?.id ?? null;
+    const arriveCenter = { x: goal.x + bw / 2, y: goal.y + bh / 2 };
 
-    // Static camera focus on the target — bon may walk off-screen while
-    // approaching; the mini-camera PiP (rendered while isWalking) tracks
-    // him instead.
-    {
+    const flatStartRoomId = flatRoomIdAt(bc);
+    const flatGoalRoomId = flatRoomIdAt(tc);
+    const doorPair =
+      flatGoalRoomId && flatGoalRoomId !== flatStartRoomId ? doorStandForRoom(flatGoalRoomId) : null;
+
+    // Camera: when this approach crosses through a door (doorPair), start
+    // wide on the destination ROOM (so the door + room are visible during
+    // the crossing) rather than tight on the target — the final leg below
+    // zooms tight-on-target only once bon is actually inside, walking the
+    // last stretch to them. No crossing (same room already, or no door
+    // pairing painted for it) — unchanged: tight on the target immediately,
+    // same as before this camera-staging change existed.
+    if (doorPair) {
+      focusRoomFit(flatGoalRoomId, 600);
+    } else {
       const ref = transformRef.current;
       const wrapper = ref?.instance.wrapperComponent;
       if (ref && wrapper) {
@@ -1160,11 +1285,6 @@ export function OfficeMap() {
     approachNonceRef.current += 1;
     const nonce = approachNonceRef.current;
 
-    const flatStartRoomId = flatRoomIdAt(bc);
-    const flatGoalRoomId = flatRoomIdAt(tc);
-    const doorPair =
-      flatGoalRoomId && flatGoalRoomId !== flatStartRoomId ? doorStandForRoom(flatGoalRoomId) : null;
-
     if (doorPair) {
       const outGoal = { x: doorPair.outStand.x - bw / 2, y: doorPair.outStand.y - bh / 2 };
       const inGoal = { x: doorPair.inStand.x - bw / 2, y: doorPair.inStand.y - bh / 2 };
@@ -1180,10 +1300,25 @@ export function OfficeMap() {
           walkTo(pathToInStand, () => {
             if (approachNonceRef.current !== nonce) return;
             onDoorClose(flatGoalRoomId);
+            // Final leg — inside the room now, walking the last stretch to
+            // the actual target. Zoom IN from room-fit to tight-on-target
+            // here (animated, not instant) so the camera visibly closes in
+            // as bon approaches them.
+            {
+              const ref = transformRef.current;
+              const wrapper = ref?.instance.wrapperComponent;
+              if (ref && wrapper) {
+                const rect = wrapper.getBoundingClientRect();
+                const focusScale = initialScale * 2.5;
+                const { x, y } = computeCenterTransform(target, focusScale, rect.width, rect.height);
+                ref.setTransform(x, y, focusScale, 600, "easeOut");
+              }
+            }
             const pathToStandSpot = findPath(inGoal, goal, goalRoomId, goalRoomId);
             walkTo(pathToStandSpot, () => {
               if (approachNonceRef.current !== nonce) return;
-              onArrive();
+              face(directionBetween(arriveCenter, tc));
+              onArrive(arriveCenter, tc);
             });
           });
         }, DOOR_ANIM_MS);
@@ -1194,7 +1329,10 @@ export function OfficeMap() {
     // Fallback: same room already, or no complete door stand-point pairing
     // painted for this room yet — existing single-goal walk, unchanged.
     const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, goalRoomId);
-    walkTo(path, onArrive);
+    walkTo(path, () => {
+      face(directionBetween(arriveCenter, tc));
+      onArrive(arriveCenter, tc);
+    });
   }
 
   function handleChoose(action: "chat" | "call" | "pat" | "walkDemo" | "patDemo") {
@@ -1213,8 +1351,15 @@ export function OfficeMap() {
     }
     if (action === "pat") {
       setMenu(null);
-      approachCharacter(target, () => {
+      approachCharacter(target, (arriveCenter, targetCenter) => {
         playPat();
+        // Turn the patted NPC to face bon back, if it has its own
+        // useCharacterWalk instance (alex/micah/lui) — plain static roster
+        // people have no directional capability, so facerFor returns null
+        // and this is a no-op for them. Left facing bon rather than reverted
+        // on a timer — the next time that NPC's own demo/movement runs it
+        // recomputes its own direction from its next segment anyway.
+        facerFor(target.id)?.(directionBetween(targetCenter, arriveCenter));
       });
     } else if (action === "chat") {
       // setMenu(null) rather than closeCharacterMenu() — avoid resetting the
@@ -1222,13 +1367,35 @@ export function OfficeMap() {
       setMenu(null);
       approachCharacter(target, () => {
         setOpenChat(target);
-        setTalkingIds([currentUserId, target.id]);
+        setTalkingIds([playerLayerId, target.id]);
       });
     } else {
       closeCharacterMenu();
       setToast(`Calling ${name}… — coming soon`);
       setTimeout(() => setToast(null), 1800);
     }
+  }
+
+  // Zooms out (relative to the current tight-focus multipliers) to frame an
+  // entire flat room rect — used mid-walk, right as a character reaches a
+  // room's door, so the door slide animation (and the room it opens into)
+  // is actually visible instead of staying tight on a character/target the
+  // whole time. `flatRoomId` is the flat rects/teamRooms-namespace id (e.g.
+  // "design-team") — the same scheme doorStandForRoom/flatRoomIdAt use, NOT
+  // the roomLayers/manifest scheme. Mirrors every other focus call's
+  // guarded ref/wrapper pattern; degrades to a no-op (returns false) if the
+  // room rect or the transform ref/wrapper isn't available.
+  function focusRoomFit(flatRoomId: string, durationMs = 500): boolean {
+    const roomRect = rooms.find((r) => r.id === flatRoomId);
+    if (!roomRect) return false;
+    const ref = transformRef.current;
+    const wrapper = ref?.instance.wrapperComponent;
+    if (!ref || !wrapper) return false;
+    const rect = wrapper.getBoundingClientRect();
+    const scale = initialScale * ROOM_FIT_MULTIPLIER;
+    const { x, y } = computeCenterTransform(roomRect, scale, rect.width, rect.height);
+    ref.setTransform(x, y, scale, durationMs, "easeOut");
+    return true;
   }
 
   function focusRoom(layer: AssetLayer, side: "left" | "right") {
@@ -1341,6 +1508,19 @@ export function OfficeMap() {
         ...(viewerIsHere ? [playerCharacterLayer] : []),
       ]
     : [];
+  // Real roster people are keyed by the flat rooms/teamRooms namespace
+  // (e.g. "dev-team"), not the manifest room id the sidebar was opened
+  // with (e.g. "dev-room") — same id-scheme split flatRoomIdAt/
+  // savedAvatarsInRoom above bridge via geometry. Resolve the flat id
+  // once here from the room layer's center so the filter below compares
+  // like-for-like instead of silently matching nothing for the "-team"
+  // rooms whose flat/manifest ids don't happen to coincide.
+  const roomSidebarFlatId = roomSidebar
+    ? flatRoomIdAt({
+        x: roomSidebar.layer.x + roomSidebar.layer.width / 2,
+        y: roomSidebar.layer.y + roomSidebar.layer.height / 2,
+      })
+    : null;
 
   return (
     <div className={`${styles.viewport} ${isDragging ? styles.dragging : ""}`}>
@@ -1420,6 +1600,7 @@ export function OfficeMap() {
             greetingText={greeting?.text}
             talkingCharacterIds={talkingIds}
             talkingTextById={talkingTextById}
+            openDoorLayerIds={openDoorLayerIds}
           />
         </TransformComponent>
       </TransformWrapper>
@@ -1453,6 +1634,7 @@ export function OfficeMap() {
               hiddenCharacterIds={hiddenCharacterIds}
               talkingCharacterIds={talkingIds}
               talkingTextById={talkingTextById}
+              openDoorLayerIds={openDoorLayerIds}
             />
           </div>
         </div>
@@ -1645,7 +1827,9 @@ export function OfficeMap() {
         // roster, so the manifest fallback still applies.
         people={
           rosterActive && roomSidebar
-            ? roster.people.filter((person) => person.roomId === roomSidebar.layer.id)
+            ? roster.people.filter(
+                (person) => roomSidebarFlatId !== null && person.roomId === roomSidebarFlatId,
+              )
             : undefined
         }
         roomNames={roster.roomNames}
@@ -1654,7 +1838,7 @@ export function OfficeMap() {
       {openChat && (
         <ConversationView
           peer={openChat}
-          selfId={currentUserId}
+          selfId={playerLayerId}
           onIncomingMessage={handleTalkingMessage}
           onClose={() => {
             setOpenChat(null);
@@ -1710,6 +1894,7 @@ export function OfficeMap() {
       {isAvatarCreatorOpen && (
         <AvatarCreator
           onClose={() => setIsAvatarCreatorOpen(false)}
+          ownerEmail={currentUser?.email ?? null}
           onAvatarSaved={(saved) => {
             setCustomAvatars((prev) => [...prev, saved]);
             if (saved.generationStatus === "pending") startPollingJob(saved);

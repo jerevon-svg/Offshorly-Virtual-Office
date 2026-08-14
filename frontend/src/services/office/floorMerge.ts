@@ -33,8 +33,10 @@ export interface OfficePerson {
   jobTitle: string | null;
   currentActivity: string | null;
   lastMessage: LastMessage | null;
-  /** Sprite to draw, from the identity join. */
-  avatarId: string;
+  /** Sprite to draw, from the identity join. Null when the person's email
+   *  has no registry mapping — rosterLayers.ts renders these with the
+   *  faceless placeholder sprite instead of defaulting to Bon's art. */
+  avatarId: string | null;
   /** Hand-drawn room to draw them in. Never null — see resolveRoomId. */
   roomId: string;
   /** Atlas's room id, retained even when it has no canvas twin, so the
@@ -114,6 +116,8 @@ export function mergeFloorWithPresence(
       jobTitle: person.job_title ?? live?.job_title ?? null,
       currentActivity,
       lastMessage: live?.last_message ?? person.last_message ?? null,
+      // Null when unmapped — rosterLayers.ts renders the faceless placeholder
+      // sprite for these people rather than defaulting to Bon's art.
       avatarId: avatarIdForEmail(person.user_email),
       roomId,
       atlasRoomId: currentRoomId,

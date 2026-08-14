@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "gen-server": "node scripts/avatar-pipeline/gen-server.mjs",
+    "walkgrid": "node scripts/parse-walkable.cjs",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",

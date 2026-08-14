@@ -1,7 +1,16 @@
 import { ASSET_PATH_TO_SRC, bonLayer, characterLayers, rooms } from "./office-layout";
 import { seatsForRoomId } from "./roomSeats";
+import { characterSprite } from "./bonWalkFrames";
+import { PLACEHOLDER_SPRITE_SET } from "../services/avatar/placeholder";
 import type { AssetLayer } from "../types/office";
 import type { OfficePerson } from "../services/office/floorMerge";
+
+// Sentinel `path` used for roster people with no registry-mapped avatar
+// (avatarId null or unrecognized). rosterSrcById resolves this to the
+// faceless placeholder sprite instead of ASSET_PATH_TO_SRC, which has no
+// entry for it — see Bon's screenshot regression: unmapped people must NOT
+// silently fall back to Bon's art.
+export const PLACEHOLDER_LAYER_PATH = "__placeholder_avatar__";
 
 // Turns a live roster into positioned canvas layers.
 //
@@ -103,7 +112,12 @@ export function seatOverflowsRoom(roomId: string, seatCount: number): boolean {
 // static cast uses, keyed by the layer id (the person's email).
 export function rosterSrcById(layers: AssetLayer[]): Record<string, string> {
   const map: Record<string, string> = {};
+  const placeholderSrc = characterSprite(PLACEHOLDER_SPRITE_SET, "idle", "front");
   for (const layer of layers) {
+    if (layer.path === PLACEHOLDER_LAYER_PATH) {
+      map[layer.id] = placeholderSrc;
+      continue;
+    }
     const src = ASSET_PATH_TO_SRC[layer.path];
     if (src) map[layer.id] = src;
   }
@@ -153,7 +167,15 @@ export function officePeopleToLayers(people: OfficePerson[]): AssetLayer[] {
     let overflowIndex = 0;
 
     roomPeople.forEach((person, i) => {
-      const art = artByAvatarId.get(person.avatarId) ?? bonLayer;
+      // Unmapped avatarId (null, or not found in the manifest) renders the
+      // faceless placeholder sprite rather than silently defaulting to
+      // Bon's art — see Bon's screenshot regression (roster room full of
+      // "Bon" placeholders). Seat/geometry logic below is unchanged; only
+      // the art source differs.
+      const mappedArt = person.avatarId ? artByAvatarId.get(person.avatarId) : undefined;
+      const art = mappedArt
+        ? { path: mappedArt.path, imgCrop: mappedArt.imgCrop }
+        : { path: PLACEHOLDER_LAYER_PATH, imgCrop: null };
 
       let position: { x: number; y: number };
       let width: number;
