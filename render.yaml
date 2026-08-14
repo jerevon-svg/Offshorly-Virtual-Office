@@ -38,6 +38,8 @@ services:
         sync: false
       - key: FRONTEND_URL
         sync: false
+      - key: ATLAS_API_URL
+        sync: false
 
 databases:
   - name: virtual-office-db

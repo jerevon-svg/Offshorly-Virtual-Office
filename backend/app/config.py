@@ -1,5 +1,7 @@
 from __future__ import annotations
+
 from functools import lru_cache
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -21,6 +23,15 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "http://localhost:3000"
 
     FRONTEND_URL: str = "http://localhost:3000"
+
+    # Base URL of Atlas's API. Identity for the chat REST/socket surface is verified by calling
+    # ${ATLAS_API_URL}/api/v1/auth/me with the caller's bearer token (see app/auth/atlas.py) —
+    # this backend never checks JWT signatures locally, mirroring backend/src/config.ts.
+    ATLAS_API_URL: str = "https://atlas-api.offshorly.com"
+
+    # TTL (ms) for the in-memory Atlas token verification cache — mirrors
+    # backend/src/auth/verifyAtlasToken.ts's CACHE_TTL_MS.
+    ATLAS_VERIFY_TTL_MS: int = 60_000
 
     @property
     def cors_origins_list(self) -> list[str]:
