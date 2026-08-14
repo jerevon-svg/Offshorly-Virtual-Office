@@ -119,12 +119,15 @@ describe("mergeFloorWithPresence", () => {
     expect(merged[0].avatarId).toBe("bon");
   });
 
-  it("gives an unmapped person the fallback sprite rather than failing", () => {
+  it("gives an unmapped person a null avatarId rather than defaulting to Bon", () => {
+    // Regression: a whole room of unmapped employees must NOT all render as
+    // Bon's sprite (see the roster rendering fix in rosterLayers.ts, which
+    // treats null as "use the faceless placeholder").
     const merged = mergeFloorWithPresence(
       [floorPerson({ user_email: "nobody.here@offshorly.com" })],
       [],
     );
-    expect(merged[0].avatarId).toBe("bon");
+    expect(merged[0].avatarId).toBeNull();
   });
 });
 

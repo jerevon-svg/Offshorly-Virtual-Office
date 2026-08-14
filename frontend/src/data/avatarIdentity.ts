@@ -1,4 +1,5 @@
 import { characterLayers } from "./office-layout";
+import { EMAIL_TO_AVATAR_ID } from "./avatarRegistry";
 
 // The identity join: Atlas keys every person by EMAIL; this app's canvas
 // keys every sprite by a hand-authored layer id ("bon", "alex", ...).
@@ -9,31 +10,22 @@ import { characterLayers } from "./office-layout";
 // The intended end state is a field on Atlas's user record (e.g.
 // office_avatar_id) served straight from the API, at which point
 // avatarIdForPerson() collapses into "read person.office_avatar_id, fall
-// back to FALLBACK_AVATAR_ID". Until that migration exists, the mapping
-// lives here. This WILL drift as people join and leave — that is the known
-// cost of the interim, and the fallback below is what keeps drift from
-// being a crash.
+// back to null". Until that migration exists, the mapping lives in
+// avatarRegistry.ts (the committed Layer D registry). This WILL drift as
+// people join and leave — that is the known cost of the interim.
 
-// Sprite shown for anyone with no mapping. Must be a real character layer,
-// so an unmapped person renders as a generic body rather than a blank.
+// Legacy "everyone with no mapping renders as Bon" sprite. Kept ONLY as the
+// pre-identity/loading-state default (see data/currentUser.ts's
+// CURRENT_USER_ID) — it must NOT be returned by avatarIdForEmail below for
+// an unmapped person anymore. A real unmapped person has no character yet;
+// masking them as Bon was the bug this file used to have. Callers that need
+// a "no match" answer get `null` instead and are expected to render the
+// faceless placeholder (see services/avatar/placeholder.ts).
 export const FALLBACK_AVATAR_ID = "bon";
 
 // Domain used to synthesize mock emails and to read the localpart
 // convention below.
 const OFFICE_EMAIL_DOMAIN = "offshorly.com";
-
-// Explicit overrides, checked first. Add a row here whenever someone's
-// email localpart is not simply their sprite id — that is the only case
-// this table needs to cover, because of the localpart fallback below.
-//
-// Keys MUST be lowercase; lookups lowercase the incoming address, since
-// email localparts are not reliably case-consistent between systems.
-const EMAIL_TO_AVATAR_ID: Record<string, string> = {
-  // Bon's real Zoho/Atlas email localpart ("jerevon") does not match his
-  // sprite id ("bon"), unlike micah/alex/lui whose localparts already match
-  // by convention and need no entry here.
-  "jerevon@offshorly.com": "bon",
-};
 
 const KNOWN_AVATAR_IDS = new Set(characterLayers.map((layer) => layer.id));
 
@@ -47,12 +39,15 @@ export function mockEmailForAvatarId(avatarId: string): string {
   return `${avatarId}@${OFFICE_EMAIL_DOMAIN}`;
 }
 
-// Resolves an Atlas person to a sprite. Accepts anything carrying an email
-// — Presence, FloorPerson, MapPerson, PersonCard and AtlasUser all satisfy
-// this shape under different field names, so callers pass the address
-// itself rather than the record.
-export function avatarIdForEmail(email: string | null | undefined): string {
-  if (!email) return FALLBACK_AVATAR_ID;
+// Resolves an Atlas person to a sprite id, or null when nobody in
+// avatarRegistry.ts (nor the localpart convention) matches — a distinct,
+// honest "no character" signal rather than silently defaulting to a real
+// person's id. Accepts anything carrying an email — Presence, FloorPerson,
+// MapPerson, PersonCard and AtlasUser all satisfy this shape under
+// different field names, so callers pass the address itself rather than
+// the record.
+export function avatarIdForEmail(email: string | null | undefined): string | null {
+  if (!email) return null;
   const normalized = email.trim().toLowerCase();
 
   const override = EMAIL_TO_AVATAR_ID[normalized];
@@ -60,16 +55,18 @@ export function avatarIdForEmail(email: string | null | undefined): string {
 
   // Convention fallback: bon@offshorly.com -> "bon". Only honoured when it
   // names a sprite that actually exists, so a new hire whose localpart
-  // happens to collide with nothing simply gets the fallback body instead
-  // of a broken image.
+  // happens to collide with nothing simply gets `null` instead of a broken
+  // image.
   const localpart = normalized.split("@")[0];
   if (localpart && isKnownAvatarId(localpart)) return localpart;
 
-  return FALLBACK_AVATAR_ID;
+  return null;
 }
 
 // Convenience wrapper for the record shapes the office API returns.
-export function avatarIdForPerson(person: { user_email: string } | { email: string }): string {
+export function avatarIdForPerson(
+  person: { user_email: string } | { email: string },
+): string | null {
   const email = "user_email" in person ? person.user_email : person.email;
   return avatarIdForEmail(email);
 }

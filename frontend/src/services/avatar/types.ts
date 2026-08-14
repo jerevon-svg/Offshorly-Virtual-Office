@@ -74,6 +74,13 @@ export interface SaveAvatarRequest {
   // One of the 6 real team-home room ids from data/office-layout.ts `rooms`
   // (ai-room, executive-team, dev-team, cms-team, qa-room, design-team).
   roomId: string;
+  // The Atlas email of the person this avatar belongs to, so it can be
+  // found again by email next session (see currentUser.ts / OfficeMap.tsx's
+  // "no character yet" -> creation-flow wiring). Optional: the interim
+  // creation flow (AvatarCreator, dev-only "+ Add Employee") is also used to
+  // generate OTHER colleagues on someone else's behalf, which have no
+  // logged-in "owner" of their own — those avatars simply omit this field.
+  ownerEmail?: string;
 }
 
 export interface SavedAvatar extends GeneratedAvatar {
@@ -82,6 +89,12 @@ export interface SavedAvatar extends GeneratedAvatar {
   nickname: string;
   roomId: string;
   savedAt: string;
+  // The Atlas email of the person this avatar belongs to — stamped from
+  // SaveAvatarRequest.ownerEmail at persistence time (see avatarStorage.ts).
+  // Optional for the same backward-compatibility reason as generationStatus/
+  // jobId below: every avatar saved before this field existed (and any
+  // colleague avatar generated on someone else's behalf) simply omits it.
+  ownerEmail?: string;
   // Non-blocking real-mode flow (Track 2 placeholder-swap): "pending" means
   // this record is a placeholder standing in for a still-running background
   // generation job; "ready" means previewUrl/spriteSet are the real result;

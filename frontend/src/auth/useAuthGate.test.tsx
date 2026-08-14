@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { useAuthGate, getCurrentUserId, __resetCurrentUserIdForTest } from "./useAuthGate";
 import { HOME_PATH, LOGIN_PATH } from "../services/api/client";
+import { getCurrentUser, resetCurrentUserForTests } from "./currentUserStore";
 
 function GateProbe() {
   const status = useAuthGate();
@@ -16,6 +17,8 @@ describe("useAuthGate", () => {
     // so one test's resolved id can never leak into the next test's
     // assertions (order-independence).
     __resetCurrentUserIdForTest();
+    resetCurrentUserForTests();
+    delete import.meta.env.VITE_DEV_USER_EMAIL;
     import.meta.env.VITE_API_URL = "https://atlas-api.offshorly.com";
     // Vitest loads .env.local like any Vite mode, and DEV is true here — so a
     // developer's local VITE_AUTH_GATE=off would silently bypass the gate and
@@ -237,5 +240,60 @@ describe("useAuthGate", () => {
     expect(window.localStorage.getItem("token")).toBeNull();
     expect(window.localStorage.getItem("user")).toBeNull();
     expect(window.localStorage.getItem("checkout:draft")).toBe("keep-me");
+  });
+
+  describe("dev-bypass identity override", () => {
+    beforeEach(() => {
+      import.meta.env.VITE_AUTH_GATE = "off";
+    });
+
+    it("seeds Bon by default when neither ?as= nor VITE_DEV_USER_EMAIL is set (no regression)", () => {
+      render(<GateProbe />);
+
+      expect(screen.getByTestId("status").textContent).toBe("allowed");
+      expect(getCurrentUser()?.email).toBe("jerevon@offshorly.com");
+      expect(getCurrentUser()?.full_name).toBe("Bon");
+    });
+
+    it("?as= query param overrides the seeded identity", () => {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: {
+          ...window.location,
+          href: "https://atlas.offshorly.com/virtual-office?as=micah@offshorly.com",
+          search: "?as=micah@offshorly.com",
+        },
+      });
+
+      render(<GateProbe />);
+
+      expect(getCurrentUser()?.email).toBe("micah@offshorly.com");
+      expect(getCurrentUser()?.full_name).toBe("Micah");
+    });
+
+    it("VITE_DEV_USER_EMAIL overrides the seeded identity when no ?as= is present", () => {
+      import.meta.env.VITE_DEV_USER_EMAIL = "lui@offshorly.com";
+
+      render(<GateProbe />);
+
+      expect(getCurrentUser()?.email).toBe("lui@offshorly.com");
+      expect(getCurrentUser()?.full_name).toBe("Lui");
+    });
+
+    it("?as= takes precedence over VITE_DEV_USER_EMAIL when both are set", () => {
+      import.meta.env.VITE_DEV_USER_EMAIL = "lui@offshorly.com";
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: {
+          ...window.location,
+          href: "https://atlas.offshorly.com/virtual-office?as=alex@offshorly.com",
+          search: "?as=alex@offshorly.com",
+        },
+      });
+
+      render(<GateProbe />);
+
+      expect(getCurrentUser()?.email).toBe("alex@offshorly.com");
+    });
   });
 });

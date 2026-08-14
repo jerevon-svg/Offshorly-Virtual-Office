@@ -123,19 +123,54 @@ function isGateBypassed(): boolean {
 // OfficeMap's roster de-dup, which drops the signed-in viewer's own static
 // roster portrait by matching their email; with no email, the filter never
 // matches and the viewer's roster entry renders alongside their animated
-// player sprite (two Bons on screen). Bon's real email is hardcoded here
-// deliberately (matches FALLBACK_USER_ID's/FALLBACK_AVATAR_ID's "bon"
-// convention and avatarIdentity.ts's EMAIL_TO_AVATAR_ID override) — local
-// dev with the gate off is meant to behave as "you are Bon", same as it
-// always has. Keep this in sync with that override if it ever changes.
+// player sprite (two Bons on screen). Bon's real email is the DEFAULT here
+// (matches FALLBACK_USER_ID's/FALLBACK_AVATAR_ID's "bon" convention and
+// avatarRegistry.ts's EMAIL_TO_AVATAR_ID override) — local dev with the gate
+// off behaves as "you are Bon" unless overridden below. Keep this in sync
+// with that registry entry if it ever changes.
 const DEV_BYPASS_EMAIL = "jerevon@offshorly.com";
+
+// Local-only escape hatch for testing "who am I" as someone other than Bon,
+// since there's no real Atlas token available to run the gate for real
+// locally (see isGateBypassed's module comment). Two ways in, checked in
+// this order:
+//   1. `?as=someone@offshorly.com` query param — fastest for ad-hoc checks,
+//      no restart needed.
+//   2. VITE_AUTH_GATE=off VITE_DEV_USER_EMAIL=someone@offshorly.com in
+//      frontend/.env.local — sticky across reloads without retyping the
+//      query param every time.
+// Neither is read unless the caller (seedDevBypassIdentity) is itself
+// already behind isGateBypassed()'s import.meta.env.DEV check, so this
+// inherits the exact same production guard as the rest of the bypass —
+// nothing new to weaken here.
+function resolveDevBypassEmail(): string {
+  if (typeof window !== "undefined") {
+    const fromQuery = new URLSearchParams(window.location.search).get("as");
+    if (fromQuery) return fromQuery;
+  }
+  const fromEnv = import.meta.env.VITE_DEV_USER_EMAIL;
+  if (fromEnv) return fromEnv;
+  return DEV_BYPASS_EMAIL;
+}
+
+// Derives a display name for the dev-bypass identity. Bon's real name is
+// kept as a literal ("Bon", not a slugified localpart) since "Jerevon"
+// would otherwise replace it; every overridden email gets a best-effort
+// Capitalized-localpart name instead, since there's no real /auth/me
+// response to source a name from locally.
+function fullNameForDevBypassEmail(email: string): string {
+  if (email.trim().toLowerCase() === DEV_BYPASS_EMAIL) return "Bon";
+  const localpart = email.split("@")[0] || email;
+  return localpart.charAt(0).toUpperCase() + localpart.slice(1);
+}
 
 function seedDevBypassIdentity(): void {
   if (getCurrentUser()) return;
+  const email = resolveDevBypassEmail();
   setCurrentUserFromMeResponse({
     id: FALLBACK_USER_ID,
-    email: DEV_BYPASS_EMAIL,
-    full_name: "Bon",
+    email,
+    full_name: fullNameForDevBypassEmail(email),
     role: "",
     team: null,
   });

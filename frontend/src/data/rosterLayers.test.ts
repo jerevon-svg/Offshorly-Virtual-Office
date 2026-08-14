@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { officePeopleToLayers, rosterSrcById, seatOverflowsRoom } from "./rosterLayers";
-import { rooms } from "./office-layout";
+import {
+  officePeopleToLayers,
+  PLACEHOLDER_LAYER_PATH,
+  rosterSrcById,
+  seatOverflowsRoom,
+} from "./rosterLayers";
+import { rooms, bonLayer, ASSET_PATH_TO_SRC } from "./office-layout";
+import { characterSprite } from "./bonWalkFrames";
+import { PLACEHOLDER_SPRITE_SET } from "../services/avatar/placeholder";
 import type { OfficePerson } from "../services/office/floorMerge";
 
 function person(overrides: Partial<OfficePerson> = {}): OfficePerson {
@@ -142,6 +149,31 @@ describe("rosterSrcById", () => {
     const layers = officePeopleToLayers([person()]);
     const srcs = rosterSrcById(layers);
     expect(srcs[layers[0].id]).toBeTruthy();
+  });
+
+  it("resolves an unmapped person to the faceless placeholder, NOT Bon's art — regression for the roster-full-of-Bon screenshot", () => {
+    // This is the exact scenario from Bon's screenshot: a room full of
+    // employees with no registry mapping (avatarId null) must not all
+    // render as Bon's sprite.
+    const layers = officePeopleToLayers([
+      person({ email: "unmapped1@offshorly.com", avatarId: null }),
+      person({ email: "unmapped2@offshorly.com", avatarId: null }),
+    ]);
+    const srcs = rosterSrcById(layers);
+    const bonSrc = ASSET_PATH_TO_SRC[bonLayer.path];
+    const placeholderSrc = characterSprite(PLACEHOLDER_SPRITE_SET, "idle", "front");
+
+    for (const layer of layers) {
+      expect(layer.path).toBe(PLACEHOLDER_LAYER_PATH);
+      expect(srcs[layer.id]).toBe(placeholderSrc);
+      expect(srcs[layer.id]).not.toBe(bonSrc);
+    }
+  });
+
+  it("still resolves a mapped person to their real art, unchanged", () => {
+    const layers = officePeopleToLayers([person({ avatarId: "bon" })]);
+    const srcs = rosterSrcById(layers);
+    expect(srcs[layers[0].id]).toBe(ASSET_PATH_TO_SRC[bonLayer.path]);
   });
 });
 

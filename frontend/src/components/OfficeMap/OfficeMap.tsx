@@ -55,9 +55,10 @@ import { useOfficePhase } from "./useOfficePhase";
 import { OfficePhaseDebugControl } from "./OfficePhaseDebugControl";
 import { AvatarCreator } from "../AvatarCreator/AvatarCreator";
 import { loadSavedAvatars } from "../../services/avatar/MockAvatarService";
-import { updateSavedAvatar } from "../../services/avatar/avatarStorage";
+import { findSavedAvatarByOwnerEmail, updateSavedAvatar } from "../../services/avatar/avatarStorage";
 import { realAvatarService } from "../../services/avatar/RealAvatarService";
-import type { SavedAvatar } from "../../services/avatar/types";
+import { PLACEHOLDER_SPRITE_SET } from "../../services/avatar/placeholder";
+import type { AvatarSpriteSet, SavedAvatar } from "../../services/avatar/types";
 import { savedAvatarsToLayers } from "../../data/savedAvatarLayers";
 import { useCheckoutFlow } from "./useCheckoutFlow";
 import { WorkingStatusIndicator } from "./checkout/WorkingStatusIndicator";
@@ -160,10 +161,24 @@ export function OfficeMap() {
   const currentUserId = useCurrentUserAvatarId();
   // Generalizes what used to be a hardcoded "bon" for the viewer's own
   // animated sprite — anyone with an entry in SPRITE_SET_BY_AVATAR_ID gets
-  // their own walk/pat/idle art; anyone else (no sprite set built yet)
-  // still renders as Bon so the viewer always has a body.
-  const playerLayerId = SPRITE_SET_BY_AVATAR_ID[currentUserId] ? currentUserId : "bon";
-  const viewerSpriteSet = SPRITE_SET_BY_AVATAR_ID[playerLayerId];
+  // their own walk/pat/idle art. Two distinct "no real sprite set" cases,
+  // both now handled the same way (the faceless placeholder), NOT a
+  // silent fallback to Bon's identity:
+  //   - currentUserId === null: avatarIdForEmail found no registry/localpart
+  //     match at all (a genuinely new/unmapped person).
+  //   - currentUserId is a known id but SPRITE_SET_BY_AVATAR_ID has no entry
+  //     for it (e.g. registry points at a real person with only a static
+  //     portrait, no animated set built yet).
+  const knownSpriteSet = currentUserId !== null ? SPRITE_SET_BY_AVATAR_ID[currentUserId] : undefined;
+  const hasOwnSpriteSet = Boolean(knownSpriteSet);
+  // Not a real character-layer id (never matches a manifest layer, an NPC,
+  // or a sprite-set entry) — deliberately, so the existing
+  // `npcCharacterLayers.find(...) ?? bonLayer` geometry fallback below still
+  // resolves to bonLayer's position/size for the placeholder case, without
+  // that fallback needing to know this id exists.
+  const noCharacterPlayerId = "__no_character__";
+  const playerLayerId = hasOwnSpriteSet ? (currentUserId as string) : noCharacterPlayerId;
+  const viewerSpriteSet = hasOwnSpriteSet ? (knownSpriteSet as AvatarSpriteSet) : PLACEHOLDER_SPRITE_SET;
   // The manifest layer for whichever sprite is playing "you" — used for
   // name formatting/geometry the same way bonLayer used to be used
   // unconditionally.
@@ -273,6 +288,36 @@ export function OfficeMap() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // "No character yet" -> creation flow (interim, no-backend v1): the
+  // faceless placeholder (wired above via hasOwnSpriteSet) is the IMMEDIATE
+  // stand-in for a signed-in viewer with no registry mapping and no
+  // previously saved avatar of their own — not a dead end. The first time
+  // identity resolves to that state, this auto-opens the existing
+  // AvatarCreator flow (same "Add Employee" generation pipeline, just
+  // scoped to the viewer's own email via ownerEmail) instead of leaving
+  // them on the placeholder with no path forward. Fires at most once per
+  // page load (promptedOwnAvatarRef) — closing the modal without saving
+  // does not reopen it; the viewer stays the placeholder until they refresh
+  // or re-open "+ Add Employee" themselves.
+  //
+  // DEV-only, same guard as the "+ Add Employee" button below: the creator
+  // runs on MockAvatarService with no server-side persistence yet, so in
+  // production auto-opening it would quietly write an invented character
+  // into one viewer's localStorage — invisible to everyone else, lost on
+  // cache-clear/device-switch. In production an unmapped user just sees the
+  // faceless placeholder until real backend-based character assignment
+  // exists.
+  const promptedOwnAvatarRef = useRef(false);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    if (promptedOwnAvatarRef.current) return;
+    if (!currentUser?.email) return; // identity not resolved yet
+    if (hasOwnSpriteSet) return; // already has a real/registry-mapped character
+    if (findSavedAvatarByOwnerEmail(currentUser.email)) return; // already generated one
+    promptedOwnAvatarRef.current = true;
+    setIsAvatarCreatorOpen(true);
+  }, [currentUser, hasOwnSpriteSet]);
 
   const [greeting, setGreeting] = useState<{ characterId: string; nonce: number; text?: string } | null>(
     null,
@@ -1322,7 +1367,7 @@ export function OfficeMap() {
       setMenu(null);
       approachCharacter(target, () => {
         setOpenChat(target);
-        setTalkingIds([currentUserId, target.id]);
+        setTalkingIds([playerLayerId, target.id]);
       });
     } else {
       closeCharacterMenu();
@@ -1793,7 +1838,7 @@ export function OfficeMap() {
       {openChat && (
         <ConversationView
           peer={openChat}
-          selfId={currentUserId}
+          selfId={playerLayerId}
           onIncomingMessage={handleTalkingMessage}
           onClose={() => {
             setOpenChat(null);
@@ -1849,6 +1894,7 @@ export function OfficeMap() {
       {isAvatarCreatorOpen && (
         <AvatarCreator
           onClose={() => setIsAvatarCreatorOpen(false)}
+          ownerEmail={currentUser?.email ?? null}
           onAvatarSaved={(saved) => {
             setCustomAvatars((prev) => [...prev, saved]);
             if (saved.generationStatus === "pending") startPollingJob(saved);
