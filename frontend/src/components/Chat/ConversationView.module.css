@@ -53,6 +53,42 @@
   background: rgba(255, 255, 255, 0.08);
 }
 
+.connectionBanner {
+  padding: 8px 16px;
+  font-size: 12px;
+  color: #ffe08a;
+  background: rgba(255, 191, 71, 0.12);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.sendError {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 16px;
+  font-size: 12px;
+  color: #ff9c9c;
+  background: rgba(255, 80, 80, 0.1);
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.retryButton {
+  all: unset;
+  cursor: pointer;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.15);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+
+.retryButton:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
 .messages {
   flex: 1;
   overflow-y: auto;

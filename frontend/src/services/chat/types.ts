@@ -25,6 +25,13 @@ export interface UnreadCountUpdate {
 }
 export type UnreadCountListener = (update: UnreadCountUpdate) => void;
 
+// Real-mode-only: surfaces the underlying Socket.IO connection lifecycle so
+// the UI can show a "waking up the chat server" banner during a Render
+// free-tier cold start instead of silently dropping sends. "reconnecting"
+// covers both a mid-session drop and a cold-start handshake in progress.
+export type ConnectionState = "connecting" | "connected" | "reconnecting" | "disconnected";
+export type ConnectionStateListener = (state: ConnectionState) => void;
+
 export interface ChatService {
   listConversations(): Promise<Conversation[]>;
   getMessages(conversationId: string): Promise<ChatMessage[]>;
@@ -39,4 +46,8 @@ export interface ChatService {
   // tracking, so MockChatService simply doesn't implement them.
   markRead?(input: { conversationId: string; upToSentAt: string }): void;
   onUnreadCount?(cb: UnreadCountListener): () => void;
+  // Mock mode has no real socket/connection to report on, so
+  // MockChatService simply doesn't implement these.
+  getConnectionState?(): ConnectionState;
+  onConnectionState?(cb: ConnectionStateListener): () => void;
 }

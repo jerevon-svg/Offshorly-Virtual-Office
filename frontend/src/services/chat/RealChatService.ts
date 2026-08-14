@@ -3,6 +3,8 @@ import { getAuthToken } from "../api/client";
 import type {
   ChatMessage,
   ChatService,
+  ConnectionState,
+  ConnectionStateListener,
   Conversation,
   MessageListener,
   UnreadCountListener,
@@ -18,7 +20,11 @@ import type {
 // It reuses the same bearer token (getAuthToken()) rather than duplicating
 // the localStorage key lookup.
 
-const SEND_TIMEOUT_MS = 8000;
+const SEND_ACK_TIMEOUT_MS = 8000;
+// Render's free tier can cold-sleep after ~15min idle; observed wake time is
+// ~41s. 45s gives the socket handshake a little headroom beyond that before
+// we give up and tell the user the server may be waking up.
+const CONNECT_TIMEOUT_MS = 45000;
 
 function socketBase(): string {
   const raw = import.meta.env.VITE_CHAT_SOCKET_URL;
@@ -79,6 +85,8 @@ export class RealChatService implements ChatService {
   // a reconnect.
   private activeConversationId: string | null = null;
   private hadPriorDisconnect = false;
+  private connectionState: ConnectionState = "disconnected";
+  private connectionStateListeners = new Set<ConnectionStateListener>();
   // DEV-ONLY: when set, requests/sockets authenticate via the backend's
   // `x-dev-email` bypass (backend/src/http.ts `devEmailFrom` / backend/src/
   // socket.ts `devEmailFromHandshake`, both hard-gated to
@@ -110,6 +118,7 @@ export class RealChatService implements ChatService {
     });
 
     socket.on("connect", () => {
+      this.setConnectionState("connected");
       if (this.hadPriorDisconnect) {
         this.hadPriorDisconnect = false;
         this.catchUpActiveConversation();
@@ -117,6 +126,7 @@ export class RealChatService implements ChatService {
     });
     socket.on("disconnect", () => {
       this.hadPriorDisconnect = true;
+      this.setConnectionState("reconnecting");
     });
 
     socket.on("message_saved", (payload: { clientTempId: string; message: ChatMessage }) => {
@@ -145,7 +155,25 @@ export class RealChatService implements ChatService {
     });
 
     this.socketInstance = socket;
+    this.setConnectionState("connecting");
     return socket;
+  }
+
+  private setConnectionState(state: ConnectionState): void {
+    if (this.connectionState === state) return;
+    this.connectionState = state;
+    this.connectionStateListeners.forEach((cb) => cb(state));
+  }
+
+  getConnectionState(): ConnectionState {
+    return this.connectionState;
+  }
+
+  onConnectionState(cb: ConnectionStateListener): () => void {
+    this.connectionStateListeners.add(cb);
+    return () => {
+      this.connectionStateListeners.delete(cb);
+    };
   }
 
   private pushMessage(msg: ChatMessage): void {
@@ -219,19 +247,62 @@ export class RealChatService implements ChatService {
     const clientTempId = nextClientTempId();
     const socket = this.socket();
 
-    return new Promise<ChatMessage>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingSends.delete(clientTempId);
-        reject(new Error("Timed out waiting for the server to confirm this message was sent."));
-      }, SEND_TIMEOUT_MS);
+    // Emits `send_message` and arms the ack timeout. There is no server-side
+    // idempotency (no client_temp_id column, insert_message is a blind
+    // insert) — this MUST be called exactly once per send, ever.
+    const emitAndAwaitAck = (): Promise<ChatMessage> => {
+      return new Promise<ChatMessage>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          this.pendingSends.delete(clientTempId);
+          reject(new Error("Timed out waiting for the server to confirm this message was sent."));
+        }, SEND_ACK_TIMEOUT_MS);
 
-      this.pendingSends.set(clientTempId, { resolve, reject, timer });
+        this.pendingSends.set(clientTempId, { resolve, reject, timer });
 
-      socket.emit("send_message", {
-        conversationId: input.conversationId,
-        text: input.text,
-        clientTempId,
+        socket.emit("send_message", {
+          conversationId: input.conversationId,
+          text: input.text,
+          clientTempId,
+        });
       });
+    };
+
+    if (socket.connected) {
+      // Warm path — unchanged behavior: emit immediately, then wait for ack.
+      return emitAndAwaitAck();
+    }
+
+    // Cold path — socket not connected (e.g. Render free-tier cold start,
+    // measured ~41s wake). Do NOT emit yet: wait for `connect`, bounded by
+    // CONNECT_TIMEOUT_MS. Emit fires from exactly one place below (either
+    // on connect, or never — the timeout path guarantees no emit).
+    return new Promise<ChatMessage>((resolve, reject) => {
+      let settled = false;
+
+      const cleanup = () => {
+        clearTimeout(connectTimer);
+        socket.off("connect", onConnect);
+      };
+
+      const onConnect = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        emitAndAwaitAck().then(resolve, reject);
+      };
+
+      const connectTimer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(
+          new Error(
+            "Couldn't reach the chat server — it may be waking up after a period of inactivity. Please try again in a moment.",
+          ),
+        );
+      }, CONNECT_TIMEOUT_MS);
+
+      socket.on("connect", onConnect);
     });
   }
 
