@@ -7,6 +7,9 @@ describe("avatarIdForEmail", () => {
     // Case/whitespace-insensitive, matching every other email-keyed lookup
     // in this app.
     expect(avatarIdForEmail("  JEREVON@Offshorly.com  ")).toBe("bon");
+
+    // Lui's real Atlas login ("louiejie") also differs from his sprite id.
+    expect(avatarIdForEmail("louiejie@offshorly.com")).toBe("lui");
   });
 
   it("resolves via the localpart convention when there's no explicit registry entry", () => {
