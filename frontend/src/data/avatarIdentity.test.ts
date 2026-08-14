@@ -26,6 +26,15 @@ describe("avatarIdForEmail", () => {
     expect(avatarIdForEmail("brand-new-hire@offshorly.com")).toBeNull();
   });
 
+  it("returns null (not the decorative stock character) when a localpart collides with a hardcoded office-decoration id", () => {
+    // "nicole" is one of the 16 old Figma stock-art placeholder characters in
+    // office-assets-manifest.json — decoration only, no animated sprite set.
+    // A real Atlas employee named Nicole must fall through to null (the
+    // faceless placeholder), not resolve to that decoration's flat PNG.
+    expect(isKnownAvatarId("nicole")).toBe(false);
+    expect(avatarIdForEmail("nicole@offshorly.com")).toBeNull();
+  });
+
   it("returns null for null/undefined/empty input", () => {
     expect(avatarIdForEmail(null)).toBeNull();
     expect(avatarIdForEmail(undefined)).toBeNull();
