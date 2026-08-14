@@ -10,6 +10,15 @@ class FakeSocket {
   // property; defaults to true so existing warm-path tests (written before
   // the cold-start handling below existed) keep passing unmodified.
   connected = true;
+  // Real socket.io-client Sockets expose this too — true while the manager
+  // is (or will be) retrying, false once it has given up (e.g. an
+  // auth/namespace connect_error). Defaults to true; tests that exercise
+  // the terminal-error path set it to false before triggering connect_error.
+  active = true;
+
+  connect() {
+    this.connected = true;
+  }
 
   on(event: string, cb: (...args: unknown[]) => void) {
     const list = this.handlers.get(event) ?? [];
@@ -308,5 +317,79 @@ describe("RealChatService reconnect handling", () => {
     const url = catchUpCall![0] as string;
     expect(url).toContain(encodeURIComponent(firstMsg.sentAt));
     expect(received[1]).toEqual(missedMsg);
+  });
+});
+
+describe("RealChatService connect_error handling", () => {
+  it('sets state to "error" (not stuck at "connecting") and captures the reason when socket.active is false', async () => {
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { RealChatService } = await import("./RealChatService");
+    const service = new RealChatService();
+
+    await service.getMessages("conv-a__b");
+    expect(service.getConnectionState()).toBe("connecting");
+
+    lastFakeSocket!.active = false;
+    lastFakeSocket!.trigger("connect_error", new Error("invalid token"));
+
+    expect(service.getConnectionState()).toBe("error");
+    expect(service.getConnectionState()).not.toBe("connecting");
+    expect(service.getConnectionError()).toBe("invalid token");
+    expect(consoleErrorSpy).toHaveBeenCalled();
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('sets state to "reconnecting" when socket.active is true (manager will retry on its own)', async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { RealChatService } = await import("./RealChatService");
+    const service = new RealChatService();
+
+    await service.getMessages("conv-a__b");
+    lastFakeSocket!.active = true;
+    lastFakeSocket!.trigger("connect_error", new Error("transport close"));
+
+    expect(service.getConnectionState()).toBe("reconnecting");
+  });
+
+  it("rejects a send waiting on the cold connect path (instead of hanging to the 45s timeout) when connect_error is terminal", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { RealChatService } = await import("./RealChatService");
+    const service = new RealChatService();
+
+    await service.getMessages("conv-a__b");
+    lastFakeSocket!.connected = false;
+
+    const sendPromise = service.sendMessage({
+      conversationId: "conv-a__b",
+      senderId: "a@example.com",
+      text: "hello",
+    });
+
+    lastFakeSocket!.active = false;
+    lastFakeSocket!.trigger("connect_error", new Error("unauthorized"));
+
+    await expect(sendPromise).rejects.toThrow(/unauthorized/i);
+    // No emit before rejection, and none after — exactly-once guarantee
+    // must hold even when the connect wait ends in a terminal error.
+    expect(lastFakeSocket!.emitted.find((e) => e.event === "send_message")).toBeUndefined();
+  });
+});
+
+describe("RealChatService missing auth token", () => {
+  it("does not open a socket and sets state to \"error\" when no auth token is available", async () => {
+    const { getAuthToken } = await import("../api/client");
+    vi.mocked(getAuthToken).mockReturnValue(null as unknown as string);
+    const { RealChatService } = await import("./RealChatService");
+    const service = new RealChatService();
+
+    await expect(
+      service.sendMessage({ conversationId: "conv-a__b", senderId: "a@example.com", text: "hi" }),
+    ).rejects.toThrow(/not signed in/i);
+
+    expect(service.getConnectionState()).toBe("error");
+    // The io() mock (and thus lastFakeSocket) must never have been touched —
+    // a doomed handshake shouldn't even attempt a connection.
+    expect(lastFakeSocket).toBeNull();
   });
 });

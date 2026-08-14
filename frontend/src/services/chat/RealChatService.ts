@@ -87,6 +87,9 @@ export class RealChatService implements ChatService {
   private hadPriorDisconnect = false;
   private connectionState: ConnectionState = "disconnected";
   private connectionStateListeners = new Set<ConnectionStateListener>();
+  // Human-readable reason for the most recent "error" state — surfaced to
+  // the UI via getConnectionError(). Cleared on a successful connect.
+  private connectionErrorReason: string | undefined;
   // DEV-ONLY: when set, requests/sockets authenticate via the backend's
   // `x-dev-email` bypass (backend/src/http.ts `devEmailFrom` / backend/src/
   // socket.ts `devEmailFromHandshake`, both hard-gated to
@@ -106,8 +109,19 @@ export class RealChatService implements ChatService {
     }
   }
 
-  private socket(): Socket {
+  // Returns null (without ever calling io()) when the handshake is doomed
+  // from the start — no auth token and no dev-email bypass — rather than
+  // opening a socket that will send `{ token: null }` and hang forever.
+  private socket(): Socket | null {
     if (this.socketInstance) return this.socketInstance;
+
+    if (!this.devEmail && !getAuthToken()) {
+      const reason = "Not signed in — please sign in to use chat.";
+      console.error(`[chat] connection error: ${reason}`);
+      this.connectionErrorReason = reason;
+      this.setConnectionState("error");
+      return null;
+    }
 
     const auth: Record<string, string | null> = this.devEmail
       ? { "x-dev-email": this.devEmail }
@@ -118,6 +132,7 @@ export class RealChatService implements ChatService {
     });
 
     socket.on("connect", () => {
+      this.connectionErrorReason = undefined;
       this.setConnectionState("connected");
       if (this.hadPriorDisconnect) {
         this.hadPriorDisconnect = false;
@@ -127,6 +142,22 @@ export class RealChatService implements ChatService {
     socket.on("disconnect", () => {
       this.hadPriorDisconnect = true;
       this.setConnectionState("reconnecting");
+    });
+    socket.on("connect_error", (err: Error) => {
+      // This was previously swallowed entirely — nothing logged the failure
+      // and the UI stayed pinned at "connecting" forever. Always log so
+      // failures are visible, then disambiguate via socket.active: the
+      // manager keeps retrying transport-level failures on its own
+      // (socket.active === true), but socket.io v4 does NOT retry after a
+      // namespace/auth rejection (socket.active === false) — that's terminal
+      // until something calls reconnect().
+      console.error("[chat] connect_error", err);
+      if (socket.active) {
+        this.setConnectionState("reconnecting");
+      } else {
+        this.connectionErrorReason = err.message || "Connection to the chat server was rejected.";
+        this.setConnectionState("error");
+      }
     });
 
     socket.on("message_saved", (payload: { clientTempId: string; message: ChatMessage }) => {
@@ -176,6 +207,18 @@ export class RealChatService implements ChatService {
     };
   }
 
+  getConnectionError(): string | undefined {
+    return this.connectionErrorReason;
+  }
+
+  // Socket.io does not auto-reconnect after an auth/namespace connect_error
+  // (see the connect_error handler above) — a terminal "error" state needs
+  // an explicit call to recover, wired to the UI's Retry button.
+  reconnect(): void {
+    const socket = this.socket();
+    socket?.connect();
+  }
+
   private pushMessage(msg: ChatMessage): void {
     const seen = this.lastSeenSentAt.get(msg.conversationId);
     if (!seen || msg.sentAt > seen) {
@@ -213,7 +256,7 @@ export class RealChatService implements ChatService {
 
   async getMessages(conversationId: string): Promise<ChatMessage[]> {
     this.activeConversationId = conversationId;
-    this.socket().emit("join_conversation", { conversationId });
+    this.socket()?.emit("join_conversation", { conversationId });
     const res = await restFetch(
       `/conversations/${encodeURIComponent(conversationId)}/messages`,
       {},
@@ -239,13 +282,22 @@ export class RealChatService implements ChatService {
     );
     const conv: Conversation = await res.json();
     this.activeConversationId = conv.id;
-    this.socket().emit("join_conversation", { conversationId: conv.id });
+    this.socket()?.emit("join_conversation", { conversationId: conv.id });
     return conv;
   }
 
   sendMessage(input: { conversationId: string; senderId: string; text: string }): Promise<ChatMessage> {
     const clientTempId = nextClientTempId();
     const socket = this.socket();
+
+    if (!socket) {
+      // No auth token / doomed handshake — socket() already logged and set
+      // state to "error". Reject immediately rather than hanging on a
+      // socket that was never opened.
+      return Promise.reject(
+        new Error(this.connectionErrorReason || "Not connected to the chat server."),
+      );
+    }
 
     // Emits `send_message` and arms the ack timeout. There is no server-side
     // idempotency (no client_temp_id column, insert_message is a blind
@@ -275,13 +327,15 @@ export class RealChatService implements ChatService {
     // Cold path — socket not connected (e.g. Render free-tier cold start,
     // measured ~41s wake). Do NOT emit yet: wait for `connect`, bounded by
     // CONNECT_TIMEOUT_MS. Emit fires from exactly one place below (either
-    // on connect, or never — the timeout path guarantees no emit).
+    // on connect, or never — the timeout and terminal-error paths both
+    // guarantee no emit).
     return new Promise<ChatMessage>((resolve, reject) => {
       let settled = false;
 
       const cleanup = () => {
         clearTimeout(connectTimer);
         socket.off("connect", onConnect);
+        unsubscribeState();
       };
 
       const onConnect = () => {
@@ -290,6 +344,18 @@ export class RealChatService implements ChatService {
         cleanup();
         emitAndAwaitAck().then(resolve, reject);
       };
+
+      // A connect_error can land while this send is waiting on the cold
+      // path. A terminal ("error") state means socket.io has given up
+      // retrying (auth/namespace rejection) — settle now with the reason
+      // instead of hanging until the 45s timeout, and guarantee no emit
+      // ever fires for this send.
+      const unsubscribeState = this.onConnectionState((state) => {
+        if (settled || state !== "error") return;
+        settled = true;
+        cleanup();
+        reject(new Error(this.connectionErrorReason || "Couldn't connect to the chat server."));
+      });
 
       const connectTimer = setTimeout(() => {
         if (settled) return;
@@ -318,7 +384,7 @@ export class RealChatService implements ChatService {
   // read was recorded, and a dropped event here just means the badge stays
   // stale until the next mark-read call, not a functional break.
   markRead(input: { conversationId: string; upToSentAt: string }): void {
-    this.socket().emit("message_read", input);
+    this.socket()?.emit("message_read", input);
   }
 
   onUnreadCount(cb: UnreadCountListener): () => void {

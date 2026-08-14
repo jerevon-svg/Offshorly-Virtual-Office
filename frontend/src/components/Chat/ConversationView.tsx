@@ -161,7 +161,15 @@ export function ConversationView({
   // Real-mode-only — mock mode has no onConnectionState, so
   // connectionState stays at its "connected" default and this never fires.
   const isNotConnected = connectionState !== "connected";
+  // Terminal failure (auth rejected, no token) — distinct from the
+  // in-progress "waking up" states below; socket.io will not retry this on
+  // its own, so it needs its own banner + a manual Retry affordance.
+  const isConnectionError = connectionState === "error";
   const showOpeningPlaceholder = isOpening && messages.length === 0;
+
+  function handleReconnect() {
+    chatService.reconnect?.();
+  }
 
   return (
     <div className={styles.backdrop} onClick={onClose}>
@@ -172,10 +180,21 @@ export function ConversationView({
             ×
           </button>
         </div>
-        {isNotConnected && (
-          <div className={styles.connectionBanner}>
-            Waking up the chat server — this can take up to a minute after a period of inactivity.
+        {isConnectionError ? (
+          <div className={styles.errorBanner}>
+            <span>
+              Couldn't connect to chat: {chatService.getConnectionError?.() ?? "connection error"}
+            </span>
+            <button type="button" className={styles.retryButton} onClick={handleReconnect}>
+              Retry
+            </button>
           </div>
+        ) : (
+          isNotConnected && (
+            <div className={styles.connectionBanner}>
+              Waking up the chat server — this can take up to a minute after a period of inactivity.
+            </div>
+          )
         )}
         <div className={styles.messages}>
           {showOpeningPlaceholder ? (

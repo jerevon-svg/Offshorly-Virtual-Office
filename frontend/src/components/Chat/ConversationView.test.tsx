@@ -142,4 +142,37 @@ describe("ConversationView", () => {
     });
     expect(screen.queryByText("Retry")).not.toBeInTheDocument();
   });
+
+  it('renders a distinct error banner (not the "waking up" banner) with Retry when connectionState is "error", and wires Retry to reconnect()', async () => {
+    const peer = makePeer("broken-auth");
+    const reconnectSpy = vi.fn();
+    // mockChatService normally has no onConnectionState/getConnectionState/
+    // getConnectionError/reconnect (mock mode has no real socket) — stub
+    // them on the singleton for this test only, mirroring what a real
+    // ChatService in a terminal "error" state would expose.
+    (mockChatService as unknown as { getConnectionState: () => string }).getConnectionState = () => "error";
+    (mockChatService as unknown as { getConnectionError: () => string }).getConnectionError = () =>
+      "invalid token";
+    (mockChatService as unknown as { onConnectionState: (cb: (s: string) => void) => () => void }).onConnectionState =
+      () => () => {};
+    (mockChatService as unknown as { reconnect: () => void }).reconnect = reconnectSpy;
+
+    render(<ConversationView peer={peer} selfId={SELF_ID} onClose={() => {}} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Couldn't connect to chat: invalid token/i)).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByText(/Waking up the chat server/i),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Retry"));
+    expect(reconnectSpy).toHaveBeenCalledTimes(1);
+
+    // Clean up the stubs so later tests see mock mode's normal shape again.
+    delete (mockChatService as unknown as { getConnectionState?: () => string }).getConnectionState;
+    delete (mockChatService as unknown as { getConnectionError?: () => string }).getConnectionError;
+    delete (mockChatService as unknown as { onConnectionState?: () => void }).onConnectionState;
+    delete (mockChatService as unknown as { reconnect?: () => void }).reconnect;
+  });
 });
