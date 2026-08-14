@@ -6,18 +6,19 @@ Render **Static Site** (not a Web Service) — the build output is static, so
 a Static Site gives always-on CDN serving with no cold starts.
 
 > **Scope note:** the root `render.yaml` only manages the backend API
-> (`offshorly-virtual-office-api`, rootDir `backend`) and its Postgres database
-> (`offshorly-virtual-office-db`). The frontend Static Site described in this doc
+> (`virtual-office-api`, rootDir `backend`) and its Postgres database
+> (`virtual-office-db`). The frontend Static Site described in this doc
 > remains dashboard-managed and is intentionally not represented in
 > `render.yaml`. `render.yaml` also isn't auto-applied — it only takes
 > effect once explicitly connected as a Blueprint in the Render dashboard.
 >
-> **Warning — do not reuse `virtual-office-api.onrender.com`:** that hostname
-> is already occupied by an unrelated third-party Express/Node service, not
-> this project's backend. Do not point any env var at it and do not attempt
-> to create a Render service with that name. This backend is deployed under
-> the verified-free name `offshorly-virtual-office-api`, i.e.
-> `https://offshorly-virtual-office-api.onrender.com`.
+> **Note — use the suffixed URL, not the bare hostname:** the Render
+> service is named `virtual-office-api`, but the bare
+> `virtual-office-api.onrender.com` hostname is globally claimed by an
+> unrelated third-party app. Render assigned this service the suffixed URL
+> `https://virtual-office-api-0hzd.onrender.com` instead. Always use that
+> suffixed URL (copy it from the service page) when wiring env vars —
+> pointing at the bare hostname silently hits a stranger's API.
 
 ## Render service settings
 
@@ -30,7 +31,7 @@ a Static Site gives always-on CDN serving with no cold starts.
 | Region               | same region as Atlas                                       |
 | Env var              | `VITE_API_URL=https://atlas-api.offshorly.com`             |
 | Env var              | `VITE_CHAT_MODE=real`                                       |
-| Env var              | `VITE_CHAT_SOCKET_URL=https://offshorly-virtual-office-api.onrender.com` |
+| Env var              | `VITE_CHAT_SOCKET_URL=https://virtual-office-api-0hzd.onrender.com` |
 
 `VITE_API_URL` is inlined into the JS bundle at build time — there is no
 runtime env on a static bundle. Changing it requires a rebuild + redeploy on
@@ -43,7 +44,7 @@ backend, with no error anywhere.
 
 `VITE_CHAT_SOCKET_URL` must be an `https://` base with **no trailing slash**
 and **no `ws://`/`wss://` scheme** — Socket.IO negotiates `wss://` on its own
-from an `https://` base, e.g. `https://offshorly-virtual-office-api.onrender.com`.
+from an `https://` base, e.g. `https://virtual-office-api-0hzd.onrender.com`.
 
 > **All three of these are Vite build-time vars** — they get inlined into
 > the bundle at build time, same as `VITE_API_URL` above. Changing any of
@@ -125,7 +126,7 @@ call is cross-origin, so `useAuthGate` will deny and bounce to `/`. That is
 expected at this stage, not a failure. The only thing to verify pre-cutover
 is that the JS/CSS assets themselves load with a 200 and correct MIME type.
 
-## Backend (`offshorly-virtual-office-api`) env vars
+## Backend (`virtual-office-api`) env vars
 
 `CORS_ORIGINS` (dashboard-managed, `sync: false` in `render.yaml` — see
 comment there) must include the **exact** browser origin
