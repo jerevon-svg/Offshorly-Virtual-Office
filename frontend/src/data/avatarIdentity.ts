@@ -1,5 +1,5 @@
-import { characterLayers } from "./office-layout";
 import { EMAIL_TO_AVATAR_ID } from "./avatarRegistry";
+import { SPRITE_SET_BY_AVATAR_ID } from "./bonWalkFrames";
 
 // The identity join: Atlas keys every person by EMAIL; this app's canvas
 // keys every sprite by a hand-authored layer id ("bon", "alex", ...).
@@ -27,7 +27,15 @@ export const FALLBACK_AVATAR_ID = "bon";
 // convention below.
 const OFFICE_EMAIL_DOMAIN = "offshorly.com";
 
-const KNOWN_AVATAR_IDS = new Set(characterLayers.map((layer) => layer.id));
+// Deliberately NOT all 20 office-assets-manifest characterLayers ids — 16 of
+// those are hardcoded Figma stock-art decoration with no animated sprite set
+// (e.g. "nicole", "arisha"), not real pipeline-generated avatars. Only ids
+// with an actual AvatarSpriteSet (bon/alex/micah/lui) count as "known" here,
+// so a real Atlas employee whose email localpart happens to collide with a
+// decorative name (e.g. nicole@offshorly.com) correctly falls through to
+// `null` -> the faceless placeholder, instead of rendering that decoration's
+// flat stock PNG as if it were their avatar.
+const KNOWN_AVATAR_IDS = new Set(Object.keys(SPRITE_SET_BY_AVATAR_ID));
 
 export function isKnownAvatarId(candidate: string): boolean {
   return KNOWN_AVATAR_IDS.has(candidate);

@@ -11,7 +11,10 @@
 // case-consistent between systems.
 export const EMAIL_TO_AVATAR_ID: Record<string, string> = {
   // Bon's real Zoho/Atlas email localpart ("jerevon") does not match his
-  // sprite id ("bon"), unlike micah/alex/lui whose localparts already match
-  // by convention and need no entry here.
+  // sprite id ("bon"), unlike micah/alex whose localparts already match by
+  // convention and need no entry here.
   "jerevon@offshorly.com": "bon",
+  // Lui's real Atlas login email ("louiejie") does not match his sprite id
+  // ("lui") by the localpart convention, so it needs an explicit entry here.
+  "louiejie@offshorly.com": "lui",
 };
