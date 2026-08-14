@@ -9,7 +9,7 @@ from app.auth.atlas import AtlasAuthError, verify_atlas_token
 from app.config import settings
 from app.database import async_session_maker
 from app.repositories import chat as chat_repo
-from app.schemas.chat import serialize_message_dict
+from app.schemas.chat import serialize_message_dict, to_iso_z
 
 # Faithful port of backend/src/socket.ts onto python-socketio's ASGI async server. Mounted in
 # app/main.py via socketio.ASGIApp(sio, other_asgi_app=<fastapi app>, socketio_path="socket.io")
@@ -144,7 +144,9 @@ async def send_message(sid: str, payload: dict | None) -> None:
             conv = await chat_repo.get_conversation_by_id(session, conversation_id)
             await session.commit()
 
-        message_payload = serialize_message_dict(message)
+        # Freshly-inserted message: nothing delivered/read yet — payload shape always includes
+        # deliveredAt/readAt (both null on send), matching serialize_message_dict's defaults.
+        message_payload = serialize_message_dict(message, delivered_at=None, read_at=None)
         await sio.emit("message_saved", {"clientTempId": client_temp_id, "message": message_payload}, to=sid)
         await sio.emit("incoming_message", {"message": message_payload}, room=conversation_id, skip_sid=sid)
 
@@ -159,6 +161,11 @@ async def send_message(sid: str, payload: dict | None) -> None:
             )
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
+
+
+async def _other_participant_emails(session, conversation_id: str, self_email: str) -> list[str]:
+    conv = await chat_repo.get_conversation_by_id(session, conversation_id)
+    return [pid for pid in (conv["participant_ids"] if conv else []) if pid != self_email]
 
 
 @sio.on("message_read")
@@ -183,6 +190,7 @@ async def message_read(sid: str, payload: dict | None) -> None:
                 return
             await chat_repo.mark_read(session, conversation_id, email, up_to_sent_at)
             count = await chat_repo.unread_count(session, conversation_id, email)
+            peers = await _other_participant_emails(session, conversation_id, email)
             await session.commit()
 
         # "This user's other sockets" — broadcast to every socket for this email except the one
@@ -190,5 +198,49 @@ async def message_read(sid: str, payload: dict | None) -> None:
         await sio.emit(
             "unread_count", {"conversationId": conversation_id, "count": count}, room=user_room(email), skip_sid=sid
         )
+        # Tell the peer(s) — the sender(s) of the messages just marked read — so their UI can
+        # advance from "delivered" to "read" without polling.
+        for peer in peers:
+            await sio.emit(
+                "read_receipt",
+                {"conversationId": conversation_id, "readUpTo": to_iso_z(up_to_sent_at)},
+                room=user_room(peer),
+            )
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("message_delivered")
+async def message_delivered(sid: str, payload: dict | None) -> None:
+    try:
+        payload = payload or {}
+        conversation_id = payload.get("conversationId")
+        if not isinstance(conversation_id, str) or not conversation_id:
+            return
+        up_to_raw = payload.get("upToSentAt")
+        up_to_sent_at = _parse_iso(up_to_raw) if isinstance(up_to_raw, str) and up_to_raw else datetime.now(
+            timezone.utc
+        )
+
+        session_data = await sio.get_session(sid)
+        email = session_data["email"]
+
+        async with async_session_maker() as session:
+            ok = await chat_repo.is_participant(session, conversation_id, email)
+            if not ok:
+                await sio.emit("chat_error", {"code": "forbidden", "message": "Not a participant"}, to=sid)
+                return
+            await chat_repo.mark_delivered(session, conversation_id, email, up_to_sent_at)
+            peers = await _other_participant_emails(session, conversation_id, email)
+            await session.commit()
+
+        # Delivery receipt goes to the PEER's room only (the message sender(s) whose messages
+        # just got marked delivered) — never back to the acker's own room.
+        for peer in peers:
+            await sio.emit(
+                "delivery_receipt",
+                {"conversationId": conversation_id, "deliveredUpTo": to_iso_z(up_to_sent_at)},
+                room=user_room(peer),
+            )
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)

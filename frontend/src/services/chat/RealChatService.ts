@@ -4,7 +4,11 @@ import type {
   ChatMessage,
   ChatService,
   Conversation,
+  DeliveryReceiptListener,
+  DeliveryReceiptUpdate,
   MessageListener,
+  ReadReceiptListener,
+  ReadReceiptUpdate,
   UnreadCountListener,
   UnreadCountUpdate,
 } from "./types";
@@ -68,6 +72,8 @@ export class RealChatService implements ChatService {
   private socketInstance: Socket | null = null;
   private listeners = new Set<MessageListener>();
   private unreadCountListeners = new Set<UnreadCountListener>();
+  private deliveryReceiptListeners = new Set<DeliveryReceiptListener>();
+  private readReceiptListeners = new Set<ReadReceiptListener>();
   private pendingSends = new Map<string, PendingSend>();
   // Tracks the most recently seen sentAt per conversation, from any message
   // that has flowed through pushMessage (send, receive, or history fetch).
@@ -131,10 +137,21 @@ export class RealChatService implements ChatService {
 
     socket.on("incoming_message", (payload: { message: ChatMessage }) => {
       this.pushMessage(payload.message);
+      // Live-receipt case: a message just arrived while we're connected — ack delivery
+      // immediately so the sender's "sent" doesn't stay stuck once we're actually here.
+      this.ackDelivered(payload.message.conversationId, [payload.message]);
     });
 
     socket.on("unread_count", (payload: UnreadCountUpdate) => {
       this.unreadCountListeners.forEach((cb) => cb(payload));
+    });
+
+    socket.on("delivery_receipt", (payload: DeliveryReceiptUpdate) => {
+      this.deliveryReceiptListeners.forEach((cb) => cb(payload));
+    });
+
+    socket.on("read_receipt", (payload: ReadReceiptUpdate) => {
+      this.readReceiptListeners.forEach((cb) => cb(payload));
     });
 
     socket.on("chat_error", (payload: { code: string; message: string }) => {
@@ -172,9 +189,28 @@ export class RealChatService implements ChatService {
       // with what's already rendered — pushing the full catch-up batch
       // through the normal onMessage path is safe.
       for (const msg of messages) this.pushMessage(msg);
+      // Offline-then-reconnect case: any message sent to us while we were
+      // offline must not stay stuck on "sent" forever now that we've caught
+      // up — ack delivery for the whole batch.
+      this.ackDelivered(conversationId, messages);
     } catch (err) {
       console.error("[chat] reconnect catch-up fetch failed", err);
     }
+  }
+
+  // Fire-and-forget delivery ack, mirroring markRead's pattern — acks up to
+  // the newest sentAt in the given batch. Safe to call even for a batch that
+  // includes our own sent messages: the server only ever treats a watermark
+  // as meaningful for messages sent by the OTHER participant (see backend's
+  // compute_message_receipts), so acking our own messages' delivery is a
+  // harmless no-op there.
+  private ackDelivered(conversationId: string, messages: ChatMessage[]): void {
+    if (messages.length === 0) return;
+    let newest = messages[0].sentAt;
+    for (const msg of messages) {
+      if (msg.sentAt > newest) newest = msg.sentAt;
+    }
+    this.socket().emit("message_delivered", { conversationId, upToSentAt: newest });
   }
 
   async listConversations(): Promise<Conversation[]> {
@@ -254,6 +290,25 @@ export class RealChatService implements ChatService {
     this.unreadCountListeners.add(cb);
     return () => {
       this.unreadCountListeners.delete(cb);
+    };
+  }
+
+  // Fire-and-forget, same pattern as markRead above.
+  markDelivered(input: { conversationId: string; upToSentAt: string }): void {
+    this.socket().emit("message_delivered", input);
+  }
+
+  onDeliveryReceipt(cb: DeliveryReceiptListener): () => void {
+    this.deliveryReceiptListeners.add(cb);
+    return () => {
+      this.deliveryReceiptListeners.delete(cb);
+    };
+  }
+
+  onReadReceipt(cb: ReadReceiptListener): () => void {
+    this.readReceiptListeners.add(cb);
+    return () => {
+      this.readReceiptListeners.delete(cb);
     };
   }
 }

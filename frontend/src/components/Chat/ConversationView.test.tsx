@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
-import { ConversationView } from "./ConversationView";
+import { ConversationView, deriveMessageStatus } from "./ConversationView";
 import { mockChatService } from "../../services/chat";
 import type { AssetLayer } from "../../types/office";
+import type { ChatMessage, ChatService, Conversation } from "../../services/chat/types";
 
 function makePeer(id: string): AssetLayer {
   return {
@@ -52,7 +53,7 @@ describe("ConversationView", () => {
 
     const textarea = await screen.findByPlaceholderText("Type a message…");
     fireEvent.change(textarea, { target: { value: "hello there" } });
-    fireEvent.click(screen.getByText("Send"));
+    fireEvent.click(screen.getByLabelText("Send"));
 
     await waitFor(() => {
       expect(screen.getByText("hello there")).toBeInTheDocument();
@@ -70,7 +71,7 @@ describe("ConversationView", () => {
 
     const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: "ping" } });
-    fireEvent.click(screen.getByText("Send"));
+    fireEvent.click(screen.getByLabelText("Send"));
     await vi.advanceTimersByTimeAsync(0);
 
     expect(container.textContent).toContain("ping");
@@ -81,5 +82,166 @@ describe("ConversationView", () => {
     const texts = Array.from(bubbles).map((el) => el.textContent);
     expect(texts[0]).toBe("ping");
     expect(texts).toHaveLength(2);
+  });
+});
+
+function makeMessage(overrides: Partial<ChatMessage>): ChatMessage {
+  return {
+    id: "m1",
+    conversationId: "conv-1",
+    senderId: "bon",
+    text: "hi",
+    sentAt: "2026-08-14T10:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("deriveMessageStatus", () => {
+  it("returns sent when no watermarks are set", () => {
+    const msg = makeMessage({ sentAt: "2026-08-14T10:00:00.000Z" });
+    expect(deriveMessageStatus(msg, "bon", null, null)).toBe("sent");
+  });
+
+  it("returns delivered when sentAt is at-or-before peerDeliveredUpTo only", () => {
+    const msg = makeMessage({ sentAt: "2026-08-14T10:00:00.000Z" });
+    expect(deriveMessageStatus(msg, "bon", "2026-08-14T10:05:00.000Z", null)).toBe("delivered");
+  });
+
+  it("returns read when sentAt is at-or-before peerReadUpTo", () => {
+    const msg = makeMessage({ sentAt: "2026-08-14T10:00:00.000Z" });
+    expect(
+      deriveMessageStatus(msg, "bon", "2026-08-14T10:05:00.000Z", "2026-08-14T10:06:00.000Z"),
+    ).toBe("read");
+  });
+
+  it("returns sent when sentAt is after both watermarks", () => {
+    const msg = makeMessage({ sentAt: "2026-08-14T10:10:00.000Z" });
+    expect(
+      deriveMessageStatus(msg, "bon", "2026-08-14T10:05:00.000Z", "2026-08-14T10:06:00.000Z"),
+    ).toBe("sent");
+  });
+
+  it("treats exact equality with peerDeliveredUpTo as delivered (inclusive)", () => {
+    const msg = makeMessage({ sentAt: "2026-08-14T10:05:00.000Z" });
+    expect(deriveMessageStatus(msg, "bon", "2026-08-14T10:05:00.000Z", null)).toBe("delivered");
+  });
+
+  it("treats exact equality with peerReadUpTo as read (inclusive)", () => {
+    const msg = makeMessage({ sentAt: "2026-08-14T10:06:00.000Z" });
+    expect(
+      deriveMessageStatus(msg, "bon", "2026-08-14T10:05:00.000Z", "2026-08-14T10:06:00.000Z"),
+    ).toBe("read");
+  });
+});
+
+describe("ConversationView (real mode, status indicators)", () => {
+  // Builds a fake real ChatService pre-seeded with history so the panel
+  // renders own messages with deliveredAt/readAt already reflecting the
+  // peer's watermark (mirrors what RealChatService.getMessages returns).
+  function makeFakeRealService(history: ChatMessage[]): ChatService {
+    const conv: Conversation = { id: "conv-1", participantIds: ["bon", "alex"], lastMessageAt: history[0]?.sentAt ?? "" };
+    return {
+      listConversations: async () => [conv],
+      getMessages: async () => history,
+      sendMessage: async (input) => makeMessage({ id: "new", ...input }),
+      openConversationWith: async () => conv,
+      onMessage: () => () => {},
+      markRead: () => {},
+      onUnreadCount: () => () => {},
+      markDelivered: () => {},
+      onDeliveryReceipt: () => () => {},
+      onReadReceipt: () => () => {},
+    };
+  }
+
+  afterEach(() => {
+    vi.doUnmock("../../services/chat");
+    vi.resetModules();
+  });
+
+  it("shows a read-status marker with a single Seen label on the last read own message, none on peer messages, and nothing in mock mode", async () => {
+    const history: ChatMessage[] = [
+      makeMessage({
+        id: "own-1",
+        senderId: "bon",
+        text: "first",
+        sentAt: "2026-08-14T10:00:00.000Z",
+        readAt: "2026-08-14T10:10:00.000Z",
+      }),
+      makeMessage({
+        id: "peer-1",
+        senderId: "alex",
+        text: "peer reply",
+        sentAt: "2026-08-14T10:01:00.000Z",
+      }),
+      makeMessage({
+        id: "own-2",
+        senderId: "bon",
+        text: "second",
+        sentAt: "2026-08-14T10:02:00.000Z",
+        readAt: "2026-08-14T10:10:00.000Z",
+      }),
+    ];
+
+    vi.resetModules();
+    vi.doMock("../../services/chat", () => ({
+      chatMode: "real",
+      chatService: makeFakeRealService(history),
+    }));
+
+    const { ConversationView: RealConversationView } = await import("./ConversationView");
+    const peer: AssetLayer = {
+      id: "alex",
+      kind: "character",
+      path: "characters/alex.png",
+      transform: null,
+      name: "alex",
+      x: 0,
+      y: 0,
+      width: 40,
+      height: 60,
+    };
+
+    render(<RealConversationView peer={peer} selfId="bon" peerChatId="alex" onClose={() => {}} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("second")).toBeInTheDocument();
+    });
+
+    // Exactly one "Seen" label, attached to the LAST read own message.
+    const seenLabels = screen.getAllByText(/^Seen /);
+    expect(seenLabels).toHaveLength(1);
+
+    // Peer message never renders a status marker.
+    const peerBubble = screen.getByText("peer reply").closest("div")?.parentElement;
+    expect(peerBubble?.querySelector('[data-status]')).toBeNull();
+  });
+
+  it("shows no status marker for any message in mock mode", async () => {
+    const peer: AssetLayer = {
+      id: "morgan",
+      kind: "character",
+      path: "characters/morgan.png",
+      transform: null,
+      name: "morgan",
+      x: 0,
+      y: 0,
+      width: 40,
+      height: 60,
+    };
+    const conv = await mockChatService.openConversationWith(peer.id, "bon");
+    await mockChatService.sendMessage({
+      conversationId: conv.id,
+      senderId: "bon",
+      text: "mock mode message",
+    });
+
+    render(<ConversationView peer={peer} selfId="bon" onClose={() => {}} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("mock mode message")).toBeInTheDocument();
+    });
+
+    expect(document.querySelector("[data-status]")).toBeNull();
   });
 });

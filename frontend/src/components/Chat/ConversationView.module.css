@@ -1,24 +1,16 @@
-.backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 30;
-  background: rgba(0, 0, 0, 0.35);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
 .panel {
-  position: relative;
-  z-index: 31;
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
   width: 360px;
-  max-width: calc(100vw - 32px);
-  height: 480px;
-  max-height: calc(100vh - 32px);
-  background: rgba(26, 26, 26, 0.95);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 10px;
-  backdrop-filter: blur(4px);
+  max-width: 100vw;
+  height: 100vh;
+  background: #fff;
+  border: none;
+  border-left: 1px solid #e5e7eb;
+  border-radius: 0;
   font-family: system-ui, sans-serif;
   display: flex;
   flex-direction: column;
@@ -28,21 +20,28 @@
 .header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   padding: 14px 16px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  border-bottom: 1px solid #e5e7eb;
+  background: #fff;
+}
+
+.headerIcon {
+  display: inline-flex;
+  color: #3b82f6;
 }
 
 .title {
-  color: #f0f0f0;
+  flex: 1;
+  color: #111827;
   font-size: 15px;
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .closeButton {
   all: unset;
   cursor: pointer;
-  color: rgba(240, 240, 240, 0.75);
+  color: #6b7280;
   font-size: 20px;
   line-height: 1;
   padding: 2px 6px;
@@ -50,7 +49,7 @@
 }
 
 .closeButton:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: #f3f4f6;
 }
 
 .messages {
@@ -59,63 +58,166 @@
   padding: 12px 16px;
   display: flex;
   flex-direction: column;
+  gap: 12px;
+  background: #fff;
+}
+
+.messageGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dayDivider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dayDividerLine {
+  flex: 1;
+  border: none;
+  border-top: 1px solid #e5e7eb;
+  margin: 0;
+}
+
+.dayDividerLabel {
+  flex-shrink: 0;
+  color: #9ca3af;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.row {
+  display: flex;
+  align-items: flex-end;
   gap: 8px;
 }
 
-.message {
+.rowSelf {
+  flex-direction: row-reverse;
+}
+
+.avatar {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #9ca3af;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.bubbleColumn {
+  display: flex;
+  flex-direction: column;
   max-width: 75%;
+}
+
+.rowSelf .bubbleColumn {
+  align-items: flex-end;
+}
+
+.message {
   padding: 8px 12px;
-  border-radius: 12px;
+  border-radius: 14px;
   font-size: 14px;
   word-break: break-word;
   white-space: pre-wrap;
 }
 
 .own {
-  align-self: flex-end;
   background: #3b82f6;
   color: #fff;
 }
 
 .peer {
-  align-self: flex-start;
-  background: rgba(255, 255, 255, 0.1);
-  color: #f0f0f0;
+  background: #f3f4f6;
+  color: #111827;
+}
+
+.timestamp {
+  margin-top: 3px;
+  color: #9ca3af;
+  font-size: 11px;
+}
+
+.timestampRight {
+  text-align: right;
+}
+
+.statusRow {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.statusIcon {
+  flex-shrink: 0;
+  width: 13px;
+  height: 13px;
+  color: #9ca3af;
+}
+
+.statusIconRead {
+  color: #3b82f6;
+}
+
+.seenLabel {
+  font-size: 11px;
+  color: #9ca3af;
 }
 
 .composer {
   display: flex;
+  align-items: center;
   gap: 8px;
   padding: 12px 16px;
-  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  border-top: 1px solid #e5e7eb;
+  background: #fff;
 }
 
 .textarea {
   flex: 1;
   resize: none;
-  min-height: 36px;
+  min-height: 20px;
   max-height: 96px;
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  background: rgba(255, 255, 255, 0.05);
-  color: #f0f0f0;
+  border-radius: 20px;
+  border: 1px solid #e5e7eb;
+  background: #f3f4f6;
+  color: #111827;
   font-size: 14px;
-  padding: 8px 10px;
+  padding: 10px 16px;
   font-family: inherit;
+}
+
+.textarea::placeholder {
+  color: #9ca3af;
 }
 
 .sendButton {
   all: unset;
   cursor: pointer;
-  align-self: flex-end;
-  color: #1a1a1a;
-  background: #f0f0f0;
-  font-size: 14px;
-  padding: 10px 14px;
-  border-radius: 6px;
-  font-weight: 600;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: #3b82f6;
+  color: #fff;
 }
 
 .sendButton:hover {
-  background: #ffffff;
+  background: #2563eb;
 }

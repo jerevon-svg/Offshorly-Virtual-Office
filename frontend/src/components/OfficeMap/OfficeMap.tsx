@@ -1895,6 +1895,7 @@ export function OfficeMap() {
           peer={openChat}
           selfId={selfChatId}
           peerChatId={resolvePeerChatId(openChat)}
+          selfAvatarUrl={playerSpriteSrc}
           onIncomingMessage={handleTalkingMessage}
           onClose={() => {
             setOpenChat(null);

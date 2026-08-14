@@ -151,6 +151,112 @@ async def test_send_message_pushes_unread_count_to_recipient_only(server):
     await b.disconnect()
 
 
+async def test_message_delivered_updates_watermark_and_emits_to_peer_only(server):
+    conv_id = await _seeded_conversation()
+
+    a = await _connect_as(server, "a@example.com")
+    b = await _connect_as(server, "b@example.com")
+    await asyncio.sleep(0.2)
+
+    async with async_session_maker() as session:
+        msg = await chat_repo.insert_message(session, conv_id, "b@example.com", "hi a")
+        await chat_repo.touch_conversation(session, conv_id, msg.sent_at)
+        await session.commit()
+        sent_at_iso = msg.sent_at
+
+    receipt_future: asyncio.Future = asyncio.get_event_loop().create_future()
+    a_got_receipt = False
+
+    @b.on("delivery_receipt")
+    async def on_receipt_b(data):
+        if not receipt_future.done():
+            receipt_future.set_result(data)
+
+    @a.on("delivery_receipt")
+    async def on_receipt_a(_data):
+        nonlocal a_got_receipt
+        a_got_receipt = True
+
+    from app.schemas.chat import to_iso_z
+
+    await a.emit(
+        "message_delivered", {"conversationId": conv_id, "upToSentAt": to_iso_z(sent_at_iso)}
+    )
+
+    payload = await asyncio.wait_for(receipt_future, timeout=2)
+    assert payload["conversationId"] == conv_id
+    assert a_got_receipt is False
+
+    async with async_session_maker() as session:
+        watermarks = await chat_repo.get_participant_watermarks(session, conv_id)
+        delivered_at, _ = watermarks["a@example.com"]
+        assert delivered_at is not None
+
+    await a.disconnect()
+    await b.disconnect()
+
+
+async def test_message_read_emits_unread_count_to_self_and_read_receipt_to_peer(server):
+    conv_id = await _seeded_conversation()
+
+    a = await _connect_as(server, "a@example.com")
+    a2 = await _connect_as(server, "a@example.com")
+    b = await _connect_as(server, "b@example.com")
+    await asyncio.sleep(0.2)
+
+    unread_future: asyncio.Future = asyncio.get_event_loop().create_future()
+    read_receipt_future: asyncio.Future = asyncio.get_event_loop().create_future()
+
+    @a2.on("unread_count")
+    async def on_unread_a2(data):
+        if not unread_future.done():
+            unread_future.set_result(data)
+
+    @b.on("read_receipt")
+    async def on_read_receipt_b(data):
+        if not read_receipt_future.done():
+            read_receipt_future.set_result(data)
+
+    await a.emit(
+        "message_read", {"conversationId": conv_id, "upToSentAt": "2026-01-01T00:00:00.000Z"}
+    )
+
+    unread_payload = await asyncio.wait_for(unread_future, timeout=2)
+    read_receipt_payload = await asyncio.wait_for(read_receipt_future, timeout=2)
+    assert unread_payload["conversationId"] == conv_id
+    assert read_receipt_payload["conversationId"] == conv_id
+    assert read_receipt_payload["readUpTo"] == "2026-01-01T00:00:00.000Z"
+
+    await a.disconnect()
+    await a2.disconnect()
+    await b.disconnect()
+
+
+async def test_message_delivered_from_non_participant_is_rejected_and_no_watermark_change(server):
+    conv_id = await _seeded_conversation()
+    c = await _connect_as(server, "c@example.com")
+
+    err_future: asyncio.Future = asyncio.get_event_loop().create_future()
+
+    @c.on("chat_error")
+    async def on_error(data):
+        if not err_future.done():
+            err_future.set_result(data)
+
+    await c.emit(
+        "message_delivered", {"conversationId": conv_id, "upToSentAt": "2026-01-01T00:00:00.000Z"}
+    )
+
+    err = await asyncio.wait_for(err_future, timeout=2)
+    assert err["code"] == "forbidden"
+
+    async with async_session_maker() as session:
+        watermarks = await chat_repo.get_participant_watermarks(session, conv_id)
+        assert "c@example.com" not in watermarks
+
+    await c.disconnect()
+
+
 async def test_send_message_from_non_participant_is_rejected(server):
     conv_id = await _seeded_conversation()
     c = await _connect_as(server, "c@example.com")

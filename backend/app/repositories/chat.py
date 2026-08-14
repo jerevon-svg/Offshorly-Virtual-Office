@@ -15,6 +15,19 @@ from app.models.message import Message
 # about detached-instance access after a session closes.
 
 
+def _as_aware_utc(dt: datetime | None) -> datetime | None:
+    """SQLite has no native tz-aware storage — a DateTime(timezone=True) column round-trips as
+    naive on read-back even though it was written aware, while values still held on an
+    in-session ORM object (never re-fetched) stay aware. Normalize both sides to aware UTC
+    before comparing so `>`/`>=` never raises `can't compare offset-naive and offset-aware
+    datetimes` depending on where a given datetime happened to come from."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def dm_key(email_a: str, email_b: str) -> str:
     """Same deterministic scheme the Node repo and client-side mock use, just used here purely
     as a server-side lookup key (see Conversation.dm_key) — the frontend never derives or
@@ -136,7 +149,71 @@ async def mark_read(
     )
     participant = result.scalar_one_or_none()
     if participant is not None:
-        participant.last_read_at = up_to_sent_at
+        # Monotonic guard: never let a stale/out-of-order ack move the watermark backward — a
+        # regression here would incorrectly "un-read" messages under the derived-status logic
+        # compute_message_receipts relies on.
+        existing = _as_aware_utc(participant.last_read_at)
+        if existing is None or _as_aware_utc(up_to_sent_at) > existing:
+            participant.last_read_at = up_to_sent_at
+
+
+async def mark_delivered(
+    session: AsyncSession, conversation_id: str, email: str, up_to_sent_at: datetime
+) -> None:
+    """Sibling to mark_read above, same monotonic guard — see its docstring."""
+    self_email = email.strip().lower()
+    result = await session.execute(
+        select(ConversationParticipant).where(
+            ConversationParticipant.conversation_id == conversation_id,
+            ConversationParticipant.participant_email == self_email,
+        )
+    )
+    participant = result.scalar_one_or_none()
+    if participant is not None:
+        existing = _as_aware_utc(participant.last_delivered_at)
+        if existing is None or _as_aware_utc(up_to_sent_at) > existing:
+            participant.last_delivered_at = up_to_sent_at
+
+
+async def get_participant_watermarks(
+    session: AsyncSession, conversation_id: str
+) -> dict[str, tuple[datetime | None, datetime | None]]:
+    """One query returning {email: (last_delivered_at, last_read_at)} for every participant in
+    a conversation. This is a DM-only app (dm_key is always a 2-party pair) so the returned dict
+    has at most 2 entries."""
+    result = await session.execute(
+        select(
+            ConversationParticipant.participant_email,
+            ConversationParticipant.last_delivered_at,
+            ConversationParticipant.last_read_at,
+        ).where(ConversationParticipant.conversation_id == conversation_id)
+    )
+    return {row[0]: (row[1], row[2]) for row in result.all()}
+
+
+def compute_message_receipts(
+    message: Message, watermarks: dict[str, tuple[datetime | None, datetime | None]]
+) -> tuple[datetime | None, datetime | None]:
+    """Derived, not stored — see unread_count's derivation off last_read_at for the same
+    pattern. The recipient is the OTHER participant (never the sender): a message is
+    delivered/read at the recipient's watermark timestamp once that watermark has caught up to
+    (>=) the message's own sent_at, else None (not yet)."""
+    recipient_email = next(
+        (email for email in watermarks if email != message.sender_email), None
+    )
+    if recipient_email is None:
+        return (None, None)
+
+    recipient_last_delivered_at, recipient_last_read_at = watermarks[recipient_email]
+    sent_at = _as_aware_utc(message.sent_at)
+
+    delivered_cmp = _as_aware_utc(recipient_last_delivered_at)
+    delivered_at = (
+        recipient_last_delivered_at if (delivered_cmp is not None and delivered_cmp >= sent_at) else None
+    )
+    read_cmp = _as_aware_utc(recipient_last_read_at)
+    read_at = recipient_last_read_at if (read_cmp is not None and read_cmp >= sent_at) else None
+    return (delivered_at, read_at)
 
 
 async def _compute_unread(
@@ -212,11 +289,18 @@ async def list_conversations_for_user(session: AsyncSession, email: str) -> list
 
 async def insert_message(session: AsyncSession, conversation_id: str, sender_email: str, text: str) -> Message:
     # Sender is always the server-verified identity — a client-sent sender id is never trusted.
+    # Truncate to millisecond precision at insert time (not just on wire serialization) so the
+    # stored sent_at always exactly matches whatever a client later echoes back as a watermark
+    # (see to_iso_z, which serializes with timespec="milliseconds") — otherwise
+    # compute_message_receipts/_compute_unread compare a truncated watermark against a
+    # full-microsecond sent_at and the message can never resolve to delivered/read.
+    now = datetime.now(timezone.utc)
+    sent_at = now.replace(microsecond=(now.microsecond // 1000) * 1000)
     message = Message(
         conversation_id=conversation_id,
         sender_email=sender_email.strip().lower(),
         text=text,
-        sent_at=datetime.now(timezone.utc),
+        sent_at=sent_at,
     )
     session.add(message)
     await session.flush()

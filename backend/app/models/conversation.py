@@ -42,3 +42,9 @@ class ConversationParticipant(BaseModel):
     # then counts every peer message). Mirrors backend/src/repo/conversations.ts's
     # conversation_participants.last_read_at.
     last_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Delivery-receipt cursor, sibling to last_read_at above: null means "nothing delivered yet".
+    # Per-message delivered/read status is DERIVED by comparing a message's sent_at against the
+    # recipient's watermarks (see app/repositories/chat.py's compute_message_receipts) — same
+    # pattern as unread_count's derivation off last_read_at. No per-message columns.
+    last_delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

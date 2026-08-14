@@ -85,16 +85,22 @@ async def get_conversation_messages(
     messages = await chat_repo.list_messages(
         db, conversation_id, since=since_dt, before=before_dt, limit=limit
     )
-    return [
-        ChatMessageOut(
-            id=m.id,
-            conversation_id=m.conversation_id,
-            sender_id=m.sender_email,
-            text=m.text,
-            sent_at=m.sent_at,
+    watermarks = await chat_repo.get_participant_watermarks(db, conversation_id)
+    out = []
+    for m in messages:
+        delivered_at, read_at = chat_repo.compute_message_receipts(m, watermarks)
+        out.append(
+            ChatMessageOut(
+                id=m.id,
+                conversation_id=m.conversation_id,
+                sender_id=m.sender_email,
+                text=m.text,
+                sent_at=m.sent_at,
+                delivered_at=delivered_at,
+                read_at=read_at,
+            )
         )
-        for m in messages
-    ]
+    return out
 
 
 @router.post("/conversations/{conversation_id}/read", response_model=UnreadCountOut)
