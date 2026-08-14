@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: virtual-office-api
+    name: offshorly-virtual-office-api
     runtime: python
     # FREE tier — deliberate for the demo phase (unlike OffshorlyLMS's render.yaml, which pins
     # `plan: starter` because its uploads disk requires a paid instance). Virtual Office has no
@@ -27,7 +27,7 @@ services:
         generateValue: true
       - key: DATABASE_URL
         fromDatabase:
-          name: virtual-office-db
+          name: offshorly-virtual-office-db
           property: connectionString
       # Domain-dependent values are NOT managed here — they are maintained in the Render dashboard
       # (Environment tab) and differ per environment. A Blueprint sync overwrites any `value:` it
@@ -42,7 +42,7 @@ services:
         sync: false
 
 databases:
-  - name: virtual-office-db
+  - name: offshorly-virtual-office-db
     databaseName: virtual_office
     user: virtual_office
     # FREE tier — DELIBERATE and TEMPORARY, chosen for the demo phase only. READ BEFORE TOUCHING:
