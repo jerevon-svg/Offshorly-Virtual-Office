@@ -26,6 +26,8 @@ import {
   worldToCell,
 } from "../../data/officeGrid";
 import { doorStandForRoom } from "../../data/doorStandPoints";
+import { seatsForRoomId } from "../../data/roomSeats";
+import type { Pt } from "../../data/walkable-zones";
 import { DOOR_ANIM_MS, DOOR_LAYERS_BY_ROOM } from "../../data/officeDoors";
 import type { AssetLayer } from "../../types/office";
 import { chatMode } from "../../services/chat";
@@ -119,6 +121,29 @@ function computeCoverScale(): number {
 // below for every door-gated walk (check-in, chat/pat approach, checkout
 // exit).
 export const ROOM_FIT_MULTIPLIER = 1.6;
+
+// Plain nearest-seat lookup for a room's hand-painted seats, used only to
+// give the LIVE player (bon) a real seat to walk to on check-in — deliberately
+// separate from rosterLayers.ts's email-sorted seat assignment for OTHER
+// colleagues' static portraits, since bon isn't part of that roster list.
+// Returns null if the room has no painted seats yet (fallback: don't add a
+// walk leg, keep today's exact behavior).
+function nearestSeatTo(roomId: string, point: Pt): Pt | null {
+  const seats = seatsForRoomId(roomId);
+  if (seats.length === 0) return null;
+  let best = seats[0];
+  let bestDist = Infinity;
+  for (const seat of seats) {
+    const dx = seat.x - point.x;
+    const dy = seat.y - point.y;
+    const dist = dx * dx + dy * dy;
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = seat;
+    }
+  }
+  return best;
+}
 
 export function OfficeMap() {
   const { phase, hourDecimal, overrideHour, setOverrideHour } = useOfficePhase();
@@ -585,7 +610,7 @@ export function OfficeMap() {
   // avatar with a populated spriteSet (via savedAvatarApiRef). Scripts a
   // small in-view closed-loop walk (out ~1-2 tiles, then back) exercising
   // multiple directions, then plays the pat frames. Does not touch bon or his
-  // own walk/pat mechanism (see handleChoose's existing "pat"/"chat" branches).
+  // own walk/pat mechanism (see handleChoose's existing "approach"/"chat" branches).
   function runWalkDemo(layer: AssetLayer) {
     const walkTo =
       layer.id === "alex"
@@ -741,10 +766,11 @@ export function OfficeMap() {
           y: layer.y + layer.height / 2,
         })?.id.includes("reception"),
       );
-      // Nobody in reception is a normal state, not an error — the flow
-      // below already handles a missing target by skipping the walk.
       if (inReception) return inReception;
-      return undefined;
+      // Nobody currently in reception via the live roster — fall through to
+      // the scripted Arisha NPC (hidden under rosterActive, but still a valid
+      // walk target) so the checkout walk/door-hold still runs, mirroring how
+      // startCheckin always targets her regardless of roster state.
     }
     return npcCharacterLayers.find((l) => l.id === "arisha");
   }
@@ -1105,7 +1131,20 @@ export function OfficeMap() {
             const pathToInStand = findPath(outGoal, inGoal, layer.id, layer.id);
             walkTo(pathToInStand, () => {
               onDoorClose(flatRoomId);
-              finishArrival();
+              // Don't leave bon glued to the door threshold — walk him one
+              // more short leg to an actual seat inside the room. This makes
+              // checkout's first leg (seat -> inStand) a real, visible walk
+              // instead of a zero-distance one that fires its arrival
+              // callback synchronously (see useCharacterWalk.ts). Falls back
+              // to greeting immediately if this room has no painted seats.
+              const nearestSeat = nearestSeatTo(flatRoomId, doorPair.inStand);
+              if (nearestSeat) {
+                const seatGoal = { x: nearestSeat.x - bw / 2, y: nearestSeat.y - bh / 2 };
+                const pathToSeat = findPath(inGoal, seatGoal, layer.id, layer.id);
+                walkTo(pathToSeat, finishArrival);
+              } else {
+                finishArrival();
+              }
             });
           }, DOOR_ANIM_MS);
         });
@@ -1187,17 +1226,14 @@ export function OfficeMap() {
       const outGoal = { x: doorPair.outStand.x - bw / 2, y: doorPair.outStand.y - bh / 2 };
       const pathToInStand = findPath({ x: bonPos.x, y: bonPos.y }, inGoal, startRoomId, startRoomId);
 
-      // Room-fit on the room being LEFT, right before the door-crossing legs
-      // begin — overrides whichever caller-set tight zoom (on Arisha, at
-      // walk-start) ran in the same tick, since this runs synchronously
-      // inside walkOutOfRoomThenTo itself and setTransform calls simply
-      // apply in call order on the shared transformRef. The caller's
-      // tight-zoom-at-ARRIVAL call (on Arisha, once bon reaches her) is
-      // untouched — that's the correct "zoom back in" moment for this flow.
-      focusRoomFit(flatStartRoomId!, 600);
-
       walkTo(pathToInStand, () => {
         if (checkoutDoorNonceRef.current !== nonce) return;
+        // Room-fit on the room being LEFT, right as bon reaches the door —
+        // synchronized with onDoorOpen below, same beat as the entry-side
+        // equivalent in walkToAssignedDepartment. The caller's tight-zoom-at-
+        // ARRIVAL call (on Arisha, once bon reaches her) is untouched —
+        // that's the correct "zoom back in" moment for this flow.
+        focusRoomFit(flatStartRoomId!, 600);
         onDoorOpen(flatStartRoomId!);
         checkoutDoorTimerRef.current = window.setTimeout(() => {
           checkoutDoorTimerRef.current = undefined;
@@ -1363,7 +1399,7 @@ export function OfficeMap() {
     });
   }
 
-  function handleChoose(action: "chat" | "call" | "pat" | "walkDemo" | "patDemo") {
+  function handleChoose(action: "chat" | "call" | "approach" | "walkDemo" | "patDemo") {
     if (!menu) return;
     const target = menu.layer;
     const name = formatCharacterName(target);
@@ -1377,16 +1413,15 @@ export function OfficeMap() {
       runPatDemo(target);
       return;
     }
-    if (action === "pat") {
+    if (action === "approach") {
       setMenu(null);
       approachCharacter(target, (arriveCenter, targetCenter) => {
-        playPat();
-        // Turn the patted NPC to face bon back, if it has its own
-        // useCharacterWalk instance (alex/micah/lui) — plain static roster
-        // people have no directional capability, so facerFor returns null
-        // and this is a no-op for them. Left facing bon rather than reverted
-        // on a timer — the next time that NPC's own demo/movement runs it
-        // recomputes its own direction from its next segment anyway.
+        // Turn the NPC to face bon back after he approaches, if it has its
+        // own useCharacterWalk instance (alex/micah/lui) — plain static
+        // roster people have no directional capability, so facerFor returns
+        // null and this is a no-op for them. Left facing bon rather than
+        // reverted on a timer — the next time that NPC's own demo/movement
+        // runs it recomputes its own direction from its next segment anyway.
         facerFor(target.id)?.(directionBetween(targetCenter, arriveCenter));
       });
     } else if (action === "chat") {

@@ -1,25 +1,22 @@
-import walkLeft1 from "../assets/office/characters/bon-walk-norm/left-1.png";
-import walkLeft2 from "../assets/office/characters/bon-walk-norm/left-2.png";
-import walkRight1 from "../assets/office/characters/bon-walk-norm/right-1.png";
-import walkRight2 from "../assets/office/characters/bon-walk-norm/right-2.png";
-import walkFront1 from "../assets/office/characters/bon-walk-norm/front-1.png";
-import walkFront2 from "../assets/office/characters/bon-walk-norm/front-2.png";
-import walkBack1 from "../assets/office/characters/bon-walk-norm/back-1.png";
-import walkBack2 from "../assets/office/characters/bon-walk-norm/back-2.png";
+// Bon's hand-made sprite set (replaces the earlier AI-generated
+// bon-walk-norm/bon-idle-norm/bon-pat-norm/bon-sit-type-norm assets — see git
+// history to roll back). Bon drew idle/sit/walk-A/walk-B for all 4
+// directions but no pat pose, so there is no BON_PAT_FRAMES anymore;
+// characterSprite() falls back to idle when "pat" is requested for a sprite
+// set with no pat frames.
+import walkLeft1 from "../assets/office/characters/chibi-bon/left-walk-A.png";
+import walkLeft2 from "../assets/office/characters/chibi-bon/left-walk-B.png";
+import walkRight1 from "../assets/office/characters/chibi-bon/right-walk-A.png";
+import walkRight2 from "../assets/office/characters/chibi-bon/right-walk-B.png";
+import walkFront1 from "../assets/office/characters/chibi-bon/front-walk-A.png";
+import walkFront2 from "../assets/office/characters/chibi-bon/front-walk-B.png";
+import walkBack1 from "../assets/office/characters/chibi-bon/back-walk-A.png";
+import walkBack2 from "../assets/office/characters/chibi-bon/back-walk-B.png";
 
-import idleLeft from "../assets/office/characters/bon-idle-norm/left.png";
-import idleRight from "../assets/office/characters/bon-idle-norm/right.png";
-import idleFront from "../assets/office/characters/bon-idle-norm/front.png";
-import idleBack from "../assets/office/characters/bon-idle-norm/back.png";
-
-import patLeft1 from "../assets/office/characters/bon-pat-norm/left-1.png";
-import patLeft2 from "../assets/office/characters/bon-pat-norm/left-2.png";
-import patRight1 from "../assets/office/characters/bon-pat-norm/right-1.png";
-import patRight2 from "../assets/office/characters/bon-pat-norm/right-2.png";
-import patFront1 from "../assets/office/characters/bon-pat-norm/front-1.png";
-import patFront2 from "../assets/office/characters/bon-pat-norm/front-2.png";
-import patBack1 from "../assets/office/characters/bon-pat-norm/back-1.png";
-import patBack2 from "../assets/office/characters/bon-pat-norm/back-2.png";
+import idleLeft from "../assets/office/characters/chibi-bon/left-idle.png";
+import idleRight from "../assets/office/characters/chibi-bon/right-idle.png";
+import idleFront from "../assets/office/characters/chibi-bon/front-idle.png";
+import idleBack from "../assets/office/characters/chibi-bon/back-idle.png";
 
 import alexWalkLeft1 from "../assets/office/characters/alex-walk-norm/left-1.png";
 import alexWalkLeft2 from "../assets/office/characters/alex-walk-norm/left-2.png";
@@ -90,10 +87,10 @@ import luiPatFront2 from "../assets/office/characters/lui-pat-norm/front-2.png";
 import luiPatBack1 from "../assets/office/characters/lui-pat-norm/back-1.png";
 import luiPatBack2 from "../assets/office/characters/lui-pat-norm/back-2.png";
 
-import sitTypeFront from "../assets/office/characters/bon-sit-type-norm/front.png";
-import sitTypeBack from "../assets/office/characters/bon-sit-type-norm/back.png";
-import sitTypeLeft from "../assets/office/characters/bon-sit-type-norm/left.png";
-import sitTypeRight from "../assets/office/characters/bon-sit-type-norm/right.png";
+import sitTypeFront from "../assets/office/characters/chibi-bon/front-sit.png";
+import sitTypeBack from "../assets/office/characters/chibi-bon/back-sit.png";
+import sitTypeLeft from "../assets/office/characters/chibi-bon/left-sit.png";
+import sitTypeRight from "../assets/office/characters/chibi-bon/right-sit.png";
 
 import alexSitTypeFront from "../assets/office/characters/alex-sit-type-norm/front.png";
 import alexSitTypeBack from "../assets/office/characters/alex-sit-type-norm/back.png";
@@ -129,13 +126,6 @@ export const BON_IDLE_FRAMES: Record<WalkDirection, string> = {
   back: idleBack,
 };
 
-export const BON_PAT_FRAMES: Record<WalkDirection, readonly [string, string]> = {
-  left: [patLeft1, patLeft2],
-  right: [patRight1, patRight2],
-  front: [patFront1, patFront2],
-  back: [patBack1, patBack2],
-};
-
 // Pose #13 "Sitting — Typing / Keyboard" (see POSE_LIBRARY.md) — one frame
 // per direction, same shape as BON_IDLE_FRAMES (no stride/gesture pair).
 export const BON_SIT_TYPE_FRAMES: Record<WalkDirection, string> = {
@@ -147,11 +137,12 @@ export const BON_SIT_TYPE_FRAMES: Record<WalkDirection, string> = {
 
 // Bon's frames repackaged into the generic AvatarSpriteSet shape (see
 // services/avatar/types.ts) so he can be run through the same
-// characterSprite() selector as any future per-employee sprite set.
+// characterSprite() selector as any future per-employee sprite set. No `pat`
+// — Bon's hand-made set has no pat pose; `pat` is optional on
+// AvatarSpriteSet and characterSprite() falls back to idle for him.
 export const BON_SPRITE_SET: AvatarSpriteSet = {
   walk: BON_WALK_FRAMES,
   idle: BON_IDLE_FRAMES,
-  pat: BON_PAT_FRAMES,
   sitType: BON_SIT_TYPE_FRAMES,
 };
 
@@ -284,8 +275,10 @@ export const SPRITE_SET_BY_AVATAR_ID: Record<string, AvatarSpriteSet> = {
 // state/direction/frame. idle and sitType have only one frame per
 // direction, so frameIndex is ignored for both (matches the original
 // bonSprite behavior for idle). sitType falls back to idle's frame for that
-// direction if the sprite set predates pose #13 and has no sitType entry
-// (see AvatarSpriteSet.sitType's optionality note in services/avatar/types.ts).
+// direction if the sprite set predates pose #13 and has no sitType entry;
+// pat falls back to idle's frame if the sprite set has no pat pose at all
+// (e.g. Bon's hand-made set) (see AvatarSpriteSet.pat/sitType optionality
+// notes in services/avatar/types.ts).
 export function characterSprite(
   set: AvatarSpriteSet,
   state: "idle" | "walk" | "pat" | "sitType",
@@ -293,7 +286,7 @@ export function characterSprite(
   frameIndex: 0 | 1 = 0,
 ): string {
   if (state === "walk") return set.walk[direction][frameIndex];
-  if (state === "pat") return set.pat[direction][frameIndex];
+  if (state === "pat") return set.pat?.[direction]?.[frameIndex] ?? set.idle[direction];
   if (state === "sitType") return set.sitType?.[direction] ?? set.idle[direction];
   return set.idle[direction];
 }

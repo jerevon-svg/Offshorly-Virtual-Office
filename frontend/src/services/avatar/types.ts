@@ -10,20 +10,24 @@ import type { WalkDirection } from "../../data/bonWalkFrames";
 
 export type OutfitId = "business-suit" | "smart-casual" | "polo" | "hoodie" | "barong" | "uniform";
 
-// A full per-employee sprite set matching Bon's real asset shape exactly:
+// A full per-employee sprite set matching Bon's real asset shape:
 // 8 walk frames (2 per direction x4), 4 idle frames (1 per direction x4),
-// 8 pat frames (2 per direction x4), 4 sitType frames (1 per direction x4,
-// pose #13 "Sitting — Typing / Keyboard" in POSE_LIBRARY.md) = 24 slots
-// total. Optional on GeneratedAvatar/SavedAvatar — Slice 1 has no generator
-// producing these yet, so every avatar today (and every record already in
-// localStorage) simply omits it and keeps rendering as a static portrait.
-// sitType is itself optional within AvatarSpriteSet — it was added after
-// walk/idle/pat, so any sprite set built before this pose existed can omit
-// it and callers must treat it as "no seated-typing frame available".
+// up to 8 pat frames (2 per direction x4), 4 sitType frames (1 per direction
+// x4, pose #13 "Sitting — Typing / Keyboard" in POSE_LIBRARY.md). Optional on
+// GeneratedAvatar/SavedAvatar — Slice 1 has no generator producing these yet,
+// so every avatar today (and every record already in localStorage) simply
+// omits it and keeps rendering as a static portrait.
+// sitType and pat are both optional within AvatarSpriteSet: sitType was added
+// after walk/idle/pat, so any sprite set built before this pose existed can
+// omit it; pat became optional when Bon's hand-made sprite sets (no AI
+// generation, no pat pose drawn) replaced the AI-generated ones — callers
+// must treat a missing pat as "no gesture frame available" and fall back to
+// the idle frame for that direction (see characterSprite() in
+// data/bonWalkFrames.ts).
 export interface AvatarSpriteSet {
   walk: Record<WalkDirection, readonly [string, string]>;
   idle: Record<WalkDirection, string>;
-  pat: Record<WalkDirection, readonly [string, string]>;
+  pat?: Record<WalkDirection, readonly [string, string]>;
   sitType?: Record<WalkDirection, string>;
 }
 

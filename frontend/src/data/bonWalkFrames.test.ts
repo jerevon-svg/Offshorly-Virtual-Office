@@ -5,7 +5,6 @@ import {
   ALEX_SPRITE_SET,
   ALEX_WALK_FRAMES,
   BON_IDLE_FRAMES,
-  BON_PAT_FRAMES,
   BON_SPRITE_SET,
   BON_WALK_FRAMES,
   LUI_IDLE_FRAMES,
@@ -31,10 +30,10 @@ describe("characterSprite", () => {
     }
   });
 
-  it("returns the correct pat frame per direction/frameIndex", () => {
+  it("falls back to idle for pat, since Bon's hand-made sprite set has no pat pose", () => {
     for (const dir of DIRECTIONS) {
-      expect(characterSprite(BON_SPRITE_SET, "pat", dir, 0)).toBe(BON_PAT_FRAMES[dir][0]);
-      expect(characterSprite(BON_SPRITE_SET, "pat", dir, 1)).toBe(BON_PAT_FRAMES[dir][1]);
+      expect(characterSprite(BON_SPRITE_SET, "pat", dir, 0)).toBe(BON_IDLE_FRAMES[dir]);
+      expect(characterSprite(BON_SPRITE_SET, "pat", dir, 1)).toBe(BON_IDLE_FRAMES[dir]);
     }
   });
 
@@ -48,7 +47,7 @@ describe("characterSprite", () => {
   it("defaults frameIndex to 0 when omitted", () => {
     for (const dir of DIRECTIONS) {
       expect(characterSprite(BON_SPRITE_SET, "walk", dir)).toBe(BON_WALK_FRAMES[dir][0]);
-      expect(characterSprite(BON_SPRITE_SET, "pat", dir)).toBe(BON_PAT_FRAMES[dir][0]);
+      expect(characterSprite(BON_SPRITE_SET, "pat", dir)).toBe(BON_IDLE_FRAMES[dir]);
     }
   });
 });
@@ -69,7 +68,7 @@ describe("bonSprite (backward-compat shim)", () => {
   it("matches the pre-refactor hardcoded frame tables directly", () => {
     expect(bonSprite("walk", "left", 0)).toBe(BON_WALK_FRAMES.left[0]);
     expect(bonSprite("walk", "left", 1)).toBe(BON_WALK_FRAMES.left[1]);
-    expect(bonSprite("pat", "back", 1)).toBe(BON_PAT_FRAMES.back[1]);
+    expect(bonSprite("pat", "back", 1)).toBe(BON_IDLE_FRAMES.back);
     expect(bonSprite("idle", "right")).toBe(BON_IDLE_FRAMES.right);
   });
 });
@@ -111,7 +110,10 @@ describe.each([
     for (const dir of DIRECTIONS) {
       expect(walkFrames[dir][0]).not.toBe(BON_WALK_FRAMES[dir][0]);
       expect(idleFrames[dir]).not.toBe(BON_IDLE_FRAMES[dir]);
-      expect(patFrames[dir][0]).not.toBe(BON_PAT_FRAMES[dir][0]);
+      // Bon has no pat pose of his own anymore (hand-made set, falls back to
+      // idle) — just confirm this sprite set's pat frame isn't accidentally
+      // aliased to Bon's idle fallback frame.
+      expect(patFrames[dir][0]).not.toBe(BON_IDLE_FRAMES[dir]);
     }
   });
 });

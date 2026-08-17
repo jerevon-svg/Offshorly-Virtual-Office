@@ -70,7 +70,7 @@ function assertPathIsGenuinelyValid(start: { x: number; y: number }, path: { x: 
   }
 }
 
-// Replicates OfficeMap.tsx's handleChoose "pat" standoff-point calculation so
+// Replicates OfficeMap.tsx's handleChoose "approach" standoff-point calculation so
 // tests exercise the REAL geometry a live user action would produce, not
 // hand-picked pre-verified-reachable coordinates.
 function standoffGoal(bon: { x: number; y: number; width: number; height: number }, target: AssetLayer) {

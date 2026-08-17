@@ -55,7 +55,7 @@ function assertPathIsGenuinelyValid(start: { x: number; y: number }, path: { x: 
 }
 
 // Replicates OfficeMap.tsx's startCheckin standoff-point calculation (same
-// geometry as handleChoose's "pat" branch), including the stand-spot-first /
+// geometry as handleChoose's "approach" branch), including the stand-spot-first /
 // walkability-snapped-geometry-fallback logic OfficeMap.tsx now applies
 // before using the point as a walk target — real production logic, not a
 // hand-picked reachable point.

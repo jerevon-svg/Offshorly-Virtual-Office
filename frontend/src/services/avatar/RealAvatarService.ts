@@ -97,13 +97,18 @@ function rewriteSpriteSet(spriteSet: AvatarSpriteSet): AvatarSpriteSet {
   const directions = Object.keys(spriteSet.idle) as (keyof typeof spriteSet.idle)[];
   const idle = {} as AvatarSpriteSet["idle"];
   const walk = {} as AvatarSpriteSet["walk"];
-  const pat = {} as AvatarSpriteSet["pat"];
+  // pat is optional on AvatarSpriteSet (Bon's hand-made set has none), but
+  // gen-server's real pipeline still produces pat frames — rewrite them when
+  // present, otherwise leave pat undefined.
+  const pat = spriteSet.pat ? ({} as NonNullable<AvatarSpriteSet["pat"]>) : undefined;
   for (const dir of directions) {
     idle[dir] = withBase(spriteSet.idle[dir]);
     const [walkA, walkB] = spriteSet.walk[dir];
     walk[dir] = [withBase(walkA), withBase(walkB)];
-    const [patA, patB] = spriteSet.pat[dir];
-    pat[dir] = [withBase(patA), withBase(patB)];
+    if (pat && spriteSet.pat) {
+      const [patA, patB] = spriteSet.pat[dir];
+      pat[dir] = [withBase(patA), withBase(patB)];
+    }
   }
   return { idle, walk, pat };
 }

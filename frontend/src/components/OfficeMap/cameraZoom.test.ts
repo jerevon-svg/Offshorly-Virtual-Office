@@ -5,7 +5,7 @@ import { rooms } from "../../data/office-layout";
 import { FRAME_HEIGHT, FRAME_WIDTH } from "../../data/office-layout";
 
 // Cheap, pure assertions covering the room-fit camera stage added for
-// door-gated walks (check-in / chat-pat approach / checkout exit) — no
+// door-gated walks (check-in / chat/approach / checkout exit) — no
 // component rendering required.
 describe("ROOM_FIT_MULTIPLIER (room-fit camera stage)", () => {
   it("sits strictly between full-map (1.0) and the tight-focus multiplier (2.5)", () => {
