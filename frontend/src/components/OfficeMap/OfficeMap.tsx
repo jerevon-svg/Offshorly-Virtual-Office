@@ -1316,18 +1316,23 @@ export function OfficeMap() {
 
     const flatStartRoomId = flatRoomIdAt(bc);
     const flatGoalRoomId = flatRoomIdAt(tc);
-    const doorPair =
-      flatGoalRoomId && flatGoalRoomId !== flatStartRoomId ? doorStandForRoom(flatGoalRoomId) : null;
+    const doorCrossing =
+      flatGoalRoomId && flatGoalRoomId !== flatStartRoomId
+        ? (() => {
+            const dp = doorStandForRoom(flatGoalRoomId);
+            return dp ? { pair: dp, roomId: flatGoalRoomId } : null;
+          })()
+        : null;
 
-    // Camera: when this approach crosses through a door (doorPair), start
+    // Camera: when this approach crosses through a door (doorCrossing), start
     // wide on the destination ROOM (so the door + room are visible during
     // the crossing) rather than tight on the target — the final leg below
     // zooms tight-on-target only once bon is actually inside, walking the
     // last stretch to them. No crossing (same room already, or no door
     // pairing painted for it) — unchanged: tight on the target immediately,
     // same as before this camera-staging change existed.
-    if (doorPair) {
-      focusRoomFit(flatGoalRoomId, 600);
+    if (doorCrossing) {
+      focusRoomFit(doorCrossing.roomId, 600);
     } else {
       const ref = transformRef.current;
       const wrapper = ref?.instance.wrapperComponent;
@@ -1349,21 +1354,22 @@ export function OfficeMap() {
     approachNonceRef.current += 1;
     const nonce = approachNonceRef.current;
 
-    if (doorPair) {
+    if (doorCrossing) {
+      const doorPair = doorCrossing.pair;
       const outGoal = { x: doorPair.outStand.x - bw / 2, y: doorPair.outStand.y - bh / 2 };
       const inGoal = { x: doorPair.inStand.x - bw / 2, y: doorPair.inStand.y - bh / 2 };
       const pathToOutStand = findPath({ x: bonPos.x, y: bonPos.y }, outGoal, startRoomId, goalRoomId);
 
       walkTo(pathToOutStand, () => {
         if (approachNonceRef.current !== nonce) return;
-        onDoorOpen(flatGoalRoomId);
+        onDoorOpen(doorCrossing.roomId);
         approachDoorTimerRef.current = window.setTimeout(() => {
           approachDoorTimerRef.current = undefined;
           if (approachNonceRef.current !== nonce) return;
           const pathToInStand = findPath(outGoal, inGoal, goalRoomId, goalRoomId);
           walkTo(pathToInStand, () => {
             if (approachNonceRef.current !== nonce) return;
-            onDoorClose(flatGoalRoomId);
+            onDoorClose(doorCrossing.roomId);
             // Final leg — inside the room now, walking the last stretch to
             // the actual target. Zoom IN from room-fit to tight-on-target
             // here (animated, not instant) so the camera visibly closes in

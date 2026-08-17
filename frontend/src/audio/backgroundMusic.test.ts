@@ -18,7 +18,10 @@ class FakeAudio {
   muted = false;
   preload = "";
   play = vi.fn().mockResolvedValue(undefined);
-  constructor(public src?: string) {}
+  src?: string;
+  constructor(src?: string) {
+    this.src = src;
+  }
 }
 
 beforeEach(() => {

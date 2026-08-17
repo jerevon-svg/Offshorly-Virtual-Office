@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { formatCharacterName } from "../../data/office-layout";
 import { chatMode, chatService } from "../../services/chat";
-import type { ChatMessage } from "../../services/chat";
+import type { ChatMessage, ConnectionState } from "../../services/chat";
 import type { AssetLayer } from "../../types/office";
 import styles from "./ConversationView.module.css";
 
@@ -132,6 +132,15 @@ export function ConversationView({
   // forever in mock mode (MockChatService has zero receipt support).
   const [peerDeliveredUpTo, setPeerDeliveredUpTo] = useState<string | null>(null);
   const [peerReadUpTo, setPeerReadUpTo] = useState<string | null>(null);
+  const [isOpening, setIsOpening] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  // Text of the last send that failed — preserved so Retry can resend it
+  // without the user having to retype (manual retry only, no auto-retry:
+  // there's no server-side idempotency to make an automatic retry safe).
+  const [failedText, setFailedText] = useState<string | null>(null);
+  const [connectionState, setConnectionState] = useState<ConnectionState>(
+    chatService.getConnectionState?.() ?? "connected",
+  );
   const listEndRef = useRef<HTMLDivElement | null>(null);
 
   const resolvedPeerId = peerChatId !== undefined ? peerChatId : peer.id;
@@ -146,37 +155,53 @@ export function ConversationView({
   useEffect(() => {
     if (chatDisabled || routingPeerId === null) return;
     let cancelled = false;
+    setIsOpening(true);
 
-    chatService.openConversationWith(routingPeerId, selfId).then((conv) => {
-      if (cancelled) return;
-      setConversationId(conv.id);
-      chatService.getMessages(conv.id).then((msgs) => {
+    chatService
+      .openConversationWith(routingPeerId, selfId)
+      .then((conv) => {
         if (cancelled) return;
-        setMessages(msgs);
-        // Bootstrap peer watermarks from history — ONLY from the viewer's
-        // own messages. For a given message, deliveredAt/readAt reflect the
-        // *recipient's* watermark: for the viewer's own messages that's the
-        // peer's delivered/read state (what we need); for peer messages it's
-        // the viewer's own read state (not what we need here) — mixing the
-        // two in would corrupt the peer watermark.
-        if (chatMode === "real") {
-          let deliveredMax: string | null = null;
-          let readMax: string | null = null;
-          for (const m of msgs) {
-            if (m.senderId !== selfId) continue;
-            if (m.deliveredAt) deliveredMax = maxIso(deliveredMax, m.deliveredAt);
-            if (m.readAt) readMax = maxIso(readMax, m.readAt);
+        setConversationId(conv.id);
+        return chatService.getMessages(conv.id).then((msgs) => {
+          if (cancelled) return;
+          setMessages(msgs);
+          // Bootstrap peer watermarks from history — ONLY from the viewer's
+          // own messages. For a given message, deliveredAt/readAt reflect the
+          // *recipient's* watermark: for the viewer's own messages that's the
+          // peer's delivered/read state (what we need); for peer messages it's
+          // the viewer's own read state (not what we need here) — mixing the
+          // two in would corrupt the peer watermark.
+          if (chatMode === "real") {
+            let deliveredMax: string | null = null;
+            let readMax: string | null = null;
+            for (const m of msgs) {
+              if (m.senderId !== selfId) continue;
+              if (m.deliveredAt) deliveredMax = maxIso(deliveredMax, m.deliveredAt);
+              if (m.readAt) readMax = maxIso(readMax, m.readAt);
+            }
+            if (deliveredMax) setPeerDeliveredUpTo((prev) => maxIso(prev, deliveredMax));
+            if (readMax) setPeerReadUpTo((prev) => maxIso(prev, readMax));
           }
-          if (deliveredMax) setPeerDeliveredUpTo((prev) => maxIso(prev, deliveredMax));
-          if (readMax) setPeerReadUpTo((prev) => maxIso(prev, readMax));
-        }
+        });
+      })
+      .finally(() => {
+        if (!cancelled) setIsOpening(false);
       });
-    });
 
     return () => {
       cancelled = true;
     };
   }, [routingPeerId, selfId, chatDisabled]);
+
+  // Real-mode-only: mirrors the socket's connection lifecycle so the panel
+  // can show a "waking up the chat server" banner instead of looking broken
+  // during a Render free-tier cold start. Mock mode has no
+  // onConnectionState, so this stays a no-op there.
+  useEffect(() => {
+    if (!chatService.onConnectionState) return;
+    setConnectionState(chatService.getConnectionState?.() ?? "connected");
+    return chatService.onConnectionState(setConnectionState);
+  }, []);
 
   useEffect(() => {
     if (!conversationId) return;
@@ -231,13 +256,32 @@ export function ConversationView({
     chatService.markDelivered?.({ conversationId, upToSentAt: latest.sentAt });
   }, [conversationId, messages]);
 
+  function sendText(text: string) {
+    if (!conversationId) return;
+    setSendError(null);
+    setFailedText(null);
+    // Own message arrives via the onMessage subscription above (sendMessage
+    // notifies listeners synchronously) — no need to also append it here.
+    chatService.sendMessage({ conversationId, senderId: selfId, text }).catch((err: Error) => {
+      // No automatic retry: the backend has no client_temp_id-based
+      // idempotency, so re-emitting from here (rather than a fresh,
+      // user-initiated click) risks a duplicate message. Preserve the text
+      // so the user doesn't lose what they typed.
+      setSendError(err?.message || "Failed to send message.");
+      setFailedText(text);
+    });
+  }
+
   function handleSend() {
     const text = draft.trim();
     if (!text || !conversationId) return;
     setDraft("");
-    // Own message arrives via the onMessage subscription above (sendMessage
-    // notifies listeners synchronously) — no need to also append it here.
-    chatService.sendMessage({ conversationId, senderId: selfId, text });
+    sendText(text);
+  }
+
+  function handleRetry() {
+    if (!failedText) return;
+    sendText(failedText);
   }
 
   if (chatDisabled) {
@@ -264,6 +308,19 @@ export function ConversationView({
         </div>
       </div>
     );
+  }
+
+  // Real-mode-only — mock mode has no onConnectionState, so
+  // connectionState stays at its "connected" default and this never fires.
+  const isNotConnected = connectionState !== "connected";
+  // Terminal failure (auth rejected, no token) — distinct from the
+  // in-progress "waking up" states below; socket.io will not retry this on
+  // its own, so it needs its own banner + a manual Retry affordance.
+  const isConnectionError = connectionState === "error";
+  const showOpeningPlaceholder = isOpening && messages.length === 0;
+
+  function handleReconnect() {
+    chatService.reconnect?.();
   }
 
   const peerName = formatCharacterName(peer);
@@ -296,57 +353,85 @@ export function ConversationView({
           ×
         </button>
       </div>
+      {isConnectionError ? (
+        <div className={styles.errorBanner}>
+          <span>
+            Couldn't connect to chat: {chatService.getConnectionError?.() ?? "connection error"}
+          </span>
+          <button type="button" className={styles.retryButton} onClick={handleReconnect}>
+            Retry
+          </button>
+        </div>
+      ) : (
+        isNotConnected && (
+          <div className={styles.connectionBanner}>
+            Waking up the chat server — this can take up to a minute after a period of inactivity.
+          </div>
+        )
+      )}
       <div className={styles.messages}>
-        {messages.map((msg, index) => {
-          const dayLabel = formatDayDivider(msg.sentAt);
-          const showDivider = dayLabel !== lastDayLabel;
-          lastDayLabel = dayLabel;
-          const isOwn = msg.senderId === selfId;
-          const showStatus = chatMode === "real" && isOwn;
-          const status = showStatus
-            ? deriveMessageStatus(msg, selfId, peerDeliveredUpTo, peerReadUpTo)
-            : null;
-          const showSeenLabel =
-            showStatus && status === "read" && index === lastReadOwnIndex && peerReadUpTo;
-          return (
-            <div key={msg.id} className={styles.messageGroup}>
-              {showDivider && (
-                <div className={styles.dayDivider}>
-                  <hr className={styles.dayDividerLine} />
-                  <span className={styles.dayDividerLabel}>{dayLabel}</span>
-                  <hr className={styles.dayDividerLine} />
-                </div>
-              )}
-              <div className={isOwn ? `${styles.row} ${styles.rowSelf}` : styles.row}>
-                {!isOwn && <Avatar className={styles.avatar} src={peer.path || undefined} label={peerName} />}
-                <div className={styles.bubbleColumn}>
-                  <div className={isOwn ? `${styles.message} ${styles.own}` : `${styles.message} ${styles.peer}`}>
-                    {msg.text}
+        {showOpeningPlaceholder ? (
+          <div className={styles.message}>Connecting to chat…</div>
+        ) : (
+          messages.map((msg, index) => {
+            const dayLabel = formatDayDivider(msg.sentAt);
+            const showDivider = dayLabel !== lastDayLabel;
+            lastDayLabel = dayLabel;
+            const isOwn = msg.senderId === selfId;
+            const showStatus = chatMode === "real" && isOwn;
+            const status = showStatus
+              ? deriveMessageStatus(msg, selfId, peerDeliveredUpTo, peerReadUpTo)
+              : null;
+            const showSeenLabel =
+              showStatus && status === "read" && index === lastReadOwnIndex && peerReadUpTo;
+            return (
+              <div key={msg.id} className={styles.messageGroup}>
+                {showDivider && (
+                  <div className={styles.dayDivider}>
+                    <hr className={styles.dayDividerLine} />
+                    <span className={styles.dayDividerLabel}>{dayLabel}</span>
+                    <hr className={styles.dayDividerLine} />
                   </div>
-                  <span className={isOwn ? `${styles.timestamp} ${styles.timestampRight}` : styles.timestamp}>
-                    {formatMessageTime(msg.sentAt)}
-                  </span>
-                  {showStatus && (
-                    <span className={styles.statusRow} data-status={status}>
-                      {showSeenLabel && (
-                        <span className={styles.seenLabel}>Seen {formatMessageTime(peerReadUpTo)}</span>
-                      )}
-                      <StatusIcon status={status} />
+                )}
+                <div className={isOwn ? `${styles.row} ${styles.rowSelf}` : styles.row}>
+                  {!isOwn && <Avatar className={styles.avatar} src={peer.path || undefined} label={peerName} />}
+                  <div className={styles.bubbleColumn}>
+                    <div className={isOwn ? `${styles.message} ${styles.own}` : `${styles.message} ${styles.peer}`}>
+                      {msg.text}
+                    </div>
+                    <span className={isOwn ? `${styles.timestamp} ${styles.timestampRight}` : styles.timestamp}>
+                      {formatMessageTime(msg.sentAt)}
                     </span>
-                  )}
+                    {showStatus && (
+                      <span className={styles.statusRow} data-status={status}>
+                        {showSeenLabel && (
+                          <span className={styles.seenLabel}>Seen {formatMessageTime(peerReadUpTo)}</span>
+                        )}
+                        <StatusIcon status={status} />
+                      </span>
+                    )}
+                  </div>
+                  {isOwn && <Avatar className={styles.avatar} src={selfAvatarUrl || undefined} label={selfId} />}
                 </div>
-                {isOwn && <Avatar className={styles.avatar} src={selfAvatarUrl || undefined} label={selfId} />}
               </div>
-            </div>
-          );
-        })}
+            );
+          })
+        )}
         <div ref={listEndRef} />
       </div>
+      {sendError && (
+        <div className={styles.sendError}>
+          <span>{sendError}</span>
+          <button type="button" className={styles.retryButton} onClick={handleRetry}>
+            Retry
+          </button>
+        </div>
+      )}
       <div className={styles.composer}>
         <textarea
           className={styles.textarea}
           value={draft}
-          placeholder="Type a message…"
+          placeholder={isNotConnected ? "Connecting…" : "Type a message…"}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {

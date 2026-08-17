@@ -11,6 +11,14 @@ a Static Site gives always-on CDN serving with no cold starts.
 > remains dashboard-managed and is intentionally not represented in
 > `render.yaml`. `render.yaml` also isn't auto-applied — it only takes
 > effect once explicitly connected as a Blueprint in the Render dashboard.
+>
+> **Note — use the suffixed URL, not the bare hostname:** the Render
+> service is named `virtual-office-api`, but the bare
+> `virtual-office-api.onrender.com` hostname is globally claimed by an
+> unrelated third-party app. Render assigned this service the suffixed URL
+> `https://virtual-office-api-0hzd.onrender.com` instead. Always use that
+> suffixed URL (copy it from the service page) when wiring env vars —
+> pointing at the bare hostname silently hits a stranger's API.
 
 ## Render service settings
 
@@ -22,10 +30,31 @@ a Static Site gives always-on CDN serving with no cold starts.
 | Publish Directory     | `dist`                                                     |
 | Region               | same region as Atlas                                       |
 | Env var              | `VITE_API_URL=https://atlas-api.offshorly.com`             |
+| Env var              | `VITE_CHAT_MODE=real`                                       |
+| Env var              | `VITE_CHAT_SOCKET_URL=https://virtual-office-api-0hzd.onrender.com` |
 
 `VITE_API_URL` is inlined into the JS bundle at build time — there is no
 runtime env on a static bundle. Changing it requires a rebuild + redeploy on
 Render, not just an env var flip.
+
+`VITE_CHAT_MODE` is now optional in practice: setting `VITE_CHAT_SOCKET_URL`
+(non-empty, after trimming) is sufficient on its own to make
+`frontend/src/services/chat/index.ts` resolve to `real` mode. `VITE_CHAT_MODE`
+only needs to be set explicitly when you want to **override** that inference
+— e.g. `VITE_CHAT_MODE=mock` forces mock chat even with a socket URL
+configured. Leaving both unset, or leaving `VITE_CHAT_SOCKET_URL` empty,
+still silently falls back to `mock` — the app builds and runs fine, chat just
+never talks to the real backend, with no error anywhere.
+
+`VITE_CHAT_SOCKET_URL` must be an `https://` base with **no trailing slash**
+and **no `ws://`/`wss://` scheme** — Socket.IO negotiates `wss://` on its own
+from an `https://` base, e.g. `https://virtual-office-api-0hzd.onrender.com`.
+
+> **All three of these are Vite build-time vars** — they get inlined into
+> the bundle at build time, same as `VITE_API_URL` above. Changing any of
+> them in the Render dashboard has **no effect on the live site** until you
+> trigger **Manual Deploy → Clear build cache & deploy**. A plain restart
+> does not re-run the build, so it will not pick up the change.
 
 **Failure mode if `VITE_API_URL` is unset at build time:** the build still
 succeeds — Vite just inlines `undefined` where the value should be.
@@ -100,6 +129,15 @@ there's no Atlas auth token on the onrender origin, and the `/api/v1/auth/me`
 call is cross-origin, so `useAuthGate` will deny and bounce to `/`. That is
 expected at this stage, not a failure. The only thing to verify pre-cutover
 is that the JS/CSS assets themselves load with a 200 and correct MIME type.
+
+## Backend (`virtual-office-api`) env vars
+
+`CORS_ORIGINS` (dashboard-managed, `sync: false` in `render.yaml` — see
+comment there) must include the **exact** browser origin
+`https://atlas.offshorly.com`. `backend/app/main.py` sets
+`allow_credentials=True` on `CORSMiddleware`, and per the CORS spec that
+disables wildcard origins (`*`) — the origin must match exactly, scheme and
+host and all, or the browser rejects the cross-origin request.
 
 ## Handoff to Atlas
 

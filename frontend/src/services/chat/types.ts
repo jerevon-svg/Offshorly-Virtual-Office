@@ -47,6 +47,21 @@ export interface ReadReceiptUpdate {
 }
 export type ReadReceiptListener = (update: ReadReceiptUpdate) => void;
 
+// Real-mode-only: surfaces the underlying Socket.IO connection lifecycle so
+// the UI can show a "waking up the chat server" banner during a Render
+// free-tier cold start instead of silently dropping sends. "reconnecting"
+// covers both a mid-session drop and a cold-start handshake in progress.
+// "error" is a terminal failure (handshake/auth rejected, or no auth token
+// available at all) — socket.io v4 will NOT auto-retry after this, unlike
+// "reconnecting" which the manager is actively retrying on its own.
+export type ConnectionState =
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "disconnected"
+  | "error";
+export type ConnectionStateListener = (state: ConnectionState) => void;
+
 export interface ChatService {
   listConversations(): Promise<Conversation[]>;
   getMessages(conversationId: string): Promise<ChatMessage[]>;
@@ -66,4 +81,15 @@ export interface ChatService {
   markDelivered?(input: { conversationId: string; upToSentAt: string }): void;
   onDeliveryReceipt?(cb: DeliveryReceiptListener): () => void;
   onReadReceipt?(cb: ReadReceiptListener): () => void;
+  // Mock mode has no real socket/connection to report on, so
+  // MockChatService simply doesn't implement these.
+  getConnectionState?(): ConnectionState;
+  onConnectionState?(cb: ConnectionStateListener): () => void;
+  // Populated when getConnectionState() === "error" — the human-readable
+  // reason the connection failed (auth rejected, no token, etc).
+  getConnectionError?(): string | undefined;
+  // Manually re-arms the connection after a terminal "error" state.
+  // socket.io does not auto-reconnect after an auth/namespace connect_error,
+  // so recovery requires an explicit call (wired to a UI Retry button).
+  reconnect?(): void;
 }
