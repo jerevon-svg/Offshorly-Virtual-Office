@@ -1,18 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
   ALEX_IDLE_FRAMES,
-  ALEX_PAT_FRAMES,
   ALEX_SPRITE_SET,
   ALEX_WALK_FRAMES,
   BON_IDLE_FRAMES,
   BON_SPRITE_SET,
   BON_WALK_FRAMES,
+  CHRIS_IDLE_FRAMES,
+  CHRIS_SPRITE_SET,
+  CHRIS_WALK_FRAMES,
   LUI_IDLE_FRAMES,
   LUI_PAT_FRAMES,
   LUI_SPRITE_SET,
   LUI_WALK_FRAMES,
   MICAH_IDLE_FRAMES,
-  MICAH_PAT_FRAMES,
   MICAH_SPRITE_SET,
   MICAH_WALK_FRAMES,
   bonSprite,
@@ -73,9 +74,97 @@ describe("bonSprite (backward-compat shim)", () => {
   });
 });
 
+describe("characterSprite with ALEX_SPRITE_SET", () => {
+  it("returns the correct walk frame per direction/frameIndex", () => {
+    for (const dir of DIRECTIONS) {
+      expect(characterSprite(ALEX_SPRITE_SET, "walk", dir, 0)).toBe(ALEX_WALK_FRAMES[dir][0]);
+      expect(characterSprite(ALEX_SPRITE_SET, "walk", dir, 1)).toBe(ALEX_WALK_FRAMES[dir][1]);
+    }
+  });
+
+  it("falls back to idle for pat, since Alex's hand-made sprite set has no pat pose", () => {
+    for (const dir of DIRECTIONS) {
+      expect(characterSprite(ALEX_SPRITE_SET, "pat", dir, 0)).toBe(ALEX_IDLE_FRAMES[dir]);
+      expect(characterSprite(ALEX_SPRITE_SET, "pat", dir, 1)).toBe(ALEX_IDLE_FRAMES[dir]);
+    }
+  });
+
+  it("returns the idle frame regardless of frameIndex (idle has no second frame)", () => {
+    for (const dir of DIRECTIONS) {
+      expect(characterSprite(ALEX_SPRITE_SET, "idle", dir, 0)).toBe(ALEX_IDLE_FRAMES[dir]);
+      expect(characterSprite(ALEX_SPRITE_SET, "idle", dir, 1)).toBe(ALEX_IDLE_FRAMES[dir]);
+    }
+  });
+
+  it("defaults frameIndex to 0 when omitted", () => {
+    for (const dir of DIRECTIONS) {
+      expect(characterSprite(ALEX_SPRITE_SET, "walk", dir)).toBe(ALEX_WALK_FRAMES[dir][0]);
+      expect(characterSprite(ALEX_SPRITE_SET, "pat", dir)).toBe(ALEX_IDLE_FRAMES[dir]);
+    }
+  });
+});
+
+describe("characterSprite with MICAH_SPRITE_SET", () => {
+  it("returns the correct walk frame per direction/frameIndex", () => {
+    for (const dir of DIRECTIONS) {
+      expect(characterSprite(MICAH_SPRITE_SET, "walk", dir, 0)).toBe(MICAH_WALK_FRAMES[dir][0]);
+      expect(characterSprite(MICAH_SPRITE_SET, "walk", dir, 1)).toBe(MICAH_WALK_FRAMES[dir][1]);
+    }
+  });
+
+  it("falls back to idle for pat, since Micah's hand-made sprite set has no pat pose", () => {
+    for (const dir of DIRECTIONS) {
+      expect(characterSprite(MICAH_SPRITE_SET, "pat", dir, 0)).toBe(MICAH_IDLE_FRAMES[dir]);
+      expect(characterSprite(MICAH_SPRITE_SET, "pat", dir, 1)).toBe(MICAH_IDLE_FRAMES[dir]);
+    }
+  });
+
+  it("returns the idle frame regardless of frameIndex (idle has no second frame)", () => {
+    for (const dir of DIRECTIONS) {
+      expect(characterSprite(MICAH_SPRITE_SET, "idle", dir, 0)).toBe(MICAH_IDLE_FRAMES[dir]);
+      expect(characterSprite(MICAH_SPRITE_SET, "idle", dir, 1)).toBe(MICAH_IDLE_FRAMES[dir]);
+    }
+  });
+
+  it("defaults frameIndex to 0 when omitted", () => {
+    for (const dir of DIRECTIONS) {
+      expect(characterSprite(MICAH_SPRITE_SET, "walk", dir)).toBe(MICAH_WALK_FRAMES[dir][0]);
+      expect(characterSprite(MICAH_SPRITE_SET, "pat", dir)).toBe(MICAH_IDLE_FRAMES[dir]);
+    }
+  });
+});
+
+describe("characterSprite with CHRIS_SPRITE_SET", () => {
+  it("returns the correct walk frame per direction/frameIndex", () => {
+    for (const dir of DIRECTIONS) {
+      expect(characterSprite(CHRIS_SPRITE_SET, "walk", dir, 0)).toBe(CHRIS_WALK_FRAMES[dir][0]);
+      expect(characterSprite(CHRIS_SPRITE_SET, "walk", dir, 1)).toBe(CHRIS_WALK_FRAMES[dir][1]);
+    }
+  });
+
+  it("falls back to idle for pat, since Chris's hand-made sprite set has no pat pose", () => {
+    for (const dir of DIRECTIONS) {
+      expect(characterSprite(CHRIS_SPRITE_SET, "pat", dir, 0)).toBe(CHRIS_IDLE_FRAMES[dir]);
+      expect(characterSprite(CHRIS_SPRITE_SET, "pat", dir, 1)).toBe(CHRIS_IDLE_FRAMES[dir]);
+    }
+  });
+
+  it("returns the idle frame regardless of frameIndex (idle has no second frame)", () => {
+    for (const dir of DIRECTIONS) {
+      expect(characterSprite(CHRIS_SPRITE_SET, "idle", dir, 0)).toBe(CHRIS_IDLE_FRAMES[dir]);
+      expect(characterSprite(CHRIS_SPRITE_SET, "idle", dir, 1)).toBe(CHRIS_IDLE_FRAMES[dir]);
+    }
+  });
+
+  it("defaults frameIndex to 0 when omitted", () => {
+    for (const dir of DIRECTIONS) {
+      expect(characterSprite(CHRIS_SPRITE_SET, "walk", dir)).toBe(CHRIS_WALK_FRAMES[dir][0]);
+      expect(characterSprite(CHRIS_SPRITE_SET, "pat", dir)).toBe(CHRIS_IDLE_FRAMES[dir]);
+    }
+  });
+});
+
 describe.each([
-  ["ALEX_SPRITE_SET", ALEX_SPRITE_SET, ALEX_WALK_FRAMES, ALEX_IDLE_FRAMES, ALEX_PAT_FRAMES],
-  ["MICAH_SPRITE_SET", MICAH_SPRITE_SET, MICAH_WALK_FRAMES, MICAH_IDLE_FRAMES, MICAH_PAT_FRAMES],
   ["LUI_SPRITE_SET", LUI_SPRITE_SET, LUI_WALK_FRAMES, LUI_IDLE_FRAMES, LUI_PAT_FRAMES],
 ] as const)("characterSprite with %s", (_label, spriteSet, walkFrames, idleFrames, patFrames) => {
   it("returns the correct walk frame per direction/frameIndex", () => {

@@ -18,51 +18,33 @@ import idleRight from "../assets/office/characters/chibi-bon/right-idle.png";
 import idleFront from "../assets/office/characters/chibi-bon/front-idle.png";
 import idleBack from "../assets/office/characters/chibi-bon/back-idle.png";
 
-import alexWalkLeft1 from "../assets/office/characters/alex-walk-norm/left-1.png";
-import alexWalkLeft2 from "../assets/office/characters/alex-walk-norm/left-2.png";
-import alexWalkRight1 from "../assets/office/characters/alex-walk-norm/right-1.png";
-import alexWalkRight2 from "../assets/office/characters/alex-walk-norm/right-2.png";
-import alexWalkFront1 from "../assets/office/characters/alex-walk-norm/front-1.png";
-import alexWalkFront2 from "../assets/office/characters/alex-walk-norm/front-2.png";
-import alexWalkBack1 from "../assets/office/characters/alex-walk-norm/back-1.png";
-import alexWalkBack2 from "../assets/office/characters/alex-walk-norm/back-2.png";
+import alexWalkLeft1 from "../assets/office/characters/chibi-alex/left-walk-A.png";
+import alexWalkLeft2 from "../assets/office/characters/chibi-alex/left-walk-B.png";
+import alexWalkRight1 from "../assets/office/characters/chibi-alex/right-walk-A.png";
+import alexWalkRight2 from "../assets/office/characters/chibi-alex/right-walk-B.png";
+import alexWalkFront1 from "../assets/office/characters/chibi-alex/front-walk-A.png";
+import alexWalkFront2 from "../assets/office/characters/chibi-alex/front-walk-B.png";
+import alexWalkBack1 from "../assets/office/characters/chibi-alex/back-walk-A.png";
+import alexWalkBack2 from "../assets/office/characters/chibi-alex/back-walk-B.png";
 
-import alexIdleLeft from "../assets/office/characters/alex-idle-norm/left.png";
-import alexIdleRight from "../assets/office/characters/alex-idle-norm/right.png";
-import alexIdleFront from "../assets/office/characters/alex-idle-norm/front.png";
-import alexIdleBack from "../assets/office/characters/alex-idle-norm/back.png";
+import alexIdleLeft from "../assets/office/characters/chibi-alex/left-idle.png";
+import alexIdleRight from "../assets/office/characters/chibi-alex/right-idle.png";
+import alexIdleFront from "../assets/office/characters/chibi-alex/front-idle.png";
+import alexIdleBack from "../assets/office/characters/chibi-alex/back-idle.png";
 
-import alexPatLeft1 from "../assets/office/characters/alex-pat-norm/left-1.png";
-import alexPatLeft2 from "../assets/office/characters/alex-pat-norm/left-2.png";
-import alexPatRight1 from "../assets/office/characters/alex-pat-norm/right-1.png";
-import alexPatRight2 from "../assets/office/characters/alex-pat-norm/right-2.png";
-import alexPatFront1 from "../assets/office/characters/alex-pat-norm/front-1.png";
-import alexPatFront2 from "../assets/office/characters/alex-pat-norm/front-2.png";
-import alexPatBack1 from "../assets/office/characters/alex-pat-norm/back-1.png";
-import alexPatBack2 from "../assets/office/characters/alex-pat-norm/back-2.png";
+import micahWalkLeft1 from "../assets/office/characters/chibi-micah/left-walk-A.png";
+import micahWalkLeft2 from "../assets/office/characters/chibi-micah/left-walk-B.png";
+import micahWalkRight1 from "../assets/office/characters/chibi-micah/right-walk-A.png";
+import micahWalkRight2 from "../assets/office/characters/chibi-micah/right-walk-B.png";
+import micahWalkFront1 from "../assets/office/characters/chibi-micah/front-walk-A.png";
+import micahWalkFront2 from "../assets/office/characters/chibi-micah/front-walk-B.png";
+import micahWalkBack1 from "../assets/office/characters/chibi-micah/back-walk-A.png";
+import micahWalkBack2 from "../assets/office/characters/chibi-micah/back-walk-B.png";
 
-import micahWalkLeft1 from "../assets/office/characters/micah-walk-norm/left-1.png";
-import micahWalkLeft2 from "../assets/office/characters/micah-walk-norm/left-2.png";
-import micahWalkRight1 from "../assets/office/characters/micah-walk-norm/right-1.png";
-import micahWalkRight2 from "../assets/office/characters/micah-walk-norm/right-2.png";
-import micahWalkFront1 from "../assets/office/characters/micah-walk-norm/front-1.png";
-import micahWalkFront2 from "../assets/office/characters/micah-walk-norm/front-2.png";
-import micahWalkBack1 from "../assets/office/characters/micah-walk-norm/back-1.png";
-import micahWalkBack2 from "../assets/office/characters/micah-walk-norm/back-2.png";
-
-import micahIdleLeft from "../assets/office/characters/micah-idle-norm/left.png";
-import micahIdleRight from "../assets/office/characters/micah-idle-norm/right.png";
-import micahIdleFront from "../assets/office/characters/micah-idle-norm/front.png";
-import micahIdleBack from "../assets/office/characters/micah-idle-norm/back.png";
-
-import micahPatLeft1 from "../assets/office/characters/micah-pat-norm/left-1.png";
-import micahPatLeft2 from "../assets/office/characters/micah-pat-norm/left-2.png";
-import micahPatRight1 from "../assets/office/characters/micah-pat-norm/right-1.png";
-import micahPatRight2 from "../assets/office/characters/micah-pat-norm/right-2.png";
-import micahPatFront1 from "../assets/office/characters/micah-pat-norm/front-1.png";
-import micahPatFront2 from "../assets/office/characters/micah-pat-norm/front-2.png";
-import micahPatBack1 from "../assets/office/characters/micah-pat-norm/back-1.png";
-import micahPatBack2 from "../assets/office/characters/micah-pat-norm/back-2.png";
+import micahIdleLeft from "../assets/office/characters/chibi-micah/left-idle.png";
+import micahIdleRight from "../assets/office/characters/chibi-micah/right-idle.png";
+import micahIdleFront from "../assets/office/characters/chibi-micah/front-idle.png";
+import micahIdleBack from "../assets/office/characters/chibi-micah/back-idle.png";
 
 import luiWalkLeft1 from "../assets/office/characters/lui-walk-norm/left-1.png";
 import luiWalkLeft2 from "../assets/office/characters/lui-walk-norm/left-2.png";
@@ -92,20 +74,39 @@ import sitTypeBack from "../assets/office/characters/chibi-bon/back-sit.png";
 import sitTypeLeft from "../assets/office/characters/chibi-bon/left-sit.png";
 import sitTypeRight from "../assets/office/characters/chibi-bon/right-sit.png";
 
-import alexSitTypeFront from "../assets/office/characters/alex-sit-type-norm/front.png";
-import alexSitTypeBack from "../assets/office/characters/alex-sit-type-norm/back.png";
-import alexSitTypeLeft from "../assets/office/characters/alex-sit-type-norm/left.png";
-import alexSitTypeRight from "../assets/office/characters/alex-sit-type-norm/right.png";
+import alexSitTypeFront from "../assets/office/characters/chibi-alex/front-sit.png";
+import alexSitTypeBack from "../assets/office/characters/chibi-alex/back-sit.png";
+import alexSitTypeLeft from "../assets/office/characters/chibi-alex/left-sit.png";
+import alexSitTypeRight from "../assets/office/characters/chibi-alex/right-sit.png";
 
-import micahSitTypeFront from "../assets/office/characters/micah-sit-type-norm/front.png";
-import micahSitTypeBack from "../assets/office/characters/micah-sit-type-norm/back.png";
-import micahSitTypeLeft from "../assets/office/characters/micah-sit-type-norm/left.png";
-import micahSitTypeRight from "../assets/office/characters/micah-sit-type-norm/right.png";
+import micahSitTypeFront from "../assets/office/characters/chibi-micah/front-sit.png";
+import micahSitTypeBack from "../assets/office/characters/chibi-micah/back-sit.png";
+import micahSitTypeLeft from "../assets/office/characters/chibi-micah/left-sit.png";
+import micahSitTypeRight from "../assets/office/characters/chibi-micah/right-sit.png";
 
 import luiSitTypeFront from "../assets/office/characters/lui-sit-type-norm/front.png";
 import luiSitTypeBack from "../assets/office/characters/lui-sit-type-norm/back.png";
 import luiSitTypeLeft from "../assets/office/characters/lui-sit-type-norm/left.png";
 import luiSitTypeRight from "../assets/office/characters/lui-sit-type-norm/right.png";
+
+import chrisWalkLeft1 from "../assets/office/characters/chibi-chris/left-walk-A.png";
+import chrisWalkLeft2 from "../assets/office/characters/chibi-chris/left-walk-B.png";
+import chrisWalkRight1 from "../assets/office/characters/chibi-chris/right-walk-A.png";
+import chrisWalkRight2 from "../assets/office/characters/chibi-chris/right-walk-B.png";
+import chrisWalkFront1 from "../assets/office/characters/chibi-chris/front-walk-A.png";
+import chrisWalkFront2 from "../assets/office/characters/chibi-chris/front-walk-B.png";
+import chrisWalkBack1 from "../assets/office/characters/chibi-chris/back-walk-A.png";
+import chrisWalkBack2 from "../assets/office/characters/chibi-chris/back-walk-B.png";
+
+import chrisIdleLeft from "../assets/office/characters/chibi-chris/left-idle.png";
+import chrisIdleRight from "../assets/office/characters/chibi-chris/right-idle.png";
+import chrisIdleFront from "../assets/office/characters/chibi-chris/front-idle.png";
+import chrisIdleBack from "../assets/office/characters/chibi-chris/back-idle.png";
+
+import chrisSitTypeFront from "../assets/office/characters/chibi-chris/front-sit.png";
+import chrisSitTypeBack from "../assets/office/characters/chibi-chris/back-sit.png";
+import chrisSitTypeLeft from "../assets/office/characters/chibi-chris/left-sit.png";
+import chrisSitTypeRight from "../assets/office/characters/chibi-chris/right-sit.png";
 
 import type { AvatarSpriteSet } from "../services/avatar/types";
 
@@ -146,9 +147,12 @@ export const BON_SPRITE_SET: AvatarSpriteSet = {
   sitType: BON_SIT_TYPE_FRAMES,
 };
 
-// Alex and Micah — same normalized production-v2 pipeline output, packaged
-// identically to Bon's sprite set so they can run through the same
-// characterSprite() selector / useCharacterWalk hook.
+// Alex's hand-made sprite set (replaces the earlier AI-generated
+// alex-walk-norm/alex-idle-norm/alex-pat-norm/alex-sit-type-norm assets —
+// see git history to roll back). Alex drew idle/sit/walk-A/walk-B for all 4
+// directions but no pat pose, so there is no ALEX_PAT_FRAMES anymore;
+// characterSprite() falls back to idle when "pat" is requested for a sprite
+// set with no pat frames (same shape as BON_SPRITE_SET).
 export const ALEX_WALK_FRAMES: Record<WalkDirection, readonly [string, string]> = {
   left: [alexWalkLeft1, alexWalkLeft2],
   right: [alexWalkRight1, alexWalkRight2],
@@ -163,13 +167,6 @@ export const ALEX_IDLE_FRAMES: Record<WalkDirection, string> = {
   back: alexIdleBack,
 };
 
-export const ALEX_PAT_FRAMES: Record<WalkDirection, readonly [string, string]> = {
-  left: [alexPatLeft1, alexPatLeft2],
-  right: [alexPatRight1, alexPatRight2],
-  front: [alexPatFront1, alexPatFront2],
-  back: [alexPatBack1, alexPatBack2],
-};
-
 export const ALEX_SIT_TYPE_FRAMES: Record<WalkDirection, string> = {
   left: alexSitTypeLeft,
   right: alexSitTypeRight,
@@ -180,10 +177,15 @@ export const ALEX_SIT_TYPE_FRAMES: Record<WalkDirection, string> = {
 export const ALEX_SPRITE_SET: AvatarSpriteSet = {
   walk: ALEX_WALK_FRAMES,
   idle: ALEX_IDLE_FRAMES,
-  pat: ALEX_PAT_FRAMES,
   sitType: ALEX_SIT_TYPE_FRAMES,
 };
 
+// Micah's hand-made sprite set (replaces the earlier AI-generated
+// micah-walk-norm/micah-idle-norm/micah-pat-norm/micah-sit-type-norm assets —
+// see git history to roll back). Micah drew idle/sit/walk-A/walk-B for all 4
+// directions but no pat pose, so there is no MICAH_PAT_FRAMES anymore;
+// characterSprite() falls back to idle when "pat" is requested for a sprite
+// set with no pat frames (same shape as BON_SPRITE_SET/ALEX_SPRITE_SET).
 export const MICAH_WALK_FRAMES: Record<WalkDirection, readonly [string, string]> = {
   left: [micahWalkLeft1, micahWalkLeft2],
   right: [micahWalkRight1, micahWalkRight2],
@@ -198,13 +200,6 @@ export const MICAH_IDLE_FRAMES: Record<WalkDirection, string> = {
   back: micahIdleBack,
 };
 
-export const MICAH_PAT_FRAMES: Record<WalkDirection, readonly [string, string]> = {
-  left: [micahPatLeft1, micahPatLeft2],
-  right: [micahPatRight1, micahPatRight2],
-  front: [micahPatFront1, micahPatFront2],
-  back: [micahPatBack1, micahPatBack2],
-};
-
 export const MICAH_SIT_TYPE_FRAMES: Record<WalkDirection, string> = {
   left: micahSitTypeLeft,
   right: micahSitTypeRight,
@@ -215,7 +210,6 @@ export const MICAH_SIT_TYPE_FRAMES: Record<WalkDirection, string> = {
 export const MICAH_SPRITE_SET: AvatarSpriteSet = {
   walk: MICAH_WALK_FRAMES,
   idle: MICAH_IDLE_FRAMES,
-  pat: MICAH_PAT_FRAMES,
   sitType: MICAH_SIT_TYPE_FRAMES,
 };
 
@@ -257,6 +251,39 @@ export const LUI_SPRITE_SET: AvatarSpriteSet = {
   sitType: LUI_SIT_TYPE_FRAMES,
 };
 
+// Chris's hand-made sprite set (self-view + static-portrait treatment only —
+// not wired up as a walking-demo NPC like Alex/Micah/Lui). Chris drew
+// idle/sit/walk-A/walk-B for all 4 directions but no pat pose, so there is no
+// CHRIS_PAT_FRAMES; characterSprite() falls back to idle when "pat" is
+// requested for a sprite set with no pat frames (same shape as
+// BON_SPRITE_SET/ALEX_SPRITE_SET).
+export const CHRIS_WALK_FRAMES: Record<WalkDirection, readonly [string, string]> = {
+  left: [chrisWalkLeft1, chrisWalkLeft2],
+  right: [chrisWalkRight1, chrisWalkRight2],
+  front: [chrisWalkFront1, chrisWalkFront2],
+  back: [chrisWalkBack1, chrisWalkBack2],
+};
+
+export const CHRIS_IDLE_FRAMES: Record<WalkDirection, string> = {
+  left: chrisIdleLeft,
+  right: chrisIdleRight,
+  front: chrisIdleFront,
+  back: chrisIdleBack,
+};
+
+export const CHRIS_SIT_TYPE_FRAMES: Record<WalkDirection, string> = {
+  left: chrisSitTypeLeft,
+  right: chrisSitTypeRight,
+  front: chrisSitTypeFront,
+  back: chrisSitTypeBack,
+};
+
+export const CHRIS_SPRITE_SET: AvatarSpriteSet = {
+  walk: CHRIS_WALK_FRAMES,
+  idle: CHRIS_IDLE_FRAMES,
+  sitType: CHRIS_SIT_TYPE_FRAMES,
+};
+
 // Lookup by avatar id — lets a caller that only has "which sprite id is the
 // viewer" (e.g. from avatarIdentity.ts's join) resolve straight to the
 // AvatarSpriteSet, instead of hardcoding which BON_SPRITE_SET-shaped
@@ -269,6 +296,7 @@ export const SPRITE_SET_BY_AVATAR_ID: Record<string, AvatarSpriteSet> = {
   alex: ALEX_SPRITE_SET,
   micah: MICAH_SPRITE_SET,
   lui: LUI_SPRITE_SET,
+  chris: CHRIS_SPRITE_SET,
 };
 
 // Generic sprite selector: picks the frame for a given sprite set's

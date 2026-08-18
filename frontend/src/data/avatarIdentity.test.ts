@@ -13,11 +13,13 @@ describe("avatarIdForEmail", () => {
   });
 
   it("resolves via the localpart convention when there's no explicit registry entry", () => {
-    // micah/alex/lui aren't in the registry override table — their localpart
-    // already equals their sprite id, and that id is a real character layer.
+    // micah/alex/lui/chris aren't in the registry override table — their
+    // localpart already equals their sprite id, and that id is a real
+    // character layer.
     expect(avatarIdForEmail("micah@offshorly.com")).toBe("micah");
     expect(avatarIdForEmail("alex@offshorly.com")).toBe("alex");
     expect(avatarIdForEmail("lui@offshorly.com")).toBe("lui");
+    expect(avatarIdForEmail("chris@offshorly.com")).toBe("chris");
   });
 
   it("returns null (not 'bon') for an unmapped email with no matching localpart", () => {
