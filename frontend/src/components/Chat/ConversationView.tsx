@@ -402,7 +402,7 @@ export function ConversationView({
                     <span className={isOwn ? `${styles.timestamp} ${styles.timestampRight}` : styles.timestamp}>
                       {formatMessageTime(msg.sentAt)}
                     </span>
-                    {showStatus && (
+                    {status && (
                       <span className={styles.statusRow} data-status={status}>
                         {showSeenLabel && (
                           <span className={styles.seenLabel}>Seen {formatMessageTime(peerReadUpTo)}</span>

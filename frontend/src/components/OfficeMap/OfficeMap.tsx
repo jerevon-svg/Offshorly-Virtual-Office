@@ -460,7 +460,6 @@ export function OfficeMap() {
     direction,
     frameIndex,
     walkTo,
-    playPat,
     face,
     cancel: cancelWalk,
     resetPos: resetBonPos,
