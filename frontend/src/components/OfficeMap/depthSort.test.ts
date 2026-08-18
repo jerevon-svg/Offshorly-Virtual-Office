@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AssetLayer } from "../../types/office";
-import { depthCompare } from "./depthSort";
+import { createDepthCompare, depthCompare } from "./depthSort";
 
 function layer(overrides: Partial<AssetLayer> & { id: string; kind: AssetLayer["kind"] }): AssetLayer {
   return {
@@ -283,6 +283,113 @@ describe("depthCompare", () => {
       const sorted = [cmsRoom, decor, floor].sort(depthCompare);
 
       expect(sorted.map((l) => l.id)).toEqual(["floor-1", "cms-room", "decor-1"]);
+    });
+  });
+
+  describe("back-sit occupant-baseline override (createDepthCompare)", () => {
+    it("sorts a back-facing occupant's chair IN FRONT OF them when the chair's id is in the occupant-baseline map", () => {
+      const sofa = layer({
+        id: "dev-side-sofa",
+        kind: "furniture",
+        path: "assets/office/furniture/dev-team/dev-side-sofa.png",
+        y: 0,
+        height: 174.6, // sofa's own art baseline
+      });
+      const backSitter = layer({ id: "jona@x.com", kind: "character", y: 0, height: 177.3 }); // occupant baseline 177.3
+
+      const compare = createDepthCompare({ "dev-side-sofa": 177.3 });
+      const sorted = [backSitter, sofa].sort(compare);
+
+      // Chair key = 177.3 + epsilon > occupant's own baseline, so the chair
+      // draws AFTER (in front of) the occupant, even though the chair's own
+      // art baseline (174.6) is less than the occupant's (177.3).
+      expect(sorted.map((l) => l.id)).toEqual(["jona@x.com", "dev-side-sofa"]);
+    });
+
+    it("real usage: only the SYNTHETIC backrest-crop layer id (not the base chair id) is a map key, so the base chair stays behind while its crop clone renders in front", () => {
+      // Mirrors OfficeStage.tsx's real setup: backSitOccupantBaselines is
+      // keyed by `${furnitureId}-backrest-crop` (see backSitOccupancy.ts),
+      // and OfficeStage clones the base chair into a same-path synthetic
+      // layer under that id. depthSort.ts itself is agnostic to the key
+      // naming convention — this test just proves the real convention
+      // produces the intended base-behind / crop-in-front outcome.
+      const baseChair = layer({
+        id: "dev-side-sofa",
+        kind: "furniture",
+        path: "assets/office/furniture/dev-team/dev-side-sofa.png",
+        y: 0,
+        height: 174.6,
+      });
+      const backrestCrop = layer({
+        id: "dev-side-sofa-backrest-crop",
+        kind: "furniture",
+        path: "assets/office/furniture/dev-team/dev-side-sofa.png", // same path -> isSeat() still matches
+        y: 0,
+        height: 174.6,
+      });
+      const backSitter = layer({ id: "jona@x.com", kind: "character", y: 0, height: 177.3 });
+
+      const compare = createDepthCompare({ "dev-side-sofa-backrest-crop": 177.3 });
+      const sorted = [backSitter, backrestCrop, baseChair].sort(compare);
+
+      // Base chair (no map entry -> -Infinity) draws first (furthest back);
+      // occupant next; synthetic crop layer (map entry -> in front) last.
+      expect(sorted.map((l) => l.id)).toEqual(["dev-side-sofa", "jona@x.com", "dev-side-sofa-backrest-crop"]);
+    });
+
+    it("still sorts an unlisted seat behind its occupant (default -Infinity, unchanged)", () => {
+      const chair = layer({
+        id: "other-chair",
+        kind: "furniture",
+        path: "assets/office/furniture/dev-team/dev-visitor-chair.png",
+        y: 0,
+        height: 40,
+      });
+      const frontSitter = layer({ id: "alex@x.com", kind: "character", y: 0, height: 30 });
+
+      // Map has an entry for a DIFFERENT furniture id only — this chair is
+      // unaffected (front-facing occupant on the same room, gated on
+      // presence-in-map, not the room in general).
+      const compare = createDepthCompare({ "dev-side-sofa": 177.3 });
+      const sorted = [frontSitter, chair].sort(compare);
+
+      expect(sorted.map((l) => l.id)).toEqual(["other-chair", "alex@x.com"]);
+    });
+
+    it("does not apply the override to non-seat furniture even if its id happens to collide with a map key", () => {
+      const desk = layer({
+        id: "dev-side-sofa", // deliberately colliding id, but NOT seat-classified (no chair/sofa/beanbag in path)
+        kind: "furniture",
+        path: "assets/office/furniture/dev-team/dev-desk.png",
+        y: 0,
+        height: 174.6,
+      });
+      const character = layer({ id: "jona@x.com", kind: "character", y: 0, height: 177.3 });
+
+      const compare = createDepthCompare({ "dev-side-sofa": 177.3 });
+      const sorted = [character, desk].sort(compare);
+
+      // isSeat() is false for this layer (path has no chair/sofa/beanbag),
+      // so sortKey falls through to the real baseline (174.6) regardless of
+      // the id collision with the occupant-baseline map — desk still sorts
+      // behind the taller-baseline character, exactly as the existing
+      // non-seat-furniture rule already guarantees.
+      expect(sorted.map((l) => l.id)).toEqual(["dev-side-sofa", "jona@x.com"]);
+    });
+
+    it("depthCompare (no map) keeps the default always-behind seat behavior, unaffected by this fix", () => {
+      const sofa = layer({
+        id: "dev-side-sofa",
+        kind: "furniture",
+        path: "assets/office/furniture/dev-team/dev-side-sofa.png",
+        y: 0,
+        height: 174.6,
+      });
+      const backSitter = layer({ id: "jona@x.com", kind: "character", y: 0, height: 177.3 });
+
+      const sorted = [backSitter, sofa].sort(depthCompare);
+
+      expect(sorted.map((l) => l.id)).toEqual(["dev-side-sofa", "jona@x.com"]);
     });
   });
 });

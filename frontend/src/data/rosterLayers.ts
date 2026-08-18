@@ -1,6 +1,7 @@
 import { ASSET_PATH_TO_SRC, bonLayer, characterLayers, rooms } from "./office-layout";
 import { seatsForRoomId } from "./roomSeats";
-import { characterSprite } from "./bonWalkFrames";
+import { SEAT_DIRECTIONS } from "./seatDirections";
+import { SPRITE_SET_BY_AVATAR_ID, characterSprite } from "./bonWalkFrames";
 import { PLACEHOLDER_SPRITE_SET } from "../services/avatar/placeholder";
 import type { AssetLayer } from "../types/office";
 import type { OfficePerson } from "../services/office/floorMerge";
@@ -114,6 +115,17 @@ export function rosterSrcById(layers: AssetLayer[]): Record<string, string> {
   const map: Record<string, string> = {};
   const placeholderSrc = characterSprite(PLACEHOLDER_SPRITE_SET, "idle", "front");
   for (const layer of layers) {
+    // Seated on a real hand-painted chair (sitDirection set by
+    // officePeopleToLayers below): resolve through the same
+    // characterSprite() selector the live player uses, picking that
+    // person's own sprite set (or the placeholder set for anyone with no
+    // registry-mapped sprite set) and the seat's FIXED facing direction —
+    // never the manifest's hardcoded front-sit portrait.
+    if (layer.sitDirection) {
+      const set = layer.avatarId ? SPRITE_SET_BY_AVATAR_ID[layer.avatarId] : undefined;
+      map[layer.id] = characterSprite(set ?? PLACEHOLDER_SPRITE_SET, "sitType", layer.sitDirection);
+      continue;
+    }
     if (layer.path === PLACEHOLDER_LAYER_PATH) {
       map[layer.id] = placeholderSrc;
       continue;
@@ -180,13 +192,30 @@ export function officePeopleToLayers(people: OfficePerson[]): AssetLayer[] {
       let position: { x: number; y: number };
       let width: number;
       let height: number;
+      // Set for BOTH a real painted-chair seat and the packed-grid overflow
+      // fallback below — overflow people have no real seat coordinates to
+      // look up a per-seat override for, so they resolve the room's default
+      // direction instead (falling through to "front" when the room has no
+      // default either), rather than being left undefined and silently
+      // rendered with the manifest's static front-sit portrait regardless of
+      // any seatDirections.ts entry.
+      let sitDirection: AssetLayer["sitDirection"];
+      let furnitureId: AssetLayer["furnitureId"];
 
       if (i < seatedCount) {
-        // Real painted chair: center the sprite on the seat centroid.
+        // Real painted chair: center the sprite on the seat centroid, and
+        // carry the seat's fixed facing direction so rosterSrcById renders
+        // the correct directional sit pose instead of the hardcoded
+        // front-sit manifest portrait.
         const seat = seats[i];
         width = SEAT_WIDTH;
         height = SEAT_HEIGHT;
         position = { x: seat.x - width / 2, y: seat.y - height / 2 };
+        sitDirection = seat.direction;
+        // Only populated for the 4 manifest-driven rooms (see Seat.furnitureId)
+        // — undefined for the other 6 rooms' flood-fill seats, which is fine:
+        // the back-sit occlusion fix (depthSort.ts) naturally no-ops there.
+        furnitureId = seat.furnitureId;
       } else {
         // Overflow: no real chair left for this person, fall back to the
         // existing generic packed-grid logic for just the remainder.
@@ -202,6 +231,7 @@ export function officePeopleToLayers(people: OfficePerson[]): AssetLayer[] {
           x: room.x + ROOM_PADDING_X + column * (width + SEAT_GAP_X),
           y: room.y + ROOM_PADDING_TOP + row * (height + SEAT_GAP_Y),
         };
+        sitDirection = SEAT_DIRECTIONS[roomId]?.default ?? "front";
       }
 
       layers.push({
@@ -220,6 +250,9 @@ export function officePeopleToLayers(people: OfficePerson[]): AssetLayer[] {
         // has no guarantee of a matching frame set. Static portrait until
         // avatar generation covers real people (see rollout plan, D2).
         animatable: false,
+        avatarId: person.avatarId,
+        sitDirection,
+        furnitureId,
       });
     });
   }

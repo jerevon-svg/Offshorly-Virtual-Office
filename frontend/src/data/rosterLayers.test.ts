@@ -6,8 +6,10 @@ import {
   seatOverflowsRoom,
 } from "./rosterLayers";
 import { rooms, bonLayer, ASSET_PATH_TO_SRC } from "./office-layout";
-import { characterSprite } from "./bonWalkFrames";
+import { BON_SPRITE_SET, characterSprite } from "./bonWalkFrames";
 import { PLACEHOLDER_SPRITE_SET } from "../services/avatar/placeholder";
+import { seatsForRoomId } from "./roomSeats";
+import { SEAT_DIRECTIONS } from "./seatDirections";
 import type { OfficePerson } from "../services/office/floorMerge";
 
 function person(overrides: Partial<OfficePerson> = {}): OfficePerson {
@@ -124,6 +126,22 @@ describe("crowded rooms", () => {
     expect(overflowPerson.width).toBeLessThan(solo[0].width);
   });
 
+  it("gives an overflow person the room's default seat direction instead of leaving it undefined", () => {
+    // Overflow (packed-grid) people have no real seat coordinates, so they
+    // can't use directionForSeat's per-seat override lookup — but they must
+    // still resolve to SOME direction, or rosterSrcById falls through to the
+    // static front-sit manifest portrait regardless of any seatDirections.ts
+    // entry (the bug this fix closes). ai-room has no `default` key set in
+    // SEAT_DIRECTIONS today, so the guaranteed-overflow person (email-sorted
+    // last) should resolve to the documented "front" fallback — asserted
+    // via SEAT_DIRECTIONS itself so this stays correct if ai-room ever gains
+    // a `default`.
+    const packed = officePeopleToLayers(crowd("ai-room", 200));
+    const overflowPerson = packed.find((l) => l.id === "p99@offshorly.com")!;
+    expect(overflowPerson.sitDirection).toBeDefined();
+    expect(overflowPerson.sitDirection).toBe(SEAT_DIRECTIONS["ai-room"]?.default ?? "front");
+  });
+
   it("scales each room independently", () => {
     const layers = officePeopleToLayers([
       ...crowd("ai-room", 200),
@@ -154,26 +172,37 @@ describe("rosterSrcById", () => {
   it("resolves an unmapped person to the faceless placeholder, NOT Bon's art — regression for the roster-full-of-Bon screenshot", () => {
     // This is the exact scenario from Bon's screenshot: a room full of
     // employees with no registry mapping (avatarId null) must not all
-    // render as Bon's sprite.
+    // render as Bon's sprite. dev-team has real painted chairs, so these
+    // land on a real seat and resolve through the seat-direction mechanism
+    // (placeholder sprite set's sitType frame, defaulting to "front"), not
+    // the old idle-front fallback.
     const layers = officePeopleToLayers([
       person({ email: "unmapped1@offshorly.com", avatarId: null }),
       person({ email: "unmapped2@offshorly.com", avatarId: null }),
     ]);
     const srcs = rosterSrcById(layers);
     const bonSrc = ASSET_PATH_TO_SRC[bonLayer.path];
-    const placeholderSrc = characterSprite(PLACEHOLDER_SPRITE_SET, "idle", "front");
+    const devTeamSeats = seatsForRoomId("dev-team");
 
-    for (const layer of layers) {
+    layers.forEach((layer, i) => {
       expect(layer.path).toBe(PLACEHOLDER_LAYER_PATH);
-      expect(srcs[layer.id]).toBe(placeholderSrc);
+      const expectedSrc = characterSprite(PLACEHOLDER_SPRITE_SET, "sitType", devTeamSeats[i].direction);
+      expect(srcs[layer.id]).toBe(expectedSrc);
       expect(srcs[layer.id]).not.toBe(bonSrc);
-    }
+    });
   });
 
-  it("still resolves a mapped person to their real art, unchanged", () => {
+  it("resolves a mapped person seated on a real chair to their own sprite set's directional sit pose", () => {
+    // Seat-direction mechanism (see data/seatDirections.ts): a roster
+    // teammate seated on a real painted chair renders through
+    // characterSprite(set, "sitType", seat.direction) — NOT the old
+    // hardcoded manifest static portrait — so their pose always matches the
+    // seat's fixed facing direction (defaults to "front" until real
+    // directions are hand-assigned).
     const layers = officePeopleToLayers([person({ avatarId: "bon" })]);
     const srcs = rosterSrcById(layers);
-    expect(srcs[layers[0].id]).toBe(ASSET_PATH_TO_SRC[bonLayer.path]);
+    const expectedDirection = seatsForRoomId("dev-team")[0].direction;
+    expect(srcs[layers[0].id]).toBe(characterSprite(BON_SPRITE_SET, "sitType", expectedDirection));
   });
 });
 

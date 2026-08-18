@@ -26,7 +26,8 @@ import {
   worldToCell,
 } from "../../data/officeGrid";
 import { doorStandForRoom } from "../../data/doorStandPoints";
-import { seatsForRoomId } from "../../data/roomSeats";
+import { seatsForRoomId, type Seat } from "../../data/roomSeats";
+import { computeEmptySeats, seatCentroidKey, type SeatTarget } from "../../data/emptySeats";
 import type { Pt } from "../../data/walkable-zones";
 import { DOOR_ANIM_MS, DOOR_LAYERS_BY_ROOM } from "../../data/officeDoors";
 import type { AssetLayer } from "../../types/office";
@@ -41,6 +42,7 @@ import { CharacterActionMenu } from "./CharacterActionMenu";
 import { RoomSidebar } from "./RoomSidebar";
 import { CheckinModal } from "./CheckinModal";
 import { ReceptionActionMenu } from "./ReceptionActionMenu";
+import { SeatActionMenu } from "./SeatActionMenu";
 import {
   computeCenterTransform,
   computeRoomFocusTransform,
@@ -76,6 +78,7 @@ import { getCurrentUserId, useCurrentUserAvatarId } from "../../data/currentUser
 import { useCurrentUser } from "../../auth/currentUserStore";
 import { useOfficeRoster } from "../../services/office/useOfficeRoster";
 import { officePeopleToLayers, rosterSrcById } from "../../data/rosterLayers";
+import { computeBackSitOccupantBaselines } from "../../data/backSitOccupancy";
 import { TimeLogReview } from "./checkout/TimeLogReview";
 import { SubmissionFailedPanel } from "./checkout/SubmissionFailedPanel";
 import { CheckoutSuccessCard } from "./checkout/CheckoutSuccessCard";
@@ -128,7 +131,7 @@ export const ROOM_FIT_MULTIPLIER = 1.6;
 // colleagues' static portraits, since bon isn't part of that roster list.
 // Returns null if the room has no painted seats yet (fallback: don't add a
 // walk leg, keep today's exact behavior).
-function nearestSeatTo(roomId: string, point: Pt): Pt | null {
+function nearestSeatTo(roomId: string, point: Pt): Seat | null {
   const seats = seatsForRoomId(roomId);
   if (seats.length === 0) return null;
   let best = seats[0];
@@ -163,6 +166,13 @@ export function OfficeMap() {
   // sole entry point for check-in/check-out now that Arisha's own menu no
   // longer offers "Check in" and the room-picker step is gone.
   const [receptionMenu, setReceptionMenu] = useState<{ clientX: number; clientY: number } | null>(
+    null,
+  );
+  // Anchored "Sit here" confirm menu opened by clicking an empty seat marker
+  // (see emptySeats.ts / OfficeStage's onSeatClick). Confirming calls
+  // walkToSeat (declared below); closing (backdrop click or Escape) just
+  // clears this without starting a walk.
+  const [seatMenu, setSeatMenu] = useState<{ seat: SeatTarget; clientX: number; clientY: number } | null>(
     null,
   );
   const [roomSidebar, setRoomSidebar] = useState<{ layer: AssetLayer; side: "left" | "right" } | null>(
@@ -447,6 +457,7 @@ export function OfficeMap() {
       window.clearTimeout(charMenuTimerRef.current);
       window.clearTimeout(approachDoorTimerRef.current);
       window.clearTimeout(checkoutDoorTimerRef.current);
+      window.clearTimeout(seatDoorTimerRef.current);
       for (const timerId of Object.values(talkingTimersRef.current)) {
         window.clearTimeout(timerId);
       }
@@ -459,7 +470,7 @@ export function OfficeMap() {
     isPatting,
     direction,
     frameIndex,
-    walkTo,
+    walkTo: walkToRaw,
     playPat,
     face,
     cancel: cancelWalk,
@@ -468,10 +479,59 @@ export function OfficeMap() {
     x: bonLayer.x,
     y: bonLayer.y,
   });
+
+  // Sitting is a FIXED seat-owned pose, never derived from `direction` (the
+  // last direction bon happened to be facing/walking before he sat down —
+  // see the seat-direction mechanism in data/seatDirections.ts). Set only by
+  // the seat-arrival paths below (finishArrival's seatDirection arg, and the
+  // initial spawn-at-desk effect), and cleared the moment the player starts
+  // walking again (see the walkTo wrapper right below).
+  const [isSitting, setIsSitting] = useState(false);
+  const [sitDirection, setSitDirection] = useState<WalkDirection>("front");
+  // The viewer's own currently-occupied seat, as its centroid key (see
+  // emptySeats.ts's seatCentroidKey) — null whenever not sitting in a real
+  // painted chair. Set alongside every setIsSitting(true) call site (initial
+  // spawn-at-desk effect, sitAtSeat below) and cleared alongside every
+  // setIsSitting(false) (the walkTo wrapper right below). Used by the
+  // occupiedCentroidKeys memo further down so the viewer's own seat is never
+  // offered back to them (or anyone else) as a click-to-sit target while
+  // they're in it.
+  const [currentSeatKey, setCurrentSeatKey] = useState<string | null>(null);
+  // The viewer's own currently-occupied seat's manifest furniture id (see
+  // roomSeats.ts's Seat.furnitureId) — undefined whenever not sitting in a
+  // real manifest-room chair (non-manifest rooms' seats have no furnitureId
+  // at all). Set/cleared alongside currentSeatKey above. Feeds the back-sit
+  // occlusion fix's occupant-baseline map (see backSitOccupantBaselines
+  // below) so the viewer's own chair can be resolved without re-deriving it
+  // via a seat lookup every render.
+  const [currentSeatFurnitureId, setCurrentSeatFurnitureId] = useState<string | undefined>(undefined);
+
+  // Wraps the raw walk-hook's walkTo so ANY new walk (re-triggered mid-app,
+  // not just the onboarding sequence) clears isSitting — a character who
+  // starts moving again is, by definition, no longer sitting. Every call
+  // site below uses this wrapper, not walkToRaw directly.
+  function walkTo(input: Pt | Pt[], onArrive?: () => void) {
+    setIsSitting(false);
+    setCurrentSeatKey(null);
+    setCurrentSeatFurnitureId(undefined);
+    walkToRaw(input, onArrive);
+  }
+
+  // Shared "arrived at a seat, now sit in it" finalizer — used by BOTH
+  // walkToAssignedDepartment's real-seat arrival leg (finishArrival) and the
+  // click-to-sit walkToSeat flow below, so the isSitting/sitDirection/
+  // currentSeatKey trio is only ever set together, in exactly one place.
+  function sitAtSeat(seat: Seat) {
+    setIsSitting(true);
+    setSitDirection(seat.direction);
+    setCurrentSeatKey(seatCentroidKey(seat.x, seat.y));
+    setCurrentSeatFurnitureId(seat.furnitureId);
+  }
+
   const playerSpriteSrc = characterSprite(
     viewerSpriteSet,
-    isPatting ? "pat" : isWalking ? "walk" : "idle",
-    direction,
+    isPatting ? "pat" : isWalking ? "walk" : isSitting ? "sitType" : "idle",
+    isSitting ? sitDirection : direction,
     frameIndex,
   );
 
@@ -686,8 +746,30 @@ export function OfficeMap() {
   useEffect(() => {
     if (spawnMovedRef.current || !viewerLayer || isWalking) return;
     spawnMovedRef.current = true;
-    const seatAt = checkoutFlow.state === "CHECKED_OUT" ? bonLayer : viewerLayer;
+    const seatedAtDesk = checkoutFlow.state !== "CHECKED_OUT";
+    // Resolve Bon's seat the SAME way the onboarding walk does
+    // (resolveOwnSeat: nearest real detected seat to the room's door-in
+    // point) rather than viewerLayer.sitDirection — that came from Bon's
+    // email-sorted position in the roster array, the same overflow-prone
+    // mechanism any other roster person uses, and could disagree with the
+    // seat onboarding just walked him to. This keeps "check in fresh" and
+    // "reload while already seated" landing in the same seat/direction.
+    const seat = seatedAtDesk ? resolveOwnSeat() : null;
+    const bw = playerCharacterLayer.width;
+    const bh = playerCharacterLayer.height;
+    const seatAt = !seatedAtDesk ? bonLayer : seat ? { x: seat.x - bw / 2, y: seat.y - bh / 2 } : viewerLayer;
     resetBonPos({ x: seatAt.x, y: seatAt.y });
+    if (seatedAtDesk && seat) {
+      sitAtSeat(seat);
+    } else {
+      setIsSitting(false);
+      setCurrentSeatKey(null);
+    }
+    // resolveOwnSeat/playerCharacterLayer intentionally omitted below:
+    // resolveOwnSeat is a plain function recreated every render (not
+    // memoized), and listing it (or the layer dims it reads) would re-fire
+    // this effect on every render, defeating the spawnMovedRef "once" guard.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewerLayer, isWalking, resetBonPos, checkoutFlow.state]);
 
   // Once real people are on the floor, the manifest's fictional cast is
@@ -922,6 +1004,38 @@ export function OfficeMap() {
   // required here, not just a nice-to-have.
   const checkoutDoorTimerRef = useRef<number | undefined>(undefined);
   const checkoutDoorNonceRef = useRef(0);
+  // Pending door-open/door-close timeout for an in-flight click-to-sit
+  // walkToSeat walk — dedicated pair (not shared with approachDoorTimerRef/
+  // checkoutDoorTimerRef) so re-clicking a different seat mid-walk cancels
+  // cleanly without touching an unrelated pat/chat/checkout walk that might
+  // also be pending, and vice versa.
+  const seatDoorTimerRef = useRef<number | undefined>(undefined);
+  const seatDoorNonceRef = useRef(0);
+
+  // walkToSeat, approachCharacter, and checkout's walkOutOfRoomThenTo are all
+  // reachable from the same app-state window (onboarding === "done" &&
+  // !checkoutBusy overlaps with the checkout flow's own gating in ways that
+  // are easy to get wrong) — each flow's own door-gate refs above only
+  // self-cancel, so a click into a DIFFERENT flow's door-gated walk while one
+  // is mid-pause (waiting on DOOR_ANIM_MS at a door's outStand point, still
+  // clickable) would leave the other flow's stale timeout pending. It later
+  // fires and hijacks the new walk (see the click-to-sit vs approach race).
+  // Call this at the very top of every door-gated walk starter, before that
+  // starter captures its own local `nonce` snapshot, so cross-flow AND
+  // same-flow cancellation both happen in one place.
+  function cancelPendingDoorWalks() {
+    window.clearTimeout(seatDoorTimerRef.current);
+    seatDoorTimerRef.current = undefined;
+    seatDoorNonceRef.current += 1;
+
+    window.clearTimeout(approachDoorTimerRef.current);
+    approachDoorTimerRef.current = undefined;
+    approachNonceRef.current += 1;
+
+    window.clearTimeout(checkoutDoorTimerRef.current);
+    checkoutDoorTimerRef.current = undefined;
+    checkoutDoorNonceRef.current += 1;
+  }
 
   const PIP_WIDTH = 240;
   const PIP_HEIGHT = 180;
@@ -1067,6 +1181,24 @@ export function OfficeMap() {
   // logic below — via that room's flat-rect CENTER point run through
   // roomContainingPoint(), the existing documented convention for crossing
   // these two id schemes (see office-layout.ts).
+  // Bon's own live seat, resolved the SAME way for both the onboarding
+  // door-gated arrival (below) and the spawn-at-desk effect above — nearest
+  // real detected seat to the room's door-in point (or the room's center,
+  // for rooms with no painted door stand-point pair yet), NEVER the
+  // roster's email-sorted seats[i] assignment (rosterLayers.ts's
+  // officePeopleToLayers), which any other roster person can land past into
+  // the overflow fallback. Returns null only when the room has no painted
+  // seats at all.
+  function resolveOwnSeat(): Seat | null {
+    const flatRoomId = roomIdForPerson(currentUser?.email, currentUser?.team ?? null) ?? FALLBACK_ROOM_ID;
+    const doorPair = doorStandForRoom(flatRoomId);
+    if (doorPair) return nearestSeatTo(flatRoomId, doorPair.inStand);
+    const flatRoom = rooms.find((r) => r.id === flatRoomId);
+    if (!flatRoom) return null;
+    const center = { x: flatRoom.x + flatRoom.width / 2, y: flatRoom.y + flatRoom.height / 2 };
+    return nearestSeatTo(flatRoomId, center);
+  }
+
   function resolveAssignedRoomLayer(): AssetLayer {
     const roomId = roomIdForPerson(currentUser?.email, currentUser?.team ?? null) ?? FALLBACK_ROOM_ID;
     const flatRoom = rooms.find((r) => r.id === roomId) ?? rooms.find((r) => r.id === FALLBACK_ROOM_ID)!;
@@ -1096,8 +1228,16 @@ export function OfficeMap() {
       const roomCell = worldToCell(roomCenter);
       const startRoomId = roomOf(startCenter)?.id ?? null;
 
-      function finishArrival() {
-        face("front");
+      // `seat` is passed ONLY when this arrival is a real seat (nearestSeat
+      // found below) — never for the door-only fallback landing (plain
+      // room-center/door-cell walk further down), which leaves the player
+      // standing, not sitting.
+      function finishArrival(seat?: Seat) {
+        if (seat) {
+          sitAtSeat(seat);
+        } else {
+          face("front");
+        }
         window.clearTimeout(greetTimerRef.current);
         greetNonceRef.current += 1;
         setGreeting({ characterId: playerLayerId, nonce: greetNonceRef.current, text: "Hi team!" });
@@ -1137,11 +1277,11 @@ export function OfficeMap() {
               // instead of a zero-distance one that fires its arrival
               // callback synchronously (see useCharacterWalk.ts). Falls back
               // to greeting immediately if this room has no painted seats.
-              const nearestSeat = nearestSeatTo(flatRoomId, doorPair.inStand);
+              const nearestSeat = resolveOwnSeat();
               if (nearestSeat) {
                 const seatGoal = { x: nearestSeat.x - bw / 2, y: nearestSeat.y - bh / 2 };
                 const pathToSeat = findPath(inGoal, seatGoal, layer.id, layer.id);
-                walkTo(pathToSeat, finishArrival);
+                walkTo(pathToSeat, () => finishArrival(nearestSeat));
               } else {
                 finishArrival();
               }
@@ -1216,9 +1356,7 @@ export function OfficeMap() {
     // no-ops — checkout's mid-pause is user-cancelable (handleCancelCheckoutWalk,
     // the debug hours-reset path), unlike walkToAssignedDepartment's
     // onboarding-locked walk.
-    window.clearTimeout(checkoutDoorTimerRef.current);
-    checkoutDoorTimerRef.current = undefined;
-    checkoutDoorNonceRef.current += 1;
+    cancelPendingDoorWalks();
     const nonce = checkoutDoorNonceRef.current;
 
     if (doorPair) {
@@ -1257,6 +1395,72 @@ export function OfficeMap() {
     // existing single-goal walk behavior, unchanged.
     const path = findPath({ x: bonPos.x, y: bonPos.y }, finalGoal, startRoomId, finalGoalRoomId);
     walkTo(path, onArrive);
+  }
+
+  // Click-to-sit: walks the viewer to an empty painted seat clicked via the
+  // "Sit here" confirm menu (seatMenu state, below). Modeled directly on
+  // walkToAssignedDepartment's real-seat arrival leg — door-gated ONLY when
+  // crossing into the seat's room from outside AND that room has a complete
+  // hand-painted door in/out stand-point pair (see doorStandPoints.ts);
+  // otherwise a single-goal walk straight to the seat, same fallback
+  // reasoning as every other walk helper in this file. Uses its own
+  // seatDoorTimerRef/seatDoorNonceRef pair (declared above) so re-clicking a
+  // different seat mid-walk cancels the previous walk's pending door timer
+  // and makes its in-flight callbacks no-ops, instead of leaving a stale
+  // timer running or double-firing sitAtSeat.
+  function walkToSeat(seat: SeatTarget) {
+    const bw = playerCharacterLayer.width;
+    const bh = playerCharacterLayer.height;
+    const startCenter = { x: bonPos.x + bw / 2, y: bonPos.y + bh / 2 };
+    const startRoomId = roomOf(startCenter)?.id ?? null;
+    const flatStartRoomId = flatRoomIdAt(startCenter);
+    const seatGoal = { x: seat.x - bw / 2, y: seat.y - bh / 2 };
+    // seat.roomId is the flat rects/teamRooms-namespace id (rooms.ts) — bridge
+    // it into the roomLayers/manifest namespace findPath's goalRoomId expects
+    // via the seat's own center point, same convention
+    // resolveAssignedRoomLayer/flatRoomIdAt use elsewhere in this file.
+    const goalRoomId = roomContainingPoint({ x: seat.x, y: seat.y })?.id ?? null;
+
+    cancelPendingDoorWalks();
+    const nonce = seatDoorNonceRef.current;
+
+    pipSideRef.current = seat.x > bonPos.x ? "left" : "right";
+
+    const doorPair = flatStartRoomId !== seat.roomId ? doorStandForRoom(seat.roomId) : null;
+    if (doorPair) {
+      const outGoal = { x: doorPair.outStand.x - bw / 2, y: doorPair.outStand.y - bh / 2 };
+      const inGoal = { x: doorPair.inStand.x - bw / 2, y: doorPair.inStand.y - bh / 2 };
+      const pathToOutStand = findPath({ x: bonPos.x, y: bonPos.y }, outGoal, startRoomId, goalRoomId);
+
+      focusRoomFit(seat.roomId, 600);
+      walkTo(pathToOutStand, () => {
+        if (seatDoorNonceRef.current !== nonce) return;
+        onDoorOpen(seat.roomId);
+        seatDoorTimerRef.current = window.setTimeout(() => {
+          seatDoorTimerRef.current = undefined;
+          if (seatDoorNonceRef.current !== nonce) return;
+          const pathToInStand = findPath(outGoal, inGoal, goalRoomId, goalRoomId);
+          walkTo(pathToInStand, () => {
+            if (seatDoorNonceRef.current !== nonce) return;
+            onDoorClose(seat.roomId);
+            const pathToSeat = findPath(inGoal, seatGoal, goalRoomId, goalRoomId);
+            walkTo(pathToSeat, () => {
+              if (seatDoorNonceRef.current !== nonce) return;
+              sitAtSeat(seat);
+            });
+          });
+        }, DOOR_ANIM_MS);
+      });
+      return;
+    }
+
+    // Fallback: already in the seat's room, or no complete door stand-point
+    // pairing painted for it yet — single-goal walk straight to the seat.
+    const path = findPath({ x: bonPos.x, y: bonPos.y }, seatGoal, startRoomId, goalRoomId);
+    walkTo(path, () => {
+      if (seatDoorNonceRef.current !== nonce) return;
+      sitAtSeat(seat);
+    });
   }
 
   // Shared "walk up to a character to interact with them" logic — used by
@@ -1349,9 +1553,7 @@ export function OfficeMap() {
     // hasn't finished yet, and bump the nonce so its in-flight callbacks
     // become no-ops — pat/chat can be re-triggered mid-walk, unlike the
     // onboarding-locked check-in flow.
-    window.clearTimeout(approachDoorTimerRef.current);
-    approachDoorTimerRef.current = undefined;
-    approachNonceRef.current += 1;
+    cancelPendingDoorWalks();
     const nonce = approachNonceRef.current;
 
     if (doorCrossing) {
@@ -1576,6 +1778,70 @@ export function OfficeMap() {
     }
   }
 
+  // Opens the "Sit here" confirm menu for a clicked empty-seat marker — same
+  // suppression guard as handleCharacterClick/onRoomClick (onboarding must be
+  // "done", not mid-checkout-walk).
+  function handleSeatClick(seat: SeatTarget, anchor: { clientX: number; clientY: number }) {
+    if (onboarding !== "done" || checkoutBusy) return;
+    setRoomSidebar(null);
+    setSeatMenu({ seat, ...anchor });
+  }
+
+  // Every seat centroid currently occupied — by a live roster person seated
+  // on a real painted chair (rosterLayers entries with sitDirection set, see
+  // rosterLayers.ts), or by the viewer's own current seat (currentSeatKey,
+  // set by sitAtSeat above). Feeds computeEmptySeats below so occupied seats
+  // never get a click-to-sit marker (silent, no dimmed/tooltipped state —
+  // see the feature's design decision).
+  const occupiedCentroidKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const layer of rosterLayers) {
+      if (layer.sitDirection) {
+        keys.add(seatCentroidKey(layer.x + layer.width / 2, layer.y + layer.height / 2));
+      }
+    }
+    if (isSitting && currentSeatKey) keys.add(currentSeatKey);
+    return keys;
+  }, [rosterLayers, isSitting, currentSeatKey]);
+
+  // Back-sit occlusion fix (manifest rooms only — see furnitureId's doc
+  // comment in types/office.ts): furnitureId -> that seat's back-facing
+  // occupant's own baseline, for every currently back-sit occupant (roster
+  // people via rosterLayers, plus the live player via isSitting/sitDirection/
+  // currentSeatFurnitureId/bonPos). Passed to the MAIN OfficeStage instance
+  // only — the PiP mini-camera instance below only renders while the viewer
+  // is actively walking (isWalking), and walkTo always clears isSitting, so
+  // the viewer himself can never be back-sitting while PiP is visible; a
+  // roster NPC could still be, but PiP is a small transient preview during
+  // the viewer's own walk, not a scene players study, so this fidelity is
+  // skipped there rather than threading the prop through a second time.
+  const backSitOccupantBaselines = useMemo(
+    () =>
+      computeBackSitOccupantBaselines(rosterLayers, {
+        isSitting,
+        sitDirection,
+        furnitureId: currentSeatFurnitureId,
+        baseline: bonPos.y + playerCharacterLayer.height,
+      }),
+    [rosterLayers, isSitting, sitDirection, currentSeatFurnitureId, bonPos, playerCharacterLayer.height],
+  );
+
+  // Suppresses seat markers entirely under the same conditions the rest of
+  // this file already suppresses room/character-click interactions
+  // (onboarding not done, mid-checkout-walk), plus checked-out/not-checked-in
+  // — clicking a seat to sit down makes no sense before the viewer has
+  // checked in, or after they've checked out for the day.
+  const seatInteractionsSuppressed =
+    onboarding !== "done" ||
+    checkoutBusy ||
+    checkoutFlow.state === "CHECKED_OUT" ||
+    !hasCheckedIn;
+
+  const emptySeats = useMemo(
+    () => (seatInteractionsSuppressed ? [] : computeEmptySeats(occupiedCentroidKeys)),
+    [seatInteractionsSuppressed, occupiedCentroidKeys],
+  );
+
   // Recomputed on every render (e.g. while the viewer walks with the
   // sidebar open) so the roster reflects the viewer's live position, not a
   // stale snapshot.
@@ -1697,6 +1963,9 @@ export function OfficeMap() {
             talkingCharacterIds={talkingIds}
             talkingTextById={talkingTextById}
             openDoorLayerIds={openDoorLayerIds}
+            emptySeats={emptySeats}
+            onSeatClick={handleSeatClick}
+            backSitOccupantBaselines={backSitOccupantBaselines}
           />
         </TransformComponent>
       </TransformWrapper>
@@ -1895,6 +2164,17 @@ export function OfficeMap() {
             menu.layer.id === "lui" ||
             Boolean(menu.layer.animatable)
           }
+        />
+      )}
+      {seatMenu && (
+        <SeatActionMenu
+          anchor={seatMenu}
+          onClose={() => setSeatMenu(null)}
+          onConfirm={() => {
+            const seat = seatMenu.seat;
+            setSeatMenu(null);
+            walkToSeat(seat);
+          }}
         />
       )}
       {avatarsWithSpriteSet.map((avatar) => {

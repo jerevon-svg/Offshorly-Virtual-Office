@@ -8,8 +8,11 @@ import {
 } from "../../data/office-layout";
 import type { AssetLayer } from "../../types/office";
 import type { Phase } from "../../data/officePhase";
+import type { SeatTarget } from "../../data/emptySeats";
 import { DOOR_ANIM_MS, DOOR_SLIDE_DIRECTION } from "../../data/officeDoors";
-import { depthCompare } from "./depthSort";
+import { backrestCropLayerId } from "../../data/backSitOccupancy";
+import { getBackrestCropFraction } from "../../data/chairBackrestCrop";
+import { createDepthCompare } from "./depthSort";
 import { GreetingBubble } from "./GreetingBubble";
 import { TalkingBubble } from "./TalkingBubble";
 import { OfficePhaseOverlay } from "./OfficePhaseOverlay";
@@ -51,25 +54,46 @@ type OfficeStageProps = {
   // prop entirely means "no doors open," matching existing callers/tests
   // that don't pass it.
   openDoorLayerIds?: Set<string>;
+  // Empty (unoccupied) painted seats to render as clickable "sit here"
+  // markers — occupied seats get no marker at all (see emptySeats.ts).
+  // Deliberately not passed to the PiP mini-camera OfficeStage instance
+  // (OfficeMap.tsx only wires this on the main instance).
+  emptySeats?: SeatTarget[];
+  onSeatClick?: (seat: SeatTarget, anchor: { clientX: number; clientY: number }) => void;
+  // Synthetic backrest-crop layer id (`${furnitureId}-backrest-crop`, see
+  // backSitOccupancy.ts's backrestCropLayerId) -> that seat's back-facing
+  // occupant's own sprite baseline (position.y + height), for every
+  // currently back-sit occupant (see OfficeMap.tsx's
+  // computeBackSitOccupantBaselines). OfficeStage generates a synthetic,
+  // clip-path-cropped "backrest only" clone of any furniture layer whose id
+  // has an entry here (once suffixed) and lets depthSort force THAT clone
+  // (not the original chair layer) to render in front of its occupant —
+  // see depthSort.ts's sortKey doc comment and chairBackrestCrop.ts for the
+  // full reasoning. Omitted/undefined = existing always-behind behavior for
+  // every seat, unchanged (matches every existing caller/test that doesn't
+  // pass this prop).
+  backSitOccupantBaselines?: Record<string, number>;
 };
 
 // Shared click-vs-drag threshold logic: only fires onClick when pointer
 // movement between down/up stays under 6px (otherwise treated as a drag/pan).
-function useClickVsDrag(
-  onClick: ((layer: AssetLayer, anchor: { clientX: number; clientY: number }) => void) | undefined,
+// Generic over the clicked item so it can drive both character/room layer
+// clicks (AssetLayer) and empty-seat marker clicks (SeatTarget).
+function useClickVsDrag<T>(
+  onClick: ((item: T, anchor: { clientX: number; clientY: number }) => void) | undefined,
 ) {
   const downRef = useRef<{ x: number; y: number } | null>(null);
   return {
     onPointerDown: (e: React.PointerEvent) => {
       downRef.current = { x: e.clientX, y: e.clientY };
     },
-    onPointerUp: (layer: AssetLayer, e: React.PointerEvent) => {
+    onPointerUp: (item: T, e: React.PointerEvent) => {
       const d = downRef.current;
       if (d) {
         const dist = Math.hypot(e.clientX - d.x, e.clientY - d.y);
         if (dist < 6) {
           e.stopPropagation();
-          onClick?.(layer, { clientX: e.clientX, clientY: e.clientY });
+          onClick?.(item, { clientX: e.clientX, clientY: e.clientY });
         }
       }
       downRef.current = null;
@@ -92,9 +116,13 @@ export function OfficeStage({
   talkingCharacterIds,
   talkingTextById,
   openDoorLayerIds,
+  emptySeats,
+  onSeatClick,
+  backSitOccupantBaselines,
 }: OfficeStageProps = {}) {
-  const characterClick = useClickVsDrag(onCharacterClick);
-  const roomClick = useClickVsDrag(onRoomClick);
+  const characterClick = useClickVsDrag<AssetLayer>(onCharacterClick);
+  const roomClick = useClickVsDrag<AssetLayer>(onRoomClick);
+  const seatClick = useClickVsDrag<SeatTarget>(onSeatClick);
 
   // Resolve live character positions (e.g. bon's walking override) BEFORE
   // sorting, so depth ordering reflects true current feet-Y each render.
@@ -105,7 +133,37 @@ export function OfficeStage({
       const ov = l.kind === "character" ? characterOverrides?.[l.id] : undefined;
       return ov ? { ...l, x: ov.x, y: ov.y } : l;
     });
-  const sorted = resolved.slice().sort(depthCompare);
+  // Synthetic backrest-crop layers: for every furniture layer currently
+  // back-sit-occupied (its id, once suffixed, is a key in
+  // backSitOccupantBaselines — see backSitOccupancy.ts/OfficeMap.tsx), clone
+  // it into a new layer sharing the same path/position/size/imgCrop (so it
+  // renders identically, and still qualifies for depthSort's isSeat() path-
+  // match), but flagged with frontClipBottomPct so only its top "backrest"
+  // portion is visible (clip-path applied below at render time). The clone's
+  // id gets the -backrest-crop suffix, which is exactly what
+  // backSitOccupantBaselines is keyed by, so ONLY this synthetic layer (never
+  // the original chair layer, whose id has no such suffix) picks up the
+  // front-of-occupant sort-key override in depthSort.ts. Not generated for
+  // any other seat (unoccupied, or occupied but facing front/left/right) —
+  // gated purely on presence in the map, which backSitOccupancy.ts already
+  // restricts to real back-sit occupants.
+  const backrestCropLayers: AssetLayer[] = [];
+  if (backSitOccupantBaselines) {
+    for (const layer of resolved) {
+      if (layer.kind !== "furniture") continue;
+      const cropId = backrestCropLayerId(layer.id);
+      if (backSitOccupantBaselines[cropId] === undefined) continue;
+      backrestCropLayers.push({
+        ...layer,
+        id: cropId,
+        frontClipBottomPct: getBackrestCropFraction(layer.path),
+      });
+    }
+  }
+  const withBackrestCrops = backrestCropLayers.length
+    ? resolved.concat(backrestCropLayers)
+    : resolved;
+  const sorted = withBackrestCrops.slice().sort(createDepthCompare(backSitOccupantBaselines));
 
   const resolvedGreetedLayer = greetingCharacterId
     ? resolved.find((l) => l.id === greetingCharacterId)
@@ -152,6 +210,16 @@ export function OfficeStage({
               width: `${(layer.width / FRAME_WIDTH) * 100}%`,
               height: `${(layer.height / FRAME_HEIGHT) * 100}%`,
               ...(layer.transform ? { transform: layer.transform } : {}),
+              // Synthetic backrest-crop layer only (see frontClipBottomPct's
+              // doc comment in types/office.ts): clip the WRAPPER div itself
+              // (not the img inside it) to only its top frontClipBottomPct
+              // fraction, showing just the backrest/headrest portion. Never
+              // resizes the div (would rescale the imgCrop %-based math
+              // below), just visually clips it — same box, same img
+              // position, less of it drawn.
+              ...(layer.frontClipBottomPct !== undefined
+                ? { clipPath: `inset(0 0 ${(1 - layer.frontClipBottomPct) * 100}% 0)` }
+                : {}),
               ...(layer.blendMode
                 ? { mixBlendMode: layer.blendMode as React.CSSProperties["mixBlendMode"] }
                 : {}),
@@ -197,6 +265,27 @@ export function OfficeStage({
               })()}
             />
           </div>
+        );
+      })}
+      {emptySeats?.map((seat) => {
+        // Fixed on-screen marker footprint (world px, before %-conversion) —
+        // seat centroids have no inherent size of their own (they're a
+        // point), so this is just big enough to be an easy click target
+        // without visually dwarfing the chair art underneath it.
+        const size = 28;
+        return (
+          <div
+            key={seat.key}
+            className={styles.emptySeatMarker}
+            style={{
+              left: `${((seat.x - size / 2) / FRAME_WIDTH) * 100}%`,
+              top: `${((seat.y - size / 2) / FRAME_HEIGHT) * 100}%`,
+              width: `${(size / FRAME_WIDTH) * 100}%`,
+              height: `${(size / FRAME_HEIGHT) * 100}%`,
+            }}
+            onPointerDown={seatClick.onPointerDown}
+            onPointerUp={(e) => seatClick.onPointerUp(seat, e)}
+          />
         );
       })}
       {resolvedGreetedLayer && (
