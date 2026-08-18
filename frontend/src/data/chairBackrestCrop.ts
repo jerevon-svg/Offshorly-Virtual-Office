@@ -31,21 +31,21 @@
 // spot-check and adjust these afterward — precision here is not the goal.
 export const CHAIR_BACKREST_FRACTION: Record<string, number> = {
   // ai-room: ai-visitor-chair-1/2 (visible box ~18x16.63, wider than tall).
-  "assets/office/furniture/ai-team/ai-lead-chair.png": 0,
+  "assets/office/furniture/ai-team/ai-lead-chair.png": 0.45,
   // executive-team: ceo/cto-visitor-chair-1..4 (visible box ~19.8x22.9).
-  "assets/office/furniture/executive-team/exec-visitor-chair.png": 0,
+  "assets/office/furniture/executive-team/exec-visitor-chair.png": 0.4,
   // executive-team: bottom-center-sofa (visible box ~27.6x29.4, squarish
   // loveseat — sofas give proportionally less of their box to backrest).
-  "assets/office/furniture/executive-team/bottom-center-sofa.png": 0,
+  "assets/office/furniture/executive-team/bottom-center-sofa.png": 0.35,
   // dev-team: every dev-lead*-visitor*/dev-bay*-chair5..8 instance (visible
   // box ~17.7x20.1).
-  "assets/office/furniture/dev-team/dev-visitor-chair.png": 0,
+  "assets/office/furniture/dev-team/dev-visitor-chair.png": 0.4,
   // design-team: design-chair-3/design-member-chair-4/5 (visible box
   // ~18.5x20.8).
-  "assets/office/furniture/design-team/design-member-chair-b.png": 0,
+  "assets/office/furniture/design-team/design-member-chair-b.png": 0.4,
   // design-team: design-side-beanbag (visible box ~28.9x29.3, round — no
   // distinct backrest edge, kept on the lower end alongside the sofa).
-  "assets/office/furniture/design-team/design-side-beanbag.png": 0,
+  "assets/office/furniture/design-team/design-side-beanbag.png": 0.35,
 };
 
 // Fallback for any chair/sofa/beanbag style not explicitly listed above, so
