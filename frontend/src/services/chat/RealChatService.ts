@@ -281,7 +281,7 @@ export class RealChatService implements ChatService {
     for (const msg of messages) {
       if (msg.sentAt > newest) newest = msg.sentAt;
     }
-    this.socket().emit("message_delivered", { conversationId, upToSentAt: newest });
+    this.socket()?.emit("message_delivered", { conversationId, upToSentAt: newest });
   }
 
   async listConversations(): Promise<Conversation[]> {
@@ -432,7 +432,7 @@ export class RealChatService implements ChatService {
 
   // Fire-and-forget, same pattern as markRead above.
   markDelivered(input: { conversationId: string; upToSentAt: string }): void {
-    this.socket().emit("message_delivered", input);
+    this.socket()?.emit("message_delivered", input);
   }
 
   onDeliveryReceipt(cb: DeliveryReceiptListener): () => void {

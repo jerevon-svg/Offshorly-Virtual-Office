@@ -471,7 +471,6 @@ export function OfficeMap() {
     direction,
     frameIndex,
     walkTo: walkToRaw,
-    playPat,
     face,
     cancel: cancelWalk,
     resetPos: resetBonPos,
