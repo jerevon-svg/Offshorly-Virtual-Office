@@ -7,8 +7,9 @@
 // with mock signals, with no jsdom/WebGL stubbing required.
 //
 // Tiers:
-//   T0 — no live-3D. Mobile/tablet, no WebGL2, software renderer, or weak
-//        CPU/RAM. Fail-safe default for anything ambiguous or erroring.
+//   T0 — no live-3D. Mobile/tablet, no working WebGL context (neither
+//        WebGL2 nor a WebGL1 fallback), software renderer, or weak CPU/RAM.
+//        Fail-safe default for anything ambiguous or erroring.
 //   T1 — capable-but-modest desktop/laptop (e.g. integrated GPU, or a browser
 //        that doesn't expose `deviceMemory`). Launches at 0 live-3D cap
 //        (see tierBudgets.ts) until field data justifies promotion.
@@ -39,10 +40,24 @@ export interface DeviceCapabilitySignals {
   /** Whether a WebGL2 context could be created at all */
   hasWebGL2: boolean;
   /**
+   * Whether a plain WebGL1 context (`webgl` / `experimental-webgl`) could be
+   * created, as a fallback probe when WebGL2 creation fails. three.js's
+   * `WebGLRenderer` (see SharedRenderer.ts) doesn't require WebGL2
+   * specifically — it uses WebGL2 when available and falls back to WebGL1
+   * transparently — so a WebGL1-only device is still capable of live-3D and
+   * should NOT be hard-capped at T0 just because WebGL2 is unavailable.
+   * Undefined/unset only in mocked test signals that don't care about this
+   * fallback path; real signals always populate this.
+   */
+  hasWebGL1?: boolean;
+  /**
    * UNMASKED_RENDERER_WEBGL string via WEBGL_debug_renderer_info, when the
    * extension is available and unblocked. `null` means the string could not
    * be read (extension missing/blocked); this is NOT treated as a software
-   * renderer — it's just an unknown one.
+   * renderer — it's just an unknown one. Read from whichever context
+   * (WebGL2, or the WebGL1 fallback) actually succeeded, so the software-
+   * renderer blocklist below (Rule 3) still catches a software-rendered
+   * WebGL1 context exactly the same way it catches WebGL2.
    */
   unmaskedRenderer: string | null;
   /**
@@ -102,8 +117,11 @@ export function computeDeviceTier(signals: DeviceCapabilitySignals): DeviceTier 
     // any GPU string — thermal/battery risk can't be measured from JS.
     if (isMobileLike(signals)) return "T0";
 
-    // Rule 2: no WebGL2 => T0.
-    if (!signals.hasWebGL2) return "T0";
+    // Rule 2: no working WebGL context at all (neither WebGL2 nor a WebGL1
+    // fallback) => T0. WebGL2 is preferred when available, but three.js's
+    // WebGLRenderer falls back to WebGL1 transparently, so WebGL1-only
+    // devices are still live-3D-capable and must not be forced to T0 here.
+    if (!signals.hasWebGL2 && !signals.hasWebGL1) return "T0";
 
     // Rule 3: known software-renderer strings => T0.
     if (isSoftwareRenderer(signals.unmaskedRenderer)) return "T0";
@@ -153,25 +171,48 @@ export function collectDeviceSignals(): DeviceCapabilitySignals {
   const win = typeof window !== "undefined" ? window : undefined;
 
   let hasWebGL2 = false;
+  let hasWebGL1 = false;
   let unmaskedRenderer: string | null = null;
+
+  function readUnmaskedRenderer(gl: WebGL2RenderingContext | WebGLRenderingContext): string | null {
+    try {
+      const ext = gl.getExtension("WEBGL_debug_renderer_info");
+      if (!ext) return null;
+      const raw = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
+      return typeof raw === "string" ? raw : null;
+    } catch {
+      return null;
+    }
+  }
 
   try {
     const canvas = document.createElement("canvas");
-    const gl = canvas.getContext("webgl2") as WebGL2RenderingContext | null;
-    if (gl) {
+    const gl2 = canvas.getContext("webgl2") as WebGL2RenderingContext | null;
+    if (gl2) {
       hasWebGL2 = true;
-      try {
-        const ext = gl.getExtension("WEBGL_debug_renderer_info");
-        if (ext) {
-          const raw = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
-          unmaskedRenderer = typeof raw === "string" ? raw : null;
-        }
-      } catch {
-        unmaskedRenderer = null;
-      }
+      unmaskedRenderer = readUnmaskedRenderer(gl2);
     }
   } catch {
     hasWebGL2 = false;
+  }
+
+  // WebGL1 fallback probe: only matters when WebGL2 creation failed, but we
+  // still run the software-renderer string read the same way as the WebGL2
+  // path above, so Rule 3 (software renderer => T0) applies identically to
+  // a WebGL1-only context (e.g. SwiftShader/llvmpipe exposed only via
+  // 'webgl') and doesn't accidentally slip through as "supported".
+  if (!hasWebGL2) {
+    try {
+      const canvas = document.createElement("canvas");
+      const gl1 = (canvas.getContext("webgl") ??
+        canvas.getContext("experimental-webgl")) as WebGLRenderingContext | null;
+      if (gl1) {
+        hasWebGL1 = true;
+        unmaskedRenderer = readUnmaskedRenderer(gl1);
+      }
+    } catch {
+      hasWebGL1 = false;
+    }
   }
 
   return {
@@ -182,6 +223,7 @@ export function collectDeviceSignals(): DeviceCapabilitySignals {
     maxTouchPoints: nav?.maxTouchPoints ?? 0,
     viewportWidth: win?.innerWidth ?? 0,
     hasWebGL2,
+    hasWebGL1,
     unmaskedRenderer,
   };
 }

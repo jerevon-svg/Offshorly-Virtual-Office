@@ -39,8 +39,28 @@ describe("computeDeviceTier", () => {
     expect(result).toBe("T0");
   });
 
-  it("no WebGL2 -> T0", () => {
-    const result = computeDeviceTier(signals({ hasWebGL2: false }));
+  it("no WebGL2 and no WebGL1 fallback -> T0", () => {
+    const result = computeDeviceTier(
+      signals({ hasWebGL2: false, hasWebGL1: false }),
+    );
+    expect(result).toBe("T0");
+  });
+
+  it("no WebGL2 but WebGL1 fallback succeeds (non-software) -> NOT T0, proceeds to normal tier logic", () => {
+    const result = computeDeviceTier(
+      signals({ hasWebGL2: false, hasWebGL1: true }),
+    );
+    expect(result).toBe("T2");
+  });
+
+  it("no WebGL2, WebGL1 fallback succeeds but reports a software renderer -> still T0", () => {
+    const result = computeDeviceTier(
+      signals({
+        hasWebGL2: false,
+        hasWebGL1: true,
+        unmaskedRenderer: "Google SwiftShader",
+      }),
+    );
     expect(result).toBe("T0");
   });
 
