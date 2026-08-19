@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import {
   ASSET_PATH_TO_SRC,
   FRAME_HEIGHT,
@@ -16,7 +16,105 @@ import { createDepthCompare } from "./depthSort";
 import { GreetingBubble } from "./GreetingBubble";
 import { TalkingBubble } from "./TalkingBubble";
 import { OfficePhaseOverlay } from "./OfficePhaseOverlay";
+import { CharacterCanvas, directionToHeadingDegrees } from "../../render3d/CharacterCanvas";
+import { LIVE_3D_CHARACTERS, type Live3dAssetSet } from "../../render3d/live3dCharacters";
+import { avatarIdForEmail } from "../../data/avatarIdentity";
+import type { WalkDirection } from "../../data/bonWalkFrames";
+import { detectDeviceTier, type DeviceTier } from "../../services/render/deviceTier";
+import { LIVE_3D_CAP_BY_TIER, LIVE_3D_SELF_MIN_TIER } from "../../services/render/tierBudgets";
 import styles from "./OfficeStage.module.css";
+
+// ---------------------------------------------------------------------------
+// Live-3D gating.
+//
+// Two independent gates decide whether a given character layer shows its
+// CharacterCanvas (live-3D) instead of its normal sprite <img>:
+//
+//  1. ELIGIBILITY (live3dCharacters.ts's LIVE_3D_CHARACTERS) — does this
+//     avatar id have an approved, shipped GLB asset set at all? Bon is the
+//     only real entry today; adding employee #2 is a registry-only change.
+//  2. PERMISSION (computeLive3dGating below) — does the CURRENT VIEWER's
+//     device/role allow showing it right now? This is where device tier
+//     (deviceTier.ts) and the self vs. crowd budget split
+//     (tierBudgets.ts) come in:
+//       - T0 (mobile/weak hardware): never, no exceptions, self included —
+//         a hard safety floor.
+//       - The viewer's OWN character ("self", see selfCharacterId prop):
+//         shown starting at LIVE_3D_SELF_MIN_TIER (T1+), independent of the
+//         crowd cap below.
+//       - Every other character: shown only within LIVE_3D_CAP_BY_TIER's
+//         per-tier crowd budget (currently 0 below T2) — self consumption
+//         does NOT count against this budget.
+//
+// A separate, dev-only `?live3d=` URL override (see
+// getLive3dEnabledAvatarIds below) bypasses gate 2 entirely for manual
+// testing of characters that aren't (yet) eligible, e.g. Alex — but even
+// the override still requires *some* asset set to show (falls back to
+// DEV_ONLY_LIVE_3D_ENTRIES when the character has no real registry entry).
+// ---------------------------------------------------------------------------
+
+// Assets for characters NOT (yet) eligible for production — kept around
+// purely so the dev-only `?live3d=` override above can still preview them.
+// Never consulted by the tier/budget gating path, only by the override.
+const DEV_ONLY_LIVE_3D_ENTRIES: Record<string, Live3dAssetSet> = {
+  // Manifest aspect ratio: width 20 / height 34.46.
+  alex: {
+    walkingGlbUrl: `${import.meta.env.BASE_URL}scripts/avatar-pipeline/output/meshy-test/rig/alex-basic-walking_glb_url.glb`,
+    renderWidth: 160,
+    renderHeight: 276,
+  },
+};
+
+// detectDeviceTier() does real WebGL probing (creates a canvas + GL
+// context) — must run exactly ONCE per session, not per-character or
+// per-render. Module-level lazy singleton, matching the precedent set by
+// SharedRenderer.ts's shared WebGLRenderer and glbCache.ts's shared GLTF
+// cache (both singletons for the same "expensive shared resource" reason).
+let cachedDeviceTier: DeviceTier | null = null;
+function getDeviceTierOnce(): DeviceTier {
+  if (cachedDeviceTier === null) {
+    cachedDeviceTier = detectDeviceTier();
+  }
+  return cachedDeviceTier;
+}
+
+// Test-only escape hatch (mirrors SharedRenderer's/glbCache's own
+// __reset*ForTests) — lets tests force a fresh detectDeviceTier() call
+// after mocking it to a different return value, instead of being stuck
+// with whatever the first test in the file happened to trigger.
+export function __resetDeviceTierCacheForTests(): void {
+  cachedDeviceTier = null;
+}
+
+const TIER_ORDER: DeviceTier[] = ["T0", "T1", "T2"];
+function tierAtLeast(tier: DeviceTier, min: DeviceTier): boolean {
+  return TIER_ORDER.indexOf(tier) >= TIER_ORDER.indexOf(min);
+}
+
+// avatarIdForEmail (data/avatarIdentity.ts) resolves a character layer id
+// to its avatar id, used below to look up LIVE_3D_CHARACTERS. Handles both
+// id shapes: the static office-assets-manifest roster keys characters
+// directly ("alex", "bon"), but a real/mock office-integration roster (see
+// OfficeMap.tsx's officePeopleToLayers) instead keys every person's layer
+// on their email ("alex@offshorly.com") — an id with no "@" is treated as
+// its own localpart, so "alex" resolves to "alex" the same way
+// "alex@offshorly.com" does.
+
+// Reads the `live3d` query param (comma-separated list of avatar ids, e.g.
+// `?live3d=alex,bon`) into a Set, or an empty Set when disabled/not in dev.
+function getLive3dEnabledAvatarIds(): Set<string> {
+  if (!import.meta.env.DEV || typeof window === "undefined") {
+    return new Set();
+  }
+  const raw = new URLSearchParams(window.location.search).get("live3d");
+  if (!raw) return new Set();
+  return new Set(
+    raw
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean),
+  );
+}
 
 type CharacterOverrides = Record<string, { x: number; y: number }>;
 
@@ -73,6 +171,24 @@ type OfficeStageProps = {
   // every seat, unchanged (matches every existing caller/test that doesn't
   // pass this prop).
   backSitOccupantBaselines?: Record<string, number>;
+  // Phase C live-3D dev-toggle only (see LIVE_3D_ENTRIES above) — the same
+  // per-character facing direction/walking state already computed for the
+  // sprite path (useCharacterWalk's `direction`/`isWalking`), keyed by
+  // layer id exactly like characterOverrides/characterSrcOverrides above.
+  // Absent entries default to facing "front" and animating, matching every
+  // existing caller/test that doesn't pass these (no live-3D layer present
+  // there anyway).
+  characterDirectionsById?: Record<string, WalkDirection>;
+  characterIsWalkingById?: Record<string, boolean>;
+  // The character layer id that IS the current viewer's own avatar (see
+  // OfficeMap.tsx's playerLayerId — the existing "which sprite is you"
+  // mechanism, reused here rather than inventing a second identity
+  // concept). Drives the live-3D self-vs-crowd gating split above:
+  // undefined/omitted (e.g. tests) means "no
+  // character here is the viewer," so every character falls through to the
+  // crowd-budget path — matching every existing caller/test that doesn't
+  // pass this prop.
+  selfCharacterId?: string | null;
 };
 
 // Shared click-vs-drag threshold logic: only fires onClick when pointer
@@ -119,10 +235,30 @@ export function OfficeStage({
   emptySeats,
   onSeatClick,
   backSitOccupantBaselines,
+  characterDirectionsById,
+  characterIsWalkingById,
+  selfCharacterId,
 }: OfficeStageProps = {}) {
   const characterClick = useClickVsDrag<AssetLayer>(onCharacterClick);
   const roomClick = useClickVsDrag<AssetLayer>(onRoomClick);
   const seatClick = useClickVsDrag<SeatTarget>(onSeatClick);
+  const live3dEnabledAvatarIds = getLive3dEnabledAvatarIds();
+  const deviceTier = getDeviceTierOnce();
+  // Layer ids whose live-3D model failed to load (GLB fetch/parse error,
+  // or a mid-session WebGL context loss) — see CharacterCanvas's onError
+  // prop below. Once a layer id lands here it renders the normal sprite
+  // for the rest of this mount, even if it's otherwise eligible/permitted.
+  const [erroredLive3dIds, setErroredLive3dIds] = useState<Set<string>>(new Set());
+  const reportLive3dError = (layerId: string) => {
+    setErroredLive3dIds((prev) => (prev.has(layerId) ? prev : new Set(prev).add(layerId)));
+  };
+  // Crowd budget consumed so far THIS render pass — a plain local counter
+  // (not state) is correct here since the sorted.map() below runs
+  // synchronously, top to bottom, exactly once per render; self-avatar
+  // consumption is intentionally never added to this (see
+  // LIVE_3D_SELF_MIN_TIER's doc comment in tierBudgets.ts).
+  let crowdBudgetUsed = 0;
+  const crowdBudgetCap = LIVE_3D_CAP_BY_TIER[deviceTier];
 
   // Resolve live character positions (e.g. bon's walking override) BEFORE
   // sorting, so depth ordering reflects true current feet-Y each render.
@@ -194,6 +330,37 @@ export function OfficeStage({
 
         const isClickable = isChar && layer.id !== "bon";
         const isRoomClickable = layer.kind === "room";
+        const live3dAvatarId = isChar ? avatarIdForEmail(layer.id) : null;
+        const hasErroredLive3d = erroredLive3dIds.has(layer.id);
+        const registryEntry = live3dAvatarId ? LIVE_3D_CHARACTERS[live3dAvatarId] : undefined;
+        // Dev-only URL override: bypasses the tier/budget gating below
+        // entirely, falling back to DEV_ONLY_LIVE_3D_ENTRIES for a
+        // not-yet-eligible character (e.g. Alex) so it can still be
+        // previewed manually. Already dead-code-eliminated from
+        // production builds via getLive3dEnabledAvatarIds' import.meta.env
+        // .DEV check.
+        const devOverrideEntry =
+          live3dAvatarId && live3dEnabledAvatarIds.has(live3dAvatarId)
+            ? registryEntry ?? DEV_ONLY_LIVE_3D_ENTRIES[live3dAvatarId]
+            : undefined;
+        const isSelf = !!selfCharacterId && layer.id === selfCharacterId;
+        let live3dEntry: Live3dAssetSet | undefined;
+        if (!hasErroredLive3d) {
+          if (devOverrideEntry) {
+            live3dEntry = devOverrideEntry;
+          } else if (registryEntry && deviceTier !== "T0") {
+            if (isSelf) {
+              // Self gets its own, more generous allowance — independent
+              // of (and never counted against) the crowd budget below.
+              live3dEntry = tierAtLeast(deviceTier, LIVE_3D_SELF_MIN_TIER)
+                ? registryEntry
+                : undefined;
+            } else if (crowdBudgetUsed < crowdBudgetCap) {
+              live3dEntry = registryEntry;
+              crowdBudgetUsed += 1;
+            }
+          }
+        }
 
         const className = [styles.layer, isClickable ? styles.characterLayer : ""]
           .filter(Boolean)
@@ -236,6 +403,36 @@ export function OfficeStage({
                   }
                 : {})}
           >
+            {live3dEntry ? (
+              // live3dEntry is only ever set once both eligibility AND
+              // permission gate above (or the dev override) allow it — same
+              // wrapper div/slot/position/size as every other character
+              // (depth-sort/occlusion untouched, still driven by this
+              // layer's y+height baseline above), just a <canvas> in place
+              // of the sprite <img>. onError below flips this specific
+              // layer id into erroredLive3dIds, causing THIS character
+              // (only) to fall back to its normal sprite on the next
+              // render — never a blank/broken box.
+              <CharacterCanvas
+                walkingGlbUrl={live3dEntry.walkingGlbUrl}
+                idleGlbUrl={live3dEntry.idleGlbUrl}
+                shrugGlbUrl={live3dEntry.shrugGlbUrl}
+                thinkingGlbUrl={live3dEntry.thinkingGlbUrl}
+                width={live3dEntry.renderWidth}
+                height={live3dEntry.renderHeight}
+                headingDegrees={directionToHeadingDegrees(
+                  characterDirectionsById?.[layer.id] ?? "front",
+                )}
+                isWalking={characterIsWalkingById?.[layer.id] ?? true}
+                // Reuses the existing chat-panel "talking" signal — set on
+                // both the player and the peer while a chat (or, once
+                // wired, a call) with them is open — rather than plumbing
+                // a separate chat/call-specific flag. No-ops for
+                // characters with no shrug/thinking glb configured.
+                gestureActive={talkingCharacterIds?.includes(layer.id) ?? false}
+                onError={() => reportLive3dError(layer.id)}
+              />
+            ) : (
             <img
               src={src}
               alt=""
@@ -264,6 +461,7 @@ export function OfficeStage({
                 };
               })()}
             />
+            )}
           </div>
         );
       })}

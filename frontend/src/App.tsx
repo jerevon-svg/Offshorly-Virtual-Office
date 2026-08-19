@@ -1,7 +1,9 @@
+import { useEffect } from "react";
 import { OfficeMap } from "./components/OfficeMap/OfficeMap";
 import { useAuthGate } from "./auth/useAuthGate";
 import { BackgroundMusicControl } from "./audio/BackgroundMusicControl";
 import { ChatTestPage } from "./pages/ChatTestPage";
+import { initDeviceTierTelemetry } from "./services/render/telemetry";
 
 // DEV-ONLY chat test harness entry point (see src/pages/ChatTestPage.tsx).
 // `import.meta.env.DEV` is Vite's build-time flag — false in every built/
@@ -19,6 +21,14 @@ const isChatTestRoute =
 // without any Atlas session.
 function OfficeApp() {
   const status = useAuthGate();
+
+  // Phase B device-tier telemetry: fires once, after mount, purely to
+  // measure/log capability signals for later per-tier capping. Runs in a
+  // post-render effect so it never blocks first paint, and never touches
+  // rendering/UI — see services/render/telemetry.ts.
+  useEffect(() => {
+    initDeviceTierTelemetry();
+  }, []);
 
   if (status === "pending") {
     return <div>Loading…</div>;

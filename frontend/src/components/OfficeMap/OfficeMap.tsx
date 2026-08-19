@@ -1926,6 +1926,23 @@ export function OfficeMap() {
               ...savedAvatarOverrideSrc,
               [playerLayerId]: playerSpriteSrc,
             }}
+            characterDirectionsById={{
+              alex: alexDirection,
+              micah: micahDirection,
+              lui: luiDirection,
+              [playerLayerId]: isSitting ? sitDirection : direction,
+            }}
+            characterIsWalkingById={{
+              alex: alexIsWalking,
+              micah: micahIsWalking,
+              lui: luiIsWalking,
+              [playerLayerId]: isWalking,
+            }}
+            // playerLayerId is the existing "which sprite is you" identity
+            // (see useCurrentUserAvatarId above) — reused here to drive
+            // OfficeStage's live-3D self-vs-crowd gating, not a separate
+            // concept.
+            selfCharacterId={playerLayerId}
             extraCharacterLayers={extraCharacterLayers}
             extraCharacterSrcById={extraCharacterSrcById}
             onCharacterClick={handleCharacterClick}
@@ -1993,6 +2010,19 @@ export function OfficeMap() {
                 ...savedAvatarOverrideSrc,
                 [playerLayerId]: playerSpriteSrc,
               }}
+              characterDirectionsById={{
+                alex: alexDirection,
+                micah: micahDirection,
+                lui: luiDirection,
+                [playerLayerId]: isSitting ? sitDirection : direction,
+              }}
+              characterIsWalkingById={{
+                alex: alexIsWalking,
+                micah: micahIsWalking,
+                lui: luiIsWalking,
+                [playerLayerId]: isWalking,
+              }}
+              selfCharacterId={playerLayerId}
               extraCharacterLayers={extraCharacterLayers}
               extraCharacterSrcById={extraCharacterSrcById}
               hiddenCharacterIds={hiddenCharacterIds}
