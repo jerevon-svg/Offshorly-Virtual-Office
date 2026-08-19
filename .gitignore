@@ -37,3 +37,7 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+
+# SQLite runtime files
+*.db-shm
+*.db-wal
