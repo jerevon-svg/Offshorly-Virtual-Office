@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Bon offline sprite bake</title>
+  <style>
+    html, body { margin: 0; padding: 0; background: transparent; }
+    canvas { display: block; }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "/node_modules/three/build/three.module.js",
+        "three/addons/": "/node_modules/three/examples/jsm/",
+        "three/examples/jsm/utils/SkeletonUtils.js": "/node_modules/three/examples/jsm/utils/SkeletonUtils.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <script type="module">
+    import * as THREE from 'three';
+    import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+    import { clone as cloneSkeleton } from 'three/examples/jsm/utils/SkeletonUtils.js';
+
+    // ---------------------------------------------------------------------
+    // BAKE CONFIG — ported VERBATIM from src/render3d/CharacterCanvas.tsx's
+    // CONFIG object (do not re-derive; that file is the source of truth).
+    // ---------------------------------------------------------------------
+    // Canvas is rendered at 4x supersample of the FINAL sprite-sheet target
+    // (191x240, chibi-bon's convention) — same aspect ratio as the target so
+    // sharp's downstream resize is a pure downsample (no fit:"contain"
+    // letterboxing waste) and gives free anti-aliasing for the "grainy
+    // hair" fix (calibration issue #3). NOT the same convention as
+    // CharacterCanvas.tsx's live on-screen 210x298 canvas — this bake
+    // targets the hand-made chibi-bon sprite export convention instead.
+    const SUPERSAMPLE = 4;
+    const CONFIG = {
+      canvas: { width: 191 * SUPERSAMPLE, height: 240 * SUPERSAMPLE },
+      camera: {
+        elevationDeg: 35,
+        azimuthDeg: 0,
+        distance: 5,
+        // Tuned DOWN from CharacterCanvas.tsx's 1.4234/1.556 (that value was
+        // calibrated for the live in-app canvas's own headroom convention).
+        // Smaller margin = character fills more of frame. Re-tuned here so
+        // baked bbox height matches chibi-bon's measured ~78-79% fill
+        // (calibration issue #1).
+        frameMarginY: 1.166,
+        frameMarginX: 1.289,
+      },
+      lights: {
+        ambient: { color: 0xfff2e6, intensity: 0.4 },
+        keyTop: { color: 0xfff0dd, intensity: 0.4, pos: [0, 6, 0.6] },
+        fill: { color: 0xffffff, intensity: 0.2, pos: [-2, 1, 3] },
+      },
+      emissiveIntensity: 0.7,
+    };
+    window.__BAKE_CONFIG__ = CONFIG;
+
+    const canvas = document.getElementById('c');
+    canvas.width = CONFIG.canvas.width;
+    canvas.height = CONFIG.canvas.height;
+
+    const renderer = new THREE.WebGLRenderer({
+      canvas,
+      alpha: true,
+      antialias: true,
+      preserveDrawingBuffer: true,
+    });
+    renderer.setSize(CONFIG.canvas.width, CONFIG.canvas.height, false);
+    renderer.setClearColor(0x000000, 0);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.NoToneMapping;
+    renderer.toneMappingExposure = 1;
+
+    const scene = new THREE.Scene();
+    const ambient = new THREE.AmbientLight(CONFIG.lights.ambient.color, CONFIG.lights.ambient.intensity);
+    scene.add(ambient);
+    const keyTop = new THREE.DirectionalLight(CONFIG.lights.keyTop.color, CONFIG.lights.keyTop.intensity);
+    keyTop.position.set(...CONFIG.lights.keyTop.pos);
+    scene.add(keyTop);
+    const fill = new THREE.DirectionalLight(CONFIG.lights.fill.color, CONFIG.lights.fill.intensity);
+    fill.position.set(...CONFIG.lights.fill.pos);
+    scene.add(fill);
+
+    const aspect = CONFIG.canvas.width / CONFIG.canvas.height;
+    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 100);
+
+    function positionCamera(target) {
+      const elev = (CONFIG.camera.elevationDeg * Math.PI) / 180;
+      const az = (CONFIG.camera.azimuthDeg * Math.PI) / 180;
+      const d = CONFIG.camera.distance;
+      const x = d * Math.cos(elev) * Math.sin(az);
+      const y = d * Math.sin(elev);
+      const z = d * Math.cos(elev) * Math.cos(az);
+      camera.position.set(target.x + x, target.y + y, target.z + z);
+      camera.lookAt(target);
+    }
+
+    // Ported verbatim from CharacterCanvas.tsx.
+    function getCameraSpaceExtent(box3, cam) {
+      cam.updateMatrixWorld(true);
+      const inv = cam.matrixWorldInverse.clone().copy(cam.matrixWorld).invert();
+      const corners = [
+        new THREE.Vector3(box3.min.x, box3.min.y, box3.min.z),
+        new THREE.Vector3(box3.min.x, box3.min.y, box3.max.z),
+        new THREE.Vector3(box3.min.x, box3.max.y, box3.min.z),
+        new THREE.Vector3(box3.min.x, box3.max.y, box3.max.z),
+        new THREE.Vector3(box3.max.x, box3.min.y, box3.min.z),
+        new THREE.Vector3(box3.max.x, box3.min.y, box3.max.z),
+        new THREE.Vector3(box3.max.x, box3.max.y, box3.min.z),
+        new THREE.Vector3(box3.max.x, box3.max.y, box3.max.z),
+      ];
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (const c of corners) {
+        const local = c.clone().applyMatrix4(inv);
+        minX = Math.min(minX, local.x);
+        maxX = Math.max(maxX, local.x);
+        minY = Math.min(minY, local.y);
+        maxY = Math.max(maxY, local.y);
+      }
+      return { minX, maxX, minY, maxY };
+    }
+
+    // Ported verbatim from CharacterCanvas.tsx (bone-based framing box — the
+    // fix for calibration.html's broken naive Box3().setFromObject() on
+    // skinned rigs).
+    function computeFramingBox(root) {
+      const box = new THREE.Box3();
+      const pos = new THREE.Vector3();
+      let hasBones = false;
+      root.traverse((o) => {
+        if (o.isBone) {
+          hasBones = true;
+          o.getWorldPosition(pos);
+          box.expandByPoint(pos);
+        }
+      });
+      if (!hasBones) {
+        box.setFromObject(root);
+        return box;
+      }
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      box.expandByVector(size.multiplyScalar(0.12));
+      return box;
+    }
+
+    // Ported verbatim from CharacterCanvas.tsx.
+    function setupModelMaterials(root) {
+      root.traverse((o) => {
+        const mesh = o;
+        if (mesh.isMesh && mesh.material) {
+          const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+          for (const mat of mats) {
+            mat.emissiveIntensity = CONFIG.emissiveIntensity;
+            for (const tex of [mat.map, mat.emissiveMap]) {
+              if (!tex) continue;
+              tex.generateMipmaps = false;
+              tex.minFilter = THREE.LinearFilter;
+              tex.magFilter = THREE.LinearFilter;
+              tex.needsUpdate = true;
+            }
+          }
+        }
+      });
+    }
+
+    // Ported verbatim from CharacterCanvas.tsx.
+    function groundModel(root) {
+      const box = computeFramingBox(root);
+      const center = new THREE.Vector3();
+      box.getCenter(center);
+      root.position.x -= center.x;
+      root.position.z -= center.z;
+      root.position.y -= box.min.y;
+    }
+
+    // Ported verbatim from CharacterCanvas.tsx.
+    function normalizeToReferenceHeight(root, animations, referenceHeight) {
+      if (animations.length === 0 || referenceHeight <= 0) return;
+      const calibMixer = new THREE.AnimationMixer(root);
+      const calibAction = calibMixer.clipAction(animations[0]);
+      calibAction.play();
+      calibMixer.setTime(0);
+      const boxAtFirstFrame = computeFramingBox(root);
+      const sizeAtFirstFrame = new THREE.Vector3();
+      boxAtFirstFrame.getSize(sizeAtFirstFrame);
+      if (sizeAtFirstFrame.y > 0) {
+        root.scale.setScalar(referenceHeight / sizeAtFirstFrame.y);
+      }
+      calibMixer.stopAllAction();
+    }
+
+    // -----------------------------------------------------------------
+    // Bake session state. The camera frustum is locked exactly ONCE per
+    // page session — off the FIRST glbUrl ever loaded (the orchestrating
+    // node script always loads the WALKING glb first, matching production:
+    // CharacterCanvas.tsx computes the frustum only from the walking
+    // model's post-ground framing box; every other pose variant
+    // (idle/shrug/thinking) normalizes its own scale against that same
+    // fixed frustum via normalizeToReferenceHeight instead of re-framing
+    // the camera). Any subsequent glbUrl loaded in this session reuses the
+    // already-locked camera/frustum untouched.
+    // -----------------------------------------------------------------
+    const modelCache = new Map(); // glbUrl -> { model, animations, mixer }
+    let referenceHeight = 0; // walkFramingHeight equivalent
+    let cameraLocked = false;
+    const loader = new GLTFLoader();
+
+    window.__renderComplete = false;
+    window.__renderError = null;
+    window.__bakeLog = [];
+
+    function loadOnce(glbUrl) {
+      if (modelCache.has(glbUrl)) return Promise.resolve(modelCache.get(glbUrl));
+      return loader.loadAsync(glbUrl).then((gltf) => {
+        const model = cloneSkeleton(gltf.scene);
+        scene.add(model);
+        setupModelMaterials(model);
+
+        if (!cameraLocked) {
+          // First-ever glbUrl in this session is the reference pose (the
+          // walking glb, per orchestration order): rotation.y=0, ground,
+          // compute+lock the camera frustum exactly once.
+          model.rotation.y = 0;
+          groundModel(model);
+          const box2 = computeFramingBox(model);
+          const size2 = new THREE.Vector3();
+          box2.getSize(size2);
+          referenceHeight = size2.y;
+
+          const target = new THREE.Vector3(0, size2.y * 0.5, 0);
+          positionCamera(target);
+
+          const ext1 = getCameraSpaceExtent(box2, camera);
+          const centerX = (ext1.minX + ext1.maxX) / 2;
+          const centerY = (ext1.minY + ext1.maxY) / 2;
+          const right = new THREE.Vector3();
+          const up = new THREE.Vector3();
+          camera.matrixWorld.extractBasis(right, up, new THREE.Vector3());
+          camera.position.addScaledVector(right, centerX);
+          camera.position.addScaledVector(up, centerY);
+          camera.updateMatrixWorld(true);
+
+          const ext2 = getCameraSpaceExtent(box2, camera);
+          const halfHeight = ((ext2.maxY - ext2.minY) / 2) * CONFIG.camera.frameMarginY;
+          const halfWidth = ((ext2.maxX - ext2.minX) / 2) * CONFIG.camera.frameMarginX;
+          const topFromHeight = halfHeight;
+          const topFromWidth = halfWidth / aspect;
+          const top = Math.max(topFromHeight, topFromWidth);
+          camera.top = top;
+          camera.bottom = -top;
+          camera.right = top * aspect;
+          camera.left = -top * aspect;
+          camera.updateProjectionMatrix();
+
+          cameraLocked = true;
+          window.__bakeLog.push(`[camera-locked] from ${glbUrl}, referenceHeight=${referenceHeight}`);
+        } else {
+          // A later glbUrl in this session (e.g. idle) — normalize its own
+          // scale against the already-locked referenceHeight, then ground.
+          // Camera/frustum is NOT touched.
+          model.rotation.y = 0;
+          normalizeToReferenceHeight(model, gltf.animations, referenceHeight);
+          groundModel(model);
+        }
+
+        let mixer = null;
+        if (gltf.animations.length > 0) {
+          mixer = new THREE.AnimationMixer(model);
+          mixer.clipAction(gltf.animations[0]).play();
+        }
+
+        const entry = { model, animations: gltf.animations, mixer };
+        modelCache.set(glbUrl, entry);
+        model.visible = false; // only the actively-captured model should be visible per render
+        return entry;
+      });
+    }
+
+    window.__bake = async function ({ glbUrl, headingDeg = 0, clipTime = 0 }) {
+      window.__renderComplete = false;
+      window.__renderError = null;
+      try {
+        const entry = await loadOnce(glbUrl);
+        // Hide every other loaded variant so only this glbUrl's model
+        // contributes to the frame (session can hold multiple glbUrls,
+        // e.g. walking + idle, sharing one scene/camera).
+        for (const [, other] of modelCache) {
+          other.model.visible = other === entry;
+        }
+        entry.model.rotation.y = (headingDeg * Math.PI) / 180;
+        if (entry.mixer) {
+          entry.mixer.setTime(clipTime);
+          entry.mixer.update(0);
+          entry.model.updateMatrixWorld(true);
+        }
+        renderer.render(scene, camera);
+        window.__renderComplete = true;
+      } catch (err) {
+        window.__renderError = String((err && err.stack) || err);
+      }
+    };
+
+    // Exposes the clip duration for a given glbUrl (after it's loaded) so
+    // the node orchestrator can log/sample the real walk-clip duration
+    // instead of guessing it blind.
+    window.__getClipDuration = function (glbUrl) {
+      const entry = modelCache.get(glbUrl);
+      if (!entry || entry.animations.length === 0) return null;
+      return entry.animations[0].duration;
+    };
+  </script>
+</body>
+</html>
