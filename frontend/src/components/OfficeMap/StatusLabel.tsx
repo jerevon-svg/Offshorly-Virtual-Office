@@ -1,4 +1,3 @@
-import { KeepScale } from "react-zoom-pan-pinch";
 import { formatCharacterName } from "../../data/office-layout";
 import type { AssetLayer } from "../../types/office";
 import { ACTIVE_DETAIL_STATUSES, STATUS_META, type OfficeStatus } from "../../services/presence/status";
@@ -20,11 +19,22 @@ type StatusLabelProps = {
   bubbleVariant?: "dots" | "text";
 };
 
-// Floating "{emoji} {name}" pill, anchored above the character exactly like
-// TalkingBubble (same greetingAnchor + KeepScale pattern), but with a larger
-// negative vertical offset so it sits ABOVE where TalkingBubble renders —
-// both stay visible at once without overlapping. TalkingBubble keeps its
-// existing closer-to-the-head position untouched.
+// Floating "{emoji} {name}" pill, anchored above the character using the same
+// greetingAnchor as TalkingBubble, but with a larger negative vertical offset
+// so it sits ABOVE where TalkingBubble renders — both stay visible at once
+// without overlapping. TalkingBubble keeps its existing closer-to-the-head
+// position untouched.
+//
+// Unlike TalkingBubble, this label does NOT use KeepScale: it renders as a
+// plain descendant of the same TransformWrapper-scaled container the
+// character avatar divs render in (see OfficeStage.tsx), so its size and its
+// head-to-label gap are fixed in WORLD space and scale together with the
+// avatar as the user zooms in/out (by design — see StatusLabel task notes).
+// The three offset values below (-10px/-34px/-84px) were originally tuned as
+// screen-space pixel values under KeepScale's constant-scale behavior; they
+// are kept unchanged as the new WORLD-space defaults per design direction,
+// so overlap-avoidance vs. the (still KeepScale'd, constant-screen-size)
+// TalkingBubble is only guaranteed near 100% zoom — see StatusLabel.module.css.
 export function StatusLabel({ layer, status, isSelf, hasActiveBubble, bubbleVariant }: StatusLabelProps) {
   const { leftPct, topPct } = greetingAnchor(layer);
   const meta = STATUS_META[status];
@@ -43,7 +53,7 @@ export function StatusLabel({ layer, status, isSelf, hasActiveBubble, bubbleVari
       : `${styles.pill} ${styles.pillDotsActive}`;
 
   return (
-    <KeepScale
+    <div
       className={styles.anchor}
       style={{
         left: `${leftPct}%`,
@@ -57,7 +67,7 @@ export function StatusLabel({ layer, status, isSelf, hasActiveBubble, bubbleVari
           {showDetail ? ` · ${meta.label}` : ""}
         </span>
       </div>
-    </KeepScale>
+    </div>
   );
 }
 

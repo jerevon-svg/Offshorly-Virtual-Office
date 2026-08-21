@@ -5,9 +5,10 @@ import { OfficeStage } from "./OfficeStage";
 import { STATUS_META, type OfficeStatus } from "../../services/presence/status";
 import styles from "./StatusLabel.module.css";
 
-// KeepScale (used by StatusLabel, same as TalkingBubble/GreetingBubble) needs
-// a TransformWrapper ancestor's context — mirror how OfficeMap actually
-// renders OfficeStage (see TalkingBubble.test.tsx for the same pattern).
+// StatusLabel no longer uses KeepScale (it scales with the scene, unlike
+// TalkingBubble/GreetingBubble), but OfficeStage still renders inside a
+// TransformWrapper/TransformComponent in production, so mirror that here too
+// — see TalkingBubble.test.tsx for the same rendering pattern.
 function renderStage(opts: {
   selfCharacterId?: string;
   selfStatus?: OfficeStatus;
