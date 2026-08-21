@@ -78,6 +78,7 @@ import { mapAtlasToOfficeStatus, type OfficeStatus } from "../../services/presen
 import { resolveManualStatusMovement } from "../../services/presence/statusMovement";
 import { emitGoOffline, emitComeOnline, useOfflineLineup } from "../../services/presence/offlineLineupClient";
 import { slotIndexToPosition } from "../../services/presence/lineupSlots";
+import { applyOfflineLineupPositions } from "../../services/presence/offlineLineupPlacement";
 import { CENTRAL_HUB_ROOM_ID } from "../../data/centralHub";
 import { CheckoutReminderToast } from "./checkout/CheckoutReminderToast";
 import { CheckoutConfirmModal } from "./checkout/CheckoutConfirmModal";
@@ -200,6 +201,12 @@ export function OfficeMap() {
   // real people actually arrive — see rosterActive below.
   const roster = useOfficeRoster();
   const currentUser = useCurrentUser();
+  // Offline lineup (Phase 0/1 — v1 explicit-checkout-only, see offline_lineup.py's module
+  // docstring): server-assigned slot list (email -> slot), from an in-app checkout. Declared
+  // here (moved up from its original spot near checkoutFlow) because Phase 2's
+  // applyOfflineLineupPositions memo below needs it, and this is an unconditional hook call
+  // — safe to run this early regardless of what else has resolved yet.
+  const offlineLineup = useOfflineLineup();
 
   // Which sprite is "you". Falls back to the default body on the first
   // paint and re-renders once Atlas's /auth/me identity lands, so this must
@@ -251,6 +258,16 @@ export function OfficeMap() {
     };
   }, [roster.people, currentUser]);
 
+  // Phase 2: OTHER roster peers marked Atlas-OFFLINE (not just app-checkout users) get
+  // repositioned to the sidewalk lineup, reconciled against the server-authoritative
+  // offlineLineup where both signals overlap (see offlineLineupPlacement.ts). Self is
+  // excluded already (rosterLayers above has the viewer's own layer split out) — this only
+  // ever touches other people's positions.
+  const positionedPeerLayers = useMemo(
+    () => applyOfflineLineupPositions(rosterLayers, roster.people, offlineLineup),
+    [rosterLayers, roster.people, offlineLineup],
+  );
+
   // Once real people are on the floor, the manifest's fictional cast is
   // hidden — otherwise employees and characters share the office. Bon is
   // exempt: that layer IS the viewer's avatar, not an NPC.
@@ -284,11 +301,11 @@ export function OfficeMap() {
   }
 
   const extraCharacterLayers = useMemo(
-    () => [...savedAvatarsToLayers(customAvatars), ...rosterLayers],
-    [customAvatars, rosterLayers],
+    () => [...savedAvatarsToLayers(customAvatars), ...positionedPeerLayers],
+    [customAvatars, positionedPeerLayers],
   );
   const extraCharacterSrcById = useMemo(() => {
-    const map: Record<string, string> = { ...rosterSrcById(rosterLayers) };
+    const map: Record<string, string> = { ...rosterSrcById(positionedPeerLayers) };
     for (const avatar of customAvatars) {
       // Avatars with a populated spriteSet resolve through the same
       // characterSprite() selector Bon uses (idle-front frame only — no
@@ -299,7 +316,7 @@ export function OfficeMap() {
         : avatar.previewUrl;
     }
     return map;
-  }, [customAvatars, rosterLayers]);
+  }, [customAvatars, positionedPeerLayers]);
   // Placeholder-swap flow (Track 2 real mode): jobIds currently being
   // polled, deduped so a job saved via onAvatarSaved and the mount-scan
   // effect below never start a second concurrent poll for the same job.
@@ -760,7 +777,6 @@ export function OfficeMap() {
   // whenever a NEW checkout begins, so a later checkout with a different assigned slot can
   // reconcile again.
   const reconciledLineupSlotRef = useRef<number | null>(null);
-  const offlineLineup = useOfflineLineup();
 
   useEffect(() => {
     const prev = prevCheckoutStateForLineupRef.current;
