@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { OfficeMap } from "./components/OfficeMap/OfficeMap";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useAuthGate } from "./auth/useAuthGate";
 import { BackgroundMusicControl } from "./audio/BackgroundMusicControl";
 import { ChatTestPage } from "./pages/ChatTestPage";
@@ -41,10 +42,10 @@ function OfficeApp() {
   }
 
   return (
-    <>
+    <ErrorBoundary>
       <OfficeMap />
       <BackgroundMusicControl />
-    </>
+    </ErrorBoundary>
   );
 }
 
