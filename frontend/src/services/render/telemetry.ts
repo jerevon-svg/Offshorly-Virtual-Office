@@ -13,8 +13,15 @@
 // array in the app's root component) — it must never block first paint.
 // It only measures and logs; it does not change rendering/UI/behavior.
 
-import { detectDeviceTier, type DeviceTier } from "./deviceTier";
-import { runDeviceTierMicrobench } from "./deviceTierBenchmark";
+import {
+  collectDeviceSignals,
+  detectDeviceTier,
+  hasWorkingWebGl,
+  isMobileLike,
+  isSoftwareRendererSignal,
+  type DeviceTier,
+} from "./deviceTier";
+import { getSharedDeviceTierMicrobench } from "./deviceTierBenchmark";
 import { useFrameBudget } from "./useFrameBudget";
 
 const LOG_PREFIX = "[device-tier]";
@@ -32,21 +39,56 @@ export function initDeviceTierTelemetry(): void {
   hasInitialized = true;
 
   let staticTier: DeviceTier;
+  let signals: ReturnType<typeof collectDeviceSignals> | undefined;
   try {
-    staticTier = detectDeviceTier();
+    signals = collectDeviceSignals();
+    staticTier = detectDeviceTier(signals);
   } catch {
     staticTier = "T0";
   }
 
   // eslint-disable-next-line no-console
   console.info(`${LOG_PREFIX} static tier: ${staticTier}`);
+  // Log the raw signals too — the tier alone doesn't say WHICH rule fired
+  // (mobile UA, no WebGL context, software renderer, weak cores/RAM, weak
+  // integrated GPU), which is exactly what's needed to tell a genuine
+  // hardware limitation apart from an overly-conservative read on capable
+  // hardware. Wrapped in try/catch since collectDeviceSignals itself is
+  // defensive but this is a diagnostic nice-to-have, never worth a throw.
+  try {
+    // eslint-disable-next-line no-console
+    console.info(`${LOG_PREFIX} raw signals`, signals ?? collectDeviceSignals());
+  } catch {
+    // ignore — diagnostic only
+  }
 
-  // Microbench only matters for T1/T2 (T0 is hard-capped regardless of
-  // benchmark result, so don't spend the cycles running it).
-  if (staticTier === "T1" || staticTier === "T2") {
-    void runDeviceTierMicrobench()
+  // Microbench matters for: T1/T2 (confirm/promote to T2, existing path),
+  // AND now also a weak-static T0 device that still has working WebGL and
+  // isn't a software renderer (the rescue-to-T1 path, see deviceTier.ts's
+  // MICROBENCH_T1_RESCUE_MS) — logged here the same way so the rescue
+  // attempt is diagnosable exactly like a T1->T2 promotion attempt already
+  // is. Mobile/no-WebGL/software-renderer devices never benefit from the
+  // microbench (per D-C/D-E in the approved plan) so it's skipped for them
+  // even when staticTier is T0 for one of those reasons.
+  const isRescueCandidate =
+    staticTier === "T0" &&
+    !!signals &&
+    !isMobileLike(signals) &&
+    hasWorkingWebGl(signals) &&
+    !isSoftwareRendererSignal(signals);
+
+  if (staticTier === "T1" || staticTier === "T2" || isRescueCandidate) {
+    // Shared with OfficeStage.tsx's own microbench-rescue trigger (see
+    // deviceTierBenchmark.ts's getSharedDeviceTierMicrobench doc comment) —
+    // whichever of the two call sites runs first actually starts the
+    // bench; this always gets the same settled result, never a second
+    // independent run.
+    void getSharedDeviceTierMicrobench()
       .then((result) => {
-        const finalTier = detectDeviceTier({ microbenchMs: result.medianFrameMs });
+        const finalTier = detectDeviceTier({
+          ...signals,
+          microbenchMs: result.medianFrameMs,
+        });
         // eslint-disable-next-line no-console
         console.debug(`${LOG_PREFIX} microbench`, {
           medianFrameMs: result.medianFrameMs,

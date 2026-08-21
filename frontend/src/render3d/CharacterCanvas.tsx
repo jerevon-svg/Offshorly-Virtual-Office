@@ -155,6 +155,18 @@ type Props = {
   // sprite src), it only reports the failure upward. No-ops after the
   // first call per mount.
   onError?: () => void;
+  // Default true (every existing caller/test that doesn't pass this keeps
+  // today's fully-animated behavior unchanged). false = "static frame"
+  // mode for a confirmed-too-weak-but-has-WebGL device (software renderer,
+  // or a weak-static device that failed/never ran its microbench rescue —
+  // see OfficeStage.tsx and deviceTier.ts's D-D bucket): the GLB still
+  // loads and renders exactly ONE real frame at the resolved pose/heading,
+  // but the requestAnimationFrame tick loop (mixer updates, continuous
+  // heading turn) never starts — no per-frame render loop ever runs for
+  // this instance, not merely "started then immediately stopped," so a
+  // confirmed-weak device never pays the ongoing per-frame render cost it
+  // couldn't afford in the first place (the whole point of this mode).
+  animated?: boolean;
 };
 
 export function CharacterCanvas({
@@ -167,6 +179,7 @@ export function CharacterCanvas({
   width,
   height,
   onError,
+  animated = true,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   // Ref (not a direct closure over the onError prop) so the main load
@@ -467,7 +480,25 @@ export function CharacterCanvas({
         applyAnimState(resolveCharacterAnimState(stateInputsRef.current));
       }
 
-      startTickLoopOnce();
+      if (animated) {
+        startTickLoopOnce();
+      } else {
+        // Static-frame mode: render exactly this one frame at the resolved
+        // pose/heading and stop — never call startTickLoopOnce, so no
+        // requestAnimationFrame loop or mixer.update() ever runs for this
+        // instance (not "start then immediately cancel," which would still
+        // pay for at least one scheduled tick and leave a rafId to clean
+        // up for no benefit).
+        // Sample the resolved action's pose (at time 0, since it was just
+        // .play()ed) into the skeleton's bones without advancing the clip
+        // or requiring a running tick loop — otherwise the SkinnedMesh
+        // stays in the GLB's raw bind pose (T/A-pose) for this static frame.
+        mixer?.update(0);
+        const canvas = canvasRef.current;
+        if (canvas) {
+          renderToCanvas(scene, camera, canvas, width, height);
+        }
+      }
     }).catch((err) => {
       if (cancelled) return;
       // eslint-disable-next-line no-console
@@ -496,7 +527,7 @@ export function CharacterCanvas({
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [glbUrl, width, height]);
+  }, [glbUrl, width, height, animated]);
 
   return (
     <canvas

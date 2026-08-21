@@ -7,12 +7,30 @@
 // with mock signals, with no jsdom/WebGL stubbing required.
 //
 // Tiers:
-//   T0 — no live-3D. Mobile/tablet, no working WebGL context (neither
-//        WebGL2 nor a WebGL1 fallback), software renderer, or weak CPU/RAM.
-//        Fail-safe default for anything ambiguous or erroring.
-//   T1 — capable-but-modest desktop/laptop (e.g. integrated GPU, or a browser
-//        that doesn't expose `deviceMemory`). Launches at 0 live-3D cap
-//        (see tierBudgets.ts) until field data justifies promotion.
+//   T0 — no live-3D (or, for a device with working WebGL that's merely
+//        confirmed too weak — see below — a STATIC single frame of the
+//        cheapest LOD instead of the animated sprite; that distinction is
+//        the rendering layer's call, see OfficeStage.tsx, not this module's).
+//        Mobile/tablet and "no working WebGL context at all" (neither
+//        WebGL2 nor a WebGL1 fallback) are UNCONDITIONAL hard-fails — never
+//        microbench-rescued, matches the fail-safe default for anything
+//        ambiguous or erroring. A known software-renderer string is ALSO an
+//        unconditional hard-fail (Rule 3): a tiny microbench scene can pass
+//        deceptively on a software GL context even though the real character
+//        scene would choke, so software renderers are deliberately never
+//        given a chance to rescue via microbench.
+//        Weak CPU (<4 cores, or unreadable) / weak RAM (<4GB, when readable)
+//        is DIFFERENT: it's microbench-ADJUDICATED, not an unconditional
+//        hard-cap. A weak-static device still lands at T0 by default, but an
+//        optional microbench result (see deviceTierBenchmark.ts) that comes
+//        in fast enough (< MICROBENCH_T1_RESCUE_MS ms/frame) rescues it to
+//        T1. A weak-static device can NEVER be rescued past T1 (i.e. never
+//        reaches T2), regardless of how fast its microbench result is —
+//        that cap is intentional, not a missing case.
+//   T1 — capable-but-modest desktop/laptop (e.g. integrated GPU, a browser
+//        that doesn't expose `deviceMemory`, or a weak-static device rescued
+//        via microbench per above). Launches at 0 live-3D cap (see
+//        tierBudgets.ts) until field data justifies promotion.
 //   T2 — strong desktop signals (>=8 cores, >=8GB RAM when both are readable).
 //        Only reachable from static signals as "T2-eligible"; an optional
 //        microbench result (see deviceTierBenchmark.ts) can promote a
@@ -88,10 +106,35 @@ const NARROW_VIEWPORT_PX = 900;
 /** Microbench promotion threshold: median ms/frame below this = fast enough for T2. */
 export const MICROBENCH_T2_THRESHOLD_MS = 8;
 
-function isMobileLike(signals: DeviceCapabilitySignals): boolean {
+/**
+ * Microbench RESCUE threshold for a weak-static (low core count / low RAM)
+ * device: median ms/frame below this = fast enough to rescue to T1. Distinct
+ * (and deliberately more lenient) than MICROBENCH_T2_THRESHOLD_MS above,
+ * which governs a different, stronger promotion (T1-eligible -> T2). Never
+ * applied to mobile/no-WebGL/software-renderer devices — see Rules 1-3 in
+ * computeDeviceTier, which return unconditionally before this threshold is
+ * ever consulted.
+ */
+export const MICROBENCH_T1_RESCUE_MS = 12;
+
+/**
+ * Exported so the rendering layer (OfficeStage.tsx) can independently
+ * distinguish "no live-3D possible at all" (mobile, or no WebGL context of
+ * any kind) from "has working WebGL but confirmed too weak" (software
+ * renderer, or a weak-static device that failed/never ran its microbench
+ * rescue) — both can resolve to the "T0" tier, but only the former is a true
+ * sprite-only floor; the latter still gets a static (non-animated) 3D frame.
+ * See this module's header doc comment for the full T0/T1/T2 rationale.
+ */
+export function isMobileLike(signals: DeviceCapabilitySignals): boolean {
   if (MOBILE_UA_RE.test(signals.userAgent)) return true;
   if (signals.maxTouchPoints > 0 && signals.viewportWidth < NARROW_VIEWPORT_PX) return true;
   return false;
+}
+
+/** Exported for the same "T0 bucket" distinction as isMobileLike above. */
+export function hasWorkingWebGl(signals: DeviceCapabilitySignals): boolean {
+  return signals.hasWebGL2 || !!signals.hasWebGL1;
 }
 
 function isSoftwareRenderer(renderer: string | null): boolean {
@@ -99,9 +142,25 @@ function isSoftwareRenderer(renderer: string | null): boolean {
   return SOFTWARE_RENDERER_RES.some((re) => re.test(renderer));
 }
 
+/** Exported for the same "T0 bucket" distinction as isMobileLike above. */
+export function isSoftwareRendererSignal(signals: DeviceCapabilitySignals): boolean {
+  return isSoftwareRenderer(signals.unmaskedRenderer);
+}
+
 function isWeakIntegratedGpu(renderer: string | null): boolean {
   if (!renderer) return false;
   return WEAK_INTEGRATED_GPU_RES.some((re) => re.test(renderer));
+}
+
+/**
+ * Weak-static (Rule 4) resolution: T1 if a microbench result is present AND
+ * fast enough (< MICROBENCH_T1_RESCUE_MS), else T0. Never T2 — see this
+ * module's header doc comment for why that cap is intentional.
+ */
+function rescueToT1OrT0(signals: DeviceCapabilitySignals): DeviceTier {
+  return signals.microbenchMs !== undefined && signals.microbenchMs < MICROBENCH_T1_RESCUE_MS
+    ? "T1"
+    : "T0";
 }
 
 /**
@@ -126,14 +185,17 @@ export function computeDeviceTier(signals: DeviceCapabilitySignals): DeviceTier 
     // Rule 3: known software-renderer strings => T0.
     if (isSoftwareRenderer(signals.unmaskedRenderer)) return "T0";
 
-    // Rule 4: weak CPU, or weak RAM when RAM is readable => T0.
+    // Rule 4: weak CPU, or weak RAM when RAM is readable => microbench-
+    // adjudicated rescue to T1, else T0. This can NEVER reach T2 — a
+    // weak-static device caps out at T1 even with an extremely fast
+    // microbench result, by design (see module header doc comment).
     const cores = signals.hardwareConcurrency;
-    if (cores === undefined || cores < 4) return "T0";
+    if (cores === undefined || cores < 4) return rescueToT1OrT0(signals);
     const memory = signals.deviceMemory;
-    if (memory !== undefined && memory < 4) return "T0";
+    if (memory !== undefined && memory < 4) return rescueToT1OrT0(signals);
 
-    // From here on we have a real WebGL2 context, non-software renderer,
-    // >=4 cores, and (if known) >=4GB RAM.
+    // From here on we have a real WebGL2 (or WebGL1-fallback) context,
+    // non-software renderer, >=4 cores, and (if known) >=4GB RAM.
 
     if (isWeakIntegratedGpu(signals.unmaskedRenderer)) return "T1";
 

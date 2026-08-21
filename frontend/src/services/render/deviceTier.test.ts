@@ -132,6 +132,66 @@ describe("computeDeviceTier", () => {
     expect(result).toBe("T1");
   });
 
+  it("weak-static (cores<4) + fast microbench (< MICROBENCH_T1_RESCUE_MS) -> rescued to T1", () => {
+    const result = computeDeviceTier(
+      signals({ hardwareConcurrency: 2, microbenchMs: 11 }),
+    );
+    expect(result).toBe("T1");
+  });
+
+  it("weak-static (cores<4) + slow microbench (>= MICROBENCH_T1_RESCUE_MS) -> stays T0", () => {
+    const result = computeDeviceTier(
+      signals({ hardwareConcurrency: 2, microbenchMs: 12 }),
+    );
+    expect(result).toBe("T0");
+  });
+
+  it("weak-static (cores<4) + no microbench result -> stays T0 (unchanged from today)", () => {
+    const result = computeDeviceTier(signals({ hardwareConcurrency: 2 }));
+    expect(result).toBe("T0");
+  });
+
+  it("weak-static (low deviceMemory) + fast microbench -> rescued to T1", () => {
+    const result = computeDeviceTier(
+      signals({ deviceMemory: 2, microbenchMs: 5 }),
+    );
+    expect(result).toBe("T1");
+  });
+
+  it("a weak-static device can NEVER be rescued past T1, even with an extremely fast microbench result", () => {
+    const result = computeDeviceTier(
+      signals({ hardwareConcurrency: 2, deviceMemory: 2, microbenchMs: 1 }),
+    );
+    expect(result).toBe("T1");
+  });
+
+  it("mobile stays T0 regardless of any microbenchMs value (rescue never applies)", () => {
+    const result = computeDeviceTier(
+      signals({
+        userAgent:
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
+        maxTouchPoints: 5,
+        viewportWidth: 390,
+        microbenchMs: 1,
+      }),
+    );
+    expect(result).toBe("T0");
+  });
+
+  it("no WebGL context at all stays T0 regardless of any microbenchMs value (rescue never applies)", () => {
+    const result = computeDeviceTier(
+      signals({ hasWebGL2: false, hasWebGL1: false, microbenchMs: 1 }),
+    );
+    expect(result).toBe("T0");
+  });
+
+  it("software renderer stays T0 regardless of any microbenchMs value (rescue never applies)", () => {
+    const result = computeDeviceTier(
+      signals({ unmaskedRenderer: "Google SwiftShader", microbenchMs: 1 }),
+    );
+    expect(result).toBe("T0");
+  });
+
   it("thrown error while reading a signal getter fails safe to T0", () => {
     const throwing: DeviceCapabilitySignals = {
       ...BASE_SIGNALS,

@@ -29,7 +29,20 @@
 // shrugGlbUrl/thinkingGlbUrl), which required hard-swapping between up to 4
 // independently-loaded models.
 export type Live3dAssetSet = {
+  // LOD0 — full-detail GLB, used for T2 (strong desktop) viewers.
   glbUrl: string;
+  // LOD1 — reduced-detail GLB, used for T1 (including microbench-rescued
+  // weak-static devices, see deviceTier.ts's MICROBENCH_T1_RESCUE_MS)
+  // viewers. Falls back to glbUrl (LOD0) when a character has no dedicated
+  // LOD1 asset yet, so adding a new character without LOD1/LOD2 art doesn't
+  // break rendering — it just means every tier gets the same (LOD0) detail
+  // until the cheaper LODs are produced.
+  lod1GlbUrl?: string;
+  // LOD2 — cheapest GLB, used for the confirmed-too-weak-but-has-WebGL
+  // static-frame case (software renderer, or a weak-static device that
+  // failed/never ran its microbench rescue — see OfficeStage.tsx). Falls
+  // back to lod1GlbUrl, then glbUrl, when absent.
+  lod2GlbUrl?: string;
   // Fixed offscreen render resolution, matched to this character's
   // office-assets-manifest aspect ratio for a crisp result regardless of
   // the wrapper div's current on-screen (percentage/zoom-scaled) size.
@@ -45,6 +58,8 @@ export const LIVE_3D_CHARACTERS: Record<string, Live3dAssetSet> = {
   // Manifest aspect ratio: width 26.23 / height 37.2.
   bon: {
     glbUrl: `${BASE}avatars/jerevon/jerevon-lod0.glb`,
+    lod1GlbUrl: `${BASE}avatars/jerevon/jerevon-lod1.glb`,
+    lod2GlbUrl: `${BASE}avatars/jerevon/jerevon-lod2.glb`,
     renderWidth: 210,
     renderHeight: 298,
   },
@@ -52,4 +67,24 @@ export const LIVE_3D_CHARACTERS: Record<string, Live3dAssetSet> = {
 
 export function isLive3dEligible(avatarId: string | null | undefined): boolean {
   return !!avatarId && avatarId in LIVE_3D_CHARACTERS;
+}
+
+/**
+ * Picks the right per-LOD GLB url for a given asset set + resolved device
+ * tier + "static frame" bucket (see deviceTier.ts's isMobileLike/
+ * hasWorkingWebGl/isSoftwareRendererSignal doc comments and OfficeStage.tsx
+ * for how the static-frame bucket is determined) — T2 -> LOD0, T1
+ * (including microbench-rescued) -> LOD1, static-frame -> LOD2. Each LOD
+ * falls back to the next-higher-detail asset when a character hasn't had
+ * that LOD produced yet, so a character can ship with only glbUrl and still
+ * render (at LOD0 detail) at every tier.
+ */
+export function resolveLive3dGlbUrl(
+  entry: Live3dAssetSet,
+  tier: "T0" | "T1" | "T2",
+  isStaticFrame: boolean,
+): string {
+  if (isStaticFrame) return entry.lod2GlbUrl ?? entry.lod1GlbUrl ?? entry.glbUrl;
+  if (tier === "T1") return entry.lod1GlbUrl ?? entry.glbUrl;
+  return entry.glbUrl;
 }

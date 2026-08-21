@@ -1,11 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render } from "@testing-library/react";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render } from "@testing-library/react";
 import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch";
 import { OfficeStage, __resetDeviceTierCacheForTests } from "./OfficeStage";
 import { backrestCropLayerId } from "../../data/backSitOccupancy";
 import { LIVE_3D_CHARACTERS } from "../../render3d/live3dCharacters";
 import { LIVE_3D_CAP_BY_TIER } from "../../services/render/tierBudgets";
-import { detectDeviceTier } from "../../services/render/deviceTier";
+import {
+  collectDeviceSignals,
+  detectDeviceTier,
+  type DeviceCapabilitySignals,
+} from "../../services/render/deviceTier";
+import { getSharedDeviceTierMicrobench } from "../../services/render/deviceTierBenchmark";
 import styles from "./OfficeStage.module.css";
 
 // Stub out the real (three.js/WebGL) CharacterCanvas for the live-3D
@@ -32,14 +37,17 @@ vi.mock("../../render3d/CharacterCanvas", async () => {
       width: number;
       height: number;
       onError?: () => void;
+      animated?: boolean;
     }) => (
       <div
         data-testid="character-canvas-stub"
+        data-glb-url={props.glbUrl}
         data-heading-degrees={props.headingDegrees}
         data-is-walking={props.isWalking}
         data-is-sitting={props.isSitting}
         data-is-chatting={props.isChatting}
         data-is-responder={props.isResponder}
+        data-animated={props.animated}
       >
         {props.onError && (
           <button data-testid="character-canvas-error-trigger" onClick={props.onError} />
@@ -58,7 +66,23 @@ vi.mock("../../services/render/deviceTier", async () => {
   const actual = await vi.importActual<typeof import("../../services/render/deviceTier")>(
     "../../services/render/deviceTier",
   );
-  return { ...actual, detectDeviceTier: vi.fn(actual.detectDeviceTier) };
+  return {
+    ...actual,
+    detectDeviceTier: vi.fn(actual.detectDeviceTier),
+    collectDeviceSignals: vi.fn(actual.collectDeviceSignals),
+  };
+});
+
+// getSharedDeviceTierMicrobench() (deviceTierBenchmark.ts) is the module-
+// level, session-shared microbench-rescue trigger OfficeStage's
+// useDeviceTier() hook calls — mocked so individual tests can control
+// exactly when/how it resolves instead of depending on a real (mocked-out
+// in jsdom anyway) three.js render.
+vi.mock("../../services/render/deviceTierBenchmark", async () => {
+  const actual = await vi.importActual<typeof import("../../services/render/deviceTierBenchmark")>(
+    "../../services/render/deviceTierBenchmark",
+  );
+  return { ...actual, getSharedDeviceTierMicrobench: vi.fn() };
 });
 
 // getDeviceTierOnce() (OfficeStage.tsx) caches detectDeviceTier()'s result
@@ -66,8 +90,22 @@ vi.mock("../../services/render/deviceTier", async () => {
 // test's own mockReturnValue (or the default real-jsdom-T0 behavior) is
 // actually re-read, instead of leaking whichever tier the first test in
 // the file happened to compute.
+let actualCollectDeviceSignals: typeof collectDeviceSignals;
+beforeAll(async () => {
+  actualCollectDeviceSignals = (
+    await vi.importActual<typeof import("../../services/render/deviceTier")>(
+      "../../services/render/deviceTier",
+    )
+  ).collectDeviceSignals;
+});
+
 beforeEach(() => {
   __resetDeviceTierCacheForTests();
+  // Restore both mocks to their "delegate to the real implementation"
+  // default — any test-specific mockReturnValue/mockResolvedValue set below
+  // must not leak into the next test.
+  vi.mocked(collectDeviceSignals).mockImplementation(actualCollectDeviceSignals);
+  vi.mocked(getSharedDeviceTierMicrobench).mockReset();
 });
 
 // Real dev-team furniture id (see office-assets-manifest.json) whose seat
@@ -378,6 +416,52 @@ describe("OfficeStage live-3D tier/budget gating (no ?live3d= override)", () => 
     });
   });
 
+  describe("?deviceTier= dev-only override", () => {
+    afterEach(() => {
+      window.history.pushState({}, "", "/");
+    });
+
+    it("no override: real signal-based tiering still decides gating exactly as before (regression)", () => {
+      vi.mocked(detectDeviceTier).mockReturnValue("T0");
+
+      const { queryByTestId, container } = renderGated("bon");
+
+      expect(queryByTestId("character-canvas-stub")).toBeNull();
+      expect(container.querySelector('img[src*="bon"]')).not.toBeNull();
+    });
+
+    it("?deviceTier=T1 overrides an underlying T0 detection, matching a genuine T1 device's rendering path", () => {
+      // Simulates Bon's low-hardwareConcurrency test rig: the real signal
+      // path would resolve to T0 (mocked here), but the override forces the
+      // session to behave as a genuine T1 device would — self live-3D shown.
+      vi.mocked(detectDeviceTier).mockReturnValue("T0");
+      window.history.pushState({}, "", "/?deviceTier=T1");
+
+      const { queryByTestId } = renderGated("bon");
+
+      expect(queryByTestId("character-canvas-stub")).not.toBeNull();
+    });
+
+    it("?deviceTier=T0 overrides an underlying T2 detection, forcing the sprite fallback like a genuine T0 device", () => {
+      vi.mocked(detectDeviceTier).mockReturnValue("T2");
+      window.history.pushState({}, "", "/?deviceTier=T0");
+
+      const { queryByTestId, container } = renderGated("bon");
+
+      expect(queryByTestId("character-canvas-stub")).toBeNull();
+      expect(container.querySelector('img[src*="bon"]')).not.toBeNull();
+    });
+
+    it("ignores an invalid ?deviceTier= value and falls back to real signal-based tiering", () => {
+      vi.mocked(detectDeviceTier).mockReturnValue("T2");
+      window.history.pushState({}, "", "/?deviceTier=bogus");
+
+      const { queryByTestId } = renderGated("bon");
+
+      expect(queryByTestId("character-canvas-stub")).not.toBeNull();
+    });
+  });
+
   describe("runtime fallback on live-3D load failure", () => {
     it("falls back to the sprite for a character whose CharacterCanvas reports onError", () => {
       vi.mocked(detectDeviceTier).mockReturnValue("T1");
@@ -386,6 +470,101 @@ describe("OfficeStage live-3D tier/budget gating (no ?live3d= override)", () => 
 
       expect(getByTestId("character-canvas-stub")).not.toBeNull();
       fireEvent.click(getByTestId("character-canvas-error-trigger"));
+
+      expect(queryByTestId("character-canvas-stub")).toBeNull();
+      expect(container.querySelector('img[src*="bon"]')).not.toBeNull();
+    });
+  });
+
+  describe("microbench-rescue for weak-static devices + confirmed-weak static-frame rendering", () => {
+    const DESKTOP_SIGNALS: DeviceCapabilitySignals = {
+      userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+      hardwareConcurrency: 2,
+      deviceMemory: undefined,
+      maxTouchPoints: 0,
+      viewportWidth: 1440,
+      hasWebGL2: true,
+      hasWebGL1: false,
+      unmaskedRenderer: "ANGLE (Apple, Apple M1 Pro, OpenGL 4.1)",
+    };
+
+    it("renders a static (non-animated) LOD2 3D frame for a weak-static T0 device before the rescue resolves, then upgrades to animated LOD1 once it resolves fast", async () => {
+      vi.mocked(detectDeviceTier).mockReturnValue("T0");
+      vi.mocked(collectDeviceSignals).mockReturnValue(DESKTOP_SIGNALS);
+      vi.mocked(getSharedDeviceTierMicrobench).mockResolvedValue({
+        medianFrameMs: 5,
+        promoteToT2: false,
+        sampleCount: 30,
+      });
+
+      const { getByTestId } = renderGated("bon");
+
+      const before = getByTestId("character-canvas-stub");
+      expect(before.dataset.animated).toBe("false");
+      expect(before.dataset.glbUrl).toContain("lod2");
+
+      // Flush the rescue microbench's promise chain (getSharedDeviceTierMicrobench
+      // -> computeDeviceTier -> setTier), matching how the real async
+      // useEffect->promise->setState sequence resolves.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      const after = getByTestId("character-canvas-stub");
+      expect(after.dataset.animated).toBe("true");
+      expect(after.dataset.glbUrl).toContain("lod1");
+    });
+
+    it("stays a static LOD2 3D frame (never rescued to T1) when the microbench resolves too slow", async () => {
+      vi.mocked(detectDeviceTier).mockReturnValue("T0");
+      vi.mocked(collectDeviceSignals).mockReturnValue(DESKTOP_SIGNALS);
+      vi.mocked(getSharedDeviceTierMicrobench).mockResolvedValue({
+        medianFrameMs: 20,
+        promoteToT2: false,
+        sampleCount: 30,
+      });
+
+      const { getByTestId } = renderGated("bon");
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      const stub = getByTestId("character-canvas-stub");
+      expect(stub.dataset.animated).toBe("false");
+      expect(stub.dataset.glbUrl).toContain("lod2");
+    });
+
+    it("renders a static (non-animated) LOD2 3D frame — not the sprite, not full animated 3D — for a software-renderer device, and never attempts the microbench rescue", async () => {
+      vi.mocked(detectDeviceTier).mockReturnValue("T0");
+      vi.mocked(collectDeviceSignals).mockReturnValue({
+        ...DESKTOP_SIGNALS,
+        hardwareConcurrency: 8,
+        unmaskedRenderer: "Google SwiftShader",
+      });
+
+      const { getByTestId, container } = renderGated("bon");
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      const stub = getByTestId("character-canvas-stub");
+      expect(stub.dataset.animated).toBe("false");
+      expect(stub.dataset.glbUrl).toContain("lod2");
+      expect(container.querySelector('img[src*="bon"]')).toBeNull();
+      expect(getSharedDeviceTierMicrobench).not.toHaveBeenCalled();
+    });
+
+    it("renders the plain sprite (not a static 3D frame) for a true no-WebGL/mobile T0 device", () => {
+      vi.mocked(detectDeviceTier).mockReturnValue("T0");
+      vi.mocked(collectDeviceSignals).mockReturnValue({
+        ...DESKTOP_SIGNALS,
+        hasWebGL2: false,
+        hasWebGL1: false,
+      });
+
+      const { queryByTestId, container } = renderGated("bon");
 
       expect(queryByTestId("character-canvas-stub")).toBeNull();
       expect(container.querySelector('img[src*="bon"]')).not.toBeNull();
