@@ -10,6 +10,7 @@ from app.config import settings
 from app.database import async_session_maker
 from app.repositories import chat as chat_repo
 from app.schemas.chat import serialize_message_dict, to_iso_z
+from app.services.offline_lineup import OfflineLineup
 
 # Faithful port of backend/src/socket.ts onto python-socketio's ASGI async server. Mounted in
 # app/main.py via socketio.ASGIApp(sio, other_asgi_app=<fastapi app>, socketio_path="socket.io")
@@ -26,6 +27,16 @@ sio = socketio.AsyncServer(
 
 def user_room(email: str) -> str:
     return f"user:{email}"
+
+
+# Single shared instance — matches this module's existing pattern of holding shared server
+# state as a plain module-level object (see `sio` above), not per-request/per-session state.
+# See offline_lineup.py's module docstring for the in-memory/single-process assumption.
+offline_lineup = OfflineLineup()
+
+
+async def _broadcast_offline_lineup() -> None:
+    await sio.emit("offline_lineup", {"entries": offline_lineup.snapshot()})
 
 
 def _dev_email_from_auth(auth: dict) -> str | None:
@@ -80,6 +91,51 @@ async def connect(sid: str, environ: dict, auth: dict | None) -> None:
         for conv in conversations:
             await sio.enter_room(sid, conv["id"])
     except Exception as exc:  # noqa: BLE001 - mirrors emitUnexpected's catch-all
+        await _emit_unexpected(sid, exc)
+
+    # A client that connects after others have already checked out must see the current
+    # lineup immediately, not just future changes — send it directly to this sid rather than
+    # waiting for the next broadcast.
+    await sio.emit("offline_lineup", {"entries": offline_lineup.snapshot()}, to=sid)
+
+
+@sio.event
+async def disconnect(sid: str) -> None:
+    # Cleanup ONLY — not a new offline-detection mechanism (v1 is explicit-checkout-only, see
+    # go_offline below). A real socket disconnect just means this person's connection is gone;
+    # if they had already explicitly checked out and were occupying a slot, free it so it
+    # doesn't linger forever for someone who will never emit come_online again this session.
+    try:
+        session_data = await sio.get_session(sid)
+    except KeyError:
+        return
+    email = session_data.get("email")
+    if not email:
+        return
+    if email in {entry["email"] for entry in offline_lineup.snapshot()}:
+        offline_lineup.remove(email)
+        await _broadcast_offline_lineup()
+
+
+@sio.on("go_offline")
+async def go_offline(sid: str, _payload: dict | None = None) -> None:
+    try:
+        session_data = await sio.get_session(sid)
+        email = session_data["email"]
+        offline_lineup.add(email)
+        await _broadcast_offline_lineup()
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("come_online")
+async def come_online(sid: str, _payload: dict | None = None) -> None:
+    try:
+        session_data = await sio.get_session(sid)
+        email = session_data["email"]
+        offline_lineup.remove(email)
+        await _broadcast_offline_lineup()
+    except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 
 

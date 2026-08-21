@@ -76,6 +76,8 @@ import { useAutoStatusDetection } from "../../services/presence/useAutoStatusDet
 import { useSelfStatus } from "../../services/presence/selfStatusStore";
 import { mapAtlasToOfficeStatus, type OfficeStatus } from "../../services/presence/status";
 import { resolveManualStatusMovement } from "../../services/presence/statusMovement";
+import { emitGoOffline, emitComeOnline, useOfflineLineup } from "../../services/presence/offlineLineupClient";
+import { slotIndexToPosition } from "../../services/presence/lineupSlots";
 import { CENTRAL_HUB_ROOM_ID } from "../../data/centralHub";
 import { CheckoutReminderToast } from "./checkout/CheckoutReminderToast";
 import { CheckoutConfirmModal } from "./checkout/CheckoutConfirmModal";
@@ -745,6 +747,52 @@ export function OfficeMap() {
     inConversation: talkingIds.includes(playerLayerId),
     offline: checkoutFlow.state === "CHECKED_OUT",
   });
+
+  // Offline lineup (Phase 0/1 — v1 explicit-checkout-only, see offline_lineup.py's module
+  // docstring): additive, separate wiring keyed strictly off checkoutFlow.state, never off
+  // manualStatus — must not interact with the Break/Lunch auto-walk effect above/below.
+  //
+  // go_offline/come_online fire exactly once per CHECKED_OUT transition (either direction),
+  // tracked via a prev-state ref rather than derived every render, matching
+  // prevManualStatusRef's established pattern in this file.
+  const prevCheckoutStateForLineupRef = useRef(checkoutFlow.state);
+  // The slot index this session has already walked to a reconciling adjustment for — reset
+  // whenever a NEW checkout begins, so a later checkout with a different assigned slot can
+  // reconcile again.
+  const reconciledLineupSlotRef = useRef<number | null>(null);
+  const offlineLineup = useOfflineLineup();
+
+  useEffect(() => {
+    const prev = prevCheckoutStateForLineupRef.current;
+    prevCheckoutStateForLineupRef.current = checkoutFlow.state;
+    if (prev === checkoutFlow.state) return;
+
+    if (checkoutFlow.state === "CHECKED_OUT" && prev !== "CHECKED_OUT") {
+      reconciledLineupSlotRef.current = null;
+      emitGoOffline();
+    } else if (prev === "CHECKED_OUT" && checkoutFlow.state !== "CHECKED_OUT") {
+      reconciledLineupSlotRef.current = null;
+      emitComeOnline();
+      walkBackToDesk();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checkoutFlow.state]);
+
+  // Reconciling adjustment: the exit walk above already lands the viewer at the general
+  // sidewalk area (bonLayer) immediately/optimistically. Once the server's authoritative
+  // snapshot arrives with THIS user's actual assigned slot, nudge to the exact slot
+  // coordinate — but only once per checkout (reconciledLineupSlotRef guard) and never
+  // mid-walk (isWalking guard), so it can't collide with the in-flight exit-walk animation.
+  useEffect(() => {
+    if (checkoutFlow.state !== "CHECKED_OUT" || isWalking) return;
+    const selfEmail = currentUser?.email?.trim().toLowerCase();
+    if (!selfEmail) return;
+    const mine = offlineLineup.find((entry) => entry.email === selfEmail);
+    if (!mine || reconciledLineupSlotRef.current === mine.slot) return;
+    reconciledLineupSlotRef.current = mine.slot;
+    walkTo(slotIndexToPosition(mine.slot));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [offlineLineup, checkoutFlow.state, isWalking, currentUser]);
   const { currentStatus: selfOfficeStatus, manualStatus } = useSelfStatus();
   // Break/Lunch auto-walk (client-side-only, see statusMovement.ts): tracks
   // the PREVIOUS manualStatus so the effect below only fires on a genuine
