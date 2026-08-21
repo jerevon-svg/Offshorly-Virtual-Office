@@ -4,8 +4,10 @@ import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch";
 import { OfficeStage } from "./OfficeStage";
 import styles from "./TalkingBubble.module.css";
 
-// KeepScale (used by TalkingBubble/GreetingBubble) needs a TransformWrapper
-// ancestor's context — mirror how OfficeMap actually renders OfficeStage.
+// TalkingBubble no longer uses KeepScale (removed to match StatusLabel's
+// world-space scaling), but GreetingBubble still does and OfficeStage
+// renders inside a TransformWrapper/TransformComponent in production, so
+// mirror that ancestor context here too.
 function renderStage(
   talkingCharacterIds?: string[],
   talkingTextById?: Record<string, string>,

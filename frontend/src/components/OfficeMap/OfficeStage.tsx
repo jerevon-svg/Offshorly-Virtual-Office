@@ -722,22 +722,13 @@ export function OfficeStage({
             const isSelf = !!selfCharacterId && layer.id === selfCharacterId;
             const status = isSelf ? selfStatus : statusByLayerId?.[layer.id];
             if (!status) return null;
-            // Mirror talkingCharacterIds/talkingTextById (same source the
-            // TalkingBubble render pass below uses) so the pill knows
-            // whether a bubble is currently painted on top of it, and
-            // which variant, so it can clear the taller "text" bubble.
+            // Mutually exclusive with TalkingBubble: a character with an
+            // active spatial-chat conversation (same source the
+            // TalkingBubble render pass below uses) shows TalkingBubble
+            // INSTEAD of StatusLabel — skip rendering the pill for it here.
             const hasActiveBubble = talkingCharacterIds?.includes(layer.id) ?? false;
-            const bubbleVariant = talkingTextById?.[layer.id] ? "text" : "dots";
-            return (
-              <StatusLabel
-                key={`status-${layer.id}`}
-                layer={layer}
-                status={status}
-                isSelf={isSelf}
-                hasActiveBubble={hasActiveBubble}
-                bubbleVariant={bubbleVariant}
-              />
-            );
+            if (hasActiveBubble) return null;
+            return <StatusLabel key={`status-${layer.id}`} layer={layer} status={status} isSelf={isSelf} />;
           })}
       {talkingCharacterIds?.map((id, index) => {
         const layer = resolved.find((l) => l.id === id);

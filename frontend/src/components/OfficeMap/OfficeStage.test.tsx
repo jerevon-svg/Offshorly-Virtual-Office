@@ -12,6 +12,8 @@ import {
 } from "../../services/render/deviceTier";
 import { getSharedDeviceTierMicrobench } from "../../services/render/deviceTierBenchmark";
 import styles from "./OfficeStage.module.css";
+import statusLabelStyles from "./StatusLabel.module.css";
+import talkingBubbleStyles from "./TalkingBubble.module.css";
 
 // Stub out the real (three.js/WebGL) CharacterCanvas for the live-3D
 // dev-toggle tests below — jsdom has no WebGL context, and these tests only
@@ -569,5 +571,69 @@ describe("OfficeStage live-3D tier/budget gating (no ?live3d= override)", () => 
       expect(queryByTestId("character-canvas-stub")).toBeNull();
       expect(container.querySelector('img[src*="bon"]')).not.toBeNull();
     });
+  });
+});
+
+describe("StatusLabel / TalkingBubble mutual exclusivity", () => {
+  function renderWithPresence(opts: {
+    selfCharacterId?: string;
+    statusByLayerId?: Record<string, import("../../services/presence/status").OfficeStatus>;
+    talkingCharacterIds?: string[];
+    talkingTextById?: Record<string, string>;
+  }) {
+    return render(
+      <TransformWrapper>
+        <TransformComponent>
+          <OfficeStage
+            showStatusLabels
+            selfCharacterId={opts.selfCharacterId}
+            statusByLayerId={opts.statusByLayerId}
+            talkingCharacterIds={opts.talkingCharacterIds}
+            talkingTextById={opts.talkingTextById}
+          />
+        </TransformComponent>
+      </TransformWrapper>,
+    );
+  }
+
+  it("renders StatusLabel (not TalkingBubble) for a character with no active bubble", () => {
+    const { container, getByText } = renderWithPresence({
+      selfCharacterId: "bon",
+      statusByLayerId: { alex: "AVAILABLE" },
+    });
+    expect(getByText(/^Alex$/)).toBeTruthy();
+    expect(container.querySelectorAll(`.${talkingBubbleStyles.bubble}`).length).toBe(0);
+    expect(container.querySelectorAll(`.${talkingBubbleStyles.bubbleText}`).length).toBe(0);
+  });
+
+  it("renders TalkingBubble (not StatusLabel) for a character with an active bubble, and leaves other characters' StatusLabel untouched", () => {
+    const { container, queryByText, getByText } = renderWithPresence({
+      selfCharacterId: "bon",
+      statusByLayerId: { alex: "IN_CONVERSATION", micah: "AVAILABLE" },
+      talkingCharacterIds: ["alex"],
+    });
+    // alex has an active bubble: its StatusLabel pill text must not render.
+    expect(queryByText(/Alex ·/)).toBeNull();
+    // ...and its TalkingBubble (dots variant, no talkingTextById entry) does.
+    expect(container.querySelectorAll(`.${talkingBubbleStyles.bubble}`).length).toBe(1);
+    // micah has no active bubble: its StatusLabel still renders normally.
+    expect(getByText(/^Micah$/)).toBeTruthy();
+    const micahPill = [...container.querySelectorAll(`.${statusLabelStyles.pill}`)].find((el) =>
+      el.textContent?.includes("Micah"),
+    );
+    expect(micahPill).toBeTruthy();
+  });
+
+  it("renders TalkingBubble's text variant (not StatusLabel) when talkingTextById has an entry for the active character", () => {
+    const { container, queryByText, getByText } = renderWithPresence({
+      selfCharacterId: "bon",
+      statusByLayerId: { alex: "IN_CONVERSATION" },
+      talkingCharacterIds: ["alex"],
+      talkingTextById: { alex: "Hey, got a minute to look at this?" },
+    });
+    expect(queryByText(/Alex ·/)).toBeNull();
+    expect(getByText("Hey, got a minute to look at this?")).toBeTruthy();
+    expect(container.querySelectorAll(`.${talkingBubbleStyles.bubbleText}`).length).toBe(1);
+    expect(container.querySelectorAll(`.${talkingBubbleStyles.bubble}`).length).toBe(0);
   });
 });

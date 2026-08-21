@@ -100,52 +100,20 @@ describe("StatusLabel via OfficeStage", () => {
     expect(container.querySelectorAll(`.${styles.pill}`).length).toBe(1);
   });
 
-  it("uses the tight default offset (no pillDotsActive/pillAboveText) when the layer has no active talking bubble", () => {
-    const { container } = renderStage({
-      showStatusLabels: true,
-      selfCharacterId: "bon",
-      selfStatus: "AVAILABLE",
-      statusByLayerId: { alex: "IN_CONVERSATION" },
-      // No talkingCharacterIds/talkingTextById at all — alex's status pill
-      // should sit at the tight default clearance, not either bubble offset.
-    });
-    const alexPill = [...container.querySelectorAll(`.${styles.pill}`)].find((el) =>
-      el.textContent?.includes("Alex"),
-    ) as HTMLElement;
-    expect(alexPill.className).not.toContain(styles.pillDotsActive);
-    expect(alexPill.className).not.toContain(styles.pillAboveText);
-  });
-
-  it("uses the pillDotsActive offset, not pillAboveText, when the active bubble is the dots variant", () => {
-    const { container, getByText } = renderStage({
+  it("does not render a status pill for a character with an active talking bubble (mutual exclusivity)", () => {
+    const { container, queryByText } = renderStage({
       showStatusLabels: true,
       selfCharacterId: "bon",
       selfStatus: "AVAILABLE",
       statusByLayerId: { alex: "IN_CONVERSATION" },
       talkingCharacterIds: ["alex"],
-      // talkingTextById omitted -> TalkingBubble falls back to the dots variant.
     });
-    expect(getByText(/Alex · In Conversation/)).toBeTruthy();
-    const alexPill = [...container.querySelectorAll(`.${styles.pill}`)].find((el) =>
-      el.textContent?.includes("Alex"),
-    ) as HTMLElement;
-    expect(alexPill.className).toContain(styles.pillDotsActive);
-    expect(alexPill.className).not.toContain(styles.pillAboveText);
-  });
-
-  it("uses the larger pillAboveText offset when the active bubble is the text variant", () => {
-    const { container, getByText } = renderStage({
-      showStatusLabels: true,
-      selfCharacterId: "bon",
-      selfStatus: "AVAILABLE",
-      statusByLayerId: { alex: "IN_CONVERSATION" },
-      talkingCharacterIds: ["alex"],
-      talkingTextById: { alex: "Hey, got a minute to look at this?" },
-    });
-    expect(getByText(/Alex · In Conversation/)).toBeTruthy();
-    const alexPill = [...container.querySelectorAll(`.${styles.pill}`)].find((el) =>
-      el.textContent?.includes("Alex"),
-    ) as HTMLElement;
-    expect(alexPill.className).toContain(styles.pillAboveText);
+    // Alex has an active bubble, so TalkingBubble renders instead of the
+    // StatusLabel pill — no "Alex" pill text should be present.
+    expect(queryByText(/Alex · In Conversation/)).toBeNull();
+    // Self ("bon") has no active bubble, so its pill still renders normally.
+    const pills = [...container.querySelectorAll(`.${styles.pill}`)];
+    expect(pills.some((el) => el.textContent?.includes("You"))).toBe(true);
+    expect(pills.some((el) => el.textContent?.includes("Alex"))).toBe(false);
   });
 });
