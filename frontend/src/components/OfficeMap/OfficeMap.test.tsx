@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, fireEvent } from "@testing-library/react";
+import { render, fireEvent, within } from "@testing-library/react";
 import { OfficeMap } from "./OfficeMap";
 import type { OfficePerson } from "../../services/office/floorMerge";
+import sidebarStyles from "./RoomSidebar.module.css";
 
 // The roster's real occupants are keyed by the flat rooms/teamRooms
 // namespace (e.g. "design-team"), while the room the sidebar was opened
@@ -64,14 +65,21 @@ describe("OfficeMap", () => {
   it("lists a live-roster person seated in a flat '-team' room under the sidebar for its manifest '-room' counterpart", () => {
     mockRosterPeople = [designPerson];
     try {
-      const { container, getByText, queryByText } = render(<OfficeMap />);
+      const { container, queryByText } = render(<OfficeMap />);
       const designRoomLayer = container.querySelector('[data-room-id="design-room"]');
       expect(designRoomLayer).not.toBeNull();
 
       fireEvent.pointerDown(designRoomLayer!, { clientX: 0, clientY: 0 });
       fireEvent.pointerUp(designRoomLayer!, { clientX: 0, clientY: 0 });
 
-      expect(getByText("Dana Designer")).not.toBeNull();
+      // "Dana Designer" now legitimately renders twice on screen: once here
+      // in the sidebar's occupants list, and once in the floating
+      // StatusLabel pill above her avatar. Scope the assertion to the
+      // sidebar's `.item` row so this test only verifies the roster
+      // listing it was written for, not the unrelated floating label.
+      const occupantItem = container.querySelector(`.${sidebarStyles.item}`);
+      expect(occupantItem).not.toBeNull();
+      expect(within(occupantItem as HTMLElement).getByText("Dana Designer")).not.toBeNull();
       expect(queryByText("No employees in this room")).toBeNull();
     } finally {
       mockRosterPeople = [];

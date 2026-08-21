@@ -71,8 +71,15 @@ import type { AvatarSpriteSet, SavedAvatar } from "../../services/avatar/types";
 import { savedAvatarsToLayers } from "../../data/savedAvatarLayers";
 import { useCheckoutFlow } from "./useCheckoutFlow";
 import { WorkingStatusIndicator } from "./checkout/WorkingStatusIndicator";
+import { StatusPicker } from "./StatusPicker";
+import { useAutoStatusDetection } from "../../services/presence/useAutoStatusDetection";
+import { useSelfStatus } from "../../services/presence/selfStatusStore";
+import { mapAtlasToOfficeStatus, type OfficeStatus } from "../../services/presence/status";
+import { resolveManualStatusMovement } from "../../services/presence/statusMovement";
+import { CENTRAL_HUB_ROOM_ID } from "../../data/centralHub";
 import { CheckoutReminderToast } from "./checkout/CheckoutReminderToast";
 import { CheckoutConfirmModal } from "./checkout/CheckoutConfirmModal";
+import { StatusOvertimePrompt } from "./StatusOvertimePrompt";
 import { TimeSummaryPanel } from "./checkout/TimeSummaryPanel";
 import { TimeLogForm } from "./checkout/TimeLogForm";
 import { ConversationView } from "../Chat/ConversationView";
@@ -729,6 +736,33 @@ export function OfficeMap() {
     hourDecimal,
     timeInMs: effectiveTimeInMs,
   });
+
+  // Presence/status system (see services/presence/status.ts). Idle (Away)
+  // detection runs once here; inConversation comes from talkingIds
+  // (self's layer id in the active chat), offline from a hard
+  // disconnect/checkout (CHECKED_OUT). See useAutoStatusDetection.ts.
+  useAutoStatusDetection({
+    inConversation: talkingIds.includes(playerLayerId),
+    offline: checkoutFlow.state === "CHECKED_OUT",
+  });
+  const { currentStatus: selfOfficeStatus, manualStatus } = useSelfStatus();
+  // Break/Lunch auto-walk (client-side-only, see statusMovement.ts): tracks
+  // the PREVIOUS manualStatus so the effect below only fires on a genuine
+  // user-driven transition, never on mount — initialized to the CURRENT
+  // value (which may be BREAK/LUNCH restored from localStorage) so a fresh
+  // page load never counts as a "transition" and never triggers a walk.
+  const prevManualStatusRef = useRef(manualStatus);
+  // Peers' status comes from the read-only Atlas presence feed (5 values),
+  // mapped onto our 9-value palette — no backend writes, no new endpoints.
+  // Keyed by person.email, which is exactly the layer id rosterLayers.ts
+  // assigns roster people (see officePeopleToLayers).
+  const statusByLayerId = useMemo<Record<string, OfficeStatus>>(() => {
+    const map: Record<string, OfficeStatus> = {};
+    for (const person of roster.people) {
+      map[person.email] = mapAtlasToOfficeStatus(person.status);
+    }
+    return map;
+  }, [roster.people]);
 
   // Dev-only preview affordance: ?checkedOut=1 jumps straight into
   // CHECKED_OUT on load, so Bon can preview "avatar standing on the
@@ -1473,6 +1507,78 @@ export function OfficeMap() {
     });
   }
 
+  // Break/Lunch auto-walk target: Central Hub has no door gate and no
+  // painted seats (see office-assets-manifest.json), so this is a plain
+  // walk-to-point using the exact same no-door fallback branch
+  // walkToAssignedDepartment uses for rooms without a door stand-point pair
+  // — worldToCell -> nearestWalkableConnectedTo -> findPath -> walkTo, then
+  // just face("front") on arrival (no seat/sit step).
+  function walkToHub() {
+    const layer = roomLayers.find((l) => l.id === CENTRAL_HUB_ROOM_ID);
+    if (!layer) return;
+    const bw = playerCharacterLayer.width;
+    const bh = playerCharacterLayer.height;
+    const startCenter = { x: bonPos.x + bw / 2, y: bonPos.y + bh / 2 };
+    // Already standing in Central Hub (e.g. re-entering a hub status while
+    // still there) — nothing to walk to. Reuses the existing room-lookup
+    // helper rather than inventing new geometry.
+    if (roomContainingPoint(startCenter)?.id === CENTRAL_HUB_ROOM_ID) return;
+    const roomCenter = { x: layer.x + layer.width / 2, y: layer.y + layer.height / 2 };
+    const startCell = worldToCell(startCenter);
+    const roomCell = worldToCell(roomCenter);
+    const startRoomId = roomOf(startCenter)?.id ?? null;
+    const doorCell = findRoomDoorCell(layer);
+    const snapped = doorCell
+      ? nearestWalkableConnectedTo(doorCell.cx, doorCell.cy, startCell.cx, startCell.cy)
+      : nearestWalkableConnectedTo(roomCell.cx, roomCell.cy, startCell.cx, startCell.cy);
+    const snappedWorld = cellToWorld(snapped.cx, snapped.cy);
+    const goal = { x: snappedWorld.x - bw / 2, y: snappedWorld.y - bh / 2 };
+    const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, layer.id);
+    walkTo(path, () => face("front"));
+  }
+
+  // Available-from-Break/Lunch auto-walk target: the viewer's own assigned
+  // desk. Adapts resolveOwnSeat()'s result (a bare Seat, no roomId) into the
+  // SeatTarget shape walkToSeat expects — attaching the flat-namespace room
+  // id the same way resolveOwnSeat itself resolves it — so the return trip
+  // reuses walkToSeat's existing door-gating + sit-down behavior instead of
+  // duplicating it. Falls back to walkToAssignedDepartment() (which itself
+  // resolves and sits at the same seat) if no painted seat is found.
+  function walkBackToDesk() {
+    const seat = resolveOwnSeat();
+    if (!seat) {
+      walkToAssignedDepartment();
+      return;
+    }
+    const flatRoomId = roomIdForPerson(currentUser?.email, currentUser?.team ?? null) ?? FALLBACK_ROOM_ID;
+    walkToSeat({
+      ...seat,
+      roomId: flatRoomId,
+      index: 0,
+      key: `own-desk-${seatCentroidKey(seat.x, seat.y)}`,
+    });
+  }
+
+  // Break/Lunch auto-walk trigger (client-side-only visual effect, see
+  // statusMovement.ts): keyed ONLY on manualStatus transitions, never on
+  // resolveCurrentStatus's derived value — an Away/InConversation/InCall
+  // overlay during a Break/Lunch stay must not re-trigger movement.
+  useEffect(() => {
+    const prev = prevManualStatusRef.current;
+    prevManualStatusRef.current = manualStatus;
+    if (prev === manualStatus) return;
+    // Don't fire during spawn/onboarding or checkout — both already drive
+    // their own scripted walks, and firing here would collide with them.
+    if (onboarding !== "done" || checkoutBusy) return;
+    const move = resolveManualStatusMovement(prev, manualStatus);
+    if (move === "HUB") {
+      walkToHub();
+    } else if (move === "DESK") {
+      walkBackToDesk();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [manualStatus]);
+
   // Shared "walk up to a character to interact with them" logic — used by
   // both `pat` and `chat` (checkout's walk-to-reception has its own
   // call site and is intentionally NOT routed through this, since Arisha's
@@ -1959,6 +2065,9 @@ export function OfficeMap() {
             // OfficeStage's live-3D self-vs-crowd gating, not a separate
             // concept.
             selfCharacterId={playerLayerId}
+            showStatusLabels
+            statusByLayerId={statusByLayerId}
+            selfStatus={selfOfficeStatus}
             extraCharacterLayers={extraCharacterLayers}
             extraCharacterSrcById={extraCharacterSrcById}
             onCharacterClick={handleCharacterClick}
@@ -2013,9 +2122,10 @@ export function OfficeMap() {
           >
             <ErrorBoundary>
               {/* PiP mini-camera preview intentionally omits greetingCharacterId,
-                  talkingCharacterIds, and talkingTextById: this OfficeStage renders
-                  outside the main <TransformWrapper>, so its KeepScale-based chat/
-                  greeting bubbles would mount with a null pan/zoom context and crash
+                  talkingCharacterIds, talkingTextById, and showStatusLabels (status
+                  labels default to unset/false): this OfficeStage renders outside
+                  the main <TransformWrapper>, so its KeepScale-based chat/greeting/
+                  status bubbles would mount with a null pan/zoom context and crash
                   (react-zoom-pan-pinch's KeepScale has no null guard). The PiP is
                   just a walking-preview thumbnail — it doesn't need bubbles. */}
               <OfficeStage
@@ -2086,6 +2196,7 @@ export function OfficeMap() {
           hand-maintained DEV flag — is what stops this from silently
           regressing to "logs into the void" on a future deploy. DEV stays
           in the condition so mock-mode development still exercises the UI. */}
+      <StatusPicker />
       {(import.meta.env.DEV || isRealZohoMode()) && (
         <>
           <WorkingStatusIndicator state={checkoutFlow.state} workedLabel={checkoutFlow.workedLabel} />
@@ -2099,6 +2210,7 @@ export function OfficeMap() {
         onNotYet={checkoutFlow.cancelConfirmation}
         onStartCheckout={handleConfirmStartCheckout}
       />
+      {onboarding === "done" && !checkoutBusy && <StatusOvertimePrompt />}
       {(checkoutFlow.state === "AT_RECEPTION" ||
         checkoutFlow.state === "EDITING_TIME_LOG" ||
         checkoutFlow.state === "REVIEWING") && (

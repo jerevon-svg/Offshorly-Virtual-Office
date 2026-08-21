@@ -1,0 +1,56 @@
+.anchor {
+  position: absolute;
+  width: 0;
+  height: 0;
+  line-height: 0;
+  pointer-events: none;
+}
+
+/* Default: no active TalkingBubble — small, consistent gap above the head. */
+.pill {
+  position: absolute;
+  transform: translate(-50%, calc(-100% - 10px));
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(26, 26, 26, 0.85);
+  color: #f5f5f5;
+  padding: 3px 9px;
+  border-radius: 999px;
+  white-space: nowrap;
+  pointer-events: none;
+  font-family: system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+/* Applied on top of .pill when the layer's TalkingBubble is rendering the
+   "dots" typing-indicator variant (~22px tall, spans y in [-34,-12] from
+   the anchor per TalkingBubble.module.css's -12px offset). -34px puts the
+   pill's bottom edge right at the bubble's top edge so they never overlap. */
+.pillDotsActive {
+  transform: translate(-50%, calc(-100% - 34px));
+}
+
+/* Applied on top of .pill when the layer's TalkingBubble is rendering the
+   "text" (bubbleText) variant — a real chat message, up to 3 lines, which
+   can be up to ~70px tall (TalkingBubble.module.css .bubbleText) vs the
+   ~22px "dots" typing indicator.
+   -84px clears the tallest bubbleText (spans y in [-82,-12] from anchor)
+   plus a small gap so the pill and bubble never touch. */
+.pillAboveText {
+  transform: translate(-50%, calc(-100% - 84px));
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.text {
+  white-space: nowrap;
+}

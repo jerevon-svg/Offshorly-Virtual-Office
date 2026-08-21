@@ -15,7 +15,9 @@ import { getBackrestCropFraction } from "../../data/chairBackrestCrop";
 import { createDepthCompare } from "./depthSort";
 import { GreetingBubble } from "./GreetingBubble";
 import { TalkingBubble } from "./TalkingBubble";
+import { StatusLabel } from "./StatusLabel";
 import { OfficePhaseOverlay } from "./OfficePhaseOverlay";
+import type { OfficeStatus } from "../../services/presence/status";
 import { CharacterCanvas, directionToHeadingDegrees } from "../../render3d/CharacterCanvas";
 import {
   LIVE_3D_CHARACTERS,
@@ -344,6 +346,21 @@ type OfficeStageProps = {
   // crowd-budget path — matching every existing caller/test that doesn't
   // pass this prop.
   selfCharacterId?: string | null;
+  // Status label system (see StatusLabel.tsx / services/presence/status.ts).
+  // Deliberately NOT rendered by default: the PiP mini-camera instance
+  // renders outside the main <TransformWrapper> (see OfficeMap.tsx's
+  // ~line 2015 comment on KeepScale's null-pan/zoom-context crash), so
+  // OfficeMap.tsx only ever sets this true on the MAIN OfficeStage
+  // instance. Absent/false = existing no-status-labels behavior, matching
+  // every existing caller/test that doesn't pass this.
+  showStatusLabels?: boolean;
+  // Atlas-roster-derived status for every non-self character layer, keyed
+  // by layer id (== person.email for roster layers — see rosterLayers.ts).
+  // Absent entries render no status label for that character.
+  statusByLayerId?: Record<string, OfficeStatus>;
+  // The local viewer's own richly-computed status (see selfStatusStore.ts).
+  // Used only for the layer whose id === selfCharacterId.
+  selfStatus?: OfficeStatus;
 };
 
 // Shared click-vs-drag threshold logic: only fires onClick when pointer
@@ -395,6 +412,9 @@ export function OfficeStage({
   characterIsWalkingById,
   characterIsSittingById,
   selfCharacterId,
+  showStatusLabels,
+  statusByLayerId,
+  selfStatus,
 }: OfficeStageProps = {}) {
   const characterClick = useClickVsDrag<AssetLayer>(onCharacterClick);
   const roomClick = useClickVsDrag<AssetLayer>(onRoomClick);
@@ -695,6 +715,30 @@ export function OfficeStage({
           text={greetingText ?? `Hi there, I'm ${formatCharacterName(resolvedGreetedLayer)}!`}
         />
       )}
+      {showStatusLabels &&
+        resolved
+          .filter((layer) => layer.kind === "character")
+          .map((layer) => {
+            const isSelf = !!selfCharacterId && layer.id === selfCharacterId;
+            const status = isSelf ? selfStatus : statusByLayerId?.[layer.id];
+            if (!status) return null;
+            // Mirror talkingCharacterIds/talkingTextById (same source the
+            // TalkingBubble render pass below uses) so the pill knows
+            // whether a bubble is currently painted on top of it, and
+            // which variant, so it can clear the taller "text" bubble.
+            const hasActiveBubble = talkingCharacterIds?.includes(layer.id) ?? false;
+            const bubbleVariant = talkingTextById?.[layer.id] ? "text" : "dots";
+            return (
+              <StatusLabel
+                key={`status-${layer.id}`}
+                layer={layer}
+                status={status}
+                isSelf={isSelf}
+                hasActiveBubble={hasActiveBubble}
+                bubbleVariant={bubbleVariant}
+              />
+            );
+          })}
       {talkingCharacterIds?.map((id, index) => {
         const layer = resolved.find((l) => l.id === id);
         if (!layer) return null;
