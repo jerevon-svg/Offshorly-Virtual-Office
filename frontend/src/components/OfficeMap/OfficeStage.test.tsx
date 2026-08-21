@@ -248,20 +248,33 @@ describe("OfficeStage live-3D tier/budget gating (no ?live3d= override)", () => 
     expect(container.querySelector('img[src*="bon"]')).not.toBeNull();
   });
 
-  it("falls back to sprite for a non-self bon at T1 (crowd cap is 0 at T1)", () => {
+  it("shows a non-self bon as CharacterCanvas at T1 (size-gated relaxation: registry has only one entry)", () => {
     vi.mocked(detectDeviceTier).mockReturnValue("T1");
 
-    // No selfCharacterId passed -> bon is treated as a crowd member, not
-    // the viewer's own avatar.
+    // No selfCharacterId passed -> bon is treated as a peer/crowd member,
+    // not the viewer's own avatar. With LIVE_3D_CHARACTERS holding only
+    // bon's entry, there's no "crowd" to budget against — every T1+ viewer
+    // (self or peer) sees him live-3D, so this must NOT fall back to sprite.
     const { queryByTestId } = renderGated(undefined);
 
-    expect(queryByTestId("character-canvas-stub")).toBeNull();
+    expect(queryByTestId("character-canvas-stub")).not.toBeNull();
   });
 
   it("shows a non-self bon as CharacterCanvas at T2, within the crowd budget", () => {
     vi.mocked(detectDeviceTier).mockReturnValue("T2");
 
     const { queryByTestId } = renderGated(undefined);
+
+    expect(queryByTestId("character-canvas-stub")).not.toBeNull();
+  });
+
+  it("shows bon as CharacterCanvas at T1 to a genuine peer viewer (selfCharacterId is someone else), single-entry registry", () => {
+    vi.mocked(detectDeviceTier).mockReturnValue("T1");
+
+    // selfCharacterId is "alex", not "bon" -> bon is unambiguously a peer
+    // here, not merely "no self set". Proves the size-gated relaxation
+    // applies to real peer viewing, not just the no-selfCharacterId case.
+    const { queryByTestId } = renderGated("alex");
 
     expect(queryByTestId("character-canvas-stub")).not.toBeNull();
   });

@@ -372,7 +372,20 @@ export function OfficeStage({
           if (devOverrideEntry) {
             live3dEntry = devOverrideEntry;
           } else if (registryEntry && deviceTier !== "T0") {
-            if (isSelf) {
+            // Size-gated relaxation: while the live-3D registry holds only
+            // ONE entry (bon, today), there's no "crowd" to budget against —
+            // every viewer (self or peer) sees the same single character, so
+            // the T2-only crowd cap would just be gatekeeping bon from his
+            // own peers for no reason. In that state, T1+ is sufficient for
+            // everyone. The moment a second character is added to
+            // LIVE_3D_CHARACTERS, this branch automatically stops applying
+            // and the untouched self+crowd-cap logic below re-arms — no
+            // separate flag or character-count check to maintain elsewhere.
+            if (Object.keys(LIVE_3D_CHARACTERS).length <= 1) {
+              live3dEntry = tierAtLeast(deviceTier, LIVE_3D_SELF_MIN_TIER)
+                ? registryEntry
+                : undefined;
+            } else if (isSelf) {
               // Self gets its own, more generous allowance — independent
               // of (and never counted against) the crowd budget below.
               live3dEntry = tierAtLeast(deviceTier, LIVE_3D_SELF_MIN_TIER)
