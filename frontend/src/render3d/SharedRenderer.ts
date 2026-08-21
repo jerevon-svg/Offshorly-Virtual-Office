@@ -87,6 +87,19 @@ export function getSharedCanvasElement(): HTMLCanvasElement {
   return getRenderer().domElement;
 }
 
+/**
+ * The shared `THREE.WebGLRenderer` instance itself — exposed ONLY for
+ * `glbCache.ts`'s `KTX2Loader.detectSupport(renderer)` call, which needs a
+ * real renderer (not just its canvas) to query which GPU texture formats
+ * are supported before picking a Basis transcode target. Lazily constructs
+ * the renderer (same as `renderToCanvas`) if it doesn't exist yet — callers
+ * in non-DOM/test environments must wrap this in a try/catch, same as
+ * `getSharedCanvasElement()`.
+ */
+export function getSharedRenderer(): THREE.WebGLRenderer {
+  return getRenderer();
+}
+
 // Test/dev-only escape hatch: lets tests reset the singleton between runs
 // instead of leaking a WebGL context across test files.
 export function __resetSharedRendererForTests(): void {

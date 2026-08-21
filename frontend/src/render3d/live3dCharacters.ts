@@ -1,5 +1,6 @@
 // Live-3D character registry: which avatar ids have an APPROVED, shipped
-// set of Meshy-pipeline GLBs eligible to replace the 2D sprite in
+// consolidated GLB (single mesh/skeleton + all 6 named animation clips,
+// see build-character-lods.mjs) eligible to replace the 2D sprite in
 // production, subject to the viewer's device tier / crowd budget (see
 // OfficeStage.tsx's gating logic and services/render/tierBudgets.ts).
 //
@@ -17,17 +18,18 @@
 //
 // Adding employee #2 (once they've gone through the same Meshy pipeline and
 // been approved) is a single new entry here — no other code changes.
-
+//
+// Phase A: each character now ships exactly ONE consolidated GLB (built by
+// build-character-lods.mjs's animation-retargeting pass) containing every
+// one of CharacterCanvas's 6 animation-state clips (see
+// characterAnimationState.ts's CHARACTER_ANIM_STATES) baked onto a single
+// shared skeleton — CharacterCanvas loads it once and drives a single
+// AnimationMixer, crossfading between clips as the resolved state changes.
+// This replaces the earlier per-pose-GLB shape (walkingGlbUrl/idleGlbUrl/
+// shrugGlbUrl/thinkingGlbUrl), which required hard-swapping between up to 4
+// independently-loaded models.
 export type Live3dAssetSet = {
-  walkingGlbUrl: string;
-  // Optional dedicated idle-pose GLB — see CharacterCanvas.tsx Props doc.
-  idleGlbUrl?: string;
-  // Optional looping-gesture GLBs (shrug/thinking), shown instead of
-  // idle/walking while this character is in an active chat/call — see
-  // OfficeStage.tsx's talkingCharacterIds and CharacterCanvas's
-  // gestureActive prop.
-  shrugGlbUrl?: string;
-  thinkingGlbUrl?: string;
+  glbUrl: string;
   // Fixed offscreen render resolution, matched to this character's
   // office-assets-manifest aspect ratio for a crisp result regardless of
   // the wrapper div's current on-screen (percentage/zoom-scaled) size.
@@ -42,10 +44,7 @@ const BASE = import.meta.env.BASE_URL;
 export const LIVE_3D_CHARACTERS: Record<string, Live3dAssetSet> = {
   // Manifest aspect ratio: width 26.23 / height 37.2.
   bon: {
-    walkingGlbUrl: `${BASE}avatars/jerevon/jerevon-basic-walking_glb_url.glb`,
-    idleGlbUrl: `${BASE}avatars/jerevon/jerevon-basic-idle.glb`,
-    shrugGlbUrl: `${BASE}avatars/jerevon/jerevon-basic-shrug.glb`,
-    thinkingGlbUrl: `${BASE}avatars/jerevon/jerevon-basic-thinking.glb`,
+    glbUrl: `${BASE}avatars/jerevon/jerevon-lod0.glb`,
     renderWidth: 210,
     renderHeight: 298,
   },

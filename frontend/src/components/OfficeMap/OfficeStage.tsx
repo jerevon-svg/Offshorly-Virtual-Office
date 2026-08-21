@@ -59,7 +59,7 @@ import styles from "./OfficeStage.module.css";
 const DEV_ONLY_LIVE_3D_ENTRIES: Record<string, Live3dAssetSet> = {
   // Manifest aspect ratio: width 20 / height 34.46.
   alex: {
-    walkingGlbUrl: `${import.meta.env.BASE_URL}scripts/avatar-pipeline/output/meshy-test/rig/alex-basic-walking_glb_url.glb`,
+    glbUrl: `${import.meta.env.BASE_URL}scripts/avatar-pipeline/output/meshy-test/rig/alex-basic-walking_glb_url.glb`,
     renderWidth: 160,
     renderHeight: 276,
   },
@@ -147,6 +147,19 @@ type OfficeStageProps = {
   // that character has recently sent a chat message (falls back to the
   // looping dots when absent).
   talkingTextById?: Record<string, string>;
+  // Phase A live-3D "responder" signal, keyed by character LAYER id (not
+  // chat senderId/email like talkingTextById above) — recently sent a
+  // message within the bubble-display window (see
+  // characterAnimationState.ts's isResponder doc comment). OfficeMap.tsx
+  // builds this separately from talkingTextById because talkingTextById is
+  // keyed by chat senderId, which for peer roster layers happens to equal
+  // layer.id (rosterLayers.ts keys id on person.email) but for the self
+  // layer is the viewer's OWN chat id (selfChatId, an email), never
+  // playerLayerId/currentUserId (an avatar id like "bon") — looking self up
+  // directly in talkingTextById by layer.id therefore always misses.
+  // Absent entries default to false, matching every existing caller/test
+  // that doesn't pass this.
+  characterIsResponderById?: Record<string, boolean>;
   // Door art layer ids currently slid open (see officeDoors.ts). Layers not
   // present here render at rest (translateX(0)/no override) — omitting the
   // prop entirely means "no doors open," matching existing callers/tests
@@ -180,6 +193,14 @@ type OfficeStageProps = {
   // there anyway).
   characterDirectionsById?: Record<string, WalkDirection>;
   characterIsWalkingById?: Record<string, boolean>;
+  // Phase A live-3D animation-state input: which character layer ids are
+  // currently seated in a real (painted-chair) seat — see OfficeMap.tsx's
+  // isSitting. Absent entries default to false (standing), matching every
+  // existing caller/test that doesn't pass this. The seat's own facing
+  // direction is expected to already be reflected in
+  // characterDirectionsById above (see data/seatDirections.ts) — never
+  // derived here from the camera.
+  characterIsSittingById?: Record<string, boolean>;
   // The character layer id that IS the current viewer's own avatar (see
   // OfficeMap.tsx's playerLayerId — the existing "which sprite is you"
   // mechanism, reused here rather than inventing a second identity
@@ -231,12 +252,14 @@ export function OfficeStage({
   extraCharacterSrcById,
   talkingCharacterIds,
   talkingTextById,
+  characterIsResponderById,
   openDoorLayerIds,
   emptySeats,
   onSeatClick,
   backSitOccupantBaselines,
   characterDirectionsById,
   characterIsWalkingById,
+  characterIsSittingById,
   selfCharacterId,
 }: OfficeStageProps = {}) {
   const characterClick = useClickVsDrag<AssetLayer>(onCharacterClick);
@@ -414,22 +437,23 @@ export function OfficeStage({
               // (only) to fall back to its normal sprite on the next
               // render — never a blank/broken box.
               <CharacterCanvas
-                walkingGlbUrl={live3dEntry.walkingGlbUrl}
-                idleGlbUrl={live3dEntry.idleGlbUrl}
-                shrugGlbUrl={live3dEntry.shrugGlbUrl}
-                thinkingGlbUrl={live3dEntry.thinkingGlbUrl}
+                glbUrl={live3dEntry.glbUrl}
                 width={live3dEntry.renderWidth}
                 height={live3dEntry.renderHeight}
                 headingDegrees={directionToHeadingDegrees(
                   characterDirectionsById?.[layer.id] ?? "front",
                 )}
                 isWalking={characterIsWalkingById?.[layer.id] ?? true}
-                // Reuses the existing chat-panel "talking" signal — set on
-                // both the player and the peer while a chat (or, once
-                // wired, a call) with them is open — rather than plumbing
-                // a separate chat/call-specific flag. No-ops for
-                // characters with no shrug/thinking glb configured.
-                gestureActive={talkingCharacterIds?.includes(layer.id) ?? false}
+                isSitting={characterIsSittingById?.[layer.id] ?? false}
+                // Reuses the existing chat-panel "talking" signal (rather
+                // than plumbing a separate chat/call-specific flag) —
+                // isChatting mirrors talkingCharacterIds exactly as the
+                // prior gestureActive prop did; isResponder comes from
+                // characterIsResponderById (layer-id-keyed — see its doc
+                // comment above for why this can't be looked up directly
+                // in talkingTextById, which is senderId/email-keyed).
+                isChatting={talkingCharacterIds?.includes(layer.id) ?? false}
+                isResponder={!!characterIsResponderById?.[layer.id]}
                 onError={() => reportLive3dError(layer.id)}
               />
             ) : (

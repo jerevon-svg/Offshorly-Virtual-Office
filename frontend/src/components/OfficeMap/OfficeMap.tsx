@@ -36,7 +36,9 @@ import type { ChatMessage } from "../../services/chat";
 import { useUnreadTotal } from "../../services/chat/useUnreadTotal";
 import { MessageNotificationBadge } from "../Chat/MessageNotificationBadge";
 import { isRealZohoMode } from "../../services/zoho";
+import { ErrorBoundary } from "../ErrorBoundary";
 import { OfficeStage } from "./OfficeStage";
+import { buildCharacterIsResponderById } from "./responderMap";
 import { CharacterSearch } from "./CharacterSearch";
 import { CharacterActionMenu } from "./CharacterActionMenu";
 import { RoomSidebar } from "./RoomSidebar";
@@ -396,6 +398,15 @@ export function OfficeMap() {
   // until it expires (falls back to the looping dots otherwise).
   const [talkingTextById, setTalkingTextById] = useState<Record<string, string>>({});
   const talkingTimersRef = useRef<Record<string, number>>({});
+
+  // Phase A live-3D "responder" signal, remapped from talkingTextById's
+  // senderId/email key-space into character LAYER id key-space — see
+  // responderMap.ts's buildCharacterIsResponderById and OfficeStage.tsx's
+  // characterIsResponderById doc comment for the full why.
+  const characterIsResponderById = useMemo(
+    () => buildCharacterIsResponderById(talkingTextById, selfChatId, playerLayerId),
+    [talkingTextById, selfChatId, playerLayerId],
+  );
 
   // Door art layer ids currently slid open (see officeDoors.ts). Rooms
   // without a DOOR_LAYERS_BY_ROOM entry have no door art yet, so
@@ -1938,6 +1949,11 @@ export function OfficeMap() {
               lui: luiIsWalking,
               [playerLayerId]: isWalking,
             }}
+            // Phase A live-3D animation state: only the viewer's own seated
+            // state is tracked today (isSitting/sitDirection above) — NPC
+            // roster seating isn't threaded into a live-3D-eligible id here
+            // since bon/jerevon is the only live-3D character shipped.
+            characterIsSittingById={{ [playerLayerId]: isSitting }}
             // playerLayerId is the existing "which sprite is you" identity
             // (see useCurrentUserAvatarId above) — reused here to drive
             // OfficeStage's live-3D self-vs-crowd gating, not a separate
@@ -1978,6 +1994,7 @@ export function OfficeMap() {
             greetingText={greeting?.text}
             talkingCharacterIds={talkingIds}
             talkingTextById={talkingTextById}
+            characterIsResponderById={characterIsResponderById}
             openDoorLayerIds={openDoorLayerIds}
             emptySeats={emptySeats}
             onSeatClick={handleSeatClick}
@@ -1994,42 +2011,49 @@ export function OfficeMap() {
             className={styles.pipInner}
             style={{ transform: `translate(${pipTransform.x}px, ${pipTransform.y}px) scale(${pipScale})` }}
           >
-            <OfficeStage
-              phase={phase}
-              characterOverrides={{
-                alex: alexPos,
-                micah: micahPos,
-                lui: luiPos,
-                ...savedAvatarOverridePos,
-                [playerLayerId]: bonPos,
-              }}
-              characterSrcOverrides={{
-                alex: alexSpriteSrc,
-                micah: micahSpriteSrc,
-                lui: luiSpriteSrc,
-                ...savedAvatarOverrideSrc,
-                [playerLayerId]: playerSpriteSrc,
-              }}
-              characterDirectionsById={{
-                alex: alexDirection,
-                micah: micahDirection,
-                lui: luiDirection,
-                [playerLayerId]: isSitting ? sitDirection : direction,
-              }}
-              characterIsWalkingById={{
-                alex: alexIsWalking,
-                micah: micahIsWalking,
-                lui: luiIsWalking,
-                [playerLayerId]: isWalking,
-              }}
-              selfCharacterId={playerLayerId}
-              extraCharacterLayers={extraCharacterLayers}
-              extraCharacterSrcById={extraCharacterSrcById}
-              hiddenCharacterIds={hiddenCharacterIds}
-              talkingCharacterIds={talkingIds}
-              talkingTextById={talkingTextById}
-              openDoorLayerIds={openDoorLayerIds}
-            />
+            <ErrorBoundary>
+              {/* PiP mini-camera preview intentionally omits greetingCharacterId,
+                  talkingCharacterIds, and talkingTextById: this OfficeStage renders
+                  outside the main <TransformWrapper>, so its KeepScale-based chat/
+                  greeting bubbles would mount with a null pan/zoom context and crash
+                  (react-zoom-pan-pinch's KeepScale has no null guard). The PiP is
+                  just a walking-preview thumbnail — it doesn't need bubbles. */}
+              <OfficeStage
+                phase={phase}
+                characterOverrides={{
+                  alex: alexPos,
+                  micah: micahPos,
+                  lui: luiPos,
+                  ...savedAvatarOverridePos,
+                  [playerLayerId]: bonPos,
+                }}
+                characterSrcOverrides={{
+                  alex: alexSpriteSrc,
+                  micah: micahSpriteSrc,
+                  lui: luiSpriteSrc,
+                  ...savedAvatarOverrideSrc,
+                  [playerLayerId]: playerSpriteSrc,
+                }}
+                characterDirectionsById={{
+                  alex: alexDirection,
+                  micah: micahDirection,
+                  lui: luiDirection,
+                  [playerLayerId]: isSitting ? sitDirection : direction,
+                }}
+                characterIsWalkingById={{
+                  alex: alexIsWalking,
+                  micah: micahIsWalking,
+                  lui: luiIsWalking,
+                  [playerLayerId]: isWalking,
+                }}
+                selfCharacterId={playerLayerId}
+                extraCharacterLayers={extraCharacterLayers}
+                extraCharacterSrcById={extraCharacterSrcById}
+                hiddenCharacterIds={hiddenCharacterIds}
+                characterIsResponderById={characterIsResponderById}
+                openDoorLayerIds={openDoorLayerIds}
+              />
+            </ErrorBoundary>
           </div>
         </div>
       )}

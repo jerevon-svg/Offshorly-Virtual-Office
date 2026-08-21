@@ -23,13 +23,12 @@ vi.mock("../../render3d/CharacterCanvas", async () => {
   return {
     ...actual,
     CharacterCanvas: (props: {
-      walkingGlbUrl: string;
-      idleGlbUrl?: string;
-      shrugGlbUrl?: string;
-      thinkingGlbUrl?: string;
-      gestureActive?: boolean;
+      glbUrl: string;
       headingDegrees?: number;
       isWalking?: boolean;
+      isSitting?: boolean;
+      isChatting?: boolean;
+      isResponder?: boolean;
       width: number;
       height: number;
       onError?: () => void;
@@ -38,7 +37,9 @@ vi.mock("../../render3d/CharacterCanvas", async () => {
         data-testid="character-canvas-stub"
         data-heading-degrees={props.headingDegrees}
         data-is-walking={props.isWalking}
-        data-gesture-active={props.gestureActive}
+        data-is-sitting={props.isSitting}
+        data-is-chatting={props.isChatting}
+        data-is-responder={props.isResponder}
       >
         {props.onError && (
           <button data-testid="character-canvas-error-trigger" onClick={props.onError} />
@@ -323,6 +324,44 @@ describe("OfficeStage live-3D tier/budget gating (no ?live3d= override)", () => 
       const stubs = container.querySelectorAll('[data-testid="character-canvas-stub"]');
       // bon (self) + 2 crowd slots (alex/micah/lui, cap 2) = 3 total.
       expect(stubs.length).toBe(3);
+    });
+  });
+
+  describe("isResponder wiring (characterIsResponderById, layer-id-keyed)", () => {
+    // Regression test for the id-space bug: OfficeStage must read isResponder
+    // from characterIsResponderById (layer-id-keyed), never from
+    // talkingTextById (senderId/email-keyed) directly — passing an
+    // email-keyed talkingTextById entry alone must NOT flip isResponder for
+    // a same-named layer id.
+    it("sets isResponder=true for a layer id present in characterIsResponderById", () => {
+      vi.mocked(detectDeviceTier).mockReturnValue("T1");
+
+      const { getByTestId } = render(
+        <TransformWrapper>
+          <TransformComponent>
+            <OfficeStage selfCharacterId="bon" characterIsResponderById={{ bon: true }} />
+          </TransformComponent>
+        </TransformWrapper>,
+      );
+
+      expect(getByTestId("character-canvas-stub").getAttribute("data-is-responder")).toBe("true");
+    });
+
+    it("leaves isResponder false when only the email-keyed talkingTextById (not characterIsResponderById) has an entry", () => {
+      vi.mocked(detectDeviceTier).mockReturnValue("T1");
+
+      const { getByTestId } = render(
+        <TransformWrapper>
+          <TransformComponent>
+            <OfficeStage
+              selfCharacterId="bon"
+              talkingTextById={{ "jerevon@offshorly.com": "hey team" }}
+            />
+          </TransformComponent>
+        </TransformWrapper>,
+      );
+
+      expect(getByTestId("character-canvas-stub").getAttribute("data-is-responder")).toBe("false");
     });
   });
 
