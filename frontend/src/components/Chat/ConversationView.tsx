@@ -282,11 +282,14 @@ export function ConversationView({
     window.clearTimeout(typingTimerRef.current);
     if (text.length === 0) {
       onTypingChange?.(false);
+      if (conversationId) chatService.sendTyping?.({ conversationId, isTyping: false });
       return;
     }
     onTypingChange?.(true);
+    if (conversationId) chatService.sendTyping?.({ conversationId, isTyping: true });
     typingTimerRef.current = window.setTimeout(() => {
       onTypingChange?.(false);
+      if (conversationId) chatService.sendTyping?.({ conversationId, isTyping: false });
     }, TYPING_IDLE_MS);
   }
 
@@ -294,6 +297,7 @@ export function ConversationView({
     if (!conversationId) return;
     window.clearTimeout(typingTimerRef.current);
     onTypingChange?.(false);
+    chatService.sendTyping?.({ conversationId, isTyping: false });
     setSendError(null);
     setFailedText(null);
     // Own message arrives via the onMessage subscription above (sendMessage

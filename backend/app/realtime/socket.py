@@ -224,6 +224,36 @@ async def _other_participant_emails(session, conversation_id: str, self_email: s
     return [pid for pid in (conv["participant_ids"] if conv else []) if pid != self_email]
 
 
+@sio.on("typing")
+async def typing(sid: str, payload: dict | None) -> None:
+    try:
+        payload = payload or {}
+        conversation_id = payload.get("conversationId")
+        conversation_id = conversation_id if isinstance(conversation_id, str) else ""
+        is_typing = bool(payload.get("isTyping"))
+
+        if not conversation_id:
+            return
+
+        session_data = await sio.get_session(sid)
+        email = session_data["email"]
+
+        async with async_session_maker() as session:
+            ok = await chat_repo.is_participant(session, conversation_id, email)
+            if not ok:
+                await sio.emit("chat_error", {"code": "forbidden", "message": "Not a participant"}, to=sid)
+                return
+
+        await sio.emit(
+            "peer_typing",
+            {"conversationId": conversation_id, "senderEmail": email, "isTyping": is_typing},
+            room=conversation_id,
+            skip_sid=sid,
+        )
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
 @sio.on("message_read")
 async def message_read(sid: str, payload: dict | None) -> None:
     try:

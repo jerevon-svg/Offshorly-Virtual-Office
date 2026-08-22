@@ -47,6 +47,15 @@ export interface ReadReceiptUpdate {
 }
 export type ReadReceiptListener = (update: ReadReceiptUpdate) => void;
 
+// Ephemeral typing-indicator update — no DB persistence, real-mode-only.
+// senderId mirrors ChatMessage.senderId's shape (server-verified email).
+export interface TypingUpdate {
+  conversationId: string;
+  senderId: string;
+  isTyping: boolean;
+}
+export type TypingListener = (update: TypingUpdate) => void;
+
 // Real-mode-only: surfaces the underlying Socket.IO connection lifecycle so
 // the UI can show a "waking up the chat server" banner during a Render
 // free-tier cold start instead of silently dropping sends. "reconnecting"
@@ -81,6 +90,10 @@ export interface ChatService {
   markDelivered?(input: { conversationId: string; upToSentAt: string }): void;
   onDeliveryReceipt?(cb: DeliveryReceiptListener): () => void;
   onReadReceipt?(cb: ReadReceiptListener): () => void;
+  // Fire-and-forget typing signal — mock mode has no server-side room to
+  // broadcast to, so MockChatService's implementation is a no-op/local-only.
+  sendTyping?(input: { conversationId: string; isTyping: boolean }): void;
+  onTyping?(cb: TypingListener): () => void;
   // Mock mode has no real socket/connection to report on, so
   // MockChatService simply doesn't implement these.
   getConnectionState?(): ConnectionState;

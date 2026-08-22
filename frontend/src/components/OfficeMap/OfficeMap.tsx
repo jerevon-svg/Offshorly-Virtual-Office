@@ -31,7 +31,7 @@ import { computeEmptySeats, seatCentroidKey, type SeatTarget } from "../../data/
 import type { Pt } from "../../data/walkable-zones";
 import { DOOR_ANIM_MS, DOOR_LAYERS_BY_ROOM } from "../../data/officeDoors";
 import type { AssetLayer } from "../../types/office";
-import { chatMode } from "../../services/chat";
+import { chatMode, chatService } from "../../services/chat";
 import type { ChatMessage } from "../../services/chat";
 import { useUnreadTotal } from "../../services/chat/useUnreadTotal";
 import { MessageNotificationBadge } from "../Chat/MessageNotificationBadge";
@@ -446,12 +446,56 @@ export function OfficeMap() {
   );
 
   // Actively-typing signal (real keystroke activity, see
-  // ConversationView.tsx's onTypingChange) — self-only for now; peer typing
-  // ids arrive in a follow-up task over the backend.
+  // ConversationView.tsx's onTypingChange) — self side.
   const [selfTyping, setSelfTyping] = useState(false);
+
+  // Peer side, fed by RealChatService's onTyping (mock mode's implementation
+  // never invokes listeners, so this stays empty there). Keyed by layer id
+  // — peer layer ids equal the peer's lowercased email, same convention as
+  // selfChatId/talkingTextById elsewhere in this file.
+  const [peerTypingByLayerId, setPeerTypingByLayerId] = useState<Record<string, boolean>>({});
+  const peerTypingTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+
+  useEffect(() => {
+    const unsubscribe = chatService.onTyping?.((update) => {
+      const senderLayerId = update.senderId.toLowerCase();
+      // Never let a self-echo affect peer state.
+      if (senderLayerId === selfChatId?.toLowerCase()) return;
+
+      const timers = peerTypingTimersRef.current;
+      if (timers[senderLayerId]) {
+        clearTimeout(timers[senderLayerId]);
+        delete timers[senderLayerId];
+      }
+
+      if (update.isTyping) {
+        setPeerTypingByLayerId((prev) => ({ ...prev, [senderLayerId]: true }));
+        // Belt-and-suspenders expiry in case a "stopped typing" event is
+        // lost (dropped socket message, tab closed uncleanly, etc).
+        timers[senderLayerId] = setTimeout(() => {
+          setPeerTypingByLayerId((prev) => ({ ...prev, [senderLayerId]: false }));
+          delete timers[senderLayerId];
+        }, 6000);
+      } else {
+        setPeerTypingByLayerId((prev) => ({ ...prev, [senderLayerId]: false }));
+      }
+    });
+
+    return () => {
+      unsubscribe?.();
+      Object.values(peerTypingTimersRef.current).forEach((timer) => clearTimeout(timer));
+      peerTypingTimersRef.current = {};
+    };
+  }, [selfChatId]);
+
   const typingCharacterIds = useMemo(
-    () => (selfTyping ? [playerLayerId] : []),
-    [selfTyping, playerLayerId],
+    () => [
+      ...(selfTyping ? [playerLayerId] : []),
+      ...Object.entries(peerTypingByLayerId)
+        .filter(([, isTyping]) => isTyping)
+        .map(([id]) => id),
+    ],
+    [selfTyping, playerLayerId, peerTypingByLayerId],
   );
 
   // Door art layer ids currently slid open (see officeDoors.ts). Rooms

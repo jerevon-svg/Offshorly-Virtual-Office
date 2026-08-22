@@ -1,8 +1,41 @@
-import { describe, expect, it, vi } from "vitest";
-import { render, fireEvent, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { render, fireEvent, within, act } from "@testing-library/react";
 import { OfficeMap } from "./OfficeMap";
 import type { OfficePerson } from "../../services/office/floorMerge";
 import sidebarStyles from "./RoomSidebar.module.css";
+import talkingBubbleStyles from "./TalkingBubble.module.css";
+import type { TypingListener } from "../../services/chat";
+
+// Captures the callback OfficeMap.tsx registers via chatService.onTyping so
+// tests can simulate a peer_typing event arriving over the (mocked) socket,
+// without depending on RealChatService's actual socket.io wiring. Declared
+// via vi.hoisted since vi.mock's factory below is hoisted above these
+// otherwise-top-level declarations.
+const { onTypingMock, getCapturedOnTyping } = vi.hoisted(() => {
+  let captured: TypingListener | null = null;
+  return {
+    onTypingMock: vi.fn((cb: TypingListener) => {
+      captured = cb;
+      return () => {
+        captured = null;
+      };
+    }),
+    getCapturedOnTyping: () => captured,
+  };
+});
+
+vi.mock("../../services/chat", async () => {
+  const actual = await vi.importActual<typeof import("../../services/chat")>(
+    "../../services/chat",
+  );
+  return {
+    ...actual,
+    chatService: {
+      ...actual.chatService,
+      onTyping: onTypingMock,
+    },
+  };
+});
 
 // The roster's real occupants are keyed by the flat rooms/teamRooms
 // namespace (e.g. "design-team"), while the room the sidebar was opened
@@ -84,5 +117,60 @@ describe("OfficeMap", () => {
     } finally {
       mockRosterPeople = [];
     }
+  });
+
+  describe("peer typing indicator", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function dotBubbleCount(container: HTMLElement): number {
+      return container.querySelectorAll(`.${talkingBubbleStyles.bubble}`).length;
+    }
+
+    it("adds a peer's typing-dots bubble when onTyping fires isTyping: true, and removes it on isTyping: false", () => {
+      const { container } = render(<OfficeMap />);
+      expect(getCapturedOnTyping()).not.toBeNull();
+      expect(dotBubbleCount(container)).toBe(0);
+
+      act(() => {
+        getCapturedOnTyping()!({ conversationId: "conv-1", senderId: "arisha", isTyping: true });
+      });
+      expect(dotBubbleCount(container)).toBe(1);
+
+      act(() => {
+        getCapturedOnTyping()!({ conversationId: "conv-1", senderId: "arisha", isTyping: false });
+      });
+      expect(dotBubbleCount(container)).toBe(0);
+    });
+
+    it("removes the peer's typing-dots bubble after the ~6s expiry when no further update arrives", () => {
+      const { container } = render(<OfficeMap />);
+
+      act(() => {
+        getCapturedOnTyping()!({ conversationId: "conv-1", senderId: "arisha", isTyping: true });
+      });
+      expect(dotBubbleCount(container)).toBe(1);
+
+      act(() => {
+        vi.advanceTimersByTime(6000);
+      });
+      expect(dotBubbleCount(container)).toBe(0);
+    });
+
+    it("ignores a self-authored typing update (senderId matching selfChatId) — never affects peer state", () => {
+      const { container } = render(<OfficeMap />);
+
+      act(() => {
+        // Default/unauthenticated selfChatId falls back to playerLayerId
+        // ("bon") — see OfficeMap.tsx's selfChatId derivation.
+        getCapturedOnTyping()!({ conversationId: "conv-1", senderId: "bon", isTyping: true });
+      });
+      expect(dotBubbleCount(container)).toBe(0);
+    });
   });
 });

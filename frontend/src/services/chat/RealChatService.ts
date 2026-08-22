@@ -11,6 +11,7 @@ import type {
   MessageListener,
   ReadReceiptListener,
   ReadReceiptUpdate,
+  TypingListener,
   UnreadCountListener,
   UnreadCountUpdate,
 } from "./types";
@@ -80,6 +81,7 @@ export class RealChatService implements ChatService {
   private unreadCountListeners = new Set<UnreadCountListener>();
   private deliveryReceiptListeners = new Set<DeliveryReceiptListener>();
   private readReceiptListeners = new Set<ReadReceiptListener>();
+  private typingListeners = new Set<TypingListener>();
   private pendingSends = new Map<string, PendingSend>();
   // Tracks the most recently seen sentAt per conversation, from any message
   // that has flowed through pushMessage (send, receive, or history fetch).
@@ -194,6 +196,19 @@ export class RealChatService implements ChatService {
     socket.on("read_receipt", (payload: ReadReceiptUpdate) => {
       this.readReceiptListeners.forEach((cb) => cb(payload));
     });
+
+    socket.on(
+      "peer_typing",
+      (payload: { conversationId: string; senderEmail: string; isTyping: boolean }) => {
+        this.typingListeners.forEach((cb) =>
+          cb({
+            conversationId: payload.conversationId,
+            senderId: payload.senderEmail,
+            isTyping: payload.isTyping,
+          }),
+        );
+      },
+    );
 
     socket.on("chat_error", (payload: { code: string; message: string }) => {
       // Surfaced to any in-flight sendMessage callers via rejection isn't
@@ -446,6 +461,19 @@ export class RealChatService implements ChatService {
     this.readReceiptListeners.add(cb);
     return () => {
       this.readReceiptListeners.delete(cb);
+    };
+  }
+
+  // Fire-and-forget, ephemeral — no ack, no persistence. Same pattern as
+  // markRead/markDelivered above.
+  sendTyping(input: { conversationId: string; isTyping: boolean }): void {
+    this.socket()?.emit("typing", input);
+  }
+
+  onTyping(cb: TypingListener): () => void {
+    this.typingListeners.add(cb);
+    return () => {
+      this.typingListeners.delete(cb);
     };
   }
 }
