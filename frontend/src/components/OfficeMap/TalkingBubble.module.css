@@ -7,24 +7,24 @@
 }
 
 /* Unified with StatusLabel's tuned small-dark-pill look (same font-size,
-   padding, gap, background, border-radius, and -6px world-space head-gap
+   padding, gap, background, border-radius, and -4px world-space head-gap
    offset — see StatusLabel.module.css .pill). No decorative "tail" triangle
    (removed) to match StatusLabel's plain pill shape and keep the presence
    system's small-tag aesthetic (avoid large speech bubbles). */
 .bubble {
   position: absolute;
-  transform: translate(-50%, calc(-100% - 6px));
+  transform: translate(-50%, calc(-100% - 4px));
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
   background: rgba(26, 26, 26, 0.85);
   color: #f5f5f5;
-  padding: 2px 6px;
+  padding: 1px 5px;
   border-radius: 999px;
   white-space: nowrap;
   pointer-events: none;
   font-family: system-ui, sans-serif;
-  font-size: 8px;
+  font-size: 7px;
   font-weight: 600;
   line-height: 1.4;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
@@ -36,10 +36,10 @@
    text isn't), otherwise identical container treatment. */
 .bubbleText {
   position: absolute;
-  transform: translate(-50%, calc(-100% - 6px));
+  transform: translate(-50%, calc(-100% - 4px));
   background: rgba(26, 26, 26, 0.85);
   color: #f5f5f5;
-  padding: 2px 6px;
+  padding: 1px 5px;
   border-radius: 999px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
   pointer-events: none;
@@ -51,7 +51,7 @@
   -webkit-box-orient: vertical;
   overflow: hidden;
   font-family: system-ui, sans-serif;
-  font-size: 8px;
+  font-size: 7px;
   font-weight: 600;
   /* .anchor (parent) sets line-height:0 for the no-wrap dots bubble — must
      override here or wrapped lines collapse onto each other. */
@@ -59,8 +59,8 @@
 }
 
 .dot {
-  width: 5px;
-  height: 5px;
+  width: 4px;
+  height: 4px;
   border-radius: 50%;
   background: #f5f5f5;
   animation: talkingDot 1s ease-in-out infinite;

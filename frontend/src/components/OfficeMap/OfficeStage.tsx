@@ -13,7 +13,6 @@ import { DOOR_ANIM_MS, DOOR_SLIDE_DIRECTION } from "../../data/officeDoors";
 import { backrestCropLayerId } from "../../data/backSitOccupancy";
 import { getBackrestCropFraction } from "../../data/chairBackrestCrop";
 import { createDepthCompare } from "./depthSort";
-import { GreetingBubble } from "./GreetingBubble";
 import { TalkingBubble } from "./TalkingBubble";
 import { StatusLabel } from "./StatusLabel";
 import { OfficePhaseOverlay } from "./OfficePhaseOverlay";
@@ -276,13 +275,24 @@ type OfficeStageProps = {
   // Custom greeting text (e.g. onboarding's "Welcome to Offshorly!" instead
   // of the search-locate default "Hi there, I'm {name}!").
   greetingText?: string;
-  // Character ids to render a looping "talking" indicator above — fully
-  // separate from the greeting system (used by the chat feature).
+  // Character ids with an OPEN conversation panel — "conversation is open,"
+  // NOT "actively typing." Still drives the 3D isChatting flag/inConversation
+  // signal below; no longer gates the overhead bubble render (see
+  // typingCharacterIds for that).
   talkingCharacterIds?: string[];
-  // Text to show inside the talking bubble for a given character id, when
+  // Text to show inside the overhead bubble for a given character id, when
   // that character has recently sent a chat message (falls back to the
-  // looping dots when absent).
+  // looping dots when absent — see typingCharacterIds). Layer-id-keyed (the
+  // OfficeMap.tsx caller remaps chat-senderId keys to layer ids before
+  // passing this down — see responderMap.ts's remapSelfKey).
   talkingTextById?: Record<string, string>;
+  // Character ids ACTIVELY TYPING right now (real keystroke activity, with a
+  // short inactivity timeout — see ConversationView.tsx's onTypingChange).
+  // Distinct from talkingCharacterIds ("conversation is open"): drives the
+  // overhead dots-bubble render only, lowest priority behind an active
+  // greeting or unexpired sent-text bubble. Absent/omitted = no one typing,
+  // matching every existing caller/test that doesn't pass this.
+  typingCharacterIds?: string[];
   // Phase A live-3D "responder" signal, keyed by character LAYER id (not
   // chat senderId/email like talkingTextById above) — recently sent a
   // message within the bubble-display window (see
@@ -403,6 +413,7 @@ export function OfficeStage({
   extraCharacterSrcById,
   talkingCharacterIds,
   talkingTextById,
+  typingCharacterIds,
   characterIsResponderById,
   openDoorLayerIds,
   emptySeats,
@@ -482,10 +493,6 @@ export function OfficeStage({
     ? resolved.concat(backrestCropLayers)
     : resolved;
   const sorted = withBackrestCrops.slice().sort(createDepthCompare(backSitOccupantBaselines));
-
-  const resolvedGreetedLayer = greetingCharacterId
-    ? resolved.find((l) => l.id === greetingCharacterId)
-    : undefined;
 
   return (
     <div
@@ -708,33 +715,49 @@ export function OfficeStage({
           />
         );
       })}
-      {resolvedGreetedLayer && (
-        <GreetingBubble
-          key={greetingNonce}
-          layer={resolvedGreetedLayer}
-          text={greetingText ?? `Hi there, I'm ${formatCharacterName(resolvedGreetedLayer)}!`}
-        />
-      )}
-      {showStatusLabels &&
-        resolved
-          .filter((layer) => layer.kind === "character")
-          .map((layer) => {
+      {resolved
+        .filter((layer) => layer.kind === "character")
+        .map((layer) => {
+          // Single per-character overhead-element resolver — exactly ONE
+          // element (or none) per layer, by priority: active greeting >
+          // unexpired sent-text bubble > actively-typing dots > status
+          // label > nothing. Replaces three previously-separate render
+          // passes (greeting bubble / status-label-unless-talking /
+          // talking-bubble-for-talking) that could double up or fall back
+          // to the wrong element (see task doc for the bugs this fixes).
+          const isGreeted = !!greetingCharacterId && layer.id === greetingCharacterId;
+          if (isGreeted) {
+            return (
+              <TalkingBubble
+                key={`overhead-${layer.id}-${greetingNonce}`}
+                layer={layer}
+                text={greetingText ?? `Hi there, I'm ${formatCharacterName(layer)}!`}
+              />
+            );
+          }
+          const sentText = talkingTextById?.[layer.id];
+          if (sentText) {
+            return <TalkingBubble key={`overhead-${layer.id}`} layer={layer} text={sentText} />;
+          }
+          if (typingCharacterIds?.includes(layer.id)) {
+            return <TalkingBubble key={`overhead-${layer.id}`} layer={layer} />;
+          }
+          if (showStatusLabels) {
             const isSelf = !!selfCharacterId && layer.id === selfCharacterId;
             const status = isSelf ? selfStatus : statusByLayerId?.[layer.id];
-            if (!status) return null;
-            // Mutually exclusive with TalkingBubble: a character with an
-            // active spatial-chat conversation (same source the
-            // TalkingBubble render pass below uses) shows TalkingBubble
-            // INSTEAD of StatusLabel — skip rendering the pill for it here.
-            const hasActiveBubble = talkingCharacterIds?.includes(layer.id) ?? false;
-            if (hasActiveBubble) return null;
-            return <StatusLabel key={`status-${layer.id}`} layer={layer} status={status} isSelf={isSelf} />;
-          })}
-      {talkingCharacterIds?.map((id) => {
-        const layer = resolved.find((l) => l.id === id);
-        if (!layer) return null;
-        return <TalkingBubble key={id} layer={layer} text={talkingTextById?.[id]} />;
-      })}
+            if (status) {
+              return (
+                <StatusLabel
+                  key={`overhead-${layer.id}`}
+                  layer={layer}
+                  status={status}
+                  isSelf={isSelf}
+                />
+              );
+            }
+          }
+          return null;
+        })}
       <OfficePhaseOverlay phase={phase} />
     </div>
   );

@@ -7,18 +7,24 @@ import { characterLayers } from "../../data/office-layout";
 import styles from "./TalkingBubble.module.css";
 
 // TalkingBubble no longer uses KeepScale (removed to match StatusLabel's
-// world-space scaling), but GreetingBubble still does and OfficeStage
-// renders inside a TransformWrapper/TransformComponent in production, so
-// mirror that ancestor context here too.
+// world-space scaling), and OfficeStage renders inside a
+// TransformWrapper/TransformComponent in production, so mirror that ancestor
+// context here too.
+//
+// typingCharacterIds (actively-typing, drives the dots variant) and
+// talkingTextById (an unexpired sent message, drives the text variant) are
+// the two props that gate the overhead TalkingBubble render in OfficeStage's
+// per-character resolver — talkingCharacterIds ("conversation is open") no
+// longer does (see OfficeStage.test.tsx's resolver-priority tests for that).
 function renderStage(
-  talkingCharacterIds?: string[],
+  typingCharacterIds?: string[],
   talkingTextById?: Record<string, string>,
 ) {
   return render(
     <TransformWrapper>
       <TransformComponent>
         <OfficeStage
-          talkingCharacterIds={talkingCharacterIds}
+          typingCharacterIds={typingCharacterIds}
           talkingTextById={talkingTextById}
         />
       </TransformComponent>
@@ -26,7 +32,7 @@ function renderStage(
   );
 }
 
-describe("OfficeStage talkingCharacterIds", () => {
+describe("OfficeStage typingCharacterIds / talkingTextById overhead bubble", () => {
   it("renders a talking bubble per known character id", () => {
     const { container } = renderStage(["bon", "alex"]);
     expect(container.querySelectorAll(`.${styles.bubble}`).length).toBe(2);
@@ -50,6 +56,7 @@ describe("OfficeStage talkingCharacterIds", () => {
 
   it("renders text bubble instead of dots when talkingTextById has an entry", () => {
     const { container, getByText } = renderStage(["bon", "alex"], { bon: "Hello there!" });
+    // bon has sent-text (higher priority than typing) -> text pill, not dots.
     expect(container.querySelectorAll(`.${styles.bubble}`).length).toBe(1);
     expect(container.querySelectorAll(`.${styles.bubbleText}`).length).toBe(1);
     expect(getByText("Hello there!")).toBeTruthy();

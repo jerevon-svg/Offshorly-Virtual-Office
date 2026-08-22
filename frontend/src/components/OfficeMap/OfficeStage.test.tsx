@@ -574,12 +574,18 @@ describe("OfficeStage live-3D tier/budget gating (no ?live3d= override)", () => 
   });
 });
 
-describe("StatusLabel / TalkingBubble mutual exclusivity", () => {
+describe("overhead per-character resolver: StatusLabel / TalkingBubble mutual exclusivity", () => {
+  // talkingCharacterIds ("conversation is open") deliberately never appears
+  // in these opts — it no longer gates the overhead bubble render (see
+  // typingCharacterIds/talkingTextById/greeting props below, which do).
   function renderWithPresence(opts: {
     selfCharacterId?: string;
     statusByLayerId?: Record<string, import("../../services/presence/status").OfficeStatus>;
-    talkingCharacterIds?: string[];
+    typingCharacterIds?: string[];
     talkingTextById?: Record<string, string>;
+    greetingCharacterId?: string | null;
+    greetingNonce?: number;
+    greetingText?: string;
   }) {
     return render(
       <TransformWrapper>
@@ -588,15 +594,18 @@ describe("StatusLabel / TalkingBubble mutual exclusivity", () => {
             showStatusLabels
             selfCharacterId={opts.selfCharacterId}
             statusByLayerId={opts.statusByLayerId}
-            talkingCharacterIds={opts.talkingCharacterIds}
+            typingCharacterIds={opts.typingCharacterIds}
             talkingTextById={opts.talkingTextById}
+            greetingCharacterId={opts.greetingCharacterId}
+            greetingNonce={opts.greetingNonce}
+            greetingText={opts.greetingText}
           />
         </TransformComponent>
       </TransformWrapper>,
     );
   }
 
-  it("renders StatusLabel (not TalkingBubble) for a character with no active bubble", () => {
+  it("(a) only status set -> StatusLabel renders", () => {
     const { container, getByText } = renderWithPresence({
       selfCharacterId: "bon",
       statusByLayerId: { alex: "AVAILABLE" },
@@ -606,17 +615,18 @@ describe("StatusLabel / TalkingBubble mutual exclusivity", () => {
     expect(container.querySelectorAll(`.${talkingBubbleStyles.bubbleText}`).length).toBe(0);
   });
 
-  it("renders TalkingBubble (not StatusLabel) for a character with an active bubble, and leaves other characters' StatusLabel untouched", () => {
+  it("(b) typingCharacterIds includes the id -> dots render, no label", () => {
     const { container, queryByText, getByText } = renderWithPresence({
       selfCharacterId: "bon",
       statusByLayerId: { alex: "IN_CONVERSATION", micah: "AVAILABLE" },
-      talkingCharacterIds: ["alex"],
+      typingCharacterIds: ["alex"],
     });
-    // alex has an active bubble: its StatusLabel pill text must not render.
+    // alex is typing: no StatusLabel pill text for it.
     expect(queryByText(/Alex ·/)).toBeNull();
-    // ...and its TalkingBubble (dots variant, no talkingTextById entry) does.
+    // ...dots-variant TalkingBubble renders instead.
     expect(container.querySelectorAll(`.${talkingBubbleStyles.bubble}`).length).toBe(1);
-    // micah has no active bubble: its StatusLabel still renders normally.
+    expect(container.querySelectorAll(`.${talkingBubbleStyles.bubbleText}`).length).toBe(0);
+    // micah is untouched, still shows its normal StatusLabel.
     expect(getByText(/^Micah$/)).toBeTruthy();
     const micahPill = [...container.querySelectorAll(`.${statusLabelStyles.pill}`)].find((el) =>
       el.textContent?.includes("Micah"),
@@ -624,16 +634,52 @@ describe("StatusLabel / TalkingBubble mutual exclusivity", () => {
     expect(micahPill).toBeTruthy();
   });
 
-  it("renders TalkingBubble's text variant (not StatusLabel) when talkingTextById has an entry for the active character", () => {
+  it("(c) talkingTextById[id] present -> text pill renders, no dots/no label", () => {
     const { container, queryByText, getByText } = renderWithPresence({
       selfCharacterId: "bon",
       statusByLayerId: { alex: "IN_CONVERSATION" },
-      talkingCharacterIds: ["alex"],
       talkingTextById: { alex: "Hey, got a minute to look at this?" },
     });
     expect(queryByText(/Alex ·/)).toBeNull();
     expect(getByText("Hey, got a minute to look at this?")).toBeTruthy();
     expect(container.querySelectorAll(`.${talkingBubbleStyles.bubbleText}`).length).toBe(1);
     expect(container.querySelectorAll(`.${talkingBubbleStyles.bubble}`).length).toBe(0);
+  });
+
+  it("(d) greeting active for an id -> text pill renders (greeting text), no label", () => {
+    const { container, queryByText, getByText } = renderWithPresence({
+      selfCharacterId: "bon",
+      statusByLayerId: { alex: "AVAILABLE" },
+      greetingCharacterId: "alex",
+      greetingNonce: 1,
+      greetingText: "Hi there, I'm Alex!",
+    });
+    expect(queryByText(/^Alex$/)).toBeNull();
+    expect(getByText("Hi there, I'm Alex!")).toBeTruthy();
+    expect(container.querySelectorAll(`.${talkingBubbleStyles.bubbleText}`).length).toBe(1);
+  });
+
+  it("(e) priority: greeting wins over sent-text for the same id", () => {
+    const { queryByText, getByText } = renderWithPresence({
+      selfCharacterId: "bon",
+      greetingCharacterId: "alex",
+      greetingNonce: 1,
+      greetingText: "Hi there, I'm Alex!",
+      talkingTextById: { alex: "some sent text" },
+    });
+    expect(getByText("Hi there, I'm Alex!")).toBeTruthy();
+    expect(queryByText("some sent text")).toBeNull();
+  });
+
+  it("(f) revert case: an id with neither typing, sent-text, nor greeting -> StatusLabel renders", () => {
+    const { getByText } = renderWithPresence({
+      selfCharacterId: "bon",
+      statusByLayerId: { alex: "AVAILABLE" },
+      // Simulates a sent-text bubble having expired and no typing/greeting
+      // active — must revert to the status label, not stay stuck on dots.
+      typingCharacterIds: [],
+      talkingTextById: {},
+    });
+    expect(getByText(/^Alex$/)).toBeTruthy();
   });
 });

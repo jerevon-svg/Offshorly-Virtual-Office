@@ -38,7 +38,7 @@ import { MessageNotificationBadge } from "../Chat/MessageNotificationBadge";
 import { isRealZohoMode } from "../../services/zoho";
 import { ErrorBoundary } from "../ErrorBoundary";
 import { OfficeStage } from "./OfficeStage";
-import { buildCharacterIsResponderById } from "./responderMap";
+import { buildCharacterIsResponderById, remapSelfKey } from "./responderMap";
 import { CharacterSearch } from "./CharacterSearch";
 import { CharacterActionMenu } from "./CharacterActionMenu";
 import { RoomSidebar } from "./RoomSidebar";
@@ -432,6 +432,26 @@ export function OfficeMap() {
   const characterIsResponderById = useMemo(
     () => buildCharacterIsResponderById(talkingTextById, selfChatId, playerLayerId),
     [talkingTextById, selfChatId, playerLayerId],
+  );
+
+  // Same senderId/email -> layer-id remap as characterIsResponderById above,
+  // but for the actual text values (not a derived boolean) — this is what
+  // OfficeStage's overhead-bubble resolver reads (talkingTextById prop,
+  // layer-id-keyed), fixing the bug where self's own sent-text bubble never
+  // showed (the old direct pass-through was keyed on selfChatId/email, but
+  // the render lookup used playerLayerId, e.g. "bon").
+  const talkingTextByLayerId = useMemo(
+    () => remapSelfKey(talkingTextById, selfChatId, playerLayerId),
+    [talkingTextById, selfChatId, playerLayerId],
+  );
+
+  // Actively-typing signal (real keystroke activity, see
+  // ConversationView.tsx's onTypingChange) — self-only for now; peer typing
+  // ids arrive in a follow-up task over the backend.
+  const [selfTyping, setSelfTyping] = useState(false);
+  const typingCharacterIds = useMemo(
+    () => (selfTyping ? [playerLayerId] : []),
+    [selfTyping, playerLayerId],
   );
 
   // Door art layer ids currently slid open (see officeDoors.ts). Rooms
@@ -2166,7 +2186,8 @@ export function OfficeMap() {
             greetingNonce={greeting?.nonce}
             greetingText={greeting?.text}
             talkingCharacterIds={talkingIds}
-            talkingTextById={talkingTextById}
+            talkingTextById={talkingTextByLayerId}
+            typingCharacterIds={typingCharacterIds}
             characterIsResponderById={characterIsResponderById}
             openDoorLayerIds={openDoorLayerIds}
             emptySeats={emptySeats}
@@ -2447,9 +2468,11 @@ export function OfficeMap() {
           peerChatId={resolvePeerChatId(openChat)}
           selfAvatarUrl={playerSpriteSrc}
           onIncomingMessage={handleTalkingMessage}
+          onTypingChange={setSelfTyping}
           onClose={() => {
             setOpenChat(null);
             setTalkingIds([]);
+            setSelfTyping(false);
             for (const timerId of Object.values(talkingTimersRef.current)) {
               window.clearTimeout(timerId);
             }

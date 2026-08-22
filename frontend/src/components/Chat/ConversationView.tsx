@@ -21,7 +21,17 @@ type ConversationViewProps = {
   selfAvatarUrl?: string;
   onClose: () => void;
   onIncomingMessage?: (msg: ChatMessage) => void;
+  // Fired ONLY from real composer keystroke activity (onChange) and the
+  // send/unmount paths below — never from a focus/mount/open effect. true on
+  // any non-empty content change (re-arming a 2.5s inactivity timer that
+  // fires false), false immediately if the content becomes empty, and false
+  // immediately (clearing any pending timer) on send.
+  onTypingChange?: (isTyping: boolean) => void;
 };
+
+// Inactivity window after the last keystroke before we consider the user to
+// have stopped typing.
+const TYPING_IDLE_MS = 2500;
 
 // "Today" / "Yesterday" / a locale date string, compared against calendar
 // days (not a rolling 24h window) so a message sent at 11:59pm yesterday
@@ -123,6 +133,7 @@ export function ConversationView({
   selfAvatarUrl,
   onClose,
   onIncomingMessage,
+  onTypingChange,
 }: ConversationViewProps) {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -142,6 +153,16 @@ export function ConversationView({
     chatService.getConnectionState?.() ?? "connected",
   );
   const listEndRef = useRef<HTMLDivElement | null>(null);
+  const typingTimerRef = useRef<number | undefined>(undefined);
+
+  // Clear any pending typing-inactivity timer on unmount — same rationale as
+  // OfficeMap.tsx's talkingTimersRef cleanup, prevents a stray timer firing
+  // onTypingChange(false) after this component is gone.
+  useEffect(() => {
+    return () => {
+      window.clearTimeout(typingTimerRef.current);
+    };
+  }, []);
 
   const resolvedPeerId = peerChatId !== undefined ? peerChatId : peer.id;
   // Real backend requires a stable email to route on — a sprite/layer id
@@ -256,8 +277,23 @@ export function ConversationView({
     chatService.markDelivered?.({ conversationId, upToSentAt: latest.sentAt });
   }, [conversationId, messages]);
 
+  function handleDraftChange(text: string) {
+    setDraft(text);
+    window.clearTimeout(typingTimerRef.current);
+    if (text.length === 0) {
+      onTypingChange?.(false);
+      return;
+    }
+    onTypingChange?.(true);
+    typingTimerRef.current = window.setTimeout(() => {
+      onTypingChange?.(false);
+    }, TYPING_IDLE_MS);
+  }
+
   function sendText(text: string) {
     if (!conversationId) return;
+    window.clearTimeout(typingTimerRef.current);
+    onTypingChange?.(false);
     setSendError(null);
     setFailedText(null);
     // Own message arrives via the onMessage subscription above (sendMessage
@@ -432,7 +468,7 @@ export function ConversationView({
           className={styles.textarea}
           value={draft}
           placeholder={isNotConnected ? "Connecting…" : "Type a message…"}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => handleDraftChange(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();

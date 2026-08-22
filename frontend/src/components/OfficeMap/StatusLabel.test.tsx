@@ -5,8 +5,8 @@ import { OfficeStage } from "./OfficeStage";
 import { STATUS_META, type OfficeStatus } from "../../services/presence/status";
 import styles from "./StatusLabel.module.css";
 
-// StatusLabel no longer uses KeepScale (it scales with the scene, unlike
-// TalkingBubble/GreetingBubble), but OfficeStage still renders inside a
+// StatusLabel doesn't use KeepScale (it scales with the scene, same as
+// TalkingBubble), but OfficeStage still renders inside a
 // TransformWrapper/TransformComponent in production, so mirror that here too
 // — see TalkingBubble.test.tsx for the same rendering pattern.
 function renderStage(opts: {
@@ -14,7 +14,7 @@ function renderStage(opts: {
   selfStatus?: OfficeStatus;
   statusByLayerId?: Record<string, OfficeStatus>;
   showStatusLabels?: boolean;
-  talkingCharacterIds?: string[];
+  typingCharacterIds?: string[];
   talkingTextById?: Record<string, string>;
 }) {
   return render(
@@ -25,7 +25,7 @@ function renderStage(opts: {
           selfStatus={opts.selfStatus}
           statusByLayerId={opts.statusByLayerId}
           showStatusLabels={opts.showStatusLabels}
-          talkingCharacterIds={opts.talkingCharacterIds}
+          typingCharacterIds={opts.typingCharacterIds}
           talkingTextById={opts.talkingTextById}
         />
       </TransformComponent>
@@ -100,15 +100,15 @@ describe("StatusLabel via OfficeStage", () => {
     expect(container.querySelectorAll(`.${styles.pill}`).length).toBe(1);
   });
 
-  it("does not render a status pill for a character with an active talking bubble (mutual exclusivity)", () => {
+  it("does not render a status pill for a character actively typing (mutual exclusivity)", () => {
     const { container, queryByText } = renderStage({
       showStatusLabels: true,
       selfCharacterId: "bon",
       selfStatus: "AVAILABLE",
       statusByLayerId: { alex: "IN_CONVERSATION" },
-      talkingCharacterIds: ["alex"],
+      typingCharacterIds: ["alex"],
     });
-    // Alex has an active bubble, so TalkingBubble renders instead of the
+    // Alex is actively typing, so TalkingBubble renders instead of the
     // StatusLabel pill — no "Alex" pill text should be present.
     expect(queryByText(/Alex · In Conversation/)).toBeNull();
     // Self ("bon") has no active bubble, so its pill still renders normally.

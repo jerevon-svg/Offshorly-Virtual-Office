@@ -25,3 +25,24 @@ export function buildCharacterIsResponderById(
   }
   return map;
 }
+
+// Generic version of the same self-id remap buildCharacterIsResponderById
+// does above (same key comparison, same "rekey selfChatId to playerLayerId,
+// pass everything else through unchanged" behavior) — but generic over the
+// map's VALUE type, so callers with non-boolean values (e.g.
+// OfficeMap.tsx's talkingTextById, string-valued) can reuse it instead of
+// re-deriving the remap themselves. Kept alongside (not replacing)
+// buildCharacterIsResponderById since existing callers already depend on
+// its exact boolean-map shape.
+export function remapSelfKey<T>(
+  map: Record<string, T>,
+  selfChatId: string,
+  playerLayerId: string,
+): Record<string, T> {
+  const remapped: Record<string, T> = {};
+  for (const [key, value] of Object.entries(map)) {
+    const layerId = key === selfChatId ? playerLayerId : key;
+    remapped[layerId] = value;
+  }
+  return remapped;
+}
