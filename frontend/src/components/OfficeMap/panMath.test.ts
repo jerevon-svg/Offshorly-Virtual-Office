@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FRAME_HEIGHT, FRAME_WIDTH } from "../../data/office-layout";
-import { formatCharacterName } from "../../data/office-layout";
+import { formatCharacterName, formatShortName } from "../../data/office-layout";
 import {
   computeCenterTransform,
   computeRoomFocusTransform,
@@ -164,5 +164,29 @@ describe("formatCharacterName", () => {
 
   it("prefers an explicit name over the id", () => {
     expect(formatCharacterName({ id: "x", name: "Zed" })).toBe("Zed");
+  });
+});
+
+describe("formatShortName", () => {
+  it("keeps only the first name from a two-word name", () => {
+    expect(formatShortName({ id: "aina", name: "Aina Perez" })).toBe("Aina");
+  });
+
+  it("keeps only the first name from a three-word name", () => {
+    expect(formatShortName({ id: "rhendel", name: "Rhendel Khey Cayaco" })).toBe("Rhendel");
+  });
+
+  it("leaves a single-word nickname unchanged", () => {
+    expect(formatShortName({ id: "lui", name: "Lui" })).toBe("Lui");
+  });
+
+  it("falls back to the id-derived, title-cased name when no name is set", () => {
+    expect(formatShortName({ id: "alex", name: undefined })).toBe("Alex");
+  });
+
+  it("never returns blank for an empty/whitespace-only name", () => {
+    expect(formatShortName({ id: "alex", name: "   " })).toBe(
+      formatCharacterName({ id: "alex", name: "   " }),
+    );
   });
 });

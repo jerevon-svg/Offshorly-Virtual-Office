@@ -1,4 +1,4 @@
-import { formatCharacterName } from "../../data/office-layout";
+import { formatShortName } from "../../data/office-layout";
 import type { AssetLayer } from "../../types/office";
 import { ACTIVE_DETAIL_STATUSES, STATUS_META, type OfficeStatus } from "../../services/presence/status";
 import { greetingAnchor } from "./panMath";
@@ -28,7 +28,7 @@ type StatusLabelProps = {
 export function StatusLabel({ layer, status, isSelf }: StatusLabelProps) {
   const { leftPct, topPct } = greetingAnchor(layer);
   const meta = STATUS_META[status];
-  const name = isSelf ? "You" : formatCharacterName(layer);
+  const name = isSelf ? "You" : formatShortName(layer);
   const showDetail = ACTIVE_DETAIL_STATUSES.has(status);
 
   return (
