@@ -730,18 +730,10 @@ export function OfficeStage({
             if (hasActiveBubble) return null;
             return <StatusLabel key={`status-${layer.id}`} layer={layer} status={status} isSelf={isSelf} />;
           })}
-      {talkingCharacterIds?.map((id, index) => {
+      {talkingCharacterIds?.map((id) => {
         const layer = resolved.find((l) => l.id === id);
         if (!layer) return null;
-        // Participants standing close together (e.g. bon walked up next to
-        // the peer for chat) can land almost-identical bubble anchors —
-        // nudge each participant's bubble to its own side so overlapping
-        // text stays readable instead of garbling together.
-        const sideOffset =
-          talkingCharacterIds.length > 1 ? (index - (talkingCharacterIds.length - 1) / 2) * 130 : 0;
-        return (
-          <TalkingBubble key={id} layer={layer} text={talkingTextById?.[id]} sideOffset={sideOffset} />
-        );
+        return <TalkingBubble key={id} layer={layer} text={talkingTextById?.[id]} />;
       })}
       <OfficePhaseOverlay phase={phase} />
     </div>

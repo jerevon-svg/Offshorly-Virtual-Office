@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { render } from "@testing-library/react";
 import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch";
 import { OfficeStage } from "./OfficeStage";
+import { greetingAnchor } from "./panMath";
+import { characterLayers } from "../../data/office-layout";
 import styles from "./TalkingBubble.module.css";
 
 // TalkingBubble no longer uses KeepScale (removed to match StatusLabel's
@@ -57,5 +59,24 @@ describe("OfficeStage talkingCharacterIds", () => {
     const { container } = renderStage(["bon"], undefined);
     expect(container.querySelectorAll(`.${styles.bubble}`).length).toBe(1);
     expect(container.querySelectorAll(`.${styles.bubbleText}`).length).toBe(0);
+  });
+
+  it("does not apply an inline style/transform override to any bubble, even with 2+ participants (relies purely on CSS class offset, same as StatusLabel)", () => {
+    const { container } = renderStage(["bon", "alex"]);
+    const bubbles = [...container.querySelectorAll(`.${styles.bubble}`)];
+    expect(bubbles.length).toBe(2);
+    for (const bubble of bubbles) {
+      expect(bubble.getAttribute("style")).toBeNull();
+      expect((bubble as HTMLElement).style.transform).toBe("");
+    }
+  });
+
+  it("anchors dead-center over the head via greetingAnchor, exactly like StatusLabel (no lateral sideOffset)", () => {
+    const { container } = renderStage(["bon"]);
+    const bonLayer = characterLayers.find((l) => l.id === "bon")!;
+    const expected = greetingAnchor(bonLayer);
+    const anchor = container.querySelector(`.${styles.anchor}`) as HTMLElement;
+    expect(anchor.style.left).toBe(`${expected.leftPct}%`);
+    expect(anchor.style.top).toBe(`${expected.topPct}%`);
   });
 });
