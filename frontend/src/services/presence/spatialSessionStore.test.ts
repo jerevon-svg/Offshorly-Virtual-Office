@@ -1,7 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// Fake Socket.IO client — same shape as RealChatService.test.ts's FakeSocket, trimmed to
+// Fake Socket.IO client — same shape as offlineLineupClient.test.ts's FakeSocket, trimmed to
 // what this client actually uses (on/emit/disconnect/trigger).
 class FakeSocket {
   handlers = new Map<string, Array<(...args: unknown[]) => void>>();
@@ -48,67 +48,92 @@ beforeEach(() => {
   (import.meta.env as Record<string, string>).VITE_CHAT_SOCKET_URL = "http://localhost:4800";
 });
 
-describe("offlineLineupClient", () => {
-  it("emits go_offline / come_online on the connection it opens", async () => {
-    const { emitGoOffline, emitComeOnline } = await import("./offlineLineupClient");
+describe("spatialSessionStore", () => {
+  it("emits spatial_session_start with {sessionId} on the connection it opens", async () => {
+    const { emitSpatialSessionStart } = await import("./spatialSessionStore");
 
-    emitGoOffline();
+    emitSpatialSessionStart("conv-123");
+
     expect(lastFakeSocket).not.toBeNull();
-    expect(lastFakeSocket!.emitted).toEqual([{ event: "go_offline", payload: undefined }]);
-
-    emitComeOnline();
     expect(lastFakeSocket!.emitted).toEqual([
-      { event: "go_offline", payload: undefined },
-      { event: "come_online", payload: undefined },
+      { event: "spatial_session_start", payload: { sessionId: "conv-123" } },
     ]);
   });
 
+  it("emits spatial_session_leave with no payload", async () => {
+    const { emitSpatialSessionStart, emitSpatialSessionLeave } = await import(
+      "./spatialSessionStore"
+    );
+
+    emitSpatialSessionStart("conv-123"); // opens the connection
+    emitSpatialSessionLeave();
+
+    expect(lastFakeSocket!.emitted).toEqual([
+      { event: "spatial_session_start", payload: { sessionId: "conv-123" } },
+      { event: "spatial_session_leave", payload: undefined },
+    ]);
+  });
+
+  it("guards emitSpatialSessionStart against an empty/falsy sessionId", async () => {
+    const { emitSpatialSessionStart } = await import("./spatialSessionStore");
+
+    emitSpatialSessionStart("");
+
+    expect(lastFakeSocket).toBeNull();
+  });
+
   it("reuses the same connection across multiple emits", async () => {
-    const { emitGoOffline, emitComeOnline } = await import("./offlineLineupClient");
+    const { emitSpatialSessionStart, emitSpatialSessionLeave } = await import(
+      "./spatialSessionStore"
+    );
     const socketIoModule = await import("socket.io-client");
     ioSpy = socketIoModule.io as unknown as ReturnType<typeof vi.fn>;
     const callsBefore = ioSpy.mock.calls.length;
 
-    emitGoOffline();
-    emitComeOnline();
+    emitSpatialSessionStart("conv-123");
+    emitSpatialSessionLeave();
 
     expect(ioSpy.mock.calls.length - callsBefore).toBe(1);
   });
 
-  it("updates the subscribable snapshot when an offline_lineup event arrives", async () => {
-    const { emitGoOffline, getOfflineLineupSnapshot } = await import("./offlineLineupClient");
+  it("updates the subscribable snapshot when a spatial_sessions event arrives", async () => {
+    const { emitSpatialSessionStart, getSpatialSessionsSnapshot } = await import(
+      "./spatialSessionStore"
+    );
 
-    emitGoOffline(); // ensures the connection is opened
-    expect(getOfflineLineupSnapshot()).toEqual([]);
+    emitSpatialSessionStart("conv-123"); // ensures the connection is opened
+    expect(getSpatialSessionsSnapshot()).toEqual([]);
 
-    lastFakeSocket!.trigger("offline_lineup", {
-      entries: [{ email: "a@example.com", slot: 0 }],
+    lastFakeSocket!.trigger("spatial_sessions", {
+      sessions: [{ sessionId: "conv-123", members: ["a@example.com", "b@example.com"] }],
     });
 
-    expect(getOfflineLineupSnapshot()).toEqual([{ email: "a@example.com", slot: 0 }]);
+    expect(getSpatialSessionsSnapshot()).toEqual([
+      { sessionId: "conv-123", members: ["a@example.com", "b@example.com"] },
+    ]);
   });
 
-  it("subscribes via useOfflineLineup and re-renders when a snapshot update arrives", async () => {
-    const { useOfflineLineup } = await import("./offlineLineupClient");
+  it("subscribes via useSpatialSessions and re-renders when a snapshot update arrives", async () => {
+    const { useSpatialSessions } = await import("./spatialSessionStore");
 
-    const { result } = renderHook(() => useOfflineLineup());
+    const { result } = renderHook(() => useSpatialSessions());
     expect(result.current).toEqual([]);
     expect(lastFakeSocket).not.toBeNull(); // mounting the hook opens the connection
 
     act(() => {
-      lastFakeSocket!.trigger("offline_lineup", {
-        entries: [{ email: "b@example.com", slot: 2 }],
+      lastFakeSocket!.trigger("spatial_sessions", {
+        sessions: [{ sessionId: "conv-456", members: ["c@example.com"] }],
       });
     });
 
-    expect(result.current).toEqual([{ email: "b@example.com", slot: 2 }]);
+    expect(result.current).toEqual([{ sessionId: "conv-456", members: ["c@example.com"] }]);
   });
 
   it("setDevIdentity causes the next connection to authenticate with x-dev-email instead of token", async () => {
-    const { emitGoOffline, setDevIdentity } = await import("./offlineLineupClient");
+    const { emitSpatialSessionStart, setDevIdentity } = await import("./spatialSessionStore");
 
     setDevIdentity("dev@example.com");
-    emitGoOffline();
+    emitSpatialSessionStart("conv-123");
 
     expect(lastFakeSocket).not.toBeNull();
     const socketIoModule = await import("socket.io-client");
@@ -118,12 +143,12 @@ describe("offlineLineupClient", () => {
   });
 
   it("setDevIdentity tears down a live socket and reconnects with the new identity", async () => {
-    const { emitGoOffline, setDevIdentity } = await import("./offlineLineupClient");
+    const { emitSpatialSessionStart, setDevIdentity } = await import("./spatialSessionStore");
     const socketIoModule = await import("socket.io-client");
     const ioMock = socketIoModule.io as unknown as ReturnType<typeof vi.fn>;
 
     setDevIdentity("first@example.com");
-    emitGoOffline();
+    emitSpatialSessionStart("conv-123");
     const firstSocket = lastFakeSocket;
     const disconnectSpy = vi.spyOn(firstSocket!, "disconnect");
     const callsBefore = ioMock.mock.calls.length;
@@ -131,7 +156,7 @@ describe("offlineLineupClient", () => {
     setDevIdentity("second@example.com");
     expect(disconnectSpy).toHaveBeenCalledTimes(1);
 
-    emitGoOffline();
+    emitSpatialSessionStart("conv-456");
     expect(ioMock.mock.calls.length - callsBefore).toBe(1);
     const lastCallOptions = ioMock.mock.calls[ioMock.mock.calls.length - 1][1];
     expect(lastCallOptions.auth).toEqual({ "x-dev-email": "second@example.com" });
@@ -142,19 +167,19 @@ describe("offlineLineupClient", () => {
   // no test after this one can rely on the default fake-token mock.
   it("does not open a connection when there is no auth token", async () => {
     vi.doMock("../api/client", () => ({ getAuthToken: vi.fn(() => null) }));
-    const { emitGoOffline } = await import("./offlineLineupClient");
+    const { emitSpatialSessionStart } = await import("./spatialSessionStore");
 
-    emitGoOffline();
+    emitSpatialSessionStart("conv-123");
 
     expect(lastFakeSocket).toBeNull();
   });
 
   it("setDevIdentity allows connecting even with no real auth token present (doomed-from-the-start guard bypassed)", async () => {
     vi.doMock("../api/client", () => ({ getAuthToken: vi.fn(() => null) }));
-    const { emitGoOffline, setDevIdentity } = await import("./offlineLineupClient");
+    const { emitSpatialSessionStart, setDevIdentity } = await import("./spatialSessionStore");
 
     setDevIdentity("dev@example.com");
-    emitGoOffline();
+    emitSpatialSessionStart("conv-123");
 
     expect(lastFakeSocket).not.toBeNull();
   });

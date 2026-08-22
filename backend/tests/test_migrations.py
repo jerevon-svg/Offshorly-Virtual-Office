@@ -31,3 +31,4 @@ async def test_alembic_upgrade_head_then_downgrade_one_round_trips_cleanly(tmp_p
 
     command.upgrade(cfg, "head")
     command.downgrade(cfg, "-1")
+    command.upgrade(cfg, "head")

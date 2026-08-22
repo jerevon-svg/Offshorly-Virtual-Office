@@ -16,21 +16,19 @@ def to_iso_z(dt: datetime) -> str:
     return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def serialize_message_dict(
-    message, delivered_at: datetime | None = None, read_at: datetime | None = None
-) -> dict:
+def serialize_message_dict(message, delivered_to: list[str], read_by: list[str]) -> dict:
     """Plain-dict serializer used by the socket layer (app/realtime/socket.py), which emits raw
-    JSON-able payloads rather than FastAPI response models. `deliveredAt`/`readAt` are derived
-    watermark comparisons (see app/repositories/chat.py's compute_message_receipts) — null means
-    not yet delivered/read, never a status enum string."""
+    JSON-able payloads rather than FastAPI response models. `deliveredTo`/`readBy` are per-reader
+    email lists derived from watermark comparisons (see app/repositories/chat.py's
+    compute_message_receipts) — an empty list means nobody yet, never null."""
     return {
         "id": message.id,
         "conversationId": message.conversation_id,
         "senderId": message.sender_email,
         "text": message.text,
         "sentAt": to_iso_z(message.sent_at),
-        "deliveredAt": to_iso_z(delivered_at) if delivered_at is not None else None,
-        "readAt": to_iso_z(read_at) if read_at is not None else None,
+        "deliveredTo": list(delivered_to),
+        "readBy": list(read_by),
     }
 
 
@@ -42,22 +40,14 @@ class ChatMessageOut(BaseModel):
     sender_id: str = Field(alias="senderId")
     text: str
     sent_at: datetime = Field(alias="sentAt")
-    # Derived watermark timestamps, not stored per-message — see
-    # app/repositories/chat.py's compute_message_receipts. Null = not yet delivered/read.
-    delivered_at: datetime | None = Field(default=None, alias="deliveredAt")
-    read_at: datetime | None = Field(default=None, alias="readAt")
+    # Per-reader email lists, not stored per-message — see
+    # app/repositories/chat.py's compute_message_receipts. Empty list = nobody yet, never null.
+    delivered_to: list[str] = Field(default_factory=list, alias="deliveredTo")
+    read_by: list[str] = Field(default_factory=list, alias="readBy")
 
     @field_serializer("sent_at")
     def _serialize_sent_at(self, dt: datetime) -> str:
         return to_iso_z(dt)
-
-    @field_serializer("delivered_at")
-    def _serialize_delivered_at(self, dt: datetime | None) -> str | None:
-        return to_iso_z(dt) if dt is not None else None
-
-    @field_serializer("read_at")
-    def _serialize_read_at(self, dt: datetime | None) -> str | None:
-        return to_iso_z(dt) if dt is not None else None
 
 
 class ConversationOut(BaseModel):
@@ -70,6 +60,11 @@ class ConversationOut(BaseModel):
     # response_model_exclude_none) on POST /conversations, matching
     # backend/src/repo/conversations.ts's Conversation.unreadCount semantics.
     unread_count: int | None = Field(default=None, alias="unreadCount")
+    # "dm" | "group" — see app/models/conversation.py's Conversation.type. Defaults to "dm" for
+    # any pre-Stage-2 caller that hasn't started passing it explicitly.
+    type: str = Field(default="dm")
+    # Group display name; null for DMs (peer identity derives from participants instead).
+    title: str | None = Field(default=None)
 
     @field_serializer("last_message_at")
     def _serialize_last_message_at(self, dt: datetime) -> str:

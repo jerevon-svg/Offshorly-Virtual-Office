@@ -1,0 +1,22 @@
+.container {
+  position: fixed; top: 16px; right: 16px; z-index: 30;
+  display: flex; flex-direction: column; gap: 8px;
+  font-family: system-ui, sans-serif;
+}
+.prompt {
+  background: rgba(26,26,26,0.95); border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px; padding: 10px 12px; min-width: 240px;
+  color: #f0f0f0; display: flex; flex-direction: column; gap: 8px;
+  backdrop-filter: blur(4px);
+}
+.text { font-size: 13px; }
+.actions { display: flex; gap: 8px; justify-content: flex-end; }
+.allowButton, .declineButton {
+  all: unset; cursor: pointer; font-size: 13px; padding: 6px 12px;
+  border-radius: 6px; text-align: center;
+}
+.allowButton { background: rgba(76,175,80,0.85); color: #fff; }
+.allowButton:hover { background: rgba(76,175,80,1); }
+.declineButton { background: rgba(255,255,255,0.1); color: #f0f0f0; }
+.declineButton:hover { background: rgba(255,255,255,0.18); }
+.allowButton:disabled, .declineButton:disabled { opacity: 0.5; cursor: default; }

@@ -33,8 +33,10 @@ import { DOOR_ANIM_MS, DOOR_LAYERS_BY_ROOM } from "../../data/officeDoors";
 import type { AssetLayer } from "../../types/office";
 import { chatMode, chatService } from "../../services/chat";
 import type { ChatMessage } from "../../services/chat";
+import type { Conversation } from "../../services/chat/types";
 import { useUnreadTotal } from "../../services/chat/useUnreadTotal";
 import { MessageNotificationBadge } from "../Chat/MessageNotificationBadge";
+import { GroupConversationView } from "../Chat/GroupConversationView";
 import { isRealZohoMode } from "../../services/zoho";
 import { ErrorBoundary } from "../ErrorBoundary";
 import { OfficeStage } from "./OfficeStage";
@@ -53,6 +55,13 @@ import {
 import { useCharacterWalk, directionBetween } from "./useCharacterWalk";
 import type { WalkDirection } from "../../data/bonWalkFrames";
 import { SavedAvatarWalker, type SavedAvatarWalkApi, type SavedAvatarWalkState } from "./SavedAvatarWalker";
+import { PeerWalker, type PeerWalkerRenderState } from "./PeerWalker";
+import {
+  emitAndWalkTo,
+  usePeerWalks,
+  type PeerWalkState,
+} from "../../services/presence/spatialWalkClient";
+import { EMAIL_TO_AVATAR_ID } from "../../data/avatarRegistry";
 import {
   ALEX_SPRITE_SET,
   LUI_SPRITE_SET,
@@ -86,6 +95,22 @@ import { StatusOvertimePrompt } from "./StatusOvertimePrompt";
 import { TimeSummaryPanel } from "./checkout/TimeSummaryPanel";
 import { TimeLogForm } from "./checkout/TimeLogForm";
 import { ConversationView } from "../Chat/ConversationView";
+import {
+  emitSpatialSessionLeave,
+  emitSpatialSessionStart,
+  useSpatialSessions,
+  type SpatialSessionEntry,
+} from "../../services/presence/spatialSessionStore";
+import { createJoinRequest, onRequestResolved } from "../../services/chat/requestsClient";
+import { JoinRequestPrompt } from "./JoinRequestPrompt";
+import { assignClusterSlots } from "../../data/clusterSlots";
+import {
+  classifyUpgrade,
+  computeClusterAnchor,
+  incumbentCentersForAnchor,
+  resolveSelfSlotWalk,
+  slotWalkSignature,
+} from "./clusterFormation";
 import { getCurrentUserId, useCurrentUserAvatarId } from "../../data/currentUser";
 import { useCurrentUser } from "../../auth/currentUserStore";
 import { useOfficeRoster } from "../../services/office/useOfficeRoster";
@@ -281,10 +306,65 @@ export function OfficeMap() {
   // yet) or in mock mode, where the sprite id is harmless.
   const selfChatId = currentUser?.email?.trim().toLowerCase() || playerLayerId;
 
+  // "Ask to Join + Group Conversation" Stage 4: server-driven spatial clustering, live via
+  // spatial_sessions pushes. sessionId is always a Conversation.id (never a layer id/email/
+  // synthetic value) — see spatialSessionStore.ts's contract doc.
+  const spatialSessions = useSpatialSessions();
+
+  // Self "in conversation" status now comes from the server-broadcast spatial session (real
+  // chat actually open with >=1 other member), replacing the old client-local talkingIds
+  // check. Identified by EMAIL (selfChatId), never playerLayerId — those are different
+  // identifiers (sprite/layer id vs. real chat identity). members.length >= 2 guards against
+  // counting a session where the viewer opened chat but the peer hasn't joined/has left.
+  const inConv = useMemo(
+    () =>
+      !!selfChatId &&
+      spatialSessions.some(
+        (s) => s.members.includes(selfChatId) && s.members.length >= 2,
+      ),
+    [spatialSessions, selfChatId],
+  );
+
+  // Peer "talking" visual state, consolidated onto the same server-driven signal (finalized
+  // decision: peers' talking visual is now spatial_sessions-driven, not client-local). Any
+  // member (by email) of any >=2-member session is included — remapped through playerLayerId
+  // for the self entry, since roster peers' layer ids already equal their lowercased email
+  // (officePeopleToLayers keys AssetLayer.id on person.email) but the viewer's own layer id
+  // (e.g. "bon") is not their email.
+  const talkingCharacterIdsFromSessions = useMemo(() => {
+    const ids = new Set<string>();
+    for (const session of spatialSessions) {
+      if (session.members.length < 2) continue;
+      for (const member of session.members) {
+        ids.add(member === selfChatId ? playerLayerId : member);
+      }
+    }
+    return Array.from(ids);
+  }, [spatialSessions, selfChatId, playerLayerId]);
+
   // Unread-message notification badge (Phase 3, functional placeholder —
   // Bon will restyle it once this is confirmed working). Real-mode-only,
   // same gating precedent as resolvePeerChatId/chatDisabled below.
-  const { total: unreadTotal, unreadConversations } = useUnreadTotal(selfChatId);
+  const {
+    total: unreadTotal,
+    conversations: allConversations,
+    refetch: refetchConversations,
+  } = useUnreadTotal(selfChatId);
+
+  // Shared with JoinRequestPrompt's resolveDisplayName below — a roster
+  // person's real display name when known, else a formatted fallback off
+  // the raw email/id. Extracted here (Stage B1) so the conversation-list
+  // badge and the group panel header can reuse the exact same resolution
+  // instead of duplicating the roster lookup.
+  const resolveDisplayName = useCallback(
+    (email: string) => {
+      const person = roster.people.find((p) => p.email.toLowerCase() === email.toLowerCase());
+      return person
+        ? formatCharacterName({ id: email, name: person.displayName })
+        : formatCharacterName({ id: email, name: undefined });
+    },
+    [roster.people],
+  );
 
   // A person's real email is only known when they're a live roster entry
   // (officePeopleToLayers keys AssetLayer.id on person.email — see
@@ -418,8 +498,80 @@ export function OfficeMap() {
   const charMenuTimerRef = useRef<number | undefined>(undefined);
 
   // Chat feature state — fully separate from the greeting system above.
-  const [talkingIds, setTalkingIds] = useState<string[]>([]);
   const [openChat, setOpenChat] = useState<AssetLayer | null>(null);
+  // The Conversation.id of the currently-open chat panel, if any — set once ConversationView's
+  // conv.id first resolves (see the onConversationOpen callback below). This is also the
+  // spatial-session sessionId for that chat (sessionId === Conversation.id, per the settled
+  // contract). Used to emit spatial_session_leave with the right context on explicit
+  // close/unmount, and to detect a DM->group conversation-id change on an accepted join
+  // request (see the JoinRequestPrompt onResolved handler below).
+  const [openConversationId, setOpenConversationId] = useState<string | null>(null);
+  const openConversationIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    openConversationIdRef.current = openConversationId;
+  }, [openConversationId]);
+
+  // Stage B1: the open GROUP conversation panel, opened by an EXISTING
+  // conversationId via the conversation-list badge — mutually exclusive
+  // with openChat (the DM panel) below. Reuses the exact same
+  // openConversationId/spatial-session bookkeeping as the DM panel (see
+  // GroupConversationView's render block further down).
+  const [openGroupConv, setOpenGroupConv] = useState<{
+    conversationId: string;
+    participantEmails: string[];
+    title: string | null;
+  } | null>(null);
+
+  // Stage B1: routes a conversation-list click to the right existing panel
+  // — a group opens GroupConversationView directly by id; a dm/untyped
+  // conversation reuses the existing openChatWithPeerEmail path (idempotent,
+  // never creates a new DM for an existing one). Defined after
+  // openChatWithPeerEmail further down, so this is a function declaration
+  // reference resolved at call time, not at this point in the file.
+  function onSelectConversation(conv: Conversation) {
+    if (conv.type === "group") {
+      setOpenChat(null);
+      setOpenGroupConv({
+        conversationId: conv.id,
+        participantEmails: conv.participantIds,
+        title: conv.title ?? null,
+      });
+      return;
+    }
+    setOpenGroupConv(null);
+    const peerEmail = conv.participantIds.find((id) => id.toLowerCase() !== selfChatId.toLowerCase());
+    if (peerEmail) openChatWithPeerEmail(peerEmail);
+  }
+  // Chat-panel-required per the finalized spatial-clustering decision: leave on unmount only
+  // if a chat panel was actually open (explicit close already emits its own leave — see
+  // ConversationView's onClose below). Mount-once effect (empty deps) so this only fires on
+  // real component unmount, not on every openConversationId change.
+  useEffect(() => {
+    return () => {
+      if (openConversationIdRef.current) emitSpatialSessionLeave();
+    };
+  }, []);
+
+  // Stage B2's conversation_upgraded live-reaction effect is declared further
+  // down (search "Stage B2: live" below), AFTER approachCharacter/bonPos/
+  // walkTo/resolveMemberCenter are all in scope — its dependency array reads
+  // bonPos, which is a `const` declared later in this same function; putting
+  // the effect here would hit bonPos's temporal dead zone (deps arrays are
+  // evaluated immediately, unlike the effect body itself, which only runs
+  // after the whole render function has finished).
+
+  // Requester-side toast for a declined "ask to join" — onRequestResolved only ever fires for
+  // requests THIS signed-in user created (server routes request_resolved to the requester's
+  // own user room), so no extra filtering by requesterEmail is needed here. Reuses the
+  // existing generic toast mechanism (setToast) rather than inventing a new notification
+  // system, per the finalized "add if simple, skip otherwise" decision.
+  useEffect(() => {
+    return onRequestResolved((req) => {
+      if (req.state !== "declined") return;
+      setToast("Your request to join was declined.");
+      window.setTimeout(() => setToast((current) => (current === "Your request to join was declined." ? null : current)), 2500);
+    });
+  }, []);
   // Latest sent message text per character id, shown in their talking bubble
   // until it expires (falls back to the looping dots otherwise).
   const [talkingTextById, setTalkingTextById] = useState<Record<string, string>>({});
@@ -765,6 +917,112 @@ export function OfficeMap() {
     return map;
   }, [savedAvatarWalkState]);
 
+  // Stage 3 spatial-walk: renders OTHER users' in-flight approach walks,
+  // broadcast by the backend (peer_walk_started/peer_walk_arrived) whenever a
+  // peer's own approachCharacter emits via emitAndWalkTo. One headless
+  // <PeerWalker> per peer (see the peerWalks.map() below) reports live
+  // pos+src up here, merged into characterOverrides/characterSrcOverrides —
+  // same pattern as savedAvatarWalkState above.
+  const peerWalks = usePeerWalks();
+  const [peerWalkState, setPeerWalkState] = useState<Record<string, PeerWalkerRenderState>>({});
+  const handlePeerWalkUpdate = useCallback(
+    (id: string, s: PeerWalkerRenderState) => setPeerWalkState((prev) => ({ ...prev, [id]: s })),
+    [],
+  );
+  const peerWalkOverridePos = useMemo(() => {
+    const m: Record<string, { x: number; y: number }> = {};
+    for (const [id, s] of Object.entries(peerWalkState)) m[id] = s.pos;
+    return m;
+  }, [peerWalkState]);
+  const peerWalkOverrideSrc = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const [id, s] of Object.entries(peerWalkState)) m[id] = s.src;
+    return m;
+  }, [peerWalkState]);
+
+  // Cluster-formation wiring: resolves a member's current WORLD-CENTER
+  // position (not top-left) for anchor/slot computation. Mirrors the same
+  // layer-lookup chain the peerWalks.map() rendering block and
+  // openChatWithPeerEmail already use: extraCharacterLayers (which folds in
+  // positionedPeerLayers) first, else npcCharacterLayers. Live peer movement
+  // (peerWalkState, top-left coords) takes priority over a peer's static
+  // layer position when a walk is in flight/just completed. Returns null
+  // when truly unresolvable — callers still include the member in
+  // assignClusterSlots' membership list, just skip them for the anchor
+  // average. Shared between Mechanism 1 (self-settle effect below) and
+  // Mechanism 2 (the joiner branch of the conversation_upgraded handler).
+  function resolveMemberCenter(email: string): Pt | null {
+    const lower = email.toLowerCase();
+    if (lower === selfChatId.toLowerCase()) {
+      return {
+        x: bonPos.x + playerCharacterLayer.width / 2,
+        y: bonPos.y + playerCharacterLayer.height / 2,
+      };
+    }
+    const layer =
+      extraCharacterLayers.find((l) => l.id.toLowerCase() === lower) ??
+      npcCharacterLayers.find((l) => l.id.toLowerCase() === lower) ??
+      null;
+    const live = peerWalkState[lower];
+    if (live && layer) {
+      return { x: live.pos.x + layer.width / 2, y: live.pos.y + layer.height / 2 };
+    }
+    if (live && !layer) {
+      // No known layer dimensions to center against — the raw (top-left)
+      // point is still a usable approximation for the anchor average.
+      return live.pos;
+    }
+    if (!layer) return null;
+    return { x: layer.x + layer.width / 2, y: layer.y + layer.height / 2 };
+  }
+
+  // Mechanism 1 (self-settle): whenever self's spatial-session membership
+  // genuinely changes (2-person formation, or an incumbent repositioning
+  // once a 3rd person's cluster-slot geometry shifts everyone's slot), walk
+  // to THIS client's own deterministic cluster slot — every client
+  // independently computes the identical slot map from the same
+  // (sorted/lowercased) membership list + anchor, so no server-authoritative
+  // position broadcast is needed. Mirrors reconciledLineupSlotRef's effect's
+  // exact idiom above (signature-gated, skip while mid-walk). Positioning
+  // ONLY — never emits spatial_session_start here; status stays entirely
+  // owned by ConversationView/GroupConversationView's onConversationOpen
+  // wiring for the 2-person + incumbent-reposition cases (Mechanism 2 below
+  // handles the arrival-gated 3-person joiner separately).
+  useEffect(() => {
+    const decision = resolveSelfSlotWalk({
+      sessions: spatialSessions,
+      selfEmail: selfChatId,
+      lastSignature: slotWalkSignatureRef.current,
+      isWalking,
+    });
+    if (decision === null) return;
+    if ("reset" in decision) {
+      slotWalkSignatureRef.current = null;
+      return;
+    }
+
+    slotWalkSignatureRef.current = decision.signature;
+
+    const anchor = computeClusterAnchor(
+      decision.members.map((m) => resolveMemberCenter(m)).filter((p): p is Pt => p !== null),
+    );
+    const slots = assignClusterSlots(decision.members, anchor);
+    const mySlotCenter = slots[selfChatId];
+    if (!mySlotCenter) return;
+
+    const bw = playerCharacterLayer.width;
+    const bh = playerCharacterLayer.height;
+    const goal = { x: mySlotCenter.x - bw / 2, y: mySlotCenter.y - bh / 2 };
+    const startRoomId = roomOf({ x: bonPos.x + bw / 2, y: bonPos.y + bh / 2 })?.id ?? null;
+    const goalRoomId = roomOf(mySlotCenter)?.id ?? null;
+    const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, goalRoomId);
+
+    emitAndWalkTo(walkTo, { x: bonPos.x, y: bonPos.y }, path, () => {
+      face(directionBetween({ x: goal.x + bw / 2, y: goal.y + bh / 2 }, anchor));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spatialSessions, selfChatId, isWalking, bonPos]);
+
   // "Walk demo" / "Pat demo" — action-menu items available to alex/micah/lui
   // (their own dedicated useCharacterWalk instances above) AND any saved
   // avatar with a populated spriteSet (via savedAvatarApiRef). Scripts a
@@ -821,11 +1079,12 @@ export function OfficeMap() {
   });
 
   // Presence/status system (see services/presence/status.ts). Idle (Away)
-  // detection runs once here; inConversation comes from talkingIds
-  // (self's layer id in the active chat), offline from a hard
-  // disconnect/checkout (CHECKED_OUT). See useAutoStatusDetection.ts.
+  // detection runs once here; inConversation now comes from the server-broadcast
+  // spatial session (inConv, derived above from spatial_sessions + selfChatId — see the
+  // "Ask to Join" Stage 4 block), offline from a hard disconnect/checkout (CHECKED_OUT).
+  // See useAutoStatusDetection.ts.
   useAutoStatusDetection({
-    inConversation: talkingIds.includes(playerLayerId),
+    inConversation: inConv,
     offline: checkoutFlow.state === "CHECKED_OUT",
   });
 
@@ -841,6 +1100,22 @@ export function OfficeMap() {
   // whenever a NEW checkout begins, so a later checkout with a different assigned slot can
   // reconcile again.
   const reconciledLineupSlotRef = useRef<number | null>(null);
+
+  // Cluster-formation wiring (final integration of Stage 1's assignClusterSlots
+  // geometry + Stage 3's emitAndWalkTo peer-walk broadcast). Mirrors
+  // reconciledLineupSlotRef's exact idiom above: a signature of "the last
+  // membership set this client already walked to a slot for", reset to null
+  // whenever self stops belonging to any >=2-member spatial session, so a
+  // NEW cluster (even one with the same signature reused later) can be
+  // walked to again. See the self-settle effect (Mechanism 1) below.
+  const slotWalkSignatureRef = useRef<string | null>(null);
+  // conversation_upgraded joiner-arrival gating (Mechanism 2, in the
+  // conversation_upgraded handler below): set the moment a 3rd-person joiner
+  // starts walking into the cluster, cleared once their walk completes (or
+  // the panel closes mid-walk). Also read by GroupConversationView's
+  // onConversationOpen wiring to skip emitting spatial_session_start early —
+  // the joiner's status must not flip to "In Conversation" until arrival.
+  const pendingJoinerConvIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     const prev = prevCheckoutStateForLineupRef.current;
@@ -1727,6 +2002,7 @@ export function OfficeMap() {
   function approachCharacter(
     target: AssetLayer,
     onArrive: (arriveCenter: { x: number; y: number }, targetCenter: { x: number; y: number }) => void,
+    destOverride?: { x: number; y: number },
   ) {
     const bw = playerCharacterLayer.width;
     const bh = playerCharacterLayer.height;
@@ -1740,30 +2016,40 @@ export function OfficeMap() {
     const standoff = target.width / 2 + bw / 2 + 4;
     const bcCell = worldToCell(bc);
     const tcCell = worldToCell(tc);
-    const standSpot = nearestStandSpotConnectedTo(tcCell.cx, tcCell.cy, bcCell.cx, bcCell.cy);
-    const goal = standSpot
-      ? (() => {
-          const w = cellToWorld(standSpot.cx, standSpot.cy);
-          return { x: w.x - bw / 2, y: w.y - bh / 2 };
-        })()
+    const goal = destOverride
+      ? destOverride
       : (() => {
-          // No hand-painted stand spot nearby — fall back to pure
-          // geometry, but the geometric offset has no awareness of
-          // walls/furniture, so it can land on a blocked tile with the
-          // finer 16px grid. Snap to the nearest walkable cell connected
-          // to bon's own region before using it as a walk target.
-          const raw = { x: tc.x - ux * standoff - bw / 2, y: tc.y - uy * standoff - bh / 2 };
-          const rawCell = worldToCell({ x: raw.x + bw / 2, y: raw.y + bh / 2 });
-          const snapped = nearestWalkableConnectedTo(rawCell.cx, rawCell.cy, bcCell.cx, bcCell.cy);
-          const w = cellToWorld(snapped.cx, snapped.cy);
-          return { x: w.x - bw / 2, y: w.y - bh / 2 };
+          const standSpot = nearestStandSpotConnectedTo(tcCell.cx, tcCell.cy, bcCell.cx, bcCell.cy);
+          return standSpot
+            ? (() => {
+                const w = cellToWorld(standSpot.cx, standSpot.cy);
+                return { x: w.x - bw / 2, y: w.y - bh / 2 };
+              })()
+            : (() => {
+                // No hand-painted stand spot nearby — fall back to pure
+                // geometry, but the geometric offset has no awareness of
+                // walls/furniture, so it can land on a blocked tile with the
+                // finer 16px grid. Snap to the nearest walkable cell connected
+                // to bon's own region before using it as a walk target.
+                const raw = { x: tc.x - ux * standoff - bw / 2, y: tc.y - uy * standoff - bh / 2 };
+                const rawCell = worldToCell({ x: raw.x + bw / 2, y: raw.y + bh / 2 });
+                const snapped = nearestWalkableConnectedTo(rawCell.cx, rawCell.cy, bcCell.cx, bcCell.cy);
+                const w = cellToWorld(snapped.cx, snapped.cy);
+                return { x: w.x - bw / 2, y: w.y - bh / 2 };
+              })();
         })();
-    const startRoomId = roomOf(bc)?.id ?? null;
-    const goalRoomId = roomOf(tc)?.id ?? null;
     const arriveCenter = { x: goal.x + bw / 2, y: goal.y + bh / 2 };
+    // Room lookups for door-crossing routing: when destOverride is given, the
+    // actual destination may be in a different room than the target NPC (the
+    // joiner's cluster slot vs. the incumbent's own standing position) — key
+    // the room lookups off the real destination in that case. Without an
+    // override, keep using the target NPC's position, unchanged.
+    const roomLookupPoint = destOverride ? arriveCenter : tc;
+    const startRoomId = roomOf(bc)?.id ?? null;
+    const goalRoomId = roomOf(roomLookupPoint)?.id ?? null;
 
     const flatStartRoomId = flatRoomIdAt(bc);
-    const flatGoalRoomId = flatRoomIdAt(tc);
+    const flatGoalRoomId = flatRoomIdAt(roomLookupPoint);
     const doorCrossing =
       flatGoalRoomId && flatGoalRoomId !== flatStartRoomId
         ? (() => {
@@ -1806,14 +2092,14 @@ export function OfficeMap() {
       const inGoal = { x: doorPair.inStand.x - bw / 2, y: doorPair.inStand.y - bh / 2 };
       const pathToOutStand = findPath({ x: bonPos.x, y: bonPos.y }, outGoal, startRoomId, goalRoomId);
 
-      walkTo(pathToOutStand, () => {
+      emitAndWalkTo(walkTo, { x: bonPos.x, y: bonPos.y }, pathToOutStand, () => {
         if (approachNonceRef.current !== nonce) return;
         onDoorOpen(doorCrossing.roomId);
         approachDoorTimerRef.current = window.setTimeout(() => {
           approachDoorTimerRef.current = undefined;
           if (approachNonceRef.current !== nonce) return;
           const pathToInStand = findPath(outGoal, inGoal, goalRoomId, goalRoomId);
-          walkTo(pathToInStand, () => {
+          emitAndWalkTo(walkTo, outGoal, pathToInStand, () => {
             if (approachNonceRef.current !== nonce) return;
             onDoorClose(doorCrossing.roomId);
             // Final leg — inside the room now, walking the last stretch to
@@ -1831,7 +2117,7 @@ export function OfficeMap() {
               }
             }
             const pathToStandSpot = findPath(inGoal, goal, goalRoomId, goalRoomId);
-            walkTo(pathToStandSpot, () => {
+            emitAndWalkTo(walkTo, inGoal, pathToStandSpot, () => {
               if (approachNonceRef.current !== nonce) return;
               face(directionBetween(arriveCenter, tc));
               onArrive(arriveCenter, tc);
@@ -1845,13 +2131,177 @@ export function OfficeMap() {
     // Fallback: same room already, or no complete door stand-point pairing
     // painted for this room yet — existing single-goal walk, unchanged.
     const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, goalRoomId);
-    walkTo(path, () => {
+    emitAndWalkTo(walkTo, { x: bonPos.x, y: bonPos.y }, path, () => {
       face(directionBetween(arriveCenter, tc));
       onArrive(arriveCenter, tc);
     });
   }
 
-  function handleChoose(action: "chat" | "call" | "approach" | "walkDemo" | "patDemo") {
+  // Stage B2: live "pop open at formation" reaction to the backend's
+  // conversation_upgraded socket event (already emitted by the approved
+  // Stage A, to every affected member's user room, the moment an accepted
+  // join_group request upgrades a DM into a brand-new group conversation).
+  // Re-subscribes if selfChatId changes (e.g. currentUser resolving after
+  // this component's initial mount-before-auth render) so the filter below
+  // never runs against a stale fallback id. ALSO re-subscribes on every
+  // bonPos change (new, for the joiner-walk wiring below): this callback now
+  // needs a genuinely CURRENT bonPos/extraCharacterLayers/etc. to compute a
+  // correct walk-start position and cluster anchor for the newly-accepted
+  // 3rd-person joiner — with the old deps=[selfChatId]-only subscription,
+  // this closure would freeze bonPos at whatever it was on the last
+  // selfChatId change (effectively mount), sending the joiner's walk from a
+  // stale/wrong tile. Re-registering the listener is just a Set add/delete
+  // in RealChatService (see its onConversationUpgraded) — cheap even at
+  // walk-animation frequency, not a socket reconnect. Declared here (after
+  // approachCharacter/bonPos/walkTo/resolveMemberCenter, rather than up near
+  // the other early state-declaration effects) because its dependency array
+  // references bonPos, a `const` declared earlier in render order but still
+  // textually below where this effect used to live — deps arrays are
+  // evaluated immediately, so bonPos's temporal dead zone would otherwise
+  // throw on every render.
+  useEffect(() => {
+    const unsubscribe = chatService.onConversationUpgraded?.((payload) => {
+      const self = selfChatId.toLowerCase();
+      // Defense in depth — should always be true if the event correctly
+      // routed to this user's own room, but don't assume.
+      if (!payload.participantIds.some((id) => id.toLowerCase() === self)) return;
+
+      // Incumbent: self already had this exact DM panel open before the
+      // upgrade (both original DM participants satisfy this — Ask-to-Join
+      // can only be offered against a conversation both DM members already
+      // had open). Joiner: the newly-accepted 3rd person, who had no prior
+      // panel open for this conversation — gets an arrival-gated walk into
+      // the cluster below, on top of the same panel-swap/refetch bookkeeping
+      // both roles share.
+      const role = classifyUpgrade({ selfEmail: selfChatId, openConversationId: openConversationIdRef.current, payload });
+
+      // The old DM panel (if this user had it open) unmounts via a plain
+      // state swap below, not via its own onClose handler — so the
+      // spatial-session leave for the OLD conversation id has to be emitted
+      // explicitly here, mirroring the same "old id differs from new id"
+      // transition JoinRequestPrompt's onResolved handler already does
+      // further down. The NEW conversation's spatial_session_start is NOT
+      // emitted here — GroupConversationView's own onConversationOpen
+      // (wired below) fires that exactly once as soon as its conversationId
+      // prop resolves, same as the DM panel does today (incumbent case) —
+      // or, for the joiner, is deliberately SKIPPED there and fired instead
+      // from onJoinerArrived below, once the walk actually completes.
+      if (openConversationIdRef.current === payload.oldConversationId) {
+        emitSpatialSessionLeave();
+      }
+
+      // Explicitly clear both panel setters rather than relying solely on
+      // the openChat/openGroupConv mutual-exclusion render guards — those
+      // guards only guarantee correctness when setOpenChat(truthy) also
+      // clears openGroupConv (Part 1's fix); setOpenGroupConv(truthy) doesn't
+      // symmetrically clear openChat anywhere else in this file, so leaving
+      // openChat set here would re-trigger the exact vanish bug Part 1 fixed.
+      setOpenChat(null);
+      setOpenGroupConv({
+        conversationId: payload.conversationId,
+        participantEmails: payload.participantIds,
+        title: payload.title,
+      });
+
+      // Refresh the badge/list data now, live, rather than only after some
+      // unrelated future event triggers a refetch — the newly-formed group
+      // should show up in the conversation list immediately.
+      void refetchConversations();
+
+      if (role !== "joiner") return;
+
+      // Joiner-only: arrival-gated walk into the new cluster. Uses the same
+      // cluster-slot geometry Mechanism 1 (the self-settle effect above)
+      // uses, but computed directly off payload.participantIds (the fresh
+      // membership straight from the event) rather than waiting for
+      // spatialSessions to reflect it. onJoinerArrived — not this function —
+      // is what flips status (emitSpatialSessionStart), and it also
+      // pre-seeds slotWalkSignatureRef so Mechanism 1 doesn't immediately
+      // re-walk the joiner once their own spatial-session update reflects
+      // the new membership.
+      pendingJoinerConvIdRef.current = payload.conversationId;
+
+      const bw = playerCharacterLayer.width;
+      const bh = playerCharacterLayer.height;
+      // Anchor off the INCUMBENTS only — excluding the joiner's own
+      // far-away starting position keeps the cluster centroid (and the
+      // incumbents' "make room" repositioning) from lurching toward
+      // wherever the joiner happened to start their walk from. Falls back
+      // to all members only in the unlikely case no incumbent position
+      // resolves at all.
+      const anchor = computeClusterAnchor(
+        incumbentCentersForAnchor(payload.participantIds, self, resolveMemberCenter),
+      );
+      const slots = assignClusterSlots(payload.participantIds, anchor);
+      const mySlotCenter = slots[self];
+      if (!mySlotCenter) {
+        // Should never happen (assignClusterSlots always assigns every
+        // member a slot) — defensive bail so a geometry edge case can't
+        // leave pendingJoinerConvIdRef permanently stuck.
+        pendingJoinerConvIdRef.current = null;
+        return;
+      }
+      const goal = { x: mySlotCenter.x - bw / 2, y: mySlotCenter.y - bh / 2 };
+
+      const onJoinerArrived = () => {
+        // Defensive — the panel may have closed (or a newer upgrade fired)
+        // mid-walk; don't flip status or clobber a newer pending walk.
+        if (pendingJoinerConvIdRef.current !== payload.conversationId) return;
+        if (openConversationIdRef.current !== payload.conversationId) {
+          // Panel closed or switched mid-walk — clear so a later reopen of
+          // this same conversation isn't wrongly treated as still pending
+          // (see onClose below and onConversationOpen's guard).
+          pendingJoinerConvIdRef.current = null;
+          return;
+        }
+        // Set BEFORE emitting start — prevents Mechanism 1 from immediately
+        // re-walking the joiner once their own spatial-session update
+        // reflects this same membership.
+        slotWalkSignatureRef.current = slotWalkSignature(payload.participantIds);
+        emitSpatialSessionStart(payload.conversationId);
+        pendingJoinerConvIdRef.current = null;
+      };
+
+      const incumbentEmail = payload.participantIds.find((id) => id.toLowerCase() !== self);
+      const incumbentLayer = incumbentEmail
+        ? (extraCharacterLayers.find((l) => l.id.toLowerCase() === incumbentEmail.toLowerCase()) ??
+            npcCharacterLayers.find((l) => l.id.toLowerCase() === incumbentEmail.toLowerCase()) ??
+            null)
+        : null;
+
+      if (incumbentLayer) {
+        // Reuses the existing door-crossing/camera-staging logic for free.
+        // destOverride=goal makes approachCharacter walk the ENTIRE distance
+        // (including any door-crossing) directly to the joiner's real
+        // cluster slot in one coherent path, rather than stopping short at
+        // the incumbent and then re-pathing a disjointed second leg.
+        approachCharacter(incumbentLayer, () => onJoinerArrived(), goal);
+      } else {
+        // No resolvable incumbent layer — skip the door-staged approach and
+        // walk straight to the cluster slot. This fires synchronously in the
+        // same tick as the event, so this render's own bonPos (fresh, since
+        // this effect now re-subscribes on every bonPos change) is accurate.
+        const startRoomId = roomOf({ x: bonPos.x + bw / 2, y: bonPos.y + bh / 2 })?.id ?? null;
+        const goalRoomId = roomOf(mySlotCenter)?.id ?? null;
+        const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, goalRoomId);
+        emitAndWalkTo(walkTo, { x: bonPos.x, y: bonPos.y }, path, onJoinerArrived);
+      }
+    });
+    return () => unsubscribe?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selfChatId, bonPos]);
+
+  // Finds the spatial session (sessionId == Conversation.id) a given layer's lowercased
+  // email currently belongs to, if any — used both for the Ask-to-Join gating (canAskToJoin
+  // below) and the askToJoin action branch itself.
+  function findSpatialSessionForLayer(layerId: string): SpatialSessionEntry | undefined {
+    const email = layerId.toLowerCase();
+    return spatialSessions.find((s) => s.members.includes(email));
+  }
+
+  function handleChoose(
+    action: "chat" | "call" | "approach" | "walkDemo" | "patDemo" | "askToJoin",
+  ) {
     if (!menu) return;
     const target = menu.layer;
     const name = formatCharacterName(target);
@@ -1878,12 +2328,36 @@ export function OfficeMap() {
       });
     } else if (action === "chat") {
       // setMenu(null) rather than closeCharacterMenu() — avoid resetting the
-      // camera view when opening the chat panel.
+      // camera view when opening the chat panel. Spatial clustering
+      // (spatial_session_start) is NOT emitted here — per the finalized
+      // "chat panel required" decision, it only fires once ConversationView's
+      // conv.id actually resolves (see its onConversationOpen prop below).
+      // Approach alone (the branch above) must never create a spatial
+      // session or a DM conversation.
       setMenu(null);
       approachCharacter(target, () => {
+        // Opening a DM panel must always clear any open group panel — the
+        // two render guards (openChat && !openGroupConv / openGroupConv &&
+        // !openChat) are mutually exclusive by construction, so leaving a
+        // stale openGroupConv set here would make BOTH guards false and
+        // silently vanish both panels (group's onClose never fires either).
+        setOpenGroupConv(null);
         setOpenChat(target);
-        setTalkingIds([playerLayerId, target.id]);
       });
+    } else if (action === "askToJoin") {
+      // Ask-to-join affordance: only shown (canAskToJoin, computed below) when the target is
+      // currently in a >=2-member spatial session the viewer isn't already part of. Look up
+      // that session by the target's layer id (== lowercased email for roster peers) to get
+      // its sessionId (== the target conversation's Conversation.id).
+      closeCharacterMenu();
+      const session = findSpatialSessionForLayer(target.id);
+      if (session && session.members.length >= 2) {
+        createJoinRequest(session.sessionId).catch((err) => {
+          console.error("[requests] failed to create join request", err);
+        });
+        setToast(`Asked to join ${name}’s conversation…`);
+        setTimeout(() => setToast(null), 1800);
+      }
     } else {
       closeCharacterMenu();
       setToast(`Calling ${name}… — coming soon`);
@@ -1976,8 +2450,11 @@ export function OfficeMap() {
         height: 0,
         transform: null,
       } as AssetLayer);
+    // Defensive hardening: every path that sets openChat truthy must also
+    // clear openGroupConv, guaranteeing the two panels' mutual-exclusion
+    // invariant holds regardless of caller — not just at some call sites.
+    setOpenGroupConv(null);
     setOpenChat(layer);
-    setTalkingIds([playerLayerId, layer.id]);
   }
 
   function handleCharacterClick(layer: AssetLayer, anchor: { clientX: number; clientY: number }) {
@@ -2159,6 +2636,11 @@ export function OfficeMap() {
               micah: micahPos,
               lui: luiPos,
               ...savedAvatarOverridePos,
+              // Peer keys are lowercased emails and don't collide with named
+              // characters or self. Self ALWAYS applied last — a peer
+              // broadcast must never move the local player's own rendered
+              // position.
+              ...peerWalkOverridePos,
               // Player's own override comes last, so it wins any key
               // collision with the alex/micah/lui demo entries above when
               // the viewer IS one of them.
@@ -2169,6 +2651,7 @@ export function OfficeMap() {
               micah: micahSpriteSrc,
               lui: luiSpriteSrc,
               ...savedAvatarOverrideSrc,
+              ...peerWalkOverrideSrc,
               [playerLayerId]: playerSpriteSrc,
             }}
             characterDirectionsById={{
@@ -2229,7 +2712,7 @@ export function OfficeMap() {
             greetingCharacterId={greeting?.characterId ?? null}
             greetingNonce={greeting?.nonce}
             greetingText={greeting?.text}
-            talkingCharacterIds={talkingIds}
+            talkingCharacterIds={talkingCharacterIdsFromSessions}
             talkingTextById={talkingTextByLayerId}
             typingCharacterIds={typingCharacterIds}
             characterIsResponderById={characterIsResponderById}
@@ -2458,6 +2941,14 @@ export function OfficeMap() {
             menu.layer.id === "lui" ||
             Boolean(menu.layer.animatable)
           }
+          canAskToJoin={(() => {
+            const session = findSpatialSessionForLayer(menu.layer.id);
+            return (
+              !!session &&
+              session.members.length >= 2 &&
+              !session.members.includes(selfChatId)
+            );
+          })()}
         />
       )}
       {seatMenu && (
@@ -2486,6 +2977,26 @@ export function OfficeMap() {
           />
         );
       })}
+      {peerWalks
+        .filter((w: PeerWalkState) => w.email !== selfChatId.toLowerCase()) // defense-in-depth; server already excludes the sender via skip_sid
+        .map((w: PeerWalkState) => {
+          const spriteSet = SPRITE_SET_BY_AVATAR_ID[EMAIL_TO_AVATAR_ID[w.email] ?? ""] ?? null;
+          const staticSrc = extraCharacterSrcById[w.email] ?? "";
+          return (
+            <PeerWalker
+              key={w.email}
+              layerId={w.email}
+              from={w.from}
+              path={w.path}
+              startNonce={w.startNonce}
+              arrivedAt={w.arrivedAt}
+              arrivedNonce={w.arrivedNonce}
+              spriteSet={spriteSet}
+              staticSrc={staticSrc}
+              onUpdate={handlePeerWalkUpdate}
+            />
+          );
+        })}
       <RoomSidebar
         open={roomSidebar !== null}
         layer={roomSidebar?.layer ?? null}
@@ -2505,7 +3016,7 @@ export function OfficeMap() {
         roomNames={roster.roomNames}
         onClose={closeRoomSidebar}
       />
-      {openChat && (
+      {openChat && !openGroupConv && (
         <ConversationView
           peer={openChat}
           selfId={selfChatId}
@@ -2513,9 +3024,63 @@ export function OfficeMap() {
           selfAvatarUrl={playerSpriteSrc}
           onIncomingMessage={handleTalkingMessage}
           onTypingChange={setSelfTyping}
+          onConversationOpen={(conversationId) => {
+            // Edge-triggered: fires exactly once, the moment the chat panel's conversation id
+            // first resolves — never on a poll. Chat-panel-required per the finalized
+            // decision: this is the ONLY place spatial_session_start is emitted.
+            setOpenConversationId(conversationId);
+            emitSpatialSessionStart(conversationId);
+          }}
           onClose={() => {
             setOpenChat(null);
-            setTalkingIds([]);
+            if (openConversationId) emitSpatialSessionLeave();
+            setOpenConversationId(null);
+            setSelfTyping(false);
+            for (const timerId of Object.values(talkingTimersRef.current)) {
+              window.clearTimeout(timerId);
+            }
+            talkingTimersRef.current = {};
+            setTalkingTextById({});
+          }}
+        />
+      )}
+      {openGroupConv && !openChat && (
+        <GroupConversationView
+          conversationId={openGroupConv.conversationId}
+          selfId={selfChatId}
+          participantEmails={openGroupConv.participantEmails}
+          title={openGroupConv.title}
+          resolveDisplayName={resolveDisplayName}
+          selfAvatarUrl={playerSpriteSrc}
+          onIncomingMessage={handleTalkingMessage}
+          onTypingChange={setSelfTyping}
+          onConversationOpen={(conversationId) => {
+            // Same spatial-session bookkeeping the DM panel above uses — a
+            // reopened group is a legitimate spatial-conversation
+            // participant while its panel is open. EXCEPT: when this
+            // conversationId is a pending arrival-gated joiner walk (see the
+            // conversation_upgraded handler's Mechanism 2 above),
+            // spatial_session_start must NOT fire yet — the joiner isn't "In
+            // Conversation" until their walk into the cluster actually
+            // completes; onJoinerArrived emits it once that happens. Every
+            // other case (reopening an existing group, an incumbent's panel
+            // swap) still emits immediately, as it does today.
+            setOpenConversationId(conversationId);
+            if (pendingJoinerConvIdRef.current !== conversationId) {
+              emitSpatialSessionStart(conversationId);
+            }
+          }}
+          onClose={() => {
+            if (pendingJoinerConvIdRef.current === openGroupConv?.conversationId) {
+              // Panel closed while the arrival-gated joiner walk was still
+              // in progress — clear so a later reopen of this same
+              // conversation isn't wrongly skipped by onConversationOpen's
+              // pending-joiner guard above.
+              pendingJoinerConvIdRef.current = null;
+            }
+            setOpenGroupConv(null);
+            if (openConversationId) emitSpatialSessionLeave();
+            setOpenConversationId(null);
             setSelfTyping(false);
             for (const timerId of Object.values(talkingTimersRef.current)) {
               window.clearTimeout(timerId);
@@ -2528,8 +3093,33 @@ export function OfficeMap() {
       {chatMode === "real" && (
         <MessageNotificationBadge
           total={unreadTotal}
-          unreadConversations={unreadConversations}
-          onSelectPeer={openChatWithPeerEmail}
+          conversations={allConversations}
+          selfId={selfChatId}
+          resolveDisplayName={resolveDisplayName}
+          onSelectConversation={onSelectConversation}
+        />
+      )}
+      {chatMode === "real" && (
+        <JoinRequestPrompt
+          resolveDisplayName={resolveDisplayName}
+          onResolved={(req) => {
+            // Current participants (who are approving) should treat resultConversationId as
+            // their live conversation too — if it differs from the one they already have
+            // open, transition spatial-session bookkeeping to the new id. (In today's backend,
+            // accept_join_request adds the requester to the SAME conversation_id the request
+            // targeted, so this practically never differs for an existing participant — kept
+            // for forward-compatibility with a future DM->group conversation-id change.)
+            if (
+              req.state === "accepted" &&
+              req.resultConversationId &&
+              openConversationId &&
+              req.resultConversationId !== openConversationId
+            ) {
+              emitSpatialSessionLeave();
+              setOpenConversationId(req.resultConversationId);
+              emitSpatialSessionStart(req.resultConversationId);
+            }
+          }}
         />
       )}
       {toast && <div className={styles.toast}>{toast}</div>}

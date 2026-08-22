@@ -21,6 +21,12 @@ type ConversationViewProps = {
   selfAvatarUrl?: string;
   onClose: () => void;
   onIncomingMessage?: (msg: ChatMessage) => void;
+  // Fired exactly once, the moment this panel's conversation id first resolves (real mode's
+  // openConversationWith response) — the edge-triggered "chat actually opened" signal callers
+  // use to start a spatial session (see OfficeMap.tsx's emitSpatialSessionStart wiring). Never
+  // fired again for the same mount (see the guard around setConversationId below) — a
+  // re-render from an unrelated prop change must not re-fire this.
+  onConversationOpen?: (conversationId: string) => void;
   // Fired ONLY from real composer keystroke activity (onChange) and the
   // send/unmount paths below — never from a focus/mount/open effect. true on
   // any non-empty content change (re-arming a 2.5s inactivity timer that
@@ -134,6 +140,7 @@ export function ConversationView({
   onClose,
   onIncomingMessage,
   onTypingChange,
+  onConversationOpen,
 }: ConversationViewProps) {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -183,22 +190,30 @@ export function ConversationView({
       .then((conv) => {
         if (cancelled) return;
         setConversationId(conv.id);
+        onConversationOpen?.(conv.id);
         return chatService.getMessages(conv.id).then((msgs) => {
           if (cancelled) return;
           setMessages(msgs);
           // Bootstrap peer watermarks from history — ONLY from the viewer's
-          // own messages. For a given message, deliveredAt/readAt reflect the
-          // *recipient's* watermark: for the viewer's own messages that's the
-          // peer's delivered/read state (what we need); for peer messages it's
-          // the viewer's own read state (not what we need here) — mixing the
-          // two in would corrupt the peer watermark.
-          if (chatMode === "real") {
+          // own messages. For a given message, deliveredTo/readBy reflect the
+          // *recipients'* per-reader watermark state: for the viewer's own
+          // messages that includes the peer's delivered/read state (what we
+          // need); for peer messages it's the viewer's own read state (not
+          // what we need here) — mixing the two in would corrupt the peer
+          // watermark. 1:1 DM only here — derive a single peer watermark by
+          // checking whether the peer's email appears in each array.
+          if (chatMode === "real" && routingPeerId) {
+            // Invariant: routingPeerId is already lowercase here — both real-mode callers
+            // (OfficeMap's resolvePeerChatId and ChatTestPage's active.peer) lowercase the
+            // email before it ever reaches peerChatId, matching the lowercased emails the
+            // backend stores/emits in deliveredTo/readBy. If a future caller stops guaranteeing
+            // that, lowercase routingPeerId at derivation time instead of here.
             let deliveredMax: string | null = null;
             let readMax: string | null = null;
             for (const m of msgs) {
               if (m.senderId !== selfId) continue;
-              if (m.deliveredAt) deliveredMax = maxIso(deliveredMax, m.deliveredAt);
-              if (m.readAt) readMax = maxIso(readMax, m.readAt);
+              if (m.deliveredTo.includes(routingPeerId)) deliveredMax = maxIso(deliveredMax, m.sentAt);
+              if (m.readBy.includes(routingPeerId)) readMax = maxIso(readMax, m.sentAt);
             }
             if (deliveredMax) setPeerDeliveredUpTo((prev) => maxIso(prev, deliveredMax));
             if (readMax) setPeerReadUpTo((prev) => maxIso(prev, readMax));

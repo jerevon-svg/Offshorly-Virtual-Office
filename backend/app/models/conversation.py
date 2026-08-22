@@ -23,6 +23,13 @@ class Conversation(BaseModel):
     # derives or relies on this, only on the opaque `id` (BaseModel's UUID PK).
     dm_key: Mapped[str | None] = mapped_column(String(600), unique=True, index=True, nullable=True)
 
+    # "dm" | "group" ("room" reserved for a future feature). No DB CHECK constraint — this
+    # codebase validates enums at the Python layer only, not in the schema.
+    type: Mapped[str] = mapped_column(String(16), nullable=False, server_default="dm", index=True)
+
+    # Group display name; null for DMs (peer identity is derived from participants instead).
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
 
 class ConversationParticipant(BaseModel):
     """Join row: one per (conversation, participant email). Identity is an email string —

@@ -112,8 +112,9 @@ beforeEach(() => {
 
 // Real dev-team furniture id (see office-assets-manifest.json) whose seat
 // (roomSeats.ts/seatDirections.ts) can be assigned "back" direction —
-// path assets/office/furniture/dev-team/dev-visitor-chair.png, fraction 0.4
-// in chairBackrestCrop.ts.
+// path assets/office/furniture/dev-team/dev-visitor-chair.png, fraction 0
+// in chairBackrestCrop.ts (backrest-occlusion crop intentionally disabled
+// as of the 2026-08-19 commit).
 const DEV_BACK_CHAIR_ID = "dev-lead1-visitor1";
 
 function renderStage(backSitOccupantBaselines?: Record<string, number>) {
@@ -140,8 +141,10 @@ describe("OfficeStage synthetic backrest-crop layer generation", () => {
 
     const clipped = clipPathLayers(container);
     expect(clipped.length).toBe(1);
-    // fraction 0.4 for dev-visitor-chair.png -> clip away bottom 60%.
-    expect(clipped[0].style.clipPath).toBe("inset(0 0 60% 0)");
+    // fraction 0 for dev-visitor-chair.png (backrest-occlusion crop
+    // intentionally disabled as of the 2026-08-19 commit) -> clip away
+    // the full 100%, leaving nothing of the synthetic clone visible.
+    expect(clipped[0].style.clipPath).toBe("inset(0 0 100% 0)");
   });
 
   it("generates no synthetic layer when the map is empty/omitted", () => {

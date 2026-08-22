@@ -76,6 +76,48 @@ describe("useUnreadTotal", () => {
     await waitFor(() => expect(result.current.total).toBe(4));
   });
 
+  it("returns ALL conversations (including 0-unread and groups), sorted by lastMessageAt descending", async () => {
+    listConversations.mockResolvedValue([
+      { id: "conv-old", participantIds: ["a@example.com", "b@example.com"], lastMessageAt: "2026-08-18T10:00:00.000Z", unreadCount: 0 },
+      {
+        id: "conv-group",
+        participantIds: ["a@example.com", "c@example.com", "d@example.com"],
+        lastMessageAt: "2026-08-22T10:00:00.000Z",
+        unreadCount: 2,
+        type: "group",
+        title: "Team Chat",
+      },
+      { id: "conv-mid", participantIds: ["a@example.com", "e@example.com"], lastMessageAt: "2026-08-20T10:00:00.000Z", unreadCount: 1 },
+    ]);
+
+    const { useUnreadTotal } = await import("./useUnreadTotal");
+    const { result } = renderHook(() => useUnreadTotal("a@example.com"));
+
+    await waitFor(() => expect(result.current.conversations).toHaveLength(3));
+    expect(result.current.conversations.map((c) => c.id)).toEqual(["conv-group", "conv-mid", "conv-old"]);
+    // Existing behavior stays intact — total/unreadConversations unaffected by this addition.
+    expect(result.current.total).toBe(3);
+    expect(result.current.unreadConversations).toHaveLength(2);
+  });
+
+  it("keeps a live unread_count push reflected in the conversations list's unreadCount field", async () => {
+    listConversations.mockResolvedValue([
+      { id: "conv-1", participantIds: ["a@example.com", "b@example.com"], lastMessageAt: "t", unreadCount: 1 },
+    ]);
+
+    const { useUnreadTotal } = await import("./useUnreadTotal");
+    const { result } = renderHook(() => useUnreadTotal("a@example.com"));
+
+    await waitFor(() => expect(result.current.conversations).toHaveLength(1));
+    expect(result.current.conversations[0].unreadCount).toBe(1);
+
+    act(() => {
+      fireUnreadCount({ conversationId: "conv-1", count: 5 });
+    });
+
+    await waitFor(() => expect(result.current.conversations[0].unreadCount).toBe(5));
+  });
+
   it("drops a conversation from the total once its count reaches 0 (read elsewhere)", async () => {
     listConversations.mockResolvedValue([
       { id: "conv-1", participantIds: ["a@example.com", "b@example.com"], lastMessageAt: "t", unreadCount: 2 },

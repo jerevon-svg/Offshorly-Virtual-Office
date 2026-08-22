@@ -102,6 +102,9 @@ export class MockChatService implements ChatService {
       senderId: input.senderId,
       text: input.text,
       sentAt: new Date().toISOString(),
+      // Mock mode has no server-side receipt tracking — always empty, never populated.
+      deliveredTo: [],
+      readBy: [],
     });
 
     // Mock-only auto-echo: a user-originated send gets one canned reply from
@@ -120,6 +123,8 @@ export class MockChatService implements ChatService {
             senderId: peerId,
             text: canned(),
             sentAt: new Date().toISOString(),
+            deliveredTo: [],
+            readBy: [],
             mock: true,
           });
         }, delay);

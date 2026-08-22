@@ -32,6 +32,11 @@ function socketBase(): string {
 let socketInstance: Socket | null = null;
 let entries: OfflineLineupEntry[] = [];
 const listeners = new Set<() => void>();
+// DEV-ONLY: mirrors RealChatService.ts's devEmail/setDevIdentity exactly — when set, this
+// module's socket authenticates via the backend's `x-dev-email` bypass instead of the real
+// Atlas bearer token. Only ever set by the dev-only auth-gate bypass (see useAuthGate.ts's
+// seedDevBypassIdentity) — never touched by the normal app.
+let devEmail: string | null = null;
 
 function notify(): void {
   for (const listener of listeners) listener();
@@ -48,18 +53,31 @@ function getSnapshot(): OfflineLineupEntry[] {
   return entries;
 }
 
+// DEV-ONLY: switches this module's connection to the backend's dev-email bypass (or back to
+// normal token auth when passed null). Tears down any live socket so the next call reconnects
+// with the new identity. Mirrors RealChatService.ts's setDevIdentity exactly.
+export function setDevIdentity(email: string | null): void {
+  devEmail = email ? email.trim().toLowerCase() : null;
+  if (socketInstance) {
+    socketInstance.disconnect();
+    socketInstance = null;
+  }
+}
+
 // Lazily opens the connection on first use (mount of useOfflineLineup, or the first
 // emitGoOffline/emitComeOnline call — whichever happens first) rather than at module load,
 // matching RealChatService's "don't open a socket that's doomed from the start" guard: no
-// auth token yet (identity not resolved) means no connection attempt.
+// auth token and no dev-email bypass (identity not resolved) means no connection attempt.
 function ensureSocket(): Socket | null {
   if (socketInstance) return socketInstance;
 
-  const token = getAuthToken();
-  if (!token) return null;
+  if (!devEmail && !getAuthToken()) return null;
 
+  const auth: Record<string, string | null> = devEmail
+    ? { "x-dev-email": devEmail }
+    : { token: getAuthToken() };
   const socket = io(socketBase(), {
-    auth: { token },
+    auth,
     autoConnect: true,
   });
 
@@ -102,5 +120,6 @@ export function resetOfflineLineupClientForTests(): void {
   socketInstance?.disconnect?.();
   socketInstance = null;
   entries = [];
+  devEmail = null;
   notify();
 }

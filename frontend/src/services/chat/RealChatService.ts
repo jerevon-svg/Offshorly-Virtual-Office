@@ -6,6 +6,7 @@ import type {
   ConnectionState,
   ConnectionStateListener,
   Conversation,
+  ConversationUpgradedListener,
   DeliveryReceiptListener,
   DeliveryReceiptUpdate,
   MessageListener,
@@ -82,6 +83,7 @@ export class RealChatService implements ChatService {
   private deliveryReceiptListeners = new Set<DeliveryReceiptListener>();
   private readReceiptListeners = new Set<ReadReceiptListener>();
   private typingListeners = new Set<TypingListener>();
+  private conversationUpgradedListeners = new Set<ConversationUpgradedListener>();
   private pendingSends = new Map<string, PendingSend>();
   // Tracks the most recently seen sentAt per conversation, from any message
   // that has flowed through pushMessage (send, receive, or history fetch).
@@ -205,6 +207,22 @@ export class RealChatService implements ChatService {
             conversationId: payload.conversationId,
             senderId: payload.senderEmail,
             isTyping: payload.isTyping,
+          }),
+        );
+      },
+    );
+
+    socket.on(
+      "conversation_upgraded",
+      (payload: { oldConversationId: string; newConversationId: string; participants: string[] }) => {
+        this.conversationUpgradedListeners.forEach((cb) =>
+          cb({
+            conversationId: payload.newConversationId,
+            oldConversationId: payload.oldConversationId,
+            participantIds: payload.participants,
+            // Stage A never sets a title on the newly-formed group — see
+            // backend/app/routers/requests.py's conversation_upgraded emit.
+            title: null,
           }),
         );
       },
@@ -474,6 +492,13 @@ export class RealChatService implements ChatService {
     this.typingListeners.add(cb);
     return () => {
       this.typingListeners.delete(cb);
+    };
+  }
+
+  onConversationUpgraded(cb: ConversationUpgradedListener): () => void {
+    this.conversationUpgradedListeners.add(cb);
+    return () => {
+      this.conversationUpgradedListeners.delete(cb);
     };
   }
 }

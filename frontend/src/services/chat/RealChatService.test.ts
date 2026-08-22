@@ -431,6 +431,57 @@ describe("RealChatService typing", () => {
   });
 });
 
+describe("RealChatService.onConversationUpgraded", () => {
+  it("maps the backend's conversation_upgraded payload fields onto the frontend callback shape", async () => {
+    const { RealChatService } = await import("./RealChatService");
+    const service = new RealChatService();
+
+    await service.getMessages("conv-a__b");
+
+    const received: unknown[] = [];
+    service.onConversationUpgraded((update) => received.push(update));
+
+    lastFakeSocket!.trigger("conversation_upgraded", {
+      oldConversationId: "conv-a__b",
+      newConversationId: "conv-group-1",
+      participants: ["a@example.com", "b@example.com", "c@example.com"],
+    });
+
+    // newConversationId -> conversationId, oldConversationId passed through
+    // unmodified (needed by callers to distinguish an incumbent from a
+    // joiner), participants -> participantIds, and title is always null
+    // (Stage A never sets one on the newly-formed group) — see
+    // backend/app/routers/requests.py's conversation_upgraded emit.
+    expect(received).toEqual([
+      {
+        conversationId: "conv-group-1",
+        oldConversationId: "conv-a__b",
+        participantIds: ["a@example.com", "b@example.com", "c@example.com"],
+        title: null,
+      },
+    ]);
+  });
+
+  it("stops notifying a listener after its unsubscribe function is called", async () => {
+    const { RealChatService } = await import("./RealChatService");
+    const service = new RealChatService();
+
+    await service.getMessages("conv-a__b");
+
+    const received: unknown[] = [];
+    const unsubscribe = service.onConversationUpgraded((update) => received.push(update));
+    unsubscribe();
+
+    lastFakeSocket!.trigger("conversation_upgraded", {
+      oldConversationId: "conv-a__b",
+      newConversationId: "conv-group-1",
+      participants: ["a@example.com", "b@example.com"],
+    });
+
+    expect(received).toEqual([]);
+  });
+});
+
 describe("RealChatService missing auth token", () => {
   it("does not open a socket and sets state to \"error\" when no auth token is available", async () => {
     const { getAuthToken } = await import("../api/client");

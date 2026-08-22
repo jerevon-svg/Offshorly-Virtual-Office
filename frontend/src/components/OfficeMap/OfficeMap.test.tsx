@@ -4,23 +4,61 @@ import { OfficeMap } from "./OfficeMap";
 import type { OfficePerson } from "../../services/office/floorMerge";
 import sidebarStyles from "./RoomSidebar.module.css";
 import talkingBubbleStyles from "./TalkingBubble.module.css";
-import type { TypingListener } from "../../services/chat";
+import conversationPanelStyles from "../Chat/ConversationView.module.css";
+import type { ConversationUpgradedListener, TypingListener } from "../../services/chat";
 
-// Captures the callback OfficeMap.tsx registers via chatService.onTyping so
-// tests can simulate a peer_typing event arriving over the (mocked) socket,
-// without depending on RealChatService's actual socket.io wiring. Declared
-// via vi.hoisted since vi.mock's factory below is hoisted above these
-// otherwise-top-level declarations.
-const { onTypingMock, getCapturedOnTyping } = vi.hoisted(() => {
-  let captured: TypingListener | null = null;
+// Spies on the two spatial-session emit functions so tests can assert
+// exactly when spatial_session_start/leave fire, without opening a real
+// socket.io connection (spatialSessionStore.ts's emit* functions talk to a
+// live socket otherwise). useSpatialSessions is stubbed to an empty
+// snapshot — no test in this file currently asserts on spatial-session
+// rendering, only on when the emit functions are invoked.
+const { emitSpatialSessionStartMock, emitSpatialSessionLeaveMock } = vi.hoisted(() => ({
+  emitSpatialSessionStartMock: vi.fn(),
+  emitSpatialSessionLeaveMock: vi.fn(),
+}));
+
+vi.mock("../../services/presence/spatialSessionStore", async () => {
+  const actual = await vi.importActual<typeof import("../../services/presence/spatialSessionStore")>(
+    "../../services/presence/spatialSessionStore",
+  );
+  return {
+    ...actual,
+    emitSpatialSessionStart: emitSpatialSessionStartMock,
+    emitSpatialSessionLeave: emitSpatialSessionLeaveMock,
+    useSpatialSessions: () => [],
+  };
+});
+
+// Captures the callbacks OfficeMap.tsx registers via chatService.onTyping /
+// chatService.onConversationUpgraded so tests can simulate a peer_typing /
+// conversation_upgraded event arriving over the (mocked) socket, without
+// depending on RealChatService's actual socket.io wiring. Declared via
+// vi.hoisted since vi.mock's factory below is hoisted above these otherwise-
+// top-level declarations.
+const {
+  onTypingMock,
+  getCapturedOnTyping,
+  onConversationUpgradedMock,
+  getCapturedOnConversationUpgraded,
+} = vi.hoisted(() => {
+  let capturedTyping: TypingListener | null = null;
+  let capturedUpgraded: ConversationUpgradedListener | null = null;
   return {
     onTypingMock: vi.fn((cb: TypingListener) => {
-      captured = cb;
+      capturedTyping = cb;
       return () => {
-        captured = null;
+        capturedTyping = null;
       };
     }),
-    getCapturedOnTyping: () => captured,
+    getCapturedOnTyping: () => capturedTyping,
+    onConversationUpgradedMock: vi.fn((cb: ConversationUpgradedListener) => {
+      capturedUpgraded = cb;
+      return () => {
+        capturedUpgraded = null;
+      };
+    }),
+    getCapturedOnConversationUpgraded: () => capturedUpgraded,
   };
 });
 
@@ -33,6 +71,18 @@ vi.mock("../../services/chat", async () => {
     chatService: {
       ...actual.chatService,
       onTyping: onTypingMock,
+      onConversationUpgraded: onConversationUpgradedMock,
+      // Spreading a class instance only copies own enumerable properties,
+      // not prototype methods — these all live on MockChatService's
+      // prototype, so they need explicit stubs here now that firing
+      // onConversationUpgraded actually mounts a live GroupConversationView
+      // panel (which calls getMessages/onMessage on mount) and Stage B2's
+      // handler calls useUnreadTotal's refetch() (-> listConversations)
+      // unconditionally (unlike the rest of that hook, refetch has no
+      // chatMode !== "real" guard).
+      listConversations: vi.fn(async () => []),
+      getMessages: vi.fn(async () => []),
+      onMessage: vi.fn(() => () => {}),
     },
   };
 });
@@ -171,6 +221,106 @@ describe("OfficeMap", () => {
         getCapturedOnTyping()!({ conversationId: "conv-1", senderId: "bon", isTyping: true });
       });
       expect(dotBubbleCount(container)).toBe(0);
+    });
+  });
+
+  describe("Stage B2: conversation_upgraded live reaction", () => {
+    function panelCount(container: HTMLElement): number {
+      return container.querySelectorAll(`.${conversationPanelStyles.panel}`).length;
+    }
+
+    it("opens the group panel (exactly one panel, never zero/two) when this user is among the upgraded conversation's participants", () => {
+      const { container } = render(<OfficeMap />);
+      expect(getCapturedOnConversationUpgraded()).not.toBeNull();
+      expect(panelCount(container)).toBe(0);
+
+      act(() => {
+        // Default/unauthenticated selfChatId falls back to playerLayerId
+        // ("bon") — same fallback the peer-typing tests above rely on.
+        getCapturedOnConversationUpgraded()!({
+          conversationId: "conv-group-1",
+          oldConversationId: "conv-bon__peer",
+          participantIds: ["bon", "peer@example.com"],
+          title: null,
+        });
+      });
+
+      // Exactly one panel renders (the new group panel) — never zero (the
+      // mutual-exclusion vanish bug) and never two.
+      expect(panelCount(container)).toBe(1);
+      // GroupConversationView's headerTitle falls back to the other
+      // participants' resolved display names when title is null — "bon" is
+      // excluded as self, leaving only peer@example.com's formatted fallback
+      // name (formatCharacterName has no roster/manifest entry for this
+      // synthetic email, so it title-cases the local part).
+      expect(container.querySelector(`.${conversationPanelStyles.title}`)?.textContent).toContain(
+        "Peer@example.com",
+      );
+    });
+
+    it("ignores an upgrade event whose participantIds do not include this user (defense in depth)", () => {
+      const { container } = render(<OfficeMap />);
+
+      act(() => {
+        getCapturedOnConversationUpgraded()!({
+          conversationId: "conv-group-1",
+          oldConversationId: "conv-someone-else__another",
+          participantIds: ["someone-else@example.com", "another@example.com"],
+          title: null,
+        });
+      });
+
+      expect(panelCount(container)).toBe(0);
+    });
+
+    it("clears pendingJoinerConvIdRef on close mid-walk, so reopening the same group later still emits spatial_session_start", async () => {
+      const { container, getByLabelText } = render(<OfficeMap />);
+
+      // Step 1: this user is the joiner — pendingJoinerConvIdRef gets set
+      // for "conv-group-1" and the arrival-gated walk starts (never
+      // completes in this test, mirroring "closed mid-walk").
+      act(() => {
+        getCapturedOnConversationUpgraded()!({
+          conversationId: "conv-group-1",
+          oldConversationId: "conv-bon__peer",
+          participantIds: ["bon", "peer@example.com"],
+          title: null,
+        });
+      });
+      expect(panelCount(container)).toBe(1);
+      // Guarded by pendingJoinerConvIdRef — must NOT have fired yet.
+      expect(emitSpatialSessionStartMock).not.toHaveBeenCalledWith("conv-group-1");
+
+      // Step 2: close the panel WHILE the walk is still pending. Before the
+      // fix this left pendingJoinerConvIdRef stuck on "conv-group-1"
+      // forever, since neither this onClose handler nor onJoinerArrived's
+      // early-bail cleared it.
+      act(() => {
+        fireEvent.click(getByLabelText("Close chat"));
+      });
+      expect(panelCount(container)).toBe(0);
+
+      // Step 3: "reopen" the SAME conversation — simulated here via a second
+      // conversation_upgraded event classified as "incumbent" (openConversationIdRef
+      // is now null after the close above, matched via oldConversationId: null),
+      // which re-mounts GroupConversationView for the same conversationId and
+      // fires its onConversationOpen callback again, exactly like a real
+      // badge-driven reopen would. This isolates the exact bug: whether
+      // pendingJoinerConvIdRef is still stale from step 1's joiner walk.
+      act(() => {
+        getCapturedOnConversationUpgraded()!({
+          conversationId: "conv-group-1",
+          oldConversationId: null as unknown as string,
+          participantIds: ["bon", "peer@example.com"],
+          title: null,
+        });
+      });
+      expect(panelCount(container)).toBe(1);
+
+      // Bug fixed: pendingJoinerConvIdRef was cleared on close, so this
+      // reopen's onConversationOpen guard no longer wrongly skips the emit —
+      // the joiner correctly re-enters the spatial cluster.
+      expect(emitSpatialSessionStartMock).toHaveBeenCalledWith("conv-group-1");
     });
   });
 });

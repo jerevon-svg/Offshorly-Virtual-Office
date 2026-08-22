@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 
 import pytest
 import socketio
@@ -217,15 +218,20 @@ async def test_message_read_emits_unread_count_to_self_and_read_receipt_to_peer(
         if not read_receipt_future.done():
             read_receipt_future.set_result(data)
 
-    await a.emit(
-        "message_read", {"conversationId": conv_id, "upToSentAt": "2026-01-01T00:00:00.000Z"}
-    )
+    # Wall-clock "now" rather than a fixed literal: the (a, b) conversation is deterministic
+    # (dm_key-based) and the test DB persists across runs, so mark_read's monotonic-advance
+    # guard (app/repositories/chat.py) would make a fixed past timestamp a no-op — and thus emit
+    # no read_receipt at all — on any run after the first.
+    from app.schemas.chat import to_iso_z
+
+    up_to_sent_at = to_iso_z(datetime.now(timezone.utc))
+    await a.emit("message_read", {"conversationId": conv_id, "upToSentAt": up_to_sent_at})
 
     unread_payload = await asyncio.wait_for(unread_future, timeout=2)
     read_receipt_payload = await asyncio.wait_for(read_receipt_future, timeout=2)
     assert unread_payload["conversationId"] == conv_id
     assert read_receipt_payload["conversationId"] == conv_id
-    assert read_receipt_payload["readUpTo"] == "2026-01-01T00:00:00.000Z"
+    assert read_receipt_payload["readUpTo"] == up_to_sent_at
 
     await a.disconnect()
     await a2.disconnect()

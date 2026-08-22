@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react";
 import { apiFetch, AuthRedirectError, HOME_PATH } from "../services/api/client";
 import { getCurrentUser, setCurrentUserFromMeResponse } from "./currentUserStore";
+import { chatMode, realChatService } from "../services/chat";
+import { setDevIdentity as setSpatialSessionDevIdentity } from "../services/presence/spatialSessionStore";
+import { setDevIdentity as setRequestsClientDevIdentity } from "../services/chat/requestsClient";
+import { setDevIdentity as setOfflineLineupDevIdentity } from "../services/presence/offlineLineupClient";
+import { setDevIdentity as setSpatialWalkDevIdentity } from "../services/presence/spatialWalkClient";
 
 // Boot-time permission gate for the Virtual Office. Calls Atlas's
 // GET /api/v1/auth/me and checks the can_view_virtual_office flag.
@@ -174,6 +179,24 @@ function seedDevBypassIdentity(): void {
     role: "",
     team: null,
   });
+  // Local multi-browser dev testing needs the map identity (?as=) and the
+  // chat identity to be the same person — wire the just-resolved bypass
+  // email into chat's own dev-identity bypass so chat isn't left trying a
+  // real Atlas bearer token that doesn't exist for this identity.
+  if (chatMode === "real") {
+    realChatService.setDevIdentity(email);
+  }
+  // Spatial-session, join-request, offline-lineup, and spatial-walk sockets
+  // are NOT part of the swappable mock/real ChatService abstraction —
+  // OfficeMap.tsx wires them up and calls their emit/hook functions
+  // unconditionally regardless of chatMode (only some of the UI *rendering*
+  // around requests is gated on chatMode === "real"). So their dev-identity
+  // bypass must be seeded here unconditionally too, or they're left trying a
+  // real Atlas bearer token that doesn't exist for this dev-bypass identity.
+  setSpatialSessionDevIdentity(email);
+  setRequestsClientDevIdentity(email);
+  setOfflineLineupDevIdentity(email);
+  setSpatialWalkDevIdentity(email);
 }
 
 export function useAuthGate(): AuthGateStatus {

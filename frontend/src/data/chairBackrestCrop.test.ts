@@ -8,9 +8,12 @@ describe("getBackrestCropFraction", () => {
     );
   });
 
-  it("returns every known style's fraction as a value strictly between 0 and 1", () => {
+  it("returns every known style's fraction as a valid 0-1 crop fraction", () => {
+    // All entries are currently 0 (backrest-occlusion crop intentionally
+    // disabled — see the 2026-08-19 commit that zeroed them out), so this
+    // only guards the valid range rather than asserting a nonzero crop.
     for (const fraction of Object.values(CHAIR_BACKREST_FRACTION)) {
-      expect(fraction).toBeGreaterThan(0);
+      expect(fraction).toBeGreaterThanOrEqual(0);
       expect(fraction).toBeLessThan(1);
     }
   });

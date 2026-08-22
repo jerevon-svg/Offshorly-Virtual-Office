@@ -54,6 +54,8 @@ async def get_conversation_by_id(session: AsyncSession, conversation_id: str) ->
         "id": conv.id,
         "last_message_at": conv.last_message_at,
         "participant_ids": await _participant_ids(session, conv.id),
+        "type": conv.type,
+        "title": conv.title,
     }
 
 
@@ -85,7 +87,7 @@ async def _get_or_create_conversation(session: AsyncSession, key: str) -> Conver
     return conv
 
 
-async def _add_participant_if_missing(session: AsyncSession, conversation_id: str, email: str) -> None:
+async def add_participant_if_missing(session: AsyncSession, conversation_id: str, email: str) -> None:
     try:
         async with session.begin_nested():
             session.add(ConversationParticipant(conversation_id=conversation_id, participant_email=email))
@@ -99,7 +101,7 @@ async def _add_participant_if_missing(session: AsyncSession, conversation_id: st
 async def upsert_conversation(session: AsyncSession, email_a: str, email_b: str) -> dict:
     """Upserts a conversation + both participant rows for a DM between two emails. Idempotent —
     safe to call every time a chat is opened, including concurrently for the same email pair
-    (see `_get_or_create_conversation`/`_add_participant_if_missing` for the race handling)."""
+    (see `_get_or_create_conversation`/`add_participant_if_missing` for the race handling)."""
     a = email_a.strip().lower()
     b = email_b.strip().lower()
     key = dm_key(a, b)
@@ -109,7 +111,7 @@ async def upsert_conversation(session: AsyncSession, email_a: str, email_b: str)
     existing_emails = set(await _participant_ids(session, conv.id))
     for email in (a, b):
         if email not in existing_emails:
-            await _add_participant_if_missing(session, conv.id, email)
+            await add_participant_if_missing(session, conv.id, email)
 
     await session.commit()
 
@@ -139,7 +141,10 @@ async def touch_conversation(session: AsyncSession, conversation_id: str, sent_a
 
 async def mark_read(
     session: AsyncSession, conversation_id: str, email: str, up_to_sent_at: datetime
-) -> None:
+) -> bool:
+    """Returns True iff the watermark actually advanced (participant row exists AND the new
+    value is strictly later than the existing one) — callers (e.g. socket.py) use this to only
+    fan out a read_receipt event on a genuine change, not on every redundant re-ack."""
     self_email = email.strip().lower()
     result = await session.execute(
         select(ConversationParticipant).where(
@@ -148,19 +153,23 @@ async def mark_read(
         )
     )
     participant = result.scalar_one_or_none()
-    if participant is not None:
-        # Monotonic guard: never let a stale/out-of-order ack move the watermark backward — a
-        # regression here would incorrectly "un-read" messages under the derived-status logic
-        # compute_message_receipts relies on.
-        existing = _as_aware_utc(participant.last_read_at)
-        if existing is None or _as_aware_utc(up_to_sent_at) > existing:
-            participant.last_read_at = up_to_sent_at
+    if participant is None:
+        return False
+    # Monotonic guard: never let a stale/out-of-order ack move the watermark backward — a
+    # regression here would incorrectly "un-read" messages under the derived-status logic
+    # compute_message_receipts relies on.
+    existing = _as_aware_utc(participant.last_read_at)
+    if existing is None or _as_aware_utc(up_to_sent_at) > existing:
+        participant.last_read_at = up_to_sent_at
+        return True
+    return False
 
 
 async def mark_delivered(
     session: AsyncSession, conversation_id: str, email: str, up_to_sent_at: datetime
-) -> None:
-    """Sibling to mark_read above, same monotonic guard — see its docstring."""
+) -> bool:
+    """Sibling to mark_read above, same monotonic guard and same True-iff-advanced return
+    contract — see its docstring."""
     self_email = email.strip().lower()
     result = await session.execute(
         select(ConversationParticipant).where(
@@ -169,18 +178,20 @@ async def mark_delivered(
         )
     )
     participant = result.scalar_one_or_none()
-    if participant is not None:
-        existing = _as_aware_utc(participant.last_delivered_at)
-        if existing is None or _as_aware_utc(up_to_sent_at) > existing:
-            participant.last_delivered_at = up_to_sent_at
+    if participant is None:
+        return False
+    existing = _as_aware_utc(participant.last_delivered_at)
+    if existing is None or _as_aware_utc(up_to_sent_at) > existing:
+        participant.last_delivered_at = up_to_sent_at
+        return True
+    return False
 
 
 async def get_participant_watermarks(
     session: AsyncSession, conversation_id: str
 ) -> dict[str, tuple[datetime | None, datetime | None]]:
     """One query returning {email: (last_delivered_at, last_read_at)} for every participant in
-    a conversation. This is a DM-only app (dm_key is always a 2-party pair) so the returned dict
-    has at most 2 entries."""
+    a conversation — DMs have 2 entries, groups can have arbitrarily many."""
     result = await session.execute(
         select(
             ConversationParticipant.participant_email,
@@ -193,27 +204,25 @@ async def get_participant_watermarks(
 
 def compute_message_receipts(
     message: Message, watermarks: dict[str, tuple[datetime | None, datetime | None]]
-) -> tuple[datetime | None, datetime | None]:
+) -> tuple[list[str], list[str]]:
     """Derived, not stored — see unread_count's derivation off last_read_at for the same
-    pattern. The recipient is the OTHER participant (never the sender): a message is
-    delivered/read at the recipient's watermark timestamp once that watermark has caught up to
-    (>=) the message's own sent_at, else None (not yet)."""
-    recipient_email = next(
-        (email for email in watermarks if email != message.sender_email), None
-    )
-    if recipient_email is None:
-        return (None, None)
-
-    recipient_last_delivered_at, recipient_last_read_at = watermarks[recipient_email]
+    pattern. Returns (delivered_to, read_by): sorted lists of every recipient email (i.e. every
+    watermark entry OTHER than the sender) whose delivered/read watermark has caught up to (>=)
+    this message's own sent_at. `read_by` is NOT guaranteed to be a subset of `delivered_to` — a
+    client that acks read without ever acking delivered is possible, don't assert containment."""
     sent_at = _as_aware_utc(message.sent_at)
-
-    delivered_cmp = _as_aware_utc(recipient_last_delivered_at)
-    delivered_at = (
-        recipient_last_delivered_at if (delivered_cmp is not None and delivered_cmp >= sent_at) else None
-    )
-    read_cmp = _as_aware_utc(recipient_last_read_at)
-    read_at = recipient_last_read_at if (read_cmp is not None and read_cmp >= sent_at) else None
-    return (delivered_at, read_at)
+    delivered_to: list[str] = []
+    read_by: list[str] = []
+    for recipient_email, (last_delivered_at, last_read_at) in watermarks.items():
+        if recipient_email == message.sender_email:
+            continue
+        delivered_cmp = _as_aware_utc(last_delivered_at)
+        if delivered_cmp is not None and delivered_cmp >= sent_at:
+            delivered_to.append(recipient_email)
+        read_cmp = _as_aware_utc(last_read_at)
+        if read_cmp is not None and read_cmp >= sent_at:
+            read_by.append(recipient_email)
+    return (sorted(delivered_to), sorted(read_by))
 
 
 async def _compute_unread(
@@ -282,9 +291,52 @@ async def list_conversations_for_user(session: AsyncSession, email: str) -> list
                 "last_message_at": conv.last_message_at,
                 "participant_ids": parts_by_conv.get(conv.id, []),
                 "unread_count": count,
+                "type": conv.type,
+                "title": conv.title,
             }
         )
     return out
+
+
+async def _create_group_conversation(
+    session: AsyncSession, member_emails: set[str], title: str | None
+) -> str:
+    """No-commit core: creates a group Conversation + participant rows, flushes, returns the new
+    conversation id. Caller owns the transaction/commit. Raises ValueError if fewer than 2 unique
+    members."""
+    members = {e.strip().lower() for e in member_emails}
+    if len(members) < 2:
+        raise ValueError("A group conversation requires at least 2 unique participants")
+
+    conv = Conversation(type="group", title=title, dm_key=None, last_message_at=datetime.now(timezone.utc))
+    session.add(conv)
+    await session.flush()
+
+    for email in members:
+        await add_participant_if_missing(session, conv.id, email)
+
+    return conv.id
+
+
+async def create_group_conversation(
+    session: AsyncSession, creator_email: str, participant_emails: list[str], title: str | None
+) -> dict:
+    """Creates a new group conversation with the creator plus every given participant email
+    (deduped, normalized). Raises ValueError if the deduped membership set has fewer than 2
+    people — routers translate that to a 400. Thin commit-owning wrapper around
+    `_create_group_conversation` — kept as its own function so accept_join_request (which must
+    do the group-creation and other side effects inside ONE transaction) can call the no-commit
+    core directly instead."""
+    creator = creator_email.strip().lower()
+    members = {creator} | {e.strip().lower() for e in participant_emails}
+
+    new_id = await _create_group_conversation(session, members, title)
+    await session.commit()
+
+    result_conv = await get_conversation_by_id(session, new_id)
+    if result_conv is None:
+        raise RuntimeError(f"Failed to create group conversation {new_id}")
+    return result_conv
 
 
 async def insert_message(session: AsyncSession, conversation_id: str, sender_email: str, text: str) -> Message:

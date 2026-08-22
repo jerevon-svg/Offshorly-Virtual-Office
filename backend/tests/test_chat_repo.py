@@ -65,6 +65,13 @@ async def test_list_conversations_excludes_messages_at_or_before_last_read_at(db
     conv_id = conv["id"]
 
     m1 = await chat_repo.insert_message(db_session, conv_id, "b@example.com", "hi 1")
+    # Force a deterministic gap between m1's sent_at and m2's: two back-to-back insert_message
+    # calls can otherwise land in the same millisecond-truncated timestamp (see insert_message's
+    # truncation), collapsing the `> last_read_at` boundary and making this test race the clock.
+    # Nudge m1's watermark backward instead of forward so m2 (inserted with a real, untouched
+    # "now") is guaranteed to be strictly after it, regardless of how fast the two calls run.
+    m1.sent_at = m1.sent_at - timedelta(milliseconds=5)
+    await db_session.flush()
     await chat_repo.mark_read(db_session, conv_id, "a@example.com", m1.sent_at)
     await chat_repo.insert_message(db_session, conv_id, "b@example.com", "hi 2")
     await db_session.commit()
@@ -263,13 +270,56 @@ async def test_mark_delivered_advances_the_watermark(db_session):
     m1 = await chat_repo.insert_message(db_session, conv_id, "b@example.com", "hi")
     await db_session.commit()
 
-    await chat_repo.mark_delivered(db_session, conv_id, "a@example.com", m1.sent_at)
+    advanced = await chat_repo.mark_delivered(db_session, conv_id, "a@example.com", m1.sent_at)
     await db_session.commit()
+    assert advanced is True
 
     watermarks = await chat_repo.get_participant_watermarks(db_session, conv_id)
     delivered_at, read_at = watermarks["a@example.com"]
     assert _utc(delivered_at) == _utc(m1.sent_at)
     assert read_at is None
+
+
+async def test_mark_read_returns_true_on_genuine_advance_false_on_noop_and_missing_participant(
+    db_session,
+):
+    conv = await _seed_conversation(db_session)
+    conv_id = conv["id"]
+    m1 = await chat_repo.insert_message(db_session, conv_id, "b@example.com", "hi 1")
+    m2 = await chat_repo.insert_message(db_session, conv_id, "b@example.com", "hi 2")
+    await db_session.commit()
+
+    assert await chat_repo.mark_read(db_session, conv_id, "a@example.com", m2.sent_at) is True
+    await db_session.commit()
+
+    # Same/earlier watermark again — no-op, must report False.
+    assert await chat_repo.mark_read(db_session, conv_id, "a@example.com", m1.sent_at) is False
+    assert await chat_repo.mark_read(db_session, conv_id, "a@example.com", m2.sent_at) is False
+    await db_session.commit()
+
+    # Non-participant email — no row to advance, must report False.
+    assert await chat_repo.mark_read(db_session, conv_id, "nobody@example.com", m2.sent_at) is False
+
+
+async def test_mark_delivered_returns_true_on_genuine_advance_false_on_noop_and_missing_participant(
+    db_session,
+):
+    conv = await _seed_conversation(db_session)
+    conv_id = conv["id"]
+    m1 = await chat_repo.insert_message(db_session, conv_id, "b@example.com", "hi 1")
+    m2 = await chat_repo.insert_message(db_session, conv_id, "b@example.com", "hi 2")
+    await db_session.commit()
+
+    assert await chat_repo.mark_delivered(db_session, conv_id, "a@example.com", m2.sent_at) is True
+    await db_session.commit()
+
+    assert await chat_repo.mark_delivered(db_session, conv_id, "a@example.com", m1.sent_at) is False
+    assert await chat_repo.mark_delivered(db_session, conv_id, "a@example.com", m2.sent_at) is False
+    await db_session.commit()
+
+    assert (
+        await chat_repo.mark_delivered(db_session, conv_id, "nobody@example.com", m2.sent_at) is False
+    )
 
 
 async def test_mark_delivered_monotonic_guard_rejects_backward_move(db_session):
@@ -312,25 +362,25 @@ async def test_compute_message_receipts_transitions_sent_delivered_read(db_sessi
 
     # sent only — recipient (a) has no watermarks yet.
     watermarks = await chat_repo.get_participant_watermarks(db_session, conv_id)
-    delivered_at, read_at = chat_repo.compute_message_receipts(m1, watermarks)
-    assert delivered_at is None
-    assert read_at is None
+    delivered_to, read_by = chat_repo.compute_message_receipts(m1, watermarks)
+    assert delivered_to == []
+    assert read_by == []
 
     # delivered — a's last_delivered_at has caught up to m1.sent_at.
     await chat_repo.mark_delivered(db_session, conv_id, "a@example.com", m1.sent_at)
     await db_session.commit()
     watermarks = await chat_repo.get_participant_watermarks(db_session, conv_id)
-    delivered_at, read_at = chat_repo.compute_message_receipts(m1, watermarks)
-    assert _utc(delivered_at) == _utc(m1.sent_at)
-    assert read_at is None
+    delivered_to, read_by = chat_repo.compute_message_receipts(m1, watermarks)
+    assert delivered_to == ["a@example.com"]
+    assert read_by == []
 
     # read — a's last_read_at has also caught up.
     await chat_repo.mark_read(db_session, conv_id, "a@example.com", m1.sent_at)
     await db_session.commit()
     watermarks = await chat_repo.get_participant_watermarks(db_session, conv_id)
-    delivered_at, read_at = chat_repo.compute_message_receipts(m1, watermarks)
-    assert _utc(delivered_at) == _utc(m1.sent_at)
-    assert _utc(read_at) == _utc(m1.sent_at)
+    delivered_to, read_by = chat_repo.compute_message_receipts(m1, watermarks)
+    assert delivered_to == ["a@example.com"]
+    assert read_by == ["a@example.com"]
 
 
 async def test_compute_message_receipts_batch_read_shares_same_read_at(db_session):
@@ -350,11 +400,11 @@ async def test_compute_message_receipts_batch_read_shares_same_read_at(db_sessio
     await db_session.commit()
 
     watermarks = await chat_repo.get_participant_watermarks(db_session, conv_id)
-    _, read_at_1 = chat_repo.compute_message_receipts(m1, watermarks)
-    _, read_at_2 = chat_repo.compute_message_receipts(m2, watermarks)
-    assert _utc(read_at_1) == _utc(read_watermark)
-    assert _utc(read_at_2) == _utc(read_watermark)
-    assert read_at_1 == read_at_2
+    _, read_by_1 = chat_repo.compute_message_receipts(m1, watermarks)
+    _, read_by_2 = chat_repo.compute_message_receipts(m2, watermarks)
+    assert read_by_1 == ["a@example.com"]
+    assert read_by_2 == ["a@example.com"]
+    assert read_by_1 == read_by_2
 
 
 async def test_compute_message_receipts_resolves_after_wire_precision_round_trip(db_session):
@@ -381,10 +431,9 @@ async def test_compute_message_receipts_resolves_after_wire_precision_round_trip
     await db_session.commit()
 
     watermarks = await chat_repo.get_participant_watermarks(db_session, conv_id)
-    delivered_at, read_at = chat_repo.compute_message_receipts(m1, watermarks)
-    assert delivered_at is not None
-    assert read_at is not None
-    assert _utc(read_at) == _utc(round_tripped)
+    delivered_to, read_by = chat_repo.compute_message_receipts(m1, watermarks)
+    assert delivered_to == ["a@example.com"]
+    assert read_by == ["a@example.com"]
 
 
 async def test_unread_count_unaffected_by_mark_delivered(db_session):
@@ -413,3 +462,75 @@ async def test_list_messages_clamps_limit_between_1_and_500(db_session):
     assert len(await chat_repo.list_messages(db_session, conv_id, limit=0)) == 1
     assert len(await chat_repo.list_messages(db_session, conv_id, limit=2)) == 2
     assert len(await chat_repo.list_messages(db_session, conv_id, limit=10_000)) == 5
+
+
+async def test_compute_message_receipts_with_three_plus_participants_partial_and_full(db_session):
+    conv = await chat_repo.create_group_conversation(
+        db_session, "a@example.com", ["b@example.com", "c@example.com"], title="Squad"
+    )
+    conv_id = conv["id"]
+    m1 = await chat_repo.insert_message(db_session, conv_id, "a@example.com", "hi all")
+    await db_session.commit()
+
+    # Nobody's acked yet.
+    watermarks = await chat_repo.get_participant_watermarks(db_session, conv_id)
+    delivered_to, read_by = chat_repo.compute_message_receipts(m1, watermarks)
+    assert delivered_to == []
+    assert read_by == []
+
+    # b delivers only, c reads (which does not require delivered to be set).
+    await chat_repo.mark_delivered(db_session, conv_id, "b@example.com", m1.sent_at)
+    await chat_repo.mark_read(db_session, conv_id, "c@example.com", m1.sent_at)
+    await db_session.commit()
+
+    watermarks = await chat_repo.get_participant_watermarks(db_session, conv_id)
+    delivered_to, read_by = chat_repo.compute_message_receipts(m1, watermarks)
+    # Sender (a) is always excluded even though a is a watermark entry.
+    assert "a@example.com" not in delivered_to
+    assert "a@example.com" not in read_by
+    assert delivered_to == ["b@example.com"]
+    assert read_by == ["c@example.com"]
+
+    # Everyone else also delivers/reads — full fan-out, both lists sorted.
+    await chat_repo.mark_delivered(db_session, conv_id, "c@example.com", m1.sent_at)
+    await chat_repo.mark_read(db_session, conv_id, "b@example.com", m1.sent_at)
+    await db_session.commit()
+
+    watermarks = await chat_repo.get_participant_watermarks(db_session, conv_id)
+    delivered_to, read_by = chat_repo.compute_message_receipts(m1, watermarks)
+    assert delivered_to == ["b@example.com", "c@example.com"]
+    assert read_by == ["b@example.com", "c@example.com"]
+
+
+async def test_create_group_conversation_dedups_and_includes_creator(db_session):
+    conv = await chat_repo.create_group_conversation(
+        db_session,
+        "A@Example.com",
+        ["b@example.com", "B@Example.com", "a@example.com"],
+        title="Team Chat",
+    )
+    assert conv["type"] == "group"
+    assert conv["title"] == "Team Chat"
+    assert sorted(conv["participant_ids"]) == ["a@example.com", "b@example.com"]
+
+
+async def test_create_group_conversation_raises_on_fewer_than_two_unique_members(db_session):
+    with pytest.raises(ValueError):
+        await chat_repo.create_group_conversation(
+            db_session, "a@example.com", ["a@example.com", "A@Example.com"], title=None
+        )
+
+
+async def test_create_group_conversation_helper_no_commit(db_session):
+    """`_create_group_conversation` is the no-commit core `accept_join_request` relies on to
+    fold group creation into its own surrounding transaction — proves it genuinely never
+    self-commits by rolling back right after calling it and confirming nothing persisted."""
+    new_id = await chat_repo._create_group_conversation(
+        db_session, {"a@example.com", "b@example.com"}, title=None
+    )
+    assert new_id
+
+    await db_session.rollback()
+
+    result = await db_session.execute(select(Conversation).where(Conversation.id == new_id))
+    assert result.scalar_one_or_none() is None

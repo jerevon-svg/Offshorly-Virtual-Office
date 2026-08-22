@@ -278,6 +278,8 @@ function makeMessage(overrides: Partial<ChatMessage>): ChatMessage {
     senderId: "bon",
     text: "hi",
     sentAt: "2026-08-14T10:00:00.000Z",
+    deliveredTo: [],
+    readBy: [],
     ...overrides,
   };
 }
@@ -322,7 +324,7 @@ describe("deriveMessageStatus", () => {
 
 describe("ConversationView (real mode, status indicators)", () => {
   // Builds a fake real ChatService pre-seeded with history so the panel
-  // renders own messages with deliveredAt/readAt already reflecting the
+  // renders own messages with deliveredTo/readBy already reflecting the
   // peer's watermark (mirrors what RealChatService.getMessages returns).
   function makeFakeRealService(history: ChatMessage[]): ChatService {
     const conv: Conversation = { id: "conv-1", participantIds: ["bon", "alex"], lastMessageAt: history[0]?.sentAt ?? "" };
@@ -352,7 +354,7 @@ describe("ConversationView (real mode, status indicators)", () => {
         senderId: "bon",
         text: "first",
         sentAt: "2026-08-14T10:00:00.000Z",
-        readAt: "2026-08-14T10:10:00.000Z",
+        readBy: ["alex"],
       }),
       makeMessage({
         id: "peer-1",
@@ -365,7 +367,7 @@ describe("ConversationView (real mode, status indicators)", () => {
         senderId: "bon",
         text: "second",
         sentAt: "2026-08-14T10:02:00.000Z",
-        readAt: "2026-08-14T10:10:00.000Z",
+        readBy: ["alex"],
       }),
     ];
 
