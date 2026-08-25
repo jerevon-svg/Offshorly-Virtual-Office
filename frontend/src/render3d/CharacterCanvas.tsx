@@ -1,12 +1,14 @@
-import { useEffect, useRef, type MutableRefObject } from "react";
+import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import type { WalkDirection } from "../data/bonWalkFrames";
 import { loadGlbCached } from "./glbCache";
 import { getSharedCanvasElement, renderToCanvas } from "./SharedRenderer";
+import { stepAngleTowardsDegrees } from "./angleMath";
+import { resolveCharacterAnimState, type CharacterAnimState } from "./characterAnimationState";
 
 // ---------------------------------------------------------------------------
-// Phase C — live-3D character renderer.
+// Live-3D character renderer.
 //
 // Camera (orthographic, ~35deg elevation, azimuth 0 = front, two-pass
 // camera-space bbox auto-framing) is ported as-is from the locked
@@ -38,6 +40,18 @@ import { getSharedCanvasElement, renderToCanvas } from "./SharedRenderer";
 // tones is close to saturated even before any multiplier, so cranking
 // emissiveIntensity toward/above 1.0 clips highlights to flat white —
 // values below 1.0 are correct here, not a mistake.
+//
+// Phase A: replaced the earlier "up to 4 independently-loaded GLBs,
+// hard-swap visibility" architecture with a single consolidated GLB (one
+// mesh/skeleton, all 6 animation-state clips baked in — see
+// live3dCharacters.ts/build-character-lods.mjs) driving ONE
+// THREE.AnimationMixer. Which clip plays is resolved every render via the
+// pure resolveCharacterAnimState() (characterAnimationState.ts) from this
+// component's isWalking/isSitting/isChatting/isResponder props, and
+// transitions crossfade (THREE's clipAction.crossFadeTo) over ~0.3s rather
+// than snapping. Model rotation is now a continuous per-frame turn (see
+// angleMath.ts's stepAngleTowardsDegrees) toward headingDegrees, replacing
+// the old instant 4-direction snap.
 // ---------------------------------------------------------------------------
 
 const CONFIG = {
@@ -45,22 +59,30 @@ const CONFIG = {
     elevationDeg: 35,
     azimuthDeg: 0,
     distance: 5,
-    // Tuned via pixel-alpha-scan measurement (see git history) to bring the
-    // front-facing walking silhouette from ~184px up to ~190px at this
-    // 210x298 render size, without touching elevationDeg — a slight
-    // zoom-in on top of the 35deg elevation fix, not a re-derivation of
-    // the framing math itself.
-    // Tuned via pixel-alpha-scan measurement (see git history) to bring the
-    // front-facing walking bind-pose silhouette from ~180-185px up to
-    // ~190px at this 210x298 render size, without touching elevationDeg —
-    // a slight zoom-in on top of the 35deg elevation fix, not a
-    // re-derivation of the framing math itself. Every other pose variant
-    // (idle/shrug/thinking/future) normalizes its own scale against this
-    // same frustum via normalizeToReferenceHeight (see loadPoseVariant),
-    // so this one pair of constants is the single place controlling
-    // apparent character size across every variant.
-    frameMarginY: 1.4234,
-    frameMarginX: 1.556,
+    // Re-tuned via pixel-alpha-scan measurement (Phase A live-verify,
+    // 2026-08-20). Skip past a couple of wrong turns recorded in git
+    // history (an unrelated "~88% frame fill" figure borrowed from the
+    // 2D sprite pipeline, then a "190px" target sourced from a stale code
+    // comment) — a direct human side-by-side comparison against other
+    // characters in the live app is what actually settled this, not any
+    // documented number. Final target: as LARGE as possible while still
+    // keeping every one of the 6 animation clips fully inside frame (no
+    // clipping on any edge) — measured pixel bbox height/width across all
+    // 6 states (idle, walking, sit-on-chair-arms, sitting-answering,
+    // agree-gesture, listening-gesture) at the real 210x298 render size,
+    // this is the tightest margin with zero edge-touching on the tallest
+    // clip (`walking`, ~254px). Standing/gesture poses land ~245-254px;
+    // `sit-on-chair-arms` is genuinely shorter (~185px) since sitting is a
+    // physically shorter silhouette than standing — that's correct, not
+    // an inconsistency to fix. frameMarginX has slack to spare (widest
+    // measured clip uses well under half the available width) so it isn't
+    // independently load-bearing here. Re-measure ALL 6 clips (not just
+    // idle, not just walking) via scripts/avatar-pipeline/
+    // threejs-calibration if the model is regenerated again — see git
+    // history for the measurement harness — and sanity-check against
+    // other characters in the live app, not just an internal target.
+    frameMarginY: 1.09,
+    frameMarginX: 1.115,
   },
   lights: {
     ambient: { color: 0xfff2e6, intensity: 0.4 },
@@ -70,15 +92,25 @@ const CONFIG = {
   emissiveIntensity: 0.7,
 };
 
+// Continuous turn rate for the smooth-rotation state machine (Phase A.3) —
+// reaches a typical 90deg direction change in 125ms and a full 180deg
+// about-face in 250ms, comfortably inside the "a few hundred ms" target.
+const TURN_RATE_DEG_PER_SEC = 720;
+
+// Crossfade duration (seconds) used for every animation-state transition —
+// picked from the 0.2-0.3s spec range; no single transition in the current
+// 6-state set warrants a different value.
+const CROSSFADE_SECONDS = 0.3;
+
 // Maps the app's existing 4-direction sprite convention (see
 // useCharacterWalk.ts's WalkDirection: y grows downward -> +dy = "front" =
-// facing viewer) onto a model rotation.y in degrees, replacing sprite
-// swapping with an actual turn of the 3D model. azimuthDeg: 0 in CONFIG
-// means the camera looks at the model's front face when rotation.y = 0, so
-// "front" maps to 0 here. Left/right sign was picked to match screen-space
-// left/right as seen by the camera and confirmed against the running app
-// (see OfficeStage dev-toggle integration) — flip the two if a future model
-// turns out mirrored.
+// facing viewer) onto a model heading in degrees — this is the STEP
+// TARGET fed into the continuous per-frame turn above, not an instant
+// snap. azimuthDeg: 0 in CONFIG means the camera looks at the model's front
+// face when rotation.y = 0, so "front" maps to 0 here. Left/right sign was
+// picked to match screen-space left/right as seen by the camera and
+// confirmed against the running app (see OfficeStage dev-toggle
+// integration) — flip the two if a future model turns out mirrored.
 export function directionToHeadingDegrees(direction: WalkDirection): number {
   switch (direction) {
     case "front":
@@ -93,70 +125,61 @@ export function directionToHeadingDegrees(direction: WalkDirection): number {
 }
 
 type Props = {
-  // The always-present walking-animation GLB (unchanged from before this
-  // idle-pose addition).
-  walkingGlbUrl: string;
-  // Optional dedicated idle-pose GLB (own rig-matched skeleton, single
-  // "Idle" clip). When provided, `isWalking=false` shows THIS glb's model
-  // with its own mixer running, instead of freezing the walking glb
-  // mid-stride. When omitted (e.g. no idle asset generated yet for this
-  // character), behavior falls back exactly to the pre-idle single-GLB
-  // freeze-on-pause behavior below.
-  idleGlbUrl?: string;
-  // Optional looping-gesture GLBs (e.g. shrug/thinking) shown while a chat
-  // or call with this character is active — see gestureActive below. Both
-  // are optional and independent of idleGlbUrl; a character with no
-  // gesture assets configured (anyone but Bon/Jerevon right now) simply
-  // never shows a gesture, matching the idle-glb graceful-fallback
-  // principle (absent prop -> no-op, never an error).
-  shrugGlbUrl?: string;
-  thinkingGlbUrl?: string;
-  // When true, shows ONE of shrugGlbUrl/thinkingGlbUrl (randomly chosen
-  // ONCE per activation — i.e. once per false->true transition, not
-  // re-rolled every frame/render) looping, instead of the normal
-  // idle/walking behavior below. Returns to normal idle/walking exactly as
-  // before once this goes back to false. No-ops (renders idle/walking as
-  // usual) if neither gesture glb is provided.
-  gestureActive?: boolean;
-  animationName?: string;
+  // The single consolidated GLB (mesh + skeleton + all 6 animation-state
+  // clips) — see live3dCharacters.ts.
+  glbUrl: string;
+  // Target heading in degrees — CharacterCanvas turns toward this
+  // continuously (see angleMath.ts's stepAngleTowardsDegrees), never snaps.
   headingDegrees?: number;
-  // Gates which variant is shown/animated, mirroring the sprite path's
-  // "only cycle frames while isWalking" behavior — true (the default)
-  // matches every existing caller's prior always-animating behavior.
-  // - With idleGlbUrl set: true shows the walking glb (mixer running),
-  //   false shows the idle glb (its OWN mixer running the idle clip).
-  // - Without idleGlbUrl (fallback): true keeps the walking mixer
-  //   advancing, false freezes it wherever it happens to be (character
-  //   holds its current pose) — the scene keeps rendering, so
-  //   rotation/heading changes made while stationary still show up
-  //   immediately.
+  // Sprite-path's existing walk-gate.
   isWalking?: boolean;
+  // Seated in a real (painted-chair) seat — see OfficeMap's isSitting.
+  // Facing (headingDegrees) is expected to already reflect the CHAIR's own
+  // defined direction (data/seatDirections.ts) whenever this is true — the
+  // caller resolves that (mirroring the existing 2D sitDirection plumbing),
+  // never derived from the camera here.
+  isSitting?: boolean;
+  // This character is a participant in an active chat/call (see
+  // OfficeStage's talkingCharacterIds).
+  isChatting?: boolean;
+  // Within an active chat, this character is the one currently responding
+  // (see OfficeStage's talkingTextById). Ignored when isChatting is false.
+  isResponder?: boolean;
   width: number;
   height: number;
   // Fires (at most once per mount) when this character's live-3D model
-  // could not be shown — a GLB fetch/parse failure (walking, idle, shrug,
-  // or thinking) or the shared WebGL context being lost mid-session. The
-  // caller is expected to fall back to the normal 2D sprite <img> for this
-  // character on this signal; CharacterCanvas itself never renders a
-  // fallback (it doesn't know about sprite src), it only reports the
-  // failure upward. No-ops after the first call per mount (a lost context
-  // firing "restored" and lost again wouldn't re-fire) — the caller owns
-  // whatever happens next.
+  // could not be shown — a GLB fetch/parse failure or the shared WebGL
+  // context being lost mid-session. The caller is expected to fall back to
+  // the normal 2D sprite <img> for this character on this signal;
+  // CharacterCanvas itself never renders a fallback (it doesn't know about
+  // sprite src), it only reports the failure upward. No-ops after the
+  // first call per mount.
   onError?: () => void;
+  // Default true (every existing caller/test that doesn't pass this keeps
+  // today's fully-animated behavior unchanged). false = "static frame"
+  // mode for a confirmed-too-weak-but-has-WebGL device (software renderer,
+  // or a weak-static device that failed/never ran its microbench rescue —
+  // see OfficeStage.tsx and deviceTier.ts's D-D bucket): the GLB still
+  // loads and renders exactly ONE real frame at the resolved pose/heading,
+  // but the requestAnimationFrame tick loop (mixer updates, continuous
+  // heading turn) never starts — no per-frame render loop ever runs for
+  // this instance, not merely "started then immediately stopped," so a
+  // confirmed-weak device never pays the ongoing per-frame render cost it
+  // couldn't afford in the first place (the whole point of this mode).
+  animated?: boolean;
 };
 
 export function CharacterCanvas({
-  walkingGlbUrl,
-  idleGlbUrl,
-  shrugGlbUrl,
-  thinkingGlbUrl,
-  gestureActive = false,
-  animationName,
+  glbUrl,
   headingDegrees = 0,
   isWalking = true,
+  isSitting = false,
+  isChatting = false,
+  isResponder = false,
   width,
   height,
   onError,
+  animated = true,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   // Ref (not a direct closure over the onError prop) so the main load
@@ -165,117 +188,32 @@ export function CharacterCanvas({
   // re-trigger a GLB re-fetch.
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
-  // At most once per mount — a lost-then-restored-then-lost-again context,
-  // or multiple variants failing independently, should only notify the
-  // caller once (it's already switched this character to the sprite path
-  // after the first call, so repeat calls would be no-ops anyway).
+  // At most once per mount — a lost-then-restored-then-lost-again context
+  // should only notify the caller once (it's already switched this
+  // character to the sprite path after the first call).
   const reportedErrorRef = useRef(false);
   function reportError() {
     if (reportedErrorRef.current) return;
     reportedErrorRef.current = true;
     onErrorRef.current?.();
   }
-  const walkModelRef = useRef<THREE.Object3D | null>(null);
-  const idleModelRef = useRef<THREE.Object3D | null>(null);
-  const shrugModelRef = useRef<THREE.Object3D | null>(null);
-  const thinkingModelRef = useRef<THREE.Object3D | null>(null);
-  const isWalkingRef = useRef(isWalking);
-  const gestureActiveRef = useRef(gestureActive);
-  // Which gesture glb is currently "chosen" for this activation — randomly
-  // picked once per false->true transition (see the gestureActive effect
-  // below), then held steady (not re-rolled) for as long as gestureActive
-  // stays true, per the props doc above.
-  const chosenGestureRef = useRef<"shrug" | "thinking" | null>(null);
 
-  // Reconciles which of the (up to four) loaded model variants is visible,
-  // given the latest isWalking/gestureActive/chosen-gesture refs. Called
-  // from every effect below that can change one of those inputs, plus from
-  // each variant's own load callback (in case that variant finishes loading
-  // after the relevant effect already ran). "effective" gesture mode only
-  // engages when gestureActive is true AND the chosen gesture's glb has
-  // actually finished loading — driven by loaded-model availability, not
-  // prop presence, so a gesture (or idle) glb that fails to load falls back
-  // to the walk model staying visible/animating instead of a blank canvas.
-  // Likewise idle "availability" is based on idleModelRef, not idleGlbUrl,
-  // for the same reason.
-  function applyVisibility() {
-    const chosen = chosenGestureRef.current;
-    const effectiveGesture =
-      gestureActiveRef.current &&
-      (chosen === "shrug"
-        ? !!shrugModelRef.current
-        : chosen === "thinking"
-          ? !!thinkingModelRef.current
-          : false);
-    const idleAvailable = !!idleModelRef.current;
-    const walking = isWalkingRef.current;
-    if (walkModelRef.current) {
-      walkModelRef.current.visible = !effectiveGesture && (!idleAvailable || walking);
-    }
-    if (idleModelRef.current) {
-      idleModelRef.current.visible = !effectiveGesture && idleAvailable && !walking;
-    }
-    if (shrugModelRef.current) {
-      shrugModelRef.current.visible = effectiveGesture && chosenGestureRef.current === "shrug";
-    }
-    if (thinkingModelRef.current) {
-      thinkingModelRef.current.visible =
-        effectiveGesture && chosenGestureRef.current === "thinking";
-    }
-  }
-
-  // Live model rotation without re-triggering the GLB load effect. Applied
-  // to every loaded variant so whichever one is currently visible is
-  // always facing the right way, and swapping visibility never needs to
-  // re-sync rotation separately.
+  const headingTargetRef = useRef(headingDegrees);
   useEffect(() => {
-    const rad = (headingDegrees * Math.PI) / 180;
-    if (walkModelRef.current) walkModelRef.current.rotation.y = rad;
-    if (idleModelRef.current) idleModelRef.current.rotation.y = rad;
-    if (shrugModelRef.current) shrugModelRef.current.rotation.y = rad;
-    if (thinkingModelRef.current) thinkingModelRef.current.rotation.y = rad;
+    headingTargetRef.current = headingDegrees;
   }, [headingDegrees]);
 
-  // Live walk-gate without re-triggering the GLB load effect (same pattern
-  // as headingDegrees above). Also flips which model is visible right away
-  // (rather than waiting for the next load) when the relevant variants are
-  // already loaded.
+  const stateInputsRef = useRef({ isWalking, isSitting, isChatting, isResponder });
   useEffect(() => {
-    isWalkingRef.current = isWalking;
-    applyVisibility();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isWalking, idleGlbUrl]);
-
-  // Live gesture-gate, same "don't re-trigger the GLB load effect" pattern.
-  // Picks a random gesture (once) on every false->true transition, per the
-  // Props doc — not re-rolled on every render while gestureActive stays
-  // true, and reset back to null on deactivation so the next activation
-  // re-rolls fresh.
-  const prevGestureActiveRef = useRef(false);
-  useEffect(() => {
-    const activating = gestureActive && !prevGestureActiveRef.current;
-    prevGestureActiveRef.current = gestureActive;
-    gestureActiveRef.current = gestureActive;
-    if (activating) {
-      const options: Array<"shrug" | "thinking"> = [];
-      if (shrugGlbUrl) options.push("shrug");
-      if (thinkingGlbUrl) options.push("thinking");
-      chosenGestureRef.current =
-        options.length > 0 ? options[Math.floor(Math.random() * options.length)] : null;
-    } else if (!gestureActive) {
-      chosenGestureRef.current = null;
-    }
-    applyVisibility();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gestureActive, shrugGlbUrl, thinkingGlbUrl]);
+    stateInputsRef.current = { isWalking, isSitting, isChatting, isResponder };
+  }, [isWalking, isSitting, isChatting, isResponder]);
 
   // WebGL context loss on the shared renderer's canvas (see SharedRenderer)
   // is a mid-session failure, not a load-time one — every currently-mounted
   // CharacterCanvas attaches its own listener here, so each independently
   // (and safely — reportError() is idempotent) tells its own caller to fall
   // back to the sprite, without any of them needing to know about the
-  // others. Not in the main GLB-load effect below since this listener must
-  // stay attached regardless of which GLB urls/props change.
+  // others.
   useEffect(() => {
     let glCanvas: HTMLCanvasElement | undefined;
     try {
@@ -293,9 +231,18 @@ export function CharacterCanvas({
 
   useEffect(() => {
     let cancelled = false;
+    let disposed = false;
     let rafId = 0;
     let mixer: THREE.AnimationMixer | null = null;
     let model: THREE.Object3D | null = null;
+    let tickStarted = false;
+    // Every clip resolveCharacterAnimState() can name, looked up by name
+    // once the gltf's animations array is known.
+    const clipsByState = new Map<CharacterAnimState, THREE.AnimationClip>();
+    let currentAction: THREE.AnimationAction | null = null;
+    let currentState: CharacterAnimState | null = null;
+    let currentHeading = headingTargetRef.current;
+
     const scene = new THREE.Scene();
 
     const ambient = new THREE.AmbientLight(CONFIG.lights.ambient.color, CONFIG.lights.ambient.intensity);
@@ -385,19 +332,6 @@ export function CharacterCanvas({
       return box;
     }
 
-    let disposed = false;
-    let idleMixer: THREE.AnimationMixer | null = null;
-    let idleModel: THREE.Object3D | null = null;
-    let shrugMixer: THREE.AnimationMixer | null = null;
-    let shrugModel: THREE.Object3D | null = null;
-    let thinkingMixer: THREE.AnimationMixer | null = null;
-    let thinkingModel: THREE.Object3D | null = null;
-    let tickStarted = false;
-
-    // Shared per-mesh material tweaks (mipmap seam-bleed fix + baked
-    // emissiveIntensity) — identical treatment for both variants since
-    // they're the same underlying character/material, just a different
-    // pose GLB.
     function setupModelMaterials(root: THREE.Object3D) {
       root.traverse((o) => {
         const mesh = o as THREE.Mesh;
@@ -428,12 +362,7 @@ export function CharacterCanvas({
       });
     }
 
-    // Grounds a model at its own bbox (centers X/Z, drops feet to y=0) —
-    // used for BOTH variants so each stands correctly on the shared floor
-    // plane even though the idle pose's bbox may differ slightly from the
-    // walk pose's bind-pose bbox. Only the WALK model's post-centering box
-    // drives the shared camera framing below (per CONFIG comment: same
-    // rig/character, one frustum, no per-variant re-framing).
+    // Grounds the model at its own bbox (centers X/Z, drops feet to y=0).
     function groundModel(root: THREE.Object3D) {
       const box = computeFramingBox(root);
       const center = new THREE.Vector3();
@@ -443,6 +372,45 @@ export function CharacterCanvas({
       root.position.y -= box.min.y;
     }
 
+    // Applies the currently-resolved animation state to the mixer, crossfading
+    // from whatever was previously playing. No-ops entirely (does not touch
+    // the mixer/action at all) if the resolved state hasn't changed since
+    // the last call — the no-restart-on-same-state contract from the task
+    // spec, kept here (the effectful side) separate from the pure
+    // resolveCharacterAnimState() (characterAnimationState.ts).
+    function applyAnimState(nextState: CharacterAnimState) {
+      if (!mixer) return;
+      if (currentState === nextState) return;
+      const nextClip = clipsByState.get(nextState);
+      if (!nextClip) {
+        // eslint-disable-next-line no-console
+        console.warn(`[CharacterCanvas] no "${nextState}" animation clip on ${glbUrl}`);
+        currentState = nextState;
+        return;
+      }
+      const nextAction = mixer.clipAction(nextClip);
+      nextAction.reset();
+      nextAction.enabled = true;
+      nextAction.setEffectiveWeight(1);
+      nextAction.setEffectiveTimeScale(1);
+      nextAction.play();
+      if (currentAction && currentAction !== nextAction) {
+        currentAction.crossFadeTo(nextAction, CROSSFADE_SECONDS, true);
+      }
+      currentAction = nextAction;
+      currentState = nextState;
+    }
+
+    function tickHeadingAndAnimState(delta: number) {
+      if (!model) return;
+      const maxDelta = TURN_RATE_DEG_PER_SEC * delta;
+      currentHeading = stepAngleTowardsDegrees(currentHeading, headingTargetRef.current, maxDelta);
+      model.rotation.y = (currentHeading * Math.PI) / 180;
+
+      const resolved = resolveCharacterAnimState(stateInputsRef.current);
+      applyAnimState(resolved);
+    }
+
     function startTickLoopOnce() {
       if (tickStarted) return;
       tickStarted = true;
@@ -450,33 +418,8 @@ export function CharacterCanvas({
       const tick = () => {
         if (disposed) return;
         const delta = clock.getDelta();
-        // Gesture mode (chat/call active + a gesture chosen) takes priority
-        // over the normal walk/idle mixer selection below — same
-        // "effective gesture" gating as applyVisibility(), kept in sync
-        // manually here rather than reusing that function (it also touches
-        // .visible, which this tick loop doesn't need to redo every frame).
-        const chosenTick = chosenGestureRef.current;
-        const effectiveGesture =
-          gestureActiveRef.current &&
-          (chosenTick === "shrug"
-            ? !!shrugModelRef.current
-            : chosenTick === "thinking"
-              ? !!thinkingModelRef.current
-              : false);
-        if (effectiveGesture) {
-          const activeMixer = chosenGestureRef.current === "shrug" ? shrugMixer : thinkingMixer;
-          activeMixer?.update(delta);
-        } else if (idleGlbUrl) {
-          // Without an idle glb: exact prior behavior — only advance the
-          // (sole) walking mixer while isWalking, else freeze mid-pose.
-          // With an idle glb: whichever variant is currently shown keeps
-          // animating (walk cycle while moving, idle breathing/sway while
-          // stationary) — there's always a "correct" mixer to run.
-          const activeMixer = isWalkingRef.current ? mixer : idleMixer;
-          activeMixer?.update(delta);
-        } else if (isWalkingRef.current) {
-          mixer?.update(delta);
-        }
+        mixer?.update(delta);
+        tickHeadingAndAnimState(delta);
         const canvas = canvasRef.current;
         if (canvas) {
           renderToCanvas(scene, camera, canvas, width, height);
@@ -486,39 +429,28 @@ export function CharacterCanvas({
       rafId = requestAnimationFrame(tick);
     }
 
-    // Captures the walk model's calibrated framing-box world height, so the
-    // idle glb load (below) can scale itself to match it — see idle-load
-    // callback comment for why this is needed.
-    let walkFramingHeight = 0;
-
-    loadGlbCached(walkingGlbUrl).then((gltf) => {
+    loadGlbCached(glbUrl).then((gltf) => {
       if (cancelled) return;
       // Clone via SkeletonUtils so each mounted instance of the same GLB
       // gets its own independent skeleton/bones instead of sharing one
       // live Object3D graph (plain Object3D.clone() does not correctly
       // re-target skinned-mesh bone bindings).
       model = cloneSkeleton(gltf.scene) as THREE.Object3D;
-      walkModelRef.current = model;
       scene.add(model);
 
       setupModelMaterials(model);
-      model.rotation.y = (headingDegrees * Math.PI) / 180;
+      currentHeading = headingTargetRef.current;
+      model.rotation.y = (currentHeading * Math.PI) / 180;
       groundModel(model);
-      // Only the walk-glb-if-no-idle case (or, when other variants haven't
-      // finished loading yet) needs this visible immediately; once any
-      // other variant finishes loading, applyVisibility() reconciles final
-      // visibility.
-      model.visible = !idleGlbUrl || isWalkingRef.current;
 
-      const box2 = computeFramingBox(model);
-      const size2 = new THREE.Vector3();
-      box2.getSize(size2);
-      walkFramingHeight = size2.y;
+      const box = computeFramingBox(model);
+      const size = new THREE.Vector3();
+      box.getSize(size);
 
-      const target = new THREE.Vector3(0, size2.y * 0.5, 0);
+      const target = new THREE.Vector3(0, size.y * 0.5, 0);
       positionCamera(target);
 
-      const ext1 = getCameraSpaceExtent(box2, camera);
+      const ext1 = getCameraSpaceExtent(box, camera);
       const centerX = (ext1.minX + ext1.maxX) / 2;
       const centerY = (ext1.minY + ext1.maxY) / 2;
       const right = new THREE.Vector3();
@@ -528,7 +460,7 @@ export function CharacterCanvas({
       camera.position.addScaledVector(up, centerY);
       camera.updateMatrixWorld(true);
 
-      const ext2 = getCameraSpaceExtent(box2, camera);
+      const ext2 = getCameraSpaceExtent(box, camera);
       const halfHeight = ((ext2.maxY - ext2.minY) / 2) * CONFIG.camera.frameMarginY;
       const halfWidth = ((ext2.maxX - ext2.minX) / 2) * CONFIG.camera.frameMarginX;
       const topFromHeight = halfHeight;
@@ -542,149 +474,37 @@ export function CharacterCanvas({
 
       if (gltf.animations.length > 0) {
         mixer = new THREE.AnimationMixer(model);
-        const clip =
-          (animationName && THREE.AnimationClip.findByName(gltf.animations, animationName)) ||
-          gltf.animations[0];
-        if (clip) mixer.clipAction(clip).play();
+        for (const clip of gltf.animations) {
+          clipsByState.set(clip.name as CharacterAnimState, clip);
+        }
+        applyAnimState(resolveCharacterAnimState(stateInputsRef.current));
       }
 
-      startTickLoopOnce();
-
-      // Kicked off from inside the walk model's .then (rather than fired
-      // in parallel alongside it) so walkFramingHeight above is guaranteed
-      // set before the scale-correction logic below needs it, regardless
-      // of which GLB happens to finish fetching first.
-      if (idleGlbUrl) loadIdleVariant(idleGlbUrl);
-      if (shrugGlbUrl) loadGestureVariant(shrugGlbUrl, "shrug");
-      if (thinkingGlbUrl) loadGestureVariant(thinkingGlbUrl, "thinking");
+      if (animated) {
+        startTickLoopOnce();
+      } else {
+        // Static-frame mode: render exactly this one frame at the resolved
+        // pose/heading and stop — never call startTickLoopOnce, so no
+        // requestAnimationFrame loop or mixer.update() ever runs for this
+        // instance (not "start then immediately cancel," which would still
+        // pay for at least one scheduled tick and leave a rafId to clean
+        // up for no benefit).
+        // Sample the resolved action's pose (at time 0, since it was just
+        // .play()ed) into the skeleton's bones without advancing the clip
+        // or requiring a running tick loop — otherwise the SkinnedMesh
+        // stays in the GLB's raw bind pose (T/A-pose) for this static frame.
+        mixer?.update(0);
+        const canvas = canvasRef.current;
+        if (canvas) {
+          renderToCanvas(scene, camera, canvas, width, height);
+        }
+      }
     }).catch((err) => {
       if (cancelled) return;
-      // The always-present walking glb is this character's baseline —
-      // failing to load it (network error, bad URL, corrupt asset) means
-      // there is nothing to show at all, so this is the one failure that
-      // always reports upward (unlike an optional idle/gesture variant
-      // below, which degrades gracefully instead).
       // eslint-disable-next-line no-console
-      console.warn(`[CharacterCanvas] failed to load walking glb ${walkingGlbUrl}`, err);
+      console.warn(`[CharacterCanvas] failed to load glb ${glbUrl}`, err);
       reportError();
     });
-
-    // Scales `root` (in place) so its OWN first-played-frame bone-derived
-    // height matches `referenceHeight` (walkFramingHeight — the walking
-    // model's calibrated bind-pose framing height, the single source of
-    // truth every non-walking variant normalizes against). Generalized
-    // from the original idle-only fix (Bon reported the idle stand
-    // visibly bigger than the walking stand when toggling between them):
-    // investigation found every one of these Meshy Animation-API exports'
-    // raw (pre-animation) bind poses measures an IDENTICAL bone-derived
-    // height to the walking glb's — there's no baked scale difference
-    // between exports. The mismatch only appears once a clip is actually
-    // evaluated: a variant's pose (even at its very first frame) can stand
-    // measurably taller/shorter than its own bind pose (idle observed
-    // ~10-13% taller). Since the frustum is deliberately kept calibrated
-    // off the walking model (per product decision — don't touch the
-    // walking size), every OTHER variant corrects itself here instead, one
-    // at a time, via this exact same formula — not idle-specific, applies
-    // uniformly to however many additional pose variants get loaded (idle,
-    // shrug, thinking today; any future variant, e.g. sitting, later).
-    // Computed dynamically (not a hardcoded constant) so this self-corrects
-    // if any GLB export is regenerated later.
-    function normalizeToReferenceHeight(
-      root: THREE.Object3D,
-      animations: THREE.AnimationClip[],
-      referenceHeight: number,
-    ) {
-      if (animations.length === 0 || referenceHeight <= 0) return;
-      const calibMixer = new THREE.AnimationMixer(root);
-      const calibAction = calibMixer.clipAction(animations[0]);
-      calibAction.play();
-      calibMixer.setTime(0);
-      const boxAtFirstFrame = computeFramingBox(root);
-      const sizeAtFirstFrame = new THREE.Vector3();
-      boxAtFirstFrame.getSize(sizeAtFirstFrame);
-      if (sizeAtFirstFrame.y > 0) {
-        root.scale.setScalar(referenceHeight / sizeAtFirstFrame.y);
-      }
-      calibMixer.stopAllAction();
-    }
-
-    // Shared loader for every non-walking pose variant (idle, shrug,
-    // thinking, and any future gesture/pose glb) — loads, clones, applies
-    // materials/heading, normalizes scale against walkFramingHeight (see
-    // normalizeToReferenceHeight above), grounds, warns if the clip count
-    // looks wrong, and plays its single animation clip looped.
-    function loadPoseVariant(
-      url: string,
-      label: string,
-      modelRef: MutableRefObject<THREE.Object3D | null>,
-      onLoaded: (model: THREE.Object3D, mixer: THREE.AnimationMixer | null) => void,
-    ) {
-      loadGlbCached(url).then((gltf) => {
-        if (cancelled) return;
-        const poseModel = cloneSkeleton(gltf.scene) as THREE.Object3D;
-        modelRef.current = poseModel;
-        scene.add(poseModel);
-
-        setupModelMaterials(poseModel);
-        poseModel.rotation.y = (headingDegrees * Math.PI) / 180;
-        normalizeToReferenceHeight(poseModel, gltf.animations, walkFramingHeight);
-        groundModel(poseModel);
-
-        if (gltf.animations.length !== 1) {
-          // eslint-disable-next-line no-console
-          console.warn(
-            `[CharacterCanvas] ${label} glb ${url} has ${gltf.animations.length} animation clip(s)` +
-              ` (expected exactly 1 dedicated clip): ${gltf.animations.map((a) => a.name).join(", ")}`,
-          );
-        }
-        let poseMixer: THREE.AnimationMixer | null = null;
-        if (gltf.animations.length > 0) {
-          poseMixer = new THREE.AnimationMixer(poseModel);
-          poseMixer.clipAction(gltf.animations[0]).play();
-        }
-        onLoaded(poseModel, poseMixer);
-
-        applyVisibility();
-        startTickLoopOnce();
-      }).catch((err) => {
-        if (cancelled) return;
-        // Optional-variant failure (idle/shrug/thinking) degrades
-        // gracefully — the walking glb still loaded/loads independently,
-        // so this character keeps showing live-3D, just without this one
-        // variant (matching idleGlbUrl's existing absent-prop no-op
-        // behavior). Does NOT call reportError()/fall back to the sprite —
-        // that's reserved for the always-present walking glb above.
-        // eslint-disable-next-line no-console
-        console.warn(`[CharacterCanvas] failed to load ${label} glb ${url}`, err);
-        // Re-reconcile visibility now that this variant is known to have
-        // failed (rather than just "not yet loaded") — e.g. the walk model
-        // may currently be hidden pending this variant's resolution (see
-        // the initial `model.visible` assignment on the walking glb above),
-        // and needs to fall back to visible now instead of staying hidden
-        // indefinitely.
-        applyVisibility();
-      });
-    }
-
-    function loadIdleVariant(url: string) {
-      loadPoseVariant(url, "idle", idleModelRef, (loadedModel, loadedMixer) => {
-        idleModel = loadedModel;
-        idleMixer = loadedMixer;
-      });
-    }
-
-    function loadGestureVariant(url: string, kind: "shrug" | "thinking") {
-      const modelRef = kind === "shrug" ? shrugModelRef : thinkingModelRef;
-      loadPoseVariant(url, kind, modelRef, (loadedModel, loadedMixer) => {
-        if (kind === "shrug") {
-          shrugModel = loadedModel;
-          shrugMixer = loadedMixer;
-        } else {
-          thinkingModel = loadedModel;
-          thinkingMixer = loadedMixer;
-        }
-      });
-    }
 
     return () => {
       cancelled = true;
@@ -692,14 +512,7 @@ export function CharacterCanvas({
       if (rafId) cancelAnimationFrame(rafId);
       mixer?.stopAllAction();
       mixer = null;
-      idleMixer?.stopAllAction();
-      idleMixer = null;
-      shrugMixer?.stopAllAction();
-      shrugMixer = null;
-      thinkingMixer?.stopAllAction();
-      thinkingMixer = null;
-      for (const m of [model, idleModel, shrugModel, thinkingModel]) {
-        if (!m) continue;
+      if (model) {
         // NOTE: geometry/material are NOT disposed here. They are owned by
         // the cached GLTF in glbCache.ts (which never evicts successfully
         // loaded entries) and shared by reference across every
@@ -709,16 +522,12 @@ export function CharacterCanvas({
         // still-mounted clone of the same character (e.g. main view +
         // PiP mini-camera both showing the self-avatar). Only this
         // instance's cloned Object3D nodes are instance-owned; let GC
-        // reclaim those via scene.remove + ref nulling below.
-        scene.remove(m);
+        // reclaim those via scene.remove below.
+        scene.remove(model);
       }
-      walkModelRef.current = null;
-      idleModelRef.current = null;
-      shrugModelRef.current = null;
-      thinkingModelRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [walkingGlbUrl, idleGlbUrl, shrugGlbUrl, thinkingGlbUrl, animationName, width, height]);
+  }, [glbUrl, width, height, animated]);
 
   return (
     <canvas

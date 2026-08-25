@@ -47,6 +47,8 @@ async def create_conversation(
         id=conv["id"],
         participant_ids=conv["participant_ids"],
         last_message_at=conv["last_message_at"],
+        type=conv["type"],
+        title=conv["title"],
     )
 
 
@@ -62,6 +64,8 @@ async def list_conversations(
             participant_ids=c["participant_ids"],
             last_message_at=c["last_message_at"],
             unread_count=c["unread_count"],
+            type=c["type"],
+            title=c["title"],
         )
         for c in convs
     ]
@@ -88,7 +92,7 @@ async def get_conversation_messages(
     watermarks = await chat_repo.get_participant_watermarks(db, conversation_id)
     out = []
     for m in messages:
-        delivered_at, read_at = chat_repo.compute_message_receipts(m, watermarks)
+        delivered_to, read_by = chat_repo.compute_message_receipts(m, watermarks)
         out.append(
             ChatMessageOut(
                 id=m.id,
@@ -96,8 +100,8 @@ async def get_conversation_messages(
                 sender_id=m.sender_email,
                 text=m.text,
                 sent_at=m.sent_at,
-                delivered_at=delivered_at,
-                read_at=read_at,
+                delivered_to=delivered_to,
+                read_by=read_by,
             )
         )
     return out

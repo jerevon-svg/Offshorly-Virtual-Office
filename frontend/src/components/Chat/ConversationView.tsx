@@ -21,7 +21,23 @@ type ConversationViewProps = {
   selfAvatarUrl?: string;
   onClose: () => void;
   onIncomingMessage?: (msg: ChatMessage) => void;
+  // Fired exactly once, the moment this panel's conversation id first resolves (real mode's
+  // openConversationWith response) — the edge-triggered "chat actually opened" signal callers
+  // use to start a spatial session (see OfficeMap.tsx's emitSpatialSessionStart wiring). Never
+  // fired again for the same mount (see the guard around setConversationId below) — a
+  // re-render from an unrelated prop change must not re-fire this.
+  onConversationOpen?: (conversationId: string) => void;
+  // Fired ONLY from real composer keystroke activity (onChange) and the
+  // send/unmount paths below — never from a focus/mount/open effect. true on
+  // any non-empty content change (re-arming a 2.5s inactivity timer that
+  // fires false), false immediately if the content becomes empty, and false
+  // immediately (clearing any pending timer) on send.
+  onTypingChange?: (isTyping: boolean) => void;
 };
+
+// Inactivity window after the last keystroke before we consider the user to
+// have stopped typing.
+const TYPING_IDLE_MS = 2500;
 
 // "Today" / "Yesterday" / a locale date string, compared against calendar
 // days (not a rolling 24h window) so a message sent at 11:59pm yesterday
@@ -123,6 +139,8 @@ export function ConversationView({
   selfAvatarUrl,
   onClose,
   onIncomingMessage,
+  onTypingChange,
+  onConversationOpen,
 }: ConversationViewProps) {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -142,6 +160,16 @@ export function ConversationView({
     chatService.getConnectionState?.() ?? "connected",
   );
   const listEndRef = useRef<HTMLDivElement | null>(null);
+  const typingTimerRef = useRef<number | undefined>(undefined);
+
+  // Clear any pending typing-inactivity timer on unmount — same rationale as
+  // OfficeMap.tsx's talkingTimersRef cleanup, prevents a stray timer firing
+  // onTypingChange(false) after this component is gone.
+  useEffect(() => {
+    return () => {
+      window.clearTimeout(typingTimerRef.current);
+    };
+  }, []);
 
   const resolvedPeerId = peerChatId !== undefined ? peerChatId : peer.id;
   // Real backend requires a stable email to route on — a sprite/layer id
@@ -162,22 +190,30 @@ export function ConversationView({
       .then((conv) => {
         if (cancelled) return;
         setConversationId(conv.id);
+        onConversationOpen?.(conv.id);
         return chatService.getMessages(conv.id).then((msgs) => {
           if (cancelled) return;
           setMessages(msgs);
           // Bootstrap peer watermarks from history — ONLY from the viewer's
-          // own messages. For a given message, deliveredAt/readAt reflect the
-          // *recipient's* watermark: for the viewer's own messages that's the
-          // peer's delivered/read state (what we need); for peer messages it's
-          // the viewer's own read state (not what we need here) — mixing the
-          // two in would corrupt the peer watermark.
-          if (chatMode === "real") {
+          // own messages. For a given message, deliveredTo/readBy reflect the
+          // *recipients'* per-reader watermark state: for the viewer's own
+          // messages that includes the peer's delivered/read state (what we
+          // need); for peer messages it's the viewer's own read state (not
+          // what we need here) — mixing the two in would corrupt the peer
+          // watermark. 1:1 DM only here — derive a single peer watermark by
+          // checking whether the peer's email appears in each array.
+          if (chatMode === "real" && routingPeerId) {
+            // Invariant: routingPeerId is already lowercase here — both real-mode callers
+            // (OfficeMap's resolvePeerChatId and ChatTestPage's active.peer) lowercase the
+            // email before it ever reaches peerChatId, matching the lowercased emails the
+            // backend stores/emits in deliveredTo/readBy. If a future caller stops guaranteeing
+            // that, lowercase routingPeerId at derivation time instead of here.
             let deliveredMax: string | null = null;
             let readMax: string | null = null;
             for (const m of msgs) {
               if (m.senderId !== selfId) continue;
-              if (m.deliveredAt) deliveredMax = maxIso(deliveredMax, m.deliveredAt);
-              if (m.readAt) readMax = maxIso(readMax, m.readAt);
+              if (m.deliveredTo.includes(routingPeerId)) deliveredMax = maxIso(deliveredMax, m.sentAt);
+              if (m.readBy.includes(routingPeerId)) readMax = maxIso(readMax, m.sentAt);
             }
             if (deliveredMax) setPeerDeliveredUpTo((prev) => maxIso(prev, deliveredMax));
             if (readMax) setPeerReadUpTo((prev) => maxIso(prev, readMax));
@@ -256,8 +292,27 @@ export function ConversationView({
     chatService.markDelivered?.({ conversationId, upToSentAt: latest.sentAt });
   }, [conversationId, messages]);
 
+  function handleDraftChange(text: string) {
+    setDraft(text);
+    window.clearTimeout(typingTimerRef.current);
+    if (text.length === 0) {
+      onTypingChange?.(false);
+      if (conversationId) chatService.sendTyping?.({ conversationId, isTyping: false });
+      return;
+    }
+    onTypingChange?.(true);
+    if (conversationId) chatService.sendTyping?.({ conversationId, isTyping: true });
+    typingTimerRef.current = window.setTimeout(() => {
+      onTypingChange?.(false);
+      if (conversationId) chatService.sendTyping?.({ conversationId, isTyping: false });
+    }, TYPING_IDLE_MS);
+  }
+
   function sendText(text: string) {
     if (!conversationId) return;
+    window.clearTimeout(typingTimerRef.current);
+    onTypingChange?.(false);
+    chatService.sendTyping?.({ conversationId, isTyping: false });
     setSendError(null);
     setFailedText(null);
     // Own message arrives via the onMessage subscription above (sendMessage
@@ -432,7 +487,7 @@ export function ConversationView({
           className={styles.textarea}
           value={draft}
           placeholder={isNotConnected ? "Connecting…" : "Type a message…"}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => handleDraftChange(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();

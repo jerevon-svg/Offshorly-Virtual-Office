@@ -176,6 +176,99 @@ describe("ConversationView", () => {
     delete (mockChatService as unknown as { onConnectionState?: () => void }).onConnectionState;
     delete (mockChatService as unknown as { reconnect?: () => void }).reconnect;
   });
+
+  describe("onTypingChange (keystroke-driven typing signal)", () => {
+    it("never calls onTypingChange merely from rendering/focusing the component, without typing", async () => {
+      const peer = makePeer("silent-render");
+      const onTypingChange = vi.fn();
+      render(<ConversationView peer={peer} selfId={SELF_ID} onClose={() => {}} onTypingChange={onTypingChange} />);
+
+      const textarea = await screen.findByPlaceholderText("Type a message…");
+      fireEvent.focus(textarea);
+
+      expect(onTypingChange).not.toHaveBeenCalled();
+    });
+
+    it("fires onTypingChange(true) on a real keystroke, then onTypingChange(false) after 2.5s of inactivity", async () => {
+      vi.useFakeTimers();
+      const peer = makePeer("typing-idle");
+      const onTypingChange = vi.fn();
+      const { container } = render(
+        <ConversationView peer={peer} selfId={SELF_ID} onClose={() => {}} onTypingChange={onTypingChange} />,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+
+      const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: "h" } });
+
+      expect(onTypingChange).toHaveBeenCalledWith(true);
+      onTypingChange.mockClear();
+
+      await vi.advanceTimersByTimeAsync(2499);
+      expect(onTypingChange).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(onTypingChange).toHaveBeenCalledWith(false);
+    });
+
+    it("re-arms the inactivity timer on every keystroke instead of firing false early", async () => {
+      vi.useFakeTimers();
+      const peer = makePeer("typing-rearm");
+      const onTypingChange = vi.fn();
+      const { container } = render(
+        <ConversationView peer={peer} selfId={SELF_ID} onClose={() => {}} onTypingChange={onTypingChange} />,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+
+      const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: "h" } });
+      await vi.advanceTimersByTimeAsync(2000);
+      fireEvent.change(textarea, { target: { value: "hi" } });
+      onTypingChange.mockClear();
+      await vi.advanceTimersByTimeAsync(2000);
+
+      expect(onTypingChange).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(500);
+      expect(onTypingChange).toHaveBeenCalledWith(false);
+    });
+
+    it("fires onTypingChange(false) immediately when the composer becomes empty", async () => {
+      const peer = makePeer("typing-empty");
+      const onTypingChange = vi.fn();
+      render(<ConversationView peer={peer} selfId={SELF_ID} onClose={() => {}} onTypingChange={onTypingChange} />);
+
+      const textarea = await screen.findByPlaceholderText("Type a message…");
+      fireEvent.change(textarea, { target: { value: "h" } });
+      expect(onTypingChange).toHaveBeenLastCalledWith(true);
+
+      fireEvent.change(textarea, { target: { value: "" } });
+      expect(onTypingChange).toHaveBeenLastCalledWith(false);
+    });
+
+    it("sending a message immediately fires onTypingChange(false) and clears the pending inactivity timer", async () => {
+      vi.useFakeTimers();
+      const peer = makePeer("typing-send");
+      const onTypingChange = vi.fn();
+      const { container } = render(
+        <ConversationView peer={peer} selfId={SELF_ID} onClose={() => {}} onTypingChange={onTypingChange} />,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+
+      const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: "hello there" } });
+      onTypingChange.mockClear();
+
+      fireEvent.click(screen.getByLabelText("Send"));
+      expect(onTypingChange).toHaveBeenCalledWith(false);
+      onTypingChange.mockClear();
+
+      // Pending inactivity timer must have been cleared by send — advancing
+      // past the 2.5s window must not fire a second, redundant false.
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(onTypingChange).not.toHaveBeenCalled();
+    });
+  });
 });
 
 function makeMessage(overrides: Partial<ChatMessage>): ChatMessage {
@@ -185,6 +278,8 @@ function makeMessage(overrides: Partial<ChatMessage>): ChatMessage {
     senderId: "bon",
     text: "hi",
     sentAt: "2026-08-14T10:00:00.000Z",
+    deliveredTo: [],
+    readBy: [],
     ...overrides,
   };
 }
@@ -229,7 +324,7 @@ describe("deriveMessageStatus", () => {
 
 describe("ConversationView (real mode, status indicators)", () => {
   // Builds a fake real ChatService pre-seeded with history so the panel
-  // renders own messages with deliveredAt/readAt already reflecting the
+  // renders own messages with deliveredTo/readBy already reflecting the
   // peer's watermark (mirrors what RealChatService.getMessages returns).
   function makeFakeRealService(history: ChatMessage[]): ChatService {
     const conv: Conversation = { id: "conv-1", participantIds: ["bon", "alex"], lastMessageAt: history[0]?.sentAt ?? "" };
@@ -259,7 +354,7 @@ describe("ConversationView (real mode, status indicators)", () => {
         senderId: "bon",
         text: "first",
         sentAt: "2026-08-14T10:00:00.000Z",
-        readAt: "2026-08-14T10:10:00.000Z",
+        readBy: ["alex"],
       }),
       makeMessage({
         id: "peer-1",
@@ -272,7 +367,7 @@ describe("ConversationView (real mode, status indicators)", () => {
         senderId: "bon",
         text: "second",
         sentAt: "2026-08-14T10:02:00.000Z",
-        readAt: "2026-08-14T10:10:00.000Z",
+        readBy: ["alex"],
       }),
     ];
 

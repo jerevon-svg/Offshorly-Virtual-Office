@@ -86,6 +86,13 @@ describe("MockChatService.sendMessage", () => {
   });
 });
 
+describe("MockChatService.onConversationUpgraded", () => {
+  it("is not implemented (mock mode has no server-side DM->group upgrade concept) — same optional-listener pattern as onUnreadCount et al", () => {
+    const service = new MockChatService();
+    expect(service.onConversationUpgraded).toBeUndefined();
+  });
+});
+
 describe("MockChatService echo reply", () => {
   beforeEach(() => {
     vi.useFakeTimers();

@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ASSET_PATH_TO_SRC,
   FRAME_HEIGHT,
@@ -13,14 +13,29 @@ import { DOOR_ANIM_MS, DOOR_SLIDE_DIRECTION } from "../../data/officeDoors";
 import { backrestCropLayerId } from "../../data/backSitOccupancy";
 import { getBackrestCropFraction } from "../../data/chairBackrestCrop";
 import { createDepthCompare } from "./depthSort";
-import { GreetingBubble } from "./GreetingBubble";
 import { TalkingBubble } from "./TalkingBubble";
+import { StatusLabel } from "./StatusLabel";
 import { OfficePhaseOverlay } from "./OfficePhaseOverlay";
+import type { OfficeStatus } from "../../services/presence/status";
 import { CharacterCanvas, directionToHeadingDegrees } from "../../render3d/CharacterCanvas";
-import { LIVE_3D_CHARACTERS, type Live3dAssetSet } from "../../render3d/live3dCharacters";
+import {
+  LIVE_3D_CHARACTERS,
+  resolveLive3dGlbUrl,
+  type Live3dAssetSet,
+} from "../../render3d/live3dCharacters";
 import { avatarIdForEmail } from "../../data/avatarIdentity";
 import type { WalkDirection } from "../../data/bonWalkFrames";
-import { detectDeviceTier, type DeviceTier } from "../../services/render/deviceTier";
+import {
+  collectDeviceSignals,
+  computeDeviceTier,
+  detectDeviceTier,
+  hasWorkingWebGl,
+  isMobileLike,
+  isSoftwareRendererSignal,
+  type DeviceCapabilitySignals,
+  type DeviceTier,
+} from "../../services/render/deviceTier";
+import { getSharedDeviceTierMicrobench } from "../../services/render/deviceTierBenchmark";
 import { LIVE_3D_CAP_BY_TIER, LIVE_3D_SELF_MIN_TIER } from "../../services/render/tierBudgets";
 import styles from "./OfficeStage.module.css";
 
@@ -59,11 +74,31 @@ import styles from "./OfficeStage.module.css";
 const DEV_ONLY_LIVE_3D_ENTRIES: Record<string, Live3dAssetSet> = {
   // Manifest aspect ratio: width 20 / height 34.46.
   alex: {
-    walkingGlbUrl: `${import.meta.env.BASE_URL}scripts/avatar-pipeline/output/meshy-test/rig/alex-basic-walking_glb_url.glb`,
+    glbUrl: `${import.meta.env.BASE_URL}scripts/avatar-pipeline/output/meshy-test/rig/alex-basic-walking_glb_url.glb`,
     renderWidth: 160,
     renderHeight: 276,
   },
 };
+
+const DEVICE_TIER_VALUES: DeviceTier[] = ["T0", "T1", "T2"];
+
+// LOCAL DEV TESTING escape hatch ONLY — same rationale/pattern as the
+// `?live3d=` override above and `?as=` in useAuthGate.ts: lets a developer
+// force the CURRENT session's device tier via `?deviceTier=T1` (or T0/T2)
+// when their own machine/browser under-reports real capability signals
+// (e.g. a test rig reporting hardwareConcurrency=2 while showing no
+// perceptible lag). This does NOT touch computeDeviceTier's actual
+// threshold rules (cores<4, memory<4, software-renderer list, etc.) — those
+// stay exactly as-is for every real user with no override param. Gated on
+// import.meta.env.DEV so `vite build` drops this as dead code and it can
+// never affect production traffic.
+function getDeviceTierOverride(): DeviceTier | null {
+  if (!import.meta.env.DEV || typeof window === "undefined") return null;
+  const raw = new URLSearchParams(window.location.search).get("deviceTier");
+  if (!raw) return null;
+  const upper = raw.trim().toUpperCase();
+  return DEVICE_TIER_VALUES.includes(upper as DeviceTier) ? (upper as DeviceTier) : null;
+}
 
 // detectDeviceTier() does real WebGL probing (creates a canvas + GL
 // context) — must run exactly ONCE per session, not per-character or
@@ -73,17 +108,117 @@ const DEV_ONLY_LIVE_3D_ENTRIES: Record<string, Live3dAssetSet> = {
 let cachedDeviceTier: DeviceTier | null = null;
 function getDeviceTierOnce(): DeviceTier {
   if (cachedDeviceTier === null) {
-    cachedDeviceTier = detectDeviceTier();
+    cachedDeviceTier = getDeviceTierOverride() ?? detectDeviceTier();
   }
   return cachedDeviceTier;
+}
+
+// collectDeviceSignals() does the same real WebGL probing as
+// detectDeviceTier() above — cached the same way, and separately from the
+// tier itself, because the RENDERING layer (the JSX below) needs the raw
+// signals to distinguish two different "T0" buckets that detectDeviceTier's
+// return value alone can't tell apart: (a) mobile / no WebGL context at
+// all — sprite-only, no 3D is even possible — vs (b) working WebGL but
+// confirmed too weak (software renderer, or a weak-static device that
+// failed/never ran its microbench rescue) — gets a STATIC single 3D frame
+// instead. See deviceTier.ts's isMobileLike/hasWorkingWebGl/
+// isSoftwareRendererSignal exports and this file's isStaticFrameBucket
+// below.
+let cachedDeviceSignals: DeviceCapabilitySignals | null = null;
+function getDeviceSignalsOnce(): DeviceCapabilitySignals {
+  if (cachedDeviceSignals === null) {
+    cachedDeviceSignals = collectDeviceSignals();
+  }
+  return cachedDeviceSignals;
+}
+
+// True only for a weak-static (low core count, or low RAM when readable)
+// device that's still eligible for the microbench rescue: has working
+// WebGL, isn't mobile, and isn't a known software renderer (software
+// renderers are an unconditional hard-fail per D-E — a tiny benchmark
+// scene can pass deceptively on a software GL context even though the real
+// character scene would choke).
+function isRescueEligible(signals: DeviceCapabilitySignals): boolean {
+  return !isMobileLike(signals) && hasWorkingWebGl(signals) && !isSoftwareRendererSignal(signals);
+}
+
+// True for the D-D "confirmed weak but has working WebGL" bucket — software
+// renderer, or a weak-static device that failed (or hasn't yet completed)
+// its microbench rescue. Distinct from the true sprite-only floor (mobile /
+// no WebGL at all, D-C) — both can resolve `tier` to "T0", but only this
+// bucket gets a static (non-animated) 3D frame instead of the 2D sprite.
+function isStaticFrameBucket(tier: DeviceTier, signals: DeviceCapabilitySignals): boolean {
+  if (tier !== "T0") return false;
+  if (isMobileLike(signals)) return false;
+  return hasWorkingWebGl(signals);
+}
+
+// Module-level, session-shared microbench-rescue state — the microbench
+// itself (see deviceTierBenchmark.ts's getSharedDeviceTierMicrobench) must
+// run at most ONCE per page load, with every currently- or later-mounted
+// character/OfficeStage instance sharing the same result, rather than each
+// independently kicking off its own run.
+let rescueStarted = false;
+let rescueResolvedTier: DeviceTier | null = null;
+let rescueSubscribers: Array<(tier: DeviceTier) => void> = [];
+
+function startRescueOnce(signals: DeviceCapabilitySignals): void {
+  if (rescueStarted) return;
+  rescueStarted = true;
+  void getSharedDeviceTierMicrobench()
+    .then((result) => computeDeviceTier({ ...signals, microbenchMs: result.medianFrameMs }))
+    .catch(() => "T0" as DeviceTier)
+    .then((tier) => {
+      rescueResolvedTier = tier;
+      const subs = rescueSubscribers;
+      rescueSubscribers = [];
+      subs.forEach((notify) => notify(tier));
+    });
 }
 
 // Test-only escape hatch (mirrors SharedRenderer's/glbCache's own
 // __reset*ForTests) — lets tests force a fresh detectDeviceTier() call
 // after mocking it to a different return value, instead of being stuck
-// with whatever the first test in the file happened to trigger.
+// with whatever the first test in the file happened to trigger. Also
+// resets the signals cache and the microbench-rescue singleton above, for
+// the same reason.
 export function __resetDeviceTierCacheForTests(): void {
   cachedDeviceTier = null;
+  cachedDeviceSignals = null;
+  rescueStarted = false;
+  rescueResolvedTier = null;
+  rescueSubscribers = [];
+}
+
+/**
+ * Progressive device-tier hook. Seeds synchronously from the same
+ * getDeviceTierOnce() singleton as before (identical first-paint behavior,
+ * `?deviceTier=` dev override precedence unchanged), then — only for a
+ * weak-static-but-rescue-eligible T0 device — kicks off the session-shared
+ * microbench and re-renders with the (possibly-rescued) final tier once it
+ * resolves. This is the source of the accepted ~1-2s benchmark-induced
+ * stutter + visible pop-in swap tradeoffs (see the approved plan's D-B).
+ */
+function useDeviceTier(): DeviceTier {
+  const [tier, setTier] = useState<DeviceTier>(() => getDeviceTierOnce());
+
+  useEffect(() => {
+    // The dev override always wins and is never rescued — it's an explicit
+    // manual choice, not a signal to second-guess.
+    if (getDeviceTierOverride()) return;
+    if (rescueResolvedTier !== null) {
+      if (tier !== rescueResolvedTier) setTier(rescueResolvedTier);
+      return;
+    }
+    if (tier !== "T0") return;
+    const signals = getDeviceSignalsOnce();
+    if (!isRescueEligible(signals)) return;
+    rescueSubscribers.push(setTier);
+    startRescueOnce(signals);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return tier;
 }
 
 const TIER_ORDER: DeviceTier[] = ["T0", "T1", "T2"];
@@ -140,13 +275,37 @@ type OfficeStageProps = {
   // Custom greeting text (e.g. onboarding's "Welcome to Offshorly!" instead
   // of the search-locate default "Hi there, I'm {name}!").
   greetingText?: string;
-  // Character ids to render a looping "talking" indicator above — fully
-  // separate from the greeting system (used by the chat feature).
+  // Character ids with an OPEN conversation panel — "conversation is open,"
+  // NOT "actively typing." Still drives the 3D isChatting flag/inConversation
+  // signal below; no longer gates the overhead bubble render (see
+  // typingCharacterIds for that).
   talkingCharacterIds?: string[];
-  // Text to show inside the talking bubble for a given character id, when
+  // Text to show inside the overhead bubble for a given character id, when
   // that character has recently sent a chat message (falls back to the
-  // looping dots when absent).
+  // looping dots when absent — see typingCharacterIds). Layer-id-keyed (the
+  // OfficeMap.tsx caller remaps chat-senderId keys to layer ids before
+  // passing this down — see responderMap.ts's remapSelfKey).
   talkingTextById?: Record<string, string>;
+  // Character ids ACTIVELY TYPING right now (real keystroke activity, with a
+  // short inactivity timeout — see ConversationView.tsx's onTypingChange).
+  // Distinct from talkingCharacterIds ("conversation is open"): drives the
+  // overhead dots-bubble render only, lowest priority behind an active
+  // greeting or unexpired sent-text bubble. Absent/omitted = no one typing,
+  // matching every existing caller/test that doesn't pass this.
+  typingCharacterIds?: string[];
+  // Phase A live-3D "responder" signal, keyed by character LAYER id (not
+  // chat senderId/email like talkingTextById above) — recently sent a
+  // message within the bubble-display window (see
+  // characterAnimationState.ts's isResponder doc comment). OfficeMap.tsx
+  // builds this separately from talkingTextById because talkingTextById is
+  // keyed by chat senderId, which for peer roster layers happens to equal
+  // layer.id (rosterLayers.ts keys id on person.email) but for the self
+  // layer is the viewer's OWN chat id (selfChatId, an email), never
+  // playerLayerId/currentUserId (an avatar id like "bon") — looking self up
+  // directly in talkingTextById by layer.id therefore always misses.
+  // Absent entries default to false, matching every existing caller/test
+  // that doesn't pass this.
+  characterIsResponderById?: Record<string, boolean>;
   // Door art layer ids currently slid open (see officeDoors.ts). Layers not
   // present here render at rest (translateX(0)/no override) — omitting the
   // prop entirely means "no doors open," matching existing callers/tests
@@ -180,6 +339,14 @@ type OfficeStageProps = {
   // there anyway).
   characterDirectionsById?: Record<string, WalkDirection>;
   characterIsWalkingById?: Record<string, boolean>;
+  // Phase A live-3D animation-state input: which character layer ids are
+  // currently seated in a real (painted-chair) seat — see OfficeMap.tsx's
+  // isSitting. Absent entries default to false (standing), matching every
+  // existing caller/test that doesn't pass this. The seat's own facing
+  // direction is expected to already be reflected in
+  // characterDirectionsById above (see data/seatDirections.ts) — never
+  // derived here from the camera.
+  characterIsSittingById?: Record<string, boolean>;
   // The character layer id that IS the current viewer's own avatar (see
   // OfficeMap.tsx's playerLayerId — the existing "which sprite is you"
   // mechanism, reused here rather than inventing a second identity
@@ -189,6 +356,21 @@ type OfficeStageProps = {
   // crowd-budget path — matching every existing caller/test that doesn't
   // pass this prop.
   selfCharacterId?: string | null;
+  // Status label system (see StatusLabel.tsx / services/presence/status.ts).
+  // Deliberately NOT rendered by default: the PiP mini-camera instance
+  // renders outside the main <TransformWrapper> (see OfficeMap.tsx's
+  // ~line 2015 comment on KeepScale's null-pan/zoom-context crash), so
+  // OfficeMap.tsx only ever sets this true on the MAIN OfficeStage
+  // instance. Absent/false = existing no-status-labels behavior, matching
+  // every existing caller/test that doesn't pass this.
+  showStatusLabels?: boolean;
+  // Atlas-roster-derived status for every non-self character layer, keyed
+  // by layer id (== person.email for roster layers — see rosterLayers.ts).
+  // Absent entries render no status label for that character.
+  statusByLayerId?: Record<string, OfficeStatus>;
+  // The local viewer's own richly-computed status (see selfStatusStore.ts).
+  // Used only for the layer whose id === selfCharacterId.
+  selfStatus?: OfficeStatus;
 };
 
 // Shared click-vs-drag threshold logic: only fires onClick when pointer
@@ -231,19 +413,30 @@ export function OfficeStage({
   extraCharacterSrcById,
   talkingCharacterIds,
   talkingTextById,
+  typingCharacterIds,
+  characterIsResponderById,
   openDoorLayerIds,
   emptySeats,
   onSeatClick,
   backSitOccupantBaselines,
   characterDirectionsById,
   characterIsWalkingById,
+  characterIsSittingById,
   selfCharacterId,
+  showStatusLabels,
+  statusByLayerId,
+  selfStatus,
 }: OfficeStageProps = {}) {
   const characterClick = useClickVsDrag<AssetLayer>(onCharacterClick);
   const roomClick = useClickVsDrag<AssetLayer>(onRoomClick);
   const seatClick = useClickVsDrag<SeatTarget>(onSeatClick);
   const live3dEnabledAvatarIds = getLive3dEnabledAvatarIds();
-  const deviceTier = getDeviceTierOnce();
+  const deviceTier = useDeviceTier();
+  // D-D bucket (see isStaticFrameBucket's doc comment above): confirmed
+  // weak but has working WebGL — software renderer, or a weak-static
+  // device that failed/never ran its microbench rescue. Distinct from the
+  // true sprite-only floor (mobile / no WebGL at all).
+  const isStaticFrame = isStaticFrameBucket(deviceTier, getDeviceSignalsOnce());
   // Layer ids whose live-3D model failed to load (GLB fetch/parse error,
   // or a mid-session WebGL context loss) — see CharacterCanvas's onError
   // prop below. Once a layer id lands here it renders the normal sprite
@@ -301,10 +494,6 @@ export function OfficeStage({
     : resolved;
   const sorted = withBackrestCrops.slice().sort(createDepthCompare(backSitOccupantBaselines));
 
-  const resolvedGreetedLayer = greetingCharacterId
-    ? resolved.find((l) => l.id === greetingCharacterId)
-    : undefined;
-
   return (
     <div
       className={styles.stage}
@@ -345,11 +534,34 @@ export function OfficeStage({
             : undefined;
         const isSelf = !!selfCharacterId && layer.id === selfCharacterId;
         let live3dEntry: Live3dAssetSet | undefined;
+        // Whether the CharacterCanvas below should run its normal animated
+        // render loop (true, the default) or the D-D "static single frame"
+        // mode (false) — see CharacterCanvas's `animated` prop doc comment.
+        let live3dAnimated = true;
+        // Dev override bypasses per-tier LOD selection entirely (it always
+        // shows LOD0 detail, matching its existing manual-preview intent),
+        // set alongside live3dEntry below so the render code can tell which
+        // path chose it without a fragile reference-equality check.
+        let usedDevOverride = false;
         if (!hasErroredLive3d) {
           if (devOverrideEntry) {
             live3dEntry = devOverrideEntry;
+            usedDevOverride = true;
           } else if (registryEntry && deviceTier !== "T0") {
-            if (isSelf) {
+            // Size-gated relaxation: while the live-3D registry holds only
+            // ONE entry (bon, today), there's no "crowd" to budget against —
+            // every viewer (self or peer) sees the same single character, so
+            // the T2-only crowd cap would just be gatekeeping bon from his
+            // own peers for no reason. In that state, T1+ is sufficient for
+            // everyone. The moment a second character is added to
+            // LIVE_3D_CHARACTERS, this branch automatically stops applying
+            // and the untouched self+crowd-cap logic below re-arms — no
+            // separate flag or character-count check to maintain elsewhere.
+            if (Object.keys(LIVE_3D_CHARACTERS).length <= 1) {
+              live3dEntry = tierAtLeast(deviceTier, LIVE_3D_SELF_MIN_TIER)
+                ? registryEntry
+                : undefined;
+            } else if (isSelf) {
               // Self gets its own, more generous allowance — independent
               // of (and never counted against) the crowd budget below.
               live3dEntry = tierAtLeast(deviceTier, LIVE_3D_SELF_MIN_TIER)
@@ -359,6 +571,17 @@ export function OfficeStage({
               live3dEntry = registryEntry;
               crowdBudgetUsed += 1;
             }
+          } else if (registryEntry && isStaticFrame) {
+            // D-D: confirmed-weak-but-has-WebGL device (software renderer,
+            // or a weak-static device that failed/never ran its microbench
+            // rescue) — a real, static (non-animated) single 3D frame of
+            // the cheapest LOD, instead of the 2D sprite. Deliberately NOT
+            // gated by the self/crowd budget above (this is a fallback
+            // rendering mode, not full live-3D crowd consumption) and
+            // independent of the ?live3d= dev override (already handled by
+            // devOverrideEntry above).
+            live3dEntry = registryEntry;
+            live3dAnimated = false;
           }
         }
 
@@ -414,22 +637,28 @@ export function OfficeStage({
               // (only) to fall back to its normal sprite on the next
               // render — never a blank/broken box.
               <CharacterCanvas
-                walkingGlbUrl={live3dEntry.walkingGlbUrl}
-                idleGlbUrl={live3dEntry.idleGlbUrl}
-                shrugGlbUrl={live3dEntry.shrugGlbUrl}
-                thinkingGlbUrl={live3dEntry.thinkingGlbUrl}
+                glbUrl={
+                  usedDevOverride
+                    ? live3dEntry.glbUrl
+                    : resolveLive3dGlbUrl(live3dEntry, deviceTier, !live3dAnimated)
+                }
                 width={live3dEntry.renderWidth}
                 height={live3dEntry.renderHeight}
+                animated={live3dAnimated}
                 headingDegrees={directionToHeadingDegrees(
                   characterDirectionsById?.[layer.id] ?? "front",
                 )}
                 isWalking={characterIsWalkingById?.[layer.id] ?? true}
-                // Reuses the existing chat-panel "talking" signal — set on
-                // both the player and the peer while a chat (or, once
-                // wired, a call) with them is open — rather than plumbing
-                // a separate chat/call-specific flag. No-ops for
-                // characters with no shrug/thinking glb configured.
-                gestureActive={talkingCharacterIds?.includes(layer.id) ?? false}
+                isSitting={characterIsSittingById?.[layer.id] ?? false}
+                // Reuses the existing chat-panel "talking" signal (rather
+                // than plumbing a separate chat/call-specific flag) —
+                // isChatting mirrors talkingCharacterIds exactly as the
+                // prior gestureActive prop did; isResponder comes from
+                // characterIsResponderById (layer-id-keyed — see its doc
+                // comment above for why this can't be looked up directly
+                // in talkingTextById, which is senderId/email-keyed).
+                isChatting={talkingCharacterIds?.includes(layer.id) ?? false}
+                isResponder={!!characterIsResponderById?.[layer.id]}
                 onError={() => reportLive3dError(layer.id)}
               />
             ) : (
@@ -486,26 +715,49 @@ export function OfficeStage({
           />
         );
       })}
-      {resolvedGreetedLayer && (
-        <GreetingBubble
-          key={greetingNonce}
-          layer={resolvedGreetedLayer}
-          text={greetingText ?? `Hi there, I'm ${formatCharacterName(resolvedGreetedLayer)}!`}
-        />
-      )}
-      {talkingCharacterIds?.map((id, index) => {
-        const layer = resolved.find((l) => l.id === id);
-        if (!layer) return null;
-        // Participants standing close together (e.g. bon walked up next to
-        // the peer for chat) can land almost-identical bubble anchors —
-        // nudge each participant's bubble to its own side so overlapping
-        // text stays readable instead of garbling together.
-        const sideOffset =
-          talkingCharacterIds.length > 1 ? (index - (talkingCharacterIds.length - 1) / 2) * 130 : 0;
-        return (
-          <TalkingBubble key={id} layer={layer} text={talkingTextById?.[id]} sideOffset={sideOffset} />
-        );
-      })}
+      {resolved
+        .filter((layer) => layer.kind === "character")
+        .map((layer) => {
+          // Single per-character overhead-element resolver — exactly ONE
+          // element (or none) per layer, by priority: active greeting >
+          // unexpired sent-text bubble > actively-typing dots > status
+          // label > nothing. Replaces three previously-separate render
+          // passes (greeting bubble / status-label-unless-talking /
+          // talking-bubble-for-talking) that could double up or fall back
+          // to the wrong element (see task doc for the bugs this fixes).
+          const isGreeted = !!greetingCharacterId && layer.id === greetingCharacterId;
+          if (isGreeted) {
+            return (
+              <TalkingBubble
+                key={`overhead-${layer.id}-${greetingNonce}`}
+                layer={layer}
+                text={greetingText ?? `Hi there, I'm ${formatCharacterName(layer)}!`}
+              />
+            );
+          }
+          const sentText = talkingTextById?.[layer.id];
+          if (sentText) {
+            return <TalkingBubble key={`overhead-${layer.id}`} layer={layer} text={sentText} />;
+          }
+          if (typingCharacterIds?.includes(layer.id)) {
+            return <TalkingBubble key={`overhead-${layer.id}`} layer={layer} />;
+          }
+          if (showStatusLabels) {
+            const isSelf = !!selfCharacterId && layer.id === selfCharacterId;
+            const status = isSelf ? selfStatus : statusByLayerId?.[layer.id];
+            if (status) {
+              return (
+                <StatusLabel
+                  key={`overhead-${layer.id}`}
+                  layer={layer}
+                  status={status}
+                  isSelf={isSelf}
+                />
+              );
+            }
+          }
+          return null;
+        })}
       <OfficePhaseOverlay phase={phase} />
     </div>
   );

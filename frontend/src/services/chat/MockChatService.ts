@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatService, Conversation, MessageListener } from "./types";
+import type { ChatMessage, ChatService, Conversation, MessageListener, TypingListener } from "./types";
 
 export const CHAT_STORAGE_KEY = "offshorly.chat";
 
@@ -63,6 +63,7 @@ function canned(): string {
 export class MockChatService implements ChatService {
   private state: ChatStorageShape = load();
   private listeners = new Set<MessageListener>();
+  private typingListeners = new Set<TypingListener>();
 
   async listConversations(): Promise<Conversation[]> {
     return this.state.conversations.slice();
@@ -101,6 +102,9 @@ export class MockChatService implements ChatService {
       senderId: input.senderId,
       text: input.text,
       sentAt: new Date().toISOString(),
+      // Mock mode has no server-side receipt tracking — always empty, never populated.
+      deliveredTo: [],
+      readBy: [],
     });
 
     // Mock-only auto-echo: a user-originated send gets one canned reply from
@@ -119,6 +123,8 @@ export class MockChatService implements ChatService {
             senderId: peerId,
             text: canned(),
             sentAt: new Date().toISOString(),
+            deliveredTo: [],
+            readBy: [],
             mock: true,
           });
         }, delay);
@@ -132,6 +138,19 @@ export class MockChatService implements ChatService {
     this.listeners.add(cb);
     return () => {
       this.listeners.delete(cb);
+    };
+  }
+
+  // No real peer socket in mock mode — a plain no-op satisfies the
+  // interface. onTyping's listeners are simply never invoked.
+  sendTyping(_input: { conversationId: string; isTyping: boolean }): void {
+    // Intentionally a no-op — see class comment above.
+  }
+
+  onTyping(cb: TypingListener): () => void {
+    this.typingListeners.add(cb);
+    return () => {
+      this.typingListeners.delete(cb);
     };
   }
 

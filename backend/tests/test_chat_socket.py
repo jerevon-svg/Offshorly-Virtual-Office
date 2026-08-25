@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 
 import pytest
 import socketio
@@ -217,15 +218,20 @@ async def test_message_read_emits_unread_count_to_self_and_read_receipt_to_peer(
         if not read_receipt_future.done():
             read_receipt_future.set_result(data)
 
-    await a.emit(
-        "message_read", {"conversationId": conv_id, "upToSentAt": "2026-01-01T00:00:00.000Z"}
-    )
+    # Wall-clock "now" rather than a fixed literal: the (a, b) conversation is deterministic
+    # (dm_key-based) and the test DB persists across runs, so mark_read's monotonic-advance
+    # guard (app/repositories/chat.py) would make a fixed past timestamp a no-op — and thus emit
+    # no read_receipt at all — on any run after the first.
+    from app.schemas.chat import to_iso_z
+
+    up_to_sent_at = to_iso_z(datetime.now(timezone.utc))
+    await a.emit("message_read", {"conversationId": conv_id, "upToSentAt": up_to_sent_at})
 
     unread_payload = await asyncio.wait_for(unread_future, timeout=2)
     read_receipt_payload = await asyncio.wait_for(read_receipt_future, timeout=2)
     assert unread_payload["conversationId"] == conv_id
     assert read_receipt_payload["conversationId"] == conv_id
-    assert read_receipt_payload["readUpTo"] == "2026-01-01T00:00:00.000Z"
+    assert read_receipt_payload["readUpTo"] == up_to_sent_at
 
     await a.disconnect()
     await a2.disconnect()
@@ -273,4 +279,66 @@ async def test_send_message_from_non_participant_is_rejected(server):
     err = await asyncio.wait_for(err_future, timeout=2)
     assert err["code"] == "forbidden"
 
+    await c.disconnect()
+
+
+async def test_typing_broadcasts_to_peer_only_with_server_verified_sender(server):
+    conv_id = await _seeded_conversation()
+
+    a = await _connect_as(server, "a@example.com")
+    b = await _connect_as(server, "b@example.com")
+    await asyncio.sleep(0.2)
+
+    peer_typing_future: asyncio.Future = asyncio.get_event_loop().create_future()
+    a_got_peer_typing = False
+
+    @b.on("peer_typing")
+    async def on_peer_typing_b(data):
+        if not peer_typing_future.done():
+            peer_typing_future.set_result(data)
+
+    @a.on("peer_typing")
+    async def on_peer_typing_a(_data):
+        nonlocal a_got_peer_typing
+        a_got_peer_typing = True
+
+    await a.emit("typing", {"conversationId": conv_id, "isTyping": True})
+
+    payload = await asyncio.wait_for(peer_typing_future, timeout=2)
+    assert payload["conversationId"] == conv_id
+    assert payload["senderEmail"] == "a@example.com"
+    assert payload["isTyping"] is True
+    assert a_got_peer_typing is False
+
+    await a.disconnect()
+    await b.disconnect()
+
+
+async def test_typing_from_non_participant_is_rejected_and_not_broadcast(server):
+    conv_id = await _seeded_conversation()
+    a = await _connect_as(server, "a@example.com")
+    c = await _connect_as(server, "c@example.com")
+    await asyncio.sleep(0.2)
+
+    err_future: asyncio.Future = asyncio.get_event_loop().create_future()
+    a_got_peer_typing = False
+
+    @c.on("chat_error")
+    async def on_error(data):
+        if not err_future.done():
+            err_future.set_result(data)
+
+    @a.on("peer_typing")
+    async def on_peer_typing_a(_data):
+        nonlocal a_got_peer_typing
+        a_got_peer_typing = True
+
+    await c.emit("typing", {"conversationId": conv_id, "isTyping": True})
+
+    err = await asyncio.wait_for(err_future, timeout=2)
+    assert err["code"] == "forbidden"
+    await asyncio.sleep(0.2)
+    assert a_got_peer_typing is False
+
+    await a.disconnect()
     await c.disconnect()

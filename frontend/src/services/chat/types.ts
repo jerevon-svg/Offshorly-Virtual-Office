@@ -4,12 +4,11 @@ export interface ChatMessage {
   senderId: string;
   text: string;
   sentAt: string; // ISO
-  // Derived watermark timestamps (real mode only) — see backend's compute_message_receipts.
-  // Undefined/absent in mock mode. Null-in-wire-format arrives as `undefined` here since these
-  // are optional fields; both unset = sent only, deliveredAt set + readAt unset = delivered,
-  // both set = read.
-  deliveredAt?: string;
-  readAt?: string;
+  // Per-reader receipt arrays (real mode only) — see backend's compute_message_receipts.
+  // Empty arrays in mock mode (no server-side receipt tracking there); empty (not undefined)
+  // means "nobody yet", never null. deliveredTo/readBy are NOT guaranteed subsets of each other.
+  deliveredTo: string[];
+  readBy: string[];
   // True for the mock-only auto-echo reply — Phase 3 removes echo entirely.
   mock?: boolean;
 }
@@ -21,6 +20,14 @@ export interface Conversation {
   // Only populated in real mode (backend-derived, per-requester) — see
   // backend/src/repo/conversations.ts. Absent/undefined in mock mode.
   unreadCount?: number;
+  // "dm" | "group" — backend already sends this on every row from
+  // GET /conversations (see ConversationOut in backend/app/schemas/chat.py).
+  // Missing/undefined (e.g. MockChatService, or an older cached row) must be
+  // treated as "dm".
+  type?: "dm" | "group";
+  // Group display name; null/absent for DMs (peer identity derives from
+  // participants instead).
+  title?: string | null;
 }
 
 export type MessageListener = (msg: ChatMessage) => void;
@@ -46,6 +53,37 @@ export interface ReadReceiptUpdate {
   readUpTo: string;
 }
 export type ReadReceiptListener = (update: ReadReceiptUpdate) => void;
+
+// Ephemeral typing-indicator update — no DB persistence, real-mode-only.
+// senderId mirrors ChatMessage.senderId's shape (server-verified email).
+export interface TypingUpdate {
+  conversationId: string;
+  senderId: string;
+  isTyping: boolean;
+}
+export type TypingListener = (update: TypingUpdate) => void;
+
+// Stage B2: fired once when an existing DM upgrades into a brand-new group
+// conversation (see backend's requests.py `conversation_upgraded` socket
+// event, emitted to every affected member's user room on an accepted
+// join_group request). Field names here are the frontend's own
+// mapping/renaming of the backend payload
+// ({oldConversationId, newConversationId, participants}) — see
+// RealChatService's onConversationUpgraded for the mapping. `title` is
+// always null today since Stage A never sets a title on the newly-formed
+// group.
+export interface ConversationUpgradedUpdate {
+  conversationId: string;
+  // The DM conversation this upgrade replaced — needed by callers (see
+  // OfficeMap.tsx's classifyUpgrade usage) to tell an "incumbent" (had this
+  // exact DM panel open already) apart from the newly-accepted "joiner" (had
+  // no prior panel open for it). Passed through unmodified from the backend's
+  // conversation_upgraded payload — see RealChatService's onConversationUpgraded.
+  oldConversationId: string;
+  participantIds: string[];
+  title: string | null;
+}
+export type ConversationUpgradedListener = (update: ConversationUpgradedUpdate) => void;
 
 // Real-mode-only: surfaces the underlying Socket.IO connection lifecycle so
 // the UI can show a "waking up the chat server" banner during a Render
@@ -81,6 +119,14 @@ export interface ChatService {
   markDelivered?(input: { conversationId: string; upToSentAt: string }): void;
   onDeliveryReceipt?(cb: DeliveryReceiptListener): () => void;
   onReadReceipt?(cb: ReadReceiptListener): () => void;
+  // Fire-and-forget typing signal — mock mode has no server-side room to
+  // broadcast to, so MockChatService's implementation is a no-op/local-only.
+  sendTyping?(input: { conversationId: string; isTyping: boolean }): void;
+  onTyping?(cb: TypingListener): () => void;
+  // Stage B2 — real-mode-only, mirrors the other onX listener registrations
+  // above. MockChatService has no server-side DM->group upgrade concept, so
+  // it simply doesn't implement this (same pattern as onUnreadCount et al).
+  onConversationUpgraded?(cb: ConversationUpgradedListener): () => void;
   // Mock mode has no real socket/connection to report on, so
   // MockChatService simply doesn't implement these.
   getConnectionState?(): ConnectionState;

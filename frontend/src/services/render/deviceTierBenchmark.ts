@@ -102,3 +102,30 @@ export async function runDeviceTierMicrobench(): Promise<DeviceTierBenchmarkResu
     return fallback;
   }
 }
+
+// Module-level, session-scoped memoized bench promise. Both OfficeStage.tsx
+// (the microbench-rescue path for a weak-static device — see deviceTier.ts's
+// MICROBENCH_T1_RESCUE_MS) and telemetry.ts (the diagnostic logging path)
+// need "run this at most once per page load, share the result" — a second,
+// independent run would waste cycles and could log/resolve conflicting
+// results for what should be a single measurement. Whichever call site
+// reaches this first kicks off the real run; every other caller (now or
+// later) gets the SAME promise/result.
+let sharedBenchPromise: Promise<DeviceTierBenchmarkResult> | null = null;
+
+/**
+ * Same contract as `runDeviceTierMicrobench`, but memoized at module scope
+ * so it only ever actually runs once per session no matter how many call
+ * sites request it (each gets the same settled promise/result).
+ */
+export function getSharedDeviceTierMicrobench(): Promise<DeviceTierBenchmarkResult> {
+  if (!sharedBenchPromise) {
+    sharedBenchPromise = runDeviceTierMicrobench();
+  }
+  return sharedBenchPromise;
+}
+
+/** Test-only: resets the shared-bench-promise singleton between test cases. */
+export function __resetSharedDeviceTierMicrobenchForTests(): void {
+  sharedBenchPromise = null;
+}

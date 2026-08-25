@@ -20,6 +20,18 @@ export interface UnreadTotalState {
   total: number;
   /** Conversations with count > 0, for the placeholder click-through list. */
   unreadConversations: UnreadConversation[];
+  /** ALL conversations (dm and group alike, including 0-unread), sorted by
+   *  lastMessageAt descending — for the full conversation-list UI (Stage
+   *  B1). Populated from the same conversationsRef this hook already
+   *  maintains for peer-id resolution. Empty in mock mode, same gating as
+   *  everything else in this hook. */
+  conversations: Conversation[];
+  /** Stage B2: manually re-fetches the conversation list — used when a live
+   *  event (e.g. conversation_upgraded) means a brand-new conversation exists
+   *  that this hook wouldn't otherwise learn about until some unrelated
+   *  future unread-count push. No-op promise in mock mode (chatMode !== "real"
+   *  guard below, same as everywhere else in this hook). */
+  refetch: () => Promise<void>;
 }
 
 export function useUnreadTotal(selfId: string): UnreadTotalState {
@@ -29,6 +41,12 @@ export function useUnreadTotal(selfId: string): UnreadTotalState {
   // refetched wholesale if a live push ever references a conversation this
   // tab hasn't seen yet (e.g. a brand-new conversation created elsewhere).
   const conversationsRef = useRef<Record<string, Conversation>>({});
+  // Same data as conversationsRef, but as state so the full-list consumer
+  // (Stage B1's conversation-list UI) re-renders when it changes — the ref
+  // alone is invisible to React. Only unread PUSH updates (onUnreadCount)
+  // mutate countsByConversation without a refetch, and those never change
+  // the underlying conversation set, so this only needs to be set here.
+  const [conversationsList, setConversationsList] = useState<Conversation[]>([]);
 
   const refetch = useCallback(() => {
     return chatService.listConversations().then((conversations: Conversation[]) => {
@@ -39,6 +57,7 @@ export function useUnreadTotal(selfId: string): UnreadTotalState {
         if (conv.unreadCount) counts[conv.id] = conv.unreadCount;
       }
       conversationsRef.current = byId;
+      setConversationsList(conversations);
       setCountsByConversation(counts);
     });
   }, []);
@@ -91,5 +110,17 @@ export function useUnreadTotal(selfId: string): UnreadTotalState {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [countsByConversation, selfId]);
 
-  return { total, unreadConversations };
+  // Overlay live push-driven counts (countsByConversation) onto the fetched
+  // list so a conversation's badge count in the full list stays current
+  // between refetches, then sort most-recently-active first.
+  const conversations = useMemo<Conversation[]>(() => {
+    return conversationsList
+      .map((conv) => ({
+        ...conv,
+        unreadCount: countsByConversation[conv.id] ?? 0,
+      }))
+      .sort((a, b) => b.lastMessageAt.localeCompare(a.lastMessageAt));
+  }, [conversationsList, countsByConversation]);
+
+  return { total, unreadConversations, conversations, refetch };
 }

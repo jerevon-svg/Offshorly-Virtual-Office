@@ -1,0 +1,27 @@
+/* Positioned to sit right next to the top-chrome WorkingStatusIndicator
+   pill (fixed, top:12px right:12px, z-index:25 — see checkout.module.css's
+   .statusBadge). Offset further right so the two never overlap. */
+.picker {
+  position: fixed;
+  top: 12px;
+  right: 160px;
+  z-index: 25;
+  font-family: system-ui, sans-serif;
+}
+
+.select {
+  background: rgba(26, 26, 26, 0.9);
+  color: #f0f0f0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 13px;
+  font-family: inherit;
+  backdrop-filter: blur(4px);
+  cursor: pointer;
+}
+
+.select:focus {
+  outline: 2px solid rgba(255, 255, 255, 0.4);
+  outline-offset: 1px;
+}

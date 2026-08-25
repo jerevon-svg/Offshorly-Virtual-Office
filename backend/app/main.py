@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from app.config import settings
 from app.realtime.socket import sio
 from app.routers import chat as chat_router
+from app.routers import requests as requests_router
 
 _logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ async def health_check() -> dict:
 
 
 fastapi_app.include_router(chat_router.router)
+fastapi_app.include_router(requests_router.router)
 
 
 # Faithful port of backend/src/http.ts's error shape: REST error responses always come back as

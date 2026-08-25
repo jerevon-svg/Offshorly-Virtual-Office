@@ -273,6 +273,20 @@ export function formatCharacterName(layer: Pick<AssetLayer, "id" | "name">): str
     .join(" ");
 }
 
+// First-name-only variant used solely by the in-scene floating StatusLabel
+// pill (small nameplate above a character). Showing a Zoho nickname here
+// instead was requested, but Atlas currently exposes no nickname field
+// anywhere in the data model (see services/office/types.ts) — only
+// `display_name` (full name). If Atlas adds a nickname field later, prefer
+// it here before falling back to this name-split. Every other call site
+// (roster sidebar, search, chat headers, greetings, menus) intentionally
+// keeps using formatCharacterName's full name and must not be changed.
+export function formatShortName(layer: Pick<AssetLayer, "id" | "name">): string {
+  const full = formatCharacterName(layer);
+  const first = full.trim().split(/\s+/)[0];
+  return first || full; // never return blank
+}
+
 // Room layers used for click-to-view-roster (kept separate from the legacy
 // `rooms` flat-rect export above, which uses different ids).
 export const roomLayers: AssetLayer[] = officeAssetLayers.filter(

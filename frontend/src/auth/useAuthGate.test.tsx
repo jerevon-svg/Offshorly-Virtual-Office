@@ -4,6 +4,38 @@ import { useAuthGate, getCurrentUserId, __resetCurrentUserIdForTest } from "./us
 import { HOME_PATH, LOGIN_PATH } from "../services/api/client";
 import { getCurrentUser, resetCurrentUserForTests } from "./currentUserStore";
 
+// Mocked so tests can flip chatMode ("real"/"mock") per-case without relying
+// on the real module's build-time env resolution, and so setDevIdentity can
+// be asserted on without a real socket/service instance.
+const {
+  chatModeState,
+  setDevIdentitySpy,
+  setSpatialSessionDevIdentitySpy,
+  setRequestsClientDevIdentitySpy,
+  setOfflineLineupDevIdentitySpy,
+} = vi.hoisted(() => ({
+  chatModeState: { value: "mock" as "real" | "mock" },
+  setDevIdentitySpy: vi.fn(),
+  setSpatialSessionDevIdentitySpy: vi.fn(),
+  setRequestsClientDevIdentitySpy: vi.fn(),
+  setOfflineLineupDevIdentitySpy: vi.fn(),
+}));
+vi.mock("../services/chat", () => ({
+  get chatMode() {
+    return chatModeState.value;
+  },
+  realChatService: { setDevIdentity: setDevIdentitySpy },
+}));
+vi.mock("../services/presence/spatialSessionStore", () => ({
+  setDevIdentity: setSpatialSessionDevIdentitySpy,
+}));
+vi.mock("../services/chat/requestsClient", () => ({
+  setDevIdentity: setRequestsClientDevIdentitySpy,
+}));
+vi.mock("../services/presence/offlineLineupClient", () => ({
+  setDevIdentity: setOfflineLineupDevIdentitySpy,
+}));
+
 function GateProbe() {
   const status = useAuthGate();
   return <div data-testid="status">{status}</div>;
@@ -18,6 +50,11 @@ describe("useAuthGate", () => {
     // assertions (order-independence).
     __resetCurrentUserIdForTest();
     resetCurrentUserForTests();
+    chatModeState.value = "mock";
+    setDevIdentitySpy.mockClear();
+    setSpatialSessionDevIdentitySpy.mockClear();
+    setRequestsClientDevIdentitySpy.mockClear();
+    setOfflineLineupDevIdentitySpy.mockClear();
     delete import.meta.env.VITE_DEV_USER_EMAIL;
     import.meta.env.VITE_API_URL = "https://atlas-api.offshorly.com";
     // Vitest loads .env.local like any Vite mode, and DEV is true here — so a
@@ -295,5 +332,59 @@ describe("useAuthGate", () => {
 
       expect(getCurrentUser()?.email).toBe("alex@offshorly.com");
     });
+
+    it("wires the resolved bypass email into chat's dev identity when chat mode is real", () => {
+      chatModeState.value = "real";
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: {
+          ...window.location,
+          href: "https://atlas.offshorly.com/virtual-office?as=alex@offshorly.com",
+          search: "?as=alex@offshorly.com",
+        },
+      });
+
+      render(<GateProbe />);
+
+      expect(setDevIdentitySpy).toHaveBeenCalledTimes(1);
+      expect(setDevIdentitySpy).toHaveBeenCalledWith("alex@offshorly.com");
+      // Spatial-session/requests/offline-lineup sockets aren't gated on
+      // chatMode — they're always "real" sockets used directly by
+      // OfficeMap.tsx regardless of chat mode.
+      expect(setSpatialSessionDevIdentitySpy).toHaveBeenCalledWith("alex@offshorly.com");
+      expect(setRequestsClientDevIdentitySpy).toHaveBeenCalledWith("alex@offshorly.com");
+      expect(setOfflineLineupDevIdentitySpy).toHaveBeenCalledWith("alex@offshorly.com");
+    });
+
+    it("does not touch chat's dev identity when chat mode is mock, but still seeds the always-real presence/requests sockets", () => {
+      chatModeState.value = "mock";
+
+      render(<GateProbe />);
+
+      expect(setDevIdentitySpy).not.toHaveBeenCalled();
+      // Unlike realChatService, these three aren't part of the swappable
+      // mock/real ChatService abstraction — they must still be seeded.
+      expect(setSpatialSessionDevIdentitySpy).toHaveBeenCalledWith("jerevon@offshorly.com");
+      expect(setRequestsClientDevIdentitySpy).toHaveBeenCalledWith("jerevon@offshorly.com");
+      expect(setOfflineLineupDevIdentitySpy).toHaveBeenCalledWith("jerevon@offshorly.com");
+    });
+  });
+
+  it("does not touch chat's dev identity when the gate is NOT bypassed", async () => {
+    chatModeState.value = "real";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ can_view_virtual_office: true }), { status: 200 }),
+      ),
+    );
+
+    render(<GateProbe />);
+
+    await waitFor(() => expect(screen.getByTestId("status").textContent).toBe("allowed"));
+    expect(setDevIdentitySpy).not.toHaveBeenCalled();
+    expect(setSpatialSessionDevIdentitySpy).not.toHaveBeenCalled();
+    expect(setRequestsClientDevIdentitySpy).not.toHaveBeenCalled();
+    expect(setOfflineLineupDevIdentitySpy).not.toHaveBeenCalled();
   });
 });
