@@ -8,6 +8,8 @@
 // sites (the self-settle effect, and the conversation_upgraded handler) for
 // how these compose with real state.
 
+import type { ConversationUpgradedUpdate } from "../../services/chat/types";
+
 export type Pt = { x: number; y: number };
 
 /** Centroid (mean x, mean y) of the given points. {x:0,y:0} for an empty array
@@ -104,7 +106,7 @@ export function resolveSelfSlotWalk(input: {
 export function classifyUpgrade(input: {
   selfEmail: string;
   openConversationId: string | null;
-  payload: { oldConversationId: string; newConversationId: string; participantIds: string[] };
+  payload: Pick<ConversationUpgradedUpdate, "oldConversationId" | "participantIds">;
 }): "incumbent" | "joiner" {
   return input.openConversationId === input.payload.oldConversationId ? "incumbent" : "joiner";
 }

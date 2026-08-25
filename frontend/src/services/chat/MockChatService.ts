@@ -1,4 +1,11 @@
-import type { ChatMessage, ChatService, Conversation, MessageListener, TypingListener } from "./types";
+import type {
+  ChatMessage,
+  ChatService,
+  Conversation,
+  ConversationUpgradedListener,
+  MessageListener,
+  TypingListener,
+} from "./types";
 
 export const CHAT_STORAGE_KEY = "offshorly.chat";
 
@@ -153,6 +160,10 @@ export class MockChatService implements ChatService {
       this.typingListeners.delete(cb);
     };
   }
+
+  // Mock mode has no server-side DM->group upgrade concept — declared but
+  // never assigned, same pattern as onUnreadCount et al in ChatService.
+  onConversationUpgraded?: (cb: ConversationUpgradedListener) => () => void;
 
   private appendMessage(message: ChatMessage): ChatMessage {
     this.state.messages.push(message);

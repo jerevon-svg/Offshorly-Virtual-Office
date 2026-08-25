@@ -99,7 +99,7 @@ describe("spatialWalkClient", () => {
     const from = { x: 0, y: 0 };
     const path = [{ x: 1, y: 1 }, { x: 2, y: 2 }];
     const onArrive = vi.fn();
-    const fakeWalkTo = vi.fn((input: unknown, onArriveCb?: () => void) => {
+    const fakeWalkTo = vi.fn((_input: unknown, onArriveCb?: () => void) => {
       onArriveCb?.();
     });
 

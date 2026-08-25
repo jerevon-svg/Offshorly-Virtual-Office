@@ -86,18 +86,18 @@ beforeEach(() => {
   promiseCache.clear();
   capturedScene = null;
   rafCallback = null;
-  originalRAF = global.requestAnimationFrame;
-  originalCAF = global.cancelAnimationFrame;
-  global.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+  originalRAF = globalThis.requestAnimationFrame;
+  originalCAF = globalThis.cancelAnimationFrame;
+  globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
     rafCallback = cb;
     return 1;
   }) as typeof requestAnimationFrame;
-  global.cancelAnimationFrame = (() => {}) as typeof cancelAnimationFrame;
+  globalThis.cancelAnimationFrame = (() => {}) as typeof cancelAnimationFrame;
 });
 
 afterEach(() => {
-  global.requestAnimationFrame = originalRAF;
-  global.cancelAnimationFrame = originalCAF;
+  globalThis.requestAnimationFrame = originalRAF;
+  globalThis.cancelAnimationFrame = originalCAF;
   vi.clearAllMocks();
 });
 
