@@ -6,7 +6,9 @@ import styles from "./CharacterActionMenu.module.css";
 type Props = {
   layer: AssetLayer;
   anchor: { clientX: number; clientY: number };
-  onChoose: (action: "chat" | "call" | "approach" | "walkDemo" | "patDemo" | "askToJoin") => void;
+  onChoose: (
+    action: "chat" | "call" | "approach" | "walkDemo" | "patDemo" | "askToJoin" | "viewProfile",
+  ) => void;
   onClose: () => void;
   // Demo triggers for any character with a populated sprite set — alex/micah
   // (hardcoded NPCs) plus any saved avatar (e.g. "Lui") generated via the
@@ -45,6 +47,7 @@ export function CharacterActionMenu({
         <button className={styles.item} onClick={() => onChoose("chat")}>Chat</button>
         <button className={styles.item} onClick={() => onChoose("call")}>Call</button>
         <button className={styles.item} onClick={() => onChoose("approach")}>Approach</button>
+        <button className={styles.item} onClick={() => onChoose("viewProfile")}>View Profile</button>
         {canAskToJoin && (
           <button className={styles.item} onClick={() => onChoose("askToJoin")}>Ask to Join</button>
         )}

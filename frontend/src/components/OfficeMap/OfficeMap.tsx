@@ -121,6 +121,11 @@ import { SubmissionFailedPanel } from "./checkout/SubmissionFailedPanel";
 import { CheckoutSuccessCard } from "./checkout/CheckoutSuccessCard";
 import { CheckoutDebugPanel } from "./checkout/CheckoutDebugPanel";
 import checkoutStyles from "./checkout/checkout.module.css";
+import { CompanyHub } from "./CompanyHub";
+import { openCompanyHub, useCompanyHub } from "../../services/hub/companyHubStore";
+import { resetDevHubState } from "../../services/hub/hubClient";
+import { EmployeeProfile } from "./EmployeeProfile";
+import { mockEmailForAvatarId } from "../../data/avatarIdentity";
 import styles from "./OfficeMap.module.css";
 
 // Check-in sequence: bon spawns outside with no popup. Clicking the
@@ -199,6 +204,10 @@ export function OfficeMap() {
   const [menu, setMenu] = useState<{ layer: AssetLayer; clientX: number; clientY: number } | null>(
     null,
   );
+  // Employee Profile V1 (see EmployeeProfile.tsx) — the email currently open, or null when
+  // closed. Set from CharacterActionMenu's "View Profile" action, or the self-profile button
+  // in the top chrome below.
+  const [profileEmail, setProfileEmail] = useState<string | null>(null);
   // Anchored action menu opened by clicking the reception room itself — the
   // sole entry point for check-in/check-out now that Arisha's own menu no
   // longer offers "Check in" and the room-picker step is gone.
@@ -1081,12 +1090,19 @@ export function OfficeMap() {
   // Presence/status system (see services/presence/status.ts). Idle (Away)
   // detection runs once here; inConversation now comes from the server-broadcast
   // spatial session (inConv, derived above from spatial_sessions + selfChatId — see the
-  // "Ask to Join" Stage 4 block), offline from a hard disconnect/checkout (CHECKED_OUT).
+  // "Ask to Join" Stage 4 block), offline from not-yet-checked-in OR a hard
+  // disconnect/checkout (CHECKED_OUT) — same !hasCheckedIn signal already used
+  // for seatInteractionsSuppressed above, so self follows the same "not checked
+  // in yet" rule other checked-in-gated behavior in this file already follows.
   // See useAutoStatusDetection.ts.
   useAutoStatusDetection({
     inConversation: inConv,
-    offline: checkoutFlow.state === "CHECKED_OUT",
+    offline: !hasCheckedIn || checkoutFlow.state === "CHECKED_OUT",
   });
+
+  // Company Hub V1 (see services/hub/companyHubStore.ts) — opened once check-in completes
+  // (finishArrival, below) and reopenable anytime via the Hub button in the top chrome.
+  const companyHub = useCompanyHub();
 
   // Offline lineup (Phase 0/1 — v1 explicit-checkout-only, see offline_lineup.py's module
   // docstring): additive, separate wiring keyed strictly off checkoutFlow.state, never off
@@ -1691,6 +1707,7 @@ export function OfficeMap() {
         greetTimerRef.current = window.setTimeout(() => setGreeting(null), 3000);
         setOnboarding("done");
         setHasCheckedIn(true);
+        openCompanyHub("checkin");
       }
 
       pipSideRef.current = roomCenter.x > startCenter.x ? "left" : "right";
@@ -2300,11 +2317,21 @@ export function OfficeMap() {
   }
 
   function handleChoose(
-    action: "chat" | "call" | "approach" | "walkDemo" | "patDemo" | "askToJoin",
+    action: "chat" | "call" | "approach" | "walkDemo" | "patDemo" | "askToJoin" | "viewProfile",
   ) {
     if (!menu) return;
     const target = menu.layer;
     const name = formatCharacterName(target);
+    if (action === "viewProfile") {
+      closeCharacterMenu();
+      // Real roster people key their layer id straight off email (see rosterLayers.ts's
+      // officePeopleToLayers); static manifest NPCs (bon/alex/micah/lui) use a sprite id
+      // instead — mockEmailForAvatarId is avatarIdentity.ts's own inverse of that same
+      // localpart convention (already used to seed MockOfficeService's roster), reused here
+      // rather than inventing a second id->email mapping.
+      setProfileEmail(target.id.includes("@") ? target.id : mockEmailForAvatarId(target.id));
+      return;
+    }
     if (action === "walkDemo") {
       setMenu(null);
       runWalkDemo(target);
@@ -2809,6 +2836,53 @@ export function OfficeMap() {
           regressing to "logs into the void" on a future deploy. DEV stays
           in the condition so mock-mode development still exercises the UI. */}
       <StatusPicker />
+      {hasCheckedIn && onboarding === "done" && !checkoutBusy && (
+        <button
+          className={styles.hubButton}
+          onClick={() => openCompanyHub("manual")}
+          aria-label="Open Company Hub"
+        >
+          🏠 Hub
+        </button>
+      )}
+      {hasCheckedIn && onboarding === "done" && !checkoutBusy && currentUser?.email && (
+        <button
+          className={styles.profileButton}
+          onClick={() => setProfileEmail(currentUser.email)}
+          aria-label="Open my profile"
+        >
+          👤 Profile
+        </button>
+      )}
+      {import.meta.env.DEV && (
+        <button
+          className={styles.hubDevResetButton}
+          onClick={() => {
+            resetDevHubState()
+              .then(({ resetCount }) => {
+                setToast(`Reset ${resetCount} dev Hub item state(s) — check in again to re-demo.`);
+              })
+              .catch((err) => {
+                setToast(err instanceof Error ? err.message : "Failed to reset dev Hub state.");
+              })
+              .finally(() => {
+                window.setTimeout(() => setToast(null), 2500);
+              });
+          }}
+          aria-label="Reset Hub demo state"
+        >
+          ♻️ Reset Hub Demo State
+        </button>
+      )}
+      {companyHub.isOpen && <CompanyHub />}
+      {profileEmail && (
+        <EmployeeProfile
+          email={profileEmail}
+          viewerEmail={currentUser?.email ?? getCurrentUserId()}
+          roster={roster.people}
+          onClose={() => setProfileEmail(null)}
+        />
+      )}
       {(import.meta.env.DEV || isRealZohoMode()) && (
         <>
           <WorkingStatusIndicator state={checkoutFlow.state} workedLabel={checkoutFlow.workedLabel} />

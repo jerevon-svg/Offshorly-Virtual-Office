@@ -6,6 +6,8 @@ import { setDevIdentity as setSpatialSessionDevIdentity } from "../services/pres
 import { setDevIdentity as setRequestsClientDevIdentity } from "../services/chat/requestsClient";
 import { setDevIdentity as setOfflineLineupDevIdentity } from "../services/presence/offlineLineupClient";
 import { setDevIdentity as setSpatialWalkDevIdentity } from "../services/presence/spatialWalkClient";
+import { setDevIdentity as setHubClientDevIdentity } from "../services/hub/hubClient";
+import { setDevIdentity as setFeedClientDevIdentity } from "../services/feed/feedClient";
 
 // Boot-time permission gate for the Virtual Office. Calls Atlas's
 // GET /api/v1/auth/me and checks the can_view_virtual_office flag.
@@ -197,6 +199,8 @@ function seedDevBypassIdentity(): void {
   setRequestsClientDevIdentity(email);
   setOfflineLineupDevIdentity(email);
   setSpatialWalkDevIdentity(email);
+  setHubClientDevIdentity(email);
+  setFeedClientDevIdentity(email);
 }
 
 export function useAuthGate(): AuthGateStatus {
