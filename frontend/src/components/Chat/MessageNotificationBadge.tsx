@@ -12,26 +12,31 @@ type MessageNotificationBadgeProps = {
   selfId: string;
   resolveDisplayName: (email: string) => string;
   onSelectConversation: (conv: Conversation) => void;
+  // Global Chat entry points, all opened remote/non-spatial by the caller — see
+  // OfficeMap.tsx's chatPickerMode wiring. New Message and Find Person both resolve to the same
+  // single-employee-search flow (open/create that person's DM); New Group Chat opens the
+  // multi-select flow.
+  onNewMessage: () => void;
+  onFindPerson: () => void;
+  onNewGroupChat: () => void;
 };
 
-// Placeholder notification icon + count badge (Phase 3 real-time unread
-// tracking) — Bon will restyle this once the underlying wiring is
-// confirmed working. Clicking opens a list of ALL conversations (Stage
-// B1); clicking an entry hands the caller the full Conversation object so
-// it can branch on `type` (dm vs group) and reopen by id.
+// Persistent Global Chat entry point (💬) — always visible once real chat is enabled, not just
+// when there's something unread. Clicking opens a list of ALL conversations (Stage B1) plus the
+// New Message / Find Person / New Group Chat actions above it; clicking a conversation entry
+// hands the caller the full Conversation object so it can branch on `type` (dm vs group) and
+// reopen by id.
 export function MessageNotificationBadge({
   total,
   conversations,
   selfId,
   resolveDisplayName,
   onSelectConversation,
+  onNewMessage,
+  onFindPerson,
+  onNewGroupChat,
 }: MessageNotificationBadgeProps) {
   const [open, setOpen] = useState(false);
-
-  // Keep the icon visible whenever there's anything to show (unread OR any
-  // conversation at all) — it's now a general conversation-list entry
-  // point, not purely an unread badge.
-  if (total <= 0 && conversations.length === 0) return null;
 
   function labelFor(conv: Conversation): string {
     if (conv.type === "group") {
@@ -58,6 +63,37 @@ export function MessageNotificationBadge({
       </button>
       {open && (
         <div className={styles.dropdown}>
+          <button
+            type="button"
+            className={styles.actionRow}
+            onClick={() => {
+              setOpen(false);
+              onNewMessage();
+            }}
+          >
+            + New Message
+          </button>
+          <button
+            type="button"
+            className={styles.actionRow}
+            onClick={() => {
+              setOpen(false);
+              onFindPerson();
+            }}
+          >
+            🔍 Find Person
+          </button>
+          <button
+            type="button"
+            className={styles.actionRow}
+            onClick={() => {
+              setOpen(false);
+              onNewGroupChat();
+            }}
+          >
+            + New Group Chat
+          </button>
+          <div className={styles.divider} />
           {conversations.length === 0 && <div className={styles.emptyRow}>No conversations yet.</div>}
           {conversations.map((conv) => (
             <button

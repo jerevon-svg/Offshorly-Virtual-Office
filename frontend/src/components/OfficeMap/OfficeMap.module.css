@@ -14,6 +14,15 @@
   cursor: grabbing;
 }
 
+/* Messenger-style floating chat stack — each open conversation (spatial or remote) gets its own
+   fixed-position slot, offset horizontally by floatingChatOffsets in OfficeMap.tsx so multiple
+   windows stack right-to-left along the bottom edge without overlapping. */
+.floatingChatSlot {
+  position: fixed;
+  bottom: 16px;
+  z-index: 140;
+}
+
 .pip {
   position: fixed;
   width: 240px;

@@ -64,6 +64,29 @@
   font-size: 13px;
 }
 
+.actionRow {
+  all: unset;
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  cursor: pointer;
+  padding: 8px;
+  border-radius: 6px;
+  color: #f0f0f0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.actionRow:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.divider {
+  height: 1px;
+  margin: 4px 0;
+  background: rgba(255, 255, 255, 0.1);
+}
+
 .row {
   all: unset;
   display: flex;

@@ -36,6 +36,7 @@ import type { ChatMessage } from "../../services/chat";
 import type { Conversation } from "../../services/chat/types";
 import { useUnreadTotal } from "../../services/chat/useUnreadTotal";
 import { MessageNotificationBadge } from "../Chat/MessageNotificationBadge";
+import { EmployeePickerModal } from "../Chat/EmployeePickerModal";
 import { GroupConversationView } from "../Chat/GroupConversationView";
 import { isRealZohoMode } from "../../services/zoho";
 import { ErrorBoundary } from "../ErrorBoundary";
@@ -188,6 +189,31 @@ function nearestSeatTo(roomId: string, point: Pt): Seat | null {
     }
   }
   return best;
+}
+
+// Messenger-style floating chat stack layout — see the render block further down (search
+// "floatingChatRightOffsets"). Windows are laid out right-to-left along the bottom edge; an
+// expanded window reserves EXPANDED_WIDTH, a minimized (header-only) one reserves the narrower
+// MINIMIZED_WIDTH, so restoring/minimizing a window shifts everything to its left without
+// overlap.
+const FLOATING_CHAT_EDGE_MARGIN = 16;
+const FLOATING_CHAT_EXPANDED_WIDTH = 320;
+const FLOATING_CHAT_MINIMIZED_WIDTH = 220;
+const FLOATING_CHAT_GAP = 12;
+// Synthetic key for the single spatial ("Character -> Chat") slot in the combined floating
+// layout — distinct from any real conversationId/peer-email key a remote window could have.
+const SPATIAL_WINDOW_KEY = "__spatial__";
+
+// Pure layout pass: given an ordered list (index 0 = rightmost/newest) of {key, minimized},
+// returns each key's `right` CSS offset in px so windows stack without overlapping.
+function computeFloatingChatRightOffsets(items: { key: string; minimized: boolean }[]): Map<string, number> {
+  const offsets = new Map<string, number>();
+  let cursor = FLOATING_CHAT_EDGE_MARGIN;
+  for (const item of items) {
+    offsets.set(item.key, cursor);
+    cursor += (item.minimized ? FLOATING_CHAT_MINIMIZED_WIDTH : FLOATING_CHAT_EXPANDED_WIDTH) + FLOATING_CHAT_GAP;
+  }
+  return offsets;
 }
 
 export function OfficeMap() {
@@ -531,15 +557,155 @@ export function OfficeMap() {
     title: string | null;
   } | null>(null);
 
-  // Stage B1: routes a conversation-list click to the right existing panel
-  // — a group opens GroupConversationView directly by id; a dm/untyped
-  // conversation reuses the existing openChatWithPeerEmail path (idempotent,
-  // never creates a new DM for an existing one). Defined after
-  // openChatWithPeerEmail further down, so this is a function declaration
-  // reference resolved at call time, not at this point in the file.
+  // openChat/openGroupConv above are EXCLUSIVELY the spatial "Character -> Chat" floating window
+  // (auto-walk, spatial session, In Conversation, Ask to Join) — reused unchanged from before the
+  // Messenger-style floating chat redesign. Whether that window shows expanded or collapsed to
+  // just its header row.
+  const [spatialChatMinimized, setSpatialChatMinimized] = useState(false);
+
+  // Global Chat (persistent 💬 HUD icon) floating windows — completely separate state from
+  // openChat/openGroupConv above. Multiple can be open at once, each keyed by peer email (DM) or
+  // conversationId (group) so reopening an already-open one focuses/restores it instead of
+  // duplicating. Remote windows never call emitSpatialSessionStart/Leave — no auto-walk, no
+  // spatial session, no "In Conversation" status, no Ask to Join — that's the whole point of the
+  // remote/spatial split.
+  type RemoteChatWindow =
+    | { kind: "dm"; key: string; peerEmail: string; layer: AssetLayer; minimized: boolean }
+    | {
+        kind: "group";
+        key: string;
+        conversationId: string;
+        participantEmails: string[];
+        title: string | null;
+        minimized: boolean;
+      };
+  const [remoteChatWindows, setRemoteChatWindows] = useState<RemoteChatWindow[]>([]);
+
+  // Drives the EmployeePickerModal — "message"/"findPerson" both resolve to the modal's
+  // single-select mode (functionally identical: search, pick one, open/create their DM), kept as
+  // distinct values only so the modal's title matches whichever entry point was clicked; "group"
+  // is the modal's multi-select mode. null when closed.
+  const [chatPickerMode, setChatPickerMode] = useState<"message" | "findPerson" | "group" | null>(null);
+
+  // Same AssetLayer resolution openChatWithPeerEmail used pre-redesign: prefer a live on-map
+  // layer (for name/avatar) when the peer is currently rendered; fall back to a minimal synthetic
+  // layer (id-derived display name) otherwise, since a remote conversation can still be opened by
+  // email even if they're not currently visible on the floor.
+  function buildPeerLayer(peerEmail: string): AssetLayer {
+    const email = peerEmail.toLowerCase();
+    return (
+      extraCharacterLayers.find((l) => l.id.toLowerCase() === email) ??
+      npcCharacterLayers.find((l) => l.id.toLowerCase() === email) ??
+      ({
+        id: email,
+        kind: "character",
+        path: "",
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        transform: null,
+      } as AssetLayer)
+    );
+  }
+
+  // Keeps at most ~3 remote windows expanded at once (a bit fewer while the spatial window is
+  // also expanded, since it occupies a slot in the same visual stack) — gracefully minimizes the
+  // OLDEST other expanded window rather than the one just opened/restored (protectKey).
+  function capExpandedRemoteWindows(windows: RemoteChatWindow[], protectKey: string): RemoteChatWindow[] {
+    const spatialTakesSlot = (openChat !== null || openGroupConv !== null) && !spatialChatMinimized;
+    const maxExpanded = spatialTakesSlot ? 2 : 3;
+    const result = [...windows];
+    let expandedCount = result.filter((w) => !w.minimized).length;
+    for (let i = result.length - 1; i >= 0 && expandedCount > maxExpanded; i -= 1) {
+      if (result[i].key === protectKey) continue;
+      if (!result[i].minimized) {
+        result[i] = { ...result[i], minimized: true };
+        expandedCount -= 1;
+      }
+    }
+    return result;
+  }
+
+  // Opens a remote DM window for peerEmail, or focuses/restores it if one is already open —
+  // never duplicates. New windows are unshifted to the front (rightmost slot in the stack — see
+  // the floatingChatOffsets computation further down).
+  function openOrFocusRemoteDm(peerEmail: string) {
+    const email = peerEmail.toLowerCase();
+    const key = `dm:${email}`;
+    setRemoteChatWindows((prev) => {
+      if (prev.some((w) => w.key === key)) {
+        return capExpandedRemoteWindows(
+          prev.map((w) => (w.key === key ? { ...w, minimized: false } : w)),
+          key,
+        );
+      }
+      const next: RemoteChatWindow = { kind: "dm", key, peerEmail: email, layer: buildPeerLayer(email), minimized: false };
+      return capExpandedRemoteWindows([next, ...prev], key);
+    });
+  }
+
+  // Same idempotent open-or-focus behavior as openOrFocusRemoteDm, keyed by conversationId
+  // instead of peer email (a group has no single "peer").
+  function openOrFocusRemoteGroup(conv: { id: string; participantIds: string[]; title: string | null }) {
+    const key = `group:${conv.id}`;
+    setRemoteChatWindows((prev) => {
+      if (prev.some((w) => w.key === key)) {
+        return capExpandedRemoteWindows(
+          prev.map((w) => (w.key === key ? { ...w, minimized: false } : w)),
+          key,
+        );
+      }
+      const next: RemoteChatWindow = {
+        kind: "group",
+        key,
+        conversationId: conv.id,
+        participantEmails: conv.participantIds,
+        title: conv.title ?? null,
+        minimized: false,
+      };
+      return capExpandedRemoteWindows([next, ...prev], key);
+    });
+  }
+
+  // Close only dismisses the floating window — the conversation itself (messages, unread state,
+  // membership) lives entirely server-side and is untouched.
+  function closeRemoteWindow(key: string) {
+    setRemoteChatWindows((prev) => prev.filter((w) => w.key !== key));
+  }
+
+  function toggleRemoteWindowMinimize(key: string) {
+    setRemoteChatWindows((prev) =>
+      capExpandedRemoteWindows(
+        prev.map((w) => (w.key === key ? { ...w, minimized: !w.minimized } : w)),
+        key,
+      ),
+    );
+  }
+
+  // Combined right-to-left layout for the floating chat stack: newest remote windows first
+  // (remoteChatWindows is already newest-first, see openOrFocusRemoteDm/Group's unshift), then
+  // the spatial window (if any) last/leftmost. Purely presentational — has no bearing on which
+  // slot is "spatial" vs "remote" for session-bookkeeping purposes, only on where each renders.
+  const floatingChatRightOffsets = useMemo(() => {
+    const items = remoteChatWindows.map((w) => ({ key: w.key, minimized: w.minimized }));
+    if (openChat || openGroupConv) {
+      items.push({ key: SPATIAL_WINDOW_KEY, minimized: spatialChatMinimized });
+    }
+    return computeFloatingChatRightOffsets(items);
+  }, [remoteChatWindows, openChat, openGroupConv, spatialChatMinimized]);
+
+  // Routes a conversation-list click to the SPATIAL slot — mirrors pre-floating-chat behavior.
+  // Reopening an existing conversation from the Global Chat list is how the non-initiating party
+  // in a Character->Chat DM/group actually joins their side (e.g. responding to an incoming
+  // message via the HUD icon rather than walking back to the sender) — routing this remote
+  // instead of spatial silently drops them from spatial_session_start, so the session never
+  // reaches the >=2 members canAskToJoin requires and Ask-to-Join never becomes eligible for a
+  // third user. Restored to setOpenChat/setOpenGroupConv (spatial) to fix that regression.
   function onSelectConversation(conv: Conversation) {
     if (conv.type === "group") {
       setOpenChat(null);
+      setSpatialChatMinimized(false);
       setOpenGroupConv({
         conversationId: conv.id,
         participantEmails: conv.participantIds,
@@ -548,13 +714,36 @@ export function OfficeMap() {
       return;
     }
     setOpenGroupConv(null);
+    setSpatialChatMinimized(false);
     const peerEmail = conv.participantIds.find((id) => id.toLowerCase() !== selfChatId.toLowerCase());
-    if (peerEmail) openChatWithPeerEmail(peerEmail);
+    if (peerEmail) setOpenChat(buildPeerLayer(peerEmail));
+  }
+
+  // Global Chat "New Message"/"Find Person" resolution — both search/select flows land here with
+  // the picked employee's email.
+  function startRemoteDirectMessage(peerEmail: string) {
+    openOrFocusRemoteDm(peerEmail);
+  }
+
+  // Global Chat "New Group Chat" resolution — creates (or reuses, per the backend's exact-member
+  // idempotency) a group conversation for the picked employees, then opens/focuses its window.
+  async function startRemoteGroupChat(participantEmails: string[]) {
+    if (!chatService.createGroupConversation) return;
+    try {
+      const conv = await chatService.createGroupConversation(participantEmails, null);
+      openOrFocusRemoteGroup(conv);
+      void refetchConversations();
+    } catch (err) {
+      console.error("[chat] failed to create group conversation", err);
+      setToast("Couldn't create the group chat.");
+      setTimeout(() => setToast(null), 1800);
+    }
   }
   // Chat-panel-required per the finalized spatial-clustering decision: leave on unmount only
   // if a chat panel was actually open (explicit close already emits its own leave — see
   // ConversationView's onClose below). Mount-once effect (empty deps) so this only fires on
-  // real component unmount, not on every openConversationId change.
+  // real component unmount, not on every openConversationId change. openConversationId only ever
+  // tracks the spatial window (see its declaration above) — remote windows never touch it.
   useEffect(() => {
     return () => {
       if (openConversationIdRef.current) emitSpatialSessionLeave();
@@ -952,7 +1141,7 @@ export function OfficeMap() {
   // Cluster-formation wiring: resolves a member's current WORLD-CENTER
   // position (not top-left) for anchor/slot computation. Mirrors the same
   // layer-lookup chain the peerWalks.map() rendering block and
-  // openChatWithPeerEmail already use: extraCharacterLayers (which folds in
+  // buildPeerLayer already use: extraCharacterLayers (which folds in
   // positionedPeerLayers) first, else npcCharacterLayers. Live peer movement
   // (peerWalkState, top-left coords) takes priority over a peer's static
   // layer position when a walk is in flight/just completed. Returns null
@@ -2214,6 +2403,7 @@ export function OfficeMap() {
       // symmetrically clear openChat anywhere else in this file, so leaving
       // openChat set here would re-trigger the exact vanish bug Part 1 fixed.
       setOpenChat(null);
+      setSpatialChatMinimized(false);
       setOpenGroupConv({
         conversationId: payload.conversationId,
         participantEmails: payload.participantIds,
@@ -2369,6 +2559,7 @@ export function OfficeMap() {
         // stale openGroupConv set here would make BOTH guards false and
         // silently vanish both panels (group's onClose never fires either).
         setOpenGroupConv(null);
+        setSpatialChatMinimized(false);
         setOpenChat(target);
       });
     } else if (action === "askToJoin") {
@@ -2452,36 +2643,6 @@ export function OfficeMap() {
   function closeCharacterMenu() {
     resetToInitialView();
     setMenu(null);
-  }
-
-  // Placeholder click-through for the unread-notification badge — opens the
-  // conversation directly (no walk-up-and-approach beat, unlike the normal
-  // "chat" action-menu path) since this is a simple testing affordance, not
-  // the polished entry point. Prefers the peer's real on-map layer (for
-  // name/avatar) when they're currently a rendered character; falls back to
-  // a minimal synthetic layer (id-derived display name) otherwise, since the
-  // conversation can still be opened by email even if they're not currently
-  // visible on the floor.
-  function openChatWithPeerEmail(peerEmail: string) {
-    const email = peerEmail.toLowerCase();
-    const layer =
-      extraCharacterLayers.find((l) => l.id.toLowerCase() === email) ??
-      npcCharacterLayers.find((l) => l.id.toLowerCase() === email) ??
-      ({
-        id: email,
-        kind: "character",
-        path: "",
-        x: 0,
-        y: 0,
-        width: 0,
-        height: 0,
-        transform: null,
-      } as AssetLayer);
-    // Defensive hardening: every path that sets openChat truthy must also
-    // clear openGroupConv, guaranteeing the two panels' mutual-exclusion
-    // invariant holds regardless of caller — not just at some call sites.
-    setOpenGroupConv(null);
-    setOpenChat(layer);
   }
 
   function handleCharacterClick(layer: AssetLayer, anchor: { clientX: number; clientY: number }) {
@@ -3090,80 +3251,138 @@ export function OfficeMap() {
         roomNames={roster.roomNames}
         onClose={closeRoomSidebar}
       />
+      {/* Messenger-style floating chat stack: the spatial window (openChat/openGroupConv, if
+          any) plus every remote (Global Chat) window, each in its own fixed-position slot
+          stacked right-to-left along the bottom edge. floatingChatRightOffsets keys by
+          "__spatial__" for the spatial slot and by the window's own key for remote ones. */}
       {openChat && !openGroupConv && (
-        <ConversationView
-          peer={openChat}
-          selfId={selfChatId}
-          peerChatId={resolvePeerChatId(openChat)}
-          selfAvatarUrl={playerSpriteSrc}
-          onIncomingMessage={handleTalkingMessage}
-          onTypingChange={setSelfTyping}
-          onConversationOpen={(conversationId) => {
-            // Edge-triggered: fires exactly once, the moment the chat panel's conversation id
-            // first resolves — never on a poll. Chat-panel-required per the finalized
-            // decision: this is the ONLY place spatial_session_start is emitted.
-            setOpenConversationId(conversationId);
-            emitSpatialSessionStart(conversationId);
-          }}
-          onClose={() => {
-            setOpenChat(null);
-            if (openConversationId) emitSpatialSessionLeave();
-            setOpenConversationId(null);
-            setSelfTyping(false);
-            for (const timerId of Object.values(talkingTimersRef.current)) {
-              window.clearTimeout(timerId);
-            }
-            talkingTimersRef.current = {};
-            setTalkingTextById({});
-          }}
-        />
+        <div
+          className={styles.floatingChatSlot}
+          style={{ right: floatingChatRightOffsets.get(SPATIAL_WINDOW_KEY) ?? FLOATING_CHAT_EDGE_MARGIN }}
+        >
+          <ConversationView
+            peer={openChat}
+            selfId={selfChatId}
+            peerChatId={resolvePeerChatId(openChat)}
+            selfAvatarUrl={playerSpriteSrc}
+            onIncomingMessage={handleTalkingMessage}
+            onTypingChange={setSelfTyping}
+            isSpatial
+            minimized={spatialChatMinimized}
+            onMinimizeToggle={() => setSpatialChatMinimized((v) => !v)}
+            onConversationOpen={(conversationId) => {
+              // Edge-triggered: fires exactly once, the moment the chat panel's conversation id
+              // first resolves — never on a poll. Chat-panel-required per the finalized
+              // decision: this is the ONLY place spatial_session_start is emitted. This slot
+              // (openChat) is exclusively the spatial "Character -> Chat" window — Global Chat
+              // (remote) conversations render through the separate remoteChatWindows stack below
+              // and never touch spatial-session bookkeeping at all.
+              setOpenConversationId(conversationId);
+              emitSpatialSessionStart(conversationId);
+            }}
+            onClose={() => {
+              setOpenChat(null);
+              if (openConversationId) emitSpatialSessionLeave();
+              setOpenConversationId(null);
+              setSpatialChatMinimized(false);
+              setSelfTyping(false);
+              for (const timerId of Object.values(talkingTimersRef.current)) {
+                window.clearTimeout(timerId);
+              }
+              talkingTimersRef.current = {};
+              setTalkingTextById({});
+            }}
+          />
+        </div>
       )}
       {openGroupConv && !openChat && (
-        <GroupConversationView
-          conversationId={openGroupConv.conversationId}
-          selfId={selfChatId}
-          participantEmails={openGroupConv.participantEmails}
-          title={openGroupConv.title}
-          resolveDisplayName={resolveDisplayName}
-          selfAvatarUrl={playerSpriteSrc}
-          onIncomingMessage={handleTalkingMessage}
-          onTypingChange={setSelfTyping}
-          onConversationOpen={(conversationId) => {
-            // Same spatial-session bookkeeping the DM panel above uses — a
-            // reopened group is a legitimate spatial-conversation
-            // participant while its panel is open. EXCEPT: when this
-            // conversationId is a pending arrival-gated joiner walk (see the
-            // conversation_upgraded handler's Mechanism 2 above),
-            // spatial_session_start must NOT fire yet — the joiner isn't "In
-            // Conversation" until their walk into the cluster actually
-            // completes; onJoinerArrived emits it once that happens. Every
-            // other case (reopening an existing group, an incumbent's panel
-            // swap) still emits immediately, as it does today.
-            setOpenConversationId(conversationId);
-            if (pendingJoinerConvIdRef.current !== conversationId) {
-              emitSpatialSessionStart(conversationId);
-            }
-          }}
-          onClose={() => {
-            if (pendingJoinerConvIdRef.current === openGroupConv?.conversationId) {
-              // Panel closed while the arrival-gated joiner walk was still
-              // in progress — clear so a later reopen of this same
-              // conversation isn't wrongly skipped by onConversationOpen's
-              // pending-joiner guard above.
-              pendingJoinerConvIdRef.current = null;
-            }
-            setOpenGroupConv(null);
-            if (openConversationId) emitSpatialSessionLeave();
-            setOpenConversationId(null);
-            setSelfTyping(false);
-            for (const timerId of Object.values(talkingTimersRef.current)) {
-              window.clearTimeout(timerId);
-            }
-            talkingTimersRef.current = {};
-            setTalkingTextById({});
-          }}
-        />
+        <div
+          className={styles.floatingChatSlot}
+          style={{ right: floatingChatRightOffsets.get(SPATIAL_WINDOW_KEY) ?? FLOATING_CHAT_EDGE_MARGIN }}
+        >
+          <GroupConversationView
+            conversationId={openGroupConv.conversationId}
+            selfId={selfChatId}
+            participantEmails={openGroupConv.participantEmails}
+            title={openGroupConv.title}
+            resolveDisplayName={resolveDisplayName}
+            selfAvatarUrl={playerSpriteSrc}
+            onIncomingMessage={handleTalkingMessage}
+            onTypingChange={setSelfTyping}
+            isSpatial
+            minimized={spatialChatMinimized}
+            onMinimizeToggle={() => setSpatialChatMinimized((v) => !v)}
+            onConversationOpen={(conversationId) => {
+              // Same spatial-session bookkeeping the DM panel above uses — a
+              // reopened group is a legitimate spatial-conversation
+              // participant while its panel is open. EXCEPT: when this
+              // conversationId is a pending arrival-gated joiner walk (see the
+              // conversation_upgraded handler's Mechanism 2 above),
+              // spatial_session_start must NOT fire yet — the joiner isn't "In
+              // Conversation" until their walk into the cluster actually
+              // completes; onJoinerArrived emits it once that happens. Every
+              // other case (reopening an existing group, an incumbent's panel
+              // swap) still emits immediately, as it does today. This slot
+              // (openGroupConv) is exclusively spatial — Global Chat groups
+              // render through the separate remoteChatWindows stack below.
+              setOpenConversationId(conversationId);
+              if (pendingJoinerConvIdRef.current !== conversationId) {
+                emitSpatialSessionStart(conversationId);
+              }
+            }}
+            onClose={() => {
+              if (pendingJoinerConvIdRef.current === openGroupConv?.conversationId) {
+                // Panel closed while the arrival-gated joiner walk was still
+                // in progress — clear so a later reopen of this same
+                // conversation isn't wrongly skipped by onConversationOpen's
+                // pending-joiner guard above.
+                pendingJoinerConvIdRef.current = null;
+              }
+              setOpenGroupConv(null);
+              if (openConversationId) emitSpatialSessionLeave();
+              setOpenConversationId(null);
+              setSpatialChatMinimized(false);
+              setSelfTyping(false);
+              for (const timerId of Object.values(talkingTimersRef.current)) {
+                window.clearTimeout(timerId);
+              }
+              talkingTimersRef.current = {};
+              setTalkingTextById({});
+            }}
+          />
+        </div>
       )}
+      {remoteChatWindows.map((w) => (
+        <div
+          key={w.key}
+          className={styles.floatingChatSlot}
+          style={{ right: floatingChatRightOffsets.get(w.key) ?? FLOATING_CHAT_EDGE_MARGIN }}
+        >
+          {w.kind === "dm" ? (
+            <ConversationView
+              peer={w.layer}
+              selfId={selfChatId}
+              peerChatId={resolvePeerChatId(w.layer)}
+              selfAvatarUrl={playerSpriteSrc}
+              minimized={w.minimized}
+              onMinimizeToggle={() => toggleRemoteWindowMinimize(w.key)}
+              onClose={() => closeRemoteWindow(w.key)}
+            />
+          ) : (
+            <GroupConversationView
+              conversationId={w.conversationId}
+              selfId={selfChatId}
+              participantEmails={w.participantEmails}
+              title={w.title}
+              resolveDisplayName={resolveDisplayName}
+              selfAvatarUrl={playerSpriteSrc}
+              minimized={w.minimized}
+              onMinimizeToggle={() => toggleRemoteWindowMinimize(w.key)}
+              onClose={() => closeRemoteWindow(w.key)}
+            />
+          )}
+        </div>
+      ))}
       {chatMode === "real" && (
         <MessageNotificationBadge
           total={unreadTotal}
@@ -3171,6 +3390,34 @@ export function OfficeMap() {
           selfId={selfChatId}
           resolveDisplayName={resolveDisplayName}
           onSelectConversation={onSelectConversation}
+          onNewMessage={() => setChatPickerMode("message")}
+          onFindPerson={() => setChatPickerMode("findPerson")}
+          onNewGroupChat={() => setChatPickerMode("group")}
+        />
+      )}
+      {chatMode === "real" && chatPickerMode && (
+        <EmployeePickerModal
+          mode={chatPickerMode === "group" ? "multi" : "single"}
+          title={
+            chatPickerMode === "group"
+              ? "New Group Chat"
+              : chatPickerMode === "findPerson"
+                ? "Find Person"
+                : "New Message"
+          }
+          people={roster.people
+            .filter((p) => p.email.toLowerCase() !== selfChatId.toLowerCase())
+            .map((p) => ({ email: p.email, displayName: resolveDisplayName(p.email) }))}
+          onClose={() => setChatPickerMode(null)}
+          onConfirm={(emails) => {
+            const wasGroup = chatPickerMode === "group";
+            setChatPickerMode(null);
+            if (wasGroup) {
+              void startRemoteGroupChat(emails);
+            } else {
+              startRemoteDirectMessage(emails[0]);
+            }
+          }}
         />
       )}
       {chatMode === "real" && (
