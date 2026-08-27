@@ -277,6 +277,38 @@ async def _compute_unread(
     return int(result.scalar_one())
 
 
+async def _compute_mention_count(
+    session: AsyncSession, conversation_id: str, self_email: str, last_read_at: datetime | None
+) -> int:
+    """Sibling to _compute_unread, same watermark-derived (not stored) approach: counts unread
+    peer messages whose validated mentioned_emails includes self_email. Filtered in Python
+    rather than a DB-specific JSON "contains" operator, keeping this portable across SQLite
+    (dev/tests) and Postgres — acceptable for V1's "lightweight" scope (one column fetched over
+    the same already-small unread set _compute_unread scans)."""
+    conditions = [
+        Message.conversation_id == conversation_id,
+        Message.sender_email != self_email,
+    ]
+    if last_read_at is not None:
+        conditions.append(Message.sent_at > last_read_at)
+    result = await session.execute(select(Message.mentioned_emails).where(and_(*conditions)))
+    return sum(1 for (mentioned,) in result.all() if mentioned and self_email in mentioned)
+
+
+async def mention_count(session: AsyncSession, conversation_id: str, email: str) -> int:
+    """Derived, not stored — same last_read_at watermark unread_count uses, further filtered to
+    messages that mention `email`."""
+    self_email = email.strip().lower()
+    result = await session.execute(
+        select(ConversationParticipant.last_read_at).where(
+            ConversationParticipant.conversation_id == conversation_id,
+            ConversationParticipant.participant_email == self_email,
+        )
+    )
+    last_read_at = result.scalar_one_or_none()
+    return await _compute_mention_count(session, conversation_id, self_email, last_read_at)
+
+
 async def unread_count(session: AsyncSession, conversation_id: str, email: str) -> int:
     """Derived, not stored — see backend/src/repo/conversations.ts's `unreadCount`. Null
     last_read_at (never read) counts every peer message."""
@@ -323,13 +355,16 @@ async def list_conversations_for_user(session: AsyncSession, email: str) -> list
 
     out: list[dict] = []
     for conv in convs:
-        count = await _compute_unread(session, conv.id, self_email, last_read_by_conv.get(conv.id))
+        last_read_at = last_read_by_conv.get(conv.id)
+        count = await _compute_unread(session, conv.id, self_email, last_read_at)
+        mentions = await _compute_mention_count(session, conv.id, self_email, last_read_at)
         out.append(
             {
                 "id": conv.id,
                 "last_message_at": conv.last_message_at,
                 "participant_ids": parts_by_conv.get(conv.id, []),
                 "unread_count": count,
+                "mention_count": mentions,
                 "type": conv.type,
                 "title": conv.title,
             }
@@ -378,7 +413,13 @@ async def create_group_conversation(
     return result_conv
 
 
-async def insert_message(session: AsyncSession, conversation_id: str, sender_email: str, text: str) -> Message:
+async def insert_message(
+    session: AsyncSession,
+    conversation_id: str,
+    sender_email: str,
+    text: str,
+    mentioned_emails: list[str] | None = None,
+) -> Message:
     # Sender is always the server-verified identity — a client-sent sender id is never trusted.
     # Truncate to millisecond precision at insert time (not just on wire serialization) so the
     # stored sent_at always exactly matches whatever a client later echoes back as a watermark
@@ -387,11 +428,29 @@ async def insert_message(session: AsyncSession, conversation_id: str, sender_ema
     # full-microsecond sent_at and the message can never resolve to delivered/read.
     now = datetime.now(timezone.utc)
     sent_at = now.replace(microsecond=(now.microsecond // 1000) * 1000)
+
+    # @mentions V1: never trust the client's claimed mentions — a real mention must resolve to an
+    # actual conversation participant. Intersect against the real participant list (one extra
+    # query, only when the caller actually sent any candidates) rather than parsing @DisplayName
+    # out of `text` after the fact.
+    validated_mentions: list[str] | None = None
+    if mentioned_emails:
+        participants_result = await session.execute(
+            select(ConversationParticipant.participant_email).where(
+                ConversationParticipant.conversation_id == conversation_id
+            )
+        )
+        participant_emails = {row[0] for row in participants_result.all()}
+        candidates = {e.strip().lower() for e in mentioned_emails if isinstance(e, str) and e.strip()}
+        validated = sorted(candidates & participant_emails)
+        validated_mentions = validated or None
+
     message = Message(
         conversation_id=conversation_id,
         sender_email=sender_email.strip().lower(),
         text=text,
         sent_at=sent_at,
+        mentioned_emails=validated_mentions,
     )
     session.add(message)
     await session.flush()

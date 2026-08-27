@@ -97,6 +97,7 @@ async def list_conversations(
             participant_ids=c["participant_ids"],
             last_message_at=c["last_message_at"],
             unread_count=c["unread_count"],
+            mention_count=c["mention_count"],
             type=c["type"],
             title=c["title"],
         )
@@ -135,6 +136,7 @@ async def get_conversation_messages(
                 sent_at=m.sent_at,
                 delivered_to=delivered_to,
                 read_by=read_by,
+                mentioned_emails=list(m.mentioned_emails or []),
             )
         )
     return out

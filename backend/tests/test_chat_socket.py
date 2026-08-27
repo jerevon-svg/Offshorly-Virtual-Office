@@ -152,6 +152,81 @@ async def test_send_message_pushes_unread_count_to_recipient_only(server):
     await b.disconnect()
 
 
+async def test_send_message_with_mention_persists_and_pushes_mention_count_to_mentioned_recipient(server):
+    conv_id = await _seeded_conversation()  # participants: a, b
+
+    a = await _connect_as(server, "a@example.com")
+    b = await _connect_as(server, "b@example.com")
+    await asyncio.sleep(0.2)
+
+    saved_future: asyncio.Future = asyncio.get_event_loop().create_future()
+    mention_future: asyncio.Future = asyncio.get_event_loop().create_future()
+
+    @a.on("message_saved")
+    async def on_saved(data):
+        if not saved_future.done():
+            saved_future.set_result(data)
+
+    @b.on("mention_count")
+    async def on_mention(data):
+        if not mention_future.done():
+            mention_future.set_result(data)
+
+    await a.emit(
+        "send_message",
+        {
+            "conversationId": conv_id,
+            "text": "hey @b",
+            "clientTempId": "tmp-mention",
+            "mentionedEmails": ["b@example.com"],
+        },
+    )
+
+    saved = await asyncio.wait_for(saved_future, timeout=2)
+    assert saved["message"]["mentionedEmails"] == ["b@example.com"]
+
+    mention_payload = await asyncio.wait_for(mention_future, timeout=2)
+    assert mention_payload["conversationId"] == conv_id
+    # Same ">= 1" convention as the sibling unread_count test above — this file's tests share a
+    # persistent DM conversation (dm_key upsert is idempotent across the whole suite/db), so an
+    # exact count would be brittle against other tests' accumulated messages in the same DM.
+    assert mention_payload["count"] >= 1
+
+    await a.disconnect()
+    await b.disconnect()
+
+
+async def test_send_message_without_mention_does_not_push_mention_count(server):
+    conv_id = await _seeded_conversation()
+
+    a = await _connect_as(server, "a@example.com")
+    b = await _connect_as(server, "b@example.com")
+    await asyncio.sleep(0.2)
+
+    got_mention_event = False
+
+    @b.on("mention_count")
+    async def on_mention(_data):
+        nonlocal got_mention_event
+        got_mention_event = True
+
+    unread_future: asyncio.Future = asyncio.get_event_loop().create_future()
+
+    @b.on("unread_count")
+    async def on_unread(data):
+        if not unread_future.done():
+            unread_future.set_result(data)
+
+    await a.emit("send_message", {"conversationId": conv_id, "text": "no mention", "clientTempId": "tmp-3"})
+    await asyncio.wait_for(unread_future, timeout=2)  # confirms the send round-trip completed
+    await asyncio.sleep(0.1)
+
+    assert got_mention_event is False
+
+    await a.disconnect()
+    await b.disconnect()
+
+
 async def test_message_delivered_updates_watermark_and_emits_to_peer_only(server):
     conv_id = await _seeded_conversation()
 

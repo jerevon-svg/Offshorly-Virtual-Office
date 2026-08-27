@@ -9,6 +9,8 @@ import type {
   ConversationUpgradedListener,
   DeliveryReceiptListener,
   DeliveryReceiptUpdate,
+  MentionCountListener,
+  MentionCountUpdate,
   MessageListener,
   ReadReceiptListener,
   ReadReceiptUpdate,
@@ -80,6 +82,7 @@ export class RealChatService implements ChatService {
   private socketInstance: Socket | null = null;
   private listeners = new Set<MessageListener>();
   private unreadCountListeners = new Set<UnreadCountListener>();
+  private mentionCountListeners = new Set<MentionCountListener>();
   private deliveryReceiptListeners = new Set<DeliveryReceiptListener>();
   private readReceiptListeners = new Set<ReadReceiptListener>();
   private typingListeners = new Set<TypingListener>();
@@ -189,6 +192,10 @@ export class RealChatService implements ChatService {
 
     socket.on("unread_count", (payload: UnreadCountUpdate) => {
       this.unreadCountListeners.forEach((cb) => cb(payload));
+    });
+
+    socket.on("mention_count", (payload: MentionCountUpdate) => {
+      this.mentionCountListeners.forEach((cb) => cb(payload));
     });
 
     socket.on("delivery_receipt", (payload: DeliveryReceiptUpdate) => {
@@ -374,7 +381,12 @@ export class RealChatService implements ChatService {
     return conv;
   }
 
-  sendMessage(input: { conversationId: string; senderId: string; text: string }): Promise<ChatMessage> {
+  sendMessage(input: {
+    conversationId: string;
+    senderId: string;
+    text: string;
+    mentionedEmails?: string[];
+  }): Promise<ChatMessage> {
     const clientTempId = nextClientTempId();
     const socket = this.socket();
 
@@ -403,6 +415,7 @@ export class RealChatService implements ChatService {
           conversationId: input.conversationId,
           text: input.text,
           clientTempId,
+          mentionedEmails: input.mentionedEmails?.length ? input.mentionedEmails : undefined,
         });
       });
     };
@@ -479,6 +492,13 @@ export class RealChatService implements ChatService {
     this.unreadCountListeners.add(cb);
     return () => {
       this.unreadCountListeners.delete(cb);
+    };
+  }
+
+  onMentionCount(cb: MentionCountListener): () => void {
+    this.mentionCountListeners.add(cb);
+    return () => {
+      this.mentionCountListeners.delete(cb);
     };
   }
 

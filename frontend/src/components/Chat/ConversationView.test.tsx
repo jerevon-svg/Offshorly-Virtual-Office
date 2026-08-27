@@ -280,6 +280,7 @@ function makeMessage(overrides: Partial<ChatMessage>): ChatMessage {
     sentAt: "2026-08-14T10:00:00.000Z",
     deliveredTo: [],
     readBy: [],
+    mentionedEmails: [],
     ...overrides,
   };
 }
@@ -431,5 +432,116 @@ describe("ConversationView (real mode, status indicators)", () => {
     });
 
     expect(document.querySelector("[data-status]")).toBeNull();
+  });
+
+  describe("pinned DND helper text", () => {
+    it("shows 'Expect delayed response' pinned above the composer for a remote DND peer", async () => {
+      const peer = makePeer("dndpeer");
+      render(
+        <ConversationView
+          peer={peer}
+          selfId={SELF_ID}
+          onClose={() => {}}
+          subtitle="🔴 DND · Notifications muted"
+        />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText("Expect delayed response")).toBeInTheDocument();
+      });
+      // Header carries only the short subtitle — the delayed-response line lives separately.
+      expect(screen.queryByText(/Expect a delayed response/)).toBeNull();
+    });
+
+    it("does not show the helper without a DND subtitle", async () => {
+      const peer = makePeer("nodndpeer");
+      render(<ConversationView peer={peer} selfId={SELF_ID} onClose={() => {}} />);
+      await screen.findByPlaceholderText("Type a message…");
+
+      expect(screen.queryByText("Expect delayed response")).toBeNull();
+    });
+
+    it("does not show the helper in spatial chat even with a subtitle", async () => {
+      const peer = makePeer("spatialpeer");
+      render(
+        <ConversationView
+          peer={peer}
+          selfId={SELF_ID}
+          onClose={() => {}}
+          subtitle="🔴 DND · Notifications muted"
+          isSpatial
+        />,
+      );
+      await screen.findByPlaceholderText("Type a message…");
+
+      expect(screen.queryByText("Expect delayed response")).toBeNull();
+    });
+  });
+
+  describe("@mentions", () => {
+    it("typing @ opens autocomplete suggesting only the other DM participant", async () => {
+      const peer = makePeer("alex");
+      render(<ConversationView peer={peer} selfId={SELF_ID} onClose={() => {}} />);
+      const textarea = await screen.findByPlaceholderText("Type a message…");
+
+      fireEvent.change(textarea, { target: { value: "hi @al", selectionStart: 6 } });
+
+      await waitFor(() => {
+        expect(screen.getByRole("option", { name: "alex" })).toBeInTheDocument();
+      });
+    });
+
+    it("selecting a suggestion inserts @DisplayName and sending includes mentionedEmails", async () => {
+      const peer = makePeer("alex");
+      render(<ConversationView peer={peer} selfId={SELF_ID} onClose={() => {}} />);
+      const textarea = (await screen.findByPlaceholderText("Type a message…")) as HTMLTextAreaElement;
+
+      fireEvent.change(textarea, { target: { value: "hi @al", selectionStart: 6 } });
+      const option = await screen.findByRole("option", { name: "alex" });
+      fireEvent.mouseDown(option);
+
+      await waitFor(() => expect(textarea.value).toBe("hi @alex "));
+
+      fireEvent.click(screen.getByLabelText("Send"));
+
+      await waitFor(() => {
+        // The rendered bubble highlights the mention in its own span (see MentionText.tsx) —
+        // confirms the sent message actually carried mentionedEmails through to rendering.
+        expect(document.querySelector('[class*="mention"]')).not.toBeNull();
+      });
+    });
+
+    it("manually typed @text that was never selected from autocomplete sends as plain text", async () => {
+      // Distinct peer id from the other @mentions tests — MockChatService reuses the same DM
+      // conversation for a given (self, peer) pair across tests in this file (mirrors the real
+      // backend's dm_key upsert idempotency), so a shared "alex" peer here would pick up the
+      // earlier test's already-sent mention message too.
+      const peer = makePeer("nomention");
+      render(<ConversationView peer={peer} selfId={SELF_ID} onClose={() => {}} />);
+      const textarea = await screen.findByPlaceholderText("Type a message…");
+
+      fireEvent.change(textarea, { target: { value: "hi @randomtext", selectionStart: 14 } });
+      fireEvent.click(screen.getByLabelText("Send"));
+
+      await waitFor(() => {
+        expect(screen.getByText("hi @randomtext")).toBeInTheDocument();
+      });
+      expect(document.querySelector('[class*="mention"]')).toBeNull();
+    });
+
+    it("Escape closes the autocomplete without sending", async () => {
+      const peer = makePeer("alex");
+      render(<ConversationView peer={peer} selfId={SELF_ID} onClose={() => {}} />);
+      const textarea = await screen.findByPlaceholderText("Type a message…");
+
+      fireEvent.change(textarea, { target: { value: "hi @al", selectionStart: 6 } });
+      await screen.findByRole("option", { name: "alex" });
+
+      fireEvent.keyDown(textarea, { key: "Escape" });
+
+      await waitFor(() => {
+        expect(screen.queryByRole("option", { name: "alex" })).toBeNull();
+      });
+    });
   });
 });

@@ -4,6 +4,9 @@ import { chatMode, chatService } from "../../services/chat";
 import type { ChatMessage, ConnectionState } from "../../services/chat";
 import type { AssetLayer } from "../../types/office";
 import { ChatWindowHeader } from "./ChatWindowHeader";
+import { MentionAutocomplete } from "./MentionAutocomplete";
+import { renderMessageText } from "./MentionText";
+import { useMentionComposer } from "./useMentionComposer";
 import styles from "./ConversationView.module.css";
 
 type ConversationViewProps = {
@@ -193,6 +196,12 @@ export function ConversationView({
   const chatDisabled = chatMode === "real" && resolvedPeerId === null;
   const routingPeerId =
     resolvedPeerId ?? (chatMode === "mock" ? peer.id : null);
+  const peerName = formatCharacterName(peer);
+
+  // @mentions V1: DM autocomplete offers exactly the other participant — never the whole
+  // company roster (feature spec: "Do NOT search the entire company roster from an existing
+  // conversation"). No candidate at all when there's no stable routing identity.
+  const mention = useMentionComposer(routingPeerId ? [{ email: routingPeerId, displayName: peerName }] : []);
 
   useEffect(() => {
     if (chatDisabled || routingPeerId === null) return;
@@ -329,9 +338,10 @@ export function ConversationView({
     chatService.sendTyping?.({ conversationId, isTyping: false });
     setSendError(null);
     setFailedText(null);
+    const mentionedEmails = mention.mentionsForSend(text);
     // Own message arrives via the onMessage subscription above (sendMessage
     // notifies listeners synchronously) — no need to also append it here.
-    chatService.sendMessage({ conversationId, senderId: selfId, text }).catch((err: Error) => {
+    chatService.sendMessage({ conversationId, senderId: selfId, text, mentionedEmails }).catch((err: Error) => {
       // No automatic retry: the backend has no client_temp_id-based
       // idempotency, so re-emitting from here (rather than a fresh,
       // user-initiated click) risks a duplicate message. Preserve the text
@@ -346,6 +356,7 @@ export function ConversationView({
     if (!text || !conversationId) return;
     setDraft("");
     sendText(text);
+    mention.resetAfterSend();
   }
 
   function handleRetry() {
@@ -389,7 +400,6 @@ export function ConversationView({
     chatService.reconnect?.();
   }
 
-  const peerName = formatCharacterName(peer);
   let lastDayLabel: string | null = null;
 
   // Index of the most recent own message whose derived status is "read" —
@@ -462,7 +472,12 @@ export function ConversationView({
                   {!isOwn && <Avatar className={styles.avatar} src={peer.path || undefined} label={peerName} />}
                   <div className={styles.bubbleColumn}>
                     <div className={isOwn ? `${styles.message} ${styles.own}` : `${styles.message} ${styles.peer}`}>
-                      {msg.text}
+                      {renderMessageText(
+                        msg.text,
+                        msg.mentionedEmails,
+                        (email) => (routingPeerId && email.toLowerCase() === routingPeerId.toLowerCase() ? peerName : email),
+                        selfId,
+                      )}
                     </div>
                     <span className={isOwn ? `${styles.timestamp} ${styles.timestampRight}` : styles.timestamp}>
                       {formatMessageTime(msg.sentAt)}
@@ -492,13 +507,37 @@ export function ConversationView({
           </button>
         </div>
       )}
+      {/* Pinned above the composer, outside the scrolling .messages list — never scrolls away,
+          never persists as a message, never affects unread/mention counts. Reuses the same
+          `subtitle` signal the header's "🔴 DND · Notifications muted" already derives from
+          (see OfficeMap.tsx), which is only ever set for a remote (non-spatial) DND peer — so
+          this never shows in spatial chat and disappears immediately once DND ends. */}
+      {!isSpatial && subtitle && <div className={styles.dndHelperText}>Expect delayed response</div>}
       <div className={styles.composer}>
+        {mention.trigger && mention.filtered.length > 0 && (
+          <MentionAutocomplete
+            candidates={mention.filtered}
+            highlightedIndex={mention.highlightedIndex}
+            onHover={mention.setHighlightedIndex}
+            onSelect={(c) => mention.selectCandidate(c, draft, setDraft)}
+          />
+        )}
         <textarea
+          ref={mention.textareaRef}
           className={styles.textarea}
           value={draft}
           placeholder={isNotConnected ? "Connecting…" : "Type a message…"}
-          onChange={(e) => handleDraftChange(e.target.value)}
+          onChange={(e) => {
+            handleDraftChange(e.target.value);
+            mention.onDraftChanged(e.target.value, e.target.selectionStart ?? e.target.value.length);
+          }}
           onKeyDown={(e) => {
+            if (mention.trigger && mention.filtered.length > 0 && e.key === "Enter") {
+              e.preventDefault();
+              mention.selectCandidate(mention.filtered[mention.highlightedIndex], draft, setDraft);
+              return;
+            }
+            if (mention.handleKeyDown(e)) return;
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               handleSend();

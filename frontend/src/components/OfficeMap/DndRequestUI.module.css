@@ -1,0 +1,134 @@
+/* Shared look for the DND V1 person-level request UI (TalkRequestToast + DndRequestQueue) —
+   deliberately matches checkout.module.css's toast / JoinRequestPrompt.module.css's prompt
+   visual language for consistency with the rest of the office chrome, without importing those
+   modules directly (keeps this feature's CSS self-contained). */
+
+.toast {
+  position: fixed;
+  bottom: 100px; /* stacked above RoomLockedToast's bottom:24px so both can coexist without overlap */
+  right: 24px;
+  z-index: 27;
+  min-width: 260px;
+  max-width: 320px;
+  background: rgba(26, 26, 26, 0.95);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  border-radius: 10px;
+  padding: 14px 16px;
+  backdrop-filter: blur(4px);
+  font-family: system-ui, sans-serif;
+  color: #f0f0f0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.toastText {
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.actionsRow {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  justify-content: center;
+}
+
+.primary {
+  all: unset;
+  cursor: pointer;
+  color: #1a1a1a;
+  background: #f0f0f0;
+  font-size: 14px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-weight: 600;
+  text-align: center;
+}
+.primary:hover {
+  background: #ffffff;
+}
+
+.secondary {
+  all: unset;
+  cursor: pointer;
+  color: rgba(240, 240, 240, 0.75);
+  font-size: 13px;
+  padding: 8px 14px;
+  border-radius: 6px;
+  text-align: center;
+}
+.secondary:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* Recipient-side compact request queue. */
+.queue {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-family: system-ui, sans-serif;
+  max-width: 280px;
+}
+
+.queueHeader {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(240, 240, 240, 0.75);
+  padding: 0 2px;
+}
+
+.row {
+  background: rgba(26, 26, 26, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #f0f0f0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  backdrop-filter: blur(4px);
+}
+
+.rowText {
+  font-size: 13px;
+}
+
+.rowActions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.allowButton,
+.declineButton {
+  all: unset;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  text-align: center;
+}
+.allowButton {
+  background: rgba(76, 175, 80, 0.85);
+  color: #fff;
+}
+.allowButton:hover {
+  background: rgba(76, 175, 80, 1);
+}
+.declineButton {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f0f0f0;
+}
+.declineButton:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+.allowButton:disabled,
+.declineButton:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
