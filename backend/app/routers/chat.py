@@ -12,6 +12,7 @@ from app.schemas.chat import (
     ChatMessageOut,
     ConversationOut,
     CreateConversationRequest,
+    CreateGroupConversationRequest,
     MarkReadRequest,
     UnreadCountOut,
 )
@@ -43,6 +44,38 @@ async def create_conversation(
         raise HTTPException(status_code=400, detail="peerEmail is required")
 
     conv = await chat_repo.upsert_conversation(db, email, peer_email)
+    return ConversationOut(
+        id=conv["id"],
+        participant_ids=conv["participant_ids"],
+        last_message_at=conv["last_message_at"],
+        type=conv["type"],
+        title=conv["title"],
+    )
+
+
+@router.post("/conversations/group", response_model=ConversationOut, response_model_exclude_none=True)
+async def create_group_conversation(
+    body: CreateGroupConversationRequest,
+    email: str = Depends(get_current_email),
+    db: AsyncSession = Depends(get_db),
+) -> ConversationOut:
+    """Manual group creation for the Global Chat "New Group Chat" flow — distinct from the
+    join_group-upgrade path in routers/requests.py, which creates groups as a side effect of an
+    accepted request. Idempotent by exact member set (same guard accept_join_request uses via
+    find_group_by_exact_members): re-submitting the same set of people reopens the existing
+    group instead of spawning a duplicate."""
+    members = {email.strip().lower()} | {p.strip().lower() for p in body.participant_emails if p.strip()}
+    if len(members) < 2:
+        raise HTTPException(
+            status_code=400, detail="A group conversation requires at least 2 unique participants"
+        )
+
+    existing_id = await chat_repo.find_group_by_exact_members(db, members)
+    conv = (
+        await chat_repo.get_conversation_by_id(db, existing_id)
+        if existing_id is not None
+        else await chat_repo.create_group_conversation(db, email, body.participant_emails, body.title)
+    )
     return ConversationOut(
         id=conv["id"],
         participant_ids=conv["participant_ids"],

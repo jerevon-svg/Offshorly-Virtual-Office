@@ -77,6 +77,16 @@ class CreateConversationRequest(BaseModel):
     peer_email: str | None = Field(default=None, alias="peerEmail")
 
 
+class CreateGroupConversationRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    # Other members to add alongside the caller (derived server-side via get_current_email) —
+    # never includes the caller's own email explicitly, though a duplicate is harmless (deduped
+    # by the router before hitting the repo layer).
+    participant_emails: list[str] = Field(default_factory=list, alias="participantEmails")
+    title: str | None = Field(default=None)
+
+
 class MarkReadRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 

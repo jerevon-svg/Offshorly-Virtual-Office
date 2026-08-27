@@ -3,6 +3,31 @@ import type { Pt } from "./walkable-zones";
 import { CELL, worldToCell, cellToWorld, isWalkable, nearestWalkable, nearestWalkableConnectedTo, floodFillFrom } from "./officeGrid";
 import { aStar, type Cell } from "./gridAStar";
 
+export type TileDestination = { valid: boolean; cellCenter: Pt };
+
+// Right-click-to-move validation: is `point` a walkable tile connected to
+// `start`'s region? Deliberately does NOT use findPath's
+// nearestWalkableConnectedTo goal-snapping — that "nearest reachable"
+// substitution is correct for internal fixed-goal callers (Walk To/Move to
+// Room/Sit Here), but an arbitrary map click on a blocked or disconnected
+// tile must simply fail, never silently walk to a nearby substitute tile.
+// Returns the clicked tile's cell-center in the same top-left Pt basis
+// findPath/walkTo expect, for both the ring-feedback anchor and (when valid)
+// the findPath goal.
+export function classifyDestination(start: Pt, point: Pt): TileDestination {
+  const startCenter = { x: start.x + half.x, y: start.y + half.y };
+  const s = worldToCell(startCenter);
+  const t = worldToCell(point);
+  const w = cellToWorld(t.cx, t.cy);
+  const cellCenter = { x: w.x - half.x, y: w.y - half.y };
+
+  if (!isWalkable(t.cx, t.cy)) return { valid: false, cellCenter };
+
+  const sSnapped = isWalkable(s.cx, s.cy) ? s : nearestWalkable(s.cx, s.cy);
+  const region = floodFillFrom(sSnapped);
+  return { valid: region.has(`${t.cx},${t.cy}`), cellCenter };
+}
+
 const roomLayers = officeAssetLayers.filter((l) => l.kind === "room");
 
 export function roomOf(p: Pt): { id: string } | null {

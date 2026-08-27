@@ -51,6 +51,42 @@
   box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.55);
 }
 
+/* Right-click-to-move destination feedback — a ring centered on the clicked
+   tile that expands and fades once, then is unmounted by the caller. Sized
+   in world px (16px CELL) via transform so it stays legible at any zoom. */
+.destinationRing {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  margin-left: -8px;
+  margin-top: -8px;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 40;
+  animation: destination-ring-pulse 0.5s ease-out forwards;
+}
+
+.destinationRingValid {
+  border: 2px solid rgba(80, 220, 120, 0.9);
+  box-shadow: 0 0 6px rgba(80, 220, 120, 0.6);
+}
+
+.destinationRingInvalid {
+  border: 2px solid rgba(230, 70, 70, 0.9);
+  box-shadow: 0 0 6px rgba(230, 70, 70, 0.6);
+}
+
+@keyframes destination-ring-pulse {
+  0% {
+    transform: scale(0.4);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+}
+
 /* Day/night phase overlay — last child of .stage, sits above every layer but
    is scoped to the stage's own stacking context so it never covers UI that
    renders outside .stage (modals, sidebars, menus). */

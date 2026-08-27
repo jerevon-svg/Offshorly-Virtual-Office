@@ -1,0 +1,228 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.panel {
+  width: min(520px, 92vw);
+  max-height: 84vh;
+  background: linear-gradient(180deg, rgba(30, 26, 46, 0.97), rgba(18, 16, 28, 0.97));
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  font-family: system-ui, sans-serif;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.header {
+  padding: 20px 24px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.headerTitle {
+  color: #f5f0ff;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.empty {
+  color: rgba(245, 240, 255, 0.75);
+  font-size: 15px;
+  text-align: center;
+  padding: 32px 8px;
+}
+
+.errorBanner {
+  color: #ffb4b4;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.card {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cardImportant {
+  border-color: rgba(245, 158, 11, 0.5);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.cardRequired {
+  border-color: rgba(239, 68, 68, 0.55);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.cardImage {
+  width: 100%;
+  max-height: 160px;
+  object-fit: cover;
+  border-radius: 8px;
+}
+
+.cardHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cardEmoji {
+  font-size: 18px;
+}
+
+.cardTitle {
+  color: #f5f0ff;
+  font-size: 15px;
+  font-weight: 600;
+  flex: 1;
+}
+
+.requiredBadge {
+  color: #ffdada;
+  background: rgba(239, 68, 68, 0.25);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Shown only when the Hub was manually reopened (mode "manual") — see CompanyHub.tsx's
+   stateBadge(). Reflects HubItemState.status as-is; not a separate history/tracking system. */
+.stateNew,
+.stateDismissed,
+.stateAcknowledged {
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.stateNew {
+  color: rgba(245, 240, 255, 0.75);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.stateDismissed {
+  color: rgba(245, 240, 255, 0.55);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.stateAcknowledged {
+  color: #bdf5c9;
+  background: rgba(34, 197, 94, 0.2);
+}
+
+.cardDescription {
+  color: rgba(245, 240, 255, 0.85);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.cardActions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.primaryAction {
+  all: unset;
+  cursor: pointer;
+  color: #1a1a1a;
+  background: #f0f0f0;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 6px;
+  text-align: center;
+}
+
+.primaryAction:hover {
+  background: #ffffff;
+}
+
+.primaryAction:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.dismissAction {
+  all: unset;
+  cursor: pointer;
+  color: rgba(245, 240, 255, 0.65);
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 6px;
+}
+
+.dismissAction:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.dismissAction:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.footer {
+  padding: 14px 24px 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.blockedHint {
+  color: #ffb4b4;
+  font-size: 12px;
+  text-align: center;
+}
+
+.enterOfficeButton {
+  all: unset;
+  cursor: pointer;
+  color: #1a1a1a;
+  background: #f0f0f0;
+  font-size: 15px;
+  font-weight: 700;
+  padding: 12px 16px;
+  border-radius: 8px;
+  text-align: center;
+}
+
+.enterOfficeButton:hover {
+  background: #ffffff;
+}
+
+.enterOfficeButton:disabled {
+  opacity: 0.45;
+  cursor: default;
+}

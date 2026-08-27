@@ -12,6 +12,7 @@ from app.models.request import ConversationRequest
 from app.repositories.chat import (
     _create_group_conversation,
     add_participant_if_missing,
+    find_group_by_exact_members,
     get_conversation_by_id,
 )
 
@@ -159,7 +160,15 @@ async def accept_join_request(
 
     if target is not None and target["type"] == "dm":
         members = set(target["participant_ids"]) | {requester}
-        result_cid = await _create_group_conversation(session, members, title=None)
+        existing_gid = await find_group_by_exact_members(session, members)
+        if existing_gid is not None:
+            # Reuse the already-formed group for this exact member set instead of spawning a
+            # redundant duplicate. requester is already in `members` (hence in the matched
+            # group by exact-set equality), so this add is a defensive no-op — kept for safety.
+            await add_participant_if_missing(session, existing_gid, requester)
+            result_cid = existing_gid
+        else:
+            result_cid = await _create_group_conversation(session, members, title=None)
     else:
         # Already a group (or defensive fallback if the conversation vanished) — add the
         # requester to the existing conversation, never touch a DM here.

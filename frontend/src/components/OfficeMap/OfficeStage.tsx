@@ -16,6 +16,7 @@ import { createDepthCompare } from "./depthSort";
 import { TalkingBubble } from "./TalkingBubble";
 import { StatusLabel } from "./StatusLabel";
 import { OfficePhaseOverlay } from "./OfficePhaseOverlay";
+import { ToucanFlyer } from "./ToucanFlyer";
 import type { OfficeStatus } from "../../services/presence/status";
 import { CharacterCanvas, directionToHeadingDegrees } from "../../render3d/CharacterCanvas";
 import {
@@ -270,6 +271,25 @@ type OfficeStageProps = {
   extraCharacterSrcById?: Record<string, string>;
   onCharacterClick?: (layer: AssetLayer, anchor: { clientX: number; clientY: number }) => void;
   onRoomClick?: (layer: AssetLayer, anchor: { clientX: number; clientY: number }) => void;
+  // Dota-style right-click-to-move. Fires for a right-click anywhere on the
+  // map surface (world-space point, in the same FRAME_WIDTH/HEIGHT-scaled
+  // basis as every layer's x/y — NOT yet snapped to a cell). The browser's
+  // native context menu is always suppressed inside .stage, independent of
+  // whether this prop is passed. Omitted on the PiP mini-camera instance —
+  // that's a non-interactive preview thumbnail.
+  onMapRightClick?: (point: { x: number; y: number }) => void;
+  // Right-click destination feedback ring — a brief expanding/fading ring at
+  // the resolved cell center, green for a valid (walkable + reachable) tile
+  // or red otherwise. `key` should change on every right-click (even
+  // repeats of the same tile) so the CSS animation restarts; null renders
+  // nothing.
+  destinationRing?: { x: number; y: number; valid: boolean; key: number } | null;
+  // Renders the single ambient decorative toucan NPC (ToucanFlyer.tsx).
+  // Only ever passed true on the MAIN OfficeStage instance (OfficeMap.tsx)
+  // — never on the PiP mini-camera instance — so exactly one toucan exists
+  // regardless of how many OfficeStage instances are mounted. Purely
+  // visual/non-interactive; see ToucanFlyer.tsx for details.
+  showToucan?: boolean;
   greetingCharacterId?: string | null;
   greetingNonce?: number;
   // Custom greeting text (e.g. onboarding's "Welcome to Offshorly!" instead
@@ -383,9 +403,15 @@ function useClickVsDrag<T>(
   const downRef = useRef<{ x: number; y: number } | null>(null);
   return {
     onPointerDown: (e: React.PointerEvent) => {
+      // Right-click (button 2) is movement-only input handled separately by
+      // .stage's onContextMenu — ignore it here so it can never also
+      // register as a "click" on the underlying room/character/seat and
+      // fall through to their normal left-click selection/menu behavior.
+      if (e.button !== 0) return;
       downRef.current = { x: e.clientX, y: e.clientY };
     },
     onPointerUp: (item: T, e: React.PointerEvent) => {
+      if (e.button !== 0) return;
       const d = downRef.current;
       if (d) {
         const dist = Math.hypot(e.clientX - d.x, e.clientY - d.y);
@@ -406,6 +432,9 @@ export function OfficeStage({
   hiddenCharacterIds,
   onCharacterClick,
   onRoomClick,
+  onMapRightClick,
+  destinationRing,
+  showToucan,
   greetingCharacterId,
   greetingNonce,
   greetingText,
@@ -500,6 +529,17 @@ export function OfficeStage({
       style={{
         width: FRAME_WIDTH,
         aspectRatio: `${FRAME_WIDTH} / ${FRAME_HEIGHT}`,
+      }}
+      onContextMenu={(e) => {
+        // Always suppress the native context menu inside the map surface,
+        // even if onMapRightClick isn't wired up (e.g. the PiP thumbnail).
+        e.preventDefault();
+        if (!onMapRightClick) return;
+        const rect = e.currentTarget.getBoundingClientRect();
+        onMapRightClick({
+          x: ((e.clientX - rect.left) / rect.width) * FRAME_WIDTH,
+          y: ((e.clientY - rect.top) / rect.height) * FRAME_HEIGHT,
+        });
       }}
     >
       {sorted.map((layer) => {
@@ -758,6 +798,17 @@ export function OfficeStage({
           }
           return null;
         })}
+      {destinationRing && (
+        <div
+          key={destinationRing.key}
+          className={`${styles.destinationRing} ${destinationRing.valid ? styles.destinationRingValid : styles.destinationRingInvalid}`}
+          style={{
+            left: `${(destinationRing.x / FRAME_WIDTH) * 100}%`,
+            top: `${(destinationRing.y / FRAME_HEIGHT) * 100}%`,
+          }}
+        />
+      )}
+      {showToucan && <ToucanFlyer />}
       <OfficePhaseOverlay phase={phase} />
     </div>
   );

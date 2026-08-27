@@ -521,6 +521,82 @@ async def test_create_group_conversation_raises_on_fewer_than_two_unique_members
         )
 
 
+async def _bump_last_message_at(db_session, conv_id: str, when: datetime) -> None:
+    result = await db_session.execute(select(Conversation).where(Conversation.id == conv_id))
+    conv = result.scalar_one()
+    conv.last_message_at = when
+    await db_session.commit()
+
+
+async def test_find_group_by_exact_members_matches_exactly_and_case_insensitively(db_session):
+    conv = await chat_repo.create_group_conversation(
+        db_session, "a@example.com", ["b@example.com", "c@example.com"], title=None
+    )
+    found = await chat_repo.find_group_by_exact_members(
+        db_session, {"a@example.com", "b@example.com", "c@example.com"}
+    )
+    assert found == conv["id"]
+
+    found_mixed_case = await chat_repo.find_group_by_exact_members(
+        db_session, {"A@Example.com", "B@EXAMPLE.com", "c@example.com"}
+    )
+    assert found_mixed_case == conv["id"]
+
+
+async def test_find_group_by_exact_members_ignores_superset(db_session):
+    await chat_repo.create_group_conversation(
+        db_session, "a@example.com", ["b@example.com", "c@example.com", "d@example.com"], title=None
+    )
+    found = await chat_repo.find_group_by_exact_members(
+        db_session, {"a@example.com", "b@example.com", "c@example.com"}
+    )
+    assert found is None
+
+
+async def test_find_group_by_exact_members_ignores_subset(db_session):
+    await chat_repo.create_group_conversation(db_session, "a@example.com", ["b@example.com"], title=None)
+    found = await chat_repo.find_group_by_exact_members(
+        db_session, {"a@example.com", "b@example.com", "c@example.com"}
+    )
+    assert found is None
+
+
+async def test_find_group_by_exact_members_ignores_dms(db_session):
+    await chat_repo.upsert_conversation(db_session, "a@example.com", "b@example.com")
+    found = await chat_repo.find_group_by_exact_members(db_session, {"a@example.com", "b@example.com"})
+    assert found is None
+
+
+async def test_find_group_by_exact_members_returns_none_when_no_match(db_session):
+    await chat_repo.upsert_conversation(db_session, "x@example.com", "y@example.com")
+    found = await chat_repo.find_group_by_exact_members(
+        db_session, {"nobody@example.com", "nobody-else@example.com"}
+    )
+    assert found is None
+
+
+async def test_find_group_by_exact_members_tie_break_by_last_message_at_desc(db_session):
+    members = {"a@example.com", "b@example.com", "c@example.com"}
+    g1 = await chat_repo.create_group_conversation(
+        db_session, "a@example.com", ["b@example.com", "c@example.com"], title=None
+    )
+    g2 = await chat_repo.create_group_conversation(
+        db_session, "a@example.com", ["b@example.com", "c@example.com"], title=None
+    )
+
+    now = datetime.now(timezone.utc)
+    await _bump_last_message_at(db_session, g1["id"], now - timedelta(seconds=10))
+    await _bump_last_message_at(db_session, g2["id"], now)
+
+    found = await chat_repo.find_group_by_exact_members(db_session, members)
+    assert found == g2["id"]
+
+    # Flip it — g1 now more recent, must win instead.
+    await _bump_last_message_at(db_session, g1["id"], now + timedelta(seconds=10))
+    found_again = await chat_repo.find_group_by_exact_members(db_session, members)
+    assert found_again == g1["id"]
+
+
 async def test_create_group_conversation_helper_no_commit(db_session):
     """`_create_group_conversation` is the no-commit core `accept_join_request` relies on to
     fold group creation into its own surrounding transaction — proves it genuinely never

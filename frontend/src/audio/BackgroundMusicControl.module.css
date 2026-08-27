@@ -1,11 +1,12 @@
-/* Ambient background-music control — matches the existing top-bar pill
-   convention (see OfficeMap.module.css .addEmployeeButton / .phaseDebug).
-   Top-right corner is free real estate: other controls occupy
-   top-left (CharacterSearch) / top-center (phase debug). */
+/* Ambient background-music control. Bottom-left corner is free real estate: the top-right
+   corner it used to occupy is MessageNotificationBadge's spot (top:12/right:16, same z-index),
+   which this pill was sitting directly on top of/covering. Nothing else is anchored
+   bottom-left — CharacterSearch is top-left, the checkout toast/walk-indicator/debug panel are
+   bottom-right/bottom-center/top-left respectively (see checkout.module.css). */
 .pill {
   position: fixed;
-  top: 12px;
-  right: 16px;
+  bottom: 16px;
+  left: 16px;
   z-index: 100;
   display: flex;
   flex-direction: row;

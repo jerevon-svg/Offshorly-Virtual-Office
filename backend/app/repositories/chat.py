@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -57,6 +57,45 @@ async def get_conversation_by_id(session: AsyncSession, conversation_id: str) ->
         "type": conv.type,
         "title": conv.title,
     }
+
+
+async def find_group_by_exact_members(
+    session: AsyncSession, member_emails: set[str]
+) -> str | None:
+    """Returns the id of an existing `type == "group"` conversation whose CURRENT participant
+    set is EXACTLY `member_emails` (not a subset, not a superset), or None if none exists.
+    No-commit read. Used by accept_join_request to reuse an already-formed group for a member
+    set instead of creating a redundant duplicate (membership only ever grows in this system,
+    so an exact match is stable). If multiple duplicates exist (pre-existing data), the
+    most-recently-active one wins (last_message_at DESC), with id ASC as a deterministic final
+    tie-break."""
+    members = {e.strip().lower() for e in member_emails}
+    if len(members) < 2:
+        return None
+    n = len(members)
+    members_list = list(members)
+
+    result = await session.execute(
+        select(Conversation.id)
+        .join(ConversationParticipant, ConversationParticipant.conversation_id == Conversation.id)
+        .where(Conversation.type == "group")
+        .group_by(Conversation.id)
+        .having(
+            and_(
+                func.count(ConversationParticipant.id) == n,
+                func.sum(
+                    case((ConversationParticipant.participant_email.in_(members_list), 1), else_=0)
+                ) == n,
+            )
+        )
+        # Ordering by last_message_at (not itself in GROUP BY) is only legal under PostgreSQL's
+        # strict GROUP BY functional-dependency rules because it's functionally dependent on the
+        # grouped primary key (Conversation.id) — don't change the group-by key in a future
+        # refactor without re-checking this.
+        .order_by(Conversation.last_message_at.desc(), Conversation.id.asc())
+    )
+    row = result.first()
+    return row[0] if row else None
 
 
 async def _get_or_create_conversation(session: AsyncSession, key: str) -> Conversation:

@@ -3,6 +3,7 @@ import { formatCharacterName } from "../../data/office-layout";
 import { chatMode, chatService } from "../../services/chat";
 import type { ChatMessage, ConnectionState } from "../../services/chat";
 import type { AssetLayer } from "../../types/office";
+import { ChatWindowHeader } from "./ChatWindowHeader";
 import styles from "./ConversationView.module.css";
 
 type ConversationViewProps = {
@@ -20,6 +21,15 @@ type ConversationViewProps = {
   // circle when omitted or empty.
   selfAvatarUrl?: string;
   onClose: () => void;
+  // Optional status line shown under the name (e.g. a presence label) — omitted when unknown.
+  subtitle?: string;
+  // True for a "Character -> Chat" spatial conversation — shows the "📍 Spatial Conversation"
+  // header badge. False/omitted for a Global Chat (remote) window, which never shows it.
+  isSpatial?: boolean;
+  // Collapses the window to just its header row — same conversation stays mounted (socket
+  // subscriptions, draft text, etc. are untouched), only the body is hidden.
+  minimized?: boolean;
+  onMinimizeToggle?: () => void;
   onIncomingMessage?: (msg: ChatMessage) => void;
   // Fired exactly once, the moment this panel's conversation id first resolves (real mode's
   // openConversationWith response) — the edge-triggered "chat actually opened" signal callers
@@ -138,6 +148,10 @@ export function ConversationView({
   peerChatId,
   selfAvatarUrl,
   onClose,
+  subtitle,
+  isSpatial,
+  minimized,
+  onMinimizeToggle,
   onIncomingMessage,
   onTypingChange,
   onConversationOpen,
@@ -340,27 +354,24 @@ export function ConversationView({
   }
 
   if (chatDisabled) {
+    const disabledName = formatCharacterName(peer);
     return (
-      <div className={styles.panel}>
-        <div className={styles.header}>
-          <span className={styles.headerIcon} aria-hidden="true">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path
-                d="M4 4h16v12H8l-4 4V4z"
-                fill="currentColor"
-              />
-            </svg>
-          </span>
-          <span className={styles.title}>{formatCharacterName(peer)}</span>
-          <button type="button" className={styles.closeButton} onClick={onClose} aria-label="Close chat">
-            ×
-          </button>
-        </div>
-        <div className={styles.messages}>
-          <div className={`${styles.message} ${styles.peer}`}>
-            Chat isn't available for {formatCharacterName(peer)} yet — no linked account.
+      <div className={minimized ? `${styles.panel} ${styles.panelMinimized}` : styles.panel}>
+        <ChatWindowHeader
+          name={disabledName}
+          subtitle={subtitle}
+          isSpatial={isSpatial}
+          minimized={minimized}
+          onMinimizeToggle={onMinimizeToggle}
+          onClose={onClose}
+        />
+        {!minimized && (
+          <div className={styles.messages}>
+            <div className={`${styles.message} ${styles.peer}`}>
+              Chat isn't available for {disabledName} yet — no linked account.
+            </div>
           </div>
-        </div>
+        )}
       </div>
     );
   }
@@ -396,18 +407,17 @@ export function ConversationView({
   }
 
   return (
-    <div className={styles.panel}>
-      <div className={styles.header}>
-        <span className={styles.headerIcon} aria-hidden="true">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M4 4h16v12H8l-4 4V4z" fill="currentColor" />
-          </svg>
-        </span>
-        <span className={styles.title}>{peerName}</span>
-        <button type="button" className={styles.closeButton} onClick={onClose} aria-label="Close chat">
-          ×
-        </button>
-      </div>
+    <div className={minimized ? `${styles.panel} ${styles.panelMinimized}` : styles.panel}>
+      <ChatWindowHeader
+        name={peerName}
+        subtitle={subtitle}
+        isSpatial={isSpatial}
+        minimized={minimized}
+        onMinimizeToggle={onMinimizeToggle}
+        onClose={onClose}
+      />
+      {!minimized && (
+      <>
       {isConnectionError ? (
         <div className={styles.errorBanner}>
           <span>
@@ -508,6 +518,8 @@ export function ConversationView({
           </svg>
         </button>
       </div>
+      </>
+      )}
     </div>
   );
 }

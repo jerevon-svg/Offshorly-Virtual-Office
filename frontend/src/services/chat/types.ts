@@ -110,6 +110,12 @@ export interface ChatService {
   }): Promise<ChatMessage>;
   openConversationWith(peerId: string, selfId: string): Promise<Conversation>;
   onMessage(cb: MessageListener): () => void;
+  // Real-mode-only: manual group creation for the Global Chat "New Group Chat" flow (distinct
+  // from the join_group-upgrade path, which forms groups as a side effect of an accepted
+  // request). Idempotent server-side by exact member set — MockChatService has no server-side
+  // group-formation concept, so it simply doesn't implement this (same pattern as onUnreadCount
+  // et al above).
+  createGroupConversation?(participantEmails: string[], title?: string | null): Promise<Conversation>;
   // Real-mode-only additions below — mock mode has no server-side read
   // tracking, so MockChatService simply doesn't implement them.
   markRead?(input: { conversationId: string; upToSentAt: string }): void;

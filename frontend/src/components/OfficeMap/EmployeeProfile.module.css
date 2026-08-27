@@ -1,0 +1,363 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.panel {
+  position: relative;
+  width: min(480px, 92vw);
+  max-height: 84vh;
+  background: linear-gradient(180deg, rgba(30, 26, 46, 0.97), rgba(18, 16, 28, 0.97));
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  font-family: system-ui, sans-serif;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.closeButton {
+  all: unset;
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  cursor: pointer;
+  color: rgba(245, 240, 255, 0.7);
+  font-size: 14px;
+  padding: 6px;
+  border-radius: 6px;
+}
+
+.closeButton:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f5f0ff;
+}
+
+.header {
+  padding: 24px 24px 16px;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.headerText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.name {
+  color: #f5f0ff;
+  font-size: 18px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.recognitionBadge {
+  font-size: 14px;
+}
+
+.role {
+  color: rgba(245, 240, 255, 0.7);
+  font-size: 13px;
+}
+
+.status {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px 24px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.tab,
+.tabActive {
+  all: unset;
+  cursor: pointer;
+  color: rgba(245, 240, 255, 0.6);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-bottom: 2px solid transparent;
+}
+
+.tabActive {
+  color: #f5f0ff;
+  border-bottom-color: #a78bfa;
+}
+
+.body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 24px 24px;
+}
+
+.profileInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.infoRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: rgba(245, 240, 255, 0.9);
+  font-size: 13px;
+}
+
+.infoLabel {
+  color: rgba(245, 240, 255, 0.55);
+  font-weight: 600;
+}
+
+.empty {
+  color: rgba(245, 240, 255, 0.65);
+  font-size: 13px;
+  text-align: center;
+  padding: 20px 8px;
+}
+
+.errorBanner {
+  color: #ffb4b4;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+
+.feedTab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.composer,
+.commentComposer,
+.replyComposer {
+  display: flex;
+  gap: 8px;
+}
+
+.composerInput,
+.replyInput {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: #f5f0ff;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.composerInput::placeholder,
+.replyInput::placeholder {
+  color: rgba(245, 240, 255, 0.4);
+}
+
+.smallPrimary {
+  all: unset;
+  cursor: pointer;
+  color: #1a1a1a;
+  background: #f0f0f0;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 6px;
+}
+
+.smallPrimary:hover {
+  background: #ffffff;
+}
+
+.smallPrimary:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.postCard {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.postHeader {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.postAvatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+
+.postHeaderText {
+  flex: 1;
+  min-width: 0;
+}
+
+.postAuthor {
+  color: #f5f0ff;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.postText {
+  color: rgba(245, 240, 255, 0.9);
+  font-size: 13px;
+  margin-top: 2px;
+}
+
+.activitySentence {
+  color: #f5f0ff;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.activityEmoji {
+  font-size: 14px;
+}
+
+.postTimestamp {
+  color: rgba(245, 240, 255, 0.45);
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+.reactionRow {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.reactionButton,
+.reactionButtonActive {
+  all: unset;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: rgba(245, 240, 255, 0.85);
+}
+
+.reactionButtonActive {
+  background: rgba(167, 139, 250, 0.25);
+  border-color: rgba(167, 139, 250, 0.6);
+}
+
+.reactionButton:hover,
+.reactionButtonActive:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.linkButton {
+  all: unset;
+  cursor: pointer;
+  color: rgba(245, 240, 255, 0.6);
+  font-size: 12px;
+  padding: 4px 6px;
+}
+
+.linkButton:hover {
+  color: #f5f0ff;
+}
+
+.commentsSection {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.commentThread {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.commentRow,
+.replyRow {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.replyRow {
+  margin-left: 20px;
+}
+
+.replyArrow {
+  color: rgba(245, 240, 255, 0.4);
+  font-size: 13px;
+  padding-top: 4px;
+}
+
+.commentAvatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+
+.commentBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.commentAuthor {
+  color: #f5f0ff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.commentText {
+  color: rgba(245, 240, 255, 0.9);
+  font-size: 12px;
+}
+
+.commentActions {
+  display: flex;
+  gap: 4px;
+  margin-top: 2px;
+}

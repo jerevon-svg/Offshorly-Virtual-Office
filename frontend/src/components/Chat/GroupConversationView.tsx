@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { chatMode, chatService } from "../../services/chat";
 import type { ChatMessage, ConnectionState } from "../../services/chat";
+import { ChatWindowHeader } from "./ChatWindowHeader";
 import styles from "./ConversationView.module.css";
 
 export type GroupConversationViewProps = {
@@ -11,6 +12,14 @@ export type GroupConversationViewProps = {
   resolveDisplayName: (email: string) => string;
   selfAvatarUrl?: string;
   onClose: () => void;
+  // Optional status line shown under the name (e.g. "3 members") — omitted when unknown.
+  subtitle?: string;
+  // True for a "Character -> Chat" spatial conversation — shows the "📍 Spatial Conversation"
+  // header badge. False/omitted for a Global Chat (remote) window.
+  isSpatial?: boolean;
+  // Collapses the window to just its header row — same conversation stays mounted.
+  minimized?: boolean;
+  onMinimizeToggle?: () => void;
   onIncomingMessage?: (msg: ChatMessage) => void;
   // Fired exactly once, the moment this panel mounts for a given
   // conversationId — mirrors ConversationView's onConversationOpen "fire
@@ -140,6 +149,10 @@ export function GroupConversationView({
   resolveDisplayName,
   selfAvatarUrl,
   onClose,
+  subtitle,
+  isSpatial,
+  minimized,
+  onMinimizeToggle,
   onIncomingMessage,
   onConversationOpen,
   onTypingChange,
@@ -278,18 +291,17 @@ export function GroupConversationView({
   const latestOwnId = ownMessages.length ? ownMessages[ownMessages.length - 1].id : null;
 
   return (
-    <div className={styles.panel}>
-      <div className={styles.header}>
-        <span className={styles.headerIcon} aria-hidden="true">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M4 4h16v12H8l-4 4V4z" fill="currentColor" />
-          </svg>
-        </span>
-        <span className={styles.title}>{headerTitle}</span>
-        <button type="button" className={styles.closeButton} onClick={onClose} aria-label="Close chat">
-          ×
-        </button>
-      </div>
+    <div className={minimized ? `${styles.panel} ${styles.panelMinimized}` : styles.panel}>
+      <ChatWindowHeader
+        name={headerTitle}
+        subtitle={subtitle}
+        isSpatial={isSpatial}
+        minimized={minimized}
+        onMinimizeToggle={onMinimizeToggle}
+        onClose={onClose}
+      />
+      {!minimized && (
+      <>
       {isConnectionError ? (
         <div className={styles.errorBanner}>
           <span>
@@ -392,6 +404,8 @@ export function GroupConversationView({
           </svg>
         </button>
       </div>
+      </>
+      )}
     </div>
   );
 }

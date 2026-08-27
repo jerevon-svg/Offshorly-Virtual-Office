@@ -21,17 +21,52 @@ function dm(overrides: Partial<Conversation>): Conversation {
 }
 
 describe("MessageNotificationBadge", () => {
-  it("renders nothing when there are no unread messages and no conversations", () => {
-    const { container } = render(
+  it("stays visible (persistent Global Chat entry point) even with no unread messages and no conversations", () => {
+    render(
       <MessageNotificationBadge
         total={0}
         conversations={[]}
         selfId={SELF}
         resolveDisplayName={resolveDisplayName}
         onSelectConversation={() => {}}
+        onNewMessage={() => {}}
+        onFindPerson={() => {}}
+        onNewGroupChat={() => {}}
       />,
     );
-    expect(container.firstChild).toBeNull();
+    expect(screen.getByRole("button", { name: "Conversations" })).toBeInTheDocument();
+  });
+
+  it("calls onNewMessage/onFindPerson/onNewGroupChat and closes the dropdown when their action rows are clicked", () => {
+    const onNewMessage = vi.fn();
+    const onFindPerson = vi.fn();
+    const onNewGroupChat = vi.fn();
+
+    render(
+      <MessageNotificationBadge
+        total={0}
+        conversations={[]}
+        selfId={SELF}
+        resolveDisplayName={resolveDisplayName}
+        onSelectConversation={() => {}}
+        onNewMessage={onNewMessage}
+        onFindPerson={onFindPerson}
+        onNewGroupChat={onNewGroupChat}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Conversations" }));
+    fireEvent.click(screen.getByText("+ New Message"));
+    expect(onNewMessage).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("+ New Message")).not.toBeInTheDocument(); // dropdown closed
+
+    fireEvent.click(screen.getByRole("button", { name: "Conversations" }));
+    fireEvent.click(screen.getByText("🔍 Find Person"));
+    expect(onFindPerson).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Conversations" }));
+    fireEvent.click(screen.getByText("+ New Group Chat"));
+    expect(onNewGroupChat).toHaveBeenCalledTimes(1);
   });
 
   it("lists ALL conversations (including 0-unread and groups), sorted by lastMessageAt descending", () => {
@@ -55,6 +90,9 @@ describe("MessageNotificationBadge", () => {
         selfId={SELF}
         resolveDisplayName={resolveDisplayName}
         onSelectConversation={() => {}}
+        onNewMessage={() => {}}
+        onFindPerson={() => {}}
+        onNewGroupChat={() => {}}
       />,
     );
 
@@ -86,6 +124,9 @@ describe("MessageNotificationBadge", () => {
         selfId={SELF}
         resolveDisplayName={resolveDisplayName}
         onSelectConversation={() => {}}
+        onNewMessage={() => {}}
+        onFindPerson={() => {}}
+        onNewGroupChat={() => {}}
       />,
     );
 
@@ -106,6 +147,9 @@ describe("MessageNotificationBadge", () => {
         selfId={SELF}
         resolveDisplayName={resolveDisplayName}
         onSelectConversation={() => {}}
+        onNewMessage={() => {}}
+        onFindPerson={() => {}}
+        onNewGroupChat={() => {}}
       />,
     );
 
@@ -124,6 +168,9 @@ describe("MessageNotificationBadge", () => {
         selfId={SELF}
         resolveDisplayName={resolveDisplayName}
         onSelectConversation={onSelectConversation}
+        onNewMessage={() => {}}
+        onFindPerson={() => {}}
+        onNewGroupChat={() => {}}
       />,
     );
 
@@ -145,6 +192,9 @@ describe("MessageNotificationBadge", () => {
         selfId={SELF}
         resolveDisplayName={resolveDisplayName}
         onSelectConversation={() => {}}
+        onNewMessage={() => {}}
+        onFindPerson={() => {}}
+        onNewGroupChat={() => {}}
       />,
     );
 

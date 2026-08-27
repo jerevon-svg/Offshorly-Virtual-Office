@@ -355,6 +355,25 @@ export class RealChatService implements ChatService {
     return conv;
   }
 
+  async createGroupConversation(
+    participantEmails: string[],
+    title?: string | null,
+  ): Promise<Conversation> {
+    this.socket(); // ensure connection is established before REST call
+    const res = await restFetch(
+      "/conversations/group",
+      {
+        method: "POST",
+        body: JSON.stringify({ participantEmails, title: title ?? null }),
+      },
+      this.devEmail,
+    );
+    const conv: Conversation = await res.json();
+    this.activeConversationId = conv.id;
+    this.socket()?.emit("join_conversation", { conversationId: conv.id });
+    return conv;
+  }
+
   sendMessage(input: { conversationId: string; senderId: string; text: string }): Promise<ChatMessage> {
     const clientTempId = nextClientTempId();
     const socket = this.socket();
