@@ -17,7 +17,7 @@ import {
   roomMembersById,
 } from "../../data/office-layout";
 import { FALLBACK_ROOM_ID, roomIdForPerson } from "../../data/roomIdentity";
-import { findPath, roomOf } from "../../data/officePathfinding";
+import { findPath, roomOf, classifyDestination } from "../../data/officePathfinding";
 import {
   cellToWorld,
   findRoomDoorCell,
@@ -909,6 +909,8 @@ export function OfficeMap() {
       window.clearTimeout(approachDoorTimerRef.current);
       window.clearTimeout(checkoutDoorTimerRef.current);
       window.clearTimeout(seatDoorTimerRef.current);
+      window.clearTimeout(mapRightClickDoorTimerRef.current);
+      window.clearTimeout(destinationRingTimerRef.current);
       for (const timerId of Object.values(talkingTimersRef.current)) {
         window.clearTimeout(timerId);
       }
@@ -1447,6 +1449,15 @@ export function OfficeMap() {
   const exitTriggeredRef = useRef(false);
   const [frozenCheckoutAtMs, setFrozenCheckoutAtMs] = useState<number | null>(null);
 
+  // Right-click-to-move destination feedback ring (see handleMapRightClick
+  // below) — `key` bumps on every right-click, even repeat clicks on the
+  // same tile, so OfficeStage's CSS animation restarts each time. Cleared
+  // via a timer matching the CSS animation's duration so a lingering
+  // (invisible, opacity:0) ring div doesn't sit in the DOM indefinitely.
+  const [destinationRing, setDestinationRing] = useState<{ x: number; y: number; valid: boolean; key: number } | null>(null);
+  const destinationRingKeyRef = useRef(0);
+  const destinationRingTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
   useEffect(() => {
     if (checkoutFlow.submissionResult?.submittedAt) {
       setFrozenCheckoutAtMs(new Date(checkoutFlow.submissionResult.submittedAt).getTime());
@@ -1663,6 +1674,13 @@ export function OfficeMap() {
   // also be pending, and vice versa.
   const seatDoorTimerRef = useRef<number | undefined>(undefined);
   const seatDoorNonceRef = useRef(0);
+  // Pending door-open/door-close timeout for an in-flight right-click-to-move
+  // walk that's crossing into a different room (handleMapRightClick below) —
+  // dedicated pair, same reasoning as seatDoorTimerRef/seatDoorNonceRef: a
+  // second right-click mid-door-pause must cancel cleanly without touching
+  // an unrelated pat/chat/seat/checkout walk that might also be pending.
+  const mapRightClickDoorTimerRef = useRef<number | undefined>(undefined);
+  const mapRightClickDoorNonceRef = useRef(0);
 
   // walkToSeat, approachCharacter, and checkout's walkOutOfRoomThenTo are all
   // reachable from the same app-state window (onboarding === "done" &&
@@ -1687,6 +1705,10 @@ export function OfficeMap() {
     window.clearTimeout(checkoutDoorTimerRef.current);
     checkoutDoorTimerRef.current = undefined;
     checkoutDoorNonceRef.current += 1;
+
+    window.clearTimeout(mapRightClickDoorTimerRef.current);
+    mapRightClickDoorTimerRef.current = undefined;
+    mapRightClickDoorNonceRef.current += 1;
   }
 
   const PIP_WIDTH = 240;
@@ -2696,6 +2718,84 @@ export function OfficeMap() {
     setSeatMenu({ seat, ...anchor });
   }
 
+  // Dota-style right-click-to-move: classifies the clicked world point as a
+  // walkable+reachable tile or not (classifyDestination — no goal-snapping,
+  // see its doc comment), then — if that tile is inside a DIFFERENT flat
+  // room than bon currently stands in — gates entry through that room's
+  // door using the exact same stand-point-pair choreography walkToSeat uses
+  // (outStand -> onDoorOpen -> wait DOOR_ANIM_MS -> inStand -> onDoorClose
+  // -> final goal), so the avatar can never walk straight through a closed
+  // door/wall to a destination inside a room. A target room with no painted
+  // door stand-point pair is treated as not enterable via right-click (red
+  // ring, no movement) — unlike walkToSeat/approachCharacter's direct-walk
+  // fallback for that case, which is safe there because their targets are
+  // always a deliberately-chosen seat/character, never an arbitrary click.
+  // Same suppression guard as handleCharacterClick/handleSeatClick/onRoomClick.
+  function handleMapRightClick(point: Pt) {
+    if (onboarding !== "done" || checkoutBusy) return;
+    const start = { x: bonPos.x, y: bonPos.y };
+    const { valid, cellCenter } = classifyDestination(start, point);
+
+    const bw = playerCharacterLayer.width;
+    const bh = playerCharacterLayer.height;
+    const startCenter = { x: bonPos.x + bw / 2, y: bonPos.y + bh / 2 };
+    const goalCenter = { x: cellCenter.x + bw / 2, y: cellCenter.y + bh / 2 };
+    const flatStartRoomId = flatRoomIdAt(startCenter);
+    const flatGoalRoomId = flatRoomIdAt(goalCenter);
+    const enteringNewRoom = flatGoalRoomId !== null && flatGoalRoomId !== flatStartRoomId;
+    const doorPair = enteringNewRoom ? doorStandForRoom(flatGoalRoomId!) : null;
+    // Validity is decided ENTIRELY by classifyDestination's grid-based
+    // walkability+floodfill reachability check (`valid`) — the same source
+    // of truth findPath's A* itself walks against. doorPair only selects
+    // HOW to route there (door choreography vs. a direct findPath leg); its
+    // absence means "this room's door has no painted stand-point pair yet",
+    // per doorStandForRoom's own contract, NOT "this room is unreachable".
+    // Gating validity on doorPair (the prior version of this fix) wrongly
+    // red-ringed every reachable room without a hand-painted pair (Reception,
+    // Meeting, Project, etc.) even though findPath could walk there directly.
+    const isValid = valid;
+
+    window.clearTimeout(destinationRingTimerRef.current);
+    destinationRingKeyRef.current += 1;
+    setDestinationRing({ ...cellCenter, valid: isValid, key: destinationRingKeyRef.current });
+    destinationRingTimerRef.current = window.setTimeout(() => setDestinationRing(null), 500);
+
+    if (!isValid) return;
+
+    const startRoomId = roomOf(startCenter)?.id ?? null;
+    const goalRoomId = roomOf(goalCenter)?.id ?? null;
+
+    cancelPendingDoorWalks();
+    const nonce = mapRightClickDoorNonceRef.current;
+
+    if (doorPair) {
+      const outGoal = { x: doorPair.outStand.x - bw / 2, y: doorPair.outStand.y - bh / 2 };
+      const inGoal = { x: doorPair.inStand.x - bw / 2, y: doorPair.inStand.y - bh / 2 };
+      const pathToOutStand = findPath(start, outGoal, startRoomId, goalRoomId);
+      walkTo(pathToOutStand, () => {
+        if (mapRightClickDoorNonceRef.current !== nonce) return;
+        onDoorOpen(flatGoalRoomId!);
+        mapRightClickDoorTimerRef.current = window.setTimeout(() => {
+          mapRightClickDoorTimerRef.current = undefined;
+          if (mapRightClickDoorNonceRef.current !== nonce) return;
+          const pathToInStand = findPath(outGoal, inGoal, goalRoomId, goalRoomId);
+          walkTo(pathToInStand, () => {
+            if (mapRightClickDoorNonceRef.current !== nonce) return;
+            onDoorClose(flatGoalRoomId!);
+            const pathToGoal = findPath(inGoal, cellCenter, goalRoomId, goalRoomId);
+            walkTo(pathToGoal);
+          });
+        }, DOOR_ANIM_MS);
+      });
+      return;
+    }
+
+    // Same room already, or destination isn't inside any flat room (open
+    // floor/corridor) — existing single-goal walk, unchanged.
+    const path = findPath(start, cellCenter, startRoomId, goalRoomId);
+    walkTo(path);
+  }
+
   // Every seat centroid currently occupied — by a live roster person seated
   // on a real painted chair (rosterLayers entries with sitDirection set, see
   // rosterLayers.ts), or by the viewer's own current seat (currentSeatKey,
@@ -2870,6 +2970,9 @@ export function OfficeMap() {
             extraCharacterLayers={extraCharacterLayers}
             extraCharacterSrcById={extraCharacterSrcById}
             onCharacterClick={handleCharacterClick}
+            onMapRightClick={handleMapRightClick}
+            destinationRing={destinationRing}
+            showToucan
             hiddenCharacterIds={hiddenCharacterIds}
             onRoomClick={(layer, anchor) => {
               // Onboarding sequence must complete before normal room-click
