@@ -731,7 +731,7 @@ export function OfficeMap() {
     if (!chatService.createGroupConversation) return;
     try {
       const conv = await chatService.createGroupConversation(participantEmails, null);
-      openOrFocusRemoteGroup(conv);
+      openOrFocusRemoteGroup({ id: conv.id, participantIds: conv.participantIds, title: conv.title ?? null });
       void refetchConversations();
     } catch (err) {
       console.error("[chat] failed to create group conversation", err);
@@ -2905,6 +2905,10 @@ export function OfficeMap() {
         wheel={{ step: 0.1 }}
         pinch={{ step: 5 }}
         doubleClick={{ disabled: true }}
+        // react-zoom-pan-pinch defaults allowRightClickPan to true, so a right-button drag both
+        // pans the map AND drives the right-click-to-move pathfinding below — right mouse input
+        // must be exclusive to movement. Left-click panning (the default) is untouched.
+        panning={{ allowRightClickPan: false }}
         onPanningStart={() => {
           setIsDragging(true);
           setMenu(null);

@@ -104,7 +104,7 @@ export function resolveSelfSlotWalk(input: {
 export function classifyUpgrade(input: {
   selfEmail: string;
   openConversationId: string | null;
-  payload: { oldConversationId: string; newConversationId: string; participantIds: string[] };
+  payload: { oldConversationId: string; conversationId: string; participantIds: string[] };
 }): "incumbent" | "joiner" {
   return input.openConversationId === input.payload.oldConversationId ? "incumbent" : "joiner";
 }

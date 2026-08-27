@@ -146,7 +146,7 @@ describe("classifyUpgrade", () => {
       openConversationId: "conv-a__b",
       payload: {
         oldConversationId: "conv-a__b",
-        newConversationId: "conv-group-1",
+        conversationId: "conv-group-1",
         participantIds: ["a@x.com", "b@x.com", "c@x.com"],
       },
     });
@@ -159,7 +159,7 @@ describe("classifyUpgrade", () => {
       openConversationId: null,
       payload: {
         oldConversationId: "conv-a__b",
-        newConversationId: "conv-group-1",
+        conversationId: "conv-group-1",
         participantIds: ["a@x.com", "b@x.com", "c@x.com"],
       },
     });
