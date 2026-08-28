@@ -7,7 +7,7 @@ import { CharacterCanvas } from "./CharacterCanvas";
 // Phase A regression coverage for the single-model animation state machine:
 // one consolidated GLB (all 6 named clips baked onto one skeleton) driving
 // one AnimationMixer, crossfading between clips as the resolved
-// (isWalking/isSitting/isChatting/isResponder) state changes, and never
+// (isWalking/isSitting/isGlobalChatActive/isSpatialConversation/isTyping) state changes, and never
 // restarting a clip that's already playing.
 //
 // loadGlbCached is mocked so the single glbUrl's resolve/reject is
@@ -166,7 +166,7 @@ describe("CharacterCanvas animation-state crossfade wiring", () => {
     expect(findModelByName(capturedScene!, "theModel")).toBe(model);
   });
 
-  it("does not re-trigger a GLB reload when isWalking/isSitting/isChatting/isResponder/headingDegrees change", async () => {
+  it("does not re-trigger a GLB reload when isWalking/isSitting/isGlobalChatActive/isSpatialConversation/isTyping/headingDegrees change", async () => {
     const { rerender } = render(
       <CharacterCanvas glbUrl="model.glb" width={100} height={100} isWalking={true} />,
     );
@@ -185,8 +185,9 @@ describe("CharacterCanvas animation-state crossfade wiring", () => {
         height={100}
         isWalking={false}
         isSitting
-        isChatting
-        isResponder
+        isGlobalChatActive
+        isSpatialConversation
+        isTyping
         headingDegrees={90}
       />,
     );

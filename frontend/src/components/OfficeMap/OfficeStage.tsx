@@ -73,14 +73,55 @@ import styles from "./OfficeStage.module.css";
 // Assets for characters NOT (yet) eligible for production — kept around
 // purely so the dev-only `?live3d=` override above can still preview them.
 // Never consulted by the tier/budget gating path, only by the override.
-const DEV_ONLY_LIVE_3D_ENTRIES: Record<string, Live3dAssetSet> = {
+//
+// Two kinds of keys:
+//   - an avatar id ("alex"): previews that not-yet-eligible character;
+//   - a CANDIDATE id ("bon-v2") carrying `forAvatarId`: previews a
+//     replacement asset set for an avatar that already has a production
+//     registry entry, WITHOUT touching that entry. `?live3d=bon-v2` swaps
+//     Bon's own layer to the candidate GLBs (same layer, so never a
+//     duplicate character); `?live3d=bon` still previews the shipped set.
+//   Both are DEV-only: getLive3dEnabledAvatarIds() is empty outside
+//   import.meta.env.DEV, so production can never select a candidate.
+type DevOnlyLive3dEntry = Live3dAssetSet & { forAvatarId?: string };
+const DEV_ONLY_LIVE_3D_ENTRIES: Record<string, DevOnlyLive3dEntry> = {
   // Manifest aspect ratio: width 20 / height 34.46.
   alex: {
     glbUrl: `${import.meta.env.BASE_URL}scripts/avatar-pipeline/output/meshy-test/rig/alex-basic-walking_glb_url.glb`,
     renderWidth: 160,
     renderHeight: 276,
   },
+  // Bon v2 candidate (Meshy pipeline 2026-08-28: bon-chibi-ref-v2 -> image-to-3d
+  // 01a04848 -> remesh 01a04854 -> rig 01a0485f -> 6 clips -> build-character-lods).
+  // Same manifest aspect/render size as the shipped `bon` entry. Approved for
+  // dev preview only; promoting it = editing live3dCharacters.ts's `bon` entry.
+  "bon-v2": {
+    forAvatarId: "bon",
+    glbUrl: `${import.meta.env.BASE_URL}avatars/bon-v2/bon-v2-lod0.glb`,
+    lod1GlbUrl: `${import.meta.env.BASE_URL}avatars/bon-v2/bon-v2-lod1.glb`,
+    lod2GlbUrl: `${import.meta.env.BASE_URL}avatars/bon-v2/bon-v2-lod2.glb`,
+    renderWidth: 210,
+    renderHeight: 298,
+  },
 };
+
+// Resolves the dev-only override entry for a layer's avatar id: the id itself
+// when listed in `?live3d=` (registry entry first, then DEV_ONLY preview), else
+// any listed CANDIDATE id whose forAvatarId targets this avatar. Returns
+// undefined when the override doesn't apply to this layer.
+function resolveDevOverrideEntry(
+  avatarId: string | null,
+  enabledIds: Set<string>,
+  registryEntry: Live3dAssetSet | undefined,
+): Live3dAssetSet | undefined {
+  if (!avatarId || enabledIds.size === 0) return undefined;
+  if (enabledIds.has(avatarId)) return registryEntry ?? DEV_ONLY_LIVE_3D_ENTRIES[avatarId];
+  for (const id of enabledIds) {
+    const candidate = DEV_ONLY_LIVE_3D_ENTRIES[id];
+    if (candidate?.forAvatarId === avatarId) return candidate;
+  }
+  return undefined;
+}
 
 const DEVICE_TIER_VALUES: DeviceTier[] = ["T0", "T1", "T2"];
 
@@ -314,19 +355,20 @@ type OfficeStageProps = {
   // greeting or unexpired sent-text bubble. Absent/omitted = no one typing,
   // matching every existing caller/test that doesn't pass this.
   typingCharacterIds?: string[];
-  // Phase A live-3D "responder" signal, keyed by character LAYER id (not
-  // chat senderId/email like talkingTextById above) — recently sent a
-  // message within the bubble-display window (see
-  // characterAnimationState.ts's isResponder doc comment). OfficeMap.tsx
-  // builds this separately from talkingTextById because talkingTextById is
-  // keyed by chat senderId, which for peer roster layers happens to equal
-  // layer.id (rosterLayers.ts keys id on person.email) but for the self
-  // layer is the viewer's OWN chat id (selfChatId, an email), never
-  // playerLayerId/currentUserId (an avatar id like "bon") — looking self up
-  // directly in talkingTextById by layer.id therefore always misses.
-  // Absent entries default to false, matching every existing caller/test
-  // that doesn't pass this.
-  characterIsResponderById?: Record<string, boolean>;
+  // Character LAYER ids that currently have an active Global Chat window
+  // (>=1 visible, non-minimized remote DM/group window). Self is derived
+  // locally in OfficeMap.tsx and OR'd with the server-broadcast
+  // `global_chat_activity` snapshot; peers come from that snapshot (emails ==
+  // their layer ids). Drives only the seated `sitting-answering` animation —
+  // see characterAnimationState.ts. Absent = nobody active.
+  globalChatActiveCharacterIds?: string[];
+  // Character LAYER ids ACTIVELY TYPING in the conversation of the live spatial
+  // session they belong to (OfficeMap's deriveSpatialTypingCharacterIds). This
+  // — not typingCharacterIds — drives the `agree-gesture` animation, so typing
+  // in an unrelated remote DM/group never animates a spatial character.
+  // typingCharacterIds keeps its broader any-conversation meaning for the
+  // overhead dots bubble. Absent = nobody typing spatially.
+  spatialTypingCharacterIds?: string[];
   // Door art layer ids currently slid open (see officeDoors.ts). Layers not
   // present here render at rest (translateX(0)/no override) — omitting the
   // prop entirely means "no doors open," matching existing callers/tests
@@ -444,7 +486,8 @@ export function OfficeStage({
   talkingCharacterIds,
   talkingTextById,
   typingCharacterIds,
-  characterIsResponderById,
+  globalChatActiveCharacterIds,
+  spatialTypingCharacterIds,
   openDoorLayerIds,
   emptySeats,
   onSeatClick,
@@ -572,10 +615,11 @@ export function OfficeStage({
         // previewed manually. Already dead-code-eliminated from
         // production builds via getLive3dEnabledAvatarIds' import.meta.env
         // .DEV check.
-        const devOverrideEntry =
-          live3dAvatarId && live3dEnabledAvatarIds.has(live3dAvatarId)
-            ? registryEntry ?? DEV_ONLY_LIVE_3D_ENTRIES[live3dAvatarId]
-            : undefined;
+        const devOverrideEntry = resolveDevOverrideEntry(
+          live3dAvatarId,
+          live3dEnabledAvatarIds,
+          registryEntry,
+        );
         const isSelf = !!selfCharacterId && layer.id === selfCharacterId;
         let live3dEntry: Live3dAssetSet | undefined;
         // Whether the CharacterCanvas below should run its normal animated
@@ -586,11 +630,9 @@ export function OfficeStage({
         // shows LOD0 detail, matching its existing manual-preview intent),
         // set alongside live3dEntry below so the render code can tell which
         // path chose it without a fragile reference-equality check.
-        let usedDevOverride = false;
         if (!hasErroredLive3d) {
           if (devOverrideEntry) {
             live3dEntry = devOverrideEntry;
-            usedDevOverride = true;
           } else if (registryEntry && deviceTier !== "T0") {
             // Size-gated relaxation: while the live-3D registry holds only
             // ONE entry (bon, today), there's no "crowd" to budget against —
@@ -681,11 +723,18 @@ export function OfficeStage({
               // (only) to fall back to its normal sprite on the next
               // render — never a blank/broken box.
               <CharacterCanvas
-                glbUrl={
-                  usedDevOverride
-                    ? live3dEntry.glbUrl
-                    : resolveLive3dGlbUrl(live3dEntry, deviceTier, !live3dAnimated)
-                }
+                // Tier-based LOD pick applies under the dev override too, so
+                // `?live3d=<id>&deviceTier=T1` previews that id's LOD1 exactly
+                // as production would (entries without lod1/lod2 art fall
+                // back to glbUrl inside resolveLive3dGlbUrl). Production never
+                // renders live-3D at T0, so resolveLive3dGlbUrl has no T0 rule;
+                // under the DEV-only override (which does force a canvas at
+                // T0) T0 maps to the cheapest LOD (LOD2 chain), never LOD0.
+                glbUrl={resolveLive3dGlbUrl(
+                  live3dEntry,
+                  deviceTier,
+                  !live3dAnimated || (live3dEntry === devOverrideEntry && deviceTier === "T0"),
+                )}
                 width={live3dEntry.renderWidth}
                 height={live3dEntry.renderHeight}
                 animated={live3dAnimated}
@@ -694,15 +743,17 @@ export function OfficeStage({
                 )}
                 isWalking={characterIsWalkingById?.[layer.id] ?? false}
                 isSitting={characterIsSittingById?.[layer.id] ?? false}
-                // Reuses the existing chat-panel "talking" signal (rather
-                // than plumbing a separate chat/call-specific flag) —
-                // isChatting mirrors talkingCharacterIds exactly as the
-                // prior gestureActive prop did; isResponder comes from
-                // characterIsResponderById (layer-id-keyed — see its doc
-                // comment above for why this can't be looked up directly
-                // in talkingTextById, which is senderId/email-keyed).
-                isChatting={talkingCharacterIds?.includes(layer.id) ?? false}
-                isResponder={!!characterIsResponderById?.[layer.id]}
+                // Animation-state inputs (see characterAnimationState.ts):
+                // isSpatialConversation mirrors talkingCharacterIds (spatial
+                // session membership), isTyping mirrors
+                // spatialTypingCharacterIds (real keystrokes + idle timeout,
+                // scoped to that spatial conversation — never sent-message
+                // history, never typing in an unrelated remote window),
+                // isGlobalChatActive mirrors globalChatActiveCharacterIds. All
+                // are layer-id-keyed.
+                isSpatialConversation={talkingCharacterIds?.includes(layer.id) ?? false}
+                isTyping={spatialTypingCharacterIds?.includes(layer.id) ?? false}
+                isGlobalChatActive={globalChatActiveCharacterIds?.includes(layer.id) ?? false}
                 onError={() => reportLive3dError(layer.id)}
               />
             ) : (

@@ -34,8 +34,9 @@ vi.mock("../../render3d/CharacterCanvas", async () => {
       headingDegrees?: number;
       isWalking?: boolean;
       isSitting?: boolean;
-      isChatting?: boolean;
-      isResponder?: boolean;
+      isGlobalChatActive?: boolean;
+      isSpatialConversation?: boolean;
+      isTyping?: boolean;
       width: number;
       height: number;
       onError?: () => void;
@@ -47,8 +48,9 @@ vi.mock("../../render3d/CharacterCanvas", async () => {
         data-heading-degrees={props.headingDegrees}
         data-is-walking={props.isWalking}
         data-is-sitting={props.isSitting}
-        data-is-chatting={props.isChatting}
-        data-is-responder={props.isResponder}
+        data-is-spatial-conversation={props.isSpatialConversation}
+        data-is-typing={props.isTyping}
+        data-is-global-chat-active={props.isGlobalChatActive}
         data-animated={props.animated}
       >
         {props.onError && (
@@ -273,6 +275,251 @@ describe("OfficeStage Phase C live-3D dev-toggle: heading/walk wiring", () => {
   });
 });
 
+describe("OfficeStage: peer state attaches to the surviving roster Bon layer", () => {
+  afterEach(() => {
+    window.history.pushState({}, "", "/");
+  });
+
+  const ROSTER_BON = "jerevon@offshorly.com";
+  const rosterBonLayer = {
+    id: ROSTER_BON,
+    kind: "character" as const,
+    path: "",
+    x: 300,
+    y: 300,
+    width: 26,
+    height: 37,
+    transform: null,
+  } as unknown as import("../../types/office").AssetLayer;
+
+  it("5. with the manifest bon hidden, the email-keyed walking/sitting/typing/Global-Chat state drives the one roster Bon canvas", () => {
+    vi.mocked(detectDeviceTier).mockReturnValue("T2");
+    window.history.pushState({}, "", "/?live3d=bon-v2");
+    const { getAllByTestId } = render(
+      <TransformWrapper>
+        <TransformComponent>
+          <OfficeStage
+            selfCharacterId="alex"
+            hiddenCharacterIds={["bon"]}
+            extraCharacterLayers={[rosterBonLayer]}
+            characterIsWalkingById={{ [ROSTER_BON]: true }}
+            characterIsSittingById={{ [ROSTER_BON]: false }}
+            characterDirectionsById={{ [ROSTER_BON]: "left" }}
+            talkingCharacterIds={[ROSTER_BON]}
+            spatialTypingCharacterIds={[ROSTER_BON]}
+            globalChatActiveCharacterIds={[ROSTER_BON]}
+          />
+        </TransformComponent>
+      </TransformWrapper>,
+    );
+    const stubs = getAllByTestId("character-canvas-stub");
+    expect(stubs.length).toBe(1);
+    const stub = stubs[0];
+    expect(stub.getAttribute("data-glb-url")).toMatch(/bon-v2-lod0\.glb$/);
+    expect(stub.getAttribute("data-is-walking")).toBe("true");
+    expect(stub.getAttribute("data-heading-degrees")).toBe("-90");
+    expect(stub.getAttribute("data-is-spatial-conversation")).toBe("true");
+    expect(stub.getAttribute("data-is-typing")).toBe("true");
+    expect(stub.getAttribute("data-is-global-chat-active")).toBe("true");
+  });
+
+  it("without hiding, the manifest bon layer would render a second Bon canvas (documents the fixed condition)", () => {
+    vi.mocked(detectDeviceTier).mockReturnValue("T2");
+    window.history.pushState({}, "", "/?live3d=bon-v2");
+    const { getAllByTestId } = render(
+      <TransformWrapper>
+        <TransformComponent>
+          <OfficeStage selfCharacterId="alex" extraCharacterLayers={[rosterBonLayer]} />
+        </TransformComponent>
+      </TransformWrapper>,
+    );
+    expect(getAllByTestId("character-canvas-stub").length).toBe(2);
+  });
+});
+
+describe("OfficeStage dev-only candidate override (?live3d=bon-v2)", () => {
+  afterEach(() => {
+    window.history.pushState({}, "", "/");
+  });
+
+  function renderWith(query: string, selfCharacterId?: string) {
+    window.history.pushState({}, "", `/${query}`);
+    return render(
+      <TransformWrapper>
+        <TransformComponent>
+          <OfficeStage selfCharacterId={selfCharacterId} />
+        </TransformComponent>
+      </TransformWrapper>,
+    );
+  }
+
+  it("swaps Bon's own layer to the bon-v2 candidate LOD0 at T2 — exactly one canvas, no duplicate Bon", () => {
+    vi.mocked(detectDeviceTier).mockReturnValue("T2");
+    const { getAllByTestId, container } = renderWith("?live3d=bon-v2");
+    const stubs = getAllByTestId("character-canvas-stub");
+    expect(stubs.length).toBe(1);
+    expect(stubs[0].getAttribute("data-glb-url")).toMatch(/avatars\/bon-v2\/bon-v2-lod0\.glb$/);
+    // The bon layer no longer renders its sprite <img> alongside the canvas.
+    const bonImgs = Array.from(container.querySelectorAll("img")).filter((img) =>
+      (img.getAttribute("src") ?? "").includes("/bon"),
+    );
+    expect(bonImgs.length).toBe(0);
+  });
+
+  it("bon-v2 T2 selects lod0", () => {
+    vi.mocked(detectDeviceTier).mockReturnValue("T2");
+    const { getByTestId } = renderWith("?live3d=bon-v2");
+    expect(getByTestId("character-canvas-stub").getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v2\/bon-v2-lod0\.glb$/);
+  });
+
+  it("bon-v2 T1 selects lod1", () => {
+    vi.mocked(detectDeviceTier).mockReturnValue("T1");
+    const { getByTestId } = renderWith("?live3d=bon-v2");
+    expect(getByTestId("character-canvas-stub").getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v2\/bon-v2-lod1\.glb$/);
+  });
+
+  it("bon-v2 T0 selects lod2", () => {
+    vi.mocked(detectDeviceTier).mockReturnValue("T0");
+    const { getAllByTestId } = renderWith("?live3d=bon-v2");
+    const stubs = getAllByTestId("character-canvas-stub");
+    expect(stubs.length).toBe(1);
+    expect(stubs[0].getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v2\/bon-v2-lod2\.glb$/);
+  });
+
+  // detectDeviceTier() is a once-per-session cached singleton, so each tier needs its own test.
+  const rosterBonLayerForPeerTests = {
+    id: "jerevon@offshorly.com", kind: "character" as const, path: "", x: 300, y: 300, width: 26, height: 37, transform: null,
+  } as unknown as import("../../types/office").AssetLayer;
+  function renderPeerRosterBon(tier: "T0" | "T1" | "T2") {
+    vi.mocked(detectDeviceTier).mockReturnValue(tier);
+    window.history.pushState({}, "", "/?live3d=bon-v2");
+    return render(
+      <TransformWrapper>
+        <TransformComponent>
+          <OfficeStage selfCharacterId="alex" hiddenCharacterIds={["bon"]} extraCharacterLayers={[rosterBonLayerForPeerTests]} />
+        </TransformComponent>
+      </TransformWrapper>,
+    );
+  }
+  for (const [tier, lod] of [["T2", "lod0"], ["T1", "lod1"], ["T0", "lod2"]] as const) {
+    it(`Peer roster Bon follows the same tier selection: ${tier} -> ${lod} (alex viewer, roster jerevon layer, manifest bon hidden)`, () => {
+      const { getAllByTestId } = renderPeerRosterBon(tier);
+      const stubs = getAllByTestId("character-canvas-stub");
+      expect(stubs.length).toBe(1);
+      expect(stubs[0].getAttribute("data-glb-url")).toMatch(new RegExp(`/avatars/bon-v2/bon-v2-${lod}\\.glb$`));
+    });
+  }
+
+  it("Production ignores the selector (DEV=false): ?live3d=bon-v2 falls back to normal gating with the shipped jerevon set", () => {
+    vi.stubEnv("DEV", false);
+    try {
+      vi.mocked(detectDeviceTier).mockReturnValue("T2");
+      const { getByTestId } = renderWith("?live3d=bon-v2", "bon");
+      const url = getByTestId("character-canvas-stub").getAttribute("data-glb-url") ?? "";
+      // Registry (promoted to bon-v2) still wins; the selector itself contributed nothing.
+      expect(url).toMatch(/avatars\/bon-v2\/bon-v2-lod0\.glb$/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("picks the candidate's LOD1 at T1 and LOD2 in the static-frame bucket via the same tier policy as production", () => {
+    vi.mocked(detectDeviceTier).mockReturnValue("T1");
+    const { getByTestId, unmount } = renderWith("?live3d=bon-v2");
+    expect(getByTestId("character-canvas-stub").getAttribute("data-glb-url")).toMatch(/bon-v2-lod1\.glb$/);
+    unmount();
+  });
+
+  it("Default Bon T2 loads bon-v2 lod0 without a selector", () => {
+    vi.mocked(detectDeviceTier).mockReturnValue("T2");
+    const { getAllByTestId } = renderWith("", "bon");
+    const stubs = getAllByTestId("character-canvas-stub");
+    expect(stubs.length).toBe(1);
+    expect(stubs[0].getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v2\/bon-v2-lod0\.glb$/);
+    expect(LIVE_3D_CHARACTERS.bon.glbUrl).toMatch(/\/avatars\/bon-v2\/bon-v2-lod0\.glb$/);
+  });
+
+  it("Default Bon T1 loads lod1", () => {
+    vi.mocked(detectDeviceTier).mockReturnValue("T1");
+    const { getByTestId } = renderWith("", "bon");
+    expect(getByTestId("character-canvas-stub").getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v2\/bon-v2-lod1\.glb$/);
+  });
+
+  it("Default Bon at a genuine T0 keeps the production 2D sprite safety floor (no canvas, no selector)", () => {
+    vi.mocked(detectDeviceTier).mockReturnValue("T0");
+    const { queryAllByTestId, container } = renderWith("", "bon");
+    expect(queryAllByTestId("character-canvas-stub").length).toBe(0);
+    const bonSprites = Array.from(container.querySelectorAll("img")).filter((i) => /chibi-bon|\/bon-/.test(i.getAttribute("src") ?? ""));
+    expect(bonSprites.length).toBe(1);
+  });
+
+  it("Peer view renders exactly one default bon-v2", () => {
+    vi.mocked(detectDeviceTier).mockReturnValue("T2");
+    const rosterBon = {
+      id: "jerevon@offshorly.com", kind: "character" as const, path: "", x: 300, y: 300, width: 26, height: 37, transform: null,
+    } as unknown as import("../../types/office").AssetLayer;
+    const { getAllByTestId, container } = render(
+      <TransformWrapper>
+        <TransformComponent>
+          <OfficeStage selfCharacterId="alex" hiddenCharacterIds={["bon"]} extraCharacterLayers={[rosterBon]} />
+        </TransformComponent>
+      </TransformWrapper>,
+    );
+    const stubs = getAllByTestId("character-canvas-stub");
+    expect(stubs.length).toBe(1);
+    expect(stubs[0].getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v2\/bon-v2-lod0\.glb$/);
+    expect(Array.from(container.querySelectorAll("img")).filter((i) => /chibi-bon|\/bon-/.test(i.getAttribute("src") ?? "")).length).toBe(0);
+  });
+
+  it("Animation and movement inputs reach the default Bon canvas", () => {
+    vi.mocked(detectDeviceTier).mockReturnValue("T2");
+    // no selector; drive every state input for the self layer "bon"
+    const { getByTestId: g2 } = render(
+      <TransformWrapper>
+        <TransformComponent>
+          <OfficeStage
+            selfCharacterId="bon"
+            characterIsWalkingById={{ bon: true }}
+            characterDirectionsById={{ bon: "right" }}
+            characterIsSittingById={{ bon: false }}
+            talkingCharacterIds={["bon"]}
+            spatialTypingCharacterIds={["bon"]}
+            globalChatActiveCharacterIds={["bon"]}
+          />
+        </TransformComponent>
+      </TransformWrapper>,
+    );
+    const stub = g2("character-canvas-stub");
+    expect(stub.getAttribute("data-glb-url")).toMatch(/bon-v2-lod0\.glb$/);
+    expect(stub.getAttribute("data-is-walking")).toBe("true");
+    expect(stub.getAttribute("data-heading-degrees")).toBe("90");
+    expect(stub.getAttribute("data-is-spatial-conversation")).toBe("true");
+    expect(stub.getAttribute("data-is-typing")).toBe("true");
+    expect(stub.getAttribute("data-is-global-chat-active")).toBe("true");
+  });
+
+  it("Other employees remain unchanged (alex stays a sprite; registry still has only bon)", () => {
+    vi.mocked(detectDeviceTier).mockReturnValue("T2");
+    const { container, getAllByTestId } = renderWith("", "bon");
+    expect(Object.keys(LIVE_3D_CHARACTERS)).toEqual(["bon"]);
+    expect(getAllByTestId("character-canvas-stub").length).toBe(1);
+    const alexImgs = Array.from(container.querySelectorAll("img")).filter((i) => /chibi-alex/.test(i.getAttribute("src") ?? ""));
+    expect(alexImgs.length).toBeGreaterThan(0);
+  });
+
+  it("`?live3d=bon` (registry id) previews the registry set, which is now bon-v2", () => {
+    vi.mocked(detectDeviceTier).mockReturnValue("T2");
+    const { getByTestId } = renderWith("?live3d=bon");
+    expect(getByTestId("character-canvas-stub").getAttribute("data-glb-url")).toMatch(/bon-v2-lod0\.glb$/);
+  });
+
+  it("an unknown candidate id is ignored (falls back to normal gating)", () => {
+    vi.mocked(detectDeviceTier).mockReturnValue("T2");
+    const { getByTestId } = renderWith("?live3d=bon-v9", "bon");
+    expect(getByTestId("character-canvas-stub").getAttribute("data-glb-url")).toMatch(/bon-v2-lod0\.glb$/);
+  });
+});
+
 describe("OfficeStage live-3D tier/budget gating (no ?live3d= override)", () => {
   function renderGated(selfCharacterId?: string) {
     return render(
@@ -467,41 +714,57 @@ describe("OfficeStage live-3D tier/budget gating (no ?live3d= override)", () => 
     });
   });
 
-  describe("isResponder wiring (characterIsResponderById, layer-id-keyed)", () => {
-    // Regression test for the id-space bug: OfficeStage must read isResponder
-    // from characterIsResponderById (layer-id-keyed), never from
-    // talkingTextById (senderId/email-keyed) directly — passing an
-    // email-keyed talkingTextById entry alone must NOT flip isResponder for
-    // a same-named layer id.
-    it("sets isResponder=true for a layer id present in characterIsResponderById", () => {
+  describe("animation-state input wiring (layer-id-keyed)", () => {
+    function renderStage(props: Record<string, unknown>) {
       vi.mocked(detectDeviceTier).mockReturnValue("T1");
-
-      const { getByTestId } = render(
+      return render(
         <TransformWrapper>
           <TransformComponent>
-            <OfficeStage selfCharacterId="bon" characterIsResponderById={{ bon: true }} />
+            <OfficeStage selfCharacterId="bon" {...props} />
           </TransformComponent>
         </TransformWrapper>,
       );
+    }
 
-      expect(getByTestId("character-canvas-stub").getAttribute("data-is-responder")).toBe("true");
+    it("isSpatialConversation mirrors talkingCharacterIds", () => {
+      const { getByTestId } = renderStage({ talkingCharacterIds: ["bon"] });
+      const el = getByTestId("character-canvas-stub");
+      expect(el.getAttribute("data-is-spatial-conversation")).toBe("true");
+      expect(el.getAttribute("data-is-typing")).toBe("false");
+      expect(el.getAttribute("data-is-global-chat-active")).toBe("false");
     });
 
-    it("leaves isResponder false when only the email-keyed talkingTextById (not characterIsResponderById) has an entry", () => {
-      vi.mocked(detectDeviceTier).mockReturnValue("T1");
+    it("isTyping mirrors spatialTypingCharacterIds (conversation-scoped keystroke signal)", () => {
+      const { getByTestId } = renderStage({ talkingCharacterIds: ["bon"], spatialTypingCharacterIds: ["bon"] });
+      expect(getByTestId("character-canvas-stub").getAttribute("data-is-typing")).toBe("true");
+    });
 
-      const { getByTestId } = render(
-        <TransformWrapper>
-          <TransformComponent>
-            <OfficeStage
-              selfCharacterId="bon"
-              talkingTextById={{ "jerevon@offshorly.com": "hey team" }}
-            />
-          </TransformComponent>
-        </TransformWrapper>,
-      );
+    it("the any-conversation typingCharacterIds (bubble signal) alone never sets isTyping", () => {
+      const { getByTestId } = renderStage({ talkingCharacterIds: ["bon"], typingCharacterIds: ["bon"] });
+      expect(getByTestId("character-canvas-stub").getAttribute("data-is-typing")).toBe("false");
+    });
 
-      expect(getByTestId("character-canvas-stub").getAttribute("data-is-responder")).toBe("false");
+    it("a recently-sent message (talkingTextById) alone never sets isTyping or isGlobalChatActive", () => {
+      const { getByTestId } = renderStage({
+        talkingCharacterIds: ["bon"],
+        talkingTextById: { bon: "hey team", "jerevon@offshorly.com": "hey" },
+      });
+      const el = getByTestId("character-canvas-stub");
+      expect(el.getAttribute("data-is-typing")).toBe("false");
+      expect(el.getAttribute("data-is-global-chat-active")).toBe("false");
+    });
+
+    it("isGlobalChatActive mirrors globalChatActiveCharacterIds and is independent of the spatial signals", () => {
+      const { getByTestId } = renderStage({ globalChatActiveCharacterIds: ["bon"] });
+      const el = getByTestId("character-canvas-stub");
+      expect(el.getAttribute("data-is-global-chat-active")).toBe("true");
+      expect(el.getAttribute("data-is-spatial-conversation")).toBe("false");
+      expect(el.getAttribute("data-is-typing")).toBe("false");
+    });
+
+    it("an email-keyed globalChatActiveCharacterIds entry does not light up the self avatar id (caller must remap)", () => {
+      const { getByTestId } = renderStage({ globalChatActiveCharacterIds: ["jerevon@offshorly.com"] });
+      expect(getByTestId("character-canvas-stub").getAttribute("data-is-global-chat-active")).toBe("false");
     });
   });
 

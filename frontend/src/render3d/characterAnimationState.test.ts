@@ -4,97 +4,113 @@ import { resolveCharacterAnimState, type CharacterAnimInput } from "./characterA
 const BASE: CharacterAnimInput = {
   isWalking: false,
   isSitting: false,
-  isChatting: false,
-  isResponder: false,
+  isGlobalChatActive: false,
+  isSpatialConversation: false,
+  isTyping: false,
 };
 
-describe("resolveCharacterAnimState", () => {
-  it("defaults to idle-9 when nothing else applies", () => {
+describe("resolveCharacterAnimState (locked semantics 2026-08-28)", () => {
+  it("1. standing and inactive -> idle-9", () => {
     expect(resolveCharacterAnimState(BASE)).toBe("idle-9");
   });
 
-  it("resolves to walking when isWalking is true and not seated", () => {
+  it("2. walking overrides every other state, regardless of prior state", () => {
     expect(resolveCharacterAnimState({ ...BASE, isWalking: true })).toBe("walking");
-  });
-
-  it("resolves to agree-gesture when chatting as the responder while standing", () => {
     expect(
-      resolveCharacterAnimState({ ...BASE, isChatting: true, isResponder: true }),
-    ).toBe("agree-gesture");
-  });
-
-  it("resolves to listening-gesture when chatting but not the responder while standing", () => {
-    expect(
-      resolveCharacterAnimState({ ...BASE, isChatting: true, isResponder: false }),
-    ).toBe("listening-gesture");
-  });
-
-  it("resolves to sit-on-chair-arms when seated and not chatting", () => {
-    expect(resolveCharacterAnimState({ ...BASE, isSitting: true })).toBe("sit-on-chair-arms");
-  });
-
-  it("resolves to sit-on-chair-arms when seated, chatting, but listening (not the responder)", () => {
-    expect(
-      resolveCharacterAnimState({ ...BASE, isSitting: true, isChatting: true, isResponder: false }),
-    ).toBe("sit-on-chair-arms");
-  });
-
-  it("resolves to sitting-answering when seated AND responding", () => {
-    expect(
-      resolveCharacterAnimState({ ...BASE, isSitting: true, isChatting: true, isResponder: true }),
-    ).toBe("sitting-answering");
-  });
-
-  it("prioritizes seated over walking (can't be both, but seated wins if both flags are somehow set)", () => {
-    expect(resolveCharacterAnimState({ ...BASE, isSitting: true, isWalking: true })).toBe(
-      "sit-on-chair-arms",
-    );
-  });
-
-  it("prioritizes walking over chat state while standing", () => {
-    expect(
-      resolveCharacterAnimState({ ...BASE, isWalking: true, isChatting: true, isResponder: true }),
+      resolveCharacterAnimState({
+        isWalking: true,
+        isSitting: true,
+        isGlobalChatActive: true,
+        isSpatialConversation: true,
+        isTyping: true,
+      }),
     ).toBe("walking");
   });
 
-  it("ignores isResponder when isChatting is false (standing, idle)", () => {
-    expect(resolveCharacterAnimState({ ...BASE, isResponder: true })).toBe("idle-9");
+  it("3. spatial conversation + real typing -> agree-gesture", () => {
+    expect(resolveCharacterAnimState({ ...BASE, isSpatialConversation: true, isTyping: true })).toBe(
+      "agree-gesture",
+    );
+  });
+
+  it("4. spatial conversation + typing timed out -> listening-gesture", () => {
+    expect(resolveCharacterAnimState({ ...BASE, isSpatialConversation: true, isTyping: false })).toBe(
+      "listening-gesture",
+    );
+  });
+
+  it("5. spatial conversation ends -> idle-9 unless sitting or walking", () => {
+    expect(resolveCharacterAnimState({ ...BASE, isSpatialConversation: false, isTyping: true })).toBe("idle-9");
+    expect(resolveCharacterAnimState({ ...BASE, isSitting: true })).toBe("sit-on-chair-arms");
+    expect(resolveCharacterAnimState({ ...BASE, isWalking: true })).toBe("walking");
+  });
+
+  it("6. sitting without active Global Chat -> sit-on-chair-arms (even while in a spatial conversation)", () => {
+    expect(resolveCharacterAnimState({ ...BASE, isSitting: true })).toBe("sit-on-chair-arms");
+    expect(
+      resolveCharacterAnimState({ ...BASE, isSitting: true, isSpatialConversation: true, isTyping: true }),
+    ).toBe("sit-on-chair-arms");
+  });
+
+  it("7/8. sitting + active Global Chat (remote DM or group window) -> sitting-answering", () => {
+    expect(resolveCharacterAnimState({ ...BASE, isSitting: true, isGlobalChatActive: true })).toBe(
+      "sitting-answering",
+    );
+  });
+
+  it("9. remote window minimized/closed (isGlobalChatActive false) -> back to sit-on-chair-arms", () => {
+    const seatedActive = { ...BASE, isSitting: true, isGlobalChatActive: true };
+    expect(resolveCharacterAnimState(seatedActive)).toBe("sitting-answering");
+    expect(resolveCharacterAnimState({ ...seatedActive, isGlobalChatActive: false })).toBe("sit-on-chair-arms");
+  });
+
+  it("10. standing + active Global Chat stays idle-9 (never a seated animation)", () => {
+    expect(resolveCharacterAnimState({ ...BASE, isGlobalChatActive: true })).toBe("idle-9");
+  });
+
+  it("11. spatial panel open without typing -> listening-gesture, never agree", () => {
+    expect(resolveCharacterAnimState({ ...BASE, isSpatialConversation: true })).toBe("listening-gesture");
+  });
+
+  it("12. no input other than real typing can produce agree-gesture (no responder heuristic exists)", () => {
+    const keys = Object.keys(BASE) as (keyof CharacterAnimInput)[];
+    expect(keys).not.toContain("isResponder");
+    expect(keys).not.toContain("isChatting");
+    // Only the (spatial && typing) pair yields agree-gesture.
+    for (const isTyping of [false, true]) {
+      for (const isSpatialConversation of [false, true]) {
+        const r = resolveCharacterAnimState({ ...BASE, isSpatialConversation, isTyping });
+        expect(r === "agree-gesture").toBe(isSpatialConversation && isTyping);
+      }
+    }
   });
 
   it("is a pure function: same input always produces the same output (no-restart-on-same-state contract)", () => {
-    const input: CharacterAnimInput = { ...BASE, isChatting: true, isResponder: true };
-    const a = resolveCharacterAnimState(input);
-    const b = resolveCharacterAnimState(input);
-    expect(a).toBe(b);
-    expect(a).toBe("agree-gesture");
+    const input: CharacterAnimInput = { ...BASE, isSpatialConversation: true, isTyping: true };
+    expect(resolveCharacterAnimState(input)).toBe(resolveCharacterAnimState(input));
   });
 
-  // Exhaustive coverage of every one of the 16 boolean combinations, so any
-  // future change to the priority order gets caught by a concrete assertion
-  // rather than relying only on the hand-picked cases above.
-  it("covers every boolean combination with a deterministic, documented result", () => {
-    const expectedByKey: Record<string, ReturnType<typeof resolveCharacterAnimState>> = {
-      "0000": "idle-9",
-      "0001": "idle-9", // isResponder ignored without isChatting
-      "0010": "listening-gesture",
-      "0011": "agree-gesture",
-      "0100": "walking",
-      "0101": "walking",
-      "0110": "walking",
-      "0111": "walking",
-      "1000": "sit-on-chair-arms",
-      "1001": "sit-on-chair-arms",
-      "1010": "sit-on-chair-arms",
-      "1011": "sitting-answering",
-      "1100": "sit-on-chair-arms", // seated wins over walking
-      "1101": "sit-on-chair-arms",
-      "1110": "sit-on-chair-arms",
-      "1111": "sitting-answering",
-    };
-    for (const [key, expected] of Object.entries(expectedByKey)) {
-      const [isSitting, isWalking, isChatting, isResponder] = key.split("").map((c) => c === "1");
-      const result = resolveCharacterAnimState({ isSitting, isWalking, isChatting, isResponder });
-      expect(result, `key=${key}`).toBe(expected);
+  // Exhaustive coverage of all 32 boolean combinations, so any future change to the
+  // priority order is caught by a concrete assertion. Key order:
+  // isWalking, isSitting, isGlobalChatActive, isSpatialConversation, isTyping.
+  it("covers every boolean combination with the documented priority", () => {
+    const expected = (i: CharacterAnimInput) =>
+      i.isWalking
+        ? "walking"
+        : i.isSitting
+          ? i.isGlobalChatActive
+            ? "sitting-answering"
+            : "sit-on-chair-arms"
+          : i.isSpatialConversation
+            ? i.isTyping
+              ? "agree-gesture"
+              : "listening-gesture"
+            : "idle-9";
+    for (let n = 0; n < 32; n++) {
+      const bits = n.toString(2).padStart(5, "0").split("").map((c) => c === "1");
+      const [isWalking, isSitting, isGlobalChatActive, isSpatialConversation, isTyping] = bits;
+      const input = { isWalking, isSitting, isGlobalChatActive, isSpatialConversation, isTyping };
+      expect(resolveCharacterAnimState(input), `bits=${bits.map(Number).join("")}`).toBe(expected(input));
     }
   });
 });

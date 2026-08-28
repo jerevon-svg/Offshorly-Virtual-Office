@@ -56,10 +56,16 @@ const BASE = import.meta.env.BASE_URL;
 // Bon/Jerevon is the only real employee through the pipeline so far.
 export const LIVE_3D_CHARACTERS: Record<string, Live3dAssetSet> = {
   // Manifest aspect ratio: width 26.23 / height 37.2.
+  // Promoted 2026-08-28 to the bon-v2 set (Meshy pipeline: bon-chibi-ref-v2 ->
+  // image-to-3d 01a04848 -> remesh 01a04854 -> rig 01a0485f -> 6 clips ->
+  // build-character-lods). The previous set stays on disk untouched at
+  // public/avatars/jerevon/jerevon-lod{0,1,2}.glb as the rollback: revert
+  // these three paths to roll back. `?live3d=bon-v2` (OfficeStage's dev
+  // override) now points at the same files and is kept only as a preview aid.
   bon: {
-    glbUrl: `${BASE}avatars/jerevon/jerevon-lod0.glb`,
-    lod1GlbUrl: `${BASE}avatars/jerevon/jerevon-lod1.glb`,
-    lod2GlbUrl: `${BASE}avatars/jerevon/jerevon-lod2.glb`,
+    glbUrl: `${BASE}avatars/bon-v2/bon-v2-lod0.glb`,
+    lod1GlbUrl: `${BASE}avatars/bon-v2/bon-v2-lod1.glb`,
+    lod2GlbUrl: `${BASE}avatars/bon-v2/bon-v2-lod2.glb`,
     renderWidth: 210,
     renderHeight: 298,
   },

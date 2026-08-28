@@ -24,6 +24,17 @@
 //
 // Usage:
 //   node scripts/avatar-pipeline/build-character-lods.mjs jerevon
+//   node scripts/avatar-pipeline/build-character-lods.mjs bon --out-dir=<dir>
+//
+// --out-dir (added 2026-08-28): write the 3 LOD GLBs to <dir> (absolute, or
+// relative to the frontend root) instead of the default public/avatars/<id>/.
+// Used to stage a candidate for review under the gitignored
+// scripts/avatar-pipeline/output/... tree without touching shipped assets.
+//
+// Walking source (2026-08-28): the rig step now saves the free bundled walk
+// as <id>-rigged-walking.glb; older employee folders (jerevon, bonv2) have
+// <id>-basic-walking_glb_url.glb. The first that exists is used, so both
+// generations of folders keep building unchanged.
 // ---------------------------------------------------------------------------
 
 import { NodeIO } from "@gltf-transform/core";
@@ -51,17 +62,20 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../..");
 
 const character = process.argv[2];
-if (!character) {
-  console.error("Usage: node build-character-lods.mjs <character-id>");
+if (!character || character.startsWith("--")) {
+  console.error("Usage: node build-character-lods.mjs <character-id> [--out-dir=<dir>]");
   process.exit(1);
 }
+const outDirFlag = (process.argv.slice(3).find((a) => a.startsWith("--out-dir=")) || "").slice("--out-dir=".length);
 
 const RAW_DIR = path.join(
   REPO_ROOT,
   "scripts/avatar-pipeline/output/meshy-employees",
   character,
 );
-const OUT_DIR = path.join(REPO_ROOT, "public/avatars", character);
+const OUT_DIR = outDirFlag
+  ? path.resolve(REPO_ROOT, outDirFlag)
+  : path.join(REPO_ROOT, "public/avatars", character);
 
 // Base rigged mesh (no meaningful animation — a placeholder single-frame
 // "clip0" clip is present in the raw export and is dropped below).
@@ -70,9 +84,16 @@ const BASE_GLB = path.join(RAW_DIR, `${character}-rigged.glb`);
 // Source clip GLB -> target AnimationClip name the app looks up by (see
 // task spec — CharacterCanvas/live3dCharacters will key off these exact
 // strings in a later phase).
+const WALKING_CANDIDATES = [
+  `${character}-rigged-walking.glb`, // current rig-step naming (preferred)
+  `${character}-basic-walking_glb_url.glb`, // legacy naming (jerevon, bonv2)
+];
+const walkingSource =
+  WALKING_CANDIDATES.find((f) => fs.existsSync(path.join(RAW_DIR, f))) ?? WALKING_CANDIDATES[0];
+
 const CLIP_SOURCES = {
   [`${character}-idle-9.glb`]: "idle-9",
-  [`${character}-basic-walking_glb_url.glb`]: "walking",
+  [walkingSource]: "walking",
   [`${character}-agree-gesture.glb`]: "agree-gesture",
   [`${character}-listening-gesture.glb`]: "listening-gesture",
   [`${character}-sit-on-chair-arms.glb`]: "sit-on-chair-arms",
@@ -299,6 +320,8 @@ async function reportTriangleCount(doc) {
 
 async function main() {
   fs.mkdirSync(OUT_DIR, { recursive: true });
+  console.log(`[build-character-lods] output dir: ${OUT_DIR}`);
+  console.log(`[build-character-lods] walking source: ${walkingSource}`);
 
   const consolidatedDoc = await buildConsolidatedDocument();
   const baseTriangleCount = await reportTriangleCount(consolidatedDoc);

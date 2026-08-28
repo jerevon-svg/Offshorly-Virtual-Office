@@ -46,6 +46,13 @@ export interface UseSelfMovementDeps {
   /** Current walk direction, used as the default arrival facing when the
    * caller doesn't specify one explicitly. */
   getDirection: () => WalkDirection;
+  /** Turns the LOCAL walker to the final arrival facing (useCharacterWalk's
+   * `face`). Without this the owner keeps the last path-segment direction
+   * while every peer snaps to the broadcast `walk_arrived.facing` — the
+   * same character faces different ways on different browsers, and a
+   * reload (seeded from the persisted facing) visibly "corrects" the owner.
+   * Optional only for backwards-compatible callers/tests; OfficeMap passes it. */
+  face?: (direction: WalkDirection) => void;
 }
 
 /**
@@ -89,6 +96,10 @@ export function makeMoveSelf(deps: UseSelfMovementDeps) {
       () => {
         const at = path[path.length - 1] ?? origin;
         const facing: Facing = arrival?.facing ?? deps.getDirection();
+        // Apply the authoritative facing locally FIRST, so the owner, every
+        // peer (walk_arrived), and any later snapshot/reload all agree. No
+        // new movement is created — this is the same arrival, not a walk.
+        deps.face?.(facing);
         emitWalkArrived({
           movementId,
           at,

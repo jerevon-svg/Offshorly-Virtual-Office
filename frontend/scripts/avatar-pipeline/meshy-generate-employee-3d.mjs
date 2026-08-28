@@ -8,7 +8,30 @@
  * second real employee (Jerevon/"Bon") is going through this pipeline.
  *
  * Run:
- *   node scripts/avatar-pipeline/meshy-generate-employee-3d.mjs <employeeName> <imagePath>
+ *   node scripts/avatar-pipeline/meshy-generate-employee-3d.mjs <employeeName> <imagePath> [--stop-after=image-to-3d]
+ *
+ *   --from-image-to-3d-task=<taskId>  (added 2026-08-28) RESUME from an already
+ *   SUCCEEDED Image-to-3D task: Phase 1 is skipped entirely (no 30-credit
+ *   call), the task is fetched read-only and fed to Phase 2.
+ *   --stop-after=remesh  run through Phase 2 only (5 credits), download every
+ *   returned remesh artifact and write <employeeName>-remesh.task.json, then
+ *   exit before Rigging. Combine with --from-image-to-3d-task for a pure
+ *   remesh validation run.
+ *
+ *   --from-remesh-task=<taskId>  (added 2026-08-28) RESUME from an already
+ *   SUCCEEDED Remesh task: Phases 1 and 2 are skipped entirely (no 30+5
+ *   credit calls), the task is fetched read-only and fed to Phase 3
+ *   (Rigging, 5 credits). Rig outputs are named <name>-rigged.glb/.fbx,
+ *   <name>-rigged-walking.glb, <name>-rigged-running.glb (+ -armature / .fbx
+ *   variants) and a <name>-rig.task.json is written.
+ *
+ *   --stop-after=image-to-3d  (added 2026-08-28) run ONLY Phase 1 (30 credits),
+ *   download every returned artifact (all model_urls, texture_urls,
+ *   thumbnails) and write <employeeName>-image-to-3d.task.json, then exit
+ *   before Remesh/Rigging so the raw model can be human-reviewed first.
+ *   Phase 1 now sends ai_model:"latest", pose_mode:"a-pose",
+ *   texture_resolution:"2k", should_remesh:false (remesh stays a separate,
+ *   proven phase) and multi_view_thumbnails:true (free preview renders).
  *
  * Flow (mirrors the already-validated Alex run, same endpoints/fields):
  *   1. GET /openapi/v1/balance - confirm key valid before spending credits.
@@ -47,7 +70,9 @@ const ENV_PATH = path.join(APP_ROOT, ".env");
 const API_BASE = "https://api.meshy.ai/openapi";
 const POLL_INTERVAL_MS = 8_000;
 const POLL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
-const TARGET_POLYCOUNT = 300_000;
+// 280k leaves margin under Meshy's 300,000-face rigging cap (docs re-read
+// 2026-08-28; the earlier 300k target produced 301,293 tris).
+const TARGET_POLYCOUNT = 280_000;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -112,6 +137,20 @@ async function downloadFile(url, outPath) {
 
 // ---------- Phase 1: Image-to-3D ----------
 
+// Request contract per docs.meshy.ai/en/api/image-to-3d (read 2026-08-28).
+// Kept as a function so the exact settings can be logged to the task JSON
+// without the (large) base64 image.
+const IMAGE_TO_3D_SETTINGS = (imageUrl) => ({
+  image_url: imageUrl,
+  ai_model: "latest",
+  pose_mode: "a-pose",
+  should_texture: true,
+  texture_resolution: "2k",
+  should_remesh: false, // remesh is a separate, proven phase (Phase 2)
+  target_formats: ["glb"],
+  multi_view_thumbnails: true,
+});
+
 async function submitImageTo3D(apiKey, imagePath) {
   console.log(`[meshy-employee] Phase 1: submitting Image-to-3D for ${imagePath} ...`);
   console.log("[meshy-employee] COST WARNING: real, paid Meshy API call.");
@@ -120,11 +159,7 @@ async function submitImageTo3D(apiKey, imagePath) {
   const buf = fs.readFileSync(imagePath);
   const dataUri = `data:${mime};base64,${buf.toString("base64")}`;
 
-  const result = await meshyFetch(apiKey, "POST", "/v1/image-to-3d", {
-    image_url: dataUri,
-    should_texture: true,
-    target_formats: ["glb"],
-  });
+  const result = await meshyFetch(apiKey, "POST", "/v1/image-to-3d", IMAGE_TO_3D_SETTINGS(dataUri));
 
   if (!result.result) throw new Error("Image-to-3D submit response missing 'result' (task id) field");
   console.log(`[meshy-employee] Image-to-3D task submitted. task_id = ${result.result}`);
@@ -144,6 +179,49 @@ async function pollImageTo3D(apiKey, taskId) {
     await sleep(POLL_INTERVAL_MS);
   }
   throw new Error(`Timed out waiting for image-to-3d task ${taskId}`);
+}
+
+async function downloadImageTo3DArtifacts(task, outDir, employeeName) {
+  const downloaded = [];
+  const grab = async (label, url, ext) => {
+    if (typeof url !== "string" || !url) return;
+    const out = path.join(outDir, `${employeeName}-raw-${label}.${ext}`);
+    downloaded.push({ label, ...(await downloadFile(url, out)) });
+  };
+  const models = task.model_urls || {};
+  for (const [fmt, url] of Object.entries(models)) {
+    if (fmt === "glb") await grab("model", url, "glb");
+    else await grab(fmt, url, fmt === "pre_remeshed_glb" ? "glb" : fmt);
+  }
+  const textures = Array.isArray(task.texture_urls) ? task.texture_urls : [];
+  for (let i = 0; i < textures.length; i++) {
+    for (const [kind, url] of Object.entries(textures[i] || {})) {
+      await grab(`tex${i}-${kind}`, url, "png");
+    }
+  }
+  await grab("thumbnail", task.thumbnail_url, "png");
+  for (const [view, url] of Object.entries(task.thumbnail_urls || {})) {
+    await grab(`thumb-${view}`, url, "png");
+  }
+  return downloaded;
+}
+
+async function downloadRemeshArtifacts(task, outDir, employeeName) {
+  const downloaded = [];
+  const grab = async (label, url, ext) => {
+    if (typeof url !== "string" || !url) return;
+    const out = path.join(outDir, `${employeeName}-remeshed-${label}.${ext}`);
+    downloaded.push({ label, url, ...(await downloadFile(url, out)) });
+  };
+  for (const [fmt, url] of Object.entries(task.model_urls || {})) {
+    if (fmt !== "glb") await grab(fmt, url, fmt); // glb itself is saved as <name>-remeshed.glb by main()
+  }
+  const textures = Array.isArray(task.texture_urls) ? task.texture_urls : [];
+  for (let i = 0; i < textures.length; i++) {
+    for (const [kind, url] of Object.entries(textures[i] || {})) await grab(`tex${i}-${kind}`, url, "png");
+  }
+  await grab("thumbnail", task.thumbnail_url, "png");
+  return downloaded;
 }
 
 // ---------- Phase 2: Remesh ----------
@@ -237,27 +315,46 @@ async function pollRigging(apiKey, taskId) {
 async function downloadRiggingResults(task, outDir, employeeName) {
   const result = task.result || {};
   const downloaded = [];
+  const grab = async (label, url, outName) => {
+    if (typeof url !== "string" || !url) return;
+    const outPath = path.join(outDir, outName);
+    if (fs.existsSync(outPath)) throw new Error(`Refusing to overwrite existing file: ${outPath}`);
+    downloaded.push({ label, url, ...(await downloadFile(url, outPath)) });
+  };
 
-  const rigGlbUrl = result.rigged_character_glb_url;
-  if (!rigGlbUrl) throw new Error("Succeeded rigging task has no result.rigged_character_glb_url to download");
-  const rigOut = path.join(outDir, `${employeeName}-rigged.glb`);
-  downloaded.push({ label: "rigged_character_glb_url", ...(await downloadFile(rigGlbUrl, rigOut)) });
+  if (!result.rigged_character_glb_url) {
+    throw new Error("Succeeded rigging task has no result.rigged_character_glb_url to download");
+  }
+  await grab("rigged_character_glb_url", result.rigged_character_glb_url, `${employeeName}-rigged.glb`);
+  await grab("rigged_character_fbx_url", result.rigged_character_fbx_url, `${employeeName}-rigged.fbx`);
 
-  const basicAnimations = result.basic_animations;
-  if (basicAnimations && typeof basicAnimations === "object") {
-    for (const [key, value] of Object.entries(basicAnimations)) {
-      let url;
-      if (typeof value === "string" && value.toLowerCase().includes(".glb")) {
-        url = value;
-      } else if (value && typeof value === "object") {
-        if (typeof value.glb_url === "string") url = value.glb_url;
-        else if (typeof value.url === "string" && value.url.toLowerCase().includes(".glb")) url = value.url;
+  // basic_animations per docs (2026-08-28): flat keys like walking_glb_url,
+  // walking_fbx_url, walking_armature_glb_url, running_* — map to
+  // <name>-rigged-walking.glb, -walking.fbx, -walking-armature.glb, etc.
+  // Older responses nested {glb_url} objects; both shapes handled.
+  const basic = result.basic_animations;
+  if (basic && typeof basic === "object") {
+    for (const [key, value] of Object.entries(basic)) {
+      const urls = typeof value === "string" ? { [key]: value }
+        : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([k, v]) => [`${key}_${k}`, v])) : {};
+      for (const [k, url] of Object.entries(urls)) {
+        if (typeof url !== "string") continue;
+        const m = k.match(/^(.+?)_(armature_)?(glb|fbx)_url$/i);
+        const clip = m ? m[1] : k.replace(/[^a-z0-9_-]+/gi, "-").toLowerCase();
+        const ext = m ? m[3].toLowerCase() : "glb";
+        const suffix = m && m[2] ? "-armature" : "";
+        await grab(`basic_animations.${k}`, url, `${employeeName}-rigged-${clip}${suffix}.${ext}`);
       }
-      if (url) {
-        const safeKey = key.replace(/[^a-z0-9_-]+/gi, "-").toLowerCase();
-        const outPath = path.join(outDir, `${employeeName}-basic-${safeKey}.glb`);
-        downloaded.push({ label: `basic_animations.${key}`, ...(await downloadFile(url, outPath)) });
-      }
+    }
+  }
+  await grab("thumbnail_url", task.thumbnail_url, `${employeeName}-rigged-thumbnail.png`);
+  for (const [view, url] of Object.entries(task.thumbnail_urls || {})) {
+    await grab(`thumbnail_urls.${view}`, url, `${employeeName}-rigged-thumb-${view}.png`);
+  }
+  const textures = Array.isArray(task.texture_urls) ? task.texture_urls : [];
+  for (let i = 0; i < textures.length; i++) {
+    for (const [kind, url] of Object.entries(textures[i] || {})) {
+      await grab(`texture_urls[${i}].${kind}`, url, `${employeeName}-rigged-tex${i}-${kind}.png`);
     }
   }
   return downloaded;
@@ -275,7 +372,24 @@ function usageAndExit() {
 async function main() {
   const employeeName = process.argv[2];
   const imagePath = process.argv[3];
+  const flags = process.argv.slice(4);
+  const flagValue = (name) => (flags.find((a) => a.startsWith(`${name}=`)) || "").slice(name.length + 1) || null;
+  const stopAfter = flagValue("--stop-after");
+  const resumeTaskId = flagValue("--from-image-to-3d-task");
+  const resumeRemeshTaskId = flagValue("--from-remesh-task");
+  if (resumeRemeshTaskId && (resumeTaskId || stopAfter)) {
+    console.error("--from-remesh-task runs Phase 3 only and cannot be combined with --from-image-to-3d-task or --stop-after");
+    return usageAndExit();
+  }
   if (!employeeName || !imagePath) return usageAndExit();
+  if (stopAfter && !["image-to-3d", "remesh"].includes(stopAfter)) {
+    console.error(`Unsupported --stop-after value "${stopAfter}" (supported: image-to-3d, remesh)`);
+    return usageAndExit();
+  }
+  if (resumeTaskId && stopAfter === "image-to-3d") {
+    console.error("--from-image-to-3d-task cannot be combined with --stop-after=image-to-3d (nothing would run)");
+    return usageAndExit();
+  }
   if (!fs.existsSync(imagePath)) {
     console.error(`Image not found: ${imagePath}`);
     return usageAndExit();
@@ -297,25 +411,136 @@ async function main() {
   }
 
   try {
-    await checkBalance(apiKey);
+    const balanceBefore = await checkBalance(apiKey);
 
-    // Phase 1: Image-to-3D
-    const imageTaskId = await submitImageTo3D(apiKey, imagePath);
-    const imageTask = await pollImageTo3D(apiKey, imageTaskId);
-    const rawGlbUrl = imageTask.model_urls && imageTask.model_urls.glb;
-    if (rawGlbUrl) {
-      await downloadFile(rawGlbUrl, path.join(outDir, `${employeeName}-raw.glb`));
+    if (resumeRemeshTaskId) {
+      // ---- Phase 3 only: resume from an existing SUCCEEDED remesh task ----
+      console.log(`[meshy-employee] Phases 1+2 SKIPPED — resuming from existing remesh task ${resumeRemeshTaskId} (read-only GET, no credits).`);
+      const remeshTask = await meshyFetch(apiKey, "GET", `/v1/remesh/${resumeRemeshTaskId}`);
+      if (remeshTask.status !== "SUCCEEDED") throw new Error(`Cannot resume: remesh task has status ${remeshTask.status}, expected SUCCEEDED`);
+      if (!(remeshTask.model_urls && remeshTask.model_urls.glb)) throw new Error("Cannot resume: remesh task has no model_urls.glb (expired?)");
+      const rigStartedAt = new Date().toISOString();
+      const rigTaskId = await submitRigging(apiKey, remeshTask.id);
+      const rigTask = await pollRigging(apiKey, rigTaskId);
+      const downloaded = await downloadRiggingResults(rigTask, outDir, employeeName);
+      const balanceAfter = await checkBalance(apiKey);
+      const record = {
+        step: "rigging",
+        employee: employeeName,
+        source_remesh_task_id: remeshTask.id,
+        resumed_from_existing_task: true,
+        endpoint: "POST /openapi/v1/rigging",
+        request_settings: { input_task_id: remeshTask.id },
+        task_id: rigTask.id,
+        consumed_credits: rigTask.consumed_credits ?? null,
+        balance_before: balanceBefore,
+        balance_after: balanceAfter,
+        started_at: rigStartedAt,
+        finished_at: new Date().toISOString(),
+        meshy_created_at: rigTask.created_at ?? null,
+        meshy_finished_at: rigTask.finished_at ?? null,
+        expires_at: rigTask.expires_at ?? null,
+        result_keys: Object.keys(rigTask.result || {}),
+        basic_animation_keys: Object.keys((rigTask.result || {}).basic_animations || {}),
+        artifacts: downloaded,
+      };
+      fs.writeFileSync(path.join(outDir, `${employeeName}-rig.task.json`), JSON.stringify(record, null, 2));
+      console.log(`[meshy-employee] Phase 3 SUCCESS. task_id=${rigTask.id} consumed_credits=${rigTask.consumed_credits ?? "?"}`);
+      for (const d of downloaded) console.log(`[meshy-employee]   ${d.label} -> ${d.outPath} (${d.bytes} bytes)`);
+      return;
     }
-    console.log(`[meshy-employee] Phase 1 SUCCESS. task_id=${imageTask.id} consumed_credits=${imageTask.consumed_credits ?? "?"}`);
+
+    // Phase 1: Image-to-3D (or resume from an existing SUCCEEDED task)
+    const startedAt = new Date().toISOString();
+    let imageTask;
+    if (resumeTaskId) {
+      console.log(`[meshy-employee] Phase 1 SKIPPED — resuming from existing image-to-3d task ${resumeTaskId} (read-only GET, no credits).`);
+      imageTask = await meshyFetch(apiKey, "GET", `/v1/image-to-3d/${resumeTaskId}`);
+      if (imageTask.status !== "SUCCEEDED") {
+        throw new Error(`Cannot resume: task ${resumeTaskId} has status ${imageTask.status}, expected SUCCEEDED`);
+      }
+      if (!(imageTask.model_urls && imageTask.model_urls.glb)) {
+        throw new Error(`Cannot resume: task ${resumeTaskId} has no model_urls.glb (expired?)`);
+      }
+      // Never touch <name>-raw.glb on resume — it is the reviewed artifact.
+    } else {
+      const imageTaskId = await submitImageTo3D(apiKey, imagePath);
+      imageTask = await pollImageTo3D(apiKey, imageTaskId);
+      const rawGlbUrl = imageTask.model_urls && imageTask.model_urls.glb;
+      if (rawGlbUrl) {
+        await downloadFile(rawGlbUrl, path.join(outDir, `${employeeName}-raw.glb`));
+      }
+      console.log(`[meshy-employee] Phase 1 SUCCESS. task_id=${imageTask.id} consumed_credits=${imageTask.consumed_credits ?? "?"}`);
+    }
+
+    if (stopAfter === "image-to-3d") {
+      const artifacts = await downloadImageTo3DArtifacts(imageTask, outDir, employeeName);
+      const balanceAfter = await checkBalance(apiKey);
+      const { image_url: _omit, ...settings } = IMAGE_TO_3D_SETTINGS("");
+      const record = {
+        step: "image-to-3d",
+        employee: employeeName,
+        source_image: imagePath,
+        request_settings: settings,
+        task_id: imageTask.id,
+        consumed_credits: imageTask.consumed_credits ?? null,
+        balance_before: balanceBefore,
+        balance_after: balanceAfter,
+        started_at: startedAt,
+        finished_at: new Date().toISOString(),
+        meshy_created_at: imageTask.created_at ?? null,
+        meshy_finished_at: imageTask.finished_at ?? null,
+        expires_at: imageTask.expires_at ?? null,
+        artifacts: [{ label: "glb", outPath: path.join(outDir, `${employeeName}-raw.glb`) }, ...artifacts],
+      };
+      fs.writeFileSync(path.join(outDir, `${employeeName}-image-to-3d.task.json`), JSON.stringify(record, null, 2));
+      console.log("");
+      console.log("[meshy-employee] STOPPED after Phase 1 (--stop-after=image-to-3d). No remesh/rig submitted.");
+      for (const a of record.artifacts) console.log(`[meshy-employee]   ${a.label} -> ${a.outPath}${a.bytes ? ` (${a.bytes} bytes)` : ""}`);
+      return;
+    }
 
     // Phase 2: Remesh
+    const remeshStartedAt = new Date().toISOString();
     const { taskId: remeshTaskId, versionUsed } = await submitRemesh(apiKey, imageTask.id);
     const remeshTask = await pollRemesh(apiKey, remeshTaskId, versionUsed);
     const remeshGlbUrl = remeshTask.model_urls && remeshTask.model_urls.glb;
+    const remeshedOut = path.join(outDir, `${employeeName}-remeshed.glb`);
     if (remeshGlbUrl) {
-      await downloadFile(remeshGlbUrl, path.join(outDir, `${employeeName}-remeshed.glb`));
+      await downloadFile(remeshGlbUrl, remeshedOut);
     }
     console.log(`[meshy-employee] Phase 2 SUCCESS. task_id=${remeshTask.id} consumed_credits=${remeshTask.consumed_credits ?? "?"}`);
+
+    if (stopAfter === "remesh") {
+      const extra = await downloadRemeshArtifacts(remeshTask, outDir, employeeName);
+      const balanceAfter = await checkBalance(apiKey);
+      const record = {
+        step: "remesh",
+        employee: employeeName,
+        source_image_to_3d_task_id: imageTask.id,
+        resumed_from_existing_task: Boolean(resumeTaskId),
+        endpoint: `POST /openapi/${versionUsed}/remesh`,
+        request_settings: { input_task_id: imageTask.id, target_polycount: TARGET_POLYCOUNT, target_formats: ["glb"] },
+        task_id: remeshTask.id,
+        consumed_credits: remeshTask.consumed_credits ?? null,
+        balance_before: balanceBefore,
+        balance_after: balanceAfter,
+        started_at: remeshStartedAt,
+        finished_at: new Date().toISOString(),
+        meshy_created_at: remeshTask.created_at ?? null,
+        meshy_finished_at: remeshTask.finished_at ?? null,
+        expires_at: remeshTask.expires_at ?? null,
+        artifacts: [
+          { label: "glb", url: remeshGlbUrl || null, outPath: remeshedOut, bytes: remeshGlbUrl ? fs.statSync(remeshedOut).size : null },
+          ...extra,
+        ],
+      };
+      fs.writeFileSync(path.join(outDir, `${employeeName}-remesh.task.json`), JSON.stringify(record, null, 2));
+      console.log("");
+      console.log("[meshy-employee] STOPPED after Phase 2 (--stop-after=remesh). No rigging submitted.");
+      for (const a of record.artifacts) console.log(`[meshy-employee]   ${a.label} -> ${a.outPath}${a.bytes ? ` (${a.bytes} bytes)` : ""}`);
+      return;
+    }
 
     // Phase 3: Rigging
     const rigTaskId = await submitRigging(apiKey, remeshTask.id);

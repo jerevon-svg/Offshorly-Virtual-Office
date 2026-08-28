@@ -41,7 +41,14 @@ import { GroupConversationView } from "../Chat/GroupConversationView";
 import { isRealZohoMode } from "../../services/zoho";
 import { ErrorBoundary } from "../ErrorBoundary";
 import { OfficeStage } from "./OfficeStage";
-import { buildCharacterIsResponderById, remapSelfKey } from "./responderMap";
+import { remapSelfKey } from "./responderMap";
+import {
+  applyPeerTypingUpdate,
+  deriveAnyTypingCharacterIds,
+  deriveSpatialTypingCharacterIds,
+  typingTimerKey,
+  type PeerTypingState,
+} from "./spatialTyping";
 import { CharacterSearch } from "./CharacterSearch";
 import { CharacterActionMenu } from "./CharacterActionMenu";
 import { RoomSidebar } from "./RoomSidebar";
@@ -123,6 +130,7 @@ import {
 } from "../../services/chat/talkRequestsClient";
 import { RoomLockedToast } from "./RoomLockedToast";
 import { emitDndSet, useDndEmails } from "../../services/presence/dndClient";
+import { emitGlobalChatActive, useGlobalChatActiveEmails } from "../../services/presence/globalChatActivityClient";
 import {
   emitRoomPresenceEnter,
   emitRoomPresenceLeave,
@@ -152,7 +160,7 @@ import { CompanyHub } from "./CompanyHub";
 import { openCompanyHub, useCompanyHub } from "../../services/hub/companyHubStore";
 import { resetDevHubState } from "../../services/hub/hubClient";
 import { EmployeeProfile } from "./EmployeeProfile";
-import { mockEmailForAvatarId } from "../../data/avatarIdentity";
+import { avatarIdForEmail, mockEmailForAvatarId } from "../../data/avatarIdentity";
 import styles from "./OfficeMap.module.css";
 
 // Check-in sequence: bon spawns outside with no popup. Clicking the
@@ -730,6 +738,40 @@ export function OfficeMap() {
     );
   }
 
+  // Global Chat ACTIVITY presence fact (animation only — see characterAnimationState.ts's
+  // isGlobalChatActive): true while >=1 remote DM/group window is visible and NOT minimized.
+  // The spatial "Character -> Chat" window (openChat/openGroupConv) deliberately never counts.
+  // Edge-triggered emit to the server (mirrors the DND broadcast below) so peers see this
+  // person's seated avatar switch to `sitting-answering`; the server refcounts per socket, so a
+  // second tab keeps it true until the LAST window/tab closes, and re-sends the snapshot on
+  // (re)connect. Carries only the boolean — no conversation ids or contents.
+  const selfGlobalChatActive = remoteChatWindows.some((w) => !w.minimized);
+  const selfGlobalChatActiveRef = useRef(false);
+  useEffect(() => {
+    if (selfGlobalChatActiveRef.current === selfGlobalChatActive) return;
+    selfGlobalChatActiveRef.current = selfGlobalChatActive;
+    emitGlobalChatActive(selfGlobalChatActive);
+  }, [selfGlobalChatActive]);
+  useEffect(
+    () => () => {
+      // Unmount (e.g. navigating away) with a window still open: report false so peers don't
+      // keep seeing sitting-answering until the socket eventually drops.
+      if (selfGlobalChatActiveRef.current) emitGlobalChatActive(false);
+    },
+    [],
+  );
+  const globalChatActiveEmails = useGlobalChatActiveEmails();
+  // Layer-id-keyed list for OfficeStage: peers' layer ids equal their lowercased email; the
+  // self entry is remapped selfChatId -> playerLayerId (same convention as
+  // talkingCharacterIdsFromSessions). Self is additionally OR'd with the local derivation so
+  // the viewer's own avatar reacts immediately (and still works in mock mode with no socket).
+  const globalChatActiveCharacterIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const email of globalChatActiveEmails) ids.add(email === selfChatId ? playerLayerId : email);
+    if (selfGlobalChatActive) ids.add(playerLayerId);
+    return Array.from(ids);
+  }, [globalChatActiveEmails, selfGlobalChatActive, selfChatId, playerLayerId]);
+
   // Combined right-to-left layout for the floating chat stack: newest remote windows first
   // (remoteChatWindows is already newest-first, see openOrFocusRemoteDm/Group's unshift), then
   // the spatial window (if any) last/leftmost. Purely presentational — has no bearing on which
@@ -860,17 +902,7 @@ export function OfficeMap() {
   const [talkingTextById, setTalkingTextById] = useState<Record<string, string>>({});
   const talkingTimersRef = useRef<Record<string, number>>({});
 
-  // Phase A live-3D "responder" signal, remapped from talkingTextById's
-  // senderId/email key-space into character LAYER id key-space — see
-  // responderMap.ts's buildCharacterIsResponderById and OfficeStage.tsx's
-  // characterIsResponderById doc comment for the full why.
-  const characterIsResponderById = useMemo(
-    () => buildCharacterIsResponderById(talkingTextById, selfChatId, playerLayerId),
-    [talkingTextById, selfChatId, playerLayerId],
-  );
-
-  // Same senderId/email -> layer-id remap as characterIsResponderById above,
-  // but for the actual text values (not a derived boolean) — this is what
+  // senderId/email -> layer-id remap of the sent-text map (see responderMap.ts) — this is what
   // OfficeStage's overhead-bubble resolver reads (talkingTextById prop,
   // layer-id-keyed), fixing the bug where self's own sent-text bubble never
   // showed (the old direct pass-through was keyed on selfChatId/email, but
@@ -880,39 +912,48 @@ export function OfficeMap() {
     [talkingTextById, selfChatId, playerLayerId],
   );
 
-  // Actively-typing signal (real keystroke activity, see
-  // ConversationView.tsx's onTypingChange) — self side.
-  const [selfTyping, setSelfTyping] = useState(false);
+  // Actively-typing signal (real keystroke activity, see ConversationView.tsx's
+  // onTypingChange) — self side, recorded together with the spatial conversation it happened
+  // in. Only the two spatial windows wire onTypingChange (remote Global Chat windows never do),
+  // and the conversation id is what lets deriveSpatialTypingCharacterIds match it against the
+  // live spatial session (see spatialTyping.ts).
+  const [selfTypingConversationId, setSelfTypingConversationId] = useState<string | null>(null);
+  const selfSpatialConversationId = openGroupConv?.conversationId ?? openConversationId ?? null;
+  const selfSpatialConversationIdRef = useRef<string | null>(selfSpatialConversationId);
+  selfSpatialConversationIdRef.current = selfSpatialConversationId;
+  const setSelfTyping = useCallback((isTyping: boolean) => {
+    setSelfTypingConversationId(isTyping ? selfSpatialConversationIdRef.current : null);
+  }, []);
 
-  // Peer side, fed by RealChatService's onTyping (mock mode's implementation
-  // never invokes listeners, so this stays empty there). Keyed by layer id
-  // — peer layer ids equal the peer's lowercased email, same convention as
-  // selfChatId/talkingTextById elsewhere in this file.
-  const [peerTypingByLayerId, setPeerTypingByLayerId] = useState<Record<string, boolean>>({});
+  // Peer side, fed by RealChatService's onTyping (mock mode's implementation never invokes
+  // listeners, so this stays empty there). Conversation-scoped: lowercased email -> set of
+  // conversation ids currently typing in, with one inactivity timer per (email, conversation)
+  // so a stop/timeout in one conversation can never clear typing in another.
+  const [peerTypingByEmail, setPeerTypingByEmail] = useState<PeerTypingState>({});
   const peerTypingTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   useEffect(() => {
     const unsubscribe = chatService.onTyping?.((update) => {
-      const senderLayerId = update.senderId.toLowerCase();
+      const email = update.senderId.toLowerCase();
       // Never let a self-echo affect peer state.
-      if (senderLayerId === selfChatId?.toLowerCase()) return;
+      if (email === selfChatId?.toLowerCase()) return;
+      const conversationId = update.conversationId;
+      const timerKey = typingTimerKey(email, conversationId);
 
       const timers = peerTypingTimersRef.current;
-      if (timers[senderLayerId]) {
-        clearTimeout(timers[senderLayerId]);
-        delete timers[senderLayerId];
+      if (timers[timerKey]) {
+        clearTimeout(timers[timerKey]);
+        delete timers[timerKey];
       }
 
+      setPeerTypingByEmail((prev) => applyPeerTypingUpdate(prev, { email, conversationId, isTyping: update.isTyping }));
       if (update.isTyping) {
-        setPeerTypingByLayerId((prev) => ({ ...prev, [senderLayerId]: true }));
         // Belt-and-suspenders expiry in case a "stopped typing" event is
         // lost (dropped socket message, tab closed uncleanly, etc).
-        timers[senderLayerId] = setTimeout(() => {
-          setPeerTypingByLayerId((prev) => ({ ...prev, [senderLayerId]: false }));
-          delete timers[senderLayerId];
+        timers[timerKey] = setTimeout(() => {
+          setPeerTypingByEmail((prev) => applyPeerTypingUpdate(prev, { email, conversationId, isTyping: false }));
+          delete timers[timerKey];
         }, 6000);
-      } else {
-        setPeerTypingByLayerId((prev) => ({ ...prev, [senderLayerId]: false }));
       }
     });
 
@@ -923,14 +964,26 @@ export function OfficeMap() {
     };
   }, [selfChatId]);
 
+  // Any-conversation typing — drives the overhead "typing dots" bubble only (unchanged
+  // semantics: a peer typing in any conversation with the viewer shows dots).
   const typingCharacterIds = useMemo(
-    () => [
-      ...(selfTyping ? [playerLayerId] : []),
-      ...Object.entries(peerTypingByLayerId)
-        .filter(([, isTyping]) => isTyping)
-        .map(([id]) => id),
-    ],
-    [selfTyping, playerLayerId, peerTypingByLayerId],
+    () => deriveAnyTypingCharacterIds(peerTypingByEmail, selfTypingConversationId !== null, playerLayerId),
+    [peerTypingByEmail, selfTypingConversationId, playerLayerId],
+  );
+
+  // Spatial-scoped typing — drives the `agree-gesture` animation only: a character counts as
+  // typing solely when its typing entry belongs to the conversation of the live spatial session
+  // it is a member of (see spatialTyping.ts / characterAnimationState.ts).
+  const spatialTypingCharacterIds = useMemo(
+    () =>
+      deriveSpatialTypingCharacterIds({
+        peerTyping: peerTypingByEmail,
+        sessions: spatialSessions,
+        selfChatId,
+        playerLayerId,
+        selfTypingConversationId,
+      }),
+    [peerTypingByEmail, spatialSessions, selfChatId, playerLayerId, selfTypingConversationId],
   );
 
   // Door art layer ids currently slid open (see officeDoors.ts). Rooms
@@ -1082,6 +1135,10 @@ export function OfficeMap() {
     walkTo,
     getPos: () => bonPos,
     getDirection: () => (isSitting ? sitDirection : direction),
+    // Owner turns to the same arrival facing it broadcasts (see
+    // UseSelfMovementDeps.face) — fixes per-browser facing divergence
+    // after a spatial-conversation settle.
+    face,
   });
 
   const playerSpriteSrc = characterSprite(
@@ -1791,11 +1848,23 @@ export function OfficeMap() {
   // the viewer is alex/micah/lui we still have to filter their id out here
   // explicitly, or their own manifest layer would get hidden right along
   // with the fictional cast.
+  // The manifest "bon" layer is NOT in npcCharacterLayers (excluded by
+  // construction), so it was never hidden for a non-Bon viewer — and once a
+  // REAL roster person resolves to avatar id "bon" (Bon/Jerevon's own
+  // roster layer, keyed by email), that viewer saw two Bons: the static
+  // manifest one idling at its manifest spot plus the synced roster one.
+  // Hide the manifest bon layer only in that case, so the single surviving
+  // Bon is the roster layer that all email-keyed peer state (position,
+  // walking, facing, sitting, spatial typing, Global Chat activity) already
+  // attaches to. With no roster Bon (pure mock cast) the manifest Bon stays,
+  // and the viewer's own player layer is never hidden.
   const hiddenCharacterIds = useMemo(() => {
-    return rosterActive
-      ? npcCharacterLayers.filter((layer) => layer.id !== playerLayerId).map((layer) => layer.id)
-      : [];
-  }, [rosterActive, playerLayerId]);
+    if (!rosterActive) return [];
+    const ids = npcCharacterLayers.filter((layer) => layer.id !== playerLayerId).map((layer) => layer.id);
+    const rosterHasBon = rosterLayers.some((layer) => avatarIdForEmail(layer.id) === "bon");
+    if (playerLayerId !== "bon" && rosterHasBon) ids.push("bon");
+    return ids;
+  }, [rosterActive, playerLayerId, rosterLayers]);
 
   const checkoutBusy =
     checkoutFlow.state === "SAYING_GOODBYE" ||
@@ -3617,7 +3686,8 @@ export function OfficeMap() {
             talkingCharacterIds={talkingCharacterIdsFromSessions}
             talkingTextById={talkingTextByLayerId}
             typingCharacterIds={typingCharacterIds}
-            characterIsResponderById={characterIsResponderById}
+            globalChatActiveCharacterIds={globalChatActiveCharacterIds}
+            spatialTypingCharacterIds={spatialTypingCharacterIds}
             openDoorLayerIds={openDoorLayerIds}
             emptySeats={emptySeats}
             onSeatClick={handleSeatClick}
@@ -3674,7 +3744,8 @@ export function OfficeMap() {
                 extraCharacterLayers={extraCharacterLayers}
                 extraCharacterSrcById={extraCharacterSrcById}
                 hiddenCharacterIds={hiddenCharacterIds}
-                characterIsResponderById={characterIsResponderById}
+                globalChatActiveCharacterIds={globalChatActiveCharacterIds}
+            spatialTypingCharacterIds={spatialTypingCharacterIds}
                 openDoorLayerIds={openDoorLayerIds}
               />
             </ErrorBoundary>

@@ -9,6 +9,7 @@ import { setDevIdentity as setSpatialWalkDevIdentity } from "../services/presenc
 import { setDevIdentity as setHubClientDevIdentity } from "../services/hub/hubClient";
 import { setDevIdentity as setFeedClientDevIdentity } from "../services/feed/feedClient";
 import { setDevIdentity as setDndClientDevIdentity } from "../services/presence/dndClient";
+import { setDevIdentity as setGlobalChatActivityDevIdentity } from "../services/presence/globalChatActivityClient";
 import { setDevIdentity as setRoomPresenceDevIdentity } from "../services/presence/roomPresenceClient";
 import { setDevIdentity as setRoomRequestsClientDevIdentity } from "../services/chat/roomRequestsClient";
 import { setDevIdentity as setTalkRequestsClientDevIdentity } from "../services/chat/talkRequestsClient";
@@ -233,6 +234,7 @@ function seedDevBypassIdentity(): void {
   // ensureSocket()'s "no devEmail and no real auth token" guard silently no-ops every emit/
   // subscribe call in dev-bypass mode, which is exactly why the feature appeared to do nothing.
   setDndClientDevIdentity(email);
+  setGlobalChatActivityDevIdentity(email);
   setRoomPresenceDevIdentity(email);
   setRoomRequestsClientDevIdentity(email);
   setTalkRequestsClientDevIdentity(email);

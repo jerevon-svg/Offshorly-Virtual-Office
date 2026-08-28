@@ -18,6 +18,7 @@ from app.schemas.room_requests import RoomRequestOut
 from app.schemas.talk_requests import TalkRequestOut
 from app.repositories import position as position_repo
 from app.services.dnd_registry import DndRegistry
+from app.services.global_chat_activity import GlobalChatActivityRegistry
 from app.services.offline_lineup import OfflineLineup
 from app.services.position_registry import position_registry
 from app.services.room_presence import RoomPresenceRegistry
@@ -54,6 +55,10 @@ spatial_sessions = SpatialSessionRegistry()
 # docstrings. Same in-memory/single-process assumption as the registries above.
 dnd_registry = DndRegistry()
 room_presence = RoomPresenceRegistry()
+# Ephemeral "has an active Global Chat window" presence — see global_chat_activity.py. Same
+# in-memory/single-process assumption as the registries above; refcounted per socket so
+# multi-tab users are handled correctly.
+global_chat_activity = GlobalChatActivityRegistry()
 
 
 async def _broadcast_offline_lineup() -> None:
@@ -66,6 +71,10 @@ async def _broadcast_spatial_sessions() -> None:
 
 async def _broadcast_dnd_status() -> None:
     await sio.emit("dnd_status", {"emails": dnd_registry.snapshot()})
+
+
+async def _broadcast_global_chat_activity() -> None:
+    await sio.emit("global_chat_activity", {"emails": global_chat_activity.snapshot()})
 
 
 async def _broadcast_room_presence() -> None:
@@ -276,6 +285,11 @@ async def connect(sid: str, environ: dict, auth: dict | None) -> None:
     await sio.emit("dnd_status", {"emails": dnd_registry.snapshot()}, to=sid)
     await sio.emit("room_presence", {"rooms": room_presence.snapshot()}, to=sid)
 
+    # Same reasoning for Global Chat activity: a late joiner / reconnecting client must see who
+    # is currently in an active Global Chat window (drives peers' seated `sitting-answering`
+    # animation) immediately, not just future changes.
+    await sio.emit("global_chat_activity", {"emails": global_chat_activity.snapshot()}, to=sid)
+
     # Same reasoning again for live spatial positions: a client connecting mid-walk or after
     # others have already arrived somewhere must see current position state immediately, not
     # just future walk_started/walk_arrived broadcasts (see position_registry.py's docstring).
@@ -307,6 +321,10 @@ async def disconnect(sid: str) -> None:
     if dnd_registry.clear(email):
         await _broadcast_dnd_status()
         await _cancel_stale_talk_requests(email)
+    # Per-socket refcount: only broadcasts when this was the email's LAST active socket, so a
+    # second tab keeps the person active through one tab closing.
+    if global_chat_activity.clear_sid(email, sid):
+        await _broadcast_global_chat_activity()
     left_room_id = room_presence.leave(email)
     if left_room_id is not None:
         await _broadcast_room_presence()
@@ -358,6 +376,26 @@ async def spatial_session_leave(sid: str, _payload: dict | None = None) -> None:
         left = spatial_sessions.leave(email)
         if left is not None:
             await _broadcast_spatial_sessions()
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("global_chat_active")
+async def global_chat_active(sid: str, payload: dict | None) -> None:
+    """Edge-triggered "I have an active (visible, non-minimized) Global Chat window" presence
+    fact — mirrors dnd_set's contract: call exactly once per real transition (see
+    frontend/src/services/presence/globalChatActivityClient.ts), never on a poll. Carries only
+    the boolean; no conversation ids or contents. Tracked per socket so multiple tabs of one
+    user compose correctly (see global_chat_activity.py). Broadcasts only when the email-level
+    boolean actually changed. Never touches spatial_sessions — remote chats must not look
+    spatial (no auto-walk / "In Conversation" / Ask to Join)."""
+    try:
+        payload = payload or {}
+        is_active = bool(payload.get("isActive"))
+        session_data = await sio.get_session(sid)
+        email = session_data["email"]
+        if global_chat_activity.set_active(email, sid, is_active):
+            await _broadcast_global_chat_activity()
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 

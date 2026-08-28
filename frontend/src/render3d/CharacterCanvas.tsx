@@ -47,7 +47,8 @@ import { resolveCharacterAnimState, type CharacterAnimState } from "./characterA
 // live3dCharacters.ts/build-character-lods.mjs) driving ONE
 // THREE.AnimationMixer. Which clip plays is resolved every render via the
 // pure resolveCharacterAnimState() (characterAnimationState.ts) from this
-// component's isWalking/isSitting/isChatting/isResponder props, and
+// component's isWalking/isSitting/isGlobalChatActive/isSpatialConversation/
+// isTyping props, and
 // transitions crossfade (THREE's clipAction.crossFadeTo) over ~0.3s rather
 // than snapping. Model rotation is now a continuous per-frame turn (see
 // angleMath.ts's stepAngleTowardsDegrees) toward headingDegrees, replacing
@@ -132,19 +133,20 @@ type Props = {
   // continuously (see angleMath.ts's stepAngleTowardsDegrees), never snaps.
   headingDegrees?: number;
   // Sprite-path's existing walk-gate.
+  // Inputs to resolveCharacterAnimState() — see characterAnimationState.ts
+  // for each flag's exact meaning and the locked priority order.
   isWalking?: boolean;
-  // Seated in a real (painted-chair) seat — see OfficeMap's isSitting.
-  // Facing (headingDegrees) is expected to already reflect the CHAIR's own
-  // defined direction (data/seatDirections.ts) whenever this is true — the
-  // caller resolves that (mirroring the existing 2D sitDirection plumbing),
-  // never derived from the camera here.
   isSitting?: boolean;
-  // This character is a participant in an active chat/call (see
-  // OfficeStage's talkingCharacterIds).
-  isChatting?: boolean;
-  // Within an active chat, this character is the one currently responding
-  // (see OfficeStage's talkingTextById). Ignored when isChatting is false.
-  isResponder?: boolean;
+  // Visible, non-minimized remote DM/group window open via Global Chat
+  // (self: local remoteChatWindows OR server snapshot; peers: server
+  // `global_chat_activity`). Only matters while seated.
+  isGlobalChatActive?: boolean;
+  // Member of the active spatial conversation (server `spatial_sessions`,
+  // surfaced as OfficeStage's talkingCharacterIds).
+  isSpatialConversation?: boolean;
+  // Real keystroke typing in the spatial chat (OfficeStage's
+  // typingCharacterIds). Never sent-message history.
+  isTyping?: boolean;
   width: number;
   height: number;
   // Fires (at most once per mount) when this character's live-3D model
@@ -174,8 +176,9 @@ export function CharacterCanvas({
   headingDegrees = 0,
   isWalking = true,
   isSitting = false,
-  isChatting = false,
-  isResponder = false,
+  isGlobalChatActive = false,
+  isSpatialConversation = false,
+  isTyping = false,
   width,
   height,
   onError,
@@ -203,10 +206,10 @@ export function CharacterCanvas({
     headingTargetRef.current = headingDegrees;
   }, [headingDegrees]);
 
-  const stateInputsRef = useRef({ isWalking, isSitting, isChatting, isResponder });
+  const stateInputsRef = useRef({ isWalking, isSitting, isGlobalChatActive, isSpatialConversation, isTyping });
   useEffect(() => {
-    stateInputsRef.current = { isWalking, isSitting, isChatting, isResponder };
-  }, [isWalking, isSitting, isChatting, isResponder]);
+    stateInputsRef.current = { isWalking, isSitting, isGlobalChatActive, isSpatialConversation, isTyping };
+  }, [isWalking, isSitting, isGlobalChatActive, isSpatialConversation, isTyping]);
 
   // WebGL context loss on the shared renderer's canvas (see SharedRenderer)
   // is a mid-session failure, not a load-time one — every currently-mounted
@@ -399,6 +402,10 @@ export function CharacterCanvas({
       }
       currentAction = nextAction;
       currentState = nextState;
+      // Observability only: exposes the resolved clip name on the canvas so
+      // live-browser validation / tests can assert the real state machine
+      // outcome without reaching into the mixer. No rendering effect.
+      canvasRef.current?.setAttribute("data-anim-state", nextState);
     }
 
     function tickHeadingAndAnimState(delta: number) {
