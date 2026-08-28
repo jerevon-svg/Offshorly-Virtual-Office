@@ -25,7 +25,8 @@ import {
   type Live3dAssetSet,
 } from "../../render3d/live3dCharacters";
 import { avatarIdForEmail } from "../../data/avatarIdentity";
-import type { WalkDirection } from "../../data/bonWalkFrames";
+import { characterSprite, type WalkDirection } from "../../data/bonWalkFrames";
+import { PLACEHOLDER_SPRITE_SET } from "../../services/avatar/placeholder";
 import {
   collectDeviceSignals,
   computeDeviceTier,
@@ -544,10 +545,13 @@ export function OfficeStage({
     >
       {sorted.map((layer) => {
         const isChar = layer.kind === "character";
-        const srcOverride = isChar
-          ? (characterSrcOverrides?.[layer.id] ?? extraCharacterSrcById?.[layer.id])
-          : undefined;
-        const src = srcOverride ?? ASSET_PATH_TO_SRC[layer.path];
+        // Treat an empty-string override as ABSENT, not "render a blank
+        // img" — a stale/incomplete override (e.g. a peer whose sprite set
+        // hasn't resolved yet) must never leave a character invisible.
+        const srcOverride =
+          (isChar ? (characterSrcOverrides?.[layer.id] ?? extraCharacterSrcById?.[layer.id]) : undefined) || undefined;
+        const src =
+          srcOverride ?? ASSET_PATH_TO_SRC[layer.path] ?? characterSprite(PLACEHOLDER_SPRITE_SET, "idle", "front");
 
         if (layer.kind === "floor") {
           return (
@@ -688,7 +692,7 @@ export function OfficeStage({
                 headingDegrees={directionToHeadingDegrees(
                   characterDirectionsById?.[layer.id] ?? "front",
                 )}
-                isWalking={characterIsWalkingById?.[layer.id] ?? true}
+                isWalking={characterIsWalkingById?.[layer.id] ?? false}
                 isSitting={characterIsSittingById?.[layer.id] ?? false}
                 // Reuses the existing chat-panel "talking" signal (rather
                 // than plumbing a separate chat/call-specific flag) —

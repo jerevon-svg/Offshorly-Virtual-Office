@@ -136,6 +136,76 @@ export function rosterSrcById(layers: AssetLayer[]): Record<string, string> {
   return map;
 }
 
+// Atlas's own /floor snapshot has produced duplicate rows for one employee
+// whose emails differ only by case (see the movement-sync lowercasing fix
+// above) — a pre-existing gap in Atlas, not something this canvas can fix
+// upstream. Collapsing to ONE layer per normalized email has to happen
+// before grouping/seating, or the duplicate silently eats a second seat and
+// both rows fight over the SAME lowercased layer id (React key collision,
+// same failure mode `id` being the email was chosen to avoid).
+//
+// Ranks a person's PresenceStatusValue for duplicate-resolution purposes
+// only — most current/usable presence wins. No existing status-priority
+// table exists elsewhere in the app (checked mapAtlasToOfficeStatus and
+// callers), so this order is defined here, scoped to this file:
+// ONLINE > IN_MEETING/AWAY (still an active session) > ON_LEAVE > OFFLINE.
+const STATUS_DEDUPE_RANK: Record<OfficePerson["status"], number> = {
+  ONLINE: 4,
+  IN_MEETING: 3,
+  AWAY: 3,
+  ON_LEAVE: 1,
+  OFFLINE: 0,
+};
+
+function completenessScore(person: OfficePerson): number {
+  return [
+    person.avatarId,
+    person.departmentName,
+    person.jobTitle,
+    person.currentActivity,
+    person.lastMessage,
+  ].filter((field) => field !== null).length;
+}
+
+// Picks the single winning row between two duplicates of the same
+// normalized email. Whole-row selection ONLY — never merges fields from
+// both, so a rendered layer can't end up with e.g. one row's displayName
+// paired with the other's jobTitle (a hybrid that matches nobody's actual
+// data).
+//
+// Precedence, in order, each a tie-break on the previous:
+//   1. Higher-ranked status (STATUS_DEDUPE_RANK) — the more "live" row wins.
+//   2. Non-null atlasRoomId beats null — actually in a known Atlas room.
+//   3. More complete metadata (completenessScore) — more non-null fields.
+//   4. Raw email localeCompare — deterministic regardless of input order.
+function pickWinner(a: OfficePerson, b: OfficePerson): OfficePerson {
+  const statusDiff = STATUS_DEDUPE_RANK[a.status] - STATUS_DEDUPE_RANK[b.status];
+  if (statusDiff !== 0) return statusDiff > 0 ? a : b;
+
+  const aHasRoom = a.atlasRoomId !== null;
+  const bHasRoom = b.atlasRoomId !== null;
+  if (aHasRoom !== bHasRoom) return aHasRoom ? a : b;
+
+  const completenessDiff = completenessScore(a) - completenessScore(b);
+  if (completenessDiff !== 0) return completenessDiff > 0 ? a : b;
+
+  return a.email.localeCompare(b.email) <= 0 ? a : b;
+}
+
+// Collapses the roster to at most one row per normalized (`.trim().toLowerCase()`)
+// email, keeping the whole winning row per pickWinner. Pure and exported for
+// direct testing — applied at the very start of officePeopleToLayers so every
+// downstream grouping/seat/overflow computation only ever sees deduped people.
+export function dedupePeopleByEmail(people: OfficePerson[]): OfficePerson[] {
+  const winnerByKey = new Map<string, OfficePerson>();
+  for (const person of people) {
+    const key = person.email.trim().toLowerCase();
+    const existing = winnerByKey.get(key);
+    winnerByKey.set(key, existing ? pickWinner(existing, person) : person);
+  }
+  return [...winnerByKey.values()];
+}
+
 // Groups people by room and sorts each group by email — a stable identity
 // that never reshuffles who sits where across re-renders/reorderings of the
 // upstream roster array, unlike array order (which the API/merge is free to
@@ -154,7 +224,8 @@ function groupByRoomSortedByEmail(people: OfficePerson[]): Map<string, OfficePer
 }
 
 export function officePeopleToLayers(people: OfficePerson[]): AssetLayer[] {
-  const peopleByRoom = groupByRoomSortedByEmail(people);
+  const dedupedPeople = dedupePeopleByEmail(people);
+  const peopleByRoom = groupByRoomSortedByEmail(dedupedPeople);
 
   // Seating for the OVERFLOW remainder only (people beyond the room's real
   // painted chairs) depends on how many of THOSE there are, per room — it
@@ -235,7 +306,12 @@ export function officePeopleToLayers(people: OfficePerson[]): AssetLayer[] {
       }
 
       layers.push({
-        id: person.email,
+        // Lowercased: every movement-sync key (peer overrides,
+        // rosterLayerEmailSet, PeerWalker) is already normalized to
+        // lowercase, but Atlas's roster email is raw-case — leaving this
+        // raw produced a static roster twin for any mixed-case email that
+        // never collapsed with its lowercased moving-peer override.
+        id: person.email.trim().toLowerCase(),
         kind: "character",
         path: art.path,
         x: position.x,

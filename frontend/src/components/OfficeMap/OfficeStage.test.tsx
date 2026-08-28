@@ -135,6 +135,24 @@ function clipPathLayers(container: HTMLElement): HTMLElement[] {
   );
 }
 
+describe("OfficeStage src-override empty-string fallback", () => {
+  it("treats an empty-string characterSrcOverrides entry as absent, never rendering a blank img", () => {
+    const { container } = render(
+      <TransformWrapper>
+        <TransformComponent>
+          <OfficeStage characterSrcOverrides={{ bon: "" }} />
+        </TransformComponent>
+      </TransformWrapper>,
+    );
+    const imgs = Array.from(container.querySelectorAll("img"));
+    expect(imgs.length).toBeGreaterThan(0);
+    for (const img of imgs) {
+      expect(img.getAttribute("src")).not.toBe("");
+      expect(img.getAttribute("src")).toBeTruthy();
+    }
+  });
+});
+
 describe("OfficeStage synthetic backrest-crop layer generation", () => {
   it("generates exactly one synthetic crop layer, clipped to the looked-up fraction, for an occupied back-sit seat", () => {
     const { container } = renderStage({ [backrestCropLayerId(DEV_BACK_CHAIR_ID)]: 999 });
@@ -232,12 +250,12 @@ describe("OfficeStage Phase C live-3D dev-toggle: heading/walk wiring", () => {
     }
   });
 
-  it("defaults to front (0deg) and walking=true when no direction/walk-state entry is given for the toggled character", () => {
+  it("defaults to front (0deg) and walking=false when no direction/walk-state entry is given for the toggled character (a live-3D peer with no synced movement entry must never default to walking-in-place forever)", () => {
     const { getByTestId } = renderStageWithLive3d("bon");
 
     const stub = getByTestId("character-canvas-stub");
     expect(stub.dataset.headingDegrees).toBe("0");
-    expect(stub.dataset.isWalking).toBe("true");
+    expect(stub.dataset.isWalking).toBe("false");
   });
 
   it("freezes the mixer (isWalking=false) when the character is stationary", () => {
@@ -380,6 +398,72 @@ describe("OfficeStage live-3D tier/budget gating (no ?live3d= override)", () => 
       const stubs = container.querySelectorAll('[data-testid="character-canvas-stub"]');
       // bon (self) + 2 crowd slots (alex/micah/lui, cap 2) = 3 total.
       expect(stubs.length).toBe(3);
+    });
+  });
+
+  describe("tier visibility matrix: same employee, T0 vs T2, always exactly one visible avatar", () => {
+    // Item 5 verification (see task notes): a device tier that grants no
+    // live-3D budget must still render the 2D sprite (never drop the
+    // layer), and src must never be empty regardless of tier.
+    function renderBonAt(tier: "T0" | "T2") {
+      vi.mocked(detectDeviceTier).mockReturnValue(tier);
+      return render(
+        <TransformWrapper>
+          <TransformComponent>
+            <OfficeStage
+              selfCharacterId="bon"
+              characterOverrides={{ bon: { x: 111, y: 222 } }}
+              characterDirectionsById={{ bon: "left" }}
+              characterIsWalkingById={{ bon: true }}
+            />
+          </TransformComponent>
+        </TransformWrapper>,
+      );
+    }
+
+    it("T0: exactly one visible bon avatar, rendered as the 2D sprite fallback with a non-empty src, at the overridden logical pos", () => {
+      const { container, queryByTestId } = renderBonAt("T0");
+
+      // Never live-3D at T0 (the hard safety floor).
+      expect(queryByTestId("character-canvas-stub")).toBeNull();
+      // Exactly one bon sprite <img> — never dropped, never duplicated.
+      const bonImgs = Array.from(container.querySelectorAll<HTMLImageElement>('img[src*="bon"]'));
+      expect(bonImgs).toHaveLength(1);
+      expect(bonImgs[0].getAttribute("src")).toBeTruthy();
+      // Same logical pos this test asked for, expressed as the layer's
+      // %-based left/top style (OfficeStage converts world px -> %).
+      const layerDiv = bonImgs[0].closest<HTMLElement>(`.${styles.layer}`)!;
+      expect(layerDiv.style.left).not.toBe("");
+      expect(layerDiv.style.top).not.toBe("");
+    });
+
+    it("T2: exactly one visible bon avatar, rendered live-3D, at the SAME logical pos the T0 case used", () => {
+      const { container, queryAllByTestId } = renderBonAt("T2");
+
+      const stubs = queryAllByTestId("character-canvas-stub");
+      // Exactly one live-3D node for bon — never dropped, never duplicated
+      // into a second (e.g. stale sprite) node alongside it.
+      expect(stubs).toHaveLength(1);
+      expect(container.querySelectorAll('img[src*="bon"]')).toHaveLength(0);
+      const layerDiv = stubs[0].closest<HTMLElement>(`.${styles.layer}`)!;
+      expect(layerDiv.style.left).not.toBe("");
+      expect(layerDiv.style.top).not.toBe("");
+    });
+
+    it("no live-3D registry entry + no crowd budget (a tier that grants nothing) still renders the 2D sprite, never an empty src, never a dropped layer", () => {
+      // "alex" has no LIVE_3D_CHARACTERS entry at all, at any tier — the
+      // worst case for "does a no-budget tier still render someone".
+      vi.mocked(detectDeviceTier).mockReturnValue("T0");
+      const { container } = render(
+        <TransformWrapper>
+          <TransformComponent>
+            <OfficeStage selfCharacterId="bon" />
+          </TransformComponent>
+        </TransformWrapper>,
+      );
+      const alexImg = container.querySelector<HTMLImageElement>('img[src*="alex"]');
+      expect(alexImg).not.toBeNull();
+      expect(alexImg!.getAttribute("src")).toBeTruthy();
     });
   });
 

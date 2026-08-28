@@ -5,7 +5,7 @@ import { chatMode, realChatService } from "../services/chat";
 import { setDevIdentity as setSpatialSessionDevIdentity } from "../services/presence/spatialSessionStore";
 import { setDevIdentity as setRequestsClientDevIdentity } from "../services/chat/requestsClient";
 import { setDevIdentity as setOfflineLineupDevIdentity } from "../services/presence/offlineLineupClient";
-import { setDevIdentity as setSpatialWalkDevIdentity } from "../services/presence/spatialWalkClient";
+import { setDevIdentity as setSpatialWalkDevIdentity } from "../services/presence/movementSync";
 import { setDevIdentity as setHubClientDevIdentity } from "../services/hub/hubClient";
 import { setDevIdentity as setFeedClientDevIdentity } from "../services/feed/feedClient";
 import { setDevIdentity as setDndClientDevIdentity } from "../services/presence/dndClient";
@@ -154,10 +154,32 @@ const DEV_BYPASS_EMAIL = "jerevon@offshorly.com";
 // already behind isGateBypassed()'s import.meta.env.DEV check, so this
 // inherits the exact same production guard as the rest of the bypass —
 // nothing new to weaken here.
+// Sanitizes a raw `?as=` value into a plausible email, or null if it isn't
+// one. Guards against a malformed query string like `?as=x@y.com?deviceTier=t2`
+// (a tester writing a second `?` instead of `&`), which URLSearchParams.get
+// would otherwise return verbatim as `"x@y.com?deviceTier=t2"` — polluting
+// the dev identity with everything after the stray `?` and breaking every
+// email-keyed lookup (movement sync, roster dedup, chat) downstream. A
+// well-formed `?as=x@y.com&deviceTier=t2` is unaffected: `&deviceTier=t2` is
+// already a separate query param, not part of this value.
+function sanitizeDevBypassEmailCandidate(raw: string): string | null {
+  const candidate = raw.split(/[?&\s]/)[0]?.trim().toLowerCase() ?? "";
+  if (!candidate) return null;
+  // Plausible-email check: at least one char, an "@", at least one char, a
+  // ".", at least one char — deliberately loose (this is a local dev escape
+  // hatch, not real validation) but enough to reject junk like
+  // "?deviceTier=t2" (no "as" value at all) or a bare "@".
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidate)) return null;
+  return candidate;
+}
+
 function resolveDevBypassEmail(): string {
   if (typeof window !== "undefined") {
     const fromQuery = new URLSearchParams(window.location.search).get("as");
-    if (fromQuery) return fromQuery;
+    if (fromQuery) {
+      const sanitized = sanitizeDevBypassEmailCandidate(fromQuery);
+      if (sanitized) return sanitized;
+    }
   }
   const fromEnv = import.meta.env.VITE_DEV_USER_EMAIL;
   if (fromEnv) return fromEnv;

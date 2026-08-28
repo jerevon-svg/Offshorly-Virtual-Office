@@ -18,6 +18,21 @@ export function directionBetween(from: Pt, to: Pt): WalkDirection {
     : (dy > 0 ? "front" : "back");
 }
 
+// Pure helper: computes the SAME walk-duration formula useCharacterWalk's
+// internal walkTo uses, given the FULL point set (starting position included
+// as points[0]) or, more commonly, just the path (points to visit) with the
+// starting point prepended by the caller. Exported so useSelfMovement.ts and
+// PeerWalker.tsx can compute an identical duration/derive fast-forward
+// offsets without duplicating (and risking drift from) this formula.
+export function walkDurationMs(points: Pt[]): number {
+  let totalDist = 0;
+  for (let i = 1; i < points.length; i++) {
+    totalDist += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+  }
+  if (totalDist === 0) return 0;
+  return Math.min(3500, Math.max(500, totalDist * 3.4));
+}
+
 export function useCharacterWalk(initial: Pt) {
   const [pos, setPos] = useState(initial);
   const [isWalking, setIsWalking] = useState(false);
@@ -58,7 +73,11 @@ export function useCharacterWalk(initial: Pt) {
     }, PAT_DURATION_MS);
   }
 
-  function walkTo(input: Pt | Pt[], onArrive?: () => void) {
+  function walkTo(
+    input: Pt | Pt[],
+    onArrive?: () => void,
+    opts?: { durationMs?: number; elapsedMs?: number },
+  ) {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     const path = Array.isArray(input) ? input : [input];
     const points = [posRef.current, ...path];
@@ -79,8 +98,24 @@ export function useCharacterWalk(initial: Pt) {
       return;
     }
 
-    const dur = Math.min(3500, Math.max(500, totalDist * 3.4));
-    const t0 = performance.now();
+    const dur = opts?.durationMs ?? Math.min(3500, Math.max(500, totalDist * 3.4));
+    const elapsed = opts?.elapsedMs ?? 0;
+
+    // Fast-forward: if the caller says we've already spent `elapsed` ms of
+    // this walk (e.g. replaying a peer's walk that started before this
+    // client connected/subscribed), snap straight to the end when the walk
+    // would already be finished, otherwise start the rAF loop's clock in the
+    // past by that amount so the FIRST frame already reflects progress.
+    if (elapsed >= dur) {
+      const end = points[points.length - 1];
+      posRef.current = end;
+      setPos(end);
+      setIsWalking(false);
+      onArrive?.();
+      return;
+    }
+
+    const t0 = performance.now() - Math.max(0, elapsed);
     setIsWalking(true);
     setFrameIndex(0);
     distSinceToggleRef.current = 0;

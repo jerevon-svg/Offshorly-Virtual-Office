@@ -24,16 +24,26 @@ import type { OfflineLineupEntry } from "./offlineLineupClient";
 const AVATAR_WIDTH = bonLayer.width;
 const AVATAR_HEIGHT = bonLayer.height;
 
+// Extracted so movement-sync consumers (OfficeMap.tsx's peer-override
+// merge) can apply the EXACT SAME "is this person Atlas-offline" predicate
+// this module's own placement logic uses, instead of duplicating (and
+// risking drift from) the mapAtlasToOfficeStatus check below. A peer who is
+// offline must never render at a synced-movement desk position — see
+// applyOfflineLineupPositions's own precedence doc comment.
+export function computeOfflineEmailSet(people: OfficePerson[]): Set<string> {
+  return new Set(
+    people
+      .filter((person) => mapAtlasToOfficeStatus(person.status) === "OFFLINE")
+      .map((person) => person.email.trim().toLowerCase()),
+  );
+}
+
 export function applyOfflineLineupPositions(
   peerLayers: AssetLayer[],
   people: OfficePerson[],
   serverLineup: OfflineLineupEntry[],
 ): AssetLayer[] {
-  const offlineEmails = new Set(
-    people
-      .filter((person) => mapAtlasToOfficeStatus(person.status) === "OFFLINE")
-      .map((person) => person.email.trim().toLowerCase()),
-  );
+  const offlineEmails = computeOfflineEmailSet(people);
 
   if (offlineEmails.size === 0) return peerLayers;
 

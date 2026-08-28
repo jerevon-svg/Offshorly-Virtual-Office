@@ -7,6 +7,11 @@ import talkingBubbleStyles from "./TalkingBubble.module.css";
 import conversationPanelStyles from "../Chat/ConversationView.module.css";
 import badgeStyles from "../Chat/MessageNotificationBadge.module.css";
 import type { ConversationUpgradedListener, TypingListener } from "../../services/chat";
+import { resetCurrentUserForTests, setCurrentUserFromMeResponse } from "../../auth/currentUserStore";
+import { BON_SPRITE_SET, characterSprite } from "../../data/bonWalkFrames";
+import type { PeerMovementState } from "../../services/presence/movementSync";
+import { clearAll as clearCheckoutStorage, saveResult as saveCheckoutResult } from "../../data/checkoutStorage";
+import { getCurrentUserId } from "../../auth/useAuthGate";
 
 // Spies on the two spatial-session emit functions so tests can assert
 // exactly when spatial_session_start/leave fire, without opening a real
@@ -133,6 +138,24 @@ vi.mock("../../services/chat/talkRequestsClient", async () => {
     "../../services/chat/talkRequestsClient",
   );
   return { ...actual, usePendingTalkRequests: () => [] };
+});
+
+// getPeerMovementSnapshot() is mocked so the self-facing-restore tests below
+// (see "self facing restore on mount") can seed self's own snapshot entry
+// (movement-sync's positions_snapshot, which includes self's stable entry
+// even though self is excluded from PeerWalker rendering) without needing a
+// real socket connection — usePeerMovements/ensureSocket stay real (no auth
+// token in jsdom means ensureSocket() returns null and no network call ever
+// happens, matching every pre-existing test's assumption of an empty peer
+// list).
+const { peerMovementSnapshotState } = vi.hoisted(() => ({
+  peerMovementSnapshotState: { entries: [] as import("../../services/presence/movementSync").PeerMovementState[] },
+}));
+vi.mock("../../services/presence/movementSync", async () => {
+  const actual = await vi.importActual<typeof import("../../services/presence/movementSync")>(
+    "../../services/presence/movementSync",
+  );
+  return { ...actual, getPeerMovementSnapshot: () => peerMovementSnapshotState.entries };
 });
 
 // The roster's real occupants are keyed by the flat rooms/teamRooms
@@ -516,6 +539,123 @@ describe("OfficeMap", () => {
       expect(spatialBadgeCount(view.container)).toBe(1);
       expect(emitSpatialSessionStartMock).toHaveBeenCalledTimes(1);
       expect(emitSpatialSessionStartMock).toHaveBeenCalledWith(dmConv.id);
+    });
+  });
+  describe("self facing restore on mount (movement-sync snapshot beats the seat/roster default)", () => {
+    const SELF_EMAIL = "jerevon@offshorly.com"; // maps to avatarId "bon" + room "design-team"
+
+    const selfPerson: OfficePerson = {
+      email: SELF_EMAIL,
+      displayName: "Bon",
+      status: "ONLINE",
+      departmentName: "Design",
+      jobTitle: null,
+      currentActivity: null,
+      lastMessage: null,
+      avatarId: "bon",
+      roomId: "design-team",
+      atlasRoomId: null,
+      inEphemeralRoom: false,
+    };
+
+    function selfSnapshotEntry(overrides: Partial<PeerMovementState["stable"]>): PeerMovementState[] {
+      return [
+        {
+          email: SELF_EMAIL,
+          revision: 1,
+          stable: {
+            pos: { x: 0, y: 0 },
+            facing: "front",
+            state: "standing",
+            seatKey: null,
+            roomId: null,
+            ...overrides,
+          },
+          active: null,
+        },
+      ];
+    }
+
+    beforeEach(() => {
+      mockRosterPeople = [selfPerson];
+      setCurrentUserFromMeResponse({
+        id: "self-id",
+        email: SELF_EMAIL,
+        full_name: "Bon",
+        role: "",
+        team: null,
+      });
+    });
+
+    afterEach(() => {
+      mockRosterPeople = [];
+      peerMovementSnapshotState.entries = [];
+      resetCurrentUserForTests();
+      window.history.pushState({}, "", "/");
+    });
+
+    // Manila calendar date, matching useCheckoutFlow's own manilaWorkDate()
+    // key derivation — needed to seed checkoutStorage under the SAME key
+    // the hook's lazy useState initializer reads on mount.
+    function manilaWorkDate(): string {
+      return new Intl.DateTimeFormat("en-CA", {
+        timeZone: "Asia/Manila",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).format(new Date());
+    }
+
+    it("standing: seeds self's initial direction from the synced facing, not the seat default", async () => {
+      // Forces seatedAtDesk=false (bonLayer spawn, no seat resolution) so
+      // the rendered direction can only ever come from useCharacterWalk's
+      // own "front" default or this fix's face(selfSnapshot.stable.facing)
+      // call — never a seat's fixed direction. Seeded via checkoutStorage
+      // (not the dev-only `?checkedOut=1` query param, which applies via an
+      // async effect that races the spawn effect's own once-only guard) so
+      // useCheckoutFlow's lazy initializer already resolves CHECKED_OUT on
+      // the very first render, matching a genuine "already checked out,
+      // page reloaded" reload.
+      const employeeId = getCurrentUserId();
+      const workDate = manilaWorkDate();
+      saveCheckoutResult(employeeId, workDate, { success: true, submissionId: "test-sub", entriesCreated: 0 });
+      peerMovementSnapshotState.entries = selfSnapshotEntry({ facing: "left", state: "standing" });
+
+      try {
+        const { container } = render(<OfficeMap />);
+
+        const expectedSrc = characterSprite(BON_SPRITE_SET, "idle", "left");
+        await waitFor(() => {
+          const imgs = Array.from(container.querySelectorAll("img"));
+          expect(imgs.some((img) => img.getAttribute("src") === expectedSrc)).toBe(true);
+        });
+      } finally {
+        clearCheckoutStorage(employeeId, workDate);
+      }
+    });
+
+    it("sitting: seeds sitDirection from the synced facing, overriding whatever the resolved seat's own fixed direction is", async () => {
+      // Two DIFFERENT synced facings, same seat/room/person: a fixed
+      // seat-default implementation would render the SAME sitType src both
+      // times (whatever the seat's own direction is) — rendering each
+      // test's OWN distinct facing instead proves the snapshot facing wins.
+      for (const facing of ["left", "back"] as const) {
+        mockRosterPeople = [selfPerson];
+        peerMovementSnapshotState.entries = selfSnapshotEntry({ facing, state: "sitting" });
+
+        const { container, unmount } = render(<OfficeMap />);
+        const expectedSrc = characterSprite(BON_SPRITE_SET, "sitType", facing);
+        await waitFor(() => {
+          const imgs = Array.from(container.querySelectorAll("img"));
+          expect(imgs.some((img) => img.getAttribute("src") === expectedSrc)).toBe(true);
+        });
+        unmount();
+      }
+    });
+
+    it("falls back to the seat default when there is no self snapshot entry yet", async () => {
+      peerMovementSnapshotState.entries = [];
+      expect(() => render(<OfficeMap />)).not.toThrow();
     });
   });
 });

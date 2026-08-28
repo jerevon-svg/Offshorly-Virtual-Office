@@ -1,12 +1,13 @@
 // frontend/src/components/OfficeMap/clusterFormation.ts
 //
 // Pure, DOM-free decision helpers wiring together Stage 1's assignClusterSlots
-// geometry (data/clusterSlots.ts) and Stage 3's emitAndWalkTo peer-walk
-// broadcast (services/presence/spatialWalkClient.ts) into actual
-// conversation-formation behavior. Kept free of React/DOM so every branch is
-// unit-testable without mounting OfficeMap.tsx — see OfficeMap.tsx's two call
-// sites (the self-settle effect, and the conversation_upgraded handler) for
-// how these compose with real state.
+// geometry (data/clusterSlots.ts) and the unified moveSelf self-movement
+// funnel (components/OfficeMap/useSelfMovement.ts, backed by
+// services/presence/movementSync.ts's walk_started/walk_arrived wire
+// contract) into actual conversation-formation behavior. Kept free of
+// React/DOM so every branch is unit-testable without mounting OfficeMap.tsx —
+// see OfficeMap.tsx's two call sites (the self-settle effect, and the
+// conversation_upgraded handler) for how these compose with real state.
 
 import type { ConversationUpgradedUpdate } from "../../services/chat/types";
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from datetime import datetime, timezone
 
 import socketio
@@ -15,8 +16,10 @@ from app.repositories import talk_requests as talk_requests_repo
 from app.schemas.chat import serialize_message_dict, to_iso_z
 from app.schemas.room_requests import RoomRequestOut
 from app.schemas.talk_requests import TalkRequestOut
+from app.repositories import position as position_repo
 from app.services.dnd_registry import DndRegistry
 from app.services.offline_lineup import OfflineLineup
+from app.services.position_registry import position_registry
 from app.services.room_presence import RoomPresenceRegistry
 from app.services.spatial_session import SpatialSessionRegistry
 
@@ -109,14 +112,27 @@ async def _cancel_stale_talk_requests(target_email: str) -> None:
         )
 
 
+_DEV_EMAIL_RE = re.compile(r"^[^\s?&@]+@[^\s?&@]+\.[^\s?&@]+$")
+
+
 def _dev_email_from_auth(auth: dict) -> str | None:
     """Dev-only identity bypass for sockets — mirrors http.ts's devEmailFrom / socket.ts's
     devEmailFromHandshake. Hard-gated: only reachable when settings.is_development is literally
-    True (fail-closed), regardless of what the client sends."""
+    True (fail-closed), regardless of what the client sends.
+
+    A malformed value (e.g. a stray `?devicetier=...` query-string tail from a bad `?as=` URL,
+    or anything containing `?`/`&`/whitespace) is rejected outright via ConnectionRefusedError —
+    the same path used for a bad Atlas token — rather than silently accepted as a phantom
+    identity with no roster layer."""
     if not settings.is_development:
         return None
     raw = auth.get("x-dev-email") or auth.get("devEmail")
-    return raw.strip().lower() if isinstance(raw, str) and raw.strip() else None
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    candidate = raw.strip().lower()
+    if not _DEV_EMAIL_RE.match(candidate):
+        raise ConnectionRefusedError("Invalid dev email")
+    return candidate
 
 
 def _parse_iso(value: str) -> datetime:
@@ -149,6 +165,67 @@ def _valid_walk_payload(payload) -> bool:
     if not isinstance(path, list) or not path or len(path) > 64:
         return False
     return all(_is_point(p) for p in path)
+
+
+def _now_ms() -> int:
+    return int(datetime.now(timezone.utc).timestamp() * 1000)
+
+
+def _ms_to_dt(ms: int) -> datetime:
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+
+
+_FACINGS = {"front", "back", "left", "right"}
+_MOVE_STATES = {"standing", "sitting"}
+
+
+def _is_room_id(v) -> bool:
+    return v is None or isinstance(v, str)
+
+
+def _is_movement_id(v) -> bool:
+    return isinstance(v, str) and 1 <= len(v) <= 64
+
+
+def _valid_walk_started_payload(payload) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if not _is_movement_id(payload.get("movementId")):
+        return False
+    if not _is_point(payload.get("origin")):
+        return False
+    path = payload.get("path")
+    if not isinstance(path, list) or not path or len(path) > 64:
+        return False
+    if not all(_is_point(p) for p in path):
+        return False
+    if not _is_room_id(payload.get("roomId")):
+        return False
+    duration_ms = payload.get("durationMs")
+    if not isinstance(duration_ms, int) or isinstance(duration_ms, bool):
+        return False
+    if not (100 <= duration_ms <= 20000):
+        return False
+    return True
+
+
+def _valid_walk_arrived_payload(payload) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if not _is_movement_id(payload.get("movementId")):
+        return False
+    if not _is_point(payload.get("at")):
+        return False
+    if payload.get("facing") not in _FACINGS:
+        return False
+    if payload.get("state") not in _MOVE_STATES:
+        return False
+    seat_key = payload.get("seatKey")
+    if seat_key is not None and not isinstance(seat_key, str):
+        return False
+    if not _is_room_id(payload.get("roomId")):
+        return False
+    return True
 
 
 async def _emit_unexpected(sid: str, err: Exception) -> None:
@@ -198,6 +275,15 @@ async def connect(sid: str, environ: dict, auth: dict | None) -> None:
     # connecting after others are already DND/in-room must see current lock state immediately.
     await sio.emit("dnd_status", {"emails": dnd_registry.snapshot()}, to=sid)
     await sio.emit("room_presence", {"rooms": room_presence.snapshot()}, to=sid)
+
+    # Same reasoning again for live spatial positions: a client connecting mid-walk or after
+    # others have already arrived somewhere must see current position state immediately, not
+    # just future walk_started/walk_arrived broadcasts (see position_registry.py's docstring).
+    await sio.emit(
+        "positions_snapshot",
+        {"entries": position_registry.snapshot(own_email=email), "serverTime": _now_ms()},
+        to=sid,
+    )
 
 
 @sio.event
@@ -341,18 +427,44 @@ async def room_presence_leave(sid: str, _payload: dict | None = None) -> None:
 
 @sio.on("walk_started")
 async def walk_started(sid: str, payload: dict | None) -> None:
+    """Moving client supplies path/destination; peers replay it. Server holds live position +
+    in-flight movement in memory only (position_registry.py) — no DB write here, see that
+    module's docstring for why (only stable/arrived state is durable)."""
     try:
-        if not _valid_walk_payload(payload):
+        if not _valid_walk_started_payload(payload):
             return  # silent drop on malformed input — matches this codebase's convention
             # (e.g. spatial_session_start's early-return on bad sessionId)
         session_data = await sio.get_session(sid)
         email = session_data["email"]  # server-verified identity ONLY, never payload-supplied
+
+        movement_id = payload["movementId"]
+        origin = {"x": payload["origin"]["x"], "y": payload["origin"]["y"]}
+        path = [{"x": p["x"], "y": p["y"]} for p in payload["path"]]
+        room_id = payload.get("roomId")
+        duration_ms = payload["durationMs"]
+        started_at = _now_ms()
+
+        revision = position_registry.start(
+            email,
+            movement_id=movement_id,
+            origin=origin,
+            path=path,
+            room_id=room_id,
+            duration_ms=duration_ms,
+            started_at=started_at,
+        )
+
         await sio.emit(
             "peer_walk_started",
             {
                 "email": email,
-                "from": {"x": payload["from"]["x"], "y": payload["from"]["y"]},
-                "path": [{"x": p["x"], "y": p["y"]} for p in payload["path"]],
+                "movementId": movement_id,
+                "revision": revision,
+                "origin": origin,
+                "path": path,
+                "roomId": room_id,
+                "durationMs": duration_ms,
+                "startedAt": started_at,
             },
             skip_sid=sid,
         )
@@ -362,16 +474,66 @@ async def walk_started(sid: str, payload: dict | None) -> None:
 
 @sio.on("walk_arrived")
 async def walk_arrived(sid: str, payload: dict | None) -> None:
+    """Accepted only if it matches the currently-active movementId for this employee (rejects
+    stale/reordered arrivals from a superseded walk, see position_registry.arrive's docstring).
+    On acceptance, stable state is persisted to the DB (position.py) BEFORE broadcasting — a
+    persist failure is logged and must not block the broadcast, same pattern as
+    _cancel_stale_room_requests' surrounding try/except-per-step convention."""
     try:
-        payload = payload or {}
-        at = payload.get("at")
-        if not _is_point(at):
+        if not _valid_walk_arrived_payload(payload):
             return
         session_data = await sio.get_session(sid)
         email = session_data["email"]
+
+        movement_id = payload["movementId"]
+        at = {"x": payload["at"]["x"], "y": payload["at"]["y"]}
+        facing = payload["facing"]
+        state = payload["state"]
+        seat_key = payload.get("seatKey")
+        room_id = payload.get("roomId")
+
+        stable = position_registry.arrive(
+            email,
+            movement_id=movement_id,
+            at=at,
+            facing=facing,
+            state=state,
+            seat_key=seat_key,
+            room_id=room_id,
+            now_ms=_now_ms(),
+        )
+        if stable is None:
+            return  # stale/wrong movementId — ignore silently
+
+        try:
+            async with async_session_maker() as session:
+                await position_repo.upsert_stable(
+                    session,
+                    email=email,
+                    x=stable.x,
+                    y=stable.y,
+                    facing=stable.facing,
+                    state=stable.state,
+                    seat_key=stable.seat_key,
+                    room_id=stable.room_id,
+                    revision=stable.revision,
+                    updated_at=_ms_to_dt(stable.updated_at),
+                )
+        except Exception as exc:  # noqa: BLE001
+            _logger.exception(exc)
+
         await sio.emit(
             "peer_walk_arrived",
-            {"email": email, "at": {"x": at["x"], "y": at["y"]}},
+            {
+                "email": email,
+                "movementId": movement_id,
+                "revision": stable.revision,
+                "at": at,
+                "facing": stable.facing,
+                "state": stable.state,
+                "seatKey": stable.seat_key,
+                "roomId": stable.room_id,
+            },
             skip_sid=sid,
         )
     except Exception as exc:  # noqa: BLE001
