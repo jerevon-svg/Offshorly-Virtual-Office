@@ -532,18 +532,22 @@ async def message_read(sid: str, payload: dict | None) -> None:
                 await sio.emit("chat_error", {"code": "forbidden", "message": "Not a participant"}, to=sid)
                 return
             advanced = await chat_repo.mark_read(session, conversation_id, email, up_to_sent_at)
+            # mark_read only mutates the in-memory participant row; unread_count/mention_count
+            # re-SELECT last_read_at, so without a flush they'd compute against the OLD watermark
+            # and push a stale (still-nonzero) count to the reader's badge.
+            await session.flush()
             count = await chat_repo.unread_count(session, conversation_id, email)
             mentions = await chat_repo.mention_count(session, conversation_id, email)
             peers = await _other_participant_emails(session, conversation_id, email)
             await session.commit()
 
-        # "This user's other sockets" — broadcast to every socket for this email except the one
-        # that just marked it read, via the per-user room joined at connect time.
+        # Authoritative post-read counts to EVERY socket for this email (per-user room joined at
+        # connect time) — including the socket that just marked read. The marking tab has no
+        # local decrement (frontend's useUnreadTotal only updates on this push), so skipping the
+        # sender left its badge stuck until a refetch.
+        await sio.emit("unread_count", {"conversationId": conversation_id, "count": count}, room=user_room(email))
         await sio.emit(
-            "unread_count", {"conversationId": conversation_id, "count": count}, room=user_room(email), skip_sid=sid
-        )
-        await sio.emit(
-            "mention_count", {"conversationId": conversation_id, "count": mentions}, room=user_room(email), skip_sid=sid
+            "mention_count", {"conversationId": conversation_id, "count": mentions}, room=user_room(email)
         )
         if not advanced:
             # Watermark didn't actually move (redundant/stale re-ack, or no participant row) —
@@ -551,10 +555,12 @@ async def message_read(sid: str, payload: dict | None) -> None:
             return
         # Tell the peer(s) — the sender(s) of the messages just marked read — so their UI can
         # advance from "delivered" to "read" without polling.
+        # readerEmail is the server-verified session identity — never a client-supplied field —
+        # so a group sender's UI can attribute the receipt to the right participant's avatar.
         for peer in peers:
             await sio.emit(
                 "read_receipt",
-                {"conversationId": conversation_id, "readUpTo": to_iso_z(up_to_sent_at)},
+                {"conversationId": conversation_id, "readUpTo": to_iso_z(up_to_sent_at), "readerEmail": email},
                 room=user_room(peer),
             )
     except Exception as exc:  # noqa: BLE001
@@ -591,10 +597,15 @@ async def message_delivered(sid: str, payload: dict | None) -> None:
             return
         # Delivery receipt goes to the PEER's room only (the message sender(s) whose messages
         # just got marked delivered) — never back to the acker's own room.
+        # recipientEmail: server-verified session identity of the acker (see readerEmail above).
         for peer in peers:
             await sio.emit(
                 "delivery_receipt",
-                {"conversationId": conversation_id, "deliveredUpTo": to_iso_z(up_to_sent_at)},
+                {
+                    "conversationId": conversation_id,
+                    "deliveredUpTo": to_iso_z(up_to_sent_at),
+                    "recipientEmail": email,
+                },
                 room=user_room(peer),
             )
     except Exception as exc:  # noqa: BLE001

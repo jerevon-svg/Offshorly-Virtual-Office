@@ -260,7 +260,11 @@ async def test_message_delivered_updates_watermark_and_emits_to_peer_only(server
     )
 
     payload = await asyncio.wait_for(receipt_future, timeout=2)
-    assert payload["conversationId"] == conv_id
+    assert payload == {
+        "conversationId": conv_id,
+        "deliveredUpTo": to_iso_z(sent_at_iso),
+        "recipientEmail": "a@example.com",  # server-verified acker identity
+    }
     assert a_got_receipt is False
 
     async with async_session_maker() as session:
@@ -272,7 +276,10 @@ async def test_message_delivered_updates_watermark_and_emits_to_peer_only(server
     await b.disconnect()
 
 
-async def test_message_read_emits_unread_count_to_self_and_read_receipt_to_peer(server):
+async def test_message_read_emits_counts_to_every_own_socket_and_read_receipt_to_peer(server):
+    """After message_read, the authoritative unread_count/mention_count go to EVERY socket of the
+    reader — the marking socket itself (its badge has no local decrement; see frontend
+    useUnreadTotal) AND the reader's other sockets — while the peer gets a read_receipt."""
     conv_id = await _seeded_conversation()
 
     a = await _connect_as(server, "a@example.com")
@@ -280,18 +287,41 @@ async def test_message_read_emits_unread_count_to_self_and_read_receipt_to_peer(
     b = await _connect_as(server, "b@example.com")
     await asyncio.sleep(0.2)
 
-    unread_future: asyncio.Future = asyncio.get_event_loop().create_future()
-    read_receipt_future: asyncio.Future = asyncio.get_event_loop().create_future()
+    # Collect EVERY count event per socket (not just the first): the shared test DB/deterministic
+    # dm_key means straggler pushes from earlier tests' sends can still land on a fresh socket in
+    # this user's room. What matters is the LAST state each socket was told after the read.
+    counts: dict[tuple[str, str], list] = {
+        ("a", "unread_count"): [],
+        ("a", "mention_count"): [],
+        ("a2", "unread_count"): [],
+        ("a2", "mention_count"): [],
+    }
+    read_receipts: list = []
+    b_count_events: list = []
 
-    @a2.on("unread_count")
-    async def on_unread_a2(data):
-        if not unread_future.done():
-            unread_future.set_result(data)
+    def _collect(key):
+        async def handler(data):
+            counts[key].append(data)
+
+        return handler
+
+    a.on("unread_count", _collect(("a", "unread_count")))
+    a.on("mention_count", _collect(("a", "mention_count")))
+    a2.on("unread_count", _collect(("a2", "unread_count")))
+    a2.on("mention_count", _collect(("a2", "mention_count")))
 
     @b.on("read_receipt")
     async def on_read_receipt_b(data):
-        if not read_receipt_future.done():
-            read_receipt_future.set_result(data)
+        read_receipts.append(data)
+
+    @b.on("unread_count")
+    async def on_unread_b(data):
+        b_count_events.append(data)
+
+    # Let any straggler pushes from earlier tests flush, then start counting from a clean slate.
+    await asyncio.sleep(0.3)
+    for events in counts.values():
+        events.clear()
 
     # Wall-clock "now" rather than a fixed literal: the (a, b) conversation is deterministic
     # (dm_key-based) and the test DB persists across runs, so mark_read's monotonic-advance
@@ -301,16 +331,91 @@ async def test_message_read_emits_unread_count_to_self_and_read_receipt_to_peer(
 
     up_to_sent_at = to_iso_z(datetime.now(timezone.utc))
     await a.emit("message_read", {"conversationId": conv_id, "upToSentAt": up_to_sent_at})
+    await asyncio.sleep(0.5)
 
-    unread_payload = await asyncio.wait_for(unread_future, timeout=2)
-    read_receipt_payload = await asyncio.wait_for(read_receipt_future, timeout=2)
-    assert unread_payload["conversationId"] == conv_id
-    assert read_receipt_payload["conversationId"] == conv_id
-    assert read_receipt_payload["readUpTo"] == up_to_sent_at
+    # Marking socket AND the reader's other socket both receive both counts, and the final
+    # state each was told is zero: the watermark was just advanced to "now".
+    for key, events in counts.items():
+        assert events, f"{key} received no count push after message_read"
+        assert events[-1] == {"conversationId": conv_id, "count": 0}, (key, events)
+    # Peer keeps its existing read_receipt, and is never told about a's counts.
+    assert read_receipts, "peer received no read_receipt"
+    assert read_receipts[-1] == {
+        "conversationId": conv_id,
+        "readUpTo": up_to_sent_at,
+        "readerEmail": "a@example.com",  # server-verified session identity, never client-sent
+    }
+    assert b_count_events == []
 
     await a.disconnect()
     await a2.disconnect()
     await b.disconnect()
+
+
+async def test_group_receipts_carry_server_verified_identity_and_go_to_other_members_only(server):
+    """3-member group: b's read/delivery acks fan out to a AND c (the other participants) with
+    readerEmail/recipientEmail == b (from b's session, not the payload), and never back to b."""
+    from app.schemas.chat import to_iso_z
+
+    async with async_session_maker() as session:
+        conv = await chat_repo.create_group_conversation(
+            session, "a@example.com", ["b@example.com", "c@example.com"], None
+        )
+        await session.commit()
+    conv_id = conv["id"]
+
+    a = await _connect_as(server, "a@example.com")
+    b = await _connect_as(server, "b@example.com")
+    c = await _connect_as(server, "c@example.com")
+    await asyncio.sleep(0.2)
+
+    async with async_session_maker() as session:
+        msg = await chat_repo.insert_message(session, conv_id, "a@example.com", "hello group")
+        await session.commit()
+        up_to = to_iso_z(msg.sent_at)
+
+    got: dict[str, list] = {"a": [], "b": [], "c": []}
+    for name, client in (("a", a), ("b", b), ("c", c)):
+        for evt in ("read_receipt", "delivery_receipt"):
+
+            def _mk(name=name, evt=evt):
+                async def handler(data):
+                    got[name].append((evt, data))
+
+                return handler
+
+            client.on(evt, _mk())
+
+    # A spoofed identity in the payload must be ignored — the server uses b's session email.
+    await b.emit(
+        "message_read", {"conversationId": conv_id, "upToSentAt": up_to, "readerEmail": "mallory@example.com"}
+    )
+    await b.emit(
+        "message_delivered",
+        {"conversationId": conv_id, "upToSentAt": up_to, "recipientEmail": "mallory@example.com"},
+    )
+    await asyncio.sleep(0.5)
+
+    expected_read = ("read_receipt", {"conversationId": conv_id, "readUpTo": up_to, "readerEmail": "b@example.com"})
+    expected_delivered = (
+        "delivery_receipt",
+        {"conversationId": conv_id, "deliveredUpTo": up_to, "recipientEmail": "b@example.com"},
+    )
+    for name in ("a", "c"):
+        assert expected_read in got[name], (name, got[name])
+        assert expected_delivered in got[name], (name, got[name])
+    assert got["b"] == []
+
+    # History for the sender now derives the same fact from b's watermark: readBy/deliveredTo == [b].
+    async with async_session_maker() as session:
+        watermarks = await chat_repo.get_participant_watermarks(session, conv_id)
+        delivered_to, read_by = chat_repo.compute_message_receipts(msg, watermarks)
+    assert read_by == ["b@example.com"]
+    assert delivered_to == ["b@example.com"]
+
+    await a.disconnect()
+    await b.disconnect()
+    await c.disconnect()
 
 
 async def test_message_delivered_from_non_participant_is_rejected_and_no_watermark_change(server):

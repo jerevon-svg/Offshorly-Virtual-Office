@@ -5,6 +5,7 @@ import {
   slotWalkSignature,
   resolveSelfSlotWalk,
   classifyUpgrade,
+  resolveConversationSlot,
 } from "./clusterFormation";
 
 describe("computeClusterAnchor", () => {
@@ -162,5 +163,57 @@ describe("classifyUpgrade", () => {
       },
     });
     expect(role).toBe("joiner");
+  });
+});
+
+describe("resolveConversationSlot", () => {
+  const self = "bon@example.com";
+
+  it("routes to spatial when a live session for this conversation has a member other than self (active peer spatial DM)", () => {
+    expect(
+      resolveConversationSlot({
+        conversationId: "conv-dm-1",
+        sessions: [{ sessionId: "conv-dm-1", members: ["peer@example.com"] }],
+        selfEmail: self,
+      }),
+    ).toBe("spatial");
+  });
+
+  it("routes to remote when no session exists for this conversation (normal DM)", () => {
+    expect(
+      resolveConversationSlot({
+        conversationId: "conv-dm-1",
+        sessions: [{ sessionId: "conv-other", members: ["peer@example.com", "x@example.com"] }],
+        selfEmail: self,
+      }),
+    ).toBe("remote");
+    expect(resolveConversationSlot({ conversationId: "conv-dm-1", sessions: [], selfEmail: self })).toBe("remote");
+  });
+
+  it("routes to remote for a stale self-only session (case-insensitive self match)", () => {
+    expect(
+      resolveConversationSlot({
+        conversationId: "conv-dm-1",
+        sessions: [{ sessionId: "conv-dm-1", members: ["Bon@Example.com"] }],
+        selfEmail: self,
+      }),
+    ).toBe("remote");
+  });
+
+  it("routes a group to spatial only while its session has another member", () => {
+    const active = [{ sessionId: "conv-group-1", members: ["a@example.com", "b@example.com"] }];
+    expect(resolveConversationSlot({ conversationId: "conv-group-1", sessions: active, selfEmail: self })).toBe("spatial");
+    expect(resolveConversationSlot({ conversationId: "conv-group-1", sessions: [], selfEmail: self })).toBe("remote");
+  });
+
+  it("matches the session by exact conversation id, never by shared membership", () => {
+    // Peer is in SOME session, but not this conversation's — must not leak spatial routing.
+    expect(
+      resolveConversationSlot({
+        conversationId: "conv-dm-1",
+        sessions: [{ sessionId: "conv-dm-2", members: ["peer@example.com", self] }],
+        selfEmail: self,
+      }),
+    ).toBe("remote");
   });
 });

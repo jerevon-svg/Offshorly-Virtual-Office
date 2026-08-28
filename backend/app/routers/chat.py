@@ -157,5 +157,8 @@ async def mark_conversation_read(
     up_to_sent_at = _parse_iso(up_to_raw) if up_to_raw else datetime.now(timezone.utc)
 
     await chat_repo.mark_read(db, conversation_id, email, up_to_sent_at)
+    # Same as socket.py's message_read: the session is autoflush=False, so unread_count's
+    # re-SELECT of last_read_at would otherwise see the OLD watermark and return a stale count.
+    await db.flush()
     count = await chat_repo.unread_count(db, conversation_id, email)
     return UnreadCountOut(unread_count=count)

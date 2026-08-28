@@ -60,12 +60,18 @@ export type MentionCountListener = (update: MentionCountUpdate) => void;
 export interface DeliveryReceiptUpdate {
   conversationId: string;
   deliveredUpTo: string;
+  // Server-verified email of the participant who acked delivery (never client-supplied). Optional
+  // for backward compatibility with older servers; group views need it to attribute the receipt,
+  // the DM view (single implied peer) ignores it.
+  recipientEmail?: string;
 }
 export type DeliveryReceiptListener = (update: DeliveryReceiptUpdate) => void;
 
 export interface ReadReceiptUpdate {
   conversationId: string;
   readUpTo: string;
+  // Server-verified email of the participant who read — same rationale as recipientEmail.
+  readerEmail?: string;
 }
 export type ReadReceiptListener = (update: ReadReceiptUpdate) => void;
 

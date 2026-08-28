@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, fireEvent, within, act } from "@testing-library/react";
+import { render, fireEvent, within, act, waitFor } from "@testing-library/react";
 import { OfficeMap } from "./OfficeMap";
 import type { OfficePerson } from "../../services/office/floorMerge";
 import sidebarStyles from "./RoomSidebar.module.css";
 import talkingBubbleStyles from "./TalkingBubble.module.css";
 import conversationPanelStyles from "../Chat/ConversationView.module.css";
+import badgeStyles from "../Chat/MessageNotificationBadge.module.css";
 import type { ConversationUpgradedListener, TypingListener } from "../../services/chat";
 
 // Spies on the two spatial-session emit functions so tests can assert
@@ -13,9 +14,12 @@ import type { ConversationUpgradedListener, TypingListener } from "../../service
 // live socket otherwise). useSpatialSessions is stubbed to an empty
 // snapshot — no test in this file currently asserts on spatial-session
 // rendering, only on when the emit functions are invoked.
-const { emitSpatialSessionStartMock, emitSpatialSessionLeaveMock } = vi.hoisted(() => ({
+const { emitSpatialSessionStartMock, emitSpatialSessionLeaveMock, spatialSessionsState } = vi.hoisted(() => ({
   emitSpatialSessionStartMock: vi.fn(),
   emitSpatialSessionLeaveMock: vi.fn(),
+  // Mutable snapshot returned by the useSpatialSessions stub — empty for every pre-existing
+  // test; the Global Chat routing tests below swap in live sessions, scoped via afterEach.
+  spatialSessionsState: { sessions: [] as { sessionId: string; members: string[] }[] },
 }));
 
 vi.mock("../../services/presence/spatialSessionStore", async () => {
@@ -26,7 +30,7 @@ vi.mock("../../services/presence/spatialSessionStore", async () => {
     ...actual,
     emitSpatialSessionStart: emitSpatialSessionStartMock,
     emitSpatialSessionLeave: emitSpatialSessionLeaveMock,
-    useSpatialSessions: () => [],
+    useSpatialSessions: () => spatialSessionsState.sessions,
   };
 });
 
@@ -41,10 +45,17 @@ const {
   getCapturedOnTyping,
   onConversationUpgradedMock,
   getCapturedOnConversationUpgraded,
+  chatModeState,
+  chatListState,
 } = vi.hoisted(() => {
   let capturedTyping: TypingListener | null = null;
   let capturedUpgraded: ConversationUpgradedListener | null = null;
   return {
+    // Mutable so the Global Chat routing tests below can flip OfficeMap into real mode (the 💬
+    // badge/list only renders when chatMode === "real"); every pre-existing test keeps "mock".
+    chatModeState: { mode: "mock" as "mock" | "real" },
+    // What the stubbed listConversations resolves to — the 💬 list's rows.
+    chatListState: { conversations: [] as import("../../services/chat").Conversation[] },
     onTypingMock: vi.fn((cb: TypingListener) => {
       capturedTyping = cb;
       return () => {
@@ -68,10 +79,23 @@ vi.mock("../../services/chat", async () => {
   );
   return {
     ...actual,
+    // Getter (not a snapshot) so chatModeState.mode changes are seen by every module reading
+    // `chatMode` at render/effect time — OfficeMap, ConversationView, useUnreadTotal.
+    get chatMode() {
+      return chatModeState.mode;
+    },
     chatService: {
       ...actual.chatService,
       onTyping: onTypingMock,
       onConversationUpgraded: onConversationUpgradedMock,
+      // Real-mode ConversationView opens (or creates) the DM before loading history; the id it
+      // resolves is what onConversationOpen -> emitSpatialSessionStart receives.
+      openConversationWith: vi.fn(async (peerId: string, selfId: string) => ({
+        id: `conv-dm:${peerId}`,
+        participantIds: [selfId, peerId],
+        lastMessageAt: "2026-01-01T00:00:00.000Z",
+        type: "dm" as const,
+      })),
       // Spreading a class instance only copies own enumerable properties,
       // not prototype methods — these all live on MockChatService's
       // prototype, so they need explicit stubs here now that firing
@@ -80,11 +104,35 @@ vi.mock("../../services/chat", async () => {
       // handler calls useUnreadTotal's refetch() (-> listConversations)
       // unconditionally (unlike the rest of that hook, refetch has no
       // chatMode !== "real" guard).
-      listConversations: vi.fn(async () => []),
+      listConversations: vi.fn(async () => chatListState.conversations),
       getMessages: vi.fn(async () => []),
       onMessage: vi.fn(() => () => {}),
     },
   };
+});
+
+// Real-mode-only HUD pieces (JoinRequestPrompt / DndRequestQueue) poll their pending-request
+// lists over REST on mount; with no auth token in jsdom that fetch rejects ("Missing
+// Authorization bearer token") as an unhandled rejection. Stub just the polling hooks to an empty
+// list — every other export (createJoinRequest, cancelTalkRequest, onRequestResolved, ...) that
+// OfficeMap itself imports stays real.
+vi.mock("../../services/chat/requestsClient", async () => {
+  const actual = await vi.importActual<typeof import("../../services/chat/requestsClient")>(
+    "../../services/chat/requestsClient",
+  );
+  return { ...actual, usePendingRequests: () => [] };
+});
+vi.mock("../../services/chat/roomRequestsClient", async () => {
+  const actual = await vi.importActual<typeof import("../../services/chat/roomRequestsClient")>(
+    "../../services/chat/roomRequestsClient",
+  );
+  return { ...actual, usePendingRoomRequests: () => [] };
+});
+vi.mock("../../services/chat/talkRequestsClient", async () => {
+  const actual = await vi.importActual<typeof import("../../services/chat/talkRequestsClient")>(
+    "../../services/chat/talkRequestsClient",
+  );
+  return { ...actual, usePendingTalkRequests: () => [] };
 });
 
 // The roster's real occupants are keyed by the flat rooms/teamRooms
@@ -321,6 +369,153 @@ describe("OfficeMap", () => {
       // reopen's onConversationOpen guard no longer wrongly skips the emit —
       // the joiner correctly re-enters the spatial cluster.
       expect(emitSpatialSessionStartMock).toHaveBeenCalledWith("conv-group-1");
+    });
+  });
+  describe("Global Chat routing: spatial vs remote (resolveConversationSlot)", () => {
+    const peerPerson: OfficePerson = {
+      ...designPerson,
+      email: "peer@example.com",
+      displayName: "Peer Person",
+    };
+    // Default/unauthenticated selfChatId falls back to playerLayerId ("bon") — same fallback the
+    // peer-typing and Stage B2 tests above rely on.
+    const dmConv = {
+      id: "conv-dm:peer@example.com",
+      participantIds: ["bon", "peer@example.com"],
+      lastMessageAt: "2026-01-01T00:00:00.000Z",
+      type: "dm" as const,
+    };
+    const groupConv = {
+      id: "conv-group-1",
+      participantIds: ["bon", "peer@example.com", "other@example.com"],
+      lastMessageAt: "2026-01-01T00:00:00.000Z",
+      type: "group" as const,
+      title: "Design Sync",
+    };
+
+    beforeEach(() => {
+      chatModeState.mode = "real";
+      mockRosterPeople = [peerPerson];
+      emitSpatialSessionStartMock.mockClear();
+      emitSpatialSessionLeaveMock.mockClear();
+    });
+
+    afterEach(() => {
+      chatModeState.mode = "mock";
+      mockRosterPeople = [];
+      spatialSessionsState.sessions = [];
+      chatListState.conversations = [];
+    });
+
+    function panelCount(container: HTMLElement): number {
+      return container.querySelectorAll(`.${conversationPanelStyles.panel}`).length;
+    }
+    function spatialBadgeCount(container: HTMLElement): number {
+      return container.querySelectorAll(`.${conversationPanelStyles.spatialBadge}`).length;
+    }
+    async function selectFromGlobalChat(view: ReturnType<typeof render>, rowLabel: string) {
+      // Opens the 💬 dropdown and clicks the conversation row. The list is populated by
+      // useUnreadTotal's async listConversations fetch, so wait for the row to appear.
+      await act(async () => {
+        fireEvent.click(view.getByRole("button", { name: /Conversations|unread message/ }));
+      });
+      // Scope to the dropdown's own rows — an already-open panel's header shows the same name.
+      const row = await waitFor(() => {
+        const match = Array.from(view.container.querySelectorAll(`.${badgeStyles.row}`)).find((el) =>
+          el.textContent?.includes(rowLabel),
+        );
+        if (!match) throw new Error(`no 💬 row for ${rowLabel}`);
+        return match;
+      });
+      await act(async () => {
+        fireEvent.click(row);
+      });
+      // Let ConversationView's openConversationWith/getMessages promises settle.
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+
+    it("opens an active peer spatial DM in the SPATIAL slot (badge shown, spatial_session_start emitted once) — not remote", async () => {
+      chatListState.conversations = [dmConv];
+      spatialSessionsState.sessions = [{ sessionId: dmConv.id, members: ["peer@example.com"] }];
+      const view = render(<OfficeMap />);
+
+      await selectFromGlobalChat(view, "Peer Person");
+
+      expect(panelCount(view.container)).toBe(1);
+      expect(spatialBadgeCount(view.container)).toBe(1);
+      expect(emitSpatialSessionStartMock).toHaveBeenCalledTimes(1);
+      expect(emitSpatialSessionStartMock).toHaveBeenCalledWith(dmConv.id);
+    });
+
+    it("keeps a normal DM (no live session) REMOTE: no spatial badge, no spatial_session_start", async () => {
+      chatListState.conversations = [dmConv];
+      spatialSessionsState.sessions = [];
+      const view = render(<OfficeMap />);
+
+      await selectFromGlobalChat(view, "Peer Person");
+
+      expect(panelCount(view.container)).toBe(1);
+      expect(spatialBadgeCount(view.container)).toBe(0);
+      expect(emitSpatialSessionStartMock).not.toHaveBeenCalled();
+    });
+
+    it("treats a stale self-only session as REMOTE", async () => {
+      chatListState.conversations = [dmConv];
+      spatialSessionsState.sessions = [{ sessionId: dmConv.id, members: ["bon"] }];
+      const view = render(<OfficeMap />);
+
+      await selectFromGlobalChat(view, "Peer Person");
+
+      expect(panelCount(view.container)).toBe(1);
+      expect(spatialBadgeCount(view.container)).toBe(0);
+      expect(emitSpatialSessionStartMock).not.toHaveBeenCalled();
+    });
+
+    it("opens an active spatial GROUP in the spatial group slot, and an inactive group remotely", async () => {
+      chatListState.conversations = [groupConv];
+      spatialSessionsState.sessions = [
+        { sessionId: groupConv.id, members: ["peer@example.com", "other@example.com"] },
+      ];
+      const active = render(<OfficeMap />);
+      await selectFromGlobalChat(active, "Design Sync");
+      expect(panelCount(active.container)).toBe(1);
+      expect(spatialBadgeCount(active.container)).toBe(1);
+      expect(emitSpatialSessionStartMock).toHaveBeenCalledTimes(1);
+      expect(emitSpatialSessionStartMock).toHaveBeenCalledWith(groupConv.id);
+      active.unmount();
+
+      emitSpatialSessionStartMock.mockClear();
+      spatialSessionsState.sessions = [];
+      const inactive = render(<OfficeMap />);
+      await selectFromGlobalChat(inactive, "Design Sync");
+      expect(panelCount(inactive.container)).toBe(1);
+      expect(spatialBadgeCount(inactive.container)).toBe(0);
+      expect(emitSpatialSessionStartMock).not.toHaveBeenCalled();
+    });
+
+    it("closes an existing REMOTE window for the same DM when it is reopened as spatial — never both at once, start emitted once", async () => {
+      chatListState.conversations = [dmConv];
+      spatialSessionsState.sessions = [];
+      const view = render(<OfficeMap />);
+
+      // Step 1: no live session yet -> remote window.
+      await selectFromGlobalChat(view, "Peer Person");
+      expect(panelCount(view.container)).toBe(1);
+      expect(spatialBadgeCount(view.container)).toBe(0);
+
+      // Step 2: the peer walks up and opens this DM via Character -> Chat (server now broadcasts
+      // a session for it); the user reopens it from Global Chat.
+      spatialSessionsState.sessions = [{ sessionId: dmConv.id, members: ["peer@example.com"] }];
+      view.rerender(<OfficeMap />);
+      await selectFromGlobalChat(view, "Peer Person");
+
+      // Exactly one panel remains (the remote one was closed), and it is the spatial one.
+      expect(panelCount(view.container)).toBe(1);
+      expect(spatialBadgeCount(view.container)).toBe(1);
+      expect(emitSpatialSessionStartMock).toHaveBeenCalledTimes(1);
+      expect(emitSpatialSessionStartMock).toHaveBeenCalledWith(dmConv.id);
     });
   });
 });

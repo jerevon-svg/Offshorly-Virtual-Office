@@ -110,3 +110,28 @@ export function classifyUpgrade(input: {
 }): "incumbent" | "joiner" {
   return input.openConversationId === input.payload.oldConversationId ? "incumbent" : "joiner";
 }
+
+/**
+ * Routes a Global Chat (💬 list) conversation click to the SPATIAL slot or a
+ * REMOTE floating window. Spatial only when a live server-broadcast spatial
+ * session exists for this exact conversation id (sessionId === Conversation.id)
+ * AND it contains at least one member other than self — i.e. a peer actually
+ * has that conversation open via Character -> Chat right now. Everything else
+ * (no session, or a stale self-only session left over from our own earlier
+ * open) stays remote, so a normal persistent DM/group never triggers
+ * spatial_session_start / "In Conversation" just from being reopened here.
+ */
+export interface ConversationSlotSession extends SlotWalkSession {
+  sessionId: string;
+}
+
+export function resolveConversationSlot(input: {
+  conversationId: string;
+  sessions: ConversationSlotSession[];
+  selfEmail: string;
+}): "spatial" | "remote" {
+  const self = input.selfEmail.toLowerCase();
+  const session = input.sessions.find((s) => s.sessionId === input.conversationId);
+  if (!session) return "remote";
+  return session.members.some((m) => m.toLowerCase() !== self) ? "spatial" : "remote";
+}

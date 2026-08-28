@@ -134,6 +134,7 @@ import {
   incumbentCentersForAnchor,
   resolveSelfSlotWalk,
   slotWalkSignature,
+  resolveConversationSlot,
 } from "./clusterFormation";
 import { getCurrentUserId, useCurrentUserAvatarId } from "../../data/currentUser";
 import { useCurrentUser } from "../../auth/currentUserStore";
@@ -719,29 +720,65 @@ export function OfficeMap() {
   }, [remoteChatWindows, openChat, openGroupConv, spatialChatMinimized]);
 
   // Routes a conversation-list click (the 💬 Global Chat icon's dropdown — MessageNotification
-  // Badge's `conversations` list, below its New Message/Find Person/New Group Chat actions) to
-  // the REMOTE slot — every interaction that starts from the Global Chat icon must stay remote:
-  // no auto-walk, no spatial_session_start, no "📍 Spatial Conversation" badge, and (per the DND
-  // feature) never gated by the target's DND status. Character -> Chat (handleChoose's "chat"
-  // action, triggered by clicking a character ON THE MAP) remains the only path that opens the
-  // SPATIAL slot — that is a completely separate, untouched code path.
+  // Badge's `conversations` list, below its New Message/Find Person/New Group Chat actions).
+  // Global Chat is a unified entry point onto the same persistent conversations, so the slot is
+  // decided by the conversation's LIVE state, not by which button was clicked:
   //
-  // NOTE — deliberate behavior change from a prior fix (previously routed here to the spatial
-  // slot instead): reopening an existing spatial conversation via this icon used to be how the
-  // non-initiating party in a Character->Chat DM "joined their side" for spatial_session_start
-  // purposes, which a 3rd person's Ask-to-Join eligibility (>=2 spatial members) depended on.
-  // Since the current spec requires the Global Chat icon to NEVER be spatial, responding to an
-  // existing spatial conversation via this icon (rather than walking back to the sender) no
-  // longer counts toward that 3rd-person eligibility — a known, deliberate tradeoff, not an
-  // oversight. Ask-to-Join itself (spatial approach -> chat -> a 3rd person's Ask-to-Join option)
-  // is otherwise fully intact.
+  // - SPATIAL (openChat/openGroupConv): a server-broadcast spatial session exists for this exact
+  //   conversation id with at least one member other than self — a peer currently has it open
+  //   via Character -> Chat (e.g. they walked up and messaged us). Opening it here attaches to
+  //   that session through the spatial slot's existing onConversationOpen wiring, so
+  //   spatial_session_start, "In Conversation", Mechanism 1's auto-walk to the cluster slot,
+  //   and a 3rd person's Ask-to-Join eligibility (>=2 members) all flow through the same
+  //   mechanisms as Character -> Chat — no need to find the peer on the map and click Chat
+  //   again. Not gated by the target's DND status: the peer initiated this session.
+  // - REMOTE (remoteChatWindows): no live session, or only a stale self-only one — a normal
+  //   persistent DM/group. Stays a floating remote window: no auto-walk, no
+  //   spatial_session_start, no "📍 Spatial Conversation" badge, never DND-gated.
+  //
+  // The two views are mutually exclusive per conversation: routing to spatial closes any remote
+  // window already open for the same DM/group, so a conversation never renders twice. (An
+  // earlier version routed EVERY Global Chat click to the spatial slot — which made plain
+  // remote chats flip "In Conversation" — and the correction after that routed NONE, which lost
+  // the peer's spatial context entirely. resolveConversationSlot is the middle ground.)
   function onSelectConversation(conv: Conversation) {
+    const slot = resolveConversationSlot({
+      conversationId: conv.id,
+      sessions: spatialSessions,
+      selfEmail: selfChatId,
+    });
+
     if (conv.type === "group") {
-      openOrFocusRemoteGroup({ id: conv.id, participantIds: conv.participantIds, title: conv.title ?? null });
+      if (slot === "remote") {
+        openOrFocusRemoteGroup({ id: conv.id, participantIds: conv.participantIds, title: conv.title ?? null });
+        return;
+      }
+      closeRemoteWindow(`group:${conv.id}`);
+      // Same mutual-exclusion clearing the conversation_upgraded handler does — openChat must be
+      // nulled whenever openGroupConv is set, or both render guards go false and both vanish.
+      setOpenChat(null);
+      setSpatialChatMinimized(false);
+      setOpenGroupConv({
+        conversationId: conv.id,
+        participantEmails: conv.participantIds,
+        title: conv.title ?? null,
+      });
       return;
     }
+
     const peerEmail = conv.participantIds.find((id) => id.toLowerCase() !== selfChatId.toLowerCase());
-    if (peerEmail) openOrFocusRemoteDm(peerEmail);
+    if (!peerEmail) return;
+    if (slot === "remote") {
+      openOrFocusRemoteDm(peerEmail);
+      return;
+    }
+    closeRemoteWindow(`dm:${peerEmail.toLowerCase()}`);
+    // Mirrors handleChoose's "chat" branch (minus the approach walk — Mechanism 1 walks self to
+    // the cluster slot once the session reaches >=2 members): opening the DM panel must clear
+    // any open group panel, for the same mutual-exclusion reason as above.
+    setOpenGroupConv(null);
+    setSpatialChatMinimized(false);
+    setOpenChat(buildPeerLayer(peerEmail));
   }
 
   // Global Chat "New Message"/"Find Person" resolution — both search/select flows land here with
