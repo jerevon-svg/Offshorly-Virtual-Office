@@ -11,6 +11,10 @@ export interface ChatMessage {
   readBy: string[];
   // True for the mock-only auto-echo reply — Phase 3 removes echo entirely.
   mock?: boolean;
+  // @mentions V1 — server-validated (real conversation participant) emails mentioned in this
+  // message. Always an array, never undefined/null on the wire (see backend's
+  // serialize_message_dict) — empty for both "no mentions" and pre-mentions-feature rows.
+  mentionedEmails: string[];
 }
 
 export interface Conversation {
@@ -20,6 +24,9 @@ export interface Conversation {
   // Only populated in real mode (backend-derived, per-requester) — see
   // backend/src/repo/conversations.ts. Absent/undefined in mock mode.
   unreadCount?: number;
+  // Only populated in real mode, same convention as unreadCount — count of unread messages that
+  // mention the caller (feature spec section 15's "lightweight indicator/count").
+  mentionCount?: number;
   // "dm" | "group" — backend already sends this on every row from
   // GET /conversations (see ConversationOut in backend/app/schemas/chat.py).
   // Missing/undefined (e.g. MockChatService, or an older cached row) must be
@@ -37,6 +44,14 @@ export interface UnreadCountUpdate {
   count: number;
 }
 export type UnreadCountListener = (update: UnreadCountUpdate) => void;
+
+// @mentions V1 — mirrors UnreadCountUpdate's shape/semantics exactly, scoped to unread messages
+// that mention the caller.
+export interface MentionCountUpdate {
+  conversationId: string;
+  count: number;
+}
+export type MentionCountListener = (update: MentionCountUpdate) => void;
 
 // Delivery/read receipts, Messenger-style watermarks (see backend's
 // compute_message_receipts) — a per-conversation timestamp, not a per-message
@@ -107,6 +122,10 @@ export interface ChatService {
     conversationId: string;
     senderId: string;
     text: string;
+    // @mentions V1 — candidate participant emails the composer resolved via autocomplete;
+    // server-side re-validated against actual membership (see insert_message), never trusted
+    // as-is. Omitted/empty means no mentions.
+    mentionedEmails?: string[];
   }): Promise<ChatMessage>;
   openConversationWith(peerId: string, selfId: string): Promise<Conversation>;
   onMessage(cb: MessageListener): () => void;
@@ -120,6 +139,9 @@ export interface ChatService {
   // tracking, so MockChatService simply doesn't implement them.
   markRead?(input: { conversationId: string; upToSentAt: string }): void;
   onUnreadCount?(cb: UnreadCountListener): () => void;
+  // @mentions V1 — mock mode has no server-side mention validation/counting, so
+  // MockChatService simply doesn't implement this (same pattern as onUnreadCount et al).
+  onMentionCount?(cb: MentionCountListener): () => void;
   // Fire-and-forget ack that the caller's client has received message(s) up
   // to a given sentAt — mirrors markRead's shape/semantics but for delivery.
   markDelivered?(input: { conversationId: string; upToSentAt: string }): void;

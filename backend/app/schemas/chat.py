@@ -20,7 +20,9 @@ def serialize_message_dict(message, delivered_to: list[str], read_by: list[str])
     """Plain-dict serializer used by the socket layer (app/realtime/socket.py), which emits raw
     JSON-able payloads rather than FastAPI response models. `deliveredTo`/`readBy` are per-reader
     email lists derived from watermark comparisons (see app/repositories/chat.py's
-    compute_message_receipts) — an empty list means nobody yet, never null."""
+    compute_message_receipts) — an empty list means nobody yet, never null. `mentionedEmails` is
+    always a list (never null on the wire) even though the column is nullable — pre-mentions rows
+    and messages with no mentions both serialize to []."""
     return {
         "id": message.id,
         "conversationId": message.conversation_id,
@@ -29,6 +31,7 @@ def serialize_message_dict(message, delivered_to: list[str], read_by: list[str])
         "sentAt": to_iso_z(message.sent_at),
         "deliveredTo": list(delivered_to),
         "readBy": list(read_by),
+        "mentionedEmails": list(message.mentioned_emails or []),
     }
 
 
@@ -44,6 +47,9 @@ class ChatMessageOut(BaseModel):
     # app/repositories/chat.py's compute_message_receipts. Empty list = nobody yet, never null.
     delivered_to: list[str] = Field(default_factory=list, alias="deliveredTo")
     read_by: list[str] = Field(default_factory=list, alias="readBy")
+    # @mentions V1 — server-validated participant emails (see insert_message). Empty list, never
+    # null, for both "no mentions" and pre-mentions-feature rows.
+    mentioned_emails: list[str] = Field(default_factory=list, alias="mentionedEmails")
 
     @field_serializer("sent_at")
     def _serialize_sent_at(self, dt: datetime) -> str:
@@ -60,6 +66,11 @@ class ConversationOut(BaseModel):
     # response_model_exclude_none) on POST /conversations, matching
     # backend/src/repo/conversations.ts's Conversation.unreadCount semantics.
     unread_count: int | None = Field(default=None, alias="unreadCount")
+    # Mirrors unread_count's "only populated on the list endpoint" convention — count of unread
+    # messages that mention the caller (see repositories/chat.py's mention_count). Feature spec
+    # section 15: "lightweight indicator/count where the existing conversation list can support
+    # it cleanly" — this IS that list.
+    mention_count: int | None = Field(default=None, alias="mentionCount")
     # "dm" | "group" — see app/models/conversation.py's Conversation.type. Defaults to "dm" for
     # any pre-Stage-2 caller that hasn't started passing it explicitly.
     type: str = Field(default="dm")

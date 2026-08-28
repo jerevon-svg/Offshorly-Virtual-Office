@@ -597,6 +597,82 @@ async def test_find_group_by_exact_members_tie_break_by_last_message_at_desc(db_
     assert found_again == g1["id"]
 
 
+async def test_insert_message_validates_mentions_against_actual_participants(db_session):
+    """@mentions V1: a real mention must resolve to an actual conversation participant — the
+    repo re-validates the client's claimed mentionedEmails rather than trusting them as-is."""
+    conv = await _seed_conversation(db_session)  # participants: a, b
+
+    message = await chat_repo.insert_message(
+        db_session,
+        conv["id"],
+        "a@example.com",
+        "hi @b, also @outsider and @NOT-AN-EMAIL",
+        mentioned_emails=["B@Example.com", "outsider@example.com", "not-a-participant@example.com"],
+    )
+
+    # Only b (a real participant, case/whitespace-normalized) survives — outsider/non-participant
+    # candidates are dropped even though the client claimed them.
+    assert message.mentioned_emails == ["b@example.com"]
+
+
+async def test_insert_message_with_no_mentions_stores_null(db_session):
+    conv = await _seed_conversation(db_session)
+    message = await chat_repo.insert_message(db_session, conv["id"], "a@example.com", "just text")
+    assert message.mentioned_emails is None
+
+
+async def test_insert_message_with_only_invalid_mentions_stores_null_not_empty_list(db_session):
+    conv = await _seed_conversation(db_session)
+    message = await chat_repo.insert_message(
+        db_session, conv["id"], "a@example.com", "hi @stranger", mentioned_emails=["stranger@example.com"]
+    )
+    assert message.mentioned_emails is None
+
+
+async def test_mention_count_counts_only_unread_messages_mentioning_the_caller(db_session):
+    conv = await _seed_conversation(db_session)  # participants: a, b
+
+    await chat_repo.insert_message(
+        db_session, conv["id"], "a@example.com", "hey @b", mentioned_emails=["b@example.com"]
+    )
+    await chat_repo.insert_message(db_session, conv["id"], "a@example.com", "no mention here")
+    await db_session.commit()
+
+    count = await chat_repo.mention_count(db_session, conv["id"], "b@example.com")
+    assert count == 1
+
+    # The sender never counts their own message as a self-mention scenario here, and a
+    # non-participant naturally has no watermark/mentions to count.
+    count_for_sender = await chat_repo.mention_count(db_session, conv["id"], "a@example.com")
+    assert count_for_sender == 0
+
+
+async def test_mention_count_drops_to_zero_once_marked_read(db_session):
+    conv = await _seed_conversation(db_session)
+    msg = await chat_repo.insert_message(
+        db_session, conv["id"], "a@example.com", "hey @b", mentioned_emails=["b@example.com"]
+    )
+    await db_session.commit()
+
+    assert await chat_repo.mention_count(db_session, conv["id"], "b@example.com") == 1
+
+    await chat_repo.mark_read(db_session, conv["id"], "b@example.com", msg.sent_at)
+    await db_session.commit()
+
+    assert await chat_repo.mention_count(db_session, conv["id"], "b@example.com") == 0
+
+
+async def test_list_conversations_for_user_includes_mention_count(db_session):
+    conv = await _seed_conversation(db_session)
+    await chat_repo.insert_message(
+        db_session, conv["id"], "a@example.com", "hey @b", mentioned_emails=["b@example.com"]
+    )
+    await db_session.commit()
+
+    [row] = await chat_repo.list_conversations_for_user(db_session, "b@example.com")
+    assert row["mention_count"] == 1
+
+
 async def test_create_group_conversation_helper_no_commit(db_session):
     """`_create_group_conversation` is the no-commit core `accept_join_request` relies on to
     fold group creation into its own surrounding transaction — proves it genuinely never

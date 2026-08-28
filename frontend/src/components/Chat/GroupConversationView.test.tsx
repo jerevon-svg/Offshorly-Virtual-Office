@@ -22,6 +22,7 @@ function makeMessage(overrides: Partial<ChatMessage>): ChatMessage {
     sentAt: "2026-08-22T10:00:00.000Z",
     deliveredTo: [],
     readBy: [],
+    mentionedEmails: [],
     ...overrides,
   };
 }
@@ -163,6 +164,7 @@ describe("GroupConversationView", () => {
         conversationId: CONVERSATION_ID,
         senderId: SELF,
         text: "hey team",
+        mentionedEmails: [],
       }),
     );
   });
@@ -378,5 +380,51 @@ describe("deriveGroupDeliveryLabel", () => {
     const { deriveGroupDeliveryLabel } = await import("./GroupConversationView");
     const msg = makeMessage({ readBy: [], deliveredTo: [] });
     expect(deriveGroupDeliveryLabel(msg, 2)).toBe("Sent");
+  });
+
+  describe("@mentions", () => {
+    it("typing @ suggests the other GC participants, not the whole roster", async () => {
+      const service = makeFakeService();
+      await mountWith(service);
+      await waitFor(() => expect(service.getMessages).toHaveBeenCalled());
+
+      const textarea = screen.getByPlaceholderText("Type a message…");
+      fireEvent.change(textarea, { target: { value: "@", selectionStart: 1 } });
+
+      await waitFor(() => {
+        expect(screen.getByRole("option", { name: "alex" })).toBeInTheDocument();
+        expect(screen.getByRole("option", { name: "lui" })).toBeInTheDocument();
+      });
+      // Only the two OTHER participants — never the sender themselves.
+      expect(screen.queryByRole("option", { name: "bon" })).toBeNull();
+    });
+
+    it("selecting one candidate mentions only that employee, not the other participant", async () => {
+      const sendMessage = vi.fn(async (input: { conversationId: string; senderId: string; text: string; mentionedEmails?: string[] }) =>
+        makeMessage({ id: "sent-mention", ...input }),
+      );
+      const service = makeFakeService({ sendMessage });
+      await mountWith(service);
+      await waitFor(() => expect(service.getMessages).toHaveBeenCalled());
+
+      const textarea = screen.getByPlaceholderText("Type a message…") as HTMLTextAreaElement;
+      fireEvent.change(textarea, { target: { value: "hey @al", selectionStart: 7 } });
+      const option = await screen.findByRole("option", { name: "alex" });
+      fireEvent.mouseDown(option);
+
+      await waitFor(() => expect(textarea.value).toBe("hey @alex "));
+
+      fireEvent.click(screen.getByLabelText("Send"));
+
+      await waitFor(() =>
+        // handleSend() trims the draft before sending, so the trailing space insertMention adds
+        // is gone by the time sendMessage is called.
+        expect(sendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({ text: "hey @alex", mentionedEmails: [OTHER_A] }),
+        ),
+      );
+      const [call] = sendMessage.mock.calls;
+      expect(call[0].mentionedEmails).not.toContain(OTHER_B);
+    });
   });
 });

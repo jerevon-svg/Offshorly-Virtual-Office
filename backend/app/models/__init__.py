@@ -4,6 +4,8 @@ from app.models.feed import FeedComment, FeedPost, FeedReaction
 from app.models.hub import HubItem, HubItemState
 from app.models.message import Message
 from app.models.request import ConversationRequest
+from app.models.room_request import RoomEntryRequest
+from app.models.talk_request import TalkRequest
 
 __all__ = [
     "Avatar",
@@ -16,4 +18,6 @@ __all__ = [
     "HubItem",
     "HubItemState",
     "Message",
+    "RoomEntryRequest",
+    "TalkRequest",
 ]

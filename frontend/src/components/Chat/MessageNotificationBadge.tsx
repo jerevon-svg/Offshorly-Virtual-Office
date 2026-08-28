@@ -106,9 +106,18 @@ export function MessageNotificationBadge({
               }}
             >
               <span>{labelFor(conv)}</span>
-              {!!conv.unreadCount && conv.unreadCount > 0 && (
-                <span className={styles.rowCount}>{conv.unreadCount}</span>
-              )}
+              <span className={styles.rowBadges}>
+                {/* @mentions V1 — lightweight indicator, feature spec section 15: shown
+                    alongside (not instead of) the existing unread count. */}
+                {!!conv.mentionCount && conv.mentionCount > 0 && (
+                  <span className={styles.rowMentionCount} aria-label={`${conv.mentionCount} mentions`}>
+                    @{conv.mentionCount}
+                  </span>
+                )}
+                {!!conv.unreadCount && conv.unreadCount > 0 && (
+                  <span className={styles.rowCount}>{conv.unreadCount}</span>
+                )}
+              </span>
             </button>
           ))}
         </div>

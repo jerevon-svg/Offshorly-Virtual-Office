@@ -8,6 +8,10 @@ import { setDevIdentity as setOfflineLineupDevIdentity } from "../services/prese
 import { setDevIdentity as setSpatialWalkDevIdentity } from "../services/presence/spatialWalkClient";
 import { setDevIdentity as setHubClientDevIdentity } from "../services/hub/hubClient";
 import { setDevIdentity as setFeedClientDevIdentity } from "../services/feed/feedClient";
+import { setDevIdentity as setDndClientDevIdentity } from "../services/presence/dndClient";
+import { setDevIdentity as setRoomPresenceDevIdentity } from "../services/presence/roomPresenceClient";
+import { setDevIdentity as setRoomRequestsClientDevIdentity } from "../services/chat/roomRequestsClient";
+import { setDevIdentity as setTalkRequestsClientDevIdentity } from "../services/chat/talkRequestsClient";
 
 // Boot-time permission gate for the Virtual Office. Calls Atlas's
 // GET /api/v1/auth/me and checks the can_view_virtual_office flag.
@@ -201,6 +205,15 @@ function seedDevBypassIdentity(): void {
   setSpatialWalkDevIdentity(email);
   setHubClientDevIdentity(email);
   setFeedClientDevIdentity(email);
+  // Same reasoning for the DND-room-lock feature's sockets (dnd status broadcast, room
+  // occupancy broadcast, room-entry-request REST+socket) — also wired up unconditionally by
+  // OfficeMap.tsx outside the mock/real ChatService abstraction. Without seeding these too,
+  // ensureSocket()'s "no devEmail and no real auth token" guard silently no-ops every emit/
+  // subscribe call in dev-bypass mode, which is exactly why the feature appeared to do nothing.
+  setDndClientDevIdentity(email);
+  setRoomPresenceDevIdentity(email);
+  setRoomRequestsClientDevIdentity(email);
+  setTalkRequestsClientDevIdentity(email);
 }
 
 export function useAuthGate(): AuthGateStatus {

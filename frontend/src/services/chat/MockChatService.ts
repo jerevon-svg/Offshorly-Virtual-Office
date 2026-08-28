@@ -102,6 +102,7 @@ export class MockChatService implements ChatService {
     conversationId: string;
     senderId: string;
     text: string;
+    mentionedEmails?: string[];
   }): Promise<ChatMessage> {
     const message = this.appendMessage({
       id: nextMessageId(),
@@ -112,6 +113,8 @@ export class MockChatService implements ChatService {
       // Mock mode has no server-side receipt tracking — always empty, never populated.
       deliveredTo: [],
       readBy: [],
+      // Mock mode has no participant-validation concept — trusted as-is, unlike RealChatService.
+      mentionedEmails: input.mentionedEmails ?? [],
     });
 
     // Mock-only auto-echo: a user-originated send gets one canned reply from
@@ -132,6 +135,7 @@ export class MockChatService implements ChatService {
             sentAt: new Date().toISOString(),
             deliveredTo: [],
             readBy: [],
+            mentionedEmails: [],
             mock: true,
           });
         }, delay);

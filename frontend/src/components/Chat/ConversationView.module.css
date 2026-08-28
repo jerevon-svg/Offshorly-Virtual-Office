@@ -76,6 +76,17 @@
   font-size: 11px;
 }
 
+/* Pinned DND helper line, between the scrolling .messages list and the .composer — plain
+   informational text, deliberately not styled like a message (no bubble/background/border/
+   icon/avatar/timestamp). */
+.dndHelperText {
+  flex-shrink: 0;
+  text-align: center;
+  color: #9ca3af;
+  font-size: 11px;
+  padding: 4px 16px;
+}
+
 .spatialBadge {
   flex-shrink: 0;
   color: #2563eb;
@@ -285,12 +296,26 @@
 }
 
 .composer {
+  position: relative; /* anchors MentionAutocomplete's absolute positioning */
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 12px 16px;
   border-top: 1px solid #e5e7eb;
   background: #fff;
+}
+
+/* @mentions V1 — subtle highlight; the current viewer's own mention is slightly more noticeable
+   (heavier weight + a touch more opacity) without being loud. */
+.mention {
+  background: rgba(59, 130, 246, 0.14);
+  color: #1d4ed8;
+  border-radius: 4px;
+  padding: 0 2px;
+}
+.mentionSelf {
+  background: rgba(59, 130, 246, 0.24);
+  font-weight: 600;
 }
 
 .textarea {

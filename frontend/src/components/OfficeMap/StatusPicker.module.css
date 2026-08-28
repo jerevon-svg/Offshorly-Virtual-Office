@@ -25,3 +25,108 @@
   outline: 2px solid rgba(255, 255, 255, 0.4);
   outline-offset: 1px;
 }
+
+/* Active-DND chip — replaces the <select> while manualStatus === "DND", showing the live
+   countdown (feature spec: "expose remaining time where appropriate"). */
+.dndChip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(239, 68, 68, 0.18);
+  color: #f0f0f0;
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  border-radius: 999px;
+  padding: 7px 8px 7px 12px;
+  font-size: 13px;
+}
+
+.dndChipCancel {
+  all: unset;
+  cursor: pointer;
+  color: rgba(240, 240, 240, 0.75);
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 999px;
+}
+.dndChipCancel:hover {
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+}
+
+.popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 220px;
+  background: rgba(26, 26, 26, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 12px;
+  backdrop-filter: blur(4px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.popoverTitle {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.durationRow {
+  display: flex;
+  gap: 6px;
+}
+
+.durationButton {
+  all: unset;
+  cursor: pointer;
+  flex: 1;
+  text-align: center;
+  font-size: 12px;
+  padding: 6px 4px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #f0f0f0;
+}
+.durationButton:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+.durationButton:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.reasonSelect {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f0f0f0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.allowanceLine {
+  font-size: 11px;
+  color: rgba(240, 240, 240, 0.6);
+}
+
+.exhaustedMessage {
+  font-size: 12px;
+  line-height: 1.4;
+  color: rgba(240, 240, 240, 0.85);
+}
+
+.requestExtendedButton {
+  all: unset;
+  cursor: not-allowed;
+  text-align: center;
+  font-size: 12px;
+  padding: 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(240, 240, 240, 0.45);
+}

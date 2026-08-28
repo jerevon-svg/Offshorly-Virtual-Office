@@ -36,6 +36,9 @@ export interface UnreadTotalState {
 
 export function useUnreadTotal(selfId: string): UnreadTotalState {
   const [countsByConversation, setCountsByConversation] = useState<Record<string, number>>({});
+  // @mentions V1 — mirrors countsByConversation's exact shape/update pattern (initial fetch +
+  // live onMentionCount push), just for mentionCount instead of unreadCount.
+  const [mentionCountsByConversation, setMentionCountsByConversation] = useState<Record<string, number>>({});
   // Keyed by conversationId — holds enough of each Conversation to resolve
   // a peer id for the click-through list. Filled from the initial fetch;
   // refetched wholesale if a live push ever references a conversation this
@@ -52,13 +55,16 @@ export function useUnreadTotal(selfId: string): UnreadTotalState {
     return chatService.listConversations().then((conversations: Conversation[]) => {
       const byId: Record<string, Conversation> = {};
       const counts: Record<string, number> = {};
+      const mentionCounts: Record<string, number> = {};
       for (const conv of conversations) {
         byId[conv.id] = conv;
         if (conv.unreadCount) counts[conv.id] = conv.unreadCount;
+        if (conv.mentionCount) mentionCounts[conv.id] = conv.mentionCount;
       }
       conversationsRef.current = byId;
       setConversationsList(conversations);
       setCountsByConversation(counts);
+      setMentionCountsByConversation(mentionCounts);
     });
   }, []);
 
@@ -88,9 +94,24 @@ export function useUnreadTotal(selfId: string): UnreadTotalState {
       });
     });
 
+    const unsubscribeMentions = chatService.onMentionCount?.(({ conversationId, count }) => {
+      if (cancelled) return;
+      if (!(conversationId in conversationsRef.current)) return; // refetch above already covers unknown conversations
+      setMentionCountsByConversation((prev) => {
+        if (count <= 0) {
+          if (!(conversationId in prev)) return prev;
+          const next = { ...prev };
+          delete next[conversationId];
+          return next;
+        }
+        return { ...prev, [conversationId]: count };
+      });
+    });
+
     return () => {
       cancelled = true;
       unsubscribe?.();
+      unsubscribeMentions?.();
     };
   }, [refetch]);
 
@@ -118,9 +139,10 @@ export function useUnreadTotal(selfId: string): UnreadTotalState {
       .map((conv) => ({
         ...conv,
         unreadCount: countsByConversation[conv.id] ?? 0,
+        mentionCount: mentionCountsByConversation[conv.id] ?? 0,
       }))
       .sort((a, b) => b.lastMessageAt.localeCompare(a.lastMessageAt));
-  }, [conversationsList, countsByConversation]);
+  }, [conversationsList, countsByConversation, mentionCountsByConversation]);
 
   return { total, unreadConversations, conversations, refetch };
 }

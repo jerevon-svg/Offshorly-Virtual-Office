@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { chatMode, chatService } from "../../services/chat";
 import type { ChatMessage, ConnectionState } from "../../services/chat";
 import { ChatWindowHeader } from "./ChatWindowHeader";
+import { MentionAutocomplete } from "./MentionAutocomplete";
+import { renderMessageText } from "./MentionText";
+import { useMentionComposer } from "./useMentionComposer";
 import styles from "./ConversationView.module.css";
 
 export type GroupConversationViewProps = {
@@ -177,6 +180,12 @@ export function GroupConversationView({
   );
   const headerTitle = title ?? otherParticipants.map(resolveDisplayName).join(", ");
 
+  // @mentions V1: GC autocomplete offers the current conversation's OTHER participants only —
+  // never the whole company roster (same "existing conversation" scoping as the DM case).
+  const mention = useMentionComposer(
+    otherParticipants.map((email) => ({ email, displayName: resolveDisplayName(email) })),
+  );
+
   useEffect(() => {
     return () => {
       window.clearTimeout(typingTimerRef.current);
@@ -260,7 +269,8 @@ export function GroupConversationView({
     chatService.sendTyping?.({ conversationId, isTyping: false });
     setSendError(null);
     setFailedText(null);
-    chatService.sendMessage({ conversationId, senderId: selfId, text }).catch((err: Error) => {
+    const mentionedEmails = mention.mentionsForSend(text);
+    chatService.sendMessage({ conversationId, senderId: selfId, text, mentionedEmails }).catch((err: Error) => {
       setSendError(err?.message || "Failed to send message.");
       setFailedText(text);
     });
@@ -271,6 +281,7 @@ export function GroupConversationView({
     if (!text) return;
     setDraft("");
     sendText(text);
+    mention.resetAfterSend();
   }
 
   function handleRetry() {
@@ -348,7 +359,7 @@ export function GroupConversationView({
                   <div className={styles.bubbleColumn}>
                     {!isOwn && <span className={styles.timestamp}>{senderName}</span>}
                     <div className={isOwn ? `${styles.message} ${styles.own}` : `${styles.message} ${styles.peer}`}>
-                      {msg.text}
+                      {renderMessageText(msg.text, msg.mentionedEmails, resolveDisplayName, selfId)}
                     </div>
                     <span className={isOwn ? `${styles.timestamp} ${styles.timestampRight}` : styles.timestamp}>
                       {formatMessageTime(msg.sentAt)}
@@ -379,12 +390,30 @@ export function GroupConversationView({
         </div>
       )}
       <div className={styles.composer}>
+        {mention.trigger && mention.filtered.length > 0 && (
+          <MentionAutocomplete
+            candidates={mention.filtered}
+            highlightedIndex={mention.highlightedIndex}
+            onHover={mention.setHighlightedIndex}
+            onSelect={(c) => mention.selectCandidate(c, draft, setDraft)}
+          />
+        )}
         <textarea
+          ref={mention.textareaRef}
           className={styles.textarea}
           value={draft}
           placeholder={isNotConnected ? "Connecting…" : "Type a message…"}
-          onChange={(e) => handleDraftChange(e.target.value)}
+          onChange={(e) => {
+            handleDraftChange(e.target.value);
+            mention.onDraftChanged(e.target.value, e.target.selectionStart ?? e.target.value.length);
+          }}
           onKeyDown={(e) => {
+            if (mention.trigger && mention.filtered.length > 0 && e.key === "Enter") {
+              e.preventDefault();
+              mention.selectCandidate(mention.filtered[mention.highlightedIndex], draft, setDraft);
+              return;
+            }
+            if (mention.handleKeyDown(e)) return;
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               handleSend();

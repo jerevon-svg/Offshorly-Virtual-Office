@@ -83,7 +83,7 @@ import { useCheckoutFlow } from "./useCheckoutFlow";
 import { WorkingStatusIndicator } from "./checkout/WorkingStatusIndicator";
 import { StatusPicker } from "./StatusPicker";
 import { useAutoStatusDetection } from "../../services/presence/useAutoStatusDetection";
-import { useSelfStatus } from "../../services/presence/selfStatusStore";
+import { endDnd, useSelfStatus } from "../../services/presence/selfStatusStore";
 import { mapAtlasToOfficeStatus, type OfficeStatus } from "../../services/presence/status";
 import { resolveManualStatusMovement } from "../../services/presence/statusMovement";
 import { emitGoOffline, emitComeOnline, useOfflineLineup } from "../../services/presence/offlineLineupClient";
@@ -104,6 +104,29 @@ import {
 } from "../../services/presence/spatialSessionStore";
 import { createJoinRequest, onRequestResolved } from "../../services/chat/requestsClient";
 import { JoinRequestPrompt } from "./JoinRequestPrompt";
+import {
+  cancelRoomEntryRequest,
+  createRoomEntryRequest,
+  onRoomRequestCancelled,
+  onRoomRequestResolved,
+} from "../../services/chat/roomRequestsClient";
+import { DndRequestQueue } from "./DndRequestQueue";
+import { TalkRequestToast } from "./TalkRequestToast";
+import {
+  cancelTalkRequest,
+  createTalkRequest,
+  onTalkRequestCancelled,
+  onTalkRequestResolved,
+  TalkRequestCooldownError,
+} from "../../services/chat/talkRequestsClient";
+import { RoomLockedToast } from "./RoomLockedToast";
+import { emitDndSet, useDndEmails } from "../../services/presence/dndClient";
+import {
+  emitRoomPresenceEnter,
+  emitRoomPresenceLeave,
+  useRoomPresence,
+} from "../../services/presence/roomPresenceClient";
+import { isRoomLocked } from "../../data/roomLock";
 import { assignClusterSlots } from "../../data/clusterSlots";
 import {
   classifyUpgrade,
@@ -695,28 +718,30 @@ export function OfficeMap() {
     return computeFloatingChatRightOffsets(items);
   }, [remoteChatWindows, openChat, openGroupConv, spatialChatMinimized]);
 
-  // Routes a conversation-list click to the SPATIAL slot — mirrors pre-floating-chat behavior.
-  // Reopening an existing conversation from the Global Chat list is how the non-initiating party
-  // in a Character->Chat DM/group actually joins their side (e.g. responding to an incoming
-  // message via the HUD icon rather than walking back to the sender) — routing this remote
-  // instead of spatial silently drops them from spatial_session_start, so the session never
-  // reaches the >=2 members canAskToJoin requires and Ask-to-Join never becomes eligible for a
-  // third user. Restored to setOpenChat/setOpenGroupConv (spatial) to fix that regression.
+  // Routes a conversation-list click (the 💬 Global Chat icon's dropdown — MessageNotification
+  // Badge's `conversations` list, below its New Message/Find Person/New Group Chat actions) to
+  // the REMOTE slot — every interaction that starts from the Global Chat icon must stay remote:
+  // no auto-walk, no spatial_session_start, no "📍 Spatial Conversation" badge, and (per the DND
+  // feature) never gated by the target's DND status. Character -> Chat (handleChoose's "chat"
+  // action, triggered by clicking a character ON THE MAP) remains the only path that opens the
+  // SPATIAL slot — that is a completely separate, untouched code path.
+  //
+  // NOTE — deliberate behavior change from a prior fix (previously routed here to the spatial
+  // slot instead): reopening an existing spatial conversation via this icon used to be how the
+  // non-initiating party in a Character->Chat DM "joined their side" for spatial_session_start
+  // purposes, which a 3rd person's Ask-to-Join eligibility (>=2 spatial members) depended on.
+  // Since the current spec requires the Global Chat icon to NEVER be spatial, responding to an
+  // existing spatial conversation via this icon (rather than walking back to the sender) no
+  // longer counts toward that 3rd-person eligibility — a known, deliberate tradeoff, not an
+  // oversight. Ask-to-Join itself (spatial approach -> chat -> a 3rd person's Ask-to-Join option)
+  // is otherwise fully intact.
   function onSelectConversation(conv: Conversation) {
     if (conv.type === "group") {
-      setOpenChat(null);
-      setSpatialChatMinimized(false);
-      setOpenGroupConv({
-        conversationId: conv.id,
-        participantEmails: conv.participantIds,
-        title: conv.title ?? null,
-      });
+      openOrFocusRemoteGroup({ id: conv.id, participantIds: conv.participantIds, title: conv.title ?? null });
       return;
     }
-    setOpenGroupConv(null);
-    setSpatialChatMinimized(false);
     const peerEmail = conv.participantIds.find((id) => id.toLowerCase() !== selfChatId.toLowerCase());
-    if (peerEmail) setOpenChat(buildPeerLayer(peerEmail));
+    if (peerEmail) openOrFocusRemoteDm(peerEmail);
   }
 
   // Global Chat "New Message"/"Find Person" resolution — both search/select flows land here with
@@ -1331,6 +1356,12 @@ export function OfficeMap() {
 
     if (checkoutFlow.state === "CHECKED_OUT" && prev !== "CHECKED_OUT") {
       reconciledLineupSlotRef.current = null;
+      // DND should only meaningfully protect an actively checked-in employee (feature spec
+      // section 16) — checking out ends any active DND session the same way a manual cancel
+      // does (restores the previous status, credits elapsed time, and — via the existing
+      // prevSelfOfficeStatusRef effect reacting to the resulting currentStatus change — emits
+      // dnd_set(false) so any room this person was protecting unlocks).
+      endDnd();
       emitGoOffline();
     } else if (prev === "CHECKED_OUT" && checkoutFlow.state !== "CHECKED_OUT") {
       reconciledLineupSlotRef.current = null;
@@ -1356,6 +1387,209 @@ export function OfficeMap() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [offlineLineup, checkoutFlow.state, isWalking, currentUser]);
   const { currentStatus: selfOfficeStatus, manualStatus } = useSelfStatus();
+
+  // DND-room-lock feature: live sets of who else is DND / who occupies which flat room, needed
+  // to derive isRoomLocked() at the door-approach gates in walkToSeat/approachCharacter/
+  // handleMapRightClick below. See dndClient.ts/roomPresenceClient.ts/data/roomLock.ts.
+  const dndEmails = useDndEmails();
+  const roomPresenceEntries = useRoomPresence();
+
+  function roomNameFor(roomId: string): string {
+    return rooms.find((r) => r.id === roomId)?.name ?? roomId;
+  }
+
+  // Edge-triggered self-DND broadcast — mirrors prevManualStatusRef's "initialize to current
+  // value so a fresh mount never counts as a transition" contract exactly. DND was previously
+  // client-side/localStorage-only (no realtime channel); this is the minimal addition making it
+  // visible to other clients, which room-lock derivation needs.
+  const prevSelfOfficeStatusRef = useRef(selfOfficeStatus);
+  useEffect(() => {
+    if (prevSelfOfficeStatusRef.current === selfOfficeStatus) return;
+    const wasDnd = prevSelfOfficeStatusRef.current === "DND";
+    const isDnd = selfOfficeStatus === "DND";
+    prevSelfOfficeStatusRef.current = selfOfficeStatus;
+    if (wasDnd !== isDnd) emitDndSet(isDnd);
+  }, [selfOfficeStatus]);
+
+  // Edge-triggered self room-occupancy broadcast — fires once per real "crossed into/out of a
+  // flat room" transition, reusing the exact same flatRoomIdAt() geometry the door-choreography
+  // walks below already use (never a per-frame poll — see room_presence_enter's contract).
+  const selfFlatRoomId = flatRoomIdAt({
+    x: bonPos.x + playerCharacterLayer.width / 2,
+    y: bonPos.y + playerCharacterLayer.height / 2,
+  });
+  const prevSelfFlatRoomIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (prevSelfFlatRoomIdRef.current === selfFlatRoomId) return;
+    prevSelfFlatRoomIdRef.current = selfFlatRoomId;
+    if (selfFlatRoomId) emitRoomPresenceEnter(selfFlatRoomId);
+    else emitRoomPresenceLeave();
+  }, [selfFlatRoomId]);
+
+  // Set while the viewer's walk into a DND-locked room has stopped at the door's outside stand
+  // point (feature spec section 3). `resume` re-enters the exact door-continuation the gating
+  // check short-circuited — captured as a closure at the gate site (walkToSeat/approachCharacter/
+  // handleMapRightClick) rather than modeled generically, since each site's post-door behavior
+  // differs (sit at a seat, arrive at a character, or just stop at the clicked tile).
+  // `pendingRequestId` is non-null once the viewer has actually sent a Knock for this gate.
+  const [roomEntryGate, setRoomEntryGate] = useState<{
+    roomId: string;
+    roomName: string;
+    resume: () => void;
+    pendingRequestId: string | null;
+  } | null>(null);
+  // Always-latest mirror of roomEntryGate for the room_request_resolved/cancelled socket
+  // listeners below (mounted once) and for cancelPendingDoorWalks (called synchronously from
+  // event handlers) — both need the CURRENT gate, not the one captured in a stale closure.
+  const roomEntryGateRef = useRef(roomEntryGate);
+  roomEntryGateRef.current = roomEntryGate;
+  // Same always-latest-mirror reasoning as roomEntryGateRef, for the mount-once
+  // room_request_cancelled listener below, which needs the CURRENT lock state (not the one from
+  // whatever render first mounted the effect) to decide whether to auto-resume.
+  const dndEmailsRef = useRef(dndEmails);
+  dndEmailsRef.current = dndEmails;
+  const roomPresenceEntriesRef = useRef(roomPresenceEntries);
+  roomPresenceEntriesRef.current = roomPresenceEntries;
+  const [roomEntryDeclined, setRoomEntryDeclined] = useState(false);
+  const roomEntryDeclinedTimerRef = useRef<number | undefined>(undefined);
+
+  useEffect(() => {
+    const offResolved = onRoomRequestResolved((req) => {
+      const gate = roomEntryGateRef.current;
+      if (!gate || gate.pendingRequestId !== req.id) return; // not this viewer's own outstanding Knock
+      if (req.state === "accepted") {
+        // One-shot: consume the permission immediately by resuming the exact door-continuation
+        // captured at knock time, then clear the gate — a repeat entry after leaving requires a
+        // fresh Knock (feature spec section 6: never a persistent whitelist).
+        setRoomEntryGate(null);
+        gate.resume();
+      } else if (req.state === "declined") {
+        setRoomEntryGate(null);
+        setRoomEntryDeclined(true);
+        window.clearTimeout(roomEntryDeclinedTimerRef.current);
+        roomEntryDeclinedTimerRef.current = window.setTimeout(() => setRoomEntryDeclined(false), 3000);
+      }
+    });
+    const offCancelled = onRoomRequestCancelled((req) => {
+      const gate = roomEntryGateRef.current;
+      if (!gate || gate.pendingRequestId !== req.id) return;
+      // Almost always this fires because the server auto-cancelled a stale request once the
+      // room unlocked (feature spec section 11) — in that case, proceed through the now-open
+      // door immediately rather than leaving a stale "🔒 locked" toast up. Re-check live lock
+      // state (not just assume unlocked) in case some other occupant is still DND.
+      if (!isRoomLocked(gate.roomId, roomPresenceEntriesRef.current, dndEmailsRef.current)) {
+        setRoomEntryGate(null);
+        gate.resume();
+        return;
+      }
+      setRoomEntryGate({ ...gate, pendingRequestId: null });
+    });
+    return () => {
+      offResolved();
+      offCancelled();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function handleKnock() {
+    const gate = roomEntryGateRef.current;
+    if (!gate || gate.pendingRequestId) return;
+    try {
+      const req = await createRoomEntryRequest(gate.roomId);
+      setRoomEntryGate((current) => (current && current.roomId === gate.roomId ? { ...current, pendingRequestId: req.id } : current));
+    } catch (err) {
+      console.error("[roomRequests] failed to send entry request", err);
+    }
+  }
+
+  function handleCancelKnock() {
+    const gate = roomEntryGateRef.current;
+    if (!gate?.pendingRequestId) return;
+    void cancelRoomEntryRequest(gate.pendingRequestId).catch(() => {});
+    setRoomEntryGate({ ...gate, pendingRequestId: null });
+  }
+
+  // Person-level DND protection (feature spec section 7) — same shape as roomEntryGate above,
+  // but gates Chat/Approach against a specific DND PERSON rather than a room's door. `resume`
+  // re-runs the exact approachCharacter call the gate short-circuited. `cooldownUntil` is set
+  // only right after a decline (server-authoritative — see talkRequestsClient's
+  // TalkRequestCooldownError) so the toast can show "try again in Xm" without polling.
+  const [personGate, setPersonGate] = useState<{
+    targetEmail: string;
+    targetName: string;
+    kind: "chat" | "approach";
+    resume: () => void;
+    pendingRequestId: string | null;
+  } | null>(null);
+  const personGateRef = useRef(personGate);
+  personGateRef.current = personGate;
+  const [personGateDeclined, setPersonGateDeclined] = useState(false);
+  const [personGateCooldownUntil, setPersonGateCooldownUntil] = useState<string | null>(null);
+  const personGateDeclinedTimerRef = useRef<number | undefined>(undefined);
+
+  useEffect(() => {
+    const offResolved = onTalkRequestResolved((req) => {
+      const gate = personGateRef.current;
+      if (!gate || gate.pendingRequestId !== req.id) return;
+      if (req.state === "accepted") {
+        // One-shot: consume the permission immediately, then clear — a future interruption
+        // while the target remains DND requires another request (feature spec section 8/9).
+        setPersonGate(null);
+        gate.resume();
+      } else if (req.state === "declined") {
+        setPersonGate(null);
+        setPersonGateDeclined(true);
+        setPersonGateCooldownUntil(null); // this decline's own cooldown isn't known client-side until the NEXT create attempt 429s
+        window.clearTimeout(personGateDeclinedTimerRef.current);
+        personGateDeclinedTimerRef.current = window.setTimeout(() => setPersonGateDeclined(false), 3000);
+      }
+    });
+    const offCancelled = onTalkRequestCancelled((req) => {
+      const gate = personGateRef.current;
+      if (!gate || gate.pendingRequestId !== req.id) return;
+      // Target turned DND off (or otherwise went stale) while waiting — same "fall back to the
+      // resting gate state" reasoning as room-entry's onCancelled handler. If they're no longer
+      // DND at all, drop the gate entirely and let the original action proceed normally.
+      if (!dndEmailsRef.current.has(gate.targetEmail)) {
+        setPersonGate(null);
+        gate.resume();
+        return;
+      }
+      setPersonGate({ ...gate, pendingRequestId: null });
+    });
+    return () => {
+      offResolved();
+      offCancelled();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function handleRequestTalk() {
+    const gate = personGateRef.current;
+    if (!gate || gate.pendingRequestId) return;
+    try {
+      const req = await createTalkRequest(gate.targetEmail, gate.kind);
+      setPersonGate((current) => (current && current.targetEmail === gate.targetEmail ? { ...current, pendingRequestId: req.id } : current));
+    } catch (err) {
+      if (err instanceof TalkRequestCooldownError) {
+        setPersonGate(null);
+        setPersonGateDeclined(true);
+        setPersonGateCooldownUntil(err.cooldownUntil);
+        window.clearTimeout(personGateDeclinedTimerRef.current);
+        personGateDeclinedTimerRef.current = window.setTimeout(() => setPersonGateDeclined(false), 3000);
+        return;
+      }
+      console.error("[talkRequests] failed to send talk request", err);
+    }
+  }
+
+  function handleCancelTalkRequest() {
+    const gate = personGateRef.current;
+    if (!gate?.pendingRequestId) return;
+    void cancelTalkRequest(gate.pendingRequestId).catch(() => {});
+    setPersonGate({ ...gate, pendingRequestId: null });
+  }
+
   // Break/Lunch auto-walk (client-side-only, see statusMovement.ts): tracks
   // the PREVIOUS manualStatus so the effect below only fires on a genuine
   // user-driven transition, never on mount — initialized to the CURRENT
@@ -1709,6 +1943,16 @@ export function OfficeMap() {
     window.clearTimeout(mapRightClickDoorTimerRef.current);
     mapRightClickDoorTimerRef.current = undefined;
     mapRightClickDoorNonceRef.current += 1;
+
+    // Any new door-gated walk invalidates a Knock the viewer left outstanding at a locked
+    // room's door — walking away/changing destination cancels it rather than leaving a stale
+    // pending request behind (feature spec section 11: "requester walks away while waiting" /
+    // "requester changes destination").
+    const gate = roomEntryGateRef.current;
+    if (gate?.pendingRequestId) {
+      void cancelRoomEntryRequest(gate.pendingRequestId).catch(() => {});
+    }
+    if (gate) setRoomEntryGate(null);
   }
 
   const PIP_WIDTH = 240;
@@ -2110,21 +2354,40 @@ export function OfficeMap() {
       focusRoomFit(seat.roomId, 600);
       walkTo(pathToOutStand, () => {
         if (seatDoorNonceRef.current !== nonce) return;
-        onDoorOpen(seat.roomId);
-        seatDoorTimerRef.current = window.setTimeout(() => {
-          seatDoorTimerRef.current = undefined;
-          if (seatDoorNonceRef.current !== nonce) return;
-          const pathToInStand = findPath(outGoal, inGoal, goalRoomId, goalRoomId);
-          walkTo(pathToInStand, () => {
+
+        function proceedThroughDoor() {
+          onDoorOpen(seat.roomId);
+          seatDoorTimerRef.current = window.setTimeout(() => {
+            seatDoorTimerRef.current = undefined;
             if (seatDoorNonceRef.current !== nonce) return;
-            onDoorClose(seat.roomId);
-            const pathToSeat = findPath(inGoal, seatGoal, goalRoomId, goalRoomId);
-            walkTo(pathToSeat, () => {
+            const pathToInStand = findPath(outGoal, inGoal, goalRoomId, goalRoomId);
+            walkTo(pathToInStand, () => {
               if (seatDoorNonceRef.current !== nonce) return;
-              sitAtSeat(seat);
+              onDoorClose(seat.roomId);
+              const pathToSeat = findPath(inGoal, seatGoal, goalRoomId, goalRoomId);
+              walkTo(pathToSeat, () => {
+                if (seatDoorNonceRef.current !== nonce) return;
+                sitAtSeat(seat);
+              });
             });
+          }, DOOR_ANIM_MS);
+        }
+
+        // DND-room-lock gate: the target room is protected and this viewer holds no live
+        // permission for it yet — stop right here at the door's outside stand point (already
+        // reached) instead of continuing through, and surface the Knock/Request-Entry toast
+        // (feature spec section 3).
+        if (isRoomLocked(seat.roomId, roomPresenceEntries, dndEmails)) {
+          setRoomEntryGate({
+            roomId: seat.roomId,
+            roomName: roomNameFor(seat.roomId),
+            resume: proceedThroughDoor,
+            pendingRequestId: null,
           });
-        }, DOOR_ANIM_MS);
+          return;
+        }
+
+        proceedThroughDoor();
       });
       return;
     }
@@ -2534,6 +2797,52 @@ export function OfficeMap() {
     if (!menu) return;
     const target = menu.layer;
     const name = formatCharacterName(target);
+
+    // Abandon any stale gate toast left over from a PREVIOUS DND-gated attempt at a different
+    // target — any new character-menu interaction supersedes it, same "new attempt cancels the
+    // old one" reasoning as cancelPendingDoorWalks for the room-entry gate.
+    if (personGateRef.current && personGateRef.current.targetEmail !== target.id.trim().toLowerCase()) {
+      const stale = personGateRef.current;
+      if (stale.pendingRequestId) void cancelTalkRequest(stale.pendingRequestId).catch(() => {});
+      setPersonGate(null);
+    }
+
+    // Person-level DND protection (feature spec section 7): Chat/Approach must not auto-walk or
+    // open a spatial conversation with a DND person from outside — gate behind Request
+    // Permission to Talk instead. Real employees only (target.id is an email, per the existing
+    // "real roster people key their layer id straight off email" convention below); demo/NPC
+    // characters (bon/alex/micah/lui ids) are never in dndEmails, so they're never gated. "Call"
+    // isn't a real spatial interaction yet (falls into the final else-branch's "coming soon"
+    // toast) so it needs no gating here. Room-entry protection (walkToSeat/handleMapRightClick)
+    // is a SEPARATE, already-existing gate — this one applies regardless of room/location, per
+    // "DND protects the employee, not merely the room."
+    if ((action === "approach" || action === "chat") && target.id.includes("@")) {
+      const targetEmail = target.id.trim().toLowerCase();
+      if (dndEmails.has(targetEmail)) {
+        setMenu(null);
+        setPersonGate({
+          targetEmail,
+          targetName: name,
+          kind: action,
+          pendingRequestId: null,
+          resume: () => {
+            if (action === "approach") {
+              approachCharacter(target, (arriveCenter, targetCenter) => {
+                facerFor(target.id)?.(directionBetween(targetCenter, arriveCenter));
+              });
+            } else {
+              approachCharacter(target, () => {
+                setOpenGroupConv(null);
+                setSpatialChatMinimized(false);
+                setOpenChat(target);
+              });
+            }
+          },
+        });
+        return;
+      }
+    }
+
     if (action === "viewProfile") {
       closeCharacterMenu();
       // Real roster people key their layer id straight off email (see rosterLayers.ts's
@@ -2774,18 +3083,37 @@ export function OfficeMap() {
       const pathToOutStand = findPath(start, outGoal, startRoomId, goalRoomId);
       walkTo(pathToOutStand, () => {
         if (mapRightClickDoorNonceRef.current !== nonce) return;
-        onDoorOpen(flatGoalRoomId!);
-        mapRightClickDoorTimerRef.current = window.setTimeout(() => {
-          mapRightClickDoorTimerRef.current = undefined;
-          if (mapRightClickDoorNonceRef.current !== nonce) return;
-          const pathToInStand = findPath(outGoal, inGoal, goalRoomId, goalRoomId);
-          walkTo(pathToInStand, () => {
+
+        function proceedThroughDoor() {
+          onDoorOpen(flatGoalRoomId!);
+          mapRightClickDoorTimerRef.current = window.setTimeout(() => {
+            mapRightClickDoorTimerRef.current = undefined;
             if (mapRightClickDoorNonceRef.current !== nonce) return;
-            onDoorClose(flatGoalRoomId!);
-            const pathToGoal = findPath(inGoal, cellCenter, goalRoomId, goalRoomId);
-            walkTo(pathToGoal);
+            const pathToInStand = findPath(outGoal, inGoal, goalRoomId, goalRoomId);
+            walkTo(pathToInStand, () => {
+              if (mapRightClickDoorNonceRef.current !== nonce) return;
+              onDoorClose(flatGoalRoomId!);
+              const pathToGoal = findPath(inGoal, cellCenter, goalRoomId, goalRoomId);
+              walkTo(pathToGoal);
+            });
+          }, DOOR_ANIM_MS);
+        }
+
+        // DND-room-lock gate — same reasoning as walkToSeat's: right-clicking a tile inside a
+        // locked room must never ghost through the door (feature spec section 8). The avatar
+        // has already arrived at the door's outside stand point; stop there instead of
+        // continuing, and surface the Knock/Request-Entry toast.
+        if (isRoomLocked(flatGoalRoomId, roomPresenceEntries, dndEmails)) {
+          setRoomEntryGate({
+            roomId: flatGoalRoomId!,
+            roomName: roomNameFor(flatGoalRoomId!),
+            resume: proceedThroughDoor,
+            pendingRequestId: null,
           });
-        }, DOOR_ANIM_MS);
+          return;
+        }
+
+        proceedThroughDoor();
       });
       return;
     }
@@ -3103,7 +3431,7 @@ export function OfficeMap() {
           hand-maintained DEV flag — is what stops this from silently
           regressing to "logs into the void" on a future deploy. DEV stays
           in the condition so mock-mode development still exercises the UI. */}
-      <StatusPicker />
+      <StatusPicker checkedIn={hasCheckedIn && checkoutFlow.state !== "CHECKED_OUT"} />
       {hasCheckedIn && onboarding === "done" && !checkoutBusy && (
         <button
           className={styles.hubButton}
@@ -3472,6 +3800,12 @@ export function OfficeMap() {
               peerChatId={resolvePeerChatId(w.layer)}
               selfAvatarUrl={playerSpriteSrc}
               minimized={w.minimized}
+              // Global Chat DND indicator (feature spec section 11): messaging itself is never
+              // blocked — this is a subtitle-only cue that the recipient is DND and may not
+              // respond immediately. Same dndEmails source of truth the room-lock/person-level
+              // gates use; w.layer.id is the peer's email per this file's existing "real roster
+              // people key their layer id straight off email" convention.
+              subtitle={dndEmails.has(w.layer.id.toLowerCase()) ? "🔴 DND · Notifications muted" : undefined}
               onMinimizeToggle={() => toggleRemoteWindowMinimize(w.key)}
               onClose={() => closeRemoteWindow(w.key)}
             />
@@ -3550,6 +3884,22 @@ export function OfficeMap() {
           }}
         />
       )}
+      {chatMode === "real" && <DndRequestQueue resolveDisplayName={resolveDisplayName} />}
+      <RoomLockedToast
+        roomName={roomEntryGate?.roomName ?? null}
+        pendingRequestId={roomEntryGate?.pendingRequestId ?? null}
+        declined={roomEntryDeclined}
+        onKnock={() => void handleKnock()}
+        onCancel={handleCancelKnock}
+      />
+      <TalkRequestToast
+        targetName={personGate?.targetName ?? null}
+        pendingRequestId={personGate?.pendingRequestId ?? null}
+        declined={personGateDeclined}
+        cooldownUntil={personGateCooldownUntil}
+        onRequest={() => void handleRequestTalk()}
+        onCancel={handleCancelTalkRequest}
+      />
       {toast && <div className={styles.toast}>{toast}</div>}
       {onboarding === "checkinPrompt" && (
         <CheckinModal onYes={startCheckin} onNotNow={() => setOnboarding("done")} />

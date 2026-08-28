@@ -10,8 +10,14 @@ from app.auth.atlas import AtlasAuthError, verify_atlas_token
 from app.config import settings
 from app.database import async_session_maker
 from app.repositories import chat as chat_repo
+from app.repositories import room_requests as room_requests_repo
+from app.repositories import talk_requests as talk_requests_repo
 from app.schemas.chat import serialize_message_dict, to_iso_z
+from app.schemas.room_requests import RoomRequestOut
+from app.schemas.talk_requests import TalkRequestOut
+from app.services.dnd_registry import DndRegistry
 from app.services.offline_lineup import OfflineLineup
+from app.services.room_presence import RoomPresenceRegistry
 from app.services.spatial_session import SpatialSessionRegistry
 
 # Faithful port of backend/src/socket.ts onto python-socketio's ASGI async server. Mounted in
@@ -41,6 +47,11 @@ offline_lineup = OfflineLineup()
 # ConversationRequest models from Stage 1/2.
 spatial_sessions = SpatialSessionRegistry()
 
+# Ephemeral DND-room-lock feature state — see dnd_registry.py/room_presence.py module
+# docstrings. Same in-memory/single-process assumption as the registries above.
+dnd_registry = DndRegistry()
+room_presence = RoomPresenceRegistry()
+
 
 async def _broadcast_offline_lineup() -> None:
     await sio.emit("offline_lineup", {"entries": offline_lineup.snapshot()})
@@ -48,6 +59,54 @@ async def _broadcast_offline_lineup() -> None:
 
 async def _broadcast_spatial_sessions() -> None:
     await sio.emit("spatial_sessions", {"sessions": spatial_sessions.snapshot()})
+
+
+async def _broadcast_dnd_status() -> None:
+    await sio.emit("dnd_status", {"emails": dnd_registry.snapshot()})
+
+
+async def _broadcast_room_presence() -> None:
+    await sio.emit("room_presence", {"rooms": room_presence.snapshot()})
+
+
+def is_room_locked(room_id: str) -> bool:
+    """A room is locked iff at least one of its current occupants is DND (feature spec section
+    2). Occupancy and DND are two independent ephemeral registries, both populated by explicit
+    client emits (room_presence_enter/leave, dnd_set) — combining them here is the single
+    source of truth both the REST layer (room_requests router) and the auto-expiry logic below
+    use."""
+    return any(dnd_registry.is_dnd(email) for email in room_presence.occupants(room_id))
+
+
+async def _cancel_stale_room_requests(room_id: str | None) -> None:
+    """Called after any change that could have unlocked a room (an occupant left, or the last
+    DND occupant turned DND off/disconnected). If the room is no longer locked, any pending
+    Knock/Request-Entry requests against it are now stale — cancel them and tell each requester
+    live (feature spec section 11: "room becomes unlocked while request is pending")."""
+    if room_id is None or is_room_locked(room_id):
+        return
+    async with async_session_maker() as session:
+        cancelled = await room_requests_repo.cancel_pending_for_room(session, room_id=room_id)
+    for req in cancelled:
+        out = RoomRequestOut.from_dict(req)
+        await sio.emit(
+            "room_request_cancelled", out.model_dump(by_alias=True), room=user_room(req["requester_email"])
+        )
+
+
+async def _cancel_stale_talk_requests(target_email: str) -> None:
+    """Called whenever `target_email`'s DND turns off (manual cancel, timer expiry, or
+    disconnect). Any still-pending "Request Permission to Talk" against them is now moot —
+    cancel it and tell the requester live, same reasoning as _cancel_stale_room_requests."""
+    if dnd_registry.is_dnd(target_email):
+        return
+    async with async_session_maker() as session:
+        cancelled = await talk_requests_repo.cancel_pending_for_target(session, target_email=target_email)
+    for req in cancelled:
+        out = TalkRequestOut.from_dict(req)
+        await sio.emit(
+            "talk_request_cancelled", out.model_dump(by_alias=True), room=user_room(req["requester_email"])
+        )
 
 
 def _dev_email_from_auth(auth: dict) -> str | None:
@@ -135,6 +194,11 @@ async def connect(sid: str, environ: dict, auth: dict | None) -> None:
     # must see the current grouping immediately, not just future changes.
     await sio.emit("spatial_sessions", {"sessions": spatial_sessions.snapshot()}, to=sid)
 
+    # Same reasoning again for the DND-room-lock feature's two ephemeral registries: a client
+    # connecting after others are already DND/in-room must see current lock state immediately.
+    await sio.emit("dnd_status", {"emails": dnd_registry.snapshot()}, to=sid)
+    await sio.emit("room_presence", {"rooms": room_presence.snapshot()}, to=sid)
+
 
 @sio.event
 async def disconnect(sid: str) -> None:
@@ -154,6 +218,13 @@ async def disconnect(sid: str) -> None:
         await _broadcast_offline_lineup()
     if spatial_sessions.leave(email) is not None:
         await _broadcast_spatial_sessions()
+    if dnd_registry.clear(email):
+        await _broadcast_dnd_status()
+        await _cancel_stale_talk_requests(email)
+    left_room_id = room_presence.leave(email)
+    if left_room_id is not None:
+        await _broadcast_room_presence()
+        await _cancel_stale_room_requests(left_room_id)
 
 
 @sio.on("go_offline")
@@ -201,6 +272,69 @@ async def spatial_session_leave(sid: str, _payload: dict | None = None) -> None:
         left = spatial_sessions.leave(email)
         if left is not None:
             await _broadcast_spatial_sessions()
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("dnd_set")
+async def dnd_set(sid: str, payload: dict | None) -> None:
+    """Edge-triggered self-DND broadcast — mirrors spatial_session_start's contract exactly:
+    call exactly once per real manualStatus transition into/out of DND (see
+    frontend/src/services/presence/selfStatusStore.ts), never on a poll. DND was previously
+    client-side/localStorage-only with no realtime channel; this is the minimal addition making
+    it visible to other clients, which the DND-room-lock feature needs to compute lock state."""
+    try:
+        payload = payload or {}
+        is_dnd = bool(payload.get("isDnd"))
+        session_data = await sio.get_session(sid)
+        email = session_data["email"]
+        changed = dnd_registry.set_dnd(email, is_dnd)
+        if not changed:
+            return
+        await _broadcast_dnd_status()
+        if not is_dnd:
+            await _cancel_stale_room_requests(room_presence.room_of(email))
+            await _cancel_stale_talk_requests(email)
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("room_presence_enter")
+async def room_presence_enter(sid: str, payload: dict | None) -> None:
+    """Edge-triggered self room-occupancy broadcast — call exactly once per real "entered a new
+    flat room" transition (computed client-side from the same flatRoomIdAt() geometry OfficeMap
+    already uses for door-choreography, see doorStandPoints.ts), never on a per-frame poll.
+    room_id is the flat rects/teamRooms-namespace id (e.g. "design-team")."""
+    try:
+        payload = payload or {}
+        room_id = payload.get("roomId")
+        if not isinstance(room_id, str) or not room_id:
+            return
+        session_data = await sio.get_session(sid)
+        email = session_data["email"]
+        previous_room_id = room_presence.room_of(email)
+        if previous_room_id == room_id:
+            return
+        room_presence.enter(email, room_id)
+        await _broadcast_room_presence()
+        await _cancel_stale_room_requests(previous_room_id)
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("room_presence_leave")
+async def room_presence_leave(sid: str, _payload: dict | None = None) -> None:
+    """Edge-triggered self room-occupancy broadcast — call exactly once when leaving a flat room
+    for open floor/corridor (not when crossing directly into another room — use
+    room_presence_enter for that, which already replaces the prior membership)."""
+    try:
+        session_data = await sio.get_session(sid)
+        email = session_data["email"]
+        left_room_id = room_presence.leave(email)
+        if left_room_id is None:
+            return
+        await _broadcast_room_presence()
+        await _cancel_stale_room_requests(left_room_id)
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 
@@ -277,6 +411,8 @@ async def send_message(sid: str, payload: dict | None) -> None:
         client_temp_id = client_temp_id if isinstance(client_temp_id, str) else ""
         text = payload.get("text")
         text = text.strip() if isinstance(text, str) else ""
+        raw_mentions = payload.get("mentionedEmails")
+        mentioned_emails = [e for e in raw_mentions if isinstance(e, str)] if isinstance(raw_mentions, list) else None
 
         if not conversation_id:
             await sio.emit(
@@ -299,8 +435,11 @@ async def send_message(sid: str, payload: dict | None) -> None:
                 return
 
             # Sender is ALWAYS the server-verified session email — a client-sent sender id is
-            # never trusted, even implicitly.
-            message = await chat_repo.insert_message(session, conversation_id, email, text)
+            # never trusted, even implicitly. mentioned_emails is likewise never trusted as-is —
+            # insert_message re-validates every candidate against actual participant membership.
+            message = await chat_repo.insert_message(
+                session, conversation_id, email, text, mentioned_emails=mentioned_emails
+            )
             await chat_repo.touch_conversation(session, conversation_id, message.sent_at)
             conv = await chat_repo.get_conversation_by_id(session, conversation_id)
             await session.commit()
@@ -321,6 +460,18 @@ async def send_message(sid: str, payload: dict | None) -> None:
             await sio.emit(
                 "unread_count", {"conversationId": conversation_id, "count": count}, room=user_room(recipient)
             )
+            # @mentions V1: same live-push pattern as unread_count above, purely a count update —
+            # this never touches DND state (DndRegistry/talk_requests) and never triggers any
+            # notification (none exists in this codebase to trigger — see MessageNotificationBadge/
+            # RealChatService), so a mention can never interrupt a DND recipient by itself.
+            if message.mentioned_emails and recipient in message.mentioned_emails:
+                async with async_session_maker() as mention_session:
+                    mentions = await chat_repo.mention_count(mention_session, conversation_id, recipient)
+                await sio.emit(
+                    "mention_count",
+                    {"conversationId": conversation_id, "count": mentions},
+                    room=user_room(recipient),
+                )
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 
@@ -382,6 +533,7 @@ async def message_read(sid: str, payload: dict | None) -> None:
                 return
             advanced = await chat_repo.mark_read(session, conversation_id, email, up_to_sent_at)
             count = await chat_repo.unread_count(session, conversation_id, email)
+            mentions = await chat_repo.mention_count(session, conversation_id, email)
             peers = await _other_participant_emails(session, conversation_id, email)
             await session.commit()
 
@@ -389,6 +541,9 @@ async def message_read(sid: str, payload: dict | None) -> None:
         # that just marked it read, via the per-user room joined at connect time.
         await sio.emit(
             "unread_count", {"conversationId": conversation_id, "count": count}, room=user_room(email), skip_sid=sid
+        )
+        await sio.emit(
+            "mention_count", {"conversationId": conversation_id, "count": mentions}, room=user_room(email), skip_sid=sid
         )
         if not advanced:
             # Watermark didn't actually move (redundant/stale re-ack, or no participant row) —
