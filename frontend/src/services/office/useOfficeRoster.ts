@@ -47,6 +47,31 @@ function isRealMode(): boolean {
   return import.meta.env.VITE_OFFICE_INTEGRATION_MODE === "real";
 }
 
+// Same join key floorMerge.ts uses — emails are not case-consistent across
+// Zoho/Cliq/Atlas, so every lookup here is on the normalized form.
+function emailKey(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+// A presence_update for someone the /floor snapshot never contained is a
+// dead letter: mergeFloorWithPresence is `floor.map(...)`, so the row sits
+// in `presence` state and never becomes a person. Until now the only way
+// they appeared was the next SSE (re)connect resync or a reload. On such an
+// event we refetch /floor ONCE (deduplicated — repeat unknown events while a
+// refetch is in flight just join it) and let the existing merge pick them
+// up. If Atlas still doesn't list them, nothing is fabricated and that
+// email is put on a cooldown so a chatty presence source can't turn one
+// missing employee into a /floor request loop.
+const UNKNOWN_EMAIL_REFETCH_COOLDOWN_MS = 60_000;
+
+interface UnknownEmailRefetchState {
+  inFlight: Promise<void> | null;
+  /** Normalized emails whose event triggered/joined the in-flight refetch. */
+  pending: Set<string>;
+  /** Normalized email -> epoch ms before which we won't refetch for it again. */
+  cooldownUntil: Map<string, number>;
+}
+
 export function useOfficeRoster(): OfficeRosterState {
   const [floor, setFloor] = useState<FloorPerson[]>([]);
   const [presence, setPresence] = useState<Presence[]>([]);
@@ -91,7 +116,20 @@ export function useOfficeRoster(): OfficeRosterState {
     };
   }, []);
 
+  // Normalized emails of the CURRENT floor, readable from the SSE callback
+  // without closing over stale `floor` state.
+  const floorEmailsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    floorEmailsRef.current = new Set(floor.map((person) => emailKey(person.user_email)));
+  }, [floor]);
+
+  // True while load() (initial fetch or a reconnect resync) is fetching
+  // /floor — an unknown-email refetch during that window would only
+  // duplicate the request that is already about to land.
+  const loadInFlightRef = useRef(false);
+
   const load = useCallback(async () => {
+    loadInFlightRef.current = true;
     try {
       // Parallel: the endpoints are independent, and serializing them
       // doubles the time the floor sits empty.
@@ -110,8 +148,58 @@ export function useOfficeRoster(): OfficeRosterState {
       // office as though nobody were in.
       setError(err instanceof Error ? err : new Error(String(err)));
     } finally {
+      loadInFlightRef.current = false;
       if (mountedRef.current) setLoading(false);
     }
+  }, []);
+
+  const unknownRefetchRef = useRef<UnknownEmailRefetchState>({
+    inFlight: null,
+    pending: new Set(),
+    cooldownUntil: new Map(),
+  });
+
+  // See UNKNOWN_EMAIL_REFETCH_COOLDOWN_MS. Floor-only refetch: the live
+  // `presence` state already holds the newest snapshot (this very event
+  // included), so the existing mergeFloorWithPresence memo below does the
+  // join — no separate merge path.
+  const refetchFloorForUnknownEmail = useCallback((email: string) => {
+    const key = emailKey(email);
+    if (floorEmailsRef.current.has(key)) return;
+    if (loadInFlightRef.current) return;
+
+    const state = unknownRefetchRef.current;
+    const until = state.cooldownUntil.get(key);
+    if (until !== undefined && Date.now() < until) return;
+
+    state.pending.add(key);
+    if (state.inFlight) return; // join the refetch already running
+
+    state.inFlight = officeService
+      .getFloor()
+      .then((nextFloor) => {
+        if (!mountedRef.current) return;
+        const nextKeys = new Set(nextFloor.map((person) => emailKey(person.user_email)));
+        floorEmailsRef.current = nextKeys;
+        setFloor(nextFloor);
+        const now = Date.now();
+        for (const pendingKey of state.pending) {
+          if (nextKeys.has(pendingKey)) state.cooldownUntil.delete(pendingKey);
+          else state.cooldownUntil.set(pendingKey, now + UNKNOWN_EMAIL_REFETCH_COOLDOWN_MS);
+        }
+      })
+      .catch(() => {
+        // Keep the current floor. Cool the pending emails down too, so a
+        // failing /floor can't be hammered by every further unknown event.
+        const now = Date.now();
+        for (const pendingKey of state.pending) {
+          state.cooldownUntil.set(pendingKey, now + UNKNOWN_EMAIL_REFETCH_COOLDOWN_MS);
+        }
+      })
+      .finally(() => {
+        state.pending.clear();
+        state.inFlight = null;
+      });
   }, []);
 
   useEffect(() => {
@@ -141,7 +229,10 @@ export function useOfficeRoster(): OfficeRosterState {
     if (!isRealMode()) return;
 
     const stream = openPresenceStream({
-      onPresence: (row) => setPresence((rows) => mergePresenceRow(rows, row)),
+      onPresence: (row) => {
+        setPresence((rows) => mergePresenceRow(rows, row));
+        if (row?.user_email) refetchFloorForUnknownEmail(row.user_email);
+      },
       onConnected: () => {
         setLive(true);
         // Resync on every (re)connect. Events broadcast while we were
@@ -153,7 +244,7 @@ export function useOfficeRoster(): OfficeRosterState {
     });
 
     return () => stream.close();
-  }, [load]);
+  }, [load, refetchFloorForUnknownEmail]);
 
   const people = useMemo(
     () => mergeFloorWithPresence(floor, presence),

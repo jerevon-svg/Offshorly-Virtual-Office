@@ -1,5 +1,6 @@
 import { render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { FRAME_HEIGHT, FRAME_WIDTH } from "../../data/office-layout";
 import { resetCurrentUserForTests, setCurrentUserFromMeResponse } from "../../auth/currentUserStore";
 import type { OfficePerson } from "../../services/office/floorMerge";
 import { OfficeMap } from "./OfficeMap";
@@ -31,7 +32,11 @@ vi.mock("../../services/presence/movementSync", async () => {
   const actual = await vi.importActual<typeof import("../../services/presence/movementSync")>(
     "../../services/presence/movementSync",
   );
-  return { ...actual, getPeerMovementSnapshot: () => peerMovementSnapshotState.entries };
+  return {
+    ...actual,
+    getPeerMovementSnapshot: () => peerMovementSnapshotState.entries,
+    usePeerMovements: () => peerMovementSnapshotState.entries,
+  };
 });
 
 let mockRosterPeople: OfficePerson[] = [];
@@ -86,6 +91,7 @@ describe("OfficeMap: single authoritative Bon layer", () => {
     peerMovementSnapshotState.entries = [];
     resetCurrentUserForTests();
     window.history.pushState({}, "", "/");
+    vi.unstubAllEnvs();
   });
 
   it("1. peer viewer (alex) + roster Bon -> exactly one Bon (the roster layer), manifest bon hidden", () => {
@@ -130,5 +136,58 @@ describe("OfficeMap: single authoritative Bon layer", () => {
     // Manifest Bon + Dana (rendered with Bon's sprite/GLB) = 2 Bon-looking renders, unchanged
     // from the pre-fix behavior for this unrelated case.
     expect(bonRenders(container).total).toBe(2);
+  });
+});
+
+// Mock-mode offline predicate (2026-08-29). MockOfficeService hard-codes Bon
+// (jerevon) OFFLINE and check-in never updates it, so with the Atlas-status
+// predicate a checked-in Bon was moved to the sidewalk lineup and his synced
+// position dropped in Alex's view. In mock mode OfficeMap now derives "offline"
+// from the app's own server lineup instead (see offlineLineupPlacement.ts).
+describe("OfficeMap mock mode: checked-in Bon is visible to Alex at his synchronized position", () => {
+  const MOCK_OFFLINE_BON: OfficePerson = { ...BON, status: "OFFLINE" };
+  const BON_SYNCED_POS = { x: 640, y: 420 };
+  function bonMovement(): import("../../services/presence/movementSync").PeerMovementState {
+    return {
+      email: "jerevon@offshorly.com",
+      revision: 3,
+      stable: { pos: BON_SYNCED_POS, facing: "left", state: "standing", seatKey: null, roomId: "design-team" },
+      active: null,
+    };
+  }
+  const pct = (v: number, frame: number) => `${(v / frame) * 100}%`;
+
+  afterEach(() => {
+    mockRosterPeople = [];
+    peerMovementSnapshotState.entries = [];
+    resetCurrentUserForTests();
+    vi.unstubAllEnvs();
+  });
+
+  it("3. Alex viewer sees exactly one roster Bon, at Bon's synchronized position (mock status OFFLINE, not in the server lineup)", () => {
+    vi.stubEnv("VITE_OFFICE_INTEGRATION_MODE", "mock");
+    mockRosterPeople = [MOCK_OFFLINE_BON, ALEX];
+    peerMovementSnapshotState.entries = [bonMovement()];
+    signInAs("alex@offshorly.com", "Alex");
+    const { container } = render(<OfficeMap />);
+    const r = bonRenders(container);
+    expect(r.total, `canvases=${r.canvases.length} sprites=${r.sprites.length}`).toBe(1);
+    const layerDiv = (r.canvases[0] ?? r.sprites[0]).parentElement as HTMLElement;
+    expect(layerDiv.style.left).toBe(pct(BON_SYNCED_POS.x, FRAME_WIDTH));
+    expect(layerDiv.style.top).toBe(pct(BON_SYNCED_POS.y, FRAME_HEIGHT));
+  });
+
+  it("4. manifest Bon remains hidden while the roster Bon is active in mock mode (duplicate-Bon prevention intact)", () => {
+    vi.stubEnv("VITE_OFFICE_INTEGRATION_MODE", "mock");
+    mockRosterPeople = [MOCK_OFFLINE_BON, ALEX];
+    peerMovementSnapshotState.entries = [bonMovement()];
+    signInAs("alex@offshorly.com", "Alex");
+    const { container } = render(<OfficeMap />);
+    // Exactly one Bon render overall, and it is the roster (email-keyed) layer — the manifest
+    // "bon" layer is hidden by hiddenCharacterIds exactly as before this change.
+    const r = bonRenders(container);
+    expect(r.total).toBe(1);
+    const stubs = Array.from(container.querySelectorAll<HTMLElement>('[data-testid="character-canvas-stub"]'));
+    expect(stubs.filter((el) => /bon-v2-lod/.test(el.getAttribute("data-glb-url") ?? "")).length).toBe(1);
   });
 });

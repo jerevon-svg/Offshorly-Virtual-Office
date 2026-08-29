@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyOfflineLineupPositions } from "./offlineLineupPlacement";
+import { applyOfflineLineupPositions, computeOfflineEmailSet, computeServerLineupEmailSet } from "./offlineLineupPlacement";
 import { slotIndexToPosition } from "./lineupSlots";
 import { bonLayer } from "../../data/office-layout";
 import type { AssetLayer } from "../../types/office";
@@ -117,5 +117,63 @@ describe("applyOfflineLineupPositions", () => {
     // peer2 (not OFFLINE) is unchanged; peer1 (OFFLINE) is repositioned.
     const peer2 = result.find((l) => l.id === "peer2@x.com")!;
     expect(peer2).toEqual(layers[1]);
+  });
+});
+
+// Mock-mode offline predicate (2026-08-29): MockOfficeService hard-codes Bon
+// OFFLINE and nothing updates it, so in mock mode OfficeMap derives "offline"
+// from the app's own server lineup (explicit checkout) via
+// computeServerLineupEmailSet and passes that ONE set into
+// applyOfflineLineupPositions. Real mode keeps the Atlas-status default.
+describe("mock-mode offline predicate: server lineup instead of the fixed mock Atlas status", () => {
+  const BON = "jerevon@offshorly.com";
+  const mockOfflineBon = [makePerson(BON, "OFFLINE" as OfficePerson["status"])];
+
+  it("1. mock Bon checked out (in the server lineup) -> exactly one Bon, placed in the offline lineup", () => {
+    const lineup: OfflineLineupEntry[] = [{ email: BON, slot: 0 }];
+    const offline = computeServerLineupEmailSet(lineup);
+    const result = applyOfflineLineupPositions([makeLayer(BON)], mockOfflineBon, lineup, offline);
+
+    expect(result).toHaveLength(1);
+    const expected = slotIndexToPosition(0);
+    expect(result[0].x).toBe(expected.x);
+    expect(result[0].y).toBe(expected.y);
+    expect(result[0].sitDirection).toBeUndefined();
+  });
+
+  it("2. mock Bon checks in (come_online removed him from the server lineup) -> not in the offline set despite mock status OFFLINE", () => {
+    const offline = computeServerLineupEmailSet([]);
+    expect(offline.has(BON)).toBe(false);
+    // Contrast: the Atlas-status predicate would still call him offline.
+    expect(computeOfflineEmailSet(mockOfflineBon).has(BON)).toBe(true);
+
+    const layer = makeLayer(BON, { x: 640, y: 420 });
+    const result = applyOfflineLineupPositions([layer], mockOfflineBon, [], offline);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toBe(layer); // untouched: desk/synced position stands
+  });
+
+  it("5. checkout returns Bon to the lineup: the moment go_offline lands in the server lineup he is offline again and slotted", () => {
+    const before = applyOfflineLineupPositions([makeLayer(BON, { x: 640, y: 420 })], mockOfflineBon, [], computeServerLineupEmailSet([]));
+    expect(before[0].x).toBe(640);
+
+    const lineup: OfflineLineupEntry[] = [{ email: "Jerevon@Offshorly.com", slot: 2 }]; // mixed case from the wire
+    const after = applyOfflineLineupPositions([makeLayer(BON, { x: 640, y: 420 })], mockOfflineBon, lineup, computeServerLineupEmailSet(lineup));
+    const expected = slotIndexToPosition(2);
+    expect(after).toHaveLength(1);
+    expect(after[0].x).toBe(expected.x);
+    expect(after[0].y).toBe(expected.y);
+  });
+
+  it("6. real-mode offline behavior unchanged: the 3-arg call still uses the Atlas-status predicate (OFFLINE -> lineup, ONLINE -> untouched)", () => {
+    const online = makePerson("alex@offshorly.com", "ONLINE" as OfficePerson["status"]);
+    const layers = [makeLayer(BON), makeLayer("alex@offshorly.com", { x: 300, y: 300 })];
+    const threeArg = applyOfflineLineupPositions(layers, [...mockOfflineBon, online], []);
+    const explicitAtlas = applyOfflineLineupPositions(layers, [...mockOfflineBon, online], [], computeOfflineEmailSet([...mockOfflineBon, online]));
+    expect(threeArg).toEqual(explicitAtlas);
+
+    const expected = slotIndexToPosition(0);
+    expect(threeArg[0].x).toBe(expected.x); // Atlas-OFFLINE Bon -> lineup, as before
+    expect(threeArg[1]).toBe(layers[1]); // ONLINE Alex untouched
   });
 });

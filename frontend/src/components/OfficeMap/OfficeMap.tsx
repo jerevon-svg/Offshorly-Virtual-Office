@@ -97,7 +97,11 @@ import { mapAtlasToOfficeStatus, type OfficeStatus } from "../../services/presen
 import { resolveManualStatusMovement } from "../../services/presence/statusMovement";
 import { emitGoOffline, emitComeOnline, useOfflineLineup } from "../../services/presence/offlineLineupClient";
 import { slotIndexToPosition } from "../../services/presence/lineupSlots";
-import { applyOfflineLineupPositions, computeOfflineEmailSet } from "../../services/presence/offlineLineupPlacement";
+import {
+  applyOfflineLineupPositions,
+  computeOfflineEmailSet,
+  computeServerLineupEmailSet,
+} from "../../services/presence/offlineLineupPlacement";
 import { CENTRAL_HUB_ROOM_ID } from "../../data/centralHub";
 import { CheckoutReminderToast } from "./checkout/CheckoutReminderToast";
 import { CheckoutConfirmModal } from "./checkout/CheckoutConfirmModal";
@@ -371,16 +375,29 @@ export function OfficeMap() {
   // is owned by the sidewalk-lineup placement above, never by a synced
   // movementSync desk position — see resolvePeerOverrides'/
   // resolveRenderablePeerEmails' doc comments.
-  const offlineEmailSet = useMemo(() => computeOfflineEmailSet(roster.people), [roster.people]);
+  //
+  // Mock mode (2026-08-29): MockOfficeService's statuses are a fixed spread that
+  // check-in never updates (Bon is hard-coded OFFLINE), which parked a checked-in
+  // Bon on the sidewalk in Alex's view and dropped his synced position. There the
+  // app's own server lineup (explicit checkout) is the only truthful offline
+  // signal — see computeServerLineupEmailSet. Real mode keeps the Atlas predicate.
+  const offlineEmailSet = useMemo(
+    () =>
+      import.meta.env.VITE_OFFICE_INTEGRATION_MODE === "real"
+        ? computeOfflineEmailSet(roster.people)
+        : computeServerLineupEmailSet(offlineLineup),
+    [roster.people, offlineLineup],
+  );
 
   // Phase 2: OTHER roster peers marked Atlas-OFFLINE (not just app-checkout users) get
   // repositioned to the sidewalk lineup, reconciled against the server-authoritative
   // offlineLineup where both signals overlap (see offlineLineupPlacement.ts). Self is
   // excluded already (rosterLayers above has the viewer's own layer split out) — this only
-  // ever touches other people's positions.
+  // ever touches other people's positions. Shares offlineEmailSet above so placement and
+  // the peer-override filters below can never disagree about who is offline.
   const positionedPeerLayers = useMemo(
-    () => applyOfflineLineupPositions(rosterLayers, roster.people, offlineLineup),
-    [rosterLayers, roster.people, offlineLineup],
+    () => applyOfflineLineupPositions(rosterLayers, roster.people, offlineLineup, offlineEmailSet),
+    [rosterLayers, roster.people, offlineLineup, offlineEmailSet],
   );
 
   // Once real people are on the floor, the manifest's fictional cast is

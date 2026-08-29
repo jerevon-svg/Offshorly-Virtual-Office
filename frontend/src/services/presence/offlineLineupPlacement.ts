@@ -38,13 +38,28 @@ export function computeOfflineEmailSet(people: OfficePerson[]): Set<string> {
   );
 }
 
+// Mock-mode offline predicate (2026-08-29). MockOfficeService's statuses are a
+// fixed deterministic spread that nothing ever updates — Bon/jerevon is
+// hard-coded OFFLINE — so feeding them to computeOfflineEmailSet parked a
+// checked-in Bon on the sidewalk in every peer's view (and, being "offline",
+// dropped his synced position from the override maps). In mock mode the only
+// truthful offline signal is the app's own server lineup (explicit
+// go_offline/come_online over :8001), so OfficeMap uses this instead there.
+// Real mode is untouched: Atlas presence keeps driving computeOfflineEmailSet.
+export function computeServerLineupEmailSet(serverLineup: OfflineLineupEntry[]): Set<string> {
+  return new Set(serverLineup.map((entry) => entry.email.trim().toLowerCase()));
+}
+
+// `offlineEmails` defaults to the Atlas-status predicate (real mode). Passing
+// it explicitly lets the caller share ONE predicate between placement here and
+// the peer-override/renderable-peer filters in OfficeMap — the two must agree,
+// or a peer is moved to the lineup while their synced position still applies.
 export function applyOfflineLineupPositions(
   peerLayers: AssetLayer[],
   people: OfficePerson[],
   serverLineup: OfflineLineupEntry[],
+  offlineEmails: Set<string> = computeOfflineEmailSet(people),
 ): AssetLayer[] {
-  const offlineEmails = computeOfflineEmailSet(people);
-
   if (offlineEmails.size === 0) return peerLayers;
 
   const serverSlotByEmail = new Map<string, number>();

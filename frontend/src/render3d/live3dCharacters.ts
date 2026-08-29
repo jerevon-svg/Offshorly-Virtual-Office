@@ -53,7 +53,10 @@ export type Live3dAssetSet = {
 const BASE = import.meta.env.BASE_URL;
 
 // One entry per avatar id with an approved, shipped live-3D asset set.
-// Bon/Jerevon is the only real employee through the pipeline so far.
+// Two real employees through the pipeline so far: bon (Jerevon) and alex.
+// NOTE: with two entries, OfficeStage's single-entry "size-gated relaxation"
+// no longer applies — self is shown at LIVE_3D_SELF_MIN_TIER (T1+), peers go
+// through LIVE_3D_CAP_BY_TIER (T1: 2, T2: 4), exactly as tierBudgets.ts documents.
 export const LIVE_3D_CHARACTERS: Record<string, Live3dAssetSet> = {
   // Manifest aspect ratio: width 26.23 / height 37.2.
   // Promoted 2026-08-28 to the bon-v2 set (Meshy pipeline: bon-chibi-ref-v2 ->
@@ -68,6 +71,17 @@ export const LIVE_3D_CHARACTERS: Record<string, Live3dAssetSet> = {
     lod2GlbUrl: `${BASE}avatars/bon-v2/bon-v2-lod2.glb`,
     renderWidth: 210,
     renderHeight: 298,
+  },
+  // Manifest aspect ratio: width 20 / height 34.46.
+  // Added 2026-08-29 via the same Meshy pipeline as bon-v2:
+  // alex-chibi-ref-stageb-global-base-test -> image-to-3d 01a04c7d ->
+  // remesh 01a04c82 -> rig 01a04c86 -> 6 clips -> build-character-lods.
+  alex: {
+    glbUrl: `${BASE}avatars/alex/alex-lod0.glb`,
+    lod1GlbUrl: `${BASE}avatars/alex/alex-lod1.glb`,
+    lod2GlbUrl: `${BASE}avatars/alex/alex-lod2.glb`,
+    renderWidth: 160,
+    renderHeight: 276,
   },
 };
 

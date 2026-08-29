@@ -75,7 +75,8 @@ import styles from "./OfficeStage.module.css";
 // Never consulted by the tier/budget gating path, only by the override.
 //
 // Two kinds of keys:
-//   - an avatar id ("alex"): previews that not-yet-eligible character;
+//   - an avatar id (e.g. "micah"): previews that not-yet-eligible character
+//     (alex used to live here until his registry entry shipped 2026-08-29);
 //   - a CANDIDATE id ("bon-v2") carrying `forAvatarId`: previews a
 //     replacement asset set for an avatar that already has a production
 //     registry entry, WITHOUT touching that entry. `?live3d=bon-v2` swaps
@@ -85,12 +86,6 @@ import styles from "./OfficeStage.module.css";
 //   import.meta.env.DEV, so production can never select a candidate.
 type DevOnlyLive3dEntry = Live3dAssetSet & { forAvatarId?: string };
 const DEV_ONLY_LIVE_3D_ENTRIES: Record<string, DevOnlyLive3dEntry> = {
-  // Manifest aspect ratio: width 20 / height 34.46.
-  alex: {
-    glbUrl: `${import.meta.env.BASE_URL}scripts/avatar-pipeline/output/meshy-test/rig/alex-basic-walking_glb_url.glb`,
-    renderWidth: 160,
-    renderHeight: 276,
-  },
   // Bon v2 candidate (Meshy pipeline 2026-08-28: bon-chibi-ref-v2 -> image-to-3d
   // 01a04848 -> remesh 01a04854 -> rig 01a0485f -> 6 clips -> build-character-lods).
   // Same manifest aspect/render size as the shipped `bon` entry. Approved for
