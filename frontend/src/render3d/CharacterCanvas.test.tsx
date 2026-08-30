@@ -36,13 +36,16 @@ vi.mock("./glbCache", () => ({
 }));
 
 let capturedScene: THREE.Scene | null = null;
+const renderedSizes: Array<{ width: number; height: number }> = [];
 vi.mock("./SharedRenderer", () => ({
-  renderToCanvas: vi.fn((scene: THREE.Scene) => {
+  renderToCanvas: vi.fn((scene: THREE.Scene, _camera: THREE.Camera, _canvas: HTMLCanvasElement, width: number, height: number) => {
     capturedScene = scene;
+    renderedSizes.push({ width, height });
   }),
   getSharedCanvasElement: vi.fn(() => {
     throw new Error("no real WebGL context in tests");
   }),
+  getMaxAnisotropy: vi.fn(() => 8),
 }));
 
 const CLIP_NAMES = [
@@ -58,10 +61,18 @@ const CLIP_NAMES = [
 // isn't needed for this suite's assertions, a plain Group+Mesh is enough
 // since these tests only exercise the mixer/action wiring, not real skinned
 // deformation), with one trivial AnimationClip per real clip name.
+// Mirrors what GLTFLoader produces for the shipped LODs: a metal/rough PBR
+// material whose base-color texture is also bound as the emissive map.
 function makeFakeGltf(name: string) {
   const scene = new THREE.Group();
   scene.name = name;
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial());
+  const atlas = new THREE.Texture();
+  atlas.generateMipmaps = false;
+  atlas.minFilter = THREE.LinearFilter;
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(1, 1, 1),
+    new THREE.MeshStandardMaterial({ map: atlas, emissiveMap: atlas, emissive: 0xffffff, metalness: 1, roughness: 1 }),
+  );
   scene.add(mesh);
   const animations = CLIP_NAMES.map(
     (clipName) => new THREE.AnimationClip(clipName, 1, []),
@@ -85,6 +96,7 @@ beforeEach(() => {
   pendingLoads.clear();
   promiseCache.clear();
   capturedScene = null;
+  renderedSizes.length = 0;
   rafCallback = null;
   originalRAF = globalThis.requestAnimationFrame;
   originalCAF = globalThis.cancelAnimationFrame;
@@ -290,5 +302,37 @@ describe("CharacterCanvas cleanup does not dispose cache-owned geometry/material
     expect(findModelByName(sceneA!, "theModel")).toBe(modelA);
     expect(geomDisposeSpy).not.toHaveBeenCalled();
     expect(matDisposeSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("CharacterCanvas unlit toy material + texture filtering (quality pass 2026-08-29)", () => {
+  it("replaces the Meshy metal/emissive PBR material with ONE unlit MeshBasicMaterial sampling the base-color map once, mipmapped + anisotropic", async () => {
+    const { unmount } = render(<CharacterCanvas glbUrl="/x.glb" width={210} height={298} />);
+    await resolveLoad("/x.glb", "toy");
+    runOneTick();
+    const mesh = findModelByName(capturedScene!, "toy")!.children[0] as THREE.Mesh;
+    const mat = mesh.material as THREE.MeshBasicMaterial;
+    expect(mat).toBeInstanceOf(THREE.MeshBasicMaterial);
+    expect(mat.map).toBeInstanceOf(THREE.Texture);
+    // No lighting-dependent terms and no second (emissive) texture binding.
+    expect((mat as unknown as { emissiveMap?: unknown }).emissiveMap).toBeUndefined();
+    expect((mat as unknown as { metalness?: unknown }).metalness).toBeUndefined();
+    // Filtering: trilinear mipmaps + capped anisotropy from the shared renderer.
+    expect(mat.map!.generateMipmaps).toBe(true);
+    expect(mat.map!.minFilter).toBe(THREE.LinearMipmapLinearFilter);
+    expect(mat.map!.magFilter).toBe(THREE.LinearFilter);
+    expect(mat.map!.anisotropy).toBe(8);
+    // Scene carries no lights any more (an unlit material ignores them anyway).
+    let lights = 0;
+    capturedScene!.traverse((o) => { if ((o as THREE.Light).isLight) lights++; });
+    expect(lights).toBe(0);
+    unmount();
+  });
+
+  it("renders at the base size when the canvas has no layout size (jsdom) — the DPR/zoom bucket only scales up with a measured on-screen size", async () => {
+    render(<CharacterCanvas glbUrl="/y.glb" width={172} height={276} />);
+    await resolveLoad("/y.glb", "sized");
+    runOneTick();
+    expect(renderedSizes.at(-1)).toEqual({ width: 172, height: 276 });
   });
 });

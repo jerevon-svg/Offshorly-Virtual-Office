@@ -73,6 +73,12 @@ const POLL_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 // 280k leaves margin under Meshy's 300,000-face rigging cap (docs re-read
 // 2026-08-28; the earlier 300k target produced 301,293 tris).
 const TARGET_POLYCOUNT = 280_000;
+// Meshy's image-to-3d pose_mode enum. "a-pose" was the proven Alex/Bon-v2/
+// Micah-v2 setting; --pose-mode=t-pose (added 2026-08-30) is required when the
+// source master is itself a true horizontal T-pose (bon-v3 onward), since
+// asking for a-pose from a T-pose reference makes Meshy re-pose the arms.
+const POSE_MODES = ["a-pose", "t-pose", "default"];
+const DEFAULT_POSE_MODE = "a-pose";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -140,10 +146,10 @@ async function downloadFile(url, outPath) {
 // Request contract per docs.meshy.ai/en/api/image-to-3d (read 2026-08-28).
 // Kept as a function so the exact settings can be logged to the task JSON
 // without the (large) base64 image.
-const IMAGE_TO_3D_SETTINGS = (imageUrl) => ({
+const IMAGE_TO_3D_SETTINGS = (imageUrl, poseMode = DEFAULT_POSE_MODE) => ({
   image_url: imageUrl,
   ai_model: "latest",
-  pose_mode: "a-pose",
+  pose_mode: poseMode,
   should_texture: true,
   texture_resolution: "2k",
   should_remesh: false, // remesh is a separate, proven phase (Phase 2)
@@ -151,7 +157,7 @@ const IMAGE_TO_3D_SETTINGS = (imageUrl) => ({
   multi_view_thumbnails: true,
 });
 
-async function submitImageTo3D(apiKey, imagePath) {
+async function submitImageTo3D(apiKey, imagePath, poseMode = DEFAULT_POSE_MODE) {
   console.log(`[meshy-employee] Phase 1: submitting Image-to-3D for ${imagePath} ...`);
   console.log("[meshy-employee] COST WARNING: real, paid Meshy API call.");
 
@@ -159,7 +165,8 @@ async function submitImageTo3D(apiKey, imagePath) {
   const buf = fs.readFileSync(imagePath);
   const dataUri = `data:${mime};base64,${buf.toString("base64")}`;
 
-  const result = await meshyFetch(apiKey, "POST", "/v1/image-to-3d", IMAGE_TO_3D_SETTINGS(dataUri));
+  console.log(`[meshy-employee] pose_mode = ${poseMode}`);
+  const result = await meshyFetch(apiKey, "POST", "/v1/image-to-3d", IMAGE_TO_3D_SETTINGS(dataUri, poseMode));
 
   if (!result.result) throw new Error("Image-to-3D submit response missing 'result' (task id) field");
   console.log(`[meshy-employee] Image-to-3D task submitted. task_id = ${result.result}`);
@@ -375,6 +382,7 @@ async function main() {
   const flags = process.argv.slice(4);
   const flagValue = (name) => (flags.find((a) => a.startsWith(`${name}=`)) || "").slice(name.length + 1) || null;
   const stopAfter = flagValue("--stop-after");
+  const poseMode = flagValue("--pose-mode") || DEFAULT_POSE_MODE;
   const resumeTaskId = flagValue("--from-image-to-3d-task");
   const resumeRemeshTaskId = flagValue("--from-remesh-task");
   if (resumeRemeshTaskId && (resumeTaskId || stopAfter)) {
@@ -382,6 +390,10 @@ async function main() {
     return usageAndExit();
   }
   if (!employeeName || !imagePath) return usageAndExit();
+  if (!POSE_MODES.includes(poseMode)) {
+    console.error(`Unsupported --pose-mode value "${poseMode}" (supported: ${POSE_MODES.join(", ")})`);
+    return usageAndExit();
+  }
   if (stopAfter && !["image-to-3d", "remesh"].includes(stopAfter)) {
     console.error(`Unsupported --stop-after value "${stopAfter}" (supported: image-to-3d, remesh)`);
     return usageAndExit();
@@ -464,7 +476,7 @@ async function main() {
       }
       // Never touch <name>-raw.glb on resume — it is the reviewed artifact.
     } else {
-      const imageTaskId = await submitImageTo3D(apiKey, imagePath);
+      const imageTaskId = await submitImageTo3D(apiKey, imagePath, poseMode);
       imageTask = await pollImageTo3D(apiKey, imageTaskId);
       const rawGlbUrl = imageTask.model_urls && imageTask.model_urls.glb;
       if (rawGlbUrl) {
@@ -476,7 +488,7 @@ async function main() {
     if (stopAfter === "image-to-3d") {
       const artifacts = await downloadImageTo3DArtifacts(imageTask, outDir, employeeName);
       const balanceAfter = await checkBalance(apiKey);
-      const { image_url: _omit, ...settings } = IMAGE_TO_3D_SETTINGS("");
+      const { image_url: _omit, ...settings } = IMAGE_TO_3D_SETTINGS("", poseMode);
       const record = {
         step: "image-to-3d",
         employee: employeeName,

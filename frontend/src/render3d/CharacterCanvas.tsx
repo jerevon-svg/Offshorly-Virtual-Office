@@ -3,7 +3,8 @@ import * as THREE from "three";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import type { WalkDirection } from "../data/bonWalkFrames";
 import { loadGlbCached } from "./glbCache";
-import { getSharedCanvasElement, renderToCanvas } from "./SharedRenderer";
+import { getMaxAnisotropy, getSharedCanvasElement, renderToCanvas } from "./SharedRenderer";
+import { resolveRenderScale, scaledRenderSize } from "./renderScale";
 import { stepAngleTowardsDegrees } from "./angleMath";
 import { resolveCharacterAnimState, type CharacterAnimState } from "./characterAnimationState";
 
@@ -29,17 +30,29 @@ import { resolveCharacterAnimState, type CharacterAnimState } from "./characterA
 // The auto-framing math below is untouched — this was purely an
 // elevationDeg value change, not a framing/target-point bug.
 //
-// Lights / emissiveIntensity were RE-CALIBRATED against Meshy's own
-// preview render (scripts/avatar-pipeline/reference/
-// meshy-preview-alex-front.png) via objective pixel sampling (see git
-// history for the calibration pass) — this model's material is
-// effectively self-illuminated (metalness=1, roughness=1, full baked
-// appearance in the emissiveMap), so these scene lights contribute only a
-// small amount on top of the emissive term; emissiveIntensity is the
-// dominant brightness control. The baked emissiveMap's R channel for skin
-// tones is close to saturated even before any multiplier, so cranking
-// emissiveIntensity toward/above 1.0 clips highlights to flat white —
-// values below 1.0 are correct here, not a mistake.
+// Material (quality pass 2026-08-29): Meshy's rigged GLBs arrive with a
+// metallic=1/roughness=1 MeshPhysicalMaterial (KHR_materials_specular/ior)
+// whose base-color texture is ALSO bound as the emissiveMap. The earlier
+// calibration drove brightness with emissiveIntensity 0.7 + three scene
+// lights on top; the lit term of that metal material is a view-dependent
+// specular sheen that shimmered along UV seams and over-brightened light
+// skin. The baked atlas already IS the finished toy look (Meshy bakes its
+// lighting into the base color), so every character is now drawn with ONE
+// unlit MeshBasicMaterial sampling the base-color map once — no lights, no
+// emissive duplicate, no metallic/specular term, identical treatment for
+// every character (see toUnlitToyMaterial). Colour space is untouched:
+// GLTFLoader tags the map SRGB and SharedRenderer outputs SRGB.
+//
+// Texture filtering: mipmaps + trilinear + anisotropy are ON. They used to
+// be disabled because mip generation blended the atlas's black inter-chart
+// gaps into the charts ("scratches"); the LOD build now pads those gaps
+// (scripts/avatar-pipeline/atlas-dilate.mjs), so filtering is safe and
+// removes the minification sparkle the no-mipmap path produced.
+//
+// Render size: the offscreen render is DPR-aware (renderScale.ts) — the
+// base renderWidth/renderHeight stay the calibration reference, and the
+// actual device-pixel size is that base × a zoom/DPR bucket (cap DPR 2),
+// re-evaluated only every RENDER_SCALE_POLL_FRAMES frames.
 //
 // Phase A: replaced the earlier "up to 4 independently-loaded GLBs,
 // hard-swap visibility" architecture with a single consolidated GLB (one
@@ -85,13 +98,122 @@ const CONFIG = {
     frameMarginY: 1.09,
     frameMarginX: 1.115,
   },
-  lights: {
-    ambient: { color: 0xfff2e6, intensity: 0.4 },
-    keyTop: { color: 0xfff0dd, intensity: 0.4, pos: [0, 6, 0.6] as [number, number, number] },
-    fill: { color: 0xffffff, intensity: 0.2, pos: [-2, 1, 3] as [number, number, number] },
-  },
-  emissiveIntensity: 0.7,
 };
+
+// How often (in rendered frames) the on-screen size is re-measured to pick
+// the render-scale bucket. getBoundingClientRect is a layout read; once a
+// quarter-second at 60fps is plenty for zoom changes and costs nothing.
+const RENDER_SCALE_POLL_FRAMES = 15;
+
+// `THREE.Box3().setFromObject()` on a SkinnedMesh reads the geometry's
+// raw (bind-pose-local, pre-skin) vertex attribute positions transformed
+// only by the mesh node's own (near-identity) matrixWorld — it does NOT
+// apply the per-vertex skin/bone matrix palette used at render time. For
+// this rig, that raw attribute data is a tiny (~centimeter-scale) blob
+// near the origin, while the actual world-space pose comes entirely from
+// the skeleton's bone transforms. Framing the camera off that raw mesh
+// box therefore zooms in on a near-single-point patch of geometry
+// instead of the whole character. Frame off the skeleton's bone world
+// positions instead — a much cheaper and, for this asset, more accurate
+// proxy for the character's actual on-screen extent. Falls back to the
+// standard mesh bbox for any (non-skinned) model with no bones.
+export function computeFramingBox(root: THREE.Object3D): THREE.Box3 {
+  const box = new THREE.Box3();
+  const pos = new THREE.Vector3();
+  let hasBones = false;
+  root.traverse((o) => {
+    if ((o as THREE.Bone).isBone) {
+      hasBones = true;
+      o.getWorldPosition(pos);
+      box.expandByPoint(pos);
+    }
+  });
+  if (!hasBones) {
+    box.setFromObject(root);
+    return box;
+  }
+  // Bone positions sit at joint centers, inside the actual skin surface
+  // (head/hands/feet/chest extend past their nearest bone), so pad the
+  // bone-derived box out a bit before the caller's own frameMargin is
+  // applied on top.
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  box.expandByVector(size.multiplyScalar(0.12));
+  return box;
+}
+
+// Swaps every mesh's Meshy PBR material for the shared unlit toy
+// material (memoised per source material, see toUnlitToyMaterial).
+function setupModelMaterials(root: THREE.Object3D) {
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (mesh.isMesh && mesh.material) {
+      mesh.material = Array.isArray(mesh.material)
+        ? mesh.material.map((m) => toUnlitToyMaterial(m))
+        : toUnlitToyMaterial(mesh.material);
+    }
+  });
+}
+
+// Heading-independent framing bounds (2026-08-30). computeFramingBox reads
+// bone WORLD positions, which include the model's own rotation.y (the
+// character's heading). Under the 35deg-elevated orthographic camera a
+// Y-rotation swings the rig's wide X arm-span round into Z, and Z projects
+// into camera-space Y — so the solved `top` (i.e. the zoom) moved with
+// heading: measured 103.675 facing front/back vs 129.843 facing left/right,
+// a 25.2% apparent-size swing for bon, 20.2% for micah, 13.9% for alex.
+// Framing is solved ONCE at mount, so a canvas that mounted while its
+// character faced sideways came back visibly smaller than the same
+// character mounted facing front — and any re-mount mid-walk (LOD/tier
+// swap, onError recovery, re-entering the crowd budget as depth-sort order
+// changes while walking between tiles) made the character jump size.
+// Solve the zoom from bounds measured with the heading rotation removed;
+// the value is identical to today's front-facing calibration, so nothing
+// about the tuned framing changes — it just stops drifting with heading.
+// Centering still uses the live world box (below) so the character stays
+// centred at every heading.
+export function computeStableFramingBox(root: THREE.Object3D): THREE.Box3 {
+  const savedY = root.rotation.y;
+  root.rotation.y = 0;
+  root.updateMatrixWorld(true);
+  const box = computeFramingBox(root);
+  root.rotation.y = savedY;
+  root.updateMatrixWorld(true);
+  return box;
+}
+
+// One unlit material per SOURCE material. The cached GLTF's materials are
+// shared by every SkeletonUtils.clone() of that GLB (three's Mesh.copy shares
+// material by reference), so the conversion is memoised per source so all
+// instances of a character keep sharing one material — same ownership rule
+// as before (never disposed by an instance; see cleanup below).
+const unlitMaterialCache = new WeakMap<THREE.Material, THREE.MeshBasicMaterial>();
+
+export function toUnlitToyMaterial(source: THREE.Material): THREE.MeshBasicMaterial {
+  const cached = unlitMaterialCache.get(source);
+  if (cached) return cached;
+  const src = source as THREE.MeshStandardMaterial;
+  const map = src.map ?? null;
+  if (map) {
+    map.generateMipmaps = true;
+    map.minFilter = THREE.LinearMipmapLinearFilter;
+    map.magFilter = THREE.LinearFilter;
+    map.anisotropy = getMaxAnisotropy();
+    map.needsUpdate = true;
+  }
+  const mat = new THREE.MeshBasicMaterial({
+    map,
+    color: src.color ? src.color.clone() : new THREE.Color(0xffffff),
+    side: src.side,
+    transparent: src.transparent,
+    opacity: src.opacity,
+    alphaTest: src.alphaTest,
+    depthWrite: src.depthWrite,
+  });
+  mat.name = `${src.name || "material"} (unlit toy)`;
+  unlitMaterialCache.set(source, mat);
+  return mat;
+}
 
 // Continuous turn rate for the smooth-rotation state machine (Phase A.3) —
 // reaches a typical 90deg direction change in 125ms and a full 180deg
@@ -246,16 +368,26 @@ export function CharacterCanvas({
     let currentState: CharacterAnimState | null = null;
     let currentHeading = headingTargetRef.current;
 
+    // Unlit material — no scene lights (see header).
     const scene = new THREE.Scene();
 
-    const ambient = new THREE.AmbientLight(CONFIG.lights.ambient.color, CONFIG.lights.ambient.intensity);
-    scene.add(ambient);
-    const keyTop = new THREE.DirectionalLight(CONFIG.lights.keyTop.color, CONFIG.lights.keyTop.intensity);
-    keyTop.position.set(...CONFIG.lights.keyTop.pos);
-    scene.add(keyTop);
-    const fill = new THREE.DirectionalLight(CONFIG.lights.fill.color, CONFIG.lights.fill.intensity);
-    fill.position.set(...CONFIG.lights.fill.pos);
-    scene.add(fill);
+    // Device-pixel render size = base size × zoom/DPR bucket (renderScale.ts).
+    // The camera/framing below is computed from the BASE width/height, so it
+    // stays exactly as calibrated at every scale.
+    let renderScale = 1;
+    let renderSize = scaledRenderSize(width, height, renderScale);
+    let framesSincePoll = RENDER_SCALE_POLL_FRAMES; // poll on the first frame
+    function updateRenderScale() {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const dpr = typeof window !== "undefined" ? window.devicePixelRatio : 1;
+      const next = resolveRenderScale(rect.height, height, dpr);
+      if (next !== renderScale) {
+        renderScale = next;
+        renderSize = scaledRenderSize(width, height, renderScale);
+      }
+    }
 
     const aspect = width / height;
     const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 100);
@@ -296,73 +428,6 @@ export function CharacterCanvas({
         maxY = Math.max(maxY, local.y);
       }
       return { minX, maxX, minY, maxY };
-    }
-
-    // `THREE.Box3().setFromObject()` on a SkinnedMesh reads the geometry's
-    // raw (bind-pose-local, pre-skin) vertex attribute positions transformed
-    // only by the mesh node's own (near-identity) matrixWorld — it does NOT
-    // apply the per-vertex skin/bone matrix palette used at render time. For
-    // this rig, that raw attribute data is a tiny (~centimeter-scale) blob
-    // near the origin, while the actual world-space pose comes entirely from
-    // the skeleton's bone transforms. Framing the camera off that raw mesh
-    // box therefore zooms in on a near-single-point patch of geometry
-    // instead of the whole character. Frame off the skeleton's bone world
-    // positions instead — a much cheaper and, for this asset, more accurate
-    // proxy for the character's actual on-screen extent. Falls back to the
-    // standard mesh bbox for any (non-skinned) model with no bones.
-    function computeFramingBox(root: THREE.Object3D): THREE.Box3 {
-      const box = new THREE.Box3();
-      const pos = new THREE.Vector3();
-      let hasBones = false;
-      root.traverse((o) => {
-        if ((o as THREE.Bone).isBone) {
-          hasBones = true;
-          o.getWorldPosition(pos);
-          box.expandByPoint(pos);
-        }
-      });
-      if (!hasBones) {
-        box.setFromObject(root);
-        return box;
-      }
-      // Bone positions sit at joint centers, inside the actual skin surface
-      // (head/hands/feet/chest extend past their nearest bone), so pad the
-      // bone-derived box out a bit before the caller's own frameMargin is
-      // applied on top.
-      const size = new THREE.Vector3();
-      box.getSize(size);
-      box.expandByVector(size.multiplyScalar(0.12));
-      return box;
-    }
-
-    function setupModelMaterials(root: THREE.Object3D) {
-      root.traverse((o) => {
-        const mesh = o as THREE.Mesh;
-        if (mesh.isMesh && mesh.material) {
-          const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-          for (const m of mats) {
-            const mat = m as THREE.MeshStandardMaterial;
-            mat.emissiveIntensity = CONFIG.emissiveIntensity;
-            // The baked emissiveMap is a tightly-packed UV atlas whose charts
-            // butt up against hard-edged (torn-looking) boundaries with no
-            // padding/dilation between islands. Mipmap generation blends
-            // across those chart seams at lower mip levels, bleeding the
-            // gaps' dark fill color into the charts themselves — visible on
-            // screen as fine scratchy "cracks" across otherwise-smooth skin.
-            // Disabling mipmaps (and using linear min-filtering instead)
-            // removes that seam-bleed at the cost of some minification
-            // aliasing, which is an acceptable trade at this render's small
-            // on-screen character size.
-            for (const tex of [mat.map, mat.emissiveMap] as (THREE.Texture | null)[]) {
-              if (!tex) continue;
-              tex.generateMipmaps = false;
-              tex.minFilter = THREE.LinearFilter;
-              tex.magFilter = THREE.LinearFilter;
-              tex.needsUpdate = true;
-            }
-          }
-        }
-      });
     }
 
     // Grounds the model at its own bbox (centers X/Z, drops feet to y=0).
@@ -427,9 +492,13 @@ export function CharacterCanvas({
         const delta = clock.getDelta();
         mixer?.update(delta);
         tickHeadingAndAnimState(delta);
+        if (++framesSincePoll >= RENDER_SCALE_POLL_FRAMES) {
+          framesSincePoll = 0;
+          updateRenderScale();
+        }
         const canvas = canvasRef.current;
         if (canvas) {
-          renderToCanvas(scene, camera, canvas, width, height);
+          renderToCanvas(scene, camera, canvas, renderSize.width, renderSize.height);
         }
         rafId = requestAnimationFrame(tick);
       };
@@ -451,6 +520,7 @@ export function CharacterCanvas({
       groundModel(model);
 
       const box = computeFramingBox(model);
+      const stableBox = computeStableFramingBox(model);
       const size = new THREE.Vector3();
       box.getSize(size);
 
@@ -467,7 +537,10 @@ export function CharacterCanvas({
       camera.position.addScaledVector(up, centerY);
       camera.updateMatrixWorld(true);
 
-      const ext2 = getCameraSpaceExtent(box, camera);
+      // Zoom comes from the heading-independent bounds (see
+      // computeStableFramingBox) so apparent size never changes with facing;
+      // the centering above deliberately keeps using the live world box.
+      const ext2 = getCameraSpaceExtent(stableBox, camera);
       const halfHeight = ((ext2.maxY - ext2.minY) / 2) * CONFIG.camera.frameMarginY;
       const halfWidth = ((ext2.maxX - ext2.minX) / 2) * CONFIG.camera.frameMarginX;
       const topFromHeight = halfHeight;
@@ -501,9 +574,10 @@ export function CharacterCanvas({
         // or requiring a running tick loop — otherwise the SkinnedMesh
         // stays in the GLB's raw bind pose (T/A-pose) for this static frame.
         mixer?.update(0);
+        updateRenderScale();
         const canvas = canvasRef.current;
         if (canvas) {
-          renderToCanvas(scene, camera, canvas, width, height);
+          renderToCanvas(scene, camera, canvas, renderSize.width, renderSize.height);
         }
       }
     }).catch((err) => {

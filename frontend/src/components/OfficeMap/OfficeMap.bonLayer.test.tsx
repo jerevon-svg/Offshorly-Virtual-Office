@@ -75,11 +75,11 @@ function signInAs(email: string, name: string) {
   setCurrentUserFromMeResponse({ id: `${name}-id`, email, full_name: name, role: "", team: null });
 }
 
-// Every render of Bon: live-3D canvas stubs whose GLB is Bon's (shipped jerevon set or the
-// bon-v2 candidate) plus any 2D Bon sprite <img>.
+// Every render of Bon: live-3D canvas stubs whose GLB is Bon's (shipped bon-v3 set, the
+// bon-v2 dev-override candidate, or the old jerevon rollback) plus any 2D Bon sprite <img>.
 function bonRenders(container: HTMLElement) {
   const canvases = Array.from(container.querySelectorAll<HTMLElement>('[data-testid="character-canvas-stub"]')).filter((el) =>
-    /jerevon-lod|bon-v2-lod/.test(el.getAttribute("data-glb-url") ?? ""),
+    /jerevon-lod|bon-v2-lod|bon-v3-lod/.test(el.getAttribute("data-glb-url") ?? ""),
   );
   const sprites = Array.from(container.querySelectorAll("img")).filter((img) => /chibi-bon|\/bon-/.test(img.getAttribute("src") ?? ""));
   return { canvases, sprites, total: canvases.length + sprites.length };
@@ -188,6 +188,6 @@ describe("OfficeMap mock mode: checked-in Bon is visible to Alex at his synchron
     const r = bonRenders(container);
     expect(r.total).toBe(1);
     const stubs = Array.from(container.querySelectorAll<HTMLElement>('[data-testid="character-canvas-stub"]'));
-    expect(stubs.filter((el) => /bon-v2-lod/.test(el.getAttribute("data-glb-url") ?? "")).length).toBe(1);
+    expect(stubs.filter((el) => /bon-v3-lod/.test(el.getAttribute("data-glb-url") ?? "")).length).toBe(1);
   });
 });

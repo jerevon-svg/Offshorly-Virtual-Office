@@ -19,8 +19,16 @@ import * as THREE from "three";
 // ---------------------------------------------------------------------------
 
 let sharedRenderer: THREE.WebGLRenderer | null = null;
-let lastWidth = 0;
-let lastHeight = 0;
+// Current size of the shared WebGL surface. Quality pass 2026-08-29: the
+// surface is GROW-ONLY — several CharacterCanvas instances of different sizes
+// (bon 210x298, alex 160x276, micah 172x276, and now DPR-scaled variants)
+// render through this one renderer every frame, so re-sizing to each caller's
+// exact size used to reallocate the framebuffer on EVERY render call. Now the
+// surface only grows to the largest size ever requested and each render is
+// drawn into a viewport/scissor sub-rectangle, copied out with a source-rect
+// drawImage.
+let surfaceWidth = 0;
+let surfaceHeight = 0;
 
 function getRenderer(): THREE.WebGLRenderer {
   if (!sharedRenderer) {
@@ -39,8 +47,36 @@ function getRenderer(): THREE.WebGLRenderer {
     sharedRenderer.outputColorSpace = THREE.SRGBColorSpace;
     sharedRenderer.toneMapping = THREE.NoToneMapping;
     sharedRenderer.toneMappingExposure = 1;
+    // CharacterCanvas passes explicit device-pixel sizes (renderScale.ts);
+    // the renderer must not apply its own DPR on top.
+    sharedRenderer.setPixelRatio(1);
+    sharedRenderer.setScissorTest(true);
   }
   return sharedRenderer;
+}
+
+// Grow-only surface sizing helper (pure; unit-tested). Returns the surface
+// size that fits both the current surface and the requested render size.
+export function growSurface(
+  current: { width: number; height: number },
+  requestedWidth: number,
+  requestedHeight: number,
+): { width: number; height: number; grew: boolean } {
+  const width = Math.max(current.width, requestedWidth);
+  const height = Math.max(current.height, requestedHeight);
+  return { width, height, grew: width !== current.width || height !== current.height };
+}
+
+// Largest anisotropic-filtering level the GPU supports, capped (quality pass
+// 2026-08-29): 8 already removes the seam/sparkle at the grazing angles the
+// 35deg office camera produces; 16 costs bandwidth for no visible gain here.
+export const MAX_ANISOTROPY_CAP = 8;
+export function getMaxAnisotropy(): number {
+  try {
+    return Math.max(1, Math.min(MAX_ANISOTROPY_CAP, getRenderer().capabilities.getMaxAnisotropy()));
+  } catch {
+    return 1;
+  }
 }
 
 /**
@@ -58,11 +94,16 @@ export function renderToCanvas(
   height: number,
 ): void {
   const renderer = getRenderer();
-  if (width !== lastWidth || height !== lastHeight) {
-    renderer.setSize(width, height, false);
-    lastWidth = width;
-    lastHeight = height;
+  // Grow-only surface (see surfaceWidth/Height): the frame is rendered into
+  // the bottom-left width x height viewport and copied out below.
+  const grown = growSurface({ width: surfaceWidth, height: surfaceHeight }, width, height);
+  if (grown.grew) {
+    renderer.setSize(grown.width, grown.height, false);
+    surfaceWidth = grown.width;
+    surfaceHeight = grown.height;
   }
+  renderer.setViewport(0, 0, width, height);
+  renderer.setScissor(0, 0, width, height);
   renderer.render(scene, camera);
 
   const ctx = targetCanvas.getContext("2d");
@@ -72,7 +113,9 @@ export function renderToCanvas(
     targetCanvas.height = height;
   }
   ctx.clearRect(0, 0, width, height);
-  ctx.drawImage(renderer.domElement, 0, 0, width, height);
+  // GL viewport origin is bottom-left; in canvas-element pixel space that
+  // region sits at (0, surfaceHeight - height).
+  ctx.drawImage(renderer.domElement, 0, surfaceHeight - height, width, height, 0, 0, width, height);
 }
 
 /**
@@ -105,6 +148,6 @@ export function getSharedRenderer(): THREE.WebGLRenderer {
 export function __resetSharedRendererForTests(): void {
   sharedRenderer?.dispose();
   sharedRenderer = null;
-  lastWidth = 0;
-  lastHeight = 0;
+  surfaceWidth = 0;
+  surfaceHeight = 0;
 }

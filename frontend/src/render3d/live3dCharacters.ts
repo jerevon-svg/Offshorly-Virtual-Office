@@ -59,16 +59,18 @@ const BASE = import.meta.env.BASE_URL;
 // through LIVE_3D_CAP_BY_TIER (T1: 2, T2: 4), exactly as tierBudgets.ts documents.
 export const LIVE_3D_CHARACTERS: Record<string, Live3dAssetSet> = {
   // Manifest aspect ratio: width 26.23 / height 37.2.
-  // Promoted 2026-08-28 to the bon-v2 set (Meshy pipeline: bon-chibi-ref-v2 ->
-  // image-to-3d 01a04848 -> remesh 01a04854 -> rig 01a0485f -> 6 clips ->
-  // build-character-lods). The previous set stays on disk untouched at
-  // public/avatars/jerevon/jerevon-lod{0,1,2}.glb as the rollback: revert
-  // these three paths to roll back. `?live3d=bon-v2` (OfficeStage's dev
-  // override) now points at the same files and is kept only as a preview aid.
+  // Promoted 2026-08-30 to the bon-v3 set, built straight from the approved
+  // T-pose master bon-tpose.png (Meshy pipeline, pose_mode "t-pose":
+  // image-to-3d 01a05185 -> remesh 01a05188 -> rig 01a0518b -> 6 clips ->
+  // build-character-lods). BOTH earlier sets stay on disk untouched as
+  // rollbacks — public/avatars/bon-v2/bon-v2-lod{0,1,2}.glb (2026-08-28) and
+  // public/avatars/jerevon/jerevon-lod{0,1,2}.glb (the original): revert these
+  // three paths to roll back to either. `?live3d=bon-v2` (OfficeStage's dev
+  // override) still points at the bon-v2 files and is kept as a preview aid.
   bon: {
-    glbUrl: `${BASE}avatars/bon-v2/bon-v2-lod0.glb`,
-    lod1GlbUrl: `${BASE}avatars/bon-v2/bon-v2-lod1.glb`,
-    lod2GlbUrl: `${BASE}avatars/bon-v2/bon-v2-lod2.glb`,
+    glbUrl: `${BASE}avatars/bon-v3/bon-v3-lod0.glb`,
+    lod1GlbUrl: `${BASE}avatars/bon-v3/bon-v3-lod1.glb`,
+    lod2GlbUrl: `${BASE}avatars/bon-v3/bon-v3-lod2.glb`,
     renderWidth: 210,
     renderHeight: 298,
   },

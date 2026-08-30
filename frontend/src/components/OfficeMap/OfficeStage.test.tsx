@@ -142,12 +142,13 @@ function clipPathLayers(container: HTMLElement): HTMLElement[] {
 // Since alex joined LIVE_3D_CHARACTERS (2026-08-29), a T2 render of the
 // manifest roster produces an alex canvas alongside bon's (self, or a peer
 // within the T2 crowd cap). Tests that assert on Bon specifically select his
-// stub by its bon-v2 GLB url instead of assuming he owns the only canvas.
+// stub by its Bon GLB url (bon-v3 registry set, or the bon-v2 dev-override
+// candidate) instead of assuming he owns the only canvas.
 function canvasStubs(container: HTMLElement): HTMLElement[] {
   return Array.from(container.querySelectorAll<HTMLElement>('[data-testid="character-canvas-stub"]'));
 }
 function bonCanvasStubs(container: HTMLElement): HTMLElement[] {
-  return canvasStubs(container).filter((el) => /bon-v2/.test(el.getAttribute("data-glb-url") ?? ""));
+  return canvasStubs(container).filter((el) => /bon-v2|bon-v3/.test(el.getAttribute("data-glb-url") ?? ""));
 }
 function alexCanvasStubs(container: HTMLElement): HTMLElement[] {
   return canvasStubs(container).filter((el) => /\/avatars\/alex\//.test(el.getAttribute("data-glb-url") ?? ""));
@@ -432,14 +433,14 @@ describe("OfficeStage dev-only candidate override (?live3d=bon-v2)", () => {
     });
   }
 
-  it("Production ignores the selector (DEV=false): ?live3d=bon-v2 falls back to normal gating with the shipped jerevon set", () => {
+  it("Production ignores the selector (DEV=false): ?live3d=bon-v2 falls back to normal gating with the shipped bon-v3 set", () => {
     vi.stubEnv("DEV", false);
     try {
       vi.mocked(detectDeviceTier).mockReturnValue("T2");
       const { container } = renderWith("?live3d=bon-v2", "bon");
       const url = bonCanvasStub(container).getAttribute("data-glb-url") ?? "";
-      // Registry (promoted to bon-v2) still wins; the selector itself contributed nothing.
-      expect(url).toMatch(/avatars\/bon-v2\/bon-v2-lod0\.glb$/);
+      // Registry (promoted to bon-v3) still wins; the selector itself contributed nothing.
+      expect(url).toMatch(/avatars\/bon-v3\/bon-v3-lod0\.glb$/);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -452,19 +453,19 @@ describe("OfficeStage dev-only candidate override (?live3d=bon-v2)", () => {
     unmount();
   });
 
-  it("Default Bon T2 loads bon-v2 lod0 without a selector", () => {
+  it("Default Bon T2 loads bon-v3 lod0 without a selector", () => {
     vi.mocked(detectDeviceTier).mockReturnValue("T2");
     const { container } = renderWith("", "bon");
     const stubs = bonCanvasStubs(container);
     expect(stubs.length).toBe(1);
-    expect(stubs[0].getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v2\/bon-v2-lod0\.glb$/);
-    expect(LIVE_3D_CHARACTERS.bon.glbUrl).toMatch(/\/avatars\/bon-v2\/bon-v2-lod0\.glb$/);
+    expect(stubs[0].getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v3\/bon-v3-lod0\.glb$/);
+    expect(LIVE_3D_CHARACTERS.bon.glbUrl).toMatch(/\/avatars\/bon-v3\/bon-v3-lod0\.glb$/);
   });
 
   it("Default Bon T1 loads lod1", () => {
     vi.mocked(detectDeviceTier).mockReturnValue("T1");
     const { container } = renderWith("", "bon");
-    expect(bonCanvasStub(container).getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v2\/bon-v2-lod1\.glb$/);
+    expect(bonCanvasStub(container).getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v3\/bon-v3-lod1\.glb$/);
   });
 
   it("Default Bon at a genuine T0 keeps the production 2D sprite safety floor (no canvas, no selector)", () => {
@@ -475,7 +476,7 @@ describe("OfficeStage dev-only candidate override (?live3d=bon-v2)", () => {
     expect(bonSprites.length).toBe(1);
   });
 
-  it("Peer view renders exactly one default bon-v2", () => {
+  it("Peer view renders exactly one default bon-v3", () => {
     vi.mocked(detectDeviceTier).mockReturnValue("T2");
     const rosterBon = {
       id: "jerevon@offshorly.com", kind: "character" as const, path: "", x: 300, y: 300, width: 26, height: 37, transform: null,
@@ -489,7 +490,7 @@ describe("OfficeStage dev-only candidate override (?live3d=bon-v2)", () => {
     );
     const stubs = bonCanvasStubs(container);
     expect(stubs.length).toBe(1);
-    expect(stubs[0].getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v2\/bon-v2-lod0\.glb$/);
+    expect(stubs[0].getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v3\/bon-v3-lod0\.glb$/);
     expect(Array.from(container.querySelectorAll("img")).filter((i) => /chibi-bon|\/bon-/.test(i.getAttribute("src") ?? "")).length).toBe(0);
   });
 
@@ -512,7 +513,7 @@ describe("OfficeStage dev-only candidate override (?live3d=bon-v2)", () => {
       </TransformWrapper>,
     );
     const stub = bonCanvasStub(container);
-    expect(stub.getAttribute("data-glb-url")).toMatch(/bon-v2-lod0\.glb$/);
+    expect(stub.getAttribute("data-glb-url")).toMatch(/bon-v3-lod0\.glb$/);
     expect(stub.getAttribute("data-is-walking")).toBe("true");
     expect(stub.getAttribute("data-heading-degrees")).toBe("90");
     expect(stub.getAttribute("data-is-spatial-conversation")).toBe("true");
@@ -533,16 +534,16 @@ describe("OfficeStage dev-only candidate override (?live3d=bon-v2)", () => {
     expect(micahImgs.length).toBeGreaterThan(0);
   });
 
-  it("`?live3d=bon` (registry id) previews the registry set, which is now bon-v2", () => {
+  it("`?live3d=bon` (registry id) previews the registry set, which is now bon-v3", () => {
     vi.mocked(detectDeviceTier).mockReturnValue("T2");
     const { container } = renderWith("?live3d=bon");
-    expect(bonCanvasStub(container).getAttribute("data-glb-url")).toMatch(/bon-v2-lod0\.glb$/);
+    expect(bonCanvasStub(container).getAttribute("data-glb-url")).toMatch(/bon-v3-lod0\.glb$/);
   });
 
   it("an unknown candidate id is ignored (falls back to normal gating)", () => {
     vi.mocked(detectDeviceTier).mockReturnValue("T2");
     const { container } = renderWith("?live3d=bon-v9", "bon");
-    expect(bonCanvasStub(container).getAttribute("data-glb-url")).toMatch(/bon-v2-lod0\.glb$/);
+    expect(bonCanvasStub(container).getAttribute("data-glb-url")).toMatch(/bon-v3-lod0\.glb$/);
   });
 });
 
@@ -593,7 +594,7 @@ describe("OfficeStage live-3D tier/budget gating (no ?live3d= override)", () => 
 
     const stubs = bonCanvasStubs(container);
     expect(stubs.length).toBe(1);
-    expect(stubs[0].getAttribute("data-glb-url")).toMatch(/bon-v2-lod1\.glb$/);
+    expect(stubs[0].getAttribute("data-glb-url")).toMatch(/bon-v3-lod1\.glb$/);
     expect(container.querySelector('img[src*="bon"]')).toBeNull();
   });
 
@@ -617,7 +618,7 @@ describe("OfficeStage live-3D tier/budget gating (no ?live3d= override)", () => 
     expect(alexStubs.length).toBe(1);
     expect(bonStubs.length).toBe(1);
     expect(alexStubs[0].getAttribute("data-glb-url")).toMatch(/alex-lod1\.glb$/);
-    expect(bonStubs[0].getAttribute("data-glb-url")).toMatch(/bon-v2-lod1\.glb$/);
+    expect(bonStubs[0].getAttribute("data-glb-url")).toMatch(/bon-v3-lod1\.glb$/);
     expect(container.querySelector('img[src*="bon"]')).toBeNull();
   });
 
@@ -1074,7 +1075,7 @@ describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
   const SPRITE_RE: Record<string, RegExp> = { bon: /chibi-bon|\/bon-/, alex: /alex/, micah: /micah/, lui: /lui/ };
   function stubOwner(el: HTMLElement): string {
     const url = el.getAttribute("data-glb-url") ?? "";
-    if (/bon-v2/.test(url)) return "bon";
+    if (/bon-v2|bon-v3/.test(url)) return "bon";
     const m = url.match(/\/avatars\/(alex|micah|lui)\//);
     return m ? m[1] : "?";
   }
