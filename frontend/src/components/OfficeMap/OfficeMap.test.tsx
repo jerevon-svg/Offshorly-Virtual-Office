@@ -459,6 +459,55 @@ describe("OfficeMap", () => {
       });
     }
 
+    // -----------------------------------------------------------------------
+    // Regression: BOTH clients crashed into the app error boundary the moment
+    // a SECOND participant made a spatial session active (members.length >= 2).
+    // The spatial-focus effect fires exactly on that transition and read
+    // `transformRef.current.instance.transformState`, which does not exist on
+    // ZoomPanPinch — the live transform lives on the ref itself. The resulting
+    // TypeError was thrown from inside a useEffect, so React propagated it
+    // straight to the error boundary. The session-identity mapping was also
+    // reading `s.id` on a SpatialSessionEntry whose key is `sessionId`.
+    // -----------------------------------------------------------------------
+    it("a second participant joining an active spatial session does not crash (both clients)", async () => {
+      const onError = vi.fn();
+      const view = render(<OfficeMap />);
+
+      // 1. one member only -> not yet an active conversation, no focus
+      await act(async () => {
+        spatialSessionsState.sessions = [{ sessionId: "conv-1", members: ["peer@example.com"] }];
+        view.rerender(<OfficeMap />);
+      });
+      expect(onError).not.toHaveBeenCalled();
+
+      // 2. THE CRASHING TRANSITION: the second participant opens the chat, so
+      //    the session becomes active on both clients simultaneously.
+      await act(async () => {
+        spatialSessionsState.sessions = [
+          { sessionId: "conv-1", members: ["peer@example.com", "jerevon@offshorly.com"] },
+        ];
+        view.rerender(<OfficeMap />);
+      });
+      // the office is still mounted and rendering — no error boundary
+      expect(view.container.querySelector(".officeRoot, [data-testid], div")).toBeTruthy();
+
+      // 3. a participant-set change while the SAME session stays active must
+      //    not loop or throw either
+      await act(async () => {
+        spatialSessionsState.sessions = [
+          { sessionId: "conv-1", members: ["peer@example.com", "jerevon@offshorly.com", "third@example.com"] },
+        ];
+        view.rerender(<OfficeMap />);
+      });
+
+      // 4. leaving restores without throwing
+      await act(async () => {
+        spatialSessionsState.sessions = [];
+        view.rerender(<OfficeMap />);
+      });
+      expect(view.container).toBeTruthy();
+    });
+
     it("opens an active peer spatial DM in the SPATIAL slot (badge shown, spatial_session_start emitted once) — not remote", async () => {
       chatListState.conversations = [dmConv];
       spatialSessionsState.sessions = [{ sessionId: dmConv.id, members: ["peer@example.com"] }];

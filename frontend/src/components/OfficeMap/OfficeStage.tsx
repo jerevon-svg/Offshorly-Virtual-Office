@@ -22,8 +22,18 @@ import { CharacterCanvas, directionToHeadingDegrees } from "../../render3d/Chara
 import {
   LIVE_3D_CHARACTERS,
   resolveLive3dGlbUrl,
+  resolveLive3dGlbUrlForTier,
+  resolveWidthCapacity,
   type Live3dAssetSet,
 } from "../../render3d/live3dCharacters";
+import {
+  applyTierDebounce,
+  frameDistance,
+  isLayerOnScreen,
+  resolveLodTier,
+  shouldUseMaxQuality,
+  type LodTier,
+} from "../../render3d/adaptiveLod";
 import { avatarIdForEmail } from "../../data/avatarIdentity";
 import { characterSprite, type WalkDirection } from "../../data/bonWalkFrames";
 import { PLACEHOLDER_SPRITE_SET } from "../../services/avatar/placeholder";
@@ -414,6 +424,14 @@ type OfficeStageProps = {
   // crowd-budget path — matching every existing caller/test that doesn't
   // pass this prop.
   selfCharacterId?: string | null;
+  // Live map view (zoom as a multiple of cover scale + the visible frame-space
+  // rect), mirrored from TransformWrapper by OfficeMap. Drives adaptive LOD
+  // only — never eligibility, never model or CSS scale. Absent = unknown, in
+  // which case proximity alone decides and nothing is culled.
+  mapView?: {
+    zoom: number;
+    visibleRect: { x: number; y: number; width: number; height: number };
+  } | null;
   // Status label system (see StatusLabel.tsx / services/presence/status.ts).
   // Deliberately NOT rendered by default: the PiP mini-camera instance
   // renders outside the main <TransformWrapper> (see OfficeMap.tsx's
@@ -491,6 +509,7 @@ export function OfficeStage({
   characterIsWalkingById,
   characterIsSittingById,
   selfCharacterId,
+  mapView,
   showStatusLabels,
   statusByLayerId,
   selfStatus,
@@ -509,6 +528,12 @@ export function OfficeStage({
   // or a mid-session WebGL context loss) — see CharacterCanvas's onError
   // prop below. Once a layer id lands here it renders the normal sprite
   // for the rest of this mount, even if it's otherwise eligible/permitted.
+  // Per-character adaptive-LOD memory. Hysteresis and the 400ms debounce need
+  // to know the tier a character is ALREADY using; without it every resolve
+  // started from scratch and the thresholds could chatter. Kept in a ref so a
+  // quality change never itself triggers a re-render.
+  const lodMemoryRef = useRef<Map<string, { tier: LodTier; hd: boolean; at: number }>>(new Map());
+
   const [erroredLive3dIds, setErroredLive3dIds] = useState<Set<string>>(new Set());
   const reportLive3dError = (layerId: string) => {
     setErroredLive3dIds((prev) => (prev.has(layerId) ? prev : new Set(prev).add(layerId)));
@@ -581,6 +606,10 @@ export function OfficeStage({
         });
       }}
     >
+      {/* Adaptive LOD (adaptiveLod.ts): the self layer anchors the proximity
+          test, so a distant employee never pulls the ~5MB HQ mesh. This only
+          picks the QUALITY tier — eligibility stays with the device-tier /
+          crowd gating below, and the tier is still clamped by it. */}
       {sorted.map((layer) => {
         const isChar = layer.kind === "character";
         // Treat an empty-string override as ABSENT, not "render a blank
@@ -666,6 +695,29 @@ export function OfficeStage({
           }
         }
 
+        // An ACTIVE, VISIBLE spatial-conversation participant. Drives both the
+        // HQ LOD0 pick and the maximum internal render bucket, so the two can
+        // never disagree. Offscreen members are excluded so a large group
+        // cannot pin maximum resolution for characters nobody can see.
+        const isSpatialParticipant =
+          (talkingCharacterIds?.includes(layer.id) ?? false) &&
+          isLayerOnScreen(layer, mapView?.visibleRect);
+        // Maximum internal render bucket. Spatial participants keep their pin;
+        // ANY visible character manually zoomed to a comparable on-screen size
+        // now earns it too (see shouldUseMaxQuality) — previously the top
+        // bucket was reachable only through Spatial Chat.
+        const lodMemory = lodMemoryRef.current.get(layer.id) ?? null;
+        const wantsHd = shouldUseMaxQuality(
+          {
+            isSelf: !!selfCharacterId && layer.id === selfCharacterId,
+            isFocused: isSpatialParticipant,
+            zoom: mapView?.zoom,
+            distance: 0,
+            isOnScreen: isLayerOnScreen(layer, mapView?.visibleRect),
+          },
+          lodMemory?.hd ?? false,
+        );
+
         const className = [styles.layer, isClickable ? styles.characterLayer : ""]
           .filter(Boolean)
           .join(" ");
@@ -681,6 +733,15 @@ export function OfficeStage({
               width: `${(layer.width / FRAME_WIDTH) * 100}%`,
               height: `${(layer.height / FRAME_HEIGHT) * 100}%`,
               ...(layer.transform ? { transform: layer.transform } : {}),
+              // .layer sets `overflow: hidden`, which clipped the widened
+              // live-3D canvas (widthCapacity) straight back to the wrapper's
+              // own width — the real reason wide poses still cropped. Let the
+              // PAINT overflow for 3D character layers only; sprite layers keep
+              // clipping (imgCrop / backrest clipPath depend on it). The
+              // wrapper's box, position, hit area and label anchoring are
+              // unchanged, and the canvas is pointer-events:none, so nothing
+              // outside the original box becomes clickable.
+              ...(live3dEntry ? { overflow: "visible" as const } : {}),
               // Synthetic backrest-crop layer only (see frontClipBottomPct's
               // doc comment in types/office.ts): clip the WRAPPER div itself
               // (not the img inside it) to only its top frontClipBottomPct
@@ -725,13 +786,65 @@ export function OfficeStage({
                 // renders live-3D at T0, so resolveLive3dGlbUrl has no T0 rule;
                 // under the DEV-only override (which does force a canvas at
                 // T0) T0 maps to the cheapest LOD (LOD2 chain), never LOD0.
-                glbUrl={resolveLive3dGlbUrl(
-                  live3dEntry,
-                  deviceTier,
-                  !live3dAnimated || (live3dEntry === devOverrideEntry && deviceTier === "T0"),
-                )}
+                glbUrl={(() => {
+                  // Device-tier ceiling first — it decides the WORST quality
+                  // this viewer may be given and owns the static-frame/T0
+                  // safety path, exactly as before.
+                  const ceiling = resolveLive3dGlbUrl(
+                    live3dEntry,
+                    deviceTier,
+                    !live3dAnimated || (live3dEntry === devOverrideEntry && deviceTier === "T0"),
+                  );
+                  // Only a T2 viewer may be promoted above that ceiling, and
+                  // only for the character they are actually looking at.
+                  // The dev-only ?live3d= override previews an exact asset
+                  // set — never re-pick its tier.
+                  if (live3dEntry === devOverrideEntry) return ceiling;
+                  if (deviceTier !== "T2" || !live3dAnimated) return ceiling;
+                  const selfLayer = selfCharacterId
+                    ? sorted.find((l) => l.id === selfCharacterId)
+                    : undefined;
+                  const now =
+                    typeof performance !== "undefined" ? performance.now() : Date.now();
+                  const prev = lodMemoryRef.current.get(layer.id) ?? null;
+                  const resolved: LodTier = resolveLodTier(
+                    {
+                      isSelf,
+                      isFocused: isSpatialParticipant,
+                      // Real map zoom, as a multiple of cover scale.
+                      zoom: mapView?.zoom,
+                      isOnScreen: isLayerOnScreen(layer, mapView?.visibleRect),
+                      distance: selfLayer ? frameDistance(selfLayer, layer) : Number.POSITIVE_INFINITY,
+                    },
+                    prev?.tier ?? null,
+                  );
+                  // Debounce so a character crossing a boundary cannot thrash
+                  // the loader; the seamless swap keeps the old model visible
+                  // for whatever load does happen.
+                  const tier = applyTierDebounce(resolved, prev?.tier ?? null, prev?.at ?? 0, now);
+                  lodMemoryRef.current.set(layer.id, {
+                    tier,
+                    hd: wantsHd,
+                    at: tier === prev?.tier ? (prev?.at ?? now) : now,
+                  });
+                  return resolveLive3dGlbUrlForTier(live3dEntry, tier);
+                })()}
                 width={live3dEntry.renderWidth}
                 height={live3dEntry.renderHeight}
+                // Canonical size policy (characterSize.ts): the character's
+                // manifest layer height is what sets its CSS footprint, so the
+                // canvas needs it to make every employee the same visible
+                // standing height. Resolution and LOD are unaffected.
+                layerHeight={layer.height}
+                // Spatial-conversation quality override: maximum internal
+                // render resolution for active participants. Camera, model
+                // scale and CSS footprint are all untouched.
+                maxQuality={wantsHd}
+                // Measured horizontal capacity for this character's widest
+                // animated pose. Widens only what the canvas PAINTS — the
+                // wrapper div below keeps its exact size, position, hit area
+                // and label anchoring.
+                widthScale={resolveWidthCapacity(live3dEntry)}
                 animated={live3dAnimated}
                 headingDegrees={directionToHeadingDegrees(
                   characterDirectionsById?.[layer.id] ?? "front",

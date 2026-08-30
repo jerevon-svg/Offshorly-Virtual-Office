@@ -22,6 +22,11 @@ export const MAX_EFFECTIVE_DPR = 2;
 // scale-invariant because width and height scale together.
 export const RENDER_SCALE_BUCKETS: readonly number[] = [0.5, 0.75, 1, 1.5, 2];
 
+/** The highest approved bucket — used by the spatial-conversation quality
+ *  override, which renders participants at maximum internal resolution
+ *  WITHOUT changing their visible CSS size or the camera. */
+export const MAX_RENDER_SCALE = RENDER_SCALE_BUCKETS[RENDER_SCALE_BUCKETS.length - 1];
+
 export function resolveRenderScale(cssHeightPx: number, baseHeightPx: number, devicePixelRatio: number): number {
   if (!(cssHeightPx > 0) || !(baseHeightPx > 0)) return 1; // not laid out yet (or jsdom) -> base size
   const dpr = Math.min(Math.max(devicePixelRatio || 1, 1), MAX_EFFECTIVE_DPR);

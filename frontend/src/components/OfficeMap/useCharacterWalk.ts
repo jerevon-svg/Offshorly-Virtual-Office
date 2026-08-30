@@ -222,5 +222,18 @@ export function useCharacterWalk(initial: Pt) {
     if (patTimeoutRef.current) clearTimeout(patTimeoutRef.current);
   }, []);
 
-  return { pos, isWalking, isPatting, direction, frameIndex, walkTo, playPat, face, cancel, resetPos };
+  // Live accessor for the LAST NON-ZERO walk-segment direction.
+  //
+  // `direction` (the state) is only readable by whoever re-rendered after it
+  // changed. Arrival facing is resolved inside a walk's onArrive callback,
+  // which runs from the rAF loop long after the caller captured its closures
+  // — so reading the state there yields the facing the character had when the
+  // walk STARTED, and the character visibly snaps back to it on stopping.
+  // dirRef is updated on every segment change inside the walk loop, so this
+  // always reports where the character is actually facing right now.
+  function getDirection(): WalkDirection {
+    return dirRef.current;
+  }
+
+  return { pos, isWalking, isPatting, direction, getDirection, frameIndex, walkTo, playPat, face, cancel, resetPos };
 }

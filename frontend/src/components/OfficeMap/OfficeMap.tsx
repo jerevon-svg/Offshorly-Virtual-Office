@@ -115,6 +115,7 @@ import {
   useSpatialSessions,
   type SpatialSessionEntry,
 } from "../../services/presence/spatialSessionStore";
+import { clusterBounds, computeClusterFocus, readMapTransform, shouldRefocus } from "./spatialFocus";
 import { createJoinRequest, onRequestResolved } from "../../services/chat/requestsClient";
 import { JoinRequestPrompt } from "./JoinRequestPrompt";
 import {
@@ -264,6 +265,15 @@ export function OfficeMap() {
   const maxScale = initialScale * 5;
   const [isDragging, setIsDragging] = useState(false);
   const transformRef = useRef<ReactZoomPanPinchRef | null>(null);
+  // Live map view for the adaptive-LOD policy (adaptiveLod.ts). Sourced from
+  // TransformWrapper's own onTransformed callback — never measured off the DOM
+  // and never a second zoom state: this only MIRRORS the wrapper's transform
+  // so OfficeStage can tell what is on screen and how big it is. `zoom` is
+  // normalized to cover scale so thresholds are viewport-independent.
+  const [mapView, setMapView] = useState<{
+    zoom: number;
+    visibleRect: { x: number; y: number; width: number; height: number };
+  } | null>(null);
 
   const [menu, setMenu] = useState<{ layer: AssetLayer; clientX: number; clientY: number } | null>(
     null,
@@ -1077,6 +1087,7 @@ export function OfficeMap() {
     isWalking,
     isPatting,
     direction,
+    getDirection: getWalkDirection,
     frameIndex,
     walkTo: walkToRaw,
     face,
@@ -1151,7 +1162,14 @@ export function OfficeMap() {
   const moveSelf = makeMoveSelf({
     walkTo,
     getPos: () => bonPos,
-    getDirection: () => (isSitting ? sitDirection : direction),
+    // Reads the walker's LIVE direction ref, not this render's `direction`
+    // state: arrival facing is resolved inside onArrive, which fires from the
+    // walk's rAF loop after this closure was created, so the state value there
+    // is the pre-walk facing. Using it made a character snap back to whatever
+    // way they were facing before the walk (commonly "right") the moment they
+    // stopped. Explicit arrival.facing still overrides this — see
+    // useSelfMovement's `arrival?.facing ?? deps.getDirection()`.
+    getDirection: () => (isSitting ? sitDirection : getWalkDirection()),
     // Owner turns to the same arrival facing it broadcasts (see
     // UseSelfMovementDeps.face) — fixes per-browser facing divergence
     // after a spatial-conversation settle.
@@ -1336,6 +1354,78 @@ export function OfficeMap() {
       ),
     [peerMovements, rosterLayerEmailSet, offlineEmailSet, selfChatId],
   );
+
+  // --- Spatial-conversation focus camera (spatialFocus.ts) -----------------
+  // Participants already get HQ LOD0 (adaptiveLod's isFocused), but at cover
+  // zoom a character is only ~30-50 CSS px tall so none of that detail can
+  // resolve. Entering a spatial conversation therefore moves the CAMERA to the
+  // participant cluster, which is what makes faces look like the manually
+  // approved max-zoom view. Model and CSS scale are untouched.
+  //
+  // Fires ONLY on entering a session or when the participant set materially
+  // changes (shouldRefocus), so a user who pans/zooms mid-conversation is
+  // never fought. On leaving, the transform captured at entry is restored —
+  // unless the user has since navigated elsewhere, in which case the stale
+  // transform is dropped.
+  const preFocusTransformRef = useRef<{ x: number; y: number; scale: number } | null>(null);
+  const focusedSessionRef = useRef<{ sessionId: string; members: string[] } | null>(null);
+
+  const activeSpatialSession = useMemo(() => {
+    if (!selfChatId) return null;
+    const s = spatialSessions.find(
+      (x) => x.members.includes(selfChatId) && x.members.length >= 2,
+    );
+    return s ? { sessionId: s.sessionId, members: [...s.members].sort() } : null;
+  }, [spatialSessions, selfChatId]);
+
+  useEffect(() => {
+    const ref = transformRef.current;
+    const wrapper = ref?.instance.wrapperComponent;
+    if (!ref || !wrapper) return;
+    const prev = focusedSessionRef.current;
+
+    // --- leaving a conversation: restore what we captured on entry
+    if (!activeSpatialSession) {
+      const saved = preFocusTransformRef.current;
+      focusedSessionRef.current = null;
+      preFocusTransformRef.current = null;
+      if (prev && saved) ref.setTransform(saved.x, saved.y, saved.scale, 500, "easeOut");
+      return;
+    }
+
+    if (!shouldRefocus(prev, activeSpatialSession)) return;
+
+    const rect = wrapper.getBoundingClientRect();
+    const boxes = activeSpatialSession.members
+      .map((email) => {
+        const c = resolveMemberCenter(email);
+        if (!c) return null;
+        return { x: c.x - 13, y: c.y - 18, width: 26, height: 37 };
+      })
+      .filter((b): b is { x: number; y: number; width: number; height: number } => b !== null);
+    const cluster = clusterBounds(boxes);
+    if (!cluster) return;
+
+    // capture the pre-conversation view once, on first entry only
+    if (!prev) {
+      // See readMapTransform: the transform lives on the ref itself, and the
+      // old `instance.transformState` read threw the moment a second
+      // participant made the session active.
+      preFocusTransformRef.current = readMapTransform(ref);
+    }
+    focusedSessionRef.current = activeSpatialSession;
+
+    const t = computeClusterFocus(
+      cluster,
+      activeSpatialSession.members.length,
+      rect.width,
+      rect.height,
+      minScale,
+      maxScale,
+    );
+    ref.setTransform(t.x, t.y, t.scale, 600, "easeOut");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSpatialSession]);
 
   // Cluster-formation wiring: resolves a member's current WORLD-CENTER
   // position (not top-left) for anchor/slot computation. Mirrors the same
@@ -3606,12 +3696,29 @@ export function OfficeMap() {
           setGreeting(null);
         }}
         onPanningStop={() => setIsDragging(false)}
+        onTransform={(ref, state) => {
+          const wrapper = ref.instance.wrapperComponent;
+          if (!wrapper) return;
+          const rect = wrapper.getBoundingClientRect();
+          const s = state.scale || 1;
+          setMapView({
+            zoom: s / initialScale,
+            // the frame-space rectangle currently visible through the wrapper
+            visibleRect: {
+              x: -state.positionX / s,
+              y: -state.positionY / s,
+              width: rect.width / s,
+              height: rect.height / s,
+            },
+          });
+        }}
       >
         <TransformComponent
           wrapperStyle={{ width: "100%", height: "100%" }}
         >
           <OfficeStage
             phase={phase}
+            mapView={mapView}
             characterOverrides={{
               alex: alexPos,
               micah: micahPos,

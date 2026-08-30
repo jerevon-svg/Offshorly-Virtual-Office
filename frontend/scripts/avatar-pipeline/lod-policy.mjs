@@ -53,6 +53,16 @@ export const TEXTURE_ENCODING = {
   effort: 6,
 };
 
+// ---------------------------------------------------------------------------
+// Quality profiles (2026-08-30). `default` is the original size-first policy.
+// `hq` is the quality-first policy: LOD0 keeps the rigged source geometry
+// (simplification to ~40k drove the share of vertices sitting on a UV-chart
+// seam from 33% to 96%, so every surviving triangle edge became a chart edge
+// and any filtering/quantization error there reads as a crack), LOD1 is a
+// mid-distance mesh and LOD2 stays the cheap far tier. `source` is the
+// diagnostic baseline: no simplification, no Draco, lossless texture.
+// `triangleTarget: null` means "do not simplify at all".
+// ---------------------------------------------------------------------------
 export const LOD_TIERS = [
   {
     name: "lod0",
@@ -76,3 +86,45 @@ export const LOD_TIERS = [
     dracoQuant: { quantizePosition: 10, quantizeNormal: 8, quantizeTexcoord: 10 },
   },
 ];
+
+// Quality-first tiers. LOD0 is the near/self/zoomed-in tier and is not
+// simplified at all; LOD1 targets mid distance; LOD2 is unchanged from the
+// size-first policy since it is only ever shown small.
+export const HQ_LOD_TIERS = [
+  {
+    name: "lod0",
+    triangleTarget: null,          // keep the full rigged mesh
+    textureSize: 2048,
+    simplifyError: 0,
+    dracoQuant: { quantizePosition: 16, quantizeNormal: 10, quantizeTexcoord: 16 },
+  },
+  {
+    name: "lod1",
+    triangleTarget: 80_000,
+    textureSize: 1024,
+    simplifyError: 0.05,
+    dracoQuant: { quantizePosition: 14, quantizeNormal: 10, quantizeTexcoord: 14 },
+  },
+  {
+    name: "lod2",
+    triangleTarget: 30_000,
+    textureSize: 512,
+    simplifyError: 0.3,
+    dracoQuant: { quantizePosition: 12, quantizeNormal: 8, quantizeTexcoord: 12 },
+  },
+];
+
+// Diagnostic baseline: the rigged source exactly as it is, so a render of it
+// is the ceiling every optimized tier is judged against.
+export const SOURCE_LOD_TIERS = [
+  {
+    name: "source",
+    triangleTarget: null,
+    textureSize: 2048,
+    simplifyError: 0,
+    dracoQuant: null,              // no Draco at all
+    lossless: true,                // PNG-quality texture, no lossy conversion
+  },
+];
+
+export const PROFILES = { default: LOD_TIERS, hq: HQ_LOD_TIERS, source: SOURCE_LOD_TIERS };

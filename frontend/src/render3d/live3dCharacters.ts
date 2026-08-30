@@ -48,7 +48,33 @@ export type Live3dAssetSet = {
   // the wrapper div's current on-screen (percentage/zoom-scaled) size.
   renderWidth: number;
   renderHeight: number;
+  // Horizontal painting capacity, as a multiple of renderWidth.
+  //
+  // renderWidth/renderHeight match the character's manifest layer aspect, which
+  // was sized for their 2D sprite. Wide animated poses (measured worst case:
+  // `sitting-answering` at 45deg-family headings) reach past that box and were
+  // being cropped at the canvas edge. This widens the offscreen BUFFER and the
+  // canvas's painted area together, so the orthographic camera simply sees more
+  // world horizontally — the model is never scaled or stretched, standing
+  // height and the vertical anchor are untouched, and the character stays
+  // horizontally centred.
+  //
+  // MEASURED, not guessed: render every clip x 8 headings x 7 phases through
+  // the app's own camera and take max|x| in NDC (1.0 = the current frame edge),
+  // then add ~8% margin. See CHARACTER_PIPELINE_STANDARD.md. Omitted =
+  // DEFAULT_WIDTH_CAPACITY.
+  widthCapacity?: number;
 };
+
+// Fallback for a character whose widest pose has not been measured yet. Covers
+// the widest measured character to date (alex, 1.502) with margin, so a new
+// employee cannot ship visibly cropped before its own measurement lands.
+export const DEFAULT_WIDTH_CAPACITY = 1.65;
+
+/** The horizontal painting capacity to use for an asset set. */
+export function resolveWidthCapacity(entry: Live3dAssetSet): number {
+  return Math.max(1, entry.widthCapacity ?? DEFAULT_WIDTH_CAPACITY);
+}
 
 const BASE = import.meta.env.BASE_URL;
 
@@ -67,23 +93,41 @@ export const LIVE_3D_CHARACTERS: Record<string, Live3dAssetSet> = {
   // public/avatars/jerevon/jerevon-lod{0,1,2}.glb (the original): revert these
   // three paths to roll back to either. `?live3d=bon-v2` (OfficeStage's dev
   // override) still points at the bon-v2 files and is kept as a preview aid.
+  //
+  // Promoted again 2026-08-30 to the quality-first `bon-v3-hq` set. The
+  // size-first LOD0 simplified 280k -> 40k, which collapsed vertices across UV
+  // chart boundaries and left 6.1% of triangles sampling unrelated parts of
+  // the atlas (visible as speckles in hair/clothing). HQ LOD0 keeps the full
+  // rigged mesh (0.06%, identical to the rigged source). bon-v3/ stays on disk
+  // as the rollback.
   bon: {
-    glbUrl: `${BASE}avatars/bon-v3/bon-v3-lod0.glb`,
-    lod1GlbUrl: `${BASE}avatars/bon-v3/bon-v3-lod1.glb`,
-    lod2GlbUrl: `${BASE}avatars/bon-v3/bon-v3-lod2.glb`,
+    glbUrl: `${BASE}avatars/bon-v3-hq/bon-v3-lod0.glb`,
+    lod1GlbUrl: `${BASE}avatars/bon-v3-hq/bon-v3-lod1.glb`,
+    lod2GlbUrl: `${BASE}avatars/bon-v3-hq/bon-v3-lod2.glb`,
     renderWidth: 210,
     renderHeight: 298,
+    // measured max|x| 1.216 (sitting-answering @45deg, consistent across
+    // lod0/1/2) + 8% margin
+    widthCapacity: 1.35,
   },
   // Manifest aspect ratio: width 20 / height 34.46.
-  // Added 2026-08-29 via the same Meshy pipeline as bon-v2:
-  // alex-chibi-ref-stageb-global-base-test -> image-to-3d 01a04c7d ->
-  // remesh 01a04c82 -> rig 01a04c86 -> 6 clips -> build-character-lods.
+  // Promoted 2026-08-30 to the alex-v2 set, built from the approved T-pose
+  // master alex-tpose.png on the same locked pipeline as bon-v3 (pose_mode
+  // "t-pose": image-to-3d 01a051ea -> remesh 01a051ed -> rig 01a051f0 -> 6
+  // clips -> build-character-lods, with Idle_12 arm-chain-corrected and
+  // embedded as the `idle-9` runtime slot). The original set stays on disk
+  // untouched at public/avatars/alex/alex-lod{0,1,2}.glb as the rollback:
+  // revert these three paths to roll back. Promoted again 2026-08-30 to the
+  // quality-first `alex-v2-hq` set (same crack diagnosis as bon: 6.8% ->
+  // 0.06% chart-spanning triangles); alex-v2/ stays on disk as the rollback.
   alex: {
-    glbUrl: `${BASE}avatars/alex/alex-lod0.glb`,
-    lod1GlbUrl: `${BASE}avatars/alex/alex-lod1.glb`,
-    lod2GlbUrl: `${BASE}avatars/alex/alex-lod2.glb`,
+    glbUrl: `${BASE}avatars/alex-v2-hq/alex-v2-lod0.glb`,
+    lod1GlbUrl: `${BASE}avatars/alex-v2-hq/alex-v2-lod1.glb`,
+    lod2GlbUrl: `${BASE}avatars/alex-v2-hq/alex-v2-lod2.glb`,
     renderWidth: 160,
     renderHeight: 276,
+    // measured max|x| 1.502 (sitting-answering @45deg) + 8% margin
+    widthCapacity: 1.65,
   },
 };
 
@@ -101,6 +145,22 @@ export function isLive3dEligible(avatarId: string | null | undefined): boolean {
  * that LOD produced yet, so a character can ship with only glbUrl and still
  * render (at LOD0 detail) at every tier.
  */
+/**
+ * Adaptive-LOD variant: picks the asset for an explicitly-chosen quality tier
+ * (see adaptiveLod.ts). Falls back down the chain exactly like the
+ * device-tier resolver, so a character shipping only glbUrl still renders.
+ * Kept separate from resolveLive3dGlbUrl so the device-tier ceiling and the
+ * proximity/zoom choice stay independently testable.
+ */
+export function resolveLive3dGlbUrlForTier(
+  entry: Live3dAssetSet,
+  tier: "lod0" | "lod1" | "lod2",
+): string {
+  if (tier === "lod2") return entry.lod2GlbUrl ?? entry.lod1GlbUrl ?? entry.glbUrl;
+  if (tier === "lod1") return entry.lod1GlbUrl ?? entry.glbUrl;
+  return entry.glbUrl;
+}
+
 export function resolveLive3dGlbUrl(
   entry: Live3dAssetSet,
   tier: "T0" | "T1" | "T2",

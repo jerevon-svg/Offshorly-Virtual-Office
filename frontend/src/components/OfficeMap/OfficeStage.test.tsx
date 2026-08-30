@@ -5,6 +5,7 @@ import { OfficeStage, __resetDeviceTierCacheForTests } from "./OfficeStage";
 import { backrestCropLayerId } from "../../data/backSitOccupancy";
 import { officeAssetLayers } from "../../data/office-layout";
 import { createDepthCompare } from "./depthSort";
+import { MIN_TIER_HOLD_MS } from "../../render3d/adaptiveLod";
 import { LIVE_3D_CHARACTERS } from "../../render3d/live3dCharacters";
 import { LIVE_3D_CAP_BY_TIER } from "../../services/render/tierBudgets";
 import {
@@ -43,6 +44,9 @@ vi.mock("../../render3d/CharacterCanvas", async () => {
       height: number;
       onError?: () => void;
       animated?: boolean;
+      maxQuality?: boolean;
+      layerHeight?: number;
+      widthScale?: number;
     }) => (
       <div
         data-testid="character-canvas-stub"
@@ -54,6 +58,9 @@ vi.mock("../../render3d/CharacterCanvas", async () => {
         data-is-typing={props.isTyping}
         data-is-global-chat-active={props.isGlobalChatActive}
         data-animated={props.animated}
+        data-max-quality={props.maxQuality}
+        data-layer-height={props.layerHeight}
+        data-width-scale={props.widthScale}
       >
         {props.onError && (
           <button data-testid="character-canvas-error-trigger" onClick={props.onError} />
@@ -151,7 +158,7 @@ function bonCanvasStubs(container: HTMLElement): HTMLElement[] {
   return canvasStubs(container).filter((el) => /bon-v2|bon-v3/.test(el.getAttribute("data-glb-url") ?? ""));
 }
 function alexCanvasStubs(container: HTMLElement): HTMLElement[] {
-  return canvasStubs(container).filter((el) => /\/avatars\/alex\//.test(el.getAttribute("data-glb-url") ?? ""));
+  return canvasStubs(container).filter((el) => /\/avatars\/alex(-v2)?(-hq)?\//.test(el.getAttribute("data-glb-url") ?? ""));
 }
 function bonCanvasStub(container: HTMLElement): HTMLElement {
   const stubs = bonCanvasStubs(container);
@@ -440,7 +447,7 @@ describe("OfficeStage dev-only candidate override (?live3d=bon-v2)", () => {
       const { container } = renderWith("?live3d=bon-v2", "bon");
       const url = bonCanvasStub(container).getAttribute("data-glb-url") ?? "";
       // Registry (promoted to bon-v3) still wins; the selector itself contributed nothing.
-      expect(url).toMatch(/avatars\/bon-v3\/bon-v3-lod0\.glb$/);
+      expect(url).toMatch(/avatars\/bon-v3-hq\/bon-v3-lod0\.glb$/);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -458,14 +465,14 @@ describe("OfficeStage dev-only candidate override (?live3d=bon-v2)", () => {
     const { container } = renderWith("", "bon");
     const stubs = bonCanvasStubs(container);
     expect(stubs.length).toBe(1);
-    expect(stubs[0].getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v3\/bon-v3-lod0\.glb$/);
-    expect(LIVE_3D_CHARACTERS.bon.glbUrl).toMatch(/\/avatars\/bon-v3\/bon-v3-lod0\.glb$/);
+    expect(stubs[0].getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v3-hq\/bon-v3-lod0\.glb$/);
+    expect(LIVE_3D_CHARACTERS.bon.glbUrl).toMatch(/\/avatars\/bon-v3-hq\/bon-v3-lod0\.glb$/);
   });
 
   it("Default Bon T1 loads lod1", () => {
     vi.mocked(detectDeviceTier).mockReturnValue("T1");
     const { container } = renderWith("", "bon");
-    expect(bonCanvasStub(container).getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v3\/bon-v3-lod1\.glb$/);
+    expect(bonCanvasStub(container).getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v3-hq\/bon-v3-lod1\.glb$/);
   });
 
   it("Default Bon at a genuine T0 keeps the production 2D sprite safety floor (no canvas, no selector)", () => {
@@ -490,7 +497,10 @@ describe("OfficeStage dev-only candidate override (?live3d=bon-v2)", () => {
     );
     const stubs = bonCanvasStubs(container);
     expect(stubs.length).toBe(1);
-    expect(stubs[0].getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v3\/bon-v3-lod0\.glb$/);
+    // Adaptive LOD (adaptiveLod.ts): bon is a PEER here (self is alex) and is
+    // further away than the near radius, so he correctly gets the mid tier —
+    // the ~5MB HQ mesh is reserved for self/focused/near characters.
+    expect(stubs[0].getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v3-hq\/bon-v3-lod1\.glb$/);
     expect(Array.from(container.querySelectorAll("img")).filter((i) => /chibi-bon|\/bon-/.test(i.getAttribute("src") ?? "")).length).toBe(0);
   });
 
@@ -519,6 +529,193 @@ describe("OfficeStage dev-only candidate override (?live3d=bon-v2)", () => {
     expect(stub.getAttribute("data-is-spatial-conversation")).toBe("true");
     expect(stub.getAttribute("data-is-typing")).toBe("true");
     expect(stub.getAttribute("data-is-global-chat-active")).toBe("true");
+  });
+
+  describe("overflow chain (the real clipping boundary)", () => {
+    it("a live-3D character layer allows visual overflow so the widened canvas is not clipped", () => {
+      vi.mocked(detectDeviceTier).mockReturnValue("T2");
+      const { container } = render(
+        <TransformWrapper>
+          <TransformComponent>
+            <OfficeStage selfCharacterId="bon" />
+          </TransformComponent>
+        </TransformWrapper>,
+      );
+      const stub = canvasStubs(container).find((el) =>
+        /bon-v3-hq/.test(el.getAttribute("data-glb-url") ?? ""),
+      )!;
+      const wrapper = stub.parentElement as HTMLElement;
+      // .layer's `overflow: hidden` used to crop the widened canvas back to the
+      // wrapper's own width — this inline override is the fix.
+      expect(wrapper.style.overflow).toBe("visible");
+      // ...and the wrapper's own geometry (== the hit box) is untouched
+      expect(wrapper.style.width).toMatch(/%$/);
+      expect(wrapper.style.height).toMatch(/%$/);
+      expect(wrapper.style.left).toMatch(/%$/);
+      expect(wrapper.style.top).toMatch(/%$/);
+    });
+
+    it("sprite-only layers keep clipping (imgCrop / backrest clipPath depend on it)", () => {
+      vi.mocked(detectDeviceTier).mockReturnValue("T0");   // no live-3D at all
+      const { container } = render(
+        <TransformWrapper>
+          <TransformComponent>
+            <OfficeStage selfCharacterId="bon" />
+          </TransformComponent>
+        </TransformWrapper>,
+      );
+      const sprite = Array.from(container.querySelectorAll("img")).find((i) =>
+        /chibi-bon|\/bon-/.test(i.getAttribute("src") ?? ""),
+      )!;
+      const wrapper = sprite.parentElement as HTMLElement;
+      expect(wrapper.style.overflow).toBe("");   // falls through to .layer's hidden
+    });
+  });
+
+  describe("horizontal capacity (wide-pose cropping)", () => {
+    const renderStage = () => render(
+      <TransformWrapper>
+        <TransformComponent>
+          <OfficeStage selfCharacterId="bon" />
+        </TransformComponent>
+      </TransformWrapper>,
+    );
+    const stubFor = (c: HTMLElement, re: RegExp) =>
+      canvasStubs(c).find((el) => re.test(el.getAttribute("data-glb-url") ?? ""));
+
+    it("each character receives its own measured capacity, not a shared constant", () => {
+      vi.mocked(detectDeviceTier).mockReturnValue("T2");
+      const { container } = renderStage();
+      expect(stubFor(container, /bon-v3-hq/)!.getAttribute("data-width-scale")).toBe("1.35");
+      expect(stubFor(container, /alex-v2-hq/)!.getAttribute("data-width-scale")).toBe("1.65");
+    });
+
+    it("the wrapper layer keeps its own width/height — only the canvas paints wider", () => {
+      vi.mocked(detectDeviceTier).mockReturnValue("T2");
+      const { container } = renderStage();
+      const stub = stubFor(container, /bon-v3-hq/)!;
+      // layerHeight is what the canonical size policy calibrates against; it
+      // must be untouched by the widening
+      expect(stub.getAttribute("data-layer-height")).toBe("37.2");
+      const wrapper = stub.parentElement as HTMLElement;
+      // the wrapper's own inline geometry is still percentage-of-frame based
+      expect(wrapper.style.width).toMatch(/%$/);
+      expect(wrapper.style.height).toMatch(/%$/);
+      expect(wrapper.style.left).toMatch(/%$/);
+      expect(wrapper.style.top).toMatch(/%$/);
+    });
+
+    it("widening does not disturb the layer's position anchor", () => {
+      vi.mocked(detectDeviceTier).mockReturnValue("T2");
+      const { container } = renderStage();
+      const bon = stubFor(container, /bon-v3-hq/)!.parentElement as HTMLElement;
+      const alex = stubFor(container, /alex-v2-hq/)!.parentElement as HTMLElement;
+      // both still anchored by their own manifest left/top, unchanged by capacity
+      expect(bon.style.left).not.toBe("");
+      expect(alex.style.left).not.toBe("");
+      expect(bon.style.left).not.toBe(alex.style.left);
+    });
+  });
+
+  describe("spatial-conversation quality override", () => {
+    const renderChat = (talking: string[], self = "bon") => render(
+      <TransformWrapper>
+        <TransformComponent>
+          <OfficeStage selfCharacterId={self} talkingCharacterIds={talking} />
+        </TransformComponent>
+      </TransformWrapper>,
+    );
+    const stubFor = (c: HTMLElement, re: RegExp) =>
+      canvasStubs(c).find((el) => re.test(el.getAttribute("data-glb-url") ?? ""));
+
+    it("both participants of a two-person chat get HQ LOD0 and the max-quality override", () => {
+      vi.mocked(detectDeviceTier).mockReturnValue("T2");
+      const { container } = renderChat(["bon", "alex"]);
+      for (const re of [/bon-v3-hq/, /alex-v2-hq/]) {
+        const stub = stubFor(container, re)!;
+        expect(stub).toBeTruthy();
+        expect(stub.getAttribute("data-glb-url")).toMatch(/-lod0\.glb$/);
+        expect(stub.getAttribute("data-max-quality")).toBe("true");
+      }
+    });
+
+    it("an unrelated character in the same office gets neither", () => {
+      vi.mocked(detectDeviceTier).mockReturnValue("T2");
+      const { container } = renderChat(["bon"], "bon");
+      const alex = stubFor(container, /alex-v2-hq/)!;
+      expect(alex).toBeTruthy();
+      expect(alex.getAttribute("data-max-quality")).toBe("false");
+      expect(alex.getAttribute("data-glb-url")).not.toMatch(/-lod0\.glb$/);
+    });
+
+    it("leaving the conversation releases the render-quality override immediately", () => {
+      vi.mocked(detectDeviceTier).mockReturnValue("T2");
+      const { container, rerender } = renderChat(["bon", "alex"]);
+      expect(stubFor(container, /alex-v2-hq/)!.getAttribute("data-max-quality")).toBe("true");
+      rerender(
+        <TransformWrapper>
+          <TransformComponent>
+            <OfficeStage selfCharacterId="bon" talkingCharacterIds={[]} />
+          </TransformComponent>
+        </TransformWrapper>,
+      );
+      // the resolution pin is not debounced — it drops the moment the session ends
+      expect(stubFor(container, /alex-v2-hq/)!.getAttribute("data-max-quality")).toBe("false");
+    });
+
+    it("the LOD tier demotes after the debounce hold, not instantly (anti-thrash)", () => {
+      vi.mocked(detectDeviceTier).mockReturnValue("T2");
+      const nowSpy = vi.spyOn(performance, "now").mockReturnValue(1000);
+      const { container, rerender } = renderChat(["bon", "alex"]);
+      expect(stubFor(container, /alex-v2-hq/)!.getAttribute("data-glb-url")).toMatch(/-lod0\.glb$/);
+
+      const leave = () => rerender(
+        <TransformWrapper>
+          <TransformComponent>
+            <OfficeStage selfCharacterId="bon" talkingCharacterIds={[]} />
+          </TransformComponent>
+        </TransformWrapper>,
+      );
+      // still inside the 400ms hold -> keeps the tier it had
+      nowSpy.mockReturnValue(1000 + MIN_TIER_HOLD_MS - 1);
+      leave();
+      expect(stubFor(container, /alex-v2-hq/)!.getAttribute("data-glb-url")).toMatch(/-lod0\.glb$/);
+
+      // past the hold -> returns to the adaptive tier
+      nowSpy.mockReturnValue(1000 + MIN_TIER_HOLD_MS + 1);
+      leave();
+      expect(stubFor(container, /alex-v2-hq/)!.getAttribute("data-glb-url")).not.toMatch(/-lod0\.glb$/);
+      nowSpy.mockRestore();
+    });
+
+    it("global chat and remote chat never trigger it", () => {
+      vi.mocked(detectDeviceTier).mockReturnValue("T2");
+      const { container } = render(
+        <TransformWrapper>
+          <TransformComponent>
+            <OfficeStage selfCharacterId="bon" globalChatActiveCharacterIds={["bon", "alex"]} talkingCharacterIds={[]} />
+          </TransformComponent>
+        </TransformWrapper>,
+      );
+      const alex = stubFor(container, /alex-v2-hq/)!;
+      expect(alex.getAttribute("data-max-quality")).toBe("false");
+    });
+
+    it("renders exactly one canvas per participant — no duplicates", () => {
+      vi.mocked(detectDeviceTier).mockReturnValue("T2");
+      const { container } = renderChat(["bon", "alex"]);
+      expect(canvasStubs(container).filter((el) => /bon-v3-hq/.test(el.getAttribute("data-glb-url") ?? "")).length).toBe(1);
+      expect(canvasStubs(container).filter((el) => /alex-v2-hq/.test(el.getAttribute("data-glb-url") ?? "")).length).toBe(1);
+    });
+
+    it("the override does not change the character's visible CSS footprint", () => {
+      vi.mocked(detectDeviceTier).mockReturnValue("T2");
+      const { container: chat } = renderChat(["bon", "alex"]);
+      const inChat = stubFor(chat, /alex-v2-hq/)!.getAttribute("data-layer-height");
+      const { container: idle } = renderChat([], "bon");
+      const outOfChat = stubFor(idle, /alex-v2-hq/)!.getAttribute("data-layer-height");
+      expect(inChat).toBe(outOfChat);
+    });
   });
 
   it("Other employees remain unchanged (micah stays a sprite; registry has exactly bon and alex)", () => {
@@ -617,7 +814,7 @@ describe("OfficeStage live-3D tier/budget gating (no ?live3d= override)", () => 
     const bonStubs = bonCanvasStubs(container);
     expect(alexStubs.length).toBe(1);
     expect(bonStubs.length).toBe(1);
-    expect(alexStubs[0].getAttribute("data-glb-url")).toMatch(/alex-lod1\.glb$/);
+    expect(alexStubs[0].getAttribute("data-glb-url")).toMatch(/alex-v2-lod1\.glb$/);
     expect(bonStubs[0].getAttribute("data-glb-url")).toMatch(/bon-v3-lod1\.glb$/);
     expect(container.querySelector('img[src*="bon"]')).toBeNull();
   });
@@ -1076,7 +1273,7 @@ describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
   function stubOwner(el: HTMLElement): string {
     const url = el.getAttribute("data-glb-url") ?? "";
     if (/bon-v2|bon-v3/.test(url)) return "bon";
-    const m = url.match(/\/avatars\/(alex|micah|lui)\//);
+    const m = url.match(/\/avatars\/(alex|micah|lui)(?:-v2)?(?:-hq)?\//);
     return m ? m[1] : "?";
   }
   function stubsOf(container: HTMLElement, id: string): HTMLElement[] {
@@ -1170,16 +1367,20 @@ describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
     });
   });
 
-  it("T1 crowd cap 6: T2 policy is unchanged — cap 4, self plus three peers all animated at LOD0", () => {
+  it("T1 crowd cap 6: T2 crowd cap is still 4 — every peer animated, each at its adaptive tier", () => {
     expect(LIVE_3D_CAP_BY_TIER.T2).toBe(4);
     expect(LIVE_3D_CAP_BY_TIER.T0).toBe(0);
     withExtraRegistered(["micah", "lui"], () => {
       const { container } = renderAt("T2");
+      // The CAP is unchanged — all four still render live-3D. What changed is
+      // the QUALITY each one gets: adaptive LOD keeps the HQ mesh for the
+      // self/near/focused character and gives distant peers a cheaper tier,
+      // so a crowd of four never means four ~5MB downloads.
       expect(canvasStubs(container).length).toBe(4);
       for (const id of ["bon", "alex", "micah", "lui"]) {
         const stubs = stubsOf(container, id);
         expect(stubs.length).toBe(1);
-        expect(stubs[0].getAttribute("data-glb-url")).toMatch(/-lod0\.glb$/);
+        expect(stubs[0].getAttribute("data-glb-url")).toMatch(/-lod[012]\.glb$/);
       }
     });
   });
@@ -1205,7 +1406,7 @@ describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
     const stubs = stubsOf(container, "alex");
     expect(stubs.length).toBe(1);
     const stub = stubs[0];
-    expect(stub.getAttribute("data-glb-url")).toMatch(/alex-lod1\.glb$/);
+    expect(stub.getAttribute("data-glb-url")).toMatch(/alex-v2-lod1\.glb$/);
     expect(stub.getAttribute("data-animated")).not.toBe("false");
     expect(stub.getAttribute("data-is-walking")).toBe("true");
     expect(stub.getAttribute("data-heading-degrees")).toBe("-90");

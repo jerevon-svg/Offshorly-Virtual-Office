@@ -67,7 +67,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { padAtlasImage, rasterizeUvCoverage } from "./atlas-dilate.mjs";
-import { ATLAS_FILL_REMAINDER, ATLAS_PAD_RADIUS, LOD_TIERS, REQUIRED_CLIP_NAMES, TEXTURE_ENCODING } from "./lod-policy.mjs";
+import { ATLAS_FILL_REMAINDER, ATLAS_PAD_RADIUS, PROFILES, REQUIRED_CLIP_NAMES, TEXTURE_ENCODING } from "./lod-policy.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../..");
@@ -83,6 +83,16 @@ const outDirFlag = (process.argv.slice(3).find((a) => a.startsWith("--out-dir=")
 // raw->remesh closest-point transfer) before padding/encoding. The PNG must
 // match the atlas layout of <character>-rigged.glb; geometry/UVs are untouched.
 const baseColorFlag = (process.argv.slice(3).find((a) => a.startsWith("--base-color=")) || "").slice("--base-color=".length);
+// --profile=<default|hq|source> (added 2026-08-30): which tier set from
+// lod-policy.mjs to build. `hq` is the quality-first policy used for the
+// near/self/zoomed-in tier; `source` is the unsimplified, un-Draco'd,
+// lossless diagnostic baseline. Defaults to the original size-first tiers.
+const profileFlag = (process.argv.slice(3).find((a) => a.startsWith("--profile=")) || "").slice("--profile=".length) || "default";
+const LOD_TIERS = PROFILES[profileFlag];
+if (!LOD_TIERS) {
+  console.error(`Unknown --profile="${profileFlag}" (known: ${Object.keys(PROFILES).join(", ")})`);
+  process.exit(1);
+}
 // --clip-source=<clipName>=<file> (added 2026-08-30): build one of the six
 // required clips from a DIFFERENT source GLB in the same RAW_DIR, leaving the
 // original per-clip export on disk untouched. Repeatable. Used to ship a
@@ -344,20 +354,26 @@ async function buildLodTier(consolidatedDoc, tier, baseTriangleCount) {
   // doesn't stop early on tight-error mode (meshoptimizer simplifier stops
   // if it hits ratio OR error first — a tiny default error like 0.0001
   // would block us from reaching lod2's ~1.3%-of-original target).
-  const ratio = Math.min(1, tier.triangleTarget / baseTriangleCount);
-
-  // weld first (skin-aware) so simplify has clean shared vertices to work
-  // with; lockBorder keeps skinned silhouette seams stable and preserves
-  // joint/weight validity as required by the task spec.
-  await doc.transform(
-    weld({ tolerance: 0.0001 }),
-    simplify({
-      simplifier: MeshoptSimplifier,
-      ratio,
-      error: tier.simplifyError,
-      lockBorder: true,
-    }),
-  );
+  // triangleTarget null => keep the rigged geometry untouched (HQ/source
+  // near tier). Welding alone is still skipped so the mesh stays byte-faithful
+  // to the rigged export.
+  if (tier.triangleTarget !== null) {
+    const ratio = Math.min(1, tier.triangleTarget / baseTriangleCount);
+    // weld first (skin-aware) so simplify has clean shared vertices to work
+    // with; lockBorder keeps skinned silhouette seams stable and preserves
+    // joint/weight validity as required by the task spec.
+    await doc.transform(
+      weld({ tolerance: 0.0001 }),
+      simplify({
+        simplifier: MeshoptSimplifier,
+        ratio,
+        error: tier.simplifyError,
+        lockBorder: true,
+      }),
+    );
+  } else {
+    console.log(`[build-character-lods] ${tier.name}: simplification SKIPPED (full rigged geometry)`);
+  }
 
   // Resize + re-encode textures. No toktx/basisu binary present on this
   // machine (checked via `which toktx`/`which basisu` — both absent), so
@@ -369,7 +385,7 @@ async function buildLodTier(consolidatedDoc, tier, baseTriangleCount) {
   // textureCompress forwards `nearLossless` without `lossless`, which silently
   // produces a plain lossy q60 file (measured: 453KB instead of ~2.4MB, edge
   // error ~50/255 instead of <=2/255).
-  await encodeTextures(doc, tier.textureSize);
+  await encodeTextures(doc, tier.textureSize, tier.lossless === true);
 
   await doc.transform(dedup(), prune());
 
@@ -378,7 +394,11 @@ async function buildLodTier(consolidatedDoc, tier, baseTriangleCount) {
   // above; this transform just marks the document (with per-tier
   // quantization bit depths) to use KHR_draco_mesh_compression at write
   // time.
-  await doc.transform(draco(tier.dracoQuant));
+  if (tier.dracoQuant) {
+    await doc.transform(draco(tier.dracoQuant));
+  } else {
+    console.log(`[build-character-lods] ${tier.name}: Draco SKIPPED (uncompressed float attributes)`);
+  }
 
   return doc;
 }
@@ -386,9 +406,20 @@ async function buildLodTier(consolidatedDoc, tier, baseTriangleCount) {
 // Resizes every texture to `size` (Lanczos3) and encodes it per
 // TEXTURE_ENCODING (near-lossless WebP), registering EXT_texture_webp as a
 // required extension on the document.
-async function encodeTextures(doc, size) {
+async function encodeTextures(doc, size, lossless = false) {
   const textures = doc.getRoot().listTextures();
   if (textures.length === 0) return;
+  if (lossless) {
+    // Diagnostic/source tier: keep PNG so no encoder can be blamed for a seam.
+    for (const texture of textures) {
+      const encoded = await sharp(Buffer.from(texture.getImage()))
+        .resize(size, size, { kernel: "lanczos3", fit: "fill" })
+        .png({ compressionLevel: 9 })
+        .toBuffer();
+      texture.setImage(encoded).setMimeType("image/png").setURI("");
+    }
+    return;
+  }
   const webp = doc.createExtension(EXTTextureWebP).setRequired(true);
   for (const texture of textures) {
     const encoded = await sharp(Buffer.from(texture.getImage()))
