@@ -4,6 +4,7 @@ import {
   attendFacePointFor,
   decideSummon,
   parkPointFor,
+  toucanRenderPx,
   travelDurationFor,
   uprightPitchTarget,
   yawToward,
@@ -208,5 +209,39 @@ describe("yawToward", () => {
     // local -Z maps to (-1, 0).
     const yaw = yawToward(AT(532, 600), AT(500, 600));
     expect(Math.sin(yaw)).toBeCloseTo(1, 6);
+  });
+});
+
+describe("toucanRenderPx (zoom-aware render resolution)", () => {
+  // Bird CSS box is RENDER_SIZE(28) x zoom; base raster is 28 * SUPERSAMPLE(3) * dpr.
+  it("keeps exactly the previous fixed raster at normal zoom", () => {
+    expect(toucanRenderPx(28, 1)).toBe(84); // 28 * 3 * 1
+    expect(toucanRenderPx(28, 2)).toBe(168); // 28 * 3 * 2
+  });
+
+  it("never renders below that base when zoomed out", () => {
+    expect(toucanRenderPx(10, 2)).toBe(168);
+    expect(toucanRenderPx(0, 2)).toBe(168); // not laid out yet
+  });
+
+  it("raises resolution as the bird grows on screen", () => {
+    // ~1.6x zoom: still inside the base, unchanged.
+    expect(toucanRenderPx(45, 2)).toBe(168);
+    // Max zoom (5x -> 140 CSS px) on a 2x display needs 280 device px, which
+    // the old fixed 168 could only upscale. Now it clears it.
+    expect(toucanRenderPx(140, 2)).toBeGreaterThanOrEqual(280);
+  });
+
+  it("is monotonic in on-screen size and capped for performance", () => {
+    const sizes = [28, 45, 70, 100, 140, 200, 400];
+    const px = sizes.map((s) => toucanRenderPx(s, 2));
+    for (let i = 1; i < px.length; i++) expect(px[i]).toBeGreaterThanOrEqual(px[i - 1]);
+    // Top bucket is 3x base — a deep zoom cannot run away with fill cost.
+    expect(Math.max(...px)).toBe(168 * 3);
+  });
+
+  it("caps device pixel ratio the same way the character policy does", () => {
+    // A 3x display is treated as 2x (MAX_EFFECTIVE_DPR).
+    expect(toucanRenderPx(140, 3)).toBe(toucanRenderPx(140, 2));
   });
 });

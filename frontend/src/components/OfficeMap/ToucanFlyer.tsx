@@ -5,6 +5,7 @@ import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.j
 import { FRAME_HEIGHT, FRAME_WIDTH } from "../../data/office-layout";
 import { loadGlbCached } from "../../render3d/glbCache";
 import { getSharedRenderer, renderToCanvas } from "../../render3d/SharedRenderer";
+import { MAX_EFFECTIVE_DPR, scaledRenderSize } from "../../render3d/renderScale";
 import styles from "./ToucanFlyer.module.css";
 import bubbleStyles from "./TalkingBubble.module.css";
 import { advanceWingRhythm, createWingRhythm, wingStrokeAngle } from "./toucanWingRhythm";
@@ -94,6 +95,53 @@ const RENDER_SIZE = 28;
 // CSS-size ratio (its fixed 210x298 render vs. bon's ~26x37 CSS box) rather
 // than the previous 1x-2x.
 const SUPERSAMPLE = 3;
+
+// ---------------------------------------------------------------------------
+// Zoom-aware render resolution — the same policy the live-3D characters use
+// (render3d/renderScale.ts): measure the canvas's ACTUAL on-screen size (which
+// already includes the map's CSS transform zoom), multiply by a capped device
+// pixel ratio, snap to a small bucket ladder so the shared WebGL surface is
+// resized only when the bucket changes, and cap the top so a deep zoom on a
+// high-DPI display can't run away with fill cost.
+//
+// Why this needs its own ladder instead of calling resolveRenderScale()
+// directly: that helper's buckets top out at 2x base because a character's
+// base render (e.g. 298px) is already ~8x its on-screen height, so 2x is
+// plenty. The toucan's base is only RENDER_SIZE * SUPERSAMPLE (84px) against a
+// 28px sprite that grows to ~140 CSS px at max zoom — 2x of that base is still
+// an upscale, which is exactly why the bird went soft while characters stayed
+// sharp. The STRATEGY (measure x capped DPR, snap, cap) and the shared
+// MAX_EFFECTIVE_DPR / scaledRenderSize primitives are reused verbatim; only
+// the ladder is re-calibrated for this asset's much smaller base.
+//
+// Bucket 1 is EXACTLY the previous fixed size, so nothing changes at normal
+// zoom and a zoomed-out bird never renders bigger than it used to.
+const TOUCAN_RENDER_SCALE_BUCKETS: readonly number[] = [1, 1.5, 2, 3];
+
+// How often (in rendered frames) the on-screen size is re-measured, matching
+// CharacterCanvas's RENDER_SCALE_POLL_FRAMES: getBoundingClientRect is a
+// layout read, and once a quarter-second at 60fps is ample for zoom changes.
+const TOUCAN_RENDER_SCALE_POLL_FRAMES = 15;
+
+/** Backing-buffer size (device px, square) for a toucan canvas currently
+ *  displayed at `cssSizePx`. Pure, so the buckets are unit-testable. */
+export function toucanRenderPx(cssSizePx: number, devicePixelRatio: number): number {
+  const dpr = Math.min(Math.max(devicePixelRatio || 1, 1), MAX_EFFECTIVE_DPR);
+  // Bucket 1 == the original fixed raster.
+  const base = RENDER_SIZE * SUPERSAMPLE * dpr;
+  // 1:1 with the pixels the bird actually occupies on screen; never below the
+  // original base, so zooming out cannot make it worse than it was.
+  const wanted = Math.max(base, (cssSizePx > 0 ? cssSizePx : RENDER_SIZE) * dpr);
+  const ratio = wanted / base;
+  let bucket = TOUCAN_RENDER_SCALE_BUCKETS[TOUCAN_RENDER_SCALE_BUCKETS.length - 1];
+  for (const candidate of TOUCAN_RENDER_SCALE_BUCKETS) {
+    if (candidate >= ratio) {
+      bucket = candidate;
+      break;
+    }
+  }
+  return scaledRenderSize(base, base, bucket).width;
+}
 // How much of the camera's vertical frame the model's bounding sphere
 // should fill (angular diameter / full vertical FOV) — the auto-framing
 // target, same 85-95% range CharacterCanvas's own frameMargin constants aim
@@ -485,10 +533,19 @@ export function ToucanFlyer({ summonTargetRef, onSummonStateChange, thinking = f
     // does NOT fix blur (proven in the diagnosis) — it's paired with the
     // camera auto-framing below, which is what actually puts bird detail
     // into those raster pixels instead of empty margin.
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const renderPx = Math.round(RENDER_SIZE * dpr * SUPERSAMPLE);
+    // CSS size is fixed (the bird's visible size on the map never changes);
+    // only the BACKING BUFFER follows zoom — see toucanRenderPx above.
     canvas.style.width = `${RENDER_SIZE}px`;
     canvas.style.height = `${RENDER_SIZE}px`;
+    let renderPx = toucanRenderPx(RENDER_SIZE, window.devicePixelRatio || 1);
+    let framesSinceRenderScalePoll = TOUCAN_RENDER_SCALE_POLL_FRAMES; // poll on the first frame
+    function updateRenderPx() {
+      const el = canvasRef.current;
+      if (!el) return;
+      // Includes the map's CSS transform zoom, exactly as CharacterCanvas's
+      // own measurement does.
+      renderPx = toucanRenderPx(el.getBoundingClientRect().height, window.devicePixelRatio || 1);
+    }
 
     const scene = new THREE.Scene();
     const ambient = new THREE.AmbientLight(0xfff2e6, 0.55);
@@ -945,6 +1002,11 @@ export function ToucanFlyer({ summonTargetRef, onSummonStateChange, thinking = f
         if (rightWing && rightWingBindQuat) {
           rightWing.quaternion.copy(rightWingBindQuat).multiply(flapQuat);
         }
+      }
+
+      if (++framesSinceRenderScalePoll >= TOUCAN_RENDER_SCALE_POLL_FRAMES) {
+        framesSinceRenderScalePoll = 0;
+        updateRenderPx();
       }
 
       if (!webglBroken) {
