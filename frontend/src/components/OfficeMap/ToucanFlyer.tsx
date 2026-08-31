@@ -5,6 +5,7 @@ import { FRAME_HEIGHT, FRAME_WIDTH } from "../../data/office-layout";
 import { loadGlbCached } from "../../render3d/glbCache";
 import { getSharedRenderer, renderToCanvas } from "../../render3d/SharedRenderer";
 import styles from "./ToucanFlyer.module.css";
+import { advanceWingRhythm, createWingRhythm, wingStrokeAngle } from "./toucanWingRhythm";
 
 // ---------------------------------------------------------------------------
 // Ambient decorative toucan NPC — V1. Purely a visual flourish: flies a
@@ -99,8 +100,10 @@ const CAMERA_FILL_FRACTION = 0.9;
 // Padding multiplier on the bone-derived bounding radius, mirroring
 // CharacterCanvas's own bone-position padding (its computeFramingBox pads
 // by 12% since skin surface extends past bone joint centers). This rig
-// ALSO flaps its wing bones up to +-FLAP_MAX_AMPLITUDE away from the rest
-// pose the bounding box below is measured at, so the pad needs to cover
+// ALSO flaps its wing bones up to +0.55 rad away from the rest pose the
+// bounding box below is measured at (toucanWingRhythm's GLIDE_SPREAD_ANGLE
+// + FLAP_STROKE_AMPLITUDE peak, pinned by its unit tests), so the pad
+// needs to cover
 // both slop sources — 18% leaves comfortable headroom for a full-amplitude
 // flap without re-fitting the camera every frame.
 const FRAME_PADDING_FACTOR = 1.18;
@@ -127,12 +130,20 @@ const MAX_BANK = 0.42; // radians (~24deg)
 const ALTITUDE_PX = 46; // fixed screen-space offset so it reads as "above" the office
 
 // Procedural wing flap (see GLB inspection note above the component): the
-// supplied rig has no flying/flapping clip, but IS a real skinned biped
-// skeleton whose LeftArm/RightArm bones stand in for the wings (Meshy's
-// auto-rig maps any character's limbs onto a generic biped template). Each
-// frame, a small oscillating rotation is composed onto the bone's ORIGINAL
-// bind-pose quaternion (never accumulated), so it always oscillates around
-// the authored rest pose instead of drifting.
+// supplied rig has no flying/flapping clip — its only two clips are the
+// bipedal "Running"/"Walking" and neither is ever played — but it IS a real
+// skinned biped skeleton whose LeftArm/RightArm bones stand in for the
+// wings (Meshy's auto-rig maps any character's limbs onto a generic biped
+// template). Each frame, a small rotation is composed onto the bone's
+// ORIGINAL bind-pose quaternion (never accumulated), so it always
+// oscillates around the authored rest pose instead of drifting.
+//
+// The stroke VALUE and the glide/burst rhythm driving it live in
+// ./toucanWingRhythm.ts (pure + unit-tested); this file only owns the axis
+// and the bone application. Read that module's two invariants before
+// touching either — in particular, both bones take the same-signed angle on
+// purpose, because this rig's Left/Right bind quaternions are already
+// mirrored.
 //
 // Axis chosen by rendering both candidates through the real top-down camera
 // (see the offline debug-harness screenshots taken while implementing this)
@@ -144,8 +155,6 @@ const ALTITUDE_PX = 46; // fixed screen-space offset so it reads as "above" the 
 // still reads wrong in the live app, this is the one constant to flip
 // (try Vector3(0,0,1) or Vector3(0,1,0)) — do not change anything else.
 const FLAP_AXIS = new THREE.Vector3(1, 0, 0);
-const FLAP_FREQUENCY = 9; // radians/sec — a brisk small-bird wingbeat
-const FLAP_MAX_AMPLITUDE = 0.55; // radians (~31deg) swing off rest pose
 
 // Fallback pose-basis reference vectors for the CURRENT unrigged toucan
 // mesh (see header comment) — used only when no Hips/Head bones are found,
@@ -306,8 +315,14 @@ export function ToucanFlyer() {
     let leftWingBindQuat: THREE.Quaternion | null = null;
     let rightWingBindQuat: THREE.Quaternion | null = null;
     let usingClipForFlap = false;
-    let flapT = 0;
-    let flapAmplitude = 0;
+    // Glide/flap-burst rhythm — a plain mutable object advanced by dt in the
+    // rAF loop below (no timers, no listeners, no React state), created once
+    // per mount inside this []-dep effect so rerenders can never reset it
+    // and unmount discards it wholesale.
+    const wingRhythm = createWingRhythm();
+    // Scratch quaternion reused every frame for the stroke rotation, so the
+    // flap never allocates inside the render loop.
+    const flapQuat = new THREE.Quaternion();
     let webglBroken = false;
 
     function startTravelTo(nextIdx: number) {
@@ -373,7 +388,7 @@ export function ToucanFlyer() {
         // covering bone-vs-skin slop and full-amplitude wing flap) subtends
         // CAMERA_FILL_FRACTION of the vertical FOV — i.e. the RESTING model
         // fills ~90%/1.18 =~ 76% of the frame, leaving headroom so a fully
-        // flapped wing (up to +-FLAP_MAX_AMPLITUDE from rest) still lands
+        // flapped wing (up to +0.55 rad from rest) still lands
         // inside frame instead of clipping. asin(paddedRadius/distance) =
         // half the target angle, solved for distance. Same "fit the camera
         // to the model's real extent" principle CharacterCanvas's own two-
@@ -479,18 +494,15 @@ export function ToucanFlyer() {
           mixer.clipAction(flightClip).play();
           usingClipForFlap = true;
         } else {
-          // No usable flight clip. Look for independently-controllable
-          // wing bones (the earlier placeholder rig had these — Meshy's
-          // biped auto-rig mapped its wings onto humanoid Arm bones) to
-          // drive a lightweight procedural flap. The CURRENT asset (see
-          // header comment) has no skeleton at all — rigging failed twice,
-          // a hard Meshy API limitation for this body shape, not a bug
-          // here — so these both resolve to null and the flap block below
-          // (`if (!usingClipForFlap && (leftWing || rightWing))`) simply
-          // never runs. Per spec: skip the animation rather than fake/
-          // deform the static mesh. If a future toucan GLB DOES ship a
-          // rig with these bone names, flapping will "just work" again
-          // with zero code changes.
+          // No usable flight clip ("Running"/"Walking" are bipedal
+          // locomotion). Look for independently-controllable wing bones to
+          // drive the procedural flap instead — the current rig DOES have
+          // them (Meshy's biped auto-rig mapped this toucan's wings onto
+          // humanoid LeftArm/RightArm), so both of these resolve. If a
+          // future toucan GLB drops the rig, they resolve to null and the
+          // flap block below simply never runs; if it ships a real flight
+          // clip, the branch above takes over. Either way, zero code
+          // changes here.
           leftWing = findBone(model, ["LeftArm", "LeftUpperArm", "LeftShoulder"]);
           rightWing = findBone(model, ["RightArm", "RightUpperArm", "RightShoulder"]);
           leftWingBindQuat = leftWing?.quaternion.clone() ?? null;
@@ -553,23 +565,23 @@ export function ToucanFlyer() {
       pivot.position.y = Math.sin(bobT) * bobAmplitudeWorld;
 
       // Procedural wing flap — skipped entirely when a real flight clip is
-      // driving the mixer instead (usingClipForFlap). Amplitude eases
-      // toward full while flying and toward 0 while paused/perched, so the
-      // flap visibly slows and settles rather than snapping off.
+      // driving the mixer instead (usingClipForFlap). The rhythm module
+      // decides WHEN (glide hold vs. a whole number of wingbeats) and HOW
+      // FAR; this just stamps the one shared stroke angle onto both wing
+      // bones. Same sign on both sides is deliberate — see toucanWingRhythm's
+      // invariant 1: these bones' bind quaternions are already mirrored, so
+      // an identical local rotation yields mirrored (i.e. synchronized)
+      // world motion, while negating one side is what used to make the wings
+      // look like they were alternating left/right.
       if (!usingClipForFlap && (leftWing || rightWing)) {
-        const targetAmplitude = phase === "flying" ? FLAP_MAX_AMPLITUDE : 0;
-        flapAmplitude = lerp(flapAmplitude, targetAmplitude, Math.min(1, 4 * dt));
-        flapT += dt * FLAP_FREQUENCY;
-        const flapAngle = Math.sin(flapT) * flapAmplitude;
+        advanceWingRhythm(wingRhythm, dt, phase === "flying");
+        const strokeAngle = wingStrokeAngle(wingRhythm);
+        flapQuat.setFromAxisAngle(FLAP_AXIS, strokeAngle);
         if (leftWing && leftWingBindQuat) {
-          leftWing.quaternion
-            .copy(leftWingBindQuat)
-            .multiply(new THREE.Quaternion().setFromAxisAngle(FLAP_AXIS, flapAngle));
+          leftWing.quaternion.copy(leftWingBindQuat).multiply(flapQuat);
         }
         if (rightWing && rightWingBindQuat) {
-          rightWing.quaternion
-            .copy(rightWingBindQuat)
-            .multiply(new THREE.Quaternion().setFromAxisAngle(FLAP_AXIS, -flapAngle));
+          rightWing.quaternion.copy(rightWingBindQuat).multiply(flapQuat);
         }
       }
 
