@@ -64,11 +64,28 @@ export type Live3dAssetSet = {
   // then add ~8% margin. See CHARACTER_PIPELINE_STANDARD.md. Omitted =
   // DEFAULT_WIDTH_CAPACITY.
   widthCapacity?: number;
+  // Distance, in office-frame units, from the vertical CENTRE of this
+  // character's canvas up to the top of its STANDING head.
+  //
+  // Used by panMath.greetingAnchor to hang the status pill / talking bubble off
+  // the real head instead of the layer's top edge. The canonical size policy
+  // centres the character in its canvas and scales it as 1/layerHeight, so
+  // `layerHeight / 2 - headTopAboveCenter` gives the head's distance below the
+  // canvas top for ANY layer box — which is why the same value works whether
+  // the character is drawn in its own manifest layer (as self) or in bon's
+  // seat box (as a roster peer).
+  //
+  // MEASURED, not guessed: render the bind pose through the app's own camera
+  // and take the highest mesh vertex in NDC, then headTopAboveCenter =
+  // ndcHeadTop x layerHeight / 2. Same harness as widthCapacity.
+  headTopAboveCenter?: number;
 };
 
 // Fallback for a character whose widest pose has not been measured yet. Covers
 // the widest measured character to date (alex, 1.502) with margin, so a new
 // employee cannot ship visibly cropped before its own measurement lands.
+// Every registered character now carries its own measured value, so this is
+// only ever used by a not-yet-measured newcomer.
 export const DEFAULT_WIDTH_CAPACITY = 1.65;
 
 /** The horizontal painting capacity to use for an asset set. */
@@ -79,10 +96,12 @@ export function resolveWidthCapacity(entry: Live3dAssetSet): number {
 const BASE = import.meta.env.BASE_URL;
 
 // One entry per avatar id with an approved, shipped live-3D asset set.
-// Two real employees through the pipeline so far: bon (Jerevon) and alex.
-// NOTE: with two entries, OfficeStage's single-entry "size-gated relaxation"
-// no longer applies — self is shown at LIVE_3D_SELF_MIN_TIER (T1+), peers go
-// through LIVE_3D_CAP_BY_TIER (T1: 2, T2: 4), exactly as tierBudgets.ts documents.
+// Four real employees through the pipeline so far: bon (Jerevon), alex, micah
+// and angelo. NOTE: with more than one entry, OfficeStage's single-entry
+// "size-gated relaxation" no longer applies — self is shown at
+// LIVE_3D_SELF_MIN_TIER (T1+), peers go through LIVE_3D_CAP_BY_TIER (T1: 2,
+// T2: 4), exactly as tierBudgets.ts documents. Growing from two entries to
+// four changes WHICH characters are eligible, never the crowd budgets.
 export const LIVE_3D_CHARACTERS: Record<string, Live3dAssetSet> = {
   // Manifest aspect ratio: width 26.23 / height 37.2.
   // Promoted 2026-08-30 to the bon-v3 set, built straight from the approved
@@ -109,6 +128,8 @@ export const LIVE_3D_CHARACTERS: Record<string, Live3dAssetSet> = {
     // measured max|x| 1.216 (sitting-answering @45deg, consistent across
     // lod0/1/2) + 8% margin
     widthCapacity: 1.35,
+    // measured ndc head 0.784838 @ layer height 37.2
+    headTopAboveCenter: 14.598,
   },
   // Manifest aspect ratio: width 20 / height 34.46.
   // Promoted 2026-08-30 to the alex-v2 set, built from the approved T-pose
@@ -128,6 +149,84 @@ export const LIVE_3D_CHARACTERS: Record<string, Live3dAssetSet> = {
     renderHeight: 276,
     // measured max|x| 1.502 (sitting-answering @45deg) + 8% margin
     widthCapacity: 1.65,
+    // measured ndc head 0.829558 @ layer height 34.46
+    headTopAboveCenter: 14.293,
+  },
+  // Manifest aspect ratio: width 24.36 / height 39.10.
+  // Promoted 2026-08-31 to the micah-v5 set, built straight from the approved
+  // T-pose master micah-tpose1.png (pose_mode "t-pose": image-to-3d 01a05658
+  // -> remesh 01a0565b -> rig 01a0565e -> 5 clips -> build-character-lods
+  // --profile=hq). The micah-v4 set stays on disk untouched at
+  // public/avatars/micah-v4-hq/ as the rollback — revert these three paths to
+  // roll back. Earlier rejected chains (micah/, micah-v2/, and the long-hair
+  // v3 archived under output/meshy-employees/rejected/) are never referenced.
+  //
+  // Feminine idle profile preserved: Meshy Idle_12 (action 252), embedded as
+  // the `idle-9` runtime slot. It DID flare on v5 (hands 25.4/26.9 outboard of
+  // hip, elbows 28/30 deg) so it carries the standard whole-arm-chain
+  // correction solved from V5'S OWN bind axes
+  // (micah-v5-idle-12-armfix-v1.mjs -> 16.3/17.3, elbows 11.0/14.1, matching
+  // alex's corrected 10.9/13.6). Note v4 needed NO such correction — its
+  // a-pose bind already hung the arms low — which is why the correction is
+  // re-decided per chain rather than inherited.
+  //
+  // The rigged base carries a v5-DERIVED weight correction
+  // (micah-v5-weightfix-v1.mjs): Meshy again left Arm/Shoulder influence on
+  // her scalp/hair/glasses, worse than v4 (4.00% of body height dragged during
+  // walking vs v4's 1.59%). The cut is solved from v5's own data (y=1.280) and
+  // the feather band is 0.11 x body height, NOT v4's 0.15 — at 0.15 the ramp
+  // only reached full strength at y=1.535, above the scalp itself, leaving
+  // 1.12%. Result 0.14% (bon 0.28%, angelo 0.39%).
+  //
+  // Layer geometry is UNCHANGED from the v4 calibration: v5 already clears the
+  // frame at 24.36 x 39.10 with 7.5% vertical margin (0 of 1152 clip/heading/
+  // phase poses overshoot), so feet anchor, labels and hitbox all stay put.
+  micah: {
+    glbUrl: `${BASE}avatars/micah-v5-hq/micah-v5-lod0.glb`,
+    lod1GlbUrl: `${BASE}avatars/micah-v5-hq/micah-v5-lod1.glb`,
+    lod2GlbUrl: `${BASE}avatars/micah-v5-hq/micah-v5-lod2.glb`,
+    renderWidth: 182,
+    renderHeight: 292,
+    // measured max|x| 1.288 (sitting-answering @225deg) + 8% margin
+    widthCapacity: 1.4,
+    // measured ndc head 0.740101 @ layer height 39.10
+    headTopAboveCenter: 14.469,
+  },
+  // Manifest aspect ratio: width 28.18 / height 39.85. Registry key is
+  // `angelo` (the office-assets-manifest / roster id that avatarIdForEmail
+  // produces); only the ASSET FILES carry the pipeline's `gelo-v1` chain name.
+  // Built 2026-08-30 from gelo-tpose.png, a genuine horizontal T-pose, so
+  // pose_mode "t-pose" (image-to-3d 01a05325 -> remesh 01a05329 -> rig
+  // 01a0532b -> 5 clips -> build-character-lods --profile=hq). Idle_12 DID
+  // flare (hands 34.8/37.3 outboard of hip, worse than alex's pre-fix
+  // 30.3/31.1) and carries the standard whole-arm-chain correction solved from
+  // ANGELO'S OWN bind axes (gelo-v1-idle-12-armfix-v1.mjs -> 15.2/16.3),
+  // embedded as `idle-9`.
+  //
+  // His manifest layer was authored as background stock art at 22.149 x 31.323
+  // — far short of bon 37.2 / micah 36.526 / alex 34.46 — which pushed the
+  // canonical rule's wanted fraction to 33.06/31.323 = 1.0555, ABOVE
+  // characterSize.ts's MAX_STANDING_CANVAS_FRACTION ceiling of 1.02. He
+  // therefore clamped and rendered ~3.4% short, with 4 of 6 clips overflowing
+  // the frame top (agree-gesture peaked at 1.160, cutting his raised hand).
+  // Recalibrated to 28.18 x 39.85: uniform (aspect 0.7071 preserved to 4dp, so
+  // object-fit:cover never crops or stretches his sprite) and re-anchored so
+  // his feet stay on the exact same world spot. The fraction is now 0.8296,
+  // clear of the ceiling, so he stands the canonical 33.06 frame units —
+  // matching bon/alex/micah — and his tallest pose peaks at 0.945.
+  // The shared rendering policy is unchanged; only this one undersized layer
+  // was corrected.
+  angelo: {
+    glbUrl: `${BASE}avatars/gelo-v1-hq/gelo-v1-lod0.glb`,
+    lod1GlbUrl: `${BASE}avatars/gelo-v1-hq/gelo-v1-lod1.glb`,
+    lod2GlbUrl: `${BASE}avatars/gelo-v1-hq/gelo-v1-lod2.glb`,
+    renderWidth: 177,
+    renderHeight: 251,
+    // measured max|x| 1.121 (sitting-answering @225deg) + 8% margin, re-measured
+    // after his manifest layer was recalibrated to 28.18 x 39.85 (see below)
+    widthCapacity: 1.22,
+    // measured ndc head 0.724536 @ layer height 39.85
+    headTopAboveCenter: 14.437,
   },
 };
 

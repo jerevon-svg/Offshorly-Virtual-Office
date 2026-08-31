@@ -165,6 +165,7 @@ import { CompanyHub } from "./CompanyHub";
 import { openCompanyHub, useCompanyHub } from "../../services/hub/companyHubStore";
 import { resetDevHubState } from "../../services/hub/hubClient";
 import { EmployeeProfile } from "./EmployeeProfile";
+import { isLive3dEligible } from "../../render3d/live3dCharacters";
 import { avatarIdForEmail, mockEmailForAvatarId } from "../../data/avatarIdentity";
 import styles from "./OfficeMap.module.css";
 
@@ -335,13 +336,30 @@ export function OfficeMap() {
   //     portrait, no animated set built yet).
   const knownSpriteSet = currentUserId !== null ? SPRITE_SET_BY_AVATAR_ID[currentUserId] : undefined;
   const hasOwnSpriteSet = Boolean(knownSpriteSet);
+  // "Does this person already have an assigned production character?"
+  //
+  // hasOwnSpriteSet alone is the WRONG question, and asking it was a real bug:
+  // an employee can finish the Meshy pipeline and ship a live-3D asset set
+  // before anyone bakes their 2D walk/idle sprite sheets. Angelo is exactly
+  // that — `gelo-v1-hq` in LIVE_3D_CHARACTERS, no AvatarSpriteSet. Judged by
+  // sprite sheets alone he looked like a brand-new unmapped person, which
+  // (a) auto-opened the dev "Create your avatar" prompt over his existing
+  // character and (b) collapsed his player layer to `__no_character__`, so as
+  // the viewer he rendered the faceless placeholder at Bon's geometry and his
+  // own manifest layer got hidden as an NPC.
+  //
+  // A live-3D registry entry is just as much an assigned character as a sprite
+  // set, so both count. This does NOT invent a sprite set: viewerSpriteSet
+  // below still falls back to the shared faceless placeholder for the 2D tiers,
+  // while T1+ renders his real 3D character.
+  const hasOwnCharacter = hasOwnSpriteSet || (currentUserId !== null && isLive3dEligible(currentUserId));
   // Not a real character-layer id (never matches a manifest layer, an NPC,
   // or a sprite-set entry) — deliberately, so the existing
   // `npcCharacterLayers.find(...) ?? bonLayer` geometry fallback below still
   // resolves to bonLayer's position/size for the placeholder case, without
   // that fallback needing to know this id exists.
   const noCharacterPlayerId = "__no_character__";
-  const playerLayerId = hasOwnSpriteSet ? (currentUserId as string) : noCharacterPlayerId;
+  const playerLayerId = hasOwnCharacter ? (currentUserId as string) : noCharacterPlayerId;
   const viewerSpriteSet = hasOwnSpriteSet ? (knownSpriteSet as AvatarSpriteSet) : PLACEHOLDER_SPRITE_SET;
   // The manifest layer for whichever sprite is playing "you" — used for
   // name formatting/geometry the same way bonLayer used to be used
@@ -601,11 +619,11 @@ export function OfficeMap() {
     if (!import.meta.env.DEV) return;
     if (promptedOwnAvatarRef.current) return;
     if (!currentUser?.email) return; // identity not resolved yet
-    if (hasOwnSpriteSet) return; // already has a real/registry-mapped character
+    if (hasOwnCharacter) return; // already has a real/registry-mapped character (sprite set OR live-3D)
     if (findSavedAvatarByOwnerEmail(currentUser.email)) return; // already generated one
     promptedOwnAvatarRef.current = true;
     setIsAvatarCreatorOpen(true);
-  }, [currentUser, hasOwnSpriteSet]);
+  }, [currentUser, hasOwnCharacter]);
 
   const [greeting, setGreeting] = useState<{ characterId: string; nonce: number; text?: string } | null>(
     null,

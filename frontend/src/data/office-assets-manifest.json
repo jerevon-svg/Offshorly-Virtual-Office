@@ -485,20 +485,20 @@
     "id": "angelo",
     "kind": "character",
     "path": "assets/office/characters/angelo.png",
-    "x": 126.31,
-    "y": 490.07,
-    "width": 22.149,
-    "height": 31.323,
+    "x": 123.2945,
+    "y": 485.352,
+    "width": 28.18,
+    "height": 39.85,
     "transform": null
   },
   {
     "id": "micah",
     "kind": "character",
     "path": "assets/office/characters/micah.png",
-    "x": 71.25,
-    "y": 349.95,
-    "width": 22.756,
-    "height": 36.526,
+    "x": 70.448,
+    "y": 348.663,
+    "width": 24.36,
+    "height": 39.1,
     "transform": null
   },
   {

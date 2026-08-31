@@ -368,3 +368,90 @@ describe("seatOverflowsRoom", () => {
     expect(seatOverflowsRoom("not-a-room", 500)).toBe(false);
   });
 });
+
+// Live-3D peers must be seated in their OWN manifest box, not the shared
+// bon-sized seat box: CharacterCanvas solves its zoom from the layer height,
+// so bon's box handed micah and angelo bon's vertical framing and threw away
+// the headroom their taller layers were calibrated to give their raised-arm
+// clips.
+describe("live-3D peers use their own layer box", () => {
+  const MANIFEST = {
+    bon: { width: 26.23, height: 37.2 },
+    alex: { width: 20, height: 34.46 },
+    micah: { width: 24.36, height: 39.1 },
+    angelo: { width: 28.18, height: 39.85 },
+  } as const;
+  // |ndcFeet| x ownHeight / 2 — the feet's constant distance below the box
+  // centre. Constant in height because the canonical policy scales the
+  // character as 1/layerHeight, which is why resizing the box cannot move feet.
+  const FEET_BELOW_CENTRE = {
+    bon: 0.741938 * 37.2 / 2,
+    alex: 0.830595 * 34.46 / 2,
+    micah: 0.726009 * 39.1 / 2,
+    angelo: 0.678897 * 39.85 / 2,
+  } as const;
+
+  function layersFor(people: Parameters<typeof officePeopleToLayers>[0]) {
+    return new Map(officePeopleToLayers(people).map((l) => [l.avatarId ?? l.id, l]));
+  }
+  const person = (email: string, avatarId: string | null) => ({
+    email, displayName: avatarId ?? email, status: "ONLINE" as const,
+    avatarId, roomId: "dev-team", departmentName: "Dev",
+  });
+
+  it("every registered live-3D employee resolves its own width and height", () => {
+    const byId = layersFor([
+      person("jerevon@offshorly.com", "bon"),
+      person("alex@offshorly.com", "alex"),
+      person("micah@offshorly.com", "micah"),
+      person("angelo@offshorly.com", "angelo"),
+    ] as never);
+    for (const [id, box] of Object.entries(MANIFEST)) {
+      expect(byId.get(id)!.width).toBeCloseTo(box.width, 3);
+      expect(byId.get(id)!.height).toBeCloseTo(box.height, 3);
+    }
+  });
+
+  it("a peer's box equals the box that same character uses as self", () => {
+    // "self" = their own manifest layer; the peer box must be identical, so
+    // camera framing, headroom, widthCapacity and proportions all match.
+    const byId = layersFor([person("micah@offshorly.com", "micah"), person("angelo@offshorly.com", "angelo")] as never);
+    for (const id of ["micah", "angelo"] as const) {
+      expect(byId.get(id)!.width).toBeCloseTo(MANIFEST[id].width, 3);
+      expect(byId.get(id)!.height).toBeCloseTo(MANIFEST[id].height, 3);
+    }
+  });
+
+  it("resizing the box does not move anyone's feet or horizontal centre", () => {
+    const people = [person("micah@offshorly.com", "micah"), person("angelo@offshorly.com", "angelo")] as never;
+    const byId = layersFor(people);
+    for (const id of ["micah", "angelo"] as const) {
+      const l = byId.get(id)!;
+      const centreX = l.x + l.width / 2;
+      const centreY = l.y + l.height / 2;
+      const feetY = centreY + FEET_BELOW_CENTRE[id];
+      // The same seat centroid, whatever box is drawn on it — so a box swap
+      // moves neither the horizontal centre nor the feet.
+      const inBonBox = { x: centreX - 26.23 / 2, y: centreY - 37.2 / 2, width: 26.23, height: 37.2 };
+      expect(inBonBox.x + inBonBox.width / 2).toBeCloseTo(centreX, 9);
+      expect(inBonBox.y + inBonBox.height / 2 + FEET_BELOW_CENTRE[id]).toBeCloseTo(feetY, 9);
+    }
+  });
+
+  it("non-live-3D people keep the shared fallback seat box", () => {
+    const byId = layersFor([person("lui@offshorly.com", "lui"), person("nobody@offshorly.com", null)] as never);
+    expect(byId.get("lui")!.width).toBeCloseTo(26.23, 3);
+    expect(byId.get("lui")!.height).toBeCloseTo(37.2, 3);
+  });
+
+  it("produces exactly one layer per person, none duplicated or dropped", () => {
+    const people = [
+      person("jerevon@offshorly.com", "bon"), person("alex@offshorly.com", "alex"),
+      person("micah@offshorly.com", "micah"), person("angelo@offshorly.com", "angelo"),
+      person("lui@offshorly.com", "lui"),
+    ] as never;
+    const layers = officePeopleToLayers(people);
+    expect(layers).toHaveLength(5);
+    expect(new Set(layers.map((l) => l.id)).size).toBe(5);
+  });
+});

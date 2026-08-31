@@ -3,6 +3,7 @@ import { render } from "@testing-library/react";
 import { TransformWrapper, TransformComponent } from "react-zoom-pan-pinch";
 import { OfficeStage } from "./OfficeStage";
 import { greetingAnchor } from "./panMath";
+import { LIVE_3D_CHARACTERS } from "../../render3d/live3dCharacters";
 import { characterLayers } from "../../data/office-layout";
 import styles from "./TalkingBubble.module.css";
 
@@ -81,7 +82,10 @@ describe("OfficeStage typingCharacterIds / talkingTextById overhead bubble", () 
   it("anchors dead-center over the head via greetingAnchor, exactly like StatusLabel (no lateral sideOffset)", () => {
     const { container } = renderStage(["bon"]);
     const bonLayer = characterLayers.find((l) => l.id === "bon")!;
-    const expected = greetingAnchor(bonLayer);
+    // TalkingBubble deliberately shares StatusLabel's anchor, which for a
+    // live-3D employee now hangs off the measured head rather than the layer's
+    // top edge — so the expectation passes the same head offset.
+    const expected = greetingAnchor(bonLayer, LIVE_3D_CHARACTERS.bon.headTopAboveCenter);
     const anchor = container.querySelector(`.${styles.anchor}`) as HTMLElement;
     expect(anchor.style.left).toBe(`${expected.leftPct}%`);
     expect(anchor.style.top).toBe(`${expected.topPct}%`);

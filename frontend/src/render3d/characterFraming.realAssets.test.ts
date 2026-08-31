@@ -19,8 +19,10 @@ const io = new NodeIO().registerExtensions(ALL_EXTENSIONS)
 const ASSETS = {
   bon: "public/avatars/bon-v3-hq/bon-v3",
   alex: "public/avatars/alex-v2-hq/alex-v2",
+  micah: "public/avatars/micah-v5-hq/micah-v5",
+  angelo: "public/avatars/gelo-v1-hq/gelo-v1",
 };
-const LAYER_HEIGHT = { bon: 37.2, alex: 34.46 };
+const LAYER_HEIGHT = { bon: 37.2, alex: 34.46, micah: 39.1, angelo: 39.85 };
 
 async function meshBounds(file: string) {
   const doc = await io.read(file);
@@ -63,10 +65,12 @@ describe("real Meshy assets — Armature scale convention", () => {
     expect(bogusTop).toBeLessThan(0.05);
   });
 
-  it("both characters are the same modelled height, so equal visible height is achievable", async () => {
+  it("every character is the same modelled height, so equal visible height is achievable", async () => {
     const bon = await meshBounds(`${ASSETS.bon}-lod0.glb`);
-    const alex = await meshBounds(`${ASSETS.alex}-lod0.glb`);
-    expect(Math.abs(bon.height - alex.height) / bon.height).toBeLessThan(0.02);
+    for (const key of ["alex", "micah", "angelo"] as const) {
+      const other = await meshBounds(`${ASSETS[key]}-lod0.glb`);
+      expect(Math.abs(bon.height - other.height) / bon.height).toBeLessThan(0.02);
+    }
   });
 
   it("every LOD tier of a character has the same modelled height (LOD never changes size)", async () => {
@@ -92,6 +96,17 @@ describe("real Meshy assets — Armature scale convention", () => {
     // and neither lands anywhere near the collapsed-zoom regression
     expect(bonTop).toBeGreaterThan(0.5);
     expect(alexTop).toBeGreaterThan(0.5);
+  });
+
+  it("every registered employee lands on the SAME canonical visible standing height", () => {
+    // visible height (frame units) = canonicalStandingFraction(layerHeight) x
+    // layerHeight, which equals CANONICAL_STANDING_FRAME_UNITS for every
+    // character whose layer is tall enough not to hit the 1.02 ceiling.
+    // Angelo's layer used to be 31.323, which DID hit the ceiling and left him
+    // 3.4% short; his and micah's layers are now calibrated so all four match.
+    const heights = Object.entries(LAYER_HEIGHT).map(([, lh]) => canonicalStandingFraction(lh) * lh);
+    const min = Math.min(...heights), max = Math.max(...heights);
+    expect((max - min) / max).toBeLessThan(0.02);
   });
 
   it("the canonical fraction never exceeds the headroom ceiling", () => {

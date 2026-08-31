@@ -85,8 +85,8 @@ import styles from "./OfficeStage.module.css";
 // Never consulted by the tier/budget gating path, only by the override.
 //
 // Two kinds of keys:
-//   - an avatar id (e.g. "micah"): previews that not-yet-eligible character
-//     (alex used to live here until his registry entry shipped 2026-08-29);
+//   - an avatar id (e.g. "lui"): previews that not-yet-eligible character
+//     (alex and micah used to live here until their registry entries shipped 2026-08-29);
 //   - a CANDIDATE id ("bon-v2") carrying `forAvatarId`: previews a
 //     replacement asset set for an avatar that already has a production
 //     registry entry, WITHOUT touching that entry. `?live3d=bon-v2` swaps

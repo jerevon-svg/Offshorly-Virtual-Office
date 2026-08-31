@@ -2,6 +2,7 @@ import { ASSET_PATH_TO_SRC, bonLayer, characterLayers, rooms } from "./office-la
 import { seatsForRoomId } from "./roomSeats";
 import { SEAT_DIRECTIONS } from "./seatDirections";
 import { SPRITE_SET_BY_AVATAR_ID, characterSprite } from "./bonWalkFrames";
+import { isLive3dEligible } from "../render3d/live3dCharacters";
 import { PLACEHOLDER_SPRITE_SET } from "../services/avatar/placeholder";
 import type { AssetLayer } from "../types/office";
 import type { OfficePerson } from "../services/office/floorMerge";
@@ -260,6 +261,32 @@ export function officePeopleToLayers(people: OfficePerson[]): AssetLayer[] {
         ? { path: mappedArt.path, imgCrop: mappedArt.imgCrop }
         : { path: PLACEHOLDER_LAYER_PATH, imgCrop: null };
 
+      // A live-3D employee is seated in their OWN manifest box, not the shared
+      // bon-sized one.
+      //
+      // The uniform SEAT_WIDTH/SEAT_HEIGHT below exists so a room of static
+      // roster portraits reads as one cast instead of a size-jumble — correct
+      // for 2D art, wrong for a live-3D character. CharacterCanvas solves its
+      // zoom from the LAYER HEIGHT (characterSize.ts), so a character drawn in
+      // bon's box gets bon's vertical framing: micah and angelo have layers
+      // deliberately calibrated taller to give their raised-arm clips headroom,
+      // and rendering them as peers in bon's shorter box threw that away and
+      // let angelo crop when someone else looked at him.
+      //
+      // Using their own box makes self and peer identical in dimensions,
+      // framing, headroom and proportions. It is derived from the registry, so
+      // any future employee gets it automatically; everyone else (decorative
+      // manifest cast, sprite-only and unmapped people) keeps the shared box.
+      //
+      // Feet do not move: the box is CENTRED on the seat centroid, and the
+      // canonical policy scales the character as 1/layerHeight, so the feet sit
+      // a constant |ndcFeet| x height / 2 below the box centre no matter which
+      // box is used (verified: micah 14.782 frame units in both).
+      const ownBox =
+        person.avatarId && mappedArt && isLive3dEligible(person.avatarId)
+          ? { width: mappedArt.width, height: mappedArt.height }
+          : null;
+
       let position: { x: number; y: number };
       let width: number;
       let height: number;
@@ -279,8 +306,8 @@ export function officePeopleToLayers(people: OfficePerson[]): AssetLayer[] {
         // the correct directional sit pose instead of the hardcoded
         // front-sit manifest portrait.
         const seat = seats[i];
-        width = SEAT_WIDTH;
-        height = SEAT_HEIGHT;
+        width = ownBox?.width ?? SEAT_WIDTH;
+        height = ownBox?.height ?? SEAT_HEIGHT;
         position = { x: seat.x - width / 2, y: seat.y - height / 2 };
         sitDirection = seat.direction;
         // Only populated for the 4 manifest-driven rooms (see Seat.furnitureId)
@@ -296,11 +323,20 @@ export function officePeopleToLayers(people: OfficePerson[]): AssetLayer[] {
 
         const column = index % overflowSeating.columns;
         const row = Math.floor(index / overflowSeating.columns);
-        width = overflowSeating.seatWidth;
-        height = overflowSeating.seatHeight;
+        const cellWidth = overflowSeating.seatWidth;
+        const cellHeight = overflowSeating.seatHeight;
+        // A crowded room shrinks every body to fit inside its walls. Keep that
+        // shrink for a live-3D employee too — just apply it to their own box
+        // rather than bon's — and centre them in the cell, so the packed grid
+        // and their feet both stay exactly where they were.
+        const overflowScale = cellHeight / SEAT_HEIGHT;
+        width = ownBox ? ownBox.width * overflowScale : cellWidth;
+        height = ownBox ? ownBox.height * overflowScale : cellHeight;
+        const cellX = room.x + ROOM_PADDING_X + column * (cellWidth + SEAT_GAP_X);
+        const cellY = room.y + ROOM_PADDING_TOP + row * (cellHeight + SEAT_GAP_Y);
         position = {
-          x: room.x + ROOM_PADDING_X + column * (width + SEAT_GAP_X),
-          y: room.y + ROOM_PADDING_TOP + row * (height + SEAT_GAP_Y),
+          x: cellX + (cellWidth - width) / 2,
+          y: cellY + (cellHeight - height) / 2,
         };
         sitDirection = SEAT_DIRECTIONS[roomId]?.default ?? "front";
       }
