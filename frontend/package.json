@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:mock": "vite --port 5174 --strictPort --mode mock",
     "gen-server": "node scripts/avatar-pipeline/gen-server.mjs",
     "walkgrid": "node scripts/parse-walkable.cjs",
     "build": "tsc -b && vite build",
