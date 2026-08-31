@@ -810,3 +810,97 @@ async def message_delivered(sid: str, payload: dict | None) -> None:
             )
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
+
+
+@sio.on("add_reaction")
+async def add_reaction(sid: str, payload: dict | None) -> None:
+    await _handle_reaction(sid, payload, action="add")
+
+
+@sio.on("remove_reaction")
+async def remove_reaction(sid: str, payload: dict | None) -> None:
+    await _handle_reaction(sid, payload, action="remove")
+
+
+async def _handle_reaction(sid: str, payload: dict | None, *, action: str) -> None:
+    """Shared body for add_reaction/remove_reaction — the two differ only in which repo call
+    they make, so the authorization and broadcast are written once.
+
+    Deliberately touches NOTHING that feeds the message-derived counters: no insert_message, no
+    touch_conversation, no mark_read/mark_delivered. A reaction therefore cannot create an
+    unread message, cannot register as a mention, cannot reorder the conversation list, and
+    cannot move a delivery/read watermark — all four of those derive exclusively from rows in
+    `messages` and the participant watermark columns (see repositories/chat.py).
+    """
+    try:
+        payload = payload or {}
+        message_id = payload.get("messageId")
+        message_id = message_id if isinstance(message_id, str) else ""
+        emoji = payload.get("emoji")
+        emoji = emoji.strip() if isinstance(emoji, str) else ""
+
+        if not message_id or not emoji:
+            await sio.emit(
+                "chat_error",
+                {"code": "invalid_reaction", "message": "messageId and emoji are required"},
+                to=sid,
+            )
+            return
+
+        if emoji not in chat_repo.ALLOWED_REACTION_EMOJIS:
+            await sio.emit(
+                "chat_error",
+                {"code": "invalid_reaction", "message": "Unsupported reaction emoji"},
+                to=sid,
+            )
+            return
+
+        # Reactor is ALWAYS the server-verified session email — exactly like send_message, a
+        # client-supplied reactor id is never read, not even as a hint.
+        session_data = await sio.get_session(sid)
+        email = session_data["email"]
+
+        async with async_session_maker() as session:
+            conversation_id = await chat_repo.get_message_conversation_id(session, message_id)
+            if conversation_id is None:
+                await sio.emit(
+                    "chat_error", {"code": "not_found", "message": "Message not found"}, to=sid
+                )
+                return
+
+            # Membership is checked against the MESSAGE's own conversation, not against any
+            # conversation the caller happens to claim — the client never supplies the
+            # conversation id for a reaction at all.
+            ok = await chat_repo.is_participant(session, conversation_id, email)
+            if not ok:
+                await sio.emit(
+                    "chat_error", {"code": "forbidden", "message": "Not a participant"}, to=sid
+                )
+                return
+
+            if action == "add":
+                changed = await chat_repo.add_reaction(session, message_id, email, emoji)
+            else:
+                changed = await chat_repo.remove_reaction(session, message_id, email, emoji)
+            await session.commit()
+
+        # No-op (re-adding an emoji already held, or removing one never held): the desired end
+        # state already holds, so stay silent rather than broadcasting a phantom change.
+        if not changed:
+            return
+
+        # Broadcast to the whole conversation room INCLUDING the reactor's own socket (no
+        # skip_sid, unlike incoming_message) — reactions have no optimistic local apply, so the
+        # sender needs this echo to render its own chip.
+        await sio.emit(
+            "message_reaction",
+            {
+                "messageId": message_id,
+                "emoji": emoji,
+                "reactorEmail": email,
+                "action": action,
+            },
+            room=conversation_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)

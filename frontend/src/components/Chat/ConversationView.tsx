@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { formatCharacterName } from "../../data/office-layout";
 import { chatMode, chatService } from "../../services/chat";
+import { applyReactionUpdate } from "../../services/chat/reactions";
 import type { ChatMessage, ConnectionState } from "../../services/chat";
 import type { AssetLayer } from "../../types/office";
 import { ChatWindowHeader } from "./ChatWindowHeader";
 import { MentionAutocomplete } from "./MentionAutocomplete";
+import { MessageReactions } from "./MessageReactions";
 import { renderMessageText } from "./MentionText";
 import { useMentionComposer } from "./useMentionComposer";
 import styles from "./ConversationView.module.css";
@@ -275,6 +277,16 @@ export function ConversationView({
     return unsubscribe;
   }, [conversationId]);
 
+  // Live reactions — folds each `message_reaction` delta into the message already in state
+  // (see applyReactionUpdate). Deliberately does NOT touch unread/mention/receipt state: a
+  // reaction is not a message, and the server never emits a count or receipt event for one.
+  useEffect(() => {
+    if (!chatService.onMessageReaction) return;
+    return chatService.onMessageReaction((update) => {
+      setMessages((prev) => applyReactionUpdate(prev, update));
+    });
+  }, [conversationId]);
+
   // Live delivery/read receipts — real-mode only (mock has no server-side
   // receipt tracking, MockChatService doesn't implement these optional
   // methods). Merges each update into the watermarks via maxIso so a
@@ -482,6 +494,17 @@ export function ConversationView({
                     <span className={isOwn ? `${styles.timestamp} ${styles.timestampRight}` : styles.timestamp}>
                       {formatMessageTime(msg.sentAt)}
                     </span>
+                    <MessageReactions
+                      messageId={msg.id}
+                      reactions={msg.reactions}
+                      selfId={selfId}
+                      isOwn={isOwn}
+                      resolveDisplayName={(email) =>
+                        routingPeerId && email.toLowerCase() === routingPeerId.toLowerCase()
+                          ? peerName
+                          : email
+                      }
+                    />
                     {status && (
                       <span className={styles.statusRow} data-status={status}>
                         {showSeenLabel && (

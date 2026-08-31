@@ -281,6 +281,7 @@ function makeMessage(overrides: Partial<ChatMessage>): ChatMessage {
     deliveredTo: [],
     readBy: [],
     mentionedEmails: [],
+    reactions: [],
     ...overrides,
   };
 }

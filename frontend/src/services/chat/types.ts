@@ -15,7 +15,31 @@ export interface ChatMessage {
   // message. Always an array, never undefined/null on the wire (see backend's
   // serialize_message_dict) — empty for both "no mentions" and pre-mentions-feature rows.
   mentionedEmails: string[];
+  // Grouped emoji reactions, aggregated server-side (see backend's get_reactions_for_messages).
+  // Always an array, never undefined/null on the wire — empty for both "nobody reacted" and
+  // pre-reactions-feature rows, which is what keeps existing history backward compatible.
+  reactions: MessageReaction[];
 }
+
+// One emoji's worth of reactions on a message. `reactors` is every participant email holding
+// this emoji (sorted) — already in hand from the same query, so the hover tooltip costs nothing
+// extra.
+export interface MessageReaction {
+  emoji: string;
+  count: number;
+  reactors: string[];
+}
+
+// Realtime reaction delta — mirrors the backend's `message_reaction` event. Deliberately a
+// DELTA, not a re-send of the grouped array: clients fold it into the message they already
+// hold (see applyReactionUpdate), so a reaction never re-renders the whole history.
+export interface MessageReactionUpdate {
+  messageId: string;
+  emoji: string;
+  reactorEmail: string;
+  action: "add" | "remove";
+}
+export type MessageReactionListener = (update: MessageReactionUpdate) => void;
 
 export interface Conversation {
   id: string;
@@ -135,6 +159,13 @@ export interface ChatService {
   }): Promise<ChatMessage>;
   openConversationWith(peerId: string, selfId: string): Promise<Conversation>;
   onMessage(cb: MessageListener): () => void;
+  // Emoji reactions — fire-and-forget, same shape as sendTyping/markRead. `reactorEmail` is
+  // ONLY consulted by MockChatService, which has no authenticated session to derive an
+  // identity from; RealChatService drops it before emitting and the server derives the reactor
+  // from the socket session, so a client can never claim to be someone else.
+  addReaction?(input: { messageId: string; emoji: string; reactorEmail?: string }): void;
+  removeReaction?(input: { messageId: string; emoji: string; reactorEmail?: string }): void;
+  onMessageReaction?(cb: MessageReactionListener): () => void;
   // Real-mode-only: manual group creation for the Global Chat "New Group Chat" flow (distinct
   // from the join_group-upgrade path, which forms groups as a side effect of an accepted
   // request). Idempotent server-side by exact member set — MockChatService has no server-side
