@@ -1,10 +1,12 @@
 import { useEffect, useRef } from "react";
+import type { RefObject } from "react";
 import * as THREE from "three";
 import { clone as cloneSkeleton } from "three/examples/jsm/utils/SkeletonUtils.js";
 import { FRAME_HEIGHT, FRAME_WIDTH } from "../../data/office-layout";
 import { loadGlbCached } from "../../render3d/glbCache";
 import { getSharedRenderer, renderToCanvas } from "../../render3d/SharedRenderer";
 import styles from "./ToucanFlyer.module.css";
+import bubbleStyles from "./TalkingBubble.module.css";
 import { advanceWingRhythm, createWingRhythm, wingStrokeAngle } from "./toucanWingRhythm";
 
 // ---------------------------------------------------------------------------
@@ -129,6 +131,11 @@ const TURN_SPEED = 3.2; // radians/sec, how fast facing catches up to travel dir
 const MAX_BANK = 0.42; // radians (~24deg)
 const ALTITUDE_PX = 46; // fixed screen-space offset so it reads as "above" the office
 
+// The ONLY thing the world-space pill ever says. Not derived from, and never
+// replaced by, an assistant response — a bird in the office behaves like a
+// bird; the meaningful reply is the assistant panel's job.
+const BIRD_TALK = "Squawk squawk…";
+
 // Procedural wing flap (see GLB inspection note above the component): the
 // supplied rig has no flying/flapping clip — its only two clips are the
 // bipedal "Running"/"Walking" and neither is ever played — but it IS a real
@@ -220,14 +227,245 @@ function findBone(root: THREE.Object3D, names: string[]): THREE.Object3D | null 
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Stage 1 "Call Toucan" summon support. The bird stays a roaming office
+// decoration by default; a summon is expressed ENTIRELY as "a park point is
+// present in summonTargetRef, or it isn't." Everything below is additive —
+// the roaming waypoint logic, the flight interpolation, the yaw/bank/bob
+// math, the GLB, the camera and toucanWingRhythm's timing are untouched;
+// summoned flight deliberately runs through the SAME approved flight motion
+// (see the two `phase === "flying" || phase === "approaching"` checks in
+// tick()).
+//
+// The target arrives through a REF, never a prop the effect depends on: the
+// GLB-loading effect has []-deps on purpose, so making it observe the live
+// player position would reload the model and teleport the bird home on every
+// walk frame.
+// ---------------------------------------------------------------------------
+
+// What the parent renders its Call/Coming/Ask button from. Deliberately
+// coarser than the internal `phase` union — "flying" vs "paused" is a
+// roaming implementation detail the button must not care about.
+export type ToucanSummonState = "roaming" | "approaching" | "attending";
+
+// How far to the SIDE of the player's character centre the bird parks.
+// Lateral on purpose: StatusLabel/TalkingBubble occupy the space directly
+// above every avatar's head (see greetingAnchor), so parking overhead would
+// sit the bird on top of the viewer's own nameplate. Note the canvas is
+// already lifted ALTITUDE_PX in screen space, so a park point at the
+// character's own centre-y reads as "hovering beside the head."
+//
+// Was 55px, which read as "across the desk" rather than "with you" — tuned
+// down to 32px so the bird is plainly beside the character while still
+// clearing the avatar body and the nameplate above it.
+const PARK_LATERAL_PX = 32;
+// Re-target deadband while approaching: the park point is recomputed from
+// the player's live position every frame, but a fresh beginTravel() resets
+// travelT to 0, so re-issuing one per frame would leave the bird
+// permanently at the start of an ease and effectively frozen. Only a
+// MEANINGFUL move (the player actually walking somewhere) re-aims it.
+const RETARGET_DEADBAND_PX = 40;
+// Close enough to latch `attending` and stop moving. Latching on a radius
+// rather than only on travelT>=1 is what stops the bird endlessly
+// converging on a target that keeps shifting by a few pixels.
+//
+// Was 24px, which was fine against the old 55px park offset but became the
+// DOMINANT term once that dropped to 32 — measured live, the bird was
+// latching up to 24px short and parking ~44px away instead of ~32. Tightened
+// to 10px: the normal latch is travelT>=1 (which lands exactly on the park
+// point), and this radius is only the early-out for a target that keeps
+// shifting slightly, so a small value costs nothing.
+const ARRIVE_RADIUS_PX = 10;
+// Hysteresis while parked: small player movement is ignored completely (no
+// chasing/jitter), but walking properly away re-enters `approaching` so the
+// bird catches up. Must stay well above ARRIVE_RADIUS_PX or the two
+// thresholds would oscillate.
+const FOLLOW_BREAK_PX = 140;
+// How much faster a SUMMONED approach flies than normal roaming. Applied
+// only on the "approaching" path in beginTravel — SPEED_PX_PER_SEC itself is
+// untouched, so roaming is bit-for-bit unchanged.
+const SUMMON_SPEED_MULTIPLIER = 1.8;
+// Roaming's MIN_TRAVEL_S (4s) exists to keep ambient hops languid; on a
+// summon it would swallow the speed-up entirely for the short hops that are
+// most common (the bird is usually already in the same room), so a summon
+// gets its own, much shorter floor. MAX_TRAVEL_S still applies.
+const SUMMON_MIN_TRAVEL_S = 0.9;
+// Nose-up pitch applied ONLY while summoned, so the bird reads as
+// approaching/hovering in front of its owner instead of presenting its full
+// back to the overhead camera. Lives on its own group between the yaw/bank
+// pivot and the one-time pose fix, so it never fights either.
+// Was 0.55 rad (~32deg), which still read as "looking at the bird's back from
+// above." 0.95 rad (~54deg) tips the chest and head clearly toward the
+// overhead camera so a summoned toucan reads as hovering in front of its
+// owner. Deliberately not 90deg — the silhouette has to stay a flying bird
+// with a wing to each side.
+const SUMMON_UPRIGHT_MAX_RAD = 0.95;
+// Distance to the park point at which the upright blend starts easing in —
+// the bird sets up as it closes the last stretch rather than flying the whole
+// way tilted.
+const SUMMON_UPRIGHT_BLEND_START_PX = 320;
+// Blend rate (per second) for the upright pitch, both in and out. Roaming's
+// target is 0, so releasing the bird eases it back to exactly the original
+// flight orientation.
+const SUMMON_UPRIGHT_LERP = 2.5;
+// While parked, the bird faces the LATCHED user centre; the latch only moves
+// when the user really moves, so tiny position noise can never make the bird
+// swivel. Same value as the approach re-target deadband, same reasoning.
+const ATTEND_FACE_DEADBAND_PX = RETARGET_DEADBAND_PX;
+
+type ToucanFlyerProps = {
+  // Live park anchor: the viewer's character CENTRE (not the park point —
+  // the lateral offset and map-edge choice are owned here, next to the
+  // FRAME_WIDTH the rest of this file already works in), or null when the
+  // bird is not summoned. Read fresh inside the rAF loop.
+  summonTargetRef?: RefObject<{ x: number; y: number } | null>;
+  // Fired only on real transitions, never per frame. Held in a ref inside
+  // the effect so a re-rendered parent callback can't stale-close.
+  onSummonStateChange?: (state: ToucanSummonState) => void;
+  // Shows the bird's world-space BIRD-TALK pill ("Squawk squawk…") while the
+  // assistant is preparing a reply. Deliberately a BOOLEAN, not text: the
+  // world-space bird is personality only and must never mirror the assistant's
+  // real answer — that lives exclusively in ToucanAssistantPanel. The caller
+  // owns how long it lingers after a reply lands (see OfficeMap's
+  // toucanSquawk). Pure presentation — no AI-driven animation.
+  thinking?: boolean;
+};
+
+// Park point for a given character centre: beside the avatar, on whichever
+// side faces the middle of the map, clamped so the bird never parks off the
+// frame edge. Exported for the unit tests.
+export function parkPointFor(center: { x: number; y: number }): { x: number; y: number } {
+  const towardInterior = center.x > FRAME_WIDTH / 2 ? -1 : 1;
+  const x = Math.max(
+    PARK_LATERAL_PX,
+    Math.min(FRAME_WIDTH - PARK_LATERAL_PX, center.x + towardInterior * PARK_LATERAL_PX),
+  );
+  return { x, y: center.y };
+}
+
+// The whole summon state machine, as a pure function of (intent, phase,
+// current position, current travel target). Kept out of the rAF closure so
+// the thresholds above are unit-testable without a WebGL context or a
+// simulated animation loop; updateSummon() below is a thin apply-the-verdict
+// wrapper.
+export type ToucanSummonDecision =
+  // Nothing to do this frame.
+  | { kind: "hold" }
+  // Start (or restart) a summoned flight AND report the new state.
+  | { kind: "approach"; target: { x: number; y: number } }
+  // Re-aim an in-progress approach; state is already "approaching".
+  | { kind: "retarget"; target: { x: number; y: number } }
+  // Close enough — latch parked.
+  | { kind: "attend" }
+  // Summon withdrawn while approaching/attending — resume roaming.
+  | { kind: "release" };
+
+export function decideSummon(input: {
+  // Viewer's character centre, or null when not summoned.
+  center: { x: number; y: number } | null;
+  phase: "flying" | "paused" | "approaching" | "attending";
+  pos: { x: number; y: number };
+  // Current travel target (only meaningful while approaching).
+  to: { x: number; y: number };
+}): ToucanSummonDecision {
+  const { center, phase, pos, to } = input;
+
+  if (!center) {
+    return phase === "approaching" || phase === "attending" ? { kind: "release" } : { kind: "hold" };
+  }
+
+  const park = parkPointFor(center);
+  const distToPark = Math.hypot(park.x - pos.x, park.y - pos.y);
+
+  if (phase === "attending") {
+    // Small movement is ignored entirely (no chasing); a real walk away
+    // re-triggers the approach.
+    return distToPark > FOLLOW_BREAK_PX ? { kind: "approach", target: park } : { kind: "hold" };
+  }
+
+  if (phase === "approaching") {
+    if (distToPark <= ARRIVE_RADIUS_PX) return { kind: "attend" };
+    // Deadband: only a meaningful shift in the park point re-aims the leg,
+    // otherwise travelT would reset every frame and the bird would stall.
+    return Math.hypot(park.x - to.x, park.y - to.y) > RETARGET_DEADBAND_PX
+      ? { kind: "retarget", target: park }
+      : { kind: "hold" };
+  }
+
+  // Summoned out of roaming — "flying" mid-leg and "paused"/perched behave
+  // identically.
+  return { kind: "approach", target: park };
+}
+
+// Travel duration for one leg. "roaming" is the ORIGINAL formula verbatim
+// (including its +-15% jitter, passed in so this stays pure); "summon" swaps
+// in the faster speed and the shorter floor, and takes no jitter at all — a
+// click should respond the same way every time.
+export function travelDurationFor(
+  distancePx: number,
+  mode: "roaming" | "summon",
+  jitter = 1,
+): number {
+  if (mode === "summon") {
+    const base = distancePx / (SPEED_PX_PER_SEC * SUMMON_SPEED_MULTIPLIER);
+    return Math.min(MAX_TRAVEL_S, Math.max(SUMMON_MIN_TRAVEL_S, base));
+  }
+  const base = distancePx / SPEED_PX_PER_SEC;
+  return Math.min(MAX_TRAVEL_S, Math.max(MIN_TRAVEL_S, base)) * jitter;
+}
+
+// Nose-up pitch the bird should be easing toward, in radians. Zero for both
+// roaming phases — that is what guarantees normal flight is untouched — and
+// eases in over the last SUMMON_UPRIGHT_BLEND_START_PX of an approach, held
+// at full while parked.
+export function uprightPitchTarget(
+  phase: "flying" | "paused" | "approaching" | "attending",
+  distanceToParkPx: number,
+): number {
+  if (phase === "attending") return SUMMON_UPRIGHT_MAX_RAD;
+  if (phase !== "approaching") return 0;
+  const closeness = 1 - Math.min(1, Math.max(0, distanceToParkPx) / SUMMON_UPRIGHT_BLEND_START_PX);
+  return SUMMON_UPRIGHT_MAX_RAD * closeness;
+}
+
+// The point a parked bird faces. Latches on arrival and only moves once the
+// user has genuinely walked, so small position noise never swivels the bird.
+export function attendFacePointFor(
+  current: { x: number; y: number } | null,
+  center: { x: number; y: number },
+): { x: number; y: number } {
+  if (!current) return center;
+  return Math.hypot(center.x - current.x, center.y - current.y) > ATTEND_FACE_DEADBAND_PX
+    ? center
+    : current;
+}
+
+// Yaw (radians) that points the bird's head at `to`. The +PI is not
+// decoration: the pose fix maps the head to local -Z, and a plain Y-rotation
+// by theta sends local -Z to world (-sin theta, -cos theta) in this
+// (map-x, map-y-as-depth) convention — so theta must be atan2(dx, dy) + PI
+// for the head to point toward the target rather than away from it. Omitting
+// it is exactly the "faces one way, flies backwards" bug.
+export function yawToward(from: { x: number; y: number }, to: { x: number; y: number }): number {
+  return Math.atan2(to.x - from.x, to.y - from.y) + Math.PI;
+}
+
 // Only a clip whose NAME actually suggests flight/flapping counts as
 // "usable" — "Running"/"Walking" (this GLB's real clips) are bipedal
 // locomotion and must NOT be force-played as a flying animation.
 const FLIGHT_CLIP_RE = /fly|flap|wing|glide|soar/i;
 
-export function ToucanFlyer() {
+export function ToucanFlyer({ summonTargetRef, onSummonStateChange, thinking = false }: ToucanFlyerProps = {}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Latest callback, re-pointed on every render so the []-dep effect below
+  // can call it without depending on it (which would remount the bird).
+  const onStateChangeRef = useRef(onSummonStateChange);
+  onStateChangeRef.current = onSummonStateChange;
+  // Same reasoning for the target ref itself — the ref OBJECT may be a
+  // different one across renders even though its identity normally isn't.
+  const targetRefRef = useRef(summonTargetRef);
+  targetRefRef.current = summonTargetRef;
 
   useEffect(() => {
     const container = containerRef.current;
@@ -286,8 +524,15 @@ export function ToucanFlyer() {
     // sides, not its front. `pivot` carries the PER-FRAME yaw/bank; this
     // inner group carries the ONE-TIME orientation correction, so the two
     // never fight each other.
+    // Summon-only nose-up pitch. Sits BETWEEN pivot (per-frame yaw/bank) and
+    // poseGroup (the one-time orientation fix) so the pitch is applied in the
+    // already-yawed frame — i.e. a real "nose up relative to heading", not a
+    // world-axis tilt — and so neither of the other two transforms is
+    // touched. Stays at identity for the whole of normal roaming.
+    const uprightGroup = new THREE.Group();
+    pivot.add(uprightGroup);
     const poseGroup = new THREE.Group();
-    pivot.add(poseGroup);
+    uprightGroup.add(poseGroup);
 
     // Flight state — plain mutable refs, no React state, so nothing here
     // triggers a component re-render (see file header). Starts perched at
@@ -297,13 +542,25 @@ export function ToucanFlyer() {
     let from = WAYPOINTS[HOME_WAYPOINT_INDEX];
     let to = WAYPOINTS[HOME_WAYPOINT_INDEX];
     let pos = { x: WAYPOINTS[HOME_WAYPOINT_INDEX].x, y: WAYPOINTS[HOME_WAYPOINT_INDEX].y };
-    let phase: "flying" | "paused" = "paused";
+    // "flying"/"paused" are the original roaming states and behave exactly as
+    // before. "approaching" is a summoned flight (identical motion, different
+    // target + no arriveAndDecide on arrival) and "attending" is parked beside
+    // the player while the assistant panel is up.
+    let phase: "flying" | "paused" | "approaching" | "attending" = "paused";
     let pauseUntil = 0;
     let travelT = 1;
     let travelDuration = 1;
     let yaw = 0;
     let bank = 0;
     let bobT = 0;
+    // Current (blended) summon pitch, and the last known distance to the park
+    // point that drives its target. Both are meaningless while roaming: the
+    // target is 0 there, so uprightGroup stays at identity.
+    let uprightPitch = 0;
+    let distToPark = Infinity;
+    // Latched point a parked bird faces (the user's centre, not the park
+    // point). Null whenever not attending.
+    let attendFacePoint: { x: number; y: number } | null = null;
     // Resolved to the real value (BOB_AMPLITUDE_TO_DISTANCE_RATIO * actual
     // camera distance) once the model loads and auto-framing runs — see
     // the `.then()` callback. Kept at 0 until then so no bob applies to an
@@ -325,15 +582,84 @@ export function ToucanFlyer() {
     const flapQuat = new THREE.Quaternion();
     let webglBroken = false;
 
-    function startTravelTo(nextIdx: number) {
+    // Shared travel setup for BOTH a roaming waypoint leg and a summoned
+    // approach — same `from = current position` continuity (so a summon
+    // issued mid-flight transitions smoothly instead of snapping), same
+    // speed, same duration clamp, same randomization. Only the target point
+    // and the resulting phase differ.
+    function beginTravel(target: { x: number; y: number }, nextPhase: "flying" | "approaching") {
       from = { ...pos };
-      to = WAYPOINTS[nextIdx];
-      currentIdx = nextIdx;
+      to = target;
       const dist = Math.hypot(to.x - from.x, to.y - from.y);
-      const base = dist / SPEED_PX_PER_SEC;
-      travelDuration = Math.min(MAX_TRAVEL_S, Math.max(MIN_TRAVEL_S, base)) * (0.85 + Math.random() * 0.3);
+      travelDuration =
+        nextPhase === "approaching"
+          ? travelDurationFor(dist, "summon")
+          : travelDurationFor(dist, "roaming", 0.85 + Math.random() * 0.3);
       travelT = 0;
-      phase = "flying";
+      phase = nextPhase;
+    }
+
+    function startTravelTo(nextIdx: number) {
+      currentIdx = nextIdx;
+      beginTravel(WAYPOINTS[nextIdx], "flying");
+    }
+
+    // Coarse state reported to the parent, emitted on transitions only.
+    let lastReportedState: ToucanSummonState = "roaming";
+    function reportState(state: ToucanSummonState) {
+      if (state === lastReportedState) return;
+      lastReportedState = state;
+      onStateChangeRef.current?.(state);
+    }
+
+    // Reads the live park anchor and drives every summon transition. Runs
+    // once per frame BEFORE the movement advance below, so a state change
+    // takes effect on the same frame it is decided.
+    function updateSummon() {
+      const center = targetRefRef.current?.current ?? null;
+      // Kept fresh for the upright-pitch blend below (Infinity while roaming,
+      // where the pitch target is 0 anyway).
+      if (center) {
+        const park = parkPointFor(center);
+        distToPark = Math.hypot(park.x - pos.x, park.y - pos.y);
+      } else {
+        distToPark = Infinity;
+      }
+      const decision = decideSummon({ center, phase, pos, to });
+      if (phase === "attending" && center) {
+        // Deadbanded re-latch, so the parked bird only turns when the user
+        // has actually walked.
+        attendFacePoint = attendFacePointFor(attendFacePoint, center);
+      }
+      switch (decision.kind) {
+        case "hold":
+          return;
+        case "approach":
+          beginTravel(decision.target, "approaching");
+          attendFacePoint = null;
+          reportState("approaching");
+          return;
+        case "retarget":
+          beginTravel(decision.target, "approaching");
+          return;
+        case "attend":
+          // `pos` is deliberately NOT snapped onto the park point — snapping
+          // is a visible jump, and being inside the arrival radius is by
+          // definition close enough.
+          phase = "attending";
+          if (center) attendFacePoint = center;
+          reportState("attending");
+          return;
+        case "release":
+          // Resume roaming through the EXISTING waypoint logic; no dedicated
+          // "returning" state and no special return-home animation. The
+          // upright pitch eases back to 0 on its own (see the blend below),
+          // restoring the original flight orientation exactly.
+          startTravelTo(pickNextIndex(currentIdx, WAYPOINTS.length));
+          attendFacePoint = null;
+          reportState("roaming");
+          return;
+      }
     }
 
     function arriveAndDecide() {
@@ -529,26 +855,40 @@ export function ToucanFlyer() {
 
       if (mixer) mixer.update(dt);
 
+      // Summon intent first, so an entered/left approach is reflected in the
+      // same frame's movement and orientation below.
+      updateSummon();
+
       if (phase === "paused") {
         if (now >= pauseUntil) startTravelTo(pickNextIndex(currentIdx, WAYPOINTS.length));
+      } else if (phase === "attending") {
+        // Parked beside the player — hold position. Re-approach is decided
+        // by updateSummon()'s FOLLOW_BREAK_PX hysteresis, never here.
       } else {
         travelT = Math.min(1, travelT + dt / travelDuration);
         const eased = easeInOutCubic(travelT);
         pos = { x: lerp(from.x, to.x, eased), y: lerp(from.y, to.y, eased) };
-        if (travelT >= 1) arriveAndDecide();
+        if (travelT >= 1) {
+          if (phase === "approaching") {
+            // A summoned leg must NOT run arriveAndDecide() (that would pause
+            // or pick a new roaming waypoint) — it parks instead.
+            pos = { ...to };
+            phase = "attending";
+            reportState("attending");
+          } else {
+            arriveAndDecide();
+          }
+        }
       }
 
-      if (phase === "flying") {
+      // Summoned flight reuses the approved roaming flight motion verbatim —
+      // only the phase test widens.
+      if (phase === "flying" || phase === "approaching") {
         const dx = to.x - from.x;
         const dy = to.y - from.y;
         if (dx !== 0 || dy !== 0) {
-          // +PI: the pose fix above maps the head to local -Z, and a plain
-          // Y-rotation by theta sends local -Z to world (-sin theta, -cos
-          // theta) in this (map-x, map-y-as-depth) convention — so theta
-          // must be atan2(dx, dy) + PI for local -Z (the head) to actually
-          // point toward (dx, dy), not away from it. Omitting this offset
-          // is exactly the "faces one way, flies backwards" bug.
-          const targetYaw = Math.atan2(dx, dy) + Math.PI;
+          // Same heading math as always (see yawToward's own note on the +PI).
+          const targetYaw = yawToward(from, to);
           const prevYaw = yaw;
           yaw = lerpAngle(yaw, targetYaw, Math.min(1, TURN_SPEED * dt));
           const angularVel = yaw - prevYaw; // signed delta this frame (already shortest-path)
@@ -556,8 +896,30 @@ export function ToucanFlyer() {
           bank = lerp(bank, targetBank, Math.min(1, 4 * dt));
         }
       } else {
+        // Parked: turn to face the user (latched point, so no swivelling on
+        // position noise) using the same heading math and the same turn rate
+        // the flight legs use. Roaming's "paused" keeps its original
+        // behaviour — attendFacePoint is only ever set while attending.
+        if (phase === "attending" && attendFacePoint) {
+          const facingDist = Math.hypot(attendFacePoint.x - pos.x, attendFacePoint.y - pos.y);
+          // Degenerate vector guard: atan2(0,0) would swing the bird a full
+          // half-turn for no reason.
+          if (facingDist > 1) {
+            yaw = lerpAngle(yaw, yawToward(pos, attendFacePoint), Math.min(1, TURN_SPEED * dt));
+          }
+        }
         bank = lerp(bank, 0, Math.min(1, 3 * dt));
       }
+
+      // Summon-only upright posture. Target is 0 for both roaming phases, so
+      // this line is a no-op (identity) for every frame of normal flight, and
+      // eases the bird back to exactly that on release.
+      uprightPitch = lerp(
+        uprightPitch,
+        uprightPitchTarget(phase, distToPark),
+        Math.min(1, SUMMON_UPRIGHT_LERP * dt),
+      );
+      uprightGroup.rotation.x = uprightPitch;
 
       bobT += dt * BOB_FREQUENCY;
       pivot.rotation.y = yaw;
@@ -574,7 +936,7 @@ export function ToucanFlyer() {
       // world motion, while negating one side is what used to make the wings
       // look like they were alternating left/right.
       if (!usingClipForFlap && (leftWing || rightWing)) {
-        advanceWingRhythm(wingRhythm, dt, phase === "flying");
+        advanceWingRhythm(wingRhythm, dt, phase === "flying" || phase === "approaching");
         const strokeAngle = wingStrokeAngle(wingRhythm);
         flapQuat.setFromAxisAngle(FLAP_AXIS, strokeAngle);
         if (leftWing && leftWingBindQuat) {
@@ -619,6 +981,10 @@ export function ToucanFlyer() {
     };
   }, []);
 
+  // NOTE: the container's left/top are mutated directly by tick() above.
+  // The inline style below is a constant object, so React's per-key style
+  // diff never writes either property again after mount and a re-render
+  // (e.g. `thinking` toggling) cannot reset the bird's position.
   return (
     <div ref={containerRef} className={styles.toucan} style={{ top: 0, left: 0 }}>
       <canvas
@@ -627,6 +993,26 @@ export function ToucanFlyer() {
         height={RENDER_SIZE}
         style={{ transform: `translate(-50%, calc(-50% - ${ALTITUDE_PX}px))` }}
       />
+      {thinking && (
+        // Reuses TalkingBubble's existing text pill verbatim (styles only — no
+        // chat state), anchored just above the bird's own lifted canvas rather
+        // than above a character layer. Bird talk only, by construction: the
+        // string is a module constant, so no response text can reach here.
+        <div
+          className={bubbleStyles.anchor}
+          style={{ transform: `translateY(calc(-50% - ${ALTITUDE_PX + RENDER_SIZE / 2}px))` }}
+        >
+          <div
+            className={bubbleStyles.bubbleText}
+            // The shared pill class wraps (it is sized for real chat text);
+            // bird talk is two short words and reads better on one line.
+            style={{ whiteSpace: "nowrap" }}
+            data-testid="toucan-bird-talk"
+          >
+            {BIRD_TALK}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

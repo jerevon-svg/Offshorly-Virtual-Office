@@ -152,6 +152,8 @@ import {
   resolveConversationSlot,
 } from "./clusterFormation";
 import { getCurrentUserId, useCurrentUserAvatarId } from "../../data/currentUser";
+import { ToucanAssistantPanel } from "./ToucanAssistantPanel";
+import type { ToucanSummonState } from "./ToucanFlyer";
 import { useCurrentUser } from "../../auth/currentUserStore";
 import { useOfficeRoster } from "../../services/office/useOfficeRoster";
 import { officePeopleToLayers, rosterSrcById } from "../../data/rosterLayers";
@@ -1998,6 +2000,120 @@ export function OfficeMap() {
   const exitTriggeredRef = useRef(false);
   const [frozenCheckoutAtMs, setFrozenCheckoutAtMs] = useState<number | null>(null);
 
+  // --- "Call Toucan" (Stage 1) -------------------------------------------
+  // Summoning is entirely LOCAL to this browser, matching the toucan itself
+  // (it has never been server-synced, and isn't now): no Socket.IO events,
+  // no backend bird state, no shared ownership. Every viewer summons their
+  // own bird.
+  //
+  // `toucanCalled` is the intent; `toucanSummonTargetRef` is the live park
+  // anchor the bird's rAF loop reads. The ref exists precisely so the
+  // viewer's per-frame position never becomes a prop/dep of ToucanFlyer's
+  // []-dep GLB-loading effect — that would reload the model and reset the
+  // bird's position on every walk frame.
+  const [toucanCalled, setToucanCalled] = useState(false);
+  const [toucanState, setToucanState] = useState<ToucanSummonState>("roaming");
+  const [toucanPanelOpen, setToucanPanelOpen] = useState(false);
+  // Raw "a mock reply is being prepared" flag, reported by the panel.
+  const [toucanPending, setToucanPending] = useState(false);
+  // What the BIRD shows: the same flag, but lingering briefly after the reply
+  // lands so the world-space "Squawk squawk…" fades out naturally instead of
+  // snapping off the instant the panel's typing dots stop. Owned here rather
+  // than in ToucanFlyer because release must clear it INSTANTLY (no trailing
+  // squawk on a bird that's already flying off), and release lives here.
+  const [toucanSquawk, setToucanSquawk] = useState(false);
+  const toucanSquawkTimerRef = useRef<number | null>(null);
+  // Real keystroke activity in the Toucan panel (the panel owns the same
+  // idle timeout the chat composer uses). Feeds the office's EXISTING
+  // character animation seam below — no new avatar animation, no chat state.
+  const [toucanTyping, setToucanTyping] = useState(false);
+  const toucanSummonTargetRef = useRef<{ x: number; y: number } | null>(null);
+  // Same character-centre formula every other self-position consumer here
+  // uses (see selfFlatRoomId / approachCharacter).
+  const selfCenterX = bonPos.x + playerCharacterLayer.width / 2;
+  const selfCenterY = bonPos.y + playerCharacterLayer.height / 2;
+  useEffect(() => {
+    toucanSummonTargetRef.current = toucanCalled ? { x: selfCenterX, y: selfCenterY } : null;
+  }, [toucanCalled, selfCenterX, selfCenterY]);
+
+  // Auto-open the assistant panel the moment the bird actually parks — the
+  // AI interaction is only ever offered AFTER a successful arrival.
+  useEffect(() => {
+    if (toucanState === "attending" && toucanCalled) setToucanPanelOpen(true);
+  }, [toucanState, toucanCalled]);
+
+  const SQUAWK_LINGER_MS = 900;
+  useEffect(() => {
+    if (toucanPending) {
+      if (toucanSquawkTimerRef.current !== null) {
+        window.clearTimeout(toucanSquawkTimerRef.current);
+        toucanSquawkTimerRef.current = null;
+      }
+      setToucanSquawk(true);
+      return;
+    }
+    if (!toucanSquawk) return;
+    toucanSquawkTimerRef.current = window.setTimeout(() => {
+      toucanSquawkTimerRef.current = null;
+      setToucanSquawk(false);
+    }, SQUAWK_LINGER_MS);
+  }, [toucanPending, toucanSquawk]);
+  // Any unmount of the office drops the linger timer with it.
+  useEffect(() => {
+    return () => {
+      if (toucanSquawkTimerRef.current !== null) window.clearTimeout(toucanSquawkTimerRef.current);
+    };
+  }, []);
+
+  function releaseToucan() {
+    setToucanCalled(false);
+    setToucanPanelOpen(false);
+    // Clear the pending flag AND the bird's pill immediately, cancelling any
+    // in-flight linger — a released bird must not trail a squawk.
+    setToucanPending(false);
+    if (toucanSquawkTimerRef.current !== null) {
+      window.clearTimeout(toucanSquawkTimerRef.current);
+      toucanSquawkTimerRef.current = null;
+    }
+    setToucanSquawk(false);
+    // Never leave the character stuck mid-talk.
+    setToucanTyping(false);
+  }
+
+  // Checkout/goodbye (and any state where the rest of this chrome hides)
+  // releases the bird, so it is never left parked next to a departing
+  // avatar with an orphaned panel.
+  const toucanChromeVisible = hasCheckedIn && onboarding === "done" && !checkoutBusy;
+  useEffect(() => {
+    if (!toucanChromeVisible && toucanCalled) releaseToucan();
+  }, [toucanChromeVisible, toucanCalled]);
+
+  // Talking to the toucan reuses the office's EXISTING conversation animation
+  // seam rather than inventing one: resolveCharacterAnimState (see
+  // render3d/characterAnimationState.ts) maps
+  //   isSpatialConversation + isTyping -> "agree-gesture"
+  //   isSpatialConversation            -> "listening-gesture"
+  // and those two inputs are OfficeStage's talkingCharacterIds /
+  // spatialTypingCharacterIds arrays. So an open toucan session simply adds
+  // the viewer's own layer id to the same two arrays — identical animation,
+  // identical stop behaviour, and no chat conversation, session, socket event
+  // or persistence is involved. Deliberately NOT added to typingCharacterIds
+  // (the overhead chat typing-dots bubble): the bird's own "Squawk squawk…"
+  // pill is the only overhead feedback this feature shows.
+  const toucanSessionActive = toucanPanelOpen && toucanState === "attending";
+  const talkingCharacterIdsWithToucan = useMemo(() => {
+    if (!toucanSessionActive) return talkingCharacterIdsFromSessions;
+    return talkingCharacterIdsFromSessions.includes(playerLayerId)
+      ? talkingCharacterIdsFromSessions
+      : [...talkingCharacterIdsFromSessions, playerLayerId];
+  }, [talkingCharacterIdsFromSessions, toucanSessionActive, playerLayerId]);
+  const spatialTypingCharacterIdsWithToucan = useMemo(() => {
+    if (!(toucanSessionActive && toucanTyping)) return spatialTypingCharacterIds;
+    return spatialTypingCharacterIds.includes(playerLayerId)
+      ? spatialTypingCharacterIds
+      : [...spatialTypingCharacterIds, playerLayerId];
+  }, [spatialTypingCharacterIds, toucanSessionActive, toucanTyping, playerLayerId]);
+
   // Right-click-to-move destination feedback ring (see handleMapRightClick
   // below) — `key` bumps on every right-click, even repeat clicks on the
   // same tile, so OfficeStage's CSS animation restarts each time. Cleared
@@ -3795,6 +3911,9 @@ export function OfficeMap() {
             onMapRightClick={handleMapRightClick}
             destinationRing={destinationRing}
             showToucan
+            toucanSummonTargetRef={toucanSummonTargetRef}
+            onToucanSummonStateChange={setToucanState}
+            toucanThinking={toucanSquawk}
             hiddenCharacterIds={hiddenCharacterIds}
             onRoomClick={(layer, anchor) => {
               // Onboarding sequence must complete before normal room-click
@@ -3825,11 +3944,11 @@ export function OfficeMap() {
             greetingCharacterId={greeting?.characterId ?? null}
             greetingNonce={greeting?.nonce}
             greetingText={greeting?.text}
-            talkingCharacterIds={talkingCharacterIdsFromSessions}
+            talkingCharacterIds={talkingCharacterIdsWithToucan}
             talkingTextById={talkingTextByLayerId}
             typingCharacterIds={typingCharacterIds}
             globalChatActiveCharacterIds={globalChatActiveCharacterIds}
-            spatialTypingCharacterIds={spatialTypingCharacterIds}
+            spatialTypingCharacterIds={spatialTypingCharacterIdsWithToucan}
             openDoorLayerIds={openDoorLayerIds}
             emptySeats={emptySeats}
             onSeatClick={handleSeatClick}
@@ -3941,6 +4060,38 @@ export function OfficeMap() {
         >
           👤 Profile
         </button>
+      )}
+      {toucanChromeVisible && (
+        <button
+          className={styles.toucanButton}
+          onClick={() => {
+            // Repeat presses are never a duplicate action: mid-approach the
+            // button is disabled outright, and once parked it just (re)opens
+            // the panel.
+            if (toucanState === "attending") {
+              setToucanPanelOpen(true);
+              return;
+            }
+            setToucanCalled(true);
+          }}
+          disabled={toucanCalled && toucanState === "approaching"}
+          aria-label={
+            toucanState === "attending"
+              ? "Ask the toucan"
+              : toucanCalled
+                ? "Toucan is on its way"
+                : "Call the toucan"
+          }
+        >
+          {toucanState === "attending" ? "🦜 Ask Toucan" : toucanCalled ? "🦜 Coming…" : "🦜 Call Toucan"}
+        </button>
+      )}
+      {toucanPanelOpen && toucanState === "attending" && (
+        <ToucanAssistantPanel
+          onRelease={releaseToucan}
+          onPendingChange={setToucanPending}
+          onTypingChange={setToucanTyping}
+        />
       )}
       {import.meta.env.DEV && (
         <button

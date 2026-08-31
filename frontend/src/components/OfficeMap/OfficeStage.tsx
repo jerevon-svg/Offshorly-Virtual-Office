@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { RefObject } from "react";
 import {
   ASSET_PATH_TO_SRC,
   FRAME_HEIGHT,
@@ -17,6 +18,7 @@ import { TalkingBubble } from "./TalkingBubble";
 import { StatusLabel } from "./StatusLabel";
 import { OfficePhaseOverlay } from "./OfficePhaseOverlay";
 import { ToucanFlyer } from "./ToucanFlyer";
+import type { ToucanSummonState } from "./ToucanFlyer";
 import type { OfficeStatus } from "../../services/presence/status";
 import { CharacterCanvas, directionToHeadingDegrees } from "../../render3d/CharacterCanvas";
 import {
@@ -341,6 +343,13 @@ type OfficeStageProps = {
   // regardless of how many OfficeStage instances are mounted. Purely
   // visual/non-interactive; see ToucanFlyer.tsx for details.
   showToucan?: boolean;
+  // "Call Toucan" summon seam — passed straight through to ToucanFlyer, which
+  // reads the ref inside its own rAF loop. A REF (not a value) on purpose:
+  // OfficeStage re-renders constantly while the viewer walks, and the bird's
+  // GLB-loading effect must never observe that.
+  toucanSummonTargetRef?: RefObject<{ x: number; y: number } | null>;
+  onToucanSummonStateChange?: (state: ToucanSummonState) => void;
+  toucanThinking?: boolean;
   greetingCharacterId?: string | null;
   greetingNonce?: number;
   // Custom greeting text (e.g. onboarding's "Welcome to Offshorly!" instead
@@ -495,6 +504,9 @@ export function OfficeStage({
   onMapRightClick,
   destinationRing,
   showToucan,
+  toucanSummonTargetRef,
+  onToucanSummonStateChange,
+  toucanThinking,
   greetingCharacterId,
   greetingNonce,
   greetingText,
@@ -975,7 +987,13 @@ export function OfficeStage({
           }}
         />
       )}
-      {showToucan && <ToucanFlyer />}
+      {showToucan && (
+        <ToucanFlyer
+          summonTargetRef={toucanSummonTargetRef}
+          onSummonStateChange={onToucanSummonStateChange}
+          thinking={toucanThinking}
+        />
+      )}
       <OfficePhaseOverlay phase={phase} />
     </div>
   );
