@@ -28,11 +28,20 @@ export function computeCenterTransform(
 // Anchor point (as % of the design frame) for a speech-bubble greeting: above
 // the character's horizontal center, at the top of their layer.
 // The visible gap between the top of a character's head and the bottom of the
-// status pill / talking bubble, in frame units. This is BON's measured gap
-// under his approved framing (4.002), kept as the single shared target so his
-// long-tuned look is preserved exactly while every other employee is matched
-// to it rather than to their own layer box.
-export const HEAD_LABEL_GAP_FRAME_UNITS = 4;
+// status pill / talking bubble, in frame units. Single shared target for every
+// employee — each one is matched to THIS value rather than to their own layer
+// box, so the head-to-pill gap reads identically across the cast.
+//
+// Originally 4, taken from BON's measured gap under his approved framing
+// (4.002). Tightened to 3, then to 2, on 2026-08-31 per successive live visual
+// reviews: at default zoom the pill still read as floating away from the head
+// at both earlier values. Nothing else about the label changed — this constant
+// is the ONLY place the gap lives, so
+// every overhead element that anchors through greetingAnchor (StatusLabel's
+// name/status pill and TalkingBubble in all three of its variants: typing dots,
+// sent chat text, and the greeting bubble) moves together. Per-component or
+// per-employee offsets are deliberately not a thing here.
+export const HEAD_LABEL_GAP_FRAME_UNITS = 2;
 
 /**
  * Where a character's floating label/bubble anchors.

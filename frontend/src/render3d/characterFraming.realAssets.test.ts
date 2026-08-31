@@ -16,11 +16,13 @@ import { canonicalStandingFraction, canonicalTop } from "./characterSize";
 const io = new NodeIO().registerExtensions(ALL_EXTENSIONS)
   .registerDependencies({ "draco3d.decoder": await draco3d.createDecoderModule() });
 
+// The SHIPPED sets, i.e. exactly what LIVE_3D_CHARACTERS points at — the three
+// masculine-idle rebuilds (2026-08-31) plus micah's untouched feminine set.
 const ASSETS = {
-  bon: "public/avatars/bon-v3-hq/bon-v3",
-  alex: "public/avatars/alex-v2-hq/alex-v2",
+  bon: "public/avatars/bon-v3-hq-idle9/bon-v3",
+  alex: "public/avatars/alex-v2-hq-idle9/alex-v2",
   micah: "public/avatars/micah-v5-hq/micah-v5",
-  angelo: "public/avatars/gelo-v1-hq/gelo-v1",
+  angelo: "public/avatars/gelo-v1-hq-idle9/gelo-v1",
 };
 const LAYER_HEIGHT = { bon: 37.2, alex: 34.46, micah: 39.1, angelo: 39.85 };
 

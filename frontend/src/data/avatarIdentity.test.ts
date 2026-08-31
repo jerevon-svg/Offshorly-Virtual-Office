@@ -114,11 +114,18 @@ describe("mock self URLs (?as=<email>&deviceTier=T2)", () => {
     expect(his[0].path).toMatch(/angelo/);
   });
 
-  it("angelo is served the gelo-v1-hq set and has no fabricated 2D sprite set", async () => {
+  it("angelo is served his gelo-v1 set and has no fabricated 2D sprite set", async () => {
     const { LIVE_3D_CHARACTERS } = await import("../render3d/live3dCharacters");
     const { SPRITE_SET_BY_AVATAR_ID } = await import("./bonWalkFrames");
-    for (const url of Object.values(LIVE_3D_CHARACTERS.angelo).filter((v): v is string => typeof v === "string")) {
-      expect(url).toMatch(/\/avatars\/gelo-v1-hq\//);
+    // `-hq-idle9` since the 2026-08-31 masculine-idle rebuild; matched loosely
+    // on the chain name so a later variant folder doesn't break this test's
+    // actual subject (identity -> asset mapping, not which build ships).
+    const glbUrls = Object.entries(LIVE_3D_CHARACTERS.angelo)
+      .filter(([key, value]) => typeof value === "string" && key.toLowerCase().endsWith("glburl"))
+      .map(([, value]) => value as string);
+    expect(glbUrls.length).toBeGreaterThan(0);
+    for (const url of glbUrls) {
+      expect(url).toMatch(/\/avatars\/gelo-v1(?:-[a-z0-9]+)*\/gelo-v1-lod\d\.glb$/);
     }
     // no invented sprite sheets — below the live-3D tier he falls back to the
     // shared faceless placeholder, exactly like any unmapped person.

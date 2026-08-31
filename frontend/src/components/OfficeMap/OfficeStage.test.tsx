@@ -158,7 +158,9 @@ function bonCanvasStubs(container: HTMLElement): HTMLElement[] {
   return canvasStubs(container).filter((el) => /bon-v2|bon-v3/.test(el.getAttribute("data-glb-url") ?? ""));
 }
 function alexCanvasStubs(container: HTMLElement): HTMLElement[] {
-  return canvasStubs(container).filter((el) => /\/avatars\/alex(-v2)?(-hq)?\//.test(el.getAttribute("data-glb-url") ?? ""));
+  // Trailing build-variant suffixes included (e.g. the masculine idle rebuild
+  // `alex-v2-hq-idle9/`).
+  return canvasStubs(container).filter((el) => /\/avatars\/alex(?:-v\d+)?(?:-[a-z0-9]+)*\//.test(el.getAttribute("data-glb-url") ?? ""));
 }
 function bonCanvasStub(container: HTMLElement): HTMLElement {
   const stubs = bonCanvasStubs(container);
@@ -447,7 +449,7 @@ describe("OfficeStage dev-only candidate override (?live3d=bon-v2)", () => {
       const { container } = renderWith("?live3d=bon-v2", "bon");
       const url = bonCanvasStub(container).getAttribute("data-glb-url") ?? "";
       // Registry (promoted to bon-v3) still wins; the selector itself contributed nothing.
-      expect(url).toMatch(/avatars\/bon-v3-hq\/bon-v3-lod0\.glb$/);
+      expect(url).toMatch(/avatars\/bon-v3-hq-idle9\/bon-v3-lod0\.glb$/);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -465,14 +467,14 @@ describe("OfficeStage dev-only candidate override (?live3d=bon-v2)", () => {
     const { container } = renderWith("", "bon");
     const stubs = bonCanvasStubs(container);
     expect(stubs.length).toBe(1);
-    expect(stubs[0].getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v3-hq\/bon-v3-lod0\.glb$/);
-    expect(LIVE_3D_CHARACTERS.bon.glbUrl).toMatch(/\/avatars\/bon-v3-hq\/bon-v3-lod0\.glb$/);
+    expect(stubs[0].getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v3-hq-idle9\/bon-v3-lod0\.glb$/);
+    expect(LIVE_3D_CHARACTERS.bon.glbUrl).toMatch(/\/avatars\/bon-v3-hq-idle9\/bon-v3-lod0\.glb$/);
   });
 
   it("Default Bon T1 loads lod1", () => {
     vi.mocked(detectDeviceTier).mockReturnValue("T1");
     const { container } = renderWith("", "bon");
-    expect(bonCanvasStub(container).getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v3-hq\/bon-v3-lod1\.glb$/);
+    expect(bonCanvasStub(container).getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v3-hq-idle9\/bon-v3-lod1\.glb$/);
   });
 
   it("Default Bon at a genuine T0 keeps the production 2D sprite safety floor (no canvas, no selector)", () => {
@@ -500,7 +502,7 @@ describe("OfficeStage dev-only candidate override (?live3d=bon-v2)", () => {
     // Adaptive LOD (adaptiveLod.ts): bon is a PEER here (self is alex) and is
     // further away than the near radius, so he correctly gets the mid tier —
     // the ~5MB HQ mesh is reserved for self/focused/near characters.
-    expect(stubs[0].getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v3-hq\/bon-v3-lod1\.glb$/);
+    expect(stubs[0].getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v3-hq-idle9\/bon-v3-lod1\.glb$/);
     expect(Array.from(container.querySelectorAll("img")).filter((i) => /chibi-bon|\/bon-/.test(i.getAttribute("src") ?? "")).length).toBe(0);
   });
 
@@ -799,7 +801,7 @@ describe("OfficeStage live-3D tier/budget gating (no ?live3d= override)", () => 
   it("angelo renders exactly once at T2 — as a peer, and as self — with his gelo-v1-hq set", () => {
     vi.mocked(detectDeviceTier).mockReturnValue("T2");
     const angeloStubs = (c: HTMLElement) =>
-      canvasStubs(c).filter((el) => /\/avatars\/gelo-v1-hq\//.test(el.getAttribute("data-glb-url") ?? ""));
+      canvasStubs(c).filter((el) => /\/avatars\/gelo-v1-hq(?:-[a-z0-9]+)*\//.test(el.getAttribute("data-glb-url") ?? ""));
 
     // as a PEER (viewer is micah)
     const peerView = renderGated("micah");
@@ -1292,7 +1294,9 @@ describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
     const url = el.getAttribute("data-glb-url") ?? "";
     if (/bon-v2|bon-v3|\/jerevon\//.test(url)) return "bon";
     if (/\/avatars\/gelo-v\d+/.test(url)) return "angelo";
-    const m = url.match(/\/avatars\/(alex|micah|lui)(?:-v\d+)?(?:-hq)?\//);
+    // The folder can carry further build-variant suffixes (e.g. the masculine
+    // idle rebuild `alex-v2-hq-idle9/`) — match the character, not the variant.
+    const m = url.match(/\/avatars\/(alex|micah|lui)(?:-v\d+)?(?:-[a-z0-9]+)*\//);
     return m ? m[1] : "?";
   }
   function stubsOf(container: HTMLElement, id: string): HTMLElement[] {

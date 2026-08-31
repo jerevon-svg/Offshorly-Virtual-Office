@@ -10,11 +10,30 @@ character-specific: no Bon/Alex constants, no per-employee scale values.
 | Image-to-3D | `POST /v1/image-to-3d` | 30 | `ai_model: latest`, `pose_mode: t-pose`, 2K texture, GLB, multi-view thumbnails, `should_remesh: false` |
 | Remesh | `POST /v2/remesh` | 5 | `target_polycount: 280000` (under Meshy's 300k rigging cap) |
 | Rig | `POST /v1/rigging` | 5 | defaults; bundled walking is reused, running is discarded |
-| Animations | `POST /v1/animations` | 5×3 | `idle-12`=252, `agree-gesture`=25, `listening-gesture`=47, `sit-on-chair-arms`=33, `sitting-answering`=307 |
+| Animations | `POST /v1/animations` | 5×3 | idle per the character's **idle profile** (below), `agree-gesture`=25, `listening-gesture`=47, `sit-on-chair-arms`=33, `sitting-answering`=307 |
 
 Run via `meshy-generate-employee-3d.mjs <id> <png> --pose-mode=t-pose` then
 `meshy-generate-pose-animations.mjs`. Each stage is gated — stop before the
 next paid call if a gate fails, and never resubmit without approval.
+
+### 1a. Idle profile (decide before spending)
+
+Meshy has two standing idles and they are not interchangeable. Declare which
+one a character gets — masculine or feminine — as part of the plan, not after
+the fact; the resolved ids live in `lod-policy.mjs`'s `IDLE_PROFILES`, and the
+declaration is carried per character by `live3dCharacters.ts`'s `idleProfile`.
+
+| Profile | Meshy clip | `action_id` | Correction it needs (section 3) |
+|---|---|---|---|
+| `masculine` | `Idle_9` | 249 | wrist only — the arms already hang along the body |
+| `feminine` | `Idle_12` | 252 | whole arm chain |
+
+Until 2026-08-31 this table did not exist and the standard named `Idle_12`
+unconditionally, so every character shipped the feminine idle regardless and the
+only trace of the choice was prose in each registry comment. Both profiles are
+baked to the same runtime clip name, `idle-9` (section 7) — the app has one idle
+slot and does not know which library clip filled it, so the registry
+declaration is the only machine-readable record.
 
 ## 2. Gates
 
@@ -27,9 +46,23 @@ next paid call if a gate fails, and never resubmit without approval.
 
 ## 3. Corrected natural idle (zero credits)
 
-Meshy's `Idle_12` splays the whole arm chain. Re-solve it per character with
-world-space FK on one neutral frame and bake **constant parent-space offsets**
-onto every key of the six arm-chain tracks (`{Left,Right}{Arm,ForeArm,Hand}`):
+Both idles need correcting, but not the same correction, and the flare is
+re-measured per character either way — `qa/idle-flare-metrics.mjs` reports hand
+distance outboard of the hip and elbow bend across the clip. Judge against the
+shipped band (hands ~15–20 outboard, elbows ~8–15); bon's approved masculine
+idle sits at 20.4/27.2, the widest accepted to date.
+
+**Feminine (`Idle_12`)** splays the whole arm chain. **Masculine (`Idle_9`)**
+brings the arms down correctly but drives both wrists with a large asymmetric
+rotation — so on a rig whose measured hands still sit far outboard (alex
+25.1/28.9, angelo 32.4/37.6) it gets the same whole-chain treatment, and on one
+where only the wrists are wrong (bon 19.6°/53.3° off bind) the wrist-only
+re-centre onto the bind orientation is enough. Which one applies is decided from
+that character's measurements, never inherited.
+
+Whole-chain method: re-solve it per character with world-space FK on one
+neutral frame and bake **constant parent-space offsets** onto every key of the
+six arm-chain tracks (`{Left,Right}{Arm,ForeArm,Hand}`):
 
 ```
 delta_B = world_parent^-1 (x) R_w (x) world_parent
@@ -40,11 +73,18 @@ Targets: upper arm ~17° out, forearm ~12°, hand ~8°, palm ~20° inward. Solve
 from **that character's own** bind-mesh axes — never reuse another character's
 quaternions. Duration, key times and loop closure must be preserved, and only
 those six channels may change. Embed the result under the runtime clip name
-`idle-9`.
+`idle-9` — whichever profile it came from.
+
+Review it before integrating: `qa/idle-profile-sheet.mjs <chain> <label>=<clip>
+<label>=<clip>` renders front / three-quarter / back views of two idle clips with
+the hand and forearm vertices tinted, which is what a masculine-vs-feminine
+choice is actually judged on.
 
 ## 4. Quality-first LODs
 
-Build with `build-character-lods.mjs <id> --profile=hq --clip-source=idle-9=<corrected>`.
+Build with `build-character-lods.mjs <id> --profile=hq --clip-source=idle-9=<corrected>`
+(`--out-dir=` a NEW folder when rebuilding a shipped character, so the set
+currently in production stays on disk as the rollback — section 8).
 
 | Tier | Geometry | Texture | Used for |
 |---|---|---|---|
@@ -89,6 +129,15 @@ maps.
 
 ## 8. Integration
 
-Add the entry to `LIVE_3D_CHARACTERS`, keep the previous asset folder on disk
-as the rollback, and validate all three GLBs through GLTFLoader + the vendored
-Draco decoder before shipping.
+Add the entry to `LIVE_3D_CHARACTERS` — including its `idleProfile`, which the
+type requires — keep the previous asset folder on disk as the rollback, and
+validate all three GLBs through GLTFLoader + the vendored Draco decoder
+(`clip-validate.mjs`) before shipping: 24 joints, one skinned mesh, all six
+clips present at every LOD.
+
+A rebuild that only swaps a clip still needs its silhouette re-checked against
+the character's frame, since the layer geometry was calibrated against the old
+poses. The 2026-08-31 idle swap measured the new idle over 8 headings x 7 phases at
+|ndc.x| ≤ 0.90 and ndc.y ≤ 0.93 for all three characters (against per-character
+`widthCapacity` ceilings of 1.22–1.65, and 1.0 vertically), so no layer,
+`widthCapacity` or `headTopAboveCenter` value changed.

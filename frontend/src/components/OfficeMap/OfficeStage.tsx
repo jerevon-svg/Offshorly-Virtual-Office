@@ -107,6 +107,10 @@ const DEV_ONLY_LIVE_3D_ENTRIES: Record<string, DevOnlyLive3dEntry> = {
     lod2GlbUrl: `${import.meta.env.BASE_URL}avatars/bon-v2/bon-v2-lod2.glb`,
     renderWidth: 210,
     renderHeight: 298,
+    // The v2 candidate predates the idle-profile split and was built on Meshy
+    // Idle_12; it is kept byte-for-byte as the dev-preview rollback, so it is
+    // declared for what it HOLDS, not what bon now ships (masculine).
+    idleProfile: "feminine",
   },
 };
 

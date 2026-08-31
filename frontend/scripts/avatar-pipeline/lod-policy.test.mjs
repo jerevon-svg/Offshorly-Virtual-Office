@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { ATLAS_PAD_RADIUS, LOD_TIERS, REQUIRED_CLIP_NAMES, TEXTURE_ENCODING } from "./lod-policy.mjs";
+import {
+  ATLAS_PAD_RADIUS,
+  IDLE_PROFILES,
+  idleActionIdFor,
+  LOD_TIERS,
+  REQUIRED_CLIP_NAMES,
+  TEXTURE_ENCODING,
+} from "./lod-policy.mjs";
 
 describe("LOD policy (quality pass 2026-08-29)", () => {
   it("ships 2048 / 1024 / 512 textures for lod0 / lod1 / lod2", () => {
@@ -31,5 +38,30 @@ describe("LOD policy (quality pass 2026-08-29)", () => {
 
   it("requires exactly the six CharacterCanvas clip names", () => {
     expect(REQUIRED_CLIP_NAMES).toEqual(["idle-9", "walking", "agree-gesture", "listening-gesture", "sit-on-chair-arms", "sitting-answering"]);
+  });
+});
+
+describe("IDLE_PROFILES", () => {
+  it("declares exactly the two profiles the registry can name", () => {
+    expect(Object.keys(IDLE_PROFILES).sort()).toEqual(["feminine", "masculine"]);
+  });
+
+  it("maps each profile to its Meshy action id and the correction its clip needs", () => {
+    expect(IDLE_PROFILES.masculine).toEqual({ actionId: 249, meshyName: "Idle_9", correction: "wrist" });
+    expect(IDLE_PROFILES.feminine).toEqual({ actionId: 252, meshyName: "Idle_12", correction: "arm-chain" });
+  });
+
+  it("resolves a profile to its action id, and refuses anything else", () => {
+    expect(idleActionIdFor("masculine")).toBe(249);
+    expect(idleActionIdFor("feminine")).toBe(252);
+    expect(() => idleActionIdFor("neutral")).toThrow(/unknown idle profile/);
+    expect(() => idleActionIdFor(undefined)).toThrow(/unknown idle profile/);
+  });
+
+  it("keeps both profiles on the single runtime idle slot", () => {
+    // Whichever library clip is generated, it is baked as `idle-9` — the app
+    // resolves states by clip NAME and has exactly one idle state.
+    expect(REQUIRED_CLIP_NAMES).toContain("idle-9");
+    expect(REQUIRED_CLIP_NAMES.filter((n) => n.startsWith("idle")).length).toBe(1);
   });
 });

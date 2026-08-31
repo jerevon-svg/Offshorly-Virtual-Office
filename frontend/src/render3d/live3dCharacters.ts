@@ -17,7 +17,10 @@
 // `public/` or it will 404 in a real `vite build`.
 //
 // Adding employee #2 (once they've gone through the same Meshy pipeline and
-// been approved) is a single new entry here — no other code changes.
+// been approved) is a single new entry here — no other code changes. That entry
+// must state its `idleProfile` (see the type below): the pipeline generates a
+// different Meshy idle for each profile, and nothing else records which one a
+// shipped GLB actually holds.
 //
 // Phase A: each character now ships exactly ONE consolidated GLB (built by
 // build-character-lods.mjs's animation-retargeting pass) containing every
@@ -28,6 +31,21 @@
 // This replaces the earlier per-pose-GLB shape (walkingGlbUrl/idleGlbUrl/
 // shrugGlbUrl/thinkingGlbUrl), which required hard-swapping between up to 4
 // independently-loaded models.
+/**
+ * Which of Meshy's two standing idles this character's `idle-9` runtime clip
+ * was built from — masculine = Idle_9 (action 249), feminine = Idle_12 (252).
+ * The action ids and the per-clip arm correction each one needs live in the
+ * pipeline's own authority, scripts/avatar-pipeline/lod-policy.mjs
+ * (IDLE_PROFILES); this type only carries the DECLARATION.
+ *
+ * Every character was previously generated on Idle_12 regardless, because the
+ * pipeline standard named that one clip unconditionally — so the whole cast
+ * idled with the feminine hip-shifted sway and the only record of the choice
+ * was prose in each entry's comment. Declaring it per character makes the pick
+ * explicit and reviewable, and stops a new employee inheriting it by accident.
+ */
+export type IdleProfile = "masculine" | "feminine";
+
 export type Live3dAssetSet = {
   // LOD0 — full-detail GLB, used for T2 (strong desktop) viewers.
   glbUrl: string;
@@ -79,6 +97,10 @@ export type Live3dAssetSet = {
   // and take the highest mesh vertex in NDC, then headTopAboveCenter =
   // ndcHeadTop x layerHeight / 2. Same harness as widthCapacity.
   headTopAboveCenter?: number;
+  // Which standing idle this set's `idle-9` clip actually holds. REQUIRED, not
+  // optional: the point of the field is that a new character has to state it
+  // rather than silently inherit whatever the last build used.
+  idleProfile: IdleProfile;
 };
 
 // Fallback for a character whose widest pose has not been measured yet. Covers
@@ -119,10 +141,25 @@ export const LIVE_3D_CHARACTERS: Record<string, Live3dAssetSet> = {
   // the atlas (visible as speckles in hair/clothing). HQ LOD0 keeps the full
   // rigged mesh (0.06%, identical to the rigged source). bon-v3/ stays on disk
   // as the rollback.
+  //
+  // Promoted again 2026-08-31 to the MASCULINE idle profile: same bon-v3-hq
+  // geometry and textures, rebuilt with Meshy Idle_9 (action 249) in the
+  // `idle-9` slot instead of Idle_12. Zero credits — his Idle_9 was already
+  // generated and on disk from 2026-08-30.
+  //
+  // It ships the WHOLE-ARM-CHAIN correction (bon-v3-idle-9-armfix-v1.mjs ->
+  // hands 14.2/17.4 outboard of hip, elbows 9.9/9.8), not the earlier
+  // wrist-only handfix of the same clip. The handfix killed the fin read but
+  // left his hands 20.4/27.2 — the widest and least symmetric idle in the cast
+  // once alex and angelo were corrected to ~16-17. Both clips stay on disk;
+  // rebuild with --clip-source=idle-9=bon-v3-idle-9-handfix-v1.glb to go back
+  // to the wrist-only variant, or revert these three paths to bon-v3-hq/ to
+  // drop the masculine profile entirely.
   bon: {
-    glbUrl: `${BASE}avatars/bon-v3-hq/bon-v3-lod0.glb`,
-    lod1GlbUrl: `${BASE}avatars/bon-v3-hq/bon-v3-lod1.glb`,
-    lod2GlbUrl: `${BASE}avatars/bon-v3-hq/bon-v3-lod2.glb`,
+    glbUrl: `${BASE}avatars/bon-v3-hq-idle9/bon-v3-lod0.glb`,
+    lod1GlbUrl: `${BASE}avatars/bon-v3-hq-idle9/bon-v3-lod1.glb`,
+    lod2GlbUrl: `${BASE}avatars/bon-v3-hq-idle9/bon-v3-lod2.glb`,
+    idleProfile: "masculine",
     renderWidth: 210,
     renderHeight: 298,
     // measured max|x| 1.216 (sitting-answering @45deg, consistent across
@@ -141,10 +178,19 @@ export const LIVE_3D_CHARACTERS: Record<string, Live3dAssetSet> = {
   // revert these three paths to roll back. Promoted again 2026-08-30 to the
   // quality-first `alex-v2-hq` set (same crack diagnosis as bon: 6.8% ->
   // 0.06% chart-spanning triangles); alex-v2/ stays on disk as the rollback.
+  // Promoted again 2026-08-31 to the MASCULINE idle profile: same alex-v2-hq
+  // geometry and textures, rebuilt with Meshy Idle_9 (action 249, 3 credits) in
+  // the `idle-9` slot. His Idle_9 flared too (hands 25.1/28.9 outboard of hip
+  // against bon's approved 20.4/27.2), so it carries the standard whole-arm-
+  // chain correction solved from ALEX'S OWN bind axes and his own approved
+  // targets (alex-v2-idle-9-armfix-v1.mjs -> 16.7/17.0, elbows 9.8/9.9), i.e.
+  // it lands in the same band his reviewed Idle_12 armfix did (19.8/20.2).
+  // alex-v2-hq/ stays on disk as the rollback.
   alex: {
-    glbUrl: `${BASE}avatars/alex-v2-hq/alex-v2-lod0.glb`,
-    lod1GlbUrl: `${BASE}avatars/alex-v2-hq/alex-v2-lod1.glb`,
-    lod2GlbUrl: `${BASE}avatars/alex-v2-hq/alex-v2-lod2.glb`,
+    glbUrl: `${BASE}avatars/alex-v2-hq-idle9/alex-v2-lod0.glb`,
+    lod1GlbUrl: `${BASE}avatars/alex-v2-hq-idle9/alex-v2-lod1.glb`,
+    lod2GlbUrl: `${BASE}avatars/alex-v2-hq-idle9/alex-v2-lod2.glb`,
+    idleProfile: "masculine",
     renderWidth: 160,
     renderHeight: 276,
     // measured max|x| 1.502 (sitting-answering @45deg) + 8% margin
@@ -161,8 +207,9 @@ export const LIVE_3D_CHARACTERS: Record<string, Live3dAssetSet> = {
   // roll back. Earlier rejected chains (micah/, micah-v2/, and the long-hair
   // v3 archived under output/meshy-employees/rejected/) are never referenced.
   //
-  // Feminine idle profile preserved: Meshy Idle_12 (action 252), embedded as
-  // the `idle-9` runtime slot. It DID flare on v5 (hands 25.4/26.9 outboard of
+  // Feminine idle profile (now declared as `idleProfile` below rather than left
+  // to this comment): Meshy Idle_12 (action 252), embedded as the `idle-9`
+  // runtime slot. It DID flare on v5 (hands 25.4/26.9 outboard of
   // hip, elbows 28/30 deg) so it carries the standard whole-arm-chain
   // correction solved from V5'S OWN bind axes
   // (micah-v5-idle-12-armfix-v1.mjs -> 16.3/17.3, elbows 11.0/14.1, matching
@@ -185,6 +232,10 @@ export const LIVE_3D_CHARACTERS: Record<string, Live3dAssetSet> = {
     glbUrl: `${BASE}avatars/micah-v5-hq/micah-v5-lod0.glb`,
     lod1GlbUrl: `${BASE}avatars/micah-v5-hq/micah-v5-lod1.glb`,
     lod2GlbUrl: `${BASE}avatars/micah-v5-hq/micah-v5-lod2.glb`,
+    // The one FEMININE idle in the cast, and the only entry the 2026-08-31
+    // profile split left alone: she was already deliberately built on Idle_12,
+    // so her assets are untouched — only the declaration is new.
+    idleProfile: "feminine",
     renderWidth: 182,
     renderHeight: 292,
     // measured max|x| 1.288 (sitting-answering @225deg) + 8% margin
@@ -216,10 +267,19 @@ export const LIVE_3D_CHARACTERS: Record<string, Live3dAssetSet> = {
   // matching bon/alex/micah — and his tallest pose peaks at 0.945.
   // The shared rendering policy is unchanged; only this one undersized layer
   // was corrected.
+  // Promoted 2026-08-31 to the MASCULINE idle profile: same gelo-v1-hq geometry
+  // and textures, rebuilt with Meshy Idle_9 (action 249, 3 credits) in the
+  // `idle-9` slot. His Idle_9 flared hardest of the three (hands 32.4/37.6
+  // outboard of hip) and carries the standard whole-arm-chain correction solved
+  // from ANGELO'S OWN bind axes and his own approved targets
+  // (gelo-v1-idle-9-armfix-v1.mjs -> 15.8/15.9, elbows 8.5/8.5, matching his
+  // reviewed Idle_12 armfix at 15.2/16.3). gelo-v1-hq/ stays on disk as the
+  // rollback.
   angelo: {
-    glbUrl: `${BASE}avatars/gelo-v1-hq/gelo-v1-lod0.glb`,
-    lod1GlbUrl: `${BASE}avatars/gelo-v1-hq/gelo-v1-lod1.glb`,
-    lod2GlbUrl: `${BASE}avatars/gelo-v1-hq/gelo-v1-lod2.glb`,
+    glbUrl: `${BASE}avatars/gelo-v1-hq-idle9/gelo-v1-lod0.glb`,
+    lod1GlbUrl: `${BASE}avatars/gelo-v1-hq-idle9/gelo-v1-lod1.glb`,
+    lod2GlbUrl: `${BASE}avatars/gelo-v1-hq-idle9/gelo-v1-lod2.glb`,
+    idleProfile: "masculine",
     renderWidth: 177,
     renderHeight: 251,
     // measured max|x| 1.121 (sitting-answering @225deg) + 8% margin, re-measured
