@@ -8,7 +8,7 @@ from livekit.api import AccessToken, VideoGrants
 
 from app.auth.deps import get_current_email
 from app.config import settings
-from app.realtime.socket import call_registry, spatial_sessions
+from app.realtime.state import call_registry, spatial_sessions
 from app.schemas.calls import CallTokenIn, CallTokenOut
 
 # Stage A voice calls: the ONE backend endpoint the frontend needs. Mirrors

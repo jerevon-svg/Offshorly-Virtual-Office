@@ -6,8 +6,6 @@ import math
 import re
 from datetime import datetime, timezone
 
-import socketio
-
 from app.auth.atlas import AtlasAuthError, verify_atlas_token
 from app.config import settings
 from app.database import async_session_maker
@@ -18,15 +16,25 @@ from app.schemas.chat import serialize_message_dict, to_iso_z
 from app.schemas.room_requests import RoomRequestOut
 from app.schemas.talk_requests import TalkRequestOut
 from app.repositories import position as position_repo
-from app.services.call_invites import INVITE_TTL_SECONDS, CallInviteRegistry
+# Shared realtime state is CONSTRUCTED in state.py and only imported here — these are the same
+# singleton objects the REST routers use (state.spatial_sessions is socket.spatial_sessions).
+# Re-exported from this module unchanged so existing `from app.realtime.socket import ...`
+# call sites and tests keep working.
+from app.realtime.state import (
+    call_invites,
+    call_registry,
+    dnd_registry,
+    global_chat_activity,
+    is_room_locked,
+    offline_lineup,
+    room_presence,
+    sio,
+    spatial_sessions,
+    user_room,
+)
+from app.services.call_invites import INVITE_TTL_SECONDS
 from app.services.call_invites import wire as invite_wire
-from app.services.call_registry import CallRegistry
-from app.services.dnd_registry import DndRegistry
-from app.services.global_chat_activity import GlobalChatActivityRegistry
-from app.services.offline_lineup import OfflineLineup
 from app.services.position_registry import position_registry
-from app.services.room_presence import RoomPresenceRegistry
-from app.services.spatial_session import SpatialSessionRegistry
 
 # Faithful port of backend/src/socket.ts onto python-socketio's ASGI async server. Mounted in
 # app/main.py via socketio.ASGIApp(sio, other_asgi_app=<fastapi app>, socketio_path="socket.io")
@@ -34,44 +42,6 @@ from app.services.spatial_session import SpatialSessionRegistry
 # VITE_CHAT_SOCKET_URL / single socket.io-client `io(socketBase())` call.
 
 _logger = logging.getLogger(__name__)
-
-sio = socketio.AsyncServer(
-    async_mode="asgi",
-    cors_allowed_origins=settings.cors_origins_list or "*",
-)
-
-
-def user_room(email: str) -> str:
-    return f"user:{email}"
-
-
-# Single shared instance — matches this module's existing pattern of holding shared server
-# state as a plain module-level object (see `sio` above), not per-request/per-session state.
-# See offline_lineup.py's module docstring for the in-memory/single-process assumption.
-offline_lineup = OfflineLineup()
-
-# Ephemeral in-world spatial clustering presence — see spatial_session.py's module docstring
-# for the in-memory/single-process assumption. Distinct from the DB-backed Conversation /
-# ConversationRequest models from Stage 1/2.
-spatial_sessions = SpatialSessionRegistry()
-
-# Ephemeral Stage A voice-call state layered on top of spatial_sessions — see call_registry.py.
-# Holds ONLY the session->room mapping plus who is connected to media; LiveKit owns tracks, mute,
-# speaking and reconnection. Same in-memory/single-process assumption as the registries above.
-call_registry = CallRegistry()
-
-# Ephemeral person-to-person call ringing ("A is calling B") — see call_invites.py for why this is
-# NOT the persisted talk_requests table. Holds no sessionId and no LiveKit room.
-call_invites = CallInviteRegistry()
-
-# Ephemeral DND-room-lock feature state — see dnd_registry.py/room_presence.py module
-# docstrings. Same in-memory/single-process assumption as the registries above.
-dnd_registry = DndRegistry()
-room_presence = RoomPresenceRegistry()
-# Ephemeral "has an active Global Chat window" presence — see global_chat_activity.py. Same
-# in-memory/single-process assumption as the registries above; refcounted per socket so
-# multi-tab users are handled correctly.
-global_chat_activity = GlobalChatActivityRegistry()
 
 
 async def _broadcast_offline_lineup() -> None:
@@ -96,15 +66,6 @@ async def _broadcast_global_chat_activity() -> None:
 
 async def _broadcast_room_presence() -> None:
     await sio.emit("room_presence", {"rooms": room_presence.snapshot()})
-
-
-def is_room_locked(room_id: str) -> bool:
-    """A room is locked iff at least one of its current occupants is DND (feature spec section
-    2). Occupancy and DND are two independent ephemeral registries, both populated by explicit
-    client emits (room_presence_enter/leave, dnd_set) — combining them here is the single
-    source of truth both the REST layer (room_requests router) and the auto-expiry logic below
-    use."""
-    return any(dnd_registry.is_dnd(email) for email in room_presence.occupants(room_id))
 
 
 async def _cancel_stale_room_requests(room_id: str | None) -> None:

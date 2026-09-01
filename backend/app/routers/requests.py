@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_email
 from app.database import get_db
-from app.realtime.socket import call_registry, sio, user_room
+from app.realtime.state import call_registry, sio, user_room
 from app.repositories import chat as chat_repo
 from app.repositories import requests as requests_repo
 from app.schemas.requests import CreateRequestIn, RequestOut, ResolveRequestIn

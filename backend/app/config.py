@@ -47,6 +47,15 @@ class Settings(BaseSettings):
     LIVEKIT_API_KEY: str = ""
     LIVEKIT_API_SECRET: str = ""
 
+    # FUTURE multi-worker realtime seam — UNSET AND UNUSED TODAY. When this backend eventually
+    # runs more than one worker, Socket.IO needs a cross-process message queue (and the
+    # ephemeral registries in app/realtime/state.py need a shared store) for a broadcast made on
+    # worker A to reach a client held by worker B. This var reserves the config surface for that
+    # queue; empty means "single worker, in-process manager", which is the only supported mode
+    # right now and what every environment (local, mock rig on :8002, render.yaml) runs. Nothing
+    # connects to Redis when it is set — see state.py's _build_client_manager.
+    REALTIME_REDIS_URL: str = ""
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",")]

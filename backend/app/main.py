@@ -10,6 +10,9 @@ from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.database import async_session_maker
+# Imported from socket.py, NOT state.py, on purpose: `sio` is constructed in
+# app/realtime/state.py, but importing socket.py is what registers every Socket.IO event
+# handler onto it. Point this at state.py and the server comes up with no handlers.
 from app.realtime.socket import sio
 from app.repositories import position as position_repo
 from app.routers import calls as calls_router
