@@ -127,6 +127,7 @@ import {
 import { CallInvitePrompt } from "./CallInvitePrompt";
 import { AudioDebugPanel } from "./AudioDebugPanel";
 import { SpatialCallControls } from "./SpatialCallControls";
+import { CallOverlay } from "./CallOverlay";
 import { clusterBounds, computeClusterFocus, readMapTransform, shouldRefocus } from "./spatialFocus";
 import { createJoinRequest, onRequestResolved } from "../../services/chat/requestsClient";
 import { JoinRequestPrompt } from "./JoinRequestPrompt";
@@ -993,6 +994,18 @@ export function OfficeMap() {
     () => remapSelfKey(callState.videoByIdentity, selfChatId, playerLayerId),
     [callState.videoByIdentity, selfChatId, playerLayerId],
   );
+
+  // Stage C. Expanded vs minimized call view — PURE UI STATE and nothing else. It lives here,
+  // not in callStore, precisely so that toggling it cannot reach the LiveKit Room: no token, no
+  // reconnect, no republish, no call_joined, no spatial-session change. CallOverlay additionally
+  // guards on status === "connected", so this boolean can never resurrect a dead call; the reset
+  // below only stops a NEXT call opening pre-expanded.
+  const [callExpanded, setCallExpanded] = useState(false);
+  useEffect(() => {
+    if (callState.status !== "connected") setCallExpanded(false);
+  }, [callState.status]);
+  const handleMinimizeCall = useCallback(() => setCallExpanded(false), []);
+  const handleExpandCall = useCallback(() => setCallExpanded(true), []);
 
   // Actively-typing signal (real keystroke activity, see ConversationView.tsx's
   // onTypingChange) — self side, recorded together with the spatial conversation it happened
@@ -4029,7 +4042,11 @@ export function OfficeMap() {
             selfStatus={selfOfficeStatus}
             // Stage B spatial video — MAIN stage only, never the PiP mini-camera below (same
             // rule as showStatusLabels): that instance renders outside this TransformWrapper,
-            // and one camera track must not be attached to two video elements.
+            // so its tiles would be anchored against a second, differently-scaled stage.
+            // NOT a LiveKit limitation: Track.attachedElements is an array and each element
+            // gets its own MediaStream wrapper, which is exactly what lets Stage C's CallOverlay
+            // show the same track at the same time (see CallOverlay.tsx). The rule here is about
+            // not duplicating the stage, not about the track.
             spatialVideoByLayerId={spatialVideoByLayerId}
             extraCharacterLayers={extraCharacterLayers}
             extraCharacterSrcById={extraCharacterSrcById}
@@ -4482,7 +4499,9 @@ export function OfficeMap() {
             // further below never receive this prop, so a plain DM or remote group can never
             // show a call button. openConversationId is the spatial window's own conversation
             // id, which is exactly the spatial session id the backend gates the token on.
-            headerExtra={<SpatialCallControls sessionId={openConversationId} />}
+            headerExtra={
+              <SpatialCallControls sessionId={openConversationId} onExpand={handleExpandCall} />
+            }
             minimized={spatialChatMinimized}
             onMinimizeToggle={() => setSpatialChatMinimized((v) => !v)}
             onConversationOpen={(conversationId) => {
@@ -4526,7 +4545,9 @@ export function OfficeMap() {
             onTypingChange={setSelfTyping}
             isSpatial
             // Same spatial-slot-only reasoning as the DM panel above.
-            headerExtra={<SpatialCallControls sessionId={openConversationId} />}
+            headerExtra={
+              <SpatialCallControls sessionId={openConversationId} onExpand={handleExpandCall} />
+            }
             minimized={spatialChatMinimized}
             onMinimizeToggle={() => setSpatialChatMinimized((v) => !v)}
             onConversationOpen={(conversationId) => {
@@ -4670,6 +4691,15 @@ export function OfficeMap() {
       {/* Ringing UI — top level, so an incoming call reaches the recipient with Spatial Chat
           closed and nobody clicked. */}
       {chatMode === "real" && <CallInvitePrompt resolveDisplayName={resolveDisplayName} />}
+      {/* Stage C expanded call view. Mounted top level beside the ringing card for the same
+          reason: it must survive the chat panel being closed or minimized. Renders nothing
+          unless the viewer is BOTH expanded and genuinely connected. */}
+      <CallOverlay
+        expanded={callExpanded}
+        onMinimize={handleMinimizeCall}
+        resolveDisplayName={resolveDisplayName}
+        selfIdentity={selfChatId}
+      />
       {/* TEMPORARY dev-only voice diagnostic — renders only while connected to a call, and is
           dead code in production builds (see AudioDebugPanel's import.meta.env.DEV gate). */}
       {import.meta.env.DEV && <AudioDebugPanel />}

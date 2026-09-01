@@ -1,0 +1,143 @@
+/* Stage C expanded call view.
+
+   LAYERING. 150 sits above the office stage and above .floatingChatSlot (140), so the expanded
+   call covers the chat windows it was expanded from, and below AudioDebugPanel (210) so the
+   dev diagnostic stays reachable. The two top-right prompt stacks that can legitimately arrive
+   DURING a call — DndRequestQueue's .queue and JoinRequestPrompt's .container — are raised to
+   160 in their own modules so they keep working exactly as they do today. The ringing card
+   (CallInvitePrompt, z-index 28) is deliberately NOT raised: an already-active call is protected
+   by the existing Stage A busy/in-call path, so no ring should reach an expanded call at all. */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 10, 12, 0.82);
+  font-family: system-ui, sans-serif;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(92vw, 1040px);
+  max-height: 88vh;
+  padding: 16px;
+  border-radius: 14px;
+  background: #16171a;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e5e7eb;
+  letter-spacing: 0.02em;
+}
+
+.minimize {
+  all: unset;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1;
+  color: #9ca3af;
+}
+
+.minimize:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f3f4f6;
+}
+
+/* 1:1 is the case this is built for; the auto-fit rule below is the whole 3+ fallback. One tile
+   centres itself because the grid is only as wide as its content allows at that max-width. */
+.grid {
+  display: grid;
+  gap: 10px;
+  overflow-y: auto;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  align-content: center;
+}
+
+.grid[data-participant-count="1"] {
+  grid-template-columns: 1fr;
+  max-width: 720px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.grid[data-participant-count="2"] {
+  grid-template-columns: 1fr 1fr;
+}
+
+@media (max-width: 720px) {
+  .grid[data-participant-count="2"] {
+    grid-template-columns: 1fr;
+  }
+}
+
+.tile {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #101114;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Camera off. No <video> element exists for this participant at all (callStore removes the entry
+   rather than keeping a muted track), so there is no last frame to freeze here. */
+.placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  font-size: 34px;
+  font-weight: 600;
+  color: #9ca3af;
+  background: #1d1f24;
+}
+
+.name {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  max-width: calc(100% - 16px);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #f3f4f6;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Mic / camera / leave are the EXISTING SpatialCallControls, mounted here unchanged. */
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  padding-top: 2px;
+}

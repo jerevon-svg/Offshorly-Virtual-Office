@@ -220,6 +220,23 @@ describe("SpatialCallControls camera", () => {
     expect(screen.getByLabelText("Leave call")).toBeInTheDocument();
   });
 
+  it("shows the Stage C Expand button ONLY when an onExpand handler is given", () => {
+    snapshot = connected();
+    const { unmount } = render(<SpatialCallControls sessionId="conv-1" />);
+    expect(screen.queryByLabelText("Expand call")).toBeNull();
+    unmount();
+
+    const onExpand = vi.fn();
+    render(<SpatialCallControls sessionId="conv-1" onExpand={onExpand} />);
+    screen.getByLabelText("Expand call").click();
+    expect(onExpand).toHaveBeenCalledTimes(1);
+    // Expanding is UI only — it must never touch the call.
+    expect(leaveCall).not.toHaveBeenCalled();
+    expect(setMicEnabled).not.toHaveBeenCalled();
+    expect(setCameraEnabled).not.toHaveBeenCalled();
+    expect(startOrJoinCall).not.toHaveBeenCalled();
+  });
+
   it("leaves mic and leave behaviour exactly as Stage A", () => {
     snapshot = connected();
     render(<SpatialCallControls sessionId="conv-1" />);

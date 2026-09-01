@@ -63,3 +63,9 @@
 .cameraOff {
   color: #9ca3af;
 }
+
+/* Stage C expand affordance. Same quiet .iconButton base as the mic and camera beside it, so the
+   header still gains no width. */
+.expand {
+  color: #6b7280;
+}

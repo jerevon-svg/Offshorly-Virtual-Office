@@ -11,6 +11,10 @@ import styles from "./SpatialCallControls.module.css";
 type SpatialCallControlsProps = {
   /** The spatial session (conversation) id this chat panel is open for. */
   sessionId: string | null;
+  /** Stage C. Open the expanded call view. PURE UI STATE — the handler does nothing to the call.
+   *  Omitted by the expanded overlay's own footer instance (and by any caller that has no
+   *  expanded view), in which case no Expand button renders at all. */
+  onExpand?: () => void;
 };
 
 // ACTIVE-CALL controls for the SPATIAL chat window. STARTING a call is deliberately NOT here —
@@ -29,7 +33,7 @@ type SpatialCallControlsProps = {
 //
 // Mounted exclusively by OfficeMap's two spatial slots; remote Global Chat windows never receive
 // it, so no DM, remote group, or non-spatial conversation can show call controls.
-export function SpatialCallControls({ sessionId }: SpatialCallControlsProps) {
+export function SpatialCallControls({ sessionId, onExpand }: SpatialCallControlsProps) {
   const call = useCallState();
 
   if (!sessionId) return null;
@@ -88,6 +92,19 @@ export function SpatialCallControls({ sessionId }: SpatialCallControlsProps) {
       >
         {call.cameraEnabled ? "📹" : "🚫"}
       </button>
+      {/* Stage C. Expands the ALREADY-RUNNING call into the larger overlay. It calls a plain
+          callback and touches no media: no token, no republish, no reconnect. */}
+      {onExpand && (
+        <button
+          type="button"
+          className={`${styles.iconButton} ${styles.expand}`}
+          onClick={onExpand}
+          aria-label="Expand call"
+          title="Expand call"
+        >
+          ⤢
+        </button>
+      )}
       <button
         type="button"
         className={`${styles.iconButton} ${styles.leave}`}
