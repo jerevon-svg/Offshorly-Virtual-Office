@@ -316,7 +316,11 @@ async def disconnect(sid: str) -> None:
     if email in {entry["email"] for entry in offline_lineup.snapshot()}:
         offline_lineup.remove(email)
         await _broadcast_offline_lineup()
-    if spatial_sessions.leave(email) is not None:
+    # BY SID, never by email: this user has ~10 independent sockets open (see
+    # spatial_session.py's SID-AWARE OWNERSHIP note), and only the one that emitted
+    # spatial_session_start owns the membership. Every other socket's disconnect is a no-op
+    # here. Returns the session id only when the LAST owning sid went away.
+    if spatial_sessions.clear_sid(sid) is not None:
         await _broadcast_spatial_sessions()
     if dnd_registry.clear(email):
         await _broadcast_dnd_status()
@@ -362,7 +366,10 @@ async def spatial_session_start(sid: str, payload: dict | None) -> None:
             return
         session_data = await sio.get_session(sid)
         email = session_data["email"]
-        spatial_sessions.start(email, session_id)
+        # sid is the OWNER of this membership — the only socket whose disconnect may end it.
+        # Re-emitting on reconnect (spatialSessionStore.ts's "connect" re-assert) simply
+        # registers the new sid; the old one was already cleared by its own disconnect.
+        spatial_sessions.start(email, session_id, sid)
         await _broadcast_spatial_sessions()
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
