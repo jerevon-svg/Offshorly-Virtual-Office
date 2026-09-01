@@ -1,0 +1,30 @@
+/* Zero-size anchor point, identical to TalkingBubble/StatusLabel — the tile itself is positioned
+   relative to it, so the anchor can sit exactly on the head coordinate greetingAnchor returns. */
+.anchor {
+  position: absolute;
+  width: 0;
+  height: 0;
+  line-height: 0;
+  pointer-events: none;
+}
+
+/* Sizes are in WORLD (design-frame) px and scale with zoom, like the nameplate pill — they are
+   NOT screen px. Deliberately conservative first-pass values: the tile has to clear the
+   StatusLabel pill that shares this exact anchor point, and the right numbers are a live visual
+   judgement, not a static one. Do not tune these without a live two-browser look.
+
+   The -18px lift is the pill clearance; without it the tile lands on top of the nameplate. */
+.video {
+  position: absolute;
+  transform: translate(-50%, calc(-100% - 18px));
+  width: 48px;
+  height: 36px;
+  object-fit: cover;
+  border-radius: 4px;
+  background: #1a1a1a;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  /* Never steal a click from the character underneath — the whole avatar stays clickable, so
+     the character action menu keeps working while someone is on camera. */
+  pointer-events: none;
+}

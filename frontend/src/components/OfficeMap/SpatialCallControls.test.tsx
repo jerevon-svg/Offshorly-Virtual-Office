@@ -11,6 +11,7 @@ import { SpatialCallControls } from "./SpatialCallControls";
 
 const leaveCall = vi.fn();
 const setMicEnabled = vi.fn();
+const setCameraEnabled = vi.fn();
 const startOrJoinCall = vi.fn();
 let snapshot: CallSnapshot;
 
@@ -23,6 +24,7 @@ vi.mock("../../services/call/callStore", async () => {
     useCallState: () => snapshot,
     leaveCall: (...a: unknown[]) => leaveCall(...a),
     setMicEnabled: (...a: unknown[]) => setMicEnabled(...a),
+    setCameraEnabled: (...a: unknown[]) => setCameraEnabled(...a),
     startOrJoinCall: (...a: unknown[]) => startOrJoinCall(...a),
   };
 });
@@ -32,6 +34,9 @@ function snap(over: Partial<CallSnapshot> = {}): CallSnapshot {
     status: "idle",
     connectedSessionId: null,
     micEnabled: false,
+    cameraEnabled: false,
+    cameraError: null,
+    videoByIdentity: {},
     error: null,
     calls: [],
     outgoing: null,
@@ -109,12 +114,15 @@ describe("SpatialCallControls", () => {
     expect(startOrJoinCall).not.toHaveBeenCalled();
   });
 
-  it("shows exactly two compact controls while connected: mute and leave", () => {
+  it("shows exactly three compact controls while connected: mute, camera and leave", () => {
+    // Was two in Stage A; Stage B adds the camera between them. Still icon-only, so the compact
+    // chat header keeps its width.
     snapshot = snap({ status: "connected", connectedSessionId: "conv-1", micEnabled: true });
     render(<SpatialCallControls sessionId="conv-1" />);
     expect(screen.getByLabelText("Mute microphone")).toBeInTheDocument();
+    expect(screen.getByLabelText("Turn camera on")).toBeInTheDocument();
     expect(screen.getByLabelText("Leave call")).toBeInTheDocument();
-    expect(screen.getAllByRole("button")).toHaveLength(2);
+    expect(screen.getAllByRole("button")).toHaveLength(3);
     // No duplicate affordance once connected.
     expect(screen.queryByLabelText("Join call")).not.toBeInTheDocument();
   });
@@ -147,5 +155,78 @@ describe("SpatialCallControls", () => {
 
     screen.getByLabelText("Leave call").click();
     expect(leaveCall).toHaveBeenCalled();
+  });
+});
+
+// --- Stage B camera control -------------------------------------------------------------------
+
+describe("SpatialCallControls camera", () => {
+  const connected = () =>
+    snap({ status: "connected", connectedSessionId: "conv-1", micEnabled: true });
+
+  it("offers the camera only while connected, never in the Join state", () => {
+    snapshot = snap({
+      calls: [{ sessionId: "conv-1", room: "vo-call-x", participants: ["b@example.com"] }],
+    });
+    render(<SpatialCallControls sessionId="conv-1" />);
+
+    expect(screen.queryByLabelText("Turn camera on")).not.toBeInTheDocument();
+  });
+
+  it("offers the camera only while connected, never in the Connecting state", () => {
+    snapshot = snap({ status: "connecting", connectedSessionId: "conv-1" });
+    render(<SpatialCallControls sessionId="conv-1" />);
+
+    expect(screen.queryByLabelText("Turn camera on")).not.toBeInTheDocument();
+  });
+
+  it("shows mic, camera and leave in that order once connected", () => {
+    snapshot = connected();
+    render(<SpatialCallControls sessionId="conv-1" />);
+
+    expect(
+      screen.getAllByRole("button").map((b) => b.getAttribute("aria-label")),
+    ).toEqual(["Mute microphone", "Turn camera on", "Leave call"]);
+  });
+
+  it("defaults to camera off — the call never turns it on by itself", () => {
+    snapshot = connected();
+    render(<SpatialCallControls sessionId="conv-1" />);
+
+    expect(screen.getByLabelText("Turn camera on")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Turn camera off")).not.toBeInTheDocument();
+  });
+
+  it("turns the camera on, then off, on click", () => {
+    snapshot = connected();
+    const { rerender } = render(<SpatialCallControls sessionId="conv-1" />);
+
+    screen.getByLabelText("Turn camera on").click();
+    expect(setCameraEnabled).toHaveBeenCalledWith(true);
+
+    snapshot = snap({ ...connected(), cameraEnabled: true });
+    rerender(<SpatialCallControls sessionId="conv-1" />);
+    screen.getByLabelText("Turn camera off").click();
+    expect(setCameraEnabled).toHaveBeenLastCalledWith(false);
+  });
+
+  it("surfaces a camera failure without disturbing the other controls", () => {
+    snapshot = snap({ ...connected(), cameraError: "Permission denied" });
+    render(<SpatialCallControls sessionId="conv-1" />);
+
+    expect(screen.getByLabelText("Turn camera on")).toHaveAttribute("title", "Permission denied");
+    // Mute and Leave are untouched by a camera problem.
+    expect(screen.getByLabelText("Mute microphone")).toBeInTheDocument();
+    expect(screen.getByLabelText("Leave call")).toBeInTheDocument();
+  });
+
+  it("leaves mic and leave behaviour exactly as Stage A", () => {
+    snapshot = connected();
+    render(<SpatialCallControls sessionId="conv-1" />);
+
+    screen.getByLabelText("Mute microphone").click();
+    expect(setMicEnabled).toHaveBeenCalledWith(false);
+    screen.getByLabelText("Leave call").click();
+    expect(leaveCall).toHaveBeenCalledTimes(1);
   });
 });

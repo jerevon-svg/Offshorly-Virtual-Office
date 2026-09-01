@@ -38,12 +38,29 @@ class FakeRoom {
   micCalls: boolean[] = [];
   canPlaybackAudio = true;
   startAudioCalls = 0;
+  cameraCalls: boolean[] = [];
+  // Stage B: what setCameraEnabled(true) should do — resolve (default), or reject (permission
+  // denied / no device). Set per-test.
+  cameraImpl: ((on: boolean) => Promise<void>) | null = null;
+  cameraPublication: { videoTrack: unknown; isMuted: boolean } | null = null;
   localParticipant = {
+    identity: "a@example.com",
     isMicrophoneEnabled: false,
+    isCameraEnabled: false,
     setMicrophoneEnabled: async (on: boolean) => {
       this.micCalls.push(on);
       this.localParticipant.isMicrophoneEnabled = on;
     },
+    setCameraEnabled: async (on: boolean) => {
+      this.cameraCalls.push(on);
+      if (this.cameraImpl) await this.cameraImpl(on);
+      this.localParticipant.isCameraEnabled = on;
+      this.cameraPublication = on
+        ? { videoTrack: { kind: "video", source: "camera" }, isMuted: false }
+        : null;
+    },
+    getTrackPublication: (source: string) =>
+      source === "camera" ? (this.cameraPublication ?? undefined) : undefined,
   };
   constructor() {
     FakeRoom.instances.push(this);
@@ -94,10 +111,24 @@ vi.mock("livekit-client", () => ({
     ParticipantDisconnected: "participantDisconnected",
     TrackSubscribed: "trackSubscribed",
     TrackUnsubscribed: "trackUnsubscribed",
+    TrackMuted: "trackMuted",
+    TrackUnmuted: "trackUnmuted",
     AudioPlaybackStatusChanged: "audioPlaybackStatusChanged",
   },
-  Track: { Kind: { Audio: "audio", Video: "video" }, Source: { Microphone: "microphone" } },
+  Track: {
+    Kind: { Audio: "audio", Video: "video" },
+    Source: { Microphone: "microphone", Camera: "camera", ScreenShare: "screen_share" },
+  },
 }));
+
+/** Minimal stand-in for a subscribed remote CAMERA track and its publication. */
+function fakeRemoteCamera(sid: string, source = "camera") {
+  const track = { kind: "video", source, sid };
+  const publication = { trackSid: sid, kind: "video", source, isMuted: false, videoTrack: track };
+  return { track, publication };
+}
+
+const participant = (identity: string) => ({ identity });
 
 /** Minimal stand-in for a subscribed RemoteAudioTrack: attach() hands back an element. */
 function fakeRemoteAudio(sid: string, kind = "audio") {
@@ -650,15 +681,18 @@ describe("callStore remote audio playback", () => {
     expect(document.querySelectorAll("[data-livekit-remote-audio]")).toHaveLength(1);
   });
 
-  it("ignores a video track (Stage A is voice only)", async () => {
-    const { startOrJoinCall } = await import("./callStore");
+  it("never routes a video track into the hidden audio elements", async () => {
+    const { startOrJoinCall, getCallSnapshot } = await import("./callStore");
     await startOrJoinCall("conv-1");
     const { track, publication } = fakeRemoteAudio("sid-vid", "video");
 
-    FakeRoom.instances[0].fire("trackSubscribed", track, publication);
+    FakeRoom.instances[0].fire("trackSubscribed", track, publication, participant("b@x.com"));
 
     expect(track.attachCalls).toBe(0);
     expect(document.querySelectorAll("[data-livekit-remote-audio]")).toHaveLength(0);
+    // Nor is a source-less video publication mistaken for a camera (Stage B filters on
+    // Track.Source.Camera, so a future screen share can never surface as someone's face).
+    expect(getCallSnapshot().videoByIdentity).toEqual({});
   });
 
   it("does not double-attach the same track", async () => {
@@ -749,6 +783,261 @@ describe("callStore remote audio playback", () => {
     expect(getRoomForDevDiagnostics()).not.toBeNull();
     leaveCall();
     expect(getRoomForDevDiagnostics()).toBeNull();
+  });
+});
+
+// --- Stage B: local camera --------------------------------------------------------------------
+
+describe("callStore camera", () => {
+  it("starts every call with the camera OFF and publishes no video on connect", async () => {
+    const { startOrJoinCall, getCallSnapshot } = await import("./callStore");
+
+    await startOrJoinCall("conv-1");
+
+    // The entire point of Stage B requirement 3: connecting to a call — however it was reached,
+    // ring/accept/join/rejoin — never touches the camera.
+    expect(FakeRoom.instances[0].cameraCalls).toEqual([]);
+    expect(getCallSnapshot().cameraEnabled).toBe(false);
+    expect(getCallSnapshot().videoByIdentity).toEqual({});
+  });
+
+  it("publishes and unpublishes the camera on explicit toggle, mirroring LiveKit", async () => {
+    const { startOrJoinCall, setCameraEnabled, getCallSnapshot } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+
+    await setCameraEnabled(true);
+    expect(FakeRoom.instances[0].cameraCalls).toEqual([true]);
+    expect(getCallSnapshot().cameraEnabled).toBe(true);
+
+    await setCameraEnabled(false);
+    expect(FakeRoom.instances[0].cameraCalls).toEqual([true, false]);
+    expect(getCallSnapshot().cameraEnabled).toBe(false);
+  });
+
+  it("registers the local camera under the local identity, so self video needs no second path", async () => {
+    const { startOrJoinCall, setCameraEnabled, getCallSnapshot } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+
+    await setCameraEnabled(true);
+    expect(Object.keys(getCallSnapshot().videoByIdentity)).toEqual(["a@example.com"]);
+
+    await setCameraEnabled(false);
+    expect(getCallSnapshot().videoByIdentity).toEqual({});
+  });
+
+  it("is a no-op when not connected to a call", async () => {
+    const { setCameraEnabled, getCallSnapshot } = await import("./callStore");
+
+    await setCameraEnabled(true);
+
+    expect(FakeRoom.instances).toHaveLength(0);
+    expect(getCallSnapshot().cameraEnabled).toBe(false);
+  });
+
+  it("keeps the voice call connected when the camera is denied", async () => {
+    const { startOrJoinCall, setCameraEnabled, getCallSnapshot } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+    FakeRoom.instances[0].cameraImpl = async () => {
+      throw new Error("Permission denied");
+    };
+
+    await setCameraEnabled(true);
+
+    const snap = getCallSnapshot();
+    // The camera failed; the CALL did not. This is why cameraError is a separate field.
+    expect(snap.cameraError).toBe("Permission denied");
+    expect(snap.cameraEnabled).toBe(false);
+    expect(snap.status).toBe("connected");
+    expect(snap.error).toBeNull();
+    expect(snap.micEnabled).toBe(true);
+    expect(FakeRoom.instances[0].disconnectCalls).toBe(0);
+  });
+
+  it("ignores a second toggle while one is still in flight", async () => {
+    const { startOrJoinCall, setCameraEnabled } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+    const room = FakeRoom.instances[0];
+    let release: () => void;
+    room.cameraImpl = () => new Promise<void>((r) => { release = r; });
+
+    const first = setCameraEnabled(true);
+    await setCameraEnabled(true); // double click, mid-flight
+    release!();
+    await first;
+
+    // One device acquisition, not two.
+    expect(room.cameraCalls).toEqual([true]);
+  });
+
+  it("forgets the camera across a leave and rejoin", async () => {
+    const { startOrJoinCall, setCameraEnabled, leaveCall, getCallSnapshot } =
+      await import("./callStore");
+    await startOrJoinCall("conv-1");
+    await setCameraEnabled(true);
+
+    leaveCall();
+    expect(getCallSnapshot().cameraEnabled).toBe(false);
+    expect(getCallSnapshot().videoByIdentity).toEqual({});
+
+    await startOrJoinCall("conv-1");
+    // A rejoin is a fresh call: camera state is never remembered.
+    expect(getCallSnapshot().cameraEnabled).toBe(false);
+    expect(FakeRoom.instances[1].cameraCalls).toEqual([]);
+  });
+});
+
+// --- Stage B: remote camera video ---------------------------------------------------------------
+
+describe("callStore remote video", () => {
+  it("registers a subscribed remote camera track under that participant's identity", async () => {
+    const { startOrJoinCall, getCallSnapshot } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+    const { track, publication } = fakeRemoteCamera("sid-cam");
+
+    FakeRoom.instances[0].fire("trackSubscribed", track, publication, participant("B@Example.com"));
+
+    // Identity is normalised, so it matches the lowercased email a roster layer id carries.
+    expect(getCallSnapshot().videoByIdentity).toEqual({ "b@example.com": track });
+  });
+
+  it("ignores a non-camera video source", async () => {
+    const { startOrJoinCall, getCallSnapshot } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+    const { track, publication } = fakeRemoteCamera("sid-screen", "screen_share");
+
+    FakeRoom.instances[0].fire("trackSubscribed", track, publication, participant("b@example.com"));
+
+    expect(getCallSnapshot().videoByIdentity).toEqual({});
+  });
+
+  it("removes the track on TrackMuted — the frozen-frame guard", async () => {
+    const { startOrJoinCall, getCallSnapshot } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+    const room = FakeRoom.instances[0];
+    const { track, publication } = fakeRemoteCamera("sid-cam");
+    room.fire("trackSubscribed", track, publication, participant("b@example.com"));
+
+    // livekit-client turns a camera OFF by MUTING the publication, not unpublishing it, so this
+    // — not trackUnsubscribed — is the only signal that camera-off happened. Without it the tile
+    // would hang on the last decoded frame over the avatar.
+    publication.isMuted = true;
+    room.fire("trackMuted", publication, participant("b@example.com"));
+
+    expect(getCallSnapshot().videoByIdentity).toEqual({});
+  });
+
+  it("restores the track on TrackUnmuted", async () => {
+    const { startOrJoinCall, getCallSnapshot } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+    const room = FakeRoom.instances[0];
+    const { track, publication } = fakeRemoteCamera("sid-cam");
+    room.fire("trackSubscribed", track, publication, participant("b@example.com"));
+    publication.isMuted = true;
+    room.fire("trackMuted", publication, participant("b@example.com"));
+
+    publication.isMuted = false;
+    room.fire("trackUnmuted", publication, participant("b@example.com"));
+
+    expect(getCallSnapshot().videoByIdentity).toEqual({ "b@example.com": track });
+  });
+
+  it("does not register a publication that is already muted when subscribed", async () => {
+    const { startOrJoinCall, getCallSnapshot } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+    const { track, publication } = fakeRemoteCamera("sid-cam");
+    publication.isMuted = true;
+
+    FakeRoom.instances[0].fire("trackSubscribed", track, publication, participant("b@example.com"));
+
+    expect(getCallSnapshot().videoByIdentity).toEqual({});
+  });
+
+  it("removes the track on TrackUnsubscribed", async () => {
+    const { startOrJoinCall, getCallSnapshot } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+    const room = FakeRoom.instances[0];
+    const { track, publication } = fakeRemoteCamera("sid-cam");
+    room.fire("trackSubscribed", track, publication, participant("b@example.com"));
+
+    room.fire("trackUnsubscribed", track, publication, participant("b@example.com"));
+
+    expect(getCallSnapshot().videoByIdentity).toEqual({});
+  });
+
+  it("purges a participant who disappears without unsubscribing", async () => {
+    const { startOrJoinCall, getCallSnapshot } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+    const room = FakeRoom.instances[0];
+    const { track, publication } = fakeRemoteCamera("sid-cam");
+    room.fire("trackSubscribed", track, publication, participant("b@example.com"));
+
+    // Crash / reload / network drop — no orderly unsubscribe arrives.
+    room.fire("participantDisconnected", participant("b@example.com"));
+
+    expect(getCallSnapshot().videoByIdentity).toEqual({});
+  });
+
+  it("tracks several participants independently", async () => {
+    const { startOrJoinCall, getCallSnapshot } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+    const room = FakeRoom.instances[0];
+    const b = fakeRemoteCamera("sid-b");
+    const c = fakeRemoteCamera("sid-c");
+
+    room.fire("trackSubscribed", b.track, b.publication, participant("b@example.com"));
+    room.fire("trackSubscribed", c.track, c.publication, participant("c@example.com"));
+    expect(getCallSnapshot().videoByIdentity).toEqual({
+      "b@example.com": b.track,
+      "c@example.com": c.track,
+    });
+
+    // One camera going off must not disturb the other.
+    b.publication.isMuted = true;
+    room.fire("trackMuted", b.publication, participant("b@example.com"));
+    expect(getCallSnapshot().videoByIdentity).toEqual({ "c@example.com": c.track });
+  });
+
+  it("keeps remote AUDIO attached while video comes and goes", async () => {
+    const { startOrJoinCall, getCallSnapshot } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+    const room = FakeRoom.instances[0];
+    const audio = fakeRemoteAudio("sid-audio");
+    const cam = fakeRemoteCamera("sid-cam");
+
+    room.fire("trackSubscribed", audio.track, audio.publication, participant("b@example.com"));
+    room.fire("trackSubscribed", cam.track, cam.publication, participant("b@example.com"));
+    cam.publication.isMuted = true;
+    room.fire("trackMuted", cam.publication, participant("b@example.com"));
+
+    // Stage A's production audio path is untouched by any of the video traffic above.
+    expect(document.querySelectorAll("[data-livekit-remote-audio]")).toHaveLength(1);
+    expect(audio.track.detachCalls).toBe(0);
+    expect(getCallSnapshot().videoByIdentity).toEqual({});
+  });
+
+  it("clears every video track when the room disconnects", async () => {
+    const { startOrJoinCall, getCallSnapshot } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+    const room = FakeRoom.instances[0];
+    const { track, publication } = fakeRemoteCamera("sid-cam");
+    room.fire("trackSubscribed", track, publication, participant("b@example.com"));
+
+    room.trigger("disconnected");
+
+    expect(getCallSnapshot().videoByIdentity).toEqual({});
+    expect(getCallSnapshot().cameraEnabled).toBe(false);
+  });
+
+  it("clears every video track on leave", async () => {
+    const { startOrJoinCall, leaveCall, getCallSnapshot } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+    const room = FakeRoom.instances[0];
+    const { track, publication } = fakeRemoteCamera("sid-cam");
+    room.fire("trackSubscribed", track, publication, participant("b@example.com"));
+
+    leaveCall();
+
+    expect(getCallSnapshot().videoByIdentity).toEqual({});
   });
 });
 

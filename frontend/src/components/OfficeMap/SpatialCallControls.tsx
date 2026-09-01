@@ -1,6 +1,7 @@
 import {
   callParticipantsFor,
   leaveCall,
+  setCameraEnabled,
   setMicEnabled,
   startOrJoinCall,
   useCallState,
@@ -19,6 +20,9 @@ type SpatialCallControlsProps = {
 // What IS here is JOINING a call that is already running in this session. The server already
 // broadcasts that fact (spatial_calls -> callStore.calls); before this, nothing consumed it for a
 // viewer who wasn't already connected, so the second participant had no way to discover the call.
+//
+// Stage B adds ONE control here — camera on/off, between mic and leave. Nothing else about this
+// component changed: Join and Connecting behave exactly as they did in Stage A.
 //
 // Renders nothing at all when this session has no call and the viewer isn't in one — so an
 // ordinary spatial chat looks exactly as it did before Stage A.
@@ -70,6 +74,19 @@ export function SpatialCallControls({ sessionId }: SpatialCallControlsProps) {
         title={call.micEnabled ? "Mute" : "Unmute"}
       >
         {call.micEnabled ? "🎙" : "🔇"}
+      </button>
+      {/* Stage B camera. Same icon-only treatment as the mic beside it, so adding video costs the
+          header no width. OFF is the default for every call — this button is the ONLY thing in
+          the app that turns a camera on. cameraError is surfaced as a title rather than a banner:
+          a camera that fails must not push the call controls around. */}
+      <button
+        type="button"
+        className={call.cameraEnabled ? styles.iconButton : `${styles.iconButton} ${styles.cameraOff}`}
+        onClick={() => void setCameraEnabled(!call.cameraEnabled)}
+        aria-label={call.cameraEnabled ? "Turn camera off" : "Turn camera on"}
+        title={call.cameraError ?? (call.cameraEnabled ? "Turn camera off" : "Turn camera on")}
+      >
+        {call.cameraEnabled ? "📹" : "🚫"}
       </button>
       <button
         type="button"

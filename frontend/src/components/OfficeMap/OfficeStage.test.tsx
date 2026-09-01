@@ -1438,3 +1438,72 @@ describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
     expect(stub.getAttribute("data-is-global-chat-active")).toBe("true");
   });
 });
+
+// --- Stage B spatial video --------------------------------------------------------------------
+
+describe("OfficeStage spatial video", () => {
+  /** Minimal LiveKit-video-track stand-in — SpatialVideoTile only calls attach/detach. */
+  function fakeTrack() {
+    return {
+      attach: (el: HTMLElement) => el,
+      detach: (el: HTMLElement) => el,
+    } as never;
+  }
+
+  function renderWithVideo(spatialVideoByLayerId?: Record<string, never>) {
+    return render(
+      <TransformWrapper>
+        <TransformComponent>
+          <OfficeStage spatialVideoByLayerId={spatialVideoByLayerId} />
+        </TransformComponent>
+      </TransformWrapper>,
+    );
+  }
+
+  it("renders no video at all when the prop is omitted", () => {
+    // Protects every existing caller and test: absent prop == Stage A rendering, unchanged.
+    const { container } = renderWithVideo();
+    expect(container.querySelectorAll("video")).toHaveLength(0);
+  });
+
+  it("renders no video for a layer id with no track", () => {
+    const { container } = renderWithVideo({});
+    expect(container.querySelectorAll("video")).toHaveLength(0);
+  });
+
+  it("renders one tile for a character layer that has a camera track", () => {
+    const { container } = renderWithVideo({ bon: fakeTrack() });
+    expect(container.querySelectorAll("video")).toHaveLength(1);
+  });
+
+  it("renders a tile per participant, ignoring ids that match no character layer", () => {
+    const { container } = renderWithVideo({
+      bon: fakeTrack(),
+      alex: fakeTrack(),
+      // Nobody on this floor — a call participant with no rendered avatar gets no tile (their
+      // audio is unaffected).
+      "ghost@example.com": fakeTrack(),
+    });
+    expect(container.querySelectorAll("video")).toHaveLength(2);
+  });
+
+  it("keeps the overhead status label — video is an ADDITIVE pass, not a replacement", () => {
+    const { container } = render(
+      <TransformWrapper>
+        <TransformComponent>
+          <OfficeStage
+            showStatusLabels
+            selfCharacterId="bon"
+            selfStatus="IN_CALL"
+            spatialVideoByLayerId={{ bon: fakeTrack() }}
+          />
+        </TransformComponent>
+      </TransformWrapper>,
+    );
+
+    // Both on screen for the same character: the tile never enters the exclusive
+    // greeting/sent-text/typing/status resolver.
+    expect(container.querySelectorAll("video")).toHaveLength(1);
+    expect(container.querySelectorAll(`.${statusLabelStyles.pill}`).length).toBeGreaterThan(0);
+  });
+});

@@ -977,6 +977,23 @@ export function OfficeMap() {
     [talkingTextById, selfChatId, playerLayerId],
   );
 
+  // Stage B spatial video: LiveKit IDENTITY -> character LAYER id, using the very same remap the
+  // sent-text bubbles above use. It is an exact fit, and no new identity concept is introduced:
+  //
+  //   * PEERS need no translation at all. The backend mints each token with
+  //     .with_identity(email) on a lowercased address, and rosterLayers.ts keys every peer
+  //     layer's id off `person.email.trim().toLowerCase()` — so identity === layer.id already.
+  //   * SELF is the one exception, exactly as it is for bubbles: the viewer's own layer id is
+  //     playerLayerId (an avatar id like "bon"), never their email — rosterLayers deliberately
+  //     splits the viewer's own layer out. remapSelfKey moves selfChatId -> playerLayerId.
+  //
+  // A participant with no rendered layer (offline, unmapped, not on this floor) simply gets no
+  // tile; their audio is unaffected.
+  const spatialVideoByLayerId = useMemo(
+    () => remapSelfKey(callState.videoByIdentity, selfChatId, playerLayerId),
+    [callState.videoByIdentity, selfChatId, playerLayerId],
+  );
+
   // Actively-typing signal (real keystroke activity, see ConversationView.tsx's
   // onTypingChange) — self side, recorded together with the spatial conversation it happened
   // in. Only the two spatial windows wire onTypingChange (remote Global Chat windows never do),
@@ -4010,6 +4027,10 @@ export function OfficeMap() {
             showStatusLabels
             statusByLayerId={statusByLayerId}
             selfStatus={selfOfficeStatus}
+            // Stage B spatial video — MAIN stage only, never the PiP mini-camera below (same
+            // rule as showStatusLabels): that instance renders outside this TransformWrapper,
+            // and one camera track must not be attached to two video elements.
+            spatialVideoByLayerId={spatialVideoByLayerId}
             extraCharacterLayers={extraCharacterLayers}
             extraCharacterSrcById={extraCharacterSrcById}
             onCharacterClick={handleCharacterClick}

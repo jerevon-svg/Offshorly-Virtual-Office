@@ -16,10 +16,14 @@ import { getBackrestCropFraction } from "../../data/chairBackrestCrop";
 import { createDepthCompare } from "./depthSort";
 import { TalkingBubble } from "./TalkingBubble";
 import { StatusLabel } from "./StatusLabel";
+import { SpatialVideoTile } from "./SpatialVideoTile";
 import { OfficePhaseOverlay } from "./OfficePhaseOverlay";
 import { ToucanFlyer } from "./ToucanFlyer";
 import type { ToucanSummonState } from "./ToucanFlyer";
 import type { OfficeStatus } from "../../services/presence/status";
+// TYPE-ONLY on purpose: OfficeStage must not import callStore's runtime, which opens a socket
+// (and throws without VITE_CHAT_SOCKET_URL). Video arrives as a plain resolved prop instead.
+import type { SpatialVideoTrack } from "../../services/call/callStore";
 import { CharacterCanvas, directionToHeadingDegrees } from "../../render3d/CharacterCanvas";
 import {
   LIVE_3D_CHARACTERS,
@@ -460,6 +464,20 @@ type OfficeStageProps = {
   // The local viewer's own richly-computed status (see selfStatusStore.ts).
   // Used only for the layer whose id === selfCharacterId.
   selfStatus?: OfficeStatus;
+  // Stage B spatial video: character LAYER id -> that participant's live camera track.
+  // Already in layer-id key-space when it arrives — OfficeMap does the LiveKit-identity
+  // (email) -> layer-id remap, since it alone knows selfChatId/playerLayerId (see
+  // responderMap.ts's remapSelfKey). A participant with the camera off is simply ABSENT here.
+  //
+  // Rendered as its own ADDITIVE pass below, never as a branch of the exclusive
+  // greeting/sent-text/typing/status resolver — video coexists with whatever overhead element a
+  // character already has rather than replacing it.
+  //
+  // Deliberately NOT passed to the PiP mini-camera OfficeStage instance (same rule as
+  // showStatusLabels): that instance renders outside the main <TransformWrapper>, and one
+  // camera track must never be attached to two video elements. Absent/undefined = no video at
+  // all, matching every existing caller and test that doesn't pass it.
+  spatialVideoByLayerId?: Record<string, SpatialVideoTrack>;
 };
 
 // Shared click-vs-drag threshold logic: only fires onClick when pointer
@@ -529,6 +547,7 @@ export function OfficeStage({
   showStatusLabels,
   statusByLayerId,
   selfStatus,
+  spatialVideoByLayerId,
 }: OfficeStageProps = {}) {
   const characterClick = useClickVsDrag<AssetLayer>(onCharacterClick);
   const roomClick = useClickVsDrag<AssetLayer>(onRoomClick);
@@ -977,6 +996,21 @@ export function OfficeStage({
           }
           return null;
         })}
+      {/* Stage B spatial video — a SEPARATE, ADDITIVE pass over the same character layers, so a
+          camera tile and a nameplate/typing bubble can both be on screen for the same person.
+          Reads `resolved` (walk/position overrides already applied) and sits after the
+          depth-sorted layers, so tiles follow moving avatars and are never occluded by
+          furniture. */}
+      {spatialVideoByLayerId &&
+        resolved
+          .filter((layer) => layer.kind === "character" && spatialVideoByLayerId[layer.id])
+          .map((layer) => (
+            <SpatialVideoTile
+              key={`spatial-video-${layer.id}`}
+              layer={layer}
+              track={spatialVideoByLayerId[layer.id]}
+            />
+          ))}
       {destinationRing && (
         <div
           key={destinationRing.key}

@@ -57,3 +57,9 @@
   color: #6b7280;
   white-space: nowrap;
 }
+
+/* Camera OFF is the default state for every call, so it is styled as a quiet "not on" rather than
+   an alarm — unlike .muted, an off camera is never a surprise worth flagging in red. */
+.cameraOff {
+  color: #9ca3af;
+}

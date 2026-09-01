@@ -1,7 +1,15 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { io, type Socket } from "socket.io-client";
 import { Room, RoomEvent, Track } from "livekit-client";
-import type { RemoteTrack, RemoteTrackPublication } from "livekit-client";
+import type {
+  LocalVideoTrack,
+  Participant,
+  RemoteParticipant,
+  RemoteTrack,
+  RemoteTrackPublication,
+  RemoteVideoTrack,
+  TrackPublication,
+} from "livekit-client";
 import { getAuthToken } from "../api/client";
 import { getCurrentUser } from "../../auth/currentUserStore";
 
@@ -32,6 +40,11 @@ export interface CallEntry {
 
 export type CallStatus = "idle" | "connecting" | "connected" | "error";
 
+/** A camera track ready to be shown over someone's avatar. Local and remote video tracks share
+ *  the attach()/detach() surface SpatialVideoTile needs, and nothing here cares which is which —
+ *  that is the whole reason self video needs no second code path. */
+export type SpatialVideoTrack = LocalVideoTrack | RemoteVideoTrack;
+
 /** A ring in flight. Person-to-person; carries no session id and no room (see the backend's
  *  call_invites.py) — the spatial session doesn't exist yet while ringing. */
 export interface CallInvite {
@@ -52,6 +65,13 @@ export interface CallSnapshot {
   /** Spatial session id this client is connected to media for, else null. */
   connectedSessionId: string | null;
   micEnabled: boolean;
+  /** Stage B. Local camera publication state — mirrors LiveKit's own
+   *  localParticipant.isCameraEnabled and drives the camera button ONLY. Always starts false for
+   *  every new/rejoined call: nothing in this module ever turns the camera on by itself. */
+  cameraEnabled: boolean;
+  /** Stage B. Last camera-specific failure (permission denied, no device). Deliberately separate
+   *  from `error`, which means "the CALL failed" — a camera failure must never take voice down. */
+  cameraError: string | null;
   error: string | null;
   /** Server-broadcast active calls (all sessions) — drives Start vs Join for non-participants. */
   calls: CallEntry[];
@@ -64,6 +84,13 @@ export interface CallSnapshot {
   /** True when the browser refused to autoplay remote audio — the call is connected and the
    *  track is flowing, but nothing is audible until a user gesture calls resumeAudioPlayback(). */
   audioPlaybackBlocked: boolean;
+  /** Stage B. LiveKit IDENTITY (a lowercased Atlas email — see the backend's
+   *  AccessToken.with_identity) -> that participant's LIVE, UNMUTED camera track. Includes this
+   *  client's own local camera under its own identity, so self video needs no separate field.
+   *  A participant with the camera off is ABSENT from this map, never present-but-muted — that
+   *  is what stops a frozen last frame hanging over an avatar. Referentially stable between
+   *  changes so React can depend on it directly. */
+  videoByIdentity: Record<string, SpatialVideoTrack>;
   /** Peer email whose Accept just landed — OfficeMap consumes this to run the EXISTING
    *  approach/spatial-panel flow, then clears it. Never triggers media directly. */
   acceptedPeerEmail: string | null;
@@ -84,6 +111,12 @@ let room: Room | null = null;
 let status: CallStatus = "idle";
 let connectedSessionId: string | null = null;
 let micEnabled = false;
+let cameraEnabled = false;
+let cameraError: string | null = null;
+// Stage B. A camera toggle is slow (getUserMedia prompt + device start), easily long enough for a
+// second click to land mid-flight. LiveKit would serialise those internally, but the SNAPSHOT
+// would briefly disagree with the device. Guarded here so the button cannot be double-fired.
+let cameraPending = false;
 let error: string | null = null;
 let calls: CallEntry[] = [];
 let outgoing: CallInvite | null = null;
@@ -96,6 +129,15 @@ let audioPlaybackBlocked = false;
 // deliberately don't use) — a subscribed track is silent until it is attached to an element in the
 // DOM. Kept here so every element is detached and removed on unsubscribe/leave.
 const remoteAudioElements = new Map<string, HTMLAudioElement>();
+// Stage B. LiveKit identity -> that participant's live camera track. Deliberately holds TRACKS,
+// not elements: the DOM element for video is owned by the React tile that renders it
+// (SpatialVideoTile), which is what makes several participants work without any bookkeeping here.
+// Audio is the opposite — no component renders it, so this module owns those elements above.
+// The two registries never touch each other.
+const videoTracks = new Map<string, SpatialVideoTrack>();
+// Snapshot-facing projection of `videoTracks`, rebuilt only when the map actually changes so the
+// object stays referentially stable for React consumers between video events.
+let videoByIdentity: Record<string, SpatialVideoTrack> = {};
 // Bumped by every leave() and every new start/join. An in-flight connect whose generation is
 // stale discards its own result and tears the room down — this is what stops a call being
 // "resurrected" when the user clicks Leave while the connect handshake is still running.
@@ -125,6 +167,8 @@ function getSnapshot(): CallSnapshot {
       status,
       connectedSessionId,
       micEnabled,
+      cameraEnabled,
+      cameraError,
       error,
       calls,
       outgoing,
@@ -132,6 +176,7 @@ function getSnapshot(): CallSnapshot {
       inviteOutcome,
       acceptedPeerEmail,
       audioPlaybackBlocked,
+      videoByIdentity,
     };
   }
   return cached;
@@ -354,6 +399,47 @@ function detachAllRemoteAudio(): void {
   remoteAudioElements.clear();
 }
 
+// --- camera video registry -------------------------------------------------------------------
+// CAMERA ONLY, everywhere below: every entry point filters on Track.Source.Camera, so a future
+// screen-share publication can never be mistaken for somebody's face.
+
+function normalizeIdentity(identity: string | undefined): string {
+  return identity?.trim().toLowerCase() ?? "";
+}
+
+function isCameraVideo(publication: {
+  kind?: unknown;
+  source?: unknown;
+}): boolean {
+  return publication.kind === Track.Kind.Video && publication.source === Track.Source.Camera;
+}
+
+function syncVideoByIdentity(): void {
+  videoByIdentity = Object.fromEntries(videoTracks);
+}
+
+function setVideoTrack(identity: string, track: SpatialVideoTrack | undefined): boolean {
+  const key = normalizeIdentity(identity);
+  if (!key || !track) return false;
+  if (videoTracks.get(key) === track) return false;
+  videoTracks.set(key, track);
+  syncVideoByIdentity();
+  return true;
+}
+
+function clearVideoTrack(identity: string): boolean {
+  const key = normalizeIdentity(identity);
+  if (!videoTracks.delete(key)) return false;
+  syncVideoByIdentity();
+  return true;
+}
+
+function clearAllVideoTracks(): void {
+  if (videoTracks.size === 0) return;
+  videoTracks.clear();
+  syncVideoByIdentity();
+}
+
 /** Retry blocked autoplay from inside a user gesture. */
 export async function resumeAudioPlayback(): Promise<void> {
   const r = room;
@@ -371,11 +457,20 @@ export async function resumeAudioPlayback(): Promise<void> {
 function teardownRoom(): void {
   const r = room;
   room = null;
+  // Camera state is per-room and never survives one: a rejoin always starts with the camera OFF.
+  // Cleared unconditionally (before the null-room bail) so a torn-down store can't strand a stale
+  // "camera on" button.
+  cameraEnabled = false;
+  cameraError = null;
+  cameraPending = false;
+  // Every tile — self and remote — disappears with the room. Room.disconnect() below also stops
+  // the local camera device, so nothing is left publishing.
+  clearAllVideoTracks();
   if (!r) return;
   r.removeAllListeners();
   detachAllRemoteAudio();
   audioPlaybackBlocked = false;
-  // Also unpublishes the local microphone track and stops the underlying device.
+  // Also unpublishes the local microphone AND camera tracks and stops the underlying devices.
   void r.disconnect();
 }
 
@@ -398,6 +493,10 @@ export async function startOrJoinCall(sessionId: string): Promise<void> {
   connectedSessionId = sessionId;
   error = null;
   micEnabled = false;
+  // Stage B: EVERY new/rejoined call starts with the camera off. There is deliberately no
+  // "remember my last camera state" — turning a camera on is always an explicit, per-call act.
+  cameraEnabled = false;
+  cameraError = null;
   notify();
 
   try {
@@ -414,6 +513,13 @@ export async function startOrJoinCall(sessionId: string): Promise<void> {
       status = "idle";
       connectedSessionId = null;
       micEnabled = false;
+      cameraEnabled = false;
+      cameraError = null;
+      cameraPending = false;
+      // This handler resets state INLINE rather than via teardownRoom(), so the video registry
+      // has to be cleared here too — otherwise a LiveKit-side drop leaves every participant's
+      // tile pinned over their avatar with no room behind it.
+      clearAllVideoTracks();
       notify();
       ensureSocket()?.emit("call_left");
     });
@@ -421,18 +527,60 @@ export async function startOrJoinCall(sessionId: string): Promise<void> {
       if (room === r) notify();
     };
     r.on(RoomEvent.ParticipantConnected, syncParticipants);
-    r.on(RoomEvent.ParticipantDisconnected, syncParticipants);
-
-    // PLAYBACK. Without this a remote track is subscribed but inaudible — see
-    // remoteAudioElements. Audio only; Stage A publishes and subscribes no video.
-    r.on(RoomEvent.TrackSubscribed, (track, publication) => {
+    r.on(RoomEvent.ParticipantDisconnected, (participant: RemoteParticipant) => {
       if (room !== r) return;
-      attachRemoteAudio(track, publication);
+      // A participant who vanishes without an orderly unsubscribe (crash, reload, network drop)
+      // would otherwise leave their tile pinned over their avatar forever.
+      clearVideoTrack(participant?.identity ?? "");
       notify();
     });
-    r.on(RoomEvent.TrackUnsubscribed, (track, publication) => {
+
+    // PLAYBACK. Without this a remote track is subscribed but inaudible — see
+    // remoteAudioElements. The AUDIO half below is Stage A, unchanged; Stage B adds the camera
+    // half beside it, and the two never share an element.
+    r.on(
+      RoomEvent.TrackSubscribed,
+      (track: RemoteTrack, publication: RemoteTrackPublication, participant: RemoteParticipant) => {
+        if (room !== r) return;
+        // UNCHANGED Stage A audio path — attachRemoteAudio itself ignores non-audio tracks.
+        attachRemoteAudio(track, publication);
+        // Stage B, strictly beside it: video is never attached to those hidden audio elements.
+        // A publication that arrives already muted (camera off before we subscribed) is left out
+        // of the map on purpose — TrackUnmuted below adds it if and when it goes live.
+        if (isCameraVideo(publication) && !publication.isMuted) {
+          setVideoTrack(participant?.identity ?? "", publication.videoTrack);
+        }
+        notify();
+      },
+    );
+    r.on(
+      RoomEvent.TrackUnsubscribed,
+      (track: RemoteTrack, publication: RemoteTrackPublication, participant: RemoteParticipant) => {
+        if (room !== r) return;
+        detachRemoteAudio(track, publication);
+        if (isCameraVideo(publication)) {
+          clearVideoTrack(participant?.identity ?? "");
+        }
+        notify();
+      },
+    );
+    // FROZEN-FRAME GUARD. livekit-client turns a camera OFF by MUTING the publication, not by
+    // unpublishing it (only screen-share unpublishes — see LocalParticipant.setTrackEnabled), so
+    // TrackUnsubscribed never fires for a camera-off. Without these two handlers the subscriber
+    // keeps a live-but-stalled track and the tile hangs on the last decoded frame over the
+    // avatar. Muted => out of the map immediately; unmuted => back in.
+    // Base Participant/TrackPublication types on purpose: LiveKit raises these for the LOCAL
+    // participant as well, and self video lives in the same map as everyone else's.
+    r.on(RoomEvent.TrackMuted, (publication: TrackPublication, participant: Participant) => {
       if (room !== r) return;
-      detachRemoteAudio(track, publication);
+      if (!isCameraVideo(publication)) return;
+      clearVideoTrack(participant?.identity ?? "");
+      notify();
+    });
+    r.on(RoomEvent.TrackUnmuted, (publication: TrackPublication, participant: Participant) => {
+      if (room !== r) return;
+      if (!isCameraVideo(publication)) return;
+      setVideoTrack(participant?.identity ?? "", publication.videoTrack);
       notify();
     });
     // Chrome blocks autoplay until the page has a user gesture. Surface it rather than failing
@@ -464,6 +612,8 @@ export async function startOrJoinCall(sessionId: string): Promise<void> {
     status = "connected";
     audioPlaybackBlocked = !r.canPlaybackAudio;
     micEnabled = r.localParticipant.isMicrophoneEnabled;
+    // Voice only on connect — the camera is never published here (see setCameraEnabled).
+    cameraEnabled = false;
     error = null;
     notify();
 
@@ -502,6 +652,77 @@ export async function setMicEnabled(enabled: boolean): Promise<void> {
   if (!r || status !== "connected") return;
   await r.localParticipant.setMicrophoneEnabled(enabled);
   micEnabled = r.localParticipant.isMicrophoneEnabled;
+  notify();
+}
+
+/**
+ * Stage B camera on/off. Deliberately shaped exactly like setMicEnabled above — same connected-
+ * call guard, same "LiveKit is the source of truth, the boolean only drives the button" rule.
+ *
+ * Three things make this safe to add to a working voice call:
+ *
+ *  1. NOTHING ELSE CALLS IT. There is no call to setCameraEnabled anywhere in the ringing,
+ *     accept, spatial-setup, connect or join/rejoin paths — turning a camera on is always an
+ *     explicit user act, and every new call starts with it off.
+ *
+ *  2. A CAMERA FAILURE NEVER TAKES VOICE DOWN. getUserMedia rejects on a denied permission or a
+ *     missing device; that lands in `cameraError` and leaves status/`error`/the room untouched,
+ *     so the call stays connected and audible. This is why cameraError is a separate field.
+ *
+ *  3. It is re-entrancy guarded. `cameraPending` is held across the await so a double click
+ *     cannot start two device acquisitions or leave the snapshot disagreeing with the device.
+ *
+ * NOTE on turning the camera OFF: livekit-client MUTES the camera publication rather than
+ * unpublishing it (only screen-share unpublishes), and LocalVideoTrack.mute() stops the
+ * underlying MediaStreamTrack so the camera indicator light goes out. Peers therefore observe
+ * camera-off as RoomEvent.TrackMuted, NOT TrackUnsubscribed — see the remote video handlers.
+ */
+export async function setCameraEnabled(enabled: boolean): Promise<void> {
+  const r = room;
+  if (!r || status !== "connected") return;
+  if (cameraPending) return;
+  cameraPending = true;
+  cameraError = null;
+  notify();
+  try {
+    await r.localParticipant.setCameraEnabled(enabled);
+    cameraEnabled = r.localParticipant.isCameraEnabled;
+  } catch (err) {
+    // The call itself is untouched: still connected, mic still published, remote audio still
+    // attached. Only the camera failed, and only the camera reports it.
+    cameraEnabled = r.localParticipant.isCameraEnabled;
+    cameraError =
+      err instanceof Error ? err.message : "Couldn't turn the camera on";
+  } finally {
+    cameraPending = false;
+    syncLocalVideoTrack(r);
+    notify();
+  }
+}
+
+/**
+ * Mirror the local camera publication into the same identity-keyed map remote cameras use, so
+ * self video renders through the identical tile with no second path.
+ *
+ * Registered explicitly rather than off RoomEvent.LocalTrackPublished because a FIRST publish is
+ * not an unmute — only a re-enable after a mute raises TrackUnmuted. Reading the publication
+ * after the await covers both, and re-reading `isCameraEnabled` keeps LiveKit authoritative.
+ */
+function syncLocalVideoTrack(r: Room): void {
+  const identity = normalizeIdentity(r.localParticipant.identity) || selfEmail();
+  const publication = r.localParticipant.getTrackPublication(Track.Source.Camera);
+  const track = publication?.videoTrack;
+  if (r.localParticipant.isCameraEnabled && track && !publication?.isMuted) {
+    setVideoTrack(identity, track as SpatialVideoTrack);
+  } else {
+    clearVideoTrack(identity);
+  }
+}
+
+/** Dismiss a camera failure banner without touching the call. */
+export function clearCameraError(): void {
+  if (cameraError === null) return;
+  cameraError = null;
   notify();
 }
 
@@ -598,6 +819,9 @@ export function resetCallStoreForTests(): void {
   status = "idle";
   connectedSessionId = null;
   micEnabled = false;
+  cameraEnabled = false;
+  cameraError = null;
+  cameraPending = false;
   error = null;
   calls = [];
   outgoing = null;
@@ -606,6 +830,7 @@ export function resetCallStoreForTests(): void {
   acceptedPeerEmail = null;
   audioPlaybackBlocked = false;
   detachAllRemoteAudio();
+  clearAllVideoTracks();
   devEmail = null;
   notify();
 }
