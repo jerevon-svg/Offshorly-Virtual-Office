@@ -23,6 +23,9 @@ export type GroupConversationViewProps = {
   // True for a "Character -> Chat" spatial conversation — shows the "📍 Spatial Conversation"
   // header badge. False/omitted for a Global Chat (remote) window.
   isSpatial?: boolean;
+  // Passthrough only — see ChatWindowHeader's headerExtra. This component neither creates nor
+  // interprets these controls.
+  headerExtra?: React.ReactNode;
   // Collapses the window to just its header row — same conversation stays mounted.
   minimized?: boolean;
   onMinimizeToggle?: () => void;
@@ -185,6 +188,7 @@ export function GroupConversationView({
   onClose,
   subtitle,
   isSpatial,
+  headerExtra,
   minimized,
   onMinimizeToggle,
   onIncomingMessage,
@@ -370,6 +374,7 @@ export function GroupConversationView({
         name={headerTitle}
         subtitle={subtitle}
         isSpatial={isSpatial}
+        headerExtra={headerExtra}
         minimized={minimized}
         onMinimizeToggle={onMinimizeToggle}
         onClose={onClose}

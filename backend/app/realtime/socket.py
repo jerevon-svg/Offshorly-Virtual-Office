@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import re
@@ -17,6 +18,9 @@ from app.schemas.chat import serialize_message_dict, to_iso_z
 from app.schemas.room_requests import RoomRequestOut
 from app.schemas.talk_requests import TalkRequestOut
 from app.repositories import position as position_repo
+from app.services.call_invites import INVITE_TTL_SECONDS, CallInviteRegistry
+from app.services.call_invites import wire as invite_wire
+from app.services.call_registry import CallRegistry
 from app.services.dnd_registry import DndRegistry
 from app.services.global_chat_activity import GlobalChatActivityRegistry
 from app.services.offline_lineup import OfflineLineup
@@ -51,6 +55,15 @@ offline_lineup = OfflineLineup()
 # ConversationRequest models from Stage 1/2.
 spatial_sessions = SpatialSessionRegistry()
 
+# Ephemeral Stage A voice-call state layered on top of spatial_sessions — see call_registry.py.
+# Holds ONLY the session->room mapping plus who is connected to media; LiveKit owns tracks, mute,
+# speaking and reconnection. Same in-memory/single-process assumption as the registries above.
+call_registry = CallRegistry()
+
+# Ephemeral person-to-person call ringing ("A is calling B") — see call_invites.py for why this is
+# NOT the persisted talk_requests table. Holds no sessionId and no LiveKit room.
+call_invites = CallInviteRegistry()
+
 # Ephemeral DND-room-lock feature state — see dnd_registry.py/room_presence.py module
 # docstrings. Same in-memory/single-process assumption as the registries above.
 dnd_registry = DndRegistry()
@@ -67,6 +80,10 @@ async def _broadcast_offline_lineup() -> None:
 
 async def _broadcast_spatial_sessions() -> None:
     await sio.emit("spatial_sessions", {"sessions": spatial_sessions.snapshot()})
+
+
+async def _broadcast_spatial_calls() -> None:
+    await sio.emit("spatial_calls", {"calls": call_registry.snapshot()})
 
 
 async def _broadcast_dnd_status() -> None:
@@ -280,6 +297,20 @@ async def connect(sid: str, environ: dict, auth: dict | None) -> None:
     # must see the current grouping immediately, not just future changes.
     await sio.emit("spatial_sessions", {"sessions": spatial_sessions.snapshot()}, to=sid)
 
+    # Same reasoning for active voice calls: a client connecting mid-call must immediately know
+    # whether its spatial session already has one (drives "Join call" vs "Start call") rather
+    # than waiting for the next join/leave.
+    await sio.emit("spatial_calls", {"calls": call_registry.snapshot()}, to=sid)
+
+    # Same reasoning for in-flight call invites: a reconnecting/reloading client must get its own
+    # pending ring back (either direction) rather than losing the Calling…/incoming prompt. Scoped
+    # to invites this person is a party to — an invite is private to its two parties.
+    await sio.emit(
+        "call_invites",
+        {"invites": [invite_wire(i) for i in call_invites.pending_for(email)]},
+        to=sid,
+    )
+
     # Same reasoning again for the DND-room-lock feature's two ephemeral registries: a client
     # connecting after others are already DND/in-room must see current lock state immediately.
     await sio.emit("dnd_status", {"emails": dnd_registry.snapshot()}, to=sid)
@@ -322,6 +353,15 @@ async def disconnect(sid: str) -> None:
     # here. Returns the session id only when the LAST owning sid went away.
     if spatial_sessions.clear_sid(sid) is not None:
         await _broadcast_spatial_sessions()
+    # Media cleanup is BY SID and INDEPENDENT of the spatial cleanup above: a dropped call
+    # socket must never imply leaving the spatial conversation (and vice versa). A socket that
+    # never joined media is not in this registry, so this is a no-op for it.
+    if call_registry.clear_sid(sid):
+        await _broadcast_spatial_calls()
+    # Caller's socket vanished mid-ring: terminate their invite so the recipient's prompt clears.
+    # Sid-aware — a socket owning no invite is a no-op here.
+    for invite in call_invites.clear_sid(sid):
+        await _emit_invite_terminal(invite, "call_invite_cancelled", {"reason": "caller_left"})
     if dnd_registry.clear(email):
         await _broadcast_dnd_status()
         await _cancel_stale_talk_requests(email)
@@ -383,6 +423,159 @@ async def spatial_session_leave(sid: str, _payload: dict | None = None) -> None:
         left = spatial_sessions.leave(email)
         if left is not None:
             await _broadcast_spatial_sessions()
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("call_joined")
+async def call_joined(sid: str, payload: dict | None) -> None:
+    """Edge-triggered "my LiveKit connection is live" fact — emitted by callStore.ts ONLY after
+    room.connect() actually resolves, never optimistically on button click. Carries no track,
+    mute or speaking state: LiveKit owns those. Refcounted per socket so multiple tabs compose.
+
+    Deliberately does NOT touch spatial_sessions: joining media is not joining a conversation.
+    """
+    try:
+        payload = payload or {}
+        session_id = payload.get("sessionId")
+        if not isinstance(session_id, str) or not session_id:
+            return
+        session_data = await sio.get_session(sid)
+        email = session_data["email"]
+        # Same eligibility gate the token endpoint applies — a client cannot register itself as
+        # a participant of a session it isn't spatially in.
+        if spatial_sessions.session_of(email) != session_id:
+            return
+        if call_registry.join(session_id, email, sid):
+            await _broadcast_spatial_calls()
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("call_left")
+async def call_left(sid: str, _payload: dict | None = None) -> None:
+    """Edge-triggered "I left the media call". Removes ONLY this socket's media claim — the
+    caller stays in its spatial session and its chat panel stays open (see callStore.ts's leave:
+    it never calls emitSpatialSessionLeave)."""
+    try:
+        session_data = await sio.get_session(sid)
+        email = session_data["email"]
+        if call_registry.leave(email, sid):
+            await _broadcast_spatial_calls()
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+def _is_online(email: str) -> bool:
+    """Any live socket for this email. Mirrors requests.py's get_participants use — a ring must
+    never be sent into the void."""
+    return any(True for _ in sio.manager.get_participants("/", user_room(email)))
+
+
+def _is_in_a_call(email: str) -> bool:
+    """Read-only use of the existing CallRegistry: is this person currently connected to media
+    anywhere? Drives the 'busy' rejection."""
+    key = email.strip().lower()
+    return any(key in entry["participants"] for entry in call_registry.snapshot())
+
+
+async def _emit_invite_terminal(invite: dict, event: str, extra: dict | None = None) -> None:
+    """Terminal states fan out to BOTH parties' user rooms — not just the caller. A recipient with
+    several tabs open must have every prompt cleared, not only the tab that answered."""
+    payload = {**invite_wire(invite), **(extra or {})}
+    for email in (invite["from_email"], invite["to_email"]):
+        await sio.emit(event, payload, room=user_room(email))
+
+
+async def _expire_invite_later(invite_id: str) -> None:
+    """Server-side TTL so a ring cannot hang forever when the recipient simply walks away. Cancels
+    itself implicitly: once the invite is resolved by anyone, the sweep finds nothing."""
+    try:
+        await asyncio.sleep(INVITE_TTL_SECONDS)
+    except asyncio.CancelledError:
+        return
+    invite = call_invites.resolve(invite_id)
+    if invite is not None:
+        await _emit_invite_terminal(invite, "call_invite_cancelled", {"reason": "timeout"})
+
+
+@sio.on("call_invite")
+async def call_invite(sid: str, payload: dict | None) -> None:
+    """Caller rings a specific person. NOTHING spatial or media-related happens here: no
+    conversation, no spatial session, no token, no microphone. Those all wait for accept."""
+    try:
+        payload = payload or {}
+        raw = payload.get("toEmail")
+        if not isinstance(raw, str) or not raw.strip():
+            return
+        to_email = raw.strip().lower()
+        session_data = await sio.get_session(sid)
+        email = session_data["email"].strip().lower()
+
+        def fail(reason: str) -> dict:
+            return {"toEmail": to_email, "reason": reason}
+
+        if to_email == email:
+            return
+        if not _is_online(to_email):
+            await sio.emit("call_invite_failed", fail("offline"), to=sid)
+            return
+        if dnd_registry.is_dnd(to_email):
+            # DND protection is preserved: a ring never reaches a DND person. The caller's own
+            # client routes them to the existing Request-Permission-to-Talk gate instead.
+            await sio.emit("call_invite_failed", fail("dnd"), to=sid)
+            return
+        if _is_in_a_call(to_email):
+            await sio.emit("call_invite_failed", fail("busy"), to=sid)
+            return
+        # One check covers both a duplicate re-invite and glare (both calling at once): the
+        # second invite is refused rather than creating two competing rings.
+        if call_invites.pending_between(email, to_email) is not None:
+            await sio.emit("call_invite_failed", fail("already_ringing"), to=sid)
+            return
+
+        invite = call_invites.create(from_email=email, from_sid=sid, to_email=to_email)
+        await sio.emit("call_invite_incoming", invite_wire(invite), room=user_room(to_email))
+        await sio.emit("call_invite_ringing", invite_wire(invite), room=user_room(email))
+        asyncio.create_task(_expire_invite_later(invite["inviteId"]))
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("call_invite_accept")
+async def call_invite_accept(sid: str, payload: dict | None) -> None:
+    """Recipient accepts. Still no media here — both clients now run the EXISTING approach/chat
+    flow, which creates the spatial session; the existing eligibility-gated path starts LiveKit
+    once that session actually has both members."""
+    await _resolve_invite(sid, payload, role="recipient", event="call_invite_accepted")
+
+
+@sio.on("call_invite_decline")
+async def call_invite_decline(sid: str, payload: dict | None) -> None:
+    await _resolve_invite(sid, payload, role="recipient", event="call_invite_declined")
+
+
+@sio.on("call_invite_cancel")
+async def call_invite_cancel(sid: str, payload: dict | None) -> None:
+    await _resolve_invite(sid, payload, role="caller", event="call_invite_cancelled")
+
+
+async def _resolve_invite(sid: str, payload: dict | None, *, role: str, event: str) -> None:
+    """Shared single-shot resolution. A late or duplicate resolve — including an Accept racing a
+    Cancel — pops nothing and emits nothing, so the first terminal state always wins. Never
+    creates a talk_requests row and never starts a decline cooldown."""
+    try:
+        payload = payload or {}
+        invite_id = payload.get("inviteId")
+        if not isinstance(invite_id, str) or not invite_id:
+            return
+        session_data = await sio.get_session(sid)
+        email = session_data["email"]
+        invite = call_invites.resolve(invite_id, actor_email=email, role=role)
+        if invite is None:
+            return
+        extra = {"reason": "declined"} if event == "call_invite_declined" else None
+        await _emit_invite_terminal(invite, event, extra)
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 

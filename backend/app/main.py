@@ -12,6 +12,7 @@ from app.config import settings
 from app.database import async_session_maker
 from app.realtime.socket import sio
 from app.repositories import position as position_repo
+from app.routers import calls as calls_router
 from app.routers import chat as chat_router
 from app.routers import feed as feed_router
 from app.routers import hub as hub_router
@@ -78,6 +79,7 @@ async def health_check() -> dict:
 
 
 fastapi_app.include_router(chat_router.router)
+fastapi_app.include_router(calls_router.router)
 fastapi_app.include_router(requests_router.router)
 fastapi_app.include_router(room_requests_router.router)
 fastapi_app.include_router(talk_requests_router.router)

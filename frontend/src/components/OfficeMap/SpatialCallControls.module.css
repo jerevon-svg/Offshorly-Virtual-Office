@@ -1,0 +1,59 @@
+/* Sits inside ConversationView's .header, immediately before .headerActions, and ONLY while a
+   call is in progress — so the header keeps its original layout the rest of the time. Sized to
+   match the existing .minimizeButton/.closeButton controls it sits beside; adds no width to the
+   panel. */
+.wrap {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.iconButton {
+  all: unset;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 4px 6px;
+  border-radius: 6px;
+  color: #6b7280;
+}
+
+.iconButton:hover {
+  background: #f3f4f6;
+}
+
+/* Muted is the state worth calling out — an accidentally-muted mic is the common confusion. */
+.muted {
+  color: #b91c1c;
+  background: #fee2e2;
+}
+
+.muted:hover {
+  background: #fecaca;
+}
+
+.leave {
+  color: #b91c1c;
+}
+
+/* Joining an in-progress call is the one affirmative action in this header, so it gets the only
+   accent. Sized off the same .iconButton base so the header keeps its width. */
+.join {
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: #2563eb;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
+.join:hover {
+  background: #1d4ed8;
+}
+
+.connecting {
+  font-size: 10px;
+  color: #6b7280;
+  white-space: nowrap;
+}

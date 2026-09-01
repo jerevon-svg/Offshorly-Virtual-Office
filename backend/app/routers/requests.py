@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_email
 from app.database import get_db
-from app.realtime.socket import sio, user_room
+from app.realtime.socket import call_registry, sio, user_room
 from app.repositories import chat as chat_repo
 from app.repositories import requests as requests_repo
 from app.schemas.requests import CreateRequestIn, RequestOut, ResolveRequestIn
@@ -125,6 +125,11 @@ async def resolve_request(
             for member in members:
                 for sid, _ in list(sio.manager.get_participants("/", user_room(member))):
                     await sio.enter_room(sid, new_cid)
+            # An active voice call must survive the id change: re-key the call mapping so the
+            # NEW session id resolves to the SAME LiveKit room. Everyone already connected stays
+            # put (no room hop, no reconnect), and the joiner's own /calls/token request for the
+            # new id lands in that existing call. No-op when no call is in progress.
+            call_registry.rekey_session(conversation_id, new_cid)
             payload = {
                 "oldConversationId": conversation_id,
                 "newConversationId": new_cid,

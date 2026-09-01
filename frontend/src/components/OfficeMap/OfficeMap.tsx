@@ -115,6 +115,18 @@ import {
   useSpatialSessions,
   type SpatialSessionEntry,
 } from "../../services/presence/spatialSessionStore";
+import {
+  callParticipantsFor,
+  clearAcceptedPeer,
+  getCallSnapshot,
+  isConnectedToMedia,
+  sendCallInvite,
+  startOrJoinCall,
+  useCallState,
+} from "../../services/call/callStore";
+import { CallInvitePrompt } from "./CallInvitePrompt";
+import { AudioDebugPanel } from "./AudioDebugPanel";
+import { SpatialCallControls } from "./SpatialCallControls";
 import { clusterBounds, computeClusterFocus, readMapTransform, shouldRefocus } from "./spatialFocus";
 import { createJoinRequest, onRequestResolved } from "../../services/chat/requestsClient";
 import { JoinRequestPrompt } from "./JoinRequestPrompt";
@@ -453,6 +465,12 @@ export function OfficeMap() {
   // check. Identified by EMAIL (selfChatId), never playerLayerId — those are different
   // identifiers (sprite/layer id vs. real chat identity). members.length >= 2 guards against
   // counting a session where the viewer opened chat but the peer hasn't joined/has left.
+  // Stage A voice calls: ALL LiveKit lifecycle lives in callStore.ts — this component only
+  // reads the connection state (for the IN_CALL status below) and mounts SpatialCallControls
+  // into the two SPATIAL chat slots. No room, track, or mute handling here.
+  const callState = useCallState();
+  const isInCall = isConnectedToMedia(callState);
+
   const inConv = useMemo(
     () =>
       !!selfChatId &&
@@ -1398,6 +1416,45 @@ export function OfficeMap() {
     return s ? { sessionId: s.sessionId, members: [...s.members].sort() } : null;
   }, [spatialSessions, selfChatId]);
 
+  // Character-menu "Call" intent for a person we are NOT yet in a spatial session with. Holds
+  // the TARGET EMAIL (not a conversation id — that doesn't exist yet): the call may only start
+  // once the existing spatial system says the two of us are actually clustered together, which
+  // is precisely `activeSpatialSession` below (>=2 members, includes self). Matching on the
+  // target's email means an unrelated conversation forming later can never trigger a stale call.
+  const pendingCallTargetRef = useRef<string | null>(null);
+
+  // A ring was accepted (by either side). Converge through the EXISTING approach + spatial-panel
+  // flow — the same one the "chat" action uses — which is what creates/reuses the conversation and
+  // emits spatial_session_start. pendingCallTargetRef then lets the eligibility-gated effect below
+  // start media once the session genuinely has both members. No second LiveKit join path, and no
+  // token or microphone before this point.
+  useEffect(() => {
+    const peer = callState.acceptedPeerEmail;
+    if (!peer) return;
+    clearAcceptedPeer();
+    pendingCallTargetRef.current = peer;
+    const peerLayer = buildPeerLayer(peer);
+    approachCharacter(peerLayer, () => {
+      setOpenGroupConv(null);
+      setSpatialChatMinimized(false);
+      setOpenChat(peerLayer);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [callState.acceptedPeerEmail]);
+
+  // Fires the deferred call exactly once, the moment the spatial session becomes eligible.
+  // Deliberately gated on the SAME derived session the "In Conversation" status uses — this adds
+  // no second notion of call eligibility, and the backend re-verifies membership on the token
+  // request regardless.
+  useEffect(() => {
+    const wanted = pendingCallTargetRef.current;
+    if (!wanted || !activeSpatialSession) return;
+    if (!activeSpatialSession.members.includes(wanted)) return;
+    pendingCallTargetRef.current = null;
+    void startSpatialCall(activeSpatialSession.sessionId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSpatialSession]);
+
   useEffect(() => {
     const ref = transformRef.current;
     const wrapper = ref?.instance.wrapperComponent;
@@ -1602,6 +1659,10 @@ export function OfficeMap() {
   useAutoStatusDetection({
     inConversation: inConv,
     offline: !hasCheckedIn || checkoutFlow.state === "CHECKED_OUT",
+    // Connected to LiveKit media -> IN_CALL (outranks IN_CONVERSATION in the existing
+    // resolveCurrentStatus precedence). Leaving the call flips this false while the spatial
+    // session persists, so status falls back to IN_CONVERSATION on its own — no extra wiring.
+    inCall: isInCall,
   });
 
   // Company Hub V1 (see services/hub/companyHubStore.ts) — opened once check-in completes
@@ -3353,6 +3414,18 @@ export function OfficeMap() {
     return spatialSessions.find((s) => s.members.includes(email));
   }
 
+  // Single place the character menu's "Call" action reaches LiveKit. All room/track lifecycle
+  // stays in callStore.ts; this only surfaces a failure (e.g. the backend's 403/409 eligibility
+  // checks) through the existing toast, since there is no longer a header button to show it on.
+  async function startSpatialCall(sessionId: string) {
+    await startOrJoinCall(sessionId);
+    const snap = getCallSnapshot();
+    if (snap.status === "error" && snap.error) {
+      setToast(snap.error);
+      setTimeout(() => setToast(null), 2600);
+    }
+  }
+
   function handleChoose(
     action: "chat" | "call" | "approach" | "walkDemo" | "patDemo" | "askToJoin" | "viewProfile",
   ) {
@@ -3369,23 +3442,27 @@ export function OfficeMap() {
       setPersonGate(null);
     }
 
-    // Person-level DND protection (feature spec section 7): Chat/Approach must not auto-walk or
-    // open a spatial conversation with a DND person from outside — gate behind Request
+    // Person-level DND protection (feature spec section 7): Chat/Approach/Call must not auto-walk
+    // or open a spatial conversation with a DND person from outside — gate behind Request
     // Permission to Talk instead. Real employees only (target.id is an email, per the existing
     // "real roster people key their layer id straight off email" convention below); demo/NPC
     // characters (bon/alex/micah/lui ids) are never in dndEmails, so they're never gated. "Call"
-    // isn't a real spatial interaction yet (falls into the final else-branch's "coming soon"
-    // toast) so it needs no gating here. Room-entry protection (walkToSeat/handleMapRightClick)
-    // is a SEPARATE, already-existing gate — this one applies regardless of room/location, per
-    // "DND protects the employee, not merely the room."
-    if ((action === "approach" || action === "chat") && target.id.includes("@")) {
+    // is gated here too now that it establishes a real spatial conversation before starting
+    // media — without it, Call would be a way around the very protection Chat honours.
+    // Room-entry protection (walkToSeat/handleMapRightClick) is a SEPARATE, already-existing
+    // gate — this one applies regardless of room/location, per "DND protects the employee, not
+    // merely the room."
+    if ((action === "approach" || action === "chat" || action === "call") && target.id.includes("@")) {
       const targetEmail = target.id.trim().toLowerCase();
       if (dndEmails.has(targetEmail)) {
         setMenu(null);
         setPersonGate({
           targetEmail,
           targetName: name,
-          kind: action,
+          // "call" rides the existing "chat" talk-request kind — it IS a request to talk, and
+          // the backend's CreateTalkRequestIn enum is deliberately left untouched. The call
+          // intent itself is remembered separately in resume() below.
+          kind: action === "call" ? "chat" : action,
           pendingRequestId: null,
           resume: () => {
             if (action === "approach") {
@@ -3393,6 +3470,9 @@ export function OfficeMap() {
                 facerFor(target.id)?.(directionBetween(targetCenter, arriveCenter));
               });
             } else {
+              // A DND person is never rung (the server rejects it too). Allowing "talk" resumes
+              // as a plain spatial conversation; the call can then be started from the menu via
+              // the already-in-session path, which needs no invite.
               approachCharacter(target, () => {
                 setOpenGroupConv(null);
                 setSpatialChatMinimized(false);
@@ -3469,10 +3549,35 @@ export function OfficeMap() {
         setToast(`Asked to join ${name}’s conversation…`);
         setTimeout(() => setToast(null), 1800);
       }
+    } else if (action === "call") {
+      // CALL ENTRY POINT (Stage A, voice only). The spatial session — never this menu — decides
+      // eligibility; this branch only expresses intent.
+      setMenu(null);
+      const targetEmail = target.id.trim().toLowerCase();
+
+      // (a) Already clustered with this person: start/join their call immediately. No ring is
+      //     needed or wanted — we are already together, and this is also the rejoin path.
+      if (activeSpatialSession?.members.includes(targetEmail)) {
+        void startSpatialCall(activeSpatialSession.sessionId);
+        return;
+      }
+
+      // (b) They're mid-conversation with someone else. Joining that conversation is Ask to
+      //     Join's job (already offered in this same menu) — do not fabricate a parallel path
+      //     into a call we aren't eligible for.
+      const theirSession = findSpatialSessionForLayer(target.id);
+      if (theirSession && theirSession.members.length >= 2 && !theirSession.members.includes(selfChatId)) {
+        setToast(`${name} is in a conversation — ask to join first.`);
+        setTimeout(() => setToast(null), 2400);
+        return;
+      }
+
+      // (c) Not together yet: RING them. Intent only — no walk, no chat panel, no conversation,
+      //     no spatial session, no token, no microphone. All of that waits for their Accept (see
+      //     the acceptedPeerEmail effect above), so a declined call leaves zero residue.
+      sendCallInvite(targetEmail);
     } else {
       closeCharacterMenu();
-      setToast(`Calling ${name}… — coming soon`);
-      setTimeout(() => setToast(null), 1800);
     }
   }
 
@@ -4248,6 +4353,13 @@ export function OfficeMap() {
           anchor={menu}
           onChoose={handleChoose}
           onClose={closeCharacterMenu}
+          // Label-only hint so an already-running call is discoverable from the menu that starts
+          // one. Scoped to the viewer's OWN active spatial session, so a call elsewhere in the
+          // office never relabels this item.
+          targetInActiveCall={callParticipantsFor(
+            callState,
+            activeSpatialSession?.sessionId ?? null,
+          ).includes(menu.layer.id.trim().toLowerCase())}
           showDemos={
             menu.layer.id === "alex" ||
             menu.layer.id === "micah" ||
@@ -4345,6 +4457,11 @@ export function OfficeMap() {
             onIncomingMessage={handleTalkingMessage}
             onTypingChange={setSelfTyping}
             isSpatial
+            // Voice-call controls: SPATIAL SLOT ONLY. The remote (Global Chat) windows rendered
+            // further below never receive this prop, so a plain DM or remote group can never
+            // show a call button. openConversationId is the spatial window's own conversation
+            // id, which is exactly the spatial session id the backend gates the token on.
+            headerExtra={<SpatialCallControls sessionId={openConversationId} />}
             minimized={spatialChatMinimized}
             onMinimizeToggle={() => setSpatialChatMinimized((v) => !v)}
             onConversationOpen={(conversationId) => {
@@ -4387,6 +4504,8 @@ export function OfficeMap() {
             onIncomingMessage={handleTalkingMessage}
             onTypingChange={setSelfTyping}
             isSpatial
+            // Same spatial-slot-only reasoning as the DM panel above.
+            headerExtra={<SpatialCallControls sessionId={openConversationId} />}
             minimized={spatialChatMinimized}
             onMinimizeToggle={() => setSpatialChatMinimized((v) => !v)}
             onConversationOpen={(conversationId) => {
@@ -4527,6 +4646,12 @@ export function OfficeMap() {
         />
       )}
       {chatMode === "real" && <DndRequestQueue resolveDisplayName={resolveDisplayName} />}
+      {/* Ringing UI — top level, so an incoming call reaches the recipient with Spatial Chat
+          closed and nobody clicked. */}
+      {chatMode === "real" && <CallInvitePrompt resolveDisplayName={resolveDisplayName} />}
+      {/* TEMPORARY dev-only voice diagnostic — renders only while connected to a call, and is
+          dead code in production builds (see AudioDebugPanel's import.meta.env.DEV gate). */}
+      {import.meta.env.DEV && <AudioDebugPanel />}
       <RoomLockedToast
         roomName={roomEntryGate?.roomName ?? null}
         pendingRequestId={roomEntryGate?.pendingRequestId ?? null}

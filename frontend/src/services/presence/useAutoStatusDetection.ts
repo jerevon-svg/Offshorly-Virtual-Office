@@ -13,17 +13,24 @@ export interface UseAutoStatusDetectionParams {
   /** Whether the local viewer has hard-disconnected (checked out) — drives
    *  the OFFLINE auto condition, which always wins over everything else. */
   offline: boolean;
+  /** Whether the local viewer is CONNECTED to LiveKit media for their spatial
+   *  conversation (see services/call/callStore.ts) — drives the IN_CALL auto
+   *  condition, which outranks IN_CONVERSATION in resolveCurrentStatus. False
+   *  the moment they leave the call, which is what returns them to
+   *  IN_CONVERSATION while they stay in the spatial session. */
+  inCall: boolean;
 }
 
 // Mounted once in OfficeMap. Owns idle (Away) detection via DOM listeners +
-// a debounce timer, and syncs the caller-computed inConversation/offline
-// flags into the shared self-status store. inCall has no real
-// call/WebRTC system in this repo yet — it stays a settable store flag
-// nothing currently sets for self (forward-compatible), so it is not wired
-// here.
+// a debounce timer, and syncs the caller-computed inConversation/offline/
+// inCall flags into the shared self-status store. inCall is now driven by a
+// real media connection (Stage A voice calls, services/call/callStore.ts);
+// the status precedence it feeds (IN_CALL > IN_CONVERSATION) already existed
+// in status.ts and is unchanged.
 export function useAutoStatusDetection({
   inConversation,
   offline,
+  inCall,
 }: UseAutoStatusDetectionParams): void {
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -80,4 +87,8 @@ export function useAutoStatusDetection({
   useEffect(() => {
     setAutoCondition("offline", offline);
   }, [offline]);
+
+  useEffect(() => {
+    setAutoCondition("inCall", inCall);
+  }, [inCall]);
 }

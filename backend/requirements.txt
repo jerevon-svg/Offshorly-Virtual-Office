@@ -13,6 +13,11 @@ pydantic>=2.5.3
 pydantic-settings>=2.1.0
 python-dotenv>=1.0.0
 
+# LiveKit server SDK — used ONLY to mint short-lived participant JWTs for Stage A voice calls
+# (app/routers/calls.py). Pure local signing: no media, no outbound calls, no async runtime
+# impact. The API key/secret it signs with stay backend-only (see app/config.py).
+livekit-api>=1.2.1
+
 httpx>=0.26.0
 # [asyncio_client] extra pulls aiohttp/websockets — only exercised by tests/test_chat_socket.py's
 # real socketio.AsyncClient, but kept in one requirements.txt to match the scaffold's existing

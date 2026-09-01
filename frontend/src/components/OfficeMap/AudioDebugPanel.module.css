@@ -1,0 +1,68 @@
+/* TEMPORARY DEV-ONLY diagnostic. Fixed-position and dead-code-eliminated from production builds
+   (see AudioDebugPanel.tsx's import.meta.env.DEV gate), so it cannot affect production layout. */
+.panel {
+  position: fixed;
+  bottom: 24px;
+  left: 24px;
+  z-index: 210;
+  min-width: 210px;
+  max-width: 260px;
+  background: rgba(10, 10, 14, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  line-height: 1.5;
+  color: #e5e7eb;
+}
+
+.header {
+  all: unset;
+  cursor: pointer;
+  display: block;
+  width: 100%;
+  font: inherit;
+  font-weight: 700;
+  color: #93c5fd;
+  padding-bottom: 2px;
+}
+
+.section {
+  margin-top: 6px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.label {
+  color: #9ca3af;
+}
+
+.yes {
+  color: #4ade80;
+}
+
+.no {
+  color: #f87171;
+}
+
+.meter {
+  letter-spacing: 1px;
+}
+
+.warn {
+  margin-top: 5px;
+  color: #fbbf24;
+}
+
+.resume {
+  all: unset;
+  cursor: pointer;
+  margin-top: 4px;
+  font: inherit;
+  font-weight: 700;
+  color: #0a0a0e;
+  background: #fbbf24;
+  padding: 3px 7px;
+  border-radius: 4px;
+}
