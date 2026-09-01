@@ -30,7 +30,12 @@ const TRANSITIONS: Record<CheckoutState, CheckoutState[]> = {
   EDITING_TIME_LOG: ["REVIEWING"],
   REVIEWING: ["SUBMITTING", "EDITING_TIME_LOG"],
   SUBMITTING: ["CHECKOUT_SUCCESS", "SUBMISSION_FAILED"],
-  SUBMISSION_FAILED: ["EDITING_TIME_LOG", "REVIEWING"], // retry
+  // Retry (EDITING_TIME_LOG/REVIEWING) plus "Save and return later" (IDLE) —
+  // SubmissionFailedPanel's only other action, previously missing here,
+  // which made useCheckoutFlow.saveAndReturnLater() throw
+  // "Illegal checkout state transition: SUBMISSION_FAILED -> IDLE" the
+  // moment a real submission failure occurred (its only call site).
+  SUBMISSION_FAILED: ["EDITING_TIME_LOG", "REVIEWING", "IDLE"],
   CHECKOUT_SUCCESS: ["WALKING_TO_EXIT"],
   WALKING_TO_EXIT: ["CHECKED_OUT"],
   CHECKED_OUT: [],

@@ -333,6 +333,63 @@ describe("useAuthGate", () => {
       expect(getCurrentUser()?.email).toBe("alex@offshorly.com");
     });
 
+    it("sanitizes a malformed ?as=x@y.com?deviceTier=t2 (stray second '?') down to just the email", () => {
+      // A tester wrote `?as=x@y.com?deviceTier=t2` instead of
+      // `?as=x@y.com&deviceTier=t2` — URLSearchParams.get("as") returns the
+      // WHOLE malformed tail verbatim ("x@y.com?deviceTier=t2"), which must
+      // not pollute the dev identity.
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: {
+          ...window.location,
+          href: "https://atlas.offshorly.com/virtual-office?as=alex@offshorly.com?deviceTier=t2",
+          search: "?as=alex@offshorly.com?deviceTier=t2",
+        },
+      });
+
+      render(<GateProbe />);
+
+      expect(getCurrentUser()?.email).toBe("alex@offshorly.com");
+    });
+
+    it("a well-formed ?as=x@y.com&deviceTier=t2 resolves the identity AND leaves deviceTier as its own separate, readable param", () => {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: {
+          ...window.location,
+          href: "https://atlas.offshorly.com/virtual-office?as=alex@offshorly.com&deviceTier=t2",
+          search: "?as=alex@offshorly.com&deviceTier=t2",
+        },
+      });
+
+      render(<GateProbe />);
+
+      expect(getCurrentUser()?.email).toBe("alex@offshorly.com");
+      // deviceTier is a genuinely separate URLSearchParams entry here (not
+      // swallowed into "as") — confirms the well-formed `&` case is
+      // unaffected by the "as" sanitizer, which only ever reads the "as" key.
+      expect(new URLSearchParams(window.location.search).get("deviceTier")).toBe("t2");
+    });
+
+    it("rejects a junk ?as=?deviceTier=t2 (no real as= value) and falls back to the default bypass identity", () => {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: {
+          ...window.location,
+          href: "https://atlas.offshorly.com/virtual-office?as=?deviceTier=t2",
+          search: "?as=?deviceTier=t2",
+        },
+      });
+
+      render(<GateProbe />);
+
+      // "as" resolves to an empty-first-segment ("" before the stray "?"),
+      // which is not a plausible email — rejected, falling through to the
+      // default Bon identity rather than seeding a broken/empty email.
+      expect(getCurrentUser()?.email).toBe("jerevon@offshorly.com");
+      expect(getCurrentUser()?.full_name).toBe("Bon");
+    });
+
     it("wires the resolved bypass email into chat's dev identity when chat mode is real", () => {
       chatModeState.value = "real";
       Object.defineProperty(window, "location", {

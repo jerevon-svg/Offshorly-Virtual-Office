@@ -25,6 +25,11 @@
  *     idle:1 shrug:317 thinking:36 sit:33
  *
  * Output: scripts/avatar-pipeline/output/meshy-employees/<employeeName>/<employeeName>-<poseName>.glb
+ *   (+ any returned .fbx / -armature.glb variants, and a per-task
+ *   <employeeName>-<poseName>.task.json with task id, action id, credits,
+ *   timestamps, result URLs and expiry — no secrets). Added 2026-08-28.
+ *   Refuses to overwrite an existing <employeeName>-<poseName>.glb.
+ *   Poses run strictly sequentially (one task in flight at a time).
  *
  * SECURITY: never log/print process.env.MESHY_API_KEY / the loaded key.
  * COST WARNING: each pose submitted here is a real, paid Meshy Animation
@@ -161,7 +166,12 @@ async function main() {
     console.log(`[pose-anim] Auth OK. Credit balance before: ${balanceBefore}`);
 
     const downloaded = [];
+    for (const { name } of poses) {
+      const p = path.join(outDir, `${employeeName}-${name}.glb`);
+      if (fs.existsSync(p)) throw new Error(`Refusing to overwrite existing clip: ${p} — use a different pose name`);
+    }
     for (const { name, actionId } of poses) {
+      const submittedAt = new Date().toISOString();
       const taskId = await submitAnimation(apiKey, riggedTaskId, actionId);
       const task = await pollAnimation(apiKey, taskId);
       const url = task.result && task.result.animation_glb_url;
@@ -174,6 +184,23 @@ async function main() {
       const d = await downloadFile(url, outPath);
       console.log(`[pose-anim] ${name}: SUCCESS task_id=${task.id} consumed_credits=${task.consumed_credits ?? "?"} -> ${d.outPath} (${d.bytes} bytes)`);
       downloaded.push({ name, actionId, taskId: task.id, ...d });
+      // Extra artifacts (fbx / armature-only glb) when the API returns them.
+      const extras = [];
+      for (const [k, v] of Object.entries(task.result || {})) {
+        if (k === "animation_glb_url" || typeof v !== "string" || !/^https?:/.test(v)) continue;
+        const ext = /fbx/i.test(k) ? "fbx" : "glb";
+        const suffix = /armature/i.test(k) ? "-armature" : "";
+        const extraOut = path.join(outDir, `${employeeName}-${name}${suffix}.${ext}`);
+        if (fs.existsSync(extraOut)) continue;
+        extras.push({ key: k, url: v, ...(await downloadFile(v, extraOut)) });
+      }
+      fs.writeFileSync(path.join(outDir, `${employeeName}-${name}.task.json`), JSON.stringify({
+        step: "animation", employee: employeeName, clip: name, rig_task_id: riggedTaskId, action_id: actionId,
+        endpoint: "POST /openapi/v1/animations", task_id: task.id, consumed_credits: task.consumed_credits ?? null,
+        submitted_at: submittedAt, finished_at: new Date().toISOString(),
+        meshy_created_at: task.created_at ?? null, meshy_finished_at: task.finished_at ?? null, expires_at: task.expires_at ?? null,
+        result_urls: task.result || {}, output: outPath, bytes: d.bytes, extras,
+      }, null, 2));
     }
 
     const balanceAfter = await checkBalance(apiKey);

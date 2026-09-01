@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
-import type { ChatMessage, ChatService, Conversation } from "../../services/chat/types";
+import { render, screen, fireEvent, waitFor, cleanup, act } from "@testing-library/react";
+import type {
+  ChatMessage,
+  ChatService,
+  Conversation,
+  DeliveryReceiptUpdate,
+  ReadReceiptUpdate,
+} from "../../services/chat/types";
 
 afterEach(() => {
   cleanup();
@@ -313,6 +319,151 @@ describe("GroupConversationView", () => {
     expect(screen.queryByTestId("seen-stack")).not.toBeInTheDocument();
     expect(screen.queryByText(/Delivered/)).not.toBeInTheDocument();
     expect(screen.queryByText("Sent")).not.toBeInTheDocument();
+  });
+});
+
+describe("GroupConversationView live receipts", () => {
+  // Captures the receipt listeners the view registers so a test can play a server
+  // read_receipt/delivery_receipt into the mounted view without a socket.
+  function makeReceiptService(history: ChatMessage[]) {
+    let readCb: ((u: ReadReceiptUpdate) => void) | null = null;
+    let deliveryCb: ((u: DeliveryReceiptUpdate) => void) | null = null;
+    const service = makeFakeService({
+      getMessages: vi.fn(async () => history),
+      onReadReceipt: (cb) => {
+        readCb = cb;
+        return () => {
+          readCb = null;
+        };
+      },
+      onDeliveryReceipt: (cb) => {
+        deliveryCb = cb;
+        return () => {
+          deliveryCb = null;
+        };
+      },
+    });
+    return {
+      service,
+      read: (u: ReadReceiptUpdate) => act(() => readCb!(u)),
+      deliver: (u: DeliveryReceiptUpdate) => act(() => deliveryCb!(u)),
+    };
+  }
+  const T0 = "2026-08-22T10:00:00.000Z";
+  const T1 = "2026-08-22T10:01:00.000Z";
+  const avatarsIn = (el: HTMLElement) => el.querySelectorAll('[data-initials-avatar="true"]').length;
+
+  it("adds the verified reader's avatar live (no reopen) and drops the Sent label", async () => {
+    const { service, read } = makeReceiptService([makeMessage({ id: "own-1", text: "hey", sentAt: T0 })]);
+    await mountWith(service);
+    await waitFor(() => expect(screen.getByText("Sent")).toBeInTheDocument());
+
+    read({ conversationId: CONVERSATION_ID, readUpTo: T0, readerEmail: OTHER_A });
+
+    expect(screen.getByTestId("seen-stack")).toHaveTextContent("A");
+    expect(screen.queryByText("Sent")).not.toBeInTheDocument();
+  });
+
+  it("accumulates multiple readers without replacement, and a duplicate receipt adds nothing", async () => {
+    const { service, read } = makeReceiptService([makeMessage({ id: "own-1", text: "hey", sentAt: T0 })]);
+    await mountWith(service);
+    await waitFor(() => expect(screen.getByText("hey")).toBeInTheDocument());
+
+    read({ conversationId: CONVERSATION_ID, readUpTo: T0, readerEmail: OTHER_A });
+    read({ conversationId: CONVERSATION_ID, readUpTo: T0, readerEmail: OTHER_B });
+    read({ conversationId: CONVERSATION_ID, readUpTo: T0, readerEmail: OTHER_B.toUpperCase() });
+
+    const stack = screen.getByTestId("seen-stack");
+    expect(stack).toHaveTextContent("A");
+    expect(stack).toHaveTextContent("L");
+    expect(avatarsIn(stack)).toBe(2);
+  });
+
+  it("keeps the newest-read anchor semantics for live receipts", async () => {
+    const { service, read } = makeReceiptService([
+      makeMessage({ id: "own-1", text: "first", sentAt: T0 }),
+      makeMessage({ id: "own-2", text: "second", sentAt: T1 }),
+    ]);
+    await mountWith(service);
+    await waitFor(() => expect(screen.getByText("second")).toBeInTheDocument());
+
+    read({ conversationId: CONVERSATION_ID, readUpTo: T0, readerEmail: OTHER_B }); // only "first"
+    read({ conversationId: CONVERSATION_ID, readUpTo: T1, readerEmail: OTHER_A }); // both
+
+    const stacks = screen.getAllByTestId("seen-stack");
+    expect(stacks).toHaveLength(2);
+    expect(stacks[0]).toHaveTextContent("L");
+    expect(stacks[1]).toHaveTextContent("A");
+    expect(stacks[1]).not.toHaveTextContent("L");
+  });
+
+  it("ignores unrelated-conversation, legacy identity-less, self, and too-old receipts", async () => {
+    const { service, read } = makeReceiptService([makeMessage({ id: "own-1", text: "hey", sentAt: T1 })]);
+    await mountWith(service);
+    await waitFor(() => expect(screen.getByText("Sent")).toBeInTheDocument());
+
+    read({ conversationId: "some-other-conv", readUpTo: T1, readerEmail: OTHER_A });
+    read({ conversationId: CONVERSATION_ID, readUpTo: T1 }); // legacy server: no readerEmail
+    read({ conversationId: CONVERSATION_ID, readUpTo: T1, readerEmail: SELF });
+    read({ conversationId: CONVERSATION_ID, readUpTo: T0, readerEmail: OTHER_A }); // before the message
+
+    expect(screen.queryByTestId("seen-stack")).not.toBeInTheDocument();
+    expect(screen.getByText("Sent")).toBeInTheDocument();
+  });
+
+  it("never touches peer-authored messages", async () => {
+    const { service, read } = makeReceiptService([
+      makeMessage({ id: "peer-1", senderId: OTHER_A, text: "peer msg", sentAt: T0 }),
+      makeMessage({ id: "own-1", text: "mine", sentAt: T1 }),
+    ]);
+    await mountWith(service);
+    await waitFor(() => expect(screen.getByText("mine")).toBeInTheDocument());
+
+    read({ conversationId: CONVERSATION_ID, readUpTo: T1, readerEmail: OTHER_B });
+
+    // Exactly one stack, under the own message; the peer message gained nothing.
+    expect(screen.getAllByTestId("seen-stack")).toHaveLength(1);
+    expect(screen.getByTestId("seen-stack")).toHaveTextContent("L");
+  });
+
+  it("progresses the delivery label live: Sent -> Delivered to 1 -> Delivered", async () => {
+    const { service, deliver } = makeReceiptService([makeMessage({ id: "own-1", text: "hey", sentAt: T0 })]);
+    await mountWith(service);
+    await waitFor(() => expect(screen.getByText("Sent")).toBeInTheDocument());
+
+    deliver({ conversationId: CONVERSATION_ID, deliveredUpTo: T0, recipientEmail: OTHER_A });
+    expect(screen.getByText("Delivered to 1")).toBeInTheDocument();
+
+    deliver({ conversationId: CONVERSATION_ID, deliveredUpTo: T0, recipientEmail: OTHER_A }); // duplicate
+    expect(screen.getByText("Delivered to 1")).toBeInTheDocument();
+
+    deliver({ conversationId: CONVERSATION_ID, deliveredUpTo: T0, recipientEmail: OTHER_B });
+    expect(screen.getByText("Delivered")).toBeInTheDocument();
+    expect(screen.queryByTestId("seen-stack")).not.toBeInTheDocument();
+  });
+});
+
+describe("applyReceiptToMessages", () => {
+  const base = [
+    makeMessage({ id: "own-1", sentAt: "2026-08-22T10:00:00.000Z" }),
+    makeMessage({ id: "peer-1", senderId: OTHER_A, sentAt: "2026-08-22T10:00:30.000Z" }),
+    makeMessage({ id: "own-2", sentAt: "2026-08-22T10:01:00.000Z" }),
+  ];
+
+  it("adds the reader to every own message at or before readUpTo (inclusive), never to peer messages", async () => {
+    const { applyReceiptToMessages } = await import("./GroupConversationView");
+    const next = applyReceiptToMessages(base, SELF, "readBy", OTHER_B, "2026-08-22T10:01:00.000Z");
+    expect(next.map((m) => m.readBy)).toEqual([[OTHER_B], [], [OTHER_B]]);
+    expect(base.every((m) => m.readBy.length === 0)).toBe(true); // immutable
+  });
+
+  it("returns the same array reference when nothing changes (missing/self identity, dedupe, too old)", async () => {
+    const { applyReceiptToMessages } = await import("./GroupConversationView");
+    expect(applyReceiptToMessages(base, SELF, "readBy", undefined, "2026-08-22T10:01:00.000Z")).toBe(base);
+    expect(applyReceiptToMessages(base, SELF, "readBy", SELF, "2026-08-22T10:01:00.000Z")).toBe(base);
+    expect(applyReceiptToMessages(base, SELF, "readBy", OTHER_B, "2026-08-22T09:00:00.000Z")).toBe(base);
+    const once = applyReceiptToMessages(base, SELF, "deliveredTo", OTHER_B, "2026-08-22T10:01:00.000Z");
+    expect(applyReceiptToMessages(once, SELF, "deliveredTo", "LUI@example.com", "2026-08-22T10:01:00.000Z")).toBe(once);
   });
 });
 

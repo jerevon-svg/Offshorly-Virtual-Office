@@ -10,23 +10,25 @@ import type { DeviceTier } from "./deviceTier";
 /**
  * Max number of simultaneously-live-3D-rendered "crowd" characters (i.e.
  * anyone other than the viewer's own self, once self has its own allowance —
- * see LIVE_3D_SELF_MIN_TIER) allowed per device tier. T0 and T1 are 0 on
- * purpose: T0 can't run live 3D at all, and T1's crowd cap is intentionally
- * held at 0 until field data justifies promoting it. Only T2 gets any
- * crowd-budgeted live-3D at launch.
+ * see LIVE_3D_SELF_MIN_TIER) allowed per device tier. T0 is 0 on purpose:
+ * T0 can't run live 3D at all (the 2D sprite safety floor). T1 launched at
+ * 0 and was raised to 2 on 2026-08-29, once alex joined the registry: a
+ * microbench-rescued T1 machine (e.g. Bon's M1 Mac mini) could otherwise
+ * never see a peer's 3D animations. Peers beyond the cap are picked by the
+ * existing deterministic rule in OfficeStage.tsx — first-come in depth-sort
+ * (`createDepthCompare`) render order — and the rest stay 2D sprites. T1
+ * peers resolve to LOD1 via live3dCharacters.ts's resolveLive3dGlbUrl.
  *
- * NOTE: this cap is currently DORMANT for the only character in the
- * registry (bon) — see OfficeStage.tsx's size-gated relaxation, which lets
- * bon render live-3D for every T1+ viewer (self AND peer) while
- * LIVE_3D_CHARACTERS has exactly one entry, since there's no "crowd" to
- * budget against yet. This cap re-arms automatically — with no code change
- * needed here — the moment a second character is added to that registry;
- * OfficeStage.tsx then falls back to enforcing this cap for every character
- * that isn't the viewer's own self.
+ * NOTE: this cap is DORMANT while LIVE_3D_CHARACTERS has exactly one entry
+ * — see OfficeStage.tsx's size-gated relaxation, which lets that lone
+ * character render live-3D for every T1+ viewer (self AND peer) since
+ * there's no "crowd" to budget against. With two or more registered
+ * characters (bon + alex today) OfficeStage.tsx enforces this cap for every
+ * character that isn't the viewer's own self.
  */
 export const LIVE_3D_CAP_BY_TIER: Record<DeviceTier, number> = {
   T0: 0,
-  T1: 0,
+  T1: 2,
   T2: 4,
 };
 

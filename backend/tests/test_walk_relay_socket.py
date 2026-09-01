@@ -9,6 +9,7 @@ import uvicorn
 from app.config import settings
 from app.database import Base, engine
 from app.main import app as combined_app
+from app.realtime import socket as socket_module
 
 pytestmark = pytest.mark.asyncio
 
@@ -21,6 +22,8 @@ async def server():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    socket_module.position_registry.reset()
+
     config = uvicorn.Config(combined_app, host="127.0.0.1", port=0, log_level="warning", lifespan="off")
     srv = uvicorn.Server(config)
     task = asyncio.create_task(srv.serve())
@@ -32,6 +35,7 @@ async def server():
 
     srv.should_exit = True
     await task
+    socket_module.position_registry.reset()
     settings.APP_ENV = original_env
 
 
@@ -42,6 +46,31 @@ async def _connect_as(url: str, email: str) -> socketio.AsyncClient:
         timeout=5,
     )
     return client
+
+
+def _walk_started_payload(**overrides):
+    payload = {
+        "movementId": "m1",
+        "origin": {"x": 0, "y": 0},
+        "path": [{"x": 10, "y": 0}, {"x": 20, "y": 0}],
+        "roomId": None,
+        "durationMs": 500,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _walk_arrived_payload(**overrides):
+    payload = {
+        "movementId": "m1",
+        "at": {"x": 5, "y": 5},
+        "facing": "front",
+        "state": "standing",
+        "seatKey": None,
+        "roomId": None,
+    }
+    payload.update(overrides)
+    return payload
 
 
 async def test_walk_started_rebroadcasts_to_others_not_sender(server):
@@ -62,12 +91,13 @@ async def test_walk_started_rebroadcasts_to_others_not_sender(server):
         if not b_future.done():
             b_future.set_result(data)
 
-    payload = {"from": {"x": 0, "y": 0}, "path": [{"x": 10, "y": 0}, {"x": 20, "y": 0}]}
+    payload = _walk_started_payload()
     await a.emit("walk_started", payload)
 
     b_payload = await asyncio.wait_for(b_future, timeout=2)
-    assert b_payload["from"] == payload["from"]
+    assert b_payload["origin"] == payload["origin"]
     assert b_payload["path"] == payload["path"]
+    assert b_payload["movementId"] == payload["movementId"]
 
     await asyncio.sleep(0.2)
     assert not a_future.done()
@@ -88,11 +118,7 @@ async def test_walk_started_uses_server_identity_ignoring_client_email(server):
         if not b_future.done():
             b_future.set_result(data)
 
-    payload = {
-        "from": {"x": 0, "y": 0},
-        "path": [{"x": 10, "y": 0}],
-        "email": "evil@example.com",
-    }
+    payload = _walk_started_payload(email="evil@example.com")
     await a.emit("walk_started", payload)
 
     b_payload = await asyncio.wait_for(b_future, timeout=2)
@@ -107,6 +133,16 @@ async def test_walk_arrived_rebroadcasts_to_others_not_sender(server):
     b = await _connect_as(server, "b@example.com")
     await asyncio.sleep(0.2)
 
+    started_future: asyncio.Future = asyncio.get_event_loop().create_future()
+
+    @b.on("peer_walk_started")
+    async def on_started(data):
+        if not started_future.done():
+            started_future.set_result(data)
+
+    await a.emit("walk_started", _walk_started_payload())
+    await asyncio.wait_for(started_future, timeout=2)
+
     a_future: asyncio.Future = asyncio.get_event_loop().create_future()
     b_future: asyncio.Future = asyncio.get_event_loop().create_future()
 
@@ -120,7 +156,7 @@ async def test_walk_arrived_rebroadcasts_to_others_not_sender(server):
         if not b_future.done():
             b_future.set_result(data)
 
-    payload = {"at": {"x": 5, "y": 5}}
+    payload = _walk_arrived_payload()
     await a.emit("walk_arrived", payload)
 
     b_payload = await asyncio.wait_for(b_future, timeout=2)
@@ -138,6 +174,16 @@ async def test_walk_arrived_uses_server_identity_ignoring_client_email(server):
     b = await _connect_as(server, "b@example.com")
     await asyncio.sleep(0.2)
 
+    started_future: asyncio.Future = asyncio.get_event_loop().create_future()
+
+    @b.on("peer_walk_started")
+    async def on_started(data):
+        if not started_future.done():
+            started_future.set_result(data)
+
+    await a.emit("walk_started", _walk_started_payload())
+    await asyncio.wait_for(started_future, timeout=2)
+
     b_future: asyncio.Future = asyncio.get_event_loop().create_future()
 
     @b.on("peer_walk_arrived")
@@ -145,7 +191,7 @@ async def test_walk_arrived_uses_server_identity_ignoring_client_email(server):
         if not b_future.done():
             b_future.set_result(data)
 
-    payload = {"at": {"x": 5, "y": 5}, "email": "evil@example.com"}
+    payload = _walk_arrived_payload(email="evil@example.com")
     await a.emit("walk_arrived", payload)
 
     b_payload = await asyncio.wait_for(b_future, timeout=2)
@@ -163,10 +209,10 @@ async def test_invalid_walk_payloads_rejected_without_crash(server):
     malformed_payloads = [
         {},
         {"path": [{"x": 1, "y": 1}]},
-        {"from": {"x": "0", "y": 0}, "path": [{"x": 1, "y": 1}]},
-        {"from": {"x": 0, "y": 0}, "path": []},
-        {"from": {"x": 0, "y": 0}, "path": "not-a-list"},
-        {"from": {"x": 0, "y": 0}, "path": [{"x": 1}]},
+        _walk_started_payload(origin={"x": "0", "y": 0}),
+        _walk_started_payload(path=[]),
+        _walk_started_payload(path="not-a-list"),
+        _walk_started_payload(path=[{"x": 1}]),
     ]
 
     for bad_payload in malformed_payloads:
@@ -188,7 +234,7 @@ async def test_invalid_walk_payloads_rejected_without_crash(server):
         if not valid_future.done():
             valid_future.set_result(data)
 
-    valid_payload = {"from": {"x": 0, "y": 0}, "path": [{"x": 1, "y": 1}]}
+    valid_payload = _walk_started_payload()
     await a.emit("walk_started", valid_payload)
 
     valid_result = await asyncio.wait_for(valid_future, timeout=2)
@@ -210,7 +256,7 @@ async def test_walk_path_length_cap_enforced(server):
         if not too_long_future.done():
             too_long_future.set_result(data)
 
-    too_long_payload = {"from": {"x": 0, "y": 0}, "path": [{"x": i, "y": 0} for i in range(65)]}
+    too_long_payload = _walk_started_payload(path=[{"x": i, "y": 0} for i in range(65)])
     await a.emit("walk_started", too_long_payload)
     await asyncio.sleep(0.2)
     assert not too_long_future.done()
@@ -222,7 +268,7 @@ async def test_walk_path_length_cap_enforced(server):
         if not ok_future.done():
             ok_future.set_result(data)
 
-    ok_payload = {"from": {"x": 0, "y": 0}, "path": [{"x": i, "y": 0} for i in range(64)]}
+    ok_payload = _walk_started_payload(path=[{"x": i, "y": 0} for i in range(64)])
     await a.emit("walk_started", ok_payload)
 
     ok_result = await asyncio.wait_for(ok_future, timeout=2)

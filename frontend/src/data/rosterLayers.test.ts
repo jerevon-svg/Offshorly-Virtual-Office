@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  dedupePeopleByEmail,
   officePeopleToLayers,
   PLACEHOLDER_LAYER_PATH,
   rosterSrcById,
@@ -85,6 +86,21 @@ describe("officePeopleToLayers", () => {
     // sprite has no guarantee of matching frames.
     const layers = officePeopleToLayers([person()]);
     expect(layers[0].animatable).toBe(false);
+  });
+
+  it("lowercases the layer id even when Atlas returns a mixed-case email", () => {
+    // Every movement-sync key (peer overrides, rosterLayerEmailSet,
+    // PeerWalker) is already lowercased — a raw-case roster layer id never
+    // collapses with its lowercased moving-peer override, producing a static
+    // roster twin that never syncs to the live peer's position (see the
+    // fix's regression note in rosterLayers.ts).
+    const layers = officePeopleToLayers([person({ email: "Mixed.Case@Offshorly.com" })]);
+    expect(layers[0].id).toBe("mixed.case@offshorly.com");
+  });
+
+  it("trims and lowercases together", () => {
+    const layers = officePeopleToLayers([person({ email: "  Bon@Offshorly.com  " })]);
+    expect(layers[0].id).toBe("bon@offshorly.com");
   });
 });
 
@@ -203,6 +219,139 @@ describe("rosterSrcById", () => {
     const srcs = rosterSrcById(layers);
     const expectedDirection = seatsForRoomId("dev-team")[0].direction;
     expect(srcs[layers[0].id]).toBe(characterSprite(BON_SPRITE_SET, "sitType", expectedDirection));
+  });
+});
+
+describe("dedupePeopleByEmail", () => {
+  it("collapses mixed-case duplicates of the same email to one row", () => {
+    const result = dedupePeopleByEmail([
+      person({ email: "Bon@x.com" }),
+      person({ email: "bon@x.com" }),
+    ]);
+    expect(result).toHaveLength(1);
+  });
+
+  it("collapses identical duplicates and keeps the data intact", () => {
+    const p = person({ email: "same@x.com" });
+    const result = dedupePeopleByEmail([p, { ...p }]);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual(p);
+  });
+
+  it("leaves unique employees unchanged and order-independent", () => {
+    const a = person({ email: "a@x.com" });
+    const b = person({ email: "b@x.com" });
+    const c = person({ email: "c@x.com" });
+    const forward = dedupePeopleByEmail([a, b, c]);
+    const shuffled = dedupePeopleByEmail([c, a, b]);
+    expect(forward).toHaveLength(3);
+    expect(new Set(forward.map((p) => p.email))).toEqual(new Set(["a@x.com", "b@x.com", "c@x.com"]));
+    expect(new Set(shuffled.map((p) => p.email))).toEqual(new Set(["a@x.com", "b@x.com", "c@x.com"]));
+  });
+
+  it("picks the whole ONLINE row over an OFFLINE row for the same email (status precedence)", () => {
+    const online = person({
+      email: "Dup@x.com",
+      status: "ONLINE",
+      displayName: "Online Row",
+      jobTitle: "Engineer",
+      atlasRoomId: null,
+    });
+    const offline = person({
+      email: "dup@x.com",
+      status: "OFFLINE",
+      displayName: "Offline Row",
+      jobTitle: "Manager",
+      atlasRoomId: "atlas-room-1",
+    });
+    const result = dedupePeopleByEmail([offline, online]);
+    expect(result).toHaveLength(1);
+    // Whole winning row, never a hybrid — offline's jobTitle must NOT leak
+    // in even though it has an atlasRoomId (status wins first).
+    expect(result[0]).toEqual(online);
+    expect(result[0].displayName).toBe("Online Row");
+    expect(result[0].jobTitle).toBe("Engineer");
+  });
+
+  it("tie-breaks equal status on atlasRoomId presence", () => {
+    const inRoom = person({
+      email: "Dup2@x.com",
+      status: "ONLINE",
+      displayName: "In Room",
+      atlasRoomId: "atlas-room-2",
+      jobTitle: "A",
+    });
+    const noRoom = person({
+      email: "dup2@x.com",
+      status: "ONLINE",
+      displayName: "No Room",
+      atlasRoomId: null,
+      jobTitle: "B",
+    });
+    const result = dedupePeopleByEmail([noRoom, inRoom]);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual(inRoom);
+  });
+
+  it("tie-breaks equal status and atlasRoomId on completeness (more non-null metadata wins)", () => {
+    const complete = person({
+      email: "Dup3@x.com",
+      status: "ONLINE",
+      atlasRoomId: null,
+      displayName: "Complete",
+      avatarId: "bon",
+      departmentName: "dev-team",
+      jobTitle: "Engineer",
+      currentActivity: "coding",
+      lastMessage: { text: "hi", at: "2024-01-01T00:00:00Z" },
+    });
+    const sparse = person({
+      email: "dup3@x.com",
+      status: "ONLINE",
+      atlasRoomId: null,
+      displayName: "Sparse",
+      avatarId: null,
+      departmentName: null,
+      jobTitle: null,
+      currentActivity: null,
+      lastMessage: null,
+    });
+    const result = dedupePeopleByEmail([sparse, complete]);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toEqual(complete);
+  });
+
+  it("final tie-break is raw-email localeCompare, stable regardless of input order", () => {
+    const first = person({ email: "AAA@x.com", status: "ONLINE", atlasRoomId: null, displayName: "First" });
+    const second = person({ email: "aaa@x.com", status: "ONLINE", atlasRoomId: null, displayName: "Second" });
+    // "AAA@x.com".localeCompare("aaa@x.com") should pick AAA (or whichever
+    // sorts first) consistently, regardless of array order.
+    const forward = dedupePeopleByEmail([first, second]);
+    const reversed = dedupePeopleByEmail([second, first]);
+    expect(forward).toHaveLength(1);
+    expect(reversed).toHaveLength(1);
+    expect(forward[0]).toEqual(reversed[0]);
+  });
+});
+
+describe("officePeopleToLayers with duplicate emails", () => {
+  it("produces exactly one lowercased-id layer for mixed-case duplicate emails", () => {
+    const layers = officePeopleToLayers([
+      person({ email: "Bon@x.com", roomId: "dev-team" }),
+      person({ email: "bon@x.com", roomId: "dev-team" }),
+    ]);
+    expect(layers).toHaveLength(1);
+    expect(layers[0].id).toBe("bon@x.com");
+  });
+
+  it("a peer override keyed by the lowercased email still matches the deduped layer id", () => {
+    const layers = officePeopleToLayers([
+      person({ email: "Dup@offshorly.com", status: "ONLINE" }),
+      person({ email: "dup@offshorly.com", status: "OFFLINE" }),
+    ]);
+    expect(layers).toHaveLength(1);
+    const overrideKey = "dup@offshorly.com";
+    expect(layers[0].id).toBe(overrideKey);
   });
 });
 

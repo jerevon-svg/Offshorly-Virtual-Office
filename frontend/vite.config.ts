@@ -47,9 +47,16 @@ export default defineConfig({
     // HMR client needs. Without this block the HMR socket tries to connect to
     // the page's own origin (3000), gets no upgrade, and hot reload dies
     // SILENTLY — the page still renders, edits just never appear. Pointing the
-    // HMR client straight at 5173 keeps the socket direct while the page itself
-    // stays on origin 3000 (and so keeps Atlas's localStorage token).
-    hmr: { protocol: "ws", host: "localhost", port: 5173 },
+    // HMR client straight at this dev server's own host keeps the socket direct
+    // while the page itself stays on origin 3000 (and so keeps Atlas's
+    // localStorage token). The port is deliberately NOT pinned: Vite defaults
+    // hmr.port to the server's actual port, so a second instance started with
+    // `--port 5174` (e.g. the mock-mode rig) serves HMR on 5174 too. Pinning it
+    // to 5173 made that instance open an HMR-only WebSocket listener on
+    // [::1]:5173 next to the real server's 127.0.0.1:5173 — browsers and the
+    // Atlas proxy resolve localhost to ::1 first and got HTTP 426 "Upgrade
+    // Required" instead of the app (2026-08-29).
+    hmr: { protocol: "ws", host: "localhost" },
     proxy: {
       // Local avatar-generation server (scripts/avatar-pipeline/gen-server.mjs)
       // — holds the OpenAI key server-side only. Browser calls /avatar-api/*

@@ -1,12 +1,13 @@
 // frontend/src/components/OfficeMap/clusterFormation.ts
 //
 // Pure, DOM-free decision helpers wiring together Stage 1's assignClusterSlots
-// geometry (data/clusterSlots.ts) and Stage 3's emitAndWalkTo peer-walk
-// broadcast (services/presence/spatialWalkClient.ts) into actual
-// conversation-formation behavior. Kept free of React/DOM so every branch is
-// unit-testable without mounting OfficeMap.tsx — see OfficeMap.tsx's two call
-// sites (the self-settle effect, and the conversation_upgraded handler) for
-// how these compose with real state.
+// geometry (data/clusterSlots.ts) and the unified moveSelf self-movement
+// funnel (components/OfficeMap/useSelfMovement.ts, backed by
+// services/presence/movementSync.ts's walk_started/walk_arrived wire
+// contract) into actual conversation-formation behavior. Kept free of
+// React/DOM so every branch is unit-testable without mounting OfficeMap.tsx —
+// see OfficeMap.tsx's two call sites (the self-settle effect, and the
+// conversation_upgraded handler) for how these compose with real state.
 
 import type { ConversationUpgradedUpdate } from "../../services/chat/types";
 
@@ -109,4 +110,29 @@ export function classifyUpgrade(input: {
   payload: Pick<ConversationUpgradedUpdate, "oldConversationId" | "participantIds">;
 }): "incumbent" | "joiner" {
   return input.openConversationId === input.payload.oldConversationId ? "incumbent" : "joiner";
+}
+
+/**
+ * Routes a Global Chat (💬 list) conversation click to the SPATIAL slot or a
+ * REMOTE floating window. Spatial only when a live server-broadcast spatial
+ * session exists for this exact conversation id (sessionId === Conversation.id)
+ * AND it contains at least one member other than self — i.e. a peer actually
+ * has that conversation open via Character -> Chat right now. Everything else
+ * (no session, or a stale self-only session left over from our own earlier
+ * open) stays remote, so a normal persistent DM/group never triggers
+ * spatial_session_start / "In Conversation" just from being reopened here.
+ */
+export interface ConversationSlotSession extends SlotWalkSession {
+  sessionId: string;
+}
+
+export function resolveConversationSlot(input: {
+  conversationId: string;
+  sessions: ConversationSlotSession[];
+  selfEmail: string;
+}): "spatial" | "remote" {
+  const self = input.selfEmail.toLowerCase();
+  const session = input.sessions.find((s) => s.sessionId === input.conversationId);
+  if (!session) return "remote";
+  return session.members.some((m) => m.toLowerCase() !== self) ? "spatial" : "remote";
 }

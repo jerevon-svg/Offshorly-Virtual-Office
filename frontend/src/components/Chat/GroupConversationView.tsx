@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { chatMode, chatService } from "../../services/chat";
 import type { ChatMessage, ConnectionState } from "../../services/chat";
+import type { DeliveryReceiptUpdate, ReadReceiptUpdate } from "../../services/chat/types";
 import { ChatWindowHeader } from "./ChatWindowHeader";
 import { MentionAutocomplete } from "./MentionAutocomplete";
 import { renderMessageText } from "./MentionText";
@@ -105,6 +106,34 @@ export function computeSeenByMessage(
     }
   }
   return result;
+}
+
+// Live receipt merge (real mode). A read_receipt/delivery_receipt is a per-conversation
+// watermark from ONE participant (readerEmail/recipientEmail — server-verified, never
+// client-supplied); history's readBy/deliveredTo are the server's derivation of exactly these
+// watermarks (compute_message_receipts), so mirroring them here keeps live state identical to
+// what a reopen would fetch. Immutable: returns the same array when nothing changes so React
+// state/memo stays stable. Rules — only the CURRENT USER's own messages are touched (peers'
+// arrays are never inferred); only messages with sentAt <= upTo (inclusive, matching the
+// server's >=); case-insensitive dedupe; a missing identity (legacy server) or self identity
+// is a no-op.
+export function applyReceiptToMessages(
+  messages: ChatMessage[],
+  selfId: string,
+  field: "readBy" | "deliveredTo",
+  participantEmail: string | undefined,
+  upTo: string,
+): ChatMessage[] {
+  const who = participantEmail?.trim().toLowerCase();
+  if (!who || who === selfId.toLowerCase()) return messages;
+  let changed = false;
+  const next = messages.map((m) => {
+    if (m.senderId !== selfId || m.sentAt > upTo) return m;
+    if (m[field].some((e) => e.toLowerCase() === who)) return m;
+    changed = true;
+    return { ...m, [field]: [...m[field], who] };
+  });
+  return changed ? next : messages;
 }
 
 // For the LATEST own message only: returns null if anyone has read it
@@ -233,6 +262,28 @@ export function GroupConversationView({
     });
     return unsubscribe;
   }, [conversationId, onIncomingMessage]);
+
+  // Live read/delivery receipts — real-mode only (mock has no server-side receipt tracking).
+  // Same subscription shape as ConversationView's, but merged into per-message readBy/
+  // deliveredTo (see applyReceiptToMessages) since a group has to attribute each receipt to a
+  // specific participant's avatar rather than a single implied peer.
+  useEffect(() => {
+    if (chatMode !== "real") return;
+    const unsubscribeRead = chatService.onReadReceipt?.((update: ReadReceiptUpdate) => {
+      if (update.conversationId !== conversationId) return;
+      setMessages((prev) => applyReceiptToMessages(prev, selfId, "readBy", update.readerEmail, update.readUpTo));
+    });
+    const unsubscribeDelivery = chatService.onDeliveryReceipt?.((update: DeliveryReceiptUpdate) => {
+      if (update.conversationId !== conversationId) return;
+      setMessages((prev) =>
+        applyReceiptToMessages(prev, selfId, "deliveredTo", update.recipientEmail, update.deliveredUpTo),
+      );
+    });
+    return () => {
+      unsubscribeRead?.();
+      unsubscribeDelivery?.();
+    };
+  }, [conversationId, selfId]);
 
   useEffect(() => {
     listEndRef.current?.scrollIntoView({ block: "end" });

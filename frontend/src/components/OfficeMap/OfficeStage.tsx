@@ -22,10 +22,21 @@ import { CharacterCanvas, directionToHeadingDegrees } from "../../render3d/Chara
 import {
   LIVE_3D_CHARACTERS,
   resolveLive3dGlbUrl,
+  resolveLive3dGlbUrlForTier,
+  resolveWidthCapacity,
   type Live3dAssetSet,
 } from "../../render3d/live3dCharacters";
+import {
+  applyTierDebounce,
+  frameDistance,
+  isLayerOnScreen,
+  resolveLodTier,
+  shouldUseMaxQuality,
+  type LodTier,
+} from "../../render3d/adaptiveLod";
 import { avatarIdForEmail } from "../../data/avatarIdentity";
-import type { WalkDirection } from "../../data/bonWalkFrames";
+import { characterSprite, type WalkDirection } from "../../data/bonWalkFrames";
+import { PLACEHOLDER_SPRITE_SET } from "../../services/avatar/placeholder";
 import {
   collectDeviceSignals,
   computeDeviceTier,
@@ -72,14 +83,50 @@ import styles from "./OfficeStage.module.css";
 // Assets for characters NOT (yet) eligible for production — kept around
 // purely so the dev-only `?live3d=` override above can still preview them.
 // Never consulted by the tier/budget gating path, only by the override.
-const DEV_ONLY_LIVE_3D_ENTRIES: Record<string, Live3dAssetSet> = {
-  // Manifest aspect ratio: width 20 / height 34.46.
-  alex: {
-    glbUrl: `${import.meta.env.BASE_URL}scripts/avatar-pipeline/output/meshy-test/rig/alex-basic-walking_glb_url.glb`,
-    renderWidth: 160,
-    renderHeight: 276,
+//
+// Two kinds of keys:
+//   - an avatar id (e.g. "micah"): previews that not-yet-eligible character
+//     (alex used to live here until his registry entry shipped 2026-08-29);
+//   - a CANDIDATE id ("bon-v2") carrying `forAvatarId`: previews a
+//     replacement asset set for an avatar that already has a production
+//     registry entry, WITHOUT touching that entry. `?live3d=bon-v2` swaps
+//     Bon's own layer to the candidate GLBs (same layer, so never a
+//     duplicate character); `?live3d=bon` still previews the shipped set.
+//   Both are DEV-only: getLive3dEnabledAvatarIds() is empty outside
+//   import.meta.env.DEV, so production can never select a candidate.
+type DevOnlyLive3dEntry = Live3dAssetSet & { forAvatarId?: string };
+const DEV_ONLY_LIVE_3D_ENTRIES: Record<string, DevOnlyLive3dEntry> = {
+  // Bon v2 candidate (Meshy pipeline 2026-08-28: bon-chibi-ref-v2 -> image-to-3d
+  // 01a04848 -> remesh 01a04854 -> rig 01a0485f -> 6 clips -> build-character-lods).
+  // Same manifest aspect/render size as the shipped `bon` entry. Approved for
+  // dev preview only; promoting it = editing live3dCharacters.ts's `bon` entry.
+  "bon-v2": {
+    forAvatarId: "bon",
+    glbUrl: `${import.meta.env.BASE_URL}avatars/bon-v2/bon-v2-lod0.glb`,
+    lod1GlbUrl: `${import.meta.env.BASE_URL}avatars/bon-v2/bon-v2-lod1.glb`,
+    lod2GlbUrl: `${import.meta.env.BASE_URL}avatars/bon-v2/bon-v2-lod2.glb`,
+    renderWidth: 210,
+    renderHeight: 298,
   },
 };
+
+// Resolves the dev-only override entry for a layer's avatar id: the id itself
+// when listed in `?live3d=` (registry entry first, then DEV_ONLY preview), else
+// any listed CANDIDATE id whose forAvatarId targets this avatar. Returns
+// undefined when the override doesn't apply to this layer.
+function resolveDevOverrideEntry(
+  avatarId: string | null,
+  enabledIds: Set<string>,
+  registryEntry: Live3dAssetSet | undefined,
+): Live3dAssetSet | undefined {
+  if (!avatarId || enabledIds.size === 0) return undefined;
+  if (enabledIds.has(avatarId)) return registryEntry ?? DEV_ONLY_LIVE_3D_ENTRIES[avatarId];
+  for (const id of enabledIds) {
+    const candidate = DEV_ONLY_LIVE_3D_ENTRIES[id];
+    if (candidate?.forAvatarId === avatarId) return candidate;
+  }
+  return undefined;
+}
 
 const DEVICE_TIER_VALUES: DeviceTier[] = ["T0", "T1", "T2"];
 
@@ -313,19 +360,20 @@ type OfficeStageProps = {
   // greeting or unexpired sent-text bubble. Absent/omitted = no one typing,
   // matching every existing caller/test that doesn't pass this.
   typingCharacterIds?: string[];
-  // Phase A live-3D "responder" signal, keyed by character LAYER id (not
-  // chat senderId/email like talkingTextById above) — recently sent a
-  // message within the bubble-display window (see
-  // characterAnimationState.ts's isResponder doc comment). OfficeMap.tsx
-  // builds this separately from talkingTextById because talkingTextById is
-  // keyed by chat senderId, which for peer roster layers happens to equal
-  // layer.id (rosterLayers.ts keys id on person.email) but for the self
-  // layer is the viewer's OWN chat id (selfChatId, an email), never
-  // playerLayerId/currentUserId (an avatar id like "bon") — looking self up
-  // directly in talkingTextById by layer.id therefore always misses.
-  // Absent entries default to false, matching every existing caller/test
-  // that doesn't pass this.
-  characterIsResponderById?: Record<string, boolean>;
+  // Character LAYER ids that currently have an active Global Chat window
+  // (>=1 visible, non-minimized remote DM/group window). Self is derived
+  // locally in OfficeMap.tsx and OR'd with the server-broadcast
+  // `global_chat_activity` snapshot; peers come from that snapshot (emails ==
+  // their layer ids). Drives only the seated `sitting-answering` animation —
+  // see characterAnimationState.ts. Absent = nobody active.
+  globalChatActiveCharacterIds?: string[];
+  // Character LAYER ids ACTIVELY TYPING in the conversation of the live spatial
+  // session they belong to (OfficeMap's deriveSpatialTypingCharacterIds). This
+  // — not typingCharacterIds — drives the `agree-gesture` animation, so typing
+  // in an unrelated remote DM/group never animates a spatial character.
+  // typingCharacterIds keeps its broader any-conversation meaning for the
+  // overhead dots bubble. Absent = nobody typing spatially.
+  spatialTypingCharacterIds?: string[];
   // Door art layer ids currently slid open (see officeDoors.ts). Layers not
   // present here render at rest (translateX(0)/no override) — omitting the
   // prop entirely means "no doors open," matching existing callers/tests
@@ -376,6 +424,14 @@ type OfficeStageProps = {
   // crowd-budget path — matching every existing caller/test that doesn't
   // pass this prop.
   selfCharacterId?: string | null;
+  // Live map view (zoom as a multiple of cover scale + the visible frame-space
+  // rect), mirrored from TransformWrapper by OfficeMap. Drives adaptive LOD
+  // only — never eligibility, never model or CSS scale. Absent = unknown, in
+  // which case proximity alone decides and nothing is culled.
+  mapView?: {
+    zoom: number;
+    visibleRect: { x: number; y: number; width: number; height: number };
+  } | null;
   // Status label system (see StatusLabel.tsx / services/presence/status.ts).
   // Deliberately NOT rendered by default: the PiP mini-camera instance
   // renders outside the main <TransformWrapper> (see OfficeMap.tsx's
@@ -443,7 +499,8 @@ export function OfficeStage({
   talkingCharacterIds,
   talkingTextById,
   typingCharacterIds,
-  characterIsResponderById,
+  globalChatActiveCharacterIds,
+  spatialTypingCharacterIds,
   openDoorLayerIds,
   emptySeats,
   onSeatClick,
@@ -452,6 +509,7 @@ export function OfficeStage({
   characterIsWalkingById,
   characterIsSittingById,
   selfCharacterId,
+  mapView,
   showStatusLabels,
   statusByLayerId,
   selfStatus,
@@ -470,6 +528,12 @@ export function OfficeStage({
   // or a mid-session WebGL context loss) — see CharacterCanvas's onError
   // prop below. Once a layer id lands here it renders the normal sprite
   // for the rest of this mount, even if it's otherwise eligible/permitted.
+  // Per-character adaptive-LOD memory. Hysteresis and the 400ms debounce need
+  // to know the tier a character is ALREADY using; without it every resolve
+  // started from scratch and the thresholds could chatter. Kept in a ref so a
+  // quality change never itself triggers a re-render.
+  const lodMemoryRef = useRef<Map<string, { tier: LodTier; hd: boolean; at: number }>>(new Map());
+
   const [erroredLive3dIds, setErroredLive3dIds] = useState<Set<string>>(new Set());
   const reportLive3dError = (layerId: string) => {
     setErroredLive3dIds((prev) => (prev.has(layerId) ? prev : new Set(prev).add(layerId)));
@@ -542,12 +606,19 @@ export function OfficeStage({
         });
       }}
     >
+      {/* Adaptive LOD (adaptiveLod.ts): the self layer anchors the proximity
+          test, so a distant employee never pulls the ~5MB HQ mesh. This only
+          picks the QUALITY tier — eligibility stays with the device-tier /
+          crowd gating below, and the tier is still clamped by it. */}
       {sorted.map((layer) => {
         const isChar = layer.kind === "character";
-        const srcOverride = isChar
-          ? (characterSrcOverrides?.[layer.id] ?? extraCharacterSrcById?.[layer.id])
-          : undefined;
-        const src = srcOverride ?? ASSET_PATH_TO_SRC[layer.path];
+        // Treat an empty-string override as ABSENT, not "render a blank
+        // img" — a stale/incomplete override (e.g. a peer whose sprite set
+        // hasn't resolved yet) must never leave a character invisible.
+        const srcOverride =
+          (isChar ? (characterSrcOverrides?.[layer.id] ?? extraCharacterSrcById?.[layer.id]) : undefined) || undefined;
+        const src =
+          srcOverride ?? ASSET_PATH_TO_SRC[layer.path] ?? characterSprite(PLACEHOLDER_SPRITE_SET, "idle", "front");
 
         if (layer.kind === "floor") {
           return (
@@ -568,10 +639,11 @@ export function OfficeStage({
         // previewed manually. Already dead-code-eliminated from
         // production builds via getLive3dEnabledAvatarIds' import.meta.env
         // .DEV check.
-        const devOverrideEntry =
-          live3dAvatarId && live3dEnabledAvatarIds.has(live3dAvatarId)
-            ? registryEntry ?? DEV_ONLY_LIVE_3D_ENTRIES[live3dAvatarId]
-            : undefined;
+        const devOverrideEntry = resolveDevOverrideEntry(
+          live3dAvatarId,
+          live3dEnabledAvatarIds,
+          registryEntry,
+        );
         const isSelf = !!selfCharacterId && layer.id === selfCharacterId;
         let live3dEntry: Live3dAssetSet | undefined;
         // Whether the CharacterCanvas below should run its normal animated
@@ -582,11 +654,9 @@ export function OfficeStage({
         // shows LOD0 detail, matching its existing manual-preview intent),
         // set alongside live3dEntry below so the render code can tell which
         // path chose it without a fragile reference-equality check.
-        let usedDevOverride = false;
         if (!hasErroredLive3d) {
           if (devOverrideEntry) {
             live3dEntry = devOverrideEntry;
-            usedDevOverride = true;
           } else if (registryEntry && deviceTier !== "T0") {
             // Size-gated relaxation: while the live-3D registry holds only
             // ONE entry (bon, today), there's no "crowd" to budget against —
@@ -625,6 +695,29 @@ export function OfficeStage({
           }
         }
 
+        // An ACTIVE, VISIBLE spatial-conversation participant. Drives both the
+        // HQ LOD0 pick and the maximum internal render bucket, so the two can
+        // never disagree. Offscreen members are excluded so a large group
+        // cannot pin maximum resolution for characters nobody can see.
+        const isSpatialParticipant =
+          (talkingCharacterIds?.includes(layer.id) ?? false) &&
+          isLayerOnScreen(layer, mapView?.visibleRect);
+        // Maximum internal render bucket. Spatial participants keep their pin;
+        // ANY visible character manually zoomed to a comparable on-screen size
+        // now earns it too (see shouldUseMaxQuality) — previously the top
+        // bucket was reachable only through Spatial Chat.
+        const lodMemory = lodMemoryRef.current.get(layer.id) ?? null;
+        const wantsHd = shouldUseMaxQuality(
+          {
+            isSelf: !!selfCharacterId && layer.id === selfCharacterId,
+            isFocused: isSpatialParticipant,
+            zoom: mapView?.zoom,
+            distance: 0,
+            isOnScreen: isLayerOnScreen(layer, mapView?.visibleRect),
+          },
+          lodMemory?.hd ?? false,
+        );
+
         const className = [styles.layer, isClickable ? styles.characterLayer : ""]
           .filter(Boolean)
           .join(" ");
@@ -640,6 +733,15 @@ export function OfficeStage({
               width: `${(layer.width / FRAME_WIDTH) * 100}%`,
               height: `${(layer.height / FRAME_HEIGHT) * 100}%`,
               ...(layer.transform ? { transform: layer.transform } : {}),
+              // .layer sets `overflow: hidden`, which clipped the widened
+              // live-3D canvas (widthCapacity) straight back to the wrapper's
+              // own width — the real reason wide poses still cropped. Let the
+              // PAINT overflow for 3D character layers only; sprite layers keep
+              // clipping (imgCrop / backrest clipPath depend on it). The
+              // wrapper's box, position, hit area and label anchoring are
+              // unchanged, and the canvas is pointer-events:none, so nothing
+              // outside the original box becomes clickable.
+              ...(live3dEntry ? { overflow: "visible" as const } : {}),
               // Synthetic backrest-crop layer only (see frontClipBottomPct's
               // doc comment in types/office.ts): clip the WRAPPER div itself
               // (not the img inside it) to only its top frontClipBottomPct
@@ -677,28 +779,89 @@ export function OfficeStage({
               // (only) to fall back to its normal sprite on the next
               // render — never a blank/broken box.
               <CharacterCanvas
-                glbUrl={
-                  usedDevOverride
-                    ? live3dEntry.glbUrl
-                    : resolveLive3dGlbUrl(live3dEntry, deviceTier, !live3dAnimated)
-                }
+                // Tier-based LOD pick applies under the dev override too, so
+                // `?live3d=<id>&deviceTier=T1` previews that id's LOD1 exactly
+                // as production would (entries without lod1/lod2 art fall
+                // back to glbUrl inside resolveLive3dGlbUrl). Production never
+                // renders live-3D at T0, so resolveLive3dGlbUrl has no T0 rule;
+                // under the DEV-only override (which does force a canvas at
+                // T0) T0 maps to the cheapest LOD (LOD2 chain), never LOD0.
+                glbUrl={(() => {
+                  // Device-tier ceiling first — it decides the WORST quality
+                  // this viewer may be given and owns the static-frame/T0
+                  // safety path, exactly as before.
+                  const ceiling = resolveLive3dGlbUrl(
+                    live3dEntry,
+                    deviceTier,
+                    !live3dAnimated || (live3dEntry === devOverrideEntry && deviceTier === "T0"),
+                  );
+                  // Only a T2 viewer may be promoted above that ceiling, and
+                  // only for the character they are actually looking at.
+                  // The dev-only ?live3d= override previews an exact asset
+                  // set — never re-pick its tier.
+                  if (live3dEntry === devOverrideEntry) return ceiling;
+                  if (deviceTier !== "T2" || !live3dAnimated) return ceiling;
+                  const selfLayer = selfCharacterId
+                    ? sorted.find((l) => l.id === selfCharacterId)
+                    : undefined;
+                  const now =
+                    typeof performance !== "undefined" ? performance.now() : Date.now();
+                  const prev = lodMemoryRef.current.get(layer.id) ?? null;
+                  const resolved: LodTier = resolveLodTier(
+                    {
+                      isSelf,
+                      isFocused: isSpatialParticipant,
+                      // Real map zoom, as a multiple of cover scale.
+                      zoom: mapView?.zoom,
+                      isOnScreen: isLayerOnScreen(layer, mapView?.visibleRect),
+                      distance: selfLayer ? frameDistance(selfLayer, layer) : Number.POSITIVE_INFINITY,
+                    },
+                    prev?.tier ?? null,
+                  );
+                  // Debounce so a character crossing a boundary cannot thrash
+                  // the loader; the seamless swap keeps the old model visible
+                  // for whatever load does happen.
+                  const tier = applyTierDebounce(resolved, prev?.tier ?? null, prev?.at ?? 0, now);
+                  lodMemoryRef.current.set(layer.id, {
+                    tier,
+                    hd: wantsHd,
+                    at: tier === prev?.tier ? (prev?.at ?? now) : now,
+                  });
+                  return resolveLive3dGlbUrlForTier(live3dEntry, tier);
+                })()}
                 width={live3dEntry.renderWidth}
                 height={live3dEntry.renderHeight}
+                // Canonical size policy (characterSize.ts): the character's
+                // manifest layer height is what sets its CSS footprint, so the
+                // canvas needs it to make every employee the same visible
+                // standing height. Resolution and LOD are unaffected.
+                layerHeight={layer.height}
+                // Spatial-conversation quality override: maximum internal
+                // render resolution for active participants. Camera, model
+                // scale and CSS footprint are all untouched.
+                maxQuality={wantsHd}
+                // Measured horizontal capacity for this character's widest
+                // animated pose. Widens only what the canvas PAINTS — the
+                // wrapper div below keeps its exact size, position, hit area
+                // and label anchoring.
+                widthScale={resolveWidthCapacity(live3dEntry)}
                 animated={live3dAnimated}
                 headingDegrees={directionToHeadingDegrees(
                   characterDirectionsById?.[layer.id] ?? "front",
                 )}
-                isWalking={characterIsWalkingById?.[layer.id] ?? true}
+                isWalking={characterIsWalkingById?.[layer.id] ?? false}
                 isSitting={characterIsSittingById?.[layer.id] ?? false}
-                // Reuses the existing chat-panel "talking" signal (rather
-                // than plumbing a separate chat/call-specific flag) —
-                // isChatting mirrors talkingCharacterIds exactly as the
-                // prior gestureActive prop did; isResponder comes from
-                // characterIsResponderById (layer-id-keyed — see its doc
-                // comment above for why this can't be looked up directly
-                // in talkingTextById, which is senderId/email-keyed).
-                isChatting={talkingCharacterIds?.includes(layer.id) ?? false}
-                isResponder={!!characterIsResponderById?.[layer.id]}
+                // Animation-state inputs (see characterAnimationState.ts):
+                // isSpatialConversation mirrors talkingCharacterIds (spatial
+                // session membership), isTyping mirrors
+                // spatialTypingCharacterIds (real keystrokes + idle timeout,
+                // scoped to that spatial conversation — never sent-message
+                // history, never typing in an unrelated remote window),
+                // isGlobalChatActive mirrors globalChatActiveCharacterIds. All
+                // are layer-id-keyed.
+                isSpatialConversation={talkingCharacterIds?.includes(layer.id) ?? false}
+                isTyping={spatialTypingCharacterIds?.includes(layer.id) ?? false}
+                isGlobalChatActive={globalChatActiveCharacterIds?.includes(layer.id) ?? false}
                 onError={() => reportLive3dError(layer.id)}
               />
             ) : (

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from datetime import datetime, timezone
 
 import socketio
@@ -15,8 +16,11 @@ from app.repositories import talk_requests as talk_requests_repo
 from app.schemas.chat import serialize_message_dict, to_iso_z
 from app.schemas.room_requests import RoomRequestOut
 from app.schemas.talk_requests import TalkRequestOut
+from app.repositories import position as position_repo
 from app.services.dnd_registry import DndRegistry
+from app.services.global_chat_activity import GlobalChatActivityRegistry
 from app.services.offline_lineup import OfflineLineup
+from app.services.position_registry import position_registry
 from app.services.room_presence import RoomPresenceRegistry
 from app.services.spatial_session import SpatialSessionRegistry
 
@@ -51,6 +55,10 @@ spatial_sessions = SpatialSessionRegistry()
 # docstrings. Same in-memory/single-process assumption as the registries above.
 dnd_registry = DndRegistry()
 room_presence = RoomPresenceRegistry()
+# Ephemeral "has an active Global Chat window" presence — see global_chat_activity.py. Same
+# in-memory/single-process assumption as the registries above; refcounted per socket so
+# multi-tab users are handled correctly.
+global_chat_activity = GlobalChatActivityRegistry()
 
 
 async def _broadcast_offline_lineup() -> None:
@@ -63,6 +71,10 @@ async def _broadcast_spatial_sessions() -> None:
 
 async def _broadcast_dnd_status() -> None:
     await sio.emit("dnd_status", {"emails": dnd_registry.snapshot()})
+
+
+async def _broadcast_global_chat_activity() -> None:
+    await sio.emit("global_chat_activity", {"emails": global_chat_activity.snapshot()})
 
 
 async def _broadcast_room_presence() -> None:
@@ -109,14 +121,27 @@ async def _cancel_stale_talk_requests(target_email: str) -> None:
         )
 
 
+_DEV_EMAIL_RE = re.compile(r"^[^\s?&@]+@[^\s?&@]+\.[^\s?&@]+$")
+
+
 def _dev_email_from_auth(auth: dict) -> str | None:
     """Dev-only identity bypass for sockets — mirrors http.ts's devEmailFrom / socket.ts's
     devEmailFromHandshake. Hard-gated: only reachable when settings.is_development is literally
-    True (fail-closed), regardless of what the client sends."""
+    True (fail-closed), regardless of what the client sends.
+
+    A malformed value (e.g. a stray `?devicetier=...` query-string tail from a bad `?as=` URL,
+    or anything containing `?`/`&`/whitespace) is rejected outright via ConnectionRefusedError —
+    the same path used for a bad Atlas token — rather than silently accepted as a phantom
+    identity with no roster layer."""
     if not settings.is_development:
         return None
     raw = auth.get("x-dev-email") or auth.get("devEmail")
-    return raw.strip().lower() if isinstance(raw, str) and raw.strip() else None
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    candidate = raw.strip().lower()
+    if not _DEV_EMAIL_RE.match(candidate):
+        raise ConnectionRefusedError("Invalid dev email")
+    return candidate
 
 
 def _parse_iso(value: str) -> datetime:
@@ -149,6 +174,67 @@ def _valid_walk_payload(payload) -> bool:
     if not isinstance(path, list) or not path or len(path) > 64:
         return False
     return all(_is_point(p) for p in path)
+
+
+def _now_ms() -> int:
+    return int(datetime.now(timezone.utc).timestamp() * 1000)
+
+
+def _ms_to_dt(ms: int) -> datetime:
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+
+
+_FACINGS = {"front", "back", "left", "right"}
+_MOVE_STATES = {"standing", "sitting"}
+
+
+def _is_room_id(v) -> bool:
+    return v is None or isinstance(v, str)
+
+
+def _is_movement_id(v) -> bool:
+    return isinstance(v, str) and 1 <= len(v) <= 64
+
+
+def _valid_walk_started_payload(payload) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if not _is_movement_id(payload.get("movementId")):
+        return False
+    if not _is_point(payload.get("origin")):
+        return False
+    path = payload.get("path")
+    if not isinstance(path, list) or not path or len(path) > 64:
+        return False
+    if not all(_is_point(p) for p in path):
+        return False
+    if not _is_room_id(payload.get("roomId")):
+        return False
+    duration_ms = payload.get("durationMs")
+    if not isinstance(duration_ms, int) or isinstance(duration_ms, bool):
+        return False
+    if not (100 <= duration_ms <= 20000):
+        return False
+    return True
+
+
+def _valid_walk_arrived_payload(payload) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if not _is_movement_id(payload.get("movementId")):
+        return False
+    if not _is_point(payload.get("at")):
+        return False
+    if payload.get("facing") not in _FACINGS:
+        return False
+    if payload.get("state") not in _MOVE_STATES:
+        return False
+    seat_key = payload.get("seatKey")
+    if seat_key is not None and not isinstance(seat_key, str):
+        return False
+    if not _is_room_id(payload.get("roomId")):
+        return False
+    return True
 
 
 async def _emit_unexpected(sid: str, err: Exception) -> None:
@@ -199,6 +285,20 @@ async def connect(sid: str, environ: dict, auth: dict | None) -> None:
     await sio.emit("dnd_status", {"emails": dnd_registry.snapshot()}, to=sid)
     await sio.emit("room_presence", {"rooms": room_presence.snapshot()}, to=sid)
 
+    # Same reasoning for Global Chat activity: a late joiner / reconnecting client must see who
+    # is currently in an active Global Chat window (drives peers' seated `sitting-answering`
+    # animation) immediately, not just future changes.
+    await sio.emit("global_chat_activity", {"emails": global_chat_activity.snapshot()}, to=sid)
+
+    # Same reasoning again for live spatial positions: a client connecting mid-walk or after
+    # others have already arrived somewhere must see current position state immediately, not
+    # just future walk_started/walk_arrived broadcasts (see position_registry.py's docstring).
+    await sio.emit(
+        "positions_snapshot",
+        {"entries": position_registry.snapshot(own_email=email), "serverTime": _now_ms()},
+        to=sid,
+    )
+
 
 @sio.event
 async def disconnect(sid: str) -> None:
@@ -221,6 +321,10 @@ async def disconnect(sid: str) -> None:
     if dnd_registry.clear(email):
         await _broadcast_dnd_status()
         await _cancel_stale_talk_requests(email)
+    # Per-socket refcount: only broadcasts when this was the email's LAST active socket, so a
+    # second tab keeps the person active through one tab closing.
+    if global_chat_activity.clear_sid(email, sid):
+        await _broadcast_global_chat_activity()
     left_room_id = room_presence.leave(email)
     if left_room_id is not None:
         await _broadcast_room_presence()
@@ -272,6 +376,26 @@ async def spatial_session_leave(sid: str, _payload: dict | None = None) -> None:
         left = spatial_sessions.leave(email)
         if left is not None:
             await _broadcast_spatial_sessions()
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("global_chat_active")
+async def global_chat_active(sid: str, payload: dict | None) -> None:
+    """Edge-triggered "I have an active (visible, non-minimized) Global Chat window" presence
+    fact — mirrors dnd_set's contract: call exactly once per real transition (see
+    frontend/src/services/presence/globalChatActivityClient.ts), never on a poll. Carries only
+    the boolean; no conversation ids or contents. Tracked per socket so multiple tabs of one
+    user compose correctly (see global_chat_activity.py). Broadcasts only when the email-level
+    boolean actually changed. Never touches spatial_sessions — remote chats must not look
+    spatial (no auto-walk / "In Conversation" / Ask to Join)."""
+    try:
+        payload = payload or {}
+        is_active = bool(payload.get("isActive"))
+        session_data = await sio.get_session(sid)
+        email = session_data["email"]
+        if global_chat_activity.set_active(email, sid, is_active):
+            await _broadcast_global_chat_activity()
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 
@@ -341,18 +465,44 @@ async def room_presence_leave(sid: str, _payload: dict | None = None) -> None:
 
 @sio.on("walk_started")
 async def walk_started(sid: str, payload: dict | None) -> None:
+    """Moving client supplies path/destination; peers replay it. Server holds live position +
+    in-flight movement in memory only (position_registry.py) — no DB write here, see that
+    module's docstring for why (only stable/arrived state is durable)."""
     try:
-        if not _valid_walk_payload(payload):
+        if not _valid_walk_started_payload(payload):
             return  # silent drop on malformed input — matches this codebase's convention
             # (e.g. spatial_session_start's early-return on bad sessionId)
         session_data = await sio.get_session(sid)
         email = session_data["email"]  # server-verified identity ONLY, never payload-supplied
+
+        movement_id = payload["movementId"]
+        origin = {"x": payload["origin"]["x"], "y": payload["origin"]["y"]}
+        path = [{"x": p["x"], "y": p["y"]} for p in payload["path"]]
+        room_id = payload.get("roomId")
+        duration_ms = payload["durationMs"]
+        started_at = _now_ms()
+
+        revision = position_registry.start(
+            email,
+            movement_id=movement_id,
+            origin=origin,
+            path=path,
+            room_id=room_id,
+            duration_ms=duration_ms,
+            started_at=started_at,
+        )
+
         await sio.emit(
             "peer_walk_started",
             {
                 "email": email,
-                "from": {"x": payload["from"]["x"], "y": payload["from"]["y"]},
-                "path": [{"x": p["x"], "y": p["y"]} for p in payload["path"]],
+                "movementId": movement_id,
+                "revision": revision,
+                "origin": origin,
+                "path": path,
+                "roomId": room_id,
+                "durationMs": duration_ms,
+                "startedAt": started_at,
             },
             skip_sid=sid,
         )
@@ -362,16 +512,66 @@ async def walk_started(sid: str, payload: dict | None) -> None:
 
 @sio.on("walk_arrived")
 async def walk_arrived(sid: str, payload: dict | None) -> None:
+    """Accepted only if it matches the currently-active movementId for this employee (rejects
+    stale/reordered arrivals from a superseded walk, see position_registry.arrive's docstring).
+    On acceptance, stable state is persisted to the DB (position.py) BEFORE broadcasting — a
+    persist failure is logged and must not block the broadcast, same pattern as
+    _cancel_stale_room_requests' surrounding try/except-per-step convention."""
     try:
-        payload = payload or {}
-        at = payload.get("at")
-        if not _is_point(at):
+        if not _valid_walk_arrived_payload(payload):
             return
         session_data = await sio.get_session(sid)
         email = session_data["email"]
+
+        movement_id = payload["movementId"]
+        at = {"x": payload["at"]["x"], "y": payload["at"]["y"]}
+        facing = payload["facing"]
+        state = payload["state"]
+        seat_key = payload.get("seatKey")
+        room_id = payload.get("roomId")
+
+        stable = position_registry.arrive(
+            email,
+            movement_id=movement_id,
+            at=at,
+            facing=facing,
+            state=state,
+            seat_key=seat_key,
+            room_id=room_id,
+            now_ms=_now_ms(),
+        )
+        if stable is None:
+            return  # stale/wrong movementId — ignore silently
+
+        try:
+            async with async_session_maker() as session:
+                await position_repo.upsert_stable(
+                    session,
+                    email=email,
+                    x=stable.x,
+                    y=stable.y,
+                    facing=stable.facing,
+                    state=stable.state,
+                    seat_key=stable.seat_key,
+                    room_id=stable.room_id,
+                    revision=stable.revision,
+                    updated_at=_ms_to_dt(stable.updated_at),
+                )
+        except Exception as exc:  # noqa: BLE001
+            _logger.exception(exc)
+
         await sio.emit(
             "peer_walk_arrived",
-            {"email": email, "at": {"x": at["x"], "y": at["y"]}},
+            {
+                "email": email,
+                "movementId": movement_id,
+                "revision": stable.revision,
+                "at": at,
+                "facing": stable.facing,
+                "state": stable.state,
+                "seatKey": stable.seat_key,
+                "roomId": stable.room_id,
+            },
             skip_sid=sid,
         )
     except Exception as exc:  # noqa: BLE001
@@ -532,18 +732,22 @@ async def message_read(sid: str, payload: dict | None) -> None:
                 await sio.emit("chat_error", {"code": "forbidden", "message": "Not a participant"}, to=sid)
                 return
             advanced = await chat_repo.mark_read(session, conversation_id, email, up_to_sent_at)
+            # mark_read only mutates the in-memory participant row; unread_count/mention_count
+            # re-SELECT last_read_at, so without a flush they'd compute against the OLD watermark
+            # and push a stale (still-nonzero) count to the reader's badge.
+            await session.flush()
             count = await chat_repo.unread_count(session, conversation_id, email)
             mentions = await chat_repo.mention_count(session, conversation_id, email)
             peers = await _other_participant_emails(session, conversation_id, email)
             await session.commit()
 
-        # "This user's other sockets" — broadcast to every socket for this email except the one
-        # that just marked it read, via the per-user room joined at connect time.
+        # Authoritative post-read counts to EVERY socket for this email (per-user room joined at
+        # connect time) — including the socket that just marked read. The marking tab has no
+        # local decrement (frontend's useUnreadTotal only updates on this push), so skipping the
+        # sender left its badge stuck until a refetch.
+        await sio.emit("unread_count", {"conversationId": conversation_id, "count": count}, room=user_room(email))
         await sio.emit(
-            "unread_count", {"conversationId": conversation_id, "count": count}, room=user_room(email), skip_sid=sid
-        )
-        await sio.emit(
-            "mention_count", {"conversationId": conversation_id, "count": mentions}, room=user_room(email), skip_sid=sid
+            "mention_count", {"conversationId": conversation_id, "count": mentions}, room=user_room(email)
         )
         if not advanced:
             # Watermark didn't actually move (redundant/stale re-ack, or no participant row) —
@@ -551,10 +755,12 @@ async def message_read(sid: str, payload: dict | None) -> None:
             return
         # Tell the peer(s) — the sender(s) of the messages just marked read — so their UI can
         # advance from "delivered" to "read" without polling.
+        # readerEmail is the server-verified session identity — never a client-supplied field —
+        # so a group sender's UI can attribute the receipt to the right participant's avatar.
         for peer in peers:
             await sio.emit(
                 "read_receipt",
-                {"conversationId": conversation_id, "readUpTo": to_iso_z(up_to_sent_at)},
+                {"conversationId": conversation_id, "readUpTo": to_iso_z(up_to_sent_at), "readerEmail": email},
                 room=user_room(peer),
             )
     except Exception as exc:  # noqa: BLE001
@@ -591,10 +797,15 @@ async def message_delivered(sid: str, payload: dict | None) -> None:
             return
         # Delivery receipt goes to the PEER's room only (the message sender(s) whose messages
         # just got marked delivered) — never back to the acker's own room.
+        # recipientEmail: server-verified session identity of the acker (see readerEmail above).
         for peer in peers:
             await sio.emit(
                 "delivery_receipt",
-                {"conversationId": conversation_id, "deliveredUpTo": to_iso_z(up_to_sent_at)},
+                {
+                    "conversationId": conversation_id,
+                    "deliveredUpTo": to_iso_z(up_to_sent_at),
+                    "recipientEmail": email,
+                },
                 room=user_room(peer),
             )
     except Exception as exc:  # noqa: BLE001

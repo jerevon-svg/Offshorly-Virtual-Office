@@ -8,17 +8,35 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import settings
+from app.database import async_session_maker
 from app.realtime.socket import sio
+from app.repositories import position as position_repo
 from app.routers import chat as chat_router
 from app.routers import feed as feed_router
 from app.routers import hub as hub_router
 from app.routers import requests as requests_router
 from app.routers import room_requests as room_requests_router
 from app.routers import talk_requests as talk_requests_router
+from app.services.position_registry import position_registry
 
 _logger = logging.getLogger(__name__)
 
 fastapi_app = FastAPI(title=settings.APP_NAME, version="0.1.0")
+
+
+@fastapi_app.on_event("startup")
+async def _load_positions_into_registry() -> None:
+    """Cold-start recovery: repopulate the in-memory PositionRegistry from the last-persisted
+    stable positions so a deploy restart / single-worker crash-restart doesn't show everyone at
+    (0, 0) until they next move. Tolerant of DB unavailability (log, continue with an empty
+    registry) so tests/dev without the table present don't crash — matches this app's general
+    "connection failures degrade gracefully, never crash startup" posture."""
+    try:
+        async with async_session_maker() as session:
+            rows = await position_repo.list_all(session)
+        position_registry.load_stable(rows)
+    except Exception as exc:  # noqa: BLE001
+        _logger.exception(exc)
 
 fastapi_app.add_middleware(
     CORSMiddleware,

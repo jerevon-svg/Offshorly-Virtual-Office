@@ -3,6 +3,7 @@ from app.models.conversation import Conversation, ConversationParticipant
 from app.models.feed import FeedComment, FeedPost, FeedReaction
 from app.models.hub import HubItem, HubItemState
 from app.models.message import Message
+from app.models.position import EmployeePosition
 from app.models.request import ConversationRequest
 from app.models.room_request import RoomEntryRequest
 from app.models.talk_request import TalkRequest
@@ -12,6 +13,7 @@ __all__ = [
     "Conversation",
     "ConversationParticipant",
     "ConversationRequest",
+    "EmployeePosition",
     "FeedComment",
     "FeedPost",
     "FeedReaction",

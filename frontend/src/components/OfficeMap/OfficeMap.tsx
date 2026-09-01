@@ -41,7 +41,14 @@ import { GroupConversationView } from "../Chat/GroupConversationView";
 import { isRealZohoMode } from "../../services/zoho";
 import { ErrorBoundary } from "../ErrorBoundary";
 import { OfficeStage } from "./OfficeStage";
-import { buildCharacterIsResponderById, remapSelfKey } from "./responderMap";
+import { remapSelfKey } from "./responderMap";
+import {
+  applyPeerTypingUpdate,
+  deriveAnyTypingCharacterIds,
+  deriveSpatialTypingCharacterIds,
+  typingTimerKey,
+  type PeerTypingState,
+} from "./spatialTyping";
 import { CharacterSearch } from "./CharacterSearch";
 import { CharacterActionMenu } from "./CharacterActionMenu";
 import { RoomSidebar } from "./RoomSidebar";
@@ -58,10 +65,12 @@ import type { WalkDirection } from "../../data/bonWalkFrames";
 import { SavedAvatarWalker, type SavedAvatarWalkApi, type SavedAvatarWalkState } from "./SavedAvatarWalker";
 import { PeerWalker, type PeerWalkerRenderState } from "./PeerWalker";
 import {
-  emitAndWalkTo,
-  usePeerWalks,
-  type PeerWalkState,
-} from "../../services/presence/spatialWalkClient";
+  usePeerMovements,
+  getPeerMovementSnapshot,
+  type PeerMovementState,
+} from "../../services/presence/movementSync";
+import { makeMoveSelf } from "./useSelfMovement";
+import { resolvePeerOverrides, resolveRenderablePeerEmails } from "./peerOverrides";
 import { EMAIL_TO_AVATAR_ID } from "../../data/avatarRegistry";
 import {
   ALEX_SPRITE_SET,
@@ -88,7 +97,11 @@ import { mapAtlasToOfficeStatus, type OfficeStatus } from "../../services/presen
 import { resolveManualStatusMovement } from "../../services/presence/statusMovement";
 import { emitGoOffline, emitComeOnline, useOfflineLineup } from "../../services/presence/offlineLineupClient";
 import { slotIndexToPosition } from "../../services/presence/lineupSlots";
-import { applyOfflineLineupPositions } from "../../services/presence/offlineLineupPlacement";
+import {
+  applyOfflineLineupPositions,
+  computeOfflineEmailSet,
+  computeServerLineupEmailSet,
+} from "../../services/presence/offlineLineupPlacement";
 import { CENTRAL_HUB_ROOM_ID } from "../../data/centralHub";
 import { CheckoutReminderToast } from "./checkout/CheckoutReminderToast";
 import { CheckoutConfirmModal } from "./checkout/CheckoutConfirmModal";
@@ -102,6 +115,7 @@ import {
   useSpatialSessions,
   type SpatialSessionEntry,
 } from "../../services/presence/spatialSessionStore";
+import { clusterBounds, computeClusterFocus, readMapTransform, shouldRefocus } from "./spatialFocus";
 import { createJoinRequest, onRequestResolved } from "../../services/chat/requestsClient";
 import { JoinRequestPrompt } from "./JoinRequestPrompt";
 import {
@@ -121,6 +135,7 @@ import {
 } from "../../services/chat/talkRequestsClient";
 import { RoomLockedToast } from "./RoomLockedToast";
 import { emitDndSet, useDndEmails } from "../../services/presence/dndClient";
+import { emitGlobalChatActive, useGlobalChatActiveEmails } from "../../services/presence/globalChatActivityClient";
 import {
   emitRoomPresenceEnter,
   emitRoomPresenceLeave,
@@ -134,6 +149,7 @@ import {
   incumbentCentersForAnchor,
   resolveSelfSlotWalk,
   slotWalkSignature,
+  resolveConversationSlot,
 } from "./clusterFormation";
 import { getCurrentUserId, useCurrentUserAvatarId } from "../../data/currentUser";
 import { useCurrentUser } from "../../auth/currentUserStore";
@@ -149,7 +165,7 @@ import { CompanyHub } from "./CompanyHub";
 import { openCompanyHub, useCompanyHub } from "../../services/hub/companyHubStore";
 import { resetDevHubState } from "../../services/hub/hubClient";
 import { EmployeeProfile } from "./EmployeeProfile";
-import { mockEmailForAvatarId } from "../../data/avatarIdentity";
+import { avatarIdForEmail, mockEmailForAvatarId } from "../../data/avatarIdentity";
 import styles from "./OfficeMap.module.css";
 
 // Check-in sequence: bon spawns outside with no popup. Clicking the
@@ -249,6 +265,15 @@ export function OfficeMap() {
   const maxScale = initialScale * 5;
   const [isDragging, setIsDragging] = useState(false);
   const transformRef = useRef<ReactZoomPanPinchRef | null>(null);
+  // Live map view for the adaptive-LOD policy (adaptiveLod.ts). Sourced from
+  // TransformWrapper's own onTransformed callback — never measured off the DOM
+  // and never a second zoom state: this only MIRRORS the wrapper's transform
+  // so OfficeStage can tell what is on screen and how big it is. `zoom` is
+  // normalized to cover scale so thresholds are viewport-independent.
+  const [mapView, setMapView] = useState<{
+    zoom: number;
+    visibleRect: { x: number; y: number; width: number; height: number };
+  } | null>(null);
 
   const [menu, setMenu] = useState<{ layer: AssetLayer; clientX: number; clientY: number } | null>(
     null,
@@ -341,14 +366,48 @@ export function OfficeMap() {
     };
   }, [roster.people, currentUser]);
 
+  // Which lowercased emails have a real roster layer right now — gates
+  // which peers get a <PeerWalker> instance (see its render site below).
+  // A movementSync store entry for an email with no roster layer yet (e.g.
+  // their walk_started/positions_snapshot arrived before /floor's roster
+  // landed) still holds its state; once their roster layer appears this set
+  // gains their email and PeerWalker mounts, reading the ALREADY-current
+  // store state at mount (see PeerWalker's initial useCharacterWalk seed) —
+  // no event is lost to timing.
+  const rosterLayerEmailSet = useMemo(
+    () => new Set(rosterLayers.map((layer) => layer.id.toLowerCase())),
+    [rosterLayers],
+  );
+
+  // Atlas-offline peer emails (same predicate applyOfflineLineupPositions
+  // uses, extracted as computeOfflineEmailSet so this doesn't drift from
+  // that module's own definition of "offline"). An offline peer's position
+  // is owned by the sidewalk-lineup placement above, never by a synced
+  // movementSync desk position — see resolvePeerOverrides'/
+  // resolveRenderablePeerEmails' doc comments.
+  //
+  // Mock mode (2026-08-29): MockOfficeService's statuses are a fixed spread that
+  // check-in never updates (Bon is hard-coded OFFLINE), which parked a checked-in
+  // Bon on the sidewalk in Alex's view and dropped his synced position. There the
+  // app's own server lineup (explicit checkout) is the only truthful offline
+  // signal — see computeServerLineupEmailSet. Real mode keeps the Atlas predicate.
+  const offlineEmailSet = useMemo(
+    () =>
+      import.meta.env.VITE_OFFICE_INTEGRATION_MODE === "real"
+        ? computeOfflineEmailSet(roster.people)
+        : computeServerLineupEmailSet(offlineLineup),
+    [roster.people, offlineLineup],
+  );
+
   // Phase 2: OTHER roster peers marked Atlas-OFFLINE (not just app-checkout users) get
   // repositioned to the sidewalk lineup, reconciled against the server-authoritative
   // offlineLineup where both signals overlap (see offlineLineupPlacement.ts). Self is
   // excluded already (rosterLayers above has the viewer's own layer split out) — this only
-  // ever touches other people's positions.
+  // ever touches other people's positions. Shares offlineEmailSet above so placement and
+  // the peer-override filters below can never disagree about who is offline.
   const positionedPeerLayers = useMemo(
-    () => applyOfflineLineupPositions(rosterLayers, roster.people, offlineLineup),
-    [rosterLayers, roster.people, offlineLineup],
+    () => applyOfflineLineupPositions(rosterLayers, roster.people, offlineLineup, offlineEmailSet),
+    [rosterLayers, roster.people, offlineLineup, offlineEmailSet],
   );
 
   // Once real people are on the floor, the manifest's fictional cast is
@@ -706,6 +765,40 @@ export function OfficeMap() {
     );
   }
 
+  // Global Chat ACTIVITY presence fact (animation only — see characterAnimationState.ts's
+  // isGlobalChatActive): true while >=1 remote DM/group window is visible and NOT minimized.
+  // The spatial "Character -> Chat" window (openChat/openGroupConv) deliberately never counts.
+  // Edge-triggered emit to the server (mirrors the DND broadcast below) so peers see this
+  // person's seated avatar switch to `sitting-answering`; the server refcounts per socket, so a
+  // second tab keeps it true until the LAST window/tab closes, and re-sends the snapshot on
+  // (re)connect. Carries only the boolean — no conversation ids or contents.
+  const selfGlobalChatActive = remoteChatWindows.some((w) => !w.minimized);
+  const selfGlobalChatActiveRef = useRef(false);
+  useEffect(() => {
+    if (selfGlobalChatActiveRef.current === selfGlobalChatActive) return;
+    selfGlobalChatActiveRef.current = selfGlobalChatActive;
+    emitGlobalChatActive(selfGlobalChatActive);
+  }, [selfGlobalChatActive]);
+  useEffect(
+    () => () => {
+      // Unmount (e.g. navigating away) with a window still open: report false so peers don't
+      // keep seeing sitting-answering until the socket eventually drops.
+      if (selfGlobalChatActiveRef.current) emitGlobalChatActive(false);
+    },
+    [],
+  );
+  const globalChatActiveEmails = useGlobalChatActiveEmails();
+  // Layer-id-keyed list for OfficeStage: peers' layer ids equal their lowercased email; the
+  // self entry is remapped selfChatId -> playerLayerId (same convention as
+  // talkingCharacterIdsFromSessions). Self is additionally OR'd with the local derivation so
+  // the viewer's own avatar reacts immediately (and still works in mock mode with no socket).
+  const globalChatActiveCharacterIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const email of globalChatActiveEmails) ids.add(email === selfChatId ? playerLayerId : email);
+    if (selfGlobalChatActive) ids.add(playerLayerId);
+    return Array.from(ids);
+  }, [globalChatActiveEmails, selfGlobalChatActive, selfChatId, playerLayerId]);
+
   // Combined right-to-left layout for the floating chat stack: newest remote windows first
   // (remoteChatWindows is already newest-first, see openOrFocusRemoteDm/Group's unshift), then
   // the spatial window (if any) last/leftmost. Purely presentational — has no bearing on which
@@ -719,29 +812,65 @@ export function OfficeMap() {
   }, [remoteChatWindows, openChat, openGroupConv, spatialChatMinimized]);
 
   // Routes a conversation-list click (the 💬 Global Chat icon's dropdown — MessageNotification
-  // Badge's `conversations` list, below its New Message/Find Person/New Group Chat actions) to
-  // the REMOTE slot — every interaction that starts from the Global Chat icon must stay remote:
-  // no auto-walk, no spatial_session_start, no "📍 Spatial Conversation" badge, and (per the DND
-  // feature) never gated by the target's DND status. Character -> Chat (handleChoose's "chat"
-  // action, triggered by clicking a character ON THE MAP) remains the only path that opens the
-  // SPATIAL slot — that is a completely separate, untouched code path.
+  // Badge's `conversations` list, below its New Message/Find Person/New Group Chat actions).
+  // Global Chat is a unified entry point onto the same persistent conversations, so the slot is
+  // decided by the conversation's LIVE state, not by which button was clicked:
   //
-  // NOTE — deliberate behavior change from a prior fix (previously routed here to the spatial
-  // slot instead): reopening an existing spatial conversation via this icon used to be how the
-  // non-initiating party in a Character->Chat DM "joined their side" for spatial_session_start
-  // purposes, which a 3rd person's Ask-to-Join eligibility (>=2 spatial members) depended on.
-  // Since the current spec requires the Global Chat icon to NEVER be spatial, responding to an
-  // existing spatial conversation via this icon (rather than walking back to the sender) no
-  // longer counts toward that 3rd-person eligibility — a known, deliberate tradeoff, not an
-  // oversight. Ask-to-Join itself (spatial approach -> chat -> a 3rd person's Ask-to-Join option)
-  // is otherwise fully intact.
+  // - SPATIAL (openChat/openGroupConv): a server-broadcast spatial session exists for this exact
+  //   conversation id with at least one member other than self — a peer currently has it open
+  //   via Character -> Chat (e.g. they walked up and messaged us). Opening it here attaches to
+  //   that session through the spatial slot's existing onConversationOpen wiring, so
+  //   spatial_session_start, "In Conversation", Mechanism 1's auto-walk to the cluster slot,
+  //   and a 3rd person's Ask-to-Join eligibility (>=2 members) all flow through the same
+  //   mechanisms as Character -> Chat — no need to find the peer on the map and click Chat
+  //   again. Not gated by the target's DND status: the peer initiated this session.
+  // - REMOTE (remoteChatWindows): no live session, or only a stale self-only one — a normal
+  //   persistent DM/group. Stays a floating remote window: no auto-walk, no
+  //   spatial_session_start, no "📍 Spatial Conversation" badge, never DND-gated.
+  //
+  // The two views are mutually exclusive per conversation: routing to spatial closes any remote
+  // window already open for the same DM/group, so a conversation never renders twice. (An
+  // earlier version routed EVERY Global Chat click to the spatial slot — which made plain
+  // remote chats flip "In Conversation" — and the correction after that routed NONE, which lost
+  // the peer's spatial context entirely. resolveConversationSlot is the middle ground.)
   function onSelectConversation(conv: Conversation) {
+    const slot = resolveConversationSlot({
+      conversationId: conv.id,
+      sessions: spatialSessions,
+      selfEmail: selfChatId,
+    });
+
     if (conv.type === "group") {
-      openOrFocusRemoteGroup({ id: conv.id, participantIds: conv.participantIds, title: conv.title ?? null });
+      if (slot === "remote") {
+        openOrFocusRemoteGroup({ id: conv.id, participantIds: conv.participantIds, title: conv.title ?? null });
+        return;
+      }
+      closeRemoteWindow(`group:${conv.id}`);
+      // Same mutual-exclusion clearing the conversation_upgraded handler does — openChat must be
+      // nulled whenever openGroupConv is set, or both render guards go false and both vanish.
+      setOpenChat(null);
+      setSpatialChatMinimized(false);
+      setOpenGroupConv({
+        conversationId: conv.id,
+        participantEmails: conv.participantIds,
+        title: conv.title ?? null,
+      });
       return;
     }
+
     const peerEmail = conv.participantIds.find((id) => id.toLowerCase() !== selfChatId.toLowerCase());
-    if (peerEmail) openOrFocusRemoteDm(peerEmail);
+    if (!peerEmail) return;
+    if (slot === "remote") {
+      openOrFocusRemoteDm(peerEmail);
+      return;
+    }
+    closeRemoteWindow(`dm:${peerEmail.toLowerCase()}`);
+    // Mirrors handleChoose's "chat" branch (minus the approach walk — Mechanism 1 walks self to
+    // the cluster slot once the session reaches >=2 members): opening the DM panel must clear
+    // any open group panel, for the same mutual-exclusion reason as above.
+    setOpenGroupConv(null);
+    setSpatialChatMinimized(false);
+    setOpenChat(buildPeerLayer(peerEmail));
   }
 
   // Global Chat "New Message"/"Find Person" resolution — both search/select flows land here with
@@ -800,17 +929,7 @@ export function OfficeMap() {
   const [talkingTextById, setTalkingTextById] = useState<Record<string, string>>({});
   const talkingTimersRef = useRef<Record<string, number>>({});
 
-  // Phase A live-3D "responder" signal, remapped from talkingTextById's
-  // senderId/email key-space into character LAYER id key-space — see
-  // responderMap.ts's buildCharacterIsResponderById and OfficeStage.tsx's
-  // characterIsResponderById doc comment for the full why.
-  const characterIsResponderById = useMemo(
-    () => buildCharacterIsResponderById(talkingTextById, selfChatId, playerLayerId),
-    [talkingTextById, selfChatId, playerLayerId],
-  );
-
-  // Same senderId/email -> layer-id remap as characterIsResponderById above,
-  // but for the actual text values (not a derived boolean) — this is what
+  // senderId/email -> layer-id remap of the sent-text map (see responderMap.ts) — this is what
   // OfficeStage's overhead-bubble resolver reads (talkingTextById prop,
   // layer-id-keyed), fixing the bug where self's own sent-text bubble never
   // showed (the old direct pass-through was keyed on selfChatId/email, but
@@ -820,39 +939,48 @@ export function OfficeMap() {
     [talkingTextById, selfChatId, playerLayerId],
   );
 
-  // Actively-typing signal (real keystroke activity, see
-  // ConversationView.tsx's onTypingChange) — self side.
-  const [selfTyping, setSelfTyping] = useState(false);
+  // Actively-typing signal (real keystroke activity, see ConversationView.tsx's
+  // onTypingChange) — self side, recorded together with the spatial conversation it happened
+  // in. Only the two spatial windows wire onTypingChange (remote Global Chat windows never do),
+  // and the conversation id is what lets deriveSpatialTypingCharacterIds match it against the
+  // live spatial session (see spatialTyping.ts).
+  const [selfTypingConversationId, setSelfTypingConversationId] = useState<string | null>(null);
+  const selfSpatialConversationId = openGroupConv?.conversationId ?? openConversationId ?? null;
+  const selfSpatialConversationIdRef = useRef<string | null>(selfSpatialConversationId);
+  selfSpatialConversationIdRef.current = selfSpatialConversationId;
+  const setSelfTyping = useCallback((isTyping: boolean) => {
+    setSelfTypingConversationId(isTyping ? selfSpatialConversationIdRef.current : null);
+  }, []);
 
-  // Peer side, fed by RealChatService's onTyping (mock mode's implementation
-  // never invokes listeners, so this stays empty there). Keyed by layer id
-  // — peer layer ids equal the peer's lowercased email, same convention as
-  // selfChatId/talkingTextById elsewhere in this file.
-  const [peerTypingByLayerId, setPeerTypingByLayerId] = useState<Record<string, boolean>>({});
+  // Peer side, fed by RealChatService's onTyping (mock mode's implementation never invokes
+  // listeners, so this stays empty there). Conversation-scoped: lowercased email -> set of
+  // conversation ids currently typing in, with one inactivity timer per (email, conversation)
+  // so a stop/timeout in one conversation can never clear typing in another.
+  const [peerTypingByEmail, setPeerTypingByEmail] = useState<PeerTypingState>({});
   const peerTypingTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   useEffect(() => {
     const unsubscribe = chatService.onTyping?.((update) => {
-      const senderLayerId = update.senderId.toLowerCase();
+      const email = update.senderId.toLowerCase();
       // Never let a self-echo affect peer state.
-      if (senderLayerId === selfChatId?.toLowerCase()) return;
+      if (email === selfChatId?.toLowerCase()) return;
+      const conversationId = update.conversationId;
+      const timerKey = typingTimerKey(email, conversationId);
 
       const timers = peerTypingTimersRef.current;
-      if (timers[senderLayerId]) {
-        clearTimeout(timers[senderLayerId]);
-        delete timers[senderLayerId];
+      if (timers[timerKey]) {
+        clearTimeout(timers[timerKey]);
+        delete timers[timerKey];
       }
 
+      setPeerTypingByEmail((prev) => applyPeerTypingUpdate(prev, { email, conversationId, isTyping: update.isTyping }));
       if (update.isTyping) {
-        setPeerTypingByLayerId((prev) => ({ ...prev, [senderLayerId]: true }));
         // Belt-and-suspenders expiry in case a "stopped typing" event is
         // lost (dropped socket message, tab closed uncleanly, etc).
-        timers[senderLayerId] = setTimeout(() => {
-          setPeerTypingByLayerId((prev) => ({ ...prev, [senderLayerId]: false }));
-          delete timers[senderLayerId];
+        timers[timerKey] = setTimeout(() => {
+          setPeerTypingByEmail((prev) => applyPeerTypingUpdate(prev, { email, conversationId, isTyping: false }));
+          delete timers[timerKey];
         }, 6000);
-      } else {
-        setPeerTypingByLayerId((prev) => ({ ...prev, [senderLayerId]: false }));
       }
     });
 
@@ -863,14 +991,26 @@ export function OfficeMap() {
     };
   }, [selfChatId]);
 
+  // Any-conversation typing — drives the overhead "typing dots" bubble only (unchanged
+  // semantics: a peer typing in any conversation with the viewer shows dots).
   const typingCharacterIds = useMemo(
-    () => [
-      ...(selfTyping ? [playerLayerId] : []),
-      ...Object.entries(peerTypingByLayerId)
-        .filter(([, isTyping]) => isTyping)
-        .map(([id]) => id),
-    ],
-    [selfTyping, playerLayerId, peerTypingByLayerId],
+    () => deriveAnyTypingCharacterIds(peerTypingByEmail, selfTypingConversationId !== null, playerLayerId),
+    [peerTypingByEmail, selfTypingConversationId, playerLayerId],
+  );
+
+  // Spatial-scoped typing — drives the `agree-gesture` animation only: a character counts as
+  // typing solely when its typing entry belongs to the conversation of the live spatial session
+  // it is a member of (see spatialTyping.ts / characterAnimationState.ts).
+  const spatialTypingCharacterIds = useMemo(
+    () =>
+      deriveSpatialTypingCharacterIds({
+        peerTyping: peerTypingByEmail,
+        sessions: spatialSessions,
+        selfChatId,
+        playerLayerId,
+        selfTypingConversationId,
+      }),
+    [peerTypingByEmail, spatialSessions, selfChatId, playerLayerId, selfTypingConversationId],
   );
 
   // Door art layer ids currently slid open (see officeDoors.ts). Rooms
@@ -947,6 +1087,7 @@ export function OfficeMap() {
     isWalking,
     isPatting,
     direction,
+    getDirection: getWalkDirection,
     frameIndex,
     walkTo: walkToRaw,
     face,
@@ -987,11 +1128,15 @@ export function OfficeMap() {
   // not just the onboarding sequence) clears isSitting — a character who
   // starts moving again is, by definition, no longer sitting. Every call
   // site below uses this wrapper, not walkToRaw directly.
-  function walkTo(input: Pt | Pt[], onArrive?: () => void) {
+  function walkTo(
+    input: Pt | Pt[],
+    onArrive?: () => void,
+    opts?: { durationMs?: number; elapsedMs?: number },
+  ) {
     setIsSitting(false);
     setCurrentSeatKey(null);
     setCurrentSeatFurnitureId(undefined);
-    walkToRaw(input, onArrive);
+    walkToRaw(input, onArrive, opts);
   }
 
   // Shared "arrived at a seat, now sit in it" finalizer — used by BOTH
@@ -1004,6 +1149,32 @@ export function OfficeMap() {
     setCurrentSeatKey(seatCentroidKey(seat.x, seat.y));
     setCurrentSeatFurnitureId(seat.furnitureId);
   }
+
+  // THE single self-movement funnel (see useSelfMovement.ts's doc comment):
+  // every self-movement call site below (right-click, seat walks,
+  // approachCharacter, spatial self-settle, Ask-to-Join joiner, checkout
+  // exit, walkBackToDesk, lineup nudge) calls this instead of bare walkTo/
+  // walkToRaw, so every self walk emits the walk_started/walk_arrived wire
+  // events peers replay. Recreated every render (like every other walk
+  // helper in this file) so its getPos/getDirection closures always read
+  // the current render's bonPos/direction/isSitting/sitDirection — moveSelf
+  // is only ever invoked synchronously (never stashed across renders).
+  const moveSelf = makeMoveSelf({
+    walkTo,
+    getPos: () => bonPos,
+    // Reads the walker's LIVE direction ref, not this render's `direction`
+    // state: arrival facing is resolved inside onArrive, which fires from the
+    // walk's rAF loop after this closure was created, so the state value there
+    // is the pre-walk facing. Using it made a character snap back to whatever
+    // way they were facing before the walk (commonly "right") the moment they
+    // stopped. Explicit arrival.facing still overrides this — see
+    // useSelfMovement's `arrival?.facing ?? deps.getDirection()`.
+    getDirection: () => (isSitting ? sitDirection : getWalkDirection()),
+    // Owner turns to the same arrival facing it broadcasts (see
+    // UseSelfMovementDeps.face) — fixes per-browser facing divergence
+    // after a spatial-conversation settle.
+    face,
+  });
 
   const playerSpriteSrc = characterSprite(
     viewerSpriteSet,
@@ -1142,28 +1313,119 @@ export function OfficeMap() {
     return map;
   }, [savedAvatarWalkState]);
 
-  // Stage 3 spatial-walk: renders OTHER users' in-flight approach walks,
-  // broadcast by the backend (peer_walk_started/peer_walk_arrived) whenever a
-  // peer's own approachCharacter emits via emitAndWalkTo. One headless
-  // <PeerWalker> per peer (see the peerWalks.map() below) reports live
-  // pos+src up here, merged into characterOverrides/characterSrcOverrides —
-  // same pattern as savedAvatarWalkState above.
-  const peerWalks = usePeerWalks();
+  // Unified movement-sync: renders OTHER users' movement (walk_started/
+  // walk_arrived replay) via the shared movementSync store, one headless
+  // <PeerWalker> per peer (see the usePeerMovements().map() below) reporting
+  // live pos+src+isWalking+direction+isSitting up here, merged into
+  // characterOverrides/characterSrcOverrides/characterIsWalkingById/
+  // characterIsSittingById/characterDirectionsById — same pattern as
+  // savedAvatarWalkState above.
+  const peerMovements = usePeerMovements();
   const [peerWalkState, setPeerWalkState] = useState<Record<string, PeerWalkerRenderState>>({});
   const handlePeerWalkUpdate = useCallback(
     (id: string, s: PeerWalkerRenderState) => setPeerWalkState((prev) => ({ ...prev, [id]: s })),
     [],
   );
-  const peerWalkOverridePos = useMemo(() => {
-    const m: Record<string, { x: number; y: number }> = {};
-    for (const [id, s] of Object.entries(peerWalkState)) m[id] = s.pos;
-    return m;
-  }, [peerWalkState]);
-  const peerWalkOverrideSrc = useMemo(() => {
-    const m: Record<string, string> = {};
-    for (const [id, s] of Object.entries(peerWalkState)) m[id] = s.src;
-    return m;
-  }, [peerWalkState]);
+  // Excludes any Atlas-offline peer from every override map (see
+  // resolvePeerOverrides' doc comment) — an offline peer's synced desk
+  // position must never beat their sidewalk-lineup placement.
+  const peerOverrides = useMemo(
+    () => resolvePeerOverrides(peerWalkState, offlineEmailSet),
+    [peerWalkState, offlineEmailSet],
+  );
+  const peerWalkOverridePos = peerOverrides.pos;
+  const peerWalkOverrideSrc = peerOverrides.src;
+  const peerIsWalkingById = peerOverrides.isWalking;
+  const peerIsSittingById = peerOverrides.isSitting;
+  const peerDirectionsById = peerOverrides.direction;
+
+  // Which of the currently-known peer emails get a live <PeerWalker>
+  // instance — see resolveRenderablePeerEmails' doc comment (self excluded,
+  // must have a roster layer, must not be Atlas-offline).
+  const renderablePeerEmailSet = useMemo(
+    () =>
+      new Set(
+        resolveRenderablePeerEmails(
+          peerMovements.map((p) => p.email),
+          rosterLayerEmailSet,
+          offlineEmailSet,
+          selfChatId.toLowerCase(),
+        ),
+      ),
+    [peerMovements, rosterLayerEmailSet, offlineEmailSet, selfChatId],
+  );
+
+  // --- Spatial-conversation focus camera (spatialFocus.ts) -----------------
+  // Participants already get HQ LOD0 (adaptiveLod's isFocused), but at cover
+  // zoom a character is only ~30-50 CSS px tall so none of that detail can
+  // resolve. Entering a spatial conversation therefore moves the CAMERA to the
+  // participant cluster, which is what makes faces look like the manually
+  // approved max-zoom view. Model and CSS scale are untouched.
+  //
+  // Fires ONLY on entering a session or when the participant set materially
+  // changes (shouldRefocus), so a user who pans/zooms mid-conversation is
+  // never fought. On leaving, the transform captured at entry is restored —
+  // unless the user has since navigated elsewhere, in which case the stale
+  // transform is dropped.
+  const preFocusTransformRef = useRef<{ x: number; y: number; scale: number } | null>(null);
+  const focusedSessionRef = useRef<{ sessionId: string; members: string[] } | null>(null);
+
+  const activeSpatialSession = useMemo(() => {
+    if (!selfChatId) return null;
+    const s = spatialSessions.find(
+      (x) => x.members.includes(selfChatId) && x.members.length >= 2,
+    );
+    return s ? { sessionId: s.sessionId, members: [...s.members].sort() } : null;
+  }, [spatialSessions, selfChatId]);
+
+  useEffect(() => {
+    const ref = transformRef.current;
+    const wrapper = ref?.instance.wrapperComponent;
+    if (!ref || !wrapper) return;
+    const prev = focusedSessionRef.current;
+
+    // --- leaving a conversation: restore what we captured on entry
+    if (!activeSpatialSession) {
+      const saved = preFocusTransformRef.current;
+      focusedSessionRef.current = null;
+      preFocusTransformRef.current = null;
+      if (prev && saved) ref.setTransform(saved.x, saved.y, saved.scale, 500, "easeOut");
+      return;
+    }
+
+    if (!shouldRefocus(prev, activeSpatialSession)) return;
+
+    const rect = wrapper.getBoundingClientRect();
+    const boxes = activeSpatialSession.members
+      .map((email) => {
+        const c = resolveMemberCenter(email);
+        if (!c) return null;
+        return { x: c.x - 13, y: c.y - 18, width: 26, height: 37 };
+      })
+      .filter((b): b is { x: number; y: number; width: number; height: number } => b !== null);
+    const cluster = clusterBounds(boxes);
+    if (!cluster) return;
+
+    // capture the pre-conversation view once, on first entry only
+    if (!prev) {
+      // See readMapTransform: the transform lives on the ref itself, and the
+      // old `instance.transformState` read threw the moment a second
+      // participant made the session active.
+      preFocusTransformRef.current = readMapTransform(ref);
+    }
+    focusedSessionRef.current = activeSpatialSession;
+
+    const t = computeClusterFocus(
+      cluster,
+      activeSpatialSession.members.length,
+      rect.width,
+      rect.height,
+      minScale,
+      maxScale,
+    );
+    ref.setTransform(t.x, t.y, t.scale, 600, "easeOut");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSpatialSession]);
 
   // Cluster-formation wiring: resolves a member's current WORLD-CENTER
   // position (not top-left) for anchor/slot computation. Mirrors the same
@@ -1242,11 +1504,17 @@ export function OfficeMap() {
     const goalRoomId = roomOf(mySlotCenter)?.id ?? null;
     const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, goalRoomId);
 
-    emitAndWalkTo(walkTo, { x: bonPos.x, y: bonPos.y }, path, () => {
-      face(directionBetween({ x: goal.x + bw / 2, y: goal.y + bh / 2 }, anchor));
+    // Facing folded into arrival.facing (rather than a post-arrival face()
+    // call) so walk_arrived broadcasts the FINAL intended facing — a
+    // post-arrival local face() never reaches the server/DB, leaving peers
+    // and a reload with the wrong facing.
+    moveSelf({
+      path,
+      roomId: goalRoomId,
+      arrival: { state: "standing", facing: directionBetween({ x: goal.x + bw / 2, y: goal.y + bh / 2 }, anchor) },
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [spatialSessions, selfChatId, isWalking, bonPos]);
+  }, [spatialSessions, selfChatId, isWalking]);
 
   // "Walk demo" / "Pat demo" — action-menu items available to alex/micah/lui
   // (their own dedicated useCharacterWalk instances above) AND any saved
@@ -1383,7 +1651,7 @@ export function OfficeMap() {
     const mine = offlineLineup.find((entry) => entry.email === selfEmail);
     if (!mine || reconciledLineupSlotRef.current === mine.slot) return;
     reconciledLineupSlotRef.current = mine.slot;
-    walkTo(slotIndexToPosition(mine.slot));
+    moveSelf({ path: [slotIndexToPosition(mine.slot)], roomId: null });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [offlineLineup, checkoutFlow.state, isWalking, currentUser]);
   const { currentStatus: selfOfficeStatus, manualStatus } = useSelfStatus();
@@ -1653,6 +1921,23 @@ export function OfficeMap() {
       setIsSitting(false);
       setCurrentSeatKey(null);
     }
+    // Prefer self's OWN last-synced facing (from movement-sync's
+    // positions_snapshot, which delivers self's stable entry with
+    // stable.facing even though self is excluded from PeerWalker rendering)
+    // over the seat/roster default set above — otherwise a reloaded client
+    // always shows the seat's fixed direction instead of whichever way bon
+    // was actually last facing before reload. Falls back to the seat
+    // default (already applied above) when there's no snapshot entry yet.
+    const selfSnapshot = getPeerMovementSnapshot().find(
+      (p) => p.email === selfChatId.toLowerCase(),
+    );
+    if (selfSnapshot) {
+      if (selfSnapshot.stable.state === "sitting") {
+        setSitDirection(selfSnapshot.stable.facing);
+      } else {
+        face(selfSnapshot.stable.facing);
+      }
+    }
     // resolveOwnSeat/playerCharacterLayer intentionally omitted below:
     // resolveOwnSeat is a plain function recreated every render (not
     // memoized), and listing it (or the layer dims it reads) would re-fire
@@ -1670,11 +1955,23 @@ export function OfficeMap() {
   // the viewer is alex/micah/lui we still have to filter their id out here
   // explicitly, or their own manifest layer would get hidden right along
   // with the fictional cast.
+  // The manifest "bon" layer is NOT in npcCharacterLayers (excluded by
+  // construction), so it was never hidden for a non-Bon viewer — and once a
+  // REAL roster person resolves to avatar id "bon" (Bon/Jerevon's own
+  // roster layer, keyed by email), that viewer saw two Bons: the static
+  // manifest one idling at its manifest spot plus the synced roster one.
+  // Hide the manifest bon layer only in that case, so the single surviving
+  // Bon is the roster layer that all email-keyed peer state (position,
+  // walking, facing, sitting, spatial typing, Global Chat activity) already
+  // attaches to. With no roster Bon (pure mock cast) the manifest Bon stays,
+  // and the viewer's own player layer is never hidden.
   const hiddenCharacterIds = useMemo(() => {
-    return rosterActive
-      ? npcCharacterLayers.filter((layer) => layer.id !== playerLayerId).map((layer) => layer.id)
-      : [];
-  }, [rosterActive, playerLayerId]);
+    if (!rosterActive) return [];
+    const ids = npcCharacterLayers.filter((layer) => layer.id !== playerLayerId).map((layer) => layer.id);
+    const rosterHasBon = rosterLayers.some((layer) => avatarIdForEmail(layer.id) === "bon");
+    if (playerLayerId !== "bon" && rosterHasBon) ids.push("bon");
+    return ids;
+  }, [rosterActive, playerLayerId, rosterLayers]);
 
   const checkoutBusy =
     checkoutFlow.state === "SAYING_GOODBYE" ||
@@ -1807,18 +2104,22 @@ export function OfficeMap() {
     // Door-gated on the way OUT of whatever room bon is currently in (his
     // own department, typically) — falls through to the single walk above
     // unchanged when that room has no complete door pair.
-    walkOutOfRoomThenTo(goal, goalRoomId, () => {
-      face(directionBetween(arriveCenter, tc));
-      checkoutFlow.arrivedAtReception();
-      const ref = transformRef.current;
-      const wrapper = ref?.instance.wrapperComponent;
-      if (ref && wrapper) {
-        const rect = wrapper.getBoundingClientRect();
-        const focusScale = initialScale * 3;
-        const { x, y } = computeCenterTransform(arisha, focusScale, rect.width, rect.height);
-        ref.setTransform(x, y, focusScale, 500, "easeOut");
-      }
-    });
+    walkOutOfRoomThenTo(
+      goal,
+      goalRoomId,
+      () => {
+        checkoutFlow.arrivedAtReception();
+        const ref = transformRef.current;
+        const wrapper = ref?.instance.wrapperComponent;
+        if (ref && wrapper) {
+          const rect = wrapper.getBoundingClientRect();
+          const focusScale = initialScale * 3;
+          const { x, y } = computeCenterTransform(arisha, focusScale, rect.width, rect.height);
+          ref.setTransform(x, y, focusScale, 500, "easeOut");
+        }
+      },
+      directionBetween(arriveCenter, tc),
+    );
   }
 
   function handleCancelCheckoutWalk() {
@@ -1853,8 +2154,10 @@ export function OfficeMap() {
       // (or whatever reception's flat id resolves to) returns null until its
       // stand-point pair is painted, but wired correctly for when that
       // lands. Falls through to the single walk unchanged in the meantime.
-      walkOutOfRoomThenTo(goal, goalRoomId, () => {
-        face("front");
+      walkOutOfRoomThenTo(
+        goal,
+        goalRoomId,
+        () => {
         window.clearTimeout(greetTimerRef.current);
         greetNonceRef.current += 1;
         setGreeting({ characterId: playerLayerId, nonce: greetNonceRef.current, text: "Bye, everyone! 👋" });
@@ -1862,7 +2165,9 @@ export function OfficeMap() {
           setGreeting(null);
           checkoutFlow.finishExit();
         }, 1500);
-      });
+        },
+        "front",
+      );
     }
 
     const arisha = npcCharacterLayers.find((l) => l.id === "arisha");
@@ -2075,8 +2380,13 @@ export function OfficeMap() {
     }
     pipSideRef.current = arisha.x > bonPos.x ? "left" : "right";
     const arriveCenter = { x: goal.x + bw / 2, y: goal.y + bh / 2 };
-    walkTo(path, () => {
-      face(directionBetween(arriveCenter, tc));
+    // Facing folded into arrival.facing (not a post-arrival face() call) so
+    // walk_arrived carries the FINAL facing bon turns to face Arisha.
+    moveSelf({
+      path,
+      roomId: goalRoomId,
+      arrival: { state: "standing", facing: directionBetween(arriveCenter, tc) },
+      onArrive: () => {
       setOnboarding("greeting");
       // Three sequential beats — a proper greet/respond/prompt exchange
       // rather than one static bubble. Each beat fully dismisses before the
@@ -2090,6 +2400,7 @@ export function OfficeMap() {
         ],
         () => walkToAssignedDepartment(),
       );
+      },
     });
   }
 
@@ -2107,6 +2418,16 @@ export function OfficeMap() {
   // officePeopleToLayers), which any other roster person can land past into
   // the overflow fallback. Returns null only when the room has no painted
   // seats at all.
+  //
+  // Always returns the seat's OWN fixed direction — the spawn-at-desk
+  // effect above (spawnMovedRef) overrides this with self's own synced
+  // facing from movement-sync's positions_snapshot when available (self's
+  // stable entry arrives even though self is excluded from PeerWalker
+  // rendering), falling back to this seat default only when there's no
+  // snapshot entry yet. Self's FINAL facing is also broadcast via
+  // walk_arrived (see moveSelf arrival.facing call sites above), so OTHER
+  // clients and the DB see the correct facing too. Peers restore their own
+  // facing correctly via PeerWalker's stable-state snap.
   function resolveOwnSeat(): Seat | null {
     const flatRoomId = roomIdForPerson(currentUser?.email, currentUser?.team ?? null) ?? FALLBACK_ROOM_ID;
     const doorPair = doorStandForRoom(flatRoomId);
@@ -2153,9 +2474,13 @@ export function OfficeMap() {
       function finishArrival(seat?: Seat) {
         if (seat) {
           sitAtSeat(seat);
-        } else {
-          face("front");
         }
+        // No-seat facing is no longer set here: both moveSelf call sites
+        // that lead here with no seat (the door-pair pathToInStand leg
+        // above, and the no-door-pair fallback leg below) already carry
+        // arrival: { state: "standing", facing: "front" } upfront, so
+        // walk_arrived already broadcasts the correct final facing — a
+        // local-only face("front") here would be redundant.
         window.clearTimeout(greetTimerRef.current);
         greetNonceRef.current += 1;
         setGreeting({ characterId: playerLayerId, nonce: greetNonceRef.current, text: "Hi team!" });
@@ -2178,7 +2503,10 @@ export function OfficeMap() {
         const inGoal = { x: doorPair.inStand.x - bw / 2, y: doorPair.inStand.y - bh / 2 };
         const pathToOutStand = findPath({ x: bonPos.x, y: bonPos.y }, outGoal, startRoomId, layer.id);
 
-        walkTo(pathToOutStand, () => {
+        moveSelf({
+          path: pathToOutStand,
+          roomId: layer.id,
+          onArrive: () => {
           // The full-map reveal (resetToInitialView above) has done its job
           // by now (bon has walked all the way to the door) — narrow to
           // room-fit right as the door is about to slide open, so the
@@ -2188,7 +2516,19 @@ export function OfficeMap() {
           onDoorOpen(flatRoomId);
           window.setTimeout(() => {
             const pathToInStand = findPath(outGoal, inGoal, layer.id, layer.id);
-            walkTo(pathToInStand, () => {
+            // Facing folded into arrival.facing ("front", the door-threshold
+            // default) rather than a post-arrival face() call — this leg's
+            // walk_arrived is superseded a moment later by the pathToSeat
+            // leg's own arrival.facing (nearestSeat.direction) when a seat
+            // exists, and is the FINAL facing broadcast when it doesn't (see
+            // finishArrival's no-seat branch below), so peers/reload see the
+            // correct facing either way instead of this leg's last walking
+            // direction.
+            moveSelf({
+              path: pathToInStand,
+              roomId: layer.id,
+              arrival: { state: "standing", facing: "front" },
+              onArrive: () => {
               onDoorClose(flatRoomId);
               // Don't leave bon glued to the door threshold — walk him one
               // more short leg to an actual seat inside the room. This makes
@@ -2200,12 +2540,27 @@ export function OfficeMap() {
               if (nearestSeat) {
                 const seatGoal = { x: nearestSeat.x - bw / 2, y: nearestSeat.y - bh / 2 };
                 const pathToSeat = findPath(inGoal, seatGoal, layer.id, layer.id);
-                walkTo(pathToSeat, () => finishArrival(nearestSeat));
+                moveSelf({
+                  path: pathToSeat,
+                  roomId: layer.id,
+                  arrival: {
+                    state: "sitting",
+                    seatKey: seatCentroidKey(nearestSeat.x, nearestSeat.y),
+                    facing: nearestSeat.direction,
+                  },
+                  onArrive: () => finishArrival(nearestSeat),
+                });
               } else {
+                // Facing already correct: the pathToInStand moveSelf above
+                // carries arrival.facing="front" upfront (see its comment),
+                // so walk_arrived already broadcast the right final facing
+                // for this no-seat arrival — nothing left to do here.
                 finishArrival();
               }
+              },
             });
           }, DOOR_ANIM_MS);
+          },
         });
         return;
       }
@@ -2225,7 +2580,11 @@ export function OfficeMap() {
       const goal = { x: snappedWorld.x - bw / 2, y: snappedWorld.y - bh / 2 };
       const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, layer.id);
 
-      walkTo(path, finishArrival);
+      // This fallback never resolves a seat (no door pair means no
+      // door-gated "walk one more short leg to a seat" step) — arrival.facing
+      // is always "front" here, so it's safe to fold in upfront, unlike the
+      // door-pair branch's no-seat case above.
+      moveSelf({ path, roomId: layer.id, arrival: { state: "standing", facing: "front" }, onArrive: finishArrival });
     }, zoomOutMs);
   }
 
@@ -2262,6 +2621,12 @@ export function OfficeMap() {
     finalGoal: { x: number; y: number },
     finalGoalRoomId: string | null,
     onArrive: () => void,
+    // Final facing bon should end up turned to once this walk's LAST leg
+    // arrives — threaded into that leg's moveSelf arrival.facing (not a
+    // post-arrival face() call from the caller) so walk_arrived broadcasts
+    // the true final facing to peers/DB. Omitted callers keep the walk's own
+    // final direction (moveSelf's default).
+    arrivalFacing?: WalkDirection,
   ) {
     const bw = playerCharacterLayer.width;
     const bh = playerCharacterLayer.height;
@@ -2283,7 +2648,10 @@ export function OfficeMap() {
       const outGoal = { x: doorPair.outStand.x - bw / 2, y: doorPair.outStand.y - bh / 2 };
       const pathToInStand = findPath({ x: bonPos.x, y: bonPos.y }, inGoal, startRoomId, startRoomId);
 
-      walkTo(pathToInStand, () => {
+      moveSelf({
+        path: pathToInStand,
+        roomId: startRoomId,
+        onArrive: () => {
         if (checkoutDoorNonceRef.current !== nonce) return;
         // Room-fit on the room being LEFT, right as bon reaches the door —
         // synchronized with onDoorOpen below, same beat as the entry-side
@@ -2296,16 +2664,26 @@ export function OfficeMap() {
           checkoutDoorTimerRef.current = undefined;
           if (checkoutDoorNonceRef.current !== nonce) return;
           const pathToOutStand = findPath(inGoal, outGoal, startRoomId, startRoomId);
-          walkTo(pathToOutStand, () => {
+          moveSelf({
+            path: pathToOutStand,
+            roomId: startRoomId,
+            onArrive: () => {
             if (checkoutDoorNonceRef.current !== nonce) return;
             onDoorClose(flatStartRoomId!);
             const pathToGoal = findPath(outGoal, finalGoal, startRoomId, finalGoalRoomId);
-            walkTo(pathToGoal, () => {
+            moveSelf({
+              path: pathToGoal,
+              roomId: finalGoalRoomId,
+              ...(arrivalFacing ? { arrival: { state: "standing" as const, facing: arrivalFacing } } : {}),
+              onArrive: () => {
               if (checkoutDoorNonceRef.current !== nonce) return;
               onArrive();
+              },
             });
+            },
           });
         }, DOOR_ANIM_MS);
+        },
       });
       return;
     }
@@ -2313,7 +2691,12 @@ export function OfficeMap() {
     // Fallback: bon isn't currently in a room with a complete door pair —
     // existing single-goal walk behavior, unchanged.
     const path = findPath({ x: bonPos.x, y: bonPos.y }, finalGoal, startRoomId, finalGoalRoomId);
-    walkTo(path, onArrive);
+    moveSelf({
+      path,
+      roomId: finalGoalRoomId,
+      ...(arrivalFacing ? { arrival: { state: "standing" as const, facing: arrivalFacing } } : {}),
+      onArrive,
+    });
   }
 
   // Click-to-sit: walks the viewer to an empty painted seat clicked via the
@@ -2352,7 +2735,10 @@ export function OfficeMap() {
       const pathToOutStand = findPath({ x: bonPos.x, y: bonPos.y }, outGoal, startRoomId, goalRoomId);
 
       focusRoomFit(seat.roomId, 600);
-      walkTo(pathToOutStand, () => {
+      moveSelf({
+        path: pathToOutStand,
+        roomId: goalRoomId,
+        onArrive: () => {
         if (seatDoorNonceRef.current !== nonce) return;
 
         function proceedThroughDoor() {
@@ -2361,14 +2747,27 @@ export function OfficeMap() {
             seatDoorTimerRef.current = undefined;
             if (seatDoorNonceRef.current !== nonce) return;
             const pathToInStand = findPath(outGoal, inGoal, goalRoomId, goalRoomId);
-            walkTo(pathToInStand, () => {
+            moveSelf({
+              path: pathToInStand,
+              roomId: goalRoomId,
+              onArrive: () => {
               if (seatDoorNonceRef.current !== nonce) return;
               onDoorClose(seat.roomId);
               const pathToSeat = findPath(inGoal, seatGoal, goalRoomId, goalRoomId);
-              walkTo(pathToSeat, () => {
+              moveSelf({
+                path: pathToSeat,
+                roomId: goalRoomId,
+                arrival: {
+                  state: "sitting",
+                  seatKey: seatCentroidKey(seat.x, seat.y),
+                  facing: seat.direction,
+                },
+                onArrive: () => {
                 if (seatDoorNonceRef.current !== nonce) return;
                 sitAtSeat(seat);
+                },
               });
+              },
             });
           }, DOOR_ANIM_MS);
         }
@@ -2388,6 +2787,7 @@ export function OfficeMap() {
         }
 
         proceedThroughDoor();
+        },
       });
       return;
     }
@@ -2395,9 +2795,14 @@ export function OfficeMap() {
     // Fallback: already in the seat's room, or no complete door stand-point
     // pairing painted for it yet — single-goal walk straight to the seat.
     const path = findPath({ x: bonPos.x, y: bonPos.y }, seatGoal, startRoomId, goalRoomId);
-    walkTo(path, () => {
-      if (seatDoorNonceRef.current !== nonce) return;
-      sitAtSeat(seat);
+    moveSelf({
+      path,
+      roomId: goalRoomId,
+      arrival: { state: "sitting", seatKey: seatCentroidKey(seat.x, seat.y), facing: seat.direction },
+      onArrive: () => {
+        if (seatDoorNonceRef.current !== nonce) return;
+        sitAtSeat(seat);
+      },
     });
   }
 
@@ -2428,7 +2833,9 @@ export function OfficeMap() {
     const snappedWorld = cellToWorld(snapped.cx, snapped.cy);
     const goal = { x: snappedWorld.x - bw / 2, y: snappedWorld.y - bh / 2 };
     const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, layer.id);
-    walkTo(path, () => face("front"));
+    // Facing folded into arrival.facing (not a post-arrival face() call) so
+    // walk_arrived broadcasts the FINAL facing.
+    moveSelf({ path, roomId: layer.id, arrival: { state: "standing", facing: "front" } });
   }
 
   // Available-from-Break/Lunch auto-walk target: the viewer's own assigned
@@ -2583,14 +2990,20 @@ export function OfficeMap() {
       const inGoal = { x: doorPair.inStand.x - bw / 2, y: doorPair.inStand.y - bh / 2 };
       const pathToOutStand = findPath({ x: bonPos.x, y: bonPos.y }, outGoal, startRoomId, goalRoomId);
 
-      emitAndWalkTo(walkTo, { x: bonPos.x, y: bonPos.y }, pathToOutStand, () => {
+      moveSelf({
+        path: pathToOutStand,
+        roomId: goalRoomId,
+        onArrive: () => {
         if (approachNonceRef.current !== nonce) return;
         onDoorOpen(doorCrossing.roomId);
         approachDoorTimerRef.current = window.setTimeout(() => {
           approachDoorTimerRef.current = undefined;
           if (approachNonceRef.current !== nonce) return;
           const pathToInStand = findPath(outGoal, inGoal, goalRoomId, goalRoomId);
-          emitAndWalkTo(walkTo, outGoal, pathToInStand, () => {
+          moveSelf({
+            path: pathToInStand,
+            roomId: goalRoomId,
+            onArrive: () => {
             if (approachNonceRef.current !== nonce) return;
             onDoorClose(doorCrossing.roomId);
             // Final leg — inside the room now, walking the last stretch to
@@ -2608,13 +3021,22 @@ export function OfficeMap() {
               }
             }
             const pathToStandSpot = findPath(inGoal, goal, goalRoomId, goalRoomId);
-            emitAndWalkTo(walkTo, inGoal, pathToStandSpot, () => {
+            // Facing folded into arrival.facing (not a post-arrival face()
+            // call) so walk_arrived carries the FINAL facing bon turns to
+            // face the target — see moveSelf's arrival.facing doc.
+            moveSelf({
+              path: pathToStandSpot,
+              roomId: goalRoomId,
+              arrival: { state: "standing", facing: directionBetween(arriveCenter, tc) },
+              onArrive: () => {
               if (approachNonceRef.current !== nonce) return;
-              face(directionBetween(arriveCenter, tc));
               onArrive(arriveCenter, tc);
+              },
             });
+            },
           });
         }, DOOR_ANIM_MS);
+        },
       });
       return;
     }
@@ -2622,9 +3044,15 @@ export function OfficeMap() {
     // Fallback: same room already, or no complete door stand-point pairing
     // painted for this room yet — existing single-goal walk, unchanged.
     const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, goalRoomId);
-    emitAndWalkTo(walkTo, { x: bonPos.x, y: bonPos.y }, path, () => {
-      face(directionBetween(arriveCenter, tc));
-      onArrive(arriveCenter, tc);
+    // Facing folded into arrival.facing — see the door-crossing branch's
+    // identical note above.
+    moveSelf({
+      path,
+      roomId: goalRoomId,
+      arrival: { state: "standing", facing: directionBetween(arriveCenter, tc) },
+      onArrive: () => {
+        onArrive(arriveCenter, tc);
+      },
     });
   }
 
@@ -2776,7 +3204,7 @@ export function OfficeMap() {
         const startRoomId = roomOf({ x: bonPos.x + bw / 2, y: bonPos.y + bh / 2 })?.id ?? null;
         const goalRoomId = roomOf(mySlotCenter)?.id ?? null;
         const path = findPath({ x: bonPos.x, y: bonPos.y }, goal, startRoomId, goalRoomId);
-        emitAndWalkTo(walkTo, { x: bonPos.x, y: bonPos.y }, path, onJoinerArrived);
+        moveSelf({ path, roomId: goalRoomId, onArrive: onJoinerArrived });
       }
     });
     return () => unsubscribe?.();
@@ -3081,7 +3509,10 @@ export function OfficeMap() {
       const outGoal = { x: doorPair.outStand.x - bw / 2, y: doorPair.outStand.y - bh / 2 };
       const inGoal = { x: doorPair.inStand.x - bw / 2, y: doorPair.inStand.y - bh / 2 };
       const pathToOutStand = findPath(start, outGoal, startRoomId, goalRoomId);
-      walkTo(pathToOutStand, () => {
+      moveSelf({
+        path: pathToOutStand,
+        roomId: goalRoomId,
+        onArrive: () => {
         if (mapRightClickDoorNonceRef.current !== nonce) return;
 
         function proceedThroughDoor() {
@@ -3090,11 +3521,15 @@ export function OfficeMap() {
             mapRightClickDoorTimerRef.current = undefined;
             if (mapRightClickDoorNonceRef.current !== nonce) return;
             const pathToInStand = findPath(outGoal, inGoal, goalRoomId, goalRoomId);
-            walkTo(pathToInStand, () => {
+            moveSelf({
+              path: pathToInStand,
+              roomId: goalRoomId,
+              onArrive: () => {
               if (mapRightClickDoorNonceRef.current !== nonce) return;
               onDoorClose(flatGoalRoomId!);
               const pathToGoal = findPath(inGoal, cellCenter, goalRoomId, goalRoomId);
-              walkTo(pathToGoal);
+              moveSelf({ path: pathToGoal, roomId: goalRoomId });
+              },
             });
           }, DOOR_ANIM_MS);
         }
@@ -3114,6 +3549,7 @@ export function OfficeMap() {
         }
 
         proceedThroughDoor();
+        },
       });
       return;
     }
@@ -3121,7 +3557,7 @@ export function OfficeMap() {
     // Same room already, or destination isn't inside any flat room (open
     // floor/corridor) — existing single-goal walk, unchanged.
     const path = findPath(start, cellCenter, startRoomId, goalRoomId);
-    walkTo(path);
+    moveSelf({ path, roomId: goalRoomId });
   }
 
   // Every seat centroid currently occupied — by a live roster person seated
@@ -3132,14 +3568,29 @@ export function OfficeMap() {
   // see the feature's design decision).
   const occupiedCentroidKeys = useMemo(() => {
     const keys = new Set<string>();
+    const syncedByEmail = new Map(peerMovements.map((p) => [p.email, p]));
     for (const layer of rosterLayers) {
-      if (layer.sitDirection) {
-        keys.add(seatCentroidKey(layer.x + layer.width / 2, layer.y + layer.height / 2));
-      }
+      if (!layer.sitDirection) continue;
+      // A peer with a live movementSync entry has their occupancy decided
+      // by that entry (below), not by the roster's static sitDirection —
+      // which goes stale the instant a self-movement-funnel walk stands
+      // them up (they keep their Atlas-roster seated portrait/position
+      // until the NEXT roster/SSE refresh, but their actual live state is
+      // "standing" and their seat must free up immediately).
+      if (syncedByEmail.has(layer.id.toLowerCase())) continue;
+      keys.add(seatCentroidKey(layer.x + layer.width / 2, layer.y + layer.height / 2));
+    }
+    // Synced peers occupy a seat exactly when their movementSync stable
+    // state says "sitting" (and isn't mid-walk to somewhere else) — seatKey
+    // is already the same seatCentroidKey(...) value rosterLayers' own
+    // occupancy keys use (both resolve to the seat's centroid), computed
+    // once at the sitting arrival's moveSelf call site.
+    for (const p of peerMovements) {
+      if (!p.active && p.stable.state === "sitting" && p.stable.seatKey) keys.add(p.stable.seatKey);
     }
     if (isSitting && currentSeatKey) keys.add(currentSeatKey);
     return keys;
-  }, [rosterLayers, isSitting, currentSeatKey]);
+  }, [rosterLayers, isSitting, currentSeatKey, peerMovements]);
 
   // Back-sit occlusion fix (manifest rooms only — see furnitureId's doc
   // comment in types/office.ts): furnitureId -> that seat's back-facing
@@ -3245,12 +3696,29 @@ export function OfficeMap() {
           setGreeting(null);
         }}
         onPanningStop={() => setIsDragging(false)}
+        onTransform={(ref, state) => {
+          const wrapper = ref.instance.wrapperComponent;
+          if (!wrapper) return;
+          const rect = wrapper.getBoundingClientRect();
+          const s = state.scale || 1;
+          setMapView({
+            zoom: s / initialScale,
+            // the frame-space rectangle currently visible through the wrapper
+            visibleRect: {
+              x: -state.positionX / s,
+              y: -state.positionY / s,
+              width: rect.width / s,
+              height: rect.height / s,
+            },
+          });
+        }}
       >
         <TransformComponent
           wrapperStyle={{ width: "100%", height: "100%" }}
         >
           <OfficeStage
             phase={phase}
+            mapView={mapView}
             characterOverrides={{
               alex: alexPos,
               micah: micahPos,
@@ -3278,19 +3746,23 @@ export function OfficeMap() {
               alex: alexDirection,
               micah: micahDirection,
               lui: luiDirection,
+              ...peerDirectionsById,
               [playerLayerId]: isSitting ? sitDirection : direction,
             }}
             characterIsWalkingById={{
               alex: alexIsWalking,
               micah: micahIsWalking,
               lui: luiIsWalking,
+              ...peerIsWalkingById,
               [playerLayerId]: isWalking,
             }}
-            // Phase A live-3D animation state: only the viewer's own seated
-            // state is tracked today (isSitting/sitDirection above) — NPC
-            // roster seating isn't threaded into a live-3D-eligible id here
-            // since bon/jerevon is the only live-3D character shipped.
-            characterIsSittingById={{ [playerLayerId]: isSitting }}
+            // Phase A live-3D animation state: viewer's own seated state
+            // (isSitting/sitDirection above) plus every synced peer's
+            // reported isSitting/direction/isWalking — so a live-3D-eligible
+            // peer (e.g. jerevon@offshorly.com's "bon" character) never
+            // defaults to "always walking in place" (see OfficeStage.tsx's
+            // characterIsWalkingById fallback fix).
+            characterIsSittingById={{ ...peerIsSittingById, [playerLayerId]: isSitting }}
             // playerLayerId is the existing "which sprite is you" identity
             // (see useCurrentUserAvatarId above) — reused here to drive
             // OfficeStage's live-3D self-vs-crowd gating, not a separate
@@ -3338,7 +3810,8 @@ export function OfficeMap() {
             talkingCharacterIds={talkingCharacterIdsFromSessions}
             talkingTextById={talkingTextByLayerId}
             typingCharacterIds={typingCharacterIds}
-            characterIsResponderById={characterIsResponderById}
+            globalChatActiveCharacterIds={globalChatActiveCharacterIds}
+            spatialTypingCharacterIds={spatialTypingCharacterIds}
             openDoorLayerIds={openDoorLayerIds}
             emptySeats={emptySeats}
             onSeatClick={handleSeatClick}
@@ -3395,7 +3868,8 @@ export function OfficeMap() {
                 extraCharacterLayers={extraCharacterLayers}
                 extraCharacterSrcById={extraCharacterSrcById}
                 hiddenCharacterIds={hiddenCharacterIds}
-                characterIsResponderById={characterIsResponderById}
+                globalChatActiveCharacterIds={globalChatActiveCharacterIds}
+            spatialTypingCharacterIds={spatialTypingCharacterIds}
                 openDoorLayerIds={openDoorLayerIds}
               />
             </ErrorBoundary>
@@ -3647,22 +4121,21 @@ export function OfficeMap() {
           />
         );
       })}
-      {peerWalks
-        .filter((w: PeerWalkState) => w.email !== selfChatId.toLowerCase()) // defense-in-depth; server already excludes the sender via skip_sid
-        .map((w: PeerWalkState) => {
-          const spriteSet = SPRITE_SET_BY_AVATAR_ID[EMAIL_TO_AVATAR_ID[w.email] ?? ""] ?? null;
-          const staticSrc = extraCharacterSrcById[w.email] ?? "";
+      {peerMovements
+        .filter(
+          (p: PeerMovementState) => renderablePeerEmailSet.has(p.email),
+          // (self-exclusion is defense-in-depth; server already excludes the
+          // sender via skip_sid) — see resolveRenderablePeerEmails' doc
+          // comment for the full self/roster/offline gate.
+        )
+        .map((p: PeerMovementState) => {
+          const spriteSet = SPRITE_SET_BY_AVATAR_ID[EMAIL_TO_AVATAR_ID[p.email] ?? ""] ?? null;
           return (
             <PeerWalker
-              key={w.email}
-              layerId={w.email}
-              from={w.from}
-              path={w.path}
-              startNonce={w.startNonce}
-              arrivedAt={w.arrivedAt}
-              arrivedNonce={w.arrivedNonce}
+              key={p.email}
+              layerId={p.email}
+              state={p}
               spriteSet={spriteSet}
-              staticSrc={staticSrc}
               onUpdate={handlePeerWalkUpdate}
             />
           );

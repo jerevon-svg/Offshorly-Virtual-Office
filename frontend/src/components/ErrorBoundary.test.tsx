@@ -42,6 +42,29 @@ describe("ErrorBoundary", () => {
     expect(screen.queryByText("all good")).not.toBeInTheDocument();
   });
 
+  it("catches a throw from a checkout-panel-shaped child instead of white-screening the app (App.tsx wraps the whole tree in this same boundary)", () => {
+    // No checkout component is scoped to its own boundary today — the
+    // checkout flow relies on App.tsx's top-level ErrorBoundary (see
+    // App.tsx) to avoid a white screen, same mechanism the PiP camera's
+    // dedicated boundary in OfficeMap.tsx uses. This proves that shared
+    // mechanism catches an error thrown deep in a checkout-shaped subtree.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    function CheckoutPanelBomb(): never {
+      throw new Error("submitTimeLogs threw unexpectedly mid-render");
+    }
+
+    render(
+      <ErrorBoundary>
+        <div>
+          <CheckoutPanelBomb />
+        </div>
+      </ErrorBoundary>,
+    );
+
+    expect(screen.getByText("Something went wrong. Please refresh the page.")).toBeInTheDocument();
+  });
+
   it("logs the error via console.error for diagnosability", () => {
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
