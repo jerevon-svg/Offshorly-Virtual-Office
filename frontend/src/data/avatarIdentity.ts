@@ -35,7 +35,24 @@ const OFFICE_EMAIL_DOMAIN = "offshorly.com";
 // decorative name (e.g. nicole@offshorly.com) correctly falls through to
 // `null` -> the faceless placeholder, instead of rendering that decoration's
 // flat stock PNG as if it were their avatar.
-const KNOWN_AVATAR_IDS = new Set(Object.keys(SPRITE_SET_BY_AVATAR_ID));
+//
+// ...with one deliberate addition: an employee can finish the Meshy pipeline
+// and ship a live-3D asset set BEFORE anyone bakes their 2D walk/idle sprite
+// sheets. Angelo is the first such case — he has a full rigged, animated
+// `gelo-v1-hq` GLB set in live3dCharacters.ts but no AvatarSpriteSet yet.
+// Without an entry here avatarIdForEmail returns null for him, and
+// OfficeStage's `avatarIdForEmail(layer.id)` lookup can never find his
+// registry entry, so the 3D path is unreachable no matter what the registry
+// says. Listing him explicitly (rather than widening the rule to all manifest
+// ids) keeps the stock-art names above falling through to `null` exactly as
+// before. Anyone added here MUST have a LIVE_3D_CHARACTERS entry; their 2D
+// fallback is the faceless placeholder, never another person's sprite.
+const LIVE_3D_ONLY_AVATAR_IDS = ["angelo"] as const;
+
+const KNOWN_AVATAR_IDS = new Set([
+  ...Object.keys(SPRITE_SET_BY_AVATAR_ID),
+  ...LIVE_3D_ONLY_AVATAR_IDS,
+]);
 
 export function isKnownAvatarId(candidate: string): boolean {
   return KNOWN_AVATAR_IDS.has(candidate);

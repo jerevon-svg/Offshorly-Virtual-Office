@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import styles from "./ConversationView.module.css";
 
 type ChatWindowHeaderProps = {
@@ -8,6 +9,10 @@ type ChatWindowHeaderProps = {
   // badge so the user can tell this window apart from a Global Chat (remote) one.
   isSpatial?: boolean;
   minimized?: boolean;
+  // Optional controls rendered just before the minimize/close buttons. Only the SPATIAL chat
+  // slots pass anything here (voice-call controls — see OfficeMap.tsx); remote Global Chat
+  // windows leave it undefined, so no DM or remote group can show call controls.
+  headerExtra?: ReactNode;
   // Omitted entirely hides the minimize control (used by ConversationView's chatDisabled
   // fallback where there's nothing to minimize into).
   onMinimizeToggle?: () => void;
@@ -22,6 +27,7 @@ export function ChatWindowHeader({
   subtitle,
   isSpatial,
   minimized,
+  headerExtra,
   onMinimizeToggle,
   onClose,
 }: ChatWindowHeaderProps) {
@@ -38,6 +44,7 @@ export function ChatWindowHeader({
         </div>
         {subtitle && <span className={styles.subtitle}>{subtitle}</span>}
       </div>
+      {!minimized && headerExtra}
       <div className={styles.headerActions}>
         {onMinimizeToggle && (
           <button

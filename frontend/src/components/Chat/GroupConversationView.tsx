@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { chatMode, chatService } from "../../services/chat";
+import { applyReactionUpdate } from "../../services/chat/reactions";
 import type { ChatMessage, ConnectionState } from "../../services/chat";
 import type { DeliveryReceiptUpdate, ReadReceiptUpdate } from "../../services/chat/types";
 import { ChatWindowHeader } from "./ChatWindowHeader";
 import { MentionAutocomplete } from "./MentionAutocomplete";
 import { renderMessageText } from "./MentionText";
+import { MessageReactions } from "./MessageReactions";
 import { useMentionComposer } from "./useMentionComposer";
 import styles from "./ConversationView.module.css";
 
@@ -21,6 +23,9 @@ export type GroupConversationViewProps = {
   // True for a "Character -> Chat" spatial conversation — shows the "📍 Spatial Conversation"
   // header badge. False/omitted for a Global Chat (remote) window.
   isSpatial?: boolean;
+  // Passthrough only — see ChatWindowHeader's headerExtra. This component neither creates nor
+  // interprets these controls.
+  headerExtra?: React.ReactNode;
   // Collapses the window to just its header row — same conversation stays mounted.
   minimized?: boolean;
   onMinimizeToggle?: () => void;
@@ -183,6 +188,7 @@ export function GroupConversationView({
   onClose,
   subtitle,
   isSpatial,
+  headerExtra,
   minimized,
   onMinimizeToggle,
   onIncomingMessage,
@@ -262,6 +268,16 @@ export function GroupConversationView({
     });
     return unsubscribe;
   }, [conversationId, onIncomingMessage]);
+
+  // Live reactions — folds each `message_reaction` delta into the message already in state
+  // (see applyReactionUpdate). Deliberately does NOT touch unread/mention/receipt state: a
+  // reaction is not a message, and the server never emits a count or receipt event for one.
+  useEffect(() => {
+    if (!chatService.onMessageReaction) return;
+    return chatService.onMessageReaction((update) => {
+      setMessages((prev) => applyReactionUpdate(prev, update));
+    });
+  }, [conversationId]);
 
   // Live read/delivery receipts — real-mode only (mock has no server-side receipt tracking).
   // Same subscription shape as ConversationView's, but merged into per-message readBy/
@@ -358,6 +374,7 @@ export function GroupConversationView({
         name={headerTitle}
         subtitle={subtitle}
         isSpatial={isSpatial}
+        headerExtra={headerExtra}
         minimized={minimized}
         onMinimizeToggle={onMinimizeToggle}
         onClose={onClose}
@@ -415,6 +432,13 @@ export function GroupConversationView({
                     <span className={isOwn ? `${styles.timestamp} ${styles.timestampRight}` : styles.timestamp}>
                       {formatMessageTime(msg.sentAt)}
                     </span>
+                    <MessageReactions
+                      messageId={msg.id}
+                      reactions={msg.reactions}
+                      selfId={selfId}
+                      isOwn={isOwn}
+                      resolveDisplayName={resolveDisplayName}
+                    />
                     {showStatus && readersHere && readersHere.length > 0 && (
                       <SeenAvatarStack readers={readersHere} resolveDisplayName={resolveDisplayName} />
                     )}

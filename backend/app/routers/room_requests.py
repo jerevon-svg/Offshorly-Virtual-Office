@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_email
 from app.database import get_db
-from app.realtime.socket import (
+from app.realtime.state import (
     dnd_registry,
     is_room_locked,
     room_presence,
@@ -23,7 +23,7 @@ from app.schemas.room_requests import (
 # (server-derived identity via get_current_email, a per-request AsyncSession via get_db).
 # Kept as a separate router/table from Ask-to-Join (see app/models/room_request.py's docstring):
 # authorization here is against live spatial/DND state (RoomPresenceRegistry + DndRegistry in
-# app/realtime/socket.py), not conversation participancy.
+# app/realtime/state.py), not conversation participancy.
 
 router = APIRouter(tags=["room-requests"])
 

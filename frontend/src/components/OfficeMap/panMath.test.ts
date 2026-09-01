@@ -5,6 +5,7 @@ import {
   computeCenterTransform,
   computeRoomFocusTransform,
   greetingAnchor,
+  HEAD_LABEL_GAP_FRAME_UNITS,
 } from "./panMath";
 
 describe("computeCenterTransform", () => {
@@ -145,11 +146,36 @@ describe("computeRoomFocusTransform", () => {
 });
 
 describe("greetingAnchor", () => {
-  it("centers horizontally on the character and anchors at the layer top (angelo manifest coords)", () => {
-    const layer = { x: 126.31, y: 490.07, width: 22.149 };
+  it("centers horizontally and, with no head measurement, still anchors at the layer top", () => {
+    // sprite-only people / NPCs / saved avatars keep the original behaviour
+    const layer = { x: 126.31, y: 490.07, width: 22.149, height: 31.323 };
     const result = greetingAnchor(layer);
     expect(result.leftPct).toBeCloseTo(((126.31 + 22.149 / 2) / FRAME_WIDTH) * 100, 6);
     expect(result.topPct).toBeCloseTo((490.07 / FRAME_HEIGHT) * 100, 6);
+  });
+
+  it("anchors a live-3D character off its measured head, not the layer's top edge", () => {
+    const layer = { x: 0, y: 100, width: 28.18, height: 39.85 };
+    const headTopAboveCenter = 14.437; // angelo, measured
+    const result = greetingAnchor(layer, headTopAboveCenter);
+    const headTopY = 100 + 39.85 / 2 - 14.437;
+    expect(result.topPct).toBeCloseTo(((headTopY - HEAD_LABEL_GAP_FRAME_UNITS) / FRAME_HEIGHT) * 100, 6);
+    // horizontal centring is untouched by the head anchor
+    expect(result.leftPct).toBeCloseTo(((0 + 28.18 / 2) / FRAME_WIDTH) * 100, 6);
+  });
+
+  it("the head anchor is independent of layer-box headroom", () => {
+    // same character, two different layer boxes (own manifest layer vs bon's
+    // roster seat box): the gap between head and label must not move.
+    const headTopAboveCenter = 14.864; // micah, measured
+    const gapFor = (height: number) => {
+      const { topPct } = greetingAnchor({ x: 0, y: 0, width: 10, height }, headTopAboveCenter);
+      const labelY = (topPct / 100) * FRAME_HEIGHT;
+      const headY = height / 2 - headTopAboveCenter;
+      return headY - labelY;
+    };
+    expect(gapFor(39.1)).toBeCloseTo(gapFor(37.2), 10);
+    expect(gapFor(39.1)).toBeCloseTo(HEAD_LABEL_GAP_FRAME_UNITS, 10);
   });
 });
 

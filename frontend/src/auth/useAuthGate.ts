@@ -3,6 +3,7 @@ import { apiFetch, AuthRedirectError, HOME_PATH } from "../services/api/client";
 import { getCurrentUser, setCurrentUserFromMeResponse } from "./currentUserStore";
 import { chatMode, realChatService } from "../services/chat";
 import { setDevIdentity as setSpatialSessionDevIdentity } from "../services/presence/spatialSessionStore";
+import { setDevIdentity as setCallStoreDevIdentity } from "../services/call/callStore";
 import { setDevIdentity as setRequestsClientDevIdentity } from "../services/chat/requestsClient";
 import { setDevIdentity as setOfflineLineupDevIdentity } from "../services/presence/offlineLineupClient";
 import { setDevIdentity as setSpatialWalkDevIdentity } from "../services/presence/movementSync";
@@ -223,6 +224,10 @@ function seedDevBypassIdentity(): void {
   // bypass must be seeded here unconditionally too, or they're left trying a
   // real Atlas bearer token that doesn't exist for this dev-bypass identity.
   setSpatialSessionDevIdentity(email);
+  // Stage A voice calls: callStore.ts opens its own socket and hits /calls/token, both of
+  // which need the same dev identity in local two-browser testing (same reasoning as the
+  // spatial-session/offline-lineup setters above).
+  setCallStoreDevIdentity(email);
   setRequestsClientDevIdentity(email);
   setOfflineLineupDevIdentity(email);
   setSpatialWalkDevIdentity(email);

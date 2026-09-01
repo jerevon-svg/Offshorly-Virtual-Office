@@ -27,7 +27,7 @@ async def server():
         await conn.run_sync(Base.metadata.create_all)
 
     socket_module.global_chat_activity._sids_by_email.clear()
-    socket_module.spatial_sessions._session_by_email.clear()
+    socket_module.spatial_sessions.reset()
 
     config = uvicorn.Config(combined_app, host="127.0.0.1", port=0, log_level="warning", lifespan="off")
     srv = uvicorn.Server(config)
@@ -41,7 +41,7 @@ async def server():
     srv.should_exit = True
     await task
     socket_module.global_chat_activity._sids_by_email.clear()
-    socket_module.spatial_sessions._session_by_email.clear()
+    socket_module.spatial_sessions.reset()
     settings.APP_ENV = original_env
 
 

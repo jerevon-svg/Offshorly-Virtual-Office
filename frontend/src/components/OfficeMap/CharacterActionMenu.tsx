@@ -21,6 +21,11 @@ type Props = {
   // (see spatialSessionStore.ts) that the viewer is NOT already a member of — computed in
   // OfficeMap.tsx, which already consumes useSpatialSessions() for the self status flip.
   canAskToJoin?: boolean;
+  // True when this target is already a participant in the active call for the viewer's CURRENT
+  // spatial session (computed in OfficeMap from callStore's spatial_calls state). Label only —
+  // the action it dispatches is still "call", handled by the one existing join path in
+  // handleChoose. There is deliberately no second join implementation.
+  targetInActiveCall?: boolean;
 };
 
 export function CharacterActionMenu({
@@ -30,6 +35,7 @@ export function CharacterActionMenu({
   onClose,
   showDemos,
   canAskToJoin,
+  targetInActiveCall,
 }: Props) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
@@ -45,7 +51,9 @@ export function CharacterActionMenu({
       <div className={styles.menu} style={{ left, top }} onClick={(e) => e.stopPropagation()}>
         <div className={styles.title}>{formatCharacterName(layer)}</div>
         <button className={styles.item} onClick={() => onChoose("chat")}>Chat</button>
-        <button className={styles.item} onClick={() => onChoose("call")}>Call</button>
+        <button className={styles.item} onClick={() => onChoose("call")}>
+          {targetInActiveCall ? "Join call" : "Call"}
+        </button>
         <button className={styles.item} onClick={() => onChoose("approach")}>Approach</button>
         <button className={styles.item} onClick={() => onChoose("viewProfile")}>View Profile</button>
         {canAskToJoin && (

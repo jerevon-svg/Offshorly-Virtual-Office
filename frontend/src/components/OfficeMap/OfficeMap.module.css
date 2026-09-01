@@ -171,13 +171,43 @@
   background: rgba(40, 40, 40, 0.95);
 }
 
-/* Dev-only demo control (see resetDevHubState in services/hub/hubClient.ts) — stacked below
-   .profileButton in the same top-chrome column. Never rendered outside import.meta.env.DEV, and
-   the backend independently 404s the call outside development regardless. */
-.hubDevResetButton {
+/* Summons the roaming toucan to the viewer (see ToucanFlyer.tsx's summon block and
+   ToucanAssistantPanel.tsx) — stacked directly below .profileButton in the same top-chrome
+   column, same pill treatment as .hubButton. */
+.toucanButton {
   all: unset;
   position: fixed;
   top: 136px;
+  right: 12px;
+  z-index: 25;
+  cursor: pointer;
+  font-family: system-ui, sans-serif;
+  color: #f0f0f0;
+  background: rgba(26, 26, 26, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 13px;
+  backdrop-filter: blur(4px);
+}
+
+.toucanButton:hover:not(:disabled) {
+  background: rgba(40, 40, 40, 0.95);
+}
+
+.toucanButton:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* Dev-only demo control (see resetDevHubState in services/hub/hubClient.ts) — stacked below
+   .toucanButton in the same top-chrome column (moved down one slot when .toucanButton was
+   added). Never rendered outside import.meta.env.DEV, and the backend independently 404s the
+   call outside development regardless. */
+.hubDevResetButton {
+  all: unset;
+  position: fixed;
+  top: 176px;
   right: 12px;
   z-index: 25;
   cursor: pointer;

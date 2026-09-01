@@ -8,6 +8,7 @@ from app.config import settings
 from app.database import get_db
 from app.repositories import feed as feed_repo
 from app.repositories import hub as hub_repo
+from app.scripts import seed_dev_hub_content as hub_mock
 from app.schemas.hub import CreateHubItemIn, HubItemOut
 
 # Company Hub V1 REST layer — mirrors routers/requests.py's dependency pattern (server-derived
@@ -135,13 +136,17 @@ async def reset_dev_hub_state(
     email: str = Depends(get_current_email),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, int]:
-    """Dev-only demo control: wipes the CALLER's own seen/dismissed/acknowledged/acted state on
-    dev-seeded ([DEV]) Hub items only, so a required item can be re-demoed after already
-    acknowledging it — e.g. re-testing the check-in gate without a fresh item or a new day.
-    Hard-gated on settings.is_development (same fail-closed allow-list as
-    app/auth/deps.py's dev-email bypass) — unreachable in production regardless of who calls
-    it. Never touches HubItem rows, real (non-[DEV]) items, or any other employee's state."""
+    """Dev-only demo control: restores the whole mock Hub experience for the CALLER, so the
+    check-in flow can be re-run from scratch — wipes their own seen/dismissed/acknowledged/acted
+    state AND their own Hub-triggered Feed activities on dev-seeded ([DEV]) items, then
+    re-seeds/re-dates the mock dataset (see app/scripts/seed_dev_hub_content.py). Without the
+    Feed half, `uq_feed_hub_activity` makes a second "Wish Happy Birthday" click a silent no-op
+    and the action is only ever testable once.
+
+    Hard-gated on settings.is_development (same fail-closed allow-list as app/auth/deps.py's
+    dev-email bypass) — unreachable in production regardless of who calls it. Never touches real
+    (non-[DEV]) items or any other employee's state/activities. `resetCount` keeps its original
+    meaning (state rows removed) so the existing frontend DEV button needs no change."""
     if not settings.is_development:
         raise HTTPException(status_code=404, detail="Not found")
-    reset_count = await hub_repo.reset_dev_state_for_employee(db, employee_email=email)
-    return {"resetCount": reset_count}
+    return await hub_mock.reset_mock_hub_for_employee(db, employee_email=email)

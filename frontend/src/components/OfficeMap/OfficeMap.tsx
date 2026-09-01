@@ -115,6 +115,19 @@ import {
   useSpatialSessions,
   type SpatialSessionEntry,
 } from "../../services/presence/spatialSessionStore";
+import {
+  callParticipantsFor,
+  clearAcceptedPeer,
+  getCallSnapshot,
+  isConnectedToMedia,
+  sendCallInvite,
+  startOrJoinCall,
+  useCallState,
+} from "../../services/call/callStore";
+import { CallInvitePrompt } from "./CallInvitePrompt";
+import { AudioDebugPanel } from "./AudioDebugPanel";
+import { SpatialCallControls } from "./SpatialCallControls";
+import { CallOverlay } from "./CallOverlay";
 import { clusterBounds, computeClusterFocus, readMapTransform, shouldRefocus } from "./spatialFocus";
 import { createJoinRequest, onRequestResolved } from "../../services/chat/requestsClient";
 import { JoinRequestPrompt } from "./JoinRequestPrompt";
@@ -152,6 +165,8 @@ import {
   resolveConversationSlot,
 } from "./clusterFormation";
 import { getCurrentUserId, useCurrentUserAvatarId } from "../../data/currentUser";
+import { ToucanAssistantPanel } from "./ToucanAssistantPanel";
+import type { ToucanSummonState } from "./ToucanFlyer";
 import { useCurrentUser } from "../../auth/currentUserStore";
 import { useOfficeRoster } from "../../services/office/useOfficeRoster";
 import { officePeopleToLayers, rosterSrcById } from "../../data/rosterLayers";
@@ -165,6 +180,7 @@ import { CompanyHub } from "./CompanyHub";
 import { openCompanyHub, useCompanyHub } from "../../services/hub/companyHubStore";
 import { resetDevHubState } from "../../services/hub/hubClient";
 import { EmployeeProfile } from "./EmployeeProfile";
+import { isLive3dEligible } from "../../render3d/live3dCharacters";
 import { avatarIdForEmail, mockEmailForAvatarId } from "../../data/avatarIdentity";
 import styles from "./OfficeMap.module.css";
 
@@ -335,13 +351,30 @@ export function OfficeMap() {
   //     portrait, no animated set built yet).
   const knownSpriteSet = currentUserId !== null ? SPRITE_SET_BY_AVATAR_ID[currentUserId] : undefined;
   const hasOwnSpriteSet = Boolean(knownSpriteSet);
+  // "Does this person already have an assigned production character?"
+  //
+  // hasOwnSpriteSet alone is the WRONG question, and asking it was a real bug:
+  // an employee can finish the Meshy pipeline and ship a live-3D asset set
+  // before anyone bakes their 2D walk/idle sprite sheets. Angelo is exactly
+  // that — `gelo-v1-hq` in LIVE_3D_CHARACTERS, no AvatarSpriteSet. Judged by
+  // sprite sheets alone he looked like a brand-new unmapped person, which
+  // (a) auto-opened the dev "Create your avatar" prompt over his existing
+  // character and (b) collapsed his player layer to `__no_character__`, so as
+  // the viewer he rendered the faceless placeholder at Bon's geometry and his
+  // own manifest layer got hidden as an NPC.
+  //
+  // A live-3D registry entry is just as much an assigned character as a sprite
+  // set, so both count. This does NOT invent a sprite set: viewerSpriteSet
+  // below still falls back to the shared faceless placeholder for the 2D tiers,
+  // while T1+ renders his real 3D character.
+  const hasOwnCharacter = hasOwnSpriteSet || (currentUserId !== null && isLive3dEligible(currentUserId));
   // Not a real character-layer id (never matches a manifest layer, an NPC,
   // or a sprite-set entry) — deliberately, so the existing
   // `npcCharacterLayers.find(...) ?? bonLayer` geometry fallback below still
   // resolves to bonLayer's position/size for the placeholder case, without
   // that fallback needing to know this id exists.
   const noCharacterPlayerId = "__no_character__";
-  const playerLayerId = hasOwnSpriteSet ? (currentUserId as string) : noCharacterPlayerId;
+  const playerLayerId = hasOwnCharacter ? (currentUserId as string) : noCharacterPlayerId;
   const viewerSpriteSet = hasOwnSpriteSet ? (knownSpriteSet as AvatarSpriteSet) : PLACEHOLDER_SPRITE_SET;
   // The manifest layer for whichever sprite is playing "you" — used for
   // name formatting/geometry the same way bonLayer used to be used
@@ -433,6 +466,12 @@ export function OfficeMap() {
   // check. Identified by EMAIL (selfChatId), never playerLayerId — those are different
   // identifiers (sprite/layer id vs. real chat identity). members.length >= 2 guards against
   // counting a session where the viewer opened chat but the peer hasn't joined/has left.
+  // Stage A voice calls: ALL LiveKit lifecycle lives in callStore.ts — this component only
+  // reads the connection state (for the IN_CALL status below) and mounts SpatialCallControls
+  // into the two SPATIAL chat slots. No room, track, or mute handling here.
+  const callState = useCallState();
+  const isInCall = isConnectedToMedia(callState);
+
   const inConv = useMemo(
     () =>
       !!selfChatId &&
@@ -601,11 +640,11 @@ export function OfficeMap() {
     if (!import.meta.env.DEV) return;
     if (promptedOwnAvatarRef.current) return;
     if (!currentUser?.email) return; // identity not resolved yet
-    if (hasOwnSpriteSet) return; // already has a real/registry-mapped character
+    if (hasOwnCharacter) return; // already has a real/registry-mapped character (sprite set OR live-3D)
     if (findSavedAvatarByOwnerEmail(currentUser.email)) return; // already generated one
     promptedOwnAvatarRef.current = true;
     setIsAvatarCreatorOpen(true);
-  }, [currentUser, hasOwnSpriteSet]);
+  }, [currentUser, hasOwnCharacter]);
 
   const [greeting, setGreeting] = useState<{ characterId: string; nonce: number; text?: string } | null>(
     null,
@@ -938,6 +977,35 @@ export function OfficeMap() {
     () => remapSelfKey(talkingTextById, selfChatId, playerLayerId),
     [talkingTextById, selfChatId, playerLayerId],
   );
+
+  // Stage B spatial video: LiveKit IDENTITY -> character LAYER id, using the very same remap the
+  // sent-text bubbles above use. It is an exact fit, and no new identity concept is introduced:
+  //
+  //   * PEERS need no translation at all. The backend mints each token with
+  //     .with_identity(email) on a lowercased address, and rosterLayers.ts keys every peer
+  //     layer's id off `person.email.trim().toLowerCase()` — so identity === layer.id already.
+  //   * SELF is the one exception, exactly as it is for bubbles: the viewer's own layer id is
+  //     playerLayerId (an avatar id like "bon"), never their email — rosterLayers deliberately
+  //     splits the viewer's own layer out. remapSelfKey moves selfChatId -> playerLayerId.
+  //
+  // A participant with no rendered layer (offline, unmapped, not on this floor) simply gets no
+  // tile; their audio is unaffected.
+  const spatialVideoByLayerId = useMemo(
+    () => remapSelfKey(callState.videoByIdentity, selfChatId, playerLayerId),
+    [callState.videoByIdentity, selfChatId, playerLayerId],
+  );
+
+  // Stage C. Expanded vs minimized call view — PURE UI STATE and nothing else. It lives here,
+  // not in callStore, precisely so that toggling it cannot reach the LiveKit Room: no token, no
+  // reconnect, no republish, no call_joined, no spatial-session change. CallOverlay additionally
+  // guards on status === "connected", so this boolean can never resurrect a dead call; the reset
+  // below only stops a NEXT call opening pre-expanded.
+  const [callExpanded, setCallExpanded] = useState(false);
+  useEffect(() => {
+    if (callState.status !== "connected") setCallExpanded(false);
+  }, [callState.status]);
+  const handleMinimizeCall = useCallback(() => setCallExpanded(false), []);
+  const handleExpandCall = useCallback(() => setCallExpanded(true), []);
 
   // Actively-typing signal (real keystroke activity, see ConversationView.tsx's
   // onTypingChange) — self side, recorded together with the spatial conversation it happened
@@ -1378,6 +1446,45 @@ export function OfficeMap() {
     return s ? { sessionId: s.sessionId, members: [...s.members].sort() } : null;
   }, [spatialSessions, selfChatId]);
 
+  // Character-menu "Call" intent for a person we are NOT yet in a spatial session with. Holds
+  // the TARGET EMAIL (not a conversation id — that doesn't exist yet): the call may only start
+  // once the existing spatial system says the two of us are actually clustered together, which
+  // is precisely `activeSpatialSession` below (>=2 members, includes self). Matching on the
+  // target's email means an unrelated conversation forming later can never trigger a stale call.
+  const pendingCallTargetRef = useRef<string | null>(null);
+
+  // A ring was accepted (by either side). Converge through the EXISTING approach + spatial-panel
+  // flow — the same one the "chat" action uses — which is what creates/reuses the conversation and
+  // emits spatial_session_start. pendingCallTargetRef then lets the eligibility-gated effect below
+  // start media once the session genuinely has both members. No second LiveKit join path, and no
+  // token or microphone before this point.
+  useEffect(() => {
+    const peer = callState.acceptedPeerEmail;
+    if (!peer) return;
+    clearAcceptedPeer();
+    pendingCallTargetRef.current = peer;
+    const peerLayer = buildPeerLayer(peer);
+    approachCharacter(peerLayer, () => {
+      setOpenGroupConv(null);
+      setSpatialChatMinimized(false);
+      setOpenChat(peerLayer);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [callState.acceptedPeerEmail]);
+
+  // Fires the deferred call exactly once, the moment the spatial session becomes eligible.
+  // Deliberately gated on the SAME derived session the "In Conversation" status uses — this adds
+  // no second notion of call eligibility, and the backend re-verifies membership on the token
+  // request regardless.
+  useEffect(() => {
+    const wanted = pendingCallTargetRef.current;
+    if (!wanted || !activeSpatialSession) return;
+    if (!activeSpatialSession.members.includes(wanted)) return;
+    pendingCallTargetRef.current = null;
+    void startSpatialCall(activeSpatialSession.sessionId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSpatialSession]);
+
   useEffect(() => {
     const ref = transformRef.current;
     const wrapper = ref?.instance.wrapperComponent;
@@ -1582,6 +1689,10 @@ export function OfficeMap() {
   useAutoStatusDetection({
     inConversation: inConv,
     offline: !hasCheckedIn || checkoutFlow.state === "CHECKED_OUT",
+    // Connected to LiveKit media -> IN_CALL (outranks IN_CONVERSATION in the existing
+    // resolveCurrentStatus precedence). Leaving the call flips this false while the spatial
+    // session persists, so status falls back to IN_CONVERSATION on its own — no extra wiring.
+    inCall: isInCall,
   });
 
   // Company Hub V1 (see services/hub/companyHubStore.ts) — opened once check-in completes
@@ -1979,6 +2090,120 @@ export function OfficeMap() {
     checkoutFlow.state === "WALKING_TO_EXIT";
   const exitTriggeredRef = useRef(false);
   const [frozenCheckoutAtMs, setFrozenCheckoutAtMs] = useState<number | null>(null);
+
+  // --- "Call Toucan" (Stage 1) -------------------------------------------
+  // Summoning is entirely LOCAL to this browser, matching the toucan itself
+  // (it has never been server-synced, and isn't now): no Socket.IO events,
+  // no backend bird state, no shared ownership. Every viewer summons their
+  // own bird.
+  //
+  // `toucanCalled` is the intent; `toucanSummonTargetRef` is the live park
+  // anchor the bird's rAF loop reads. The ref exists precisely so the
+  // viewer's per-frame position never becomes a prop/dep of ToucanFlyer's
+  // []-dep GLB-loading effect — that would reload the model and reset the
+  // bird's position on every walk frame.
+  const [toucanCalled, setToucanCalled] = useState(false);
+  const [toucanState, setToucanState] = useState<ToucanSummonState>("roaming");
+  const [toucanPanelOpen, setToucanPanelOpen] = useState(false);
+  // Raw "a mock reply is being prepared" flag, reported by the panel.
+  const [toucanPending, setToucanPending] = useState(false);
+  // What the BIRD shows: the same flag, but lingering briefly after the reply
+  // lands so the world-space "Squawk squawk…" fades out naturally instead of
+  // snapping off the instant the panel's typing dots stop. Owned here rather
+  // than in ToucanFlyer because release must clear it INSTANTLY (no trailing
+  // squawk on a bird that's already flying off), and release lives here.
+  const [toucanSquawk, setToucanSquawk] = useState(false);
+  const toucanSquawkTimerRef = useRef<number | null>(null);
+  // Real keystroke activity in the Toucan panel (the panel owns the same
+  // idle timeout the chat composer uses). Feeds the office's EXISTING
+  // character animation seam below — no new avatar animation, no chat state.
+  const [toucanTyping, setToucanTyping] = useState(false);
+  const toucanSummonTargetRef = useRef<{ x: number; y: number } | null>(null);
+  // Same character-centre formula every other self-position consumer here
+  // uses (see selfFlatRoomId / approachCharacter).
+  const selfCenterX = bonPos.x + playerCharacterLayer.width / 2;
+  const selfCenterY = bonPos.y + playerCharacterLayer.height / 2;
+  useEffect(() => {
+    toucanSummonTargetRef.current = toucanCalled ? { x: selfCenterX, y: selfCenterY } : null;
+  }, [toucanCalled, selfCenterX, selfCenterY]);
+
+  // Auto-open the assistant panel the moment the bird actually parks — the
+  // AI interaction is only ever offered AFTER a successful arrival.
+  useEffect(() => {
+    if (toucanState === "attending" && toucanCalled) setToucanPanelOpen(true);
+  }, [toucanState, toucanCalled]);
+
+  const SQUAWK_LINGER_MS = 900;
+  useEffect(() => {
+    if (toucanPending) {
+      if (toucanSquawkTimerRef.current !== null) {
+        window.clearTimeout(toucanSquawkTimerRef.current);
+        toucanSquawkTimerRef.current = null;
+      }
+      setToucanSquawk(true);
+      return;
+    }
+    if (!toucanSquawk) return;
+    toucanSquawkTimerRef.current = window.setTimeout(() => {
+      toucanSquawkTimerRef.current = null;
+      setToucanSquawk(false);
+    }, SQUAWK_LINGER_MS);
+  }, [toucanPending, toucanSquawk]);
+  // Any unmount of the office drops the linger timer with it.
+  useEffect(() => {
+    return () => {
+      if (toucanSquawkTimerRef.current !== null) window.clearTimeout(toucanSquawkTimerRef.current);
+    };
+  }, []);
+
+  function releaseToucan() {
+    setToucanCalled(false);
+    setToucanPanelOpen(false);
+    // Clear the pending flag AND the bird's pill immediately, cancelling any
+    // in-flight linger — a released bird must not trail a squawk.
+    setToucanPending(false);
+    if (toucanSquawkTimerRef.current !== null) {
+      window.clearTimeout(toucanSquawkTimerRef.current);
+      toucanSquawkTimerRef.current = null;
+    }
+    setToucanSquawk(false);
+    // Never leave the character stuck mid-talk.
+    setToucanTyping(false);
+  }
+
+  // Checkout/goodbye (and any state where the rest of this chrome hides)
+  // releases the bird, so it is never left parked next to a departing
+  // avatar with an orphaned panel.
+  const toucanChromeVisible = hasCheckedIn && onboarding === "done" && !checkoutBusy;
+  useEffect(() => {
+    if (!toucanChromeVisible && toucanCalled) releaseToucan();
+  }, [toucanChromeVisible, toucanCalled]);
+
+  // Talking to the toucan reuses the office's EXISTING conversation animation
+  // seam rather than inventing one: resolveCharacterAnimState (see
+  // render3d/characterAnimationState.ts) maps
+  //   isSpatialConversation + isTyping -> "agree-gesture"
+  //   isSpatialConversation            -> "listening-gesture"
+  // and those two inputs are OfficeStage's talkingCharacterIds /
+  // spatialTypingCharacterIds arrays. So an open toucan session simply adds
+  // the viewer's own layer id to the same two arrays — identical animation,
+  // identical stop behaviour, and no chat conversation, session, socket event
+  // or persistence is involved. Deliberately NOT added to typingCharacterIds
+  // (the overhead chat typing-dots bubble): the bird's own "Squawk squawk…"
+  // pill is the only overhead feedback this feature shows.
+  const toucanSessionActive = toucanPanelOpen && toucanState === "attending";
+  const talkingCharacterIdsWithToucan = useMemo(() => {
+    if (!toucanSessionActive) return talkingCharacterIdsFromSessions;
+    return talkingCharacterIdsFromSessions.includes(playerLayerId)
+      ? talkingCharacterIdsFromSessions
+      : [...talkingCharacterIdsFromSessions, playerLayerId];
+  }, [talkingCharacterIdsFromSessions, toucanSessionActive, playerLayerId]);
+  const spatialTypingCharacterIdsWithToucan = useMemo(() => {
+    if (!(toucanSessionActive && toucanTyping)) return spatialTypingCharacterIds;
+    return spatialTypingCharacterIds.includes(playerLayerId)
+      ? spatialTypingCharacterIds
+      : [...spatialTypingCharacterIds, playerLayerId];
+  }, [spatialTypingCharacterIds, toucanSessionActive, toucanTyping, playerLayerId]);
 
   // Right-click-to-move destination feedback ring (see handleMapRightClick
   // below) — `key` bumps on every right-click, even repeat clicks on the
@@ -3219,6 +3444,18 @@ export function OfficeMap() {
     return spatialSessions.find((s) => s.members.includes(email));
   }
 
+  // Single place the character menu's "Call" action reaches LiveKit. All room/track lifecycle
+  // stays in callStore.ts; this only surfaces a failure (e.g. the backend's 403/409 eligibility
+  // checks) through the existing toast, since there is no longer a header button to show it on.
+  async function startSpatialCall(sessionId: string) {
+    await startOrJoinCall(sessionId);
+    const snap = getCallSnapshot();
+    if (snap.status === "error" && snap.error) {
+      setToast(snap.error);
+      setTimeout(() => setToast(null), 2600);
+    }
+  }
+
   function handleChoose(
     action: "chat" | "call" | "approach" | "walkDemo" | "patDemo" | "askToJoin" | "viewProfile",
   ) {
@@ -3235,23 +3472,27 @@ export function OfficeMap() {
       setPersonGate(null);
     }
 
-    // Person-level DND protection (feature spec section 7): Chat/Approach must not auto-walk or
-    // open a spatial conversation with a DND person from outside — gate behind Request
+    // Person-level DND protection (feature spec section 7): Chat/Approach/Call must not auto-walk
+    // or open a spatial conversation with a DND person from outside — gate behind Request
     // Permission to Talk instead. Real employees only (target.id is an email, per the existing
     // "real roster people key their layer id straight off email" convention below); demo/NPC
     // characters (bon/alex/micah/lui ids) are never in dndEmails, so they're never gated. "Call"
-    // isn't a real spatial interaction yet (falls into the final else-branch's "coming soon"
-    // toast) so it needs no gating here. Room-entry protection (walkToSeat/handleMapRightClick)
-    // is a SEPARATE, already-existing gate — this one applies regardless of room/location, per
-    // "DND protects the employee, not merely the room."
-    if ((action === "approach" || action === "chat") && target.id.includes("@")) {
+    // is gated here too now that it establishes a real spatial conversation before starting
+    // media — without it, Call would be a way around the very protection Chat honours.
+    // Room-entry protection (walkToSeat/handleMapRightClick) is a SEPARATE, already-existing
+    // gate — this one applies regardless of room/location, per "DND protects the employee, not
+    // merely the room."
+    if ((action === "approach" || action === "chat" || action === "call") && target.id.includes("@")) {
       const targetEmail = target.id.trim().toLowerCase();
       if (dndEmails.has(targetEmail)) {
         setMenu(null);
         setPersonGate({
           targetEmail,
           targetName: name,
-          kind: action,
+          // "call" rides the existing "chat" talk-request kind — it IS a request to talk, and
+          // the backend's CreateTalkRequestIn enum is deliberately left untouched. The call
+          // intent itself is remembered separately in resume() below.
+          kind: action === "call" ? "chat" : action,
           pendingRequestId: null,
           resume: () => {
             if (action === "approach") {
@@ -3259,6 +3500,9 @@ export function OfficeMap() {
                 facerFor(target.id)?.(directionBetween(targetCenter, arriveCenter));
               });
             } else {
+              // A DND person is never rung (the server rejects it too). Allowing "talk" resumes
+              // as a plain spatial conversation; the call can then be started from the menu via
+              // the already-in-session path, which needs no invite.
               approachCharacter(target, () => {
                 setOpenGroupConv(null);
                 setSpatialChatMinimized(false);
@@ -3335,10 +3579,35 @@ export function OfficeMap() {
         setToast(`Asked to join ${name}’s conversation…`);
         setTimeout(() => setToast(null), 1800);
       }
+    } else if (action === "call") {
+      // CALL ENTRY POINT (Stage A, voice only). The spatial session — never this menu — decides
+      // eligibility; this branch only expresses intent.
+      setMenu(null);
+      const targetEmail = target.id.trim().toLowerCase();
+
+      // (a) Already clustered with this person: start/join their call immediately. No ring is
+      //     needed or wanted — we are already together, and this is also the rejoin path.
+      if (activeSpatialSession?.members.includes(targetEmail)) {
+        void startSpatialCall(activeSpatialSession.sessionId);
+        return;
+      }
+
+      // (b) They're mid-conversation with someone else. Joining that conversation is Ask to
+      //     Join's job (already offered in this same menu) — do not fabricate a parallel path
+      //     into a call we aren't eligible for.
+      const theirSession = findSpatialSessionForLayer(target.id);
+      if (theirSession && theirSession.members.length >= 2 && !theirSession.members.includes(selfChatId)) {
+        setToast(`${name} is in a conversation — ask to join first.`);
+        setTimeout(() => setToast(null), 2400);
+        return;
+      }
+
+      // (c) Not together yet: RING them. Intent only — no walk, no chat panel, no conversation,
+      //     no spatial session, no token, no microphone. All of that waits for their Accept (see
+      //     the acceptedPeerEmail effect above), so a declined call leaves zero residue.
+      sendCallInvite(targetEmail);
     } else {
       closeCharacterMenu();
-      setToast(`Calling ${name}… — coming soon`);
-      setTimeout(() => setToast(null), 1800);
     }
   }
 
@@ -3771,12 +4040,23 @@ export function OfficeMap() {
             showStatusLabels
             statusByLayerId={statusByLayerId}
             selfStatus={selfOfficeStatus}
+            // Stage B spatial video — MAIN stage only, never the PiP mini-camera below (same
+            // rule as showStatusLabels): that instance renders outside this TransformWrapper,
+            // so its tiles would be anchored against a second, differently-scaled stage.
+            // NOT a LiveKit limitation: Track.attachedElements is an array and each element
+            // gets its own MediaStream wrapper, which is exactly what lets Stage C's CallOverlay
+            // show the same track at the same time (see CallOverlay.tsx). The rule here is about
+            // not duplicating the stage, not about the track.
+            spatialVideoByLayerId={spatialVideoByLayerId}
             extraCharacterLayers={extraCharacterLayers}
             extraCharacterSrcById={extraCharacterSrcById}
             onCharacterClick={handleCharacterClick}
             onMapRightClick={handleMapRightClick}
             destinationRing={destinationRing}
             showToucan
+            toucanSummonTargetRef={toucanSummonTargetRef}
+            onToucanSummonStateChange={setToucanState}
+            toucanThinking={toucanSquawk}
             hiddenCharacterIds={hiddenCharacterIds}
             onRoomClick={(layer, anchor) => {
               // Onboarding sequence must complete before normal room-click
@@ -3807,11 +4087,11 @@ export function OfficeMap() {
             greetingCharacterId={greeting?.characterId ?? null}
             greetingNonce={greeting?.nonce}
             greetingText={greeting?.text}
-            talkingCharacterIds={talkingCharacterIdsFromSessions}
+            talkingCharacterIds={talkingCharacterIdsWithToucan}
             talkingTextById={talkingTextByLayerId}
             typingCharacterIds={typingCharacterIds}
             globalChatActiveCharacterIds={globalChatActiveCharacterIds}
-            spatialTypingCharacterIds={spatialTypingCharacterIds}
+            spatialTypingCharacterIds={spatialTypingCharacterIdsWithToucan}
             openDoorLayerIds={openDoorLayerIds}
             emptySeats={emptySeats}
             onSeatClick={handleSeatClick}
@@ -3923,6 +4203,38 @@ export function OfficeMap() {
         >
           👤 Profile
         </button>
+      )}
+      {toucanChromeVisible && (
+        <button
+          className={styles.toucanButton}
+          onClick={() => {
+            // Repeat presses are never a duplicate action: mid-approach the
+            // button is disabled outright, and once parked it just (re)opens
+            // the panel.
+            if (toucanState === "attending") {
+              setToucanPanelOpen(true);
+              return;
+            }
+            setToucanCalled(true);
+          }}
+          disabled={toucanCalled && toucanState === "approaching"}
+          aria-label={
+            toucanState === "attending"
+              ? "Ask the toucan"
+              : toucanCalled
+                ? "Toucan is on its way"
+                : "Call the toucan"
+          }
+        >
+          {toucanState === "attending" ? "🦜 Ask Toucan" : toucanCalled ? "🦜 Coming…" : "🦜 Call Toucan"}
+        </button>
+      )}
+      {toucanPanelOpen && toucanState === "attending" && (
+        <ToucanAssistantPanel
+          onRelease={releaseToucan}
+          onPendingChange={setToucanPending}
+          onTypingChange={setToucanTyping}
+        />
       )}
       {import.meta.env.DEV && (
         <button
@@ -4079,6 +4391,13 @@ export function OfficeMap() {
           anchor={menu}
           onChoose={handleChoose}
           onClose={closeCharacterMenu}
+          // Label-only hint so an already-running call is discoverable from the menu that starts
+          // one. Scoped to the viewer's OWN active spatial session, so a call elsewhere in the
+          // office never relabels this item.
+          targetInActiveCall={callParticipantsFor(
+            callState,
+            activeSpatialSession?.sessionId ?? null,
+          ).includes(menu.layer.id.trim().toLowerCase())}
           showDemos={
             menu.layer.id === "alex" ||
             menu.layer.id === "micah" ||
@@ -4176,6 +4495,13 @@ export function OfficeMap() {
             onIncomingMessage={handleTalkingMessage}
             onTypingChange={setSelfTyping}
             isSpatial
+            // Voice-call controls: SPATIAL SLOT ONLY. The remote (Global Chat) windows rendered
+            // further below never receive this prop, so a plain DM or remote group can never
+            // show a call button. openConversationId is the spatial window's own conversation
+            // id, which is exactly the spatial session id the backend gates the token on.
+            headerExtra={
+              <SpatialCallControls sessionId={openConversationId} onExpand={handleExpandCall} />
+            }
             minimized={spatialChatMinimized}
             onMinimizeToggle={() => setSpatialChatMinimized((v) => !v)}
             onConversationOpen={(conversationId) => {
@@ -4218,6 +4544,10 @@ export function OfficeMap() {
             onIncomingMessage={handleTalkingMessage}
             onTypingChange={setSelfTyping}
             isSpatial
+            // Same spatial-slot-only reasoning as the DM panel above.
+            headerExtra={
+              <SpatialCallControls sessionId={openConversationId} onExpand={handleExpandCall} />
+            }
             minimized={spatialChatMinimized}
             onMinimizeToggle={() => setSpatialChatMinimized((v) => !v)}
             onConversationOpen={(conversationId) => {
@@ -4358,6 +4688,21 @@ export function OfficeMap() {
         />
       )}
       {chatMode === "real" && <DndRequestQueue resolveDisplayName={resolveDisplayName} />}
+      {/* Ringing UI — top level, so an incoming call reaches the recipient with Spatial Chat
+          closed and nobody clicked. */}
+      {chatMode === "real" && <CallInvitePrompt resolveDisplayName={resolveDisplayName} />}
+      {/* Stage C expanded call view. Mounted top level beside the ringing card for the same
+          reason: it must survive the chat panel being closed or minimized. Renders nothing
+          unless the viewer is BOTH expanded and genuinely connected. */}
+      <CallOverlay
+        expanded={callExpanded}
+        onMinimize={handleMinimizeCall}
+        resolveDisplayName={resolveDisplayName}
+        selfIdentity={selfChatId}
+      />
+      {/* TEMPORARY dev-only voice diagnostic — renders only while connected to a call, and is
+          dead code in production builds (see AudioDebugPanel's import.meta.env.DEV gate). */}
+      {import.meta.env.DEV && <AudioDebugPanel />}
       <RoomLockedToast
         roomName={roomEntryGate?.roomName ?? null}
         pendingRequestId={roomEntryGate?.pendingRequestId ?? null}

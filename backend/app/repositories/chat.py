@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.conversation import Conversation, ConversationParticipant
 from app.models.message import Message
+from app.models.reaction import MessageReaction
 
 # Faithful port of backend/src/repo/conversations.ts + backend/src/repo/messages.ts onto the
 # scaffold's async SQLAlchemy models. Conversations/messages are returned as plain dicts (not
@@ -477,3 +478,102 @@ async def list_messages(
         select(Message).where(and_(*conditions)).order_by(Message.sent_at.asc()).limit(clamped_limit)
     )
     return list(result.scalars().all())
+
+
+# --- Message reactions -------------------------------------------------------------------
+# Deliberately self-contained: nothing below writes to `messages`, `conversations` or
+# `conversation_participants`, so reactions can never move last_message_at, the
+# delivered/read watermarks, or the message rows _compute_unread/_compute_mention_count scan.
+
+# V1 keeps a small server-side allowlist rather than accepting arbitrary client strings —
+# same "validate at the Python layer, not with a DB CHECK" convention Conversation.type uses.
+# Mirrored by REACTION_EMOJIS in frontend/src/components/Chat/MessageReactions.tsx; keep the
+# two in sync.
+ALLOWED_REACTION_EMOJIS: tuple[str, ...] = ("👍", "❤️", "😂", "😮", "😢", "🎉")
+
+
+async def get_message_conversation_id(session: AsyncSession, message_id: str) -> str | None:
+    """The conversation a message belongs to, or None if the message doesn't exist. Callers
+    pair this with is_participant to authorize a reaction — a reactor must belong to the
+    message's OWN conversation, never merely to some conversation."""
+    result = await session.execute(select(Message.conversation_id).where(Message.id == message_id))
+    row = result.first()
+    return row[0] if row else None
+
+
+async def add_reaction(session: AsyncSession, message_id: str, reactor_email: str, emoji: str) -> bool:
+    """Idempotent add. Returns True iff a row was actually inserted — callers (socket.py) use
+    this to skip re-broadcasting a no-op double-click. Authorization is the CALLER's job (see
+    get_message_conversation_id + is_participant); this function trusts its arguments."""
+    email = reactor_email.strip().lower()
+    try:
+        # SAVEPOINT so a uq_message_reaction violation unwinds only this insert rather than
+        # poisoning the outer transaction — same idiom as add_participant_if_missing, and
+        # portable across SQLite and Postgres unlike INSERT ... ON CONFLICT.
+        async with session.begin_nested():
+            session.add(MessageReaction(message_id=message_id, reactor_email=email, emoji=emoji))
+            await session.flush()
+        return True
+    except IntegrityError:
+        # This exact (message, user, emoji) already exists — the DB constraint makes a duplicate
+        # impossible, and the desired end state is already true. Nothing to do.
+        return False
+
+
+async def remove_reaction(session: AsyncSession, message_id: str, reactor_email: str, emoji: str) -> bool:
+    """Removes ONLY the caller's own reaction (the reactor_email predicate is what makes this
+    safe — a participant can never delete someone else's). Returns True iff a row was deleted."""
+    email = reactor_email.strip().lower()
+    result = await session.execute(
+        select(MessageReaction).where(
+            MessageReaction.message_id == message_id,
+            MessageReaction.reactor_email == email,
+            MessageReaction.emoji == emoji,
+        )
+    )
+    reaction = result.scalar_one_or_none()
+    if reaction is None:
+        return False
+    await session.delete(reaction)
+    return True
+
+
+def _group_reactions(rows: list[MessageReaction]) -> list[dict]:
+    """Groups a single message's reaction rows into the wire shape
+    [{emoji, count, reactors}] — one entry per distinct emoji, reactors sorted for a stable
+    render order. Insertion order of first appearance is preserved so chips don't reshuffle
+    as counts change."""
+    grouped: dict[str, list[str]] = {}
+    for row in rows:
+        grouped.setdefault(row.emoji, []).append(row.reactor_email)
+    return [
+        {"emoji": emoji, "count": len(reactors), "reactors": sorted(reactors)}
+        for emoji, reactors in grouped.items()
+    ]
+
+
+async def get_reactions_for_messages(
+    session: AsyncSession, message_ids: list[str]
+) -> dict[str, list[dict]]:
+    """Batch loader — ONE query for a whole page of history, keyed by message id. Mirrors
+    repositories/feed.py's get_reactions_for_posts. Messages with no reactions are simply
+    absent from the returned dict; every read site defaults them to []. Avoids the N+1 a
+    per-message fetch inside the serialization loop would create."""
+    if not message_ids:
+        return {}
+    result = await session.execute(
+        select(MessageReaction)
+        .where(MessageReaction.message_id.in_(message_ids))
+        # Deterministic ordering so _group_reactions' first-appearance chip order is stable
+        # across requests rather than depending on the DB's physical row order.
+        .order_by(MessageReaction.created_at.asc(), MessageReaction.id.asc())
+    )
+    by_message: dict[str, list[MessageReaction]] = {}
+    for row in result.scalars().all():
+        by_message.setdefault(row.message_id, []).append(row)
+    return {mid: _group_reactions(rows) for mid, rows in by_message.items()}
+
+
+async def get_reactions_for_message(session: AsyncSession, message_id: str) -> list[dict]:
+    """Single-message convenience wrapper over the batch loader."""
+    return (await get_reactions_for_messages(session, [message_id])).get(message_id, [])

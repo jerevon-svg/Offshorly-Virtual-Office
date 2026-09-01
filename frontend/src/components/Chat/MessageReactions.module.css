@@ -1,0 +1,103 @@
+/* Sits under the bubble, inside the existing .bubbleColumn — deliberately no changes to the
+   bubble itself. */
+.wrap {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+
+.wrapSelf {
+  justify-content: flex-end;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  background: rgba(255, 255, 255, 0.9);
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+  color: #333;
+}
+
+.chip:hover {
+  border-color: rgba(0, 0, 0, 0.28);
+}
+
+/* The caller already holds this emoji — clicking again removes it. */
+.chipOwn {
+  border-color: #4a7dff;
+  background: #eaf0ff;
+  color: #1d4ed8;
+}
+
+.count {
+  font-variant-numeric: tabular-nums;
+}
+
+/* The "add a reaction" affordance. Hidden until the message row is hovered/focused so the
+   list stays visually quiet — .messageGroup:hover is provided by the parent view. */
+.addButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 18px;
+  padding: 0;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  background: transparent;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.wrap:hover .addButton,
+.addButton:focus-visible,
+.addButtonOpen {
+  opacity: 1;
+  border-color: rgba(0, 0, 0, 0.12);
+  background: rgba(255, 255, 255, 0.9);
+}
+
+/* Always keep the affordance reachable when there are no chips to hover over. */
+.wrapEmpty .addButton {
+  opacity: 0.45;
+}
+
+.wrapEmpty:hover .addButton {
+  opacity: 1;
+}
+
+.picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 4px;
+  border-radius: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.pickerOption {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px;
+  border-radius: 6px;
+}
+
+.pickerOption:hover {
+  background: rgba(0, 0, 0, 0.06);
+}

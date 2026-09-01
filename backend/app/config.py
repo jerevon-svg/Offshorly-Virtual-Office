@@ -33,6 +33,29 @@ class Settings(BaseSettings):
     # backend/src/auth/verifyAtlasToken.ts's CACHE_TTL_MS.
     ATLAS_VERIFY_TTL_MS: int = 60_000
 
+    # LiveKit media server (Stage A voice calls). BACKEND-ONLY, ALL THREE:
+    #   * LIVEKIT_API_KEY / LIVEKIT_API_SECRET sign participant tokens here and must NEVER be
+    #     sent to the browser, logged, or mirrored into any VITE_* var — a leaked secret lets
+    #     anyone mint a token for any room and any identity.
+    #   * LIVEKIT_URL is not itself a secret, but it is still returned to the client through
+    #     POST /calls/token's response rather than baked into the bundle, so switching between
+    #     LiveKit Cloud and a self-hosted server is a backend env change with no frontend
+    #     rebuild (see app/routers/calls.py, and client.ts's note on build-time VITE_* pain).
+    # Empty by default so a deploy without them fails closed with a clear 503 rather than
+    # minting garbage tokens (see calls.py's _livekit_config).
+    LIVEKIT_URL: str = ""
+    LIVEKIT_API_KEY: str = ""
+    LIVEKIT_API_SECRET: str = ""
+
+    # FUTURE multi-worker realtime seam — UNSET AND UNUSED TODAY. When this backend eventually
+    # runs more than one worker, Socket.IO needs a cross-process message queue (and the
+    # ephemeral registries in app/realtime/state.py need a shared store) for a broadcast made on
+    # worker A to reach a client held by worker B. This var reserves the config surface for that
+    # queue; empty means "single worker, in-process manager", which is the only supported mode
+    # right now and what every environment (local, mock rig on :8002, render.yaml) runs. Nothing
+    # connects to Redis when it is set — see state.py's _build_client_manager.
+    REALTIME_REDIS_URL: str = ""
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",")]

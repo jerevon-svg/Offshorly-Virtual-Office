@@ -4,10 +4,17 @@ import type {
   Conversation,
   ConversationUpgradedListener,
   MessageListener,
+  MessageReactionListener,
+  MessageReactionUpdate,
   TypingListener,
 } from "./types";
+import { foldReaction } from "./reactions";
 
 export const CHAT_STORAGE_KEY = "offshorly.chat";
+
+// Mock mode has no authenticated session to derive a reactor from. Callers pass their own id
+// explicitly; this is only the last-resort fallback.
+const MOCK_SELF_EMAIL = "you";
 
 interface ChatStorageShape {
   conversations: Conversation[];
@@ -115,6 +122,7 @@ export class MockChatService implements ChatService {
       readBy: [],
       // Mock mode has no participant-validation concept — trusted as-is, unlike RealChatService.
       mentionedEmails: input.mentionedEmails ?? [],
+      reactions: [],
     });
 
     // Mock-only auto-echo: a user-originated send gets one canned reply from
@@ -136,6 +144,7 @@ export class MockChatService implements ChatService {
             deliveredTo: [],
             readBy: [],
             mentionedEmails: [],
+            reactions: [],
             mock: true,
           });
         }, delay);
@@ -168,6 +177,46 @@ export class MockChatService implements ChatService {
   // Mock mode has no server-side DM->group upgrade concept — declared but
   // never assigned, same pattern as onUnreadCount et al in ChatService.
   onConversationUpgraded?: (cb: ConversationUpgradedListener) => () => void;
+
+  // Reactions in mock mode: NOT a second architecture — the same `foldReaction` helper the
+  // real path uses, applied against local storage and echoed to the same
+  // MessageReactionUpdate listeners, so the components can't tell the two modes apart. The
+  // "server" identity check has no analogue here (no auth), so the caller's own id is taken
+  // as the reactor.
+  addReaction(input: { messageId: string; emoji: string; reactorEmail?: string }): void {
+    this.applyLocalReaction(input.messageId, input.emoji, input.reactorEmail, "add");
+  }
+
+  removeReaction(input: { messageId: string; emoji: string; reactorEmail?: string }): void {
+    this.applyLocalReaction(input.messageId, input.emoji, input.reactorEmail, "remove");
+  }
+
+  onMessageReaction(cb: MessageReactionListener): () => void {
+    this.messageReactionListeners.add(cb);
+    return () => {
+      this.messageReactionListeners.delete(cb);
+    };
+  }
+
+  private applyLocalReaction(
+    messageId: string,
+    emoji: string,
+    reactorEmail: string | undefined,
+    action: "add" | "remove",
+  ): void {
+    const message = this.state.messages.find((m) => m.id === messageId);
+    if (!message) return;
+    const email = (reactorEmail || MOCK_SELF_EMAIL).toLowerCase();
+    const update: MessageReactionUpdate = { messageId, emoji, reactorEmail: email, action };
+    const next = foldReaction(message.reactions ?? [], update);
+    // Same no-op suppression the server does — an unchanged array means nothing to broadcast.
+    if (next === (message.reactions ?? [])) return;
+    message.reactions = next;
+    save(this.state);
+    this.messageReactionListeners.forEach((cb) => cb(update));
+  }
+
+  private messageReactionListeners = new Set<MessageReactionListener>();
 
   private appendMessage(message: ChatMessage): ChatMessage {
     this.state.messages.push(message);

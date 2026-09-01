@@ -162,6 +162,103 @@ describe("spatialSessionStore", () => {
     expect(lastCallOptions.auth).toEqual({ "x-dev-email": "second@example.com" });
   });
 
+  // --- Stage 0: reconnect re-assert ---------------------------------------------------
+
+  it("re-emits spatial_session_start for the active session on reconnect", async () => {
+    const { emitSpatialSessionStart } = await import("./spatialSessionStore");
+
+    emitSpatialSessionStart("conv-123");
+    lastFakeSocket!.emitted.length = 0;
+
+    // A reconnect is a brand-new server-side sid with no memory of us.
+    lastFakeSocket!.trigger("connect");
+
+    expect(lastFakeSocket!.emitted).toEqual([
+      { event: "spatial_session_start", payload: { sessionId: "conv-123" } },
+    ]);
+  });
+
+  it("does not resurrect a session the user explicitly left before reconnecting", async () => {
+    const { emitSpatialSessionStart, emitSpatialSessionLeave } = await import(
+      "./spatialSessionStore"
+    );
+
+    emitSpatialSessionStart("conv-123");
+    emitSpatialSessionLeave();
+    lastFakeSocket!.emitted.length = 0;
+
+    lastFakeSocket!.trigger("connect");
+
+    expect(lastFakeSocket!.emitted).toEqual([]);
+  });
+
+  it("re-asserts only the LATEST session id across an upgrade, never a stale one", async () => {
+    const { emitSpatialSessionStart, emitSpatialSessionLeave } = await import(
+      "./spatialSessionStore"
+    );
+
+    // Mirrors OfficeMap's conversation_upgraded handler: leave the old id, start the new one.
+    emitSpatialSessionStart("old-conv");
+    emitSpatialSessionLeave();
+    emitSpatialSessionStart("new-conv");
+    lastFakeSocket!.emitted.length = 0;
+
+    lastFakeSocket!.trigger("connect");
+
+    expect(lastFakeSocket!.emitted).toEqual([
+      { event: "spatial_session_start", payload: { sessionId: "new-conv" } },
+    ]);
+  });
+
+  it("re-asserts once per connect, idempotently across repeated reconnects", async () => {
+    const { emitSpatialSessionStart } = await import("./spatialSessionStore");
+
+    emitSpatialSessionStart("conv-123");
+    lastFakeSocket!.emitted.length = 0;
+
+    lastFakeSocket!.trigger("connect");
+    lastFakeSocket!.trigger("connect");
+
+    // One start per connect and nothing else — the server treats a repeat for the same
+    // (email, session) as idempotent, registering the new sid as a co-owner.
+    expect(lastFakeSocket!.emitted).toEqual([
+      { event: "spatial_session_start", payload: { sessionId: "conv-123" } },
+      { event: "spatial_session_start", payload: { sessionId: "conv-123" } },
+    ]);
+  });
+
+  it("does not re-assert the previous identity's session after setDevIdentity", async () => {
+    const { emitSpatialSessionStart, setDevIdentity } = await import("./spatialSessionStore");
+
+    setDevIdentity("first@example.com");
+    emitSpatialSessionStart("conv-123");
+
+    setDevIdentity("second@example.com");
+    emitSpatialSessionStart(""); // guarded no-op; forces no new session
+    const before = lastFakeSocket;
+    before!.emitted.length = 0;
+    before!.trigger("connect");
+
+    expect(before!.emitted).toEqual([]);
+  });
+
+  it("snapshot updates still arrive normally after a reconnect", async () => {
+    const { emitSpatialSessionStart, getSpatialSessionsSnapshot } = await import(
+      "./spatialSessionStore"
+    );
+
+    emitSpatialSessionStart("conv-123");
+    lastFakeSocket!.trigger("connect");
+
+    lastFakeSocket!.trigger("spatial_sessions", {
+      sessions: [{ sessionId: "conv-123", members: ["a@example.com", "b@example.com"] }],
+    });
+
+    expect(getSpatialSessionsSnapshot()).toEqual([
+      { sessionId: "conv-123", members: ["a@example.com", "b@example.com"] },
+    ]);
+  });
+
   // Run last: overrides the module-level "../api/client" mock for the rest of this file
   // (vi.doMock's replacement isn't scoped to a single test/undoable via vi.resetModules), so
   // no test after this one can rely on the default fake-token mock.

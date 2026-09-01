@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 import socketio
 from fastapi import FastAPI, HTTPException
@@ -9,14 +10,19 @@ from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.database import async_session_maker
+# Imported from socket.py, NOT state.py, on purpose: `sio` is constructed in
+# app/realtime/state.py, but importing socket.py is what registers every Socket.IO event
+# handler onto it. Point this at state.py and the server comes up with no handlers.
 from app.realtime.socket import sio
 from app.repositories import position as position_repo
+from app.routers import calls as calls_router
 from app.routers import chat as chat_router
 from app.routers import feed as feed_router
 from app.routers import hub as hub_router
 from app.routers import requests as requests_router
 from app.routers import room_requests as room_requests_router
 from app.routers import talk_requests as talk_requests_router
+from app.scripts import seed_dev_hub_content as hub_mock
 from app.services.position_registry import position_registry
 
 _logger = logging.getLogger(__name__)
@@ -38,6 +44,29 @@ async def _load_positions_into_registry() -> None:
     except Exception as exc:  # noqa: BLE001
         _logger.exception(exc)
 
+
+@fastapi_app.on_event("startup")
+async def _seed_mock_hub_content() -> None:
+    """MOCK-RIG ONLY: insert/re-date the [DEV] Company Hub test dataset on boot, so the mock
+    frontend always has a required announcement / birthday / recognition / announcement / survey
+    to exercise instead of an immediate "You're all caught up!".
+
+    Double-gated and OPT-IN: it needs both APP_ENV=development and an explicit MOCK_HUB_SEED=1
+    in the process env. The ordinary local backend (and every deploy) leaves MOCK_HUB_SEED
+    unset, so this is a no-op there and no mock content can reach a real database. Only the
+    mock instance — its own DATABASE_URL, its own port — ever passes it. Tolerant of DB
+    unavailability, matching the position-registry hook above.
+    """
+    if not (settings.is_development and os.getenv("MOCK_HUB_SEED") == "1"):
+        return
+    try:
+        async with async_session_maker() as session:
+            counts = await hub_mock.ensure_seeded(session, prune_legacy=True)
+        _logger.info("Mock Company Hub dataset ready: %s", counts)
+    except Exception as exc:  # noqa: BLE001
+        _logger.exception(exc)
+
+
 fastapi_app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
@@ -53,6 +82,7 @@ async def health_check() -> dict:
 
 
 fastapi_app.include_router(chat_router.router)
+fastapi_app.include_router(calls_router.router)
 fastapi_app.include_router(requests_router.router)
 fastapi_app.include_router(room_requests_router.router)
 fastapi_app.include_router(talk_requests_router.router)

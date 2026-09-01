@@ -14,6 +14,7 @@ from app.schemas.chat import (
     CreateConversationRequest,
     CreateGroupConversationRequest,
     MarkReadRequest,
+    MessageReactionOut,
     UnreadCountOut,
 )
 
@@ -124,6 +125,9 @@ async def get_conversation_messages(
         db, conversation_id, since=since_dt, before=before_dt, limit=limit
     )
     watermarks = await chat_repo.get_participant_watermarks(db, conversation_id)
+    # ONE query for the whole page's reactions rather than a fetch per message inside the loop
+    # below — see get_reactions_for_messages.
+    reactions_by_message = await chat_repo.get_reactions_for_messages(db, [m.id for m in messages])
     out = []
     for m in messages:
         delivered_to, read_by = chat_repo.compute_message_receipts(m, watermarks)
@@ -137,6 +141,9 @@ async def get_conversation_messages(
                 delivered_to=delivered_to,
                 read_by=read_by,
                 mentioned_emails=list(m.mentioned_emails or []),
+                reactions=[
+                    MessageReactionOut(**r) for r in reactions_by_message.get(m.id, [])
+                ],
             )
         )
     return out

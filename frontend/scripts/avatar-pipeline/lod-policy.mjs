@@ -31,6 +31,44 @@ export const REQUIRED_CLIP_NAMES = [
   "sitting-answering",
 ];
 
+// ---------------------------------------------------------------------------
+// Idle profiles (2026-08-31). Meshy's animation library has two standing idles
+// this project uses, and they are NOT interchangeable:
+//
+//   Idle_9  (action 249) — the idle bon's original set was generated with
+//                          (Phase 0.2, 2026-08-20). Arms hang down along the
+//                          body; the clip's only defect is a large ASYMMETRIC
+//                          wrist rotation (measured on bon: 19.6deg left /
+//                          53.3deg right off bind).
+//   Idle_12 (action 252) — the idle micah's set was deliberately built on and
+//                          which her registry entry calls the FEMININE idle.
+//                          Splays the whole arm chain (upper arm 23deg off
+//                          vertical, forearms a further 37-42deg), so it needs
+//                          the whole-chain correction of
+//                          CHARACTER_PIPELINE_STANDARD.md section 3.
+//
+// The standard used to name Idle_12 unconditionally, so EVERY character was
+// generated feminine-idled and the distinction survived only as prose inside
+// individual registry comments. The choice is now declared per character
+// (live3dCharacters.ts's `idleProfile`) and resolved to an action id here, so a
+// new employee cannot silently inherit the wrong idle.
+//
+// Both profiles are baked to the SAME runtime clip name (`idle-9`, see
+// REQUIRED_CLIP_NAMES) — the runtime has one idle slot and does not care which
+// library clip filled it. `correction` names which fix that clip needs; it is
+// still re-solved from each character's own bind axes, never inherited.
+export const IDLE_PROFILES = {
+  masculine: { actionId: 249, meshyName: "Idle_9", correction: "wrist" },
+  feminine: { actionId: 252, meshyName: "Idle_12", correction: "arm-chain" },
+};
+
+/** The Meshy action_id to generate for a declared idle profile. */
+export function idleActionIdFor(profile) {
+  const entry = IDLE_PROFILES[profile];
+  if (!entry) throw new Error(`unknown idle profile "${profile}" (known: ${Object.keys(IDLE_PROFILES).join(", ")})`);
+  return entry.actionId;
+}
+
 // Texel radius for atlas gap padding (atlas-dilate.mjs). 16 texels at the
 // 2048 source resolution = 4 texels at LOD2's 512, which is more than the
 // 2-texel footprint a trilinear/anisotropic tap can straddle at any mip the

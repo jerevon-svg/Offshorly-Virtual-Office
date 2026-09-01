@@ -232,7 +232,7 @@ class PositionRegistry:
 
     def reset(self) -> None:
         """Test-only helper — mirrors the pattern socket tests use to clear other module-level
-        singleton registries between tests (e.g. spatial_sessions._session_by_email.clear())."""
+        singleton registries between tests (e.g. spatial_sessions.reset())."""
         self._revision_by_email.clear()
         self._entries.clear()
 

@@ -67,6 +67,30 @@ const mockPeople = [
     status: statusFor(3),
     departmentName: "Dev",
   },
+  {
+    // `layerId` IS the avatar id here — the manifest/roster key `angelo`, which
+    // avatarIdForEmail("angelo@offshorly.com") resolves to via the localpart
+    // convention (angelo is listed in avatarIdentity.ts's
+    // LIVE_3D_ONLY_AVATAR_IDS). Note the registry key is `angelo` while his
+    // GLB files are the `gelo-v1` pipeline chain — do not rename either to
+    // match the other.
+    //
+    // He has no AvatarSpriteSet yet, so below LIVE_3D_SELF_MIN_TIER he falls
+    // back to the existing faceless placeholder exactly as any unmapped person
+    // does — deliberately not a fabricated sprite set.
+    layerId: "angelo",
+    email: "angelo@offshorly.com",
+    displayName: displayNameFor("angelo"),
+    // Pinned ONLINE rather than taken from statusFor()'s spread: index 4 lands
+    // on IN_MEETING, which mapAtlasToOfficeStatus turns into IN_CALL, so he
+    // showed a purple "Angelo · In Call" pill with no call anywhere. He is the
+    // live-3D self/peer subject, so his baseline has to be the plain
+    // checked-in one. This is seed data only — the status still flows through
+    // the normal mapping, and real conversation/call state overrides it exactly
+    // as it does for everyone else.
+    status: "ONLINE" as PresenceStatusValue,
+    departmentName: "Dev",
+  },
 ];
 
 export class MockOfficeService implements OfficeService {

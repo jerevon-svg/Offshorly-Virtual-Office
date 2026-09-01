@@ -1,0 +1,84 @@
+/* Ringing UI. Deliberately matches DndRequestUI.module.css's toast language (same corner, same
+   dark translucent card, same button shapes) so the office chrome stays consistent — this is not
+   a call modal. Stacked ABOVE the DND toast's bottom:100px so a ring and a DND gate can coexist. */
+
+.toast {
+  position: fixed;
+  bottom: 176px;
+  right: 24px;
+  z-index: 28;
+  min-width: 260px;
+  max-width: 320px;
+  background: rgba(26, 26, 26, 0.95);
+  border: 1px solid rgba(59, 130, 246, 0.45);
+  border-radius: 10px;
+  padding: 14px 16px;
+  backdrop-filter: blur(4px);
+  font-family: system-ui, sans-serif;
+  color: #f0f0f0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.text {
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.name {
+  font-weight: 600;
+}
+
+.actionsRow {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  justify-content: center;
+}
+
+.accept {
+  all: unset;
+  cursor: pointer;
+  flex: 1;
+  text-align: center;
+  color: #fff;
+  background: #16a34a;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 9px 12px;
+  border-radius: 6px;
+}
+.accept:hover {
+  background: #15803d;
+}
+
+.decline {
+  all: unset;
+  cursor: pointer;
+  flex: 1;
+  text-align: center;
+  color: #fecaca;
+  background: rgba(239, 68, 68, 0.18);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 9px 12px;
+  border-radius: 6px;
+}
+.decline:hover {
+  background: rgba(239, 68, 68, 0.3);
+}
+
+.secondary {
+  all: unset;
+  cursor: pointer;
+  align-self: center;
+  color: #d4d4d4;
+  font-size: 12px;
+  padding: 7px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+.secondary:hover {
+  background: rgba(255, 255, 255, 0.08);
+}

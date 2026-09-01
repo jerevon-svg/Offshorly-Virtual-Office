@@ -222,7 +222,12 @@ async def test_dev_reset_endpoint_clears_only_required_dev_item_for_caller(_isol
 
         reset = await client.post("/hub/dev/reset-my-state", headers=_headers("bon@example.com"))
         assert reset.status_code == 200
-        assert reset.json() == {"resetCount": 1}
+        # `resetCount` still counts exactly the caller's own state rows on [DEV] items. The
+        # endpoint now also re-seeds/re-dates the mock dataset and clears the caller's
+        # Hub-triggered Feed activities (see app/scripts/seed_dev_hub_content.py), so the
+        # response carries extra keys — the state-scoping guarantees below are what this test
+        # is about and are unchanged.
+        assert reset.json()["resetCount"] == 1
 
         items_for_bon = {i["id"]: i for i in (await client.get("/hub/items", headers=_headers("bon@example.com"))).json()}
         items_for_micah = {i["id"]: i for i in (await client.get("/hub/items", headers=_headers("micah@example.com"))).json()}

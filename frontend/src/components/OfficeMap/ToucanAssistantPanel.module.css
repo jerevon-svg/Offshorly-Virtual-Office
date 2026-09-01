@@ -1,0 +1,106 @@
+/* Toucan assistant panel — Toucan-SPECIFIC additions only. Every Messenger
+   pattern (panel chrome, header, message rows/bubbles/alignment/timestamps,
+   scrolling column, composer, send button) comes from
+   ../Chat/ConversationView.module.css, imported directly by the component so
+   the two surfaces cannot visually drift apart. Nothing in the chat
+   stylesheet was modified. */
+
+/* Positioning only — .panel's size/border/shadow come from the chat panel
+   class. Sits above the .floatingChatSlot layer (z-index 140) so an open DM
+   window can't cover the parked toucan's panel. */
+.panel {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 141;
+}
+
+/* The chat header avatar is an initials circle on grey; the toucan gets an
+   emoji on a warm ground instead. */
+.headerAvatar {
+  background: #fde68a;
+  color: #111827;
+  font-size: 17px;
+}
+
+.toucanAvatar {
+  background: #fde68a;
+  color: #111827;
+  font-size: 15px;
+}
+
+/* Mirrors the header's existing .spatialBadge treatment (small, coloured,
+   uppercase-ish tag beside the title) so "this is not a real assistant yet"
+   stays visible in the UI, not just in the source. */
+.demoBadge {
+  flex-shrink: 0;
+  color: #b45309;
+  background: rgba(180, 83, 9, 0.1);
+  border-radius: 999px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+/* Typing bubble: a normal received (.peer) bubble whose content is the
+   office's established animated dots. Animation values are copied from
+   TalkingBubble.module.css's .dot / talkingDot (1s ease-in-out, 0.15s
+   stagger, -3px lift) so the typing treatment reads identically to the
+   world-space one, scaled up for the panel. */
+.typingBubble {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 11px 14px;
+}
+
+.typingDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #9ca3af;
+  animation: toucanTypingDot 1s ease-in-out infinite;
+}
+
+.typingDot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.typingDot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes toucanTypingDot {
+  0%,
+  60%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+
+/* Same subtle, centred, non-message helper-line treatment the chat window
+   uses for its pinned DND note (.dndHelperText), as a button. */
+.release {
+  all: unset;
+  cursor: pointer;
+  flex-shrink: 0;
+  text-align: center;
+  color: #9ca3af;
+  font-family: system-ui, sans-serif;
+  font-size: 11px;
+  padding: 6px 16px 8px;
+  border-top: 1px solid #e5e7eb;
+  background: #fff;
+}
+
+.release:hover {
+  color: #4b5563;
+  background: #f9fafb;
+}

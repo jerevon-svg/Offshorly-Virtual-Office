@@ -1,9 +1,11 @@
 import type { AssetLayer } from "../../types/office";
 import { greetingAnchor } from "./panMath";
+import { avatarIdForEmail } from "../../data/avatarIdentity";
+import { LIVE_3D_CHARACTERS } from "../../render3d/live3dCharacters";
 import styles from "./TalkingBubble.module.css";
 
 type TalkingBubbleProps = {
-  layer: Pick<AssetLayer, "x" | "y" | "width">;
+  layer: Pick<AssetLayer, "id" | "x" | "y" | "width" | "height">;
   text?: string;
 };
 
@@ -16,7 +18,14 @@ type TalkingBubbleProps = {
 // same TransformWrapper-scaled container the avatar divs render in, so size
 // and head-gap are fixed in WORLD space and scale with zoom.
 export function TalkingBubble({ layer, text }: TalkingBubbleProps) {
-  const { leftPct, topPct } = greetingAnchor(layer);
+  // Live-3D employees hang off their own measured head so the visible
+  // head-to-label gap is identical for all of them regardless of how much
+  // vertical animation headroom their layer box carries (see
+  // greetingAnchor). Everyone else keeps the original top-edge anchor.
+  const { leftPct, topPct } = greetingAnchor(
+    layer,
+    LIVE_3D_CHARACTERS[avatarIdForEmail(layer.id) ?? ""]?.headTopAboveCenter,
+  );
   return (
     <div
       className={styles.anchor}

@@ -2,10 +2,12 @@ import { formatShortName } from "../../data/office-layout";
 import type { AssetLayer } from "../../types/office";
 import { ACTIVE_DETAIL_STATUSES, STATUS_META, type OfficeStatus } from "../../services/presence/status";
 import { greetingAnchor } from "./panMath";
+import { avatarIdForEmail } from "../../data/avatarIdentity";
+import { LIVE_3D_CHARACTERS } from "../../render3d/live3dCharacters";
 import styles from "./StatusLabel.module.css";
 
 type StatusLabelProps = {
-  layer: Pick<AssetLayer, "id" | "x" | "y" | "width" | "name">;
+  layer: Pick<AssetLayer, "id" | "x" | "y" | "width" | "height" | "name">;
   status: OfficeStatus;
   isSelf: boolean;
 };
@@ -26,7 +28,14 @@ type StatusLabelProps = {
 // KeepScale removal so the label reads as a small nameplate rather than
 // dominating the character. TalkingBubble shares this same offset/sizing.
 export function StatusLabel({ layer, status, isSelf }: StatusLabelProps) {
-  const { leftPct, topPct } = greetingAnchor(layer);
+  // Live-3D employees hang off their own measured head so the visible
+  // head-to-label gap is identical for all of them regardless of how much
+  // vertical animation headroom their layer box carries (see
+  // greetingAnchor). Everyone else keeps the original top-edge anchor.
+  const { leftPct, topPct } = greetingAnchor(
+    layer,
+    LIVE_3D_CHARACTERS[avatarIdForEmail(layer.id) ?? ""]?.headTopAboveCenter,
+  );
   const meta = STATUS_META[status];
   const name = isSelf ? "You" : formatShortName(layer);
   const showDetail = ACTIVE_DETAIL_STATUSES.has(status);

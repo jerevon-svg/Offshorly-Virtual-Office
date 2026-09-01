@@ -9,13 +9,15 @@ import { scaledRenderSize } from "./renderScale";
 // canvas's painted area by the SAME measured factor, so the ortho camera sees
 // more world sideways at an unchanged scale. Numbers below are measured through
 // the app's own camera against the real HQ GLBs.
-const MEASURED_MAX_ABS_X = { bon: 1.216, alex: 1.502 };   // 1.0 = old frame edge
+const MEASURED_MAX_ABS_X = { bon: 1.216, alex: 1.502, micah: 1.288, angelo: 1.120 };   // 1.0 = old frame edge
 const MARGIN = 1.08;
 
 describe("character horizontal capacity", () => {
   it("each shipped character declares a capacity covering its measured widest pose", () => {
     expect(resolveWidthCapacity(LIVE_3D_CHARACTERS.bon)).toBeGreaterThanOrEqual(MEASURED_MAX_ABS_X.bon * MARGIN);
     expect(resolveWidthCapacity(LIVE_3D_CHARACTERS.alex)).toBeGreaterThanOrEqual(MEASURED_MAX_ABS_X.alex * MARGIN);
+    expect(resolveWidthCapacity(LIVE_3D_CHARACTERS.micah)).toBeGreaterThanOrEqual(MEASURED_MAX_ABS_X.micah * MARGIN);
+    expect(resolveWidthCapacity(LIVE_3D_CHARACTERS.angelo)).toBeGreaterThanOrEqual(MEASURED_MAX_ABS_X.angelo * MARGIN);
   });
 
   it("the widest pose lands inside the widened frame with margin to spare", () => {
@@ -38,18 +40,19 @@ describe("character horizontal capacity", () => {
   });
 
   it("widens the buffer WIDTH only — height, and therefore apparent size, is untouched", () => {
-    for (const id of ["bon", "alex"] as const) {
+    const EXPECTED_HEIGHT = { bon: 298, alex: 276, micah: 292, angelo: 251 } as const;
+    for (const id of ["bon", "alex", "micah", "angelo"] as const) {
       const e = LIVE_3D_CHARACTERS[id];
       const cap = resolveWidthCapacity(e);
       const widened = Math.round(e.renderWidth * cap);
       expect(widened).toBeGreaterThan(e.renderWidth);
       // height is the axis the canonical size policy calibrates against
-      expect(e.renderHeight).toBe(id === "bon" ? 298 : 276);
+      expect(e.renderHeight).toBe(EXPECTED_HEIGHT[id]);
     }
   });
 
   it("pixels stay square: the painted CSS width scales by exactly the buffer factor", () => {
-    for (const id of ["bon", "alex"] as const) {
+    for (const id of ["bon", "alex", "micah", "angelo"] as const) {
       const e = LIVE_3D_CHARACTERS[id];
       const cap = resolveWidthCapacity(e);
       const bufferAspect = Math.round(e.renderWidth * cap) / e.renderHeight;
@@ -62,7 +65,7 @@ describe("character horizontal capacity", () => {
   it("the canvas is centred on the wrapper (left:50% + translateX(-50%))", () => {
     // centring is now transform-based rather than a percentage margin, so it
     // holds for any painted width — including one wider than the wrapper
-    for (const id of ["bon", "alex"] as const) {
+    for (const id of ["bon", "alex", "micah", "angelo"] as const) {
       const cap = resolveWidthCapacity(LIVE_3D_CHARACTERS[id]);
       const paintedWidths = [0.5, 1, cap, 3].map((w) => w);
       for (const w of paintedWidths) {

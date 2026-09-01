@@ -106,3 +106,37 @@ describe("getStatusTimeLimitMs", () => {
     }
   });
 });
+
+// Angelo showed a purple "Angelo · In Call" pill with no call anywhere. The
+// source was seed data, not the status machine: his mock record used
+// statusFor(4), and 4 % 4 === 0 returns IN_MEETING, which maps to IN_CALL.
+describe("angelo's mock presence baseline", () => {
+  it("is ONLINE at the source, so he derives AVAILABLE with no call", async () => {
+    const { MockOfficeService } = await import("../office/MockOfficeService");
+    const svc = new MockOfficeService();
+    const [presence, floor] = await Promise.all([svc.getPresence(), svc.getFloor()]);
+    const p = presence.find((x) => x.user_email === "angelo@offshorly.com")!;
+    const f = floor.find((x) => x.user_email === "angelo@offshorly.com")!;
+    expect(p.status).toBe("ONLINE");
+    expect(f.status).toBe("ONLINE");
+    // derived through the normal mapping, never hardcoded in the label
+    expect(mapAtlasToOfficeStatus(p.status)).toBe("AVAILABLE");
+    expect(mapAtlasToOfficeStatus(p.status)).not.toBe("IN_CALL");
+  });
+
+  it("IN_CALL is still reachable — only from a real IN_MEETING, not by default", () => {
+    expect(mapAtlasToOfficeStatus("IN_MEETING")).toBe("IN_CALL");
+    // the seed index that caused the bug, kept as a regression marker
+    expect(4 % 4).toBe(0);
+  });
+
+  it("leaves every other employee's seeded status alone", async () => {
+    const { MockOfficeService } = await import("../office/MockOfficeService");
+    const presence = await new MockOfficeService().getPresence();
+    const byEmail = Object.fromEntries(presence.map((p) => [p.user_email, p.status]));
+    expect(byEmail["jerevon@offshorly.com"]).toBe("OFFLINE");
+    expect(byEmail["micah@offshorly.com"]).toBe("ONLINE");
+    expect(byEmail["alex@offshorly.com"]).toBe("ONLINE");
+    expect(byEmail["lui@offshorly.com"]).toBe("AWAY");
+  });
+});

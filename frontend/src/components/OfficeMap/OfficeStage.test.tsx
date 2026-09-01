@@ -158,7 +158,9 @@ function bonCanvasStubs(container: HTMLElement): HTMLElement[] {
   return canvasStubs(container).filter((el) => /bon-v2|bon-v3/.test(el.getAttribute("data-glb-url") ?? ""));
 }
 function alexCanvasStubs(container: HTMLElement): HTMLElement[] {
-  return canvasStubs(container).filter((el) => /\/avatars\/alex(-v2)?(-hq)?\//.test(el.getAttribute("data-glb-url") ?? ""));
+  // Trailing build-variant suffixes included (e.g. the masculine idle rebuild
+  // `alex-v2-hq-idle9/`).
+  return canvasStubs(container).filter((el) => /\/avatars\/alex(?:-v\d+)?(?:-[a-z0-9]+)*\//.test(el.getAttribute("data-glb-url") ?? ""));
 }
 function bonCanvasStub(container: HTMLElement): HTMLElement {
   const stubs = bonCanvasStubs(container);
@@ -447,7 +449,7 @@ describe("OfficeStage dev-only candidate override (?live3d=bon-v2)", () => {
       const { container } = renderWith("?live3d=bon-v2", "bon");
       const url = bonCanvasStub(container).getAttribute("data-glb-url") ?? "";
       // Registry (promoted to bon-v3) still wins; the selector itself contributed nothing.
-      expect(url).toMatch(/avatars\/bon-v3-hq\/bon-v3-lod0\.glb$/);
+      expect(url).toMatch(/avatars\/bon-v3-hq-idle9\/bon-v3-lod0\.glb$/);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -465,14 +467,14 @@ describe("OfficeStage dev-only candidate override (?live3d=bon-v2)", () => {
     const { container } = renderWith("", "bon");
     const stubs = bonCanvasStubs(container);
     expect(stubs.length).toBe(1);
-    expect(stubs[0].getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v3-hq\/bon-v3-lod0\.glb$/);
-    expect(LIVE_3D_CHARACTERS.bon.glbUrl).toMatch(/\/avatars\/bon-v3-hq\/bon-v3-lod0\.glb$/);
+    expect(stubs[0].getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v3-hq-idle9\/bon-v3-lod0\.glb$/);
+    expect(LIVE_3D_CHARACTERS.bon.glbUrl).toMatch(/\/avatars\/bon-v3-hq-idle9\/bon-v3-lod0\.glb$/);
   });
 
   it("Default Bon T1 loads lod1", () => {
     vi.mocked(detectDeviceTier).mockReturnValue("T1");
     const { container } = renderWith("", "bon");
-    expect(bonCanvasStub(container).getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v3-hq\/bon-v3-lod1\.glb$/);
+    expect(bonCanvasStub(container).getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v3-hq-idle9\/bon-v3-lod1\.glb$/);
   });
 
   it("Default Bon at a genuine T0 keeps the production 2D sprite safety floor (no canvas, no selector)", () => {
@@ -500,7 +502,7 @@ describe("OfficeStage dev-only candidate override (?live3d=bon-v2)", () => {
     // Adaptive LOD (adaptiveLod.ts): bon is a PEER here (self is alex) and is
     // further away than the near radius, so he correctly gets the mid tier —
     // the ~5MB HQ mesh is reserved for self/focused/near characters.
-    expect(stubs[0].getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v3-hq\/bon-v3-lod1\.glb$/);
+    expect(stubs[0].getAttribute("data-glb-url")).toMatch(/\/avatars\/bon-v3-hq-idle9\/bon-v3-lod1\.glb$/);
     expect(Array.from(container.querySelectorAll("img")).filter((i) => /chibi-bon|\/bon-/.test(i.getAttribute("src") ?? "")).length).toBe(0);
   });
 
@@ -718,17 +720,17 @@ describe("OfficeStage dev-only candidate override (?live3d=bon-v2)", () => {
     });
   });
 
-  it("Other employees remain unchanged (micah stays a sprite; registry has exactly bon and alex)", () => {
+  it("Unregistered employees remain unchanged (lui stays a sprite; registry has exactly bon, alex, micah and angelo)", () => {
     vi.mocked(detectDeviceTier).mockReturnValue("T2");
     const { container } = renderWith("", "bon");
-    expect(Object.keys(LIVE_3D_CHARACTERS).sort()).toEqual(["alex", "bon"]);
+    expect(Object.keys(LIVE_3D_CHARACTERS).sort()).toEqual(["alex", "angelo", "bon", "micah"]);
     expect(bonCanvasStubs(container).length).toBe(1);
     // alex is a registered peer within the T2 crowd cap -> one alex canvas.
     expect(alexCanvasStubs(container).length).toBe(1);
-    // micah has no registry entry -> still the 2D sprite, no canvas.
-    expect(canvasStubs(container).filter((el) => /micah/.test(el.getAttribute("data-glb-url") ?? "")).length).toBe(0);
-    const micahImgs = Array.from(container.querySelectorAll("img")).filter((i) => /micah/.test(i.getAttribute("src") ?? ""));
-    expect(micahImgs.length).toBeGreaterThan(0);
+    // lui has no registry entry -> still the 2D sprite, no canvas.
+    expect(canvasStubs(container).filter((el) => /lui/.test(el.getAttribute("data-glb-url") ?? "")).length).toBe(0);
+    const luiImgs = Array.from(container.querySelectorAll("img")).filter((i) => /lui/.test(i.getAttribute("src") ?? ""));
+    expect(luiImgs.length).toBeGreaterThan(0);
   });
 
   it("`?live3d=bon` (registry id) previews the registry set, which is now bon-v3", () => {
@@ -783,16 +785,36 @@ describe("OfficeStage live-3D tier/budget gating (no ?live3d= override)", () => 
   it("shows a non-self bon as CharacterCanvas (LOD1) at T1, within the T1 peer crowd cap of 2", () => {
     vi.mocked(detectDeviceTier).mockReturnValue("T1");
 
-    // No selfCharacterId passed -> bon is a peer/crowd member. With alex
-    // also registered (2026-08-29) the single-entry relaxation no longer
-    // applies, so bon goes through LIVE_3D_CAP_BY_TIER.T1 — raised to 2 on
-    // 2026-08-29 so T1 viewers can see peers' animations — and lands in it.
+    // No selfCharacterId passed -> every registered character is a peer/crowd
+    // member. With four registered the single-entry relaxation no longer
+    // applies, so they all go through LIVE_3D_CAP_BY_TIER.T1 (2) and exactly
+    // two win a slot. WHICH two follows the depth-sort first-come rule and is
+    // covered by the crowd-cap block below — what matters here is that peers
+    // are animated at T1 and that the cap is honoured exactly.
     const { container } = renderGated(undefined);
 
-    const stubs = bonCanvasStubs(container);
-    expect(stubs.length).toBe(1);
-    expect(stubs[0].getAttribute("data-glb-url")).toMatch(/bon-v3-lod1\.glb$/);
-    expect(container.querySelector('img[src*="bon"]')).toBeNull();
+    const stubs = canvasStubs(container);
+    expect(stubs.length).toBe(LIVE_3D_CAP_BY_TIER.T1);
+    for (const stub of stubs) expect(stub.getAttribute("data-glb-url")).toMatch(/-lod1\.glb$/);
+  });
+
+  it("angelo renders exactly once at T2 — as a peer, and as self — with his gelo-v1-hq set", () => {
+    vi.mocked(detectDeviceTier).mockReturnValue("T2");
+    const angeloStubs = (c: HTMLElement) =>
+      canvasStubs(c).filter((el) => /\/avatars\/gelo-v1-hq(?:-[a-z0-9]+)*\//.test(el.getAttribute("data-glb-url") ?? ""));
+
+    // as a PEER (viewer is micah)
+    const peerView = renderGated("micah");
+    expect(angeloStubs(peerView.container)).toHaveLength(1);
+    // never doubled up as a sprite as well
+    expect(peerView.container.querySelector('img[src*="angelo"]')).toBeNull();
+    peerView.unmount();
+    __resetDeviceTierCacheForTests();
+
+    // as SELF
+    const selfView = renderGated("angelo");
+    expect(angeloStubs(selfView.container)).toHaveLength(1);
+    expect(selfView.container.querySelector('img[src*="angelo"]')).toBeNull();
   });
 
   it("shows a non-self bon as CharacterCanvas at T2, within the crowd budget", () => {
@@ -806,53 +828,47 @@ describe("OfficeStage live-3D tier/budget gating (no ?live3d= override)", () => 
   it("at T1 a genuine peer viewer (self = alex) sees their own avatar AND bon live-3D at LOD1 (self allowance + T1 peer cap)", () => {
     vi.mocked(detectDeviceTier).mockReturnValue("T1");
 
-    // selfCharacterId is "alex", not "bon" -> bon is unambiguously a peer.
-    // Self gets LIVE_3D_SELF_MIN_TIER (T1+); bon fits the T1 peer cap (2).
+    // selfCharacterId is "alex" -> alex gets the self allowance
+    // (LIVE_3D_SELF_MIN_TIER, T1+), and the other three registered characters
+    // compete for the T1 peer cap of 2.
     const { container } = renderGated("alex");
 
     const alexStubs = alexCanvasStubs(container);
-    const bonStubs = bonCanvasStubs(container);
     expect(alexStubs.length).toBe(1);
-    expect(bonStubs.length).toBe(1);
     expect(alexStubs[0].getAttribute("data-glb-url")).toMatch(/alex-v2-lod1\.glb$/);
-    expect(bonStubs[0].getAttribute("data-glb-url")).toMatch(/bon-v3-lod1\.glb$/);
-    expect(container.querySelector('img[src*="bon"]')).toBeNull();
+    expect(canvasStubs(container).length).toBe(1 + LIVE_3D_CAP_BY_TIER.T1);
   });
 
   it("falls back to sprite for a character with no live-3D registry entry, regardless of tier", () => {
     vi.mocked(detectDeviceTier).mockReturnValue("T2");
 
-    // "micah" has no LIVE_3D_CHARACTERS entry (only bon and alex ship today).
+    // "lui" has no LIVE_3D_CHARACTERS entry (bon, alex, micah and angelo ship).
     const { container } = renderGated(undefined);
 
-    expect(canvasStubs(container).filter((el) => /micah/.test(el.getAttribute("data-glb-url") ?? "")).length).toBe(0);
-    expect(container.querySelector('img[src*="micah"]')).not.toBeNull();
+    expect(canvasStubs(container).filter((el) => /lui/.test(el.getAttribute("data-glb-url") ?? "")).length).toBe(0);
+    expect(container.querySelector('img[src*="lui"]')).not.toBeNull();
   });
 
   describe("crowd budget cap enforcement (registry temporarily widened for this test)", () => {
     const ORIGINAL_T2_CAP = LIVE_3D_CAP_BY_TIER.T2;
-    const originalBonEntry = LIVE_3D_CHARACTERS.bon;
 
     beforeEach(() => {
-      // Widen eligibility to 4 real, always-present manifest characters
-      // (bon and alex are already registered; micah/lui are added here —
-      // all four exist in officeAssetLayers) and shrink the T2 crowd cap to
-      // 2, so "eligible > cap" is reachable without fabricating layers.
+      // The registry now holds 4 real, always-present manifest characters
+      // (bon, alex, micah, angelo — all four exist in officeAssetLayers), so
+      // "eligible > cap" is reachable by shrinking ONLY the T2 crowd cap to 2.
+      // No fabricated registry entries are needed any more; the cap itself is
+      // the single thing this fixture changes, and it is restored below.
       LIVE_3D_CAP_BY_TIER.T2 = 2;
-      LIVE_3D_CHARACTERS.micah = { ...originalBonEntry, renderWidth: 160, renderHeight: 276 };
-      LIVE_3D_CHARACTERS.lui = { ...originalBonEntry, renderWidth: 160, renderHeight: 276 };
     });
 
     afterEach(() => {
       LIVE_3D_CAP_BY_TIER.T2 = ORIGINAL_T2_CAP;
-      delete LIVE_3D_CHARACTERS.micah;
-      delete LIVE_3D_CHARACTERS.lui;
     });
 
     it("caps non-self live-3D characters at the tier's crowd budget, falling back to sprite for the excess", () => {
       vi.mocked(detectDeviceTier).mockReturnValue("T2");
 
-      // No selfCharacterId -> bon/alex/micah/lui are ALL crowd members.
+      // No selfCharacterId -> bon/alex/micah/angelo are ALL crowd members.
       const { container } = renderGated(undefined);
 
       const stubs = container.querySelectorAll('[data-testid="character-canvas-stub"]');
@@ -864,11 +880,11 @@ describe("OfficeStage live-3D tier/budget gating (no ?live3d= override)", () => 
 
       // bon is self here — self is unconditionally allowed at T2 and must
       // not consume one of the 2 crowd slots also available to
-      // alex/micah/lui.
+      // alex/micah/angelo.
       const { container } = renderGated("bon");
 
       const stubs = container.querySelectorAll('[data-testid="character-canvas-stub"]');
-      // bon (self) + 2 crowd slots (alex/micah/lui, cap 2) = 3 total.
+      // bon (self) + 2 crowd slots (alex/micah/angelo, cap 2) = 3 total.
       expect(stubs.length).toBe(3);
     });
   });
@@ -923,7 +939,7 @@ describe("OfficeStage live-3D tier/budget gating (no ?live3d= override)", () => 
     });
 
     it("no live-3D registry entry + no crowd budget (a tier that grants nothing) still renders the 2D sprite, never an empty src, never a dropped layer", () => {
-      // "micah" has no LIVE_3D_CHARACTERS entry at all, at any tier — the
+      // "lui" has no LIVE_3D_CHARACTERS entry at all, at any tier — the
       // worst case for "does a no-budget tier still render someone".
       vi.mocked(detectDeviceTier).mockReturnValue("T0");
       const { container } = render(
@@ -933,9 +949,9 @@ describe("OfficeStage live-3D tier/budget gating (no ?live3d= override)", () => 
           </TransformComponent>
         </TransformWrapper>,
       );
-      const micahImg = container.querySelector<HTMLImageElement>('img[src*="micah"]');
-      expect(micahImg).not.toBeNull();
-      expect(micahImg!.getAttribute("src")).toBeTruthy();
+      const luiImg = container.querySelector<HTMLImageElement>('img[src*="lui"]');
+      expect(luiImg).not.toBeNull();
+      expect(luiImg!.getAttribute("src")).toBeTruthy();
     });
   });
 
@@ -1269,11 +1285,18 @@ describe("overhead per-character resolver: StatusLabel / TalkingBubble mutual ex
 // distinct, never-loaded GLB urls so each stub is attributable) to reach the
 // "more eligible peers than budget" case.
 describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
-  const SPRITE_RE: Record<string, RegExp> = { bon: /chibi-bon|\/bon-/, alex: /alex/, micah: /micah/, lui: /lui/ };
+  const SPRITE_RE: Record<string, RegExp> = { bon: /chibi-bon|\/bon-/, alex: /alex/, micah: /micah/, lui: /lui/, angelo: /angelo/ };
+  // Maps a stub's GLB url back to the avatar id that owns it. The asset FOLDER
+  // does not always equal the registry key: angelo's files are the `gelo-v1`
+  // pipeline chain, and each character carries its own version suffix
+  // (bon-v3, alex-v2, micah-v4).
   function stubOwner(el: HTMLElement): string {
     const url = el.getAttribute("data-glb-url") ?? "";
-    if (/bon-v2|bon-v3/.test(url)) return "bon";
-    const m = url.match(/\/avatars\/(alex|micah|lui)(?:-v2)?(?:-hq)?\//);
+    if (/bon-v2|bon-v3|\/jerevon\//.test(url)) return "bon";
+    if (/\/avatars\/gelo-v\d+/.test(url)) return "angelo";
+    // The folder can carry further build-variant suffixes (e.g. the masculine
+    // idle rebuild `alex-v2-hq-idle9/`) — match the character, not the variant.
+    const m = url.match(/\/avatars\/(alex|micah|lui)(?:-v\d+)?(?:-[a-z0-9]+)*\//);
     return m ? m[1] : "?";
   }
   function stubsOf(container: HTMLElement, id: string): HTMLElement[] {
@@ -1282,14 +1305,12 @@ describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
   function spritesOf(container: HTMLElement, id: string): HTMLImageElement[] {
     return Array.from(container.querySelectorAll<HTMLImageElement>("img")).filter((i) => SPRITE_RE[id].test(i.getAttribute("src") ?? ""));
   }
-  function withExtraRegistered<T>(ids: string[], fn: () => T): T {
-    for (const id of ids) {
-      LIVE_3D_CHARACTERS[id] = {
-        glbUrl: `/avatars/${id}/${id}-lod0.glb`, lod1GlbUrl: `/avatars/${id}/${id}-lod1.glb`, lod2GlbUrl: `/avatars/${id}/${id}-lod2.glb`,
-        renderWidth: 160, renderHeight: 276,
-      };
-    }
-    try { return fn(); } finally { for (const id of ids) delete LIVE_3D_CHARACTERS[id]; }
+  // The registry ships exactly bon/alex/micah/angelo, which is already the
+  // four-character crowd these tests need — no fabricated entries, and no
+  // change to any crowd budget.
+  function withFourRegistered<T>(fn: () => T): T {
+    expect(Object.keys(LIVE_3D_CHARACTERS).sort()).toEqual(["alex", "angelo", "bon", "micah"]);
+    return fn();
   }
   function renderAt(tier: "T0" | "T1" | "T2", props: Record<string, unknown> = {}) {
     vi.mocked(detectDeviceTier).mockReturnValue(tier);
@@ -1318,21 +1339,22 @@ describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
     }
   });
 
-  it("T1 crowd cap 2: self plus two registered peers -> all three animated 3D at LOD1", () => {
-    withExtraRegistered(["micah"], () => {
+  it("T1 crowd cap 2: self plus the two peers the cap allows -> all three animated 3D at LOD1", () => {
+    withFourRegistered(() => {
       const { container } = renderAt("T1");
-      for (const id of ["bon", "alex", "micah"]) {
-        const stubs = stubsOf(container, id);
-        expect(stubs.length).toBe(1);
-        expect(stubs[0].getAttribute("data-glb-url")).toMatch(/-lod1\.glb$/);
-        expect(stubs[0].getAttribute("data-animated")).not.toBe("false");
+      // self (bon) is always allowed; the other three registered characters
+      // compete for LIVE_3D_CAP_BY_TIER.T1 = 2 peer slots.
+      expect(canvasStubs(container).length).toBe(1 + LIVE_3D_CAP_BY_TIER.T1);
+      expect(stubsOf(container, "bon").length).toBe(1);
+      for (const stub of canvasStubs(container)) {
+        expect(stub.getAttribute("data-glb-url")).toMatch(/-lod1\.glb$/);
+        expect(stub.getAttribute("data-animated")).not.toBe("false");
       }
-      expect(canvasStubs(container).length).toBe(3);
     });
   });
 
   it("T1 crowd cap 3: self plus three registered peers -> exactly two peers selected, the remaining peer stays a 2D sprite", () => {
-    withExtraRegistered(["micah", "lui"], () => {
+    withFourRegistered(() => {
       const { container } = renderAt("T1");
       expect(stubsOf(container, "bon").length).toBe(1);
       const peerStubs = canvasStubs(container).filter((el) => stubOwner(el) !== "bon");
@@ -1346,8 +1368,8 @@ describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
   });
 
   it("T1 crowd cap 4: peer selection is deterministic and follows the existing depth-sort first-come rule", () => {
-    withExtraRegistered(["micah", "lui"], () => {
-      const expected = depthOrder(["alex", "micah", "lui"]).slice(0, 2).sort();
+    withFourRegistered(() => {
+      const expected = depthOrder(["alex", "micah", "angelo"]).slice(0, 2).sort();
       const first = renderAt("T1");
       const a = canvasStubs(first.container).filter((el) => stubOwner(el) !== "bon").map(stubOwner).sort();
       first.unmount();
@@ -1360,24 +1382,24 @@ describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
   });
 
   it("T1 crowd cap 5: T0 stays sprite-only for self and every registered peer without a DEV override", () => {
-    withExtraRegistered(["micah", "lui"], () => {
+    withFourRegistered(() => {
       const { container } = renderAt("T0");
       expect(canvasStubs(container).length).toBe(0);
-      for (const id of ["bon", "alex", "micah", "lui"]) expect(spritesOf(container, id).length).toBe(1);
+      for (const id of ["bon", "alex", "micah", "angelo"]) expect(spritesOf(container, id).length).toBe(1);
     });
   });
 
   it("T1 crowd cap 6: T2 crowd cap is still 4 — every peer animated, each at its adaptive tier", () => {
     expect(LIVE_3D_CAP_BY_TIER.T2).toBe(4);
     expect(LIVE_3D_CAP_BY_TIER.T0).toBe(0);
-    withExtraRegistered(["micah", "lui"], () => {
+    withFourRegistered(() => {
       const { container } = renderAt("T2");
       // The CAP is unchanged — all four still render live-3D. What changed is
       // the QUALITY each one gets: adaptive LOD keeps the HQ mesh for the
       // self/near/focused character and gives distant peers a cheaper tier,
       // so a crowd of four never means four ~5MB downloads.
       expect(canvasStubs(container).length).toBe(4);
-      for (const id of ["bon", "alex", "micah", "lui"]) {
+      for (const id of ["bon", "alex", "micah", "angelo"]) {
         const stubs = stubsOf(container, id);
         expect(stubs.length).toBe(1);
         expect(stubs[0].getAttribute("data-glb-url")).toMatch(/-lod[012]\.glb$/);
@@ -1386,9 +1408,9 @@ describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
   });
 
   it("T1 crowd cap 7: no employee renders twice — exactly one visual (canvas or sprite) per character at T1", () => {
-    withExtraRegistered(["micah", "lui"], () => {
+    withFourRegistered(() => {
       const { container } = renderAt("T1");
-      for (const id of ["bon", "alex", "micah", "lui"]) {
+      for (const id of ["bon", "alex", "micah", "angelo"]) {
         expect(stubsOf(container, id).length + spritesOf(container, id).length).toBe(1);
       }
     });
@@ -1414,5 +1436,74 @@ describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
     expect(stub.getAttribute("data-is-spatial-conversation")).toBe("true");
     expect(stub.getAttribute("data-is-typing")).toBe("true");
     expect(stub.getAttribute("data-is-global-chat-active")).toBe("true");
+  });
+});
+
+// --- Stage B spatial video --------------------------------------------------------------------
+
+describe("OfficeStage spatial video", () => {
+  /** Minimal LiveKit-video-track stand-in — SpatialVideoTile only calls attach/detach. */
+  function fakeTrack() {
+    return {
+      attach: (el: HTMLElement) => el,
+      detach: (el: HTMLElement) => el,
+    } as never;
+  }
+
+  function renderWithVideo(spatialVideoByLayerId?: Record<string, never>) {
+    return render(
+      <TransformWrapper>
+        <TransformComponent>
+          <OfficeStage spatialVideoByLayerId={spatialVideoByLayerId} />
+        </TransformComponent>
+      </TransformWrapper>,
+    );
+  }
+
+  it("renders no video at all when the prop is omitted", () => {
+    // Protects every existing caller and test: absent prop == Stage A rendering, unchanged.
+    const { container } = renderWithVideo();
+    expect(container.querySelectorAll("video")).toHaveLength(0);
+  });
+
+  it("renders no video for a layer id with no track", () => {
+    const { container } = renderWithVideo({});
+    expect(container.querySelectorAll("video")).toHaveLength(0);
+  });
+
+  it("renders one tile for a character layer that has a camera track", () => {
+    const { container } = renderWithVideo({ bon: fakeTrack() });
+    expect(container.querySelectorAll("video")).toHaveLength(1);
+  });
+
+  it("renders a tile per participant, ignoring ids that match no character layer", () => {
+    const { container } = renderWithVideo({
+      bon: fakeTrack(),
+      alex: fakeTrack(),
+      // Nobody on this floor — a call participant with no rendered avatar gets no tile (their
+      // audio is unaffected).
+      "ghost@example.com": fakeTrack(),
+    });
+    expect(container.querySelectorAll("video")).toHaveLength(2);
+  });
+
+  it("keeps the overhead status label — video is an ADDITIVE pass, not a replacement", () => {
+    const { container } = render(
+      <TransformWrapper>
+        <TransformComponent>
+          <OfficeStage
+            showStatusLabels
+            selfCharacterId="bon"
+            selfStatus="IN_CALL"
+            spatialVideoByLayerId={{ bon: fakeTrack() }}
+          />
+        </TransformComponent>
+      </TransformWrapper>,
+    );
+
+    // Both on screen for the same character: the tile never enters the exclusive
+    // greeting/sent-text/typing/status resolver.
+    expect(container.querySelectorAll("video")).toHaveLength(1);
+    expect(container.querySelectorAll(`.${statusLabelStyles.pill}`).length).toBeGreaterThan(0);
   });
 });

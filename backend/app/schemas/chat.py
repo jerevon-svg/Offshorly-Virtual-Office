@@ -16,13 +16,18 @@ def to_iso_z(dt: datetime) -> str:
     return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def serialize_message_dict(message, delivered_to: list[str], read_by: list[str]) -> dict:
+def serialize_message_dict(
+    message, delivered_to: list[str], read_by: list[str], reactions: list[dict] | None = None
+) -> dict:
     """Plain-dict serializer used by the socket layer (app/realtime/socket.py), which emits raw
     JSON-able payloads rather than FastAPI response models. `deliveredTo`/`readBy` are per-reader
     email lists derived from watermark comparisons (see app/repositories/chat.py's
     compute_message_receipts) — an empty list means nobody yet, never null. `mentionedEmails` is
     always a list (never null on the wire) even though the column is nullable — pre-mentions rows
-    and messages with no mentions both serialize to []."""
+    and messages with no mentions both serialize to []. `reactions` is likewise always a list —
+    grouped [{emoji, count, reactors}] entries (see repositories/chat.py's
+    get_reactions_for_messages); pre-reactions rows and messages nobody reacted to both
+    serialize to [], which is what keeps every existing message backward compatible."""
     return {
         "id": message.id,
         "conversationId": message.conversation_id,
@@ -32,7 +37,24 @@ def serialize_message_dict(message, delivered_to: list[str], read_by: list[str])
         "deliveredTo": list(delivered_to),
         "readBy": list(read_by),
         "mentionedEmails": list(message.mentioned_emails or []),
+        "reactions": [
+            {"emoji": r["emoji"], "count": r["count"], "reactors": list(r["reactors"])}
+            for r in (reactions or [])
+        ],
     }
+
+
+class MessageReactionOut(BaseModel):
+    """One emoji's worth of reactions on a message, already aggregated server-side so the
+    client never counts rows itself. `reactors` is the sorted list of participant emails who
+    hold this emoji — cheap to include (the repo already has them) and it powers the chip's
+    hover tooltip."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    emoji: str
+    count: int
+    reactors: list[str] = Field(default_factory=list)
 
 
 class ChatMessageOut(BaseModel):
@@ -50,6 +72,9 @@ class ChatMessageOut(BaseModel):
     # @mentions V1 — server-validated participant emails (see insert_message). Empty list, never
     # null, for both "no mentions" and pre-mentions-feature rows.
     mentioned_emails: list[str] = Field(default_factory=list, alias="mentionedEmails")
+    # Grouped emoji reactions — one entry per distinct emoji. Same "always a list, never null"
+    # convention as mentioned_emails above: a message nobody reacted to serializes as [].
+    reactions: list[MessageReactionOut] = Field(default_factory=list)
 
     @field_serializer("sent_at")
     def _serialize_sent_at(self, dt: datetime) -> str:

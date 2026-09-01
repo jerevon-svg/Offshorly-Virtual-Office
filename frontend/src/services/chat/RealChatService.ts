@@ -12,6 +12,8 @@ import type {
   MentionCountListener,
   MentionCountUpdate,
   MessageListener,
+  MessageReactionListener,
+  MessageReactionUpdate,
   ReadReceiptListener,
   ReadReceiptUpdate,
   TypingListener,
@@ -87,6 +89,7 @@ export class RealChatService implements ChatService {
   private readReceiptListeners = new Set<ReadReceiptListener>();
   private typingListeners = new Set<TypingListener>();
   private conversationUpgradedListeners = new Set<ConversationUpgradedListener>();
+  private messageReactionListeners = new Set<MessageReactionListener>();
   private pendingSends = new Map<string, PendingSend>();
   // Tracks the most recently seen sentAt per conversation, from any message
   // that has flowed through pushMessage (send, receive, or history fetch).
@@ -234,6 +237,10 @@ export class RealChatService implements ChatService {
         );
       },
     );
+
+    socket.on("message_reaction", (payload: MessageReactionUpdate) => {
+      this.messageReactionListeners.forEach((cb) => cb(payload));
+    });
 
     socket.on("chat_error", (payload: { code: string; message: string }) => {
       // Surfaced to any in-flight sendMessage callers via rejection isn't
@@ -531,6 +538,27 @@ export class RealChatService implements ChatService {
     this.typingListeners.add(cb);
     return () => {
       this.typingListeners.delete(cb);
+    };
+  }
+
+  // Fire-and-forget, mirroring sendTyping/markRead above — the server broadcasts the
+  // resulting `message_reaction` back to the whole room INCLUDING us, so there is nothing to
+  // await and no optimistic local apply to reconcile.
+  addReaction(input: { messageId: string; emoji: string; reactorEmail?: string }): void {
+    // Only messageId/emoji go on the wire — any reactorEmail the caller passed (mock-mode
+    // convenience) is deliberately dropped so the server's session-derived identity is the
+    // only possible reactor.
+    this.socket()?.emit("add_reaction", { messageId: input.messageId, emoji: input.emoji });
+  }
+
+  removeReaction(input: { messageId: string; emoji: string; reactorEmail?: string }): void {
+    this.socket()?.emit("remove_reaction", { messageId: input.messageId, emoji: input.emoji });
+  }
+
+  onMessageReaction(cb: MessageReactionListener): () => void {
+    this.messageReactionListeners.add(cb);
+    return () => {
+      this.messageReactionListeners.delete(cb);
     };
   }
 

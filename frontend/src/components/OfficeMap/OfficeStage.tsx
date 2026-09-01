@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { RefObject } from "react";
 import {
   ASSET_PATH_TO_SRC,
   FRAME_HEIGHT,
@@ -15,9 +16,14 @@ import { getBackrestCropFraction } from "../../data/chairBackrestCrop";
 import { createDepthCompare } from "./depthSort";
 import { TalkingBubble } from "./TalkingBubble";
 import { StatusLabel } from "./StatusLabel";
+import { SpatialVideoTile } from "./SpatialVideoTile";
 import { OfficePhaseOverlay } from "./OfficePhaseOverlay";
 import { ToucanFlyer } from "./ToucanFlyer";
+import type { ToucanSummonState } from "./ToucanFlyer";
 import type { OfficeStatus } from "../../services/presence/status";
+// TYPE-ONLY on purpose: OfficeStage must not import callStore's runtime, which opens a socket
+// (and throws without VITE_CHAT_SOCKET_URL). Video arrives as a plain resolved prop instead.
+import type { SpatialVideoTrack } from "../../services/call/callStore";
 import { CharacterCanvas, directionToHeadingDegrees } from "../../render3d/CharacterCanvas";
 import {
   LIVE_3D_CHARACTERS,
@@ -85,8 +91,8 @@ import styles from "./OfficeStage.module.css";
 // Never consulted by the tier/budget gating path, only by the override.
 //
 // Two kinds of keys:
-//   - an avatar id (e.g. "micah"): previews that not-yet-eligible character
-//     (alex used to live here until his registry entry shipped 2026-08-29);
+//   - an avatar id (e.g. "lui"): previews that not-yet-eligible character
+//     (alex and micah used to live here until their registry entries shipped 2026-08-29);
 //   - a CANDIDATE id ("bon-v2") carrying `forAvatarId`: previews a
 //     replacement asset set for an avatar that already has a production
 //     registry entry, WITHOUT touching that entry. `?live3d=bon-v2` swaps
@@ -107,6 +113,10 @@ const DEV_ONLY_LIVE_3D_ENTRIES: Record<string, DevOnlyLive3dEntry> = {
     lod2GlbUrl: `${import.meta.env.BASE_URL}avatars/bon-v2/bon-v2-lod2.glb`,
     renderWidth: 210,
     renderHeight: 298,
+    // The v2 candidate predates the idle-profile split and was built on Meshy
+    // Idle_12; it is kept byte-for-byte as the dev-preview rollback, so it is
+    // declared for what it HOLDS, not what bon now ships (masculine).
+    idleProfile: "feminine",
   },
 };
 
@@ -337,6 +347,13 @@ type OfficeStageProps = {
   // regardless of how many OfficeStage instances are mounted. Purely
   // visual/non-interactive; see ToucanFlyer.tsx for details.
   showToucan?: boolean;
+  // "Call Toucan" summon seam — passed straight through to ToucanFlyer, which
+  // reads the ref inside its own rAF loop. A REF (not a value) on purpose:
+  // OfficeStage re-renders constantly while the viewer walks, and the bird's
+  // GLB-loading effect must never observe that.
+  toucanSummonTargetRef?: RefObject<{ x: number; y: number } | null>;
+  onToucanSummonStateChange?: (state: ToucanSummonState) => void;
+  toucanThinking?: boolean;
   greetingCharacterId?: string | null;
   greetingNonce?: number;
   // Custom greeting text (e.g. onboarding's "Welcome to Offshorly!" instead
@@ -447,6 +464,20 @@ type OfficeStageProps = {
   // The local viewer's own richly-computed status (see selfStatusStore.ts).
   // Used only for the layer whose id === selfCharacterId.
   selfStatus?: OfficeStatus;
+  // Stage B spatial video: character LAYER id -> that participant's live camera track.
+  // Already in layer-id key-space when it arrives — OfficeMap does the LiveKit-identity
+  // (email) -> layer-id remap, since it alone knows selfChatId/playerLayerId (see
+  // responderMap.ts's remapSelfKey). A participant with the camera off is simply ABSENT here.
+  //
+  // Rendered as its own ADDITIVE pass below, never as a branch of the exclusive
+  // greeting/sent-text/typing/status resolver — video coexists with whatever overhead element a
+  // character already has rather than replacing it.
+  //
+  // Deliberately NOT passed to the PiP mini-camera OfficeStage instance (same rule as
+  // showStatusLabels): that instance renders outside the main <TransformWrapper>, and one
+  // camera track must never be attached to two video elements. Absent/undefined = no video at
+  // all, matching every existing caller and test that doesn't pass it.
+  spatialVideoByLayerId?: Record<string, SpatialVideoTrack>;
 };
 
 // Shared click-vs-drag threshold logic: only fires onClick when pointer
@@ -491,6 +522,9 @@ export function OfficeStage({
   onMapRightClick,
   destinationRing,
   showToucan,
+  toucanSummonTargetRef,
+  onToucanSummonStateChange,
+  toucanThinking,
   greetingCharacterId,
   greetingNonce,
   greetingText,
@@ -513,6 +547,7 @@ export function OfficeStage({
   showStatusLabels,
   statusByLayerId,
   selfStatus,
+  spatialVideoByLayerId,
 }: OfficeStageProps = {}) {
   const characterClick = useClickVsDrag<AssetLayer>(onCharacterClick);
   const roomClick = useClickVsDrag<AssetLayer>(onRoomClick);
@@ -961,6 +996,21 @@ export function OfficeStage({
           }
           return null;
         })}
+      {/* Stage B spatial video — a SEPARATE, ADDITIVE pass over the same character layers, so a
+          camera tile and a nameplate/typing bubble can both be on screen for the same person.
+          Reads `resolved` (walk/position overrides already applied) and sits after the
+          depth-sorted layers, so tiles follow moving avatars and are never occluded by
+          furniture. */}
+      {spatialVideoByLayerId &&
+        resolved
+          .filter((layer) => layer.kind === "character" && spatialVideoByLayerId[layer.id])
+          .map((layer) => (
+            <SpatialVideoTile
+              key={`spatial-video-${layer.id}`}
+              layer={layer}
+              track={spatialVideoByLayerId[layer.id]}
+            />
+          ))}
       {destinationRing && (
         <div
           key={destinationRing.key}
@@ -971,7 +1021,13 @@ export function OfficeStage({
           }}
         />
       )}
-      {showToucan && <ToucanFlyer />}
+      {showToucan && (
+        <ToucanFlyer
+          summonTargetRef={toucanSummonTargetRef}
+          onSummonStateChange={onToucanSummonStateChange}
+          thinking={toucanThinking}
+        />
+      )}
       <OfficePhaseOverlay phase={phase} />
     </div>
   );
