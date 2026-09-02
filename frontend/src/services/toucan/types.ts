@@ -99,6 +99,31 @@ export interface ToucanConversationDetail extends ToucanConversation {
   messages: ToucanStoredMessage[];
 }
 
+/** T4 — one explicitly saved memory, as the management surface shows it. Mirrors
+ *  backend/app/schemas/toucan.py's ToucanMemoryOut.
+ *
+ *  Note what the wire shape does NOT carry, by construction rather than by the
+ *  client choosing not to read it: no owner_email (everything the caller can
+ *  list is theirs), no resource locator, no retrieval scores, no raw metadata.
+ *  `id` exists only as the address DELETE needs — the panel never displays it. */
+export interface ToucanMemory {
+  id: string;
+  /** "fact" or "note" — the label the user chose when saving it. */
+  kind: string;
+  content: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Thrown when a memory id no longer resolves for this viewer — already
+ *  forgotten, or never theirs. Same deliberate ambiguity the backend keeps. */
+export class ToucanMemoryGoneError extends Error {
+  constructor(memoryId: string) {
+    super(`Toucan memory ${memoryId} is no longer available`);
+    this.name = "ToucanMemoryGoneError";
+  }
+}
+
 export function turnRoleFromStored(role: ToucanStoredRole): ToucanTurnRole {
   return role === "assistant" ? "toucan" : "user";
 }
@@ -161,6 +186,18 @@ export interface ToucanService {
   confirmAction(actionId: string, options?: ToucanAskOptions): Promise<ToucanActionResult>;
   /** T8 — discard one pending action proposal. Nothing executes. */
   cancelAction(actionId: string, options?: ToucanAskOptions): Promise<ToucanActionResult>;
+  /** T9 — delete one of the viewer's own conversations, transcript and all. A
+   *  DELETE on the T1 endpoint that already existed; hard delete, matching the
+   *  backend's own reasoning that a transcript holds only what the user said and
+   *  what the toucan replied. Resolves when it is gone AND when it was already
+   *  gone — "make this not exist" is idempotent from the caller's side. */
+  deleteConversation(conversationId: string, options?: ToucanAskOptions): Promise<void>;
+  /** T9 — the viewer's own explicitly saved memories, newest first, bounded
+   *  server-side. A READ: listing changes nothing and creates nothing. */
+  listMemories(options?: ToucanAskOptions): Promise<ToucanMemory[]>;
+  /** T9 — forget one memory by id. The counterpart of the T4 "Forget that …"
+   *  chat command, addressed rather than matched on content. */
+  deleteMemory(memoryId: string, options?: ToucanAskOptions): Promise<void>;
 }
 
 // Kept in step with backend/app/schemas/toucan.py's MAX_HISTORY_TURNS /

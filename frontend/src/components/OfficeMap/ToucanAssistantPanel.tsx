@@ -8,9 +8,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 // the chat components themselves were modified.
 import chat from "../Chat/ConversationView.module.css";
 import styles from "./ToucanAssistantPanel.module.css";
+import { ToucanMessageBody } from "./ToucanMessageBody";
+import { copyToClipboard } from "./toucanClipboard";
 import {
   applyToucanStatus,
   canApplyToucanStatus,
+  toucanMode,
   toucanService,
   ToucanActionUnavailableError,
   ToucanConversationGoneError,
@@ -19,6 +22,7 @@ import {
   type ToucanActionProposal,
   type ToucanConversation,
   type ToucanConversationDetail,
+  type ToucanMemory,
 } from "../../services/toucan";
 
 // ---------------------------------------------------------------------------
@@ -61,9 +65,53 @@ import {
 //     ("Squawk squawk…", owned by ToucanFlyer). It must never mirror a real
 //     response. That's why `onPendingChange` below reports only a boolean —
 //     there is no channel through which response text could reach the bird.
+//
+// T9 — PRODUCTION POLISH. Presentation and affordances only; every call it
+// makes already existed at T1/T4/T8, so T9 adds no endpoint, no schema and no
+// migration:
+//
+//   RENDERING  -> assistant replies go through ToucanMessageBody (safe Markdown
+//                 subset -> React elements, never HTML). User messages stay
+//                 literal text. See toucanMarkdown.ts for why that is
+//                 structurally injection-proof rather than sanitised.
+//   COPY       -> per-reply Copy, plus Copy on each fenced code block.
+//   RETRY      -> a failed REQUEST (nothing was answered) can be re-sent
+//                 without retyping. It re-runs the SAME ask() the composer runs
+//                 and cannot execute anything — see the safety note on
+//                 submitQuestion.
+//   HISTORY    -> per-conversation Delete, via T1's existing DELETE endpoint.
+//   MEMORY     -> a second popover listing the viewer's own explicitly saved
+//                 memories (T4's GET /toucan/memories) with a Forget control
+//                 (T4's DELETE). READ AND DELETE ONLY: there is no create path
+//                 here, so a memory still only ever comes from the user's own
+//                 explicit "Remember that …".
+//
+// NOT ADDED, deliberately (both would have to lie about what they do):
+//   REGENERATE -> /toucan/ask always PERSISTS the question with the answer, and
+//                 routes the deterministic T4 memory commands and T8 action
+//                 phrasings before it ever reaches the provider. Re-asking to
+//                 get a second opinion would therefore duplicate the user's
+//                 question in the stored transcript, and could re-run a
+//                 "Remember that …" or re-mint an action proposal. Doing it
+//                 safely needs a backend that can replace an answer in place
+//                 and skip the command branches — a T9-out-of-scope change to
+//                 the persistence and routing layers, not a polish item.
+//   CANCEL     -> aborting the fetch stops the panel waiting but does not stop
+//                 the backend: the request runs to completion and the exchange
+//                 is persisted, so the "cancelled" answer would reappear on the
+//                 next refresh. A Stop button here would be theatre.
 // ---------------------------------------------------------------------------
 
-type Turn = { id: number; role: "user" | "toucan"; text: string; sentAt: string };
+type Turn = {
+  id: number;
+  role: "user" | "toucan";
+  text: string;
+  sentAt: string;
+  /** Set only on a REQUEST-FAILED turn: the question that never got an answer,
+   *  so it can be re-sent without the viewer retyping it. Its presence is also
+   *  what marks the turn as an error rather than an ordinary reply. */
+  retryQuestion?: string;
+};
 
 // Shown when the request itself fails (network down, backend asleep, aborted
 // by something other than release). A plain toucan turn — no new UI surface.
@@ -82,11 +130,32 @@ const ACTION_GONE_TEXT =
   "Squawk — that request expired before it was confirmed, so I changed nothing. Ask me again if you still want it.";
 
 // History popover copy. Deliberately plain strings rather than new UI surfaces.
-const HISTORY_EMPTY_TEXT = "No saved conversations yet.";
+const HISTORY_EMPTY_TEXT = "No saved conversations yet. Ask me something and it'll show up here.";
 const HISTORY_FAILED_TEXT = "Couldn't load your conversations.";
 // A conversation created by "New conversation" has no title until its first
 // question, so the list needs a stand-in label for it.
 const UNTITLED_CONVERSATION_LABEL = "New conversation";
+
+// T9 memory popover copy. The empty state says how a memory is made, because
+// the only way to make one is to tell the toucan — this surface deliberately
+// has no "add" control (see the module note).
+const MEMORY_EMPTY_TEXT =
+  "Nothing saved yet. Tell me “Remember that …” and it'll be kept here.";
+const MEMORY_FAILED_TEXT = "Couldn't load what I remember.";
+
+// How long a Copy control shows its confirmation before resting again.
+const COPIED_FEEDBACK_MS = 1600;
+
+// Auto-grow ceiling for the composer's CONTENT height — the same value as the
+// chat stylesheet's `.textarea { max-height: 96px }` (ConversationView.module.css),
+// so the CSS cap and the JS cap cannot disagree. ~4 lines at 14px/1.4.
+const MAX_COMPOSER_CONTENT_PX = 96;
+
+/** "fact" / "note" as a short human label. Anything unexpected from the server
+ *  falls back to Note rather than showing a raw enum value. */
+function memoryKindLabel(kind: string): string {
+  return kind === "fact" ? "Fact" : "Note";
+}
 
 // Short, locale-aware day label beside each entry — enough to tell yesterday's
 // conversation from last week's without turning the list into a table.
@@ -155,6 +224,13 @@ export function ToucanAssistantPanel({
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyItems, setHistoryItems] = useState<ToucanConversation[] | null>(null);
   const [historyFailed, setHistoryFailed] = useState(false);
+  // T9 — the memory popover, same three-state shape as History (null = still
+  // loading, [] = genuinely nothing saved).
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  const [memoryItems, setMemoryItems] = useState<ToucanMemory[] | null>(null);
+  const [memoryFailed, setMemoryFailed] = useState(false);
+  // T9 — which reply's Copy button is currently showing its confirmation.
+  const [copiedTurnId, setCopiedTurnId] = useState<number | null>(null);
   // T8 — the one pending action proposal, if the latest answer carried one. LOCAL
   // AND EPHEMERAL on purpose: the server holds the authoritative pending entry
   // (short TTL, one-time), so this is only "which card to render". It is NOT
@@ -170,6 +246,7 @@ export function ToucanAssistantPanel({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const typingTimerRef = useRef<number | null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
+  const copiedTimerRef = useRef<number | null>(null);
 
   // Abort an in-flight question on unmount, so a panel dismissed mid-"thinking"
   // never fires setState (or leaves the bird squawking).
@@ -221,6 +298,30 @@ export function ToucanAssistantPanel({
   useEffect(() => {
     textareaRef.current?.focus();
   }, []);
+
+  // T9 — composer auto-grow, Messenger-style. Keyed on `draft` so EVERY path
+  // that changes the text resizes the box: typing grows it line by line, and the
+  // clear on send / leave-conversation collapses it back to one line. The cap is
+  // the chat stylesheet's own 96px max-height (restated here for the JS side);
+  // past it the height stops and the textarea's default overflow scrolls
+  // internally. Height only — the panel's width is untouched.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    // Collapse to the CSS minimum first, so deleting lines shrinks the box —
+    // scrollHeight never reports smaller than the current height.
+    el.style.height = "auto";
+    const style = window.getComputedStyle(el);
+    // The textarea is content-box: scrollHeight includes padding, the height
+    // style does not, so measure the padding back out.
+    const padding =
+      (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+    const contentHeight = el.scrollHeight - padding;
+    // jsdom (and a hidden panel) measure 0 — leave the CSS min-height in charge.
+    if (contentHeight > 0) {
+      el.style.height = `${Math.min(contentHeight, MAX_COMPOSER_CONTENT_PX)}px`;
+    }
+  }, [draft]);
 
   useEffect(() => {
     const el = messagesRef.current;
@@ -275,6 +376,7 @@ export function ToucanAssistantPanel({
     setPending(false);
     setDraft("");
     setHistoryOpen(false);
+    setMemoryOpen(false);
     // An unresolved proposal belongs to the conversation being left. Dropping the
     // card executes nothing — the server-side pending entry simply expires.
     setActionProposal(null);
@@ -307,6 +409,7 @@ export function ToucanAssistantPanel({
   // none is deleted, and the one currently on screen stays selected until the
   // viewer actually picks a different one.
   const handleToggleHistory = useCallback(() => {
+    setMemoryOpen(false);
     setHistoryOpen((wasOpen) => {
       if (wasOpen) return false;
       setHistoryFailed(false);
@@ -362,8 +465,82 @@ export function ToucanAssistantPanel({
     [pending, conversationId, leaveCurrentConversation],
   );
 
+  // T9 — DELETE ONE CONVERSATION. T1's endpoint, exposed. Deleting the one on
+  // screen leaves the panel on a clean greeting with no conversation id, which
+  // is exactly the state a first-ever summon is in — the next question creates a
+  // fresh conversation server-side. Deleting any OTHER conversation does not
+  // disturb the transcript being read.
+  const handleDeleteConversation = useCallback(
+    (id: string) => {
+      if (pending) return;
+      const wasCurrent = id === conversationId;
+      // Optimistic, because the call is idempotent: a failure leaves the row
+      // gone from this list and the next open refetches the truth.
+      setHistoryItems((prev) => prev?.filter((item) => item.id !== id) ?? prev);
+      if (wasCurrent) {
+        leaveCurrentConversation();
+        setConversationId(null);
+        nextIdRef.current = 1;
+        setTurns([greetingTurn(0)]);
+      }
+      void toucanService.deleteConversation(id).catch(() => {
+        // Still there after all — the next History open will show it again.
+      });
+    },
+    [pending, conversationId, leaveCurrentConversation],
+  );
+
+  // T9 — COPY ONE REPLY. Clipboard only; it neither sends anything nor touches
+  // the conversation.
+  const handleCopyTurn = useCallback((turn: Turn) => {
+    void copyToClipboard(turn.text).then((ok) => {
+      if (!ok) return;
+      setCopiedTurnId(turn.id);
+      if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current = window.setTimeout(() => {
+        copiedTimerRef.current = null;
+        setCopiedTurnId(null);
+      }, COPIED_FEEDBACK_MS);
+    });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (copiedTimerRef.current !== null) window.clearTimeout(copiedTimerRef.current);
+    };
+  }, []);
+
+  // T9 — MEMORY. Same popover shape as History and the same discipline: opening
+  // it is one GET, and the only mutation reachable from it is a per-row Forget
+  // (one DELETE). There is deliberately NO create control — a memory can still
+  // only come into existence from the user's own explicit "Remember that …", so
+  // T4's rule that an ordinary message never becomes a memory stays structural.
+  const handleToggleMemory = useCallback(() => {
+    setHistoryOpen(false);
+    setMemoryOpen((wasOpen) => {
+      if (wasOpen) return false;
+      setMemoryFailed(false);
+      setMemoryItems(null);
+      void toucanService
+        .listMemories()
+        .then(setMemoryItems)
+        .catch(() => {
+          setMemoryItems([]);
+          setMemoryFailed(true);
+        });
+      return true;
+    });
+  }, []);
+
+  const handleForgetMemory = useCallback((memoryId: string) => {
+    setMemoryItems((prev) => prev?.filter((item) => item.id !== memoryId) ?? prev);
+    void toucanService.deleteMemory(memoryId).catch(() => {
+      // Idempotent and non-fatal; reopening the popover refetches the truth.
+    });
+  }, []);
+
   // T8 — the assistant's own follow-up line for confirm/cancel outcomes. A plain
-  // toucan turn, same shape appendReply produces inside handleSend.
+  // toucan turn, same shape appendReply produces inside submitQuestion.
   const appendToucanTurn = useCallback((text: string) => {
     setTurns((prev) => [
       ...prev,
@@ -429,20 +606,36 @@ export function ToucanAssistantPanel({
       });
   }, [actionProposal, actionBusy, appendToucanTurn]);
 
-  function handleSend() {
-    const text = draft.trim();
-    // Same empty-send guard the chat composer uses: the button is never
-    // disabled, the handler simply does nothing.
+  // ONE submit path, shared by the composer and by Retry.
+  //
+  // T8 SAFETY: this is the ordinary ask() call and nothing more. Whether it was
+  // reached by pressing Send or by pressing Retry, an answer that carries an
+  // action can only ever set `actionProposal` — the confirmation card — and the
+  // ONLY thing that executes is the explicit Confirm button POSTing the
+  // server-minted id. Retry therefore cannot execute an action for the same
+  // structural reason typing "yes" cannot: there is no other door.
+  //
+  // `history` is captured from the turns list at call time so a retry sends the
+  // same bounded window the original send did, minus the failure notice, which
+  // is dropped before this runs.
+  function submitQuestion(
+    text: string,
+    options: { echoUserTurn: boolean; historyFrom?: Turn[] },
+  ) {
     if (!text || pending) return;
     // Bounded history, oldest-trimmed. The backend re-validates this limit — the
     // client trimming here only avoids a pointless 422.
-    const history = turns
+    const history = (options.historyFrom ?? turns)
       .slice(-TOUCAN_HISTORY_TURNS)
       .map((turn) => ({ role: turn.role, text: turn.text }));
-    setTurns((prev) => [
-      ...prev,
-      { id: nextIdRef.current++, role: "user", text, sentAt: new Date().toISOString() },
-    ]);
+    // A retry re-uses the user turn that is ALREADY in the transcript — echoing
+    // it again would show the question twice for one asking of it.
+    if (options.echoUserTurn) {
+      setTurns((prev) => [
+        ...prev,
+        { id: nextIdRef.current++, role: "user", text, sentAt: new Date().toISOString() },
+      ]);
+    }
     setDraft("");
     stopTyping();
     setPending(true);
@@ -452,7 +645,7 @@ export function ToucanAssistantPanel({
 
     const controller = new AbortController();
     askAbortRef.current = controller;
-    const appendReply = (replyText: string) => {
+    const appendReply = (replyText: string, retryQuestion?: string) => {
       if (controller.signal.aborted) return;
       setTurns((prev) => [
         ...prev,
@@ -461,6 +654,7 @@ export function ToucanAssistantPanel({
           role: "toucan",
           text: replyText,
           sentAt: new Date().toISOString(),
+          ...(retryQuestion ? { retryQuestion } : {}),
         },
       ]);
     };
@@ -485,7 +679,10 @@ export function ToucanAssistantPanel({
           appendReply(CONVERSATION_GONE_TEXT);
           return;
         }
-        appendReply(REQUEST_FAILED_TEXT);
+        // The request never produced an answer, so re-sending it is exactly the
+        // same one ask the user already intended — hence Retry is offered here,
+        // and ONLY here.
+        appendReply(REQUEST_FAILED_TEXT, text);
       })
       .finally(() => {
         if (askAbortRef.current === controller) askAbortRef.current = null;
@@ -495,6 +692,33 @@ export function ToucanAssistantPanel({
       });
   }
 
+  function handleSend() {
+    // Same empty-send guard the chat composer uses. The Send button is now also
+    // disabled while a reply is in flight and while the draft is blank, so a
+    // double-click or a held Enter cannot queue a second question — but the
+    // guard inside submitQuestion stays the authority.
+    submitQuestion(draft.trim(), { echoUserTurn: true });
+  }
+
+  // RETRY — only ever offered on a turn that carries `retryQuestion`, i.e. a
+  // request that failed before any answer existed. It re-sends that question
+  // without echoing the user's message a second time, and drops the failure
+  // notice so the transcript reads as one question with one outcome.
+  function handleRetry(turn: Turn) {
+    if (!turn.retryQuestion || pending) return;
+    const remaining = turns.filter((candidate) => candidate.id !== turn.id);
+    setTurns(remaining);
+    // The failure notice is not part of the conversation, so it must not travel
+    // in the retried request's history either.
+    submitQuestion(turn.retryQuestion, { echoUserTurn: false, historyFrom: remaining });
+  }
+
+  // The composer is inert while a reply is in flight — the single clearest way
+  // to say "a request is active" and to make a second submit impossible. NOT
+  // disabled during the mount-time restore: that is one microtask, and blocking
+  // the field for it would only add a flicker.
+  const composerDisabled = pending;
+
   return (
     <div className={`${chat.panel} ${styles.panel}`} role="dialog" aria-label="Toucan Assistant">
       <div className={chat.header}>
@@ -502,18 +726,22 @@ export function ToucanAssistantPanel({
         <div className={chat.headerText}>
           <div className={chat.titleRow}>
             <span className={chat.title}>Toucan Assistant</span>
-            <span className={styles.demoBadge}>DEMO</span>
+            {/* T9 — the old unconditional "DEMO" badge is gone. Real mode is now
+                the ordinary case and wears no badge at all; the chip appears
+                only when the canned bird is actually what's answering, which is
+                a claim about this build rather than a development artifact. */}
+            {toucanMode === "mock" && <span className={styles.demoBadge}>Demo</span>}
           </div>
           <span className={chat.subtitle}>Perched beside you</span>
         </div>
         <div className={chat.headerActions}>
-          {/* History and "start over", both in the existing header action slot.
-              A popover, deliberately not a sidebar: it lists titles and dates so
-              a past conversation can be reopened, and does nothing else — no
-              search, no rename, no delete. */}
+          {/* History, memory and "start over", all in the existing header action
+              slot. Popovers, deliberately not sidebars: each is one list with one
+              row-level control, and nothing else — no search, no rename, no
+              pagination. */}
           <button
             type="button"
-            className={`${chat.closeButton} ${styles.newConversationButton}`}
+            className={`${chat.closeButton} ${styles.headerActionButton}`}
             onClick={handleToggleHistory}
             aria-label="Conversation history"
             aria-expanded={historyOpen}
@@ -523,8 +751,19 @@ export function ToucanAssistantPanel({
           </button>
           <button
             type="button"
-            className={`${chat.closeButton} ${styles.newConversationButton}`}
+            className={`${chat.closeButton} ${styles.headerActionButton}`}
+            onClick={handleToggleMemory}
+            aria-label="What the toucan remembers"
+            aria-expanded={memoryOpen}
+            title="What I remember"
+          >
+            🧠
+          </button>
+          <button
+            type="button"
+            className={`${chat.closeButton} ${styles.headerActionButton}`}
             onClick={handleNewConversation}
+            disabled={pending}
             aria-label="Start a new conversation"
             title="New conversation"
           >
@@ -542,34 +781,95 @@ export function ToucanAssistantPanel({
       </div>
 
       {historyOpen && (
-        <div className={styles.historyPopover} role="menu" aria-label="Saved conversations">
-          {historyItems === null ? (
-            <p className={styles.historyEmpty}>Loading…</p>
-          ) : historyFailed ? (
-            <p className={styles.historyEmpty}>{HISTORY_FAILED_TEXT}</p>
-          ) : historyItems.length === 0 ? (
-            <p className={styles.historyEmpty}>{HISTORY_EMPTY_TEXT}</p>
-          ) : (
-            // Already most-recent-first from the server; the panel does not
-            // re-sort, so one ordering rule lives in one place.
-            historyItems.map((conversation) => (
-              <button
-                key={conversation.id}
-                type="button"
-                role="menuitem"
-                className={styles.historyItem}
-                aria-current={conversation.id === conversationId}
-                onClick={() => handleSelectConversation(conversation.id)}
-              >
-                <span className={styles.historyTitle}>
-                  {conversation.title || UNTITLED_CONVERSATION_LABEL}
-                </span>
-                <span className={styles.historyDate}>
-                  {formatConversationDate(conversation.updatedAt)}
-                </span>
-              </button>
-            ))
-          )}
+        <div className={styles.popover}>
+          <p className={styles.popoverHeading}>Your conversations</p>
+          <div role="menu" aria-label="Saved conversations">
+            {historyItems === null ? (
+              <p className={styles.popoverEmpty}>Loading…</p>
+            ) : historyFailed ? (
+              <p className={styles.popoverEmpty}>{HISTORY_FAILED_TEXT}</p>
+            ) : historyItems.length === 0 ? (
+              <p className={styles.popoverEmpty}>{HISTORY_EMPTY_TEXT}</p>
+            ) : (
+              // Already most-recent-first from the server; the panel does not
+              // re-sort, so one ordering rule lives in one place.
+              historyItems.map((conversation) => {
+                const isCurrent = conversation.id === conversationId;
+                return (
+                  <div key={conversation.id} className={styles.popoverRow}>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className={styles.historyItem}
+                      aria-current={isCurrent}
+                      disabled={pending}
+                      onClick={() => handleSelectConversation(conversation.id)}
+                    >
+                      {/* A visible mark, not just aria-current: the active row
+                          has to be identifiable at a glance, not only to a
+                          screen reader. */}
+                      <span aria-hidden="true" className={styles.historyMarker}>
+                        {isCurrent ? "•" : ""}
+                      </span>
+                      <span className={styles.historyTitle}>
+                        {conversation.title || UNTITLED_CONVERSATION_LABEL}
+                      </span>
+                      <span className={styles.historyDate}>
+                        {formatConversationDate(conversation.updatedAt)}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.rowDelete}
+                      disabled={pending}
+                      onClick={() => handleDeleteConversation(conversation.id)}
+                      aria-label={`Delete conversation ${
+                        conversation.title || UNTITLED_CONVERSATION_LABEL
+                      }`}
+                      title="Delete"
+                    >
+                      ×
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+
+      {memoryOpen && (
+        // T9 — MEMORY MANAGEMENT. Content and kind, nothing else: no id, no
+        // owner, no resource locator, no timestamps-as-metadata, no retrieval
+        // scoring. The row's Forget button is the only mutation reachable from
+        // here, and there is no control that could create a memory.
+        <div className={styles.popover}>
+          <p className={styles.popoverHeading}>What I remember</p>
+          <div role="list" aria-label="Saved memories">
+            {memoryItems === null ? (
+              <p className={styles.popoverEmpty}>Loading…</p>
+            ) : memoryFailed ? (
+              <p className={styles.popoverEmpty}>{MEMORY_FAILED_TEXT}</p>
+            ) : memoryItems.length === 0 ? (
+              <p className={styles.popoverEmpty}>{MEMORY_EMPTY_TEXT}</p>
+            ) : (
+              memoryItems.map((memory) => (
+                <div key={memory.id} role="listitem" className={styles.memoryRow}>
+                  <span className={styles.memoryKind}>{memoryKindLabel(memory.kind)}</span>
+                  <span className={styles.memoryContent}>{memory.content}</span>
+                  <button
+                    type="button"
+                    className={styles.rowDelete}
+                    onClick={() => handleForgetMemory(memory.id)}
+                    aria-label={`Forget: ${memory.content}`}
+                    title="Forget"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
         </div>
       )}
 
@@ -580,20 +880,58 @@ export function ToucanAssistantPanel({
           ? null
           : turns.map((turn) => {
               const isOwn = turn.role === "user";
+              const isError = Boolean(turn.retryQuestion);
               return (
                 <div key={turn.id} className={isOwn ? `${chat.row} ${chat.rowSelf}` : chat.row}>
                   {!isOwn && <div className={`${chat.avatar} ${styles.toucanAvatar}`}>🦜</div>}
                   <div className={chat.bubbleColumn}>
-                    <div className={`${chat.message} ${isOwn ? chat.own : chat.peer}`}>
-                      {turn.text}
+                    <div
+                      className={`${chat.message} ${isOwn ? chat.own : chat.peer}${
+                        isError ? ` ${styles.errorBubble}` : ""
+                      }`}
+                    >
+                      {/* The viewer's own message stays literal text — their
+                          keystrokes, shown back verbatim. Only the assistant's
+                          side goes through the Markdown renderer. */}
+                      {isOwn ? turn.text : <ToucanMessageBody text={turn.text} />}
                     </div>
-                    <span
+                    <div
                       className={
-                        isOwn ? `${chat.timestamp} ${chat.timestampRight}` : chat.timestamp
+                        isOwn ? `${styles.turnFooter} ${styles.turnFooterSelf}` : styles.turnFooter
                       }
                     >
-                      {formatMessageTime(turn.sentAt)}
-                    </span>
+                      <span
+                        className={
+                          isOwn ? `${chat.timestamp} ${chat.timestampRight}` : chat.timestamp
+                        }
+                      >
+                        {formatMessageTime(turn.sentAt)}
+                      </span>
+                      {/* Retry sits on the failure notice only; Copy sits on
+                          every real reply. Neither appears on the viewer's own
+                          message — one is meaningless there, and the other is
+                          text they still have. */}
+                      {!isOwn && isError && (
+                        <button
+                          type="button"
+                          className={styles.turnAction}
+                          onClick={() => handleRetry(turn)}
+                          disabled={pending}
+                        >
+                          Try again
+                        </button>
+                      )}
+                      {!isOwn && !isError && (
+                        <button
+                          type="button"
+                          className={styles.turnAction}
+                          onClick={() => handleCopyTurn(turn)}
+                          aria-label="Copy response"
+                        >
+                          {copiedTurnId === turn.id ? "Copied" : "Copy"}
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               );
@@ -634,7 +972,12 @@ export function ToucanAssistantPanel({
           // "Toucan is typing" — a normal received bubble carrying the
           // office's established animated dots (same 1s stagger as the
           // world-space TalkingBubble), NOT a special assistant card.
-          <div className={chat.row} data-testid="toucan-typing">
+          <div
+            className={chat.row}
+            data-testid="toucan-typing"
+            role="status"
+            aria-label="The toucan is thinking"
+          >
             <div className={`${chat.avatar} ${styles.toucanAvatar}`}>🦜</div>
             <div className={chat.bubbleColumn}>
               <div className={`${chat.message} ${chat.peer} ${styles.typingBubble}`}>
@@ -647,14 +990,15 @@ export function ToucanAssistantPanel({
         )}
       </div>
 
-      <div className={chat.composer}>
+      <div className={`${chat.composer} ${styles.composerGrow}`} aria-busy={pending}>
         <textarea
           ref={textareaRef}
-          className={chat.textarea}
+          className={`${chat.textarea} ${styles.textarea}`}
           value={draft}
-          placeholder="Ask the toucan…"
+          placeholder={pending ? "Waiting for the toucan…" : "Ask the toucan…"}
           aria-label="Message the toucan"
           rows={1}
+          disabled={composerDisabled}
           onChange={(e) => {
             setDraft(e.target.value);
             reportTyping(e.target.value);
@@ -667,7 +1011,15 @@ export function ToucanAssistantPanel({
             }
           }}
         />
-        <button type="button" className={chat.sendButton} onClick={handleSend} aria-label="Send">
+        <button
+          type="button"
+          className={`${chat.sendButton} ${styles.sendButton}`}
+          onClick={handleSend}
+          // Belt and braces against a double submit: the guard in
+          // submitQuestion is the authority, this makes the state visible.
+          disabled={pending || !draft.trim()}
+          aria-label="Send"
+        >
           <svg width="16" height="16" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
             <path
               d="M3 11.5L21 3l-7.5 18-2.5-7.5L3 11.5z"

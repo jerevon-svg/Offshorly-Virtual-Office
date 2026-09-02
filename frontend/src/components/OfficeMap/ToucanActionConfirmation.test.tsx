@@ -21,10 +21,13 @@ const h = vi.hoisted(() => {
     confirmAction: vi.fn(),
     cancelAction: vi.fn(),
   };
+  // Typed as the real ToucanApplyResult union rather than inferred from the
+  // default `{ ok: true }`, so a spec can mockReturnValue the failure arm.
+  type ApplyResult = { ok: true } | { ok: false; reason: string };
   return {
     service,
-    applyToucanStatus: vi.fn(() => ({ ok: true }) as const),
-    canApplyToucanStatus: vi.fn(() => ({ ok: true }) as const),
+    applyToucanStatus: vi.fn((): ApplyResult => ({ ok: true })),
+    canApplyToucanStatus: vi.fn((): ApplyResult => ({ ok: true })),
   };
 });
 

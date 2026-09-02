@@ -184,7 +184,7 @@ describe("Toucan conversation history", () => {
 
     await openHistory();
 
-    expect(within(historyMenu()).getByText("No saved conversations yet.")).toBeInTheDocument();
+    expect(within(historyMenu()).getByText(/No saved conversations yet/)).toBeInTheDocument();
     expect(historyEntries()).toHaveLength(0);
   });
 

@@ -1,0 +1,171 @@
+/* Markdown inside a Toucan reply bubble.
+
+   Everything here is scoped to the .markdown wrapper, which only exists on a
+   message that actually contains Markdown — a plain reply renders as a bare
+   string in the chat bubble and none of this applies to it.
+
+   The bubble itself comes from ../Chat/ConversationView.module.css and is
+   unchanged. The one override is white-space: the chat bubble sets pre-wrap for
+   literal text, which would double every gap once blocks provide their own
+   spacing, so the wrapper switches it back to normal and code re-opts in. */
+
+.markdown {
+  white-space: normal;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  /* The bubble is 75% of a 320px panel; long unbroken tokens must wrap rather
+     than push the column wider. */
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.paragraph {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.heading {
+  margin: 2px 0 0;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: inherit;
+}
+
+/* First block never needs the leading nudge — the bubble's padding is enough. */
+.markdown > *:first-child {
+  margin-top: 0;
+}
+
+.list {
+  margin: 0;
+  padding-left: 18px;
+  line-height: 1.45;
+}
+
+.listItem {
+  margin: 0;
+}
+
+.listItem + .listItem {
+  margin-top: 3px;
+}
+
+.listItem::marker {
+  color: #9ca3af;
+}
+
+.quote {
+  margin: 0;
+  padding: 2px 0 2px 10px;
+  border-left: 3px solid #d1d5db;
+  color: #4b5563;
+  line-height: 1.45;
+}
+
+.rule {
+  margin: 2px 0;
+  border: 0;
+  border-top: 1px solid #e5e7eb;
+}
+
+.link {
+  color: #1d4ed8;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.link:hover {
+  color: #1e40af;
+}
+
+.inlineCode {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  background: rgba(17, 24, 39, 0.07);
+  border-radius: 4px;
+  padding: 1px 4px;
+  /* An inline code span may be a path or an id; let it break rather than
+     stretch the bubble. */
+  overflow-wrap: anywhere;
+}
+
+/* --- fenced code block ------------------------------------------------------
+   A framed sub-surface inside the received bubble: its own slightly darker
+   ground so it reads as quoted material, a header carrying the language and the
+   Copy control, and a horizontally scrolling pre so whitespace is preserved
+   without ever widening the panel. */
+
+.codeBlock {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.codeHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 6px 3px 8px;
+  background: #f9fafb;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.codeLang {
+  color: #6b7280;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: lowercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.codeCopy {
+  all: unset;
+  cursor: pointer;
+  flex-shrink: 0;
+  color: #4b5563;
+  font-family: system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 5px;
+}
+
+.codeCopy:hover {
+  background: #e5e7eb;
+  color: #111827;
+}
+
+.codeCopy:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 1px;
+}
+
+.pre {
+  margin: 0;
+  padding: 8px;
+  /* pre, not pre-wrap: code keeps its own line breaks and indentation, and a
+     long line scrolls instead of reflowing. */
+  white-space: pre;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #111827;
+}
+
+/* A slim scrollbar so a two-line snippet isn't half chrome. */
+.pre::-webkit-scrollbar {
+  height: 6px;
+}
+
+.pre::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 3px;
+}

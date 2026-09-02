@@ -29,18 +29,17 @@
   font-size: 15px;
 }
 
-/* Mirrors the header's existing .spatialBadge treatment (small, coloured,
-   uppercase-ish tag beside the title) so "this is not a real assistant yet"
-   stays visible in the UI, not just in the source. */
+/* T9: shown ONLY when the canned bird is what's answering (see the panel's
+   toucanMode check). Real mode wears nothing. Quieter than the old always-on
+   DEMO tag — it is a fact about the build, not a warning label. */
 .demoBadge {
   flex-shrink: 0;
-  color: #b45309;
-  background: rgba(180, 83, 9, 0.1);
+  color: #92400e;
+  background: rgba(180, 83, 9, 0.08);
   border-radius: 999px;
   padding: 1px 6px;
   font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
+  font-weight: 600;
   white-space: nowrap;
 }
 
@@ -105,31 +104,104 @@
   background: #f9fafb;
 }
 
-/* "New conversation" sits in the chat header's existing action slot and borrows
-   .closeButton wholesale — this only trims the glyph, which is a pencil rather
-   than the close ×, back to the same optical weight. */
-.newConversationButton {
+/* The header's own action glyphs (history, memory, new conversation) borrow
+   .closeButton wholesale; this only trims them back to the close ×'s optical
+   weight and adds the disabled state the pending guard needs to be visible. */
+.headerActionButton {
   font-size: 14px;
 }
 
-/* History popover. Sits directly under the header, inside the panel's own
-   column — no portal, no overlay, no new chrome. Colours, radii and type are
-   the chat window's own; only the drop shadow and the scroll cap are new. */
-.historyPopover {
+.headerActionButton:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.headerActionButton:disabled:hover {
+  background: none;
+}
+
+/* --- T9: header popovers (History, Memory) ---------------------------------
+   Both sit directly under the header, inside the panel's own column — no
+   portal, no overlay, no new chrome. Colours, radii and type are the chat
+   window's own; only the drop shadow, the heading and the scroll cap are new.
+   One set of classes for both, so the two lists cannot drift apart. */
+.popover {
   flex-shrink: 0;
-  max-height: 180px;
+  max-height: 200px;
   overflow-y: auto;
   background: #fff;
   border-bottom: 1px solid #e5e7eb;
   box-shadow: 0 4px 10px rgba(17, 24, 39, 0.06);
 }
 
-.historyEmpty {
+/* Says which list you are looking at — the two popovers open in the same slot
+   and are otherwise identically shaped. */
+.popoverHeading {
+  position: sticky;
+  top: 0;
   margin: 0;
-  padding: 12px 16px;
+  padding: 8px 16px 4px;
+  background: #fff;
+  color: #6b7280;
+  font-family: system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.popoverEmpty {
+  margin: 0;
+  padding: 4px 16px 12px;
   color: #9ca3af;
   font-family: system-ui, sans-serif;
   font-size: 12px;
+  line-height: 1.45;
+}
+
+/* A row is [select | delete]: the delete control has to be its own button, so
+   the row cannot be a single button element. */
+.popoverRow {
+  display: flex;
+  align-items: stretch;
+}
+
+.popoverRow:hover {
+  background: #f9fafb;
+}
+
+/* Per-row destructive control, deliberately low-contrast until hovered so the
+   list does not read as a row of × buttons. */
+.rowDelete {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 12px 0 4px;
+  color: #d1d5db;
+  font-family: system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.rowDelete:hover {
+  color: #dc2626;
+}
+
+.rowDelete:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: -2px;
+}
+
+.rowDelete:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.rowDelete:disabled:hover {
+  color: #d1d5db;
 }
 
 .historyItem {
@@ -138,27 +210,44 @@
   cursor: pointer;
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  width: 100%;
-  padding: 8px 16px;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  padding: 8px 4px 8px 16px;
   font-family: system-ui, sans-serif;
   font-size: 12px;
   color: #374151;
 }
 
-.historyItem:hover {
-  background: #f9fafb;
+.historyItem:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.historyItem:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: -2px;
+}
+
+/* Fixed-width dot column, so titles line up whether or not a row is active. */
+.historyMarker {
+  flex-shrink: 0;
+  width: 6px;
+  color: #3b82f6;
+  font-size: 14px;
+  line-height: 1;
 }
 
 /* The conversation currently on screen, so History reads as a selector rather
    than a list of somewhere-elses. */
 .historyItem[aria-current="true"] {
-  background: #f3f4f6;
+  color: #111827;
   font-weight: 600;
 }
 
 .historyTitle {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -168,6 +257,111 @@
   flex-shrink: 0;
   color: #9ca3af;
   font-size: 11px;
+}
+
+/* --- T9: memory rows -------------------------------------------------------
+   Kind chip, the memory's own words, and Forget. Nothing else is shown because
+   nothing else is safe to show: no id, no owner, no locator, no metadata. */
+.memoryRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 7px 0 7px 16px;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  color: #374151;
+}
+
+.memoryRow:hover {
+  background: #f9fafb;
+}
+
+.memoryKind {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: #6b7280;
+  background: #f3f4f6;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.memoryContent {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.4;
+  /* A saved memory is free text and can be long; wrap it rather than clip it,
+     and let unbroken tokens break instead of widening the panel. */
+  overflow-wrap: anywhere;
+}
+
+/* --- T9: per-message footer (timestamp + Copy / Try again) ------------------
+   The timestamp used to be alone under the bubble; the message control shares
+   that line so no new row appears in the transcript. */
+.turnFooter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.turnFooterSelf {
+  flex-direction: row-reverse;
+}
+
+.turnAction {
+  all: unset;
+  cursor: pointer;
+  color: #9ca3af;
+  font-family: system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 4px;
+  border-radius: 4px;
+  /* Quiet until the row is hovered or the button is focused, so a long
+     transcript is not a column of buttons. */
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.turnFooter:hover .turnAction,
+.turnAction:focus-visible {
+  opacity: 1;
+}
+
+.turnAction:hover {
+  color: #4b5563;
+  background: #f3f4f6;
+}
+
+.turnAction:focus-visible {
+  outline: 2px solid #3b82f6;
+  outline-offset: 1px;
+}
+
+.turnAction:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* Try again must be reachable without hunting for it — a failure is not a
+   quiet affordance. */
+.errorBubble + .turnFooter .turnAction {
+  opacity: 1;
+  color: #b91c1c;
+}
+
+/* The request-failed notice: still a received bubble, tinted just enough to
+   read as "this didn't work" rather than as an answer. */
+.errorBubble.errorBubble {
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+/* --- T9: composer ---------------------------------------------------------- */
+.sendButton:disabled {
+  cursor: default;
+  opacity: 0.4;
 }
 
 /* --- T8: action confirmation card ------------------------------------------
@@ -223,4 +417,22 @@
 .actionCancel:disabled {
   cursor: default;
   opacity: 0.6;
+}
+
+/* The composer while a reply is in flight — the .textarea it borrows from the
+   chat stylesheet has no disabled state of its own. */
+.textarea:disabled {
+  cursor: default;
+  color: #9ca3af;
+  background: #f9fafb;
+}
+
+/* --- T9: composer auto-grow --------------------------------------------------
+   The textarea's height is driven from the panel (scrollHeight, capped at the
+   chat stylesheet's own 96px max-height), so the row bottom-aligns instead of
+   centring: the send button stays anchored at the bottom-right while the box
+   grows upward. Single-line state renders exactly as before — the button is
+   simply bottom-aligned inside the same-height row. */
+.composerGrow {
+  align-items: flex-end;
 }
