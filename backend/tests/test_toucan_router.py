@@ -3,7 +3,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from app.database import Base, engine
+from app import database as app_db
+from app.database import Base
 from app.main import fastapi_app
 from app.models.toucan import ToucanConversation, ToucanMessage
 from app.realtime.state import (
@@ -23,11 +24,14 @@ pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture(autouse=True)
-async def _fresh_state():
+async def _fresh_state(isolated_app_db):
+    # `isolated_app_db` FIRST, and it is not optional: it repoints the application at a
+    # throwaway database before anything below runs. Without it the truncations here would
+    # execute against the developer's real virtual_office_fastapi.db (see tests/conftest.py).
     # T1 persists every exchange, so this file now touches the DB. Tables are cleared (not just
     # created — create_all is a no-op on an existing table) so a conversation written by an
     # earlier test never shows up as another test's "latest".
-    async with engine.begin() as conn:
+    async with app_db.engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.execute(ToucanMessage.__table__.delete())
         await conn.execute(ToucanConversation.__table__.delete())

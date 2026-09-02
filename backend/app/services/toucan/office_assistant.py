@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from app.services.toucan.activity import AttentionSnapshot
 from app.services.toucan.context import (
     NOT_A_NAME,
     Availability,
@@ -56,6 +57,29 @@ SUPPORTED_INTENTS: tuple[str, ...] = (
     "room_occupants",
     "locate_person",
     "person_available",
+    # T2 — the durable activity intents. These are the only intents whose answers are built from
+    # anything that survives a restart, and the only ones that need an AttentionSnapshot; every
+    # intent above is answered purely from live registry state.
+    "away_summary",
+    "missed_chats",
+    "missed_mentions",
+    "missed_calls",
+    "important_summary",
+)
+
+# Said when an activity question arrives without a snapshot to answer it from — the caller
+# either could not build one, or the question was routed here without one. Never guesses a
+# number, and never implies the answer is zero.
+ACTIVITY_UNAVAILABLE_TEXT = (
+    "I can't check what you've missed right now — try me again in a moment."
+)
+
+# Said when the server has never observed this person present, so there is no window to measure
+# and every count is trivially zero. Reporting a confident "nothing happened" here would be a
+# lie of omission: nothing was being watched.
+NO_ACTIVITY_HISTORY_TEXT = (
+    "I haven't seen you in the office yet, so I've got nothing to compare against. Once "
+    "you've been here and come back, I can tell you what you missed."
 )
 
 
@@ -171,6 +195,82 @@ _ONLINE = [
         r"(?:available|free|around|here|in|in the office)$"
     ),
 ]
+
+
+
+# --- T2 activity patterns ---------------------------------------------------------------
+# Matched BEFORE every live-state intent (see answer_question): these phrasings are about the
+# PAST and are unambiguous, so there is nothing for them to shadow. The narrow forms come first
+# so "how many chats did i miss" is answered with the chat number alone rather than the whole
+# summary — a specific question deserves a specific answer.
+
+_MISSED_CHATS = [
+    re.compile(
+        r"^how many (?:chats|chat messages|messages|dms)"
+        r"(?: did i (?:miss|get|receive))?$"
+    ),
+    re.compile(r"^how many (?:chats|chat messages|messages|dms) do i have$"),
+    re.compile(r"^did i (?:miss|get) any (?:chats|chat messages|messages|dms)$"),
+]
+
+_MISSED_MENTIONS = [
+    re.compile(r"^how many times was i (?:mentioned|tagged)$"),
+    re.compile(r"^how many (?:mentions|tags)(?: do i have)?$"),
+    re.compile(r"^was i (?:mentioned|tagged)(?: anywhere)?$"),
+    re.compile(r"^did anyone (?:mention|tag) me$"),
+]
+
+_MISSED_CALLS = [
+    re.compile(r"^did i miss (?:any|a) calls?$"),
+    re.compile(r"^how many calls did i miss$"),
+    re.compile(r"^(?:any|how many) missed calls(?: do i have)?$"),
+    re.compile(r"^did anyone (?:call|ring) me$"),
+]
+
+_IMPORTANT_SUMMARY = [
+    re.compile(
+        r"^is there anything (?:important|urgent)"
+        r"(?: (?:i need|for me) to (?:check|look at|see|know about))?$"
+    ),
+    re.compile(r"^anything (?:important|urgent)(?: i need to (?:check|see|know))?$"),
+    re.compile(r"^do i need to check anything$"),
+    re.compile(r"^what needs my attention$"),
+]
+
+_AWAY_SUMMARY = [
+    re.compile(r"^what happened while i was (?:gone|away|out|offline)$"),
+    re.compile(r"^what happened while i was not (?:here|around)$"),
+    re.compile(r"^what did i miss(?: while i was (?:gone|away|out|offline))?$"),
+    re.compile(r"^what have i missed$"),
+    re.compile(r"^(?:did|have) i miss(?:ed)? anything$"),
+    re.compile(r"^anything i missed$"),
+    re.compile(r"^catch me up$"),
+    re.compile(r"^what happened$"),
+]
+
+# Every activity phrasing, in the order answer_question tries them. Exported as one list so the
+# router can ask "would this question need a database?" with the SAME patterns that will answer
+# it — see is_activity_question. Two separate lists would eventually disagree, and the failure
+# mode would be silent (a question matched here, answered without a snapshot).
+_ACTIVITY_INTENTS: tuple[tuple[str, list[re.Pattern[str]]], ...] = (
+    ("missed_chats", _MISSED_CHATS),
+    ("missed_mentions", _MISSED_MENTIONS),
+    ("missed_calls", _MISSED_CALLS),
+    ("important_summary", _IMPORTANT_SUMMARY),
+    ("away_summary", _AWAY_SUMMARY),
+)
+
+
+def is_activity_question(question: str) -> bool:
+    """Does answering this question require durable activity data?
+
+    The router calls this to decide whether to spend a database round trip before calling
+    answer_question — so an ordinary "who is online" costs exactly what it cost at T1, and only
+    the handful of phrasings above pay for a snapshot. Pure and side-effect free."""
+    text = _normalize_question(question)
+    if not text:
+        return False
+    return any(_first_match(patterns, text) for _, patterns in _ACTIVITY_INTENTS)
 
 
 # A question that is NOTHING BUT a name (one or two tokens, or an email). Matched LAST, so it
@@ -304,19 +404,159 @@ def _ambiguous_person(raw_name: str, people: tuple[PersonView, ...]) -> str:
     )
 
 
+
+# --- T2 activity wording -------------------------------------------------------------------
+# Counts only. There is nothing else in an AttentionSnapshot to say (see
+# services/toucan/activity.py), which is precisely why the wording layer cannot leak content
+# even by accident — it has none to leak. No sentence below names a person, a conversation, a
+# Hub item or a single word anybody wrote.
+
+# What the window means, said out loud. `since` is never rendered as a date: a timestamp invites
+# the reader to reason about a boundary the server only knows approximately (presence is sampled
+# at connect/checkout), whereas these phrases are exactly as precise as the data is.
+_WINDOW_PHRASE = {
+    "last_active": "since you were last active",
+    "tracking_started": "since I started keeping track",
+}
+
+
+def _window(snapshot: AttentionSnapshot) -> str:
+    return _WINDOW_PHRASE.get(snapshot.since_reason, "since I started keeping track")
+
+
+def _plural(count: int, singular: str, plural: str | None = None) -> str:
+    return f"{count} {singular if count == 1 else (plural or singular + 's')}"
+
+
+def _activity_parts(snapshot: AttentionSnapshot) -> list[str]:
+    """The non-zero components of a summary, in the order a person would want them: volume
+    first, then the things aimed specifically at them. A zero is omitted rather than reported —
+    "you received 0 chat messages" is noise in a sentence that already says what did arrive."""
+    parts: list[str] = []
+    if snapshot.chat_count:
+        parts.append(f"received {_plural(snapshot.chat_count, 'chat message')}")
+    if snapshot.mention_count:
+        times = "once" if snapshot.mention_count == 1 else f"{snapshot.mention_count} times"
+        parts.append(f"were mentioned {times}")
+    if snapshot.missed_call_count:
+        parts.append(f"missed {_plural(snapshot.missed_call_count, 'call')}")
+    if snapshot.hub_count:
+        parts.append(f"have {_plural(snapshot.hub_count, 'Hub item')}")
+    return parts
+
+
+def _guard(snapshot: AttentionSnapshot | None) -> str | None:
+    """The two cases every activity answer shares: no data to answer from, and no history to
+    measure against. Returns the sentence to say, or None to carry on with the real answer."""
+    if snapshot is None:
+        return ACTIVITY_UNAVAILABLE_TEXT
+    if snapshot.has_no_history:
+        return NO_ACTIVITY_HISTORY_TEXT
+    return None
+
+
+def _away_summary_answer(snapshot: AttentionSnapshot) -> str:
+    if snapshot.is_empty:
+        return (
+            f"Nothing came in {_window(snapshot)} — no chat messages, mentions, calls or "
+            "Hub items."
+        )
+    return f"You {_join(_activity_parts(snapshot))} {_window(snapshot)}."
+
+
+def _single_count_answer(count: int, *, some: str, none: str, window: str) -> str:
+    """One number, worded. `some` carries a {n} placeholder so the pluralisation stays with the
+    noun it belongs to."""
+    if not count:
+        return f"{none} {window}."
+    return f"{some.format(n=count)} {window}."
+
+
+def _important_answer(snapshot: AttentionSnapshot) -> str:
+    """"Anything I need to check?" is a triage question, so it reports the roll-up and then says
+    what it is made of. Ordinary chat volume is excluded by construction (see
+    services/toucan/activity.py's important_count) — a busy group thread is not, by itself, a
+    thing demanding the reader's attention."""
+    if not snapshot.important_count:
+        return (
+            f"Nothing looks urgent {_window(snapshot)} — no mentions, missed calls or "
+            "priority Hub items."
+        )
+    detail: list[str] = []
+    if snapshot.mention_count:
+        times = "once" if snapshot.mention_count == 1 else f"{snapshot.mention_count} times"
+        detail.append(f"you were mentioned {times}")
+    if snapshot.missed_call_count:
+        detail.append(f"you missed {_plural(snapshot.missed_call_count, 'call')}")
+    if snapshot.pressing_hub_count:
+        detail.append(
+            f"there {'is' if snapshot.pressing_hub_count == 1 else 'are'} "
+            f"{_plural(snapshot.pressing_hub_count, 'priority Hub item')}"
+        )
+    head = _plural(snapshot.important_count, "thing")
+    return f"{head} worth checking {_window(snapshot)}: {_join(detail)}."
+
+
+def _activity_answer(intent: str, snapshot: AttentionSnapshot) -> str:
+    window = _window(snapshot)
+    if intent == "missed_chats":
+        return _single_count_answer(
+            snapshot.chat_count,
+            some="You received {n} chat message" + ("" if snapshot.chat_count == 1 else "s"),
+            none="No chat messages came in",
+            window=window,
+        )
+    if intent == "missed_mentions":
+        if not snapshot.mention_count:
+            return f"Nobody mentioned you {window}."
+        times = "once" if snapshot.mention_count == 1 else f"{snapshot.mention_count} times"
+        return f"You were mentioned {times} {window}."
+    if intent == "missed_calls":
+        return _single_count_answer(
+            snapshot.missed_call_count,
+            some="You missed {n} call" + ("" if snapshot.missed_call_count == 1 else "s"),
+            none="You didn't miss any calls",
+            window=window,
+        )
+    if intent == "important_summary":
+        return _important_answer(snapshot)
+    return _away_summary_answer(snapshot)
+
+
 # --- resolver ------------------------------------------------------------------------------
 
 
-def answer_question(question: str, ctx: OfficeContext) -> Answer:
-    """Resolve one question against a caller-scoped OfficeContext.
+def answer_question(
+    question: str, ctx: OfficeContext, *, activity: AttentionSnapshot | None = None
+) -> Answer:
+    """Resolve one question against a caller-scoped OfficeContext, and — for the T2 activity
+    intents — a caller-scoped AttentionSnapshot.
 
-    Pure and synchronous — the same question against the same context always produces the same
-    answer. Conversation history is intentionally not a parameter: T0 answers each question on
-    its own (see app/routers/toucan.py on why history is still accepted on the wire).
+    Pure and synchronous — the same question against the same context and snapshot always
+    produces the same answer. Conversation history is intentionally not a parameter: each
+    question is answered on its own (see app/routers/toucan.py on why history is still accepted
+    on the wire).
+
+    `activity` is a VALUE, never a session or a repository — this function still cannot reach
+    a database, which is what keeps the storage-free rule over services/toucan/ true at T2 (see
+    tests/test_toucan_privacy.py). It is optional and defaults to None: the router only builds
+    one when is_activity_question says the question needs it, and a missing snapshot degrades to
+    ACTIVITY_UNAVAILABLE_TEXT rather than to a fabricated zero.
     """
     text = _normalize_question(question)
     if not text:
         return Answer(text=FALLBACK_TEXT, intent=INTENT_UNSUPPORTED, supported=False)
+
+    # T2 FIRST. These phrasings are about the past and are unambiguous, so they can shadow
+    # nothing below — and putting them first means a live-state pattern can never accidentally
+    # claim one of them as the feature grows.
+    for intent, patterns in _ACTIVITY_INTENTS:
+        if _first_match(patterns, text):
+            blocked = _guard(activity)
+            if blocked is not None:
+                return Answer(text=blocked, intent=intent, supported=True)
+            assert activity is not None  # _guard returns a sentence when it is None
+            return Answer(text=_activity_answer(intent, activity), intent=intent, supported=True)
 
     match = _first_match(_PERSON_LIVENESS, text)
     if match:

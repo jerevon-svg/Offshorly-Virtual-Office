@@ -30,8 +30,13 @@ from app.services.toucan.roster import RosterPerson, fetch_roster
 #      one. Keep it that way: no other Toucan module may import a registry.
 #
 # EXPLICITLY NOT READ HERE (and asserted absent by tests/test_toucan_privacy.py):
-#   * chat message bodies, conversation lists, unread/mention counts, read receipts
-#     (app/repositories/chat.py is never imported)
+#   * chat message bodies, conversation lists, read cursors, Hub items — nothing from a
+#     database at all (app/repositories/chat.py and hub.py are never imported). NOTE T2 gave
+#     the FEATURE the ability to count what the caller missed while they were away, but it
+#     deliberately did NOT give it to this module: that counting lives in
+#     app/repositories/toucan_activity.py, reaches the answer layer as a frozen
+#     AttentionSnapshot of plain integers (services/toucan/activity.py), and never passes
+#     through here. This file's job is live office state, and it stays storage-free
 #   * LiveKit rooms, tokens, tracks, audio or video — note `call_registry.snapshot()` carries a
 #     `room` (the LiveKit room id) and this module deliberately DROPS it; only "is this person
 #     connected to a call, and to which spatial session" survives

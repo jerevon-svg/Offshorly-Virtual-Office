@@ -8,7 +8,8 @@ import re
 import httpx
 import pytest
 
-from app.database import Base, async_session_maker, engine
+from app import database as app_db
+from app.database import Base
 from app.main import fastapi_app
 from app.realtime.state import (
     call_registry,
@@ -41,6 +42,18 @@ pytestmark = pytest.mark.asyncio
 _TOUCAN_PACKAGE = pathlib.Path(__file__).resolve().parents[1] / "app" / "services" / "toucan"
 
 # Substrings that must not appear in any Toucan identifier, attribute or string literal.
+#
+# T2 NARROWED EXACTLY ONE ENTRY IN THIS LIST, and it is worth being explicit about why. "mention"
+# used to be banned outright, because at T0/T1 Toucan had no business knowing anything about
+# chat at all. T2's charter is the opposite for counts specifically: "How many times was I
+# mentioned?" is one of the five questions it exists to answer. So the ban moves from the WORD
+# to every CONTENT-BEARING form of it (see _FORBIDDEN_MENTION_FORMS below) — Toucan may learn
+# that it happened three times; it must still be structurally incapable of learning what was
+# said, who said it, or where.
+#
+# "unread" stays banned in full. T2 counts a TIME WINDOW, never a read cursor: it deliberately
+# does not touch last_read_at (see repositories/toucan_activity.py's _chat_count for why those
+# are different questions), so nothing in the Toucan surface has any reason to name it.
 _FORBIDDEN_TOKENS = (
     "last_message",
     "lastmessage",
@@ -49,9 +62,23 @@ _FORBIDDEN_TOKENS = (
     "livekit",
     "transcript",
     "unread",
-    "mention",
     "read_receipt",
     "message_body",
+    "message_text",
+)
+
+# The content-bearing forms of "mention", banned in place of the bare word. Each of these names
+# something that would let a mention be READ rather than COUNTED — `mentioned_emails` in
+# particular is the raw column app/repositories/toucan_activity.py reads, which the Toucan
+# answer surface must never touch directly.
+_FORBIDDEN_MENTION_FORMS = (
+    "mention_text",
+    "mention_body",
+    "mention_preview",
+    "mention_content",
+    "mentioned_emails",
+    "mentioned_in",
+    "mention_snippet",
 )
 
 # Modules NO Toucan module may import, directly or aliased — at any layer.
@@ -118,7 +145,11 @@ def _toucan_sources() -> list[tuple[pathlib.Path, ast.Module]]:
 
 
 @pytest.fixture(autouse=True)
-def _fresh_registries():
+async def _fresh_registries(isolated_app_db):
+    # Takes `isolated_app_db` purely for its side effect: this file drives the real endpoint
+    # with real private data (see the dynamic tests below), and that data must never be
+    # written into the developer's own database.
+
     def clear():
         offline_lineup._slot_by_email.clear()
         dnd_registry._dnd_emails.clear()
@@ -140,8 +171,9 @@ async def _client() -> httpx.AsyncClient:
 
 
 async def test_toucan_code_never_names_a_forbidden_field():
-    """Covers Cliq's last_message/current_activity, LiveKit media, chat transcripts, unread and
-    mention counts — the categories T0 is explicitly forbidden to read."""
+    """Covers Cliq's last_message/current_activity, LiveKit media, chat transcripts, read
+    cursors, and every content-bearing form of a mention. T2 may count mentions; it must remain
+    unable to name, read or locate one."""
     offenders: list[str] = []
     for path, tree in _toucan_sources():
         docstrings = _docstring_constants(tree)
@@ -162,7 +194,7 @@ async def test_toucan_code_never_names_a_forbidden_field():
                 values.append(node.value)
             for value in values:
                 lowered = value.lower()
-                for token in _FORBIDDEN_TOKENS:
+                for token in _FORBIDDEN_TOKENS + _FORBIDDEN_MENTION_FORMS:
                     if token in lowered:
                         offenders.append(f"{path.name}: {value!r} contains {token!r}")
     assert offenders == []
@@ -235,9 +267,9 @@ async def test_no_ai_provider_or_api_key_is_referenced():
 
 async def test_a_real_private_chat_message_never_reaches_a_toucan_answer():
     secret = "SECRET-DM-BODY-do-not-leak"
-    async with engine.begin() as conn:
+    async with app_db.engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    async with async_session_maker() as session:
+    async with app_db.async_session_maker() as session:
         conversation = await chat_repo.upsert_conversation(
             session, "angelo@example.com", "micah@example.com"
         )

@@ -12,6 +12,7 @@ from app.database import async_session_maker
 from app.repositories import chat as chat_repo
 from app.repositories import room_requests as room_requests_repo
 from app.repositories import talk_requests as talk_requests_repo
+from app.repositories import toucan_activity as toucan_activity_repo
 from app.schemas.chat import serialize_message_dict, to_iso_z
 from app.schemas.room_requests import RoomRequestOut
 from app.schemas.talk_requests import TalkRequestOut
@@ -42,6 +43,106 @@ from app.services.position_registry import position_registry
 # VITE_CHAT_SOCKET_URL / single socket.io-client `io(socketBase())` call.
 
 _logger = logging.getLogger(__name__)
+
+
+# --- Toucan T2 instrumentation -------------------------------------------------------------
+#
+# TWO facts, and only two, are written down from this module for the "while you were away"
+# layer, because they are the only ones that would otherwise not survive a restart:
+#
+#   1. WE SAW THIS PERSON ARRIVE OR LEAVE (_record_arrival / _record_departure). Every presence
+#      store in this file is an in-memory dict; none of them can answer "when were you last
+#      here?" after a redeploy, and no other durable column means it either
+#      (employee_positions.updated_at means "last finished walking").
+#
+#      ARRIVAL is a socket connect or an explicit check-in, and is the only thing that may
+#      freeze an absence boundary. DEPARTURE is an explicit checkout OR the moment this person's
+#      LAST socket goes away, and only ever records a candidate.
+#
+#      The last-socket half is what makes "closed the laptop at 17:00 without checking out"
+#      measure from 17:00 instead of from whenever that morning's session began. It is gated on
+#      _has_another_live_socket, so an individual socket of a multi-socket browser closing is
+#      NOT a departure, and a refresh — a departure followed within ABSENCE_GAP_SECONDS by an
+#      arrival — records no absence at all.
+#
+#   2. A RING WENT UNANSWERED (_record_missed_call). Invites live entirely in
+#      app/services/call_invites.py's in-memory registry, so a missed call leaves no trace at
+#      all once the process restarts — or if the recipient was never connected to begin with,
+#      which is exactly the case that matters.
+#
+# NEITHER IS ALLOWED TO BREAK REALTIME. Both swallow and log their failures: bookkeeping for a
+# question the user has not yet asked must never refuse a socket connection, drop a ring, or
+# turn into a chat_error. And neither writes a byte of content — see
+# app/models/activity_event.py.
+#
+# NOTHING ELSE IS INSTRUMENTED. Chat and Hub already persist what they need; mirroring them
+# here would create a second, silently-diverging answer.
+
+
+def _has_another_live_socket(email: str, *, excluding_sid: str) -> bool:
+    """Does this person still have a socket other than `excluding_sid`?
+
+    REUSES THE EXISTING CONNECTION BOOKKEEPING rather than adding a registry: every socket joins
+    its owner's user_room at connect (see the connect handler), which is the same source
+    _is_online already treats as the authority on "is this person reachable". Two details make
+    it correct to call from inside a disconnect handler:
+
+      * python-socketio triggers this handler BEFORE it removes the sid from its rooms (see
+        AsyncServer._handle_disconnect), so the departing socket is still listed — hence
+        `excluding_sid`.
+      * a sid that is itself mid-disconnect is already excluded by manager.is_connected, which
+        consults the pending_disconnect list. Ten sockets closing together therefore do not each
+        see the other nine as alive; whichever is genuinely last sees nobody.
+
+    So no heartbeat, no refcount registry, and no timer — the fact is already there to read."""
+    for sid, _ in sio.manager.get_participants("/", user_room(email)):
+        if sid == excluding_sid:
+            continue
+        if sio.manager.is_connected(sid, "/"):
+            return True
+    return False
+
+
+async def _record_arrival(email: str) -> None:
+    """This person has just turned up. The ONLY event that can freeze an absence boundary —
+    see repositories/toucan_activity.py's record_arrival."""
+    try:
+        async with async_session_maker() as session:
+            await toucan_activity_repo.record_arrival(session, email=email)
+            await session.commit()
+    except Exception:  # never let bookkeeping refuse a connection
+        _logger.warning("failed to record arrival for %s", email, exc_info=True)
+
+
+async def _record_departure(email: str) -> None:
+    """This person has just stopped being here. Records a departure CANDIDATE only; whether it
+    turns out to have been a real absence is decided by their next arrival."""
+    try:
+        async with async_session_maker() as session:
+            await toucan_activity_repo.record_departure(session, email=email)
+            await session.commit()
+    except Exception:  # never let bookkeeping delay a disconnect
+        _logger.warning("failed to record departure for %s", email, exc_info=True)
+
+
+async def _record_missed_call(invite: dict, *, reason: str) -> None:
+    """One unanswered ring, recorded against the RECIPIENT — they are the person who missed it,
+    and the only person who will ever be able to read it back.
+
+    `reason` is for the log only and is deliberately not stored: "you missed a call" is the fact
+    worth keeping, and the difference between a timeout and a hang-up is not something Toucan
+    should be repeating back to anyone."""
+    try:
+        async with async_session_maker() as session:
+            await toucan_activity_repo.record_missed_call(
+                session,
+                subject_email=invite["to_email"],
+                actor_email=invite["from_email"],
+                reference_id=invite.get("inviteId"),
+            )
+            await session.commit()
+    except Exception:  # a ring must terminate cleanly regardless
+        _logger.warning("failed to record missed call (%s)", reason, exc_info=True)
 
 
 async def _broadcast_offline_lineup() -> None:
@@ -239,6 +340,11 @@ async def connect(sid: str, environ: dict, auth: dict | None) -> None:
     await sio.save_session(sid, {"email": email})
     await sio.enter_room(sid, user_room(email))
 
+    # Toucan T2: the arrival half of the presence cursor. Placed before the room bootstrap so a
+    # bootstrap failure (which only emits chat_error) cannot cost us the one durable record that
+    # a person came back — the absence boundary is frozen here or not at all.
+    await _record_arrival(email)
+
     # Fire-and-forget-equivalent room bootstrap (mirrors bootstrapRooms in socket.ts): failures
     # here surface as chat_error rather than rejecting the already-established connection.
     try:
@@ -322,6 +428,9 @@ async def disconnect(sid: str) -> None:
     # Caller's socket vanished mid-ring: terminate their invite so the recipient's prompt clears.
     # Sid-aware — a socket owning no invite is a no-op here.
     for invite in call_invites.clear_sid(sid):
+        # The caller's tab went away mid-ring. From the recipient's side that is indistinguishable
+        # from a hang-up, and it is still a call they did not get to answer.
+        await _record_missed_call(invite, reason="caller_left")
         await _emit_invite_terminal(invite, "call_invite_cancelled", {"reason": "caller_left"})
     if dnd_registry.clear(email):
         await _broadcast_dnd_status()
@@ -334,6 +443,14 @@ async def disconnect(sid: str) -> None:
     if left_room_id is not None:
         await _broadcast_room_presence()
         await _cancel_stale_room_requests(left_room_id)
+    # Toucan T2, and the ONLY thing in this handler that is not per-sid cleanup: if this was the
+    # person's last socket, they have actually gone — record the departure candidate. Deliberately
+    # last, so a bookkeeping failure cannot affect any of the cleanup above, and deliberately
+    # gated: one socket of a multi-socket browser closing leaves the others live and writes
+    # nothing. This does NOT resurrect explicit-checkout-only presence — no registry, broadcast
+    # or client-visible state is touched here, only a durable timestamp Toucan reads later.
+    if not _has_another_live_socket(email, excluding_sid=sid):
+        await _record_departure(email)
 
 
 @sio.on("go_offline")
@@ -343,6 +460,10 @@ async def go_offline(sid: str, _payload: dict | None = None) -> None:
         email = session_data["email"]
         offline_lineup.add(email)
         await _broadcast_offline_lineup()
+        # An explicit checkout is the most precise departure this backend ever gets. It records
+        # a CANDIDATE, not an absence: checking out and back in a minute later must not make the
+        # user look like they were away.
+        await _record_departure(email)
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 
@@ -354,6 +475,10 @@ async def come_online(sid: str, _payload: dict | None = None) -> None:
         email = session_data["email"]
         offline_lineup.remove(email)
         await _broadcast_offline_lineup()
+        # The mirror of go_offline's departure. Checking back in is an arrival like any other,
+        # so a checkout long enough to clear ABSENCE_GAP_SECONDS is resolved into a real
+        # absence here rather than being silently forgotten.
+        await _record_arrival(email)
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 
@@ -457,6 +582,8 @@ async def _expire_invite_later(invite_id: str) -> None:
         return
     invite = call_invites.resolve(invite_id)
     if invite is not None:
+        # Rang out unanswered — the canonical missed call.
+        await _record_missed_call(invite, reason="timeout")
         await _emit_invite_terminal(invite, "call_invite_cancelled", {"reason": "timeout"})
 
 
@@ -479,6 +606,12 @@ async def call_invite(sid: str, payload: dict | None) -> None:
         if to_email == email:
             return
         if not _is_online(to_email):
+            # THE CASE T2 EXISTS FOR: nobody was there to ring, so no invite is ever minted and
+            # nothing ephemeral records the attempt. Synthesised from the two emails the server
+            # already holds, so the recipient can be told about it whenever they next come back.
+            await _record_missed_call(
+                {"to_email": to_email, "from_email": email, "inviteId": None}, reason="offline"
+            )
             await sio.emit("call_invite_failed", fail("offline"), to=sid)
             return
         if dnd_registry.is_dnd(to_email):
@@ -535,6 +668,10 @@ async def _resolve_invite(sid: str, payload: dict | None, *, role: str, event: s
         invite = call_invites.resolve(invite_id, actor_email=email, role=role)
         if invite is None:
             return
+        # A CANCEL is a missed call: the caller gave up before the recipient answered. A
+        # DECLINE is not — the recipient was there and made a choice — and neither is an accept.
+        if event == "call_invite_cancelled":
+            await _record_missed_call(invite, reason="cancelled")
         extra = {"reason": "declined"} if event == "call_invite_declined" else None
         await _emit_invite_terminal(invite, event, extra)
     except Exception as exc:  # noqa: BLE001

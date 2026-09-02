@@ -450,10 +450,14 @@ async def test_the_bare_name_pattern_never_shadows_a_real_phrasing():
 
 
 async def test_unsupported_question_returns_the_deterministic_fallback():
+    # "what happened while I was gone" used to live in this list. T2 answers it — see
+    # tests/test_toucan_activity.py — so it moved out rather than being deleted, and the
+    # remaining cases still pin the boundary: content work stays unsupported, and so does
+    # "unread", which T2 deliberately does not implement (it counts a time window, not a read
+    # cursor).
     for question in (
         "write me a reply to this email",
         "summarize this thread",
-        "what happened while I was gone",
         "how many unread messages do I have",
         "",
         "   ",

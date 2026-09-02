@@ -6,14 +6,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.deps import bearer_token_from_request, get_current_email
 from app.database import get_db
 from app.repositories import toucan as toucan_repo
+from app.repositories import toucan_activity as toucan_activity_repo
 from app.schemas.toucan import (
+    ToucanActivityOut,
     ToucanAnswerOut,
     ToucanAskIn,
     ToucanConversationDetailOut,
     ToucanConversationOut,
 )
+from app.services.toucan.activity import AttentionSnapshot
 from app.services.toucan.context import build_office_context
-from app.services.toucan.office_assistant import answer_question
+from app.services.toucan.office_assistant import answer_question, is_activity_question
 
 # Toucan assistant REST layer.
 #
@@ -27,7 +30,12 @@ from app.services.toucan.office_assistant import answer_question
 #   * no Socket.IO emit, so nothing here enters the realtime fan-out that
 #     docs/realtime-scaling-roadmap.md's R4/R5 would have to make cross-worker. A Toucan
 #     conversation has exactly one reader — its owner — so there is nobody to fan out to
-#   * no persisted activity history, no "while you were away", no extracted memory
+#   * NEW IN T2: durable activity METADATA — counts, and only counts. See
+#     app/repositories/toucan_activity.py for the rules; the short version is that Toucan can
+#     now tell you HOW MUCH happened while you were gone and never what it was. Nothing about
+#     T1's boundary moves: the answer-building package still owns no storage, and the counting
+#     lives in its own quarantined repository rather than anywhere near context.py
+#   * still no extracted memory, no summarisation of anything anybody wrote
 #
 # IDENTITY: `email` comes from get_current_email (bearer token verified against Atlas, or the
 # hard-gated dev bypass) and is the ONLY source of caller identity. It is what scopes the
@@ -78,7 +86,18 @@ async def ask_toucan(
         conversation = await toucan_repo.create_conversation(db, owner_email=email)
 
     context = await build_office_context(email, bearer_token=bearer_token_from_request(request))
-    answer = answer_question(body.question, context)
+
+    # T2: only the handful of "what did I miss" phrasings pay for a database round trip. Every
+    # live-state question costs exactly what it cost at T1. The predicate and the resolver share
+    # one pattern table (see office_assistant._ACTIVITY_INTENTS), so they cannot drift into a
+    # state where a question is claimed here and answered without a snapshot there.
+    activity = None
+    if is_activity_question(body.question):
+        activity = AttentionSnapshot.from_dict(
+            await toucan_activity_repo.attention_snapshot(db, viewer_email=email)
+        )
+
+    answer = answer_question(body.question, context, activity=activity)
 
     await toucan_repo.append_exchange(
         db, conversation=conversation, question=body.question, answer=answer.text
@@ -174,3 +193,24 @@ async def delete_toucan_conversation(
     if not deleted:
         raise HTTPException(status_code=404, detail=_CONVERSATION_NOT_FOUND)
     return Response(status_code=204)
+
+
+@router.get("/toucan/activity", response_model=ToucanActivityOut)
+async def get_toucan_activity(
+    email: str = Depends(get_current_email),
+    db: AsyncSession = Depends(get_db),
+) -> ToucanActivityOut:
+    """The caller's own attention snapshot — the same numbers the deterministic "what did I
+    miss" answer is worded from, as structured data.
+
+    Exists so the counts are independently readable and testable without going through the
+    wording layer, and so a future badge or panel affordance has a contract to call. It adds no
+    new capability: the snapshot is built by exactly the same viewer-scoped repository call the
+    ask path uses, and returns exactly the same nine scalars.
+
+    NO PARAMETERS BY DESIGN. There is no `email`, no `since`, no window override — the caller is
+    the bearer identity and the window is server-derived (see repositories/toucan_activity.py's
+    attention_window). A caller therefore cannot widen their own window to sweep up history
+    from before they were being tracked, nor name anybody else."""
+    snapshot = await toucan_activity_repo.attention_snapshot(db, viewer_email=email)
+    return ToucanActivityOut.from_dict(snapshot)

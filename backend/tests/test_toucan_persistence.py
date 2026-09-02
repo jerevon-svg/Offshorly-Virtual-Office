@@ -3,7 +3,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from app.database import Base, engine
+from app import database as app_db
+from app.database import Base
 from app.main import fastapi_app
 from app.models.toucan import ToucanConversation, ToucanMessage
 from app.realtime.state import (
@@ -32,8 +33,11 @@ MICAH = "micah@example.com"
 
 
 @pytest.fixture(autouse=True)
-async def _fresh_state():
-    async with engine.begin() as conn:
+async def _fresh_state(isolated_app_db):
+    # `isolated_app_db` FIRST, and it is not optional: it repoints the application at a
+    # throwaway database before anything below runs. Without it the truncations here would
+    # execute against the developer's real virtual_office_fastapi.db (see tests/conftest.py).
+    async with app_db.engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.execute(ToucanMessage.__table__.delete())
         await conn.execute(ToucanConversation.__table__.delete())
@@ -326,9 +330,7 @@ async def test_a_conversations_transcript_is_returned_bounded():
     """Directly at the repository, because driving MAX_MESSAGES_RETURNED turns through the
     router would be slow for no extra coverage. The most RECENT turns are what survive the cap —
     that is the part the panel is scrolled to."""
-    from app.database import async_session_maker
-
-    async with async_session_maker() as session:
+    async with app_db.async_session_maker() as session:
         conv = await toucan_repo.create_conversation(session, owner_email=ANGELO)
         for i in range(5):
             await toucan_repo.append_exchange(
@@ -347,9 +349,7 @@ async def test_a_conversations_transcript_is_returned_bounded():
 
 
 async def test_stored_content_is_clamped():
-    from app.database import async_session_maker
-
-    async with async_session_maker() as session:
+    async with app_db.async_session_maker() as session:
         conv = await toucan_repo.create_conversation(session, owner_email=ANGELO)
         await toucan_repo.append_exchange(
             session,
@@ -367,7 +367,6 @@ async def test_stored_content_is_clamped():
 
 
 async def test_deleting_a_conversation_removes_it_and_its_messages():
-    from app.database import async_session_maker
     from sqlalchemy import func, select
 
     async with await _client() as client:
@@ -380,7 +379,7 @@ async def test_deleting_a_conversation_removes_it_and_its_messages():
     assert removed.status_code == 204
     assert listed.json() == []
 
-    async with async_session_maker() as session:
+    async with app_db.async_session_maker() as session:
         orphans = await session.execute(
             select(func.count())
             .select_from(ToucanMessage)

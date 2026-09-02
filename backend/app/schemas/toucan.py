@@ -154,3 +154,55 @@ class ToucanConversationDetailOut(ToucanConversationOut):
             updated_at=conversation["updated_at"],
             messages=[ToucanMessageOut.from_dict(m) for m in messages],
         )
+
+
+# --- T2 activity wire shape ---------------------------------------------------------------
+
+
+class ToucanActivityOut(BaseModel):
+    """The attention snapshot: how much the caller missed, and over what window.
+
+    WHAT IS NOT ON THIS WIRE, and cannot be added without changing this class: message text,
+    conversation ids, titles, sender names, Hub item ids or bodies. Nine scalars — two
+    timestamps, a label, and six counts. A client receiving this learns HOW MUCH happened to
+    THEM and nothing about what it was or who else was involved.
+
+    Scoped entirely by the bearer identity, like every other Toucan response: there is no query
+    parameter and no body, so there is nothing through which a caller could ask about somebody
+    else."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    # The window. `since_reason` ships alongside `since` so a client can never present a count
+    # as "while you were away" when the window actually means "since Toucan first saw you" —
+    # see app/repositories/toucan_activity.py's SINCE_* constants.
+    since: datetime
+    since_reason: Literal["last_active", "tracking_started", "no_history"] = Field(
+        alias="sinceReason"
+    )
+    until: datetime
+
+    chat_count: int = Field(alias="chatCount")
+    mention_count: int = Field(alias="mentionCount")
+    missed_call_count: int = Field(alias="missedCallCount")
+    hub_count: int = Field(alias="hubCount")
+    pressing_hub_count: int = Field(alias="pressingHubCount")
+    important_count: int = Field(alias="importantCount")
+
+    @field_serializer("since", "until")
+    def _serialize_window(self, dt: datetime) -> str:
+        return to_iso_z(dt)
+
+    @classmethod
+    def from_dict(cls, row: dict[str, Any]) -> "ToucanActivityOut":
+        return cls(
+            since=row["since"],
+            since_reason=row["since_reason"],
+            until=row["until"],
+            chat_count=row["chat_count"],
+            mention_count=row["mention_count"],
+            missed_call_count=row["missed_call_count"],
+            hub_count=row["hub_count"],
+            pressing_hub_count=row["pressing_hub_count"],
+            important_count=row["important_count"],
+        )

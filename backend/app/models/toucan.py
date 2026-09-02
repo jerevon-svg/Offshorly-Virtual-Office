@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from sqlalchemy import ForeignKey, Index, String, Text
+from datetime import datetime
+
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import BaseModel
@@ -66,3 +68,51 @@ class ToucanMessage(BaseModel):
     # layer only (same as Conversation.type).
     role: Mapped[str] = mapped_column(String(16), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+# --- T2: the absence window ---------------------------------------------------------------
+#
+# T2 asks Toucan a question T0 and T1 could not: "what happened while I was gone?" Answering it
+# needs a durable answer to "when was I last here?", and this codebase had none. Every presence
+# signal it owns is in-memory and per-process — app/services/offline_lineup.py's explicit
+# checkout lineup, room_presence, spatial_sessions — so all of them forget everything on a
+# restart, which is exactly the case "several days away" has to survive. The one durable
+# timestamp that looked close, employee_positions.updated_at, means "when this person last
+# finished walking somewhere", not "when we last saw them", and is cold-loaded at boot on
+# purpose (see models/position.py), so it would report a stale walk as recent presence.
+#
+# Hence one small row per person, written from the socket layer, holding two timestamps and
+# nothing else.
+
+
+class ToucanAttentionCursor(BaseModel):
+    """When we last saw this person, and when their current absence began.
+
+    Does NOT extend the uuid-PK convention meaningfully — there is exactly one row per email,
+    upserted in place. It still carries BaseModel's id/created_at/updated_at because
+    `created_at` is load-bearing: it is the honest floor for the absence window the very first
+    time somebody uses Toucan ("since I started keeping track"), so that a brand-new user is
+    told what the number means instead of being handed a silently wrong one.
+
+    Holds no content of any kind. Two timestamps and an email."""
+
+    __tablename__ = "toucan_attention_cursors"
+
+    # Natural key, normalized (lowercased/stripped) by the repository before every read and
+    # write. Unique because a second row for the same person would split their history.
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
+
+    # The most recent moment the server observed this person either ARRIVE or LEAVE: a socket
+    # connect, an explicit check-in, an explicit checkout, or their LAST socket going away.
+    # Departures matter as much as arrivals here — without them, somebody who closes their
+    # laptop at 17:00 without checking out leaves this at whenever that morning's session
+    # started, and the next day's absence would be measured from the wrong end of a working day.
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    # THE ABSENCE BOUNDARY, frozen. Set to the PREVIOUS value of last_seen_at at the moment a
+    # gap of at least ABSENCE_GAP_SECONDS is detected ON A RETURN — arrivals only, never
+    # departures (see repositories/toucan_activity.py's _touch for why letting a departure
+    # freeze it would mistake a long working day for a long absence). It has to be frozen rather
+    # than derived, because the instant somebody reconnects `last_seen_at` moves to now and the
+    # boundary is gone. Null until this person's first observed absence.
+    away_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
