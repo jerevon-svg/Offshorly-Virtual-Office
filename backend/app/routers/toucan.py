@@ -7,15 +7,31 @@ from app.auth.deps import bearer_token_from_request, get_current_email
 from app.database import get_db
 from app.repositories import toucan as toucan_repo
 from app.repositories import toucan_activity as toucan_activity_repo
+from app.repositories import toucan_memory as toucan_memory_repo
+from app.repositories import toucan_resources as toucan_resources_repo
 from app.schemas.toucan import (
     ToucanActivityOut,
     ToucanAnswerOut,
     ToucanAskIn,
     ToucanConversationDetailOut,
     ToucanConversationOut,
+    ToucanMemoryIn,
+    ToucanMemoryOut,
+    ToucanResourceIn,
+    ToucanResourceOut,
 )
 from app.services.toucan.activity import AttentionSnapshot
 from app.services.toucan.context import build_office_context
+from app.services.toucan.memory_commands import (
+    EMPTY_FORGET_TEXT,
+    EMPTY_REMEMBER_TEXT,
+    MemoryCommand,
+    MemoryView,
+    forgotten_text,
+    memories_text,
+    parse_memory_command,
+    saved_text,
+)
 from app.services.toucan.office_assistant import answer_question, is_activity_question
 
 # Toucan assistant REST layer.
@@ -56,6 +72,42 @@ from app.services.toucan.office_assistant import answer_question, is_activity_qu
 router = APIRouter(tags=["toucan"])
 
 _CONVERSATION_NOT_FOUND = "Conversation not found"
+_MEMORY_NOT_FOUND = "Memory not found"
+_RESOURCE_NOT_FOUND = "Resource not found"
+_RESOURCE_TARGET_NOT_FOUND = "Attachment target not found"
+
+
+async def _execute_memory_command(
+    db: AsyncSession, *, email: str, command: MemoryCommand
+) -> tuple[str, str]:
+    """Run one explicit memory command for the caller and word the outcome. Returns
+    (answer_text, intent).
+
+    T4's counterpart of the T2 snapshot split: services/toucan/memory_commands.py decided WHAT
+    the message asks and will word the result, this function does the one storage step in
+    between, and `email` is the bearer identity — the command carries no owner and never can."""
+    if command.action == "list":
+        rows = await toucan_memory_repo.list_memories(
+            db, owner_email=email, limit=toucan_memory_repo.MEMORY_ANSWER_LIMIT
+        )
+        views = [MemoryView(kind=r["kind"], content=r["content"]) for r in rows]
+        return memories_text(views), "memory_list"
+
+    if command.action == "forget":
+        if not command.content:
+            return EMPTY_FORGET_TEXT, "memory_forget"
+        deleted = await toucan_memory_repo.forget_by_content(
+            db, owner_email=email, content=command.content
+        )
+        return forgotten_text(command, deleted), "memory_forget"
+
+    # remember / save-note
+    if not command.content:
+        return EMPTY_REMEMBER_TEXT, "memory_save"
+    await toucan_memory_repo.save_memory(
+        db, owner_email=email, content=command.content, kind=command.kind
+    )
+    return saved_text(command), "memory_save"
 
 
 @router.post("/toucan/ask", response_model=ToucanAnswerOut)
@@ -84,6 +136,27 @@ async def ask_toucan(
             raise HTTPException(status_code=404, detail=_CONVERSATION_NOT_FOUND)
     else:
         conversation = await toucan_repo.create_conversation(db, owner_email=email)
+
+    # T4 FIRST — before the office context is even built. An explicit remember/list/forget is a
+    # command about the caller's own durable memory: it needs no roster fetch and no registry
+    # read, and nothing about it may depend on live office state. Only these deterministic
+    # phrasings take this branch (see services/toucan/memory_commands.py); every other message
+    # flows on exactly as before, which is what keeps "an ordinary message never becomes a
+    # memory" structural rather than filtered.
+    memory_command = parse_memory_command(body.question)
+    if memory_command is not None:
+        answer_text, memory_intent = await _execute_memory_command(
+            db, email=email, command=memory_command
+        )
+        await toucan_repo.append_exchange(
+            db, conversation=conversation, question=body.question, answer=answer_text
+        )
+        return ToucanAnswerOut(
+            text=answer_text,
+            intent=memory_intent,
+            supported=True,
+            conversation_id=conversation.id,
+        )
 
     context = await build_office_context(email, bearer_token=bearer_token_from_request(request))
 
@@ -214,3 +287,112 @@ async def get_toucan_activity(
     from before they were being tracked, nor name anybody else."""
     snapshot = await toucan_activity_repo.attention_snapshot(db, viewer_email=email)
     return ToucanActivityOut.from_dict(snapshot)
+
+
+# --- T4: important memory --------------------------------------------------------------------
+#
+# The REST twins of the chat commands, and the contract T9's management UI will call. Ownership
+# discipline is identical to conversations: the body has no identity field, every repository
+# call filters on the bearer email, and someone else's memory id is a 404 — never a 403, so an
+# id cannot be probed for existence.
+
+
+@router.post("/toucan/memories", response_model=ToucanMemoryOut, status_code=201)
+async def create_toucan_memory(
+    body: ToucanMemoryIn,
+    email: str = Depends(get_current_email),
+    db: AsyncSession = Depends(get_db),
+) -> ToucanMemoryOut:
+    row = await toucan_memory_repo.save_memory(
+        db, owner_email=email, content=body.content, kind=body.kind
+    )
+    return ToucanMemoryOut.from_dict(row)
+
+
+@router.get("/toucan/memories", response_model=list[ToucanMemoryOut])
+async def list_toucan_memories(
+    limit: int = Query(
+        default=toucan_memory_repo.DEFAULT_MEMORIES_RETURNED,
+        ge=1,
+        le=toucan_memory_repo.MAX_MEMORIES_RETURNED,
+    ),
+    email: str = Depends(get_current_email),
+    db: AsyncSession = Depends(get_db),
+) -> list[ToucanMemoryOut]:
+    """The caller's own explicitly saved memories, newest first, bounded — the same rows and the
+    same order the "What do you remember?" chat answer is worded from."""
+    rows = await toucan_memory_repo.list_memories(db, owner_email=email, limit=limit)
+    return [ToucanMemoryOut.from_dict(r) for r in rows]
+
+
+@router.delete("/toucan/memories/{memory_id}", status_code=204)
+async def delete_toucan_memory(
+    memory_id: str,
+    email: str = Depends(get_current_email),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """ID-addressed forget — the precise counterpart of the chat command's exact-content match.
+    Hard delete, like conversations: a memory is only ever the user's own words, so there is
+    nothing to retain once they ask for it gone."""
+    deleted = await toucan_memory_repo.delete_memory(db, memory_id=memory_id, owner_email=email)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=_MEMORY_NOT_FOUND)
+    return Response(status_code=204)
+
+
+# --- T4: resource references -----------------------------------------------------------------
+#
+# Metadata and references ONLY — the honest foundation for future file understanding (T7). The
+# codebase has no object storage at T4, so there is no upload endpoint here and no content
+# column behind these routes; `locator` records where a thing lives (a URL today, a storage key
+# once the object-storage layer exists). See models/toucan.py's ToucanResource.
+
+
+@router.post("/toucan/resources", response_model=ToucanResourceOut, status_code=201)
+async def create_toucan_resource(
+    body: ToucanResourceIn,
+    email: str = Depends(get_current_email),
+    db: AsyncSession = Depends(get_db),
+) -> ToucanResourceOut:
+    row = await toucan_resources_repo.create_resource(
+        db,
+        owner_email=email,
+        display_name=body.display_name,
+        locator=body.locator,
+        media_type=body.media_type,
+        conversation_id=body.conversation_id,
+        memory_id=body.memory_id,
+    )
+    if row is None:
+        # The optional conversation/memory link named something the caller does not own —
+        # indistinguishable from something that does not exist, as everywhere in Toucan.
+        raise HTTPException(status_code=404, detail=_RESOURCE_TARGET_NOT_FOUND)
+    return ToucanResourceOut.from_dict(row)
+
+
+@router.get("/toucan/resources", response_model=list[ToucanResourceOut])
+async def list_toucan_resources(
+    limit: int = Query(
+        default=toucan_resources_repo.DEFAULT_RESOURCES_RETURNED,
+        ge=1,
+        le=toucan_resources_repo.MAX_RESOURCES_RETURNED,
+    ),
+    email: str = Depends(get_current_email),
+    db: AsyncSession = Depends(get_db),
+) -> list[ToucanResourceOut]:
+    rows = await toucan_resources_repo.list_resources(db, owner_email=email, limit=limit)
+    return [ToucanResourceOut.from_dict(r) for r in rows]
+
+
+@router.delete("/toucan/resources/{resource_id}", status_code=204)
+async def delete_toucan_resource(
+    resource_id: str,
+    email: str = Depends(get_current_email),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    deleted = await toucan_resources_repo.delete_resource(
+        db, resource_id=resource_id, owner_email=email
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail=_RESOURCE_NOT_FOUND)
+    return Response(status_code=204)

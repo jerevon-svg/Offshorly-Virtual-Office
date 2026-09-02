@@ -138,6 +138,10 @@ def _toucan_sources() -> list[tuple[pathlib.Path, ast.Module]]:
         "app/schemas/toucan.py",
         "app/models/toucan.py",
         "app/repositories/toucan.py",
+        # T4 — the memory and resource persistence modules are swept by the same rules: a
+        # forbidden field is no more acceptable in a memory row than in a variable.
+        "app/repositories/toucan_memory.py",
+        "app/repositories/toucan_resources.py",
     ):
         path = _TOUCAN_PACKAGE.parents[2] / extra
         modules.append((path, ast.parse(path.read_text())))

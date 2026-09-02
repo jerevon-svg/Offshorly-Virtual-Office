@@ -116,3 +116,91 @@ class ToucanAttentionCursor(BaseModel):
     # than derived, because the instant somebody reconnects `last_seen_at` moves to now and the
     # boundary is gone. Null until this person's first observed absence.
     away_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+# --- T4: important memory ------------------------------------------------------------------
+#
+# T4 gives Toucan the one kind of durability T1 deliberately refused: facts the user EXPLICITLY
+# asked it to keep ("Remember that the demo is Friday"). The refusal itself has not moved an
+# inch — nothing is ever extracted, summarised or inferred. A row appears in this table through
+# exactly two doors, both of which start with the user typing an explicit remember/save command:
+# the deterministic chat command in services/toucan/memory_commands.py, and POST /toucan/memories.
+# An ordinary Toucan question, a chat message, an office snapshot — none of those can reach here.
+
+
+class ToucanMemory(BaseModel):
+    """One durable fact the owner explicitly asked Toucan to remember.
+
+    `owner_email` is written ONLY from get_current_email, exactly as ToucanConversation's is —
+    the request body has no owner field and forbids extras. Every repository helper filters on
+    it in the same SELECT, so another user's memory is indistinguishable from one that does not
+    exist.
+
+    Deliberately NOT here: any link to the conversation the command was typed in (a memory
+    outlives and floats above conversations — that is its entire point), any source snippet,
+    any embedding or derived representation. `content` is the user's own words, verbatim."""
+
+    __tablename__ = "toucan_memories"
+    # "this owner's memories, newest first" is the only read shape — served directly.
+    __table_args__ = (
+        Index("ix_toucan_memories_owner_created", "owner_email", "created_at"),
+    )
+
+    owner_email: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+
+    # "fact" (remember that ...) | "note" (save this note: ...). Python-layer vocabulary, no DB
+    # CHECK — same convention as ToucanMessage.role.
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    # The user's own words, clamped at the repository (see repositories/toucan_memory.py).
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+# --- T4: resource references ----------------------------------------------------------------
+#
+# The FOUNDATION for future file understanding (T7), and only the foundation. This codebase has
+# no object storage and no attachment abstraction anywhere (checked at T4), so this table
+# honestly stores METADATA AND REFERENCES ONLY: a name the owner gave the thing, an optional
+# locator (a URL today; an object-storage key once that layer exists), and optional links into
+# the owner's own Toucan conversations/memories. There is no byte-content column of any kind —
+# adding one, or smuggling base64 through `locator`, is exactly what the size bound and the
+# tests exist to refuse. Actual binary upload waits for the planned object-storage layer.
+
+
+class ToucanResource(BaseModel):
+    """A persistent reference to an external thing the owner attached to their Toucan world.
+
+    Owner-scoped like everything else Toucan persists. The two foreign keys are OPTIONAL links
+    into the same owner's data — the repository verifies ownership of the target before writing
+    either — and are severed (set NULL) when the target is deleted, so a resource row can never
+    dangle into another user's id space."""
+
+    __tablename__ = "toucan_resources"
+
+    owner_email: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+
+    # Optional attachment points. ondelete="SET NULL" for engines that enforce FKs; SQLite here
+    # does not (no PRAGMA foreign_keys), so the repositories also sever these explicitly on
+    # delete — same reasoning as delete_conversation's explicit child delete.
+    conversation_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("toucan_conversations.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
+    memory_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("toucan_memories.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
+
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    # WHERE the thing lives, never WHAT it contains: a URL today, an object-storage key later.
+    # Nullable because a resource can be registered before its storage location exists. Bounded
+    # tightly enough that a file body cannot be smuggled through it.
+    locator: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+
+    # MIME type when known ("application/pdf"). Metadata about the reference, not content.
+    media_type: Mapped[str | None] = mapped_column(String(127), nullable=True)

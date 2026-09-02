@@ -3,10 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.toucan import ToucanConversation, ToucanMessage
+from app.models.toucan import ToucanConversation, ToucanMessage, ToucanResource
 
 # Toucan T1 persistence — plain-dict returns, same house style as repositories/talk_requests.py.
 #
@@ -197,6 +197,15 @@ async def delete_conversation(
     if conv is None:
         return False
     await session.execute(delete(ToucanMessage).where(ToucanMessage.conversation_id == conv.id))
+    # T4: detach (never delete) any resource references pointing here — a resource belongs to
+    # the owner, not to the conversation it was attached from. Explicit for the same reason the
+    # message delete above is: SQLite runs without PRAGMA foreign_keys, so the FK's ON DELETE
+    # SET NULL would not fire.
+    await session.execute(
+        update(ToucanResource)
+        .where(ToucanResource.conversation_id == conv.id)
+        .values(conversation_id=None)
+    )
     await session.delete(conv)
     await session.flush()
     return True

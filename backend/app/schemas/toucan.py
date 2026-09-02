@@ -206,3 +206,104 @@ class ToucanActivityOut(BaseModel):
             pressing_hub_count=row["pressing_hub_count"],
             important_count=row["important_count"],
         )
+
+
+# --- T4 memory + resource wire shapes -------------------------------------------------------
+#
+# Same two deliberate properties as ToucanAskIn: NO IDENTITY FIELD anywhere (extra="forbid"
+# turns a smuggled "email"/"ownerEmail" into a 422, loudly), and every inbound string bounded at
+# the edge. The owner of everything below is the bearer identity, decided server-side, always.
+
+# Kept in step with repositories/toucan_memory.py and toucan_resources.py.
+MAX_MEMORY_CONTENT_CHARS = 1000
+MAX_DISPLAY_NAME_CHARS = 255
+MAX_LOCATOR_CHARS = 1024
+MAX_MEDIA_TYPE_CHARS = 127
+
+
+class ToucanMemoryIn(BaseModel):
+    """POST /toucan/memories — the REST twin of the "Remember that ..." chat command. Content
+    only (plus an optional kind label); there is nothing else a memory is allowed to be made of."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    content: str = Field(min_length=1, max_length=MAX_MEMORY_CONTENT_CHARS)
+    kind: Literal["fact", "note"] = "note"
+
+
+class ToucanMemoryOut(BaseModel):
+    """No owner email on the wire — everything the caller can list is theirs by construction,
+    same reasoning as ToucanConversationOut."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    kind: str
+    content: str
+    created_at: datetime = Field(alias="createdAt")
+    updated_at: datetime = Field(alias="updatedAt")
+
+    @field_serializer("created_at", "updated_at")
+    def _serialize_timestamps(self, dt: datetime) -> str:
+        return to_iso_z(dt)
+
+    @classmethod
+    def from_dict(cls, row: dict[str, Any]) -> "ToucanMemoryOut":
+        return cls(
+            id=row["id"],
+            kind=row["kind"],
+            content=row["content"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+
+class ToucanResourceIn(BaseModel):
+    """POST /toucan/resources — registers a REFERENCE, never content. There is deliberately no
+    field a file body could travel in: no data, no bytes, no base64 — extra="forbid" makes an
+    attempt a 422 rather than a silent drop. `locator` says where a thing lives (a URL today, an
+    object-storage key once that layer exists) and is bounded far below any useful payload size."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    display_name: str = Field(alias="displayName", min_length=1, max_length=MAX_DISPLAY_NAME_CHARS)
+    locator: str | None = Field(default=None, max_length=MAX_LOCATOR_CHARS)
+    media_type: str | None = Field(default=None, alias="mediaType", max_length=MAX_MEDIA_TYPE_CHARS)
+    # Optional attachment points into the CALLER'S OWN data — ownership is verified before the
+    # row is written, and a foreign id 404s (see repositories/toucan_resources.py).
+    conversation_id: str | None = Field(
+        default=None, alias="conversationId", max_length=MAX_CONVERSATION_ID_CHARS
+    )
+    memory_id: str | None = Field(
+        default=None, alias="memoryId", max_length=MAX_CONVERSATION_ID_CHARS
+    )
+
+
+class ToucanResourceOut(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    display_name: str = Field(alias="displayName")
+    locator: str | None = None
+    media_type: str | None = Field(default=None, alias="mediaType")
+    conversation_id: str | None = Field(default=None, alias="conversationId")
+    memory_id: str | None = Field(default=None, alias="memoryId")
+    created_at: datetime = Field(alias="createdAt")
+    updated_at: datetime = Field(alias="updatedAt")
+
+    @field_serializer("created_at", "updated_at")
+    def _serialize_timestamps(self, dt: datetime) -> str:
+        return to_iso_z(dt)
+
+    @classmethod
+    def from_dict(cls, row: dict[str, Any]) -> "ToucanResourceOut":
+        return cls(
+            id=row["id"],
+            display_name=row["display_name"],
+            locator=row["locator"],
+            media_type=row["media_type"],
+            conversation_id=row["conversation_id"],
+            memory_id=row["memory_id"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
