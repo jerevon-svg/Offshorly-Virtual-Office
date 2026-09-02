@@ -60,6 +60,11 @@ SUPPORTED_INTENTS: tuple[str, ...] = (
     # T2 — the durable activity intents. These are the only intents whose answers are built from
     # anything that survives a restart, and the only ones that need an AttentionSnapshot; every
     # intent above is answered purely from live registry state.
+    #
+    # T3 changed WHAT "away_summary" says, not what it is called: it is now the prioritised
+    # attention digest rather than a flat sentence of counts. The name is kept so the persisted
+    # transcripts, the response contract and the client stay untouched — the intent has always
+    # meant "the broad what-did-I-miss question", and that is still exactly what it means.
     "away_summary",
     "missed_chats",
     "missed_mentions",
@@ -105,7 +110,12 @@ def _normalize_question(raw: str) -> str:
     text = re.sub(r"\bwhatis\b", "what is", text)
     text = re.sub(r"\bwhats\b", "what is", text)
     text = _FILLER.sub(" ", text)
-    return re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
+    # A trailing full stop survives the character filter above — "." is kept deliberately, so an
+    # email address stays intact — and it used to make "Catch me up." miss a pattern that
+    # "Catch me up" matched. Stripped here rather than widening the filter, because a period is
+    # only ever noise at the END of a question and is load-bearing anywhere inside one.
+    return text.rstrip(". ")
 
 
 # Time filler that carries no meaning for a live-state question. Stripped from ANYWHERE in the
@@ -237,6 +247,16 @@ _IMPORTANT_SUMMARY = [
     re.compile(r"^what needs my attention$"),
 ]
 
+# T3 — THE ATTENTION DIGEST. These are the BROAD phrasings: "tell me everything that is waiting
+# for me, worst first". They are matched LAST among the activity intents (see _ACTIVITY_INTENTS)
+# precisely so a narrow question keeps its narrow answer — "how many messages did I miss" is a
+# request for one number, not for a triage list.
+#
+# The T3 additions are the phrasings that ask WHICH THING FIRST rather than HOW MANY: "what
+# should I look at first", "give me my attention digest", "anything I need to check". None of
+# them matched anything before T3 (each one fell to FALLBACK_TEXT), so widening the table here
+# takes no phrasing away from an existing intent — _IMPORTANT_SUMMARY still owns every
+# "anything IMPORTANT/URGENT" wording, and is tried first regardless.
 _AWAY_SUMMARY = [
     re.compile(r"^what happened while i was (?:gone|away|out|offline)$"),
     re.compile(r"^what happened while i was not (?:here|around)$"),
@@ -244,8 +264,18 @@ _AWAY_SUMMARY = [
     re.compile(r"^what have i missed$"),
     re.compile(r"^(?:did|have) i miss(?:ed)? anything$"),
     re.compile(r"^anything i missed$"),
-    re.compile(r"^catch me up$"),
+    re.compile(r"^catch me up(?: on (?:everything|things|the office))?$"),
+    re.compile(r"^bring me up to speed$"),
     re.compile(r"^what happened$"),
+    re.compile(r"^what is new$"),
+    # "which of these deserves me first" — the question the priority ordering exists for.
+    re.compile(r"^what should i (?:look at|check|read|handle|do) first$"),
+    re.compile(r"^what do i (?:look at|check) first$"),
+    re.compile(r"^(?:anything|is there anything) i need to (?:check|look at|see|know about)$"),
+    re.compile(r"^(?:do i have|is there) anything (?:waiting|pending)(?: for me)?$"),
+    # The feature asked for by name.
+    re.compile(r"^(?:give me|show me|whats) (?:my )?(?:attention )?digest$"),
+    re.compile(r"^(?:my )?attention digest$"),
 ]
 
 # Every activity phrasing, in the order answer_question tries them. Exported as one list so the
@@ -419,30 +449,27 @@ _WINDOW_PHRASE = {
     "tracking_started": "since I started keeping track",
 }
 
+# The same window, worded as a DIGEST HEADER rather than as a trailing clause. Split from
+# _WINDOW_PHRASE rather than derived from it because the honesty requirement bites differently
+# in the two positions: "While you were away" is a claim about an observed absence and is only
+# available to `last_active`, whereas `tracking_started` has to keep saying out loud that it is
+# reporting everything it has ever seen, not everything that happened during a gap.
+_HEADER_PHRASE = {
+    "last_active": "While you were away",
+    "tracking_started": "Since I started keeping track",
+}
+
 
 def _window(snapshot: AttentionSnapshot) -> str:
     return _WINDOW_PHRASE.get(snapshot.since_reason, "since I started keeping track")
 
 
+def _header(snapshot: AttentionSnapshot) -> str:
+    return _HEADER_PHRASE.get(snapshot.since_reason, "Since I started keeping track")
+
+
 def _plural(count: int, singular: str, plural: str | None = None) -> str:
     return f"{count} {singular if count == 1 else (plural or singular + 's')}"
-
-
-def _activity_parts(snapshot: AttentionSnapshot) -> list[str]:
-    """The non-zero components of a summary, in the order a person would want them: volume
-    first, then the things aimed specifically at them. A zero is omitted rather than reported —
-    "you received 0 chat messages" is noise in a sentence that already says what did arrive."""
-    parts: list[str] = []
-    if snapshot.chat_count:
-        parts.append(f"received {_plural(snapshot.chat_count, 'chat message')}")
-    if snapshot.mention_count:
-        times = "once" if snapshot.mention_count == 1 else f"{snapshot.mention_count} times"
-        parts.append(f"were mentioned {times}")
-    if snapshot.missed_call_count:
-        parts.append(f"missed {_plural(snapshot.missed_call_count, 'call')}")
-    if snapshot.hub_count:
-        parts.append(f"have {_plural(snapshot.hub_count, 'Hub item')}")
-    return parts
 
 
 def _guard(snapshot: AttentionSnapshot | None) -> str | None:
@@ -455,13 +482,89 @@ def _guard(snapshot: AttentionSnapshot | None) -> str | None:
     return None
 
 
+# --- T3 attention digest --------------------------------------------------------------------
+#
+# THE PRIORITY ORDER, and it is the whole feature. "What did I miss?" is not a request for a
+# tally — it is a request to be told what to do next. The five categories below are listed in
+# descending order of how strongly the thing is aimed at THIS PERSON:
+#
+#   1. mentions            somebody typed this person's name and is waiting on them
+#   2. missed calls        somebody tried to reach them in real time and failed
+#   3. priority Hub items  the Hub itself marked required/important
+#   4. ordinary chat       volume in their conversations, aimed at nobody in particular
+#   5. ordinary Hub items  posted to be read eventually
+#
+# STILL COUNTS ONLY. The digest reorders and re-labels the same six integers T2 already
+# collected; it reads no new field, and there is no new field for it to read (see
+# services/toucan/activity.py — the AttentionSnapshot IS the privacy boundary). No line below
+# can name a person, a conversation, a Hub item or a word anybody wrote, because none of those
+# is reachable from here.
+#
+# THE SUBSET ARITHMETIC. `mention_count` is a subset of `chat_count` and `pressing_hub_count` a
+# subset of `hub_count` (see repositories/toucan_activity.py). The digest therefore subtracts
+# before it prints: a mention counted on line 1 must not be counted again on line 4, or a
+# person with three mentions and nothing else would be told they have three mentions AND three
+# chat messages. max(0, ...) guards the subtraction rather than trusting the invariant — a
+# negative bullet would be a far worse bug than an under-count.
+
+_BULLET = "\u2022 "
+
+
+def _digest_lines(snapshot: AttentionSnapshot) -> list[str]:
+    """The non-zero categories, highest-value signal first. A zero category is omitted, never
+    printed as "0 mentions" — a digest of zeroes is noise, and the zero state is its own answer
+    (see _attention_digest)."""
+    other_chat = max(0, snapshot.chat_count - snapshot.mention_count)
+    other_hub = max(0, snapshot.hub_count - snapshot.pressing_hub_count)
+
+    lines: list[str] = []
+    if snapshot.mention_count:
+        verb = "needs" if snapshot.mention_count == 1 else "need"
+        lines.append(f"{_plural(snapshot.mention_count, 'mention')} {verb} your attention")
+    if snapshot.missed_call_count:
+        lines.append(_plural(snapshot.missed_call_count, "missed call"))
+    if snapshot.pressing_hub_count:
+        lines.append(_plural(snapshot.pressing_hub_count, "priority Hub item"))
+    if other_chat:
+        # "other" is only true once something has been listed above it. On a chat-only digest
+        # the word would be a small lie about a comparison that was never made.
+        label = "other chat message" if snapshot.mention_count else "chat message"
+        lines.append(_plural(other_chat, label))
+    if other_hub:
+        label = "other Hub item" if snapshot.pressing_hub_count else "Hub item"
+        lines.append(_plural(other_hub, label))
+    return lines
+
+
+def _digest_lead(snapshot: AttentionSnapshot) -> str:
+    """What to open first, named by CATEGORY. This is the sentence "What should I look at
+    first?" is actually asking for, and it is answerable without knowing a single thing about
+    the item itself — which is why the digest can offer it at all."""
+    if snapshot.mention_count:
+        return "Start with the mention." if snapshot.mention_count == 1 else "Start with the mentions."
+    if snapshot.missed_call_count:
+        noun = _plural(snapshot.missed_call_count, "missed call").split(" ", 1)[1]
+        return f"Start with the {noun}."
+    if snapshot.pressing_hub_count:
+        noun = _plural(snapshot.pressing_hub_count, "priority Hub item").split(" ", 1)[1]
+        return f"Start with the {noun}."
+    # Reached only when the whole digest is ordinary volume: real, but aimed at nobody.
+    return "None of it is flagged for you specifically."
+
+
 def _away_summary_answer(snapshot: AttentionSnapshot) -> str:
+    """The T3 digest. Multi-line by design — the panel renders assistant text with
+    `white-space: pre-wrap` (see frontend Chat/ConversationView.module.css), so the newlines
+    below display as written and no frontend change was needed to show them."""
     if snapshot.is_empty:
+        # A CLEAN ZERO STATE, not a list of zeroes. Says which categories were checked so the
+        # answer is falsifiable, without printing a single number.
         return (
-            f"Nothing came in {_window(snapshot)} — no chat messages, mentions, calls or "
-            "Hub items."
+            f"Nothing came in {_window(snapshot)} — no mentions, missed calls, Hub items or "
+            "chat messages."
         )
-    return f"You {_join(_activity_parts(snapshot))} {_window(snapshot)}."
+    bullets = "\n".join(f"{_BULLET}{line}" for line in _digest_lines(snapshot))
+    return f"{_header(snapshot)}:\n{bullets}\n\n{_digest_lead(snapshot)}"
 
 
 def _single_count_answer(count: int, *, some: str, none: str, window: str) -> str:

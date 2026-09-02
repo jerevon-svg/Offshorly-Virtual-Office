@@ -577,17 +577,29 @@ def _snap(**kwargs) -> AttentionSnapshot:
     )
 
 
-async def test_the_away_summary_reads_the_way_the_spec_words_it():
+async def test_the_away_summary_is_a_prioritised_digest():
+    """T3 REPLACED THE WORDING OF THIS INTENT, and this test is the record of that.
+
+    It used to assert a flat sentence in snapshot-field order ("You received 12 chat messages,
+    were mentioned 3 times, ..."). That sentence answered "how much" when the question asked
+    "what now", so the same six numbers are now re-ordered worst-first and given a lead. The
+    intent name and the response contract are unchanged — only the prose is."""
     answer = answer_question(
         "What happened while I was gone?",
         _ctx(),
-        activity=_snap(chat_count=12, mention_count=3, missed_call_count=1, hub_count=2),
+        activity=_snap(chat_count=15, mention_count=3, missed_call_count=1, hub_count=2,
+                       pressing_hub_count=2, important_count=6),
     )
     assert answer.intent == "away_summary"
     assert answer.supported is True
     assert answer.text == (
-        "You received 12 chat messages, were mentioned 3 times, missed 1 call and have "
-        "2 Hub items since you were last active."
+        "While you were away:\n"
+        "\u2022 3 mentions need your attention\n"
+        "\u2022 1 missed call\n"
+        "\u2022 2 priority Hub items\n"
+        "\u2022 12 other chat messages\n"
+        "\n"
+        "Start with the mentions."
     )
 
 
@@ -635,7 +647,10 @@ async def test_answers_never_claim_an_absence_that_was_not_observed():
         chat_count=2,
     )
     text = answer_question("what did I miss", _ctx(), activity=tracking).text
-    assert "since I started keeping track" in text
+    # Case-insensitive since T3: the broad question now opens with the window as a HEADER
+    # ("Since I started keeping track:") rather than closing with it as a clause. The claim
+    # under test is unchanged — it must name the tracking window and must not imply an absence.
+    assert "since i started keeping track" in text.lower()
     assert "away" not in text
 
     none_yet = AttentionSnapshot(
