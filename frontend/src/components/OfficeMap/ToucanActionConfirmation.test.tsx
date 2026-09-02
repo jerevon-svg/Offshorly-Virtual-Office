@@ -23,8 +23,8 @@ const h = vi.hoisted(() => {
   };
   return {
     service,
-    applyToucanStatus: vi.fn(() => ({ ok: true }) as const),
-    canApplyToucanStatus: vi.fn(() => ({ ok: true }) as const),
+    applyToucanStatus: vi.fn((): ToucanApplyResult => ({ ok: true })),
+    canApplyToucanStatus: vi.fn((): ToucanApplyResult => ({ ok: true })),
   };
 });
 
@@ -38,7 +38,7 @@ vi.mock("../../services/toucan", async (importOriginal) => {
   };
 });
 
-import { ToucanActionUnavailableError } from "../../services/toucan";
+import { ToucanActionUnavailableError, type ToucanApplyResult } from "../../services/toucan";
 import { ToucanAssistantPanel } from "./ToucanAssistantPanel";
 
 const PROPOSAL = {
