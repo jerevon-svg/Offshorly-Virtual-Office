@@ -57,6 +57,45 @@ class ToucanAskIn(BaseModel):
     history: list[ToucanTurnIn] = Field(default_factory=list, max_length=MAX_HISTORY_TURNS)
 
 
+class ToucanActionProposalOut(BaseModel):
+    """T8 — one PROPOSED (not executed) action, riding along on an ask() answer. Everything here
+    is server-derived from the validated proposal: the id is server-minted, `summary` is the
+    server-worded exact effect, and the args are the frozen validated ones — never the model's
+    raw output. Receiving this changes nothing; only POST /toucan/actions/{id}/confirm does."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    action: Literal["set_status"]
+    # One of the manual statuses (services/toucan/actions.py MANUAL_STATUSES).
+    status: str
+    # Present only for DND, already clamped server-side.
+    dnd_minutes: int | None = Field(default=None, alias="dndMinutes")
+    # The exact effect, as the confirmation card must show it.
+    summary: str
+    expires_at: datetime = Field(alias="expiresAt")
+
+    @field_serializer("expires_at")
+    def _serialize_expires_at(self, dt: datetime) -> str:
+        return to_iso_z(dt)
+
+
+class ToucanActionResultOut(BaseModel):
+    """The outcome of confirming or cancelling one pending action — echoes the same frozen
+    action fields so the client applies exactly what was confirmed, plus the transcript line."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    outcome: Literal["executed", "cancelled"]
+    action: Literal["set_status"]
+    status: str
+    dnd_minutes: int | None = Field(default=None, alias="dndMinutes")
+    summary: str
+    # The assistant's outcome line, also persisted into the conversation transcript.
+    text: str
+
+
 class ToucanAnswerOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -70,6 +109,11 @@ class ToucanAnswerOut(BaseModel):
     # freshly created one. Always present, so the panel never has to guess which conversation it
     # is now in after asking its first question.
     conversation_id: str = Field(alias="conversationId")
+    # T8, backward-compatible: a pending action proposal awaiting explicit confirmation, or None
+    # (the overwhelmingly common case — every pre-T8 client simply never reads it). Its presence
+    # means NOTHING has executed: the text above asks for confirmation and this carries the id
+    # the Confirm/Cancel buttons target.
+    action: ToucanActionProposalOut | None = None
 
 
 # --- T1 persistence wire shapes ---------------------------------------------------------

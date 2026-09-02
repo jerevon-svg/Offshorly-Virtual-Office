@@ -1,5 +1,7 @@
 import {
+  ToucanActionUnavailableError,
   ToucanConversationGoneError,
+  type ToucanActionResult,
   type ToucanAnswer,
   type ToucanAskOptions,
   type ToucanAskRequest,
@@ -179,6 +181,19 @@ export class MockToucanService implements ToucanService {
       }
       options.signal?.addEventListener("abort", onAbort, { once: true });
     });
+  }
+
+  // T8 — the canned bird proposes no actions (its replies are fixed strings, and
+  // a demo that pretended to change real product state would be lying the same
+  // way fake durable storage would). With no proposals there is nothing these
+  // ids could ever resolve to, which is exactly what the real backend answers
+  // for an unknown id.
+  async confirmAction(actionId: string): Promise<ToucanActionResult> {
+    throw new ToucanActionUnavailableError(actionId);
+  }
+
+  async cancelAction(actionId: string): Promise<ToucanActionResult> {
+    throw new ToucanActionUnavailableError(actionId);
   }
 }
 

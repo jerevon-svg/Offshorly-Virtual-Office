@@ -182,6 +182,24 @@ async def append_exchange(
     return message_to_dict(user_row), message_to_dict(assistant_row)
 
 
+async def append_assistant_message(
+    session: AsyncSession,
+    *,
+    conversation: ToucanConversation,
+    content: str,
+) -> dict[str, Any]:
+    """Persist ONE assistant-only row — T8's confirm/cancel outcome line, which follows a
+    structural button press rather than a typed question, so there is no user row to pair it
+    with. Same clamp, same explicit updated_at bump as append_exchange."""
+    assistant_row = ToucanMessage(
+        conversation_id=conversation.id, role="assistant", content=_clamp(content)
+    )
+    session.add(assistant_row)
+    conversation.updated_at = _utc_now()
+    await session.flush()
+    return message_to_dict(assistant_row)
+
+
 async def delete_conversation(
     session: AsyncSession, *, conversation_id: str, owner_email: str
 ) -> bool:

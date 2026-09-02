@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import bearer_token_from_request, get_current_email
+from app.config import settings
 from app.database import get_db
 from app.repositories import toucan as toucan_repo
 from app.repositories import toucan_activity as toucan_activity_repo
 from app.repositories import toucan_memory as toucan_memory_repo
 from app.repositories import toucan_resources as toucan_resources_repo
 from app.schemas.toucan import (
+    ToucanActionProposalOut,
+    ToucanActionResultOut,
     ToucanActivityOut,
     ToucanAnswerOut,
     ToucanAskIn,
@@ -19,6 +24,17 @@ from app.schemas.toucan import (
     ToucanMemoryOut,
     ToucanResourceIn,
     ToucanResourceOut,
+)
+from app.services.toucan.actions import (
+    ACTION_PROPOSAL_INTENT,
+    ACTION_UNAVAILABLE_DETAIL,
+    SetStatusAction,
+    cancelled_text,
+    confirmation_text,
+    executed_text,
+    parse_action_request,
+    proposal_summary,
+    validate_ai_proposal,
 )
 from app.services.toucan.activity import AttentionSnapshot
 from app.services.toucan.context import build_office_context
@@ -34,6 +50,7 @@ from app.services.toucan.memory_commands import (
 )
 from app.services.toucan.memory_retrieval import select_relevant_memories
 from app.services.toucan.office_assistant import answer_question, is_activity_question
+from app.services.toucan.pending_actions import PendingAction, pending_actions
 from app.services.toucan_ai.provider import AI_INTENT, ai_enabled, generate_answer
 
 # Toucan assistant REST layer.
@@ -77,6 +94,8 @@ from app.services.toucan_ai.provider import AI_INTENT, ai_enabled, generate_answ
 # `email` above is derived by verifying that token, not by trusting it. A caller on the dev
 # bypass has no token, so they simply get no roster.
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["toucan"])
 
 _CONVERSATION_NOT_FOUND = "Conversation not found"
@@ -118,7 +137,75 @@ async def _execute_memory_command(
     return saved_text(command), "memory_save"
 
 
-@router.post("/toucan/ask", response_model=ToucanAnswerOut)
+async def _propose_action(
+    db: AsyncSession,
+    *,
+    conversation,
+    email: str,
+    question: str,
+    action: SetStatusAction,
+) -> ToucanAnswerOut:
+    """T8 — register one VALIDATED proposal and answer with the confirmation ask. Everything
+    user-facing here is server-worded from the validated action (never from model text), the
+    pending entry is bound to the bearer identity, and — the entire point — NOTHING EXECUTES:
+    the only paths out of pending are the explicit confirm/cancel endpoints below, or expiry."""
+    summary = proposal_summary(action)
+    pending = pending_actions.propose(
+        owner_email=email,
+        conversation_id=conversation.id,
+        action=action,
+        summary=summary,
+        ttl_seconds=settings.TOUCAN_ACTION_TTL_SECONDS,
+    )
+    answer_text = confirmation_text(action)
+    await toucan_repo.append_exchange(
+        db, conversation=conversation, question=question, answer=answer_text
+    )
+    return ToucanAnswerOut(
+        text=answer_text,
+        intent=ACTION_PROPOSAL_INTENT,
+        supported=True,
+        conversation_id=conversation.id,
+        action=ToucanActionProposalOut(
+            id=pending.id,
+            action=action.action,
+            status=action.status,
+            dnd_minutes=action.dnd_minutes,
+            summary=summary,
+            expires_at=pending.expires_at,
+        ),
+    )
+
+
+def _action_result(pending: PendingAction, *, outcome: str, text: str) -> ToucanActionResultOut:
+    return ToucanActionResultOut(
+        id=pending.id,
+        outcome=outcome,
+        action=pending.action.action,
+        status=pending.action.status,
+        dnd_minutes=pending.action.dnd_minutes,
+        summary=pending.summary,
+        text=text,
+    )
+
+
+async def _append_action_note(db: AsyncSession, pending: PendingAction, *, email: str, text: str) -> None:
+    """Write the confirm/cancel outcome line into the transcript the proposal came from — if
+    that conversation still exists and still belongs to the caller (re-verified, like every
+    conversation lookup). A deleted conversation just means no transcript line; the action
+    outcome itself is unaffected."""
+    conversation = await toucan_repo.get_conversation(
+        db, conversation_id=pending.conversation_id, owner_email=email
+    )
+    if conversation is not None:
+        await toucan_repo.append_assistant_message(db, conversation=conversation, content=text)
+
+
+# response_model_exclude_none keeps the pre-T8 wire BYTE-IDENTICAL: of the five fields only
+# `action` can be None, so an answer without a proposal is still exactly the T0 four-field
+# contract (asserted in test_toucan_ai/test_toucan_privacy), and `action` appears only when a
+# proposal is actually pending.
+@router.post("/toucan/ask", response_model=ToucanAnswerOut, response_model_exclude_none=True)
 async def ask_toucan(
     request: Request,
     body: ToucanAskIn,
@@ -166,6 +253,18 @@ async def ask_toucan(
             conversation_id=conversation.id,
         )
 
+    # T8 SECOND — the deterministic action phrasings, still before any context is built (a
+    # set-my-status request needs no roster and no registry read to become a PROPOSAL; live
+    # state only matters at execution, which hasn't happened and may never happen). Like the
+    # memory commands above, only the explicit self-scoped imperatives in
+    # services/toucan/actions.py take this branch — and even they only produce a pending
+    # proposal that the confirm endpoint alone can execute.
+    action_request = parse_action_request(body.question)
+    if action_request is not None:
+        return await _propose_action(
+            db, conversation=conversation, email=email, question=body.question, action=action_request
+        )
+
     context = await build_office_context(email, bearer_token=bearer_token_from_request(request))
 
     # T2: only the handful of "what did I miss" phrasings pay for a database round trip. Every
@@ -199,14 +298,33 @@ async def ask_toucan(
         memory_rows = await toucan_memory_repo.list_memories(
             db, owner_email=email, limit=toucan_memory_repo.MAX_MEMORIES_RETURNED
         )
-        ai_text = await generate_answer(
+        reply = await generate_answer(
             body.question,
             context,
             [(turn.role, turn.text) for turn in body.history],
             memories=select_relevant_memories(body.question, memory_rows),
         )
-        if ai_text is not None:
-            answer_text, intent, supported = ai_text, AI_INTENT, True
+        if reply is not None:
+            # T8: the model may have PROPOSED an action — raw, untrusted {name, args}. The one
+            # door it can pass through is the server-owned validator; anything that is not
+            # exactly an allowlisted action with exactly the allowed args comes back None and
+            # the request continues as an ordinary answer. A valid proposal becomes a pending
+            # entry awaiting the explicit confirm endpoint — nothing executes here, and the
+            # confirmation ask is worded by the server from the VALIDATED action, never taken
+            # from the model's own text.
+            if reply.action_name is not None:
+                proposed = validate_ai_proposal(reply.action_name, reply.action_args)
+                if proposed is not None:
+                    return await _propose_action(
+                        db,
+                        conversation=conversation,
+                        email=email,
+                        question=body.question,
+                        action=proposed,
+                    )
+                logger.warning("toucan ai proposal rejected by validator")
+            if reply.text:
+                answer_text, intent, supported = reply.text, AI_INTENT, True
 
     await toucan_repo.append_exchange(
         db, conversation=conversation, question=body.question, answer=answer_text
@@ -302,6 +420,68 @@ async def delete_toucan_conversation(
     if not deleted:
         raise HTTPException(status_code=404, detail=_CONVERSATION_NOT_FOUND)
     return Response(status_code=204)
+
+
+# --- T8: safe actions — explicit confirmation ---------------------------------------------------
+#
+# STRUCTURAL, NOT CONVERSATIONAL: a pending action is confirmed by POSTing its server-minted id
+# to these endpoints — never by typing "yes" into /toucan/ask, hitting Enter, or anything the
+# model could be talked into. The id is the whole ceremony: it exists only if the server itself
+# validated and registered the proposal, it is bound to the bearer identity, it works exactly
+# once, and it expires. Every failure mode — unknown id, someone else's id, expired, replayed,
+# already cancelled — is the same 404 with the same detail, so nothing can be probed.
+#
+# WHAT "EXECUTE" MEANS FOR set_status: the user's office status is a client-owned product
+# concept (frontend/src/services/presence/selfStatusStore.ts + localStorage; only the DND bit
+# reaches this server, via the dnd_set socket event the client emits on transition). So the
+# server's execution step is everything the server CAN authoritatively do: consume the one-time
+# pending entry, log the audit line (who confirmed which allowlisted action), persist the
+# outcome into the transcript, and return the frozen validated effect — which the caller's own
+# client then applies through the exact same setManualStatus/startDnd path the StatusPicker
+# uses, keeping every existing side effect (DND broadcast, room locks, allowance policy)
+# consistent. Self-scoped by construction: the effect goes back to the confirming caller and
+# nobody else, so "set someone else's status" has no representation anywhere in this flow.
+
+
+@router.post("/toucan/actions/{action_id}/confirm", response_model=ToucanActionResultOut)
+async def confirm_toucan_action(
+    action_id: str,
+    email: str = Depends(get_current_email),
+    db: AsyncSession = Depends(get_db),
+) -> ToucanActionResultOut:
+    pending = pending_actions.take(action_id, owner_email=email)
+    if pending is None:
+        raise HTTPException(status_code=404, detail=ACTION_UNAVAILABLE_DETAIL)
+    # The audit line: who confirmed, which allowlisted action, with which validated args. No
+    # secrets, no prompt, no free-form payload exists to leak.
+    logger.info(
+        "toucan action executed: owner=%s action=%s status=%s dnd_minutes=%s id=%s",
+        email,
+        pending.action.action,
+        pending.action.status,
+        pending.action.dnd_minutes,
+        pending.id,
+    )
+    text = executed_text(pending.action)
+    await _append_action_note(db, pending, email=email, text=text)
+    return _action_result(pending, outcome="executed", text=text)
+
+
+@router.post("/toucan/actions/{action_id}/cancel", response_model=ToucanActionResultOut)
+async def cancel_toucan_action(
+    action_id: str,
+    email: str = Depends(get_current_email),
+    db: AsyncSession = Depends(get_db),
+) -> ToucanActionResultOut:
+    pending = pending_actions.cancel(action_id, owner_email=email)
+    if pending is None:
+        raise HTTPException(status_code=404, detail=ACTION_UNAVAILABLE_DETAIL)
+    logger.info(
+        "toucan action cancelled: owner=%s action=%s id=%s", email, pending.action.action, pending.id
+    )
+    text = cancelled_text(pending.action)
+    await _append_action_note(db, pending, email=email, text=text)
+    return _action_result(pending, outcome="cancelled", text=text)
 
 
 @router.get("/toucan/activity", response_model=ToucanActivityOut)

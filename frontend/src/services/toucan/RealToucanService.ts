@@ -1,6 +1,8 @@
 import { getAuthToken } from "../api/client";
 import {
+  ToucanActionUnavailableError,
   ToucanConversationGoneError,
+  type ToucanActionResult,
   type ToucanAnswer,
   type ToucanAskOptions,
   type ToucanAskRequest,
@@ -146,6 +148,42 @@ export class RealToucanService implements ToucanService {
       throw new Error(body?.error || body?.detail || `Toucan backend request failed (${res.status})`);
     }
     return (await res.json()) as ToucanConversationDetail;
+  }
+
+  // T8 — the structural confirmation endpoints. Note what is NOT sent: no body at
+  // all. The action's args were validated and FROZEN server-side at proposal time;
+  // the id is the entire request, so there is no channel through which a client
+  // could mutate what executes. Identity rides in the same auth header as
+  // everything else — a pending action belonging to someone else is a 404.
+
+  private async resolveAction(
+    actionId: string,
+    verb: "confirm" | "cancel",
+    options: ToucanAskOptions,
+  ): Promise<ToucanActionResult> {
+    const res = await fetch(`${socketBase()}/toucan/actions/${actionId}/${verb}`, {
+      method: "POST",
+      headers: authHeaders(),
+      signal: options.signal,
+    });
+    if (res.status === 404) {
+      // Expired, already handled, or never this viewer's — deliberately
+      // indistinguishable server-side.
+      throw new ToucanActionUnavailableError(actionId);
+    }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body?.error || body?.detail || `Toucan backend request failed (${res.status})`);
+    }
+    return (await res.json()) as ToucanActionResult;
+  }
+
+  async confirmAction(actionId: string, options: ToucanAskOptions = {}): Promise<ToucanActionResult> {
+    return this.resolveAction(actionId, "confirm", options);
+  }
+
+  async cancelAction(actionId: string, options: ToucanAskOptions = {}): Promise<ToucanActionResult> {
+    return this.resolveAction(actionId, "cancel", options);
   }
 }
 

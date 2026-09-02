@@ -71,6 +71,10 @@ class Settings(BaseSettings):
     # on an already owner-filtered, already-projected payload, not the privacy boundary itself.
     TOUCAN_AI_MAX_MEMORIES: int = 5
     TOUCAN_AI_MAX_MEMORY_CHARS: int = 300
+    # T8: how long a proposed action stays confirmable. Short on purpose — a confirmation is a
+    # "right now" decision, and an expired proposal simply reads as "not found or no longer
+    # available"; the user asks again. See services/toucan/pending_actions.py.
+    TOUCAN_ACTION_TTL_SECONDS: float = 120.0
 
     # FUTURE multi-worker realtime seam — UNSET AND UNUSED TODAY. When this backend eventually
     # runs more than one worker, Socket.IO needs a cross-process message queue (and the

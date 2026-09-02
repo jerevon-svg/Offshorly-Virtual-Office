@@ -9,10 +9,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import chat from "../Chat/ConversationView.module.css";
 import styles from "./ToucanAssistantPanel.module.css";
 import {
+  applyToucanStatus,
+  canApplyToucanStatus,
   toucanService,
+  ToucanActionUnavailableError,
   ToucanConversationGoneError,
   turnRoleFromStored,
   TOUCAN_HISTORY_TURNS,
+  type ToucanActionProposal,
   type ToucanConversation,
   type ToucanConversationDetail,
 } from "../../services/toucan";
@@ -70,6 +74,12 @@ const REQUEST_FAILED_TEXT =
 // another tab, say). The next question simply starts a new one — no dead end.
 const CONVERSATION_GONE_TEXT =
   "Squawk — that conversation isn't there any more. Ask me again and I'll start a fresh one.";
+
+// T8 — shown when a Confirm/Cancel lands on a proposal that is expired, already
+// handled, or otherwise gone (the backend words all of those identically). The
+// user just asks again; nothing has executed.
+const ACTION_GONE_TEXT =
+  "Squawk — that request expired before it was confirmed, so I changed nothing. Ask me again if you still want it.";
 
 // History popover copy. Deliberately plain strings rather than new UI surfaces.
 const HISTORY_EMPTY_TEXT = "No saved conversations yet.";
@@ -145,6 +155,15 @@ export function ToucanAssistantPanel({
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyItems, setHistoryItems] = useState<ToucanConversation[] | null>(null);
   const [historyFailed, setHistoryFailed] = useState(false);
+  // T8 — the one pending action proposal, if the latest answer carried one. LOCAL
+  // AND EPHEMERAL on purpose: the server holds the authoritative pending entry
+  // (short TTL, one-time), so this is only "which card to render". It is NOT
+  // restored on refresh — by the time a page reloads the proposal has usually
+  // expired, and confirming a stale one safely reads as ACTION_GONE_TEXT anyway.
+  const [actionProposal, setActionProposal] = useState<ToucanActionProposal | null>(null);
+  // True while a confirm/cancel round trip is in flight — disables both buttons so
+  // a double-click cannot race the one-time server-side consume.
+  const [actionBusy, setActionBusy] = useState(false);
   const nextIdRef = useRef(1);
   const askAbortRef = useRef<AbortController | null>(null);
   const restoreAbortRef = useRef<AbortController | null>(null);
@@ -206,7 +225,7 @@ export function ToucanAssistantPanel({
   useEffect(() => {
     const el = messagesRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [turns, pending]);
+  }, [turns, pending, actionProposal]);
 
   const onTypingChangeRef = useRef(onTypingChange);
   onTypingChangeRef.current = onTypingChange;
@@ -256,6 +275,10 @@ export function ToucanAssistantPanel({
     setPending(false);
     setDraft("");
     setHistoryOpen(false);
+    // An unresolved proposal belongs to the conversation being left. Dropping the
+    // card executes nothing — the server-side pending entry simply expires.
+    setActionProposal(null);
+    setActionBusy(false);
   }, []);
 
   // "New conversation": a real, empty, server-side conversation, then a clean
@@ -339,6 +362,73 @@ export function ToucanAssistantPanel({
     [pending, conversationId, leaveCurrentConversation],
   );
 
+  // T8 — the assistant's own follow-up line for confirm/cancel outcomes. A plain
+  // toucan turn, same shape appendReply produces inside handleSend.
+  const appendToucanTurn = useCallback((text: string) => {
+    setTurns((prev) => [
+      ...prev,
+      { id: nextIdRef.current++, role: "toucan", text, sentAt: new Date().toISOString() },
+    ]);
+  }, []);
+
+  // CONFIRM — the only gesture that executes anything, and it is a button press
+  // carrying the server-minted proposal id, never conversational text. Order of
+  // operations: (1) pre-check the effect is applyable at all (DND allowance), so
+  // the one-time confirm is never consumed for an effect that cannot happen;
+  // (2) consume the pending entry server-side (one-time, owner-bound, TTL'd);
+  // (3) apply the SERVER-RETURNED frozen effect through the existing product
+  // status path. A failure at any step reports honestly and executes nothing.
+  const handleConfirmAction = useCallback(() => {
+    if (!actionProposal || actionBusy) return;
+    const precheck = canApplyToucanStatus(actionProposal);
+    if (!precheck.ok) {
+      setActionProposal(null);
+      appendToucanTurn(precheck.reason);
+      // Tidy up the unusable pending entry; nothing to do if this fails — it
+      // simply expires.
+      void toucanService.cancelAction(actionProposal.id).catch(() => {});
+      return;
+    }
+    setActionBusy(true);
+    void toucanService
+      .confirmAction(actionProposal.id)
+      .then((result) => {
+        // Apply exactly what the server confirmed — the frozen validated args —
+        // and only claim success when the local apply actually happened.
+        const applied = applyToucanStatus({ status: result.status, dndMinutes: result.dndMinutes });
+        appendToucanTurn(applied.ok ? result.text : applied.reason);
+      })
+      .catch((error: unknown) => {
+        appendToucanTurn(
+          error instanceof ToucanActionUnavailableError ? ACTION_GONE_TEXT : REQUEST_FAILED_TEXT,
+        );
+      })
+      .finally(() => {
+        setActionBusy(false);
+        setActionProposal(null);
+      });
+  }, [actionProposal, actionBusy, appendToucanTurn]);
+
+  // CANCEL — burns the pending entry server-side; nothing executes either way.
+  const handleCancelAction = useCallback(() => {
+    if (!actionProposal || actionBusy) return;
+    setActionBusy(true);
+    void toucanService
+      .cancelAction(actionProposal.id)
+      .then((result) => appendToucanTurn(result.text))
+      .catch((error: unknown) => {
+        // An expired/gone proposal was never going to execute — cancelling it is
+        // already true, so word it as the ordinary "changed nothing" outcome.
+        appendToucanTurn(
+          error instanceof ToucanActionUnavailableError ? ACTION_GONE_TEXT : REQUEST_FAILED_TEXT,
+        );
+      })
+      .finally(() => {
+        setActionBusy(false);
+        setActionProposal(null);
+      });
+  }, [actionProposal, actionBusy, appendToucanTurn]);
+
   function handleSend() {
     const text = draft.trim();
     // Same empty-send guard the chat composer uses: the button is never
@@ -356,6 +446,9 @@ export function ToucanAssistantPanel({
     setDraft("");
     stopTyping();
     setPending(true);
+    // Asking something new abandons an unconfirmed proposal (it stays unexecuted
+    // and expires server-side) — the freshest answer owns the confirmation slot.
+    setActionProposal(null);
 
     const controller = new AbortController();
     askAbortRef.current = controller;
@@ -377,7 +470,12 @@ export function ToucanAssistantPanel({
       .then((answer) => {
         // Tracks the conversation the server actually used — the one that was
         // sent, or the one it created because none was.
-        if (!controller.signal.aborted) setConversationId(answer.conversationId);
+        if (!controller.signal.aborted) {
+          setConversationId(answer.conversationId);
+          // T8: an answer may carry a pending action proposal. Nothing has
+          // executed — this only decides whether the confirmation card shows.
+          setActionProposal(answer.action ?? null);
+        }
         appendReply(answer.text);
       })
       .catch((error: unknown) => {
@@ -500,6 +598,38 @@ export function ToucanAssistantPanel({
                 </div>
               );
             })}
+        {actionProposal && !pending && !restoring && (
+          // T8 — the confirmation card: the ONE surface through which a proposed
+          // action can execute. It restates the exact server-worded effect and
+          // offers two explicit buttons; nothing about typing, Enter, or later
+          // messages can stand in for pressing Confirm.
+          <div className={chat.row} data-testid="toucan-action-card">
+            <div className={`${chat.avatar} ${styles.toucanAvatar}`}>🦜</div>
+            <div className={chat.bubbleColumn}>
+              <div className={`${chat.message} ${chat.peer} ${styles.actionCard}`}>
+                <span className={styles.actionSummary}>{actionProposal.summary}</span>
+                <div className={styles.actionButtons}>
+                  <button
+                    type="button"
+                    className={styles.actionConfirm}
+                    onClick={handleConfirmAction}
+                    disabled={actionBusy}
+                  >
+                    Confirm
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.actionCancel}
+                    onClick={handleCancelAction}
+                    disabled={actionBusy}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
         {pending && (
           // "Toucan is typing" — a normal received bubble carrying the
           // office's established animated dots (same 1s stagger as the

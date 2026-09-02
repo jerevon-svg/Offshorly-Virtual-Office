@@ -26,7 +26,7 @@ from app.services.toucan_ai import provider
 
 # T6 — THE OPENAI PROVIDER BEHIND /toucan/ask.
 #
-# Everything here runs against a FAKE at provider._request_text, the module's declared test
+# Everything here runs against a FAKE at provider._request_reply, the module's declared test
 # seam: no test in this file (or anywhere in the suite) performs a real OpenAI request. The
 # matrix proves the three T6 promises:
 #
@@ -72,21 +72,23 @@ async def _fresh_state(isolated_app_db):
 
 
 class FakeProvider:
-    """Stands in for provider._request_text and records every request it is asked to make.
-    `reply` may be a string (returned), an Exception instance (raised), or None/"" (an empty
-    completion)."""
+    """Stands in for provider._request_reply and records every request it is asked to make.
+    `reply` may be a string (returned as content-only — generate_answer normalises bare
+    strings), an Exception instance (raised), None/"" (an empty completion), or a
+    (content, (tool_name, raw_args_json)) tuple for T8 action-proposal tests."""
 
     def __init__(self, reply: object = AI_REPLY):
         self.reply = reply
         self.calls: list[dict] = []
 
-    async def __call__(self, messages, *, model, max_output_tokens, timeout):
+    async def __call__(self, messages, *, model, max_output_tokens, timeout, tools=None):
         self.calls.append(
             {
                 "messages": messages,
                 "model": model,
                 "max_output_tokens": max_output_tokens,
                 "timeout": timeout,
+                "tools": tools,
             }
         )
         if isinstance(self.reply, Exception):
@@ -102,7 +104,7 @@ class FakeProvider:
 def _enable_ai(monkeypatch, reply: object = AI_REPLY) -> FakeProvider:
     fake = FakeProvider(reply)
     monkeypatch.setattr(settings, "OPENAI_API_KEY", "unit-test-key")
-    monkeypatch.setattr(provider, "_request_text", fake)
+    monkeypatch.setattr(provider, "_request_reply", fake)
     return fake
 
 
@@ -110,7 +112,7 @@ def _disable_ai(monkeypatch) -> FakeProvider:
     """No key configured — and a tripwire fake, so an unexpected request fails loudly."""
     fake = FakeProvider(AssertionError("provider must not be called while disabled"))
     monkeypatch.setattr(settings, "OPENAI_API_KEY", "")
-    monkeypatch.setattr(provider, "_request_text", fake)
+    monkeypatch.setattr(provider, "_request_reply", fake)
     return fake
 
 

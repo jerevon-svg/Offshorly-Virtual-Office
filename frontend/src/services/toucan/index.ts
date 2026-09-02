@@ -9,6 +9,12 @@ export {
   resetMockToucanConversations,
 } from "./MockToucanService";
 export { RealToucanService, realToucanService, setDevIdentity } from "./RealToucanService";
+export {
+  applyToucanStatus,
+  canApplyToucanStatus,
+  type ToucanApplyResult,
+  type ToucanStatusEffect,
+} from "./applyAction";
 
 export type ToucanMode = "mock" | "real";
 

@@ -169,3 +169,58 @@
   color: #9ca3af;
   font-size: 11px;
 }
+
+/* --- T8: action confirmation card ------------------------------------------
+   A received bubble that happens to hold two buttons — deliberately styled as
+   part of the conversation rather than a modal, because the safe default (do
+   nothing, let it expire) must stay one keystroke away in the composer. */
+.actionCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.actionSummary {
+  font-weight: 600;
+}
+
+.actionButtons {
+  display: flex;
+  gap: 8px;
+}
+
+.actionConfirm,
+.actionCancel {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  padding: 4px 12px;
+  border-radius: 8px;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.actionConfirm {
+  background: #059669;
+  color: #ffffff;
+}
+
+.actionConfirm:hover:not(:disabled) {
+  background: #047857;
+}
+
+.actionCancel {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.actionCancel:hover:not(:disabled) {
+  background: #d1d5db;
+}
+
+.actionConfirm:disabled,
+.actionCancel:disabled {
+  cursor: default;
+  opacity: 0.6;
+}

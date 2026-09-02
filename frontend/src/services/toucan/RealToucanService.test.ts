@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RealToucanService, setDevIdentity } from "./RealToucanService";
-import { ToucanConversationGoneError } from "./types";
+import { ToucanActionUnavailableError, ToucanConversationGoneError } from "./types";
 
 // Wire-contract coverage for the live Toucan client. `fetch` is stubbed, so this
 // asserts what leaves the browser and what is made of what comes back — never a
@@ -171,5 +171,45 @@ describe("RealToucanService", () => {
     await service.loadLatestConversation();
     const headers = lastCall()[1].headers as Headers;
     expect(headers.get("x-dev-email")).toBe("angelo@example.com");
+  });
+
+  // --- T8: action confirmation -------------------------------------------
+
+  const actionResult = {
+    id: "a-1",
+    outcome: "executed",
+    action: "set_status",
+    status: "BUSY",
+    dndMinutes: null,
+    summary: "Set your status to Busy",
+    text: "Done — your status is now Busy.",
+  };
+
+  it("confirms an action with a bodyless POST to the id — no args, no owner, nothing mutable", async () => {
+    fetchMock.mockResolvedValue(jsonResponse(actionResult));
+    const result = await service.confirmAction("a-1");
+    expect(lastCall()[0]).toBe(`${BASE}/toucan/actions/a-1/confirm`);
+    expect(lastCall()[1].method).toBe("POST");
+    // THE ASSERTION THAT MATTERS: no request body at all. The args were frozen
+    // server-side at proposal time; the id is the entire request.
+    expect(lastCall()[1].body).toBeUndefined();
+    expect(result.outcome).toBe("executed");
+    expect(result.status).toBe("BUSY");
+  });
+
+  it("cancels an action through the same bodyless shape", async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ ...actionResult, outcome: "cancelled" }));
+    const result = await service.cancelAction("a-1");
+    expect(lastCall()[0]).toBe(`${BASE}/toucan/actions/a-1/cancel`);
+    expect(lastCall()[1].body).toBeUndefined();
+    expect(result.outcome).toBe("cancelled");
+  });
+
+  it("reports an expired/foreign/replayed action id distinctly, so the panel can word it safely", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ error: "Action request not found or no longer available" }, 404),
+    );
+    await expect(service.confirmAction("a-1")).rejects.toBeInstanceOf(ToucanActionUnavailableError);
+    await expect(service.cancelAction("a-1")).rejects.toBeInstanceOf(ToucanActionUnavailableError);
   });
 });

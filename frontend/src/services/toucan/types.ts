@@ -24,6 +24,37 @@ export interface ToucanAskRequest {
   conversationId?: string | null;
 }
 
+/** T8 — one PROPOSED (not executed) action riding along on an answer. Mirrors
+ *  backend/app/schemas/toucan.py's ToucanActionProposalOut. Receiving one changes
+ *  NOTHING: it only carries the server-minted id the explicit Confirm/Cancel
+ *  buttons target, plus the server-worded exact effect to show. */
+export interface ToucanActionProposal {
+  id: string;
+  /** The entire T8 allowlist. */
+  action: "set_status";
+  /** One of the manual statuses (AVAILABLE | BUSY | BREAK | LUNCH | DND). */
+  status: string;
+  /** Present only for DND — already validated/clamped server-side. */
+  dndMinutes?: number | null;
+  /** The exact effect, as the confirmation card must show it. */
+  summary: string;
+  expiresAt: string;
+}
+
+/** The outcome of confirming or cancelling one pending action. Echoes the frozen
+ *  server-side args so the client applies exactly what was confirmed — never a
+ *  locally cached copy that could have drifted. */
+export interface ToucanActionResult {
+  id: string;
+  outcome: "executed" | "cancelled";
+  action: "set_status";
+  status: string;
+  dndMinutes?: number | null;
+  summary: string;
+  /** The assistant's outcome line — also persisted into the transcript server-side. */
+  text: string;
+}
+
 export interface ToucanAnswer {
   /** The one and only string shown in the assistant panel. */
   text: string;
@@ -34,6 +65,9 @@ export interface ToucanAnswer {
    *  or the freshly created one. Always present, so the panel never has to guess
    *  which conversation it is in after its first question. */
   conversationId: string;
+  /** T8, optional and backward-compatible: a pending action proposal awaiting the
+   *  viewer's explicit confirmation. Absent on every ordinary answer. */
+  action?: ToucanActionProposal | null;
 }
 
 /** Stored role vocabulary, which differs from the wire history's `ToucanTurnRole`
@@ -79,6 +113,17 @@ export class ToucanConversationGoneError extends Error {
   }
 }
 
+/** Thrown when a pending action id no longer resolves — expired, already
+ *  confirmed/cancelled, or never this viewer's. The backend deliberately answers
+ *  all of those identically, and the panel words them all as "that one's gone,
+ *  ask again" rather than as a request failure. */
+export class ToucanActionUnavailableError extends Error {
+  constructor(actionId: string) {
+    super(`Toucan action ${actionId} is no longer available`);
+    this.name = "ToucanActionUnavailableError";
+  }
+}
+
 export interface ToucanAskOptions {
   /** Aborts an in-flight question — the panel wires this to unmount/release, so
    *  a dismissed toucan never resolves into a stale reply. */
@@ -109,6 +154,13 @@ export interface ToucanService {
     conversationId: string,
     options?: ToucanAskOptions,
   ): Promise<ToucanConversationDetail>;
+  /** T8 — consume one pending action proposal, exactly once, by its server-minted
+   *  id. Only THIS explicit call executes anything: typing "yes" into ask() never
+   *  does. Rejects with ToucanActionUnavailableError when the id is expired,
+   *  already handled, or not this viewer's. */
+  confirmAction(actionId: string, options?: ToucanAskOptions): Promise<ToucanActionResult>;
+  /** T8 — discard one pending action proposal. Nothing executes. */
+  cancelAction(actionId: string, options?: ToucanAskOptions): Promise<ToucanActionResult>;
 }
 
 // Kept in step with backend/app/schemas/toucan.py's MAX_HISTORY_TURNS /
