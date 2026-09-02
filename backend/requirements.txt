@@ -18,6 +18,11 @@ python-dotenv>=1.0.0
 # impact. The API key/secret it signs with stay backend-only (see app/config.py).
 livekit-api>=1.2.1
 
+# OpenAI SDK — used ONLY by app/services/toucan_ai/provider.py (Toucan T6) to word answers the
+# deterministic assistant marked unsupported. Backend-only; the key is OPENAI_API_KEY in .env
+# (see app/config.py) and an absent key disables the provider without breaking startup.
+openai>=1.60.0
+
 httpx>=0.26.0
 # [asyncio_client] extra pulls aiohttp/websockets — only exercised by tests/test_chat_socket.py's
 # real socketio.AsyncClient, but kept in one requirements.txt to match the scaffold's existing

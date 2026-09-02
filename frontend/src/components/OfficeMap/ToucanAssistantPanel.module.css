@@ -104,3 +104,123 @@
   color: #4b5563;
   background: #f9fafb;
 }
+
+/* "New conversation" sits in the chat header's existing action slot and borrows
+   .closeButton wholesale — this only trims the glyph, which is a pencil rather
+   than the close ×, back to the same optical weight. */
+.newConversationButton {
+  font-size: 14px;
+}
+
+/* History popover. Sits directly under the header, inside the panel's own
+   column — no portal, no overlay, no new chrome. Colours, radii and type are
+   the chat window's own; only the drop shadow and the scroll cap are new. */
+.historyPopover {
+  flex-shrink: 0;
+  max-height: 180px;
+  overflow-y: auto;
+  background: #fff;
+  border-bottom: 1px solid #e5e7eb;
+  box-shadow: 0 4px 10px rgba(17, 24, 39, 0.06);
+}
+
+.historyEmpty {
+  margin: 0;
+  padding: 12px 16px;
+  color: #9ca3af;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+}
+
+.historyItem {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 16px;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  color: #374151;
+}
+
+.historyItem:hover {
+  background: #f9fafb;
+}
+
+/* The conversation currently on screen, so History reads as a selector rather
+   than a list of somewhere-elses. */
+.historyItem[aria-current="true"] {
+  background: #f3f4f6;
+  font-weight: 600;
+}
+
+.historyTitle {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.historyDate {
+  flex-shrink: 0;
+  color: #9ca3af;
+  font-size: 11px;
+}
+
+/* --- T8: action confirmation card ------------------------------------------
+   A received bubble that happens to hold two buttons — deliberately styled as
+   part of the conversation rather than a modal, because the safe default (do
+   nothing, let it expire) must stay one keystroke away in the composer. */
+.actionCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.actionSummary {
+  font-weight: 600;
+}
+
+.actionButtons {
+  display: flex;
+  gap: 8px;
+}
+
+.actionConfirm,
+.actionCancel {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  padding: 4px 12px;
+  border-radius: 8px;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.actionConfirm {
+  background: #059669;
+  color: #ffffff;
+}
+
+.actionConfirm:hover:not(:disabled) {
+  background: #047857;
+}
+
+.actionCancel {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.actionCancel:hover:not(:disabled) {
+  background: #d1d5db;
+}
+
+.actionConfirm:disabled,
+.actionCancel:disabled {
+  cursor: default;
+  opacity: 0.6;
+}

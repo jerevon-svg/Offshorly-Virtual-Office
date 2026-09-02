@@ -72,6 +72,9 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./src/test/setup.ts'],
-    env: { VITE_CHAT_MODE: 'mock' },
+    // Pinned so the suite never inherits a developer's .env.local. VITE_TOUCAN_MODE joins
+    // VITE_CHAT_MODE here for exactly the same reason: with it set to 'real' locally, every
+    // Toucan panel test would try to reach the VO backend instead of the canned bird.
+    env: { VITE_CHAT_MODE: 'mock', VITE_TOUCAN_MODE: 'mock' },
   },
 })

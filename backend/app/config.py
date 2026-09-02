@@ -47,6 +47,35 @@ class Settings(BaseSettings):
     LIVEKIT_API_KEY: str = ""
     LIVEKIT_API_SECRET: str = ""
 
+    # Toucan AI provider (T6). BACKEND-ONLY, like the LiveKit block above: the key signs in to
+    # OpenAI from app/services/toucan_ai/provider.py and must never be sent to the browser,
+    # logged, or mirrored into a VITE_* var. Empty by default so a deploy without it fails
+    # closed into the deterministic assistant — the provider reports itself disabled and every
+    # /toucan/ask keeps working exactly as it did at T5 (see provider.ai_enabled).
+    OPENAI_API_KEY: str = ""
+    # Deliberately a cheap, fast, non-reasoning default; overridable per environment without a
+    # code change. A reasoning model here would silently spend the output-token budget on
+    # thinking and return empty text under the cap below.
+    TOUCAN_AI_MODEL: str = "gpt-4.1-mini"
+    # Hard cost/latency bounds on every provider call. No retries are configured anywhere —
+    # one question is at most one request, and a failure falls back to the deterministic answer.
+    TOUCAN_AI_TIMEOUT_SECONDS: float = 12.0
+    TOUCAN_AI_MAX_OUTPUT_TOKENS: int = 500
+    # Input bounds: at most this many recent turns of the CURRENT conversation ride along, and
+    # at most this many people from the office context are projected into the prompt.
+    TOUCAN_AI_MAX_HISTORY_TURNS: int = 6
+    TOUCAN_AI_MAX_CONTEXT_PEOPLE: int = 40
+    # T7: at most this many of the caller's own saved memories — the ones the deterministic
+    # relevance pass in services/toucan/memory_retrieval.py judged relevant to the question —
+    # ride along per request, each clamped to this many characters. Both are token-cost bounds
+    # on an already owner-filtered, already-projected payload, not the privacy boundary itself.
+    TOUCAN_AI_MAX_MEMORIES: int = 5
+    TOUCAN_AI_MAX_MEMORY_CHARS: int = 300
+    # T8: how long a proposed action stays confirmable. Short on purpose — a confirmation is a
+    # "right now" decision, and an expired proposal simply reads as "not found or no longer
+    # available"; the user asks again. See services/toucan/pending_actions.py.
+    TOUCAN_ACTION_TTL_SECONDS: float = 120.0
+
     # FUTURE multi-worker realtime seam — UNSET AND UNUSED TODAY. When this backend eventually
     # runs more than one worker, Socket.IO needs a cross-process message queue (and the
     # ephemeral registries in app/realtime/state.py need a shared store) for a broadcast made on

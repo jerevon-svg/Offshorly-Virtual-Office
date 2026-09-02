@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 // Messenger-style presentation is reused WHOLESALE from the existing chat
 // window's stylesheet — same bubbles, alignment, radii, typography, spacing,
 // scrolling column, composer and send button — so the Toucan reads as another
@@ -8,18 +8,54 @@ import { useEffect, useRef, useState } from "react";
 // the chat components themselves were modified.
 import chat from "../Chat/ConversationView.module.css";
 import styles from "./ToucanAssistantPanel.module.css";
+import {
+  applyToucanStatus,
+  canApplyToucanStatus,
+  toucanService,
+  ToucanActionUnavailableError,
+  ToucanConversationGoneError,
+  turnRoleFromStored,
+  TOUCAN_HISTORY_TURNS,
+  type ToucanActionProposal,
+  type ToucanConversation,
+  type ToucanConversationDetail,
+} from "../../services/toucan";
 
 // ---------------------------------------------------------------------------
-// Stage 1 Toucan assistant panel — MOCK ONLY.
+// Toucan assistant panel.
 //
-// Every reply below is a local canned string returned after a short
-// setTimeout. The panel exists to perfect the assistant UX before any
-// provider, backend route or API key is involved; the mock block is the one
-// thing that gets replaced when a real model lands.
+// This component owns PRESENTATION AND CONVERSATION STATE ONLY. Every reply now
+// comes from the swappable toucanService (frontend/src/services/toucan/):
+//   - mock mode  -> MockToucanService, the same canned strings and 1100ms delay
+//                   that used to live in this file, moved verbatim
+//   - real mode  -> RealToucanService, POST /toucan/ask on the VO backend
+// Nothing about the panel's appearance, the composer, the typing signal or the
+// release behaviour changed when the reply logic moved out.
 //
-// The transcript is local component state and dies with the component.
+// T1 — PERSISTENT CONVERSATIONS. The transcript is still local component state,
+// but it is now SEEDED FROM and WRITTEN THROUGH the toucanService:
 //
-// DIVISION OF LABOUR (deliberate, see the task spec):
+//   MOUNT      -> loadLatestConversation(). A transcript comes back, it is
+//                 restored; null comes back (nobody has ever asked anything) and
+//                 the greeting is shown instead.
+//   ASK        -> the conversation id rides along, and the server persists BOTH
+//                 the question and the reply.
+//   NEW        -> createConversation(), then the transcript resets to the
+//                 greeting. Created eagerly so a refresh straight afterwards
+//                 restores the NEW conversation, not the previous one.
+//   HISTORY    -> listConversations() on demand, then loadConversation(id) to
+//                 reopen one. Both are READS. Opening History creates nothing and
+//                 deletes nothing; picking a conversation only changes which id
+//                 the next question is appended to.
+//   RELEASE    -> closes the panel and nothing else. It DOES NOT delete
+//                 anything: re-summoning takes the MOUNT path above and lands
+//                 back in the same conversation.
+//
+// The greeting itself is never persisted — it is a per-mount opening line, shown
+// only when there is no transcript to show, so a restored conversation is not
+// topped with a fresh "hello" every time the bird is summoned.
+//
+// DIVISION OF LABOUR (deliberate, unchanged):
 //   - THIS PANEL carries the meaningful assistant conversation.
 //   - The world-space pill above the bird carries BIRD TALK ONLY
 //     ("Squawk squawk…", owned by ToucanFlyer). It must never mirror a real
@@ -29,32 +65,33 @@ import styles from "./ToucanAssistantPanel.module.css";
 
 type Turn = { id: number; role: "user" | "toucan"; text: string; sentAt: string };
 
-const GREETING =
-  "Squawk! I'm the office toucan — parked right beside you. Ask me anything. (Demo replies for now.)";
+// Shown when the request itself fails (network down, backend asleep, aborted
+// by something other than release). A plain toucan turn — no new UI surface.
+const REQUEST_FAILED_TEXT =
+  "Squawk — I couldn't reach the office just now. Try asking me again in a moment.";
 
-// MOCK reply selection: keyword table first, then a deterministic rotation by
-// turn number, so the same conversation always produces the same replies (no
-// Math.random — repeatable for manual and automated checks alike).
-const MOCK_KEYWORD_REPLIES: { match: RegExp; reply: string }[] = [
-  { match: /\bhello\b|\bhi\b|\bhey\b/i, reply: "Hello! Nice to perch beside you." },
-  { match: /who|what are you/i, reply: "I'm the office toucan. Right now I only know how to be a demo." },
-  { match: /where/i, reply: "I can't look people up yet — that arrives once I'm wired to the office data." },
-  { match: /room|meeting/i, reply: "Room awareness isn't plugged in yet. Ask me again in a later stage." },
-  { match: /help/i, reply: "Ask away. Real answers arrive when my brain is connected." },
-];
+// Shown when the conversation the panel was holding has gone (deleted from
+// another tab, say). The next question simply starts a new one — no dead end.
+const CONVERSATION_GONE_TEXT =
+  "Squawk — that conversation isn't there any more. Ask me again and I'll start a fresh one.";
 
-const MOCK_FALLBACK_REPLIES = [
-  "Got it. I can't answer that for real yet — I'm still a mock bird.",
-  "Noted! A real assistant will pick this up in a later stage.",
-  "Squawk. Placeholder reply — the interaction works, the brain doesn't.",
-];
+// T8 — shown when a Confirm/Cancel lands on a proposal that is expired, already
+// handled, or otherwise gone (the backend words all of those identically). The
+// user just asks again; nothing has executed.
+const ACTION_GONE_TEXT =
+  "Squawk — that request expired before it was confirmed, so I changed nothing. Ask me again if you still want it.";
 
-const MOCK_REPLY_DELAY_MS = 1100;
+// History popover copy. Deliberately plain strings rather than new UI surfaces.
+const HISTORY_EMPTY_TEXT = "No saved conversations yet.";
+const HISTORY_FAILED_TEXT = "Couldn't load your conversations.";
+// A conversation created by "New conversation" has no title until its first
+// question, so the list needs a stand-in label for it.
+const UNTITLED_CONVERSATION_LABEL = "New conversation";
 
-function mockReplyFor(prompt: string, turnNumber: number): string {
-  const hit = MOCK_KEYWORD_REPLIES.find((r) => r.match.test(prompt));
-  if (hit) return hit.reply;
-  return MOCK_FALLBACK_REPLIES[turnNumber % MOCK_FALLBACK_REPLIES.length];
+// Short, locale-aware day label beside each entry — enough to tell yesterday's
+// conversation from last week's without turning the list into a table.
+function formatConversationDate(updatedAt: string): string {
+  return new Date(updatedAt).toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
 // Same formatting the chat windows use for a message's time (see
@@ -81,28 +118,92 @@ type ToucanAssistantPanelProps = {
 // "talking" after exactly as long a pause as it does in normal chat.
 const TYPING_IDLE_MS = 2500;
 
+function greetingTurn(id: number): Turn {
+  return { id, role: "toucan", text: toucanService.greeting(), sentAt: new Date().toISOString() };
+}
+
+/** One saved conversation's transcript, as panel turns. Shared by the mount-time
+ *  restore and by reopening from History, so both land in exactly the same
+ *  state — there is no second way to display a conversation. */
+function turnsFromConversation(conversation: ToucanConversationDetail): Turn[] {
+  return conversation.messages.map((message, index) => ({
+    id: index,
+    role: turnRoleFromStored(message.role),
+    text: message.content,
+    sentAt: message.createdAt,
+  }));
+}
+
 export function ToucanAssistantPanel({
   onRelease,
   onPendingChange,
   onTypingChange,
 }: ToucanAssistantPanelProps) {
-  const [turns, setTurns] = useState<Turn[]>([
-    { id: 0, role: "toucan", text: GREETING, sentAt: new Date().toISOString() },
-  ]);
+  const [turns, setTurns] = useState<Turn[]>([greetingTurn(0)]);
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
+  // The conversation every question is appended to. Null until the restore below
+  // finishes (or when the viewer has none yet) — a question asked in that window
+  // simply creates one server-side, which is the same path the very first
+  // question ever asked takes.
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  // True only while the initial restore is in flight. It suppresses the greeting
+  // so a restored transcript never flashes a "hello" above itself first.
+  const [restoring, setRestoring] = useState(true);
+  // History popover. `historyItems` is null until a fetch has completed, which is
+  // what distinguishes "still loading" from "genuinely no conversations".
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyItems, setHistoryItems] = useState<ToucanConversation[] | null>(null);
+  const [historyFailed, setHistoryFailed] = useState(false);
+  // T8 — the one pending action proposal, if the latest answer carried one. LOCAL
+  // AND EPHEMERAL on purpose: the server holds the authoritative pending entry
+  // (short TTL, one-time), so this is only "which card to render". It is NOT
+  // restored on refresh — by the time a page reloads the proposal has usually
+  // expired, and confirming a stale one safely reads as ACTION_GONE_TEXT anyway.
+  const [actionProposal, setActionProposal] = useState<ToucanActionProposal | null>(null);
+  // True while a confirm/cancel round trip is in flight — disables both buttons so
+  // a double-click cannot race the one-time server-side consume.
+  const [actionBusy, setActionBusy] = useState(false);
   const nextIdRef = useRef(1);
-  const replyTimerRef = useRef<number | null>(null);
+  const askAbortRef = useRef<AbortController | null>(null);
+  const restoreAbortRef = useRef<AbortController | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const typingTimerRef = useRef<number | null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
 
-  // Clear the pending mock-reply timer on unmount, so a panel dismissed
-  // mid-"thinking" never fires setState (or leaves the bird squawking).
+  // Abort an in-flight question on unmount, so a panel dismissed mid-"thinking"
+  // never fires setState (or leaves the bird squawking).
   useEffect(() => {
-    return () => {
-      if (replyTimerRef.current !== null) window.clearTimeout(replyTimerRef.current);
-    };
+    return () => askAbortRef.current?.abort();
+  }, []);
+
+  // RESTORE, on every mount — which is exactly once per summoned session, and
+  // again on a page refresh. Release unmounts the panel; re-summon mounts a new
+  // one and lands right back here, which is what makes a conversation survive
+  // both. A failure is non-fatal: the panel falls back to the greeting and a
+  // fresh conversation rather than refusing to open.
+  useEffect(() => {
+    const controller = new AbortController();
+    restoreAbortRef.current = controller;
+
+    void toucanService
+      .loadLatestConversation({ signal: controller.signal })
+      .then((conversation) => {
+        if (controller.signal.aborted || !conversation) return;
+        setConversationId(conversation.id);
+        if (conversation.messages.length === 0) return;
+        setTurns(turnsFromConversation(conversation));
+        nextIdRef.current = conversation.messages.length;
+      })
+      .catch(() => {
+        // Offline, or the backend is asleep. Nothing to restore — carry on with
+        // the greeting; the next question starts a new conversation.
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setRestoring(false);
+      });
+
+    return () => controller.abort();
   }, []);
 
   const onPendingChangeRef = useRef(onPendingChange);
@@ -124,7 +225,7 @@ export function ToucanAssistantPanel({
   useEffect(() => {
     const el = messagesRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [turns, pending]);
+  }, [turns, pending, actionProposal]);
 
   const onTypingChangeRef = useRef(onTypingChange);
   onTypingChangeRef.current = onTypingChange;
@@ -164,12 +265,180 @@ export function ToucanAssistantPanel({
     };
   }, []);
 
+  // Everything that swaps which conversation the panel is showing goes through
+  // here: abandon any in-flight question (it belongs to the conversation being
+  // left), clear the composer, and close History. It does not itself decide what
+  // to show next — the two callers below do.
+  const leaveCurrentConversation = useCallback(() => {
+    askAbortRef.current?.abort();
+    askAbortRef.current = null;
+    setPending(false);
+    setDraft("");
+    setHistoryOpen(false);
+    // An unresolved proposal belongs to the conversation being left. Dropping the
+    // card executes nothing — the server-side pending entry simply expires.
+    setActionProposal(null);
+    setActionBusy(false);
+  }, []);
+
+  // "New conversation": a real, empty, server-side conversation, then a clean
+  // transcript. Eager creation is the point — see the module note above.
+  const handleNewConversation = useCallback(() => {
+    if (pending) return;
+    leaveCurrentConversation();
+    nextIdRef.current = 1;
+    setTurns([greetingTurn(0)]);
+    setConversationId(null);
+
+    void toucanService
+      .createConversation()
+      .then((conversation) => {
+        setConversationId(conversation.id);
+        // The new conversation belongs at the top of History next time it opens.
+        setHistoryItems(null);
+      })
+      .catch(() => {
+        // Leaving conversationId null is already correct: the next question
+        // creates a conversation server-side anyway.
+      });
+  }, [pending, leaveCurrentConversation]);
+
+  // HISTORY. Opening it is a READ and nothing else — no conversation is created,
+  // none is deleted, and the one currently on screen stays selected until the
+  // viewer actually picks a different one.
+  const handleToggleHistory = useCallback(() => {
+    setHistoryOpen((wasOpen) => {
+      if (wasOpen) return false;
+      setHistoryFailed(false);
+      // Refetched on each open rather than cached, so a conversation just
+      // continued shows in the right place without any invalidation plumbing.
+      void toucanService
+        .listConversations()
+        .then(setHistoryItems)
+        .catch(() => {
+          setHistoryItems([]);
+          setHistoryFailed(true);
+        });
+      return true;
+    });
+  }, []);
+
+  // Reopen a saved conversation. Selecting the one already on screen is a no-op
+  // beyond closing the popover — no refetch, and nothing thrown away.
+  const handleSelectConversation = useCallback(
+    (id: string) => {
+      if (pending) return;
+      if (id === conversationId) {
+        setHistoryOpen(false);
+        return;
+      }
+      leaveCurrentConversation();
+
+      void toucanService
+        .loadConversation(id)
+        .then((conversation) => {
+          setConversationId(conversation.id);
+          const restored = turnsFromConversation(conversation);
+          // An empty saved conversation shows the greeting, exactly as a freshly
+          // created one does.
+          setTurns(restored.length > 0 ? restored : [greetingTurn(0)]);
+          nextIdRef.current = Math.max(restored.length, 1);
+        })
+        .catch(() => {
+          // Gone, or unreachable. Say so in the transcript rather than silently
+          // leaving the panel on a conversation the viewer thinks they left.
+          setConversationId(null);
+          nextIdRef.current = 1;
+          setTurns([
+            {
+              id: 0,
+              role: "toucan",
+              text: CONVERSATION_GONE_TEXT,
+              sentAt: new Date().toISOString(),
+            },
+          ]);
+        });
+    },
+    [pending, conversationId, leaveCurrentConversation],
+  );
+
+  // T8 — the assistant's own follow-up line for confirm/cancel outcomes. A plain
+  // toucan turn, same shape appendReply produces inside handleSend.
+  const appendToucanTurn = useCallback((text: string) => {
+    setTurns((prev) => [
+      ...prev,
+      { id: nextIdRef.current++, role: "toucan", text, sentAt: new Date().toISOString() },
+    ]);
+  }, []);
+
+  // CONFIRM — the only gesture that executes anything, and it is a button press
+  // carrying the server-minted proposal id, never conversational text. Order of
+  // operations: (1) pre-check the effect is applyable at all (DND allowance), so
+  // the one-time confirm is never consumed for an effect that cannot happen;
+  // (2) consume the pending entry server-side (one-time, owner-bound, TTL'd);
+  // (3) apply the SERVER-RETURNED frozen effect through the existing product
+  // status path. A failure at any step reports honestly and executes nothing.
+  const handleConfirmAction = useCallback(() => {
+    if (!actionProposal || actionBusy) return;
+    const precheck = canApplyToucanStatus(actionProposal);
+    if (!precheck.ok) {
+      setActionProposal(null);
+      appendToucanTurn(precheck.reason);
+      // Tidy up the unusable pending entry; nothing to do if this fails — it
+      // simply expires.
+      void toucanService.cancelAction(actionProposal.id).catch(() => {});
+      return;
+    }
+    setActionBusy(true);
+    void toucanService
+      .confirmAction(actionProposal.id)
+      .then((result) => {
+        // Apply exactly what the server confirmed — the frozen validated args —
+        // and only claim success when the local apply actually happened.
+        const applied = applyToucanStatus({ status: result.status, dndMinutes: result.dndMinutes });
+        appendToucanTurn(applied.ok ? result.text : applied.reason);
+      })
+      .catch((error: unknown) => {
+        appendToucanTurn(
+          error instanceof ToucanActionUnavailableError ? ACTION_GONE_TEXT : REQUEST_FAILED_TEXT,
+        );
+      })
+      .finally(() => {
+        setActionBusy(false);
+        setActionProposal(null);
+      });
+  }, [actionProposal, actionBusy, appendToucanTurn]);
+
+  // CANCEL — burns the pending entry server-side; nothing executes either way.
+  const handleCancelAction = useCallback(() => {
+    if (!actionProposal || actionBusy) return;
+    setActionBusy(true);
+    void toucanService
+      .cancelAction(actionProposal.id)
+      .then((result) => appendToucanTurn(result.text))
+      .catch((error: unknown) => {
+        // An expired/gone proposal was never going to execute — cancelling it is
+        // already true, so word it as the ordinary "changed nothing" outcome.
+        appendToucanTurn(
+          error instanceof ToucanActionUnavailableError ? ACTION_GONE_TEXT : REQUEST_FAILED_TEXT,
+        );
+      })
+      .finally(() => {
+        setActionBusy(false);
+        setActionProposal(null);
+      });
+  }, [actionProposal, actionBusy, appendToucanTurn]);
+
   function handleSend() {
     const text = draft.trim();
     // Same empty-send guard the chat composer uses: the button is never
     // disabled, the handler simply does nothing.
     if (!text || pending) return;
-    const turnNumber = turns.filter((t) => t.role === "user").length;
+    // Bounded history, oldest-trimmed. The backend re-validates this limit — the
+    // client trimming here only avoids a pointless 422.
+    const history = turns
+      .slice(-TOUCAN_HISTORY_TURNS)
+      .map((turn) => ({ role: turn.role, text: turn.text }));
     setTurns((prev) => [
       ...prev,
       { id: nextIdRef.current++, role: "user", text, sentAt: new Date().toISOString() },
@@ -177,20 +446,53 @@ export function ToucanAssistantPanel({
     setDraft("");
     stopTyping();
     setPending(true);
-    // MOCK: local delay, no network.
-    replyTimerRef.current = window.setTimeout(() => {
-      replyTimerRef.current = null;
+    // Asking something new abandons an unconfirmed proposal (it stays unexecuted
+    // and expires server-side) — the freshest answer owns the confirmation slot.
+    setActionProposal(null);
+
+    const controller = new AbortController();
+    askAbortRef.current = controller;
+    const appendReply = (replyText: string) => {
+      if (controller.signal.aborted) return;
       setTurns((prev) => [
         ...prev,
         {
           id: nextIdRef.current++,
           role: "toucan",
-          text: mockReplyFor(text, turnNumber),
+          text: replyText,
           sentAt: new Date().toISOString(),
         },
       ]);
-      setPending(false);
-    }, MOCK_REPLY_DELAY_MS);
+    };
+
+    void toucanService
+      .ask({ question: text, history, conversationId }, { signal: controller.signal })
+      .then((answer) => {
+        // Tracks the conversation the server actually used — the one that was
+        // sent, or the one it created because none was.
+        if (!controller.signal.aborted) {
+          setConversationId(answer.conversationId);
+          // T8: an answer may carry a pending action proposal. Nothing has
+          // executed — this only decides whether the confirmation card shows.
+          setActionProposal(answer.action ?? null);
+        }
+        appendReply(answer.text);
+      })
+      .catch((error: unknown) => {
+        if (error instanceof ToucanConversationGoneError) {
+          // Self-heal: drop the stale id so the next question starts fresh.
+          if (!controller.signal.aborted) setConversationId(null);
+          appendReply(CONVERSATION_GONE_TEXT);
+          return;
+        }
+        appendReply(REQUEST_FAILED_TEXT);
+      })
+      .finally(() => {
+        if (askAbortRef.current === controller) askAbortRef.current = null;
+        // A panel unmounted mid-request has already reported pending=false via
+        // the cleanup effect above; skip the setState on an aborted request.
+        if (!controller.signal.aborted) setPending(false);
+      });
   }
 
   return (
@@ -205,6 +507,29 @@ export function ToucanAssistantPanel({
           <span className={chat.subtitle}>Perched beside you</span>
         </div>
         <div className={chat.headerActions}>
+          {/* History and "start over", both in the existing header action slot.
+              A popover, deliberately not a sidebar: it lists titles and dates so
+              a past conversation can be reopened, and does nothing else — no
+              search, no rename, no delete. */}
+          <button
+            type="button"
+            className={`${chat.closeButton} ${styles.newConversationButton}`}
+            onClick={handleToggleHistory}
+            aria-label="Conversation history"
+            aria-expanded={historyOpen}
+            title="History"
+          >
+            🕘
+          </button>
+          <button
+            type="button"
+            className={`${chat.closeButton} ${styles.newConversationButton}`}
+            onClick={handleNewConversation}
+            aria-label="Start a new conversation"
+            title="New conversation"
+          >
+            ✎
+          </button>
           <button
             type="button"
             className={chat.closeButton}
@@ -216,21 +541,95 @@ export function ToucanAssistantPanel({
         </div>
       </div>
 
-      <div className={chat.messages} ref={messagesRef}>
-        {turns.map((turn) => {
-          const isOwn = turn.role === "user";
-          return (
-            <div key={turn.id} className={isOwn ? `${chat.row} ${chat.rowSelf}` : chat.row}>
-              {!isOwn && <div className={`${chat.avatar} ${styles.toucanAvatar}`}>🦜</div>}
-              <div className={chat.bubbleColumn}>
-                <div className={`${chat.message} ${isOwn ? chat.own : chat.peer}`}>{turn.text}</div>
-                <span className={isOwn ? `${chat.timestamp} ${chat.timestampRight}` : chat.timestamp}>
-                  {formatMessageTime(turn.sentAt)}
+      {historyOpen && (
+        <div className={styles.historyPopover} role="menu" aria-label="Saved conversations">
+          {historyItems === null ? (
+            <p className={styles.historyEmpty}>Loading…</p>
+          ) : historyFailed ? (
+            <p className={styles.historyEmpty}>{HISTORY_FAILED_TEXT}</p>
+          ) : historyItems.length === 0 ? (
+            <p className={styles.historyEmpty}>{HISTORY_EMPTY_TEXT}</p>
+          ) : (
+            // Already most-recent-first from the server; the panel does not
+            // re-sort, so one ordering rule lives in one place.
+            historyItems.map((conversation) => (
+              <button
+                key={conversation.id}
+                type="button"
+                role="menuitem"
+                className={styles.historyItem}
+                aria-current={conversation.id === conversationId}
+                onClick={() => handleSelectConversation(conversation.id)}
+              >
+                <span className={styles.historyTitle}>
+                  {conversation.title || UNTITLED_CONVERSATION_LABEL}
                 </span>
+                <span className={styles.historyDate}>
+                  {formatConversationDate(conversation.updatedAt)}
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+
+      <div className={chat.messages} ref={messagesRef}>
+        {/* While the restore is in flight the transcript is withheld entirely, so
+            a restored conversation never flashes the greeting above itself. */}
+        {restoring
+          ? null
+          : turns.map((turn) => {
+              const isOwn = turn.role === "user";
+              return (
+                <div key={turn.id} className={isOwn ? `${chat.row} ${chat.rowSelf}` : chat.row}>
+                  {!isOwn && <div className={`${chat.avatar} ${styles.toucanAvatar}`}>🦜</div>}
+                  <div className={chat.bubbleColumn}>
+                    <div className={`${chat.message} ${isOwn ? chat.own : chat.peer}`}>
+                      {turn.text}
+                    </div>
+                    <span
+                      className={
+                        isOwn ? `${chat.timestamp} ${chat.timestampRight}` : chat.timestamp
+                      }
+                    >
+                      {formatMessageTime(turn.sentAt)}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+        {actionProposal && !pending && !restoring && (
+          // T8 — the confirmation card: the ONE surface through which a proposed
+          // action can execute. It restates the exact server-worded effect and
+          // offers two explicit buttons; nothing about typing, Enter, or later
+          // messages can stand in for pressing Confirm.
+          <div className={chat.row} data-testid="toucan-action-card">
+            <div className={`${chat.avatar} ${styles.toucanAvatar}`}>🦜</div>
+            <div className={chat.bubbleColumn}>
+              <div className={`${chat.message} ${chat.peer} ${styles.actionCard}`}>
+                <span className={styles.actionSummary}>{actionProposal.summary}</span>
+                <div className={styles.actionButtons}>
+                  <button
+                    type="button"
+                    className={styles.actionConfirm}
+                    onClick={handleConfirmAction}
+                    disabled={actionBusy}
+                  >
+                    Confirm
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.actionCancel}
+                    onClick={handleCancelAction}
+                    disabled={actionBusy}
+                  >
+                    Cancel
+                  </button>
+                </div>
               </div>
             </div>
-          );
-        })}
+          </div>
+        )}
         {pending && (
           // "Toucan is typing" — a normal received bubble carrying the
           // office's established animated dots (same 1s stagger as the

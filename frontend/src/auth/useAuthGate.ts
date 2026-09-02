@@ -14,6 +14,7 @@ import { setDevIdentity as setGlobalChatActivityDevIdentity } from "../services/
 import { setDevIdentity as setRoomPresenceDevIdentity } from "../services/presence/roomPresenceClient";
 import { setDevIdentity as setRoomRequestsClientDevIdentity } from "../services/chat/roomRequestsClient";
 import { setDevIdentity as setTalkRequestsClientDevIdentity } from "../services/chat/talkRequestsClient";
+import { setDevIdentity as setToucanDevIdentity } from "../services/toucan";
 
 // Boot-time permission gate for the Virtual Office. Calls Atlas's
 // GET /api/v1/auth/me and checks the can_view_virtual_office flag.
@@ -233,6 +234,10 @@ function seedDevBypassIdentity(): void {
   setSpatialWalkDevIdentity(email);
   setHubClientDevIdentity(email);
   setFeedClientDevIdentity(email);
+  // Toucan's assistant endpoint (POST /toucan/ask) lives on the same VO backend and derives
+  // the asking employee from this identity — without it, local ?as= testing would ask the
+  // office about whoever the real bearer token belongs to, or 401.
+  setToucanDevIdentity(email);
   // Same reasoning for the DND-room-lock feature's sockets (dnd status broadcast, room
   // occupancy broadcast, room-entry-request REST+socket) — also wired up unconditionally by
   // OfficeMap.tsx outside the mock/real ChatService abstraction. Without seeding these too,
