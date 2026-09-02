@@ -8,18 +8,23 @@ import { useEffect, useRef, useState } from "react";
 // the chat components themselves were modified.
 import chat from "../Chat/ConversationView.module.css";
 import styles from "./ToucanAssistantPanel.module.css";
+import { toucanService, TOUCAN_HISTORY_TURNS } from "../../services/toucan";
 
 // ---------------------------------------------------------------------------
-// Stage 1 Toucan assistant panel — MOCK ONLY.
+// Toucan assistant panel.
 //
-// Every reply below is a local canned string returned after a short
-// setTimeout. The panel exists to perfect the assistant UX before any
-// provider, backend route or API key is involved; the mock block is the one
-// thing that gets replaced when a real model lands.
+// This component owns PRESENTATION AND CONVERSATION STATE ONLY. Every reply now
+// comes from the swappable toucanService (frontend/src/services/toucan/):
+//   - mock mode  -> MockToucanService, the same canned strings and 1100ms delay
+//                   that used to live in this file, moved verbatim
+//   - real mode  -> RealToucanService, POST /toucan/ask on the VO backend
+// Nothing about the panel's appearance, the composer, the typing signal or the
+// release behaviour changed when the reply logic moved out.
 //
-// The transcript is local component state and dies with the component.
+// The transcript is local component state and dies with the component — there is
+// no persistence, by design.
 //
-// DIVISION OF LABOUR (deliberate, see the task spec):
+// DIVISION OF LABOUR (deliberate, unchanged):
 //   - THIS PANEL carries the meaningful assistant conversation.
 //   - The world-space pill above the bird carries BIRD TALK ONLY
 //     ("Squawk squawk…", owned by ToucanFlyer). It must never mirror a real
@@ -29,33 +34,10 @@ import styles from "./ToucanAssistantPanel.module.css";
 
 type Turn = { id: number; role: "user" | "toucan"; text: string; sentAt: string };
 
-const GREETING =
-  "Squawk! I'm the office toucan — parked right beside you. Ask me anything. (Demo replies for now.)";
-
-// MOCK reply selection: keyword table first, then a deterministic rotation by
-// turn number, so the same conversation always produces the same replies (no
-// Math.random — repeatable for manual and automated checks alike).
-const MOCK_KEYWORD_REPLIES: { match: RegExp; reply: string }[] = [
-  { match: /\bhello\b|\bhi\b|\bhey\b/i, reply: "Hello! Nice to perch beside you." },
-  { match: /who|what are you/i, reply: "I'm the office toucan. Right now I only know how to be a demo." },
-  { match: /where/i, reply: "I can't look people up yet — that arrives once I'm wired to the office data." },
-  { match: /room|meeting/i, reply: "Room awareness isn't plugged in yet. Ask me again in a later stage." },
-  { match: /help/i, reply: "Ask away. Real answers arrive when my brain is connected." },
-];
-
-const MOCK_FALLBACK_REPLIES = [
-  "Got it. I can't answer that for real yet — I'm still a mock bird.",
-  "Noted! A real assistant will pick this up in a later stage.",
-  "Squawk. Placeholder reply — the interaction works, the brain doesn't.",
-];
-
-const MOCK_REPLY_DELAY_MS = 1100;
-
-function mockReplyFor(prompt: string, turnNumber: number): string {
-  const hit = MOCK_KEYWORD_REPLIES.find((r) => r.match.test(prompt));
-  if (hit) return hit.reply;
-  return MOCK_FALLBACK_REPLIES[turnNumber % MOCK_FALLBACK_REPLIES.length];
-}
+// Shown when the request itself fails (network down, backend asleep, aborted
+// by something other than release). A plain toucan turn — no new UI surface.
+const REQUEST_FAILED_TEXT =
+  "Squawk — I couldn't reach the office just now. Try asking me again in a moment.";
 
 // Same formatting the chat windows use for a message's time (see
 // ConversationView's own formatMessageTime).
@@ -87,22 +69,20 @@ export function ToucanAssistantPanel({
   onTypingChange,
 }: ToucanAssistantPanelProps) {
   const [turns, setTurns] = useState<Turn[]>([
-    { id: 0, role: "toucan", text: GREETING, sentAt: new Date().toISOString() },
+    { id: 0, role: "toucan", text: toucanService.greeting(), sentAt: new Date().toISOString() },
   ]);
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
   const nextIdRef = useRef(1);
-  const replyTimerRef = useRef<number | null>(null);
+  const askAbortRef = useRef<AbortController | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const typingTimerRef = useRef<number | null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
 
-  // Clear the pending mock-reply timer on unmount, so a panel dismissed
-  // mid-"thinking" never fires setState (or leaves the bird squawking).
+  // Abort an in-flight question on unmount, so a panel dismissed mid-"thinking"
+  // never fires setState (or leaves the bird squawking).
   useEffect(() => {
-    return () => {
-      if (replyTimerRef.current !== null) window.clearTimeout(replyTimerRef.current);
-    };
+    return () => askAbortRef.current?.abort();
   }, []);
 
   const onPendingChangeRef = useRef(onPendingChange);
@@ -169,7 +149,11 @@ export function ToucanAssistantPanel({
     // Same empty-send guard the chat composer uses: the button is never
     // disabled, the handler simply does nothing.
     if (!text || pending) return;
-    const turnNumber = turns.filter((t) => t.role === "user").length;
+    // Bounded history, oldest-trimmed. The backend re-validates this limit — the
+    // client trimming here only avoids a pointless 422.
+    const history = turns
+      .slice(-TOUCAN_HISTORY_TURNS)
+      .map((turn) => ({ role: turn.role, text: turn.text }));
     setTurns((prev) => [
       ...prev,
       { id: nextIdRef.current++, role: "user", text, sentAt: new Date().toISOString() },
@@ -177,20 +161,32 @@ export function ToucanAssistantPanel({
     setDraft("");
     stopTyping();
     setPending(true);
-    // MOCK: local delay, no network.
-    replyTimerRef.current = window.setTimeout(() => {
-      replyTimerRef.current = null;
+
+    const controller = new AbortController();
+    askAbortRef.current = controller;
+    const appendReply = (replyText: string) => {
+      if (controller.signal.aborted) return;
       setTurns((prev) => [
         ...prev,
         {
           id: nextIdRef.current++,
           role: "toucan",
-          text: mockReplyFor(text, turnNumber),
+          text: replyText,
           sentAt: new Date().toISOString(),
         },
       ]);
-      setPending(false);
-    }, MOCK_REPLY_DELAY_MS);
+    };
+
+    void toucanService
+      .ask({ question: text, history }, { signal: controller.signal })
+      .then((answer) => appendReply(answer.text))
+      .catch(() => appendReply(REQUEST_FAILED_TEXT))
+      .finally(() => {
+        if (askAbortRef.current === controller) askAbortRef.current = null;
+        // A panel unmounted mid-request has already reported pending=false via
+        // the cleanup effect above; skip the setState on an aborted request.
+        if (!controller.signal.aborted) setPending(false);
+      });
   }
 
   return (

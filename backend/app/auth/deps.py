@@ -23,6 +23,18 @@ def _dev_email_from_request(request: Request) -> str | None:
     return raw.strip().lower() if raw and raw.strip() else None
 
 
+def bearer_token_from_request(request: Request) -> str | None:
+    """The caller's raw bearer token, or None when there isn't one (the dev-email bypass).
+
+    ONLY for forwarding a request to Atlas ON THE CALLER'S BEHALF — see
+    app/services/toucan/roster.py. It is never an identity source: identity always comes from
+    get_current_email below, which verifies the token rather than trusting it. Returns None
+    rather than raising so a caller on the dev bypass degrades to "no Atlas access", never to a
+    fallback credential."""
+    match = _BEARER_RE.match(request.headers.get("authorization") or "")
+    return match.group(1) if match else None
+
+
 async def get_current_email(request: Request) -> str:
     """FastAPI dependency mirroring backend/src/http.ts's authMiddleware: server always derives
     the caller's identity itself — REST bodies/query params never supply a trusted sender/user

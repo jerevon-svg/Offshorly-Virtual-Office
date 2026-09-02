@@ -4229,7 +4229,15 @@ export function OfficeMap() {
           {toucanState === "attending" ? "🦜 Ask Toucan" : toucanCalled ? "🦜 Coming…" : "🦜 Call Toucan"}
         </button>
       )}
-      {toucanPanelOpen && toucanState === "attending" && (
+      {/* Panel lifetime is the SUMMONED SESSION (`toucanPanelOpen`), deliberately NOT the
+          bird's flight phase. Gating this on `toucanState === "attending"` unmounted the panel
+          every time the viewer walked past FOLLOW_BREAK_PX and the bird re-entered
+          "approaching" — destroying the transcript, the draft and any in-flight question, then
+          remounting a fresh panel on arrival. Release/checkout still close it: releaseToucan()
+          and the toucanChromeVisible effect both clear toucanPanelOpen.
+          `toucanSessionActive` above stays gated on "attending" on purpose, so the character
+          does not mouth words while the bird is still in the air. */}
+      {toucanPanelOpen && (
         <ToucanAssistantPanel
           onRelease={releaseToucan}
           onPendingChange={setToucanPending}
