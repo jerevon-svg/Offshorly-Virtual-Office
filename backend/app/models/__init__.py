@@ -8,6 +8,7 @@ from app.models.reaction import MessageReaction
 from app.models.request import ConversationRequest
 from app.models.room_request import RoomEntryRequest
 from app.models.talk_request import TalkRequest
+from app.models.toucan import ToucanConversation, ToucanMessage
 
 __all__ = [
     "Avatar",
@@ -24,4 +25,6 @@ __all__ = [
     "MessageReaction",
     "RoomEntryRequest",
     "TalkRequest",
+    "ToucanConversation",
+    "ToucanMessage",
 ]

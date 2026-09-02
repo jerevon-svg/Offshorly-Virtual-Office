@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import inspect
 import pathlib
+import re
 
 import httpx
 import pytest
@@ -16,8 +17,11 @@ from app.realtime.state import (
     room_presence,
     spatial_sessions,
 )
+from app.auth.deps import get_current_email
 from app.repositories import chat as chat_repo
 from app.routers import toucan as toucan_router
+from app.services.toucan.context import build_office_context
+from app.services.toucan.office_assistant import answer_question
 from app.services.position_registry import position_registry
 
 # PRIVACY BOUNDARY TESTS.
@@ -50,14 +54,25 @@ _FORBIDDEN_TOKENS = (
     "message_body",
 )
 
-# Modules the Toucan package must never import, directly or aliased.
+# Modules NO Toucan module may import, directly or aliased — at any layer.
 _FORBIDDEN_IMPORTS = (
     "app.repositories.chat",
     "app.repositories.hub",
     "app.repositories.feed",
     # Toucan FORWARDS the caller's credential; it never verifies one.
     "app.auth.atlas",
+)
+
+# T1 gave Toucan a database, but ONLY for its own transcript. The split below is the whole
+# point: the router and the repository may open a session; the answer-building package
+# (services/toucan/) still may not, so no office context, roster row or registry snapshot can
+# reach a table even by accident. That is why "app.database" moved out of the list above and
+# into this package-scoped one rather than simply being deleted.
+_STORAGE_FREE_PACKAGE_FORBIDDEN_IMPORTS = (
     "app.database",
+    "app.models.toucan",
+    "app.repositories.toucan",
+    "sqlalchemy",
 )
 
 # `httpx` is allowed in exactly one Toucan module — the roster reader — so the feature's outbound
@@ -65,12 +80,38 @@ _FORBIDDEN_IMPORTS = (
 _NETWORK_MODULE = "roster.py"
 
 
+def _docstring_constants(tree: ast.Module) -> set[int]:
+    """Identity of every Constant node that IS a docstring. The modules under test *document*
+    the fields they must never read, and that prose must not fail its own test — but only real
+    docstrings get the exemption, never an ordinary string literal that happens to be long."""
+    exempt: set[int] = set()
+    holders = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+    for node in ast.walk(tree):
+        if not isinstance(node, holders):
+            continue
+        first = node.body[0] if node.body else None
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            exempt.add(id(first.value))
+    return exempt
+
+
 def _toucan_sources() -> list[tuple[pathlib.Path, ast.Module]]:
     modules = []
     for path in sorted(_TOUCAN_PACKAGE.glob("*.py")):
         modules.append((path, ast.parse(path.read_text())))
-    # Also cover the router and schema modules that make up the feature's surface.
-    for extra in ("app/routers/toucan.py", "app/schemas/toucan.py"):
+    # Also cover the router, schema, model and repository modules that make up the rest of
+    # the feature's surface. The T1 persistence modules are swept by exactly the same rules as
+    # the rest — a forbidden field name is no more acceptable in a column than in a variable.
+    for extra in (
+        "app/routers/toucan.py",
+        "app/schemas/toucan.py",
+        "app/models/toucan.py",
+        "app/repositories/toucan.py",
+    ):
         path = _TOUCAN_PACKAGE.parents[2] / extra
         modules.append((path, ast.parse(path.read_text())))
     return modules
@@ -103,6 +144,7 @@ async def test_toucan_code_never_names_a_forbidden_field():
     mention counts — the categories T0 is explicitly forbidden to read."""
     offenders: list[str] = []
     for path, tree in _toucan_sources():
+        docstrings = _docstring_constants(tree)
         for node in ast.walk(tree):
             values: list[str] = []
             if isinstance(node, ast.Name):
@@ -114,10 +156,8 @@ async def test_toucan_code_never_names_a_forbidden_field():
             elif (
                 isinstance(node, ast.Constant)
                 and isinstance(node.value, str)
-                # Docstrings are Constant nodes too; skip the ones that ARE a docstring by
-                # checking length — the prohibitions are only ever documented in prose, and no
-                # short literal in this codebase carries one.
-                and len(node.value) < 200
+                # Docstrings are Constant nodes too — see _docstring_constants above.
+                and id(node) not in docstrings
             ):
                 values.append(node.value)
             for value in values:
@@ -128,31 +168,57 @@ async def test_toucan_code_never_names_a_forbidden_field():
     assert offenders == []
 
 
-async def test_toucan_package_imports_no_chat_atlas_or_database_module():
+def _imported_module_names(tree: ast.Module) -> list[str]:
+    names: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            names.append(node.module or "")
+    return names
+
+
+async def test_no_toucan_module_imports_chat_hub_feed_or_atlas_verification():
     offenders: list[str] = []
     for path, tree in _toucan_sources():
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                names = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom):
-                names = [node.module or ""]
-            else:
-                continue
-            for name in names:
-                if name in _FORBIDDEN_IMPORTS:
-                    offenders.append(f"{path.name}: imports {name}")
-                if name == "httpx" and path.name != _NETWORK_MODULE:
-                    offenders.append(f"{path.name}: imports httpx")
+        for name in _imported_module_names(tree):
+            if name in _FORBIDDEN_IMPORTS:
+                offenders.append(f"{path.name}: imports {name}")
+            if name == "httpx" and path.name != _NETWORK_MODULE:
+                offenders.append(f"{path.name}: imports httpx")
     assert offenders == []
 
 
-async def test_the_endpoint_declares_no_database_dependency():
-    """No `db` parameter means no session, no query, no migration — T0 owns no storage. The
-    `request` parameter is the credential-forwarding seam (bearer header -> Atlas roster), not
-    an identity source: `email` still comes from get_current_email."""
+async def test_the_answer_building_package_still_owns_no_storage():
+    """T1's database stops at the router/repository. Every module under services/toucan/ — the
+    context builder and the answer wording — must remain unable to reach a session or a table,
+    so no roster row, room snapshot or registry state can be written down even by mistake."""
+    offenders: list[str] = []
+    for path in sorted(_TOUCAN_PACKAGE.glob("*.py")):
+        tree = ast.parse(path.read_text())
+        for name in _imported_module_names(tree):
+            root = name.split(".")[0]
+            if name in _STORAGE_FREE_PACKAGE_FORBIDDEN_IMPORTS or root == "sqlalchemy":
+                offenders.append(f"{path.name}: imports {name}")
+    assert offenders == []
+
+
+async def test_the_endpoint_takes_a_session_but_never_an_identity_argument():
+    """T1 adds `db` — the transcript has to be written somewhere. What must NOT change is where
+    identity comes from: `email` is still a get_current_email dependency, and there is still no
+    parameter through which a caller could name somebody else. The `request` parameter remains
+    the credential-forwarding seam (bearer header -> Atlas roster), not an identity source."""
     params = inspect.signature(toucan_router.ask_toucan).parameters
-    assert set(params) == {"request", "body", "email"}
-    assert "db" not in params
+    assert set(params) == {"request", "body", "email", "db"}
+    assert params["email"].default.dependency is get_current_email
+
+
+async def test_the_context_and_answer_layers_are_never_handed_a_session():
+    """The one-way street: a session exists in the router, and it stops there. Neither the
+    context builder nor the answer writer can be passed one, so neither can persist anything."""
+    for func in (build_office_context, answer_question):
+        params = inspect.signature(func).parameters
+        assert not {"db", "session", "conn"} & set(params), func.__name__
 
 
 async def test_no_ai_provider_or_api_key_is_referenced():
@@ -249,10 +315,13 @@ async def test_a_failed_roster_fetch_is_never_surfaced_to_the_user(monkeypatch):
 
 
 async def test_the_answer_payload_has_no_channel_for_office_data():
-    """The response is three fields wide: one human sentence plus two labels. There is nowhere
-    for a raw context object, a registry snapshot or a media identifier to ride along."""
+    """The response is four fields wide: one human sentence, two labels, and T1's opaque
+    conversation id. There is nowhere for a raw context object, a registry snapshot or a media
+    identifier to ride along — and the one field T1 added carries a UUID, not office data."""
     async with await _client() as client:
         res = await client.post(
             "/toucan/ask", json={"question": "who is online"}, headers={"x-dev-email": "a@example.com"}
         )
-    assert set(res.json()) == {"text", "intent", "supported"}
+    body = res.json()
+    assert set(body) == {"text", "intent", "supported", "conversationId"}
+    assert re.fullmatch(r"[0-9a-f-]{36}", body["conversationId"])

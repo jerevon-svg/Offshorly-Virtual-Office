@@ -1,11 +1,18 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { ToucanAssistantPanel } from "./ToucanAssistantPanel";
+import { resetMockToucanConversations } from "../../services/toucan";
 import chat from "../Chat/ConversationView.module.css";
 
 // Focused tests for the Toucan assistant panel's Messenger-style presentation
 // and its mock reply flow. Says nothing about summon/movement (frozen — see
 // toucanSummon.test.ts) and touches no chat state.
+//
+// T1 NOTE: mounting now asks the service for the latest persisted conversation
+// before rendering any turn, so the greeting never flashes above a restored
+// transcript. Every mount here therefore has to flush that one microtask before
+// asserting on messages — `setup()` does it, hence the awaits. Composer, header
+// and typing signal are unaffected and stay synchronous.
 
 const MOCK_DELAY = 1100;
 
@@ -15,15 +22,29 @@ function bubbleFor(text: string | RegExp): HTMLElement {
 }
 
 describe("ToucanAssistantPanel", () => {
-  beforeEach(() => vi.useFakeTimers());
+  beforeEach(() => {
+    vi.useFakeTimers();
+    // The mock keeps conversations in a module-level map, so one spec's
+    // conversation would otherwise restore into the next spec's panel.
+    resetMockToucanConversations();
+  });
   afterEach(() => {
     vi.runOnlyPendingTimers();
     vi.useRealTimers();
   });
 
-  const setup = (onPendingChange = vi.fn(), onRelease = vi.fn()) => {
+  const setup = async (onPendingChange = vi.fn(), onRelease = vi.fn()) => {
     render(<ToucanAssistantPanel onRelease={onRelease} onPendingChange={onPendingChange} />);
+    await flushRestore();
     return { onPendingChange, onRelease };
+  };
+
+  // Settles the mount-time "load the latest conversation" call. With a clean
+  // mock store it resolves to null, so the panel falls back to the greeting.
+  const flushRestore = async () => {
+    await act(async () => {
+      await Promise.resolve();
+    });
   };
 
   // Same fireEvent idioms the existing chat tests use (no user-event dep).
@@ -38,14 +59,14 @@ describe("ToucanAssistantPanel", () => {
     });
   };
 
-  it("opens with the toucan's greeting as a received message", () => {
-    setup();
+  it("opens with the toucan's greeting as a received message", async () => {
+    await setup();
     expect(screen.getByRole("dialog", { name: "Toucan Assistant" })).toBeInTheDocument();
     expect(bubbleFor(/I'm the office toucan/)).toHaveClass(chat.peer);
   });
 
   it("renders the user's own message with own-message styling and the toucan's reply as received", async () => {
-    setup();
+    await setup();
     sendViaButton("hello toucan");
 
     // Own message: own styling, and NOT the received styling.
@@ -65,7 +86,7 @@ describe("ToucanAssistantPanel", () => {
   });
 
   it("puts own and received messages on opposite sides", async () => {
-    setup();
+    await setup();
     sendViaEnter("hello");
     await settleReply();
     // The self row carries the chat's row-reverse modifier; a received row does not.
@@ -76,13 +97,13 @@ describe("ToucanAssistantPanel", () => {
   });
 
   it("sends on Enter", async () => {
-    setup();
+    await setup();
     sendViaEnter("sent with enter");
     expect(bubbleFor("sent with enter")).toHaveClass(chat.own);
   });
 
   it("does not send an empty or whitespace-only message", async () => {
-    const { onPendingChange } = setup();
+    const { onPendingChange } = await setup();
     pressEnter();
     sendViaEnter("   ");
     typeText("");
@@ -92,7 +113,7 @@ describe("ToucanAssistantPanel", () => {
   });
 
   it("reports pending as a boolean only, so no response text can reach the bird", async () => {
-    const { onPendingChange } = setup();
+    const { onPendingChange } = await setup();
     sendViaEnter("hello");
     expect(onPendingChange).toHaveBeenCalledWith(true);
     await settleReply();
@@ -101,7 +122,7 @@ describe("ToucanAssistantPanel", () => {
   });
 
   it("clears pending state when released mid-reply", async () => {
-    const { onPendingChange, onRelease } = setup();
+    const { onPendingChange, onRelease } = await setup();
     sendViaEnter("hello");
     expect(onPendingChange).toHaveBeenLastCalledWith(true);
     fireEvent.click(screen.getByText("Let the toucan go"));
@@ -114,6 +135,7 @@ describe("ToucanAssistantPanel", () => {
   it("clears pending state on unmount mid-reply", async () => {
     const onPendingChange = vi.fn();
     const view = render(<ToucanAssistantPanel onRelease={vi.fn()} onPendingChange={onPendingChange} />);
+    await flushRestore();
     sendViaEnter("hello");
     expect(onPendingChange).toHaveBeenLastCalledWith(true);
     view.unmount();
@@ -121,7 +143,7 @@ describe("ToucanAssistantPanel", () => {
   });
 
   it("keeps the composer usable after a reply", async () => {
-    setup();
+    await setup();
     sendViaEnter("hello");
     await settleReply();
     sendViaEnter("second question");
@@ -181,7 +203,7 @@ describe("ToucanAssistantPanel", () => {
   });
 
   it("shows the meaningful reply inside the panel", async () => {
-    setup();
+    await setup();
     sendViaEnter("where is micah");
     await settleReply();
     const panel = screen.getByRole("dialog", { name: "Toucan Assistant" });

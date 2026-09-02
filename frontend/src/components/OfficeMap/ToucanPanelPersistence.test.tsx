@@ -2,6 +2,7 @@ import { useState } from "react";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { ToucanAssistantPanel } from "./ToucanAssistantPanel";
+import { resetMockToucanConversations } from "../../services/toucan";
 // Vite's ?raw import, so the source assertions below need no node types.
 import officeMapSource from "./OfficeMap.tsx?raw";
 
@@ -46,8 +47,18 @@ const walkAwayAndBack = () => {
   fireEvent.click(screen.getByText("bird catches up"));
 };
 
+// Settles the panel's mount-time "load the latest conversation" call.
+async function flushRestore() {
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
+
 describe("Toucan panel survives the bird's follow flight", () => {
-  beforeEach(() => vi.useFakeTimers());
+  beforeEach(() => {
+    vi.useFakeTimers();
+    resetMockToucanConversations();
+  });
   afterEach(() => {
     vi.runOnlyPendingTimers();
     vi.useRealTimers();
@@ -63,6 +74,7 @@ describe("Toucan panel survives the bird's follow flight", () => {
 
   it("keeps the transcript across attending -> approaching -> attending", async () => {
     render(<Harness gateOnAttending={false} />);
+    await flushRestore();
     await askAndSettle("hello toucan");
     expect(screen.getByText("hello toucan")).toBeInTheDocument();
     expect(screen.getByText("Hello! Nice to perch beside you.")).toBeInTheDocument();
@@ -73,8 +85,9 @@ describe("Toucan panel survives the bird's follow flight", () => {
     expect(screen.getByText("Hello! Nice to perch beside you.")).toBeInTheDocument();
   });
 
-  it("keeps an unsent draft across the same cycle", () => {
+  it("keeps an unsent draft across the same cycle", async () => {
     render(<Harness gateOnAttending={false} />);
+    await flushRestore();
     fireEvent.change(composer(), { target: { value: "where is ang" } });
 
     walkAwayAndBack();
@@ -84,22 +97,43 @@ describe("Toucan panel survives the bird's follow flight", () => {
 
   it("keeps the greeting from being repeated after the bird re-parks", async () => {
     render(<Harness gateOnAttending={false} />);
+    await flushRestore();
     await askAndSettle("hello toucan");
     walkAwayAndBack();
-    expect(screen.getAllByText(/I'm the office toucan/)).toHaveLength(1);
+    expect(screen.queryAllByText(/I'm the office toucan/)).toHaveLength(1);
   });
 
-  // CONTROL: the harness must actually be able to see the old bug, or the
-  // three tests above prove nothing.
-  it("would lose the transcript if the mount were gated on the flight phase", async () => {
+  // CONTROL: the harness must actually be able to see the old bug, or the three
+  // tests above prove nothing.
+  //
+  // T1 CHANGED WHAT THIS CONTROL CAN DETECT, and that is worth stating plainly.
+  // The remounted panel now RESTORES its transcript from persistence, so the
+  // flight-phase gate no longer destroys the conversation — which is the whole
+  // point of T1. What persistence cannot save is the UNSENT DRAFT and the
+  // in-flight question: those live only in the component. So the control now
+  // proves the harness still detects the remount, via the draft.
+  it("would still lose an unsent draft if the mount were gated on the flight phase", async () => {
     render(<Harness gateOnAttending />);
-    await askAndSettle("hello toucan");
-    expect(screen.getByText("hello toucan")).toBeInTheDocument();
+    await flushRestore();
+    fireEvent.change(composer(), { target: { value: "where is ang" } });
+    expect(composer().value).toBe("where is ang");
 
     walkAwayAndBack();
+    await flushRestore();
 
-    expect(screen.queryByText("hello toucan")).not.toBeInTheDocument();
-    expect(screen.getAllByText(/I'm the office toucan/)).toHaveLength(1);
+    expect(composer().value).toBe("");
+  });
+
+  it("restores the transcript on remount, so the gate can no longer destroy it", async () => {
+    render(<Harness gateOnAttending />);
+    await flushRestore();
+    await askAndSettle("hello toucan");
+
+    walkAwayAndBack();
+    await flushRestore();
+
+    expect(screen.getByText("hello toucan")).toBeInTheDocument();
+    expect(screen.getByText("Hello! Nice to perch beside you.")).toBeInTheDocument();
   });
 });
 

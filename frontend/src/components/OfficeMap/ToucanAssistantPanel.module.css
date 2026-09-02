@@ -104,3 +104,68 @@
   color: #4b5563;
   background: #f9fafb;
 }
+
+/* "New conversation" sits in the chat header's existing action slot and borrows
+   .closeButton wholesale — this only trims the glyph, which is a pencil rather
+   than the close ×, back to the same optical weight. */
+.newConversationButton {
+  font-size: 14px;
+}
+
+/* History popover. Sits directly under the header, inside the panel's own
+   column — no portal, no overlay, no new chrome. Colours, radii and type are
+   the chat window's own; only the drop shadow and the scroll cap are new. */
+.historyPopover {
+  flex-shrink: 0;
+  max-height: 180px;
+  overflow-y: auto;
+  background: #fff;
+  border-bottom: 1px solid #e5e7eb;
+  box-shadow: 0 4px 10px rgba(17, 24, 39, 0.06);
+}
+
+.historyEmpty {
+  margin: 0;
+  padding: 12px 16px;
+  color: #9ca3af;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+}
+
+.historyItem {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 16px;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  color: #374151;
+}
+
+.historyItem:hover {
+  background: #f9fafb;
+}
+
+/* The conversation currently on screen, so History reads as a selector rather
+   than a list of somewhere-elses. */
+.historyItem[aria-current="true"] {
+  background: #f3f4f6;
+  font-weight: 600;
+}
+
+.historyTitle {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.historyDate {
+  flex-shrink: 0;
+  color: #9ca3af;
+  font-size: 11px;
+}

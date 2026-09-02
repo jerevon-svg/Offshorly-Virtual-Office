@@ -3,7 +3,11 @@ import { realToucanService } from "./RealToucanService";
 import type { ToucanService } from "./types";
 
 export * from "./types";
-export { MockToucanService, mockToucanService } from "./MockToucanService";
+export {
+  MockToucanService,
+  mockToucanService,
+  resetMockToucanConversations,
+} from "./MockToucanService";
 export { RealToucanService, realToucanService, setDevIdentity } from "./RealToucanService";
 
 export type ToucanMode = "mock" | "real";

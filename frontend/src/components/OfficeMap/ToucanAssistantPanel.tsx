@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 // Messenger-style presentation is reused WHOLESALE from the existing chat
 // window's stylesheet — same bubbles, alignment, radii, typography, spacing,
 // scrolling column, composer and send button — so the Toucan reads as another
@@ -8,7 +8,14 @@ import { useEffect, useRef, useState } from "react";
 // the chat components themselves were modified.
 import chat from "../Chat/ConversationView.module.css";
 import styles from "./ToucanAssistantPanel.module.css";
-import { toucanService, TOUCAN_HISTORY_TURNS } from "../../services/toucan";
+import {
+  toucanService,
+  ToucanConversationGoneError,
+  turnRoleFromStored,
+  TOUCAN_HISTORY_TURNS,
+  type ToucanConversation,
+  type ToucanConversationDetail,
+} from "../../services/toucan";
 
 // ---------------------------------------------------------------------------
 // Toucan assistant panel.
@@ -21,8 +28,28 @@ import { toucanService, TOUCAN_HISTORY_TURNS } from "../../services/toucan";
 // Nothing about the panel's appearance, the composer, the typing signal or the
 // release behaviour changed when the reply logic moved out.
 //
-// The transcript is local component state and dies with the component — there is
-// no persistence, by design.
+// T1 — PERSISTENT CONVERSATIONS. The transcript is still local component state,
+// but it is now SEEDED FROM and WRITTEN THROUGH the toucanService:
+//
+//   MOUNT      -> loadLatestConversation(). A transcript comes back, it is
+//                 restored; null comes back (nobody has ever asked anything) and
+//                 the greeting is shown instead.
+//   ASK        -> the conversation id rides along, and the server persists BOTH
+//                 the question and the reply.
+//   NEW        -> createConversation(), then the transcript resets to the
+//                 greeting. Created eagerly so a refresh straight afterwards
+//                 restores the NEW conversation, not the previous one.
+//   HISTORY    -> listConversations() on demand, then loadConversation(id) to
+//                 reopen one. Both are READS. Opening History creates nothing and
+//                 deletes nothing; picking a conversation only changes which id
+//                 the next question is appended to.
+//   RELEASE    -> closes the panel and nothing else. It DOES NOT delete
+//                 anything: re-summoning takes the MOUNT path above and lands
+//                 back in the same conversation.
+//
+// The greeting itself is never persisted — it is a per-mount opening line, shown
+// only when there is no transcript to show, so a restored conversation is not
+// topped with a fresh "hello" every time the bird is summoned.
 //
 // DIVISION OF LABOUR (deliberate, unchanged):
 //   - THIS PANEL carries the meaningful assistant conversation.
@@ -38,6 +65,24 @@ type Turn = { id: number; role: "user" | "toucan"; text: string; sentAt: string 
 // by something other than release). A plain toucan turn — no new UI surface.
 const REQUEST_FAILED_TEXT =
   "Squawk — I couldn't reach the office just now. Try asking me again in a moment.";
+
+// Shown when the conversation the panel was holding has gone (deleted from
+// another tab, say). The next question simply starts a new one — no dead end.
+const CONVERSATION_GONE_TEXT =
+  "Squawk — that conversation isn't there any more. Ask me again and I'll start a fresh one.";
+
+// History popover copy. Deliberately plain strings rather than new UI surfaces.
+const HISTORY_EMPTY_TEXT = "No saved conversations yet.";
+const HISTORY_FAILED_TEXT = "Couldn't load your conversations.";
+// A conversation created by "New conversation" has no title until its first
+// question, so the list needs a stand-in label for it.
+const UNTITLED_CONVERSATION_LABEL = "New conversation";
+
+// Short, locale-aware day label beside each entry — enough to tell yesterday's
+// conversation from last week's without turning the list into a table.
+function formatConversationDate(updatedAt: string): string {
+  return new Date(updatedAt).toLocaleDateString([], { month: "short", day: "numeric" });
+}
 
 // Same formatting the chat windows use for a message's time (see
 // ConversationView's own formatMessageTime).
@@ -63,18 +108,46 @@ type ToucanAssistantPanelProps = {
 // "talking" after exactly as long a pause as it does in normal chat.
 const TYPING_IDLE_MS = 2500;
 
+function greetingTurn(id: number): Turn {
+  return { id, role: "toucan", text: toucanService.greeting(), sentAt: new Date().toISOString() };
+}
+
+/** One saved conversation's transcript, as panel turns. Shared by the mount-time
+ *  restore and by reopening from History, so both land in exactly the same
+ *  state — there is no second way to display a conversation. */
+function turnsFromConversation(conversation: ToucanConversationDetail): Turn[] {
+  return conversation.messages.map((message, index) => ({
+    id: index,
+    role: turnRoleFromStored(message.role),
+    text: message.content,
+    sentAt: message.createdAt,
+  }));
+}
+
 export function ToucanAssistantPanel({
   onRelease,
   onPendingChange,
   onTypingChange,
 }: ToucanAssistantPanelProps) {
-  const [turns, setTurns] = useState<Turn[]>([
-    { id: 0, role: "toucan", text: toucanService.greeting(), sentAt: new Date().toISOString() },
-  ]);
+  const [turns, setTurns] = useState<Turn[]>([greetingTurn(0)]);
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
+  // The conversation every question is appended to. Null until the restore below
+  // finishes (or when the viewer has none yet) — a question asked in that window
+  // simply creates one server-side, which is the same path the very first
+  // question ever asked takes.
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  // True only while the initial restore is in flight. It suppresses the greeting
+  // so a restored transcript never flashes a "hello" above itself first.
+  const [restoring, setRestoring] = useState(true);
+  // History popover. `historyItems` is null until a fetch has completed, which is
+  // what distinguishes "still loading" from "genuinely no conversations".
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyItems, setHistoryItems] = useState<ToucanConversation[] | null>(null);
+  const [historyFailed, setHistoryFailed] = useState(false);
   const nextIdRef = useRef(1);
   const askAbortRef = useRef<AbortController | null>(null);
+  const restoreAbortRef = useRef<AbortController | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const typingTimerRef = useRef<number | null>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -83,6 +156,35 @@ export function ToucanAssistantPanel({
   // never fires setState (or leaves the bird squawking).
   useEffect(() => {
     return () => askAbortRef.current?.abort();
+  }, []);
+
+  // RESTORE, on every mount — which is exactly once per summoned session, and
+  // again on a page refresh. Release unmounts the panel; re-summon mounts a new
+  // one and lands right back here, which is what makes a conversation survive
+  // both. A failure is non-fatal: the panel falls back to the greeting and a
+  // fresh conversation rather than refusing to open.
+  useEffect(() => {
+    const controller = new AbortController();
+    restoreAbortRef.current = controller;
+
+    void toucanService
+      .loadLatestConversation({ signal: controller.signal })
+      .then((conversation) => {
+        if (controller.signal.aborted || !conversation) return;
+        setConversationId(conversation.id);
+        if (conversation.messages.length === 0) return;
+        setTurns(turnsFromConversation(conversation));
+        nextIdRef.current = conversation.messages.length;
+      })
+      .catch(() => {
+        // Offline, or the backend is asleep. Nothing to restore — carry on with
+        // the greeting; the next question starts a new conversation.
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setRestoring(false);
+      });
+
+    return () => controller.abort();
   }, []);
 
   const onPendingChangeRef = useRef(onPendingChange);
@@ -144,6 +246,99 @@ export function ToucanAssistantPanel({
     };
   }, []);
 
+  // Everything that swaps which conversation the panel is showing goes through
+  // here: abandon any in-flight question (it belongs to the conversation being
+  // left), clear the composer, and close History. It does not itself decide what
+  // to show next — the two callers below do.
+  const leaveCurrentConversation = useCallback(() => {
+    askAbortRef.current?.abort();
+    askAbortRef.current = null;
+    setPending(false);
+    setDraft("");
+    setHistoryOpen(false);
+  }, []);
+
+  // "New conversation": a real, empty, server-side conversation, then a clean
+  // transcript. Eager creation is the point — see the module note above.
+  const handleNewConversation = useCallback(() => {
+    if (pending) return;
+    leaveCurrentConversation();
+    nextIdRef.current = 1;
+    setTurns([greetingTurn(0)]);
+    setConversationId(null);
+
+    void toucanService
+      .createConversation()
+      .then((conversation) => {
+        setConversationId(conversation.id);
+        // The new conversation belongs at the top of History next time it opens.
+        setHistoryItems(null);
+      })
+      .catch(() => {
+        // Leaving conversationId null is already correct: the next question
+        // creates a conversation server-side anyway.
+      });
+  }, [pending, leaveCurrentConversation]);
+
+  // HISTORY. Opening it is a READ and nothing else — no conversation is created,
+  // none is deleted, and the one currently on screen stays selected until the
+  // viewer actually picks a different one.
+  const handleToggleHistory = useCallback(() => {
+    setHistoryOpen((wasOpen) => {
+      if (wasOpen) return false;
+      setHistoryFailed(false);
+      // Refetched on each open rather than cached, so a conversation just
+      // continued shows in the right place without any invalidation plumbing.
+      void toucanService
+        .listConversations()
+        .then(setHistoryItems)
+        .catch(() => {
+          setHistoryItems([]);
+          setHistoryFailed(true);
+        });
+      return true;
+    });
+  }, []);
+
+  // Reopen a saved conversation. Selecting the one already on screen is a no-op
+  // beyond closing the popover — no refetch, and nothing thrown away.
+  const handleSelectConversation = useCallback(
+    (id: string) => {
+      if (pending) return;
+      if (id === conversationId) {
+        setHistoryOpen(false);
+        return;
+      }
+      leaveCurrentConversation();
+
+      void toucanService
+        .loadConversation(id)
+        .then((conversation) => {
+          setConversationId(conversation.id);
+          const restored = turnsFromConversation(conversation);
+          // An empty saved conversation shows the greeting, exactly as a freshly
+          // created one does.
+          setTurns(restored.length > 0 ? restored : [greetingTurn(0)]);
+          nextIdRef.current = Math.max(restored.length, 1);
+        })
+        .catch(() => {
+          // Gone, or unreachable. Say so in the transcript rather than silently
+          // leaving the panel on a conversation the viewer thinks they left.
+          setConversationId(null);
+          nextIdRef.current = 1;
+          setTurns([
+            {
+              id: 0,
+              role: "toucan",
+              text: CONVERSATION_GONE_TEXT,
+              sentAt: new Date().toISOString(),
+            },
+          ]);
+        });
+    },
+    [pending, conversationId, leaveCurrentConversation],
+  );
+
   function handleSend() {
     const text = draft.trim();
     // Same empty-send guard the chat composer uses: the button is never
@@ -178,9 +373,22 @@ export function ToucanAssistantPanel({
     };
 
     void toucanService
-      .ask({ question: text, history }, { signal: controller.signal })
-      .then((answer) => appendReply(answer.text))
-      .catch(() => appendReply(REQUEST_FAILED_TEXT))
+      .ask({ question: text, history, conversationId }, { signal: controller.signal })
+      .then((answer) => {
+        // Tracks the conversation the server actually used — the one that was
+        // sent, or the one it created because none was.
+        if (!controller.signal.aborted) setConversationId(answer.conversationId);
+        appendReply(answer.text);
+      })
+      .catch((error: unknown) => {
+        if (error instanceof ToucanConversationGoneError) {
+          // Self-heal: drop the stale id so the next question starts fresh.
+          if (!controller.signal.aborted) setConversationId(null);
+          appendReply(CONVERSATION_GONE_TEXT);
+          return;
+        }
+        appendReply(REQUEST_FAILED_TEXT);
+      })
       .finally(() => {
         if (askAbortRef.current === controller) askAbortRef.current = null;
         // A panel unmounted mid-request has already reported pending=false via
@@ -201,6 +409,29 @@ export function ToucanAssistantPanel({
           <span className={chat.subtitle}>Perched beside you</span>
         </div>
         <div className={chat.headerActions}>
+          {/* History and "start over", both in the existing header action slot.
+              A popover, deliberately not a sidebar: it lists titles and dates so
+              a past conversation can be reopened, and does nothing else — no
+              search, no rename, no delete. */}
+          <button
+            type="button"
+            className={`${chat.closeButton} ${styles.newConversationButton}`}
+            onClick={handleToggleHistory}
+            aria-label="Conversation history"
+            aria-expanded={historyOpen}
+            title="History"
+          >
+            🕘
+          </button>
+          <button
+            type="button"
+            className={`${chat.closeButton} ${styles.newConversationButton}`}
+            onClick={handleNewConversation}
+            aria-label="Start a new conversation"
+            title="New conversation"
+          >
+            ✎
+          </button>
           <button
             type="button"
             className={chat.closeButton}
@@ -212,21 +443,63 @@ export function ToucanAssistantPanel({
         </div>
       </div>
 
-      <div className={chat.messages} ref={messagesRef}>
-        {turns.map((turn) => {
-          const isOwn = turn.role === "user";
-          return (
-            <div key={turn.id} className={isOwn ? `${chat.row} ${chat.rowSelf}` : chat.row}>
-              {!isOwn && <div className={`${chat.avatar} ${styles.toucanAvatar}`}>🦜</div>}
-              <div className={chat.bubbleColumn}>
-                <div className={`${chat.message} ${isOwn ? chat.own : chat.peer}`}>{turn.text}</div>
-                <span className={isOwn ? `${chat.timestamp} ${chat.timestampRight}` : chat.timestamp}>
-                  {formatMessageTime(turn.sentAt)}
+      {historyOpen && (
+        <div className={styles.historyPopover} role="menu" aria-label="Saved conversations">
+          {historyItems === null ? (
+            <p className={styles.historyEmpty}>Loading…</p>
+          ) : historyFailed ? (
+            <p className={styles.historyEmpty}>{HISTORY_FAILED_TEXT}</p>
+          ) : historyItems.length === 0 ? (
+            <p className={styles.historyEmpty}>{HISTORY_EMPTY_TEXT}</p>
+          ) : (
+            // Already most-recent-first from the server; the panel does not
+            // re-sort, so one ordering rule lives in one place.
+            historyItems.map((conversation) => (
+              <button
+                key={conversation.id}
+                type="button"
+                role="menuitem"
+                className={styles.historyItem}
+                aria-current={conversation.id === conversationId}
+                onClick={() => handleSelectConversation(conversation.id)}
+              >
+                <span className={styles.historyTitle}>
+                  {conversation.title || UNTITLED_CONVERSATION_LABEL}
                 </span>
-              </div>
-            </div>
-          );
-        })}
+                <span className={styles.historyDate}>
+                  {formatConversationDate(conversation.updatedAt)}
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+
+      <div className={chat.messages} ref={messagesRef}>
+        {/* While the restore is in flight the transcript is withheld entirely, so
+            a restored conversation never flashes the greeting above itself. */}
+        {restoring
+          ? null
+          : turns.map((turn) => {
+              const isOwn = turn.role === "user";
+              return (
+                <div key={turn.id} className={isOwn ? `${chat.row} ${chat.rowSelf}` : chat.row}>
+                  {!isOwn && <div className={`${chat.avatar} ${styles.toucanAvatar}`}>🦜</div>}
+                  <div className={chat.bubbleColumn}>
+                    <div className={`${chat.message} ${isOwn ? chat.own : chat.peer}`}>
+                      {turn.text}
+                    </div>
+                    <span
+                      className={
+                        isOwn ? `${chat.timestamp} ${chat.timestampRight}` : chat.timestamp
+                      }
+                    >
+                      {formatMessageTime(turn.sentAt)}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
         {pending && (
           // "Toucan is typing" — a normal received bubble carrying the
           // office's established animated dots (same 1s stagger as the

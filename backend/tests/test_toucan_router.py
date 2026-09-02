@@ -3,7 +3,9 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from app.database import Base, engine
 from app.main import fastapi_app
+from app.models.toucan import ToucanConversation, ToucanMessage
 from app.realtime.state import (
     call_registry,
     dnd_registry,
@@ -21,7 +23,15 @@ pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture(autouse=True)
-def _fresh_registries():
+async def _fresh_state():
+    # T1 persists every exchange, so this file now touches the DB. Tables are cleared (not just
+    # created — create_all is a no-op on an existing table) so a conversation written by an
+    # earlier test never shows up as another test's "latest".
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(ToucanMessage.__table__.delete())
+        await conn.execute(ToucanConversation.__table__.delete())
+
     def clear():
         offline_lineup._slot_by_email.clear()
         dnd_registry._dnd_emails.clear()
@@ -57,7 +67,9 @@ async def test_ask_returns_the_answer_contract():
         )
     assert res.status_code == 200
     body = res.json()
-    assert set(body) == {"text", "intent", "supported"}
+    # T1 adds conversationId — the id of the conversation the exchange was persisted into.
+    assert set(body) == {"text", "intent", "supported", "conversationId"}
+    assert isinstance(body["conversationId"], str) and body["conversationId"]
     assert body["intent"] == "room_occupants"
     assert body["supported"] is True
     assert isinstance(body["text"], str) and body["text"]
@@ -71,7 +83,11 @@ async def test_unsupported_question_returns_the_fallback():
             headers=_headers("angelo@example.com"),
         )
     body = res.json()
-    assert body == {"text": FALLBACK_TEXT, "intent": "unsupported", "supported": False}
+    assert {k: v for k, v in body.items() if k != "conversationId"} == {
+        "text": FALLBACK_TEXT,
+        "intent": "unsupported",
+        "supported": False,
+    }
 
 
 async def test_identity_comes_from_auth_not_the_body():
