@@ -258,12 +258,68 @@ async def test_the_context_and_answer_layers_are_never_handed_a_session():
 
 
 async def test_no_ai_provider_or_api_key_is_referenced():
-    """T0 must contain no provider SDK and no key lookup."""
+    """The DETERMINISTIC surface must contain no provider SDK and no key lookup — at T0 that was
+    the whole feature; since T6 it is the boundary that keeps the AI quarantined. The one module
+    allowed to speak to OpenAI is app/services/toucan_ai/provider.py, deliberately OUTSIDE this
+    sweep; what it may know is only what services/toucan/ai_context.py (swept here, and clean)
+    projects. This test is what stops the SDK creeping back into the answer-building package."""
     banned = ("openai", "anthropic", "gemini", "api_key", "apikey", "getenv", "os.environ")
     for path, _ in _toucan_sources():
         lowered = path.read_text().lower()
         for term in banned:
             assert term not in lowered, f"{path.name} references {term}"
+
+
+# The T6 provider package's own boundary: it may render the projected context and call the SDK,
+# and NOTHING else. No registry, no repository, no session, no model, no auth — its only inlet
+# is app/services/toucan/ai_context.py's projection, so everything it can possibly leak is
+# reviewable in that one swept file.
+_AI_PACKAGE = _TOUCAN_PACKAGE.parent / "toucan_ai"
+
+_AI_PACKAGE_FORBIDDEN_IMPORT_PREFIXES = (
+    "app.realtime",
+    "app.repositories",
+    "app.models",
+    "app.database",
+    "app.auth",
+    "sqlalchemy",
+    "httpx",  # its outbound surface is the SDK, never a hand-rolled request
+)
+
+
+async def test_the_ai_package_reads_nothing_but_the_projected_context():
+    offenders: list[str] = []
+    for path in sorted(_AI_PACKAGE.glob("*.py")):
+        tree = ast.parse(path.read_text())
+        for name in _imported_module_names(tree):
+            if any(
+                name == prefix or name.startswith(prefix + ".")
+                for prefix in _AI_PACKAGE_FORBIDDEN_IMPORT_PREFIXES
+            ):
+                offenders.append(f"{path.name}: imports {name}")
+        # The same forbidden-field sweep the deterministic surface gets: the provider package
+        # must be as unable to NAME private data as it is to reach it.
+        docstrings = _docstring_constants(tree)
+        for node in ast.walk(tree):
+            values: list[str] = []
+            if isinstance(node, ast.Name):
+                values.append(node.id)
+            elif isinstance(node, ast.Attribute):
+                values.append(node.attr)
+            elif isinstance(node, ast.arg):
+                values.append(node.arg)
+            elif (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and id(node) not in docstrings
+            ):
+                values.append(node.value)
+            for value in values:
+                lowered = value.lower()
+                for token in _FORBIDDEN_TOKENS + _FORBIDDEN_MENTION_FORMS:
+                    if token in lowered:
+                        offenders.append(f"{path.name}: {value!r} contains {token!r}")
+    assert offenders == []
 
 
 # --- dynamic -------------------------------------------------------------------------------

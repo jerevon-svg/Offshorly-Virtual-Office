@@ -33,13 +33,20 @@ from app.services.toucan.memory_commands import (
     saved_text,
 )
 from app.services.toucan.office_assistant import answer_question, is_activity_question
+from app.services.toucan_ai.provider import AI_INTENT, ai_enabled, generate_answer
 
 # Toucan assistant REST layer.
 #
 # SCOPE, stated as what this module does NOT have (T1 changes exactly one line of this list —
 # the database one — and nothing else):
-#   * no AI provider, no SDK, no API key. The one outbound call is the Atlas roster read in
-#     services/toucan/roster.py, made with the CALLER'S OWN bearer token
+#   * CHANGED IN T6: there is now an AI provider — but not here, and not in services/toucan/.
+#     The SDK and the key live solely in services/toucan_ai/provider.py; this module imports a
+#     seam (ai_enabled/generate_answer) and hands it the SAME OfficeContext the deterministic
+#     assistant gets, from which the provider projects the bounded allowlist in
+#     services/toucan/ai_context.py. The provider is consulted ONLY for questions the
+#     deterministic assistant marked unsupported, so every T0-T5 answer — memory commands, the
+#     activity digest, every live-state intent — is still produced with no network call beyond
+#     the Atlas roster read in services/toucan/roster.py (caller's own bearer token, as ever)
 #   * NEW IN T1: a database, but only for the transcript. Two tables (see models/toucan.py),
 #     holding the user's own questions and the assistant's own answers. No office context
 #     snapshot, no roster rows, no registry state, no token is ever written down
@@ -171,15 +178,31 @@ async def ask_toucan(
         )
 
     answer = answer_question(body.question, context, activity=activity)
+    answer_text, intent, supported = answer.text, answer.intent, answer.supported
+
+    # T6: DETERMINISTIC FIRST, AI FOR THE UNSUPPORTED TAIL. A question any T0-T5 intent claimed
+    # (supported=True) is already answered from registry truth and never reaches the provider —
+    # so the model cannot re-word real state, memory commands and the digest stay off the
+    # network, and the per-question cost of everything that worked yesterday stays zero. Only
+    # the fallback case asks the provider, handing it the same caller-scoped context (projected
+    # through services/toucan/ai_context.py) plus the request's own bounded history. None —
+    # disabled, error, timeout, empty — keeps the deterministic fallback: an LLM failure can
+    # degrade an answer, never fail the request.
+    if not supported and ai_enabled():
+        ai_text = await generate_answer(
+            body.question, context, [(turn.role, turn.text) for turn in body.history]
+        )
+        if ai_text is not None:
+            answer_text, intent, supported = ai_text, AI_INTENT, True
 
     await toucan_repo.append_exchange(
-        db, conversation=conversation, question=body.question, answer=answer.text
+        db, conversation=conversation, question=body.question, answer=answer_text
     )
 
     return ToucanAnswerOut(
-        text=answer.text,
-        intent=answer.intent,
-        supported=answer.supported,
+        text=answer_text,
+        intent=intent,
+        supported=supported,
         conversation_id=conversation.id,
     )
 
