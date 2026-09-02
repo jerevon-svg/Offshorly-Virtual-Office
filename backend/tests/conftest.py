@@ -8,6 +8,21 @@ import app.models  # noqa: F401 - registers every model on Base.metadata
 from app.database import Base
 
 
+@pytest.fixture(autouse=True)
+def _no_real_ai_provider(monkeypatch):
+    """NO REAL OPENAI CALLS IN AUTOMATED TESTS — enforced here rather than trusted per-file.
+
+    Settings resolve from backend/.env, so a developer machine with a real OPENAI_API_KEY would
+    otherwise turn every unfaked unsupported-tail /toucan/ask in the suite into a live network
+    request (nondeterministic answers, real cost, and exactly the failure mode the provider's
+    test seam exists to prevent). Blank the key for every test; a test that wants the AI lane
+    re-enables it explicitly AND fakes provider._request_text (see test_toucan_ai._enable_ai),
+    which runs after this fixture and therefore wins."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "")
+
+
 @pytest.fixture
 async def db_session():
     """A fresh in-memory SQLite DB per test, independent of the app's configured

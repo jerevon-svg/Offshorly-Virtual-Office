@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     # at most this many people from the office context are projected into the prompt.
     TOUCAN_AI_MAX_HISTORY_TURNS: int = 6
     TOUCAN_AI_MAX_CONTEXT_PEOPLE: int = 40
+    # T7: at most this many of the caller's own saved memories — the ones the deterministic
+    # relevance pass in services/toucan/memory_retrieval.py judged relevant to the question —
+    # ride along per request, each clamped to this many characters. Both are token-cost bounds
+    # on an already owner-filtered, already-projected payload, not the privacy boundary itself.
+    TOUCAN_AI_MAX_MEMORIES: int = 5
+    TOUCAN_AI_MAX_MEMORY_CHARS: int = 300
 
     # FUTURE multi-worker realtime seam — UNSET AND UNUSED TODAY. When this backend eventually
     # runs more than one worker, Socket.IO needs a cross-process message queue (and the

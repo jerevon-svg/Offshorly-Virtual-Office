@@ -32,6 +32,7 @@ from app.services.toucan.memory_commands import (
     parse_memory_command,
     saved_text,
 )
+from app.services.toucan.memory_retrieval import select_relevant_memories
 from app.services.toucan.office_assistant import answer_question, is_activity_question
 from app.services.toucan_ai.provider import AI_INTENT, ai_enabled, generate_answer
 
@@ -189,8 +190,20 @@ async def ask_toucan(
     # disabled, error, timeout, empty — keeps the deterministic fallback: an LLM failure can
     # degrade an answer, never fail the request.
     if not supported and ai_enabled():
+        # T7: RETRIEVE → FILTER → PROJECT → AI, and only on this branch — deterministic answers
+        # never pay for the memory read. The candidate pool is the caller's own rows, filtered
+        # on owner_email in the repository's SQL and bounded there; the relevance pass and the
+        # {kind, content} projection are the pure function in services/toucan/memory_retrieval.py,
+        # so what can reach the provider is decided entirely inside the swept package. An
+        # irrelevant or empty pool projects to [] and the provider renders no memory block.
+        memory_rows = await toucan_memory_repo.list_memories(
+            db, owner_email=email, limit=toucan_memory_repo.MAX_MEMORIES_RETURNED
+        )
         ai_text = await generate_answer(
-            body.question, context, [(turn.role, turn.text) for turn in body.history]
+            body.question,
+            context,
+            [(turn.role, turn.text) for turn in body.history],
+            memories=select_relevant_memories(body.question, memory_rows),
         )
         if ai_text is not None:
             answer_text, intent, supported = ai_text, AI_INTENT, True
