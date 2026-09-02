@@ -83,7 +83,6 @@ async def test_presence_phrasings_all_resolve():
     for question in (
         "Who is here?",
         "who is in the office",
-        "who is available",
         "who is checked in",
         "who is around",
     ):
@@ -354,10 +353,11 @@ async def test_is_person_available_when_in_a_conversation():
 
 
 async def test_quantifier_falls_through_to_the_roster_answer():
-    """"is anyone available" is a roster question, not a lookup for a colleague called Anyone."""
+    """"is anyone available" is a roster question, not a lookup for a colleague called Anyone.
+    Since T5 it lands on the availability roster rather than the present one."""
     _place(A)
     answer = _ask("is anyone available")
-    assert answer.intent == "present"
+    assert answer.intent == "available"
     assert "Angelo" in answer.text
 
 
@@ -442,8 +442,207 @@ async def test_the_bare_name_pattern_never_shadows_a_real_phrasing():
         ("who is in this room", "room_occupants"),
         ("where is angelo", "locate_person"),
         ("is angelo available", "person_available"),
+        ("who is available", "available"),
+        ("who is in a conversation", "in_conversation"),
+        ("how many people are here", "headcount"),
+        ("which rooms have people", "occupied_rooms"),
+        ("who is in the ai room", "room_occupants"),
+        ("who is at lunch", "status_untracked"),
     ):
         assert _ask(question).intent == intent, question
+
+
+# --- T5: available (free to talk, not merely present) ---------------------------------------
+
+
+async def test_who_is_available_excludes_busy_people():
+    room_presence.enter(A, "ai-room")  # viewer, free
+    room_presence.enter(B, "ai-room")
+    dnd_registry.set_dnd(B, True)  # DND — present but not available
+    spatial_sessions.start(C, "sess-1", "sid-c")
+    call_registry.join("sess-1", C, "sid-c")  # in a call — present but not available
+    answer = _ask("who is available")
+    assert answer.intent == "available"
+    assert answer.supported
+    assert "Angelo" in answer.text
+    assert "Micah" not in answer.text
+    assert "Bon" not in answer.text
+    assert "free to talk" in answer.text
+
+
+async def test_who_is_available_with_everyone_blocked():
+    dnd_registry.set_dnd(A, True)  # the viewer themself is DND
+    answer = _ask("who is free")
+    assert answer.intent == "available"
+    assert "Nobody looks free to talk" in answer.text
+
+
+async def test_available_phrasings_all_resolve():
+    _place(A)
+    for question in ("who is available", "who is free", "is anyone free to talk"):
+        assert _ask(question).intent == "available", question
+
+
+# --- T5: headcounts --------------------------------------------------------------------------
+
+
+async def test_how_many_people_are_in_the_office():
+    room_presence.enter(A, "ai-room")
+    room_presence.enter(B, "central-hub")
+    answer = _ask("how many people are in the office")
+    assert answer.intent == "headcount"
+    assert answer.supported
+    assert "2 people are in the office" in answer.text
+    assert "Angelo" in answer.text and "Micah" in answer.text
+
+
+async def test_how_many_people_are_online_keeps_the_liveness_disclaimer():
+    room_presence.enter(A, "ai-room")
+    answer = _ask("how many people are online")
+    assert answer.intent == "headcount"
+    assert answer.text.startswith(LIVENESS_UNKNOWN_TEXT)
+    assert "1 person is checked in" in answer.text
+    # The word "online" may only ever appear inside the disclaimer.
+    assert "online" not in answer.text.replace(LIVENESS_UNKNOWN_TEXT, "").lower()
+
+
+async def test_how_many_people_are_in_a_call():
+    spatial_sessions.start(B, "sess-1", "sid-b")
+    call_registry.join("sess-1", B, "sid-b")
+    answer = _ask("how many people are in a call")
+    assert answer.intent == "headcount"
+    assert "1 person is in a call" in answer.text
+    assert "Micah" in answer.text
+
+
+async def test_headcount_with_nobody_present():
+    offline_lineup.add(A)
+    offline_lineup.add(B)  # the viewer themself has checked out
+    answer = _ask("how many people are here", viewer=B)
+    assert answer.intent == "headcount"
+    assert "Nobody is in the office" in answer.text
+    assert "Angelo" not in answer.text
+
+
+async def test_a_stale_position_is_never_counted():
+    """A persisted floor position survives restarts by design — it is evidence of where someone
+    WAS, and must not inflate a live headcount."""
+    _place(B)  # position registry only: not live evidence
+    answer = _ask("how many people are in the office")
+    # Only the viewer counts.
+    assert "1 person is in the office" in answer.text
+    assert "Micah" not in answer.text
+
+
+# --- T5: conversations -----------------------------------------------------------------------
+
+
+async def test_who_is_in_a_conversation():
+    spatial_sessions.start(A, "sess-1", "sid-a")
+    spatial_sessions.start(B, "sess-1", "sid-b")
+    answer = _ask("who is in a conversation", viewer=C)
+    assert answer.intent == "in_conversation"
+    assert "Angelo" in answer.text and "Micah" in answer.text
+
+
+async def test_who_is_in_a_conversation_with_nobody_talking():
+    _place(A)
+    answer = _ask("who is talking")
+    assert answer.intent == "in_conversation"
+    assert "Nobody is in a conversation" in answer.text
+
+
+async def test_is_person_in_a_conversation():
+    spatial_sessions.start(B, "sess-1", "sid-b")
+    answer = _ask("is micah in a conversation")
+    assert answer.intent == "person_available"
+    assert "already in a conversation" in answer.text
+
+
+# --- T5: rooms by name -----------------------------------------------------------------------
+
+
+async def test_who_is_in_a_named_room():
+    room_presence.enter(B, "central-hub")
+    room_presence.enter(C, "central-hub")
+    answer = _ask("who is in the central hub")
+    assert answer.intent == "room_occupants"
+    assert "Micah" in answer.text and "Bon" in answer.text
+    assert "Central Hub" in answer.text
+    assert "active" in answer.text
+
+
+async def test_a_named_room_with_a_room_suffix_resolves():
+    room_presence.enter(B, "ai-room")
+    answer = _ask("who is in the ai room")
+    assert answer.intent == "room_occupants"
+    assert "Micah" in answer.text
+    assert "AI Room" in answer.text
+
+
+async def test_an_empty_or_unknown_room_gets_the_honest_answer():
+    room_presence.enter(B, "ai-room")
+    for question in ("who is in the kitchen", "who is in the central hub"):
+        answer = _ask(question)
+        assert answer.intent == "room_occupants", question
+        assert "can't see anyone active" in answer.text, question
+        assert "Micah" not in answer.text, question
+
+
+async def test_asking_about_your_own_room_by_name_reuses_the_room_answer():
+    room_presence.enter(A, "ai-room")
+    room_presence.enter(B, "ai-room")
+    answer = _ask("who is in the ai room", viewer=A)
+    assert answer.intent == "room_occupants"
+    assert "You're in AI Room" in answer.text
+
+
+async def test_which_rooms_have_people():
+    room_presence.enter(A, "ai-room")
+    room_presence.enter(B, "central-hub")
+    room_presence.enter(C, "central-hub")
+    answer = _ask("which rooms have people")
+    assert answer.intent == "occupied_rooms"
+    assert "AI Room (1)" in answer.text
+    assert "Central Hub (2)" in answer.text
+    # A roster of rooms, not of people — no name leaks into the summary.
+    assert "Micah" not in answer.text
+
+
+async def test_which_rooms_have_people_with_no_occupied_rooms():
+    _place(A)
+    answer = _ask("what rooms are occupied")
+    assert answer.intent == "occupied_rooms"
+    assert "No rooms" in answer.text
+
+
+# --- T5: untracked statuses (breaks / lunch) -------------------------------------------------
+
+
+async def test_breaks_and_lunch_are_honestly_untracked():
+    room_presence.enter(B, "ai-room")
+    for question in ("who is on break", "who is at lunch"):
+        answer = _ask(question)
+        assert answer.intent == "status_untracked", question
+        assert answer.supported
+        assert "doesn't track breaks or lunches" in answer.text, question
+        # Never fabricated from a weaker signal.
+        assert "Micah" not in answer.text, question
+
+
+async def test_is_person_at_lunch_shows_what_is_actually_known():
+    room_presence.enter(B, "ai-room")
+    answer = _ask("is micah at lunch")
+    assert answer.intent == "status_untracked"
+    assert "doesn't track breaks or lunches" in answer.text
+    assert "AI Room" in answer.text  # the known state is offered instead
+
+
+async def test_is_an_unknown_person_on_break():
+    _place(A)
+    answer = _ask("is zephyr on a break")
+    assert answer.intent == "status_untracked"
+    assert "don't know anyone called" in answer.text
 
 
 # --- fallback -----------------------------------------------------------------------------

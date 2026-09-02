@@ -16,12 +16,16 @@ from app.services.toucan import context as toucan_context
 from app.services.toucan.context import (
     PersonView,
     availability,
+    available_people,
     build_office_context_from,
     checked_out_people,
     dnd_people,
+    occupied_rooms,
     people_in_calls,
+    people_in_conversations,
     present_people,
     resolve_person,
+    resolve_room,
     room_occupants,
 )
 from app.services.toucan.roster import RosterPerson
@@ -216,6 +220,65 @@ async def test_availability_reports_the_most_blocking_reason_first():
     person = ctx.person(A)
     assert person is not None
     assert availability(ctx, person).blocked_by == "checked_out"
+
+
+async def test_available_people_is_narrower_than_present_people():
+    """T5's split: everyone below is present, but only the unblocked viewer is available."""
+    room_presence.enter(A, "ai-room")
+    room_presence.enter(B, "ai-room")
+    dnd_registry.set_dnd(B, True)
+    spatial_sessions.start(C, "sess-1", "sid-c")
+    call_registry.join("sess-1", C, "sid-c")
+    ctx = build_office_context_from(A)
+    assert {p.email for p in present_people(ctx)} == {A, B, C}
+    assert {p.email for p in available_people(ctx)} == {A}
+
+
+async def test_a_roster_only_person_is_never_available():
+    ctx = build_office_context_from(
+        A, roster=(RosterPerson(email=B, display_name="Micah"),), roster_available=True
+    )
+    assert B not in {p.email for p in available_people(ctx)}
+
+
+async def test_people_in_conversations_reads_spatial_sessions():
+    spatial_sessions.start(A, "sess-1", "sid-a")
+    spatial_sessions.start(B, "sess-1", "sid-b")
+    _place(C)  # a stale position is not a conversation
+    ctx = build_office_context_from(A)
+    assert {p.email for p in people_in_conversations(ctx)} == {A, B}
+
+
+async def test_occupied_rooms_groups_present_people_only():
+    room_presence.enter(A, "ai-room")
+    room_presence.enter(B, "central-hub")
+    _place(C, room_id="central-hub")  # persisted position only — not an active occupant
+    ctx = build_office_context_from(A)
+    rooms = occupied_rooms(ctx)
+    assert [(room_id, tuple(p.email for p in members)) for room_id, members in rooms] == [
+        ("ai-room", (A,)),
+        ("central-hub", (B,)),
+    ]
+
+
+async def test_resolve_room_matches_spoken_names_against_occupied_rooms():
+    room_presence.enter(A, "central-hub")
+    room_presence.enter(B, "ai-room")
+    ctx = build_office_context_from(A)
+    assert resolve_room(ctx, "central hub") == "central-hub"
+    assert resolve_room(ctx, "Central-Hub") == "central-hub"
+    assert resolve_room(ctx, "ai room") == "ai-room"
+    assert resolve_room(ctx, "ai") == "ai-room"  # a trailing "room" is optional on either side
+    assert resolve_room(ctx, "central hub room") == "central-hub"
+    assert resolve_room(ctx, "kitchen") is None
+    assert resolve_room(ctx, "") is None
+
+
+async def test_resolve_room_never_invents_an_empty_room():
+    """No occupants means no resolution — an empty room and a nonexistent room are the same
+    honest unknown, because there is no room catalog to tell them apart."""
+    ctx = build_office_context_from(A)
+    assert resolve_room(ctx, "central hub") is None
 
 
 async def test_resolve_person_matches_on_name_tokens_and_prefixes():

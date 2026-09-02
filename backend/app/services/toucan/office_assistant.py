@@ -10,11 +10,15 @@ from app.services.toucan.context import (
     OfficeContext,
     PersonView,
     availability,
+    available_people,
     checked_out_people,
     dnd_people,
+    occupied_rooms,
     people_in_calls,
+    people_in_conversations,
     present_people,
     resolve_person,
+    resolve_room,
     room_occupants,
 )
 
@@ -57,6 +61,17 @@ SUPPORTED_INTENTS: tuple[str, ...] = (
     "room_occupants",
     "locate_person",
     "person_available",
+    # T5 — richer office awareness, still answered purely from live registry state via the same
+    # OfficeContext. "available" split out of "present" (in the office != free to talk),
+    # "in_conversation" reads the spatial sessions already projected onto PersonView, "headcount"
+    # counts the same rosters the list intents word, "occupied_rooms" regroups room_presence, and
+    # "status_untracked" is the honest answer for statuses (breaks/lunch) the VO has no source of
+    # truth for.
+    "available",
+    "in_conversation",
+    "headcount",
+    "occupied_rooms",
+    "status_untracked",
     # T2 — the durable activity intents. These are the only intents whose answers are built from
     # anything that survives a restart, and the only ones that need an AttentionSnapshot; every
     # intent above is answered purely from live registry state.
@@ -149,9 +164,24 @@ _PERSON_AVAILABLE = [
     re.compile(
         r"^(?:is|are)\s+(?P<person>.+?)\s+"
         r"(?:available|free|busy|around|reachable|offline|there|here|"
-        r"in a call|on a call|in a meeting|on dnd|dnd|do not disturb)$"
+        r"in a call|on a call|in a meeting|on dnd|dnd|do not disturb|"
+        r"in a conversation|talking to someone|talking with someone)$"
     ),
     re.compile(r"^can\s+i\s+(?:talk|speak|chat)\s+(?:to|with)\s+(?P<person>.+?)$"),
+]
+
+# Statuses this office HAS NO SOURCE OF TRUTH FOR. The VO's live state is exactly: checked out,
+# DND, in a room, in a conversation, in a call. Breaks and lunches are not tracked anywhere —
+# not in a registry, not in Atlas fields Toucan may read — so these phrasings get an honest
+# "the office doesn't track that" instead of the generic fallback, and never an inference.
+_UNTRACKED_STATUS = r"(?:on\s+(?:a\s+)?break|at\s+lunch|on\s+lunch|out\s+to\s+lunch)"
+
+_UNTRACKED_ROSTER = [
+    re.compile(r"^who\s+is\s+" + _UNTRACKED_STATUS + "$"),
+]
+
+_UNTRACKED_PERSON = [
+    re.compile(r"^(?:is|are)\s+(?P<person>.+?)\s+" + _UNTRACKED_STATUS + "$"),
 ]
 
 # Explicitly-worded connection questions. Matched BEFORE _PERSON_AVAILABLE/_ONLINE so an
@@ -182,6 +212,11 @@ _IN_CALL = [
     re.compile(r"^who\s+is\s+calling$"),
 ]
 
+_IN_CONVERSATION = [
+    re.compile(r"^who\s+is\s+(?:in|having)\s+(?:a\s+)?conversations?$"),
+    re.compile(r"^who\s+is\s+(?:talking|chatting)(?:\s+(?:to|with)\s+(?:someone|somebody))?$"),
+]
+
 _DND = [
     re.compile(r"^who\s+is\s+(?:on\s+)?(?:dnd|do not disturb)$"),
     re.compile(r"^who\s+is\s+busy$"),
@@ -196,14 +231,64 @@ _OFFLINE = [
 
 _ONLINE = [
     re.compile(
-        r"^who\s+is\s+(?:here|around|available|working|at work|in|in the office|in today|checked in)$"
+        r"^who\s+is\s+(?:here|around|working|at work|in|in the office|in today|checked in)$"
     ),
     re.compile(r"^who\s+is\s+in\s+the\s+office(?:\s+today)?$"),
-    # "is anyone free?" is a roster question, not a lookup for a colleague called Anyone.
     re.compile(
         r"^(?:is|are)\s+(?:anyone|anybody|someone|somebody)\s+"
-        r"(?:available|free|around|here|in|in the office)$"
+        r"(?:around|here|in|in the office)$"
     ),
+]
+
+# T5 split "available" out of the present roster: being in the office and being free to talk are
+# different questions, and the old alias listed someone on DND or mid-call as an answer to "who
+# is available". "is anyone free?" stays a roster question, not a lookup for a colleague called
+# Anyone.
+_AVAILABLE = [
+    re.compile(r"^who\s+(?:else\s+)?is\s+(?:available|free)(?:\s+to\s+(?:talk|chat))?$"),
+    re.compile(
+        r"^(?:is|are)\s+(?:anyone|anybody|someone|somebody)\s+"
+        r"(?:available|free)(?:\s+to\s+(?:talk|chat))?$"
+    ),
+]
+
+# Counts, not lists. The same rosters the list intents word, so a count can never disagree with
+# its list — and the online-phrased count keeps the same liveness disclaimer the online roster
+# has, because counting does not make the checked-in signal any stronger.
+_COUNT_SUBJECT = r"(?:\s+(?:people|folks|employees|users))?"
+
+_HEADCOUNT_LIVENESS = [
+    re.compile(r"^how many" + _COUNT_SUBJECT + r"\s+are\s+(?:online|connected)$"),
+]
+
+_HEADCOUNT_CALLS = [
+    re.compile(r"^how many" + _COUNT_SUBJECT + r"\s+are\s+(?:in|on)\s+(?:a\s+|the\s+)?calls?$"),
+]
+
+_HEADCOUNT_PRESENT = [
+    re.compile(
+        r"^how many"
+        + _COUNT_SUBJECT
+        + r"\s+are\s+(?:here|around|at work|in the office|in today|checked in|present)$"
+    ),
+]
+
+_OCCUPIED_ROOMS = [
+    re.compile(
+        r"^(?:which|what)\s+rooms?\s+(?:have|has)\s+"
+        r"(?:people|anyone|anybody|someone|somebody)(?:\s+in\s+(?:them|it))?$"
+    ),
+    re.compile(r"^(?:which|what)\s+rooms?\s+are\s+(?:occupied|busy|in use)$"),
+    re.compile(r"^where\s+is\s+everyone$"),
+]
+
+# A room asked about BY NAME ("who is in the central hub"). Matched LAST among the who-is
+# intents (see answer_question) so "the office", "a call" and "this room" keep their own
+# answers; whatever reaches here is resolved against rooms that currently have occupants
+# (context.resolve_room) and anything unmatched gets the honest empty-or-unknown wording.
+_ROOM_NAMED = [
+    re.compile(r"^who\s+(?:else\s+)?is\s+(?:in|inside|at)\s+the\s+(?P<room>.+)$"),
+    re.compile(r"^who\s+(?:else\s+)?is\s+(?:in|inside)\s+(?P<room>.+?)\s+room$"),
 ]
 
 
@@ -358,6 +443,63 @@ def _roster_answer(people: tuple[PersonView, ...], *, some: str, none: str) -> s
         return none
     verb = "is" if len(names) == 1 else "are"
     return f"{_join(names)} {verb} {some}"
+
+
+def _headcount_answer(
+    people: tuple[PersonView, ...], *, some: str, none: str, prefix: str = ""
+) -> str:
+    """A count worded from the same roster the list intents use, with the names attached so the
+    number is falsifiable. `some` carries a {n} placeholder."""
+    names = _names(people)
+    if not names:
+        return f"{prefix}{none}"
+    n = len(names)
+    noun = "person is" if n == 1 else "people are"
+    return f"{prefix}{some.format(n=f'{n} {noun}')}: {_join(names)}."
+
+
+def _occupied_rooms_answer(rooms: tuple[tuple[str, tuple[PersonView, ...]], ...]) -> str:
+    if not rooms:
+        return "No rooms have anyone active in them right now."
+    parts = [f"{_room_label(room_id)} ({len(members)})" for room_id, members in rooms]
+    verb = "has" if len(parts) == 1 else "have"
+    return f"{_join(parts)} {verb} people active in there right now."
+
+
+# Said for statuses the office has no source of truth for (breaks, lunch). Honest by
+# construction: nothing in the registries or the roster allowlist records one, so Toucan says
+# so instead of inferring one from absence.
+UNTRACKED_STATUS_TEXT = (
+    "The office doesn't track breaks or lunches, so I can't tell you that. I can check who's "
+    "checked out, on Do Not Disturb, or in a call instead."
+)
+
+
+def _untracked_person_answer(person: PersonView) -> str:
+    return (
+        f"I can't tell whether {_display(person)} is on a break — the office doesn't track "
+        f"breaks or lunches. What I can see: they're {_where_phrase(person)}."
+    )
+
+
+def _named_room_answer(ctx: OfficeContext, raw_room: str) -> str:
+    room_id = resolve_room(ctx, raw_room)
+    if room_id is None:
+        # Empty room and unknown room are the same honest answer — there is no server-side room
+        # catalog to tell them apart (see context.resolve_room), so neither is ever fabricated.
+        label = _room_label(raw_room.strip()) or raw_room.strip()
+        return (
+            f"I can't see anyone active in {label} right now — it's either empty or not a "
+            "room I can watch."
+        )
+    viewer = ctx.viewer
+    if viewer is not None and viewer.room_id == room_id:
+        return _room_answer(ctx)
+    occupants = tuple(p for p in room_occupants(ctx, room_id) if p.present)
+    label = _room_label(room_id)
+    names = _names(occupants)
+    verb = "is" if len(names) == 1 else "are"
+    return f"{_join(names)} {verb} active in {label} right now."
 
 
 def _where_phrase(person: PersonView) -> str:
@@ -661,6 +803,38 @@ def answer_question(
             assert activity is not None  # _guard returns a sentence when it is None
             return Answer(text=_activity_answer(intent, activity), intent=intent, supported=True)
 
+    # T5 untracked statuses (breaks/lunch) — before every live-state intent so a lunch question
+    # can never be half-answered out of a weaker signal. The person form still resolves the name,
+    # so an unknown colleague gets the usual "I don't know anyone called..." answer.
+    if _first_match(_UNTRACKED_ROSTER, text):
+        return Answer(text=UNTRACKED_STATUS_TEXT, intent="status_untracked", supported=True)
+
+    match = _first_match(_UNTRACKED_PERSON, text)
+    if match:
+        name = _clean_person(match.group("person"))
+        if name:
+            result = resolve_person(ctx, name)
+            if result.is_ambiguous:
+                return Answer(
+                    text=_ambiguous_person(name, result.matches),
+                    intent="status_untracked",
+                    supported=True,
+                )
+            if result.person is not None:
+                return Answer(
+                    text=_untracked_person_answer(result.person),
+                    intent="status_untracked",
+                    supported=True,
+                )
+            if _looks_like_a_name(name):
+                return Answer(
+                    text=_no_such_person(name, roster_available=ctx.roster_available),
+                    intent="status_untracked",
+                    supported=True,
+                )
+            # "is anyone at lunch" — a roster question, and the honest answer is the same.
+            return Answer(text=UNTRACKED_STATUS_TEXT, intent="status_untracked", supported=True)
+
     match = _first_match(_PERSON_LIVENESS, text)
     if match:
         answer = _person_answer(ctx, match.group("person"), intent="liveness_unknown")
@@ -671,6 +845,42 @@ def answer_question(
         return Answer(
             text=_liveness_roster_answer(present_people(ctx)),
             intent="liveness_unknown",
+            supported=True,
+        )
+
+    # T5 headcounts. Counts of the same rosters the list intents word; the online phrasing keeps
+    # the liveness disclaimer, because a count is not a stronger claim than a list.
+    if _first_match(_HEADCOUNT_LIVENESS, text):
+        return Answer(
+            text=_headcount_answer(
+                present_people(ctx),
+                some="{n} checked in",
+                none="Nobody is checked in right now.",
+                prefix=f"{LIVENESS_UNKNOWN_TEXT} ",
+            ),
+            intent="headcount",
+            supported=True,
+        )
+
+    if _first_match(_HEADCOUNT_CALLS, text):
+        return Answer(
+            text=_headcount_answer(
+                people_in_calls(ctx),
+                some="{n} in a call",
+                none="Nobody is in a call right now.",
+            ),
+            intent="headcount",
+            supported=True,
+        )
+
+    if _first_match(_HEADCOUNT_PRESENT, text):
+        return Answer(
+            text=_headcount_answer(
+                present_people(ctx),
+                some="{n} in the office",
+                none="Nobody is in the office right now.",
+            ),
+            intent="headcount",
             supported=True,
         )
 
@@ -700,6 +910,17 @@ def answer_question(
             supported=True,
         )
 
+    if _first_match(_IN_CONVERSATION, text):
+        return Answer(
+            text=_roster_answer(
+                people_in_conversations(ctx),
+                some="in a conversation.",
+                none="Nobody is in a conversation right now.",
+            ),
+            intent="in_conversation",
+            supported=True,
+        )
+
     if _first_match(_DND, text):
         return Answer(
             text=_roster_answer(
@@ -722,6 +943,17 @@ def answer_question(
             supported=True,
         )
 
+    if _first_match(_AVAILABLE, text):
+        return Answer(
+            text=_roster_answer(
+                available_people(ctx),
+                some="free to talk right now.",
+                none="Nobody looks free to talk right now.",
+            ),
+            intent="available",
+            supported=True,
+        )
+
     if _first_match(_ONLINE, text):
         return Answer(
             text=_roster_answer(
@@ -730,6 +962,23 @@ def answer_question(
                 none="Nobody is in the office right now.",
             ),
             intent="present",
+            supported=True,
+        )
+
+    if _first_match(_OCCUPIED_ROOMS, text):
+        return Answer(
+            text=_occupied_rooms_answer(occupied_rooms(ctx)),
+            intent="occupied_rooms",
+            supported=True,
+        )
+
+    # Named rooms LAST among the who-is forms, so every specific phrasing above ("the office",
+    # "a call", "this room") keeps its own intent and only a genuine room name lands here.
+    match = _first_match(_ROOM_NAMED, text)
+    if match:
+        return Answer(
+            text=_named_room_answer(ctx, match.group("room")),
+            intent="room_occupants",
             supported=True,
         )
 

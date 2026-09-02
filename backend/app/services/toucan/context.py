@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from app.realtime.state import (
@@ -288,8 +289,53 @@ def people_in_calls(ctx: OfficeContext) -> tuple[PersonView, ...]:
     return tuple(p for p in ctx.people if p.in_call)
 
 
+def people_in_conversations(ctx: OfficeContext) -> tuple[PersonView, ...]:
+    """Everyone currently clustered into a spatial session. A call participant is included —
+    a call IS a conversation — the split is the caller's to word, not this layer's to hide."""
+    return tuple(p for p in ctx.people if p.in_conversation and p.present)
+
+
 def room_occupants(ctx: OfficeContext, room_id: str) -> tuple[PersonView, ...]:
     return tuple(p for p in ctx.people if p.room_id == room_id)
+
+
+def occupied_rooms(ctx: OfficeContext) -> tuple[tuple[str, tuple[PersonView, ...]], ...]:
+    """Every room that currently has at least one active occupant, with those occupants.
+
+    Sourced purely from the room ids already projected onto PersonView (the room_presence
+    registry) — this is a regrouping of existing context, not a new registry read. A room with
+    nobody active in it does not appear: the backend has no room catalog, so an empty room and a
+    room that does not exist are the same honest "I can't see anyone active there"."""
+    rooms: dict[str, list[PersonView]] = {}
+    for p in ctx.people:
+        if p.room_id and p.present:
+            rooms.setdefault(p.room_id, []).append(p)
+    return tuple((room_id, tuple(members)) for room_id, members in sorted(rooms.items()))
+
+
+def _room_id_tokens(value: str) -> tuple[str, ...]:
+    return tuple(t for t in re.split(r"[^a-z0-9]+", value.strip().lower()) if t)
+
+
+def resolve_room(ctx: OfficeContext, raw_name: str) -> str | None:
+    """Map a spoken room name onto a room id that currently has occupants.
+
+    "central hub" -> "central-hub", "the AI room" -> "ai-room" (a trailing "room" is optional on
+    either side). Deliberately matched ONLY against occupied rooms: there is no server-side room
+    catalog to validate against, so an unmatched name means "nobody active in anything by that
+    name", never "that room does not exist"."""
+    wanted = _room_id_tokens(raw_name)
+    if not wanted:
+        return None
+    for room_id, _ in occupied_rooms(ctx):
+        tokens = _room_id_tokens(room_id)
+        if wanted == tokens:
+            return room_id
+        if tokens[-1:] == ("room",) and wanted == tokens[:-1]:
+            return room_id
+        if wanted[-1:] == ("room",) and wanted[:-1] == tokens:
+            return room_id
+    return None
 
 
 def locate(ctx: OfficeContext, email: str) -> PersonView | None:
@@ -310,6 +356,13 @@ def availability(ctx: OfficeContext, person: PersonView) -> Availability:
     if person.in_conversation:
         return Availability(person=person, available=False, blocked_by="in_conversation")
     return Availability(person=person, available=True, blocked_by=None)
+
+
+def available_people(ctx: OfficeContext) -> tuple[PersonView, ...]:
+    """Everyone a colleague could walk up to right now: present and not blocked by a call, DND
+    or an ongoing conversation. Strictly narrower than present_people — "in the office" and
+    "free to talk" are different questions, and T5 stops conflating them."""
+    return tuple(p for p in ctx.people if availability(ctx, p).available)
 
 
 # Words that look like a name in "is <x> available" but are not one. Without this guard,
