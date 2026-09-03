@@ -416,6 +416,19 @@ async def _create_group_conversation(
     return conv.id
 
 
+async def set_group_title_if_empty(session: AsyncSession, conversation_id: str, title: str) -> bool:
+    """Give an UNTITLED group a title; never overwrite one somebody already chose. Returns True
+    when the title was applied. Commits. Used by the create-group endpoint's exact-member reuse
+    branch so re-creating an existing but nameless group with a name finally names it."""
+    result = await session.execute(select(Conversation).where(Conversation.id == conversation_id))
+    conv = result.scalar_one_or_none()
+    if conv is None or conv.type != "group" or (conv.title or "").strip():
+        return False
+    conv.title = title
+    await session.commit()
+    return True
+
+
 async def create_group_conversation(
     session: AsyncSession, creator_email: str, participant_emails: list[str], title: str | None
 ) -> dict:
