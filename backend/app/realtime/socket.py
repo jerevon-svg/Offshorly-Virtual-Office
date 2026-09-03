@@ -13,7 +13,7 @@ from app.repositories import chat as chat_repo
 from app.repositories import room_requests as room_requests_repo
 from app.repositories import talk_requests as talk_requests_repo
 from app.repositories import toucan_activity as toucan_activity_repo
-from app.schemas.chat import serialize_message_dict, to_iso_z
+from app.schemas.chat import to_iso_z
 from app.schemas.room_requests import RoomRequestOut
 from app.schemas.talk_requests import TalkRequestOut
 from app.repositories import position as position_repo
@@ -35,6 +35,7 @@ from app.realtime.state import (
 )
 from app.services.call_invites import INVITE_TTL_SECONDS
 from app.services.call_invites import wire as invite_wire
+from app.services.chat_send import ChatSendError, send_chat_message
 from app.services.position_registry import position_registry
 
 # Faithful port of backend/src/socket.ts onto python-socketio's ASGI async server. Mounted in
@@ -901,6 +902,9 @@ async def join_conversation(sid: str, payload: dict | None) -> None:
 
 @sio.on("send_message")
 async def send_message(sid: str, payload: dict | None) -> None:
+    """Parse the payload, take the sender from the authenticated socket session, and hand off to
+    the shared chat write path (services/chat_send.py) — authorization, persistence, and fan-out
+    all live there so any server-side sender goes through the same seam."""
     try:
         payload = payload or {}
         conversation_id = payload.get("conversationId")
@@ -908,68 +912,28 @@ async def send_message(sid: str, payload: dict | None) -> None:
         client_temp_id = payload.get("clientTempId")
         client_temp_id = client_temp_id if isinstance(client_temp_id, str) else ""
         text = payload.get("text")
-        text = text.strip() if isinstance(text, str) else ""
+        text = text if isinstance(text, str) else ""
         raw_mentions = payload.get("mentionedEmails")
         mentioned_emails = [e for e in raw_mentions if isinstance(e, str)] if isinstance(raw_mentions, list) else None
 
-        if not conversation_id:
-            await sio.emit(
-                "chat_error", {"code": "invalid_message", "message": "conversationId is required"}, to=sid
-            )
-            return
-
+        # Sender is ALWAYS the server-verified session email — a client-sent sender id is
+        # never trusted, even implicitly.
         session_data = await sio.get_session(sid)
         email = session_data["email"]
 
-        async with async_session_maker() as session:
-            ok = await chat_repo.is_participant(session, conversation_id, email)
-            if not ok:
-                await sio.emit("chat_error", {"code": "forbidden", "message": "Not a participant"}, to=sid)
-                return
-            if not text:
-                await sio.emit(
-                    "chat_error", {"code": "invalid_message", "message": "Message text is empty"}, to=sid
+        try:
+            async with async_session_maker() as session:
+                await send_chat_message(
+                    session,
+                    conversation_id=conversation_id,
+                    sender_email=email,
+                    text=text,
+                    mentioned_emails=mentioned_emails,
+                    origin_sid=sid,
+                    client_temp_id=client_temp_id,
                 )
-                return
-
-            # Sender is ALWAYS the server-verified session email — a client-sent sender id is
-            # never trusted, even implicitly. mentioned_emails is likewise never trusted as-is —
-            # insert_message re-validates every candidate against actual participant membership.
-            message = await chat_repo.insert_message(
-                session, conversation_id, email, text, mentioned_emails=mentioned_emails
-            )
-            await chat_repo.touch_conversation(session, conversation_id, message.sent_at)
-            conv = await chat_repo.get_conversation_by_id(session, conversation_id)
-            await session.commit()
-
-        # Freshly-inserted message: nothing delivered/read yet — payload shape always includes
-        # deliveredTo/readBy (both empty lists on send), matching serialize_message_dict's
-        # per-reader wire format.
-        message_payload = serialize_message_dict(message, delivered_to=[], read_by=[])
-        await sio.emit("message_saved", {"clientTempId": client_temp_id, "message": message_payload}, to=sid)
-        await sio.emit("incoming_message", {"message": message_payload}, room=conversation_id, skip_sid=sid)
-
-        # Push each recipient's (not the sender's) fresh unread count to their own per-user
-        # room, so an idle badge updates live without polling.
-        recipients = [pid for pid in (conv["participant_ids"] if conv else []) if pid != email]
-        for recipient in recipients:
-            async with async_session_maker() as recipient_session:
-                count = await chat_repo.unread_count(recipient_session, conversation_id, recipient)
-            await sio.emit(
-                "unread_count", {"conversationId": conversation_id, "count": count}, room=user_room(recipient)
-            )
-            # @mentions V1: same live-push pattern as unread_count above, purely a count update —
-            # this never touches DND state (DndRegistry/talk_requests) and never triggers any
-            # notification (none exists in this codebase to trigger — see MessageNotificationBadge/
-            # RealChatService), so a mention can never interrupt a DND recipient by itself.
-            if message.mentioned_emails and recipient in message.mentioned_emails:
-                async with async_session_maker() as mention_session:
-                    mentions = await chat_repo.mention_count(mention_session, conversation_id, recipient)
-                await sio.emit(
-                    "mention_count",
-                    {"conversationId": conversation_id, "count": mentions},
-                    room=user_room(recipient),
-                )
+        except ChatSendError as err:
+            await sio.emit("chat_error", {"code": err.code, "message": err.message}, to=sid)
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 
