@@ -564,3 +564,10 @@
   color: #6b7280;
   margin-left: 2px;
 }
+
+/* A1.4 — the Toucan author's avatar: same treatment as the assistant panel's bird. */
+.toucanAvatar {
+  background: #fde68a;
+  color: #111827;
+  font-size: 15px;
+}

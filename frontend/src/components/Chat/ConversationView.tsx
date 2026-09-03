@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { formatCharacterName } from "../../data/office-layout";
 import { chatMode, chatService } from "../../services/chat";
+import { TOUCAN_AVATAR_GLYPH, TOUCAN_DISPLAY_NAME, isToucanSender } from "../../services/chat/toucanSender";
 import { applyReactionUpdate } from "../../services/chat/reactions";
 import type { ChatMessage, ConnectionState } from "../../services/chat";
 import type { AssetLayer } from "../../types/office";
@@ -113,15 +114,18 @@ function Avatar({
   src,
   label,
   className,
+  glyph,
 }: {
   src?: string;
   label: string;
   className?: string;
+  /** A fixed glyph instead of the initial — used for the non-human Toucan author. */
+  glyph?: string;
 }) {
   if (src && !ALWAYS_USE_INITIALS) {
     return <img className={className} src={src} alt="" />;
   }
-  const initial = label.trim().charAt(0).toUpperCase() || "?";
+  const initial = glyph ?? (label.trim().charAt(0).toUpperCase() || "?");
   return (
     <div className={className} data-initials-avatar="true">
       {initial}
@@ -470,6 +474,9 @@ export function ConversationView({
             const showDivider = dayLabel !== lastDayLabel;
             lastDayLabel = dayLabel;
             const isOwn = msg.senderId === selfId;
+            // A1.4 — a DM has exactly one human peer, but Toucan can also author messages here.
+            // Never dress its messages as the peer's: distinct avatar + explicit name line.
+            const fromToucan = !isOwn && isToucanSender(msg.senderId);
             const showStatus = chatMode === "real" && isOwn;
             const status = showStatus
               ? deriveMessageStatus(msg, selfId, peerDeliveredUpTo, peerReadUpTo)
@@ -485,9 +492,22 @@ export function ConversationView({
                     <hr className={styles.dayDividerLine} />
                   </div>
                 )}
-                <div className={isOwn ? `${styles.row} ${styles.rowSelf}` : styles.row}>
-                  {!isOwn && <Avatar className={styles.avatar} src={peer.path || undefined} label={peerName} />}
+                <div
+                  className={isOwn ? `${styles.row} ${styles.rowSelf}` : styles.row}
+                  data-sender={fromToucan ? "toucan" : isOwn ? "self" : "peer"}
+                >
+                  {fromToucan && (
+                    <Avatar
+                      className={`${styles.avatar} ${styles.toucanAvatar}`}
+                      label={TOUCAN_DISPLAY_NAME}
+                      glyph={TOUCAN_AVATAR_GLYPH}
+                    />
+                  )}
+                  {!isOwn && !fromToucan && (
+                    <Avatar className={styles.avatar} src={peer.path || undefined} label={peerName} />
+                  )}
                   <div className={styles.bubbleColumn}>
+                    {fromToucan && <span className={styles.timestamp}>{TOUCAN_DISPLAY_NAME}</span>}
                     <div className={isOwn ? `${styles.message} ${styles.own}` : `${styles.message} ${styles.peer}`}>
                       {renderMessageText(
                         msg.text,

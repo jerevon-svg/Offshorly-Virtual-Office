@@ -23,6 +23,18 @@ from app.schemas.chat import serialize_message_dict
 # session email or a bearer-derived email), never from a client payload.
 
 
+# THE ONE RESERVED NON-HUMAN SENDER. Toucan's messages inside DMs and groups are authored by this
+# id: it is never a participant, never appears in rosters, and is never minted by Atlas. It is the
+# only sender_email allowed to write into a conversation it does not belong to — the exception is
+# keyed on this exact constant, not on a flag a caller could pass. The socket handler refuses a
+# session that claims this identity, so only server-side code can author as Toucan.
+TOUCAN_CHAT_SENDER = "toucan@virtual-office.local"
+
+
+def is_toucan_sender(email: str) -> bool:
+    return email.strip().lower() == TOUCAN_CHAT_SENDER
+
+
 class ChatSendError(Exception):
     """A send the caller must surface (bad request / not a participant). `code`/`message` are
     the exact `chat_error` wire strings the socket handler has always emitted."""
@@ -71,9 +83,16 @@ async def send_chat_message(
     if not conversation_id:
         raise ChatSendError("invalid_message", "conversationId is required")
 
-    ok = await chat_repo.is_participant(session, conversation_id, sender_email)
-    if not ok:
-        raise ChatSendError("forbidden", "Not a participant")
+    if is_toucan_sender(sender_email):
+        # Toucan is not a member of anything; it may only write into a conversation that already
+        # exists (it never creates one and is never added to one). Every other sender — human or
+        # otherwise — must be a participant, exactly as before.
+        if await chat_repo.get_conversation_by_id(session, conversation_id) is None:
+            raise ChatSendError("invalid_message", "Conversation not found")
+    else:
+        ok = await chat_repo.is_participant(session, conversation_id, sender_email)
+        if not ok:
+            raise ChatSendError("forbidden", "Not a participant")
 
     text = text.strip() if isinstance(text, str) else ""
     if not text:

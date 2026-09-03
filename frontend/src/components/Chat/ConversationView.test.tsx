@@ -546,3 +546,64 @@ describe("ConversationView (real mode, status indicators)", () => {
     });
   });
 });
+
+describe("ConversationView — A1.4 Toucan author in a DM", () => {
+  function msg(overrides: Partial<ChatMessage>): ChatMessage {
+    return {
+      id: "m",
+      conversationId: "conv-1",
+      senderId: "alex",
+      text: "",
+      sentAt: "2026-08-14T10:00:00.000Z",
+      deliveredTo: [],
+      readBy: [],
+      mentionedEmails: [],
+      reactions: [],
+      ...overrides,
+    };
+  }
+
+  afterEach(() => {
+    cleanup();
+    vi.doUnmock("../../services/chat");
+    vi.resetModules();
+  });
+
+  it("renders a Toucan-authored message as Toucan, never as the DM peer", async () => {
+    const { TOUCAN_CHAT_SENDER, TOUCAN_AVATAR_GLYPH } = await import("../../services/chat/toucanSender");
+    const history: ChatMessage[] = [
+      msg({ id: "own", senderId: "bon", text: "hi alex" }),
+      msg({ id: "peer", senderId: "alex", text: "hi bon", sentAt: "2026-08-14T10:01:00.000Z" }),
+      msg({ id: "bird", senderId: TOUCAN_CHAT_SENDER, text: "Squawk — noted.", sentAt: "2026-08-14T10:02:00.000Z" }),
+    ];
+    const conv: Conversation = { id: "conv-1", participantIds: ["bon", "alex"], lastMessageAt: history[0].sentAt };
+    const service: ChatService = {
+      listConversations: async () => [conv],
+      getMessages: async () => history,
+      sendMessage: async (input) => msg({ id: "new", ...input }),
+      openConversationWith: async () => conv,
+      onMessage: () => () => {},
+      markRead: () => {},
+      onUnreadCount: () => () => {},
+      markDelivered: () => {},
+      onDeliveryReceipt: () => () => {},
+      onReadReceipt: () => () => {},
+    };
+    vi.doMock("../../services/chat", () => ({ chatMode: "real", chatService: service, mockChatService: service }));
+    const { ConversationView: View } = await import("./ConversationView");
+    render(<View peer={makePeer("alex")} peerChatId="alex" selfId="bon" onClose={() => {}} />);
+
+    await waitFor(() => expect(screen.getByText("Squawk — noted.")).toBeInTheDocument());
+    const birdRow = screen.getByText("Squawk — noted.").closest("[data-sender]");
+    expect(birdRow?.getAttribute("data-sender")).toBe("toucan");
+    expect(birdRow?.textContent).toContain("Toucan");
+    expect(birdRow?.textContent).toContain(TOUCAN_AVATAR_GLYPH);
+    expect(birdRow?.textContent).not.toContain("A"); // not the peer's initial
+
+    const peerRow = screen.getByText("hi bon").closest("[data-sender]");
+    expect(peerRow?.getAttribute("data-sender")).toBe("peer");
+    expect(peerRow?.textContent).toContain("A"); // peer initial unchanged
+    const ownRow = screen.getByText("hi alex").closest("[data-sender]");
+    expect(ownRow?.getAttribute("data-sender")).toBe("self");
+  });
+});

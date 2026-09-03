@@ -35,7 +35,7 @@ from app.realtime.state import (
 )
 from app.services.call_invites import INVITE_TTL_SECONDS
 from app.services.call_invites import wire as invite_wire
-from app.services.chat_send import ChatSendError, send_chat_message
+from app.services.chat_send import ChatSendError, is_toucan_sender, send_chat_message
 from app.services.position_registry import position_registry
 
 # Faithful port of backend/src/socket.ts onto python-socketio's ASGI async server. Mounted in
@@ -920,6 +920,10 @@ async def send_message(sid: str, payload: dict | None) -> None:
         # never trusted, even implicitly.
         session_data = await sio.get_session(sid)
         email = session_data["email"]
+        if is_toucan_sender(email):
+            # The reserved Toucan author is server-side only; no socket session may speak as it.
+            await sio.emit("chat_error", {"code": "forbidden", "message": "Reserved sender"}, to=sid)
+            return
 
         try:
             async with async_session_maker() as session:
