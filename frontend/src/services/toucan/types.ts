@@ -38,6 +38,9 @@ export interface ToucanActionProposal {
   status?: string | null;
   /** set_status: present only for DND — already validated/clamped server-side. */
   dndMinutes?: number | null;
+  /** send_message: "dm" (recipientEmail set) or "group" (an existing group the
+   *  viewer belongs to; recipientLabel is its title). Server-resolved. */
+  targetKind?: "dm" | "group" | null;
   /** send_message: the SERVER-resolved recipient. The client never names one. */
   recipientEmail?: string | null;
   recipientLabel?: string | null;
@@ -57,6 +60,7 @@ export interface ToucanActionResult {
   action: ToucanActionKind;
   status?: string | null;
   dndMinutes?: number | null;
+  targetKind?: "dm" | "group" | null;
   recipientEmail?: string | null;
   recipientLabel?: string | null;
   message?: string | null;

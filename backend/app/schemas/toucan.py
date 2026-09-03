@@ -71,8 +71,10 @@ class ToucanActionProposalOut(BaseModel):
     status: str | None = None
     # set_status: present only for DND, already clamped server-side.
     dnd_minutes: int | None = Field(default=None, alias="dndMinutes")
-    # send_message: the RESOLVED recipient and the exact outgoing text — both must be visible on
-    # the card before Confirm. Server-resolved; the client never names a recipient.
+    # send_message: the RESOLVED target and the exact outgoing text — both must be visible on
+    # the card before Confirm. Server-resolved; the client never names a target. target_kind
+    # "dm" carries recipient_email; "group" carries an existing group's title as the label.
+    target_kind: Literal["dm", "group"] | None = Field(default=None, alias="targetKind")
     recipient_email: str | None = Field(default=None, alias="recipientEmail")
     recipient_label: str | None = Field(default=None, alias="recipientLabel")
     message: str | None = None
@@ -96,6 +98,7 @@ class ToucanActionResultOut(BaseModel):
     action: Literal["set_status", "send_message"]
     status: str | None = None
     dnd_minutes: int | None = Field(default=None, alias="dndMinutes")
+    target_kind: Literal["dm", "group"] | None = Field(default=None, alias="targetKind")
     recipient_email: str | None = Field(default=None, alias="recipientEmail")
     recipient_label: str | None = Field(default=None, alias="recipientLabel")
     message: str | None = None

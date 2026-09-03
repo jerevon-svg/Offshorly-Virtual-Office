@@ -170,6 +170,20 @@ async def get_dm_conversation_id(session: AsyncSession, email_a: str, email_b: s
     return row[0] if row else None
 
 
+async def list_group_titles_for_user(session: AsyncSession, email: str) -> list[dict]:
+    """Minimal group metadata for one member: [{id, title}] for every GROUP conversation the
+    email participates in. Deliberately nothing else — no counts, no last message, no other
+    members — so a caller that only needs to resolve a group by name learns only that."""
+    self_email = email.strip().lower()
+    result = await session.execute(
+        select(Conversation.id, Conversation.title)
+        .join(ConversationParticipant, ConversationParticipant.conversation_id == Conversation.id)
+        .where(ConversationParticipant.participant_email == self_email, Conversation.type == "group")
+        .order_by(Conversation.title, Conversation.id)
+    )
+    return [{"id": row[0], "title": row[1]} for row in result.all()]
+
+
 async def is_participant(session: AsyncSession, conversation_id: str, email: str) -> bool:
     self_email = email.strip().lower()
     result = await session.execute(

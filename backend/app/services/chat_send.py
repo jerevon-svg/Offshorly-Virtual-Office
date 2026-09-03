@@ -154,3 +154,9 @@ async def send_direct_message(
         text=text,
         join_participant_sockets=True,
     )
+
+
+async def list_group_targets(session: AsyncSession, email: str) -> list[dict]:
+    """[{id, title}] for every group conversation `email` belongs to — the minimum a server-side
+    sender needs to resolve "the Design Team" onto a conversation it may post into. Read-only."""
+    return await chat_repo.list_group_titles_for_user(session, email)

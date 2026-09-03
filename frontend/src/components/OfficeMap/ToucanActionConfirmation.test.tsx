@@ -316,6 +316,29 @@ describe("ToucanAssistantPanel — A1 send_message confirmation", () => {
     expect(screen.getByText("Okay, cancelled — I haven't sent anything.")).toBeTruthy();
   });
 
+  it("a group target shows the group title AND the exact message, and sends nothing by itself", async () => {
+    h.service.ask.mockResolvedValue({
+      ...SEND_ANSWER,
+      text: "I can send this to Design Team: “I'll be late.” Nothing has been sent yet — confirm below and I'll send it.",
+      action: {
+        ...SEND_PROPOSAL,
+        id: "act-3",
+        targetKind: "group" as const,
+        recipientEmail: null,
+        recipientLabel: "Design Team",
+        message: "I'll be late.",
+        summary: "Send message to Design Team",
+      },
+    });
+    await setup();
+    await sendQuestion("Message Design Team that I'll be late.");
+
+    expect(screen.getByTestId("toucan-action-card").textContent).toContain("Send message to Design Team");
+    expect(screen.getByTestId("toucan-action-message").textContent).toBe("I'll be late.");
+    expect(h.service.confirmAction).not.toHaveBeenCalled();
+    expect(h.applyToucanStatus).not.toHaveBeenCalled();
+  });
+
   it("an expired send proposal is worded safely and sends nothing", async () => {
     h.service.ask.mockResolvedValue(SEND_ANSWER);
     h.service.confirmAction.mockRejectedValue(new ToucanActionUnavailableError("act-2"));

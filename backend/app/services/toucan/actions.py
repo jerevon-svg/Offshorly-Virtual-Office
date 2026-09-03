@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # T8 — SAFE ACTIONS: the server-owned allowlist, parsing, validation and wording. Pure module,
 # storage-free like the rest of this package (see tests/test_toucan_privacy.py): no database, no
@@ -76,32 +76,81 @@ class SetStatusAction:
         return ACTION_SET_STATUS
 
 
+TARGET_DM = "dm"
+TARGET_GROUP = "group"
+
+
 @dataclass(frozen=True)
 class SendMessageRequest:
     """An UNRESOLVED send request: the recipient exactly as the user (or the model) named them,
     plus the exact outgoing text. Not yet a proposal — the router must resolve `recipient` onto
-    exactly one known person (services/toucan/context.resolve_person) before a SendMessageAction
-    exists. Zero or several matches never become a proposal; Toucan asks instead."""
+    exactly one known person (services/toucan/context.resolve_person) or exactly one existing
+    group the caller belongs to before a SendMessageAction exists. Zero or several matches never
+    become a proposal; Toucan asks instead.
+
+    `splits`: alternative (recipient, text) readings of a connector-less phrasing ("tell Project
+    Alpha I'll join after lunch"), longest recipient first. The router tries them in order and
+    takes the first whose recipient names something it knows; `recipient`/`text` are the
+    single-word reading and are what an AI-relayed request carries. Excluded from equality."""
 
     recipient: str
     text: str
+    splits: tuple[tuple[str, str], ...] = field(default=(), compare=False, repr=False)
+
+    def readings(self) -> tuple[tuple[str, str], ...]:
+        return self.splits or ((self.recipient, self.text),)
 
 
 @dataclass(frozen=True)
 class SendMessageAction:
     """One validated, RESOLVED send-message proposal — what the confirmation card shows and what
     Confirm executes. The sender is never here: it is the authenticated owner of the pending
-    entry, applied at confirm time from the bearer identity. `conversation_id` is the existing DM
-    when one already exists; None means Confirm creates it (never the proposal)."""
+    entry, applied at confirm time from the bearer identity.
 
-    recipient_email: str
+    target_kind "dm": `recipient_email` is the person; `conversation_id` is the existing DM when
+    one already exists, None means Confirm creates it (never the proposal).
+    target_kind "group": `conversation_id` is an EXISTING group the owner belonged to at proposal
+    time (re-checked by the chat seam at Confirm); `recipient_email` is None and
+    `recipient_label` is the group's title. Toucan never creates or alters a group."""
+
     recipient_label: str
     text: str
+    recipient_email: str | None = None
     conversation_id: str | None = None
+    target_kind: str = TARGET_DM
 
     @property
     def action(self) -> str:
         return ACTION_SEND_MESSAGE
+
+
+@dataclass(frozen=True)
+class GroupTarget:
+    """The whole of what Toucan may know about a group for resolution: its id and its title."""
+
+    conversation_id: str
+    title: str | None
+
+
+def _normalize_title(value: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", value.lower()).split())
+
+
+def resolve_group_targets(targets: tuple[GroupTarget, ...] | list[GroupTarget], raw_name: str) -> tuple[GroupTarget, ...]:
+    """Deterministic group-by-name resolution over the CALLER'S OWN groups only (the caller
+    supplies the list). Exact normalized title match wins outright; failing that, a title that
+    begins with the query as a whole word ("Design" → "Design Team"). Nothing looser — a query
+    longer than the title never matches, so a connector-less reading like "Design Team I'll"
+    cannot claim the group and swallow a word of the text. Every candidate is returned — zero or
+    several is the router's cue to ask, never to guess."""
+    query = _normalize_title(raw_name)
+    if not query:
+        return ()
+    titled = [(t, _normalize_title(t.title)) for t in targets if t.title]
+    exact = tuple(t for t, norm in titled if norm == query)
+    if exact:
+        return exact
+    return tuple(t for t, norm in titled if norm.startswith(query + " "))
 
 
 ToucanAction = SetStatusAction | SendMessageAction
@@ -218,17 +267,36 @@ _SEND_VERB = r"(?:(?:please\s+)?(?:can\s+you\s+|could\s+you\s+)?(?:send\s+(?:a\s
 _SEND_MESSAGE_PATTERNS = [
     # With an explicit connector ("that", "saying", ":" or ",") — multi-word names allowed.
     re.compile(
-        r"^" + _SEND_VERB + r"\s+" + _PERSON_TOKEN + r"(?:\s+that\s+|\s+saying\s+|\s*:\s*|\s*,\s*)(?P<text>.+)$",
+        r"^" + _SEND_VERB + r"\s+(?:the\s+)?" + _PERSON_TOKEN + r"(?:\s+that\s+|\s+saying\s+|\s*:\s*|\s*,\s*)(?P<text>.+)$",
         re.IGNORECASE,
     ),
     # "let <person> know (that) <text>"
     re.compile(
-        r"^(?:please\s+)?(?:can\s+you\s+|could\s+you\s+)?let\s+" + _PERSON_TOKEN + r"\s+know\s+(?:that\s+)?(?P<text>.+)$",
+        r"^(?:please\s+)?(?:can\s+you\s+|could\s+you\s+)?let\s+(?:the\s+)?" + _PERSON_TOKEN + r"\s+know\s+(?:that\s+)?(?P<text>.+)$",
         re.IGNORECASE,
     ),
-    # No connector — a single-word recipient only, so the text cannot swallow part of a name.
-    re.compile(r"^" + _SEND_VERB + r"\s+(?P<person>[^\s,:]+)\s+(?P<text>.+)$", re.IGNORECASE),
+    # No connector — captured as a single-word recipient; parse_send_message_request also offers
+    # the two- and three-word readings via SendMessageRequest.splits so "tell Project Alpha ..."
+    # can resolve onto a multi-word name without the text swallowing part of it.
+    re.compile(r"^" + _SEND_VERB + r"\s+(?:the\s+)?(?P<person>[^\s,:]+)\s+(?P<text>.+)$", re.IGNORECASE),
 ]
+
+_MAX_RECIPIENT_WORDS = 3
+
+
+def _connectorless_splits(person: str, rest: str) -> tuple[tuple[str, str], ...]:
+    """(recipient, text) readings of "<verb> w1 w2 w3 ..." — longest recipient first, the
+    single-word reading last. Only readings that leave some text behind are offered."""
+    words = rest.split()
+    readings: list[tuple[str, str]] = []
+    for extra in range(_MAX_RECIPIENT_WORDS - 1, 0, -1):
+        if len(words) > extra:
+            candidate = " ".join([person, *words[:extra]])
+            if any(w.lower() in _NOT_A_RECIPIENT for w in words[:extra]):
+                continue
+            readings.append((candidate, _clean_outgoing(" ".join(words[extra:]))))
+    readings.append((person, _clean_outgoing(rest)))
+    return tuple(r for r in readings if r[1])
 
 
 def _clean_outgoing(raw: str) -> str:
@@ -255,7 +323,10 @@ def parse_send_message_request(question: str) -> SendMessageRequest | None:
         body = _clean_outgoing(match.group("text"))
         if not body or len(body) > MAX_MESSAGE_CHARS or len(person) > MAX_RECIPIENT_CHARS:
             return None
-        return SendMessageRequest(recipient=person, text=body)
+        splits: tuple[tuple[str, str], ...] = ()
+        if pattern is _SEND_MESSAGE_PATTERNS[-1]:
+            splits = _connectorless_splits(person, match.group("text"))
+        return SendMessageRequest(recipient=person, text=body, splits=splits)
     return None
 
 
@@ -381,6 +452,44 @@ def cancelled_text(action: ToucanAction) -> str:
 
 def self_recipient_text() -> str:
     return "That's you — I can only send messages to other people in the office."
+
+
+def _quote_join(items: list[str]) -> str:
+    quoted = [f"\"{i}\"" for i in items]
+    if len(quoted) <= 1:
+        return "".join(quoted)
+    return ", ".join(quoted[:-1]) + " and " + quoted[-1]
+
+
+def unknown_target_text(raw_name: str, *, roster_available: bool) -> str:
+    """Neither a person nor one of the caller's group chats. Mentions both so the user knows
+    which kinds of target exist — and never names anything that did not match."""
+    name = raw_name.strip()
+    if roster_available:
+        return (
+            f"I don't know anyone called \"{name}\" in the office directory, and you're not in a "
+            "group chat by that name."
+        )
+    return (
+        f"I don't know anyone called \"{name}\" — I can't reach the employee directory right now, "
+        "so I only know people the office has seen this session — and you're not in a group chat "
+        "by that name."
+    )
+
+
+def ambiguous_group_text(raw_name: str, titles: list[str]) -> str:
+    return (
+        f"More than one of your group chats matches \"{raw_name.strip()}\": "
+        f"{_quote_join(titles)}. Which one did you mean?"
+    )
+
+
+def target_collision_text(raw_name: str, person_names: list[str], titles: list[str]) -> str:
+    """A name that is both a person and a group chat. Ask — never pick."""
+    return (
+        f"\"{raw_name.strip()}\" could be a person ({_quote_join(person_names)}) or a group chat "
+        f"({_quote_join(titles)}). Which did you mean — the person or the group?"
+    )
 
 
 # What confirm/cancel says about an id that is unknown, expired, already used, or somebody

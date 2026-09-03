@@ -28,21 +28,30 @@ from app.schemas.toucan import (
 from app.services.chat_send import (
     ChatSendError,
     find_direct_conversation_id,
+    list_group_targets,
+    send_chat_message,
     send_direct_message,
 )
 from app.services.toucan.actions import (
     ACTION_PROPOSAL_INTENT,
     ACTION_UNAVAILABLE_DETAIL,
+    TARGET_DM,
+    TARGET_GROUP,
+    GroupTarget,
     SendMessageAction,
     SendMessageRequest,
     SetStatusAction,
     ToucanAction,
+    ambiguous_group_text,
     cancelled_text,
     confirmation_text,
     executed_text,
     parse_action_request,
     proposal_summary,
+    resolve_group_targets,
     self_recipient_text,
+    target_collision_text,
+    unknown_target_text,
     validate_ai_proposal,
 )
 from app.services.toucan.activity import AttentionSnapshot
@@ -66,7 +75,6 @@ from app.services.toucan.office_assistant import (
     ambiguous_person_text,
     answer_question,
     is_activity_question,
-    unknown_person_text,
 )
 from app.services.toucan.pending_actions import PendingAction, pending_actions
 from app.services.toucan_ai.provider import AI_INTENT, ai_enabled, generate_answer
@@ -199,6 +207,7 @@ def _action_fields(action: ToucanAction) -> dict:
     proposal carries the RESOLVED recipient and the exact text so the card shows both."""
     if isinstance(action, SendMessageAction):
         return {
+            "target_kind": action.target_kind,
             "recipient_email": action.recipient_email,
             "recipient_label": action.recipient_label,
             "message": action.text,
@@ -218,30 +227,73 @@ async def _resolve_send_request(
     request: SendMessageRequest,
     context: OfficeContext,
 ) -> ToucanAnswerOut:
-    """A1 — turn an UNRESOLVED send request into a proposal, or ask. The recipient is resolved
-    server-side against the caller's own office context: exactly one match becomes a
-    SendMessageAction (frozen recipient + exact text); nobody, several people, or the caller
-    themselves gets a clarifying answer and NO proposal — a recipient is never guessed. An
-    existing DM id is looked up read-only here; a missing DM is created only at Confirm, so a
-    cancelled or expired proposal leaves no empty conversation behind."""
-    match = resolve_person(context, request.recipient)
-    if match.is_ambiguous:
-        answer_text = ambiguous_person_text(request.recipient, match.matches)
-    elif match.person is None:
-        answer_text = unknown_person_text(request.recipient, roster_available=context.roster_available)
-    elif match.person.email == email:
-        answer_text = self_recipient_text()
+    """A1 — turn an UNRESOLVED send request into a proposal, or ask. The target is resolved
+    server-side against two lists the caller is entitled to: their own office context (people)
+    and the titles of the groups THEY belong to (list_group_targets — id and title only). The
+    decision table is deterministic and never guesses:
+
+      one person, no group  → DM proposal (existing DM id looked up read-only; created at Confirm)
+      one group, no person  → group proposal (the group must already exist; never created)
+      person AND group      → ask which — no proposal
+      several of either     → ask which — no proposal
+      only the caller       → "that's you"
+      nothing               → "don't know anyone / no such group"
+
+    A connector-less phrasing offers several (recipient, text) readings (longest recipient
+    first); the first reading that names anything known is the one used, so "tell Project Alpha
+    I'll join after lunch" resolves the group and keeps the text exact."""
+    group_targets = [
+        GroupTarget(conversation_id=g["id"], title=g["title"]) for g in await list_group_targets(db, email)
+    ]
+    chosen = None
+    for recipient, text in request.readings():
+        match = resolve_person(context, recipient)
+        people = tuple(p for p in match.matches if p.email != email)
+        self_only = bool(match.matches) and not people
+        groups = resolve_group_targets(group_targets, recipient)
+        if people or groups or self_only:
+            chosen = (recipient, text, people, groups, self_only)
+            break
+
+    if chosen is None:
+        answer_text = unknown_target_text(request.recipient, roster_available=context.roster_available)
     else:
-        person = match.person
-        action = SendMessageAction(
-            recipient_email=person.email,
-            recipient_label=person.display_name or person.email,
-            text=request.text,
-            conversation_id=await find_direct_conversation_id(db, email, person.email),
-        )
-        return await _propose_action(
-            db, conversation=conversation, email=email, question=question, action=action
-        )
+        recipient, text, people, groups, self_only = chosen
+        if people and groups:
+            answer_text = target_collision_text(
+                recipient,
+                [p.display_name or p.email for p in people],
+                [g.title or g.conversation_id for g in groups],
+            )
+        elif len(people) > 1:
+            answer_text = ambiguous_person_text(recipient, people)
+        elif len(groups) > 1:
+            answer_text = ambiguous_group_text(recipient, [g.title or g.conversation_id for g in groups])
+        elif people:
+            person = people[0]
+            action = SendMessageAction(
+                target_kind=TARGET_DM,
+                recipient_email=person.email,
+                recipient_label=person.display_name or person.email,
+                text=text,
+                conversation_id=await find_direct_conversation_id(db, email, person.email),
+            )
+            return await _propose_action(
+                db, conversation=conversation, email=email, question=question, action=action
+            )
+        elif groups:
+            group = groups[0]
+            action = SendMessageAction(
+                target_kind=TARGET_GROUP,
+                recipient_label=group.title or "group chat",
+                text=text,
+                conversation_id=group.conversation_id,
+            )
+            return await _propose_action(
+                db, conversation=conversation, email=email, question=question, action=action
+            )
+        else:
+            answer_text = self_recipient_text()
     await toucan_repo.append_exchange(db, conversation=conversation, question=question, answer=answer_text)
     return ToucanAnswerOut(
         text=answer_text, intent=ACTION_CLARIFY_INTENT, supported=True, conversation_id=conversation.id
@@ -558,19 +610,36 @@ async def confirm_toucan_action(
         # seam's — nothing is duplicated here. The audit line names who and to whom, never
         # the text.
         try:
-            sent = await send_direct_message(
-                db,
-                sender_email=email,
-                recipient_email=pending.action.recipient_email,
-                text=pending.action.text,
-            )
+            if pending.action.target_kind == TARGET_GROUP and pending.action.conversation_id:
+                # A1.3 — an EXISTING group. send_chat_message re-checks that the confirming
+                # identity is still a participant; if membership changed since the proposal it
+                # raises and nothing is sent. Members' sockets already sit in the room.
+                sent = await send_chat_message(
+                    db,
+                    conversation_id=pending.action.conversation_id,
+                    sender_email=email,
+                    text=pending.action.text,
+                )
+            elif pending.action.recipient_email:
+                sent = await send_direct_message(
+                    db,
+                    sender_email=email,
+                    recipient_email=pending.action.recipient_email,
+                    text=pending.action.text,
+                )
+            else:  # pragma: no cover — unrepresentable: the validator never mints such an action
+                raise HTTPException(status_code=409, detail="Message target is no longer available")
         except ChatSendError as err:
+            # Not a participant (any more) or nothing to send — fail closed, nothing was sent,
+            # and the one-time entry is already consumed so it cannot be retried into a send.
             raise HTTPException(status_code=409, detail=err.message) from err
         logger.info(
-            "toucan action executed: owner=%s action=%s recipient=%s id=%s",
+            "toucan action executed: owner=%s action=%s target=%s recipient=%s conversation=%s id=%s",
             email,
             pending.action.action,
+            pending.action.target_kind,
             pending.action.recipient_email,
+            sent["conversationId"],
             pending.id,
         )
     else:
