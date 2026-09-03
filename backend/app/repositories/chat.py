@@ -516,6 +516,20 @@ async def list_messages(
     return list(result.scalars().all())
 
 
+async def list_recent_messages(session: AsyncSession, conversation_id: str, limit: int) -> list[Message]:
+    """The LATEST `limit` messages of one conversation, returned oldest → newest. Bounded in SQL
+    (ORDER BY sent_at DESC LIMIT n) so a caller that only needs a recent window never pulls the
+    whole history into memory."""
+    n = min(max(int(limit), 1), 500)
+    result = await session.execute(
+        select(Message)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.sent_at.desc(), Message.id.desc())
+        .limit(n)
+    )
+    return list(reversed(result.scalars().all()))
+
+
 # --- Message reactions -------------------------------------------------------------------
 # Deliberately self-contained: nothing below writes to `messages`, `conversations` or
 # `conversation_participants`, so reactions can never move last_message_at, the

@@ -75,6 +75,13 @@ class Settings(BaseSettings):
     # "right now" decision, and an expired proposal simply reads as "not found or no longer
     # available"; the user asks again. See services/toucan/pending_actions.py.
     TOUCAN_ACTION_TTL_SECONDS: float = 120.0
+    # A1.4.3: bounds on the conversation window an explicit in-chat "@Toucan <prompt>" may show
+    # the provider — at most this many of the LATEST messages of THAT conversation only, each
+    # clamped to this many characters, and the whole window clamped to this many characters
+    # (oldest messages dropped first). See services/chat_assistant.py.
+    TOUCAN_CHAT_WINDOW_MESSAGES: int = 20
+    TOUCAN_CHAT_MAX_MESSAGE_CHARS: int = 600
+    TOUCAN_CHAT_MAX_CONTEXT_CHARS: int = 4000
 
     # FUTURE multi-worker realtime seam — UNSET AND UNUSED TODAY. When this backend eventually
     # runs more than one worker, Socket.IO needs a cross-process message queue (and the

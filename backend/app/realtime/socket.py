@@ -928,7 +928,7 @@ async def send_message(sid: str, payload: dict | None) -> None:
 
         try:
             async with async_session_maker() as session:
-                await send_chat_message(
+                saved = await send_chat_message(
                     session,
                     conversation_id=conversation_id,
                     sender_email=email,
@@ -946,7 +946,7 @@ async def send_message(sid: str, payload: dict | None) -> None:
         # delay or fail this send. The reply re-checks membership itself.
         prompt = detect_toucan_invocation(text)
         if prompt is not None:
-            schedule_reply(conversation_id, email, prompt)
+            schedule_reply(conversation_id, email, prompt, saved["id"])
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 
