@@ -35,6 +35,7 @@ from app.realtime.state import (
 )
 from app.services.call_invites import INVITE_TTL_SECONDS
 from app.services.call_invites import wire as invite_wire
+from app.services.chat_assistant import detect_toucan_invocation, schedule_reply
 from app.services.chat_send import ChatSendError, is_toucan_sender, send_chat_message
 from app.services.position_registry import position_registry
 
@@ -938,6 +939,14 @@ async def send_message(sid: str, payload: dict | None) -> None:
                 )
         except ChatSendError as err:
             await sio.emit("chat_error", {"code": err.code, "message": err.message}, to=sid)
+            return
+
+        # A1.4.2 — only AFTER the human message is committed and fanned out: an "@Toucan" token
+        # schedules Toucan's in-chat reply as a background task, so nothing about the reply can
+        # delay or fail this send. The reply re-checks membership itself.
+        prompt = detect_toucan_invocation(text)
+        if prompt is not None:
+            schedule_reply(conversation_id, email, prompt)
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 
