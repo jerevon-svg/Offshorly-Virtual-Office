@@ -149,6 +149,28 @@ export class ToucanActionUnavailableError extends Error {
   }
 }
 
+/** T10 — ONE attachment a viewer has staged on the composer, before anything is
+ *  uploaded, stored or sent. Deliberately the smallest shape that a preview row
+ *  needs and nothing more: there is no URL, no bytes, no base64, no server id,
+ *  because none of those exist yet and inventing them now would freeze a
+ *  contract the backend has not agreed to.
+ *
+ *  NOT part of ToucanAskRequest: /toucan/ask is unchanged and text-only. When
+ *  real uploads land, this grows a server-issued reference and the request gains
+ *  a field — both server-driven decisions, made then rather than guessed here. */
+export interface ToucanDraftAttachment {
+  /** Client-local, unique for this composer session only. Never sent anywhere. */
+  id: string;
+  /** Display name, as the preview row shows it. */
+  name: string;
+  /** MIME type when known, so a preview can tell an image from a document.
+   *  Optional because a future picker may not always supply one. */
+  mimeType?: string;
+  /** Size in bytes when known — for a preview label and, later, a client-side
+   *  bound check before any upload is attempted. */
+  sizeBytes?: number;
+}
+
 export interface ToucanAskOptions {
   /** Aborts an in-flight question — the panel wires this to unmount/release, so
    *  a dismissed toucan never resolves into a stale reply. */

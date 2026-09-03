@@ -22,8 +22,10 @@ import {
   type ToucanActionProposal,
   type ToucanConversation,
   type ToucanConversationDetail,
+  type ToucanDraftAttachment,
   type ToucanMemory,
 } from "../../services/toucan";
+import { appendDictatedText } from "./toucanDictation";
 
 // ---------------------------------------------------------------------------
 // Toucan assistant panel.
@@ -181,6 +183,20 @@ type ToucanAssistantPanelProps = {
   // the office's EXISTING character talking/typing animation seam — this
   // component neither knows nor cares which animation that is.
   onTypingChange?: (isTyping: boolean) => void;
+  // T10 — MULTIMODAL SEAMS. Both are absent today, and their absence is what
+  // renders the two composer buttons inert ("coming soon"): the panel never
+  // invents a picker or a recogniser of its own.
+  //
+  // Attachment: the caller opens whatever picker it owns and calls `add` with
+  // the chosen files' metadata. Staging one only fills the preview row above
+  // the composer — nothing uploads, nothing is stored, and /toucan/ask still
+  // sends text alone.
+  onRequestAttachment?: (add: (items: ToucanDraftAttachment[]) => void) => void;
+  // Dictation: the caller starts whatever speech-to-text it owns and calls
+  // `insert` with each finished transcript, which lands in the draft exactly as
+  // if it had been typed. This component starts no recording, requests no
+  // microphone permission, and touches no browser speech API.
+  onRequestDictation?: (insert: (transcript: string) => void) => void;
 };
 
 // Matches ConversationView's own TYPING_IDLE_MS, so the character stops
@@ -203,13 +219,48 @@ function turnsFromConversation(conversation: ToucanConversationDetail): Turn[] {
   }));
 }
 
+// T10 icons — local to the panel on purpose. The chat composer has its own
+// near-identical pair, and the module note there is explicit that normal chat
+// must not couple to Toucan; sharing eight lines of SVG is not worth reversing
+// that.
+function AttachIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M20 11.5l-8 8a5 5 0 0 1-7-7l8-8a3.5 3.5 0 0 1 5 5l-8 8a2 2 0 0 1-3-3l7.5-7.5"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function DictateIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M12 18v3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function ToucanAssistantPanel({
   onRelease,
   onPendingChange,
   onTypingChange,
+  onRequestAttachment,
+  onRequestDictation,
 }: ToucanAssistantPanelProps) {
   const [turns, setTurns] = useState<Turn[]>([greetingTurn(0)]);
   const [draft, setDraft] = useState("");
+  // T10 — attachments STAGED on the composer, client-side only. Always empty
+  // until a caller supplies onRequestAttachment, and cleared on send: nothing is
+  // uploaded, persisted or attached to a question yet, so keeping them past the
+  // draft they belong to would be a lie about what was sent.
+  const [attachments, setAttachments] = useState<ToucanDraftAttachment[]>([]);
   const [pending, setPending] = useState(false);
   // The conversation every question is appended to. Null until the restore below
   // finishes (or when the viewer has none yet) — a question asked in that window
@@ -357,6 +408,30 @@ export function ToucanAssistantPanel({
     onTypingChangeRef.current?.(false);
   }
 
+  // T10 — the ONE place a dictated transcript enters the draft. It lands through
+  // the same setDraft/reportTyping pair a keystroke takes, so auto-grow, the
+  // typing signal and the Send button's enabled state all behave identically to
+  // typed text. Nothing calls it until a caller supplies onRequestDictation.
+  function insertDictatedText(transcript: string) {
+    setDraft((current) => {
+      const next = appendDictatedText(current, transcript);
+      reportTyping(next);
+      return next;
+    });
+    textareaRef.current?.focus();
+  }
+
+  // T10 — the ONE place a staged attachment enters the composer. Metadata only;
+  // see ToucanDraftAttachment for why there is no URL or payload here.
+  function addAttachments(items: ToucanDraftAttachment[]) {
+    if (items.length === 0) return;
+    setAttachments((current) => [...current, ...items]);
+  }
+
+  function removeAttachment(id: string) {
+    setAttachments((current) => current.filter((item) => item.id !== id));
+  }
+
   // The character must never be left stuck in the talking animation — clear
   // it (and the timer) whenever the panel goes away, for any reason.
   useEffect(() => {
@@ -375,6 +450,8 @@ export function ToucanAssistantPanel({
     askAbortRef.current = null;
     setPending(false);
     setDraft("");
+    // Staged attachments belong to the draft that is being discarded.
+    setAttachments([]);
     setHistoryOpen(false);
     setMemoryOpen(false);
     // An unresolved proposal belongs to the conversation being left. Dropping the
@@ -637,6 +714,9 @@ export function ToucanAssistantPanel({
       ]);
     }
     setDraft("");
+    // Cleared with the draft they were staged on: the question just sent was
+    // text-only, so leaving them in the preview row would claim otherwise.
+    setAttachments([]);
     stopTyping();
     setPending(true);
     // Asking something new abandons an unconfirmed proposal (it stays unexecuted
@@ -990,7 +1070,64 @@ export function ToucanAssistantPanel({
         )}
       </div>
 
+      {/* T10 — staged-attachment preview. Renders ONLY when something is staged,
+          so the resting panel is byte-for-byte the composer it was before; there
+          is no empty tray, no dropzone and no placeholder. */}
+      {attachments.length > 0 && (
+        <div className={styles.attachmentPreview} aria-label="Attachments">
+          {attachments.map((item) => (
+            <div key={item.id} className={styles.attachmentChip}>
+              <span className={styles.attachmentName} title={item.name}>
+                {item.name}
+              </span>
+              <button
+                type="button"
+                className={styles.attachmentRemove}
+                onClick={() => removeAttachment(item.id)}
+                aria-label={`Remove ${item.name}`}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className={`${chat.composer} ${styles.composerGrow}`} aria-busy={pending}>
+        {/* T10 — multimodal actions, in the compact icon-button style the chat
+            composer already defines. Both are disabled until a caller wires the
+            matching seam, and a disabled button cannot fire: no picker opens, no
+            recording starts, no permission is requested. */}
+        <div className={`${chat.composerActions} ${styles.multimodalActions}`}>
+          <button
+            type="button"
+            className={
+              onRequestAttachment
+                ? chat.iconButton
+                : `${chat.iconButton} ${chat.iconButtonDisabled}`
+            }
+            disabled={composerDisabled || !onRequestAttachment}
+            onClick={() => onRequestAttachment?.(addAttachments)}
+            aria-label={onRequestAttachment ? "Attach a file" : "Attach a file (coming soon)"}
+            title={onRequestAttachment ? "Attach a file" : "Attach a file (coming soon)"}
+          >
+            <AttachIcon />
+          </button>
+          <button
+            type="button"
+            className={
+              onRequestDictation
+                ? chat.iconButton
+                : `${chat.iconButton} ${chat.iconButtonDisabled}`
+            }
+            disabled={composerDisabled || !onRequestDictation}
+            onClick={() => onRequestDictation?.(insertDictatedText)}
+            aria-label={onRequestDictation ? "Dictate a message" : "Dictate a message (coming soon)"}
+            title={onRequestDictation ? "Dictate a message" : "Dictate a message (coming soon)"}
+          >
+            <DictateIcon />
+          </button>
+        </div>
         <textarea
           ref={textareaRef}
           className={`${chat.textarea} ${styles.textarea}`}

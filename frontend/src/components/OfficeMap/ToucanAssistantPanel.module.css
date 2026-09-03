@@ -436,3 +436,75 @@
 .composerGrow {
   align-items: flex-end;
 }
+
+/* --- T10: multimodal composer preparation -----------------------------------
+   Two compact icon buttons ahead of the textarea, and a preview row that only
+   exists while something is staged. The buttons borrow the chat stylesheet's
+   .iconButton sizing wholesale — this only stops the cluster from stretching
+   with an auto-grown textarea, matching how .composerGrow bottom-anchors Send. */
+.multimodalActions {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+/* Staged attachments, immediately above the composer and inside the same top
+   border, so the composer reads as one block that has grown rather than as a
+   new panel section. Never rendered empty (see the panel's guard). */
+.attachmentPreview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px 0;
+  border-top: 1px solid #e5e7eb;
+  background: #fff;
+}
+
+/* Deliberately a name chip and not a thumbnail: no file bytes exist client-side
+   yet, so there is nothing to render a preview image from and faking one would
+   imply an upload that has not happened. */
+.attachmentChip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 180px;
+  padding: 4px 6px 4px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 9999px;
+  background: #f9fafb;
+  font-size: 12px;
+  color: #374151;
+}
+
+.attachmentName {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachmentRemove {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  color: #6b7280;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.attachmentRemove:hover {
+  background: #e5e7eb;
+  color: #111827;
+}
+
+/* The preview row takes over the divider above the composer when it is present,
+   so the two never draw a double rule. Adjacent-sibling rather than a toggled
+   class: the markup order already encodes the condition exactly. */
+.attachmentPreview + .composerGrow {
+  border-top: none;
+}
