@@ -66,11 +66,16 @@ class ToucanActionProposalOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     id: str
-    action: Literal["set_status"]
-    # One of the manual statuses (services/toucan/actions.py MANUAL_STATUSES).
-    status: str
-    # Present only for DND, already clamped server-side.
+    action: Literal["set_status", "send_message"]
+    # set_status: one of the manual statuses (services/toucan/actions.py MANUAL_STATUSES).
+    status: str | None = None
+    # set_status: present only for DND, already clamped server-side.
     dnd_minutes: int | None = Field(default=None, alias="dndMinutes")
+    # send_message: the RESOLVED recipient and the exact outgoing text — both must be visible on
+    # the card before Confirm. Server-resolved; the client never names a recipient.
+    recipient_email: str | None = Field(default=None, alias="recipientEmail")
+    recipient_label: str | None = Field(default=None, alias="recipientLabel")
+    message: str | None = None
     # The exact effect, as the confirmation card must show it.
     summary: str
     expires_at: datetime = Field(alias="expiresAt")
@@ -88,9 +93,15 @@ class ToucanActionResultOut(BaseModel):
 
     id: str
     outcome: Literal["executed", "cancelled"]
-    action: Literal["set_status"]
-    status: str
+    action: Literal["set_status", "send_message"]
+    status: str | None = None
     dnd_minutes: int | None = Field(default=None, alias="dndMinutes")
+    recipient_email: str | None = Field(default=None, alias="recipientEmail")
+    recipient_label: str | None = Field(default=None, alias="recipientLabel")
+    message: str | None = None
+    # send_message, executed only: where the message landed, so a client can open the chat.
+    conversation_id: str | None = Field(default=None, alias="conversationId")
+    message_id: str | None = Field(default=None, alias="messageId")
     summary: str
     # The assistant's outcome line, also persisted into the conversation transcript.
     text: str

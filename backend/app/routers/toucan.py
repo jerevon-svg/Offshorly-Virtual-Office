@@ -25,19 +25,32 @@ from app.schemas.toucan import (
     ToucanResourceIn,
     ToucanResourceOut,
 )
+from app.services.chat_send import (
+    ChatSendError,
+    find_direct_conversation_id,
+    send_direct_message,
+)
 from app.services.toucan.actions import (
     ACTION_PROPOSAL_INTENT,
     ACTION_UNAVAILABLE_DETAIL,
+    SendMessageAction,
+    SendMessageRequest,
     SetStatusAction,
+    ToucanAction,
     cancelled_text,
     confirmation_text,
     executed_text,
     parse_action_request,
     proposal_summary,
+    self_recipient_text,
     validate_ai_proposal,
 )
 from app.services.toucan.activity import AttentionSnapshot
-from app.services.toucan.context import build_office_context
+from app.services.toucan.context import (
+    OfficeContext,
+    build_office_context,
+    resolve_person,
+)
 from app.services.toucan.memory_commands import (
     EMPTY_FORGET_TEXT,
     EMPTY_REMEMBER_TEXT,
@@ -49,7 +62,12 @@ from app.services.toucan.memory_commands import (
     saved_text,
 )
 from app.services.toucan.memory_retrieval import select_relevant_memories
-from app.services.toucan.office_assistant import answer_question, is_activity_question
+from app.services.toucan.office_assistant import (
+    ambiguous_person_text,
+    answer_question,
+    is_activity_question,
+    unknown_person_text,
+)
 from app.services.toucan.pending_actions import PendingAction, pending_actions
 from app.services.toucan_ai.provider import AI_INTENT, ai_enabled, generate_answer
 
@@ -143,7 +161,7 @@ async def _propose_action(
     conversation,
     email: str,
     question: str,
-    action: SetStatusAction,
+    action: ToucanAction,
 ) -> ToucanAnswerOut:
     """T8 — register one VALIDATED proposal and answer with the confirmation ask. Everything
     user-facing here is server-worded from the validated action (never from model text), the
@@ -169,23 +187,79 @@ async def _propose_action(
         action=ToucanActionProposalOut(
             id=pending.id,
             action=action.action,
-            status=action.status,
-            dnd_minutes=action.dnd_minutes,
             summary=summary,
             expires_at=pending.expires_at,
+            **_action_fields(action),
         ),
     )
 
 
-def _action_result(pending: PendingAction, *, outcome: str, text: str) -> ToucanActionResultOut:
+def _action_fields(action: ToucanAction) -> dict:
+    """The frozen validated args, keyed the way both wire models name them. A send_message
+    proposal carries the RESOLVED recipient and the exact text so the card shows both."""
+    if isinstance(action, SendMessageAction):
+        return {
+            "recipient_email": action.recipient_email,
+            "recipient_label": action.recipient_label,
+            "message": action.text,
+        }
+    return {"status": action.status, "dnd_minutes": action.dnd_minutes}
+
+
+ACTION_CLARIFY_INTENT = "send_message_clarify"
+
+
+async def _resolve_send_request(
+    db: AsyncSession,
+    *,
+    conversation,
+    email: str,
+    question: str,
+    request: SendMessageRequest,
+    context: OfficeContext,
+) -> ToucanAnswerOut:
+    """A1 — turn an UNRESOLVED send request into a proposal, or ask. The recipient is resolved
+    server-side against the caller's own office context: exactly one match becomes a
+    SendMessageAction (frozen recipient + exact text); nobody, several people, or the caller
+    themselves gets a clarifying answer and NO proposal — a recipient is never guessed. An
+    existing DM id is looked up read-only here; a missing DM is created only at Confirm, so a
+    cancelled or expired proposal leaves no empty conversation behind."""
+    match = resolve_person(context, request.recipient)
+    if match.is_ambiguous:
+        answer_text = ambiguous_person_text(request.recipient, match.matches)
+    elif match.person is None:
+        answer_text = unknown_person_text(request.recipient, roster_available=context.roster_available)
+    elif match.person.email == email:
+        answer_text = self_recipient_text()
+    else:
+        person = match.person
+        action = SendMessageAction(
+            recipient_email=person.email,
+            recipient_label=person.display_name or person.email,
+            text=request.text,
+            conversation_id=await find_direct_conversation_id(db, email, person.email),
+        )
+        return await _propose_action(
+            db, conversation=conversation, email=email, question=question, action=action
+        )
+    await toucan_repo.append_exchange(db, conversation=conversation, question=question, answer=answer_text)
+    return ToucanAnswerOut(
+        text=answer_text, intent=ACTION_CLARIFY_INTENT, supported=True, conversation_id=conversation.id
+    )
+
+
+def _action_result(
+    pending: PendingAction, *, outcome: str, text: str, sent: dict | None = None
+) -> ToucanActionResultOut:
     return ToucanActionResultOut(
         id=pending.id,
         outcome=outcome,
         action=pending.action.action,
-        status=pending.action.status,
-        dnd_minutes=pending.action.dnd_minutes,
         summary=pending.summary,
         text=text,
+        conversation_id=sent["conversationId"] if sent else None,
+        message_id=sent["id"] if sent else None,
+        **_action_fields(pending.action),
     )
 
 
@@ -260,12 +334,25 @@ async def ask_toucan(
     # services/toucan/actions.py take this branch — and even they only produce a pending
     # proposal that the confirm endpoint alone can execute.
     action_request = parse_action_request(body.question)
-    if action_request is not None:
+    if isinstance(action_request, SetStatusAction):
         return await _propose_action(
             db, conversation=conversation, email=email, question=body.question, action=action_request
         )
 
     context = await build_office_context(email, bearer_token=bearer_token_from_request(request))
+
+    # A1 — an explicit "message <person> <text>" phrasing. Unlike set_status it needs the
+    # context, but only to resolve the recipient onto exactly one known person; nothing is
+    # sent, and an unresolved name is answered with a question rather than a guess.
+    if isinstance(action_request, SendMessageRequest):
+        return await _resolve_send_request(
+            db,
+            conversation=conversation,
+            email=email,
+            question=body.question,
+            request=action_request,
+            context=context,
+        )
 
     # T2: only the handful of "what did I miss" phrasings pay for a database round trip. Every
     # live-state question costs exactly what it cost at T1. The predicate and the resolver share
@@ -314,6 +401,16 @@ async def ask_toucan(
             # from the model's own text.
             if reply.action_name is not None:
                 proposed = validate_ai_proposal(reply.action_name, reply.action_args)
+                if isinstance(proposed, SendMessageRequest):
+                    # The model named a recipient; only the server resolves who that is.
+                    return await _resolve_send_request(
+                        db,
+                        conversation=conversation,
+                        email=email,
+                        question=body.question,
+                        request=proposed,
+                        context=context,
+                    )
                 if proposed is not None:
                     return await _propose_action(
                         db,
@@ -452,19 +549,44 @@ async def confirm_toucan_action(
     pending = pending_actions.take(action_id, owner_email=email)
     if pending is None:
         raise HTTPException(status_code=404, detail=ACTION_UNAVAILABLE_DETAIL)
-    # The audit line: who confirmed, which allowlisted action, with which validated args. No
-    # secrets, no prompt, no free-form payload exists to leak.
-    logger.info(
-        "toucan action executed: owner=%s action=%s status=%s dnd_minutes=%s id=%s",
-        email,
-        pending.action.action,
-        pending.action.status,
-        pending.action.dnd_minutes,
-        pending.id,
-    )
+    sent: dict | None = None
+    if isinstance(pending.action, SendMessageAction):
+        # A1 — the one action the server executes itself, and it does so through the SAME chat
+        # write path the Socket.IO handler uses (services/chat_send.py): the sender is the
+        # bearer identity that owns the pending entry, the DM is upserted only now (never at
+        # proposal time), and persistence, membership, unread and live fan-out are the chat
+        # seam's — nothing is duplicated here. The audit line names who and to whom, never
+        # the text.
+        try:
+            sent = await send_direct_message(
+                db,
+                sender_email=email,
+                recipient_email=pending.action.recipient_email,
+                text=pending.action.text,
+            )
+        except ChatSendError as err:
+            raise HTTPException(status_code=409, detail=err.message) from err
+        logger.info(
+            "toucan action executed: owner=%s action=%s recipient=%s id=%s",
+            email,
+            pending.action.action,
+            pending.action.recipient_email,
+            pending.id,
+        )
+    else:
+        # The audit line: who confirmed, which allowlisted action, with which validated args.
+        # No secrets, no prompt, no free-form payload exists to leak.
+        logger.info(
+            "toucan action executed: owner=%s action=%s status=%s dnd_minutes=%s id=%s",
+            email,
+            pending.action.action,
+            pending.action.status,
+            pending.action.dnd_minutes,
+            pending.id,
+        )
     text = executed_text(pending.action)
     await _append_action_note(db, pending, email=email, text=text)
-    return _action_result(pending, outcome="executed", text=text)
+    return _action_result(pending, outcome="executed", text=text, sent=sent)
 
 
 @router.post("/toucan/actions/{action_id}/cancel", response_model=ToucanActionResultOut)

@@ -123,3 +123,34 @@ async def send_chat_message(
             )
 
     return message_payload
+
+
+# --- direct-message entry points ---------------------------------------------------------------
+# For server-side senders that know WHO they are messaging rather than which conversation: the
+# DM is resolved (or created) by the same deterministic dm_key upsert the REST create-conversation
+# endpoint uses, then the message goes through send_chat_message above. Because a brand-new DM
+# has no live sockets in its room yet, join_participant_sockets is always on here.
+
+
+async def find_direct_conversation_id(session: AsyncSession, email_a: str, email_b: str) -> str | None:
+    """The existing DM between two people, or None. Read-only — creates nothing."""
+    return await chat_repo.get_dm_conversation_id(session, email_a, email_b)
+
+
+async def send_direct_message(
+    session: AsyncSession,
+    *,
+    sender_email: str,
+    recipient_email: str,
+    text: str,
+) -> dict:
+    """Upsert the DM between sender and recipient, then send through send_chat_message. The
+    sender must be a server-verified identity. Returns the serialized saved message."""
+    conv = await chat_repo.upsert_conversation(session, sender_email, recipient_email)
+    return await send_chat_message(
+        session,
+        conversation_id=conv["id"],
+        sender_email=sender_email,
+        text=text,
+        join_participant_sockets=True,
+    )

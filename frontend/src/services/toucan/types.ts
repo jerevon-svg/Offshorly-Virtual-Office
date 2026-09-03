@@ -28,14 +28,21 @@ export interface ToucanAskRequest {
  *  backend/app/schemas/toucan.py's ToucanActionProposalOut. Receiving one changes
  *  NOTHING: it only carries the server-minted id the explicit Confirm/Cancel
  *  buttons target, plus the server-worded exact effect to show. */
+export type ToucanActionKind = "set_status" | "send_message";
+
 export interface ToucanActionProposal {
   id: string;
-  /** The entire T8 allowlist. */
-  action: "set_status";
-  /** One of the manual statuses (AVAILABLE | BUSY | BREAK | LUNCH | DND). */
-  status: string;
-  /** Present only for DND — already validated/clamped server-side. */
+  /** The action allowlist: T8's set_status plus A1's send_message. */
+  action: ToucanActionKind;
+  /** set_status: one of the manual statuses (AVAILABLE | BUSY | BREAK | LUNCH | DND). */
+  status?: string | null;
+  /** set_status: present only for DND — already validated/clamped server-side. */
   dndMinutes?: number | null;
+  /** send_message: the SERVER-resolved recipient. The client never names one. */
+  recipientEmail?: string | null;
+  recipientLabel?: string | null;
+  /** send_message: the exact outgoing text — shown verbatim on the card before Confirm. */
+  message?: string | null;
   /** The exact effect, as the confirmation card must show it. */
   summary: string;
   expiresAt: string;
@@ -47,9 +54,15 @@ export interface ToucanActionProposal {
 export interface ToucanActionResult {
   id: string;
   outcome: "executed" | "cancelled";
-  action: "set_status";
-  status: string;
+  action: ToucanActionKind;
+  status?: string | null;
   dndMinutes?: number | null;
+  recipientEmail?: string | null;
+  recipientLabel?: string | null;
+  message?: string | null;
+  /** send_message, executed only: where the message landed. */
+  conversationId?: string | null;
+  messageId?: string | null;
   summary: string;
   /** The assistant's outcome line — also persisted into the transcript server-side. */
   text: string;

@@ -634,23 +634,40 @@ export function ToucanAssistantPanel({
   // status path. A failure at any step reports honestly and executes nothing.
   const handleConfirmAction = useCallback(() => {
     if (!actionProposal || actionBusy) return;
-    const precheck = canApplyToucanStatus(actionProposal);
-    if (!precheck.ok) {
-      setActionProposal(null);
-      appendToucanTurn(precheck.reason);
-      // Tidy up the unusable pending entry; nothing to do if this fails — it
-      // simply expires.
-      void toucanService.cancelAction(actionProposal.id).catch(() => {});
-      return;
+    // The status pre-check is a set_status concern only. A send_message proposal
+    // is executed entirely server-side (through the normal chat write path), so
+    // there is nothing to pre-check and nothing to apply locally.
+    if (actionProposal.action === "set_status") {
+      const precheck = canApplyToucanStatus({
+        status: actionProposal.status ?? "",
+        dndMinutes: actionProposal.dndMinutes,
+      });
+      if (!precheck.ok) {
+        setActionProposal(null);
+        appendToucanTurn(precheck.reason);
+        // Tidy up the unusable pending entry; nothing to do if this fails — it
+        // simply expires.
+        void toucanService.cancelAction(actionProposal.id).catch(() => {});
+        return;
+      }
     }
     setActionBusy(true);
     void toucanService
       .confirmAction(actionProposal.id)
       .then((result) => {
-        // Apply exactly what the server confirmed — the frozen validated args —
-        // and only claim success when the local apply actually happened.
-        const applied = applyToucanStatus({ status: result.status, dndMinutes: result.dndMinutes });
-        appendToucanTurn(applied.ok ? result.text : applied.reason);
+        if (result.action === "set_status") {
+          // Apply exactly what the server confirmed — the frozen validated args —
+          // and only claim success when the local apply actually happened.
+          const applied = applyToucanStatus({
+            status: result.status ?? "",
+            dndMinutes: result.dndMinutes,
+          });
+          appendToucanTurn(applied.ok ? result.text : applied.reason);
+          return;
+        }
+        // send_message: the server already sent it through the chat seam; the
+        // outcome line is the whole effect on this panel. Never touches status.
+        appendToucanTurn(result.text);
       })
       .catch((error: unknown) => {
         appendToucanTurn(
@@ -1026,6 +1043,13 @@ export function ToucanAssistantPanel({
             <div className={chat.bubbleColumn}>
               <div className={`${chat.message} ${chat.peer} ${styles.actionCard}`}>
                 <span className={styles.actionSummary}>{actionProposal.summary}</span>
+                {actionProposal.action === "send_message" && actionProposal.message != null && (
+                  // A1 — the exact outgoing text, verbatim. The user must see BOTH the
+                  // recipient (in the summary above) and the message before Confirm.
+                  <blockquote className={styles.actionMessage} data-testid="toucan-action-message">
+                    {actionProposal.message}
+                  </blockquote>
+                )}
                 <div className={styles.actionButtons}>
                   <button
                     type="button"

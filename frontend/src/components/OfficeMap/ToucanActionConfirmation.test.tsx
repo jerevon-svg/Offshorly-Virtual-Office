@@ -203,3 +203,130 @@ describe("ToucanAssistantPanel — T8 action confirmation", () => {
     expect(h.service.confirmAction).not.toHaveBeenCalled();
   });
 });
+
+// A1 — send_message rides the same card and the same two buttons, but its
+// execution is entirely server-side: the panel must show recipient + exact text
+// before Confirm, and must never route a send outcome through the status path.
+const SEND_PROPOSAL = {
+  id: "act-2",
+  action: "send_message" as const,
+  recipientEmail: "micah@example.com",
+  recipientLabel: "Micah Reyes",
+  message: "I'll be back at 3.",
+  summary: "Send message to Micah Reyes",
+  expiresAt: "2026-09-02T12:02:00.000Z",
+};
+
+const SEND_ANSWER = {
+  text: "I can send this to Micah Reyes: “I'll be back at 3.” Nothing has been sent yet — confirm below and I'll send it.",
+  intent: "action_proposal",
+  supported: true,
+  conversationId: "c-1",
+  action: SEND_PROPOSAL,
+};
+
+const SENT_RESULT = {
+  id: "act-2",
+  outcome: "executed" as const,
+  action: "send_message" as const,
+  recipientEmail: "micah@example.com",
+  recipientLabel: "Micah Reyes",
+  message: "I'll be back at 3.",
+  conversationId: "conv-1",
+  messageId: "m-1",
+  summary: "Send message to Micah Reyes",
+  text: "Done — I sent your message to Micah Reyes.",
+};
+
+describe("ToucanAssistantPanel — A1 send_message confirmation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.service.loadLatestConversation.mockResolvedValue(null);
+    h.service.listConversations.mockResolvedValue([]);
+    h.canApplyToucanStatus.mockReturnValue({ ok: true });
+    h.applyToucanStatus.mockReturnValue({ ok: true });
+  });
+  afterEach(cleanup);
+
+  const flush = async () => {
+    await act(async () => {
+      await Promise.resolve();
+    });
+  };
+
+  const setup = async () => {
+    render(<ToucanAssistantPanel onRelease={vi.fn()} />);
+    await flush();
+  };
+
+  const sendQuestion = async (text: string) => {
+    fireEvent.change(screen.getByLabelText("Message the toucan"), { target: { value: text } });
+    fireEvent.keyDown(screen.getByLabelText("Message the toucan"), { key: "Enter" });
+    await flush();
+  };
+
+  it("shows the recipient AND the exact message on the card, and sends nothing by itself", async () => {
+    h.service.ask.mockResolvedValue(SEND_ANSWER);
+    await setup();
+    await sendQuestion("Message Micah that I'll be back at 3.");
+
+    const card = screen.getByTestId("toucan-action-card");
+    expect(card.textContent).toContain("Send message to Micah Reyes");
+    expect(screen.getByTestId("toucan-action-message").textContent).toBe("I'll be back at 3.");
+    expect(screen.getByText("Confirm")).toBeTruthy();
+    expect(screen.getByText("Cancel")).toBeTruthy();
+    expect(h.service.confirmAction).not.toHaveBeenCalled();
+    expect(h.applyToucanStatus).not.toHaveBeenCalled();
+  });
+
+  it("Confirm consumes the id, reports the send, and never touches the status path", async () => {
+    h.service.ask.mockResolvedValue(SEND_ANSWER);
+    h.service.confirmAction.mockResolvedValue(SENT_RESULT);
+    await setup();
+    await sendQuestion("Message Micah that I'll be back at 3.");
+
+    fireEvent.click(screen.getByText("Confirm"));
+    await flush();
+
+    expect(h.service.confirmAction).toHaveBeenCalledWith("act-2");
+    expect(h.canApplyToucanStatus).not.toHaveBeenCalled();
+    expect(h.applyToucanStatus).not.toHaveBeenCalled();
+    expect(screen.getByText("Done — I sent your message to Micah Reyes.")).toBeTruthy();
+    expect(screen.queryByTestId("toucan-action-card")).toBeNull();
+  });
+
+  it("Cancel sends nothing", async () => {
+    h.service.ask.mockResolvedValue(SEND_ANSWER);
+    h.service.cancelAction.mockResolvedValue({
+      ...SENT_RESULT,
+      outcome: "cancelled" as const,
+      conversationId: null,
+      messageId: null,
+      text: "Okay, cancelled — I haven't sent anything.",
+    });
+    await setup();
+    await sendQuestion("Message Micah that I'll be back at 3.");
+
+    fireEvent.click(screen.getByText("Cancel"));
+    await flush();
+
+    expect(h.service.cancelAction).toHaveBeenCalledWith("act-2");
+    expect(h.service.confirmAction).not.toHaveBeenCalled();
+    expect(h.applyToucanStatus).not.toHaveBeenCalled();
+    expect(screen.getByText("Okay, cancelled — I haven't sent anything.")).toBeTruthy();
+  });
+
+  it("an expired send proposal is worded safely and sends nothing", async () => {
+    h.service.ask.mockResolvedValue(SEND_ANSWER);
+    h.service.confirmAction.mockRejectedValue(new ToucanActionUnavailableError("act-2"));
+    await setup();
+    await sendQuestion("Message Micah that I'll be back at 3.");
+
+    fireEvent.click(screen.getByText("Confirm"));
+    await flush();
+
+    expect(h.applyToucanStatus).not.toHaveBeenCalled();
+    expect(screen.queryByText("Done — I sent your message to Micah Reyes.")).toBeNull();
+    expect(screen.queryByTestId("toucan-action-card")).toBeNull();
+  });
+});

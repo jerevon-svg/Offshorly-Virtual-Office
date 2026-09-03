@@ -161,6 +161,15 @@ async def upsert_conversation(session: AsyncSession, email_a: str, email_b: str)
     return result_conv
 
 
+async def get_dm_conversation_id(session: AsyncSession, email_a: str, email_b: str) -> str | None:
+    """Read-only twin of upsert_conversation: the id of the DM between two emails if one already
+    exists, else None. Never creates anything — for callers that must not leave an empty
+    conversation behind (a proposal that may still be cancelled)."""
+    result = await session.execute(select(Conversation.id).where(Conversation.dm_key == dm_key(email_a, email_b)))
+    row = result.first()
+    return row[0] if row else None
+
+
 async def is_participant(session: AsyncSession, conversation_id: str, email: str) -> bool:
     self_email = email.strip().lower()
     result = await session.execute(

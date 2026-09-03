@@ -378,6 +378,16 @@
   font-weight: 600;
 }
 
+/* A1 — the exact outgoing message on a send_message card, quoted verbatim. */
+.actionMessage {
+  margin: 6px 0 0;
+  padding: 4px 10px;
+  border-left: 3px solid currentColor;
+  opacity: 0.85;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .actionButtons {
   display: flex;
   gap: 8px;
