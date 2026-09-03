@@ -3,8 +3,8 @@ import { chatMode, chatService } from "../../services/chat";
 import { applyReactionUpdate } from "../../services/chat/reactions";
 import type { ChatMessage, ConnectionState } from "../../services/chat";
 import type { DeliveryReceiptUpdate, ReadReceiptUpdate } from "../../services/chat/types";
+import { ChatComposer } from "./ChatComposer";
 import { ChatWindowHeader } from "./ChatWindowHeader";
-import { MentionAutocomplete } from "./MentionAutocomplete";
 import { renderMessageText } from "./MentionText";
 import { MessageReactions } from "./MessageReactions";
 import { useMentionComposer } from "./useMentionComposer";
@@ -464,50 +464,17 @@ export function GroupConversationView({
           </button>
         </div>
       )}
-      <div className={styles.composer}>
-        {mention.trigger && mention.filtered.length > 0 && (
-          <MentionAutocomplete
-            candidates={mention.filtered}
-            highlightedIndex={mention.highlightedIndex}
-            onHover={mention.setHighlightedIndex}
-            onSelect={(c) => mention.selectCandidate(c, draft, setDraft)}
-          />
-        )}
-        <textarea
-          ref={mention.textareaRef}
-          className={styles.textarea}
-          value={draft}
-          placeholder={isNotConnected ? "Connecting…" : "Type a message…"}
-          onChange={(e) => {
-            handleDraftChange(e.target.value);
-            mention.onDraftChanged(e.target.value, e.target.selectionStart ?? e.target.value.length);
-          }}
-          onKeyDown={(e) => {
-            if (mention.trigger && mention.filtered.length > 0 && e.key === "Enter") {
-              e.preventDefault();
-              mention.selectCandidate(mention.filtered[mention.highlightedIndex], draft, setDraft);
-              return;
-            }
-            if (mention.handleKeyDown(e)) return;
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              handleSend();
-            }
-          }}
-        />
-        <button type="button" className={styles.sendButton} onClick={handleSend} aria-label="Send">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path
-              d="M3 11.5L21 3l-7.5 18-2.5-7.5L3 11.5z"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinejoin="round"
-              strokeLinecap="round"
-              fill="none"
-            />
-          </svg>
-        </button>
-      </div>
+      <ChatComposer
+        draft={draft}
+        setDraft={setDraft}
+        mention={mention}
+        placeholder={isNotConnected ? "Connecting…" : undefined}
+        onDraftInput={(text, caret) => {
+          handleDraftChange(text);
+          mention.onDraftChanged(text, caret);
+        }}
+        onSend={handleSend}
+      />
       </>
       )}
     </div>

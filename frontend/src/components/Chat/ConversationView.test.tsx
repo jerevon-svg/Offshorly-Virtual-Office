@@ -51,7 +51,7 @@ describe("ConversationView", () => {
     const peer = makePeer("arisha");
     render(<ConversationView peer={peer} selfId={SELF_ID} onClose={() => {}} />);
 
-    const textarea = await screen.findByPlaceholderText("Type a message…");
+    const textarea = await screen.findByPlaceholderText("Message");
     fireEvent.change(textarea, { target: { value: "hello there" } });
     fireEvent.click(screen.getByLabelText("Send"));
 
@@ -107,7 +107,7 @@ describe("ConversationView", () => {
     await waitFor(() => {
       expect(screen.queryByText("Connecting to chat…")).not.toBeInTheDocument();
     });
-    expect(screen.getByPlaceholderText("Type a message…")).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Message")).toBeInTheDocument();
 
     getMessagesSpy.mockRestore();
   });
@@ -120,7 +120,7 @@ describe("ConversationView", () => {
 
     render(<ConversationView peer={peer} selfId={SELF_ID} onClose={() => {}} />);
 
-    const textarea = await screen.findByPlaceholderText("Type a message…");
+    const textarea = await screen.findByPlaceholderText("Message");
     fireEvent.change(textarea, { target: { value: "will fail" } });
     fireEvent.click(screen.getByLabelText("Send"));
 
@@ -183,7 +183,7 @@ describe("ConversationView", () => {
       const onTypingChange = vi.fn();
       render(<ConversationView peer={peer} selfId={SELF_ID} onClose={() => {}} onTypingChange={onTypingChange} />);
 
-      const textarea = await screen.findByPlaceholderText("Type a message…");
+      const textarea = await screen.findByPlaceholderText("Message");
       fireEvent.focus(textarea);
 
       expect(onTypingChange).not.toHaveBeenCalled();
@@ -238,7 +238,7 @@ describe("ConversationView", () => {
       const onTypingChange = vi.fn();
       render(<ConversationView peer={peer} selfId={SELF_ID} onClose={() => {}} onTypingChange={onTypingChange} />);
 
-      const textarea = await screen.findByPlaceholderText("Type a message…");
+      const textarea = await screen.findByPlaceholderText("Message");
       fireEvent.change(textarea, { target: { value: "h" } });
       expect(onTypingChange).toHaveBeenLastCalledWith(true);
 
@@ -457,7 +457,7 @@ describe("ConversationView (real mode, status indicators)", () => {
     it("does not show the helper without a DND subtitle", async () => {
       const peer = makePeer("nodndpeer");
       render(<ConversationView peer={peer} selfId={SELF_ID} onClose={() => {}} />);
-      await screen.findByPlaceholderText("Type a message…");
+      await screen.findByPlaceholderText("Message");
 
       expect(screen.queryByText("Expect delayed response")).toBeNull();
     });
@@ -473,7 +473,7 @@ describe("ConversationView (real mode, status indicators)", () => {
           isSpatial
         />,
       );
-      await screen.findByPlaceholderText("Type a message…");
+      await screen.findByPlaceholderText("Message");
 
       expect(screen.queryByText("Expect delayed response")).toBeNull();
     });
@@ -483,7 +483,7 @@ describe("ConversationView (real mode, status indicators)", () => {
     it("typing @ opens autocomplete suggesting only the other DM participant", async () => {
       const peer = makePeer("alex");
       render(<ConversationView peer={peer} selfId={SELF_ID} onClose={() => {}} />);
-      const textarea = await screen.findByPlaceholderText("Type a message…");
+      const textarea = await screen.findByPlaceholderText("Message");
 
       fireEvent.change(textarea, { target: { value: "hi @al", selectionStart: 6 } });
 
@@ -495,7 +495,7 @@ describe("ConversationView (real mode, status indicators)", () => {
     it("selecting a suggestion inserts @DisplayName and sending includes mentionedEmails", async () => {
       const peer = makePeer("alex");
       render(<ConversationView peer={peer} selfId={SELF_ID} onClose={() => {}} />);
-      const textarea = (await screen.findByPlaceholderText("Type a message…")) as HTMLTextAreaElement;
+      const textarea = (await screen.findByPlaceholderText("Message")) as HTMLTextAreaElement;
 
       fireEvent.change(textarea, { target: { value: "hi @al", selectionStart: 6 } });
       const option = await screen.findByRole("option", { name: "alex" });
@@ -519,7 +519,7 @@ describe("ConversationView (real mode, status indicators)", () => {
       // earlier test's already-sent mention message too.
       const peer = makePeer("nomention");
       render(<ConversationView peer={peer} selfId={SELF_ID} onClose={() => {}} />);
-      const textarea = await screen.findByPlaceholderText("Type a message…");
+      const textarea = await screen.findByPlaceholderText("Message");
 
       fireEvent.change(textarea, { target: { value: "hi @randomtext", selectionStart: 14 } });
       fireEvent.click(screen.getByLabelText("Send"));
@@ -533,7 +533,7 @@ describe("ConversationView (real mode, status indicators)", () => {
     it("Escape closes the autocomplete without sending", async () => {
       const peer = makePeer("alex");
       render(<ConversationView peer={peer} selfId={SELF_ID} onClose={() => {}} />);
-      const textarea = await screen.findByPlaceholderText("Type a message…");
+      const textarea = await screen.findByPlaceholderText("Message");
 
       fireEvent.change(textarea, { target: { value: "hi @al", selectionStart: 6 } });
       await screen.findByRole("option", { name: "alex" });

@@ -296,13 +296,140 @@
 }
 
 .composer {
-  position: relative; /* anchors MentionAutocomplete's absolute positioning */
+  position: relative; /* anchors MentionAutocomplete's + .emojiPopover's absolute positioning */
+  display: flex;
+  /* Bottom-anchored, not centered: the textarea auto-grows upward (see
+     ChatComposer), so the action buttons and Send stay pinned to the bottom
+     row like Messenger. Same value ToucanAssistantPanel's .composerGrow
+     already layers on top — no visual change there. */
+  align-items: flex-end;
+  gap: 6px;
+  padding: 12px 12px;
+  border-top: 1px solid #e5e7eb;
+  background: #fff;
+}
+
+/* A cluster of compact icon actions flanking the textarea. min-height matches
+   the textarea's single-line rendered height (20px content + 20px padding +
+   2px border) so the icons center against one line of text, and stay pinned
+   to that bottom band (via the composer's flex-end) as the textarea grows. */
+.composerActions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 42px;
+  flex-shrink: 0;
+}
+
+/* Groups a popover toggle with its popover so one ref covers both for
+   outside-click dismissal — display: contents keeps it out of the flex layout,
+   and the popovers still position against .composer (the nearest positioned
+   ancestor), so .mediaCluster's overflow: hidden can't clip them. */
+.popoverGroup {
+  display: contents;
+}
+
+/* The left voice/image/GIF cluster. Empty draft: all three icons (3 × 32px +
+   2 × 2px gaps). Typing: folds to a single "+" button; the width animates so
+   the textarea slides into the freed room instead of jumping. */
+.mediaCluster {
+  justify-content: flex-start;
+  width: 100px;
+  overflow: hidden;
+  transition: width 0.15s ease;
+}
+
+.mediaClusterCollapsed {
+  width: 32px;
+}
+
+/* The "+" popover — same disabled future actions as the empty-state cluster,
+   shown as labeled rows. UI preparation only. */
+.mediaMenu {
+  position: absolute;
+  left: 12px;
+  bottom: calc(100% + 6px);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  z-index: 10;
+}
+
+.mediaMenuItem {
+  all: unset;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 12px 16px;
-  border-top: 1px solid #e5e7eb;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  white-space: nowrap;
+  color: #9ca3af;
+  cursor: default;
+}
+
+.iconButton {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  color: #3b82f6;
+}
+
+.iconButton:hover {
+  background: #eff6ff;
+}
+
+.iconButtonActive {
+  background: #eff6ff;
+}
+
+/* Future media actions (voice / image / GIF) — UI preparation only, rendered
+   visibly inert until the real attachment work lands. */
+.iconButtonDisabled,
+.iconButton:disabled {
+  cursor: default;
+  color: #9ca3af;
+}
+
+.iconButton:disabled:hover {
+  background: none;
+}
+
+.emojiPopover {
+  position: absolute;
+  right: 12px;
+  bottom: calc(100% + 6px);
+  display: flex;
+  gap: 2px;
+  padding: 4px 8px;
   background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 9999px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  z-index: 10;
+}
+
+.emojiOption {
+  all: unset;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  padding: 5px;
+  border-radius: 50%;
+}
+
+.emojiOption:hover {
+  background: #f3f4f6;
 }
 
 /* @mentions V1 — subtle highlight; the current viewer's own mention is slightly more noticeable
@@ -320,7 +447,15 @@
 
 .textarea {
   flex: 1;
+  min-width: 0; /* let the textarea shrink instead of widening the window */
   resize: none;
+  overflow-y: auto; /* internal scroll once the auto-grow cap is reached */
+  line-height: 1.4;
+  /* True one-line pill by default (content-box: padding/border add the rest).
+     ChatComposer clears its inline height whenever the draft is empty so this
+     rule wins there; a non-empty draft gets a measured inline height instead
+     (grow-on-wrap, capped by max-height below). */
+  height: 20px;
   min-height: 20px;
   max-height: 96px;
   border-radius: 20px;
@@ -334,6 +469,48 @@
 
 .textarea::placeholder {
   color: #9ca3af;
+}
+
+/* --- ChatComposer's Messenger pill --------------------------------------
+   The pill chrome (background, border, radius) lives on this wrapper so the
+   emoji toggle can sit INSIDE the field: [ textarea……… 🙂 ]. Bottom-aligned so
+   the emoji hugs the bottom-right corner as the textarea grows. Toucan keeps
+   using bare .textarea and is untouched by any of this. */
+.inputPill {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-end;
+  background: #f3f4f6;
+  border: 1px solid #e5e7eb;
+  border-radius: 20px;
+}
+
+.inputPill:focus-within {
+  border-color: #bfdbfe;
+}
+
+/* Inside the pill the textarea is bare: the wrapper owns the chrome. The
+   emoji button is a flex sibling, so text can never run underneath it — no
+   right padding tricks needed. Scrollbars stay hidden below the auto-grow
+   cap; ChatComposer flips overflow-y to auto inline only at max height. */
+.pillTextarea {
+  border: none;
+  background: transparent;
+  border-radius: 20px 0 0 20px;
+  padding: 10px 2px 10px 16px;
+  overflow-y: hidden;
+  overflow-x: hidden;
+  outline: none;
+}
+
+/* Emoji toggle inside the pill — slightly smaller than the outer icon
+   buttons; 6px bottom margin centers its 28px against the pill's one-line
+   42px height, and keeps that offset from the bottom edge as the pill grows. */
+.emojiToggle {
+  width: 28px;
+  height: 28px;
+  margin: 0 6px 6px 2px;
 }
 
 .sendButton {

@@ -162,7 +162,7 @@ describe("GroupConversationView", () => {
     await mountWith(service);
     await waitFor(() => expect(service.getMessages).toHaveBeenCalled());
 
-    const textarea = screen.getByPlaceholderText("Type a message…");
+    const textarea = screen.getByPlaceholderText("Message");
     fireEvent.change(textarea, { target: { value: "hey team" } });
     fireEvent.click(screen.getByLabelText("Send"));
 
@@ -540,7 +540,7 @@ describe("deriveGroupDeliveryLabel", () => {
       await mountWith(service);
       await waitFor(() => expect(service.getMessages).toHaveBeenCalled());
 
-      const textarea = screen.getByPlaceholderText("Type a message…");
+      const textarea = screen.getByPlaceholderText("Message");
       fireEvent.change(textarea, { target: { value: "@", selectionStart: 1 } });
 
       await waitFor(() => {
@@ -559,7 +559,7 @@ describe("deriveGroupDeliveryLabel", () => {
       await mountWith(service);
       await waitFor(() => expect(service.getMessages).toHaveBeenCalled());
 
-      const textarea = screen.getByPlaceholderText("Type a message…") as HTMLTextAreaElement;
+      const textarea = screen.getByPlaceholderText("Message") as HTMLTextAreaElement;
       fireEvent.change(textarea, { target: { value: "hey @al", selectionStart: 7 } });
       const option = await screen.findByRole("option", { name: "alex" });
       fireEvent.mouseDown(option);
