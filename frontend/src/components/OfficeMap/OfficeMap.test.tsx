@@ -204,10 +204,11 @@ describe("OfficeMap", () => {
   it("renders the layered office stage with multiple images", () => {
     const { container } = render(<OfficeMap />);
     const images = container.querySelectorAll("img");
-    // 164 layers from the manifest: floor + rooms + decor + characters +
+    // 165 layers from the manifest: floor + rooms + decor + characters +
     // furniture (161 previous + 3 for the new ai-door / executive-door-left /
-    // executive-door-right visual door assets from Bon's Figma redesign).
-    expect(images.length).toBe(164);
+    // executive-door-right visual door assets from Bon's Figma redesign,
+    // + 1 for the jan character layer added with the A2 roster).
+    expect(images.length).toBe(165);
   });
 
   it("mounts the TransformWrapper wrapper div", () => {

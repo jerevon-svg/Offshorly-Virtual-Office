@@ -162,19 +162,25 @@ async def test_create_group_conversation_stores_a_trimmed_title():
 
 
 async def test_reusing_an_untitled_exact_member_group_applies_the_new_title():
+    # Fresh identities per run: the dev DB persists across runs, and an exact-member group that
+    # already carries "Design Team" from a previous run would break the "starts untitled" step.
+    from uuid import uuid4
+
+    tag = uuid4().hex[:12]
+    owner, b, c = (f"t2{x}-{tag}@example.com" for x in ("a", "b", "c"))
     async with await _client() as client:
         first = await client.post(
             "/conversations/group",
-            json={"participantEmails": ["t2b@example.com", "t2c@example.com"]},
-            headers=_headers("t2a@example.com"),
+            json={"participantEmails": [b, c]},
+            headers=_headers(owner),
         )
         assert first.json().get("title") is None  # exclude_none drops a null title
         second = await client.post(
             "/conversations/group",
-            json={"participantEmails": ["t2c@example.com", "t2b@example.com"], "title": "Design Team"},
-            headers=_headers("t2a@example.com"),
+            json={"participantEmails": [c, b], "title": "Design Team"},
+            headers=_headers(owner),
         )
-        listed = await client.get("/conversations", headers=_headers("t2b@example.com"))
+        listed = await client.get("/conversations", headers=_headers(b))
     assert second.json()["id"] == first.json()["id"]
     assert second.json()["title"] == "Design Team"
     assert [c["title"] for c in listed.json() if c["id"] == first.json()["id"]] == ["Design Team"]
