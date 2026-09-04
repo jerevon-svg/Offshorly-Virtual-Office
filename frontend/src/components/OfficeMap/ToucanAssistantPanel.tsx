@@ -25,7 +25,9 @@ import {
   type ToucanDraftAttachment,
   type ToucanMemory,
   subscribeDelegationEnded,
+  subscribeDelegationUrgent,
   type ToucanDelegation,
+  type ToucanUrgentFlag,
 } from "../../services/toucan";
 import { appendDictatedText } from "./toucanDictation";
 
@@ -152,6 +154,17 @@ function formatLocalTime(date: Date): string {
   return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
+/** A3 — the same derivation the server uses for requesterLabel ("micah.reyes@…" → "Micah Reyes"),
+ *  for flags that arrive over the socket without one. */
+export function requesterLabelFromEmail(email: string): string {
+  const local = (email.split("@", 1)[0] ?? "").replace(/[._]/g, " ").trim();
+  if (!local) return "Someone";
+  return local
+    .split(/\s+/)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
 export function delegationScopeLabel(scope: string | null | undefined): string {
   return scope === "dm" ? "DMs only" : "Direct messages + group @mentions";
 }
@@ -185,6 +198,13 @@ export function describeActiveDelegation(delegation: ToucanDelegation): string {
   }
   const ends = new Date(delegation.expiresAt);
   return Number.isNaN(ends.getTime()) ? scope : `${scope} · until ${formatLocalTime(ends)}`;
+}
+
+/** A3 — one return-card line: who flagged it and when, in the viewer's zone. No text. */
+export function describeUrgentFlag(flag: ToucanUrgentFlag): string {
+  const when = new Date(flag.flaggedAt);
+  const label = flag.requesterLabel || flag.requesterEmail;
+  return Number.isNaN(when.getTime()) ? label : `${label} · ${formatLocalTime(when)}`;
 }
 
 export function withDelegationEnd(text: string, expiresAt: string | null | undefined): string {
@@ -259,6 +279,9 @@ type ToucanAssistantPanelProps = {
   // if it had been typed. This component starts no recording, requests no
   // microphone permission, and touches no browser speech API.
   onRequestDictation?: (insert: (transcript: string) => void) => void;
+  // A3 — the return card's Open button. The caller owns the chat windows; this component only
+  // hands over the conversation id it was told about. Absent = the card shows Dismiss only.
+  onOpenConversation?: (conversationId: string) => void;
 };
 
 // Matches ConversationView's own TYPING_IDLE_MS, so the character stops
@@ -315,6 +338,7 @@ export function ToucanAssistantPanel({
   onTypingChange,
   onRequestAttachment,
   onRequestDictation,
+  onOpenConversation,
 }: ToucanAssistantPanelProps) {
   const [turns, setTurns] = useState<Turn[]>([greetingTurn(0)]);
   const [draft, setDraft] = useState("");
@@ -357,6 +381,12 @@ export function ToucanAssistantPanel({
   // confirmed start_delegation result, cleared by Stop and by the server's delegation_ended.
   const [delegation, setDelegation] = useState<ToucanDelegation | null>(null);
   const [stopBusy, setStopBusy] = useState(false);
+  // A3 — the viewer's UNSEEN urgency flags. Loaded on mount, appended from the owner-only
+  // realtime event, refetched when the delegation ends, removed by Open/Dismiss. The list is
+  // shown as the return card only while no delegation is active; while one is, the banner
+  // carries the count instead.
+  const [urgentFlags, setUrgentFlags] = useState<ToucanUrgentFlag[]>([]);
+  const [urgentBusyId, setUrgentBusyId] = useState<string | null>(null);
   const nextIdRef = useRef(1);
   const askAbortRef = useRef<AbortController | null>(null);
   const restoreAbortRef = useRef<AbortController | null>(null);
@@ -413,9 +443,27 @@ export function ToucanAssistantPanel({
     return () => controller.abort();
   }, []);
 
+  // A3 — the viewer's unseen urgency flags, owner-scoped server-side. A failure (offline, an
+  // older service without the call) just means no card.
+  const loadUrgentFlags = useCallback((signal?: AbortSignal) => {
+    Promise.resolve()
+      .then(() => toucanService.listUrgentFlags({ signal }))
+      .then((flags) => {
+        if (!signal?.aborted) setUrgentFlags(Array.isArray(flags) ? flags : []);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    loadUrgentFlags(controller.signal);
+    return () => controller.abort();
+  }, [loadUrgentFlags]);
+
   // A2.2 — the server tells the OWNER (only) when their delegation ended: Stop from another
   // tab, replaced by a new one, or found expired. Clear the banner unless the event names a
   // different (older) delegation than the one shown.
+  // A3 — the same moment is when the return card becomes relevant, so the flags are refetched.
   useEffect(() => {
     return subscribeDelegationEnded((event) => {
       setDelegation((current) => {
@@ -423,6 +471,30 @@ export function ToucanAssistantPanel({
         if (event.delegationId && event.delegationId !== current.id) return current;
         return null;
       });
+      loadUrgentFlags();
+    });
+  }, [loadUrgentFlags]);
+
+  // A3 — somebody declared a message urgent while Toucan covered for the viewer. Bump the
+  // banner's counter (only for the delegation shown) and remember the flag for the return card.
+  useEffect(() => {
+    return subscribeDelegationUrgent((event) => {
+      setDelegation((current) => {
+        if (!current || (event.delegationId && event.delegationId !== current.id)) return current;
+        const next = typeof event.urgentCount === "number" ? event.urgentCount : (current.urgentCount ?? 0) + 1;
+        return { ...current, urgentCount: next };
+      });
+      if (!event.flagId || !event.conversationId) return;
+      const flag: ToucanUrgentFlag = {
+        id: event.flagId,
+        delegationId: event.delegationId ?? "",
+        conversationId: event.conversationId,
+        requesterEmail: event.requesterEmail ?? "",
+        requesterLabel: requesterLabelFromEmail(event.requesterEmail ?? ""),
+        flaggedAt: event.flaggedAt ?? new Date().toISOString(),
+        seenAt: null,
+      };
+      setUrgentFlags((current) => (current.some((f) => f.id === flag.id) ? current : [flag, ...current]));
     });
   }, []);
 
@@ -793,6 +865,32 @@ export function ToucanAssistantPanel({
       .finally(() => setStopBusy(false));
   }, [delegation, stopBusy, appendToucanTurn]);
 
+  // A3 — Open / Dismiss a flagged conversation. Both mark the flag seen (owner-scoped POST) and
+  // drop it from the card; Open additionally hands the conversation id to the caller, which lays
+  // the conversation out BESIDE this panel (OfficeMap's floating chat stack) — the panel stays
+  // open and only an explicit release closes it. One request at a time per flag; a failed mark
+  // keeps the row so nothing is silently lost.
+  const resolveUrgentFlag = useCallback(
+    (flag: ToucanUrgentFlag, open: boolean) => {
+      if (urgentBusyId) return;
+      setUrgentBusyId(flag.id);
+      if (open) onOpenConversation?.(flag.conversationId);
+      void toucanService
+        .markUrgentFlagsSeen([flag.id])
+        .then(() => {
+          setUrgentFlags((current) => current.filter((f) => f.id !== flag.id));
+          setDelegation((current) =>
+            current && current.id === flag.delegationId && (current.urgentCount ?? 0) > 0
+              ? { ...current, urgentCount: (current.urgentCount ?? 0) - 1 }
+              : current,
+          );
+        })
+        .catch(() => appendToucanTurn(REQUEST_FAILED_TEXT))
+        .finally(() => setUrgentBusyId(null));
+    },
+    [urgentBusyId, onOpenConversation, appendToucanTurn],
+  );
+
   // CANCEL — burns the pending entry server-side; nothing executes either way.
   const handleCancelAction = useCallback(() => {
     if (!actionProposal || actionBusy) return;
@@ -1088,7 +1186,14 @@ export function ToucanAssistantPanel({
         // Small, always visible while active, and the one place to stop it from the panel.
         <div className={styles.delegationBanner} data-testid="toucan-delegation-banner" role="status">
           <div className={styles.delegationText}>
-            <span className={styles.delegationTitle}>Toucan is handling your messages</span>
+            <span className={styles.delegationTitle}>
+              Toucan is handling your messages
+              {(delegation.urgentCount ?? 0) > 0 && (
+                <span className={styles.delegationUrgent} data-testid="toucan-delegation-urgent-count">
+                  {delegation.urgentCount === 1 ? "1 urgent" : `${delegation.urgentCount} urgent`}
+                </span>
+              )}
+            </span>
             <span className={styles.delegationMeta}>{describeActiveDelegation(delegation)}</span>
           </div>
           <button
@@ -1100,6 +1205,41 @@ export function ToucanAssistantPanel({
           >
             {stopBusy ? "Stopping…" : "Stop"}
           </button>
+        </div>
+      )}
+
+      {!delegation && urgentFlags.length > 0 && (
+        // A3 — the return card: once Toucan has stopped covering, the conversations somebody
+        // flagged as urgent, oldest last. Open hands the id to the caller; both actions mark seen.
+        <div className={styles.urgentCard} data-testid="toucan-urgent-card" role="status">
+          <span className={styles.urgentTitle}>Urgent while Toucan covered for you</span>
+          {urgentFlags.map((flag) => (
+            <div key={flag.id} className={styles.urgentRow} data-testid="toucan-urgent-row">
+              <span className={styles.urgentMeta}>{describeUrgentFlag(flag)}</span>
+              <span className={styles.urgentActions}>
+                {onOpenConversation && (
+                  <button
+                    type="button"
+                    className={styles.urgentOpen}
+                    onClick={() => resolveUrgentFlag(flag, true)}
+                    disabled={urgentBusyId !== null}
+                    aria-label={`Open the conversation flagged by ${flag.requesterLabel || flag.requesterEmail}`}
+                  >
+                    Open
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className={styles.urgentDismiss}
+                  onClick={() => resolveUrgentFlag(flag, false)}
+                  disabled={urgentBusyId !== null}
+                  aria-label={`Dismiss the flag from ${flag.requesterLabel || flag.requesterEmail}`}
+                >
+                  Dismiss
+                </button>
+              </span>
+            </div>
+          ))}
         </div>
       )}
 

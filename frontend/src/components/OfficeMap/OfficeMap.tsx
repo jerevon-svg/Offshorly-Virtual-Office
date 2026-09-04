@@ -263,6 +263,10 @@ const FLOATING_CHAT_GAP = 12;
 // Synthetic key for the single spatial ("Character -> Chat") slot in the combined floating
 // layout — distinct from any real conversationId/peer-email key a remote window could have.
 const SPATIAL_WINDOW_KEY = "__spatial__";
+// Synthetic key for the Toucan assistant panel's slot in the same floating layout. The panel is
+// just another conversation-shaped window: it keeps the rightmost slot it has always occupied,
+// and DM/group windows opened while it is up stack to its LEFT instead of underneath it.
+const TOUCAN_WINDOW_KEY = "__toucan__";
 
 // Pure layout pass: given an ordered list (index 0 = rightmost/newest) of {key, minimized},
 // returns each key's `right` CSS offset in px so windows stack without overlapping.
@@ -717,6 +721,10 @@ export function OfficeMap() {
         minimized: boolean;
       };
   const [remoteChatWindows, setRemoteChatWindows] = useState<RemoteChatWindow[]>([]);
+  // Whether the Toucan assistant panel is up. It is a window in the same floating stack as the
+  // chat windows above (see floatingChatRightOffsets / TOUCAN_WINDOW_KEY); its summon lifecycle
+  // (toucanCalled / toucanState / releaseToucan) lives further down with the rest of the bird.
+  const [toucanPanelOpen, setToucanPanelOpen] = useState(false);
 
   // Drives the EmployeePickerModal — "message"/"findPerson" both resolve to the modal's
   // single-select mode (functionally identical: search, pick one, open/create their DM), kept as
@@ -751,7 +759,8 @@ export function OfficeMap() {
   // OLDEST other expanded window rather than the one just opened/restored (protectKey).
   function capExpandedRemoteWindows(windows: RemoteChatWindow[], protectKey: string): RemoteChatWindow[] {
     const spatialTakesSlot = (openChat !== null || openGroupConv !== null) && !spatialChatMinimized;
-    const maxExpanded = spatialTakesSlot ? 2 : 3;
+    // The Toucan panel, while open, holds an expanded slot in the same visual stack.
+    const maxExpanded = Math.max(1, 3 - (spatialTakesSlot ? 1 : 0) - (toucanPanelOpen ? 1 : 0));
     const result = [...windows];
     let expandedCount = result.filter((w) => !w.minimized).length;
     for (let i = result.length - 1; i >= 0 && expandedCount > maxExpanded; i -= 1) {
@@ -859,12 +868,16 @@ export function OfficeMap() {
   // the spatial window (if any) last/leftmost. Purely presentational — has no bearing on which
   // slot is "spatial" vs "remote" for session-bookkeeping purposes, only on where each renders.
   const floatingChatRightOffsets = useMemo(() => {
-    const items = remoteChatWindows.map((w) => ({ key: w.key, minimized: w.minimized }));
+    const items: { key: string; minimized: boolean }[] = [];
+    // The Toucan panel keeps the rightmost slot while it is open (never minimized), so every
+    // conversation window opened alongside it lands beside it rather than behind it.
+    if (toucanPanelOpen) items.push({ key: TOUCAN_WINDOW_KEY, minimized: false });
+    for (const w of remoteChatWindows) items.push({ key: w.key, minimized: w.minimized });
     if (openChat || openGroupConv) {
       items.push({ key: SPATIAL_WINDOW_KEY, minimized: spatialChatMinimized });
     }
     return computeFloatingChatRightOffsets(items);
-  }, [remoteChatWindows, openChat, openGroupConv, spatialChatMinimized]);
+  }, [toucanPanelOpen, remoteChatWindows, openChat, openGroupConv, spatialChatMinimized]);
 
   // Routes a conversation-list click (the 💬 Global Chat icon's dropdown — MessageNotification
   // Badge's `conversations` list, below its New Message/Find Person/New Group Chat actions).
@@ -888,6 +901,19 @@ export function OfficeMap() {
   // earlier version routed EVERY Global Chat click to the spatial slot — which made plain
   // remote chats flip "In Conversation" — and the correction after that routed NONE, which lost
   // the peer's spatial context entirely. resolveConversationSlot is the middle ground.)
+  // A3 — the Toucan return card knows a conversation only by id. Resolve it through the same
+  // list the badge uses and route it through onSelectConversation, so a flagged DM or group
+  // opens exactly where a click in Global Chat would open it. Unknown ids do nothing.
+  function openConversationById(conversationId: string) {
+    void chatService
+      .listConversations()
+      .then((list) => {
+        const conv = list.find((c) => c.id === conversationId);
+        if (conv) onSelectConversation(conv);
+      })
+      .catch(() => {});
+  }
+
   function onSelectConversation(conv: Conversation) {
     const slot = resolveConversationSlot({
       conversationId: conv.id,
@@ -2246,7 +2272,8 @@ export function OfficeMap() {
   // bird's position on every walk frame.
   const [toucanCalled, setToucanCalled] = useState(false);
   const [toucanState, setToucanState] = useState<ToucanSummonState>("roaming");
-  const [toucanPanelOpen, setToucanPanelOpen] = useState(false);
+  // (toucanPanelOpen is declared with the floating chat stack above, since the panel is one of
+  // that stack's windows.)
   // Raw "a mock reply is being prepared" flag, reported by the panel.
   const [toucanPending, setToucanPending] = useState(false);
   // What the BIRD shows: the same flag, but lingering briefly after the reply
@@ -4420,11 +4447,19 @@ export function OfficeMap() {
           `toucanSessionActive` above stays gated on "attending" on purpose, so the character
           does not mouth words while the bird is still in the air. */}
       {toucanPanelOpen && (
-        <ToucanAssistantPanel
-          onRelease={releaseToucan}
-          onPendingChange={setToucanPending}
-          onTypingChange={setToucanTyping}
-        />
+        // Same fixed-position slot the chat windows use, at the offset the shared layout pass
+        // computed for TOUCAN_WINDOW_KEY — the panel no longer positions itself.
+        <div
+          className={styles.floatingChatSlot}
+          style={{ right: floatingChatRightOffsets.get(TOUCAN_WINDOW_KEY) ?? FLOATING_CHAT_EDGE_MARGIN }}
+        >
+          <ToucanAssistantPanel
+            onRelease={releaseToucan}
+            onPendingChange={setToucanPending}
+            onTypingChange={setToucanTyping}
+            onOpenConversation={openConversationById}
+          />
+        </div>
       )}
       {import.meta.env.DEV && (
         <button

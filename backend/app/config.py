@@ -95,6 +95,9 @@ class Settings(BaseSettings):
     # A2.4: whether a delegated reply may try a GROUNDED answer (same-conversation, owner-authored
     # evidence only) before the deterministic acknowledgement. Off = A2.3 behavior exactly.
     TOUCAN_DELEGATION_GROUNDED_ANSWERS: bool = True
+    # A3: how long after Toucan's own "Is this urgent?" a bare "yes" from the requester still counts
+    # as the answer to it. Explicit markers ("urgent", "asap") never depend on this window.
+    TOUCAN_URGENCY_WINDOW_SECONDS: float = 1800.0
 
     # FUTURE multi-worker realtime seam — UNSET AND UNUSED TODAY. When this backend eventually
     # runs more than one worker, Socket.IO needs a cross-process message queue (and the

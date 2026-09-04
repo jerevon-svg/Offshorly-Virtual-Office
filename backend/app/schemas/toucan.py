@@ -119,10 +119,47 @@ class ToucanDelegationOut(BaseModel):
     ended_at: datetime | None = Field(default=None, alias="endedAt")
     ended_reason: str | None = Field(default=None, alias="endedReason")
     reply_count: int = Field(alias="replyCount")
+    # A3 — flags under THIS delegation the owner has not opened yet. Zero on a fresh row.
+    urgent_count: int = Field(default=0, alias="urgentCount")
 
     @field_serializer("starts_at", "expires_at", "hard_cap_at", "ended_at")
     def _serialize_times(self, dt: datetime | None) -> str | None:
         return to_iso_z(dt) if dt is not None else None
+
+
+class ToucanUrgentFlagOut(BaseModel):
+    """A3 — one urgency flag as its OWNER sees it. Metadata only: which conversation to open, who
+    declared it, when. No text — the owner reads the message in the conversation itself. Every
+    producer filters on the bearer identity."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    delegation_id: str = Field(alias="delegationId")
+    conversation_id: str = Field(alias="conversationId")
+    requester_email: str = Field(alias="requesterEmail")
+    requester_label: str = Field(alias="requesterLabel")
+    flagged_at: datetime = Field(alias="flaggedAt")
+    seen_at: datetime | None = Field(default=None, alias="seenAt")
+
+    @field_serializer("flagged_at", "seen_at")
+    def _serialize_times(self, dt: datetime | None) -> str | None:
+        return to_iso_z(dt) if dt is not None else None
+
+
+class ToucanUrgentSeenIn(BaseModel):
+    """Which flags the owner opened or dismissed. Absent/None = all of the caller's unseen flags.
+    NO IDENTITY FIELD: the owner is the bearer identity, and foreign ids are ignored server-side."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    flag_ids: list[str] | None = Field(default=None, alias="flagIds", max_length=200)
+
+
+class ToucanUrgentSeenOut(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    seen_count: int = Field(alias="seenCount")
 
 
 class ToucanActionResultOut(BaseModel):

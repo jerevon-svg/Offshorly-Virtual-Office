@@ -17,6 +17,7 @@ from app.models.toucan import (
     ToucanMemory,
     ToucanMessage,
     ToucanResource,
+    ToucanUrgentFlag,
 )
 
 __all__ = [
@@ -42,4 +43,5 @@ __all__ = [
     "ToucanMemory",
     "ToucanMessage",
     "ToucanResource",
+    "ToucanUrgentFlag",
 ]

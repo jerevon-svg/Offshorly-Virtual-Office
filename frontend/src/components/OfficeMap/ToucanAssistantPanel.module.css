@@ -8,11 +8,10 @@
 /* Positioning only — .panel's size/border/shadow come from the chat panel
    class. Sits above the .floatingChatSlot layer (z-index 140) so an open DM
    window can't cover the parked toucan's panel. */
+/* Positioned by OfficeMap's floating chat slot (same stack as the DM/group windows), so the
+   panel itself carries no fixed offset — it is laid out beside the other windows, never over them. */
 .panel {
-  position: fixed;
-  right: 16px;
-  bottom: 16px;
-  z-index: 141;
+  position: relative;
 }
 
 /* The chat header avatar is an initials circle on grey; the toucan gets an
@@ -570,6 +569,94 @@
 }
 
 .delegationStop:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* A3 — the live urgent counter inside the delegation banner. */
+.delegationUrgent {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #dc2626;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* A3 — the return card: conversations somebody flagged as urgent while Toucan covered.
+   Same footprint as the delegation banner, red accent because it asks for action now. */
+.urgentCard {
+  margin: 0 12px 6px;
+  padding: 8px 12px;
+  border-left: 3px solid #dc2626;
+  border-radius: 8px;
+  background: #fef2f2;
+  color: #7f1d1d;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+}
+
+.urgentTitle {
+  display: block;
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+.urgentRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 0;
+}
+
+.urgentMeta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.urgentActions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.urgentOpen,
+.urgentDismiss {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  padding: 3px 10px;
+  border-radius: 8px;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.urgentOpen {
+  background: #dc2626;
+  color: #fff;
+}
+
+.urgentOpen:hover:not(:disabled) {
+  background: #b91c1c;
+}
+
+.urgentDismiss {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.urgentDismiss:hover:not(:disabled) {
+  background: #d1d5db;
+}
+
+.urgentOpen:disabled,
+.urgentDismiss:disabled {
   cursor: default;
   opacity: 0.6;
 }

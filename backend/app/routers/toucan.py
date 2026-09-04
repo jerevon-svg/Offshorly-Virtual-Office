@@ -13,6 +13,7 @@ from app.repositories import toucan_activity as toucan_activity_repo
 from app.repositories import toucan_delegation as toucan_delegation_repo
 from app.repositories import toucan_memory as toucan_memory_repo
 from app.repositories import toucan_resources as toucan_resources_repo
+from app.repositories import toucan_urgency as toucan_urgency_repo
 from app.schemas.toucan import (
     ToucanActionProposalOut,
     ToucanActionResultOut,
@@ -26,6 +27,9 @@ from app.schemas.toucan import (
     ToucanMemoryOut,
     ToucanResourceIn,
     ToucanResourceOut,
+    ToucanUrgentFlagOut,
+    ToucanUrgentSeenIn,
+    ToucanUrgentSeenOut,
 )
 from app.services.delegation_events import emit_delegation_ended
 from app.services.delegation_lifecycle import mark_owner_returned_in
@@ -64,6 +68,7 @@ from app.services.toucan.delegation import (
     ClockProblem,
     DelegationClockRequest,
     clock_problem_text,
+    display_name_from_email,
     nothing_to_stop_text,
     parse_stop_delegation,
     replaced_text,
@@ -343,7 +348,7 @@ def _action_result(
     )
 
 
-def _delegation_out(row) -> ToucanDelegationOut:
+def _delegation_out(row, *, urgent_count: int = 0) -> ToucanDelegationOut:
     return ToucanDelegationOut(
         id=row.id,
         status=row.status,
@@ -355,7 +360,28 @@ def _delegation_out(row) -> ToucanDelegationOut:
         ended_at=row.ended_at,
         ended_reason=row.ended_reason,
         reply_count=row.reply_count or 0,
+        urgent_count=urgent_count,
     )
+
+
+def _urgent_flag_out(row) -> ToucanUrgentFlagOut:
+    return ToucanUrgentFlagOut(
+        id=row.id,
+        delegation_id=row.delegation_id,
+        conversation_id=row.conversation_id,
+        requester_email=row.requester_email,
+        requester_label=display_name_from_email(row.requester_email),
+        flagged_at=row.flagged_at,
+        seen_at=row.seen_at,
+    )
+
+
+async def _attention_snapshot_dict(db: AsyncSession, email: str) -> dict:
+    """T2's viewer-scoped snapshot plus A3's one extra number: unseen requester-declared urgency
+    flags. Assembled here, at the router, so the pure answer layer still only ever sees counts."""
+    snapshot = await toucan_activity_repo.attention_snapshot(db, viewer_email=email)
+    snapshot["delegated_urgent_count"] = await toucan_urgency_repo.count_unseen_for_owner(db, owner_email=email)
+    return snapshot
 
 
 async def _append_action_note(db: AsyncSession, pending: PendingAction, *, email: str, text: str) -> None:
@@ -482,9 +508,7 @@ async def ask_toucan(
     # state where a question is claimed here and answered without a snapshot there.
     activity = None
     if is_activity_question(body.question):
-        activity = AttentionSnapshot.from_dict(
-            await toucan_activity_repo.attention_snapshot(db, viewer_email=email)
-        )
+        activity = AttentionSnapshot.from_dict(await _attention_snapshot_dict(db, email))
 
     answer = answer_question(body.question, context, activity=activity)
     answer_text, intent, supported = answer.text, answer.intent, answer.supported
@@ -786,7 +810,10 @@ async def get_toucan_delegation(
     db: AsyncSession = Depends(get_db),
 ) -> ToucanDelegationOut | None:
     row = await toucan_delegation_repo.get_active_delegation(db, owner_email=email, on_ended=emit_delegation_ended)
-    return _delegation_out(row) if row is not None else None
+    if row is None:
+        return None
+    urgent = await toucan_urgency_repo.count_unseen_for_delegation(db, delegation_id=row.id, owner_email=email)
+    return _delegation_out(row, urgent_count=urgent)
 
 
 @router.delete("/toucan/delegation", response_model=ToucanDelegationOut)
@@ -799,6 +826,33 @@ async def cancel_toucan_delegation(
         raise HTTPException(status_code=404, detail="No active delegation")
     logger.info("toucan delegation cancelled: owner=%s delegation=%s", email, row.id)
     return _delegation_out(row)
+
+
+# --- A3: the owner's urgency flags -------------------------------------------------------------
+# Read and mark-seen only. A flag is only ever CREATED by the delegated reply path
+# (services/chat_delegation.py) from a requester's own words; nothing here can add one. Both
+# endpoints filter on the bearer identity: another owner's flags are indistinguishable from none,
+# and marking somebody else's ids changes nothing.
+
+
+@router.get("/toucan/delegation/urgent", response_model=list[ToucanUrgentFlagOut])
+async def list_toucan_urgent_flags(
+    email: str = Depends(get_current_email),
+    db: AsyncSession = Depends(get_db),
+) -> list[ToucanUrgentFlagOut]:
+    rows = await toucan_urgency_repo.list_unseen(db, owner_email=email)
+    return [_urgent_flag_out(r) for r in rows]
+
+
+@router.post("/toucan/delegation/urgent/seen", response_model=ToucanUrgentSeenOut)
+async def mark_toucan_urgent_flags_seen(
+    body: ToucanUrgentSeenIn | None = None,
+    email: str = Depends(get_current_email),
+    db: AsyncSession = Depends(get_db),
+) -> ToucanUrgentSeenOut:
+    flag_ids = body.flag_ids if body is not None else None
+    changed = await toucan_urgency_repo.mark_seen(db, owner_email=email, flag_ids=flag_ids)
+    return ToucanUrgentSeenOut(seen_count=changed)
 
 
 @router.get("/toucan/activity", response_model=ToucanActivityOut)

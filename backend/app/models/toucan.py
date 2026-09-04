@@ -246,3 +246,37 @@ class ToucanDelegation(BaseModel):
     # The owner's own words, if they gave any. Reserved; A2.1 never writes it.
     note: Mapped[str | None] = mapped_column(String(300), nullable=True)
     reply_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
+
+class ToucanUrgentFlag(BaseModel):
+    """A3 — one requester's declaration that a message left under a delegation is urgent.
+
+    METADATA ONLY, by construction: which delegation, whose it was, which conversation, who
+    declared it, an opaque handle to the message that carried the declaration, and when. No
+    text, no body, no preview — the owner opens the conversation to read it. Exactly one row per
+    (delegation, conversation, requester): a second "yes" changes nothing. `seen_at` is written
+    only by the owner's own open/dismiss, never by Toucan."""
+
+    __tablename__ = "toucan_delegation_urgent_flags"
+    __table_args__ = (
+        Index(
+            "ux_toucan_urgent_flags_delegation_conversation_requester",
+            "delegation_id",
+            "conversation_id",
+            "requester_email",
+            unique=True,
+        ),
+        Index("ix_toucan_urgent_flags_owner_seen", "owner_email", "seen_at"),
+    )
+
+    delegation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("toucan_delegations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Denormalised from the delegation so every owner-scoped read is one indexed SELECT.
+    owner_email: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    conversation_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    requester_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Opaque correlation handle to the declaring message. Never resolved into content here.
+    message_reference: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    flagged_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
