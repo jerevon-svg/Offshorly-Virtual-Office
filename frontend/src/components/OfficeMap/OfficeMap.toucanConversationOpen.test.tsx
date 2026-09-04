@@ -5,17 +5,20 @@ import type { OfficePerson } from "../../services/office/floorMerge";
 import type { ToucanSummonState } from "./ToucanFlyer";
 import conversationPanelStyles from "../Chat/ConversationView.module.css";
 import badgeStyles from "../Chat/MessageNotificationBadge.module.css";
+import officeStyles from "./OfficeMap.module.css";
 import { getCurrentUserId } from "../../auth/useAuthGate";
 import { mockAttendanceService, resetMockAttendanceForTests } from "../../services/attendance";
 
-// A3 follow-up — OPENING A CONVERSATION GETS THE TOUCAN OUT OF THE WAY. Every user action that
-// brings a normal DM/group window to the foreground funnels through OfficeMap's shared openers
-// (onSelectConversation → openOrFocusRemoteDm/Group or the spatial slot), and those now release
-// the Toucan panel through its existing release path. Proven here for:
-//   * Global Chat → DM (remote slot)          → Toucan closes, DM panel visible
-//   * Global Chat → group                      → Toucan closes, group panel visible
-//   * A3 urgent-card Open                      → Toucan closes, the flagged DM opens
-//   * Toucan never called → Global Chat → DM   → unchanged: one panel, no Toucan
+// THE TOUCAN IS ANOTHER WINDOW IN THE FLOATING CHAT STACK. While the panel is open it holds the
+// rightmost slot of OfficeMap's Messenger-style layout (computeFloatingChatRightOffsets), so a
+// DM/group opened from Global Chat — or from the A3 urgent card — lands BESIDE it, never behind
+// it, and the panel closes only on an explicit release. Proven here for:
+//   * Toucan open + Global Chat → DM           → both visible, DM in the next slot to the left
+//   * Toucan open + Global Chat → group        → both visible
+//   * Toucan open + live-session (spatial) DM  → both visible, spatial routing intact
+//   * A3 urgent-card Open                      → the flagged DM opens beside the still-open Toucan
+//   * explicit "Dismiss the toucan"            → Toucan closes, the stack re-flows to the edge
+//   * Toucan never called                      → the existing stacking is exactly as before
 //
 // The bird reaches "attending" inside the 3D stage's frame loop, which jsdom cannot run, so the
 // stage is stubbed and its onToucanSummonStateChange callback is driven directly.
@@ -148,21 +151,24 @@ const groupConv = {
   title: "Design Sync",
 };
 
-function panelCount(container: HTMLElement): number {
-  return container.querySelectorAll(`.${conversationPanelStyles.panel}`).length;
+// Layout constants mirrored from OfficeMap.tsx: edge margin 16, expanded width 320, gap 12.
+const SLOT_0 = "16px";
+const SLOT_1 = `${16 + 320 + 12}px`;
+const SLOT_2 = `${16 + 2 * (320 + 12)}px`;
+
+function conversationPanels(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(`.${conversationPanelStyles.panel}`)).filter(
+    (el) => el.getAttribute("aria-label") !== "Toucan Assistant",
+  );
 }
 function toucanPanel(view: ReturnType<typeof render>): HTMLElement | null {
   return view.queryByLabelText("Message the toucan");
 }
-
-// Released, not merely hidden: the bird resumes roaming (the stage reports it, as the real
-// flyer would once the summon is withdrawn) and the chrome offers to call it again.
-async function expectToucanReleased(view: ReturnType<typeof render>) {
-  expect(toucanPanel(view)).toBeNull();
-  await act(async () => {
-    stageState.onToucanSummonStateChange?.("roaming");
-  });
-  expect(view.getByRole("button", { name: "Call the toucan" })).toBeTruthy();
+function slotRight(el: Element | null): string | undefined {
+  return (el?.closest(`.${officeStyles.floatingChatSlot}`) as HTMLElement | null)?.style.right;
+}
+function toucanSlotRight(view: ReturnType<typeof render>): string | undefined {
+  return slotRight(view.queryByRole("dialog", { name: "Toucan Assistant" }));
 }
 
 async function summonToucan(view: ReturnType<typeof render>) {
@@ -195,7 +201,7 @@ async function selectFromGlobalChat(view: ReturnType<typeof render>, rowLabel: s
   });
 }
 
-describe("OfficeMap — opening a conversation releases the Toucan panel", () => {
+describe("OfficeMap — the Toucan panel shares the floating chat stack", () => {
   beforeEach(async () => {
     resetMockAttendanceForTests(getCurrentUserId());
     // The Toucan button is part of the checked-in chrome.
@@ -211,30 +217,37 @@ describe("OfficeMap — opening a conversation releases the Toucan panel", () =>
     resetMockAttendanceForTests(getCurrentUserId());
   });
 
-  it("Global Chat → DM closes the Toucan and shows the DM", async () => {
+  it("Toucan open + Global Chat → DM: both stay visible, the DM takes the slot beside the Toucan", async () => {
     chatListState.conversations = [dmConv];
     const view = render(<OfficeMap />);
     await summonToucan(view);
+    expect(toucanSlotRight(view)).toBe(SLOT_0);
+    expect(conversationPanels(view.container)).toHaveLength(0);
 
     await selectFromGlobalChat(view, "Peer Person");
 
-    // Exactly one conversation panel (the DM) and no Toucan composer in front of it.
-    expect(panelCount(view.container)).toBe(1);
-    await expectToucanReleased(view);
+    const panels = conversationPanels(view.container);
+    expect(panels).toHaveLength(1);
+    expect(toucanPanel(view)).toBeTruthy();
+    expect(toucanSlotRight(view)).toBe(SLOT_0);
+    expect(slotRight(panels[0])).toBe(SLOT_1);
   });
 
-  it("Global Chat → group closes the Toucan and shows the group", async () => {
+  it("Toucan open + Global Chat → group: both stay visible side by side", async () => {
     chatListState.conversations = [groupConv];
     const view = render(<OfficeMap />);
     await summonToucan(view);
 
     await selectFromGlobalChat(view, "Design Sync");
 
-    expect(panelCount(view.container)).toBe(1);
-    expect(toucanPanel(view)).toBeNull();
+    const panels = conversationPanels(view.container);
+    expect(panels).toHaveLength(1);
+    expect(toucanPanel(view)).toBeTruthy();
+    expect(toucanSlotRight(view)).toBe(SLOT_0);
+    expect(slotRight(panels[0])).toBe(SLOT_1);
   });
 
-  it("Global Chat → spatial DM (live session) also closes the Toucan and still routes spatially", async () => {
+  it("Toucan open + live-session DM: still routed spatially, laid out beside the Toucan", async () => {
     chatListState.conversations = [dmConv];
     spatialSessionsState.sessions = [{ sessionId: dmConv.id, members: ["peer@example.com"] }];
     const view = render(<OfficeMap />);
@@ -242,12 +255,14 @@ describe("OfficeMap — opening a conversation releases the Toucan panel", () =>
 
     await selectFromGlobalChat(view, "Peer Person");
 
-    expect(panelCount(view.container)).toBe(1);
-    expect(toucanPanel(view)).toBeNull();
+    const panels = conversationPanels(view.container);
+    expect(panels).toHaveLength(1);
     expect(emitStart).toHaveBeenCalledWith(dmConv.id);
+    expect(toucanPanel(view)).toBeTruthy();
+    expect(slotRight(panels[0])).toBe(SLOT_1);
   });
 
-  it("A3 urgent-card Open closes the Toucan and opens the flagged DM", async () => {
+  it("A3 urgent-card Open opens the flagged DM beside the Toucan and keeps the Toucan open", async () => {
     chatListState.conversations = [dmConv];
     toucanFlagsState.flags = [
       {
@@ -267,19 +282,51 @@ describe("OfficeMap — opening a conversation releases the Toucan panel", () =>
     await act(async () => {
       fireEvent.click(open);
     });
-    await waitFor(() => expect(panelCount(view.container)).toBe(1));
-    await expectToucanReleased(view);
+    await waitFor(() => expect(conversationPanels(view.container)).toHaveLength(1));
+
+    expect(toucanPanel(view)).toBeTruthy();
+    expect(toucanSlotRight(view)).toBe(SLOT_0);
+    expect(slotRight(conversationPanels(view.container)[0])).toBe(SLOT_1);
   });
 
-  it("with the Toucan never called, opening a DM is unchanged", async () => {
+  it("an explicit release still closes the Toucan, and the stack re-flows to the edge", async () => {
     chatListState.conversations = [dmConv];
+    const view = render(<OfficeMap />);
+    await summonToucan(view);
+    await selectFromGlobalChat(view, "Peer Person");
+    expect(slotRight(conversationPanels(view.container)[0])).toBe(SLOT_1);
+
+    await act(async () => {
+      fireEvent.click(view.getByRole("button", { name: "Dismiss the toucan" }));
+    });
+
+    expect(toucanPanel(view)).toBeNull();
+    const panels = conversationPanels(view.container);
+    expect(panels).toHaveLength(1);
+    expect(slotRight(panels[0])).toBe(SLOT_0);
+    await act(async () => {
+      stageState.onToucanSummonStateChange?.("roaming");
+    });
+    expect(view.getByRole("button", { name: "Call the toucan" })).toBeTruthy();
+  });
+
+  it("with the Toucan never called, the existing stacking is unchanged", async () => {
+    chatListState.conversations = [dmConv, groupConv];
     const view = render(<OfficeMap />);
     await waitFor(() => view.getByRole("button", { name: "Call the toucan" }));
 
     await selectFromGlobalChat(view, "Peer Person");
+    let panels = conversationPanels(view.container);
+    expect(panels).toHaveLength(1);
+    expect(slotRight(panels[0])).toBe(SLOT_0);
 
-    expect(panelCount(view.container)).toBe(1);
+    await selectFromGlobalChat(view, "Design Sync");
+    panels = conversationPanels(view.container);
+    expect(panels).toHaveLength(2);
+    // Newest window rightmost, the earlier DM shifted one slot left — exactly as before.
+    const rights = panels.map((el) => slotRight(el)).sort();
+    expect(rights).toEqual([SLOT_0, SLOT_1].sort());
     expect(toucanPanel(view)).toBeNull();
-    expect(view.getByRole("button", { name: "Call the toucan" })).toBeTruthy();
+    expect(SLOT_2).toBe("680px");
   });
 });

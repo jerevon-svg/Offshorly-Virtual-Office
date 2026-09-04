@@ -8,11 +8,10 @@
 /* Positioning only — .panel's size/border/shadow come from the chat panel
    class. Sits above the .floatingChatSlot layer (z-index 140) so an open DM
    window can't cover the parked toucan's panel. */
+/* Positioned by OfficeMap's floating chat slot (same stack as the DM/group windows), so the
+   panel itself carries no fixed offset — it is laid out beside the other windows, never over them. */
 .panel {
-  position: fixed;
-  right: 16px;
-  bottom: 16px;
-  z-index: 141;
+  position: relative;
 }
 
 /* The chat header avatar is an initials circle on grey; the toucan gets an
