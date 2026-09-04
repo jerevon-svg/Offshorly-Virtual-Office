@@ -8,8 +8,9 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 //     only, and remembers the flag
 //   * no active delegation + unseen flags → the return card lists them; a delegation_ended event
 //     refetches the list
-//   * Open hands the conversation id to the caller and marks the flag seen; Dismiss marks seen
-//     only; both remove the row; a failed mark keeps it
+//   * Open hands the conversation id to the caller, marks the flag seen and releases the panel
+//     (the existing close path) so the destination chat is visible; Dismiss marks seen only and
+//     keeps the panel open; both remove the row; a failed mark keeps it
 //   * without an onOpenConversation caller, only Dismiss is offered
 
 type Ended = { delegationId?: string | null; reason?: string | null };
@@ -107,8 +108,10 @@ const flush = async () => {
   });
 };
 
-const setup = async (props: { onOpenConversation?: (id: string) => void } = {}) => {
-  render(<ToucanAssistantPanel onRelease={vi.fn()} {...props} />);
+const setup = async (
+  props: { onOpenConversation?: (id: string) => void; onRelease?: () => void } = {},
+) => {
+  render(<ToucanAssistantPanel onRelease={props.onRelease ?? vi.fn()} onOpenConversation={props.onOpenConversation} />);
   await flush();
 };
 
@@ -164,10 +167,11 @@ describe("ToucanAssistantPanel — A3 urgency", () => {
     expect(screen.getByTestId("toucan-urgent-card").textContent).toContain("Micah");
   });
 
-  it("shows the return card with unseen flags when nothing is active, and Open hands over the id", async () => {
+  it("shows the return card with unseen flags when nothing is active; Open hands over the id and releases the panel", async () => {
     h.service.listUrgentFlags.mockResolvedValue([FLAG_ALEX, FLAG_MICAH]);
     const onOpenConversation = vi.fn();
-    await setup({ onOpenConversation });
+    const onRelease = vi.fn();
+    await setup({ onOpenConversation, onRelease });
     const card = screen.getByTestId("toucan-urgent-card");
     expect(card.textContent).toContain("Urgent while Toucan covered for you");
     const rows = screen.getAllByTestId("toucan-urgent-row");
@@ -180,6 +184,8 @@ describe("ToucanAssistantPanel — A3 urgency", () => {
     fireEvent.click(screen.getByLabelText("Open the conversation flagged by Micah"));
     await flush();
     expect(onOpenConversation).toHaveBeenCalledWith("conv-1");
+    // The panel gets out of the way through its existing close path, so the DM is visible.
+    expect(onRelease).toHaveBeenCalledTimes(1);
     expect(h.service.markUrgentFlagsSeen).toHaveBeenCalledWith(["f-1"]);
     expect(screen.getAllByTestId("toucan-urgent-row")).toHaveLength(1);
     expect(screen.getByTestId("toucan-urgent-card").textContent).not.toContain("Micah");
@@ -187,6 +193,7 @@ describe("ToucanAssistantPanel — A3 urgency", () => {
     fireEvent.click(screen.getByLabelText("Dismiss the flag from Alex"));
     await flush();
     expect(onOpenConversation).toHaveBeenCalledTimes(1);
+    expect(onRelease).toHaveBeenCalledTimes(1); // Dismiss never closes the panel
     expect(h.service.markUrgentFlagsSeen).toHaveBeenLastCalledWith(["f-2"]);
     expect(screen.queryByTestId("toucan-urgent-card")).toBeNull();
   });

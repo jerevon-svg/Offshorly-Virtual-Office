@@ -866,13 +866,18 @@ export function ToucanAssistantPanel({
   }, [delegation, stopBusy, appendToucanTurn]);
 
   // A3 — Open / Dismiss a flagged conversation. Both mark the flag seen (owner-scoped POST) and
-  // drop it from the card; Open additionally hands the conversation id to the caller. One
-  // request at a time per flag; a failed mark keeps the row so nothing is silently lost.
+  // drop it from the card; Open additionally hands the conversation id to the caller and then
+  // releases the panel through the existing close path, so the destination conversation is
+  // visible at once instead of sitting behind Toucan. One request at a time per flag; a failed
+  // mark keeps the row so nothing is silently lost.
   const resolveUrgentFlag = useCallback(
     (flag: ToucanUrgentFlag, open: boolean) => {
       if (urgentBusyId) return;
       setUrgentBusyId(flag.id);
-      if (open) onOpenConversation?.(flag.conversationId);
+      if (open) {
+        onOpenConversation?.(flag.conversationId);
+        onRelease();
+      }
       void toucanService
         .markUrgentFlagsSeen([flag.id])
         .then(() => {
@@ -886,7 +891,7 @@ export function ToucanAssistantPanel({
         .catch(() => appendToucanTurn(REQUEST_FAILED_TEXT))
         .finally(() => setUrgentBusyId(null));
     },
-    [urgentBusyId, onOpenConversation, appendToucanTurn],
+    [urgentBusyId, onOpenConversation, onRelease, appendToucanTurn],
   );
 
   // CANCEL — burns the pending entry server-side; nothing executes either way.
