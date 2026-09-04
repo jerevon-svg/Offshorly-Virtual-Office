@@ -12,6 +12,7 @@ import { BON_SPRITE_SET, characterSprite } from "../../data/bonWalkFrames";
 import type { PeerMovementState } from "../../services/presence/movementSync";
 import { clearAll as clearCheckoutStorage, saveResult as saveCheckoutResult } from "../../data/checkoutStorage";
 import { getCurrentUserId } from "../../auth/useAuthGate";
+import { mockAttendanceService, resetMockAttendanceForTests } from "../../services/attendance";
 
 // Spies on the two spatial-session emit functions so tests can assert
 // exactly when spatial_session_start/leave fire, without opening a real
@@ -149,13 +150,25 @@ vi.mock("../../services/chat/talkRequestsClient", async () => {
 // happens, matching every pre-existing test's assumption of an empty peer
 // list).
 const { peerMovementSnapshotState } = vi.hoisted(() => ({
-  peerMovementSnapshotState: { entries: [] as import("../../services/presence/movementSync").PeerMovementState[] },
+  peerMovementSnapshotState: {
+    entries: [] as import("../../services/presence/movementSync").PeerMovementState[],
+    // When true, the spawn effect treats the seeded entries as the socket's first
+    // positions_snapshot instead of waiting MOVEMENT_SNAPSHOT_WAIT_MS for one.
+    snapshotReady: false,
+  },
 }));
 vi.mock("../../services/presence/movementSync", async () => {
   const actual = await vi.importActual<typeof import("../../services/presence/movementSync")>(
     "../../services/presence/movementSync",
   );
-  return { ...actual, getPeerMovementSnapshot: () => peerMovementSnapshotState.entries };
+  return {
+    ...actual,
+    getPeerMovementSnapshot: () => peerMovementSnapshotState.entries,
+    useMovementSnapshotReady: () => {
+      const actualReady = actual.useMovementSnapshotReady();
+      return peerMovementSnapshotState.snapshotReady || actualReady;
+    },
+  };
 });
 
 // The roster's real occupants are keyed by the flat rooms/teamRooms
@@ -640,6 +653,8 @@ describe("OfficeMap", () => {
     afterEach(() => {
       mockRosterPeople = [];
       peerMovementSnapshotState.entries = [];
+      peerMovementSnapshotState.snapshotReady = false;
+      resetMockAttendanceForTests(getCurrentUserId());
       resetCurrentUserForTests();
       window.history.pushState({}, "", "/");
     });
@@ -689,6 +704,13 @@ describe("OfficeMap", () => {
       // seat-default implementation would render the SAME sitType src both
       // times (whatever the seat's own direction is) — rendering each
       // test's OWN distinct facing instead proves the snapshot facing wins.
+      //
+      // Attendance gates the interior spawn (spawnPlacement.ts): only a
+      // CHECKED_IN employee is placed at a seat, so the mock attendance record
+      // is checked in first, and the seeded entries stand in for the movement
+      // socket's first positions_snapshot.
+      await mockAttendanceService.checkIn(getCurrentUserId());
+      peerMovementSnapshotState.snapshotReady = true;
       for (const facing of ["left", "back"] as const) {
         mockRosterPeople = [selfPerson];
         peerMovementSnapshotState.entries = selfSnapshotEntry({ facing, state: "sitting" });
