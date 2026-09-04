@@ -12,6 +12,7 @@ import {
   type ToucanMemory,
   type ToucanService,
   type ToucanDelegation,
+  type ToucanUrgentFlag,
 } from "./types";
 
 // Live Toucan — talks to the Virtual Office backend's POST /toucan/ask
@@ -224,6 +225,24 @@ export class RealToucanService implements ToucanService {
       throw new Error(body?.error || body?.detail || `Toucan backend request failed (${res.status})`);
     }
     return (await res.json()) as ToucanDelegation;
+  }
+
+  // A3 — the viewer's own urgency flags. GET lists the unseen ones; POST …/seen marks the given
+  // ids (or all) seen. Both owner-scoped by the auth header alone; nothing here can create one.
+
+  async listUrgentFlags(options: ToucanAskOptions = {}): Promise<ToucanUrgentFlag[]> {
+    const res = await toucanFetch("/toucan/delegation/urgent", { signal: options.signal });
+    return ((await res.json()) as ToucanUrgentFlag[] | null) ?? [];
+  }
+
+  async markUrgentFlagsSeen(flagIds: string[] | null, options: ToucanAskOptions = {}): Promise<number> {
+    const res = await toucanFetch("/toucan/delegation/urgent/seen", {
+      method: "POST",
+      body: JSON.stringify({ flagIds }),
+      signal: options.signal,
+    });
+    const body = (await res.json()) as { seenCount?: number } | null;
+    return body?.seenCount ?? 0;
   }
 
   // T9 — the two management calls the polish pass exposes. Both hit endpoints

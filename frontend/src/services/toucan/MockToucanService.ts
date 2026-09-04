@@ -11,6 +11,7 @@ import {
   type ToucanService,
   type ToucanStoredMessage,
   type ToucanDelegation,
+  type ToucanUrgentFlag,
 } from "./types";
 
 // Canned-reply Toucan, lifted VERBATIM out of ToucanAssistantPanel.tsx so the
@@ -205,6 +206,15 @@ export class MockToucanService implements ToucanService {
 
   async cancelDelegation(): Promise<ToucanDelegation | null> {
     return null;
+  }
+
+  // A3 — no delegation means nobody could have flagged anything.
+  async listUrgentFlags(): Promise<ToucanUrgentFlag[]> {
+    return [];
+  }
+
+  async markUrgentFlagsSeen(): Promise<number> {
+    return 0;
   }
 
   // T9 — management calls.

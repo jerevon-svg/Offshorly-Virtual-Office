@@ -145,6 +145,9 @@ def _toucan_sources() -> list[tuple[pathlib.Path, ast.Module]]:
         # A2.1 — delegation persistence, same sweep: a delegation row names an owner and a
         # window, never a conversation or a message.
         "app/repositories/toucan_delegation.py",
+        # A3 — urgency flag persistence, same sweep: a flag names a delegation, a conversation
+        # and a requester, never a message body.
+        "app/repositories/toucan_urgency.py",
     ):
         path = _TOUCAN_PACKAGE.parents[2] / extra
         modules.append((path, ast.parse(path.read_text())))

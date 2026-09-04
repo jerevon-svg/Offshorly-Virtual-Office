@@ -78,6 +78,21 @@ export interface ToucanDelegation {
   endedAt?: string | null;
   endedReason?: string | null;
   replyCount: number;
+  /** A3 — flags under this delegation the owner has not opened yet. Absent on older payloads. */
+  urgentCount?: number;
+}
+
+/** A3 — one requester-declared urgency flag as its OWNER sees it. Mirrors
+ *  backend/app/schemas/toucan.py's ToucanUrgentFlagOut: which conversation to open, who
+ *  declared it, when. Never any message text. */
+export interface ToucanUrgentFlag {
+  id: string;
+  delegationId: string;
+  conversationId: string;
+  requesterEmail: string;
+  requesterLabel: string;
+  flaggedAt: string;
+  seenAt?: string | null;
 }
 
 /** The outcome of confirming or cancelling one pending action. Echoes the frozen
@@ -267,6 +282,11 @@ export interface ToucanService {
   /** A2.2 — Stop: ends the viewer's own active delegation (durable row → ended /
    *  cancelled, audit kept). Resolves null when nothing was active any more. */
   cancelDelegation(options?: ToucanAskOptions): Promise<ToucanDelegation | null>;
+  /** A3 — the viewer's own UNSEEN urgency flags, newest first. Owner-scoped server-side. */
+  listUrgentFlags(options?: ToucanAskOptions): Promise<ToucanUrgentFlag[]>;
+  /** A3 — the owner opened or dismissed these flags (null = all of theirs). Foreign ids are
+   *  ignored server-side. Resolves with how many rows changed. */
+  markUrgentFlagsSeen(flagIds: string[] | null, options?: ToucanAskOptions): Promise<number>;
   /** T9 — delete one of the viewer's own conversations, transcript and all. A
    *  DELETE on the T1 endpoint that already existed; hard delete, matching the
    *  backend's own reasoning that a transcript holds only what the user said and

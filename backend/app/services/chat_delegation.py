@@ -9,13 +9,14 @@ from app import database as app_db
 from app.config import settings
 from app.repositories import chat as chat_repo
 from app.repositories import toucan_delegation as delegation_repo
+from app.repositories import toucan_urgency as urgency_repo
 from app.services.chat_send import (
     TOUCAN_CHAT_SENDER,
     ChatSendError,
     is_toucan_sender,
     send_chat_message,
 )
-from app.services.delegation_events import emit_delegation_ended
+from app.services.delegation_events import emit_delegation_ended, emit_delegation_urgent_flagged
 from app.services.toucan.delegation import (
     SCOPE_DM_AND_GROUPS,
     combined_first_reply_text,
@@ -29,6 +30,13 @@ from app.services.toucan.delegation_grounding import (
     is_retrieval_question,
     strip_mentions,
     validate_grounded_answer,
+)
+from app.services.toucan.urgency import (
+    URGENCY_AFFIRMATIVE,
+    URGENCY_EXPLICIT,
+    URGENCY_NEGATIVE,
+    classify_urgency_reply,
+    urgent_flagged_reply_text,
 )
 from app.services.toucan_ai.provider import ai_enabled, generate_delegated_answer
 
@@ -135,6 +143,39 @@ class DelegationReplyGate:
         if message_id:
             entry.handled_message_ids.add(message_id)
 
+    # --- A3 — what the gate remembers that urgency needs ------------------------------------
+
+    def already_handled(self, conversation_id: str, owner_email: str, delegation_id: str, message_id: str | None) -> bool:
+        entry = self._entries.get(self._key(conversation_id, owner_email))
+        return bool(
+            entry and entry.delegation_id == delegation_id and message_id and message_id in entry.handled_message_ids
+        )
+
+    def question_outstanding(
+        self, conversation_id: str, owner_email: str, delegation_id: str, *, now: datetime | None = None
+    ) -> bool:
+        """Has Toucan spoken for this owner in this conversation recently enough that a bare "yes"
+        reads as the answer to its "Is this urgent?"? Process-local like the rest of the gate: a
+        restart forgets the question, and a bare "yes" after one is an ordinary message (explicit
+        markers never depend on this)."""
+        entry = self._entries.get(self._key(conversation_id, owner_email))
+        if entry is None or entry.delegation_id != delegation_id or entry.replies < 1:
+            return False
+        current = now or _utc_now()
+        return (current - entry.last_reply_at).total_seconds() <= settings.TOUCAN_URGENCY_WINDOW_SECONDS
+
+    def owners_asked_in(self, conversation_id: str, *, now: datetime | None = None) -> list[str]:
+        """Owners with an outstanding question in this conversation — how a group "yes" with no
+        fresh @mention finds who it answers."""
+        current = now or _utc_now()
+        return sorted(
+            owner
+            for (conv, owner), entry in self._entries.items()
+            if conv == conversation_id
+            and entry.replies >= 1
+            and (current - entry.last_reply_at).total_seconds() <= settings.TOUCAN_URGENCY_WINDOW_SECONDS
+        )
+
     def reset(self) -> None:
         """Test hook, mirroring the other registries."""
         self._entries.clear()
@@ -154,7 +195,12 @@ async def evaluate_and_reply(
     Toucan reply on behalf of the OTHER participant, and send it. Every condition is re-checked
     here, at reply time, against the database: DM only, sender is human and not the owner, the
     owner is (still) a participant, the owner's delegation is active and unexpired, the gate
-    allows. Never raises: the human message stands on its own."""
+    allows. Never raises: the human message stands on its own.
+
+    A3 — before the acknowledgement, the message is read for what it SAYS about urgency (a
+    deterministic classifier, never the provider). A declared-urgent message records one durable
+    flag per owner and earns one confirmation instead of the acknowledgement; a bare "no" to
+    Toucan's own question earns silence; everything else is exactly the A2 path."""
     if not conversation_id or is_toucan_sender(sender_email):
         return None
     sender = sender_email.strip().lower()
@@ -167,12 +213,20 @@ async def evaluate_and_reply(
             members = [p for p in conv.get("participant_ids", []) if p]
             if sender not in members:
                 return None
+            verdict = classify_urgency_reply(text)
+            tagged: set[str] = set()
             if kind == "dm":
                 candidates = [p for p in members if p != sender]
             elif kind == "group":
                 # ONLY the stored, membership-validated mention list decides who was addressed.
                 tagged = {m.strip().lower() for m in (mentioned or []) if isinstance(m, str)}
                 candidates = [p for p in members if p in tagged and p != sender]
+                if verdict is not None:
+                    # A3 — a reply to Toucan's own question rarely re-@mentions the owner. Owners
+                    # Toucan recently spoke for HERE are candidates for the urgency path only;
+                    # the A2 acknowledgement below still requires the validated mention.
+                    asked = set(reply_gate.owners_asked_in(conversation_id))
+                    candidates = sorted(set(candidates) | {p for p in members if p in asked and p != sender})
             else:
                 return None
             if not candidates:
@@ -189,11 +243,30 @@ async def evaluate_and_reply(
                 ),
                 key=lambda d: d.owner_email,
             )
+            if not eligible:
+                return None
+            # A3 — urgency first. Returns the reply it sent, None for deliberate silence, or the
+            # sentinel to carry on with the A2 acknowledgement.
+            if verdict is not None:
+                outcome = await _handle_urgency(
+                    session,
+                    conversation_id=conversation_id,
+                    kind=kind,
+                    sender=sender,
+                    message_id=message_id,
+                    verdict=verdict,
+                    eligible=eligible,
+                    tagged=tagged,
+                )
+                if outcome is not _NOT_HANDLED:
+                    return outcome
+            # A2 — exactly as before: in a group only the validated mention earns the acknowledgement.
+            addressed = [d for d in eligible if kind == "dm" or d.owner_email in tagged]
             included = [
-                d for d in eligible if reply_gate.allows(conversation_id, d.owner_email, d.id, message_id)
+                d for d in addressed if reply_gate.allows(conversation_id, d.owner_email, d.id, message_id)
             ]
             if not included:
-                if eligible:
+                if addressed:
                     logger.info("toucan delegated reply suppressed by gate: conversation=%s", conversation_id)
                 return None
             owners = [d.owner_email for d in included]
@@ -223,6 +296,82 @@ async def evaluate_and_reply(
     except Exception:
         logger.exception("toucan delegated reply failed")
     return None
+
+
+# Sentinel: "urgency had nothing to say about this message — run the A2 path".
+_NOT_HANDLED = object()
+
+
+async def _handle_urgency(
+    session,
+    *,
+    conversation_id: str,
+    kind: str,
+    sender: str,
+    message_id: str | None,
+    verdict: str,
+    eligible: list,
+    tagged: set[str],
+) -> dict | None | object:
+    """A3 — turn a declared urgency into durable flags and ONE confirmation.
+
+    Who qualifies, per eligible owner:
+      * EXPLICIT marker  → the owner was addressed (DM, validated @mention) OR Toucan's question
+                           to them is outstanding here.
+      * bare AFFIRMATIVE → only an outstanding question. "yes" to nothing is nothing.
+      * bare NEGATIVE    → an outstanding question earns silence (it was answered); otherwise the
+                           message is ordinary and the A2 path runs.
+
+    Idempotent end to end: a flag already on file means no new flag, no event, no confirmation.
+    A duplicate explicit message then falls through to the A2 acknowledgement (subject to its
+    gate); a duplicate "yes" stays silent. A bare "yes" with no question outstanding is an
+    ordinary message and takes the A2 path. The confirmation bypasses the cooldown and cap — it is
+    bounded on its own by one flag per (delegation, conversation, requester) — but still counts
+    as a reply, so the A2 budget only ever shrinks."""
+    outstanding = {
+        d.owner_email: reply_gate.question_outstanding(conversation_id, d.owner_email, d.id) for d in eligible
+    }
+    if verdict == URGENCY_NEGATIVE:
+        return None if any(outstanding.values()) else _NOT_HANDLED
+    qualifying = [
+        d for d in eligible
+        if not reply_gate.already_handled(conversation_id, d.owner_email, d.id, message_id)
+        and (
+            outstanding[d.owner_email]
+            or (verdict == URGENCY_EXPLICIT and (kind == "dm" or d.owner_email in tagged))
+        )
+    ]
+    if not qualifying:
+        # Nothing to answer and nobody addressed: an ordinary message, A2 decides.
+        return _NOT_HANDLED
+    created = []
+    for d in qualifying:
+        flag, is_new = await urgency_repo.record_urgent_flag(
+            session,
+            delegation=d,
+            conversation_id=conversation_id,
+            requester_email=sender,
+            message_reference=message_id,
+        )
+        if is_new:
+            created.append((d, flag))
+    if not created:
+        return _NOT_HANDLED if verdict == URGENCY_EXPLICIT else None
+    owners = [d.owner_email for d, _ in created]
+    for d, _ in created:
+        reply_gate.record(conversation_id, d.owner_email, d.id, message_id)
+    saved = await send_chat_message(
+        session, conversation_id=conversation_id, sender_email=TOUCAN_CHAT_SENDER, text=urgent_flagged_reply_text(owners)
+    )
+    for d, flag in created:
+        await delegation_repo.record_reply(session, d)
+        count = await urgency_repo.count_unseen_for_delegation(session, delegation_id=d.id, owner_email=d.owner_email)
+        await emit_delegation_urgent_flagged(flag, urgent_count=count)
+    logger.info(
+        "toucan urgency flagged: owners=%s conversation=%s kind=%s verdict=%s",
+        ",".join(owners), conversation_id, kind, verdict,
+    )
+    return saved
 
 
 async def _grounded_answer(

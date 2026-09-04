@@ -888,6 +888,19 @@ export function OfficeMap() {
   // earlier version routed EVERY Global Chat click to the spatial slot — which made plain
   // remote chats flip "In Conversation" — and the correction after that routed NONE, which lost
   // the peer's spatial context entirely. resolveConversationSlot is the middle ground.)
+  // A3 — the Toucan return card knows a conversation only by id. Resolve it through the same
+  // list the badge uses and route it through onSelectConversation, so a flagged DM or group
+  // opens exactly where a click in Global Chat would open it. Unknown ids do nothing.
+  function openConversationById(conversationId: string) {
+    void chatService
+      .listConversations()
+      .then((list) => {
+        const conv = list.find((c) => c.id === conversationId);
+        if (conv) onSelectConversation(conv);
+      })
+      .catch(() => {});
+  }
+
   function onSelectConversation(conv: Conversation) {
     const slot = resolveConversationSlot({
       conversationId: conv.id,
@@ -4424,6 +4437,7 @@ export function OfficeMap() {
           onRelease={releaseToucan}
           onPendingChange={setToucanPending}
           onTypingChange={setToucanTyping}
+          onOpenConversation={openConversationById}
         />
       )}
       {import.meta.env.DEV && (

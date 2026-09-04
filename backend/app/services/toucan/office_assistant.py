@@ -672,6 +672,10 @@ def _digest_lines(snapshot: AttentionSnapshot) -> list[str]:
     other_hub = max(0, snapshot.hub_count - snapshot.pressing_hub_count)
 
     lines: list[str] = []
+    if snapshot.delegated_urgent_count:
+        # A3 — somebody TOLD Toucan this was urgent while it covered for the caller. Aimed at
+        # this person more directly than anything else on the list, so it goes first.
+        lines.append(_urgent_flags_phrase(snapshot.delegated_urgent_count))
     if snapshot.mention_count:
         verb = "needs" if snapshot.mention_count == 1 else "need"
         lines.append(f"{_plural(snapshot.mention_count, 'mention')} {verb} your attention")
@@ -694,6 +698,12 @@ def _digest_lead(snapshot: AttentionSnapshot) -> str:
     """What to open first, named by CATEGORY. This is the sentence "What should I look at
     first?" is actually asking for, and it is answerable without knowing a single thing about
     the item itself — which is why the digest can offer it at all."""
+    if snapshot.delegated_urgent_count:
+        return (
+            "Start with the message flagged as urgent."
+            if snapshot.delegated_urgent_count == 1
+            else "Start with the messages flagged as urgent."
+        )
     if snapshot.mention_count:
         return "Start with the mention." if snapshot.mention_count == 1 else "Start with the mentions."
     if snapshot.missed_call_count:
@@ -734,12 +744,15 @@ def _important_answer(snapshot: AttentionSnapshot) -> str:
     what it is made of. Ordinary chat volume is excluded by construction (see
     services/toucan/activity.py's important_count) — a busy group thread is not, by itself, a
     thing demanding the reader's attention."""
-    if not snapshot.important_count:
+    total = snapshot.important_count + snapshot.delegated_urgent_count
+    if not total:
         return (
             f"Nothing looks urgent {_window(snapshot)} — no mentions, missed calls or "
             "priority Hub items."
         )
     detail: list[str] = []
+    if snapshot.delegated_urgent_count:
+        detail.append(_urgent_flags_phrase(snapshot.delegated_urgent_count))
     if snapshot.mention_count:
         times = "once" if snapshot.mention_count == 1 else f"{snapshot.mention_count} times"
         detail.append(f"you were mentioned {times}")
@@ -750,8 +763,16 @@ def _important_answer(snapshot: AttentionSnapshot) -> str:
             f"there {'is' if snapshot.pressing_hub_count == 1 else 'are'} "
             f"{_plural(snapshot.pressing_hub_count, 'priority Hub item')}"
         )
-    head = _plural(snapshot.important_count, "thing")
+    head = _plural(total, "thing")
     return f"{head} worth checking {_window(snapshot)}: {_join(detail)}."
+
+
+def _urgent_flags_phrase(count: int) -> str:
+    """A3 — the one sentence fragment about requester-declared urgency. Counts flags (one per
+    person per conversation); names nobody and quotes nothing."""
+    if count == 1:
+        return "1 message was flagged as urgent while Toucan covered for you"
+    return f"{count} messages were flagged as urgent while Toucan covered for you"
 
 
 def _activity_answer(intent: str, snapshot: AttentionSnapshot) -> str:
@@ -811,6 +832,14 @@ def answer_question(
         if _first_match(patterns, text):
             blocked = _guard(activity)
             if blocked is not None:
+                # A3 — a flag somebody raised does not depend on this person's presence history.
+                # Say it first, then the honest "nothing to compare against" for the rest.
+                if (
+                    activity is not None
+                    and activity.delegated_urgent_count
+                    and intent in ("important_summary", "away_summary")
+                ):
+                    blocked = f"{_urgent_flags_phrase(activity.delegated_urgent_count)}. {blocked}"
                 return Answer(text=blocked, intent=intent, supported=True)
             assert activity is not None  # _guard returns a sentence when it is None
             return Answer(text=_activity_answer(intent, activity), intent=intent, supported=True)

@@ -58,13 +58,22 @@ class AttentionSnapshot:
     # Roll-up of the ones that plausibly need acting on: mentions + missed calls + pressing Hub
     # items. Ordinary chat volume is excluded by design.
     important_count: int = 0
+    # A3 — messages somebody DECLARED urgent while Toucan was covering for the caller, and the
+    # caller has not opened yet. Kept beside important_count rather than folded into it: the
+    # roll-up is a derived sum the repository owns, and this is a different kind of fact (a
+    # person asked, not a system counted). Still only a number — no requester, no conversation.
+    delegated_urgent_count: int = 0
 
     @property
     def is_empty(self) -> bool:
         """True when nothing at all came in. Note this ignores `important_count`, which is a
         roll-up of the others and can never be non-zero while they are all zero."""
         return not (
-            self.chat_count or self.mention_count or self.missed_call_count or self.hub_count
+            self.chat_count
+            or self.mention_count
+            or self.missed_call_count
+            or self.hub_count
+            or self.delegated_urgent_count
         )
 
     @property
@@ -95,4 +104,5 @@ class AttentionSnapshot:
             hub_count=int(row.get("hub_count", 0)),
             pressing_hub_count=int(row.get("pressing_hub_count", 0)),
             important_count=int(row.get("important_count", 0)),
+            delegated_urgent_count=int(row.get("delegated_urgent_count", 0)),
         )

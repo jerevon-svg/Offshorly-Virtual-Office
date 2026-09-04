@@ -13,11 +13,25 @@ export interface DelegationEndedEvent {
   reason?: string | null;
 }
 
+/** A3 — somebody declared a message urgent while Toucan covered for the viewer. Owner-only,
+ *  like delegation_ended; carries what the panel needs to bump its counter and, later, to list
+ *  the conversation on the return card. Never any message text. */
+export interface DelegationUrgentEvent {
+  flagId?: string | null;
+  delegationId?: string | null;
+  conversationId?: string | null;
+  requesterEmail?: string | null;
+  flaggedAt?: string | null;
+  urgentCount?: number | null;
+}
+
 type Listener = (event: DelegationEndedEvent) => void;
+type UrgentListener = (event: DelegationUrgentEvent) => void;
 
 let socketInstance: Socket | null = null;
 let devEmail: string | null = null;
 const listeners = new Set<Listener>();
+const urgentListeners = new Set<UrgentListener>();
 
 function socketBase(): string | null {
   const raw = import.meta.env.VITE_CHAT_SOCKET_URL;
@@ -44,6 +58,10 @@ function ensureSocket(): Socket | null {
     const event = payload ?? {};
     for (const listener of listeners) listener(event);
   });
+  socket.on("delegation_urgent_flagged", (payload: DelegationUrgentEvent | undefined) => {
+    const event = payload ?? {};
+    for (const listener of urgentListeners) listener(event);
+  });
   socketInstance = socket;
   return socket;
 }
@@ -62,8 +80,23 @@ export function subscribeDelegationEnded(listener: Listener): () => void {
   };
 }
 
+/** A3 — subscribe to `delegation_urgent_flagged` for the signed-in viewer. Same socket, same
+ *  owner-only guarantee, same "no channel means no events" behaviour as subscribeDelegationEnded. */
+export function subscribeDelegationUrgent(listener: UrgentListener): () => void {
+  urgentListeners.add(listener);
+  try {
+    ensureSocket();
+  } catch {
+    // No realtime channel; the counter still refreshes on reload.
+  }
+  return () => {
+    urgentListeners.delete(listener);
+  };
+}
+
 export function resetDelegationClientForTests(): void {
   listeners.clear();
+  urgentListeners.clear();
   if (socketInstance) {
     socketInstance.disconnect();
     socketInstance = null;
