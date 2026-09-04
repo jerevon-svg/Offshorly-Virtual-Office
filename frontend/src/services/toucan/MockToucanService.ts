@@ -7,8 +7,10 @@ import {
   type ToucanAskRequest,
   type ToucanConversation,
   type ToucanConversationDetail,
+  type ToucanMemory,
   type ToucanService,
   type ToucanStoredMessage,
+  type ToucanDelegation,
 } from "./types";
 
 // Canned-reply Toucan, lifted VERBATIM out of ToucanAssistantPanel.tsx so the
@@ -194,6 +196,38 @@ export class MockToucanService implements ToucanService {
 
   async cancelAction(actionId: string): Promise<ToucanActionResult> {
     throw new ToucanActionUnavailableError(actionId);
+  }
+
+  // A2.2 — the canned bird never handles anybody's messages: no delegation, nothing to stop.
+  async getDelegation(): Promise<ToucanDelegation | null> {
+    return null;
+  }
+
+  async cancelDelegation(): Promise<ToucanDelegation | null> {
+    return null;
+  }
+
+  // T9 — management calls.
+
+  async deleteConversation(conversationId: string): Promise<void> {
+    // Idempotent, like the real service: deleting one that has already gone is
+    // the caller's intent already satisfied.
+    mockConversations.delete(conversationId);
+  }
+
+  async listMemories(): Promise<ToucanMemory[]> {
+    // ALWAYS EMPTY, deliberately. The canned bird has no memory command parser
+    // (that is server-side, services/toucan/memory_commands.py), so it has never
+    // saved anything and has nothing to list. Seeding fake memories here would
+    // make the demo lie about durable storage in exactly the way the in-memory
+    // conversation map is careful not to — the memory view's empty state is the
+    // honest answer in mock mode.
+    return [];
+  }
+
+  async deleteMemory(): Promise<void> {
+    // Nothing to delete, and saying so by succeeding keeps the caller simple:
+    // "make this not exist" is already true.
   }
 }
 

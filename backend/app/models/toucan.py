@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import BaseModel
@@ -204,3 +204,45 @@ class ToucanResource(BaseModel):
 
     # MIME type when known ("application/pdf"). Metadata about the reference, not content.
     media_type: Mapped[str | None] = mapped_column(String(127), nullable=True)
+
+
+# --- A2.1: explicit temporary delegation ----------------------------------------------------
+#
+# A2 lets a person say "handle my messages for 2 hours" and have Toucan answer their DMs while
+# they are away — clearly as Toucan, never as them. The row below is the durable fact that such
+# a delegation exists, so it survives a backend restart and ends on time without a scheduler:
+# every read checks `expires_at`/`hard_cap_at` and lazily marks a stale row ended.
+#
+# It holds NO content: who delegated, when it started, when it ends, how it ended, how many
+# automatic replies were sent, and the owner's own optional note (unused at A2.1, reserved for
+# A2.4's explicitly authorised wording). Nothing about the conversations Toucan replied in.
+
+
+class ToucanDelegation(BaseModel):
+    """One explicit, temporary "handle my messages" grant, owned by exactly one person.
+
+    `owner_email` is written ONLY from get_current_email at confirm time — the proposal carries no
+    owner and the request body has no owner field. At most one row per owner is `active`; starting
+    another ends the previous one. Ended rows are kept for audit, never deleted."""
+
+    __tablename__ = "toucan_delegations"
+    __table_args__ = (Index("ix_toucan_delegations_owner_status", "owner_email", "status"),)
+
+    owner_email: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
+    # "active" | "ended". Python-layer vocabulary, no DB CHECK — same convention as the rest.
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    # A2.1 ships "at_time" only; "until_return" arrives with A2.3.
+    end_condition: Mapped[str] = mapped_column(String(16), nullable=False)
+    # A2.1 ships "dm" only; groups arrive with A2.2.
+    scope: Mapped[str] = mapped_column(String(16), nullable=False)
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Null is reserved for a future until_return condition; at_time rows always carry it.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The absolute ceiling regardless of condition — a delegation can never outlive this.
+    hard_cap_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # "expired" | "cancelled" | "replaced" (A2.3 adds "returned").
+    ended_reason: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # The owner's own words, if they gave any. Reserved; A2.1 never writes it.
+    note: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    reply_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")

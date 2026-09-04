@@ -20,6 +20,7 @@ describe("pixel density is invariant to widthScale", () => {
     { id: "alex" as const, cssW: 96 },
     { id: "micah" as const, cssW: 110 },
     { id: "angelo" as const, cssW: 104 },
+    { id: "jan" as const, cssW: 104 },
   ];
 
   it("is identical with and without widening, for every character and bucket", () => {

@@ -20,6 +20,8 @@ const h = vi.hoisted(() => {
     loadConversation: vi.fn(),
     confirmAction: vi.fn(),
     cancelAction: vi.fn(),
+    getDelegation: vi.fn(async () => null),
+    cancelDelegation: vi.fn(async () => null),
   };
   return {
     service,
@@ -200,6 +202,336 @@ describe("ToucanAssistantPanel — T8 action confirmation", () => {
 
     await sendQuestion("actually, who is online?");
     expect(screen.queryByTestId("toucan-action-card")).toBeNull();
+    expect(h.service.confirmAction).not.toHaveBeenCalled();
+  });
+});
+
+// A1 — send_message rides the same card and the same two buttons, but its
+// execution is entirely server-side: the panel must show recipient + exact text
+// before Confirm, and must never route a send outcome through the status path.
+const SEND_PROPOSAL = {
+  id: "act-2",
+  action: "send_message" as const,
+  recipientEmail: "micah@example.com",
+  recipientLabel: "Micah Reyes",
+  message: "I'll be back at 3.",
+  summary: "Send message to Micah Reyes",
+  expiresAt: "2026-09-02T12:02:00.000Z",
+};
+
+const SEND_ANSWER = {
+  text: "I can send this to Micah Reyes: “I'll be back at 3.” Nothing has been sent yet — confirm below and I'll send it.",
+  intent: "action_proposal",
+  supported: true,
+  conversationId: "c-1",
+  action: SEND_PROPOSAL,
+};
+
+const SENT_RESULT = {
+  id: "act-2",
+  outcome: "executed" as const,
+  action: "send_message" as const,
+  recipientEmail: "micah@example.com",
+  recipientLabel: "Micah Reyes",
+  message: "I'll be back at 3.",
+  conversationId: "conv-1",
+  messageId: "m-1",
+  summary: "Send message to Micah Reyes",
+  text: "Done — I sent your message to Micah Reyes.",
+};
+
+describe("ToucanAssistantPanel — A1 send_message confirmation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.service.loadLatestConversation.mockResolvedValue(null);
+    h.service.listConversations.mockResolvedValue([]);
+    h.canApplyToucanStatus.mockReturnValue({ ok: true });
+    h.applyToucanStatus.mockReturnValue({ ok: true });
+  });
+  afterEach(cleanup);
+
+  const flush = async () => {
+    await act(async () => {
+      await Promise.resolve();
+    });
+  };
+
+  const setup = async () => {
+    render(<ToucanAssistantPanel onRelease={vi.fn()} />);
+    await flush();
+  };
+
+  const sendQuestion = async (text: string) => {
+    fireEvent.change(screen.getByLabelText("Message the toucan"), { target: { value: text } });
+    fireEvent.keyDown(screen.getByLabelText("Message the toucan"), { key: "Enter" });
+    await flush();
+  };
+
+  it("shows the recipient AND the exact message on the card, and sends nothing by itself", async () => {
+    h.service.ask.mockResolvedValue(SEND_ANSWER);
+    await setup();
+    await sendQuestion("Message Micah that I'll be back at 3.");
+
+    const card = screen.getByTestId("toucan-action-card");
+    expect(card.textContent).toContain("Send message to Micah Reyes");
+    expect(screen.getByTestId("toucan-action-message").textContent).toBe("I'll be back at 3.");
+    expect(screen.getByText("Confirm")).toBeTruthy();
+    expect(screen.getByText("Cancel")).toBeTruthy();
+    expect(h.service.confirmAction).not.toHaveBeenCalled();
+    expect(h.applyToucanStatus).not.toHaveBeenCalled();
+  });
+
+  it("Confirm consumes the id, reports the send, and never touches the status path", async () => {
+    h.service.ask.mockResolvedValue(SEND_ANSWER);
+    h.service.confirmAction.mockResolvedValue(SENT_RESULT);
+    await setup();
+    await sendQuestion("Message Micah that I'll be back at 3.");
+
+    fireEvent.click(screen.getByText("Confirm"));
+    await flush();
+
+    expect(h.service.confirmAction).toHaveBeenCalledWith("act-2");
+    expect(h.canApplyToucanStatus).not.toHaveBeenCalled();
+    expect(h.applyToucanStatus).not.toHaveBeenCalled();
+    expect(screen.getByText("Done — I sent your message to Micah Reyes.")).toBeTruthy();
+    expect(screen.queryByTestId("toucan-action-card")).toBeNull();
+  });
+
+  it("Cancel sends nothing", async () => {
+    h.service.ask.mockResolvedValue(SEND_ANSWER);
+    h.service.cancelAction.mockResolvedValue({
+      ...SENT_RESULT,
+      outcome: "cancelled" as const,
+      conversationId: null,
+      messageId: null,
+      text: "Okay, cancelled — I haven't sent anything.",
+    });
+    await setup();
+    await sendQuestion("Message Micah that I'll be back at 3.");
+
+    fireEvent.click(screen.getByText("Cancel"));
+    await flush();
+
+    expect(h.service.cancelAction).toHaveBeenCalledWith("act-2");
+    expect(h.service.confirmAction).not.toHaveBeenCalled();
+    expect(h.applyToucanStatus).not.toHaveBeenCalled();
+    expect(screen.getByText("Okay, cancelled — I haven't sent anything.")).toBeTruthy();
+  });
+
+  it("a group target shows the group title AND the exact message, and sends nothing by itself", async () => {
+    h.service.ask.mockResolvedValue({
+      ...SEND_ANSWER,
+      text: "I can send this to Design Team: “I'll be late.” Nothing has been sent yet — confirm below and I'll send it.",
+      action: {
+        ...SEND_PROPOSAL,
+        id: "act-3",
+        targetKind: "group" as const,
+        recipientEmail: null,
+        recipientLabel: "Design Team",
+        message: "I'll be late.",
+        summary: "Send message to Design Team",
+      },
+    });
+    await setup();
+    await sendQuestion("Message Design Team that I'll be late.");
+
+    expect(screen.getByTestId("toucan-action-card").textContent).toContain("Send message to Design Team");
+    expect(screen.getByTestId("toucan-action-message").textContent).toBe("I'll be late.");
+    expect(h.service.confirmAction).not.toHaveBeenCalled();
+    expect(h.applyToucanStatus).not.toHaveBeenCalled();
+  });
+
+  it("an expired send proposal is worded safely and sends nothing", async () => {
+    h.service.ask.mockResolvedValue(SEND_ANSWER);
+    h.service.confirmAction.mockRejectedValue(new ToucanActionUnavailableError("act-2"));
+    await setup();
+    await sendQuestion("Message Micah that I'll be back at 3.");
+
+    fireEvent.click(screen.getByText("Confirm"));
+    await flush();
+
+    expect(h.applyToucanStatus).not.toHaveBeenCalled();
+    expect(screen.queryByText("Done — I sent your message to Micah Reyes.")).toBeNull();
+    expect(screen.queryByTestId("toucan-action-card")).toBeNull();
+  });
+});
+
+// A2.1 — start_delegation rides the same card and the same two buttons. Nothing is
+// active until Confirm; the card must state the scope (DMs only) and the duration; the
+// outcome never touches the status path and reports the resolved end time.
+const DELEGATION_PROPOSAL = {
+  id: "act-3",
+  action: "start_delegation" as const,
+  durationMinutes: 120,
+  scope: "dm_and_groups" as const,
+  summary: "Let Toucan handle your messages for 2 hours (direct messages + group @mentions)",
+  expiresAt: "2026-09-04T12:02:00.000Z",
+};
+
+const DELEGATION_ANSWER = {
+  text: "I can handle your direct messages for 2 hours. DMs only, and nothing is active yet — confirm below and I'll start.",
+  intent: "action_proposal",
+  supported: true,
+  conversationId: "c-1",
+  action: DELEGATION_PROPOSAL,
+};
+
+const DELEGATION_RESULT = {
+  id: "act-3",
+  outcome: "executed" as const,
+  action: "start_delegation" as const,
+  durationMinutes: 120,
+  scope: "dm_and_groups" as const,
+  delegation: {
+    id: "d-1",
+    status: "active" as const,
+    endCondition: "at_time",
+    scope: "dm_and_groups",
+    startsAt: "2026-09-04T12:00:00.000Z",
+    expiresAt: "2026-09-04T14:00:00.000Z",
+    hardCapAt: "2026-09-05T12:00:00.000Z",
+    replyCount: 0,
+  },
+  summary: "Let Toucan handle your direct messages for 2 hours (DMs only)",
+  text: "Done — I'm handling your direct messages for the next 2 hours.",
+};
+
+describe("ToucanAssistantPanel — A2.1 start_delegation confirmation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.service.loadLatestConversation.mockResolvedValue(null);
+    h.service.listConversations.mockResolvedValue([]);
+  });
+  afterEach(cleanup);
+
+  const flush = async () => {
+    await act(async () => {
+      await Promise.resolve();
+    });
+  };
+
+  const setup = async () => {
+    render(<ToucanAssistantPanel onRelease={vi.fn()} />);
+    await flush();
+  };
+
+  const sendQuestion = async (text: string) => {
+    fireEvent.change(screen.getByLabelText("Message the toucan"), { target: { value: text } });
+    fireEvent.keyDown(screen.getByLabelText("Message the toucan"), { key: "Enter" });
+    await flush();
+  };
+
+  it("shows the delegation summary, DMs-only scope and duration, and activates nothing by itself", async () => {
+    h.service.ask.mockResolvedValue(DELEGATION_ANSWER);
+    await setup();
+    await sendQuestion("Handle my messages for 2 hours.");
+
+    const card = screen.getByTestId("toucan-action-card");
+    expect(card.textContent).toContain("Let Toucan handle your messages for 2 hours (direct messages + group @mentions)");
+    const detail = screen.getByTestId("toucan-action-delegation").textContent ?? "";
+    expect(detail).toContain("Direct messages + group @mentions");
+    expect(detail).toContain("for 2 hours");
+    expect(detail).toContain("ends about");
+    expect(screen.getByText("Confirm")).toBeTruthy();
+    expect(screen.getByText("Cancel")).toBeTruthy();
+    expect(h.service.confirmAction).not.toHaveBeenCalled();
+    expect(h.applyToucanStatus).not.toHaveBeenCalled();
+  });
+
+  it("Confirm consumes the id, reports the delegation with its end time, and never touches the status path", async () => {
+    h.service.ask.mockResolvedValue(DELEGATION_ANSWER);
+    h.service.confirmAction.mockResolvedValue(DELEGATION_RESULT);
+    await setup();
+    await sendQuestion("Handle my messages for 2 hours.");
+
+    fireEvent.click(screen.getByText("Confirm"));
+    await flush();
+
+    expect(h.service.confirmAction).toHaveBeenCalledWith("act-3");
+    expect(h.canApplyToucanStatus).not.toHaveBeenCalled();
+    expect(h.applyToucanStatus).not.toHaveBeenCalled();
+    const line = screen.getByText(/Done — I'm handling your direct messages for the next 2 hours\./).textContent ?? "";
+    expect(line).toMatch(/Ends at \d/);
+    expect(screen.queryByTestId("toucan-action-card")).toBeNull();
+  });
+
+  it("Cancel activates nothing", async () => {
+    h.service.ask.mockResolvedValue(DELEGATION_ANSWER);
+    h.service.cancelAction.mockResolvedValue({
+      ...DELEGATION_RESULT,
+      outcome: "cancelled" as const,
+      delegation: null,
+      text: "Okay, cancelled — I'm not handling your messages.",
+    });
+    await setup();
+    await sendQuestion("Handle my messages for 2 hours.");
+
+    fireEvent.click(screen.getByText("Cancel"));
+    await flush();
+
+    expect(h.service.cancelAction).toHaveBeenCalledWith("act-3");
+    expect(h.service.confirmAction).not.toHaveBeenCalled();
+    expect(screen.getByText("Okay, cancelled — I'm not handling your messages.")).toBeTruthy();
+    expect(screen.queryByTestId("toucan-action-card")).toBeNull();
+  });
+});
+
+// A2.3 — clock-time and until-return proposals ride the same card. The clock end is the
+// server-resolved instant, rendered in the viewer's zone; until-return states the 24 h cap.
+describe("ToucanAssistantPanel — A2.3 clock-time and until-return proposals", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.service.loadLatestConversation.mockResolvedValue(null);
+    h.service.listConversations.mockResolvedValue([]);
+  });
+  afterEach(cleanup);
+
+  const flush = async () => {
+    await act(async () => {
+      await Promise.resolve();
+    });
+  };
+
+  const propose = async (action: Record<string, unknown>) => {
+    h.service.ask.mockResolvedValue({
+      text: "confirm below",
+      intent: "action_proposal",
+      supported: true,
+      conversationId: "c-1",
+      action: { id: "act-9", action: "start_delegation", scope: "dm_and_groups", expiresAt: "2026-09-04T12:02:00.000Z", ...action },
+    });
+    render(<ToucanAssistantPanel onRelease={vi.fn()} />);
+    await flush();
+    fireEvent.change(screen.getByLabelText("Message the toucan"), { target: { value: "Handle my messages…" } });
+    fireEvent.keyDown(screen.getByLabelText("Message the toucan"), { key: "Enter" });
+    await flush();
+    return screen.getByTestId("toucan-action-delegation").textContent ?? "";
+  };
+
+  it("renders a clock-time proposal with the resolved end in local time", async () => {
+    const endsAt = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
+    const detail = await propose({
+      endCondition: "at_time",
+      endsAt,
+      durationMinutes: null,
+      summary: "Let Toucan handle your messages until 3:00 PM today (direct messages + group @mentions)",
+    });
+    const expected = new Date(endsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    expect(detail).toContain("Direct messages + group @mentions");
+    expect(detail).toContain(`until ${expected} today`);
+    expect(detail).not.toContain("ends about");
+    expect(screen.getByTestId("toucan-action-card").textContent).toContain("until 3:00 PM today");
+    expect(h.service.confirmAction).not.toHaveBeenCalled();
+  });
+
+  it("renders an until-return proposal with the 24-hour maximum", async () => {
+    const detail = await propose({
+      endCondition: "until_return",
+      endsAt: null,
+      durationMinutes: null,
+      summary: "Let Toucan handle your messages until you return (direct messages + group @mentions, maximum 24 hours)",
+    });
+    expect(detail).toBe("Direct messages + group @mentions · until you return · maximum 24 hours");
     expect(h.service.confirmAction).not.toHaveBeenCalled();
   });
 });

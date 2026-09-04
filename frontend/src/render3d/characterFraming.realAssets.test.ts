@@ -23,8 +23,9 @@ const ASSETS = {
   alex: "public/avatars/alex-v2-hq-idle9/alex-v2",
   micah: "public/avatars/micah-v5-hq/micah-v5",
   angelo: "public/avatars/gelo-v1-hq-idle9/gelo-v1",
+  jan: "public/avatars/jan-v1-hq-idle9/jan-v1",
 };
-const LAYER_HEIGHT = { bon: 37.2, alex: 34.46, micah: 39.1, angelo: 39.85 };
+const LAYER_HEIGHT = { bon: 37.2, alex: 34.46, micah: 39.1, angelo: 39.85, jan: 39.85 };
 
 async function meshBounds(file: string) {
   const doc = await io.read(file);
@@ -69,7 +70,7 @@ describe("real Meshy assets — Armature scale convention", () => {
 
   it("every character is the same modelled height, so equal visible height is achievable", async () => {
     const bon = await meshBounds(`${ASSETS.bon}-lod0.glb`);
-    for (const key of ["alex", "micah", "angelo"] as const) {
+    for (const key of ["alex", "micah", "angelo", "jan"] as const) {
       const other = await meshBounds(`${ASSETS[key]}-lod0.glb`);
       expect(Math.abs(bon.height - other.height) / bon.height).toBeLessThan(0.02);
     }

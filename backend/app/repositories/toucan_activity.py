@@ -111,6 +111,7 @@ async def _touch(
         must never be allowed to run it — doing so would freeze away_since at the moment the
         session STARTED and report a whole day's activity as missed."""
     row = await _get_cursor(session, email)
+    absence_detected = False
     if row is None:
         # First sighting ever. There is no absence to record — we cannot claim somebody was
         # away during a period we were not watching them.
@@ -121,6 +122,7 @@ async def _touch(
             previous = _as_aware_utc(row.last_seen_at)
             if previous is not None and (moment - previous).total_seconds() >= ABSENCE_GAP_SECONDS:
                 row.away_since = previous
+                absence_detected = True
         row.last_seen_at = moment
 
     await session.flush()
@@ -128,6 +130,9 @@ async def _touch(
         "email": row.email,
         "last_seen_at": _as_aware_utc(row.last_seen_at),
         "away_since": _as_aware_utc(row.away_since),
+        # A2.3: True only on THIS arrival, only when the gap cleared ABSENCE_GAP_SECONDS — the
+        # one presence fact strong enough to count as "the owner came back".
+        "absence_detected": absence_detected,
     }
 
 

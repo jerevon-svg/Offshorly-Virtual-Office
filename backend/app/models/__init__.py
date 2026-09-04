@@ -13,6 +13,7 @@ from app.models.talk_request import TalkRequest
 from app.models.toucan import (
     ToucanAttentionCursor,
     ToucanConversation,
+    ToucanDelegation,
     ToucanMemory,
     ToucanMessage,
     ToucanResource,
@@ -37,6 +38,7 @@ __all__ = [
     "TalkRequest",
     "ToucanAttentionCursor",
     "ToucanConversation",
+    "ToucanDelegation",
     "ToucanMemory",
     "ToucanMessage",
     "ToucanResource",

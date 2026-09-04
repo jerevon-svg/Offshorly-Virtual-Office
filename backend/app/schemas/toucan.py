@@ -55,6 +55,9 @@ class ToucanAskIn(BaseModel):
     # on its own. It is on the wire now so the frontend contract does not have to change when a
     # provider that does need conversation context arrives.
     history: list[ToucanTurnIn] = Field(default_factory=list, max_length=MAX_HISTORY_TURNS)
+    # A2.3: the caller's IANA zone, used ONLY to interpret a wall-clock they typed ("until 3 PM").
+    # Never identity, never stored, validated server-side (services/toucan/delegation.py).
+    client_timezone: str | None = Field(default=None, alias="clientTimezone", max_length=64)
 
 
 class ToucanActionProposalOut(BaseModel):
@@ -66,11 +69,26 @@ class ToucanActionProposalOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     id: str
-    action: Literal["set_status"]
-    # One of the manual statuses (services/toucan/actions.py MANUAL_STATUSES).
-    status: str
-    # Present only for DND, already clamped server-side.
+    action: Literal["set_status", "send_message", "start_delegation"]
+    # set_status: one of the manual statuses (services/toucan/actions.py MANUAL_STATUSES).
+    status: str | None = None
+    # set_status: present only for DND, already clamped server-side.
     dnd_minutes: int | None = Field(default=None, alias="dndMinutes")
+    # send_message: the RESOLVED target and the exact outgoing text — both must be visible on
+    # the card before Confirm. Server-resolved; the client never names a target. target_kind
+    # "dm" carries recipient_email; "group" carries an existing group's title as the label.
+    target_kind: Literal["dm", "group"] | None = Field(default=None, alias="targetKind")
+    recipient_email: str | None = Field(default=None, alias="recipientEmail")
+    recipient_label: str | None = Field(default=None, alias="recipientLabel")
+    message: str | None = None
+    # start_delegation (A2.1): the clamped duration and the scope ("dm" only). The card shows
+    # both; the resolved end time is only known at Confirm (see ToucanDelegationOut).
+    duration_minutes: int | None = Field(default=None, alias="durationMinutes")
+    scope: Literal["dm", "dm_and_groups"] | None = None
+    # A2.3: "at_time" (duration or clock) | "until_return"; ends_at is the RESOLVED UTC end for a
+    # clock-time request, so the card can show it in the viewer's zone before Confirm.
+    end_condition: Literal["at_time", "until_return"] | None = Field(default=None, alias="endCondition")
+    ends_at: datetime | None = Field(default=None, alias="endsAt")
     # The exact effect, as the confirmation card must show it.
     summary: str
     expires_at: datetime = Field(alias="expiresAt")
@@ -78,6 +96,33 @@ class ToucanActionProposalOut(BaseModel):
     @field_serializer("expires_at")
     def _serialize_expires_at(self, dt: datetime) -> str:
         return to_iso_z(dt)
+
+    @field_serializer("ends_at")
+    def _serialize_ends_at(self, dt: datetime | None) -> str | None:
+        return to_iso_z(dt) if dt is not None else None
+
+
+class ToucanDelegationOut(BaseModel):
+    """A2.1 — one delegation row as the owner sees it. Server times, ISO-Z; the client formats
+    the end in the viewer's own zone. Never carries another owner's row: every producer filters
+    on the bearer identity."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    status: Literal["active", "ended"]
+    end_condition: str = Field(alias="endCondition")
+    scope: str
+    starts_at: datetime = Field(alias="startsAt")
+    expires_at: datetime | None = Field(default=None, alias="expiresAt")
+    hard_cap_at: datetime = Field(alias="hardCapAt")
+    ended_at: datetime | None = Field(default=None, alias="endedAt")
+    ended_reason: str | None = Field(default=None, alias="endedReason")
+    reply_count: int = Field(alias="replyCount")
+
+    @field_serializer("starts_at", "expires_at", "hard_cap_at", "ended_at")
+    def _serialize_times(self, dt: datetime | None) -> str | None:
+        return to_iso_z(dt) if dt is not None else None
 
 
 class ToucanActionResultOut(BaseModel):
@@ -88,9 +133,26 @@ class ToucanActionResultOut(BaseModel):
 
     id: str
     outcome: Literal["executed", "cancelled"]
-    action: Literal["set_status"]
-    status: str
+    action: Literal["set_status", "send_message", "start_delegation"]
+    status: str | None = None
     dnd_minutes: int | None = Field(default=None, alias="dndMinutes")
+    target_kind: Literal["dm", "group"] | None = Field(default=None, alias="targetKind")
+    recipient_email: str | None = Field(default=None, alias="recipientEmail")
+    recipient_label: str | None = Field(default=None, alias="recipientLabel")
+    message: str | None = None
+    # send_message, executed only: where the message landed, so a client can open the chat.
+    conversation_id: str | None = Field(default=None, alias="conversationId")
+    message_id: str | None = Field(default=None, alias="messageId")
+    duration_minutes: int | None = Field(default=None, alias="durationMinutes")
+    scope: Literal["dm", "dm_and_groups"] | None = None
+    end_condition: Literal["at_time", "until_return"] | None = Field(default=None, alias="endCondition")
+    ends_at: datetime | None = Field(default=None, alias="endsAt")
+    # start_delegation, executed only: the durable delegation that is now active.
+    delegation: ToucanDelegationOut | None = None
+
+    @field_serializer("ends_at")
+    def _serialize_ends_at(self, dt: datetime | None) -> str | None:
+        return to_iso_z(dt) if dt is not None else None
     summary: str
     # The assistant's outcome line, also persisted into the conversation transcript.
     text: str

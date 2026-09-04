@@ -120,7 +120,8 @@ class CreateGroupConversationRequest(BaseModel):
     # never includes the caller's own email explicitly, though a duplicate is harmless (deduped
     # by the router before hitting the repo layer).
     participant_emails: list[str] = Field(default_factory=list, alias="participantEmails")
-    title: str | None = Field(default=None)
+    # Optional group name; mirrors Conversation.title's String(255). Trimmed by the router.
+    title: str | None = Field(default=None, max_length=255)
 
 
 class MarkReadRequest(BaseModel):

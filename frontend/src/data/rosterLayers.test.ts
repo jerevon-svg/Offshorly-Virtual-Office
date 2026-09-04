@@ -380,6 +380,7 @@ describe("live-3D peers use their own layer box", () => {
     alex: { width: 20, height: 34.46 },
     micah: { width: 24.36, height: 39.1 },
     angelo: { width: 28.18, height: 39.85 },
+    jan: { width: 28.18, height: 39.85 },
   } as const;
   // |ndcFeet| x ownHeight / 2 — the feet's constant distance below the box
   // centre. Constant in height because the canonical policy scales the
@@ -389,6 +390,7 @@ describe("live-3D peers use their own layer box", () => {
     alex: 0.830595 * 34.46 / 2,
     micah: 0.726009 * 39.1 / 2,
     angelo: 0.678897 * 39.85 / 2,
+    jan: 0.657724 * 39.85 / 2,
   } as const;
 
   function layersFor(people: Parameters<typeof officePeopleToLayers>[0]) {
@@ -405,6 +407,7 @@ describe("live-3D peers use their own layer box", () => {
       person("alex@offshorly.com", "alex"),
       person("micah@offshorly.com", "micah"),
       person("angelo@offshorly.com", "angelo"),
+      person("jan@offshorly.com", "jan"),
     ] as never);
     for (const [id, box] of Object.entries(MANIFEST)) {
       expect(byId.get(id)!.width).toBeCloseTo(box.width, 3);
@@ -415,17 +418,17 @@ describe("live-3D peers use their own layer box", () => {
   it("a peer's box equals the box that same character uses as self", () => {
     // "self" = their own manifest layer; the peer box must be identical, so
     // camera framing, headroom, widthCapacity and proportions all match.
-    const byId = layersFor([person("micah@offshorly.com", "micah"), person("angelo@offshorly.com", "angelo")] as never);
-    for (const id of ["micah", "angelo"] as const) {
+    const byId = layersFor([person("micah@offshorly.com", "micah"), person("angelo@offshorly.com", "angelo"), person("jan@offshorly.com", "jan")] as never);
+    for (const id of ["micah", "angelo", "jan"] as const) {
       expect(byId.get(id)!.width).toBeCloseTo(MANIFEST[id].width, 3);
       expect(byId.get(id)!.height).toBeCloseTo(MANIFEST[id].height, 3);
     }
   });
 
   it("resizing the box does not move anyone's feet or horizontal centre", () => {
-    const people = [person("micah@offshorly.com", "micah"), person("angelo@offshorly.com", "angelo")] as never;
+    const people = [person("micah@offshorly.com", "micah"), person("angelo@offshorly.com", "angelo"), person("jan@offshorly.com", "jan")] as never;
     const byId = layersFor(people);
-    for (const id of ["micah", "angelo"] as const) {
+    for (const id of ["micah", "angelo", "jan"] as const) {
       const l = byId.get(id)!;
       const centreX = l.x + l.width / 2;
       const centreY = l.y + l.height / 2;
@@ -448,10 +451,10 @@ describe("live-3D peers use their own layer box", () => {
     const people = [
       person("jerevon@offshorly.com", "bon"), person("alex@offshorly.com", "alex"),
       person("micah@offshorly.com", "micah"), person("angelo@offshorly.com", "angelo"),
-      person("lui@offshorly.com", "lui"),
+      person("jan@offshorly.com", "jan"), person("lui@offshorly.com", "lui"),
     ] as never;
     const layers = officePeopleToLayers(people);
-    expect(layers).toHaveLength(5);
-    expect(new Set(layers.map((l) => l.id)).size).toBe(5);
+    expect(layers).toHaveLength(6);
+    expect(new Set(layers.map((l) => l.id)).size).toBe(6);
   });
 });

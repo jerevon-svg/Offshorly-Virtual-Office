@@ -13,7 +13,7 @@ from app.repositories import chat as chat_repo
 from app.repositories import room_requests as room_requests_repo
 from app.repositories import talk_requests as talk_requests_repo
 from app.repositories import toucan_activity as toucan_activity_repo
-from app.schemas.chat import serialize_message_dict, to_iso_z
+from app.schemas.chat import to_iso_z
 from app.schemas.room_requests import RoomRequestOut
 from app.schemas.talk_requests import TalkRequestOut
 from app.repositories import position as position_repo
@@ -35,6 +35,10 @@ from app.realtime.state import (
 )
 from app.services.call_invites import INVITE_TTL_SECONDS
 from app.services.call_invites import wire as invite_wire
+from app.services.chat_assistant import detect_toucan_invocation, schedule_reply
+from app.services.chat_delegation import schedule_delegation_reply
+from app.services.delegation_lifecycle import mark_owner_returned, schedule_owner_returned
+from app.services.chat_send import ChatSendError, is_toucan_sender, send_chat_message
 from app.services.position_registry import position_registry
 
 # Faithful port of backend/src/socket.ts onto python-socketio's ASGI async server. Mounted in
@@ -103,15 +107,19 @@ def _has_another_live_socket(email: str, *, excluding_sid: str) -> bool:
     return False
 
 
-async def _record_arrival(email: str) -> None:
+async def _record_arrival(email: str) -> bool:
     """This person has just turned up. The ONLY event that can freeze an absence boundary —
-    see repositories/toucan_activity.py's record_arrival."""
+    see repositories/toucan_activity.py's record_arrival. Returns True only when THIS arrival
+    closed a real absence (gap ≥ ABSENCE_GAP_SECONDS) — a refresh, HMR or a network blip
+    reconnects inside the gap and returns False."""
     try:
         async with async_session_maker() as session:
-            await toucan_activity_repo.record_arrival(session, email=email)
+            result = await toucan_activity_repo.record_arrival(session, email=email)
             await session.commit()
+        return bool(result.get("absence_detected"))
     except Exception:  # never let bookkeeping refuse a connection
         _logger.warning("failed to record arrival for %s", email, exc_info=True)
+        return False
 
 
 async def _record_departure(email: str) -> None:
@@ -343,7 +351,13 @@ async def connect(sid: str, environ: dict, auth: dict | None) -> None:
     # Toucan T2: the arrival half of the presence cursor. Placed before the room bootstrap so a
     # bootstrap failure (which only emits chat_error) cannot cost us the one durable record that
     # a person came back — the absence boundary is frozen here or not at all.
-    await _record_arrival(email)
+    returned_from_absence = await _record_arrival(email)
+    # A2.3 — a reconnect counts as "the owner is back" ONLY when it closed a proven absence AND
+    # it is this person's only live socket. A second tab beside a live one, a refresh, HMR or a
+    # blip never qualifies. The other return signals (own message, Toucan question, explicit
+    # check-in) live on their own handlers; all of them end through the same one function.
+    if returned_from_absence and not _has_another_live_socket(email, excluding_sid=sid):
+        await mark_owner_returned(email)
 
     # Fire-and-forget-equivalent room bootstrap (mirrors bootstrapRooms in socket.ts): failures
     # here surface as chat_error rather than rejecting the already-established connection.
@@ -477,6 +491,9 @@ async def come_online(sid: str, _payload: dict | None = None) -> None:
         # so a checkout long enough to clear ABSENCE_GAP_SECONDS is resolved into a real
         # absence here rather than being silently forgotten.
         await _record_arrival(email)
+        # A2.3 — an explicit check-in is the owner saying "I'm here": end an until_return
+        # delegation regardless of how long they were gone.
+        await mark_owner_returned(email)
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 
@@ -899,6 +916,9 @@ async def join_conversation(sid: str, payload: dict | None) -> None:
 
 @sio.on("send_message")
 async def send_message(sid: str, payload: dict | None) -> None:
+    """Parse the payload, take the sender from the authenticated socket session, and hand off to
+    the shared chat write path (services/chat_send.py) — authorization, persistence, and fan-out
+    all live there so any server-side sender goes through the same seam."""
     try:
         payload = payload or {}
         conversation_id = payload.get("conversationId")
@@ -906,68 +926,57 @@ async def send_message(sid: str, payload: dict | None) -> None:
         client_temp_id = payload.get("clientTempId")
         client_temp_id = client_temp_id if isinstance(client_temp_id, str) else ""
         text = payload.get("text")
-        text = text.strip() if isinstance(text, str) else ""
+        text = text if isinstance(text, str) else ""
         raw_mentions = payload.get("mentionedEmails")
         mentioned_emails = [e for e in raw_mentions if isinstance(e, str)] if isinstance(raw_mentions, list) else None
 
-        if not conversation_id:
-            await sio.emit(
-                "chat_error", {"code": "invalid_message", "message": "conversationId is required"}, to=sid
-            )
-            return
-
+        # Sender is ALWAYS the server-verified session email — a client-sent sender id is
+        # never trusted, even implicitly.
         session_data = await sio.get_session(sid)
         email = session_data["email"]
+        if is_toucan_sender(email):
+            # The reserved Toucan author is server-side only; no socket session may speak as it.
+            await sio.emit("chat_error", {"code": "forbidden", "message": "Reserved sender"}, to=sid)
+            return
 
-        async with async_session_maker() as session:
-            ok = await chat_repo.is_participant(session, conversation_id, email)
-            if not ok:
-                await sio.emit("chat_error", {"code": "forbidden", "message": "Not a participant"}, to=sid)
-                return
-            if not text:
-                await sio.emit(
-                    "chat_error", {"code": "invalid_message", "message": "Message text is empty"}, to=sid
+        try:
+            async with async_session_maker() as session:
+                saved = await send_chat_message(
+                    session,
+                    conversation_id=conversation_id,
+                    sender_email=email,
+                    text=text,
+                    mentioned_emails=mentioned_emails,
+                    origin_sid=sid,
+                    client_temp_id=client_temp_id,
                 )
-                return
+        except ChatSendError as err:
+            await sio.emit("chat_error", {"code": err.code, "message": err.message}, to=sid)
+            return
 
-            # Sender is ALWAYS the server-verified session email — a client-sent sender id is
-            # never trusted, even implicitly. mentioned_emails is likewise never trusted as-is —
-            # insert_message re-validates every candidate against actual participant membership.
-            message = await chat_repo.insert_message(
-                session, conversation_id, email, text, mentioned_emails=mentioned_emails
+        # A1.4.2 — only AFTER the human message is committed and fanned out: an "@Toucan" token
+        # schedules Toucan's in-chat reply as a background task, so nothing about the reply can
+        # delay or fail this send. The reply re-checks membership itself.
+        prompt = detect_toucan_invocation(text)
+        if prompt is not None:
+            schedule_reply(conversation_id, email, prompt, saved["id"])
+        # A2.1 — same ordering guarantee: only after the human message is committed and fanned
+        # out, decide in the background whether the OTHER participant of a DM has an active
+        # delegation that earns a deterministic Toucan acknowledgement. The evaluation reads no
+        # message text and re-checks every condition against the database itself.
+        # A2.3 — a human message from this person is the strongest "I'm back" there is. Ends an
+        # until_return delegation of THEIRS (never anybody else's), in the background.
+        schedule_owner_returned(email)
+        # A message that explicitly addresses Toucan is a conversation WITH Toucan (A1.4 answers
+        # it); it is not a message left for the absent owner, so no acknowledgement on their behalf.
+        if prompt is None:
+            # A2.2: the saved message's SERVER-VALIDATED mention list decides who was addressed in
+            # a group; the evaluation never re-parses text.
+            # A2.4: the saved text is passed so a simple retrieval question can be answered from
+            # the owner's own earlier words in this conversation; unsafe questions never read it.
+            schedule_delegation_reply(
+                conversation_id, email, saved["id"], saved.get("mentionedEmails"), saved.get("text")
             )
-            await chat_repo.touch_conversation(session, conversation_id, message.sent_at)
-            conv = await chat_repo.get_conversation_by_id(session, conversation_id)
-            await session.commit()
-
-        # Freshly-inserted message: nothing delivered/read yet — payload shape always includes
-        # deliveredTo/readBy (both empty lists on send), matching serialize_message_dict's
-        # per-reader wire format.
-        message_payload = serialize_message_dict(message, delivered_to=[], read_by=[])
-        await sio.emit("message_saved", {"clientTempId": client_temp_id, "message": message_payload}, to=sid)
-        await sio.emit("incoming_message", {"message": message_payload}, room=conversation_id, skip_sid=sid)
-
-        # Push each recipient's (not the sender's) fresh unread count to their own per-user
-        # room, so an idle badge updates live without polling.
-        recipients = [pid for pid in (conv["participant_ids"] if conv else []) if pid != email]
-        for recipient in recipients:
-            async with async_session_maker() as recipient_session:
-                count = await chat_repo.unread_count(recipient_session, conversation_id, recipient)
-            await sio.emit(
-                "unread_count", {"conversationId": conversation_id, "count": count}, room=user_room(recipient)
-            )
-            # @mentions V1: same live-push pattern as unread_count above, purely a count update —
-            # this never touches DND state (DndRegistry/talk_requests) and never triggers any
-            # notification (none exists in this codebase to trigger — see MessageNotificationBadge/
-            # RealChatService), so a mention can never interrupt a DND recipient by itself.
-            if message.mentioned_emails and recipient in message.mentioned_emails:
-                async with async_session_maker() as mention_session:
-                    mentions = await chat_repo.mention_count(mention_session, conversation_id, recipient)
-                await sio.emit(
-                    "mention_count",
-                    {"conversationId": conversation_id, "count": mentions},
-                    room=user_room(recipient),
-                )
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 

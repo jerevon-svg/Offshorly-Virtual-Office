@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from app.services.toucan import delegation as delegation_words
+from app.services.toucan.delegation import (
+    ACTION_START_DELEGATION,
+    StartDelegationAction,
+    parse_delegation_request,
+)
 
 # T8 — SAFE ACTIONS: the server-owned allowlist, parsing, validation and wording. Pure module,
 # storage-free like the rest of this package (see tests/test_toucan_privacy.py): no database, no
@@ -31,12 +38,19 @@ from dataclasses import dataclass
 # uses. The server never applies a status to anybody, so it cannot possibly apply one to
 # somebody else.
 
-# The entire T8 action allowlist. Deliberately a tuple of one: send-message, movement and
-# call actions were considered and DEFERRED — none of them has a cleanly reusable
-# server-side write seam today (chat writes are socket-native with fan-out and DND policy;
-# movement exists only as client-side avatar navigation).
+# The action allowlist. T8 shipped set_status alone; A1 adds send_message now that chat has a
+# reusable server-side write seam (app/services/chat_send.py — the same persist + fan-out path
+# the Socket.IO handler uses). Movement and call actions remain deferred.
 ACTION_SET_STATUS = "set_status"
-ALLOWED_ACTIONS = (ACTION_SET_STATUS,)
+ACTION_SEND_MESSAGE = "send_message"
+# A2.1 adds start_delegation: explicit, duration-bounded, DM-only, deterministic-typed only (the
+# AI door below deliberately does not admit it — see validate_ai_proposal).
+ALLOWED_ACTIONS = (ACTION_SET_STATUS, ACTION_SEND_MESSAGE, ACTION_START_DELEGATION)
+
+# Bounds on a proposed outgoing message. The chat path itself has no cap; this one only bounds
+# what a proposal (typed or model-emitted) may carry.
+MAX_MESSAGE_CHARS = 2000
+MAX_RECIPIENT_CHARS = 200
 
 # Intent label for an ask() answer that carries a proposal — same shape as the deterministic
 # intent ids, stable for tests/telemetry.
@@ -69,6 +83,86 @@ class SetStatusAction:
     @property
     def action(self) -> str:
         return ACTION_SET_STATUS
+
+
+TARGET_DM = "dm"
+TARGET_GROUP = "group"
+
+
+@dataclass(frozen=True)
+class SendMessageRequest:
+    """An UNRESOLVED send request: the recipient exactly as the user (or the model) named them,
+    plus the exact outgoing text. Not yet a proposal — the router must resolve `recipient` onto
+    exactly one known person (services/toucan/context.resolve_person) or exactly one existing
+    group the caller belongs to before a SendMessageAction exists. Zero or several matches never
+    become a proposal; Toucan asks instead.
+
+    `splits`: alternative (recipient, text) readings of a connector-less phrasing ("tell Project
+    Alpha I'll join after lunch"), longest recipient first. The router tries them in order and
+    takes the first whose recipient names something it knows; `recipient`/`text` are the
+    single-word reading and are what an AI-relayed request carries. Excluded from equality."""
+
+    recipient: str
+    text: str
+    splits: tuple[tuple[str, str], ...] = field(default=(), compare=False, repr=False)
+
+    def readings(self) -> tuple[tuple[str, str], ...]:
+        return self.splits or ((self.recipient, self.text),)
+
+
+@dataclass(frozen=True)
+class SendMessageAction:
+    """One validated, RESOLVED send-message proposal — what the confirmation card shows and what
+    Confirm executes. The sender is never here: it is the authenticated owner of the pending
+    entry, applied at confirm time from the bearer identity.
+
+    target_kind "dm": `recipient_email` is the person; `conversation_id` is the existing DM when
+    one already exists, None means Confirm creates it (never the proposal).
+    target_kind "group": `conversation_id` is an EXISTING group the owner belonged to at proposal
+    time (re-checked by the chat seam at Confirm); `recipient_email` is None and
+    `recipient_label` is the group's title. Toucan never creates or alters a group."""
+
+    recipient_label: str
+    text: str
+    recipient_email: str | None = None
+    conversation_id: str | None = None
+    target_kind: str = TARGET_DM
+
+    @property
+    def action(self) -> str:
+        return ACTION_SEND_MESSAGE
+
+
+@dataclass(frozen=True)
+class GroupTarget:
+    """The whole of what Toucan may know about a group for resolution: its id and its title."""
+
+    conversation_id: str
+    title: str | None
+
+
+def _normalize_title(value: str) -> str:
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", value.lower()).split())
+
+
+def resolve_group_targets(targets: tuple[GroupTarget, ...] | list[GroupTarget], raw_name: str) -> tuple[GroupTarget, ...]:
+    """Deterministic group-by-name resolution over the CALLER'S OWN groups only (the caller
+    supplies the list). Exact normalized title match wins outright; failing that, a title that
+    begins with the query as a whole word ("Design" → "Design Team"). Nothing looser — a query
+    longer than the title never matches, so a connector-less reading like "Design Team I'll"
+    cannot claim the group and swallow a word of the text. Every candidate is returned — zero or
+    several is the router's cue to ask, never to guess."""
+    query = _normalize_title(raw_name)
+    if not query:
+        return ()
+    titled = [(t, _normalize_title(t.title)) for t in targets if t.title]
+    exact = tuple(t for t, norm in titled if norm == query)
+    if exact:
+        return exact
+    return tuple(t for t, norm in titled if norm.startswith(query + " "))
+
+
+ToucanAction = SetStatusAction | SendMessageAction | StartDelegationAction
 
 
 # --- status word resolution --------------------------------------------------------------------
@@ -166,10 +260,90 @@ def _normalize(question: str) -> str:
     return re.sub(r"[.!?\s]+$", "", question.strip())
 
 
-def parse_action_request(question: str) -> SetStatusAction | None:
+# --- deterministic send-message parsing -------------------------------------------------------
+# Imperative, recipient-first phrasings only: "message Micah that I'll be back at 3", "tell Alex
+# I'm running late", "send a message to Micah: on my way", "let Micah know I'm late". The
+# recipient is captured as typed and resolved by the router; the text is captured verbatim.
+# Words that can never be a recipient keep "tell me who is online" flowing to the assistant.
+
+_NOT_A_RECIPIENT = frozenset(
+    {"me", "us", "them", "him", "her", "you", "it", "everyone", "everybody", "all", "someone",
+     "somebody", "anyone", "the", "a", "an", "my", "your", "our", "this", "that", "what", "who"}
+)
+_PERSON_TOKEN = r"(?P<person>[^\s,:]+(?:\s+[^\s,:]+){0,2}?)"
+_SEND_VERB = r"(?:(?:please\s+)?(?:can\s+you\s+|could\s+you\s+)?(?:send\s+(?:a\s+)?(?:message|dm|note)\s+to|message|dm|text|tell|ping))"
+
+_SEND_MESSAGE_PATTERNS = [
+    # With an explicit connector ("that", "saying", ":" or ",") — multi-word names allowed.
+    re.compile(
+        r"^" + _SEND_VERB + r"\s+(?:the\s+)?" + _PERSON_TOKEN + r"(?:\s+that\s+|\s+saying\s+|\s*:\s*|\s*,\s*)(?P<text>.+)$",
+        re.IGNORECASE,
+    ),
+    # "let <person> know (that) <text>"
+    re.compile(
+        r"^(?:please\s+)?(?:can\s+you\s+|could\s+you\s+)?let\s+(?:the\s+)?" + _PERSON_TOKEN + r"\s+know\s+(?:that\s+)?(?P<text>.+)$",
+        re.IGNORECASE,
+    ),
+    # No connector — captured as a single-word recipient; parse_send_message_request also offers
+    # the two- and three-word readings via SendMessageRequest.splits so "tell Project Alpha ..."
+    # can resolve onto a multi-word name without the text swallowing part of it.
+    re.compile(r"^" + _SEND_VERB + r"\s+(?:the\s+)?(?P<person>[^\s,:]+)\s+(?P<text>.+)$", re.IGNORECASE),
+]
+
+_MAX_RECIPIENT_WORDS = 3
+
+
+def _connectorless_splits(person: str, rest: str) -> tuple[tuple[str, str], ...]:
+    """(recipient, text) readings of "<verb> w1 w2 w3 ..." — longest recipient first, the
+    single-word reading last. Only readings that leave some text behind are offered."""
+    words = rest.split()
+    readings: list[tuple[str, str]] = []
+    for extra in range(_MAX_RECIPIENT_WORDS - 1, 0, -1):
+        if len(words) > extra:
+            candidate = " ".join([person, *words[:extra]])
+            if any(w.lower() in _NOT_A_RECIPIENT for w in words[:extra]):
+                continue
+            readings.append((candidate, _clean_outgoing(" ".join(words[extra:]))))
+    readings.append((person, _clean_outgoing(rest)))
+    return tuple(r for r in readings if r[1])
+
+
+def _clean_outgoing(raw: str) -> str:
+    text = raw.strip()
+    if len(text) >= 2 and text[0] in "\"'\u201c\u2018" and text[-1] in "\"'\u201d\u2019":
+        text = text[1:-1].strip()
+    return text
+
+
+def parse_send_message_request(question: str) -> SendMessageRequest | None:
+    """Deterministic send-message phrasings → an UNRESOLVED request, or None. Never resolves a
+    person and never produces a proposal on its own."""
+    text = question.strip()
+    if not text:
+        return None
+    for pattern in _SEND_MESSAGE_PATTERNS:
+        match = pattern.match(text)
+        if not match:
+            continue
+        person = match.group("person").strip()
+        first_word = person.split()[0].lower() if person else ""
+        if not person or first_word in _NOT_A_RECIPIENT or person.lower() in _NOT_A_RECIPIENT:
+            return None
+        body = _clean_outgoing(match.group("text"))
+        if not body or len(body) > MAX_MESSAGE_CHARS or len(person) > MAX_RECIPIENT_CHARS:
+            return None
+        splits: tuple[tuple[str, str], ...] = ()
+        if pattern is _SEND_MESSAGE_PATTERNS[-1]:
+            splits = _connectorless_splits(person, match.group("text"))
+        return SendMessageRequest(recipient=person, text=body, splits=splits)
+    return None
+
+
+def parse_action_request(question: str) -> SetStatusAction | SendMessageRequest | StartDelegationAction | None:
     """The deterministic action parser: is this message one of the explicit set-my-status
-    phrasings? Anything else returns None and flows on to the ordinary assistant untouched —
-    a drafting request ("write a message saying I'm busy") matches nothing here by design."""
+    phrasings, or an explicit send-a-message-to-someone phrasing? Anything else returns None and
+    flows on to the ordinary assistant untouched — a drafting request ("write a message saying
+    I'm busy") matches nothing here by design."""
     text = _normalize(question)
     for pattern in _SET_STATUS_PATTERNS:
         match = pattern.match(text)
@@ -186,19 +360,47 @@ def parse_action_request(question: str) -> SetStatusAction | None:
         elif raw_hours:
             minutes = int(raw_hours) * 60
         return _finish(status, minutes)
-    return None
+    # A2.1 — explicit "handle my messages for <duration>". Tried before the send-message
+    # phrasings so the two vocabularies can never shadow each other.
+    delegation = parse_delegation_request(question)
+    if delegation is not None:
+        return delegation
+    return parse_send_message_request(question)
 
 
 # --- AI proposal validation --------------------------------------------------------------------
 
 _ALLOWED_AI_ARGS = {"status", "dnd_minutes"}
+_ALLOWED_SEND_AI_ARGS = {"recipient", "text"}
 
 
-def validate_ai_proposal(name: object, args: object) -> SetStatusAction | None:
+def _validate_send_proposal(args: dict) -> SendMessageRequest | None:
+    if set(args) - _ALLOWED_SEND_AI_ARGS:
+        return None
+    recipient = args.get("recipient")
+    body = args.get("text")
+    if not isinstance(recipient, str) or not isinstance(body, str):
+        return None
+    recipient = recipient.strip()
+    body = _clean_outgoing(body)
+    if not recipient or not body:
+        return None
+    if len(recipient) > MAX_RECIPIENT_CHARS or len(body) > MAX_MESSAGE_CHARS:
+        return None
+    return SendMessageRequest(recipient=recipient, text=body)
+
+
+def validate_ai_proposal(name: object, args: object) -> SetStatusAction | SendMessageRequest | None:
     """The one door a model-emitted proposal can pass through. Treats every input as untrusted:
     unknown action name, non-dict args, extra keys, unknown status, junk minutes — each returns
-    None, which the router treats as 'no action proposed', never as an executable anything."""
-    if name != ACTION_SET_STATUS or not isinstance(args, dict):
+    None, which the router treats as 'no action proposed', never as an executable anything.
+    A send_message proposal comes back UNRESOLVED (a SendMessageRequest): the model names a
+    recipient, it never picks an email, and the router still has to resolve it uniquely."""
+    if not isinstance(args, dict):
+        return None
+    if name == ACTION_SEND_MESSAGE:
+        return _validate_send_proposal(args)
+    if name != ACTION_SET_STATUS:
         return None
     if set(args) - _ALLOWED_AI_ARGS:
         # Extras forbidden — a smuggled owner_email/target/endpoint kills the whole proposal.
@@ -229,26 +431,87 @@ def _status_phrase(action: SetStatusAction) -> str:
     return label
 
 
-def proposal_summary(action: SetStatusAction) -> str:
+def proposal_summary(action: ToucanAction) -> str:
     """The exact effect, stated before execution — what the confirmation card shows."""
+    if isinstance(action, SendMessageAction):
+        return f"Send message to {action.recipient_label}"
+    if isinstance(action, StartDelegationAction):
+        return delegation_words.proposal_summary(action)
     return f"Set your status to {_status_phrase(action)}"
 
 
-def confirmation_text(action: SetStatusAction) -> str:
+def confirmation_text(action: ToucanAction) -> str:
     """The transcript line accompanying a proposal. Server-worded from the VALIDATED action —
     never the model's own phrasing — so what the user confirms is what will happen."""
+    if isinstance(action, SendMessageAction):
+        return (
+            f"I can send this to {action.recipient_label}: \u201c{action.text}\u201d "
+            "Nothing has been sent yet — confirm below and I'll send it."
+        )
+    if isinstance(action, StartDelegationAction):
+        return delegation_words.confirmation_text(action)
     return (
         f"I can set your status to {_status_phrase(action)}. "
         "Nothing has changed yet — confirm below and I'll do it."
     )
 
 
-def executed_text(action: SetStatusAction) -> str:
+def executed_text(action: ToucanAction) -> str:
+    if isinstance(action, SendMessageAction):
+        return f"Done — I sent your message to {action.recipient_label}."
+    if isinstance(action, StartDelegationAction):
+        return delegation_words.executed_text(action)
     return f"Done — your status is now {_status_phrase(action)}."
 
 
-def cancelled_text(action: SetStatusAction) -> str:  # noqa: ARG001 — symmetry with executed_text
+def cancelled_text(action: ToucanAction) -> str:
+    if isinstance(action, SendMessageAction):
+        return "Okay, cancelled — I haven't sent anything."
+    if isinstance(action, StartDelegationAction):
+        return delegation_words.cancelled_text(action)
     return "Okay, cancelled — I haven't changed your status."
+
+
+def self_recipient_text() -> str:
+    return "That's you — I can only send messages to other people in the office."
+
+
+def _quote_join(items: list[str]) -> str:
+    quoted = [f"\"{i}\"" for i in items]
+    if len(quoted) <= 1:
+        return "".join(quoted)
+    return ", ".join(quoted[:-1]) + " and " + quoted[-1]
+
+
+def unknown_target_text(raw_name: str, *, roster_available: bool) -> str:
+    """Neither a person nor one of the caller's group chats. Mentions both so the user knows
+    which kinds of target exist — and never names anything that did not match."""
+    name = raw_name.strip()
+    if roster_available:
+        return (
+            f"I don't know anyone called \"{name}\" in the office directory, and you're not in a "
+            "group chat by that name."
+        )
+    return (
+        f"I don't know anyone called \"{name}\" — I can't reach the employee directory right now, "
+        "so I only know people the office has seen this session — and you're not in a group chat "
+        "by that name."
+    )
+
+
+def ambiguous_group_text(raw_name: str, titles: list[str]) -> str:
+    return (
+        f"More than one of your group chats matches \"{raw_name.strip()}\": "
+        f"{_quote_join(titles)}. Which one did you mean?"
+    )
+
+
+def target_collision_text(raw_name: str, person_names: list[str], titles: list[str]) -> str:
+    """A name that is both a person and a group chat. Ask — never pick."""
+    return (
+        f"\"{raw_name.strip()}\" could be a person ({_quote_join(person_names)}) or a group chat "
+        f"({_quote_join(titles)}). Which did you mean — the person or the group?"
+    )
 
 
 # What confirm/cancel says about an id that is unknown, expired, already used, or somebody

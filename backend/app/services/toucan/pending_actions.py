@@ -4,7 +4,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from app.services.toucan.actions import SetStatusAction
+from app.services.toucan.actions import ToucanAction
 
 # T8 — PENDING ACTION STATE: the gap between "proposed" and "confirmed", held server-side.
 #
@@ -21,7 +21,7 @@ from app.services.toucan.actions import SetStatusAction
 #   * OWNER-BOUND — take()/cancel() require the same authenticated email that proposed. A
 #     mismatch behaves exactly like an unknown id (None/False), so another user can neither
 #     confirm, cancel, nor probe for existence.
-#   * ARGS FROZEN SERVER-SIDE — the validated SetStatusAction is stored here at propose time
+#   * ARGS FROZEN SERVER-SIDE — the validated action (set_status or send_message) is stored here at propose time
 #     and is what executes. Confirm carries only the id; there is no channel through which the
 #     args could be mutated between proposal and execution.
 #   * ONE-TIME — take() POPS the entry, so a replayed confirm (or a confirm after cancel, or a
@@ -40,7 +40,7 @@ class PendingAction:
     # re-verified against the bearer identity at confirm time in the router, like every other
     # conversation lookup.
     conversation_id: str
-    action: SetStatusAction
+    action: ToucanAction
     # The server-worded exact effect, frozen alongside the args it describes.
     summary: str
     expires_at: datetime
@@ -59,7 +59,7 @@ class PendingActionRegistry:
         *,
         owner_email: str,
         conversation_id: str,
-        action: SetStatusAction,
+        action: ToucanAction,
         summary: str,
         ttl_seconds: float,
         now: datetime | None = None,

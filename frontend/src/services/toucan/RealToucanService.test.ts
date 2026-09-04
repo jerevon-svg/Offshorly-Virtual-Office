@@ -52,10 +52,30 @@ describe("RealToucanService", () => {
     });
 
     expect(lastCall()[0]).toBe(`${BASE}/toucan/ask`);
-    expect(lastBody()).toEqual({ question: "who is online", history: [], conversationId: "c-1" });
+    expect(lastBody()).toEqual({
+      question: "who is online",
+      history: [],
+      conversationId: "c-1",
+      // A2.3 — the viewer's zone rides along for "until 3 PM"; still no identity field.
+      clientTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    });
     expect(Object.keys(lastBody())).not.toContain("ownerEmail");
     expect(Object.keys(lastBody())).not.toContain("email");
     expect(answer.conversationId).toBe("c-1");
+  });
+
+  it("A2.3 — sends the viewer's IANA time zone, or the caller's override, and never identity", async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({ text: "ok", intent: "x", supported: true, conversationId: "c-1" }),
+    );
+    await service.ask({ question: "Handle my messages until 3 PM.", history: [] });
+    let body = lastBody();
+    expect(body.clientTimezone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
+    expect(Object.keys(body).sort()).toEqual(["clientTimezone", "conversationId", "history", "question"]);
+
+    await service.ask({ question: "Handle my messages until 3 PM.", history: [], clientTimezone: "Asia/Manila" });
+    body = lastBody();
+    expect(body.clientTimezone).toBe("Asia/Manila");
   });
 
   it("sends a null conversation id when there is none yet", async () => {

@@ -148,3 +148,65 @@ async def test_mark_read_rejects_non_participant_and_unauthenticated_without_tou
         after = await chat_repo.get_participant_watermarks(session, conv_id)
     assert after == before
     assert "c@example.com" not in after
+
+
+async def test_create_group_conversation_stores_a_trimmed_title():
+    async with await _client() as client:
+        res = await client.post(
+            "/conversations/group",
+            json={"participantEmails": ["t1b@example.com", "t1c@example.com"], "title": "  Design Team  "},
+            headers=_headers("t1a@example.com"),
+        )
+    assert res.status_code == 200
+    assert res.json()["title"] == "Design Team"
+
+
+async def test_reusing_an_untitled_exact_member_group_applies_the_new_title():
+    # Fresh identities per run: the dev DB persists across runs, and an exact-member group that
+    # already carries "Design Team" from a previous run would break the "starts untitled" step.
+    from uuid import uuid4
+
+    tag = uuid4().hex[:12]
+    owner, b, c = (f"t2{x}-{tag}@example.com" for x in ("a", "b", "c"))
+    async with await _client() as client:
+        first = await client.post(
+            "/conversations/group",
+            json={"participantEmails": [b, c]},
+            headers=_headers(owner),
+        )
+        assert first.json().get("title") is None  # exclude_none drops a null title
+        second = await client.post(
+            "/conversations/group",
+            json={"participantEmails": [c, b], "title": "Design Team"},
+            headers=_headers(owner),
+        )
+        listed = await client.get("/conversations", headers=_headers(b))
+    assert second.json()["id"] == first.json()["id"]
+    assert second.json()["title"] == "Design Team"
+    assert [c["title"] for c in listed.json() if c["id"] == first.json()["id"]] == ["Design Team"]
+
+
+async def test_reusing_a_titled_exact_member_group_never_overwrites_its_title():
+    async with await _client() as client:
+        first = await client.post(
+            "/conversations/group",
+            json={"participantEmails": ["t3b@example.com", "t3c@example.com"], "title": "Design Team"},
+            headers=_headers("t3a@example.com"),
+        )
+        for title in ("Marketing", "", "   ", None):
+            body = {"participantEmails": ["t3b@example.com", "t3c@example.com"]}
+            if title is not None:
+                body["title"] = title
+            again = await client.post("/conversations/group", json=body, headers=_headers("t3a@example.com"))
+            assert again.json()["id"] == first.json()["id"]
+            assert again.json()["title"] == "Design Team"
+
+
+async def test_group_title_is_capped_at_the_column_length():
+    async with await _client() as client:
+        res = await client.post(
+            "/conversations/group",
+            json={"participantEmails": ["t4b@example.com", "t4c@example.com"], "title": "x" * 256},
+            headers=_headers("t4a@example.com"),
+        )
+    assert res.status_code == 422

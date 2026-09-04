@@ -522,3 +522,213 @@ async def test_typing_from_non_participant_is_rejected_and_not_broadcast(server)
 
     await a.disconnect()
     await c.disconnect()
+
+
+async def test_send_seam_without_origin_sid_reaches_whole_room_and_pushes_unread(server):
+    """The extracted write path (services/chat_send.py) called with no originating socket — the
+    shape a non-socket server-side sender uses: incoming_message reaches EVERY participant socket
+    (the sender's own included, since nothing is skipped), no message_saved echo is emitted, and
+    the recipient's unread_count still arrives on their per-user room."""
+    from app.services.chat_send import send_chat_message
+
+    conv_id = await _seeded_conversation()
+
+    a = await _connect_as(server, "a@example.com")
+    b = await _connect_as(server, "b@example.com")
+    await asyncio.sleep(0.2)
+
+    incoming_a: asyncio.Future = asyncio.get_event_loop().create_future()
+    incoming_b: asyncio.Future = asyncio.get_event_loop().create_future()
+    unread_b: asyncio.Future = asyncio.get_event_loop().create_future()
+    saved_seen = False
+
+    @a.on("incoming_message")
+    async def on_incoming_a(data):
+        if not incoming_a.done():
+            incoming_a.set_result(data)
+
+    @b.on("incoming_message")
+    async def on_incoming_b(data):
+        if not incoming_b.done():
+            incoming_b.set_result(data)
+
+    @b.on("unread_count")
+    async def on_unread_b(data):
+        if not unread_b.done():
+            unread_b.set_result(data)
+
+    @a.on("message_saved")
+    async def on_saved(_data):
+        nonlocal saved_seen
+        saved_seen = True
+
+    async with async_session_maker() as session:
+        payload = await send_chat_message(
+            session, conversation_id=conv_id, sender_email="a@example.com", text="  from the seam  "
+        )
+
+    got_a = await asyncio.wait_for(incoming_a, timeout=2)
+    got_b = await asyncio.wait_for(incoming_b, timeout=2)
+    unread = await asyncio.wait_for(unread_b, timeout=2)
+
+    assert payload["senderId"] == "a@example.com"
+    assert payload["text"] == "from the seam"
+    assert got_a["message"]["id"] == payload["id"]
+    assert got_b["message"]["id"] == payload["id"]
+    assert unread["conversationId"] == conv_id
+    assert unread["count"] >= 1  # shared dev DB accumulates across tests, like the socket unread test
+    assert saved_seen is False
+
+    await a.disconnect()
+    await b.disconnect()
+
+
+async def test_join_participant_sockets_lets_recipient_connected_before_conversation_receive_live(server):
+    """A conversation created AFTER both participants connected has no live sockets in its room.
+    With join_participant_sockets the seam migrates them in before fan-out, so the recipient
+    gets incoming_message without reconnecting."""
+    from app.services.chat_send import send_chat_message
+
+    a = await _connect_as(server, "a@example.com")
+    b = await _connect_as(server, "b@example.com")
+    await asyncio.sleep(0.2)
+
+    conv_id = await _seeded_conversation()  # created after connect — nobody is in its room yet
+
+    incoming_b: asyncio.Future = asyncio.get_event_loop().create_future()
+
+    @b.on("incoming_message")
+    async def on_incoming_b(data):
+        if not incoming_b.done():
+            incoming_b.set_result(data)
+
+    async with async_session_maker() as session:
+        await send_chat_message(
+            session,
+            conversation_id=conv_id,
+            sender_email="a@example.com",
+            text="first ever",
+            join_participant_sockets=True,
+        )
+
+    got_b = await asyncio.wait_for(incoming_b, timeout=2)
+    assert got_b["message"]["text"] == "first ever"
+    assert got_b["message"]["senderId"] == "a@example.com"
+
+    await a.disconnect()
+    await b.disconnect()
+
+
+# --- A1.4.1: the reserved Toucan sender -----------------------------------------------------------
+
+
+async def test_reserved_toucan_sender_can_write_into_an_existing_conversation_without_membership(server):
+    """Toucan is not a participant, yet its message persists, reaches every participant socket
+    live, and bumps every participant's unread count (all of them are recipients)."""
+    from app.services.chat_send import TOUCAN_CHAT_SENDER, send_chat_message
+
+    conv_id = await _seeded_conversation()
+    a = await _connect_as(server, "a@example.com")
+    b = await _connect_as(server, "b@example.com")
+    await asyncio.sleep(0.2)
+
+    incoming = {e: asyncio.get_event_loop().create_future() for e in ("a", "b")}
+    unread = {e: asyncio.get_event_loop().create_future() for e in ("a", "b")}
+    for key, client in (("a", a), ("b", b)):
+
+        def bind(k, c):
+            @c.on("incoming_message")
+            async def on_incoming(data):
+                if not incoming[k].done():
+                    incoming[k].set_result(data)
+
+            @c.on("unread_count")
+            async def on_unread(data):
+                if not unread[k].done():
+                    unread[k].set_result(data)
+
+        bind(key, client)
+
+    async with async_session_maker() as session:
+        payload = await send_chat_message(
+            session, conversation_id=conv_id, sender_email=TOUCAN_CHAT_SENDER, text="Squawk — noted."
+        )
+        conv = await chat_repo.get_conversation_by_id(session, conv_id)
+
+    assert payload["senderId"] == TOUCAN_CHAT_SENDER
+    for key in ("a", "b"):
+        got = await asyncio.wait_for(incoming[key], timeout=2)
+        assert got["message"]["id"] == payload["id"]
+        assert got["message"]["senderId"] == TOUCAN_CHAT_SENDER
+        count = await asyncio.wait_for(unread[key], timeout=2)
+        assert count["conversationId"] == conv_id and count["count"] >= 1
+    # Still exactly two humans in the conversation — Toucan was never added.
+    assert set(conv["participant_ids"]) == {"a@example.com", "b@example.com"}
+
+    await a.disconnect()
+    await b.disconnect()
+
+
+async def test_reserved_toucan_sender_cannot_write_into_a_missing_conversation(server):
+    from app.services.chat_send import (
+        TOUCAN_CHAT_SENDER,
+        ChatSendError,
+        send_chat_message,
+    )
+
+    async with async_session_maker() as session:
+        with pytest.raises(ChatSendError) as exc:
+            await send_chat_message(
+                session, conversation_id="does-not-exist", sender_email=TOUCAN_CHAT_SENDER, text="hi"
+            )
+    assert exc.value.code == "invalid_message"
+
+
+async def test_arbitrary_non_participant_is_still_rejected_by_the_seam(server):
+    from app.services.chat_send import ChatSendError, send_chat_message
+
+    conv_id = await _seeded_conversation()
+    async with async_session_maker() as session:
+        with pytest.raises(ChatSendError) as exc:
+            await send_chat_message(
+                session, conversation_id=conv_id, sender_email="intruder@example.com", text="let me in"
+            )
+        messages = await chat_repo.list_messages(session, conv_id)
+    assert exc.value.code == "forbidden"
+    assert all(m.sender_email != "intruder@example.com" for m in messages)
+
+
+async def test_a_socket_session_claiming_the_toucan_identity_is_refused(server):
+    """Only server-side code may author as Toucan — a (dev-bypass) session using the reserved
+    email gets chat_error and nothing is persisted or delivered."""
+    from app.services.chat_send import TOUCAN_CHAT_SENDER
+
+    conv_id = await _seeded_conversation()
+    fake = await _connect_as(server, TOUCAN_CHAT_SENDER)
+    b = await _connect_as(server, "b@example.com")
+    await asyncio.sleep(0.2)
+
+    error_future: asyncio.Future = asyncio.get_event_loop().create_future()
+    b_got_incoming = False
+
+    @fake.on("chat_error")
+    async def on_error(data):
+        if not error_future.done():
+            error_future.set_result(data)
+
+    @b.on("incoming_message")
+    async def on_incoming(_data):
+        nonlocal b_got_incoming
+        b_got_incoming = True
+
+    await fake.emit("send_message", {"conversationId": conv_id, "text": "I am the bird", "clientTempId": "x"})
+    err = await asyncio.wait_for(error_future, timeout=2)
+    await asyncio.sleep(0.2)
+    assert err["code"] == "forbidden"
+    assert b_got_incoming is False
+    async with async_session_maker() as session:
+        messages = await chat_repo.list_messages(session, conv_id)
+    assert all(m.text != "I am the bird" for m in messages)
+
+    await fake.disconnect()
+    await b.disconnect()

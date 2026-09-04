@@ -69,11 +69,12 @@ describe("live3dCharacters registry (bon-v3 + alex-v2 2026-08-30; micah-v4 + ang
     expect(angelo.renderWidth / angelo.renderHeight).toBeCloseTo(28.18 / 39.85, 2);
   });
 
-  it("registry holds exactly bon, alex, micah and angelo; none references a rollback or another character's assets", () => {
-    expect(Object.keys(LIVE_3D_CHARACTERS).sort()).toEqual(["alex", "angelo", "bon", "micah"]);
+  it("registry holds exactly bon, alex, micah, angelo and jan; none references a rollback or another character's assets", () => {
+    expect(Object.keys(LIVE_3D_CHARACTERS).sort()).toEqual(["alex", "angelo", "bon", "jan", "micah"]);
     expect(isLive3dEligible("alex")).toBe(true);
     expect(isLive3dEligible("micah")).toBe(true);
     expect(isLive3dEligible("angelo")).toBe(true);
+    expect(isLive3dEligible("jan")).toBe(true);
     expect(isLive3dEligible("lui")).toBe(false);
     for (const url of glbUrlsOf(LIVE_3D_CHARACTERS.bon)) {
       expect(url).not.toMatch(/jerevon|alex/);
@@ -89,6 +90,21 @@ describe("live3dCharacters registry (bon-v3 + alex-v2 2026-08-30; micah-v4 + ang
       expect(url).toMatch(/\/avatars\/gelo-v1-hq-idle9\//);
       expect(url).not.toMatch(/\/avatars\/gelo-v1-hq\//);
     }
+    for (const url of glbUrlsOf(LIVE_3D_CHARACTERS.jan)) {
+      expect(url).toMatch(/\/avatars\/jan-v1-hq-idle9\//);
+      expect(url).not.toMatch(/gelo|bon|alex|micah/);
+    }
+  });
+
+  it("jan resolves to the jan-v1-hq-idle9 LODs per tier: T2 lod0, T1 lod1, static-frame bucket lod2", () => {
+    // Registry KEY is the roster/manifest id `jan`; only the asset files carry
+    // the pipeline chain name `jan-v1`. Built 2026-09-04, masculine from day one.
+    const jan = LIVE_3D_CHARACTERS.jan;
+    expect(resolveLive3dGlbUrl(jan, "T2", false)).toMatch(/\/avatars\/jan-v1-hq-idle9\/jan-v1-lod0\.glb$/);
+    expect(resolveLive3dGlbUrl(jan, "T1", false)).toMatch(/\/avatars\/jan-v1-hq-idle9\/jan-v1-lod1\.glb$/);
+    expect(resolveLive3dGlbUrl(jan, "T0", true)).toMatch(/\/avatars\/jan-v1-hq-idle9\/jan-v1-lod2\.glb$/);
+    // Manifest aspect for jan is 28.18 / 39.85 — render size must keep it.
+    expect(jan.renderWidth / jan.renderHeight).toBeCloseTo(28.18 / 39.85, 2);
   });
 });
 
@@ -97,7 +113,7 @@ describe("live3dCharacters registry (bon-v3 + alex-v2 2026-08-30; micah-v4 + ang
 // layer box happens to carry.
 describe("head-to-label gap", () => {
   const LAYER_HEIGHT: Record<string, number> = {
-    bon: 37.2, alex: 34.46, micah: 39.1, angelo: 39.85,
+    bon: 37.2, alex: 34.46, micah: 39.1, angelo: 39.85, jan: 39.85,
   };
   // What the OLD layer-top anchor produced: head sits this far below the box
   // top, so the gap differed per character (this is the bug).
@@ -149,7 +165,7 @@ describe("head-to-label gap", () => {
 // that one clip unconditionally, and the choice existed only as prose in each
 // registry comment.
 describe("idle profiles", () => {
-  const MASCULINE = ["alex", "angelo", "bon"];
+  const MASCULINE = ["alex", "angelo", "bon", "jan"];
 
   it("every registered character declares a profile", () => {
     for (const [id, entry] of Object.entries(LIVE_3D_CHARACTERS)) {
@@ -157,7 +173,7 @@ describe("idle profiles", () => {
     }
   });
 
-  it("bon, alex and angelo are masculine; micah is the one feminine idle", () => {
+  it("bon, alex, angelo and jan are masculine; micah is the one feminine idle", () => {
     const byProfile = (profile: string) =>
       Object.keys(LIVE_3D_CHARACTERS)
         .filter((id) => LIVE_3D_CHARACTERS[id].idleProfile === profile)

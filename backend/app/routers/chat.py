@@ -71,12 +71,18 @@ async def create_group_conversation(
             status_code=400, detail="A group conversation requires at least 2 unique participants"
         )
 
+    title = body.title.strip() if body.title else None
+    title = title or None
+
     existing_id = await chat_repo.find_group_by_exact_members(db, members)
-    conv = (
-        await chat_repo.get_conversation_by_id(db, existing_id)
-        if existing_id is not None
-        else await chat_repo.create_group_conversation(db, email, body.participant_emails, body.title)
-    )
+    if existing_id is not None:
+        # Reuse — and if the reused group has no name yet and this request brings one, name it.
+        # A name somebody already chose is never overwritten here (no rename endpoint exists).
+        if title:
+            await chat_repo.set_group_title_if_empty(db, existing_id, title)
+        conv = await chat_repo.get_conversation_by_id(db, existing_id)
+    else:
+        conv = await chat_repo.create_group_conversation(db, email, body.participant_emails, title)
     return ConversationOut(
         id=conv["id"],
         participant_ids=conv["participant_ids"],

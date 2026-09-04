@@ -16,8 +16,8 @@ const EXPECTED_IMG_CROP_COUNT = 123;
 describe("roomMembersById", () => {
   it("assigns npcs whose center point falls inside design-room's bounding box", () => {
     const ids = roomMembersById["design-room"].map((l) => l.id);
-    expect(ids).toEqual(expect.arrayContaining(["angelo", "micah", "clang", "france"]));
-    expect(ids).toHaveLength(4);
+    expect(ids).toEqual(expect.arrayContaining(["angelo", "micah", "clang", "france", "jan"]));
+    expect(ids).toHaveLength(5);
     expect(ids).not.toContain("bon");
   });
 

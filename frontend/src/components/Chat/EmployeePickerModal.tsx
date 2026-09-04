@@ -10,7 +10,9 @@ type EmployeePickerModalProps = {
   title: string;
   people: EmployeePickerPerson[];
   onClose: () => void;
-  onConfirm: (emails: string[]) => void;
+  /** Multi mode also hands back the optional, already-trimmed group name ("" when left blank).
+   *  Single mode never passes a second argument. */
+  onConfirm: (emails: string[], groupName?: string) => void;
 };
 
 // Shared employee search/select surface for the Global Chat entry points — "New Message" and
@@ -20,6 +22,7 @@ type EmployeePickerModalProps = {
 export function EmployeePickerModal({ mode, title, people, onClose, onConfirm }: EmployeePickerModalProps) {
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [groupName, setGroupName] = useState("");
 
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -75,11 +78,20 @@ export function EmployeePickerModal({ mode, title, people, onClose, onConfirm }:
         </div>
         {mode === "multi" && (
           <div className={styles.footer}>
+            <input
+              type="text"
+              className={styles.searchInput}
+              placeholder="Group name (optional)"
+              aria-label="Group name"
+              maxLength={255}
+              value={groupName}
+              onChange={(e) => setGroupName(e.target.value)}
+            />
             <button
               type="button"
               className={styles.confirmButton}
               disabled={selected.size < 2}
-              onClick={() => onConfirm(Array.from(selected))}
+              onClick={() => onConfirm(Array.from(selected), groupName.trim())}
             >
               Create Group ({selected.size})
             </button>

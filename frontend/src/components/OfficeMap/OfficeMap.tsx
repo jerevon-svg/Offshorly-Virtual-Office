@@ -936,10 +936,10 @@ export function OfficeMap() {
 
   // Global Chat "New Group Chat" resolution — creates (or reuses, per the backend's exact-member
   // idempotency) a group conversation for the picked employees, then opens/focuses its window.
-  async function startRemoteGroupChat(participantEmails: string[]) {
+  async function startRemoteGroupChat(participantEmails: string[], groupName: string | null = null) {
     if (!chatService.createGroupConversation) return;
     try {
-      const conv = await chatService.createGroupConversation(participantEmails, null);
+      const conv = await chatService.createGroupConversation(participantEmails, groupName);
       openOrFocusRemoteGroup({ id: conv.id, participantIds: conv.participantIds, title: conv.title ?? null });
       void refetchConversations();
     } catch (err) {
@@ -4846,11 +4846,11 @@ export function OfficeMap() {
             .filter((p) => p.email.toLowerCase() !== selfChatId.toLowerCase())
             .map((p) => ({ email: p.email, displayName: resolveDisplayName(p.email) }))}
           onClose={() => setChatPickerMode(null)}
-          onConfirm={(emails) => {
+          onConfirm={(emails, groupName) => {
             const wasGroup = chatPickerMode === "group";
             setChatPickerMode(null);
             if (wasGroup) {
-              void startRemoteGroupChat(emails);
+              void startRemoteGroupChat(emails, groupName?.trim() || null);
             } else {
               startRemoteDirectMessage(emails[0]);
             }
