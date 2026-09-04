@@ -46,6 +46,7 @@ import chris from "../assets/office/characters/chibi-chris/front-sit.png";
 import cyrus from "../assets/office/characters/cyrus.png";
 import jona from "../assets/office/characters/jona.png";
 import angelo from "../assets/office/characters/angelo.png";
+import jan from "../assets/office/characters/jan.png";
 import micah from "../assets/office/characters/chibi-micah/front-sit.png";
 import lui from "../assets/office/characters/lui-sit-type-norm/front.png";
 import bon from "../assets/office/characters/chibi-bon/front-idle.png";
@@ -131,6 +132,7 @@ export const ASSET_PATH_TO_SRC: Record<string, string> = {
   "assets/office/characters/cyrus.png": cyrus,
   "assets/office/characters/jona.png": jona,
   "assets/office/characters/angelo.png": angelo,
+  "assets/office/characters/jan.png": jan,
   "assets/office/characters/micah.png": micah,
   "assets/office/characters/lui.png": lui,
   "assets/office/characters/bon.png": bon,

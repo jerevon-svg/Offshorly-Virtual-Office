@@ -91,6 +91,25 @@ const mockPeople = [
     status: "ONLINE" as PresenceStatusValue,
     departmentName: "Dev",
   },
+  {
+    // Same shape as angelo: `layerId` IS the avatar id (manifest/roster key
+    // `jan`, listed in avatarIdentity.ts's LIVE_3D_ONLY_AVATAR_IDS), which
+    // avatarIdForEmail("jan@offshorly.com") resolves to via the localpart
+    // convention — jan@offshorly.com is his confirmed production identity
+    // (2026-09-04), so no EMAIL_TO_AVATAR_ID override is needed. Registry key
+    // is `jan`, asset files are the `jan-v1` pipeline chain — do not rename
+    // either to match the other.
+    //
+    // No AvatarSpriteSet: below LIVE_3D_SELF_MIN_TIER he falls back to the
+    // faceless placeholder like any unmapped person, never a fabricated sprite.
+    layerId: "jan",
+    email: "jan@offshorly.com",
+    displayName: displayNameFor("jan"),
+    // Pinned ONLINE for the same reason as angelo (seed baseline, not status
+    // logic); real conversation/call state still overrides it.
+    status: "ONLINE" as PresenceStatusValue,
+    departmentName: "Dev",
+  },
 ];
 
 export class MockOfficeService implements OfficeService {

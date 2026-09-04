@@ -61,7 +61,7 @@ describe("avatarIdForPerson", () => {
 // asset set but has no 2D AvatarSpriteSet, so he is known only via
 // LIVE_3D_ONLY_AVATAR_IDS.
 describe("mock self URLs (?as=<email>&deviceTier=T2)", () => {
-  it("micah and angelo both resolve to a registered live-3D character", async () => {
+  it("micah, angelo and jan all resolve to a registered live-3D character", async () => {
     const { LIVE_3D_CHARACTERS } = await import("../render3d/live3dCharacters");
     const { MockOfficeService } = await import("../services/office/MockOfficeService");
     const roster = await new MockOfficeService().getFloor();
@@ -69,6 +69,9 @@ describe("mock self URLs (?as=<email>&deviceTier=T2)", () => {
     for (const [email, id] of [
       ["micah@offshorly.com", "micah"],
       ["angelo@offshorly.com", "angelo"],
+      // jan (2026-09-04): second LIVE_3D_ONLY employee, same shape as angelo;
+      // jan@offshorly.com is his confirmed production identity.
+      ["jan@offshorly.com", "jan"],
     ] as const) {
       expect(avatarIdForEmail(email)).toBe(id);
       expect(isKnownAvatarId(id)).toBe(true);
