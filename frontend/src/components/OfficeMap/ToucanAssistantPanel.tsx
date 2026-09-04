@@ -156,20 +156,33 @@ export function delegationScopeLabel(scope: string | null | undefined): string {
   return scope === "dm" ? "DMs only" : "Direct messages + group @mentions";
 }
 
+/** The card's detail line. Three windows (A2.1 duration, A2.3 clock time, A2.3 until return);
+ *  the clock end is the server-resolved instant shown in the viewer's own zone. */
 export function describeDelegationProposal(
-  minutes: number,
-  scope: string | null | undefined,
+  proposal: Pick<ToucanActionProposal, "durationMinutes" | "scope" | "endCondition" | "endsAt">,
   now: Date = new Date(),
 ): string {
+  const scope = delegationScopeLabel(proposal.scope);
+  if (proposal.endCondition === "until_return") {
+    return `${scope} · until you return · maximum 24 hours`;
+  }
+  if (proposal.endsAt) {
+    const ends = new Date(proposal.endsAt);
+    if (!Number.isNaN(ends.getTime())) return `${scope} · until ${formatLocalTime(ends)} today`;
+  }
+  const minutes = proposal.durationMinutes ?? 0;
   const ends = new Date(now.getTime() + minutes * 60_000);
-  return `${delegationScopeLabel(scope)} · for ${formatDelegationDuration(minutes)} · ends about ${formatLocalTime(ends)} once confirmed`;
+  return `${scope} · for ${formatDelegationDuration(minutes)} · ends about ${formatLocalTime(ends)} once confirmed`;
 }
 
 /** A2.2 — the banner's second line: scope, and when it ends. Existing A2.1 rows carry
- *  scope "dm" and read "DMs only"; new ones read "DMs + group @mentions". */
+ *  scope "dm" and read "DMs only"; new ones read "DMs + group @mentions". A2.3 until-return
+ *  rows have no expiry and read "until you return · max 24h". */
 export function describeActiveDelegation(delegation: ToucanDelegation): string {
   const scope = delegation.scope === "dm" ? "DMs only" : "DMs + group @mentions";
-  if (!delegation.expiresAt) return `${scope} · until you stop it`;
+  if (delegation.endCondition === "until_return" || !delegation.expiresAt) {
+    return `${scope} · until you return · max 24h`;
+  }
   const ends = new Date(delegation.expiresAt);
   return Number.isNaN(ends.getTime()) ? scope : `${scope} · until ${formatLocalTime(ends)}`;
 }
@@ -1167,7 +1180,7 @@ export function ToucanAssistantPanel({
                   // A2.1 — the card must say what is being handed over: the scope (DMs only),
                   // the duration, and roughly when it ends. Nothing is active until Confirm.
                   <div className={styles.actionMessage} data-testid="toucan-action-delegation">
-                    {describeDelegationProposal(actionProposal.durationMinutes ?? 0, actionProposal.scope)}
+                    {describeDelegationProposal(actionProposal)}
                   </div>
                 )}
                 {actionProposal.action === "send_message" && actionProposal.message != null && (

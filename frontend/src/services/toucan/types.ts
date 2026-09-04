@@ -22,6 +22,10 @@ export interface ToucanAskRequest {
    *  takes. Opaque and server-issued — supplying one only ever selects among
    *  conversations the signed-in viewer already owns. */
   conversationId?: string | null;
+  /** A2.3 — the viewer's IANA time zone (Intl.DateTimeFormat().resolvedOptions().timeZone),
+   *  used by the server ONLY to interpret a wall-clock the viewer typed ("until 3 PM").
+   *  Never identity. The real service fills it in when the caller does not. */
+  clientTimezone?: string | null;
 }
 
 /** T8 — one PROPOSED (not executed) action riding along on an answer. Mirrors
@@ -51,6 +55,10 @@ export interface ToucanActionProposal {
    *  A2.1. The real end time is only known at Confirm (see ToucanDelegation). */
   durationMinutes?: number | null;
   scope?: "dm" | "dm_and_groups" | null;
+  /** A2.3: "at_time" (a duration or a clock time) or "until_return". For a clock time,
+   *  endsAt is the server-RESOLVED UTC end, shown in the viewer's zone before Confirm. */
+  endCondition?: "at_time" | "until_return" | null;
+  endsAt?: string | null;
   /** The exact effect, as the confirmation card must show it. */
   summary: string;
   expiresAt: string;
@@ -92,6 +100,8 @@ export interface ToucanActionResult {
    *  durable delegation. */
   durationMinutes?: number | null;
   scope?: "dm" | "dm_and_groups" | null;
+  endCondition?: "at_time" | "until_return" | null;
+  endsAt?: string | null;
   delegation?: ToucanDelegation | null;
   summary: string;
   /** The assistant's outcome line — also persisted into the transcript server-side. */

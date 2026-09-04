@@ -55,6 +55,9 @@ class ToucanAskIn(BaseModel):
     # on its own. It is on the wire now so the frontend contract does not have to change when a
     # provider that does need conversation context arrives.
     history: list[ToucanTurnIn] = Field(default_factory=list, max_length=MAX_HISTORY_TURNS)
+    # A2.3: the caller's IANA zone, used ONLY to interpret a wall-clock they typed ("until 3 PM").
+    # Never identity, never stored, validated server-side (services/toucan/delegation.py).
+    client_timezone: str | None = Field(default=None, alias="clientTimezone", max_length=64)
 
 
 class ToucanActionProposalOut(BaseModel):
@@ -82,6 +85,10 @@ class ToucanActionProposalOut(BaseModel):
     # both; the resolved end time is only known at Confirm (see ToucanDelegationOut).
     duration_minutes: int | None = Field(default=None, alias="durationMinutes")
     scope: Literal["dm", "dm_and_groups"] | None = None
+    # A2.3: "at_time" (duration or clock) | "until_return"; ends_at is the RESOLVED UTC end for a
+    # clock-time request, so the card can show it in the viewer's zone before Confirm.
+    end_condition: Literal["at_time", "until_return"] | None = Field(default=None, alias="endCondition")
+    ends_at: datetime | None = Field(default=None, alias="endsAt")
     # The exact effect, as the confirmation card must show it.
     summary: str
     expires_at: datetime = Field(alias="expiresAt")
@@ -89,6 +96,10 @@ class ToucanActionProposalOut(BaseModel):
     @field_serializer("expires_at")
     def _serialize_expires_at(self, dt: datetime) -> str:
         return to_iso_z(dt)
+
+    @field_serializer("ends_at")
+    def _serialize_ends_at(self, dt: datetime | None) -> str | None:
+        return to_iso_z(dt) if dt is not None else None
 
 
 class ToucanDelegationOut(BaseModel):
@@ -134,8 +145,14 @@ class ToucanActionResultOut(BaseModel):
     message_id: str | None = Field(default=None, alias="messageId")
     duration_minutes: int | None = Field(default=None, alias="durationMinutes")
     scope: Literal["dm", "dm_and_groups"] | None = None
+    end_condition: Literal["at_time", "until_return"] | None = Field(default=None, alias="endCondition")
+    ends_at: datetime | None = Field(default=None, alias="endsAt")
     # start_delegation, executed only: the durable delegation that is now active.
     delegation: ToucanDelegationOut | None = None
+
+    @field_serializer("ends_at")
+    def _serialize_ends_at(self, dt: datetime | None) -> str | None:
+        return to_iso_z(dt) if dt is not None else None
     summary: str
     # The assistant's outcome line, also persisted into the conversation transcript.
     text: str

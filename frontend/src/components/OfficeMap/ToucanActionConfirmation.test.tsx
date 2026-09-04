@@ -475,3 +475,63 @@ describe("ToucanAssistantPanel — A2.1 start_delegation confirmation", () => {
     expect(screen.queryByTestId("toucan-action-card")).toBeNull();
   });
 });
+
+// A2.3 — clock-time and until-return proposals ride the same card. The clock end is the
+// server-resolved instant, rendered in the viewer's zone; until-return states the 24 h cap.
+describe("ToucanAssistantPanel — A2.3 clock-time and until-return proposals", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.service.loadLatestConversation.mockResolvedValue(null);
+    h.service.listConversations.mockResolvedValue([]);
+  });
+  afterEach(cleanup);
+
+  const flush = async () => {
+    await act(async () => {
+      await Promise.resolve();
+    });
+  };
+
+  const propose = async (action: Record<string, unknown>) => {
+    h.service.ask.mockResolvedValue({
+      text: "confirm below",
+      intent: "action_proposal",
+      supported: true,
+      conversationId: "c-1",
+      action: { id: "act-9", action: "start_delegation", scope: "dm_and_groups", expiresAt: "2026-09-04T12:02:00.000Z", ...action },
+    });
+    render(<ToucanAssistantPanel onRelease={vi.fn()} />);
+    await flush();
+    fireEvent.change(screen.getByLabelText("Message the toucan"), { target: { value: "Handle my messages…" } });
+    fireEvent.keyDown(screen.getByLabelText("Message the toucan"), { key: "Enter" });
+    await flush();
+    return screen.getByTestId("toucan-action-delegation").textContent ?? "";
+  };
+
+  it("renders a clock-time proposal with the resolved end in local time", async () => {
+    const endsAt = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
+    const detail = await propose({
+      endCondition: "at_time",
+      endsAt,
+      durationMinutes: null,
+      summary: "Let Toucan handle your messages until 3:00 PM today (direct messages + group @mentions)",
+    });
+    const expected = new Date(endsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    expect(detail).toContain("Direct messages + group @mentions");
+    expect(detail).toContain(`until ${expected} today`);
+    expect(detail).not.toContain("ends about");
+    expect(screen.getByTestId("toucan-action-card").textContent).toContain("until 3:00 PM today");
+    expect(h.service.confirmAction).not.toHaveBeenCalled();
+  });
+
+  it("renders an until-return proposal with the 24-hour maximum", async () => {
+    const detail = await propose({
+      endCondition: "until_return",
+      endsAt: null,
+      durationMinutes: null,
+      summary: "Let Toucan handle your messages until you return (direct messages + group @mentions, maximum 24 hours)",
+    });
+    expect(detail).toBe("Direct messages + group @mentions · until you return · maximum 24 hours");
+    expect(h.service.confirmAction).not.toHaveBeenCalled();
+  });
+});

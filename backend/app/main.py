@@ -47,6 +47,21 @@ async def _load_positions_into_registry() -> None:
 
 
 @fastapi_app.on_event("startup")
+async def _start_delegation_sweeper() -> None:
+    # A2.3 — one periodic task; see services/delegation_lifecycle.py.
+    from app.services.delegation_lifecycle import delegation_sweeper
+
+    delegation_sweeper.start()
+
+
+@fastapi_app.on_event("shutdown")
+async def _stop_delegation_sweeper() -> None:
+    from app.services.delegation_lifecycle import delegation_sweeper
+
+    await delegation_sweeper.stop()
+
+
+@fastapi_app.on_event("startup")
 async def _seed_mock_hub_content() -> None:
     """MOCK-RIG ONLY: insert/re-date the [DEV] Company Hub test dataset on boot, so the mock
     frontend always has a required announcement / birthday / recognition / announcement / survey

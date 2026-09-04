@@ -68,6 +68,16 @@ function authHeaders(): Headers {
   return headers;
 }
 
+/** The viewer's IANA zone, or null when the runtime cannot say (old engines, odd sandboxes). */
+export function detectClientTimezone(): string | null {
+  try {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return zone && zone.length <= 64 ? zone : null;
+  } catch {
+    return null;
+  }
+}
+
 async function toucanFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const res = await fetch(`${socketBase()}${path}`, { ...init, headers: authHeaders() });
   if (!res.ok) {
@@ -94,6 +104,8 @@ export class RealToucanService implements ToucanService {
         question: request.question,
         history: request.history,
         conversationId: request.conversationId ?? null,
+        // A2.3 — only so "until 3 PM" means 3 PM where the viewer is. Not identity.
+        clientTimezone: request.clientTimezone ?? detectClientTimezone(),
       }),
       signal: options.signal,
     });

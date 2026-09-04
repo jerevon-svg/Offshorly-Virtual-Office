@@ -28,6 +28,7 @@ from app.schemas.toucan import (
     ToucanResourceOut,
 )
 from app.services.delegation_events import emit_delegation_ended
+from app.services.delegation_lifecycle import mark_owner_returned_in
 from app.services.chat_send import (
     ChatSendError,
     find_direct_conversation_id,
@@ -60,9 +61,13 @@ from app.services.toucan.actions import (
 )
 from app.services.toucan.activity import AttentionSnapshot
 from app.services.toucan.delegation import (
+    ClockProblem,
+    DelegationClockRequest,
+    clock_problem_text,
     nothing_to_stop_text,
     parse_stop_delegation,
     replaced_text,
+    resolve_clock_request,
     stopped_text,
 )
 from app.services.toucan.context import (
@@ -223,7 +228,12 @@ def _action_fields(action: ToucanAction) -> dict:
             "message": action.text,
         }
     if isinstance(action, StartDelegationAction):
-        return {"duration_minutes": action.duration_minutes, "scope": action.scope}
+        return {
+            "duration_minutes": action.duration_minutes,
+            "scope": action.scope,
+            "end_condition": action.end_condition,
+            "ends_at": action.ends_at,
+        }
     return {"status": action.status, "dnd_minutes": action.dnd_minutes}
 
 
@@ -429,6 +439,22 @@ async def ask_toucan(
         )
 
     action_request = parse_action_request(body.question)
+    # A2.3 — a Toucan question is strong evidence its owner is back: end an until_return
+    # delegation (theirs only). Not when the question itself starts a delegation — that one is
+    # the owner arranging their absence, not returning from it.
+    if not isinstance(action_request, (StartDelegationAction, DelegationClockRequest)):
+        await mark_owner_returned_in(db, email)
+    # A2.3 — "until 3 PM" needs the caller's zone to become an absolute end. Resolution either
+    # yields a normal proposal or a clarification; a refused time creates and proposes nothing.
+    if isinstance(action_request, DelegationClockRequest):
+        resolved = resolve_clock_request(action_request, client_timezone=body.client_timezone)
+        if isinstance(resolved, ClockProblem):
+            answer_text = clock_problem_text(resolved)
+            await toucan_repo.append_exchange(db, conversation=conversation, question=body.question, answer=answer_text)
+            return ToucanAnswerOut(
+                text=answer_text, intent="delegation_clarify", supported=True, conversation_id=conversation.id
+            )
+        action_request = resolved
     # A start_delegation proposal, like set_status, needs no context to become a PROPOSAL.
     if isinstance(action_request, (SetStatusAction, StartDelegationAction)):
         return await _propose_action(
@@ -651,13 +677,20 @@ async def confirm_toucan_action(
         # A2.1 — the owner is the bearer identity that owns the pending entry, never a field of
         # the action. The durable row is written only here, only once (take() popped the entry),
         # and any previous active delegation of the same owner is ended (reason "replaced").
-        row, replaced = await toucan_delegation_repo.start_delegation(
-            db,
-            owner_email=email,
-            duration_minutes=pending.action.duration_minutes,
-            scope=pending.action.scope,
-            on_ended=emit_delegation_ended,
-        )
+        try:
+            row, replaced = await toucan_delegation_repo.start_delegation(
+                db,
+                owner_email=email,
+                duration_minutes=pending.action.duration_minutes,
+                ends_at=pending.action.ends_at,
+                end_condition=pending.action.end_condition,
+                scope=pending.action.scope,
+                on_ended=emit_delegation_ended,
+            )
+        except ValueError as err:
+            # A clock end that slipped into the past between proposal and Confirm. The one-time
+            # entry is consumed and nothing was created — the user asks again with a later time.
+            raise HTTPException(status_code=409, detail="That end time has already passed") from err
         delegation_out = _delegation_out(row)
         logger.info(
             "toucan action executed: owner=%s action=%s duration_minutes=%s expires_at=%s delegation=%s id=%s",

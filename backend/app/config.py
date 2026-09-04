@@ -89,6 +89,9 @@ class Settings(BaseSettings):
     # is durable (repositories/toucan_delegation.py).
     TOUCAN_DELEGATION_COOLDOWN_SECONDS: float = 120.0
     TOUCAN_DELEGATION_MAX_REPLIES_PER_CONVERSATION: int = 3
+    # A2.3: how often the one background task ends expired / hard-capped delegations that no read
+    # has touched. Lazy expiry on every read remains the second wall. <= 0 disables the sweep.
+    TOUCAN_DELEGATION_SWEEP_SECONDS: float = 60.0
 
     # FUTURE multi-worker realtime seam — UNSET AND UNUSED TODAY. When this backend eventually
     # runs more than one worker, Socket.IO needs a cross-process message queue (and the

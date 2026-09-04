@@ -37,6 +37,7 @@ from app.services.call_invites import INVITE_TTL_SECONDS
 from app.services.call_invites import wire as invite_wire
 from app.services.chat_assistant import detect_toucan_invocation, schedule_reply
 from app.services.chat_delegation import schedule_delegation_reply
+from app.services.delegation_lifecycle import mark_owner_returned, schedule_owner_returned
 from app.services.chat_send import ChatSendError, is_toucan_sender, send_chat_message
 from app.services.position_registry import position_registry
 
@@ -106,15 +107,19 @@ def _has_another_live_socket(email: str, *, excluding_sid: str) -> bool:
     return False
 
 
-async def _record_arrival(email: str) -> None:
+async def _record_arrival(email: str) -> bool:
     """This person has just turned up. The ONLY event that can freeze an absence boundary —
-    see repositories/toucan_activity.py's record_arrival."""
+    see repositories/toucan_activity.py's record_arrival. Returns True only when THIS arrival
+    closed a real absence (gap ≥ ABSENCE_GAP_SECONDS) — a refresh, HMR or a network blip
+    reconnects inside the gap and returns False."""
     try:
         async with async_session_maker() as session:
-            await toucan_activity_repo.record_arrival(session, email=email)
+            result = await toucan_activity_repo.record_arrival(session, email=email)
             await session.commit()
+        return bool(result.get("absence_detected"))
     except Exception:  # never let bookkeeping refuse a connection
         _logger.warning("failed to record arrival for %s", email, exc_info=True)
+        return False
 
 
 async def _record_departure(email: str) -> None:
@@ -346,7 +351,13 @@ async def connect(sid: str, environ: dict, auth: dict | None) -> None:
     # Toucan T2: the arrival half of the presence cursor. Placed before the room bootstrap so a
     # bootstrap failure (which only emits chat_error) cannot cost us the one durable record that
     # a person came back — the absence boundary is frozen here or not at all.
-    await _record_arrival(email)
+    returned_from_absence = await _record_arrival(email)
+    # A2.3 — a reconnect counts as "the owner is back" ONLY when it closed a proven absence AND
+    # it is this person's only live socket. A second tab beside a live one, a refresh, HMR or a
+    # blip never qualifies. The other return signals (own message, Toucan question, explicit
+    # check-in) live on their own handlers; all of them end through the same one function.
+    if returned_from_absence and not _has_another_live_socket(email, excluding_sid=sid):
+        await mark_owner_returned(email)
 
     # Fire-and-forget-equivalent room bootstrap (mirrors bootstrapRooms in socket.ts): failures
     # here surface as chat_error rather than rejecting the already-established connection.
@@ -482,6 +493,9 @@ async def come_online(sid: str, _payload: dict | None = None) -> None:
         # so a checkout long enough to clear ABSENCE_GAP_SECONDS is resolved into a real
         # absence here rather than being silently forgotten.
         await _record_arrival(email)
+        # A2.3 — an explicit check-in is the owner saying "I'm here": end an until_return
+        # delegation regardless of how long they were gone.
+        await mark_owner_returned(email)
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 
@@ -952,6 +966,9 @@ async def send_message(sid: str, payload: dict | None) -> None:
         # out, decide in the background whether the OTHER participant of a DM has an active
         # delegation that earns a deterministic Toucan acknowledgement. The evaluation reads no
         # message text and re-checks every condition against the database itself.
+        # A2.3 — a human message from this person is the strongest "I'm back" there is. Ends an
+        # until_return delegation of THEIRS (never anybody else's), in the background.
+        schedule_owner_returned(email)
         # A message that explicitly addresses Toucan is a conversation WITH Toucan (A1.4 answers
         # it); it is not a message left for the absent owner, so no acknowledgement on their behalf.
         if prompt is None:

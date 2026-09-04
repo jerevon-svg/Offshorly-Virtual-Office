@@ -503,3 +503,130 @@ async def test_at_toucan_plus_delegated_mention_uses_the_a14_path_only(server):
     assert [t.text for t in toucan] == [FAILURE_REPLY]
     assert not any("assisting" in t.text for t in toucan)
     await m.disconnect()
+
+
+# =====================================================================================================
+# A2.3 — return detection over the real socket path. Conservative by design: only the owner's own
+# message, an explicit check-in, or a reconnect that closed a PROVEN absence ends until_return.
+# =====================================================================================================
+
+from app.repositories import toucan_activity as activity_repo
+from app.services.toucan.delegation import END_UNTIL_RETURN
+
+
+async def _delegate_until_return(owner: str):
+    async with app_db.async_session_maker() as session:
+        row, _ = await repo.start_delegation(
+            session, owner_email=owner, end_condition=END_UNTIL_RETURN, scope=SCOPE_DM_AND_GROUPS
+        )
+    return row
+
+
+async def _status(owner: str) -> tuple[str, str | None]:
+    async with app_db.async_session_maker() as session:
+        rows = await repo.list_delegations(session, owner_email=owner)
+    return rows[0].status, rows[0].ended_reason
+
+
+async def _seen_recently(owner: str, seconds_ago: float) -> None:
+    """Plant the presence cursor: the owner was last seen `seconds_ago` (a departure candidate)."""
+    async with app_db.async_session_maker() as session:
+        await activity_repo.record_departure(
+            session, email=owner, now=datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+        )
+        await session.commit()
+
+
+async def test_refresh_short_reconnect_second_tab_and_message_read_do_not_end_until_return(server):
+    bon, micah = _fresh("bon"), _fresh("micah")
+    conv_id = await _dm(bon, micah)
+    b1 = await _connect_as(server, bon)
+    await asyncio.sleep(0.2)
+    await _delegate_until_return(bon)
+    ended = _collector(b1, "delegation_ended")
+
+    # Second tab while the first is live.
+    b2 = await _connect_as(server, bon)
+    await asyncio.sleep(0.3)
+    assert await _status(bon) == ("active", None)
+    # Refresh / HMR / blip: the last socket drops and comes back well inside the 300 s gap.
+    await b1.disconnect()
+    await b2.disconnect()
+    await asyncio.sleep(0.2)
+    b3 = await _connect_as(server, bon)
+    await asyncio.sleep(0.3)
+    assert await _status(bon) == ("active", None)
+    # A peer's message and the owner READING it are not return signals.
+    m = await _connect_as(server, micah)
+    await asyncio.sleep(0.2)
+    await _send_and_settle(m, conv_id, "you there?")
+    await b3.emit("message_read", {"conversationId": conv_id})
+    await asyncio.sleep(0.3)
+    assert await _status(bon) == ("active", None)
+    assert ended == []
+    # And Toucan DID acknowledge on Bon's behalf meanwhile.
+    assert len(await _toucan_messages(conv_id)) == 1
+    for c in (b3, m):
+        await c.disconnect()
+
+
+async def test_owner_message_ends_until_return_with_owner_only_event(server):
+    bon, micah = _fresh("bon"), _fresh("micah")
+    conv_id = await _dm(bon, micah)
+    b = await _connect_as(server, bon)
+    m = await _connect_as(server, micah)
+    await asyncio.sleep(0.2)
+    row = await _delegate_until_return(bon)
+    b_ended = _collector(b, "delegation_ended")
+    m_ended = _collector(m, "delegation_ended")
+    m_in = _collector(m, "incoming_message")
+
+    await _send_and_settle(b, conv_id, "back at my desk")
+    assert await _status(bon) == ("ended", "returned")
+    assert b_ended == [{"delegationId": row.id, "reason": "returned"}]
+    assert m_ended == []  # never broadcast to conversation participants
+    assert [x["message"]["senderId"] for x in m_in] == [bon]
+    # No more acknowledgements now.
+    await _send_and_settle(m, conv_id, "welcome back")
+    assert await _toucan_messages(conv_id) == []
+    for c in (b, m):
+        await c.disconnect()
+
+
+async def test_explicit_come_online_ends_until_return_but_timed_rows_survive(server):
+    bon = _fresh("bon")
+    b = await _connect_as(server, bon)
+    await asyncio.sleep(0.2)
+    await _delegate_until_return(bon)
+    ended = _collector(b, "delegation_ended")
+    await b.emit("come_online", {})
+    await asyncio.sleep(0.3)
+    assert await _status(bon) == ("ended", "returned")
+    assert [e["reason"] for e in ended] == ["returned"]
+    # A timed delegation is not presence tracking: check-in leaves it alone.
+    await _delegate(bon)
+    await b.emit("come_online", {})
+    await asyncio.sleep(0.3)
+    assert await _status(bon) == ("active", None)
+    await b.disconnect()
+
+
+async def test_reconnect_after_a_proven_absence_ends_until_return(server):
+    bon = _fresh("bon")
+    await _delegate_until_return(bon)
+    # Last seen 10 minutes ago (≥ the 300 s threshold) with no live socket: this connect closes a
+    # real absence and is the owner's only socket → returned.
+    await _seen_recently(bon, seconds_ago=600)
+    b = await _connect_as(server, bon)
+    await asyncio.sleep(0.3)
+    assert await _status(bon) == ("ended", "returned")
+    await b.disconnect()
+
+    # Below the threshold: a 2-minute gap is a blip, not a return.
+    bon2 = _fresh("bon")
+    await _delegate_until_return(bon2)
+    await _seen_recently(bon2, seconds_ago=120)
+    b2 = await _connect_as(server, bon2)
+    await asyncio.sleep(0.3)
+    assert await _status(bon2) == ("active", None)
+    await b2.disconnect()

@@ -101,6 +101,15 @@ describe("ToucanAssistantPanel — A2.2 active delegation banner", () => {
     expect(screen.getByText("Stop")).toBeTruthy();
   });
 
+  it("A2.3 — renders an until-return delegation as until you return with the cap", async () => {
+    h.service.getDelegation.mockResolvedValue({ ...ACTIVE, endCondition: "until_return", expiresAt: null });
+    await setup();
+    const banner = screen.getByTestId("toucan-delegation-banner");
+    expect(banner.textContent).toContain("Toucan is handling your messages");
+    expect(banner.textContent).toContain("DMs + group @mentions · until you return · max 24h");
+    expect(screen.getByText("Stop")).toBeTruthy();
+  });
+
   it("renders an A2.1 dm-only row as DMs only", async () => {
     h.service.getDelegation.mockResolvedValue({ ...ACTIVE, scope: "dm" });
     await setup();
