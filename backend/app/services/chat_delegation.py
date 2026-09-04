@@ -15,9 +15,17 @@ from app.services.chat_send import (
     is_toucan_sender,
     send_chat_message,
 )
-from app.services.toucan.delegation import first_reply_text, follow_up_reply_text
+from app.services.delegation_events import emit_delegation_ended
+from app.services.toucan.delegation import (
+    SCOPE_DM_AND_GROUPS,
+    combined_first_reply_text,
+    combined_follow_up_reply_text,
+)
 
 # A2.1 — TOUCAN ANSWERING A DM ON SOMEBODY'S BEHALF, deterministically.
+# A2.2 — and a GROUP message, but only one that carries a SERVER-VALIDATED @mention of the owner
+# (the saved message's stored mention list, never re-parsed text), only for a delegation whose
+# scope includes groups, and with ONE combined reply when several mentioned owners qualify.
 #
 # WHAT THIS IS: after a HUMAN message has gone through the ordinary send path untouched, the
 # socket handler schedules evaluate_and_reply as a background task (same shape as A1.4.2's
@@ -119,7 +127,12 @@ class DelegationReplyGate:
 reply_gate = DelegationReplyGate()
 
 
-async def evaluate_and_reply(conversation_id: str, sender_email: str, message_id: str | None) -> dict | None:
+async def evaluate_and_reply(
+    conversation_id: str,
+    sender_email: str,
+    message_id: str | None,
+    mentioned: list[str] | None = None,
+) -> dict | None:
     """Decide whether the human message just saved into `conversation_id` earns an automatic
     Toucan reply on behalf of the OTHER participant, and send it. Every condition is re-checked
     here, at reply time, against the database: DM only, sender is human and not the owner, the
@@ -131,33 +144,58 @@ async def evaluate_and_reply(conversation_id: str, sender_email: str, message_id
     try:
         async with app_db.async_session_maker() as session:
             conv = await chat_repo.get_conversation_by_id(session, conversation_id)
-            if conv is None or conv.get("type") != "dm":
+            if conv is None:
                 return None
-            participants = [p for p in conv.get("participant_ids", []) if p and p != sender]
-            if sender not in conv.get("participant_ids", []) or not participants:
+            kind = conv.get("type")
+            members = [p for p in conv.get("participant_ids", []) if p]
+            if sender not in members:
                 return None
-            live = await delegation_repo.active_delegations_for_owners(session, participants)
-            for delegation in live:
-                owner = delegation.owner_email
-                if owner == sender or owner not in participants:
-                    continue
-                if not reply_gate.allows(conversation_id, owner, delegation.id, message_id):
+            if kind == "dm":
+                candidates = [p for p in members if p != sender]
+            elif kind == "group":
+                # ONLY the stored, membership-validated mention list decides who was addressed.
+                tagged = {m.strip().lower() for m in (mentioned or []) if isinstance(m, str)}
+                candidates = [p for p in members if p in tagged and p != sender]
+            else:
+                return None
+            if not candidates:
+                return None
+            live = await delegation_repo.active_delegations_for_owners(
+                session, candidates, on_ended=emit_delegation_ended
+            )
+            eligible = sorted(
+                (
+                    d for d in live
+                    if d.owner_email in candidates
+                    and d.owner_email != sender
+                    and (kind == "dm" or d.scope == SCOPE_DM_AND_GROUPS)
+                ),
+                key=lambda d: d.owner_email,
+            )
+            included = [
+                d for d in eligible if reply_gate.allows(conversation_id, d.owner_email, d.id, message_id)
+            ]
+            if not included:
+                if eligible:
                     logger.info("toucan delegated reply suppressed by gate: conversation=%s", conversation_id)
-                    return None
-                first = reply_gate.replies_so_far(conversation_id, owner, delegation.id) == 0
-                text = first_reply_text(owner) if first else follow_up_reply_text(owner)
-                # Record BEFORE sending so a concurrent evaluation for the same conversation
-                # cannot slip a second reply through while this one is in flight.
-                reply_gate.record(conversation_id, owner, delegation.id, message_id)
-                saved = await send_chat_message(
-                    session, conversation_id=conversation_id, sender_email=TOUCAN_CHAT_SENDER, text=text
-                )
-                await delegation_repo.record_reply(session, delegation)
-                logger.info(
-                    "toucan delegated reply sent: owner=%s conversation=%s delegation=%s",
-                    owner, conversation_id, delegation.id,
-                )
-                return saved
+                return None
+            owners = [d.owner_email for d in included]
+            first = any(reply_gate.replies_so_far(conversation_id, d.owner_email, d.id) == 0 for d in included)
+            text = combined_first_reply_text(owners) if first else combined_follow_up_reply_text(owners)
+            # Record BEFORE sending so a concurrent evaluation for the same conversation cannot
+            # slip a second reply through while this one is in flight.
+            for d in included:
+                reply_gate.record(conversation_id, d.owner_email, d.id, message_id)
+            saved = await send_chat_message(
+                session, conversation_id=conversation_id, sender_email=TOUCAN_CHAT_SENDER, text=text
+            )
+            for d in included:
+                await delegation_repo.record_reply(session, d)
+            logger.info(
+                "toucan delegated reply sent: owners=%s conversation=%s kind=%s",
+                ",".join(owners), conversation_id, kind,
+            )
+            return saved
     except ChatSendError as err:
         logger.info("toucan delegated reply skipped: %s", err.code)
     except Exception:
@@ -169,8 +207,10 @@ async def evaluate_and_reply(conversation_id: str, sender_email: str, message_id
 _pending: set[asyncio.Task] = set()
 
 
-def schedule_delegation_reply(conversation_id: str, sender_email: str, message_id: str | None) -> asyncio.Task:
-    task = asyncio.create_task(evaluate_and_reply(conversation_id, sender_email, message_id))
+def schedule_delegation_reply(
+    conversation_id: str, sender_email: str, message_id: str | None, mentioned: list[str] | None = None
+) -> asyncio.Task:
+    task = asyncio.create_task(evaluate_and_reply(conversation_id, sender_email, message_id, mentioned))
     _pending.add(task)
     task.add_done_callback(_pending.discard)
     return task

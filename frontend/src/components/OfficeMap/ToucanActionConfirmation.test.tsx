@@ -20,6 +20,8 @@ const h = vi.hoisted(() => {
     loadConversation: vi.fn(),
     confirmAction: vi.fn(),
     cancelAction: vi.fn(),
+    getDelegation: vi.fn(async () => null),
+    cancelDelegation: vi.fn(async () => null),
   };
   return {
     service,
@@ -361,8 +363,8 @@ const DELEGATION_PROPOSAL = {
   id: "act-3",
   action: "start_delegation" as const,
   durationMinutes: 120,
-  scope: "dm" as const,
-  summary: "Let Toucan handle your direct messages for 2 hours (DMs only)",
+  scope: "dm_and_groups" as const,
+  summary: "Let Toucan handle your messages for 2 hours (direct messages + group @mentions)",
   expiresAt: "2026-09-04T12:02:00.000Z",
 };
 
@@ -379,12 +381,12 @@ const DELEGATION_RESULT = {
   outcome: "executed" as const,
   action: "start_delegation" as const,
   durationMinutes: 120,
-  scope: "dm" as const,
+  scope: "dm_and_groups" as const,
   delegation: {
     id: "d-1",
     status: "active" as const,
     endCondition: "at_time",
-    scope: "dm",
+    scope: "dm_and_groups",
     startsAt: "2026-09-04T12:00:00.000Z",
     expiresAt: "2026-09-04T14:00:00.000Z",
     hardCapAt: "2026-09-05T12:00:00.000Z",
@@ -425,9 +427,9 @@ describe("ToucanAssistantPanel — A2.1 start_delegation confirmation", () => {
     await sendQuestion("Handle my messages for 2 hours.");
 
     const card = screen.getByTestId("toucan-action-card");
-    expect(card.textContent).toContain("Let Toucan handle your direct messages for 2 hours (DMs only)");
+    expect(card.textContent).toContain("Let Toucan handle your messages for 2 hours (direct messages + group @mentions)");
     const detail = screen.getByTestId("toucan-action-delegation").textContent ?? "";
-    expect(detail).toContain("DMs only");
+    expect(detail).toContain("Direct messages + group @mentions");
     expect(detail).toContain("for 2 hours");
     expect(detail).toContain("ends about");
     expect(screen.getByText("Confirm")).toBeTruthy();

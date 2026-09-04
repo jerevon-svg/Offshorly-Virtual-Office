@@ -26,8 +26,12 @@ from dataclasses import dataclass
 
 ACTION_START_DELEGATION = "start_delegation"
 
-# A2.1 scope: direct messages only. Groups arrive with A2.2.
+# Scopes. A2.1 rows carry "dm" (direct messages only) and keep behaving that way. A2.2 makes
+# "dm_and_groups" the default for NEW delegations: direct messages plus group messages that
+# carry a server-validated @mention of the owner — never general group chatter.
 SCOPE_DM = "dm"
+SCOPE_DM_AND_GROUPS = "dm_and_groups"
+SCOPES = (SCOPE_DM, SCOPE_DM_AND_GROUPS)
 
 # Bounds on one delegation. The cap is the audited hard ceiling: a delegation that outlives a
 # working day is a stale one, not a helpful one.
@@ -43,7 +47,7 @@ class StartDelegationAction:
 
     # Already clamped to [DELEGATION_MIN_MINUTES, DELEGATION_MAX_MINUTES].
     duration_minutes: int
-    scope: str = SCOPE_DM
+    scope: str = SCOPE_DM_AND_GROUPS
 
     @property
     def action(self) -> str:
@@ -139,22 +143,28 @@ def duration_phrase(minutes: int) -> str:
     return f"{minutes} minutes"
 
 
+def scope_label(scope: str) -> str:
+    return "direct messages only" if scope == SCOPE_DM else "direct messages + group @mentions"
+
+
 def proposal_summary(action: StartDelegationAction) -> str:
-    return f"Let Toucan handle your direct messages for {duration_phrase(action.duration_minutes)} (DMs only)"
+    return f"Let Toucan handle your messages for {duration_phrase(action.duration_minutes)} ({scope_label(action.scope)})"
 
 
 def confirmation_text(action: StartDelegationAction) -> str:
     return (
-        f"I can handle your direct messages for {duration_phrase(action.duration_minutes)}. "
-        "While that's on, I'll answer people who DM you — clearly as Toucan assisting you — "
-        "and let them know you're unavailable and will see their message when you're back. "
-        "DMs only, and nothing is active yet — confirm below and I'll start."
+        f"I can handle your messages for {duration_phrase(action.duration_minutes)} "
+        f"({scope_label(action.scope)}). While that's on, I'll answer people who DM you"
+        + (" or @mention you in a group" if action.scope == SCOPE_DM_AND_GROUPS else "")
+        + " — clearly as Toucan assisting you — and let them know you're unavailable and will see "
+        "their message when you're back. I won't watch general group chatter. "
+        "Nothing is active yet — confirm below and I'll start."
     )
 
 
 def executed_text(action: StartDelegationAction) -> str:
     return (
-        f"Done — I'm handling your direct messages for the next "
+        f"Done — I'm handling your messages ({scope_label(action.scope)}) for the next "
         f"{duration_phrase(action.duration_minutes)}. Say “stop handling my messages” any time to end it."
     )
 
@@ -203,3 +213,40 @@ def first_reply_text(owner_email: str) -> str:
 def follow_up_reply_text(owner_email: str) -> str:
     name = display_name_from_email(owner_email)
     return f"{assisting_prefix(owner_email)} {name} is still unavailable and will see this when they return."
+
+
+# --- A2.2: one reply for several owners -----------------------------------------------------------
+
+
+def sorted_owners(owner_emails: list[str]) -> list[str]:
+    """Deterministic order for a combined reply: by display name, then by address. Duplicates
+    (any casing) collapse to one."""
+    unique = {e.strip().lower() for e in owner_emails if e and e.strip()}
+    return sorted(unique, key=lambda e: (display_name_from_email(e).lower(), e))
+
+
+def assisting_label(owner_emails: list[str]) -> str:
+    names = [display_name_from_email(e) for e in sorted_owners(owner_emails)]
+    if not names:
+        return "Someone"
+    if len(names) == 1:
+        return names[0]
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def combined_first_reply_text(owner_emails: list[str]) -> str:
+    """ONE reply naming every owner it speaks for. A single owner keeps the A2.1 wording exactly."""
+    owners = sorted_owners(owner_emails)
+    if len(owners) == 1:
+        return first_reply_text(owners[0])
+    return (
+        f"Toucan — assisting {assisting_label(owners)}: They're currently unavailable and will see "
+        "your message when they return. Is this urgent?"
+    )
+
+
+def combined_follow_up_reply_text(owner_emails: list[str]) -> str:
+    owners = sorted_owners(owner_emails)
+    if len(owners) == 1:
+        return follow_up_reply_text(owners[0])
+    return f"Toucan — assisting {assisting_label(owners)}: They're still unavailable and will see this when they return."

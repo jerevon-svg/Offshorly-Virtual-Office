@@ -518,3 +518,58 @@
 .attachmentPreview + .composerGrow {
   border-top: none;
 }
+
+/* A2.2 — the active-delegation banner: same green as the Confirm button, same small type
+   as the action card. Sits between the header and the transcript while a delegation is on. */
+.delegationBanner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 12px 6px;
+  padding: 8px 12px;
+  border-left: 3px solid #059669;
+  border-radius: 8px;
+  background: #ecfdf5;
+  color: #065f46;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+}
+
+.delegationText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.delegationTitle {
+  font-weight: 600;
+}
+
+.delegationMeta {
+  opacity: 0.85;
+}
+
+.delegationStop {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 4px 12px;
+  border-radius: 8px;
+  background: #e5e7eb;
+  color: #374151;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.delegationStop:hover:not(:disabled) {
+  background: #d1d5db;
+}
+
+.delegationStop:disabled {
+  cursor: default;
+  opacity: 0.6;
+}

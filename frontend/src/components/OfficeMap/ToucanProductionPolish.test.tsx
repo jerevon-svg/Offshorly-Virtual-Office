@@ -44,6 +44,8 @@ const h = vi.hoisted(() => {
     loadConversation: vi.fn(),
     confirmAction: vi.fn(),
     cancelAction: vi.fn(),
+    getDelegation: vi.fn(async () => null),
+    cancelDelegation: vi.fn(async () => null),
     deleteConversation: vi.fn(async (): Promise<void> => {}),
     listMemories: vi.fn(async (): Promise<Memory[]> => []),
     deleteMemory: vi.fn(async (): Promise<void> => {}),

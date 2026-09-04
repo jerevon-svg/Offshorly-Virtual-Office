@@ -27,6 +27,7 @@ from app.schemas.toucan import (
     ToucanResourceIn,
     ToucanResourceOut,
 )
+from app.services.delegation_events import emit_delegation_ended
 from app.services.chat_send import (
     ChatSendError,
     find_direct_conversation_id,
@@ -420,7 +421,7 @@ async def ask_toucan(
     # A2.1 — "stop handling my messages" ends an active delegation IMMEDIATELY, with no
     # confirmation: stopping is the safe direction, and the owner is the bearer identity.
     if parse_stop_delegation(body.question):
-        ended = await toucan_delegation_repo.end_delegation(db, owner_email=email)
+        ended = await toucan_delegation_repo.end_delegation(db, owner_email=email, on_ended=emit_delegation_ended)
         answer_text = stopped_text() if ended is not None else nothing_to_stop_text()
         await toucan_repo.append_exchange(db, conversation=conversation, question=body.question, answer=answer_text)
         return ToucanAnswerOut(
@@ -651,7 +652,11 @@ async def confirm_toucan_action(
         # the action. The durable row is written only here, only once (take() popped the entry),
         # and any previous active delegation of the same owner is ended (reason "replaced").
         row, replaced = await toucan_delegation_repo.start_delegation(
-            db, owner_email=email, duration_minutes=pending.action.duration_minutes, scope=pending.action.scope
+            db,
+            owner_email=email,
+            duration_minutes=pending.action.duration_minutes,
+            scope=pending.action.scope,
+            on_ended=emit_delegation_ended,
         )
         delegation_out = _delegation_out(row)
         logger.info(
@@ -747,7 +752,7 @@ async def get_toucan_delegation(
     email: str = Depends(get_current_email),
     db: AsyncSession = Depends(get_db),
 ) -> ToucanDelegationOut | None:
-    row = await toucan_delegation_repo.get_active_delegation(db, owner_email=email)
+    row = await toucan_delegation_repo.get_active_delegation(db, owner_email=email, on_ended=emit_delegation_ended)
     return _delegation_out(row) if row is not None else None
 
 
@@ -756,7 +761,7 @@ async def cancel_toucan_delegation(
     email: str = Depends(get_current_email),
     db: AsyncSession = Depends(get_db),
 ) -> ToucanDelegationOut:
-    row = await toucan_delegation_repo.end_delegation(db, owner_email=email)
+    row = await toucan_delegation_repo.end_delegation(db, owner_email=email, on_ended=emit_delegation_ended)
     if row is None:
         raise HTTPException(status_code=404, detail="No active delegation")
     logger.info("toucan delegation cancelled: owner=%s delegation=%s", email, row.id)

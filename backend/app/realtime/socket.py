@@ -955,7 +955,9 @@ async def send_message(sid: str, payload: dict | None) -> None:
         # A message that explicitly addresses Toucan is a conversation WITH Toucan (A1.4 answers
         # it); it is not a message left for the absent owner, so no acknowledgement on their behalf.
         if prompt is None:
-            schedule_delegation_reply(conversation_id, email, saved["id"])
+            # A2.2: the saved message's SERVER-VALIDATED mention list decides who was addressed in
+            # a group; the evaluation never re-parses text.
+            schedule_delegation_reply(conversation_id, email, saved["id"], saved.get("mentionedEmails"))
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 

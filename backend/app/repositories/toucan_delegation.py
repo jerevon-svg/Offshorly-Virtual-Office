@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -26,6 +26,18 @@ END_AT_TIME = "at_time"
 ENDED_EXPIRED = "expired"
 ENDED_CANCELLED = "cancelled"
 ENDED_REPLACED = "replaced"
+
+# A2.2 — an optional async hook every ending goes through (expired, replaced, cancelled), so the
+# realtime layer can tell the OWNER without this module importing it. Storage stays authoritative;
+# the hook only observes.
+EndedHook = Callable[[ToucanDelegation], Awaitable[None]] | None
+
+
+async def _notify(on_ended: EndedHook, rows: list[ToucanDelegation]) -> None:
+    if on_ended is None:
+        return
+    for row in rows:
+        await on_ended(row)
 
 
 def _utc_now() -> datetime:
@@ -69,37 +81,40 @@ async def _active_rows(session: AsyncSession, owners: Iterable[str]) -> list[Tou
     return list(result.scalars().all())
 
 
-async def _live_rows(session: AsyncSession, owners: Iterable[str], now: datetime) -> list[ToucanDelegation]:
+async def _live_rows(
+    session: AsyncSession, owners: Iterable[str], now: datetime, on_ended: EndedHook = None
+) -> list[ToucanDelegation]:
     """Active rows that are ALSO within their window. Stale ones are ended in place (lazy
     expiry) and committed, so the next reader — or the next process — sees the same truth."""
     now = _as_aware_utc(now)
     rows = await _active_rows(session, owners)
     live: list[ToucanDelegation] = []
-    expired_any = False
+    expired: list[ToucanDelegation] = []
     for row in rows:
         if is_expired(row, now):
             _end(row, reason=ENDED_EXPIRED, now=now)
-            expired_any = True
+            expired.append(row)
         else:
             live.append(row)
-    if expired_any:
+    if expired:
         await session.commit()
+        await _notify(on_ended, expired)
     return live
 
 
 async def get_active_delegation(
-    session: AsyncSession, *, owner_email: str, now: datetime | None = None
+    session: AsyncSession, *, owner_email: str, now: datetime | None = None, on_ended: EndedHook = None
 ) -> ToucanDelegation | None:
     """This owner's one active, unexpired delegation, or None."""
-    live = await _live_rows(session, [owner_email], now or _utc_now())
+    live = await _live_rows(session, [owner_email], now or _utc_now(), on_ended)
     return live[0] if live else None
 
 
 async def active_delegations_for_owners(
-    session: AsyncSession, owners: Iterable[str], *, now: datetime | None = None
+    session: AsyncSession, owners: Iterable[str], *, now: datetime | None = None, on_ended: EndedHook = None
 ) -> list[ToucanDelegation]:
-    """The live delegations among a conversation's participants — what the DM trigger asks."""
-    return await _live_rows(session, owners, now or _utc_now())
+    """The live delegations among a conversation's participants — what the DM/group trigger asks."""
+    return await _live_rows(session, owners, now or _utc_now(), on_ended)
 
 
 async def start_delegation(
@@ -109,16 +124,17 @@ async def start_delegation(
     duration_minutes: int,
     scope: str = SCOPE_DM,
     now: datetime | None = None,
+    on_ended: EndedHook = None,
 ) -> tuple[ToucanDelegation, bool]:
     """Create the owner's active delegation, ending any previous active one first (reason
     "replaced"). Returns (row, replaced_previous). The duration is clamped here as well as at
     parse time, so the row can never encode a window the product does not allow."""
     owner = normalize_email(owner_email)
     current = now or _utc_now()
-    replaced = False
-    for previous in await _active_rows(session, [owner]):
+    replaced_rows = await _active_rows(session, [owner])
+    for previous in replaced_rows:
         _end(previous, reason=ENDED_REPLACED, now=current)
-        replaced = True
+    replaced = bool(replaced_rows)
     minutes = clamp_duration(int(duration_minutes))
     row = ToucanDelegation(
         owner_email=owner,
@@ -133,23 +149,30 @@ async def start_delegation(
     session.add(row)
     await session.commit()
     await session.refresh(row)
+    await _notify(on_ended, replaced_rows)
     return row, replaced
 
 
 async def end_delegation(
-    session: AsyncSession, *, owner_email: str, reason: str = ENDED_CANCELLED, now: datetime | None = None
+    session: AsyncSession,
+    *,
+    owner_email: str,
+    reason: str = ENDED_CANCELLED,
+    now: datetime | None = None,
+    on_ended: EndedHook = None,
 ) -> ToucanDelegation | None:
     """End the owner's active delegation (manual cancel by default). Returns the ended row, or
     None when nothing was active — an already-expired row is reported as None too, having been
     ended with its own reason by the lazy check."""
     current = now or _utc_now()
-    live = await _live_rows(session, [owner_email], current)
+    live = await _live_rows(session, [owner_email], current, on_ended)
     if not live:
         return None
     row = live[0]
     _end(row, reason=reason, now=current)
     await session.commit()
     await session.refresh(row)
+    await _notify(on_ended, [row])
     return row
 
 

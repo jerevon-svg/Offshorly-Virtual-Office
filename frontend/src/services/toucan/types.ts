@@ -50,7 +50,7 @@ export interface ToucanActionProposal {
   /** start_delegation (A2.1): the server-clamped duration and the scope. DMs only at
    *  A2.1. The real end time is only known at Confirm (see ToucanDelegation). */
   durationMinutes?: number | null;
-  scope?: "dm" | null;
+  scope?: "dm" | "dm_and_groups" | null;
   /** The exact effect, as the confirmation card must show it. */
   summary: string;
   expiresAt: string;
@@ -91,7 +91,7 @@ export interface ToucanActionResult {
   /** start_delegation: the frozen duration/scope, and — executed only — the now-active
    *  durable delegation. */
   durationMinutes?: number | null;
-  scope?: "dm" | null;
+  scope?: "dm" | "dm_and_groups" | null;
   delegation?: ToucanDelegation | null;
   summary: string;
   /** The assistant's outcome line — also persisted into the transcript server-side. */
@@ -251,6 +251,12 @@ export interface ToucanService {
   confirmAction(actionId: string, options?: ToucanAskOptions): Promise<ToucanActionResult>;
   /** T8 — discard one pending action proposal. Nothing executes. */
   cancelAction(actionId: string, options?: ToucanAskOptions): Promise<ToucanActionResult>;
+  /** A2.2 — the viewer's own active delegation, or null. Owner-scoped server-side:
+   *  there is no parameter through which somebody else's could be requested. */
+  getDelegation(options?: ToucanAskOptions): Promise<ToucanDelegation | null>;
+  /** A2.2 — Stop: ends the viewer's own active delegation (durable row → ended /
+   *  cancelled, audit kept). Resolves null when nothing was active any more. */
+  cancelDelegation(options?: ToucanAskOptions): Promise<ToucanDelegation | null>;
   /** T9 — delete one of the viewer's own conversations, transcript and all. A
    *  DELETE on the T1 endpoint that already existed; hard delete, matching the
    *  backend's own reasoning that a transcript holds only what the user said and

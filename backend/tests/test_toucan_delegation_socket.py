@@ -305,3 +305,201 @@ async def test_evaluation_reads_no_history_and_calls_no_provider(server, monkeyp
     assert not hasattr(chat_delegation, "generate_conversation_reply")
     saved = await evaluate_and_reply(conv_id, micah, "m1")
     assert saved is not None and saved["text"] == first_reply_text(bon)
+
+
+# =====================================================================================================
+# A2.2 — groups: only a server-validated @mention of a delegated owner earns a reply; several
+# mentioned owners earn ONE combined reply.
+# =====================================================================================================
+
+from app.services.chat_assistant import FAILURE_REPLY
+from app.services.toucan.delegation import (
+    SCOPE_DM_AND_GROUPS,
+    combined_first_reply_text,
+    combined_follow_up_reply_text,
+)
+
+
+async def _group(creator: str, members: list[str], title: str = "Team") -> str:
+    async with app_db.async_session_maker() as session:
+        conv = await chat_repo.create_group_conversation(session, creator, members, title=title)
+    return conv["id"]
+
+
+async def _delegate_groups(owner: str, minutes: int = 120, now=None):
+    async with app_db.async_session_maker() as session:
+        row, _ = await repo.start_delegation(
+            session, owner_email=owner, duration_minutes=minutes, scope=SCOPE_DM_AND_GROUPS, now=now
+        )
+    return row
+
+
+async def _send_group(client, conv_id: str, text: str, mentions: list[str] | None, temp: str = "g") -> None:
+    payload = {"conversationId": conv_id, "text": text, "clientTempId": temp}
+    if mentions is not None:
+        payload["mentionedEmails"] = mentions
+    await client.emit("send_message", payload)
+    await _settle()
+
+
+async def test_validated_group_mention_of_a_delegated_owner_earns_one_reply_that_fans_out(server):
+    bon, micah, alex = _fresh("bon"), _fresh("micah"), _fresh("alex")
+    conv_id = await _group(bon, [micah, alex])
+    await _delegate_groups(bon)
+    m = await _connect_as(server, micah)
+    a = await _connect_as(server, alex)
+    b = await _connect_as(server, bon)
+    await asyncio.sleep(0.2)
+    a_in = _collector(a, "incoming_message")
+    b_in = _collector(b, "incoming_message")
+    m_in = _collector(m, "incoming_message")
+
+    await _send_group(m, conv_id, "@Bon can you look at this?", [bon])
+    await _wait_until(lambda: len(a_in) >= 2 and len(b_in) >= 2 and len(m_in) >= 1)
+    await _settle()
+
+    expected = first_reply_text(bon)
+    assert [x["message"]["senderId"] for x in a_in] == [micah, TOUCAN_CHAT_SENDER]
+    assert a_in[1]["message"]["text"] == expected and expected.startswith("Toucan — assisting ")
+    assert b_in[1]["message"]["text"] == expected
+    assert m_in[0]["message"]["text"] == expected
+    msgs = await _messages(conv_id)
+    assert [x.sender_email for x in msgs] == [micah, TOUCAN_CHAT_SENDER]
+    assert msgs[0].mentioned_emails == [bon]
+    assert len(await _toucan_messages(conv_id)) == 1
+    async with app_db.async_session_maker() as session:
+        active = await repo.get_active_delegation(session, owner_email=bon)
+        owner_unread = await chat_repo.unread_count(session, conv_id, bon)
+        peer_unread = await chat_repo.unread_count(session, conv_id, alex)
+    assert active.reply_count == 1
+    # Unread characterization for groups, same seam behavior as DMs: the owner's unread includes
+    # the human message and Toucan's acknowledgement (2); every other member sees both too (2).
+    assert owner_unread == 2 and peer_unread == 2
+    for c in (m, a, b):
+        await c.disconnect()
+
+
+async def test_group_chatter_plain_names_dm_scope_expired_and_cancelled_are_silent(server):
+    bon, micah, alex = _fresh("bon"), _fresh("micah"), _fresh("alex")
+    conv_id = await _group(bon, [micah, alex])
+    m = await _connect_as(server, micah)
+    await asyncio.sleep(0.2)
+
+    # scope="dm" (an A2.1 row) never answers in a group, even when validly mentioned.
+    await _delegate(bon)
+    await _send_group(m, conv_id, "@Bon ping", [bon], "s1")
+    assert await _toucan_messages(conv_id) == []
+
+    # Upgrade to groups: chatter and a plain-text name earn nothing.
+    await _delegate_groups(bon)
+    await _send_group(m, conv_id, "anyone free for lunch?", None, "s2")
+    await _send_group(m, conv_id, "Bon said he'd review it", None, "s3")
+    await _send_group(m, conv_id, "@Bon-ish text without a validated mention", [], "s4")
+    assert await _toucan_messages(conv_id) == []
+
+    # Expired.
+    await _delegate_groups(bon, minutes=60, now=datetime.now(timezone.utc) - timedelta(hours=3))
+    await _send_group(m, conv_id, "@Bon?", [bon], "s5")
+    assert await _toucan_messages(conv_id) == []
+
+    # Cancelled.
+    await _delegate_groups(bon)
+    async with app_db.async_session_maker() as session:
+        await repo.end_delegation(session, owner_email=bon)
+    await _send_group(m, conv_id, "@Bon??", [bon], "s6")
+    assert await _toucan_messages(conv_id) == []
+    # Every human message persisted regardless.
+    assert len([x for x in await _messages(conv_id) if x.sender_email == micah]) == 6
+    await m.disconnect()
+
+
+async def test_group_guards_non_participants_toucan_senders_and_owner_self_mention(server):
+    bon, micah, alex, outsider = _fresh("bon"), _fresh("micah"), _fresh("alex"), _fresh("out")
+    conv_id = await _group(bon, [micah, alex])
+    await _delegate_groups(bon)
+    await _delegate_groups(outsider)
+    # A mention list naming a delegated NON-participant earns nothing (the socket path could never
+    # even store it — insert_message validates membership — so exercise the evaluation directly).
+    assert await evaluate_and_reply(conv_id, micah, "g1", [outsider]) is None
+    # Toucan as sender, and an owner mentioning themself, earn nothing.
+    assert await evaluate_and_reply(conv_id, TOUCAN_CHAT_SENDER, "g2", [bon]) is None
+    assert await evaluate_and_reply(conv_id, bon, "g3", [bon]) is None
+    # A sender outside the group earns nothing.
+    assert await evaluate_and_reply(conv_id, outsider, "g4", [bon]) is None
+    assert await _toucan_messages(conv_id) == []
+
+
+async def test_group_cooldown_and_cap(server, monkeypatch):
+    bon, micah, alex = _fresh("bon"), _fresh("micah"), _fresh("alex")
+    conv_id = await _group(bon, [micah, alex])
+    await _delegate_groups(bon)
+    m = await _connect_as(server, micah)
+    await asyncio.sleep(0.2)
+    monkeypatch.setattr(settings, "TOUCAN_DELEGATION_COOLDOWN_SECONDS", 3600.0)
+    for i in range(3):
+        await m.emit("send_message", {"conversationId": conv_id, "text": f"@Bon {i}", "clientTempId": f"c{i}", "mentionedEmails": [bon]})
+    await _settle(0.8)
+    assert len(await _toucan_messages(conv_id)) == 1
+    monkeypatch.setattr(settings, "TOUCAN_DELEGATION_COOLDOWN_SECONDS", 0.0)
+    monkeypatch.setattr(settings, "TOUCAN_DELEGATION_MAX_REPLIES_PER_CONVERSATION", 2)
+    for i in range(3):
+        await _send_group(m, conv_id, f"@Bon again {i}", [bon], f"p{i}")
+    assert [t.text for t in await _toucan_messages(conv_id)] == [first_reply_text(bon), follow_up_reply_text(bon)]
+    await m.disconnect()
+
+
+async def test_two_mentioned_delegated_owners_earn_exactly_one_combined_reply(server, monkeypatch):
+    bon, micah, alex, jan = _fresh("bon"), _fresh("micah"), _fresh("alex"), _fresh("jan")
+    conv_id = await _group(bon, [micah, alex, jan])
+    await _delegate_groups(bon)
+    await _delegate_groups(micah)
+    await _delegate(jan)  # dm-only: mentioned, but NOT eligible in a group
+    a = await _connect_as(server, alex)
+    await asyncio.sleep(0.2)
+    a_in = _collector(a, "incoming_message")
+
+    # Mention order on the wire is arbitrary; the label is not.
+    await _send_group(a, conv_id, "@Micah @Jan @Bon standup?", [micah, jan, bon])
+    toucan = await _toucan_messages(conv_id)
+    assert len(toucan) == 1
+    assert toucan[0].text == combined_first_reply_text([bon, micah])
+    assert toucan[0].text.startswith("Toucan — assisting ") and "and" in toucan[0].text
+    assert "Jan" not in toucan[0].text
+    assert [x["message"]["senderId"] for x in a_in] == [TOUCAN_CHAT_SENDER]
+    async with app_db.async_session_maker() as session:
+        for owner, expected in ((bon, 1), (micah, 1), (jan, 0)):
+            active = await repo.get_active_delegation(session, owner_email=owner)
+            assert active.reply_count == expected, owner
+
+    # Follow-up, still one message; the gate counts one reply per owner, not per owner-pair.
+    monkeypatch.setattr(settings, "TOUCAN_DELEGATION_COOLDOWN_SECONDS", 0.0)
+    await _send_group(a, conv_id, "@Bon @Micah anyone?", [bon, micah], "g2")
+    toucan = await _toucan_messages(conv_id)
+    assert [t.text for t in toucan] == [combined_first_reply_text([bon, micah]), combined_follow_up_reply_text([bon, micah])]
+
+    # Cap reached for Bon only (cap=2): Micah alone is still eligible → the reply names Micah only.
+    monkeypatch.setattr(settings, "TOUCAN_DELEGATION_MAX_REPLIES_PER_CONVERSATION", 3)
+    await _send_group(a, conv_id, "@Bon @Micah please", [bon, micah], "g3")
+    monkeypatch.setattr(settings, "TOUCAN_DELEGATION_MAX_REPLIES_PER_CONVERSATION", 4)
+    async with app_db.async_session_maker() as session:
+        await repo.end_delegation(session, owner_email=bon)
+    await _send_group(a, conv_id, "@Bon @Micah last one", [bon, micah], "g4")
+    toucan = await _toucan_messages(conv_id)
+    assert len(toucan) == 4
+    assert toucan[-1].text == follow_up_reply_text(micah)
+    await a.disconnect()
+
+
+async def test_at_toucan_plus_delegated_mention_uses_the_a14_path_only(server):
+    bon, micah, alex = _fresh("bon"), _fresh("micah"), _fresh("alex")
+    conv_id = await _group(bon, [micah, alex])
+    await _delegate_groups(bon)
+    m = await _connect_as(server, micah)
+    await asyncio.sleep(0.2)
+    # The prompt "@Bon" reaches A1.4, whose provider is patched to fail → its deterministic
+    # fallback. Exactly one Toucan message, and it is NOT a delegation acknowledgement.
+    await _send_group(m, conv_id, "@Toucan @Bon", [bon])
+    toucan = await _toucan_messages(conv_id)
+    assert [t.text for t in toucan] == [FAILURE_REPLY]
+    assert not any("assisting" in t.text for t in toucan)
+    await m.disconnect()

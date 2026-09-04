@@ -123,9 +123,13 @@ async def test_reply_wording_identifies_toucan_and_promises_nothing():
         assert "@toucan" not in lowered  # can never re-invoke A1.4
         for forbidden in ("will respond", "will reply by", "approved", "deadline", "because", "at 3"):
             assert forbidden not in lowered
-    assert "DMs only" in words.confirmation_text(StartDelegationAction(120))
+    assert "group @mentions" in words.confirmation_text(StartDelegationAction(120))
+    assert "won't watch general group chatter" in words.confirmation_text(StartDelegationAction(120))
     assert words.proposal_summary(StartDelegationAction(90)) == (
-        "Let Toucan handle your direct messages for 1 hour 30 minutes (DMs only)"
+        "Let Toucan handle your messages for 1 hour 30 minutes (direct messages + group @mentions)"
+    )
+    assert words.proposal_summary(StartDelegationAction(90, scope="dm")) == (
+        "Let Toucan handle your messages for 1 hour 30 minutes (direct messages only)"
     )
 
 
@@ -227,9 +231,9 @@ async def test_ask_proposes_only_and_activates_nothing():
         body = await _ask(client, "Handle my messages for 2 hours.")
     action = body["action"]
     assert action["action"] == "start_delegation"
-    assert action["durationMinutes"] == 120 and action["scope"] == "dm"
-    assert action["summary"] == "Let Toucan handle your direct messages for 2 hours (DMs only)"
-    assert "DMs only" in body["text"] and "confirm below" in body["text"]
+    assert action["durationMinutes"] == 120 and action["scope"] == "dm_and_groups"
+    assert action["summary"] == "Let Toucan handle your messages for 2 hours (direct messages + group @mentions)"
+    assert "group @mentions" in body["text"] and "confirm below" in body["text"]
     assert body["intent"] == "action_proposal"
     assert await _active_rows() == []
     async with _client() as client:
@@ -253,14 +257,14 @@ async def test_confirm_creates_the_delegation_and_replay_cannot_create_another()
         assert res.status_code == 200, res.text
         result = res.json()
         assert result["outcome"] == "executed" and result["action"] == "start_delegation"
-        assert result["durationMinutes"] == 120 and result["scope"] == "dm"
+        assert result["durationMinutes"] == 120 and result["scope"] == "dm_and_groups"
         delegation = result["delegation"]
-        assert delegation["status"] == "active" and delegation["scope"] == "dm"
+        assert delegation["status"] == "active" and delegation["scope"] == "dm_and_groups"
         assert delegation["endCondition"] == "at_time" and delegation["replyCount"] == 0
         starts = datetime.fromisoformat(delegation["startsAt"].replace("Z", "+00:00"))
         expires = datetime.fromisoformat(delegation["expiresAt"].replace("Z", "+00:00"))
         assert expires - starts == timedelta(hours=2)
-        assert "handling your direct messages for the next 2 hours" in result["text"]
+        assert "handling your messages (direct messages + group @mentions) for the next 2 hours" in result["text"]
 
         # Replay: the one-time entry is gone, and no second row appears.
         replay = await client.post(f"/toucan/actions/{action_id}/confirm", headers=_h())
@@ -393,3 +397,90 @@ async def test_the_pure_delegation_module_owns_no_storage_and_reads_no_text():
 
     for fn in (words.first_reply_text, words.follow_up_reply_text):
         assert list(inspect.signature(fn).parameters) == ["owner_email"]
+    for fn in (words.combined_first_reply_text, words.combined_follow_up_reply_text):
+        assert list(inspect.signature(fn).parameters) == ["owner_emails"]
+
+
+# --- A2.2: combined wording (pure) -------------------------------------------------------------------
+
+
+async def test_combined_wording_is_deterministic_and_names_only_the_given_owners():
+    owners = ["micah@example.com", "Bon@Example.com", "bon@example.com"]
+    assert words.sorted_owners(owners) == ["bon@example.com", "micah@example.com"]
+    assert words.assisting_label(owners) == "Bon and Micah"
+    assert words.assisting_label(["jan@x.com", "micah@x.com", "bon@x.com"]) == "Bon, Jan and Micah"
+    text = words.combined_first_reply_text(owners)
+    assert text == (
+        "Toucan — assisting Bon and Micah: They're currently unavailable and will see your message "
+        "when they return. Is this urgent?"
+    )
+    assert words.combined_follow_up_reply_text(owners) == (
+        "Toucan — assisting Bon and Micah: They're still unavailable and will see this when they return."
+    )
+    # One owner keeps the A2.1 wording byte for byte.
+    assert words.combined_first_reply_text(["bon@example.com"]) == words.first_reply_text("bon@example.com")
+    assert words.combined_follow_up_reply_text(["bon@example.com"]) == words.follow_up_reply_text("bon@example.com")
+    for t in (text, words.combined_follow_up_reply_text(owners)):
+        assert "@toucan" not in t.lower() and "because" not in t.lower()
+
+
+# --- A2.2: delegation_ended reaches the owner only ------------------------------------------------------
+
+
+@pytest.fixture
+def emitted(monkeypatch):
+    from app.services import delegation_events
+
+    seen: list[tuple[str, dict, str | None]] = []
+
+    async def fake_emit(event, payload, room=None, **kwargs):
+        seen.append((event, payload, room))
+
+    monkeypatch.setattr(delegation_events.sio, "emit", fake_emit)
+    return seen
+
+
+async def test_delete_and_stop_phrase_emit_delegation_ended_to_the_owner_room_only(emitted):
+    from app.realtime.state import user_room
+
+    async with _client() as client:
+        body = await _ask(client, "Handle my messages for 1 hour.")
+        await client.post(f"/toucan/actions/{body['action']['id']}/confirm", headers=_h())
+        assert emitted == []  # starting emits nothing
+        res = await client.delete("/toucan/delegation", headers=_h())
+        assert res.status_code == 200
+    assert emitted == [("delegation_ended", {"delegationId": res.json()["id"], "reason": "cancelled"}, user_room(VIEWER))]
+    emitted.clear()
+    async with _client() as client:
+        body = await _ask(client, "Handle my messages for 1 hour.")
+        await client.post(f"/toucan/actions/{body['action']['id']}/confirm", headers=_h())
+        await _ask(client, "stop handling my messages")
+    assert [(e, p["reason"], r) for e, p, r in emitted] == [("delegation_ended", "cancelled", user_room(VIEWER))]
+    # Another user's DELETE neither ends nor emits anything.
+    emitted.clear()
+    async with _client() as client:
+        body = await _ask(client, "Handle my messages for 1 hour.")
+        await client.post(f"/toucan/actions/{body['action']['id']}/confirm", headers=_h())
+        assert (await client.delete("/toucan/delegation", headers=_h(OTHER))).status_code == 404
+    assert emitted == []
+
+
+async def test_replacement_and_lazy_expiry_emit_delegation_ended(emitted):
+    from app.realtime.state import user_room
+
+    async with _client() as client:
+        first = await _ask(client, "Handle my messages for 1 hour.")
+        await client.post(f"/toucan/actions/{first['action']['id']}/confirm", headers=_h())
+        second = await _ask(client, "Handle my messages for 2 hours.")
+        await client.post(f"/toucan/actions/{second['action']['id']}/confirm", headers=_h())
+    assert [(p["reason"], r) for _, p, r in emitted] == [("replaced", user_room(VIEWER))]
+    emitted.clear()
+
+    # An already-stale row, discovered by the owner's own GET: ended as expired, and told so.
+    async with app_db.async_session_maker() as session:
+        row, _ = await repo.start_delegation(
+            session, owner_email=OTHER, duration_minutes=30, now=datetime.now(timezone.utc) - timedelta(hours=2)
+        )
+    async with _client() as client:
+        assert (await client.get("/toucan/delegation", headers=_h(OTHER))).json() is None
+    assert emitted == [("delegation_ended", {"delegationId": row.id, "reason": "expired"}, user_room(OTHER))]

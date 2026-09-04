@@ -81,7 +81,7 @@ class ToucanActionProposalOut(BaseModel):
     # start_delegation (A2.1): the clamped duration and the scope ("dm" only). The card shows
     # both; the resolved end time is only known at Confirm (see ToucanDelegationOut).
     duration_minutes: int | None = Field(default=None, alias="durationMinutes")
-    scope: Literal["dm"] | None = None
+    scope: Literal["dm", "dm_and_groups"] | None = None
     # The exact effect, as the confirmation card must show it.
     summary: str
     expires_at: datetime = Field(alias="expiresAt")
@@ -133,7 +133,7 @@ class ToucanActionResultOut(BaseModel):
     conversation_id: str | None = Field(default=None, alias="conversationId")
     message_id: str | None = Field(default=None, alias="messageId")
     duration_minutes: int | None = Field(default=None, alias="durationMinutes")
-    scope: Literal["dm"] | None = None
+    scope: Literal["dm", "dm_and_groups"] | None = None
     # start_delegation, executed only: the durable delegation that is now active.
     delegation: ToucanDelegationOut | None = None
     summary: str

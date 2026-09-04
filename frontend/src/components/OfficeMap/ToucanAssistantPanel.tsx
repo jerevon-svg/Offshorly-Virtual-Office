@@ -24,6 +24,8 @@ import {
   type ToucanConversationDetail,
   type ToucanDraftAttachment,
   type ToucanMemory,
+  subscribeDelegationEnded,
+  type ToucanDelegation,
 } from "../../services/toucan";
 import { appendDictatedText } from "./toucanDictation";
 
@@ -150,9 +152,26 @@ function formatLocalTime(date: Date): string {
   return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
-export function describeDelegationProposal(minutes: number, now: Date = new Date()): string {
+export function delegationScopeLabel(scope: string | null | undefined): string {
+  return scope === "dm" ? "DMs only" : "Direct messages + group @mentions";
+}
+
+export function describeDelegationProposal(
+  minutes: number,
+  scope: string | null | undefined,
+  now: Date = new Date(),
+): string {
   const ends = new Date(now.getTime() + minutes * 60_000);
-  return `DMs only · for ${formatDelegationDuration(minutes)} · ends about ${formatLocalTime(ends)} once confirmed`;
+  return `${delegationScopeLabel(scope)} · for ${formatDelegationDuration(minutes)} · ends about ${formatLocalTime(ends)} once confirmed`;
+}
+
+/** A2.2 — the banner's second line: scope, and when it ends. Existing A2.1 rows carry
+ *  scope "dm" and read "DMs only"; new ones read "DMs + group @mentions". */
+export function describeActiveDelegation(delegation: ToucanDelegation): string {
+  const scope = delegation.scope === "dm" ? "DMs only" : "DMs + group @mentions";
+  if (!delegation.expiresAt) return `${scope} · until you stop it`;
+  const ends = new Date(delegation.expiresAt);
+  return Number.isNaN(ends.getTime()) ? scope : `${scope} · until ${formatLocalTime(ends)}`;
 }
 
 export function withDelegationEnd(text: string, expiresAt: string | null | undefined): string {
@@ -321,6 +340,10 @@ export function ToucanAssistantPanel({
   // True while a confirm/cancel round trip is in flight — disables both buttons so
   // a double-click cannot race the one-time server-side consume.
   const [actionBusy, setActionBusy] = useState(false);
+  // A2.2 — the viewer's own active delegation (null = none). Loaded on mount, set from a
+  // confirmed start_delegation result, cleared by Stop and by the server's delegation_ended.
+  const [delegation, setDelegation] = useState<ToucanDelegation | null>(null);
+  const [stopBusy, setStopBusy] = useState(false);
   const nextIdRef = useRef(1);
   const askAbortRef = useRef<AbortController | null>(null);
   const restoreAbortRef = useRef<AbortController | null>(null);
@@ -362,6 +385,32 @@ export function ToucanAssistantPanel({
       });
 
     return () => controller.abort();
+  }, []);
+
+  // A2.2 — is Toucan handling this viewer's messages right now? Owner-scoped server-side; a
+  // failure (offline, mock mode) just means no banner.
+  useEffect(() => {
+    const controller = new AbortController();
+    Promise.resolve()
+      .then(() => toucanService.getDelegation({ signal: controller.signal }))
+      .then((active) => {
+        if (!controller.signal.aborted) setDelegation(active ?? null);
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, []);
+
+  // A2.2 — the server tells the OWNER (only) when their delegation ended: Stop from another
+  // tab, replaced by a new one, or found expired. Clear the banner unless the event names a
+  // different (older) delegation than the one shown.
+  useEffect(() => {
+    return subscribeDelegationEnded((event) => {
+      setDelegation((current) => {
+        if (!current) return null;
+        if (event.delegationId && event.delegationId !== current.id) return current;
+        return null;
+      });
+    });
   }, []);
 
   const onPendingChangeRef = useRef(onPendingChange);
@@ -698,6 +747,8 @@ export function ToucanAssistantPanel({
         if (result.action === "start_delegation") {
           // A2.1: the server wrote the durable delegation; the panel only reports it,
           // adding the resolved end time in the viewer's own zone. Never touches status.
+          // A2.2: the banner appears from the returned row, no refresh needed.
+          setDelegation(result.delegation ?? null);
           appendToucanTurn(withDelegationEnd(result.text, result.delegation?.expiresAt));
           return;
         }
@@ -715,6 +766,19 @@ export function ToucanAssistantPanel({
         setActionProposal(null);
       });
   }, [actionProposal, actionBusy, appendToucanTurn]);
+
+  // A2.2 STOP — ends the viewer's own delegation through the owner-scoped DELETE. The row
+  // is kept for audit; the banner goes away as soon as the server confirms. One request at a
+  // time: the button is disabled while a stop is pending.
+  const handleStopDelegation = useCallback(() => {
+    if (!delegation || stopBusy) return;
+    setStopBusy(true);
+    void toucanService
+      .cancelDelegation()
+      .then(() => setDelegation(null))
+      .catch(() => appendToucanTurn(REQUEST_FAILED_TEXT))
+      .finally(() => setStopBusy(false));
+  }, [delegation, stopBusy, appendToucanTurn]);
 
   // CANCEL — burns the pending entry server-side; nothing executes either way.
   const handleCancelAction = useCallback(() => {
@@ -1006,6 +1070,26 @@ export function ToucanAssistantPanel({
         </div>
       )}
 
+      {delegation && (
+        // A2.2 — the persistent indicator that Toucan is answering on this viewer's behalf.
+        // Small, always visible while active, and the one place to stop it from the panel.
+        <div className={styles.delegationBanner} data-testid="toucan-delegation-banner" role="status">
+          <div className={styles.delegationText}>
+            <span className={styles.delegationTitle}>Toucan is handling your messages</span>
+            <span className={styles.delegationMeta}>{describeActiveDelegation(delegation)}</span>
+          </div>
+          <button
+            type="button"
+            className={styles.delegationStop}
+            onClick={handleStopDelegation}
+            disabled={stopBusy}
+            aria-label="Stop Toucan handling your messages"
+          >
+            {stopBusy ? "Stopping…" : "Stop"}
+          </button>
+        </div>
+      )}
+
       <div className={chat.messages} ref={messagesRef}>
         {/* While the restore is in flight the transcript is withheld entirely, so
             a restored conversation never flashes the greeting above itself. */}
@@ -1083,7 +1167,7 @@ export function ToucanAssistantPanel({
                   // A2.1 — the card must say what is being handed over: the scope (DMs only),
                   // the duration, and roughly when it ends. Nothing is active until Confirm.
                   <div className={styles.actionMessage} data-testid="toucan-action-delegation">
-                    {describeDelegationProposal(actionProposal.durationMinutes ?? 0)}
+                    {describeDelegationProposal(actionProposal.durationMinutes ?? 0, actionProposal.scope)}
                   </div>
                 )}
                 {actionProposal.action === "send_message" && actionProposal.message != null && (
