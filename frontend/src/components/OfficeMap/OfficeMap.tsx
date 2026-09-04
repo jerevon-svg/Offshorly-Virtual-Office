@@ -764,10 +764,20 @@ export function OfficeMap() {
     return result;
   }
 
+  // A user action that brings a normal DM/group conversation to the foreground must not leave
+  // the Toucan panel sitting on top of it. Every such open path below (Global Chat selection,
+  // New Message / New Group, the A3 urgent-card Open) funnels through this one call, which
+  // reuses the existing release path — no new close mechanism, no change to window stacking.
+  // A no-op when the bird was never called, so the ordinary open flow is untouched.
+  function releaseToucanForConversation() {
+    if (toucanCalled || toucanPanelOpen) releaseToucan();
+  }
+
   // Opens a remote DM window for peerEmail, or focuses/restores it if one is already open —
   // never duplicates. New windows are unshifted to the front (rightmost slot in the stack — see
   // the floatingChatOffsets computation further down).
   function openOrFocusRemoteDm(peerEmail: string) {
+    releaseToucanForConversation();
     const email = peerEmail.toLowerCase();
     const key = `dm:${email}`;
     setRemoteChatWindows((prev) => {
@@ -785,6 +795,7 @@ export function OfficeMap() {
   // Same idempotent open-or-focus behavior as openOrFocusRemoteDm, keyed by conversationId
   // instead of peer email (a group has no single "peer").
   function openOrFocusRemoteGroup(conv: { id: string; participantIds: string[]; title: string | null }) {
+    releaseToucanForConversation();
     const key = `group:${conv.id}`;
     setRemoteChatWindows((prev) => {
       if (prev.some((w) => w.key === key)) {
@@ -902,6 +913,8 @@ export function OfficeMap() {
   }
 
   function onSelectConversation(conv: Conversation) {
+    // Spatial and remote branches alike: the conversation the user picked must be visible.
+    releaseToucanForConversation();
     const slot = resolveConversationSlot({
       conversationId: conv.id,
       sessions: spatialSessions,
