@@ -3,6 +3,13 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from app.services.toucan import delegation as delegation_words
+from app.services.toucan.delegation import (
+    ACTION_START_DELEGATION,
+    StartDelegationAction,
+    parse_delegation_request,
+)
+
 # T8 — SAFE ACTIONS: the server-owned allowlist, parsing, validation and wording. Pure module,
 # storage-free like the rest of this package (see tests/test_toucan_privacy.py): no database, no
 # network, no registry — it decides WHAT a valid action proposal is and how to word it; the
@@ -36,7 +43,9 @@ from dataclasses import dataclass, field
 # the Socket.IO handler uses). Movement and call actions remain deferred.
 ACTION_SET_STATUS = "set_status"
 ACTION_SEND_MESSAGE = "send_message"
-ALLOWED_ACTIONS = (ACTION_SET_STATUS, ACTION_SEND_MESSAGE)
+# A2.1 adds start_delegation: explicit, duration-bounded, DM-only, deterministic-typed only (the
+# AI door below deliberately does not admit it — see validate_ai_proposal).
+ALLOWED_ACTIONS = (ACTION_SET_STATUS, ACTION_SEND_MESSAGE, ACTION_START_DELEGATION)
 
 # Bounds on a proposed outgoing message. The chat path itself has no cap; this one only bounds
 # what a proposal (typed or model-emitted) may carry.
@@ -153,7 +162,7 @@ def resolve_group_targets(targets: tuple[GroupTarget, ...] | list[GroupTarget], 
     return tuple(t for t, norm in titled if norm.startswith(query + " "))
 
 
-ToucanAction = SetStatusAction | SendMessageAction
+ToucanAction = SetStatusAction | SendMessageAction | StartDelegationAction
 
 
 # --- status word resolution --------------------------------------------------------------------
@@ -330,7 +339,7 @@ def parse_send_message_request(question: str) -> SendMessageRequest | None:
     return None
 
 
-def parse_action_request(question: str) -> SetStatusAction | SendMessageRequest | None:
+def parse_action_request(question: str) -> SetStatusAction | SendMessageRequest | StartDelegationAction | None:
     """The deterministic action parser: is this message one of the explicit set-my-status
     phrasings, or an explicit send-a-message-to-someone phrasing? Anything else returns None and
     flows on to the ordinary assistant untouched — a drafting request ("write a message saying
@@ -351,6 +360,11 @@ def parse_action_request(question: str) -> SetStatusAction | SendMessageRequest 
         elif raw_hours:
             minutes = int(raw_hours) * 60
         return _finish(status, minutes)
+    # A2.1 — explicit "handle my messages for <duration>". Tried before the send-message
+    # phrasings so the two vocabularies can never shadow each other.
+    delegation = parse_delegation_request(question)
+    if delegation is not None:
+        return delegation
     return parse_send_message_request(question)
 
 
@@ -421,6 +435,8 @@ def proposal_summary(action: ToucanAction) -> str:
     """The exact effect, stated before execution — what the confirmation card shows."""
     if isinstance(action, SendMessageAction):
         return f"Send message to {action.recipient_label}"
+    if isinstance(action, StartDelegationAction):
+        return delegation_words.proposal_summary(action)
     return f"Set your status to {_status_phrase(action)}"
 
 
@@ -432,6 +448,8 @@ def confirmation_text(action: ToucanAction) -> str:
             f"I can send this to {action.recipient_label}: \u201c{action.text}\u201d "
             "Nothing has been sent yet — confirm below and I'll send it."
         )
+    if isinstance(action, StartDelegationAction):
+        return delegation_words.confirmation_text(action)
     return (
         f"I can set your status to {_status_phrase(action)}. "
         "Nothing has changed yet — confirm below and I'll do it."
@@ -441,12 +459,16 @@ def confirmation_text(action: ToucanAction) -> str:
 def executed_text(action: ToucanAction) -> str:
     if isinstance(action, SendMessageAction):
         return f"Done — I sent your message to {action.recipient_label}."
+    if isinstance(action, StartDelegationAction):
+        return delegation_words.executed_text(action)
     return f"Done — your status is now {_status_phrase(action)}."
 
 
 def cancelled_text(action: ToucanAction) -> str:
     if isinstance(action, SendMessageAction):
         return "Okay, cancelled — I haven't sent anything."
+    if isinstance(action, StartDelegationAction):
+        return delegation_words.cancelled_text(action)
     return "Okay, cancelled — I haven't changed your status."
 
 

@@ -82,6 +82,13 @@ class Settings(BaseSettings):
     TOUCAN_CHAT_WINDOW_MESSAGES: int = 20
     TOUCAN_CHAT_MAX_MESSAGE_CHARS: int = 600
     TOUCAN_CHAT_MAX_CONTEXT_CHARS: int = 4000
+    # A2.1: bounds on Toucan's AUTOMATIC replies under an explicit delegation (see
+    # services/chat_delegation.py). Per (conversation, owner): at least this many seconds between
+    # two automatic replies, and at most this many automatic replies for one delegation. Both are
+    # spam/loop guards, process-local like every other ephemeral registry; the delegation itself
+    # is durable (repositories/toucan_delegation.py).
+    TOUCAN_DELEGATION_COOLDOWN_SECONDS: float = 120.0
+    TOUCAN_DELEGATION_MAX_REPLIES_PER_CONVERSATION: int = 3
 
     # FUTURE multi-worker realtime seam — UNSET AND UNUSED TODAY. When this backend eventually
     # runs more than one worker, Socket.IO needs a cross-process message queue (and the

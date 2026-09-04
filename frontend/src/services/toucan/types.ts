@@ -28,7 +28,8 @@ export interface ToucanAskRequest {
  *  backend/app/schemas/toucan.py's ToucanActionProposalOut. Receiving one changes
  *  NOTHING: it only carries the server-minted id the explicit Confirm/Cancel
  *  buttons target, plus the server-worded exact effect to show. */
-export type ToucanActionKind = "set_status" | "send_message";
+/** T8 set_status, A1 send_message, A2.1 start_delegation. */
+export type ToucanActionKind = "set_status" | "send_message" | "start_delegation";
 
 export interface ToucanActionProposal {
   id: string;
@@ -46,9 +47,29 @@ export interface ToucanActionProposal {
   recipientLabel?: string | null;
   /** send_message: the exact outgoing text — shown verbatim on the card before Confirm. */
   message?: string | null;
+  /** start_delegation (A2.1): the server-clamped duration and the scope. DMs only at
+   *  A2.1. The real end time is only known at Confirm (see ToucanDelegation). */
+  durationMinutes?: number | null;
+  scope?: "dm" | null;
   /** The exact effect, as the confirmation card must show it. */
   summary: string;
   expiresAt: string;
+}
+
+/** A2.1 — one explicit, temporary "handle my messages" delegation as the owner sees
+ *  it. Mirrors backend/app/schemas/toucan.py's ToucanDelegationOut. Server times in
+ *  ISO-Z; the client formats the end in the viewer's own zone. */
+export interface ToucanDelegation {
+  id: string;
+  status: "active" | "ended";
+  endCondition: string;
+  scope: string;
+  startsAt: string;
+  expiresAt: string | null;
+  hardCapAt: string;
+  endedAt?: string | null;
+  endedReason?: string | null;
+  replyCount: number;
 }
 
 /** The outcome of confirming or cancelling one pending action. Echoes the frozen
@@ -67,6 +88,11 @@ export interface ToucanActionResult {
   /** send_message, executed only: where the message landed. */
   conversationId?: string | null;
   messageId?: string | null;
+  /** start_delegation: the frozen duration/scope, and — executed only — the now-active
+   *  durable delegation. */
+  durationMinutes?: number | null;
+  scope?: "dm" | null;
+  delegation?: ToucanDelegation | null;
   summary: string;
   /** The assistant's outcome line — also persisted into the transcript server-side. */
   text: string;

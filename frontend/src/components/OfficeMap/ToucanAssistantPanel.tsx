@@ -131,6 +131,36 @@ const CONVERSATION_GONE_TEXT =
 const ACTION_GONE_TEXT =
   "Squawk — that request expired before it was confirmed, so I changed nothing. Ask me again if you still want it.";
 
+// A2.1 — delegation wording helpers. The server states the duration; only the client
+// knows the viewer's time zone, so the resolved end is formatted here.
+export function formatDelegationDuration(minutes: number): string {
+  if (minutes <= 0) return "";
+  if (minutes % 60 === 0) {
+    const hours = minutes / 60;
+    return hours === 1 ? "1 hour" : `${hours} hours`;
+  }
+  if (minutes > 60) {
+    const hours = Math.floor(minutes / 60);
+    return `${hours} hour${hours === 1 ? "" : "s"} ${minutes % 60} minutes`;
+  }
+  return `${minutes} minutes`;
+}
+
+function formatLocalTime(date: Date): string {
+  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+export function describeDelegationProposal(minutes: number, now: Date = new Date()): string {
+  const ends = new Date(now.getTime() + minutes * 60_000);
+  return `DMs only · for ${formatDelegationDuration(minutes)} · ends about ${formatLocalTime(ends)} once confirmed`;
+}
+
+export function withDelegationEnd(text: string, expiresAt: string | null | undefined): string {
+  if (!expiresAt) return text;
+  const ends = new Date(expiresAt);
+  return Number.isNaN(ends.getTime()) ? text : `${text} Ends at ${formatLocalTime(ends)}.`;
+}
+
 // History popover copy. Deliberately plain strings rather than new UI surfaces.
 const HISTORY_EMPTY_TEXT = "No saved conversations yet. Ask me something and it'll show up here.";
 const HISTORY_FAILED_TEXT = "Couldn't load your conversations.";
@@ -665,6 +695,12 @@ export function ToucanAssistantPanel({
           appendToucanTurn(applied.ok ? result.text : applied.reason);
           return;
         }
+        if (result.action === "start_delegation") {
+          // A2.1: the server wrote the durable delegation; the panel only reports it,
+          // adding the resolved end time in the viewer's own zone. Never touches status.
+          appendToucanTurn(withDelegationEnd(result.text, result.delegation?.expiresAt));
+          return;
+        }
         // send_message: the server already sent it through the chat seam; the
         // outcome line is the whole effect on this panel. Never touches status.
         appendToucanTurn(result.text);
@@ -1043,6 +1079,13 @@ export function ToucanAssistantPanel({
             <div className={chat.bubbleColumn}>
               <div className={`${chat.message} ${chat.peer} ${styles.actionCard}`}>
                 <span className={styles.actionSummary}>{actionProposal.summary}</span>
+                {actionProposal.action === "start_delegation" && (
+                  // A2.1 — the card must say what is being handed over: the scope (DMs only),
+                  // the duration, and roughly when it ends. Nothing is active until Confirm.
+                  <div className={styles.actionMessage} data-testid="toucan-action-delegation">
+                    {describeDelegationProposal(actionProposal.durationMinutes ?? 0)}
+                  </div>
+                )}
                 {actionProposal.action === "send_message" && actionProposal.message != null && (
                   // A1 — the exact outgoing text, verbatim. The user must see BOTH the
                   // recipient (in the summary above) and the message before Confirm.

@@ -353,3 +353,123 @@ describe("ToucanAssistantPanel — A1 send_message confirmation", () => {
     expect(screen.queryByTestId("toucan-action-card")).toBeNull();
   });
 });
+
+// A2.1 — start_delegation rides the same card and the same two buttons. Nothing is
+// active until Confirm; the card must state the scope (DMs only) and the duration; the
+// outcome never touches the status path and reports the resolved end time.
+const DELEGATION_PROPOSAL = {
+  id: "act-3",
+  action: "start_delegation" as const,
+  durationMinutes: 120,
+  scope: "dm" as const,
+  summary: "Let Toucan handle your direct messages for 2 hours (DMs only)",
+  expiresAt: "2026-09-04T12:02:00.000Z",
+};
+
+const DELEGATION_ANSWER = {
+  text: "I can handle your direct messages for 2 hours. DMs only, and nothing is active yet — confirm below and I'll start.",
+  intent: "action_proposal",
+  supported: true,
+  conversationId: "c-1",
+  action: DELEGATION_PROPOSAL,
+};
+
+const DELEGATION_RESULT = {
+  id: "act-3",
+  outcome: "executed" as const,
+  action: "start_delegation" as const,
+  durationMinutes: 120,
+  scope: "dm" as const,
+  delegation: {
+    id: "d-1",
+    status: "active" as const,
+    endCondition: "at_time",
+    scope: "dm",
+    startsAt: "2026-09-04T12:00:00.000Z",
+    expiresAt: "2026-09-04T14:00:00.000Z",
+    hardCapAt: "2026-09-05T12:00:00.000Z",
+    replyCount: 0,
+  },
+  summary: "Let Toucan handle your direct messages for 2 hours (DMs only)",
+  text: "Done — I'm handling your direct messages for the next 2 hours.",
+};
+
+describe("ToucanAssistantPanel — A2.1 start_delegation confirmation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.service.loadLatestConversation.mockResolvedValue(null);
+    h.service.listConversations.mockResolvedValue([]);
+  });
+  afterEach(cleanup);
+
+  const flush = async () => {
+    await act(async () => {
+      await Promise.resolve();
+    });
+  };
+
+  const setup = async () => {
+    render(<ToucanAssistantPanel onRelease={vi.fn()} />);
+    await flush();
+  };
+
+  const sendQuestion = async (text: string) => {
+    fireEvent.change(screen.getByLabelText("Message the toucan"), { target: { value: text } });
+    fireEvent.keyDown(screen.getByLabelText("Message the toucan"), { key: "Enter" });
+    await flush();
+  };
+
+  it("shows the delegation summary, DMs-only scope and duration, and activates nothing by itself", async () => {
+    h.service.ask.mockResolvedValue(DELEGATION_ANSWER);
+    await setup();
+    await sendQuestion("Handle my messages for 2 hours.");
+
+    const card = screen.getByTestId("toucan-action-card");
+    expect(card.textContent).toContain("Let Toucan handle your direct messages for 2 hours (DMs only)");
+    const detail = screen.getByTestId("toucan-action-delegation").textContent ?? "";
+    expect(detail).toContain("DMs only");
+    expect(detail).toContain("for 2 hours");
+    expect(detail).toContain("ends about");
+    expect(screen.getByText("Confirm")).toBeTruthy();
+    expect(screen.getByText("Cancel")).toBeTruthy();
+    expect(h.service.confirmAction).not.toHaveBeenCalled();
+    expect(h.applyToucanStatus).not.toHaveBeenCalled();
+  });
+
+  it("Confirm consumes the id, reports the delegation with its end time, and never touches the status path", async () => {
+    h.service.ask.mockResolvedValue(DELEGATION_ANSWER);
+    h.service.confirmAction.mockResolvedValue(DELEGATION_RESULT);
+    await setup();
+    await sendQuestion("Handle my messages for 2 hours.");
+
+    fireEvent.click(screen.getByText("Confirm"));
+    await flush();
+
+    expect(h.service.confirmAction).toHaveBeenCalledWith("act-3");
+    expect(h.canApplyToucanStatus).not.toHaveBeenCalled();
+    expect(h.applyToucanStatus).not.toHaveBeenCalled();
+    const line = screen.getByText(/Done — I'm handling your direct messages for the next 2 hours\./).textContent ?? "";
+    expect(line).toMatch(/Ends at \d/);
+    expect(screen.queryByTestId("toucan-action-card")).toBeNull();
+  });
+
+  it("Cancel activates nothing", async () => {
+    h.service.ask.mockResolvedValue(DELEGATION_ANSWER);
+    h.service.cancelAction.mockResolvedValue({
+      ...DELEGATION_RESULT,
+      outcome: "cancelled" as const,
+      delegation: null,
+      text: "Okay, cancelled — I'm not handling your messages.",
+    });
+    await setup();
+    await sendQuestion("Handle my messages for 2 hours.");
+
+    fireEvent.click(screen.getByText("Cancel"));
+    await flush();
+
+    expect(h.service.cancelAction).toHaveBeenCalledWith("act-3");
+    expect(h.service.confirmAction).not.toHaveBeenCalled();
+    expect(screen.getByText("Okay, cancelled — I'm not handling your messages.")).toBeTruthy();
+    expect(screen.queryByTestId("toucan-action-card")).toBeNull();
+  });
+});

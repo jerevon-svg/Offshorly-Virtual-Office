@@ -10,6 +10,7 @@ from app.config import settings
 from app.database import get_db
 from app.repositories import toucan as toucan_repo
 from app.repositories import toucan_activity as toucan_activity_repo
+from app.repositories import toucan_delegation as toucan_delegation_repo
 from app.repositories import toucan_memory as toucan_memory_repo
 from app.repositories import toucan_resources as toucan_resources_repo
 from app.schemas.toucan import (
@@ -20,6 +21,7 @@ from app.schemas.toucan import (
     ToucanAskIn,
     ToucanConversationDetailOut,
     ToucanConversationOut,
+    ToucanDelegationOut,
     ToucanMemoryIn,
     ToucanMemoryOut,
     ToucanResourceIn,
@@ -41,6 +43,7 @@ from app.services.toucan.actions import (
     SendMessageAction,
     SendMessageRequest,
     SetStatusAction,
+    StartDelegationAction,
     ToucanAction,
     ambiguous_group_text,
     cancelled_text,
@@ -55,6 +58,12 @@ from app.services.toucan.actions import (
     validate_ai_proposal,
 )
 from app.services.toucan.activity import AttentionSnapshot
+from app.services.toucan.delegation import (
+    nothing_to_stop_text,
+    parse_stop_delegation,
+    replaced_text,
+    stopped_text,
+)
 from app.services.toucan.context import (
     OfficeContext,
     build_office_context,
@@ -212,6 +221,8 @@ def _action_fields(action: ToucanAction) -> dict:
             "recipient_label": action.recipient_label,
             "message": action.text,
         }
+    if isinstance(action, StartDelegationAction):
+        return {"duration_minutes": action.duration_minutes, "scope": action.scope}
     return {"status": action.status, "dnd_minutes": action.dnd_minutes}
 
 
@@ -301,7 +312,12 @@ async def _resolve_send_request(
 
 
 def _action_result(
-    pending: PendingAction, *, outcome: str, text: str, sent: dict | None = None
+    pending: PendingAction,
+    *,
+    outcome: str,
+    text: str,
+    sent: dict | None = None,
+    delegation: ToucanDelegationOut | None = None,
 ) -> ToucanActionResultOut:
     return ToucanActionResultOut(
         id=pending.id,
@@ -311,7 +327,23 @@ def _action_result(
         text=text,
         conversation_id=sent["conversationId"] if sent else None,
         message_id=sent["id"] if sent else None,
+        delegation=delegation,
         **_action_fields(pending.action),
+    )
+
+
+def _delegation_out(row) -> ToucanDelegationOut:
+    return ToucanDelegationOut(
+        id=row.id,
+        status=row.status,
+        end_condition=row.end_condition,
+        scope=row.scope,
+        starts_at=row.starts_at,
+        expires_at=row.expires_at,
+        hard_cap_at=row.hard_cap_at,
+        ended_at=row.ended_at,
+        ended_reason=row.ended_reason,
+        reply_count=row.reply_count or 0,
     )
 
 
@@ -385,8 +417,19 @@ async def ask_toucan(
     # memory commands above, only the explicit self-scoped imperatives in
     # services/toucan/actions.py take this branch — and even they only produce a pending
     # proposal that the confirm endpoint alone can execute.
+    # A2.1 — "stop handling my messages" ends an active delegation IMMEDIATELY, with no
+    # confirmation: stopping is the safe direction, and the owner is the bearer identity.
+    if parse_stop_delegation(body.question):
+        ended = await toucan_delegation_repo.end_delegation(db, owner_email=email)
+        answer_text = stopped_text() if ended is not None else nothing_to_stop_text()
+        await toucan_repo.append_exchange(db, conversation=conversation, question=body.question, answer=answer_text)
+        return ToucanAnswerOut(
+            text=answer_text, intent="delegation_stop", supported=True, conversation_id=conversation.id
+        )
+
     action_request = parse_action_request(body.question)
-    if isinstance(action_request, SetStatusAction):
+    # A start_delegation proposal, like set_status, needs no context to become a PROPOSAL.
+    if isinstance(action_request, (SetStatusAction, StartDelegationAction)):
         return await _propose_action(
             db, conversation=conversation, email=email, question=body.question, action=action_request
         )
@@ -602,6 +645,24 @@ async def confirm_toucan_action(
     if pending is None:
         raise HTTPException(status_code=404, detail=ACTION_UNAVAILABLE_DETAIL)
     sent: dict | None = None
+    delegation_out: ToucanDelegationOut | None = None
+    if isinstance(pending.action, StartDelegationAction):
+        # A2.1 — the owner is the bearer identity that owns the pending entry, never a field of
+        # the action. The durable row is written only here, only once (take() popped the entry),
+        # and any previous active delegation of the same owner is ended (reason "replaced").
+        row, replaced = await toucan_delegation_repo.start_delegation(
+            db, owner_email=email, duration_minutes=pending.action.duration_minutes, scope=pending.action.scope
+        )
+        delegation_out = _delegation_out(row)
+        logger.info(
+            "toucan action executed: owner=%s action=%s duration_minutes=%s expires_at=%s delegation=%s id=%s",
+            email, pending.action.action, pending.action.duration_minutes, row.expires_at, row.id, pending.id,
+        )
+        text = executed_text(pending.action)
+        if replaced:
+            text = f"{text} {replaced_text()}"
+        await _append_action_note(db, pending, email=email, text=text)
+        return _action_result(pending, outcome="executed", text=text, delegation=delegation_out)
     if isinstance(pending.action, SendMessageAction):
         # A1 — the one action the server executes itself, and it does so through the SAME chat
         # write path the Socket.IO handler uses (services/chat_send.py): the sender is the
@@ -673,6 +734,33 @@ async def cancel_toucan_action(
     text = cancelled_text(pending.action)
     await _append_action_note(db, pending, email=email, text=text)
     return _action_result(pending, outcome="cancelled", text=text)
+
+
+# --- A2.1: the owner's delegation --------------------------------------------------------------
+# Read and cancel only. Creating one goes through /toucan/ask → proposal → confirm, so that the
+# explicit-confirmation gate is the ONLY way a delegation can start. Both endpoints filter on the
+# bearer identity; another owner's delegation is indistinguishable from none.
+
+
+@router.get("/toucan/delegation", response_model=ToucanDelegationOut | None)
+async def get_toucan_delegation(
+    email: str = Depends(get_current_email),
+    db: AsyncSession = Depends(get_db),
+) -> ToucanDelegationOut | None:
+    row = await toucan_delegation_repo.get_active_delegation(db, owner_email=email)
+    return _delegation_out(row) if row is not None else None
+
+
+@router.delete("/toucan/delegation", response_model=ToucanDelegationOut)
+async def cancel_toucan_delegation(
+    email: str = Depends(get_current_email),
+    db: AsyncSession = Depends(get_db),
+) -> ToucanDelegationOut:
+    row = await toucan_delegation_repo.end_delegation(db, owner_email=email)
+    if row is None:
+        raise HTTPException(status_code=404, detail="No active delegation")
+    logger.info("toucan delegation cancelled: owner=%s delegation=%s", email, row.id)
+    return _delegation_out(row)
 
 
 @router.get("/toucan/activity", response_model=ToucanActivityOut)
