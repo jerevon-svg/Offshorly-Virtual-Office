@@ -10,6 +10,7 @@ import {
   type ToucanMemory,
   type ToucanService,
   type ToucanStoredMessage,
+  type ToucanDelegation,
 } from "./types";
 
 // Canned-reply Toucan, lifted VERBATIM out of ToucanAssistantPanel.tsx so the
@@ -195,6 +196,15 @@ export class MockToucanService implements ToucanService {
 
   async cancelAction(actionId: string): Promise<ToucanActionResult> {
     throw new ToucanActionUnavailableError(actionId);
+  }
+
+  // A2.2 — the canned bird never handles anybody's messages: no delegation, nothing to stop.
+  async getDelegation(): Promise<ToucanDelegation | null> {
+    return null;
+  }
+
+  async cancelDelegation(): Promise<ToucanDelegation | null> {
+    return null;
   }
 
   // T9 — management calls.

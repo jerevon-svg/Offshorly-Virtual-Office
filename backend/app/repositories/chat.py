@@ -161,6 +161,29 @@ async def upsert_conversation(session: AsyncSession, email_a: str, email_b: str)
     return result_conv
 
 
+async def get_dm_conversation_id(session: AsyncSession, email_a: str, email_b: str) -> str | None:
+    """Read-only twin of upsert_conversation: the id of the DM between two emails if one already
+    exists, else None. Never creates anything — for callers that must not leave an empty
+    conversation behind (a proposal that may still be cancelled)."""
+    result = await session.execute(select(Conversation.id).where(Conversation.dm_key == dm_key(email_a, email_b)))
+    row = result.first()
+    return row[0] if row else None
+
+
+async def list_group_titles_for_user(session: AsyncSession, email: str) -> list[dict]:
+    """Minimal group metadata for one member: [{id, title}] for every GROUP conversation the
+    email participates in. Deliberately nothing else — no counts, no last message, no other
+    members — so a caller that only needs to resolve a group by name learns only that."""
+    self_email = email.strip().lower()
+    result = await session.execute(
+        select(Conversation.id, Conversation.title)
+        .join(ConversationParticipant, ConversationParticipant.conversation_id == Conversation.id)
+        .where(ConversationParticipant.participant_email == self_email, Conversation.type == "group")
+        .order_by(Conversation.title, Conversation.id)
+    )
+    return [{"id": row[0], "title": row[1]} for row in result.all()]
+
+
 async def is_participant(session: AsyncSession, conversation_id: str, email: str) -> bool:
     self_email = email.strip().lower()
     result = await session.execute(
@@ -393,6 +416,19 @@ async def _create_group_conversation(
     return conv.id
 
 
+async def set_group_title_if_empty(session: AsyncSession, conversation_id: str, title: str) -> bool:
+    """Give an UNTITLED group a title; never overwrite one somebody already chose. Returns True
+    when the title was applied. Commits. Used by the create-group endpoint's exact-member reuse
+    branch so re-creating an existing but nameless group with a name finally names it."""
+    result = await session.execute(select(Conversation).where(Conversation.id == conversation_id))
+    conv = result.scalar_one_or_none()
+    if conv is None or conv.type != "group" or (conv.title or "").strip():
+        return False
+    conv.title = title
+    await session.commit()
+    return True
+
+
 async def create_group_conversation(
     session: AsyncSession, creator_email: str, participant_emails: list[str], title: str | None
 ) -> dict:
@@ -478,6 +514,20 @@ async def list_messages(
         select(Message).where(and_(*conditions)).order_by(Message.sent_at.asc()).limit(clamped_limit)
     )
     return list(result.scalars().all())
+
+
+async def list_recent_messages(session: AsyncSession, conversation_id: str, limit: int) -> list[Message]:
+    """The LATEST `limit` messages of one conversation, returned oldest → newest. Bounded in SQL
+    (ORDER BY sent_at DESC LIMIT n) so a caller that only needs a recent window never pulls the
+    whole history into memory."""
+    n = min(max(int(limit), 1), 500)
+    result = await session.execute(
+        select(Message)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.sent_at.desc(), Message.id.desc())
+        .limit(n)
+    )
+    return list(reversed(result.scalars().all()))
 
 
 # --- Message reactions -------------------------------------------------------------------

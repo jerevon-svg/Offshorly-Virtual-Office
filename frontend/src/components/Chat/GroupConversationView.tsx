@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { chatMode, chatService } from "../../services/chat";
+import { TOUCAN_AVATAR_GLYPH, TOUCAN_DISPLAY_NAME, isToucanSender } from "../../services/chat/toucanSender";
 import { applyReactionUpdate } from "../../services/chat/reactions";
 import type { ChatMessage, ConnectionState } from "../../services/chat";
 import type { DeliveryReceiptUpdate, ReadReceiptUpdate } from "../../services/chat/types";
+import { ChatComposer } from "./ChatComposer";
 import { ChatWindowHeader } from "./ChatWindowHeader";
-import { MentionAutocomplete } from "./MentionAutocomplete";
 import { renderMessageText } from "./MentionText";
 import { MessageReactions } from "./MessageReactions";
 import { useMentionComposer } from "./useMentionComposer";
@@ -62,11 +63,22 @@ function formatMessageTime(sentAt: string): string {
 // duplicate this small bit of render logic rather than sharing a module.
 const ALWAYS_USE_INITIALS = true;
 
-function Avatar({ src, label, className }: { src?: string; label: string; className?: string }) {
+function Avatar({
+  src,
+  label,
+  className,
+  glyph,
+}: {
+  src?: string;
+  label: string;
+  className?: string;
+  /** A fixed glyph instead of the initial — used for the non-human Toucan author. */
+  glyph?: string;
+}) {
   if (src && !ALWAYS_USE_INITIALS) {
     return <img className={className} src={src} alt="" />;
   }
-  const initial = label.trim().charAt(0).toUpperCase() || "?";
+  const initial = glyph ?? (label.trim().charAt(0).toUpperCase() || "?");
   return (
     <div className={className} data-initials-avatar="true">
       {initial}
@@ -406,7 +418,9 @@ export function GroupConversationView({
             const showDivider = dayLabel !== lastDayLabel;
             lastDayLabel = dayLabel;
             const isOwn = msg.senderId === selfId;
-            const senderName = isOwn ? "" : resolveDisplayName(msg.senderId);
+            // A1.4 — Toucan's reserved id is not a roster email; label it by name, never by id.
+            const fromToucan = !isOwn && isToucanSender(msg.senderId);
+            const senderName = isOwn ? "" : fromToucan ? TOUCAN_DISPLAY_NAME : resolveDisplayName(msg.senderId);
             const showStatus = chatMode === "real" && isOwn;
             const readersHere = isOwn ? seenByMessage.get(msg.id) : undefined;
             const deliveryLabel =
@@ -422,8 +436,17 @@ export function GroupConversationView({
                     <hr className={styles.dayDividerLine} />
                   </div>
                 )}
-                <div className={isOwn ? `${styles.row} ${styles.rowSelf}` : styles.row}>
-                  {!isOwn && <Avatar className={styles.avatar} label={senderName} />}
+                <div
+                  className={isOwn ? `${styles.row} ${styles.rowSelf}` : styles.row}
+                  data-sender={fromToucan ? "toucan" : isOwn ? "self" : "peer"}
+                >
+                  {!isOwn && (
+                    <Avatar
+                      className={fromToucan ? `${styles.avatar} ${styles.toucanAvatar}` : styles.avatar}
+                      label={senderName}
+                      glyph={fromToucan ? TOUCAN_AVATAR_GLYPH : undefined}
+                    />
+                  )}
                   <div className={styles.bubbleColumn}>
                     {!isOwn && <span className={styles.timestamp}>{senderName}</span>}
                     <div className={isOwn ? `${styles.message} ${styles.own}` : `${styles.message} ${styles.peer}`}>
@@ -464,50 +487,17 @@ export function GroupConversationView({
           </button>
         </div>
       )}
-      <div className={styles.composer}>
-        {mention.trigger && mention.filtered.length > 0 && (
-          <MentionAutocomplete
-            candidates={mention.filtered}
-            highlightedIndex={mention.highlightedIndex}
-            onHover={mention.setHighlightedIndex}
-            onSelect={(c) => mention.selectCandidate(c, draft, setDraft)}
-          />
-        )}
-        <textarea
-          ref={mention.textareaRef}
-          className={styles.textarea}
-          value={draft}
-          placeholder={isNotConnected ? "Connecting…" : "Type a message…"}
-          onChange={(e) => {
-            handleDraftChange(e.target.value);
-            mention.onDraftChanged(e.target.value, e.target.selectionStart ?? e.target.value.length);
-          }}
-          onKeyDown={(e) => {
-            if (mention.trigger && mention.filtered.length > 0 && e.key === "Enter") {
-              e.preventDefault();
-              mention.selectCandidate(mention.filtered[mention.highlightedIndex], draft, setDraft);
-              return;
-            }
-            if (mention.handleKeyDown(e)) return;
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              handleSend();
-            }
-          }}
-        />
-        <button type="button" className={styles.sendButton} onClick={handleSend} aria-label="Send">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path
-              d="M3 11.5L21 3l-7.5 18-2.5-7.5L3 11.5z"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinejoin="round"
-              strokeLinecap="round"
-              fill="none"
-            />
-          </svg>
-        </button>
-      </div>
+      <ChatComposer
+        draft={draft}
+        setDraft={setDraft}
+        mention={mention}
+        placeholder={isNotConnected ? "Connecting…" : undefined}
+        onDraftInput={(text, caret) => {
+          handleDraftChange(text);
+          mention.onDraftChanged(text, caret);
+        }}
+        onSend={handleSend}
+      />
       </>
       )}
     </div>

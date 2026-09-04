@@ -720,10 +720,10 @@ describe("OfficeStage dev-only candidate override (?live3d=bon-v2)", () => {
     });
   });
 
-  it("Unregistered employees remain unchanged (lui stays a sprite; registry has exactly bon, alex, micah and angelo)", () => {
+  it("Unregistered employees remain unchanged (lui stays a sprite; registry has exactly bon, alex, micah, angelo and jan)", () => {
     vi.mocked(detectDeviceTier).mockReturnValue("T2");
     const { container } = renderWith("", "bon");
-    expect(Object.keys(LIVE_3D_CHARACTERS).sort()).toEqual(["alex", "angelo", "bon", "micah"]);
+    expect(Object.keys(LIVE_3D_CHARACTERS).sort()).toEqual(["alex", "angelo", "bon", "jan", "micah"]);
     expect(bonCanvasStubs(container).length).toBe(1);
     // alex is a registered peer within the T2 crowd cap -> one alex canvas.
     expect(alexCanvasStubs(container).length).toBe(1);
@@ -817,12 +817,26 @@ describe("OfficeStage live-3D tier/budget gating (no ?live3d= override)", () => 
     expect(selfView.container.querySelector('img[src*="angelo"]')).toBeNull();
   });
 
-  it("shows a non-self bon as CharacterCanvas at T2, within the crowd budget", () => {
+  it("with no self, T2 fills its crowd cap of 4 from the five registered peers in depth-sort order", () => {
     vi.mocked(detectDeviceTier).mockReturnValue("T2");
 
+    // Since jan shipped (2026-09-04) the registry holds FIVE always-present
+    // manifest characters, one more than the T2 crowd cap. With nobody claiming
+    // the self allowance the existing first-come depth-sort rule decides which
+    // four animate; the fifth stays a 2D sprite. The cap itself is unchanged.
     const { container } = renderGated(undefined);
+    const stubs = canvasStubs(container);
+    expect(stubs.length).toBe(LIVE_3D_CAP_BY_TIER.T2);
 
-    expect(bonCanvasStubs(container).length).toBe(1);
+    const registered = Object.keys(LIVE_3D_CHARACTERS);
+    const expected = officeAssetLayers
+      .filter((l) => registered.includes(l.id))
+      .slice()
+      .sort(createDepthCompare(undefined))
+      .map((l) => l.id)
+      .slice(0, LIVE_3D_CAP_BY_TIER.T2);
+    const bonSelected = expected.includes("bon");
+    expect(bonCanvasStubs(container).length).toBe(bonSelected ? 1 : 0);
   });
 
   it("at T1 a genuine peer viewer (self = alex) sees their own avatar AND bon live-3D at LOD1 (self allowance + T1 peer cap)", () => {
@@ -1285,7 +1299,7 @@ describe("overhead per-character resolver: StatusLabel / TalkingBubble mutual ex
 // distinct, never-loaded GLB urls so each stub is attributable) to reach the
 // "more eligible peers than budget" case.
 describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
-  const SPRITE_RE: Record<string, RegExp> = { bon: /chibi-bon|\/bon-/, alex: /alex/, micah: /micah/, lui: /lui/, angelo: /angelo/ };
+  const SPRITE_RE: Record<string, RegExp> = { bon: /chibi-bon|\/bon-/, alex: /alex/, micah: /micah/, lui: /lui/, angelo: /angelo/, jan: /\/jan\./ };
   // Maps a stub's GLB url back to the avatar id that owns it. The asset FOLDER
   // does not always equal the registry key: angelo's files are the `gelo-v1`
   // pipeline chain, and each character carries its own version suffix
@@ -1294,6 +1308,7 @@ describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
     const url = el.getAttribute("data-glb-url") ?? "";
     if (/bon-v2|bon-v3|\/jerevon\//.test(url)) return "bon";
     if (/\/avatars\/gelo-v\d+/.test(url)) return "angelo";
+    if (/\/avatars\/jan-v\d+/.test(url)) return "jan";
     // The folder can carry further build-variant suffixes (e.g. the masculine
     // idle rebuild `alex-v2-hq-idle9/`) — match the character, not the variant.
     const m = url.match(/\/avatars\/(alex|micah|lui)(?:-v\d+)?(?:-[a-z0-9]+)*\//);
@@ -1305,11 +1320,13 @@ describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
   function spritesOf(container: HTMLElement, id: string): HTMLImageElement[] {
     return Array.from(container.querySelectorAll<HTMLImageElement>("img")).filter((i) => SPRITE_RE[id].test(i.getAttribute("src") ?? ""));
   }
-  // The registry ships exactly bon/alex/micah/angelo, which is already the
-  // four-character crowd these tests need — no fabricated entries, and no
-  // change to any crowd budget.
+  // The registry ships exactly bon/alex/micah/angelo/jan — self plus FOUR
+  // registered peers, which is the crowd these tests need — no fabricated
+  // entries, and no change to any crowd budget. (Named for the four peers
+  // competing for slots; jan joined 2026-09-04.)
+  const REGISTERED_PEERS = ["alex", "micah", "angelo", "jan"];
   function withFourRegistered<T>(fn: () => T): T {
-    expect(Object.keys(LIVE_3D_CHARACTERS).sort()).toEqual(["alex", "angelo", "bon", "micah"]);
+    expect(Object.keys(LIVE_3D_CHARACTERS).sort()).toEqual(["alex", "angelo", "bon", "jan", "micah"]);
     return fn();
   }
   function renderAt(tier: "T0" | "T1" | "T2", props: Record<string, unknown> = {}) {
@@ -1353,23 +1370,25 @@ describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
     });
   });
 
-  it("T1 crowd cap 3: self plus three registered peers -> exactly two peers selected, the remaining peer stays a 2D sprite", () => {
+  it("T1 crowd cap 3: self plus four registered peers -> exactly two peers selected, the remaining peers stay 2D sprites", () => {
     withFourRegistered(() => {
       const { container } = renderAt("T1");
       expect(stubsOf(container, "bon").length).toBe(1);
       const peerStubs = canvasStubs(container).filter((el) => stubOwner(el) !== "bon");
       expect(peerStubs.length).toBe(2);
       const selected = peerStubs.map(stubOwner);
-      const excluded = ["alex", "micah", "lui"].filter((id) => !selected.includes(id));
-      expect(excluded.length).toBe(1);
-      expect(stubsOf(container, excluded[0]).length).toBe(0);
-      expect(spritesOf(container, excluded[0]).length).toBe(1);
+      const excluded = REGISTERED_PEERS.filter((id) => !selected.includes(id));
+      expect(excluded.length).toBe(2);
+      for (const id of excluded) {
+        expect(stubsOf(container, id).length).toBe(0);
+        expect(spritesOf(container, id).length).toBe(1);
+      }
     });
   });
 
   it("T1 crowd cap 4: peer selection is deterministic and follows the existing depth-sort first-come rule", () => {
     withFourRegistered(() => {
-      const expected = depthOrder(["alex", "micah", "angelo"]).slice(0, 2).sort();
+      const expected = depthOrder(REGISTERED_PEERS).slice(0, 2).sort();
       const first = renderAt("T1");
       const a = canvasStubs(first.container).filter((el) => stubOwner(el) !== "bon").map(stubOwner).sort();
       first.unmount();
@@ -1385,7 +1404,7 @@ describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
     withFourRegistered(() => {
       const { container } = renderAt("T0");
       expect(canvasStubs(container).length).toBe(0);
-      for (const id of ["bon", "alex", "micah", "angelo"]) expect(spritesOf(container, id).length).toBe(1);
+      for (const id of ["bon", ...REGISTERED_PEERS]) expect(spritesOf(container, id).length).toBe(1);
     });
   });
 
@@ -1397,9 +1416,10 @@ describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
       // The CAP is unchanged — all four still render live-3D. What changed is
       // the QUALITY each one gets: adaptive LOD keeps the HQ mesh for the
       // self/near/focused character and gives distant peers a cheaper tier,
-      // so a crowd of four never means four ~5MB downloads.
-      expect(canvasStubs(container).length).toBe(4);
-      for (const id of ["bon", "alex", "micah", "angelo"]) {
+      // so a crowd of four never means four ~5MB downloads. Since jan shipped
+      // that is the self allowance PLUS the four registered peers filling the cap.
+      expect(canvasStubs(container).length).toBe(1 + LIVE_3D_CAP_BY_TIER.T2);
+      for (const id of ["bon", ...REGISTERED_PEERS]) {
         const stubs = stubsOf(container, id);
         expect(stubs.length).toBe(1);
         expect(stubs[0].getAttribute("data-glb-url")).toMatch(/-lod[012]\.glb$/);
@@ -1410,7 +1430,7 @@ describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
   it("T1 crowd cap 7: no employee renders twice — exactly one visual (canvas or sprite) per character at T1", () => {
     withFourRegistered(() => {
       const { container } = renderAt("T1");
-      for (const id of ["bon", "alex", "micah", "angelo"]) {
+      for (const id of ["bon", ...REGISTERED_PEERS]) {
         expect(stubsOf(container, id).length + spritesOf(container, id).length).toBe(1);
       }
     });

@@ -576,6 +576,18 @@ def _ambiguous_person(raw_name: str, people: tuple[PersonView, ...]) -> str:
     )
 
 
+def unknown_person_text(raw_name: str, *, roster_available: bool) -> str:
+    """Public wording for a name that resolves to nobody — shared by the A1 send-message
+    clarification so a recipient that cannot be resolved is worded exactly like any other
+    unknown name (and never guessed)."""
+    return _no_such_person(raw_name, roster_available=roster_available)
+
+
+def ambiguous_person_text(raw_name: str, people: tuple[PersonView, ...]) -> str:
+    """Public wording for a name matching several people — see unknown_person_text."""
+    return _ambiguous_person(raw_name, people)
+
+
 
 # --- T2 activity wording -------------------------------------------------------------------
 # Counts only. There is nothing else in an AttentionSnapshot to say (see

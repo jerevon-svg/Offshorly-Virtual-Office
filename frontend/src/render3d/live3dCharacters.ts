@@ -288,6 +288,35 @@ export const LIVE_3D_CHARACTERS: Record<string, Live3dAssetSet> = {
     // measured ndc head 0.724536 @ layer height 39.85
     headTopAboveCenter: 14.437,
   },
+  // Manifest aspect ratio: width 28.18 / height 39.85 (the same headroom-
+  // calibrated box angelo settled on, so raised-arm clips clear the frame top
+  // with the canonical 33.06-unit standing height; fraction 0.8296, under the
+  // 1.02 ceiling). Registry key is `jan` (roster/manifest id); only the ASSET
+  // FILES carry the pipeline chain name `jan-v1`.
+  // Built 2026-09-04 from jan-tpose.png, a genuine horizontal T-pose, so
+  // pose_mode "t-pose" (image-to-3d 01a06a6e -> remesh 01a06a7c, 281,988 tris
+  // -> rig 01a06a7e -> 5 clips -> build-character-lods --profile=hq).
+  // MASCULINE idle profile from the start (Meshy Idle_9, action 249). His raw
+  // Idle_9 flared (hands 21.9/25.3 outboard of hip, elbows 14.6/11.1) and
+  // carries the standard whole-arm-chain correction solved from JAN'S OWN bind
+  // axes (jan-v1-idle-9-armfix-v1.mjs -> 16.5/16.1, elbows 8.5/8.5), embedded
+  // as `idle-9`.
+  // Measured through jan-v1-measure.mjs at 177x251 / layer 39.85: worst
+  // max|x| 0.9964 (sitting-answering @45deg) -> x1.08 margin = 1.0761;
+  // HEAD_NDC 0.761911 -> 0.761911 x 39.85 / 2 = 15.181; every clip within
+  // |ndc.x| <= 0.9964 and ndc.y <= 0.868, so no vertical clipping.
+  jan: {
+    glbUrl: `${BASE}avatars/jan-v1-hq-idle9/jan-v1-lod0.glb`,
+    lod1GlbUrl: `${BASE}avatars/jan-v1-hq-idle9/jan-v1-lod1.glb`,
+    lod2GlbUrl: `${BASE}avatars/jan-v1-hq-idle9/jan-v1-lod2.glb`,
+    idleProfile: "masculine",
+    renderWidth: 177,
+    renderHeight: 251,
+    // measured max|x| 0.9964 (sitting-answering @45deg) + 8% margin
+    widthCapacity: 1.08,
+    // measured ndc head 0.761911 @ layer height 39.85
+    headTopAboveCenter: 15.181,
+  },
 };
 
 export function isLive3dEligible(avatarId: string | null | undefined): boolean {

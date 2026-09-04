@@ -22,8 +22,12 @@ import {
   type ToucanActionProposal,
   type ToucanConversation,
   type ToucanConversationDetail,
+  type ToucanDraftAttachment,
   type ToucanMemory,
+  subscribeDelegationEnded,
+  type ToucanDelegation,
 } from "../../services/toucan";
+import { appendDictatedText } from "./toucanDictation";
 
 // ---------------------------------------------------------------------------
 // Toucan assistant panel.
@@ -129,6 +133,66 @@ const CONVERSATION_GONE_TEXT =
 const ACTION_GONE_TEXT =
   "Squawk — that request expired before it was confirmed, so I changed nothing. Ask me again if you still want it.";
 
+// A2.1 — delegation wording helpers. The server states the duration; only the client
+// knows the viewer's time zone, so the resolved end is formatted here.
+export function formatDelegationDuration(minutes: number): string {
+  if (minutes <= 0) return "";
+  if (minutes % 60 === 0) {
+    const hours = minutes / 60;
+    return hours === 1 ? "1 hour" : `${hours} hours`;
+  }
+  if (minutes > 60) {
+    const hours = Math.floor(minutes / 60);
+    return `${hours} hour${hours === 1 ? "" : "s"} ${minutes % 60} minutes`;
+  }
+  return `${minutes} minutes`;
+}
+
+function formatLocalTime(date: Date): string {
+  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+export function delegationScopeLabel(scope: string | null | undefined): string {
+  return scope === "dm" ? "DMs only" : "Direct messages + group @mentions";
+}
+
+/** The card's detail line. Three windows (A2.1 duration, A2.3 clock time, A2.3 until return);
+ *  the clock end is the server-resolved instant shown in the viewer's own zone. */
+export function describeDelegationProposal(
+  proposal: Pick<ToucanActionProposal, "durationMinutes" | "scope" | "endCondition" | "endsAt">,
+  now: Date = new Date(),
+): string {
+  const scope = delegationScopeLabel(proposal.scope);
+  if (proposal.endCondition === "until_return") {
+    return `${scope} · until you return · maximum 24 hours`;
+  }
+  if (proposal.endsAt) {
+    const ends = new Date(proposal.endsAt);
+    if (!Number.isNaN(ends.getTime())) return `${scope} · until ${formatLocalTime(ends)} today`;
+  }
+  const minutes = proposal.durationMinutes ?? 0;
+  const ends = new Date(now.getTime() + minutes * 60_000);
+  return `${scope} · for ${formatDelegationDuration(minutes)} · ends about ${formatLocalTime(ends)} once confirmed`;
+}
+
+/** A2.2 — the banner's second line: scope, and when it ends. Existing A2.1 rows carry
+ *  scope "dm" and read "DMs only"; new ones read "DMs + group @mentions". A2.3 until-return
+ *  rows have no expiry and read "until you return · max 24h". */
+export function describeActiveDelegation(delegation: ToucanDelegation): string {
+  const scope = delegation.scope === "dm" ? "DMs only" : "DMs + group @mentions";
+  if (delegation.endCondition === "until_return" || !delegation.expiresAt) {
+    return `${scope} · until you return · max 24h`;
+  }
+  const ends = new Date(delegation.expiresAt);
+  return Number.isNaN(ends.getTime()) ? scope : `${scope} · until ${formatLocalTime(ends)}`;
+}
+
+export function withDelegationEnd(text: string, expiresAt: string | null | undefined): string {
+  if (!expiresAt) return text;
+  const ends = new Date(expiresAt);
+  return Number.isNaN(ends.getTime()) ? text : `${text} Ends at ${formatLocalTime(ends)}.`;
+}
+
 // History popover copy. Deliberately plain strings rather than new UI surfaces.
 const HISTORY_EMPTY_TEXT = "No saved conversations yet. Ask me something and it'll show up here.";
 const HISTORY_FAILED_TEXT = "Couldn't load your conversations.";
@@ -181,6 +245,20 @@ type ToucanAssistantPanelProps = {
   // the office's EXISTING character talking/typing animation seam — this
   // component neither knows nor cares which animation that is.
   onTypingChange?: (isTyping: boolean) => void;
+  // T10 — MULTIMODAL SEAMS. Both are absent today, and their absence is what
+  // renders the two composer buttons inert ("coming soon"): the panel never
+  // invents a picker or a recogniser of its own.
+  //
+  // Attachment: the caller opens whatever picker it owns and calls `add` with
+  // the chosen files' metadata. Staging one only fills the preview row above
+  // the composer — nothing uploads, nothing is stored, and /toucan/ask still
+  // sends text alone.
+  onRequestAttachment?: (add: (items: ToucanDraftAttachment[]) => void) => void;
+  // Dictation: the caller starts whatever speech-to-text it owns and calls
+  // `insert` with each finished transcript, which lands in the draft exactly as
+  // if it had been typed. This component starts no recording, requests no
+  // microphone permission, and touches no browser speech API.
+  onRequestDictation?: (insert: (transcript: string) => void) => void;
 };
 
 // Matches ConversationView's own TYPING_IDLE_MS, so the character stops
@@ -203,13 +281,48 @@ function turnsFromConversation(conversation: ToucanConversationDetail): Turn[] {
   }));
 }
 
+// T10 icons — local to the panel on purpose. The chat composer has its own
+// near-identical pair, and the module note there is explicit that normal chat
+// must not couple to Toucan; sharing eight lines of SVG is not worth reversing
+// that.
+function AttachIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M20 11.5l-8 8a5 5 0 0 1-7-7l8-8a3.5 3.5 0 0 1 5 5l-8 8a2 2 0 0 1-3-3l7.5-7.5"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function DictateIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="9" y="3" width="6" height="11" rx="3" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M12 18v3" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function ToucanAssistantPanel({
   onRelease,
   onPendingChange,
   onTypingChange,
+  onRequestAttachment,
+  onRequestDictation,
 }: ToucanAssistantPanelProps) {
   const [turns, setTurns] = useState<Turn[]>([greetingTurn(0)]);
   const [draft, setDraft] = useState("");
+  // T10 — attachments STAGED on the composer, client-side only. Always empty
+  // until a caller supplies onRequestAttachment, and cleared on send: nothing is
+  // uploaded, persisted or attached to a question yet, so keeping them past the
+  // draft they belong to would be a lie about what was sent.
+  const [attachments, setAttachments] = useState<ToucanDraftAttachment[]>([]);
   const [pending, setPending] = useState(false);
   // The conversation every question is appended to. Null until the restore below
   // finishes (or when the viewer has none yet) — a question asked in that window
@@ -240,6 +353,10 @@ export function ToucanAssistantPanel({
   // True while a confirm/cancel round trip is in flight — disables both buttons so
   // a double-click cannot race the one-time server-side consume.
   const [actionBusy, setActionBusy] = useState(false);
+  // A2.2 — the viewer's own active delegation (null = none). Loaded on mount, set from a
+  // confirmed start_delegation result, cleared by Stop and by the server's delegation_ended.
+  const [delegation, setDelegation] = useState<ToucanDelegation | null>(null);
+  const [stopBusy, setStopBusy] = useState(false);
   const nextIdRef = useRef(1);
   const askAbortRef = useRef<AbortController | null>(null);
   const restoreAbortRef = useRef<AbortController | null>(null);
@@ -281,6 +398,32 @@ export function ToucanAssistantPanel({
       });
 
     return () => controller.abort();
+  }, []);
+
+  // A2.2 — is Toucan handling this viewer's messages right now? Owner-scoped server-side; a
+  // failure (offline, mock mode) just means no banner.
+  useEffect(() => {
+    const controller = new AbortController();
+    Promise.resolve()
+      .then(() => toucanService.getDelegation({ signal: controller.signal }))
+      .then((active) => {
+        if (!controller.signal.aborted) setDelegation(active ?? null);
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, []);
+
+  // A2.2 — the server tells the OWNER (only) when their delegation ended: Stop from another
+  // tab, replaced by a new one, or found expired. Clear the banner unless the event names a
+  // different (older) delegation than the one shown.
+  useEffect(() => {
+    return subscribeDelegationEnded((event) => {
+      setDelegation((current) => {
+        if (!current) return null;
+        if (event.delegationId && event.delegationId !== current.id) return current;
+        return null;
+      });
+    });
   }, []);
 
   const onPendingChangeRef = useRef(onPendingChange);
@@ -357,6 +500,30 @@ export function ToucanAssistantPanel({
     onTypingChangeRef.current?.(false);
   }
 
+  // T10 — the ONE place a dictated transcript enters the draft. It lands through
+  // the same setDraft/reportTyping pair a keystroke takes, so auto-grow, the
+  // typing signal and the Send button's enabled state all behave identically to
+  // typed text. Nothing calls it until a caller supplies onRequestDictation.
+  function insertDictatedText(transcript: string) {
+    setDraft((current) => {
+      const next = appendDictatedText(current, transcript);
+      reportTyping(next);
+      return next;
+    });
+    textareaRef.current?.focus();
+  }
+
+  // T10 — the ONE place a staged attachment enters the composer. Metadata only;
+  // see ToucanDraftAttachment for why there is no URL or payload here.
+  function addAttachments(items: ToucanDraftAttachment[]) {
+    if (items.length === 0) return;
+    setAttachments((current) => [...current, ...items]);
+  }
+
+  function removeAttachment(id: string) {
+    setAttachments((current) => current.filter((item) => item.id !== id));
+  }
+
   // The character must never be left stuck in the talking animation — clear
   // it (and the timer) whenever the panel goes away, for any reason.
   useEffect(() => {
@@ -375,6 +542,8 @@ export function ToucanAssistantPanel({
     askAbortRef.current = null;
     setPending(false);
     setDraft("");
+    // Staged attachments belong to the draft that is being discarded.
+    setAttachments([]);
     setHistoryOpen(false);
     setMemoryOpen(false);
     // An unresolved proposal belongs to the conversation being left. Dropping the
@@ -557,23 +726,48 @@ export function ToucanAssistantPanel({
   // status path. A failure at any step reports honestly and executes nothing.
   const handleConfirmAction = useCallback(() => {
     if (!actionProposal || actionBusy) return;
-    const precheck = canApplyToucanStatus(actionProposal);
-    if (!precheck.ok) {
-      setActionProposal(null);
-      appendToucanTurn(precheck.reason);
-      // Tidy up the unusable pending entry; nothing to do if this fails — it
-      // simply expires.
-      void toucanService.cancelAction(actionProposal.id).catch(() => {});
-      return;
+    // The status pre-check is a set_status concern only. A send_message proposal
+    // is executed entirely server-side (through the normal chat write path), so
+    // there is nothing to pre-check and nothing to apply locally.
+    if (actionProposal.action === "set_status") {
+      const precheck = canApplyToucanStatus({
+        status: actionProposal.status ?? "",
+        dndMinutes: actionProposal.dndMinutes,
+      });
+      if (!precheck.ok) {
+        setActionProposal(null);
+        appendToucanTurn(precheck.reason);
+        // Tidy up the unusable pending entry; nothing to do if this fails — it
+        // simply expires.
+        void toucanService.cancelAction(actionProposal.id).catch(() => {});
+        return;
+      }
     }
     setActionBusy(true);
     void toucanService
       .confirmAction(actionProposal.id)
       .then((result) => {
-        // Apply exactly what the server confirmed — the frozen validated args —
-        // and only claim success when the local apply actually happened.
-        const applied = applyToucanStatus({ status: result.status, dndMinutes: result.dndMinutes });
-        appendToucanTurn(applied.ok ? result.text : applied.reason);
+        if (result.action === "set_status") {
+          // Apply exactly what the server confirmed — the frozen validated args —
+          // and only claim success when the local apply actually happened.
+          const applied = applyToucanStatus({
+            status: result.status ?? "",
+            dndMinutes: result.dndMinutes,
+          });
+          appendToucanTurn(applied.ok ? result.text : applied.reason);
+          return;
+        }
+        if (result.action === "start_delegation") {
+          // A2.1: the server wrote the durable delegation; the panel only reports it,
+          // adding the resolved end time in the viewer's own zone. Never touches status.
+          // A2.2: the banner appears from the returned row, no refresh needed.
+          setDelegation(result.delegation ?? null);
+          appendToucanTurn(withDelegationEnd(result.text, result.delegation?.expiresAt));
+          return;
+        }
+        // send_message: the server already sent it through the chat seam; the
+        // outcome line is the whole effect on this panel. Never touches status.
+        appendToucanTurn(result.text);
       })
       .catch((error: unknown) => {
         appendToucanTurn(
@@ -585,6 +779,19 @@ export function ToucanAssistantPanel({
         setActionProposal(null);
       });
   }, [actionProposal, actionBusy, appendToucanTurn]);
+
+  // A2.2 STOP — ends the viewer's own delegation through the owner-scoped DELETE. The row
+  // is kept for audit; the banner goes away as soon as the server confirms. One request at a
+  // time: the button is disabled while a stop is pending.
+  const handleStopDelegation = useCallback(() => {
+    if (!delegation || stopBusy) return;
+    setStopBusy(true);
+    void toucanService
+      .cancelDelegation()
+      .then(() => setDelegation(null))
+      .catch(() => appendToucanTurn(REQUEST_FAILED_TEXT))
+      .finally(() => setStopBusy(false));
+  }, [delegation, stopBusy, appendToucanTurn]);
 
   // CANCEL — burns the pending entry server-side; nothing executes either way.
   const handleCancelAction = useCallback(() => {
@@ -637,6 +844,9 @@ export function ToucanAssistantPanel({
       ]);
     }
     setDraft("");
+    // Cleared with the draft they were staged on: the question just sent was
+    // text-only, so leaving them in the preview row would claim otherwise.
+    setAttachments([]);
     stopTyping();
     setPending(true);
     // Asking something new abandons an unconfirmed proposal (it stays unexecuted
@@ -873,6 +1083,26 @@ export function ToucanAssistantPanel({
         </div>
       )}
 
+      {delegation && (
+        // A2.2 — the persistent indicator that Toucan is answering on this viewer's behalf.
+        // Small, always visible while active, and the one place to stop it from the panel.
+        <div className={styles.delegationBanner} data-testid="toucan-delegation-banner" role="status">
+          <div className={styles.delegationText}>
+            <span className={styles.delegationTitle}>Toucan is handling your messages</span>
+            <span className={styles.delegationMeta}>{describeActiveDelegation(delegation)}</span>
+          </div>
+          <button
+            type="button"
+            className={styles.delegationStop}
+            onClick={handleStopDelegation}
+            disabled={stopBusy}
+            aria-label="Stop Toucan handling your messages"
+          >
+            {stopBusy ? "Stopping…" : "Stop"}
+          </button>
+        </div>
+      )}
+
       <div className={chat.messages} ref={messagesRef}>
         {/* While the restore is in flight the transcript is withheld entirely, so
             a restored conversation never flashes the greeting above itself. */}
@@ -946,6 +1176,20 @@ export function ToucanAssistantPanel({
             <div className={chat.bubbleColumn}>
               <div className={`${chat.message} ${chat.peer} ${styles.actionCard}`}>
                 <span className={styles.actionSummary}>{actionProposal.summary}</span>
+                {actionProposal.action === "start_delegation" && (
+                  // A2.1 — the card must say what is being handed over: the scope (DMs only),
+                  // the duration, and roughly when it ends. Nothing is active until Confirm.
+                  <div className={styles.actionMessage} data-testid="toucan-action-delegation">
+                    {describeDelegationProposal(actionProposal)}
+                  </div>
+                )}
+                {actionProposal.action === "send_message" && actionProposal.message != null && (
+                  // A1 — the exact outgoing text, verbatim. The user must see BOTH the
+                  // recipient (in the summary above) and the message before Confirm.
+                  <blockquote className={styles.actionMessage} data-testid="toucan-action-message">
+                    {actionProposal.message}
+                  </blockquote>
+                )}
                 <div className={styles.actionButtons}>
                   <button
                     type="button"
@@ -990,7 +1234,64 @@ export function ToucanAssistantPanel({
         )}
       </div>
 
+      {/* T10 — staged-attachment preview. Renders ONLY when something is staged,
+          so the resting panel is byte-for-byte the composer it was before; there
+          is no empty tray, no dropzone and no placeholder. */}
+      {attachments.length > 0 && (
+        <div className={styles.attachmentPreview} aria-label="Attachments">
+          {attachments.map((item) => (
+            <div key={item.id} className={styles.attachmentChip}>
+              <span className={styles.attachmentName} title={item.name}>
+                {item.name}
+              </span>
+              <button
+                type="button"
+                className={styles.attachmentRemove}
+                onClick={() => removeAttachment(item.id)}
+                aria-label={`Remove ${item.name}`}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className={`${chat.composer} ${styles.composerGrow}`} aria-busy={pending}>
+        {/* T10 — multimodal actions, in the compact icon-button style the chat
+            composer already defines. Both are disabled until a caller wires the
+            matching seam, and a disabled button cannot fire: no picker opens, no
+            recording starts, no permission is requested. */}
+        <div className={`${chat.composerActions} ${styles.multimodalActions}`}>
+          <button
+            type="button"
+            className={
+              onRequestAttachment
+                ? chat.iconButton
+                : `${chat.iconButton} ${chat.iconButtonDisabled}`
+            }
+            disabled={composerDisabled || !onRequestAttachment}
+            onClick={() => onRequestAttachment?.(addAttachments)}
+            aria-label={onRequestAttachment ? "Attach a file" : "Attach a file (coming soon)"}
+            title={onRequestAttachment ? "Attach a file" : "Attach a file (coming soon)"}
+          >
+            <AttachIcon />
+          </button>
+          <button
+            type="button"
+            className={
+              onRequestDictation
+                ? chat.iconButton
+                : `${chat.iconButton} ${chat.iconButtonDisabled}`
+            }
+            disabled={composerDisabled || !onRequestDictation}
+            onClick={() => onRequestDictation?.(insertDictatedText)}
+            aria-label={onRequestDictation ? "Dictate a message" : "Dictate a message (coming soon)"}
+            title={onRequestDictation ? "Dictate a message" : "Dictate a message (coming soon)"}
+          >
+            <DictateIcon />
+          </button>
+        </div>
         <textarea
           ref={textareaRef}
           className={`${chat.textarea} ${styles.textarea}`}

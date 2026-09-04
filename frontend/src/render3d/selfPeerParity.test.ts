@@ -16,14 +16,14 @@ import { canonicalStandingFraction } from "./characterSize";
 const BON_LAYER = { width: 26.23, height: 37.2 };      // manifest + every roster/seat layer
 const ALEX_LAYER = { width: 20, height: 34.46 };       // alex's own manifest layer
 
-const bufferAspect = (id: "bon" | "alex" | "micah" | "angelo") => {
+const bufferAspect = (id: "bon" | "alex" | "micah" | "angelo" | "jan") => {
   const e = LIVE_3D_CHARACTERS[id];
   return Math.round(e.renderWidth * resolveWidthCapacity(e)) / e.renderHeight;
 };
 /** What the canvas now paints, given ANY wrapper: height 100% + buffer aspect. */
-const paintedAspect = (id: "bon" | "alex" | "micah" | "angelo") => bufferAspect(id);
+const paintedAspect = (id: "bon" | "alex" | "micah" | "angelo" | "jan") => bufferAspect(id);
 /** The old behaviour, for contrast. */
-const legacyPaintedAspect = (id: "bon" | "alex" | "micah" | "angelo", wrapper: { width: number; height: number }) =>
+const legacyPaintedAspect = (id: "bon" | "alex" | "micah" | "angelo" | "jan", wrapper: { width: number; height: number }) =>
   (wrapper.width * resolveWidthCapacity(LIVE_3D_CHARACTERS[id])) / wrapper.height;
 
 describe("self vs peer parity", () => {
@@ -35,7 +35,7 @@ describe("self vs peer parity", () => {
   });
 
   it("painted aspect now equals buffer aspect in BOTH wrappers — pixels stay square", () => {
-    for (const id of ["bon", "alex", "micah", "angelo"] as const) {
+    for (const id of ["bon", "alex", "micah", "angelo", "jan"] as const) {
       for (const wrapper of [BON_LAYER, ALEX_LAYER]) {
         void wrapper;   // the painted aspect no longer depends on it at all
         expect(paintedAspect(id) / bufferAspect(id)).toBeCloseTo(1, 10);
@@ -63,7 +63,7 @@ describe("self vs peer parity", () => {
   });
 
   it("every LOD tier of a character shares one buffer, so a swap cannot change shape", () => {
-    for (const id of ["bon", "alex", "micah", "angelo"] as const) {
+    for (const id of ["bon", "alex", "micah", "angelo", "jan"] as const) {
       const e = LIVE_3D_CHARACTERS[id];
       const urls = (["lod0", "lod1", "lod2"] as const).map((t) => resolveLive3dGlbUrlForTier(e, t));
       expect(new Set(urls).size).toBe(3);          // three distinct assets...

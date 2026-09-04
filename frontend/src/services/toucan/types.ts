@@ -22,23 +22,62 @@ export interface ToucanAskRequest {
    *  takes. Opaque and server-issued — supplying one only ever selects among
    *  conversations the signed-in viewer already owns. */
   conversationId?: string | null;
+  /** A2.3 — the viewer's IANA time zone (Intl.DateTimeFormat().resolvedOptions().timeZone),
+   *  used by the server ONLY to interpret a wall-clock the viewer typed ("until 3 PM").
+   *  Never identity. The real service fills it in when the caller does not. */
+  clientTimezone?: string | null;
 }
 
 /** T8 — one PROPOSED (not executed) action riding along on an answer. Mirrors
  *  backend/app/schemas/toucan.py's ToucanActionProposalOut. Receiving one changes
  *  NOTHING: it only carries the server-minted id the explicit Confirm/Cancel
  *  buttons target, plus the server-worded exact effect to show. */
+/** T8 set_status, A1 send_message, A2.1 start_delegation. */
+export type ToucanActionKind = "set_status" | "send_message" | "start_delegation";
+
 export interface ToucanActionProposal {
   id: string;
-  /** The entire T8 allowlist. */
-  action: "set_status";
-  /** One of the manual statuses (AVAILABLE | BUSY | BREAK | LUNCH | DND). */
-  status: string;
-  /** Present only for DND — already validated/clamped server-side. */
+  /** The action allowlist: T8's set_status plus A1's send_message. */
+  action: ToucanActionKind;
+  /** set_status: one of the manual statuses (AVAILABLE | BUSY | BREAK | LUNCH | DND). */
+  status?: string | null;
+  /** set_status: present only for DND — already validated/clamped server-side. */
   dndMinutes?: number | null;
+  /** send_message: "dm" (recipientEmail set) or "group" (an existing group the
+   *  viewer belongs to; recipientLabel is its title). Server-resolved. */
+  targetKind?: "dm" | "group" | null;
+  /** send_message: the SERVER-resolved recipient. The client never names one. */
+  recipientEmail?: string | null;
+  recipientLabel?: string | null;
+  /** send_message: the exact outgoing text — shown verbatim on the card before Confirm. */
+  message?: string | null;
+  /** start_delegation (A2.1): the server-clamped duration and the scope. DMs only at
+   *  A2.1. The real end time is only known at Confirm (see ToucanDelegation). */
+  durationMinutes?: number | null;
+  scope?: "dm" | "dm_and_groups" | null;
+  /** A2.3: "at_time" (a duration or a clock time) or "until_return". For a clock time,
+   *  endsAt is the server-RESOLVED UTC end, shown in the viewer's zone before Confirm. */
+  endCondition?: "at_time" | "until_return" | null;
+  endsAt?: string | null;
   /** The exact effect, as the confirmation card must show it. */
   summary: string;
   expiresAt: string;
+}
+
+/** A2.1 — one explicit, temporary "handle my messages" delegation as the owner sees
+ *  it. Mirrors backend/app/schemas/toucan.py's ToucanDelegationOut. Server times in
+ *  ISO-Z; the client formats the end in the viewer's own zone. */
+export interface ToucanDelegation {
+  id: string;
+  status: "active" | "ended";
+  endCondition: string;
+  scope: string;
+  startsAt: string;
+  expiresAt: string | null;
+  hardCapAt: string;
+  endedAt?: string | null;
+  endedReason?: string | null;
+  replyCount: number;
 }
 
 /** The outcome of confirming or cancelling one pending action. Echoes the frozen
@@ -47,9 +86,23 @@ export interface ToucanActionProposal {
 export interface ToucanActionResult {
   id: string;
   outcome: "executed" | "cancelled";
-  action: "set_status";
-  status: string;
+  action: ToucanActionKind;
+  status?: string | null;
   dndMinutes?: number | null;
+  targetKind?: "dm" | "group" | null;
+  recipientEmail?: string | null;
+  recipientLabel?: string | null;
+  message?: string | null;
+  /** send_message, executed only: where the message landed. */
+  conversationId?: string | null;
+  messageId?: string | null;
+  /** start_delegation: the frozen duration/scope, and — executed only — the now-active
+   *  durable delegation. */
+  durationMinutes?: number | null;
+  scope?: "dm" | "dm_and_groups" | null;
+  endCondition?: "at_time" | "until_return" | null;
+  endsAt?: string | null;
+  delegation?: ToucanDelegation | null;
   summary: string;
   /** The assistant's outcome line — also persisted into the transcript server-side. */
   text: string;
@@ -149,6 +202,28 @@ export class ToucanActionUnavailableError extends Error {
   }
 }
 
+/** T10 — ONE attachment a viewer has staged on the composer, before anything is
+ *  uploaded, stored or sent. Deliberately the smallest shape that a preview row
+ *  needs and nothing more: there is no URL, no bytes, no base64, no server id,
+ *  because none of those exist yet and inventing them now would freeze a
+ *  contract the backend has not agreed to.
+ *
+ *  NOT part of ToucanAskRequest: /toucan/ask is unchanged and text-only. When
+ *  real uploads land, this grows a server-issued reference and the request gains
+ *  a field — both server-driven decisions, made then rather than guessed here. */
+export interface ToucanDraftAttachment {
+  /** Client-local, unique for this composer session only. Never sent anywhere. */
+  id: string;
+  /** Display name, as the preview row shows it. */
+  name: string;
+  /** MIME type when known, so a preview can tell an image from a document.
+   *  Optional because a future picker may not always supply one. */
+  mimeType?: string;
+  /** Size in bytes when known — for a preview label and, later, a client-side
+   *  bound check before any upload is attempted. */
+  sizeBytes?: number;
+}
+
 export interface ToucanAskOptions {
   /** Aborts an in-flight question — the panel wires this to unmount/release, so
    *  a dismissed toucan never resolves into a stale reply. */
@@ -186,6 +261,12 @@ export interface ToucanService {
   confirmAction(actionId: string, options?: ToucanAskOptions): Promise<ToucanActionResult>;
   /** T8 — discard one pending action proposal. Nothing executes. */
   cancelAction(actionId: string, options?: ToucanAskOptions): Promise<ToucanActionResult>;
+  /** A2.2 — the viewer's own active delegation, or null. Owner-scoped server-side:
+   *  there is no parameter through which somebody else's could be requested. */
+  getDelegation(options?: ToucanAskOptions): Promise<ToucanDelegation | null>;
+  /** A2.2 — Stop: ends the viewer's own active delegation (durable row → ended /
+   *  cancelled, audit kept). Resolves null when nothing was active any more. */
+  cancelDelegation(options?: ToucanAskOptions): Promise<ToucanDelegation | null>;
   /** T9 — delete one of the viewer's own conversations, transcript and all. A
    *  DELETE on the T1 endpoint that already existed; hard delete, matching the
    *  backend's own reasoning that a transcript holds only what the user said and

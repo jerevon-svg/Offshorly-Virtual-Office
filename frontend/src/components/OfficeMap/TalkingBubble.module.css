@@ -43,6 +43,11 @@
   border-radius: 999px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
   pointer-events: none;
+  /* The .anchor parent is a 0×0 point, so an absolutely positioned box would
+     shrink-to-fit against zero available width and collapse to its longest
+     word, wrapping short messages. max-content sizes the pill to the full
+     message instead; max-width is the only thing that forces a wrap. */
+  width: max-content;
   max-width: 220px;
   white-space: normal;
   overflow-wrap: break-word;

@@ -162,7 +162,7 @@ describe("GroupConversationView", () => {
     await mountWith(service);
     await waitFor(() => expect(service.getMessages).toHaveBeenCalled());
 
-    const textarea = screen.getByPlaceholderText("Type a message…");
+    const textarea = screen.getByPlaceholderText("Message");
     fireEvent.change(textarea, { target: { value: "hey team" } });
     fireEvent.click(screen.getByLabelText("Send"));
 
@@ -540,7 +540,7 @@ describe("deriveGroupDeliveryLabel", () => {
       await mountWith(service);
       await waitFor(() => expect(service.getMessages).toHaveBeenCalled());
 
-      const textarea = screen.getByPlaceholderText("Type a message…");
+      const textarea = screen.getByPlaceholderText("Message");
       fireEvent.change(textarea, { target: { value: "@", selectionStart: 1 } });
 
       await waitFor(() => {
@@ -559,7 +559,7 @@ describe("deriveGroupDeliveryLabel", () => {
       await mountWith(service);
       await waitFor(() => expect(service.getMessages).toHaveBeenCalled());
 
-      const textarea = screen.getByPlaceholderText("Type a message…") as HTMLTextAreaElement;
+      const textarea = screen.getByPlaceholderText("Message") as HTMLTextAreaElement;
       fireEvent.change(textarea, { target: { value: "hey @al", selectionStart: 7 } });
       const option = await screen.findByRole("option", { name: "alex" });
       fireEvent.mouseDown(option);
@@ -578,5 +578,34 @@ describe("deriveGroupDeliveryLabel", () => {
       const [call] = sendMessage.mock.calls;
       expect(call[0].mentionedEmails).not.toContain(OTHER_B);
     });
+  });
+});
+
+describe("GroupConversationView — A1.4 Toucan author", () => {
+  afterEach(() => {
+    cleanup();
+    vi.doUnmock("../../services/chat");
+    vi.resetModules();
+  });
+
+  it("labels the reserved Toucan sender as Toucan with the bird glyph, never via the email fallback", async () => {
+    const { TOUCAN_CHAT_SENDER, TOUCAN_AVATAR_GLYPH } = await import("../../services/chat/toucanSender");
+    const history = [
+      makeMessage({ id: "h1", text: "hello group", senderId: OTHER_A }),
+      makeMessage({ id: "t1", text: "Squawk — noted.", senderId: TOUCAN_CHAT_SENDER }),
+    ];
+    const service = makeFakeService({ getMessages: vi.fn(async () => history) });
+    await mountWith(service);
+
+    await waitFor(() => expect(screen.getByText("Squawk — noted.")).toBeInTheDocument());
+    expect(screen.getByText("Toucan")).toBeInTheDocument();
+    // resolveDisplayName's fallback would have produced the localpart "toucan" — it must not.
+    expect(screen.queryByText("toucan")).toBeNull();
+    const row = screen.getByText("Squawk — noted.").closest("[data-sender]");
+    expect(row?.getAttribute("data-sender")).toBe("toucan");
+    expect(row?.textContent).toContain(TOUCAN_AVATAR_GLYPH);
+    // The human peer row is untouched.
+    const peerRow = screen.getByText("hello group").closest("[data-sender]");
+    expect(peerRow?.getAttribute("data-sender")).toBe("peer");
   });
 });

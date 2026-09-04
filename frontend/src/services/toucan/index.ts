@@ -9,6 +9,7 @@ export {
   resetMockToucanConversations,
 } from "./MockToucanService";
 export { RealToucanService, realToucanService, setDevIdentity } from "./RealToucanService";
+export { subscribeDelegationEnded, type DelegationEndedEvent } from "./delegationClient";
 export {
   applyToucanStatus,
   canApplyToucanStatus,

@@ -492,6 +492,16 @@
     "transform": null
   },
   {
+    "id": "jan",
+    "kind": "character",
+    "path": "assets/office/characters/jan.png",
+    "x": 180,
+    "y": 520,
+    "width": 28.18,
+    "height": 39.85,
+    "transform": null
+  },
+  {
     "id": "micah",
     "kind": "character",
     "path": "assets/office/characters/micah.png",

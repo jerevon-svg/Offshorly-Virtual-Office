@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { formatCharacterName } from "../../data/office-layout";
 import { chatMode, chatService } from "../../services/chat";
+import { TOUCAN_AVATAR_GLYPH, TOUCAN_DISPLAY_NAME, isToucanSender } from "../../services/chat/toucanSender";
 import { applyReactionUpdate } from "../../services/chat/reactions";
 import type { ChatMessage, ConnectionState } from "../../services/chat";
 import type { AssetLayer } from "../../types/office";
+import { ChatComposer } from "./ChatComposer";
 import { ChatWindowHeader } from "./ChatWindowHeader";
-import { MentionAutocomplete } from "./MentionAutocomplete";
 import { MessageReactions } from "./MessageReactions";
 import { renderMessageText } from "./MentionText";
 import { useMentionComposer } from "./useMentionComposer";
@@ -113,15 +114,18 @@ function Avatar({
   src,
   label,
   className,
+  glyph,
 }: {
   src?: string;
   label: string;
   className?: string;
+  /** A fixed glyph instead of the initial — used for the non-human Toucan author. */
+  glyph?: string;
 }) {
   if (src && !ALWAYS_USE_INITIALS) {
     return <img className={className} src={src} alt="" />;
   }
-  const initial = label.trim().charAt(0).toUpperCase() || "?";
+  const initial = glyph ?? (label.trim().charAt(0).toUpperCase() || "?");
   return (
     <div className={className} data-initials-avatar="true">
       {initial}
@@ -470,6 +474,9 @@ export function ConversationView({
             const showDivider = dayLabel !== lastDayLabel;
             lastDayLabel = dayLabel;
             const isOwn = msg.senderId === selfId;
+            // A1.4 — a DM has exactly one human peer, but Toucan can also author messages here.
+            // Never dress its messages as the peer's: distinct avatar + explicit name line.
+            const fromToucan = !isOwn && isToucanSender(msg.senderId);
             const showStatus = chatMode === "real" && isOwn;
             const status = showStatus
               ? deriveMessageStatus(msg, selfId, peerDeliveredUpTo, peerReadUpTo)
@@ -485,9 +492,22 @@ export function ConversationView({
                     <hr className={styles.dayDividerLine} />
                   </div>
                 )}
-                <div className={isOwn ? `${styles.row} ${styles.rowSelf}` : styles.row}>
-                  {!isOwn && <Avatar className={styles.avatar} src={peer.path || undefined} label={peerName} />}
+                <div
+                  className={isOwn ? `${styles.row} ${styles.rowSelf}` : styles.row}
+                  data-sender={fromToucan ? "toucan" : isOwn ? "self" : "peer"}
+                >
+                  {fromToucan && (
+                    <Avatar
+                      className={`${styles.avatar} ${styles.toucanAvatar}`}
+                      label={TOUCAN_DISPLAY_NAME}
+                      glyph={TOUCAN_AVATAR_GLYPH}
+                    />
+                  )}
+                  {!isOwn && !fromToucan && (
+                    <Avatar className={styles.avatar} src={peer.path || undefined} label={peerName} />
+                  )}
                   <div className={styles.bubbleColumn}>
+                    {fromToucan && <span className={styles.timestamp}>{TOUCAN_DISPLAY_NAME}</span>}
                     <div className={isOwn ? `${styles.message} ${styles.own}` : `${styles.message} ${styles.peer}`}>
                       {renderMessageText(
                         msg.text,
@@ -541,50 +561,17 @@ export function ConversationView({
           (see OfficeMap.tsx), which is only ever set for a remote (non-spatial) DND peer — so
           this never shows in spatial chat and disappears immediately once DND ends. */}
       {!isSpatial && subtitle && <div className={styles.dndHelperText}>Expect delayed response</div>}
-      <div className={styles.composer}>
-        {mention.trigger && mention.filtered.length > 0 && (
-          <MentionAutocomplete
-            candidates={mention.filtered}
-            highlightedIndex={mention.highlightedIndex}
-            onHover={mention.setHighlightedIndex}
-            onSelect={(c) => mention.selectCandidate(c, draft, setDraft)}
-          />
-        )}
-        <textarea
-          ref={mention.textareaRef}
-          className={styles.textarea}
-          value={draft}
-          placeholder={isNotConnected ? "Connecting…" : "Type a message…"}
-          onChange={(e) => {
-            handleDraftChange(e.target.value);
-            mention.onDraftChanged(e.target.value, e.target.selectionStart ?? e.target.value.length);
-          }}
-          onKeyDown={(e) => {
-            if (mention.trigger && mention.filtered.length > 0 && e.key === "Enter") {
-              e.preventDefault();
-              mention.selectCandidate(mention.filtered[mention.highlightedIndex], draft, setDraft);
-              return;
-            }
-            if (mention.handleKeyDown(e)) return;
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              handleSend();
-            }
-          }}
-        />
-        <button type="button" className={styles.sendButton} onClick={handleSend} aria-label="Send">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path
-              d="M3 11.5L21 3l-7.5 18-2.5-7.5L3 11.5z"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinejoin="round"
-              strokeLinecap="round"
-              fill="none"
-            />
-          </svg>
-        </button>
-      </div>
+      <ChatComposer
+        draft={draft}
+        setDraft={setDraft}
+        mention={mention}
+        placeholder={isNotConnected ? "Connecting…" : undefined}
+        onDraftInput={(text, caret) => {
+          handleDraftChange(text);
+          mention.onDraftChanged(text, caret);
+        }}
+        onSend={handleSend}
+      />
       </>
       )}
     </div>
