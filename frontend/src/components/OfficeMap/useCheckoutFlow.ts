@@ -11,11 +11,13 @@ import {
 } from "../../data/checkoutState";
 import {
   clearAll,
+  clearDraft,
   isAlreadyCheckedOut,
   loadDraft,
   loadResult,
   saveDraft,
   saveResult,
+  saveSessionStart,
 } from "../../data/checkoutStorage";
 import { computeWorkedMinutes, formatDuration, validateAllocation } from "../../data/workedTime";
 import { isAlreadySubmittedError, zohoService } from "../../services/zoho";
@@ -81,6 +83,7 @@ export interface UseCheckoutFlowResult {
   finishExit: () => void;
   resetToday: () => void;
   forceCheckedOut: () => void;
+  beginNewSession: (startedAt: string) => void;
 }
 
 const EMPTY_ENTRY: TimeLogEntry = {
@@ -105,8 +108,11 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
   // an effect instead, state would still read "IDLE" on that first pass and
   // a one-shot mount effect elsewhere could act on stale state before this
   // hook's own effect corrected it.
+  // Session-aware (see checkoutStorage.isAlreadyCheckedOut): a checkout completed
+  // earlier today but BEFORE the current session's marker is history, not a
+  // resume into CHECKED_OUT.
   const [state, setState] = useState<CheckoutState>(() =>
-    loadResult(employeeId, workDate)?.success ? "CHECKED_OUT" : "IDLE",
+    isAlreadyCheckedOut(employeeId, workDate) ? "CHECKED_OUT" : "IDLE",
   );
   const [laterUntilMs, setLaterUntilMs] = useState<number | null>(null);
   const [projects, setProjects] = useState<ZohoProject[]>([]);
@@ -114,7 +120,7 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
   const [entries, setEntries] = useState<TimeLogEntry[]>([]);
   const [breakMinutes, setBreakMinutes] = useState<number>(0);
   const [submissionResult, setSubmissionResult] = useState<SubmitTimeLogsResult | null>(
-    () => loadResult(employeeId, workDate) ?? null,
+    () => (isAlreadyCheckedOut(employeeId, workDate) ? loadResult(employeeId, workDate) : null),
   );
   const [error, setError] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
@@ -123,7 +129,7 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
   // now handled above by the lazy initializers, so this effect only needs to
   // cover the draft-restore path.
   useEffect(() => {
-    if (loadResult(employeeId, workDate)?.success) return;
+    if (isAlreadyCheckedOut(employeeId, workDate)) return;
     const draft = loadDraft(employeeId, workDate);
     if (draft) {
       setEntries(draft.entries);
@@ -315,6 +321,9 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
           success: true,
           submissionId: err.submissionId,
           entriesCreated: err.entriesCreated,
+          // Stamped locally so the session-aware resume (isAlreadyCheckedOut) can
+          // tell this recovery apart from an earlier session's history.
+          submittedAt: new Date().toISOString(),
         };
         saveResult(employeeId, workDate, recovered);
         setSubmissionResult(recovered);
@@ -362,6 +371,24 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
 
   function finishExit() {
     goTo("CHECKED_OUT");
+  }
+
+  // A confirmed attendance Check In starts a NEW work session. Any checkout
+  // completed earlier today stays in storage as history (its result is not
+  // deleted) — only the live flow returns to IDLE, the stale draft is dropped
+  // so already-logged entries are not inherited, and the new-session marker
+  // makes isAlreadyCheckedOut() ignore the older result. Bypasses goTo() like
+  // resetToday(): it is legal from CHECKED_OUT (see checkoutState.ts) and a
+  // no-op-safe reset from IDLE on an ordinary first check-in of the day.
+  function beginNewSession(startedAt: string) {
+    saveSessionStart(employeeId, workDate, startedAt);
+    clearDraft(employeeId, workDate);
+    setEntries([]);
+    setBreakMinutes(0);
+    setSubmissionResult(null);
+    setError(null);
+    setLaterUntilMs(null);
+    setState("IDLE");
   }
 
   // Debug-only escape hatch (dev debug panel): wipes today's stored draft +
@@ -427,5 +454,6 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
     finishExit,
     resetToday,
     forceCheckedOut,
+    beginNewSession,
   };
 }

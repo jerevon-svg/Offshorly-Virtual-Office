@@ -401,9 +401,7 @@ async def connect(sid: str, environ: dict, auth: dict | None) -> None:
 @sio.event
 async def disconnect(sid: str) -> None:
     # Cleanup ONLY — not a new offline-detection mechanism (v1 is explicit-checkout-only, see
-    # go_offline below). A real socket disconnect just means this person's connection is gone;
-    # if they had already explicitly checked out and were occupying a slot, free it so it
-    # doesn't linger forever for someone who will never emit come_online again this session.
+    # go_offline below). A real socket disconnect just means this person's connection is gone.
     try:
         session_data = await sio.get_session(sid)
     except KeyError:
@@ -411,9 +409,9 @@ async def disconnect(sid: str) -> None:
     email = session_data.get("email")
     if not email:
         return
-    if email in {entry["email"] for entry in offline_lineup.snapshot()}:
-        offline_lineup.remove(email)
-        await _broadcast_offline_lineup()
+    # Attendance is durable and server-authoritative (routers/attendance.py, employee_attendance):
+    # a checked-out person stays in the sidewalk lineup until they explicitly check back in, so a
+    # closed tab / dropped socket no longer removes them here. Connection state != attendance.
     # BY SID, never by email: this user has ~10 independent sockets open (see
     # spatial_session.py's SID-AWARE OWNERSHIP note), and only the one that emitted
     # spatial_session_start owns the membership. Every other socket's disconnect is a no-op

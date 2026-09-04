@@ -9,6 +9,11 @@ type Props = {
   workedLabel: string;
   entries: TimeLogEntry[];
   submissionResult: SubmitTimeLogsResult | null;
+  /** Closes the card. Visibility is UI state owned by the caller — dismissing
+   * never touches the stored checkout result (history), attendance, or the
+   * checkout state machine; the employee stays CHECKED_OUT on the sidewalk
+   * with the normal reception UI (and Check In) reachable again. */
+  onDismiss?: () => void;
 };
 
 // CHECKOUT_SUCCESS -> "You're all set. Have a great evening!" is now spoken
@@ -16,7 +21,7 @@ type Props = {
 // playGreetingBeats) rather than a card here, so this component only renders
 // once. CHECKED_OUT -> final "You're checked out!" card with the summary +
 // a simple read-only "View today's log" expansion.
-export function CheckoutSuccessCard({ state, workedLabel, entries, submissionResult }: Props) {
+export function CheckoutSuccessCard({ state, workedLabel, entries, submissionResult, onDismiss }: Props) {
   const [showLog, setShowLog] = useState(false);
 
   if (state !== "CHECKED_OUT") return null;
@@ -43,6 +48,11 @@ export function CheckoutSuccessCard({ state, workedLabel, entries, submissionRes
           </div>
         </div>
         <div className={styles.actions}>
+          {onDismiss && (
+            <button className={styles.primary} onClick={onDismiss}>
+              Close
+            </button>
+          )}
           <button className={styles.secondary} onClick={() => setShowLog((v) => !v)}>
             {showLog ? "Hide today's log" : "View today's log"}
           </button>

@@ -14,7 +14,9 @@ from app.database import async_session_maker
 # app/realtime/state.py, but importing socket.py is what registers every Socket.IO event
 # handler onto it. Point this at state.py and the server comes up with no handlers.
 from app.realtime.socket import sio
+from app.repositories import attendance as attendance_repo
 from app.repositories import position as position_repo
+from app.routers import attendance as attendance_router
 from app.routers import calls as calls_router
 from app.routers import chat as chat_router
 from app.routers import feed as feed_router
@@ -24,6 +26,7 @@ from app.routers import room_requests as room_requests_router
 from app.routers import talk_requests as talk_requests_router
 from app.routers import toucan as toucan_router
 from app.scripts import seed_dev_hub_content as hub_mock
+from app.realtime.state import offline_lineup
 from app.services.position_registry import position_registry
 
 _logger = logging.getLogger(__name__)
@@ -42,6 +45,21 @@ async def _load_positions_into_registry() -> None:
         async with async_session_maker() as session:
             rows = await position_repo.list_all(session)
         position_registry.load_stable(rows)
+    except Exception as exc:  # noqa: BLE001
+        _logger.exception(exc)
+
+
+@fastapi_app.on_event("startup")
+async def _load_checked_out_into_lineup() -> None:
+    """Cold-start recovery for the offline lineup: attendance is durable (employee_attendance),
+    the sidewalk lineup is in-memory. Re-seed it from everyone with an explicit checkout on
+    record so a restart doesn't silently move checked-out people off the sidewalk. Same
+    degrade-gracefully posture as the position-registry hook above."""
+    try:
+        async with async_session_maker() as session:
+            emails = await attendance_repo.list_checked_out_emails(session)
+        for email in emails:
+            offline_lineup.add(email)
     except Exception as exc:  # noqa: BLE001
         _logger.exception(exc)
 
@@ -90,6 +108,7 @@ fastapi_app.include_router(talk_requests_router.router)
 fastapi_app.include_router(hub_router.router)
 fastapi_app.include_router(feed_router.router)
 fastapi_app.include_router(toucan_router.router)
+fastapi_app.include_router(attendance_router.router)
 
 
 # Faithful port of backend/src/http.ts's error shape: REST error responses always come back as

@@ -129,6 +129,10 @@ const listeners = new Set<() => void>();
 // — used by PeerWalker to fast-forward an already-in-progress peer walk to
 // its correct current position on (re)connect.
 let serverClockOffsetMs = 0;
+// True once this session's socket has delivered its first positions_snapshot — the only point at
+// which self's own persisted (employee_positions) stable entry is known. OfficeMap's spawn waits
+// on this before deciding a CHECKED_IN restore, instead of guessing from an empty store.
+let snapshotReceived = false;
 // DEV-ONLY: mirrors RealChatService.ts's/spatialSessionStore.ts's
 // devEmail/setDevIdentity exactly.
 let devEmail: string | null = null;
@@ -296,6 +300,7 @@ function ensureSocket(): Socket | null {
   socket.on("positions_snapshot", (payload?: PositionsSnapshotEvent) => {
     if (!payload || !Array.isArray(payload.entries)) return;
     serverClockOffsetMs = payload.serverTime - Date.now();
+    snapshotReceived = true;
     const nextMap = applySnapshot(new Map(peers), payload);
     peers.clear();
     for (const [k, v] of nextMap) peers.set(k, v);
@@ -376,6 +381,23 @@ export function getServerClockOffsetMs(): number {
   return serverClockOffsetMs;
 }
 
+export function hasReceivedPositionsSnapshot(): boolean {
+  return snapshotReceived;
+}
+
+function getSnapshotReceived(): boolean {
+  return snapshotReceived;
+}
+
+/** Subscribable "first positions_snapshot has arrived" flag. Establishes the
+ * connection on first mount, like usePeerMovements. */
+export function useMovementSnapshotReady(): boolean {
+  useEffect(() => {
+    ensureSocket();
+  }, []);
+  return useSyncExternalStore(subscribe, getSnapshotReceived, getSnapshotReceived);
+}
+
 /** Subscribable hook giving components the current set of peer movement
  * states. Establishes the connection on first mount. */
 export function usePeerMovements(): PeerMovementState[] {
@@ -393,6 +415,7 @@ export function __resetForTests(): void {
   peers.clear();
   peersSnapshot = [];
   serverClockOffsetMs = 0;
+  snapshotReceived = false;
   devEmail = null;
   notify();
 }

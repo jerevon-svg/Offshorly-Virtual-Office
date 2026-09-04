@@ -290,3 +290,21 @@ describe("movementSync — socket wiring", () => {
     expect(lastCallOptions.auth).toEqual({ "x-dev-email": "dev@example.com" });
   });
 });
+
+describe("movementSync — first-snapshot readiness", () => {
+  it("useMovementSnapshotReady is false until the first positions_snapshot, then true", async () => {
+    const { useMovementSnapshotReady, hasReceivedPositionsSnapshot } = await import("./movementSync");
+    const { result } = renderHook(() => useMovementSnapshotReady());
+    expect(result.current).toBe(false);
+    expect(hasReceivedPositionsSnapshot()).toBe(false);
+    act(() => {
+      lastFakeSocket!.trigger("peer_walk_started", { email: "x@x.com", movementId: "m1" });
+    });
+    expect(result.current).toBe(false); // only a snapshot counts
+    act(() => {
+      lastFakeSocket!.trigger("positions_snapshot", { serverTime: Date.now(), entries: [] });
+    });
+    expect(result.current).toBe(true);
+    expect(hasReceivedPositionsSnapshot()).toBe(true);
+  });
+});
