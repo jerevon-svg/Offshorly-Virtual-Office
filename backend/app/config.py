@@ -92,6 +92,9 @@ class Settings(BaseSettings):
     # A2.3: how often the one background task ends expired / hard-capped delegations that no read
     # has touched. Lazy expiry on every read remains the second wall. <= 0 disables the sweep.
     TOUCAN_DELEGATION_SWEEP_SECONDS: float = 60.0
+    # A2.4: whether a delegated reply may try a GROUNDED answer (same-conversation, owner-authored
+    # evidence only) before the deterministic acknowledgement. Off = A2.3 behavior exactly.
+    TOUCAN_DELEGATION_GROUNDED_ANSWERS: bool = True
 
     # FUTURE multi-worker realtime seam — UNSET AND UNUSED TODAY. When this backend eventually
     # runs more than one worker, Socket.IO needs a cross-process message queue (and the

@@ -974,7 +974,11 @@ async def send_message(sid: str, payload: dict | None) -> None:
         if prompt is None:
             # A2.2: the saved message's SERVER-VALIDATED mention list decides who was addressed in
             # a group; the evaluation never re-parses text.
-            schedule_delegation_reply(conversation_id, email, saved["id"], saved.get("mentionedEmails"))
+            # A2.4: the saved text is passed so a simple retrieval question can be answered from
+            # the owner's own earlier words in this conversation; unsafe questions never read it.
+            schedule_delegation_reply(
+                conversation_id, email, saved["id"], saved.get("mentionedEmails"), saved.get("text")
+            )
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 

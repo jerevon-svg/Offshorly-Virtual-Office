@@ -630,3 +630,249 @@ async def test_reconnect_after_a_proven_absence_ends_until_return(server):
     await asyncio.sleep(0.3)
     assert await _status(bon2) == ("active", None)
     await b2.disconnect()
+
+
+# =====================================================================================================
+# A2.4 — grounded delegated answers over the real socket path. A fake provider stands in for OpenAI;
+# every wall is exercised: when it is consulted, what it receives, and what it takes to be believed.
+# =====================================================================================================
+
+import json as _json
+
+from app.services.toucan.delegation_grounding import grounded_reply_text
+
+DRIVE = "The presentation is in the shared Drive folder."
+
+
+class GroundedFake:
+    """Records every provider request; answers with a canned verdict (or raises)."""
+
+    def __init__(self, reply=None):
+        self.reply = reply
+        self.calls: list[dict] = []
+
+    async def __call__(self, messages, *, model, max_output_tokens, timeout, tools=None):
+        self.calls.append({"messages": messages, "tools": tools})
+        if isinstance(self.reply, Exception):
+            raise self.reply
+        if callable(self.reply):
+            return self.reply(self.window)
+        return self.reply
+
+    @property
+    def window(self) -> list[dict]:
+        return _json.loads(self.calls[-1]["messages"][0]["content"].split("oldest first) ===\n", 1)[1])
+
+    @property
+    def question(self) -> str:
+        return self.calls[-1]["messages"][1]["content"]
+
+
+def _cites_owner(window):
+    ids = [t["id"] for t in window if t["fromOwner"]]
+    return _json.dumps({"canAnswer": True, "answer": "Earlier in this conversation, Bon said the presentation is in the shared Drive folder.", "evidenceMessageIds": ids[:1]})
+
+
+@pytest.fixture
+def grounded(server, monkeypatch):
+    fake = GroundedFake(_cites_owner)
+    monkeypatch.setattr(provider, "_request_reply", fake)
+    return fake
+
+
+async def _seed_owner_fact(conv_id: str, owner: str) -> str:
+    async with app_db.async_session_maker() as session:
+        m = await chat_repo.insert_message(session, conv_id, owner, DRIVE)
+        await session.commit()
+        return m.id
+
+
+async def _bon_and_micah_dm(server):
+    bon, micah = _fresh("bon"), _fresh("micah")
+    conv_id = await _dm(bon, micah)
+    m = await _connect_as(server, micah)
+    await asyncio.sleep(0.2)
+    return bon, micah, conv_id, m
+
+
+async def test_dm_factual_question_gets_a_grounded_answer_citing_only_owner_evidence(grounded, server):
+    bon, _micah, conv_id, m = await _bon_and_micah_dm(server)
+    fact_id = await _seed_owner_fact(conv_id, bon)
+    await _delegate(bon)
+    other_conv = await _dm(bon, _fresh("alex"))
+    await _seed_owner_fact(other_conv, bon)  # a SECOND conversation with the same fact — must not appear
+    m_in = _collector(m, "incoming_message")
+
+    await _send_and_settle(m, conv_id, "@Bon where is the presentation?")
+    toucan = await _toucan_messages(conv_id)
+    assert [t.text for t in toucan] == [grounded_reply_text(bon, "Earlier in this conversation, Bon said the presentation is in the shared Drive folder.")]
+    assert toucan[0].text.startswith("Toucan — assisting ") and " said " in toucan[0].text
+    assert m_in[-1]["message"]["senderId"] == TOUCAN_CHAT_SENDER and m_in[-1]["message"]["text"] == toucan[0].text
+    # What the provider saw: this conversation's window only, the owner fact flagged, the question
+    # with the mention stripped, no tools, and nothing from the other conversation.
+    assert len(grounded.calls) == 1 and grounded.calls[0]["tools"] is None
+    assert grounded.question == "where is the presentation?"
+    assert [t["id"] for t in grounded.window] == [fact_id]
+    from app.services.toucan.delegation import display_name_from_email
+
+    assert grounded.window[0] == {"id": fact_id, "author": display_name_from_email(bon), "fromOwner": True, "text": DRIVE}
+    system = grounded.calls[0]["messages"][0]["content"]
+    for absent in ("OFFICE CONTEXT", "MEMORIES", "unread", "roster"):
+        assert absent not in system
+    # Unread semantics unchanged: owner sees the peer's question and Toucan's answer as unread.
+    async with app_db.async_session_maker() as session:
+        assert await chat_repo.unread_count(session, conv_id, bon) == 2
+        assert (await repo.get_active_delegation(session, owner_email=bon)).reply_count == 1
+    await m.disconnect()
+
+
+async def test_group_mention_factual_question_gets_a_grounded_answer(grounded, server):
+    bon, micah, alex = _fresh("bon"), _fresh("micah"), _fresh("alex")
+    conv_id = await _group(bon, [micah, alex])
+    await _seed_owner_fact(conv_id, bon)
+    await _delegate_groups(bon)
+    m = await _connect_as(server, micah)
+    a = await _connect_as(server, alex)
+    await asyncio.sleep(0.2)
+    a_in = _collector(a, "incoming_message")
+    await _send_group(m, conv_id, "@Bon which folder did you put the presentation in?", [bon])
+    toucan = await _toucan_messages(conv_id)
+    assert len(toucan) == 1 and toucan[0].text.startswith("Toucan — assisting ") and "Drive" in toucan[0].text
+    assert a_in[-1]["message"]["text"] == toucan[0].text  # fans out to every member
+    assert grounded.question == "which folder did you put the presentation in?"
+    # Plain group chatter and an un-mentioned question never consult the provider.
+    await _send_group(m, conv_id, "where is the presentation?", None, "g2")
+    await _send_group(m, conv_id, "Bon where is the presentation?", [], "g3")
+    assert len(grounded.calls) == 1 and len(await _toucan_messages(conv_id)) == 1
+    for c in (m, a):
+        await c.disconnect()
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "@Bon can we move the deadline to Friday?",
+        "@Bon will you take this task?",
+        "@Bon do you approve the new budget?",
+        "@Bon what do you think about the design?",
+        "@Bon how long will the migration take?",
+    ],
+)
+async def test_unsafe_questions_fall_back_without_consulting_the_provider(grounded, server, question):
+    bon, _micah, conv_id, m = await _bon_and_micah_dm(server)
+    await _seed_owner_fact(conv_id, bon)
+    await _delegate(bon)
+    await _send_and_settle(m, conv_id, question)
+    assert [t.text for t in await _toucan_messages(conv_id)] == [first_reply_text(bon)]
+    assert grounded.calls == []
+    await m.disconnect()
+
+
+async def test_no_owner_evidence_means_no_provider_call_and_the_acknowledgement(grounded, server):
+    bon, _micah, conv_id, m = await _bon_and_micah_dm(server)
+    await _delegate(bon)
+    # Only the asker has spoken (and speculates about Bon's words): nothing to retrieve.
+    await _send_and_settle(m, conv_id, "I think Bon said it's in Drive", "s0")
+    await _send_and_settle(m, conv_id, "@Bon where is the presentation?", "s1")
+    assert [t.text for t in await _toucan_messages(conv_id)] == [first_reply_text(bon)]
+    assert grounded.calls == []
+    await m.disconnect()
+
+
+def _verdict(**kw):
+    def _reply(window):
+        return _json.dumps(kw)
+    return _reply
+
+
+@pytest.mark.parametrize(
+    ("reply", "label"),
+    [
+        (lambda w: _json.dumps({"canAnswer": True, "answer": "It's in Drive.", "evidenceMessageIds": [t["id"] for t in w if not t["fromOwner"]]}), "evidence only from another participant"),
+        (lambda w: _json.dumps({"canAnswer": True, "answer": "It's in Drive.", "evidenceMessageIds": ["not-a-real-id"]}), "invalid evidence id"),
+        (lambda w: _json.dumps({"canAnswer": True, "answer": "It's in Drive.", "evidenceMessageIds": []}), "no evidence"),
+        (lambda w: _json.dumps({"canAnswer": True, "answer": "", "evidenceMessageIds": [t["id"] for t in w if t["fromOwner"]]}), "empty answer"),
+        (lambda w: _json.dumps({"canAnswer": True, "answer": "I approved it, go ahead.", "evidenceMessageIds": [t["id"] for t in w if t["fromOwner"]]}), "unsafe wording"),
+        (lambda w: _json.dumps({"canAnswer": False, "answer": "", "evidenceMessageIds": []}), "provider declines"),
+        (lambda w: "Sure! It's in the Drive folder.", "malformed (prose, not JSON)"),
+        (lambda w: None, "empty completion"),
+        (RuntimeError("provider down"), "provider exception"),
+    ],
+)
+async def test_every_bad_verdict_falls_back_to_the_deterministic_acknowledgement(grounded, server, reply, label):
+    grounded.reply = reply
+    bon, _micah, conv_id, m = await _bon_and_micah_dm(server)
+    await _send_and_settle(m, conv_id, "I think it's in Drive", "s0")  # another participant's speculation
+    await _seed_owner_fact(conv_id, bon)
+    await _delegate(bon)
+    await _send_and_settle(m, conv_id, "@Bon where is the presentation?", "s1")
+    assert [t.text for t in await _toucan_messages(conv_id)] == [first_reply_text(bon)], label
+    assert len(grounded.calls) == 1, label
+    await m.disconnect()
+
+
+async def test_evidence_from_another_conversation_is_rejected(grounded, server):
+    bon, _micah, conv_id, m = await _bon_and_micah_dm(server)
+    await _seed_owner_fact(conv_id, bon)
+    other_conv = await _dm(bon, _fresh("alex"))
+    other_id = await _seed_owner_fact(other_conv, bon)
+    await _delegate(bon)
+    grounded.reply = lambda w: _json.dumps({"canAnswer": True, "answer": "Bon said it is in Drive.", "evidenceMessageIds": [other_id]})
+    await _send_and_settle(m, conv_id, "@Bon where is the presentation?")
+    assert [t.text for t in await _toucan_messages(conv_id)] == [first_reply_text(bon)]
+    assert other_id not in [t["id"] for t in grounded.window]
+    await m.disconnect()
+
+
+async def test_provider_unavailable_or_feature_off_keeps_delegation_working(grounded, server, monkeypatch):
+    bon, _micah, conv_id, m = await _bon_and_micah_dm(server)
+    await _seed_owner_fact(conv_id, bon)
+    await _delegate(bon)
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "")
+    await _send_and_settle(m, conv_id, "@Bon where is the presentation?", "s1")
+    assert [t.text for t in await _toucan_messages(conv_id)] == [first_reply_text(bon)]
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "unit-test-key")
+    monkeypatch.setattr(settings, "TOUCAN_DELEGATION_GROUNDED_ANSWERS", False)
+    monkeypatch.setattr(settings, "TOUCAN_DELEGATION_COOLDOWN_SECONDS", 0.0)
+    await _send_and_settle(m, conv_id, "@Bon where is the presentation?", "s2")
+    assert [t.text for t in await _toucan_messages(conv_id)] == [first_reply_text(bon), follow_up_reply_text(bon)]
+    assert grounded.calls == []
+    await m.disconnect()
+
+
+async def test_multi_owner_mention_stays_deterministic_and_never_consults_the_provider(grounded, server):
+    bon, micah, alex = _fresh("bon"), _fresh("micah"), _fresh("alex")
+    conv_id = await _group(bon, [micah, alex])
+    await _seed_owner_fact(conv_id, bon)
+    await _seed_owner_fact(conv_id, micah)
+    await _delegate_groups(bon)
+    await _delegate_groups(micah)
+    a = await _connect_as(server, alex)
+    await asyncio.sleep(0.2)
+    await _send_group(a, conv_id, "@Bon @Micah where is the presentation?", [bon, micah])
+    assert [t.text for t in await _toucan_messages(conv_id)] == [combined_first_reply_text([bon, micah])]
+    assert grounded.calls == []
+    await a.disconnect()
+
+
+async def test_at_toucan_still_wins_and_the_delegated_seam_is_not_used(grounded, server):
+    bon, _micah, conv_id, m = await _bon_and_micah_dm(server)
+    await _seed_owner_fact(conv_id, bon)
+    await _delegate(bon)
+    grounded.reply = "A1.4 answer from the conversation seam."
+    await _send_and_settle(m, conv_id, "@Toucan where is the presentation?")
+    toucan = await _toucan_messages(conv_id)
+    assert [t.text for t in toucan] == ["A1.4 answer from the conversation seam."]
+    assert not toucan[0].text.startswith("Toucan — assisting")
+    # The one provider call was the A1.4 conversation seam, not the delegated one.
+    assert len(grounded.calls) == 1 and "covering for" not in grounded.calls[0]["messages"][0]["content"]
+    await m.disconnect()
+
+
+async def test_non_member_cannot_trigger_a_grounded_answer(grounded, server):
+    bon, micah, alex = _fresh("bon"), _fresh("micah"), _fresh("alex")
+    conv_id = await _dm(bon, micah)
+    await _seed_owner_fact(conv_id, bon)
+    await _delegate(bon)
+    assert await evaluate_and_reply(conv_id, alex, "x1", None, "@Bon where is the presentation?") is None
+    assert grounded.calls == [] and await _toucan_messages(conv_id) == []

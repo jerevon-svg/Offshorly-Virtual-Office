@@ -346,9 +346,9 @@ _DELEGATION_MODULES = (
     _BACKEND / "app" / "repositories" / "toucan_delegation.py",
     _BACKEND / "app" / "services" / "delegation_lifecycle.py",
     _BACKEND / "app" / "services" / "delegation_events.py",
+    _BACKEND / "app" / "services" / "toucan" / "delegation_grounding.py",
 )
 _FORBIDDEN_IMPORT_PREFIXES = (
-    "app.services.toucan_ai",
     "app.services.toucan.context",
     "app.services.toucan.roster",
     "app.services.toucan.memory",
@@ -363,7 +363,12 @@ _FORBIDDEN_IMPORT_PREFIXES = (
     "httpx",
     "openai",
 )
-_FORBIDDEN_CALLS = ("list_recent_messages", "list_messages", "generate_conversation_reply", "generate_answer")
+# A2.4: the delegated path may call generate_delegated_answer and list_recent_messages (the same
+# bounded read A1.4.3 uses) — and nothing else from the provider or the chat repository's readers.
+_FORBIDDEN_CALLS = (
+    "list_messages", "list_conversations_for_user", "generate_conversation_reply", "generate_answer",
+    "build_office_context", "select_relevant_memories", "list_memories", "fetch_roster",
+)
 
 
 async def test_delegation_modules_import_no_context_provider_memory_or_atlas():
@@ -804,3 +809,141 @@ async def test_sweep_ends_expired_and_capped_rows_and_the_task_starts_and_stops_
     await sweeper.stop()
     assert not sweeper.running and len(calls) >= 2
     await sweeper.stop()  # second stop is a no-op
+
+
+# =====================================================================================================
+# A2.4 — grounded delegated answers: the deterministic walls (pure) and the provider seam's shape
+# =====================================================================================================
+
+import json
+from datetime import datetime as _dt
+from types import SimpleNamespace
+
+from app.services.toucan import delegation_grounding as grounding
+from app.services.toucan_ai import provider
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "@Bon where is the presentation?",
+        "What did Bon say about the demo?",
+        "which link did bon share?",
+        "when did Bon say the release was happening?",
+        "did Bon mention the venue?",
+        "Where's the shared folder?",
+        "@Bon what did you say about the venue?",
+        "which folder did you put the presentation in?",
+    ],
+)
+async def test_retrieval_questions_are_recognised(question):
+    assert grounding.is_retrieval_question(question)
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "@Bon can we move the deadline to Friday?",  # deadline change / commitment
+        "do you approve the budget?",  # approval
+        "Bon, will you take this task?",  # task acceptance
+        "could you review my PR by tomorrow?",  # commitment
+        "what do you think about the design?",  # opinion
+        "which option do you prefer?",  # preference
+        "how long will the migration take?",  # estimate
+        "should we ship today?",  # decision
+        "is it okay to extend the deadline?",  # permission + change
+        "what is Bon's salary?",  # HR/private
+        "where is the admin password?",  # security-sensitive
+        "who owns this task?",  # ownership decision
+        "where is the presentation",  # not even a question mark
+        "the presentation is in Drive?",  # not retrieval-shaped
+        "x" * 301 + "?",
+        "",
+    ],
+)
+async def test_unsafe_or_unshaped_questions_never_reach_the_provider(question):
+    assert not grounding.is_retrieval_question(question)
+
+
+def _row(i: str, sender: str, text: str, minute: int):
+    return SimpleNamespace(id=i, sender_email=sender, text=text, sent_at=_dt(2026, 9, 4, 9, minute, tzinfo=timezone.utc))
+
+
+BON, MICAH, TOUCAN = "bon@example.com", "micah@example.com", "toucan@virtual-office.local"
+LIMITS = {"exclude_sender": TOUCAN, "max_messages": 20, "max_message_chars": 600, "max_total_chars": 4000}
+
+
+async def test_evidence_window_is_bounded_labelled_and_excludes_toucan_and_the_question():
+    rows = [
+        _row("m1", MICAH, "where do we keep the deck?", 1),
+        _row("m2", BON, "The presentation is in the shared Drive folder.", 2),
+        _row("m3", TOUCAN, "Toucan — assisting Bon: …", 3),
+        _row("m4", MICAH, "@Bon where is the presentation?", 4),
+        _row("m5", MICAH, "   ", 5),
+    ]
+    window = grounding.build_evidence_window(rows, owner_email=BON, incoming_id="m4", **LIMITS)
+    assert window == [
+        {"id": "m1", "author": "Micah", "fromOwner": False, "text": "where do we keep the deck?"},
+        {"id": "m2", "author": "Bon", "fromOwner": True, "text": "The presentation is in the shared Drive folder."},
+    ]
+    assert grounding.has_owner_evidence(window)
+    # Bounds: count, per-text, and total (oldest dropped first).
+    many = [_row(f"r{i}", BON if i % 2 else MICAH, "x" * 700, i) for i in range(30)]
+    window = grounding.build_evidence_window(many, owner_email=BON, incoming_id=None, **LIMITS)
+    assert len(window) <= 20 and all(len(str(t["text"])) <= 600 for t in window)
+    assert sum(len(str(t["text"])) for t in window) <= 4000
+    assert window[-1]["id"] == "r29"
+    assert not grounding.has_owner_evidence(
+        grounding.build_evidence_window([_row("a", MICAH, "Bon said it's in Drive", 1)], owner_email=BON, incoming_id=None, **LIMITS)
+    )
+
+
+async def test_answer_validation_requires_owner_evidence_inside_the_window_and_safe_wording():
+    window = [
+        {"id": "m1", "author": "Micah", "fromOwner": False, "text": "I think it's in Drive"},
+        {"id": "m2", "author": "Bon", "fromOwner": True, "text": "The presentation is in the shared Drive folder."},
+    ]
+    ok = {"canAnswer": True, "answer": "Earlier in this conversation, Bon said the presentation is in the shared Drive folder.", "evidenceMessageIds": ["m2"]}
+    assert grounding.validate_grounded_answer(ok, window, BON) == ok["answer"]
+    # A repeated prefix is stripped rather than doubled.
+    doubled = dict(ok, answer="Toucan — assisting Bon: Bon said it is in Drive.")
+    assert grounding.validate_grounded_answer(doubled, window, BON) == "Bon said it is in Drive."
+    rejected = [
+        dict(ok, canAnswer=False),
+        dict(ok, canAnswer="true"),
+        dict(ok, answer=""),
+        dict(ok, answer="   "),
+        dict(ok, answer="x" * 401),
+        dict(ok, answer="I put it in Drive."),  # first person as the owner
+        dict(ok, answer="Bon approved moving the deadline."),  # decision marker
+        dict(ok, evidenceMessageIds=[]),
+        dict(ok, evidenceMessageIds=["m1"]),  # only another participant's words
+        dict(ok, evidenceMessageIds=["m2", "zzz"]),  # an id outside the window
+        dict(ok, evidenceMessageIds=["m2", 7]),
+        dict(ok, evidenceMessageIds="m2"),
+        {"answer": "x"},
+        None,
+        "yes",
+        [],
+    ]
+    for bad in rejected:
+        assert grounding.validate_grounded_answer(bad, window, BON) is None, bad
+    assert grounding.grounded_reply_text(BON, "Bon said it is in Drive.") == "Toucan — assisting Bon: Bon said it is in Drive."
+
+
+async def test_provider_output_parsing_fails_closed_and_the_payload_carries_only_the_window():
+    assert provider.parse_delegated_output('{"canAnswer": true, "answer": "a", "evidenceMessageIds": ["m2"]}') == {
+        "canAnswer": True, "answer": "a", "evidenceMessageIds": ["m2"]
+    }
+    assert provider.parse_delegated_output('```json\n{"canAnswer": false}\n```') == {"canAnswer": False, "answer": None, "evidenceMessageIds": None}
+    for bad in ("", "not json", "[1,2]", '"str"', None, 42, "{'single': 'quotes'}"):
+        assert provider.parse_delegated_output(bad) is None
+    window = [{"id": "m2", "author": "Bon", "fromOwner": True, "text": "in Drive"}]
+    messages = provider._build_delegated_messages("where is it?", "Bon", window)
+    assert [m["role"] for m in messages] == ["system", "user"] and messages[1]["content"] == "where is it?"
+    system = messages[0]["content"]
+    assert "covering for Bon" in system and json.dumps(window, separators=(",", ":")) in system
+    for absent in ("OFFICE CONTEXT", "MEMORIES", "roster", "room", "status", "tool"):
+        assert absent not in system, absent
+    # Disabled provider → None without a request.
+    assert await provider.generate_delegated_answer("where is it?", "Bon", window) is None

@@ -20,7 +20,17 @@ from app.services.toucan.delegation import (
     SCOPE_DM_AND_GROUPS,
     combined_first_reply_text,
     combined_follow_up_reply_text,
+    display_name_from_email,
 )
+from app.services.toucan.delegation_grounding import (
+    build_evidence_window,
+    grounded_reply_text,
+    has_owner_evidence,
+    is_retrieval_question,
+    strip_mentions,
+    validate_grounded_answer,
+)
+from app.services.toucan_ai.provider import ai_enabled, generate_delegated_answer
 
 # A2.1 — TOUCAN ANSWERING A DM ON SOMEBODY'S BEHALF, deterministically.
 # A2.2 — and a GROUP message, but only one that carries a SERVER-VALIDATED @mention of the owner
@@ -33,12 +43,18 @@ from app.services.toucan.delegation import (
 # Toucan posts one fixed acknowledgement into the same conversation as the reserved author,
 # through the same persist + fan-out seam every message uses.
 #
-# WHAT THIS DELIBERATELY DOES NOT DO — the A2.1 privacy boundary, restated as code:
-#   * reads no message bodies. Not the triggering message, not the history. The reply is a
-#     template keyed only on the OWNER's email (for the "assisting Bon" prefix).
-#   * calls no provider. There is no import of toucan_ai here and nothing to feed it.
-#   * touches no office context, roster, memories, hub or feed.
-#   * writes nothing but the chat reply and the delegation's reply counter.
+# THE PRIVACY BOUNDARY, restated as code:
+#   * The DETERMINISTIC path reads no message bodies: the acknowledgement is a template keyed only
+#     on the OWNER's email. It is what every reply was through A2.3 and what every reply still is
+#     whenever the grounded path below declines.
+#   * A2.4's GROUNDED path may run only for ONE eligible owner, only for a short, plainly
+#     retrieval-shaped question with no decision/commitment/opinion marker, and only after
+#     membership has been re-verified. It then reads the bounded LATEST window of THIS
+#     conversation (the same SQL-limited read A1.4.3 uses), hands the provider exactly that window
+#     plus the question, and accepts the answer only if every cited message is inside that window
+#     and at least one was written by the owner. Anything else → the acknowledgement.
+#   * Nothing here touches office context, roster, memories, other conversations, hub or feed.
+#   * Writes nothing but the chat reply and the delegation's reply counter.
 #
 # NO RECURSION BY CONSTRUCTION: the reply goes through send_chat_message directly, never through
 # the socket `send_message` handler, so it can never re-enter this evaluation; a Toucan-authored
@@ -132,6 +148,7 @@ async def evaluate_and_reply(
     sender_email: str,
     message_id: str | None,
     mentioned: list[str] | None = None,
+    text: str | None = None,
 ) -> dict | None:
     """Decide whether the human message just saved into `conversation_id` earns an automatic
     Toucan reply on behalf of the OTHER participant, and send it. Every condition is re-checked
@@ -181,13 +198,18 @@ async def evaluate_and_reply(
                 return None
             owners = [d.owner_email for d in included]
             first = any(reply_gate.replies_so_far(conversation_id, d.owner_email, d.id) == 0 for d in included)
-            text = combined_first_reply_text(owners) if first else combined_follow_up_reply_text(owners)
+            reply = combined_first_reply_text(owners) if first else combined_follow_up_reply_text(owners)
+            # A2.4 — a grounded answer, for exactly one owner, only when every wall lets it through.
+            if len(included) == 1:
+                grounded = await _grounded_answer(session, conversation_id, owners[0], message_id, text)
+                if grounded:
+                    reply = grounded
             # Record BEFORE sending so a concurrent evaluation for the same conversation cannot
             # slip a second reply through while this one is in flight.
             for d in included:
                 reply_gate.record(conversation_id, d.owner_email, d.id, message_id)
             saved = await send_chat_message(
-                session, conversation_id=conversation_id, sender_email=TOUCAN_CHAT_SENDER, text=text
+                session, conversation_id=conversation_id, sender_email=TOUCAN_CHAT_SENDER, text=reply
             )
             for d in included:
                 await delegation_repo.record_reply(session, d)
@@ -203,14 +225,57 @@ async def evaluate_and_reply(
     return None
 
 
+async def _grounded_answer(
+    session, conversation_id: str, owner: str, message_id: str | None, text: str | None
+) -> str | None:
+    """A2.4 — try to answer a simple retrieval question with what the owner already said HERE.
+    Returns the full reply text, or None for the deterministic acknowledgement. Called only after
+    eligibility (membership, live delegation, gate) is established. Never raises."""
+    if not settings.TOUCAN_DELEGATION_GROUNDED_ANSWERS or not text or not ai_enabled():
+        return None
+    question = strip_mentions(text)
+    if not is_retrieval_question(question):
+        return None
+    try:
+        # The ONE read: the bounded latest window of THIS conversation (+1 so the incoming
+        # question does not cost a slot), exactly as A1.4.3 reads it.
+        recent = await chat_repo.list_recent_messages(
+            session, conversation_id, settings.TOUCAN_CHAT_WINDOW_MESSAGES + 1
+        )
+        window = build_evidence_window(
+            recent,
+            owner_email=owner,
+            incoming_id=message_id,
+            exclude_sender=TOUCAN_CHAT_SENDER,
+            max_messages=settings.TOUCAN_CHAT_WINDOW_MESSAGES,
+            max_message_chars=settings.TOUCAN_CHAT_MAX_MESSAGE_CHARS,
+            max_total_chars=settings.TOUCAN_CHAT_MAX_CONTEXT_CHARS,
+        )
+        if not has_owner_evidence(window):
+            return None  # nothing the owner said → nothing to retrieve; no provider call
+        result = await generate_delegated_answer(question, display_name_from_email(owner), window)
+        answer = validate_grounded_answer(result, window, owner)
+        if answer is None:
+            return None
+        logger.info("toucan delegated grounded answer: owner=%s conversation=%s", owner, conversation_id)
+        return grounded_reply_text(owner, answer)
+    except Exception:
+        logger.exception("toucan delegated grounded answer failed; falling back")
+        return None
+
+
 # Background tasks are kept referenced until done so the event loop cannot garbage-collect them.
 _pending: set[asyncio.Task] = set()
 
 
 def schedule_delegation_reply(
-    conversation_id: str, sender_email: str, message_id: str | None, mentioned: list[str] | None = None
+    conversation_id: str,
+    sender_email: str,
+    message_id: str | None,
+    mentioned: list[str] | None = None,
+    text: str | None = None,
 ) -> asyncio.Task:
-    task = asyncio.create_task(evaluate_and_reply(conversation_id, sender_email, message_id, mentioned))
+    task = asyncio.create_task(evaluate_and_reply(conversation_id, sender_email, message_id, mentioned, text))
     _pending.add(task)
     task.add_done_callback(_pending.discard)
     return task
