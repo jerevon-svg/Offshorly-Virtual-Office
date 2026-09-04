@@ -10,7 +10,7 @@ import {
   type ToucanMemory,
   type ToucanService,
   type ToucanStoredMessage,
-  ToucanDelegation,
+  type ToucanDelegation,
 } from "./types";
 
 // Canned-reply Toucan, lifted VERBATIM out of ToucanAssistantPanel.tsx so the

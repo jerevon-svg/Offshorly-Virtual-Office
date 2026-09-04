@@ -10,6 +10,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 //   * the server's delegation_ended clears the banner
 
 type Ended = { delegationId?: string | null; reason?: string | null };
+type Delegation = import("../../services/toucan").ToucanDelegation;
 
 const h = vi.hoisted(() => {
   const service = {
@@ -21,8 +22,8 @@ const h = vi.hoisted(() => {
     loadConversation: vi.fn(),
     confirmAction: vi.fn(),
     cancelAction: vi.fn(),
-    getDelegation: vi.fn(async () => null),
-    cancelDelegation: vi.fn(async () => null),
+    getDelegation: vi.fn(async (): Promise<Delegation | null> => null),
+    cancelDelegation: vi.fn(async (): Promise<Delegation | null> => null),
     listMemories: vi.fn(async () => []),
     deleteMemory: vi.fn(async () => {}),
     deleteConversation: vi.fn(async () => {}),
@@ -156,9 +157,9 @@ describe("ToucanAssistantPanel — A2.2 active delegation banner", () => {
 
   it("Stop cancels once, is disabled while pending, and removes the banner on success", async () => {
     h.service.getDelegation.mockResolvedValue(ACTIVE);
-    let resolveStop: (value: typeof ACTIVE | null) => void = () => {};
+    let resolveStop: (value: Delegation | null) => void = () => {};
     h.service.cancelDelegation.mockImplementation(
-      () => new Promise<typeof ACTIVE | null>((resolve) => (resolveStop = resolve)),
+      () => new Promise<Delegation | null>((resolve) => (resolveStop = resolve)),
     );
     await setup();
     const stop = screen.getByText("Stop") as HTMLButtonElement;

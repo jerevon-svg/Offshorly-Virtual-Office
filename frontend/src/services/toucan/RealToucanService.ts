@@ -11,7 +11,7 @@ import {
   type ToucanConversationDetail,
   type ToucanMemory,
   type ToucanService,
-  ToucanDelegation,
+  type ToucanDelegation,
 } from "./types";
 
 // Live Toucan — talks to the Virtual Office backend's POST /toucan/ask
