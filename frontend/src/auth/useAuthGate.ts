@@ -15,6 +15,7 @@ import { setDevIdentity as setRoomPresenceDevIdentity } from "../services/presen
 import { setDevIdentity as setRoomRequestsClientDevIdentity } from "../services/chat/roomRequestsClient";
 import { setDevIdentity as setTalkRequestsClientDevIdentity } from "../services/chat/talkRequestsClient";
 import { setDevIdentity as setToucanDevIdentity } from "../services/toucan";
+import { setDevIdentity as setAttendanceDevIdentity } from "../services/attendance";
 
 // Boot-time permission gate for the Virtual Office. Calls Atlas's
 // GET /api/v1/auth/me and checks the can_view_virtual_office flag.
@@ -210,6 +211,11 @@ function seedDevBypassIdentity(): void {
     role: "",
     team: null,
   });
+  // The bypass has no Atlas employee id, so the resolved email stands in for it. Without this
+  // every `?as=` identity shared getCurrentUserId()'s "bon" fallback, and everything keyed on it
+  // (checkout result/draft/session marker, mock attendance) leaked across users in one browser.
+  // Real /auth/me sign-in still assigns the Atlas id below — this line is dev-bypass only.
+  currentUserId = email;
   // Local multi-browser dev testing needs the map identity (?as=) and the
   // chat identity to be the same person — wire the just-resolved bypass
   // email into chat's own dev-identity bypass so chat isn't left trying a
@@ -233,6 +239,7 @@ function seedDevBypassIdentity(): void {
   setOfflineLineupDevIdentity(email);
   setSpatialWalkDevIdentity(email);
   setHubClientDevIdentity(email);
+  setAttendanceDevIdentity(email);
   setFeedClientDevIdentity(email);
   // Toucan's assistant endpoint (POST /toucan/ask) lives on the same VO backend and derives
   // the asking employee from this identity — without it, local ?as= testing would ask the

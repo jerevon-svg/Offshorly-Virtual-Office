@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   clearAll,
+  clearDraft,
   isAlreadyCheckedOut,
   loadDraft,
   loadResult,
+  loadSessionStart,
   saveDraft,
   saveResult,
+  saveSessionStart,
 } from "./checkoutStorage";
 
 const EMPLOYEE = "bon";
@@ -86,5 +89,60 @@ describe("clearAll", () => {
     clearAll(EMPLOYEE, WORK_DATE);
     expect(loadDraft(EMPLOYEE, WORK_DATE)).toBeNull();
     expect(loadResult(EMPLOYEE, WORK_DATE)).toBeNull();
+  });
+});
+
+describe("session-aware isAlreadyCheckedOut", () => {
+  const T = (h: number) => `2026-08-05T${String(h).padStart(2, "0")}:00:00.000Z`;
+
+  it("a successful result with no newer session marker means checked out", () => {
+    saveResult(EMPLOYEE, WORK_DATE, { success: true, submissionId: "s1", submittedAt: T(9) });
+    expect(isAlreadyCheckedOut(EMPLOYEE, WORK_DATE)).toBe(true);
+  });
+
+  it("a newer session marker turns the earlier result into history (active new session)", () => {
+    saveResult(EMPLOYEE, WORK_DATE, { success: true, submissionId: "s1", submittedAt: T(9) });
+    saveSessionStart(EMPLOYEE, WORK_DATE, T(10));
+    expect(isAlreadyCheckedOut(EMPLOYEE, WORK_DATE)).toBe(false);
+    // History is preserved, not deleted.
+    expect(loadResult(EMPLOYEE, WORK_DATE)?.submissionId).toBe("s1");
+    expect(loadSessionStart(EMPLOYEE, WORK_DATE)).toEqual({ startedAt: T(10) });
+  });
+
+  it("a later checkout result after the marker means checked out again", () => {
+    saveSessionStart(EMPLOYEE, WORK_DATE, T(10));
+    saveResult(EMPLOYEE, WORK_DATE, { success: true, submissionId: "s2", submittedAt: T(17) });
+    expect(isAlreadyCheckedOut(EMPLOYEE, WORK_DATE)).toBe(true);
+  });
+
+  it("a result that cannot be proven newer than the marker is history", () => {
+    saveSessionStart(EMPLOYEE, WORK_DATE, T(10));
+    saveResult(EMPLOYEE, WORK_DATE, { success: true, submissionId: "old-shape" });
+    expect(isAlreadyCheckedOut(EMPLOYEE, WORK_DATE)).toBe(false);
+  });
+
+  it("clearDraft leaves the result and marker alone; clearAll removes the marker too", () => {
+    saveDraft(EMPLOYEE, WORK_DATE, { entries: [], savedAt: T(9) });
+    saveResult(EMPLOYEE, WORK_DATE, { success: true, submissionId: "s1", submittedAt: T(9) });
+    saveSessionStart(EMPLOYEE, WORK_DATE, T(10));
+    clearDraft(EMPLOYEE, WORK_DATE);
+    expect(loadDraft(EMPLOYEE, WORK_DATE)).toBeNull();
+    expect(loadResult(EMPLOYEE, WORK_DATE)).not.toBeNull();
+    expect(loadSessionStart(EMPLOYEE, WORK_DATE)).not.toBeNull();
+    clearAll(EMPLOYEE, WORK_DATE);
+    expect(loadSessionStart(EMPLOYEE, WORK_DATE)).toBeNull();
+  });
+});
+
+describe("per-employee isolation", () => {
+  it("one employee's result, draft and session marker are invisible to another employee", () => {
+    saveResult("jerevon@offshorly.com", WORK_DATE, { success: true, submissionId: "j1", submittedAt: "2026-08-05T09:00:00.000Z" });
+    saveDraft("jerevon@offshorly.com", WORK_DATE, { entries: [], savedAt: "2026-08-05T09:00:00.000Z" });
+    saveSessionStart("jerevon@offshorly.com", WORK_DATE, "2026-08-05T08:00:00.000Z");
+    expect(loadResult("alex@offshorly.com", WORK_DATE)).toBeNull();
+    expect(loadDraft("alex@offshorly.com", WORK_DATE)).toBeNull();
+    expect(loadSessionStart("alex@offshorly.com", WORK_DATE)).toBeNull();
+    expect(isAlreadyCheckedOut("alex@offshorly.com", WORK_DATE)).toBe(false);
+    expect(isAlreadyCheckedOut("jerevon@offshorly.com", WORK_DATE)).toBe(true);
   });
 });

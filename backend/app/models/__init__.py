@@ -1,4 +1,5 @@
 from app.models.activity_event import ActivityEvent
+from app.models.attendance import EmployeeAttendance
 from app.models.avatar import Avatar
 from app.models.conversation import Conversation, ConversationParticipant
 from app.models.feed import FeedComment, FeedPost, FeedReaction
@@ -24,6 +25,7 @@ __all__ = [
     "Conversation",
     "ConversationParticipant",
     "ConversationRequest",
+    "EmployeeAttendance",
     "EmployeePosition",
     "FeedComment",
     "FeedPost",

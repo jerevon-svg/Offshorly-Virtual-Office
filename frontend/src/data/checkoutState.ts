@@ -38,7 +38,10 @@ const TRANSITIONS: Record<CheckoutState, CheckoutState[]> = {
   SUBMISSION_FAILED: ["EDITING_TIME_LOG", "REVIEWING", "IDLE"],
   CHECKOUT_SUCCESS: ["WALKING_TO_EXIT"],
   WALKING_TO_EXIT: ["CHECKED_OUT"],
-  CHECKED_OUT: [],
+  // Same-day re-check-in (useCheckoutFlow.beginNewSession, driven by a confirmed
+  // attendance Check In): the earlier checkout stays recorded as history in
+  // storage; only the live flow returns to IDLE for the new work session.
+  CHECKED_OUT: ["IDLE"],
 };
 
 export function canTransition(from: CheckoutState, to: CheckoutState): boolean {

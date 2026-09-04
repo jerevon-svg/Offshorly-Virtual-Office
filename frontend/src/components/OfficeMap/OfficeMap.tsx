@@ -10,6 +10,7 @@ import {
   bonLayer,
   charactersInRoom,
   formatCharacterName,
+  officeAssetLayers,
   npcCharacterLayers,
   rooms,
   roomContainingPoint,
@@ -24,6 +25,7 @@ import {
   nearestStandSpotConnectedTo,
   nearestWalkableConnectedTo,
   worldToCell,
+  isWalkable,
 } from "../../data/officeGrid";
 import { doorStandForRoom } from "../../data/doorStandPoints";
 import { seatsForRoomId, type Seat } from "../../data/roomSeats";
@@ -68,6 +70,7 @@ import {
   usePeerMovements,
   getPeerMovementSnapshot,
   type PeerMovementState,
+  useMovementSnapshotReady,
 } from "../../services/presence/movementSync";
 import { makeMoveSelf } from "./useSelfMovement";
 import { resolvePeerOverrides, resolveRenderablePeerEmails } from "./peerOverrides";
@@ -96,6 +99,8 @@ import { endDnd, useSelfStatus } from "../../services/presence/selfStatusStore";
 import { mapAtlasToOfficeStatus, type OfficeStatus } from "../../services/presence/status";
 import { resolveManualStatusMovement } from "../../services/presence/statusMovement";
 import { emitGoOffline, emitComeOnline, useOfflineLineup } from "../../services/presence/offlineLineupClient";
+import { attendanceService, type AttendanceRecord, type AttendanceStatus } from "../../services/attendance";
+import { canOfferCheckIn, canSelfFreeWalk, insideOfficeValidator, resolveSpawnPlacement } from "./spawnPlacement";
 import { slotIndexToPosition } from "../../services/presence/lineupSlots";
 import {
   applyOfflineLineupPositions,
@@ -270,6 +275,17 @@ function computeFloatingChatRightOffsets(items: { key: string; minimized: boolea
   }
   return offsets;
 }
+
+// A CHECKED_IN spawn waits for movement-sync's first positions_snapshot (the only carrier of
+// self's persisted position) for at most this long; a missing/dead movement socket (pure mock
+// rig, backend down) then falls through to the own-desk fallback instead of never spawning.
+const MOVEMENT_SNAPSHOT_WAIT_MS = 1500;
+// "Inside the office" for the spawn restore = anywhere on the floor that is NOT the manifest's
+// sidewalk/outside layer, so corridors and shared walking areas restore too (roomOf() was too
+// strict: it only knows the eleven room rects).
+const isInsideOfficeForSpawn = insideOfficeValidator(
+  officeAssetLayers.find((layer) => layer.kind === "sidewalk") ?? null,
+);
 
 export function OfficeMap() {
   const { phase, hourDecimal, overrideHour, setOverrideHour } = useOfficePhase();
@@ -1133,7 +1149,20 @@ export function OfficeMap() {
   // it goes non-null on page load before any deliberate check-in — making it
   // unusable as an "already checked in" signal. hasCheckedIn is the
   // pre-existing, purpose-built flag for this exact gate.
-  const [hasCheckedIn, setHasCheckedIn] = useState(false);
+  //
+  // Attendance is SERVER-AUTHORITATIVE (services/attendance → backend
+  // employee_attendance): "UNKNOWN" until GET /attendance/me answers, then
+  // CHECKED_IN / CHECKED_OUT. Refresh, tab close, socket loss and a second
+  // browser never change it — only a confirmed check-in (startCheckin) or
+  // the existing explicit Log Time → Check Out flow does.
+  const [attendance, setAttendance] = useState<AttendanceStatus | "UNKNOWN">("UNKNOWN");
+  const [attendanceCheckedInAt, setAttendanceCheckedInAt] = useState<string | null>(null);
+  // "You're checked out!" card visibility — LOCAL UI state, deliberately separate from the
+  // persisted checkout result (today's history stays stored) and from attendance. Reset to
+  // visible on every live CHECKED_OUT transition (see the lineup effect), so a new checkout
+  // shows the card again; a reload restores the card once and it can be closed.
+  const [successCardDismissed, setSuccessCardDismissed] = useState(false);
+  const hasCheckedIn = attendance === "CHECKED_IN";
 
   useEffect(() => {
     return () => {
@@ -1389,6 +1418,14 @@ export function OfficeMap() {
   // characterIsSittingById/characterDirectionsById — same pattern as
   // savedAvatarWalkState above.
   const peerMovements = usePeerMovements();
+  // First-snapshot gate for the CHECKED_IN spawn restore (see the spawn effect below).
+  const movementSnapshotReady = useMovementSnapshotReady();
+  const [movementSnapshotWaitExpired, setMovementSnapshotWaitExpired] = useState(false);
+  useEffect(() => {
+    if (movementSnapshotReady) return;
+    const id = window.setTimeout(() => setMovementSnapshotWaitExpired(true), MOVEMENT_SNAPSHOT_WAIT_MS);
+    return () => window.clearTimeout(id);
+  }, [movementSnapshotReady]);
   const [peerWalkState, setPeerWalkState] = useState<Record<string, PeerWalkerRenderState>>({});
   const handlePeerWalkUpdate = useCallback(
     (id: string, s: PeerWalkerRenderState) => setPeerWalkState((prev) => ({ ...prev, [id]: s })),
@@ -1656,14 +1693,19 @@ export function OfficeMap() {
     playPat?.();
   }
 
-  // Checkout flow — stamped once the onboarding sequence reaches "done"
-  // (whichever path got there: skipped check-in, or walked to a room).
+  // Checkout flow — the work-session start comes from the server's
+  // checked_in_at (not Date.now() at mount), so a refresh or a second browser
+  // resumes the SAME session clock instead of restarting it. Null while
+  // checked out, which also keeps the 8h reminder from arming on the sidewalk.
   const [timeInMs, setTimeInMs] = useState<number | null>(null);
   useEffect(() => {
-    if (onboarding === "done" && timeInMs === null) {
-      setTimeInMs(Date.now());
+    if (attendance !== "CHECKED_IN") {
+      setTimeInMs(null);
+      return;
     }
-  }, [onboarding, timeInMs]);
+    const parsed = attendanceCheckedInAt ? Date.parse(attendanceCheckedInAt) : NaN;
+    setTimeInMs(Number.isFinite(parsed) ? parsed : Date.now());
+  }, [attendance, attendanceCheckedInAt]);
 
   // Debug-only override: lets the dev debug panel set a synthetic "hours
   // worked" so the 8h checkout reminder (workedMinutes >= 480) can be tested
@@ -1677,6 +1719,52 @@ export function OfficeMap() {
     hourDecimal,
     timeInMs: effectiveTimeInMs,
   });
+
+  // Applies a server attendance record. A confirmed CHECKED_IN also drives the checkout flow's
+  // session boundary: `newSession` (explicit Check In) or a stale same-day CHECKED_OUT resume
+  // starts a new session (beginNewSession keeps the earlier checkout as history). The one
+  // exception: if the local checkout completed AFTER the server's check-in (a check-out POST
+  // that failed earlier), the local checkout is the truth — re-send it instead of resurrecting
+  // the session. That is the only reconcile left; it can never re-post a checkout that predates
+  // a newer check-in.
+  function applyAttendance(record: AttendanceRecord, opts?: { newSession?: boolean }) {
+    if (record.status === "CHECKED_IN" && !opts?.newSession && checkoutFlow.state === "CHECKED_OUT") {
+      const submitted = Date.parse(checkoutFlow.submissionResult?.submittedAt ?? "");
+      const checkedIn = Date.parse(record.checkedInAt ?? "");
+      if (Number.isFinite(submitted) && Number.isFinite(checkedIn) && submitted > checkedIn) {
+        attendanceService
+          .checkOut(getCurrentUserId())
+          .then((reconciled) => applyAttendance(reconciled))
+          .catch(() => setAttendance("CHECKED_OUT"));
+        return;
+      }
+    }
+    setAttendance(record.status);
+    setAttendanceCheckedInAt(record.checkedInAt);
+    if (record.status === "CHECKED_IN" && (opts?.newSession || checkoutFlow.state === "CHECKED_OUT")) {
+      checkoutFlow.beginNewSession(record.checkedInAt ?? new Date().toISOString());
+    }
+  }
+
+  // Attendance load — one GET per resolved identity. A failed read degrades to
+  // CHECKED_OUT (sidewalk, Check In offered): the safe default, since the
+  // check-in POST is the real gate anyway.
+  useEffect(() => {
+    const employeeId = getCurrentUserId();
+    let cancelled = false;
+    attendanceService
+      .getMine(employeeId)
+      .then((record) => {
+        if (!cancelled) applyAttendance(record);
+      })
+      .catch(() => {
+        if (!cancelled) setAttendance("CHECKED_OUT");
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selfChatId]);
 
   // Presence/status system (see services/presence/status.ts). Idle (Away)
   // detection runs once here; inConversation now comes from the server-broadcast
@@ -1735,6 +1823,7 @@ export function OfficeMap() {
 
     if (checkoutFlow.state === "CHECKED_OUT" && prev !== "CHECKED_OUT") {
       reconciledLineupSlotRef.current = null;
+      setSuccessCardDismissed(false);
       // DND should only meaningfully protect an actively checked-in employee (feature spec
       // section 16) — checking out ends any active DND session the same way a manual cancel
       // does (restores the previous status, credits elapsed time, and — via the existing
@@ -1742,10 +1831,22 @@ export function OfficeMap() {
       // dnd_set(false) so any room this person was protecting unlocks).
       endDnd();
       emitGoOffline();
+      // Explicit checkout is the ONLY thing that ends the server-side work
+      // session — reached solely through the existing Log Time → submit →
+      // exit-walk path that lands in CHECKED_OUT.
+      attendanceService
+        .checkOut(getCurrentUserId())
+        .then(applyAttendance)
+        .catch(() => {
+          setToast("Checked out here, but the office couldn't save it. It will retry next time you open the office.");
+          setTimeout(() => setToast(null), 4000);
+        });
     } else if (prev === "CHECKED_OUT" && checkoutFlow.state !== "CHECKED_OUT") {
       reconciledLineupSlotRef.current = null;
       emitComeOnline();
-      walkBackToDesk();
+      // No walkBackToDesk() here any more: this transition now also fires on a same-day
+      // re-check-in (beginNewSession), where the check-in walk itself owns the movement, and
+      // on the dev reset the viewer is checked out and belongs outside.
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [checkoutFlow.state]);
@@ -2012,8 +2113,54 @@ export function OfficeMap() {
   // guard) — an in-progress exit-walk animation is left alone.
   useEffect(() => {
     if (spawnMovedRef.current || !viewerLayer || isWalking) return;
+    // A CHECKED_IN restore needs self's persisted position, which only arrives with the movement
+    // socket's first positions_snapshot — wait for it (bounded by MOVEMENT_SNAPSHOT_WAIT_MS).
+    // CHECKED_OUT never needs it: the sidewalk decision is independent of any persisted position.
+    if (attendance === "CHECKED_IN" && !movementSnapshotReady && !movementSnapshotWaitExpired) return;
+    const selfSnapshot = getPeerMovementSnapshot().find(
+      (p) => p.email === selfChatId.toLowerCase(),
+    );
+    // Attendance gates placement (spawnPlacement.ts): CHECKED_OUT → sidewalk
+    // regardless of any persisted interior position; CHECKED_IN → the last
+    // persisted in-office position (standing spot or painted seat) when it
+    // still passes the same inside/walkable/seat/DND-lock checks a live walk
+    // would, else the own desk; UNKNOWN → keep waiting (the once-guard below
+    // stays un-armed until the server has answered). All validators reuse the
+    // existing geometry/lock helpers — no second location system.
+    const bw = playerCharacterLayer.width;
+    const bh = playerCharacterLayer.height;
+    const placement = resolveSpawnPlacement(attendance, checkoutFlow.state, selfSnapshot?.stable ?? null, {
+      avatarSize: { w: bw, h: bh },
+      isInsideOffice: isInsideOfficeForSpawn,
+      isWalkable: (center) => {
+        const cell = worldToCell(center);
+        return isWalkable(cell.cx, cell.cy);
+      },
+      isRoomLocked: (center) => {
+        const flatRoomId = flatRoomIdAt(center);
+        return flatRoomId !== null && isRoomLocked(flatRoomId, roomPresenceEntries, dndEmails);
+      },
+      findSeat: (center, seatKey) => {
+        const flatRoomId = flatRoomIdAt(center);
+        if (!flatRoomId) return null;
+        return seatsForRoomId(flatRoomId).find((seat) => seatCentroidKey(seat.x, seat.y) === seatKey) ?? null;
+      },
+    });
+    if (!placement) return;
     spawnMovedRef.current = true;
-    const seatedAtDesk = checkoutFlow.state !== "CHECKED_OUT";
+    if (placement.kind === "standing") {
+      resetBonPos(placement.pos);
+      setIsSitting(false);
+      setCurrentSeatKey(null);
+      face(placement.facing);
+      return;
+    }
+    if (placement.kind === "seated") {
+      resetBonPos(placement.pos);
+      sitAtSeat(placement.seat);
+      return;
+    }
+    const seatedAtDesk = placement.kind === "desk";
     // Resolve Bon's seat the SAME way the onboarding walk does
     // (resolveOwnSeat: nearest real detected seat to the room's door-in
     // point) rather than viewerLayer.sitDirection — that came from Bon's
@@ -2022,8 +2169,6 @@ export function OfficeMap() {
     // seat onboarding just walked him to. This keeps "check in fresh" and
     // "reload while already seated" landing in the same seat/direction.
     const seat = seatedAtDesk ? resolveOwnSeat() : null;
-    const bw = playerCharacterLayer.width;
-    const bh = playerCharacterLayer.height;
     const seatAt = !seatedAtDesk ? bonLayer : seat ? { x: seat.x - bw / 2, y: seat.y - bh / 2 } : viewerLayer;
     resetBonPos({ x: seatAt.x, y: seatAt.y });
     if (seatedAtDesk && seat) {
@@ -2039,9 +2184,6 @@ export function OfficeMap() {
     // always shows the seat's fixed direction instead of whichever way bon
     // was actually last facing before reload. Falls back to the seat
     // default (already applied above) when there's no snapshot entry yet.
-    const selfSnapshot = getPeerMovementSnapshot().find(
-      (p) => p.email === selfChatId.toLowerCase(),
-    );
     if (selfSnapshot) {
       if (selfSnapshot.stable.state === "sitting") {
         setSitDirection(selfSnapshot.stable.facing);
@@ -2054,7 +2196,7 @@ export function OfficeMap() {
     // memoized), and listing it (or the layer dims it reads) would re-fire
     // this effect on every render, defeating the spawnMovedRef "once" guard.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewerLayer, isWalking, resetBonPos, checkoutFlow.state]);
+  }, [viewerLayer, isWalking, resetBonPos, checkoutFlow.state, attendance, movementSnapshotReady, movementSnapshotWaitExpired]);
 
   // Once real people are on the floor, the manifest's fictional cast is
   // hidden — otherwise employees and characters share the office. The
@@ -2230,7 +2372,9 @@ export function OfficeMap() {
     setDebugHoursWorked(h);
     if (h !== null) return;
     checkoutFlow.resetToday();
-    setHasCheckedIn(false);
+    setAttendance("CHECKED_OUT");
+    setAttendanceCheckedInAt(null);
+    void attendanceService.checkOut(getCurrentUserId()).catch(() => {});
     setOnboarding("done");
     setFrozenCheckoutAtMs(null);
     window.clearTimeout(greetTimerRef.current);
@@ -2547,7 +2691,33 @@ export function OfficeMap() {
     playAt(0);
   }
 
+  // Check In is the gate to office entry: attendance must be confirmed by the
+  // server BEFORE any entry movement starts. Success → CHECKED_IN locally →
+  // the existing reception/entry walk (beginCheckinWalk). Failure → avatar
+  // stays outside, the modal closes, a toast shows, and the reception menu
+  // offers Check In again. finishArrival only completes the movement.
+  const checkinRequestPendingRef = useRef(false);
   function startCheckin() {
+    if (checkinRequestPendingRef.current) return;
+    checkinRequestPendingRef.current = true;
+    attendanceService
+      .checkIn(getCurrentUserId())
+      .then((record) => {
+        applyAttendance(record, { newSession: true });
+        if (record.status !== "CHECKED_IN") throw new Error("Check-in not confirmed by server");
+        beginCheckinWalk();
+      })
+      .catch(() => {
+        setOnboarding("done");
+        setToast("Couldn't check in. Please try again.");
+        setTimeout(() => setToast(null), 2600);
+      })
+      .finally(() => {
+        checkinRequestPendingRef.current = false;
+      });
+  }
+
+  function beginCheckinWalk() {
     const arisha = npcCharacterLayers.find((l) => l.id === "arisha");
     if (!arisha) {
       // No reception NPC found (shouldn't happen) — skip straight to done
@@ -2711,7 +2881,6 @@ export function OfficeMap() {
         setGreeting({ characterId: playerLayerId, nonce: greetNonceRef.current, text: "Hi team!" });
         greetTimerRef.current = window.setTimeout(() => setGreeting(null), 3000);
         setOnboarding("done");
-        setHasCheckedIn(true);
         openCompanyHub("checkin");
       }
 
@@ -3482,6 +3651,16 @@ export function OfficeMap() {
     // Room-entry protection (walkToSeat/handleMapRightClick) is a SEPARATE, already-existing
     // gate — this one applies regardless of room/location, per "DND protects the employee, not
     // merely the room."
+    // Attendance gate for the three actions that walk the avatar to a colleague (approach, and
+    // the walk-up chat/call): a checked-out employee cannot manually move until Check In
+    // (canSelfFreeWalk). Checked before the DND gate so no walk or talk-request is ever started.
+    if (
+      (action === "approach" || action === "chat" || action === "call") &&
+      !canSelfFreeWalk(attendance, onboarding === "done", checkoutBusy)
+    ) {
+      setMenu(null);
+      return;
+    }
     if ((action === "approach" || action === "chat" || action === "call") && target.id.includes("@")) {
       const targetEmail = target.id.trim().toLowerCase();
       if (dndEmails.has(targetEmail)) {
@@ -3738,7 +3917,10 @@ export function OfficeMap() {
   // always a deliberately-chosen seat/character, never an arbitrary click.
   // Same suppression guard as handleCharacterClick/handleSeatClick/onRoomClick.
   function handleMapRightClick(point: Pt) {
-    if (onboarding !== "done" || checkoutBusy) return;
+    // Attendance-gated (canSelfFreeWalk): a checked-out employee stays on the sidewalk until
+    // Check In — peers place lineup members at their slot and never render their live walks, so
+    // letting them roam here would only ever be visible on their own screen.
+    if (!canSelfFreeWalk(attendance, onboarding === "done", checkoutBusy)) return;
     const start = { x: bonPos.x, y: bonPos.y };
     const { valid, cellCenter } = classifyDestination(start, point);
 
@@ -4070,7 +4252,7 @@ export function OfficeMap() {
               // fall through to the normal sidebar rather than popping an
               // empty menu.
               if (layer.id === "reception-room") {
-                const canCheckIn = !hasCheckedIn && checkoutFlow.state === "IDLE";
+                const canCheckIn = canOfferCheckIn(attendance, checkoutFlow.state);
                 const canCheckOut =
                   hasCheckedIn &&
                   checkoutFlow.state === "IDLE" &&
@@ -4342,12 +4524,15 @@ export function OfficeMap() {
         onTryAgain={() => void checkoutFlow.retrySubmit()}
         onSaveAndReturnLater={checkoutFlow.saveAndReturnLater}
       />
-          <CheckoutSuccessCard
-            state={checkoutFlow.state}
-            workedLabel={checkoutFlow.workedLabel}
-            entries={checkoutFlow.entries}
-            submissionResult={checkoutFlow.submissionResult}
-          />
+          {!successCardDismissed && (
+            <CheckoutSuccessCard
+              state={checkoutFlow.state}
+              workedLabel={checkoutFlow.workedLabel}
+              entries={checkoutFlow.entries}
+              submissionResult={checkoutFlow.submissionResult}
+              onDismiss={() => setSuccessCardDismissed(true)}
+            />
+          )}
         </>
       )}
       {import.meta.env.DEV && (
@@ -4734,7 +4919,7 @@ export function OfficeMap() {
         <ReceptionActionMenu
           anchor={receptionMenu}
           onClose={() => setReceptionMenu(null)}
-          showCheckIn={!hasCheckedIn && checkoutFlow.state === "IDLE"}
+          showCheckIn={canOfferCheckIn(attendance, checkoutFlow.state)}
           showCheckOut={
             hasCheckedIn &&
             checkoutFlow.state === "IDLE" &&

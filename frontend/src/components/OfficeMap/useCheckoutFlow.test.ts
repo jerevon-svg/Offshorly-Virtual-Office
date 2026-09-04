@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useCheckoutFlow } from "./useCheckoutFlow";
-import { loadDraft, loadResult, clearAll } from "../../data/checkoutStorage";
+import { loadDraft, loadResult, clearAll, saveDraft, saveResult } from "../../data/checkoutStorage";
 
 // zohoService is mocked at the module boundary so each test controls
 // submitTimeLogs' outcome directly (HTTP-500-equivalent failure, success,
@@ -206,5 +206,37 @@ describe("useCheckoutFlow — submission failure resilience", () => {
 
     expect(result.current.state).toBe("CHECKOUT_SUCCESS");
     expect(loadResult(EMPLOYEE_ID, currentWorkDate())?.success).toBe(true);
+  });
+});
+
+describe("useCheckoutFlow — same-day new session", () => {
+  it("resumes CHECKED_OUT from today's result, beginNewSession returns to IDLE and keeps the result as history", () => {
+    const workDate = currentWorkDate();
+    const earlier = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    saveResult(EMPLOYEE_ID, workDate, { success: true, submissionId: "session-1", submittedAt: earlier });
+    saveDraft(EMPLOYEE_ID, workDate, {
+      entries: [{ projectId: "p", taskId: "t", category: null, timeSpentMinutes: 60, workDescription: "old" }],
+      savedAt: earlier,
+    });
+
+    const { result } = renderHook(() =>
+      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs: null }),
+    );
+    expect(result.current.state).toBe("CHECKED_OUT");
+    expect(result.current.submissionResult?.submissionId).toBe("session-1");
+
+    act(() => result.current.beginNewSession(new Date().toISOString()));
+    expect(result.current.state).toBe("IDLE");
+    expect(result.current.submissionResult).toBeNull();
+    expect(result.current.entries).toEqual([]);
+    // History preserved; stale draft dropped so already-logged entries are not inherited.
+    expect(loadResult(EMPLOYEE_ID, workDate)?.submissionId).toBe("session-1");
+    expect(loadDraft(EMPLOYEE_ID, workDate)).toBeNull();
+
+    // A refresh (fresh hook) now starts the new session in IDLE, not CHECKED_OUT.
+    const { result: reloaded } = renderHook(() =>
+      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs: Date.now() }),
+    );
+    expect(reloaded.current.state).toBe("IDLE");
   });
 });

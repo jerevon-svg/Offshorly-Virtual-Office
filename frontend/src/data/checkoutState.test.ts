@@ -22,6 +22,8 @@ describe("canTransition", () => {
     ["SUBMISSION_FAILED", "REVIEWING"],
     ["CHECKOUT_SUCCESS", "WALKING_TO_EXIT"],
     ["WALKING_TO_EXIT", "CHECKED_OUT"],
+    // Same-day re-check-in: a confirmed attendance Check In starts a new session.
+    ["CHECKED_OUT", "IDLE"],
   ] as [CheckoutState, CheckoutState][])("%s -> %s is legal", (from, to) => {
     expect(canTransition(from, to)).toBe(true);
   });
@@ -30,15 +32,31 @@ describe("canTransition", () => {
     ["IDLE", "AT_RECEPTION"],
     ["AT_RECEPTION", "WALKING_TO_RECEPTION"],
     ["EDITING_TIME_LOG", "AT_RECEPTION"],
-    ["CHECKED_OUT", "IDLE"],
+    ["CHECKED_OUT", "AT_RECEPTION"],
+    ["CHECKED_OUT", "WALKING_TO_EXIT"],
     ["SUBMITTING", "EDITING_TIME_LOG"],
     ["WALKING_TO_EXIT", "IDLE"],
   ] as [CheckoutState, CheckoutState][])("%s -> %s is illegal", (from, to) => {
     expect(canTransition(from, to)).toBe(false);
   });
 
-  it("has no outgoing transitions from CHECKED_OUT", () => {
-    expect(canTransition("CHECKED_OUT", "IDLE")).toBe(false);
+  it("IDLE is the only outgoing transition from CHECKED_OUT (same-day re-check-in)", () => {
+    const all: CheckoutState[] = [
+      "IDLE",
+      "REMINDER_SHOWN",
+      "CHECKOUT_CONFIRMATION",
+      "SAYING_GOODBYE",
+      "WALKING_TO_RECEPTION",
+      "AT_RECEPTION",
+      "EDITING_TIME_LOG",
+      "REVIEWING",
+      "SUBMITTING",
+      "SUBMISSION_FAILED",
+      "CHECKOUT_SUCCESS",
+      "WALKING_TO_EXIT",
+      "CHECKED_OUT",
+    ];
+    expect(all.filter((to) => canTransition("CHECKED_OUT", to))).toEqual(["IDLE"]);
   });
 });
 

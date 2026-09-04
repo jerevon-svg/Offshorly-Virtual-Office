@@ -229,7 +229,7 @@ describe("useAuthGate", () => {
     warnSpy.mockRestore();
   });
 
-  it("VITE_AUTH_GATE=off bypass path never touches currentUserId, and does not warn", async () => {
+  it("VITE_AUTH_GATE=off bypass path scopes currentUserId to the bypass identity, and does not warn", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     // Seed a known, non-fallback sentinel first via the real fetch-based path
     // so this test is meaningful regardless of run order: if the bypass path
@@ -258,7 +258,9 @@ describe("useAuthGate", () => {
     await waitFor(() => expect(fetchSpy).not.toHaveBeenCalled());
     // Bypass path deliberately never touches currentUserId — it must remain
     // whatever it was seeded to above, not silently reset to "bon".
-    expect(getCurrentUserId()).toBe("sentinel-id");
+    // The bypass has no Atlas id; the resolved bypass email stands in so per-employee
+    // storage (checkout, mock attendance) is namespaced per `?as=` identity.
+    expect(getCurrentUserId()).toBe("jerevon@offshorly.com");
     // Intentional bypass, not a shape mismatch — must not warn.
     expect(warnSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
@@ -317,6 +319,22 @@ describe("useAuthGate", () => {
       expect(getCurrentUser()?.full_name).toBe("Lui");
     });
 
+    it("scopes getCurrentUserId() to the ?as= identity so per-employee storage cannot leak", () => {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: {
+          ...window.location,
+          href: "https://atlas.offshorly.com/virtual-office?as=alex@offshorly.com",
+          search: "?as=alex@offshorly.com",
+        },
+      });
+      render(<GateProbe />);
+      expect(getCurrentUserId()).toBe("alex@offshorly.com");
+    });
+    it("scopes getCurrentUserId() to the default bypass email, not the 'bon' fallback id", () => {
+      render(<GateProbe />);
+      expect(getCurrentUserId()).toBe("jerevon@offshorly.com");
+    });
     it("?as= takes precedence over VITE_DEV_USER_EMAIL when both are set", () => {
       import.meta.env.VITE_DEV_USER_EMAIL = "lui@offshorly.com";
       Object.defineProperty(window, "location", {
