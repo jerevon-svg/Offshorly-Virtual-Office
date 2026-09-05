@@ -13,6 +13,11 @@ import type { PeerMovementState } from "../../services/presence/movementSync";
 import { clearAll as clearCheckoutStorage, saveResult as saveCheckoutResult } from "../../data/checkoutStorage";
 import { getCurrentUserId } from "../../auth/useAuthGate";
 import { mockAttendanceService, resetMockAttendanceForTests } from "../../services/attendance";
+import { FRAME_HEIGHT, FRAME_WIDTH, bonLayer, officeAssetLayers } from "../../data/office-layout";
+import { isWalkable, worldToCell } from "../../data/officeGrid";
+import { insideOfficeValidator } from "./spawnPlacement";
+import { computeCenterTransform } from "./panMath";
+import type { ReactZoomPanPinchRef } from "react-zoom-pan-pinch";
 
 // Spies on the two spatial-session emit functions so tests can assert
 // exactly when spatial_session_start/leave fire, without opening a real
@@ -169,6 +174,55 @@ vi.mock("../../services/presence/movementSync", async () => {
       return peerMovementSnapshotState.snapshotReady || actualReady;
     },
   };
+});
+
+// Camera write recorder for the "camera restore to self" tests below. The REAL TransformWrapper
+// still renders (every other test in this file keeps its genuine pan/zoom behaviour); we only
+// intercept the imperative ref so each `setTransform` call OfficeMap makes is recorded, then
+// forwarded to the real lib. The controls object react-zoom-pan-pinch hands out is created once
+// per instance, so wrapping it once per mount is enough.
+const { cameraRecorder } = vi.hoisted(() => ({
+  cameraRecorder: {
+    calls: [] as { x: number; y: number; scale: number }[],
+    controls: null as import("react-zoom-pan-pinch").ReactZoomPanPinchRef | null,
+    wrapped: new WeakSet<object>(),
+    // When true, the wrapper's onInit (OfficeMap's "camera ready" signal) is held back until the
+    // test calls releaseInit() — simulates a camera that initialises AFTER the restored self
+    // position is already known.
+    holdInit: false,
+    releaseInit: null as null | (() => void),
+  },
+}));
+vi.mock("react-zoom-pan-pinch", async () => {
+  const actual = await vi.importActual<typeof import("react-zoom-pan-pinch")>("react-zoom-pan-pinch");
+  const React = await import("react");
+  type Controls = import("react-zoom-pan-pinch").ReactZoomPanPinchRef;
+  type Props = React.ComponentProps<typeof actual.TransformWrapper>;
+  const TransformWrapper = React.forwardRef<Controls, Props>(function RecordingTransformWrapper(props, ref) {
+    const merged = React.useCallback(
+      (controls: Controls | null) => {
+        if (controls && !cameraRecorder.wrapped.has(controls)) {
+          cameraRecorder.wrapped.add(controls);
+          const real = controls.setTransform;
+          controls.setTransform = (x, y, scale, time, type) => {
+            cameraRecorder.calls.push({ x, y, scale });
+            return real(x, y, scale, time, type);
+          };
+        }
+        cameraRecorder.controls = controls;
+        if (typeof ref === "function") ref(controls);
+        else if (ref) ref.current = controls;
+      },
+      [ref],
+    );
+    const onInit = props.onInit;
+    const heldOnInit: typeof onInit = (ctx) => {
+      if (cameraRecorder.holdInit) cameraRecorder.releaseInit = () => onInit?.(ctx);
+      else onInit?.(ctx);
+    };
+    return React.createElement(actual.TransformWrapper, { ...props, ref: merged, onInit: heldOnInit });
+  });
+  return { ...actual, TransformWrapper };
 });
 
 // The roster's real occupants are keyed by the flat rooms/teamRooms
@@ -728,6 +782,196 @@ describe("OfficeMap", () => {
     it("falls back to the seat default when there is no self snapshot entry yet", async () => {
       peerMovementSnapshotState.entries = [];
       expect(() => render(<OfficeMap />)).not.toThrow();
+    });
+  });
+
+  // Regression coverage for the reload camera bug (2026-09-05): avatar position persistence
+  // restored self correctly, but the camera stayed on the mount framing (bonLayer = the
+  // entrance/reception) so the user had to pan around to find themselves. The fix frames the
+  // camera on the restored position ONCE from the spawn-restore effect. Nothing here drives the
+  // camera through the DOM — jsdom gives the wrapper a 0x0 rect — so the assertions are on the
+  // recorded setTransform writes, computed with the same panMath helper OfficeMap uses.
+  describe("camera restore to self on reload (one-shot, not a follow camera)", () => {
+    const SELF_EMAIL = "jerevon@offshorly.com";
+    const selfPerson: OfficePerson = {
+      email: SELF_EMAIL,
+      displayName: "Bon",
+      status: "ONLINE",
+      departmentName: "Design",
+      jobTitle: null,
+      currentActivity: null,
+      lastMessage: null,
+      avatarId: "bon",
+      roomId: "design-team",
+      atlasRoomId: null,
+      inEphemeralRoom: false,
+    };
+    const AVATAR = { width: bonLayer.width, height: bonLayer.height };
+    // Same cover-fit rule OfficeMap's computeCoverScale uses (module-private there).
+    const initialScale = Math.max(window.innerWidth / FRAME_WIDTH, window.innerHeight / FRAME_HEIGHT);
+    const FOCUS_SCALE = initialScale * 2.5;
+    const pct = (v: number, frame: number) => `${(v / frame) * 100}%`;
+
+    // The framing OfficeMap must write for an avatar whose top-left is `pos` (0x0 wrapper in jsdom).
+    function framingFor(pos: { x: number; y: number }) {
+      const { x, y } = computeCenterTransform({ x: pos.x, y: pos.y, ...AVATAR }, FOCUS_SCALE, 0, 0);
+      return { x, y, scale: FOCUS_SCALE };
+    }
+    const sameFraming = (a: { x: number; y: number; scale: number }, b: { x: number; y: number; scale: number }) =>
+      Math.abs(a.x - b.x) < 1e-6 && Math.abs(a.y - b.y) < 1e-6 && Math.abs(a.scale - b.scale) < 1e-6;
+
+    // A persisted standing spot that passes the SAME inside/walkable checks the spawn effect
+    // applies (spawnPlacement.ts), found with the real validators so the test never hard-codes a
+    // point the floor plan could later invalidate. Distinct from bonLayer (the entrance) so a
+    // restored framing is distinguishable from the mount framing.
+    function findRestorableStandingPos(): { x: number; y: number } {
+      const inside = insideOfficeValidator(officeAssetLayers.find((l) => l.kind === "sidewalk") ?? null);
+      for (let y = 40; y < FRAME_HEIGHT - AVATAR.height; y += 20) {
+        for (let x = 40; x < FRAME_WIDTH - AVATAR.width; x += 20) {
+          const center = { x: x + AVATAR.width / 2, y: y + AVATAR.height / 2 };
+          const cell = worldToCell(center);
+          if (inside(center) && isWalkable(cell.cx, cell.cy) && (x !== bonLayer.x || y !== bonLayer.y)) return { x, y };
+        }
+      }
+      throw new Error("no restorable standing position found on the floor plan");
+    }
+
+    function selfStanding(pos: { x: number; y: number }, revision = 1): PeerMovementState[] {
+      return [
+        { email: SELF_EMAIL, revision, stable: { pos, facing: "left", state: "standing", seatKey: null, roomId: null }, active: null },
+      ];
+    }
+
+    function selfSpriteLayer(container: HTMLElement): HTMLElement {
+      const src = characterSprite(BON_SPRITE_SET, "idle", "left");
+      const img = Array.from(container.querySelectorAll("img")).find((el) => el.getAttribute("src") === src);
+      expect(img, "self idle-left sprite").toBeTruthy();
+      return img!.parentElement as HTMLElement;
+    }
+
+    beforeEach(() => {
+      cameraRecorder.calls = [];
+      cameraRecorder.holdInit = false;
+      cameraRecorder.releaseInit = null;
+      mockRosterPeople = [selfPerson];
+      setCurrentUserFromMeResponse({ id: "self-id", email: SELF_EMAIL, full_name: "Bon", role: "", team: null });
+    });
+
+    afterEach(() => {
+      mockRosterPeople = [];
+      peerMovementSnapshotState.entries = [];
+      peerMovementSnapshotState.snapshotReady = false;
+      resetMockAttendanceForTests(getCurrentUserId());
+      resetCurrentUserForTests();
+      cameraRecorder.calls = [];
+    });
+
+    it("a CHECKED_IN restored standing position centers the camera on it exactly once, at the default focus zoom, and leaves the avatar position untouched", async () => {
+      const pos = findRestorableStandingPos();
+      await mockAttendanceService.checkIn(getCurrentUserId());
+      peerMovementSnapshotState.snapshotReady = true;
+      peerMovementSnapshotState.entries = selfStanding(pos);
+
+      const { container } = render(<OfficeMap />);
+
+      const restored = framingFor(pos);
+      await waitFor(() => {
+        expect(cameraRecorder.calls.some((c) => sameFraming(c, restored))).toBe(true);
+      });
+      // Exactly one restore framing, and it is the LAST camera write — nothing re-frames after it.
+      expect(cameraRecorder.calls.filter((c) => sameFraming(c, restored)).length).toBe(1);
+      expect(sameFraming(cameraRecorder.calls[cameraRecorder.calls.length - 1], restored)).toBe(true);
+      // Default office focus zoom, same multiplier as the mount framing — no zoom jump.
+      expect(cameraRecorder.calls.every((c) => Math.abs(c.scale - FOCUS_SCALE) < 1e-6)).toBe(true);
+      // The restored avatar position itself is exactly the persisted one — the fix only READS it.
+      const layer = selfSpriteLayer(container);
+      expect(layer.style.left).toBe(pct(pos.x, FRAME_WIDTH));
+      expect(layer.style.top).toBe(pct(pos.y, FRAME_HEIGHT));
+    });
+
+    it("does not recenter again on later renders or when self's synced position changes afterwards", async () => {
+      const pos = findRestorableStandingPos();
+      await mockAttendanceService.checkIn(getCurrentUserId());
+      peerMovementSnapshotState.snapshotReady = true;
+      peerMovementSnapshotState.entries = selfStanding(pos);
+
+      const { rerender } = render(<OfficeMap />);
+      const restored = framingFor(pos);
+      await waitFor(() => expect(cameraRecorder.calls.some((c) => sameFraming(c, restored))).toBe(true));
+      const writesAfterRestore = cameraRecorder.calls.length;
+
+      // Self "moves": a newer snapshot revision at a different spot (as walk_arrived would
+      // produce), plus several re-renders and time passing. The spawn effect's once-guard
+      // means the camera must never be written again.
+      peerMovementSnapshotState.entries = selfStanding({ x: pos.x + 120, y: pos.y + 60 }, 2);
+      for (let i = 0; i < 3; i += 1) {
+        rerender(<OfficeMap />);
+        await act(() => new Promise((r) => setTimeout(r, 20)));
+      }
+      expect(cameraRecorder.calls.length).toBe(writesAfterRestore);
+    });
+
+    it("hands the camera straight back to the user: TransformWrapper stays enabled for pan/zoom/wheel and only the two framing writes happen", async () => {
+      const pos = findRestorableStandingPos();
+      await mockAttendanceService.checkIn(getCurrentUserId());
+      peerMovementSnapshotState.snapshotReady = true;
+      peerMovementSnapshotState.entries = selfStanding(pos);
+
+      render(<OfficeMap />);
+      const restored = framingFor(pos);
+      await waitFor(() => expect(cameraRecorder.calls.some((c) => sameFraming(c, restored))).toBe(true));
+
+      // mount framing (entrance) + one restore framing — no follow-camera writes in between.
+      expect(cameraRecorder.calls.length).toBe(2);
+      expect(sameFraming(cameraRecorder.calls[0], framingFor({ x: bonLayer.x, y: bonLayer.y }))).toBe(true);
+      const setup = (cameraRecorder.controls as ReactZoomPanPinchRef).instance.setup;
+      expect(setup.disabled).toBe(false);
+      expect(setup.panning.disabled).toBe(false);
+      expect(setup.wheel.disabled).toBe(false);
+      expect(setup.pinch.disabled).toBe(false);
+    });
+
+    it("lifecycle gap: restored self position known BEFORE the camera is ready still gets exactly one focus once the camera initialises", async () => {
+      // Reproduces the normal-refresh mismatch class: the spawn-restore effect applies the
+      // persisted position while the camera cannot be written yet. A focus tied to the spawn
+      // effect's own once-guard is lost forever in that ordering; the decoupled one-time focus
+      // effect must instead fire when the camera becomes ready — and only once.
+      const pos = findRestorableStandingPos();
+      await mockAttendanceService.checkIn(getCurrentUserId());
+      peerMovementSnapshotState.snapshotReady = true;
+      peerMovementSnapshotState.entries = selfStanding(pos);
+      cameraRecorder.holdInit = true;
+
+      const { container } = render(<OfficeMap />);
+      const restored = framingFor(pos);
+      // Avatar is restored (placement applied) ...
+      await waitFor(() => {
+        const layer = selfSpriteLayer(container);
+        expect(layer.style.left).toBe(pct(pos.x, FRAME_WIDTH));
+      });
+      // ... but the camera-ready signal has not fired, so no restore framing may exist yet.
+      expect(cameraRecorder.calls.some((c) => sameFraming(c, restored))).toBe(false);
+      expect(cameraRecorder.releaseInit, "held onInit").toBeTruthy();
+
+      await act(async () => {
+        cameraRecorder.releaseInit!();
+      });
+      await waitFor(() => expect(cameraRecorder.calls.some((c) => sameFraming(c, restored))).toBe(true));
+      expect(cameraRecorder.calls.filter((c) => sameFraming(c, restored)).length).toBe(1);
+      // Avatar position untouched by the late focus.
+      const layer = selfSpriteLayer(container);
+      expect(layer.style.left).toBe(pct(pos.x, FRAME_WIDTH));
+      expect(layer.style.top).toBe(pct(pos.y, FRAME_HEIGHT));
+    });
+
+    it("default startup (not checked in) keeps only the entrance framing — no restore centering", async () => {
+      // Mock attendance defaults to CHECKED_OUT, so the spawn effect resolves the sidewalk
+      // placement (bonLayer). Only the mount framing may be written.
+      peerMovementSnapshotState.entries = [];
+      render(<OfficeMap />);
+      await act(() => new Promise((r) => setTimeout(r, 60)));
+      expect(cameraRecorder.calls.length).toBe(1);
+      expect(sameFraming(cameraRecorder.calls[0], framingFor({ x: bonLayer.x, y: bonLayer.y }))).toBe(true);
     });
   });
 });
