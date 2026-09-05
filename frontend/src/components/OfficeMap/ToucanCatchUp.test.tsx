@@ -6,7 +6,8 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 //     server's order (urgent, mentions, new, Toucan replied)
 //   * Open hands the conversation id to the caller and keeps the panel; a row with an unseen A3
 //     flag also marks THAT flag seen through the A3 call; a plain row marks nothing
-//   * Dismiss is offered only on urgent rows and only marks the flag seen; the row stays
+//   * urgent rows are Open-only; normal rows offer Dismiss, which hides the row for this panel's
+//     session only — no service call — and survives a refetch during the same open panel
 //   * the card never touches any read state — the service has no such call and none is invented
 //   * no card for no_history / tracking_started / an empty row list; the A3 card is not duplicated
 //   * a digest answer refetches the catch-up
@@ -175,8 +176,9 @@ describe("ToucanAssistantPanel — A5 catch-up card", () => {
     expect(rows[0].textContent).toContain("Toucan replied");
     expect(rows[1].textContent).not.toContain("Urgent");
     expect(rows[2].textContent).toContain("Toucan replied");
-    // Dismiss only on the urgent row.
-    expect(screen.getAllByRole("button", { name: /^Dismiss the urgent flag/ })).toHaveLength(1);
+    // Urgent rows are Open-only; the two normal rows offer Dismiss.
+    expect(screen.queryByRole("button", { name: /^Dismiss Micah/ })).toBeNull();
+    expect(screen.getAllByRole("button", { name: /^Dismiss .* from this briefing$/ })).toHaveLength(2);
     expect(screen.getAllByRole("button", { name: /^Open / })).toHaveLength(3);
   });
 
@@ -208,28 +210,57 @@ describe("ToucanAssistantPanel — A5 catch-up card", () => {
     expect(called).toEqual(["getCatchUp", "getDelegation", "greeting", "listUrgentFlags", "loadLatestConversation", "markUrgentFlagsSeen"]);
   });
 
-  it("Dismiss on an urgent row marks the flag seen, drops the badge and keeps the row; a failed mark keeps the badge", async () => {
-    h.service.getCatchUp.mockResolvedValue(catchUp([URGENT_ROW]));
+  it("Dismiss on a normal row hides it for this session only, calls nothing, and survives a refetch; urgent rows cannot be dismissed", async () => {
+    h.service.getCatchUp.mockResolvedValue(catchUp([URGENT_ROW, GROUP_ROW, COVERED_ROW]));
     h.service.listUrgentFlags.mockResolvedValue([FLAG_MICAH]);
     const onOpenConversation = vi.fn();
     await setup({ onOpenConversation });
     // The same conversation is not listed twice: the A3 card yields to the catch-up row.
     expect(screen.queryByTestId("toucan-urgent-card")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Dismiss Micah/ })).toBeNull();
 
-    h.service.markUrgentFlagsSeen.mockRejectedValueOnce(new Error("offline"));
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss the urgent flag on Micah" }));
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss Launch Room from this briefing" }));
     await flush();
-    expect(screen.getByTestId("toucan-catchup-row").textContent).toContain("Urgent · Micah");
-
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss the urgent flag on Micah" }));
-    await flush();
-    expect(h.service.markUrgentFlagsSeen).toHaveBeenCalledTimes(2);
+    expect(screen.getAllByTestId("toucan-catchup-row")).toHaveLength(2);
+    expect(screen.getByTestId("toucan-catchup-card").textContent).not.toContain("Launch Room");
+    expect(h.service.markUrgentFlagsSeen).not.toHaveBeenCalled();
     expect(onOpenConversation).not.toHaveBeenCalled();
-    const row = screen.getByTestId("toucan-catchup-row");
-    expect(row.textContent).not.toContain("Urgent");
-    expect(row.textContent).toContain("1 mention");
-    expect(screen.queryByRole("button", { name: /^Dismiss the urgent flag/ })).toBeNull();
-    // With the flag gone from the catch-up row, nothing remains for the A3 card either.
+    // Still urgent, still Open-only, still one badge.
+    expect(screen.getByRole("button", { name: "Open Micah" })).toBeTruthy();
+    expect(screen.getAllByTestId("toucan-catchup-row")[0].textContent).toContain("Urgent · Micah");
+
+    // A refetch during the same open panel (a digest answer) returns the dismissed row again;
+    // it stays hidden while everything else refreshes.
+    h.service.ask.mockResolvedValue({ text: "While you were away:\n• 1 mention", intent: "away_summary", supported: true, conversationId: "tc-1" });
+    const composer = screen.getByLabelText("Message the toucan");
+    fireEvent.change(composer, { target: { value: "catch me up" } });
+    fireEvent.keyDown(composer, { key: "Enter" });
+    await flush();
+    expect(h.service.getCatchUp).toHaveBeenCalledTimes(2);
+    expect(screen.getAllByTestId("toucan-catchup-row")).toHaveLength(2);
+    expect(screen.getByTestId("toucan-catchup-card").textContent).not.toContain("Launch Room");
+    expect(screen.getByTestId("toucan-catchup-card").textContent).toContain("Alex");
+
+    // Only the known Toucan calls ran: no read-state or seen call was invented by Dismiss.
+    const called = Object.entries(h.service)
+      .filter(([, fn]) => (fn as { mock?: { calls: unknown[] } }).mock?.calls.length)
+      .map(([name]) => name)
+      .sort();
+    expect(called).toEqual(["ask", "getCatchUp", "getDelegation", "greeting", "listUrgentFlags", "loadLatestConversation"]);
+  });
+
+  it("Open on an urgent row keeps the A3 seen semantics and clears it from the A3 card too", async () => {
+    h.service.getCatchUp.mockResolvedValue(catchUp([URGENT_ROW]));
+    h.service.listUrgentFlags.mockResolvedValue([FLAG_MICAH]);
+    const onOpenConversation = vi.fn();
+    const onRelease = vi.fn();
+    await setup({ onOpenConversation, onRelease });
+    fireEvent.click(screen.getByRole("button", { name: "Open Micah" }));
+    await flush();
+    expect(onOpenConversation).toHaveBeenCalledWith("conv-urgent");
+    expect(h.service.markUrgentFlagsSeen).toHaveBeenCalledWith(["f-1"]);
+    expect(onRelease).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("toucan-catchup-card")).toBeNull();
     expect(screen.queryByTestId("toucan-urgent-card")).toBeNull();
   });
 

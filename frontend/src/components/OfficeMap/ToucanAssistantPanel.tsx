@@ -449,6 +449,11 @@ export function ToucanAssistantPanel({
   // A5 — the structured twin of the digest. Null until fetched or when the service has no call.
   const [catchUp, setCatchUp] = useState<ToucanCatchUp | null>(null);
   const [catchUpBusyId, setCatchUpBusyId] = useState<string | null>(null);
+  // A5 — normal rows the viewer dismissed from THIS panel's card. Session-only UI state: it
+  // lives as long as this component, filters every render (so a refetch during the same open
+  // panel cannot bring a dismissed row back), and is never sent anywhere. The next genuine
+  // absence opens a fresh panel and a fresh set.
+  const [dismissedCatchUpIds, setDismissedCatchUpIds] = useState<ReadonlySet<string>>(() => new Set());
   // A5 follow-up — which absence boundary this panel has already spoken a briefing for.
   const briefedSinceRef = useRef<string | null>(null);
   const [urgentBusyId, setUrgentBusyId] = useState<string | null>(null);
@@ -988,11 +993,15 @@ export function ToucanAssistantPanel({
     [urgentBusyId, onOpenConversation, appendToucanTurn],
   );
 
-  // A5 — Open / Dismiss on a catch-up row. Open hands the id to the caller (the conversation is
-  // laid out BESIDE this panel, which stays open) and drops the row from the card locally —
-  // nothing persistent: no read cursor moves from here, the chat window's own mark-read does
-  // that when it renders. If the row carries an unseen A3 flag, both actions mark THAT flag seen
-  // through A3's own call, exactly as the urgent card does; Dismiss is offered only then.
+  // A5 — actions on a catch-up row.
+  //   * OPEN (every row) hands the id to the caller (the conversation is laid out BESIDE this
+  //     panel, which stays open) and drops the row from the card locally — nothing persistent:
+  //     no read cursor moves from here, the chat window's own mark-read does that when it
+  //     renders. An urgent row's unseen A3 flag is marked seen through A3's own call, exactly
+  //     as the urgent card does.
+  //   * DISMISS (normal rows only) hides the row from this panel's card for the rest of the
+  //     session and calls nothing. Urgent rows have no Dismiss: requester-declared urgency is
+  //     resolved by opening the conversation, never by waving it away from the briefing.
   const clearUrgentOnRow = useCallback((row: ToucanCatchUpRow) => {
     const flagId = row.urgentFlagId;
     if (!flagId) return Promise.resolve();
@@ -1017,20 +1026,18 @@ export function ToucanAssistantPanel({
     });
   }, []);
 
-  const resolveCatchUpRow = useCallback(
-    (row: ToucanCatchUpRow, open: boolean) => {
+  const openCatchUpRow = useCallback(
+    (row: ToucanCatchUpRow) => {
       if (catchUpBusyId) return;
       setCatchUpBusyId(row.conversationId);
-      if (open) onOpenConversation?.(row.conversationId);
+      onOpenConversation?.(row.conversationId);
       clearUrgentOnRow(row)
         .then(() => {
-          if (open) {
-            setCatchUp((current) =>
-              current
-                ? { ...current, conversations: current.conversations.filter((r) => r.conversationId !== row.conversationId) }
-                : current,
-            );
-          }
+          setCatchUp((current) =>
+            current
+              ? { ...current, conversations: current.conversations.filter((r) => r.conversationId !== row.conversationId) }
+              : current,
+          );
         })
         .catch(() => appendToucanTurn(REQUEST_FAILED_TEXT))
         .finally(() => setCatchUpBusyId(null));
@@ -1038,7 +1045,17 @@ export function ToucanAssistantPanel({
     [catchUpBusyId, onOpenConversation, clearUrgentOnRow, appendToucanTurn],
   );
 
-  const catchUpRows = catchUpRowsToShow(catchUp);
+  const dismissCatchUpRow = useCallback((row: ToucanCatchUpRow) => {
+    if (row.urgent) return;
+    setDismissedCatchUpIds((current) => {
+      if (current.has(row.conversationId)) return current;
+      const next = new Set(current);
+      next.add(row.conversationId);
+      return next;
+    });
+  }, []);
+
+  const catchUpRows = catchUpRowsToShow(catchUp).filter((r) => !dismissedCatchUpIds.has(r.conversationId));
   // A3 card rows already represented on the catch-up card (same conversation, Urgent badge) are
   // not listed twice; anything the catch-up could not place still shows on the A3 card.
   const catchUpConversationIds = new Set(catchUpRows.map((r) => r.conversationId));
@@ -1424,20 +1441,20 @@ export function ToucanAssistantPanel({
                   <button
                     type="button"
                     className={styles.urgentOpen}
-                    onClick={() => resolveCatchUpRow(row, true)}
+                    onClick={() => openCatchUpRow(row)}
                     disabled={catchUpBusyId !== null}
                     aria-label={`Open ${row.label}`}
                   >
                     Open
                   </button>
                 )}
-                {row.urgent && (
+                {!row.urgent && (
                   <button
                     type="button"
                     className={styles.urgentDismiss}
-                    onClick={() => resolveCatchUpRow(row, false)}
+                    onClick={() => dismissCatchUpRow(row)}
                     disabled={catchUpBusyId !== null}
-                    aria-label={`Dismiss the urgent flag on ${row.label}`}
+                    aria-label={`Dismiss ${row.label} from this briefing`}
                   >
                     Dismiss
                   </button>
