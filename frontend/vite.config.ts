@@ -29,6 +29,14 @@ export default defineConfig({
     emptyOutDir: true,
   },
   plugins: [react()],
+  // tldraw is only ever reached through React.lazy (WhiteboardEditor) so it stays out of the
+  // main bundle. In dev that means Vite's dependency optimizer never sees it at startup — it
+  // DISCOVERS it on the first "open a whiteboard", pre-bundles it, and then forces a full page
+  // reload to pick up the new dep graph. That reload closed the group chat and the board the
+  // user had just created (2026-09-05). Listing it here pre-bundles it at server start instead.
+  optimizeDeps: {
+    include: ["tldraw"],
+  },
   server: {
     // 5173 is a CONTRACT, not a preference: Atlas's dev proxy targets
     // VIRTUAL_OFFICE_URL=http://localhost:5173, and the hmr block below
