@@ -17,6 +17,7 @@ from app.schemas.chat import to_iso_z
 from app.schemas.room_requests import RoomRequestOut
 from app.schemas.talk_requests import TalkRequestOut
 from app.repositories import position as position_repo
+from app.repositories import whiteboards as wb_repo
 # Shared realtime state is CONSTRUCTED in state.py and only imported here — these are the same
 # singleton objects the REST routers use (state.spatial_sessions is socket.spatial_sessions).
 # Re-exported from this module unchanged so existing `from app.realtime.socket import ...`
@@ -32,6 +33,7 @@ from app.realtime.state import (
     sio,
     spatial_sessions,
     user_room,
+    whiteboard_rooms,
 )
 from app.services.call_invites import INVITE_TTL_SECONDS
 from app.services.call_invites import wire as invite_wire
@@ -41,6 +43,7 @@ from app.services.delegation_lifecycle import mark_owner_returned, schedule_owne
 from app.services.chat_send import ChatSendError, is_toucan_sender, send_chat_message
 from app.services.position_registry import position_registry
 from app.services.quests import EVENT_COWORKER_APPROACHED, EVENT_SPATIAL_SESSION_JOINED, record_quest_event
+from app.services.whiteboard_rooms import WhiteboardRoom, build_document
 
 # Faithful port of backend/src/socket.ts onto python-socketio's ASGI async server. Mounted in
 # app/main.py via socketio.ASGIApp(sio, other_asgi_app=<fastapi app>, socketio_path="socket.io")
@@ -445,6 +448,9 @@ async def disconnect(sid: str) -> None:
         # from a hang-up, and it is still a call they did not get to answer.
         await _record_missed_call(invite, reason="caller_left")
         await _emit_invite_terminal(invite, "call_invite_cancelled", {"reason": "caller_left"})
+    # Whiteboard W3: by sid — this socket's board membership only. Closing the room's last
+    # member triggers the final (tombstone-free) DB write inside _leave_whiteboard.
+    await _leave_whiteboard(sid)
     if dnd_registry.clear(email):
         await _broadcast_dnd_status()
         await _cancel_stale_talk_requests(email)
@@ -1265,6 +1271,162 @@ async def _handle_reaction(sid: str, payload: dict | None, *, action: str) -> No
                 "action": action,
             },
             room=conversation_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+# ---------------------------------------------------------------------------------------------
+# Whiteboard W3 — realtime rooms. Permission is the board's conversation's (chat_repo.is_participant,
+# same check the REST router makes); the room registry in app/services/whiteboard_rooms.py owns
+# merge, presence and debounced persistence; this layer only does auth, wiring and fan-out.
+# Events (client → server): whiteboard_join {boardId}, whiteboard_leave, whiteboard_elements
+# {boardId, elements, clientSeq}, whiteboard_pointer {boardId, pointer, button, selectedElementIds}.
+# Events (server → client): whiteboard_snapshot (full authoritative state, on every join/rejoin),
+# whiteboard_elements (accepted batch to the room minus sender; the room's winning copies back to
+# a sender whose elements lost), whiteboard_ack {clientSeq, seq}, whiteboard_presence,
+# whiteboard_pointer, whiteboard_error {code, message}.
+
+
+def whiteboard_room(board_id: str) -> str:
+    return f"whiteboard:{board_id}"
+
+
+async def _persist_whiteboard_room(room: WhiteboardRoom, final: bool) -> int:
+    document = build_document(room.elements, room.app_state, room.files, include_deleted=not final)
+    async with async_session_maker() as session:
+        row = await wb_repo.replace_document(
+            session, board_id=room.board_id, document=document, editor_email=room.last_editor or "system"
+        )
+    return row["version"] if row is not None else room.version
+
+
+async def _whiteboard_error(sid: str, board_id: str | None, code: str, message: str) -> None:
+    await sio.emit("whiteboard_error", {"boardId": board_id, "code": code, "message": message}, to=sid)
+
+
+async def _broadcast_whiteboard_presence(room: WhiteboardRoom) -> None:
+    await sio.emit(
+        "whiteboard_presence",
+        {"boardId": room.board_id, "collaborators": room.presence()},
+        room=whiteboard_room(room.board_id),
+    )
+
+
+async def _leave_whiteboard(sid: str) -> None:
+    room = whiteboard_rooms.leave(sid)
+    if room is None:
+        return
+    await sio.leave_room(sid, whiteboard_room(room.board_id))
+    if not await whiteboard_rooms.close_if_empty(room, _persist_whiteboard_room):
+        await _broadcast_whiteboard_presence(room)
+
+
+def _whiteboard_membership(sid: str, payload: dict | None) -> tuple[WhiteboardRoom | None, str]:
+    payload = payload or {}
+    board_id = payload.get("boardId")
+    board_id = board_id if isinstance(board_id, str) else ""
+    room = whiteboard_rooms.room_of(sid)
+    if not board_id or room is None or room.board_id != board_id:
+        return None, board_id
+    return room, board_id
+
+
+@sio.on("whiteboard_join")
+async def whiteboard_join(sid: str, payload: dict | None) -> None:
+    try:
+        payload = payload or {}
+        board_id = payload.get("boardId")
+        if not isinstance(board_id, str) or not board_id:
+            return
+        session_data = await sio.get_session(sid)
+        email = session_data["email"]
+
+        async with async_session_maker() as session:
+            board = await wb_repo.get_by_id(session, board_id)
+            if board is None:
+                await _whiteboard_error(sid, board_id, "not_found", "Whiteboard not found")
+                return
+            ok = await chat_repo.is_participant(session, board["conversation_id"], email)
+        if not ok:
+            await _whiteboard_error(sid, board_id, "forbidden", "Not a participant")
+            return
+
+        # A socket is in at most one board room; joining another leaves the first.
+        current = whiteboard_rooms.room_of(sid)
+        if current is not None and current.board_id != board_id:
+            await _leave_whiteboard(sid)
+
+        room = whiteboard_rooms.ensure(board_id, board["conversation_id"], board["document"], board["version"])
+        whiteboard_rooms.join(room, sid, email, username=email.split("@", 1)[0])
+        await sio.enter_room(sid, whiteboard_room(board_id))
+        await sio.emit("whiteboard_snapshot", room.snapshot(), to=sid)
+        await _broadcast_whiteboard_presence(room)
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("whiteboard_leave")
+async def whiteboard_leave(sid: str, _payload: dict | None = None) -> None:
+    try:
+        await _leave_whiteboard(sid)
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("whiteboard_elements")
+async def whiteboard_elements(sid: str, payload: dict | None) -> None:
+    try:
+        room, board_id = _whiteboard_membership(sid, payload)
+        if room is None:
+            await _whiteboard_error(sid, board_id or None, "not_joined", "Join the whiteboard first")
+            return
+        payload = payload or {}
+        elements = payload.get("elements")
+        client_seq = payload.get("clientSeq")
+        if not isinstance(elements, list):
+            return
+        session_data = await sio.get_session(sid)
+        email = session_data["email"]
+
+        accepted, rejected = await whiteboard_rooms.apply(room, elements, editor_email=email)
+        if accepted:
+            await sio.emit(
+                "whiteboard_elements",
+                {"boardId": board_id, "elements": accepted, "seq": room.seq},
+                room=whiteboard_room(board_id),
+                skip_sid=sid,
+            )
+            whiteboard_rooms.schedule_flush(room, _persist_whiteboard_room)
+        if rejected:
+            # The sender's copies lost to the room's; hand the winners back so it converges.
+            await sio.emit("whiteboard_elements", {"boardId": board_id, "elements": rejected, "seq": room.seq}, to=sid)
+        await sio.emit("whiteboard_ack", {"boardId": board_id, "clientSeq": client_seq, "seq": room.seq}, to=sid)
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("whiteboard_pointer")
+async def whiteboard_pointer(sid: str, payload: dict | None) -> None:
+    try:
+        room, board_id = _whiteboard_membership(sid, payload)
+        if room is None:
+            return
+        payload = payload or {}
+        member = room.members.get(sid)
+        if member is None:
+            return
+        await sio.emit(
+            "whiteboard_pointer",
+            {
+                "boardId": board_id,
+                **member.wire(),
+                "pointer": payload.get("pointer"),
+                "button": payload.get("button"),
+                "selectedElementIds": payload.get("selectedElementIds"),
+            },
+            room=whiteboard_room(board_id),
+            skip_sid=sid,
         )
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)

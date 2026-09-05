@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { StrictMode, useEffect, useRef, type ReactNode } from "react";
 import type { Whiteboard } from "../../services/whiteboard/whiteboardClient";
+import type { SyncHandlers } from "../../services/whiteboard/whiteboardSyncClient";
 
 // Editor persistence layer over a stubbed Excalidraw: jsdom has no canvas, so the real component
 // is replaced by a harness that exposes the props the editor wires (initialData, onChange,
@@ -19,6 +20,10 @@ type Harness = {
   updateScene: ReturnType<typeof vi.fn>;
   addFiles: ReturnType<typeof vi.fn>;
   setActiveTool: ReturnType<typeof vi.fn>;
+  // W3 sync stub: "none" → joinWhiteboard returns null (REST fallback, the W1/W2 behaviour);
+  // "live" → returns a handle and hands the editor's handlers back for the test to drive.
+  syncMode: "none" | "live";
+  sync: { handlers: SyncHandlers; sendElements: ReturnType<typeof vi.fn>; sendPointer: ReturnType<typeof vi.fn>; leave: ReturnType<typeof vi.fn> } | null;
 };
 // vi.mock factories are hoisted above imports, so everything they reference must be hoisted too.
 const { harness, saveWhiteboard, getWhiteboard, WhiteboardConflictError } = vi.hoisted(() => {
@@ -32,6 +37,8 @@ const { harness, saveWhiteboard, getWhiteboard, WhiteboardConflictError } = vi.h
       updateScene: vi.fn(),
       addFiles: vi.fn(),
       setActiveTool: vi.fn(),
+      syncMode: "none",
+      sync: null,
     } as Harness,
     saveWhiteboard: vi.fn<(id: string, doc: Record<string, unknown>, version: number) => Promise<Whiteboard>>(),
     getWhiteboard: vi.fn<(id: string) => Promise<Whiteboard>>(),
@@ -44,6 +51,11 @@ vi.mock("@excalidraw/excalidraw", () => ({
   CaptureUpdateAction: { NEVER: "NEVER", IMMEDIATELY: "IMMEDIATELY" },
   getSceneVersion: (elements: Array<{ version?: number }>) => elements.reduce((sum, el) => sum + (el.version ?? 0), 0),
   restoreElements: (elements: unknown[] | null) => elements ?? [],
+  reconcileElements: (local: Array<{ id: string }>, remote: Array<{ id: string }>) => {
+    const byId = new Map(local.map((el) => [el.id, el]));
+    for (const el of remote) byId.set(el.id, el);
+    return [...byId.values()];
+  },
   // Skeleton → "converted" element: id it, keep everything else so the test can inspect it.
   convertToExcalidrawElements: (skeletons: Array<Record<string, unknown>>) =>
     skeletons.map((sk, i) => ({ ...sk, id: `note-${i + 1}`, version: 1 })),
@@ -89,6 +101,16 @@ vi.mock("../../services/whiteboard/whiteboardClient", () => ({
   WhiteboardConflictError,
 }));
 
+vi.mock("../../services/whiteboard/whiteboardSyncClient", () => ({
+  joinWhiteboard: (_boardId: string, handlers: SyncHandlers) => {
+    if (harness.syncMode === "none") return null;
+    const sync = { handlers, sendElements: vi.fn(() => true), sendPointer: vi.fn(), leave: vi.fn() };
+    harness.sync = sync;
+    handlers.onStatus("connecting");
+    return { selfId: () => "me", sendElements: sync.sendElements, sendPointer: sync.sendPointer, leave: sync.leave };
+  },
+}));
+
 import WhiteboardEditor from "./WhiteboardEditor";
 
 const base: Whiteboard = {
@@ -121,6 +143,8 @@ beforeEach(() => {
   harness.setActiveTool.mockReset();
   harness.scene = [];
   harness.mounted = 0;
+  harness.syncMode = "none";
+  harness.sync = null;
   harness.activeTool = { type: "selection", customType: null };
   harness.initialData = undefined;
 });
@@ -304,5 +328,133 @@ describe("WhiteboardEditor (Excalidraw)", () => {
     act(() => harness.onChange!(harness.scene, {}, {}));
     await flushAutosave();
     expect(saveWhiteboard.mock.lastCall?.[2]).toBe(7);
+  });
+
+  describe("W3 realtime (live room)", () => {
+    const other = { sid: "s-other", email: "b@example.com", username: "b", color: { background: "#eee", stroke: "#333" } };
+    const me = { sid: "me", email: "a@example.com", username: "a", color: { background: "#eee", stroke: "#333" } };
+    const snapshot = (elements: unknown[], extra: Record<string, unknown> = {}) => ({
+      boardId: "b1",
+      elements,
+      appState: {},
+      files: {},
+      version: 5,
+      seq: 3,
+      collaborators: [me, other],
+      ...extra,
+    });
+
+    function renderLive() {
+      harness.syncMode = "live";
+      const utils = render(<WhiteboardEditor board={{ ...base, document: excalidrawDoc }} />);
+      const sync = harness.sync!;
+      act(() => {
+        sync.handlers.onSnapshot(snapshot([{ ...rect, versionNonce: 1 }]) as never);
+        sync.handlers.onStatus("live");
+      });
+      return { ...utils, sync };
+    }
+
+    it("shows live status with the collaborator count and hides the REST save button", () => {
+      renderLive();
+      expect(screen.getByTestId("realtime-status")).toHaveTextContent("Live · 1 collaborator");
+      expect(screen.queryByText("Save now")).toBeNull();
+      // The snapshot replaced the scene without an undo entry.
+      expect(harness.updateScene).toHaveBeenCalledWith(expect.objectContaining({ captureUpdate: "NEVER" }));
+    });
+
+    it("sends only changed elements (tombstones included) over the room and never REST-saves while live", async () => {
+      const { sync } = renderLive();
+      const drawn = { id: "n1", type: "ellipse", version: 1, versionNonce: 7 };
+      const deleted = { ...rect, version: 2, versionNonce: 1, isDeleted: true };
+      act(() => harness.onChange!([deleted, drawn], {}, {}));
+      expect(sync.sendElements).toHaveBeenCalledTimes(1);
+      const [elements, seq] = sync.sendElements.mock.calls[0];
+      expect(elements.map((e: { id: string }) => e.id).sort()).toEqual(["n1", "r1"]);
+      expect(seq).toBe(1);
+      await flushAutosave();
+      expect(saveWhiteboard).not.toHaveBeenCalled();
+      // Same scene reported again (selection change): nothing new to send.
+      act(() => harness.onChange!([deleted, drawn], { selectedElementIds: { n1: true } }, {}));
+      expect(sync.sendElements).toHaveBeenCalledTimes(1);
+    });
+
+    it("applies remote elements through reconcile with captureUpdate NEVER and does not echo them back", () => {
+      const { sync } = renderLive();
+      harness.updateScene.mockClear();
+      const remote = { id: "z1", type: "rectangle", version: 3, versionNonce: 2 };
+      act(() => sync.handlers.onRemoteElements([remote]));
+      expect(harness.updateScene).toHaveBeenCalledTimes(1);
+      const call = harness.updateScene.mock.calls[0][0];
+      expect(call.captureUpdate).toBe("NEVER");
+      expect(call.elements.map((e: { id: string }) => e.id)).toEqual(["r1", "z1"]);
+      // Excalidraw reports the merged scene back via onChange — nothing is re-sent.
+      act(() => harness.onChange!(call.elements, {}, {}));
+      expect(sync.sendElements).not.toHaveBeenCalled();
+    });
+
+    it("on rejoin, reconciles only unacknowledged local changes against the snapshot and resends the survivors", () => {
+      const { sync } = renderLive();
+      // Two local edits sent but never acked; a third acked.
+      const winner = { id: "w", type: "rectangle", version: 9, versionNonce: 1 };
+      const loser = { ...rect, version: 2, versionNonce: 9 }; // server will hold r1 at version 4
+      const acked = { id: "k", type: "rectangle", version: 1, versionNonce: 1 };
+      act(() => harness.onChange!([winner, loser, acked], {}, {}));
+      expect(sync.sendElements).toHaveBeenCalledTimes(1);
+      act(() => sync.handlers.onAck(0)); // acks nothing (seq 1 > 0)
+      act(() => sync.handlers.onStatus("reconnecting"));
+      expect(screen.getByTestId("realtime-status")).toHaveTextContent(/Reconnecting/);
+      // While reconnecting, a further local edit is held, not sent.
+      const held = { id: "h", type: "rectangle", version: 1, versionNonce: 1 };
+      act(() => harness.onChange!([winner, loser, acked, held], {}, {}));
+      expect(sync.sendElements).toHaveBeenCalledTimes(1);
+
+      harness.updateScene.mockClear();
+      const serverR1 = { ...rect, version: 4, versionNonce: 0 };
+      act(() => {
+        sync.handlers.onSnapshot(snapshot([serverR1, acked]) as never);
+        sync.handlers.onStatus("live");
+      });
+      // Resent: w (unknown to server), h (held); dropped: r1 (server newer), k (identical).
+      expect(sync.sendElements).toHaveBeenCalledTimes(2);
+      const resent = sync.sendElements.mock.calls[1][0].map((e: { id: string }) => e.id).sort();
+      expect(resent).toEqual(["h", "w"]);
+      const scene = harness.updateScene.mock.calls[0][0].elements;
+      expect(scene.find((e: { id: string }) => e.id === "r1").version).toBe(4);
+      expect(scene.map((e: { id: string }) => e.id).sort()).toEqual(["h", "k", "r1", "w"]);
+    });
+
+    it("renders collaborator cursors from presence and pointer events, excluding itself", () => {
+      const { sync } = renderLive();
+      harness.updateScene.mockClear();
+      act(() => sync.handlers.onPointer({ ...other, boardId: "b1", pointer: { x: 10, y: 20, tool: "pointer" }, button: "down", selectedElementIds: {} }));
+      const collaborators = harness.updateScene.mock.lastCall![0].collaborators as Map<string, { pointer?: { x: number } }>;
+      expect([...collaborators.keys()]).toEqual(["s-other"]);
+      expect(collaborators.get("s-other")?.pointer?.x).toBe(10);
+      act(() => sync.handlers.onPresence([me]));
+      expect(screen.getByTestId("realtime-status")).toHaveTextContent("Live · only you");
+      expect((harness.updateScene.mock.lastCall![0].collaborators as Map<string, unknown>).size).toBe(0);
+    });
+
+    it("falls back to REST when the join is refused, flushing anything drawn meanwhile", async () => {
+      harness.syncMode = "live";
+      saveWhiteboard.mockResolvedValue({ ...base, version: 3 });
+      render(<WhiteboardEditor board={{ ...base, document: excalidrawDoc }} />);
+      const sync = harness.sync!;
+      expect(screen.getByTestId("realtime-status")).toHaveTextContent("Connecting");
+      act(() => harness.onChange!([{ ...rect, version: 2 }], { viewBackgroundColor: "#ffffff" }, {}));
+      expect(sync.sendElements).not.toHaveBeenCalled(); // not live yet: held
+      act(() => sync.handlers.onStatus("offline"));
+      expect(screen.getByText("Save now")).toBeInTheDocument();
+      await flushAutosave();
+      expect(saveWhiteboard).toHaveBeenCalledTimes(1);
+      expect(saveWhiteboard.mock.calls[0][1]).toMatchObject({ elements: [{ ...rect, version: 2 }] });
+    });
+
+    it("leaves the room on unmount", () => {
+      const { sync, unmount } = renderLive();
+      unmount();
+      expect(sync.leave).toHaveBeenCalledTimes(1);
+    });
   });
 });

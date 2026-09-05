@@ -13,6 +13,7 @@ from app.services.global_chat_activity import GlobalChatActivityRegistry
 from app.services.offline_lineup import OfflineLineup
 from app.services.room_presence import RoomPresenceRegistry
 from app.services.spatial_session import SpatialSessionRegistry
+from app.services.whiteboard_rooms import WhiteboardRoomRegistry
 
 # CONSTRUCTION SEAM for realtime shared state. This module owns the Socket.IO server and every
 # ephemeral registry singleton; it is the only place they are instantiated.
@@ -97,6 +98,10 @@ room_presence = RoomPresenceRegistry()
 # in-memory/single-process assumption as the registries above; refcounted per socket so
 # multi-tab users are handled correctly.
 global_chat_activity = GlobalChatActivityRegistry()
+# Ephemeral Whiteboard W3 realtime rooms (one per open board) — see whiteboard_rooms.py. The room
+# is the authority for a board's elements while anyone has it open and writes the DB on a
+# debounce; same in-memory/single-process assumption as the registries above.
+whiteboard_rooms = WhiteboardRoomRegistry()
 
 
 def is_room_locked(room_id: str) -> bool:

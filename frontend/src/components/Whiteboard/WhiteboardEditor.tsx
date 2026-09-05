@@ -4,15 +4,19 @@ import {
   Excalidraw,
   convertToExcalidrawElements,
   getSceneVersion,
+  reconcileElements,
   restoreElements,
 } from "@excalidraw/excalidraw";
 import type {
   AppState,
   BinaryFileData,
   BinaryFiles,
+  Collaborator,
   ExcalidrawImperativeAPI,
   ExcalidrawInitialDataState,
+  ExcalidrawProps,
   PointerDownState,
+  SocketId,
   UIAppState,
 } from "@excalidraw/excalidraw/types";
 import "@excalidraw/excalidraw/index.css";
@@ -27,24 +31,44 @@ import {
   toStoredDocument,
   type StoredElement,
 } from "../../services/whiteboard/whiteboardDocument";
+import {
+  acknowledge,
+  changedElements,
+  reconcileUnacked,
+  versionsOf,
+  type PendingEntry,
+  type SyncElement,
+} from "../../services/whiteboard/whiteboardSync";
+import {
+  joinWhiteboard,
+  type CollaboratorInfo,
+  type RemotePointer,
+  type SyncHandle,
+  type SyncStatus,
+  type WhiteboardSnapshot,
+} from "../../services/whiteboard/whiteboardSyncClient";
 import { STICKY_NOTE_TOOL, isStickyNoteTool, stickyNoteSkeleton } from "./stickyNote";
 import styles from "./Whiteboard.module.css";
 
-// Whiteboard W2: the Excalidraw editor over ONE persisted board. Excalidraw supplies free draw,
-// text, shapes, arrows, zoom/pan and undo/redo; this component only owns persistence:
-//  - load the stored document on mount (whiteboardDocument.ts decides what "stored" means),
-//  - debounce-autosave scene changes (plus an explicit "Save now"),
-//  - track the version the server handed back and surface a 409 as a reload prompt,
-//  - add the one tool Excalidraw lacks, a Sticky Note (see stickyNote.ts).
+// Whiteboard W2 + W3: the Excalidraw editor over ONE persisted board. Excalidraw supplies free
+// draw, text, shapes, arrows, zoom/pan and undo/redo; this component owns:
+//  - loading the stored document on mount (whiteboardDocument.ts decides what "stored" means),
+//  - REALTIME (W3): joining the board's Socket.IO room, sending changed elements, applying
+//    remote batches with Excalidraw's own reconcile rule, collaborator cursors and count. While
+//    realtime owns the board the server persists it and the REST save path is disabled.
+//  - FALLBACK (W1/W2): when realtime is unavailable, debounce-autosave over REST (plus "Save
+//    now") with the version/409 reload prompt, exactly as before W3.
+//  - the one tool Excalidraw lacks, a Sticky Note (see stickyNote.ts).
 // A board still holding the previous editor's (tldraw) document is NEVER silently replaced:
-// Excalidraw is not mounted — so nothing can autosave — until the user clicks "Start fresh".
+// nothing mounts — no editor, no room, no save — until the user clicks "Start fresh".
 // Default-exported so WhiteboardPanel can React.lazy() it — Excalidraw is a large dependency
-// that must stay out of the main office bundle (and in vite optimizeDeps.include, see
-// vite.config.ts). Realtime merge is W3; W1/W2 is last-write-wins with detection.
+// that must stay out of the main office bundle (and in vite optimizeDeps.include).
 
 const AUTOSAVE_DEBOUNCE_MS = 1500;
+const POINTER_THROTTLE_MS = 50;
 
 type SceneElements = NonNullable<ExcalidrawInitialDataState["elements"]>;
+type PointerUpdate = Parameters<NonNullable<ExcalidrawProps["onPointerUpdate"]>>[0];
 
 type SaveStatus = "idle" | "dirty" | "saving" | "saved" | "conflict" | "error";
 
@@ -57,6 +81,10 @@ function sceneVersionOf(elements: readonly StoredElement[]): number {
   return getSceneVersion(elements as unknown as SceneElements);
 }
 
+function realtimeOwns(status: SyncStatus): boolean {
+  return status !== "offline";
+}
+
 export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorProps) {
   const parsed = useMemo(() => parseStoredDocument(board.document), [board.document]);
   const initialElements = parsed.kind === "excalidraw" ? parsed.document.elements : [];
@@ -66,25 +94,37 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
   // Excalidraw's onChange also fires for selection/tool/scroll changes. The scene version is a
   // hash of element versions, so comparing against the last one we saw filters those out.
   const lastSceneVersionRef = useRef(sceneVersionOf(initialElements));
-  // The scene as Excalidraw last reported it via onChange. Saves serialize THIS, never a read
-  // through the imperative API: Excalidraw's componentWillUnmount replaces its scene with an
-  // empty one before React runs our effect cleanup, so an API read during the unmount flush
-  // returned zero elements and overwrote the board with an empty document (bug 2026-09-05).
+  // The scene as Excalidraw last reported it via onChange (INCLUDING deleted elements). Saves and
+  // remote reconciles read THIS, never the imperative API: Excalidraw's componentWillUnmount
+  // replaces its scene with an empty one before React runs our effect cleanup.
   const latestSceneRef = useRef<{ elements: readonly StoredElement[]; appState: Record<string, unknown>; files: Record<string, unknown> }>({
     elements: initialElements,
     appState: parsed.kind === "excalidraw" ? parsed.document.appState : {},
     files: parsed.kind === "excalidraw" ? parsed.document.files : {},
   });
   const savingRef = useRef(false);
-  const pendingRef = useRef(false);
-  // Set while a debounced save is pending; cleared when it fires so the unmount flush only runs
-  // for a save that has not happened yet.
+  const pendingSaveRef = useRef(false);
+  // Set while a debounced REST save is pending; cleared when it fires so the unmount flush only
+  // runs for a save that has not happened yet.
   const timerRef = useRef<number | undefined>(undefined);
   const [status, setStatus] = useState<SaveStatus>("idle");
   const [errorText, setErrorText] = useState<string | null>(null);
   const [startedFresh, setStartedFresh] = useState(false);
-  // Legacy board the user has not chosen to replace: no editor, no save path.
+  // Legacy board the user has not chosen to replace: no editor, no room, no save path.
   const legacyLocked = parsed.kind === "legacy" && !startedFresh;
+
+  // --- W3 realtime state -------------------------------------------------------------------
+  const syncRef = useRef<SyncHandle | null>(null);
+  const realtimeStatusRef = useRef<SyncStatus>("connecting");
+  const [realtime, setRealtime] = useState<{ status: SyncStatus; others: number }>({ status: "connecting", others: 0 });
+  // Version last sent to / received from the server, per element id — the diff baseline.
+  const knownVersionsRef = useRef(new Map<string, number>());
+  // Local changes the server has not acknowledged yet; reconciled against the next snapshot.
+  const pendingRef = useRef(new Map<string, PendingEntry>());
+  const clientSeqRef = useRef(0);
+  const collaboratorsRef = useRef(new Map<string, Collaborator>());
+  const pointerTimerRef = useRef<number | undefined>(undefined);
+  const lastPointerRef = useRef<PointerUpdate | null>(null);
 
   const initialData = useMemo<ExcalidrawInitialDataState | null>(() => {
     if (parsed.kind !== "excalidraw") return null;
@@ -97,15 +137,17 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
     };
   }, [parsed]);
 
+  // --- REST fallback save path (W1/W2) -----------------------------------------------------
   const currentDocument = useCallback(() => {
     const { elements, appState, files } = latestSceneRef.current;
     return toStoredDocument(elements, appState, files);
   }, []);
 
   const save = useCallback(async () => {
+    if (realtimeOwns(realtimeStatusRef.current)) return;
     const document = currentDocument();
     if (savingRef.current) {
-      pendingRef.current = true;
+      pendingSaveRef.current = true;
       return;
     }
     savingRef.current = true;
@@ -118,7 +160,7 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
       onSaved?.(saved);
     } catch (err) {
       if (err instanceof WhiteboardConflictError) {
-        pendingRef.current = false;
+        pendingSaveRef.current = false;
         setStatus("conflict");
       } else {
         setStatus("error");
@@ -126,8 +168,8 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
       }
     } finally {
       savingRef.current = false;
-      if (pendingRef.current) {
-        pendingRef.current = false;
+      if (pendingSaveRef.current) {
+        pendingSaveRef.current = false;
         void save();
       }
     }
@@ -141,6 +183,128 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
     }, AUTOSAVE_DEBOUNCE_MS);
   }, [save]);
 
+  // --- W3 realtime: apply / send -----------------------------------------------------------
+  const pushCollaborators = useCallback(() => {
+    apiRef.current?.updateScene({ collaborators: new Map(collaboratorsRef.current) as Map<SocketId, Collaborator> });
+  }, []);
+
+  const applyPresence = useCallback(
+    (list: CollaboratorInfo[]) => {
+      const self = syncRef.current?.selfId();
+      const next = new Map<string, Collaborator>();
+      for (const c of list) {
+        if (c.sid === self) continue;
+        const prev = collaboratorsRef.current.get(c.sid);
+        next.set(c.sid, { ...prev, id: c.sid, username: c.username, color: c.color });
+      }
+      collaboratorsRef.current = next;
+      pushCollaborators();
+      setRealtime((r) => ({ ...r, others: next.size }));
+    },
+    [pushCollaborators],
+  );
+
+  /** Replace the scene with the server's authoritative snapshot, keeping only unacknowledged
+   * local changes that beat it (same rule the server applies), and resend those. */
+  const applySnapshot = useCallback(
+    (snapshot: WhiteboardSnapshot) => {
+      const api = apiRef.current;
+      if (!api) return;
+      const pendingElements = [...pendingRef.current.values()].map((p) => p.element);
+      const { scene, resend } = reconcileUnacked(pendingElements, snapshot.elements);
+      knownVersionsRef.current = versionsOf(scene);
+      pendingRef.current = new Map();
+      if (resend.length > 0) {
+        const seq = ++clientSeqRef.current;
+        for (const el of resend) pendingRef.current.set(el.id, { element: el, seq });
+        syncRef.current?.sendElements(resend, seq);
+      }
+      const restored = restoreElements(scene as unknown as SceneElements, null);
+      lastSceneVersionRef.current = getSceneVersion(restored);
+      latestSceneRef.current = {
+        elements: restored as unknown as readonly StoredElement[],
+        appState: latestSceneRef.current.appState,
+        files: snapshot.files,
+      };
+      const files = Object.values(snapshot.files) as BinaryFileData[];
+      if (files.length > 0) api.addFiles(files);
+      api.updateScene({ elements: restored, captureUpdate: CaptureUpdateAction.NEVER });
+      versionRef.current = snapshot.version;
+      applyPresence(snapshot.collaborators);
+    },
+    [applyPresence],
+  );
+
+  const applyRemoteElements = useCallback((remote: SyncElement[]) => {
+    const api = apiRef.current;
+    if (!api || remote.length === 0) return;
+    const restoredRemote = restoreElements(remote as unknown as SceneElements, null);
+    const reconciled = reconcileElements(
+      latestSceneRef.current.elements as unknown as Parameters<typeof reconcileElements>[0],
+      restoredRemote as unknown as Parameters<typeof reconcileElements>[1],
+      api.getAppState(),
+    );
+    const winners = new Map(reconciled.map((el) => [el.id, el.version]));
+    for (const el of remote) knownVersionsRef.current.set(el.id, winners.get(el.id) ?? el.version);
+    lastSceneVersionRef.current = getSceneVersion(reconciled);
+    latestSceneRef.current = { ...latestSceneRef.current, elements: reconciled as unknown as readonly StoredElement[] };
+    api.updateScene({ elements: reconciled, captureUpdate: CaptureUpdateAction.NEVER });
+  }, []);
+
+  const applyPointer = useCallback(
+    (p: RemotePointer) => {
+      if (p.sid === syncRef.current?.selfId()) return;
+      const prev = collaboratorsRef.current.get(p.sid) ?? { id: p.sid, username: p.username, color: p.color };
+      collaboratorsRef.current.set(p.sid, {
+        ...prev,
+        pointer: p.pointer ?? undefined,
+        button: p.button,
+        selectedElementIds: p.selectedElementIds as Collaborator["selectedElementIds"],
+      });
+      pushCollaborators();
+    },
+    [pushCollaborators],
+  );
+
+  const handleStatus = useCallback(
+    (next: SyncStatus) => {
+      realtimeStatusRef.current = next;
+      setRealtime((r) => ({ ...r, status: next, others: next === "offline" ? 0 : r.others }));
+      if (next === "offline") {
+        // Realtime is unavailable for this board: anything drawn so far goes through REST.
+        if (collaboratorsRef.current.size > 0) {
+          collaboratorsRef.current = new Map();
+          pushCollaborators();
+        }
+        if (pendingRef.current.size > 0) {
+          pendingRef.current = new Map();
+          setStatus((s) => (s === "conflict" ? s : "dirty"));
+          scheduleSave();
+        }
+      }
+    },
+    [pushCollaborators, scheduleSave],
+  );
+
+  // Join the board's room for the editor's lifetime (never for a locked legacy board).
+  useEffect(() => {
+    if (legacyLocked) return;
+    const handle = joinWhiteboard(board.id, {
+      onStatus: handleStatus,
+      onSnapshot: applySnapshot,
+      onRemoteElements: applyRemoteElements,
+      onAck: (clientSeq) => acknowledge(pendingRef.current, clientSeq),
+      onPresence: applyPresence,
+      onPointer: applyPointer,
+    });
+    syncRef.current = handle;
+    if (!handle) handleStatus("offline");
+    return () => {
+      handle?.leave();
+      syncRef.current = null;
+    };
+  }, [board.id, legacyLocked, handleStatus, applySnapshot, applyRemoteElements, applyPresence, applyPointer]);
+
   const handleChange = useCallback(
     (elements: readonly SceneElements[number][], appState: AppState, files: BinaryFiles) => {
       latestSceneRef.current = {
@@ -151,15 +315,47 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
       const sceneVersion = getSceneVersion(elements);
       if (sceneVersion === lastSceneVersionRef.current) return;
       lastSceneVersionRef.current = sceneVersion;
+
+      if (realtimeOwns(realtimeStatusRef.current)) {
+        // Send only what changed since the server last knew; hold it as pending until acked.
+        // Before the first snapshot / while reconnecting nothing is sent — the next snapshot
+        // reconciles the pending set and resends the survivors.
+        const changed = changedElements(elements as unknown as readonly SyncElement[], knownVersionsRef.current);
+        if (changed.length === 0) return;
+        const seq = ++clientSeqRef.current;
+        for (const el of changed) {
+          knownVersionsRef.current.set(el.id, el.version);
+          pendingRef.current.set(el.id, { element: el, seq });
+        }
+        if (realtimeStatusRef.current === "live") syncRef.current?.sendElements(changed, seq);
+        return;
+      }
+
       setStatus((s) => (s === "conflict" ? s : "dirty"));
       scheduleSave();
     },
     [scheduleSave],
   );
 
-  // Sticky Note tool: while our custom tool is active, a pointer-down drops one note (rectangle +
-  // bound text, both Excalidraw-native) centred on the pointer, selects it, and returns to the
-  // selection tool so the next click moves/resizes/edits rather than dropping another.
+  const handlePointerUpdate = useCallback((payload: PointerUpdate) => {
+    if (realtimeStatusRef.current !== "live") return;
+    lastPointerRef.current = payload;
+    if (pointerTimerRef.current !== undefined) return;
+    pointerTimerRef.current = window.setTimeout(() => {
+      pointerTimerRef.current = undefined;
+      const p = lastPointerRef.current;
+      if (!p) return;
+      syncRef.current?.sendPointer({
+        pointer: p.pointer,
+        button: p.button,
+        selectedElementIds: apiRef.current?.getAppState().selectedElementIds ?? {},
+      });
+    }, POINTER_THROTTLE_MS);
+  }, []);
+
+  // --- Sticky Note tool ---------------------------------------------------------------------
+  // While our custom tool is active, a pointer-down drops one note (rectangle + bound text, both
+  // Excalidraw-native) centred on the pointer, selects it, and returns to the selection tool.
   const handlePointerDown = useCallback((activeTool: AppState["activeTool"], pointerDownState: PointerDownState) => {
     const api = apiRef.current;
     if (!api || !isStickyNoteTool(activeTool)) return;
@@ -203,16 +399,17 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
     [activateStickyNoteTool],
   );
 
-  // Flush a still-pending debounced save on unmount (e.g. the user hits Back right after
-  // drawing). Reads latestSceneRef, not the API — see its comment. Deliberately does NOT clear
-  // apiRef: Excalidraw hands the imperative API over exactly once, from its constructor, and
-  // React StrictMode (dev) runs this cleanup once right after mount.
+  // Flush a still-pending debounced REST save on unmount (e.g. the user hits Back right after
+  // drawing while offline). Reads latestSceneRef, not the API — see its comment. Deliberately
+  // does NOT clear apiRef: Excalidraw hands the imperative API over exactly once, from its
+  // constructor, and React StrictMode (dev) runs this cleanup once right after mount.
   useEffect(() => {
     return () => {
+      window.clearTimeout(pointerTimerRef.current);
       if (timerRef.current !== undefined) {
         window.clearTimeout(timerRef.current);
         timerRef.current = undefined;
-        if (!savingRef.current) {
+        if (!savingRef.current && !realtimeOwns(realtimeStatusRef.current)) {
           const document = currentDocument();
           void saveWhiteboard(board.id, document as unknown as Record<string, unknown>, versionRef.current).catch(
             () => {},
@@ -228,6 +425,7 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
     try {
       const fresh = await getWhiteboard(board.id);
       window.clearTimeout(timerRef.current);
+      timerRef.current = undefined;
       const freshParsed = parseStoredDocument(fresh.document);
       const freshElements = freshParsed.kind === "excalidraw" ? freshParsed.document.elements : [];
       const restored = restoreElements(freshElements as unknown as SceneElements, null);
@@ -260,25 +458,42 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
     error: errorText ?? "Save failed",
   };
 
+  const realtimeLabel: Record<SyncStatus, string> = {
+    connecting: "Connecting…",
+    live: realtime.others === 0 ? "Live · only you" : `Live · ${realtime.others} ${realtime.others === 1 ? "collaborator" : "collaborators"}`,
+    reconnecting: "Reconnecting… changes are kept and sent when back",
+    offline: "",
+  };
+  // A locked legacy board never joins a room, so its header keeps the (disabled) REST controls.
+  const live = !legacyLocked && realtimeOwns(realtime.status);
+
   return (
     <>
       <div className={styles.header}>
-        <span className={styles.status + (status === "conflict" || status === "error" ? ` ${styles.statusConflict}` : "")}>
-          {statusLabel[status]}
-        </span>
-        {status === "conflict" ? (
-          <button type="button" className={`${styles.button} ${styles.buttonPrimary}`} onClick={() => void reloadFromServer()}>
-            Reload latest
-          </button>
+        {live ? (
+          <span className={styles.status} data-testid="realtime-status">
+            {realtimeLabel[realtime.status]}
+          </span>
         ) : (
-          <button
-            type="button"
-            className={styles.button}
-            onClick={() => void save()}
-            disabled={status === "saving" || legacyLocked}
-          >
-            Save now
-          </button>
+          <>
+            <span className={styles.status + (status === "conflict" || status === "error" ? ` ${styles.statusConflict}` : "")}>
+              {statusLabel[status]}
+            </span>
+            {status === "conflict" ? (
+              <button type="button" className={`${styles.button} ${styles.buttonPrimary}`} onClick={() => void reloadFromServer()}>
+                Reload latest
+              </button>
+            ) : (
+              <button
+                type="button"
+                className={styles.button}
+                onClick={() => void save()}
+                disabled={status === "saving" || legacyLocked}
+              >
+                Save now
+              </button>
+            )}
+          </>
         )}
       </div>
       {parsed.kind === "legacy" && (
@@ -306,6 +521,8 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
             initialData={initialData}
             onChange={handleChange}
             onPointerDown={handlePointerDown}
+            onPointerUpdate={handlePointerUpdate}
+            isCollaborating={realtime.status === "live"}
             renderTopRightUI={renderTopRightUI}
             excalidrawAPI={(api) => {
               apiRef.current = api;
