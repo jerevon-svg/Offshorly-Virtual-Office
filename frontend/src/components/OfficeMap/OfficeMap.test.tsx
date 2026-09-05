@@ -186,6 +186,11 @@ const { cameraRecorder } = vi.hoisted(() => ({
     calls: [] as { x: number; y: number; scale: number }[],
     controls: null as import("react-zoom-pan-pinch").ReactZoomPanPinchRef | null,
     wrapped: new WeakSet<object>(),
+    // When true, the wrapper's onInit (OfficeMap's "camera ready" signal) is held back until the
+    // test calls releaseInit() — simulates a camera that initialises AFTER the restored self
+    // position is already known.
+    holdInit: false,
+    releaseInit: null as null | (() => void),
   },
 }));
 vi.mock("react-zoom-pan-pinch", async () => {
@@ -210,7 +215,12 @@ vi.mock("react-zoom-pan-pinch", async () => {
       },
       [ref],
     );
-    return React.createElement(actual.TransformWrapper, { ...props, ref: merged });
+    const onInit = props.onInit;
+    const heldOnInit: typeof onInit = (ctx) => {
+      if (cameraRecorder.holdInit) cameraRecorder.releaseInit = () => onInit?.(ctx);
+      else onInit?.(ctx);
+    };
+    return React.createElement(actual.TransformWrapper, { ...props, ref: merged, onInit: heldOnInit });
   });
   return { ...actual, TransformWrapper };
 });
@@ -841,6 +851,8 @@ describe("OfficeMap", () => {
 
     beforeEach(() => {
       cameraRecorder.calls = [];
+      cameraRecorder.holdInit = false;
+      cameraRecorder.releaseInit = null;
       mockRosterPeople = [selfPerson];
       setCurrentUserFromMeResponse({ id: "self-id", email: SELF_EMAIL, full_name: "Bon", role: "", team: null });
     });
@@ -917,6 +929,39 @@ describe("OfficeMap", () => {
       expect(setup.panning.disabled).toBe(false);
       expect(setup.wheel.disabled).toBe(false);
       expect(setup.pinch.disabled).toBe(false);
+    });
+
+    it("lifecycle gap: restored self position known BEFORE the camera is ready still gets exactly one focus once the camera initialises", async () => {
+      // Reproduces the normal-refresh mismatch class: the spawn-restore effect applies the
+      // persisted position while the camera cannot be written yet. A focus tied to the spawn
+      // effect's own once-guard is lost forever in that ordering; the decoupled one-time focus
+      // effect must instead fire when the camera becomes ready — and only once.
+      const pos = findRestorableStandingPos();
+      await mockAttendanceService.checkIn(getCurrentUserId());
+      peerMovementSnapshotState.snapshotReady = true;
+      peerMovementSnapshotState.entries = selfStanding(pos);
+      cameraRecorder.holdInit = true;
+
+      const { container } = render(<OfficeMap />);
+      const restored = framingFor(pos);
+      // Avatar is restored (placement applied) ...
+      await waitFor(() => {
+        const layer = selfSpriteLayer(container);
+        expect(layer.style.left).toBe(pct(pos.x, FRAME_WIDTH));
+      });
+      // ... but the camera-ready signal has not fired, so no restore framing may exist yet.
+      expect(cameraRecorder.calls.some((c) => sameFraming(c, restored))).toBe(false);
+      expect(cameraRecorder.releaseInit, "held onInit").toBeTruthy();
+
+      await act(async () => {
+        cameraRecorder.releaseInit!();
+      });
+      await waitFor(() => expect(cameraRecorder.calls.some((c) => sameFraming(c, restored))).toBe(true));
+      expect(cameraRecorder.calls.filter((c) => sameFraming(c, restored)).length).toBe(1);
+      // Avatar position untouched by the late focus.
+      const layer = selfSpriteLayer(container);
+      expect(layer.style.left).toBe(pct(pos.x, FRAME_WIDTH));
+      expect(layer.style.top).toBe(pct(pos.y, FRAME_HEIGHT));
     });
 
     it("default startup (not checked in) keeps only the entrance framing — no restore centering", async () => {

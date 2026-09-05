@@ -1322,6 +1322,12 @@ export function OfficeMap() {
   // this ref is declared here so it stays adjacent to the other
   // useCharacterWalk-related refs, but is only ever flipped by that effect.
   const spawnMovedRef = useRef(false);
+  // Authoritative restored self position (top-left), published once by the spawn-restore effect
+  // for CHECKED_IN placements only. Consumed by the one-time initial camera focus effect.
+  const [restoredSelfPos, setRestoredSelfPos] = useState<Pt | null>(null);
+  const initialSelfFocusDoneRef = useRef(false);
+  // TransformWrapper has initialised its wrapper/content (onInit) — the camera can be written.
+  const [transformReady, setTransformReady] = useState(false);
 
   // Alex/Micah/Lui demo-walk instances — same useCharacterWalk hook as bon,
   // seeded from each NPC's actual current manifest position so their demo
@@ -2176,24 +2182,24 @@ export function OfficeMap() {
     });
     if (!placement) return;
     spawnMovedRef.current = true;
-    // Restored CHECKED_IN placements also frame the camera on the avatar ONCE, here, because
-    // the mount framing below (frameCameraOnAvatar on bonLayer) ran before attendance and the
-    // movement snapshot were known and so still looks at the entrance/reception. This inherits
-    // the spawnMovedRef once-guard and the !isWalking gate: it never re-fires for later walks,
-    // peer movement, or bonPos changes, and it is a single setTransform — not a follow camera.
-    // The sidewalk placement is left alone: the mount framing already shows bonLayer.
+    // Restored CHECKED_IN placements publish the authoritative self position for the ONE-TIME
+    // initial camera focus effect below (initialSelfFocusDoneRef) — placement and camera are
+    // deliberately decoupled: this effect only ever positions the avatar, and the focus effect
+    // fires whenever checked-in state + this position + a ready camera all hold, regardless of
+    // the order in which they arrive. The sidewalk placement publishes nothing: the mount
+    // framing already shows bonLayer.
     if (placement.kind === "standing") {
       resetBonPos(placement.pos);
       setIsSitting(false);
       setCurrentSeatKey(null);
       face(placement.facing);
-      frameCameraOnAvatar(placement.pos);
+      setRestoredSelfPos(placement.pos);
       return;
     }
     if (placement.kind === "seated") {
       resetBonPos(placement.pos);
       sitAtSeat(placement.seat);
-      frameCameraOnAvatar(placement.pos);
+      setRestoredSelfPos(placement.pos);
       return;
     }
     const seatedAtDesk = placement.kind === "desk";
@@ -2213,9 +2219,9 @@ export function OfficeMap() {
       setIsSitting(false);
       setCurrentSeatKey(null);
     }
-    // Only the CHECKED_IN own-desk fallback frames here; the sidewalk placement (seatAt ===
-    // bonLayer) is exactly what the mount framing already shows, so it is not written again.
-    if (seatedAtDesk) frameCameraOnAvatar({ x: seatAt.x, y: seatAt.y });
+    // Only the CHECKED_IN own-desk fallback publishes a focus position; the sidewalk placement
+    // (seatAt === bonLayer) is exactly what the mount framing already shows.
+    if (seatedAtDesk) setRestoredSelfPos({ x: seatAt.x, y: seatAt.y });
     // Prefer self's OWN last-synced facing (from movement-sync's
     // positions_snapshot, which delivers self's stable entry with
     // stable.facing even though self is excluded from PeerWalker rendering)
@@ -2738,10 +2744,10 @@ export function OfficeMap() {
   // spawn-restore effect so both use ONE set of camera math. It is one setTransform call and
   // nothing else: no camera state is persisted, the TransformWrapper stays fully under the
   // user's control afterwards (pan/zoom/wheel untouched), and it never follows the avatar.
-  function frameCameraOnAvatar(pos: Pt, durationMs = 600) {
+  function frameCameraOnAvatar(pos: Pt, durationMs = 600): boolean {
     const ref = transformRef.current;
     const wrapper = ref?.instance.wrapperComponent;
-    if (!ref || !wrapper) return;
+    if (!ref || !wrapper) return false;
     const rect = wrapper.getBoundingClientRect();
     const focusScale = initialScale * 2.5;
     const { x, y } = computeCenterTransform(
@@ -2751,7 +2757,27 @@ export function OfficeMap() {
       rect.height,
     );
     ref.setTransform(x, y, focusScale, durationMs, "easeOut");
+    return true;
   }
+
+  // ONE-TIME initial camera focus on the restored self position. Keyed only to the three facts
+  // that must all hold — checked in, authoritative restored position published, camera ready —
+  // and NOT to the spawn-restore effect's own once-guard or to the moment it happened to run,
+  // so every reload path (normal refresh, hard refresh, snapshot-before-attendance,
+  // attendance-before-snapshot, camera initialising late) converges on the same single write.
+  // Declared after the mount framing effect above so that, when both fire in one commit, this
+  // write is the later one. initialSelfFocusDoneRef flips only after a successful write and is
+  // never reset: later walks, peer movement, bonPos changes or re-renders cannot re-enter, and
+  // the TransformWrapper stays under the user's control (not a follow camera). CHECKED_OUT users
+  // never publish a restored position, so the sidewalk/entrance framing is untouched.
+  useEffect(() => {
+    if (initialSelfFocusDoneRef.current || !restoredSelfPos || !hasCheckedIn || !transformReady) return;
+    if (frameCameraOnAvatar(restoredSelfPos)) initialSelfFocusDoneRef.current = true;
+    // frameCameraOnAvatar is a plain per-render function (like every camera helper here);
+    // listing it would re-run this effect every render — the ref guard makes that harmless but
+    // pointless, and its inputs (transformRef, initialScale, player dims) are stable anyway.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restoredSelfPos, hasCheckedIn, transformReady]);
 
   // Plays a sequence of greeting bubbles one at a time, each fully dismissing
   // before the next appears. Reuses the existing greeting/greetTimerRef
@@ -4220,6 +4246,8 @@ export function OfficeMap() {
         maxScale={maxScale}
         centerOnInit
         limitToBounds
+        // Camera-ready signal for the one-time initial self focus effect (see frameCameraOnAvatar).
+        onInit={() => setTransformReady(true)}
         wheel={{ step: 0.1 }}
         pinch={{ step: 5 }}
         doubleClick={{ disabled: true }}
