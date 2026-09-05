@@ -31,6 +31,27 @@ afterEach(() => {
 });
 
 describe("ConversationView", () => {
+  it("offers Whiteboards once the DM conversation resolves and hands back that conversation id", async () => {
+    const peer = makePeer("alex");
+    const conv = await mockChatService.openConversationWith(peer.id, SELF_ID);
+    const onOpenWhiteboard = vi.fn();
+    render(<ConversationView peer={peer} selfId={SELF_ID} onClose={() => {}} onOpenWhiteboard={onOpenWhiteboard} />);
+
+    fireEvent.click(await screen.findByLabelText("Open whiteboards"));
+    // Same id the DM window itself chats on — boards attach to it, so the spatial 1:1 window
+    // (which resolves the same dm_key) can never see a different board set.
+    // Title is the peer's display name (makePeer sets name = id).
+    expect(onOpenWhiteboard).toHaveBeenCalledWith(conv.id, "alex");
+  });
+
+  it("renders no Whiteboards button when the caller does not offer one", async () => {
+    const peer = makePeer("alex");
+    await mockChatService.openConversationWith(peer.id, SELF_ID);
+    render(<ConversationView peer={peer} selfId={SELF_ID} onClose={() => {}} />);
+    await screen.findByLabelText("Close chat");
+    expect(screen.queryByLabelText("Open whiteboards")).toBeNull();
+  });
+
   it("renders existing seeded history from MockChatService", async () => {
     const peer = makePeer("alex");
     const conv = await mockChatService.openConversationWith(peer.id, SELF_ID);

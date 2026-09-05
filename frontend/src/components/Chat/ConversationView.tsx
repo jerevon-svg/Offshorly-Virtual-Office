@@ -52,6 +52,12 @@ type ConversationViewProps = {
   // fires false), false immediately if the content becomes empty, and false
   // immediately (clearing any pending timer) on send.
   onTypingChange?: (isTyping: boolean) => void;
+  // Whiteboard 1:1: when provided, the header shows a "Whiteboards" button once the DM's
+  // conversation id has resolved, and clicking it hands back that id plus the peer's display
+  // name. Boards attach to the DM conversation itself, so the spatial 1:1 window and the Global
+  // Chat DM window (same dm_key → same conversation) always show the same boards. Only passed
+  // for real-mode windows — the server, not this component, decides access (participants).
+  onOpenWhiteboard?: (conversationId: string, title: string) => void;
 };
 
 // Inactivity window after the last keystroke before we consider the user to
@@ -167,6 +173,7 @@ export function ConversationView({
   onMinimizeToggle,
   onIncomingMessage,
   onTypingChange,
+  onOpenWhiteboard,
   onConversationOpen,
 }: ConversationViewProps) {
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -442,7 +449,24 @@ export function ConversationView({
         name={peerName}
         subtitle={subtitle}
         isSpatial={isSpatial}
-        headerExtra={headerExtra}
+        headerExtra={
+          onOpenWhiteboard && conversationId ? (
+            <>
+              {headerExtra}
+              <button
+                type="button"
+                className={styles.minimizeButton}
+                onClick={() => onOpenWhiteboard(conversationId, peerName)}
+                aria-label="Open whiteboards"
+                title="Whiteboards"
+              >
+                ▦
+              </button>
+            </>
+          ) : (
+            headerExtra
+          )
+        }
         minimized={minimized}
         onMinimizeToggle={onMinimizeToggle}
         onClose={onClose}
