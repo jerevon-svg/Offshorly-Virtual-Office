@@ -46,6 +46,12 @@ export function setDevIdentity(email: string | null): void {
   devEmail = email ? email.trim().toLowerCase() : null;
 }
 
+/** The seeded dev-bypass identity, shared with whiteboardSyncClient.ts so the realtime socket
+ * authenticates exactly like the REST calls do — one copy of this state, not two. */
+export function getDevIdentity(): string | null {
+  return devEmail;
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   if (devEmail) {

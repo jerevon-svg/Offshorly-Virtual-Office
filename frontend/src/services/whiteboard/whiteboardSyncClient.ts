@@ -1,5 +1,6 @@
 import { io, type Socket } from "socket.io-client";
 import { getAuthToken } from "../api/client";
+import { getDevIdentity } from "./whiteboardClient";
 import type { SyncElement } from "./whiteboardSync";
 
 // Socket.IO client for Whiteboard W3 realtime (backend/app/realtime/socket.py whiteboard_*
@@ -68,16 +69,15 @@ function socketBase(): string {
   return raw.replace(/\/+$/, "");
 }
 
-// DEV-ONLY: mirrors whiteboardClient.ts's devEmail/setDevIdentity exactly (seeded by useAuthGate).
-let devEmail: string | null = null;
-
-export function setDevIdentity(email: string | null): void {
-  devEmail = email ? email.trim().toLowerCase() : null;
-}
-
 /** Join `boardId`'s realtime room. Returns null (and reports nothing) when there is no identity
- * to connect with — the caller then falls back to REST saves. */
+ * to connect with — the caller then falls back to REST saves.
+ *
+ * IDENTITY IS BORROWED, NOT COPIED: the dev-bypass email comes from whiteboardClient.ts, the
+ * REST client that already loaded this board. A second module-level copy seeded separately by
+ * useAuthGate was only populated on a full app boot, so a tab that was already open when this
+ * module first loaded (dev HMR) could fetch boards over REST yet silently never join realtime. */
 export function joinWhiteboard(boardId: string, handlers: SyncHandlers): SyncHandle | null {
+  const devEmail = getDevIdentity();
   if (!devEmail && !getAuthToken()) return null;
 
   const auth: Record<string, string | null> = devEmail ? { "x-dev-email": devEmail } : { token: getAuthToken() };

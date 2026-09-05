@@ -47,9 +47,10 @@ vi.mock("socket.io-client", () => ({
   }),
 }));
 
-vi.mock("../api/client", () => ({
-  getAuthToken: vi.fn(() => "fake-token"),
-}));
+const getAuthToken = vi.fn<() => string | null>(() => "fake-token");
+const getDevIdentity = vi.fn<() => string | null>(() => null);
+vi.mock("../api/client", () => ({ getAuthToken: () => getAuthToken() }));
+vi.mock("./whiteboardClient", () => ({ getDevIdentity: () => getDevIdentity() }));
 
 vi.stubEnv("VITE_CHAT_SOCKET_URL", "http://localhost:8002");
 
@@ -72,9 +73,29 @@ const snapshot = (boardId: string) => ({ boardId, elements: [], appState: {}, fi
 
 beforeEach(() => {
   lastFakeSocket = null;
+  getAuthToken.mockReturnValue("fake-token");
+  getDevIdentity.mockReturnValue(null);
 });
 
 describe("joinWhiteboard", () => {
+  it("authenticates with the REST whiteboard client's dev identity when one is seeded, else the bearer token, else not at all", async () => {
+    const { io } = await import("socket.io-client");
+    const ioMock = io as unknown as ReturnType<typeof vi.fn>;
+    ioMock.mockClear();
+
+    getDevIdentity.mockReturnValue("alex@offshorly.com");
+    expect(joinWhiteboard("b1", handlers())).not.toBeNull();
+    expect(ioMock.mock.calls[0][1]).toMatchObject({ auth: { "x-dev-email": "alex@offshorly.com" } });
+
+    getDevIdentity.mockReturnValue(null);
+    expect(joinWhiteboard("b1", handlers())).not.toBeNull();
+    expect(ioMock.mock.calls[1][1]).toMatchObject({ auth: { token: "fake-token" } });
+
+    getAuthToken.mockReturnValue(null);
+    expect(joinWhiteboard("b1", handlers())).toBeNull();
+    expect(ioMock).toHaveBeenCalledTimes(2);
+  });
+
   it("joins on connect, goes live on the snapshot, and re-joins on every reconnect", () => {
     const h = handlers();
     const handle = joinWhiteboard("b1", h)!;

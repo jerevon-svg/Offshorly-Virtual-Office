@@ -450,7 +450,7 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
   }
 
   const statusLabel: Record<SaveStatus, string> = {
-    idle: "",
+    idle: "Offline · saving directly",
     dirty: "Unsaved changes",
     saving: "Saving…",
     saved: "Saved",
