@@ -171,6 +171,8 @@ import {
 } from "./clusterFormation";
 import { getCurrentUserId, useCurrentUserAvatarId } from "../../data/currentUser";
 import { ToucanAssistantPanel } from "./ToucanAssistantPanel";
+import { subscribeToucanChannelConnected, toucanService, type ToucanCatchUp } from "../../services/toucan";
+import { readBriefedSince, shouldBriefOnReturn, writeBriefedSince } from "./toucanReturnBriefing";
 import type { ToucanSummonState } from "./ToucanFlyer";
 import { useCurrentUser } from "../../auth/currentUserStore";
 import { useOfficeRoster } from "../../services/office/useOfficeRoster";
@@ -2325,9 +2327,37 @@ export function OfficeMap() {
     };
   }, []);
 
+  // A5 follow-up — PROACTIVE RETURN BRIEFING. When this viewer's Toucan channel (re)connects,
+  // ask the server for the catch-up it already computes and, if it describes a genuine
+  // observed absence with something to say (toucanReturnBriefing.ts), summon the bird exactly
+  // the way the button does. The server's frozen absence boundary is the dedup key: it is
+  // remembered per viewer in localStorage the moment the summon fires, so a refresh, a second
+  // tab, a reconnect blip or a manual dismiss inside the same return never re-summons, and the
+  // next real absence (a new boundary) briefs once more. No timer, no client-side window.
+  const [toucanReturnBriefing, setToucanReturnBriefing] = useState<ToucanCatchUp | null>(null);
+  const toucanBriefedSinceRef = useRef<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const unsubscribe = subscribeToucanChannelConnected(() => {
+      Promise.resolve()
+        .then(() => toucanService.getCatchUp())
+        .then((catchUp) => {
+          if (cancelled || !catchUp) return;
+          const viewer = getCurrentUserId();
+          const already = toucanBriefedSinceRef.current ?? readBriefedSince(viewer);
+          if (shouldBriefOnReturn(catchUp, already)) setToucanReturnBriefing(catchUp);
+        })
+        .catch(() => {});
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
   function releaseToucan() {
     setToucanCalled(false);
     setToucanPanelOpen(false);
+    setToucanReturnBriefing(null);
     // Clear the pending flag AND the bird's pill immediately, cancelling any
     // in-flight linger — a released bird must not trail a squawk.
     setToucanPending(false);
@@ -2344,6 +2374,19 @@ export function OfficeMap() {
   // releases the bird, so it is never left parked next to a departing
   // avatar with an orphaned panel.
   const toucanChromeVisible = hasCheckedIn && onboarding === "done" && !checkoutBusy;
+  // A5 follow-up — the summon half of the return briefing (see the subscription above). Waits
+  // for the checked-in chrome, since the bird is only ever offered there.
+  useEffect(() => {
+    if (!toucanReturnBriefing || !toucanChromeVisible) return;
+    const since = toucanReturnBriefing.activity.since;
+    if (toucanBriefedSinceRef.current === since) return;
+    toucanBriefedSinceRef.current = since;
+    writeBriefedSince(getCurrentUserId(), since);
+    // Same two branches as the "Call the toucan" button: reopen if parked, else summon.
+    if (toucanState === "attending") setToucanPanelOpen(true);
+    else setToucanCalled(true);
+  }, [toucanReturnBriefing, toucanChromeVisible, toucanState]);
+
   useEffect(() => {
     if (!toucanChromeVisible && toucanCalled) releaseToucan();
   }, [toucanChromeVisible, toucanCalled]);
@@ -4458,6 +4501,7 @@ export function OfficeMap() {
             onPendingChange={setToucanPending}
             onTypingChange={setToucanTyping}
             onOpenConversation={openConversationById}
+            returnBriefing={toucanReturnBriefing}
           />
         </div>
       )}

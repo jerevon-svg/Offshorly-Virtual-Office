@@ -28,6 +28,8 @@ import {
   subscribeDelegationUrgent,
   type ToucanDelegation,
   type ToucanUrgentFlag,
+  type ToucanCatchUp,
+  type ToucanCatchUpRow,
 } from "../../services/toucan";
 import { appendDictatedText } from "./toucanDictation";
 
@@ -117,6 +119,11 @@ type Turn = {
    *  so it can be re-sent without the viewer retyping it. Its presence is also
    *  what marks the turn as an error rather than an ordinary reply. */
   retryQuestion?: string;
+  /** A5 — set on a Toucan turn that IS a catch-up briefing (the proactive return briefing, or
+   *  the reply to a manual "catch me up"). The most recent such turn renders the structured
+   *  conversation rows and their actions inside its own bubble, so the words and the actions
+   *  are one message. Never persisted: restored transcripts carry text only. */
+  catchUp?: boolean;
 };
 
 // Shown when the request itself fails (network down, backend asleep, aborted
@@ -207,6 +214,68 @@ export function describeUrgentFlag(flag: ToucanUrgentFlag): string {
   return Number.isNaN(when.getTime()) ? label : `${label} · ${formatLocalTime(when)}`;
 }
 
+/** A5 — the badges on one catch-up row, worst first, as plain strings so the ordering is
+ *  testable without the DOM. Counts are the server's window counts; nothing is derived here. */
+/** A5 — what the panel remembers about a row the viewer OPENED from this briefing: that it was
+ *  reviewed, and whether it was urgent when it appeared (the server stops reporting the flag
+ *  once A3 marks it seen, so the briefing keeps that context itself). Session-only, like the
+ *  dismissed set: never sent anywhere, gone with the panel. */
+export type CatchUpReview = { wasUrgent: boolean; urgentRequesterLabel?: string | null };
+
+export function catchUpBadges(row: ToucanCatchUpRow, review: CatchUpReview | null = null): string[] {
+  const badges: string[] = [];
+  if (review) badges.push("Reviewed");
+  // A reviewed row keeps the fact that it WAS urgent, worded in the past tense and without the
+  // active emphasis — the viewer has already opened it.
+  const urgent = review ? review.wasUrgent : row.urgent;
+  const requester = review ? review.urgentRequesterLabel : row.urgentRequesterLabel;
+  if (urgent) badges.push(`${review ? "Was urgent" : "Urgent"}${requester ? ` · ${requester}` : ""}`);
+  if (row.mentionCount > 0) badges.push(row.mentionCount === 1 ? "1 mention" : `${row.mentionCount} mentions`);
+  if (row.newCount > 0) badges.push(row.newCount === 1 ? "1 new" : `${row.newCount} new`);
+  if (row.toucanCovered) badges.push("Toucan replied");
+  return badges;
+}
+
+function plural(count: number, singular: string, pluralForm?: string): string {
+  return `${count} ${count === 1 ? singular : pluralForm ?? `${singular}s`}`;
+}
+
+/** A5 follow-up — the proactive return briefing, worded from the SAME grounded numbers the
+ *  server's digest is worded from, in the same priority order (urgent, mentions, missed calls,
+ *  priority Hub, other chat, Toucan replied, other Hub) with the same subset arithmetic. Counts
+ *  only: no names, no conversations, no text — the rows beneath it carry the where. */
+export function composeReturnBriefing(catchUp: ToucanCatchUp): string {
+  const a = catchUp.activity;
+  const lines: string[] = [];
+  const urgent = catchUp.delegatedUrgentCount ?? 0;
+  if (urgent) {
+    lines.push(
+      urgent === 1
+        ? "1 message was flagged as urgent while Toucan covered for you"
+        : `${urgent} messages were flagged as urgent while Toucan covered for you`,
+    );
+  }
+  if (a.mentionCount) lines.push(`${plural(a.mentionCount, "mention")} ${a.mentionCount === 1 ? "needs" : "need"} your attention`);
+  if (a.missedCallCount) lines.push(plural(a.missedCallCount, "missed call"));
+  if (a.pressingHubCount) lines.push(plural(a.pressingHubCount, "priority Hub item"));
+  const otherChat = Math.max(0, a.chatCount - a.mentionCount);
+  if (otherChat) lines.push(plural(otherChat, a.mentionCount ? "other chat message" : "chat message"));
+  if (catchUp.coveredCount) lines.push(`Toucan replied for you in ${plural(catchUp.coveredCount, "conversation")}`);
+  const otherHub = Math.max(0, a.hubCount - a.pressingHubCount);
+  if (otherHub) lines.push(plural(otherHub, a.pressingHubCount ? "other Hub item" : "Hub item"));
+  const header = "Welcome back. Here's what happened while you were away:";
+  if (lines.length === 0) return `${header}\n• Nothing new — the conversations below are the ones that moved.`;
+  return `${header}\n${lines.map((line) => `• ${line}`).join("\n")}`;
+}
+
+/** A5 — the card shows only for a real observed absence with something behind it. A
+ *  tracking_started or no_history window is still worded honestly in the text; it never earns
+ *  a list of conversations, because "while you were away" would not be true of it. */
+export function catchUpRowsToShow(catchUp: ToucanCatchUp | null): ToucanCatchUpRow[] {
+  if (!catchUp || catchUp.activity?.sinceReason !== "last_active") return [];
+  return Array.isArray(catchUp.conversations) ? catchUp.conversations : [];
+}
+
 export function withDelegationEnd(text: string, expiresAt: string | null | undefined): string {
   if (!expiresAt) return text;
   const ends = new Date(expiresAt);
@@ -282,6 +351,12 @@ type ToucanAssistantPanelProps = {
   // A3 — the return card's Open button. The caller owns the chat windows; this component only
   // hands over the conversation id it was told about. Absent = the card shows Dismiss only.
   onOpenConversation?: (conversationId: string) => void;
+  // A5 follow-up — the catch-up the caller decided qualifies as a genuine return (see
+  // OfficeMap + toucanReturnBriefing.ts). When present, the panel seeds its catch-up card from
+  // it and speaks one deterministic briefing turn as soon as the transcript has restored —
+  // once per absence boundary. Local turn only, like the greeting: nothing is asked of the
+  // server and nothing is written anywhere.
+  returnBriefing?: ToucanCatchUp | null;
 };
 
 // Matches ConversationView's own TYPING_IDLE_MS, so the character stops
@@ -339,6 +414,7 @@ export function ToucanAssistantPanel({
   onRequestAttachment,
   onRequestDictation,
   onOpenConversation,
+  returnBriefing = null,
 }: ToucanAssistantPanelProps) {
   const [turns, setTurns] = useState<Turn[]>([greetingTurn(0)]);
   const [draft, setDraft] = useState("");
@@ -386,6 +462,21 @@ export function ToucanAssistantPanel({
   // shown as the return card only while no delegation is active; while one is, the banner
   // carries the count instead.
   const [urgentFlags, setUrgentFlags] = useState<ToucanUrgentFlag[]>([]);
+  // A5 — the structured twin of the digest. Null until fetched or when the service has no call.
+  const [catchUp, setCatchUp] = useState<ToucanCatchUp | null>(null);
+  const [catchUpBusyId, setCatchUpBusyId] = useState<string | null>(null);
+  // A5 — normal rows the viewer dismissed from THIS panel's card. Session-only UI state: it
+  // lives as long as this component, filters every render (so a refetch during the same open
+  // panel cannot bring a dismissed row back), and is never sent anywhere. The next genuine
+  // absence opens a fresh panel and a fresh set.
+  const [dismissedCatchUpIds, setDismissedCatchUpIds] = useState<ReadonlySet<string>>(() => new Set());
+  // A5 — rows the viewer OPENED from this briefing, with what they were when opened. Same
+  // session-only discipline as the dismissed set: filters every render, survives refetches and
+  // another "catch me up" in this panel, never written anywhere. Open means "I reviewed this",
+  // not "remove all trace of it" — the row stays, downgraded, and can be opened again.
+  const [reviewedCatchUp, setReviewedCatchUp] = useState<ReadonlyMap<string, CatchUpReview>>(() => new Map());
+  // A5 follow-up — which absence boundary this panel has already spoken a briefing for.
+  const briefedSinceRef = useRef<string | null>(null);
   const [urgentBusyId, setUrgentBusyId] = useState<string | null>(null);
   const nextIdRef = useRef(1);
   const askAbortRef = useRef<AbortController | null>(null);
@@ -460,6 +551,24 @@ export function ToucanAssistantPanel({
     return () => controller.abort();
   }, [loadUrgentFlags]);
 
+  // A5 — the viewer's catch-up, preloaded the same lightweight way as the urgent flags so the
+  // card can show on open after a real absence. Read-only server-side; a failure (offline, an
+  // older service without the call) just means no card.
+  const loadCatchUp = useCallback((signal?: AbortSignal) => {
+    Promise.resolve()
+      .then(() => toucanService.getCatchUp({ signal }))
+      .then((result) => {
+        if (!signal?.aborted) setCatchUp(result ?? null);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    loadCatchUp(controller.signal);
+    return () => controller.abort();
+  }, [loadCatchUp]);
+
   // A2.2 — the server tells the OWNER (only) when their delegation ended: Stop from another
   // tab, replaced by a new one, or found expired. Clear the banner unless the event names a
   // different (older) delegation than the one shown.
@@ -472,8 +581,9 @@ export function ToucanAssistantPanel({
         return null;
       });
       loadUrgentFlags();
+      loadCatchUp();
     });
-  }, [loadUrgentFlags]);
+  }, [loadUrgentFlags, loadCatchUp]);
 
   // A3 — somebody declared a message urgent while Toucan covered for the viewer. Bump the
   // banner's counter (only for the delegation shown) and remember the flag for the return card.
@@ -782,12 +892,31 @@ export function ToucanAssistantPanel({
 
   // T8 — the assistant's own follow-up line for confirm/cancel outcomes. A plain
   // toucan turn, same shape appendReply produces inside submitQuestion.
-  const appendToucanTurn = useCallback((text: string) => {
+  const appendToucanTurn = useCallback((text: string, options: { catchUp?: boolean } = {}) => {
     setTurns((prev) => [
       ...prev,
-      { id: nextIdRef.current++, role: "toucan", text, sentAt: new Date().toISOString() },
+      {
+        id: nextIdRef.current++,
+        role: "toucan",
+        text,
+        sentAt: new Date().toISOString(),
+        ...(options.catchUp ? { catchUp: true } : {}),
+      },
     ]);
   }, []);
+
+  // A5 follow-up — speak the return briefing once the transcript has restored, so it lands
+  // beneath the restored turns rather than being replaced by them. One turn per absence
+  // boundary: a rerender with the same catch-up, or the same boundary arriving again, is a
+  // no-op. The card is seeded from the same object so text and rows agree immediately.
+  useEffect(() => {
+    if (restoring || !returnBriefing) return;
+    const since = returnBriefing.activity?.since ?? "";
+    if (briefedSinceRef.current === since) return;
+    briefedSinceRef.current = since;
+    setCatchUp(returnBriefing);
+    appendToucanTurn(composeReturnBriefing(returnBriefing), { catchUp: true });
+  }, [restoring, returnBriefing, appendToucanTurn]);
 
   // CONFIRM — the only gesture that executes anything, and it is a button press
   // carrying the server-minted proposal id, never conversational text. Order of
@@ -891,6 +1020,84 @@ export function ToucanAssistantPanel({
     [urgentBusyId, onOpenConversation, appendToucanTurn],
   );
 
+  // A5 — actions on a catch-up row.
+  //   * OPEN (every row) hands the id to the caller (the conversation is laid out BESIDE this
+  //     panel, which stays open) and marks the row REVIEWED locally — it stays in the briefing,
+  //     downgraded, and can be opened again. Nothing persistent: no read cursor moves from
+  //     here, the chat window's own mark-read does that when it renders. An urgent row's unseen
+  //     A3 flag is marked seen through A3's own call, exactly as the urgent card does.
+  //   * DISMISS (normal rows only, reviewed or not) hides the row from this panel's card for the
+  //     rest of the session and calls nothing. Rows that were urgent when they appeared never
+  //     get Dismiss, even once reviewed: requester-declared urgency is resolved by opening the
+  //     conversation, never by waving it away from the briefing.
+  const clearUrgentOnRow = useCallback((row: ToucanCatchUpRow) => {
+    const flagId = row.urgentFlagId;
+    if (!flagId) return Promise.resolve();
+    return toucanService.markUrgentFlagsSeen([flagId]).then(() => {
+      setUrgentFlags((current) => current.filter((f) => f.id !== flagId));
+      setDelegation((current) =>
+        current && (current.urgentCount ?? 0) > 0 ? { ...current, urgentCount: (current.urgentCount ?? 0) - 1 } : current,
+      );
+      setCatchUp((current) =>
+        current
+          ? {
+              ...current,
+              delegatedUrgentCount: Math.max(0, (current.delegatedUrgentCount ?? 0) - 1),
+              conversations: current.conversations.map((r) =>
+                r.conversationId === row.conversationId
+                  ? { ...r, urgent: false, urgentFlagId: null, urgentRequesterLabel: null }
+                  : r,
+              ),
+            }
+          : current,
+      );
+    });
+  }, []);
+
+  const openCatchUpRow = useCallback(
+    (row: ToucanCatchUpRow) => {
+      if (catchUpBusyId) return;
+      setCatchUpBusyId(row.conversationId);
+      onOpenConversation?.(row.conversationId);
+      setReviewedCatchUp((current) => {
+        const previous = current.get(row.conversationId);
+        const next = new Map(current);
+        next.set(row.conversationId, {
+          wasUrgent: Boolean(row.urgent) || Boolean(previous?.wasUrgent),
+          urgentRequesterLabel: row.urgentRequesterLabel ?? previous?.urgentRequesterLabel ?? null,
+        });
+        return next;
+      });
+      clearUrgentOnRow(row)
+        .catch(() => appendToucanTurn(REQUEST_FAILED_TEXT))
+        .finally(() => setCatchUpBusyId(null));
+    },
+    [catchUpBusyId, onOpenConversation, clearUrgentOnRow, appendToucanTurn],
+  );
+
+  const dismissCatchUpRow = useCallback((row: ToucanCatchUpRow) => {
+    if (row.urgent || reviewedCatchUp.get(row.conversationId)?.wasUrgent) return;
+    setDismissedCatchUpIds((current) => {
+      if (current.has(row.conversationId)) return current;
+      const next = new Set(current);
+      next.add(row.conversationId);
+      return next;
+    });
+  }, [reviewedCatchUp]);
+
+  const catchUpRows = catchUpRowsToShow(catchUp).filter((r) => !dismissedCatchUpIds.has(r.conversationId));
+  // A5 — only the MOST RECENT briefing turn carries the rows; older briefings in the same
+  // transcript keep their words but not a second copy of the actions.
+  let latestCatchUpTurnId: number | null = null;
+  for (const turn of turns) if (turn.catchUp) latestCatchUpTurnId = turn.id;
+  // Rows are only ever shown inside a briefing turn; a preloaded catch-up with no briefing in the
+  // transcript displays nothing (the manual "catch me up" or the return briefing puts it there).
+  const displayedCatchUpRows = latestCatchUpTurnId !== null && !restoring ? catchUpRows : [];
+  // A3 card rows already represented on displayed catch-up rows (same conversation, Urgent badge)
+  // are not listed twice; anything the briefing is not showing still shows on the A3 card.
+  const catchUpConversationIds = new Set(displayedCatchUpRows.map((r) => r.conversationId));
+  const standaloneUrgentFlags = urgentFlags.filter((f) => !catchUpConversationIds.has(f.conversationId));
+
   // CANCEL — burns the pending entry server-side; nothing executes either way.
   const handleCancelAction = useCallback(() => {
     if (!actionProposal || actionBusy) return;
@@ -953,7 +1160,7 @@ export function ToucanAssistantPanel({
 
     const controller = new AbortController();
     askAbortRef.current = controller;
-    const appendReply = (replyText: string, retryQuestion?: string) => {
+    const appendReply = (replyText: string, retryQuestion?: string, catchUp = false) => {
       if (controller.signal.aborted) return;
       setTurns((prev) => [
         ...prev,
@@ -963,6 +1170,7 @@ export function ToucanAssistantPanel({
           text: replyText,
           sentAt: new Date().toISOString(),
           ...(retryQuestion ? { retryQuestion } : {}),
+          ...(catchUp ? { catchUp: true } : {}),
         },
       ]);
     };
@@ -970,6 +1178,7 @@ export function ToucanAssistantPanel({
     void toucanService
       .ask({ question: text, history, conversationId }, { signal: controller.signal })
       .then((answer) => {
+        const isCatchUpIntent = answer.intent === "away_summary" || answer.intent === "important_summary";
         // Tracks the conversation the server actually used — the one that was
         // sent, or the one it created because none was.
         if (!controller.signal.aborted) {
@@ -977,8 +1186,10 @@ export function ToucanAssistantPanel({
           // T8: an answer may carry a pending action proposal. Nothing has
           // executed — this only decides whether the confirmation card shows.
           setActionProposal(answer.action ?? null);
+          // A5 — a digest answer refreshes the rows it carries, so text and rows agree.
+          if (isCatchUpIntent) loadCatchUp();
         }
-        appendReply(answer.text);
+        appendReply(answer.text, undefined, isCatchUpIntent);
       })
       .catch((error: unknown) => {
         if (error instanceof ToucanConversationGoneError) {
@@ -1208,12 +1419,12 @@ export function ToucanAssistantPanel({
         </div>
       )}
 
-      {!delegation && urgentFlags.length > 0 && (
+      {!delegation && standaloneUrgentFlags.length > 0 && (
         // A3 — the return card: once Toucan has stopped covering, the conversations somebody
         // flagged as urgent, oldest last. Open hands the id to the caller; both actions mark seen.
         <div className={styles.urgentCard} data-testid="toucan-urgent-card" role="status">
           <span className={styles.urgentTitle}>Urgent while Toucan covered for you</span>
-          {urgentFlags.map((flag) => (
+          {standaloneUrgentFlags.map((flag) => (
             <div key={flag.id} className={styles.urgentRow} data-testid="toucan-urgent-row">
               <span className={styles.urgentMeta}>{describeUrgentFlag(flag)}</span>
               <span className={styles.urgentActions}>
@@ -1251,6 +1462,7 @@ export function ToucanAssistantPanel({
           : turns.map((turn) => {
               const isOwn = turn.role === "user";
               const isError = Boolean(turn.retryQuestion);
+              const carriesRows = Boolean(turn.catchUp) && turn.id === latestCatchUpTurnId && displayedCatchUpRows.length > 0;
               return (
                 <div key={turn.id} className={isOwn ? `${chat.row} ${chat.rowSelf}` : chat.row}>
                   {!isOwn && <div className={`${chat.avatar} ${styles.toucanAvatar}`}>🦜</div>}
@@ -1258,12 +1470,75 @@ export function ToucanAssistantPanel({
                     <div
                       className={`${chat.message} ${isOwn ? chat.own : chat.peer}${
                         isError ? ` ${styles.errorBubble}` : ""
-                      }`}
+                      }${carriesRows ? ` ${styles.briefingBubble}` : ""}`}
                     >
                       {/* The viewer's own message stays literal text — their
                           keystrokes, shown back verbatim. Only the assistant's
                           side goes through the Markdown renderer. */}
                       {isOwn ? turn.text : <ToucanMessageBody text={turn.text} />}
+                      {carriesRows && (
+                        // A5 — the conversations behind this briefing, worst first as the server
+                        // ordered them, with their actions, inside the same message.
+                        <div className={styles.catchUpRows} data-testid="toucan-catchup-rows">
+                        {catchUpRows.map((row) => {
+                          const review = reviewedCatchUp.get(row.conversationId) ?? null;
+                          const dismissible = !row.urgent && !review?.wasUrgent;
+                          return (
+                            <div
+                              key={row.conversationId}
+                              className={review ? `${styles.catchUpRow} ${styles.catchUpRowReviewed}` : styles.catchUpRow}
+                              data-testid="toucan-catchup-row"
+                              data-reviewed={review ? "true" : undefined}
+                            >
+                              <span className={styles.catchUpMeta}>
+                                <span className={styles.catchUpLabel}>{row.label}</span>
+                                <span className={styles.catchUpBadges}>
+                                  {catchUpBadges(row, review).map((badge) => (
+                                    <span
+                                      key={badge}
+                                      className={
+                                        badge.startsWith("Urgent")
+                                          ? `${styles.catchUpBadge} ${styles.catchUpBadgeUrgent}`
+                                          : review
+                                            ? `${styles.catchUpBadge} ${styles.catchUpBadgeMuted}`
+                                            : styles.catchUpBadge
+                                      }
+                                      data-testid="toucan-catchup-badge"
+                                    >
+                                      {badge}
+                                    </span>
+                                  ))}
+                                </span>
+                              </span>
+                              <span className={styles.urgentActions}>
+                                {onOpenConversation && (
+                                  <button
+                                    type="button"
+                                    className={review ? `${styles.urgentOpen} ${styles.catchUpOpenReviewed}` : styles.urgentOpen}
+                                    onClick={() => openCatchUpRow(row)}
+                                    disabled={catchUpBusyId !== null}
+                                    aria-label={review ? `Open ${row.label} again` : `Open ${row.label}`}
+                                  >
+                                    {review ? "Open again" : "Open"}
+                                  </button>
+                                )}
+                                {dismissible && (
+                                  <button
+                                    type="button"
+                                    className={styles.urgentDismiss}
+                                    onClick={() => dismissCatchUpRow(row)}
+                                    disabled={catchUpBusyId !== null}
+                                    aria-label={`Dismiss ${row.label} from this briefing`}
+                                  >
+                                    Dismiss
+                                  </button>
+                                )}
+                              </span>
+                            </div>
+                          );
+                        })}
+                        </div>
+                      )}
                     </div>
                     <div
                       className={

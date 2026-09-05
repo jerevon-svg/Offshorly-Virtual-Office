@@ -660,3 +660,82 @@
   cursor: default;
   opacity: 0.6;
 }
+
+/* A5 — the structured rows inside a briefing turn. Same row geometry as the urgent card,
+   rendered within Toucan's own bubble so the words and the actions are one message. */
+.briefingBubble {
+  max-width: 100%;
+}
+
+.catchUpRows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(30, 58, 138, 0.15);
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+}
+
+.catchUpRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 0;
+}
+
+.catchUpMeta {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+}
+
+.catchUpLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.catchUpBadges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.catchUpBadge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1e40af;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.catchUpBadgeUrgent {
+  background: #dc2626;
+  color: #fff;
+}
+
+/* A5 — a briefing row the viewer already opened: still there, quieter, still actionable. */
+.catchUpRowReviewed {
+  opacity: 0.72;
+}
+
+.catchUpBadgeMuted {
+  background: #e5e7eb;
+  color: #4b5563;
+}
+
+.catchUpOpenReviewed {
+  background: #9ca3af;
+}
+
+.catchUpOpenReviewed:hover:not(:disabled) {
+  background: #6b7280;
+}

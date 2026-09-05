@@ -351,6 +351,49 @@ class ToucanActivityOut(BaseModel):
         )
 
 
+# --- A5 catch-up wire shape -----------------------------------------------------------------
+
+
+class ToucanCatchUpRowOut(BaseModel):
+    """A5 — one conversation worth opening after an absence, as its PARTICIPANT sees it.
+    Metadata only, like ToucanUrgentFlagOut: which conversation, what kind, a label derived from
+    membership or the group title, four grounded numbers/flags, and when it last moved. Counts
+    are window-based like every other Toucan number — never a read cursor. No
+    message text, no sender of any particular message, no preview. `urgentFlagId` is carried so
+    Open can reuse A3's own seen endpoint; the flag itself is still owner-scoped there."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    conversation_id: str = Field(alias="conversationId")
+    type: Literal["dm", "group"]
+    label: str
+    new_count: int = Field(alias="newCount")
+    mention_count: int = Field(alias="mentionCount")
+    urgent: bool
+    urgent_flag_id: str | None = Field(default=None, alias="urgentFlagId")
+    urgent_requester_label: str | None = Field(default=None, alias="urgentRequesterLabel")
+    toucan_covered: bool = Field(alias="toucanCovered")
+    last_relevant_at: datetime | None = Field(default=None, alias="lastRelevantAt")
+
+    @field_serializer("last_relevant_at")
+    def _serialize_time(self, dt: datetime | None) -> str | None:
+        return to_iso_z(dt) if dt is not None else None
+
+
+class ToucanCatchUpOut(BaseModel):
+    """A5 — the return digest as structured data: T2's snapshot (unchanged, nine scalars), A3's
+    unseen-urgent count, A5's covered count, and the conversations behind them, already ordered
+    (urgent, then mentions, then new, then Toucan-covered, newest first) and deduplicated to
+    one row per conversation. Empty `conversations` whenever the window is `no_history`."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    activity: ToucanActivityOut
+    delegated_urgent_count: int = Field(alias="delegatedUrgentCount")
+    covered_count: int = Field(alias="coveredCount")
+    conversations: list[ToucanCatchUpRowOut]
+
+
 # --- T4 memory + resource wire shapes -------------------------------------------------------
 #
 # Same two deliberate properties as ToucanAskIn: NO IDENTITY FIELD anywhere (extra="forbid"

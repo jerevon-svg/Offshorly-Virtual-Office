@@ -330,6 +330,15 @@ _IMPORTANT_SUMMARY = [
     re.compile(r"^anything (?:important|urgent)(?: i need to (?:check|see|know))?$"),
     re.compile(r"^do i need to check anything$"),
     re.compile(r"^what needs my attention$"),
+    # A5 — the return phrasings of the same question.
+    re.compile(
+        r"^(?:is there |was there )?anything (?:important|urgent)"
+        r" (?:while|when) i was (?:gone|away|out|offline|not (?:here|around))$"
+    ),
+    re.compile(
+        r"^did (?:i miss )?anything (?:important|urgent) (?:happen )?"
+        r"(?:while|when) i was (?:gone|away|out|offline)$"
+    ),
 ]
 
 # T3 — THE ATTENTION DIGEST. These are the BROAD phrasings: "tell me everything that is waiting
@@ -349,8 +358,10 @@ _AWAY_SUMMARY = [
     re.compile(r"^what have i missed$"),
     re.compile(r"^(?:did|have) i miss(?:ed)? anything$"),
     re.compile(r"^anything i missed$"),
-    re.compile(r"^catch me up(?: on (?:everything|things|the office))?$"),
+    re.compile(r"^catch me up(?: on (?:everything|things|the office|what i missed))?$"),
+    re.compile(r"^(?:please )?catch me up$"),
     re.compile(r"^bring me up to speed$"),
+    re.compile(r"^(?:im|i am) back(?:,? what did i miss)?$"),
     re.compile(r"^what happened$"),
     re.compile(r"^what is new$"),
     # "which of these deserves me first" — the question the priority ordering exists for.
@@ -688,6 +699,10 @@ def _digest_lines(snapshot: AttentionSnapshot) -> list[str]:
         # the word would be a small lie about a comparison that was never made.
         label = "other chat message" if snapshot.mention_count else "chat message"
         lines.append(_plural(other_chat, label))
+    if snapshot.covered_count:
+        # A5 — after the volume line, before the lowest-signal Hub line: a fact about where
+        # Toucan spoke on the owner's behalf, so they know which threads carry its replies.
+        lines.append(_covered_phrase(snapshot.covered_count))
     if other_hub:
         label = "other Hub item" if snapshot.pressing_hub_count else "Hub item"
         lines.append(_plural(other_hub, label))
@@ -773,6 +788,12 @@ def _urgent_flags_phrase(count: int) -> str:
     if count == 1:
         return "1 message was flagged as urgent while Toucan covered for you"
     return f"{count} messages were flagged as urgent while Toucan covered for you"
+
+
+def _covered_phrase(count: int) -> str:
+    """A5 — Toucan's own replies while the owner was away, as a count of conversations. Says
+    where Toucan spoke, never what it said or whether anything is still outstanding."""
+    return f"Toucan replied for you in {_plural(count, 'conversation')}"
 
 
 def _activity_answer(intent: str, snapshot: AttentionSnapshot) -> str:

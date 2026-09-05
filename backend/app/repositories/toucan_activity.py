@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from collections.abc import Iterable
 from typing import Any
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.activity_event import EVENT_CALL_MISSED, ActivityEvent
-from app.models.conversation import ConversationParticipant
+from app.models.conversation import Conversation, ConversationParticipant
 from app.models.message import Message
 from app.models.toucan import ToucanAttentionCursor
 from app.repositories import hub as hub_repo
@@ -359,3 +360,126 @@ async def record_missed_call(
         "reference_id": row.reference_id,
         "created_at": _as_aware_utc(row.created_at),
     }
+
+
+# --- A5: the per-conversation catch-up breakdown -------------------------------------------
+#
+# Return / Catch-Up asks one thing T2 refused: WHICH conversations, so the owner can open them.
+# The refusal stands for the wording layer — services/toucan/ still sees only counts — and the
+# ids below travel beside the text at the router, exactly as A3's urgent flags do. What leaves
+# here per conversation is metadata only: the id, its type and title, who else is in it (for a
+# label), and four numbers. No text, no sender of any particular message, no preview.
+#
+# COUNTS ARE WINDOW-BASED, exactly as _chat_count's are, and for the same reason (see its
+# docstring): the read cursor is a different question, and the Toucan surface deliberately never
+# reads or writes it (tests/test_toucan_privacy.py). The chat window's own badge answers "what is
+# still unopened"; this answers "what arrived while you were gone". Nothing here writes anything.
+
+
+async def _viewer_conversation_ids(
+    session: AsyncSession, viewer_email: str, candidate_ids: Iterable[str]
+) -> set[str]:
+    """Of the given ids, the ones the viewer actually participates in. The membership check
+    for conversations reached by some route other than a window message (an urgent flag)."""
+    ids = [i for i in set(candidate_ids) if i]
+    if not ids:
+        return set()
+    result = await session.execute(
+        select(ConversationParticipant.conversation_id).where(
+            ConversationParticipant.participant_email == viewer_email,
+            ConversationParticipant.conversation_id.in_(ids),
+        )
+    )
+    return {row[0] for row in result.all()}
+
+
+async def covered_conversation_count(
+    session: AsyncSession, *, viewer_email: str, since: datetime, toucan_sender: str
+) -> int:
+    """How many of the viewer's conversations Toucan itself replied in during the window — the
+    one delegation fact that is durably grounded (the replies are ordinary message rows)."""
+    viewer = normalize_email(viewer_email)
+    conditions = _viewer_message_conditions(viewer, since)
+    conditions.append(Message.sender_email == toucan_sender)
+    result = await session.execute(
+        select(func.count(func.distinct(Message.conversation_id))).where(and_(*conditions))
+    )
+    return int(result.scalar_one())
+
+
+async def catchup_rows(
+    session: AsyncSession,
+    *,
+    viewer_email: str,
+    since: datetime,
+    toucan_sender: str,
+    extra_conversation_ids: Iterable[str] = (),
+) -> list[dict[str, Any]]:
+    """One row per conversation with activity for the viewer since `since`, plus the given extra
+    conversations (membership re-verified here) so a flagged conversation is never dropped.
+
+    Each row: conversation_id, type, title, other_participants (emails minus the viewer and
+    Toucan), new_count and mention_count (messages from others inside the window), toucan_covered,
+    and last_relevant_at (newest message from somebody else in the window, or None). Unordered
+    and unfiltered — the router decides relevance and order."""
+    viewer = normalize_email(viewer_email)
+    conditions = _viewer_message_conditions(viewer, since)
+    messages = (
+        await session.execute(
+            select(
+                Message.conversation_id,
+                Message.sender_email,
+                Message.mentioned_emails,
+                Message.sent_at,
+            ).where(and_(*conditions))
+        )
+    ).all()
+
+    conv_ids = {row[0] for row in messages}
+    conv_ids |= await _viewer_conversation_ids(session, viewer, extra_conversation_ids)
+    if not conv_ids:
+        return []
+
+    participants = (
+        await session.execute(
+            select(ConversationParticipant).where(
+                ConversationParticipant.conversation_id.in_(list(conv_ids))
+            )
+        )
+    ).scalars().all()
+    others: dict[str, list[str]] = {cid: [] for cid in conv_ids}
+    for part in participants:
+        if part.participant_email not in (viewer, toucan_sender):
+            others[part.conversation_id].append(part.participant_email)
+
+    conversations = (
+        await session.execute(select(Conversation).where(Conversation.id.in_(list(conv_ids))))
+    ).scalars().all()
+
+    rows: dict[str, dict[str, Any]] = {}
+    for conv in conversations:
+        rows[conv.id] = {
+            "conversation_id": conv.id,
+            "type": conv.type,
+            "title": conv.title,
+            "other_participants": sorted(others.get(conv.id, [])),
+            "new_count": 0,
+            "mention_count": 0,
+            "toucan_covered": False,
+            "last_relevant_at": None,
+        }
+
+    for conversation_id, sender, mentioned, sent_at in messages:
+        row = rows.get(conversation_id)
+        if row is None:
+            continue
+        moment = _as_aware_utc(sent_at)
+        if moment is not None and (row["last_relevant_at"] is None or moment > row["last_relevant_at"]):
+            row["last_relevant_at"] = moment
+        if sender == toucan_sender:
+            row["toucan_covered"] = True
+        row["new_count"] += 1
+        if mentioned and viewer in mentioned:
+            row["mention_count"] += 1
+
+    return list(rows.values())

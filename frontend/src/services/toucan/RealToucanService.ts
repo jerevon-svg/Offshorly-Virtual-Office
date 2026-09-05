@@ -12,6 +12,7 @@ import {
   type ToucanMemory,
   type ToucanService,
   type ToucanDelegation,
+  type ToucanCatchUp,
   type ToucanUrgentFlag,
 } from "./types";
 
@@ -243,6 +244,14 @@ export class RealToucanService implements ToucanService {
     });
     const body = (await res.json()) as { seenCount?: number } | null;
     return body?.seenCount ?? 0;
+  }
+
+  // A5 — the return digest's structured twin. GET only; the server derives the window and the
+  // viewer, so there is nothing to send.
+
+  async getCatchUp(options: ToucanAskOptions = {}): Promise<ToucanCatchUp | null> {
+    const res = await toucanFetch("/toucan/catchup", { signal: options.signal });
+    return ((await res.json()) as ToucanCatchUp | null) ?? null;
   }
 
   // T9 — the two management calls the polish pass exposes. Both hit endpoints
