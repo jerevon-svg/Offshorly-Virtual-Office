@@ -2176,16 +2176,24 @@ export function OfficeMap() {
     });
     if (!placement) return;
     spawnMovedRef.current = true;
+    // Restored CHECKED_IN placements also frame the camera on the avatar ONCE, here, because
+    // the mount framing below (frameCameraOnAvatar on bonLayer) ran before attendance and the
+    // movement snapshot were known and so still looks at the entrance/reception. This inherits
+    // the spawnMovedRef once-guard and the !isWalking gate: it never re-fires for later walks,
+    // peer movement, or bonPos changes, and it is a single setTransform — not a follow camera.
+    // The sidewalk placement is left alone: the mount framing already shows bonLayer.
     if (placement.kind === "standing") {
       resetBonPos(placement.pos);
       setIsSitting(false);
       setCurrentSeatKey(null);
       face(placement.facing);
+      frameCameraOnAvatar(placement.pos);
       return;
     }
     if (placement.kind === "seated") {
       resetBonPos(placement.pos);
       sitAtSeat(placement.seat);
+      frameCameraOnAvatar(placement.pos);
       return;
     }
     const seatedAtDesk = placement.kind === "desk";
@@ -2205,6 +2213,9 @@ export function OfficeMap() {
       setIsSitting(false);
       setCurrentSeatKey(null);
     }
+    // Only the CHECKED_IN own-desk fallback frames here; the sidewalk placement (seatAt ===
+    // bonLayer) is exactly what the mount framing already shows, so it is not written again.
+    if (seatedAtDesk) frameCameraOnAvatar({ x: seatAt.x, y: seatAt.y });
     // Prefer self's OWN last-synced facing (from movement-sync's
     // positions_snapshot, which delivers self's stable entry with
     // stable.facing even though self is excluded from PeerWalker rendering)
@@ -2717,23 +2728,30 @@ export function OfficeMap() {
   // point shared by whoever is viewing, not an identity — only the framing
   // box's width/height comes from the viewer's own sprite dimensions.
   useEffect(() => {
+    frameCameraOnAvatar({ x: bonLayer.x, y: bonLayer.y });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Single animated camera framing on the viewer's avatar at the office's default close-in
+  // focus zoom (initialScale * 2.5 — the same multiplier the room-focus / character-click
+  // zooms use, rather than the flat cover framing). Shared by the mount framing above and the
+  // spawn-restore effect so both use ONE set of camera math. It is one setTransform call and
+  // nothing else: no camera state is persisted, the TransformWrapper stays fully under the
+  // user's control afterwards (pan/zoom/wheel untouched), and it never follows the avatar.
+  function frameCameraOnAvatar(pos: Pt, durationMs = 600) {
     const ref = transformRef.current;
     const wrapper = ref?.instance.wrapperComponent;
     if (!ref || !wrapper) return;
     const rect = wrapper.getBoundingClientRect();
-    // Close-in, animated zoom on the viewer at mount — matches the
-    // room-focus / character-click zoom feel rather than the flat, instant
-    // cover framing.
     const focusScale = initialScale * 2.5;
     const { x, y } = computeCenterTransform(
-      { x: bonLayer.x, y: bonLayer.y, width: playerCharacterLayer.width, height: playerCharacterLayer.height },
+      { x: pos.x, y: pos.y, width: playerCharacterLayer.width, height: playerCharacterLayer.height },
       focusScale,
       rect.width,
       rect.height,
     );
-    ref.setTransform(x, y, focusScale, 600, "easeOut");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    ref.setTransform(x, y, focusScale, durationMs, "easeOut");
+  }
 
   // Plays a sequence of greeting bubbles one at a time, each fully dismissing
   // before the next appears. Reuses the existing greeting/greetTimerRef
