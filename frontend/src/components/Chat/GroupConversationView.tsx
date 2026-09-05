@@ -40,6 +40,10 @@ export type GroupConversationViewProps = {
   // race.
   onConversationOpen?: (conversationId: string) => void;
   onTypingChange?: (isTyping: boolean) => void;
+  // Whiteboard W1: when provided, the header shows a "Whiteboards" button that opens this
+  // group's boards (OfficeMap renders the panel). Only passed for real-mode groups — the
+  // server, not this component, decides access (group participants).
+  onOpenWhiteboard?: () => void;
 };
 
 const TYPING_IDLE_MS = 2500;
@@ -206,6 +210,7 @@ export function GroupConversationView({
   onIncomingMessage,
   onConversationOpen,
   onTypingChange,
+  onOpenWhiteboard,
 }: GroupConversationViewProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
@@ -386,7 +391,24 @@ export function GroupConversationView({
         name={headerTitle}
         subtitle={subtitle}
         isSpatial={isSpatial}
-        headerExtra={headerExtra}
+        headerExtra={
+          onOpenWhiteboard ? (
+            <>
+              {headerExtra}
+              <button
+                type="button"
+                className={styles.minimizeButton}
+                onClick={onOpenWhiteboard}
+                aria-label="Open whiteboards"
+                title="Whiteboards"
+              >
+                ▦
+              </button>
+            </>
+          ) : (
+            headerExtra
+          )
+        }
         minimized={minimized}
         onMinimizeToggle={onMinimizeToggle}
         onClose={onClose}

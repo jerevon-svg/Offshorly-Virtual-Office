@@ -1,0 +1,160 @@
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  background: rgba(15, 23, 42, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.dialog {
+  width: min(1280px, 100%);
+  height: min(860px, 100%);
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: #111;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f8fafc;
+}
+
+.headerTitle {
+  font-weight: 600;
+  font-size: 15px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.headerSub {
+  color: #64748b;
+  font-weight: 400;
+  margin-left: 6px;
+}
+
+.status {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.statusConflict {
+  color: #b91c1c;
+}
+
+.button {
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.button:hover {
+  background: #f1f5f9;
+}
+
+.buttonPrimary {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+}
+
+.buttonPrimary:hover {
+  background: #1d4ed8;
+}
+
+.close {
+  border: none;
+  background: transparent;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  color: #475569;
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.list {
+  padding: 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.createRow {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.input {
+  flex: 1;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 14px;
+}
+
+.boardRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fff;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.boardRow:hover {
+  background: #f8fafc;
+}
+
+.boardMeta {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.empty {
+  color: #64748b;
+  font-size: 14px;
+  padding: 24px 0;
+  text-align: center;
+}
+
+.error {
+  color: #b91c1c;
+  font-size: 13px;
+}
+
+.canvas {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}

@@ -20,6 +20,7 @@ from app.models.toucan import (
     ToucanResource,
     ToucanUrgentFlag,
 )
+from app.models.whiteboard import Whiteboard
 
 __all__ = [
     "ActivityEvent",
@@ -47,4 +48,5 @@ __all__ = [
     "ToucanMessage",
     "ToucanResource",
     "ToucanUrgentFlag",
+    "Whiteboard",
 ]

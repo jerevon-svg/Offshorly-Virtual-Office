@@ -40,6 +40,7 @@ import { useUnreadTotal } from "../../services/chat/useUnreadTotal";
 import { MessageNotificationBadge } from "../Chat/MessageNotificationBadge";
 import { EmployeePickerModal } from "../Chat/EmployeePickerModal";
 import { GroupConversationView } from "../Chat/GroupConversationView";
+import { WhiteboardPanel } from "../Whiteboard/WhiteboardPanel";
 import { isRealZohoMode } from "../../services/zoho";
 import { ErrorBoundary } from "../ErrorBoundary";
 import { OfficeStage } from "./OfficeStage";
@@ -710,6 +711,11 @@ export function OfficeMap() {
   // Messenger-style floating chat redesign. Whether that window shows expanded or collapsed to
   // just its header row.
   const [spatialChatMinimized, setSpatialChatMinimized] = useState(false);
+
+  // Whiteboard W1/W2: which group conversation's boards are open in the full-screen panel
+  // (null = closed). Opened from either group window's header button; real chat mode only,
+  // because boards live on the chat backend.
+  const [whiteboardConv, setWhiteboardConv] = useState<{ conversationId: string; title: string } | null>(null);
 
   // Global Chat (persistent 💬 HUD icon) floating windows — completely separate state from
   // openChat/openGroupConv above. Multiple can be open at once, each keyed by peer email (DM) or
@@ -4887,6 +4893,15 @@ export function OfficeMap() {
             headerExtra={
               <SpatialCallControls sessionId={openConversationId} onExpand={handleExpandCall} />
             }
+            onOpenWhiteboard={
+              chatMode === "real"
+                ? () =>
+                    setWhiteboardConv({
+                      conversationId: openGroupConv.conversationId,
+                      title: openGroupConv.title ?? "Group",
+                    })
+                : undefined
+            }
             minimized={spatialChatMinimized}
             onMinimizeToggle={() => setSpatialChatMinimized((v) => !v)}
             onConversationOpen={(conversationId) => {
@@ -4957,6 +4972,11 @@ export function OfficeMap() {
               selfId={selfChatId}
               participantEmails={w.participantEmails}
               title={w.title}
+              onOpenWhiteboard={
+                chatMode === "real"
+                  ? () => setWhiteboardConv({ conversationId: w.conversationId, title: w.title ?? "Group" })
+                  : undefined
+              }
               resolveDisplayName={resolveDisplayName}
               selfAvatarUrl={playerSpriteSrc}
               minimized={w.minimized}
@@ -4966,6 +4986,13 @@ export function OfficeMap() {
           )}
         </div>
       ))}
+      {chatMode === "real" && whiteboardConv && (
+        <WhiteboardPanel
+          conversationId={whiteboardConv.conversationId}
+          title={whiteboardConv.title}
+          onClose={() => setWhiteboardConv(null)}
+        />
+      )}
       {chatMode === "real" && (
         <MessageNotificationBadge
           total={unreadTotal}
