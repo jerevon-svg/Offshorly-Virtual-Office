@@ -28,6 +28,8 @@ import {
   subscribeDelegationUrgent,
   type ToucanDelegation,
   type ToucanUrgentFlag,
+  type ToucanCatchUp,
+  type ToucanCatchUpRow,
 } from "../../services/toucan";
 import { appendDictatedText } from "./toucanDictation";
 
@@ -205,6 +207,25 @@ export function describeUrgentFlag(flag: ToucanUrgentFlag): string {
   const when = new Date(flag.flaggedAt);
   const label = flag.requesterLabel || flag.requesterEmail;
   return Number.isNaN(when.getTime()) ? label : `${label} · ${formatLocalTime(when)}`;
+}
+
+/** A5 — the badges on one catch-up row, worst first, as plain strings so the ordering is
+ *  testable without the DOM. Counts are the server's window counts; nothing is derived here. */
+export function catchUpBadges(row: ToucanCatchUpRow): string[] {
+  const badges: string[] = [];
+  if (row.urgent) badges.push(row.urgentRequesterLabel ? `Urgent · ${row.urgentRequesterLabel}` : "Urgent");
+  if (row.mentionCount > 0) badges.push(row.mentionCount === 1 ? "1 mention" : `${row.mentionCount} mentions`);
+  if (row.newCount > 0) badges.push(row.newCount === 1 ? "1 new" : `${row.newCount} new`);
+  if (row.toucanCovered) badges.push("Toucan replied");
+  return badges;
+}
+
+/** A5 — the card shows only for a real observed absence with something behind it. A
+ *  tracking_started or no_history window is still worded honestly in the text; it never earns
+ *  a list of conversations, because "while you were away" would not be true of it. */
+export function catchUpRowsToShow(catchUp: ToucanCatchUp | null): ToucanCatchUpRow[] {
+  if (!catchUp || catchUp.activity?.sinceReason !== "last_active") return [];
+  return Array.isArray(catchUp.conversations) ? catchUp.conversations : [];
 }
 
 export function withDelegationEnd(text: string, expiresAt: string | null | undefined): string {
@@ -386,6 +407,9 @@ export function ToucanAssistantPanel({
   // shown as the return card only while no delegation is active; while one is, the banner
   // carries the count instead.
   const [urgentFlags, setUrgentFlags] = useState<ToucanUrgentFlag[]>([]);
+  // A5 — the structured twin of the digest. Null until fetched or when the service has no call.
+  const [catchUp, setCatchUp] = useState<ToucanCatchUp | null>(null);
+  const [catchUpBusyId, setCatchUpBusyId] = useState<string | null>(null);
   const [urgentBusyId, setUrgentBusyId] = useState<string | null>(null);
   const nextIdRef = useRef(1);
   const askAbortRef = useRef<AbortController | null>(null);
@@ -460,6 +484,24 @@ export function ToucanAssistantPanel({
     return () => controller.abort();
   }, [loadUrgentFlags]);
 
+  // A5 — the viewer's catch-up, preloaded the same lightweight way as the urgent flags so the
+  // card can show on open after a real absence. Read-only server-side; a failure (offline, an
+  // older service without the call) just means no card.
+  const loadCatchUp = useCallback((signal?: AbortSignal) => {
+    Promise.resolve()
+      .then(() => toucanService.getCatchUp({ signal }))
+      .then((result) => {
+        if (!signal?.aborted) setCatchUp(result ?? null);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    loadCatchUp(controller.signal);
+    return () => controller.abort();
+  }, [loadCatchUp]);
+
   // A2.2 — the server tells the OWNER (only) when their delegation ended: Stop from another
   // tab, replaced by a new one, or found expired. Clear the banner unless the event names a
   // different (older) delegation than the one shown.
@@ -472,8 +514,9 @@ export function ToucanAssistantPanel({
         return null;
       });
       loadUrgentFlags();
+      loadCatchUp();
     });
-  }, [loadUrgentFlags]);
+  }, [loadUrgentFlags, loadCatchUp]);
 
   // A3 — somebody declared a message urgent while Toucan covered for the viewer. Bump the
   // banner's counter (only for the delegation shown) and remember the flag for the return card.
@@ -891,6 +934,62 @@ export function ToucanAssistantPanel({
     [urgentBusyId, onOpenConversation, appendToucanTurn],
   );
 
+  // A5 — Open / Dismiss on a catch-up row. Open hands the id to the caller (the conversation is
+  // laid out BESIDE this panel, which stays open) and drops the row from the card locally —
+  // nothing persistent: no read cursor moves from here, the chat window's own mark-read does
+  // that when it renders. If the row carries an unseen A3 flag, both actions mark THAT flag seen
+  // through A3's own call, exactly as the urgent card does; Dismiss is offered only then.
+  const clearUrgentOnRow = useCallback((row: ToucanCatchUpRow) => {
+    const flagId = row.urgentFlagId;
+    if (!flagId) return Promise.resolve();
+    return toucanService.markUrgentFlagsSeen([flagId]).then(() => {
+      setUrgentFlags((current) => current.filter((f) => f.id !== flagId));
+      setDelegation((current) =>
+        current && (current.urgentCount ?? 0) > 0 ? { ...current, urgentCount: (current.urgentCount ?? 0) - 1 } : current,
+      );
+      setCatchUp((current) =>
+        current
+          ? {
+              ...current,
+              delegatedUrgentCount: Math.max(0, (current.delegatedUrgentCount ?? 0) - 1),
+              conversations: current.conversations.map((r) =>
+                r.conversationId === row.conversationId
+                  ? { ...r, urgent: false, urgentFlagId: null, urgentRequesterLabel: null }
+                  : r,
+              ),
+            }
+          : current,
+      );
+    });
+  }, []);
+
+  const resolveCatchUpRow = useCallback(
+    (row: ToucanCatchUpRow, open: boolean) => {
+      if (catchUpBusyId) return;
+      setCatchUpBusyId(row.conversationId);
+      if (open) onOpenConversation?.(row.conversationId);
+      clearUrgentOnRow(row)
+        .then(() => {
+          if (open) {
+            setCatchUp((current) =>
+              current
+                ? { ...current, conversations: current.conversations.filter((r) => r.conversationId !== row.conversationId) }
+                : current,
+            );
+          }
+        })
+        .catch(() => appendToucanTurn(REQUEST_FAILED_TEXT))
+        .finally(() => setCatchUpBusyId(null));
+    },
+    [catchUpBusyId, onOpenConversation, clearUrgentOnRow, appendToucanTurn],
+  );
+
+  const catchUpRows = catchUpRowsToShow(catchUp);
+  // A3 card rows already represented on the catch-up card (same conversation, Urgent badge) are
+  // not listed twice; anything the catch-up could not place still shows on the A3 card.
+  const catchUpConversationIds = new Set(catchUpRows.map((r) => r.conversationId));
+  const standaloneUrgentFlags = urgentFlags.filter((f) => !catchUpConversationIds.has(f.conversationId));
+
   // CANCEL — burns the pending entry server-side; nothing executes either way.
   const handleCancelAction = useCallback(() => {
     if (!actionProposal || actionBusy) return;
@@ -977,6 +1076,8 @@ export function ToucanAssistantPanel({
           // T8: an answer may carry a pending action proposal. Nothing has
           // executed — this only decides whether the confirmation card shows.
           setActionProposal(answer.action ?? null);
+          // A5 — a digest answer refreshes the card beneath it, so text and rows agree.
+          if (answer.intent === "away_summary" || answer.intent === "important_summary") loadCatchUp();
         }
         appendReply(answer.text);
       })
@@ -1208,12 +1309,12 @@ export function ToucanAssistantPanel({
         </div>
       )}
 
-      {!delegation && urgentFlags.length > 0 && (
+      {!delegation && standaloneUrgentFlags.length > 0 && (
         // A3 — the return card: once Toucan has stopped covering, the conversations somebody
         // flagged as urgent, oldest last. Open hands the id to the caller; both actions mark seen.
         <div className={styles.urgentCard} data-testid="toucan-urgent-card" role="status">
           <span className={styles.urgentTitle}>Urgent while Toucan covered for you</span>
-          {urgentFlags.map((flag) => (
+          {standaloneUrgentFlags.map((flag) => (
             <div key={flag.id} className={styles.urgentRow} data-testid="toucan-urgent-row">
               <span className={styles.urgentMeta}>{describeUrgentFlag(flag)}</span>
               <span className={styles.urgentActions}>
@@ -1237,6 +1338,56 @@ export function ToucanAssistantPanel({
                 >
                   Dismiss
                 </button>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {catchUpRows.length > 0 && (
+        // A5 — the catch-up card: the conversations behind "what did I miss", worst first as the
+        // server ordered them. Read-only until the viewer acts on a row.
+        <div className={styles.catchUpCard} data-testid="toucan-catchup-card" role="status">
+          <span className={styles.catchUpTitle}>While you were away</span>
+          {catchUpRows.map((row) => (
+            <div key={row.conversationId} className={styles.catchUpRow} data-testid="toucan-catchup-row">
+              <span className={styles.catchUpMeta}>
+                <span className={styles.catchUpLabel}>{row.label}</span>
+                <span className={styles.catchUpBadges}>
+                  {catchUpBadges(row).map((badge) => (
+                    <span
+                      key={badge}
+                      className={badge.startsWith("Urgent") ? `${styles.catchUpBadge} ${styles.catchUpBadgeUrgent}` : styles.catchUpBadge}
+                      data-testid="toucan-catchup-badge"
+                    >
+                      {badge}
+                    </span>
+                  ))}
+                </span>
+              </span>
+              <span className={styles.urgentActions}>
+                {onOpenConversation && (
+                  <button
+                    type="button"
+                    className={styles.urgentOpen}
+                    onClick={() => resolveCatchUpRow(row, true)}
+                    disabled={catchUpBusyId !== null}
+                    aria-label={`Open ${row.label}`}
+                  >
+                    Open
+                  </button>
+                )}
+                {row.urgent && (
+                  <button
+                    type="button"
+                    className={styles.urgentDismiss}
+                    onClick={() => resolveCatchUpRow(row, false)}
+                    disabled={catchUpBusyId !== null}
+                    aria-label={`Dismiss the urgent flag on ${row.label}`}
+                  >
+                    Dismiss
+                  </button>
+                )}
               </span>
             </div>
           ))}

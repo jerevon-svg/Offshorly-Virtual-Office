@@ -11,6 +11,7 @@ import {
   type ToucanService,
   type ToucanStoredMessage,
   type ToucanDelegation,
+  type ToucanCatchUp,
   type ToucanUrgentFlag,
 } from "./types";
 
@@ -215,6 +216,11 @@ export class MockToucanService implements ToucanService {
 
   async markUrgentFlagsSeen(): Promise<number> {
     return 0;
+  }
+
+  // A5 — the canned bird keeps no window, so there is nothing to catch up on.
+  async getCatchUp(): Promise<ToucanCatchUp | null> {
+    return null;
   }
 
   // T9 — management calls.

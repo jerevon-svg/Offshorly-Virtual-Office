@@ -95,6 +95,44 @@ export interface ToucanUrgentFlag {
   seenAt?: string | null;
 }
 
+/** A5 — one conversation worth opening after an absence. Mirrors backend/app/schemas/toucan.py's
+ *  ToucanCatchUpRowOut: metadata only (which conversation, what kind, a safe label, window-based
+ *  counts, whether an unseen A3 flag applies, whether Toucan replied there). Never any text. */
+export interface ToucanCatchUpRow {
+  conversationId: string;
+  type: "dm" | "group";
+  label: string;
+  /** Messages from other people inside the catch-up window — the same window the digest counts. */
+  newCount: number;
+  mentionCount: number;
+  urgent: boolean;
+  /** Present when `urgent`, so Open can reuse A3's own seen call. */
+  urgentFlagId?: string | null;
+  urgentRequesterLabel?: string | null;
+  toucanCovered: boolean;
+  lastRelevantAt?: string | null;
+}
+
+/** A5 — the return digest as structured data: the T2 snapshot (server-derived window, counts),
+ *  A3's unseen-urgent count, A5's covered count, and the rows behind them — already ordered
+ *  (urgent, mentions, new, Toucan-covered, newest first) and one row per conversation. */
+export interface ToucanCatchUp {
+  activity: {
+    since: string;
+    sinceReason: "last_active" | "tracking_started" | "no_history";
+    until: string;
+    chatCount: number;
+    mentionCount: number;
+    missedCallCount: number;
+    hubCount: number;
+    pressingHubCount: number;
+    importantCount: number;
+  };
+  delegatedUrgentCount: number;
+  coveredCount: number;
+  conversations: ToucanCatchUpRow[];
+}
+
 /** The outcome of confirming or cancelling one pending action. Echoes the frozen
  *  server-side args so the client applies exactly what was confirmed — never a
  *  locally cached copy that could have drifted. */
@@ -287,6 +325,9 @@ export interface ToucanService {
   /** A3 — the owner opened or dismissed these flags (null = all of theirs). Foreign ids are
    *  ignored server-side. Resolves with how many rows changed. */
   markUrgentFlagsSeen(flagIds: string[] | null, options?: ToucanAskOptions): Promise<number>;
+  /** A5 — the viewer's own catch-up: snapshot plus conversation rows. Read-only server-side
+   *  (moves no read cursor, marks nothing seen); viewer-scoped by the auth header alone. */
+  getCatchUp(options?: ToucanAskOptions): Promise<ToucanCatchUp | null>;
   /** T9 — delete one of the viewer's own conversations, transcript and all. A
    *  DELETE on the T1 endpoint that already existed; hard delete, matching the
    *  backend's own reasoning that a transcript holds only what the user said and

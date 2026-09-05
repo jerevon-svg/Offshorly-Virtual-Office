@@ -660,3 +660,66 @@
   cursor: default;
   opacity: 0.6;
 }
+
+/* A5 — the catch-up card. Same geometry as the urgent card above, neutral colour: it lists
+   what moved, not an alarm. Urgent rows carry a red badge rather than a red card. */
+.catchUpCard {
+  margin: 0 12px 6px;
+  padding: 8px 12px;
+  border-left: 3px solid #2563eb;
+  border-radius: 8px;
+  background: #eff6ff;
+  color: #1e3a8a;
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
+}
+
+.catchUpTitle {
+  display: block;
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+.catchUpRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 0;
+}
+
+.catchUpMeta {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+}
+
+.catchUpLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.catchUpBadges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.catchUpBadge {
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1e40af;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.catchUpBadgeUrgent {
+  background: #dc2626;
+  color: #fff;
+}

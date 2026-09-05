@@ -20,6 +20,8 @@ from app.schemas.toucan import (
     ToucanActivityOut,
     ToucanAnswerOut,
     ToucanAskIn,
+    ToucanCatchUpOut,
+    ToucanCatchUpRowOut,
     ToucanConversationDetailOut,
     ToucanConversationOut,
     ToucanDelegationOut,
@@ -34,6 +36,7 @@ from app.schemas.toucan import (
 from app.services.delegation_events import emit_delegation_ended
 from app.services.delegation_lifecycle import mark_owner_returned_in
 from app.services.chat_send import (
+    TOUCAN_CHAT_SENDER,
     ChatSendError,
     find_direct_conversation_id,
     list_group_targets,
@@ -63,7 +66,7 @@ from app.services.toucan.actions import (
     unknown_target_text,
     validate_ai_proposal,
 )
-from app.services.toucan.activity import AttentionSnapshot
+from app.services.toucan.activity import SINCE_NO_HISTORY, AttentionSnapshot
 from app.services.toucan.delegation import (
     ClockProblem,
     DelegationClockRequest,
@@ -381,7 +384,79 @@ async def _attention_snapshot_dict(db: AsyncSession, email: str) -> dict:
     flags. Assembled here, at the router, so the pure answer layer still only ever sees counts."""
     snapshot = await toucan_activity_repo.attention_snapshot(db, viewer_email=email)
     snapshot["delegated_urgent_count"] = await toucan_urgency_repo.count_unseen_for_owner(db, owner_email=email)
+    # A5: how many conversations Toucan replied in during the same window. Zero without a window
+    # to measure against, exactly like every other count.
+    snapshot["covered_count"] = (
+        0
+        if snapshot["since_reason"] == SINCE_NO_HISTORY
+        else await toucan_activity_repo.covered_conversation_count(
+            db, viewer_email=email, since=snapshot["since"], toucan_sender=TOUCAN_CHAT_SENDER
+        )
+    )
     return snapshot
+
+
+def _catchup_label(row: dict) -> str:
+    """A safe display label: the group's own title, or the DM peer's name derived from their
+    address the same way A3 labels a requester. Never a message, never a preview."""
+    if row["type"] == "group":
+        return (row.get("title") or "").strip() or "Group chat"
+    others = row.get("other_participants") or []
+    return display_name_from_email(others[0]) if others else "Direct message"
+
+
+def _catchup_sort_key(row: ToucanCatchUpRowOut) -> tuple:
+    """Urgent first, then anything mentioning the viewer, then anything new, then Toucan-
+    covered; newest movement first within a tier. Deterministic: ties fall back to the id."""
+    newest = row.last_relevant_at.timestamp() if row.last_relevant_at is not None else 0.0
+    return (
+        0 if row.urgent else 1,
+        0 if row.mention_count else 1,
+        0 if row.new_count else 1,
+        0 if row.toucan_covered else 1,
+        -newest,
+        row.conversation_id,
+    )
+
+
+async def _catchup_rows(db: AsyncSession, email: str, snapshot: dict) -> list[ToucanCatchUpRowOut]:
+    """A5 — the conversations behind the snapshot, merged with A3's unseen flags into ONE row per
+    conversation. Relevance: something new in the window, a mention, an unseen urgent flag,
+    or a Toucan reply. Every id came through a membership-checked query for this bearer."""
+    if snapshot["since_reason"] == SINCE_NO_HISTORY:
+        return []
+    flags = await toucan_urgency_repo.list_unseen(db, owner_email=email)
+    flag_by_conversation: dict[str, object] = {}
+    for flag in flags:  # newest first, so the first one seen per conversation is the newest
+        flag_by_conversation.setdefault(flag.conversation_id, flag)
+    rows = await toucan_activity_repo.catchup_rows(
+        db,
+        viewer_email=email,
+        since=snapshot["since"],
+        toucan_sender=TOUCAN_CHAT_SENDER,
+        extra_conversation_ids=flag_by_conversation.keys(),
+    )
+    out: list[ToucanCatchUpRowOut] = []
+    for row in rows:
+        flag = flag_by_conversation.get(row["conversation_id"])
+        if not (row["new_count"] or row["mention_count"] or row["toucan_covered"] or flag):
+            continue
+        out.append(
+            ToucanCatchUpRowOut(
+                conversation_id=row["conversation_id"],
+                type="group" if row["type"] == "group" else "dm",
+                label=_catchup_label(row),
+                new_count=row["new_count"],
+                mention_count=row["mention_count"],
+                urgent=flag is not None,
+                urgent_flag_id=flag.id if flag is not None else None,
+                urgent_requester_label=display_name_from_email(flag.requester_email) if flag is not None else None,
+                toucan_covered=row["toucan_covered"],
+                last_relevant_at=row["last_relevant_at"],
+            )
+        )
+    out.sort(key=_catchup_sort_key)
+    return out
 
 
 async def _append_action_note(db: AsyncSession, pending: PendingAction, *, email: str, text: str) -> None:
@@ -874,6 +949,27 @@ async def get_toucan_activity(
     from before they were being tracked, nor name anybody else."""
     snapshot = await toucan_activity_repo.attention_snapshot(db, viewer_email=email)
     return ToucanActivityOut.from_dict(snapshot)
+
+
+@router.get("/toucan/catchup", response_model=ToucanCatchUpOut)
+async def get_toucan_catchup(
+    email: str = Depends(get_current_email),
+    db: AsyncSession = Depends(get_db),
+) -> ToucanCatchUpOut:
+    """A5 — Return / Catch-Up: the caller's attention snapshot plus the conversations behind it.
+
+    Same window as /toucan/activity and the "what did I miss" answer — the server-derived
+    ToucanAttentionCursor boundary, never a parameter — so the text and the card can never
+    disagree about what "while you were away" covers. Read-only: nothing here moves a read
+    cursor, marks a flag seen, or touches the attention cursor. NO PARAMETERS BY DESIGN, for
+    the same reason /toucan/activity has none."""
+    snapshot = await _attention_snapshot_dict(db, email)
+    return ToucanCatchUpOut(
+        activity=ToucanActivityOut.from_dict(snapshot),
+        delegated_urgent_count=snapshot["delegated_urgent_count"],
+        covered_count=snapshot["covered_count"],
+        conversations=await _catchup_rows(db, email, snapshot),
+    )
 
 
 # --- T4: important memory --------------------------------------------------------------------

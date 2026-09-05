@@ -63,6 +63,10 @@ class AttentionSnapshot:
     # roll-up is a derived sum the repository owns, and this is a different kind of fact (a
     # person asked, not a system counted). Still only a number — no requester, no conversation.
     delegated_urgent_count: int = 0
+    # A5 — conversations Toucan itself replied in during the window. Grounded in ordinary
+    # message rows (Toucan's replies are messages), so it is a durable fact, not a guess. Still
+    # only a number — which conversations travel beside the text at the router, as A3's do.
+    covered_count: int = 0
 
     @property
     def is_empty(self) -> bool:
@@ -105,4 +109,5 @@ class AttentionSnapshot:
             pressing_hub_count=int(row.get("pressing_hub_count", 0)),
             important_count=int(row.get("important_count", 0)),
             delegated_urgent_count=int(row.get("delegated_urgent_count", 0)),
+            covered_count=int(row.get("covered_count", 0)),
         )
