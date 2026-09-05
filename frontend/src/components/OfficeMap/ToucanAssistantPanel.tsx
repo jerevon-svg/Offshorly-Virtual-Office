@@ -216,9 +216,20 @@ export function describeUrgentFlag(flag: ToucanUrgentFlag): string {
 
 /** A5 — the badges on one catch-up row, worst first, as plain strings so the ordering is
  *  testable without the DOM. Counts are the server's window counts; nothing is derived here. */
-export function catchUpBadges(row: ToucanCatchUpRow): string[] {
+/** A5 — what the panel remembers about a row the viewer OPENED from this briefing: that it was
+ *  reviewed, and whether it was urgent when it appeared (the server stops reporting the flag
+ *  once A3 marks it seen, so the briefing keeps that context itself). Session-only, like the
+ *  dismissed set: never sent anywhere, gone with the panel. */
+export type CatchUpReview = { wasUrgent: boolean; urgentRequesterLabel?: string | null };
+
+export function catchUpBadges(row: ToucanCatchUpRow, review: CatchUpReview | null = null): string[] {
   const badges: string[] = [];
-  if (row.urgent) badges.push(row.urgentRequesterLabel ? `Urgent · ${row.urgentRequesterLabel}` : "Urgent");
+  if (review) badges.push("Reviewed");
+  // A reviewed row keeps the fact that it WAS urgent, worded in the past tense and without the
+  // active emphasis — the viewer has already opened it.
+  const urgent = review ? review.wasUrgent : row.urgent;
+  const requester = review ? review.urgentRequesterLabel : row.urgentRequesterLabel;
+  if (urgent) badges.push(`${review ? "Was urgent" : "Urgent"}${requester ? ` · ${requester}` : ""}`);
   if (row.mentionCount > 0) badges.push(row.mentionCount === 1 ? "1 mention" : `${row.mentionCount} mentions`);
   if (row.newCount > 0) badges.push(row.newCount === 1 ? "1 new" : `${row.newCount} new`);
   if (row.toucanCovered) badges.push("Toucan replied");
@@ -459,6 +470,11 @@ export function ToucanAssistantPanel({
   // panel cannot bring a dismissed row back), and is never sent anywhere. The next genuine
   // absence opens a fresh panel and a fresh set.
   const [dismissedCatchUpIds, setDismissedCatchUpIds] = useState<ReadonlySet<string>>(() => new Set());
+  // A5 — rows the viewer OPENED from this briefing, with what they were when opened. Same
+  // session-only discipline as the dismissed set: filters every render, survives refetches and
+  // another "catch me up" in this panel, never written anywhere. Open means "I reviewed this",
+  // not "remove all trace of it" — the row stays, downgraded, and can be opened again.
+  const [reviewedCatchUp, setReviewedCatchUp] = useState<ReadonlyMap<string, CatchUpReview>>(() => new Map());
   // A5 follow-up — which absence boundary this panel has already spoken a briefing for.
   const briefedSinceRef = useRef<string | null>(null);
   const [urgentBusyId, setUrgentBusyId] = useState<string | null>(null);
@@ -1006,13 +1022,14 @@ export function ToucanAssistantPanel({
 
   // A5 — actions on a catch-up row.
   //   * OPEN (every row) hands the id to the caller (the conversation is laid out BESIDE this
-  //     panel, which stays open) and drops the row from the card locally — nothing persistent:
-  //     no read cursor moves from here, the chat window's own mark-read does that when it
-  //     renders. An urgent row's unseen A3 flag is marked seen through A3's own call, exactly
-  //     as the urgent card does.
-  //   * DISMISS (normal rows only) hides the row from this panel's card for the rest of the
-  //     session and calls nothing. Urgent rows have no Dismiss: requester-declared urgency is
-  //     resolved by opening the conversation, never by waving it away from the briefing.
+  //     panel, which stays open) and marks the row REVIEWED locally — it stays in the briefing,
+  //     downgraded, and can be opened again. Nothing persistent: no read cursor moves from
+  //     here, the chat window's own mark-read does that when it renders. An urgent row's unseen
+  //     A3 flag is marked seen through A3's own call, exactly as the urgent card does.
+  //   * DISMISS (normal rows only, reviewed or not) hides the row from this panel's card for the
+  //     rest of the session and calls nothing. Rows that were urgent when they appeared never
+  //     get Dismiss, even once reviewed: requester-declared urgency is resolved by opening the
+  //     conversation, never by waving it away from the briefing.
   const clearUrgentOnRow = useCallback((row: ToucanCatchUpRow) => {
     const flagId = row.urgentFlagId;
     if (!flagId) return Promise.resolve();
@@ -1042,14 +1059,16 @@ export function ToucanAssistantPanel({
       if (catchUpBusyId) return;
       setCatchUpBusyId(row.conversationId);
       onOpenConversation?.(row.conversationId);
+      setReviewedCatchUp((current) => {
+        const previous = current.get(row.conversationId);
+        const next = new Map(current);
+        next.set(row.conversationId, {
+          wasUrgent: Boolean(row.urgent) || Boolean(previous?.wasUrgent),
+          urgentRequesterLabel: row.urgentRequesterLabel ?? previous?.urgentRequesterLabel ?? null,
+        });
+        return next;
+      });
       clearUrgentOnRow(row)
-        .then(() => {
-          setCatchUp((current) =>
-            current
-              ? { ...current, conversations: current.conversations.filter((r) => r.conversationId !== row.conversationId) }
-              : current,
-          );
-        })
         .catch(() => appendToucanTurn(REQUEST_FAILED_TEXT))
         .finally(() => setCatchUpBusyId(null));
     },
@@ -1057,14 +1076,14 @@ export function ToucanAssistantPanel({
   );
 
   const dismissCatchUpRow = useCallback((row: ToucanCatchUpRow) => {
-    if (row.urgent) return;
+    if (row.urgent || reviewedCatchUp.get(row.conversationId)?.wasUrgent) return;
     setDismissedCatchUpIds((current) => {
       if (current.has(row.conversationId)) return current;
       const next = new Set(current);
       next.add(row.conversationId);
       return next;
     });
-  }, []);
+  }, [reviewedCatchUp]);
 
   const catchUpRows = catchUpRowsToShow(catchUp).filter((r) => !dismissedCatchUpIds.has(r.conversationId));
   // A5 — only the MOST RECENT briefing turn carries the rows; older briefings in the same
@@ -1461,48 +1480,63 @@ export function ToucanAssistantPanel({
                         // A5 — the conversations behind this briefing, worst first as the server
                         // ordered them, with their actions, inside the same message.
                         <div className={styles.catchUpRows} data-testid="toucan-catchup-rows">
-                        {catchUpRows.map((row) => (
-                          <div key={row.conversationId} className={styles.catchUpRow} data-testid="toucan-catchup-row">
-                            <span className={styles.catchUpMeta}>
-                              <span className={styles.catchUpLabel}>{row.label}</span>
-                              <span className={styles.catchUpBadges}>
-                                {catchUpBadges(row).map((badge) => (
-                                  <span
-                                    key={badge}
-                                    className={badge.startsWith("Urgent") ? `${styles.catchUpBadge} ${styles.catchUpBadgeUrgent}` : styles.catchUpBadge}
-                                    data-testid="toucan-catchup-badge"
-                                  >
-                                    {badge}
-                                  </span>
-                                ))}
+                        {catchUpRows.map((row) => {
+                          const review = reviewedCatchUp.get(row.conversationId) ?? null;
+                          const dismissible = !row.urgent && !review?.wasUrgent;
+                          return (
+                            <div
+                              key={row.conversationId}
+                              className={review ? `${styles.catchUpRow} ${styles.catchUpRowReviewed}` : styles.catchUpRow}
+                              data-testid="toucan-catchup-row"
+                              data-reviewed={review ? "true" : undefined}
+                            >
+                              <span className={styles.catchUpMeta}>
+                                <span className={styles.catchUpLabel}>{row.label}</span>
+                                <span className={styles.catchUpBadges}>
+                                  {catchUpBadges(row, review).map((badge) => (
+                                    <span
+                                      key={badge}
+                                      className={
+                                        badge.startsWith("Urgent")
+                                          ? `${styles.catchUpBadge} ${styles.catchUpBadgeUrgent}`
+                                          : review
+                                            ? `${styles.catchUpBadge} ${styles.catchUpBadgeMuted}`
+                                            : styles.catchUpBadge
+                                      }
+                                      data-testid="toucan-catchup-badge"
+                                    >
+                                      {badge}
+                                    </span>
+                                  ))}
+                                </span>
                               </span>
-                            </span>
-                            <span className={styles.urgentActions}>
-                              {onOpenConversation && (
-                                <button
-                                  type="button"
-                                  className={styles.urgentOpen}
-                                  onClick={() => openCatchUpRow(row)}
-                                  disabled={catchUpBusyId !== null}
-                                  aria-label={`Open ${row.label}`}
-                                >
-                                  Open
-                                </button>
-                              )}
-                              {!row.urgent && (
-                                <button
-                                  type="button"
-                                  className={styles.urgentDismiss}
-                                  onClick={() => dismissCatchUpRow(row)}
-                                  disabled={catchUpBusyId !== null}
-                                  aria-label={`Dismiss ${row.label} from this briefing`}
-                                >
-                                  Dismiss
-                                </button>
-                              )}
-                            </span>
-                          </div>
-                        ))}
+                              <span className={styles.urgentActions}>
+                                {onOpenConversation && (
+                                  <button
+                                    type="button"
+                                    className={review ? `${styles.urgentOpen} ${styles.catchUpOpenReviewed}` : styles.urgentOpen}
+                                    onClick={() => openCatchUpRow(row)}
+                                    disabled={catchUpBusyId !== null}
+                                    aria-label={review ? `Open ${row.label} again` : `Open ${row.label}`}
+                                  >
+                                    {review ? "Open again" : "Open"}
+                                  </button>
+                                )}
+                                {dismissible && (
+                                  <button
+                                    type="button"
+                                    className={styles.urgentDismiss}
+                                    onClick={() => dismissCatchUpRow(row)}
+                                    disabled={catchUpBusyId !== null}
+                                    aria-label={`Dismiss ${row.label} from this briefing`}
+                                  >
+                                    Dismiss
+                                  </button>
+                                )}
+                              </span>
+                            </div>
+                          );
+                        })}
                         </div>
                       )}
                     </div>

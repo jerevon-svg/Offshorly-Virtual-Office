@@ -721,3 +721,21 @@
   background: #dc2626;
   color: #fff;
 }
+
+/* A5 — a briefing row the viewer already opened: still there, quieter, still actionable. */
+.catchUpRowReviewed {
+  opacity: 0.72;
+}
+
+.catchUpBadgeMuted {
+  background: #e5e7eb;
+  color: #4b5563;
+}
+
+.catchUpOpenReviewed {
+  background: #9ca3af;
+}
+
+.catchUpOpenReviewed:hover:not(:disabled) {
+  background: #6b7280;
+}

@@ -150,6 +150,16 @@ describe("catchUpBadges / catchUpRowsToShow", () => {
   it("orders badges urgent, mentions, new, Toucan replied and words singulars", () => {
     expect(catchUpBadges(URGENT_ROW)).toEqual(["Urgent · Micah", "1 mention", "2 new", "Toucan replied"]);
     expect(catchUpBadges(GROUP_ROW)).toEqual(["1 new"]);
+    expect(catchUpBadges(URGENT_ROW, { wasUrgent: true, urgentRequesterLabel: "Micah" })).toEqual([
+      "Reviewed",
+      "Was urgent · Micah",
+      "1 mention",
+      "2 new",
+      "Toucan replied",
+    ]);
+    // Once A3 has marked the flag seen the server row is no longer urgent; the review remembers.
+    expect(catchUpBadges({ ...URGENT_ROW, urgent: false, urgentRequesterLabel: null }, { wasUrgent: true, urgentRequesterLabel: "Micah" })[1]).toBe("Was urgent · Micah");
+    expect(catchUpBadges(GROUP_ROW, { wasUrgent: false })).toEqual(["Reviewed", "1 new"]);
     expect(catchUpBadges({ ...GROUP_ROW, newCount: 0, mentionCount: 3, urgent: true, urgentRequesterLabel: null })).toEqual([
       "Urgent",
       "3 mentions",
@@ -200,7 +210,7 @@ describe("ToucanAssistantPanel — A5 catch-up card", () => {
     expect(screen.getAllByRole("button", { name: /^Open / })).toHaveLength(3);
   });
 
-  it("Open hands over the right id, keeps the panel, marks only an urgent row's flag seen, and never touches read state", async () => {
+  it("Open keeps the row as Reviewed (Open again), hands over the right id, keeps the panel, marks only an urgent row's flag seen, and never touches read state", async () => {
     h.service.getCatchUp.mockResolvedValue(catchUp([URGENT_ROW, GROUP_ROW]));
     const onOpenConversation = vi.fn();
     const onRelease = vi.fn();
@@ -212,15 +222,30 @@ describe("ToucanAssistantPanel — A5 catch-up card", () => {
     expect(onOpenConversation).toHaveBeenCalledWith("conv-group");
     expect(h.service.markUrgentFlagsSeen).not.toHaveBeenCalled();
     expect(onRelease).not.toHaveBeenCalled();
-    expect(screen.getAllByTestId("toucan-catchup-row")).toHaveLength(1);
+    // The row stays, downgraded: Reviewed badge, original context kept, Open again + Dismiss.
+    let rows = screen.getAllByTestId("toucan-catchup-row");
+    expect(rows).toHaveLength(2);
+    expect(rows[1].getAttribute("data-reviewed")).toBe("true");
+    expect(rows[1].textContent).toContain("Reviewed");
+    expect(rows[1].textContent).toContain("1 new");
+    expect(screen.getByRole("button", { name: "Open Launch Room again" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Dismiss Launch Room from this briefing" })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Open Micah" }));
     await flush();
     expect(onOpenConversation).toHaveBeenLastCalledWith("conv-urgent");
     expect(h.service.markUrgentFlagsSeen).toHaveBeenCalledWith(["f-1"]);
     expect(onRelease).not.toHaveBeenCalled();
-    expect(screen.queryByTestId("toucan-catchup-rows")).toBeNull();
-    // The briefing words stay in the transcript once the rows are gone.
+    // Urgent row stays too: active urgency gone, "Was urgent" kept, still no Dismiss.
+    rows = screen.getAllByTestId("toucan-catchup-row");
+    expect(rows).toHaveLength(2);
+    expect(rows[0].getAttribute("data-reviewed")).toBe("true");
+    expect(rows[0].textContent).toContain("Reviewed");
+    expect(rows[0].textContent).toContain("Was urgent · Micah");
+    expect(rows[0].textContent).not.toMatch(/(^|[^s] )Urgent · Micah/);
+    expect(screen.getByRole("button", { name: "Open Micah again" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Dismiss Micah/ })).toBeNull();
+    // The briefing words are still there; nothing was removed.
     expect(screen.getByText(/While you were away:/)).toBeTruthy();
     // The service surface has no read-cursor call, and the panel invented none: every call made
     // is one of the known Toucan calls.
@@ -229,6 +254,43 @@ describe("ToucanAssistantPanel — A5 catch-up card", () => {
       .map(([name]) => name)
       .sort();
     expect(called).toEqual(["ask", "getCatchUp", "getDelegation", "greeting", "listUrgentFlags", "loadLatestConversation", "markUrgentFlagsSeen"]);
+  });
+
+  it("Reviewed state survives a refetch in the same panel: a reviewed urgent row stays Reviewed, non-dismissible and openable again; a reviewed normal row can still be dismissed", async () => {
+    h.service.getCatchUp.mockResolvedValue(catchUp([URGENT_ROW, GROUP_ROW]));
+    const onOpenConversation = vi.fn();
+    await setup({ onOpenConversation });
+    await askCatchUp();
+    fireEvent.click(screen.getByRole("button", { name: "Open Micah" }));
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "Open Launch Room" }));
+    await flush();
+
+    // The refetch reports the urgent flag gone (A3 marked it seen) — the briefing still remembers.
+    h.service.getCatchUp.mockResolvedValue(
+      catchUp([{ ...URGENT_ROW, urgent: false, urgentFlagId: null, urgentRequesterLabel: null }, GROUP_ROW]),
+    );
+    await askCatchUp("important_summary");
+    expect(h.service.getCatchUp).toHaveBeenCalledTimes(3);
+    const rows = screen.getAllByTestId("toucan-catchup-row");
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.getAttribute("data-reviewed") === "true")).toBe(true);
+    expect(rows[0].textContent).toContain("Was urgent · Micah");
+    expect(screen.queryByRole("button", { name: /^Dismiss Micah/ })).toBeNull();
+
+    // Open again works and marks nothing further (the flag was already seen).
+    fireEvent.click(screen.getByRole("button", { name: "Open Micah again" }));
+    await flush();
+    expect(onOpenConversation).toHaveBeenLastCalledWith("conv-urgent");
+    expect(h.service.markUrgentFlagsSeen).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByTestId("toucan-catchup-row")).toHaveLength(2);
+
+    // A reviewed normal row is still intentionally removable.
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss Launch Room from this briefing" }));
+    await flush();
+    expect(screen.getAllByTestId("toucan-catchup-row")).toHaveLength(1);
+    expect(screen.getByTestId("toucan-catchup-rows").textContent).not.toContain("Launch Room");
+    expect(screen.queryByTestId("toucan-catchup-card")).toBeNull();
   });
 
   it("Dismiss on a normal row hides it for this session only, calls nothing, and survives a refetch; urgent rows cannot be dismissed", async () => {
@@ -271,20 +333,22 @@ describe("ToucanAssistantPanel — A5 catch-up card", () => {
     expect(called).toEqual(["ask", "getCatchUp", "getDelegation", "greeting", "listUrgentFlags", "loadLatestConversation"]);
   });
 
-  it("Open on an urgent row keeps the A3 seen semantics and clears it from the A3 card too", async () => {
+  it("Open on an urgent row keeps the A3 seen semantics, clears it from the A3 card, and keeps the row as Reviewed", async () => {
     h.service.getCatchUp.mockResolvedValue(catchUp([URGENT_ROW]));
     h.service.listUrgentFlags.mockResolvedValue([FLAG_MICAH]);
     const onOpenConversation = vi.fn();
     const onRelease = vi.fn();
     await setup({ onOpenConversation, onRelease });
     await askCatchUp();
+    expect(screen.queryByRole("button", { name: /^Dismiss Micah/ })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Open Micah" }));
     await flush();
     expect(onOpenConversation).toHaveBeenCalledWith("conv-urgent");
     expect(h.service.markUrgentFlagsSeen).toHaveBeenCalledWith(["f-1"]);
     expect(onRelease).not.toHaveBeenCalled();
-    expect(screen.queryByTestId("toucan-catchup-rows")).toBeNull();
+    expect(screen.getByTestId("toucan-catchup-row").getAttribute("data-reviewed")).toBe("true");
     expect(screen.queryByTestId("toucan-urgent-card")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Dismiss Micah/ })).toBeNull();
   });
 
   it("A3 flags the catch-up could not place still show on the urgent card", async () => {
