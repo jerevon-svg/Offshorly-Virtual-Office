@@ -12,6 +12,7 @@ export { RealToucanService, realToucanService, setDevIdentity } from "./RealTouc
 export {
   subscribeDelegationEnded,
   subscribeDelegationUrgent,
+  subscribeToucanChannelConnected,
   type DelegationEndedEvent,
   type DelegationUrgentEvent,
 } from "./delegationClient";

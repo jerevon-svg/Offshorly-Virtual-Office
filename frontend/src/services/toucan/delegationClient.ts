@@ -27,11 +27,13 @@ export interface DelegationUrgentEvent {
 
 type Listener = (event: DelegationEndedEvent) => void;
 type UrgentListener = (event: DelegationUrgentEvent) => void;
+type ConnectedListener = () => void;
 
 let socketInstance: Socket | null = null;
 let devEmail: string | null = null;
 const listeners = new Set<Listener>();
 const urgentListeners = new Set<UrgentListener>();
+const connectedListeners = new Set<ConnectedListener>();
 
 function socketBase(): string | null {
   const raw = import.meta.env.VITE_CHAT_SOCKET_URL;
@@ -61,6 +63,14 @@ function ensureSocket(): Socket | null {
   socket.on("delegation_urgent_flagged", (payload: DelegationUrgentEvent | undefined) => {
     const event = payload ?? {};
     for (const listener of urgentListeners) listener(event);
+  });
+  // A5 follow-up — the ONE lifecycle fact the proactive return briefing needs: this viewer's
+  // socket has (re)connected, so the server has already run its arrival bookkeeping for it
+  // (python-socketio awaits the connect handler before acknowledging the namespace), and a
+  // GET /toucan/catchup issued now sees the frozen absence boundary. Fires on every connect,
+  // including reconnects; the caller deduplicates on the server's `since`.
+  socket.on("connect", () => {
+    for (const listener of connectedListeners) listener();
   });
   socketInstance = socket;
   return socket;
@@ -94,9 +104,32 @@ export function subscribeDelegationUrgent(listener: UrgentListener): () => void 
   };
 }
 
+/** A5 follow-up — subscribe to this viewer's Toucan channel connecting. If the socket is already
+ *  connected when subscribing, the listener fires once immediately (on a microtask) so a late
+ *  subscriber is not left waiting for a reconnect that may never come. Same "no channel means no
+ *  events" behaviour as the other subscriptions. */
+export function subscribeToucanChannelConnected(listener: ConnectedListener): () => void {
+  connectedListeners.add(listener);
+  let socket: Socket | null = null;
+  try {
+    socket = ensureSocket();
+  } catch {
+    // No realtime channel; the manual "catch me up" path still works.
+  }
+  if (socket?.connected) {
+    void Promise.resolve().then(() => {
+      if (connectedListeners.has(listener)) listener();
+    });
+  }
+  return () => {
+    connectedListeners.delete(listener);
+  };
+}
+
 export function resetDelegationClientForTests(): void {
   listeners.clear();
   urgentListeners.clear();
+  connectedListeners.clear();
   if (socketInstance) {
     socketInstance.disconnect();
     socketInstance = null;

@@ -220,6 +220,38 @@ export function catchUpBadges(row: ToucanCatchUpRow): string[] {
   return badges;
 }
 
+function plural(count: number, singular: string, pluralForm?: string): string {
+  return `${count} ${count === 1 ? singular : pluralForm ?? `${singular}s`}`;
+}
+
+/** A5 follow-up — the proactive return briefing, worded from the SAME grounded numbers the
+ *  server's digest is worded from, in the same priority order (urgent, mentions, missed calls,
+ *  priority Hub, other chat, Toucan replied, other Hub) with the same subset arithmetic. Counts
+ *  only: no names, no conversations, no text — the rows beneath it carry the where. */
+export function composeReturnBriefing(catchUp: ToucanCatchUp): string {
+  const a = catchUp.activity;
+  const lines: string[] = [];
+  const urgent = catchUp.delegatedUrgentCount ?? 0;
+  if (urgent) {
+    lines.push(
+      urgent === 1
+        ? "1 message was flagged as urgent while Toucan covered for you"
+        : `${urgent} messages were flagged as urgent while Toucan covered for you`,
+    );
+  }
+  if (a.mentionCount) lines.push(`${plural(a.mentionCount, "mention")} ${a.mentionCount === 1 ? "needs" : "need"} your attention`);
+  if (a.missedCallCount) lines.push(plural(a.missedCallCount, "missed call"));
+  if (a.pressingHubCount) lines.push(plural(a.pressingHubCount, "priority Hub item"));
+  const otherChat = Math.max(0, a.chatCount - a.mentionCount);
+  if (otherChat) lines.push(plural(otherChat, a.mentionCount ? "other chat message" : "chat message"));
+  if (catchUp.coveredCount) lines.push(`Toucan replied for you in ${plural(catchUp.coveredCount, "conversation")}`);
+  const otherHub = Math.max(0, a.hubCount - a.pressingHubCount);
+  if (otherHub) lines.push(plural(otherHub, a.pressingHubCount ? "other Hub item" : "Hub item"));
+  const header = "Welcome back. Here's what happened while you were away:";
+  if (lines.length === 0) return `${header}\n• Nothing new — the conversations below are the ones that moved.`;
+  return `${header}\n${lines.map((line) => `• ${line}`).join("\n")}`;
+}
+
 /** A5 — the card shows only for a real observed absence with something behind it. A
  *  tracking_started or no_history window is still worded honestly in the text; it never earns
  *  a list of conversations, because "while you were away" would not be true of it. */
@@ -303,6 +335,12 @@ type ToucanAssistantPanelProps = {
   // A3 — the return card's Open button. The caller owns the chat windows; this component only
   // hands over the conversation id it was told about. Absent = the card shows Dismiss only.
   onOpenConversation?: (conversationId: string) => void;
+  // A5 follow-up — the catch-up the caller decided qualifies as a genuine return (see
+  // OfficeMap + toucanReturnBriefing.ts). When present, the panel seeds its catch-up card from
+  // it and speaks one deterministic briefing turn as soon as the transcript has restored —
+  // once per absence boundary. Local turn only, like the greeting: nothing is asked of the
+  // server and nothing is written anywhere.
+  returnBriefing?: ToucanCatchUp | null;
 };
 
 // Matches ConversationView's own TYPING_IDLE_MS, so the character stops
@@ -360,6 +398,7 @@ export function ToucanAssistantPanel({
   onRequestAttachment,
   onRequestDictation,
   onOpenConversation,
+  returnBriefing = null,
 }: ToucanAssistantPanelProps) {
   const [turns, setTurns] = useState<Turn[]>([greetingTurn(0)]);
   const [draft, setDraft] = useState("");
@@ -410,6 +449,8 @@ export function ToucanAssistantPanel({
   // A5 — the structured twin of the digest. Null until fetched or when the service has no call.
   const [catchUp, setCatchUp] = useState<ToucanCatchUp | null>(null);
   const [catchUpBusyId, setCatchUpBusyId] = useState<string | null>(null);
+  // A5 follow-up — which absence boundary this panel has already spoken a briefing for.
+  const briefedSinceRef = useRef<string | null>(null);
   const [urgentBusyId, setUrgentBusyId] = useState<string | null>(null);
   const nextIdRef = useRef(1);
   const askAbortRef = useRef<AbortController | null>(null);
@@ -831,6 +872,19 @@ export function ToucanAssistantPanel({
       { id: nextIdRef.current++, role: "toucan", text, sentAt: new Date().toISOString() },
     ]);
   }, []);
+
+  // A5 follow-up — speak the return briefing once the transcript has restored, so it lands
+  // beneath the restored turns rather than being replaced by them. One turn per absence
+  // boundary: a rerender with the same catch-up, or the same boundary arriving again, is a
+  // no-op. The card is seeded from the same object so text and rows agree immediately.
+  useEffect(() => {
+    if (restoring || !returnBriefing) return;
+    const since = returnBriefing.activity?.since ?? "";
+    if (briefedSinceRef.current === since) return;
+    briefedSinceRef.current = since;
+    setCatchUp(returnBriefing);
+    appendToucanTurn(composeReturnBriefing(returnBriefing));
+  }, [restoring, returnBriefing, appendToucanTurn]);
 
   // CONFIRM — the only gesture that executes anything, and it is a button press
   // carrying the server-minted proposal id, never conversational text. Order of
