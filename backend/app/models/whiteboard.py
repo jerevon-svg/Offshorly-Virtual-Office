@@ -13,8 +13,8 @@ class Whiteboard(BaseModel):
 
     Access is inherited, never stored here: a caller may see/edit a board iff they are a
     participant of `conversation_id` (app/repositories/chat.py's is_participant). The canvas is
-    stored as one opaque tldraw editor snapshot (`document`, JSON) — the server never interprets
-    shapes. `version` is an optimistic-concurrency counter: a save must present the version it
+    stored as one opaque editor document (`document`, JSON; Excalidraw file format since the
+    tldraw → Excalidraw migration) — the server never interprets shapes. `version` is an optimistic-concurrency counter: a save must present the version it
     loaded, else the router answers 409 (see repositories/whiteboards.py save_document)."""
 
     __tablename__ = "whiteboards"

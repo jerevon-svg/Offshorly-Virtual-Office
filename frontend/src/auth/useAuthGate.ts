@@ -244,6 +244,7 @@ function seedDevBypassIdentity(): void {
   setAttendanceDevIdentity(email);
   setFeedClientDevIdentity(email);
   setQuestsClientDevIdentity(email);
+  // whiteboardSyncClient.ts (W3 realtime) reads this same identity — no separate seeding.
   setWhiteboardClientDevIdentity(email);
   // Toucan's assistant endpoint (POST /toucan/ask) lives on the same VO backend and derives
   // the asking employee from this identity — without it, local ?as= testing would ask the

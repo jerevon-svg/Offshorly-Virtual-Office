@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { Whiteboard, WhiteboardSummary } from "../../services/whiteboard/whiteboardClient";
 
-// The real editor pulls in tldraw (canvas/WebGL, no jsdom) — stub it with a marker so the
+// The real editor pulls in Excalidraw (canvas, no jsdom) — stub it with a marker so the
 // panel's list → create/open → editor handoff can be asserted without a canvas.
 vi.mock("./WhiteboardEditor", () => ({
   default: ({ board }: { board: Whiteboard }) => <div data-testid="editor">editor:{board.title}:v{board.version}</div>,

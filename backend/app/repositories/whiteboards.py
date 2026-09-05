@@ -62,6 +62,31 @@ async def create(
     return _full(row)
 
 
+async def replace_document(
+    session: AsyncSession, *, board_id: str, document: dict[str, Any], editor_email: str
+) -> dict[str, Any] | None:
+    """Authoritative write from a live realtime room (W3, services/whiteboard_rooms.py): no
+    expected-version check — the room IS the current state — but the version still bumps, so a
+    REST save from a client outside the room presents a stale version and gets its 409."""
+    stmt = (
+        update(Whiteboard)
+        .where(Whiteboard.id == board_id)
+        .values(
+            document=document,
+            version=Whiteboard.version + 1,
+            updated_by_email=editor_email.strip().lower(),
+        )
+    )
+    result = await session.execute(stmt)
+    if result.rowcount != 1:
+        await session.rollback()
+        return None
+    await session.commit()
+    row = await session.get(Whiteboard, board_id)
+    await session.refresh(row)
+    return _full(row)
+
+
 async def save_document(
     session: AsyncSession,
     *,
