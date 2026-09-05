@@ -17,7 +17,8 @@ export interface WhiteboardSummary {
 }
 
 export interface Whiteboard extends WhiteboardSummary {
-  // Opaque tldraw editor snapshot (getSnapshot(editor.store)); null until the first save.
+  // Opaque editor document (see whiteboardDocument.ts for the Excalidraw shape); null until the
+  // first save. Boards saved by the previous tldraw editor still hold its snapshot shape.
   document: Record<string, unknown> | null;
 }
 

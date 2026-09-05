@@ -37,5 +37,5 @@ class WhiteboardSummaryOut(BaseModel):
 
 
 class WhiteboardOut(WhiteboardSummaryOut):
-    # Opaque tldraw editor snapshot; null for a board nobody has saved yet.
+    # Opaque editor document (Excalidraw file format); null for a board nobody has saved yet.
     document: dict[str, Any] | None = None

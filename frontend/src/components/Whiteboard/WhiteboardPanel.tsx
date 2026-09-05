@@ -9,7 +9,7 @@ import {
 import styles from "./Whiteboard.module.css";
 
 // Whiteboard W1: create / list / open the boards of ONE group conversation, then hand the opened
-// board to the lazily-loaded tldraw editor (W2). Who may see this panel is decided by the
+// board to the lazily-loaded Excalidraw editor (W2). Who may see this panel is decided by the
 // server (group participants only) — the panel just renders whatever the API returns.
 
 const WhiteboardEditor = lazy(() => import("./WhiteboardEditor"));
