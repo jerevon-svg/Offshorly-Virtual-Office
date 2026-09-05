@@ -26,4 +26,10 @@ export DATABASE_URL="sqlite+aiosqlite:///./dev_hub_playground.db"
 export MOCK_HUB_SEED=1
 export CORS_ORIGINS="http://localhost:5174,http://127.0.0.1:5174"
 
+# The app never creates tables itself (no create_all on startup) — schema comes from Alembic
+# only. Bring THIS rig's database to head before serving, or the first request to any endpoint
+# whose table a newer migration added fails with a 500 that the browser reports as
+# "Failed to fetch" (Whiteboard W1/W2, 2026-09-05).
+.venv/bin/alembic upgrade head
+
 exec .venv/bin/uvicorn app.main:app --reload --port 8002
