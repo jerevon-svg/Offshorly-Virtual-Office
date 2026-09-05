@@ -8,7 +8,7 @@ from app.config import settings
 from app.database import get_db
 from app.repositories import feed as feed_repo
 from app.repositories import hub as hub_repo
-from app.services.quests import EVENT_RECOGNITION_GIVEN, record_quest_event
+from app.services.quests import EVENT_HUB_VISITED, EVENT_RECOGNITION_GIVEN, record_quest_event
 from app.scripts import seed_dev_hub_content as hub_mock
 from app.schemas.hub import CreateHubItemIn, HubItemOut
 
@@ -69,6 +69,10 @@ async def list_hub_items(
     sort first — see list_active_items_for's ordering."""
     items = await hub_repo.list_active_items_for(db, email)
     states = await hub_repo.get_states_for(db, email, [i["id"] for i in items])
+    # Onboarding Questline: this GET is the only server-side trace of "the Hub was opened" (both
+    # the check-in overlay and the manual Hub button fetch through it). Once-mode quest, so the
+    # key is the actor alone — every later open is a duplicate and writes nothing.
+    await record_quest_event(db, actor_email=email, event_type=EVENT_HUB_VISITED, dedupe_key=email.strip().lower())
     return [HubItemOut.from_dict(item, states.get(item["id"])) for item in items]
 
 

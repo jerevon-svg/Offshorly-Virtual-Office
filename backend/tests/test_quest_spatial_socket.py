@@ -93,3 +93,35 @@ async def test_spatial_session_start_records_one_event_per_session_identity(serv
         ).scalar_one()
     assert row.count == 1 and row.completed_at is not None
     await a2.disconnect()
+
+
+async def test_approach_arrived_records_once_and_ignores_self_or_bogus_targets(server):
+    a = await _connect_as(server, "a@example.com")
+    # Self, non-email (mock avatar id) and malformed payloads must never record anything.
+    await a.emit("approach_arrived", {"targetEmail": "A@example.com"})
+    await a.emit("approach_arrived", {"targetEmail": "alex"})
+    await a.emit("approach_arrived", {"targetEmail": 42})
+    await a.emit("approach_arrived", None)
+    await asyncio.sleep(SETTLE)
+    assert await _events() == []
+
+    await a.emit("approach_arrived", {"targetEmail": " B@example.com "})
+    await asyncio.sleep(SETTLE)
+    await a.emit("approach_arrived", {"targetEmail": "c@example.com"})  # a second coworker
+    await asyncio.sleep(SETTLE)
+    events = await _events()
+    assert [(e.actor_email, e.event_type, e.dedupe_key, e.target_email) for e in events] == [
+        ("a@example.com", "coworker_approached", "a@example.com", "b@example.com")
+    ]
+
+    async with app_db.async_session_maker() as session:
+        row = (
+            await session.execute(
+                select(QuestProgress).where(
+                    QuestProgress.actor_email == "a@example.com",
+                    QuestProgress.quest_id == "approach_coworker",
+                )
+            )
+        ).scalar_one()
+    assert row.count == 1 and row.completed_at is not None
+    await a.disconnect()

@@ -19,6 +19,11 @@ EVENT_ASK_TO_JOIN = "ask_to_join"  # a persisted join_group conversation request
 EVENT_SPATIAL_SESSION_JOINED = "spatial_session_joined"  # spatial_session_start, keyed by session identity
 EVENT_RECOGNITION_GIVEN = "recognition_given"  # a feed post / reaction / Hub congratulation aimed at a coworker
 EVENT_TOUCAN_ASKED = "toucan_asked"  # a persisted user turn in a Toucan conversation
+# Onboarding Questline signals. The first two reuse the only server-observable trace of the act —
+# the self-scoped GET the client makes when the surface opens — so no new write endpoint exists.
+EVENT_HUB_VISITED = "hub_visited"  # GET /hub/items by the bearer (check-in or manual Hub open)
+EVENT_PROFILE_VIEWED = "profile_viewed"  # GET /feed/{target} where target != bearer
+EVENT_COWORKER_APPROACHED = "coworker_approached"  # socket approach_arrived with a real coworker target
 
 # Progress modes. `once`: the first accepted event completes the quest. `unique_count`: progress
 # is the number of DISTINCT target_email values across the actor's events of that type, and the
@@ -74,6 +79,15 @@ QUEST_DEFINITIONS: tuple[QuestDefinition, ...] = (
     QuestDefinition(id="give_recognition", title="Recognise a coworker", event_type=EVENT_RECOGNITION_GIVEN, order=60),
     QuestDefinition(id="first_time_log", title="Complete your first time log", event_type=EVENT_CHECK_OUT, order=70),
     QuestDefinition(id="meet_toucan", title="Meet Toucan", event_type=EVENT_TOUCAN_ASKED, order=80),
+    # Onboarding Questline additions. Interleaved into the existing order so the questline reads
+    # as one guided sequence: check in → look around the Hub → meet people → deeper actions.
+    QuestDefinition(id="visit_central_hub", title="Visit the Company Hub", event_type=EVENT_HUB_VISITED, order=12),
+    QuestDefinition(
+        id="view_coworker_profile", title="View a coworker's profile", event_type=EVENT_PROFILE_VIEWED, order=14
+    ),
+    QuestDefinition(
+        id="approach_coworker", title="Walk up to a coworker", event_type=EVENT_COWORKER_APPROACHED, order=16
+    ),
 )
 
 _BY_ID: dict[str, QuestDefinition] = {d.id: d for d in QUEST_DEFINITIONS}

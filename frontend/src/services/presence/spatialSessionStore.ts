@@ -133,6 +133,16 @@ export function emitSpatialSessionLeave(): void {
   ensureSocket()?.emit("spatial_session_leave");
 }
 
+/** Onboarding Questline: tells the server this user's avatar finished the Approach walk to a
+ * coworker. Bookkeeping only (the server records a once-mode quest event and broadcasts
+ * nothing); rides the same authenticated socket so the actor is server-derived. Call once per
+ * real arrival with the coworker's email (mock-rig avatars already mapped to their email by the
+ * caller). No-op if not signed in. */
+export function emitApproachArrived(targetEmail: string): void {
+  if (!targetEmail.includes("@")) return;
+  ensureSocket()?.emit("approach_arrived", { targetEmail });
+}
+
 export function getSpatialSessionsSnapshot(): SpatialSessionEntry[] {
   return sessions;
 }

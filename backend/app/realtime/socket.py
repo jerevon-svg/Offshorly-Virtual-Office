@@ -40,7 +40,7 @@ from app.services.chat_delegation import schedule_delegation_reply
 from app.services.delegation_lifecycle import mark_owner_returned, schedule_owner_returned
 from app.services.chat_send import ChatSendError, is_toucan_sender, send_chat_message
 from app.services.position_registry import position_registry
-from app.services.quests import EVENT_SPATIAL_SESSION_JOINED, record_quest_event
+from app.services.quests import EVENT_COWORKER_APPROACHED, EVENT_SPATIAL_SESSION_JOINED, record_quest_event
 
 # Faithful port of backend/src/socket.ts onto python-socketio's ASGI async server. Mounted in
 # app/main.py via socketio.ASGIApp(sio, other_asgi_app=<fastapi app>, socketio_path="socket.io")
@@ -535,6 +535,44 @@ async def _record_spatial_session_joined(email: str, session_id: str) -> None:
             await session.commit()
     except Exception:  # noqa: BLE001 - bookkeeping must never surface as a socket error
         _logger.error("failed to record spatial session quest event for %s", email, exc_info=True)
+
+
+@sio.on("approach_arrived")
+async def approach_arrived(sid: str, payload: dict | None) -> None:
+    """Onboarding Questline: the client reports that its own avatar finished the Approach walk to
+    a coworker. The walk itself is purely client-side, so this is the only signal; the actor is
+    still server-derived (the socket session), and the target must be a real, different email.
+    Nothing is broadcast — this is bookkeeping only."""
+    try:
+        payload = payload or {}
+        target = payload.get("targetEmail")
+        if not isinstance(target, str):
+            return
+        target = target.strip().lower()
+        session_data = await sio.get_session(sid)
+        email = session_data["email"].strip().lower()
+        if "@" not in target or target == email:
+            return
+        await _record_coworker_approached(email, target)
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+async def _record_coworker_approached(email: str, target: str) -> None:
+    """Once-mode quest: the key is the actor alone, so repeat approaches collapse on the unique
+    key. Same never-surface contract as _record_spatial_session_joined."""
+    try:
+        async with async_session_maker() as session:
+            await record_quest_event(
+                session,
+                actor_email=email,
+                event_type=EVENT_COWORKER_APPROACHED,
+                dedupe_key=email,
+                target_email=target,
+            )
+            await session.commit()
+    except Exception:  # noqa: BLE001 - bookkeeping must never surface as a socket error
+        _logger.error("failed to record approach quest event for %s", email, exc_info=True)
 
 
 @sio.on("spatial_session_leave")

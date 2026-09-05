@@ -1,0 +1,118 @@
+/* Shell mirrors EmployeeProfile.module.css so the two modals feel like one family. */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.panel {
+  position: relative;
+  width: min(420px, 92vw);
+  max-height: 84vh;
+  background: linear-gradient(180deg, rgba(30, 26, 46, 0.97), rgba(18, 16, 28, 0.97));
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  font-family: system-ui, sans-serif;
+  color: #f5f0ff;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.closeButton {
+  all: unset;
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  cursor: pointer;
+  color: rgba(245, 240, 255, 0.7);
+  font-size: 14px;
+  padding: 6px;
+  border-radius: 6px;
+}
+
+.closeButton:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f5f0ff;
+}
+
+.header {
+  padding: 18px 20px 10px;
+}
+
+.title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.summary,
+.muted {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: rgba(245, 240, 255, 0.65);
+}
+
+.error {
+  margin: 0;
+  font-size: 13px;
+  color: #ff9b9b;
+}
+
+.body {
+  padding: 4px 20px 18px;
+  overflow-y: auto;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.row,
+.rowDone {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 14px;
+}
+
+.rowDone {
+  color: rgba(245, 240, 255, 0.55);
+}
+
+.rowDone .rowTitle {
+  text-decoration: line-through;
+}
+
+.check {
+  width: 18px;
+  text-align: center;
+  color: #9be7a5;
+}
+
+.row .check {
+  color: rgba(245, 240, 255, 0.4);
+}
+
+.rowTitle {
+  flex: 1;
+}
+
+.progress {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(245, 240, 255, 0.65);
+}
