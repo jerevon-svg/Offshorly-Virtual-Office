@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CaptureUpdateAction, Excalidraw, getSceneVersion, restoreElements } from "@excalidraw/excalidraw";
+import {
+  CaptureUpdateAction,
+  Excalidraw,
+  convertToExcalidrawElements,
+  getSceneVersion,
+  restoreElements,
+} from "@excalidraw/excalidraw";
 import type {
   AppState,
   BinaryFileData,
   BinaryFiles,
   ExcalidrawImperativeAPI,
   ExcalidrawInitialDataState,
+  PointerDownState,
+  UIAppState,
 } from "@excalidraw/excalidraw/types";
 import "@excalidraw/excalidraw/index.css";
 import {
@@ -19,13 +27,17 @@ import {
   toStoredDocument,
   type StoredElement,
 } from "../../services/whiteboard/whiteboardDocument";
+import { STICKY_NOTE_TOOL, isStickyNoteTool, stickyNoteSkeleton } from "./stickyNote";
 import styles from "./Whiteboard.module.css";
 
 // Whiteboard W2: the Excalidraw editor over ONE persisted board. Excalidraw supplies free draw,
 // text, shapes, arrows, zoom/pan and undo/redo; this component only owns persistence:
 //  - load the stored document on mount (whiteboardDocument.ts decides what "stored" means),
 //  - debounce-autosave scene changes (plus an explicit "Save now"),
-//  - track the version the server handed back and surface a 409 as a reload prompt.
+//  - track the version the server handed back and surface a 409 as a reload prompt,
+//  - add the one tool Excalidraw lacks, a Sticky Note (see stickyNote.ts).
+// A board still holding the previous editor's (tldraw) document is NEVER silently replaced:
+// Excalidraw is not mounted — so nothing can autosave — until the user clicks "Start fresh".
 // Default-exported so WhiteboardPanel can React.lazy() it — Excalidraw is a large dependency
 // that must stay out of the main office bundle (and in vite optimizeDeps.include, see
 // vite.config.ts). Realtime merge is W3; W1/W2 is last-write-wins with detection.
@@ -59,6 +71,9 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
   const timerRef = useRef<number | undefined>(undefined);
   const [status, setStatus] = useState<SaveStatus>("idle");
   const [errorText, setErrorText] = useState<string | null>(null);
+  const [startedFresh, setStartedFresh] = useState(false);
+  // Legacy board the user has not chosen to replace: no editor, no save path.
+  const legacyLocked = parsed.kind === "legacy" && !startedFresh;
 
   const initialData = useMemo<ExcalidrawInitialDataState | null>(() => {
     if (parsed.kind !== "excalidraw") return null;
@@ -129,6 +144,52 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
     [scheduleSave],
   );
 
+  // Sticky Note tool: while our custom tool is active, a pointer-down drops one note (rectangle +
+  // bound text, both Excalidraw-native) centred on the pointer, selects it, and returns to the
+  // selection tool so the next click moves/resizes/edits rather than dropping another.
+  const handlePointerDown = useCallback((activeTool: AppState["activeTool"], pointerDownState: PointerDownState) => {
+    const api = apiRef.current;
+    if (!api || !isStickyNoteTool(activeTool)) return;
+    const created = convertToExcalidrawElements([stickyNoteSkeleton(pointerDownState.origin)]);
+    api.updateScene({
+      elements: [...api.getSceneElementsIncludingDeleted(), ...created],
+      appState: { selectedElementIds: Object.fromEntries(created.map((el) => [el.id, true as const])) },
+      captureUpdate: CaptureUpdateAction.IMMEDIATELY,
+    });
+    api.setActiveTool({ type: "selection" });
+  }, []);
+
+  const activateStickyNoteTool = useCallback(() => {
+    apiRef.current?.setActiveTool({ type: "custom", customType: STICKY_NOTE_TOOL });
+  }, []);
+
+  // Rendered by Excalidraw beside its own top-right buttons, using its ToolIcon classes so the
+  // button matches the toolbar's look (size, radius, hover and selected colours) in both themes.
+  const renderTopRightUI = useCallback(
+    (_isMobile: boolean, appState: UIAppState) => {
+      const active = isStickyNoteTool(appState.activeTool);
+      return (
+        <button
+          type="button"
+          className={`ToolIcon ToolIcon_type_button ToolIcon_size_medium${active ? " ToolIcon--selected" : ""}`}
+          title="Sticky note"
+          aria-label="Sticky note"
+          aria-pressed={active}
+          onClick={activateStickyNoteTool}
+        >
+          <div className="ToolIcon__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M5 4h14a1 1 0 0 1 1 1v9l-6 6H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z" />
+              <path d="M14 20v-5a1 1 0 0 1 1-1h5" />
+              <path d="M8 9h8M8 13h4" />
+            </svg>
+          </div>
+        </button>
+      );
+    },
+    [activateStickyNoteTool],
+  );
+
   // Flush a pending debounced save on unmount (e.g. the user hits Back right after drawing).
   useEffect(() => {
     return () => {
@@ -189,25 +250,48 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
             Reload latest
           </button>
         ) : (
-          <button type="button" className={styles.button} onClick={() => void save()} disabled={status === "saving"}>
+          <button
+            type="button"
+            className={styles.button}
+            onClick={() => void save()}
+            disabled={status === "saving" || legacyLocked}
+          >
             Save now
           </button>
         )}
       </div>
       {parsed.kind === "legacy" && (
         <div className={styles.legacyNotice} role="note">
-          This board was drawn with the previous editor and opens empty here. Saving will replace the old drawing.
+          {legacyLocked ? (
+            <>
+              <span>
+                This board was drawn with the previous editor and cannot be shown here. Its drawing is kept
+                until you start fresh.
+              </span>
+              <button type="button" className={`${styles.button} ${styles.buttonPrimary}`} onClick={() => setStartedFresh(true)}>
+                Start fresh
+              </button>
+            </>
+          ) : (
+            <span>Started fresh — the first save replaces the previous editor's drawing.</span>
+          )}
         </div>
       )}
-      <div className={styles.canvas}>
-        <Excalidraw
-          initialData={initialData}
-          onChange={handleChange}
-          excalidrawAPI={(api) => {
-            apiRef.current = api;
-          }}
-        />
-      </div>
+      {legacyLocked ? (
+        <div className={styles.legacyPlaceholder}>Choose “Start fresh” above to draw on this board.</div>
+      ) : (
+        <div className={styles.canvas}>
+          <Excalidraw
+            initialData={initialData}
+            onChange={handleChange}
+            onPointerDown={handlePointerDown}
+            renderTopRightUI={renderTopRightUI}
+            excalidrawAPI={(api) => {
+              apiRef.current = api;
+            }}
+          />
+        </div>
+      )}
     </>
   );
 }

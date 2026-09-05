@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
 import type { Whiteboard } from "../../services/whiteboard/whiteboardClient";
 
 // Editor persistence layer over a stubbed Excalidraw: jsdom has no canvas, so the real component
@@ -11,16 +11,28 @@ import type { Whiteboard } from "../../services/whiteboard/whiteboardClient";
 
 type Harness = {
   initialData: unknown;
+  mounted: number;
   onChange?: (elements: unknown[], appState: unknown, files: unknown) => void;
+  onPointerDown?: (activeTool: unknown, state: unknown) => void;
+  activeTool: { type: string; customType: string | null };
   scene: Array<Record<string, unknown>>;
   updateScene: ReturnType<typeof vi.fn>;
   addFiles: ReturnType<typeof vi.fn>;
+  setActiveTool: ReturnType<typeof vi.fn>;
 };
 // vi.mock factories are hoisted above imports, so everything they reference must be hoisted too.
 const { harness, saveWhiteboard, getWhiteboard, WhiteboardConflictError } = vi.hoisted(() => {
   class WhiteboardConflictError extends Error {}
   return {
-    harness: { initialData: undefined, scene: [], updateScene: vi.fn(), addFiles: vi.fn() } as Harness,
+    harness: {
+      initialData: undefined,
+      mounted: 0,
+      activeTool: { type: "selection", customType: null },
+      scene: [],
+      updateScene: vi.fn(),
+      addFiles: vi.fn(),
+      setActiveTool: vi.fn(),
+    } as Harness,
     saveWhiteboard: vi.fn<(id: string, doc: Record<string, unknown>, version: number) => Promise<Whiteboard>>(),
     getWhiteboard: vi.fn<(id: string) => Promise<Whiteboard>>(),
     WhiteboardConflictError,
@@ -29,27 +41,39 @@ const { harness, saveWhiteboard, getWhiteboard, WhiteboardConflictError } = vi.h
 
 vi.mock("@excalidraw/excalidraw/index.css", () => ({}));
 vi.mock("@excalidraw/excalidraw", () => ({
-  CaptureUpdateAction: { NEVER: "NEVER" },
+  CaptureUpdateAction: { NEVER: "NEVER", IMMEDIATELY: "IMMEDIATELY" },
   getSceneVersion: (elements: Array<{ version?: number }>) => elements.reduce((sum, el) => sum + (el.version ?? 0), 0),
   restoreElements: (elements: unknown[] | null) => elements ?? [],
+  // Skeleton → "converted" element: id it, keep everything else so the test can inspect it.
+  convertToExcalidrawElements: (skeletons: Array<Record<string, unknown>>) =>
+    skeletons.map((sk, i) => ({ ...sk, id: `note-${i + 1}`, version: 1 })),
   Excalidraw: (props: {
     initialData: unknown;
     onChange: Harness["onChange"];
+    onPointerDown: Harness["onPointerDown"];
+    renderTopRightUI: (isMobile: boolean, appState: unknown) => ReactNode;
     excalidrawAPI: (api: unknown) => void;
   }) => {
     harness.initialData = props.initialData;
     harness.onChange = props.onChange;
+    harness.onPointerDown = props.onPointerDown;
     const { excalidrawAPI } = props;
     useEffect(() => {
+      harness.mounted += 1;
       excalidrawAPI({
         getSceneElementsIncludingDeleted: () => harness.scene,
         getAppState: () => ({ viewBackgroundColor: "#ffffff", selectedElementIds: { x: true }, zoom: { value: 1 } }),
         getFiles: () => ({}),
         updateScene: harness.updateScene,
         addFiles: harness.addFiles,
+        setActiveTool: harness.setActiveTool,
       });
     }, [excalidrawAPI]);
-    return <div data-testid="excalidraw" />;
+    return (
+      <div data-testid="excalidraw">
+        <div data-testid="top-right">{props.renderTopRightUI(false, { activeTool: harness.activeTool })}</div>
+      </div>
+    );
   },
 }));
 
@@ -88,7 +112,10 @@ beforeEach(() => {
   getWhiteboard.mockReset();
   harness.updateScene.mockReset();
   harness.addFiles.mockReset();
+  harness.setActiveTool.mockReset();
   harness.scene = [];
+  harness.mounted = 0;
+  harness.activeTool = { type: "selection", customType: null };
   harness.initialData = undefined;
 });
 
@@ -104,10 +131,72 @@ describe("WhiteboardEditor (Excalidraw)", () => {
     expect(screen.queryByRole("note")).toBeNull();
   });
 
-  it("opens a legacy tldraw document as an empty canvas with a notice", () => {
+  it("never mounts the editor or saves over a legacy tldraw document until Start fresh is chosen", async () => {
+    saveWhiteboard.mockResolvedValue({ ...base, version: 3 });
     render(<WhiteboardEditor board={{ ...base, document: tldrawDoc }} />);
-    expect(harness.initialData).toBeNull();
+
+    // Locked: notice + action, no Excalidraw, no save path.
     expect(screen.getByRole("note")).toHaveTextContent(/previous editor/);
+    expect(screen.queryByTestId("excalidraw")).toBeNull();
+    expect(harness.mounted).toBe(0);
+    expect(screen.getByText("Save now")).toBeDisabled();
+    fireEvent.click(screen.getByText("Save now"));
+    await flushAutosave();
+    expect(saveWhiteboard).not.toHaveBeenCalled();
+
+    // Start fresh: an empty Excalidraw mounts, and the first change saves against the loaded version.
+    fireEvent.click(screen.getByText("Start fresh"));
+    expect(screen.getByTestId("excalidraw")).toBeInTheDocument();
+    expect(harness.initialData).toBeNull();
+    expect(screen.getByRole("note")).toHaveTextContent(/Started fresh/);
+    expect(screen.getByText("Save now")).toBeEnabled();
+
+    harness.scene = [rect];
+    act(() => harness.onChange!(harness.scene, {}, {}));
+    await flushAutosave();
+    expect(saveWhiteboard).toHaveBeenCalledTimes(1);
+    expect(saveWhiteboard.mock.calls[0][1]).toMatchObject({ type: "excalidraw", elements: [rect] });
+    expect(saveWhiteboard.mock.calls[0][2]).toBe(2);
+  });
+
+  it("unmounting a locked legacy board never flushes a save", () => {
+    const { unmount } = render(<WhiteboardEditor board={{ ...base, document: tldrawDoc }} />);
+    unmount();
+    expect(saveWhiteboard).not.toHaveBeenCalled();
+  });
+
+  it("Sticky note button activates the custom tool and reflects its active state", () => {
+    render(<WhiteboardEditor board={{ ...base, document: excalidrawDoc }} />);
+    const button = screen.getByRole("button", { name: "Sticky note" });
+    expect(button.className).toContain("ToolIcon");
+    expect(button).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(button);
+    expect(harness.setActiveTool).toHaveBeenCalledWith({ type: "custom", customType: "sticky-note" });
+
+    // Excalidraw re-renders its top-right UI on state changes; a scene change stands in for that.
+    saveWhiteboard.mockResolvedValue({ ...base, version: 3 });
+    harness.activeTool = { type: "custom", customType: "sticky-note" };
+    act(() => harness.onChange!([{ ...rect, version: 2 }], {}, {}));
+    expect(screen.getByRole("button", { name: "Sticky note" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("a pointer-down with the sticky tool drops a note centred on the pointer, selects it and returns to selection", () => {
+    render(<WhiteboardEditor board={{ ...base, document: excalidrawDoc }} />);
+    harness.scene = [rect];
+
+    // Other tools are Excalidraw's business.
+    act(() => harness.onPointerDown!({ type: "rectangle", customType: null }, { origin: { x: 0, y: 0 } }));
+    expect(harness.updateScene).not.toHaveBeenCalled();
+
+    act(() => harness.onPointerDown!({ type: "custom", customType: "sticky-note" }, { origin: { x: 400, y: 300 } }));
+    expect(harness.updateScene).toHaveBeenCalledTimes(1);
+    const call = harness.updateScene.mock.calls[0][0];
+    expect(call.elements).toHaveLength(2);
+    expect(call.elements[0]).toBe(rect);
+    expect(call.elements[1]).toMatchObject({ id: "note-1", type: "rectangle", x: 300, y: 220, width: 200, height: 160, label: { text: "Note" } });
+    expect(call.appState).toEqual({ selectedElementIds: { "note-1": true } });
+    expect(call.captureUpdate).toBe("IMMEDIATELY");
+    expect(harness.setActiveTool).toHaveBeenLastCalledWith({ type: "selection" });
   });
 
   it("autosaves a scene change in the Excalidraw file format against the loaded version", async () => {
