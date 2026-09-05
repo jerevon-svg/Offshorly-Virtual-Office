@@ -8,7 +8,9 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.quest import QuestEvent, QuestProgress
+from app.models.quest import QuestEvent
+from app.services.quests.missions import MissionRef, advance_missions, mission_definitions_for
+from app.services.quests.progress import get_or_create_progress
 from app.services.quests.registry import (
     DEFAULT_PERIOD_KEY,
     MODE_UNIQUE_COUNT,
@@ -27,6 +29,9 @@ _logger = logging.getLogger(__name__)
 #   realtime/socket.py           spatial_session_start   — spatial_session_joined per (email, session id)
 #   routers/feed.py + routers/hub.py                     — recognition_given for posts/reactions/Hub CTA
 #   repositories/toucan.py       append_exchange         — toucan_asked per persisted user turn
+#
+# Hub visit / profile view / approach keys carry a UTC day component (missions.utc_day_key) so
+# they count once per day — enough for the once-mode onboarding quests AND for daily missions.
 #
 # CONTRACT. `record_quest_event` never raises and never breaks the caller's transaction: all of
 # its work runs inside a SAVEPOINT on the caller's session, so a failure unwinds only the quest
@@ -60,6 +65,11 @@ class QuestRecordResult:
     duplicate: bool = False
     updated_quest_ids: tuple[str, ...] = field(default_factory=tuple)
     completed_quest_ids: tuple[str, ...] = field(default_factory=tuple)
+    # Daily/Weekly Missions moved by this call (services/quests/missions.py). `completed_missions`
+    # is THE seam for Progression & Rewards: each ref is one (mission, period) instance that
+    # crossed its target on this call, exactly once.
+    updated_missions: tuple[MissionRef, ...] = field(default_factory=tuple)
+    completed_missions: tuple[MissionRef, ...] = field(default_factory=tuple)
 
 
 UNSUBSCRIBED = QuestRecordResult(stored=False)
@@ -78,8 +88,9 @@ async def record_quest_event(
 ) -> QuestRecordResult | None:
     """Record one validated occurrence of `event_type` by `actor_email` and advance every quest
     that subscribes to it. Returns None ONLY when recording itself failed (already logged)."""
+    # Storage gate: an event type is written only if a quest OR a pool mission subscribes to it.
     subscribed = definitions_for(event_type)
-    if not subscribed:
+    if not subscribed and not mission_definitions_for(event_type):
         return UNSUBSCRIBED
 
     actor = _normalize(actor_email)
@@ -146,7 +157,7 @@ async def _record(
     updated: list[str] = []
     completed: list[str] = []
     for definition in subscribed:
-        row = await _progress_row(session, actor=actor, quest_id=definition.id)
+        row = await get_or_create_progress(session, actor=actor, quest_id=definition.id, period_key=DEFAULT_PERIOD_KEY)
         if row.completed_at is not None:
             continue  # once completed, always completed — later events cannot reopen or refarm
 
@@ -165,32 +176,19 @@ async def _record(
             completed.append(definition.id)
         updated.append(definition.id)
 
-    await session.flush()
-    return QuestRecordResult(stored=True, updated_quest_ids=tuple(updated), completed_quest_ids=tuple(completed))
-
-
-async def _progress_row(session: AsyncSession, *, actor: str, quest_id: str) -> QuestProgress:
-    """Get-or-create behind UNIQUE(actor, quest, period). A concurrent creator loses the race
-    cleanly inside its savepoint and re-reads the winner's row."""
-    stmt = select(QuestProgress).where(
-        QuestProgress.actor_email == actor,
-        QuestProgress.quest_id == quest_id,
-        QuestProgress.period_key == DEFAULT_PERIOD_KEY,
+    # 3. Missions: same ledger, period-bounded recount, progress rows under real period keys.
+    updated_missions, completed_missions = await advance_missions(
+        session, actor=actor, event_type=event_type, occurred_at=occurred_at
     )
-    row = (await session.execute(stmt)).scalar_one_or_none()
-    if row is not None:
-        return row
-    try:
-        async with session.begin_nested():
-            row = QuestProgress(actor_email=actor, quest_id=quest_id, period_key=DEFAULT_PERIOD_KEY, count=0)
-            session.add(row)
-            await session.flush()
-        return row
-    except IntegrityError:
-        row = (await session.execute(stmt)).scalar_one_or_none()
-        if row is None:  # pragma: no cover - the unique index guarantees the winner exists
-            raise
-        return row
+
+    await session.flush()
+    return QuestRecordResult(
+        stored=True,
+        updated_quest_ids=tuple(updated),
+        completed_quest_ids=tuple(completed),
+        updated_missions=updated_missions,
+        completed_missions=completed_missions,
+    )
 
 
 async def _distinct_target_count(session: AsyncSession, *, actor: str, event_type: str) -> int:

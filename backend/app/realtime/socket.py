@@ -42,7 +42,12 @@ from app.services.chat_delegation import schedule_delegation_reply
 from app.services.delegation_lifecycle import mark_owner_returned, schedule_owner_returned
 from app.services.chat_send import ChatSendError, is_toucan_sender, send_chat_message
 from app.services.position_registry import position_registry
-from app.services.quests import EVENT_COWORKER_APPROACHED, EVENT_SPATIAL_SESSION_JOINED, record_quest_event
+from app.services.quests import (
+    EVENT_COWORKER_APPROACHED,
+    EVENT_SPATIAL_SESSION_JOINED,
+    record_quest_event,
+    utc_day_key,
+)
 from app.services.whiteboard_rooms import WhiteboardRoom, build_document
 
 # Faithful port of backend/src/socket.ts onto python-socketio's ASGI async server. Mounted in
@@ -565,15 +570,16 @@ async def approach_arrived(sid: str, payload: dict | None) -> None:
 
 
 async def _record_coworker_approached(email: str, target: str) -> None:
-    """Once-mode quest: the key is the actor alone, so repeat approaches collapse on the unique
-    key. Same never-surface contract as _record_spatial_session_joined."""
+    """Keyed per actor+target per UTC day: repeat approaches to the same coworker collapse on the
+    unique key, a new coworker (or a new day) is a new event — enough for the once-mode quest and
+    the unique-count missions. Same never-surface contract as _record_spatial_session_joined."""
     try:
         async with async_session_maker() as session:
             await record_quest_event(
                 session,
                 actor_email=email,
                 event_type=EVENT_COWORKER_APPROACHED,
-                dedupe_key=email,
+                dedupe_key=f"{email.strip().lower()}:{target.strip().lower()}:{utc_day_key()}",
                 target_email=target,
             )
             await session.commit()

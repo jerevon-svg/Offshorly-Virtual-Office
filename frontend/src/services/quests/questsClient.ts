@@ -54,3 +54,58 @@ export async function fetchMyQuests(): Promise<Quest[]> {
   const data = (await res.json()) as { quests: Quest[] };
   return data.quests;
 }
+
+// ---- Daily/Weekly Missions (backend/app/routers/missions.py) --------------------------------
+// Same base, same identity rules, same read-only contract as /quests/me: the server draws and
+// pins the missions, derives periods in UTC from its own clock, and recounts progress from the
+// ledger. The client only renders. `endsAt` is when the period resets.
+
+export type MissionCadence = "daily" | "weekly";
+export type MissionMode = "once" | "unique_count" | "unique_days";
+
+export interface Mission {
+  id: string;
+  title: string;
+  eventType: string;
+  mode: MissionMode;
+  target: number;
+  cadence: MissionCadence;
+  count: number;
+  completed: boolean;
+  completedAt: string | null;
+}
+
+export interface MissionPeriod {
+  cadence: MissionCadence;
+  periodKey: string;
+  startsAt: string;
+  endsAt: string;
+  missions: Mission[];
+}
+
+export interface MyMissions {
+  serverTime: string;
+  daily: MissionPeriod;
+  weekly: MissionPeriod;
+}
+
+function authHeaders(): Headers {
+  const headers = new Headers();
+  if (devEmail) {
+    headers.set("x-dev-email", devEmail);
+  } else {
+    const token = getAuthToken();
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+  }
+  return headers;
+}
+
+/** GET /missions/me — the caller's active daily + weekly missions for the current server periods. */
+export async function fetchMyMissions(): Promise<MyMissions> {
+  const res = await fetch(`${socketBase()}/missions/me`, { headers: authHeaders() });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body?.error || body?.detail || `Missions request failed (${res.status})`);
+  }
+  return (await res.json()) as MyMissions;
+}

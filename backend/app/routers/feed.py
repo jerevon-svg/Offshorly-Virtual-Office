@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.deps import get_current_email
 from app.database import get_db
 from app.repositories import feed as feed_repo
-from app.services.quests import EVENT_PROFILE_VIEWED, EVENT_RECOGNITION_GIVEN, record_quest_event
+from app.services.quests import EVENT_PROFILE_VIEWED, EVENT_RECOGNITION_GIVEN, record_quest_event, utc_day_key
 from app.schemas.feed import CreateCommentIn, CreatePostIn, FeedPostOut, ReactIn
 
 # Employee Feed V1 REST layer — mirrors routers/hub.py's dependency pattern. The Feed owns all
@@ -41,13 +41,18 @@ async def get_feed(
 ) -> list[FeedPostOut]:
     """Every authenticated employee can view any employee's feed — see Employee Feed V1's
     permissions scope ("Authenticated employees can view employee feeds")."""
-    # Onboarding Questline: EmployeeProfile fetches this on open, so it is the server-side trace
-    # of "a profile was viewed". Own profile (the 👤 Profile button) must not count.
+    # Onboarding Questline + missions: EmployeeProfile fetches this on open, so it is the
+    # server-side trace of "a profile was viewed". Own profile (the 👤 Profile button) must not
+    # count. Keyed per actor+target per UTC day: re-opening the same profile is one view.
     actor = email.strip().lower()
     target = target_email.strip().lower()
     if target and target != actor:
         await record_quest_event(
-            db, actor_email=actor, event_type=EVENT_PROFILE_VIEWED, dedupe_key=actor, target_email=target
+            db,
+            actor_email=actor,
+            event_type=EVENT_PROFILE_VIEWED,
+            dedupe_key=f"{actor}:{target}:{utc_day_key()}",
+            target_email=target,
         )
     return await _assemble_feed(db, target_email, email)
 

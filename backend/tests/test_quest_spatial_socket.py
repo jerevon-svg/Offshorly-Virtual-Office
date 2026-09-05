@@ -13,6 +13,7 @@ from app.database import Base
 from app.main import app as combined_app
 from app.models.quest import QuestEvent, QuestProgress
 from app.realtime import socket as socket_module
+from app.services.quests import utc_day_key
 
 # Quest Foundation over the real socket path: spatial_session_start records exactly one event per
 # (person, session identity), so the reconnect re-assert, a duplicate emit, and leave/rejoin of
@@ -107,11 +108,16 @@ async def test_approach_arrived_records_once_and_ignores_self_or_bogus_targets(s
 
     await a.emit("approach_arrived", {"targetEmail": " B@example.com "})
     await asyncio.sleep(SETTLE)
-    await a.emit("approach_arrived", {"targetEmail": "c@example.com"})  # a second coworker
+    await a.emit("approach_arrived", {"targetEmail": "b@example.com"})  # same coworker again: collapses
+    await asyncio.sleep(SETTLE)
+    await a.emit("approach_arrived", {"targetEmail": "c@example.com"})  # a second coworker: new event
     await asyncio.sleep(SETTLE)
     events = await _events()
-    assert [(e.actor_email, e.event_type, e.dedupe_key, e.target_email) for e in events] == [
-        ("a@example.com", "coworker_approached", "a@example.com", "b@example.com")
+    # Keyed per actor+target+UTC day (Daily/Weekly Missions count distinct coworkers per period).
+    day = utc_day_key()
+    assert sorted((e.actor_email, e.event_type, e.dedupe_key, e.target_email) for e in events) == [
+        ("a@example.com", "coworker_approached", f"a@example.com:b@example.com:{day}", "b@example.com"),
+        ("a@example.com", "coworker_approached", f"a@example.com:c@example.com:{day}", "c@example.com"),
     ]
 
     async with app_db.async_session_maker() as session:

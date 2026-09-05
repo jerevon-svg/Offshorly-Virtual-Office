@@ -190,6 +190,7 @@ import { openCompanyHub, useCompanyHub } from "../../services/hub/companyHubStor
 import { resetDevHubState } from "../../services/hub/hubClient";
 import { EmployeeProfile } from "./EmployeeProfile";
 import { OnboardingQuestline } from "./OnboardingQuestline";
+import { MissionsPanel } from "./MissionsPanel";
 import { isLive3dEligible } from "../../render3d/live3dCharacters";
 import { avatarIdForEmail, mockEmailForAvatarId } from "../../data/avatarIdentity";
 import styles from "./OfficeMap.module.css";
@@ -326,6 +327,8 @@ export function OfficeMap() {
   // Onboarding Questline (see OnboardingQuestline.tsx) — opened from the 🎯 Quests button in the
   // top chrome; the panel fetches GET /quests/me on every open, nothing is cached here.
   const [questlineOpen, setQuestlineOpen] = useState(false);
+  // Daily/Weekly Missions (see MissionsPanel.tsx) — same contract: GET /missions/me on open.
+  const [missionsOpen, setMissionsOpen] = useState(false);
   // Anchored action menu opened by clicking the reception room itself — the
   // sole entry point for check-in/check-out now that Arisha's own menu no
   // longer offers "Check in" and the room-picker step is gone.
@@ -4528,6 +4531,15 @@ export function OfficeMap() {
           🎯 Quests
         </button>
       )}
+      {hasCheckedIn && onboarding === "done" && !checkoutBusy && (
+        <button
+          className={styles.missionsButton}
+          onClick={() => setMissionsOpen(true)}
+          aria-label="Open Missions"
+        >
+          📅 Missions
+        </button>
+      )}
       {toucanChromeVisible && (
         <button
           className={styles.toucanButton}
@@ -4607,6 +4619,7 @@ export function OfficeMap() {
         />
       )}
       {questlineOpen && <OnboardingQuestline onClose={() => setQuestlineOpen(false)} />}
+      {missionsOpen && <MissionsPanel onClose={() => setMissionsOpen(false)} />}
       {(import.meta.env.DEV || isRealZohoMode()) && (
         <>
           <WorkingStatusIndicator state={checkoutFlow.state} workedLabel={checkoutFlow.workedLabel} />
