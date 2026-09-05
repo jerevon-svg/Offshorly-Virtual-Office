@@ -191,6 +191,9 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
   );
 
   // Flush a pending debounced save on unmount (e.g. the user hits Back right after drawing).
+  // Deliberately does NOT clear apiRef: Excalidraw hands the imperative API over exactly once,
+  // from its constructor, and React StrictMode (dev) runs this cleanup once right after mount —
+  // nulling the ref there left every later save with no editor to read from (bug 2026-09-05).
   useEffect(() => {
     return () => {
       if (timerRef.current !== undefined) {
@@ -202,7 +205,6 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
           );
         }
       }
-      apiRef.current = null;
     };
   }, [board.id, currentDocument]);
 

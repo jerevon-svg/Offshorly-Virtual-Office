@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { useEffect, type ReactNode } from "react";
+import { StrictMode, useEffect, useRef, type ReactNode } from "react";
 import type { Whiteboard } from "../../services/whiteboard/whiteboardClient";
 
 // Editor persistence layer over a stubbed Excalidraw: jsdom has no canvas, so the real component
@@ -57,10 +57,13 @@ vi.mock("@excalidraw/excalidraw", () => ({
     harness.initialData = props.initialData;
     harness.onChange = props.onChange;
     harness.onPointerDown = props.onPointerDown;
-    const { excalidrawAPI } = props;
-    useEffect(() => {
-      harness.mounted += 1;
-      excalidrawAPI({
+    // The real Excalidraw calls excalidrawAPI ONCE, from its class constructor — never again on
+    // re-render or after StrictMode's simulated remount. Mirror that: hand it over during the
+    // first render only, so a parent that drops the API in an effect cleanup is caught here.
+    const handedOver = useRef(false);
+    if (!handedOver.current) {
+      handedOver.current = true;
+      props.excalidrawAPI({
         getSceneElementsIncludingDeleted: () => harness.scene,
         getAppState: () => ({ viewBackgroundColor: "#ffffff", selectedElementIds: { x: true }, zoom: { value: 1 } }),
         getFiles: () => ({}),
@@ -68,7 +71,10 @@ vi.mock("@excalidraw/excalidraw", () => ({
         addFiles: harness.addFiles,
         setActiveTool: harness.setActiveTool,
       });
-    }, [excalidrawAPI]);
+    }
+    useEffect(() => {
+      harness.mounted += 1;
+    }, []);
     return (
       <div data-testid="excalidraw">
         <div data-testid="top-right">{props.renderTopRightUI(false, { activeTool: harness.activeTool })}</div>
@@ -223,6 +229,21 @@ describe("WhiteboardEditor (Excalidraw)", () => {
     act(() => harness.onChange!(harness.scene, {}, {}));
     await flushAutosave();
     expect(saveWhiteboard.mock.calls[1][2]).toBe(3);
+  });
+
+  it("still saves under React StrictMode, whose mount-time effect cleanup must not drop the editor API", async () => {
+    saveWhiteboard.mockResolvedValue({ ...base, version: 3 });
+    render(
+      <StrictMode>
+        <WhiteboardEditor board={{ ...base, document: excalidrawDoc }} />
+      </StrictMode>,
+    );
+    harness.scene = [{ ...rect, version: 2 }];
+    act(() => harness.onChange!(harness.scene, {}, {}));
+    await flushAutosave();
+    expect(saveWhiteboard).toHaveBeenCalledTimes(1);
+    expect(saveWhiteboard.mock.calls[0][1]).toMatchObject({ type: "excalidraw", elements: [{ ...rect, version: 2 }] });
+    expect(screen.getByText("Saved")).toBeInTheDocument();
   });
 
   it("ignores onChange calls whose scene version is unchanged (selection/zoom only)", async () => {
