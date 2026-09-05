@@ -214,9 +214,11 @@ async def test_viewing_a_coworker_profile_counts_once_and_own_profile_never_coun
         assert await _event_count("profile_viewed") == 0
 
         assert (await client.get(f"/feed/{B}", headers=_as(A))).status_code == 200
+        assert (await client.get(f"/feed/{B}", headers=_as(A))).status_code == 200  # same profile again
         assert (await client.get(f"/feed/{C}", headers=_as(A))).status_code == 200  # second coworker
         q = await _quest(client, A, "view_coworker_profile")
         assert q["count"] == 1 and q["completed"] is True
         # The viewed person gains nothing from being looked at.
         assert (await _quest(client, B, "view_coworker_profile"))["completed"] is False
-    assert await _event_count("profile_viewed") == 1
+    # Keyed per actor+target+UTC day (missions need recurrence): B twice collapses, C is new.
+    assert await _event_count("profile_viewed") == 2

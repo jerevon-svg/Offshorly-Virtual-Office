@@ -5,6 +5,7 @@ Feature code imports exactly one thing from here: `record_quest_event`. Definiti
 quest_progress. See app/models/quest.py for the storage rules."""
 
 from app.services.quests.engine import QuestRecordResult, record_quest_event
+from app.services.quests.missions import MissionRef, utc_day_key
 from app.services.quests.registry import (
     EVENT_ASK_TO_JOIN,
     EVENT_CHECK_IN,
@@ -35,8 +36,10 @@ __all__ = [
     "EVENT_SPATIAL_SESSION_JOINED",
     "EVENT_TOUCAN_ASKED",
     "QuestDefinition",
+    "MissionRef",
     "QuestRecordResult",
     "all_definitions",
     "definitions_for",
     "record_quest_event",
+    "utc_day_key",
 ]
