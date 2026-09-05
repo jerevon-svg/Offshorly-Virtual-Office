@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.deps import get_current_email
 from app.database import get_db
 from app.repositories import feed as feed_repo
+from app.services.quests import EVENT_RECOGNITION_GIVEN, record_quest_event
 from app.schemas.feed import CreateCommentIn, CreatePostIn, FeedPostOut, ReactIn
 
 # Employee Feed V1 REST layer — mirrors routers/hub.py's dependency pattern. The Feed owns all
@@ -56,6 +57,17 @@ async def create_post(
     post = await feed_repo.create_post(
         db, target_email=target_email, author_email=email, type="post", content=body.content
     )
+    # Quest Foundation: writing on a COWORKER's feed is a social act (the engine drops a
+    # self-targeted event by rule, so a post on your own feed never counts). Key = post id.
+    await record_quest_event(
+        db,
+        actor_email=post["author_email"],
+        event_type=EVENT_RECOGNITION_GIVEN,
+        dedupe_key=f"post:{post['id']}",
+        target_email=post["target_email"],
+        reference_id=post["id"],
+        occurred_at=post["created_at"],
+    )
     return FeedPostOut.from_dict(post, reactions=[], comments=[], viewer_email=email)
 
 
@@ -85,6 +97,16 @@ async def react_to_post(
         raise HTTPException(status_code=404, detail="Post not found")
 
     await feed_repo.upsert_reaction(db, post_id=post_id, employee_email=email, emoji=body.emoji)
+    # Quest Foundation: reacting to a coworker's post counts once per (post, reactor) no matter
+    # how many times the emoji changes; the author is the target so self-reactions are dropped.
+    await record_quest_event(
+        db,
+        actor_email=email,
+        event_type=EVENT_RECOGNITION_GIVEN,
+        dedupe_key=f"reaction:{post_id}:{email.strip().lower()}",
+        target_email=post["author_email"],
+        reference_id=post_id,
+    )
     reactions = (await feed_repo.get_reactions_for_posts(db, [post_id])).get(post_id, [])
     comments = (await feed_repo.get_comments_for_posts(db, [post_id])).get(post_id, [])
     return FeedPostOut.from_dict(post, reactions=reactions, comments=comments, viewer_email=email)

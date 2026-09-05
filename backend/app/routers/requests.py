@@ -8,6 +8,7 @@ from app.database import get_db
 from app.realtime.state import call_registry, sio, user_room
 from app.repositories import chat as chat_repo
 from app.repositories import requests as requests_repo
+from app.services.quests import EVENT_ASK_TO_JOIN, record_quest_event
 from app.schemas.requests import CreateRequestIn, RequestOut, ResolveRequestIn
 
 # "Ask to Join + Group Conversation" REST layer — mirrors routers/chat.py's dependency pattern
@@ -34,6 +35,18 @@ async def create_request(
         conversation_id=body.conversation_id,
         payload=body.payload,
     )
+
+    # Quest Foundation: the persisted request is the event. create_request is idempotent (a
+    # pending duplicate returns the SAME row), so a retry carries the same id and collapses.
+    if req["kind"] == "join_group":
+        await record_quest_event(
+            db,
+            actor_email=req["requester_email"],
+            event_type=EVENT_ASK_TO_JOIN,
+            dedupe_key=req["id"],
+            reference_id=req["id"],
+            occurred_at=req["created_at"],
+        )
 
     # Notify every participant of the target conversation (mirrors the unread_count push
     # pattern in socket.py) so the ask-to-join prompt can show up live, not just on next poll.
