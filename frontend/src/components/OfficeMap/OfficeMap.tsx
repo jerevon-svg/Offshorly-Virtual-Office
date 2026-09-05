@@ -3843,10 +3843,12 @@ export function OfficeMap() {
         // reverted on a timer — the next time that NPC's own demo/movement
         // runs it recomputes its own direction from its next segment anyway.
         facerFor(target.id)?.(directionBetween(targetCenter, arriveCenter));
-        // Onboarding Questline: a finished approach to a REAL coworker is the only signal the
-        // server can get for "Walk up to a coworker" (the walk itself is client-side). Mock
-        // avatar ids carry no "@" and are filtered here and again server-side.
-        if (target.id.includes("@")) emitApproachArrived(target.id);
+        // Onboarding Questline: a finished approach is the only signal the server can get for
+        // "Walk up to a coworker" (the walk itself is client-side). Resolve the target the same
+        // way "viewProfile" does below: roster people carry their email as id, mock-rig avatars
+        // (alex/micah/...) map through mockEmailForAvatarId so the two quests agree on who a
+        // coworker is. The server still rejects self and non-email targets.
+        emitApproachArrived(target.id.includes("@") ? target.id : mockEmailForAvatarId(target.id));
       });
     } else if (action === "chat") {
       // setMenu(null) rather than closeCharacterMenu() — avoid resetting the
