@@ -338,5 +338,11 @@ async def test_a3_migration_descends_from_presence_and_is_the_single_head():
     source = path.read_text()
     for banned in ("text", "body", "preview", "content"):
         assert f'"{banned}"' not in source, banned
+    # The chain must stay linear (exactly one head) and A3 must remain on it. A3 is NOT pinned as
+    # the head itself: every later migration (Quest Foundation's d5e6f7a8b9c0 was the first) would
+    # otherwise break this test by construction. Walk Alembic's own revision graph instead.
     script = ScriptDirectory.from_config(Config(str(backend / "alembic.ini")))
-    assert script.get_heads() == ["c3d4e5f6a7b8"]
+    heads = script.get_heads()
+    assert len(heads) == 1, heads
+    lineage = [rev.revision for rev in script.walk_revisions(base="base", head=heads[0])]
+    assert "c3d4e5f6a7b8" in lineage
