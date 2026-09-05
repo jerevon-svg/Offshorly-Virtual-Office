@@ -267,7 +267,11 @@ describe("OfficeMap — proactive return briefing", () => {
     await waitFor(() => expect(toucanPanel(view)).toBeTruthy());
     await waitFor(() => expect(briefings(view)).toBe(1));
     expect(view.getByText(/1 mention needs your attention/)).toBeTruthy();
-    expect(view.getByTestId("toucan-catchup-card").textContent).toContain("Peer Person");
+    // Rows live inside the briefing bubble; there is no second "While you were away" card.
+    const rows = view.getByTestId("toucan-catchup-rows");
+    expect(rows.textContent).toContain("Peer Person");
+    expect(rows.parentElement?.textContent).toContain("Welcome back.");
+    expect(view.queryByTestId("toucan-catchup-card")).toBeNull();
     expect(toucanSlotRight(view)).toBe(SLOT_0);
 
     // Reconnect noise and rerenders: same boundary, nothing more happens.

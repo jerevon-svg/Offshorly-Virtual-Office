@@ -119,6 +119,11 @@ type Turn = {
    *  so it can be re-sent without the viewer retyping it. Its presence is also
    *  what marks the turn as an error rather than an ordinary reply. */
   retryQuestion?: string;
+  /** A5 — set on a Toucan turn that IS a catch-up briefing (the proactive return briefing, or
+   *  the reply to a manual "catch me up"). The most recent such turn renders the structured
+   *  conversation rows and their actions inside its own bubble, so the words and the actions
+   *  are one message. Never persisted: restored transcripts carry text only. */
+  catchUp?: boolean;
 };
 
 // Shown when the request itself fails (network down, backend asleep, aborted
@@ -871,10 +876,16 @@ export function ToucanAssistantPanel({
 
   // T8 — the assistant's own follow-up line for confirm/cancel outcomes. A plain
   // toucan turn, same shape appendReply produces inside submitQuestion.
-  const appendToucanTurn = useCallback((text: string) => {
+  const appendToucanTurn = useCallback((text: string, options: { catchUp?: boolean } = {}) => {
     setTurns((prev) => [
       ...prev,
-      { id: nextIdRef.current++, role: "toucan", text, sentAt: new Date().toISOString() },
+      {
+        id: nextIdRef.current++,
+        role: "toucan",
+        text,
+        sentAt: new Date().toISOString(),
+        ...(options.catchUp ? { catchUp: true } : {}),
+      },
     ]);
   }, []);
 
@@ -888,7 +899,7 @@ export function ToucanAssistantPanel({
     if (briefedSinceRef.current === since) return;
     briefedSinceRef.current = since;
     setCatchUp(returnBriefing);
-    appendToucanTurn(composeReturnBriefing(returnBriefing));
+    appendToucanTurn(composeReturnBriefing(returnBriefing), { catchUp: true });
   }, [restoring, returnBriefing, appendToucanTurn]);
 
   // CONFIRM — the only gesture that executes anything, and it is a button press
@@ -1056,9 +1067,16 @@ export function ToucanAssistantPanel({
   }, []);
 
   const catchUpRows = catchUpRowsToShow(catchUp).filter((r) => !dismissedCatchUpIds.has(r.conversationId));
-  // A3 card rows already represented on the catch-up card (same conversation, Urgent badge) are
-  // not listed twice; anything the catch-up could not place still shows on the A3 card.
-  const catchUpConversationIds = new Set(catchUpRows.map((r) => r.conversationId));
+  // A5 — only the MOST RECENT briefing turn carries the rows; older briefings in the same
+  // transcript keep their words but not a second copy of the actions.
+  let latestCatchUpTurnId: number | null = null;
+  for (const turn of turns) if (turn.catchUp) latestCatchUpTurnId = turn.id;
+  // Rows are only ever shown inside a briefing turn; a preloaded catch-up with no briefing in the
+  // transcript displays nothing (the manual "catch me up" or the return briefing puts it there).
+  const displayedCatchUpRows = latestCatchUpTurnId !== null && !restoring ? catchUpRows : [];
+  // A3 card rows already represented on displayed catch-up rows (same conversation, Urgent badge)
+  // are not listed twice; anything the briefing is not showing still shows on the A3 card.
+  const catchUpConversationIds = new Set(displayedCatchUpRows.map((r) => r.conversationId));
   const standaloneUrgentFlags = urgentFlags.filter((f) => !catchUpConversationIds.has(f.conversationId));
 
   // CANCEL — burns the pending entry server-side; nothing executes either way.
@@ -1123,7 +1141,7 @@ export function ToucanAssistantPanel({
 
     const controller = new AbortController();
     askAbortRef.current = controller;
-    const appendReply = (replyText: string, retryQuestion?: string) => {
+    const appendReply = (replyText: string, retryQuestion?: string, catchUp = false) => {
       if (controller.signal.aborted) return;
       setTurns((prev) => [
         ...prev,
@@ -1133,6 +1151,7 @@ export function ToucanAssistantPanel({
           text: replyText,
           sentAt: new Date().toISOString(),
           ...(retryQuestion ? { retryQuestion } : {}),
+          ...(catchUp ? { catchUp: true } : {}),
         },
       ]);
     };
@@ -1140,6 +1159,7 @@ export function ToucanAssistantPanel({
     void toucanService
       .ask({ question: text, history, conversationId }, { signal: controller.signal })
       .then((answer) => {
+        const isCatchUpIntent = answer.intent === "away_summary" || answer.intent === "important_summary";
         // Tracks the conversation the server actually used — the one that was
         // sent, or the one it created because none was.
         if (!controller.signal.aborted) {
@@ -1147,10 +1167,10 @@ export function ToucanAssistantPanel({
           // T8: an answer may carry a pending action proposal. Nothing has
           // executed — this only decides whether the confirmation card shows.
           setActionProposal(answer.action ?? null);
-          // A5 — a digest answer refreshes the card beneath it, so text and rows agree.
-          if (answer.intent === "away_summary" || answer.intent === "important_summary") loadCatchUp();
+          // A5 — a digest answer refreshes the rows it carries, so text and rows agree.
+          if (isCatchUpIntent) loadCatchUp();
         }
-        appendReply(answer.text);
+        appendReply(answer.text, undefined, isCatchUpIntent);
       })
       .catch((error: unknown) => {
         if (error instanceof ToucanConversationGoneError) {
@@ -1415,56 +1435,6 @@ export function ToucanAssistantPanel({
         </div>
       )}
 
-      {catchUpRows.length > 0 && (
-        // A5 — the catch-up card: the conversations behind "what did I miss", worst first as the
-        // server ordered them. Read-only until the viewer acts on a row.
-        <div className={styles.catchUpCard} data-testid="toucan-catchup-card" role="status">
-          <span className={styles.catchUpTitle}>While you were away</span>
-          {catchUpRows.map((row) => (
-            <div key={row.conversationId} className={styles.catchUpRow} data-testid="toucan-catchup-row">
-              <span className={styles.catchUpMeta}>
-                <span className={styles.catchUpLabel}>{row.label}</span>
-                <span className={styles.catchUpBadges}>
-                  {catchUpBadges(row).map((badge) => (
-                    <span
-                      key={badge}
-                      className={badge.startsWith("Urgent") ? `${styles.catchUpBadge} ${styles.catchUpBadgeUrgent}` : styles.catchUpBadge}
-                      data-testid="toucan-catchup-badge"
-                    >
-                      {badge}
-                    </span>
-                  ))}
-                </span>
-              </span>
-              <span className={styles.urgentActions}>
-                {onOpenConversation && (
-                  <button
-                    type="button"
-                    className={styles.urgentOpen}
-                    onClick={() => openCatchUpRow(row)}
-                    disabled={catchUpBusyId !== null}
-                    aria-label={`Open ${row.label}`}
-                  >
-                    Open
-                  </button>
-                )}
-                {!row.urgent && (
-                  <button
-                    type="button"
-                    className={styles.urgentDismiss}
-                    onClick={() => dismissCatchUpRow(row)}
-                    disabled={catchUpBusyId !== null}
-                    aria-label={`Dismiss ${row.label} from this briefing`}
-                  >
-                    Dismiss
-                  </button>
-                )}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-
       <div className={chat.messages} ref={messagesRef}>
         {/* While the restore is in flight the transcript is withheld entirely, so
             a restored conversation never flashes the greeting above itself. */}
@@ -1473,6 +1443,7 @@ export function ToucanAssistantPanel({
           : turns.map((turn) => {
               const isOwn = turn.role === "user";
               const isError = Boolean(turn.retryQuestion);
+              const carriesRows = Boolean(turn.catchUp) && turn.id === latestCatchUpTurnId && displayedCatchUpRows.length > 0;
               return (
                 <div key={turn.id} className={isOwn ? `${chat.row} ${chat.rowSelf}` : chat.row}>
                   {!isOwn && <div className={`${chat.avatar} ${styles.toucanAvatar}`}>🦜</div>}
@@ -1480,12 +1451,60 @@ export function ToucanAssistantPanel({
                     <div
                       className={`${chat.message} ${isOwn ? chat.own : chat.peer}${
                         isError ? ` ${styles.errorBubble}` : ""
-                      }`}
+                      }${carriesRows ? ` ${styles.briefingBubble}` : ""}`}
                     >
                       {/* The viewer's own message stays literal text — their
                           keystrokes, shown back verbatim. Only the assistant's
                           side goes through the Markdown renderer. */}
                       {isOwn ? turn.text : <ToucanMessageBody text={turn.text} />}
+                      {carriesRows && (
+                        // A5 — the conversations behind this briefing, worst first as the server
+                        // ordered them, with their actions, inside the same message.
+                        <div className={styles.catchUpRows} data-testid="toucan-catchup-rows">
+                        {catchUpRows.map((row) => (
+                          <div key={row.conversationId} className={styles.catchUpRow} data-testid="toucan-catchup-row">
+                            <span className={styles.catchUpMeta}>
+                              <span className={styles.catchUpLabel}>{row.label}</span>
+                              <span className={styles.catchUpBadges}>
+                                {catchUpBadges(row).map((badge) => (
+                                  <span
+                                    key={badge}
+                                    className={badge.startsWith("Urgent") ? `${styles.catchUpBadge} ${styles.catchUpBadgeUrgent}` : styles.catchUpBadge}
+                                    data-testid="toucan-catchup-badge"
+                                  >
+                                    {badge}
+                                  </span>
+                                ))}
+                              </span>
+                            </span>
+                            <span className={styles.urgentActions}>
+                              {onOpenConversation && (
+                                <button
+                                  type="button"
+                                  className={styles.urgentOpen}
+                                  onClick={() => openCatchUpRow(row)}
+                                  disabled={catchUpBusyId !== null}
+                                  aria-label={`Open ${row.label}`}
+                                >
+                                  Open
+                                </button>
+                              )}
+                              {!row.urgent && (
+                                <button
+                                  type="button"
+                                  className={styles.urgentDismiss}
+                                  onClick={() => dismissCatchUpRow(row)}
+                                  disabled={catchUpBusyId !== null}
+                                  aria-label={`Dismiss ${row.label} from this briefing`}
+                                >
+                                  Dismiss
+                                </button>
+                              )}
+                            </span>
+                          </div>
+                        ))}
+                        </div>
+                      )}
                     </div>
                     <div
                       className={

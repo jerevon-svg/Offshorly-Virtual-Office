@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 // A5 — Return / Catch-Up card. Against a fully faked service:
-//   * a last_active window with rows renders the card, one row per conversation, badges in the
-//     server's order (urgent, mentions, new, Toucan replied)
+//   * the rows live INSIDE Toucan's briefing turn (the reply to "catch me up", or the proactive
+//     return briefing) — one row per conversation, badges in the server's order (urgent,
+//     mentions, new, Toucan replied); there is no standalone card, and a preloaded catch-up with
+//     no briefing in the transcript shows nothing
 //   * Open hands the conversation id to the caller and keeps the panel; a row with an unseen A3
 //     flag also marks THAT flag seen through the A3 call; a plain row marks nothing
 //   * urgent rows are Open-only; normal rows offer Dismiss, which hides the row for this panel's
@@ -132,6 +134,18 @@ const setup = async (props: { onOpenConversation?: (id: string) => void; onRelea
   await flush();
 };
 
+/** Ask the manual catch-up question; the deterministic digest reply is the turn that carries the rows. */
+const askCatchUp = async (intent: "away_summary" | "important_summary" = "away_summary") => {
+  h.service.ask.mockResolvedValue({ text: "While you were away:\n• 1 mention", intent, supported: true, conversationId: "tc-1" });
+  const composer = screen.getByLabelText("Message the toucan");
+  fireEvent.change(composer, { target: { value: "catch me up" } });
+  fireEvent.keyDown(composer, { key: "Enter" });
+  await flush();
+};
+
+/** The bubble that carries the rows — proves words and actions are one message. */
+const briefingBubble = () => screen.getByTestId("toucan-catchup-rows").parentElement as HTMLElement;
+
 describe("catchUpBadges / catchUpRowsToShow", () => {
   it("orders badges urgent, mentions, new, Toucan replied and words singulars", () => {
     expect(catchUpBadges(URGENT_ROW)).toEqual(["Urgent · Micah", "1 mention", "2 new", "Toucan replied"]);
@@ -162,12 +176,16 @@ describe("ToucanAssistantPanel — A5 catch-up card", () => {
   });
   afterEach(cleanup);
 
-  it("renders one row per conversation with its badges, in the server's order", async () => {
+  it("renders one row per conversation with its badges, in the server's order, inside the briefing turn", async () => {
     h.service.getCatchUp.mockResolvedValue(catchUp([URGENT_ROW, GROUP_ROW, COVERED_ROW]));
     await setup({ onOpenConversation: vi.fn() });
     expect(h.service.getCatchUp).toHaveBeenCalledTimes(1);
-    const card = screen.getByTestId("toucan-catchup-card");
-    expect(card.textContent).toContain("While you were away");
+    // Preloaded, but nothing has been briefed yet: no rows, no standalone card anywhere.
+    expect(screen.queryByTestId("toucan-catchup-rows")).toBeNull();
+    expect(screen.queryByTestId("toucan-catchup-card")).toBeNull();
+    await askCatchUp();
+    expect(briefingBubble().textContent).toContain("While you were away:");
+    expect(screen.queryByTestId("toucan-catchup-card")).toBeNull();
     const rows = screen.getAllByTestId("toucan-catchup-row");
     expect(rows.map((r) => r.querySelector("span")?.textContent?.slice(0, 5))).toEqual(["Micah", "Launc", "Alex1"]);
     expect(rows[0].textContent).toContain("Urgent · Micah");
@@ -187,6 +205,7 @@ describe("ToucanAssistantPanel — A5 catch-up card", () => {
     const onOpenConversation = vi.fn();
     const onRelease = vi.fn();
     await setup({ onOpenConversation, onRelease });
+    await askCatchUp();
 
     fireEvent.click(screen.getByRole("button", { name: "Open Launch Room" }));
     await flush();
@@ -200,14 +219,16 @@ describe("ToucanAssistantPanel — A5 catch-up card", () => {
     expect(onOpenConversation).toHaveBeenLastCalledWith("conv-urgent");
     expect(h.service.markUrgentFlagsSeen).toHaveBeenCalledWith(["f-1"]);
     expect(onRelease).not.toHaveBeenCalled();
-    expect(screen.queryByTestId("toucan-catchup-card")).toBeNull();
+    expect(screen.queryByTestId("toucan-catchup-rows")).toBeNull();
+    // The briefing words stay in the transcript once the rows are gone.
+    expect(screen.getByText(/While you were away:/)).toBeTruthy();
     // The service surface has no read-cursor call, and the panel invented none: every call made
     // is one of the known Toucan calls.
     const called = Object.entries(h.service)
       .filter(([, fn]) => (fn as { mock?: { calls: unknown[] } }).mock?.calls.length)
       .map(([name]) => name)
       .sort();
-    expect(called).toEqual(["getCatchUp", "getDelegation", "greeting", "listUrgentFlags", "loadLatestConversation", "markUrgentFlagsSeen"]);
+    expect(called).toEqual(["ask", "getCatchUp", "getDelegation", "greeting", "listUrgentFlags", "loadLatestConversation", "markUrgentFlagsSeen"]);
   });
 
   it("Dismiss on a normal row hides it for this session only, calls nothing, and survives a refetch; urgent rows cannot be dismissed", async () => {
@@ -215,31 +236,32 @@ describe("ToucanAssistantPanel — A5 catch-up card", () => {
     h.service.listUrgentFlags.mockResolvedValue([FLAG_MICAH]);
     const onOpenConversation = vi.fn();
     await setup({ onOpenConversation });
-    // The same conversation is not listed twice: the A3 card yields to the catch-up row.
+    // Before any briefing the A3 card still lists the flag (nothing else is showing it).
+    expect(screen.getByTestId("toucan-urgent-card").textContent).toContain("Micah");
+    await askCatchUp();
+    // The same conversation is not listed twice: the A3 card yields to the briefing row.
     expect(screen.queryByTestId("toucan-urgent-card")).toBeNull();
     expect(screen.queryByRole("button", { name: /^Dismiss Micah/ })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss Launch Room from this briefing" }));
     await flush();
     expect(screen.getAllByTestId("toucan-catchup-row")).toHaveLength(2);
-    expect(screen.getByTestId("toucan-catchup-card").textContent).not.toContain("Launch Room");
+    expect(screen.getByTestId("toucan-catchup-rows").textContent).not.toContain("Launch Room");
     expect(h.service.markUrgentFlagsSeen).not.toHaveBeenCalled();
     expect(onOpenConversation).not.toHaveBeenCalled();
     // Still urgent, still Open-only, still one badge.
     expect(screen.getByRole("button", { name: "Open Micah" })).toBeTruthy();
     expect(screen.getAllByTestId("toucan-catchup-row")[0].textContent).toContain("Urgent · Micah");
 
-    // A refetch during the same open panel (a digest answer) returns the dismissed row again;
-    // it stays hidden while everything else refreshes.
-    h.service.ask.mockResolvedValue({ text: "While you were away:\n• 1 mention", intent: "away_summary", supported: true, conversationId: "tc-1" });
-    const composer = screen.getByLabelText("Message the toucan");
-    fireEvent.change(composer, { target: { value: "catch me up" } });
-    fireEvent.keyDown(composer, { key: "Enter" });
-    await flush();
-    expect(h.service.getCatchUp).toHaveBeenCalledTimes(2);
+    // A refetch during the same open panel (a second digest answer) returns the dismissed row
+    // again; it stays hidden while everything else refreshes — and the rows move to the newest
+    // briefing turn, so they are never shown twice.
+    await askCatchUp("important_summary");
+    expect(h.service.getCatchUp).toHaveBeenCalledTimes(3);
+    expect(screen.getAllByTestId("toucan-catchup-rows")).toHaveLength(1);
     expect(screen.getAllByTestId("toucan-catchup-row")).toHaveLength(2);
-    expect(screen.getByTestId("toucan-catchup-card").textContent).not.toContain("Launch Room");
-    expect(screen.getByTestId("toucan-catchup-card").textContent).toContain("Alex");
+    expect(screen.getByTestId("toucan-catchup-rows").textContent).not.toContain("Launch Room");
+    expect(screen.getByTestId("toucan-catchup-rows").textContent).toContain("Alex");
 
     // Only the known Toucan calls ran: no read-state or seen call was invented by Dismiss.
     const called = Object.entries(h.service)
@@ -255,12 +277,13 @@ describe("ToucanAssistantPanel — A5 catch-up card", () => {
     const onOpenConversation = vi.fn();
     const onRelease = vi.fn();
     await setup({ onOpenConversation, onRelease });
+    await askCatchUp();
     fireEvent.click(screen.getByRole("button", { name: "Open Micah" }));
     await flush();
     expect(onOpenConversation).toHaveBeenCalledWith("conv-urgent");
     expect(h.service.markUrgentFlagsSeen).toHaveBeenCalledWith(["f-1"]);
     expect(onRelease).not.toHaveBeenCalled();
-    expect(screen.queryByTestId("toucan-catchup-card")).toBeNull();
+    expect(screen.queryByTestId("toucan-catchup-rows")).toBeNull();
     expect(screen.queryByTestId("toucan-urgent-card")).toBeNull();
   });
 
@@ -268,12 +291,13 @@ describe("ToucanAssistantPanel — A5 catch-up card", () => {
     h.service.getCatchUp.mockResolvedValue(catchUp([URGENT_ROW]));
     h.service.listUrgentFlags.mockResolvedValue([FLAG_MICAH, FLAG_ELSEWHERE]);
     await setup({ onOpenConversation: vi.fn() });
+    await askCatchUp();
     expect(screen.getAllByTestId("toucan-catchup-row")).toHaveLength(1);
     expect(screen.getAllByTestId("toucan-urgent-row")).toHaveLength(1);
     expect(screen.getByTestId("toucan-urgent-card").textContent).toContain("Alex");
   });
 
-  it("shows no card for no_history, tracking_started, an empty list, or a service without the call", async () => {
+  it("shows no rows for no_history, tracking_started, an empty list, or a service without the call — the words still answer", async () => {
     for (const value of [
       catchUp([GROUP_ROW], { sinceReason: "no_history" }),
       catchUp([GROUP_ROW], { sinceReason: "tracking_started" }),
@@ -282,12 +306,16 @@ describe("ToucanAssistantPanel — A5 catch-up card", () => {
     ]) {
       h.service.getCatchUp.mockResolvedValue(value);
       await setup({ onOpenConversation: vi.fn() });
+      await askCatchUp();
+      expect(screen.getByText(/While you were away:/)).toBeTruthy();
+      expect(screen.queryByTestId("toucan-catchup-rows")).toBeNull();
       expect(screen.queryByTestId("toucan-catchup-card")).toBeNull();
       cleanup();
     }
     h.service.getCatchUp.mockRejectedValue(new Error("older backend"));
     await setup({ onOpenConversation: vi.fn() });
-    expect(screen.queryByTestId("toucan-catchup-card")).toBeNull();
+    await askCatchUp();
+    expect(screen.queryByTestId("toucan-catchup-rows")).toBeNull();
     expect(screen.getByText("Squawk! Test greeting.")).toBeTruthy();
   });
 
@@ -307,7 +335,7 @@ describe("ToucanAssistantPanel — A5 catch-up card", () => {
     fireEvent.keyDown(composer, { key: "Enter" });
     await flush();
     expect(h.service.getCatchUp).toHaveBeenCalledTimes(2);
-    expect(screen.getByTestId("toucan-catchup-card")).toBeTruthy();
+    expect(briefingBubble().textContent).toContain("1 chat message");
 
     act(() => {
       for (const cb of h.endedListeners) cb({ delegationId: "d-1" });

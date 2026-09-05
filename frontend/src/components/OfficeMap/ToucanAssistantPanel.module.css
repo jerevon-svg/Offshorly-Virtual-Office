@@ -661,23 +661,21 @@
   opacity: 0.6;
 }
 
-/* A5 — the catch-up card. Same geometry as the urgent card above, neutral colour: it lists
-   what moved, not an alarm. Urgent rows carry a red badge rather than a red card. */
-.catchUpCard {
-  margin: 0 12px 6px;
-  padding: 8px 12px;
-  border-left: 3px solid #2563eb;
-  border-radius: 8px;
-  background: #eff6ff;
-  color: #1e3a8a;
-  font-family: system-ui, sans-serif;
-  font-size: 12px;
+/* A5 — the structured rows inside a briefing turn. Same row geometry as the urgent card,
+   rendered within Toucan's own bubble so the words and the actions are one message. */
+.briefingBubble {
+  max-width: 100%;
 }
 
-.catchUpTitle {
-  display: block;
-  margin-bottom: 4px;
-  font-weight: 600;
+.catchUpRows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(30, 58, 138, 0.15);
+  font-family: system-ui, sans-serif;
+  font-size: 12px;
 }
 
 .catchUpRow {

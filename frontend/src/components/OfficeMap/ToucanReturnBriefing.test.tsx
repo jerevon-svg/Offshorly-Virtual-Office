@@ -137,8 +137,12 @@ describe("ToucanAssistantPanel — proactive return briefing", () => {
     );
     await flush();
     expect(screen.getAllByText(/Welcome back\. Here's what happened while you were away/)).toHaveLength(1);
-    expect(screen.getByTestId("toucan-catchup-card")).toBeTruthy();
+    // One combined message: the rows sit inside the briefing bubble; no standalone card exists.
+    const rows = screen.getByTestId("toucan-catchup-rows");
+    expect(rows.parentElement?.textContent).toContain("Welcome back.");
+    expect(screen.queryByTestId("toucan-catchup-card")).toBeNull();
     expect(screen.getByTestId("toucan-catchup-row").textContent).toContain("Urgent · Micah");
+    expect(screen.queryByRole("button", { name: /^Dismiss Micah/ })).toBeNull();
 
     view.rerender(
       <ToucanAssistantPanel onRelease={vi.fn()} onOpenConversation={onOpenConversation} returnBriefing={{ ...BRIEFING }} />,
@@ -170,7 +174,9 @@ describe("ToucanAssistantPanel — proactive return briefing", () => {
     await flush();
     expect(h.service.ask).toHaveBeenCalledTimes(1);
     expect(screen.getByText(/While you were away:/)).toBeTruthy();
-    expect(screen.getByTestId("toucan-catchup-card")).toBeTruthy();
+    // The same structured rows render inside the manual reply — one rendering path.
+    expect(screen.getByTestId("toucan-catchup-rows").parentElement?.textContent).toContain("While you were away:");
+    expect(screen.queryByTestId("toucan-catchup-card")).toBeNull();
     expect(screen.queryByText(/Welcome back\./)).toBeNull();
   });
 });
