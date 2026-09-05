@@ -165,6 +165,30 @@ describe("WhiteboardEditor (Excalidraw)", () => {
     expect(saveWhiteboard.mock.calls[0][2]).toBe(2);
   });
 
+  it("serializes the scene Excalidraw last reported, not an API read — the API is empty once Excalidraw has unmounted", async () => {
+    saveWhiteboard.mockResolvedValue({ ...base, version: 3 });
+    const { unmount } = render(<WhiteboardEditor board={{ ...base, document: excalidrawDoc }} />);
+    const drawn = [{ ...rect, version: 2 }];
+    act(() => harness.onChange!(drawn, { viewBackgroundColor: "#ffffff" }, {}));
+    // Excalidraw.componentWillUnmount swaps in a fresh empty scene before our cleanup runs.
+    harness.scene = [];
+    unmount();
+    expect(saveWhiteboard).toHaveBeenCalledTimes(1);
+    expect(saveWhiteboard.mock.calls[0][1]).toMatchObject({ elements: drawn });
+    expect(saveWhiteboard.mock.calls[0][2]).toBe(2);
+  });
+
+  it("does not flush on unmount once the debounced save has already fired", async () => {
+    saveWhiteboard.mockResolvedValue({ ...base, version: 3 });
+    const { unmount } = render(<WhiteboardEditor board={{ ...base, document: excalidrawDoc }} />);
+    act(() => harness.onChange!([{ ...rect, version: 2 }], { viewBackgroundColor: "#ffffff" }, {}));
+    await flushAutosave();
+    expect(saveWhiteboard).toHaveBeenCalledTimes(1);
+    harness.scene = [];
+    unmount();
+    expect(saveWhiteboard).toHaveBeenCalledTimes(1);
+  });
+
   it("unmounting a locked legacy board never flushes a save", () => {
     const { unmount } = render(<WhiteboardEditor board={{ ...base, document: tldrawDoc }} />);
     unmount();
@@ -211,7 +235,7 @@ describe("WhiteboardEditor (Excalidraw)", () => {
     render(<WhiteboardEditor board={{ ...base, document: excalidrawDoc }} onSaved={onSaved} />);
 
     harness.scene = [{ ...rect, version: 2 }, { id: "gone", type: "ellipse", version: 1, isDeleted: true }];
-    act(() => harness.onChange!(harness.scene, {}, {}));
+    act(() => harness.onChange!(harness.scene, { viewBackgroundColor: "#ffffff", selectedElementIds: { r1: true } }, {}));
     expect(screen.getByText("Unsaved changes")).toBeInTheDocument();
 
     await flushAutosave();

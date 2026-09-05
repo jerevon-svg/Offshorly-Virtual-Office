@@ -66,8 +66,19 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
   // Excalidraw's onChange also fires for selection/tool/scroll changes. The scene version is a
   // hash of element versions, so comparing against the last one we saw filters those out.
   const lastSceneVersionRef = useRef(sceneVersionOf(initialElements));
+  // The scene as Excalidraw last reported it via onChange. Saves serialize THIS, never a read
+  // through the imperative API: Excalidraw's componentWillUnmount replaces its scene with an
+  // empty one before React runs our effect cleanup, so an API read during the unmount flush
+  // returned zero elements and overwrote the board with an empty document (bug 2026-09-05).
+  const latestSceneRef = useRef<{ elements: readonly StoredElement[]; appState: Record<string, unknown>; files: Record<string, unknown> }>({
+    elements: initialElements,
+    appState: parsed.kind === "excalidraw" ? parsed.document.appState : {},
+    files: parsed.kind === "excalidraw" ? parsed.document.files : {},
+  });
   const savingRef = useRef(false);
   const pendingRef = useRef(false);
+  // Set while a debounced save is pending; cleared when it fires so the unmount flush only runs
+  // for a save that has not happened yet.
   const timerRef = useRef<number | undefined>(undefined);
   const [status, setStatus] = useState<SaveStatus>("idle");
   const [errorText, setErrorText] = useState<string | null>(null);
@@ -87,18 +98,12 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
   }, [parsed]);
 
   const currentDocument = useCallback(() => {
-    const api = apiRef.current;
-    if (!api) return null;
-    return toStoredDocument(
-      api.getSceneElementsIncludingDeleted() as unknown as StoredElement[],
-      api.getAppState() as unknown as Record<string, unknown>,
-      api.getFiles() as unknown as Record<string, unknown>,
-    );
+    const { elements, appState, files } = latestSceneRef.current;
+    return toStoredDocument(elements, appState, files);
   }, []);
 
   const save = useCallback(async () => {
     const document = currentDocument();
-    if (!document) return;
     if (savingRef.current) {
       pendingRef.current = true;
       return;
@@ -130,11 +135,19 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
 
   const scheduleSave = useCallback(() => {
     window.clearTimeout(timerRef.current);
-    timerRef.current = window.setTimeout(() => void save(), AUTOSAVE_DEBOUNCE_MS);
+    timerRef.current = window.setTimeout(() => {
+      timerRef.current = undefined;
+      void save();
+    }, AUTOSAVE_DEBOUNCE_MS);
   }, [save]);
 
   const handleChange = useCallback(
-    (elements: readonly SceneElements[number][], _appState: AppState, _files: BinaryFiles) => {
+    (elements: readonly SceneElements[number][], appState: AppState, files: BinaryFiles) => {
+      latestSceneRef.current = {
+        elements: elements as unknown as readonly StoredElement[],
+        appState: appState as unknown as Record<string, unknown>,
+        files: files as unknown as Record<string, unknown>,
+      };
       const sceneVersion = getSceneVersion(elements);
       if (sceneVersion === lastSceneVersionRef.current) return;
       lastSceneVersionRef.current = sceneVersion;
@@ -190,16 +203,17 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
     [activateStickyNoteTool],
   );
 
-  // Flush a pending debounced save on unmount (e.g. the user hits Back right after drawing).
-  // Deliberately does NOT clear apiRef: Excalidraw hands the imperative API over exactly once,
-  // from its constructor, and React StrictMode (dev) runs this cleanup once right after mount —
-  // nulling the ref there left every later save with no editor to read from (bug 2026-09-05).
+  // Flush a still-pending debounced save on unmount (e.g. the user hits Back right after
+  // drawing). Reads latestSceneRef, not the API — see its comment. Deliberately does NOT clear
+  // apiRef: Excalidraw hands the imperative API over exactly once, from its constructor, and
+  // React StrictMode (dev) runs this cleanup once right after mount.
   useEffect(() => {
     return () => {
       if (timerRef.current !== undefined) {
         window.clearTimeout(timerRef.current);
-        const document = currentDocument();
-        if (document && !savingRef.current) {
+        timerRef.current = undefined;
+        if (!savingRef.current) {
+          const document = currentDocument();
           void saveWhiteboard(board.id, document as unknown as Record<string, unknown>, versionRef.current).catch(
             () => {},
           );
@@ -218,6 +232,11 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
       const freshElements = freshParsed.kind === "excalidraw" ? freshParsed.document.elements : [];
       const restored = restoreElements(freshElements as unknown as SceneElements, null);
       lastSceneVersionRef.current = getSceneVersion(restored);
+      latestSceneRef.current = {
+        elements: restored as unknown as readonly StoredElement[],
+        appState: latestSceneRef.current.appState,
+        files: freshParsed.kind === "excalidraw" ? freshParsed.document.files : {},
+      };
       if (freshParsed.kind === "excalidraw") {
         api.addFiles(Object.values(freshParsed.document.files) as BinaryFileData[]);
       }
