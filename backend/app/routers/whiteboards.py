@@ -14,24 +14,24 @@ from app.schemas.whiteboard import (
     WhiteboardSummaryOut,
 )
 
-# Whiteboard W1/W2 REST. Permission model is inherited wholesale from group chat: every
-# endpoint resolves the board's conversation and requires the caller to be one of its
-# participants (chat_repo.is_participant — the same check /conversations/{id}/messages uses).
-# No board-level roles exist.
+# Whiteboard W1/W2 REST. Permission model is inherited wholesale from chat: every endpoint
+# resolves the board's conversation and requires the caller to be one of its participants
+# (chat_repo.is_participant — the same check /conversations/{id}/messages uses). Any
+# conversation type qualifies — a 1:1 DM (which the spatial 1:1 window resolves to as well, via
+# the deterministic dm_key, so both surfaces see the same boards) or a group. No board-level
+# roles exist.
 
 router = APIRouter(tags=["whiteboards"])
 
 _NOT_PARTICIPANT = "Not a participant in this conversation"
 
 
-async def _require_group_participant(db: AsyncSession, conversation_id: str, email: str) -> None:
+async def _require_participant(db: AsyncSession, conversation_id: str, email: str) -> None:
     conv = await chat_repo.get_conversation_by_id(db, conversation_id)
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
     if not await chat_repo.is_participant(db, conversation_id, email):
         raise HTTPException(status_code=403, detail=_NOT_PARTICIPANT)
-    if conv.get("type") != "group":
-        raise HTTPException(status_code=400, detail="Whiteboards attach to group conversations only")
 
 
 async def _load_board_for(db: AsyncSession, board_id: str, email: str) -> dict:
@@ -53,7 +53,7 @@ async def list_whiteboards(
     email: str = Depends(get_current_email),
     db: AsyncSession = Depends(get_db),
 ):
-    await _require_group_participant(db, conversation_id, email)
+    await _require_participant(db, conversation_id, email)
     return await wb_repo.list_for_conversation(db, conversation_id)
 
 
@@ -69,7 +69,7 @@ async def create_whiteboard(
     email: str = Depends(get_current_email),
     db: AsyncSession = Depends(get_db),
 ):
-    await _require_group_participant(db, conversation_id, email)
+    await _require_participant(db, conversation_id, email)
     return await wb_repo.create(
         db, conversation_id=conversation_id, title=body.title.strip(), creator_email=email
     )

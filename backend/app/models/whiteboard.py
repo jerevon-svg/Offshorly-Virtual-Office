@@ -9,7 +9,7 @@ from app.models.base import BaseModel
 
 
 class Whiteboard(BaseModel):
-    """One persistent whiteboard attached to a GROUP conversation (W1/W2).
+    """One persistent whiteboard attached to a conversation — 1:1 DM or group (W1/W2).
 
     Access is inherited, never stored here: a caller may see/edit a board iff they are a
     participant of `conversation_id` (app/repositories/chat.py's is_participant). The canvas is

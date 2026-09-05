@@ -712,9 +712,9 @@ export function OfficeMap() {
   // just its header row.
   const [spatialChatMinimized, setSpatialChatMinimized] = useState(false);
 
-  // Whiteboard W1/W2: which group conversation's boards are open in the full-screen panel
-  // (null = closed). Opened from either group window's header button; real chat mode only,
-  // because boards live on the chat backend.
+  // Whiteboard W1/W2: which conversation's boards (1:1 DM or group) are open in the full-screen
+  // panel (null = closed). Opened from any chat window's header button — spatial or Global Chat,
+  // DM or group; real chat mode only, because boards live on the chat backend.
   const [whiteboardConv, setWhiteboardConv] = useState<{ conversationId: string; title: string } | null>(null);
 
   // Global Chat (persistent 💬 HUD icon) floating windows — completely separate state from
@@ -4847,6 +4847,11 @@ export function OfficeMap() {
             headerExtra={
               <SpatialCallControls sessionId={openConversationId} onExpand={handleExpandCall} />
             }
+            onOpenWhiteboard={
+              chatMode === "real"
+                ? (conversationId, title) => setWhiteboardConv({ conversationId, title })
+                : undefined
+            }
             minimized={spatialChatMinimized}
             onMinimizeToggle={() => setSpatialChatMinimized((v) => !v)}
             onConversationOpen={(conversationId) => {
@@ -4965,6 +4970,11 @@ export function OfficeMap() {
               subtitle={dndEmails.has(w.layer.id.toLowerCase()) ? "🔴 DND · Notifications muted" : undefined}
               onMinimizeToggle={() => toggleRemoteWindowMinimize(w.key)}
               onClose={() => closeRemoteWindow(w.key)}
+              onOpenWhiteboard={
+                chatMode === "real"
+                  ? (conversationId, title) => setWhiteboardConv({ conversationId, title })
+                  : undefined
+              }
             />
           ) : (
             <GroupConversationView

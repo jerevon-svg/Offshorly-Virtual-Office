@@ -9,8 +9,8 @@ from app.main import fastapi_app
 from app.repositories import chat as chat_repo
 
 # Whiteboard W1/W2 over the real REST path against the isolated throwaway DB: inherited group
-# permission (403 for non-participants), group-only attachment (400 for a DM), create/list/open/
-# save round trip, and the optimistic-version 409. The dev x-dev-email bypass authenticates.
+# permission (403 for non-participants) for groups AND 1:1 DMs, create/list/open/save round
+# trip, and the optimistic-version 409. The dev x-dev-email bypass authenticates.
 
 pytestmark = pytest.mark.asyncio
 
@@ -104,13 +104,30 @@ async def test_stale_version_save_is_a_409_and_does_not_clobber():
         assert third.status_code == 200 and third.json()["version"] == 3
 
 
-async def test_dm_conversations_cannot_carry_whiteboards():
+async def test_dm_participants_share_one_board_set_and_outsiders_are_forbidden():
+    """1:1 follow-up: DMs carry whiteboards too. Both DM participants see the same boards; the
+    spatial 1:1 window resolves to the SAME conversation via dm_key (either email order), so it
+    can never surface a separate board set; a third person is still 403."""
     async with app_db.async_session_maker() as session:
         dm = await chat_repo.upsert_conversation(session, A, B)
+        same_dm = await chat_repo.upsert_conversation(session, B, A)
+    assert same_dm["id"] == dm["id"]
     async with _client() as client:
-        res = await client.post(f"/conversations/{dm['id']}/whiteboards", json={"title": "x"}, headers=_as(A))
-        assert res.status_code == 400
-        assert (await client.get(f"/conversations/{dm['id']}/whiteboards", headers=_as(A))).status_code == 400
+        created = await client.post(f"/conversations/{dm['id']}/whiteboards", json={"title": "Pairing"}, headers=_as(A))
+        assert created.status_code == 201, created.text
+        board = created.json()
+
+        listed_by_b = await client.get(f"/conversations/{dm['id']}/whiteboards", headers=_as(B))
+        assert listed_by_b.status_code == 200
+        assert [b["id"] for b in listed_by_b.json()] == [board["id"]]
+
+        saved = await client.put(f"/whiteboards/{board['id']}", json={"document": DOC, "version": 1}, headers=_as(B))
+        assert saved.status_code == 200 and saved.json()["version"] == 2
+        assert (await client.get(f"/whiteboards/{board['id']}", headers=_as(A))).json()["document"] == DOC
+
+        assert (await client.get(f"/conversations/{dm['id']}/whiteboards", headers=_as(C))).status_code == 403
+        assert (await client.post(f"/conversations/{dm['id']}/whiteboards", json={"title": "x"}, headers=_as(C))).status_code == 403
+        assert (await client.get(f"/whiteboards/{board['id']}", headers=_as(C))).status_code == 403
 
 
 async def test_unknown_ids_are_404():
