@@ -115,6 +115,7 @@ import { TimeSummaryPanel } from "./checkout/TimeSummaryPanel";
 import { TimeLogForm } from "./checkout/TimeLogForm";
 import { ConversationView } from "../Chat/ConversationView";
 import {
+  emitApproachArrived,
   emitSpatialSessionLeave,
   emitSpatialSessionStart,
   useSpatialSessions,
@@ -187,6 +188,7 @@ import { CompanyHub } from "./CompanyHub";
 import { openCompanyHub, useCompanyHub } from "../../services/hub/companyHubStore";
 import { resetDevHubState } from "../../services/hub/hubClient";
 import { EmployeeProfile } from "./EmployeeProfile";
+import { OnboardingQuestline } from "./OnboardingQuestline";
 import { isLive3dEligible } from "../../render3d/live3dCharacters";
 import { avatarIdForEmail, mockEmailForAvatarId } from "../../data/avatarIdentity";
 import styles from "./OfficeMap.module.css";
@@ -320,6 +322,9 @@ export function OfficeMap() {
   // closed. Set from CharacterActionMenu's "View Profile" action, or the self-profile button
   // in the top chrome below.
   const [profileEmail, setProfileEmail] = useState<string | null>(null);
+  // Onboarding Questline (see OnboardingQuestline.tsx) — opened from the 🎯 Quests button in the
+  // top chrome; the panel fetches GET /quests/me on every open, nothing is cached here.
+  const [questlineOpen, setQuestlineOpen] = useState(false);
   // Anchored action menu opened by clicking the reception room itself — the
   // sole entry point for check-in/check-out now that Arisha's own menu no
   // longer offers "Check in" and the room-picker step is gone.
@@ -3838,6 +3843,10 @@ export function OfficeMap() {
         // reverted on a timer — the next time that NPC's own demo/movement
         // runs it recomputes its own direction from its next segment anyway.
         facerFor(target.id)?.(directionBetween(targetCenter, arriveCenter));
+        // Onboarding Questline: a finished approach to a REAL coworker is the only signal the
+        // server can get for "Walk up to a coworker" (the walk itself is client-side). Mock
+        // avatar ids carry no "@" and are filtered here and again server-side.
+        if (target.id.includes("@")) emitApproachArrived(target.id);
       });
     } else if (action === "chat") {
       // setMenu(null) rather than closeCharacterMenu() — avoid resetting the
@@ -4502,6 +4511,15 @@ export function OfficeMap() {
           👤 Profile
         </button>
       )}
+      {hasCheckedIn && onboarding === "done" && !checkoutBusy && (
+        <button
+          className={styles.questsButton}
+          onClick={() => setQuestlineOpen(true)}
+          aria-label="Open Onboarding Questline"
+        >
+          🎯 Quests
+        </button>
+      )}
       {toucanChromeVisible && (
         <button
           className={styles.toucanButton}
@@ -4580,6 +4598,7 @@ export function OfficeMap() {
           onClose={() => setProfileEmail(null)}
         />
       )}
+      {questlineOpen && <OnboardingQuestline onClose={() => setQuestlineOpen(false)} />}
       {(import.meta.env.DEV || isRealZohoMode()) && (
         <>
           <WorkingStatusIndicator state={checkoutFlow.state} workedLabel={checkoutFlow.workedLabel} />

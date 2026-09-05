@@ -62,6 +62,9 @@ async def test_quests_me_shape_for_a_fresh_user_is_deterministic():
     quests = res.json()["quests"]
     assert [q["id"] for q in quests] == [
         "first_check_in",
+        "visit_central_hub",
+        "view_coworker_profile",
+        "approach_coworker",
         "first_dm",
         "chat_unique_coworkers",
         "join_spatial_conversation",
@@ -81,7 +84,8 @@ async def test_quests_me_shape_for_a_fresh_user_is_deterministic():
         "completed": False,
         "completedAt": None,
     }
-    assert quests[2]["mode"] == "unique_count" and quests[2]["target"] == 3
+    assert quests[5]["id"] == "chat_unique_coworkers"
+    assert quests[5]["mode"] == "unique_count" and quests[5]["target"] == 3
 
 
 async def test_check_in_transition_counts_once_and_duplicate_check_in_records_nothing():
@@ -191,3 +195,28 @@ async def test_toucan_ask_completes_meet_toucan_for_the_asker_only():
         assert (await _quest(client, A, "meet_toucan"))["completed"] is True
         assert (await _quest(client, B, "meet_toucan"))["completed"] is False
     assert await _event_count("toucan_asked") == 1
+
+
+async def test_hub_open_completes_visit_central_hub_once_for_the_viewer_only():
+    async with _client() as client:
+        assert (await client.get("/hub/items", headers=_as(A))).status_code == 200
+        assert (await client.get("/hub/items", headers=_as(A))).status_code == 200  # reopen
+        q = await _quest(client, A, "visit_central_hub")
+        assert q["count"] == 1 and q["completed"] is True and q["completedAt"] is not None
+        assert (await _quest(client, B, "visit_central_hub"))["completed"] is False
+    assert await _event_count("hub_visited") == 1
+
+
+async def test_viewing_a_coworker_profile_counts_once_and_own_profile_never_counts():
+    async with _client() as client:
+        assert (await client.get(f"/feed/{A}", headers=_as(A))).status_code == 200  # own profile
+        assert (await _quest(client, A, "view_coworker_profile"))["completed"] is False
+        assert await _event_count("profile_viewed") == 0
+
+        assert (await client.get(f"/feed/{B}", headers=_as(A))).status_code == 200
+        assert (await client.get(f"/feed/{C}", headers=_as(A))).status_code == 200  # second coworker
+        q = await _quest(client, A, "view_coworker_profile")
+        assert q["count"] == 1 and q["completed"] is True
+        # The viewed person gains nothing from being looked at.
+        assert (await _quest(client, B, "view_coworker_profile"))["completed"] is False
+    assert await _event_count("profile_viewed") == 1

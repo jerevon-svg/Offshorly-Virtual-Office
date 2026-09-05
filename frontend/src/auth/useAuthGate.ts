@@ -9,6 +9,7 @@ import { setDevIdentity as setOfflineLineupDevIdentity } from "../services/prese
 import { setDevIdentity as setSpatialWalkDevIdentity } from "../services/presence/movementSync";
 import { setDevIdentity as setHubClientDevIdentity } from "../services/hub/hubClient";
 import { setDevIdentity as setFeedClientDevIdentity } from "../services/feed/feedClient";
+import { setDevIdentity as setQuestsClientDevIdentity } from "../services/quests/questsClient";
 import { setDevIdentity as setDndClientDevIdentity } from "../services/presence/dndClient";
 import { setDevIdentity as setGlobalChatActivityDevIdentity } from "../services/presence/globalChatActivityClient";
 import { setDevIdentity as setRoomPresenceDevIdentity } from "../services/presence/roomPresenceClient";
@@ -241,6 +242,7 @@ function seedDevBypassIdentity(): void {
   setHubClientDevIdentity(email);
   setAttendanceDevIdentity(email);
   setFeedClientDevIdentity(email);
+  setQuestsClientDevIdentity(email);
   // Toucan's assistant endpoint (POST /toucan/ask) lives on the same VO backend and derives
   // the asking employee from this identity — without it, local ?as= testing would ask the
   // office about whoever the real bearer token belongs to, or 401.
