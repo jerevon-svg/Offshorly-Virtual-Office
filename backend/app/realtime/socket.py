@@ -40,6 +40,7 @@ from app.services.chat_delegation import schedule_delegation_reply
 from app.services.delegation_lifecycle import mark_owner_returned, schedule_owner_returned
 from app.services.chat_send import ChatSendError, is_toucan_sender, send_chat_message
 from app.services.position_registry import position_registry
+from app.services.quests import EVENT_SPATIAL_SESSION_JOINED, record_quest_event
 
 # Faithful port of backend/src/socket.ts onto python-socketio's ASGI async server. Mounted in
 # app/main.py via socketio.ASGIApp(sio, other_asgi_app=<fastapi app>, socketio_path="socket.io")
@@ -512,8 +513,28 @@ async def spatial_session_start(sid: str, payload: dict | None) -> None:
         # registers the new sid; the old one was already cleared by its own disconnect.
         spatial_sessions.start(email, session_id, sid)
         await _broadcast_spatial_sessions()
+        await _record_spatial_session_joined(email, session_id)
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
+
+
+async def _record_spatial_session_joined(email: str, session_id: str) -> None:
+    """Quest Foundation: one event per (person, spatial session identity). The registry above is
+    in-memory, so this ledger row is the durable record. The reconnect re-assert and any duplicate
+    emit carry the same sessionId and collapse on the unique key; a failure here is logged by the
+    engine and never touches the broadcast that already went out."""
+    try:
+        async with async_session_maker() as session:
+            await record_quest_event(
+                session,
+                actor_email=email,
+                event_type=EVENT_SPATIAL_SESSION_JOINED,
+                dedupe_key=f"{email.strip().lower()}:{session_id}",
+                reference_id=session_id,
+            )
+            await session.commit()
+    except Exception:  # noqa: BLE001 - bookkeeping must never surface as a socket error
+        _logger.error("failed to record spatial session quest event for %s", email, exc_info=True)
 
 
 @sio.on("spatial_session_leave")

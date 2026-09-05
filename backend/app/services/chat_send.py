@@ -7,6 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.realtime.state import sio, user_room
 from app.repositories import chat as chat_repo
 from app.schemas.chat import serialize_message_dict
+from app.services.quests import (
+    EVENT_DM_SENT,
+    EVENT_GROUP_MESSAGE_SENT,
+    record_quest_event,
+)
 
 # THE ONE CHAT WRITE PATH. Persist a message and fan it out exactly the way the Socket.IO
 # `send_message` handler always has — this module IS that handler's body, lifted out so a
@@ -105,6 +110,23 @@ async def send_chat_message(
     )
     await chat_repo.touch_conversation(session, conversation_id, message.sent_at)
     conv = await chat_repo.get_conversation_by_id(session, conversation_id)
+    # Quest Foundation: the saved message IS the event (its id is the idempotency key), recorded
+    # in the same transaction so a message and its quest credit commit or fail together. Toucan's
+    # own replies are not anyone's quest progress. A DM names the other participant as target so
+    # unique-coworker quests can count distinct recipients; a group message has no single target.
+    if conv is not None and not is_toucan_sender(sender_email):
+        sender_key = sender_email.strip().lower()
+        others = [pid for pid in conv["participant_ids"] if pid != sender_key]
+        is_dm = conv["type"] == "dm" and len(others) == 1
+        await record_quest_event(
+            session,
+            actor_email=sender_key,
+            event_type=EVENT_DM_SENT if is_dm else EVENT_GROUP_MESSAGE_SENT,
+            dedupe_key=message.id,
+            target_email=others[0] if is_dm else None,
+            reference_id=message.id,
+            occurred_at=message.sent_at,
+        )
     await session.commit()
 
     participant_ids = conv["participant_ids"] if conv else []

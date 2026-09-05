@@ -7,6 +7,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.toucan import ToucanConversation, ToucanMessage, ToucanResource
+from app.services.quests import EVENT_TOUCAN_ASKED, record_quest_event
 
 # Toucan T1 persistence — plain-dict returns, same house style as repositories/talk_requests.py.
 #
@@ -179,6 +180,17 @@ async def append_exchange(
     conversation.updated_at = _utc_now()
 
     await session.flush()
+    # Quest Foundation: the persisted user turn is the "talked to Toucan" event; its row id is the
+    # idempotency key. Hooked here rather than at the six router call sites because this is the
+    # one place a user turn is written (same reasoning as chat_send.py for messages).
+    await record_quest_event(
+        session,
+        actor_email=conversation.owner_email,
+        event_type=EVENT_TOUCAN_ASKED,
+        dedupe_key=user_row.id,
+        reference_id=user_row.id,
+        occurred_at=user_row.created_at,
+    )
     return message_to_dict(user_row), message_to_dict(assistant_row)
 
 

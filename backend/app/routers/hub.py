@@ -8,6 +8,7 @@ from app.config import settings
 from app.database import get_db
 from app.repositories import feed as feed_repo
 from app.repositories import hub as hub_repo
+from app.services.quests import EVENT_RECOGNITION_GIVEN, record_quest_event
 from app.scripts import seed_dev_hub_content as hub_mock
 from app.schemas.hub import CreateHubItemIn, HubItemOut
 
@@ -119,13 +120,24 @@ async def act_on_hub_item(
     activity = _HUB_TYPE_TO_FEED_ACTIVITY.get(item["type"])
     if activity is not None and item["target_employee_email"]:
         feed_type, content = activity
-        await feed_repo.create_hub_triggered_post(
+        post, _created = await feed_repo.create_hub_triggered_post(
             db,
             hub_item_id=item_id,
             target_email=item["target_employee_email"],
             author_email=email,
             type=feed_type,
             content=content,
+        )
+        # Quest Foundation: same event and same key family as a hand-written feed post — the
+        # durable post is the act, and a re-click returns the same post so it collapses.
+        await record_quest_event(
+            db,
+            actor_email=post["author_email"],
+            event_type=EVENT_RECOGNITION_GIVEN,
+            dedupe_key=f"post:{post['id']}",
+            target_email=post["target_email"],
+            reference_id=post["id"],
+            occurred_at=post["created_at"],
         )
 
     return HubItemOut.from_dict(item, state)
