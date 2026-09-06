@@ -245,7 +245,12 @@ async def test_missions_me_shape_is_stable_across_refreshes_and_self_scoped(_app
             assert block["startsAt"].endswith("Z") and block["endsAt"].endswith("Z")
             assert len(block["missions"]) == missions.ACTIVE_PER_CADENCE[cadence]
             for m in block["missions"]:
-                assert set(m) == {"id", "title", "eventType", "mode", "target", "cadence", "count", "completed", "completedAt"}
+                assert set(m) == {
+                    "id", "title", "eventType", "mode", "target", "cadence", "count", "completed", "completedAt",
+                    "rewardXp", "rewardCoins", "claimed", "claimedAt",
+                }
+                assert (m["rewardXp"], m["rewardCoins"]) == ((20, 5) if cadence == "daily" else (60, 15))
+                assert m["claimed"] is False and m["claimedAt"] is None
                 assert m["cadence"] == cadence and m["count"] == 0 and m["completed"] is False
         # Refresh / reconnect: the pinned draw is identical, not re-rolled.
         again = (await client.get("/missions/me", headers={"x-dev-email": A})).json()
