@@ -1,12 +1,23 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Mission, MyMissions } from "../../services/quests/questsClient";
+import type { Mission, MyMissions, Progression } from "../../services/quests/questsClient";
 
 vi.mock("../../services/quests/questsClient", () => ({
   fetchMyMissions: vi.fn(),
+  fetchMyProgression: vi.fn(),
+  claimReward: vi.fn(),
 }));
 
-import { fetchMyMissions } from "../../services/quests/questsClient";
+import { claimReward, fetchMyMissions, fetchMyProgression } from "../../services/quests/questsClient";
+
+const progression = (over: Partial<Progression> = {}): Progression => ({
+  xp: 0,
+  coins: 0,
+  level: 1,
+  levelStartXp: 0,
+  nextLevelXp: 100,
+  ...over,
+});
 import { MissionsPanel } from "./MissionsPanel";
 import { formatResetsIn } from "./formatResetsIn";
 
@@ -20,6 +31,10 @@ const mission = (over: Partial<Mission>): Mission => ({
   count: 0,
   completed: false,
   completedAt: null,
+  rewardXp: 20,
+  rewardCoins: 5,
+  claimed: false,
+  claimedAt: null,
   ...over,
 });
 
@@ -44,7 +59,7 @@ const payload = (): MyMissions => ({
     startsAt: "2026-08-31T00:00:00.000Z",
     endsAt: "2026-09-07T00:00:00.000Z",
     missions: [
-      mission({ id: "weekly_check_in_days", title: "Check in on 3 different days", cadence: "weekly", mode: "unique_days", target: 3, count: 2 }),
+      mission({ id: "weekly_check_in_days", title: "Check in on 3 different days", cadence: "weekly", mode: "unique_days", target: 3, count: 2, rewardXp: 60, rewardCoins: 15 }),
     ],
   },
 });
@@ -61,6 +76,7 @@ describe("formatResetsIn", () => {
 describe("MissionsPanel", () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true, now: NOW });
+    vi.mocked(fetchMyProgression).mockResolvedValue(progression({ xp: 20, coins: 5 }));
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -86,6 +102,33 @@ describe("MissionsPanel", () => {
     expect(rows[1].querySelector('[role="progressbar"]')).toHaveAttribute("aria-valuenow", "1");
     expect(screen.getByTestId("mission-weekly_check_in_days")).toHaveTextContent("2/3");
     expect(fetchMyMissions).toHaveBeenCalledTimes(1);
+    expect(rows[1]).toHaveTextContent("+20 XP · +5 🪙");
+    expect(screen.getByTestId("mission-weekly_check_in_days")).toHaveTextContent("+60 XP · +15 🪙");
+    await waitFor(() => expect(screen.getByTestId("progression-strip")).toHaveTextContent("Lv 1"));
+    expect(screen.getByTestId("progression-coins")).toHaveTextContent("🪙 5");
+  });
+
+  it("claims a completed mission with its period key and flips the row to Claimed", async () => {
+    vi.mocked(fetchMyMissions).mockResolvedValue(payload());
+    vi.mocked(claimReward).mockResolvedValue({
+      questId: "daily_check_in",
+      periodKey: "d:2026-09-02",
+      grantedNow: true,
+      reward: { xp: 20, coins: 5 },
+      progression: progression({ xp: 40, coins: 10 }),
+    });
+    render(<MissionsPanel onClose={() => {}} />);
+    const btn = await screen.findByRole("button", { name: "Claim reward for Check in today" });
+    // Only the completed mission offers Claim.
+    expect(screen.getAllByRole("button", { name: /Claim reward/ })).toHaveLength(1);
+    await act(async () => {
+      fireEvent.click(btn);
+    });
+    expect(claimReward).toHaveBeenCalledTimes(1);
+    expect(claimReward).toHaveBeenCalledWith("daily_check_in", "d:2026-09-02");
+    expect(screen.getByTestId("mission-daily_check_in")).toHaveTextContent("Claimed");
+    expect(screen.getByTestId("progression-xp")).toHaveTextContent("40 XP · 40/100 to next");
+    expect(screen.getByTestId("progression-coins")).toHaveTextContent("🪙 10");
   });
 
   it("refetches when the tab becomes visible again and when the browser comes back online", async () => {

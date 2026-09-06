@@ -1,10 +1,19 @@
 import { useEffect, useState } from "react";
 import styles from "./OnboardingQuestline.module.css";
-import { fetchMyQuests, type Quest } from "../../services/quests/questsClient";
+import { ClaimButton, ProgressionStrip, RewardTag } from "./RewardControls";
+import {
+  claimReward,
+  fetchMyProgression,
+  fetchMyQuests,
+  type Progression,
+  type Quest,
+} from "../../services/quests/questsClient";
 
-// Onboarding Questline panel — a read-only view of GET /quests/me. Mounted only while open (see
-// OfficeMap.tsx's questlineOpen), so fetching on mount IS fetching on open; there is no local
-// progress state to drift from the server. Modal shell mirrors EmployeeProfile.tsx.
+// Onboarding Questline panel — a read-only view of GET /quests/me plus the one write the user
+// can make: Claim a completed quest's reward (POST /progression/claim, idempotent server-side).
+// Mounted only while open (see OfficeMap.tsx's questlineOpen), so fetching on mount IS fetching
+// on open; there is no local progress state to drift from the server. Modal shell mirrors
+// EmployeeProfile.tsx.
 
 export interface OnboardingQuestlineProps {
   onClose: () => void;
@@ -12,7 +21,9 @@ export interface OnboardingQuestlineProps {
 
 export function OnboardingQuestline({ onClose }: OnboardingQuestlineProps) {
   const [quests, setQuests] = useState<Quest[] | null>(null);
+  const [progression, setProgression] = useState<Progression | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [claiming, setClaiming] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -23,10 +34,32 @@ export function OnboardingQuestline({ onClose }: OnboardingQuestlineProps) {
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : "Couldn't load your quests");
       });
+    // Balances are decorative here: a failure leaves the strip hidden, not the panel broken.
+    fetchMyProgression()
+      .then((p) => {
+        if (!cancelled) setProgression(p);
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
   }, []);
+
+  const claim = async (q: Quest) => {
+    if (claiming) return; // one claim in flight at a time — a double-click is one claim
+    setClaiming(q.id);
+    try {
+      const res = await claimReward(q.id, "");
+      setProgression(res.progression);
+      setQuests((prev) =>
+        prev ? prev.map((x) => (x.id === q.id ? { ...x, claimed: true, claimedAt: new Date().toISOString() } : x)) : prev,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't claim that reward");
+    } finally {
+      setClaiming(null);
+    }
+  };
 
   const done = quests?.filter((q) => q.completed).length ?? 0;
 
@@ -48,6 +81,7 @@ export function OnboardingQuestline({ onClose }: OnboardingQuestlineProps) {
               {done} of {quests.length} complete
             </p>
           )}
+          <ProgressionStrip progression={progression} />
         </header>
         <div className={styles.body}>
           {error && <p className={styles.error}>{error}</p>}
@@ -70,6 +104,14 @@ export function OnboardingQuestline({ onClose }: OnboardingQuestlineProps) {
                       {Math.min(q.count, q.target)}/{q.target}
                     </span>
                   )}
+                  <RewardTag xp={q.rewardXp} coins={q.rewardCoins} />
+                  <ClaimButton
+                    completed={q.completed}
+                    claimed={q.claimed}
+                    pending={claiming === q.id}
+                    onClaim={() => void claim(q)}
+                    label={q.title}
+                  />
                 </li>
               ))}
             </ol>

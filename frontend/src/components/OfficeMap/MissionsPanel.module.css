@@ -170,3 +170,11 @@
 .rowDone .barFill {
   background: #9be7a5;
 }
+
+.rowBottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 20px;
+}
