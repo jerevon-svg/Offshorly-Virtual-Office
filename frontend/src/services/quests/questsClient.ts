@@ -17,6 +17,11 @@ export interface Quest {
   count: number;
   completed: boolean;
   completedAt: string | null;
+  // Progression & Rewards: what completing pays, and whether the caller already claimed it.
+  rewardXp: number;
+  rewardCoins: number;
+  claimed: boolean;
+  claimedAt: string | null;
 }
 
 function socketBase(): string {
@@ -73,6 +78,10 @@ export interface Mission {
   count: number;
   completed: boolean;
   completedAt: string | null;
+  rewardXp: number;
+  rewardCoins: number;
+  claimed: boolean;
+  claimedAt: string | null;
 }
 
 export interface MissionPeriod {
@@ -108,4 +117,51 @@ export async function fetchMyMissions(): Promise<MyMissions> {
     throw new Error(body?.error || body?.detail || `Missions request failed (${res.status})`);
   }
   return (await res.json()) as MyMissions;
+}
+
+// ---- Progression & Rewards (backend/app/routers/progression.py) -----------------------------
+// XP and Coins are lifetime sums over the server's claim ledger; Level is derived from XP by the
+// server. Claim is server-authoritative and idempotent: a repeat claim (double-click, second tab,
+// retry after reconnect) returns the same 200 with grantedNow=false and unchanged balances.
+
+export interface Progression {
+  xp: number;
+  coins: number;
+  level: number;
+  levelStartXp: number;
+  nextLevelXp: number;
+}
+
+export interface ClaimResult {
+  questId: string;
+  periodKey: string;
+  grantedNow: boolean;
+  reward: { xp: number; coins: number };
+  progression: Progression;
+}
+
+/** GET /progression/me */
+export async function fetchMyProgression(): Promise<Progression> {
+  const res = await fetch(`${socketBase()}/progression/me`, { headers: authHeaders() });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body?.error || body?.detail || `Progression request failed (${res.status})`);
+  }
+  return (await res.json()) as Progression;
+}
+
+/** POST /progression/claim — `periodKey` is "" for a permanent quest, the mission's period key otherwise. */
+export async function claimReward(questId: string, periodKey = ""): Promise<ClaimResult> {
+  const headers = authHeaders();
+  headers.set("Content-Type", "application/json");
+  const res = await fetch(`${socketBase()}/progression/claim`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ questId, periodKey }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body?.error || body?.detail || `Claim failed (${res.status})`);
+  }
+  return (await res.json()) as ClaimResult;
 }

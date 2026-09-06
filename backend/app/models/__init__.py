@@ -9,6 +9,7 @@ from app.models.mission import MissionAssignment
 from app.models.position import EmployeePosition
 from app.models.quest import QuestEvent, QuestProgress
 from app.models.reaction import MessageReaction
+from app.models.reward import RewardGrant
 from app.models.request import ConversationRequest
 from app.models.room_request import RoomEntryRequest
 from app.models.talk_request import TalkRequest
@@ -41,6 +42,7 @@ __all__ = [
     "MissionAssignment",
     "QuestEvent",
     "QuestProgress",
+    "RewardGrant",
     "RoomEntryRequest",
     "TalkRequest",
     "ToucanAttentionCursor",

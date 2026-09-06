@@ -23,8 +23,13 @@ class MissionOut(BaseModel):
     count: int
     completed: bool
     completed_at: datetime | None = Field(alias="completedAt")
+    # Progression & Rewards: what completing pays, and whether this actor already claimed it.
+    reward_xp: int = Field(alias="rewardXp")
+    reward_coins: int = Field(alias="rewardCoins")
+    claimed: bool
+    claimed_at: datetime | None = Field(alias="claimedAt")
 
-    @field_serializer("completed_at")
+    @field_serializer("completed_at", "claimed_at")
     def _ser_dt(self, value: datetime | None) -> str | None:
         return to_iso_z(value) if value is not None else None
 
@@ -40,6 +45,10 @@ class MissionOut(BaseModel):
             count=data["count"],
             completed=data["completed_at"] is not None,
             completed_at=data["completed_at"],
+            reward_xp=data["reward_xp"],
+            reward_coins=data["reward_coins"],
+            claimed=data["claimed_at"] is not None,
+            claimed_at=data["claimed_at"],
         )
 
 

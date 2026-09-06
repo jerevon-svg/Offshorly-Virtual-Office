@@ -83,6 +83,10 @@ async def test_quests_me_shape_for_a_fresh_user_is_deterministic():
         "count": 0,
         "completed": False,
         "completedAt": None,
+        "rewardXp": 50,
+        "rewardCoins": 10,
+        "claimed": False,
+        "claimedAt": None,
     }
     assert quests[5]["id"] == "chat_unique_coworkers"
     assert quests[5]["mode"] == "unique_count" and quests[5]["target"] == 3

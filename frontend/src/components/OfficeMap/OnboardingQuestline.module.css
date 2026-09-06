@@ -82,7 +82,8 @@
 .rowDone {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px 10px;
   padding: 8px 10px;
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.05);
@@ -95,6 +96,10 @@
 
 .rowDone .rowTitle {
   text-decoration: line-through;
+}
+
+.rowTitle {
+  min-width: 140px;
 }
 
 .check {
