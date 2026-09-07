@@ -191,6 +191,8 @@ import { resetDevHubState } from "../../services/hub/hubClient";
 import { EmployeeProfile } from "./EmployeeProfile";
 import { OnboardingQuestline } from "./OnboardingQuestline";
 import { MissionsPanel } from "./MissionsPanel";
+import { PlayerHud } from "./PlayerHud";
+import { RewardsPanel } from "./RewardsPanel";
 import { isLive3dEligible } from "../../render3d/live3dCharacters";
 import { avatarIdForEmail, mockEmailForAvatarId } from "../../data/avatarIdentity";
 import styles from "./OfficeMap.module.css";
@@ -329,6 +331,8 @@ export function OfficeMap() {
   const [questlineOpen, setQuestlineOpen] = useState(false);
   // Daily/Weekly Missions (see MissionsPanel.tsx) — same contract: GET /missions/me on open.
   const [missionsOpen, setMissionsOpen] = useState(false);
+  // Reward Redemption (see RewardsPanel.tsx) — fetches the catalog + history on open.
+  const [rewardsOpen, setRewardsOpen] = useState(false);
   // Anchored action menu opened by clicking the reception room itself — the
   // sole entry point for check-in/check-out now that Arisha's own menu no
   // longer offers "Check in" and the room-picker step is gone.
@@ -4540,6 +4544,15 @@ export function OfficeMap() {
           📅 Missions
         </button>
       )}
+      {hasCheckedIn && onboarding === "done" && !checkoutBusy && (
+        <button
+          className={styles.rewardsButton}
+          onClick={() => setRewardsOpen(true)}
+          aria-label="Open Rewards"
+        >
+          🎁 Rewards
+        </button>
+      )}
       {toucanChromeVisible && (
         <button
           className={styles.toucanButton}
@@ -4620,6 +4633,9 @@ export function OfficeMap() {
       )}
       {questlineOpen && <OnboardingQuestline onClose={() => setQuestlineOpen(false)} />}
       {missionsOpen && <MissionsPanel onClose={() => setMissionsOpen(false)} />}
+      {rewardsOpen && <RewardsPanel onClose={() => setRewardsOpen(false)} />}
+      {/* Player HUD (Level / XP / Coins) — same visibility rule as the Quests/Missions pills. */}
+      {hasCheckedIn && onboarding === "done" && !checkoutBusy && <PlayerHud />}
       {(import.meta.env.DEV || isRealZohoMode()) && (
         <>
           <WorkingStatusIndicator state={checkoutFlow.state} workedLabel={checkoutFlow.workedLabel} />
@@ -5138,7 +5154,9 @@ export function OfficeMap() {
           that reads as data corruption rather than a demo, and nobody
           else can see the result anyway. Re-enable once generated avatars
           are persisted server-side and belong to a real person. */}
-      {import.meta.env.DEV && (
+      {/* Dev-only avatar creator entry, hidden from the normal Office UI (the Player HUD owns the
+          top-left); reachable with ?addEmployee in development. */}
+      {import.meta.env.DEV && new URLSearchParams(window.location.search).has("addEmployee") && (
         <button
           type="button"
           className={styles.addEmployeeButton}

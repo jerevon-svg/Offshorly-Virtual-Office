@@ -5,10 +5,12 @@ import type { ClaimResult, Progression, Quest } from "../../services/quests/ques
 vi.mock("../../services/quests/questsClient", () => ({
   fetchMyQuests: vi.fn(),
   fetchMyProgression: vi.fn(),
+  fetchMyBadges: vi.fn(),
   claimReward: vi.fn(),
 }));
 
 import { claimReward, fetchMyProgression, fetchMyQuests } from "../../services/quests/questsClient";
+import { resetProgressionForTests } from "../../services/quests/progressionStore";
 import { OnboardingQuestline } from "./OnboardingQuestline";
 
 const progression = (over: Partial<Progression> = {}): Progression => ({
@@ -39,6 +41,7 @@ const quest = (over: Partial<Quest>): Quest => ({
 
 describe("OnboardingQuestline", () => {
   beforeEach(() => {
+    resetProgressionForTests();
     vi.clearAllMocks();
     vi.mocked(fetchMyProgression).mockResolvedValue(progression({ xp: 50, coins: 10 }));
   });

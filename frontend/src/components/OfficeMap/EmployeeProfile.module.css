@@ -8,7 +8,8 @@
   justify-content: center;
 }
 
-.panel {
+.panel,
+.panelWide {
   position: relative;
   width: min(480px, 92vw);
   max-height: 84vh;
@@ -20,6 +21,11 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+/* Achievements tab: room for a 3-column card grid without changing the profile's default size. */
+.panelWide {
+  width: min(600px, 94vw);
 }
 
 .closeButton {
@@ -131,6 +137,21 @@
 .infoLabel {
   color: rgba(245, 240, 255, 0.55);
   font-weight: 600;
+}
+
+/* Self-only progression (Level / XP / Coins) above the info rows; the strip inside is the same
+   RewardControls.ProgressionStrip the Quests and Missions panels use. */
+.progressionBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-bottom: 10px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.progressionBlock > :first-child {
+  margin-top: 0;
 }
 
 .empty {

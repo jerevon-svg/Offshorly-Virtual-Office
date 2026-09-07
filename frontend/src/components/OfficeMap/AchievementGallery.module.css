@@ -1,0 +1,479 @@
+/* Achievements tab content inside EmployeeProfile — VO's dark violet language, tier metallics as
+   the only "game" colour. No borrowed art or branding. */
+.gallery {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  color: #f5f0ff; /* theme foreground; buttons below use `all: unset`, which drops inheritance */
+}
+
+.muted,
+.detailDesc,
+.pinnedEmpty {
+  margin: 0;
+  font-size: 13px;
+  color: rgba(245, 240, 255, 0.65);
+}
+
+.error {
+  margin: 0;
+  font-size: 13px;
+  color: #ff9b9b;
+}
+
+/* ---- category nav ------------------------------------------------------------------------ */
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.tab,
+.tabActive {
+  all: unset;
+  position: relative;
+  cursor: pointer;
+  flex: 1;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 8px 6px;
+  border-radius: 9px;
+  color: rgba(245, 240, 255, 0.6);
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+.tab:hover {
+  color: #f5f0ff;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.tabActive {
+  color: #f5f0ff;
+  background: linear-gradient(180deg, rgba(167, 139, 250, 0.35), rgba(124, 107, 255, 0.25));
+  box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.45);
+}
+
+.tabDot {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #ffd67a;
+}
+
+/* ---- category summary strip -------------------------------------------------------------- */
+.summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: linear-gradient(90deg, rgba(167, 139, 250, 0.16), rgba(167, 139, 250, 0.04));
+  border-left: 3px solid #a78bfa;
+  font-variant-numeric: tabular-nums;
+}
+
+.summaryLabel {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.summaryCount {
+  font-size: 18px;
+  font-weight: 700;
+  color: #ffd67a;
+}
+
+.summaryMeta {
+  margin-left: auto;
+  font-size: 12px;
+  color: rgba(245, 240, 255, 0.65);
+}
+
+/* ---- card grid --------------------------------------------------------------------------- */
+.grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(156px, 1fr));
+  gap: 10px;
+}
+
+.card {
+  all: unset;
+  color: #f5f0ff; /* `all: unset` resets to browser black — restore the theme foreground */
+  cursor: pointer;
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 10px 12px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.03));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: center;
+  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 255, 255, 0.18);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+}
+
+/* State styling — one attribute drives it all. */
+.card[data-state="locked"] {
+  opacity: 0.62;
+}
+
+.card[data-state="locked"] .emblem {
+  filter: grayscale(1) brightness(0.75);
+}
+
+.card[data-state="progressing"] .emblem {
+  filter: saturate(0.6) brightness(0.9);
+}
+
+.card[data-state="claimable"] {
+  border-color: rgba(255, 214, 122, 0.55);
+  box-shadow: 0 0 0 1px rgba(255, 214, 122, 0.25), 0 0 22px rgba(255, 214, 122, 0.18);
+}
+
+.card[data-state="complete"] {
+  border-color: rgba(185, 230, 255, 0.4);
+}
+
+.cardTop {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 18px;
+}
+
+.cardTierTag,
+.tierLabel,
+.tierName {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.cardClaimTag {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #1b1530;
+  background: #ffd67a;
+}
+
+.cardDoneTag {
+  font-size: 12px;
+  font-weight: 800;
+  color: #b9e6ff;
+}
+
+.cardTitle {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: #f5f0ff;
+}
+
+.cardBar {
+  display: block;
+  width: 100%;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+}
+
+.cardFill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: currentColor;
+  transition: width 240ms ease;
+}
+
+.cardProgress {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(245, 240, 255, 0.65);
+}
+
+.cardReward {
+  width: 100%;
+  margin-top: 2px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 214, 122, 0.85);
+}
+
+/* ---- emblem — the visual focus ----------------------------------------------------------- */
+.emblem {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 35% 30%,
+    color-mix(in srgb, var(--accent) 65%, white 35%),
+    var(--accent) 55%,
+    color-mix(in srgb, var(--accent) 55%, black 45%)
+  );
+  box-shadow: inset 0 0 0 3px currentColor, 0 6px 16px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+}
+
+.emblem::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.28), transparent 55%);
+  pointer-events: none;
+}
+
+.emblem_card {
+  width: 76px;
+  height: 76px;
+  font-size: 34px;
+  margin: 2px 0 4px;
+}
+
+.emblem_pinned {
+  width: 44px;
+  height: 44px;
+  font-size: 20px;
+}
+
+.emblem_detail {
+  width: 88px;
+  height: 88px;
+  font-size: 40px;
+  flex: none;
+}
+
+.emblemGlyph {
+  color: #fff;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.55);
+  line-height: 1;
+}
+
+.emblemArt {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* ---- detail ------------------------------------------------------------------------------ */
+.back {
+  all: unset;
+  cursor: pointer;
+  align-self: flex-start;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(245, 240, 255, 0.75);
+  padding: 4px 8px 4px 0;
+}
+
+.back:hover {
+  color: #f5f0ff;
+}
+
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.detailHero {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.03));
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.detail[data-state="claimable"] .detailHero {
+  border-color: rgba(255, 214, 122, 0.45);
+}
+
+.detailText {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.detailTitle {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  color: #f5f0ff;
+}
+
+.tiers {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tierRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 13px;
+  color: #f5f0ff;
+}
+
+.tierRow[data-state="locked"] {
+  opacity: 0.6;
+}
+
+.tierRow[data-state="earned"] {
+  background: rgba(255, 214, 122, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(255, 214, 122, 0.3);
+}
+
+.tierRow[data-state="claimed"] .tierReward {
+  text-decoration: line-through;
+  opacity: 0.55;
+}
+
+.tierMark {
+  width: 18px;
+  text-align: center;
+  font-size: 16px;
+}
+
+.tierText {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tierReq {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(245, 240, 255, 0.6);
+}
+
+.tierReward {
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 214, 122, 0.85);
+  white-space: nowrap;
+}
+
+/* ---- pinned badges (Profile tab) --------------------------------------------------------- */
+.pinned {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.pinnedHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.pinnedTitle {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(245, 240, 255, 0.8);
+}
+
+.pinnedMeta {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(245, 240, 255, 0.6);
+}
+
+.pinnedRow {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.pinnedItem {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 6px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  text-align: center;
+}
+
+.pinnedName {
+  font-size: 12px;
+  font-weight: 600;
+  color: #f5f0ff;
+}
+
+/* ---- tier colours — calm metallics via currentColor -------------------------------------- */
+.tier0 {
+  color: rgba(245, 240, 255, 0.35);
+}
+.tier1 {
+  color: #d29a6b;
+}
+.tier2 {
+  color: #c8ccd6;
+}
+.tier3 {
+  color: #ffd67a;
+}
+.tier4 {
+  color: #b9e6ff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card,
+  .cardFill,
+  .tab,
+  .tabActive {
+    transition: none;
+  }
+}
