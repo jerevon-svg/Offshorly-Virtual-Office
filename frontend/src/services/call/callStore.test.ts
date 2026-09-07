@@ -281,6 +281,110 @@ describe("callStore start/join", () => {
   });
 });
 
+// --- W5-B board voice --------------------------------------------------------------------
+
+describe("callStore board voice (W5-B)", () => {
+  it("requests the board token endpoint (no body), connects, publishes the mic, and never announces call_joined", async () => {
+    const fetchFn = mockTokenFetch();
+    const { startOrJoinBoardVoice, getCallSnapshot, isConnectedToMedia } = await import("./callStore");
+
+    await startOrJoinBoardVoice("board-1");
+
+    const [url, init] = fetchFn.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("http://localhost:4800/whiteboards/board-1/voice/token");
+    expect(init.method).toBe("POST");
+    expect(init.body).toBeUndefined();
+    expect(FakeRoom.instances).toHaveLength(1);
+    expect(FakeRoom.instances[0].micCalls).toEqual([true]);
+
+    const snap = getCallSnapshot();
+    expect(snap.status).toBe("connected");
+    expect(snap.connectedBoardId).toBe("board-1");
+    expect(snap.connectedSessionId).toBeNull();
+    expect(snap.micEnabled).toBe(true);
+    expect(isConnectedToMedia(snap)).toBe(true);
+    // Board voice is announced over the WHITEBOARD socket by the editor, never as a spatial call.
+    expect(lastSocket?.events() ?? []).not.toContain("call_joined");
+  });
+
+  it("is idempotent for the same board and leaves without emitting call_left", async () => {
+    const { startOrJoinBoardVoice, leaveCall, getCallSnapshot } = await import("./callStore");
+    await startOrJoinBoardVoice("board-1");
+    await startOrJoinBoardVoice("board-1");
+    expect(FakeRoom.instances).toHaveLength(1);
+
+    leaveCall();
+    expect(FakeRoom.instances[0].disconnectCalls).toBe(1);
+    expect(getCallSnapshot().connectedBoardId).toBeNull();
+    expect(getCallSnapshot().status).toBe("idle");
+    expect(lastSocket?.events() ?? []).not.toContain("call_left");
+  });
+
+  it("ONE Room at a time: joining board voice replaces a spatial call (and back), with the spatial events intact", async () => {
+    const { startOrJoinCall, startOrJoinBoardVoice, getCallSnapshot } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+    expect(lastSocket!.events()).toEqual(["call_joined"]);
+
+    await startOrJoinBoardVoice("board-1");
+    expect(FakeRoom.instances).toHaveLength(2);
+    expect(FakeRoom.instances[0].disconnectCalls).toBe(1);
+    expect(getCallSnapshot()).toMatchObject({ status: "connected", connectedBoardId: "board-1", connectedSessionId: null });
+    // Leaving the spatial call for board voice is a spatial leave; the board join announces nothing.
+    expect(lastSocket!.events()).toEqual(["call_joined", "call_left"]);
+
+    await startOrJoinCall("conv-1");
+    expect(FakeRoom.instances).toHaveLength(3);
+    expect(FakeRoom.instances[1].disconnectCalls).toBe(1);
+    expect(getCallSnapshot()).toMatchObject({ status: "connected", connectedBoardId: null, connectedSessionId: "conv-1" });
+    expect(lastSocket!.events()).toEqual(["call_joined", "call_left", "call_joined"]);
+  });
+
+  it("a token failure is contained to boardError: status idle, spatial error untouched, no Room", async () => {
+    mockTokenFetch({ detail: "Voice calling is not configured" }, false, 503);
+    const { startOrJoinBoardVoice, clearBoardError, getCallSnapshot } = await import("./callStore");
+
+    await startOrJoinBoardVoice("board-1");
+
+    const snap = getCallSnapshot();
+    expect(snap.status).toBe("idle");
+    expect(snap.error).toBeNull();
+    expect(snap.boardError).toEqual({ boardId: "board-1", message: "Voice calling is not configured" });
+    expect(snap.connectedBoardId).toBeNull();
+    expect(FakeRoom.instances).toHaveLength(0);
+
+    clearBoardError();
+    expect(getCallSnapshot().boardError).toBeNull();
+  });
+
+  it("leaveBoardVoice leaves only the matching board and never a spatial call", async () => {
+    const { startOrJoinCall, startOrJoinBoardVoice, leaveBoardVoice, getCallSnapshot } = await import("./callStore");
+    await startOrJoinBoardVoice("board-1");
+    leaveBoardVoice("board-2");
+    expect(getCallSnapshot().connectedBoardId).toBe("board-1");
+    leaveBoardVoice("board-1");
+    expect(getCallSnapshot().status).toBe("idle");
+
+    await startOrJoinCall("conv-1");
+    leaveBoardVoice("board-1");
+    expect(getCallSnapshot()).toMatchObject({ status: "connected", connectedSessionId: "conv-1" });
+  });
+
+  it("a LiveKit-side disconnect during board voice clears the board target without a spatial call_left", async () => {
+    const { startOrJoinBoardVoice, getCallSnapshot } = await import("./callStore");
+    await startOrJoinBoardVoice("board-1");
+    FakeRoom.instances[0].trigger("disconnected");
+    expect(getCallSnapshot()).toMatchObject({ status: "idle", connectedBoardId: null });
+    expect(lastSocket?.events() ?? []).not.toContain("call_left");
+  });
+
+  it("board voice never opens or uses the spatial call socket at all", async () => {
+    const { startOrJoinBoardVoice, leaveCall } = await import("./callStore");
+    await startOrJoinBoardVoice("board-1");
+    leaveCall();
+    expect(lastSocket).toBeNull();
+  });
+});
+
 // --- leave -------------------------------------------------------------------------------
 
 describe("callStore leave", () => {

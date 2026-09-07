@@ -1,5 +1,6 @@
 /* The HUD owns the top-left corner outright. Nothing else is laid out relative to it. Above the
-   Quests/Missions modal backdrop (z-index 60) so it stays lit while rewards travel to it. */
+   Quests/Missions modal backdrop (z-index 60) so it stays lit while rewards travel to it, but
+   below a left-docked RoomSidebar (145), which covers this corner while it is open. */
 .hud {
   position: fixed;
   top: 12px;

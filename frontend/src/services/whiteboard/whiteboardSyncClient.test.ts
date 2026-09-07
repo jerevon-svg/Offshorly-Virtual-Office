@@ -66,6 +66,7 @@ function handlers(): SyncHandlers & { statuses: string[] } {
     onAck: vi.fn(),
     onPresence: vi.fn(),
     onPointer: vi.fn(),
+    onCursorChat: vi.fn(),
   };
 }
 
@@ -155,6 +156,38 @@ describe("joinWhiteboard", () => {
     handle.leave();
     expect(sock.emitted.at(-1)).toEqual({ event: "whiteboard_leave", payload: { boardId: "b1" } });
     expect(sock.disconnected).toBe(1);
+  });
+
+  it("W5-A: relays cursor chat for its own board only and sends it truncated while connected", () => {
+    const h = handlers();
+    const handle = joinWhiteboard("b1", h)!;
+    const chat = { boardId: "b1", sid: "s2", email: "b@example.com", username: "b", color: { background: "#eee", stroke: "#333" }, text: "hi" };
+    lastFakeSocket!.trigger("whiteboard_cursor_chat", chat);
+    lastFakeSocket!.trigger("whiteboard_cursor_chat", { ...chat, boardId: "other" });
+    lastFakeSocket!.trigger("whiteboard_cursor_chat", { ...chat, text: 7 });
+    expect(h.onCursorChat).toHaveBeenCalledTimes(1);
+    expect(h.onCursorChat).toHaveBeenCalledWith(chat);
+
+    handle.sendCursorChat("dropped while disconnected");
+    expect(lastFakeSocket!.emitted.filter((e) => e.event === "whiteboard_cursor_chat")).toHaveLength(0);
+    lastFakeSocket!.connect();
+    handle.sendCursorChat("x".repeat(200));
+    handle.sendCursorChat("");
+    const sent = lastFakeSocket!.emitted.filter((e) => e.event === "whiteboard_cursor_chat").map((e) => e.payload);
+    expect(sent).toEqual([{ boardId: "b1", text: "x".repeat(140) }, { boardId: "b1", text: "" }]);
+  });
+
+  it("W5-B: sends the voice-presence flag with the board id while connected only", () => {
+    const handle = joinWhiteboard("b1", handlers())!;
+    handle.sendVoice(true);
+    expect(lastFakeSocket!.emitted.filter((e) => e.event === "whiteboard_voice")).toHaveLength(0);
+    lastFakeSocket!.connect();
+    handle.sendVoice(true);
+    handle.sendVoice(false);
+    expect(lastFakeSocket!.emitted.filter((e) => e.event === "whiteboard_voice").map((e) => e.payload)).toEqual([
+      { boardId: "b1", on: true },
+      { boardId: "b1", on: false },
+    ]);
   });
 
   it("reports offline (REST fallback) when the join is refused or the server is unreachable before any join", () => {

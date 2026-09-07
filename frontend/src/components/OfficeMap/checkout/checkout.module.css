@@ -88,12 +88,24 @@
   background: rgba(255, 255, 255, 0.08);
 }
 
-/* Working status badge — small persistent pill, top-right, below any other
-   top-center controls. */
+/* Working status badge — small persistent pill, top-right.
+   Slot 2 of the top:12px right-hand chrome row, which runs right-to-left in fixed slots:
+     slot 1  right:16px   MessageNotificationBadge (36px chat button, z-index 100)
+     slot 2  right:64px   this pill                (16 + 36 + 12px gap), capped at 190px
+     slot 3  right:268px  StatusPicker             (64 + 190 + 14px gap)
+   It used to sit at right:12px, i.e. directly underneath the chat button (right:16px) and with
+   the lower z-index, so the chat control painted over its right edge and clipped the label. The
+   max-width + nowrap cap is what keeps the pill inside its slot as the worked-hours label grows,
+   so it can never run into the StatusPicker slot either. */
 .statusBadge {
   position: fixed;
   top: 12px;
-  right: 12px;
+  right: 64px;
+  max-width: 190px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-sizing: border-box;
   z-index: 25;
   background: rgba(26, 26, 26, 0.9);
   color: #f0f0f0;

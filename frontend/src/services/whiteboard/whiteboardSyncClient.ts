@@ -21,6 +21,8 @@ export interface CollaboratorInfo {
   email: string;
   username: string;
   color: { background: string; stroke: string };
+  /** W5-B: connected to this board's LiveKit voice room (ephemeral, server presence). */
+  voice?: boolean;
 }
 
 export interface WhiteboardSnapshot {
@@ -43,6 +45,15 @@ export interface RemotePointer extends CollaboratorInfo, PointerPayload {
   boardId: string;
 }
 
+/** W5-A ephemeral cursor chat. `text` is the sender's CURRENT bubble (empty = cleared); the server
+ *  relays it as-is and never stores it, so nothing about it survives a rejoin. */
+export interface RemoteCursorChat extends CollaboratorInfo {
+  boardId: string;
+  text: string;
+}
+
+export const CURSOR_CHAT_MAX_CHARS = 140;
+
 export interface SyncHandlers {
   onStatus: (status: SyncStatus) => void;
   onSnapshot: (snapshot: WhiteboardSnapshot) => void;
@@ -50,6 +61,7 @@ export interface SyncHandlers {
   onAck: (clientSeq: number) => void;
   onPresence: (collaborators: CollaboratorInfo[]) => void;
   onPointer: (pointer: RemotePointer) => void;
+  onCursorChat: (chat: RemoteCursorChat) => void;
 }
 
 export interface SyncHandle {
@@ -58,6 +70,10 @@ export interface SyncHandle {
   /** Dropped (returns false) while disconnected; the editor keeps the elements pending. */
   sendElements: (elements: readonly SyncElement[], clientSeq: number) => boolean;
   sendPointer: (payload: PointerPayload) => void;
+  /** Current cursor-chat text (truncated client-side too); "" clears the bubble for everyone. */
+  sendCursorChat: (text: string) => void;
+  /** W5-B: "my LiveKit connection to this board's voice room is live / gone". Presence only. */
+  sendVoice: (on: boolean) => void;
   leave: () => void;
 }
 
@@ -124,6 +140,10 @@ export function joinWhiteboard(boardId: string, handlers: SyncHandlers): SyncHan
     if (msg?.boardId !== boardId) return;
     handlers.onPointer(msg);
   });
+  socket.on("whiteboard_cursor_chat", (msg: RemoteCursorChat | undefined) => {
+    if (msg?.boardId !== boardId || typeof msg.text !== "string" || typeof msg.sid !== "string") return;
+    handlers.onCursorChat(msg);
+  });
 
   return {
     selfId: () => socket?.id ?? null,
@@ -135,6 +155,14 @@ export function joinWhiteboard(boardId: string, handlers: SyncHandlers): SyncHan
     sendPointer: (payload) => {
       if (!socket?.connected) return;
       socket.emit("whiteboard_pointer", { boardId, ...payload });
+    },
+    sendCursorChat: (text) => {
+      if (!socket?.connected) return;
+      socket.emit("whiteboard_cursor_chat", { boardId, text: text.slice(0, CURSOR_CHAT_MAX_CHARS) });
+    },
+    sendVoice: (on) => {
+      if (!socket?.connected) return;
+      socket.emit("whiteboard_voice", { boardId, on });
     },
     leave: () => {
       if (!socket) return;

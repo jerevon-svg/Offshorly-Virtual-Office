@@ -22,8 +22,18 @@ const BASE_PATH = "/virtual-office/";
 // `/virtual-office/:path*` to `<upstream>/virtual-office/:path*`), not
 // rewrites to root.
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   base: BASE_PATH,
+  // `npm run dev` (5173) and `npm run dev:mock` (5174) run side by side. Vite's dependency
+  // optimizer writes its pre-bundled deps to cacheDir and every served module hardcodes
+  // `.../node_modules/.vite/deps/<dep>.js?v=<hash>` URLs into that directory. With ONE shared
+  // cacheDir, either server re-optimizing (or a stale cache being cleared) deletes the files the
+  // other server is still pointing at — it keeps answering from memory for deps it already served
+  // but returns "504 Outdated Optimize Dep" for anything first requested afterwards. Excalidraw
+  // is the only dep reached solely through React.lazy, so it was the one that failed: opening a
+  // whiteboard rejected the lazy import and blanked the whole office (2026-09-07). One cacheDir
+  // per mode keeps the two servers' dep graphs independent.
+  cacheDir: mode === "mock" ? "node_modules/.vite-mock" : "node_modules/.vite",
   build: {
     outDir: "dist/virtual-office",
     emptyOutDir: true,
@@ -85,4 +95,4 @@ export default defineConfig({
     // Toucan panel test would try to reach the VO backend instead of the canned bird.
     env: { VITE_CHAT_MODE: 'mock', VITE_TOUCAN_MODE: 'mock' },
   },
-})
+}))

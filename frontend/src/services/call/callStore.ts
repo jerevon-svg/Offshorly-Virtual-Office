@@ -60,10 +60,22 @@ export interface CallInviteOutcome {
   reason: string | null;
 }
 
+/** What a media connection is FOR. W5-B: the same Room lifecycle serves a spatial conversation
+ *  call and a whiteboard's voice room; only the token endpoint and the presence signal differ.
+ *  Exactly one target can be connected at a time — there is one Room. */
+export type CallTarget = { kind: "spatial"; sessionId: string } | { kind: "whiteboard"; boardId: string };
+
 export interface CallSnapshot {
   status: CallStatus;
   /** Spatial session id this client is connected to media for, else null. */
   connectedSessionId: string | null;
+  /** W5-B. Whiteboard id this client is connected to voice for, else null. Mutually exclusive with
+   *  connectedSessionId. Board voice never announces call_joined/call_left — its presence rides on
+   *  the whiteboard socket (WhiteboardEditor emits whiteboard_voice from this field). */
+  connectedBoardId: string | null;
+  /** W5-B. Last board-voice failure, scoped to the board it happened on so the board's own
+   *  controls show it and nothing spatial ever does. `error`/status "error" stay spatial-only. */
+  boardError: { boardId: string; message: string } | null;
   micEnabled: boolean;
   /** Stage B. Local camera publication state — mirrors LiveKit's own
    *  localParticipant.isCameraEnabled and drives the camera button ONLY. Always starts false for
@@ -110,6 +122,8 @@ let socketInstance: Socket | null = null;
 let room: Room | null = null;
 let status: CallStatus = "idle";
 let connectedSessionId: string | null = null;
+let connectedBoardId: string | null = null;
+let boardError: { boardId: string; message: string } | null = null;
 let micEnabled = false;
 let cameraEnabled = false;
 let cameraError: string | null = null;
@@ -166,6 +180,8 @@ function getSnapshot(): CallSnapshot {
     cached = {
       status,
       connectedSessionId,
+      connectedBoardId,
+      boardError,
       micEnabled,
       cameraEnabled,
       cameraError,
@@ -351,16 +367,25 @@ function callAuthHeaders(): Headers {
 }
 
 async function fetchToken(
-  sessionId: string,
+  target: CallTarget,
 ): Promise<{ url: string; token: string; room: string; identity: string }> {
-  const res = await fetch(`${socketBase()}/calls/token`, {
-    method: "POST",
-    headers: callAuthHeaders(),
-    body: JSON.stringify({ sessionId }),
-  });
+  // Two endpoints, one token shape (backend services/livekit_tokens.py). Eligibility is the
+  // server's: spatial-session membership for calls, the board's can_access for board voice.
+  const res =
+    target.kind === "spatial"
+      ? await fetch(`${socketBase()}/calls/token`, {
+          method: "POST",
+          headers: callAuthHeaders(),
+          body: JSON.stringify({ sessionId: target.sessionId }),
+        })
+      : await fetch(`${socketBase()}/whiteboards/${encodeURIComponent(target.boardId)}/voice/token`, {
+          method: "POST",
+          headers: callAuthHeaders(),
+        });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body?.error || `Couldn't join the call (${res.status})`);
+    const noun = target.kind === "spatial" ? "the call" : "board voice";
+    throw new Error(body?.error || body?.detail || `Couldn't join ${noun} (${res.status})`);
   }
   return res.json();
 }
@@ -482,16 +507,54 @@ function teardownRoom(): void {
  */
 export async function startOrJoinCall(sessionId: string): Promise<void> {
   if (!sessionId) return;
-  if ((status === "connecting" || status === "connected") && connectedSessionId === sessionId) {
-    return;
-  }
-  // Switching sessions (or retrying after an error) always starts from a clean room.
+  await connectTo({ kind: "spatial", sessionId });
+}
+
+/**
+ * W5-B. Join a whiteboard's voice room — EXPLICIT ONLY, exactly like startOrJoinCall: opening a
+ * board never calls this, and nothing here touches the whiteboard socket or the spatial session.
+ * Same single Room: joining board voice while in a spatial call (or another board's voice) tears
+ * that call down first — the UI disables Join Voice in that case so it cannot happen by accident.
+ */
+export async function startOrJoinBoardVoice(boardId: string): Promise<void> {
+  if (!boardId) return;
+  await connectTo({ kind: "whiteboard", boardId });
+}
+
+/** W5-B. Leave board voice iff connected to THIS board's voice — the editor calls it on close so
+ *  a board's audio never outlives the board, while a spatial call is never touched by it. */
+export function leaveBoardVoice(boardId: string): void {
+  if (connectedBoardId === boardId) leaveCall();
+}
+
+export function clearBoardError(): void {
+  if (boardError === null) return;
+  boardError = null;
+  notify();
+}
+
+function isConnectedTo(target: CallTarget): boolean {
+  if (status !== "connecting" && status !== "connected") return false;
+  return target.kind === "spatial" ? connectedSessionId === target.sessionId : connectedBoardId === target.boardId;
+}
+
+async function connectTo(target: CallTarget): Promise<void> {
+  if (isConnectedTo(target)) return;
+  // Leaving a SPATIAL call for board voice is a spatial leave: tell the server so the call
+  // registry does not keep a stale claim (nothing else will announce it — board voice never
+  // emits call_*). Spatial → spatial keeps its existing semantics (call_joined replaces).
+  const leavingSpatialForBoard =
+    target.kind === "whiteboard" && connectedSessionId !== null && (status === "connecting" || status === "connected");
+  // Switching targets (or retrying after an error) always starts from a clean room.
   teardownRoom();
+  if (leavingSpatialForBoard) ensureSocket()?.emit("call_left");
 
   const myGeneration = ++generation;
   status = "connecting";
-  connectedSessionId = sessionId;
+  connectedSessionId = target.kind === "spatial" ? target.sessionId : null;
+  connectedBoardId = target.kind === "whiteboard" ? target.boardId : null;
   error = null;
+  if (target.kind === "whiteboard") boardError = null;
   micEnabled = false;
   // Stage B: EVERY new/rejoined call starts with the camera off. There is deliberately no
   // "remember my last camera state" — turning a camera on is always an explicit, per-call act.
@@ -500,28 +563,28 @@ export async function startOrJoinCall(sessionId: string): Promise<void> {
   notify();
 
   try {
-    const creds = await fetchToken(sessionId);
+    const creds = await fetchToken(target);
     if (myGeneration !== generation) return; // left mid-handshake
 
     const r = new Room();
     room = r;
 
     r.on(RoomEvent.Disconnected, () => {
-      // Covers a LiveKit-side drop as well as our own leave(); safe either way.
       if (room !== r) return;
+      const wasSpatial = connectedSessionId !== null;
       room = null;
       status = "idle";
       connectedSessionId = null;
+      connectedBoardId = null;
       micEnabled = false;
       cameraEnabled = false;
       cameraError = null;
       cameraPending = false;
-      // This handler resets state INLINE rather than via teardownRoom(), so the video registry
-      // has to be cleared here too — otherwise a LiveKit-side drop leaves every participant's
-      // tile pinned over their avatar with no room behind it.
       clearAllVideoTracks();
       notify();
-      ensureSocket()?.emit("call_left");
+      // call_left is a SPATIAL fact; board voice presence is derived from this snapshot by the
+      // editor and sent over the whiteboard socket instead.
+      if (wasSpatial) ensureSocket()?.emit("call_left");
     });
     const syncParticipants = () => {
       if (room === r) notify();
@@ -618,14 +681,22 @@ export async function startOrJoinCall(sessionId: string): Promise<void> {
     notify();
 
     // Announced only AFTER the real connection succeeded — never optimistically on click.
-    ensureSocket()?.emit("call_joined", { sessionId });
+    if (target.kind === "spatial") ensureSocket()?.emit("call_joined", { sessionId: target.sessionId });
   } catch (err) {
     if (myGeneration !== generation) return;
     teardownRoom();
-    status = "error";
     connectedSessionId = null;
+    connectedBoardId = null;
     micEnabled = false;
-    error = err instanceof Error ? err.message : "Couldn't join the call";
+    if (target.kind === "whiteboard") {
+      // Contained: the board's own controls show this; status stays idle so no spatial surface
+      // (toast, overlay, IN_CALL status) reacts to a board-voice failure.
+      status = "idle";
+      boardError = { boardId: target.boardId, message: err instanceof Error ? err.message : "Couldn't join board voice" };
+    } else {
+      status = "error";
+      error = err instanceof Error ? err.message : "Couldn't join the call";
+    }
     notify();
   }
 }
@@ -637,13 +708,16 @@ export async function startOrJoinCall(sessionId: string): Promise<void> {
  */
 export function leaveCall(): void {
   generation += 1; // invalidates any in-flight connect
+  const wasSpatial = connectedSessionId !== null;
   teardownRoom();
   status = "idle";
   connectedSessionId = null;
+  connectedBoardId = null;
   micEnabled = false;
   error = null;
   notify();
-  ensureSocket()?.emit("call_left");
+  // Spatial-only (see the Disconnected handler): board voice never announces itself here.
+  if (wasSpatial) ensureSocket()?.emit("call_left");
 }
 
 /** Local mute/unmute. LiveKit is the source of truth; the boolean here only drives the button. */
@@ -818,6 +892,8 @@ export function resetCallStoreForTests(): void {
   socketInstance = null;
   status = "idle";
   connectedSessionId = null;
+  connectedBoardId = null;
+  boardError = null;
   micEnabled = false;
   cameraEnabled = false;
   cameraError = null;

@@ -23,7 +23,8 @@ type Harness = {
   // W3 sync stub: "none" → joinWhiteboard returns null (REST fallback, the W1/W2 behaviour);
   // "live" → returns a handle and hands the editor's handlers back for the test to drive.
   syncMode: "none" | "live";
-  sync: { handlers: SyncHandlers; sendElements: ReturnType<typeof vi.fn>; sendPointer: ReturnType<typeof vi.fn>; leave: ReturnType<typeof vi.fn> } | null;
+  sync: { handlers: SyncHandlers; sendElements: ReturnType<typeof vi.fn>; sendPointer: ReturnType<typeof vi.fn>; sendCursorChat: ReturnType<typeof vi.fn>; sendVoice: ReturnType<typeof vi.fn>; leave: ReturnType<typeof vi.fn> } | null;
+  onPointerUpdate?: (payload: unknown) => void;
 };
 // vi.mock factories are hoisted above imports, so everything they reference must be hoisted too.
 const { harness, saveWhiteboard, getWhiteboard, WhiteboardConflictError } = vi.hoisted(() => {
@@ -63,12 +64,14 @@ vi.mock("@excalidraw/excalidraw", () => ({
     initialData: unknown;
     onChange: Harness["onChange"];
     onPointerDown: Harness["onPointerDown"];
+    onPointerUpdate: Harness["onPointerUpdate"];
     renderTopRightUI: (isMobile: boolean, appState: unknown) => ReactNode;
     excalidrawAPI: (api: unknown) => void;
   }) => {
     harness.initialData = props.initialData;
     harness.onChange = props.onChange;
     harness.onPointerDown = props.onPointerDown;
+    harness.onPointerUpdate = props.onPointerUpdate;
     // The real Excalidraw calls excalidrawAPI ONCE, from its class constructor — never again on
     // re-render or after StrictMode's simulated remount. Mirror that: hand it over during the
     // first render only, so a parent that drops the API in an effect cleanup is caught here.
@@ -77,7 +80,8 @@ vi.mock("@excalidraw/excalidraw", () => ({
       handedOver.current = true;
       props.excalidrawAPI({
         getSceneElementsIncludingDeleted: () => harness.scene,
-        getAppState: () => ({ viewBackgroundColor: "#ffffff", selectedElementIds: { x: true }, zoom: { value: 1 } }),
+        getAppState: () => ({ viewBackgroundColor: "#ffffff", selectedElementIds: { x: true }, zoom: { value: 1 }, scrollX: 0, scrollY: 0 }),
+        onScrollChange: () => () => {},
         getFiles: () => ({}),
         updateScene: harness.updateScene,
         addFiles: harness.addFiles,
@@ -102,20 +106,67 @@ vi.mock("../../services/whiteboard/whiteboardClient", () => ({
 }));
 
 vi.mock("../../services/whiteboard/whiteboardSyncClient", () => ({
+  CURSOR_CHAT_MAX_CHARS: 140,
   joinWhiteboard: (_boardId: string, handlers: SyncHandlers) => {
     if (harness.syncMode === "none") return null;
-    const sync = { handlers, sendElements: vi.fn(() => true), sendPointer: vi.fn(), leave: vi.fn() };
+    const sync = { handlers, sendElements: vi.fn(() => true), sendPointer: vi.fn(), sendCursorChat: vi.fn(), sendVoice: vi.fn(), leave: vi.fn() };
     harness.sync = sync;
     handlers.onStatus("connecting");
-    return { selfId: () => "me", sendElements: sync.sendElements, sendPointer: sync.sendPointer, leave: sync.leave };
+    return { selfId: () => "me", sendElements: sync.sendElements, sendPointer: sync.sendPointer, sendCursorChat: sync.sendCursorChat, sendVoice: sync.sendVoice, leave: sync.leave };
   },
 }));
+
+// W5-B: the ONE call store, as a tiny controllable external store so tests can flip "connected to
+// this board's voice" and watch the editor mirror it onto the whiteboard socket.
+const callMock = vi.hoisted(() => {
+  const listeners = new Set<() => void>();
+  const base = {
+    status: "idle" as string,
+    connectedSessionId: null as string | null,
+    connectedBoardId: null as string | null,
+    boardError: null as { boardId: string; message: string } | null,
+    micEnabled: false,
+    audioPlaybackBlocked: false,
+  };
+  let snap = { ...base };
+  return {
+    get: () => snap,
+    set: (patch: Partial<typeof base>) => {
+      snap = { ...snap, ...patch };
+      listeners.forEach((l) => l());
+    },
+    reset: () => {
+      snap = { ...base };
+    },
+    subscribe: (l: () => void) => {
+      listeners.add(l);
+      return () => listeners.delete(l);
+    },
+    leaveBoardVoice: vi.fn(),
+    startOrJoinBoardVoice: vi.fn(),
+    leaveCall: vi.fn(),
+    setMicEnabled: vi.fn(),
+  };
+});
+vi.mock("../../services/call/callStore", async () => {
+  const { useSyncExternalStore } = await import("react");
+  return {
+    useCallState: () => useSyncExternalStore(callMock.subscribe, callMock.get, callMock.get),
+    leaveBoardVoice: (id: string) => callMock.leaveBoardVoice(id),
+    startOrJoinBoardVoice: (id: string) => callMock.startOrJoinBoardVoice(id),
+    leaveCall: () => callMock.leaveCall(),
+    setMicEnabled: (on: boolean) => callMock.setMicEnabled(on),
+    resumeAudioPlayback: vi.fn(),
+    clearBoardError: vi.fn(),
+  };
+});
 
 import WhiteboardEditor from "./WhiteboardEditor";
 
 const base: Whiteboard = {
   id: "b1",
   conversationId: "c1",
+  roomId: null,
   title: "Plan",
   version: 2,
   createdByEmail: "a@example.com",
@@ -147,6 +198,9 @@ beforeEach(() => {
   harness.sync = null;
   harness.activeTool = { type: "selection", customType: null };
   harness.initialData = undefined;
+  callMock.reset();
+  callMock.leaveBoardVoice.mockClear();
+  callMock.startOrJoinBoardVoice.mockClear();
 });
 
 afterEach(() => {
@@ -455,6 +509,224 @@ describe("WhiteboardEditor (Excalidraw)", () => {
       const { sync, unmount } = renderLive();
       unmount();
       expect(sync.leave).toHaveBeenCalledTimes(1);
+    });
+
+    describe("W5-C Ask Toucan", () => {
+      it("shows the Ask Toucan entry only when wired, and it calls back without touching the board", () => {
+        const onAskToucan = vi.fn();
+        harness.syncMode = "live";
+        const { rerender } = render(<WhiteboardEditor board={{ ...base, document: excalidrawDoc }} onAskToucan={onAskToucan} />);
+        act(() => {
+          harness.sync!.handlers.onSnapshot(snapshot([]) as never);
+          harness.sync!.handlers.onStatus("live");
+        });
+        harness.updateScene.mockClear();
+        fireEvent.click(screen.getByRole("button", { name: "Ask Toucan about this board" }));
+        expect(onAskToucan).toHaveBeenCalledTimes(1);
+        expect(harness.updateScene).not.toHaveBeenCalled();
+        expect(harness.sync!.sendElements).not.toHaveBeenCalled();
+        rerender(<WhiteboardEditor board={{ ...base, document: excalidrawDoc }} />);
+        expect(screen.queryByRole("button", { name: "Ask Toucan about this board" })).toBeNull();
+      });
+    });
+
+    describe("W5-B board voice", () => {
+      it("Join Voice is explicit: rendering a board never joins or touches the mic; the click does", () => {
+        renderLive();
+        expect(callMock.startOrJoinBoardVoice).not.toHaveBeenCalled();
+        expect(harness.sync!.sendVoice).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByRole("button", { name: "Join voice" }));
+        expect(callMock.startOrJoinBoardVoice).toHaveBeenCalledWith("b1");
+      });
+
+      it("mirrors 'connected to THIS board' onto the room as whiteboard_voice, re-sends after a reconnect, and clears on leave", () => {
+        const { sync } = renderLive();
+        act(() => callMock.set({ status: "connected", connectedBoardId: "b1", micEnabled: true }));
+        expect(sync.sendVoice.mock.calls).toEqual([[true]]);
+        expect(screen.getByRole("button", { name: "Mute microphone" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Leave voice" })).toBeInTheDocument();
+
+        act(() => sync.handlers.onStatus("reconnecting"));
+        act(() => sync.handlers.onStatus("live"));
+        expect(sync.sendVoice.mock.calls).toEqual([[true], [true]]);
+
+        // Some OTHER board's voice or a spatial call is never reported as ours.
+        act(() => callMock.set({ status: "connected", connectedBoardId: "other" }));
+        expect(sync.sendVoice.mock.calls).toEqual([[true], [true], [false]]);
+        act(() => callMock.set({ status: "idle", connectedBoardId: null }));
+        expect(sync.sendVoice.mock.calls).toEqual([[true], [true], [false]]);
+      });
+
+      it("Join Voice is disabled while connected to another media room, and shows who is in voice", () => {
+        const { sync } = renderLive();
+        act(() => callMock.set({ status: "connected", connectedSessionId: "conv-9" }));
+        const join = screen.getByRole("button", { name: "Join voice" });
+        expect(join).toBeDisabled();
+        expect(join).toHaveAttribute("title", "Leave your current call first");
+        act(() => sync.handlers.onPresence([me, { ...other, voice: true }]));
+        expect(screen.getAllByTestId("presence-voice")).toHaveLength(1);
+        expect(join).toHaveTextContent("Join Voice · 1");
+      });
+
+      it("a board-voice failure is shown inside the board, scoped to this board", () => {
+        renderLive();
+        act(() => callMock.set({ boardError: { boardId: "b1", message: "Voice calling is not configured" } }));
+        expect(screen.getByRole("alert")).toHaveTextContent("Voice calling is not configured");
+        act(() => callMock.set({ boardError: { boardId: "zzz", message: "elsewhere" } }));
+        expect(screen.queryByRole("alert")).toBeNull();
+      });
+
+      it("closing the board leaves THIS board's voice", () => {
+        const { unmount } = renderLive();
+        unmount();
+        expect(callMock.leaveBoardVoice).toHaveBeenCalledWith("b1");
+      });
+    });
+
+    describe("W5-A presence strip + cursor chat", () => {
+      // OfficeMap's resolver hands back an email-shaped placeholder for people outside the roster.
+      const names: Record<string, string> = { "a@example.com": "Alex Reyes", "b@example.com": "Bon Santos" };
+      const resolve = (email: string) => names[email] ?? email[0].toUpperCase() + email.slice(1);
+      const chat = (text: string) => ({ ...other, boardId: "b1", text });
+      const pointerAt = (x: number, y: number) =>
+        ({ ...other, boardId: "b1", pointer: { x, y, tool: "pointer" as const }, button: "up" as const, selectedElementIds: {} });
+
+      function renderLiveNamed() {
+        harness.syncMode = "live";
+        const utils = render(<WhiteboardEditor board={{ ...base, document: excalidrawDoc }} resolveDisplayName={resolve} />);
+        const sync = harness.sync!;
+        act(() => {
+          sync.handlers.onSnapshot(snapshot([]) as never);
+          sync.handlers.onStatus("live");
+        });
+        return { ...utils, sync };
+      }
+
+      it("shows every collaborator by employee name, self first as You, and feeds the resolved name to Excalidraw's cursor label", () => {
+        const { sync } = renderLiveNamed();
+        const chips = screen.getAllByTestId("presence-chip");
+        expect(chips.map((c) => c.textContent)).toEqual(["ARYou", "BSBon Santos"]);
+        expect(chips[1]).toHaveAttribute("title", "Bon Santos");
+        const collaborators = harness.updateScene.mock.lastCall![0].collaborators as Map<string, { username: string }>;
+        expect(collaborators.get("s-other")?.username).toBe("Bon Santos");
+        act(() => sync.handlers.onPresence([me]));
+        expect(screen.getAllByTestId("presence-chip")).toHaveLength(1);
+        // Unknown to the roster → capitalised wire username, never the email.
+        act(() => sync.handlers.onPresence([me, { ...other, sid: "s-x", email: "x@example.com", username: "xavier" }]));
+        expect(screen.getAllByTestId("presence-chip")[1]).toHaveTextContent("Xavier");
+      });
+
+      it("new resolveDisplayName / onSaved identities (parent re-render) never leave and rejoin the room", () => {
+        const { sync, rerender } = renderLiveNamed();
+        rerender(<WhiteboardEditor board={{ ...base, document: excalidrawDoc }} onSaved={() => {}} resolveDisplayName={(email) => resolve(email) + "!"} />);
+        rerender(<WhiteboardEditor board={{ ...base, document: excalidrawDoc }} onSaved={() => {}} resolveDisplayName={(email) => resolve(email) + "!"} />);
+        expect(sync.leave).not.toHaveBeenCalled();
+        act(() => sync.handlers.onPresence([me, other]));
+        expect(screen.getAllByTestId("presence-chip")[1]).toHaveTextContent("Bon Santos!");
+      });
+
+      it("renders a remote bubble beside that collaborator's cursor, follows it, and drops it ~4s after the last update", () => {
+        const { sync } = renderLiveNamed();
+        act(() => sync.handlers.onPointer(pointerAt(100, 50)));
+        act(() => sync.handlers.onCursorChat(chat("on my way")));
+        const bubble = screen.getByTestId("cursor-chat-bubble");
+        expect(bubble).toHaveTextContent("Bon Santos");
+        expect(bubble).toHaveTextContent("on my way");
+        expect(bubble.style.left).toBe("114px");
+        expect(bubble.style.top).toBe("86px");
+
+        act(() => sync.handlers.onPointer(pointerAt(200, 50)));
+        expect(screen.getByTestId("cursor-chat-bubble").style.left).toBe("214px");
+
+        act(() => vi.advanceTimersByTime(3000));
+        act(() => sync.handlers.onCursorChat(chat("on my way!")));
+        act(() => vi.advanceTimersByTime(3000));
+        expect(screen.getByTestId("cursor-chat-bubble")).toHaveTextContent("on my way!");
+        act(() => vi.advanceTimersByTime(1100));
+        expect(screen.queryByTestId("cursor-chat-bubble")).toBeNull();
+      });
+
+      it("clears a remote bubble on an empty message, when the collaborator leaves, and when the connection drops", () => {
+        const { sync } = renderLiveNamed();
+        act(() => sync.handlers.onPointer(pointerAt(1, 1)));
+        act(() => sync.handlers.onCursorChat(chat("a")));
+        act(() => sync.handlers.onCursorChat(chat("")));
+        expect(screen.queryByTestId("cursor-chat-bubble")).toBeNull();
+
+        act(() => sync.handlers.onCursorChat(chat("b")));
+        act(() => sync.handlers.onPresence([me]));
+        expect(screen.queryByTestId("cursor-chat-bubble")).toBeNull();
+
+        act(() => sync.handlers.onPresence([me, other]));
+        act(() => sync.handlers.onPointer(pointerAt(1, 1)));
+        act(() => sync.handlers.onCursorChat(chat("c")));
+        expect(screen.getByTestId("cursor-chat-bubble")).toBeInTheDocument();
+        act(() => sync.handlers.onStatus("reconnecting"));
+        expect(screen.queryByTestId("cursor-chat-bubble")).toBeNull();
+        // Own messages echoed back are never shown as a bubble.
+        act(() => sync.handlers.onStatus("live"));
+        act(() => sync.handlers.onCursorChat({ ...me, boardId: "b1", text: "mine" }));
+        expect(screen.queryByTestId("cursor-chat-bubble")).toBeNull();
+      });
+
+      it("'/' over the canvas opens the input at the own pointer; typing sends at most every 200ms; Enter clears and closes", () => {
+        const { sync } = renderLiveNamed();
+        act(() => harness.onPointerUpdate!({ pointer: { x: 10, y: 20, tool: "pointer" }, button: "up", pointersMap: new Map() }));
+        const canvas = screen.getByTestId("excalidraw").parentElement!;
+        // Hovering without clicking leaves focus on <body>: the hotkey must still work from there.
+        fireEvent.keyDown(document.body, { key: "/" });
+        const input = screen.getByTestId("cursor-chat-input");
+        expect(input).toHaveAttribute("maxlength", "140");
+        expect(input.parentElement!.style.left).toBe("24px");
+        expect(input.parentElement!.style.top).toBe("56px");
+
+        fireEvent.change(input, { target: { value: "h" } });
+        fireEvent.change(input, { target: { value: "he" } });
+        fireEvent.change(input, { target: { value: "hey" } });
+        expect(sync.sendCursorChat).not.toHaveBeenCalled();
+        act(() => vi.advanceTimersByTime(200));
+        expect(sync.sendCursorChat.mock.calls).toEqual([["hey"]]);
+
+        fireEvent.keyDown(input, { key: "Enter" });
+        expect(sync.sendCursorChat.mock.calls).toEqual([["hey"], [""]]);
+        expect(screen.queryByTestId("cursor-chat-input")).toBeNull();
+
+        // Not while typing into a text field, and never when realtime is not live.
+        fireEvent.keyDown(canvas, { key: "/" });
+        const reopened = screen.getByTestId("cursor-chat-input");
+        fireEvent.keyDown(reopened, { key: "/" });
+        expect(screen.getAllByTestId("cursor-chat-input")).toHaveLength(1);
+        fireEvent.keyDown(reopened, { key: "Escape" });
+        expect(screen.queryByTestId("cursor-chat-input")).toBeNull();
+        // A textarea OUTSIDE the editor: blocks the hotkey while reachable, not while this dialog
+        // covers it (a chat composer left focused behind the modal).
+        const behind = document.createElement("textarea");
+        document.body.appendChild(behind);
+        fireEvent.keyDown(behind, { key: "/" });
+        expect(screen.queryByTestId("cursor-chat-input")).toBeNull();
+        const original = document.elementFromPoint;
+        document.elementFromPoint = () => canvas;
+        fireEvent.keyDown(behind, { key: "/" });
+        expect(screen.getByTestId("cursor-chat-input")).toBeInTheDocument();
+        fireEvent.keyDown(screen.getByTestId("cursor-chat-input"), { key: "Escape" });
+        document.elementFromPoint = original;
+        behind.remove();
+        act(() => sync.handlers.onStatus("reconnecting"));
+        fireEvent.keyDown(canvas, { key: "/" });
+        expect(screen.queryByTestId("cursor-chat-input")).toBeNull();
+      });
+
+      it("the own input closes on its own ~4s after the last keystroke and clears the remote copy", () => {
+        const { sync } = renderLiveNamed();
+        fireEvent.click(screen.getByRole("button", { name: "Cursor chat" }));
+        const input = screen.getByTestId("cursor-chat-input");
+        fireEvent.change(input, { target: { value: "brb" } });
+        act(() => vi.advanceTimersByTime(3900));
+        expect(screen.getByTestId("cursor-chat-input")).toBeInTheDocument();
+        act(() => vi.advanceTimersByTime(200));
+        expect(screen.queryByTestId("cursor-chat-input")).toBeNull();
+        expect(sync.sendCursorChat.mock.calls).toEqual([["brb"], [""]]);
+      });
     });
   });
 });

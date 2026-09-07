@@ -23,7 +23,9 @@ class WhiteboardSummaryOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     id: str
-    conversation_id: str = Field(alias="conversationId")
+    # Exactly one of these is set (W4 scope): see app/models/whiteboard.py.
+    conversation_id: str | None = Field(default=None, alias="conversationId")
+    room_id: str | None = Field(default=None, alias="roomId")
     title: str
     version: int
     created_by_email: str = Field(alias="createdByEmail")

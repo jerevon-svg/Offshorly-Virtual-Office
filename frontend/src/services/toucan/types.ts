@@ -26,6 +26,9 @@ export interface ToucanAskRequest {
    *  used by the server ONLY to interpret a wall-clock the viewer typed ("until 3 PM").
    *  Never identity. The real service fills it in when the caller does not. */
   clientTimezone?: string | null;
+  /** W5-C — the whiteboard the viewer has open while asking, so Toucan can answer about its
+   *  text and sticky notes. Never identity; the server re-checks board access itself. */
+  boardId?: string | null;
 }
 
 /** T8 — one PROPOSED (not executed) action riding along on an answer. Mirrors

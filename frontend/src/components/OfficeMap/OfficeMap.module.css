@@ -124,7 +124,7 @@
 }
 
 /* Reopens the Company Hub (see CompanyHub.tsx) anytime. Sits below the
-   StatusPicker/WorkingStatusIndicator top-chrome row (top:12px right:12-160px —
+   StatusPicker/WorkingStatusIndicator top-chrome row (top:12px, right:16-268px —
    see StatusPicker.module.css) rather than sharing that row, to avoid guessing
    at exact select-width overlap. */
 .hubButton {
@@ -262,6 +262,29 @@
 }
 
 .rewardsButton:hover {
+  background: rgba(40, 40, 40, 0.95);
+}
+
+/* Whiteboard W4: office-wide boards. Next slot down the HUD pill column (296px is the
+   DEV-only Reset Hub Demo pill). */
+.boardsButton {
+  all: unset;
+  position: fixed;
+  top: 336px;
+  right: 12px;
+  z-index: 25;
+  cursor: pointer;
+  font-family: system-ui, sans-serif;
+  color: #f0f0f0;
+  background: rgba(26, 26, 26, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 13px;
+  backdrop-filter: blur(4px);
+}
+
+.boardsButton:hover {
   background: rgba(40, 40, 40, 0.95);
 }
 

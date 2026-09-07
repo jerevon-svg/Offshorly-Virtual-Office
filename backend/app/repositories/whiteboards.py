@@ -7,15 +7,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.whiteboard import Whiteboard
 
-# Whiteboard W1/W2 persistence. Authorization is NOT done here — every function trusts its
-# arguments; the router pairs each call with chat_repo.is_participant on the board's
-# conversation (same split as message reactions).
+# Whiteboard W1/W2 (+ W4 room scope) persistence. Authorization is NOT done here — every function
+# trusts its arguments; the router and socket join pair each call with
+# services/whiteboard_access.can_access (same split as message reactions).
 
 
 def _summary(row: Whiteboard) -> dict[str, Any]:
     return {
         "id": row.id,
         "conversation_id": row.conversation_id,
+        "room_id": row.room_id,
         "title": row.title,
         "version": row.version,
         "created_by_email": row.created_by_email,
@@ -39,17 +40,36 @@ async def list_for_conversation(session: AsyncSession, conversation_id: str) -> 
     return [_summary(r) for r in (await session.execute(stmt)).scalars().all()]
 
 
+async def list_for_room(session: AsyncSession, room_id: str) -> list[dict[str, Any]]:
+    """Room / office boards (W4) — same ordering as list_for_conversation."""
+    stmt = (
+        select(Whiteboard)
+        .where(Whiteboard.room_id == room_id)
+        .order_by(Whiteboard.updated_at.desc(), Whiteboard.id)
+    )
+    return [_summary(r) for r in (await session.execute(stmt)).scalars().all()]
+
+
 async def get_by_id(session: AsyncSession, board_id: str) -> dict[str, Any] | None:
     row = await session.get(Whiteboard, board_id)
     return _full(row) if row is not None else None
 
 
 async def create(
-    session: AsyncSession, *, conversation_id: str, title: str, creator_email: str
+    session: AsyncSession,
+    *,
+    title: str,
+    creator_email: str,
+    conversation_id: str | None = None,
+    room_id: str | None = None,
 ) -> dict[str, Any]:
+    """Exactly one of conversation_id / room_id (the table's CHECK enforces it too)."""
+    if (conversation_id is None) == (room_id is None):
+        raise ValueError("a whiteboard belongs to exactly one scope: conversation_id or room_id")
     email = creator_email.strip().lower()
     row = Whiteboard(
         conversation_id=conversation_id,
+        room_id=room_id,
         title=title,
         document=None,
         version=1,

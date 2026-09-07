@@ -108,6 +108,8 @@ export class RealToucanService implements ToucanService {
         conversationId: request.conversationId ?? null,
         // A2.3 — only so "until 3 PM" means 3 PM where the viewer is. Not identity.
         clientTimezone: request.clientTimezone ?? detectClientTimezone(),
+        // W5-C — present only while a board is open; the wire shape is otherwise unchanged.
+        ...(request.boardId ? { boardId: request.boardId } : {}),
       }),
       signal: options.signal,
     });

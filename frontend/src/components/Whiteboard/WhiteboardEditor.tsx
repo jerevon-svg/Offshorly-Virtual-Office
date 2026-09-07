@@ -42,12 +42,16 @@ import {
 import {
   joinWhiteboard,
   type CollaboratorInfo,
+  type RemoteCursorChat,
   type RemotePointer,
   type SyncHandle,
   type SyncStatus,
   type WhiteboardSnapshot,
 } from "../../services/whiteboard/whiteboardSyncClient";
 import { STICKY_NOTE_TOOL, isStickyNoteTool, stickyNoteSkeleton } from "./stickyNote";
+import CursorChatLayer, { type CursorChatLayerHandle } from "./CursorChatLayer";
+import BoardVoiceControls from "./BoardVoiceControls";
+import { leaveBoardVoice, useCallState } from "../../services/call/callStore";
 import styles from "./Whiteboard.module.css";
 
 // Whiteboard W2 + W3: the Excalidraw editor over ONE persisted board. Excalidraw supplies free
@@ -59,6 +63,12 @@ import styles from "./Whiteboard.module.css";
 //  - FALLBACK (W1/W2): when realtime is unavailable, debounce-autosave over REST (plus "Save
 //    now") with the version/409 reload prompt, exactly as before W3.
 //  - the one tool Excalidraw lacks, a Sticky Note (see stickyNote.ts).
+//  - W5-A: the presence strip (who is on the board, by employee name) and ephemeral cursor chat
+//    (CursorChatLayer.tsx) — session-only, never part of the document.
+//  - W5-B: board voice. Audio is the ONE LiveKit Room in services/call/callStore.ts (target
+//    kind "whiteboard"); this component only renders BoardVoiceControls, mirrors "am I connected
+//    to THIS board's voice" onto the whiteboard socket as whiteboard_voice (presence), and leaves
+//    that voice on unmount. Nothing here auto-joins or touches the microphone.
 // A board still holding the previous editor's (tldraw) document is NEVER silently replaced:
 // nothing mounts — no editor, no room, no save — until the user clicks "Start fresh".
 // Default-exported so WhiteboardPanel can React.lazy() it — Excalidraw is a large dependency
@@ -75,7 +85,20 @@ type SaveStatus = "idle" | "dirty" | "saving" | "saved" | "conflict" | "error";
 export type WhiteboardEditorProps = {
   board: Whiteboard;
   onSaved?: (board: Whiteboard) => void;
+  /** Employee display name for an email (OfficeMap's roster lookup). Falls back to the wire name. */
+  resolveDisplayName?: (email: string) => string;
+  /** W5-C — "Ask Toucan about this board". Opens the office's Toucan panel scoped to this board;
+   *  nothing about the board changes (Toucan is read-only here). Absent = no button. */
+  onAskToucan?: () => void;
 };
+
+const PRESENCE_CHIP_LIMIT = 6;
+
+function initialsOf(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  return (parts.length === 1 ? parts[0].slice(0, 2) : parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
 
 function sceneVersionOf(elements: readonly StoredElement[]): number {
   return getSceneVersion(elements as unknown as SceneElements);
@@ -85,7 +108,7 @@ function realtimeOwns(status: SyncStatus): boolean {
   return status !== "offline";
 }
 
-export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorProps) {
+export default function WhiteboardEditor({ board, onSaved, resolveDisplayName, onAskToucan }: WhiteboardEditorProps) {
   const parsed = useMemo(() => parseStoredDocument(board.document), [board.document]);
   const initialElements = parsed.kind === "excalidraw" ? parsed.document.elements : [];
 
@@ -125,6 +148,33 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
   const collaboratorsRef = useRef(new Map<string, Collaborator>());
   const pointerTimerRef = useRef<number | undefined>(undefined);
   const lastPointerRef = useRef<PointerUpdate | null>(null);
+  // W5-A: the server's full collaborator list (self included) for the header strip, and the
+  // cursor-chat overlay, driven imperatively so pointer traffic never re-renders the editor.
+  const [presence, setPresence] = useState<CollaboratorInfo[]>([]);
+  const cursorChatRef = useRef<CursorChatLayerHandle | null>(null);
+  // W5-B voice presence: derived from the call store, sent over the whiteboard socket.
+  const call = useCallState();
+  const inVoiceHere = call.status === "connected" && call.connectedBoardId === board.id;
+  const voiceSentRef = useRef(false);
+  // Read through a ref, NOT a dependency: OfficeMap's resolver is rebuilt on every roster refresh,
+  // and the room-join effect below depends on the presence/pointer callbacks — a new resolver
+  // identity there would leave and rejoin the room (dropping every bubble) each refresh.
+  const resolveDisplayNameRef = useRef(resolveDisplayName);
+  resolveDisplayNameRef.current = resolveDisplayName;
+  // Same rule for onSaved: it sits under save → scheduleSave → handleStatus → the join effect, so
+  // a parent passing a fresh function on each render used to leave and rejoin the room every time.
+  const onSavedRef = useRef(onSaved);
+  onSavedRef.current = onSaved;
+  const nameOf = useCallback((email: string, fallback: string) => {
+    // The wire username is the email's local part; capitalise it for display. The roster resolver
+    // returns an email-shaped placeholder for people it does not know — treat that as unresolved.
+    const pretty = fallback ? fallback[0].toUpperCase() + fallback.slice(1) : fallback;
+    const resolve = resolveDisplayNameRef.current;
+    if (!resolve) return pretty;
+    const resolved = resolve(email)?.trim();
+    return resolved && !resolved.includes("@") ? resolved : pretty;
+  }, []);
+  const canvasRef = useRef<HTMLDivElement | null>(null);
 
   const initialData = useMemo<ExcalidrawInitialDataState | null>(() => {
     if (parsed.kind !== "excalidraw") return null;
@@ -157,7 +207,7 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
       versionRef.current = saved.version;
       setStatus("saved");
       setErrorText(null);
-      onSaved?.(saved);
+      onSavedRef.current?.(saved);
     } catch (err) {
       if (err instanceof WhiteboardConflictError) {
         pendingSaveRef.current = false;
@@ -173,7 +223,7 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
         void save();
       }
     }
-  }, [board.id, currentDocument, onSaved]);
+  }, [board.id, currentDocument]);
 
   const scheduleSave = useCallback(() => {
     window.clearTimeout(timerRef.current);
@@ -195,13 +245,15 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
       for (const c of list) {
         if (c.sid === self) continue;
         const prev = collaboratorsRef.current.get(c.sid);
-        next.set(c.sid, { ...prev, id: c.sid, username: c.username, color: c.color });
+        next.set(c.sid, { ...prev, id: c.sid, username: nameOf(c.email, c.username), color: c.color });
       }
       collaboratorsRef.current = next;
       pushCollaborators();
       setRealtime((r) => ({ ...r, others: next.size }));
+      setPresence(list);
+      cursorChatRef.current?.retain(next.keys());
     },
-    [pushCollaborators],
+    [nameOf, pushCollaborators],
   );
 
   /** Replace the scene with the server's authoritative snapshot, keeping only unacknowledged
@@ -254,7 +306,7 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
   const applyPointer = useCallback(
     (p: RemotePointer) => {
       if (p.sid === syncRef.current?.selfId()) return;
-      const prev = collaboratorsRef.current.get(p.sid) ?? { id: p.sid, username: p.username, color: p.color };
+      const prev = collaboratorsRef.current.get(p.sid) ?? { id: p.sid, username: nameOf(p.email, p.username), color: p.color };
       collaboratorsRef.current.set(p.sid, {
         ...prev,
         pointer: p.pointer ?? undefined,
@@ -262,15 +314,25 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
         selectedElementIds: p.selectedElementIds as Collaborator["selectedElementIds"],
       });
       pushCollaborators();
+      cursorChatRef.current?.setPointer(p.sid, p.pointer ? { x: p.pointer.x, y: p.pointer.y } : null);
     },
-    [pushCollaborators],
+    [nameOf, pushCollaborators],
   );
+
+  const applyCursorChat = useCallback((chat: RemoteCursorChat) => {
+    if (chat.sid === syncRef.current?.selfId()) return;
+    cursorChatRef.current?.showRemote(chat);
+  }, []);
 
   const handleStatus = useCallback(
     (next: SyncStatus) => {
       realtimeStatusRef.current = next;
       setRealtime((r) => ({ ...r, status: next, others: next === "offline" ? 0 : r.others }));
+      // Cursor chat is session-only: a dropped connection clears every bubble, and the snapshot
+      // that follows a rejoin carries none.
+      if (next !== "live") cursorChatRef.current?.clearRemote();
       if (next === "offline") {
+        setPresence([]);
         // Realtime is unavailable for this board: anything drawn so far goes through REST.
         if (collaboratorsRef.current.size > 0) {
           collaboratorsRef.current = new Map();
@@ -296,6 +358,7 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
       onAck: (clientSeq) => acknowledge(pendingRef.current, clientSeq),
       onPresence: applyPresence,
       onPointer: applyPointer,
+      onCursorChat: applyCursorChat,
     });
     syncRef.current = handle;
     if (!handle) handleStatus("offline");
@@ -303,7 +366,7 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
       handle?.leave();
       syncRef.current = null;
     };
-  }, [board.id, legacyLocked, handleStatus, applySnapshot, applyRemoteElements, applyPresence, applyPointer]);
+  }, [board.id, legacyLocked, handleStatus, applySnapshot, applyRemoteElements, applyPresence, applyPointer, applyCursorChat]);
 
   const handleChange = useCallback(
     (elements: readonly SceneElements[number][], appState: AppState, files: BinaryFiles) => {
@@ -339,6 +402,7 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
 
   const handlePointerUpdate = useCallback((payload: PointerUpdate) => {
     if (realtimeStatusRef.current !== "live") return;
+    cursorChatRef.current?.setOwnPointer(payload.pointer ? { x: payload.pointer.x, y: payload.pointer.y } : null);
     lastPointerRef.current = payload;
     if (pointerTimerRef.current !== undefined) return;
     pointerTimerRef.current = window.setTimeout(() => {
@@ -372,32 +436,111 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
     apiRef.current?.setActiveTool({ type: "custom", customType: STICKY_NOTE_TOOL });
   }, []);
 
+  // --- W5-A cursor chat ---------------------------------------------------------------------
+  const openCursorChat = useCallback(() => {
+    cursorChatRef.current?.open();
+  }, []);
+
+  // "/" opens the input (Figma's binding). Listened for on the document because hovering the
+  // board without clicking leaves focus on <body>, outside the canvas. Never while typing into a
+  // field inside the whiteboard dialog (Excalidraw's text editor is a textarea, so this covers
+  // editing a text element); a field OUTSIDE the dialog only blocks it when it is actually
+  // reachable — a chat composer left focused behind this modal cannot be typed into, so "/" must
+  // still work there. Only while realtime is live.
+  useEffect(() => {
+    if (legacyLocked) return;
+    const isTypingTarget = (el: HTMLElement) => el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable;
+    const coveredByDialog = (el: HTMLElement, dialog: Element) => {
+      if (typeof document.elementFromPoint !== "function") return false;
+      const r = el.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return hit !== null && hit !== el && dialog.contains(hit);
+    };
+    const onKeyDown = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
+      const target = e.target as HTMLElement | null;
+      const canvas = canvasRef.current;
+      if (!target || !canvas) return;
+      const dialog = canvas.closest('[role="dialog"]') ?? canvas;
+      if (isTypingTarget(target) && (dialog.contains(target) || !coveredByDialog(target, dialog))) return;
+      if (realtimeStatusRef.current !== "live") return;
+      e.preventDefault();
+      openCursorChat();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [legacyLocked, openCursorChat]);
+  const canSendCursorChat = useCallback(() => realtimeStatusRef.current === "live", []);
+  const sendCursorChat = useCallback((text: string) => {
+    syncRef.current?.sendCursorChat(text);
+  }, []);
+  const getApi = useCallback(() => apiRef.current, []);
+
   // Rendered by Excalidraw beside its own top-right buttons, using its ToolIcon classes so the
   // button matches the toolbar's look (size, radius, hover and selected colours) in both themes.
   const renderTopRightUI = useCallback(
     (_isMobile: boolean, appState: UIAppState) => {
       const active = isStickyNoteTool(appState.activeTool);
       return (
-        <button
-          type="button"
-          className={`ToolIcon ToolIcon_type_button ToolIcon_size_medium${active ? " ToolIcon--selected" : ""}`}
-          title="Sticky note"
-          aria-label="Sticky note"
-          aria-pressed={active}
-          onClick={activateStickyNoteTool}
-        >
-          <div className="ToolIcon__icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M5 4h14a1 1 0 0 1 1 1v9l-6 6H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z" />
-              <path d="M14 20v-5a1 1 0 0 1 1-1h5" />
-              <path d="M8 9h8M8 13h4" />
-            </svg>
-          </div>
-        </button>
+        <>
+          <button
+            type="button"
+            className={`ToolIcon ToolIcon_type_button ToolIcon_size_medium${active ? " ToolIcon--selected" : ""}`}
+            title="Sticky note"
+            aria-label="Sticky note"
+            aria-pressed={active}
+            onClick={activateStickyNoteTool}
+          >
+            <div className="ToolIcon__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M5 4h14a1 1 0 0 1 1 1v9l-6 6H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z" />
+                <path d="M14 20v-5a1 1 0 0 1 1-1h5" />
+                <path d="M8 9h8M8 13h4" />
+              </svg>
+            </div>
+          </button>
+          {realtime.status === "live" && (
+            <button
+              type="button"
+              className="ToolIcon ToolIcon_type_button ToolIcon_size_medium"
+              title="Cursor chat ( / )"
+              aria-label="Cursor chat"
+              onClick={openCursorChat}
+            >
+              <div className="ToolIcon__icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M4 5h16a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H9l-5 4V6a1 1 0 0 1 1-1z" />
+                  <path d="M8 9h8M8 12h5" />
+                </svg>
+              </div>
+            </button>
+          )}
+        </>
       );
     },
-    [activateStickyNoteTool],
+    [activateStickyNoteTool, openCursorChat, realtime.status],
   );
+
+  // W5-B: mirror "connected to THIS board's voice" onto the room as whiteboard_voice. Sent when it
+  // flips, and re-sent after every reconnect — a rejoin is a new sid whose flag starts false.
+  useEffect(() => {
+    if (legacyLocked) return;
+    if (realtime.status !== "live") {
+      voiceSentRef.current = false;
+      return;
+    }
+    if (inVoiceHere) {
+      syncRef.current?.sendVoice(true);
+      voiceSentRef.current = true;
+    } else if (voiceSentRef.current) {
+      syncRef.current?.sendVoice(false);
+      voiceSentRef.current = false;
+    }
+  }, [inVoiceHere, realtime.status, legacyLocked]);
+
+  // W5-B: a board's voice never outlives the board. Only THIS board's voice is left — a spatial
+  // call or another board's voice is untouched (leaveBoardVoice checks the connected target).
+  useEffect(() => () => leaveBoardVoice(board.id), [board.id]);
 
   // Flush a still-pending debounced REST save on unmount (e.g. the user hits Back right after
   // drawing while offline). Reads latestSceneRef, not the API — see its comment. Deliberately
@@ -442,7 +585,7 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
       versionRef.current = fresh.version;
       setStatus("idle");
       setErrorText(null);
-      onSaved?.(fresh);
+      onSavedRef.current?.(fresh);
     } catch (err) {
       setStatus("error");
       setErrorText(err instanceof Error ? err.message : "Reload failed");
@@ -466,14 +609,63 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
   };
   // A locked legacy board never joins a room, so its header keeps the (disabled) REST controls.
   const live = !legacyLocked && realtimeOwns(realtime.status);
+  const selfSid = syncRef.current?.selfId() ?? null;
+  const presenceChips = presence.map((c) => ({ ...c, name: nameOf(c.email, c.username), isSelf: c.sid === selfSid }));
+  presenceChips.sort((a, b) => Number(b.isSelf) - Number(a.isSelf));
+  const overflow = Math.max(0, presenceChips.length - PRESENCE_CHIP_LIMIT);
 
   return (
     <>
       <div className={styles.header}>
         {live ? (
-          <span className={styles.status} data-testid="realtime-status">
-            {realtimeLabel[realtime.status]}
-          </span>
+          <>
+            <span className={styles.status} data-testid="realtime-status">
+              {realtimeLabel[realtime.status]}
+            </span>
+            <BoardVoiceControls
+              boardId={board.id}
+              live={realtime.status === "live"}
+              voiceCount={presence.filter((c) => c.voice).length}
+            />
+            {presenceChips.length > 0 && (
+              <ul className={styles.presenceStrip} aria-label="On this board" data-testid="presence-strip">
+                {presenceChips.slice(0, PRESENCE_CHIP_LIMIT).map((c) => (
+                  <li
+                    key={c.sid}
+                    className={styles.presenceChip}
+                    title={c.isSelf ? `${c.name} (you)` : c.name}
+                    data-testid="presence-chip"
+                  >
+                    <span
+                      className={styles.presenceAvatar}
+                      style={{ background: c.color.background, borderColor: c.color.stroke }}
+                      aria-hidden="true"
+                    >
+                      {initialsOf(c.name)}
+                    </span>
+                    <span className={styles.presenceName}>{c.isSelf ? "You" : c.name}</span>
+                    {c.voice && (
+                      <span className={styles.presenceVoice} title="In voice" aria-label="In voice" data-testid="presence-voice">
+                        🎧
+                      </span>
+                    )}
+                  </li>
+                ))}
+                {overflow > 0 && <li className={`${styles.presenceChip} ${styles.presenceMore}`}>+{overflow}</li>}
+              </ul>
+            )}
+            {onAskToucan && (
+              <button
+                type="button"
+                className={`${styles.button} ${styles.askToucan}`}
+                onClick={onAskToucan}
+                aria-label="Ask Toucan about this board"
+                title="Ask Toucan about this board"
+              >
+                🦜 Ask Toucan
+              </button>
+            )}
+          </>
         ) : (
           <>
             <span className={styles.status + (status === "conflict" || status === "error" ? ` ${styles.statusConflict}` : "")}>
@@ -516,7 +708,7 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
       {legacyLocked ? (
         <div className={styles.legacyPlaceholder}>Choose “Start fresh” above to draw on this board.</div>
       ) : (
-        <div className={styles.canvas}>
+        <div className={styles.canvas} ref={canvasRef}>
           <Excalidraw
             initialData={initialData}
             onChange={handleChange}
@@ -527,6 +719,13 @@ export default function WhiteboardEditor({ board, onSaved }: WhiteboardEditorPro
             excalidrawAPI={(api) => {
               apiRef.current = api;
             }}
+          />
+          <CursorChatLayer
+            ref={cursorChatRef}
+            getApi={getApi}
+            canSend={canSendCursorChat}
+            onSend={sendCursorChat}
+            resolveName={nameOf}
           />
         </div>
       )}

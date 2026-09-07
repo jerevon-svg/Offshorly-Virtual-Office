@@ -1,10 +1,20 @@
+/* Room details side panel. Docks flush to either edge (see .left) at full viewport height, so
+   it geometrically overlaps the whole persistent HUD band on whichever side it opens:
+   left  -> PlayerHud (70), CharacterSearch (10), .addEmployeeButton (100)
+   right -> WorkingStatusIndicator / StatusPicker / Hub-Profile-Toucan-Quests-Missions-Rewards
+            pills (25), MessageNotificationBadge (100), .floatingChatSlot (140)
+   At the old z-index 18 every one of those painted on top of the panel — covering its body and,
+   on the right, its header and close button outright. 145 puts the panel above the entire HUD
+   band (max 140) while staying below the real overlays that must interrupt it:
+   CallOverlay (150), CallInvite/JoinRequest/DndRequest prompts (160), AudioDebugPanel (210),
+   reward FX (1000), Whiteboard (1200). */
 .sidebar {
   position: fixed;
   top: 0;
   right: 0;
   height: 100vh;
   width: 340px;
-  z-index: 18;
+  z-index: 145;
   background: rgba(26, 26, 26, 0.95);
   backdrop-filter: blur(4px);
   border-left: 1px solid rgba(255, 255, 255, 0.12);
@@ -35,6 +45,26 @@
   color: #f0f0f0;
   font-size: 16px;
   font-weight: 600;
+}
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+/* Whiteboard W4 entry — same quiet chrome as the close button. */
+.whiteboardsBtn {
+  background: none;
+  border: none;
+  color: rgba(240, 240, 240, 0.7);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+.whiteboardsBtn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f0f0f0;
 }
 .closeBtn {
   background: none;

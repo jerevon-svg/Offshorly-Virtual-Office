@@ -1,10 +1,11 @@
-/* Positioned to sit right next to the top-chrome WorkingStatusIndicator
-   pill (fixed, top:12px right:12px, z-index:25 — see checkout.module.css's
-   .statusBadge). Offset further right so the two never overlap. */
+/* Slot 3 of the top:12px right-hand chrome row (slot 1 = MessageNotificationBadge at right:16px,
+   slot 2 = WorkingStatusIndicator's .statusBadge at right:64px capped to 190px wide — see
+   checkout.module.css). right:268px clears slot 2's full reserved width; the old right:160px only
+   cleared a short "Working · 1h 5m" label and collided once the worked-hours text grew. */
 .picker {
   position: fixed;
   top: 12px;
-  right: 160px;
+  right: 268px;
   z-index: 25;
   font-family: system-ui, sans-serif;
 }

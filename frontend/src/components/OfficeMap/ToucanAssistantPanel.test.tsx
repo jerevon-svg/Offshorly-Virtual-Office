@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { ToucanAssistantPanel } from "./ToucanAssistantPanel";
-import { resetMockToucanConversations } from "../../services/toucan";
+import { resetMockToucanConversations, toucanService } from "../../services/toucan";
 import chat from "../Chat/ConversationView.module.css";
 
 // Focused tests for the Toucan assistant panel's Messenger-style presentation
@@ -58,6 +58,33 @@ describe("ToucanAssistantPanel", () => {
       await vi.advanceTimersByTimeAsync(MOCK_DELAY);
     });
   };
+
+  it("W5-C — a board context shows as a chip, rides on every ask as boardId, and can be cleared", async () => {
+    const askSpy = vi.spyOn(toucanService, "ask");
+    const onClear = vi.fn();
+    render(
+      <ToucanAssistantPanel onRelease={vi.fn()} boardContext={{ boardId: "board-7", title: "Sprint Retro" }} onClearBoardContext={onClear} />,
+    );
+    await flushRestore();
+    expect(screen.getByTestId("toucan-board-context")).toHaveTextContent("Asking about board “Sprint Retro”");
+    expect(composer()).toHaveAttribute("placeholder", "Ask about this board…");
+    sendViaEnter("Summarize this board");
+    expect(askSpy).toHaveBeenCalledWith(expect.objectContaining({ question: "Summarize this board", boardId: "board-7" }), expect.anything());
+    fireEvent.click(screen.getByLabelText("Stop asking about this board"));
+    expect(onClear).toHaveBeenCalled();
+    await settleReply();
+    askSpy.mockRestore();
+  });
+
+  it("W5-C — without a board context no boardId is ever sent", async () => {
+    const askSpy = vi.spyOn(toucanService, "ask");
+    await setup();
+    sendViaEnter("who is online");
+    expect(askSpy.mock.calls[0][0]).not.toHaveProperty("boardId");
+    expect(screen.queryByTestId("toucan-board-context")).toBeNull();
+    await settleReply();
+    askSpy.mockRestore();
+  });
 
   it("opens with the toucan's greeting as a received message", async () => {
     await setup();

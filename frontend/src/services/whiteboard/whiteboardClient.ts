@@ -1,13 +1,25 @@
 import { getAuthToken } from "../api/client";
 
-// REST client for Whiteboard W1/W2 (backend/app/routers/whiteboards.py). Same "chat backend"
-// REST base (VITE_CHAT_SOCKET_URL) and the same dev-identity bypass as questsClient.ts. Access
-// is the group conversation's: the server answers 403 for non-participants, and the client never
-// sends an identity in the body — only the bearer token / dev header.
+// REST client for Whiteboard W1/W2 + W4 (backend/app/routers/whiteboards.py). Same "chat backend"
+// REST base (VITE_CHAT_SOCKET_URL) and the same dev-identity bypass as questsClient.ts. A board
+// lives in exactly one scope: a conversation (access is the conversation's — the server answers
+// 403 for non-participants) or an office room (open to every signed-in office user). The client
+// never sends an identity in the body — only the bearer token / dev header.
+
+/** Where a set of boards lives. `room` ids are the flat room ids OfficeMap already uses for room
+ * presence / room requests (office-layout.ts `rooms[]`), or OFFICE_ROOM_ID for the whole office. */
+export type WhiteboardScope =
+  | { kind: "conversation"; id: string }
+  | { kind: "room"; id: string };
+
+/** Server-defined sentinel room id for the office-wide board set (W4). */
+export const OFFICE_ROOM_ID = "office";
 
 export interface WhiteboardSummary {
   id: string;
-  conversationId: string;
+  // Exactly one of these is set — see WhiteboardScope.
+  conversationId: string | null;
+  roomId: string | null;
   title: string;
   version: number;
   createdByEmail: string;
@@ -82,6 +94,29 @@ export function createWhiteboard(conversationId: string, title: string): Promise
     method: "POST",
     body: JSON.stringify({ title }),
   });
+}
+
+/** GET /rooms/{roomId}/whiteboards — room / office boards (W4), summaries newest first. */
+export function listRoomWhiteboards(roomId: string): Promise<WhiteboardSummary[]> {
+  return request(`/rooms/${encodeURIComponent(roomId)}/whiteboards`);
+}
+
+/** POST /rooms/{roomId}/whiteboards — a new empty room / office board (version 1). */
+export function createRoomWhiteboard(roomId: string, title: string): Promise<Whiteboard> {
+  return request(`/rooms/${encodeURIComponent(roomId)}/whiteboards`, {
+    method: "POST",
+    body: JSON.stringify({ title }),
+  });
+}
+
+/** Scope-dispatching list — the panel's one entry point for either scope. */
+export function listWhiteboardsIn(scope: WhiteboardScope): Promise<WhiteboardSummary[]> {
+  return scope.kind === "room" ? listRoomWhiteboards(scope.id) : listWhiteboards(scope.id);
+}
+
+/** Scope-dispatching create. */
+export function createWhiteboardIn(scope: WhiteboardScope, title: string): Promise<Whiteboard> {
+  return scope.kind === "room" ? createRoomWhiteboard(scope.id, title) : createWhiteboard(scope.id, title);
 }
 
 /** GET /whiteboards/{id} — full board including its document. */

@@ -357,6 +357,11 @@ type ToucanAssistantPanelProps = {
   // once per absence boundary. Local turn only, like the greeting: nothing is asked of the
   // server and nothing is written anywhere.
   returnBriefing?: ToucanCatchUp | null;
+  /** W5-C — the whiteboard the viewer opened this panel from. While set, every question carries
+   *  its id so the server can answer from the board's text; the chip above the composer shows it
+   *  and clears it. The board itself is never touched from here (read-only in W5-C). */
+  boardContext?: { boardId: string; title: string } | null;
+  onClearBoardContext?: () => void;
 };
 
 // Matches ConversationView's own TYPING_IDLE_MS, so the character stops
@@ -415,6 +420,8 @@ export function ToucanAssistantPanel({
   onRequestDictation,
   onOpenConversation,
   returnBriefing = null,
+  boardContext = null,
+  onClearBoardContext,
 }: ToucanAssistantPanelProps) {
   const [turns, setTurns] = useState<Turn[]>([greetingTurn(0)]);
   const [draft, setDraft] = useState("");
@@ -1176,7 +1183,10 @@ export function ToucanAssistantPanel({
     };
 
     void toucanService
-      .ask({ question: text, history, conversationId }, { signal: controller.signal })
+      .ask(
+        { question: text, history, conversationId, ...(boardContext ? { boardId: boardContext.boardId } : {}) },
+        { signal: controller.signal },
+      )
       .then((answer) => {
         const isCatchUpIntent = answer.intent === "away_summary" || answer.intent === "important_summary";
         // Tracks the conversation the server actually used — the one that was
@@ -1672,6 +1682,22 @@ export function ToucanAssistantPanel({
         </div>
       )}
 
+      {boardContext && (
+        <div className={styles.boardContextChip} role="status" data-testid="toucan-board-context">
+          <span className={styles.boardContextText}>🗒 Asking about board “{boardContext.title}”</span>
+          {onClearBoardContext && (
+            <button
+              type="button"
+              className={styles.boardContextClear}
+              onClick={onClearBoardContext}
+              aria-label="Stop asking about this board"
+              title="Stop asking about this board"
+            >
+              ×
+            </button>
+          )}
+        </div>
+      )}
       <div className={`${chat.composer} ${styles.composerGrow}`} aria-busy={pending}>
         {/* T10 — multimodal actions, in the compact icon-button style the chat
             composer already defines. Both are disabled until a caller wires the
@@ -1711,7 +1737,7 @@ export function ToucanAssistantPanel({
           ref={textareaRef}
           className={`${chat.textarea} ${styles.textarea}`}
           value={draft}
-          placeholder={pending ? "Waiting for the toucan…" : "Ask the toucan…"}
+          placeholder={pending ? "Waiting for the toucan…" : boardContext ? "Ask about this board…" : "Ask the toucan…"}
           aria-label="Message the toucan"
           rows={1}
           disabled={composerDisabled}

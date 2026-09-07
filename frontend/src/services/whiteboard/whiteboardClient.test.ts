@@ -5,10 +5,15 @@ vi.mock("../api/client", () => ({
 }));
 
 import {
+  OFFICE_ROOM_ID,
   WhiteboardConflictError,
+  createRoomWhiteboard,
   createWhiteboard,
+  createWhiteboardIn,
   getWhiteboard,
+  listRoomWhiteboards,
   listWhiteboards,
+  listWhiteboardsIn,
   saveWhiteboard,
   setDevIdentity,
 } from "./whiteboardClient";
@@ -72,5 +77,34 @@ describe("whiteboardClient", () => {
   it("maps other HTTP errors to a plain Error carrying the server detail", async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(403, { detail: "Not a participant in this conversation" }));
     await expect(listWhiteboards("c1")).rejects.toThrow(/Not a participant/);
+  });
+
+  // ---- W4 room / office scope
+  it("lists and creates ROOM boards under /rooms/{roomId}/whiteboards", async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, []));
+    await listRoomWhiteboards("dev team");
+    expect(fetchMock.mock.calls[0][0]).toBe("http://localhost:8002/rooms/dev%20team/whiteboards");
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(201, { id: "r1", roomId: OFFICE_ROOM_ID, conversationId: null }));
+    const created = await createRoomWhiteboard(OFFICE_ROOM_ID, "All hands");
+    expect(created.roomId).toBe("office");
+    const [url, init] = fetchMock.mock.calls[1];
+    expect(url).toBe("http://localhost:8002/rooms/office/whiteboards");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual({ title: "All hands" });
+  });
+
+  it("dispatches on scope kind — conversation scope still hits the conversation routes unchanged", async () => {
+    fetchMock.mockImplementation(async () => jsonResponse(200, []));
+    await listWhiteboardsIn({ kind: "conversation", id: "c1" });
+    await listWhiteboardsIn({ kind: "room", id: "qa-room" });
+    await createWhiteboardIn({ kind: "conversation", id: "c1" }, "t");
+    await createWhiteboardIn({ kind: "room", id: "qa-room" }, "t");
+    expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([
+      "http://localhost:8002/conversations/c1/whiteboards",
+      "http://localhost:8002/rooms/qa-room/whiteboards",
+      "http://localhost:8002/conversations/c1/whiteboards",
+      "http://localhost:8002/rooms/qa-room/whiteboards",
+    ]);
   });
 });

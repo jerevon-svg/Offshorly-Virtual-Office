@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     #     LiveKit Cloud and a self-hosted server is a backend env change with no frontend
     #     rebuild (see app/routers/calls.py, and client.ts's note on build-time VITE_* pain).
     # Empty by default so a deploy without them fails closed with a clear 503 rather than
-    # minting garbage tokens (see calls.py's _livekit_config).
+    # minting garbage tokens (see services/livekit_tokens.py's livekit_config).
     LIVEKIT_URL: str = ""
     LIVEKIT_API_KEY: str = ""
     LIVEKIT_API_SECRET: str = ""

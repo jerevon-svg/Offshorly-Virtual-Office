@@ -58,6 +58,10 @@ class ToucanAskIn(BaseModel):
     # A2.3: the caller's IANA zone, used ONLY to interpret a wall-clock they typed ("until 3 PM").
     # Never identity, never stored, validated server-side (services/toucan/delegation.py).
     client_timezone: str | None = Field(default=None, alias="clientTimezone", max_length=64)
+    # W5-C: the whiteboard the viewer has open while asking. Never identity, never stored. The
+    # router applies the board's own access rule (services/whiteboard_access.can_access) before
+    # reading a single element, and only the board's TEXT reaches the answer layer.
+    board_id: str | None = Field(default=None, alias="boardId", max_length=64)
 
 
 class ToucanActionProposalOut(BaseModel):

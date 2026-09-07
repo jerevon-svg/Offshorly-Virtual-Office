@@ -14,6 +14,10 @@ from app.repositories import toucan_delegation as toucan_delegation_repo
 from app.repositories import toucan_memory as toucan_memory_repo
 from app.repositories import toucan_resources as toucan_resources_repo
 from app.repositories import toucan_urgency as toucan_urgency_repo
+from app.repositories import whiteboards as wb_repo
+from app.realtime.state import whiteboard_rooms
+from app.services.whiteboard_access import can_access
+from app.services.toucan.whiteboard_context import BOARD_INTENT, board_fallback_answer, build_board_context
 from app.schemas.toucan import (
     ToucanActionProposalOut,
     ToucanActionResultOut,
@@ -475,6 +479,21 @@ async def _append_action_note(db: AsyncSession, pending: PendingAction, *, email
 # `action` can be None, so an answer without a proposal is still exactly the T0 four-field
 # contract (asserted in test_toucan_ai/test_toucan_privacy), and `action` appears only when a
 # proposal is actually pending.
+def _board_collaborator_names(board_id: str, context) -> list[str]:
+    """Display names of the people on the board right now — from the in-memory whiteboard room
+    presence (emails only; the sid, pointer and media flag it also carries are never read) and
+    the office roster for the name. Falls back to the email's local part."""
+    room = whiteboard_rooms.get(board_id)
+    if room is None:
+        return []
+    by_email = {p.email.lower(): p for p in context.people}
+    names: list[str] = []
+    for member in room.members.values():
+        person = by_email.get(member.email.lower())
+        names.append(person.display_name if person and person.display_name else member.email.split("@", 1)[0])
+    return names
+
+
 @router.post("/toucan/ask", response_model=ToucanAnswerOut, response_model_exclude_none=True)
 async def ask_toucan(
     request: Request,
@@ -501,6 +520,17 @@ async def ask_toucan(
             raise HTTPException(status_code=404, detail=_CONVERSATION_NOT_FOUND)
     else:
         conversation = await toucan_repo.create_conversation(db, owner_email=email)
+
+    # W5-C — a board-scoped question proves board access BEFORE any work, with the same rule the
+    # whiteboard REST and realtime join apply. Unknown → 404, not yours → 403; nothing is read
+    # or written on the caller's behalf until this has passed.
+    board = None
+    if body.board_id:
+        board = await wb_repo.get_by_id(db, body.board_id)
+        if board is None:
+            raise HTTPException(status_code=404, detail="Whiteboard not found")
+        if not await can_access(db, board, email):
+            raise HTTPException(status_code=403, detail="Not a participant")
 
     # T4 FIRST — before the office context is even built. An explicit remember/list/forget is a
     # command about the caller's own durable memory: it needs no roster fetch and no registry
@@ -587,6 +617,29 @@ async def ask_toucan(
 
     answer = answer_question(body.question, context, activity=activity)
     answer_text, intent, supported = answer.text, answer.intent, answer.supported
+    # W5-C — the bounded, text-only projection of the open board (plus the display names of who
+    # is on it right now, from the realtime whiteboard presence — names only). It reaches the
+    # provider as one more data block; without a provider it becomes a verbatim listing. Only a
+    # question the office resolver could NOT answer is treated as being about the board.
+    board_context = None
+    if board is not None and not supported:
+        board_context = build_board_context(board, collaborators=_board_collaborator_names(board["id"], context))
+        answer_text, intent = board_fallback_answer(board_context), BOARD_INTENT
+        supported = True
+    if board_context is not None and ai_enabled():
+        memory_rows = await toucan_memory_repo.list_memories(
+            db, owner_email=email, limit=toucan_memory_repo.MAX_MEMORIES_RETURNED
+        )
+        reply = await generate_answer(
+            body.question,
+            context,
+            [(turn.role, turn.text) for turn in body.history],
+            memories=select_relevant_memories(body.question, memory_rows),
+            board=board_context.as_payload(),
+        )
+        # Read-only in W5-C: a proposal riding on a board answer is ignored, never executed.
+        if reply is not None and reply.text and reply.action_name is None:
+            answer_text, intent = reply.text, AI_INTENT
 
     # T6: DETERMINISTIC FIRST, AI FOR THE UNSUPPORTED TAIL. A question any T0-T5 intent claimed
     # (supported=True) is already answered from registry truth and never reaches the provider —
@@ -596,7 +649,7 @@ async def ask_toucan(
     # through services/toucan/ai_context.py) plus the request's own bounded history. None —
     # disabled, error, timeout, empty — keeps the deterministic fallback: an LLM failure can
     # degrade an answer, never fail the request.
-    if not supported and ai_enabled():
+    elif not supported and ai_enabled():
         # T7: RETRIEVE → FILTER → PROJECT → AI, and only on this branch — deterministic answers
         # never pay for the memory read. The candidate pool is the caller's own rows, filtered
         # on owner_email in the repository's SQL and bounded there; the relevance pass and the

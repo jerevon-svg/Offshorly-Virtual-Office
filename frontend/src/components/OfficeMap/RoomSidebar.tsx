@@ -17,6 +17,9 @@ type Props = {
   /** Atlas room id -> display name, so someone whose live room has no
    *  hand-drawn twin reads as "in Design Sprint" rather than a raw id. */
   roomNames?: Map<string, string>;
+  /** Whiteboard W4: opens this room's boards. Absent when boards are unavailable (mock chat
+   *  backend, or the layer has no flat room id) — then no button is rendered at all. */
+  onOpenWhiteboards?: () => void;
 };
 
 // Shown as a coloured dot rather than a word: the list is names, and a
@@ -37,6 +40,7 @@ export function RoomSidebar({
   onClose,
   people,
   roomNames,
+  onOpenWhiteboards,
 }: Props) {
   // Cache the last non-null layer so content doesn't blank during the
   // close slide-out animation (component stays mounted; only CSS toggles).
@@ -77,9 +81,22 @@ export function RoomSidebar({
     >
       <div className={styles.header}>
         <div className={styles.title}>{displayLayer ? formatRoomName(displayLayer.id) : ""}</div>
-        <button className={styles.closeBtn} onClick={onClose} aria-label="Close">
-          ×
-        </button>
+        <div className={styles.headerActions}>
+          {onOpenWhiteboards && (
+            <button
+              type="button"
+              className={styles.whiteboardsBtn}
+              onClick={onOpenWhiteboards}
+              aria-label="Open whiteboards"
+              title="Whiteboards"
+            >
+              ▦
+            </button>
+          )}
+          <button className={styles.closeBtn} onClick={onClose} aria-label="Close">
+            ×
+          </button>
+        </div>
       </div>
       <div className={styles.body}>
         {displayPeople ? (

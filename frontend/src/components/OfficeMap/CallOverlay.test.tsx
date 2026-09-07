@@ -60,6 +60,8 @@ function makeSnapshot(over: Partial<CallSnapshot> = {}): CallSnapshot {
     incoming: null,
     inviteOutcome: null,
     acceptedPeerEmail: null,
+    connectedBoardId: null,
+    boardError: null,
     audioPlaybackBlocked: false,
     videoByIdentity: {},
     ...over,

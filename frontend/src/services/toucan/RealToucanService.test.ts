@@ -64,6 +64,15 @@ describe("RealToucanService", () => {
     expect(answer.conversationId).toBe("c-1");
   });
 
+  it("W5-C — sends boardId only while a board is open; the wire shape is otherwise unchanged", async () => {
+    fetchMock.mockImplementation(async () => jsonResponse({ text: "ok", intent: "whiteboard_context", supported: true, conversationId: "c1" }));
+    await service.ask({ question: "Summarize this board", history: [], boardId: "board-7" });
+    expect(lastBody().boardId).toBe("board-7");
+    expect(Object.keys(lastBody()).sort()).toEqual(["boardId", "clientTimezone", "conversationId", "history", "question"]);
+    await service.ask({ question: "who is online", history: [], boardId: null });
+    expect("boardId" in lastBody()).toBe(false);
+  });
+
   it("A2.3 — sends the viewer's IANA time zone, or the caller's override, and never identity", async () => {
     fetchMock.mockImplementation(async () =>
       jsonResponse({ text: "ok", intent: "x", supported: true, conversationId: "c-1" }),

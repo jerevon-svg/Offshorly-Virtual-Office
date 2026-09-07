@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { ErrorBoundary } from "./ErrorBoundary";
 
 function Bomb(): never {
@@ -63,6 +63,28 @@ describe("ErrorBoundary", () => {
     );
 
     expect(screen.getByText("Something went wrong. Please refresh the page.")).toBeInTheDocument();
+  });
+
+  it("renders a scoped fallback instead of the full-page panel when `fallback` is given, and retry re-renders the children", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    let shouldThrow = true;
+    function FlakyChild() {
+      if (shouldThrow) throw new Error("chunk failed");
+      return <div>recovered</div>;
+    }
+
+    render(
+      <ErrorBoundary fallback={(retry) => <button onClick={retry}>Try again</button>}>
+        <FlakyChild />
+      </ErrorBoundary>,
+    );
+
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(screen.queryByText("Something went wrong. Please refresh the page.")).toBeNull();
+
+    shouldThrow = false;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(screen.getByText("recovered")).toBeInTheDocument();
   });
 
   it("logs the error via console.error for diagnosability", () => {

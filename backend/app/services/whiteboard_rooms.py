@@ -130,15 +130,24 @@ class Collaborator:
     sid: str
     email: str
     username: str
+    # W5-B: this socket reported a live LiveKit connection to the board's voice room. Ephemeral
+    # presence only — it rides on whiteboard_presence and dies with the membership.
+    voice: bool = False
 
     def wire(self) -> dict[str, Any]:
-        return {"sid": self.sid, "email": self.email, "username": self.username, "color": collaborator_color(self.email)}
+        return {
+            "sid": self.sid,
+            "email": self.email,
+            "username": self.username,
+            "color": collaborator_color(self.email),
+            "voice": self.voice,
+        }
 
 
 @dataclass
 class WhiteboardRoom:
     board_id: str
-    conversation_id: str
+    conversation_id: str | None  # None for a room/office board (W4); informational only
     elements: dict[str, dict[str, Any]]
     app_state: dict[str, Any]
     files: dict[str, Any]
@@ -185,7 +194,7 @@ class WhiteboardRoomRegistry:
     def get(self, board_id: str) -> WhiteboardRoom | None:
         return self._rooms.get(board_id)
 
-    def ensure(self, board_id: str, conversation_id: str, document: Any, version: int) -> WhiteboardRoom:
+    def ensure(self, board_id: str, conversation_id: str | None, document: Any, version: int) -> WhiteboardRoom:
         """Return the live room, creating it from the stored document if nobody has it open.
         Callers load `document`/`version` from the DB first; if another join created the room in
         the meantime, the existing (possibly already edited) room wins."""
@@ -210,6 +219,18 @@ class WhiteboardRoomRegistry:
         room = self._rooms.get(board_id)
         if room is not None:
             room.members.pop(sid, None)
+        return room
+
+    def set_voice(self, sid: str, on: bool) -> WhiteboardRoom | None:
+        """Flip a member's voice flag. Returns the room iff the flag actually changed (broadcast
+        only on change, matching the other registries); None for a non-member or a no-op."""
+        room = self.room_of(sid)
+        if room is None:
+            return None
+        member = room.members.get(sid)
+        if member is None or member.voice == on:
+            return None
+        member.voice = on
         return room
 
     def room_of(self, sid: str) -> WhiteboardRoom | None:

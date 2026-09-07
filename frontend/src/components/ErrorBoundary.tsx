@@ -2,6 +2,11 @@ import { Component, type ErrorInfo, type ReactNode } from "react";
 
 interface ErrorBoundaryProps {
   children: ReactNode;
+  // Optional local fallback. Without it the boundary renders the full-page "refresh" panel
+  // (App.tsx root). With it, the boundary is scoped to its subtree: the fallback gets a `retry`
+  // that clears the error and re-renders the children, so one crashed feature (e.g. a lazy chunk
+  // that failed to load) is contained instead of blanking the whole office.
+  fallback?: (retry: () => void) => ReactNode;
 }
 
 interface ErrorBoundaryState {
@@ -26,8 +31,15 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     console.error("ErrorBoundary caught an error:", error, errorInfo.componentStack);
   }
 
+  retry = (): void => {
+    this.setState({ hasError: false });
+  };
+
   render(): ReactNode {
     if (this.state.hasError) {
+      if (this.props.fallback) {
+        return this.props.fallback(this.retry);
+      }
       return (
         <div
           style={{

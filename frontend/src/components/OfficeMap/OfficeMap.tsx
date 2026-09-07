@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   TransformWrapper,
   TransformComponent,
@@ -13,6 +13,7 @@ import {
   officeAssetLayers,
   npcCharacterLayers,
   rooms,
+  formatRoomName,
   roomContainingPoint,
   roomLayers,
   roomMembersById,
@@ -41,6 +42,7 @@ import { MessageNotificationBadge } from "../Chat/MessageNotificationBadge";
 import { EmployeePickerModal } from "../Chat/EmployeePickerModal";
 import { GroupConversationView } from "../Chat/GroupConversationView";
 import { WhiteboardPanel } from "../Whiteboard/WhiteboardPanel";
+import { OFFICE_ROOM_ID, type WhiteboardScope } from "../../services/whiteboard/whiteboardClient";
 import { isRealZohoMode } from "../../services/zoho";
 import { ErrorBoundary } from "../ErrorBoundary";
 import { OfficeStage } from "./OfficeStage";
@@ -722,7 +724,14 @@ export function OfficeMap() {
   // Whiteboard W1/W2: which conversation's boards (1:1 DM or group) are open in the full-screen
   // panel (null = closed). Opened from any chat window's header button — spatial or Global Chat,
   // DM or group; real chat mode only, because boards live on the chat backend.
-  const [whiteboardConv, setWhiteboardConv] = useState<{ conversationId: string; title: string } | null>(null);
+  // Whiteboard W1–W4: the one open board set — a conversation's (chat ▦ buttons), a room's
+  // (RoomSidebar ▦) or the office's (HUD "Boards"). One panel, one scope at a time.
+  const [whiteboardTarget, setWhiteboardTarget] = useState<{ scope: WhiteboardScope; title: string } | null>(null);
+  // W5-C — the board the viewer asked Toucan about. Set by the whiteboard's Ask Toucan button,
+  // carried on every ask while set, cleared when the board closes, the chip is dismissed, or the
+  // bird is released. While set (and the board is open) the Toucan panel is lifted above the
+  // whiteboard overlay so the two can be used side by side.
+  const [toucanBoardContext, setToucanBoardContext] = useState<{ boardId: string; title: string } | null>(null);
 
   // Global Chat (persistent 💬 HUD icon) floating windows — completely separate state from
   // openChat/openGroupConv above. Multiple can be open at once, each keyed by peer email (DM) or
@@ -2392,6 +2401,7 @@ export function OfficeMap() {
   function releaseToucan() {
     setToucanCalled(false);
     setToucanPanelOpen(false);
+    setToucanBoardContext(null);
     setToucanReturnBriefing(null);
     // Clear the pending flag AND the bird's pill immediately, cancelling any
     // in-flight linger — a released bird must not trail a squawk.
@@ -2439,6 +2449,13 @@ export function OfficeMap() {
   // (the overhead chat typing-dots bubble): the bird's own "Squawk squawk…"
   // pill is the only overhead feedback this feature shows.
   const toucanSessionActive = toucanPanelOpen && toucanState === "attending";
+  // W5-C: lift the Toucan panel slot above the whiteboard overlay (Whiteboard.module.css .overlay,
+  // z-index 1200) only while the viewer is asking about an OPEN board; otherwise the slot keeps its
+  // own stacking. Visibility itself is still gated on toucanPanelOpen alone, below.
+  const toucanSlotStyle: CSSProperties = {
+    right: floatingChatRightOffsets.get(TOUCAN_WINDOW_KEY) ?? FLOATING_CHAT_EDGE_MARGIN,
+    ...(toucanBoardContext && whiteboardTarget ? { zIndex: 1300 } : {}),
+  };
   const talkingCharacterIdsWithToucan = useMemo(() => {
     if (!toucanSessionActive) return talkingCharacterIdsFromSessions;
     return talkingCharacterIdsFromSessions.includes(playerLayerId)
@@ -4553,6 +4570,15 @@ export function OfficeMap() {
           🎁 Rewards
         </button>
       )}
+      {chatMode === "real" && hasCheckedIn && onboarding === "done" && !checkoutBusy && (
+        <button
+          className={styles.boardsButton}
+          onClick={() => setWhiteboardTarget({ scope: { kind: "room", id: OFFICE_ROOM_ID }, title: "Office" })}
+          aria-label="Open office whiteboards"
+        >
+          ▦ Boards
+        </button>
+      )}
       {toucanChromeVisible && (
         <button
           className={styles.toucanButton}
@@ -4591,7 +4617,7 @@ export function OfficeMap() {
         // computed for TOUCAN_WINDOW_KEY — the panel no longer positions itself.
         <div
           className={styles.floatingChatSlot}
-          style={{ right: floatingChatRightOffsets.get(TOUCAN_WINDOW_KEY) ?? FLOATING_CHAT_EDGE_MARGIN }}
+          style={toucanSlotStyle}
         >
           <ToucanAssistantPanel
             onRelease={releaseToucan}
@@ -4599,6 +4625,8 @@ export function OfficeMap() {
             onTypingChange={setToucanTyping}
             onOpenConversation={openConversationById}
             returnBriefing={toucanReturnBriefing}
+            boardContext={toucanBoardContext}
+            onClearBoardContext={() => setToucanBoardContext(null)}
           />
         </div>
       )}
@@ -4851,6 +4879,15 @@ export function OfficeMap() {
         }
         roomNames={roster.roomNames}
         onClose={closeRoomSidebar}
+        onOpenWhiteboards={
+          chatMode === "real" && roomSidebar && roomSidebarFlatId
+            ? () =>
+                setWhiteboardTarget({
+                  scope: { kind: "room", id: roomSidebarFlatId },
+                  title: formatRoomName(roomSidebar.layer.id),
+                })
+            : undefined
+        }
       />
       {/* Messenger-style floating chat stack: the spatial window (openChat/openGroupConv, if
           any) plus every remote (Global Chat) window, each in its own fixed-position slot
@@ -4878,7 +4915,7 @@ export function OfficeMap() {
             }
             onOpenWhiteboard={
               chatMode === "real"
-                ? (conversationId, title) => setWhiteboardConv({ conversationId, title })
+                ? (conversationId, title) => setWhiteboardTarget({ scope: { kind: "conversation", id: conversationId }, title })
                 : undefined
             }
             minimized={spatialChatMinimized}
@@ -4930,8 +4967,8 @@ export function OfficeMap() {
             onOpenWhiteboard={
               chatMode === "real"
                 ? () =>
-                    setWhiteboardConv({
-                      conversationId: openGroupConv.conversationId,
+                    setWhiteboardTarget({
+                      scope: { kind: "conversation", id: openGroupConv.conversationId },
                       title: openGroupConv.title ?? "Group",
                     })
                 : undefined
@@ -5001,7 +5038,7 @@ export function OfficeMap() {
               onClose={() => closeRemoteWindow(w.key)}
               onOpenWhiteboard={
                 chatMode === "real"
-                  ? (conversationId, title) => setWhiteboardConv({ conversationId, title })
+                  ? (conversationId, title) => setWhiteboardTarget({ scope: { kind: "conversation", id: conversationId }, title })
                   : undefined
               }
             />
@@ -5013,7 +5050,7 @@ export function OfficeMap() {
               title={w.title}
               onOpenWhiteboard={
                 chatMode === "real"
-                  ? () => setWhiteboardConv({ conversationId: w.conversationId, title: w.title ?? "Group" })
+                  ? () => setWhiteboardTarget({ scope: { kind: "conversation", id: w.conversationId }, title: w.title ?? "Group" })
                   : undefined
               }
               resolveDisplayName={resolveDisplayName}
@@ -5025,11 +5062,21 @@ export function OfficeMap() {
           )}
         </div>
       ))}
-      {chatMode === "real" && whiteboardConv && (
+      {chatMode === "real" && whiteboardTarget && (
         <WhiteboardPanel
-          conversationId={whiteboardConv.conversationId}
-          title={whiteboardConv.title}
-          onClose={() => setWhiteboardConv(null)}
+          scope={whiteboardTarget.scope}
+          title={whiteboardTarget.title}
+          onClose={() => {
+            setWhiteboardTarget(null);
+            setToucanBoardContext(null);
+          }}
+          resolveDisplayName={resolveDisplayName}
+          onAskToucan={(board) => {
+            // W5-C: same summon as the 🦜 button — the EXISTING panel opens, scoped to this board.
+            setToucanBoardContext({ boardId: board.id, title: board.title });
+            if (toucanState === "attending") setToucanPanelOpen(true);
+            else setToucanCalled(true);
+          }}
         />
       )}
       {chatMode === "real" && (

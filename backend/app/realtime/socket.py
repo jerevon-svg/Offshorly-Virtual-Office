@@ -48,6 +48,7 @@ from app.services.quests import (
     record_quest_event,
     utc_day_key,
 )
+from app.services.whiteboard_access import can_access
 from app.services.whiteboard_rooms import WhiteboardRoom, build_document
 
 # Faithful port of backend/src/socket.ts onto python-socketio's ASGI async server. Mounted in
@@ -1287,11 +1288,18 @@ async def _handle_reaction(sid: str, payload: dict | None, *, action: str) -> No
 # same check the REST router makes); the room registry in app/services/whiteboard_rooms.py owns
 # merge, presence and debounced persistence; this layer only does auth, wiring and fan-out.
 # Events (client → server): whiteboard_join {boardId}, whiteboard_leave, whiteboard_elements
-# {boardId, elements, clientSeq}, whiteboard_pointer {boardId, pointer, button, selectedElementIds}.
+# {boardId, elements, clientSeq}, whiteboard_pointer {boardId, pointer, button, selectedElementIds},
+# whiteboard_cursor_chat {boardId, text} (W5-A), whiteboard_voice {boardId, on} (W5-B, flips the
+# member's voice flag carried on whiteboard_presence; audio itself is LiveKit).
 # Events (server → client): whiteboard_snapshot (full authoritative state, on every join/rejoin),
 # whiteboard_elements (accepted batch to the room minus sender; the room's winning copies back to
 # a sender whose elements lost), whiteboard_ack {clientSeq, seq}, whiteboard_presence,
-# whiteboard_pointer, whiteboard_error {code, message}.
+# whiteboard_pointer, whiteboard_cursor_chat, whiteboard_error {code, message}.
+#
+# CURSOR CHAT IS A PURE RELAY. The text is bounded, rate-limited per socket and forwarded to the
+# room minus the sender — it is never stored on the WhiteboardRoom, never part of a snapshot, never
+# written to the document and never logged. A rejoin therefore restores nothing; the client fades
+# each bubble a few seconds after its last update.
 
 
 def whiteboard_room(board_id: str) -> str:
@@ -1319,7 +1327,14 @@ async def _broadcast_whiteboard_presence(room: WhiteboardRoom) -> None:
     )
 
 
+CURSOR_CHAT_MAX_CHARS = 140
+# Clients send at most every ~200 ms; anything faster than this from one socket is dropped.
+CURSOR_CHAT_MIN_INTERVAL_S = 0.1
+_cursor_chat_last_at: dict[str, float] = {}
+
+
 async def _leave_whiteboard(sid: str) -> None:
+    _cursor_chat_last_at.pop(sid, None)
     room = whiteboard_rooms.leave(sid)
     if room is None:
         return
@@ -1353,7 +1368,7 @@ async def whiteboard_join(sid: str, payload: dict | None) -> None:
             if board is None:
                 await _whiteboard_error(sid, board_id, "not_found", "Whiteboard not found")
                 return
-            ok = await chat_repo.is_participant(session, board["conversation_id"], email)
+            ok = await can_access(session, board, email)
         if not ok:
             await _whiteboard_error(sid, board_id, "forbidden", "Not a participant")
             return
@@ -1434,5 +1449,59 @@ async def whiteboard_pointer(sid: str, payload: dict | None) -> None:
             room=whiteboard_room(board_id),
             skip_sid=sid,
         )
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("whiteboard_cursor_chat")
+async def whiteboard_cursor_chat(sid: str, payload: dict | None) -> None:
+    """W5-A ephemeral cursor chat: relay `text` to the board's room minus the sender. Membership
+    is the same check every other whiteboard event makes; the text is truncated to
+    CURSOR_CHAT_MAX_CHARS and bursts faster than CURSOR_CHAT_MIN_INTERVAL_S per socket are
+    dropped. An empty string is the sender's "clear my bubble" and is always relayed."""
+    try:
+        room, board_id = _whiteboard_membership(sid, payload)
+        if room is None:
+            return
+        payload = payload or {}
+        text = payload.get("text")
+        if not isinstance(text, str):
+            return
+        member = room.members.get(sid)
+        if member is None:
+            return
+        text = text[:CURSOR_CHAT_MAX_CHARS]
+        now = asyncio.get_running_loop().time()
+        if text:
+            last = _cursor_chat_last_at.get(sid)
+            if last is not None and now - last < CURSOR_CHAT_MIN_INTERVAL_S:
+                return
+            _cursor_chat_last_at[sid] = now
+        await sio.emit(
+            "whiteboard_cursor_chat",
+            {"boardId": board_id, **member.wire(), "text": text},
+            room=whiteboard_room(board_id),
+            skip_sid=sid,
+        )
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("whiteboard_voice")
+async def whiteboard_voice(sid: str, payload: dict | None) -> None:
+    """W5-B board voice presence: an edge-triggered "my LiveKit connection to this board's voice
+    room is live / gone" fact from callStore (emitted only after room.connect() resolves, never on
+    click). Audio itself is LiveKit's; this only flips the member's `voice` flag and re-broadcasts
+    whiteboard_presence to the board room. Spatial call_joined/call_left are untouched. Leaving the
+    board (whiteboard_leave / disconnect) removes the member and therefore the flag."""
+    try:
+        room, board_id = _whiteboard_membership(sid, payload)
+        if room is None:
+            return
+        on = (payload or {}).get("on")
+        if not isinstance(on, bool):
+            return
+        if whiteboard_rooms.set_voice(sid, on) is not None:
+            await _broadcast_whiteboard_presence(room)
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
