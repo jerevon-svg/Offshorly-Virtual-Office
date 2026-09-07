@@ -254,8 +254,10 @@
 /* Debug panel. */
 .debugPanel {
   position: fixed;
-  top: 64px;
-  left: 12px;
+  /* Directly below the Player HUD (fixed top:12px, left:16px, ~146px tall incl. borders) with a
+     small clean gap; the HUD permanently owns the top-left corner. */
+  top: 172px;
+  left: 16px;
   z-index: 100;
   background: rgba(26, 26, 26, 0.92);
   border: 1px solid rgba(255, 255, 255, 0.15);

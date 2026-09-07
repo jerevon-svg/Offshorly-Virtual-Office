@@ -1,4 +1,6 @@
-.search { position: absolute; top: 16px; left: 16px; z-index: 10; width: 240px; font-family: system-ui, sans-serif; }
+/* TEMP: offset to the right of the Player HUD (fixed top:12px left:16px width:264px) until Search
+   is relocated; position only, nothing else about Search changes. */
+.search { position: absolute; top: 16px; left: 296px; z-index: 10; width: 240px; font-family: system-ui, sans-serif; }
 .search input { width: 100%; box-sizing: border-box; padding: 8px 12px; border-radius: 8px;
   border: 1px solid rgba(255,255,255,0.15); background: rgba(26,26,26,0.85); color: #f0f0f0;
   font-size: 14px; outline: none; backdrop-filter: blur(4px); }

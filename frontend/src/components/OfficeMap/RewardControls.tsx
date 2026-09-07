@@ -40,7 +40,8 @@ export interface ClaimButtonProps {
   completed: boolean;
   claimed: boolean;
   pending: boolean;
-  onClaim: () => void;
+  /** Receives the clicked control's rect — the origin of the reward collection FX. */
+  onClaim: (source: DOMRect) => void;
   label: string;
 }
 
@@ -55,7 +56,12 @@ export function ClaimButton({ completed, claimed, pending, onClaim, label }: Cla
     );
   }
   return (
-    <button className={styles.claim} onClick={onClaim} disabled={pending} aria-label={`Claim reward for ${label}`}>
+    <button
+      className={styles.claim}
+      onClick={(e) => onClaim(e.currentTarget.getBoundingClientRect())}
+      disabled={pending}
+      aria-label={`Claim reward for ${label}`}
+    >
       {pending ? "Claiming…" : "Claim"}
     </button>
   );

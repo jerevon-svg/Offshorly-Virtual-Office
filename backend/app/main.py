@@ -17,6 +17,7 @@ from app.realtime.socket import sio
 from app.repositories import attendance as attendance_repo
 from app.repositories import position as position_repo
 from app.routers import attendance as attendance_router
+from app.routers import badges as badges_router
 from app.routers import calls as calls_router
 from app.routers import chat as chat_router
 from app.routers import feed as feed_router
@@ -25,6 +26,7 @@ from app.routers import missions as missions_router
 from app.routers import progression as progression_router
 from app.routers import quests as quests_router
 from app.routers import requests as requests_router
+from app.routers import rewards as rewards_router
 from app.routers import room_requests as room_requests_router
 from app.routers import talk_requests as talk_requests_router
 from app.routers import toucan as toucan_router
@@ -131,6 +133,8 @@ fastapi_app.include_router(attendance_router.router)
 fastapi_app.include_router(quests_router.router)
 fastapi_app.include_router(missions_router.router)
 fastapi_app.include_router(progression_router.router)
+fastapi_app.include_router(badges_router.router)
+fastapi_app.include_router(rewards_router.router)
 fastapi_app.include_router(whiteboards_router.router)
 
 

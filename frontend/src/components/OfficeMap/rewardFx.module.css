@@ -1,0 +1,33 @@
+.layer {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.coin,
+.xp {
+  position: absolute;
+  left: 0;
+  top: 0;
+  will-change: transform, opacity;
+  font-family: system-ui, sans-serif;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.45));
+}
+
+.coin {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.xp {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 999px;
+  color: #1b1530;
+  background: linear-gradient(135deg, #ffd67a, #ff9f6b);
+}

@@ -5,6 +5,7 @@ import type { Mission, MyMissions, Progression } from "../../services/quests/que
 vi.mock("../../services/quests/questsClient", () => ({
   fetchMyMissions: vi.fn(),
   fetchMyProgression: vi.fn(),
+  fetchMyBadges: vi.fn(),
   claimReward: vi.fn(),
 }));
 
@@ -18,6 +19,7 @@ const progression = (over: Partial<Progression> = {}): Progression => ({
   nextLevelXp: 100,
   ...over,
 });
+import { resetProgressionForTests } from "../../services/quests/progressionStore";
 import { MissionsPanel } from "./MissionsPanel";
 import { formatResetsIn } from "./formatResetsIn";
 
@@ -75,6 +77,7 @@ describe("formatResetsIn", () => {
 
 describe("MissionsPanel", () => {
   beforeEach(() => {
+    resetProgressionForTests();
     vi.useFakeTimers({ shouldAdvanceTime: true, now: NOW });
     vi.mocked(fetchMyProgression).mockResolvedValue(progression({ xp: 20, coins: 5 }));
   });

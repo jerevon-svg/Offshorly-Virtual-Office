@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     # closed into the deterministic assistant — the provider reports itself disabled and every
     # /toucan/ask keeps working exactly as it did at T5 (see provider.ai_enabled).
     OPENAI_API_KEY: str = ""
+    # Reward Redemption V1 approver seam: comma-separated emails allowed to approve/reject/fulfil
+    # redemptions (POST /rewards/redemptions/{id}/decide). Empty = nobody; an admin surface can
+    # replace this later without touching the redemption model.
+    REWARD_APPROVER_EMAILS: str = ""
     # Deliberately a cheap, fast, non-reasoning default; overridable per environment without a
     # code change. A reasoning model here would silently spend the output-token budget on
     # thinking and return empty text under the cap below.

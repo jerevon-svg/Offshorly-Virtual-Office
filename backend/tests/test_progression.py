@@ -51,6 +51,15 @@ def test_claim_target_resolution_rejects_mismatched_pairs():
     assert rewards.resolve_claim_target("daily_check_in", "") is None  # mission without a period
     assert rewards.resolve_claim_target("daily_check_in", "w:2026-W36") is None  # wrong cadence prefix
     assert rewards.resolve_claim_target("nope", "") is None
+    # Badge tiers: (badge_id, "t:N") with N in 1..4 only.
+    b = rewards.resolve_claim_target("connector", "t:2")
+    assert (b.source, b.period_key, b.reward) == ("badge", "t:2", rewards.Reward(xp=75, coins=25))
+    assert rewards.resolve_claim_target("connector", "t:4").reward == rewards.Reward(xp=300, coins=100)
+    assert rewards.resolve_claim_target("connector", "t:0") is None
+    assert rewards.resolve_claim_target("connector", "t:5") is None
+    assert rewards.resolve_claim_target("connector", "t:x") is None
+    assert rewards.resolve_claim_target("connector", "") is None  # a badge is not a quest
+    assert rewards.resolve_claim_target("first_check_in", "t:1") is None  # a quest is not a badge
 
 
 # --- service level ---------------------------------------------------------------------------
@@ -197,3 +206,36 @@ async def test_overlapping_claims_on_separate_connections_grant_once(tmp_path):
             assert (await rewards.load_progression(check, actor=A)).xp == 50
     finally:
         await engine.dispose()
+
+
+async def test_badge_tier_claim_requires_the_award_and_pays_once(_app_db):
+    async with _client() as client:
+        # Not earned yet → 409; unknown tier → 404.
+        res = await client.post("/progression/claim", json={"questId": "connector", "periodKey": "t:1"}, headers=_as(A))
+        assert res.status_code == 409
+        assert (await client.post("/progression/claim", json={"questId": "connector", "periodKey": "t:9"}, headers=_as(A))).status_code == 404
+    # Earn Connector bronze via three real DMs (also completes first_dm + chat_unique quests; those
+    # are separate claims and are left unclaimed here).
+    async with app_db.async_session_maker() as session:
+        for i, t in enumerate([B, C, "d@example.com"]):
+            await record_quest_event(session, actor_email=A, event_type=EVENT_DM_SENT, dedupe_key=f"m{i}", target_email=t, occurred_at=T0)
+        await session.commit()
+    async with _client() as client:
+        badges_a = {b["id"]: b for b in (await client.get("/badges/me", headers=_as(A))).json()["badges"]}
+        assert badges_a["connector"]["tier"] == 1 and badges_a["connector"]["tiersClaimedAt"][0] is None
+        res = await client.post("/progression/claim", json={"questId": "connector", "periodKey": "t:1"}, headers=_as(A))
+        assert res.status_code == 200
+        body = res.json()
+        assert body["grantedNow"] is True and body["reward"] == {"xp": 25, "coins": 10}
+        assert body["progression"] == {"xp": 25, "coins": 10, "level": 1, "levelStartXp": 0, "nextLevelXp": 100}
+        again = (await client.post("/progression/claim", json={"questId": "connector", "periodKey": "t:1"}, headers=_as(A))).json()
+        assert again["grantedNow"] is False and again["progression"]["xp"] == 25
+        # Silver is not earned (needs 8) → still 409; claimed state visible on /badges/me.
+        assert (await client.post("/progression/claim", json={"questId": "connector", "periodKey": "t:2"}, headers=_as(A))).status_code == 409
+        badges_a = {b["id"]: b for b in (await client.get("/badges/me", headers=_as(A))).json()["badges"]}
+        assert badges_a["connector"]["tiersClaimedAt"][0] is not None and badges_a["connector"]["tiersClaimedAt"][1] is None
+        # B cannot claim A's tier.
+        assert (await client.post("/progression/claim", json={"questId": "connector", "periodKey": "t:1"}, headers=_as(B))).status_code == 409
+    async with app_db.async_session_maker() as session:
+        grants = (await session.execute(select(RewardGrant))).scalars().all()
+        assert [(g.source, g.quest_id, g.period_key, g.xp, g.coins) for g in grants] == [("badge", "connector", "t:1", 25, 10)]

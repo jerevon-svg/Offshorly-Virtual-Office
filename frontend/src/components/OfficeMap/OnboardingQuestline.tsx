@@ -1,13 +1,9 @@
 import { useEffect, useState } from "react";
 import styles from "./OnboardingQuestline.module.css";
 import { ClaimButton, ProgressionStrip, RewardTag } from "./RewardControls";
-import {
-  claimReward,
-  fetchMyProgression,
-  fetchMyQuests,
-  type Progression,
-  type Quest,
-} from "../../services/quests/questsClient";
+import { collectReward } from "./rewardFx";
+import { refreshProgression, useProgression } from "../../services/quests/progressionStore";
+import { claimReward, fetchMyQuests, type Quest } from "../../services/quests/questsClient";
 
 // Onboarding Questline panel — a read-only view of GET /quests/me plus the one write the user
 // can make: Claim a completed quest's reward (POST /progression/claim, idempotent server-side).
@@ -21,7 +17,7 @@ export interface OnboardingQuestlineProps {
 
 export function OnboardingQuestline({ onClose }: OnboardingQuestlineProps) {
   const [quests, setQuests] = useState<Quest[] | null>(null);
-  const [progression, setProgression] = useState<Progression | null>(null);
+  const progression = useProgression(); // shared store — see services/quests/progressionStore.ts
   const [error, setError] = useState<string | null>(null);
   const [claiming, setClaiming] = useState<string | null>(null);
 
@@ -34,23 +30,21 @@ export function OnboardingQuestline({ onClose }: OnboardingQuestlineProps) {
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : "Couldn't load your quests");
       });
-    // Balances are decorative here: a failure leaves the strip hidden, not the panel broken.
-    fetchMyProgression()
-      .then((p) => {
-        if (!cancelled) setProgression(p);
-      })
-      .catch(() => {});
+    // Balances are decorative here: a failed refresh leaves the last known value in the store.
+    void refreshProgression();
     return () => {
       cancelled = true;
     };
   }, []);
 
-  const claim = async (q: Quest) => {
+  const claim = async (q: Quest, source: DOMRect) => {
     if (claiming) return; // one claim in flight at a time — a double-click is one claim
     setClaiming(q.id);
     try {
       const res = await claimReward(q.id, "");
-      setProgression(res.progression);
+      // Server-confirmed only: grantedNow=true bursts from the Claim button and travels to the
+      // HUD (rewardFx.ts); a replay just syncs the confirmed balances silently.
+      void collectReward(res, source);
       setQuests((prev) =>
         prev ? prev.map((x) => (x.id === q.id ? { ...x, claimed: true, claimedAt: new Date().toISOString() } : x)) : prev,
       );
@@ -109,7 +103,7 @@ export function OnboardingQuestline({ onClose }: OnboardingQuestlineProps) {
                     completed={q.completed}
                     claimed={q.claimed}
                     pending={claiming === q.id}
-                    onClaim={() => void claim(q)}
+                    onClaim={(source) => void claim(q, source)}
                     label={q.title}
                   />
                 </li>

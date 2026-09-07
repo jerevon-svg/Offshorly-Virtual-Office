@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
 import styles from "./EmployeeProfile.module.css";
+import { AchievementGallery, PinnedBadges } from "./AchievementGallery";
+import { ProgressionStrip } from "./RewardControls";
+import { refreshBadges, refreshProgression, useProgressionStore } from "../../services/quests/progressionStore";
 import {
   createComment,
   createFeedPost,
@@ -14,6 +17,7 @@ import {
   type ReactionEmoji,
 } from "../../services/feed/feedClient";
 import { avatarIdForEmail } from "../../data/avatarIdentity";
+import { profileImageFor } from "../../data/portraits";
 import { SPRITE_SET_BY_AVATAR_ID, characterSprite } from "../../data/bonWalkFrames";
 import { PLACEHOLDER_SPRITE_SET } from "../../services/avatar/placeholder";
 import { mapAtlasToOfficeStatus, STATUS_META } from "../../services/presence/status";
@@ -31,10 +35,13 @@ function titleCaseLocalpart(email: string): string {
   return local.charAt(0).toUpperCase() + local.slice(1);
 }
 
+/** New Portrait when one exists (data/portraits.ts), else the sprite's front idle frame. */
 function avatarSrcFor(email: string): string {
-  const avatarId = avatarIdForEmail(email);
-  const set = avatarId ? SPRITE_SET_BY_AVATAR_ID[avatarId] : undefined;
-  return characterSprite(set ?? PLACEHOLDER_SPRITE_SET, "idle", "front");
+  return profileImageFor(email, () => {
+    const avatarId = avatarIdForEmail(email);
+    const set = avatarId ? SPRITE_SET_BY_AVATAR_ID[avatarId] : undefined;
+    return characterSprite(set ?? PLACEHOLDER_SPRITE_SET, "idle", "front");
+  });
 }
 
 function nameFor(email: string, roster: OfficePerson[]): string {
@@ -282,7 +289,17 @@ function FeedPostCard({ post, roster, viewerEmail, onUpdate, onDeletePost }: Fee
 }
 
 export function EmployeeProfile({ email, viewerEmail, roster, onClose }: EmployeeProfileProps) {
-  const [tab, setTab] = useState<"profile" | "feed">("profile");
+  const [tab, setTab] = useState<"profile" | "feed" | "achievements">("profile");
+  // Progression is self-only by API design (GET /progression/me); other people's profiles show
+  // no progression section. Read from the shared store so it matches the HUD exactly.
+  const isSelf = viewerEmail.trim().toLowerCase() === email.trim().toLowerCase();
+  const { progression, badges } = useProgressionStore();
+  useEffect(() => {
+    if (isSelf) {
+      void refreshProgression();
+      void refreshBadges();
+    }
+  }, [isSelf]);
   const [posts, setPosts] = useState<FeedPost[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -337,7 +354,7 @@ export function EmployeeProfile({ email, viewerEmail, roster, onClose }: Employe
 
   return (
     <div className={styles.backdrop} onClick={onClose}>
-      <div className={styles.panel} onClick={(e) => e.stopPropagation()}>
+      <div className={tab === "achievements" ? styles.panelWide : styles.panel} onClick={(e) => e.stopPropagation()}>
         <button className={styles.closeButton} onClick={onClose} aria-label="Close profile">
           ✕
         </button>
@@ -374,11 +391,41 @@ export function EmployeeProfile({ email, viewerEmail, roster, onClose }: Employe
           <button className={tab === "feed" ? styles.tabActive : styles.tab} onClick={() => setTab("feed")}>
             Feed
           </button>
+          {isSelf && (
+            <button
+              className={tab === "achievements" ? styles.tabActive : styles.tab}
+              onClick={() => setTab("achievements")}
+              data-testid="tab-achievements"
+            >
+              Achievements
+            </button>
+          )}
         </div>
 
         <div className={styles.body}>
+          {tab === "achievements" && isSelf && <AchievementGallery />}
           {tab === "profile" && (
             <div className={styles.profileInfo}>
+              {isSelf && progression && (
+                <div className={styles.progressionBlock} data-testid="profile-progression">
+                  <ProgressionStrip progression={progression} />
+                  <div className={styles.infoRow}>
+                    <span className={styles.infoLabel}>Level</span>
+                    <span>{progression.level}</span>
+                  </div>
+                  <div className={styles.infoRow}>
+                    <span className={styles.infoLabel}>XP</span>
+                    <span>
+                      {progression.xp - progression.levelStartXp} / {progression.nextLevelXp - progression.levelStartXp} to next level
+                    </span>
+                  </div>
+                  <div className={styles.infoRow}>
+                    <span className={styles.infoLabel}>Coins</span>
+                    <span>🪙 {progression.coins}</span>
+                  </div>
+                  <PinnedBadges badges={badges} />
+                </div>
+              )}
               <div className={styles.infoRow}>
                 <span className={styles.infoLabel}>Email</span>
                 <span>{email}</span>

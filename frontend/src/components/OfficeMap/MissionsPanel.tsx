@@ -2,14 +2,14 @@ import { useCallback, useEffect, useState } from "react";
 import styles from "./MissionsPanel.module.css";
 import { formatResetsIn } from "./formatResetsIn";
 import { ClaimButton, ProgressionStrip, RewardTag } from "./RewardControls";
+import { collectReward } from "./rewardFx";
+import { refreshProgression, useProgression } from "../../services/quests/progressionStore";
 import {
   claimReward,
   fetchMyMissions,
-  fetchMyProgression,
   type Mission,
   type MissionPeriod,
   type MyMissions,
-  type Progression,
 } from "../../services/quests/questsClient";
 
 // Daily/Weekly Missions panel — a read-only view of GET /missions/me plus Claim (POST
@@ -25,7 +25,7 @@ export interface MissionsPanelProps {
 
 export function MissionsPanel({ onClose }: MissionsPanelProps) {
   const [data, setData] = useState<MyMissions | null>(null);
-  const [progression, setProgression] = useState<Progression | null>(null);
+  const progression = useProgression(); // shared store — see services/quests/progressionStore.ts
   const [error, setError] = useState<string | null>(null);
   const [claiming, setClaiming] = useState<string | null>(null);
 
@@ -41,11 +41,7 @@ export function MissionsPanel({ onClose }: MissionsPanelProps) {
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : "Couldn't load your missions");
       });
-    fetchMyProgression()
-      .then((p) => {
-        if (!cancelled) setProgression(p);
-      })
-      .catch(() => {});
+    void refreshProgression();
     return () => {
       cancelled = true;
     };
@@ -74,13 +70,15 @@ export function MissionsPanel({ onClose }: MissionsPanelProps) {
     return () => window.clearTimeout(timer);
   }, [data, load]);
 
-  const claim = async (m: Mission, period: MissionPeriod) => {
+  const claim = async (m: Mission, period: MissionPeriod, source: DOMRect) => {
     if (claiming) return; // one claim in flight at a time — a double-click is one claim
     const key = `${m.id}@${period.periodKey}`;
     setClaiming(key);
     try {
       const res = await claimReward(m.id, period.periodKey);
-      setProgression(res.progression);
+      // Server-confirmed only: grantedNow=true bursts from the Claim button and travels to the
+      // HUD (rewardFx.ts); a replay just syncs the confirmed balances silently.
+      void collectReward(res, source);
       setData((prev) => {
         if (!prev) return prev;
         const patch = (block: MissionPeriod): MissionPeriod =>
@@ -131,7 +129,7 @@ interface PeriodSectionProps {
   label: string;
   period: MissionPeriod;
   claiming: string | null;
-  onClaim: (m: Mission, period: MissionPeriod) => void;
+  onClaim: (m: Mission, period: MissionPeriod, source: DOMRect) => void;
 }
 
 function PeriodSection({ label, period, claiming, onClaim }: PeriodSectionProps) {
@@ -153,7 +151,7 @@ function PeriodSection({ label, period, claiming, onClaim }: PeriodSectionProps)
               key={m.id}
               mission={m}
               pending={claiming === `${m.id}@${period.periodKey}`}
-              onClaim={() => onClaim(m, period)}
+              onClaim={(source) => onClaim(m, period, source)}
             />
           ))}
         </ol>
@@ -162,7 +160,7 @@ function PeriodSection({ label, period, claiming, onClaim }: PeriodSectionProps)
   );
 }
 
-function MissionRow({ mission: m, pending, onClaim }: { mission: Mission; pending: boolean; onClaim: () => void }) {
+function MissionRow({ mission: m, pending, onClaim }: { mission: Mission; pending: boolean; onClaim: (source: DOMRect) => void }) {
   const count = Math.min(m.count, m.target);
   const pct = m.target > 0 ? Math.round((count / m.target) * 100) : 0;
   return (

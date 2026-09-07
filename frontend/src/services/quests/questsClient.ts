@@ -165,3 +165,156 @@ export async function claimReward(questId: string, periodKey = ""): Promise<Clai
   }
   return (await res.json()) as ClaimResult;
 }
+
+// ---- Badge Progression (backend/app/routers/badges.py) --------------------------------------
+// Permanent tiered achievements (0 none, 1 bronze, 2 silver, 3 gold, 4 platinum) computed by the
+// server from the same ledger quests and missions use. No claim, no XP/Coins: tiers are awarded
+// server-side the moment a threshold is crossed. Read-only here.
+
+export type BadgeTier = 0 | 1 | 2 | 3 | 4;
+export type BadgeTierName = "none" | "bronze" | "silver" | "gold" | "platinum";
+
+export type BadgeCategory = "engagement" | "social" | "contribution" | "growth";
+
+export interface TierReward {
+  xp: number;
+  coins: number;
+}
+
+export interface Badge {
+  id: string;
+  title: string;
+  description: string;
+  category: BadgeCategory;
+  /** Stable artwork key — see data/badgeEmblems.ts. */
+  emblem: string;
+  metricKind: string;
+  metric: number;
+  tier: BadgeTier;
+  tierName: BadgeTierName;
+  thresholds: number[];
+  /** Null at Platinum. */
+  nextThreshold: number | null;
+  /** Index 0..3 = bronze..platinum; null where not yet awarded. */
+  tiersAwardedAt: (string | null)[];
+  /** Index 0..3; when that tier's XP/Coins bonus was claimed (null = unclaimed). */
+  tiersClaimedAt: (string | null)[];
+  /** Index 0..3; the one-time bonus each tier pays, server-defined. */
+  tierRewards: TierReward[];
+}
+
+/** Period key for claiming a badge tier's bonus through POST /progression/claim. */
+export function badgeTierPeriodKey(tier: number): string {
+  return `t:${tier}`;
+}
+
+/** GET /badges/me */
+export async function fetchMyBadges(): Promise<Badge[]> {
+  const res = await fetch(`${socketBase()}/badges/me`, { headers: authHeaders() });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body?.error || body?.detail || `Badges request failed (${res.status})`);
+  }
+  return ((await res.json()) as { badges: Badge[] }).badges;
+}
+
+// ---- Reward Redemption (backend/app/routers/rewards.py) --------------------------------------
+// Spend Coins on a code-defined demo catalog. Server-authoritative and idempotent: the client
+// generates one idempotency key per Redeem press, so a double-click or retry replays the same
+// redemption (createdNow=false) instead of spending twice. Every Coin movement is a row in the
+// same reward ledger the HUD sums, so the response's `progression` is the new truth.
+
+export type RedemptionStatus = "pending" | "approved" | "fulfilled" | "rejected" | "cancelled";
+
+export interface CatalogItem {
+  id: string;
+  title: string;
+  description: string;
+  cost: number;
+  category: "voucher" | "perk" | "time_off" | "custom";
+  requiresApproval: boolean;
+  affordable: boolean;
+}
+
+export interface Redemption {
+  id: string;
+  itemId: string;
+  title: string;
+  cost: number;
+  status: RedemptionStatus;
+  note: string | null;
+  createdAt: string;
+  decidedAt: string | null;
+}
+
+export interface RewardCatalog {
+  items: CatalogItem[];
+  progression: Progression;
+}
+
+export interface RedeemResult {
+  redemption: Redemption;
+  createdNow: boolean;
+  progression: Progression;
+}
+
+export interface RedemptionActionResult {
+  redemption: Redemption;
+  progression: Progression;
+}
+
+/** 8-30 chars of [A-Za-z0-9_-], generated once per Redeem press. */
+export function newIdempotencyKey(): string {
+  const raw =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID().replace(/-/g, "")
+      : `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+  return raw.slice(0, 24);
+}
+
+async function readJson<T>(res: Response, what: string): Promise<T> {
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body?.error || body?.detail || `${what} failed (${res.status})`);
+  }
+  return (await res.json()) as T;
+}
+
+function jsonHeaders(): Headers {
+  const headers = authHeaders();
+  headers.set("Content-Type", "application/json");
+  return headers;
+}
+
+/** GET /rewards/catalog */
+export async function fetchRewardCatalog(): Promise<RewardCatalog> {
+  return readJson(await fetch(`${socketBase()}/rewards/catalog`, { headers: authHeaders() }), "Rewards request");
+}
+
+/** POST /rewards/redeem */
+export async function redeemReward(itemId: string, idempotencyKey: string): Promise<RedeemResult> {
+  const res = await fetch(`${socketBase()}/rewards/redeem`, {
+    method: "POST",
+    headers: jsonHeaders(),
+    body: JSON.stringify({ itemId, idempotencyKey }),
+  });
+  return readJson(res, "Redeem");
+}
+
+/** GET /rewards/redemptions/me */
+export async function fetchMyRedemptions(): Promise<Redemption[]> {
+  const data = await readJson<{ redemptions: Redemption[] }>(
+    await fetch(`${socketBase()}/rewards/redemptions/me`, { headers: authHeaders() }),
+    "Redemptions request",
+  );
+  return data.redemptions;
+}
+
+/** POST /rewards/redemptions/{id}/cancel — pending only. */
+export async function cancelRedemption(id: string): Promise<RedemptionActionResult> {
+  const res = await fetch(`${socketBase()}/rewards/redemptions/${encodeURIComponent(id)}/cancel`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  return readJson(res, "Cancel");
+}

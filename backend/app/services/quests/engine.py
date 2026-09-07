@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.quest import QuestEvent
+from app.services.quests.badges import BadgeAwardRef, advance_badges, badge_definitions_for
 from app.services.quests.missions import MissionRef, advance_missions, mission_definitions_for
 from app.services.quests.progress import get_or_create_progress
 from app.services.quests.registry import (
@@ -70,6 +71,8 @@ class QuestRecordResult:
     # crossed its target on this call, exactly once.
     updated_missions: tuple[MissionRef, ...] = field(default_factory=tuple)
     completed_missions: tuple[MissionRef, ...] = field(default_factory=tuple)
+    # Badge tiers crossed on this call (services/quests/badges.py) — permanent, no claim.
+    awarded_badges: tuple[BadgeAwardRef, ...] = field(default_factory=tuple)
 
 
 UNSUBSCRIBED = QuestRecordResult(stored=False)
@@ -90,7 +93,7 @@ async def record_quest_event(
     that subscribes to it. Returns None ONLY when recording itself failed (already logged)."""
     # Storage gate: an event type is written only if a quest OR a pool mission subscribes to it.
     subscribed = definitions_for(event_type)
-    if not subscribed and not mission_definitions_for(event_type):
+    if not subscribed and not mission_definitions_for(event_type) and not badge_definitions_for(event_type):
         return UNSUBSCRIBED
 
     actor = _normalize(actor_email)
@@ -181,6 +184,15 @@ async def _record(
         session, actor=actor, event_type=event_type, occurred_at=occurred_at
     )
 
+    # 4. Badges: monotonic metrics over the same storage; tiers awarded the moment they cross.
+    awarded_badges = await advance_badges(
+        session,
+        actor=actor,
+        event_type=event_type,
+        occurred_at=occurred_at,
+        completions_changed=bool(completed or completed_missions),
+    )
+
     await session.flush()
     return QuestRecordResult(
         stored=True,
@@ -188,6 +200,7 @@ async def _record(
         completed_quest_ids=tuple(completed),
         updated_missions=updated_missions,
         completed_missions=completed_missions,
+        awarded_badges=awarded_badges,
     )
 
 

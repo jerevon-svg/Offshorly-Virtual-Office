@@ -1,0 +1,288 @@
+/* Shell mirrors MissionsPanel.module.css — one modal family. */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.panel {
+  position: relative;
+  width: min(520px, 94vw);
+  max-height: 86vh;
+  background: linear-gradient(180deg, rgba(30, 26, 46, 0.97), rgba(18, 16, 28, 0.97));
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  font-family: system-ui, sans-serif;
+  color: #f5f0ff;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.closeButton {
+  all: unset;
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  cursor: pointer;
+  color: rgba(245, 240, 255, 0.7);
+  font-size: 14px;
+  padding: 6px;
+  border-radius: 6px;
+}
+
+.closeButton:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f5f0ff;
+}
+
+.header {
+  padding: 18px 20px 6px;
+}
+
+.title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.muted,
+.desc {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: rgba(245, 240, 255, 0.65);
+}
+
+.error {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #ff9b9b;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 20px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.tab,
+.tabActive {
+  all: unset;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 14px;
+  color: rgba(245, 240, 255, 0.6);
+  border-bottom: 2px solid transparent;
+}
+
+.tabActive {
+  color: #f5f0ff;
+  border-bottom-color: #a78bfa;
+}
+
+.body {
+  padding: 12px 20px 18px;
+  overflow-y: auto;
+}
+
+/* ---- catalog ----------------------------------------------------------------------------- */
+.grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.card,
+.cardDim {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #f5f0ff;
+}
+
+.cardDim {
+  opacity: 0.7;
+}
+
+.cardTop {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.category {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(245, 240, 255, 0.55);
+}
+
+.cost {
+  font-size: 15px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #ffd67a;
+}
+
+.cardTitle {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.desc {
+  margin: 0;
+  font-size: 12px;
+}
+
+.approval {
+  font-size: 11px;
+  color: rgba(255, 214, 122, 0.8);
+}
+
+.redeem,
+.ghost {
+  all: unset;
+  cursor: pointer;
+  align-self: flex-start;
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.redeem {
+  color: #1b1530;
+  background: #ffd67a;
+}
+
+.redeem:hover:not(:disabled) {
+  background: #ffe29c;
+}
+
+.redeem:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.ghost {
+  color: rgba(245, 240, 255, 0.8);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.ghost:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.ghost:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 214, 122, 0.1);
+  border: 1px solid rgba(255, 214, 122, 0.3);
+  font-size: 12px;
+}
+
+.confirm .redeem,
+.confirm .ghost {
+  margin-top: 0;
+}
+
+/* ---- history ----------------------------------------------------------------------------- */
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 13px;
+}
+
+.rowMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rowTitle {
+  font-weight: 600;
+}
+
+.rowMeta {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(245, 240, 255, 0.6);
+}
+
+.status {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.status_pending {
+  color: #ffd67a;
+  background: rgba(255, 214, 122, 0.14);
+}
+.status_approved {
+  color: #b9e6ff;
+  background: rgba(185, 230, 255, 0.14);
+}
+.status_fulfilled {
+  color: #9be7a5;
+  background: rgba(155, 231, 165, 0.14);
+}
+.status_rejected {
+  color: #ff9b9b;
+  background: rgba(255, 155, 155, 0.14);
+}
+.status_cancelled {
+  color: rgba(245, 240, 255, 0.6);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.row .ghost {
+  margin-top: 0;
+  align-self: center;
+}
