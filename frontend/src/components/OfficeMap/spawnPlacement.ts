@@ -81,6 +81,28 @@ export function canSelfFreeWalk(
   return attendance === "CHECKED_IN" && onboardingDone && !checkoutBusy;
 }
 
+/** Office boundary invariant: a CHECKED_IN employee who is currently inside the office may never
+ * walk or path to a point on the sidewalk/outside layer — only checkout moves them outside. The
+ * walkability grid deliberately connects the entrance corridor to the sidewalk (the check-in entry
+ * walk and the checkout exit walk need that path), so connectivity alone does not enforce this;
+ * the self-movement funnel asks here before every walk. Returns true when the move must be
+ * REJECTED. Exempt by construction: CHECKED_OUT/UNKNOWN (sidewalk lineup, entry walk before the
+ * server confirms), a walk that STARTS outside (the check-in entry walk after confirmation), and
+ * the checkout flow's own goodbye/reception/exit walks (`checkoutBusy`). */
+export function selfPathLeavesOffice(
+  attendance: AttendanceView,
+  checkoutBusy: boolean,
+  isInsideOffice: (center: Pt) => boolean,
+  avatarSize: { w: number; h: number },
+  origin: Pt,
+  path: Pt[],
+): boolean {
+  if (attendance !== "CHECKED_IN" || checkoutBusy) return false;
+  const center = (p: Pt): Pt => ({ x: p.x + avatarSize.w / 2, y: p.y + avatarSize.h / 2 });
+  if (!isInsideOffice(center(origin))) return false;
+  return path.some((p) => !isInsideOffice(center(p)));
+}
+
 function isFinitePt(p: Pt | undefined): p is Pt {
   return !!p && Number.isFinite(p.x) && Number.isFinite(p.y);
 }

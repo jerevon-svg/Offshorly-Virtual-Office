@@ -53,6 +53,11 @@ export interface UseSelfMovementDeps {
    * reload (seeded from the persisted facing) visibly "corrects" the owner.
    * Optional only for backwards-compatible callers/tests; OfficeMap passes it. */
   face?: (direction: WalkDirection) => void;
+  /** Movement policy gate, asked with the live origin and the full path BEFORE anything moves or
+   * is emitted. Returning false drops the move entirely (no local walk, no walk_started, no
+   * onArrive) — OfficeMap uses it for the office boundary invariant (spawnPlacement.ts's
+   * selfPathLeavesOffice). Optional so existing callers/tests are unaffected. */
+  allowMove?: (origin: Pt, path: Pt[]) => boolean;
 }
 
 /**
@@ -73,6 +78,8 @@ export function makeMoveSelf(deps: UseSelfMovementDeps) {
   return function moveSelf(input: MoveSelfInput): void {
     const { path, roomId, arrival, onArrive } = input;
     const origin = deps.getPos();
+
+    if (deps.allowMove && !deps.allowMove(origin, path)) return;
 
     if (path.length === 0 || walkDurationMs([origin, ...path]) === 0) {
       onArrive?.();

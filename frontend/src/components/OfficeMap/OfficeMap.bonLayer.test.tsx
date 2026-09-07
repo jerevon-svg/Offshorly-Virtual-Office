@@ -1,4 +1,4 @@
-import { render } from "@testing-library/react";
+import { render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FRAME_HEIGHT, FRAME_WIDTH } from "../../data/office-layout";
 import { resetCurrentUserForTests, setCurrentUserFromMeResponse } from "../../auth/currentUserStore";
@@ -109,11 +109,13 @@ describe("OfficeMap: single authoritative Bon layer", () => {
     expect(bonRenders(container).total).toBe(1);
   });
 
-  it("3. self Bon viewer -> own character visible exactly once", () => {
+  it("3. self Bon viewer -> own character visible exactly once", async () => {
     mockRosterPeople = [BON, ALEX];
     signInAs("jerevon@offshorly.com", "Bon");
     const { container } = render(<OfficeMap />);
-    expect(bonRenders(container).total).toBe(1);
+    // Own layer is hidden until attendance answers and the spawn effect places it (spawn
+    // hydration gate); CHECKED_OUT (mock default) resolves that on the next tick.
+    await waitFor(() => expect(bonRenders(container).total).toBe(1));
   });
 
   it("4. ?live3d=bon-v2 for a peer viewer -> exactly one candidate canvas, no second Bon", () => {

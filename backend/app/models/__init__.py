@@ -25,6 +25,7 @@ from app.models.toucan import (
     ToucanUrgentFlag,
 )
 from app.models.whiteboard import Whiteboard
+from app.models.working_today import WorkingTodayShare
 
 __all__ = [
     "ActivityEvent",
@@ -58,4 +59,5 @@ __all__ = [
     "ToucanResource",
     "ToucanUrgentFlag",
     "Whiteboard",
+    "WorkingTodayShare",
 ]

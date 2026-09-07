@@ -159,4 +159,30 @@ describe("useSelfMovement / moveSelf", () => {
     expect(movementSync.emitWalkStarted).not.toHaveBeenCalled();
     expect(onArrive).toHaveBeenCalledTimes(2);
   });
+
+  it("allowMove returning false drops the move entirely: no local walk, no walk_started/walk_arrived, no onArrive (office boundary gate)", () => {
+    vi.mocked(movementSync.emitWalkStarted).mockClear();
+    vi.mocked(movementSync.emitWalkArrived).mockClear();
+    const walkTo = vi.fn();
+    const allowMove = vi.fn(() => false);
+    const moveSelf = makeMoveSelf({ walkTo, getPos: () => ({ x: 5, y: 5 }), getDirection: () => "front", allowMove });
+    const onArrive = vi.fn();
+
+    moveSelf({ path: [{ x: 50, y: 5 }], roomId: null, onArrive });
+
+    expect(allowMove).toHaveBeenCalledWith({ x: 5, y: 5 }, [{ x: 50, y: 5 }]);
+    expect(walkTo).not.toHaveBeenCalled();
+    expect(movementSync.emitWalkStarted).not.toHaveBeenCalled();
+    expect(movementSync.emitWalkArrived).not.toHaveBeenCalled();
+    expect(onArrive).not.toHaveBeenCalled();
+  });
+
+  it("allowMove returning true leaves the move untouched", () => {
+    vi.mocked(movementSync.emitWalkStarted).mockClear();
+    const walkTo = vi.fn((_input, onArrive) => onArrive?.());
+    const moveSelf = makeMoveSelf({ walkTo, getPos: () => ({ x: 0, y: 0 }), getDirection: () => "front", allowMove: () => true });
+    moveSelf({ path: [{ x: 10, y: 0 }], roomId: null });
+    expect(walkTo).toHaveBeenCalledTimes(1);
+    expect(movementSync.emitWalkStarted).toHaveBeenCalledTimes(1);
+  });
 });

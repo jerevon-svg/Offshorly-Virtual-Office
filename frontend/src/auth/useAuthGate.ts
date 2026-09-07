@@ -18,6 +18,7 @@ import { setDevIdentity as setRoomRequestsClientDevIdentity } from "../services/
 import { setDevIdentity as setTalkRequestsClientDevIdentity } from "../services/chat/talkRequestsClient";
 import { setDevIdentity as setToucanDevIdentity } from "../services/toucan";
 import { setDevIdentity as setAttendanceDevIdentity } from "../services/attendance";
+import { setDevIdentity as setTeamMapDevIdentity } from "../services/teamMap";
 
 // Boot-time permission gate for the Virtual Office. Calls Atlas's
 // GET /api/v1/auth/me and checks the can_view_virtual_office flag.
@@ -242,6 +243,7 @@ function seedDevBypassIdentity(): void {
   setSpatialWalkDevIdentity(email);
   setHubClientDevIdentity(email);
   setAttendanceDevIdentity(email);
+  setTeamMapDevIdentity(email);
   setFeedClientDevIdentity(email);
   setQuestsClientDevIdentity(email);
   // whiteboardSyncClient.ts (W3 realtime) reads this same identity — no separate seeding.

@@ -3,6 +3,10 @@ body {
   margin: 0;
   height: 100%;
   overflow: hidden;
+  /* Matches the inline first-paint ground in index.html and
+     .loading-cover's background, so the dark page never flashes to white
+     when this stylesheet takes over from the inline rule. */
+  background-color: #1b1612;
 }
 
 #root {

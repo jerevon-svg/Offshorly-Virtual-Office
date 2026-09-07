@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, lazy, Suspense } from "react";
 import {
   TransformWrapper,
   TransformComponent,
@@ -103,7 +103,13 @@ import { mapAtlasToOfficeStatus, type OfficeStatus } from "../../services/presen
 import { resolveManualStatusMovement } from "../../services/presence/statusMovement";
 import { emitGoOffline, emitComeOnline, useOfflineLineup } from "../../services/presence/offlineLineupClient";
 import { attendanceService, type AttendanceRecord, type AttendanceStatus } from "../../services/attendance";
-import { canOfferCheckIn, canSelfFreeWalk, insideOfficeValidator, resolveSpawnPlacement } from "./spawnPlacement";
+import {
+  canOfferCheckIn,
+  canSelfFreeWalk,
+  insideOfficeValidator,
+  resolveSpawnPlacement,
+  selfPathLeavesOffice,
+} from "./spawnPlacement";
 import { slotIndexToPosition } from "../../services/presence/lineupSlots";
 import {
   applyOfflineLineupPositions,
@@ -180,6 +186,7 @@ import { readBriefedSince, shouldBriefOnReturn, writeBriefedSince } from "./touc
 import type { ToucanSummonState } from "./ToucanFlyer";
 import { useCurrentUser } from "../../auth/currentUserStore";
 import { useOfficeRoster } from "../../services/office/useOfficeRoster";
+import { setStartupSignal } from "../../startup/startupReadiness";
 import { officePeopleToLayers, rosterSrcById } from "../../data/rosterLayers";
 import { computeBackSitOccupantBaselines } from "../../data/backSitOccupancy";
 import { TimeLogReview } from "./checkout/TimeLogReview";
@@ -195,6 +202,8 @@ import { OnboardingQuestline } from "./OnboardingQuestline";
 import { MissionsPanel } from "./MissionsPanel";
 import { PlayerHud } from "./PlayerHud";
 import { RewardsPanel } from "./RewardsPanel";
+// Global Team Map V1 — React.lazy so MapLibre (~250 KB) only loads when someone opens the map.
+const TeamMapPanel = lazy(() => import("../TeamMap/TeamMapPanel"));
 import { isLive3dEligible } from "../../render3d/live3dCharacters";
 import { avatarIdForEmail, mockEmailForAvatarId } from "../../data/avatarIdentity";
 import styles from "./OfficeMap.module.css";
@@ -335,6 +344,8 @@ export function OfficeMap() {
   const [missionsOpen, setMissionsOpen] = useState(false);
   // Reward Redemption (see RewardsPanel.tsx) — fetches the catalog + history on open.
   const [rewardsOpen, setRewardsOpen] = useState(false);
+  // Global Team Map V1 (see components/TeamMap/TeamMapPanel.tsx) — fetches on open.
+  const [teamMapOpen, setTeamMapOpen] = useState(false);
   // Anchored action menu opened by clicking the reception room itself — the
   // sole entry point for check-in/check-out now that Arisha's own menu no
   // longer offers "Check in" and the room-picker step is gone.
@@ -1311,9 +1322,24 @@ export function OfficeMap() {
   // helper in this file) so its getPos/getDirection closures always read
   // the current render's bonPos/direction/isSitting/sitDirection — moveSelf
   // is only ever invoked synchronously (never stashed across renders).
+  //
+  // Office boundary invariant (selfPathLeavesOffice): a CHECKED_IN viewer standing inside can
+  // never be walked onto the sidewalk — the grid connects the two through the entrance corridor,
+  // so this gate is what enforces it. checkoutBusy is declared further down (after useCheckoutFlow)
+  // and mirrored into a ref, so the gate reads the current render's value at call time.
+  const checkoutBusyRef = useRef(false);
   const moveSelf = makeMoveSelf({
     walkTo,
     getPos: () => bonPos,
+    allowMove: (origin, path) =>
+      !selfPathLeavesOffice(
+        attendance,
+        checkoutBusyRef.current,
+        isInsideOfficeForSpawn,
+        { w: playerCharacterLayer.width, h: playerCharacterLayer.height },
+        origin,
+        path,
+      ),
     // Reads the walker's LIVE direction ref, not this render's `direction`
     // state: arrival facing is resolved inside onArrive, which fires from the
     // walk's rAF loop after this closure was created, so the state value there
@@ -1349,12 +1375,34 @@ export function OfficeMap() {
   // this ref is declared here so it stays adjacent to the other
   // useCharacterWalk-related refs, but is only ever flipped by that effect.
   const spawnMovedRef = useRef(false);
+  // Render-visible twin of spawnMovedRef: false until the spawn-restore effect has placed self.
+  // Until then a CHECKED_IN (or still-UNKNOWN) viewer is hidden (see hiddenCharacterIds) — the
+  // walk hook is seeded from the manifest's OUTSIDE spawn point (bonLayer), so on a hard refresh a
+  // checked-in employee would otherwise be drawn on the sidewalk while attendance / the movement
+  // socket's first positions_snapshot are still loading (regression 2026-09-07). Never gates
+  // CHECKED_OUT: the sidewalk IS that placement, so it is shown as soon as attendance says so.
+  const [selfPlaced, setSelfPlaced] = useState(false);
   // Authoritative restored self position (top-left), published once by the spawn-restore effect
   // for CHECKED_IN placements only. Consumed by the one-time initial camera focus effect.
   const [restoredSelfPos, setRestoredSelfPos] = useState<Pt | null>(null);
   const initialSelfFocusDoneRef = useRef(false);
   // TransformWrapper has initialised its wrapper/content (onInit) — the camera can be written.
   const [transformReady, setTransformReady] = useState(false);
+
+  // Boot loading cover (components/LoadingCover): publish the startup state this component
+  // ALREADY tracks. Observation only — nothing here waits on, or is gated by, the cover.
+  useEffect(() => {
+    setStartupSignal("roster", !roster.loading);
+  }, [roster.loading]);
+  useEffect(() => {
+    setStartupSignal("attendance", attendance !== "UNKNOWN");
+  }, [attendance]);
+  useEffect(() => {
+    setStartupSignal("transform", transformReady);
+  }, [transformReady]);
+  useEffect(() => {
+    setStartupSignal("selfPlaced", selfPlaced);
+  }, [selfPlaced]);
 
   // Alex/Micah/Lui demo-walk instances — same useCharacterWalk hook as bon,
   // seeded from each NPC's actual current manifest position so their demo
@@ -2209,6 +2257,7 @@ export function OfficeMap() {
     });
     if (!placement) return;
     spawnMovedRef.current = true;
+    setSelfPlaced(true);
     // Restored CHECKED_IN placements publish the authoritative self position for the ONE-TIME
     // initial camera focus effect below (initialSelfFocusDoneRef) — placement and camera are
     // deliberately decoupled: this effect only ever positions the avatar, and the focus effect
@@ -2290,18 +2339,31 @@ export function OfficeMap() {
   // walking, facing, sitting, spatial typing, Global Chat activity) already
   // attaches to. With no roster Bon (pure mock cast) the manifest Bon stays,
   // and the viewer's own player layer is never hidden.
+  //
+  // Spawn hydration: the viewer's own layer is ALSO hidden while its initial placement is still
+  // pending and may be an interior one (attendance UNKNOWN or CHECKED_IN, self not yet placed by
+  // the spawn-restore effect). The layer is still seeded at bonLayer (outside) in that window, so
+  // hiding it is what keeps a checked-in employee from flashing on the sidewalk on a hard refresh.
+  // Bounded: the spawn effect can only ever place a viewer who has a roster layer, so once the
+  // roster has loaded WITHOUT the viewer in it (degenerate: roster fetch failed/omitted them) the
+  // gate lifts and the legacy manifest-spawn rendering applies rather than an invisible avatar.
+  const selfPlacementPending = !selfPlaced && attendance !== "CHECKED_OUT" && (viewerLayer !== null || roster.loading);
   const hiddenCharacterIds = useMemo(() => {
-    if (!rosterActive) return [];
-    const ids = npcCharacterLayers.filter((layer) => layer.id !== playerLayerId).map((layer) => layer.id);
-    const rosterHasBon = rosterLayers.some((layer) => avatarIdForEmail(layer.id) === "bon");
-    if (playerLayerId !== "bon" && rosterHasBon) ids.push("bon");
+    const ids: string[] = [];
+    if (rosterActive) {
+      ids.push(...npcCharacterLayers.filter((layer) => layer.id !== playerLayerId).map((layer) => layer.id));
+      const rosterHasBon = rosterLayers.some((layer) => avatarIdForEmail(layer.id) === "bon");
+      if (playerLayerId !== "bon" && rosterHasBon) ids.push("bon");
+    }
+    if (selfPlacementPending) ids.push(playerLayerId);
     return ids;
-  }, [rosterActive, playerLayerId, rosterLayers]);
+  }, [rosterActive, playerLayerId, rosterLayers, selfPlacementPending]);
 
   const checkoutBusy =
     checkoutFlow.state === "SAYING_GOODBYE" ||
     checkoutFlow.state === "WALKING_TO_RECEPTION" ||
     checkoutFlow.state === "WALKING_TO_EXIT";
+  checkoutBusyRef.current = checkoutBusy;
   const exitTriggeredRef = useRef(false);
   const [frozenCheckoutAtMs, setFrozenCheckoutAtMs] = useState<number | null>(null);
 
@@ -4545,6 +4607,15 @@ export function OfficeMap() {
       )}
       {hasCheckedIn && onboarding === "done" && !checkoutBusy && (
         <button
+          className={styles.hubButton}
+          onClick={() => setTeamMapOpen(true)}
+          aria-label="Open Global Team Map"
+        >
+          🌍 Map
+        </button>
+      )}
+      {hasCheckedIn && onboarding === "done" && !checkoutBusy && (
+        <button
           className={styles.questsButton}
           onClick={() => setQuestlineOpen(true)}
           aria-label="Open Onboarding Questline"
@@ -4662,6 +4733,27 @@ export function OfficeMap() {
       {questlineOpen && <OnboardingQuestline onClose={() => setQuestlineOpen(false)} />}
       {missionsOpen && <MissionsPanel onClose={() => setMissionsOpen(false)} />}
       {rewardsOpen && <RewardsPanel onClose={() => setRewardsOpen(false)} />}
+      {teamMapOpen && (
+        <Suspense fallback={null}>
+          <TeamMapPanel
+            viewerEmail={currentUser?.email ?? null}
+            roster={roster.people}
+            onClose={() => setTeamMapOpen(false)}
+            onOpenProfile={(email) => {
+              setTeamMapOpen(false);
+              setProfileEmail(email);
+            }}
+            onOpenChat={
+              chatMode === "real"
+                ? (email) => {
+                    setTeamMapOpen(false);
+                    startRemoteDirectMessage(email);
+                  }
+                : undefined
+            }
+          />
+        </Suspense>
+      )}
       {/* Player HUD (Level / XP / Coins) — same visibility rule as the Quests/Missions pills. */}
       {hasCheckedIn && onboarding === "done" && !checkoutBusy && <PlayerHud />}
       {(import.meta.env.DEV || isRealZohoMode()) && (

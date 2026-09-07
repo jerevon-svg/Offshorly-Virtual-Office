@@ -45,7 +45,7 @@ export default defineConfig(({ mode }) => ({
   // reload to pick up the new dep graph. That reload closed the group chat and the board the
   // user had just created (2026-09-05). Listing it here pre-bundles it at server start instead.
   optimizeDeps: {
-    include: ["@excalidraw/excalidraw"],
+    include: ["@excalidraw/excalidraw", "maplibre-gl"],
   },
   server: {
     // 5173 is a CONTRACT, not a preference: Atlas's dev proxy targets

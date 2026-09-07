@@ -5,6 +5,8 @@ import { useAuthGate } from "./auth/useAuthGate";
 import { BackgroundMusicControl } from "./audio/BackgroundMusicControl";
 import { ChatTestPage } from "./pages/ChatTestPage";
 import { initDeviceTierTelemetry } from "./services/render/telemetry";
+import { LoadingCover } from "./components/LoadingCover/LoadingCover";
+import { setStartupSignal } from "./startup/startupReadiness";
 
 // DEV-ONLY chat test harness entry point (see src/pages/ChatTestPage.tsx).
 // `import.meta.env.DEV` is Vite's build-time flag — false in every built/
@@ -31,8 +33,16 @@ function OfficeApp() {
     initDeviceTierTelemetry();
   }, []);
 
+  // Boot cover readiness: the auth gate opening is the first critical
+  // startup signal (startup/startupReadiness.ts); OfficeMap publishes the
+  // rest once it mounts underneath the cover.
+  useEffect(() => {
+    setStartupSignal("auth", status === "allowed");
+  }, [status]);
+
   if (status === "pending") {
-    return <div>Loading…</div>;
+    // Same cover the office boots under — no bare "Loading…" flash.
+    return <LoadingCover />;
   }
 
   if (status === "denied" || status === "unauthenticated") {
@@ -45,6 +55,7 @@ function OfficeApp() {
     <ErrorBoundary>
       <OfficeMap />
       <BackgroundMusicControl />
+      <LoadingCover />
     </ErrorBoundary>
   );
 }

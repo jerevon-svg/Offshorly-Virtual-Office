@@ -5,6 +5,19 @@
     <link rel="icon" type="image/svg+xml" href="%BASE_URL%favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Offshorly Virtual Office</title>
+    <!-- First-paint ground, inline so it applies BEFORE any CSS/JS bundle
+         loads. Without it the browser paints its default white page for the
+         moment between navigation and React mounting the loading cover — a
+         white flash in front of a dark cover. Keep this color in sync with
+         .loading-cover's background in
+         src/components/LoadingCover/LoadingCover.css. -->
+    <style>
+      html,
+      body {
+        margin: 0;
+        background-color: #1b1612;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>

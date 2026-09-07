@@ -268,14 +268,15 @@ describe("OfficeMap", () => {
     expect(() => render(<OfficeMap />)).not.toThrow();
   });
 
-  it("renders the layered office stage with multiple images", () => {
+  it("renders the layered office stage with multiple images", async () => {
     const { container } = render(<OfficeMap />);
-    const images = container.querySelectorAll("img");
     // 165 layers from the manifest: floor + rooms + decor + characters +
     // furniture (161 previous + 3 for the new ai-door / executive-door-left /
     // executive-door-right visual door assets from Bon's Figma redesign,
-    // + 1 for the jan character layer added with the A2 roster).
-    expect(images.length).toBe(165);
+    // + 1 for the jan character layer added with the A2 roster). Counted once
+    // attendance has answered: the viewer's own layer is hidden while its
+    // placement is still pending (spawn hydration gate, see hiddenCharacterIds).
+    await waitFor(() => expect(container.querySelectorAll("img").length).toBe(165));
   });
 
   it("mounts the TransformWrapper wrapper div", () => {
@@ -972,6 +973,141 @@ describe("OfficeMap", () => {
       await act(() => new Promise((r) => setTimeout(r, 60)));
       expect(cameraRecorder.calls.length).toBe(1);
       expect(sameFraming(cameraRecorder.calls[0], framingFor({ x: bonLayer.x, y: bonLayer.y }))).toBe(true);
+    });
+  });
+  // Regression coverage for the hard-refresh spawn race (2026-09-07): attendance (GET
+  // /attendance/me) answers CHECKED_IN before movement-sync's first positions_snapshot, and the
+  // walk hook is seeded from the manifest's OUTSIDE spawn point (bonLayer), so a checked-in
+  // employee was briefly drawn on the sidewalk while their real position was still loading. The
+  // fix hides the viewer's own layer until the spawn-restore effect has placed it (never for a
+  // CHECKED_OUT viewer, whose placement IS the sidewalk). Positions are read off the rendered
+  // layer's percentage left/top, the same way the camera-restore tests do.
+  describe("hard refresh while checked in never initialises self outside (spawn hydration race)", () => {
+    const SELF_EMAIL = "jerevon@offshorly.com";
+    const selfPerson: OfficePerson = {
+      email: SELF_EMAIL,
+      displayName: "Bon",
+      status: "ONLINE",
+      departmentName: "Design",
+      jobTitle: null,
+      currentActivity: null,
+      lastMessage: null,
+      avatarId: "bon",
+      roomId: "design-team",
+      atlasRoomId: null,
+      inEphemeralRoom: false,
+    };
+    const AVATAR = { width: bonLayer.width, height: bonLayer.height };
+    const inside = insideOfficeValidator(officeAssetLayers.find((l) => l.kind === "sidewalk") ?? null);
+    const pct = (v: number, frame: number) => `${(v / frame) * 100}%`;
+    // Every src the viewer's own (bon) layer can render while standing or seated.
+    const SELF_SRCS = new Set(
+      (["front", "back", "left", "right"] as const).flatMap((d) => [
+        characterSprite(BON_SPRITE_SET, "idle", d),
+        characterSprite(BON_SPRITE_SET, "sitType", d),
+      ]),
+    );
+
+    // Top-left positions (px) of every rendered self layer — [] while the layer is hidden.
+    function selfLayerPositions(container: HTMLElement): { x: number; y: number }[] {
+      return Array.from(container.querySelectorAll("img"))
+        .filter((img) => SELF_SRCS.has(img.getAttribute("src") ?? ""))
+        .map((img) => {
+          const layer = img.parentElement as HTMLElement;
+          return {
+            x: (parseFloat(layer.style.left) / 100) * FRAME_WIDTH,
+            y: (parseFloat(layer.style.top) / 100) * FRAME_HEIGHT,
+          };
+        });
+    }
+    const isOutside = (p: { x: number; y: number }) => !inside({ x: p.x + AVATAR.width / 2, y: p.y + AVATAR.height / 2 });
+
+    // Samples the rendered self position every 25ms for `ms`, failing on the FIRST outside render.
+    async function assertNeverOutsideFor(container: HTMLElement, ms: number) {
+      for (let elapsed = 0; elapsed < ms; elapsed += 25) {
+        const outside = selfLayerPositions(container).filter(isOutside);
+        expect(outside, `self rendered outside the office at t≈${elapsed}ms`).toEqual([]);
+        await act(() => new Promise<void>((r) => setTimeout(r, 25)));
+      }
+    }
+
+    function findRestorableStandingPos(): { x: number; y: number } {
+      for (let y = 40; y < FRAME_HEIGHT - AVATAR.height; y += 20) {
+        for (let x = 40; x < FRAME_WIDTH - AVATAR.width; x += 20) {
+          const center = { x: x + AVATAR.width / 2, y: y + AVATAR.height / 2 };
+          const cell = worldToCell(center);
+          if (inside(center) && isWalkable(cell.cx, cell.cy) && (x !== bonLayer.x || y !== bonLayer.y)) return { x, y };
+        }
+      }
+      throw new Error("no restorable standing position found on the floor plan");
+    }
+
+    beforeEach(() => {
+      mockRosterPeople = [selfPerson];
+      setCurrentUserFromMeResponse({ id: "self-id", email: SELF_EMAIL, full_name: "Bon", role: "", team: null });
+    });
+
+    afterEach(() => {
+      mockRosterPeople = [];
+      peerMovementSnapshotState.entries = [];
+      peerMovementSnapshotState.snapshotReady = false;
+      resetMockAttendanceForTests(getCurrentUserId());
+      resetCurrentUserForTests();
+    });
+
+    it("CHECKED_IN with the positions_snapshot still loading: self is never drawn on the sidewalk, then appears inside once placed", async () => {
+      await mockAttendanceService.checkIn(getCurrentUserId());
+      // The socket's first snapshot has NOT arrived: the spawn effect must wait (bounded by its
+      // MOVEMENT_SNAPSHOT_WAIT_MS fallback), and nothing may be visible outside meanwhile.
+      peerMovementSnapshotState.snapshotReady = false;
+      peerMovementSnapshotState.entries = [];
+
+      const { container } = render(<OfficeMap />);
+      await assertNeverOutsideFor(container, 400);
+
+      // Snapshot wait expires → own-desk fallback: self becomes visible, and only inside.
+      await waitFor(
+        () => {
+          const positions = selfLayerPositions(container);
+          expect(positions.length).toBeGreaterThan(0);
+          expect(positions.filter(isOutside)).toEqual([]);
+        },
+        { timeout: 4000 },
+      );
+    }, 10000);
+
+    it("CHECKED_IN with a persisted standing position in the snapshot: self renders there directly, never at the outside spawn first", async () => {
+      const pos = findRestorableStandingPos();
+      await mockAttendanceService.checkIn(getCurrentUserId());
+      peerMovementSnapshotState.snapshotReady = true;
+      peerMovementSnapshotState.entries = [
+        { email: SELF_EMAIL, revision: 1, stable: { pos, facing: "left", state: "standing", seatKey: null, roomId: null }, active: null },
+      ];
+
+      const { container } = render(<OfficeMap />);
+      await assertNeverOutsideFor(container, 200);
+      await waitFor(() => {
+        const positions = selfLayerPositions(container);
+        expect(positions.length).toBe(1);
+        expect(positions[0]).toEqual(pos);
+      });
+      const layer = Array.from(container.querySelectorAll("img")).find((img) => SELF_SRCS.has(img.getAttribute("src") ?? ""))!
+        .parentElement as HTMLElement;
+      expect(layer.style.left).toBe(pct(pos.x, FRAME_WIDTH));
+      expect(layer.style.top).toBe(pct(pos.y, FRAME_HEIGHT));
+    });
+
+    it("CHECKED_OUT (default) is unchanged: self appears at the outside spawn as soon as attendance answers", async () => {
+      // Mock attendance defaults to CHECKED_OUT — the sidewalk IS the placement, so the hide gate
+      // must not apply once attendance is known.
+      const { container } = render(<OfficeMap />);
+      await waitFor(() => {
+        const positions = selfLayerPositions(container);
+        expect(positions.length).toBe(1);
+        expect(isOutside(positions[0])).toBe(true);
+        expect(positions[0].x).toBeCloseTo(bonLayer.x, 3);
+        expect(positions[0].y).toBeCloseTo(bonLayer.y, 3);
+      });
     });
   });
 });

@@ -1,0 +1,368 @@
+/* Shell mirrors MissionsPanel.module.css — one modal family. */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.panel {
+  position: relative;
+  width: min(1040px, 94vw);
+  height: min(720px, 86vh);
+  background: linear-gradient(180deg, rgba(30, 26, 46, 0.97), rgba(18, 16, 28, 0.97));
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  font-family: system-ui, sans-serif;
+  color: #f5f0ff;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.closeButton {
+  all: unset;
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  cursor: pointer;
+  color: rgba(245, 240, 255, 0.7);
+  font-size: 14px;
+  padding: 6px;
+  border-radius: 6px;
+  z-index: 2;
+}
+
+.closeButton:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.header {
+  padding: 16px 20px 10px;
+}
+
+.title {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.subtitle {
+  margin-top: 2px;
+  font-size: 12px;
+  color: rgba(245, 240, 255, 0.65);
+}
+
+.shareRow {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.shareStatus {
+  color: rgba(245, 240, 255, 0.85);
+}
+
+.shareConsent {
+  flex-basis: 100%;
+  color: rgba(245, 240, 255, 0.6);
+  font-size: 11px;
+}
+
+.shareError {
+  color: #fca5a5;
+}
+
+.banner {
+  margin: 0 20px 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  background: rgba(239, 68, 68, 0.18);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+}
+
+.bannerMuted {
+  margin: 0 20px 8px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(245, 240, 255, 0.7);
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+}
+
+@media (max-width: 720px) {
+  .body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) 200px;
+  }
+}
+
+.mapColumn {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Scoped under .mapColumn on purpose: MapLibre adds its own `maplibregl-map` class to this
+   element and its stylesheet (loaded later, on demand) sets `position: relative` on it. A
+   single-class rule here would lose that cascade, the container would collapse to 0px tall
+   (only absolutely-positioned children inside), and MapLibre would render into a hidden
+   760x300 fallback canvas — the "blank map" seen on 2026-09-07. */
+.mapColumn > .canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  background: #0e1220;
+}
+
+.sidebar {
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 12px 14px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.sectionTitle {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgba(245, 240, 255, 0.7);
+  display: flex;
+  justify-content: space-between;
+}
+
+.count {
+  color: rgba(245, 240, 255, 0.5);
+}
+
+.empty {
+  margin: 0;
+  font-size: 12px;
+  color: rgba(245, 240, 255, 0.5);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.row {
+  all: unset;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 6px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.row:hover,
+.row:focus-visible {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.rowText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.rowName {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rowMeta {
+  font-size: 11px;
+  color: rgba(245, 240, 255, 0.6);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rowStatus {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+  border: 1.5px solid rgba(18, 16, 28, 0.9);
+}
+
+.avatar,
+.avatarInitials {
+  flex: none;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #2b2540;
+}
+
+.avatarInitials {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(245, 240, 255, 0.85);
+}
+
+.privacyNote {
+  margin-top: auto;
+  font-size: 11px;
+  line-height: 1.4;
+  color: rgba(245, 240, 255, 0.45);
+}
+
+/* Floating details card over the map */
+.card {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  max-width: min(360px, calc(100% - 24px));
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+  display: flex;
+  gap: 12px;
+  padding: 12px 36px 12px 12px;
+  border-radius: 12px;
+  background: rgba(24, 20, 38, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+}
+
+.cardText {
+  min-width: 0;
+  flex: 1;
+}
+
+.cardName {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.cardMeta {
+  font-size: 12px;
+  color: rgba(245, 240, 255, 0.7);
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cardActions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.actionButton {
+  all: unset;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+}
+
+.actionButton:hover,
+.actionButton:focus-visible {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.cardClose {
+  all: unset;
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 6px;
+  color: rgba(245, 240, 255, 0.7);
+  font-size: 12px;
+}
+
+.cardClose:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* HTML avatar markers placed by MapLibre */
+.marker {
+  all: unset;
+  position: relative;
+  display: block;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.9);
+  background: #2b2540;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  overflow: visible;
+}
+
+.marker:hover,
+.marker:focus-visible {
+  border-color: #c4b5fd;
+}
+
+.markerImage {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+}
+
+.markerInitials {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(245, 240, 255, 0.9);
+}
+
+.markerStatus {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 2px solid rgba(18, 16, 28, 0.95);
+}

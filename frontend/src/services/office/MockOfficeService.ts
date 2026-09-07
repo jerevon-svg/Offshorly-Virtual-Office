@@ -112,6 +112,14 @@ const mockPeople = [
   },
 ];
 
+// Stable-identity lookup into the SAME mock cast the floor renders, so every other mock feed
+// (e.g. services/teamMap/MockTeamMapService.ts) shows the department the roster shows for that
+// email — never a value derived from array position.
+export function mockDepartmentFor(email: string): string | null {
+  const needle = email.trim().toLowerCase();
+  return mockPeople.find((person) => person.email.toLowerCase() === needle)?.departmentName ?? null;
+}
+
 export class MockOfficeService implements OfficeService {
   getPresence(): Promise<Presence[]> {
     return Promise.resolve(

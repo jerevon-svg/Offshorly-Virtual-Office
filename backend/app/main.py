@@ -29,6 +29,7 @@ from app.routers import requests as requests_router
 from app.routers import rewards as rewards_router
 from app.routers import room_requests as room_requests_router
 from app.routers import talk_requests as talk_requests_router
+from app.routers import team_map as team_map_router
 from app.routers import toucan as toucan_router
 from app.routers import whiteboards as whiteboards_router
 from app.scripts import seed_dev_hub_content as hub_mock
@@ -136,6 +137,7 @@ fastapi_app.include_router(progression_router.router)
 fastapi_app.include_router(badges_router.router)
 fastapi_app.include_router(rewards_router.router)
 fastapi_app.include_router(whiteboards_router.router)
+fastapi_app.include_router(team_map_router.router)
 
 
 # Faithful port of backend/src/http.ts's error shape: REST error responses always come back as
