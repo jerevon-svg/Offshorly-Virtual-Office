@@ -393,3 +393,12 @@
   border-radius: 8px;
   background: rgba(255, 214, 102, 0.07);
 }
+
+/* The one Feed activity a notification pointed at (see EmployeeProfile's focusPostId): ringed so
+   the viewer's eye lands on it after the panel opens, not on the top of the feed. Purely
+   decorative — no layout shift, so the highlight cannot move the rest of the feed. */
+.postCardHighlighted {
+  outline: 2px solid rgba(190, 160, 255, 0.75);
+  outline-offset: 1px;
+  box-shadow: 0 0 18px rgba(150, 110, 255, 0.35);
+}

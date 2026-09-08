@@ -13,3 +13,36 @@ body {
   width: 100%;
   height: 100%;
 }
+
+/* ---- office right-side control column -------------------------------------------------------
+   ONE source of truth for where the right-hand FEATURE pills sit — Hub, Profile, Quests,
+   Missions, Rewards, Boards, Map, Toucan and the DEV-only Hub reset. Each is its own
+   `position: fixed` element in OfficeMap.module.css, and each used to hardcode its own `top`.
+   That is what let two controls silently claim the same slot — the Global Team Map button reused
+   .hubButton and so painted directly on top of the Hub button at top: 56px.
+
+   Now each pill declares only `--vo-pill-slot: <n>` and derives its `top` from these two
+   variables, so a duplicated slot is visible as a duplicated NUMBER in one file rather than as
+   two identical `top` values in different rules. Declared on :root (index.css is a plain global
+   stylesheet, not a CSS module) so any stylesheet can read the same values.
+
+   NOT part of this column: the top:12px utility row (chat 💬, the notification bell 🔔,
+   WorkingStatusIndicator, StatusPicker), which has its own slot map in
+   components/OfficeMap/checkout/checkout.module.css.
+
+   Slots are assigned in OfficeMap.module.css; see the SLOT MAP comment there.
+
+   Layering is NOT affected by anything here — the pills keep their existing z-index: 25. */
+:root {
+  --vo-pill-top: 56px;
+  --vo-pill-step: 40px;
+}
+
+/* Shorter viewports: tighten the rhythm so the whole column still fits above the fold instead of
+   running off the bottom. A pill is ~32px tall, so 36px keeps a visible gap. Nothing else about
+   the controls changes — same buttons, same styles, same order. */
+@media (max-height: 760px) {
+  :root {
+    --vo-pill-step: 36px;
+  }
+}

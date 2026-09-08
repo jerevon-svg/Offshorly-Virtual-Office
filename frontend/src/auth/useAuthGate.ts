@@ -10,6 +10,7 @@ import { setDevIdentity as setSpatialWalkDevIdentity } from "../services/presenc
 import { setDevIdentity as setHubClientDevIdentity } from "../services/hub/hubClient";
 import { setDevIdentity as setFeedClientDevIdentity } from "../services/feed/feedClient";
 import { setDevIdentity as setQuestsClientDevIdentity } from "../services/quests/questsClient";
+import { setDevIdentity as setNotificationsDevIdentity } from "../services/notifications/notificationsStore";
 import { setDevIdentity as setWhiteboardClientDevIdentity } from "../services/whiteboard/whiteboardClient";
 import { setDevIdentity as setDndClientDevIdentity } from "../services/presence/dndClient";
 import { setDevIdentity as setGlobalChatActivityDevIdentity } from "../services/presence/globalChatActivityClient";
@@ -246,6 +247,8 @@ function seedDevBypassIdentity(): void {
   setTeamMapDevIdentity(email);
   setFeedClientDevIdentity(email);
   setQuestsClientDevIdentity(email);
+  // Seeds the notifications REST client AND its socket identity in one call.
+  setNotificationsDevIdentity(email);
   // whiteboardSyncClient.ts (W3 realtime) reads this same identity — no separate seeding.
   setWhiteboardClientDevIdentity(email);
   // Toucan's assistant endpoint (POST /toucan/ask) lives on the same VO backend and derives

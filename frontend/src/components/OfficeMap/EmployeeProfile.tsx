@@ -29,6 +29,13 @@ export interface EmployeeProfileProps {
   viewerEmail: string;
   roster: OfficePerson[];
   onClose: () => void;
+  /** Which tab to land on. Defaults to the profile tab; a notification that points at a Feed
+   * activity or a badge opens straight onto the relevant tab instead. */
+  initialTab?: "profile" | "feed" | "achievements";
+  /** A Feed post to scroll to and highlight once the feed has loaded — how a "You received
+   * Kudos!" notification lands on the actual Kudos rather than just the feed. Ignored when the
+   * post is not in the fetched window. */
+  focusPostId?: string | null;
 }
 
 function titleCaseLocalpart(email: string): string {
@@ -163,9 +170,11 @@ interface FeedPostCardProps {
   viewerEmail: string;
   onUpdate: (post: FeedPost) => void;
   onDeletePost: (postId: string) => void;
+  /** Set for the one post a notification pointed at — ringed and scrolled into view. */
+  highlighted?: boolean;
 }
 
-function FeedPostCard({ post, roster, viewerEmail, onUpdate, onDeletePost }: FeedPostCardProps) {
+function FeedPostCard({ post, roster, viewerEmail, onUpdate, onDeletePost, highlighted }: FeedPostCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [commentText, setCommentText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -210,7 +219,11 @@ function FeedPostCard({ post, roster, viewerEmail, onUpdate, onDeletePost }: Fee
   }
 
   return (
-    <div className={styles.postCard}>
+    <div
+      className={`${styles.postCard}${highlighted ? ` ${styles.postCardHighlighted}` : ""}`}
+      data-post-id={post.id}
+      data-highlighted={highlighted ? "true" : undefined}
+    >
       <div className={styles.postHeader}>
         <img className={styles.postAvatar} src={avatarSrcFor(post.authorEmail)} alt="" />
         <div className={styles.postHeaderText}>
@@ -296,8 +309,15 @@ function FeedPostCard({ post, roster, viewerEmail, onUpdate, onDeletePost }: Fee
   );
 }
 
-export function EmployeeProfile({ email, viewerEmail, roster, onClose }: EmployeeProfileProps) {
-  const [tab, setTab] = useState<"profile" | "feed" | "achievements">("profile");
+export function EmployeeProfile({
+  email,
+  viewerEmail,
+  roster,
+  onClose,
+  initialTab = "profile",
+  focusPostId = null,
+}: EmployeeProfileProps) {
+  const [tab, setTab] = useState<"profile" | "feed" | "achievements">(initialTab);
   // Progression is self-only by API design (GET /progression/me); other people's profiles show
   // no progression section. Read from the shared store so it matches the HUD exactly.
   const isSelf = viewerEmail.trim().toLowerCase() === email.trim().toLowerCase();
@@ -335,6 +355,16 @@ export function EmployeeProfile({ email, viewerEmail, roster, onClose }: Employe
       cancelled = true;
     };
   }, [email]);
+
+  // Notification landing: once the feed has loaded, bring the post the notification pointed at
+  // into view. Runs after `posts` changes rather than on mount, because the card does not exist
+  // until the fetch resolves. `scrollIntoView` is guarded — jsdom and older browsers do not
+  // implement it, and a missing scroll must never break opening the profile.
+  useEffect(() => {
+    if (!focusPostId || tab !== "feed" || posts.length === 0) return;
+    const card = document.querySelector(`[data-post-id="${window.CSS?.escape?.(focusPostId) ?? focusPostId}"]`);
+    (card as HTMLElement | null)?.scrollIntoView?.({ block: "center" });
+  }, [focusPostId, tab, posts]);
 
   const person = roster.find((p) => p.email.toLowerCase() === email.toLowerCase());
   const name = nameFor(email, roster);
@@ -535,6 +565,7 @@ export function EmployeeProfile({ email, viewerEmail, roster, onClose }: Employe
                   viewerEmail={viewerEmail}
                   onUpdate={updatePost}
                   onDeletePost={handleDeletePost}
+                  highlighted={post.id === focusPostId}
                 />
               ))}
             </div>

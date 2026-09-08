@@ -89,10 +89,16 @@
 }
 
 /* Working status badge — small persistent pill, top-right.
-   Slot 2 of the top:12px right-hand chrome row, which runs right-to-left in fixed slots:
+   Slot 3 of the top:12px right-hand chrome row, which runs right-to-left in fixed slots:
      slot 1  right:16px   MessageNotificationBadge (36px chat button, z-index 100)
-     slot 2  right:64px   this pill                (16 + 36 + 12px gap), capped at 190px
-     slot 3  right:268px  StatusPicker             (64 + 190 + 14px gap)
+     slot 2  right:64px   NotificationCenter bell  (16 + 36 + 12px gap, 36px — same size and the
+                                                    same gap as the chat button, so the two read
+                                                    as one utility pair; see
+                                                    NotificationCenter.module.css)
+     slot 3  right:112px  this pill                (64 + 36 + 12px gap), capped at 190px
+     slot 4  right:316px  StatusPicker             (112 + 190 + 14px gap)
+   This pill moved one slot left (64 -> 112) when the bell was taken OUT of the vertical feature
+   stack and put beside the chat button, which is the only reason its number changed.
    It used to sit at right:12px, i.e. directly underneath the chat button (right:16px) and with
    the lower z-index, so the chat control painted over its right edge and clipped the label. The
    max-width + nowrap cap is what keeps the pill inside its slot as the worked-hours label grows,
@@ -100,7 +106,7 @@
 .statusBadge {
   position: fixed;
   top: 12px;
-  right: 64px;
+  right: 112px;
   max-width: 190px;
   white-space: nowrap;
   overflow: hidden;

@@ -123,14 +123,37 @@
   background: rgba(255, 255, 255, 0.2);
 }
 
+/* ---- RIGHT-SIDE CONTROL COLUMN --------------------------------------------------------------
+   SLOT MAP. Every pill below is `position: fixed; right: 12px; z-index: 25` and takes its `top`
+   from --vo-pill-slot plus the two variables in src/index.css. One slot per control, no
+   duplicates — a duplicated slot number here is the bug that made the Global Team Map button
+   paint on top of the Hub button (it reused .hubButton, so both resolved to top: 56px).
+
+     0  🏠 Hub            .hubButton
+     1  👤 Profile        .profileButton
+     2  🎯 Quests         .questsButton
+     3  📅 Missions       .missionsButton
+     4  🎁 Rewards        .rewardsButton
+     5  ▦  Boards         .boardsButton
+     6  🌍 Map            .mapButton
+     7  🦜 Toucan         .toucanButton
+     8  ♻️  Reset Hub Demo .hubDevResetButton  (DEV only)
+
+   The slots are contiguous with NO GAP. 🔔 Notifications briefly held a slot here and was moved
+   out to the top:12px utility row beside the 💬 chat button (see
+   NotificationCenter.module.css); its slot was reclaimed rather than left empty, so everything
+   below it moved up one.
+   ------------------------------------------------------------------------------------------ */
+
 /* Reopens the Company Hub (see CompanyHub.tsx) anytime. Sits below the
-   StatusPicker/WorkingStatusIndicator top-chrome row (top:12px, right:16-268px —
-   see StatusPicker.module.css) rather than sharing that row, to avoid guessing
-   at exact select-width overlap. */
+   top:12px right-hand utility row (chat, bell, WorkingStatusIndicator, StatusPicker — see
+   checkout/checkout.module.css's .statusBadge for that row's slot map) rather
+   than sharing it, to avoid guessing at exact select-width overlap. */
 .hubButton {
   all: unset;
   position: fixed;
-  top: 56px;
+  --vo-pill-slot: 0;
+  top: calc(var(--vo-pill-top) + var(--vo-pill-slot) * var(--vo-pill-step));
   right: 12px;
   z-index: 25;
   cursor: pointer;
@@ -148,12 +171,38 @@
   background: rgba(40, 40, 40, 0.95);
 }
 
-/* Opens the signed-in viewer's own Employee Profile (see EmployeeProfile.tsx) — stacked
-   directly below .hubButton in the same top-chrome column. */
+/* Global Team Map (see components/TeamMap/TeamMapPanel.tsx). Its OWN class: it used to reuse
+   .hubButton, which pinned it to slot 0 on top of the Hub button — same corner, same size, so
+   the later-rendered Map pill simply covered Hub. Identical pill treatment, own slot. */
+.mapButton {
+  all: unset;
+  position: fixed;
+  --vo-pill-slot: 6;
+  top: calc(var(--vo-pill-top) + var(--vo-pill-slot) * var(--vo-pill-step));
+  right: 12px;
+  z-index: 25;
+  cursor: pointer;
+  font-family: system-ui, sans-serif;
+  color: #f0f0f0;
+  background: rgba(26, 26, 26, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 13px;
+  backdrop-filter: blur(4px);
+}
+
+.mapButton:hover {
+  background: rgba(40, 40, 40, 0.95);
+}
+
+/* Opens the signed-in viewer's own Employee Profile (see EmployeeProfile.tsx) — directly below
+   .hubButton in the column; see the SLOT MAP above. */
 .profileButton {
   all: unset;
   position: fixed;
-  top: 96px;
+  --vo-pill-slot: 1;
+  top: calc(var(--vo-pill-top) + var(--vo-pill-slot) * var(--vo-pill-step));
   right: 12px;
   z-index: 25;
   cursor: pointer;
@@ -172,12 +221,13 @@
 }
 
 /* Summons the roaming toucan to the viewer (see ToucanFlyer.tsx's summon block and
-   ToucanAssistantPanel.tsx) — stacked directly below .profileButton in the same top-chrome
-   column, same pill treatment as .hubButton. */
+   ToucanAssistantPanel.tsx). Same pill treatment as .hubButton; see the SLOT MAP above for
+   where it sits in the column. */
 .toucanButton {
   all: unset;
   position: fixed;
-  top: 136px;
+  --vo-pill-slot: 7;
+  top: calc(var(--vo-pill-top) + var(--vo-pill-slot) * var(--vo-pill-step));
   right: 12px;
   z-index: 25;
   cursor: pointer;
@@ -200,12 +250,13 @@
   opacity: 0.6;
 }
 
-/* Opens the Onboarding Questline (see OnboardingQuestline.tsx) — stacked directly below
-   .toucanButton in the same top-chrome column, same pill treatment as .hubButton. */
+/* Opens the Onboarding Questline (see OnboardingQuestline.tsx) — same pill treatment as
+   .hubButton; see the SLOT MAP above for its place in the column. */
 .questsButton {
   all: unset;
   position: fixed;
-  top: 176px;
+  --vo-pill-slot: 2;
+  top: calc(var(--vo-pill-top) + var(--vo-pill-slot) * var(--vo-pill-step));
   right: 12px;
   z-index: 25;
   cursor: pointer;
@@ -226,7 +277,8 @@
 .missionsButton {
   all: unset;
   position: fixed;
-  top: 216px;
+  --vo-pill-slot: 3;
+  top: calc(var(--vo-pill-top) + var(--vo-pill-slot) * var(--vo-pill-step));
   right: 12px;
   z-index: 25;
   cursor: pointer;
@@ -247,7 +299,8 @@
 .rewardsButton {
   all: unset;
   position: fixed;
-  top: 256px;
+  --vo-pill-slot: 4;
+  top: calc(var(--vo-pill-top) + var(--vo-pill-slot) * var(--vo-pill-step));
   right: 12px;
   z-index: 25;
   cursor: pointer;
@@ -265,12 +318,12 @@
   background: rgba(40, 40, 40, 0.95);
 }
 
-/* Whiteboard W4: office-wide boards. Next slot down the HUD pill column (296px is the
-   DEV-only Reset Hub Demo pill). */
+/* Whiteboard W4: office-wide boards. See the SLOT MAP above. */
 .boardsButton {
   all: unset;
   position: fixed;
-  top: 336px;
+  --vo-pill-slot: 5;
+  top: calc(var(--vo-pill-top) + var(--vo-pill-slot) * var(--vo-pill-step));
   right: 12px;
   z-index: 25;
   cursor: pointer;
@@ -288,14 +341,15 @@
   background: rgba(40, 40, 40, 0.95);
 }
 
-/* Dev-only demo control (see resetDevHubState in services/hub/hubClient.ts) — stacked below
-   .rewardsButton in the same top-chrome column (moved down one slot each time a pill was
-   added above it). Never rendered outside import.meta.env.DEV, and the backend independently
-   404s the call outside development regardless. */
+/* Dev-only demo control (see resetDevHubState in services/hub/hubClient.ts) — last slot in the
+   column, so adding a real control never has to step over it. Never rendered outside
+   import.meta.env.DEV, and the backend independently 404s the call outside development
+   regardless. */
 .hubDevResetButton {
   all: unset;
   position: fixed;
-  top: 296px;
+  --vo-pill-slot: 8;
+  top: calc(var(--vo-pill-top) + var(--vo-pill-slot) * var(--vo-pill-step));
   right: 12px;
   z-index: 25;
   cursor: pointer;

@@ -23,6 +23,7 @@ from app.routers import chat as chat_router
 from app.routers import feed as feed_router
 from app.routers import hub as hub_router
 from app.routers import missions as missions_router
+from app.routers import notifications as notifications_router
 from app.routers import progression as progression_router
 from app.routers import quests as quests_router
 from app.routers import requests as requests_router
@@ -133,6 +134,7 @@ fastapi_app.include_router(toucan_router.router)
 fastapi_app.include_router(attendance_router.router)
 fastapi_app.include_router(quests_router.router)
 fastapi_app.include_router(missions_router.router)
+fastapi_app.include_router(notifications_router.router)
 fastapi_app.include_router(progression_router.router)
 fastapi_app.include_router(badges_router.router)
 fastapi_app.include_router(rewards_router.router)

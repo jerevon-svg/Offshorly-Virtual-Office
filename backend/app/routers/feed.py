@@ -7,8 +7,9 @@ from app.auth.deps import get_current_email
 from app.database import get_db
 from app.repositories import feed as feed_repo
 from app.services.quests import EVENT_PROFILE_VIEWED, EVENT_RECOGNITION_GIVEN, record_quest_event, utc_day_key
+from app.services.notifications import notify_kudos_received
 from app.services.quests import rewards
-from app.services.quests.rewards import grant_kudos_received
+from app.services.quests.rewards import Reward, grant_kudos_received
 from app.schemas.feed import CreateCommentIn, CreatePostIn, FeedPostOut, GiveKudosIn, ReactIn
 
 # Employee Feed V1 REST layer — mirrors routers/hub.py's dependency pattern. The Feed owns all
@@ -103,6 +104,7 @@ async def give_kudos(
     # Read the cooldown BEFORE writing this Kudos, so the event we are about to record cannot
     # be mistaken for a previous one.
     rewarded = not await rewards.kudos_reward_on_cooldown(db, giver=giver, recipient=recipient)
+    grant = None
     post = await feed_repo.create_post(
         db, target_email=recipient, author_email=giver, type="recognition", content=body.message
     )
@@ -116,7 +118,20 @@ async def give_kudos(
             reference_id=post["id"],
             occurred_at=post["created_at"],
         )
-        await grant_kudos_received(db, recipient=recipient, giver=giver, reference_id=post["id"])
+        grant = await grant_kudos_received(db, recipient=recipient, giver=giver, reference_id=post["id"])
+    # Global Notifications V1: tell the RECIPIENT. Quoting only the grant that was actually
+    # made — `grant` is None on the cooldown path and on an idempotent replay, and the
+    # notification then carries the Kudos message with no reward line rather than falsely
+    # claiming a payout. The notification is written from the reward, never the reverse: it
+    # cannot create, change or duplicate a grant (see services/notifications.py rule 1).
+    await notify_kudos_received(
+        db,
+        recipient=recipient,
+        giver=giver,
+        post_id=post["id"],
+        message=post["content"],
+        reward=Reward(xp=grant.xp, coins=grant.coins) if grant is not None else None,
+    )
     return FeedPostOut.from_dict(post, reactions=[], comments=[], viewer_email=email)
 
 

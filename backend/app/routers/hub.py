@@ -9,8 +9,9 @@ from app.database import get_db
 from app.repositories import feed as feed_repo
 from app.repositories import hub as hub_repo
 from app.services.quests import EVENT_HUB_VISITED, EVENT_RECOGNITION_GIVEN, record_quest_event, utc_day_key
+from app.services.notifications import notify_kudos_received
 from app.services.quests import rewards
-from app.services.quests.rewards import grant_kudos_received
+from app.services.quests.rewards import Reward, grant_kudos_received
 from app.scripts import seed_dev_hub_content as hub_mock
 from app.schemas.hub import CreateHubItemIn, HubItemOut
 
@@ -142,6 +143,7 @@ async def act_on_hub_item(
     if activity is not None and target_employee and target_employee != giver:
         feed_type, content = activity
         is_kudos = item["type"] == _KUDOS_ITEM_TYPE
+        grant = None
         # ANTI-FARMING V1 — the SAME rule and the SAME helper the profile Give Kudos action uses
         # (services/quests/rewards.kudos_reward_on_cooldown), so there is one server-side
         # cooldown, not two. Probed BEFORE the post is written, so the event about to be
@@ -177,9 +179,27 @@ async def act_on_hub_item(
             # the idempotent post above makes the reward idempotent too — a re-click returns the
             # same post id and the ledger's unique index absorbs the second grant.
             if is_kudos:
-                await grant_kudos_received(
+                grant = await grant_kudos_received(
                     db, recipient=post["target_email"], giver=post["author_email"], reference_id=post["id"]
                 )
+        # Global Notifications V1 — SAME helper the profile Give Kudos action uses, so there is
+        # one place that decides the wording. `grant` is None whenever nothing was paid (the
+        # cooldown, or an idempotent re-click), and the notification then omits the reward line
+        # instead of claiming a payout that did not happen. Keyed on the post, which
+        # create_hub_triggered_post returns idempotently, so a re-click collapses onto the one
+        # bell entry rather than adding another.
+        if is_kudos:
+            await notify_kudos_received(
+                db,
+                recipient=post["target_email"],
+                giver=post["author_email"],
+                # The Hub CTA has no message box — `content` is the name-free Feed fragment
+                # ("gave them Kudos! 👏"), not something the giver wrote, so it is
+                # deliberately NOT quoted as their words.
+                message="",
+                post_id=post["id"],
+                reward=Reward(xp=grant.xp, coins=grant.coins) if grant is not None else None,
+            )
 
     return HubItemOut.from_dict(item, state)
 

@@ -1,11 +1,14 @@
-/* Slot 3 of the top:12px right-hand chrome row (slot 1 = MessageNotificationBadge at right:16px,
-   slot 2 = WorkingStatusIndicator's .statusBadge at right:64px capped to 190px wide — see
-   checkout.module.css). right:268px clears slot 2's full reserved width; the old right:160px only
-   cleared a short "Working · 1h 5m" label and collided once the worked-hours text grew. */
+/* Slot 4 of the top:12px right-hand chrome row — see checkout.module.css's .statusBadge for the
+   full slot map (1 = chat button at right:16px, 2 = the notification bell at right:64px,
+   3 = WorkingStatusIndicator's .statusBadge at right:112px capped to 190px wide).
+   right:316px clears slot 3's FULL reserved width (112 + 190 + a 14px gap); an earlier
+   right:160px only cleared a short "Working · 1h 5m" label and collided once the worked-hours
+   text grew. Availability stays the leftmost item in the row, as it always was — it only shifts
+   by the 48px the bell now occupies. */
 .picker {
   position: fixed;
   top: 12px;
-  right: 268px;
+  right: 316px;
   z-index: 25;
   font-family: system-ui, sans-serif;
 }

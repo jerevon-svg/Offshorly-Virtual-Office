@@ -54,6 +54,30 @@ export function setDevIdentity(email: string | null): void {
   devEmail = email ? email.trim().toLowerCase() : null;
 }
 
+// `devEmail` above is module-level state that useAuthGate seeds EXACTLY ONCE, at gate time (see
+// seedDevBypassIdentity). In dev, a Vite hot update RE-EXECUTES this module and resets it to
+// null — the gate has long since run and never re-seeds it, so the next Feed write goes out with
+// neither the dev header nor a bearer token and the backend answers "Missing Authorization
+// bearer token". The only correct recovery is a full page reload, which re-runs the gate.
+//
+// `import.meta.hot.invalidate()` ON ITS OWN DOES NOT DO THAT — and that is exactly why this bug
+// survived a guard that read as if it did. Vite's dev server ignores an invalidate unless the
+// module is SELF-ACCEPTING: `invalidateModule()` is gated on
+// `mod.isSelfAccepting && mod.lastHMRTimestamp > 0`, and a module only becomes self-accepting by
+// calling `import.meta.hot.accept()`. With no accept() anywhere in the file, the invalidate was
+// a silent no-op: the module still re-executed, the identity was still lost, and no reload ever
+// happened.
+//
+// So accept the update — which makes this module self-accepting and stops the update here — and
+// then immediately throw it away as an explicit full reload. Deterministic, with no reliance on
+// Vite's propagation heuristics. Dev only: `import.meta.hot` is undefined in a production build,
+// where module state is never re-executed anyway.
+if (import.meta.hot) {
+  import.meta.hot.accept(() => {
+    window.location.reload();
+  });
+}
+
 async function restFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
   if (devEmail) {

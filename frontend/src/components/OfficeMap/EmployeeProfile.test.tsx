@@ -241,4 +241,62 @@ describe("EmployeeProfile", () => {
     await waitFor(() => expect(fetchFeed).toHaveBeenCalled());
     expect(screen.queryByTestId("kudos-composer")).not.toBeInTheDocument();
   });
+  // Notification landing (see NotificationCenter.tsx's profileFeed destination): a "You received
+  // Kudos!" notification opens this panel already on the Feed tab with that Kudos highlighted,
+  // rather than dropping the viewer on the profile tab to go find it.
+  describe("notification landing", () => {
+    it("opens on the requested tab and highlights the post a notification pointed at", async () => {
+      fetchFeed.mockResolvedValue([
+        makePost({ id: "other", content: "Unrelated" }),
+        makePost({ id: "kudos-1", type: "recognition", content: "Saved the release" }),
+      ]);
+
+      render(
+        <EmployeeProfile
+          email="alex@example.com"
+          viewerEmail="bon@example.com"
+          roster={ROSTER}
+          onClose={vi.fn()}
+          initialTab="feed"
+          focusPostId="kudos-1"
+        />,
+      );
+
+      // Landed on the Feed without anyone clicking the tab.
+      expect(await screen.findByText("Saved the release")).toBeInTheDocument();
+      const highlighted = document.querySelectorAll('[data-highlighted="true"]');
+      expect(highlighted).toHaveLength(1);
+      expect(highlighted[0].getAttribute("data-post-id")).toBe("kudos-1");
+    });
+
+    it("still opens the feed when the pointed-at post is not in the fetched window", async () => {
+      fetchFeed.mockResolvedValue([makePost({ id: "other", content: "Unrelated" })]);
+
+      render(
+        <EmployeeProfile
+          email="alex@example.com"
+          viewerEmail="bon@example.com"
+          roster={ROSTER}
+          onClose={vi.fn()}
+          initialTab="feed"
+          focusPostId="long-gone"
+        />,
+      );
+
+      expect(await screen.findByText("Unrelated")).toBeInTheDocument();
+      expect(document.querySelectorAll('[data-highlighted="true"]')).toHaveLength(0);
+    });
+
+    it("defaults to the profile tab and highlights nothing when opened normally", async () => {
+      fetchFeed.mockResolvedValue([makePost({ id: "kudos-1", type: "recognition" })]);
+
+      render(
+        <EmployeeProfile email="alex@example.com" viewerEmail="bon@example.com" roster={ROSTER} onClose={vi.fn()} />,
+      );
+
+      await waitFor(() => expect(fetchFeed).toHaveBeenCalled());
+      expect(screen.getByRole("button", { name: "Feed" })).toBeInTheDocument();
+      expect(document.querySelectorAll('[data-highlighted="true"]')).toHaveLength(0);
+    });
+  });
 });

@@ -196,6 +196,7 @@ import { CheckoutDebugPanel } from "./checkout/CheckoutDebugPanel";
 import checkoutStyles from "./checkout/checkout.module.css";
 import { CompanyHub } from "./CompanyHub";
 import { openCompanyHub, useCompanyHub } from "../../services/hub/companyHubStore";
+import { NotificationCenter, type NotificationDestination } from "./NotificationCenter";
 import { resetDevHubState } from "../../services/hub/hubClient";
 import { EmployeeProfile } from "./EmployeeProfile";
 import { OnboardingQuestline } from "./OnboardingQuestline";
@@ -337,6 +338,15 @@ export function OfficeMap() {
   // closed. Set from CharacterActionMenu's "View Profile" action, or the self-profile button
   // in the top chrome below.
   const [profileEmail, setProfileEmail] = useState<string | null>(null);
+  // Where an EmployeeProfile should LAND when something opened it with a destination in mind
+  // (today: a "You received Kudos!" notification, which wants the Feed tab with that Kudos
+  // highlighted). Reset on close, which is the panel's single exit point, so a profile opened
+  // any other way — the Profile pill, a character menu, the Team Map — always lands on the
+  // default tab.
+  const [profileLanding, setProfileLanding] = useState<{
+    tab: "profile" | "feed" | "achievements";
+    postId: string | null;
+  }>({ tab: "profile", postId: null });
   // Onboarding Questline (see OnboardingQuestline.tsx) — opened from the 🎯 Quests button in the
   // top chrome; the panel fetches GET /quests/me on every open, nothing is cached here.
   const [questlineOpen, setQuestlineOpen] = useState(false);
@@ -952,6 +962,46 @@ export function OfficeMap() {
         if (conv) onSelectConversation(conv);
       })
       .catch(() => {});
+  }
+
+  /** Turns one notification's destination into the office UI action that opens it.
+   *
+   * Returns false when the destination cannot be honoured (no signed-in identity for an
+   * own-profile destination, chat not in real mode). NotificationCenter keeps its panel open in
+   * that case and has already marked the notification read, so the click is never silently lost
+   * and never invents navigation. An unrecognised destination never reaches here at all —
+   * destinationFor() maps it to null.
+   *
+   * Every branch reuses an EXISTING opener; nothing new was added to the navigation model. */
+  function openNotificationDestination(destination: NotificationDestination): boolean {
+    const selfEmail = currentUser?.email ?? null;
+    switch (destination.kind) {
+      case "profileFeed":
+        setProfileLanding({ tab: "feed", postId: destination.postId });
+        setProfileEmail(destination.email);
+        return true;
+      case "conversation":
+        if (chatMode !== "real") return false;
+        openConversationById(destination.conversationId);
+        return true;
+      case "quests":
+        setQuestlineOpen(true);
+        return true;
+      case "missions":
+        setMissionsOpen(true);
+        return true;
+      case "achievements":
+        // Badges live on the viewer's OWN profile (progression is self-only by API design).
+        if (!selfEmail) return false;
+        setProfileLanding({ tab: "achievements", postId: null });
+        setProfileEmail(selfEmail);
+        return true;
+      case "hub":
+        openCompanyHub("manual");
+        return true;
+      default:
+        return false;
+    }
   }
 
   function onSelectConversation(conv: Conversation) {
@@ -1895,6 +1945,15 @@ export function OfficeMap() {
   // Company Hub V1 (see services/hub/companyHubStore.ts) — opened once check-in completes
   // (finishArrival, below) and reopenable anytime via the Hub button in the top chrome.
   const companyHub = useCompanyHub();
+
+  // The full-modal family — every one of these renders its own z-index-60 backdrop over the
+  // office (Company Hub, Employee Profile, Questline, Missions, Rewards, Team Map). Read only by
+  // the notification panel, which closes rather than sitting behind a backdrop. Deliberately NOT
+  // reused for the Player HUD: the HUD's behind-modal step stays wired to `teamMapOpen` alone,
+  // because that is the only modal whose panel actually reaches the HUD's corner.
+  const anyModalOpen =
+    companyHub.isOpen || profileEmail !== null || questlineOpen || missionsOpen || rewardsOpen || teamMapOpen;
+
 
   // Offline lineup (Phase 0/1 — v1 explicit-checkout-only, see offline_lineup.py's module
   // docstring): additive, separate wiring keyed strictly off checkoutFlow.state, never off
@@ -4607,7 +4666,7 @@ export function OfficeMap() {
       )}
       {hasCheckedIn && onboarding === "done" && !checkoutBusy && (
         <button
-          className={styles.hubButton}
+          className={styles.mapButton}
           onClick={() => setTeamMapOpen(true)}
           aria-label="Open Global Team Map"
         >
@@ -4649,6 +4708,15 @@ export function OfficeMap() {
         >
           ▦ Boards
         </button>
+      )}
+      {/* Global Notifications V1 — the 🔔 pill and its anchored panel (one component owns both, so
+          the panel is always positioned and layered relative to its button; see
+          NotificationCenter.module.css's layering note). Same visibility rule as the pills above.
+          `modalOpen` closes the panel when a full-screen modal takes the view — the control
+          already sits BELOW the modal family at z-index 25, this just stops it lingering
+          invisibly behind a backdrop. */}
+      {hasCheckedIn && onboarding === "done" && !checkoutBusy && (
+        <NotificationCenter onNavigate={openNotificationDestination} modalOpen={anyModalOpen} />
       )}
       {toucanChromeVisible && (
         <button
@@ -4727,7 +4795,12 @@ export function OfficeMap() {
           email={profileEmail}
           viewerEmail={currentUser?.email ?? getCurrentUserId()}
           roster={roster.people}
-          onClose={() => setProfileEmail(null)}
+          initialTab={profileLanding.tab}
+          focusPostId={profileLanding.postId}
+          onClose={() => {
+            setProfileEmail(null);
+            setProfileLanding({ tab: "profile", postId: null });
+          }}
         />
       )}
       {questlineOpen && <OnboardingQuestline onClose={() => setQuestlineOpen(false)} />}

@@ -7,6 +7,7 @@ from app.models.feed import FeedComment, FeedPost, FeedReaction
 from app.models.hub import HubItem, HubItemState
 from app.models.message import Message
 from app.models.mission import MissionAssignment
+from app.models.notification import Notification
 from app.models.position import EmployeePosition
 from app.models.quest import QuestEvent, QuestProgress
 from app.models.reaction import MessageReaction
@@ -45,6 +46,7 @@ __all__ = [
     "Message",
     "MessageReaction",
     "MissionAssignment",
+    "Notification",
     "QuestEvent",
     "QuestProgress",
     "RewardGrant",
