@@ -39,6 +39,7 @@ import type { ChatMessage } from "../../services/chat";
 import type { Conversation } from "../../services/chat/types";
 import { useUnreadTotal } from "../../services/chat/useUnreadTotal";
 import { MessageNotificationBadge } from "../Chat/MessageNotificationBadge";
+import { buildChatAttentionByLayerId, type ChatAttention } from "./chatAttention";
 import { EmployeePickerModal } from "../Chat/EmployeePickerModal";
 import { GroupConversationView } from "../Chat/GroupConversationView";
 import { WhiteboardPanel } from "../Whiteboard/WhiteboardPanel";
@@ -578,6 +579,40 @@ export function OfficeMap() {
         : formatCharacterName({ id: email, name: undefined });
     },
     [roster.people],
+  );
+
+  // World-Space Chat Attention Indicator V1 — "which coworkers on the floor
+  // have unread messages waiting for me", keyed by character layer id. Derived
+  // straight from `allConversations` (the SAME useUnreadTotal rows the 💬 HUD
+  // badge and the Global Chat list read, kept live by the server's
+  // unread_count push), so read/zero events retire the indicator with no
+  // separate state to keep in sync. Empty in mock mode, like everything else
+  // hanging off useUnreadTotal.
+  const chatAttentionByLayerId = useMemo(
+    () =>
+      buildChatAttentionByLayerId({
+        conversations: allConversations,
+        selfEmail: selfChatId,
+        selfLayerId: playerLayerId,
+      }),
+    [allConversations, selfChatId, playerLayerId],
+  );
+
+  // Badge click -> the EXISTING conversation opener (onSelectConversation, the
+  // same path a Global Chat list click and a Toucan return card take), so the
+  // DM lands in its normal spatial-or-remote slot. Marking-as-read is left
+  // entirely to the conversation view that opens, which is what makes the
+  // indicator disappear.
+  const onChatAttentionClick = useCallback(
+    (attention: ChatAttention) => {
+      const conv = allConversations.find((c) => c.id === attention.conversationId);
+      if (conv) onSelectConversation(conv);
+    },
+    // onSelectConversation is a hoisted function declaration in this component
+    // body (re-created every render, like every other handler here) — listing
+    // it would defeat the memo without changing behavior.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [allConversations],
   );
 
   // A person's real email is only known when they're a live roster entry
@@ -4508,6 +4543,12 @@ export function OfficeMap() {
             // show the same track at the same time (see CallOverlay.tsx). The rule here is about
             // not duplicating the stage, not about the track.
             spatialVideoByLayerId={spatialVideoByLayerId}
+            // World-Space Chat Attention Indicator V1 — MAIN stage only (same
+            // rule as showStatusLabels/spatialVideoByLayerId: the PiP instance
+            // renders outside this TransformWrapper).
+            chatAttentionByLayerId={chatAttentionByLayerId}
+            onChatAttentionClick={onChatAttentionClick}
+            resolveCharacterDisplayName={resolveDisplayName}
             extraCharacterLayers={extraCharacterLayers}
             extraCharacterSrcById={extraCharacterSrcById}
             onCharacterClick={handleCharacterClick}

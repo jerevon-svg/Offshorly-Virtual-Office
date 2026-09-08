@@ -1,0 +1,98 @@
+/* Mirrors StatusLabel.module.css / TalkingBubble.module.css: a 0x0 anchor
+   point positioned at the character's head, with the visible element
+   absolutely placed off it. */
+.anchor {
+  position: absolute;
+  width: 0;
+  height: 0;
+  line-height: 0;
+  pointer-events: none;
+}
+
+/* World-space placement (transform set inline — the clearance depends on which
+   overhead element this character already has) plus the one-time entrance pop.
+   `forwards` so the badge settles at its resting scale instead of snapping. */
+.badge {
+  position: absolute;
+  pointer-events: none;
+  /* The .anchor parent is a 0x0 point, so an absolutely positioned box shrink-to-fits against
+     zero available width and would squeeze the emoji + count onto separate lines (or to nothing).
+     max-content sizes it to its natural width instead — the same fix TalkingBubble.module.css's
+     .bubbleText documents for the same reason. */
+  width: max-content;
+  animation: chatAttentionPop 260ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  transform-origin: 50% 100%;
+}
+
+.button {
+  /* The only interactive part of the whole overhead stack — the anchor and the
+     badge stay pointer-events:none so the indicator never steals a drag/pan or
+     a click meant for the avatar underneath it. */
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+  /* Same small-dark-pill treatment as the nameplate, so the presence stack
+     reads as one system rather than a foreign HUD chip. */
+  background: rgba(26, 26, 26, 0.85);
+  border: 0.6px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+  padding: 1px 4px;
+  margin: 0;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  font-family: system-ui, sans-serif;
+  line-height: 1;
+  /* Gentle float. Small amplitude on purpose: readable at a glance without
+     pulling the eye off whatever the viewer is actually doing. */
+  animation: chatAttentionBob 2.4s ease-in-out infinite;
+}
+
+.emoji {
+  font-size: 9px;
+  line-height: 1;
+}
+
+.count {
+  color: #f5f5f5;
+  font-size: 6px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+@keyframes chatAttentionPop {
+  0% {
+    opacity: 0;
+    scale: 0.4;
+  }
+  60% {
+    opacity: 1;
+    scale: 1.12;
+  }
+  100% {
+    opacity: 1;
+    scale: 1;
+  }
+}
+
+@keyframes chatAttentionBob {
+  0%,
+  100% {
+    translate: 0 0;
+  }
+  50% {
+    translate: 0 -1.6px;
+  }
+}
+
+/* Respect the OS setting: the badge still appears (it is information, not
+   decoration), it just stops moving. */
+@media (prefers-reduced-motion: reduce) {
+  .badge {
+    animation: none;
+  }
+  .button {
+    animation: none;
+  }
+}

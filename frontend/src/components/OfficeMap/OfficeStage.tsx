@@ -16,6 +16,12 @@ import { getBackrestCropFraction } from "../../data/chairBackrestCrop";
 import { createDepthCompare } from "./depthSort";
 import { TalkingBubble } from "./TalkingBubble";
 import { StatusLabel } from "./StatusLabel";
+import { ChatAttentionIndicator } from "./ChatAttentionIndicator";
+import {
+  OVERHEAD_CLEARANCE_PX,
+  resolveOverheadKind,
+  type ChatAttention,
+} from "./chatAttention";
 import { SpatialVideoTile } from "./SpatialVideoTile";
 import { OfficePhaseOverlay } from "./OfficePhaseOverlay";
 import { ToucanFlyer } from "./ToucanFlyer";
@@ -478,6 +484,27 @@ type OfficeStageProps = {
   // camera track must never be attached to two video elements. Absent/undefined = no video at
   // all, matching every existing caller and test that doesn't pass it.
   spatialVideoByLayerId?: Record<string, SpatialVideoTrack>;
+  // World-Space Chat Attention Indicator V1: character LAYER id -> that
+  // coworker's existing unread state (see chatAttention.ts, derived from the
+  // same conversation rows the HUD unread badge reads — this component owns no
+  // unread state of its own). A coworker with nothing unread is simply ABSENT
+  // here, and the map never contains selfCharacterId (excluded upstream), so
+  // the indicator can never render above the viewer's own avatar.
+  //
+  // Rendered as its own ADDITIVE pass below (same pattern as
+  // spatialVideoByLayerId), never as a branch of the exclusive
+  // greeting/sent-text/typing/status resolver — the 💬 badge coexists with
+  // whatever overhead element a character already has, stacked above it.
+  //
+  // MAIN stage only, same rule as showStatusLabels/spatialVideoByLayerId.
+  // Absent/undefined = no indicators, matching every existing caller and test.
+  chatAttentionByLayerId?: Record<string, ChatAttention>;
+  // Click-through for the badge: hands the caller the conversation id to open
+  // through its OWN existing conversation opener. OfficeStage deliberately
+  // knows nothing about how a chat opens.
+  onChatAttentionClick?: (attention: ChatAttention, layerId: string) => void;
+  // Display-name resolver for the badge's accessible label only.
+  resolveCharacterDisplayName?: (layerId: string) => string;
 };
 
 // Shared click-vs-drag threshold logic: only fires onClick when pointer
@@ -548,10 +575,18 @@ export function OfficeStage({
   statusByLayerId,
   selfStatus,
   spatialVideoByLayerId,
+  chatAttentionByLayerId,
+  onChatAttentionClick,
+  resolveCharacterDisplayName,
 }: OfficeStageProps = {}) {
   const characterClick = useClickVsDrag<AssetLayer>(onCharacterClick);
   const roomClick = useClickVsDrag<AssetLayer>(onRoomClick);
   const seatClick = useClickVsDrag<SeatTarget>(onSeatClick);
+  // Same 6px click-vs-drag threshold as every other clickable thing on the
+  // stage, so dragging to pan across a 💬 badge pans instead of opening a chat.
+  const chatAttentionClick = useClickVsDrag<{ attention: ChatAttention; layerId: string }>(
+    onChatAttentionClick ? ({ attention, layerId }) => onChatAttentionClick(attention, layerId) : undefined,
+  );
   const live3dEnabledAvatarIds = getLive3dEnabledAvatarIds();
   const deviceTier = useDeviceTier();
   // D-D bucket (see isStaticFrameBucket's doc comment above): confirmed
@@ -963,8 +998,25 @@ export function OfficeStage({
           // passes (greeting bubble / status-label-unless-talking /
           // talking-bubble-for-talking) that could double up or fall back
           // to the wrong element (see task doc for the bugs this fixes).
-          const isGreeted = !!greetingCharacterId && layer.id === greetingCharacterId;
-          if (isGreeted) {
+          // The priority itself lives in chatAttention.ts's
+          // resolveOverheadKind so the additive 💬 indicator pass below can
+          // ask "what is already above this head?" (and size its clearance
+          // accordingly) without re-deriving — and without the two ever
+          // drifting apart.
+          const isSelf = !!selfCharacterId && layer.id === selfCharacterId;
+          const status = showStatusLabels
+            ? isSelf
+              ? selfStatus
+              : statusByLayerId?.[layer.id]
+            : undefined;
+          const sentText = talkingTextById?.[layer.id];
+          const kind = resolveOverheadKind({
+            isGreeted: !!greetingCharacterId && layer.id === greetingCharacterId,
+            sentText,
+            isTyping: !!typingCharacterIds?.includes(layer.id),
+            hasStatus: !!status,
+          });
+          if (kind === "greeting") {
             return (
               <TalkingBubble
                 key={`overhead-${layer.id}-${greetingNonce}`}
@@ -973,29 +1025,61 @@ export function OfficeStage({
               />
             );
           }
-          const sentText = talkingTextById?.[layer.id];
-          if (sentText) {
+          if (kind === "sentText") {
             return <TalkingBubble key={`overhead-${layer.id}`} layer={layer} text={sentText} />;
           }
-          if (typingCharacterIds?.includes(layer.id)) {
+          if (kind === "typing") {
             return <TalkingBubble key={`overhead-${layer.id}`} layer={layer} />;
           }
-          if (showStatusLabels) {
-            const isSelf = !!selfCharacterId && layer.id === selfCharacterId;
-            const status = isSelf ? selfStatus : statusByLayerId?.[layer.id];
-            if (status) {
-              return (
-                <StatusLabel
-                  key={`overhead-${layer.id}`}
-                  layer={layer}
-                  status={status}
-                  isSelf={isSelf}
-                />
-              );
-            }
+          if (kind === "status" && status) {
+            return (
+              <StatusLabel
+                key={`overhead-${layer.id}`}
+                layer={layer}
+                status={status}
+                isSelf={isSelf}
+              />
+            );
           }
           return null;
         })}
+      {/* World-Space Chat Attention Indicator V1 — a SEPARATE, ADDITIVE pass
+          over the same character layers, so a coworker can show both their
+          nameplate/typing bubble and a 💬 badge. Reads `resolved` (walk
+          overrides already applied), so the badge follows a moving avatar for
+          free; and iterating `resolved` means a coworker who isn't on the
+          floor (not in the roster, or hidden) simply gets no badge — the
+          global HUD unread badge remains their only signal, by design. */}
+      {chatAttentionByLayerId &&
+        resolved
+          .filter(
+            (layer) =>
+              layer.kind === "character" &&
+              layer.id !== selfCharacterId &&
+              !!chatAttentionByLayerId[layer.id],
+          )
+          .map((layer) => {
+            const attention = chatAttentionByLayerId[layer.id];
+            // Stack above whatever the exclusive resolver above already put
+            // over this head, so the two never overlap.
+            const kind = resolveOverheadKind({
+              isGreeted: !!greetingCharacterId && layer.id === greetingCharacterId,
+              sentText: talkingTextById?.[layer.id],
+              isTyping: !!typingCharacterIds?.includes(layer.id),
+              hasStatus: !!(showStatusLabels && statusByLayerId?.[layer.id]),
+            });
+            return (
+              <ChatAttentionIndicator
+                key={`chat-attention-${layer.id}`}
+                layer={layer}
+                count={attention.count}
+                clearancePx={OVERHEAD_CLEARANCE_PX[kind]}
+                peerName={resolveCharacterDisplayName?.(layer.id) ?? formatCharacterName(layer)}
+                onPointerDown={chatAttentionClick.onPointerDown}
+                onPointerUp={(e) => chatAttentionClick.onPointerUp({ attention, layerId: layer.id }, e)}
+              />
+            );
+          })}
       {/* Stage B spatial video — a SEPARATE, ADDITIVE pass over the same character layers, so a
           camera tile and a nameplate/typing bubble can both be on screen for the same person.
           Reads `resolved` (walk/position overrides already applied) and sits after the
