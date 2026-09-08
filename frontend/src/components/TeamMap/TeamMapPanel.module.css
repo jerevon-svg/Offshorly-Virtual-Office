@@ -366,3 +366,48 @@
   border-radius: 50%;
   border: 2px solid rgba(18, 16, 28, 0.95);
 }
+
+/* Distance pill under the avatar — Booking/Airbnb style: small, high-contrast, quiet enough not
+   to compete with the avatar it belongs to. Never a click target (pointer-events: none), so the
+   avatar button and the map underneath keep every click they had. */
+.markerDistance {
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 50%;
+  transform: translateX(-50%);
+  pointer-events: none;
+  white-space: nowrap;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(18, 16, 28, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: rgba(245, 240, 255, 0.92);
+  font-family: system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+
+/* Employee search — a compact box pinned above the sidebar's normal sections. */
+.searchInput {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(245, 240, 255, 0.92);
+  font: inherit;
+  font-size: 13px;
+}
+
+.searchInput::placeholder {
+  color: rgba(245, 240, 255, 0.45);
+}
+
+.searchInput:focus-visible {
+  outline: none;
+  border-color: rgba(168, 132, 255, 0.7);
+}

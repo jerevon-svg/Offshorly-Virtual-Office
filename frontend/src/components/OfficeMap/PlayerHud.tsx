@@ -103,7 +103,14 @@ function avatarSrcFor(email: string | undefined): string {
   });
 }
 
-export function PlayerHud() {
+export interface PlayerHudProps {
+  /** True while a modal from the z-index 60 family (e.g. the Global Team Map) is open. The HUD
+   *  normally sits ABOVE those backdrops on purpose — reward FX fly into it — but a modal that
+   *  the viewer is meant to read in full must dim it like the rest of the office. */
+  behindModal?: boolean;
+}
+
+export function PlayerHud({ behindModal = false }: PlayerHudProps = {}) {
   const store = useProgressionStore();
   const user = useCurrentUser();
 
@@ -135,6 +142,7 @@ export function PlayerHud() {
       xpPulse={store.xpPulse}
       name={firstNameFor(user?.full_name, user?.email)}
       avatar={avatarSrcFor(user?.email)}
+      behindModal={behindModal}
     />
   );
 }
@@ -147,9 +155,19 @@ interface HudBodyProps {
   xpPulse: number;
   name: string;
   avatar: string;
+  behindModal: boolean;
 }
 
-function HudBody({ progression, lastClaim, lastAward, coinsPulse, xpPulse, name, avatar }: HudBodyProps) {
+function HudBody({
+  progression,
+  lastClaim,
+  lastAward,
+  coinsPulse,
+  xpPulse,
+  name,
+  avatar,
+  behindModal,
+}: HudBodyProps) {
   const xp = useAnimatedNumber(progression.xp, XP_MS);
   const coins = useAnimatedNumber(progression.coins, COINS_MS);
   const coinsPulsing = usePulse(coinsPulse);
@@ -182,7 +200,11 @@ function HudBody({ progression, lastClaim, lastAward, coinsPulse, xpPulse, name,
   const awardActive = !levelUpActive && awardFor !== null && awardFor === lastAward?.id;
 
   return (
-    <div className={styles.hud} data-testid="player-hud" aria-label="Your progression">
+    <div
+      className={behindModal ? `${styles.hud} ${styles.behindModal}` : styles.hud}
+      data-testid="player-hud"
+      aria-label="Your progression"
+    >
       <div className={styles.identity}>
         <img className={styles.avatar} src={avatar} alt="" />
         <div className={styles.identityText}>

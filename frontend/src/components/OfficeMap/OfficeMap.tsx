@@ -4755,7 +4755,7 @@ export function OfficeMap() {
         </Suspense>
       )}
       {/* Player HUD (Level / XP / Coins) — same visibility rule as the Quests/Missions pills. */}
-      {hasCheckedIn && onboarding === "done" && !checkoutBusy && <PlayerHud />}
+      {hasCheckedIn && onboarding === "done" && !checkoutBusy && <PlayerHud behindModal={teamMapOpen} />}
       {(import.meta.env.DEV || isRealZohoMode()) && (
         <>
           <WorkingStatusIndicator state={checkoutFlow.state} workedLabel={checkoutFlow.workedLabel} />

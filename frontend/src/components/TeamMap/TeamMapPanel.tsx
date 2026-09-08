@@ -14,6 +14,8 @@ import {
   resolveDisplayName,
   resolveMapStatus,
 } from "../../services/teamMap/buckets";
+import { compactDistanceLabelFor, distanceLabelFor } from "../../services/teamMap/distance";
+import { searchTeamMap } from "../../services/teamMap/search";
 import type { GeoFix, TeamMapPerson, TeamMapSnapshot } from "../../services/teamMap/types";
 import { TeamMapCanvas } from "./TeamMapCanvas";
 import styles from "./TeamMapPanel.module.css";
@@ -37,6 +39,11 @@ interface PersonRowProps {
   roster: readonly OfficePerson[];
   now: Date;
   onSelect: (email: string) => void;
+  /** Search results only: two people share this display name, so show the email that separates
+   *  them — email is the identity every selection actually uses. */
+  showEmail?: boolean;
+  /** "2.4 km away" from the viewer's own shared location, or null when there is none. */
+  distance?: string | null;
 }
 
 function Avatar({ person, size }: { person: TeamMapPerson; size: number }) {
@@ -51,7 +58,7 @@ function Avatar({ person, size }: { person: TeamMapPerson; size: number }) {
   );
 }
 
-function PersonRow({ person, roster, now, onSelect }: PersonRowProps) {
+function PersonRow({ person, roster, now, onSelect, showEmail = false, distance = null }: PersonRowProps) {
   const status = resolveMapStatus(person, roster);
   const time = formatLocalTime(person.timezone, now);
   return (
@@ -61,8 +68,9 @@ function PersonRow({ person, roster, now, onSelect }: PersonRowProps) {
         <span className={styles.rowText}>
           <span className={styles.rowName}>{resolveDisplayName(person, roster)}</span>
           <span className={styles.rowMeta}>
-            {placeHintFor(person, now)}
+            {showEmail ? person.email : placeHintFor(person, now)}
             {time ? ` · ${time}` : ""}
+            {distance ? ` · ${distance}` : ""}
           </span>
         </span>
         <span className={styles.rowStatus} style={{ background: STATUS_META[status].color }} />
@@ -78,6 +86,10 @@ export function TeamMapPanel({ viewerEmail, roster, onClose, onOpenProfile, onOp
   const [selectedEmail, setSelectedEmail] = useState<string | null>(null);
   const [clusterEmails, setClusterEmails] = useState<string[] | null>(null);
   const [now, setNow] = useState(() => new Date());
+  // Employee search: the typed query, and the locate request handed to the canvas. The nonce lets
+  // the same person be located twice in a row.
+  const [query, setQuery] = useState("");
+  const [focus, setFocus] = useState<{ email: string; nonce: number } | null>(null);
 
   // Working Today (V1.1): the viewer's own share state and the in-flight share/stop request.
   const [shareBusy, setShareBusy] = useState(false);
@@ -193,6 +205,32 @@ export function TeamMapPanel({ viewerEmail, roster, onClose, onOpenProfile, onOp
   const selectCluster = (emails: string[]) => {
     setSelectedEmail(null);
     setClusterEmails(emails);
+  };
+
+  // Distance from the viewer's own shared point (live or saved). Null everywhere when they have
+  // no share of their own — nothing is inferred from their browser and nothing is requested.
+  const distanceTo = useCallback(
+    (person: TeamMapPerson) => distanceLabelFor(snapshot?.me ?? null, person, viewerEmail),
+    [snapshot?.me, viewerEmail],
+  );
+
+  // Same gate, shorter wording, for the pill attached to each map marker.
+  const markerDistanceFor = useCallback(
+    (person: TeamMapPerson) => compactDistanceLabelFor(snapshot?.me ?? null, person, viewerEmail),
+    [snapshot?.me, viewerEmail],
+  );
+
+  const matches = useMemo(
+    () => searchTeamMap(people, roster, query),
+    [people, roster, query],
+  );
+
+  // A search hit does both halves of "find them": select the person (their card opens, which is
+  // what identifies someone sitting on a shared coordinate) and ask the canvas to fly there.
+  // Someone with no coordinates is selected the same way; the canvas simply does not move.
+  const locatePerson = (email: string) => {
+    selectPerson(email);
+    setFocus((previous) => ({ email, nonce: (previous?.nonce ?? 0) + 1 }));
   };
 
   const isSelf = (email: string) =>
@@ -321,6 +359,8 @@ export function TeamMapPanel({ viewerEmail, roster, onClose, onOpenProfile, onOp
               statusFor={statusFor}
               onSelectPerson={selectPerson}
               onSelectCluster={selectCluster}
+              distanceFor={markerDistanceFor}
+              focus={focus}
             />
             {selected && (
               <div
@@ -350,6 +390,7 @@ export function TeamMapPanel({ viewerEmail, roster, onClose, onOpenProfile, onOp
                     {formatLocalTime(selected.timezone, now)
                       ? ` · ${formatLocalTime(selected.timezone, now)} local`
                       : ""}
+                    {distanceTo(selected) ? ` · ${distanceTo(selected)}` : ""}
                   </div>
                   <div className={styles.cardActions}>
                     <button
@@ -388,7 +429,14 @@ export function TeamMapPanel({ viewerEmail, roster, onClose, onOpenProfile, onOp
                   </div>
                   <ul className={styles.list}>
                     {clusterPeople.map((p) => (
-                      <PersonRow key={p.email} person={p} roster={roster} now={now} onSelect={selectPerson} />
+                      <PersonRow
+                    key={p.email}
+                    person={p}
+                    roster={roster}
+                    now={now}
+                    onSelect={selectPerson}
+                    distance={distanceTo(p)}
+                  />
                     ))}
                   </ul>
                 </div>
@@ -405,6 +453,38 @@ export function TeamMapPanel({ viewerEmail, roster, onClose, onOpenProfile, onOp
           </div>
 
           <aside className={styles.sidebar}>
+            <input
+              type="search"
+              className={styles.searchInput}
+              placeholder="Search employee…"
+              aria-label="Search employee"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+            {query.trim() !== "" && (
+              <section>
+                <h3 className={styles.sectionTitle}>
+                  Search results <span className={styles.count}>{matches.length}</span>
+                </h3>
+                {matches.length === 0 ? (
+                  <p className={styles.empty}>No one matches “{query.trim()}”.</p>
+                ) : (
+                  <ul className={styles.list} aria-label="Search results">
+                    {matches.map((match) => (
+                      <PersonRow
+                        key={match.person.email}
+                        person={match.person}
+                        roster={roster}
+                        now={now}
+                        onSelect={locatePerson}
+                        showEmail={match.ambiguous}
+                        distance={distanceTo(match.person)}
+                      />
+                    ))}
+                  </ul>
+                )}
+              </section>
+            )}
             <section>
               <h3 className={styles.sectionTitle}>
                 {BUCKET_LABELS.elsewhere} <span className={styles.count}>{grouped.elsewhere.length}</span>
@@ -414,7 +494,14 @@ export function TeamMapPanel({ viewerEmail, roster, onClose, onOpenProfile, onOp
               )}
               <ul className={styles.list}>
                 {grouped.elsewhere.map((p) => (
-                  <PersonRow key={p.email} person={p} roster={roster} now={now} onSelect={selectPerson} />
+                  <PersonRow
+                    key={p.email}
+                    person={p}
+                    roster={roster}
+                    now={now}
+                    onSelect={selectPerson}
+                    distance={distanceTo(p)}
+                  />
                 ))}
               </ul>
             </section>
@@ -427,7 +514,14 @@ export function TeamMapPanel({ viewerEmail, roster, onClose, onOpenProfile, onOp
               )}
               <ul className={styles.list}>
                 {grouped.none.map((p) => (
-                  <PersonRow key={p.email} person={p} roster={roster} now={now} onSelect={selectPerson} />
+                  <PersonRow
+                    key={p.email}
+                    person={p}
+                    roster={roster}
+                    now={now}
+                    onSelect={selectPerson}
+                    distance={distanceTo(p)}
+                  />
                 ))}
               </ul>
             </section>

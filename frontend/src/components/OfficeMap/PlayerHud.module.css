@@ -22,6 +22,14 @@
   backdrop-filter: blur(6px);
 }
 
+/* Stepped BELOW the modal backdrops (60) so a full-screen modal dims and covers the HUD instead
+   of the HUD punching through it. Applied only while such a modal is open — no media query, and
+   nothing here depends on viewport size; the overlap was always present, just invisible on wide
+   screens where the panel never reached this corner. */
+.behindModal {
+  z-index: 50;
+}
+
 /* ---- avatar + name + level ------------------------------------------------------------- */
 .identity {
   position: relative;

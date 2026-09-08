@@ -21,16 +21,31 @@ export interface TeamMapCanvasProps {
   onSelectPerson: (email: string) => void;
   /** A cluster that cannot expand further (several people at one coarse centroid). */
   onSelectCluster: (emails: string[]) => void;
+  /** Compact distance for this person's marker pill ("2.4 km"), or null for no pill. Same gate
+   *  as the sidebar's label — the panel derives both from one place. */
+  distanceFor?: (person: TeamMapPerson) => string | null;
+  /** "Show me this person": pan/zoom to their point. `nonce` re-fires the same email. A person
+   *  with no coordinates leaves the map exactly where it is — the panel still selects them. */
+  focus?: { email: string; nonce: number } | null;
 }
 
 const SOURCE_ID = "team-map-people";
-const MAX_ZOOM = 13;
-// Cluster through the LAST zoom level on purpose. Locations are coarse city centroids, so several
-// people routinely share one exact coordinate; if clustering stopped before maxZoom they would
-// dissolve into N overlapping singleton markers at the same pixel and read as one person (the
-// "San Pablo shows 4, zoomed shows 1" report, 2026-09-07). Kept clustered, such a group stays a
-// counted circle and its click path (expansion zoom > CLUSTER_MAX_ZOOM) opens the full list.
-// Distinct cities still separate: at zoom 13 the 44px cluster radius is under 1 km.
+// Street/building level. The old ceiling of 13 stopped roughly a city across, which meant two
+// people who had opted into exact locations a few hundred metres apart could never be pulled
+// apart — 44px at zoom 13 is ~800 m, so they stayed one circle at the deepest zoom available.
+const MAX_ZOOM = 18;
+// Cluster through the LAST zoom level on purpose. Several people routinely share one exact
+// coordinate (a shared city centroid, or two people in the same building); if clustering stopped
+// before maxZoom they would dissolve into N overlapping singleton markers at the same pixel and
+// read as one person (the "San Pablo shows 4, zoomed shows 1" report, 2026-09-07). Kept
+// clustered, such a group stays a counted circle and its click path (expansion zoom >
+// CLUSTER_MAX_ZOOM) opens the full list.
+//
+// Genuinely distinct coordinates separate on their own well before the ceiling, because the
+// cluster radius is in pixels and the ground it covers shrinks with every zoom level: at this
+// latitude 44px is ~800 m at zoom 13, ~100 m at zoom 16 and ~25 m at zoom 18. So anything more
+// than a building apart is an individual marker by the time you reach max zoom, while true
+// same-coordinate groups stay grouped.
 const CLUSTER_MAX_ZOOM = MAX_ZOOM;
 const INITIAL_CENTER: [number, number] = [121.0, 13.5];
 const INITIAL_ZOOM = 3.2;
@@ -61,11 +76,15 @@ function buildMarkerElement(
   person: TeamMapPerson,
   status: OfficeStatus,
   onClick: () => void,
+  distance: string | null,
 ): HTMLElement {
   const el = document.createElement("button");
   el.type = "button";
   el.className = styles.marker;
-  el.setAttribute("aria-label", `${displayNameFor(person)} · ${STATUS_META[status].label}`);
+  el.setAttribute(
+    "aria-label",
+    `${displayNameFor(person)} · ${STATUS_META[status].label}${distance ? ` · ${distance} away` : ""}`,
+  );
   el.title = displayNameFor(person);
   const img = document.createElement("img");
   img.className = styles.markerImage;
@@ -85,6 +104,16 @@ function buildMarkerElement(
   dot.className = styles.markerStatus;
   dot.style.background = STATUS_META[status].color;
   el.appendChild(dot);
+  // Distance pill, hung under the avatar. Present only when the panel hands one down, which it
+  // does only for a located colleague other than the viewer while the viewer has a share of
+  // their own. It is pointer-events: none, so it can never swallow a click meant for the avatar
+  // or the map, and the marker's own aria-label already carries the same text for screen readers.
+  if (distance) {
+    const pill = document.createElement("span");
+    pill.className = styles.markerDistance;
+    pill.textContent = distance;
+    el.appendChild(pill);
+  }
   el.addEventListener("click", (event) => {
     event.stopPropagation();
     onClick();
@@ -97,6 +126,8 @@ export function TeamMapCanvas({
   statusFor,
   onSelectPerson,
   onSelectCluster,
+  distanceFor,
+  focus = null,
 }: TeamMapCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -105,10 +136,12 @@ export function TeamMapCanvas({
   // Latest props for the render-loop marker sync, which is registered once.
   const peopleRef = useRef(people);
   const statusForRef = useRef(statusFor);
+  const distanceForRef = useRef(distanceFor);
   const onSelectPersonRef = useRef(onSelectPerson);
   const onSelectClusterRef = useRef(onSelectCluster);
   peopleRef.current = people;
   statusForRef.current = statusFor;
+  distanceForRef.current = distanceFor;
   onSelectPersonRef.current = onSelectPerson;
   onSelectClusterRef.current = onSelectCluster;
 
@@ -131,8 +164,11 @@ export function TeamMapCanvas({
         if (!person || feature.geometry.type !== "Point") continue;
         visible.add(email as string);
         if (!markers.has(email as string)) {
-          const el = buildMarkerElement(person, statusForRef.current(person), () =>
-            onSelectPersonRef.current(person.email),
+          const el = buildMarkerElement(
+            person,
+            statusForRef.current(person),
+            () => onSelectPersonRef.current(person.email),
+            distanceForRef.current?.(person) ?? null,
           );
           const marker = new maplibre.Marker({ element: el, anchor: "center" })
             .setLngLat(feature.geometry.coordinates as [number, number])
@@ -240,6 +276,19 @@ export function TeamMapCanvas({
     };
   }, []);
 
+  // Locate-a-person (search result click). Eases to MAX_ZOOM rather than a gentler level on
+  // purpose: the cluster radius is in pixels, so the deepest zoom is where two nearby-but-
+  // distinct coordinates are guaranteed to have split into their own markers. People who really
+  // do share one coordinate stay a cluster there — the panel's own selection opens their card,
+  // which is what identifies them. No coordinates (bucket "none") means no camera move at all.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loadedRef.current || !focus) return;
+    const person = people.find((p) => p.email === focus.email);
+    if (!person || person.latitude === null || person.longitude === null) return;
+    map.easeTo({ center: [person.longitude, person.latitude], zoom: MAX_ZOOM });
+  }, [focus, people]);
+
   // Data refresh: push new coordinates into the clustered source and drop stale markers so the
   // next render rebuilds them with fresh status colours.
   useEffect(() => {
@@ -249,7 +298,7 @@ export function TeamMapCanvas({
     source?.setData(toGeoJson(people));
     for (const marker of markersRef.current.values()) marker.remove();
     markersRef.current.clear();
-  }, [people, statusFor]);
+  }, [people, statusFor, distanceFor]);
 
   return <div ref={containerRef} className={styles.canvas} data-testid="team-map-canvas" />;
 }

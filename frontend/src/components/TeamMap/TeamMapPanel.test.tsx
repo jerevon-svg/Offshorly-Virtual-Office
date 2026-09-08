@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TeamMapCanvasProps } from "./TeamMapCanvas";
 import type { OfficePerson } from "../../services/office/floorMerge";
@@ -16,8 +16,8 @@ vi.mock("../../services/teamMap", () => ({
 // MapLibre needs WebGL; the canvas is replaced with one button per mappable person plus a
 // "cluster" button so the panel's selection wiring can be exercised in jsdom.
 vi.mock("./TeamMapCanvas", () => ({
-  TeamMapCanvas: ({ people, onSelectPerson, onSelectCluster }: TeamMapCanvasProps) => (
-    <div data-testid="fake-canvas">
+  TeamMapCanvas: ({ people, onSelectPerson, onSelectCluster, focus }: TeamMapCanvasProps) => (
+    <div data-testid="fake-canvas" data-focus={focus ? `${focus.email}#${focus.nonce}` : ""}>
       {people
         .filter((p) => p.latitude !== null)
         .map((p) => (
@@ -407,6 +407,139 @@ describe("TeamMapPanel", () => {
       fireEvent.click(screen.getByRole("button", { name: /Share my exact location today/ }));
       expect(await screen.findByRole("alert")).toHaveTextContent(/permission was denied/);
       expect(shareWorkingToday).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("employee search", () => {
+    const type = (value: string) =>
+      fireEvent.change(screen.getByLabelText("Search employee"), { target: { value } });
+    // The fake canvas renders a button per person, so every result assertion is scoped to the
+    // search results list itself.
+    const results = () => within(screen.getByRole("list", { name: "Search results" }));
+
+    it("filters as the viewer types, case-insensitively", async () => {
+      getPeople.mockResolvedValue(snapshot());
+      renderPanel();
+      await screen.findByText("Sam Sy");
+      type("ad");
+      await screen.findByRole("list", { name: "Search results" });
+      expect(results().getByText("Ada Lovelace")).toBeInTheDocument();
+      expect(results().queryByText("Sam Sy")).not.toBeInTheDocument();
+      type("SAM");
+      await waitFor(() => expect(results().getByText("Sam Sy")).toBeInTheDocument());
+      expect(results().queryByText("Ada Lovelace")).not.toBeInTheDocument();
+      type("zzz");
+      expect(await screen.findByText(/No one matches/)).toBeInTheDocument();
+    });
+
+    it("locates a result: selects the person and asks the canvas to fly there", async () => {
+      getPeople.mockResolvedValue(snapshot());
+      renderPanel();
+      await screen.findByText("Sam Sy");
+      type("ada");
+      await screen.findByRole("list", { name: "Search results" });
+      fireEvent.click(results().getByText("Ada Lovelace"));
+      expect(await screen.findByRole("group", { name: "Ada Lovelace details" })).toBeInTheDocument();
+      expect(screen.getByTestId("fake-canvas").dataset.focus).toBe("ada@offshorly.com#1");
+    });
+
+    it("selects a person with no location without moving the map", async () => {
+      getPeople.mockResolvedValue(snapshot());
+      renderPanel();
+      await screen.findByText("Sam Sy");
+      type("nia");
+      await screen.findByRole("list", { name: "Search results" });
+      fireEvent.click(results().getByText("Nia None"));
+      expect(await screen.findByRole("group", { name: "Nia None details" })).toBeInTheDocument();
+      // The canvas is still told who to show — it is the canvas that declines to move for a
+      // person with no coordinates (see TeamMapCanvas.test.tsx).
+      expect(screen.getByTestId("fake-canvas").dataset.focus).toBe("nia@offshorly.com#1");
+    });
+
+    it("shows the email when two people share a display name", async () => {
+      getPeople.mockResolvedValue(
+        snapshot({
+          people: [
+            person({}),
+            person({ email: "ada2@offshorly.com", display_name: "Ada Lovelace", bucket: "elsewhere" }),
+          ],
+        }),
+      );
+      renderPanel();
+      await screen.findAllByText("Ada Lovelace");
+      type("ada");
+      await screen.findByRole("list", { name: "Search results" });
+      expect(results().getByText(/ada2@offshorly\.com/)).toBeInTheDocument();
+      expect(results().getByText(/^ada@offshorly\.com/)).toBeInTheDocument();
+    });
+  });
+
+  describe("distance from me", () => {
+    // Manila reference share; Sam is ~4 km north of it, Nia has no location at all.
+    const nearby = () =>
+      snapshot({
+        me: myShare({ latitude: 14.5995, longitude: 120.9842 }),
+        people: [
+          person({}),
+          person({
+            email: "sam@offshorly.com",
+            display_name: "Sam Sy",
+            bucket: "elsewhere",
+            latitude: 14.6355,
+            longitude: 120.9842,
+          }),
+          person({
+            email: "nia@offshorly.com",
+            display_name: "Nia None",
+            bucket: "none",
+            latitude: null,
+            longitude: null,
+            location_label: null,
+            timezone: null,
+          }),
+        ],
+      });
+
+    it("shows the distance on a located colleague's row and card", async () => {
+      getPeople.mockResolvedValue(nearby());
+      renderPanel();
+      const row = (await screen.findByText("Sam Sy")).closest("button");
+      expect(row).toHaveTextContent("4.0 km away");
+      fireEvent.click(row as HTMLElement);
+      expect(await screen.findByRole("group", { name: "Sam Sy details" })).toHaveTextContent(
+        "4.0 km away",
+      );
+    });
+
+    it("shows nothing for a colleague with no location, or for the viewer", async () => {
+      getPeople.mockResolvedValue(nearby());
+      renderPanel();
+      const nia = (await screen.findByText("Nia None")).closest("button");
+      expect(nia).not.toHaveTextContent("away");
+      // Ada is the viewer (viewerEmail defaults to ada@offshorly.com in renderPanel).
+      fireEvent.click(screen.getByText("marker:ada@offshorly.com"));
+      expect(await screen.findByRole("group", { name: "Ada Lovelace details" })).not.toHaveTextContent(
+        "away",
+      );
+    });
+
+    it("shows nothing at all when the viewer has no shared or saved location", async () => {
+      getPeople.mockResolvedValue(snapshot({ me: null }));
+      renderPanel();
+      const row = (await screen.findByText("Sam Sy")).closest("button");
+      expect(row).not.toHaveTextContent("away");
+    });
+
+    it("still measures from a saved last-shared location that is no longer live", async () => {
+      const base = nearby();
+      getPeople.mockResolvedValue(
+        snapshot({
+          ...base,
+          me: myShare({ latitude: 14.5995, longitude: 120.9842, ...savedMarker() }),
+        }),
+      );
+      renderPanel();
+      expect((await screen.findByText("Sam Sy")).closest("button")).toHaveTextContent("4.0 km away");
     });
   });
 });

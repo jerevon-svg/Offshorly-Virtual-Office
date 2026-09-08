@@ -99,4 +99,19 @@ describe("PlayerHud", () => {
     });
     expect(screen.getByTestId("badge-earned")).toHaveTextContent("Connector · bronze");
   });
+
+  it("steps behind a modal backdrop only while one is open", async () => {
+    vi.mocked(fetchMyProgression).mockResolvedValue(p({ xp: 10 }));
+    vi.mocked(fetchMyBadges).mockResolvedValue([] as Badge[]);
+    const { rerender } = render(<PlayerHud />);
+    const hud = await screen.findByTestId("player-hud");
+    // Default: the HUD keeps its own layer, above the z-index 60 modal family, so reward FX
+    // still land on it.
+    expect(hud.className).not.toMatch(/behindModal/);
+    rerender(<PlayerHud behindModal />);
+    expect(screen.getByTestId("player-hud").className).toMatch(/behindModal/);
+    // Closing the modal restores normal behaviour.
+    rerender(<PlayerHud behindModal={false} />);
+    expect(screen.getByTestId("player-hud").className).not.toMatch(/behindModal/);
+  });
 });
