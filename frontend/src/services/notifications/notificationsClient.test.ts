@@ -9,7 +9,10 @@ import {
 describe("notificationsClient", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", vi.fn());
-    setDevIdentity(null);
+    // Seeded, because these cases assert request SHAPE (url, method, error surfacing) and the
+    // client now refuses outright to issue a request with no identity at all — see
+    // missingIdentity.test.ts, which owns that path. Individual cases still override it.
+    setDevIdentity("tester@example.com");
   });
 
   afterEach(() => {

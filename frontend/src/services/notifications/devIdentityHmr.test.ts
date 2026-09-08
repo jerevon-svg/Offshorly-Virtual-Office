@@ -31,6 +31,10 @@ const FILES = [
   // Same one-shot identity, same broken guard, same fix — feedClient is where the pattern
   // originated, so it is held to the invariant too.
   "src/services/feed/feedClient.ts",
+  // Added 2026-09-08: questsClient serves /quests/me, /missions/me, /progression/me and
+  // /badges/me and holds the identical one-shot devEmail, but the original fix never covered it —
+  // so the badges/progression path kept 401ing after a hot update while notifications recovered.
+  "src/services/quests/questsClient.ts",
 ];
 
 describe.each(FILES)("%s guards its one-shot dev identity", (file) => {

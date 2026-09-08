@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { apiFetch, AuthRedirectError, HOME_PATH } from "../services/api/client";
-import { getCurrentUser, setCurrentUserFromMeResponse } from "./currentUserStore";
+import { setCurrentUserFromMeResponse } from "./currentUserStore";
 import { chatMode, realChatService } from "../services/chat";
 import { setDevIdentity as setSpatialSessionDevIdentity } from "../services/presence/spatialSessionStore";
 import { setDevIdentity as setCallStoreDevIdentity } from "../services/call/callStore";
@@ -206,7 +206,14 @@ function fullNameForDevBypassEmail(email: string): string {
 }
 
 function seedDevBypassIdentity(): void {
-  if (getCurrentUser()) return;
+  // Deliberately NOT short-circuited on `getCurrentUser()` any more. That guard keyed the
+  // decision "has the dev identity been seeded?" on a DIFFERENT module's state
+  // (currentUserStore) than the ~20 one-shot client identities it seeds below. Any situation
+  // where a client module's state was reset but currentUserStore's survived — exactly what a
+  // Vite hot update does — made a re-seed a silent no-op and left those clients permanently
+  // unauthenticated. Re-seeding is idempotent (same resolved email, same setters), so running it
+  // again is always safe and is the only thing that can recover a lost client identity without a
+  // full reload.
   const email = resolveDevBypassEmail();
   setCurrentUserFromMeResponse({
     id: FALLBACK_USER_ID,

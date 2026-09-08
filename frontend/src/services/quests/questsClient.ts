@@ -41,9 +41,46 @@ export function setDevIdentity(email: string | null): void {
   devEmail = email ? email.trim().toLowerCase() : null;
 }
 
+// Same one-shot-identity hazard notificationsClient.ts/feedClient.ts document, for THIS module's
+// own copy — and this file is where it was still live: `devEmail` above is module-level state
+// that useAuthGate seeds exactly once, at gate time. A Vite hot update re-executes the module and
+// resets it to null; the gate has long since run and never re-seeds it, so every later
+// /quests/me, /missions/me, /progression/me and /badges/me went out with neither `x-dev-email`
+// nor a bearer token and the backend answered 401 "Missing Authorization bearer token" — over and
+// over, because PlayerHud re-asks on every mount, tab focus and `online` event.
+//
+// accept() is what makes the module self-accepting; without it Vite's server ignores an
+// invalidate() entirely (see the long note in notificationsClient.ts). Reloading is the only
+// thing that re-runs the gate. Dev only — `import.meta.hot` is undefined in a production build,
+// where module state is never re-executed anyway.
+if (import.meta.hot) {
+  import.meta.hot.accept(() => {
+    window.location.reload();
+  });
+}
+
+// Thrown INSTEAD of issuing a request when this client has no identity to send: no dev identity
+// seeded and no bearer token in storage. Without this, a credential-less request is fired anyway
+// (the `if (token)` below simply omits the header), the backend answers 401, and nothing about
+// the failure stops the next trigger from doing it again — which is what turned one lost identity
+// into a continuous stream of 401s in the dev rig. Callers already tolerate a rejected promise
+// (progressionStore swallows it; the panels surface it), so refusing locally costs nothing and
+// keeps zero unauthenticated traffic on the wire.
+export class MissingIdentityError extends Error {
+  constructor() {
+    super("Not signed in: no dev identity seeded and no auth token available.");
+    this.name = "MissingIdentityError";
+  }
+}
+
+function assertIdentity(): void {
+  if (!devEmail && !getAuthToken()) throw new MissingIdentityError();
+}
+
 /** GET /quests/me — every registered quest with the caller's own progress, already in display
  * order (the server sorts by `order`, then id). */
 export async function fetchMyQuests(): Promise<Quest[]> {
+  assertIdentity();
   const headers = new Headers();
   if (devEmail) {
     headers.set("x-dev-email", devEmail);
@@ -99,6 +136,7 @@ export interface MyMissions {
 }
 
 function authHeaders(): Headers {
+  assertIdentity();
   const headers = new Headers();
   if (devEmail) {
     headers.set("x-dev-email", devEmail);

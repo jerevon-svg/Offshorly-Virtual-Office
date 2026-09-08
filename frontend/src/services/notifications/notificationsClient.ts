@@ -77,7 +77,21 @@ if (import.meta.hot) {
   });
 }
 
+// Thrown INSTEAD of issuing a request when this client has no identity to send: no dev identity
+// seeded and no bearer token in storage. Without this the request goes out anyway (the `if
+// (token)` below simply omits the header), the backend answers 401, and nothing about the failure
+// stops the next trigger — NotificationCenter re-asks on every mount, tab focus, `online` event
+// and socket reconnect — from doing it again. Refusing locally keeps zero unauthenticated traffic
+// on the wire; the store already renders a rejected refresh as its `error` string.
+export class MissingIdentityError extends Error {
+  constructor() {
+    super("Not signed in: no dev identity seeded and no auth token available.");
+    this.name = "MissingIdentityError";
+  }
+}
+
 async function restFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  if (!devEmail && !getAuthToken()) throw new MissingIdentityError();
   const headers = new Headers(init.headers);
   if (devEmail) {
     headers.set("x-dev-email", devEmail);
