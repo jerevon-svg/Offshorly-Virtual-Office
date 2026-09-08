@@ -120,7 +120,7 @@ MISSION_POOL: tuple[MissionDefinition, ...] = (
     MissionDefinition("daily_view_profile", "View a coworker's profile", EVENT_PROFILE_VIEWED, CADENCE_DAILY),
     MissionDefinition("daily_ask_toucan", "Ask Toucan something", EVENT_TOUCAN_ASKED, CADENCE_DAILY),
     MissionDefinition("daily_spatial_chat", "Join a spatial conversation", EVENT_SPATIAL_SESSION_JOINED, CADENCE_DAILY),
-    MissionDefinition("daily_recognise", "Recognise a coworker", EVENT_RECOGNITION_GIVEN, CADENCE_DAILY),
+    MissionDefinition("daily_recognise", "Give Kudos to a coworker", EVENT_RECOGNITION_GIVEN, CADENCE_DAILY),
     MissionDefinition("daily_log_time", "Log your time", EVENT_CHECK_OUT, CADENCE_DAILY),
     # ---- weekly -----------------------------------------------------------------------------
     MissionDefinition(
@@ -131,7 +131,7 @@ MISSION_POOL: tuple[MissionDefinition, ...] = (
     ),
     MissionDefinition(
         "weekly_recognise_two",
-        "Recognise 2 different coworkers",
+        "Give Kudos to 2 different coworkers",
         EVENT_RECOGNITION_GIVEN,
         CADENCE_WEEKLY,
         MODE_UNIQUE_COUNT,

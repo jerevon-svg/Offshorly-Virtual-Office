@@ -59,7 +59,7 @@ export function PinnedBadges({ badges }: { badges: Badge[] | null }) {
         </span>
       </div>
       {pinned.length === 0 ? (
-        <p className={styles.pinnedEmpty}>No badges yet — check in, chat with coworkers, recognise someone.</p>
+        <p className={styles.pinnedEmpty}>No badges yet — check in, chat with coworkers, give someone Kudos.</p>
       ) : (
         <ul className={styles.pinnedRow}>
           {pinned.map((b) => (

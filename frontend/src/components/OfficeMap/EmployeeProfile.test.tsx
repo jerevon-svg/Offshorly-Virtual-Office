@@ -4,10 +4,20 @@ import { EmployeeProfile } from "./EmployeeProfile";
 import type { FeedPost } from "../../services/feed/feedClient";
 import type { OfficePerson } from "../../services/office/floorMerge";
 
-const { fetchFeed, createFeedPost, deleteFeedPost, reactToPost, removeReaction, createComment, deleteComment } =
+const {
+  fetchFeed,
+  createFeedPost,
+  giveKudos,
+  deleteFeedPost,
+  reactToPost,
+  removeReaction,
+  createComment,
+  deleteComment,
+} =
   vi.hoisted(() => ({
     fetchFeed: vi.fn(),
     createFeedPost: vi.fn(),
+    giveKudos: vi.fn(),
     deleteFeedPost: vi.fn(),
     reactToPost: vi.fn(),
     removeReaction: vi.fn(),
@@ -23,6 +33,7 @@ vi.mock("../../services/feed/feedClient", async () => {
     ...actual,
     fetchFeed,
     createFeedPost,
+    giveKudos,
     deleteFeedPost,
     reactToPost,
     removeReaction,
@@ -201,5 +212,33 @@ describe("EmployeeProfile", () => {
 
     await waitFor(() => expect(createFeedPost).toHaveBeenCalledWith("alex@example.com", "Nice job team"));
     await waitFor(() => expect(screen.getByText("Nice job team")).toBeInTheDocument());
+  });
+
+  // Give Kudos is a separate, explicit act from the normal post composer (backend pays the
+  // recipient for it) — so it must be its own control, and never offered on your own profile.
+  it("gives Kudos with a message through the Kudos action, not the post composer", async () => {
+    giveKudos.mockResolvedValue(
+      makePost({ id: "k1", type: "recognition", content: "Saved the release", authorEmail: "bon@example.com" }),
+    );
+
+    render(<EmployeeProfile email="alex@example.com" viewerEmail="bon@example.com" roster={ROSTER} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Feed" }));
+
+    fireEvent.change(await screen.findByLabelText("Kudos message"), { target: { value: "Saved the release" } });
+    fireEvent.click(screen.getByRole("button", { name: /Give Kudos/ }));
+
+    await waitFor(() => expect(giveKudos).toHaveBeenCalledWith("alex@example.com", "Saved the release"));
+    expect(createFeedPost).not.toHaveBeenCalled();
+    // The Kudos activity renders the composed sentence AND the giver's message.
+    expect(await screen.findByText(/Bon gave Alex Kudos!/)).toBeInTheDocument();
+    expect(screen.getByText("Saved the release")).toBeInTheDocument();
+  });
+
+  it("offers no Kudos action on your own profile", async () => {
+    render(<EmployeeProfile email="bon@example.com" viewerEmail="bon@example.com" roster={ROSTER} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Feed" }));
+
+    await waitFor(() => expect(fetchFeed).toHaveBeenCalled());
+    expect(screen.queryByTestId("kudos-composer")).not.toBeInTheDocument();
   });
 });

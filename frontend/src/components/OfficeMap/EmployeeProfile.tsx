@@ -6,6 +6,7 @@ import { refreshBadges, refreshProgression, useProgressionStore } from "../../se
 import {
   createComment,
   createFeedPost,
+  giveKudos,
   deleteComment,
   deleteFeedPost,
   fetchFeed,
@@ -56,8 +57,8 @@ function nameFor(email: string, roster: OfficePerson[]): string {
 // activity types can be added later" extensibility goal.
 const ACTIVITY_SENTENCE: Partial<Record<FeedPost["type"], (author: string, target: string) => string>> = {
   birthday: (author, target) => `${author} wished ${target} a Happy Birthday! 🎉`,
-  congratulation: (author, target) => `${author} congratulated ${target}! 👏`,
-  recognition: (author, target) => `${author} recognized ${target}! 🏆`,
+  congratulation: (author, target) => `${author} gave ${target} Kudos! 👏`,
+  recognition: (author, target) => `${author} gave ${target} Kudos! 🏆`,
 };
 
 const ACTIVITY_EMOJI: Partial<Record<FeedPost["type"], string>> = {
@@ -214,10 +215,17 @@ function FeedPostCard({ post, roster, viewerEmail, onUpdate, onDeletePost }: Fee
         <img className={styles.postAvatar} src={avatarSrcFor(post.authorEmail)} alt="" />
         <div className={styles.postHeaderText}>
           {sentenceTemplate ? (
-            <div className={styles.activitySentence}>
-              <span className={styles.activityEmoji}>{ACTIVITY_EMOJI[post.type] ?? ""}</span>{" "}
-              {sentenceTemplate(authorName, targetName)}
-            </div>
+            <>
+              <div className={styles.activitySentence}>
+                <span className={styles.activityEmoji}>{ACTIVITY_EMOJI[post.type] ?? ""}</span>{" "}
+                {sentenceTemplate(authorName, targetName)}
+              </div>
+              {/* A Kudos carries the giver's own message; the other activity types store only a
+                  name-free fragment the sentence above already says. */}
+              {post.type === "recognition" && post.content.trim() && (
+                <div className={styles.postText}>{post.content}</div>
+              )}
+            </>
           ) : (
             <>
               <div className={styles.postAuthor}>{authorName}</div>
@@ -300,6 +308,9 @@ export function EmployeeProfile({ email, viewerEmail, roster, onClose }: Employe
       void refreshBadges();
     }
   }, [isSelf]);
+  const [kudosText, setKudosText] = useState("");
+  const [givingKudos, setGivingKudos] = useState(false);
+  const [kudosError, setKudosError] = useState<string | null>(null);
   const [posts, setPosts] = useState<FeedPost[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -338,6 +349,21 @@ export function EmployeeProfile({ email, viewerEmail, roster, onClose }: Employe
   async function handleDeletePost(postId: string) {
     await deleteFeedPost(postId);
     setPosts((prev) => prev.filter((p) => p.id !== postId));
+  }
+
+  async function submitKudos() {
+    if (!kudosText.trim()) return;
+    setGivingKudos(true);
+    setKudosError(null);
+    try {
+      const post = await giveKudos(email, kudosText.trim());
+      setPosts((prev) => [post, ...prev]);
+      setKudosText("");
+    } catch (err) {
+      setKudosError(err instanceof Error ? err.message : "Could not give Kudos");
+    } finally {
+      setGivingKudos(false);
+    }
   }
 
   async function submitPost() {
@@ -444,8 +470,8 @@ export function EmployeeProfile({ email, viewerEmail, roster, onClose }: Employe
               </div>
               {hasRecognition && (
                 <div className={styles.infoRow}>
-                  <span className={styles.infoLabel}>Recognition</span>
-                  <span>🏆 Recently recognized — see Feed</span>
+                  <span className={styles.infoLabel}>Kudos</span>
+                  <span>🏆 Recently received Kudos — see Feed</span>
                 </div>
               )}
             </div>
@@ -453,6 +479,29 @@ export function EmployeeProfile({ email, viewerEmail, roster, onClose }: Employe
 
           {tab === "feed" && (
             <div className={styles.feedTab}>
+              {!isSelf && (
+                <div className={styles.kudosComposer} data-testid="kudos-composer">
+                  <input
+                    className={styles.composerInput}
+                    value={kudosText}
+                    onChange={(e) => setKudosText(e.target.value)}
+                    placeholder={`Why does ${name} deserve Kudos?`}
+                    disabled={givingKudos}
+                    aria-label="Kudos message"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void submitKudos();
+                    }}
+                  />
+                  <button
+                    className={styles.smallPrimary}
+                    disabled={givingKudos || !kudosText.trim()}
+                    onClick={() => void submitKudos()}
+                  >
+                    🏆 Give Kudos
+                  </button>
+                </div>
+              )}
+              {kudosError && <div className={styles.errorBanner}>{kudosError}</div>}
               <div className={styles.composer}>
                 <input
                   className={styles.composerInput}

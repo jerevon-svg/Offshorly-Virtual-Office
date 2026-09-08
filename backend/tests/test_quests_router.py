@@ -157,17 +157,20 @@ async def test_ask_to_join_request_counts_once_even_when_retried():
     assert await _event_count("ask_to_join") == 1
 
 
-async def test_recognition_via_feed_post_and_reaction_but_never_self_directed():
+async def test_recognition_via_kudos_and_reaction_but_never_a_plain_post_or_self_directed():
     async with _client() as client:
-        # A posts on their OWN feed: not a social act.
+        # A plain post is ordinary engagement now — on anyone's feed, including A's own.
         own = await client.post(f"/feed/{A}/posts", json={"content": "note to self"}, headers=_as(A))
         assert own.status_code == 201
-        assert (await _quest(client, A, "give_recognition"))["completed"] is False
-
-        # A posts on B's feed: counts for A.
         res = await client.post(f"/feed/{B}/posts", json={"content": "great work"}, headers=_as(A))
         assert res.status_code == 201
         post_id = res.json()["id"]
+        assert (await _quest(client, A, "give_recognition"))["completed"] is False
+
+        # Giving B Kudos is the act that counts for A. Self-Kudos is refused outright.
+        assert (await client.post(f"/feed/{A}/kudos", json={"message": "me"}, headers=_as(A))).status_code == 400
+        kudos = await client.post(f"/feed/{B}/kudos", json={"message": "great work"}, headers=_as(A))
+        assert kudos.status_code == 201
         assert (await _quest(client, A, "give_recognition"))["completed"] is True
 
         # A reacting to their own post: nothing. B reacting to A's post (twice, different emoji): once.

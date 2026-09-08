@@ -21,7 +21,7 @@ const TYPE_EMOJI: Record<HubItemType, string> = {
 const DEFAULT_CTA_LABEL: Record<HubItemType, string> = {
   announcement: "Read More",
   birthday: "Wish Happy Birthday",
-  recognition: "Congratulate",
+  recognition: "Give Kudos",
   survey: "Answer Survey",
   whatsnew: "See What's New",
 };

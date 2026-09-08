@@ -9,6 +9,8 @@ from app.database import get_db
 from app.repositories import feed as feed_repo
 from app.repositories import hub as hub_repo
 from app.services.quests import EVENT_HUB_VISITED, EVENT_RECOGNITION_GIVEN, record_quest_event, utc_day_key
+from app.services.quests import rewards
+from app.services.quests.rewards import grant_kudos_received
 from app.scripts import seed_dev_hub_content as hub_mock
 from app.schemas.hub import CreateHubItemIn, HubItemOut
 
@@ -24,15 +26,21 @@ from app.schemas.hub import CreateHubItemIn, HubItemOut
 router = APIRouter(tags=["hub"])
 
 # Hub item `type` -> the Feed activity `type` it creates on acting (see act_on_hub_item below).
-# Recognition items map to "congratulation" (not "recognition") per the Employee Feed V1 spec's
-# explicit example. Content is intentionally name-free — the Feed has no employee-name table
-# (this app has no users table, only email strings, same convention as everywhere else), so the
-# frontend composes the full "X wished Y a Happy Birthday!" sentence from author/target emails
-# it already resolves for chat/roster rendering.
+# The item type stays "recognition" and the activity stays "congratulation" — both are stored
+# values on live rows, so only the WORDS people read become Kudos (company terminology); nothing
+# about the schema, the quest event, or the Feed shape changes. Content is intentionally
+# name-free — the Feed has no employee-name table (this app has no users table, only email
+# strings, same convention as everywhere else), so the frontend composes the full
+# "X gave Y Kudos!" sentence from author/target emails it already resolves for chat/roster
+# rendering.
 _HUB_TYPE_TO_FEED_ACTIVITY: dict[str, tuple[str, str]] = {
     "birthday": ("birthday", "wished them a Happy Birthday! 🎉"),
-    "recognition": ("congratulation", "congratulated them! 👏"),
+    "recognition": ("congratulation", "gave them Kudos! 👏"),
 }
+
+# The Hub item type that means "give this person Kudos" — the only act that pays the RECIPIENT
+# (see services/quests/rewards.grant_kudos_received). A birthday wish stays ordinary engagement.
+_KUDOS_ITEM_TYPE = "recognition"
 
 
 @router.post("/hub/items", response_model=HubItemOut, status_code=201)
@@ -118,36 +126,60 @@ async def act_on_hub_item(
     email: str = Depends(get_current_email),
     db: AsyncSession = Depends(get_db),
 ) -> HubItemOut:
-    """The item's CTA (Read More / Wish Happy Birthday / Congratulate / Answer Survey / See
+    """The item's CTA (Read More / Wish Happy Birthday / Give Kudos / Answer Survey / See
     What's New). Persists the interaction (acted_at) without forcing dismissed/acknowledged.
-    For a birthday/recognition item with a target_employee_email, also creates the
-    corresponding Feed activity on that employee's feed — idempotently, so repeated clicks
-    never create duplicate wishes/congratulations (see feed_repo.create_hub_triggered_post)."""
+    For a birthday/Kudos item with a target_employee_email, also creates the corresponding Feed
+    activity on that employee's feed — idempotently, so repeated clicks never create duplicate
+    wishes/Kudos (see feed_repo.create_hub_triggered_post). Giving yourself Kudos (or wishing
+    yourself a happy birthday) records the interaction but creates no activity and pays
+    nothing — the quest engine already drops self-targeted events, this closes the Feed half."""
     item = await _require_item(db, item_id)
     state = await hub_repo.record_action(db, hub_item_id=item_id, employee_email=email)
 
     activity = _HUB_TYPE_TO_FEED_ACTIVITY.get(item["type"])
-    if activity is not None and item["target_employee_email"]:
+    giver = email.strip().lower()
+    target_employee = (item["target_employee_email"] or "").strip().lower()
+    if activity is not None and target_employee and target_employee != giver:
         feed_type, content = activity
+        is_kudos = item["type"] == _KUDOS_ITEM_TYPE
+        # ANTI-FARMING V1 — the SAME rule and the SAME helper the profile Give Kudos action uses
+        # (services/quests/rewards.kudos_reward_on_cooldown), so there is one server-side
+        # cooldown, not two. Probed BEFORE the post is written, so the event about to be
+        # recorded cannot be mistaken for an earlier one. A birthday wish is not Kudos and is
+        # never gated. On cooldown the Hub still records the action and still creates the Feed
+        # activity — only the event and the payout are withheld.
+        rewarded = not is_kudos or not await rewards.kudos_reward_on_cooldown(
+            db, giver=giver, recipient=target_employee
+        )
         post, _created = await feed_repo.create_hub_triggered_post(
             db,
             hub_item_id=item_id,
-            target_email=item["target_employee_email"],
-            author_email=email,
+            target_email=target_employee,
+            author_email=giver,
             type=feed_type,
             content=content,
         )
-        # Quest Foundation: same event and same key family as a hand-written feed post — the
-        # durable post is the act, and a re-click returns the same post so it collapses.
-        await record_quest_event(
-            db,
-            actor_email=post["author_email"],
-            event_type=EVENT_RECOGNITION_GIVEN,
-            dedupe_key=f"post:{post['id']}",
-            target_email=post["target_email"],
-            reference_id=post["id"],
-            occurred_at=post["created_at"],
-        )
+        if rewarded:
+            # Quest Foundation: the durable post is the act, and a re-click returns the same post
+            # so it collapses. Kudos carry the `kudos:` key family the cooldown probe reads.
+            await record_quest_event(
+                db,
+                actor_email=post["author_email"],
+                event_type=EVENT_RECOGNITION_GIVEN,
+                dedupe_key=(
+                    rewards.kudos_dedupe_key(post["id"]) if is_kudos else f"post:{post['id']}"
+                ),
+                target_email=post["target_email"],
+                reference_id=post["id"],
+                occurred_at=post["created_at"],
+            )
+            # Progression & Rewards: the RECIPIENT's payout, keyed on the Kudos post itself, so
+            # the idempotent post above makes the reward idempotent too — a re-click returns the
+            # same post id and the ledger's unique index absorbs the second grant.
+            if is_kudos:
+                await grant_kudos_received(
+                    db, recipient=post["target_email"], giver=post["author_email"], reference_id=post["id"]
+                )
 
     return HubItemOut.from_dict(item, state)
 

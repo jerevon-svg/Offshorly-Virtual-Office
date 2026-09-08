@@ -1,7 +1,7 @@
 """Dev-only Company Hub mock content: the seeded test dataset, plus the full mock reset.
 
 Adds clearly-tagged (created_by="dev-seed-mock") Hub items so the Company Hub UI
-(Announcement/Birthday/Recognition/Survey/What's New, plus dismiss/acknowledge/action
+(Announcement/Birthday/Kudos/Survey/What's New, plus dismiss/acknowledge/action
 persistence) can be manually tested end-to-end without touching real company data.
 
 NOT an alembic migration on purpose: render.yaml runs `alembic upgrade head` on every deploy
@@ -132,13 +132,13 @@ MOCK_ITEMS: tuple[MockHubItemSpec, ...] = (
         type="recognition",
         title=f"[DEV] Employee of the Month: {_RECOGNITION_NAME} 🏆",
         description=(
-            f"Mock recognition for manual testing — congratulate {_RECOGNITION_NAME} "
-            f"({_RECOGNITION_EMAIL}) below. Dismissible; not required. Clicking Congratulate "
-            "creates a `congratulation` activity on their Employee Feed (once per person — the "
-            "mock reset clears your own so it can be re-tested)."
+            f"Mock Kudos item for manual testing — give {_RECOGNITION_NAME} "
+            f"({_RECOGNITION_EMAIL}) Kudos below. Dismissible; not required. Clicking Give Kudos "
+            "creates a `congratulation` activity on their Employee Feed and pays THEM the Kudos "
+            "reward (once per person — the mock reset clears your own so it can be re-tested)."
         ),
         priority="important",
-        cta_label="Congratulate",
+        cta_label="Give Kudos",
         start_offset=-_HOUR,
         end_offset=_LONG_WINDOW,
         target_employee_email=_RECOGNITION_EMAIL,

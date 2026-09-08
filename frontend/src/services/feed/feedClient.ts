@@ -85,6 +85,16 @@ export async function createFeedPost(targetEmail: string, content: string): Prom
   return res.json();
 }
 
+/** Give Kudos to a coworker, with a message. Separate from createFeedPost on purpose: a normal
+ * post is ordinary engagement, a Kudos is the rewarded act (see backend/app/routers/feed.py). */
+export async function giveKudos(targetEmail: string, message: string): Promise<FeedPost> {
+  const res = await restFetch(`/feed/${encodeURIComponent(targetEmail)}/kudos`, {
+    method: "POST",
+    body: JSON.stringify({ message }),
+  });
+  return res.json();
+}
+
 export async function deleteFeedPost(postId: string): Promise<void> {
   await restFetch(`/feed/posts/${encodeURIComponent(postId)}`, { method: "DELETE" });
 }

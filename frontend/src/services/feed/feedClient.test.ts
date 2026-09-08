@@ -3,6 +3,7 @@ import {
   createComment,
   createFeedPost,
   fetchFeed,
+  giveKudos,
   reactToPost,
   removeReaction,
   resetFeedClientForTests,
@@ -75,5 +76,40 @@ describe("feedClient", () => {
     vi.mocked(fetch).mockResolvedValue(mockJsonResponse({ detail: "Post not found" }, false, 404));
 
     await expect(fetchFeed("alex@example.com")).rejects.toThrow("Post not found");
+  });
+
+  // Give Kudos is a Feed write like any other: it MUST carry the same identity the rest of the
+  // Feed calls carry, by both mechanisms (dev header locally, bearer token against Atlas).
+  // A Kudos that skips this is what produced "Missing Authorization bearer token".
+  it("giveKudos sends the same auth headers as createFeedPost, on both mechanisms", async () => {
+    vi.mocked(fetch).mockResolvedValue(mockJsonResponse({ id: "k1" }));
+
+    setDevIdentity("bon@example.com");
+    await giveKudos("alex@example.com", "Saved the release");
+    await createFeedPost("alex@example.com", "hi");
+    const [kudosDev, postDev] = vi.mocked(fetch).mock.calls;
+    expect(String(kudosDev[0])).toContain("/feed/alex%40example.com/kudos");
+    expect(kudosDev[1]?.method).toBe("POST");
+    expect(JSON.parse(kudosDev[1]?.body as string)).toEqual({ message: "Saved the release" });
+    expect((kudosDev[1]?.headers as Headers).get("x-dev-email")).toBe(
+      (postDev[1]?.headers as Headers).get("x-dev-email"),
+    );
+    expect((kudosDev[1]?.headers as Headers).get("Content-Type")).toBe("application/json");
+
+    // Token path: no dev identity, a token in localStorage — the Atlas-authenticated shape.
+    vi.mocked(fetch).mockClear();
+    setDevIdentity(null);
+    window.localStorage.setItem("token", "atlas-token");
+    try {
+      await giveKudos("alex@example.com", "again");
+      await createFeedPost("alex@example.com", "hi");
+    } finally {
+      window.localStorage.removeItem("token");
+    }
+    const [kudosTok, postTok] = vi.mocked(fetch).mock.calls;
+    expect((kudosTok[1]?.headers as Headers).get("Authorization")).toBe("Bearer atlas-token");
+    expect((kudosTok[1]?.headers as Headers).get("Authorization")).toBe(
+      (postTok[1]?.headers as Headers).get("Authorization"),
+    );
   });
 });

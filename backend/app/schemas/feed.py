@@ -31,6 +31,20 @@ class CreatePostIn(BaseModel):
         return _require_non_blank(v)
 
 
+class GiveKudosIn(BaseModel):
+    """The message the giver writes with their Kudos. Same non-blank rule as a post; the wire
+    field is `message` so a Kudos can never be confused with a normal post body."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    message: str
+
+    @field_validator("message")
+    @classmethod
+    def _validate_message(cls, v: str) -> str:
+        return _require_non_blank(v)
+
+
 class CreateCommentIn(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 

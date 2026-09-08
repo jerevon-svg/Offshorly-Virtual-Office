@@ -100,7 +100,7 @@ BADGE_DEFINITIONS: tuple[BadgeDefinition, ...] = (
         "hub_regular", "Hub Regular", "Visit the Company Hub on different days", METRIC_UNIQUE_DAYS, (5, 20, 60, 150), EVENT_HUB_VISITED, 40, CATEGORY_ENGAGEMENT
     ),
     BadgeDefinition(
-        "cheerleader", "Cheerleader", "Recognise coworkers", METRIC_EVENT_COUNT, (3, 10, 30, 75), EVENT_RECOGNITION_GIVEN, 50, CATEGORY_CONTRIBUTION
+        "cheerleader", "Cheerleader", "Give Kudos to coworkers", METRIC_EVENT_COUNT, (3, 10, 30, 75), EVENT_RECOGNITION_GIVEN, 50, CATEGORY_CONTRIBUTION
     ),
     BadgeDefinition("mission_runner", "Mission Runner", "Complete daily and weekly missions", METRIC_MISSIONS_COMPLETED, (5, 25, 75, 200), None, 60, CATEGORY_GROWTH),
     BadgeDefinition("pathfinder", "Pathfinder", "Complete onboarding quests", METRIC_QUESTS_COMPLETED, (3, 6, 9, 11), None, 70, CATEGORY_GROWTH),

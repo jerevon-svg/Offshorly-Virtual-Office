@@ -7,7 +7,9 @@ from app.auth.deps import get_current_email
 from app.database import get_db
 from app.repositories import feed as feed_repo
 from app.services.quests import EVENT_PROFILE_VIEWED, EVENT_RECOGNITION_GIVEN, record_quest_event, utc_day_key
-from app.schemas.feed import CreateCommentIn, CreatePostIn, FeedPostOut, ReactIn
+from app.services.quests import rewards
+from app.services.quests.rewards import grant_kudos_received
+from app.schemas.feed import CreateCommentIn, CreatePostIn, FeedPostOut, GiveKudosIn, ReactIn
 
 # Employee Feed V1 REST layer — mirrors routers/hub.py's dependency pattern. The Feed owns all
 # social discussion (reactions/comments/replies); Company Hub actions only ever create a post
@@ -66,21 +68,55 @@ async def create_post(
 ) -> FeedPostOut:
     """Always creates a `type="post"` normal post — Hub-generated types (birthday/
     recognition/congratulation) are never client-creatable through this endpoint, so a caller
-    can't spoof a fake birthday wish."""
+    can't spoof a fake birthday wish.
+
+    A normal post is ORDINARY ENGAGEMENT and nothing more: it records no quest event and pays
+    nobody. Giving Kudos is a separate, explicit act with its own endpoint below."""
     post = await feed_repo.create_post(
         db, target_email=target_email, author_email=email, type="post", content=body.content
     )
-    # Quest Foundation: writing on a COWORKER's feed is a social act (the engine drops a
-    # self-targeted event by rule, so a post on your own feed never counts). Key = post id.
-    await record_quest_event(
-        db,
-        actor_email=post["author_email"],
-        event_type=EVENT_RECOGNITION_GIVEN,
-        dedupe_key=f"post:{post['id']}",
-        target_email=post["target_email"],
-        reference_id=post["id"],
-        occurred_at=post["created_at"],
+    return FeedPostOut.from_dict(post, reactions=[], comments=[], viewer_email=email)
+
+
+@router.post("/feed/{target_email}/kudos", response_model=FeedPostOut, status_code=201)
+async def give_kudos(
+    target_email: str,
+    body: GiveKudosIn,
+    email: str = Depends(get_current_email),
+    db: AsyncSession = Depends(get_db),
+) -> FeedPostOut:
+    """Give Kudos to a coworker, with a message. Creates a `type="recognition"` Feed activity
+    carrying that message, records the giver's recognition_given event (so their existing
+    Quest / Daily+Weekly Mission / Cheerleader badge progress advances exactly as before), and
+    pays the RECIPIENT from reward_grants.
+
+    ANTI-FARMING V1: only the first Kudos from this giver to this recipient in a rolling 7 days
+    is rewarded. A Kudos inside the cooldown is still posted and still appears on the Feed — it
+    just records no event and grants nothing, so repeating it farms neither XP/Coins nor
+    quest/mission/badge progress. Self-Kudos is refused outright.
+    """
+    giver = email.strip().lower()
+    recipient = target_email.strip().lower()
+    if not recipient or recipient == giver:
+        raise HTTPException(status_code=400, detail="You cannot give yourself Kudos")
+
+    # Read the cooldown BEFORE writing this Kudos, so the event we are about to record cannot
+    # be mistaken for a previous one.
+    rewarded = not await rewards.kudos_reward_on_cooldown(db, giver=giver, recipient=recipient)
+    post = await feed_repo.create_post(
+        db, target_email=recipient, author_email=giver, type="recognition", content=body.message
     )
+    if rewarded:
+        await record_quest_event(
+            db,
+            actor_email=giver,
+            event_type=EVENT_RECOGNITION_GIVEN,
+            dedupe_key=rewards.kudos_dedupe_key(post["id"]),
+            target_email=recipient,
+            reference_id=post["id"],
+            occurred_at=post["created_at"],
+        )
+        await grant_kudos_received(db, recipient=recipient, giver=giver, reference_id=post["id"])
     return FeedPostOut.from_dict(post, reactions=[], comments=[], viewer_email=email)
 
 

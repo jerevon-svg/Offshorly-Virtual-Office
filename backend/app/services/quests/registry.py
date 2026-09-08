@@ -17,7 +17,10 @@ EVENT_DM_SENT = "dm_sent"  # a persisted message in a type="dm" conversation; ta
 EVENT_GROUP_MESSAGE_SENT = "group_message_sent"  # a persisted message in a type="group" conversation
 EVENT_ASK_TO_JOIN = "ask_to_join"  # a persisted join_group conversation request
 EVENT_SPATIAL_SESSION_JOINED = "spatial_session_joined"  # spatial_session_start, keyed by session identity
-EVENT_RECOGNITION_GIVEN = "recognition_given"  # a feed post / reaction / Hub congratulation aimed at a coworker
+EVENT_RECOGNITION_GIVEN = "recognition_given"  # a feed post / reaction / Hub Kudos aimed at a coworker
+# NOTE: the event string, the quest id and the mission/badge ids below keep their original
+# "recognition" spelling on purpose — they are stored join keys on live quest_events /
+# quest_progress / badge_awards rows. Only the human-readable titles say Kudos.
 EVENT_TOUCAN_ASKED = "toucan_asked"  # a persisted user turn in a Toucan conversation
 # Onboarding Questline signals. The first two reuse the only server-observable trace of the act —
 # the self-scoped GET the client makes when the surface opens — so no new write endpoint exists.
@@ -76,7 +79,7 @@ QUEST_DEFINITIONS: tuple[QuestDefinition, ...] = (
         order=40,
     ),
     QuestDefinition(id="use_ask_to_join", title="Use Ask-to-Join", event_type=EVENT_ASK_TO_JOIN, order=50),
-    QuestDefinition(id="give_recognition", title="Recognise a coworker", event_type=EVENT_RECOGNITION_GIVEN, order=60),
+    QuestDefinition(id="give_recognition", title="Give Kudos to a coworker", event_type=EVENT_RECOGNITION_GIVEN, order=60),
     QuestDefinition(id="first_time_log", title="Complete your first time log", event_type=EVENT_CHECK_OUT, order=70),
     QuestDefinition(id="meet_toucan", title="Meet Toucan", event_type=EVENT_TOUCAN_ASKED, order=80),
     # Onboarding Questline additions. Interleaved into the existing order so the questline reads

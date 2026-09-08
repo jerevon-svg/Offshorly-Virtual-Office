@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.badge import BadgeAward
-from app.models.quest import QuestProgress
+from app.models.quest import QuestEvent, QuestProgress
 from app.models.reward import RewardGrant
 from app.services.quests.badges import MAX_TIER, get_badge
 from app.services.quests.missions import CADENCE_DAILY, CADENCE_WEEKLY, MissionDefinition, get_mission
@@ -33,6 +34,25 @@ SOURCE_MISSION = "mission"
 # Achievement Gallery through this same ledger with quest_id=<badge_id>, period_key="t:<tier>".
 SOURCE_BADGE = "badge"
 BADGE_PERIOD_PREFIX = "t:"
+# KUDOS (company terminology for the recognition act). Unlike every source above, this one is
+# NOT claimed: it is the RECIPIENT's payout, granted server-side the moment a coworker gives
+# them Kudos, through the same append-only ledger so balances stay a SUM and never drift. The
+# giver keeps their ordinary (smaller) quest/mission/badge claims — nothing here changes those.
+# quest_id is a fixed pseudo-id and the period key is the Kudos artifact itself, so
+# UNIQUE(actor, quest_id, period_key) makes the payout idempotent per Kudos with no new table.
+SOURCE_KUDOS = "kudos"
+KUDOS_RECEIVED_ID = "kudos_received"
+# ANTI-FARMING V1. One giver pays one recipient at most once per rolling 7 days. The cooldown
+# needs no table and no migration: quest_events ALREADY records (actor, target, occurred_at) for
+# every rewarded Kudos, so "have I rewarded this pair recently" is one indexed read of data the
+# engine writes anyway. Kudos events carry their own dedupe-key prefix so the probe cannot be
+# tripped by the other acts that share the recognition_given event type (a reaction, a Hub
+# birthday wish). A Kudos inside the cooldown is still POSTED — it simply records no event and
+# grants nothing, which is what stops reward AND quest/mission/badge farming with one gate.
+KUDOS_DEDUPE_PREFIX = "kudos:"
+KUDOS_COOLDOWN_DAYS = 7
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -51,6 +71,10 @@ REWARD_BADGE_TIER: dict[int, Reward] = {
     3: Reward(xp=150, coins=50),  # gold
     4: Reward(xp=300, coins=100),  # platinum
 }
+# Receiving Kudos deliberately pays MORE than any repeatable engagement action (daily mission
+# 20/5, weekly 60/15, once-quest 50/10) — being recognised by a coworker is the strongest signal
+# in the system. Amounts are pinned into the grant row, so changing this only affects new Kudos.
+REWARD_KUDOS_RECEIVED = Reward(xp=75, coins=20)
 
 
 def reward_for_badge_tier(tier: int) -> Reward:
@@ -208,3 +232,85 @@ async def claimed_map(session: AsyncSession, *, actor: str, period_keys: tuple[s
         RewardGrant.actor_email == actor, RewardGrant.period_key.in_(period_keys)
     )
     return {(q, p): g for q, p, g in (await session.execute(stmt)).all()}
+
+
+def kudos_period_key(reference_id: str) -> str:
+    """The Kudos artifact (the Feed activity id) as a period key. reward_grants.period_key is
+    VARCHAR(32) and a post id is a 36-char UUID, so the dashes are stripped to land on exactly
+    32 hex characters. Deterministic, so the same Kudos always maps to the same grant row."""
+    return reference_id.strip().replace("-", "")[:32]
+
+
+async def grant_kudos_received(
+    session: AsyncSession, *, recipient: str, giver: str, reference_id: str, now: datetime | None = None
+) -> RewardGrant | None:
+    """Pay REWARD_KUDOS_RECEIVED to the employee who RECEIVED one Kudos. Server-authoritative
+    (no client input reaches the amount) and idempotent: keyed on the Kudos artifact, so a
+    re-click, a retry or a replay all resolve to the one grant. Returns the new grant, or None
+    when nothing was written (self-Kudos, already granted, bad input, or a logged failure).
+
+    Self-Kudos is refused HERE rather than at each call site, so every present and future path
+    that pays a recipient inherits the rule — the same rule the quest engine applies to events.
+
+    Unlike claim(), this runs alongside the caller's other writes, so a collision unwinds only
+    this INSERT via a SAVEPOINT and never rolls back the Kudos itself — same contract as
+    services/quests/engine.record_quest_event.
+    """
+    actor = recipient.strip().lower()
+    period_key = kudos_period_key(reference_id) if reference_id else ""
+    if not actor or not period_key:
+        _logger.error("kudos grant rejected: missing recipient or reference reference_id=%s", reference_id)
+        return None
+    if actor == giver.strip().lower():
+        return None  # you cannot pay yourself Kudos
+
+    target = ClaimTarget(SOURCE_KUDOS, KUDOS_RECEIVED_ID, period_key, REWARD_KUDOS_RECEIVED)
+    try:
+        if await _grant(session, actor=actor, target=target) is not None:
+            return None  # already paid for this Kudos
+        grant = RewardGrant(
+            actor_email=actor,
+            source=SOURCE_KUDOS,
+            quest_id=KUDOS_RECEIVED_ID,
+            period_key=period_key,
+            xp=REWARD_KUDOS_RECEIVED.xp,
+            coins=REWARD_KUDOS_RECEIVED.coins,
+            granted_at=now or datetime.now(timezone.utc),
+        )
+        async with session.begin_nested():
+            session.add(grant)
+            await session.flush()
+        return grant
+    except IntegrityError:
+        return None  # concurrent giver won the race; the single grant already exists
+    except Exception:  # pragma: no cover - defensive, mirrors record_quest_event's contract
+        _logger.exception("kudos grant failed recipient=%s reference_id=%s", actor, reference_id)
+        return None
+
+
+def kudos_dedupe_key(post_id: str) -> str:
+    """The quest_events dedupe key for one Kudos. The `kudos:` prefix is what makes the pair
+    cooldown probe below able to see Kudos and only Kudos."""
+    return f"{KUDOS_DEDUPE_PREFIX}{post_id}"
+
+
+async def kudos_reward_on_cooldown(
+    session: AsyncSession, *, giver: str, recipient: str, now: datetime | None = None
+) -> bool:
+    """True when `giver` already had a Kudos to `recipient` rewarded inside the rolling
+    KUDOS_COOLDOWN_DAYS window. The caller then posts the Kudos but records no quest event and
+    grants no reward, so neither XP/Coins nor quest/mission/badge progress can be farmed by
+    repeating the same Kudos."""
+    since = (now or datetime.now(timezone.utc)) - timedelta(days=KUDOS_COOLDOWN_DAYS)
+    stmt = (
+        select(QuestEvent.id)
+        .where(
+            QuestEvent.actor_email == giver.strip().lower(),
+            QuestEvent.target_email == recipient.strip().lower(),
+            QuestEvent.dedupe_key.startswith(KUDOS_DEDUPE_PREFIX),
+            QuestEvent.occurred_at >= since,
+        )
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none() is not None
+
