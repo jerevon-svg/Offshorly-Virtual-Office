@@ -192,6 +192,21 @@
   resize: vertical;
   min-height: 48px;
 }
+/* Hours + minutes pair for one time-log entry. The inputs share the row
+   evenly; the unit letters sit between them so the field reads as HH:MM. */
+.durationRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.durationRow .input {
+  flex: 1;
+  min-width: 0;
+}
+.durationUnit {
+  font-size: 12px;
+  color: rgba(240, 240, 240, 0.6);
+}
 .entryCard {
   display: flex;
   flex-direction: column;

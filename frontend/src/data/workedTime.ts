@@ -92,3 +92,22 @@ export function validateAllocation(
 
   return { totalLoggedMinutes, remainingMinutes, isFullyAllocated, errors };
 }
+
+// --- HH:MM <-> minutes -------------------------------------------------
+// The time-log UI collects durations as hours + minutes, but every stored
+// and submitted value stays whole minutes (the Zoho contract). These two
+// helpers are the only conversion boundary.
+
+// 497 -> { hours: 8, minutes: 17 }. Negative/fractional-safe.
+export function splitDuration(totalMinutes: number): { hours: number; minutes: number } {
+  const total = Number.isFinite(totalMinutes) ? Math.max(0, Math.floor(totalMinutes)) : 0;
+  return { hours: Math.floor(total / 60), minutes: total % 60 };
+}
+
+// { 8, 17 } -> 497. Hours floor at 0; minutes are clamped to 0–59 so an
+// out-of-range field can never inflate the total past what it displays.
+export function composeDuration(hours: number, minutes: number): number {
+  const h = Number.isFinite(hours) ? Math.max(0, Math.floor(hours)) : 0;
+  const m = Number.isFinite(minutes) ? Math.min(59, Math.max(0, Math.floor(minutes))) : 0;
+  return h * 60 + m;
+}

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { computeWorkedMinutes, formatDuration, validateAllocation } from "./workedTime";
+import {
+  composeDuration,
+  computeWorkedMinutes,
+  formatDuration,
+  splitDuration,
+  validateAllocation,
+} from "./workedTime";
 import type { TimeLogEntry } from "../services/zoho/types";
 
 describe("formatDuration", () => {
@@ -111,5 +117,38 @@ describe("validateAllocation", () => {
     ]);
     expect(result.totalLoggedMinutes).toBe(90);
     expect(result.isFullyAllocated).toBe(true);
+  });
+});
+
+describe("splitDuration / composeDuration", () => {
+  it("splits total minutes into hours and minutes", () => {
+    expect(splitDuration(497)).toEqual({ hours: 8, minutes: 17 });
+    expect(splitDuration(0)).toEqual({ hours: 0, minutes: 0 });
+    expect(splitDuration(59)).toEqual({ hours: 0, minutes: 59 });
+    expect(splitDuration(120)).toEqual({ hours: 2, minutes: 0 });
+  });
+
+  it("floors negative and non-finite totals at zero", () => {
+    expect(splitDuration(-30)).toEqual({ hours: 0, minutes: 0 });
+    expect(splitDuration(Number.NaN)).toEqual({ hours: 0, minutes: 0 });
+  });
+
+  it("composes hours + minutes back into total minutes", () => {
+    expect(composeDuration(8, 17)).toBe(497);
+    expect(composeDuration(0, 0)).toBe(0);
+  });
+
+  it("clamps minutes to 0-59 and hours to non-negative", () => {
+    expect(composeDuration(1, 75)).toBe(60 + 59);
+    expect(composeDuration(1, -5)).toBe(60);
+    expect(composeDuration(-2, 30)).toBe(30);
+    expect(composeDuration(Number.NaN, Number.NaN)).toBe(0);
+  });
+
+  it("round-trips any in-range total", () => {
+    for (const total of [0, 1, 59, 60, 61, 497, 1439]) {
+      const { hours, minutes } = splitDuration(total);
+      expect(composeDuration(hours, minutes)).toBe(total);
+    }
   });
 });
