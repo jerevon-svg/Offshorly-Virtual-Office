@@ -6,6 +6,10 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Reserve the bottom dock's strip so this centred panel can never grow down into it (see
+     --vo-dock-clearance in src/index.css). Presentation only — nothing about the modal changes. */
+  padding-bottom: var(--vo-dock-clearance, 104px);
+  box-sizing: border-box;
 }
 
 .panel,

@@ -14,35 +14,26 @@ body {
   height: 100%;
 }
 
-/* ---- office right-side control column -------------------------------------------------------
-   ONE source of truth for where the right-hand FEATURE pills sit — Hub, Profile, Quests,
-   Missions, Rewards, Boards, Map, Toucan and the DEV-only Hub reset. Each is its own
-   `position: fixed` element in OfficeMap.module.css, and each used to hardcode its own `top`.
-   That is what let two controls silently claim the same slot — the Global Team Map button reused
-   .hubButton and so painted directly on top of the Hub button at top: 56px.
+/* ---- office bottom dock --------------------------------------------------------------------
+   The right-hand feature-pill column is gone: every persistent office control now lives in one
+   floating bottom-center dock (see components/OfficeMap/HudDock.module.css). The --vo-pill-slot /
+   --vo-pill-top / --vo-pill-step variables that used to sit here went with it.
 
-   Now each pill declares only `--vo-pill-slot: <n>` and derives its `top` from these two
-   variables, so a duplicated slot is visible as a duplicated NUMBER in one file rather than as
-   two identical `top` values in different rules. Declared on :root (index.css is a plain global
-   stylesheet, not a CSS module) so any stylesheet can read the same values.
+   --vo-dock-clearance is the vertical space the dock occupies at the bottom of the viewport
+   (16px offset + ~72px tall + a 16px breathing gap). The z-index 60 modal family reserves it as
+   bottom padding on their centred backdrops, so a modal panel can never grow down into the dock.
+   That is what keeps "the dock must not overlap an open modal" true WITHOUT re-layering anything:
+   the dock keeps the z-index 70 the Player HUD always had — deliberately above the modal
+   backdrops, so reward-claim FX stay lit while travelling into the coins / XP readouts.
 
-   NOT part of this column: the top:12px utility row (chat 💬, the notification bell 🔔,
-   WorkingStatusIndicator, StatusPicker), which has its own slot map in
-   components/OfficeMap/checkout/checkout.module.css.
-
-   Slots are assigned in OfficeMap.module.css; see the SLOT MAP comment there.
-
-   Layering is NOT affected by anything here — the pills keep their existing z-index: 25. */
+   Declared on :root (index.css is a plain global stylesheet, not a CSS module) so any stylesheet
+   can read the same value. */
 :root {
-  --vo-pill-top: 56px;
-  --vo-pill-step: 40px;
+  --vo-dock-clearance: 104px;
 }
 
-/* Shorter viewports: tighten the rhythm so the whole column still fits above the fold instead of
-   running off the bottom. A pill is ~32px tall, so 36px keeps a visible gap. Nothing else about
-   the controls changes — same buttons, same styles, same order. */
 @media (max-height: 760px) {
   :root {
-    --vo-pill-step: 36px;
+    --vo-dock-clearance: 96px;
   }
 }

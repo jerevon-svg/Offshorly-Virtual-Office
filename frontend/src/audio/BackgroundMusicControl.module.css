@@ -3,23 +3,26 @@
    which this pill was sitting directly on top of/covering. Nothing else is anchored
    bottom-left — CharacterSearch is top-left, the checkout toast/walk-indicator/debug panel are
    bottom-right/bottom-center/top-left respectively (see checkout.module.css). */
+/* PLACEMENT + SURFACE come from the --vo-chrome-* custom properties, whose defaults below are the
+   original standalone bottom-left pill. The dock's Settings flyout redefines them so this becomes
+   an in-flow row on a light surface — see components/OfficeMap/HudSettings.module.css. */
 .pill {
-  position: fixed;
-  bottom: 16px;
-  left: 16px;
-  z-index: 100;
+  position: var(--vo-chrome-position, fixed);
+  bottom: var(--vo-chrome-bottom, 16px);
+  left: var(--vo-chrome-left, 16px);
+  z-index: var(--vo-chrome-z, 100);
   display: flex;
   flex-direction: row;
   align-items: center;
   gap: 10px;
-  background: rgba(20, 20, 20, 0.85);
-  color: #f0f0f0;
-  padding: 8px 14px;
+  background: var(--vo-chrome-surface, rgba(20, 20, 20, 0.85));
+  color: var(--vo-chrome-ink, #f0f0f0);
+  padding: 6px 10px;
   border-radius: 999px;
   font-family: system-ui, sans-serif;
   font-size: 13px;
   backdrop-filter: blur(4px);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  border: 1px solid var(--vo-chrome-line, rgba(255, 255, 255, 0.15));
 }
 
 .muteButton {
@@ -28,11 +31,11 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #f0f0f0;
+  color: var(--vo-chrome-ink, #f0f0f0);
 }
 
 .slider {
   width: 80px;
-  accent-color: #f0f0f0;
+  accent-color: var(--vo-chrome-ink, #f0f0f0);
   cursor: pointer;
 }

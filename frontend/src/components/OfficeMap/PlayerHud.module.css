@@ -38,6 +38,44 @@
   gap: 10px;
 }
 
+/* Present only when the caller passes onProfileClick — the avatar + name block then opens the
+   viewer's own profile (what the old 👤 Profile pill did). Inherits the identity row's geometry so
+   the non-clickable form is pixel-identical. */
+.identityButton {
+  all: unset;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  border-radius: 12px;
+}
+
+.identityButton:focus-visible {
+  outline: 2px solid rgba(94, 92, 230, 0.7);
+  outline-offset: 2px;
+}
+
+.statusSlot {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+/* Dock only: holds the availability picker on its own while the first progression fetch is in
+   flight, so the picker does not blink out with the readouts. */
+.hudDockPending {
+  display: flex;
+  align-items: center;
+}
+
+.progressGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
 .avatar {
   width: 40px;
   height: 40px;
@@ -249,5 +287,235 @@
   .coins,
   .coinsPulse {
     transition: none;
+  }
+}
+
+/* ---- DOCK LAYOUT ---------------------------------------------------------------------------
+   Variant applied when PlayerHud renders as the Profile + Coins/XP section at the left end of the
+   bottom dock (layout="dock", see HudDock.tsx). Geometry follows the approved reference: a 44px
+   avatar with a live presence dot, the name + gold Lv chip on one line, the availability picker
+   beneath it, the level's XP bar beneath that, then a hairline and the Coins / XP readouts.
+
+   It drops the standalone panel chrome — the dock IS the panel now — and re-inks everything for
+   the dock's light surface. Declared after the base rules on purpose: same specificity, later
+   wins, so nothing above needed touching.
+
+   The [data-hud-target] elements (.coins / .meter) are untouched structurally — reward-claim FX
+   still find them exactly as before, they simply live somewhere else on screen. */
+.hudDock {
+  position: static;
+  z-index: auto;
+  width: auto;
+  flex-direction: row;
+  align-items: center;
+  gap: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  backdrop-filter: none;
+  color: #241f30;
+}
+
+/* ---- profile half ---- */
+.dockProfile {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.dockProfileText {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
+.avatarWrap {
+  position: relative;
+  flex: none;
+  display: block;
+  width: 44px;
+  height: 44px;
+}
+
+.hudDock .avatar {
+  box-sizing: border-box;
+  width: 44px;
+  height: 44px;
+  border: 2px solid #fff;
+  background: rgba(24, 20, 34, 0.05);
+  box-shadow: 0 0 0 1px rgba(24, 20, 34, 0.1);
+}
+
+/* Live effective status — STATUS_META's colour is set inline from the self-status store. */
+.presenceDot {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid #fdfcfa;
+  box-sizing: border-box;
+}
+
+.hudDock .identityButton {
+  border-radius: 50%;
+}
+
+.hudDock .identityButton:focus-visible {
+  outline: 2px solid rgba(94, 92, 230, 0.7);
+  outline-offset: 2px;
+}
+
+.nameLine {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.hudDock .name {
+  font-size: 14px;
+  font-weight: 700;
+  color: #241f30;
+}
+
+.hudDock .level,
+.hudDock .levelUp {
+  align-self: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  padding: 2px 7px;
+  color: #8a5a08;
+  background: #ffe6ad;
+}
+
+/* Standalone this caption floats over the panel's right edge; in the dock that edge is the Coins
+   block, so it sits above the profile text instead. */
+.hudDock .levelUpCaption {
+  top: auto;
+  bottom: calc(100% + 4px);
+  right: auto;
+  left: 0;
+  transform: none;
+  color: #8a5a08;
+  white-space: nowrap;
+}
+
+/* The current level's XP bar sits under the status line, as in the reference; its numbers live in
+   the Coins block to the right. */
+.hudDock .bar {
+  width: 92px;
+  height: 5px;
+  margin-top: 1px;
+  background: rgba(24, 20, 34, 0.11);
+}
+
+.hudDock .fill {
+  background: linear-gradient(90deg, #ffcf6b, #ff9f6b);
+}
+
+/* ---- hairline between the two halves — matches HudDock.module.css's .separator ---- */
+.dockDivider {
+  flex: none;
+  align-self: stretch;
+  width: 1px;
+  margin: 4px 12px;
+  background: rgba(24, 20, 34, 0.1);
+}
+
+/* ---- coins + XP half ---- */
+.dockProgress {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+
+.hudDock .coins,
+.hudDock .coinsPulse,
+.hudDock .meter,
+.hudDock .meterPulse {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 2px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+}
+
+.hudDock .coinIcon {
+  font-size: 15px;
+}
+
+.hudDock .coinsValue {
+  font-size: 15px;
+  font-weight: 700;
+  white-space: nowrap;
+  color: #241f30;
+}
+
+.xpDiamond {
+  font-size: 12px;
+  line-height: 1;
+  color: #4bb96a;
+}
+
+.hudDock .meterValue {
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: rgba(36, 31, 48, 0.62);
+}
+
+/* ---- responsive: compact, never hide the readouts ---------------------------------------- */
+/* .dockProgress / .coins / .meter must NEVER be display:none — they hold the [data-hud-target]
+   elements the reward FX measure, and a hidden target measures as a zero rect, flinging the claim
+   icons at the viewport's top-left corner. Only the XP bar and the first name shrink away. */
+@media (max-width: 1200px) {
+  .dockDivider {
+    margin: 4px 9px;
+  }
+  .hudDock .bar {
+    width: 76px;
+  }
+}
+
+@media (max-width: 1000px) {
+  .hudDock .avatar,
+  .avatarWrap {
+    width: 38px;
+    height: 38px;
+  }
+  .hudDock .bar {
+    display: none;
+  }
+  .dockDivider {
+    margin: 4px 7px;
+  }
+}
+
+@media (max-width: 720px) {
+  .dockProfile {
+    gap: 7px;
+  }
+  .hudDock .name {
+    display: none;
+  }
+  .dockDivider {
+    margin: 4px 5px;
   }
 }

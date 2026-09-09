@@ -19,7 +19,9 @@
    windows stack right-to-left along the bottom edge without overlapping. */
 .floatingChatSlot {
   position: fixed;
-  bottom: 16px;
+  /* Sits just ABOVE the bottom dock rather than on the same bottom edge: two open windows are
+     wide enough to reach the centred dock, and at z-index 140 they would cover its controls. */
+  bottom: calc(var(--vo-dock-clearance, 104px) - 8px);
   z-index: 140;
 }
 
@@ -44,7 +46,8 @@
 }
 
 .toast {
-  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+  /* Centred, so it lands squarely on the bottom dock unless it clears it. */
+  position: fixed; bottom: calc(var(--vo-dock-clearance, 104px) + 8px); left: 50%; transform: translateX(-50%);
   z-index: 15; background: rgba(26,26,26,0.9); color: #f0f0f0;
   padding: 10px 18px; border-radius: 999px; font-family: system-ui, sans-serif;
   font-size: 14px; backdrop-filter: blur(4px);
@@ -55,12 +58,10 @@
 .addEmployeeButton {
   all: unset;
   position: fixed;
+  /* The whole top-left corner is free now that the Player HUD and Search both moved into the
+     bottom dock, so this DEV-only entry no longer has to clear anything. */
   top: 12px;
-  /* Clears CharacterSearch (now at left:296px + width:240px while the Player HUD owns the corner; see
-     CharacterSearch.module.css). This button carries the higher z-index, so
-     the two overlapping never looked like a collision — the button simply
-     covered the search input, leaving a sliver of placeholder text showing. */
-  left: 552px;
+  left: 16px;
   z-index: 100;
   cursor: pointer;
   background: rgba(20, 20, 20, 0.85);
@@ -77,13 +78,15 @@
   background: rgba(35, 35, 35, 0.9);
 }
 
-/* Dev-only day/night debug scrubber — top-center panel. */
+/* Dev-only day/night scrubber. It now renders inside the dock's ••• -> Settings -> Developer
+   section, so its placement comes from the --vo-chrome-* contract (see HudDock.module.css); the
+   defaults below are its original standalone top-center panel, unchanged for any other use. */
 .phaseDebug {
-  position: fixed;
-  top: 12px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 100;
+  position: var(--vo-chrome-position, fixed);
+  top: var(--vo-chrome-top, 12px);
+  left: var(--vo-chrome-left, 50%);
+  transform: var(--vo-chrome-transform, translateX(-50%));
+  z-index: var(--vo-chrome-z, 100);
   background: rgba(20, 20, 20, 0.85);
   color: #f0f0f0;
   padding: 8px 16px;
@@ -123,126 +126,84 @@
   background: rgba(255, 255, 255, 0.2);
 }
 
-/* ---- RIGHT-SIDE CONTROL COLUMN --------------------------------------------------------------
-   SLOT MAP. Every pill below is `position: fixed; right: 12px; z-index: 25` and takes its `top`
-   from --vo-pill-slot plus the two variables in src/index.css. One slot per control, no
-   duplicates — a duplicated slot number here is the bug that made the Global Team Map button
-   paint on top of the Hub button (it reused .hubButton, so both resolved to top: 56px).
+/* ---- BOTTOM DOCK ----------------------------------------------------------------------------
+   The right-hand feature-pill column that used to live here is GONE, and with it the
+   --vo-pill-slot / --vo-pill-top / --vo-pill-step slot machinery in src/index.css. Hub, Profile,
+   Quests, Missions, Rewards, Boards, Map, Toucan and the DEV-only Hub reset are now entries in the
+   one bottom-center dock — see HudDock.tsx / HudDock.module.css, and the dockEntries block in
+   OfficeMap.tsx for which control maps to which dock slot. The two rules below are the only
+   dock-adjacent styling OfficeMap still owns: the working-time group it hands the dock as a node.
+   --------------------------------------------------------------------------------------------- */
 
-     0  🏠 Hub            .hubButton
-     1  👤 Profile        .profileButton
-     2  🎯 Quests         .questsButton
-     3  📅 Missions       .missionsButton
-     4  🎁 Rewards        .rewardsButton
-     5  ▦  Boards         .boardsButton
-     6  🌍 Map            .mapButton
-     7  🦜 Toucan         .toucanButton
-     8  ♻️  Reset Hub Demo .hubDevResetButton  (DEV only)
+/* Working time + Check out, stacked as one dock group per the reference: "🕐 4h 49m" over a
+   compact Check out pill. WorkingStatusIndicator draws the time itself (its `compact` form,
+   re-inked for the dock via --vo-chrome-*); the button below it calls the SAME
+   checkoutFlow.startCheckout that Reception's Check out action calls. */
+.dockTimeGroup {
+  /* Two nested outlines read as clutter, so the time pill inherits a transparent line here while
+     the button keeps the one that makes it read as clickable. Scoped by inheritance — every other
+     dock control still gets --vo-chrome-line from the dock. */
+  --vo-chrome-line: transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 4px;
+  min-width: 0;
+}
 
-   The slots are contiguous with NO GAP. 🔔 Notifications briefly held a slot here and was moved
-   out to the top:12px utility row beside the 💬 chat button (see
-   NotificationCenter.module.css); its slot was reclaimed rather than left empty, so everything
-   below it moved up one.
-   ------------------------------------------------------------------------------------------ */
-
-/* Reopens the Company Hub (see CompanyHub.tsx) anytime. Sits below the
-   top:12px right-hand utility row (chat, bell, WorkingStatusIndicator, StatusPicker — see
-   checkout/checkout.module.css's .statusBadge for that row's slot map) rather
-   than sharing it, to avoid guessing at exact select-width overlap. */
-.hubButton {
+.dockCheckoutButton {
   all: unset;
-  position: fixed;
-  --vo-pill-slot: 0;
-  top: calc(var(--vo-pill-top) + var(--vo-pill-slot) * var(--vo-pill-step));
-  right: 12px;
-  z-index: 25;
+  box-sizing: border-box;
   cursor: pointer;
-  font-family: system-ui, sans-serif;
-  color: #f0f0f0;
-  background: rgba(26, 26, 26, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 4px 12px;
   border-radius: 999px;
-  padding: 7px 12px;
-  font-size: 13px;
-  backdrop-filter: blur(4px);
-}
-
-.hubButton:hover {
-  background: rgba(40, 40, 40, 0.95);
-}
-
-/* Global Team Map (see components/TeamMap/TeamMapPanel.tsx). Its OWN class: it used to reuse
-   .hubButton, which pinned it to slot 0 on top of the Hub button — same corner, same size, so
-   the later-rendered Map pill simply covered Hub. Identical pill treatment, own slot. */
-.mapButton {
-  all: unset;
-  position: fixed;
-  --vo-pill-slot: 6;
-  top: calc(var(--vo-pill-top) + var(--vo-pill-slot) * var(--vo-pill-step));
-  right: 12px;
-  z-index: 25;
-  cursor: pointer;
+  border: 1px solid rgba(24, 20, 34, 0.1);
+  background: #eef2ec;
+  color: #3f3a4d;
   font-family: system-ui, sans-serif;
-  color: #f0f0f0;
-  background: rgba(26, 26, 26, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 999px;
-  padding: 7px 12px;
-  font-size: 13px;
-  backdrop-filter: blur(4px);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
-.mapButton:hover {
-  background: rgba(40, 40, 40, 0.95);
+.dockCheckoutButton:hover {
+  background: #e3ebdf;
+  color: #1c1826;
 }
 
-/* Opens the signed-in viewer's own Employee Profile (see EmployeeProfile.tsx) — directly below
-   .hubButton in the column; see the SLOT MAP above. */
-.profileButton {
-  all: unset;
-  position: fixed;
-  --vo-pill-slot: 1;
-  top: calc(var(--vo-pill-top) + var(--vo-pill-slot) * var(--vo-pill-step));
-  right: 12px;
-  z-index: 25;
-  cursor: pointer;
-  font-family: system-ui, sans-serif;
-  color: #f0f0f0;
-  background: rgba(26, 26, 26, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 999px;
-  padding: 7px 12px;
-  font-size: 13px;
-  backdrop-filter: blur(4px);
+.dockCheckoutButton:focus-visible {
+  outline: 2px solid rgba(94, 92, 230, 0.7);
+  outline-offset: 1px;
 }
 
-.profileButton:hover {
-  background: rgba(40, 40, 40, 0.95);
-}
-
-/* Summons the roaming toucan to the viewer (see ToucanFlyer.tsx's summon block and
-   ToucanAssistantPanel.tsx). Same pill treatment as .hubButton; see the SLOT MAP above for
-   where it sits in the column. */
+/* Toucan — its own floating round button at the bottom-right, beside (not inside) the dock, as in
+   the reference. It sits on the dock's layer and clears the dock's own strip, so the two never
+   collide; the floating chat stack sits above both. */
 .toucanButton {
   all: unset;
+  box-sizing: border-box;
   position: fixed;
-  --vo-pill-slot: 7;
-  top: calc(var(--vo-pill-top) + var(--vo-pill-slot) * var(--vo-pill-step));
-  right: 12px;
-  z-index: 25;
+  bottom: 16px;
+  right: 16px;
+  z-index: 70;
   cursor: pointer;
-  font-family: system-ui, sans-serif;
-  color: #f0f0f0;
-  background: rgba(26, 26, 26, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 999px;
-  padding: 7px 12px;
-  font-size: 13px;
-  backdrop-filter: blur(4px);
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  line-height: 1;
+  background: #d8ecd2;
+  border: 2px solid #fdfcfa;
+  box-shadow: 0 10px 26px rgba(28, 22, 45, 0.22);
 }
 
 .toucanButton:hover:not(:disabled) {
-  background: rgba(40, 40, 40, 0.95);
+  background: #c9e5c1;
 }
 
 .toucanButton:disabled {
@@ -250,119 +211,18 @@
   opacity: 0.6;
 }
 
-/* Opens the Onboarding Questline (see OnboardingQuestline.tsx) — same pill treatment as
-   .hubButton; see the SLOT MAP above for its place in the column. */
-.questsButton {
-  all: unset;
-  position: fixed;
-  --vo-pill-slot: 2;
-  top: calc(var(--vo-pill-top) + var(--vo-pill-slot) * var(--vo-pill-step));
-  right: 12px;
-  z-index: 25;
-  cursor: pointer;
-  font-family: system-ui, sans-serif;
-  color: #f0f0f0;
-  background: rgba(26, 26, 26, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 999px;
-  padding: 7px 12px;
-  font-size: 13px;
-  backdrop-filter: blur(4px);
+.toucanButton:focus-visible {
+  outline: 2px solid rgba(94, 92, 230, 0.7);
+  outline-offset: 2px;
 }
 
-.questsButton:hover {
-  background: rgba(40, 40, 40, 0.95);
-}
-
-.missionsButton {
-  all: unset;
-  position: fixed;
-  --vo-pill-slot: 3;
-  top: calc(var(--vo-pill-top) + var(--vo-pill-slot) * var(--vo-pill-step));
-  right: 12px;
-  z-index: 25;
-  cursor: pointer;
-  font-family: system-ui, sans-serif;
-  color: #f0f0f0;
-  background: rgba(26, 26, 26, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 999px;
-  padding: 7px 12px;
-  font-size: 13px;
-  backdrop-filter: blur(4px);
-}
-
-.missionsButton:hover {
-  background: rgba(40, 40, 40, 0.95);
-}
-
-.rewardsButton {
-  all: unset;
-  position: fixed;
-  --vo-pill-slot: 4;
-  top: calc(var(--vo-pill-top) + var(--vo-pill-slot) * var(--vo-pill-step));
-  right: 12px;
-  z-index: 25;
-  cursor: pointer;
-  font-family: system-ui, sans-serif;
-  color: #f0f0f0;
-  background: rgba(26, 26, 26, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 999px;
-  padding: 7px 12px;
-  font-size: 13px;
-  backdrop-filter: blur(4px);
-}
-
-.rewardsButton:hover {
-  background: rgba(40, 40, 40, 0.95);
-}
-
-/* Whiteboard W4: office-wide boards. See the SLOT MAP above. */
-.boardsButton {
-  all: unset;
-  position: fixed;
-  --vo-pill-slot: 5;
-  top: calc(var(--vo-pill-top) + var(--vo-pill-slot) * var(--vo-pill-step));
-  right: 12px;
-  z-index: 25;
-  cursor: pointer;
-  font-family: system-ui, sans-serif;
-  color: #f0f0f0;
-  background: rgba(26, 26, 26, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 999px;
-  padding: 7px 12px;
-  font-size: 13px;
-  backdrop-filter: blur(4px);
-}
-
-.boardsButton:hover {
-  background: rgba(40, 40, 40, 0.95);
-}
-
-/* Dev-only demo control (see resetDevHubState in services/hub/hubClient.ts) — last slot in the
-   column, so adding a real control never has to step over it. Never rendered outside
-   import.meta.env.DEV, and the backend independently 404s the call outside development
-   regardless. */
-.hubDevResetButton {
-  all: unset;
-  position: fixed;
-  --vo-pill-slot: 8;
-  top: calc(var(--vo-pill-top) + var(--vo-pill-slot) * var(--vo-pill-step));
-  right: 12px;
-  z-index: 25;
-  cursor: pointer;
-  font-family: system-ui, sans-serif;
-  color: #ffd28a;
-  background: rgba(90, 60, 10, 0.55);
-  border: 1px solid rgba(255, 200, 120, 0.35);
-  border-radius: 999px;
-  padding: 7px 12px;
-  font-size: 12px;
-  backdrop-filter: blur(4px);
-}
-
-.hubDevResetButton:hover {
-  background: rgba(110, 74, 14, 0.7);
+/* Below roughly this width the centred dock grows wide enough for its right edge to reach the
+   bottom-right corner, so the bird stacks ABOVE the dock's strip instead of overlapping it. */
+@media (max-width: 900px) {
+  .toucanButton {
+    bottom: calc(var(--vo-dock-clearance, 104px) + 4px);
+    width: 48px;
+    height: 48px;
+    font-size: 22px;
+  }
 }

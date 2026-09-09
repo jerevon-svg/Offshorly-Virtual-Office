@@ -54,7 +54,12 @@ function OfficeApp() {
   return (
     <ErrorBoundary>
       <OfficeMap />
-      <BackgroundMusicControl />
+      {/* Mounted but hidden: the visible music control now lives in the dock's Settings flyout
+          (components/OfficeMap/HudSettings.tsx). This instance stays here purely for its
+          armAutoplay() effect, so playback is still armed on the first user gesture anywhere in
+          the office rather than only once somebody opens Settings. Both instances read and write
+          the same singleton store (audio/backgroundMusic.ts). */}
+      <BackgroundMusicControl hidden />
       <LoadingCover />
     </ErrorBoundary>
   );

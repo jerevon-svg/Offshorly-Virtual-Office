@@ -4,7 +4,8 @@
 
 .toast {
   position: fixed;
-  bottom: 176px;
+  /* Still stacked 76px above the DND toast, which now clears the bottom dock. */
+  bottom: calc(var(--vo-dock-clearance, 104px) + 160px);
   right: 24px;
   z-index: 28;
   min-width: 260px;

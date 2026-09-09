@@ -5,21 +5,29 @@
    right:160px only cleared a short "Working · 1h 5m" label and collided once the worked-hours
    text grew. Availability stays the leftmost item in the row, as it always was — it only shifts
    by the 48px the bell now occupies. */
+/* PLACEMENT is read from the --vo-chrome-* / --vo-flyout-* custom properties, whose defaults below
+   are this control's ORIGINAL standalone geometry. The bottom dock redefines them so this root
+   becomes in-flow inside the dock and its panel opens upward — see HudDock.module.css's flyout
+   contract. Nothing but placement is variable. */
 .picker {
-  position: fixed;
-  top: 12px;
-  right: 316px;
-  z-index: 25;
+  position: var(--vo-chrome-position, fixed);
+  top: var(--vo-chrome-top, 12px);
+  right: var(--vo-chrome-right, 316px);
+  z-index: var(--vo-chrome-z, 25);
   font-family: system-ui, sans-serif;
 }
 
+/* SURFACE is read from the --vo-chrome-surface/-hover/-ink/-line custom properties, whose
+   defaults below are this control's original dark-on-office treatment. The light bottom dock
+   redefines them so the control sits on the dock's surface instead of punching a dark chip into
+   it — see HudDock.module.css. */
 .select {
-  background: rgba(26, 26, 26, 0.9);
-  color: #f0f0f0;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--vo-chrome-surface, rgba(26, 26, 26, 0.9));
+  color: var(--vo-chrome-ink, #f0f0f0);
+  border: 1px solid var(--vo-chrome-line, rgba(255, 255, 255, 0.12));
   border-radius: 999px;
-  padding: 7px 12px;
-  font-size: 13px;
+  padding: var(--vo-chrome-pad, 7px 12px);
+  font-size: var(--vo-chrome-font, 13px);
   font-family: inherit;
   backdrop-filter: blur(4px);
   cursor: pointer;
@@ -37,7 +45,7 @@
   align-items: center;
   gap: 6px;
   background: rgba(239, 68, 68, 0.18);
-  color: #f0f0f0;
+  color: var(--vo-chrome-ink, #f0f0f0);
   border: 1px solid rgba(239, 68, 68, 0.5);
   border-radius: 999px;
   padding: 7px 8px 7px 12px;
@@ -47,7 +55,7 @@
 .dndChipCancel {
   all: unset;
   cursor: pointer;
-  color: rgba(240, 240, 240, 0.75);
+  color: var(--vo-chrome-ink, rgba(240, 240, 240, 0.75));
   font-size: 13px;
   line-height: 1;
   padding: 2px 6px;
@@ -60,7 +68,8 @@
 
 .popover {
   position: absolute;
-  top: calc(100% + 6px);
+  top: var(--vo-flyout-top, calc(100% + 6px));
+  bottom: var(--vo-flyout-bottom, auto);
   right: 0;
   width: 220px;
   background: rgba(26, 26, 26, 0.97);

@@ -19,6 +19,10 @@ type MessageNotificationBadgeProps = {
   onNewMessage: () => void;
   onFindPerson: () => void;
   onNewGroupChat: () => void;
+  /** Optional caption under the 💬 glyph, so the control reads as a captioned tile in the bottom
+   *  dock (see HudDock.tsx). Omitted everywhere else, where it stays the round icon chip it was.
+   *  Presentation only — the accessible name still comes from aria-label below. */
+  label?: string;
 };
 
 // Persistent Global Chat entry point (💬) — always visible once real chat is enabled, not just
@@ -35,6 +39,7 @@ export function MessageNotificationBadge({
   onNewMessage,
   onFindPerson,
   onNewGroupChat,
+  label,
 }: MessageNotificationBadgeProps) {
   const [open, setOpen] = useState(false);
 
@@ -54,12 +59,17 @@ export function MessageNotificationBadge({
     <div className={styles.wrapper}>
       <button
         type="button"
-        className={styles.iconButton}
+        className={label ? `${styles.iconButton} ${styles.iconButtonLabeled}` : styles.iconButton}
         aria-label={total > 0 ? `${total} unread message${total === 1 ? "" : "s"}` : "Conversations"}
         onClick={() => setOpen((v) => !v)}
       >
-        💬
-        {total > 0 && <span className={styles.badge}>{total > 99 ? "99+" : total}</span>}
+        {/* The unread badge is a child of the glyph, so in the dock's captioned form it hugs the
+            💬 square (as in the reference) instead of the taller button's corner. */}
+        <span className={styles.glyph}>
+          <span aria-hidden="true">💬</span>
+          {total > 0 && <span className={styles.badge}>{total > 99 ? "99+" : total}</span>}
+        </span>
+        {label && <span className={styles.label}>{label}</span>}
       </button>
       {open && (
         <div className={styles.dropdown}>

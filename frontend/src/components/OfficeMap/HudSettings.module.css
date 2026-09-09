@@ -1,0 +1,86 @@
+/* Settings flyout body. The dock's flyout shell supplies the surface, border and shadow; this is
+   just the content layout. */
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 232px;
+  font-family: system-ui, sans-serif;
+  color: #241f30;
+
+  /* The music control positions itself bottom-left of the viewport when it stands alone; in here
+     it is an in-flow row on a light surface. Same --vo-chrome-* contract every other relocated
+     control uses (see HudDock.module.css). */
+  --vo-chrome-position: relative;
+  --vo-chrome-top: auto;
+  --vo-chrome-left: auto;
+  --vo-chrome-bottom: auto;
+  --vo-chrome-transform: none;
+  --vo-chrome-z: auto;
+  --vo-chrome-surface: rgba(24, 20, 34, 0.05);
+  --vo-chrome-ink: #3a3448;
+  --vo-chrome-line: rgba(24, 20, 34, 0.1);
+}
+
+.title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sectionTitle {
+  margin: 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(36, 31, 48, 0.5);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.rowLabel {
+  font-size: 12px;
+  color: rgba(36, 31, 48, 0.8);
+}
+
+.devButton {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  padding: 7px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 200, 120, 0.5);
+  background: rgba(255, 214, 138, 0.28);
+  color: #7a5310;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.devButton:hover {
+  background: rgba(255, 214, 138, 0.45);
+}
+
+/* DEV-only relocated panels (day/night scrubber, checkout debug). They keep their own dark
+   treatment — they are debug chrome, not a designed preference — and only stop positioning
+   themselves, via the --vo-chrome-* defaults on .panel above. */
+.devTools {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: stretch;
+  max-width: 260px;
+}

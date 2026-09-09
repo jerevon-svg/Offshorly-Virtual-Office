@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import styles from "./MissionsPanel.module.css";
 import { formatResetsIn } from "./formatResetsIn";
 import { ClaimButton, ProgressionStrip, RewardTag } from "./RewardControls";
@@ -21,9 +21,13 @@ import {
 
 export interface MissionsPanelProps {
   onClose: () => void;
+  /** Rendered at the top of the panel, above the header — the bottom dock's Tasks control passes
+   *  its Quests | Missions tab bar here (see TasksPanel.tsx). Nothing else about this panel
+   *  changes: same fetch-on-open, same visibility/online/rollover refetches, same claims. */
+  tabs?: ReactNode;
 }
 
-export function MissionsPanel({ onClose }: MissionsPanelProps) {
+export function MissionsPanel({ onClose, tabs }: MissionsPanelProps) {
   const [data, setData] = useState<MyMissions | null>(null);
   const progression = useProgression(); // shared store — see services/quests/progressionStore.ts
   const [error, setError] = useState<string | null>(null);
@@ -105,6 +109,7 @@ export function MissionsPanel({ onClose }: MissionsPanelProps) {
         <button className={styles.closeButton} onClick={onClose} aria-label="Close missions">
           ✕
         </button>
+        {tabs}
         <header className={styles.header}>
           <h2 className={styles.title}>Missions</h2>
           <p className={styles.muted}>Fresh goals every day and every week.</p>

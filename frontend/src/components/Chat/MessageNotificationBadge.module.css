@@ -1,23 +1,33 @@
 /* Minimal/functional — Bon will restyle once the feature works. */
 
+/* PLACEMENT is read from the --vo-chrome-* / --vo-flyout-* custom properties, whose defaults below
+   are this control's ORIGINAL standalone geometry. The bottom dock redefines them so this root
+   becomes in-flow inside the dock and its panel opens upward — see HudDock.module.css's flyout
+   contract. Nothing but placement is variable. */
 .wrapper {
-  position: fixed;
-  top: 12px;
-  right: 16px;
-  z-index: 100;
+  display: flex;
+  position: var(--vo-chrome-position, fixed);
+  top: var(--vo-chrome-top, 12px);
+  right: var(--vo-chrome-right, 16px);
+  z-index: var(--vo-chrome-z, 100);
   font-family: system-ui, sans-serif;
 }
 
+/* SURFACE is read from the --vo-chrome-surface/-hover/-ink/-line custom properties, whose
+   defaults below are this control's original dark-on-office treatment. The light bottom dock
+   redefines them so the control sits on the dock's surface instead of punching a dark chip into
+   it — see HudDock.module.css. */
 .iconButton {
   all: unset;
+  box-sizing: border-box;
   position: relative;
   cursor: pointer;
-  background: rgba(20, 20, 20, 0.85);
-  color: #f0f0f0;
+  background: var(--vo-chrome-surface, rgba(20, 20, 20, 0.85));
+  color: var(--vo-chrome-ink, #f0f0f0);
   width: 36px;
   height: 36px;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  border: 1px solid var(--vo-chrome-line, rgba(255, 255, 255, 0.15));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -26,7 +36,93 @@
 }
 
 .iconButton:hover {
-  background: rgba(35, 35, 35, 0.9);
+  background: var(--vo-chrome-surface-hover, rgba(35, 35, 35, 0.9));
+}
+
+/* The glyph wrapper. Unsized in the round-chip form (the badge keeps anchoring to .iconButton);
+   in the dock's captioned form it becomes the 38px icon square that carries hover, and the badge
+   anchors to IT. */
+.glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Dock form (the optional `label` prop): a captioned tile geometrically identical to the dock's
+   own tiles — 52px wide, a 38px/12px-radius icon square, a 10px caption. Kept in step with
+   HudDock.module.css's .tile / .tileIcon / .tileLabel. Geometry only: same button, same handler,
+   same accessible name. */
+.iconButtonLabeled {
+  width: 52px;
+  height: auto;
+  flex-direction: column;
+  gap: 1px;
+  padding: 0;
+  border-radius: 0;
+  /* No chip border in the dock — the tile's hover/active lives on the glyph square, and a 1px
+     border here would make this control 2px taller than every tile beside it. */
+  border: none;
+  background: transparent;
+  font-size: 20px;
+  color: var(--vo-chrome-ink, #f0f0f0);
+}
+
+.iconButtonLabeled:hover {
+  background: transparent;
+}
+
+.iconButtonLabeled .glyph {
+  position: relative;
+  box-sizing: border-box;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  line-height: 1;
+  transition: background-color 120ms ease;
+}
+
+.iconButtonLabeled:hover .glyph {
+  background: var(--vo-chrome-surface-hover, rgba(35, 35, 35, 0.9));
+}
+
+.label {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+@media (max-width: 1200px) {
+  .iconButtonLabeled {
+    width: 44px;
+  }
+}
+
+@media (max-width: 1000px) {
+  .iconButtonLabeled {
+    width: 38px;
+    font-size: 19px;
+  }
+  .iconButtonLabeled .glyph {
+    width: 36px;
+    height: 36px;
+  }
+  .label {
+    display: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .iconButtonLabeled {
+    width: 34px;
+    font-size: 17px;
+  }
+  .iconButtonLabeled .glyph {
+    width: 32px;
+    height: 32px;
+    border-radius: 10px;
+  }
 }
 
 .badge {
@@ -43,11 +139,13 @@
   line-height: 16px;
   text-align: center;
   font-weight: 700;
+  box-shadow: 0 0 0 2px var(--vo-chrome-badge-ring, transparent);
 }
 
 .dropdown {
   position: absolute;
-  top: 44px;
+  top: var(--vo-flyout-top, 44px);
+  bottom: var(--vo-flyout-bottom, auto);
   right: 0;
   width: 240px;
   max-height: 320px;

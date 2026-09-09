@@ -200,9 +200,10 @@ import { openCompanyHub, useCompanyHub } from "../../services/hub/companyHubStor
 import { NotificationCenter, type NotificationDestination } from "./NotificationCenter";
 import { resetDevHubState } from "../../services/hub/hubClient";
 import { EmployeeProfile } from "./EmployeeProfile";
-import { OnboardingQuestline } from "./OnboardingQuestline";
-import { MissionsPanel } from "./MissionsPanel";
 import { PlayerHud } from "./PlayerHud";
+import { HudDock, type HudDockEntry } from "./HudDock";
+import { HudSettings } from "./HudSettings";
+import { TasksPanel, type TasksTab } from "./TasksPanel";
 import { RewardsPanel } from "./RewardsPanel";
 // Global Team Map V1 — React.lazy so MapLibre (~250 KB) only loads when someone opens the map.
 const TeamMapPanel = lazy(() => import("../TeamMap/TeamMapPanel"));
@@ -277,6 +278,20 @@ function nearestSeatTo(roomId: string, point: Pt): Seat | null {
 // expanded window reserves EXPANDED_WIDTH, a minimized (header-only) one reserves the narrower
 // MINIMIZED_WIDTH, so restoring/minimizing a window shifts everything to its left without
 // overlap.
+// ---- CHECKOUT PRESENTATION SEQUENCING -------------------------------------------------------
+// Presentation only — none of these touch the checkout state machine, movement or the camera
+// system itself. They exist so the camera's overview transition and the character's walk are
+// SEQUENCED rather than fired in the same beat (which made the walk start behind a still-sliding
+// view). See handleConfirmStartCheckout and proceedWithExitWalk.
+/** Duration handed to the existing resetToInitialView helper for both overview pull-backs. */
+const CHECKOUT_CAMERA_MS = 600;
+/** How long a walk waits after an overview pull-back is requested — the transition above plus a
+ *  small margin, so movement begins on a settled view. */
+const CHECKOUT_CAMERA_SETTLE_MS = 700;
+/** How long a goodbye / sign-off bubble stays up. On the way in it also doubles as the wait
+ *  before the walk begins, which is why it must stay comfortably longer than the camera. */
+const CHECKOUT_GOODBYE_MS = 2000;
+
 const FLOATING_CHAT_EDGE_MARGIN = 16;
 const FLOATING_CHAT_EXPANDED_WIDTH = 320;
 const FLOATING_CHAT_MINIMIZED_WIDTH = 220;
@@ -350,9 +365,13 @@ export function OfficeMap() {
   }>({ tab: "profile", postId: null });
   // Onboarding Questline (see OnboardingQuestline.tsx) — opened from the 🎯 Quests button in the
   // top chrome; the panel fetches GET /quests/me on every open, nothing is cached here.
-  const [questlineOpen, setQuestlineOpen] = useState(false);
+  // TASKS — one dock control, two tabs over the two UNCHANGED panels (see TasksPanel.tsx). The
+  // selected tab is held here rather than inside the panel so it survives closing and reopening,
+  // and so a quest / mission notification can open the surface on the right tab. Defaults to
+  // Quests.
+  const [tasksOpen, setTasksOpen] = useState(false);
+  const [tasksTab, setTasksTab] = useState<TasksTab>("quests");
   // Daily/Weekly Missions (see MissionsPanel.tsx) — same contract: GET /missions/me on open.
-  const [missionsOpen, setMissionsOpen] = useState(false);
   // Reward Redemption (see RewardsPanel.tsx) — fetches the catalog + history on open.
   const [rewardsOpen, setRewardsOpen] = useState(false);
   // Global Team Map V1 (see components/TeamMap/TeamMapPanel.tsx) — fetches on open.
@@ -1020,10 +1039,12 @@ export function OfficeMap() {
         openConversationById(destination.conversationId);
         return true;
       case "quests":
-        setQuestlineOpen(true);
+        setTasksTab("quests");
+        setTasksOpen(true);
         return true;
       case "missions":
-        setMissionsOpen(true);
+        setTasksTab("missions");
+        setTasksOpen(true);
         return true;
       case "achievements":
         // Badges live on the viewer's OWN profile (progression is self-only by API design).
@@ -1321,6 +1342,7 @@ export function OfficeMap() {
       window.clearTimeout(charMenuTimerRef.current);
       window.clearTimeout(approachDoorTimerRef.current);
       window.clearTimeout(checkoutDoorTimerRef.current);
+      window.clearTimeout(checkoutCameraTimerRef.current);
       window.clearTimeout(seatDoorTimerRef.current);
       window.clearTimeout(mapRightClickDoorTimerRef.current);
       window.clearTimeout(destinationRingTimerRef.current);
@@ -1987,7 +2009,7 @@ export function OfficeMap() {
   // reused for the Player HUD: the HUD's behind-modal step stays wired to `teamMapOpen` alone,
   // because that is the only modal whose panel actually reaches the HUD's corner.
   const anyModalOpen =
-    companyHub.isOpen || profileEmail !== null || questlineOpen || missionsOpen || rewardsOpen || teamMapOpen;
+    companyHub.isOpen || profileEmail !== null || tasksOpen || rewardsOpen || teamMapOpen;
 
 
   // Offline lineup (Phase 0/1 — v1 explicit-checkout-only, see offline_lineup.py's module
@@ -2660,21 +2682,36 @@ export function OfficeMap() {
     cancelWalk();
     window.clearTimeout(checkoutDoorTimerRef.current);
     checkoutDoorTimerRef.current = undefined;
+    window.clearTimeout(checkoutCameraTimerRef.current);
+    checkoutCameraTimerRef.current = undefined;
     checkoutDoorNonceRef.current += 1;
     resetBonPos({ x: bonLayer.x, y: bonLayer.y });
   }
 
   // SAYING_GOODBYE/WALKING_TO_RECEPTION: goodbye bubble, then walk to Arisha
   // using the same standoff-goal logic as startCheckin.
+  // THE single entry point for starting a checkout's visuals — the HUD's Check out button, the
+  // 8h reminder toast and Reception's Check Out action all reach checkout through
+  // CHECKOUT_CONFIRMATION and land here, so the sequence below is written once and never
+  // duplicated per entry point.
+  //
+  // Order matters and is the whole point of this function:
+  //   1. camera pulls back to the bird's-eye overview IMMEDIATELY, before anything moves
+  //   2. the goodbye bubble plays while that transition establishes
+  //   3. only then does the walk to Reception begin (CHECKOUT_GOODBYE_MS > the camera's 600ms)
+  // The camera then stays put for the whole walk — the overview reset used to fire from inside
+  // beginWalkToReception, i.e. in the same beat as the movement, so the character set off while
+  // the view was still sliding and the walk was half-missed.
   function handleConfirmStartCheckout() {
     checkoutFlow.confirmStartCheckout();
+    resetToInitialView(CHECKOUT_CAMERA_MS);
     window.clearTimeout(greetTimerRef.current);
     greetNonceRef.current += 1;
     setGreeting({ characterId: playerLayerId, nonce: greetNonceRef.current, text: "Bye, everyone! 👋" });
     greetTimerRef.current = window.setTimeout(() => {
       setGreeting(null);
       beginWalkToReception();
-    }, 2000);
+    }, CHECKOUT_GOODBYE_MS);
   }
 
   // Who the viewer walks up to on the way out. With a live roster the
@@ -2736,16 +2773,9 @@ export function OfficeMap() {
         })();
     const goalRoomId = roomOf(tc)?.id ?? null;
 
-    {
-      const ref = transformRef.current;
-      const wrapper = ref?.instance.wrapperComponent;
-      if (ref && wrapper) {
-        const rect = wrapper.getBoundingClientRect();
-        const focusScale = initialScale * 2.5;
-        const { x, y } = computeCenterTransform(arisha, focusScale, rect.width, rect.height);
-        ref.setTransform(x, y, focusScale, 600, "easeOut");
-      }
-    }
+    // No camera work here on purpose: handleConfirmStartCheckout already established the
+    // bird's-eye overview and waited for it, so by the time this runs the view is settled and
+    // stationary. Deliberately not a follow camera — the walk is watched from where it is.
     pipSideRef.current = arisha.x > bonPos.x ? "left" : "right";
     const arriveCenter = { x: goal.x + bw / 2, y: goal.y + bh / 2 };
     // Door-gated on the way OUT of whatever room bon is currently in (his
@@ -2773,6 +2803,8 @@ export function OfficeMap() {
     cancelWalk();
     window.clearTimeout(checkoutDoorTimerRef.current);
     checkoutDoorTimerRef.current = undefined;
+    window.clearTimeout(checkoutCameraTimerRef.current);
+    checkoutCameraTimerRef.current = undefined;
     checkoutDoorNonceRef.current += 1;
     checkoutFlow.cancelWalkToReception();
     resetToInitialView();
@@ -2790,31 +2822,52 @@ export function OfficeMap() {
     if (exitTriggeredRef.current) return;
     exitTriggeredRef.current = true;
 
+    // Mirrors the entry sequence: sign-off bubble, camera back out to the overview, and only
+    // then the walk — so the character is visibly seen leaving Reception rather than setting off
+    // behind a still-moving camera.
     function proceedWithExitWalk() {
       checkoutFlow.startExitWalk();
+      // startExitWalk() is a setState: checkoutBusyRef is assigned during RENDER (see its
+      // assignment below the checkoutBusy declaration), and the walk below is started
+      // synchronously in this same tick — before React re-renders. Without priming the ref here
+      // the exit walk reads the previous render's `false`, so moveSelf's allowMove gate
+      // (selfPathLeavesOffice) treats the legitimate walk OUT to the sidewalk as an illegal
+      // office-boundary crossing and returns without ever calling onArrive: the flow then sat in
+      // WALKING_TO_EXIT forever with the avatar frozen in Reception, never reaching CHECKED_OUT.
+      // Scoped strictly to this transition — the boundary rule itself is unchanged, and the next
+      // render recomputes the ref from checkoutBusy as usual.
+      checkoutBusyRef.current = true;
+      // Sign-off first, then the camera back out to the same overview the walk in used (the
+      // Reception arrival had zoomed in for the checkout panels).
+      window.clearTimeout(greetTimerRef.current);
+      greetNonceRef.current += 1;
+      setGreeting({ characterId: playerLayerId, nonce: greetNonceRef.current, text: "Ciao ciao! 👋" });
+      greetTimerRef.current = window.setTimeout(() => setGreeting(null), CHECKOUT_GOODBYE_MS);
+      frameCheckoutExitView();
       const goal = { x: bonLayer.x, y: bonLayer.y };
       const goalCenter = { x: goal.x + playerCharacterLayer.width / 2, y: goal.y + playerCharacterLayer.height / 2 };
       const goalRoomId = roomOf(goalCenter)?.id ?? null;
       pipSideRef.current = goal.x > bonPos.x ? "left" : "right";
-      // Door-gated on the way OUT of reception (bon's current room at this
-      // point) — a no-op today since doorStandForRoom("reception-team")
-      // (or whatever reception's flat id resolves to) returns null until its
-      // stand-point pair is painted, but wired correctly for when that
-      // lands. Falls through to the single walk unchanged in the meantime.
-      walkOutOfRoomThenTo(
-        goal,
-        goalRoomId,
-        () => {
-        window.clearTimeout(greetTimerRef.current);
-        greetNonceRef.current += 1;
-        setGreeting({ characterId: playerLayerId, nonce: greetNonceRef.current, text: "Bye, everyone! 👋" });
-        greetTimerRef.current = window.setTimeout(() => {
-          setGreeting(null);
-          checkoutFlow.finishExit();
-        }, 1500);
-        },
-        "front",
-      );
+      // The walk starts only once the overview transition above has visibly finished, so the
+      // character is seen leaving Reception rather than setting off behind a sliding camera.
+      window.clearTimeout(checkoutCameraTimerRef.current);
+      checkoutCameraTimerRef.current = window.setTimeout(() => {
+        checkoutCameraTimerRef.current = undefined;
+        // Door-gated on the way OUT of reception (bon's current room at this
+        // point) — a no-op today since doorStandForRoom("reception-team")
+        // (or whatever reception's flat id resolves to) returns null until its
+        // stand-point pair is painted, but wired correctly for when that
+        // lands. Falls through to the single walk unchanged in the meantime.
+        walkOutOfRoomThenTo(
+          goal,
+          goalRoomId,
+          // Outside arrival: nothing to say here any more (the sign-off already played on
+          // success) and nothing to wait for — finishExit() is called immediately, so the bubble
+          // has never held the state machine open.
+          () => checkoutFlow.finishExit(),
+          "front",
+        );
+      }, CHECKOUT_CAMERA_SETTLE_MS);
     }
 
     const arisha = npcCharacterLayers.find((l) => l.id === "arisha");
@@ -2853,6 +2906,11 @@ export function OfficeMap() {
   // required here, not just a nice-to-have.
   const checkoutDoorTimerRef = useRef<number | undefined>(undefined);
   const checkoutDoorNonceRef = useRef(0);
+  // Checkout PRESENTATION sequencing only (see CHECKOUT_CAMERA_SETTLE_MS): holds the timeout that
+  // starts a walk once the overview camera transition has visibly finished, so the character never
+  // sets off while the view is still sliding out of its previous close framing. Its own ref, kept
+  // apart from the door timer above, and cancelled by the same paths that cancel a checkout walk.
+  const checkoutCameraTimerRef = useRef<number | undefined>(undefined);
   // Pending door-open/door-close timeout for an in-flight click-to-sit
   // walkToSeat walk — dedicated pair (not shared with approachDoorTimerRef/
   // checkoutDoorTimerRef) so re-clicking a different seat mid-walk cancels
@@ -4139,6 +4197,34 @@ export function OfficeMap() {
     ref.setTransform(x, y, scale, 500, "easeOut");
   }
 
+  // CHECKOUT EXIT FRAMING — the only camera call that is checkout-specific.
+  //
+  // Same bird's-eye SCALE as resetToInitialView (initialScale, the cover scale) so the exit reads
+  // as the same pull-back, but centred on the Reception-to-sidewalk band rather than on the whole
+  // office: the walk out ends at the pavement, and the general overview centres too high to show
+  // the glass entrance or the pavement at all. Reception lands around the lower middle with the
+  // office still visible above it for context, and the camera then stays put — no follow, no pan.
+  //
+  // resetToInitialView itself is deliberately untouched: check-in, the walk to Reception, the
+  // room-sidebar close and the walk-cancel path all depend on that framing.
+  function frameCheckoutExitView(durationMs = CHECKOUT_CAMERA_MS) {
+    const ref = transformRef.current;
+    const wrapper = ref?.instance.wrapperComponent;
+    if (!ref || !wrapper) return;
+    const rect = wrapper.getBoundingClientRect();
+    // The band to centre on: the top of the Reception room down to the frame's bottom edge (the
+    // pavement). computeCenterTransform already clamps to the frame, so on a viewport with no
+    // vertical room to pan this degrades to exactly the overview rather than to a gap.
+    const receptionTop = roomLayers.find((l) => l.id === "reception-room")?.y ?? FRAME_HEIGHT * 0.67;
+    const { x, y } = computeCenterTransform(
+      { x: 0, y: receptionTop, width: FRAME_WIDTH, height: FRAME_HEIGHT - receptionTop },
+      initialScale,
+      rect.width,
+      rect.height,
+    );
+    ref.setTransform(x, y, initialScale, durationMs, "easeOut");
+  }
+
   function resetToInitialView(durationMs = 400) {
     const ref = transformRef.current;
     const wrapper = ref?.instance.wrapperComponent;
@@ -4434,6 +4520,243 @@ export function OfficeMap() {
       })
     : null;
 
+  // ---- BOTTOM DOCK ---------------------------------------------------------------------------
+  // Every persistent office control now lives in ONE bottom-center dock (see HudDock.tsx). This
+  // block is the whole consolidation: it decides what the dock contains and in what order, using
+  // the SAME visibility gates and the SAME handlers the scattered pills used. No feature state,
+  // no new actions — the Check out entry calls checkoutFlow.startCheckout, the identical handler
+  // behind ReceptionActionMenu's Check out, under that menu's identical gate.
+  //
+  // `toucanChromeVisible` (declared far above) is the office's long-standing
+  // "hasCheckedIn && onboarding === 'done' && !checkoutBusy" chrome predicate; the pills all
+  // repeated it inline, so the dock reads it from there rather than restating it a tenth time.
+  const dockChromeVisible = toucanChromeVisible;
+  // WHEN THE DOCK EXISTS AT ALL. Either the whole dock renders or none of it does — the partial
+  // dock (availability, Search, Chat, •••) that used to appear the instant Check In was clicked,
+  // while the avatar was still walking in and its placement was still pending, was the ungated
+  // remainder showing through. All four conditions are existing readiness state; no timers.
+  //   hasCheckedIn          server-confirmed attendance, not the click
+  //   onboarding === "done" the check-in sequence (walk in, greet, seat) has finished
+  //   !selfPlacementPending the spawn/restore effect has actually placed the avatar
+  //   state !== CHECKED_OUT  a completed checkout leaves no dock behind
+  // Mid-checkout is deliberately NOT in this list: every step from the confirmation through
+  // CHECKOUT_SUCCESS and the WALKING_TO_EXIT walk keeps the dock exactly as it behaves today
+  // (checkoutBusy still reduces its CONTENTS via dockChromeVisible below — that is unchanged).
+  // A same-day re-check-in returns the flow to IDLE (beginNewSession) and the full dock is back.
+  const dockVisible =
+    hasCheckedIn &&
+    onboarding === "done" &&
+    !selfPlacementPending &&
+    checkoutFlow.state !== "CHECKED_OUT";
+  // The z-index 30/31 overlay family (check-in modal, status-overtime prompt, every checkout step)
+  // has to dim the dock the way it already dimmed the pills the dock replaced — and 30/31 is below
+  // the dock's own 70, so this needs its own lower step. See HudDock.module.css's .behindOverlay.
+  const dockBehindOverlay =
+    onboarding !== "done" ||
+    (checkoutFlow.state !== "IDLE" && checkoutFlow.state !== "CHECKED_OUT");
+  const timeTrackingVisible = import.meta.env.DEV || isRealZohoMode();
+  const checkoutOfferable = hasCheckedIn && checkoutFlow.state === "IDLE" && timeTrackingVisible;
+  // Availability is offered before check-in too, exactly as the standalone picker always was.
+  const statusPicker = <StatusPicker checkedIn={hasCheckedIn && checkoutFlow.state !== "CHECKED_OUT"} />;
+
+  // Order is the approved reference's, left to right:
+  //   Profile | Coins+XP | Search | Hub | Tasks | Chat | Rewards | Boards | Map |
+  //   Working+Check out | 🔔 | ••• (Settings)
+  const dockEntries: HudDockEntry[] = [];
+  dockEntries.push({
+    kind: "flyout",
+    key: "search",
+    icon: "🔍",
+    label: "Search",
+    ariaLabel: "Search for a person",
+    // CharacterSearch's input and result list keep their own dark office treatment.
+    surface: "dark",
+    panel: (
+      <CharacterSearch
+        autoFocus
+        transformRef={transformRef}
+        targetScale={maxScale}
+        onLocate={(layer) => {
+          // Onboarding sequence must complete before normal search-locate
+          // interactions resume — every non-"done" state suppresses this.
+          if (onboarding !== "done" || checkoutBusy) return;
+          setRoomSidebar(null);
+          setMenu(null);
+          window.clearTimeout(greetTimerRef.current);
+          greetNonceRef.current += 1;
+          setGreeting({ characterId: layer.id, nonce: greetNonceRef.current });
+          greetTimerRef.current = window.setTimeout(() => setGreeting(null), 3000);
+        }}
+      />
+    ),
+  });
+  if (dockChromeVisible) {
+    dockEntries.push({
+      kind: "action",
+      key: "hub",
+      icon: "🏢",
+      label: "Hub",
+      ariaLabel: "Open Company Hub",
+      active: companyHub.isOpen,
+      onClick: () => openCompanyHub("manual"),
+    });
+    // TASKS — one control for the two progression surfaces. It opens TasksPanel, which is a tab
+    // bar plus a switch over the UNCHANGED OnboardingQuestline and MissionsPanel; the models,
+    // endpoints, claims and refresh rules of both stay entirely separate. See TasksPanel.tsx.
+    dockEntries.push({
+      kind: "action",
+      key: "tasks",
+      icon: "📜",
+      label: "Tasks",
+      ariaLabel: "Open Tasks",
+      active: tasksOpen,
+      onClick: () => setTasksOpen(true),
+    });
+  }
+  if (chatMode === "real") {
+    dockEntries.push({
+      kind: "node",
+      key: "chat",
+      node: (
+        <MessageNotificationBadge
+          label="Chat"
+          total={unreadTotal}
+          conversations={allConversations}
+          selfId={selfChatId}
+          resolveDisplayName={resolveDisplayName}
+          onSelectConversation={onSelectConversation}
+          onNewMessage={() => setChatPickerMode("message")}
+          onFindPerson={() => setChatPickerMode("findPerson")}
+          onNewGroupChat={() => setChatPickerMode("group")}
+        />
+      ),
+    });
+  }
+  if (dockChromeVisible) {
+    dockEntries.push({
+      kind: "action",
+      key: "rewards",
+      icon: "🎁",
+      label: "Rewards",
+      ariaLabel: "Open Rewards",
+      active: rewardsOpen,
+      onClick: () => setRewardsOpen(true),
+    });
+    if (chatMode === "real") {
+      dockEntries.push({
+        kind: "action",
+        key: "boards",
+        icon: "🗒️",
+        label: "Boards",
+        ariaLabel: "Open office whiteboards",
+        active: whiteboardTarget?.scope.kind === "room" && whiteboardTarget.scope.id === OFFICE_ROOM_ID,
+        onClick: () => setWhiteboardTarget({ scope: { kind: "room", id: OFFICE_ROOM_ID }, title: "Office" }),
+      });
+    }
+    dockEntries.push({
+      kind: "action",
+      key: "map",
+      icon: "🗺️",
+      label: "Map",
+      ariaLabel: "Open Global Team Map",
+      active: teamMapOpen,
+      onClick: () => setTeamMapOpen(true),
+    });
+  }
+  // Working time + Check out. The pill is WorkingStatusIndicator, which keeps its own
+  // "hide before check-in / after checkout" rule, so this group can render unconditionally
+  // wherever time tracking is available at all.
+  if (timeTrackingVisible) {
+    dockEntries.push(
+      { kind: "separator", key: "sep-time" },
+      {
+        kind: "node",
+        key: "time",
+        node: (
+          <div className={styles.dockTimeGroup}>
+            <WorkingStatusIndicator compact state={checkoutFlow.state} workedLabel={checkoutFlow.workedLabel} />
+            {checkoutOfferable && (
+              <button
+                type="button"
+                className={styles.dockCheckoutButton}
+                onClick={checkoutFlow.startCheckout}
+                aria-label="Check out"
+              >
+                Check out
+              </button>
+            )}
+          </div>
+        ),
+      },
+    );
+  }
+  dockEntries.push({ kind: "separator", key: "sep-utility" });
+  if (dockChromeVisible) {
+    dockEntries.push({
+      kind: "node",
+      key: "notifications",
+      // Global Notifications V1 — one component owns the 🔔 and its anchored panel, so the panel
+      // is always positioned and layered relative to its button (see NotificationCenter.module.css).
+      // `modalOpen` still closes the panel when a full-screen modal takes the view.
+      node: <NotificationCenter onNavigate={openNotificationDestination} modalOpen={anyModalOpen} />,
+    });
+  }
+  // ••• IS SETTINGS — game/system preferences only. Product features are tiles above and are
+  // never hidden in here, at any viewport width. See HudSettings.tsx.
+  dockEntries.push({
+    kind: "flyout",
+    key: "settings",
+    icon: "•••",
+    ariaLabel: "Settings",
+    align: "end",
+    panel: (
+      <HudSettings
+        devTools={
+          // The SAME two DEV panels that used to float on the office canvas, with the same props
+          // and the same handlers — relocated, not rewritten. DEV-only exactly as before; the
+          // checkout panel's direct submit/startCheckout handles never ship to production.
+          import.meta.env.DEV ? (
+            <>
+              <OfficePhaseDebugControl
+                phase={phase}
+                hourDecimal={hourDecimal}
+                overrideHour={overrideHour}
+                setOverrideHour={setOverrideHour}
+              />
+              <CheckoutDebugPanel
+                state={checkoutFlow.state}
+                overrideHour={overrideHour}
+                debugHoursWorked={debugHoursWorked}
+                setDebugHoursWorked={handleSetDebugHoursWorked}
+                startCheckout={checkoutFlow.startCheckout}
+                confirmStartCheckout={handleConfirmStartCheckout}
+                submit={checkoutFlow.submit}
+                retrySubmit={checkoutFlow.retrySubmit}
+                resetToday={checkoutFlow.resetToday}
+              />
+            </>
+          ) : undefined
+        }
+        onResetHubDemo={
+          import.meta.env.DEV
+            ? () => {
+                resetDevHubState()
+                  .then(({ resetCount }) => {
+                    setToast(`Reset ${resetCount} dev Hub item state(s) — check in again to re-demo.`);
+                  })
+                  .catch((err) => {
+                    setToast(err instanceof Error ? err.message : "Failed to reset dev Hub state.");
+                  })
+                  .finally(() => {
+                    window.setTimeout(() => setToast(null), 2500);
+                  });
+              }
+            : undefined
+        }
+      />
+    ),
+  });
+
   return (
     <div className={`${styles.viewport} ${isDragging ? styles.dragging : ""}`}>
       <TransformWrapper
@@ -4686,86 +5009,22 @@ export function OfficeMap() {
           hand-maintained DEV flag — is what stops this from silently
           regressing to "logs into the void" on a future deploy. DEV stays
           in the condition so mock-mode development still exercises the UI. */}
-      <StatusPicker checkedIn={hasCheckedIn && checkoutFlow.state !== "CHECKED_OUT"} />
-      {hasCheckedIn && onboarding === "done" && !checkoutBusy && (
-        <button
-          className={styles.hubButton}
-          onClick={() => openCompanyHub("manual")}
-          aria-label="Open Company Hub"
-        >
-          🏠 Hub
-        </button>
-      )}
-      {hasCheckedIn && onboarding === "done" && !checkoutBusy && currentUser?.email && (
-        <button
-          className={styles.profileButton}
-          onClick={() => setProfileEmail(currentUser.email)}
-          aria-label="Open my profile"
-        >
-          👤 Profile
-        </button>
-      )}
-      {hasCheckedIn && onboarding === "done" && !checkoutBusy && (
-        <button
-          className={styles.mapButton}
-          onClick={() => setTeamMapOpen(true)}
-          aria-label="Open Global Team Map"
-        >
-          🌍 Map
-        </button>
-      )}
-      {hasCheckedIn && onboarding === "done" && !checkoutBusy && (
-        <button
-          className={styles.questsButton}
-          onClick={() => setQuestlineOpen(true)}
-          aria-label="Open Onboarding Questline"
-        >
-          🎯 Quests
-        </button>
-      )}
-      {hasCheckedIn && onboarding === "done" && !checkoutBusy && (
-        <button
-          className={styles.missionsButton}
-          onClick={() => setMissionsOpen(true)}
-          aria-label="Open Missions"
-        >
-          📅 Missions
-        </button>
-      )}
-      {hasCheckedIn && onboarding === "done" && !checkoutBusy && (
-        <button
-          className={styles.rewardsButton}
-          onClick={() => setRewardsOpen(true)}
-          aria-label="Open Rewards"
-        >
-          🎁 Rewards
-        </button>
-      )}
-      {chatMode === "real" && hasCheckedIn && onboarding === "done" && !checkoutBusy && (
-        <button
-          className={styles.boardsButton}
-          onClick={() => setWhiteboardTarget({ scope: { kind: "room", id: OFFICE_ROOM_ID }, title: "Office" })}
-          aria-label="Open office whiteboards"
-        >
-          ▦ Boards
-        </button>
-      )}
-      {/* Global Notifications V1 — the 🔔 pill and its anchored panel (one component owns both, so
-          the panel is always positioned and layered relative to its button; see
-          NotificationCenter.module.css's layering note). Same visibility rule as the pills above.
-          `modalOpen` closes the panel when a full-screen modal takes the view — the control
-          already sits BELOW the modal family at z-index 25, this just stops it lingering
-          invisibly behind a backdrop. */}
-      {hasCheckedIn && onboarding === "done" && !checkoutBusy && (
-        <NotificationCenter onNavigate={openNotificationDestination} modalOpen={anyModalOpen} />
-      )}
+      {/* THE dock — one bottom-center surface holding every persistent office control. Its
+          contents and gates are built in the dockEntries block just above the return. The
+          Player HUD renders as the dock's profile / progression group (avatar + name opens the
+          viewer's own profile, the old 👤 Profile pill's action) with the availability picker
+          beside it; when the HUD is not offered yet (pre check-in, mid-checkout) availability
+          renders as its own group so it is never lost. `behindModal` is the HUD's long-standing
+          Team Map step, unchanged — see HudDock.module.css's layering note. */}
+      {/* Toucan — a floating round button of its own at the bottom-right, matching the reference,
+          which keeps the dock to the twelve controls in its row. Same handler, same disabled rule
+          and the same three aria-labels it has always had. */}
       {toucanChromeVisible && (
         <button
           className={styles.toucanButton}
           onClick={() => {
-            // Repeat presses are never a duplicate action: mid-approach the
-            // button is disabled outright, and once parked it just (re)opens
-            // the panel.
+            // Repeat presses are never a duplicate action: mid-approach the button is disabled
+            // outright, and once parked it just (re)opens the panel.
             if (toucanState === "attending") {
               setToucanPanelOpen(true);
               return;
@@ -4781,8 +5040,25 @@ export function OfficeMap() {
                 : "Call the toucan"
           }
         >
-          {toucanState === "attending" ? "🦜 Ask Toucan" : toucanCalled ? "🦜 Coming…" : "🦜 Call Toucan"}
+          <span aria-hidden="true">🦜</span>
         </button>
+      )}
+      {dockVisible && (
+        <HudDock
+          behindModal={teamMapOpen}
+          behindOverlay={dockBehindOverlay}
+          entries={dockEntries}
+          identity={
+            dockChromeVisible ? (
+              <PlayerHud
+                layout="dock"
+                statusSlot={statusPicker}
+                onProfileClick={currentUser?.email ? () => setProfileEmail(currentUser.email) : undefined}
+              />
+            ) : undefined
+          }
+          status={dockChromeVisible ? undefined : statusPicker}
+        />
       )}
       {/* Panel lifetime is the SUMMONED SESSION (`toucanPanelOpen`), deliberately NOT the
           bird's flight phase. Gating this on `toucanState === "attending"` unmounted the panel
@@ -4810,26 +5086,6 @@ export function OfficeMap() {
           />
         </div>
       )}
-      {import.meta.env.DEV && (
-        <button
-          className={styles.hubDevResetButton}
-          onClick={() => {
-            resetDevHubState()
-              .then(({ resetCount }) => {
-                setToast(`Reset ${resetCount} dev Hub item state(s) — check in again to re-demo.`);
-              })
-              .catch((err) => {
-                setToast(err instanceof Error ? err.message : "Failed to reset dev Hub state.");
-              })
-              .finally(() => {
-                window.setTimeout(() => setToast(null), 2500);
-              });
-          }}
-          aria-label="Reset Hub demo state"
-        >
-          ♻️ Reset Hub Demo State
-        </button>
-      )}
       {companyHub.isOpen && <CompanyHub />}
       {profileEmail && (
         <EmployeeProfile
@@ -4844,8 +5100,9 @@ export function OfficeMap() {
           }}
         />
       )}
-      {questlineOpen && <OnboardingQuestline onClose={() => setQuestlineOpen(false)} />}
-      {missionsOpen && <MissionsPanel onClose={() => setMissionsOpen(false)} />}
+      {tasksOpen && (
+        <TasksPanel tab={tasksTab} onTabChange={setTasksTab} onClose={() => setTasksOpen(false)} />
+      )}
       {rewardsOpen && <RewardsPanel onClose={() => setRewardsOpen(false)} />}
       {teamMapOpen && (
         <Suspense fallback={null}>
@@ -4868,11 +5125,9 @@ export function OfficeMap() {
           />
         </Suspense>
       )}
-      {/* Player HUD (Level / XP / Coins) — same visibility rule as the Quests/Missions pills. */}
-      {hasCheckedIn && onboarding === "done" && !checkoutBusy && <PlayerHud behindModal={teamMapOpen} />}
       {(import.meta.env.DEV || isRealZohoMode()) && (
         <>
-          <WorkingStatusIndicator state={checkoutFlow.state} workedLabel={checkoutFlow.workedLabel} />
+          {/* WorkingStatusIndicator moved into the dock's working-time group (see dockEntries). */}
       <CheckoutReminderToast
         visible={checkoutFlow.reminderVisible}
         onLater={checkoutFlow.dismissReminderForLater}
@@ -4950,49 +5205,10 @@ export function OfficeMap() {
           )}
         </>
       )}
-      {import.meta.env.DEV && (
-        <OfficePhaseDebugControl
-          phase={phase}
-          hourDecimal={hourDecimal}
-          overrideHour={overrideHour}
-          setOverrideHour={setOverrideHour}
-        />
-      )}
-      {/* DEV only. The ?checkoutDebug=true escape hatch was removed
-          deliberately: this panel holds direct handles to startCheckout,
-          confirmStartCheckout and submit, so in production it was a
-          one-query-param route straight into the mock submission path —
-          bypassing the guard on the checkout UI above and writing a
-          "logged" day that never reaches Zoho. Restore the query-param
-          gate only once time-logging is real (D3). */}
-      {import.meta.env.DEV && (
-        <CheckoutDebugPanel
-          state={checkoutFlow.state}
-          overrideHour={overrideHour}
-          debugHoursWorked={debugHoursWorked}
-          setDebugHoursWorked={handleSetDebugHoursWorked}
-          startCheckout={checkoutFlow.startCheckout}
-          confirmStartCheckout={handleConfirmStartCheckout}
-          submit={checkoutFlow.submit}
-          retrySubmit={checkoutFlow.retrySubmit}
-          resetToday={checkoutFlow.resetToday}
-        />
-      )}
-      <CharacterSearch
-        transformRef={transformRef}
-        targetScale={maxScale}
-        onLocate={(layer) => {
-          // Onboarding sequence must complete before normal search-locate
-          // interactions resume — every non-"done" state suppresses this.
-          if (onboarding !== "done" || checkoutBusy) return;
-          setRoomSidebar(null);
-          setMenu(null);
-          window.clearTimeout(greetTimerRef.current);
-          greetNonceRef.current += 1;
-          setGreeting({ characterId: layer.id, nonce: greetNonceRef.current });
-          greetTimerRef.current = window.setTimeout(() => setGreeting(null), 3000);
-        }}
-      />
+      {/* The DEV day/night scrubber and the DEV checkout debug panel moved OFF the office canvas
+          into the dock's ••• -> Settings -> Developer section (see the settings entry in
+          dockEntries) — same components, same handlers, same DEV gate, no duplicate state. */}
+      {/* CharacterSearch moved into the dock's Search flyout (see dockEntries). */}
       {menu && (
         <CharacterActionMenu
           layer={menu.layer}
@@ -5285,18 +5501,7 @@ export function OfficeMap() {
           }}
         />
       )}
-      {chatMode === "real" && (
-        <MessageNotificationBadge
-          total={unreadTotal}
-          conversations={allConversations}
-          selfId={selfChatId}
-          resolveDisplayName={resolveDisplayName}
-          onSelectConversation={onSelectConversation}
-          onNewMessage={() => setChatPickerMode("message")}
-          onFindPerson={() => setChatPickerMode("findPerson")}
-          onNewGroupChat={() => setChatPickerMode("group")}
-        />
-      )}
+      {/* MessageNotificationBadge (💬 + unread badge) moved into the dock (see dockEntries). */}
       {chatMode === "real" && chatPickerMode && (
         <EmployeePickerModal
           mode={chatPickerMode === "group" ? "multi" : "single"}

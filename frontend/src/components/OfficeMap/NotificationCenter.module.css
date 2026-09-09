@@ -3,16 +3,16 @@
    The office's existing hierarchy, from the bottom:
      15/16  toast, PiP
      20/21  character action menu (backdrop / menu)
-     25     the top:12px right-hand utility row (StatusPicker, WorkingStatusIndicator) AND the
-            right-hand feature pill column (Hub, Profile, Quests, Missions, Rewards, Boards, Map,
-            Toucan) — THIS COMPONENT JOINS THAT LAYER
+     25     (was: the top:12px utility row and the right-hand feature pill column — all of it
+            moved into the bottom dock, which owns 70 / 50 / 20; nothing sits at 25 any more)
      27/28  DND request UI, incoming call prompt
      30/31  check-in / status-overtime modals
      40/45/50 stage overlays, toucan flyer, HUD's behind-modal step
      60     the full-modal family (Company Hub, Employee Profile, Questline, Missions, Rewards,
             Team Map) — every one of them dims and covers this layer
-     70     Player HUD (deliberately ABOVE 60 so reward FX stay lit while travelling to it)
-     100    MessageNotificationBadge (the 💬 chat button and its dropdown)
+     70     the bottom dock, Player HUD included (deliberately ABOVE 60 so reward FX stay lit
+            while travelling into the coins / XP readouts; steps to 50 under a 60-family modal and
+            to 20 under the 30/31 overlay family)
      140+   floating chat, room sidebar, call overlay, join/DND toasts, pickers
      1000   reward claim FX
    The bell sits at 25 and the panel is a CHILD of the bell's anchor — so it inherits that one
@@ -26,19 +26,22 @@
    only consequence is that an open 💬 dropdown paints over this panel, which is correct, since
    they are alternative dropdowns from the same utility pair.
 
-   PLACEMENT — slot 2 of the top:12px right-hand utility row, directly beside the 💬 chat button,
-   with the same 36px round geometry and the same 12px gap the rest of that row uses. See
-   checkout/checkout.module.css's .statusBadge comment for the full slot map. It is deliberately
-   NOT in the vertical feature-pill column any more: the bell is a per-second-glance utility like
-   chat and status, not a feature panel, and sitting in the stack both crowded it and dropped its
-   panel across the Toucan / DEV-reset pills. */
+   PLACEMENT — the bell is now the trailing utility entry in the bottom dock, beside the 💬 chat
+   button it has always been paired with (see HudDock.tsx's dockEntries). Its panel opens UPWARD
+   from the dock; the `top`/`right` defaults below are the standalone geometry it keeps for any
+   render outside the dock. The layering hierarchy above still holds with one correction: the
+   Player HUD's old top-left 70 is now the whole dock's 70, and this control is inside it — so the
+   bell inherits the dock's stacking context instead of its own 25. It still cannot paint above a
+   modal, because the dock steps down to 50 / 20 for the modal and overlay families. */
+/* PLACEMENT is read from the --vo-chrome-* / --vo-flyout-* custom properties, whose defaults below
+   are this control's ORIGINAL standalone geometry. The bottom dock redefines them so this root
+   becomes in-flow inside the dock and its panel opens upward — see HudDock.module.css's flyout
+   contract. Nothing but placement is variable. */
 .anchor {
-  position: fixed;
-  top: 12px;
-  /* 16px (the 💬 button) + its 36px width + the row's 12px gap. Holds NO --vo-pill-slot: this
-     control left the vertical feature column entirely, so it consumes no slot there. */
-  right: 64px;
-  z-index: 25;
+  position: var(--vo-chrome-position, fixed);
+  top: var(--vo-chrome-top, 12px);
+  right: var(--vo-chrome-right, 64px);
+  z-index: var(--vo-chrome-z, 25);
   font-family: system-ui, sans-serif;
 }
 
@@ -50,12 +53,14 @@
   position: relative;
   box-sizing: border-box;
   cursor: pointer;
-  width: 36px;
-  height: 36px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  background: rgba(20, 20, 20, 0.85);
-  color: #f0f0f0;
+  /* In the dock these come from --vo-chrome-* so the bell reads as a bare 38px icon square like
+     the tiles beside it; standalone it stays the 36px round chip it was. */
+  width: var(--vo-chrome-icon-size, 36px);
+  height: var(--vo-chrome-icon-size, 36px);
+  border-radius: var(--vo-chrome-icon-radius, 999px);
+  border: 1px solid var(--vo-chrome-line, rgba(255, 255, 255, 0.15));
+  background: var(--vo-chrome-surface, rgba(20, 20, 20, 0.85));
+  color: var(--vo-chrome-ink, #f0f0f0);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -64,7 +69,7 @@
 }
 
 .bell:hover {
-  background: rgba(35, 35, 35, 0.9);
+  background: var(--vo-chrome-surface-hover, rgba(35, 35, 35, 0.9));
 }
 
 .bellActive {
@@ -90,7 +95,7 @@
   line-height: 17px;
   text-align: center;
   font-variant-numeric: tabular-nums;
-  box-shadow: 0 0 0 2px rgba(18, 16, 28, 0.9);
+  box-shadow: 0 0 0 2px var(--vo-chrome-badge-ring, rgba(18, 16, 28, 0.9));
 }
 
 /* Anchored to the bell: drops straight down from it and right-aligns with its right edge, so the
@@ -100,7 +105,8 @@
    64px offset plus a 12px left margin), so it can never be wider than the viewport. */
 .panel {
   position: absolute;
-  top: calc(100% + 8px);
+  top: var(--vo-flyout-top, calc(100% + 8px));
+  bottom: var(--vo-flyout-bottom, auto);
   right: 0;
   width: min(340px, calc(100vw - 76px));
   /* Everything below the utility row, less a bottom margin: 12px top + 36px bell + 8px gap. */
@@ -125,11 +131,12 @@
 @media (max-width: 460px) {
   .panel {
     position: fixed;
-    top: 56px;
+    top: var(--vo-flyout-narrow-top, 56px);
+    bottom: var(--vo-flyout-narrow-bottom, auto);
     right: 12px;
     left: 12px;
     width: auto;
-    max-height: calc(100vh - 68px);
+    max-height: var(--vo-flyout-narrow-max-h, calc(100vh - 68px));
   }
 }
 

@@ -485,14 +485,21 @@ describe("OfficeMap", () => {
       title: "Design Sync",
     };
 
-    beforeEach(() => {
+    beforeEach(async () => {
       chatModeState.mode = "real";
       mockRosterPeople = [peerPerson];
       emitSpatialSessionStartMock.mockClear();
       emitSpatialSessionLeaveMock.mockClear();
+      // The 💬 Global Chat control lives in the bottom dock, and the dock only exists once
+      // check-in is genuinely complete (server-confirmed attendance + finished placement) — the
+      // gate that stops a partial dock appearing the moment Check In is clicked. These routing
+      // tests reach chat through that control, so the session has to be checked in.
+      resetMockAttendanceForTests(getCurrentUserId());
+      await mockAttendanceService.checkIn(getCurrentUserId());
     });
 
     afterEach(() => {
+      resetMockAttendanceForTests(getCurrentUserId());
       chatModeState.mode = "mock";
       mockRosterPeople = [];
       spatialSessionsState.sessions = [];
@@ -508,8 +515,11 @@ describe("OfficeMap", () => {
     async function selectFromGlobalChat(view: ReturnType<typeof render>, rowLabel: string) {
       // Opens the 💬 dropdown and clicks the conversation row. The list is populated by
       // useUnreadTotal's async listConversations fetch, so wait for the row to appear.
+      // The 💬 control itself now waits too: it lives in the bottom dock, which only mounts once
+      // the async attendance answer has confirmed check-in (no partial dock before then).
+      const chatButton = await waitFor(() => view.getByRole("button", { name: /Conversations|unread message/ }));
       await act(async () => {
-        fireEvent.click(view.getByRole("button", { name: /Conversations|unread message/ }));
+        fireEvent.click(chatButton);
       });
       // Scope to the dropdown's own rows — an already-open panel's header shows the same name.
       const row = await waitFor(() => {

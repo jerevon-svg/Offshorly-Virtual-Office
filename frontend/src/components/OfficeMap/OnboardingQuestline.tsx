@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import styles from "./OnboardingQuestline.module.css";
 import { ClaimButton, ProgressionStrip, RewardTag } from "./RewardControls";
 import { collectReward } from "./rewardFx";
@@ -13,9 +13,13 @@ import { claimReward, fetchMyQuests, type Quest } from "../../services/quests/qu
 
 export interface OnboardingQuestlineProps {
   onClose: () => void;
+  /** Rendered at the top of the panel, above the header. The bottom dock's Tasks control passes
+   *  its Quests | Missions tab bar here (see TasksPanel.tsx); nothing else does. The panel is
+   *  otherwise untouched — it still owns its own fetch, its own claims and its own FX. */
+  tabs?: ReactNode;
 }
 
-export function OnboardingQuestline({ onClose }: OnboardingQuestlineProps) {
+export function OnboardingQuestline({ onClose, tabs }: OnboardingQuestlineProps) {
   const [quests, setQuests] = useState<Quest[] | null>(null);
   const progression = useProgression(); // shared store — see services/quests/progressionStore.ts
   const [error, setError] = useState<string | null>(null);
@@ -68,6 +72,7 @@ export function OnboardingQuestline({ onClose }: OnboardingQuestlineProps) {
         <button className={styles.closeButton} onClick={onClose} aria-label="Close quests">
           ✕
         </button>
+        {tabs}
         <header className={styles.header}>
           <h2 className={styles.title}>Onboarding Questline</h2>
           {quests && (

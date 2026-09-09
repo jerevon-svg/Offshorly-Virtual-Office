@@ -1,0 +1,38 @@
+/* Quests | Missions tab bar, rendered INTO whichever existing panel is showing (see
+   TasksPanel.tsx). Styled against the shared dark modal shell both panels use, so the bar reads
+   as part of that panel rather than as a strip bolted on top. */
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 12px 14px 0;
+  /* Clears the panels' absolutely-positioned close button at top:12px right:12px. */
+  padding-right: 44px;
+  font-family: system-ui, sans-serif;
+}
+
+.tab {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(245, 240, 255, 0.6);
+}
+
+.tab:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(245, 240, 255, 0.85);
+}
+
+.tab:focus-visible {
+  outline: 2px solid rgba(190, 160, 255, 0.7);
+  outline-offset: 1px;
+}
+
+.tabActive,
+.tabActive:hover {
+  background: rgba(255, 214, 122, 0.16);
+  color: #ffd67a;
+}

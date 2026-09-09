@@ -5,7 +5,9 @@
 
 .toast {
   position: fixed;
-  bottom: 100px; /* stacked above RoomLockedToast's bottom:24px so both can coexist without overlap */
+  /* Still stacked 76px above the corner toast, which now clears the bottom dock — see
+     --vo-dock-clearance in src/index.css. */
+  bottom: calc(var(--vo-dock-clearance, 104px) + 84px);
   right: 24px;
   z-index: 27;
   min-width: 260px;

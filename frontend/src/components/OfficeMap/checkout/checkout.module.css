@@ -88,45 +88,54 @@
   background: rgba(255, 255, 255, 0.08);
 }
 
-/* Working status badge — small persistent pill, top-right.
-   Slot 3 of the top:12px right-hand chrome row, which runs right-to-left in fixed slots:
-     slot 1  right:16px   MessageNotificationBadge (36px chat button, z-index 100)
-     slot 2  right:64px   NotificationCenter bell  (16 + 36 + 12px gap, 36px — same size and the
-                                                    same gap as the chat button, so the two read
-                                                    as one utility pair; see
-                                                    NotificationCenter.module.css)
-     slot 3  right:112px  this pill                (64 + 36 + 12px gap), capped at 190px
-     slot 4  right:316px  StatusPicker             (112 + 190 + 14px gap)
-   This pill moved one slot left (64 -> 112) when the bell was taken OUT of the vertical feature
-   stack and put beside the chat button, which is the only reason its number changed.
-   It used to sit at right:12px, i.e. directly underneath the chat button (right:16px) and with
-   the lower z-index, so the chat control painted over its right edge and clipped the label. The
-   max-width + nowrap cap is what keeps the pill inside its slot as the worked-hours label grows,
-   so it can never run into the StatusPicker slot either. */
+/* Working status badge — the small persistent "Working · 4h 49m" pill.
+   It now renders inside the bottom dock's working-time group, above the Check out button (see
+   OfficeMap.module.css's .dockTimeGroup and the dockEntries block in OfficeMap.tsx). The
+   top:12px right-hand chrome row this pill used to hold slot 3 of no longer exists — the chat
+   button, the notification bell and the availability picker all moved into the dock with it.
+   The `right`/`top` defaults below are kept as this control's standalone geometry, per the
+   placement-variable note; the max-width + nowrap cap still stops a long worked-hours label from
+   stretching the group. */
+/* PLACEMENT is read from the --vo-chrome-* / --vo-flyout-* custom properties, whose defaults below
+   are this control's ORIGINAL standalone geometry. The bottom dock redefines them so this root
+   becomes in-flow inside the dock and its panel opens upward — see HudDock.module.css's flyout
+   contract. Nothing but placement is variable. */
 .statusBadge {
-  position: fixed;
-  top: 12px;
-  right: 112px;
-  max-width: 190px;
+  position: var(--vo-chrome-position, fixed);
+  top: var(--vo-chrome-top, 12px);
+  right: var(--vo-chrome-right, 112px);
+  max-width: var(--vo-chrome-width, 190px);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   box-sizing: border-box;
-  z-index: 25;
-  background: rgba(26, 26, 26, 0.9);
-  color: #f0f0f0;
+  z-index: var(--vo-chrome-z, 25);
+  background: var(--vo-chrome-surface, rgba(26, 26, 26, 0.9));
+  color: var(--vo-chrome-ink, #f0f0f0);
   padding: 8px 14px;
   border-radius: 999px;
   font-family: system-ui, sans-serif;
   font-size: 13px;
   backdrop-filter: blur(4px);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--vo-chrome-line, rgba(255, 255, 255, 0.12));
 }
 
-/* Corner reminder toast. */
+/* Dock form: tight, borderless, sitting directly above the Check out button. */
+.statusBadgeCompact {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 2px;
+  font-size: 12px;
+  font-weight: 600;
+  backdrop-filter: none;
+}
+
+/* Corner reminder toast — also reused by RoomLockedToast and TalkRequestToast. */
 .toast {
   position: fixed;
-  bottom: 24px;
+  /* Clears the bottom dock's strip — see --vo-dock-clearance in src/index.css. */
+  bottom: calc(var(--vo-dock-clearance, 104px) + 8px);
   right: 24px;
   z-index: 26;
   min-width: 260px;
@@ -150,7 +159,8 @@
 /* Small "Checking out..." walk indicator. */
 .walkIndicator {
   position: fixed;
-  bottom: 24px;
+  /* Clears the bottom dock's strip — see --vo-dock-clearance in src/index.css. */
+  bottom: calc(var(--vo-dock-clearance, 104px) + 8px);
   left: 50%;
   transform: translateX(-50%);
   z-index: 15;
@@ -286,12 +296,13 @@
 
 /* Debug panel. */
 .debugPanel {
-  position: fixed;
-  /* Directly below the Player HUD (fixed top:12px, left:16px, ~146px tall incl. borders) with a
-     small clean gap; the HUD permanently owns the top-left corner. */
-  top: 172px;
-  left: 16px;
-  z-index: 100;
+  /* DEV-only. Renders inside the dock's ••• -> Settings -> Developer section, so its placement
+     comes from the --vo-chrome-* contract (see HudDock.module.css); the defaults below are its
+     original standalone top-left panel, unchanged for any other use. */
+  position: var(--vo-chrome-position, fixed);
+  top: var(--vo-chrome-top, 56px);
+  left: var(--vo-chrome-left, 16px);
+  z-index: var(--vo-chrome-z, 100);
   background: rgba(26, 26, 26, 0.92);
   border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 8px;

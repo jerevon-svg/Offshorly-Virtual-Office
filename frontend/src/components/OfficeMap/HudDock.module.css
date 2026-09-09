@@ -1,0 +1,328 @@
+/* ---- BOTTOM DOCK -----------------------------------------------------------------------------
+   ONE floating bottom-center dock that owns every persistent Virtual Office control. It replaced
+   the old scattered chrome: the top-left Player HUD, the top-left Search box, the top:12px
+   right-hand utility row (💬 chat, 🔔 bell, Working pill, Availability select) and the vertical
+   right-hand feature-pill column (Hub, Profile, Quests, Missions, Rewards, Boards, Map, Toucan,
+   DEV reset). The --vo-pill-* slot machinery those pills used is gone with them.
+
+   THE DOCK IS PRESENTATION ONLY. Every control inside it is the SAME component / handler it was
+   before — the dock lays them out and nothing else. See HudDock.tsx.
+
+   GEOMETRY is matched to the approved reference dock: a 68px-tall rounded bar (24px radius),
+   10px/14px inner padding, a 44px avatar, ~52px tiles whose 38px icon square carries the
+   hover/active treatment with a 10px caption beneath, and hairline separators grouping
+   Profile · Coins+XP · features · Working+Check out · utilities.
+
+   LAYERING. The dock sits at z-index 70, the exact layer the Player HUD used to hold, and for the
+   exact same reason: reward-claim FX fly INTO the coins / XP readouts (rewardFx.ts finds them by
+   [data-hud-target]), so the destination has to stay lit while a claim animates out of a
+   z-index 60 modal. `behindModal` steps it to 50 — the HUD's existing Team Map rule, unchanged.
+   Nothing else in the office moved layer. The 60-family modal backdrops each reserve
+   --vo-dock-clearance at the bottom (see index.css) so a centred modal panel can never reach the
+   dock in the first place; the dock does not have to out-rank them to stay clear of them.
+
+   FLYOUT CONTRACT. The chrome components that live inside the dock (Player HUD, StatusPicker,
+   CharacterSearch, NotificationCenter, MessageNotificationBadge, WorkingStatusIndicator,
+   BackgroundMusicControl) each used to `position: fixed` themselves into a corner and drop their
+   panel DOWNWARD. Rather than fork them, each now reads its own placement and surface from the
+   --vo-chrome-* / --vo-flyout-* custom properties, whose DEFAULTS are its original standalone
+   treatment. The dock redefines them below, so inside the dock those roots become in-flow, take
+   the dock's light ink, and their panels open UPWARD. No !important, no duplicated markup, and
+   rendering any of them outside the dock still works exactly as it did. */
+
+.dock {
+  position: fixed;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 70;
+  box-sizing: border-box;
+  max-width: calc(100vw - 24px);
+  display: flex;
+  align-items: center;
+  gap: 0;
+  /* 10px + the 52px tile + 10px = a 72px bar, the reference's height. */
+  padding: 10px 14px;
+  border-radius: 24px;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.07);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.8) inset,
+    0 2px 6px rgba(28, 22, 45, 0.06),
+    0 14px 36px rgba(28, 22, 45, 0.14);
+  color: #241f30;
+  font-family: system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+
+  /* --- flyout contract: in-flow roots, upward panels (see the note above) --- */
+  --vo-chrome-position: relative;
+  --vo-chrome-top: auto;
+  --vo-chrome-right: auto;
+  --vo-chrome-left: auto;
+  --vo-chrome-bottom: auto;
+  --vo-chrome-width: auto;
+  --vo-chrome-z: auto;
+  --vo-flyout-position: absolute;
+  --vo-flyout-top: auto;
+  --vo-flyout-bottom: calc(100% + 14px);
+  --vo-flyout-narrow-top: auto;
+  --vo-flyout-narrow-bottom: 104px;
+  --vo-flyout-narrow-max-h: calc(100vh - 148px);
+
+  /* --- surface contract: the light dock's treatment for the chrome inside it --- */
+  --vo-chrome-surface: transparent;
+  --vo-chrome-surface-hover: rgba(24, 20, 34, 0.06);
+  --vo-chrome-ink: #3f3a4d;
+  --vo-chrome-line: transparent;
+  --vo-chrome-badge-ring: #fdfcfa;
+  --vo-chrome-icon-size: 38px;
+  --vo-chrome-icon-radius: 12px;
+  /* The availability picker runs at the reference's caption scale, tight enough that the profile
+     column (name / status / XP bar) stays shorter than a 52px tile and so never sets the dock's
+     height. */
+  --vo-chrome-pad: 0 1px;
+  --vo-chrome-font: 11.5px;
+}
+
+/* Same step the Player HUD has always taken for the Global Team Map — see PlayerHud.module.css.
+   50 puts the dock UNDER the z-index 60 backdrops, which is the point: a panel the viewer must
+   read in full dims the dock like the rest of the office. */
+.behindModal {
+  z-index: 50;
+}
+
+/* The office's OTHER overlay family sits at z-index 30/31, well below the dock's 70: the check-in
+   modal, the status-overtime prompt and every checkout step (confirmation, reception summary, time
+   log, review, submission failure). The dock has to drop below those too, so this step goes under
+   30 rather than under 60. The pills this dock replaced were all at z-index 25 and were dimmed by
+   these overlays already — this keeps that. */
+.behindOverlay {
+  z-index: 20;
+}
+
+/* ---- groups + separators ------------------------------------------------------------------- */
+.group {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+/* Profile + Coins/XP: the dock's widest section, per the reference. PlayerHud lays out its own
+   two halves and the hairline between them (see PlayerHud.module.css's dock variant). */
+.identityGroup {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding-right: 2px;
+}
+
+.separator {
+  flex: none;
+  align-self: stretch;
+  width: 1px;
+  margin: 4px 10px;
+  background: rgba(24, 20, 34, 0.1);
+}
+
+/* ---- feature tiles ------------------------------------------------------------------------- */
+/* icon-above-label: a 38px icon square that carries hover/active, with a 10px caption beneath. */
+.tile {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  flex: none;
+  width: 52px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 0;
+  color: #3f3a4d;
+}
+
+.tile:focus-visible {
+  outline: 2px solid rgba(94, 92, 230, 0.7);
+  outline-offset: 2px;
+  border-radius: 12px;
+}
+
+.tile:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.tileIcon {
+  box-sizing: border-box;
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  font-size: 20px;
+  line-height: 1;
+  transition: background-color 120ms ease;
+}
+
+.tile:hover:not(:disabled) .tileIcon {
+  background: rgba(24, 20, 34, 0.06);
+}
+
+/* Soft highlighted tile for the active/selected control — the reference's mint square. */
+.tileActive .tileIcon,
+.tileActive:hover:not(:disabled) .tileIcon {
+  background: #d8ecd2;
+}
+
+.tileActive {
+  color: #2f5c3c;
+}
+
+.tileLabel {
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  line-height: 1.3;
+  white-space: nowrap;
+  color: inherit;
+}
+
+/* ---- working time + checkout --------------------------------------------------------------- */
+.timeGroup {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  /* The Working pill and the Check out button are one stacked group; two nested outlines read as
+     clutter, so the pill inherits a transparent line while the button keeps its own. */
+  --vo-chrome-line: transparent;
+}
+
+.checkoutButton {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(24, 20, 34, 0.1);
+  background: #eef2ec;
+  color: #3f3a4d;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.checkoutButton:hover {
+  background: #e3ebdf;
+  color: #1c1826;
+}
+
+.checkoutButton:focus-visible {
+  outline: 2px solid rgba(94, 92, 230, 0.7);
+  outline-offset: 1px;
+}
+
+/* ---- flyouts (Search, Settings) ------------------------------------------------------------ */
+/* Stretched to the dock's content height so `bottom: 100%` on the flyout measures from the
+   dock's inner top edge, not from a short icon-only tile's — otherwise an icon-only tile (•••)
+   opens its panel a few pixels INSIDE the dock and paints over its border. */
+.flyoutAnchor {
+  position: relative;
+  display: flex;
+  align-self: stretch;
+  align-items: center;
+}
+
+.flyout {
+  position: absolute;
+  bottom: calc(100% + 14px);
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 148px);
+  overflow-y: auto;
+  box-sizing: border-box;
+  padding: 10px;
+  border-radius: 16px;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.09);
+  box-shadow: 0 16px 44px rgba(28, 22, 45, 0.22);
+}
+
+/* Right-aligned for tiles near the dock's trailing edge (Settings), so the panel cannot hang off
+   the dock into the viewport edge. */
+.flyoutEnd {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
+/* Search keeps CharacterSearch's own dark input and result list, so its flyout matches them
+   rather than forcing a light restyle on the component (`surface: "dark"` in HudDock.tsx). */
+.flyoutDark {
+  width: 264px;
+  background: rgba(22, 20, 30, 0.97);
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 16px 44px rgba(12, 10, 20, 0.45);
+  --vo-chrome-position: relative;
+  --vo-chrome-top: auto;
+  --vo-chrome-left: auto;
+  --vo-chrome-width: 100%;
+  --vo-chrome-z: auto;
+  --vo-flyout-position: static;
+  --vo-flyout-bottom: auto;
+}
+
+/* ---- responsive ---------------------------------------------------------------------------- */
+/* Compaction is spacing and captions ONLY. No product feature is ever moved into ••• or dropped:
+   every tile in the reference stays a tile at every width. */
+@media (max-width: 1200px) {
+  .dock {
+    padding: 8px 10px;
+  }
+  .tile {
+    width: 44px;
+  }
+  .separator {
+    margin: 4px 7px;
+  }
+}
+
+@media (max-width: 1000px) {
+  .tile {
+    width: 38px;
+  }
+  .tileLabel {
+    display: none;
+  }
+  .tileIcon {
+    width: 36px;
+    height: 36px;
+    font-size: 19px;
+  }
+  .separator {
+    margin: 4px 5px;
+  }
+}
+
+@media (max-width: 720px) {
+  .dock {
+    gap: 0;
+    padding: 6px 8px;
+    border-radius: 20px;
+  }
+  .tile {
+    width: 34px;
+  }
+  .tileIcon {
+    width: 32px;
+    height: 32px;
+    font-size: 17px;
+    border-radius: 10px;
+  }
+  .separator {
+    margin: 4px 3px;
+  }
+}

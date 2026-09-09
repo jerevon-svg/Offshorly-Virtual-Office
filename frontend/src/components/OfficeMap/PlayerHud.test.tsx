@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClaimResult, Progression } from "../../services/quests/questsClient";
 
@@ -113,5 +113,54 @@ describe("PlayerHud", () => {
     // Closing the modal restores normal behaviour.
     rerender(<PlayerHud behindModal={false} />);
     expect(screen.getByTestId("player-hud").className).not.toMatch(/behindModal/);
+  });
+
+  describe('layout="dock"', () => {
+    // The HUD is the bottom dock's profile / progression group (see HudDock.tsx). The variant is
+    // presentation only: same store, same numbers, and above all the same FX target elements.
+    beforeEach(() => {
+      vi.mocked(fetchMyProgression).mockResolvedValue(p({ xp: 130, coins: 150, level: 4, levelStartXp: 100, nextLevelXp: 300 }));
+      vi.mocked(fetchMyBadges).mockResolvedValue([] as Badge[]);
+    });
+
+    it("keeps the reward FX targets and every readout, in the dock's own class", async () => {
+      render(<PlayerHud layout="dock" />);
+      const hud = await screen.findByTestId("player-hud");
+      expect(hud.className).toMatch(/hudDock/);
+      // The dock owns the layering step now, so the variant must not also carry it.
+      expect(hud.className).not.toMatch(/behindModal/);
+      expect(screen.getByTestId("hud-level")).toHaveTextContent("Lv 4");
+      expect(screen.getByTestId("hud-xp")).toHaveTextContent("30 / 200");
+      expect(screen.getByTestId("hud-coins")).toHaveTextContent("150");
+      expect(document.querySelector('[data-hud-target="xp"]')).not.toBeNull();
+      expect(document.querySelector('[data-hud-target="coins"]')).not.toBeNull();
+    });
+
+    it("renders the availability picker handed to it, rather than owning status itself", async () => {
+      render(<PlayerHud layout="dock" statusSlot={<button aria-label="Set your status">Available</button>} />);
+      await screen.findByTestId("player-hud");
+      expect(screen.getByLabelText("Set your status")).toBeInTheDocument();
+    });
+
+    it("keeps the availability picker up while the first progression fetch is still in flight", async () => {
+      let resolve: (value: Progression) => void = () => {};
+      vi.mocked(fetchMyProgression).mockImplementation(() => new Promise<Progression>((r) => (resolve = r)));
+      render(<PlayerHud layout="dock" statusSlot={<button aria-label="Set your status">Available</button>} />);
+      expect(screen.queryByTestId("player-hud")).toBeNull();
+      expect(screen.getByLabelText("Set your status")).toBeInTheDocument();
+      await act(async () => resolve(p({ xp: 130, coins: 150, level: 4, levelStartXp: 100, nextLevelXp: 300 })));
+      expect(screen.getByTestId("player-hud")).toBeInTheDocument();
+      expect(screen.getByLabelText("Set your status")).toBeInTheDocument();
+    });
+
+    it("makes the avatar + name block the Profile action, only when the caller wires one up", async () => {
+      const onProfileClick = vi.fn();
+      const { rerender } = render(<PlayerHud layout="dock" onProfileClick={onProfileClick} />);
+      await screen.findByTestId("player-hud");
+      fireEvent.click(screen.getByLabelText("Open my profile"));
+      expect(onProfileClick).toHaveBeenCalledTimes(1);
+      rerender(<PlayerHud layout="dock" />);
+      expect(screen.queryByLabelText("Open my profile")).toBeNull();
+    });
   });
 });

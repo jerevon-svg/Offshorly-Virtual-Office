@@ -9,9 +9,12 @@ type CharacterSearchProps = {
   transformRef: React.RefObject<ReactZoomPanPinchRef | null>;
   targetScale: number;
   onLocate?: (layer: AssetLayer) => void;
+  /** Focus the input on mount. Set only where the search is revealed on demand (the bottom
+   *  dock's Search flyout); defaults off, so a persistently-mounted search never steals focus. */
+  autoFocus?: boolean;
 };
 
-export function CharacterSearch({ transformRef, targetScale, onLocate }: CharacterSearchProps) {
+export function CharacterSearch({ transformRef, targetScale, onLocate, autoFocus = false }: CharacterSearchProps) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(0);
@@ -70,6 +73,7 @@ export function CharacterSearch({ transformRef, targetScale, onLocate }: Charact
     <div className={styles.search}>
       <input
         type="text"
+        autoFocus={autoFocus}
         placeholder="Search for a person…"
         value={query}
         onChange={(e) => handleQueryChange(e.target.value)}
