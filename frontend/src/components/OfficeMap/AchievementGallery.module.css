@@ -8,7 +8,6 @@
 }
 
 .muted,
-.detailDesc,
 .pinnedEmpty {
   margin: 0;
   font-size: 13px;
@@ -21,13 +20,51 @@
   color: #b3352d;
 }
 
-/* ---- category nav ------------------------------------------------------------------------ */
+/* ---- page heading ------------------------------------------------------------------------
+   The primary nav is icon-only, so this names the page. It also replaced the old green summary
+   STRIP: the same earned/claimable numbers now read as a line under the subtitle rather than as
+   a separate banner competing with the title. */
+.head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.headTitle {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #241f30;
+}
+
+.headSubtitle {
+  margin: 0;
+  font-size: 14px;
+  color: rgba(36, 31, 48, 0.6);
+}
+
+.headMeta {
+  margin: 4px 0 0;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(36, 31, 48, 0.6);
+}
+
+.headCount {
+  font-weight: 700;
+  color: #241f30;
+}
+
+/* ---- category nav ------------------------------------------------------------------------
+   Secondary filters, so they get no container at all — the heading above owns the panel's
+   weight and a second boxed control competed with it. Selection is a short green rule sitting
+   on the group's own bottom border. */
 .tabs {
   display: flex;
+  align-items: center;
   gap: 4px;
-  padding: 4px;
-  border-radius: 12px;
-  background: rgba(24, 20, 34, 0.045);
+  border-bottom: 1px solid rgba(24, 20, 34, 0.08);
 }
 
 .tab,
@@ -35,65 +72,36 @@
   all: unset;
   position: relative;
   cursor: pointer;
-  flex: 1;
-  text-align: center;
-  font-size: 12px;
+  white-space: nowrap;
+  padding: 8px 14px 9px;
+  font-size: 13.5px;
   font-weight: 600;
-  letter-spacing: 0.03em;
-  padding: 8px 6px;
-  border-radius: 9px;
   color: rgba(36, 31, 48, 0.55);
-  transition: background-color 160ms ease, color 160ms ease;
+  transition: color 120ms ease;
 }
 
 .tab:hover {
   color: #241f30;
-  background: rgba(24, 20, 34, 0.045);
 }
 
 .tabActive {
-  color: #241f30;
-  background: linear-gradient(180deg, rgba(75, 185, 106, 0.2), rgba(47, 107, 69, 0.16));
-  box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.45);
+  color: #2f6b45;
 }
 
-.tabDot {
+.tabActive::after {
+  content: "";
   position: absolute;
-  top: 6px;
-  right: 8px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #e8b23c;
+  left: 14px;
+  right: 14px;
+  bottom: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: #2f6b45;
 }
 
-/* ---- category summary strip -------------------------------------------------------------- */
-.summary {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  padding: 10px 14px;
-  border-radius: 10px;
-  background: linear-gradient(90deg, rgba(75, 185, 106, 0.12), rgba(75, 185, 106, 0.03));
-  border-left: 3px solid #48a663;
-  font-variant-numeric: tabular-nums;
-}
-
-.summaryLabel {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.summaryCount {
-  font-size: 18px;
-  font-weight: 700;
-  color: #e8b23c;
-}
-
-.summaryMeta {
-  margin-left: auto;
-  font-size: 12px;
-  color: rgba(36, 31, 48, 0.58);
+.tab:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: -2px;
 }
 
 /* ---- card grid --------------------------------------------------------------------------- */
@@ -102,7 +110,7 @@
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(228px, 1fr));
   gap: 12px;
 }
 
@@ -116,8 +124,9 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 7px;
-  padding: 18px 14px 16px;
+  gap: 5px;
+  /* Was 18px 14px 16px. The card had more air than content; the badge takes it back. */
+  padding: 10px 12px 13px;
   border-radius: 16px;
   background: #fffefc;
   border: 1px solid rgba(24, 20, 34, 0.08);
@@ -144,9 +153,11 @@
   filter: saturate(0.6) brightness(0.9);
 }
 
+/* Matches the green the card's Claim tag and the detail's Claim button use, so "there is
+   something to collect" is one colour across the whole flow instead of gold here, green there. */
 .card[data-state="claimable"] {
-  border-color: rgba(255, 214, 122, 0.55);
-  box-shadow: 0 0 0 1px rgba(255, 214, 122, 0.25), 0 0 22px rgba(255, 214, 122, 0.18);
+  border-color: rgba(47, 107, 69, 0.45);
+  box-shadow: 0 0 0 1px rgba(47, 107, 69, 0.18), 0 0 22px rgba(47, 107, 69, 0.12);
 }
 
 .card[data-state="complete"] {
@@ -177,8 +188,8 @@
   text-transform: uppercase;
   padding: 2px 7px;
   border-radius: 999px;
-  color: #1b1530;
-  background: #e8b23c;
+  color: #fff;
+  background: #2f6b45;
 }
 
 .cardDoneTag {
@@ -222,10 +233,14 @@
   margin-top: 2px;
   padding-top: 6px;
   border-top: 1px solid rgba(24, 20, 34, 0.07);
+  /* The gold text was the only thing saying "reward"; the XP and Coin icons say it better and
+     the numbers get to be readable. Colour is inherited by the RewardTag inside. */
+  display: flex;
+  justify-content: center;
   font-size: 11px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-  color: rgba(255, 214, 122, 0.85);
+  color: rgba(36, 31, 48, 0.82);
 }
 
 /* ---- emblem — the visual focus ----------------------------------------------------------- */
@@ -276,20 +291,53 @@
   pointer-events: none;
 }
 
+/* Kept in step with the master slots above so a card grid mixing art and framed emblems still
+   reads as one row of equally-weighted badges. */
 .emblem_card {
-  --ring: 8px;
-  width: 104px;
-  height: 104px;
-  font-size: 40px;
-  margin: 2px 0 8px;
+  --ring: 9px;
+  width: 132px;
+  height: 132px;
+  font-size: 50px;
+  margin: 0 0 4px;
 }
 
 .emblem_detail {
-  --ring: 11px;
-  width: 152px;
-  height: 152px;
-  font-size: 62px;
+  --ring: 13px;
+  width: 190px;
+  height: 190px;
+  font-size: 76px;
   flex: none;
+}
+
+/* ---- production master ---------------------------------------------------------------------
+   A rendered badge master carries its own silhouette, rim and tier material, so it gets NO frame:
+   just a slot to size it and the same contact shadow the rest of the art uses. Deliberately not
+   a variant of .emblem — putting a medallion around a medallion is the exact thing this replaces. */
+.master {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* The badge is the reason the card exists, so it takes the space the old padding wasted. */
+.master_card {
+  width: 132px;
+  height: 132px;
+  margin: 0 0 4px;
+}
+
+.master_detail {
+  width: 190px;
+  height: 190px;
+  flex: none;
+}
+
+.masterArt {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  filter: drop-shadow(0 5px 10px rgba(18, 16, 28, 0.2));
 }
 
 .emblemGlyph {
@@ -323,45 +371,114 @@
   color: #241f30;
 }
 
+/* ---- badge detail — two columns ------------------------------------------------------------
+   ~45% showcase / ~55% ladder. The panel is wide; the old single column left the tier rows
+   stretched across the full width with the hero stacked above them. */
 .detail {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+  display: grid;
+  grid-template-columns: minmax(0, 45fr) minmax(0, 55fr);
+  align-items: start;
+  gap: 18px;
 }
 
-.detailHero {
-  gap: 26px;
-  padding: 22px 24px;
+@media (max-width: 880px) {
+  .detail {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.showcase {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 26px 22px 22px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, #fffefc, rgba(24, 20, 34, 0.03));
+  border: 1px solid rgba(24, 20, 34, 0.08);
+  text-align: center;
+}
+
+.detail[data-state="claimable"] .showcase {
+  border-color: rgba(47, 107, 69, 0.32);
+}
+
+.showcaseTitle {
+  margin: 6px 0 0;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #241f30;
+}
+
+.showcaseTier {
+  padding: 3px 12px;
+  border-radius: 999px;
+  background: rgba(24, 20, 34, 0.06);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.showcaseDesc {
+  margin: 2px 0 0;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: rgba(36, 31, 48, 0.68);
+}
+
+/* The two numbers the old hero used to bury in a caption. */
+.showcaseStats {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(24, 20, 34, 0.08);
+  width: 100%;
+}
+
+.stat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.statValue {
+  font-size: 19px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #241f30;
+}
+
+.statLabel {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: rgba(36, 31, 48, 0.55);
+}
+
+.ladder {
+  display: flex;
+  flex-direction: column;
+  padding: 18px;
   border-radius: 18px;
   background: #fffefc;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 12px 14px;
-  border-radius: 14px;
-  background: linear-gradient(180deg, rgba(24, 20, 34, 0.06), rgba(24, 20, 34, 0.03));
-  border: 1px solid rgba(24, 20, 34, 0.07);
+  border: 1px solid rgba(24, 20, 34, 0.08);
 }
 
-.detail[data-state="claimable"] .detailHero {
-  border-color: rgba(255, 214, 122, 0.45);
-}
-
-.detailText {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.detailTitle {
-  font-size: 30px;
-  letter-spacing: -0.02em;
+.ladderTitle {
   margin: 0;
   font-size: 17px;
-  font-weight: 600;
+  font-weight: 700;
   color: #241f30;
+}
+
+.ladderSubtitle {
+  margin: 2px 0 12px;
+  font-size: 12.5px;
+  color: rgba(36, 31, 48, 0.58);
 }
 
 .tiers {
@@ -370,16 +487,19 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .tierRow {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 9px 12px;
-  border-radius: 10px;
-  background: rgba(24, 20, 34, 0.045);
+  gap: 12px;
+  padding: 8px 14px;
+  border-radius: 12px;
+  /* Quest/Mission language: a white row with a hairline. The old grey band plus a gold tint on
+     the earned state made the ladder read as four different kinds of row. */
+  background: #fffefc;
+  border: 1px solid rgba(24, 20, 34, 0.08);
   font-size: 13px;
   color: #241f30;
 }
@@ -388,9 +508,11 @@
   opacity: 0.6;
 }
 
+/* Claimable is signalled by the live green Claim button in the row, so the row itself only needs
+   to sit slightly forward — no gold wash. */
 .tierRow[data-state="earned"] {
-  background: rgba(255, 214, 122, 0.08);
-  box-shadow: inset 0 0 0 1px rgba(255, 214, 122, 0.3);
+  border-color: rgba(24, 20, 34, 0.14);
+  box-shadow: 0 1px 3px rgba(18, 16, 28, 0.05);
 }
 
 .tierRow[data-state="claimed"] .tierReward {
@@ -402,6 +524,70 @@
   width: 18px;
   text-align: center;
   font-size: 16px;
+}
+
+/* The ladder rung's artwork slot. Big enough that the metal — copper vs steel vs gold vs pearl —
+   is actually legible at a glance, which is the whole point of showing the real badge here. */
+/* Progression rail: a marker per rung, joined by a line drawn from each row DOWNWARD, so the
+   last row leaves no dangling tail. */
+.tierRail {
+  position: relative;
+  flex: none;
+  width: 22px;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tierRow:not(:last-child) .tierRail::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  /* Rows are equal height, so this row's centre + its lower half + the 8px gap + the next row's
+     upper half lands exactly on the next marker. */
+  height: calc(100% + 8px);
+  width: 2px;
+  background: rgba(24, 20, 34, 0.12);
+}
+
+.tierRow[data-state="earned"] .tierRail::after,
+.tierRow[data-state="claimed"] .tierRail::after {
+  background: rgba(47, 107, 69, 0.35);
+}
+
+.tierDot {
+  position: relative;
+  z-index: 1;
+  box-sizing: border-box;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: #fdfcfa;
+  border: 2px solid rgba(24, 20, 34, 0.16);
+}
+
+.tierRow[data-state="earned"] .tierDot,
+.tierRow[data-state="claimed"] .tierDot {
+  background: #2f6b45;
+  border-color: #2f6b45;
+}
+
+.tierMarkArt {
+  flex: none;
+  display: block;
+  width: 48px;
+  height: 48px;
+}
+
+.tierMarkArt .masterArt {
+  filter: drop-shadow(0 3px 6px rgba(18, 16, 28, 0.18));
 }
 
 .tierText {
@@ -419,10 +605,11 @@
 }
 
 .tierReward {
-  font-size: 12px;
-  font-weight: 600;
+  flex: none;
+  display: flex;
+  align-items: center;
   font-variant-numeric: tabular-nums;
-  color: rgba(255, 214, 122, 0.85);
+  color: rgba(36, 31, 48, 0.82);
   white-space: nowrap;
 }
 
@@ -473,7 +660,7 @@
   padding: 0;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 7px;
+  gap: 5px;
 }
 
 .pinnedItem {
@@ -482,7 +669,8 @@
   flex-direction: column;
   align-items: center;
   gap: 2px;
-  padding: 7px 4px 9px;
+  /* Trimmed from 7px 4px 9px — every pixel taken off the tray is a pixel the badge gains. */
+  padding: 5px 3px 8px;
   border-radius: 15px;
   background: linear-gradient(180deg, #fffefb 0%, #f8f5ec 100%);
   border: 1px solid rgba(24, 20, 34, 0.055);
@@ -491,15 +679,16 @@
 }
 
 /* The artwork runs the full width of its tray, which is what makes it dominant rather than
-   an icon parked inside a card. */
+   an icon parked inside a card. The old 82px cap is gone: with the wider sidebar the tray itself
+   is the only limit, so the badge grows with the column instead of floating in spare space. */
 .pinnedArt {
   display: block;
   width: 100%;
-  max-width: 82px;
-  margin-bottom: 1px;
+  margin-bottom: 2px;
 }
 
-.pinnedArt svg {
+.pinnedArt svg,
+.pinnedArt .masterArt {
   display: block;
   width: 100%;
   height: auto;

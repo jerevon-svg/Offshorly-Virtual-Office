@@ -103,8 +103,15 @@ describe("AchievementGallery", () => {
   it("category nav filters cards; cards expose state, tier, progress and next reward", async () => {
     await load(list());
     render(<AchievementGallery />);
-    expect(screen.getByTestId("gallery-summary")).toHaveTextContent("Engagement");
-    expect(screen.getByTestId("gallery-summary")).toHaveTextContent("1/3");
+    // "All" is the landing view: every category's badges in one grid, nothing filtered out.
+    // The category name lives on the selected tab now; the heading meta carries only the counts.
+    expect(screen.getByRole("tab", { name: "All" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("gallery-summary")).toHaveTextContent("4/7 earned");
+    expect(within(screen.getByTestId("achievement-grid")).getAllByRole("button")).toHaveLength(7);
+
+    fireEvent.click(screen.getByRole("tab", { name: /Engagement/ }));
+    expect(screen.getByRole("tab", { name: "Engagement" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("gallery-summary")).toHaveTextContent("1/3 earned");
     expect(screen.getByTestId("gallery-summary")).toHaveTextContent("2 rewards to claim");
     const grid = screen.getByTestId("achievement-grid");
     expect(within(grid).getAllByRole("button").map((b) => b.getAttribute("data-testid"))).toEqual([
@@ -112,11 +119,11 @@ describe("AchievementGallery", () => {
     ]);
     expect(screen.getByTestId("achievement-regular")).toHaveAttribute("data-state", "progressing");
     expect(screen.getByTestId("achievement-regular")).toHaveTextContent("3 / 5");
-    expect(screen.getByTestId("achievement-regular-reward")).toHaveTextContent("+25 XP · +10 🪙");
+    expect(screen.getByTestId("achievement-regular-reward")).toHaveTextContent("+25 XP+10");
     expect(screen.getByTestId("achievement-hub_regular")).toHaveAttribute("data-state", "locked");
     expect(screen.getByTestId("achievement-streak")).toHaveAttribute("data-state", "claimable");
     expect(screen.getByTestId("achievement-streak-unclaimed")).toHaveTextContent("Claim");
-    expect(screen.getByTestId("achievement-streak-reward")).toHaveTextContent("+75 XP · +25 🪙"); // next tier (silver)
+    expect(screen.getByTestId("achievement-streak-reward")).toHaveTextContent("+75 XP+25"); // next tier (silver)
 
     fireEvent.click(screen.getByRole("tab", { name: /Growth/ }));
     expect(screen.getByTestId("achievement-pathfinder")).toHaveAttribute("data-state", "complete");
@@ -143,7 +150,7 @@ describe("AchievementGallery", () => {
     expect(screen.getByTestId("tier-connector-1")).toHaveAttribute("data-state", "claimed");
     expect(screen.getByTestId("tier-connector-2")).toHaveAttribute("data-state", "earned");
     expect(screen.getByTestId("tier-connector-3")).toHaveAttribute("data-state", "locked");
-    expect(screen.getByTestId("tier-connector-2")).toHaveTextContent("+75 XP · +25 🪙");
+    expect(screen.getByTestId("tier-connector-2")).toHaveTextContent("+75 XP+25");
     expect(screen.getByTestId("tier-connector-3")).toHaveTextContent("9 / 15");
     expect(within(screen.getByTestId("tier-connector-1")).getByTestId("claimed")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Claim reward for Connector Gold/ })).toBeNull();

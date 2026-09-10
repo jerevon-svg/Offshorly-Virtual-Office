@@ -22,7 +22,7 @@
 
 .panel {
   width: min(1180px, 94vw);
-  height: min(720px, 92vh);
+  height: min(648px, 92vh);
   box-sizing: border-box;
   display: flex;
   overflow: hidden;
@@ -45,20 +45,25 @@
 /* ---- left column ------------------------------------------------------------------------- */
 .side {
   flex: none;
-  width: 330px;
-  min-width: 330px;
+  /* 330 -> 382: the pinned badges are the showcase on this column and the artwork was the first
+     thing squeezed by the old width. The PANEL is unchanged, so this is a rebalance between the
+     two columns, not a bigger modal — the right workspace gives up 52px it had spare. */
+  width: 382px;
+  min-width: 382px;
   box-sizing: border-box;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 26px 26px 22px;
+  padding: 20px 20px 18px;
   /* Content height only — it must not stretch to match a taller right workspace. */
   align-self: stretch;
   overflow-y: auto;
-  background: #faf8f2;
-  border-right: 1px solid rgba(24, 20, 34, 0.07);
+  /* Was cream (#faf8f2) against the panel's own off-white — two warm tints stacked, which read
+     as tinted rather than as a card. Plain white + one hairline is the whole treatment. */
+  background: #ffffff;
+  border-right: 1px solid rgba(24, 20, 34, 0.08);
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 14px;
 }
 
 .identity {
@@ -156,7 +161,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 .sideTitle { margin: 0; font-size: 16px; font-weight: 700; }
@@ -184,7 +189,7 @@
    column gap applies to it. (It was referenced with no rule behind it.) */
 .pinnedBlock { display: block; }
 
-.aboutBlock { border-top: 1px solid rgba(24, 20, 34, 0.07); padding-top: 12px; }
+.aboutBlock { border-top: 1px solid rgba(24, 20, 34, 0.08); padding-top: 10px; }
 
 .aboutRow {
   display: flex;
@@ -206,7 +211,7 @@
   display: flex;
   align-items: center;
   gap: 11px;
-  padding: 11px 13px;
+  padding: 10px 13px;
   border-radius: 14px;
   background: #fffefc;
   border: 1px solid rgba(24, 20, 34, 0.08);
@@ -249,13 +254,31 @@
   background: rgba(24, 20, 34, 0.05);
 }
 
+.tab img {
+  flex: none;
+  opacity: 0.72;
+  transition: opacity 120ms ease;
+}
+
+.tabActive img,
+.tab:hover img {
+  opacity: 1;
+}
+
 .tab {
   all: unset;
   box-sizing: border-box;
   cursor: pointer;
+  /* [icon] Label — the icon is a cue, not the content, so it stays small and the label keeps its
+     weight. Inline-flex (not text-align) is what vertically centres the two against each other. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* Icon-only, so the button is a square target rather than a label box. The name lives in the
+     tooltip and the aria-label, and the page's own heading repeats it below. */
   text-align: center;
   min-width: 0;
-  padding: 9px clamp(16px, 2.2vw, 30px);
+  padding: 8px 16px;
   white-space: nowrap;
   border-radius: 10px;
   font-size: 14px;

@@ -509,16 +509,20 @@ export function EmployeeProfile({
                 aria-selected={tab === "profile"}
                 className={tab === "profile" ? `${styles.tab} ${styles.tabActive}` : styles.tab}
                 onClick={() => setTab("profile")}
+                title="Character"
+                aria-label="Character"
               >
-                Character
+                <HudIcon name="profile" size="22px" />
               </button>
               <button
                 role="tab"
                 aria-selected={tab === "feed"}
                 className={tab === "feed" ? `${styles.tab} ${styles.tabActive}` : styles.tab}
                 onClick={() => setTab("feed")}
+                title="Feed"
+                aria-label="Feed"
               >
-                Feed
+                <HudIcon name="chat" size="22px" />
               </button>
               {isSelf && (
                 <button
@@ -527,8 +531,10 @@ export function EmployeeProfile({
                   className={tab === "achievements" ? `${styles.tab} ${styles.tabActive}` : styles.tab}
                   onClick={() => setTab("achievements")}
                   data-testid="tab-achievements"
+                  title="Achievements"
+                  aria-label="Achievements"
                 >
-                  Achievements
+                  <HudIcon name="level" size="22px" />
                 </button>
               )}
             </div>

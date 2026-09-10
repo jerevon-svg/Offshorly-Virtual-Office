@@ -68,9 +68,12 @@
 
 .reward {
   gap: 4px;
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 600;
-  color: rgba(36, 31, 48, 0.62);
+  /* Reward AMOUNTS are read, not skimmed — 0.62 was quiet enough that the numbers greyed out
+     against the row's own text. Currency is carried by the icon, so the text stays neutral dark
+     rather than picking up a gold/yellow tint. */
+  color: rgba(36, 31, 48, 0.82);
   font-variant-numeric: tabular-nums;
 }
 
