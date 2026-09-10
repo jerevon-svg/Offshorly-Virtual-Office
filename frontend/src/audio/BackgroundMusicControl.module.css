@@ -19,7 +19,6 @@
   color: var(--vo-chrome-ink, #f0f0f0);
   padding: 6px 10px;
   border-radius: 999px;
-  font-family: system-ui, sans-serif;
   font-size: 13px;
   backdrop-filter: blur(4px);
   border: 1px solid var(--vo-chrome-line, rgba(255, 255, 255, 0.15));

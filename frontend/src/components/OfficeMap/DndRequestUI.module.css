@@ -17,7 +17,6 @@
   border-radius: 10px;
   padding: 14px 16px;
   backdrop-filter: blur(4px);
-  font-family: system-ui, sans-serif;
   color: #f0f0f0;
   display: flex;
   flex-direction: column;
@@ -75,7 +74,6 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  font-family: system-ui, sans-serif;
   max-width: 280px;
 }
 

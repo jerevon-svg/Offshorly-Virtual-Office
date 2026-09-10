@@ -17,7 +17,6 @@
   border-radius: 10px;
   padding: 20px;
   backdrop-filter: blur(4px);
-  font-family: system-ui, sans-serif;
   display: flex;
   flex-direction: column;
   gap: 14px;

@@ -14,7 +14,6 @@
   top: var(--vo-chrome-top, 12px);
   right: var(--vo-chrome-right, 316px);
   z-index: var(--vo-chrome-z, 25);
-  font-family: system-ui, sans-serif;
 }
 
 /* SURFACE is read from the --vo-chrome-surface/-hover/-ink/-line custom properties, whose

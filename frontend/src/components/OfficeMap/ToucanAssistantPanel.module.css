@@ -91,7 +91,6 @@
   flex-shrink: 0;
   text-align: center;
   color: #9ca3af;
-  font-family: system-ui, sans-serif;
   font-size: 11px;
   padding: 6px 16px 8px;
   border-top: 1px solid #e5e7eb;
@@ -142,7 +141,6 @@
   padding: 8px 16px 4px;
   background: #fff;
   color: #6b7280;
-  font-family: system-ui, sans-serif;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.05em;
@@ -153,7 +151,6 @@
   margin: 0;
   padding: 4px 16px 12px;
   color: #9ca3af;
-  font-family: system-ui, sans-serif;
   font-size: 12px;
   line-height: 1.45;
 }
@@ -180,7 +177,6 @@
   align-items: center;
   padding: 0 12px 0 4px;
   color: #d1d5db;
-  font-family: system-ui, sans-serif;
   font-size: 15px;
   line-height: 1;
 }
@@ -213,7 +209,6 @@
   flex: 1;
   min-width: 0;
   padding: 8px 4px 8px 16px;
-  font-family: system-ui, sans-serif;
   font-size: 12px;
   color: #374151;
 }
@@ -266,7 +261,6 @@
   align-items: flex-start;
   gap: 6px;
   padding: 7px 0 7px 16px;
-  font-family: system-ui, sans-serif;
   font-size: 12px;
   color: #374151;
 }
@@ -312,7 +306,6 @@
   all: unset;
   cursor: pointer;
   color: #9ca3af;
-  font-family: system-ui, sans-serif;
   font-size: 11px;
   font-weight: 600;
   padding: 1px 4px;
@@ -399,7 +392,6 @@
   cursor: pointer;
   padding: 4px 12px;
   border-radius: 8px;
-  font-family: system-ui, sans-serif;
   font-size: 12px;
   font-weight: 600;
 }
@@ -531,7 +523,6 @@
   border-radius: 8px;
   background: #ecfdf5;
   color: #065f46;
-  font-family: system-ui, sans-serif;
   font-size: 12px;
 }
 
@@ -559,7 +550,6 @@
   border-radius: 8px;
   background: #e5e7eb;
   color: #374151;
-  font-family: system-ui, sans-serif;
   font-size: 12px;
   font-weight: 600;
 }
@@ -594,7 +584,6 @@
   border-radius: 8px;
   background: #fef2f2;
   color: #7f1d1d;
-  font-family: system-ui, sans-serif;
   font-size: 12px;
 }
 
@@ -632,7 +621,6 @@
   cursor: pointer;
   padding: 3px 10px;
   border-radius: 8px;
-  font-family: system-ui, sans-serif;
   font-size: 12px;
   font-weight: 600;
 }
@@ -674,7 +662,6 @@
   margin-top: 8px;
   padding-top: 6px;
   border-top: 1px solid rgba(30, 58, 138, 0.15);
-  font-family: system-ui, sans-serif;
   font-size: 12px;
 }
 

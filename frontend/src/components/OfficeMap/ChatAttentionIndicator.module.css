@@ -42,7 +42,6 @@
   margin: 0;
   cursor: pointer;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-  font-family: system-ui, sans-serif;
   line-height: 1;
   /* Gentle float. Small amplitude on purpose: readable at a glance without
      pulling the eye off whatever the viewer is actually doing. */

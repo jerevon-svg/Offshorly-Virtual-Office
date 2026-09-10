@@ -42,7 +42,6 @@
   top: var(--vo-chrome-top, 12px);
   right: var(--vo-chrome-right, 64px);
   z-index: var(--vo-chrome-z, 25);
-  font-family: system-ui, sans-serif;
 }
 
 /* Geometry copied from MessageNotificationBadge.module.css's .iconButton on purpose — same size,

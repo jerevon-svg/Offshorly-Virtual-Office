@@ -49,7 +49,6 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
             justifyContent: "center",
             height: "100vh",
             textAlign: "center",
-            fontFamily: "sans-serif",
           }}
         >
           <p>Something went wrong. Please refresh the page.</p>

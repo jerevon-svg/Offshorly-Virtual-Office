@@ -3,7 +3,6 @@
      viewer has the call expanded stays visible and answerable, exactly as it is today. */
   position: fixed; top: 16px; right: 16px; z-index: 160;
   display: flex; flex-direction: column; gap: 8px;
-  font-family: system-ui, sans-serif;
 }
 .prompt {
   background: rgba(26,26,26,0.95); border: 1px solid rgba(255,255,255,0.12);

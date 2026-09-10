@@ -3,6 +3,7 @@ body {
   margin: 0;
   height: 100%;
   overflow: hidden;
+  font-family: var(--vo-font-sans);
   /* Matches the inline first-paint ground in index.html and
      .loading-cover's background, so the dark page never flashes to white
      when this stylesheet takes over from the inline rule. */
@@ -30,10 +31,36 @@ body {
    can read the same value. */
 :root {
   --vo-dock-clearance: 104px;
+
+  /* ---- typography ------------------------------------------------------------------------
+     Single source of truth for the UI typeface. Instrument Sans is loaded by the
+     <link> in index.html; the stack below is the ONLY place the family is named, so
+     changing the app font means editing this one line. Component stylesheets must not
+     re-declare font-family for UI text — they inherit it from html/body (and form
+     controls inherit it via the reset below, since browsers do not inherit into them
+     by default). Deliberate monospace runs (code blocks, the audio debug panel) are the
+     one exception and use --vo-font-mono. */
+  --vo-font-sans: "Instrument Sans", system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --vo-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 @media (max-height: 760px) {
   :root {
     --vo-dock-clearance: 96px;
   }
+}
+
+/* Form controls and a few other replaced elements do not inherit the document font
+   in any browser, so without this every button / input / select / textarea would fall
+   back to the platform UI font and break the single-typeface rule above. Only the
+   family is inherited — size, weight and spacing stay exactly as each component
+   declares them. */
+button,
+input,
+select,
+textarea,
+optgroup,
+option {
+  font-family: inherit;
 }

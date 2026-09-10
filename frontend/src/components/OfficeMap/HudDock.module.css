@@ -54,7 +54,6 @@
     0 2px 6px rgba(28, 22, 45, 0.06),
     0 14px 36px rgba(28, 22, 45, 0.14);
   color: #241f30;
-  font-family: system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
 
   /* --- flyout contract: in-flow roots, upward panels (see the note above) --- */

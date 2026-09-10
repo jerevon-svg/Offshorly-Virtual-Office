@@ -30,7 +30,6 @@
   border: 1px solid rgba(24, 20, 34, 0.08);
   border-radius: 24px;
   box-shadow: 0 28px 70px rgba(18, 16, 28, 0.32), 0 2px 8px rgba(18, 16, 28, 0.12);
-  font-family: system-ui, sans-serif;
   color: #241f30;
   animation: profileIn 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
@@ -259,7 +258,6 @@
   padding: 9px clamp(16px, 2.2vw, 30px);
   white-space: nowrap;
   border-radius: 10px;
-  font-family: system-ui, sans-serif;
   font-size: 14px;
   font-weight: 600;
   color: rgba(36, 31, 48, 0.6);
@@ -350,7 +348,6 @@
   flex: 1;
   min-width: 0;
   padding: 8px 4px;
-  font-family: system-ui, sans-serif;
   font-size: 14px;
   color: #241f30;
 }

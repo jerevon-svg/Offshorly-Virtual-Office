@@ -2,7 +2,7 @@
    is relocated; position only, nothing else about Search changes. */
 .search { position: var(--vo-chrome-position, absolute); top: var(--vo-chrome-top, 16px);
   left: var(--vo-chrome-left, 296px); z-index: var(--vo-chrome-z, 10);
-  width: var(--vo-chrome-width, 240px); font-family: system-ui, sans-serif; }
+  width: var(--vo-chrome-width, 240px); }
 .search input { width: 100%; box-sizing: border-box; padding: 8px 12px; border-radius: 8px;
   border: 1px solid rgba(255,255,255,0.15); background: rgba(26,26,26,0.85); color: #f0f0f0;
   font-size: 14px; outline: none; backdrop-filter: blur(4px); }

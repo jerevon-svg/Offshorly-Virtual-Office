@@ -81,7 +81,7 @@
 }
 
 .inlineCode {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--vo-font-mono);
   font-size: 0.88em;
   background: rgba(17, 24, 39, 0.07);
   border-radius: 4px;
@@ -130,7 +130,6 @@
   cursor: pointer;
   flex-shrink: 0;
   color: #4b5563;
-  font-family: system-ui, sans-serif;
   font-size: 10px;
   font-weight: 600;
   padding: 2px 6px;
@@ -154,7 +153,7 @@
      long line scrolls instead of reflowing. */
   white-space: pre;
   overflow-x: auto;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--vo-font-mono);
   font-size: 12px;
   line-height: 1.45;
   color: #111827;

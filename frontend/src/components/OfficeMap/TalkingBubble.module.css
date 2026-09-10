@@ -23,7 +23,6 @@
   border-radius: 999px;
   white-space: nowrap;
   pointer-events: none;
-  font-family: system-ui, sans-serif;
   font-size: 7px;
   font-weight: 600;
   line-height: 1.4;
@@ -55,7 +54,6 @@
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  font-family: system-ui, sans-serif;
   font-size: 7px;
   font-weight: 600;
   /* .anchor (parent) sets line-height:0 for the no-wrap dots bubble — must

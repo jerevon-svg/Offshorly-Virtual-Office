@@ -29,7 +29,6 @@
   /* The dock's cream surface language. */
   background: #fdfcfa;
   box-shadow: 0 24px 60px rgba(18, 16, 28, 0.28), 0 2px 8px rgba(18, 16, 28, 0.12);
-  font-family: system-ui, sans-serif;
   color: #241f30;
   animation: spotlightIn 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
