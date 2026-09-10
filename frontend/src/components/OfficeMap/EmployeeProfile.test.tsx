@@ -1,3 +1,6 @@
+// @ts-expect-error node:fs is untyped under tsconfig.app.json (types: ["vite/client"] only) —
+// same exemption HudDock.layering.test.ts takes. vitest runs in Node with cwd = frontend/.
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { EmployeeProfile } from "./EmployeeProfile";
@@ -124,7 +127,7 @@ describe("EmployeeProfile", () => {
     ]);
 
     render(<EmployeeProfile email="alex@example.com" viewerEmail="bon@example.com" roster={ROSTER} onClose={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Feed" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Feed" }));
 
     await waitFor(() => expect(screen.getByText("Great work!")).toBeInTheDocument());
     expect(screen.getByText(/Bon wished Alex a Happy Birthday! 🎉/)).toBeInTheDocument();
@@ -137,7 +140,7 @@ describe("EmployeeProfile", () => {
     removeReaction.mockResolvedValue({ ...post, reactions: [], myReaction: null });
 
     render(<EmployeeProfile email="alex@example.com" viewerEmail="bon@example.com" roster={ROSTER} onClose={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Feed" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Feed" }));
     await waitFor(() => expect(screen.getByLabelText("React with ❤️")).toBeInTheDocument());
 
     fireEvent.click(screen.getByLabelText("React with ❤️"));
@@ -176,7 +179,7 @@ describe("EmployeeProfile", () => {
     fetchFeed.mockResolvedValue([post]);
 
     render(<EmployeeProfile email="alex@example.com" viewerEmail="bon@example.com" roster={ROSTER} onClose={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Feed" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Feed" }));
     await waitFor(() => expect(screen.getByText(/💬 Comment/)).toBeInTheDocument());
 
     fireEvent.click(screen.getByText(/💬 Comment/));
@@ -192,7 +195,7 @@ describe("EmployeeProfile", () => {
     ]);
 
     render(<EmployeeProfile email="alex@example.com" viewerEmail="bon@example.com" roster={ROSTER} onClose={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Feed" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Feed" }));
     await waitFor(() => expect(screen.getByText("mine")).toBeInTheDocument());
 
     const deleteButtons = screen.getAllByText("Delete");
@@ -204,10 +207,10 @@ describe("EmployeeProfile", () => {
     createFeedPost.mockResolvedValue(makePost({ id: "new-post", content: "Nice job team" }));
 
     render(<EmployeeProfile email="alex@example.com" viewerEmail="bon@example.com" roster={ROSTER} onClose={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Feed" }));
-    await waitFor(() => expect(screen.getByPlaceholderText(/Write something on/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("tab", { name: "Feed" }));
+    await waitFor(() => expect(screen.getByPlaceholderText(/Share an update/)).toBeInTheDocument());
 
-    fireEvent.change(screen.getByPlaceholderText(/Write something on/), { target: { value: "Nice job team" } });
+    fireEvent.change(screen.getByPlaceholderText(/Share an update/), { target: { value: "Nice job team" } });
     fireEvent.click(screen.getByRole("button", { name: "Post" }));
 
     await waitFor(() => expect(createFeedPost).toHaveBeenCalledWith("alex@example.com", "Nice job team"));
@@ -222,7 +225,7 @@ describe("EmployeeProfile", () => {
     );
 
     render(<EmployeeProfile email="alex@example.com" viewerEmail="bon@example.com" roster={ROSTER} onClose={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Feed" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Feed" }));
 
     fireEvent.change(await screen.findByLabelText("Kudos message"), { target: { value: "Saved the release" } });
     fireEvent.click(screen.getByRole("button", { name: /Give Kudos/ }));
@@ -236,7 +239,7 @@ describe("EmployeeProfile", () => {
 
   it("offers no Kudos action on your own profile", async () => {
     render(<EmployeeProfile email="bon@example.com" viewerEmail="bon@example.com" roster={ROSTER} onClose={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Feed" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Feed" }));
 
     await waitFor(() => expect(fetchFeed).toHaveBeenCalled());
     expect(screen.queryByTestId("kudos-composer")).not.toBeInTheDocument();
@@ -295,8 +298,61 @@ describe("EmployeeProfile", () => {
       );
 
       await waitFor(() => expect(fetchFeed).toHaveBeenCalled());
-      expect(screen.getByRole("button", { name: "Feed" })).toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: "Feed" })).toBeInTheDocument();
       expect(document.querySelectorAll('[data-highlighted="true"]')).toHaveLength(0);
     });
   });
+
+// REGRESSION — the panel rendered at 600px despite `.panel { width: min(1320px, 96vw) }`,
+// because a stale GROUPED rule (`.panel, .panelWide { width: min(600px, 94vw) }`) sat later in
+// the file at equal specificity and won the cascade. A plain "is it declared?" check passes in
+// that situation, so these assert the shell classes are declared exactly ONCE across the whole
+// stylesheet — grouped selectors included.
+describe("EmployeeProfile.module.css has no stale shell overrides", () => {
+  const raw = readFileSync("src/components/OfficeMap/EmployeeProfile.module.css", "utf8");
+  // Drop @media / @keyframes bodies: a shell class legitimately reappears inside those, and it
+  // is the TOP-LEVEL duplicates at equal specificity that silently win the cascade.
+  const topLevel = raw.replace(/@[\w-]+[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/g, "");
+
+  /** How many top-level rules set `prop` on a bare `.name` selector, grouped selectors included. */
+  function declarations(name: string, prop: string): number {
+    const rules = topLevel.match(/[^{}]+\{[^{}]*\}/g) ?? [];
+    return rules.filter((rule: string) => {
+      const [selectors, body] = rule.split("{");
+      const bare = selectors
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .split(",")
+        .some((part: string) => part.trim() === `.${name}`);
+      return bare && new RegExp(`(^|;|\\s)${prop}\\s*:`).test(body);
+    }).length;
+  }
+
+  it("sets the panel's width in exactly one top-level rule", () => {
+    // The bug: a later `.panel, .panelWide { width: min(600px, 94vw) }` beat the shell's width.
+    expect(declarations("panel", "width")).toBe(1);
+  });
+
+  it.each([
+    ["backdrop", "background"],
+    ["side", "width"],
+    ["body", "padding"],
+    ["tabs", "display"],
+    ["composerInput", "flex"],
+  ])("sets .%s's %s in exactly one top-level rule", (name, prop) => {
+    expect(declarations(name, prop)).toBe(1);
+  });
+
+  it("declares a landscape desktop panel with a stable width and height", () => {
+    const panel = /\n\.panel\s*\{([^}]*)\}/.exec(raw)?.[1] ?? "";
+    // Landscape band: wide enough for a 2/3 workspace, not so wide it overshoots the reference.
+    const width = /width:\s*min\((\d+)px/.exec(panel);
+    expect(width).not.toBeNull();
+    expect(Number(width?.[1])).toBeGreaterThanOrEqual(1120);
+    expect(Number(width?.[1])).toBeLessThanOrEqual(1200);
+    // A FIXED height — `height: auto` let the modal resize when switching tabs.
+    expect(panel).toMatch(/height:\s*min\(\d+px/);
+    expect(panel).not.toMatch(/height:\s*auto/);
+    expect(raw).not.toMatch(/min\(600px/);
+  });
+});
 });

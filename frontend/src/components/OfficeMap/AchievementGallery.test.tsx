@@ -1,4 +1,7 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
+// @ts-expect-error node:fs is untyped under tsconfig.app.json (types: ["vite/client"] only) —
+// same exemption HudDock.layering.test.ts takes. vitest runs in Node with cwd = frontend/.
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Badge, ClaimResult } from "../../services/quests/questsClient";
 
@@ -77,6 +80,10 @@ describe("PinnedBadges", () => {
     const items = screen.getAllByTestId(/^pinned-/).filter((el) => el.getAttribute("data-testid") !== "pinned-summary" && el.getAttribute("data-testid") !== "pinned-badges");
     expect(items.map((el) => el.getAttribute("data-testid"))).toEqual(["pinned-pathfinder", "pinned-connector", "pinned-approachable"]);
     expect(screen.getByTestId("pinned-pathfinder")).toHaveTextContent("Platinum");
+    // The showcase draws the collectible medallion, struck at the badge's own tier — not the
+    // gallery's card emblem, which is what made these read as ordinary icons.
+    expect(screen.getByTestId("medallion-pathfinder")).toHaveAttribute("data-tier", "4");
+    expect(screen.getByTestId("medallion-connector")).toHaveAttribute("data-tier", "2");
   });
 
   it("renders nothing before the first fetch and an empty hint with no earned badges", () => {
@@ -160,4 +167,47 @@ describe("AchievementGallery", () => {
     expect(screen.getByTestId("achievement-grid")).toBeInTheDocument();
     expect(screen.getByTestId("achievement-connector")).toBeInTheDocument(); // still on Social
   });
+
+// REGRESSION — an earlier edit sliced this stylesheet from ".emblem {" to a later marker and
+// destroyed 11 rules, and left a comment INSIDE a selector list
+// (`.card[data-state="locked"] /* … */ .emblem {`). CSS strips the comment, so that parsed as a
+// DESCENDANT selector and the whole medallion construction applied only to locked cards — which
+// is why badges rendered as bare icons. Neither failure shows up in a render test.
+describe("AchievementGallery.module.css integrity", () => {
+  const css = readFileSync("src/components/OfficeMap/AchievementGallery.module.css", "utf8");
+
+  it("has balanced braces", () => {
+    expect((css.match(/\{/g) ?? []).length).toBe((css.match(/\}/g) ?? []).length);
+  });
+
+  it("never embeds a comment inside a selector list", () => {
+    const offenders: string[] = [];
+    for (const m of css.matchAll(/(^|\})\s*([^{}@]*?)\{/g)) {
+      const sel = m[2] ?? "";
+      if (sel.includes("/*") && sel.split("/*")[0].trim()) offenders.push(sel.trim().slice(0, 60));
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("styles the medallion globally, not only inside locked cards", () => {
+    expect(css).toMatch(/\n\.emblem\s*\{/);
+  });
+
+  it.each([
+    "cardTitle", "cardTop", "cardBar", "cardFill", "cardProgress", "cardReward",
+    "cardTierTag", "cardClaimTag", "cardDoneTag", "tierLabel", "tierName",
+    "emblem", "emblem_card", "emblem_detail", "pinnedTitle", "pinnedName", "pinnedArt",
+  ])("still declares .%s", (name) => {
+    expect(css).toMatch(new RegExp(`\\.${name}[\\s,{]`));
+  });
+
+  it("gives every tier its own medallion material", () => {
+    const tiers = ["tier0", "tier1", "tier2", "tier3", "tier4"].map((t) => {
+      const m = new RegExp(`\\.${t}\\s*\\{([^}]*)\\}`).exec(css);
+      return /color:\s*(#[0-9a-f]{3,8})/i.exec(m?.[1] ?? "")?.[1] ?? "";
+    });
+    expect(tiers.every(Boolean)).toBe(true);
+    expect(new Set(tiers).size).toBe(5);
+  });
+});
 });

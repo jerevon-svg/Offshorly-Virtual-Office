@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
+import type { AssetLayer } from "../../types/office";
 import { FRAME_HEIGHT, FRAME_WIDTH } from "../../data/office-layout";
 import { formatCharacterName, formatShortName } from "../../data/office-layout";
 import {
   computeCenterTransform,
   computeRoomFocusTransform,
+  layerCenter,
+  resolveRenderedLayer,
   greetingAnchor,
   HEAD_LABEL_GAP_FRAME_UNITS,
 } from "./panMath";
@@ -214,5 +217,109 @@ describe("formatShortName", () => {
     expect(formatShortName({ id: "alex", name: "   " })).toBe(
       formatCharacterName({ id: "alex", name: "   " }),
     );
+  });
+});
+
+describe("resolveRenderedLayer — Search Locate targets the drawn avatar, not the seat", () => {
+  const seatAlex: AssetLayer = {
+    id: "alex@offshorly.com",
+    kind: "character",
+    // Alex's ASSIGNED desk (the CEO desk) — what officePeopleToLayers seats them at.
+    path: "/alex.png",
+    x: 4000,
+    y: 500,
+    width: 100,
+    height: 200,
+    transform: null,
+  };
+  // The same person as actually positioned for render, moved to Central Hub by the offline
+  // sidewalk lineup (applyOfflineLineupPositions).
+  const renderedAlex: AssetLayer = { ...seatAlex, x: 1200, y: 1600 };
+
+  it("prefers the positioned render layer over the passed seat layer", () => {
+    const out = resolveRenderedLayer(seatAlex, [[renderedAlex]], {});
+    expect(out.x).toBe(1200);
+    expect(out.y).toBe(1600);
+  });
+
+  it("lets a live walk position win over both", () => {
+    const out = resolveRenderedLayer(seatAlex, [[renderedAlex]], {
+      "alex@offshorly.com": { pos: { x: 2222, y: 3333 } },
+    });
+    expect(out.x).toBe(2222);
+    expect(out.y).toBe(3333);
+    // Dimensions still come from the resolved layer, so centring stays correct.
+    expect(out.width).toBe(100);
+    expect(out.height).toBe(200);
+  });
+
+  it("falls through the chain in order and matches ids case-insensitively", () => {
+    const npcFallback: AssetLayer = { ...seatAlex, x: 77, y: 88 };
+    const out = resolveRenderedLayer({ ...seatAlex, id: "ALEX@offshorly.com" }, [[], [npcFallback]], {});
+    expect(out.x).toBe(77);
+  });
+
+  it("returns the original layer when the person is in no chain and not walking", () => {
+    expect(resolveRenderedLayer(seatAlex, [[], []], {})).toBe(seatAlex);
+  });
+
+  it("pans to the drawn position, not the seat", () => {
+    const seat = computeCenterTransform(seatAlex, 1, 800, 600);
+    const drawn = computeCenterTransform(
+      resolveRenderedLayer(seatAlex, [[renderedAlex]], {}),
+      1,
+      800,
+      600,
+    );
+    expect(drawn).not.toEqual(seat);
+    expect(drawn).toEqual(computeCenterTransform(renderedAlex, 1, 800, 600));
+  });
+});
+
+describe("Message + Call aim at the rendered teammate, not the assigned seat", () => {
+  // Generic fixture — any employee, no mock/NPC special case, no hardcoded office coordinates.
+  const seat: AssetLayer = {
+    id: "person@example.com",
+    kind: "character",
+    path: "/p.png",
+    x: 4000,
+    y: 500,
+    width: 100,
+    height: 200,
+    transform: null,
+  };
+  const positioned: AssetLayer = { ...seat, x: 1200, y: 1600 };
+  const chain = [[positioned]];
+
+  // What handleChoose now hands to approachCharacter, which aims at layerCenter(target).
+  const aimFor = (
+    live: Readonly<Record<string, { pos: { x: number; y: number } }>>,
+  ) => layerCenter(resolveRenderedLayer(seat, chain, live));
+
+  it("aims at the positioned render layer, never the seat", () => {
+    expect(aimFor({})).toEqual(layerCenter(positioned));
+    expect(aimFor({})).not.toEqual(layerCenter(seat));
+  });
+
+  it("aims at a live walk position when one is in flight", () => {
+    const live = { "person@example.com": { pos: { x: 2222, y: 3333 } } };
+    expect(aimFor(live)).toEqual({ x: 2222 + 50, y: 3333 + 100 });
+  });
+
+  it("uses the identical aim point Locate pans to, so all three agree", () => {
+    const live = { "person@example.com": { pos: { x: 900, y: 950 } } };
+    const forInteraction = resolveRenderedLayer(seat, chain, live);
+    const forLocate = resolveRenderedLayer(seat, chain, live);
+    expect(layerCenter(forInteraction)).toEqual(layerCenter(forLocate));
+  });
+
+  it("keeps identity intact so DM routing and the DND/attendance gates are unaffected", () => {
+    const live = { "person@example.com": { pos: { x: 10, y: 20 } } };
+    expect(resolveRenderedLayer(seat, chain, live).id).toBe(seat.id);
+  });
+
+  it("falls back to the passed layer when the person is neither positioned nor walking", () => {
+    expect(aimFor({})).toEqual(layerCenter(positioned));
+    expect(layerCenter(resolveRenderedLayer(seat, [[]], {}))).toEqual(layerCenter(seat));
   });
 });

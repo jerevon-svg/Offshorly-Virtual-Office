@@ -1,5 +1,6 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import styles from "./AchievementGallery.module.css";
+import { BadgeMedallion } from "./BadgeMedallion";
 import { ClaimButton } from "./RewardControls";
 import { collectReward } from "./rewardFx";
 import { emblemArtworkUrl, emblemFor } from "../../data/badgeEmblems";
@@ -34,7 +35,7 @@ function bandProgress(b: Badge): { into: number; span: number; pct: number } {
   return { into, span, pct: Math.round((into / span) * 100) };
 }
 
-function Emblem({ badge, size }: { badge: Badge; size: "card" | "pinned" | "detail" }) {
+function Emblem({ badge, size }: { badge: Badge; size: "card" | "detail" }) {
   const emblem = emblemFor(badge.emblem);
   const art = emblemArtworkUrl(emblem);
   const cls = `${styles.emblem} ${styles[`emblem_${size}`]} ${TIER_CLASS[badge.tier]}`;
@@ -46,17 +47,20 @@ function Emblem({ badge, size }: { badge: Badge; size: "card" | "pinned" | "deta
 }
 
 /** Profile tab showcase: the three strongest earned badges. No user pinning yet — derived only. */
-export function PinnedBadges({ badges }: { badges: Badge[] | null }) {
+export function PinnedBadges({ badges, action }: { badges: Badge[] | null; action?: ReactNode }) {
   if (!badges) return null;
   const pinned = strongestBadges(badges, 3);
   const unclaimed = unclaimedTierCount(badges);
   return (
     <div className={styles.pinned} data-testid="pinned-badges">
       <div className={styles.pinnedHeader}>
-        <span className={styles.pinnedTitle}>Pinned Badges</span>
+        <span className={styles.pinnedTitle}>Pinned badges</span>
         <span className={styles.pinnedMeta} data-testid="pinned-summary">
           {badges.filter((b) => b.tier > 0).length}/{badges.length} earned{unclaimed > 0 ? ` · ${unclaimed} to claim` : ""}
         </span>
+        {/* Optional trailing control (the profile sidebar's Edit). This component owns the ONE
+            header — the caller adding a second one is what produced a duplicated title. */}
+        {action}
       </div>
       {pinned.length === 0 ? (
         <p className={styles.pinnedEmpty}>No badges yet — check in, chat with coworkers, give someone Kudos.</p>
@@ -64,7 +68,9 @@ export function PinnedBadges({ badges }: { badges: Badge[] | null }) {
         <ul className={styles.pinnedRow}>
           {pinned.map((b) => (
             <li key={b.id} className={styles.pinnedItem} data-testid={`pinned-${b.id}`}>
-              <Emblem badge={b} size="pinned" />
+              <span className={styles.pinnedArt}>
+                <BadgeMedallion emblem={b.emblem} tier={b.tier} badgeId={b.id} />
+              </span>
               <span className={styles.pinnedName}>{b.title}</span>
               <span className={`${styles.tierLabel} ${TIER_CLASS[b.tier]}`}>{TIER_LABEL[b.tier]}</span>
             </li>

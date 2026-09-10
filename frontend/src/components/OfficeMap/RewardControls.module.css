@@ -1,19 +1,25 @@
+/* Shared Quests/Missions reward atoms.
+   These were written for the old dark panel; the Tasks panels are now the cream HUD surface, so
+   every colour here is the light-surface palette the redesigned panels already use. Nothing
+   about what they render changed — only the ink they render in, and the inline layout below. */
+
 .strip {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin: 10px 0 2px;
-  padding: 8px 10px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.06);
+  margin: 12px 0 2px;
+  padding: 9px 11px;
+  border-radius: 12px;
+  background: rgba(24, 20, 34, 0.05);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+  color: #241f30;
 }
 
 .level {
   font-weight: 700;
   font-size: 13px;
-  color: #ffd67a;
+  color: #2f6b45;
   white-space: nowrap;
 }
 
@@ -28,55 +34,103 @@
 .xpBar {
   height: 5px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(24, 20, 34, 0.1);
   overflow: hidden;
 }
 
 .xpFill {
   height: 100%;
   border-radius: 999px;
-  background: linear-gradient(90deg, #ffd67a, #ff9f6b);
+  background: linear-gradient(90deg, #6ec97f, #48a663);
   transition: width 240ms ease;
 }
 
-.xpText,
+.xpText {
+  color: rgba(36, 31, 48, 0.55);
+  white-space: nowrap;
+}
+
+/* Icon + value sit on ONE line, vertically centred. HudIcon renders a display:block img, so
+   these wrappers must be flex rows or each icon would push its value onto its own line. */
+.coins,
 .reward {
-  color: rgba(245, 240, 255, 0.65);
+  display: inline-flex;
+  align-items: center;
   white-space: nowrap;
 }
 
 .coins {
-  font-weight: 600;
-  white-space: nowrap;
+  gap: 5px;
+  font-weight: 700;
+  font-size: 13px;
+  color: #241f30;
 }
 
 .reward {
-  font-size: 11px;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(36, 31, 48, 0.62);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Breathing room between the XP pair and the Coin pair, without a separator glyph. */
+.rewardGap {
+  width: 6px;
+}
+
+/* ONE box for every claim state, so the action column has a fixed width and the title, count and
+   rewards beside it never shift as a row completes or is claimed. */
+.claim,
+.claimIdle,
+.claimDone {
+  all: unset;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 74px;
+  height: 26px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  text-align: center;
 }
 
 .claim {
-  all: unset;
   cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
-  padding: 4px 10px;
-  border-radius: 999px;
-  color: #1b1530;
-  background: #ffd67a;
-  white-space: nowrap;
+  color: #fff;
+  background: #2f6b45;
 }
 
-.claim:hover {
-  background: #ffe29c;
+/* Not yet earned — present for alignment, plainly inert. */
+.claimIdle {
+  cursor: default;
+  color: rgba(36, 31, 48, 0.38);
+  background: rgba(24, 20, 34, 0.06);
+}
+
+/* Already claimed — subtle green, still inert. */
+.claimDone {
+  cursor: default;
+  color: #2f6b45;
+  background: rgba(75, 185, 106, 0.16);
+}
+
+.claim:hover:not(:disabled) {
+  background: #285c3b;
 }
 
 .claim:disabled {
   cursor: default;
-  opacity: 0.6;
+  opacity: 0.55;
 }
 
-.claimed {
-  font-size: 12px;
-  color: #9be7a5;
-  white-space: nowrap;
+.claim:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: 2px;
 }
+
+

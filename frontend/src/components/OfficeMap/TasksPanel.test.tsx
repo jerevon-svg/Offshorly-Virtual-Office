@@ -143,7 +143,11 @@ describe("TasksPanel", () => {
 
   it("leaves each panel's own header, summary and progression strip intact", async () => {
     renderPanel();
-    await waitFor(() => expect(screen.getByTestId("questline-summary")).toHaveTextContent("0 of 1 complete"));
-    expect(screen.getByRole("heading", { name: "Onboarding Questline" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("questline-summary")).toHaveTextContent("0 of 1 quests complete"));
+    // The panel's headline is now editorial copy driven by progress, with "Onboarding" as the
+    // eyebrow above it; the dialog keeps its "Onboarding Questline" accessible name.
+    expect(screen.getByRole("dialog", { name: "Onboarding Questline" })).toBeInTheDocument();
+    expect(screen.getByText("Onboarding")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Find your way around." })).toBeInTheDocument();
   });
 });

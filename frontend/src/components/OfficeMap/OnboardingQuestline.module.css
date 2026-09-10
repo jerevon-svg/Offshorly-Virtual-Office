@@ -1,127 +1,370 @@
-/* Shell mirrors EmployeeProfile.module.css so the two modals feel like one family. */
+/* Quests — cream editorial panel matching the HUD / Search / Hub surface language.
+   The dock hides while Tasks is open (see OfficeMap's officeToolOpen), so this no longer
+   reserves --vo-dock-clearance at the bottom. */
 .backdrop {
   position: fixed;
   inset: 0;
   z-index: 60;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(24, 20, 34, 0.34);
+  backdrop-filter: blur(3px);
   display: flex;
   align-items: center;
   justify-content: center;
-  /* Reserve the bottom dock's strip so this centred panel can never grow down into it (see
-     --vo-dock-clearance in src/index.css). Presentation only — nothing about the modal changes. */
-  padding-bottom: var(--vo-dock-clearance, 104px);
+  padding: 24px;
   box-sizing: border-box;
+  animation: tasksScrim 160ms ease-out both;
+}
+
+@keyframes tasksScrim {
+  from {
+    opacity: 0;
+  }
 }
 
 .panel {
   position: relative;
-  width: min(420px, 92vw);
-  max-height: 84vh;
-  background: linear-gradient(180deg, rgba(30, 26, 46, 0.97), rgba(18, 16, 28, 0.97));
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 14px;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  width: min(640px, 94vw);
+  max-height: 88vh;
+  box-sizing: border-box;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.08);
+  border-radius: 22px;
+  box-shadow: 0 28px 70px rgba(18, 16, 28, 0.32), 0 2px 8px rgba(18, 16, 28, 0.12);
   font-family: system-ui, sans-serif;
-  color: #f5f0ff;
+  color: #241f30;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  animation: tasksIn 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes tasksIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.99);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .backdrop,
+  .panel {
+    animation: none;
+  }
+}
+
+/* ---- top bar: tabs + close ------------------------------------------------------------- */
+.topBar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px 10px;
 }
 
 .closeButton {
   all: unset;
-  position: absolute;
-  top: 12px;
-  right: 12px;
+  margin-left: auto;
+  flex: none;
+  box-sizing: border-box;
   cursor: pointer;
-  color: rgba(245, 240, 255, 0.7);
-  font-size: 14px;
-  padding: 6px;
-  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  color: #3f3a4d;
+  font-size: 15px;
+  transition: background-color 120ms ease;
 }
 
 .closeButton:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #f5f0ff;
+  background: rgba(24, 20, 34, 0.05);
 }
 
-.header {
-  padding: 18px 20px 10px;
+.closeButton:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: 2px;
+}
+
+/* ---- hero -------------------------------------------------------------------------------- */
+.hero {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 2px 22px 16px;
+}
+
+.heroText {
+  flex: 1;
+  min-width: 0;
+}
+
+.eyebrow {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #b08535;
 }
 
 .title {
-  margin: 0;
-  font-size: 17px;
-  font-weight: 600;
+  margin: 4px 0 2px;
+  font-size: 26px;
+  line-height: 1.14;
+  font-weight: 800;
+  letter-spacing: -0.02em;
 }
 
-.summary,
-.muted {
-  margin: 4px 0 0;
-  font-size: 13px;
-  color: rgba(245, 240, 255, 0.65);
+.summary {
+  margin: 0 0 10px;
+  font-size: 13.5px;
+  color: rgba(36, 31, 48, 0.55);
 }
 
-.error {
-  margin: 0;
-  font-size: 13px;
-  color: #ff9b9b;
+.heroBar {
+  height: 9px;
+  border-radius: 999px;
+  background: rgba(24, 20, 34, 0.09);
+  overflow: hidden;
 }
 
+.heroFill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #48a663, #2f6b45);
+  transition: width 260ms ease;
+}
+
+.heroArt {
+  flex: none;
+  width: 118px;
+  height: 118px;
+  object-fit: contain;
+}
+
+/* ---- sections ---------------------------------------------------------------------------- */
 .body {
-  padding: 4px 20px 18px;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  padding: 0 22px 8px;
+}
+
+.section {
+  margin-bottom: 10px;
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 0 6px;
+}
+
+.sectionTitle {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(36, 31, 48, 0.5);
+}
+
+.sectionCount {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(24, 20, 34, 0.07);
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(36, 31, 48, 0.6);
 }
 
 .list {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
 }
 
+/* ---- rows --------------------------------------------------------------------------------
+   ONE row grid for both tabs: same height, same gaps between icon / title / rewards / action.
+   Sits between the old cramped Quests rows and the old airy Missions rows. */
 .row,
 .rowDone {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 8px 10px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.05);
+  gap: 12px;
+  padding: 11px 2px;
+  border-bottom: 1px solid rgba(24, 20, 34, 0.06);
   font-size: 14px;
 }
 
-.rowDone {
-  color: rgba(245, 240, 255, 0.55);
+.row:last-child,
+.rowDone:last-child {
+  border-bottom: none;
 }
 
-.rowDone .rowTitle {
-  text-decoration: line-through;
-}
-
-.rowTitle {
-  min-width: 140px;
+/* Holds a HudIcon image now, not an emoji — so it centres the icon rather than sizing text. */
+.rowGlyph {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
 }
 
 .check {
-  width: 18px;
-  text-align: center;
-  color: #9be7a5;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 21px;
+  height: 21px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  background: rgba(24, 20, 34, 0.07);
+  color: rgba(36, 31, 48, 0.4);
 }
 
-.row .check {
-  color: rgba(245, 240, 255, 0.4);
+.rowDone .check {
+  background: #48a663;
+  color: #fff;
 }
 
 .rowTitle {
   flex: 1;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.rowDone .rowTitle {
+  color: #241f30;
 }
 
 .progress {
+  flex: none;
   font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  color: rgba(245, 240, 255, 0.65);
+  font-weight: 600;
+  color: rgba(36, 31, 48, 0.45);
+}
+
+/* ---- claimed group ----------------------------------------------------------------------- */
+.claimedGroup {
+  margin: 6px 0 10px;
+  border-top: 1px solid rgba(24, 20, 34, 0.07);
+}
+
+.claimedSummary {
+  cursor: pointer;
+  padding: 12px 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(36, 31, 48, 0.5);
+  list-style: none;
+}
+
+.claimedSummary::-webkit-details-marker {
+  display: none;
+}
+
+.claimedSummary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 8px;
+  transition: transform 120ms ease;
+}
+
+.claimedGroup[open] .claimedSummary::before {
+  transform: rotate(90deg);
+}
+
+/* ---- footer ------------------------------------------------------------------------------ */
+.footer {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 12px 22px 16px;
+  border-top: 1px solid rgba(24, 20, 34, 0.07);
+}
+
+.footerSummary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.footerLabel {
+  font-size: 12.5px;
+  color: rgba(36, 31, 48, 0.5);
+}
+
+.footerAmount {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.claimAll {
+  all: unset;
+  flex: none;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 22px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #f6c453, #eaa833);
+  color: #3d2c07;
+  font-size: 15px;
+  font-weight: 800;
+  transition: filter 120ms ease;
+}
+
+.claimAll:hover:not(:disabled) {
+  filter: brightness(1.04);
+}
+
+.claimAll:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.claimAll:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: 2px;
+}
+
+/* ---- states ------------------------------------------------------------------------------ */
+.muted {
+  color: rgba(36, 31, 48, 0.55);
+  font-size: 14px;
+  padding: 20px 0;
+}
+
+.error {
+  color: #b3352d;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13.5px;
+}
+
+@media (max-width: 560px) {
+  .heroArt {
+    display: none;
+  }
+
+  .title {
+    font-size: 22px;
+  }
 }

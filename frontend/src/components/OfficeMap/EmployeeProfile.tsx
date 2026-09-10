@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import styles from "./EmployeeProfile.module.css";
 import { AchievementGallery, PinnedBadges } from "./AchievementGallery";
-import { ProgressionStrip } from "./RewardControls";
+import { ProfileCharacter } from "./ProfileCharacter";
+import HudIcon from "../HudIcon";
 import { refreshBadges, refreshProgression, useProgressionStore } from "../../services/quests/progressionStore";
 import {
   createComment,
@@ -408,169 +409,213 @@ export function EmployeeProfile({
     }
   }
 
+  const span = progression ? progression.nextLevelXp - progression.levelStartXp : 0;
+  const into = progression ? progression.xp - progression.levelStartXp : 0;
+  const xpPct = span > 0 ? Math.min(100, Math.round((into / span) * 100)) : 0;
+
   return (
     <div className={styles.backdrop} onClick={onClose}>
-      <div className={tab === "achievements" ? styles.panelWide : styles.panel} onClick={(e) => e.stopPropagation()}>
-        <button className={styles.closeButton} onClick={onClose} aria-label="Close profile">
-          ✕
-        </button>
-
-        <div className={styles.header}>
-          <img className={styles.avatar} src={avatarSrcFor(email)} alt="" />
-          <div className={styles.headerText}>
-            <div className={styles.name}>
-              {name}
-              {hasRecognition && <span className={styles.recognitionBadge}>🏆</span>}
-            </div>
-            {person?.jobTitle || person?.departmentName ? (
-              <div className={styles.role}>{[person?.jobTitle, person?.departmentName].filter(Boolean).join(" · ")}</div>
-            ) : (
-              <div className={styles.role}>Role unavailable</div>
-            )}
-            {statusMeta ? (
-              <div className={styles.status} style={{ color: statusMeta.color }}>
-                {statusMeta.emoji} {statusMeta.label}
+      <div className={styles.panel} role="dialog" aria-label={`${name} profile`} onClick={(e) => e.stopPropagation()}>
+        {/* LEFT — fixed identity column. Stays put while the right side changes tab. */}
+        <aside className={styles.side}>
+          <div className={styles.identity}>
+            <img className={styles.avatar} src={avatarSrcFor(email)} alt="" />
+            <div className={styles.identityText}>
+              <div className={styles.name}>{name}</div>
+              <div className={styles.role}>
+                {[person?.jobTitle, person?.departmentName].filter(Boolean).join(" · ") || "Role unavailable"}
               </div>
-            ) : (
-              <div className={styles.status}>Status unavailable</div>
-            )}
+              {statusMeta ? (
+                <div className={styles.status}>
+                  <span className={styles.statusDot} style={{ background: statusMeta.color }} aria-hidden="true" />
+                  {statusMeta.label}
+                </div>
+              ) : (
+                <div className={styles.status}>Status unavailable</div>
+              )}
+            </div>
           </div>
-        </div>
 
-        <div className={styles.tabs}>
-          <button
-            className={tab === "profile" ? styles.tabActive : styles.tab}
-            onClick={() => setTab("profile")}
-          >
-            Profile
-          </button>
-          <button className={tab === "feed" ? styles.tabActive : styles.tab} onClick={() => setTab("feed")}>
-            Feed
-          </button>
+          {/* Progression is self-only by API design (GET /progression/me). */}
+          {isSelf && progression && (
+            <div className={styles.progression} data-testid="profile-progression">
+              <div className={styles.levelRow}>
+                <span className={styles.levelLabel}>Level</span>
+                <span className={styles.levelValue}>{progression.level}</span>
+                <span className={styles.xpBar}>
+                  <span className={styles.xpFill} style={{ width: `${xpPct}%` }} />
+                </span>
+                <span className={styles.xpText}>{`${into} / ${span} XP`}</span>
+              </div>
+              <div className={styles.coinRow}>
+                <HudIcon name="coin" size="19px" />
+                <span className={styles.coinValue}>{`${progression.coins.toLocaleString()} Coins`}</span>
+              </div>
+            </div>
+          )}
+
           {isSelf && (
+            <div className={styles.pinnedBlock}>
+              <PinnedBadges
+                badges={badges}
+                action={
+                  <button
+                    type="button"
+                    className={styles.sideAction}
+                    onClick={() => setTab("achievements")}
+                    aria-label="Edit pinned badges"
+                  >
+                    Edit
+                  </button>
+                }
+              />
+            </div>
+          )}
+
+          <div className={styles.aboutBlock}>
+            <h3 className={styles.sideTitle}>About</h3>
+            <div className={styles.aboutRow}>
+              <HudIcon name="people" size="18px" />
+              <span className={styles.aboutLabel}>Team</span>
+              <span className={styles.aboutValue}>{person?.departmentName || "—"}</span>
+            </div>
+            <div className={styles.aboutRow}>
+              <HudIcon name="chat" size="18px" />
+              <span className={styles.aboutLabel}>Email</span>
+              <span className={styles.aboutValue}>{email}</span>
+            </div>
+          </div>
+
+          {hasRecognition && (
             <button
-              className={tab === "achievements" ? styles.tabActive : styles.tab}
-              onClick={() => setTab("achievements")}
-              data-testid="tab-achievements"
+              type="button"
+              className={styles.kudosLink}
+              onClick={() => setTab("feed")}
+              data-testid="view-recent-kudos"
             >
-              Achievements
+              <HudIcon name="kudos" size="22px" />
+              <span className={styles.kudosLabel}>View recent Kudos</span>
+              <span className={styles.kudosArrow} aria-hidden="true">→</span>
             </button>
           )}
-        </div>
+        </aside>
 
-        <div className={styles.body}>
-          {tab === "achievements" && isSelf && <AchievementGallery />}
-          {tab === "profile" && (
-            <div className={styles.profileInfo}>
-              {isSelf && progression && (
-                <div className={styles.progressionBlock} data-testid="profile-progression">
-                  <ProgressionStrip progression={progression} />
-                  <div className={styles.infoRow}>
-                    <span className={styles.infoLabel}>Level</span>
-                    <span>{progression.level}</span>
-                  </div>
-                  <div className={styles.infoRow}>
-                    <span className={styles.infoLabel}>XP</span>
-                    <span>
-                      {progression.xp - progression.levelStartXp} / {progression.nextLevelXp - progression.levelStartXp} to next level
-                    </span>
-                  </div>
-                  <div className={styles.infoRow}>
-                    <span className={styles.infoLabel}>Coins</span>
-                    <span>🪙 {progression.coins}</span>
-                  </div>
-                  <PinnedBadges badges={badges} />
-                </div>
-              )}
-              <div className={styles.infoRow}>
-                <span className={styles.infoLabel}>Email</span>
-                <span>{email}</span>
-              </div>
-              <div className={styles.infoRow}>
-                <span className={styles.infoLabel}>Role</span>
-                <span>{person?.jobTitle || "—"}</span>
-              </div>
-              <div className={styles.infoRow}>
-                <span className={styles.infoLabel}>Team</span>
-                <span>{person?.departmentName || "—"}</span>
-              </div>
-              <div className={styles.infoRow}>
-                <span className={styles.infoLabel}>Status</span>
-                <span>{statusMeta?.label ?? "Unavailable"}</span>
-              </div>
-              {hasRecognition && (
-                <div className={styles.infoRow}>
-                  <span className={styles.infoLabel}>Kudos</span>
-                  <span>🏆 Recently received Kudos — see Feed</span>
-                </div>
+        {/* RIGHT — the tabbed experience. */}
+        <section className={styles.main}>
+          <div className={styles.topBar}>
+            <div className={styles.tabs} role="tablist" aria-label="Profile">
+              <button
+                role="tab"
+                aria-selected={tab === "profile"}
+                className={tab === "profile" ? `${styles.tab} ${styles.tabActive}` : styles.tab}
+                onClick={() => setTab("profile")}
+              >
+                Character
+              </button>
+              <button
+                role="tab"
+                aria-selected={tab === "feed"}
+                className={tab === "feed" ? `${styles.tab} ${styles.tabActive}` : styles.tab}
+                onClick={() => setTab("feed")}
+              >
+                Feed
+              </button>
+              {isSelf && (
+                <button
+                  role="tab"
+                  aria-selected={tab === "achievements"}
+                  className={tab === "achievements" ? `${styles.tab} ${styles.tabActive}` : styles.tab}
+                  onClick={() => setTab("achievements")}
+                  data-testid="tab-achievements"
+                >
+                  Achievements
+                </button>
               )}
             </div>
-          )}
+            <button className={styles.closeButton} onClick={onClose} aria-label="Close profile">
+              <span aria-hidden="true">✕</span>
+            </button>
+          </div>
 
-          {tab === "feed" && (
-            <div className={styles.feedTab}>
-              {!isSelf && (
-                <div className={styles.kudosComposer} data-testid="kudos-composer">
+          <div className={styles.body}>
+            {tab === "profile" && (
+              <ProfileCharacter email={email} fallbackSrc={avatarSrcFor(email)} name={name} />
+            )}
+
+            {tab === "achievements" && isSelf && <AchievementGallery />}
+
+            {tab === "feed" && (
+              <div className={styles.feedTab}>
+                <header className={styles.feedHead}>
+                  <h3 className={styles.feedTitle}>{isSelf ? "Your feed" : `${name}'s feed`}</h3>
+                  <p className={styles.feedSubtitle}>Updates, appreciation, and little wins.</p>
+                </header>
+
+                {!isSelf && (
+                  <div className={styles.kudosComposer} data-testid="kudos-composer">
+                    <input
+                      className={styles.composerInput}
+                      value={kudosText}
+                      onChange={(e) => setKudosText(e.target.value)}
+                      placeholder={`Why does ${name} deserve Kudos?`}
+                      disabled={givingKudos}
+                      aria-label="Kudos message"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void submitKudos();
+                      }}
+                    />
+                    <button
+                      className={styles.smallPrimary}
+                      disabled={givingKudos || !kudosText.trim()}
+                      onClick={() => void submitKudos()}
+                    >
+                      Give Kudos
+                    </button>
+                  </div>
+                )}
+                {kudosError && <div className={styles.errorBanner}>{kudosError}</div>}
+
+                <div className={styles.composer}>
+                  <img className={styles.composerAvatar} src={avatarSrcFor(viewerEmail)} alt="" />
                   <input
                     className={styles.composerInput}
-                    value={kudosText}
-                    onChange={(e) => setKudosText(e.target.value)}
-                    placeholder={`Why does ${name} deserve Kudos?`}
-                    disabled={givingKudos}
-                    aria-label="Kudos message"
+                    value={composerText}
+                    onChange={(e) => setComposerText(e.target.value)}
+                    placeholder="Share an update..."
+                    disabled={posting}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") void submitKudos();
+                      if (e.key === "Enter") void submitPost();
                     }}
                   />
                   <button
                     className={styles.smallPrimary}
-                    disabled={givingKudos || !kudosText.trim()}
-                    onClick={() => void submitKudos()}
+                    disabled={posting || !composerText.trim()}
+                    onClick={() => void submitPost()}
                   >
-                    🏆 Give Kudos
+                    Post
                   </button>
                 </div>
-              )}
-              {kudosError && <div className={styles.errorBanner}>{kudosError}</div>}
-              <div className={styles.composer}>
-                <input
-                  className={styles.composerInput}
-                  value={composerText}
-                  onChange={(e) => setComposerText(e.target.value)}
-                  placeholder={`Write something on ${name}'s feed…`}
-                  disabled={posting}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") void submitPost();
-                  }}
-                />
-                <button
-                  className={styles.smallPrimary}
-                  disabled={posting || !composerText.trim()}
-                  onClick={() => void submitPost()}
-                >
-                  Post
-                </button>
-              </div>
 
-              {loading && <div className={styles.empty}>Loading feed…</div>}
-              {error && <div className={styles.errorBanner}>{error}</div>}
-              {!loading && !error && posts.length === 0 && (
-                <div className={styles.empty}>No activity yet.</div>
-              )}
-              {posts.map((post) => (
-                <FeedPostCard
-                  key={post.id}
-                  post={post}
-                  roster={roster}
-                  viewerEmail={viewerEmail}
-                  onUpdate={updatePost}
-                  onDeletePost={handleDeletePost}
-                  highlighted={post.id === focusPostId}
-                />
-              ))}
-            </div>
-          )}
-        </div>
+                {loading && <div className={styles.empty}>Loading feed…</div>}
+                {error && <div className={styles.errorBanner}>{error}</div>}
+                {!loading && !error && posts.length === 0 && (
+                  <div className={styles.empty}>No activity yet.</div>
+                )}
+                {posts.map((post) => (
+                  <FeedPostCard
+                    key={post.id}
+                    post={post}
+                    roster={roster}
+                    viewerEmail={viewerEmail}
+                    onUpdate={updatePost}
+                    onDeletePost={handleDeletePost}
+                    highlighted={post.id === focusPostId}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
       </div>
     </div>
   );

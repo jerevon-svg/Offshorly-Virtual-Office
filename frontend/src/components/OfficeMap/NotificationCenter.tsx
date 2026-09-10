@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import HudIcon from "../HudIcon";
 import styles from "./NotificationCenter.module.css";
 import {
   markAllRead,
@@ -35,6 +36,9 @@ export interface NotificationCenterProps {
    * behind the modal's backdrop — belt and braces beside the z-index rule that already puts
    * this whole control below the modal family. */
   modalOpen?: boolean;
+  /** Short caption under the bell, for the dock's captioned tile row. Omitted standalone, where
+   *  the bell stays the bare round chip it has always been. */
+  label?: string;
 }
 
 function str(payload: Record<string, unknown> | null, key: string): string | null {
@@ -86,7 +90,7 @@ export function relativeTime(iso: string, now: number = Date.now()): string {
   return days === 1 ? "yesterday" : `${days}d ago`;
 }
 
-export function NotificationCenter({ onNavigate, modalOpen = false }: NotificationCenterProps) {
+export function NotificationCenter({ onNavigate, modalOpen = false, label }: NotificationCenterProps) {
   const { notifications, unreadCount, loading, error } = useNotifications();
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLDivElement | null>(null);
@@ -132,17 +136,23 @@ export function NotificationCenter({ onNavigate, modalOpen = false }: Notificati
   return (
     <div className={styles.anchor} ref={anchorRef}>
       <button
-        className={`${styles.bell}${open ? ` ${styles.bellActive}` : ""}`}
+        className={`${styles.bell}${open ? ` ${styles.bellActive}` : ""}${label ? ` ${styles.bellLabeled}` : ""}`}
         onClick={() => setOpen((wasOpen) => !wasOpen)}
         aria-label={unreadCount > 0 ? `Notifications (${unreadCount} unread)` : "Notifications"}
         aria-expanded={open}
       >
-        🔔
-        {unreadCount > 0 && (
-          <span className={styles.badge} data-testid="notification-badge">
-            {badge}
-          </span>
-        )}
+        {/* The badge is a child of the glyph so that in the captioned dock form it hugs the icon
+            square instead of the taller button's corner — the same arrangement the neighbouring
+            chat control uses. Unlabelled, .glyph is display:contents and nothing moves. */}
+        <span className={styles.glyph}>
+          <HudIcon name="notifications" />
+          {unreadCount > 0 && (
+            <span className={styles.badge} data-testid="notification-badge">
+              {badge}
+            </span>
+          )}
+        </span>
+        {label && <span className={styles.label}>{label}</span>}
       </button>
 
       {open && (
@@ -161,7 +171,7 @@ export function NotificationCenter({ onNavigate, modalOpen = false }: Notificati
           <div className={styles.list}>
             {notifications.length === 0 ? (
               <div className={styles.empty}>
-                <span className={styles.emptyEmoji}>🔔</span>
+                <span className={styles.emptyEmoji}><HudIcon name="notifications" size="2em" /></span>
                 {loading ? "Loading…" : "Nothing new yet — Kudos and updates will show up here."}
               </div>
             ) : (

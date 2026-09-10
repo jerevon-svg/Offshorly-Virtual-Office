@@ -4,7 +4,7 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  color: #f5f0ff; /* theme foreground; buttons below use `all: unset`, which drops inheritance */
+  color: #241f30; /* theme foreground; buttons below use `all: unset`, which drops inheritance */
 }
 
 .muted,
@@ -12,13 +12,13 @@
 .pinnedEmpty {
   margin: 0;
   font-size: 13px;
-  color: rgba(245, 240, 255, 0.65);
+  color: rgba(36, 31, 48, 0.58);
 }
 
 .error {
   margin: 0;
   font-size: 13px;
-  color: #ff9b9b;
+  color: #b3352d;
 }
 
 /* ---- category nav ------------------------------------------------------------------------ */
@@ -27,7 +27,7 @@
   gap: 4px;
   padding: 4px;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(24, 20, 34, 0.045);
 }
 
 .tab,
@@ -42,18 +42,18 @@
   letter-spacing: 0.03em;
   padding: 8px 6px;
   border-radius: 9px;
-  color: rgba(245, 240, 255, 0.6);
+  color: rgba(36, 31, 48, 0.55);
   transition: background-color 160ms ease, color 160ms ease;
 }
 
 .tab:hover {
-  color: #f5f0ff;
-  background: rgba(255, 255, 255, 0.05);
+  color: #241f30;
+  background: rgba(24, 20, 34, 0.045);
 }
 
 .tabActive {
-  color: #f5f0ff;
-  background: linear-gradient(180deg, rgba(167, 139, 250, 0.35), rgba(124, 107, 255, 0.25));
+  color: #241f30;
+  background: linear-gradient(180deg, rgba(75, 185, 106, 0.2), rgba(47, 107, 69, 0.16));
   box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.45);
 }
 
@@ -64,7 +64,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #ffd67a;
+  background: #e8b23c;
 }
 
 /* ---- category summary strip -------------------------------------------------------------- */
@@ -74,8 +74,8 @@
   gap: 10px;
   padding: 10px 14px;
   border-radius: 10px;
-  background: linear-gradient(90deg, rgba(167, 139, 250, 0.16), rgba(167, 139, 250, 0.04));
-  border-left: 3px solid #a78bfa;
+  background: linear-gradient(90deg, rgba(75, 185, 106, 0.12), rgba(75, 185, 106, 0.03));
+  border-left: 3px solid #48a663;
   font-variant-numeric: tabular-nums;
 }
 
@@ -87,13 +87,13 @@
 .summaryCount {
   font-size: 18px;
   font-weight: 700;
-  color: #ffd67a;
+  color: #e8b23c;
 }
 
 .summaryMeta {
   margin-left: auto;
   font-size: 12px;
-  color: rgba(245, 240, 255, 0.65);
+  color: rgba(36, 31, 48, 0.58);
 }
 
 /* ---- card grid --------------------------------------------------------------------------- */
@@ -102,13 +102,13 @@
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(156px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(232px, 1fr));
+  gap: 12px;
 }
 
 .card {
   all: unset;
-  color: #f5f0ff; /* `all: unset` resets to browser black — restore the theme foreground */
+  color: #241f30; /* `all: unset` resets to browser black — restore the theme foreground */
   cursor: pointer;
   position: relative;
   box-sizing: border-box;
@@ -116,19 +116,19 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 10px 10px 12px;
-  border-radius: 14px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.03));
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  gap: 7px;
+  padding: 18px 14px 16px;
+  border-radius: 16px;
+  background: #fffefc;
+  border: 1px solid rgba(24, 20, 34, 0.08);
   text-align: center;
   transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
 }
 
 .card:hover {
   transform: translateY(-2px);
-  border-color: rgba(255, 255, 255, 0.18);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+  border-color: rgba(24, 20, 34, 0.14);
+  box-shadow: 0 10px 24px rgba(18, 16, 28, 0.12);
 }
 
 /* State styling — one attribute drives it all. */
@@ -178,7 +178,7 @@
   padding: 2px 7px;
   border-radius: 999px;
   color: #1b1530;
-  background: #ffd67a;
+  background: #e8b23c;
 }
 
 .cardDoneTag {
@@ -191,7 +191,7 @@
   font-size: 13px;
   font-weight: 600;
   line-height: 1.2;
-  color: #f5f0ff;
+  color: #241f30;
 }
 
 .cardBar {
@@ -199,7 +199,7 @@
   width: 100%;
   height: 5px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(24, 20, 34, 0.08);
   overflow: hidden;
 }
 
@@ -214,14 +214,14 @@
 .cardProgress {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
-  color: rgba(245, 240, 255, 0.65);
+  color: rgba(36, 31, 48, 0.58);
 }
 
 .cardReward {
   width: 100%;
   margin-top: 2px;
   padding-top: 6px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 1px solid rgba(24, 20, 34, 0.07);
   font-size: 11px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -229,19 +229,41 @@
 }
 
 /* ---- emblem — the visual focus ----------------------------------------------------------- */
+/* BADGE MEDALLION — a collectible construction, not an icon in a circle.
+   Three concentric parts built from one element plus its ::after:
+     1. OUTER RIM  — the tier material (currentColor, from .tier1..4), with a bevel: a light
+        inner highlight at the top and a darker one at the bottom read as a turned metal edge.
+     2. INNER PLATE — a recessed cream dish the activity emblem sits on, so a clock/flame/Hub
+        icon reads as "clock badge", not a standalone HUD icon.
+     3. GLOSS      — a restrained top-left sheen (::after), the same language the VO clay art uses.
+   `--ring` scales the rim per size so the silhouette stays strong at 44px and rich at 168px. */
 .emblem {
   position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  background: radial-gradient(
-    circle at 35% 30%,
-    color-mix(in srgb, var(--accent) 65%, white 35%),
-    var(--accent) 55%,
-    color-mix(in srgb, var(--accent) 55%, black 45%)
-  );
-  box-shadow: inset 0 0 0 3px currentColor, 0 6px 16px rgba(0, 0, 0, 0.4);
+  /* The rim is the tier material; the plate is the cream dish inside it. */
+  background:
+    radial-gradient(
+      circle at 50% 50%,
+      #fbfaf5 0,
+      #fbfaf5 calc(100% - var(--ring, 7px)),
+      transparent calc(100% - var(--ring, 7px))
+    ),
+    linear-gradient(160deg,
+      color-mix(in srgb, currentColor 55%, white 45%) 0%,
+      currentColor 42%,
+      color-mix(in srgb, currentColor 68%, black 32%) 100%);
+  box-shadow:
+    /* rim bevel: light off the top edge, shadow into the bottom */
+    inset 0 2px 2px rgba(255, 255, 255, 0.75),
+    inset 0 -2px 3px rgba(18, 16, 28, 0.22),
+    /* the plate sits below the rim */
+    inset 0 0 0 var(--ring, 7px) transparent,
+    inset 0 3px 7px rgba(18, 16, 28, 0.14),
+    /* the medallion sits on the card */
+    0 6px 16px rgba(18, 16, 28, 0.16);
   overflow: hidden;
 }
 
@@ -250,40 +272,40 @@
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  background: linear-gradient(160deg, rgba(255, 255, 255, 0.28), transparent 55%);
+  background: linear-gradient(155deg, rgba(255, 255, 255, 0.55) 0%, rgba(255, 255, 255, 0) 46%);
   pointer-events: none;
 }
 
 .emblem_card {
-  width: 76px;
-  height: 76px;
-  font-size: 34px;
-  margin: 2px 0 4px;
-}
-
-.emblem_pinned {
-  width: 44px;
-  height: 44px;
-  font-size: 20px;
+  --ring: 8px;
+  width: 104px;
+  height: 104px;
+  font-size: 40px;
+  margin: 2px 0 8px;
 }
 
 .emblem_detail {
-  width: 88px;
-  height: 88px;
-  font-size: 40px;
+  --ring: 11px;
+  width: 152px;
+  height: 152px;
+  font-size: 62px;
   flex: none;
 }
 
 .emblemGlyph {
-  color: #fff;
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.55);
+  position: relative;
+  z-index: 1;
+  color: #3f3a4d;
   line-height: 1;
 }
 
 .emblemArt {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
+  position: relative;
+  z-index: 1;
+  width: 62%;
+  height: 62%;
+  object-fit: contain;
+  filter: drop-shadow(0 2px 3px rgba(18, 16, 28, 0.18));
 }
 
 /* ---- detail ------------------------------------------------------------------------------ */
@@ -293,12 +315,12 @@
   align-self: flex-start;
   font-size: 13px;
   font-weight: 600;
-  color: rgba(245, 240, 255, 0.75);
+  color: rgba(36, 31, 48, 0.65);
   padding: 4px 8px 4px 0;
 }
 
 .back:hover {
-  color: #f5f0ff;
+  color: #241f30;
 }
 
 .detail {
@@ -308,13 +330,17 @@
 }
 
 .detailHero {
+  gap: 26px;
+  padding: 22px 24px;
+  border-radius: 18px;
+  background: #fffefc;
   display: flex;
   align-items: center;
   gap: 16px;
   padding: 12px 14px;
   border-radius: 14px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.03));
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, rgba(24, 20, 34, 0.06), rgba(24, 20, 34, 0.03));
+  border: 1px solid rgba(24, 20, 34, 0.07);
 }
 
 .detail[data-state="claimable"] .detailHero {
@@ -322,16 +348,20 @@
 }
 
 .detailText {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
 .detailTitle {
+  font-size: 30px;
+  letter-spacing: -0.02em;
   margin: 0;
   font-size: 17px;
   font-weight: 600;
-  color: #f5f0ff;
+  color: #241f30;
 }
 
 .tiers {
@@ -349,9 +379,9 @@
   gap: 10px;
   padding: 9px 12px;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(24, 20, 34, 0.045);
   font-size: 13px;
-  color: #f5f0ff;
+  color: #241f30;
 }
 
 .tierRow[data-state="locked"] {
@@ -385,7 +415,7 @@
 .tierReq {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
-  color: rgba(245, 240, 255, 0.6);
+  color: rgba(36, 31, 48, 0.55);
 }
 
 .tierReward {
@@ -396,33 +426,45 @@
   white-space: nowrap;
 }
 
-/* ---- pinned badges (Profile tab) --------------------------------------------------------- */
+/* ---- pinned badges (Profile tab) ---------------------------------------------------------
+   The medallion is the content here; the card is only a tray under it. Padding, background and
+   border are all held back so nothing competes with the artwork. */
 .pinned {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding-top: 8px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  gap: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(24, 20, 34, 0.07);
 }
 
 .pinnedHeader {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
+  gap: 8px;
+  flex-wrap: nowrap;
 }
 
 .pinnedTitle {
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+  flex: none;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
   text-transform: uppercase;
-  color: rgba(245, 240, 255, 0.8);
+  color: rgba(36, 31, 48, 0.62);
 }
 
 .pinnedMeta {
-  font-size: 12px;
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
   font-variant-numeric: tabular-nums;
-  color: rgba(245, 240, 255, 0.6);
+  color: rgba(36, 31, 48, 0.5);
 }
 
 .pinnedRow {
@@ -430,43 +472,71 @@
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
 }
 
 .pinnedItem {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  padding: 10px 6px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.05);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  gap: 2px;
+  padding: 7px 4px 9px;
+  border-radius: 15px;
+  background: linear-gradient(180deg, #fffefb 0%, #f8f5ec 100%);
+  border: 1px solid rgba(24, 20, 34, 0.055);
+  box-shadow: 0 1px 2px rgba(24, 20, 34, 0.045);
   text-align: center;
 }
 
-.pinnedName {
-  font-size: 12px;
-  font-weight: 600;
-  color: #f5f0ff;
+/* The artwork runs the full width of its tray, which is what makes it dominant rather than
+   an icon parked inside a card. */
+.pinnedArt {
+  display: block;
+  width: 100%;
+  max-width: 82px;
+  margin-bottom: 1px;
 }
 
-/* ---- tier colours — calm metallics via currentColor -------------------------------------- */
+.pinnedArt svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.pinnedName {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  color: #241f30;
+}
+
+/* The tier caption is a footnote under the medallion — the metal already says Gold. */
+.pinnedItem .tierLabel {
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+}
+
+/* ---- tier materials ----------------------------------------------------------------------
+   currentColor IS the medallion's rim metal (see .emblem), so a tier change re-materialises the
+   whole badge rather than only recolouring the caption. Tuned to read on cream: the old silver
+   and platinum were near-white and washed out. */
 .tier0 {
-  color: rgba(245, 240, 255, 0.35);
+  color: #b9b6ae; /* locked — unstruck pewter */
 }
 .tier1 {
-  color: #d29a6b;
+  color: #c07b43; /* bronze */
 }
 .tier2 {
-  color: #c8ccd6;
+  color: #94a0ae; /* silver */
 }
 .tier3 {
-  color: #ffd67a;
+  color: #dda32c; /* gold */
 }
 .tier4 {
-  color: #b9e6ff;
+  color: #6fa9c9; /* platinum */
 }
 
 @media (prefers-reduced-motion: reduce) {

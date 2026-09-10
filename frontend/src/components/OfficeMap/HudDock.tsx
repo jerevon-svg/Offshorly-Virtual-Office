@@ -5,7 +5,7 @@ import styles from "./HudDock.module.css";
 // The Virtual Office's single persistent control surface:
 //
 //   Profile | Coins + XP | Search | Hub | Tasks | Chat | Rewards | Boards | Map |
-//   Working + Check out | 🔔 | ••• (Settings)
+//   Notifs | Settings | Working + Check out
 //
 // THIS COMPONENT OWNS LAYOUT AND NOTHING ELSE. It holds no feature state, performs no fetches and
 // knows nothing about progression, chat, quests or checkout. Every control is either
@@ -37,6 +37,10 @@ export interface HudDockAction {
   /** Soft highlighted icon tile: this control's panel is currently open. */
   active?: boolean;
   disabled?: boolean;
+  /** Unread/claimable count shown as a small red badge on the icon square, matching the chat and
+   *  notification badges. 0 or undefined renders nothing; above 9 renders "9+". The caller owns
+   *  the number — the dock never computes one. */
+  badge?: number;
 }
 
 export interface HudDockNode {
@@ -49,7 +53,7 @@ export interface HudDockFlyout {
   kind: "flyout";
   key: string;
   icon: ReactNode;
-  /** Omitted for the trailing utilities (•••), which are icon-only in the reference. */
+  /** Optional caption under the icon, matching an action tile's. */
   label?: string;
   ariaLabel: string;
   /** Panel content, rendered above the dock while open. */
@@ -80,6 +84,11 @@ export interface HudDockProps {
   /** True while the z-index 30/31 overlay family owns the screen (check-in, status overtime, any
    *  checkout step). Steps the dock below THOSE, which 50 would not clear. */
   behindOverlay?: boolean;
+  /** Slides the whole dock out of view without unmounting it — for a full-screen dock tool that
+   *  takes over the office (today: Search's spotlight). Deliberately a HIDE, not an unmount, so
+   *  every control keeps its state and its subscriptions while the tool is open, and so the
+   *  return is a transition rather than a remount flash. Reusable by any future dock tool. */
+  hidden?: boolean;
 }
 
 export function HudDock({
@@ -88,6 +97,7 @@ export function HudDock({
   entries,
   behindModal = false,
   behindOverlay = false,
+  hidden = false,
 }: HudDockProps) {
   // A separator is only ever a divider BETWEEN entries — never leading, trailing or doubled once
   // gating has removed the entries around it.
@@ -102,6 +112,7 @@ export function HudDock({
   // The lower step wins: an overlay at 30/31 needs the dock under 30, which 50 would not clear.
   if (behindOverlay) classes.push(styles.behindOverlay);
   else if (behindModal) classes.push(styles.behindModal);
+  if (hidden) classes.push(styles.hidden);
 
   return (
     <div
@@ -109,6 +120,8 @@ export function HudDock({
       data-testid="hud-dock"
       role="toolbar"
       aria-label="Office controls"
+      aria-hidden={hidden || undefined}
+      inert={hidden || undefined}
     >
       {identity && (
         <div className={styles.identityGroup} data-testid="hud-dock-identity">
@@ -149,6 +162,11 @@ function Tile({ action }: { action: HudDockAction }) {
     >
       <span className={styles.tileIcon} aria-hidden="true">
         {action.icon}
+        {action.badge !== undefined && action.badge > 0 && (
+          <span className={styles.tileBadge} data-testid={`dock-badge-${action.key}`}>
+            {action.badge > 9 ? "9+" : action.badge}
+          </span>
+        )}
       </span>
       <span className={styles.tileLabel}>{action.label}</span>
     </button>

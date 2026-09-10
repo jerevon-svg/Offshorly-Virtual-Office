@@ -59,7 +59,7 @@ describe("ChatAttentionIndicator via OfficeStage", () => {
     });
     const found = badges(container);
     expect(found).toHaveLength(1);
-    expect(found[0].textContent).toContain("💬");
+    expect(found[0].querySelector("img")?.getAttribute("src")).toContain("chat");
   });
 
   it("never renders a badge above the viewer's own avatar", () => {

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import HudIcon from "../HudIcon";
 import type { Conversation } from "../../services/chat/types";
 import styles from "./MessageNotificationBadge.module.css";
 
@@ -66,7 +67,7 @@ export function MessageNotificationBadge({
         {/* The unread badge is a child of the glyph, so in the dock's captioned form it hugs the
             💬 square (as in the reference) instead of the taller button's corner. */}
         <span className={styles.glyph}>
-          <span aria-hidden="true">💬</span>
+          <HudIcon name="chat" />
           {total > 0 && <span className={styles.badge}>{total > 99 ? "99+" : total}</span>}
         </span>
         {label && <span className={styles.label}>{label}</span>}

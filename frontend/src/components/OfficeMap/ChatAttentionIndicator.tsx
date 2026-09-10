@@ -1,4 +1,5 @@
 import type React from "react";
+import HudIcon from "../HudIcon";
 import type { AssetLayer } from "../../types/office";
 import { greetingAnchor } from "./panMath";
 import { avatarIdForEmail } from "../../data/avatarIdentity";
@@ -67,7 +68,7 @@ export function ChatAttentionIndicator({
           onPointerUp={onPointerUp}
         >
           <span className={styles.emoji} aria-hidden="true">
-            💬
+            <HudIcon name="chat" />
           </span>
           {count > 1 ? <span className={styles.count}>{count > 9 ? "9+" : count}</span> : null}
         </button>

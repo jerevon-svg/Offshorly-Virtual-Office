@@ -68,6 +68,21 @@ const MODAL_FAMILY = [
   "RewardsPanel.module.css",
 ] as const;
 
+// Full-screen dock TOOLS hide the dock outright while they are open (OfficeMap's officeToolOpen
+// -> HudDock's `hidden`), so they have nothing at the bottom of the screen to clear and
+// deliberately do NOT reserve --vo-dock-clearance. Every other modal still coexists with a
+// visible dock and must keep reserving it.
+const DOCK_TOOL_PANELS = [
+  "CompanyHub.module.css",
+  "EmployeeProfile.module.css",
+  "MissionsPanel.module.css",
+  "OnboardingQuestline.module.css",
+  "RewardsPanel.module.css",
+] as const;
+const COEXISTING_MODALS = MODAL_FAMILY.filter(
+  (file) => !DOCK_TOOL_PANELS.includes(file as (typeof DOCK_TOOL_PANELS)[number]),
+);
+
 describe("the dock has exactly three layers and no arbitrary values", () => {
   it("sits at the layer the Player HUD always held", () => {
     expect(onlyZIndex(dockCss, "dock")).toBe(DOCK_LAYER);
@@ -148,7 +163,7 @@ describe("modals reserve the dock's strip rather than the dock out-ranking them"
     expect(globals).toMatch(/@media \(max-height: 760px\)\s*\{\s*:root\s*\{\s*--vo-dock-clearance:\s*96px/);
   });
 
-  it.each([...MODAL_FAMILY, "../TeamMap/TeamMapPanel.module.css"] as const)(
+  it.each([...COEXISTING_MODALS, "../TeamMap/TeamMapPanel.module.css"] as const)(
     "%s keeps its centred panel clear of the dock",
     (file) => {
       const backdrop = new RegExp(`\\.backdrop\\s*\\{([^}]*)\\}`).exec(css(file))?.[1] ?? "";
@@ -156,6 +171,31 @@ describe("modals reserve the dock's strip rather than the dock out-ranking them"
       expect(backdrop).toMatch(/box-sizing:\s*border-box/);
     },
   );
+
+  it.each(DOCK_TOOL_PANELS)(
+    "%s does not reserve dock clearance, because the dock is hidden while it is open",
+    (file) => {
+      const backdrop = new RegExp(`\\.backdrop\\s*\\{([^}]*)\\}`).exec(css(file))?.[1] ?? "";
+      expect(backdrop).not.toMatch(/--vo-dock-clearance/);
+      expect(backdrop).toMatch(/box-sizing:\s*border-box/);
+    },
+  );
+
+  // A stale duplicate .backdrop later in a stylesheet silently wins the cascade while the
+  // assertions above — which read the FIRST match — still pass. Pin uniqueness so that a
+  // rewritten shell leaving its old rule behind fails here instead of in the browser.
+  it.each([...MODAL_FAMILY, "../TeamMap/TeamMapPanel.module.css"] as const)(
+    "%s defines .backdrop exactly once",
+    (file) => {
+      const blocks = css(file).match(/^\.backdrop\s*\{/gm) ?? [];
+      expect(blocks).toHaveLength(1);
+    },
+  );
+
+  it("hides the dock for any full-screen dock tool", () => {
+    expect(dockCss).toMatch(/\.hidden\s*\{[^}]*translate/);
+    expect(dockCss).toMatch(/\.dock\s*\{[^}]*transition:/);
+  });
 });
 
 describe("the controls inside the dock cannot escape it", () => {

@@ -159,23 +159,63 @@ describe("CompanyHub", () => {
 
     render(<CompanyHub />);
 
-    // All three are visible, unlike checkin mode.
+    // All three are REACHABLE, unlike checkin mode — the carousel shows one at a time, so the
+    // count and the dots are what prove none was filtered out.
+    expect(screen.getByText("1 of 3")).toBeInTheDocument();
+    expect(screen.getAllByRole("tab")).toHaveLength(3);
+
+    // Item 1 — dismissed: state badge shown, and read-only (no action buttons at all).
     expect(screen.getByText("Old announcement")).toBeInTheDocument();
-    expect(screen.getByText("Old policy")).toBeInTheDocument();
-    expect(screen.getByText("New item")).toBeInTheDocument();
-
-    // State badges reflect each item's real persisted status.
     expect(screen.getByText("Dismissed")).toBeInTheDocument();
-    expect(screen.getByText("✓ Acknowledged")).toBeInTheDocument();
-    expect(screen.getByText("New")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Dismiss" })).not.toBeInTheDocument();
 
-    // Handled items are read-only — the only "Dismiss" button left belongs to the still-fresh
-    // item, and no "Acknowledge" action button is offered for the already-acknowledged one.
-    expect(screen.getAllByRole("button", { name: "Dismiss" })).toHaveLength(1);
+    // Item 2 — acknowledged required: state badge shown, and no Acknowledge action re-offered.
+    fireEvent.click(screen.getByRole("button", { name: "Next item" }));
+    expect(screen.getByText("Old policy")).toBeInTheDocument();
+    expect(screen.getByText("✓ Acknowledged")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Acknowledge/ })).not.toBeInTheDocument();
 
-    // The still-fresh item keeps its normal actionable buttons.
+    // Item 3 — still fresh: keeps its normal actionable buttons.
+    fireEvent.click(screen.getByRole("button", { name: "Next item" }));
+    expect(screen.getByText("New item")).toBeInTheDocument();
+    expect(screen.getByText("New")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Read More" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Dismiss" })).toHaveLength(1);
+  });
+
+  it("the carousel pages through every visible item and wraps", () => {
+    const a = makeItem({ id: "c-1", title: "First" });
+    const b = makeItem({ id: "c-2", title: "Second" });
+    mockState.snapshot = makeSnapshot([a, b], { mode: "manual" });
+
+    render(<CompanyHub />);
+
+    expect(screen.getByText("1 of 2")).toBeInTheDocument();
+    expect(screen.getByText("First")).toBeInTheDocument();
+    // The footer names what is coming next, per the Hub mock.
+    expect(screen.getByText("Next: Second")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Next item" }));
+    expect(screen.getByText("Second")).toBeInTheDocument();
+    expect(screen.getByText("2 of 2")).toBeInTheDocument();
+
+    // Wraps forward, and the dots jump directly.
+    fireEvent.click(screen.getByRole("button", { name: "Next item" }));
+    expect(screen.getByText("First")).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole("tab")[1]);
+    expect(screen.getByText("Second")).toBeInTheDocument();
+
+    // Wraps backward too.
+    fireEvent.click(screen.getByRole("button", { name: "Previous item" }));
+    expect(screen.getByText("First")).toBeInTheDocument();
+  });
+
+  it("shows no carousel chrome for a single item", () => {
+    mockState.snapshot = makeSnapshot([makeItem({ id: "s-1", title: "Only" })], { mode: "manual" });
+    render(<CompanyHub />);
+
+    expect(screen.getByText("Only")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Next item" })).not.toBeInTheDocument();
   });
 
   it("a previously-acknowledged required item does not block Enter Office when reviewed in manual mode", () => {

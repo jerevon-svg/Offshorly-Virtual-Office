@@ -109,3 +109,41 @@ export function computeRoomFocusTransform(
   const y = clamp(viewportH / 2 - cy * scale, viewportH - contentH, 0);
   return { x, y, scale };
 }
+
+/** Where a character is ACTUALLY drawn right now, for panning to them.
+ *
+ * A roster layer's own x/y is that person's ASSIGNED SEAT, which is not where they are rendered
+ * whenever something has since moved them: the Atlas-offline sidewalk lineup repositions them
+ * (applyOfflineLineupPositions -> positionedPeerLayers), and a walk in flight or just finished
+ * moves them again (peerWalkState, top-left coords). Panning at the seat sends the viewer to an
+ * empty desk while the avatar they clicked stands elsewhere.
+ *
+ * This is deliberately the SAME lookup chain the render path and resolveMemberCenter already use
+ * — positioned layers first, then the manifest cast, with live walk position winning over both —
+ * so Search cannot drift from what is on screen. It introduces no coordinates of its own.
+ */
+/** World-centre of a layer — the point every "walk to this person" interaction aims at. Pair it
+ *  with resolveRenderedLayer so the aim point is the DRAWN position, never the assigned seat. */
+export function layerCenter(
+  layer: Pick<AssetLayer, "x" | "y" | "width" | "height">,
+): { x: number; y: number } {
+  return { x: layer.x + layer.width / 2, y: layer.y + layer.height / 2 };
+}
+
+export function resolveRenderedLayer(
+  layer: AssetLayer,
+  chain: readonly (readonly AssetLayer[])[],
+  livePosById: Readonly<Record<string, { pos: { x: number; y: number } }>>,
+): AssetLayer {
+  const id = layer.id.toLowerCase();
+  let resolved = layer;
+  for (const candidates of chain) {
+    const hit = candidates.find((l) => l.id.toLowerCase() === id);
+    if (hit) {
+      resolved = hit;
+      break;
+    }
+  }
+  const live = livePosById[id];
+  return live ? { ...resolved, x: live.pos.x, y: live.pos.y } : resolved;
+}

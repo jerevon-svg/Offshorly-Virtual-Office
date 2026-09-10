@@ -35,6 +35,9 @@
   bottom: 16px;
   left: 50%;
   transform: translateX(-50%);
+  /* Drives the reusable .hidden slide-out; harmless otherwise, since nothing else animates the
+     dock's transform or opacity. */
+  transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1), opacity 200ms ease;
   z-index: 70;
   box-sizing: border-box;
   max-width: calc(100vw - 24px);
@@ -77,10 +80,11 @@
   --vo-chrome-badge-ring: #fdfcfa;
   --vo-chrome-icon-size: 38px;
   --vo-chrome-icon-radius: 12px;
-  /* The availability picker runs at the reference's caption scale, tight enough that the profile
-     column (name / status / XP bar) stays shorter than a 52px tile and so never sets the dock's
-     height. */
-  --vo-chrome-pad: 0 1px;
+  /* The availability picker runs at the reference's caption scale. The padding is now the status
+     PILL's, not bare text's — still tight enough that the profile column (name / status) stays
+     shorter than a 52px tile and so never sets the dock's height, which the XP bar moving out of
+     that column left extra room for. */
+  --vo-chrome-pad: 2px 9px;
   --vo-chrome-font: 11.5px;
 }
 
@@ -89,6 +93,16 @@
    read in full dims the dock like the rest of the office. */
 .behindModal {
   z-index: 50;
+}
+
+/* Reusable dock hide — a dock tool that takes over the office (Search's spotlight) slides the
+   dock out rather than unmounting it, so nothing inside loses state and the restore is a
+   transition, not a remount. Paired with `inert` on the element so hidden controls are also
+   unreachable by keyboard. */
+.hidden {
+  transform: translate(-50%, calc(100% + 24px));
+  opacity: 0;
+  pointer-events: none;
 }
 
 /* The office's OTHER overlay family sits at z-index 30/31, well below the dock's 70: the check-in
@@ -151,7 +165,29 @@
   opacity: 0.45;
 }
 
+/* Same treatment as the chat and notification badges: red pill, tabular digits, ringed in the
+   dock's own surface colour so it reads cleanly over the icon square. */
+.tileBadge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 17px;
+  height: 17px;
+  box-sizing: border-box;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #e2453c;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 17px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 0 0 2px var(--vo-chrome-badge-ring, #fdfcfa);
+}
+
 .tileIcon {
+  position: relative;
   box-sizing: border-box;
   width: 38px;
   height: 38px;
@@ -324,5 +360,11 @@
   }
   .separator {
     margin: 4px 3px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dock {
+    transition: none;
   }
 }

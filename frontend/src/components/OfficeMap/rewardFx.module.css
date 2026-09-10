@@ -12,22 +12,18 @@
   left: 0;
   top: 0;
   will-change: transform, opacity;
-  font-family: system-ui, sans-serif;
+  /* Particles now paint the locked HUD Coin/XP art (set as a background-image in rewardFx.ts)
+     instead of a 🪙 / "XP" glyph. Flight path, timing and counts are unchanged. */
+  width: 22px;
+  height: 22px;
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: contain;
   filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.45));
 }
 
-.coin {
-  font-size: 18px;
-  line-height: 1;
-}
-
+/* XP reads slightly smaller than a coin, as the old glyph pair did. */
 .xp {
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  line-height: 1;
-  padding: 3px 5px;
-  border-radius: 999px;
-  color: #1b1530;
-  background: linear-gradient(135deg, #ffd67a, #ff9f6b);
+  width: 19px;
+  height: 19px;
 }

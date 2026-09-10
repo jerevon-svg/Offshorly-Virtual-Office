@@ -1,4 +1,6 @@
 import styles from "./rewardFx.module.css";
+import coinArt from "../../assets/hud-icons/coin.png";
+import xpArt from "../../assets/hud-icons/xp.png";
 import { applyClaim, commitStaged, stageClaim } from "../../services/quests/progressionStore";
 import type { ClaimResult } from "../../services/quests/questsClient";
 
@@ -99,7 +101,9 @@ export function playRewardCollection(opts: PlayOptions): Promise<void> {
     for (let i = 0; i < count; i++) {
       const el = document.createElement("span");
       el.className = kind === "coins" ? styles.coin : styles.xp;
-      el.textContent = kind === "coins" ? "🪙" : "XP";
+      // The locked HUD Coin/XP art replaces the old 🪙 / "XP" glyphs. Same element, same class,
+      // same particle count and same flight path — only what is painted inside changed.
+      el.style.backgroundImage = `url(${kind === "coins" ? coinArt : xpArt})`;
       el.setAttribute("aria-hidden", "true");
       layer.appendChild(el);
       // Fan upward-biased around the source; coins lean left, XP right, so the two streams read

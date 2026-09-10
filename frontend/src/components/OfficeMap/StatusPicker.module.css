@@ -22,9 +22,14 @@
    redefines them so the control sits on the dock's surface instead of punching a dark chip into
    it — see HudDock.module.css. */
 .select {
-  background: var(--vo-chrome-surface, rgba(26, 26, 26, 0.9));
+  /* Status pill. --status-color is set inline from STATUS_META by StatusPicker.tsx, so every
+     status tints itself from the one colour table the rest of presence already reads; the
+     fallback is OFFLINE grey for the moment before it lands. The tint is deliberately weak and
+     the border deliberately strong — the border carries the status, the fill only hints at it,
+     which keeps the label legible in the light dock and on the dark office chrome alike. */
+  background: color-mix(in srgb, var(--status-color, #6b7280) 13%, var(--vo-chrome-surface, rgba(26, 26, 26, 0.9)));
   color: var(--vo-chrome-ink, #f0f0f0);
-  border: 1px solid var(--vo-chrome-line, rgba(255, 255, 255, 0.12));
+  border: 1px solid color-mix(in srgb, var(--status-color, #6b7280) 60%, transparent);
   border-radius: 999px;
   padding: var(--vo-chrome-pad, 7px 12px);
   font-size: var(--vo-chrome-font, 13px);
@@ -36,34 +41,6 @@
 .select:focus {
   outline: 2px solid rgba(255, 255, 255, 0.4);
   outline-offset: 1px;
-}
-
-/* Active-DND chip — replaces the <select> while manualStatus === "DND", showing the live
-   countdown (feature spec: "expose remaining time where appropriate"). */
-.dndChip {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  background: rgba(239, 68, 68, 0.18);
-  color: var(--vo-chrome-ink, #f0f0f0);
-  border: 1px solid rgba(239, 68, 68, 0.5);
-  border-radius: 999px;
-  padding: 7px 8px 7px 12px;
-  font-size: 13px;
-}
-
-.dndChipCancel {
-  all: unset;
-  cursor: pointer;
-  color: var(--vo-chrome-ink, rgba(240, 240, 240, 0.75));
-  font-size: 13px;
-  line-height: 1;
-  padding: 2px 6px;
-  border-radius: 999px;
-}
-.dndChipCancel:hover {
-  background: rgba(255, 255, 255, 0.15);
-  color: #fff;
 }
 
 .popover {

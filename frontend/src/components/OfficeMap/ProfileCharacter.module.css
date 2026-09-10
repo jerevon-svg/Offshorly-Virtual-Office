@@ -1,0 +1,264 @@
+/* Character showcase — a premium game character viewer over the office's cream language. */
+.wrap {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.head {
+  flex: none;
+  padding: 2px 4px 0;
+}
+
+.title {
+  margin: 0;
+  font-size: 25px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.subtitle {
+  margin: 3px 0 0;
+  font-size: 14px;
+  color: rgba(36, 31, 48, 0.55);
+}
+
+/* ---- stage --------------------------------------------------------------------------------
+   A seamless studio cove, not a room. An earlier pass built a CSS podium here (two ellipses, a
+   cylinder wall, glowing rings); it could never read as a solid raised object, because the top
+   face sat at almost the same value as the floor and the rings floated at a different height
+   than the character's feet — so the model looked pasted over a decal. That whole construction
+   is gone. What actually grounds a character is contact shadow, so the floor is now unbroken
+   and the shadow does the work. */
+.stage {
+  position: relative;
+  flex: 1;
+  min-height: 360px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 20px;
+  /* No horizon line: the wall rolls into the floor the way a real cove backdrop does. */
+  background:
+    radial-gradient(58% 42% at 50% 96%, rgba(96, 168, 118, 0.1), rgba(96, 168, 118, 0) 70%),
+    radial-gradient(72% 56% at 30% 2%, #ffffff 0%, rgba(255, 255, 255, 0) 68%),
+    linear-gradient(180deg, #faf9f5 0%, #f6f5ef 44%, #efeee6 74%, #e6e7dc 100%);
+}
+
+/* A soft vignette pulls the corners down so the character holds the centre. */
+.stage::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(78% 68% at 50% 46%, rgba(24, 20, 34, 0) 58%, rgba(24, 20, 34, 0.055) 100%);
+}
+
+.stage[data-live="true"] {
+  cursor: grab;
+  touch-action: none;
+}
+
+.stage[data-live="true"]:active {
+  cursor: grabbing;
+}
+
+/* ---- the model, and what grounds it -------------------------------------------------------
+   CharacterCanvas solves its own zoom (canonicalStandingFraction) and paints at height:100%, so
+   the feet do NOT sit on this wrapper's bottom edge — measured against the old stage's ring
+   geometry they land ~41px above it. Both shadow layers are centred on THAT line. A shadow that
+   disagrees with the contact point is exactly why the previous podium read as floating, so this
+   offset is the load-bearing number here: re-measure it if the canvas framing ever changes. */
+.model {
+  position: relative;
+  z-index: 1;
+  width: 400px;
+  height: 362px;
+  /* Trimmed from 84px: with the podium gone there is nothing to stand the feet on top of, and
+     84 left a wide empty apron of floor under the character. */
+  margin-bottom: 56px;
+  pointer-events: none;
+}
+
+/* Both shadows are scoped to the LIVE model: the 2D fallback portrait is centred in this box, not
+   standing at the foot line, so grounding it here would park a shadow under its knees.
+   Ambient occlusion: the wide, soft darkening the body casts onto the floor, with a restrained
+   green bounce so the stage still reads as VO. */
+.stage[data-live="true"] .model::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  left: 50%;
+  bottom: -20px;
+  width: 400px;
+  height: 122px;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background:
+    radial-gradient(50% 50% at 50% 50%, rgba(93, 168, 116, 0.15), rgba(93, 168, 116, 0) 70%),
+    radial-gradient(40% 48% at 50% 50%, rgba(26, 30, 24, 0.17), rgba(26, 30, 24, 0) 74%);
+}
+
+/* Contact shadow: tight, darker and much less blurred — this is the part the eye reads as
+   "touching the floor". */
+.stage[data-live="true"] .model::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  left: 50%;
+  bottom: 27px;
+  width: 136px;
+  height: 28px;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background: radial-gradient(
+    50% 50% at 50% 50%,
+    rgba(22, 26, 20, 0.36) 0%,
+    rgba(22, 26, 20, 0.16) 54%,
+    rgba(22, 26, 20, 0) 78%
+  );
+  filter: blur(3px);
+}
+
+.model > img.fallback {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+}
+
+.fallback {
+  max-height: 100%;
+  max-width: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+/* ---- controls ---------------------------------------------------------------------------- */
+.controls {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+  padding: 12px 4px 0;
+}
+
+.poses {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 999px;
+  background: rgba(24, 20, 34, 0.05);
+}
+
+.pose {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  padding: 8px 18px;
+  border-radius: 999px;
+  font-family: system-ui, sans-serif;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: rgba(36, 31, 48, 0.6);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.pose:hover {
+  color: #241f30;
+}
+
+.poseActive {
+  background: #dfeee6;
+  color: #2f6b45;
+}
+
+.divider {
+  width: 1px;
+  height: 26px;
+  background: rgba(24, 20, 34, 0.1);
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  cursor: pointer;
+  font-size: 13.5px;
+  color: rgba(36, 31, 48, 0.7);
+}
+
+.toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.track {
+  position: relative;
+  width: 44px;
+  height: 26px;
+  border-radius: 999px;
+  background: rgba(24, 20, 34, 0.14);
+  transition: background-color 140ms ease;
+}
+
+.knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(18, 16, 28, 0.28);
+  transition: transform 140ms ease;
+}
+
+.toggle input:checked + .track {
+  background: #48a663;
+}
+
+.toggle input:checked + .track .knob {
+  transform: translateX(18px);
+}
+
+.toggle input:focus-visible + .track,
+.pose:focus-visible,
+.reset:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: 2px;
+}
+
+.reset {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  border: 1px solid rgba(24, 20, 34, 0.12);
+  font-size: 18px;
+  color: #3f3a4d;
+  transition: background-color 120ms ease;
+}
+
+.reset:hover {
+  background: rgba(24, 20, 34, 0.05);
+}
+
+.hint {
+  flex: none;
+  margin: 6px 0 0;
+  text-align: center;
+  font-size: 12px;
+  color: rgba(36, 31, 48, 0.42);
+}

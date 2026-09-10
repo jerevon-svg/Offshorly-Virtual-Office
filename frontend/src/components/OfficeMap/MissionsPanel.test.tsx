@@ -90,8 +90,12 @@ describe("MissionsPanel", () => {
     vi.mocked(fetchMyMissions).mockResolvedValue(payload());
     render(<MissionsPanel onClose={() => {}} />);
 
-    await waitFor(() => expect(screen.getByTestId("missions-daily-summary")).toHaveTextContent("1/3 · Resets in 15h"));
-    expect(screen.getByTestId("missions-weekly-summary")).toHaveTextContent("0/1 · Resets in 4d 15h");
+    await waitFor(() => expect(screen.getByTestId("missions-daily-summary")).toHaveTextContent("1/3 complete"));
+    // The reset timing moved to its own chip beside the count; same formatResetsIn output.
+    expect(screen.getByTestId("missions-daily")).toHaveTextContent("Resets in 15h");
+    expect(screen.getByTestId("missions-weekly-summary")).toHaveTextContent("0/1 complete");
+    // The reset timing moved to its own chip beside the count; same formatResetsIn output.
+    expect(screen.getByTestId("missions-weekly")).toHaveTextContent("Resets in 4d 15h");
 
     const daily = screen.getByTestId("missions-daily");
     const rows = Array.from(daily.querySelectorAll("li"));
@@ -102,13 +106,23 @@ describe("MissionsPanel", () => {
     ]);
     expect(rows[0]).toHaveAttribute("data-completed", "true");
     expect(rows[1]).toHaveTextContent("1/2");
-    expect(rows[1].querySelector('[role="progressbar"]')).toHaveAttribute("aria-valuenow", "1");
+    // Per-row bars were replaced by a compact count chip; it carries the same progress, and the
+    // panel's single progressbar is now the OVERALL daily+weekly completion in the hero.
+    expect(screen.getByTestId("mission-count-weekly_check_in_days").textContent).toBe("2/3");
+    // Overall completion spans BOTH periods: 3 daily (1 done) + 1 weekly (0 done) = 1 of 4.
+    expect(screen.getByTestId("missions-summary")).toHaveTextContent("1 of 4 missions complete");
+    expect(screen.getByLabelText("Missions complete")).toHaveAttribute("aria-valuenow", "1");
+    expect(screen.getByLabelText("Missions complete")).toHaveAttribute("aria-valuemax", "4");
     expect(screen.getByTestId("mission-weekly_check_in_days")).toHaveTextContent("2/3");
     expect(fetchMyMissions).toHaveBeenCalledTimes(1);
-    expect(rows[1]).toHaveTextContent("+20 XP · +5 🪙");
-    expect(screen.getByTestId("mission-weekly_check_in_days")).toHaveTextContent("+60 XP · +15 🪙");
-    await waitFor(() => expect(screen.getByTestId("progression-strip")).toHaveTextContent("Lv 1"));
-    expect(screen.getByTestId("progression-coins")).toHaveTextContent("🪙 5");
+    // Reward amounts unchanged; the XP/🪙 glyphs are now the locked HUD assets beside the text.
+    expect(rows[1]).toHaveTextContent("+20 XP");
+    expect(rows[1]).toHaveTextContent("+5");
+    expect(screen.getByTestId("mission-weekly_check_in_days")).toHaveTextContent("+60 XP");
+    // The Level/XP/Coins strip is deliberately no longer rendered inside Tasks — the main HUD
+    // owns progression display. The store itself is untouched (progressionStore.test.ts covers
+    // the data path); this only asserts Tasks stops painting it.
+    expect(screen.queryByTestId("progression-strip")).toBeNull();
   });
 
   it("claims a completed mission with its period key and flips the row to Claimed", async () => {
@@ -130,8 +144,6 @@ describe("MissionsPanel", () => {
     expect(claimReward).toHaveBeenCalledTimes(1);
     expect(claimReward).toHaveBeenCalledWith("daily_check_in", "d:2026-09-02");
     expect(screen.getByTestId("mission-daily_check_in")).toHaveTextContent("Claimed");
-    expect(screen.getByTestId("progression-xp")).toHaveTextContent("40 XP · 40/100 to next");
-    expect(screen.getByTestId("progression-coins")).toHaveTextContent("🪙 10");
   });
 
   it("refetches when the tab becomes visible again and when the browser comes back online", async () => {

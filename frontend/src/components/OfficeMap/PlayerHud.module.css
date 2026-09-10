@@ -331,7 +331,14 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 2px;
+  /* Two in-flow rows only — the name/Lv line and the status pill; the level-up / badge captions
+     are position:absolute and never take part. Stretching to the row's height (set by the 44px
+     avatar) and spacing between them spends the slack that was already there, instead of a
+     hardcoded margin: the name stays pinned top, the pill bottom, and the dock's height is
+     unchanged because the avatar still sets it. When the taller active-DND chip makes the column
+     the tallest item, there is no slack to spend and this lays out exactly as it did before. */
+  align-self: stretch;
+  justify-content: space-between;
   min-width: 0;
 }
 
@@ -457,7 +464,10 @@
   background: none;
 }
 
-.hudDock .coinIcon {
+.hudDock .coinIcon,
+.hudDock .xpDiamond {
+  /* One footprint for both progression icons — HudIcon is em-sized, so a shared font-size is a
+     shared rendered size. (.xpDiamond's 12px was sized for the ◆ glyph it used to hold.) */
   font-size: 15px;
 }
 

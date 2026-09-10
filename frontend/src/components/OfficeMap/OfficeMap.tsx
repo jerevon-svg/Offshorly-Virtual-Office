@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, lazy, Suspense } from "react";
+import HudIcon from "../HudIcon";
 import {
   TransformWrapper,
   TransformComponent,
@@ -55,7 +56,7 @@ import {
   typingTimerKey,
   type PeerTypingState,
 } from "./spatialTyping";
-import { CharacterSearch } from "./CharacterSearch";
+import { SearchSpotlight } from "./SearchSpotlight";
 import { CharacterActionMenu } from "./CharacterActionMenu";
 import { RoomSidebar } from "./RoomSidebar";
 import { CheckinModal } from "./CheckinModal";
@@ -63,6 +64,8 @@ import { ReceptionActionMenu } from "./ReceptionActionMenu";
 import { SeatActionMenu } from "./SeatActionMenu";
 import {
   computeCenterTransform,
+  layerCenter,
+  resolveRenderedLayer,
   computeRoomFocusTransform,
   SIDEBAR_WIDTH,
 } from "./panMath";
@@ -195,8 +198,10 @@ import { SubmissionFailedPanel } from "./checkout/SubmissionFailedPanel";
 import { CheckoutSuccessCard } from "./checkout/CheckoutSuccessCard";
 import { CheckoutDebugPanel } from "./checkout/CheckoutDebugPanel";
 import checkoutStyles from "./checkout/checkout.module.css";
+import { ClaimHud } from "./ClaimHud";
 import { CompanyHub } from "./CompanyHub";
 import { openCompanyHub, useCompanyHub } from "../../services/hub/companyHubStore";
+import { refreshClaimable, useClaimableCount } from "../../services/quests/claimableStore";
 import { NotificationCenter, type NotificationDestination } from "./NotificationCenter";
 import { resetDevHubState } from "../../services/hub/hubClient";
 import { EmployeeProfile } from "./EmployeeProfile";
@@ -347,6 +352,9 @@ export function OfficeMap() {
     visibleRect: { x: number; y: number; width: number; height: number };
   } | null>(null);
 
+  // Which full-screen dock tool currently owns the office, if any. The dock and the Toucan hide
+  // for ANY value here, so a future tool joins by adding its key — no second hide mechanism.
+  const [dockTool, setDockTool] = useState<null | "search">(null);
   const [menu, setMenu] = useState<{ layer: AssetLayer; clientX: number; clientY: number } | null>(
     null,
   );
@@ -2002,6 +2010,9 @@ export function OfficeMap() {
   // Company Hub V1 (see services/hub/companyHubStore.ts) — opened once check-in completes
   // (finishArrival, below) and reopenable anytime via the Hub button in the top chrome.
   const companyHub = useCompanyHub();
+  // Rewards waiting in Quests OR Missions, for the dock's Tasks badge. Derived from the same
+  // /quests/me + /missions/me payloads the panels render — no second copy of claim state.
+  const claimableCount = useClaimableCount();
 
   // The full-modal family — every one of these renders its own z-index-60 backdrop over the
   // office (Company Hub, Employee Profile, Questline, Missions, Rewards, Team Map). Read only by
@@ -2596,6 +2607,15 @@ export function OfficeMap() {
   // Checkout/goodbye (and any state where the rest of this chrome hides)
   // releases the bird, so it is never left parked next to a departing
   // avatar with an orphaned panel.
+  // ONE condition for "a full-screen office tool owns the screen". The dock and the Toucan both
+  // step aside for any of them — Search sets dockTool, the Hub carries its own store-owned open
+  // state — so a future tool joins by extending this line, not by adding another mechanism.
+  const officeToolOpen =
+    dockTool !== null || companyHub.isOpen || tasksOpen || rewardsOpen || profileEmail !== null;
+  // The Tasks badge must be right BEFORE Tasks is ever opened, so the count is fetched once the
+  // dock's chrome exists and re-fetched whenever the panel closes (a claim inside it already
+  // refreshes on confirmation). Failures are swallowed in the store — a decorative badge must
+  // never surface an error.
   const toucanChromeVisible = hasCheckedIn && onboarding === "done" && !checkoutBusy;
   // A5 follow-up — the summon half of the return briefing (see the subscription above). Waits
   // for the checked-in chrome, since the bird is only ever offered there.
@@ -3662,7 +3682,7 @@ export function OfficeMap() {
     const bw = playerCharacterLayer.width;
     const bh = playerCharacterLayer.height;
     const bc = { x: bonPos.x + bw / 2, y: bonPos.y + bh / 2 };
-    const tc = { x: target.x + target.width / 2, y: target.y + target.height / 2 };
+    const tc = layerCenter(target);
     const dx = tc.x - bc.x;
     const dy = tc.y - bc.y;
     const len = Math.hypot(dx, dy) || 1;
@@ -3988,11 +4008,22 @@ export function OfficeMap() {
     }
   }
 
+  // `targetLayer` lets a caller OTHER than the character menu (the Search spotlight) run these
+  // exact actions against a person it picked. Everything below — the attendance gate, the DND
+  // person gate, the spatial-session and call paths — is untouched and stays the single
+  // implementation of chat/call/approach.
   function handleChoose(
     action: "chat" | "call" | "approach" | "walkDemo" | "patDemo" | "askToJoin" | "viewProfile",
+    targetLayer?: AssetLayer,
   ) {
-    if (!menu) return;
-    const target = menu.layer;
+    const picked = targetLayer ?? menu?.layer;
+    if (!picked) return;
+    // Chat / Call / Approach all WALK to this person, so they must aim at where the person is
+    // DRAWN, not at the layer's assigned seat. positionedPeerLayers only moves Atlas-offline
+    // peers; anyone who has since walked is still carried at their seat until peerWalkState is
+    // applied. Same single resolver Locate uses — identity (`target.id`) is untouched, so every
+    // DM route, spatial-session path, DND gate and attendance gate below is unaffected.
+    const target = resolveRenderedLayer(picked, [extraCharacterLayers, npcCharacterLayers], peerWalkState);
     const name = formatCharacterName(target);
 
     // Abandon any stale gate toast left over from a PREVIOUS DND-gated attempt at a different
@@ -4242,6 +4273,29 @@ export function OfficeMap() {
   function closeRoomSidebar() {
     resetToInitialView();
     setRoomSidebar(null);
+  }
+
+  // Centre the view on a character and play the same greeting beat the dock's Search flyout did.
+  // This is CharacterSearch.goToCharacter's pan plus that flyout's onLocate body, unchanged —
+  // the spotlight calls it so locate has one implementation, not two.
+  function locateCharacter(layer: AssetLayer) {
+    const ref = transformRef.current;
+    const wrapper = ref?.instance.wrapperComponent;
+    if (!ref || !wrapper) return;
+    if (onboarding !== "done" || checkoutBusy) return;
+    const rect = wrapper.getBoundingClientRect();
+    // Pan to where this person is DRAWN, not to their assigned seat — the offline sidewalk
+    // lineup and any live walk both move them off it. Same chain the renderer and
+    // resolveMemberCenter use, so Locate cannot disagree with what is on screen.
+    const rendered = resolveRenderedLayer(layer, [extraCharacterLayers, npcCharacterLayers], peerWalkState);
+    const { x, y } = computeCenterTransform(rendered, maxScale, rect.width, rect.height);
+    setRoomSidebar(null);
+    setMenu(null);
+    window.clearTimeout(greetTimerRef.current);
+    greetNonceRef.current += 1;
+    setGreeting({ characterId: layer.id, nonce: greetNonceRef.current });
+    greetTimerRef.current = window.setTimeout(() => setGreeting(null), 3000);
+    ref.setTransform(x, y, maxScale, 500, "easeOut");
   }
 
   function closeCharacterMenu() {
@@ -4531,6 +4585,14 @@ export function OfficeMap() {
   // "hasCheckedIn && onboarding === 'done' && !checkoutBusy" chrome predicate; the pills all
   // repeated it inline, so the dock reads it from there rather than restating it a tenth time.
   const dockChromeVisible = toucanChromeVisible;
+  // The Tasks badge must be right BEFORE Tasks is ever opened, so the count is fetched once the
+  // dock's chrome exists and re-fetched whenever the panel closes (a claim inside it already
+  // refreshes on confirmation). Failures are swallowed in the store — a decorative badge must
+  // never surface an error.
+  useEffect(() => {
+    if (!dockChromeVisible) return;
+    void refreshClaimable();
+  }, [dockChromeVisible, tasksOpen]);
   // WHEN THE DOCK EXISTS AT ALL. Either the whole dock renders or none of it does — the partial
   // dock (availability, Search, Chat, •••) that used to appear the instant Check In was clicked,
   // while the avatar was still walking in and its placement was still pending, was the ungated
@@ -4564,37 +4626,19 @@ export function OfficeMap() {
   //   Working+Check out | 🔔 | ••• (Settings)
   const dockEntries: HudDockEntry[] = [];
   dockEntries.push({
-    kind: "flyout",
+    kind: "action",
     key: "search",
-    icon: "🔍",
+    icon: <HudIcon name="search" />,
     label: "Search",
     ariaLabel: "Search for a person",
-    // CharacterSearch's input and result list keep their own dark office treatment.
-    surface: "dark",
-    panel: (
-      <CharacterSearch
-        autoFocus
-        transformRef={transformRef}
-        targetScale={maxScale}
-        onLocate={(layer) => {
-          // Onboarding sequence must complete before normal search-locate
-          // interactions resume — every non-"done" state suppresses this.
-          if (onboarding !== "done" || checkoutBusy) return;
-          setRoomSidebar(null);
-          setMenu(null);
-          window.clearTimeout(greetTimerRef.current);
-          greetNonceRef.current += 1;
-          setGreeting({ characterId: layer.id, nonce: greetNonceRef.current });
-          greetTimerRef.current = window.setTimeout(() => setGreeting(null), 3000);
-        }}
-      />
-    ),
+    active: dockTool === "search",
+    onClick: () => setDockTool("search"),
   });
   if (dockChromeVisible) {
     dockEntries.push({
       kind: "action",
       key: "hub",
-      icon: "🏢",
+      icon: <HudIcon name="hub" />,
       label: "Hub",
       ariaLabel: "Open Company Hub",
       active: companyHub.isOpen,
@@ -4606,10 +4650,11 @@ export function OfficeMap() {
     dockEntries.push({
       kind: "action",
       key: "tasks",
-      icon: "📜",
+      icon: <HudIcon name="tasks" />,
       label: "Tasks",
       ariaLabel: "Open Tasks",
       active: tasksOpen,
+      badge: claimableCount,
       onClick: () => setTasksOpen(true),
     });
   }
@@ -4636,7 +4681,7 @@ export function OfficeMap() {
     dockEntries.push({
       kind: "action",
       key: "rewards",
-      icon: "🎁",
+      icon: <HudIcon name="rewards" />,
       label: "Rewards",
       ariaLabel: "Open Rewards",
       active: rewardsOpen,
@@ -4646,7 +4691,7 @@ export function OfficeMap() {
       dockEntries.push({
         kind: "action",
         key: "boards",
-        icon: "🗒️",
+        icon: <HudIcon name="boards" />,
         label: "Boards",
         ariaLabel: "Open office whiteboards",
         active: whiteboardTarget?.scope.kind === "room" && whiteboardTarget.scope.id === OFFICE_ROOM_ID,
@@ -4656,39 +4701,12 @@ export function OfficeMap() {
     dockEntries.push({
       kind: "action",
       key: "map",
-      icon: "🗺️",
+      icon: <HudIcon name="map" />,
       label: "Map",
       ariaLabel: "Open Global Team Map",
       active: teamMapOpen,
       onClick: () => setTeamMapOpen(true),
     });
-  }
-  // Working time + Check out. The pill is WorkingStatusIndicator, which keeps its own
-  // "hide before check-in / after checkout" rule, so this group can render unconditionally
-  // wherever time tracking is available at all.
-  if (timeTrackingVisible) {
-    dockEntries.push(
-      { kind: "separator", key: "sep-time" },
-      {
-        kind: "node",
-        key: "time",
-        node: (
-          <div className={styles.dockTimeGroup}>
-            <WorkingStatusIndicator compact state={checkoutFlow.state} workedLabel={checkoutFlow.workedLabel} />
-            {checkoutOfferable && (
-              <button
-                type="button"
-                className={styles.dockCheckoutButton}
-                onClick={checkoutFlow.startCheckout}
-                aria-label="Check out"
-              >
-                Check out
-              </button>
-            )}
-          </div>
-        ),
-      },
-    );
   }
   dockEntries.push({ kind: "separator", key: "sep-utility" });
   if (dockChromeVisible) {
@@ -4698,7 +4716,7 @@ export function OfficeMap() {
       // Global Notifications V1 — one component owns the 🔔 and its anchored panel, so the panel
       // is always positioned and layered relative to its button (see NotificationCenter.module.css).
       // `modalOpen` still closes the panel when a full-screen modal takes the view.
-      node: <NotificationCenter onNavigate={openNotificationDestination} modalOpen={anyModalOpen} />,
+      node: <NotificationCenter onNavigate={openNotificationDestination} modalOpen={anyModalOpen} label="Notifs" />,
     });
   }
   // ••• IS SETTINGS — game/system preferences only. Product features are tiles above and are
@@ -4706,7 +4724,8 @@ export function OfficeMap() {
   dockEntries.push({
     kind: "flyout",
     key: "settings",
-    icon: "•••",
+    icon: <HudIcon name="settings" />,
+    label: "Settings",
     ariaLabel: "Settings",
     align: "end",
     panel: (
@@ -4756,6 +4775,33 @@ export function OfficeMap() {
       />
     ),
   });
+  // Working time + Check out. The pill is WorkingStatusIndicator, which keeps its own
+  // "hide before check-in / after checkout" rule, so this group can render unconditionally
+  // wherever time tracking is available at all.
+  if (timeTrackingVisible) {
+    dockEntries.push(
+      { kind: "separator", key: "sep-time" },
+      {
+        kind: "node",
+        key: "time",
+        node: (
+          <div className={styles.dockTimeGroup}>
+            <WorkingStatusIndicator compact state={checkoutFlow.state} workedLabel={checkoutFlow.workedLabel} />
+            {checkoutOfferable && (
+              <button
+                type="button"
+                className={styles.dockCheckoutButton}
+                onClick={checkoutFlow.startCheckout}
+                aria-label="Check out"
+              >
+                Check out
+              </button>
+            )}
+          </div>
+        ),
+      },
+    );
+  }
 
   return (
     <div className={`${styles.viewport} ${isDragging ? styles.dragging : ""}`}>
@@ -5019,7 +5065,7 @@ export function OfficeMap() {
       {/* Toucan — a floating round button of its own at the bottom-right, matching the reference,
           which keeps the dock to the twelve controls in its row. Same handler, same disabled rule
           and the same three aria-labels it has always had. */}
-      {toucanChromeVisible && (
+      {toucanChromeVisible && !officeToolOpen && (
         <button
           className={styles.toucanButton}
           onClick={() => {
@@ -5043,8 +5089,25 @@ export function OfficeMap() {
           <span aria-hidden="true">🦜</span>
         </button>
       )}
+      {/* Search spotlight. Every action it offers is one of THIS component's existing handlers —
+          the search-locate path the dock's Search flyout already used, and handleChoose's chat /
+          call. No behaviour is reimplemented here. */}
+      <SearchSpotlight
+        open={dockTool === "search"}
+        onClose={() => setDockTool(null)}
+        people={positionedPeerLayers}
+        statusByLayerId={statusByLayerId}
+        onLocate={(layer) => locateCharacter(layer)}
+        onChat={(layer) => handleChoose("chat", layer)}
+        onCall={(layer) => handleChoose("call", layer)}
+      />
+      {/* Claim-time progression strip. Deliberately rendered BEFORE the dock: rewardFx's
+          findHudTargets uses querySelector, so while this is mounted its [data-hud-target]
+          elements are found first and the particles land here instead of on the hidden dock. */}
+      <ClaimHud />
       {dockVisible && (
         <HudDock
+          hidden={officeToolOpen}
           behindModal={teamMapOpen}
           behindOverlay={dockBehindOverlay}
           entries={dockEntries}

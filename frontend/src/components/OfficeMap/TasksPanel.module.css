@@ -1,38 +1,38 @@
-/* Quests | Missions tab bar, rendered INTO whichever existing panel is showing (see
-   TasksPanel.tsx). Styled against the shared dark modal shell both panels use, so the bar reads
-   as part of that panel rather than as a strip bolted on top. */
+/* Quests | Missions tab bar, rendered into each panel's top bar (see TasksPanel.tsx). Text-only
+   pills, per brief — no generated tab icons. */
 .tabs {
   display: flex;
+  align-items: center;
   gap: 4px;
-  padding: 12px 14px 0;
-  /* Clears the panels' absolutely-positioned close button at top:12px right:12px. */
-  padding-right: 44px;
-  font-family: system-ui, sans-serif;
+  padding: 3px;
+  border-radius: 13px;
+  background: rgba(24, 20, 34, 0.05);
 }
 
 .tab {
   all: unset;
   box-sizing: border-box;
   cursor: pointer;
-  padding: 6px 14px;
-  border-radius: 999px;
-  font-size: 13px;
+  padding: 7px 16px;
+  border-radius: 10px;
+  font-family: system-ui, sans-serif;
+  font-size: 13.5px;
   font-weight: 600;
-  color: rgba(245, 240, 255, 0.6);
+  color: rgba(36, 31, 48, 0.55);
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
 .tab:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(245, 240, 255, 0.85);
+  color: #241f30;
+}
+
+.tabActive {
+  background: #fdfcfa;
+  color: #241f30;
+  box-shadow: 0 1px 3px rgba(18, 16, 28, 0.12);
 }
 
 .tab:focus-visible {
-  outline: 2px solid rgba(190, 160, 255, 0.7);
-  outline-offset: 1px;
-}
-
-.tabActive,
-.tabActive:hover {
-  background: rgba(255, 214, 122, 0.16);
-  color: #ffd67a;
+  outline: 2px solid #4bb96a;
+  outline-offset: 2px;
 }

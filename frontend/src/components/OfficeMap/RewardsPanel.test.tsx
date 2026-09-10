@@ -60,14 +60,20 @@ describe("RewardsPanel", () => {
   it("shows cost, affordability and approval hints; unaffordable items cannot be redeemed", async () => {
     render(<RewardsPanel onClose={() => {}} />);
     await waitFor(() => expect(screen.getByTestId("reward-catalog")).toBeInTheDocument());
-    expect(screen.getByTestId("reward-coffee_voucher-cost")).toHaveTextContent("🪙 60");
+    // The 🪙 glyph is now the locked HUD coin asset beside the amount.
+    expect(screen.getByTestId("reward-coffee_voucher-cost")).toHaveTextContent("60");
+    expect(screen.getByTestId("reward-coffee_voucher-cost").querySelector("img")).not.toBeNull();
     expect(screen.getByTestId("reward-coffee_voucher")).toHaveAttribute("data-affordable", "true");
     expect(screen.getByTestId("reward-desk_plant")).toHaveAttribute("data-affordable", "false");
-    expect(screen.getByTestId("reward-desk_plant")).toHaveTextContent("Needs approval");
-    expect(screen.getByRole("button", { name: "Redeem Desk Plant (demo)" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Redeem Coffee Voucher (demo)" })).toBeEnabled();
-    // Catalog response feeds the shared store, so the strip shows the server balance.
-    expect(screen.getByTestId("progression-coins")).toHaveTextContent("🪙 100");
+    expect(screen.getByTestId("reward-desk_plant")).toHaveTextContent("Approval needed");
+    // Affordability now gates the CONFIRM button in the selection summary — picking a card
+    // commits nothing, so an unaffordable card can be inspected but never redeemed.
+    fireEvent.click(screen.getByTestId("reward-desk_plant"));
+    expect(screen.getByRole("button", { name: "Confirm redeem Desk Plant (demo)" })).toBeDisabled();
+    fireEvent.click(screen.getByTestId("reward-coffee_voucher"));
+    expect(screen.getByRole("button", { name: "Confirm redeem Coffee Voucher (demo)" })).toBeEnabled();
+    // Catalog response feeds the shared store, so the header shows the server balance.
+    expect(screen.getByTestId("rewards-balance")).toHaveTextContent("100 Coins");
   });
 
   it("redeems only after confirmation, once per press, then folds the server balance into the store and shows history", async () => {
@@ -79,13 +85,21 @@ describe("RewardsPanel", () => {
     render(<RewardsPanel onClose={() => {}} />);
     await waitFor(() => expect(screen.getByTestId("reward-catalog")).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole("button", { name: "Redeem Coffee Voucher (demo)" }));
-    expect(screen.getByTestId("reward-coffee_voucher-confirm")).toHaveTextContent("Redeem for 🪙 60?");
+    // Step 1 — picking a card only selects it; nothing is spent.
+    expect(screen.getByText("Choose a reward to see its details")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("reward-coffee_voucher"));
+    expect(screen.getByTestId("reward-selection")).toHaveTextContent("Coffee Voucher (demo)");
+    expect(screen.getByTestId("reward-selection")).toHaveTextContent("60 Coins");
+    expect(screen.getByTestId("reward-coffee_voucher")).toHaveAttribute("data-selected", "true");
     expect(redeemReward).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Keep coins, do not redeem Coffee Voucher (demo)" }));
-    expect(screen.queryByTestId("reward-coffee_voucher-confirm")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Redeem Coffee Voucher (demo)" }));
+    // Deselecting returns to the empty summary, still without spending.
+    fireEvent.click(screen.getByTestId("reward-coffee_voucher"));
+    expect(screen.queryByTestId("reward-selection")).toBeNull();
+    expect(redeemReward).not.toHaveBeenCalled();
+
+    // Step 2 — the summary's Redeem is the confirm.
+    fireEvent.click(screen.getByTestId("reward-coffee_voucher"));
     const confirm = screen.getByRole("button", { name: "Confirm redeem Coffee Voucher (demo)" });
     await act(async () => {
       fireEvent.click(confirm);
@@ -106,7 +120,7 @@ describe("RewardsPanel", () => {
     render(<RewardsPanel onClose={() => {}} />);
     await waitFor(() => expect(screen.getByTestId("reward-catalog")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("tab", { name: /History/ }));
-    expect(screen.getByRole("tab", { name: /History/ })).toHaveTextContent("1 pending");
+    expect(screen.getByTestId("rewards-pending-count").textContent).toBe("1");
     expect(screen.getByTestId("redemption-r1-status")).toHaveTextContent("Pending approval");
     expect(screen.getByTestId("redemption-r2-status")).toHaveTextContent("Fulfilled");
     expect(screen.getByTestId("redemption-r2")).toHaveTextContent("“enjoy”");
@@ -125,7 +139,7 @@ describe("RewardsPanel", () => {
     vi.mocked(redeemReward).mockRejectedValue(new Error("Not enough Coins: 10 available, 60 needed"));
     render(<RewardsPanel onClose={() => {}} />);
     await waitFor(() => expect(screen.getByTestId("reward-catalog")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "Redeem Coffee Voucher (demo)" }));
+    fireEvent.click(screen.getByTestId("reward-coffee_voucher"));
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Confirm redeem Coffee Voucher (demo)" }));
     });

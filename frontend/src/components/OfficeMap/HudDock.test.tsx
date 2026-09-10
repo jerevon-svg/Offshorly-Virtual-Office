@@ -138,4 +138,42 @@ describe("HudDock", () => {
     expect(dock.className).toMatch(/behindOverlay/);
     expect(dock.className).not.toMatch(/behindModal/);
   });
+
+  describe("a tile's claimable badge", () => {
+    const withBadge = (badge?: number) => [
+      {
+        kind: "action" as const,
+        key: "tasks",
+        icon: <span>T</span>,
+        label: "Tasks",
+        ariaLabel: "Open Tasks",
+        badge,
+        onClick: () => {},
+      },
+    ];
+
+    it("shows the count when rewards are waiting", () => {
+      render(<HudDock entries={withBadge(3)} />);
+      expect(screen.getByTestId("dock-badge-tasks").textContent).toBe("3");
+    });
+
+    it("caps at 9+", () => {
+      render(<HudDock entries={withBadge(12)} />);
+      expect(screen.getByTestId("dock-badge-tasks").textContent).toBe("9+");
+    });
+
+    it("renders nothing at zero or when unset", () => {
+      const { unmount } = render(<HudDock entries={withBadge(0)} />);
+      expect(screen.queryByTestId("dock-badge-tasks")).toBeNull();
+      unmount();
+      render(<HudDock entries={withBadge(undefined)} />);
+      expect(screen.queryByTestId("dock-badge-tasks")).toBeNull();
+    });
+
+    it("leaves the tile's icon and label alone", () => {
+      render(<HudDock entries={withBadge(2)} />);
+      expect(screen.getByLabelText("Open Tasks").textContent).toContain("Tasks");
+      expect(screen.getByLabelText("Open Tasks").textContent).toContain("T");
+    });
+  });
 });

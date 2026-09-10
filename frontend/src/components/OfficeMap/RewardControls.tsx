@@ -1,3 +1,4 @@
+import HudIcon from "../HudIcon";
 import styles from "./RewardControls.module.css";
 import type { Progression } from "../../services/quests/questsClient";
 
@@ -22,7 +23,7 @@ export function ProgressionStrip({ progression }: { progression: Progression | n
         </span>
       </div>
       <span className={styles.coins} data-testid="progression-coins">
-        🪙 {progression.coins}
+        <HudIcon name="coin" size="15px" /> {progression.coins}
       </span>
     </div>
   );
@@ -31,7 +32,11 @@ export function ProgressionStrip({ progression }: { progression: Progression | n
 export function RewardTag({ xp, coins }: { xp: number; coins: number }) {
   return (
     <span className={styles.reward} data-testid="reward-tag">
-      +{xp} XP · +{coins} 🪙
+      <HudIcon name="xp" size="15px" />
+      {`+${xp} XP`}
+      <span className={styles.rewardGap} aria-hidden="true" />
+      <HudIcon name="coin" size="15px" />
+      {`+${coins}`}
     </span>
   );
 }
@@ -45,14 +50,23 @@ export interface ClaimButtonProps {
   label: string;
 }
 
-/** Nothing until completed; then Claim (disabled while a claim is in flight) or Claimed. */
+/** Always rendered, so the row's action column never changes width and nothing beside it shifts
+ *  between states. Only the middle state is actionable — claim ELIGIBILITY is unchanged, and only
+ *  that state carries the "Claim reward for X" accessible name, so the two disabled states remain
+ *  invisible to anything looking for a claimable action. */
 export function ClaimButton({ completed, claimed, pending, onClaim, label }: ClaimButtonProps) {
-  if (!completed) return null;
   if (claimed) {
     return (
-      <span className={styles.claimed} data-testid="claimed">
+      <button className={styles.claimDone} disabled aria-label={`Reward claimed for ${label}`} data-testid="claimed">
         Claimed
-      </span>
+      </button>
+    );
+  }
+  if (!completed) {
+    return (
+      <button className={styles.claimIdle} disabled aria-label={`${label} is not complete yet`}>
+        Claim
+      </button>
     );
   }
   return (

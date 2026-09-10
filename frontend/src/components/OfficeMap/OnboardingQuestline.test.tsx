@@ -55,7 +55,7 @@ describe("OnboardingQuestline", () => {
     ]);
     render(<OnboardingQuestline onClose={() => {}} />);
 
-    await waitFor(() => expect(screen.getByTestId("questline-summary")).toHaveTextContent("1 of 3 complete"));
+    await waitFor(() => expect(screen.getByTestId("questline-summary")).toHaveTextContent("1 of 3 quests complete"));
     const rows = screen.getAllByRole("listitem");
     expect(rows.map((r) => r.getAttribute("data-testid"))).toEqual([
       "quest-first_check_in",
@@ -67,10 +67,14 @@ describe("OnboardingQuestline", () => {
     expect(rows[2]).toHaveTextContent("2/3");
     expect(fetchMyQuests).toHaveBeenCalledTimes(1);
     // Reward amounts come from the server; the strip shows Level / XP / Coins.
-    expect(rows[1]).toHaveTextContent("+50 XP · +10 🪙");
-    expect(screen.getByTestId("progression-strip")).toHaveTextContent("Lv 1");
-    expect(screen.getByTestId("progression-xp")).toHaveTextContent("50 XP · 50/100 to next");
-    expect(screen.getByTestId("progression-coins")).toHaveTextContent("🪙 10");
+    // Reward amounts unchanged; the XP/🪙 glyphs are now the locked HUD assets beside the text.
+    expect(rows[1]).toHaveTextContent("+50 XP");
+    expect(rows[1]).toHaveTextContent("+10");
+    expect(rows[1].querySelectorAll("img").length).toBeGreaterThanOrEqual(2);
+    // The Level/XP/Coins strip is deliberately no longer rendered inside Tasks — the main HUD
+    // owns progression display. The store itself is untouched (progressionStore.test.ts covers
+    // the data path); this only asserts Tasks stops painting it.
+    expect(screen.queryByTestId("progression-strip")).toBeNull();
   });
 
   it("offers Claim only on completed unclaimed quests, claims once, then shows Claimed with new balances", async () => {
@@ -106,9 +110,10 @@ describe("OnboardingQuestline", () => {
     });
     expect(screen.getByTestId("quest-first_check_in")).toHaveTextContent("Claimed");
     expect(screen.queryByRole("button", { name: "Claim reward for Check in" })).toBeNull();
-    expect(screen.getByTestId("progression-strip")).toHaveTextContent("Lv 2");
-    expect(screen.getByTestId("progression-xp")).toHaveTextContent("100 XP · 0/200 to next");
-    expect(screen.getByTestId("progression-coins")).toHaveTextContent("🪙 20");
+    // The Level/XP/Coins strip is deliberately no longer rendered inside Tasks — the main HUD
+    // owns progression display. The store itself is untouched (progressionStore.test.ts covers
+    // the data path); this only asserts Tasks stops painting it.
+    expect(screen.queryByTestId("progression-strip")).toBeNull();
   });
 
   it("shows the error instead of a list when the fetch fails", async () => {

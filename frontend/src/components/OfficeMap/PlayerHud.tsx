@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import HudIcon from "../HudIcon";
 import styles from "./PlayerHud.module.css";
 import { HUD_TARGET_ATTR, reducedMotion } from "./rewardFx";
 import { useCurrentUser } from "../../auth/currentUserStore";
@@ -260,10 +261,10 @@ function HudBody({
   );
 
   // ---- DOCK LAYOUT: matches the approved reference ------------------------------------------
-  // [avatar + presence dot] [name · Lv chip / status picker / XP bar]  ‖  [🪙 coins / ◆ xp]
-  // The XP BAR sits under the status line and the XP NUMBERS sit in the Coins block, which is
-  // where the reference puts them. Both read the same animated `xp`, and the FX target attributes
-  // stay on the coins block and on the numbers block, so rewardFx.ts finds them unchanged.
+  // [avatar + presence dot] [name · Lv chip / status picker]  ‖  [coins / xp numbers + XP bar]
+  // The XP BAR and the XP NUMBERS are one group in the progression block — the bar reads the same
+  // animated `xp` the numbers do and is still the only bar rendered. The FX target attributes stay
+  // on the coins block and on the numbers block, so rewardFx.ts finds them unchanged.
   if (dock) {
     const avatarBlock = (
       <span className={styles.avatarWrap}>
@@ -279,7 +280,7 @@ function HudBody({
       <span className={styles.nameLine}>
         <span className={styles.name}>{name}</span>
         <span className={levelUpActive ? styles.levelUp : styles.level} data-testid="hud-level">
-          <span aria-hidden="true">♛</span> Lv {bounds.level}
+          <HudIcon name="level" /> Lv {bounds.level}
         </span>
       </span>
     );
@@ -306,7 +307,6 @@ function HudBody({
           <div className={styles.dockProfileText}>
             {nameLine}
             {statusSlot && <div className={styles.statusSlot}>{statusSlot}</div>}
-            {bar}
             {captions}
           </div>
         </div>
@@ -314,7 +314,7 @@ function HudBody({
         <div className={styles.dockProgress}>
           <div className={coinsPulsing ? styles.coinsPulse : styles.coins} {...{ [HUD_TARGET_ATTR]: "coins" }} aria-label="Coins balance">
             <span className={styles.coinIcon} aria-hidden="true">
-              🪙
+              <HudIcon name="coin" />
             </span>
             <span className={styles.coinsValue} data-testid="hud-coins">
               {coins.toLocaleString()}
@@ -322,12 +322,13 @@ function HudBody({
           </div>
           <div className={xpPulsing ? styles.meterPulse : styles.meter} {...{ [HUD_TARGET_ATTR]: "xp" }}>
             <span className={styles.xpDiamond} aria-hidden="true">
-              ◆
+              <HudIcon name="xp" />
             </span>
             <span className={styles.meterValue} data-testid="hud-xp">
               {into} / {span} XP
             </span>
           </div>
+          {bar}
         </div>
       </div>
     );
@@ -362,7 +363,7 @@ function HudBody({
 
       <div className={coinsPulsing ? styles.coinsPulse : styles.coins} {...{ [HUD_TARGET_ATTR]: "coins" }} aria-label="Coins balance">
         <span className={styles.coinIcon} aria-hidden="true">
-          🪙
+          <HudIcon name="coin" />
         </span>
         <span className={styles.coinsValue} data-testid="hud-coins">
           {coins.toLocaleString()}

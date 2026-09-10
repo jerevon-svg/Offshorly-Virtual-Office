@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import { MANUAL_STATUSES, STATUS_META, type OfficeStatus } from "../../services/presence/status";
 import {
   endDnd,
@@ -31,29 +31,19 @@ type Props = {
 
 export function StatusPicker({ checkedIn = true }: Props) {
   const { manualStatus } = useSelfStatus();
+  // Sole source of DND remaining time — and, because the same hook fires endDnd() at zero, the
+  // sole driver of DND auto-expiry. It must stay mounted here whether or not DND is active.
   const remainingMs = useDndRemainingMs();
   const [pickerOpen, setPickerOpen] = useState(false);
-
-  if (manualStatus === "DND") {
-    const label = remainingMs !== null ? formatDurationShort(remainingMs) : "";
-    return (
-      <div className={styles.picker}>
-        <div className={styles.dndChip}>
-          <span>
-            {STATUS_META.DND.emoji} DND{label ? ` · ${label}` : ""}
-          </span>
-          <button type="button" className={styles.dndChipCancel} onClick={() => endDnd()} aria-label="Cancel DND">
-            ✕
-          </button>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className={styles.picker}>
       <select
         className={styles.select}
+        // The pill's tint and border are derived from the ONE existing colour source
+        // (STATUS_META) rather than a second status->colour table in CSS. Everything else about
+        // the control — options, handler, DND branch — is unchanged.
+        style={{ "--status-color": STATUS_META[manualStatus].color } as CSSProperties}
         value={manualStatus}
         onChange={(e) => {
           const next = e.target.value as OfficeStatus;
@@ -61,15 +51,31 @@ export function StatusPicker({ checkedIn = true }: Props) {
             setPickerOpen(true);
             return;
           }
+          // Leaving DND by picking another status is the SAME exit the removed chip's ✕ was:
+          // endDnd() is what credits the session against the daily allowance and clears the
+          // expiry/previous-status bookkeeping. setManualStatus() refuses DND and would otherwise
+          // walk straight past all of that, silently leaking the allowance.
+          if (manualStatus === "DND") endDnd();
           setManualStatus(next);
         }}
         aria-label="Set your status"
       >
-        {MANUAL_STATUSES.filter((status) => status !== "DND" || checkedIn).map((status) => {
+        {MANUAL_STATUSES.filter(
+          // DND stays in the list while it IS the current status even if `checkedIn` has since
+          // gone false — a <select> whose value matches no option renders empty.
+          (status) => status !== "DND" || checkedIn || manualStatus === "DND",
+        ).map((status) => {
           const meta = STATUS_META[status];
+          // The live countdown rides on the DND option's own label, so the pill keeps exactly the
+          // geometry every other status has and simply grows to fit its text. formatDurationShort
+          // already yields "30m" / "1h" / "1h 30m"; no second formatter.
+          const label =
+            status === "DND" && manualStatus === "DND" && remainingMs !== null
+              ? `${meta.label} · ${formatDurationShort(remainingMs)}`
+              : meta.label;
           return (
             <option key={status} value={status}>
-              {meta.emoji} {meta.label}
+              {label}
             </option>
           );
         })}

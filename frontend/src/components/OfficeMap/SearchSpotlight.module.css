@@ -1,0 +1,248 @@
+/* Search Spotlight — centred upper-middle panel over a softened office.
+   Sits at z-index 55: above the office and the dock's own chrome, below the z-index 60 modal
+   family, so an open modal still wins exactly as it does over the dock. */
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 14vh;
+  background: rgba(24, 20, 34, 0.3);
+  backdrop-filter: blur(3px);
+  animation: spotlightScrim 160ms ease-out both;
+}
+
+@keyframes spotlightScrim {
+  from {
+    opacity: 0;
+  }
+}
+
+.panel {
+  box-sizing: border-box;
+  width: min(480px, calc(100vw - 32px));
+  padding: 6px 0 4px;
+  border-radius: 18px;
+  border: 1px solid rgba(24, 20, 34, 0.08);
+  /* The dock's cream surface language. */
+  background: #fdfcfa;
+  box-shadow: 0 24px 60px rgba(18, 16, 28, 0.28), 0 2px 8px rgba(18, 16, 28, 0.12);
+  font-family: system-ui, sans-serif;
+  color: #241f30;
+  animation: spotlightIn 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes spotlightIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.985);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel {
+    animation: none;
+  }
+}
+
+/* ---- query row ---------------------------------------------------------------------------- */
+.queryRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px 12px;
+}
+
+.input {
+  all: unset;
+  flex: 1;
+  min-width: 0;
+  font-size: 17px;
+  line-height: 1.3;
+  color: #241f30;
+}
+
+.input::placeholder {
+  color: rgba(36, 31, 48, 0.38);
+}
+
+.escHint {
+  flex: none;
+  padding: 3px 8px;
+  border-radius: 7px;
+  border: 1px solid rgba(24, 20, 34, 0.1);
+  background: rgba(24, 20, 34, 0.05);
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(36, 31, 48, 0.5);
+}
+
+.divider {
+  height: 1px;
+  margin: 0 16px;
+  background: rgba(24, 20, 34, 0.08);
+}
+
+.sectionLabel {
+  padding: 10px 16px 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: rgba(36, 31, 48, 0.45);
+}
+
+/* ---- results ------------------------------------------------------------------------------ */
+.results {
+  max-height: min(52vh, 420px);
+  overflow-y: auto;
+  padding-bottom: 6px;
+}
+
+.resultRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+}
+
+.resultRow:hover {
+  background: rgba(24, 20, 34, 0.04);
+}
+
+.resultAvatar {
+  flex: none;
+  width: 52px;
+  height: 52px;
+  border-radius: 999px;
+  object-fit: cover;
+  background: rgba(24, 20, 34, 0.06);
+}
+
+.resultText {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+
+.resultName {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 15px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.presenceDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex: none;
+}
+
+.resultStatus {
+  font-size: 12.5px;
+  color: rgba(36, 31, 48, 0.55);
+  white-space: nowrap;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.actionButton {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 44px;
+  border-radius: 13px;
+  background: #dfeee6;
+  transition: background-color 120ms ease;
+}
+
+.actionButton:hover {
+  background: #d5e9dc;
+}
+
+.actionButton:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: 2px;
+}
+
+/* ---- empty state: Recent ------------------------------------------------------------------ */
+.recentRow {
+  display: flex;
+  gap: 2px;
+  padding: 0 12px 10px;
+  overflow-x: auto;
+}
+
+.recentItem {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  width: 84px;
+  flex: none;
+  padding: 6px 2px;
+  border-radius: 12px;
+  transition: background-color 120ms ease;
+}
+
+.recentItem:hover {
+  background: rgba(24, 20, 34, 0.04);
+}
+
+.recentItem:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: 1px;
+}
+
+.recentAvatarWrap {
+  position: relative;
+  width: 46px;
+  height: 46px;
+}
+
+.recentAvatar {
+  width: 46px;
+  height: 46px;
+  border-radius: 999px;
+  object-fit: cover;
+  background: rgba(24, 20, 34, 0.06);
+}
+
+.recentDot {
+  position: absolute;
+  right: 0;
+  bottom: 1px;
+  width: 11px;
+  height: 11px;
+  border-radius: 999px;
+  border: 2px solid #fdfcfa;
+  box-sizing: border-box;
+}
+
+.recentName {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: rgba(36, 31, 48, 0.7);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

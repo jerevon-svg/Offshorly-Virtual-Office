@@ -1,7 +1,8 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StatusPicker } from "./StatusPicker";
-import { resetSelfStatusForTests, setManualStatus } from "../../services/presence/selfStatusStore";
+import { getDndAllowanceSnapshot, resetSelfStatusForTests, setManualStatus } from "../../services/presence/selfStatusStore";
+import { DND_POLICY } from "../../services/presence/dndPolicy";
 
 describe("StatusPicker", () => {
   beforeEach(() => {
@@ -39,26 +40,44 @@ describe("StatusPicker", () => {
     expect(screen.getByText("2 hours")).toBeInTheDocument();
   });
 
-  it("picking a duration starts DND and shows the countdown chip", () => {
+  // DND now renders as the same compact pill as every other status — no countdown chip, no ✕ —
+  // so it is the SELECT that must show DND, and leaving DND is a normal status pick.
+  it("picking a duration starts DND and shows it as the selected status", () => {
     render(<StatusPicker checkedIn />);
     fireEvent.change(screen.getByLabelText("Set your status"), { target: { value: "DND" } });
     fireEvent.click(screen.getByText("30 min"));
 
-    expect(screen.getByText(/DND/)).toBeInTheDocument();
-    expect(screen.getByLabelText("Cancel DND")).toBeInTheDocument();
+    const select = screen.getByLabelText("Set your status") as HTMLSelectElement;
+    expect(select.value).toBe("DND");
   });
 
-  it("cancelling DND restores the select with the previous status", () => {
+  it("shows the live remaining DND time in the pill label and drops it when DND ends", () => {
+    render(<StatusPicker checkedIn />);
+    fireEvent.change(screen.getByLabelText("Set your status"), { target: { value: "DND" } });
+    fireEvent.click(screen.getByText("30 min"));
+
+    const select = screen.getByLabelText("Set your status") as HTMLSelectElement;
+    const dndOption = () => Array.from(select.options).find((o) => o.value === "DND");
+    expect(dndOption()?.textContent).toBe("DND · 30m");
+
+    fireEvent.change(select, { target: { value: "AVAILABLE" } });
+    expect(dndOption()?.textContent).toBe("DND");
+  });
+
+  it("leaving DND by picking another status ends DND and credits the allowance", () => {
     setManualStatus("BUSY");
     render(<StatusPicker checkedIn />);
     fireEvent.change(screen.getByLabelText("Set your status"), { target: { value: "DND" } });
     fireEvent.click(screen.getByText("1 hour"));
-    expect(screen.getByLabelText("Cancel DND")).toBeInTheDocument();
-
-    fireEvent.click(screen.getByLabelText("Cancel DND"));
 
     const select = screen.getByLabelText("Set your status") as HTMLSelectElement;
-    expect(select.value).toBe("BUSY");
+    expect(select.value).toBe("DND");
+
+    fireEvent.change(select, { target: { value: "AVAILABLE" } });
+
+    expect((screen.getByLabelText("Set your status") as HTMLSelectElement).value).toBe("AVAILABLE");
+    // The session was accounted for — the exit ran endDnd(), not a bare setManualStatus().
+    expect(getDndAllowanceSnapshot().remainingMs).toBeLessThan(DND_POLICY.dailyAllowanceMs);
   });
 
   it("shows the exhausted-allowance message and a disabled Request Extended DND action once the daily allowance is used up", async () => {
