@@ -40,6 +40,14 @@
 
 @media (prefers-reduced-motion: reduce) {
   .backdrop, .panel { animation: none; }
+  .tabDot { animation: none; }
+}
+
+/* Claimable-reward pip on the Achievements tab. Gold to match the reward currency, with the
+   ring lifting it off whatever the tab sits on. Purely derived — see EmployeeProfile.tsx. */
+@keyframes tabDotPulse {
+  0%, 100% { box-shadow: 0 0 0 2px var(--vo-surface, #fdfcff), 0 0 0 3px rgba(214, 158, 46, 0.28), 0 0 6px 1px rgba(240, 180, 60, 0.5); }
+  50% { box-shadow: 0 0 0 2px var(--vo-surface, #fdfcff), 0 0 0 3px rgba(214, 158, 46, 0.4), 0 0 9px 2px rgba(240, 180, 60, 0.75); }
 }
 
 /* ---- left column ------------------------------------------------------------------------- */
@@ -278,6 +286,8 @@
      tooltip and the aria-label, and the page's own heading repeats it below. */
   text-align: center;
   min-width: 0;
+  /* Anchors .tabDot only — no positioned descendants existed before, so layout is unchanged. */
+  position: relative;
   padding: 8px 16px;
   white-space: nowrap;
   border-radius: 10px;
@@ -655,4 +665,16 @@
   outline: 2px solid rgba(190, 160, 255, 0.75);
   outline-offset: 1px;
   box-shadow: 0 0 18px rgba(150, 110, 255, 0.35);
+}
+
+.tabDot {
+  position: absolute;
+  top: 5px;
+  right: 9px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: linear-gradient(160deg, #ffd576, #e0a020);
+  animation: tabDotPulse 2s ease-in-out infinite;
+  pointer-events: none;
 }

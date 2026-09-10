@@ -17,14 +17,14 @@
 /* The chat header avatar is an initials circle on grey; the toucan gets an
    emoji on a warm ground instead. */
 .headerAvatar {
-  background: #fde68a;
-  color: #111827;
+  background: #fdf0d2;
+  color: #241f30;
   font-size: 17px;
 }
 
 .toucanAvatar {
-  background: #fde68a;
-  color: #111827;
+  background: #fdf0d2;
+  color: #241f30;
   font-size: 15px;
 }
 
@@ -58,7 +58,7 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #9ca3af;
+  background: rgba(36, 31, 48, 0.45);
   animation: toucanTypingDot 1s ease-in-out infinite;
 }
 
@@ -90,16 +90,16 @@
   cursor: pointer;
   flex-shrink: 0;
   text-align: center;
-  color: #9ca3af;
+  color: rgba(36, 31, 48, 0.45);
   font-size: 11px;
   padding: 6px 16px 8px;
-  border-top: 1px solid #e5e7eb;
-  background: #fff;
+  border-top: 1px solid rgba(24, 20, 34, 0.08);
+  background: #fdfcfa;
 }
 
 .release:hover {
-  color: #4b5563;
-  background: #f9fafb;
+  color: rgba(36, 31, 48, 0.7);
+  background: rgba(24, 20, 34, 0.035);
 }
 
 /* The header's own action glyphs (history, memory, new conversation) borrow
@@ -127,8 +127,8 @@
   flex-shrink: 0;
   max-height: 200px;
   overflow-y: auto;
-  background: #fff;
-  border-bottom: 1px solid #e5e7eb;
+  background: #fdfcfa;
+  border-bottom: 1px solid rgba(24, 20, 34, 0.08);
   box-shadow: 0 4px 10px rgba(17, 24, 39, 0.06);
 }
 
@@ -139,8 +139,8 @@
   top: 0;
   margin: 0;
   padding: 8px 16px 4px;
-  background: #fff;
-  color: #6b7280;
+  background: #fdfcfa;
+  color: rgba(36, 31, 48, 0.55);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.05em;
@@ -150,7 +150,7 @@
 .popoverEmpty {
   margin: 0;
   padding: 4px 16px 12px;
-  color: #9ca3af;
+  color: rgba(36, 31, 48, 0.45);
   font-size: 12px;
   line-height: 1.45;
 }
@@ -163,7 +163,7 @@
 }
 
 .popoverRow:hover {
-  background: #f9fafb;
+  background: rgba(24, 20, 34, 0.035);
 }
 
 /* Per-row destructive control, deliberately low-contrast until hovered so the
@@ -176,17 +176,17 @@
   display: flex;
   align-items: center;
   padding: 0 12px 0 4px;
-  color: #d1d5db;
+  color: rgba(36, 31, 48, 0.3);
   font-size: 15px;
   line-height: 1;
 }
 
 .rowDelete:hover {
-  color: #dc2626;
+  color: #9b2c2c;
 }
 
 .rowDelete:focus-visible {
-  outline: 2px solid #3b82f6;
+  outline: 2px solid #2f6b45;
   outline-offset: -2px;
 }
 
@@ -196,7 +196,7 @@
 }
 
 .rowDelete:disabled:hover {
-  color: #d1d5db;
+  color: rgba(36, 31, 48, 0.3);
 }
 
 .historyItem {
@@ -210,7 +210,7 @@
   min-width: 0;
   padding: 8px 4px 8px 16px;
   font-size: 12px;
-  color: #374151;
+  color: #3f3a4d;
 }
 
 .historyItem:disabled {
@@ -219,7 +219,7 @@
 }
 
 .historyItem:focus-visible {
-  outline: 2px solid #3b82f6;
+  outline: 2px solid #2f6b45;
   outline-offset: -2px;
 }
 
@@ -227,7 +227,7 @@
 .historyMarker {
   flex-shrink: 0;
   width: 6px;
-  color: #3b82f6;
+  color: #2f6b45;
   font-size: 14px;
   line-height: 1;
 }
@@ -235,7 +235,7 @@
 /* The conversation currently on screen, so History reads as a selector rather
    than a list of somewhere-elses. */
 .historyItem[aria-current="true"] {
-  color: #111827;
+  color: #241f30;
   font-weight: 600;
 }
 
@@ -249,7 +249,7 @@
 
 .historyDate {
   flex-shrink: 0;
-  color: #9ca3af;
+  color: rgba(36, 31, 48, 0.45);
   font-size: 11px;
 }
 
@@ -262,18 +262,18 @@
   gap: 6px;
   padding: 7px 0 7px 16px;
   font-size: 12px;
-  color: #374151;
+  color: #3f3a4d;
 }
 
 .memoryRow:hover {
-  background: #f9fafb;
+  background: rgba(24, 20, 34, 0.035);
 }
 
 .memoryKind {
   flex-shrink: 0;
   margin-top: 1px;
-  color: #6b7280;
-  background: #f3f4f6;
+  color: rgba(36, 31, 48, 0.55);
+  background: rgba(24, 20, 34, 0.05);
   border-radius: 4px;
   padding: 1px 5px;
   font-size: 10px;
@@ -305,7 +305,7 @@
 .turnAction {
   all: unset;
   cursor: pointer;
-  color: #9ca3af;
+  color: rgba(36, 31, 48, 0.45);
   font-size: 11px;
   font-weight: 600;
   padding: 1px 4px;
@@ -322,12 +322,12 @@
 }
 
 .turnAction:hover {
-  color: #4b5563;
-  background: #f3f4f6;
+  color: rgba(36, 31, 48, 0.7);
+  background: rgba(24, 20, 34, 0.05);
 }
 
 .turnAction:focus-visible {
-  outline: 2px solid #3b82f6;
+  outline: 2px solid #2f6b45;
   outline-offset: 1px;
 }
 
@@ -340,7 +340,7 @@
    quiet affordance. */
 .errorBubble + .turnFooter .turnAction {
   opacity: 1;
-  color: #b91c1c;
+  color: #9b2c2c;
 }
 
 /* The request-failed notice: still a received bubble, tinted just enough to
@@ -406,12 +406,12 @@
 }
 
 .actionCancel {
-  background: #e5e7eb;
-  color: #374151;
+  background: rgba(24, 20, 34, 0.08);
+  color: #3f3a4d;
 }
 
 .actionCancel:hover:not(:disabled) {
-  background: #d1d5db;
+  background: rgba(36, 31, 48, 0.3);
 }
 
 .actionConfirm:disabled,
@@ -424,8 +424,8 @@
    chat stylesheet has no disabled state of its own. */
 .textarea:disabled {
   cursor: default;
-  color: #9ca3af;
-  background: #f9fafb;
+  color: rgba(36, 31, 48, 0.45);
+  background: rgba(24, 20, 34, 0.035);
 }
 
 /* --- T9: composer auto-grow --------------------------------------------------
@@ -458,8 +458,8 @@
   flex-wrap: wrap;
   gap: 6px;
   padding: 8px 12px 0;
-  border-top: 1px solid #e5e7eb;
-  background: #fff;
+  border-top: 1px solid rgba(24, 20, 34, 0.08);
+  background: #fdfcfa;
 }
 
 /* Deliberately a name chip and not a thumbnail: no file bytes exist client-side
@@ -471,11 +471,11 @@
   gap: 6px;
   max-width: 180px;
   padding: 4px 6px 4px 10px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid rgba(24, 20, 34, 0.08);
   border-radius: 9999px;
-  background: #f9fafb;
+  background: rgba(24, 20, 34, 0.035);
   font-size: 12px;
-  color: #374151;
+  color: #3f3a4d;
 }
 
 .attachmentName {
@@ -493,14 +493,14 @@
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  color: #6b7280;
+  color: rgba(36, 31, 48, 0.55);
   font-size: 14px;
   line-height: 1;
 }
 
 .attachmentRemove:hover {
-  background: #e5e7eb;
-  color: #111827;
+  background: rgba(24, 20, 34, 0.08);
+  color: #241f30;
 }
 
 /* The preview row takes over the divider above the composer when it is present,
@@ -548,14 +548,14 @@
   flex-shrink: 0;
   padding: 4px 12px;
   border-radius: 8px;
-  background: #e5e7eb;
-  color: #374151;
+  background: rgba(24, 20, 34, 0.08);
+  color: #3f3a4d;
   font-size: 12px;
   font-weight: 600;
 }
 
 .delegationStop:hover:not(:disabled) {
-  background: #d1d5db;
+  background: rgba(36, 31, 48, 0.3);
 }
 
 .delegationStop:disabled {
@@ -569,7 +569,7 @@
   margin-left: 6px;
   padding: 1px 7px;
   border-radius: 999px;
-  background: #dc2626;
+  background: #9b2c2c;
   color: #fff;
   font-size: 11px;
   font-weight: 700;
@@ -580,7 +580,7 @@
 .urgentCard {
   margin: 0 12px 6px;
   padding: 8px 12px;
-  border-left: 3px solid #dc2626;
+  border-left: 3px solid #9b2c2c;
   border-radius: 8px;
   background: #fef2f2;
   color: #7f1d1d;
@@ -626,21 +626,21 @@
 }
 
 .urgentOpen {
-  background: #dc2626;
+  background: #9b2c2c;
   color: #fff;
 }
 
 .urgentOpen:hover:not(:disabled) {
-  background: #b91c1c;
+  background: #9b2c2c;
 }
 
 .urgentDismiss {
-  background: #e5e7eb;
-  color: #374151;
+  background: rgba(24, 20, 34, 0.08);
+  color: #3f3a4d;
 }
 
 .urgentDismiss:hover:not(:disabled) {
-  background: #d1d5db;
+  background: rgba(36, 31, 48, 0.3);
 }
 
 .urgentOpen:disabled,
@@ -697,7 +697,7 @@
 .catchUpBadge {
   padding: 1px 6px;
   border-radius: 999px;
-  background: #dbeafe;
+  background: rgba(47, 107, 69, 0.12);
   color: #1e40af;
   font-size: 11px;
   font-weight: 600;
@@ -705,7 +705,7 @@
 }
 
 .catchUpBadgeUrgent {
-  background: #dc2626;
+  background: #9b2c2c;
   color: #fff;
 }
 
@@ -715,16 +715,16 @@
 }
 
 .catchUpBadgeMuted {
-  background: #e5e7eb;
-  color: #4b5563;
+  background: rgba(24, 20, 34, 0.08);
+  color: rgba(36, 31, 48, 0.7);
 }
 
 .catchUpOpenReviewed {
-  background: #9ca3af;
+  background: rgba(36, 31, 48, 0.45);
 }
 
 .catchUpOpenReviewed:hover:not(:disabled) {
-  background: #6b7280;
+  background: rgba(36, 31, 48, 0.55);
 }
 
 /* W5-C board context chip — sits directly above the composer while a whiteboard is in play. */

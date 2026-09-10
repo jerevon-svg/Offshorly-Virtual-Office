@@ -48,6 +48,8 @@ import {
   type SyncStatus,
   type WhiteboardSnapshot,
 } from "../../services/whiteboard/whiteboardSyncClient";
+import { profileImageFor } from "../../data/portraits";
+import HudIcon from "../HudIcon";
 import { STICKY_NOTE_TOOL, isStickyNoteTool, stickyNoteSkeleton } from "./stickyNote";
 import CursorChatLayer, { type CursorChatLayerHandle } from "./CursorChatLayer";
 import BoardVoiceControls from "./BoardVoiceControls";
@@ -90,6 +92,14 @@ export type WhiteboardEditorProps = {
   /** W5-C — "Ask Toucan about this board". Opens the office's Toucan panel scoped to this board;
    *  nothing about the board changes (Toucan is read-only here). Absent = no button. */
   onAskToucan?: () => void;
+  /** Back to the gallery. The panel no longer draws its own header over an open board — this one
+   *  document bar carries back / title / save state / presence / window controls. */
+  onBack?: () => void;
+  /** Close the whole Boards dialog. */
+  onClose?: () => void;
+  /** Browser fullscreen on the panel's dialog element (owned by WhiteboardPanel). */
+  onToggleFullscreen?: () => void;
+  fullscreen?: boolean;
 };
 
 const PRESENCE_CHIP_LIMIT = 6;
@@ -108,7 +118,16 @@ function realtimeOwns(status: SyncStatus): boolean {
   return status !== "offline";
 }
 
-export default function WhiteboardEditor({ board, onSaved, resolveDisplayName, onAskToucan }: WhiteboardEditorProps) {
+export default function WhiteboardEditor({
+  board,
+  onSaved,
+  resolveDisplayName,
+  onAskToucan,
+  onBack,
+  onClose,
+  onToggleFullscreen,
+  fullscreen = false,
+}: WhiteboardEditorProps) {
   const parsed = useMemo(() => parseStoredDocument(board.document), [board.document]);
   const initialElements = parsed.kind === "excalidraw" ? parsed.document.elements : [];
 
@@ -616,56 +635,28 @@ export default function WhiteboardEditor({ board, onSaved, resolveDisplayName, o
 
   return (
     <>
-      <div className={styles.header}>
+      <div className={styles.docBar}>
+        {onBack && (
+          <button type="button" className={styles.back} onClick={onBack}>
+            ← Boards
+          </button>
+        )}
+        <span className={styles.docTitle}>{board.title}</span>
         {live ? (
-          <>
+          // Realtime owns the board: the server persists every batch, so a live board is always
+          // saved. The connection state is only worth words while it is NOT settled.
+          realtime.status === "live" ? (
+            <span className={styles.savedChip} data-testid="saved-chip">
+              <span className={styles.savedDot} aria-hidden="true">
+                ✓
+              </span>
+              Saved
+            </span>
+          ) : (
             <span className={styles.status} data-testid="realtime-status">
               {realtimeLabel[realtime.status]}
             </span>
-            <BoardVoiceControls
-              boardId={board.id}
-              live={realtime.status === "live"}
-              voiceCount={presence.filter((c) => c.voice).length}
-            />
-            {presenceChips.length > 0 && (
-              <ul className={styles.presenceStrip} aria-label="On this board" data-testid="presence-strip">
-                {presenceChips.slice(0, PRESENCE_CHIP_LIMIT).map((c) => (
-                  <li
-                    key={c.sid}
-                    className={styles.presenceChip}
-                    title={c.isSelf ? `${c.name} (you)` : c.name}
-                    data-testid="presence-chip"
-                  >
-                    <span
-                      className={styles.presenceAvatar}
-                      style={{ background: c.color.background, borderColor: c.color.stroke }}
-                      aria-hidden="true"
-                    >
-                      {initialsOf(c.name)}
-                    </span>
-                    <span className={styles.presenceName}>{c.isSelf ? "You" : c.name}</span>
-                    {c.voice && (
-                      <span className={styles.presenceVoice} title="In voice" aria-label="In voice" data-testid="presence-voice">
-                        🎧
-                      </span>
-                    )}
-                  </li>
-                ))}
-                {overflow > 0 && <li className={`${styles.presenceChip} ${styles.presenceMore}`}>+{overflow}</li>}
-              </ul>
-            )}
-            {onAskToucan && (
-              <button
-                type="button"
-                className={`${styles.button} ${styles.askToucan}`}
-                onClick={onAskToucan}
-                aria-label="Ask Toucan about this board"
-                title="Ask Toucan about this board"
-              >
-                🦜 Ask Toucan
-              </button>
-            )}
-          </>
+          )
         ) : (
           <>
             <span className={styles.status + (status === "conflict" || status === "error" ? ` ${styles.statusConflict}` : "")}>
@@ -686,6 +677,104 @@ export default function WhiteboardEditor({ board, onSaved, resolveDisplayName, o
               </button>
             )}
           </>
+        )}
+        <span className={styles.docSpacer} />
+        {live && presenceChips.length > 0 && (
+          <>
+            <ul className={styles.presenceStrip} aria-label="On this board" data-testid="presence-strip">
+              {presenceChips.slice(0, PRESENCE_CHIP_LIMIT).map((c) => {
+                const portrait = profileImageFor(c.email, () => "");
+                return (
+                  <li
+                    key={c.sid}
+                    className={styles.presenceChip}
+                    title={c.isSelf ? `${c.name} (you)` : c.name}
+                    data-testid="presence-chip"
+                  >
+                    {portrait ? (
+                      <img className={styles.presenceAvatar} src={portrait} alt="" aria-hidden="true" draggable={false} />
+                    ) : (
+                      <span
+                        className={styles.presenceAvatar}
+                        style={{ background: c.color.background, borderColor: c.color.stroke }}
+                        aria-hidden="true"
+                      >
+                        {initialsOf(c.name)}
+                      </span>
+                    )}
+                    <span className={styles.presenceName}>{c.isSelf ? "You" : c.name}</span>
+                    {c.voice && (
+                      <span className={styles.presenceVoice} title="In voice" aria-label="In voice" data-testid="presence-voice">
+                        🎧
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+              {overflow > 0 && <li className={styles.presenceMore}>+{overflow}</li>}
+            </ul>
+            <span className={styles.presenceCount} data-testid="presence-count">
+              {presenceChips.length} here
+            </span>
+          </>
+        )}
+        {live && (
+          <BoardVoiceControls
+            boardId={board.id}
+            live={realtime.status === "live"}
+            voiceCount={presence.filter((c) => c.voice).length}
+          />
+        )}
+        {live && onAskToucan && (
+          <button
+            type="button"
+            className={`${styles.button} ${styles.askToucan}`}
+            onClick={onAskToucan}
+            aria-label="Ask Toucan about this board"
+            title="Ask Toucan about this board"
+          >
+            <HudIcon name="toucan" size="17px" />
+            Ask Toucan
+          </button>
+        )}
+        {onToggleFullscreen && (
+          <button
+            type="button"
+            className={styles.iconButton}
+            onClick={onToggleFullscreen}
+            aria-label={fullscreen ? "Exit fullscreen" : "Fullscreen"}
+            title={fullscreen ? "Exit fullscreen" : "Fullscreen"}
+          >
+            {/* Corner brackets, drawn in the same inline-SVG idiom as this editor's other bar
+                icons (sticky note, cursor chat): out-pointing to maximize, in-pointing to
+                restore. No new asset. */}
+            <svg
+              viewBox="0 0 24 24"
+              width="17"
+              height="17"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              {fullscreen ? (
+                <>
+                  <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" />
+                </>
+              ) : (
+                <>
+                  <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
+                </>
+              )}
+            </svg>
+          </button>
+        )}
+        {onClose && (
+          <button type="button" className={styles.close} onClick={onClose} aria-label="Close whiteboards">
+            ✕
+          </button>
         )}
       </div>
       {parsed.kind === "legacy" && (

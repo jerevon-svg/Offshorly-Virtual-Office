@@ -6,6 +6,8 @@ import {
   startOrJoinCall,
   useCallState,
 } from "../../services/call/callStore";
+import HudIcon from "../HudIcon";
+import { ExpandIcon, HangUpIcon, MicIcon, MicOffIcon } from "../Chat/ChatHeaderIcons";
 import styles from "./SpatialCallControls.module.css";
 
 type SpatialCallControlsProps = {
@@ -38,20 +40,45 @@ export function SpatialCallControls({ sessionId, onExpand }: SpatialCallControls
 
   if (!sessionId) return null;
 
-  // Not connected here: offer Join ONLY when a call is genuinely live in THIS session. Scoped by
-  // sessionId, so a call running in some other conversation never surfaces a Join button here.
+  // Not connected here: this IS an active spatial conversation, so offer the two call actions.
+  // Both go through the EXISTING spatial lifecycle — startOrJoinCall create-or-joins the room for
+  // this session id and the backend re-verifies spatial membership (>=2 people) before minting a
+  // token. Video is the same join followed by the existing camera toggle; there is no second call
+  // path, no new endpoint, and nothing spatial changes.
   if (call.connectedSessionId !== sessionId) {
-    if (callParticipantsFor(call, sessionId).length === 0) return null;
+    const live = callParticipantsFor(call, sessionId).length > 0;
+    const busyElsewhere = call.status === "connecting" || call.status === "connected";
     return (
       <div className={styles.wrap}>
         <button
           type="button"
           className={`${styles.iconButton} ${styles.join}`}
           onClick={() => void startOrJoinCall(sessionId)}
-          aria-label="Join call"
-          title="Join call"
+          disabled={busyElsewhere}
+          aria-label={live ? "Join call" : "Start voice call"}
+          title={live ? "Join call" : "Voice call"}
         >
-          📞 Join
+          <HudIcon name="call" size="17px" />
+        </button>
+        <button
+          type="button"
+          className={styles.iconButton}
+          onClick={() => {
+            void (async () => {
+              try {
+                await startOrJoinCall(sessionId);
+                await setCameraEnabled(true);
+              } catch {
+                // A refused join (e.g. the session dropped below two people) is already reported
+                // by the call store's own error state — the camera simply never turns on.
+              }
+            })();
+          }}
+          disabled={busyElsewhere}
+          aria-label={live ? "Join call with video" : "Start video call"}
+          title="Video call"
+        >
+          <HudIcon name="video" size="18px" />
         </button>
       </div>
     );
@@ -77,7 +104,7 @@ export function SpatialCallControls({ sessionId, onExpand }: SpatialCallControls
         aria-label={call.micEnabled ? "Mute microphone" : "Unmute microphone"}
         title={call.micEnabled ? "Mute" : "Unmute"}
       >
-        {call.micEnabled ? "🎙" : "🔇"}
+        {call.micEnabled ? <MicIcon /> : <MicOffIcon />}
       </button>
       {/* Stage B camera. Same icon-only treatment as the mic beside it, so adding video costs the
           header no width. OFF is the default for every call — this button is the ONLY thing in
@@ -85,12 +112,14 @@ export function SpatialCallControls({ sessionId, onExpand }: SpatialCallControls
           a camera that fails must not push the call controls around. */}
       <button
         type="button"
-        className={call.cameraEnabled ? styles.iconButton : `${styles.iconButton} ${styles.cameraOff}`}
+        className={
+          call.cameraEnabled ? `${styles.iconButton} ${styles.cameraOn}` : `${styles.iconButton} ${styles.cameraOff}`
+        }
         onClick={() => void setCameraEnabled(!call.cameraEnabled)}
         aria-label={call.cameraEnabled ? "Turn camera off" : "Turn camera on"}
         title={call.cameraError ?? (call.cameraEnabled ? "Turn camera off" : "Turn camera on")}
       >
-        {call.cameraEnabled ? "📹" : "🚫"}
+        <HudIcon name="video" size="18px" />
       </button>
       {/* Stage C. Expands the ALREADY-RUNNING call into the larger overlay. It calls a plain
           callback and touches no media: no token, no republish, no reconnect. */}
@@ -102,7 +131,7 @@ export function SpatialCallControls({ sessionId, onExpand }: SpatialCallControls
           aria-label="Expand call"
           title="Expand call"
         >
-          ⤢
+          <ExpandIcon />
         </button>
       )}
       <button
@@ -112,7 +141,7 @@ export function SpatialCallControls({ sessionId, onExpand }: SpatialCallControls
         aria-label="Leave call"
         title="Leave call"
       >
-        ⏻
+        <HangUpIcon />
       </button>
     </div>
   );

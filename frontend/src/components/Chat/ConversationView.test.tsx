@@ -307,6 +307,131 @@ function makeMessage(overrides: Partial<ChatMessage>): ChatMessage {
   };
 }
 
+describe("ConversationView — per-message avatars", () => {
+  afterEach(() => cleanup());
+
+  function serviceWith(history: ChatMessage[]): ChatService {
+    const conv: Conversation = { id: "conv-1", participantIds: ["bon", "alex"], lastMessageAt: "" };
+    return {
+      listConversations: async () => [conv],
+      getMessages: async () => history,
+      sendMessage: async (input) => makeMessage({ id: "new", ...input }),
+      openConversationWith: async () => conv,
+      onMessage: () => () => {},
+      markRead: () => {},
+      onUnreadCount: () => () => {},
+      markDelivered: () => {},
+      onDeliveryReceipt: () => () => {},
+      onReadReceipt: () => () => {},
+    };
+  }
+
+  it("shows ONE avatar per consecutive sender run, on that run's last bubble", async () => {
+    vi.resetModules();
+    const service = serviceWith([
+      makeMessage({ id: "p1", senderId: "alex", text: "first", sentAt: "2026-08-14T10:00:00.000Z" }),
+      makeMessage({ id: "p2", senderId: "alex", text: "second", sentAt: "2026-08-14T10:01:00.000Z" }),
+      makeMessage({ id: "p3", senderId: "alex", text: "third", sentAt: "2026-08-14T10:02:00.000Z" }),
+      makeMessage({ id: "o1", senderId: "bon", text: "mine", sentAt: "2026-08-14T10:03:00.000Z" }),
+    ]);
+    vi.doMock("../../services/chat", () => ({ chatMode: "real", chatService: service, mockChatService: service }));
+    const { ConversationView: View } = await import("./ConversationView");
+    render(<View peer={makePeer("alex")} peerChatId="alex@offshorly.com" selfId="bon" onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByText("third")).toBeInTheDocument());
+
+    const rowOf = (text: string) => screen.getByText(text).closest("[data-sender]") as HTMLElement;
+    const hasAvatar = (text: string) =>
+      Boolean(rowOf(text).querySelector('img, [data-initials-avatar="true"]'));
+
+    // The incoming run: only the LAST of the three carries the avatar.
+    expect(hasAvatar("first")).toBe(false);
+    expect(hasAvatar("second")).toBe(false);
+    expect(hasAvatar("third")).toBe(true);
+    // Outgoing messages never carry one — you know who you are.
+    expect(hasAvatar("mine")).toBe(false);
+  });
+
+  it("gives a consecutive Toucan run one avatar, on its final bubble, and none to outgoing", async () => {
+    vi.resetModules();
+    const { TOUCAN_CHAT_SENDER } = await import("../../services/chat/toucanSender");
+    const service = serviceWith([
+      makeMessage({ id: "t1", senderId: TOUCAN_CHAT_SENDER, text: "bird one", sentAt: "2026-08-14T10:00:00.000Z" }),
+      makeMessage({ id: "t2", senderId: TOUCAN_CHAT_SENDER, text: "bird two", sentAt: "2026-08-14T10:01:00.000Z" }),
+      makeMessage({ id: "o1", senderId: "bon", text: "my reply", sentAt: "2026-08-14T10:02:00.000Z" }),
+    ]);
+    vi.doMock("../../services/chat", () => ({ chatMode: "real", chatService: service, mockChatService: service }));
+    const { ConversationView: View } = await import("./ConversationView");
+    render(<View peer={makePeer("alex")} peerChatId="alex@offshorly.com" selfId="bon" onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByText("bird two")).toBeInTheDocument());
+
+    const rowOf = (text: string) => screen.getByText(text).closest("[data-sender]") as HTMLElement;
+    const avatarIn = (text: string) => rowOf(text).querySelector('img, [data-initials-avatar="true"]');
+    expect(rowOf("bird two").getAttribute("data-sender")).toBe("toucan");
+    expect(avatarIn("bird one")).toBeNull();
+    expect(avatarIn("bird two")).not.toBeNull();
+    expect(avatarIn("my reply")).toBeNull();
+
+    // Same alignment rule as everyone else: avatar on the bubble's line, metadata below it.
+    const line = screen.getByText("bird two").parentElement!;
+    expect(line.querySelector('img, [data-initials-avatar="true"]')).not.toBeNull();
+    expect(line.textContent).not.toMatch(/\d{1,2}:\d{2}/);
+  });
+
+  it("puts the avatar on the bubble's own line, with timestamp and reactions below it", async () => {
+    vi.resetModules();
+    const service = serviceWith([
+      makeMessage({ id: "p1", senderId: "alex@offshorly.com", text: "aligned", reactions: [] }),
+    ]);
+    vi.doMock("../../services/chat", () => ({ chatMode: "real", chatService: service, mockChatService: service }));
+    const { ConversationView: View } = await import("./ConversationView");
+    render(<View peer={makePeer("alex")} peerChatId="alex@offshorly.com" selfId="bon" onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByText("aligned")).toBeInTheDocument());
+
+    const bubble = screen.getByText("aligned");
+    const line = bubble.parentElement!;
+    // The avatar is the bubble's SIBLING on that line — so the line's height is the bubble's,
+    // and metadata underneath cannot drag the avatar down.
+    expect(line.querySelector("img, [data-initials-avatar='true']")).not.toBeNull();
+    // The timestamp lives outside the bubble line, in the block below it.
+    expect(line.textContent).not.toMatch(/\d{1,2}:\d{2}/);
+    const column = line.parentElement!;
+    const meta = line.nextElementSibling as HTMLElement;
+    expect(column.contains(meta)).toBe(true);
+    expect(meta.textContent).toMatch(/\d{1,2}:\d{2}/);
+  });
+
+  it("uses the peer's real portrait, and falls back to initials for someone without one", async () => {
+    vi.resetModules();
+    vi.doMock("../../services/chat", () => {
+      const service = serviceWith([makeMessage({ id: "p1", senderId: "alex@offshorly.com", text: "hello there" })]);
+      return { chatMode: "real", chatService: service, mockChatService: service };
+    });
+    const { ConversationView: View } = await import("./ConversationView");
+    const { unmount } = render(
+      <View peer={makePeer("alex")} peerChatId="alex@offshorly.com" selfId="bon" onClose={() => {}} />,
+    );
+    await waitFor(() => expect(screen.getByText("hello there")).toBeInTheDocument());
+    expect(
+      (screen.getByText("hello there").closest("[data-sender]") as HTMLElement).querySelector("img"),
+    ).not.toBeNull();
+    unmount();
+
+    vi.resetModules();
+    vi.doMock("../../services/chat", () => {
+      const service = serviceWith([makeMessage({ id: "p2", senderId: "nobody@offshorly.com", text: "no portrait" })]);
+      return { chatMode: "real", chatService: service, mockChatService: service };
+    });
+    const { ConversationView: Plain } = await import("./ConversationView");
+    render(<Plain peer={makePeer("nobody")} peerChatId="nobody@offshorly.com" selfId="bon" onClose={() => {}} />);
+    await waitFor(() => expect(screen.getByText("no portrait")).toBeInTheDocument());
+    expect(
+      (screen.getByText("no portrait").closest("[data-sender]") as HTMLElement).querySelector(
+        '[data-initials-avatar="true"]',
+      ),
+    ).not.toBeNull();
+  });
+});
+
 describe("deriveMessageStatus", () => {
   it("returns sent when no watermarks are set", () => {
     const msg = makeMessage({ sentAt: "2026-08-14T10:00:00.000Z" });
@@ -623,7 +748,9 @@ describe("ConversationView — A1.4 Toucan author in a DM", () => {
 
     const peerRow = screen.getByText("hi bon").closest("[data-sender]");
     expect(peerRow?.getAttribute("data-sender")).toBe("peer");
-    expect(peerRow?.textContent).toContain("A"); // peer initial unchanged
+    // Per-message avatars are the employee's real portrait now (initials only when there is
+    // none), and the peer's row still carries their own — never the bird's.
+    expect(peerRow?.querySelector("img")).not.toBeNull();
     const ownRow = screen.getByText("hi alex").closest("[data-sender]");
     expect(ownRow?.getAttribute("data-sender")).toBe("self");
   });

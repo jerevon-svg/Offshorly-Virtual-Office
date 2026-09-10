@@ -1,93 +1,282 @@
+/* Boards + Whiteboard — cream editorial surface matching the HUD / Rewards / Hub panel language
+   (see OfficeMap/RewardsPanel.module.css, which this deliberately mirrors: #fdfcfa panel, 22px
+   rounding, rgba(24,20,34,·) hairlines, #2f6b45 primary, #4bb96a focus ring). Typography is
+   inherited from html/body (Instrument Sans) — never re-declared here. */
+
 .overlay {
   position: fixed;
   inset: 0;
   z-index: 1200;
-  background: rgba(15, 23, 42, 0.55);
+  background: rgba(24, 20, 34, 0.34);
+  backdrop-filter: blur(3px);
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 24px;
+  box-sizing: border-box;
+  animation: boardsScrim 160ms ease-out both;
+}
+
+@keyframes boardsScrim {
+  from {
+    opacity: 0;
+  }
 }
 
 .dialog {
-  width: min(1280px, 100%);
-  height: min(860px, 100%);
-  background: #fff;
-  border-radius: 12px;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.35);
+  position: relative;
+  width: min(1180px, 100%);
+  height: min(840px, 100%);
+  box-sizing: border-box;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.08);
+  border-radius: 22px;
+  box-shadow: 0 28px 70px rgba(18, 16, 28, 0.32), 0 2px 8px rgba(18, 16, 28, 0.12);
+  color: #241f30;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  color: #111;
+  animation: boardsIn 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+/* Native fullscreen (the ⛶ control in the document bar). The dialog becomes the fullscreen
+   element, so the overlay's centring no longer applies — fill the screen and drop the rounding. */
+.dialog:fullscreen {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  border-radius: 0;
+  border: none;
+}
+
+@keyframes boardsIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.99);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overlay,
+  .dialog {
+    animation: none;
+  }
+}
+
+/* ---- gallery header ------------------------------------------------------------------------ */
 .header {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  border-bottom: 1px solid #e5e7eb;
-  background: #f8fafc;
+  gap: 14px;
+  padding: 18px 22px 12px;
 }
 
-.headerTitle {
-  font-weight: 600;
-  font-size: 15px;
+.headerIcon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 54px;
+  height: 54px;
+  border-radius: 16px;
+  background: #eef4ec;
+}
+
+.headerText {
   flex: 1;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
+.title {
+  margin: 0;
+  font-size: 27px;
+  line-height: 1.1;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.subtitle {
+  margin: 3px 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 14px;
+  color: rgba(36, 31, 48, 0.55);
+}
+
+/* Which scope's boards these are (conversation / room / office) — kept beside the description so
+   the per-scope behaviour stays legible. */
 .headerSub {
-  color: #64748b;
-  font-weight: 400;
-  margin-left: 6px;
+  color: rgba(36, 31, 48, 0.45);
 }
 
-.status {
-  font-size: 12px;
-  color: #64748b;
-}
-
-.statusConflict {
-  color: #b91c1c;
-}
-
-.button {
-  border: 1px solid #cbd5e1;
-  background: #fff;
-  border-radius: 6px;
-  padding: 4px 10px;
-  font-size: 13px;
+.newBoard {
+  all: unset;
+  flex: none;
+  box-sizing: border-box;
   cursor: pointer;
-}
-
-.button:hover {
-  background: #f1f5f9;
-}
-
-.buttonPrimary {
-  background: #2563eb;
-  border-color: #2563eb;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 20px;
+  border-radius: 999px;
+  background: #2f6b45;
   color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  transition: background-color 120ms ease;
 }
 
-.buttonPrimary:hover {
-  background: #1d4ed8;
+.newBoard:hover {
+  background: #275a3a;
+}
+
+.plus {
+  font-size: 17px;
+  line-height: 1;
 }
 
 .close {
-  border: none;
-  background: transparent;
-  font-size: 20px;
-  line-height: 1;
+  all: unset;
+  flex: none;
+  box-sizing: border-box;
   cursor: pointer;
-  padding: 2px 6px;
-  color: #475569;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  color: #3f3a4d;
+  font-size: 16px;
+  transition: background-color 120ms ease;
 }
 
+.close:hover {
+  background: rgba(24, 20, 34, 0.05);
+}
+
+.newBoard:focus-visible,
+.close:focus-visible,
+.button:focus-visible,
+.card:focus-visible,
+.searchInput:focus-visible,
+.sortSelect:focus-visible,
+.input:focus-visible,
+.iconButton:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: 2px;
+}
+
+/* ---- gallery toolbar (search + sort) --------------------------------------------------------- */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 22px 14px;
+}
+
+.searchWrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.searchIcon {
+  position: absolute;
+  left: 14px;
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.searchInput {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 14px 12px 42px;
+  border-radius: 14px;
+  border: 1px solid rgba(24, 20, 34, 0.1);
+  background: #fffefc;
+  color: #241f30;
+  font-size: 14.5px;
+  outline: none;
+}
+
+.searchInput::placeholder {
+  color: rgba(36, 31, 48, 0.4);
+}
+
+.sortSelect {
+  flex: none;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(24, 20, 34, 0.1);
+  background: #fffefc;
+  color: #241f30;
+  font-size: 14.5px;
+  cursor: pointer;
+  outline: none;
+}
+
+/* ---- create row (revealed by "New board") ---------------------------------------------------- */
+.createRow {
+  display: flex;
+  gap: 8px;
+  padding: 0 22px 14px;
+}
+
+.input {
+  flex: 1;
+  box-sizing: border-box;
+  border: 1px solid rgba(24, 20, 34, 0.1);
+  border-radius: 14px;
+  padding: 11px 14px;
+  font-size: 14.5px;
+  background: #fffefc;
+  color: #241f30;
+  outline: none;
+}
+
+.button {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(24, 20, 34, 0.12);
+  background: #fffefc;
+  color: #241f30;
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.button:hover:not(:disabled) {
+  background: rgba(24, 20, 34, 0.04);
+}
+
+.button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.buttonPrimary {
+  background: #2f6b45;
+  border-color: #2f6b45;
+  color: #fff;
+}
+
+.buttonPrimary:hover:not(:disabled) {
+  background: #275a3a;
+}
+
+/* ---- body / card grid ------------------------------------------------------------------------ */
 .body {
   flex: 1;
   min-height: 0;
@@ -96,71 +285,259 @@
 }
 
 .list {
-  padding: 16px;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  padding: 0 22px 6px;
+}
+
+.grid {
+  list-style: none;
+  margin: 0;
+  padding: 2px 0 6px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+@media (max-width: 1000px) {
+  .grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 680px) {
+  .grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.card {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(24, 20, 34, 0.08);
+  background: #fffefc;
+  transition: border-color 120ms ease, transform 120ms ease;
 }
 
-.createRow {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 8px;
+.card:hover {
+  border-color: rgba(24, 20, 34, 0.18);
+  transform: translateY(-1px);
 }
 
-.input {
-  flex: 1;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  padding: 6px 10px;
-  font-size: 14px;
-}
-
-.boardRow {
+/* Deterministic placeholder preview: no board thumbnails exist server-side and the list response
+   carries no document, so a card shows a calm tinted sheet derived from the board id (see
+   boardPreview.ts) rather than a fake screenshot. */
+.thumb {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  padding: 10px 12px;
-  background: #fff;
-  cursor: pointer;
-  text-align: left;
-  font: inherit;
+  justify-content: center;
+  width: 100%;
+  height: 148px;
+  border-radius: 13px;
+  overflow: hidden;
+  background: rgba(24, 20, 34, 0.035);
 }
 
-.boardRow:hover {
-  background: #f8fafc;
+.thumbSheet {
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(circle at 1px 1px, rgba(24, 20, 34, 0.13) 1px, transparent 0);
+  background-size: 14px 14px;
+  opacity: 0.7;
+}
+
+.thumbMark {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border-radius: 16px;
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: rgba(36, 31, 48, 0.72);
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 4px 14px rgba(18, 16, 28, 0.1);
+}
+
+.cardTitle {
+  font-size: 15.5px;
+  font-weight: 700;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .boardMeta {
-  font-size: 12px;
-  color: #64748b;
+  font-size: 13px;
+  color: rgba(36, 31, 48, 0.55);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.footer {
+  padding: 10px 22px 16px;
+  font-size: 13px;
+  color: rgba(36, 31, 48, 0.5);
 }
 
 .empty {
-  color: #64748b;
+  color: rgba(36, 31, 48, 0.55);
   font-size: 14px;
-  padding: 24px 0;
+  padding: 40px 0;
   text-align: center;
 }
 
 .error {
-  color: #b91c1c;
+  margin: 0 22px 10px;
+  padding: 8px 12px;
+  border-radius: 12px;
   font-size: 13px;
+  color: #9b2c2c;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.28);
+}
+
+/* ---- document bar (one open board) ------------------------------------------------------------
+   The panel's own header is not rendered while a board is open — this single compact bar carries
+   back / title / save state on the left and presence / voice / Toucan / window controls on the
+   right, so the canvas keeps the rest of the dialog. */
+.docBar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(24, 20, 34, 0.08);
+  background: #fdfcfa;
+}
+
+.back {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #241f30;
+  transition: background-color 120ms ease;
+}
+
+.back:hover {
+  background: rgba(24, 20, 34, 0.05);
+}
+
+.back:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: 2px;
+}
+
+.docTitle {
+  font-weight: 700;
+  font-size: 15.5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.docSpacer {
+  flex: 1;
+  min-width: 8px;
+}
+
+.savedChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #2f6b45;
+  white-space: nowrap;
+}
+
+.savedDot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #2f6b45;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.status {
+  font-size: 13px;
+  color: rgba(36, 31, 48, 0.55);
+  white-space: nowrap;
+}
+
+.statusConflict {
+  color: #9b2c2c;
+}
+
+.iconButton {
+  all: unset;
+  flex: none;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  color: #3f3a4d;
+  font-size: 15px;
+  transition: background-color 120ms ease;
+}
+
+.iconButton:hover {
+  background: rgba(24, 20, 34, 0.05);
 }
 
 .canvas {
   flex: 1;
   min-height: 0;
   position: relative;
+  /* Excalidraw theming through its OWN public CSS variables only — no class-name surgery on its
+     internals, so an Excalidraw upgrade cannot silently break the layout. Accent + islands are
+     pulled onto the VO palette; the toolbar, Library, undo/redo and zoom keep their native
+     placement and behaviour. */
+  --color-primary: #2f6b45;
+  --color-primary-darker: #275a3a;
+  --color-primary-darkest: #1f4a2f;
+  --color-primary-light: #dcecdf;
+  --color-primary-light-darker: #cde2d2;
+  --island-bg-color: #fdfcfa;
+  --default-bg-color: #fdfcfa;
+  --sidebar-bg-color: #fdfcfa;
+  --color-selection: #4bb96a;
 }
 
 /* Editor-local failure state (lazy chunk failed to load) — stays inside the panel body. */
 .editorError {
-  color: #b91c1c;
+  color: #9b2c2c;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -177,18 +554,15 @@
 
 /* Shown above the canvas when a board still holds a document from the previous (tldraw) editor. */
 .legacyNotice {
-  padding: 8px 14px;
-  font-size: 12px;
-  color: #92400e;
-  background: #fffbeb;
-  border-bottom: 1px solid #fde68a;
-}
-
-.legacyNotice {
   display: flex;
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
+  padding: 8px 16px;
+  font-size: 12.5px;
+  color: #92400e;
+  background: #fffbeb;
+  border-bottom: 1px solid #fde68a;
 }
 
 /* Legacy board that has not been started fresh yet: nothing to draw on, just the notice. */
@@ -198,58 +572,85 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #64748b;
+  color: rgba(36, 31, 48, 0.55);
   font-size: 14px;
-  background: #f8fafc;
+  background: rgba(24, 20, 34, 0.02);
 }
 
-/* W5-A presence strip: who is on the board right now (server presence, employee names). */
+/* W5-A presence strip: who is on the board right now (server presence, employee names). Real
+   portraits come from data/portraits' profileImageFor; initials remain the fallback. */
 .presenceStrip {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin: 0 0 0 auto;
-  padding: 0;
+  margin: 0;
+  padding: 0 0 0 6px;
   list-style: none;
   min-width: 0;
-  overflow: hidden;
 }
 
 .presenceChip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 2px 8px 2px 2px;
+  margin-left: -8px;
   border-radius: 999px;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  font-size: 12px;
-  color: #334155;
   white-space: nowrap;
 }
 
+.presenceChip:first-child {
+  margin-left: 0;
+}
+
 .presenceAvatar {
-  width: 20px;
-  height: 20px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
-  border: 2px solid;
+  border: 2px solid #fdfcfa;
+  box-shadow: 0 1px 3px rgba(18, 16, 28, 0.18);
+  object-fit: cover;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   color: #1e293b;
+  background: #e8e4f0;
 }
 
+/* The name is carried for assistive tech and the presence tests; the bar itself shows the pile
+   plus a count, exactly as the approved layout does. */
 .presenceName {
-  max-width: 120px;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
   overflow: hidden;
-  text-overflow: ellipsis;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.presenceCount {
+  margin-left: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(36, 31, 48, 0.6);
+  white-space: nowrap;
 }
 
 .presenceMore {
-  padding: 2px 8px;
-  color: #64748b;
+  margin-left: -8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 2px solid #fdfcfa;
+  background: rgba(24, 20, 34, 0.08);
+  color: rgba(36, 31, 48, 0.6);
+  font-size: 11px;
+  font-weight: 700;
 }
 
 /* W5-A cursor chat overlay — sits over the canvas, lets every pointer event through. */
@@ -269,12 +670,12 @@
   max-width: 260px;
   padding: 5px 10px;
   border-radius: 14px 14px 14px 4px;
-  border: 1.5px solid #94a3b8;
-  background: #fff;
-  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.18);
+  border: 1.5px solid rgba(24, 20, 34, 0.18);
+  background: #fdfcfa;
+  box-shadow: 0 4px 14px rgba(18, 16, 28, 0.18);
   font-size: 13px;
   line-height: 1.3;
-  color: #0f172a;
+  color: #241f30;
   pointer-events: none;
   animation: cursorChatIn 120ms ease-out;
 }
@@ -292,8 +693,8 @@
 
 .cursorChatOwn {
   pointer-events: auto;
-  background: #1e293b;
-  border-color: #1e293b;
+  background: #241f30;
+  border-color: #241f30;
   color: #fff;
   padding: 4px 6px;
 }
@@ -318,68 +719,70 @@
   to { opacity: 1; transform: none; }
 }
 
-/* W5-B board voice controls (header). Same visual family as the header buttons above. */
+/* W5-B board voice controls (document bar). Same pill family as the bar's other actions. */
 .voiceWrap {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  margin-left: 8px;
 }
 
 .voiceButton {
-  border: 1px solid #cbd5e1;
-  background: #fff;
+  border: 1px solid rgba(24, 20, 34, 0.12);
+  background: #fffefc;
   border-radius: 999px;
-  padding: 3px 10px;
-  font-size: 12px;
-  line-height: 1.4;
+  padding: 7px 14px;
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.3;
   cursor: pointer;
-  color: #0f172a;
+  color: #241f30;
   white-space: nowrap;
+  transition: background-color 120ms ease;
 }
 
 .voiceButton:hover:not(:disabled) {
-  background: #f1f5f9;
+  background: rgba(24, 20, 34, 0.04);
 }
 
 .voiceButton:disabled {
-  opacity: 0.55;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
 .voiceJoin {
-  border-color: #2563eb;
-  color: #1d4ed8;
+  border-color: rgba(24, 20, 34, 0.12);
+  color: #241f30;
 }
 
 .voiceMuted {
-  background: #fee2e2;
-  border-color: #fca5a5;
-  color: #991b1b;
+  background: #fdecec;
+  border-color: rgba(220, 38, 38, 0.35);
+  color: #9b2c2c;
 }
 
 .voiceLeave {
-  border-color: #dc2626;
-  color: #b91c1c;
+  border-color: rgba(220, 38, 38, 0.35);
+  color: #9b2c2c;
 }
 
 .voiceLive,
 .voiceConnecting {
-  font-size: 12px;
-  color: #166534;
+  font-size: 13px;
+  font-weight: 600;
+  color: #2f6b45;
   white-space: nowrap;
 }
 
 .voiceConnecting {
-  color: #64748b;
+  color: rgba(36, 31, 48, 0.55);
 }
 
 .voiceError {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 12px;
-  color: #b91c1c;
+  font-size: 12.5px;
+  color: #9b2c2c;
   max-width: 320px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -396,14 +799,25 @@
   padding: 0 2px;
 }
 
-/* Presence chip: in-voice marker beside the name. */
+/* Presence pile: in-voice marker, pinned to the corner of the avatar. */
 .presenceVoice {
-  font-size: 11px;
+  margin-left: -10px;
+  align-self: flex-end;
+  font-size: 10px;
   line-height: 1;
 }
 
-/* W5-C: Ask Toucan entry in the header. */
+/* W5-C: Ask Toucan entry in the document bar. */
 .askToucan {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   white-space: nowrap;
-  margin-left: 8px;
+  background: #eef4ec;
+  border-color: rgba(47, 107, 69, 0.24);
+  color: #2f6b45;
+}
+
+.askToucan:hover:not(:disabled) {
+  background: #e4eee2;
 }

@@ -59,6 +59,15 @@ describe("ToucanAssistantPanel", () => {
     });
   };
 
+  it("uses the production quill asset for New conversation, and clay icons for the other header actions", async () => {
+    await setup();
+    const iconSrc = (label: string) =>
+      (screen.getByRole("button", { name: label }).querySelector("img") as HTMLImageElement | null)?.src ?? "";
+    expect(iconSrc("Start a new conversation")).toMatch(/quill\.png/);
+    expect(iconSrc("Conversation history")).toMatch(/clock\.png/);
+    expect(iconSrc("What the toucan remembers")).toMatch(/memory\.png/);
+  });
+
   it("W5-C — a board context shows as a chip, rides on every ask as boardId, and can be cleared", async () => {
     const askSpy = vi.spyOn(toucanService, "ask");
     const onClear = vi.fn();

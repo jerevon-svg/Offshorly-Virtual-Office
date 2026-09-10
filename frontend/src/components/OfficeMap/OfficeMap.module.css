@@ -223,3 +223,120 @@
     font-size: 22px;
   }
 }
+
+/* ---- minimized chat bubbles -----------------------------------------------------------------
+   A minimized remote DM/group collapses to a circular avatar here instead of a header bar in
+   the horizontal window row. The rail stacks UPWARD from just above the Toucan button (which
+   keeps its own fixed bottom-right slot, unchanged): column-reverse puts the first minimized
+   conversation nearest the bird. The window itself stays mounted — see OfficeMap.tsx. */
+.chatBubbleRail {
+  position: fixed;
+  right: 16px;
+  /* Clears the 56px Toucan button at bottom:16 plus a gap; a fixed value so the rail does not
+     jump when the bird is released or hidden. */
+  bottom: 84px;
+  z-index: 140;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: center;
+  gap: 10px;
+}
+
+.chatBubbleWrap {
+  position: relative;
+  width: 52px;
+  height: 52px;
+}
+
+.chatBubble {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  position: relative;
+  display: block;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 2px solid #fdfcfa;
+  background: #e8e4f0;
+  box-shadow: 0 6px 18px rgba(18, 16, 28, 0.28);
+  overflow: visible;
+  transition: transform 120ms ease;
+}
+
+.chatBubble:hover {
+  transform: translateY(-2px);
+}
+
+.chatBubble:focus-visible,
+.chatBubbleClose:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: 2px;
+}
+
+.chatBubbleImage {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+}
+
+.chatBubbleInitials {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 700;
+  color: rgba(36, 31, 48, 0.75);
+}
+
+.chatBubbleBadge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  border: 2px solid #fdfcfa;
+  background: #2f6b45;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Close sits on the bubble's outer edge and only appears on hover/focus, so the rail stays calm. */
+.chatBubbleClose {
+  all: unset;
+  position: absolute;
+  left: -6px;
+  top: -6px;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  border: 1px solid rgba(24, 20, 34, 0.12);
+  background: #fdfcfa;
+  color: #3f3a4d;
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.chatBubbleWrap:hover .chatBubbleClose,
+.chatBubbleClose:focus-visible {
+  opacity: 1;
+}

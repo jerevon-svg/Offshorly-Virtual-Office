@@ -42,6 +42,7 @@
    in the dock's captioned form it becomes the 38px icon square that carries hover, and the badge
    anchors to IT. */
 .glyph {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -124,22 +125,8 @@
   }
 }
 
-.badge {
-  position: absolute;
-  top: -4px;
-  right: -4px;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: 999px;
-  background: #e5484d;
-  color: #fff;
-  font-size: 10px;
-  line-height: 16px;
-  text-align: center;
-  font-weight: 700;
-  box-shadow: 0 0 0 2px var(--vo-chrome-badge-ring, transparent);
-}
+/* The unread count reuses HudDock.module.css's .tileBadge (the Tasks badge) — see the component.
+   Only the positioning context lives here. */
 
 .dropdown {
   position: absolute;

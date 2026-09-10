@@ -1,6 +1,7 @@
 import { useState } from "react";
 import HudIcon from "../HudIcon";
 import type { Conversation } from "../../services/chat/types";
+import dock from "../OfficeMap/HudDock.module.css";
 import styles from "./MessageNotificationBadge.module.css";
 
 type MessageNotificationBadgeProps = {
@@ -24,6 +25,13 @@ type MessageNotificationBadgeProps = {
    *  dock (see HudDock.tsx). Omitted everywhere else, where it stays the round icon chip it was.
    *  Presentation only — the accessible name still comes from aria-label below. */
   label?: string;
+  /** When provided the badge is JUST the dock tile: clicking calls this instead of opening the
+   *  built-in dropdown, because the conversation list now lives in its own panel
+   *  (ConversationListPanel, opened as the dock's Chat tool). The dropdown below stays for any
+   *  caller that does not pass this. */
+  onOpen?: () => void;
+  /** Reflects the dock tool's open state for the tile's pressed styling. */
+  active?: boolean;
 };
 
 // Persistent Global Chat entry point (💬) — always visible once real chat is enabled, not just
@@ -41,6 +49,8 @@ export function MessageNotificationBadge({
   onFindPerson,
   onNewGroupChat,
   label,
+  onOpen,
+  active,
 }: MessageNotificationBadgeProps) {
   const [open, setOpen] = useState(false);
 
@@ -62,17 +72,20 @@ export function MessageNotificationBadge({
         type="button"
         className={label ? `${styles.iconButton} ${styles.iconButtonLabeled}` : styles.iconButton}
         aria-label={total > 0 ? `${total} unread message${total === 1 ? "" : "s"}` : "Conversations"}
-        onClick={() => setOpen((v) => !v)}
+        aria-pressed={onOpen ? Boolean(active) : undefined}
+        onClick={() => (onOpen ? onOpen() : setOpen((v) => !v))}
       >
         {/* The unread badge is a child of the glyph, so in the dock's captioned form it hugs the
             💬 square (as in the reference) instead of the taller button's corner. */}
         <span className={styles.glyph}>
           <HudIcon name="chat" />
-          {total > 0 && <span className={styles.badge}>{total > 99 ? "99+" : total}</span>}
+          {/* The dock's OWN badge class (HudDock's .tileBadge, the one Tasks uses) rather than a
+              second variant, so diameter, type, colour, ring and offset can never drift apart. */}
+          {total > 0 && <span className={dock.tileBadge}>{total > 99 ? "99+" : total}</span>}
         </span>
         {label && <span className={styles.label}>{label}</span>}
       </button>
-      {open && (
+      {open && !onOpen && (
         <div className={styles.dropdown}>
           <button
             type="button"

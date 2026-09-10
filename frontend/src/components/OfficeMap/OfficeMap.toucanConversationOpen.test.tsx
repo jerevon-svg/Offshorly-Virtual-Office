@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, waitFor, cleanup } from "@testing-library/react";
+import { act, fireEvent, render, waitFor, cleanup, within } from "@testing-library/react";
 import { OfficeMap } from "./OfficeMap";
 import type { OfficePerson } from "../../services/office/floorMerge";
 import type { ToucanSummonState } from "./ToucanFlyer";
 import conversationPanelStyles from "../Chat/ConversationView.module.css";
-import badgeStyles from "../Chat/MessageNotificationBadge.module.css";
+// The dock's Chat tile now opens the ConversationListPanel (dockTool "chat") instead of its own
+// dropdown; conversation rows live in that panel's stylesheet.
+import listStyles from "../Chat/ConversationListPanel.module.css";
 import officeStyles from "./OfficeMap.module.css";
 import { getCurrentUserId } from "../../auth/useAuthGate";
 import { mockAttendanceService, resetMockAttendanceForTests } from "../../services/attendance";
@@ -187,10 +189,10 @@ async function selectFromGlobalChat(view: ReturnType<typeof render>, rowLabel: s
     fireEvent.click(view.getByRole("button", { name: /Conversations|unread message/ }));
   });
   const row = await waitFor(() => {
-    const match = Array.from(view.container.querySelectorAll(`.${badgeStyles.row}`)).find((el) =>
+    const match = Array.from(view.container.querySelectorAll(`.${listStyles.row}`)).find((el) =>
       el.textContent?.includes(rowLabel),
     );
-    if (!match) throw new Error(`no 💬 row for ${rowLabel}`);
+    if (!match) throw new Error(`no conversation row for ${rowLabel}`);
     return match;
   });
   await act(async () => {
@@ -215,6 +217,67 @@ describe("OfficeMap — the Toucan panel shares the floating chat stack", () => 
   afterEach(() => {
     cleanup();
     resetMockAttendanceForTests(getCurrentUserId());
+  });
+
+  // The Chat TOOL (the conversation list) is a full-screen dock tool: it hides the dock and the
+  // Toucan through the existing officeToolOpen path, and closing it restores them. The chat
+  // WINDOWS it opens are not tools and keep coexisting with the dock as they always did.
+  it("the Chats list hides the Toucan while open and restores it on close", async () => {
+    chatListState.conversations = [dmConv];
+    const view = render(<OfficeMap />);
+    const chatTile = await waitFor(() => view.getByRole("button", { name: /Conversations|unread message/ }));
+    await waitFor(() => expect(view.getByRole("button", { name: "Call the toucan" })).toBeTruthy());
+
+    await act(async () => {
+      fireEvent.click(chatTile);
+    });
+    expect(view.getByRole("dialog", { name: "Chats" })).toBeTruthy();
+    expect(view.queryByRole("button", { name: "Call the toucan" })).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(view.getByRole("button", { name: "Close chats" }));
+    });
+    expect(view.queryByRole("dialog", { name: "Chats" })).toBeNull();
+    await waitFor(() => expect(view.getByRole("button", { name: "Call the toucan" })).toBeTruthy());
+  });
+
+  it("selecting a conversation closes the Chats list and brings the Toucan back", async () => {
+    chatListState.conversations = [dmConv];
+    const view = render(<OfficeMap />);
+    // The dock only mounts once the async attendance answer confirms check-in.
+    await waitFor(() => view.getByRole("button", { name: /Conversations|unread message/ }));
+
+    await selectFromGlobalChat(view, "Peer Person");
+
+    expect(view.queryByRole("dialog", { name: "Chats" })).toBeNull();
+    expect(conversationPanels(view.container)).toHaveLength(1);
+    await waitFor(() => expect(view.getByRole("button", { name: "Call the toucan" })).toBeTruthy());
+  });
+
+  it("New Message owns the screen too: dock chrome and the Toucan step aside, and come back on close", async () => {
+    chatListState.conversations = [dmConv];
+    const view = render(<OfficeMap />);
+    const chatTile = await waitFor(() => view.getByRole("button", { name: /Conversations|unread message/ }));
+    await waitFor(() => expect(view.getByRole("button", { name: "Call the toucan" })).toBeTruthy());
+
+    await act(async () => {
+      fireEvent.click(chatTile);
+    });
+    await act(async () => {
+      fireEvent.click(view.getByRole("button", { name: "New Message" }));
+    });
+    // The picker replaced the list, and both are screen-owning: no Toucan behind either.
+    expect(view.getByRole("dialog", { name: /New Message/i })).toBeTruthy();
+    expect(view.queryByRole("dialog", { name: "Chats" })).toBeNull();
+    expect(view.queryByRole("button", { name: "Call the toucan" })).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(
+        within(view.getByRole("dialog", { name: /New Message/i })).getByRole("button", { name: "Close" }),
+      );
+    });
+    expect(view.queryByRole("dialog", { name: /New Message/i })).toBeNull();
+    await waitFor(() => expect(view.getByRole("button", { name: "Call the toucan" })).toBeTruthy());
   });
 
   it("Toucan open + Global Chat → DM: both stay visible, the DM takes the slot beside the Toucan", async () => {

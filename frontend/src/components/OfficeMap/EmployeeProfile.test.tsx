@@ -45,6 +45,36 @@ vi.mock("../../services/feed/feedClient", async () => {
   };
 });
 
+const { useProgressionStore } = vi.hoisted(() => ({ useProgressionStore: vi.fn() }));
+
+vi.mock("../../services/quests/progressionStore", async () => {
+  const actual = await vi.importActual<typeof import("../../services/quests/progressionStore")>(
+    "../../services/quests/progressionStore",
+  );
+  // unclaimedTierCount stays REAL — the tab dot's whole point is that it is derived, so the test
+  // must exercise the real derivation and only stub the data source and the fetches.
+  return { ...actual, useProgressionStore, refreshBadges: vi.fn(), refreshProgression: vi.fn() };
+});
+
+type StoreBadge = import("../../services/quests/questsClient").Badge;
+const makeBadge = (over: Partial<StoreBadge> = {}): StoreBadge => ({
+  id: "regular",
+  title: "Regular",
+  description: "Check in to the office",
+  category: "engagement",
+  emblem: "regular",
+  metricKind: "event_count",
+  metric: 25,
+  tier: 2,
+  tierName: "silver",
+  thresholds: [5, 20, 60, 150],
+  nextThreshold: 60,
+  tiersAwardedAt: ["2026-09-01T00:00:00Z", "2026-09-02T00:00:00Z", null, null],
+  tiersClaimedAt: [null, null, null, null],
+  tierRewards: [{ xp: 25, coins: 10 }, { xp: 75, coins: 25 }, { xp: 150, coins: 50 }, { xp: 300, coins: 100 }],
+  ...over,
+});
+
 function makePost(overrides: Partial<FeedPost> = {}): FeedPost {
   return {
     id: "post-1",
@@ -94,6 +124,7 @@ describe("EmployeeProfile", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     fetchFeed.mockResolvedValue([]);
+    useProgressionStore.mockReturnValue({ progression: null, badges: null });
   });
 
   afterEach(() => {
@@ -105,6 +136,54 @@ describe("EmployeeProfile", () => {
 
     expect(screen.getByText("Alex")).toBeInTheDocument();
     await waitFor(() => expect(fetchFeed).toHaveBeenCalledWith("alex@example.com"));
+  });
+
+
+  // ---- Achievements tab attention dot -------------------------------------------------------
+  // Derived from the SAME unclaimed-tier count the gallery header shows. No stored "seen" flag,
+  // so the dot cannot drift from the reward state it stands for.
+  describe("Achievements tab claim indicator", () => {
+    const self = () =>
+      render(<EmployeeProfile email="bon@example.com" viewerEmail="bon@example.com" roster={ROSTER} onClose={vi.fn()} />);
+
+    it("shows a dot and announces the count when a tier reward is claimable", () => {
+      useProgressionStore.mockReturnValue({ progression: null, badges: [makeBadge()] }); // 2 earned, 0 claimed
+      self();
+      expect(screen.getByTestId("tab-achievements-dot")).toBeInTheDocument();
+      expect(screen.getByTestId("tab-achievements")).toHaveAttribute("aria-label", "Achievements, 2 rewards to claim");
+    });
+
+    it("singularises the announcement for exactly one claimable tier", () => {
+      useProgressionStore.mockReturnValue({
+        progression: null,
+        badges: [makeBadge({ tiersClaimedAt: ["2026-09-01T01:00:00Z", null, null, null] })],
+      });
+      self();
+      expect(screen.getByTestId("tab-achievements")).toHaveAttribute("aria-label", "Achievements, 1 reward to claim");
+    });
+
+    it("shows no dot when every earned tier is already claimed", () => {
+      useProgressionStore.mockReturnValue({
+        progression: null,
+        badges: [makeBadge({ tiersClaimedAt: ["2026-09-01T01:00:00Z", "2026-09-02T01:00:00Z", null, null] })],
+      });
+      self();
+      expect(screen.queryByTestId("tab-achievements-dot")).toBeNull();
+      expect(screen.getByTestId("tab-achievements")).toHaveAttribute("aria-label", "Achievements");
+    });
+
+    it("keeps the dot after the Achievements tab is opened — only claiming clears it", () => {
+      useProgressionStore.mockReturnValue({ progression: null, badges: [makeBadge()] });
+      self();
+      fireEvent.click(screen.getByTestId("tab-achievements"));
+      expect(screen.getByTestId("tab-achievements-dot")).toBeInTheDocument();
+    });
+
+    it("carries no indicator on someone else's profile", () => {
+      useProgressionStore.mockReturnValue({ progression: null, badges: [makeBadge()] });
+      render(<EmployeeProfile email="alex@example.com" viewerEmail="bon@example.com" roster={ROSTER} onClose={vi.fn()} />);
+      expect(screen.queryByTestId("tab-achievements-dot")).toBeNull();
+    });
   });
 
   it("falls back to a localpart-derived name when the email isn't in the roster", () => {

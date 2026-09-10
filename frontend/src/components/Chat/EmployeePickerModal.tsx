@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { profileImageFor } from "../../data/portraits";
 import styles from "./EmployeePickerModal.module.css";
 
 export type EmployeePickerPerson = { email: string; displayName: string };
@@ -47,12 +48,22 @@ export function EmployeePickerModal({ mode, title, people, onClose, onConfirm }:
 
   return (
     <div className={styles.backdrop} onClick={onClose}>
-      <div className={styles.panel} onClick={(e) => e.stopPropagation()}>
+      <div className={styles.panel} role="dialog" aria-label={title} onClick={(e) => e.stopPropagation()}>
         <div className={styles.header}>
-          <span>{title}</span>
+          <span className={styles.title}>{title}</span>
           <button type="button" className={styles.closeButton} onClick={onClose} aria-label="Close">
-            ×
+            ✕
           </button>
+        </div>
+        <div className={styles.toRow}>
+          <span className={styles.toLabel}>To:</span>
+          <span className={styles.toValue}>
+            {mode === "single"
+              ? "Pick one person"
+              : selected.size === 0
+                ? "Pick two or more people"
+                : `${selected.size} selected`}
+          </span>
         </div>
         <input
           type="text"
@@ -64,23 +75,42 @@ export function EmployeePickerModal({ mode, title, people, onClose, onConfirm }:
         />
         <div className={styles.list}>
           {matches.length === 0 && <div className={styles.emptyRow}>No match.</div>}
-          {matches.map((person) => (
-            <button
-              key={person.email}
-              type="button"
-              className={selected.has(person.email) ? `${styles.row} ${styles.rowSelected}` : styles.row}
-              onClick={() => toggle(person.email)}
-            >
-              {mode === "multi" && <input type="checkbox" checked={selected.has(person.email)} readOnly />}
-              <span>{person.displayName}</span>
-            </button>
-          ))}
+          {matches.map((person) => {
+            const isSelected = selected.has(person.email);
+            const portrait = profileImageFor(person.email, () => "");
+            return (
+              <button
+                key={person.email}
+                type="button"
+                className={isSelected ? `${styles.row} ${styles.rowSelected}` : styles.row}
+                onClick={() => toggle(person.email)}
+                aria-pressed={mode === "multi" ? isSelected : undefined}
+              >
+                {portrait ? (
+                  <img className={styles.avatar} src={portrait} alt="" draggable={false} />
+                ) : (
+                  <span className={styles.avatarInitials}>
+                    {person.displayName.trim().charAt(0).toUpperCase() || "?"}
+                  </span>
+                )}
+                <span className={styles.rowText}>
+                  <span className={styles.rowName}>{person.displayName}</span>
+                  <span className={styles.rowEmail}>{person.email}</span>
+                </span>
+                {mode === "multi" && (
+                  <span className={isSelected ? `${styles.check} ${styles.checkOn}` : styles.check} aria-hidden="true">
+                    {isSelected ? "✓" : ""}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
         {mode === "multi" && (
           <div className={styles.footer}>
             <input
               type="text"
-              className={styles.searchInput}
+              className={styles.groupNameInput}
               placeholder="Group name (optional)"
               aria-label="Group name"
               maxLength={255}

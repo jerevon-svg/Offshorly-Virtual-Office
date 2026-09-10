@@ -5,7 +5,10 @@ import type { OfficePerson } from "../../services/office/floorMerge";
 import sidebarStyles from "./RoomSidebar.module.css";
 import talkingBubbleStyles from "./TalkingBubble.module.css";
 import conversationPanelStyles from "../Chat/ConversationView.module.css";
-import badgeStyles from "../Chat/MessageNotificationBadge.module.css";
+// The dock's Chat tile now opens the ConversationListPanel (dockTool "chat") instead of its own
+// dropdown; conversation rows live in that panel's stylesheet.
+import listStyles from "../Chat/ConversationListPanel.module.css";
+import officeStyles from "./OfficeMap.module.css";
 import type { ConversationUpgradedListener, TypingListener } from "../../services/chat";
 import { resetCurrentUserForTests, setCurrentUserFromMeResponse } from "../../auth/currentUserStore";
 import { BON_SPRITE_SET, characterSprite } from "../../data/bonWalkFrames";
@@ -517,16 +520,19 @@ describe("OfficeMap", () => {
       // useUnreadTotal's async listConversations fetch, so wait for the row to appear.
       // The 💬 control itself now waits too: it lives in the bottom dock, which only mounts once
       // the async attendance answer has confirmed check-in (no partial dock before then).
-      const chatButton = await waitFor(() => view.getByRole("button", { name: /Conversations|unread message/ }));
+      const chatButton = await waitFor(
+        () => view.getByRole("button", { name: /Conversations|unread message/ }),
+        { timeout: 4000 },
+      );
       await act(async () => {
         fireEvent.click(chatButton);
       });
       // Scope to the dropdown's own rows — an already-open panel's header shows the same name.
       const row = await waitFor(() => {
-        const match = Array.from(view.container.querySelectorAll(`.${badgeStyles.row}`)).find((el) =>
+        const match = Array.from(view.container.querySelectorAll(`.${listStyles.row}`)).find((el) =>
           el.textContent?.includes(rowLabel),
         );
-        if (!match) throw new Error(`no 💬 row for ${rowLabel}`);
+        if (!match) throw new Error(`no conversation row for ${rowLabel}`);
         return match;
       });
       await act(async () => {
@@ -622,6 +628,137 @@ describe("OfficeMap", () => {
       expect(panelCount(view.container)).toBe(1);
       expect(spatialBadgeCount(view.container)).toBe(0);
       expect(emitSpatialSessionStartMock).not.toHaveBeenCalled();
+    });
+
+    // --- Minimized remote conversations become bubbles in the right-hand rail --------------
+    it("minimizes a remote DM into an avatar bubble WITHOUT unmounting its window, and restores it", async () => {
+      chatListState.conversations = [dmConv];
+      spatialSessionsState.sessions = [];
+      const view = render(<OfficeMap />);
+      await selectFromGlobalChat(view, "Peer Person");
+
+      const slotOf = () =>
+        view.container
+          .querySelector(`.${conversationPanelStyles.panel}`)!
+          .closest(`.${officeStyles.floatingChatSlot}`) as HTMLElement;
+      expect(slotOf().hidden).toBe(false);
+      expect(view.container.querySelectorAll(`.${officeStyles.chatBubble}`)).toHaveLength(0);
+
+      await act(async () => {
+        fireEvent.click(view.getByRole("button", { name: "Minimize chat" }));
+      });
+
+      // The window is still mounted (subscriptions, read receipts, selfGlobalChatActive
+      // accounting all depend on it) — only hidden, with a bubble standing in for it.
+      expect(panelCount(view.container)).toBe(1);
+      expect(slotOf().hidden).toBe(true);
+      const bubble = view.getByRole("button", { name: /Restore chat with Peer Person/ });
+      expect(bubble).toBeTruthy();
+
+      await act(async () => {
+        fireEvent.click(bubble);
+      });
+      expect(slotOf().hidden).toBe(false);
+      expect(view.container.querySelectorAll(`.${officeStyles.chatBubble}`)).toHaveLength(0);
+    });
+
+    it("closes a conversation from its bubble, removing both the bubble and the window", async () => {
+      chatListState.conversations = [dmConv];
+      spatialSessionsState.sessions = [];
+      const view = render(<OfficeMap />);
+      await selectFromGlobalChat(view, "Peer Person");
+
+      await act(async () => {
+        fireEvent.click(view.getByRole("button", { name: "Minimize chat" }));
+      });
+      await act(async () => {
+        fireEvent.click(view.getByRole("button", { name: /Close chat with Peer Person/ }));
+      });
+
+      expect(panelCount(view.container)).toBe(0);
+      expect(view.container.querySelectorAll(`.${officeStyles.chatBubble}`)).toHaveLength(0);
+    });
+
+    it("never shows call controls on a REMOTE DM — voice and video are spatial-only", async () => {
+      chatListState.conversations = [dmConv];
+      spatialSessionsState.sessions = [];
+      const view = render(<OfficeMap />);
+      await selectFromGlobalChat(view, "Peer Person");
+
+      // The window is remote (no spatial badge), so it carries no call affordance at all.
+      expect(spatialBadgeCount(view.container)).toBe(0);
+      for (const name of [/Join call/i, /Mute microphone/i, /camera/i, /Leave call/i, /Expand call/i]) {
+        expect(view.queryByRole("button", { name })).toBeNull();
+      }
+      // Nor does its minimized bubble.
+      await act(async () => {
+        fireEvent.click(view.getByRole("button", { name: "Minimize chat" }));
+      });
+      expect(view.queryByRole("button", { name: /voice call|video call|Join call/i })).toBeNull();
+    });
+
+    it("never shows call controls on a REMOTE GROUP, nor in the conversation list", async () => {
+      chatListState.conversations = [groupConv];
+      spatialSessionsState.sessions = [];
+      const view = render(<OfficeMap />);
+
+      await selectFromGlobalChat(view, "Design Sync");
+      expect(spatialBadgeCount(view.container)).toBe(0);
+      const callish = /voice call|video call|Join call/i;
+      expect(view.queryByRole("button", { name: callish })).toBeNull();
+
+      // The conversation list itself offers no call affordance either.
+      await act(async () => {
+        fireEvent.click(view.getByRole("button", { name: /Conversations|unread message/ }));
+      });
+      expect(view.getByRole("dialog", { name: "Chats" })).toBeTruthy();
+      expect(view.queryByRole("button", { name: callish })).toBeNull();
+    });
+
+    it("hides the bubble rail while a screen-owning chat overlay is open", async () => {
+      chatListState.conversations = [dmConv];
+      spatialSessionsState.sessions = [];
+      const view = render(<OfficeMap />);
+      await selectFromGlobalChat(view, "Peer Person");
+      await act(async () => {
+        fireEvent.click(view.getByRole("button", { name: "Minimize chat" }));
+      });
+      const bubbles = () => view.container.querySelectorAll(`.${officeStyles.chatBubble}`).length;
+      expect(bubbles()).toBe(1);
+
+      // Chats list owns the screen: dock, Toucan and the rail all step aside together.
+      await act(async () => {
+        fireEvent.click(view.getByRole("button", { name: /Conversations|unread message/ }));
+      });
+      expect(bubbles()).toBe(0);
+
+      await act(async () => {
+        fireEvent.click(view.getByRole("button", { name: "Close chats" }));
+      });
+      expect(bubbles()).toBe(1);
+    });
+
+    it("keeps an expanded window clear of the bubble rail", async () => {
+      chatListState.conversations = [dmConv, groupConv];
+      spatialSessionsState.sessions = [];
+      const view = render(<OfficeMap />);
+
+      await selectFromGlobalChat(view, "Peer Person");
+      const slotRight = () => {
+        const slots = Array.from(
+          view.container.querySelectorAll<HTMLElement>(`.${officeStyles.floatingChatSlot}`),
+        ).filter((el) => !el.hidden);
+        return slots.map((el) => el.style.right);
+      };
+      expect(slotRight()).toEqual(["16px"]);
+
+      // Minimize it, then open a second conversation: the rail now holds a bubble, so the
+      // expanded window starts to its left instead of at the edge.
+      await act(async () => {
+        fireEvent.click(view.getByRole("button", { name: "Minimize chat" }));
+      });
+      await selectFromGlobalChat(view, "Design Sync");
+      expect(slotRight()).toEqual(["80px"]);
     });
 
     it("opens an active spatial GROUP in the spatial group slot, and an inactive group remotely", async () => {

@@ -27,9 +27,18 @@ export interface TeamMapCanvasProps {
   /** "Show me this person": pan/zoom to their point. `nonce` re-fires the same email. A person
    *  with no coordinates leaves the map exactly where it is — the panel still selects them. */
   focus?: { email: string; nonce: number } | null;
+  /** "Fit team": frame every mappable person. `nonce` re-fires the same request. Nothing moves
+   *  when nobody has coordinates. */
+  fit?: { nonce: number } | null;
 }
 
 const SOURCE_ID = "team-map-people";
+// Marker diameter. CSS (.marker / .markerImage) remains the source of truth for layout; this is
+// only mirrored onto the <img> width/height ATTRIBUTES, which are presentational hints CSS always
+// overrides. Markers are built imperatively and cached in markersRef, so if their stylesheet is
+// ever out of step with the cached DOM (a dev-server CSS swap after this module's class hashes
+// changed, say) the portrait would otherwise fall back to its intrinsic 320px and swamp the map.
+const MARKER_SIZE_PX = 34;
 // Street/building level. The old ceiling of 13 stopped roughly a city across, which meant two
 // people who had opted into exact locations a few hundred metres apart could never be pulled
 // apart — 44px at zoom 13 is ~800 m, so they stayed one circle at the deepest zoom available.
@@ -88,6 +97,8 @@ function buildMarkerElement(
   el.title = displayNameFor(person);
   const img = document.createElement("img");
   img.className = styles.markerImage;
+  img.width = MARKER_SIZE_PX;
+  img.height = MARKER_SIZE_PX;
   img.alt = "";
   img.draggable = false;
   const src = profileImageFor(person.email, () => "");
@@ -128,6 +139,7 @@ export function TeamMapCanvas({
   onSelectCluster,
   distanceFor,
   focus = null,
+  fit = null,
 }: TeamMapCanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -197,7 +209,9 @@ export function TeamMapCanvas({
         attributionControl: { compact: true },
       });
       mapRef.current = map;
-      map.addControl(new mod.NavigationControl({ showCompass: false }), "top-right");
+      // Bottom-right: the floating search + filter cluster owns the top of the map now, and the
+      // zoom control must not sit under it.
+      map.addControl(new mod.NavigationControl({ showCompass: false }), "bottom-right");
 
       map.on("load", () => {
         if (!map) return;
@@ -214,7 +228,7 @@ export function TeamMapCanvas({
           source: SOURCE_ID,
           filter: ["has", "point_count"],
           paint: {
-            "circle-color": "#6d5dfc",
+            "circle-color": "#2f6b45",
             "circle-stroke-color": "rgba(255,255,255,0.85)",
             "circle-stroke-width": 2,
             "circle-radius": ["step", ["get", "point_count"], 16, 5, 20, 15, 26],
@@ -288,6 +302,36 @@ export function TeamMapCanvas({
     if (!person || person.latitude === null || person.longitude === null) return;
     map.easeTo({ center: [person.longitude, person.latitude], zoom: MAX_ZOOM });
   }, [focus, people]);
+
+  // Fit the whole team into view. Same one-shot nonce pattern as focus; a single mappable person
+  // would give a zero-area box, so that case eases to their point instead of fitting bounds.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !loadedRef.current || !fit) return;
+    const points = mappable(people);
+    if (points.length === 0) return;
+    if (points.length === 1) {
+      map.easeTo({ center: [points[0].longitude as number, points[0].latitude as number], zoom: 12 });
+      return;
+    }
+    let west = 180;
+    let south = 90;
+    let east = -180;
+    let north = -90;
+    for (const p of points) {
+      west = Math.min(west, p.longitude as number);
+      east = Math.max(east, p.longitude as number);
+      south = Math.min(south, p.latitude as number);
+      north = Math.max(north, p.latitude as number);
+    }
+    map.fitBounds(
+      [
+        [west, south],
+        [east, north],
+      ],
+      { padding: 72, maxZoom: 14, duration: 600 },
+    );
+  }, [fit, people]);
 
   // Data refresh: push new coordinates into the clustered source and drop stale markers so the
   // next render rebuilds them with fresh status colours.

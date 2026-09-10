@@ -12,10 +12,13 @@ import hubIcon from "../assets/hud-icons/hub.png";
 import levelIcon from "../assets/hud-icons/level.png";
 import locateIcon from "../assets/hud-icons/locate.png";
 import mapIcon from "../assets/hud-icons/map.png";
+import memoryIcon from "../assets/hud-icons/memory.png";
 import notificationsIcon from "../assets/hud-icons/notifications.png";
+import quillIcon from "../assets/hud-icons/quill.png";
 import rewardsIcon from "../assets/hud-icons/rewards.png";
 import searchIcon from "../assets/hud-icons/search.png";
 import settingsIcon from "../assets/hud-icons/settings.png";
+import videoIcon from "../assets/hud-icons/video.png";
 import tasksIcon from "../assets/hud-icons/tasks.png";
 import xpIcon from "../assets/hud-icons/xp.png";
 
@@ -37,10 +40,13 @@ export const HUD_ICONS = {
   level: levelIcon,
   locate: locateIcon,
   map: mapIcon,
+  memory: memoryIcon,
   notifications: notificationsIcon,
+  quill: quillIcon,
   rewards: rewardsIcon,
   search: searchIcon,
   settings: settingsIcon,
+  video: videoIcon,
   tasks: tasksIcon,
   xp: xpIcon,
 } as const;

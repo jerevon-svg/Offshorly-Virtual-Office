@@ -163,7 +163,7 @@ describe("modals reserve the dock's strip rather than the dock out-ranking them"
     expect(globals).toMatch(/@media \(max-height: 760px\)\s*\{\s*:root\s*\{\s*--vo-dock-clearance:\s*96px/);
   });
 
-  it.each([...COEXISTING_MODALS, "../TeamMap/TeamMapPanel.module.css"] as const)(
+  it.each(COEXISTING_MODALS)(
     "%s keeps its centred panel clear of the dock",
     (file) => {
       const backdrop = new RegExp(`\\.backdrop\\s*\\{([^}]*)\\}`).exec(css(file))?.[1] ?? "";
@@ -172,7 +172,9 @@ describe("modals reserve the dock's strip rather than the dock out-ranking them"
     },
   );
 
-  it.each(DOCK_TOOL_PANELS)(
+  // The Team Map and the Boards/Whiteboard workspace are dock TOOLS too (OfficeMap's
+  // officeToolOpen covers both), so they belong on this side of the contract.
+  it.each([...DOCK_TOOL_PANELS, "../TeamMap/TeamMapPanel.module.css"] as const)(
     "%s does not reserve dock clearance, because the dock is hidden while it is open",
     (file) => {
       const backdrop = new RegExp(`\\.backdrop\\s*\\{([^}]*)\\}`).exec(css(file))?.[1] ?? "";

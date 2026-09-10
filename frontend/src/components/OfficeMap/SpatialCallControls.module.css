@@ -9,63 +9,82 @@
   gap: 2px;
 }
 
+/* One square affordance for every call action, matching the header's whiteboard / minimize /
+   close buttons beside them. No default tile: the resting state is transparent, and a filled
+   state means a REAL call state (mic muted, camera live). */
 .iconButton {
   all: unset;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
   cursor: pointer;
-  font-size: 13px;
   line-height: 1;
-  padding: 4px 6px;
-  border-radius: 6px;
-  color: #6b7280;
+  border-radius: 9px;
+  color: #3f3a4d;
+  transition: background-color 120ms ease;
 }
 
-.iconButton:hover {
-  background: #f3f4f6;
+.iconButton:hover:not(:disabled) {
+  background: rgba(24, 20, 34, 0.05);
+}
+
+.iconButton:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.iconButton:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: 2px;
 }
 
 /* Muted is the state worth calling out — an accidentally-muted mic is the common confusion. */
+/* Muted is the state worth calling out — an accidentally-muted mic is the common confusion. */
 .muted {
-  color: #b91c1c;
-  background: #fee2e2;
+  color: #9b2c2c;
+  background: #fdecec;
 }
 
-.muted:hover {
-  background: #fecaca;
+.muted:hover:not(:disabled) {
+  background: #fbdcdc;
 }
 
 .leave {
-  color: #b91c1c;
+  color: #9b2c2c;
 }
 
-/* Joining an in-progress call is the one affirmative action in this header, so it gets the only
-   accent. Sized off the same .iconButton base so the header keeps its width. */
+/* Phone and Video are plain header actions — identical size, no accent tile. Whether the phone
+   starts or joins a call is carried by its label/tooltip, not by a coloured background. */
 .join {
-  font-size: 11px;
-  font-weight: 600;
-  color: #fff;
-  background: #2563eb;
-  padding: 4px 8px;
-  white-space: nowrap;
-}
-
-.join:hover {
-  background: #1d4ed8;
+  color: #3f3a4d;
 }
 
 .connecting {
-  font-size: 10px;
-  color: #6b7280;
+  font-size: 11px;
+  color: rgba(36, 31, 48, 0.55);
   white-space: nowrap;
 }
 
-/* Camera OFF is the default state for every call, so it is styled as a quiet "not on" rather than
-   an alarm — unlike .muted, an off camera is never a surprise worth flagging in red. */
+/* Camera OFF is the default for every call, so it stays the plain resting button. Camera ON is a
+   real live state and is the only thing that earns a filled tile. */
 .cameraOff {
-  color: #9ca3af;
+  opacity: 0.55;
+}
+
+.cameraOn {
+  background: rgba(47, 107, 69, 0.12);
+  color: #2f6b45;
+}
+
+.cameraOn:hover:not(:disabled) {
+  background: rgba(47, 107, 69, 0.18);
 }
 
 /* Stage C expand affordance. Same quiet .iconButton base as the mic and camera beside it, so the
    header still gains no width. */
 .expand {
-  color: #6b7280;
+  color: #3f3a4d;
 }

@@ -1,8 +1,13 @@
 import type { ReactNode } from "react";
+import { profileImageFor } from "../../data/portraits";
+import { CloseIcon, MinimizeIcon, RestoreIcon } from "./ChatHeaderIcons";
 import styles from "./ConversationView.module.css";
 
 type ChatWindowHeaderProps = {
   name: string;
+  /** Whose portrait to show beside the name — the DM peer, or a group's first other member.
+   *  Falls back to the initial when there is no portrait for that email. */
+  avatarEmail?: string;
   // Optional status line under the name (e.g. a presence label) — omitted when unknown.
   subtitle?: string;
   // True for a "Character -> Chat" spatial conversation — shows the "📍 Spatial Conversation"
@@ -24,6 +29,7 @@ type ChatWindowHeaderProps = {
 // their chrome. Kept as its own file only to avoid duplicating this JSX in both components.
 export function ChatWindowHeader({
   name,
+  avatarEmail,
   subtitle,
   isSpatial,
   minimized,
@@ -32,17 +38,30 @@ export function ChatWindowHeader({
   onClose,
 }: ChatWindowHeaderProps) {
   const initial = name.trim().charAt(0).toUpperCase() || "?";
+  const portrait = avatarEmail ? profileImageFor(avatarEmail, () => "") : "";
   return (
     <div className={styles.header}>
-      <div className={styles.headerAvatar} data-initials-avatar="true">
-        {initial}
-      </div>
+      {portrait ? (
+        <img className={styles.headerAvatar} src={portrait} alt="" draggable={false} />
+      ) : (
+        <div className={styles.headerAvatar} data-initials-avatar="true">
+          {initial}
+        </div>
+      )}
       <div className={styles.headerText}>
         <div className={styles.titleRow}>
           <span className={styles.title}>{name}</span>
-          {isSpatial && <span className={styles.spatialBadge}>📍 Spatial Conversation</span>}
         </div>
-        {subtitle && <span className={styles.subtitle}>{subtitle}</span>}
+        {/* "Spatial Conversation" is a secondary STATUS, styled exactly like the DND /
+            delayed-response line it sits beside — never inline with the name, where it ate the
+            header width the call actions now need. */}
+        {(isSpatial || subtitle) && (
+          <span className={styles.subtitle}>
+            {isSpatial && <span className={styles.spatialBadge}>📍 Spatial Conversation</span>}
+            {isSpatial && subtitle ? " · " : null}
+            {subtitle}
+          </span>
+        )}
       </div>
       {!minimized && headerExtra}
       <div className={styles.headerActions}>
@@ -53,11 +72,11 @@ export function ChatWindowHeader({
             onClick={onMinimizeToggle}
             aria-label={minimized ? "Restore chat" : "Minimize chat"}
           >
-            {minimized ? "▢" : "−"}
+            {minimized ? <RestoreIcon /> : <MinimizeIcon />}
           </button>
         )}
         <button type="button" className={styles.closeButton} onClick={onClose} aria-label="Close chat">
-          ×
+          <CloseIcon />
         </button>
       </div>
     </div>

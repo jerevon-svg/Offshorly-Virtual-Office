@@ -609,3 +609,31 @@ describe("GroupConversationView — A1.4 Toucan author", () => {
     expect(peerRow?.getAttribute("data-sender")).toBe("peer");
   });
 });
+
+describe("GroupConversationView — per-message avatars", () => {
+  it("shows one avatar on an incoming run's final bubble and none on outgoing messages", async () => {
+    const history = [
+      makeMessage({ id: "a1", senderId: OTHER_A, text: "alpha" }),
+      makeMessage({ id: "a2", senderId: OTHER_A, text: "beta" }),
+      makeMessage({ id: "b1", senderId: OTHER_B, text: "gamma" }),
+      makeMessage({ id: "s1", senderId: SELF, text: "delta" }),
+    ];
+    await mountWith(makeFakeService({ getMessages: vi.fn(async () => history) }));
+    await waitFor(() => expect(screen.getByText("delta")).toBeInTheDocument());
+
+    const rowOf = (text: string) => screen.getByText(text).closest("[data-sender]") as HTMLElement;
+    const avatarIn = (text: string) => rowOf(text).querySelector('img, [data-initials-avatar="true"]');
+
+    expect(avatarIn("alpha")).toBeNull();
+    expect(avatarIn("beta")).not.toBeNull();
+    // A different sender is a new run, so their single message carries one.
+    expect(avatarIn("gamma")).not.toBeNull();
+    // Outgoing: never.
+    expect(avatarIn("delta")).toBeNull();
+
+    // Avatar rides the bubble's line; the timestamp sits in the block below it.
+    const line = screen.getByText("beta").parentElement!;
+    expect(line.querySelector('img, [data-initials-avatar="true"]')).not.toBeNull();
+    expect(line.textContent).not.toMatch(/\d{1,2}:\d{2}/);
+  });
+});

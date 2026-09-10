@@ -6,6 +6,8 @@ import type { ChatMessage, ConnectionState } from "../../services/chat";
 import type { DeliveryReceiptUpdate, ReadReceiptUpdate } from "../../services/chat/types";
 import { ChatComposer } from "./ChatComposer";
 import { ChatWindowHeader } from "./ChatWindowHeader";
+import { profileImageFor } from "../../data/portraits";
+import { WhiteboardActionIcon } from "./ChatHeaderIcons";
 import { renderMessageText } from "./MentionText";
 import { MessageReactions } from "./MessageReactions";
 import { useMentionComposer } from "./useMentionComposer";
@@ -17,6 +19,7 @@ export type GroupConversationViewProps = {
   participantEmails: string[];
   title?: string | null;
   resolveDisplayName: (email: string) => string;
+  /** Kept for the caller's contract; outgoing messages deliberately show no avatar. */
   selfAvatarUrl?: string;
   onClose: () => void;
   // Optional status line shown under the name (e.g. "3 members") — omitted when unknown.
@@ -200,7 +203,6 @@ export function GroupConversationView({
   participantEmails,
   title,
   resolveDisplayName,
-  selfAvatarUrl,
   onClose,
   subtitle,
   isSpatial,
@@ -389,6 +391,7 @@ export function GroupConversationView({
     <div className={minimized ? `${styles.panel} ${styles.panelMinimized}` : styles.panel}>
       <ChatWindowHeader
         name={headerTitle}
+        avatarEmail={participantEmails.find((e) => e.toLowerCase() !== selfId.toLowerCase())}
         subtitle={subtitle}
         isSpatial={isSpatial}
         headerExtra={
@@ -397,12 +400,12 @@ export function GroupConversationView({
               {headerExtra}
               <button
                 type="button"
-                className={styles.minimizeButton}
+                className={styles.headerAction}
                 onClick={onOpenWhiteboard}
                 aria-label="Open whiteboards"
                 title="Whiteboards"
               >
-                ▦
+                <WhiteboardActionIcon />
               </button>
             </>
           ) : (
@@ -435,7 +438,7 @@ export function GroupConversationView({
         {showOpeningPlaceholder ? (
           <div className={styles.message}>Connecting to chat…</div>
         ) : (
-          messages.map((msg) => {
+          messages.map((msg, index) => {
             const dayLabel = formatDayDivider(msg.sentAt);
             const showDivider = dayLabel !== lastDayLabel;
             lastDayLabel = dayLabel;
@@ -445,6 +448,10 @@ export function GroupConversationView({
             const senderName = isOwn ? "" : fromToucan ? TOUCAN_DISPLAY_NAME : resolveDisplayName(msg.senderId);
             const showStatus = chatMode === "real" && isOwn;
             const readersHere = isOwn ? seenByMessage.get(msg.id) : undefined;
+            // One avatar per consecutive run of a sender's messages, on the run's last bubble.
+            const next = messages[index + 1];
+            const endsBlock =
+              !next || next.senderId !== msg.senderId || formatDayDivider(next.sentAt) !== dayLabel;
             const deliveryLabel =
               showStatus && msg.id === latestOwnId
                 ? deriveGroupDeliveryLabel(msg, otherParticipants.length)
@@ -462,38 +469,45 @@ export function GroupConversationView({
                   className={isOwn ? `${styles.row} ${styles.rowSelf}` : styles.row}
                   data-sender={fromToucan ? "toucan" : isOwn ? "self" : "peer"}
                 >
-                  {!isOwn && (
-                    <Avatar
-                      className={fromToucan ? `${styles.avatar} ${styles.toucanAvatar}` : styles.avatar}
-                      label={senderName}
-                      glyph={fromToucan ? TOUCAN_AVATAR_GLYPH : undefined}
-                    />
-                  )}
                   <div className={styles.bubbleColumn}>
-                    {!isOwn && <span className={styles.timestamp}>{senderName}</span>}
-                    <div className={isOwn ? `${styles.message} ${styles.own}` : `${styles.message} ${styles.peer}`}>
-                      {renderMessageText(msg.text, msg.mentionedEmails, resolveDisplayName, selfId)}
+                    {!isOwn && <span className={styles.senderName}>{senderName}</span>}
+                    {/* Avatar + bubble on one bottom-aligned line; metadata sits underneath so it
+                        cannot push the avatar off the bubble's edge. */}
+                    <div className={styles.bubbleLine}>
+                      {!isOwn && !endsBlock && <span className={styles.avatarSpacer} aria-hidden="true" />}
+                      {!isOwn && endsBlock && (
+                        <Avatar
+                          className={fromToucan ? `${styles.avatar} ${styles.toucanAvatar}` : styles.avatar}
+                          src={fromToucan ? undefined : profileImageFor(msg.senderId, () => "") || undefined}
+                          label={senderName}
+                          glyph={fromToucan ? TOUCAN_AVATAR_GLYPH : undefined}
+                        />
+                      )}
+                      <div className={isOwn ? `${styles.message} ${styles.own}` : `${styles.message} ${styles.peer}`}>
+                        {renderMessageText(msg.text, msg.mentionedEmails, resolveDisplayName, selfId)}
+                      </div>
                     </div>
-                    <span className={isOwn ? `${styles.timestamp} ${styles.timestampRight}` : styles.timestamp}>
-                      {formatMessageTime(msg.sentAt)}
-                    </span>
-                    <MessageReactions
-                      messageId={msg.id}
-                      reactions={msg.reactions}
-                      selfId={selfId}
-                      isOwn={isOwn}
-                      resolveDisplayName={resolveDisplayName}
-                    />
-                    {showStatus && readersHere && readersHere.length > 0 && (
-                      <SeenAvatarStack readers={readersHere} resolveDisplayName={resolveDisplayName} />
-                    )}
-                    {deliveryLabel && (
-                      <span className={styles.statusRow} data-status={deliveryLabel}>
-                        {deliveryLabel}
+                    <div className={styles.meta}>
+                      <span className={isOwn ? `${styles.timestamp} ${styles.timestampRight}` : styles.timestamp}>
+                        {formatMessageTime(msg.sentAt)}
                       </span>
-                    )}
+                      <MessageReactions
+                        messageId={msg.id}
+                        reactions={msg.reactions}
+                        selfId={selfId}
+                        isOwn={isOwn}
+                        resolveDisplayName={resolveDisplayName}
+                      />
+                      {showStatus && readersHere && readersHere.length > 0 && (
+                        <SeenAvatarStack readers={readersHere} resolveDisplayName={resolveDisplayName} />
+                      )}
+                      {deliveryLabel && (
+                        <span className={styles.statusRow} data-status={deliveryLabel}>
+                          {deliveryLabel}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  {isOwn && <Avatar className={styles.avatar} src={selfAvatarUrl || undefined} label={selfId} />}
                 </div>
               </div>
             );

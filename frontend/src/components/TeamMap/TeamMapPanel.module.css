@@ -1,124 +1,279 @@
-/* Shell mirrors MissionsPanel.module.css — one modal family. */
+/* Global Team Map — cream editorial surface, same family as OfficeMap/RewardsPanel.module.css
+   (#fdfcfa panel, 22px rounding, rgba(24,20,34,·) hairlines, #2f6b45 primary, #4bb96a focus).
+   Map-first: the map fills the panel, search + filters float over it, and the teammate carousel
+   sits underneath. Typography is inherited (Instrument Sans) — never re-declared. */
+/* The dock hides while the Team Map is open (OfficeMap's officeToolOpen, which this panel now
+   joins alongside the other full-screen office tools), so the backdrop has nothing at the bottom
+   of the viewport left to reserve dock clearance for. */
 .backdrop {
   position: fixed;
   inset: 0;
   z-index: 60;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(24, 20, 34, 0.34);
+  backdrop-filter: blur(3px);
   display: flex;
   align-items: center;
   justify-content: center;
-  /* Reserve the bottom dock's strip so this centred panel can never grow down into it (see
-     --vo-dock-clearance in src/index.css). Presentation only — nothing about the modal changes. */
-  padding-bottom: var(--vo-dock-clearance, 104px);
+  padding: 24px;
   box-sizing: border-box;
 }
 
 .panel {
   position: relative;
-  width: min(1040px, 94vw);
-  height: min(720px, 86vh);
-  background: linear-gradient(180deg, rgba(30, 26, 46, 0.97), rgba(18, 16, 28, 0.97));
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 14px;
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
-  color: #f5f0ff;
+  width: min(1180px, 94vw);
+  height: min(840px, 88vh);
+  box-sizing: border-box;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.08);
+  border-radius: 22px;
+  box-shadow: 0 28px 70px rgba(18, 16, 28, 0.32), 0 2px 8px rgba(18, 16, 28, 0.12);
+  color: #241f30;
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
-.closeButton {
-  all: unset;
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  cursor: pointer;
-  color: rgba(245, 240, 255, 0.7);
-  font-size: 14px;
-  padding: 6px;
-  border-radius: 6px;
-  z-index: 2;
-}
-
-.closeButton:hover {
-  background: rgba(255, 255, 255, 0.1);
-}
-
+/* ---- header ---------------------------------------------------------------------------------- */
 .header {
-  padding: 16px 20px 10px;
+  position: relative;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 20px 12px;
+}
+
+.headerIcon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 54px;
+  height: 54px;
+  border-radius: 16px;
+  background: #eef4ec;
+}
+
+.headerText {
+  flex: 1;
+  min-width: 0;
 }
 
 .title {
-  font-size: 18px;
-  font-weight: 700;
+  font-size: 24px;
+  line-height: 1.1;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.subtitleRow {
+  margin-top: 3px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .subtitle {
-  margin-top: 2px;
-  font-size: 12px;
-  color: rgba(245, 240, 255, 0.65);
+  font-size: 13px;
+  color: rgba(36, 31, 48, 0.55);
+}
+
+.infoButton {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 999px;
+  border: 1px solid rgba(24, 20, 34, 0.28);
+  font-size: 11px;
+  font-weight: 700;
+  font-style: italic;
+  color: rgba(36, 31, 48, 0.6);
+}
+
+.infoButton:hover {
+  background: rgba(24, 20, 34, 0.06);
+}
+
+.headerActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.headerAction {
+  all: unset;
+  flex: none;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(24, 20, 34, 0.12);
+  background: #fffefc;
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background-color 120ms ease;
+}
+
+.headerAction:hover:not(:disabled) {
+  background: rgba(24, 20, 34, 0.04);
+}
+
+.headerAction:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Narrow panels: the sharing actions shed their padding before anything wraps off-screen. */
+@media (max-width: 900px) {
+  .headerAction {
+    height: 32px;
+    padding: 0 11px;
+    font-size: 12.5px;
+  }
+}
+
+.closeButton {
+  all: unset;
+  flex: none;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  color: #3f3a4d;
+  font-size: 15px;
+  transition: background-color 120ms ease;
+}
+
+.closeButton:hover {
+  background: rgba(24, 20, 34, 0.05);
+}
+
+.infoButton:focus-visible,
+.headerAction:focus-visible,
+.closeButton:focus-visible,
+.tab:focus-visible,
+.actionButton:focus-visible,
+.fitButton:focus-visible,
+.searchInput:focus-visible,
+.row:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: 2px;
+}
+
+/* ---- ⓘ disclosure + sharing popover -----------------------------------------------------------
+   Everything the header used to spell out inline: the approximate-location disclosure, the
+   consent copy for each sharing state, and the Share / Stop / Forget controls themselves. Same
+   words, same actions — just no longer competing with the map for the top of the panel. */
+.infoPopover {
+  position: absolute;
+  top: calc(100% - 4px);
+  left: 20px;
+  z-index: 5;
+  width: min(420px, calc(100vw - 80px));
+  box-sizing: border-box;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.1);
+  box-shadow: 0 18px 44px rgba(18, 16, 28, 0.24);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.infoLead {
+  margin: 0;
+  font-size: 13px;
+  color: rgba(36, 31, 48, 0.7);
 }
 
 .shareRow {
-  margin-top: 8px;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
-}
-
-.shareStatus {
-  color: rgba(245, 240, 255, 0.85);
+  font-size: 13px;
 }
 
 .shareConsent {
   flex-basis: 100%;
-  color: rgba(245, 240, 255, 0.6);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(36, 31, 48, 0.6);
 }
 
 .shareError {
-  color: #fca5a5;
+  flex-basis: 100%;
+  font-size: 12.5px;
+  color: #9b2c2c;
 }
 
+.privacyNote {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgba(36, 31, 48, 0.5);
+}
+
+/* ---- banners ----------------------------------------------------------------------------------- */
 .banner {
   margin: 0 20px 8px;
   padding: 8px 12px;
-  border-radius: 8px;
-  font-size: 12px;
-  background: rgba(239, 68, 68, 0.18);
-  border: 1px solid rgba(239, 68, 68, 0.4);
+  border-radius: 12px;
+  font-size: 13px;
+  color: #9b2c2c;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.28);
 }
 
 .bannerMuted {
   margin: 0 20px 8px;
-  padding: 6px 12px;
-  border-radius: 8px;
-  font-size: 12px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: rgba(245, 240, 255, 0.7);
+  padding: 7px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+  background: rgba(24, 20, 34, 0.04);
+  border: 1px solid rgba(24, 20, 34, 0.08);
+  color: rgba(36, 31, 48, 0.6);
 }
 
+/* ---- body: map above, teammate carousel below --------------------------------------------------- */
 .body {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 280px;
-}
-
-@media (max-width: 720px) {
-  .body {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) 200px;
-  }
+  /* minmax(0, 1fr), not the implicit auto column: the teammate strip scrolls horizontally, and
+     an auto column would size itself to the strip's max-content width (every card laid end to
+     end) and drag the map — and its floating search overlay — out to ~5000px with it. */
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) auto;
+  padding: 0 20px 18px;
+  gap: 16px;
 }
 
 .mapColumn {
   position: relative;
   min-width: 0;
   min-height: 0;
+  border-radius: 18px;
+  overflow: hidden;
+  border: 1px solid rgba(24, 20, 34, 0.1);
 }
 
 /* Scoped under .mapColumn on purpose: MapLibre adds its own `maplibregl-map` class to this
@@ -131,39 +286,232 @@
   inset: 0;
   width: 100%;
   height: 100%;
-  background: #0e1220;
+  background: #eef1ec;
 }
 
-.sidebar {
-  border-left: 1px solid rgba(255, 255, 255, 0.1);
-  padding: 12px 14px;
-  overflow-y: auto;
+/* Search + filters float over the map, centred, as in the approved layout. */
+.mapOverlay {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  /* Above MapLibre's own control container, which sits at z-index 2. */
+  z-index: 6;
+  width: min(520px, calc(100% - 32px));
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  align-items: center;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.mapOverlay > * {
+  pointer-events: auto;
+}
+
+.searchInput {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(24, 20, 34, 0.1);
+  background: #fdfcfa;
+  box-shadow: 0 8px 24px rgba(18, 16, 28, 0.16);
+  color: #241f30;
+  font: inherit;
+  font-size: 14.5px;
+  outline: none;
+}
+
+.searchInput::placeholder {
+  color: rgba(36, 31, 48, 0.42);
+}
+
+/* Segmented filter, same family as the Rewards / Achievements tabs. */
+.tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 999px;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.08);
+  box-shadow: 0 6px 18px rgba(18, 16, 28, 0.14);
+}
+
+.tab {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  padding: 7px 16px;
+  border-radius: 999px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: rgba(36, 31, 48, 0.62);
+  white-space: nowrap;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.tab:hover:not(:disabled) {
+  color: #241f30;
+}
+
+.tab:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.tabActive {
+  background: #dcecdf;
+  color: #24512f;
+}
+
+.fitButton {
+  all: unset;
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+  z-index: 2;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 15px;
+  border-radius: 999px;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.1);
+  box-shadow: 0 6px 18px rgba(18, 16, 28, 0.16);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.fitButton:hover {
+  background: rgba(24, 20, 34, 0.04);
+}
+
+/* ---- teammate carousel ------------------------------------------------------------------------- */
+.tray {
+  min-width: 0;
+  min-height: 0;
+}
+
+.trayHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
 }
 
 .sectionTitle {
-  margin: 0 0 6px;
-  font-size: 12px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: rgba(245, 240, 255, 0.7);
+  margin: 0;
   display: flex;
-  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 700;
 }
 
 .count {
-  color: rgba(245, 240, 255, 0.5);
+  font-size: 14px;
+  font-weight: 600;
+  color: rgba(36, 31, 48, 0.45);
 }
 
 .empty {
   margin: 0;
-  font-size: 12px;
-  color: rgba(245, 240, 255, 0.5);
+  font-size: 13px;
+  color: rgba(36, 31, 48, 0.5);
 }
 
+.carouselWrap {
+  position: relative;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+
+.carousel {
+  list-style: none;
+  margin: 0;
+  padding: 2px 2px 6px;
+  /* Flex item: without this the strip refuses to shrink below its content and blows the grid
+     column out again. */
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  scroll-behavior: smooth;
+  scrollbar-width: thin;
+}
+
+/* Edge arrows. They only nudge scrollLeft — wheel, trackpad and touch scrolling are untouched. */
+.carouselArrow {
+  all: unset;
+  position: absolute;
+  z-index: 2;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.12);
+  box-shadow: 0 4px 14px rgba(18, 16, 28, 0.16);
+  font-size: 17px;
+  line-height: 1;
+  color: #241f30;
+}
+
+.carouselArrow:hover:not(:disabled) {
+  background: rgba(24, 20, 34, 0.04);
+}
+
+.carouselArrow:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.carouselArrow:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: 2px;
+}
+
+.carouselArrowStart {
+  left: -6px;
+}
+
+.carouselArrowEnd {
+  right: -6px;
+}
+
+.carousel > li {
+  flex: none;
+  width: 244px;
+}
+
+.carousel .row {
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(24, 20, 34, 0.08);
+  background: #fffefc;
+}
+
+.carousel .rowName {
+  font-size: 14.5px;
+}
+
+.carousel .rowMeta {
+  font-size: 12.5px;
+  white-space: normal;
+  overflow: visible;
+}
+
+/* ---- shared person row (carousel + cluster list) -------------------------------------------------- */
 .list {
   list-style: none;
   margin: 0;
@@ -177,17 +525,17 @@
   all: unset;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   width: 100%;
   box-sizing: border-box;
-  padding: 5px 6px;
-  border-radius: 8px;
+  padding: 6px 8px;
+  border-radius: 10px;
   cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
 }
 
-.row:hover,
-.row:focus-visible {
-  background: rgba(255, 255, 255, 0.08);
+.row:hover {
+  background: rgba(24, 20, 34, 0.04);
 }
 
 .rowText {
@@ -198,16 +546,16 @@
 }
 
 .rowName {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 13.5px;
+  font-weight: 700;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .rowMeta {
-  font-size: 11px;
-  color: rgba(245, 240, 255, 0.6);
+  font-size: 12px;
+  color: rgba(36, 31, 48, 0.55);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -219,7 +567,8 @@
   height: 9px;
   border-radius: 50%;
   display: inline-block;
-  border: 1.5px solid rgba(18, 16, 28, 0.9);
+  border: 1.5px solid #fdfcfa;
+  box-shadow: 0 0 0 1px rgba(24, 20, 34, 0.12);
 }
 
 .avatar,
@@ -227,7 +576,7 @@
   flex: none;
   border-radius: 50%;
   object-fit: cover;
-  background: #2b2540;
+  background: #e8e4f0;
 }
 
 .avatarInitials {
@@ -236,31 +585,25 @@
   justify-content: center;
   font-size: 11px;
   font-weight: 700;
-  color: rgba(245, 240, 255, 0.85);
+  color: rgba(36, 31, 48, 0.75);
 }
 
-.privacyNote {
-  margin-top: auto;
-  font-size: 11px;
-  line-height: 1.4;
-  color: rgba(245, 240, 255, 0.45);
-}
-
-/* Floating details card over the map */
+/* ---- floating details card over the map ------------------------------------------------------------ */
 .card {
   position: absolute;
-  left: 12px;
-  bottom: 12px;
-  max-width: min(360px, calc(100% - 24px));
-  max-height: calc(100% - 24px);
+  left: 14px;
+  bottom: 62px;
+  z-index: 2;
+  max-width: min(380px, calc(100% - 28px));
+  max-height: calc(100% - 90px);
   overflow-y: auto;
   display: flex;
   gap: 12px;
-  padding: 12px 36px 12px 12px;
-  border-radius: 12px;
-  background: rgba(24, 20, 38, 0.96);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+  padding: 14px 38px 14px 14px;
+  border-radius: 18px;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.1);
+  box-shadow: 0 16px 40px rgba(18, 16, 28, 0.24);
 }
 
 .cardText {
@@ -269,58 +612,65 @@
 }
 
 .cardName {
-  font-size: 14px;
+  font-size: 15.5px;
   font-weight: 700;
 }
 
 .cardMeta {
-  font-size: 12px;
-  color: rgba(245, 240, 255, 0.7);
-  margin-top: 2px;
+  font-size: 12.5px;
+  color: rgba(36, 31, 48, 0.6);
+  margin-top: 3px;
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
 }
 
 .cardActions {
   display: flex;
   gap: 8px;
-  margin-top: 10px;
+  margin-top: 12px;
 }
 
 .actionButton {
   all: unset;
+  box-sizing: border-box;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
-  padding: 6px 10px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.1);
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: #fffefc;
+  border: 1px solid rgba(24, 20, 34, 0.12);
+  color: #241f30;
+  transition: background-color 120ms ease;
 }
 
-.actionButton:hover,
-.actionButton:focus-visible {
-  background: rgba(255, 255, 255, 0.18);
+.actionButton:hover:not(:disabled) {
+  background: rgba(24, 20, 34, 0.04);
+}
+
+.actionButton:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .cardClose {
   all: unset;
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: 10px;
+  right: 10px;
   cursor: pointer;
-  padding: 4px 6px;
-  border-radius: 6px;
-  color: rgba(245, 240, 255, 0.7);
+  padding: 5px 7px;
+  border-radius: 8px;
+  color: rgba(36, 31, 48, 0.55);
   font-size: 12px;
 }
 
 .cardClose:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(24, 20, 34, 0.06);
 }
 
-/* HTML avatar markers placed by MapLibre */
+/* ---- HTML avatar markers placed by MapLibre ----------------------------------------------------------- */
 .marker {
   all: unset;
   position: relative;
@@ -328,16 +678,16 @@
   width: 34px;
   height: 34px;
   border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.9);
-  background: #2b2540;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+  border: 2px solid #fdfcfa;
+  background: #e8e4f0;
+  box-shadow: 0 4px 12px rgba(18, 16, 28, 0.28);
   cursor: pointer;
   overflow: visible;
 }
 
 .marker:hover,
 .marker:focus-visible {
-  border-color: #c4b5fd;
+  border-color: #4bb96a;
 }
 
 .markerImage {
@@ -357,7 +707,7 @@
   justify-content: center;
   font-size: 12px;
   font-weight: 700;
-  color: rgba(245, 240, 255, 0.9);
+  color: rgba(36, 31, 48, 0.8);
 }
 
 .markerStatus {
@@ -367,12 +717,12 @@
   width: 11px;
   height: 11px;
   border-radius: 50%;
-  border: 2px solid rgba(18, 16, 28, 0.95);
+  border: 2px solid #fdfcfa;
 }
 
-/* Distance pill under the avatar — Booking/Airbnb style: small, high-contrast, quiet enough not
-   to compete with the avatar it belongs to. Never a click target (pointer-events: none), so the
-   avatar button and the map underneath keep every click they had. */
+/* Distance pill under the avatar — small, high-contrast, quiet enough not to compete with the
+   avatar it belongs to. Never a click target (pointer-events: none), so the avatar button and
+   the map underneath keep every click they had. */
 .markerDistance {
   position: absolute;
   top: calc(100% + 3px);
@@ -380,36 +730,14 @@
   transform: translateX(-50%);
   pointer-events: none;
   white-space: nowrap;
-  padding: 1px 6px;
+  padding: 1px 7px;
   border-radius: 999px;
-  background: rgba(18, 16, 28, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  color: rgba(245, 240, 255, 0.92);
+  background: #241f30;
+  border: 1px solid rgba(253, 252, 250, 0.24);
+  color: #fdfcfa;
   font-size: 10px;
   font-weight: 600;
   line-height: 14px;
   font-variant-numeric: tabular-nums;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
-}
-
-/* Employee search — a compact box pinned above the sidebar's normal sections. */
-.searchInput {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 6px 8px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(245, 240, 255, 0.92);
-  font: inherit;
-  font-size: 13px;
-}
-
-.searchInput::placeholder {
-  color: rgba(245, 240, 255, 0.45);
-}
-
-.searchInput:focus-visible {
-  outline: none;
-  border-color: rgba(168, 132, 255, 0.7);
+  box-shadow: 0 2px 6px rgba(18, 16, 28, 0.32);
 }

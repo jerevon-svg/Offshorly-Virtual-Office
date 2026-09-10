@@ -5,6 +5,7 @@ import { ClaimButton, RewardTag } from "./RewardControls";
 import { collectReward } from "./rewardFx";
 import { badgeMasterUrl, emblemArtworkUrl, emblemFor } from "../../data/badgeEmblems";
 import { badgeState, strongestBadges } from "../../services/quests/badgeView";
+import { beginClaimSession, endClaimSession } from "../../services/quests/claimHudStore";
 import { refreshBadges, unclaimedTierCount, useProgressionStore } from "../../services/quests/progressionStore";
 import { badgeTierPeriodKey, claimReward, type Badge, type BadgeCategory } from "../../services/quests/questsClient";
 
@@ -153,6 +154,10 @@ export function AchievementGallery() {
     const key = `${badge.id}@${tier}`;
     claimingRef.current = key;
     setClaiming(key);
+    // Show the claim-time progression strip so the reward FX has a visible destination. The
+    // Profile modal sets officeToolOpen, which hides the dock the particles normally land on —
+    // without this the coins and XP fly at an off-screen target, exactly as they did for Tasks.
+    beginClaimSession();
     try {
       const res = await claimReward(badge.id, badgeTierPeriodKey(tier));
       void collectReward(res, source); // server-confirmed only; replays sync silently
@@ -162,6 +167,7 @@ export function AchievementGallery() {
     } finally {
       claimingRef.current = null;
       setClaiming(null);
+      endClaimSession();
     }
   };
 

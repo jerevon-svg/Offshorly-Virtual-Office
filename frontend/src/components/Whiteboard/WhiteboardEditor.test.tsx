@@ -411,7 +411,10 @@ describe("WhiteboardEditor (Excalidraw)", () => {
 
     it("shows live status with the collaborator count and hides the REST save button", () => {
       renderLive();
-      expect(screen.getByTestId("realtime-status")).toHaveTextContent("Live · 1 collaborator");
+      // Live: the server persists every batch, so the bar shows the saved chip and the presence
+      // pile's count rather than a connection sentence (which is kept for unsettled states).
+      expect(screen.getByTestId("saved-chip")).toHaveTextContent("Saved");
+      expect(screen.getByTestId("presence-count")).toHaveTextContent("2 here");
       expect(screen.queryByText("Save now")).toBeNull();
       // The snapshot replaced the scene without an undo entry.
       expect(harness.updateScene).toHaveBeenCalledWith(expect.objectContaining({ captureUpdate: "NEVER" }));
@@ -486,7 +489,7 @@ describe("WhiteboardEditor (Excalidraw)", () => {
       expect([...collaborators.keys()]).toEqual(["s-other"]);
       expect(collaborators.get("s-other")?.pointer?.x).toBe(10);
       act(() => sync.handlers.onPresence([me]));
-      expect(screen.getByTestId("realtime-status")).toHaveTextContent("Live · only you");
+      expect(screen.getByTestId("presence-count")).toHaveTextContent("1 here");
       expect((harness.updateScene.mock.lastCall![0].collaborators as Map<string, unknown>).size).toBe(0);
     });
 

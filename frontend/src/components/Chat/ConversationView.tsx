@@ -7,6 +7,8 @@ import type { ChatMessage, ConnectionState } from "../../services/chat";
 import type { AssetLayer } from "../../types/office";
 import { ChatComposer } from "./ChatComposer";
 import { ChatWindowHeader } from "./ChatWindowHeader";
+import { profileImageFor } from "../../data/portraits";
+import { WhiteboardActionIcon } from "./ChatHeaderIcons";
 import { MessageReactions } from "./MessageReactions";
 import { renderMessageText } from "./MentionText";
 import { useMentionComposer } from "./useMentionComposer";
@@ -25,6 +27,7 @@ type ConversationViewProps = {
   // The current user's own sprite/preview image, for the small avatar shown
   // next to their own messages. Display-only — falls back to an initials
   // circle when omitted or empty.
+  /** Kept for the caller's contract; outgoing messages deliberately show no avatar. */
   selfAvatarUrl?: string;
   onClose: () => void;
   // Optional status line shown under the name (e.g. a presence label) — omitted when unknown.
@@ -110,11 +113,10 @@ function maxIso(a: string | null, b: string | null): string | null {
   return a >= b ? a : b;
 }
 
-// TEMPORARY (per Bon, 2026-08-14): always render the initials-circle
-// fallback for per-message avatars, regardless of `src`. Image avatars
-// (peer.path / selfAvatarUrl) may come back later — flip this to false
-// to restore the <img> rendering path below.
-const ALWAYS_USE_INITIALS = true;
+// Per-message avatars are the employee's real portrait (data/portraits' profileImageFor, the
+// same resolver the Chats list, the map and the bubble rail use). The 2026-08-14 initials-only
+// stopgap is gone: it existed because the only `src` available then was the character SPRITE
+// path, not a portrait. Initials remain the fallback for anyone without one.
 
 function Avatar({
   src,
@@ -128,8 +130,8 @@ function Avatar({
   /** A fixed glyph instead of the initial — used for the non-human Toucan author. */
   glyph?: string;
 }) {
-  if (src && !ALWAYS_USE_INITIALS) {
-    return <img className={className} src={src} alt="" />;
+  if (src) {
+    return <img className={className} src={src} alt="" draggable={false} />;
   }
   const initial = glyph ?? (label.trim().charAt(0).toUpperCase() || "?");
   return (
@@ -164,7 +166,6 @@ export function ConversationView({
   peer,
   selfId,
   peerChatId,
-  selfAvatarUrl,
   onClose,
   subtitle,
   isSpatial,
@@ -214,6 +215,10 @@ export function ConversationView({
   const routingPeerId =
     resolvedPeerId ?? (chatMode === "mock" ? peer.id : null);
   const peerName = formatCharacterName(peer);
+  // Real portraits for the message rail, resolved by email like everywhere else; "" means the
+  // person has none and the initials circle stands in.
+  const peerPortrait = profileImageFor(resolvedPeerId, () => "");
+
 
   // @mentions V1: DM autocomplete offers exactly the other participant — never the whole
   // company roster (feature spec: "Do NOT search the entire company roster from an existing
@@ -447,6 +452,7 @@ export function ConversationView({
     <div className={minimized ? `${styles.panel} ${styles.panelMinimized}` : styles.panel}>
       <ChatWindowHeader
         name={peerName}
+        avatarEmail={resolvedPeerId ?? undefined}
         subtitle={subtitle}
         isSpatial={isSpatial}
         headerExtra={
@@ -455,12 +461,12 @@ export function ConversationView({
               {headerExtra}
               <button
                 type="button"
-                className={styles.minimizeButton}
+                className={styles.headerAction}
                 onClick={() => onOpenWhiteboard(conversationId, peerName)}
                 aria-label="Open whiteboards"
                 title="Whiteboards"
               >
-                ▦
+                <WhiteboardActionIcon />
               </button>
             </>
           ) : (
@@ -507,6 +513,16 @@ export function ConversationView({
               : null;
             const showSeenLabel =
               showStatus && status === "read" && index === lastReadOwnIndex && peerReadUpTo;
+            // Messenger-style grouping: one avatar per consecutive run of a sender's messages,
+            // on the last bubble of that run.
+            const senderKey = fromToucan ? "__toucan__" : msg.senderId;
+            const next = messages[index + 1];
+            const nextKey = next
+              ? isToucanSender(next.senderId) && next.senderId !== selfId
+                ? "__toucan__"
+                : next.senderId
+              : null;
+            const endsBlock = nextKey !== senderKey || formatDayDivider(next!.sentAt) !== dayLabel;
             return (
               <div key={msg.id} className={styles.messageGroup}>
                 {showDivider && (
@@ -520,50 +536,63 @@ export function ConversationView({
                   className={isOwn ? `${styles.row} ${styles.rowSelf}` : styles.row}
                   data-sender={fromToucan ? "toucan" : isOwn ? "self" : "peer"}
                 >
-                  {fromToucan && (
-                    <Avatar
-                      className={`${styles.avatar} ${styles.toucanAvatar}`}
-                      label={TOUCAN_DISPLAY_NAME}
-                      glyph={TOUCAN_AVATAR_GLYPH}
-                    />
-                  )}
-                  {!isOwn && !fromToucan && (
-                    <Avatar className={styles.avatar} src={peer.path || undefined} label={peerName} />
-                  )}
                   <div className={styles.bubbleColumn}>
-                    {fromToucan && <span className={styles.timestamp}>{TOUCAN_DISPLAY_NAME}</span>}
-                    <div className={isOwn ? `${styles.message} ${styles.own}` : `${styles.message} ${styles.peer}`}>
-                      {renderMessageText(
-                        msg.text,
-                        msg.mentionedEmails,
-                        (email) => (routingPeerId && email.toLowerCase() === routingPeerId.toLowerCase() ? peerName : email),
-                        selfId,
+                    {fromToucan && <span className={styles.senderName}>{TOUCAN_DISPLAY_NAME}</span>}
+                    {/* Avatar and bubble share ONE line, bottom-aligned to the bubble's own edge.
+                        Timestamp, reactions and receipts live in the meta block underneath, so
+                        they can never push the avatar down. */}
+                    <div className={styles.bubbleLine}>
+                      {fromToucan &&
+                        (endsBlock ? (
+                          <Avatar
+                            className={`${styles.avatar} ${styles.toucanAvatar}`}
+                            label={TOUCAN_DISPLAY_NAME}
+                            glyph={TOUCAN_AVATAR_GLYPH}
+                          />
+                        ) : (
+                          <span className={styles.avatarSpacer} aria-hidden="true" />
+                        ))}
+                      {!isOwn &&
+                        !fromToucan &&
+                        (endsBlock ? (
+                          <Avatar className={styles.avatar} src={peerPortrait || undefined} label={peerName} />
+                        ) : (
+                          <span className={styles.avatarSpacer} aria-hidden="true" />
+                        ))}
+                      <div className={isOwn ? `${styles.message} ${styles.own}` : `${styles.message} ${styles.peer}`}>
+                        {renderMessageText(
+                          msg.text,
+                          msg.mentionedEmails,
+                          (email) => (routingPeerId && email.toLowerCase() === routingPeerId.toLowerCase() ? peerName : email),
+                          selfId,
+                        )}
+                      </div>
+                    </div>
+                    <div className={styles.meta}>
+                      <span className={isOwn ? `${styles.timestamp} ${styles.timestampRight}` : styles.timestamp}>
+                        {formatMessageTime(msg.sentAt)}
+                      </span>
+                      <MessageReactions
+                        messageId={msg.id}
+                        reactions={msg.reactions}
+                        selfId={selfId}
+                        isOwn={isOwn}
+                        resolveDisplayName={(email) =>
+                          routingPeerId && email.toLowerCase() === routingPeerId.toLowerCase()
+                            ? peerName
+                            : email
+                        }
+                      />
+                      {status && (
+                        <span className={styles.statusRow} data-status={status}>
+                          {showSeenLabel && (
+                            <span className={styles.seenLabel}>Seen {formatMessageTime(peerReadUpTo)}</span>
+                          )}
+                          <StatusIcon status={status} />
+                        </span>
                       )}
                     </div>
-                    <span className={isOwn ? `${styles.timestamp} ${styles.timestampRight}` : styles.timestamp}>
-                      {formatMessageTime(msg.sentAt)}
-                    </span>
-                    <MessageReactions
-                      messageId={msg.id}
-                      reactions={msg.reactions}
-                      selfId={selfId}
-                      isOwn={isOwn}
-                      resolveDisplayName={(email) =>
-                        routingPeerId && email.toLowerCase() === routingPeerId.toLowerCase()
-                          ? peerName
-                          : email
-                      }
-                    />
-                    {status && (
-                      <span className={styles.statusRow} data-status={status}>
-                        {showSeenLabel && (
-                          <span className={styles.seenLabel}>Seen {formatMessageTime(peerReadUpTo)}</span>
-                        )}
-                        <StatusIcon status={status} />
-                      </span>
-                    )}
                   </div>
-                  {isOwn && <Avatar className={styles.avatar} src={selfAvatarUrl || undefined} label={selfId} />}
                 </div>
               </div>
             );

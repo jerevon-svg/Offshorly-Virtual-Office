@@ -40,6 +40,8 @@ import type { ChatMessage } from "../../services/chat";
 import type { Conversation } from "../../services/chat/types";
 import { useUnreadTotal } from "../../services/chat/useUnreadTotal";
 import { MessageNotificationBadge } from "../Chat/MessageNotificationBadge";
+import { ConversationListPanel } from "../Chat/ConversationListPanel";
+import { profileImageFor } from "../../data/portraits";
 import { buildChatAttentionByLayerId, type ChatAttention } from "./chatAttention";
 import { EmployeePickerModal } from "../Chat/EmployeePickerModal";
 import { GroupConversationView } from "../Chat/GroupConversationView";
@@ -308,12 +310,20 @@ const SPATIAL_WINDOW_KEY = "__spatial__";
 // just another conversation-shaped window: it keeps the rightmost slot it has always occupied,
 // and DM/group windows opened while it is up stack to its LEFT instead of underneath it.
 const TOUCAN_WINDOW_KEY = "__toucan__";
+// Minimized remote DM/group windows collapse to a circular avatar in a vertical rail stacked
+// above the Toucan button (bottom-right). While the rail has anything in it the horizontal
+// window stack starts to its left instead of at the edge.
+const CHAT_BUBBLE_SIZE = 52;
+const CHAT_BUBBLE_RAIL_GAP = 12;
 
 // Pure layout pass: given an ordered list (index 0 = rightmost/newest) of {key, minimized},
 // returns each key's `right` CSS offset in px so windows stack without overlapping.
-function computeFloatingChatRightOffsets(items: { key: string; minimized: boolean }[]): Map<string, number> {
+function computeFloatingChatRightOffsets(
+  items: { key: string; minimized: boolean }[],
+  baseMargin: number = FLOATING_CHAT_EDGE_MARGIN,
+): Map<string, number> {
   const offsets = new Map<string, number>();
-  let cursor = FLOATING_CHAT_EDGE_MARGIN;
+  let cursor = baseMargin;
   for (const item of items) {
     offsets.set(item.key, cursor);
     cursor += (item.minimized ? FLOATING_CHAT_MINIMIZED_WIDTH : FLOATING_CHAT_EXPANDED_WIDTH) + FLOATING_CHAT_GAP;
@@ -354,7 +364,7 @@ export function OfficeMap() {
 
   // Which full-screen dock tool currently owns the office, if any. The dock and the Toucan hide
   // for ANY value here, so a future tool joins by adding its key — no second hide mechanism.
-  const [dockTool, setDockTool] = useState<null | "search">(null);
+  const [dockTool, setDockTool] = useState<null | "search" | "chat">(null);
   const [menu, setMenu] = useState<{ layer: AssetLayer; clientX: number; clientY: number } | null>(
     null,
   );
@@ -979,17 +989,44 @@ export function OfficeMap() {
   // (remoteChatWindows is already newest-first, see openOrFocusRemoteDm/Group's unshift), then
   // the spatial window (if any) last/leftmost. Purely presentational — has no bearing on which
   // slot is "spatial" vs "remote" for session-bookkeeping purposes, only on where each renders.
+  const minimizedRemoteWindows = useMemo(
+    () => remoteChatWindows.filter((w) => w.minimized),
+    [remoteChatWindows],
+  );
   const floatingChatRightOffsets = useMemo(() => {
     const items: { key: string; minimized: boolean }[] = [];
     // The Toucan panel keeps the rightmost slot while it is open (never minimized), so every
     // conversation window opened alongside it lands beside it rather than behind it.
     if (toucanPanelOpen) items.push({ key: TOUCAN_WINDOW_KEY, minimized: false });
-    for (const w of remoteChatWindows) items.push({ key: w.key, minimized: w.minimized });
+    // A minimized remote window is a bubble in the right-hand rail, not a header bar in this
+    // row — it still renders (mounted, subscriptions intact), just hidden. The spatial window
+    // keeps its original header-bar minimize and therefore stays in the row either way.
+    for (const w of remoteChatWindows) {
+      if (!w.minimized) items.push({ key: w.key, minimized: false });
+    }
     if (openChat || openGroupConv) {
       items.push({ key: SPATIAL_WINDOW_KEY, minimized: spatialChatMinimized });
     }
-    return computeFloatingChatRightOffsets(items);
-  }, [toucanPanelOpen, remoteChatWindows, openChat, openGroupConv, spatialChatMinimized]);
+    // Clear the bubble rail when it has anything in it.
+    const base =
+      FLOATING_CHAT_EDGE_MARGIN +
+      (minimizedRemoteWindows.length > 0 ? CHAT_BUBBLE_SIZE + CHAT_BUBBLE_RAIL_GAP : 0);
+    return computeFloatingChatRightOffsets(items, base);
+  }, [toucanPanelOpen, remoteChatWindows, minimizedRemoteWindows, openChat, openGroupConv, spatialChatMinimized]);
+
+  // Unread/mention counts for a bubble, read from the SAME useUnreadTotal rows the dock badge
+  // and the conversation list use — a DM window is keyed by peer email, a group by its id.
+  const conversationForWindow = useCallback(
+    (w: RemoteChatWindow): Conversation | undefined =>
+      w.kind === "group"
+        ? allConversations.find((c) => c.id === w.conversationId)
+        : allConversations.find(
+            (c) =>
+              (c.type ?? "dm") === "dm" &&
+              c.participantIds.some((id) => id.toLowerCase() === w.peerEmail),
+          ),
+    [allConversations],
+  );
 
   // Routes a conversation-list click (the 💬 Global Chat icon's dropdown — MessageNotification
   // Badge's `conversations` list, below its New Message/Find Person/New Group Chat actions).
@@ -2611,7 +2648,15 @@ export function OfficeMap() {
   // step aside for any of them — Search sets dockTool, the Hub carries its own store-owned open
   // state — so a future tool joins by extending this line, not by adding another mechanism.
   const officeToolOpen =
-    dockTool !== null || companyHub.isOpen || tasksOpen || rewardsOpen || profileEmail !== null;
+    dockTool !== null ||
+    companyHub.isOpen ||
+    tasksOpen ||
+    rewardsOpen ||
+    profileEmail !== null ||
+    whiteboardTarget !== null ||
+    teamMapOpen ||
+    // New Message / New Group Chat own the screen exactly like the Chats list does.
+    chatPickerMode !== null;
   // The Tasks badge must be right BEFORE Tasks is ever opened, so the count is fetched once the
   // dock's chrome exists and re-fetched whenever the panel closes (a claim inside it already
   // refreshes on confirmation). Failures are swallowed in the store — a decorative badge must
@@ -4673,6 +4718,11 @@ export function OfficeMap() {
           onNewMessage={() => setChatPickerMode("message")}
           onFindPerson={() => setChatPickerMode("findPerson")}
           onNewGroupChat={() => setChatPickerMode("group")}
+          // The list itself is the dock's Chat TOOL (ConversationListPanel below): setting
+          // dockTool is what hides the dock and the Toucan, through the existing
+          // officeToolOpen path. The tile keeps its icon and unread badge.
+          active={dockTool === "chat"}
+          onOpen={() => setDockTool((tool) => (tool === "chat" ? null : "chat"))}
         />
       ),
     });
@@ -5086,12 +5136,39 @@ export function OfficeMap() {
                 : "Call the toucan"
           }
         >
-          <span aria-hidden="true">🦜</span>
+          <HudIcon name="toucan" size="30px" />
         </button>
       )}
       {/* Search spotlight. Every action it offers is one of THIS component's existing handlers —
           the search-locate path the dock's Search flyout already used, and handleChoose's chat /
           call. No behaviour is reimplemented here. */}
+      {/* Chat tool. Owns no chat state: the rows are useUnreadTotal's conversations and picking
+          one goes straight through the existing onSelectConversation, which still decides
+          spatial vs remote and DM vs group. Closing it restores the dock and the Toucan. */}
+      {chatMode === "real" && (
+        <ConversationListPanel
+          open={dockTool === "chat"}
+          conversations={allConversations}
+          selfId={selfChatId}
+          resolveDisplayName={resolveDisplayName}
+          onSelectConversation={(conv) => {
+            setDockTool(null);
+            onSelectConversation(conv);
+          }}
+          onNewMessage={() => {
+            setDockTool(null);
+            setChatPickerMode("message");
+          }}
+          // Find Person is the EXISTING Spotlight dock tool — the same employee search, locate,
+          // chat and call actions it already offers. No second person-finder.
+          onFindPerson={() => setDockTool("search")}
+          onNewGroupChat={() => {
+            setDockTool(null);
+            setChatPickerMode("group");
+          }}
+          onClose={() => setDockTool(null)}
+        />
+      )}
       <SearchSpotlight
         open={dockTool === "search"}
         onClose={() => setDockTool(null)}
@@ -5500,10 +5577,14 @@ export function OfficeMap() {
           />
         </div>
       )}
+      {/* Every remote window stays MOUNTED whatever its state — a minimized one is only hidden
+          here and drawn as a bubble in the rail below, so its socket subscriptions, read
+          receipts and selfGlobalChatActive accounting are untouched. */}
       {remoteChatWindows.map((w) => (
         <div
           key={w.key}
           className={styles.floatingChatSlot}
+          hidden={w.minimized}
           style={{ right: floatingChatRightOffsets.get(w.key) ?? FLOATING_CHAT_EDGE_MARGIN }}
         >
           {w.kind === "dm" ? (
@@ -5547,6 +5628,53 @@ export function OfficeMap() {
           )}
         </div>
       ))}
+      {/* Minimized remote DM/group conversations, as circular avatars stacked upward from just
+          above the Toucan button. Clicking one runs the SAME toggleRemoteWindowMinimize the
+          header's − always did; closing runs the same closeRemoteWindow. */}
+      {minimizedRemoteWindows.length > 0 && !officeToolOpen && (
+        <div className={styles.chatBubbleRail} aria-label="Minimized conversations">
+          {minimizedRemoteWindows.map((w) => {
+            const conv = conversationForWindow(w);
+            const name =
+              w.kind === "dm"
+                ? resolveDisplayName(w.peerEmail)
+                : w.title || w.participantEmails.filter((e) => e !== selfChatId).map(resolveDisplayName).join(", ") || "Group";
+            const portraitEmail =
+              w.kind === "dm" ? w.peerEmail : w.participantEmails.find((e) => e !== selfChatId) ?? "";
+            const portrait = profileImageFor(portraitEmail, () => "");
+            const unread = conv?.unreadCount ?? 0;
+            return (
+              <div key={w.key} className={styles.chatBubbleWrap}>
+                <button
+                  type="button"
+                  className={styles.chatBubble}
+                  onClick={() => toggleRemoteWindowMinimize(w.key)}
+                  aria-label={`Restore chat with ${name}${unread > 0 ? `, ${unread} unread` : ""}`}
+                  title={name}
+                >
+                  {portrait ? (
+                    <img className={styles.chatBubbleImage} src={portrait} alt="" draggable={false} />
+                  ) : (
+                    <span className={styles.chatBubbleInitials}>
+                      {name.trim().charAt(0).toUpperCase() || "?"}
+                    </span>
+                  )}
+                  {unread > 0 && <span className={styles.chatBubbleBadge}>{unread > 99 ? "99+" : unread}</span>}
+                </button>
+                <button
+                  type="button"
+                  className={styles.chatBubbleClose}
+                  onClick={() => closeRemoteWindow(w.key)}
+                  aria-label={`Close chat with ${name}`}
+                  title="Close"
+                >
+                  ×
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
       {chatMode === "real" && whiteboardTarget && (
         <WhiteboardPanel
           scope={whiteboardTarget.scope}

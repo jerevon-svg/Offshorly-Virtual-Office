@@ -12,10 +12,12 @@ vi.mock("../../services/quests/questsClient", () => ({
   badgeTierPeriodKey: (tier: number) => `t:${tier}`,
 }));
 vi.mock("./rewardFx", () => ({ collectReward: vi.fn(async () => {}) }));
+vi.mock("../../services/quests/claimHudStore", () => ({ beginClaimSession: vi.fn(), endClaimSession: vi.fn() }));
 
 import { claimReward, fetchMyBadges } from "../../services/quests/questsClient";
 import { refreshBadges, resetProgressionForTests } from "../../services/quests/progressionStore";
 import { collectReward } from "./rewardFx";
+import { beginClaimSession, endClaimSession } from "../../services/quests/claimHudStore";
 import { badgeState, strongestBadges } from "../../services/quests/badgeView";
 import { AchievementGallery, PinnedBadges } from "./AchievementGallery";
 
@@ -173,6 +175,44 @@ describe("AchievementGallery", () => {
     fireEvent.click(screen.getByRole("button", { name: "Back to all achievements" }));
     expect(screen.getByTestId("achievement-grid")).toBeInTheDocument();
     expect(screen.getByTestId("achievement-connector")).toBeInTheDocument(); // still on Social
+  });
+
+
+  // The Profile modal hides the dock the reward particles land on, so an Achievements claim has to
+  // raise the SAME claim-time strip Quests and Missions raise — otherwise the XP and Coins fly at
+  // an off-screen target and the viewer sees nothing. Reuses the existing store; no new FX.
+  it("raises the shared claim HUD session around a successful tier claim", async () => {
+    await load(list());
+    vi.mocked(claimReward).mockResolvedValue({
+      questId: "connector",
+      periodKey: "t:2",
+      grantedNow: true,
+      reward: { xp: 75, coins: 25 },
+      progression: { xp: 100, coins: 35, level: 2, levelStartXp: 100, nextLevelXp: 300 },
+    } satisfies ClaimResult);
+    render(<AchievementGallery />);
+    fireEvent.click(screen.getByRole("tab", { name: /Social/ }));
+    fireEvent.click(screen.getByTestId("achievement-connector"));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Claim reward for Connector Silver" }));
+    });
+    expect(beginClaimSession).toHaveBeenCalledTimes(1);
+    expect(endClaimSession).toHaveBeenCalledTimes(1);
+    expect(collectReward).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes the claim HUD session and plays no FX when the claim fails", async () => {
+    await load(list());
+    vi.mocked(claimReward).mockRejectedValue(new Error("Claim failed (409)"));
+    render(<AchievementGallery />);
+    fireEvent.click(screen.getByRole("tab", { name: /Social/ }));
+    fireEvent.click(screen.getByTestId("achievement-connector"));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Claim reward for Connector Silver" }));
+    });
+    expect(beginClaimSession).toHaveBeenCalledTimes(1);
+    expect(endClaimSession).toHaveBeenCalledTimes(1);
+    expect(collectReward).not.toHaveBeenCalled();
   });
 
 // REGRESSION — an earlier edit sliced this stylesheet from ".emblem {" to a later marker and

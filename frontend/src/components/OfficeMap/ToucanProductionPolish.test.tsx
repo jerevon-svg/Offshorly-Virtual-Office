@@ -164,9 +164,12 @@ describe("Toucan T9 production polish", () => {
       await setup();
       await ask("try html");
 
-      expect(document.querySelector("img")).toBeNull();
-      expect(document.querySelector("b")).toBeNull();
-      expect(screen.getByText(/<img src=x onerror="alert\(1\)">/)).toBeInTheDocument();
+      // Scoped to the rendered reply: the panel's own chrome legitimately contains images (the
+      // Toucan avatar), so the guarantee under test is that the REPLY TEXT creates no elements.
+      const body = screen.getByText(/<img src=x onerror="alert\(1\)">/);
+      expect(body.querySelector("img")).toBeNull();
+      expect(body.querySelector("b")).toBeNull();
+      expect(body).toBeInTheDocument();
     });
 
     it("renders a safe link as an anchor and an unsafe one as plain text", async () => {

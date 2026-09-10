@@ -1,120 +1,264 @@
-/* Minimal/functional, matches MessageNotificationBadge's placeholder styling — Bon will
-   restyle once the feature is confirmed working. */
-
+/* New Message / New Group Chat — the compact recipient picker. Same cream shell language as the
+   Chats panel and the Rewards / Hub / Boards family (#fdfcfa, 22px rounding, rgba(24,20,34,·)
+   hairlines, #2f6b45 primary, #4bb96a focus). Typography is inherited (Instrument Sans). */
 .backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  z-index: 160;
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 200;
+  padding: 24px;
+  box-sizing: border-box;
+  background: rgba(24, 20, 34, 0.34);
+  backdrop-filter: blur(3px);
 }
 
 .panel {
-  width: 320px;
-  max-height: 70vh;
+  width: min(400px, 100%);
+  max-height: min(560px, 88vh);
+  box-sizing: border-box;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.08);
+  border-radius: 22px;
+  box-shadow: 0 28px 70px rgba(18, 16, 28, 0.32), 0 2px 8px rgba(18, 16, 28, 0.12);
+  color: #241f30;
   display: flex;
   flex-direction: column;
-  background: rgba(26, 26, 26, 0.98);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 10px;
-  color: #f0f0f0;
   overflow: hidden;
 }
 
 .header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 12px 14px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-  font-weight: 600;
-  font-size: 14px;
+  gap: 12px;
+  padding: 18px 20px 10px;
+}
+
+.title {
+  flex: 1;
+  min-width: 0;
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
 }
 
 .closeButton {
   all: unset;
+  flex: none;
+  box-sizing: border-box;
   cursor: pointer;
-  font-size: 18px;
-  line-height: 1;
-  color: #aaa;
-  padding: 2px 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  color: #3f3a4d;
+  font-size: 14px;
+  transition: background-color 120ms ease;
 }
 
 .closeButton:hover {
-  color: #fff;
+  background: rgba(24, 20, 34, 0.05);
+}
+
+.closeButton:focus-visible,
+.searchInput:focus-visible,
+.groupNameInput:focus-visible,
+.row:focus-visible,
+.confirmButton:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: 2px;
+}
+
+/* Recipient line — mirrors the reference's "To:" row, filled with our own selection state. */
+.toRow {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 20px 10px;
+  font-size: 13.5px;
+}
+
+.toLabel {
+  font-weight: 700;
+}
+
+.toValue {
+  color: rgba(36, 31, 48, 0.55);
 }
 
 .searchInput {
-  margin: 10px 14px 0;
-  padding: 8px 10px;
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  background: rgba(255, 255, 255, 0.06);
-  color: #f0f0f0;
-  font-size: 13px;
+  margin: 0 20px 12px;
+  box-sizing: border-box;
+  padding: 11px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(24, 20, 34, 0.1);
+  background: #fffefc;
+  color: #241f30;
+  font: inherit;
+  font-size: 14px;
+  outline: none;
 }
 
-.searchInput:focus {
-  outline: none;
-  border-color: rgba(255, 255, 255, 0.35);
+.searchInput::placeholder {
+  color: rgba(36, 31, 48, 0.4);
 }
 
 .list {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 8px;
-}
-
-.emptyRow {
-  padding: 8px;
-  color: #aaa;
-  font-size: 13px;
+  padding: 0 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-top: 1px solid rgba(24, 20, 34, 0.08);
+  padding-top: 10px;
 }
 
 .row {
   all: unset;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
   box-sizing: border-box;
   cursor: pointer;
-  padding: 8px;
-  border-radius: 6px;
-  color: #f0f0f0;
-  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: 14px;
+  transition: background-color 120ms ease;
 }
 
 .row:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(24, 20, 34, 0.04);
 }
 
 .rowSelected {
-  background: rgba(255, 255, 255, 0.12);
+  background: #eef4ec;
+}
+
+.rowSelected:hover {
+  background: #e4eee2;
+}
+
+.avatar,
+.avatarInitials {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #e8e4f0;
+  display: block;
+}
+
+.avatarInitials {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(36, 31, 48, 0.75);
+}
+
+.rowText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.rowName {
+  font-size: 14.5px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowEmail {
+  font-size: 12px;
+  color: rgba(36, 31, 48, 0.5);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Multi-select tick. A styled span rather than a native checkbox so it matches the rest of the
+   surface; the row itself carries aria-pressed for assistive tech. */
+.check {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 1.5px solid rgba(24, 20, 34, 0.22);
+  background: #fffefc;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.checkOn {
+  background: #2f6b45;
+  border-color: #2f6b45;
+}
+
+.emptyRow {
+  padding: 18px 10px;
+  font-size: 13.5px;
+  color: rgba(36, 31, 48, 0.55);
 }
 
 .footer {
-  padding: 10px 14px;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 20px 18px;
+  border-top: 1px solid rgba(24, 20, 34, 0.08);
+}
+
+.groupNameInput {
+  flex: 1;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 10px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(24, 20, 34, 0.1);
+  background: #fffefc;
+  color: #241f30;
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+}
+
+.groupNameInput::placeholder {
+  color: rgba(36, 31, 48, 0.4);
 }
 
 .confirmButton {
   all: unset;
+  flex: none;
+  box-sizing: border-box;
   cursor: pointer;
-  background: #2f6fed;
+  padding: 11px 18px;
+  border-radius: 999px;
+  background: #2f6b45;
   color: #fff;
-  font-size: 13px;
-  font-weight: 600;
-  padding: 8px 14px;
-  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: background-color 120ms ease;
+}
+
+.confirmButton:hover:not(:disabled) {
+  background: #275a3a;
 }
 
 .confirmButton:disabled {
-  background: rgba(255, 255, 255, 0.12);
-  color: #888;
+  opacity: 0.4;
   cursor: not-allowed;
 }

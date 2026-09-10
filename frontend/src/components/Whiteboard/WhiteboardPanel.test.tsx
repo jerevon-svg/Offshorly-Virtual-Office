@@ -10,9 +10,16 @@ import type { Whiteboard, WhiteboardSummary } from "../../services/whiteboard/wh
 // boundaries, so a throw-once mock would never reach the boundary at all.
 let editorFails = false;
 vi.mock("./WhiteboardEditor", () => ({
-  default: ({ board }: { board: Whiteboard }) => {
+  default: ({ board, onBack }: { board: Whiteboard; onBack?: () => void }) => {
     if (editorFails) throw new Error("Failed to fetch dynamically imported module");
-    return <div data-testid="editor">editor:{board.title}:v{board.version}</div>;
+    // The real editor owns the document bar (back / title / save state / presence) now that the
+    // panel does not draw a second header over an open board.
+    return (
+      <div data-testid="editor">
+        <button type="button" onClick={onBack}>← Boards</button>
+        editor:{board.title}:v{board.version}
+      </div>
+    );
   },
 }));
 
@@ -76,6 +83,7 @@ describe("WhiteboardPanel", () => {
     render(<WhiteboardPanel scope={CONV} title="Squad" onClose={() => {}} />);
 
     await waitFor(() => expect(screen.getByText(/No whiteboards yet/)).toBeInTheDocument());
+    fireEvent.click(screen.getByText("New board"));
     fireEvent.change(screen.getByLabelText("New whiteboard title"), { target: { value: "  Retro " } });
     fireEvent.click(screen.getByText("Create"));
 
@@ -137,6 +145,7 @@ describe("WhiteboardPanel", () => {
     expect(listWhiteboards).toHaveBeenCalledWith(room);
     expect(screen.getByText("· Dev Team")).toBeInTheDocument();
 
+    fireEvent.click(screen.getByText("New board"));
     fireEvent.change(screen.getByLabelText("New whiteboard title"), { target: { value: "Standup" } });
     fireEvent.click(screen.getByText("Create"));
     await waitFor(() => expect(screen.getByTestId("editor")).toHaveTextContent("editor:Standup:v1"));

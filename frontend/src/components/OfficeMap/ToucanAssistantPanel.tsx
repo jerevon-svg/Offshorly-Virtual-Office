@@ -6,6 +6,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 // ChatService, no ChatMessage/Conversation, no conversation id, no socket
 // events, no unread/mention/receipt/reaction plumbing, no persistence. None of
 // the chat components themselves were modified.
+import HudIcon from "../HudIcon";
+import { CloseIcon } from "../Chat/ChatHeaderIcons";
 import chat from "../Chat/ConversationView.module.css";
 import styles from "./ToucanAssistantPanel.module.css";
 import { ToucanMessageBody } from "./ToucanMessageBody";
@@ -1251,7 +1253,9 @@ export function ToucanAssistantPanel({
   return (
     <div className={`${chat.panel} ${styles.panel}`} role="dialog" aria-label="Toucan Assistant">
       <div className={chat.header}>
-        <div className={`${chat.headerAvatar} ${styles.headerAvatar}`}>🦜</div>
+        <div className={`${chat.headerAvatar} ${styles.headerAvatar}`}>
+          <HudIcon name="toucan" size="22px" />
+        </div>
         <div className={chat.headerText}>
           <div className={chat.titleRow}>
             <span className={chat.title}>Toucan Assistant</span>
@@ -1276,7 +1280,7 @@ export function ToucanAssistantPanel({
             aria-expanded={historyOpen}
             title="History"
           >
-            🕘
+            <HudIcon name="clock" size="19px" />
           </button>
           <button
             type="button"
@@ -1286,7 +1290,7 @@ export function ToucanAssistantPanel({
             aria-expanded={memoryOpen}
             title="What I remember"
           >
-            🧠
+            <HudIcon name="memory" size="19px" />
           </button>
           <button
             type="button"
@@ -1296,7 +1300,7 @@ export function ToucanAssistantPanel({
             aria-label="Start a new conversation"
             title="New conversation"
           >
-            ✎
+            <HudIcon name="quill" size="19px" />
           </button>
           <button
             type="button"
@@ -1304,7 +1308,7 @@ export function ToucanAssistantPanel({
             onClick={onRelease}
             aria-label="Dismiss the toucan"
           >
-            ×
+            <CloseIcon />
           </button>
         </div>
       </div>
@@ -1475,7 +1479,9 @@ export function ToucanAssistantPanel({
               const carriesRows = Boolean(turn.catchUp) && turn.id === latestCatchUpTurnId && displayedCatchUpRows.length > 0;
               return (
                 <div key={turn.id} className={isOwn ? `${chat.row} ${chat.rowSelf}` : chat.row}>
-                  {!isOwn && <div className={`${chat.avatar} ${styles.toucanAvatar}`}>🦜</div>}
+                  {!isOwn && <div className={`${chat.avatar} ${styles.toucanAvatar}`}>
+              <HudIcon name="toucan" size="17px" />
+            </div>}
                   <div className={chat.bubbleColumn}>
                     <div
                       className={`${chat.message} ${isOwn ? chat.own : chat.peer}${
@@ -1597,7 +1603,9 @@ export function ToucanAssistantPanel({
           // offers two explicit buttons; nothing about typing, Enter, or later
           // messages can stand in for pressing Confirm.
           <div className={chat.row} data-testid="toucan-action-card">
-            <div className={`${chat.avatar} ${styles.toucanAvatar}`}>🦜</div>
+            <div className={`${chat.avatar} ${styles.toucanAvatar}`}>
+              <HudIcon name="toucan" size="17px" />
+            </div>
             <div className={chat.bubbleColumn}>
               <div className={`${chat.message} ${chat.peer} ${styles.actionCard}`}>
                 <span className={styles.actionSummary}>{actionProposal.summary}</span>
@@ -1647,7 +1655,9 @@ export function ToucanAssistantPanel({
             role="status"
             aria-label="The toucan is thinking"
           >
-            <div className={`${chat.avatar} ${styles.toucanAvatar}`}>🦜</div>
+            <div className={`${chat.avatar} ${styles.toucanAvatar}`}>
+              <HudIcon name="toucan" size="17px" />
+            </div>
             <div className={chat.bubbleColumn}>
               <div className={`${chat.message} ${chat.peer} ${styles.typingBubble}`}>
                 <span className={styles.typingDot} />

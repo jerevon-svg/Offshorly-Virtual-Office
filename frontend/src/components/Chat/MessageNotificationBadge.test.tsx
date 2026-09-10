@@ -21,6 +21,25 @@ function dm(overrides: Partial<Conversation>): Conversation {
 }
 
 describe("MessageNotificationBadge", () => {
+  it("uses the dock's own Tasks badge class, so unread geometry cannot drift from it", async () => {
+    const dock = (await import("../OfficeMap/HudDock.module.css")).default;
+    const { container } = render(
+      <MessageNotificationBadge
+        total={3}
+        conversations={[]}
+        selfId="bon@example.com"
+        resolveDisplayName={(e) => e}
+        onSelectConversation={() => {}}
+        onNewMessage={() => {}}
+        onFindPerson={() => {}}
+        onNewGroupChat={() => {}}
+      />,
+    );
+    const badge = container.querySelector(`.${dock.tileBadge}`);
+    expect(badge).not.toBeNull();
+    expect(badge).toHaveTextContent("3");
+  });
+
   it("stays visible (persistent Global Chat entry point) even with no unread messages and no conversations", () => {
     render(
       <MessageNotificationBadge

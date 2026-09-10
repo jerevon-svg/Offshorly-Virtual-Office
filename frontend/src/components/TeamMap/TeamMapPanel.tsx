@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import HudIcon from "../HudIcon";
 import { profileImageFor } from "../../data/portraits";
 import type { OfficePerson } from "../../services/office/floorMerge";
 import { STATUS_META } from "../../services/presence/status";
 import { teamMapService } from "../../services/teamMap";
 import {
-  BUCKET_LABELS,
   formatLocalTime,
   formatSharedAgo,
   groupByBucket,
@@ -14,7 +14,7 @@ import {
   resolveDisplayName,
   resolveMapStatus,
 } from "../../services/teamMap/buckets";
-import { compactDistanceLabelFor, distanceLabelFor } from "../../services/teamMap/distance";
+import { compactDistanceLabelFor, distanceLabelFor, distanceMetersFor } from "../../services/teamMap/distance";
 import { searchTeamMap } from "../../services/teamMap/search";
 import type { GeoFix, TeamMapPerson, TeamMapSnapshot } from "../../services/teamMap/types";
 import { TeamMapCanvas } from "./TeamMapCanvas";
@@ -24,6 +24,15 @@ import styles from "./TeamMapPanel.module.css";
 // MapLibre never loads for someone who never opens it. Shell mirrors MissionsPanel — one modal
 // family. Data is fetched on every open (a snapshot, not a stream) through the teamMapService
 // seam; live VO status comes from the floor roster the parent already holds.
+
+/** Carousel filters. "nearest" needs the viewer's own shared point and is disabled without it. */
+type FilterTab = "all" | "online" | "nearest";
+
+const FILTER_TABS: readonly { key: FilterTab; label: string }[] = [
+  { key: "all", label: "All teammates" },
+  { key: "online", label: "Online" },
+  { key: "nearest", label: "Nearest" },
+];
 
 export interface TeamMapPanelProps {
   viewerEmail: string | null;
@@ -90,6 +99,14 @@ export function TeamMapPanel({ viewerEmail, roster, onClose, onOpenProfile, onOp
   // the same person be located twice in a row.
   const [query, setQuery] = useState("");
   const [focus, setFocus] = useState<{ email: string; nonce: number } | null>(null);
+  // Carousel filter, the ⓘ disclosure popover, and the "fit the whole team in view" request
+  // handed to the canvas (a nonce, like focus, so the same request can fire twice).
+  const [tab, setTab] = useState<FilterTab>("all");
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [fit, setFit] = useState<{ nonce: number } | null>(null);
+  // Carousel arrows drive the SAME overflow-x strip the wheel / trackpad / touch already scroll.
+  const carouselRef = useRef<HTMLUListElement | null>(null);
+  const [carouselEdge, setCarouselEdge] = useState<{ start: boolean; end: boolean }>({ start: true, end: true });
 
   // Working Today (V1.1): the viewer's own share state and the in-flight share/stop request.
   const [shareBusy, setShareBusy] = useState(false);
@@ -236,6 +253,105 @@ export function TeamMapPanel({ viewerEmail, roster, onClose, onOpenProfile, onOp
   const isSelf = (email: string) =>
     viewerEmail !== null && email.toLowerCase() === viewerEmail.toLowerCase();
 
+
+  // Which ends the strip is against, so the arrows can disable at the boundaries. Recomputed on
+  // scroll, on resize, and whenever the rendered list changes.
+  const syncCarouselEdges = useCallback(() => {
+    const el = carouselRef.current;
+    if (!el) {
+      setCarouselEdge({ start: true, end: true });
+      return;
+    }
+    const max = el.scrollWidth - el.clientWidth;
+    setCarouselEdge({ start: el.scrollLeft <= 1, end: el.scrollLeft >= max - 1 });
+  }, []);
+
+  const scrollCarousel = (direction: -1 | 1) => {
+    const el = carouselRef.current;
+    if (!el) return;
+    el.scrollBy({ left: direction * Math.max(220, el.clientWidth * 0.8), behavior: "smooth" });
+  };
+
+  // ---- filters -------------------------------------------------------------------------------
+  // "Nearest" needs a distance for everyone, and a distance exists only when the VIEWER has
+  // shared a point of their own (nothing is inferred from the browser). With no share there is
+  // nothing to sort by, so the tab is disabled rather than silently showing an arbitrary order.
+  const nearestAvailable = Boolean(snapshot?.me);
+  const activeTab: FilterTab = tab === "nearest" && !nearestAvailable ? "all" : tab;
+
+  const metersTo = useCallback(
+    (person: TeamMapPerson) => distanceMetersFor(snapshot?.me ?? null, person, viewerEmail),
+    [snapshot?.me, viewerEmail],
+  );
+
+  // One list feeds the carousel: the search matches when searching (which keeps the ambiguous-
+  // name handling), otherwise everyone, then the tab filter.
+  const listed = useMemo(() => {
+    const base =
+      query.trim() === ""
+        ? people.map((p) => ({ person: p, ambiguous: false }))
+        : matches.map((m) => ({ person: m.person, ambiguous: m.ambiguous }));
+    if (activeTab === "online") {
+      return base.filter(({ person: p }) => resolveMapStatus(p, roster) !== "OFFLINE");
+    }
+    if (activeTab === "nearest") {
+      return base
+        .map((entry) => ({ ...entry, meters: metersTo(entry.person) }))
+        .filter((entry): entry is typeof entry & { meters: number } => entry.meters !== null)
+        .sort((a, b) => a.meters - b.meters);
+    }
+    return base;
+  }, [activeTab, matches, metersTo, people, query, roster]);
+
+  useEffect(() => {
+    syncCarouselEdges();
+    const onResize = () => syncCarouselEdges();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [syncCarouselEdges, listed]);
+
+  // "My location" goes to the signed-in employee's OWN marker — matched by their authenticated
+  // email against the snapshot, never by proximity or any other guess — through the same
+  // select-and-ease path a teammate card uses. Nothing is requested and nothing is shared.
+  const selfPerson = viewerEmail ? people.find((p) => isSelf(p.email)) ?? null : null;
+  const canRecenter = Boolean(selfPerson && selfPerson.latitude !== null && selfPerson.longitude !== null);
+  const goToMyLocation = () => {
+    if (!selfPerson || selfPerson.latitude === null || selfPerson.longitude === null) return;
+    locatePerson(selfPerson.email);
+  };
+
+  // Header status line: the viewer's REAL sharing state, straight off the snapshot.
+  const sharingStatus = snapshot?.me?.active
+    ? `Sharing exact location${
+        formatSharedAgo(snapshot.me.shared_at, now) ? ` · Shared ${formatSharedAgo(snapshot.me.shared_at, now)}` : ""
+      }`
+    : snapshot?.me
+      ? `Last shared${formatSharedAgo(snapshot.me.shared_at, now) ? ` ${formatSharedAgo(snapshot.me.shared_at, now)}` : ""} · Not live`
+      : "Approximate locations · Not live";
+
+  // Share / Stop / Forget, unchanged in behaviour, rendered beside My location in the header.
+  const shareActions = snapshot?.me?.active ? (
+    <button type="button" className={styles.headerAction} onClick={stopWorkingToday} disabled={shareBusy}>
+      Stop sharing
+    </button>
+  ) : (
+    <>
+      <button
+        type="button"
+        className={styles.headerAction}
+        onClick={shareWorkingToday}
+        disabled={shareBusy || loading}
+      >
+        📍 Share my exact location today
+      </button>
+      {snapshot?.me && (
+        <button type="button" className={styles.headerAction} onClick={forgetWorkingToday} disabled={shareBusy}>
+          Forget saved location
+        </button>
+      )}
+    </>
+  );
+
   return (
     <div className={styles.backdrop} onClick={onClose}>
       <div
@@ -244,96 +360,97 @@ export function TeamMapPanel({ viewerEmail, roster, onClose, onOpenProfile, onOp
         aria-label="Global Team Map"
         onClick={(event) => event.stopPropagation()}
       >
-        <button type="button" className={styles.closeButton} onClick={onClose} aria-label="Close team map">
-          ✕
-        </button>
         <header className={styles.header}>
-          <div className={styles.title}>🌍 Global Team Map</div>
-          <div className={styles.subtitle}>
-            {loading
-              ? "Loading…"
-              : `${grouped.ph.length} in the Philippines · ${grouped.elsewhere.length} elsewhere · ${grouped.none.length} without a location`}
+          <span className={styles.headerIcon}>
+            <HudIcon name="map" size="30px" />
+          </span>
+          <div className={styles.headerText}>
+            <div className={styles.title}>Team map</div>
+            <div className={styles.subtitleRow}>
+              <button
+                type="button"
+                className={styles.infoButton}
+                onClick={() => setInfoOpen((open) => !open)}
+                aria-expanded={infoOpen}
+                aria-label="About locations and sharing"
+                title="About locations and sharing"
+              >
+                i
+              </button>
+              <span className={styles.subtitle}>{sharingStatus}</span>
+            </div>
           </div>
-          <div className={styles.subtitle}>
-            Approximate base locations from Atlas profiles — not where people are right now.
+          <div className={styles.headerActions}>
+            {shareActions}
+            <button
+              type="button"
+              className={styles.headerAction}
+              onClick={goToMyLocation}
+              disabled={!canRecenter}
+              title={
+                canRecenter
+                  ? "Centre the map on your own location"
+                  : "You have no location on the map yet — share one to place yourself"
+              }
+            >
+              📍 My location
+            </button>
           </div>
-          <div className={styles.shareRow}>
-            {snapshot?.me?.active ? (
-              <>
-                <span className={styles.shareStatus}>
-                  {`📍 Working today${
-                    formatSharedAgo(snapshot.me.shared_at, now)
-                      ? ` · Shared ${formatSharedAgo(snapshot.me.shared_at, now)}`
-                      : ""
-                  }`}
-                </span>
-                <button
-                  type="button"
-                  className={styles.actionButton}
-                  onClick={stopWorkingToday}
-                  disabled={shareBusy}
-                >
-                  Stop sharing
-                </button>
-                <span className={styles.shareConsent} role="note">
-                  Coworkers can see your exact shared location on this map until you stop sharing or
-                  it expires 12 hours after sharing. Stopping keeps your last shared location visible
-                  as “not live” until you forget it.
-                </span>
-              </>
-            ) : snapshot?.me ? (
-              <>
-                <span className={styles.shareStatus}>
-                  {`📍 Last shared${
-                    formatSharedAgo(snapshot.me.shared_at, now)
-                      ? ` ${formatSharedAgo(snapshot.me.shared_at, now)}`
-                      : ""
-                  } · not live`}
-                </span>
-                <button
-                  type="button"
-                  className={styles.actionButton}
-                  onClick={shareWorkingToday}
-                  disabled={shareBusy || loading}
-                >
-                  📍 Share my exact location today
-                </button>
-                <button
-                  type="button"
-                  className={styles.actionButton}
-                  onClick={forgetWorkingToday}
-                  disabled={shareBusy}
-                >
-                  Forget saved location
-                </button>
-                <span className={styles.shareConsent} role="note">
-                  You are not sharing live. Coworkers still see this last shared location, marked as
-                  not live, until you forget it or share a new one; forgetting shows your approximate
-                  Atlas base location instead.
-                </span>
-              </>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  className={styles.actionButton}
-                  onClick={shareWorkingToday}
-                  disabled={shareBusy || loading}
-                >
-                  📍 Share my exact location today
-                </button>
-                <span className={styles.shareConsent} role="note">
-                  Your browser will ask for permission. If you allow it, coworkers can see your exact
-                  location on this map for up to 12 hours or until you stop sharing.
-                </span>
-              </>
-            )}
-            {shareError && (
-              <span className={styles.shareError} role="alert">
-                {shareError}
-              </span>
-            )}
-          </div>
+          <button type="button" className={styles.closeButton} onClick={onClose} aria-label="Close team map">
+            ✕
+          </button>
+
+          {/* Every word of the privacy disclosure lives here, unchanged. The Share / Stop /
+              Forget controls themselves sit in the header beside My location; this popover
+              carries the consent copy that belongs with each of those states. */}
+          {infoOpen && (
+            <div className={styles.infoPopover} role="group" aria-label="Locations and sharing">
+              <p className={styles.infoLead}>
+                {loading
+                  ? "Loading…"
+                  : `${grouped.ph.length} in the Philippines · ${grouped.elsewhere.length} elsewhere · ${grouped.none.length} without a location`}
+              </p>
+              <p className={styles.infoLead}>
+                Approximate base locations from Atlas profiles — not where people are right now.
+              </p>
+              <div className={styles.shareRow}>
+                {snapshot?.me?.active ? (
+                  <>
+                    <span className={styles.shareConsent} role="note">
+                      Coworkers can see your exact shared location on this map until you stop sharing or
+                      it expires 12 hours after sharing. Stopping keeps your last shared location visible
+                      as “not live” until you forget it.
+                    </span>
+                  </>
+                ) : snapshot?.me ? (
+                  <>
+                    <span className={styles.shareConsent} role="note">
+                      You are not sharing live. Coworkers still see this last shared location, marked as
+                      not live, until you forget it or share a new one; forgetting shows your approximate
+                      Atlas base location instead.
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className={styles.shareConsent} role="note">
+                      Your browser will ask for permission. If you allow it, coworkers can see your exact
+                      location on this map for up to 12 hours or until you stop sharing.
+                    </span>
+                  </>
+                )}
+                {shareError && (
+                  <span className={styles.shareError} role="alert">
+                    {shareError}
+                  </span>
+                )}
+              </div>
+              <p className={styles.privacyNote}>
+                Base locations are approximate (city or region), taken from each person's Atlas profile
+                address, and may be out of date. They do not show where anyone is right now. Nobody's
+                address or exact position is shown or sent to this page.
+              </p>
+            </div>
+          )}
         </header>
 
         {snapshot?.source === "unavailable" && (
@@ -361,7 +478,50 @@ export function TeamMapPanel({ viewerEmail, roster, onClose, onOpenProfile, onOp
               onSelectCluster={selectCluster}
               distanceFor={markerDistanceFor}
               focus={focus}
+              fit={fit}
             />
+
+            <div className={styles.mapOverlay}>
+              <input
+                type="search"
+                className={styles.searchInput}
+                placeholder="Find a teammate or city..."
+                aria-label="Search employee"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+              <div className={styles.tabs} role="group" aria-label="Filter teammates">
+                {FILTER_TABS.map(({ key, label }) => {
+                  const disabled = key === "nearest" && !nearestAvailable;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      className={key === activeTab ? `${styles.tab} ${styles.tabActive}` : styles.tab}
+                      onClick={() => setTab(key)}
+                      disabled={disabled}
+                      aria-pressed={key === activeTab}
+                      title={
+                        disabled
+                          ? "Share your own location to sort teammates by distance"
+                          : undefined
+                      }
+                    >
+                      {label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <button
+              type="button"
+              className={styles.fitButton}
+              onClick={() => setFit((previous) => ({ nonce: (previous?.nonce ?? 0) + 1 }))}
+            >
+              ⤢ Fit team
+            </button>
+
             {selected && (
               <div
                 className={styles.card}
@@ -430,13 +590,13 @@ export function TeamMapPanel({ viewerEmail, roster, onClose, onOpenProfile, onOp
                   <ul className={styles.list}>
                     {clusterPeople.map((p) => (
                       <PersonRow
-                    key={p.email}
-                    person={p}
-                    roster={roster}
-                    now={now}
-                    onSelect={selectPerson}
-                    distance={distanceTo(p)}
-                  />
+                        key={p.email}
+                        person={p}
+                        roster={roster}
+                        now={now}
+                        onSelect={selectPerson}
+                        distance={distanceTo(p)}
+                      />
                     ))}
                   </ul>
                 </div>
@@ -452,85 +612,65 @@ export function TeamMapPanel({ viewerEmail, roster, onClose, onOpenProfile, onOp
             )}
           </div>
 
-          <aside className={styles.sidebar}>
-            <input
-              type="search"
-              className={styles.searchInput}
-              placeholder="Search employee…"
-              aria-label="Search employee"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-            {query.trim() !== "" && (
-              <section>
-                <h3 className={styles.sectionTitle}>
-                  Search results <span className={styles.count}>{matches.length}</span>
-                </h3>
-                {matches.length === 0 ? (
-                  <p className={styles.empty}>No one matches “{query.trim()}”.</p>
-                ) : (
-                  <ul className={styles.list} aria-label="Search results">
-                    {matches.map((match) => (
-                      <PersonRow
-                        key={match.person.email}
-                        person={match.person}
-                        roster={roster}
-                        now={now}
-                        onSelect={locatePerson}
-                        showEmail={match.ambiguous}
-                        distance={distanceTo(match.person)}
-                      />
-                    ))}
-                  </ul>
-                )}
-              </section>
+          {/* Teammate carousel — the same rows the sidebar used, laid out horizontally under the
+              map. Clicking one selects AND flies to them, exactly as a search hit always did. */}
+          <section className={styles.tray}>
+            <div className={styles.trayHead}>
+              <h3 className={styles.sectionTitle}>
+                Teammates <span className={styles.count}>{listed.length}</span>
+              </h3>
+            </div>
+            {listed.length === 0 ? (
+              <p className={styles.empty}>
+                {loading
+                  ? "Loading…"
+                  : query.trim() !== ""
+                    ? `No one matches “${query.trim()}”.`
+                    : activeTab === "online"
+                      ? "Nobody is online right now."
+                      : "No teammates to show."}
+              </p>
+            ) : (
+              <div className={styles.carouselWrap}>
+                <button
+                  type="button"
+                  className={`${styles.carouselArrow} ${styles.carouselArrowStart}`}
+                  onClick={() => scrollCarousel(-1)}
+                  disabled={carouselEdge.start}
+                  aria-label="Scroll teammates left"
+                >
+                  ‹
+                </button>
+                <ul
+                  className={styles.carousel}
+                  ref={carouselRef}
+                  onScroll={syncCarouselEdges}
+                  aria-label={query.trim() !== "" ? "Search results" : "Teammates"}
+                >
+                  {listed.map(({ person: p, ambiguous }) => (
+                    <PersonRow
+                      key={p.email}
+                      person={p}
+                      roster={roster}
+                      now={now}
+                      onSelect={locatePerson}
+                      showEmail={ambiguous}
+                      distance={distanceTo(p)}
+                    />
+                  ))}
+                </ul>
+                <button
+                  type="button"
+                  className={`${styles.carouselArrow} ${styles.carouselArrowEnd}`}
+                  onClick={() => scrollCarousel(1)}
+                  disabled={carouselEdge.end}
+                  aria-label="Scroll teammates right"
+                >
+                  ›
+                </button>
+              </div>
             )}
-            <section>
-              <h3 className={styles.sectionTitle}>
-                {BUCKET_LABELS.elsewhere} <span className={styles.count}>{grouped.elsewhere.length}</span>
-              </h3>
-              {grouped.elsewhere.length === 0 && !loading && (
-                <p className={styles.empty}>Everyone with a location is in the Philippines.</p>
-              )}
-              <ul className={styles.list}>
-                {grouped.elsewhere.map((p) => (
-                  <PersonRow
-                    key={p.email}
-                    person={p}
-                    roster={roster}
-                    now={now}
-                    onSelect={selectPerson}
-                    distance={distanceTo(p)}
-                  />
-                ))}
-              </ul>
-            </section>
-            <section>
-              <h3 className={styles.sectionTitle}>
-                {BUCKET_LABELS.none} <span className={styles.count}>{grouped.none.length}</span>
-              </h3>
-              {grouped.none.length === 0 && !loading && (
-                <p className={styles.empty}>Everyone has a coarse location.</p>
-              )}
-              <ul className={styles.list}>
-                {grouped.none.map((p) => (
-                  <PersonRow
-                    key={p.email}
-                    person={p}
-                    roster={roster}
-                    now={now}
-                    onSelect={selectPerson}
-                    distance={distanceTo(p)}
-                  />
-                ))}
-              </ul>
-            </section>
-            <p className={styles.privacyNote}>
-              Base locations are approximate (city or region), taken from each person's Atlas profile
-              address, and may be out of date. They do not show where anyone is right now. Nobody's
-              address or exact position is shown or sent to this page.
-            </p>
-          </aside>
+          </section>
         </div>
       </div>
     </div>

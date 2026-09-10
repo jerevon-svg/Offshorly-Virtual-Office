@@ -143,10 +143,16 @@ describe("TeamMapPanel", () => {
     vi.unstubAllGlobals();
   });
 
+  // The disclosure copy and every sharing control live behind the header's ⓘ button now; open it
+  // the way a user does before asserting on any of it.
+  const openInfo = () => fireEvent.click(screen.getByRole("button", { name: "About locations and sharing" }));
+
   it("summarises the buckets and lists Elsewhere / No location people with local time", async () => {
     getPeople.mockResolvedValue(snapshot());
     renderPanel();
-    await screen.findByText(/1 in the Philippines · 1 elsewhere · 1 without a location/);
+    await screen.findByText("Sam Sy");
+    openInfo();
+    expect(screen.getByText(/1 in the Philippines · 1 elsewhere · 1 without a location/)).toBeInTheDocument();
     expect(screen.getByText("Sam Sy")).toBeInTheDocument();
     expect(screen.getByText("Nia None")).toBeInTheDocument();
     // Singapore row carries a wall-clock time; the no-location row does not.
@@ -157,7 +163,9 @@ describe("TeamMapPanel", () => {
   it("labels locations as approximate profile base locations, never as current position", async () => {
     getPeople.mockResolvedValue(snapshot());
     renderPanel();
-    await screen.findByText(/Approximate base locations from Atlas profiles/);
+    await screen.findByText("Sam Sy");
+    openInfo();
+    expect(screen.getByText(/Approximate base locations from Atlas profiles/)).toBeInTheDocument();
     fireEvent.click(screen.getByText("marker:sam@offshorly.com"));
     const card = screen.getByRole("group", { name: /Sam Sy details/ });
     expect(card).toHaveTextContent(/Based near Singapore, Singapore \(approx\.\)/);
@@ -209,6 +217,7 @@ describe("TeamMapPanel", () => {
     getPeople.mockResolvedValue(snapshot({ people: [], source: "unavailable" }));
     renderPanel();
     expect(await screen.findByRole("status")).toHaveTextContent(/Atlas is unavailable/);
+    openInfo();
     expect(screen.getByText(/0 in the Philippines · 0 elsewhere · 0 without a location/)).toBeInTheDocument();
   });
 
@@ -273,6 +282,60 @@ describe("TeamMapPanel", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  describe("My location", () => {
+    it("focuses the SIGNED-IN employee's own marker, not the nearest or first person", async () => {
+      // Sam sits first among the mappable non-viewer people and Ada (the viewer) is elsewhere in
+      // the list — the button must still go to Ada, matched by her authenticated email.
+      getPeople.mockResolvedValue(snapshot());
+      renderPanel({ viewerEmail: "ada@offshorly.com" });
+      await screen.findByText("Sam Sy");
+
+      fireEvent.click(screen.getByRole("button", { name: /My location/ }));
+      expect(screen.getByTestId("fake-canvas").dataset.focus).toBe("ada@offshorly.com#1");
+      expect(screen.getByRole("group", { name: /Ada Lovelace details/ })).toBeInTheDocument();
+    });
+
+    it("is disabled when the viewer has no usable coordinates of their own", async () => {
+      getPeople.mockResolvedValue(snapshot());
+      renderPanel({ viewerEmail: "nia@offshorly.com" }); // Nia has null lat/lng
+      await screen.findByText("Sam Sy");
+      expect(screen.getByRole("button", { name: /My location/ })).toBeDisabled();
+    });
+
+    it("is disabled when the viewer is not on the map at all", async () => {
+      getPeople.mockResolvedValue(snapshot());
+      renderPanel({ viewerEmail: "ghost@offshorly.com" });
+      await screen.findByText("Sam Sy");
+      expect(screen.getByRole("button", { name: /My location/ })).toBeDisabled();
+    });
+  });
+
+  describe("teammate carousel", () => {
+    it("selects the clicked teammate and eases the map to their marker", async () => {
+      getPeople.mockResolvedValue(snapshot());
+      renderPanel();
+      const strip = within(await screen.findByRole("list", { name: "Teammates" }));
+
+      fireEvent.click(strip.getByText("Sam Sy"));
+      expect(screen.getByTestId("fake-canvas").dataset.focus).toBe("sam@offshorly.com#1");
+      expect(screen.getByRole("group", { name: /Sam Sy details/ })).toBeInTheDocument();
+
+      // A second card replaces both the selection and the camera target.
+      fireEvent.click(strip.getByText("Nia None"));
+      expect(screen.getByTestId("fake-canvas").dataset.focus).toBe("nia@offshorly.com#2");
+      expect(screen.getByRole("group", { name: /Nia None details/ })).toBeInTheDocument();
+    });
+
+    it("disables both arrows while the strip has nothing to scroll", async () => {
+      getPeople.mockResolvedValue(snapshot());
+      renderPanel();
+      await screen.findByText("Sam Sy");
+      // jsdom reports zero layout, so the strip is at both ends at once.
+      expect(screen.getByRole("button", { name: "Scroll teammates left" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Scroll teammates right" })).toBeDisabled();
+    });
+  });
+
   describe("Working Today", () => {
     it("never asks for location on mount, only after the explicit Share click, and sends the exact fix once", async () => {
       const getCurrentPosition = stubGeolocation((success) =>
@@ -282,7 +345,8 @@ describe("TeamMapPanel", () => {
       renderPanel();
       await screen.findByText("Sam Sy");
       expect(getCurrentPosition).not.toHaveBeenCalled();
-      // Consent copy is visible BEFORE the click.
+      openInfo();
+      // Consent copy is visible BEFORE the click, alongside the Share button itself.
       expect(screen.getByRole("note")).toHaveTextContent(/coworkers can see your exact location/i);
 
       shareWorkingToday.mockResolvedValue(myShare());
@@ -305,7 +369,7 @@ describe("TeamMapPanel", () => {
       await waitFor(() =>
         expect(shareWorkingToday).toHaveBeenCalledWith({ latitude: 14.551234, longitude: 121.027654 }),
       );
-      await screen.findByText(/📍 Working today · Shared \d+ min ago/);
+      await screen.findByText(/Sharing exact location · Shared \d+ min ago/);
       expect(screen.getByRole("button", { name: "Stop sharing" })).toBeInTheDocument();
       expect(screen.getByRole("note")).toHaveTextContent(/coworkers can see your exact shared location/i);
       expect(screen.queryByRole("button", { name: /Share my exact location today/ })).toBeNull();
@@ -339,7 +403,7 @@ describe("TeamMapPanel", () => {
     it("stop ends live sharing but keeps the last shared location, marked not live, with a Forget action", async () => {
       getPeople.mockResolvedValueOnce(snapshot({ me: myShare() }));
       renderPanel();
-      await screen.findByText(/📍 Working today · Shared/);
+      await screen.findByText(/Sharing exact location · Shared/);
       stopWorkingToday.mockResolvedValue(undefined);
       getPeople.mockResolvedValueOnce(
         snapshot({
@@ -349,10 +413,11 @@ describe("TeamMapPanel", () => {
       );
       fireEvent.click(screen.getByRole("button", { name: "Stop sharing" }));
       await waitFor(() => expect(stopWorkingToday).toHaveBeenCalledTimes(1));
-      await screen.findByText(/📍 Last shared \d+ min ago · not live/);
+      await screen.findByText(/Last shared \d+ min ago · Not live/);
       expect(screen.queryByText(/Working today/)).toBeNull();
       expect(screen.getByRole("button", { name: /Share my exact location today/ })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Forget saved location" })).toBeInTheDocument();
+      openInfo();
       expect(screen.getByRole("note")).toHaveTextContent(/not sharing live/i);
       fireEvent.click(screen.getByText("marker:ada@offshorly.com"));
       expect(screen.getByRole("group", { name: /Ada Lovelace details/ })).toHaveTextContent(
@@ -363,7 +428,7 @@ describe("TeamMapPanel", () => {
     it("restores a saved (not live) share after a refresh and Forget falls back to Atlas", async () => {
       getPeople.mockResolvedValueOnce(snapshot({ me: myShare(savedMarker()) }));
       renderPanel();
-      await screen.findByText(/📍 Last shared/);
+      await screen.findByText(/Last shared \d+ min ago · Not live/);
       forgetWorkingToday.mockResolvedValue(undefined);
       getPeople.mockResolvedValueOnce(snapshot());
       fireEvent.click(screen.getByRole("button", { name: "Forget saved location" }));
@@ -404,6 +469,7 @@ describe("TeamMapPanel", () => {
       getPeople.mockResolvedValue(snapshot());
       renderPanel();
       await screen.findByText("Sam Sy");
+      openInfo();
       fireEvent.click(screen.getByRole("button", { name: /Share my exact location today/ }));
       expect(await screen.findByRole("alert")).toHaveTextContent(/permission was denied/);
       expect(shareWorkingToday).not.toHaveBeenCalled();

@@ -3,7 +3,7 @@ import styles from "./EmployeeProfile.module.css";
 import { AchievementGallery, PinnedBadges } from "./AchievementGallery";
 import { ProfileCharacter } from "./ProfileCharacter";
 import HudIcon from "../HudIcon";
-import { refreshBadges, refreshProgression, useProgressionStore } from "../../services/quests/progressionStore";
+import { refreshBadges, refreshProgression, unclaimedTierCount, useProgressionStore } from "../../services/quests/progressionStore";
 import {
   createComment,
   createFeedPost,
@@ -323,6 +323,10 @@ export function EmployeeProfile({
   // no progression section. Read from the shared store so it matches the HUD exactly.
   const isSelf = viewerEmail.trim().toLowerCase() === email.trim().toLowerCase();
   const { progression, badges } = useProgressionStore();
+  // Attention dot on the Achievements tab. DERIVED, never stored: the same count the gallery's
+  // own header shows, so opening the tab cannot clear it — only claiming can, when refreshBadges
+  // brings back a tier with tiersClaimedAt filled in.
+  const claimableTiers = isSelf ? unclaimedTierCount(badges) : 0;
   useEffect(() => {
     if (isSelf) {
       void refreshProgression();
@@ -532,9 +536,16 @@ export function EmployeeProfile({
                   onClick={() => setTab("achievements")}
                   data-testid="tab-achievements"
                   title="Achievements"
-                  aria-label="Achievements"
+                  aria-label={
+                    claimableTiers > 0
+                      ? `Achievements, ${claimableTiers} reward${claimableTiers === 1 ? "" : "s"} to claim`
+                      : "Achievements"
+                  }
                 >
                   <HudIcon name="level" size="22px" />
+                  {claimableTiers > 0 && (
+                    <span className={styles.tabDot} data-testid="tab-achievements-dot" aria-hidden="true" />
+                  )}
                 </button>
               )}
             </div>
