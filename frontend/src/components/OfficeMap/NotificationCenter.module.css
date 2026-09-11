@@ -15,8 +15,9 @@
             to 20 under the 30/31 overlay family)
      140+   floating chat, room sidebar, call overlay, join/DND toasts, pickers
      1000   reward claim FX
-   NOTIFICATIONS IS NOW A SCREEN-OWNING TOOL. The bell is a dock tile; its panel is a modal
-   portaled to <body> at the modal family's own layer 60 — no new layer and no changed z-index.
+   NOTIFICATIONS IS A SCREEN-OWNING TOOL. The bell is a dock tile; its panel is a floating side
+   panel (Chats / Room Details shell) portaled to <body> at layer 60 — no new layer and no changed
+   z-index.
    The dock steps to 50/20 beneath it through the EXISTING officeToolOpen path (OfficeMap.tsx),
    which is also what hides the dock, the Toucan and the minimized chat-head rail while it is
    open. The paragraph below describes the panel's former anchored-dropdown geometry and is kept
@@ -161,26 +162,27 @@
   box-shadow: 0 0 0 2px var(--vo-chrome-badge-ring, rgba(18, 16, 28, 0.9));
 }
 
-/* ---- THE PANEL — a screen-owning modal, not a dropdown --------------------------------------
-   The panel is PORTALED to <body> (see NotificationCenter.tsx) and wears the SAME cream modal
-   shell as Tasks / Rewards / Team Map: identical scrim, radius, border, shadow, entry animation
-   and close-button treatment (copied from MissionsPanel.module.css, which is the reference
-   surface for this family). Nothing here is a near-duplicate of a dropdown any more, and the
-   dock's flyout anchoring props are no longer read: a modal is centred, not anchored.
-   Layer 60 is the modal family's, exactly as the panels above sit — the dock steps to 50/20
-   underneath it through the existing officeToolOpen path. */
+/* ---- THE PANEL — a floating side panel, the Chats / Room Details family ---------------------
+   The panel is PORTALED to <body> (see NotificationCenter.tsx) and wears the SAME floating shell
+   as the Chats list (ConversationListPanel.module.css) and Room Details (RoomSidebar.module.css)
+   — the same rule values on their panel and sidebar blocks respectively: the office
+   stays visible behind a light scrim, the panel floats 16px in from the top, right and bottom
+   edges, 22px radius on all four corners, the family's warm hairline and shadow, and the same
+   slide-in from the docked edge. Values are copied verbatim from those two sheets on purpose —
+   change them there first, then here.
+   Layer 60 is kept: Notifications is still a screen-owning tool that closes under any 60-family
+   modal (`modalOpen`), and the dock steps to 50/20 underneath it through officeToolOpen. */
 .backdrop {
   position: fixed;
   inset: 0;
   z-index: 60;
-  background: rgba(24, 20, 34, 0.34);
-  backdrop-filter: blur(3px);
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
+  justify-content: flex-end;
+  align-items: stretch;
+  padding: 16px;
   box-sizing: border-box;
-  animation: notifScrim 160ms ease-out both;
+  background: rgba(24, 20, 34, 0.18);
+  animation: notifScrim 140ms ease-out both;
 }
 
 @keyframes notifScrim {
@@ -191,8 +193,8 @@
 
 .panel {
   position: relative;
-  width: min(560px, 94vw);
-  max-height: 88vh;
+  width: min(360px, 100%);
+  max-height: 100%;
   box-sizing: border-box;
   background: #fdfcfa;
   border: 1px solid rgba(24, 20, 34, 0.08);
@@ -208,7 +210,7 @@
 @keyframes notifIn {
   from {
     opacity: 0;
-    transform: translateY(-10px) scale(0.99);
+    transform: translateX(12px);
   }
 }
 
@@ -355,15 +357,22 @@
   background: rgba(24, 20, 34, 0.06);
 }
 
-.itemIcon {
-  display: flex;
+/* Fixed leading-media slot — the same 44×44 box for EVERY row, so the text column never moves.
+   A portrait fills it (its existing circular treatment, unchanged); a HudIcon is centred in it at
+   34px — the soft-3D assets carry their own padding, so 34px reads level with the 44px portrait
+   without upscaling any raster past clean. */
+.itemMedia {
   flex: none;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* Real employee portrait (public/portraits — see data/portraits.ts). Absent for anyone without a
-   clear match, and the row simply keeps its type icon. */
+   clear match, and the row simply keeps its type icon in the same slot. */
 .itemPortrait {
-  flex: none;
   width: 44px;
   height: 44px;
   border-radius: 50%;
@@ -462,15 +471,14 @@
   color: #8d3226;
 }
 
-/* COMPACT DESKTOP / NARROW. The row loses its leading type icon before it loses the portrait or
-   any text, and the controls row wraps rather than clipping Mark all read. */
+/* COMPACT DESKTOP / NARROW. The row loses its chevron before any text (the media slot stays, so
+   the text column keeps its x), and the controls row wraps rather than clipping Mark all read. */
 @media (max-width: 520px) {
   .item {
     gap: 10px;
     padding: 11px 12px;
   }
 
-  .itemIcon,
   .itemChevron {
     display: none;
   }

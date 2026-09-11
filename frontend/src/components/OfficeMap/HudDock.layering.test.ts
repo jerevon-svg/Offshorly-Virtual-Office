@@ -53,7 +53,6 @@ const chatCss = readFileSync("src/components/Chat/MessageNotificationBadge.modul
 const checkoutCss = css("checkout/checkout.module.css");
 const pickerCss = css("StatusPicker.module.css");
 const searchCss = css("CharacterSearch.module.css");
-const missionsCss = css("MissionsPanel.module.css");
 const settingsCss = css("HudSettings.module.css");
 const globals = readFileSync("src/index.css", "utf8");
 
@@ -147,7 +146,7 @@ describe("it stays above what reward FX need, and below everything it must", () 
     const bottomAnchored = [
       [officeCss, "toast"],
       [officeCss, "floatingChatSlot"],
-      [checkoutCss, "toast"],
+      [checkoutCss, "reminderCard"],
       [checkoutCss, "walkIndicator"],
       [css("DndRequestUI.module.css"), "toast"],
       [css("CallInvitePrompt.module.css"), "toast"],
@@ -280,19 +279,22 @@ describe("flyouts open upward, into the office rather than off the bottom edge",
     expect(decl(dockCss, "flyoutEnd", "right")).toBe("0");
   });
 
-  // NOTIFICATIONS IS NO LONGER A FLYOUT. It is a screen-owning dock tool: a centred modal on the
-  // modal family's own layer 60, portaled out of the dock (which hides beneath it through the
-  // existing officeToolOpen path). So it deliberately reads none of the --vo-flyout-* anchoring
-  // variables, and the invariant that matters for it is now the modal family's, asserted here
-  // against Missions — the reference surface it was matched to.
-  it("the notification panel is a modal on the family's layer, not an anchored flyout", () => {
+  // NOTIFICATIONS IS NO LONGER A FLYOUT. It is a screen-owning dock tool: a FLOATING SIDE PANEL
+  // in the Chats / Room Details family, still on layer 60 (so it closes under any modal instead
+  // of outranking one), portaled out of the dock (which hides beneath it through the existing
+  // officeToolOpen path). So it deliberately reads none of the --vo-flyout-* anchoring
+  // variables, and its shell is asserted here against the Chats list — the reference surface it
+  // was matched to: same 16px inset, same width clamp, same surface/radius/hairline/shadow.
+  it("the notification panel is a floating side panel on layer 60, not an anchored flyout", () => {
+    const chatsPanelCss = readFileSync("src/components/Chat/ConversationListPanel.module.css", "utf8");
     expect(zIndexOf(notificationCss, "backdrop")).toEqual([60]);
-    expect(zIndexOf(missionsCss, "backdrop")).toEqual([60]);
     expect(notificationCss).not.toMatch(/--vo-flyout-/);
-    // Clamped exactly like the rest of the family, so it can never push the page around.
-    expect(decl(notificationCss, "panel", "width")).toBe("min(560px, 94vw)");
-    expect(decl(notificationCss, "panel", "max-height")).toBe("88vh");
-    expect(decl(missionsCss, "panel", "max-height")).toBe("88vh");
+    expect(decl(notificationCss, "backdrop", "padding")).toBe("16px");
+    expect(decl(notificationCss, "backdrop", "justify-content")).toBe("flex-end");
+    for (const prop of ["width", "max-height", "background", "border", "border-radius", "box-shadow"]) {
+      expect(decl(notificationCss, "panel", prop)).toBe(decl(chatsPanelCss, "panel", prop));
+    }
+    expect(decl(notificationCss, "panel", "width")).toBe("min(360px, 100%)");
   });
 
   it("settings is a modal on the same family layer, with the same clamps", () => {

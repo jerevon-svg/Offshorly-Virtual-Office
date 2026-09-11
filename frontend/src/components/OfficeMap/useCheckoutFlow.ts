@@ -29,7 +29,9 @@ import type {
   ZohoTask,
 } from "../../services/zoho/types";
 
-// Re-trigger the 18:00 reminder 30 minutes after "Later" is dismissed.
+import { announceWorkHoursReached } from "../../services/notifications/notificationsClient";
+
+// Re-trigger the 8h reminder 30 minutes after "Later" is dismissed.
 const SNOOZE_MINUTES = 30;
 
 // Manila calendar date as "YYYY-MM-DD", independent of browser timezone.
@@ -57,6 +59,9 @@ export interface UseCheckoutFlowResult {
   workedLabel: string;
   breakMinutes: number;
   reminderVisible: boolean;
+  /** True when the visible reminder is a post-"Later" follow-up ("Still here?") rather than the
+   *  first 8h card. Derived from the snooze, so no extra state machine step was added. */
+  reminderFollowUp: boolean;
   projects: ZohoProject[];
   tasks: ZohoTask[];
   entries: TimeLogEntry[];
@@ -172,6 +177,14 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
     if (isAlreadyCheckedOut(employeeId, workDate)) return;
     if (laterUntilMs !== null && Date.now() < laterUntilMs) return;
     setState("REMINDER_SHOWN");
+    // The ONE persistent bell entry for today, through the existing Global Notifications
+    // producer — only on the initial threshold, never on a "Later" follow-up. The server dedupes
+    // per work date anyway (a refresh re-arms this effect), and the row arrives through the
+    // store's normal realtime push. Fire-and-forget: the card never waits on the network, and a
+    // signed-out dev rig (MissingIdentityError) or an offline tab just skips the bell.
+    if (laterUntilMs === null) {
+      void announceWorkHoursReached(workDate).catch(() => {});
+    }
   }, [workedMinutes, state, employeeId, workDate, laterUntilMs]);
 
   // Persist draft on every entry/break change.
@@ -428,6 +441,7 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
     workedLabel,
     breakMinutes,
     reminderVisible: state === "REMINDER_SHOWN",
+    reminderFollowUp: state === "REMINDER_SHOWN" && laterUntilMs !== null,
     projects,
     tasks,
     entries,

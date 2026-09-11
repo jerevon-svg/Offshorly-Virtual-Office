@@ -35,6 +35,7 @@ import {
   actorNameFor,
   destinationFor,
   displayTitle,
+  iconFor,
   relativeTime,
   splitBody,
 } from "./NotificationCenter";
@@ -255,7 +256,52 @@ describe("click destinations", () => {
   });
 });
 
+describe("floating side panel shell", () => {
+  it("floats as a non-modal side panel in the Chats / Room Details family", async () => {
+    const panel = await open();
+    // Same shell as ConversationListPanel / RoomSidebar: no aria-modal takeover, the backdrop
+    // is a light scrim with the office visible, and the panel keeps its dialog role and X.
+    expect(panel).toHaveAttribute("role", "dialog");
+    expect(panel).not.toHaveAttribute("aria-modal");
+    expect(screen.getByTestId("notification-backdrop")).toContainElement(panel);
+    expect(screen.getByRole("button", { name: /close notifications/i })).toBeInTheDocument();
+  });
+
+  it("leads the 8-hour checkout entry with the HUD's existing clock icon", () => {
+    expect(iconFor(notification({ type: "work_hours_reached" }))).toBe("clock");
+    expect(iconFor(notification({ type: "kudos_received" }))).toBe("kudos");
+    expect(iconFor(notification({ type: "something_new" }))).toBe("notifications");
+  });
+
+  it("routes the 8-hour checkout entry to the existing checkout flow, then closes", async () => {
+    const onNavigate = vi.fn().mockReturnValue(true);
+    vi.mocked(fetchNotifications).mockResolvedValue({
+      notifications: [
+        notification({
+          type: "work_hours_reached",
+          title: "8 hours reached",
+          body: "You’ve completed your work hours for today. Ready to check out?",
+          navKind: "checkout",
+          navPayload: {},
+        }),
+      ],
+      unreadCount: 1,
+    });
+    await open({ onNavigate });
+    expect(screen.getByText("8 hours reached")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("notification-item"));
+
+    expect(markNotificationRead).toHaveBeenCalledWith("n1");
+    expect(onNavigate).toHaveBeenCalledWith({ kind: "checkout" });
+    expect(screen.queryByTestId("notification-panel")).not.toBeInTheDocument();
+  });
+});
+
 describe("destinationFor", () => {
+  it("maps the checkout kind", () => {
+    expect(destinationFor(notification({ navKind: "checkout", navPayload: {} }))).toEqual({ kind: "checkout" });
+  });
+
   it("maps every kind this build supports", () => {
     expect(destinationFor(notification())).toEqual({
       kind: "profileFeed",
@@ -373,6 +419,29 @@ describe("row presentation", () => {
     expect(tag).toHaveTextContent("+20");
     // The amounts are no longer duplicated as plain text in the body.
     expect(screen.getByTestId("notification-item").textContent).not.toContain("+75 XP · +20 Coins");
+  });
+
+  it("gives every row the same fixed leading-media slot, portrait or icon", async () => {
+    const resolvePortrait = (n: AppNotification) => (n.id === "n1" ? "/portraits/angelo.png" : null);
+    vi.mocked(fetchNotifications).mockResolvedValue({
+      notifications: [
+        notification(),
+        notification({ id: "n2", type: "work_hours_reached", title: "8 hours reached", navKind: "checkout" }),
+        notification({ id: "n3", type: "something_new", title: "Later type" }),
+      ],
+      unreadCount: 3,
+    });
+    await open({ resolvePortrait });
+    const slots = screen.getAllByTestId("notification-media");
+    expect(slots).toHaveLength(3);
+    // One class, one box: the text column starts at the same x on all three rows.
+    expect(new Set(slots.map((s) => s.className)).size).toBe(1);
+    expect(slots[0].querySelector("img[src='/portraits/angelo.png']")).toBeInTheDocument();
+    for (const slot of slots.slice(1)) {
+      const icon = slot.querySelector("img");
+      expect(icon).not.toBeNull();
+      expect(icon).toHaveStyle({ width: "34px", height: "34px", objectFit: "contain" });
+    }
   });
 
   it("renders the real employee portrait the caller resolves, and copes without one", async () => {

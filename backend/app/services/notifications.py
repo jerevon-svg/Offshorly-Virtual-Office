@@ -45,6 +45,11 @@ _logger = logging.getLogger(__name__)
 # V1 writes only this one. Roadmap types (chat message, mention, call, ask-to-join, quest,
 # mission, badge, hub, meeting, HR) each become one more constant here.
 TYPE_KUDOS_RECEIVED = "kudos_received"
+# The 8-hour checkout reminder's ONE persistent bell entry (the floating card itself is
+# client-side and never recorded). Written on the client's request once its worked-time clock
+# reaches 8h — see routers/notifications.py — and deduped per Manila work date, so the 30-minute
+# follow-up cards create nothing further.
+TYPE_WORK_HOURS_REACHED = "work_hours_reached"
 
 # ---- navigation destinations ----------------------------------------------------------------
 # The closed set of places a notification can send the viewer. The client owns the mapping from
@@ -56,6 +61,7 @@ NAV_QUESTS = "quests"  # payload: {}
 NAV_MISSIONS = "missions"  # payload: {}
 NAV_ACHIEVEMENTS = "achievements"  # payload: {"badgeId": ...}
 NAV_HUB = "hub"  # payload: {"itemId": ...}
+NAV_CHECKOUT = "checkout"  # payload: {} — the client starts its existing checkout flow
 
 # The realtime event. One event, one shape: the notification plus the recipient's new badge
 # value, so a client never has to refetch just to update the count.
@@ -188,5 +194,40 @@ async def notify_kudos_received(
         nav_kind=NAV_PROFILE_FEED,
         nav_payload={"email": (recipient or "").strip().lower(), "postId": post_id},
         dedupe_key=dedupe,
+        now=now,
+    )
+
+
+async def notify_work_hours_reached(
+    session: AsyncSession,
+    *,
+    recipient: str,
+    work_date: str,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Tell someone they have completed their 8 working hours for `work_date` (a Manila
+    "YYYY-MM-DD", the same key the client's checkout storage uses).
+
+    The worked-time clock lives in the browser (check-in time is a Zoho attendance fact the
+    server does not track), so this is the one notification the CLIENT asks for — through a
+    self-scoped endpoint that can only ever address the caller. Keyed on the work date: the
+    initial 8h threshold, a refresh that re-arms the reminder and every 30-minute "Still here?"
+    follow-up all collapse onto this single row.
+
+    Destination: the viewer's own checkout flow.
+    """
+    key = (work_date or "").strip()
+    if not key:
+        _logger.error("work-hours notification rejected: no work_date recipient=%s", recipient)
+        return None
+    return await notify(
+        session,
+        recipient=recipient,
+        type=TYPE_WORK_HOURS_REACHED,
+        title="8 hours reached",
+        body="You\u2019ve completed your work hours for today. Ready to check out?",
+        nav_kind=NAV_CHECKOUT,
+        nav_payload={},
+        dedupe_key=f"{TYPE_WORK_HOURS_REACHED}:{key}",
         now=now,
     )

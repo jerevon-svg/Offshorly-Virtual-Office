@@ -130,27 +130,183 @@
 }
 
 /* Corner reminder toast — also reused by RoomLockedToast and TalkRequestToast. */
-.toast {
+/* ---- 8-hour reminder card ------------------------------------------------------------------
+   Floating cream VO action card (CheckoutReminderToast.tsx) anchored above the dock's Working
+   Hours group. Non-blocking: no scrim, pointer events only on the card itself.
+   EVERY value here is the floating-panel family's or the cream-surface button pair's:
+     surface / hairline / radius / shadow  — RoomSidebar.module.css .sidebar, ConversationListPanel
+                                             .panel (#fdfcfa, rgba(24,20,34,.08), 22px, same shadow)
+     Start checkout                        — Whiteboard.module.css .button + .buttonPrimary
+                                             (#2f6b45, hover #275a3a, 999px, 13.5px/600, 8px 14px)
+     Later                                 — Whiteboard.module.css .button (#fffefc, .12 hairline)
+     focus ring                            — the family's #4bb96a
+     ✕                                     — NotificationCenter / RoomSidebar close treatment
+   PLACEMENT is measured from the anchor at runtime and arrives as --reminder-left /
+   --reminder-bottom / --reminder-tail-x; the fallbacks below only apply when no anchor is in the
+   DOM. Layer 26 is where the old dark toast sat — above the dock's under-modal step, below every
+   modal family. */
+.reminderCard {
   position: fixed;
-  /* Clears the bottom dock's strip — see --vo-dock-clearance in src/index.css. */
-  bottom: calc(var(--vo-dock-clearance, 104px) + 8px);
-  right: 24px;
+  /* Fallback clears the bottom dock's strip — see --vo-dock-clearance in src/index.css. */
+  bottom: var(--reminder-bottom, calc(var(--vo-dock-clearance, 104px) + 14px));
+  left: var(--reminder-left, auto);
+  right: var(--reminder-right, 24px);
   z-index: 26;
-  min-width: 260px;
-  max-width: 320px;
-  background: rgba(26, 26, 26, 0.95);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 10px;
-  padding: 14px 16px;
-  backdrop-filter: blur(4px);
-  color: #f0f0f0;
+  box-sizing: border-box;
+  /* Hugs its content (the anchoring reads the live offsetWidth every frame, so a narrower card
+     re-centres and re-aims on its own); long follow-up copy wraps at the family's 400px cap. */
+  width: max-content;
+  max-width: min(400px, calc(100vw - 32px));
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 18px;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.08);
+  border-radius: 22px;
+  box-shadow: 0 28px 70px rgba(18, 16, 28, 0.32), 0 2px 8px rgba(18, 16, 28, 0.12);
+  color: #241f30;
+  animation: reminderIn 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Anchored: left wins, right must not also pin or the width would stretch. */
+.reminderCard[data-anchored="true"] {
+  right: auto;
+}
+
+/* Speech tail pointing down at the Working Hours timer; its x is aimed independently of the
+   card's clamped position. */
+.reminderCard::after {
+  content: "";
+  position: absolute;
+  bottom: -8px;
+  left: var(--reminder-tail-x, auto);
+  right: var(--reminder-tail-right, 56px);
+  width: 16px;
+  height: 16px;
+  background: #fdfcfa;
+  border-right: 1px solid rgba(24, 20, 34, 0.08);
+  border-bottom: 1px solid rgba(24, 20, 34, 0.08);
+  transform: rotate(45deg);
+  border-bottom-right-radius: 3px;
+}
+
+.reminderCard[data-anchored="true"]::after {
+  right: auto;
+}
+
+@keyframes reminderIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reminderCard {
+    animation: none;
+  }
+}
+
+.reminderIcon {
+  display: flex;
+  flex: none;
+  margin-top: 2px;
+}
+
+.reminderMain {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 2px;
 }
-.toastText {
-  font-size: 13px;
-  line-height: 1.4;
+
+.reminderTitle {
+  /* Only the title shares a line with the ✕ (32px box at top/right 10px), so only it clears it —
+     the body and actions run the full content width. */
+  padding-right: 30px;
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+
+.reminderBody {
+  font-size: 13.5px;
+  line-height: 1.35;
+  color: rgba(36, 31, 48, 0.7);
+}
+
+.reminderActions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+/* Whiteboard.module.css .button — the neutral cream-surface button. */
+.reminderLater,
+.reminderStart {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(24, 20, 34, 0.12);
+  background: #fffefc;
+  color: #241f30;
+  font-size: 13.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background-color 120ms ease;
+}
+
+.reminderLater:hover {
+  background: rgba(24, 20, 34, 0.04);
+}
+
+/* Whiteboard.module.css .buttonPrimary — the VO primary green. */
+.reminderStart {
+  background: #2f6b45;
+  border-color: #2f6b45;
+  color: #fff;
+}
+
+.reminderStart:hover {
+  background: #275a3a;
+}
+
+.reminderLater:focus-visible,
+.reminderStart:focus-visible,
+.reminderClose:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: 2px;
+}
+
+/* Same close treatment as the floating panels' ✕ — box, radius, ink, hover. */
+.reminderClose {
+  all: unset;
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  color: #3f3a4d;
+  font-size: 14px;
+  transition: background-color 120ms ease;
+}
+
+.reminderClose:hover {
+  background: rgba(24, 20, 34, 0.05);
 }
 
 /* Small "Checking out..." walk indicator. */

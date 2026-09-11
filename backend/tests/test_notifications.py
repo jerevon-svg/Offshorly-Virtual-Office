@@ -406,3 +406,68 @@ async def test_keyless_notifications_never_collide(_isolated_db, emitted):
 
     assert a is not None and b is not None
     assert len(await _rows(_isolated_db, "alex@example.com")) == 2
+
+
+# --- 8-hour checkout reminder: the client-requested, self-scoped, once-per-day bell entry ------
+
+
+async def test_work_hours_reached_writes_one_unread_entry_pointing_at_checkout(_isolated_db, emitted):
+    async with await _client() as client:
+        res = await client.post(
+            "/notifications/me/work-hours-reached",
+            json={"workDate": "2026-09-11"},
+            headers=_headers("alex@example.com"),
+        )
+        listed = (await client.get("/notifications/me", headers=_headers("alex@example.com"))).json()
+
+    assert res.status_code == 200
+    assert res.json()["created"] is True
+    assert listed["unreadCount"] == 1
+    row = listed["notifications"][0]
+    assert row["type"] == notifications_service.TYPE_WORK_HOURS_REACHED
+    assert row["title"] == "8 hours reached"
+    assert row["body"] == "You’ve completed your work hours for today. Ready to check out?"
+    assert row["navKind"] == notifications_service.NAV_CHECKOUT
+    assert row["readAt"] is None
+    # Pushed live to the caller's own room, like every other notification.
+    assert [event for event, _payload, _kw in emitted] == [notifications_service.EVENT_NOTIFICATION_NEW]
+
+
+async def test_work_hours_reached_is_once_per_work_date_however_often_the_client_asks(_isolated_db, emitted):
+    async with await _client() as client:
+        first = await client.post(
+            "/notifications/me/work-hours-reached", json={"workDate": "2026-09-11"}, headers=_headers("alex@example.com")
+        )
+        # A refresh re-arming the reminder and the 30-minute follow-up cards both re-ask.
+        second = await client.post(
+            "/notifications/me/work-hours-reached", json={"workDate": "2026-09-11"}, headers=_headers("alex@example.com")
+        )
+        third = await client.post(
+            "/notifications/me/work-hours-reached", json={"workDate": "2026-09-11"}, headers=_headers("alex@example.com")
+        )
+        # A new work day is a new entry.
+        next_day = await client.post(
+            "/notifications/me/work-hours-reached", json={"workDate": "2026-09-12"}, headers=_headers("alex@example.com")
+        )
+        listed = (await client.get("/notifications/me", headers=_headers("alex@example.com"))).json()
+
+    assert first.json()["created"] is True
+    assert second.json()["created"] is False and second.json()["notification"] is None
+    assert third.json()["created"] is False
+    assert next_day.json()["created"] is True
+    assert listed["unreadCount"] == 2
+    assert len(await _rows(_isolated_db, "alex@example.com")) == 2
+
+
+async def test_work_hours_reached_is_self_scoped_and_rejects_a_malformed_date(_isolated_db, emitted):
+    async with await _client() as client:
+        await client.post(
+            "/notifications/me/work-hours-reached", json={"workDate": "2026-09-11"}, headers=_headers("alex@example.com")
+        )
+        other = (await client.get("/notifications/me", headers=_headers("bon@example.com"))).json()
+        bad = await client.post(
+            "/notifications/me/work-hours-reached", json={"workDate": "today"}, headers=_headers("alex@example.com")
+        )
+
+    assert other == {"notifications": [], "unreadCount": 0}
+    assert bad.status_code == 422

@@ -28,7 +28,8 @@ export type NotificationDestination =
   | { kind: "quests" }
   | { kind: "missions" }
   | { kind: "achievements" }
-  | { kind: "hub" };
+  | { kind: "hub" }
+  | { kind: "checkout" };
 
 export interface NotificationCenterProps {
   /** Performs the destination. Return false (or leave it undefined) when the destination could
@@ -52,10 +53,13 @@ export interface NotificationCenterProps {
   resolvePortrait?: (notification: AppNotification) => string | null;
 }
 
-/** Which soft-3D production icon leads a row. Kudos has its own; everything else (including a
- *  type this build predates) gets the bell. No emoji, no generated art. */
-function iconFor(notification: AppNotification): "kudos" | "notifications" {
-  return notification.type.startsWith("kudos") ? "kudos" : "notifications";
+/** Which soft-3D production icon leads a row. Kudos has its own, the 8h checkout reminder gets
+ *  the HUD's existing clock; everything else (including a type this build predates) gets the
+ *  bell. No emoji, no generated art. */
+export function iconFor(notification: AppNotification): "kudos" | "clock" | "notifications" {
+  if (notification.type.startsWith("kudos")) return "kudos";
+  if (notification.type === "work_hours_reached") return "clock";
+  return "notifications";
 }
 
 /** The server renders titles at write time and some carry a leading emoji ("🏆 You received
@@ -121,6 +125,8 @@ export function destinationFor(notification: AppNotification): NotificationDesti
       return { kind: "achievements" };
     case "hub":
       return { kind: "hub" };
+    case "checkout":
+      return { kind: "checkout" };
     default:
       return null;
   }
@@ -208,12 +214,15 @@ export function NotificationCenter({
     [filter, notifications],
   );
 
+  // FLOATING SIDE PANEL — the same family as the Chats list and Room Details: cream surface,
+  // 16px viewport inset, 22px radius, warm hairline, matching shadow, the office visible behind a
+  // light scrim (see NotificationCenter.module.css's shell block). The scrim keeps the
+  // click-outside-to-close behaviour; open/close ownership and the dock hand-off are unchanged.
   const panel = (
     <div className={styles.backdrop} data-testid="notification-backdrop">
       <div
         className={styles.panel}
         role="dialog"
-        aria-modal="true"
         aria-label="Notifications"
         data-testid="notification-panel"
         ref={panelRef}
@@ -283,10 +292,16 @@ export function NotificationCenter({
                   data-testid="notification-item"
                   data-read={notification.readAt ? "true" : "false"}
                 >
-                  <span className={styles.itemIcon} aria-hidden="true">
-                    <HudIcon name={iconFor(notification)} size="26px" />
+                  {/* ONE fixed leading-media slot for every row (44×44, the portrait's existing
+                      box), so the text column starts at the same x whether the row leads with a
+                      portrait, the clock, Kudos or the bell. The HudIcon sits centred inside it. */}
+                  <span className={styles.itemMedia} aria-hidden="true" data-testid="notification-media">
+                    {portrait ? (
+                      <img className={styles.itemPortrait} src={portrait} alt="" />
+                    ) : (
+                      <HudIcon name={iconFor(notification)} size="34px" />
+                    )}
                   </span>
-                  {portrait && <img className={styles.itemPortrait} src={portrait} alt="" />}
                   <span className={styles.itemMain}>
                     <span className={styles.itemTitle}>{displayTitle(notification.title)}</span>
                     {text && <span className={styles.itemBody}>{text}</span>}

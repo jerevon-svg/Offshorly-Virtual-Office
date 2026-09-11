@@ -20,6 +20,7 @@ import {
   roomMembersById,
 } from "../../data/office-layout";
 import { FALLBACK_ROOM_ID, roomIdForPerson } from "../../data/roomIdentity";
+import { canTransition } from "../../data/checkoutState";
 import { findPath, roomOf, classifyDestination } from "../../data/officePathfinding";
 import {
   cellToWorld,
@@ -1107,6 +1108,13 @@ export function OfficeMap() {
         return true;
       case "hub":
         openCompanyHub("manual");
+        return true;
+      case "checkout":
+        // The 8h "8 hours reached" bell entry: the same startCheckout every other entry point
+        // (dock button, reminder card, Reception) uses. Only honoured from a state that can
+        // legally start it — after checkout is done or mid-flow the click just marks it read.
+        if (!canTransition(checkoutFlow.state, "CHECKOUT_CONFIRMATION")) return false;
+        checkoutFlow.startCheckout();
         return true;
       default:
         return false;
@@ -5324,6 +5332,8 @@ export function OfficeMap() {
           {/* WorkingStatusIndicator moved into the dock's working-time group (see dockEntries). */}
       <CheckoutReminderToast
         visible={checkoutFlow.reminderVisible}
+        followUp={checkoutFlow.reminderFollowUp}
+        workedLabel={checkoutFlow.workedLabel}
         onLater={checkoutFlow.dismissReminderForLater}
         onStartCheckout={checkoutFlow.startCheckout}
       />

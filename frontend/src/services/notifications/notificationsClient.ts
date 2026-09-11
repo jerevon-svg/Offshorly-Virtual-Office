@@ -6,11 +6,21 @@ import { getAuthToken } from "../api/client";
 //
 // WRITE-LIMITED BY DESIGN: a client can only mark things read. Notifications are never created
 // from here — every one is written server-side from the authoritative action, so nothing in the
-// browser can invent a notification or the reward wording inside one.
+// browser can invent a notification or the reward wording inside one. The one exception is
+// announceWorkHoursReached below: the worked-time clock exists only in the browser, so the client
+// ASKS for its own fixed "8 hours reached" entry — the server still renders the words, scopes it
+// to the bearer and dedupes it per work date.
 
 /** The destinations the client knows how to open. Anything else the server sends is listed and
  * marked read, but navigates nowhere — see NotificationCenter.tsx's `navigate`. */
-export type NavKind = "profile_feed" | "conversation" | "quests" | "missions" | "achievements" | "hub";
+export type NavKind =
+  | "profile_feed"
+  | "conversation"
+  | "quests"
+  | "missions"
+  | "achievements"
+  | "hub"
+  | "checkout";
 
 export interface AppNotification {
   id: string;
@@ -123,5 +133,17 @@ export async function markNotificationRead(id: string): Promise<UnreadResult> {
 
 export async function markAllNotificationsRead(): Promise<UnreadResult> {
   const res = await restFetch("/notifications/read-all", { method: "POST" });
+  return res.json();
+}
+
+/** POST /notifications/me/work-hours-reached — the 8h checkout reminder's single persistent bell
+ * entry for `workDate` (Manila "YYYY-MM-DD", the checkout storage key). Idempotent server-side,
+ * so the reminder can re-ask on a refresh or a follow-up without a second row appearing; the
+ * new notification itself arrives through the store's normal `notification_new` push. */
+export async function announceWorkHoursReached(workDate: string): Promise<{ created: boolean }> {
+  const res = await restFetch("/notifications/me/work-hours-reached", {
+    method: "POST",
+    body: JSON.stringify({ workDate }),
+  });
   return res.json();
 }

@@ -6,13 +6,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.deps import get_current_email
 from app.database import get_db
 from app.repositories import notifications as notifications_repo
-from app.schemas.notification import NotificationListOut, NotificationOut, UnreadOut
+from app.schemas.notification import (
+    NotificationListOut,
+    NotificationOut,
+    UnreadOut,
+    WorkHoursReachedIn,
+    WorkHoursReachedOut,
+)
+from app.services import notifications as notifications_service
 
 # Global Notifications V1 REST layer. SELF-SCOPED BY CONSTRUCTION, like /quests/me and
 # /progression/me: the recipient is always the bearer identity, so there is no path or body
 # parameter through which one person could read or clear another's notifications. Notifications
 # are never CREATED from the client — every one is written server-side from the authoritative
-# action (see services/notifications.py).
+# action (see services/notifications.py). The one exception is the 8-hour checkout reminder
+# below, whose authoritative fact (the worked-time clock) exists only in the browser: even there
+# the wording is server-rendered, the recipient is the bearer identity and the row is deduped per
+# work date, so the client can only ask for its own single fixed entry.
 
 router = APIRouter(tags=["notifications"])
 
@@ -59,3 +69,24 @@ async def mark_all_notifications_read(
     updated = await notifications_repo.mark_all_read(db, recipient_email=recipient)
     unread = await notifications_repo.unread_count(db, recipient_email=recipient)
     return UnreadOut(unread_count=unread, updated=updated)
+
+
+@router.post(
+    "/notifications/me/work-hours-reached",
+    response_model=WorkHoursReachedOut,
+    response_model_by_alias=True,
+)
+async def announce_work_hours_reached(
+    payload: WorkHoursReachedIn,
+    email: str = Depends(get_current_email),
+    db: AsyncSession = Depends(get_db),
+) -> WorkHoursReachedOut:
+    """Records the caller's own "8 hours reached" bell entry for one work date. Idempotent: the
+    second and every later call for the same date (a refresh re-arming the reminder, the
+    30-minute follow-ups) return `created: false` and write nothing."""
+    row = await notifications_service.notify_work_hours_reached(
+        db, recipient=email.strip().lower(), work_date=payload.work_date
+    )
+    return WorkHoursReachedOut(
+        created=row is not None, notification=NotificationOut.from_dict(row) if row else None
+    )

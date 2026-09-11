@@ -67,6 +67,25 @@ class UnreadOut(BaseModel):
     updated: int = 0
 
 
+class WorkHoursReachedIn(BaseModel):
+    """Body for POST /notifications/me/work-hours-reached: the Manila work date the client's
+    checkout clock crossed 8h on. Validated to the exact YYYY-MM-DD shape so it can only ever be
+    a dedupe key, never free text."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    work_date: str = Field(alias="workDate", pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+class WorkHoursReachedOut(BaseModel):
+    """`created` is False when today's entry already existed — the client treats both the same."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    created: bool
+    notification: NotificationOut | None = None
+
+
 def serialize_notification(row: dict[str, Any]) -> dict[str, Any]:
     """The realtime wire form — identical to what GET /notifications/me returns for the same
     row, so a pushed notification and a fetched one are the same object to the client."""

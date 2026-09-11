@@ -135,8 +135,10 @@ export function HudDock({
           case "separator":
             return <div key={entry.key} className={styles.separator} />;
           case "node":
+            // Same `data-dock-item` the tiles carry, so anything that must anchor to a dock group
+            // (the 8h reminder card aims at "time") finds it without a ref threaded through.
             return (
-              <div key={entry.key} className={styles.group}>
+              <div key={entry.key} className={styles.group} data-dock-item={entry.key}>
                 {entry.node}
               </div>
             );
