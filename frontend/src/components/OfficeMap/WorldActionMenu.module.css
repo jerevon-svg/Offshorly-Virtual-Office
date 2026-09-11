@@ -17,6 +17,11 @@
 }
 
 .menu {
+  /* pointer-events is INHERITED: without this the card takes the backdrop's `none` and every
+     press falls through to the office behind it (the row under the cursor never hovers, and the
+     pointer-up lands on a room/character layer and walks the character instead). The backdrop
+     stays transparent; only the visible card captures interaction. */
+  pointer-events: auto;
   position: fixed;
   z-index: 21;
   box-sizing: border-box;

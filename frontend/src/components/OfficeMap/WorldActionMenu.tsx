@@ -124,7 +124,12 @@ export function WorldActionMenu({ anchor, onClose, ariaLabel, title, meta, items
         className={styles.menu}
         style={{ left, top }}
         data-side={side ?? undefined}
+        // Presses that land on the card end here. OfficeStage walks the character from a
+        // click-vs-drag pointer-up on room/character/seat layers, so pointer-up is stopped along
+        // with click; pointer-down is left alone so the document-level dismissal listeners
+        // (this menu's own, the dock's flyouts) still see an inside press as inside.
         onClick={(e) => e.stopPropagation()}
+        onPointerUp={(e) => e.stopPropagation()}
         role="menu"
         aria-label={ariaLabel}
         data-testid="world-menu"

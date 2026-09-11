@@ -99,6 +99,72 @@ describe("WorldActionMenu shell", () => {
     expect(screen.getByTestId("world-menu-badge-many")).toHaveTextContent("9+");
   });
 
+  // REGRESSION (227b998): the backdrop went pointer-events:none for one-click character
+  // switching, and the card inherited it — rows never hovered and presses walked the character
+  // behind the menu. The transparent backdrop stays; the visible card must capture interaction.
+  describe("the card is interactive while the backdrop stays transparent", () => {
+    const rule = (cls: string) => {
+      const css = readFileSync("src/components/OfficeMap/WorldActionMenu.module.css", "utf8");
+      return new RegExp(`\\.${cls} \\{([\\s\\S]*?)\\n\\}`).exec(css)?.[1] ?? "";
+    };
+
+    it("re-enables pointer events on the card itself, not on the backdrop", () => {
+      expect(rule("backdrop")).toMatch(/pointer-events: none;/);
+      expect(rule("menu")).toMatch(/pointer-events: auto;/);
+      // Rows keep their hover/focus/active states and a pointer cursor.
+      expect(rule("item")).toMatch(/cursor: pointer;/);
+      expect(rule("item:hover")).not.toBe("");
+      expect(rule("item:focus-visible")).not.toBe("");
+    });
+
+    it("a press on a row fires the row's action and never reaches the world's movement handler", () => {
+      const worldPointerUp = vi.fn();
+      const worldClick = vi.fn();
+      const chat = vi.fn();
+      render(
+        // Stands in for a stage/room layer around the menu: OfficeStage walks the character from
+        // a click-vs-drag pointer-up, so both pointer-up and click must stop at the card.
+        <div onPointerUp={worldPointerUp} onClick={worldClick} data-testid="world">
+          <WorldActionMenu
+            anchor={anchor}
+            onClose={vi.fn()}
+            ariaLabel="Actions for Alex"
+            title="Alex"
+            items={[{ key: "chat", label: "Chat", onSelect: chat }]}
+          />
+        </div>,
+      );
+      const row = screen.getByRole("menuitem", { name: "Chat" });
+      fireEvent.pointerDown(row);
+      fireEvent.pointerUp(row);
+      fireEvent.click(row);
+      expect(chat).toHaveBeenCalledTimes(1);
+      expect(worldPointerUp).not.toHaveBeenCalled();
+      expect(worldClick).not.toHaveBeenCalled();
+
+      // The header / card body are equally solid: no walk from a press on the title.
+      fireEvent.pointerUp(screen.getByText("Alex"));
+      fireEvent.click(screen.getByText("Alex"));
+      expect(worldPointerUp).not.toHaveBeenCalled();
+      expect(worldClick).not.toHaveBeenCalled();
+    });
+
+    it("a press on ANOTHER character still reaches that character in one click, without closing first", () => {
+      const onClose = vi.fn();
+      const otherCharacterClick = vi.fn();
+      const other = document.createElement("div");
+      other.setAttribute("data-character-id", "micah");
+      other.addEventListener("pointerup", otherCharacterClick);
+      document.body.appendChild(other);
+      render(<WorldActionMenu anchor={anchor} onClose={onClose} ariaLabel="Actions for Alex" items={[]} />);
+      fireEvent.pointerDown(other);
+      fireEvent.pointerUp(other);
+      expect(otherCharacterClick).toHaveBeenCalledTimes(1); // the backdrop shielded nothing
+      expect(onClose).not.toHaveBeenCalled(); // and this menu is replaced, not closed-then-reopened
+      other.remove();
+    });
+  });
+
   it("keeps the office's 20/21 menu layers and paints the cream card, not a dark one", () => {
     const css = readFileSync("src/components/OfficeMap/WorldActionMenu.module.css", "utf8");
     const rule = (cls: string) => new RegExp(`\\.${cls} \\{([\\s\\S]*?)\\n\\}`).exec(css)?.[1] ?? "";
