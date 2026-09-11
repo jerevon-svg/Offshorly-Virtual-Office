@@ -334,6 +334,12 @@ type OfficeStageProps = {
   extraCharacterSrcById?: Record<string, string>;
   onCharacterClick?: (layer: AssetLayer, anchor: { clientX: number; clientY: number }) => void;
   onRoomClick?: (layer: AssetLayer, anchor: { clientX: number; clientY: number }) => void;
+  // Furniture layers that behave like a room for clicks (the HR desk, see
+  // HrDeskActionMenu.tsx): same click-vs-drag threshold, same anchor point,
+  // same stopPropagation so the press never also walks the character. Every
+  // other furniture layer stays inert exactly as before.
+  interactiveFurnitureIds?: readonly string[];
+  onFurnitureClick?: (layer: AssetLayer, anchor: { clientX: number; clientY: number }) => void;
   // Dota-style right-click-to-move. Fires for a right-click anywhere on the
   // map surface (world-space point, in the same FRAME_WIDTH/HEIGHT-scaled
   // basis as every layer's x/y — NOT yet snapped to a cell). The browser's
@@ -546,6 +552,8 @@ export function OfficeStage({
   hiddenCharacterIds,
   onCharacterClick,
   onRoomClick,
+  interactiveFurnitureIds,
+  onFurnitureClick,
   onMapRightClick,
   destinationRing,
   showToucan,
@@ -581,6 +589,7 @@ export function OfficeStage({
 }: OfficeStageProps = {}) {
   const characterClick = useClickVsDrag<AssetLayer>(onCharacterClick);
   const roomClick = useClickVsDrag<AssetLayer>(onRoomClick);
+  const furnitureClick = useClickVsDrag<AssetLayer>(onFurnitureClick);
   const seatClick = useClickVsDrag<SeatTarget>(onSeatClick);
   // Same 6px click-vs-drag threshold as every other clickable thing on the
   // stage, so dragging to pan across a 💬 badge pans instead of opening a chat.
@@ -700,6 +709,8 @@ export function OfficeStage({
 
         const isClickable = isChar && layer.id !== "bon";
         const isRoomClickable = layer.kind === "room";
+        const isFurnitureClickable =
+          layer.kind === "furniture" && !!onFurnitureClick && !!interactiveFurnitureIds?.includes(layer.id);
         const live3dAvatarId = isChar ? avatarIdForEmail(layer.id) : null;
         const hasErroredLive3d = erroredLive3dIds.has(layer.id);
         const registryEntry = live3dAvatarId ? LIVE_3D_CHARACTERS[live3dAvatarId] : undefined;
@@ -788,7 +799,9 @@ export function OfficeStage({
           lodMemory?.hd ?? false,
         );
 
-        const className = [styles.layer, isClickable ? styles.characterLayer : ""]
+        // .characterLayer is the stage's one "this layer takes the pointer" treatment
+        // (pointer-events + cursor); an interactive desk borrows it rather than growing a twin.
+        const className = [styles.layer, isClickable || isFurnitureClickable ? styles.characterLayer : ""]
           .filter(Boolean)
           .join(" ");
 
@@ -797,6 +810,7 @@ export function OfficeStage({
             key={layer.id}
             className={className}
             {...(isRoomClickable ? { "data-room-id": layer.id } : {})}
+            {...(isFurnitureClickable ? { "data-furniture-id": layer.id } : {})}
             // Lets the shared WorldActionMenu tell a press on a character apart from an outside
             // press, so selecting another coworker is one click (see WorldActionMenu.tsx).
             {...(isChar ? { "data-character-id": layer.id } : {})}
@@ -839,7 +853,12 @@ export function OfficeStage({
                     onPointerDown: roomClick.onPointerDown,
                     onPointerUp: (e: React.PointerEvent) => roomClick.onPointerUp(layer, e),
                   }
-                : {})}
+                : isFurnitureClickable
+                  ? {
+                      onPointerDown: furnitureClick.onPointerDown,
+                      onPointerUp: (e: React.PointerEvent) => furnitureClick.onPointerUp(layer, e),
+                    }
+                  : {})}
           >
             {live3dEntry ? (
               // live3dEntry is only ever set once both eligibility AND

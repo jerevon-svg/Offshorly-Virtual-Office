@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { HR_DESK_LAYER_IDS, HrDeskActionMenu } from "./HrDeskActionMenu";
 import { ReceptionActionMenu } from "./ReceptionActionMenu";
 import { SeatActionMenu } from "./SeatActionMenu";
 import { ANCHOR_OFFSET_PX, WorldActionMenu, placeMenu } from "./WorldActionMenu";
@@ -288,6 +289,64 @@ describe("ReceptionActionMenu on the shared shell", () => {
   it("carries no employee context — no presence meta on a desk", () => {
     render(<ReceptionActionMenu anchor={anchor} onClose={vi.fn()} showCheckIn onCheckIn={vi.fn()} onCheckOut={vi.fn()} />);
     expect(screen.queryByTestId("world-menu-meta")).not.toBeInTheDocument();
+  });
+});
+
+describe("HrDeskActionMenu on the shared shell", () => {
+  it("renders the HR Desk header with its plain Human Resources line and exactly the three V1 rows, in order", () => {
+    render(
+      <HrDeskActionMenu anchor={anchor} onClose={vi.fn()} onApplyForLeave={vi.fn()} onRequestEarlyOut={vi.fn()} onHrRequests={vi.fn()} />,
+    );
+    expect(screen.getByRole("menu", { name: "HR Desk" })).toBeInTheDocument();
+    expect(screen.getByText("HR Desk")).toBeInTheDocument();
+    // The subtitle takes the header's existing meta slot and text treatment, with no presence dot.
+    const subtitle = screen.getByTestId("world-menu-subtitle");
+    expect(subtitle).toHaveTextContent("Human Resources");
+    expect(subtitle.querySelector("span")).toBeNull();
+    expect(screen.queryByTestId("world-menu-meta")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("menuitem").map((el) => el.textContent)).toEqual([
+      "Apply for Leave",
+      "Request Early Out",
+      "HR Requests",
+    ]);
+    // Plain text rows like Reception: no icons, no badges.
+    expect(screen.queryAllByTestId(/world-menu-badge-/)).toHaveLength(0);
+    expect(screen.getByTestId("world-menu").querySelector("svg, img")).toBeNull();
+  });
+
+  it("fires each row's own handler and nothing else", () => {
+    const onApplyForLeave = vi.fn();
+    const onRequestEarlyOut = vi.fn();
+    const onHrRequests = vi.fn();
+    render(
+      <HrDeskActionMenu
+        anchor={anchor}
+        onClose={vi.fn()}
+        onApplyForLeave={onApplyForLeave}
+        onRequestEarlyOut={onRequestEarlyOut}
+        onHrRequests={onHrRequests}
+      />,
+    );
+    screen.getByRole("menuitem", { name: "Apply for Leave" }).click();
+    screen.getByRole("menuitem", { name: "Request Early Out" }).click();
+    screen.getByRole("menuitem", { name: "HR Requests" }).click();
+    expect(onApplyForLeave).toHaveBeenCalledTimes(1);
+    expect(onRequestEarlyOut).toHaveBeenCalledTimes(1);
+    expect(onHrRequests).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the shared dismissal contract: Escape and outside press close it, a press inside does not", () => {
+    const onClose = vi.fn();
+    render(<HrDeskActionMenu anchor={anchor} onClose={onClose} onApplyForLeave={vi.fn()} onRequestEarlyOut={vi.fn()} onHrRequests={vi.fn()} />);
+    fireEvent.pointerDown(screen.getByRole("menuitem", { name: "HR Requests" }));
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.pointerDown(document.body);
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it("names both manifest halves of the desk", () => {
+    expect([...HR_DESK_LAYER_IDS].sort()).toEqual(["hr-ldesk", "hr-sdesk"]);
   });
 });
 

@@ -186,6 +186,54 @@ describe("OfficeStage src-override empty-string fallback", () => {
   });
 });
 
+// HR Desk V1: two furniture layers become click targets with the room layers' exact click-vs-drag
+// contract; every other furniture layer stays inert.
+describe("OfficeStage interactive furniture (HR desk)", () => {
+  const mount = (onFurnitureClick?: (layer: { id: string }, anchor: { clientX: number; clientY: number }) => void) =>
+    render(
+      <TransformWrapper>
+        <TransformComponent>
+          <OfficeStage interactiveFurnitureIds={["hr-sdesk", "hr-ldesk"]} onFurnitureClick={onFurnitureClick} />
+        </TransformComponent>
+      </TransformWrapper>,
+    );
+
+  it("marks only the listed furniture as clickable, with the stage's pointer treatment", () => {
+    const { container } = mount(vi.fn());
+    const desks = Array.from(container.querySelectorAll("[data-furniture-id]")).map((el) => el.getAttribute("data-furniture-id"));
+    expect(desks.sort()).toEqual(["hr-ldesk", "hr-sdesk"]);
+    for (const el of container.querySelectorAll("[data-furniture-id]")) {
+      expect(el.classList.contains(styles.characterLayer)).toBe(true);
+      expect(el.hasAttribute("data-room-id")).toBe(false);
+      expect(el.hasAttribute("data-character-id")).toBe(false);
+    }
+  });
+
+  it("fires onFurnitureClick with the layer and the raw click point on a click, not on a drag", () => {
+    const onFurnitureClick = vi.fn();
+    const { container } = mount(onFurnitureClick);
+    const desk = container.querySelector('[data-furniture-id="hr-ldesk"]')!;
+    fireEvent.pointerDown(desk, { button: 0, clientX: 40, clientY: 50 });
+    fireEvent.pointerUp(desk, { button: 0, clientX: 42, clientY: 51 });
+    expect(onFurnitureClick).toHaveBeenCalledTimes(1);
+    expect(onFurnitureClick.mock.calls[0][0].id).toBe("hr-ldesk");
+    expect(onFurnitureClick.mock.calls[0][1]).toEqual({ clientX: 42, clientY: 51 });
+
+    fireEvent.pointerDown(desk, { button: 0, clientX: 40, clientY: 50 });
+    fireEvent.pointerUp(desk, { button: 0, clientX: 80, clientY: 50 });
+    expect(onFurnitureClick).toHaveBeenCalledTimes(1);
+    // Right-click is movement-only input, never a desk click.
+    fireEvent.pointerDown(desk, { button: 2, clientX: 40, clientY: 50 });
+    fireEvent.pointerUp(desk, { button: 2, clientX: 40, clientY: 50 });
+    expect(onFurnitureClick).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves every furniture layer inert when no handler is given", () => {
+    const { container } = mount(undefined);
+    expect(container.querySelector("[data-furniture-id]")).toBeNull();
+  });
+});
+
 describe("OfficeStage synthetic backrest-crop layer generation", () => {
   it("generates exactly one synthetic crop layer, clipped to the looked-up fraction, for an occupied back-sit seat", () => {
     const { container } = renderStage({ [backrestCropLayerId(DEV_BACK_CHAIR_ID)]: 999 });

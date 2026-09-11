@@ -80,10 +80,13 @@ export interface WorldActionMenuProps {
   /** Contextual status beside the title — the employee menu's presence dot + label. Omit for
    *  anything that is not a person; no surface is forced to carry information it has none of. */
   meta?: { color: string; label: string };
+  /** Plain contextual line beside the title for a surface that is a place, not a person — the
+   *  HR desk's "Human Resources". Same slot and text treatment as `meta`, minus the presence dot. */
+  subtitle?: string;
   items: WorldActionMenuItem[];
 }
 
-export function WorldActionMenu({ anchor, onClose, ariaLabel, title, meta, items }: WorldActionMenuProps) {
+export function WorldActionMenu({ anchor, onClose, ariaLabel, title, meta, subtitle, items }: WorldActionMenuProps) {
   const menuRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -134,9 +137,14 @@ export function WorldActionMenu({ anchor, onClose, ariaLabel, title, meta, items
         aria-label={ariaLabel}
         data-testid="world-menu"
       >
-        {(title || meta) && (
+        {(title || meta || subtitle) && (
           <div className={styles.header}>
             {title && <div className={styles.title}>{title}</div>}
+            {subtitle && !meta && (
+              <div className={styles.meta} data-testid="world-menu-subtitle">
+                {subtitle}
+              </div>
+            )}
             {meta && (
               <div className={styles.meta} data-testid="world-menu-meta">
                 <span className={styles.metaDot} style={{ backgroundColor: meta.color }} aria-hidden="true" />

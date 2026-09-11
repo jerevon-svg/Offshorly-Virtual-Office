@@ -64,6 +64,7 @@ import { CharacterActionMenu } from "./CharacterActionMenu";
 import { RoomSidebar } from "./RoomSidebar";
 import { CheckinModal } from "./CheckinModal";
 import { ReceptionActionMenu } from "./ReceptionActionMenu";
+import { HR_DESK_LAYER_IDS, HrDeskActionMenu } from "./HrDeskActionMenu";
 import { SeatActionMenu } from "./SeatActionMenu";
 import {
   computeCenterTransform,
@@ -409,6 +410,10 @@ export function OfficeMap() {
   const [receptionMenu, setReceptionMenu] = useState<{ clientX: number; clientY: number } | null>(
     null,
   );
+  // Anchored action menu opened by clicking the HR desk (either of its two
+  // furniture layers — see HR_DESK_LAYER_IDS). Same shape and lifecycle as
+  // receptionMenu; V1 rows are scaffolds that only announce themselves.
+  const [hrDeskMenu, setHrDeskMenu] = useState<{ clientX: number; clientY: number } | null>(null);
   // Anchored "Sit here" confirm menu opened by clicking an empty seat marker
   // (see emptySeats.ts / OfficeStage's onSeatClick). Confirming calls
   // walkToSeat (declared below); closing (backdrop click or Escape) just
@@ -4383,6 +4388,7 @@ export function OfficeMap() {
     // shared card no longer closes itself on a character press (see WorldActionMenu.tsx).
     setSeatMenu(null);
     setReceptionMenu(null);
+    setHrDeskMenu(null);
 
     const ref = transformRef.current;
     const wrapper = ref?.instance.wrapperComponent;
@@ -4420,6 +4426,25 @@ export function OfficeMap() {
     if (onboarding !== "done" || checkoutBusy) return;
     setRoomSidebar(null);
     setSeatMenu({ seat, ...anchor });
+  }
+
+  // HR Desk V1: the same gate and menu-replacement as a room click, then the anchored menu at
+  // the raw click point (exactly how Reception anchors — no zoom, no room sidebar).
+  function handleHrDeskClick(_layer: AssetLayer, anchor: { clientX: number; clientY: number }) {
+    if (onboarding !== "done" || checkoutBusy) return;
+    setMenu(null);
+    setRoomSidebar(null);
+    setHrDeskMenu(anchor);
+  }
+
+  // V1 scaffold for the HR Desk rows: close the menu and say what is coming through the existing
+  // toast. Nothing is submitted or recorded — the real flow (HR Desk -> formal employee request ->
+  // Atlas/Zoho People -> HR approval) is wired behind these three handlers later.
+  function announceHrDeskAction(label: string) {
+    setHrDeskMenu(null);
+    const msg = `${label} is coming soon.`;
+    setToast(msg);
+    window.setTimeout(() => setToast((current) => (current === msg ? null : current)), 2500);
   }
 
   // Dota-style right-click-to-move: classifies the clicked world point as a
@@ -5036,6 +5061,8 @@ export function OfficeMap() {
             onToucanSummonStateChange={setToucanState}
             toucanThinking={toucanSquawk}
             hiddenCharacterIds={hiddenCharacterIds}
+            interactiveFurnitureIds={HR_DESK_LAYER_IDS}
+            onFurnitureClick={handleHrDeskClick}
             onRoomClick={(layer, anchor) => {
               // Onboarding sequence must complete before normal room-click
               // interactions resume — every non-"done" state suppresses this.
@@ -5873,6 +5900,15 @@ export function OfficeMap() {
             setReceptionMenu(null);
             checkoutFlow.startCheckout();
           }}
+        />
+      )}
+      {hrDeskMenu && (
+        <HrDeskActionMenu
+          anchor={hrDeskMenu}
+          onClose={() => setHrDeskMenu(null)}
+          onApplyForLeave={() => announceHrDeskAction("Apply for Leave")}
+          onRequestEarlyOut={() => announceHrDeskAction("Request Early Out")}
+          onHrRequests={() => announceHrDeskAction("HR Requests")}
         />
       )}
       {/* Dev-only until avatar generation has a server-side home (D2).
