@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VO 3D — V2 foundation (dev only)</title>
+    <link rel="icon" href="data:," />
+    <!--
+      True-3D Virtual Office V2, isolated dev entry (only index.html is built for production).
+      Open:  http://localhost:5173/virtual-office/dev/vo3d.html   (the app is served under /virtual-office/)
+      Known-good reference: dev/design-room-3d.html (designRoom3d prototype, kept intact).
+    -->
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #e7ded4; }
+      #stage { display: block; width: 100vw; height: 100vh; }
+      #hint { position: fixed; left: 12px; bottom: 10px; font: 12px/1.4 system-ui, sans-serif; color: #5b5048; opacity: 0.8; pointer-events: none; }
+    </style>
+  </head>
+  <body>
+    <canvas id="stage"></canvas>
+    <div id="hint">VO 3D V2 — Design Room · left-click floor to walk · drag to orbit · wheel to zoom · panel for chair / edit / bench</div>
+    <script type="module" src="../src/dev/vo3d/app/bootstrap.ts"></script>
+  </body>
+</html>

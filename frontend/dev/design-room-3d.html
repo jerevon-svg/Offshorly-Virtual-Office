@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Design Room 3D — isolated POC (dev only)</title>
+    <link rel="icon" href="data:," />
+    <!--
+      Isolated true-3D reconstruction of the production Design Room.
+      Dev-only Vite entry (only index.html is built): open
+        http://localhost:5173/virtual-office/dev/design-room-3d.html  (the app is served under the /virtual-office/ base)
+      Touches no production module — see src/dev/designRoom3d/.
+    -->
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #e7ded4; }
+      #stage { display: block; width: 100vw; height: 100vh; }
+      #hint { position: fixed; left: 12px; bottom: 10px; font: 12px/1.4 system-ui, sans-serif; color: #5b5048; opacity: 0.8; pointer-events: none; }
+    </style>
+  </head>
+  <body>
+    <canvas id="stage"></canvas>
+    <div id="hint">Design Room — true-3D POC · drag to orbit · wheel to zoom · right-drag to pan · tune in the panel</div>
+    <script type="module" src="../src/dev/designRoom3d/main.ts"></script>
+  </body>
+</html>
