@@ -1,0 +1,175 @@
+/* THE world interaction menu — one floating card for every click-to-interact surface in the
+   office (employees, Reception, empty seats; see WorldActionMenu.tsx). Cream/warm-border/soft
+   shadow on purpose: it belongs to the Hub / Tasks / Profile card family, not to a dark game
+   menu. Radius and border are the family's row-card values (see HudSettings.module.css .card,
+   NotificationCenter.module.css .item); the shadow is a lighter step than the modal family's,
+   because this floats over the world rather than owning the screen.
+
+   LAYERING: 20 / 21 are the office's long-standing character-action-menu layers (see the
+   hierarchy note at the top of NotificationCenter.module.css) — unchanged. */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  /* A layer marker, not a click shield: outside presses are handled by a document listener in
+     WorldActionMenu.tsx so that a press on another character opens THAT menu in one click. */
+  pointer-events: none;
+}
+
+.menu {
+  position: fixed;
+  z-index: 21;
+  box-sizing: border-box;
+  min-width: 188px;
+  max-width: min(260px, calc(100vw - 16px));
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.08);
+  border-radius: 16px;
+  box-shadow: 0 12px 32px rgba(18, 16, 28, 0.18), 0 2px 6px rgba(18, 16, 28, 0.08);
+  color: #241f30;
+  animation: worldMenuIn 140ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Pointer notch toward the selected character — a rotated square sharing the card's fill and
+   hairline, on whichever edge FACES the character after the flip decision (data-side is the
+   final side placeMenu chose). Sits beside the header row, i.e. around the upper body. */
+.menu[data-side]::before {
+  content: "";
+  position: absolute;
+  top: 18px;
+  width: 10px;
+  height: 10px;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.08);
+  transform: rotate(45deg);
+  pointer-events: none;
+}
+
+/* Card on the RIGHT of the character -> notch on the card's LEFT edge, pointing left. */
+.menu[data-side="right"]::before {
+  left: -6px;
+  border-right-color: transparent;
+  border-top-color: transparent;
+  box-shadow: -2px 2px 4px rgba(18, 16, 28, 0.05);
+}
+
+/* Card on the LEFT of the character -> notch on the card's RIGHT edge, pointing right. */
+.menu[data-side="left"]::before {
+  right: -6px;
+  border-left-color: transparent;
+  border-bottom-color: transparent;
+  box-shadow: 2px -2px 4px rgba(18, 16, 28, 0.05);
+}
+
+@keyframes worldMenuIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .menu {
+    animation: none;
+  }
+}
+
+/* ---- header: contextual title + optional status meta ------------------------------------ */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px 8px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid rgba(24, 20, 34, 0.07);
+}
+
+.title {
+  font-size: 14.5px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(36, 31, 48, 0.6);
+  white-space: nowrap;
+}
+
+.metaDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+/* ---- action rows ------------------------------------------------------------------------ */
+.item {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #241f30;
+  text-align: left;
+  transition: background-color 100ms ease, color 100ms ease;
+}
+
+.item:hover {
+  background: rgba(75, 185, 106, 0.12);
+  color: #1f5c33;
+}
+
+.item:active {
+  background: rgba(75, 185, 106, 0.2);
+}
+
+.item:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: -2px;
+}
+
+.itemLabel {
+  flex: 1;
+  min-width: 0;
+}
+
+/* SAME HUD badge as the dock's Tasks/Chat tiles — HudDock.module.css .tileBadge's tokens
+   (17px, #e2453c, 11px/700 tabular digits, 999px, cream ring), guarded token-for-token by
+   WorldActionMenu.test.tsx. Only its placement differs: in-flow at the row's end instead of
+   hugging an icon square's corner. */
+.badge {
+  flex: none;
+  min-width: 17px;
+  height: 17px;
+  box-sizing: border-box;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #e2453c;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 17px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 0 0 2px #fdfcfa;
+}

@@ -1,10 +1,12 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetCurrentUserForTests, setCurrentUserFromMeResponse } from "../../auth/currentUserStore";
 import { getCurrentUserId } from "../../auth/useAuthGate";
 import { clearAll, saveResult, saveSessionStart } from "../../data/checkoutStorage";
 import { attendanceService } from "../../services/attendance";
 import { OfficeMap } from "./OfficeMap";
+import { officeAssetLayers } from "../../data/office-layout";
+import { characterScreenCenter } from "./panMath";
 
 // The bottom dock's lifecycle across a work session. Once checkout has genuinely COMPLETED there
 // must be NO dock at all — not an empty shell and not the ungated remnant (availability, Search,
@@ -158,5 +160,122 @@ describe("bottom dock visibility across a work session", () => {
 
     render(<OfficeMap />);
     await waitFor(() => expect(dock()).not.toBeNull(), { timeout: 3000 });
+  });
+});
+
+// WORLD INTERACTION: selecting one coworker while another's menu is up is ONE click — the press
+// on the second character is not a dismissal (no close, no zoom-out, no second click); their own
+// click path replaces the menu. Escape / an outside press still dismiss. Lives in this harness because it renders the REAL OfficeStage (character layers carry
+// data-character-id) and reaches onboarding "done", which handleCharacterClick requires.
+describe("quick-switching the interaction menu between coworkers", () => {
+  function checkedIn() {
+    vi.spyOn(attendanceService, "getMine").mockResolvedValue({
+      email: "jerevon@offshorly.com",
+      status: "CHECKED_IN",
+      checkedInAt: new Date(Date.now() - 3600_000).toISOString(),
+      checkedOutAt: null,
+    });
+  }
+  const press = (el: Element) =>
+    el.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 300, clientY: 300 }));
+  const release = (el: Element) =>
+    el.dispatchEvent(new MouseEvent("pointerup", { bubbles: true, button: 0, clientX: 301, clientY: 300 }));
+
+  async function openAlex() {
+    checkedIn();
+    const view = render(<OfficeMap />);
+    await waitFor(() => expect(dock()).not.toBeNull());
+    const alex = view.container.querySelector('[data-character-id="alex"]');
+    expect(alex).not.toBeNull();
+    await act(async () => {
+      press(alex!);
+      release(alex!);
+    });
+    await waitFor(() => expect(screen.getByRole("menu", { name: "Actions for Alex" })).toBeTruthy(), { timeout: 1500 });
+    return view;
+  }
+
+  it("Alex selected → click Micah: Micah's menu replaces Alex's in ONE click", async () => {
+    const view = await openAlex();
+    const micah = view.container.querySelector('[data-character-id="micah"]')!;
+    // The press must NOT dismiss Alex's menu — that close was the zoom-out and the second click.
+    await act(async () => {
+      press(micah);
+    });
+    expect(screen.getByRole("menu", { name: "Actions for Alex" })).toBeTruthy();
+    await act(async () => {
+      release(micah);
+    });
+    await waitFor(() => expect(screen.getByRole("menu", { name: "Actions for Micah" })).toBeTruthy(), { timeout: 1500 });
+    expect(screen.queryByRole("menu", { name: "Actions for Alex" })).toBeNull();
+  });
+
+  it("Escape dismisses the menu", async () => {
+    await openAlex();
+    await act(async () => {
+      fireEvent.keyDown(window, { key: "Escape" });
+    });
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  it("an outside press dismisses the menu", async () => {
+    await openAlex();
+    await act(async () => {
+      fireEvent.pointerDown(document.body);
+    });
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  // The menu is screen-space UI, but its ANCHOR is the character's live on-screen centre. The
+  // card's left must equal that centre (+8) computed from the wrapper's CURRENT matrix — and
+  // when the matrix changes with the menu open, the card must move with it.
+  it("stays attached to the character's current on-screen centre as the wrapper transform changes", async () => {
+    const view = await openAlex();
+    const alex = officeAssetLayers.find((l) => l.id === "alex")!;
+    const content = view.container.querySelector(".react-transform-component") as HTMLElement;
+    const readMatrix = () => {
+      const m = /translate\((-?[\d.]+)px, (-?[\d.]+)px\) scale\((-?[\d.]+)\)/.exec(content.style.transform);
+      expect(m, content.style.transform).not.toBeNull();
+      return { positionX: +m![1], positionY: +m![2], scale: +m![3] };
+    };
+    const expectAttached = () => {
+      const at = characterScreenCenter(alex, readMatrix(), { left: 0, top: 0 });
+      const card = screen.getByTestId("world-menu");
+      const left = parseFloat(card.style.left);
+      const candidates = [at.clientX + 8, at.clientX - 8 - 200 /* jsdom cannot measure: 200px fallback */, 8, window.innerWidth - 200 - 8];
+      expect(candidates.some((c) => Math.abs(c - left) < 1e-3), `left ${left} vs ${candidates}`).toBe(true);
+      expect(parseFloat(card.style.top)).toBeCloseTo(Math.min(at.clientY, window.innerHeight - 160), 3);
+      return at;
+    };
+    const before = expectAttached();
+    // Zoom the world under the open menu: the wrapper's own zoom (the same path a wheel takes).
+    const wrapper = view.container.querySelector(".react-transform-wrapper") as HTMLElement;
+    await act(async () => {
+      fireEvent.wheel(wrapper, { deltaY: 240, clientX: 300, clientY: 300 });
+    });
+    const after = expectAttached();
+    // The point moved with the transform (a pure re-read of the same helper), and the menu is still up.
+    expect(screen.getByRole("menu", { name: "Actions for Alex" })).toBeTruthy();
+    expect(after).not.toEqual(before);
+  });
+
+  it("Room Details is a focused panel: opening it hides the dock and the Toucan, closing restores them", async () => {
+    checkedIn();
+    const view = render(<OfficeMap />);
+    await waitFor(() => expect(dock()).not.toBeNull());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Call the toucan" })).toBeTruthy());
+    const room = view.container.querySelector("[data-room-id]")!;
+    expect(room).not.toBeNull();
+    await act(async () => {
+      press(room);
+      release(room);
+    });
+    await waitFor(() => expect(dock()).toHaveAttribute("aria-hidden", "true"));
+    expect(screen.queryByRole("button", { name: "Call the toucan" })).toBeNull();
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Close"));
+    });
+    await waitFor(() => expect(dock()).not.toHaveAttribute("aria-hidden"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Call the toucan" })).toBeTruthy());
   });
 });

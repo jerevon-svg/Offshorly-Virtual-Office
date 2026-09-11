@@ -147,3 +147,21 @@ export function resolveRenderedLayer(
   const live = livePosById[id];
   return live ? { ...resolved, x: live.pos.x, y: live.pos.y } : resolved;
 }
+
+/**
+ * A character's on-screen CENTRE for the wrapper's current pan/zoom — the anchor point the
+ * world interaction menu hangs off. Pure, so OfficeMap can call it both when the menu opens and
+ * on every render while it is open (the wrapper's onTransform re-renders OfficeMap on each zoom
+ * and pan), which is what keeps the card attached to the character instead of to the screen
+ * position it had when clicked. `layer` should be the DRAWN layer (resolveRenderedLayer).
+ */
+export function characterScreenCenter(
+  layer: Pick<AssetLayer, "x" | "y" | "width" | "height">,
+  state: { positionX: number; positionY: number; scale: number },
+  wrapperRect: { left: number; top: number },
+): { clientX: number; clientY: number } {
+  return {
+    clientX: wrapperRect.left + state.positionX + (layer.x + layer.width / 2) * state.scale,
+    clientY: wrapperRect.top + state.positionY + (layer.y + layer.height / 2) * state.scale,
+  };
+}

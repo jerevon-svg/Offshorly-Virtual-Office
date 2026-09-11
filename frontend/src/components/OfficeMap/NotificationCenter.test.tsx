@@ -30,7 +30,14 @@ import {
   resetNotificationsStoreForTests,
   setDevIdentity,
 } from "../../services/notifications/notificationsStore";
-import { NotificationCenter, destinationFor, relativeTime } from "./NotificationCenter";
+import {
+  NotificationCenter,
+  actorNameFor,
+  destinationFor,
+  displayTitle,
+  relativeTime,
+  splitBody,
+} from "./NotificationCenter";
 
 const notification = (over: Partial<AppNotification> = {}): AppNotification => ({
   id: "n1",
@@ -152,14 +159,14 @@ describe("read state", () => {
     });
     vi.mocked(markAllNotificationsRead).mockResolvedValue({ unreadCount: 0, updated: 2 });
     await open();
-    fireEvent.click(screen.getByRole("button", { name: /mark all as read/i }));
+    fireEvent.click(screen.getByRole("button", { name: /mark all read/i }));
 
     await waitFor(() => expect(markAllNotificationsRead).toHaveBeenCalledTimes(1));
     await waitFor(() =>
       expect(screen.getAllByTestId("notification-item").every((el) => el.dataset.read === "true")).toBe(true),
     );
     expect(screen.queryByTestId("notification-badge")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /mark all as read/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /mark all read/i })).toBeDisabled();
   });
 
   it("re-asks the server when marking read fails, instead of trusting a guess", async () => {
@@ -281,6 +288,131 @@ describe("destinationFor", () => {
       email: "alex@example.com",
       postId: null,
     });
+  });
+});
+
+describe("All / Unread filter", () => {
+  // The filter is a VIEW over the store, not a fetch: the server's list and order are untouched.
+  it("shows everything under All and only unread under Unread", async () => {
+    vi.mocked(fetchNotifications).mockResolvedValue({
+      notifications: [notification({ id: "unread", title: "Unread one" }), notification({ id: "read", title: "Read one", readAt: "2026-09-08T00:00:00Z" })],
+      unreadCount: 1,
+    });
+    await open();
+    expect(screen.getAllByTestId("notification-item")).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Unread" }));
+    const shown = screen.getAllByTestId("notification-item");
+    expect(shown).toHaveLength(1);
+    expect(shown[0].dataset.read).toBe("false");
+
+    fireEvent.click(screen.getByRole("tab", { name: "All" }));
+    expect(screen.getAllByTestId("notification-item")).toHaveLength(2);
+    expect(fetchNotifications).toHaveBeenCalledTimes(1); // no refetch — filtering is local
+  });
+
+  it("uses the shared tab bar's roles, with All selected first", async () => {
+    await open();
+    expect(screen.getByRole("tablist", { name: "Notifications" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "All" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "Unread" })).toHaveAttribute("aria-selected", "false");
+  });
+
+  it("still marks read and navigates from a row shown under Unread", async () => {
+    const onNavigate = vi.fn().mockReturnValue(true);
+    await open({ onNavigate });
+    fireEvent.click(screen.getByRole("tab", { name: "Unread" }));
+    fireEvent.click(screen.getByTestId("notification-item"));
+    expect(markNotificationRead).toHaveBeenCalledWith("n1");
+    expect(onNavigate).toHaveBeenCalledWith({ kind: "profileFeed", email: "alex@example.com", postId: "p1" });
+  });
+
+  it("has its own empty copy for a caught-up Unread tab", async () => {
+    vi.mocked(fetchNotifications).mockResolvedValue({
+      notifications: [notification({ readAt: "2026-09-08T00:00:00Z" })],
+      unreadCount: 0,
+    });
+    await open();
+    fireEvent.click(screen.getByRole("tab", { name: "Unread" }));
+    expect(screen.getByText(/all caught up/i)).toBeInTheDocument();
+  });
+});
+
+describe("screen-owning behaviour", () => {
+  // Notifications is a dock TOOL: the caller feeds onOpenChange into officeToolOpen, which is
+  // what hides the dock, the Toucan and the minimized chat-head rail — and restores them.
+  it("reports open and closed so the caller can hide and restore the dock chrome", async () => {
+    const onOpenChange = vi.fn();
+    render(<NotificationCenter onOpenChange={onOpenChange} />);
+    await waitFor(() => expect(fetchNotifications).toHaveBeenCalled());
+    expect(onOpenChange).toHaveBeenLastCalledWith(false);
+
+    fireEvent.click(screen.getByRole("button", { name: /notifications/i }));
+    expect(onOpenChange).toHaveBeenLastCalledWith(true);
+
+    fireEvent.click(screen.getByRole("button", { name: /close notifications/i }));
+    expect(onOpenChange).toHaveBeenLastCalledWith(false);
+    expect(screen.queryByTestId("notification-panel")).not.toBeInTheDocument();
+  });
+
+  it("keeps the panel open for a click inside it, even though it is portaled out of the dock", async () => {
+    await open();
+    fireEvent.pointerDown(screen.getByTestId("notification-panel"));
+    expect(screen.getByTestId("notification-panel")).toBeInTheDocument();
+    // The scrim is outside the panel, so a press there still dismisses.
+    fireEvent.pointerDown(screen.getByTestId("notification-backdrop"));
+    expect(screen.queryByTestId("notification-panel")).not.toBeInTheDocument();
+  });
+});
+
+describe("row presentation", () => {
+  it("shows the reward line as the shared RewardTag instead of body text", async () => {
+    await open();
+    const tag = screen.getByTestId("reward-tag");
+    expect(tag).toHaveTextContent("+75 XP");
+    expect(tag).toHaveTextContent("+20");
+    // The amounts are no longer duplicated as plain text in the body.
+    expect(screen.getByTestId("notification-item").textContent).not.toContain("+75 XP · +20 Coins");
+  });
+
+  it("renders the real employee portrait the caller resolves, and copes without one", async () => {
+    const resolvePortrait = vi.fn().mockReturnValue("/portraits/angelo.png");
+    await open({ resolvePortrait });
+    expect(document.querySelector("img[src='/portraits/angelo.png']")).toBeInTheDocument();
+    expect(resolvePortrait).toHaveBeenCalledWith(expect.objectContaining({ id: "n1" }));
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    resolvePortrait.mockReturnValue(null);
+    fireEvent.click(screen.getByRole("button", { name: /notifications/i }));
+    expect(document.querySelector("img[src='/portraits/angelo.png']")).not.toBeInTheDocument();
+    expect(screen.getByTestId("notification-item")).toBeInTheDocument();
+  });
+});
+
+describe("presentational parsing", () => {
+  it("drops a leading emoji from the title, since the row leads with a production icon", () => {
+    expect(displayTitle("🏆 You received Kudos!")).toBe("You received Kudos!");
+    expect(displayTitle("You received Kudos!")).toBe("You received Kudos!");
+    // Never returns nothing: an all-emoji title keeps its original text.
+    expect(displayTitle("🏆")).toBe("🏆");
+  });
+
+  it("splits the server's reward line off the body, and leaves anything else alone", () => {
+    expect(splitBody("Bon: “Nice”\n+75 XP · +20 Coins")).toEqual({
+      text: "Bon: “Nice”",
+      reward: { xp: 75, coins: 20 },
+    });
+    expect(splitBody("Bon gave you Kudos.")).toEqual({ text: "Bon gave you Kudos.", reward: null });
+    expect(splitBody(null)).toEqual({ text: null, reward: null });
+    // A single line that happens to look like a reward line is still the whole body.
+    expect(splitBody("+75 XP · +20 Coins")).toEqual({ text: "+75 XP · +20 Coins", reward: null });
+  });
+
+  it("reads the actor's name out of the copy the server rendered", () => {
+    expect(actorNameFor(notification())).toBe("Bon");
+    expect(actorNameFor(notification({ body: "Angelo gave you Kudos." }))).toBe("Angelo");
+    expect(actorNameFor(notification({ body: null }))).toBeNull();
+    expect(actorNameFor(notification({ body: "Something with no name" }))).toBeNull();
   });
 });
 

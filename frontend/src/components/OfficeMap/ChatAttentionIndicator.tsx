@@ -19,8 +19,10 @@ type ChatAttentionIndicatorProps = {
   onPointerUp: (e: React.PointerEvent) => void;
 };
 
-// Small game-like 💬 badge floating above a coworker who has unread messages
-// waiting for the local viewer.
+// The production soft-3D chat icon floating above a coworker who has unread messages waiting
+// for the local viewer — free-floating with a soft halo (no backing pill), so it reads as a
+// premium world-space callout and stays visually separate from the nameplate beneath it. The
+// count is the dock's HUD badge geometry at world scale, overlapping the icon's upper-right.
 //
 // Anchoring reuses greetingAnchor — the exact same head-anchor StatusLabel and
 // TalkingBubble use, including the live-3D per-character measured head offset —
@@ -67,10 +69,19 @@ export function ChatAttentionIndicator({
           onPointerDown={onPointerDown}
           onPointerUp={onPointerUp}
         >
+          {/* Halo behind the icon: a separate element so its breathing never fights the pop
+              or the bob transforms above it. */}
+          <span className={styles.halo} aria-hidden="true" />
           <span className={styles.emoji} aria-hidden="true">
             <HudIcon name="chat" />
           </span>
-          {count > 1 ? <span className={styles.count}>{count > 9 ? "9+" : count}</span> : null}
+          {/* Same rule as the dock's Tasks/Chat badges: any real count shows, above 9 reads
+              "9+". The number is this employee's own unread total from chatAttentionByLayerId. */}
+          {count > 0 ? (
+            <span className={styles.count} data-testid="chat-attention-count">
+              {count > 9 ? "9+" : count}
+            </span>
+          ) : null}
         </button>
       </div>
     </div>

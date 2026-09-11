@@ -1,11 +1,16 @@
-import { useEffect } from "react";
 import { formatCharacterName } from "../../data/office-layout";
 import type { AssetLayer } from "../../types/office";
-import styles from "./CharacterActionMenu.module.css";
+import { STATUS_META, type OfficeStatus } from "../../services/presence/status";
+import { WorldActionMenu, type WorldActionMenuAnchor, type WorldActionMenuItem } from "./WorldActionMenu";
+
+// The employee interaction menu. Presentation and dismissal are the shared WorldActionMenu's;
+// this file only decides which rows exist, in what order, with what label — and every row still
+// dispatches the SAME action string to the caller's SAME handler (OfficeMap's handleChoose).
 
 type Props = {
   layer: AssetLayer;
-  anchor: { clientX: number; clientY: number };
+  /** The character's on-screen centre (OfficeMap computes it from the layer and the zoom). */
+  anchor: WorldActionMenuAnchor;
   onChoose: (
     action: "chat" | "call" | "approach" | "walkDemo" | "patDemo" | "askToJoin" | "viewProfile",
   ) => void;
@@ -26,6 +31,12 @@ type Props = {
   // the action it dispatches is still "call", handled by the one existing join path in
   // handleChoose. There is deliberately no second join implementation.
   targetInActiveCall?: boolean;
+  /** This person's current presence, from the SAME statusByLayerId the nameplates read. Shown
+   *  beside the name as context only; omitted when the caller has none for them. */
+  status?: OfficeStatus;
+  /** Unread messages waiting from THIS person, from the existing chatAttentionByLayerId map —
+   *  the same number the world-space indicator above their head shows. Badges the Chat row. */
+  unreadCount?: number;
 };
 
 export function CharacterActionMenu({
@@ -36,37 +47,34 @@ export function CharacterActionMenu({
   showDemos,
   canAskToJoin,
   targetInActiveCall,
+  status,
+  unreadCount,
 }: Props) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  const left = Math.min(anchor.clientX + 8, window.innerWidth - 200);
-  const top = Math.min(anchor.clientY, window.innerHeight - 160);
+  const name = formatCharacterName(layer);
+  const items: WorldActionMenuItem[] = [
+    { key: "chat", label: "Chat", onSelect: () => onChoose("chat"), badge: unreadCount },
+    { key: "call", label: targetInActiveCall ? "Join call" : "Call", onSelect: () => onChoose("call") },
+    { key: "approach", label: "Approach", onSelect: () => onChoose("approach") },
+    { key: "viewProfile", label: "View Profile", onSelect: () => onChoose("viewProfile") },
+  ];
+  if (canAskToJoin) items.push({ key: "askToJoin", label: "Ask to Join", onSelect: () => onChoose("askToJoin") });
+  if (showDemos) {
+    items.push(
+      { key: "walkDemo", label: "Walk demo", onSelect: () => onChoose("walkDemo") },
+      { key: "patDemo", label: "Pat demo", onSelect: () => onChoose("patDemo") },
+    );
+  }
+  const meta = status ? { color: STATUS_META[status].color, label: STATUS_META[status].label } : undefined;
 
   return (
-    <div className={styles.backdrop} onClick={onClose}>
-      <div className={styles.menu} style={{ left, top }} onClick={(e) => e.stopPropagation()}>
-        <div className={styles.title}>{formatCharacterName(layer)}</div>
-        <button className={styles.item} onClick={() => onChoose("chat")}>Chat</button>
-        <button className={styles.item} onClick={() => onChoose("call")}>
-          {targetInActiveCall ? "Join call" : "Call"}
-        </button>
-        <button className={styles.item} onClick={() => onChoose("approach")}>Approach</button>
-        <button className={styles.item} onClick={() => onChoose("viewProfile")}>View Profile</button>
-        {canAskToJoin && (
-          <button className={styles.item} onClick={() => onChoose("askToJoin")}>Ask to Join</button>
-        )}
-        {showDemos && (
-          <>
-            <button className={styles.item} onClick={() => onChoose("walkDemo")}>Walk demo</button>
-            <button className={styles.item} onClick={() => onChoose("patDemo")}>Pat demo</button>
-          </>
-        )}
-      </div>
-    </div>
+    <WorldActionMenu
+      anchor={{ ...anchor, notch: true }}
+      onClose={onClose}
+      ariaLabel={`Actions for ${name}`}
+      title={name}
+      meta={meta}
+      items={items}
+    />
   );
 }
 

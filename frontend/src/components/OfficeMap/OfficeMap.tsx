@@ -41,7 +41,7 @@ import type { Conversation } from "../../services/chat/types";
 import { useUnreadTotal } from "../../services/chat/useUnreadTotal";
 import { MessageNotificationBadge } from "../Chat/MessageNotificationBadge";
 import { ConversationListPanel } from "../Chat/ConversationListPanel";
-import { profileImageFor } from "../../data/portraits";
+import { portraitSrcFor, profileImageFor } from "../../data/portraits";
 import { buildChatAttentionByLayerId, type ChatAttention } from "./chatAttention";
 import { EmployeePickerModal } from "../Chat/EmployeePickerModal";
 import { GroupConversationView } from "../Chat/GroupConversationView";
@@ -70,6 +70,7 @@ import {
   resolveRenderedLayer,
   computeRoomFocusTransform,
   SIDEBAR_WIDTH,
+  characterScreenCenter,
 } from "./panMath";
 import { useCharacterWalk, directionBetween } from "./useCharacterWalk";
 import type { WalkDirection } from "../../data/bonWalkFrames";
@@ -204,7 +205,8 @@ import { ClaimHud } from "./ClaimHud";
 import { CompanyHub } from "./CompanyHub";
 import { openCompanyHub, useCompanyHub } from "../../services/hub/companyHubStore";
 import { refreshClaimable, useClaimableCount } from "../../services/quests/claimableStore";
-import { NotificationCenter, type NotificationDestination } from "./NotificationCenter";
+import { NotificationCenter, actorNameFor, type NotificationDestination } from "./NotificationCenter";
+import type { AppNotification } from "../../services/notifications/notificationsClient";
 import { resetDevHubState } from "../../services/hub/hubClient";
 import { EmployeeProfile } from "./EmployeeProfile";
 import { PlayerHud } from "./PlayerHud";
@@ -394,6 +396,12 @@ export function OfficeMap() {
   const [rewardsOpen, setRewardsOpen] = useState(false);
   // Global Team Map V1 (see components/TeamMap/TeamMapPanel.tsx) — fetches on open.
   const [teamMapOpen, setTeamMapOpen] = useState(false);
+  // Notifications and Settings are SCREEN-OWNING dock tools, like the Chats list and the Team
+  // Map. Both flags exist only so officeToolOpen below can see them — the panels themselves own
+  // their content, and NotificationCenter still owns its own open/closed state (it reports it
+  // here through onOpenChange). No second visibility mechanism.
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   // Anchored action menu opened by clicking the reception room itself — the
   // sole entry point for check-in/check-out now that Arisha's own menu no
   // longer offers "Check in" and the room-picker step is gone.
@@ -2656,7 +2664,12 @@ export function OfficeMap() {
     whiteboardTarget !== null ||
     teamMapOpen ||
     // New Message / New Group Chat own the screen exactly like the Chats list does.
-    chatPickerMode !== null;
+    chatPickerMode !== null ||
+    // Notifications and Settings, same contract.
+    notificationsOpen ||
+    settingsOpen ||
+    // Room Details is a focused side panel like the Chats list: dock + Toucan step aside.
+    roomSidebar !== null;
   // The Tasks badge must be right BEFORE Tasks is ever opened, so the count is fetched once the
   // dock's chrome exists and re-fetched whenever the panel closes (a claim inside it already
   // refreshes on confirmation). Failures are swallowed in the store — a decorative badge must
@@ -4357,6 +4370,11 @@ export function OfficeMap() {
     // drives its own zoom: whichever setTransform call happens last (this
     // one) wins on the shared transformRef, so no double-animation fight.
     setRoomSidebar(null);
+    // Selecting a person replaces whatever world menu was up. The character menu itself is
+    // replaced by the setMenu below; the seat/reception menus have their own state, and the
+    // shared card no longer closes itself on a character press (see WorldActionMenu.tsx).
+    setSeatMenu(null);
+    setReceptionMenu(null);
 
     const ref = transformRef.current;
     const wrapper = ref?.instance.wrapperComponent;
@@ -4376,17 +4394,14 @@ export function OfficeMap() {
 
     if (targetScale > currentScale) {
       const { x, y } = computeCenterTransform(layer, targetScale, rect.width, rect.height);
-      const screenX = rect.left + x + (layer.x + layer.width / 2) * targetScale;
-      const screenY = rect.top + y + (layer.y + layer.height / 2) * targetScale;
+      const at = characterScreenCenter(layer, { positionX: x, positionY: y, scale: targetScale }, rect);
       ref.setTransform(x, y, targetScale, 500, "easeOut");
       charMenuTimerRef.current = window.setTimeout(() => {
-        setMenu({ layer, clientX: screenX, clientY: screenY });
+        setMenu({ layer, ...at });
       }, 500);
     } else {
       const { positionX, positionY } = ref.instance.state;
-      const screenX = rect.left + positionX + (layer.x + layer.width / 2) * currentScale;
-      const screenY = rect.top + positionY + (layer.y + layer.height / 2) * currentScale;
-      setMenu({ layer, clientX: screenX, clientY: screenY });
+      setMenu({ layer, ...characterScreenCenter(layer, { positionX, positionY, scale: currentScale }, rect) });
     }
   }
 
@@ -4666,6 +4681,21 @@ export function OfficeMap() {
   // Availability is offered before check-in too, exactly as the standalone picker always was.
   const statusPicker = <StatusPicker checkedIn={hasCheckedIn && checkoutFlow.state !== "CHECKED_OUT"} />;
 
+  // REAL EMPLOYEE PORTRAIT for a notification row. The notification itself carries no actor
+  // email — its navPayload addresses the DESTINATION (the recipient's own feed) — so the person
+  // it names is read off the copy the server rendered (`actorNameFor`) and matched against the
+  // roster we already have. Nothing is guessed: no roster match, or no portrait for that email,
+  // means the row keeps its type icon. See data/portraits.ts.
+  const resolveNotificationPortrait = (notification: AppNotification): string | null => {
+    const name = actorNameFor(notification)?.toLowerCase();
+    if (!name) return null;
+    for (const person of roster.people) {
+      const display = person.displayName.trim().toLowerCase();
+      if (display === name || display.split(/\s+/)[0] === name) return portraitSrcFor(person.email);
+    }
+    return null;
+  };
+
   // Order is the approved reference's, left to right:
   //   Profile | Coins+XP | Search | Hub | Tasks | Chat | Rewards | Boards | Map |
   //   Working+Check out | 🔔 | ••• (Settings)
@@ -4766,21 +4796,42 @@ export function OfficeMap() {
       // Global Notifications V1 — one component owns the 🔔 and its anchored panel, so the panel
       // is always positioned and layered relative to its button (see NotificationCenter.module.css).
       // `modalOpen` still closes the panel when a full-screen modal takes the view.
-      node: <NotificationCenter onNavigate={openNotificationDestination} modalOpen={anyModalOpen} label="Notifs" />,
+      node: (
+        <NotificationCenter
+          onNavigate={openNotificationDestination}
+          modalOpen={anyModalOpen}
+          label="Notifs"
+          // Screen-owning: the panel's open state feeds officeToolOpen above, which hides the
+          // dock, the Toucan and the minimized chat-head rail and restores them on close.
+          onOpenChange={setNotificationsOpen}
+          resolvePortrait={resolveNotificationPortrait}
+        />
+      ),
     });
   }
   // ••• IS SETTINGS — game/system preferences only. Product features are tiles above and are
   // never hidden in here, at any viewport width. See HudSettings.tsx.
   dockEntries.push({
-    kind: "flyout",
+    kind: "action",
     key: "settings",
     icon: <HudIcon name="settings" />,
     label: "Settings",
     ariaLabel: "Settings",
-    align: "end",
-    panel: (
-      <HudSettings
-        devTools={
+    active: settingsOpen,
+    onClick: () => setSettingsOpen(true),
+  });
+  const settingsPanel = (
+    <HudSettings
+      onClose={() => setSettingsOpen(false)}
+      lighting={{
+        // The EXISTING day/night state, not a new one: useOfficePhase's overrideHour is null for
+        // real time and a pinned hour otherwise. Turning following off holds the hour showing now.
+        phase,
+        hourDecimal,
+        followingRealTime: overrideHour === null,
+        onFollowRealTimeChange: (following) => setOverrideHour(following ? null : hourDecimal),
+      }}
+      devTools={
           // The SAME two DEV panels that used to float on the office canvas, with the same props
           // and the same handlers — relocated, not rewritten. DEV-only exactly as before; the
           // checkout panel's direct submit/startCheckout handles never ship to production.
@@ -4822,9 +4873,8 @@ export function OfficeMap() {
               }
             : undefined
         }
-      />
-    ),
-  });
+    />
+  );
   // Working time + Check out. The pill is WorkingStatusIndicator, which keeps its own
   // "hide before check-in / after checkout" rule, so this group can render unconditionally
   // wherever time tracking is available at all.
@@ -5244,6 +5294,10 @@ export function OfficeMap() {
         <TasksPanel tab={tasksTab} onTabChange={setTasksTab} onClose={() => setTasksOpen(false)} />
       )}
       {rewardsOpen && <RewardsPanel onClose={() => setRewardsOpen(false)} />}
+      {/* Settings — rendered HERE, not inside the dock, because it is a screen-owning tool and
+          the dock hides (transform + inert) while one is open. Same reason Tasks and Rewards
+          live at this level. */}
+      {settingsOpen && settingsPanel}
       {teamMapOpen && (
         <Suspense fallback={null}>
           <TeamMapPanel
@@ -5352,9 +5406,24 @@ export function OfficeMap() {
       {menu && (
         <CharacterActionMenu
           layer={menu.layer}
-          anchor={menu}
+          // LIVE anchor: the character's CURRENT on-screen centre, recomputed on every render from
+          // the wrapper's present pan/zoom and the character's drawn position — the wrapper's
+          // onTransform re-renders OfficeMap on each zoom/pan, so the card follows the character
+          // instead of staying where the screen point was when clicked. The stored click point is
+          // only the fallback for a render before the wrapper exists.
+          anchor={(() => {
+            const ref = transformRef.current;
+            const wrapper = ref?.instance.wrapperComponent;
+            if (!ref || !wrapper) return menu;
+            const rendered = resolveRenderedLayer(menu.layer, [extraCharacterLayers, npcCharacterLayers], peerWalkState);
+            return characterScreenCenter(rendered, ref.instance.state, wrapper.getBoundingClientRect());
+          })()}
           onChoose={handleChoose}
           onClose={closeCharacterMenu}
+          // Context only, from the SAME two maps the world already renders from: the nameplate's
+          // presence and the overhead indicator's unread count. Nothing is computed here.
+          status={statusByLayerId[menu.layer.id]}
+          unreadCount={chatAttentionByLayerId[menu.layer.id]?.count}
           // Label-only hint so an already-running call is discoverable from the menu that starts
           // one. Scoped to the viewer's OWN active spatial session, so a call elsewhere in the
           // office never relabels this item.

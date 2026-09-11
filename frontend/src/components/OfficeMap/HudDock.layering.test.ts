@@ -53,6 +53,8 @@ const chatCss = readFileSync("src/components/Chat/MessageNotificationBadge.modul
 const checkoutCss = css("checkout/checkout.module.css");
 const pickerCss = css("StatusPicker.module.css");
 const searchCss = css("CharacterSearch.module.css");
+const missionsCss = css("MissionsPanel.module.css");
+const settingsCss = css("HudSettings.module.css");
 const globals = readFileSync("src/index.css", "utf8");
 
 const DOCK_LAYER = 70;
@@ -239,6 +241,23 @@ describe("the controls inside the dock cannot escape it", () => {
     }
     expect(decl(dockCss, "dock", "--vo-chrome-position")).toBe("relative");
   });
+
+  // PRESSED STATE. The dock is cream; every tile's pressed/hover response must come from the
+  // dock's own light variables, never from a literal dark chip. The bell used to paint
+  // rgba(60, 48, 96, 0.95) — a leftover from its standalone dark-chrome era — which flashed black
+  // against the dock the moment it was clicked.
+  it("the bell's pressed state reads the dock's own hover surface instead of a dark literal", () => {
+    for (const cls of ["bellActive", "bellLabeled.bellActive .glyph"] as const) {
+      expect(decl(notificationCss, cls, "background")).toMatch(/^var\(--vo-chrome-surface-hover,/);
+      expect(decl(notificationCss, cls, "border-color")).toMatch(/^var\(--vo-chrome-line,/);
+    }
+    // What the dock feeds it is the very value its neighbouring action tiles paint on hover.
+    expect(decl(dockCss, "dock", "--vo-chrome-surface-hover")).toBe("rgba(24, 20, 34, 0.06)");
+    expect(dockCss).toMatch(/\.tile:hover:not\(:disabled\) \.tileIcon \{\s*background:\s*rgba\(24, 20, 34, 0\.06\);/);
+    // The dark chip is gone from the stylesheet entirely, not merely overridden further down.
+    expect(notificationCss).not.toContain("rgba(60, 48, 96");
+    expect(notificationCss).not.toContain("rgba(190, 160, 255, 0.5)");
+  });
 });
 
 describe("flyouts open upward, into the office rather than off the bottom edge", () => {
@@ -248,7 +267,6 @@ describe("flyouts open upward, into the office rather than off the bottom edge",
   });
 
   it.each([
-    ["notification panel", notificationCss, "panel"],
     ["chat dropdown", chatCss, "dropdown"],
     ["DND duration popover", pickerCss, "popover"],
   ] as const)("the %s reads both edges from the flyout variables", (_name, source, cls) => {
@@ -262,20 +280,28 @@ describe("flyouts open upward, into the office rather than off the bottom edge",
     expect(decl(dockCss, "flyoutEnd", "right")).toBe("0");
   });
 
-  it("keeps the narrow-viewport notification panel above the dock instead of behind it", () => {
-    const narrow = /@media \(max-width: 460px\) \{([\s\S]*?)\n\}/.exec(notificationCss)?.[1] ?? "";
-    expect(narrow).toMatch(/position:\s*fixed/);
-    expect(narrow).toMatch(/left:\s*12px/);
-    expect(narrow).toMatch(/right:\s*12px/);
-    expect(narrow).toMatch(/top:\s*var\(--vo-flyout-narrow-top,\s*56px\)/);
-    expect(narrow).toMatch(/bottom:\s*var\(--vo-flyout-narrow-bottom,\s*auto\)/);
-    // Still no z-index — `position: fixed` here resolves inside .anchor's stacking context.
-    expect(narrow).not.toMatch(/z-index/);
-    expect(decl(dockCss, "dock", "--vo-flyout-narrow-bottom")).toBe("104px");
+  // NOTIFICATIONS IS NO LONGER A FLYOUT. It is a screen-owning dock tool: a centred modal on the
+  // modal family's own layer 60, portaled out of the dock (which hides beneath it through the
+  // existing officeToolOpen path). So it deliberately reads none of the --vo-flyout-* anchoring
+  // variables, and the invariant that matters for it is now the modal family's, asserted here
+  // against Missions — the reference surface it was matched to.
+  it("the notification panel is a modal on the family's layer, not an anchored flyout", () => {
+    expect(zIndexOf(notificationCss, "backdrop")).toEqual([60]);
+    expect(zIndexOf(missionsCss, "backdrop")).toEqual([60]);
+    expect(notificationCss).not.toMatch(/--vo-flyout-/);
+    // Clamped exactly like the rest of the family, so it can never push the page around.
+    expect(decl(notificationCss, "panel", "width")).toBe("min(560px, 94vw)");
+    expect(decl(notificationCss, "panel", "max-height")).toBe("88vh");
+    expect(decl(missionsCss, "panel", "max-height")).toBe("88vh");
+  });
+
+  it("settings is a modal on the same family layer, with the same clamps", () => {
+    expect(zIndexOf(settingsCss, "backdrop")).toEqual([60]);
+    expect(decl(settingsCss, "panel", "width")).toBe("min(480px, 94vw)");
+    expect(decl(settingsCss, "panel", "max-height")).toBe("88vh");
   });
 
   it("every flyout is width-clamped and height-capped, so none can push the page around", () => {
-    expect(notificationCss).toMatch(/width:\s*min\(340px,\s*calc\(100vw - 76px\)\)/);
     expect(decl(dockCss, "flyout", "max-width")).toBe("calc(100vw - 32px)");
     expect(decl(dockCss, "flyout", "max-height")).toBe("calc(100vh - 148px)");
     expect(decl(dockCss, "flyout", "overflow-y")).toBe("auto");

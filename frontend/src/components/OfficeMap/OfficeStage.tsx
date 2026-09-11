@@ -797,6 +797,9 @@ export function OfficeStage({
             key={layer.id}
             className={className}
             {...(isRoomClickable ? { "data-room-id": layer.id } : {})}
+            // Lets the shared WorldActionMenu tell a press on a character apart from an outside
+            // press, so selecting another coworker is one click (see WorldActionMenu.tsx).
+            {...(isChar ? { "data-character-id": layer.id } : {})}
             style={{
               left: `${(layer.x / FRAME_WIDTH) * 100}%`,
               top: `${(layer.y / FRAME_HEIGHT) * 100}%`,

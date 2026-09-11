@@ -1,6 +1,6 @@
 import { MissionsPanel } from "./MissionsPanel";
 import { OnboardingQuestline } from "./OnboardingQuestline";
-import styles from "./TasksPanel.module.css";
+import { PanelTabs } from "./PanelTabs";
 
 // TASKS — the bottom dock's single progression entry point (it replaced the separate 🎯 Quests
 // and 📅 Missions tiles). This is UI CONSOLIDATION ONLY: it is a tab bar plus a switch, and the
@@ -28,21 +28,18 @@ export interface TasksPanelProps {
 }
 
 export function TasksPanel({ tab, onTabChange, onClose }: TasksPanelProps) {
+  // The tab bar is the SHARED PanelTabs (see PanelTabs.tsx) — the same component and the same
+  // stylesheet Notifications' All | Unread uses, so the two surfaces can never drift apart.
   const tabs = (
-    <div className={styles.tabs} role="tablist" aria-label="Tasks">
-      {(["quests", "missions"] as const).map((value) => (
-        <button
-          key={value}
-          type="button"
-          role="tab"
-          aria-selected={tab === value}
-          className={tab === value ? `${styles.tab} ${styles.tabActive}` : styles.tab}
-          onClick={() => onTabChange(value)}
-        >
-          {value === "quests" ? "Quests" : "Missions"}
-        </button>
-      ))}
-    </div>
+    <PanelTabs
+      ariaLabel="Tasks"
+      tabs={[
+        { value: "quests", label: "Quests" },
+        { value: "missions", label: "Missions" },
+      ]}
+      active={tab}
+      onChange={onTabChange}
+    />
   );
 
   return tab === "missions" ? (

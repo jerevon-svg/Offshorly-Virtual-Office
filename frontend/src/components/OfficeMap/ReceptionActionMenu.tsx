@@ -1,5 +1,4 @@
-import { useEffect } from "react";
-import styles from "./CharacterActionMenu.module.css";
+import { WorldActionMenu, type WorldActionMenuItem } from "./WorldActionMenu";
 
 type Props = {
   anchor: { clientX: number; clientY: number };
@@ -17,44 +16,13 @@ type Props = {
 };
 
 // Anchored action menu opened by clicking the reception room itself — the
-// sole entry point for both check-in and check-out. Reuses
-// CharacterActionMenu's visual pattern/CSS module for consistency.
-export function ReceptionActionMenu({
-  anchor,
-  onClose,
-  showCheckIn,
-  showCheckOut,
-  onCheckIn,
-  onCheckOut,
-}: Props) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  const left = Math.min(anchor.clientX + 8, window.innerWidth - 200);
-  const top = Math.min(anchor.clientY, window.innerHeight - 160);
-
-  return (
-    <div className={styles.backdrop} onClick={onClose}>
-      <div className={styles.menu} style={{ left, top }} onClick={(e) => e.stopPropagation()}>
-        <div className={styles.title}>Reception</div>
-        {showCheckIn && (
-          <button className={styles.item} onClick={onCheckIn}>
-            Check In
-          </button>
-        )}
-        {showCheckOut && (
-          <button className={styles.item} onClick={onCheckOut}>
-            Check Out
-          </button>
-        )}
-      </div>
-    </div>
-  );
+// sole entry point for both check-in and check-out. Rows and their gates are
+// unchanged; the card is the shared WorldActionMenu.
+export function ReceptionActionMenu({ anchor, onClose, showCheckIn, showCheckOut, onCheckIn, onCheckOut }: Props) {
+  const items: WorldActionMenuItem[] = [];
+  if (showCheckIn) items.push({ key: "checkIn", label: "Check In", onSelect: onCheckIn });
+  if (showCheckOut) items.push({ key: "checkOut", label: "Check Out", onSelect: onCheckOut });
+  return <WorldActionMenu anchor={anchor} onClose={onClose} ariaLabel="Reception" title="Reception" items={items} />;
 }
 
 export default ReceptionActionMenu;

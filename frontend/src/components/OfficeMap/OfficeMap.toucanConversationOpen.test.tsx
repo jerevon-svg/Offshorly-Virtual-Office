@@ -393,3 +393,62 @@ describe("OfficeMap — the Toucan panel shares the floating chat stack", () => 
     expect(SLOT_2).toBe("680px");
   });
 });
+
+// NOTIFICATIONS + SETTINGS are screen-owning dock tools too, on the SAME officeToolOpen flag as
+// the Chats list above — so they hide the dock, the Toucan and (by the same gate) the minimized
+// chat-head rail while open, and closing restores them. No second visibility mechanism.
+describe("OfficeMap — Notifications and Settings own the screen like the Chats list", () => {
+  beforeEach(async () => {
+    resetMockAttendanceForTests(getCurrentUserId());
+    await mockAttendanceService.checkIn(getCurrentUserId());
+    spatialSessionsState.sessions = [];
+    chatListState.conversations = [];
+    toucanFlagsState.flags = [];
+    stageState.onToucanSummonStateChange = null;
+    emitStart.mockClear();
+  });
+  afterEach(() => {
+    cleanup();
+    resetMockAttendanceForTests(getCurrentUserId());
+  });
+
+  it.each([
+    ["Notifications", /^Notifications/, "Close notifications", "Notifications"],
+    ["Settings", /^Settings$/, "Close settings", "Settings"],
+  ] as const)(
+    "%s hides the dock and the Toucan while open, and restores them on close",
+    async (_name, tileName, closeName, dialogName) => {
+      const view = render(<OfficeMap />);
+      const tile = await waitFor(() => view.getByRole("button", { name: tileName }));
+      await waitFor(() => expect(view.getByRole("button", { name: "Call the toucan" })).toBeTruthy());
+      // The dock is a HIDE, not an unmount, so it is asserted through aria-hidden/inert.
+      expect(view.getByTestId("hud-dock")).not.toHaveAttribute("aria-hidden");
+
+      await act(async () => {
+        fireEvent.click(tile);
+      });
+      expect(view.getByRole("dialog", { name: dialogName })).toBeTruthy();
+      expect(view.getByTestId("hud-dock")).toHaveAttribute("aria-hidden", "true");
+      expect(view.queryByRole("button", { name: "Call the toucan" })).toBeNull();
+
+      await act(async () => {
+        fireEvent.click(view.getByRole("button", { name: closeName }));
+      });
+      expect(view.queryByRole("dialog", { name: dialogName })).toBeNull();
+      expect(view.getByTestId("hud-dock")).not.toHaveAttribute("aria-hidden");
+      await waitFor(() => expect(view.getByRole("button", { name: "Call the toucan" })).toBeTruthy());
+    },
+  );
+
+  it("keeps Settings' DEV-gated developer tools behind import.meta.env.DEV", async () => {
+    const view = render(<OfficeMap />);
+    const tile = await waitFor(() => view.getByRole("button", { name: /^Settings$/ }));
+    await act(async () => {
+      fireEvent.click(tile);
+    });
+    // vitest runs with DEV true, so the section is present here — and it is present ONLY because
+    // OfficeMap passed the DEV props. HudSettings.test.tsx covers the production shape (no props
+    // -> no section at all), which is the half a DEV-true runner cannot exercise.
+    expect(view.getByText(/developer tools/i)).toBeTruthy();
+  });
+});

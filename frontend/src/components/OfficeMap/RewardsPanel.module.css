@@ -126,7 +126,6 @@
 }
 
 .closeButton:focus-visible,
-.tab:focus-visible,
 .card:focus-visible,
 .redeem:focus-visible,
 .ghost:focus-visible {
@@ -134,7 +133,8 @@
   outline-offset: 2px;
 }
 
-/* ---- tabs -------------------------------------------------------------------------------- */
+/* ---- tabs — the bar itself is the shared PanelTabs (PanelTabs.module.css); only the row
+   around it and History's pending badge live here. ------------------------------------------ */
 .tabRow {
   display: flex;
   align-items: center;
@@ -142,36 +142,9 @@
   padding: 0 20px 12px;
 }
 
-.tabs {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px;
-  border-radius: 13px;
-  background: rgba(24, 20, 34, 0.05);
-  flex: none;
-}
 
-.tab {
-  all: unset;
-  box-sizing: border-box;
-  cursor: pointer;
-  padding: 8px 22px;
-  border-radius: 10px;
-  font-size: 14px;
-  font-weight: 600;
-  color: rgba(36, 31, 48, 0.55);
-  transition: background-color 120ms ease, color 120ms ease;
-}
 
-.tab:hover {
-  color: #241f30;
-}
 
-.tabActive {
-  background: #e4f0e0;
-  color: #2f6b45;
-}
 
 .tabBadge {
   margin-left: 7px;

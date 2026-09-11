@@ -9,6 +9,7 @@ import {
   resolveRenderedLayer,
   greetingAnchor,
   HEAD_LABEL_GAP_FRAME_UNITS,
+  characterScreenCenter,
 } from "./panMath";
 
 describe("computeCenterTransform", () => {
@@ -321,5 +322,21 @@ describe("Message + Call aim at the rendered teammate, not the assigned seat", (
   it("falls back to the passed layer when the person is neither positioned nor walking", () => {
     expect(aimFor({})).toEqual(layerCenter(positioned));
     expect(layerCenter(resolveRenderedLayer(seat, [[]], {}))).toEqual(layerCenter(seat));
+  });
+});
+
+describe("characterScreenCenter", () => {
+  const layer = { x: 100, y: 200, width: 60, height: 90 };
+  it("maps the layer centre through the wrapper's pan/zoom into screen space", () => {
+    expect(characterScreenCenter(layer, { positionX: -50, positionY: -20, scale: 2 }, { left: 10, top: 5 })).toEqual({
+      clientX: 10 + -50 + 130 * 2,
+      clientY: 5 + -20 + 245 * 2,
+    });
+  });
+  it("moves with the zoom, so an open menu can follow the character", () => {
+    const a = characterScreenCenter(layer, { positionX: 0, positionY: 0, scale: 1 }, { left: 0, top: 0 });
+    const b = characterScreenCenter(layer, { positionX: 0, positionY: 0, scale: 3 }, { left: 0, top: 0 });
+    expect(b.clientX).toBe(a.clientX * 3);
+    expect(b.clientY).toBe(a.clientY * 3);
   });
 });

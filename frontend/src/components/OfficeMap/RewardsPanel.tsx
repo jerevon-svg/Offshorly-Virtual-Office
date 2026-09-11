@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import styles from "./RewardsPanel.module.css";
 import HudIcon from "../HudIcon";
 import { rewardArtFor } from "./rewardArt";
+import { PanelTabs } from "./PanelTabs";
 import { applyProgression, refreshProgression, useProgression } from "../../services/quests/progressionStore";
 import {
   cancelRedemption,
@@ -148,25 +149,29 @@ export function RewardsPanel({ onClose }: RewardsPanelProps) {
         </header>
 
         <div className={styles.tabRow}>
-          <div className={styles.tabs} role="tablist" aria-label="Rewards">
-            {(["catalog", "history"] as const).map((value) => (
-              <button
-                key={value}
-                type="button"
-                role="tab"
-                aria-selected={tab === value}
-                className={tab === value ? `${styles.tab} ${styles.tabActive}` : styles.tab}
-                onClick={() => setTab(value)}
-              >
-                {value === "catalog" ? "Catalog" : "History"}
-                {value === "history" && pendingCount > 0 && (
-                  <span className={styles.tabBadge} data-testid="rewards-pending-count">
-                    {pendingCount}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
+          {/* The SHARED tab bar (PanelTabs) — same component and stylesheet as Tasks' Quests |
+              Missions and Notifications' All | Unread. History keeps its pending-count badge. */}
+          <PanelTabs
+            ariaLabel="Rewards"
+            tabs={[
+              { value: "catalog", label: "Catalog" },
+              {
+                value: "history",
+                label: (
+                  <>
+                    History
+                    {pendingCount > 0 && (
+                      <span className={styles.tabBadge} data-testid="rewards-pending-count">
+                        {pendingCount}
+                      </span>
+                    )}
+                  </>
+                ),
+              },
+            ]}
+            active={tab}
+            onChange={setTab}
+          />
           <span className={styles.tabRule} aria-hidden="true" />
           {tab === "catalog" && <span className={styles.tabNote}>Demo catalog</span>}
         </div>

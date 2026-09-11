@@ -1,4 +1,4 @@
-/* Quests | Missions tab bar, rendered into each panel's top bar (see TasksPanel.tsx). Text-only
+/* Shared panel tab bar — Quests | Missions and All | Unread (see PanelTabs.tsx). Text-only
    pills, per brief — no generated tab icons. */
 .tabs {
   display: flex;

@@ -1,11 +1,41 @@
-/* Settings flyout body. The dock's flyout shell supplies the surface, border and shadow; this is
-   just the content layout. */
+/* Settings — the same cream modal shell as Tasks / Rewards / Notifications. The scrim, radius,
+   border, shadow, entry animation and close-button treatment are copied from
+   MissionsPanel.module.css (the reference surface for this family) rather than re-invented; only
+   the body's row/card layout is specific to this panel. */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(24, 20, 34, 0.34);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+  animation: settingsScrim 160ms ease-out both;
+}
+
+@keyframes settingsScrim {
+  from {
+    opacity: 0;
+  }
+}
+
 .panel {
+  position: relative;
+  width: min(480px, 94vw);
+  max-height: 88vh;
+  box-sizing: border-box;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.08);
+  border-radius: 22px;
+  box-shadow: 0 28px 70px rgba(18, 16, 28, 0.32), 0 2px 8px rgba(18, 16, 28, 0.12);
+  color: #241f30;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  min-width: 232px;
-  color: #241f30;
+  overflow: hidden;
+  animation: settingsIn 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
 
   /* The music control positions itself bottom-left of the viewport when it stands alone; in here
      it is an in-flow row on a light surface. Same --vo-chrome-* contract every other relocated
@@ -21,38 +51,241 @@
   --vo-chrome-line: rgba(24, 20, 34, 0.1);
 }
 
+@keyframes settingsIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.99);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .backdrop,
+  .panel {
+    animation: none;
+  }
+}
+
+/* ---- header ---------------------------------------------------------------------------- */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 18px 0 22px;
+}
+
+.headerIcon {
+  display: flex;
+  flex: none;
+}
+
 .title {
   margin: 0;
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
+  font-size: 22px;
+  line-height: 1.15;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.closeButton {
+  all: unset;
+  margin-left: auto;
+  flex: none;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  color: #3f3a4d;
+  font-size: 15px;
+  transition: background-color 120ms ease;
+}
+
+.closeButton:hover {
+  background: rgba(24, 20, 34, 0.05);
+}
+
+.closeButton:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: 2px;
+}
+
+/* ---- body ------------------------------------------------------------------------------ */
+.body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 22px 18px;
 }
 
 .section {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .sectionTitle {
   margin: 0;
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: rgba(36, 31, 48, 0.5);
+  color: rgba(36, 31, 48, 0.45);
 }
 
-.row {
+/* One setting = one card, on the same warm surface the other panels' rows use. */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(24, 20, 34, 0.03);
+  border: 1px solid rgba(24, 20, 34, 0.06);
+}
+
+.cardRow {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.cardIcon {
+  display: flex;
+  flex: none;
+}
+
+.cardText {
+  flex: 1;
+  min-width: 96px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 
 .rowLabel {
-  font-size: 12px;
-  color: rgba(36, 31, 48, 0.8);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.rowHint {
+  font-size: 12.5px;
+  color: rgba(36, 31, 48, 0.6);
+}
+
+.cardStatus {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: rgba(36, 31, 48, 0.55);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- toggle ---------------------------------------------------------------------------- */
+.switch {
+  flex: none;
+  position: relative;
+  display: inline-flex;
+  cursor: pointer;
+}
+
+.switch input {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.switchTrack {
+  display: block;
+  width: 46px;
+  height: 26px;
+  border-radius: 999px;
+  background: rgba(24, 20, 34, 0.16);
+  transition: background-color 140ms ease;
+}
+
+.switchKnob {
+  display: block;
+  width: 20px;
+  height: 20px;
+  margin: 3px;
+  border-radius: 50%;
+  background: #fdfcfa;
+  box-shadow: 0 1px 3px rgba(18, 16, 28, 0.28);
+  transition: transform 140ms ease;
+}
+
+.switch input:checked + .switchTrack {
+  background: #4bb96a;
+}
+
+.switch input:checked + .switchTrack .switchKnob {
+  transform: translateX(20px);
+}
+
+.switch input:focus-visible + .switchTrack {
+  outline: 2px solid #4bb96a;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .switchTrack,
+  .switchKnob {
+    transition: none;
+  }
+}
+
+/* ---- DEV-gated developer tools --------------------------------------------------------- */
+.devSection {
+  border-top: 1px solid rgba(24, 20, 34, 0.07);
+  padding-top: 12px;
+}
+
+.devSummary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  list-style: none;
+  padding: 2px 0;
+}
+
+.devSummary::-webkit-details-marker {
+  display: none;
+}
+
+.devSummary::after {
+  content: "⌄";
+  margin-left: auto;
+  font-size: 16px;
+  line-height: 1;
+  color: rgba(36, 31, 48, 0.45);
+}
+
+.devSection[open] .devSummary::after {
+  content: "⌃";
+}
+
+.devSummary:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: 2px;
+  border-radius: 10px;
+}
+
+.devBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
 }
 
 .devButton {
@@ -81,5 +314,43 @@
   flex-direction: column;
   gap: 8px;
   align-items: stretch;
-  max-width: 260px;
+  max-width: 100%;
+}
+
+/* ---- footer ---------------------------------------------------------------------------- */
+.footer {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 13px 22px 16px;
+  border-top: 1px solid rgba(24, 20, 34, 0.07);
+  font-size: 13px;
+  color: rgba(36, 31, 48, 0.55);
+}
+
+.footerCheck {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #4bb96a;
+  color: #fdfcfa;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+@media (max-width: 520px) {
+  .header {
+    padding: 16px 14px 0 16px;
+  }
+
+  .body,
+  .footer {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
 }

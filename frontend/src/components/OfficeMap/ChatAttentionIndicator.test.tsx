@@ -82,9 +82,11 @@ describe("ChatAttentionIndicator via OfficeStage", () => {
     expect(badges(container)).toHaveLength(2);
   });
 
-  it("shows a count only when more than one message is unread, capped at 9+", () => {
+  // Same rule as the dock's Tasks/Chat badges: any real count shows (a single unread reads "1",
+  // not a bare icon), and above 9 reads "9+".
+  it("shows the real count from one message up, capped at 9+", () => {
     const one = renderStage({ selfCharacterId: "bon", chatAttentionByLayerId: { alex: ALEX } });
-    expect(badges(one.container)[0].querySelector(`.${styles.count}`)).toBeNull();
+    expect(badges(one.container)[0].querySelector(`.${styles.count}`)?.textContent).toBe("1");
 
     const few = renderStage({
       selfCharacterId: "bon",
@@ -97,6 +99,82 @@ describe("ChatAttentionIndicator via OfficeStage", () => {
       chatAttentionByLayerId: { alex: { conversationId: "c", count: 42 } },
     });
     expect(badges(many.container)[0].querySelector(`.${styles.count}`)?.textContent).toBe("9+");
+  });
+
+  it("shows each coworker THEIR OWN unread count, from the per-employee mapping", () => {
+    const { container } = renderStage({
+      selfCharacterId: "bon",
+      chatAttentionByLayerId: {
+        alex: { conversationId: "conv-alex", count: 3 },
+        micah: { conversationId: "conv-micah", count: 1 },
+      },
+    });
+    const byName = Object.fromEntries(
+      badges(container).map((b) => [b.getAttribute("aria-label"), b.querySelector(`.${styles.count}`)?.textContent]),
+    );
+    expect(byName["Open chat with Alex — 3 unread messages"]).toBe("3");
+    expect(byName["Open chat with Micah — 1 unread message"]).toBe("1");
+  });
+
+  it("disappears the moment that coworker's messages are read (entry leaves the map)", () => {
+    const view = render(
+      <TransformWrapper>
+        <TransformComponent>
+          <OfficeStage selfCharacterId="bon" chatAttentionByLayerId={{ alex: ALEX, micah: { conversationId: "m", count: 2 } }} />
+        </TransformComponent>
+      </TransformWrapper>,
+    );
+    expect(badges(view.container)).toHaveLength(2);
+    // The existing unread source drops alex once read; the stage renders from that map only.
+    view.rerender(
+      <TransformWrapper>
+        <TransformComponent>
+          <OfficeStage selfCharacterId="bon" chatAttentionByLayerId={{ micah: { conversationId: "m", count: 2 } }} />
+        </TransformComponent>
+      </TransformWrapper>,
+    );
+    const left = badges(view.container);
+    expect(left).toHaveLength(1);
+    expect(left[0].getAttribute("aria-label")).toContain("Micah");
+    view.rerender(
+      <TransformWrapper>
+        <TransformComponent>
+          <OfficeStage selfCharacterId="bon" chatAttentionByLayerId={{}} />
+        </TransformComponent>
+      </TransformWrapper>,
+    );
+    expect(badges(view.container)).toHaveLength(0);
+  });
+
+  it("floats the production chat icon with no backing pill, and badges it with the HUD geometry", () => {
+    // Stylesheet SOURCE assertions, for the same reason as the max-content guard below: jsdom
+    // never loads CSS-module rules, so a computed-style check would pass vacuously.
+    const css = readFileSync("src/components/OfficeMap/ChatAttentionIndicator.module.css", "utf8");
+    const rule = (cls: string) => new RegExp(`\\.${cls} \\{([\\s\\S]*?)\\n\\}`).exec(css)?.[1] ?? "";
+    const button = rule("button");
+    expect(button).toMatch(/background: transparent;/);
+    expect(button).toMatch(/border: 0;/);
+    expect(button).not.toMatch(/rgba\(26, 26, 26/); // the old dark nameplate chip is gone
+    // A halo exists and breathes; the icon itself is the production HudIcon (asserted above).
+    expect(rule("halo")).toMatch(/radial-gradient/);
+    expect(rule("halo")).toMatch(/animation: chatAttentionBreathe/);
+    // Count = the dock's .tileBadge tokens (HudDock.module.css) at world scale: same red, white
+    // 700 tabular digits, cream ring, upper-right overlap, min-width === height (one digit = circle).
+    const count = rule("count");
+    const dock = readFileSync("src/components/OfficeMap/HudDock.module.css", "utf8");
+    const tile = /\.tileBadge \{([\s\S]*?)\n\}/.exec(dock)?.[1] ?? "";
+    for (const token of ["background: #e2453c;", "color: #fff;", "font-weight: 700;", "border-radius: 999px;", "font-variant-numeric: tabular-nums;", "text-align: center;"]) {
+      expect(count).toContain(token);
+      expect(tile).toContain(token);
+    }
+    expect(count).toMatch(/position: absolute;/);
+    expect(count).toMatch(/top: -\d/);
+    expect(count).toMatch(/right: -\d/);
+    const minW = /min-width: ([\d.]+)px;/.exec(count)?.[1];
+    const h = /\n\s*height: ([\d.]+)px;/.exec(count)?.[1];
+    expect(minW).toBeDefined();
+    expect(minW).toBe(h);
+    expect(count).toMatch(/box-shadow: 0 0 0 [\d.]+px #fdfcfa;/);
   });
 
   it("opens that coworker's existing conversation on click", () => {

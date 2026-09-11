@@ -29,35 +29,84 @@
      badge stay pointer-events:none so the indicator never steals a drag/pan or
      a click meant for the avatar underneath it. */
   pointer-events: auto;
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 2px;
+  justify-content: center;
   white-space: nowrap;
-  /* Same small-dark-pill treatment as the nameplate, so the presence stack
-     reads as one system rather than a foreign HUD chip. */
-  background: rgba(26, 26, 26, 0.85);
-  border: 0.6px solid rgba(255, 255, 255, 0.35);
+  /* NO backing pill. The icon floats on its own over the world; separation from the nameplate
+     beneath comes from the head clearance (OVERHEAD_CLEARANCE_PX) and the halo, not a chip. */
+  background: transparent;
+  border: 0;
   border-radius: 999px;
-  padding: 1px 4px;
+  padding: 1px;
   margin: 0;
   cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
   line-height: 1;
   /* Gentle float. Small amplitude on purpose: readable at a glance without
      pulling the eye off whatever the viewer is actually doing. */
   animation: chatAttentionBob 2.4s ease-in-out infinite;
 }
 
-.emoji {
-  font-size: 9px;
-  line-height: 1;
+/* Soft glow behind the icon — the callout's "premium" read. Tinted to the chat icon's own teal
+   over a white core, breathing slowly between two low opacities. World-space px like everything
+   else here, so it scales with the avatar. */
+.halo {
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(255, 255, 255, 0.85) 0%,
+    rgba(120, 214, 190, 0.55) 40%,
+    rgba(120, 214, 190, 0) 72%
+  );
+  filter: blur(1.5px);
+  pointer-events: none;
+  animation: chatAttentionBreathe 2.6s ease-in-out infinite;
 }
 
+.emoji {
+  position: relative;
+  /* HudIcon sizes itself at 1.4em, so this is the icon's world-space size (14px). */
+  font-size: 10px;
+  line-height: 1;
+  /* A crisp halo hugging the icon's own silhouette, so it never reads as a square glow. */
+  filter: drop-shadow(0 0 1.2px rgba(255, 255, 255, 0.95)) drop-shadow(0 1px 2px rgba(18, 16, 28, 0.25));
+}
+
+/* The dock's HUD badge (HudDock.module.css .tileBadge) at world scale — same red, same white
+   700 tabular digits, same cream ring, same "min-width equals height" rule so one digit is a
+   perfect circle and more digits widen only as needed, same upper-right corner overlap. */
 .count {
-  color: #f5f5f5;
-  font-size: 6px;
+  position: absolute;
+  top: -1px;
+  right: -2px;
+  min-width: 7px;
+  height: 7px;
+  box-sizing: border-box;
+  padding: 0 1.5px;
+  border-radius: 999px;
+  background: #e2453c;
+  color: #fff;
+  font-size: 4.6px;
   font-weight: 700;
-  line-height: 1.4;
+  line-height: 7px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 0 0 0.8px #fdfcfa;
+}
+
+@keyframes chatAttentionBreathe {
+  0%,
+  100% {
+    opacity: 0.55;
+    scale: 0.92;
+  }
+  50% {
+    opacity: 0.95;
+    scale: 1.08;
+  }
 }
 
 @keyframes chatAttentionPop {
@@ -88,10 +137,9 @@
 /* Respect the OS setting: the badge still appears (it is information, not
    decoration), it just stops moving. */
 @media (prefers-reduced-motion: reduce) {
-  .badge {
-    animation: none;
-  }
-  .button {
+  .badge,
+  .button,
+  .halo {
     animation: none;
   }
 }

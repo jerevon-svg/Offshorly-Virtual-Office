@@ -15,28 +15,21 @@
             to 20 under the 30/31 overlay family)
      140+   floating chat, room sidebar, call overlay, join/DND toasts, pickers
      1000   reward claim FX
-   The bell sits at 25 and the panel is a CHILD of the bell's anchor — so it inherits that one
-   stacking context and cannot paint above a modal, a call prompt, the HUD or the claim FX. No new
-   layer was introduced and no existing z-index was touched; in particular the HUD's 70/50
-   behind-modal step and Team Map's use of it are untouched, because nothing here needs to
-   outrank a modal.
-   DELIBERATELY NOT RAISED TO 100 to match the neighbouring 💬 button: 100 is above the modal
-   backdrops (60), which would let this panel paint over an open modal. The two controls never
-   overlap positionally (12px apart in the row), so the lower layer costs nothing visually — the
-   only consequence is that an open 💬 dropdown paints over this panel, which is correct, since
-   they are alternative dropdowns from the same utility pair.
+   NOTIFICATIONS IS NOW A SCREEN-OWNING TOOL. The bell is a dock tile; its panel is a modal
+   portaled to <body> at the modal family's own layer 60 — no new layer and no changed z-index.
+   The dock steps to 50/20 beneath it through the EXISTING officeToolOpen path (OfficeMap.tsx),
+   which is also what hides the dock, the Toucan and the minimized chat-head rail while it is
+   open. The paragraph below describes the panel's former anchored-dropdown geometry and is kept
+   only for the bell's own placement contract.
+   DELIBERATELY NOT RAISED ABOVE 60: the panel joins the modal family rather than outranking it,
+   so it can never paint over another modal. `modalOpen` closes it instead (NotificationCenter.tsx).
 
-   PLACEMENT — the bell is now the trailing utility entry in the bottom dock, beside the 💬 chat
-   button it has always been paired with (see HudDock.tsx's dockEntries). Its panel opens UPWARD
-   from the dock; the `top`/`right` defaults below are the standalone geometry it keeps for any
-   render outside the dock. The layering hierarchy above still holds with one correction: the
-   Player HUD's old top-left 70 is now the whole dock's 70, and this control is inside it — so the
-   bell inherits the dock's stacking context instead of its own 25. It still cannot paint above a
-   modal, because the dock steps down to 50 / 20 for the modal and overlay families. */
-/* PLACEMENT is read from the --vo-chrome-* / --vo-flyout-* custom properties, whose defaults below
-   are this control's ORIGINAL standalone geometry. The bottom dock redefines them so this root
-   becomes in-flow inside the dock and its panel opens upward — see HudDock.module.css's flyout
-   contract. Nothing but placement is variable. */
+   PLACEMENT — the bell is the trailing utility entry in the bottom dock, beside the 💬 chat
+   button it has always been paired with (see HudDock.tsx's dockEntries). Its placement is read
+   from the --vo-chrome-* custom properties, whose defaults below are this control's ORIGINAL
+   standalone geometry; the dock redefines them so the bell becomes an in-flow icon square. The
+   PANEL reads none of them any more — see the modal shell further down. Nothing but the bell's
+   own placement is variable here. */
 .anchor {
   position: var(--vo-chrome-position, fixed);
   top: var(--vo-chrome-top, 12px);
@@ -71,9 +64,15 @@
   background: var(--vo-chrome-surface-hover, rgba(35, 35, 35, 0.9));
 }
 
+/* PRESSED, not a persistent "selected" state. Notifications is screen-owning — the dock hides the
+   instant the panel opens — so a highlighted-tile state could only ever flash. What this paints is
+   the SAME subtle response the dock's own action tiles give (HudDock.module.css's .tileIcon hover,
+   fed here through --vo-chrome-surface-hover), so the bell can never differ from Search / Hub /
+   Tasks beside it. The dark purple chip it used to paint was left over from the standalone
+   dark-chrome era and read as a black flash against the cream dock. */
 .bellActive {
-  background: rgba(60, 48, 96, 0.95);
-  border-color: rgba(190, 160, 255, 0.5);
+  background: var(--vo-chrome-surface-hover, rgba(35, 35, 35, 0.9));
+  border-color: var(--vo-chrome-line, rgba(255, 255, 255, 0.15));
 }
 
 /* CAPTIONED DOCK FORM (`label` passed). The button becomes the 52px column tile the dock's own
@@ -111,6 +110,8 @@
      bell renders visibly smaller than Search/Hub/Tasks beside it (.bell's own 16px was sized for
      the emoji it used to hold). */
   font-size: 20px;
+  /* Same easing as .tileIcon, so the press fades in rather than snapping. */
+  transition: background-color 120ms ease;
 }
 
 .bellLabeled:hover {
@@ -127,8 +128,8 @@
 }
 
 .bellLabeled.bellActive .glyph {
-  background: rgba(60, 48, 96, 0.95);
-  border-color: rgba(190, 160, 255, 0.5);
+  background: var(--vo-chrome-surface-hover, rgba(35, 35, 35, 0.9));
+  border-color: var(--vo-chrome-line, rgba(255, 255, 255, 0.15));
 }
 
 .label {
@@ -160,156 +161,332 @@
   box-shadow: 0 0 0 2px var(--vo-chrome-badge-ring, rgba(18, 16, 28, 0.9));
 }
 
-/* Anchored to the bell: drops straight down from it and right-aligns with its right edge, so the
-   panel and its button always read as one control. Now that the bell lives in the top row the
-   panel opens into the whole height of the office instead of the tail end of a pill column.
-   Width is clamped against the space actually available to the LEFT of the bell (the bell's own
-   64px offset plus a 12px left margin), so it can never be wider than the viewport. */
-.panel {
-  position: absolute;
-  top: var(--vo-flyout-top, calc(100% + 8px));
-  bottom: var(--vo-flyout-bottom, auto);
-  right: 0;
-  width: min(340px, calc(100vw - 76px));
-  /* Everything below the utility row, less a bottom margin: 12px top + 36px bell + 8px gap. */
-  max-height: calc(100vh - 68px);
-  box-sizing: border-box;
+/* ---- THE PANEL — a screen-owning modal, not a dropdown --------------------------------------
+   The panel is PORTALED to <body> (see NotificationCenter.tsx) and wears the SAME cream modal
+   shell as Tasks / Rewards / Team Map: identical scrim, radius, border, shadow, entry animation
+   and close-button treatment (copied from MissionsPanel.module.css, which is the reference
+   surface for this family). Nothing here is a near-duplicate of a dropdown any more, and the
+   dock's flyout anchoring props are no longer read: a modal is centred, not anchored.
+   Layer 60 is the modal family's, exactly as the panels above sit — the dock steps to 50/20
+   underneath it through the existing officeToolOpen path. */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(24, 20, 34, 0.34);
+  backdrop-filter: blur(3px);
   display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background: linear-gradient(180deg, rgba(30, 26, 46, 0.97), rgba(18, 16, 28, 0.97));
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  border-radius: 12px;
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
-  color: #f5f0ff;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+  animation: notifScrim 160ms ease-out both;
 }
 
-/* NARROW VIEWPORTS. Below this width the 340px panel would be squeezed to a useless sliver by
-   the clamp above, so it stops hanging off the bell's right edge and spans the viewport instead,
-   inset 12px on both sides. It still starts BELOW the utility row (top: 56px = 12 + 36 + 8), so
-   it never covers Available / Working / 🔔 / 💬 — it adapts its position rather than painting
-   over them. `position: fixed` here still resolves inside .anchor's stacking context
-   (z-index 25), so the layering above is unchanged. */
-@media (max-width: 460px) {
-  .panel {
-    position: fixed;
-    top: var(--vo-flyout-narrow-top, 56px);
-    bottom: var(--vo-flyout-narrow-bottom, auto);
-    right: 12px;
-    left: 12px;
-    width: auto;
-    max-height: var(--vo-flyout-narrow-max-h, calc(100vh - 68px));
+@keyframes notifScrim {
+  from {
+    opacity: 0;
   }
 }
 
+.panel {
+  position: relative;
+  width: min(560px, 94vw);
+  max-height: 88vh;
+  box-sizing: border-box;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.08);
+  border-radius: 22px;
+  box-shadow: 0 28px 70px rgba(18, 16, 28, 0.32), 0 2px 8px rgba(18, 16, 28, 0.12);
+  color: #241f30;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: notifIn 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes notifIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.99);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .backdrop,
+  .panel {
+    animation: none;
+  }
+}
+
+/* ---- header ---------------------------------------------------------------------------- */
 .header {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 12px 14px 8px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  align-items: center;
+  gap: 10px;
+  padding: 18px 18px 0 22px;
+}
+
+.headerIcon {
+  display: flex;
+  flex: none;
 }
 
 .title {
   margin: 0;
-  font-size: 14px;
-  font-weight: 600;
+  font-size: 22px;
+  line-height: 1.15;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+/* Same close treatment as MissionsPanel's .closeButton — same box, radius, ink and hover. */
+.closeButton {
+  all: unset;
+  margin-left: auto;
+  flex: none;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  color: #3f3a4d;
+  font-size: 15px;
+  transition: background-color 120ms ease;
+}
+
+.closeButton:hover {
+  background: rgba(24, 20, 34, 0.05);
+}
+
+.closeButton:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: 2px;
+}
+
+/* ---- filter row: shared tab bar + Mark all read --------------------------------------- */
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 14px 22px 12px;
 }
 
 .markAll {
   all: unset;
+  margin-left: auto;
   cursor: pointer;
-  font-size: 12px;
-  color: rgba(190, 160, 255, 0.95);
-  padding: 2px 4px;
-  border-radius: 6px;
+  padding: 6px 8px;
+  border-radius: 9px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #2f7d4a;
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
 .markAll:hover {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(75, 185, 106, 0.12);
 }
 
 .markAll:disabled {
   cursor: default;
-  color: rgba(245, 240, 255, 0.35);
+  color: rgba(36, 31, 48, 0.35);
+  background: none;
 }
 
+.markAll:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: 2px;
+}
+
+/* ---- list ------------------------------------------------------------------------------ */
 .list {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 18px 4px;
 }
 
 .item {
   all: unset;
-  display: block;
   box-sizing: border-box;
   width: 100%;
   cursor: pointer;
   text-align: left;
-  padding: 9px 10px 9px 22px;
-  border-radius: 9px;
-  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid transparent;
+  transition: background-color 120ms ease, border-color 120ms ease;
 }
 
-.item:hover {
-  background: rgba(255, 255, 255, 0.07);
+.item:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: 2px;
 }
 
-.unread::before {
-  content: "";
-  position: absolute;
-  left: 9px;
-  top: 14px;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #7ec8ff;
+/* UNREAD reads as the tinted card the reference shows; READ drops back to the plain cream
+   surface with a hairline. Both keep the same box, so nothing shifts when a row is read. */
+.unread {
+  background: rgba(75, 185, 106, 0.1);
+  border-color: rgba(75, 185, 106, 0.18);
+}
+
+.unread:hover {
+  background: rgba(75, 185, 106, 0.16);
 }
 
 .read {
-  opacity: 0.55;
+  background: rgba(24, 20, 34, 0.03);
+  border-color: rgba(24, 20, 34, 0.06);
+  color: rgba(36, 31, 48, 0.78);
+}
+
+.read:hover {
+  background: rgba(24, 20, 34, 0.06);
+}
+
+.itemIcon {
+  display: flex;
+  flex: none;
+}
+
+/* Real employee portrait (public/portraits — see data/portraits.ts). Absent for anyone without a
+   clear match, and the row simply keeps its type icon. */
+.itemPortrait {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #fdfcfa;
+  border: 2px solid #fdfcfa;
+  box-shadow: 0 1px 4px rgba(18, 16, 28, 0.16);
+}
+
+.itemMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .itemTitle {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 14.5px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
 }
 
 .itemBody {
-  margin-top: 2px;
-  font-size: 12px;
-  color: rgba(245, 240, 255, 0.78);
+  font-size: 13px;
+  color: rgba(36, 31, 48, 0.72);
   white-space: pre-line;
   overflow-wrap: anywhere;
 }
 
-.itemTime {
-  margin-top: 3px;
-  font-size: 11px;
-  color: rgba(245, 240, 255, 0.5);
+/* The existing RewardTag component, unchanged — just given its own line in the row. */
+.itemReward {
+  display: flex;
+  margin-top: 2px;
 }
 
+.itemTime {
+  margin-top: 2px;
+  font-size: 12px;
+  color: rgba(36, 31, 48, 0.5);
+}
+
+.itemDot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #4bb96a;
+}
+
+.itemChevron {
+  flex: none;
+  font-size: 20px;
+  line-height: 1;
+  color: rgba(36, 31, 48, 0.4);
+}
+
+/* ---- empty state + footer hint -------------------------------------------------------- */
 .empty {
-  padding: 26px 18px 30px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 34px 18px 38px;
+  text-align: center;
+}
+
+.emptyIcon {
+  display: flex;
+  opacity: 0.85;
+}
+
+.emptyText {
+  margin: 0;
+  max-width: 30ch;
+  font-size: 13.5px;
+  color: rgba(36, 31, 48, 0.6);
+}
+
+.hint {
+  margin: 0;
+  padding: 14px 22px 18px;
+  border-top: 1px solid rgba(24, 20, 34, 0.07);
   text-align: center;
   font-size: 13px;
-  color: rgba(245, 240, 255, 0.6);
-}
-
-.emptyEmoji {
-  display: block;
-  font-size: 22px;
-  margin-bottom: 6px;
+  color: rgba(36, 31, 48, 0.5);
 }
 
 .error {
-  margin: 6px 10px 10px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: rgba(160, 40, 40, 0.28);
-  border: 1px solid rgba(255, 120, 120, 0.35);
-  font-size: 12px;
+  margin: 0 22px 10px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  background: rgba(196, 74, 60, 0.09);
+  border: 1px solid rgba(196, 74, 60, 0.22);
+  font-size: 12.5px;
+  color: #8d3226;
+}
+
+/* COMPACT DESKTOP / NARROW. The row loses its leading type icon before it loses the portrait or
+   any text, and the controls row wraps rather than clipping Mark all read. */
+@media (max-width: 520px) {
+  .item {
+    gap: 10px;
+    padding: 11px 12px;
+  }
+
+  .itemIcon,
+  .itemChevron {
+    display: none;
+  }
+
+  .header {
+    padding: 16px 14px 0 16px;
+  }
+
+  .controls,
+  .hint {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .list {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
 }

@@ -90,9 +90,11 @@ export function buildChatAttentionByLayerId({
 // All values are WORLD px (the indicator, like StatusLabel/TalkingBubble, is a
 // plain descendant of the TransformWrapper-scaled stage and carries no
 // KeepScale), measured off the shared pill metrics in StatusLabel.module.css /
-// TalkingBubble.module.css: 4px head gap + pill height + a 3px separation.
-// A pill line is font-size 7px x line-height 1.4 + 2px padding ~= 12px;
-// .bubbleText wraps to at most 3 lines (-webkit-line-clamp: 3) ~= 32px.
+// TalkingBubble.module.css: head gap + pill height + a 3px separation.
+// StatusLabel's nameplate is 2px gap + (font-size 6px x line-height 1.4 +
+// 2px padding ~= 10.4px) ~= 15.4 -> 16. TalkingBubble's typing pill keeps the
+// 4px gap + 7px x 1.4 + 2px ~= 12px line -> 19; .bubbleText wraps to at most
+// 3 lines (-webkit-line-clamp: 3) ~= 32px.
 // ---------------------------------------------------------------------------
 
 export type OverheadKind = "greeting" | "sentText" | "typing" | "status" | "none";
@@ -101,7 +103,7 @@ export const OVERHEAD_CLEARANCE_PX: Record<OverheadKind, number> = {
   greeting: 39,
   sentText: 39,
   typing: 19,
-  status: 19,
+  status: 16,
   // Nothing overhead at all (e.g. a rendered peer with no known status) —
   // the indicator takes the head gap itself.
   none: 6,

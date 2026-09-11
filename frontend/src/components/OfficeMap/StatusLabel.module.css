@@ -8,37 +8,57 @@
 
 /* Small, consistent gap above the head. This px offset is WORLD-space (this
    element has no KeepScale wrapper), so the on-screen gap scales with zoom
-   along with the rest of the scene. -4px (tightened again from -6px per
-   second live visual review at default zoom — still reading as too much gap
-   above the head). Mutually exclusive with TalkingBubble (see
-   StatusLabel.tsx / render logic in OfficeStage.tsx) — no separate clearance
-   tiers needed since the two never render at once; TalkingBubble shares this
-   same offset. */
+   along with the rest of the scene. -2px (from -4px, itself tightened from
+   -6px over two live reviews): the nameplate is QUIET IDENTITY in the
+   overhead hierarchy — the glowing unread indicator is the attention element
+   and the character is the primary object — so it sits close and small.
+   Mutually exclusive with TalkingBubble (see StatusLabel.tsx / render logic
+   in OfficeStage.tsx) — no separate clearance tiers needed since the two
+   never render at once. TalkingBubble keeps its own -4px offset. */
 .pill {
   position: absolute;
-  transform: translate(-50%, calc(-100% - 4px));
-  display: flex;
-  align-items: center;
-  gap: 3px;
+  transform: translate(-50%, calc(-100% - 2px));
+  /* ONE DETERMINISTIC LAYOUT, from the font's own metrics. The pill is a plain inline line: the
+     text sits on its baseline in a 1.4 line box (the pill's height, 10.4px, exactly as before),
+     and the dot is an inline-block with `vertical-align: middle` — CSS's definition of "centre on
+     the parent's baseline plus half its x-height", i.e. the visual middle of the letters. No
+     flex centring of fractional leftovers, no nudges, no per-name numbers; every current and
+     future employee gets the identical line. (No will-change here — it blurred the pills.) */
+  box-sizing: border-box;
+  height: calc(1.4em + 2px);
   background: rgba(26, 26, 26, 0.85);
   color: #f5f5f5;
-  padding: 1px 5px;
+  /* ~15% smaller than the 7px / 1px 5px / 3px / 4px it was: font, padding
+     and gap scaled together so the pill keeps its proportions. */
+  padding: 1px 4px;
   border-radius: 999px;
   white-space: nowrap;
   pointer-events: none;
-  font-size: 7px;
+  font-size: 6px;
   font-weight: 600;
   line-height: 1.4;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
 }
 
+/* STRICTLY IDENTICAL GEOMETRY for every status — only the inline background colour varies
+   (StatusLabel.tsx reads STATUS_META). 3px is the approved dot; every axis is pinned so nothing
+   in the row can negotiate its size, and aspect-ratio is the belt-and-braces round guarantee. */
 .dot {
-  width: 4px;
-  height: 4px;
+  display: inline-block;
+  vertical-align: middle;
+  box-sizing: border-box;
+  width: 3px;
+  height: 3px;
+  min-width: 3px;
+  min-height: 3px;
+  aspect-ratio: 1;
   border-radius: 50%;
-  flex-shrink: 0;
+  /* The 2.5px dot-to-name gap, as a margin now that the row is inline flow. */
+  margin-right: 2.5px;
 }
 
 .text {
+  display: inline;
+  vertical-align: baseline;
   white-space: nowrap;
 }

@@ -10,6 +10,7 @@ import chatIcon from "../assets/hud-icons/chat.png";
 import coinIcon from "../assets/hud-icons/coin.png";
 import hubIcon from "../assets/hud-icons/hub.png";
 import levelIcon from "../assets/hud-icons/level.png";
+import lightingIcon from "../assets/hud-icons/lighting.png";
 import locateIcon from "../assets/hud-icons/locate.png";
 import mapIcon from "../assets/hud-icons/map.png";
 import memoryIcon from "../assets/hud-icons/memory.png";
@@ -38,6 +39,7 @@ export const HUD_ICONS = {
   coin: coinIcon,
   hub: hubIcon,
   level: levelIcon,
+  lighting: lightingIcon,
   locate: locateIcon,
   map: mapIcon,
   memory: memoryIcon,
