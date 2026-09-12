@@ -11,6 +11,8 @@ import { facadeGlassMat, glassMat, metal } from "../render/Materials";
 import { buildShell, type ShellOptions } from "./shell";
 import { buildDesignBaked, type DesignBaked } from "./baked";
 import { receptionStatic } from "./reception";
+import { meetingStatic } from "./meeting";
+import { projectStatic } from "./project";
 
 export type BuildResult = { group: THREE.Group; sway: SwayNode[] };
 
@@ -32,6 +34,8 @@ function designRoomStatic(room: RoomDef, opts: ShellOptions): THREE.Group {
 export const ROOM_STATIC: Record<string, RoomStaticBuilder> = {
   "design-room": designRoomStatic,
   "reception-room": receptionStatic,
+  "meeting-room": meetingStatic,
+  "project-room": projectStatic,
 };
 
 export function buildEntity(e: Entity): BuildResult {

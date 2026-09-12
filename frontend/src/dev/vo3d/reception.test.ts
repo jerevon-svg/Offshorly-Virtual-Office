@@ -16,6 +16,8 @@ import { FACING_YAW } from "./core/coords";
 import { PALETTE } from "./render/Materials";
 import { pointInRect } from "./core/coords";
 import { groundFloor, registerGroundFloor, roomSouthZ } from "./rooms/ground-floor";
+import { MEETING_ROOM } from "./rooms/meeting";
+import { PROJECT_ROOM } from "./rooms/project";
 import { FACADE_Z } from "./adapters/v1Floor";
 import { v1RoomRect } from "./adapters/v1Manifest";
 import { buildFootprint, footprintWallRects } from "./build/floorplan";
@@ -35,6 +37,8 @@ function rig() {
   world.addRoom(DESIGN_ROOM);
   world.addRoom(RECEPTION_ROOM);
   for (const e of designRoomEntities()) world.addEntity(e);
+  world.addRoom(MEETING_ROOM);
+  world.addRoom(PROJECT_ROOM);
   const plan = registerGroundFloor(world);
   const inBounds = (p: Vec2) => world.walkableAt(p);
   const wk = new Walkability(composeStatic(v1Static, inBounds, clearanceLayer(worldClearances(world))));
@@ -698,6 +702,8 @@ describe("vo3d Reception — Phase 3E.2 gate lane clearance", () => {
     world.addRoom(RECEPTION_ROOM);
     for (const e of designRoomEntities()) world.addEntity(e);
     for (const e of receptionEntities()) world.addEntity(e);
+    world.addRoom(MEETING_ROOM);
+    world.addRoom(PROJECT_ROOM);
     registerGroundFloor(world);
     const inBounds = (p: Vec2) => world.walkableAt(p);
     const wk = new Walkability(composeStatic(v1Static, inBounds, clearanceLayer(worldClearances(world))));
@@ -759,6 +765,8 @@ describe("vo3d Reception — Phase 3E.2 gate lane clearance", () => {
     world.addRoom(DESIGN_ROOM); world.addRoom(RECEPTION_ROOM);
     for (const e of designRoomEntities()) world.addEntity(e);
     for (const e of receptionEntities()) world.addEntity(e);
+    world.addRoom(MEETING_ROOM);
+    world.addRoom(PROJECT_ROOM);
     registerGroundFloor(world);
     const inBounds = (p: Vec2) => world.walkableAt(p);
     for (const [i, lane] of GATE.lanes.entries()) {

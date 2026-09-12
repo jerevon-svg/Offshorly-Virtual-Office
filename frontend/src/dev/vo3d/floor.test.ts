@@ -3,6 +3,8 @@ import manifest from "../../data/office-assets-manifest.json";
 import { WorldState } from "./world/WorldState";
 import { DESIGN_ROOM, designRoomEntities, HERO_PLANT_ID, RECT } from "./rooms/design-room";
 import { groundFloor, groundFloorRegions, registerGroundFloor } from "./rooms/ground-floor";
+import { MEETING_ROOM } from "./rooms/meeting";
+import { PROJECT_ROOM } from "./rooms/project";
 import { RECEPTION_ROOM } from "./rooms/reception";
 import { FRAME, v1DoorOpenings, v1Rooms } from "./adapters/v1Floor";
 import { CELL, v1Static, worldToCell } from "./adapters/v1Grid";
@@ -21,6 +23,8 @@ function rig() {
   world.addRoom(DESIGN_ROOM);
   world.addRoom(RECEPTION_ROOM);
   for (const e of designRoomEntities()) world.addEntity(e);
+  world.addRoom(MEETING_ROOM);
+  world.addRoom(PROJECT_ROOM);
   const plan = registerGroundFloor(world);
   const inBounds = (p: Vec2) => world.walkableAt(p);
   const wk = new Walkability(composeStatic(v1Static, inBounds, clearanceLayer(worldClearances(world))));
@@ -49,19 +53,20 @@ describe("vo3d ground floor — every V1 room in ONE world", () => {
     for (const r of rooms) { const l = v1.find((x) => x.id === r.id)!; expect(r.rect).toEqual({ x: l.x, z: l.y, w: l.width, d: l.height }); expect(pointInRect({ x: r.rect.x, z: r.rect.z }, FRAME)).toBe(true); expect(r.rect.x + r.rect.w).toBeLessThanOrEqual(FRAME.w + 1e-6); }
     expect(rooms.find((r) => r.id === "design-room")!.rect).toEqual(DESIGN_ROOM.rect);
     const plan = groundFloor();
-    expect(plan.rooms.filter((r) => r.reconstructed).map((r) => r.id)).toEqual(["design-room", "reception-room"]);
+    // manifest order, not phase order: project-room and meeting-room precede reception-room in the manifest
+    expect(plan.rooms.filter((r) => r.reconstructed).map((r) => r.id)).toEqual(["design-room", "project-room", "meeting-room", "reception-room"]);
     expect(plan.rooms.find((r) => r.id === "central-hub")!.walls).toBe(false);
     // room art boxes never overlap by more than one cell (gaming/project overlap by 12 units in V1) → interiorRects are disjoint
     for (const a of rooms) for (const b of rooms) if (a !== b) { const ox = Math.min(a.rect.x + a.rect.w, b.rect.x + b.rect.w) - Math.max(a.rect.x, b.rect.x), oz = Math.min(a.rect.z + a.rect.d, b.rect.z + b.rect.d) - Math.max(a.rect.z, b.rect.z); expect(Math.min(ox, oz) <= CELL, `${a.id} vs ${b.id}`).toBe(true); }
   });
 
-  it("world regions: reconstructed floor, sidewalk, 10 unwalkable footprints, shared floor with room holes; bounds = frame", () => {
+  it("world regions: 4 reconstructed floors, sidewalk, 7 unwalkable footprints, shared floor with room holes; bounds = frame", () => {
     const { world, plan } = rig();
     expect(world.bounds).toEqual(FRAME);
     const regions = groundFloorRegions(plan, world);
-    expect(regions.map((r) => r.kind)).toEqual(["room-floor", "room-floor", "exterior", ...Array(9).fill("room-floor"), "shared-floor"]);
-    expect(regions.filter((r) => r.walkable)).toHaveLength(4);
-    expect(regions.filter((r) => r.walkable).map((r) => r.id)).toEqual(["floor:design-room", "floor:reception-room", "exterior:sidewalk", "shared:ground-floor"]);
+    expect(regions.map((r) => r.kind)).toEqual([...Array(4).fill("room-floor"), "exterior", ...Array(7).fill("room-floor"), "shared-floor"]);
+    expect(regions.filter((r) => r.walkable)).toHaveLength(6);
+    expect(regions.filter((r) => r.walkable).map((r) => r.id)).toEqual(["floor:design-room", "floor:project-room", "floor:meeting-room", "floor:reception-room", "exterior:sidewalk", "shared:ground-floor"]);
     expect(regions[regions.length - 1].holes).toHaveLength(11);
     expect(world.regionAt(APPROACH)?.id).toBe("floor:design-room");
     expect(world.regionAt({ x: 328, z: 408 })?.id).toBe("shared:ground-floor"); // just outside the Design Room door
@@ -75,9 +80,11 @@ describe("vo3d ground floor — every V1 room in ONE world", () => {
     expect(world.regionAt({ x: 656, z: 840 })?.id).toBe("floor:reception-room"); // gate lane 1, north band
     expect(world.regionAt({ x: 720, z: 1160 })?.id).toBe("floor:reception-room");
     expect(world.regionAt({ x: 720, z: 1176 })?.id).toBe("exterior:sidewalk");
-    // the east/west transitions are closed at the REGION layer only — Meeting/Project are still footprints
-    expect(world.regionAt({ x: 280, z: 968 })).toMatchObject({ id: "footprint:meeting-room", walkable: false });
-    expect(world.regionAt({ x: 1120, z: 1000 })).toMatchObject({ id: "footprint:project-room", walkable: false });
+    // Phase 4B: the east/west transitions are OPEN — both neighbours are reconstructed and their floors
+    // abut Reception's exactly (no overlap: Meeting stops at 332.33, Project starts at 1081.285)
+    expect(world.regionAt({ x: 280, z: 968 })).toMatchObject({ id: "floor:meeting-room", walkable: true });
+    expect(world.regionAt({ x: 1120, z: 1000 })).toMatchObject({ id: "floor:project-room", walkable: true });
+    expect(world.regionAt({ x: 1080, z: 1000 })?.id).toBe("floor:reception-room"); // the contested cell centre
     expect(world.regionAt({ x: -5, z: 400 })).toBeNull();
     expect(world.regionAt({ x: 700, z: FRAME.d + 1 })).toBeNull();
     expect(world.regionAt({ x: RECT.x + 100, z: RECT.z + 250 })).toBeNull(); // the Design Room's front band: in no region

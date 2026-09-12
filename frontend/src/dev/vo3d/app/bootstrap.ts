@@ -4,6 +4,11 @@ import GUI from "three/examples/jsm/libs/lil-gui.module.min.js";
 import { WorldState } from "../world/WorldState";
 import { DESIGN_ROOM, DESIGN_SOLIDS, CHAIR_4_ID, DOOR_ID, HERO_PLANT_ID, SHELL as DESIGN_SHELL, designRoomEntities } from "../rooms/design-room";
 import { RECEPTION_ROOM, COUNTER_INTERACTION_ID, ENTRY_DOOR_EAST_ID, ENTRY_DOOR_WEST_ID, ENTRY_SCANNER_ID, ENTRY_ZONE, GATE_SCANNER_IDS, GATE_ZONES, KIOSK_INTERACTION_ID, LOUNGE_SEAT_IDS, receptionEntities } from "../rooms/reception";
+import { NORTH_STRIP as MEETING_NORTH_STRIP } from "../rooms/meeting";
+import { NORTH_STRIP as PROJECT_NORTH_STRIP } from "../rooms/project";
+import { openedCells, openedLayer, v2Static } from "../nav/v2Open";
+import { MEETING_ROOM, MEETING_CHAIR_IDS, KIOSK_INTERACTION_ID as MEETING_KIOSK_INTERACTION_ID, KIOSK_SCANNER_ID as MEETING_KIOSK_SCANNER_ID, KIOSK_ZONE as MEETING_KIOSK_ZONE, meetingRoomEntities } from "../rooms/meeting";
+import { PROJECT_ROOM, CONSOLE_INTERACTION_ID, SOFA_SEAT_IDS, TUB_SEAT_IDS, TV_INTERACTION_ID, projectRoomEntities } from "../rooms/project";
 import { ApproachInteraction } from "../interact/Approach";
 import { LoungeSeatInteraction } from "../interact/LoungeSeat";
 import { Walkability, composeStatic } from "../nav/Walkability";
@@ -27,8 +32,12 @@ import { pointInRect, type Rect, type Vec2 } from "../core/coords";
 const world = new WorldState();
 world.addRoom(DESIGN_ROOM);
 world.addRoom(RECEPTION_ROOM);
+world.addRoom(MEETING_ROOM);
+world.addRoom(PROJECT_ROOM);
 for (const e of designRoomEntities()) world.addEntity(e);
 for (const e of receptionEntities()) world.addEntity(e);
+for (const e of meetingRoomEntities()) world.addEntity(e);
+for (const e of projectRoomEntities()) world.addEntity(e);
 // baked decor solids (visual comes from the shell builder) participate in placement as footprint-only entities
 DESIGN_SOLIDS.forEach((r, i) =>
   world.addEntity({ id: `${DESIGN_ROOM.id}/solid-${i}`, kind: "solid", roomId: DESIGN_ROOM.id, transform: { pos: { x: r.x + r.w / 2, z: r.z + r.d / 2 }, yaw: 0 }, footprint: { shape: "rect", w: r.w, d: r.d }, capabilities: {}, props: {}, source: { baked: true } }),
@@ -40,7 +49,10 @@ const inBounds = (p: Vec2): boolean => world.walkableAt(p);
 // ---- nav ---------------------------------------------------------------------------------------
 // static = READ-ONLY V1 grid AND inside a walkable registered region AND clear of declared architecture (door jambs);
 // dynamic footprints + reservations compose on top
-const walkability = new Walkability(composeStatic(v1Static, inBounds, clearanceLayer(worldClearances(world))));
+// V2-LOCAL: the V1 grid PLUS the floor 4C's corrected north walls gave back (nav/v2Open.ts). The grid file
+// itself is untouched; only the two declared bands can add a cell.
+const openBands = [MEETING_NORTH_STRIP, PROJECT_NORTH_STRIP];
+const walkability = new Walkability(composeStatic(v2Static(v1Static, openedLayer(openBands)), inBounds, clearanceLayer(worldClearances(world))));
 walkability.syncFromWorld(world);
 
 // ---- render ------------------------------------------------------------------------------------
@@ -59,7 +71,9 @@ const mirror = new SceneMirror(world, R.scene);
 mirror.buildGroundFloor(plan);
 const shellOpts = () => ({ wallHeight: params.wallHeight, frontWall: params.frontWall, exterior: false });
 mirror.buildRoom(DESIGN_ROOM, shellOpts());
-mirror.buildRoom(RECEPTION_ROOM, shellOpts()); // Phase 3B: architecture only (no entities yet)
+mirror.buildRoom(RECEPTION_ROOM, shellOpts());
+mirror.buildRoom(MEETING_ROOM, shellOpts()); // Phase 4B
+mirror.buildRoom(PROJECT_ROOM, shellOpts());
 // solids have no builder: skip them in the mirror by giving them no view (buildEntity would throw) — filtered here
 // (they are never rendered; the baked group already draws them)
 
@@ -133,14 +147,36 @@ const entryState = { state: "closed", open: 0, drift: 0, cycles: 0, scanner: 0 }
 // for walk-up points, SeatInteraction for the lounge chairs, planWalk for every route.
 const approachCtl = new ApproachInteraction(avatar, stack, (to) => planWalk(avatar.position, to, walkability, inBounds));
 const receptionState = { focus: "none", status: "idle", seat: "idle" };
-const loungeSeats = LOUNGE_SEAT_IDS.map((id) => {
+/** Every FIXED lounge seat in the world, flattened to one slot per entry: Reception's two tub chairs plus
+ *  Project's two sofas (two cushions each) and two tub chairs. One list, one controller — no new system. */
+const loungeSeats = [...LOUNGE_SEAT_IDS, ...SOFA_SEAT_IDS, ...TUB_SEAT_IDS].flatMap((id) => {
   const e = world.get(id);
-  return { id, slot: e.capabilities.lounge!.slots[0], view: mirror.view(id) };
+  return e.capabilities.lounge!.slots.map((slot) => ({ id, slot, view: mirror.view(id), label: slot.id }));
 });
 let loungeSeat: LoungeSeatInteraction | null = null;
-function startApproach(entityId: string): void {
-  loungeSeat?.reset();
+/** The six Meeting conference chairs use the MOVABLE pattern — the same SeatInteraction the Design Room
+ *  desk chair uses, one instance at a time. */
+let meetingSeat: SeatInteraction | null = null;
+const meetingState = { chair: "none", seat: "idle", chairRestError: 0, kioskScanner: 0 };
+/** Only an ENGAGED interaction is reset. SeatInteraction.reset() teleports the avatar back to its own
+ *  approach point, so resetting an already-idle controller would yank Bon across the building. */
+function clearSeats(): void {
+  if (loungeSeat && loungeSeat.state !== "idle") loungeSeat.reset();
   loungeSeat = null;
+  if (meetingSeat && meetingSeat.state !== "idle") meetingSeat.reset();
+}
+function startMeetingSit(index: number): void {
+  approachCtl.cancel();
+  clearSeats();
+  const id = MEETING_CHAIR_IDS[index];
+  const e = world.get(id);
+  meetingSeat = new SeatInteraction(avatar, stack, mirror.view(id), e.capabilities.seat!, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+  meetingState.chair = id.split("/")[1];
+  meetingSeat.sit();
+}
+function startApproach(entityId: string): void {
+  clearSeats();
+  meetingSeat = null;
   const spec = world.get(entityId).capabilities.approach!;
   const r = approachCtl.begin(spec);
   receptionState.focus = spec.label;
@@ -149,9 +185,11 @@ function startApproach(entityId: string): void {
 }
 function startLoungeSit(index: number): void {
   approachCtl.cancel();
+  clearSeats();
+  meetingSeat = null;
   const s = loungeSeats[index];
   loungeSeat = new LoungeSeatInteraction(avatar, stack, s.view, s.slot, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
-  receptionState.focus = `lounge chair ${index === 0 ? "west" : "east"}`;
+  receptionState.focus = s.label;
   loungeSeat.sit();
 }
 /** Click resolution: raycast the built world, then walk up to the first group a Reception interaction
@@ -165,7 +203,7 @@ function pickInteraction(cx: number, cy: number): string | null {
   const byPick = new Map<string, string>();
   for (const e of world.entities.values()) {
     if (e.capabilities.approach && typeof e.props.pick === "string") byPick.set(e.props.pick, e.id);
-    if (e.capabilities.seat && e.roomId === RECEPTION_ROOM.id) byPick.set(e.id, e.id);
+    if (e.capabilities.seat || e.capabilities.lounge) byPick.set(e.id, e.id);
   }
   for (let n: THREE.Object3D | null = hits[0].object; n; n = n.parent) {
     const id = byPick.get(n.name);
@@ -290,6 +328,24 @@ rec.add({ f: () => { loungeSeat?.stand(); } }, "f").name("▶ stand up");
 rec.add(receptionState, "focus").disable().listen();
 rec.add(receptionState, "status").disable().listen();
 rec.add(receptionState, "seat").disable().listen();
+const meet = gui.addFolder("Meeting room (4C)");
+["north 0", "north 1", "north 2", "south 0", "south 1", "south 2"].forEach((n, i) =>
+  meet.add({ f: () => startMeetingSit(i) }, "f").name(`▶ sit: chair ${n}`));
+meet.add({ f: () => meetingSeat?.stand() }, "f").name("▶ stand up");
+meet.add({ f: () => startApproach(MEETING_KIOSK_INTERACTION_ID) }, "f").name("▶ use meeting terminal");
+meet.add(meetingState, "chair").disable().listen();
+meet.add(meetingState, "seat").disable().listen();
+meet.add(meetingState, "chairRestError").name("chair rest drift").disable().listen();
+meet.add(meetingState, "kioskScanner").name("terminal scanner (0 blue → 1 green)").disable().listen();
+const proj = gui.addFolder("Project room (4C)");
+const projState = { seat: "idle", slot: "none", drift: 0 };
+loungeSeats.forEach((s2, i) => { if (s2.id.startsWith(PROJECT_ROOM.id)) proj.add({ f: () => { projState.slot = s2.label; startLoungeSit(i); } }, "f").name(`▶ sit: ${s2.label}`); });
+proj.add({ f: () => loungeSeat?.stand() }, "f").name("▶ stand up");
+proj.add({ f: () => startApproach(CONSOLE_INTERACTION_ID) }, "f").name("▶ approach coffee station");
+proj.add({ f: () => startApproach(TV_INTERACTION_ID) }, "f").name("▶ view the project board");
+proj.add(projState, "slot").disable().listen();
+proj.add(projState, "seat").disable().listen();
+proj.add(projState, "drift").name("furniture drift (always 0)").disable().listen();
 const editGui = gui.addFolder("Room edit mode (hero plant only)");
 editGui.add(params, "editMode").name("✎ edit mode").onChange((v: boolean) => { edit.setEditMode(v); if (v) edit.select(HERO_PLANT_ID); refreshEditVisuals(); });
 editGui.add({ confirm: () => { const v = edit.confirm(); editState.placement = v.ok ? "committed" : `rejected: ${v.reason}`; refreshEditVisuals(); } }, "confirm").name("✔ confirm placement");
@@ -357,6 +413,9 @@ function updateScanners(p: Vec2): void {
   // says someone is coming through. Both are PRESENCE/intent tests — never the door's animation state, so
   // green leads the panels rather than following them.
   mirror.ambient.setScanner(ENTRY_SCANNER_ID, pointInRect(scannerAt, ENTRY_ZONE) || entryDoor.wantsOpen(scannerAt, entryPath));
+  // the Meeting terminal speaks the same BLUE-idle / GREEN-detected language, driven by the same
+  // read-only proximity test — no navigation, no grid, no geometry
+  mirror.ambient.setScanner(MEETING_KIOSK_SCANNER_ID, pointInRect(scannerAt, MEETING_KIOSK_ZONE));
 }
 let entryPath: readonly Vec2[] = [];
 
@@ -375,6 +434,7 @@ function loop(): void {
   mirror.ambient.update(t, dt / 1000); // powered-surface idle animation (screens, sensors, status strips)
   if (params.avatar) {
     seat.update(dt / 1000);
+    meetingSeat?.update(dt / 1000);
     loungeSeat?.update(dt / 1000);
     approachCtl.update(dt / 1000);
     navCtl.update(dt / 1000);
@@ -392,6 +452,11 @@ function loop(): void {
     seatState.state = seat.status;
     receptionState.status = approachCtl.status;
     receptionState.seat = loungeSeat ? loungeSeat.status : "idle";
+    meetingState.seat = meetingSeat ? meetingSeat.status : "idle";
+    meetingState.chairRestError = meetingSeat ? Math.round(meetingSeat.chairRestError() * 1000) / 1000 : 0;
+    meetingState.kioskScanner = Math.round(mirror.ambient.scannerActivation(MEETING_KIOSK_SCANNER_ID) * 100) / 100;
+    projState.seat = loungeSeat ? loungeSeat.status : "idle";
+    projState.drift = loungeSeat ? Math.round(loungeSeat.furnitureDrift() * 1e6) / 1e6 : 0;
     seatState.chairRestError = Math.round(seat.chairRestError() * 1000) / 1000;
     avatarState.clip = avatar.currentClip ?? "";
     avatarState.owner = stack.owner;
@@ -423,6 +488,11 @@ loop();
     placeBonAtEntrance, entranceTour: () => { placeBonAtEntrance(); startTour([RECEPTION_STREET, RECEPTION_INSIDE]); },
     receptionInside: RECEPTION_INSIDE, receptionStreet: RECEPTION_STREET, entranceView: ENTRANCE_VIEW, planWalk: (from: Vec2, to: Vec2) => planWalk(from, to, walkability, inBounds), regionAt: (x: number, z: number) => world.regionAt({ x, z }) },
   get seat() { return seat; }, seatState,
+  openBands, openedCells: () => openedCells(openBands),
+  meeting: { state: meetingState, startSit: startMeetingSit, stand: () => meetingSeat?.stand(), seat: () => meetingSeat,
+    chairIds: MEETING_CHAIR_IDS, kioskScanner: MEETING_KIOSK_SCANNER_ID, kioskZone: MEETING_KIOSK_ZONE },
+  project: { state: projState, seats: loungeSeats.map((s2, i) => ({ i, id: s2.id, slot: s2.label })), startSit: startLoungeSit,
+    stand: () => loungeSeat?.stand(), seat: () => loungeSeat },
   reception: { state: receptionState, approach: approachCtl, startApproach, startLoungeSit,
     get loungeSeat() { return loungeSeat; }, seats: loungeSeats.map((s) => s.id),
     counterId: COUNTER_INTERACTION_ID, kioskId: KIOSK_INTERACTION_ID, pick: pickInteraction },

@@ -9,8 +9,8 @@ import { book, laptop, monitor, mug, smallPot } from "./props";
 export type FurnitureKind =
   | "lead-desk" | "member-desk" | "desk-panel" | "curve-desk" | "side-desk"
   | "sofa" | "beanbag" | "rug" | "chair-a" | "chair-b" | "lead-chair"
-  | "tub-chair" | "round-table";
-export const FURNITURE_KINDS: readonly FurnitureKind[] = ["lead-desk", "member-desk", "desk-panel", "curve-desk", "side-desk", "sofa", "beanbag", "rug", "chair-a", "chair-b", "lead-chair", "tub-chair", "round-table"];
+  | "tub-chair" | "round-table" | "conference-table" | "lounge-table";
+export const FURNITURE_KINDS: readonly FurnitureKind[] = ["lead-desk", "member-desk", "desk-panel", "curve-desk", "side-desk", "sofa", "beanbag", "rug", "chair-a", "chair-b", "lead-chair", "tub-chair", "round-table", "conference-table", "lounge-table"];
 export type FurnitureItem = { kind: FurnitureKind; rect: Rect; facing: Facing; mirrored: boolean;
   /** upholstery tone. Default = the Design/Gaming rooms' brighter green; "lounge" = reception's darker olive. */
   tone?: "lounge" };
@@ -339,8 +339,64 @@ function roundTable(item: FurnitureItem): THREE.Group {
   return g;
 }
 
+/** MEETING ROOM conference table: one light-oak top over `modules` bases, with the module reveals and the
+ *  central cable tray the artwork shows. Built on the desk system's height so a task chair tucks under it. */
+function conferenceTable(item: FurnitureItem): THREE.Group {
+  const g = placed(item.rect, "north");
+  const { w, d } = item.rect;
+  const modules = Math.max(1, Math.round(w / 44));
+  g.add(slab(roundedRect(w, d, 2.2), TOP_T, wood("extrude", true), DESK_H - TOP_T));
+  // reveals between the top's modules: thin grooves 0.1 proud of the top so they never z-fight it
+  for (let i = 1; i < modules; i++)
+    g.add(rbox(0.6, 0.3, d - 2, mat("woodLight", 0.9), -w / 2 + (w * i) / modules, DESK_H - 0.1, 0, 0.1));
+  // a shared cable tray down the spine, and one pedestal base per module
+  g.add(rbox(w - 10, 1.6, 7, mat("charcoal", 0.7), 0, DESK_H - TOP_T - 2.4, 0, 0.4));
+  for (let i = 0; i < modules; i++) {
+    const cx = -w / 2 + (w * (i + 0.5)) / modules;
+    g.add(rbox(6, DESK_H - TOP_T - 1, d - 14, wood("box"), cx, 0, 0, 0.8));
+    g.add(rbox(9, 1.1, d - 10, mat("charcoal", 0.7), cx, 0, 0, 0.4)); // foot
+  }
+  return g;
+}
+
+/** PROJECT ROOM coffee table: a rectangular light-oak top with a soft radius, an open lower shelf and a
+ *  recessed dark plinth. `tone: "lounge"` adds the plant, cup and dish the source puts on it. */
+function loungeTable(item: FurnitureItem): THREE.Group {
+  const g = placed(item.rect, "north");
+  const { w, d } = item.rect;
+  const h = 15;
+  if (item.tone === "lounge") contactShadow(g, w, d);
+  g.add(rbox(w - 8, 3.2, d - 8, mat("charcoal", 0.7), 0, 0, 0, 0.5)); // recessed plinth
+  g.add(rbox(w - 3, 1.4, d - 3, mat("tableWood", 0.6), 0, h - 8.6, 0, 0.5)); // lower shelf
+  g.add(rbox(w - 2.6, 1.0, d - 2.6, mat("charcoal", 0.8), 0, h - 4.2, 0, 0.4)); // dark reveal under the top
+  g.add(slab(roundedRect(w, d, 3.4), 3.2, wood("extrude", true), h - 3.2));
+  if (item.tone === "lounge") {
+    g.add(smallPot(-w * 0.04, h, -d * 0.22, 1.8));
+    g.add(cyl(1.9, 0.25, plastic("white"), -w * 0.1, h, d * 0.05)); // saucer
+    g.add(mug(-w * 0.1, h + 0.25, d * 0.05));
+    g.add(cyl(2.2, 0.45, plastic("white"), w * 0.02, h, d * 0.2)); // dish
+  }
+  return g;
+}
+
+/** a centred rounded rectangle for slab() */
+function roundedRect(w: number, d: number, r: number): THREE.Shape {
+  const s = new THREE.Shape();
+  const hw = w / 2 - r, hd = d / 2 - r;
+  s.moveTo(-hw - r, -hd);
+  s.lineTo(-hw - r, hd); s.quadraticCurveTo(-hw - r, hd + r, -hw, hd + r);
+  s.lineTo(hw, hd + r); s.quadraticCurveTo(hw + r, hd + r, hw + r, hd);
+  s.lineTo(hw + r, -hd); s.quadraticCurveTo(hw + r, -hd - r, hw, -hd - r);
+  s.lineTo(-hw, -hd - r); s.quadraticCurveTo(-hw - r, -hd - r, -hw - r, -hd);
+  return s;
+}
+
 export function buildFurniture(item: FurnitureItem): THREE.Group {
   switch (item.kind) {
+    case "conference-table":
+      return conferenceTable(item);
+    case "lounge-table":
+      return loungeTable(item);
     case "lead-desk":
       return leadDesk(item);
     case "member-desk":

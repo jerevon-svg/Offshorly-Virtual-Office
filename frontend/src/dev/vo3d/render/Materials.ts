@@ -40,6 +40,9 @@ export const PALETTE = {
   loungeOlive: 0x5f6a38, // reception lounge upholstery — measured (74,65,33)…(90,95,55), darker than PALETTE.green
   loungeOliveSeat: 0x6e7a42,
   tableWood: 0xd6c2a2, // pale oak of the lounge coffee tables (the Design Room's wood reads too orange here)
+  walnut: 0x6b4a31, //     dark stained oak of the front-bar credenza runs + slat features (measured 107,74,49)
+  walnutDark: 0x4a3222, // the reveals/grooves between their modules, and the slat panels' backing board
+  plaster: 0xf3ece2, //    the front-bar cove walls: a warmer cream than PALETTE.wall (measured 243,236,226)
 };
 
 // ---- shared materials -------------------------------------------------------------------

@@ -5,97 +5,18 @@
 // 3C primary forms: the HERO arc counter, the kiosk totem and the two flanking planter cylinders.
 // (Lounge furniture is entity-driven — see rooms/reception.ts receptionEntities.)
 //
-// `glassRun` is deliberately generic and axis-aligned along x: Reception needs it twice (a waist-high
-// balustrade and a full-height curtain wall) and the same continuous façade will be asked for again when
-// Meeting and Project are reconstructed.
+// `glassRun`/`subtract` have moved to build/frontbar.ts now that Meeting and Project ask for the same
+// continuous façade; Reception's calls and its output are unchanged.
 import * as THREE from "three";
 import { rbox, cyl, shadowed } from "./helpers";
 import { tiledFloor } from "./tile";
-import { contactShadowMat, emissiveMat, emissiveMatUnique, facadeGlassMat, glowMat, glowMatUnique, mat, metal, plastic, uiScreenMat, PALETTE } from "../render/Materials";
+import { contactShadowMat, emissiveMat, emissiveMatUnique, glowMat, glowMatUnique, mat, metal, plastic, uiScreenMat, PALETTE } from "../render/Materials";
 import { monitor, mug, smallPot } from "./props";
 import type { RoomDef } from "../world/WorldState";
 import { COUNTER, ENTRY_DOOR_Z, ENTRY_LEAF_W, ENTRY_SCANNER_ID, FACADE, GATE, GATE_SCANNER_IDS, KIOSK, LOGO_AREA, PLANTERS, RECT, STRUCT, TILE_RECT } from "../rooms/reception";
 import { offshorlyInlay } from "./logo";
+import { glassRun, subtract } from "./frontbar";
 import { animated } from "../render/Ambient";
-
-type Span = { x0: number; x1: number };
-
-export type GlassRunSpec = {
-  /** wall plane: the run is centred on this z and `t` thick */
-  z: number;
-  x0: number;
-  x1: number;
-  t: number;
-  /** top of the glass */
-  h: number;
-  /** shoe-rail (sill) height; glass starts here */
-  sill: number;
-  /** nominal mullion pitch — each panel run divides evenly into whole panels near this */
-  panelPitch: number;
-  /** solid pilaster centres (world x); they are built proud of the glass plane */
-  pilasters?: number[];
-  pilasterW?: number;
-  /** spans left completely clear (door openings, gate lanes) */
-  openings?: Span[];
-  topRail?: boolean;
-};
-
-/** [x0,x1] minus every span in `cuts`, in ascending order, dropping slivers. */
-function subtract(x0: number, x1: number, cuts: Span[]): Span[] {
-  let out: Span[] = [{ x0, x1 }];
-  for (const c of [...cuts].sort((a, b) => a.x0 - b.x0)) {
-    const next: Span[] = [];
-    for (const s of out) {
-      if (c.x1 <= s.x0 || c.x0 >= s.x1) { next.push(s); continue; }
-      if (c.x0 > s.x0) next.push({ x0: s.x0, x1: c.x0 });
-      if (c.x1 < s.x1) next.push({ x0: c.x1, x1: s.x1 });
-    }
-    out = next;
-  }
-  return out.filter((s) => s.x1 - s.x0 > 0.5);
-}
-
-/** Frameless glass wall run: shoe rail + glass + mullion posts (+ top rail), with pilasters and openings. */
-export function glassRun(spec: GlassRunSpec): THREE.Group {
-  const g = new THREE.Group();
-  g.name = "glass-run";
-  const { z, t, h, sill, panelPitch } = spec;
-  const pilasterW = spec.pilasterW ?? 12;
-  const pilasters = spec.pilasters ?? [];
-  const cuts: Span[] = [...(spec.openings ?? []), ...pilasters.map((x) => ({ x0: x - pilasterW / 2, x1: x + pilasterW / 2 }))];
-  const glassH = h - sill;
-  const railM = plastic("white");
-
-  for (const s of subtract(spec.x0, spec.x1, cuts)) {
-    const w = s.x1 - s.x0, cx = (s.x0 + s.x1) / 2;
-    // shoe rail (brushed metal shoe on a pale base) and the glass it carries
-    g.add(rbox(w, sill, t, railM, cx, 0, z, 0.5));
-    // the brushed shoe is WIDER than the sill it carries, so its top face must not land on the sill's top
-    // plane: coplanar faces over a run this long z-fight the length of the façade. 0.15 down reads as the
-    // sill sitting INTO its shoe (the correct detail) and is invisible at any camera distance.
-    g.add(rbox(w, 1.6, t * 1.25, metal(), cx, sill - 1.75, z, 0.3));
-    const pane = new THREE.Mesh(new THREE.PlaneGeometry(w - 0.6, glassH - 0.8), facadeGlassMat());
-    pane.position.set(cx, sill + glassH / 2, z);
-    g.add(shadowed(pane, false, false));
-    // capping rail: seen from the game camera a frameless pane is almost edge-on and disappears, so the cap
-    // is what actually draws the line. Deliberately wider than the pane (the source shows the same profile).
-    if (spec.topRail) g.add(rbox(w, 2.6, t * 2.6, metal(), cx, h - 2.6, z, 0.8));
-    // mullion posts: the run's two ends plus an even division near panelPitch. End posts are inset by half
-    // their width so a run NEVER overhangs its span — Reception must not put geometry over a neighbour's edge.
-    const panels = Math.max(1, Math.round(w / panelPitch));
-    const postW = Math.min(1.8, w);
-    // Under a capping rail the post stops 0.3 short of the run's top: a post that reached h would put its
-    // top face on the RAIL's top plane, and the rail is wider, so every post printed a flickering tick on
-    // the rail — the most-looked-at line in the room. Buried 0.3 in, the post ends inside solid rail.
-    const postH = glassH - (spec.topRail ? 0.3 : 0);
-    for (let i = 0; i <= panels; i++) {
-      const at = Math.min(Math.max(s.x0 + (w * i) / panels, s.x0 + postW / 2), s.x1 - postW / 2);
-      g.add(rbox(postW, postH, t * 1.35, railM, at, sill, z, 0.4));
-    }
-  }
-  for (const x of pilasters) g.add(rbox(pilasterW, h, t * 1.9, railM, x, 0, z, STRUCT.capRadius));
-  return g;
-}
 
 /** The scanner colour language, shared by the gates and the entrance sensors.
  *  IDLE = blue/cyan (powered, waiting). ACTIVE = green (person detected / access approved). */
@@ -387,10 +308,14 @@ function drawCalendarUi(ctx: CanvasRenderingContext2D, w: number, h: number): vo
 }
 
 /** Dark wayfinding/check-in totem west of the counter, POWERED: brushed bezel, lit welcome UI, soft wash. */
-export function kioskTotem(): THREE.Group {
+export type KioskSpec = { x: number; z: number; w: number; d: number; h: number };
+/** The dark screened totem. Defaults to Reception's own kiosk, so `kioskTotem()` is byte-identical to what
+ *  3C built; Meeting passes its own footprint, screen id and UI painter for the self-service terminal the
+ *  artwork puts on its east side (same object family, no duplicated builder). */
+export function kioskTotem(spec: KioskSpec = KIOSK, opts: { name?: string; uiId?: string; draw?: (ctx: CanvasRenderingContext2D, w: number, h: number) => void; scanner?: string } = {}): THREE.Group {
   const g = new THREE.Group();
-  g.name = "reception-kiosk";
-  const { x, z, w, d, h } = KIOSK;
+  g.name = opts.name ?? "reception-kiosk";
+  const { x, z, w, d, h } = spec;
   g.add(rbox(w, h, d, mat("charcoal", 0.5, { metalness: 0.2 }), x, 0, z, 2));
   g.add(rbox(w - 2.4, 1.0, d - 2.4, mat("charcoal", 0.3, { metalness: 0.3 }), x, h, z, 0.6)); // top plate
   // screen sits in a brushed metal bezel, tilted a touch toward the visitor (south)
@@ -398,25 +323,31 @@ export function kioskTotem(): THREE.Group {
   const bezel = rbox(sw + 2.2, 0.6, sd + 2.2, metal(), x, h + 1.0, z - d * 0.1, 0.4);
   g.add(bezel);
   // the panel itself breathes very slightly (screen luminance), so it never reads as a static picture
-  const screen = rbox(sw, 0.5, sd, uiScreenMat("kiosk-ui", 128, 224, drawKioskUi, 1.0, true), x, h + 1.45, z - d * 0.1, 0.25);
-  g.add(animated(screen, { kind: "pulse", period: 7.5, phase: 0.1, min: 0.93, max: 1.08 }));
+  const screen = rbox(sw, 0.5, sd, uiScreenMat(opts.uiId ?? "kiosk-ui", 128, 224, opts.draw ?? drawKioskUi, 1.0, true), x, h + 1.45, z - d * 0.1, 0.25);
+  const scan = opts.scanner;
+  g.add(animated(screen, { kind: "pulse", period: 7.5, phase: 0.1, min: 0.93, max: 1.08, ...(scan ? { group: scan, activeGain: 0.35 } : {}) }));
   // a gentle highlight sweeping down the glass — the "waiting for interaction" tell
   const zTop = z - d * 0.1 - sd / 2, zBot = z - d * 0.1 + sd / 2;
   g.add(animated(rbox(sw - 2, 0.12, 3.4, emissiveMatUnique("cyan", 0, 0.25), x, h + 1.72, 0, 0.12), {
     kind: "travel", axis: "z", from: zTop + 2, to: zBot - 2, period: 6.8, phase: 0.0, fade: { min: 0, max: 0.55 },
+    ...(scan ? { group: scan, tint: SCANNER_TINT, activeGain: 0.6 } : {}),
   }));
   // the primary action tile softly pulses (it sits over the blue tile drawn in the UI canvas)
   g.add(animated(rbox(sw * 0.7, 0.1, sd * 0.13, emissiveMatUnique("cyan", 0, 0.3), x, h + 1.7, z - d * 0.1 + sd * 0.12, 0.1), {
     kind: "pulse", period: 2.9, phase: 0.35, min: 0.14, max: 0.5,
+    ...(scan ? { group: scan, tint: SCANNER_TINT, activeGain: 0.7 } : {}),
   }));
   // subtle screen wash on the totem top and the floor just south of it
   const wash = rbox(sw + 6, 0.05, sd + 8, glowMat("cyan", 0.06), x, h + 1.05, z - d * 0.1, 0.2);
   wash.castShadow = wash.receiveShadow = false;
   g.add(wash);
   g.add(rbox(w - 6, 1.4, 3, mat("charcoal", 0.8), x, 0.4, z + d / 2 - 2, 0.4)); // base reveal
-  // power/status LED on the south face: a slow, barely-there activity breath
-  g.add(animated(rbox(w - 12, 0.4, 0.5, emissiveMatUnique("readyGreen", 1.2, 0.3), x, 4, z + d / 2 + 0.05, 0.15), {
+  // power/status LED on the south face: a slow, barely-there activity breath. A kiosk wired to a scanner
+  // idles BLUE and turns green only on detection (the gate/entrance language); Reception's own kiosk has
+  // no scanner and keeps its steady green power light exactly as 3D built it.
+  g.add(animated(rbox(w - 12, 0.4, 0.5, emissiveMatUnique(scan ? "cyan" : "readyGreen", 1.2, 0.3), x, 4, z + d / 2 + 0.05, 0.15), {
     kind: "pulse", period: 4.1, phase: 0.6, min: 0.85, max: 1.45,
+    ...(scan ? { group: scan, tint: SCANNER_TINT, activeGain: 0.6 } : {}),
   }));
   return g;
 }
