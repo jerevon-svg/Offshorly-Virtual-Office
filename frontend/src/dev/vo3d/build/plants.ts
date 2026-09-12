@@ -14,7 +14,13 @@ import type { SwayNode } from "../render/Sway";
 //   small   (desk pots) static succulent rosettes — pots, soil and leaves are INSTANCED
 //                     (three draw calls for every desk plant in the room, see finalizeSucculents)
 // Leaf geometry and foliage materials are shared by every tier.
-export type PlantSpec = { x: number; z: number; r: number; h: number; hanging?: boolean; y?: number };
+export type PlantSpec = {
+  x: number; z: number; r: number; h: number; hanging?: boolean; y?: number;
+  /** foliage density multiplier (1 = the Design Room's plants); the reception planters use ~1.7 */
+  lush?: number;
+  /** false = no pot; the plant stands in a planter that is built separately */
+  pot?: boolean;
+};
 export type PlantTier = "large" | "medium" | "hanging" | "small";
 export function tierFor(p: PlantSpec): PlantTier {
   if (p.hanging) return "hanging";
@@ -59,8 +65,9 @@ function leaf(parent: THREE.Object3D, x: number, y: number, z: number, size: num
  */
 export function largePlant(p: PlantSpec, sway: SwayNode[]): THREE.Group {
   const g = new THREE.Group();
-  const potH = p.h * 0.34;
-  g.add(pot(p.r * 0.8, potH, mat("potDark", 0.7), 0, 0, 0));
+  const lush = p.lush ?? 1;
+  const potH = p.pot === false ? 0 : p.h * 0.34;
+  if (p.pot !== false) g.add(pot(p.r * 0.8, potH, mat("potDark", 0.7), 0, 0, 0));
   const k = Math.min(1, (p.r - 5) / 4); // 0.5 at r7 … 1 at r9: motion + density scale
   const trunk = new THREE.Group();
   trunk.position.y = potH - 0.5;
@@ -77,7 +84,7 @@ export function largePlant(p: PlantSpec, sway: SwayNode[]): THREE.Group {
     cursor.add(next);
     cursor = next;
   }
-  const branches = 6 + Math.round(3 * k);
+  const branches = Math.round((6 + Math.round(3 * k)) * lush);
   for (let i = 0; i < branches; i++) {
     const a = (i / branches) * Math.PI * 2 + rnd() * 0.5;
     const tilt = 0.55 + rnd() * 0.5;
@@ -88,7 +95,7 @@ export function largePlant(p: PlantSpec, sway: SwayNode[]): THREE.Group {
     b.rotation.z = tilt;
     b.add(cyl(0.35, len, stemMat(), 0, 0, 0, 0.2));
     sway.push({ obj: b, axis: "z", amp: (0.03 + rnd() * 0.02) * (0.7 + 0.3 * k), freq: 0.7 + rnd() * 0.5, phase: rnd() * Math.PI * 2, base: tilt });
-    const leaves = 4 + Math.floor(rnd() * 2) + Math.round(2 * k);
+    const leaves = Math.round((4 + Math.floor(rnd() * 2) + Math.round(2 * k)) * Math.min(lush, 1.5));
     for (let j = 0; j < leaves; j++) {
       leaf(b, 0, len - rnd() * len * 0.25, 0, p.r * (0.7 + rnd() * 0.5), (j / leaves) * Math.PI * 2 + rnd() * 0.6, -0.55 - rnd() * 0.5, sway, (0.05 + rnd() * 0.04) * (0.7 + 0.3 * k), 1.4 + rnd() * 0.9);
     }

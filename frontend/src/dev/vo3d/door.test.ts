@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { WorldState } from "./world/WorldState";
 import { DESIGN_ROOM, DESIGN_DOOR, DOOR_ID, CHAIR_4_ID, designRoomEntities, RECT, SHELL } from "./rooms/design-room";
 import { registerGroundFloor } from "./rooms/ground-floor";
+import { RECEPTION_ROOM } from "./rooms/reception";
 import { Walkability, composeStatic } from "./nav/Walkability";
 import { clearanceLayer, worldClearances } from "./nav/clearance";
 import { planWalk } from "./nav/planner";
@@ -23,6 +24,7 @@ const LEAF_W = SHELL.glass.doorZ1 - SHELL.glass.z0 - 2;
 function rig() {
   const world = new WorldState();
   world.addRoom(DESIGN_ROOM);
+  world.addRoom(RECEPTION_ROOM);
   for (const e of designRoomEntities()) world.addEntity(e);
   registerGroundFloor(world);
   const inBounds = (p: Vec2) => world.walkableAt(p);

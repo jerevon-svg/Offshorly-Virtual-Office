@@ -3,6 +3,7 @@ import manifest from "../../data/office-assets-manifest.json";
 import { WorldState } from "./world/WorldState";
 import { DESIGN_ROOM, designRoomEntities, HERO_PLANT_ID, RECT } from "./rooms/design-room";
 import { groundFloor, groundFloorRegions, registerGroundFloor } from "./rooms/ground-floor";
+import { RECEPTION_ROOM } from "./rooms/reception";
 import { FRAME, v1DoorOpenings, v1Rooms } from "./adapters/v1Floor";
 import { CELL, v1Static, worldToCell } from "./adapters/v1Grid";
 import { Walkability, composeStatic } from "./nav/Walkability";
@@ -18,6 +19,7 @@ const DOOR_BAND: Rect = { x: 304, z: 400, w: 32, d: 64 }; // physically clear do
 function rig() {
   const world = new WorldState();
   world.addRoom(DESIGN_ROOM);
+  world.addRoom(RECEPTION_ROOM);
   for (const e of designRoomEntities()) world.addEntity(e);
   const plan = registerGroundFloor(world);
   const inBounds = (p: Vec2) => world.walkableAt(p);
@@ -47,7 +49,7 @@ describe("vo3d ground floor — every V1 room in ONE world", () => {
     for (const r of rooms) { const l = v1.find((x) => x.id === r.id)!; expect(r.rect).toEqual({ x: l.x, z: l.y, w: l.width, d: l.height }); expect(pointInRect({ x: r.rect.x, z: r.rect.z }, FRAME)).toBe(true); expect(r.rect.x + r.rect.w).toBeLessThanOrEqual(FRAME.w + 1e-6); }
     expect(rooms.find((r) => r.id === "design-room")!.rect).toEqual(DESIGN_ROOM.rect);
     const plan = groundFloor();
-    expect(plan.rooms.filter((r) => r.reconstructed).map((r) => r.id)).toEqual(["design-room"]);
+    expect(plan.rooms.filter((r) => r.reconstructed).map((r) => r.id)).toEqual(["design-room", "reception-room"]);
     expect(plan.rooms.find((r) => r.id === "central-hub")!.walls).toBe(false);
     // room art boxes never overlap by more than one cell (gaming/project overlap by 12 units in V1) → interiorRects are disjoint
     for (const a of rooms) for (const b of rooms) if (a !== b) { const ox = Math.min(a.rect.x + a.rect.w, b.rect.x + b.rect.w) - Math.max(a.rect.x, b.rect.x), oz = Math.min(a.rect.z + a.rect.d, b.rect.z + b.rect.d) - Math.max(a.rect.z, b.rect.z); expect(Math.min(ox, oz) <= CELL, `${a.id} vs ${b.id}`).toBe(true); }
@@ -57,8 +59,9 @@ describe("vo3d ground floor — every V1 room in ONE world", () => {
     const { world, plan } = rig();
     expect(world.bounds).toEqual(FRAME);
     const regions = groundFloorRegions(plan, world);
-    expect(regions.map((r) => r.kind)).toEqual(["room-floor", "exterior", ...Array(10).fill("room-floor"), "shared-floor"]);
-    expect(regions.filter((r) => r.walkable)).toHaveLength(3);
+    expect(regions.map((r) => r.kind)).toEqual(["room-floor", "room-floor", "exterior", ...Array(9).fill("room-floor"), "shared-floor"]);
+    expect(regions.filter((r) => r.walkable)).toHaveLength(4);
+    expect(regions.filter((r) => r.walkable).map((r) => r.id)).toEqual(["floor:design-room", "floor:reception-room", "exterior:sidewalk", "shared:ground-floor"]);
     expect(regions[regions.length - 1].holes).toHaveLength(11);
     expect(world.regionAt(APPROACH)?.id).toBe("floor:design-room");
     expect(world.regionAt({ x: 328, z: 408 })?.id).toBe("shared:ground-floor"); // just outside the Design Room door
@@ -66,6 +69,15 @@ describe("vo3d ground floor — every V1 room in ONE world", () => {
     expect(world.regionAt({ x: 720, z: 600 })).toMatchObject({ id: "footprint:central-hub", walkable: false });
     expect(world.regionAt({ x: 150, z: 150 })).toMatchObject({ id: "footprint:ai-room", walkable: false });
     expect(world.regionAt({ x: 700, z: 1216 })).toMatchObject({ id: "exterior:sidewalk", walkable: true });
+    // Reception: its floor owns the gate band, the interior and the entry threshold, and hands off to the
+    // sidewalk with NO gap (row 72 centre z=1160 → Reception, row 73 centre z=1176 → sidewalk)
+    expect(world.regionAt({ x: 720, z: 1000 })?.id).toBe("floor:reception-room"); // interior
+    expect(world.regionAt({ x: 656, z: 840 })?.id).toBe("floor:reception-room"); // gate lane 1, north band
+    expect(world.regionAt({ x: 720, z: 1160 })?.id).toBe("floor:reception-room");
+    expect(world.regionAt({ x: 720, z: 1176 })?.id).toBe("exterior:sidewalk");
+    // the east/west transitions are closed at the REGION layer only — Meeting/Project are still footprints
+    expect(world.regionAt({ x: 280, z: 968 })).toMatchObject({ id: "footprint:meeting-room", walkable: false });
+    expect(world.regionAt({ x: 1120, z: 1000 })).toMatchObject({ id: "footprint:project-room", walkable: false });
     expect(world.regionAt({ x: -5, z: 400 })).toBeNull();
     expect(world.regionAt({ x: 700, z: FRAME.d + 1 })).toBeNull();
     expect(world.regionAt({ x: RECT.x + 100, z: RECT.z + 250 })).toBeNull(); // the Design Room's front band: in no region
@@ -119,7 +131,10 @@ describe("vo3d ground floor — every V1 room in ONE world", () => {
     expect(planWalk(APPROACH, { x: 150, z: 150 }, wk, inBounds)).toMatchObject({ ok: false, reason: "outside-world" }); // AI room interior
     expect(planWalk(APPROACH, { x: 720, z: 600 }, wk, inBounds)).toMatchObject({ ok: false, reason: "outside-world" }); // central hub
     expect(planWalk({ x: 328, z: 312 }, { x: 312, z: 280 }, wk, inBounds)).toMatchObject({ ok: false, reason: "outside-world" }); // step through the AI door
-    expect(planWalk(APPROACH, { x: 700, z: 1216 }, wk, inBounds)).toMatchObject({ ok: false, reason: "unreachable" }); // sidewalk: valid exterior, only via the reception
+    // the sidewalk is now REACHABLE — Reception is reconstructed, so the hall → gates → entry door route exists
+    const street = planWalk(APPROACH, { x: 700, z: 1216 }, wk, inBounds);
+    expect(street.ok).toBe(true);
+    if (street.ok) { legsWalkable(APPROACH, street.path, wk.walkable); expect(street.path.some((p) => p.z > 1120 && p.z < 1200 && p.x >= 640 && p.x <= 800), "leaves through the V1 entry door span").toBe(true); }
     expect(planWalk(APPROACH, { x: 408, z: 40 }, wk, inBounds)).toMatchObject({ ok: false, reason: "unwalkable" }); // hall cell (vending alcove top) blocked by the V1 grid
     expect(planWalk(APPROACH, { x: 328, z: 300 }, wk, inBounds).ok).toBe(true); // the AI door threshold cell straddles the art box: hall, V1 '+' walkable
   });

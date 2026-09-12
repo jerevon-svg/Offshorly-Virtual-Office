@@ -9,10 +9,14 @@ import type { WorldState } from "../world/WorldState";
 
 export type Clearance = { band: Rect; solids: Rect[]; bodyRadius: number };
 
-/** every clearance the world's entities declare today: door capabilities (more capability kinds can join later) */
+/** every clearance the world's entities declare: moving architecture (door capabilities) and static
+ *  architecture the V1 grid resolves too coarsely (gate pedestals, bollards — `clearance` capability). */
 export function worldClearances(world: WorldState): Clearance[] {
   const out: Clearance[] = [];
-  for (const e of world.entities.values()) if (e.capabilities.door) out.push(e.capabilities.door.clearance);
+  for (const e of world.entities.values()) {
+    if (e.capabilities.door) out.push(e.capabilities.door.clearance);
+    if (e.capabilities.clearance) out.push(e.capabilities.clearance);
+  }
   return out;
 }
 

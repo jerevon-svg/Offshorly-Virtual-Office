@@ -47,10 +47,55 @@ export type DoorCapability = {
   timings: { openMs: number; closeMs: number; holdMs: number };
 };
 
+/** Architectural clearance: cells inside `band` stay walkable only if a body of `bodyRadius` standing on
+ *  the cell centre clears every solid. The V1 grid is authored at 16-unit cells and is deliberately
+ *  generous; this is how reconstructed architecture narrower than a cell reconciles with it. */
+export type ClearanceCapability = { band: Rect; solids: Rect[]; bodyRadius: number };
+
+/** A contextual standing point: where to walk to interact with something, and which way to face there.
+ *  Consumed by interact/Approach.ts. `pick` names the scene group a click must hit to offer this action. */
+export type ApproachCapability = {
+  /** world point the avatar walks to (a real V1-walkable, body-clear cell) */
+  point: Vec2;
+  /** yaw the avatar turns to on arrival (core/coords FACING_YAW) */
+  yaw: number;
+  label: string;
+  /** the contextual action offered once there (dev-safe: no backend workflow in this phase) */
+  action: string;
+};
+
+/** ONE slot of a FIXED lounge seat (tub chair, sofa cushion, bench place). The furniture never moves, so a
+ *  slot describes only where the sitter ends up. Multiple slots per piece let a sofa declare seat-left /
+ *  seat-center / seat-right; `id` is the occupancy identity a future multi-avatar pass will key on. */
+export type LoungeSeatSlot = {
+  id: string;
+  /** cushion CONTACT point in FURNITURE-LOCAL space. y is the seat SURFACE, not the furniture origin. */
+  contactLocal: { x: number; y: number; z: number };
+  /** world yaw while seated */
+  seatedYaw: number;
+  /** V1-walkable stand cell the sitter walks to first */
+  approach: Vec2;
+  /** explicit waypoints approach → in front of the slot (the grid is too coarse for the last step) */
+  approachToSeat: Vec2[];
+  /** how far the pelvis settles BELOW the surface (soft cushion compression). 0 = rests exactly on top. */
+  sink?: number;
+  timings: { sitMs: number; standMs: number };
+};
+
+/** FIXED seating: the furniture does not move at any point of the interaction. Distinct from
+ *  SeatCapability, which is MOVABLE desk-chair seating (pull out → enter → tuck in → stand → return). */
+export type LoungeSeatCapability = { slots: LoungeSeatSlot[] };
+
 /** Small composable optional capabilities — add fields, never a union. */
 export type Capabilities = {
   seat?: SeatCapability;
   door?: DoorCapability;
+  /** static architecture (gate pedestals, bollards …) that the V1 grid resolves too coarsely */
+  clearance?: ClearanceCapability;
+  /** walk-up-and-face interaction (reception counter, kiosk …) */
+  approach?: ApproachCapability;
+  /** FIXED seating (lounge chair / sofa). Mutually exclusive with `seat`, which is MOVABLE desk seating. */
+  lounge?: LoungeSeatCapability;
   /** foliage sway animation nodes are registered for this entity */
   sway?: true;
   /** can be selected/moved by the room editor */
@@ -89,9 +134,13 @@ export interface RoomDef {
   rect: Rect; // world
   /** world rect of the walkable floor (inside walls, north of the front wall) */
   floorRect: Rect;
-  shell: ShellSpec;
+  /** ShellSpec describes the Design Room's wall arrangement (solid north+west, glass east, low south band).
+   *  Rooms whose architecture does not fit that shape omit it and supply their own ROOM_STATIC builder
+   *  instead — see rooms/reception.ts. Deliberately NOT generalised into a union until a third and fourth
+   *  room shape exist to generalise from. */
+  shell?: ShellSpec;
   /** room-local measured decor for the static shell builder (credenza, boards, cabinets, rack, whiteboard) */
-  baked: Record<string, unknown>;
+  baked?: Record<string, unknown>;
 }
 
 /** A registered walkable (or deliberately non-walkable) part of the ONE world, in world space.

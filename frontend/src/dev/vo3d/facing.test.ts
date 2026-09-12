@@ -6,6 +6,7 @@ import { WorldState } from "./world/WorldState";
 import { DESIGN_ROOM, CHAIR_4_ID, designRoomEntities, RECT } from "./rooms/design-room";
 import { Walkability, composeStatic } from "./nav/Walkability";
 import { registerGroundFloor } from "./rooms/ground-floor";
+import { RECEPTION_ROOM } from "./rooms/reception";
 import { clearanceLayer, worldClearances } from "./nav/clearance";
 import { planWalk } from "./nav/planner";
 import { v1Static } from "./adapters/v1Grid";
@@ -48,7 +49,7 @@ describe("vo3d avatar faces its movement direction", () => {
     for (const [label, from, to] of LEGS) { av.setPosition(from); const r = planWalk(from, to, wk, inBounds); expect(r.ok, label).toBe(true); if (r.ok) { nav.setPath(r.path); walkAndCheck(av, nav, `static ${label}`); } }
   });
   it("dynamic-obstacle paths (plant on column 17) including the forced detour", () => {
-    const { av, nav } = rig(); const w = new WorldState(); w.addRoom(DESIGN_ROOM); for (const e of designRoomEntities()) w.addEntity(e);
+    const { av, nav } = rig(); const w = new WorldState(); w.addRoom(DESIGN_ROOM); w.addRoom(RECEPTION_ROOM); for (const e of designRoomEntities()) w.addEntity(e);
     w.commit((tx) => tx.setTransform(`${DESIGN_ROOM.id}/plant-10`, { pos: W(270.5, 125), yaw: 0 }));
     const wk = new Walkability(v1Static); wk.syncFromWorld(w);
     for (const [label, from, to] of LEGS) { av.setPosition(from); const r = planWalk(from, to, wk, inBounds); expect(r.ok, label).toBe(true); if (r.ok) { nav.setPath(r.path); walkAndCheck(av, nav, `dynamic ${label}`); } }
@@ -62,7 +63,7 @@ describe("vo3d avatar faces its movement direction", () => {
     walkAndCheck(av, nav, "redirect");
   });
   it("cross-world legs (Design Room ↔ hall through the real doorway, long straights, turns, redirect) keep facing", () => {
-    const { av, nav } = rig(); const w = new WorldState(); w.addRoom(DESIGN_ROOM); for (const e of designRoomEntities()) w.addEntity(e);
+    const { av, nav } = rig(); const w = new WorldState(); w.addRoom(DESIGN_ROOM); w.addRoom(RECEPTION_ROOM); for (const e of designRoomEntities()) w.addEntity(e);
     registerGroundFloor(w);
     const worldBounds = (p: Vec2) => w.walkableAt(p);
     const wk = new Walkability(composeStatic(v1Static, worldBounds, clearanceLayer(worldClearances(w)))); wk.syncFromWorld(w);
@@ -87,7 +88,7 @@ describe("vo3d avatar faces its movement direction", () => {
     const r = planWalk(W(270.5, 190), W(270.5, 56), wk, inBounds); expect(r.ok).toBe(true); if (r.ok) { nav.setPath(r.path); walkAndCheck(av, nav, "post-attach north"); }
   });
   it("after a full sit → stand cycle through SeatInteraction, walking in every direction faces correctly", () => {
-    const { av, stack, nav } = rig(); const w = new WorldState(); w.addRoom(DESIGN_ROOM); for (const e of designRoomEntities()) w.addEntity(e);
+    const { av, stack, nav } = rig(); const w = new WorldState(); w.addRoom(DESIGN_ROOM); w.addRoom(RECEPTION_ROOM); for (const e of designRoomEntities()) w.addEntity(e);
     const wk = new Walkability(v1Static); wk.syncFromWorld(w);
     const scene = new THREE.Object3D(); scene.add(av.root);
     const chairE = w.get(CHAIR_4_ID); const chair = new THREE.Object3D(); chair.position.set(chairE.transform.pos.x, 0, chairE.transform.pos.z); scene.add(chair);

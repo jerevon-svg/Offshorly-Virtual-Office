@@ -1,4 +1,7 @@
 // vo3d interact — automatic sliding door: Closed → Opening → Open → Closing → Closed.
+// Single-leaf (Design Room) or bi-parting (Reception entrance): one controller, one state machine, one `t`.
+// A bi-parting door passes an `opposed` leaf whose offset is the negation of the driving leaf's, so both
+// panels are derived from the SAME closed transforms + slide · ease(t) and neither can accumulate drift.
 // Data comes from the entity's `door` capability; the door's VIEW is the moving carrier. The door never owns
 // or moves the avatar: navigation keeps driving Bon along ONE continuous route, the door reacts to it —
 // it opens when Bon's remaining route will pass through the leaf's sweep band, holds while his body is in
@@ -36,15 +39,23 @@ export class SlidingDoor {
   /** how many full open→close cycles completed (diagnostics) */
   cycles = 0;
 
-  constructor(view: THREE.Object3D, spec: DoorCapability, closed: Vec2) {
+  /** the second, counter-sliding panel of a bi-parting door (null for a single-leaf door) */
+  private readonly opposed: { view: THREE.Object3D; closed: Vec2 } | null;
+
+  constructor(view: THREE.Object3D, spec: DoorCapability, closed: Vec2, opposed?: { view: THREE.Object3D; closed: Vec2 }) {
     this.view = view; this.spec = spec; this.closed = { x: closed.x, z: closed.z };
+    this.opposed = opposed ? { view: opposed.view, closed: { x: opposed.closed.x, z: opposed.closed.z } } : null;
     this.apply();
   }
   get offset(): number { return this.spec.slideDistance * smooth(this.t); }
   get openPosition(): Vec2 { return { x: this.closed.x + this.spec.slide.x * this.spec.slideDistance, z: this.closed.z + this.spec.slide.z * this.spec.slideDistance }; }
   get leafPosition(): Vec2 { return { x: this.view.position.x, z: this.view.position.z }; }
   /** distance of the leaf from the exact closed transform (meaningful while `state === "closed"`) */
-  driftError(): number { return Math.hypot(this.view.position.x - this.closed.x, this.view.position.z - this.closed.z); }
+  driftError(): number {
+    const a = Math.hypot(this.view.position.x - this.closed.x, this.view.position.z - this.closed.z);
+    if (!this.opposed) return a;
+    return Math.max(a, Math.hypot(this.opposed.view.position.x - this.opposed.closed.x, this.opposed.view.position.z - this.opposed.closed.z));
+  }
 
   bodyInCrossing(bon: Vec2): boolean { return circleOverlapsRect(bon, this.spec.clearance.bodyRadius, this.spec.crossing); }
   /** open now? body in the sweep band, or approaching with a route that will pass through it */
@@ -87,5 +98,9 @@ export class SlidingDoor {
     const o = this.offset;
     this.view.position.x = this.closed.x + this.spec.slide.x * o;
     this.view.position.z = this.closed.z + this.spec.slide.z * o;
+    if (this.opposed) {
+      this.opposed.view.position.x = this.opposed.closed.x - this.spec.slide.x * o;
+      this.opposed.view.position.z = this.opposed.closed.z - this.spec.slide.z * o;
+    }
   }
 }

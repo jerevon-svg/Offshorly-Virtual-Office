@@ -3,14 +3,25 @@
 import * as THREE from "three";
 import type { Facing, Rect } from "../core/coords";
 import { cyl, lathe, localSize, placed, rbox, shadowed, slab, sphereGeo } from "./helpers";
-import { fabric, mat, metal, plastic, wood } from "../render/Materials";
+import { contactShadowMat, fabric, mat, metal, plastic, wood } from "../render/Materials";
 import { book, laptop, monitor, mug, smallPot } from "./props";
 
 export type FurnitureKind =
   | "lead-desk" | "member-desk" | "desk-panel" | "curve-desk" | "side-desk"
-  | "sofa" | "beanbag" | "rug" | "chair-a" | "chair-b" | "lead-chair";
-export const FURNITURE_KINDS: readonly FurnitureKind[] = ["lead-desk", "member-desk", "desk-panel", "curve-desk", "side-desk", "sofa", "beanbag", "rug", "chair-a", "chair-b", "lead-chair"];
-export type FurnitureItem = { kind: FurnitureKind; rect: Rect; facing: Facing; mirrored: boolean };
+  | "sofa" | "beanbag" | "rug" | "chair-a" | "chair-b" | "lead-chair"
+  | "tub-chair" | "round-table";
+export const FURNITURE_KINDS: readonly FurnitureKind[] = ["lead-desk", "member-desk", "desk-panel", "curve-desk", "side-desk", "sofa", "beanbag", "rug", "chair-a", "chair-b", "lead-chair", "tub-chair", "round-table"];
+export type FurnitureItem = { kind: FurnitureKind; rect: Rect; facing: Facing; mirrored: boolean;
+  /** upholstery tone. Default = the Design/Gaming rooms' brighter green; "lounge" = reception's darker olive. */
+  tone?: "lounge" };
+const seatFabric = (t: FurnitureItem, seat = false) =>
+  t.tone === "lounge" ? fabric(seat ? "loungeOliveSeat" : "loungeOlive") : fabric(seat ? "greenSeat" : "green");
+/** soft contact shadow under a lounge piece (a dark translucent plate just above the floor) */
+function contactShadow(g: THREE.Group, w: number, d: number, round = false): void {
+  const m = round ? cyl(w / 2 + 3, 0.02, contactShadowMat(0.15), 0, 0.03, 0) : rbox(w + 5, 0.02, d + 5, contactShadowMat(0.15), 0, 0.03, 0, 2.5);
+  m.castShadow = m.receiveShadow = false;
+  g.add(m);
+}
 
 // ---- furniture ------------------------------------------------------------------------------
 const DESK_H = 24;
@@ -156,26 +167,41 @@ function sideDesk(item: FurnitureItem): THREE.Group {
 
 function sofa(item: FurnitureItem): THREE.Group {
   // along the left wall: soft deck, two puffy seat cushions, two back cushions
-  // against a rounded back panel, rounded arms, short feet, two pillows
+  // against a rounded back panel, rounded arms, short feet, two pillows.
+  // The build is authored back-to-WEST, so `facing` is not used here (the manifest gives every sofa the
+  // default "south"); `mirrored` flips it back-to-EAST for a sofa on the other side of a composition.
   const g = placed(item.rect, "north");
+  if (item.mirrored) g.rotation.y = Math.PI;
   const { w, d } = item.rect;
-  const deckH = 8, armW = 5, backW = 7;
-  g.add(rbox(w, deckH, d, fabric("green"), 0, 2, 0, 3, 3));
+  const lounge = item.tone === "lounge";
+  if (lounge) contactShadow(g, w, d);
+  const deckH = 8, armW = lounge ? 6.5 : 5, backW = lounge ? 9 : 7;
+  g.add(rbox(w, deckH, d, seatFabric(item), 0, 2, 0, 3, 3));
   for (let i = 0; i < 4; i++) g.add(cyl(1, 2, mat("greenDark", 0.8), (i % 2 ? 1 : -1) * (w / 2 - 3), 0, (i < 2 ? 1 : -1) * (d / 2 - 4)));
-  g.add(rbox(backW, 22, d - 1, fabric("greenDark"), -w / 2 + backW / 2, 2, 0, 3, 3)); // back panel (wall side)
-  for (const s of [-1, 1]) g.add(rbox(w - backW + 1, 15, armW, fabric("green"), backW / 2, 2, s * (d / 2 - armW / 2), 2.4, 3)); // arms
+  // lounge tone: a lower, deeper back and rounder arms/cushions so the piece reads as upholstery from the
+  // game camera rather than a box; the Design Room's default proportions are unchanged
+  const backH = lounge ? 18 : 22, armH = lounge ? 13 : 15;
+  g.add(rbox(backW, backH, d - 1, lounge ? fabric("loungeOlive") : fabric("greenDark"), -w / 2 + backW / 2, 2, 0, lounge ? 4 : 3, 3)); // back panel (wall side)
+  for (const s of [-1, 1]) g.add(rbox(w - backW + 1, armH, armW, seatFabric(item), backW / 2, 2, s * (d / 2 - armW / 2), lounge ? 3.2 : 2.4, 3)); // arms
   const cushW = w - backW - 1.5, cushD = (d - 2 * armW - 3) / 2;
   for (const s of [-1, 1]) {
-    g.add(rbox(cushW, 4.2, cushD, fabric("greenSeat"), backW / 2 + 0.5, deckH + 2, s * (cushD / 2 + 0.6), 2, 3)); // seat cushions
-    const back = rbox(4.5, 12, cushD - 1, fabric("greenSeat"), -w / 2 + backW + 1.6, deckH + 2, s * (cushD / 2 + 0.6), 2, 3); // back cushions
+    g.add(rbox(cushW, lounge ? 5.6 : 4.2, cushD, seatFabric(item, true), backW / 2 + 0.5, deckH + 2, s * (cushD / 2 + 0.6), lounge ? 2.8 : 2, 3)); // seat cushions
+    const back = rbox(lounge ? 6 : 4.5, lounge ? 13 : 12, cushD - 1, seatFabric(item, true), -w / 2 + backW + (lounge ? 2.2 : 1.6), deckH + 2, s * (cushD / 2 + 0.6), lounge ? 2.8 : 2, 3); // back cushions
     back.rotation.z = -0.12;
     g.add(back);
   }
-  const p1 = rbox(8.5, 3.2, 8.5, fabric("cushionGray"), backW / 2 + 0.5, deckH + 6.2, -d * 0.2, 1.6, 3);
-  p1.rotation.y = 0.35;
-  const p2 = rbox(8.5, 3.2, 8.5, fabric("cushionCream"), backW / 2 + 1, deckH + 6.2, d * 0.22, 1.6, 3);
-  p2.rotation.y = -0.45;
-  g.add(p1, p2);
+  // pillows: the source shows ONE loose cushion per sofa in a matching tone; the Design Room keeps its two
+  if (lounge) {
+    const p = rbox(9, 3.4, 9, fabric("cushionCream"), backW / 2 + 1, deckH + 7.6, -d * 0.16, 2, 3);
+    p.rotation.y = 0.4;
+    g.add(p);
+  } else {
+    const p1 = rbox(8.5, 3.2, 8.5, fabric("cushionGray"), backW / 2 + 0.5, deckH + 6.2, -d * 0.2, 1.6, 3);
+    p1.rotation.y = 0.35;
+    const p2 = rbox(8.5, 3.2, 8.5, fabric("cushionCream"), backW / 2 + 1, deckH + 6.2, d * 0.22, 1.6, 3);
+    p2.rotation.y = -0.45;
+    g.add(p1, p2);
+  }
   return g;
 }
 
@@ -251,6 +277,68 @@ function chair(item: FurnitureItem, style: "a" | "b" | "lead"): THREE.Group {
   return g;
 }
 
+/** Upholstered TUB / BARREL armchair: a wrap-around shell open at the front, a puffy seat cushion and
+ *  small dark feet. Distinct from chair-a/b/lead, which are wheeled task chairs — the reception lounge
+ *  chairs in the artwork have no castors, no gas lift and no spine. Reusable for any lounge setting. */
+/** Vertical proportions of the tub chair, EXPORTED so seat metadata is derived from the same numbers the
+ *  geometry uses and the two can never drift apart.
+ *
+ *  Measured against the production avatar seated (CLIP_SIT, 36 units standing):
+ *      butt → shoulders   10.0     butt → crown   28.3
+ *  The 3C chair was seatH 9.5 / backH 20 → cushion top 13.1 with a 20-high wrap-around rim, so the rim
+ *  stood level with the sitter's shoulders and swallowed the whole torso. These proportions put the rim at
+ *  arm height for this avatar. The PLAN footprint (radius, position, facing) is unchanged. */
+export const TUB_CHAIR = { seatH: 6.6, backH: 14.5, cushionH: 4.4, cushionDrop: 0.8 };
+/** cushion TOP surface in furniture-local space — the seat contact plane */
+export const TUB_CUSHION_TOP = TUB_CHAIR.seatH - TUB_CHAIR.cushionDrop + TUB_CHAIR.cushionH;
+
+function tubChair(item: FurnitureItem): THREE.Group {
+  const g = placed(item.rect, item.facing);
+  const { w, d } = localSize(item.rect, item.facing);
+  const R = Math.min(w, d) / 2;
+  const seatH = TUB_CHAIR.seatH, backH = TUB_CHAIR.backH, wall = R * 0.16;
+  if (item.tone === "lounge") contactShadow(g, 2 * R, 2 * R, true);
+  // shell: one revolved profile up the outside, over the rounded top and back down the inside.
+  // LatheGeometry's phi starts at local +z (the chair's BACK, since placed() points local -z at `facing`),
+  // so the opening is centred on phi = π and the shell wraps the remaining 250°.
+  const prof: [number, number][] = [
+    [R, 1.2], [R, backH * 0.55], [R * 0.99, backH * 0.9], [R * 0.93, backH],
+    [R * 0.86, backH * 0.97], [R - wall, backH * 0.82], [R - wall, seatH], [R - wall - 1.2, seatH - 1.5],
+  ];
+  const pts = prof.map(([r, y]) => new THREE.Vector2(r, y));
+  const shellGeo = new THREE.LatheGeometry(pts, 30, (235 * Math.PI) / 180, (250 * Math.PI) / 180);
+  g.add(shadowed(new THREE.Mesh(shellGeo, seatFabric(item))));
+  // low front rail closing the tub between the two shell ends
+  g.add(rbox(R * 1.15, seatH + 1.5, wall * 1.1, seatFabric(item), 0, 1.2, -R * 0.82, 1.6, 3));
+  g.add(cyl(R - wall * 0.7, seatH - 1.2, seatFabric(item), 0, 1.2, 0)); // seat base block
+  g.add(cyl(R - wall - 0.4, TUB_CHAIR.cushionH, seatFabric(item, true), 0, seatH - TUB_CHAIR.cushionDrop, 0, R - wall - 1.4)); // cushion, domed
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+    g.add(cyl(1.1, 1.6, mat("charcoal", 0.7), Math.cos(a) * R * 0.66, 0, Math.sin(a) * R * 0.66));
+  }
+  return g;
+}
+
+/** Round lounge COFFEE TABLE: light-wood top on a dark pedestal and foot disc. Reusable. */
+function roundTable(item: FurnitureItem): THREE.Group {
+  const g = placed(item.rect, item.facing);
+  const R = Math.min(item.rect.w, item.rect.d) / 2;
+  const h = 14;
+  g.add(cyl(R * 0.42, 1.1, mat("charcoal", 0.7), 0, 0, 0)); // foot disc
+  g.add(cyl(R * 0.22, h - 3.4, mat("charcoal", 0.6), 0, 1.1, 0)); // pedestal
+  g.add(cyl(R * 0.9, 1.0, mat("charcoal", 0.8), 0, h - 3.3, 0)); // dark reveal under the top
+  g.add(cyl(R, 2.6, mat("tableWood", 0.55), 0, h - 2.6, 0)); // top
+  if (item.tone === "lounge") {
+    contactShadow(g, 2 * R, 2 * R, true);
+    // the source shows a small potted plant, a cup on a saucer and a dish on each table
+    g.add(smallPot(-R * 0.25, h, -R * 0.1, 1.5));
+    g.add(cyl(1.8, 0.25, plastic("white"), R * 0.32, h, R * 0.28)); // saucer
+    g.add(mug(R * 0.32, h + 0.25, R * 0.28));
+    g.add(cyl(1.4, 0.4, plastic("white"), R * 0.3, h, -R * 0.42)); // dish
+  }
+  return g;
+}
+
 export function buildFurniture(item: FurnitureItem): THREE.Group {
   switch (item.kind) {
     case "lead-desk":
@@ -273,6 +361,10 @@ export function buildFurniture(item: FurnitureItem): THREE.Group {
       return chair(item, "a");
     case "chair-b":
       return chair(item, "b");
+    case "tub-chair":
+      return tubChair(item);
+    case "round-table":
+      return roundTable(item);
     case "lead-chair":
       return chair(item, "lead");
   }

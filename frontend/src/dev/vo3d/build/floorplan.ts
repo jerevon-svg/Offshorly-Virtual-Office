@@ -6,9 +6,12 @@ import * as THREE from "three";
 import { rbox } from "./helpers";
 import { mat } from "../render/Materials";
 import type { Facing, Rect } from "../core/coords";
-import type { FloorRoom, GroundFloor } from "../rooms/ground-floor";
+import { roomSouthZ, type FloorRoom, type GroundFloor } from "../rooms/ground-floor";
 
 const PLINTH_MARGIN = 48;
+/** how far the shared front ledge stands proud of the hall slab — enough to win the depth test, far too
+ *  little to read as a step (the sidewalk beyond it is already 0.2 proud). */
+const LEDGE_LIFT = 0.08;
 
 export function buildGroundFloor(plan: GroundFloor): THREE.Group {
   const g = new THREE.Group();
@@ -25,6 +28,18 @@ export function buildGroundFloor(plan: GroundFloor): THREE.Group {
   const sidewalk = rbox(S.w, 3.2, S.d, mat("sidewalk", 0.95), S.x + S.w / 2, -3, S.z + S.d / 2, 0.6);
   sidewalk.castShadow = false;
   g.add(sidewalk);
+  // the shared exterior ledge between the street façade and the sidewalk, spanning the WHOLE front row —
+  // one piece of continuous ground-floor architecture, not per-room geometry
+  const front = plan.rooms.filter((r) => r.rect.z + r.rect.d > plan.facadeZ);
+  if (front.length) {
+    const x0 = Math.min(...front.map((r) => r.rect.x)), x1 = Math.max(...front.map((r) => r.rect.x + r.rect.w));
+    const z0 = plan.facadeZ + plan.shell.wallThickness;
+    // +LEDGE_LIFT for the same reason the footprint plates carry plateLift: a top face at exactly y = 0 is
+    // coplanar with the hall slab over 1424 x 35 units and z-fights across the whole street frontage.
+    const ledge = rbox(x1 - x0, 1.6 + LEDGE_LIFT, Math.max(0, S.z - z0), mat("plinth", 1), (x0 + x1) / 2, -1.6, (z0 + S.z) / 2, 0.3);
+    ledge.castShadow = false;
+    g.add(ledge);
+  }
   for (const room of plan.rooms) if (!room.reconstructed) g.add(buildFootprint(room, plan));
   return g;
 }
@@ -37,7 +52,9 @@ export function buildFootprint(room: FloorRoom, plan: GroundFloor): THREE.Group 
   const r = room.rect;
   const { wallThickness: T, wallHeight: H, frontWallHeight: FH, capRadius: R, doorHeight: DH, plateLift } = plan.shell;
   const inset = room.walls ? T : 0;
-  const plate = rbox(r.w - 2 * inset, 1 + plateLift, r.d - 2 * inset, mat("floor", 0.82), r.x + r.w / 2, -1, r.z + r.d / 2, 0.3);
+  // front-row rooms stop at the SHARED façade plane, not at their own art bounding box (see roomSouthZ)
+  const zEnd = roomSouthZ(room, plan);
+  const plate = rbox(r.w - 2 * inset, 1 + plateLift, zEnd - r.z - 2 * inset, mat("floor", 0.82), r.x + r.w / 2, -1, (r.z + zEnd) / 2, 0.3);
   plate.castShadow = false;
   g.add(plate);
   if (!room.walls) return g;
@@ -45,9 +62,9 @@ export function buildFootprint(room: FloorRoom, plan: GroundFloor): THREE.Group 
   const openings = plan.openings.filter((o) => o.roomId === room.id);
   const sides: { side: Facing; axis: "x" | "z"; at: number; from: number; to: number; h: number }[] = [
     { side: "north", axis: "x", at: r.z + T / 2, from: r.x, to: r.x + r.w, h: H },
-    { side: "south", axis: "x", at: r.z + r.d - T / 2, from: r.x, to: r.x + r.w, h: FH },
-    { side: "west", axis: "z", at: r.x + T / 2, from: r.z, to: r.z + r.d, h: H },
-    { side: "east", axis: "z", at: r.x + r.w - T / 2, from: r.z, to: r.z + r.d, h: H },
+    { side: "south", axis: "x", at: zEnd - T / 2, from: r.x, to: r.x + r.w, h: FH },
+    { side: "west", axis: "z", at: r.x + T / 2, from: r.z, to: zEnd, h: H },
+    { side: "east", axis: "z", at: r.x + r.w - T / 2, from: r.z, to: zEnd, h: H },
   ];
   for (const s of sides) {
     const gaps = openings.filter((o) => o.side === s.side).sort((a, b) => a.from - b.from);

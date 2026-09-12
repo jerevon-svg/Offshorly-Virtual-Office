@@ -3,18 +3,20 @@
 // on committed transform changes. Sway nodes are registered per entity so a moved plant keeps them.
 import * as THREE from "three";
 import type { Entity, EntityId, RoomDef, WorldState } from "../world/WorldState";
-import { buildEntity } from "../build/registry";
-import { buildShell, type ShellOptions } from "../build/shell";
-import { buildDesignBaked, type DesignBaked } from "../build/baked";
+import { buildEntity, ROOM_STATIC } from "../build/registry";
+import type { ShellOptions } from "../build/shell";
 import { finalizeSucculents } from "../build/props";
 import { resetSeed } from "../build/helpers";
 import { SwaySystem } from "./Sway";
+import { AmbientSystem } from "./Ambient";
 import { buildGroundFloor } from "../build/floorplan";
 import type { GroundFloor } from "../rooms/ground-floor";
 
 export class SceneMirror {
   readonly root = new THREE.Group();
   readonly sway = new SwaySystem();
+  /** powered-surface idle animation (screens, sensors, status strips) — one update path for the whole world */
+  readonly ambient = new AmbientSystem();
   private readonly views = new Map<EntityId, THREE.Group>();
   private readonly roomGroups = new Map<string, THREE.Group>();
   private readonly world: WorldState;
@@ -31,21 +33,18 @@ export class SceneMirror {
     this.root.add(g);
     return g;
   }
-  /** Build a room's static shell/decor + every entity in it. Deterministic (seed reset per room). */
+  /** Build a room's static architecture + every entity in it. Deterministic (seed reset per room).
+   *  The static geometry comes from build/registry's ROOM_STATIC table already in WORLD space — this
+   *  layer holds no per-room knowledge. */
   buildRoom(room: RoomDef, opts: ShellOptions): void {
     resetSeed();
     const g = new THREE.Group();
     g.name = `room:${room.id}`;
-    const shell = buildShell({ w: room.rect.w, d: room.rect.d }, room.shell, opts);
-    shell.position.set(room.rect.x, 0, room.rect.z); // static geometry offset only — logic never uses a room-local origin
-    g.add(shell);
-    if (room.id === "design-room") {
-      const baked = buildDesignBaked(room.baked as DesignBaked, room.shell);
-      baked.position.set(room.rect.x, 0, room.rect.z);
-      g.add(baked);
-    }
+    const buildStatic = ROOM_STATIC[room.id];
+    if (buildStatic) g.add(buildStatic(room, opts));
     for (const e of this.world.inRoom(room.id)) g.add(this.buildEntityView(e));
     finalizeSucculents(g); // desk succulent anchors → 3 instanced meshes
+    this.ambient.collect(room.id, g); // `userData.ambient` taggings → channels on the shared ambient system
     this.root.add(g);
     this.roomGroups.set(room.id, g);
   }
@@ -75,6 +74,7 @@ export class SceneMirror {
       old.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.geometry.dispose(); });
       this.root.remove(old);
       for (const e of this.world.inRoom(room.id)) { this.views.delete(e.id); this.sway.unregister(e.id); }
+      this.ambient.clearRoom(room.id); // channels are re-collected by buildRoom below
     }
     this.buildRoom(room, opts);
   }

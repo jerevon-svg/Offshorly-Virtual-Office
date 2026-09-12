@@ -1,11 +1,12 @@
 // vo3d rooms — the GROUND FLOOR definition (data only): every V1 room footprint at its manifest rect,
-// the shared floor (frame minus rooms), the sidewalk, and the hand-painted door openings. Only the
-// Design Room is reconstructed; the other rooms are footprints/boundaries awaiting their own phases.
+// the shared floor (frame minus rooms), the sidewalk, and the hand-painted door openings. The Design Room
+// and Reception are reconstructed; the other rooms are footprints/boundaries awaiting their own phases.
 import { growRect, type Rect } from "../core/coords";
 import { CELL } from "../adapters/v1Grid";
 import type { WorldRegion, WorldState } from "../world/WorldState";
-import { FRAME, v1DoorOpenings, v1Rooms, v1Sidewalk, type DoorOpening, type V1Room } from "../adapters/v1Floor";
-import { DESIGN_ROOM } from "./design-room";
+import { FACADE_Z, FRAME, FRONT_ROW_ROOM_IDS, v1DoorOpenings, v1Rooms, v1Sidewalk, type DoorOpening, type V1Room } from "../adapters/v1Floor";
+import { DESIGN_ROOM, SHELL } from "./design-room";
+import { RECEPTION_ROOM } from "./reception";
 
 export type FloorRoom = V1Room & {
   /** true = full interior modelled (walkable floor region + furniture); false = footprint/boundary only */
@@ -21,10 +22,22 @@ export interface GroundFloor {
   openings: DoorOpening[];
   /** placeholder shell language shared by every unreconstructed room (matches the Design Room shell) */
   shell: { wallHeight: number; wallThickness: number; frontWallHeight: number; capRadius: number; doorHeight: number; plateLift: number };
+  /** the shared street-façade plane of the front row (Meeting → Reception → Project) */
+  facadeZ: number;
 }
 
-export const RECONSTRUCTED_ROOM_IDS = new Set([DESIGN_ROOM.id]);
+export const RECONSTRUCTED_ROOM_IDS = new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id]);
 const WALL_LESS_ROOM_IDS = new Set(["central-hub"]);
+
+/** PLACEHOLDER FAÇADE ALIGNMENT (Phase 3B). A front-row room's placeholder plate + south wall are derived
+ *  from its ART bounding box, and the three boxes disagree about where the street is by up to 115 units
+ *  (Meeting ends at z 1199.4, Project at 1238.1 — out on the sidewalk). The V1 grid says the façade is one
+ *  continuous band for all 90 columns, so front-row placeholders are clamped to that plane and Reception
+ *  builds its real glass on it. This moves PLACEHOLDER GEOMETRY ONLY: room rects, regions, the walkability
+ *  grid and room identity are untouched, and Meeting/Project stay unreconstructed. */
+export function roomSouthZ(room: V1Room, plan: Pick<GroundFloor, "facadeZ" | "shell">): number {
+  return FRONT_ROW_ROOM_IDS.has(room.id) ? plan.facadeZ + plan.shell.wallThickness : room.rect.z + room.rect.d;
+}
 
 export function groundFloor(): GroundFloor {
   const rooms = v1Rooms().map((r) => ({ ...r, reconstructed: RECONSTRUCTED_ROOM_IDS.has(r.id), walls: !WALL_LESS_ROOM_IDS.has(r.id) }));
@@ -33,7 +46,8 @@ export function groundFloor(): GroundFloor {
     rooms,
     sidewalk: v1Sidewalk(),
     openings: v1DoorOpenings(rooms),
-    shell: { wallHeight: DESIGN_ROOM.shell.wallHeight, wallThickness: DESIGN_ROOM.shell.wallThickness, frontWallHeight: DESIGN_ROOM.shell.frontWallHeight, capRadius: DESIGN_ROOM.shell.capRadius, doorHeight: 30, plateLift: 0.5 },
+    shell: { wallHeight: SHELL.wallHeight, wallThickness: SHELL.wallThickness, frontWallHeight: SHELL.frontWallHeight, capRadius: SHELL.capRadius, doorHeight: 30, plateLift: 0.5 },
+    facadeZ: FACADE_Z,
   };
 }
 

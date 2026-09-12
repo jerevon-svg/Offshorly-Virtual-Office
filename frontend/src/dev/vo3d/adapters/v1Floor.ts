@@ -15,6 +15,14 @@ const toRect = (l: Layer): Rect => ({ x: l.x, z: l.y, w: l.width, d: l.height })
 export const FRAME: Rect = { x: 0, z: 0, w: FRAME_WIDTH, d: FRAME_HEIGHT };
 export const GRID_RECT: Rect = { x: 0, z: 0, w: COLS * CELL, d: ROWS * CELL };
 
+/** The FRONT-ROW FAÇADE plane: the north face of the V1 south door band (walkability grid rows 70–74).
+ *  Meeting, Reception and Project share one continuous street façade here — their art bounding boxes do
+ *  NOT agree on it (they end at z 1199.4 / 1237.6 / 1238.1), so the plane is taken from the grid, which is
+ *  the only source that spans all three rooms. */
+export const FACADE_Z = 70 * CELL; // 1120
+/** the rooms whose rect reaches the façade band: the bottom architectural bar (Meeting → Reception → Project) */
+export const FRONT_ROW_ROOM_IDS: ReadonlySet<string> = new Set(["meeting-room", "reception-room", "project-room"]);
+
 export type V1Room = { id: string; name: string; rect: Rect };
 /** every manifest room layer, in manifest order (11 rooms incl. the wall-less central hub) */
 export function v1Rooms(): V1Room[] {

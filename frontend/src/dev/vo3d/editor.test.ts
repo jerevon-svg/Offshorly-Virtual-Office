@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
 import { WorldState } from "./world/WorldState";
-import { DESIGN_ROOM, DESIGN_SOLIDS, HERO_PLANT_ID, designRoomEntities, RECT } from "./rooms/design-room";
+import { DESIGN_ROOM, DESIGN_SOLIDS, HERO_PLANT_ID, designRoomEntities, RECT, SHELL } from "./rooms/design-room";
 import { Walkability } from "./nav/Walkability";
 import { v1Static, worldToCell } from "./adapters/v1Grid";
 import { SceneMirror } from "./render/SceneMirror";
@@ -17,7 +17,7 @@ function rig() {
   const world = new WorldState(); world.addRoom(DESIGN_ROOM); for (const e of designRoomEntities()) world.addEntity(e);
   DESIGN_SOLIDS.forEach((r, i) => world.addEntity({ id: `s${i}`, kind: "solid", roomId: DESIGN_ROOM.id, transform: { pos: { x: r.x + r.w / 2, z: r.z + r.d / 2 }, yaw: 0 }, footprint: { shape: "rect", w: r.w, d: r.d }, capabilities: {}, props: {} }));
   const scene = new THREE.Scene(); const mirror = new SceneMirror(world, scene);
-  mirror.buildRoom(DESIGN_ROOM, { wallHeight: DESIGN_ROOM.shell.wallHeight, frontWall: "low" });
+  mirror.buildRoom(DESIGN_ROOM, { wallHeight: SHELL.wallHeight, frontWall: "low" });
   const wk = new Walkability(v1Static); wk.syncFromWorld(world);
   const stack = new ControllerStack(); const edit = new EditSession(world, mirror, wk, stack);
   return { world, mirror, wk, stack, edit };

@@ -2,7 +2,10 @@
 import * as THREE from "three";
 import GUI from "three/examples/jsm/libs/lil-gui.module.min.js";
 import { WorldState } from "../world/WorldState";
-import { DESIGN_ROOM, DESIGN_SOLIDS, CHAIR_4_ID, DOOR_ID, HERO_PLANT_ID, designRoomEntities } from "../rooms/design-room";
+import { DESIGN_ROOM, DESIGN_SOLIDS, CHAIR_4_ID, DOOR_ID, HERO_PLANT_ID, SHELL as DESIGN_SHELL, designRoomEntities } from "../rooms/design-room";
+import { RECEPTION_ROOM, COUNTER_INTERACTION_ID, ENTRY_DOOR_EAST_ID, ENTRY_DOOR_WEST_ID, ENTRY_SCANNER_ID, ENTRY_ZONE, GATE_SCANNER_IDS, GATE_ZONES, KIOSK_INTERACTION_ID, LOUNGE_SEAT_IDS, receptionEntities } from "../rooms/reception";
+import { ApproachInteraction } from "../interact/Approach";
+import { LoungeSeatInteraction } from "../interact/LoungeSeat";
 import { Walkability, composeStatic } from "../nav/Walkability";
 import { clearanceLayer, worldClearances } from "../nav/clearance";
 import { SlidingDoor } from "../interact/Door";
@@ -18,12 +21,14 @@ import { EditSession } from "../editor/EditSession";
 import { NavDebug } from "../devtools/NavDebug";
 import { Capture, FrameWindow, Overlay, PRESETS, describeDevice, sceneStats, snapshotRenderer, summarize, type CaptureSummary, type PresetId } from "../devtools/Bench";
 import { BON_STANDING_HEIGHT, type AvatarLod } from "../adapters/v1Avatar";
-import type { Rect, Vec2 } from "../core/coords";
+import { pointInRect, type Rect, type Vec2 } from "../core/coords";
 
 // ---- world -------------------------------------------------------------------------------------
 const world = new WorldState();
 world.addRoom(DESIGN_ROOM);
+world.addRoom(RECEPTION_ROOM);
 for (const e of designRoomEntities()) world.addEntity(e);
+for (const e of receptionEntities()) world.addEntity(e);
 // baked decor solids (visual comes from the shell builder) participate in placement as footprint-only entities
 DESIGN_SOLIDS.forEach((r, i) =>
   world.addEntity({ id: `${DESIGN_ROOM.id}/solid-${i}`, kind: "solid", roomId: DESIGN_ROOM.id, transform: { pos: { x: r.x + r.w / 2, z: r.z + r.d / 2 }, yaw: 0 }, footprint: { shape: "rect", w: r.w, d: r.d }, capabilities: {}, props: {}, source: { baked: true } }),
@@ -43,7 +48,7 @@ const canvas = document.getElementById("stage") as HTMLCanvasElement;
 const params = {
   pitch: 52, yaw: 0, zoom: 1.32,
   lightAzimuth: -48, lightElevation: 62, keyIntensity: 2.3, ambientIntensity: 1.25, envIntensity: 0.45, exposure: 1.12,
-  shadows: true, ao: false, sway: true, wallHeight: DESIGN_ROOM.shell.wallHeight, frontWall: "low" as "low" | "full" | "hidden",
+  shadows: true, ao: false, sway: true, ambient: true, wallHeight: DESIGN_SHELL.wallHeight, frontWall: "low" as "low" | "full" | "hidden",
   overlay: true, motion: false, preset: "B" as PresetId, captureSeconds: 30,
   avatar: true, avatarLod: 1 as AvatarLod, avatarLit: true, walkSpeed: 30,
   clickToWalk: true, showGrid: false, showBlocked: false, showRegions: false, showPath: true, showDestination: true,
@@ -54,6 +59,7 @@ const mirror = new SceneMirror(world, R.scene);
 mirror.buildGroundFloor(plan);
 const shellOpts = () => ({ wallHeight: params.wallHeight, frontWall: params.frontWall, exterior: false });
 mirror.buildRoom(DESIGN_ROOM, shellOpts());
+mirror.buildRoom(RECEPTION_ROOM, shellOpts()); // Phase 3B: architecture only (no entities yet)
 // solids have no builder: skip them in the mirror by giving them no view (buildEntity would throw) — filtered here
 // (they are never rendered; the baked group already draws them)
 
@@ -105,6 +111,7 @@ function startTour(points: Vec2[]): void { tour = { points, i: 0 }; walkToGround
 function stopTour(): void { tour = null; }
 navCtl.onArrive = () => {
   navDebug.clearNav();
+  approachCtl.onArrived();
   if (tour) { tour.i = (tour.i + 1) % tour.points.length; const p = tour.points[tour.i]; walkToGround(p.x, p.z); }
 };
 let seat = new SeatInteraction(avatar, stack, mirror.view(CHAIR_4_ID), chairSeat, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
@@ -113,6 +120,59 @@ const seatState = { state: "idle", chairRestError: 0 };
 const doorEntity = world.get(DOOR_ID);
 let door = new SlidingDoor(mirror.view(DOOR_ID), doorEntity.capabilities.door!, doorEntity.transform.pos);
 const doorState = { state: "closed", open: 0, drift: 0, cycles: 0 };
+// the Reception entrance: the SAME SlidingDoor controller as the Design Room, bi-parting — the west panel
+// drives and the east one is its `opposed` mirror, so both derive from one `t` and neither can drift
+const entryWest = world.get(ENTRY_DOOR_WEST_ID);
+let entryDoor = new SlidingDoor(mirror.view(ENTRY_DOOR_WEST_ID), entryWest.capabilities.door!, entryWest.transform.pos, {
+  view: mirror.view(ENTRY_DOOR_EAST_ID),
+  closed: world.get(ENTRY_DOOR_EAST_ID).transform.pos,
+});
+const entryState = { state: "closed", open: 0, drift: 0, cycles: 0, scanner: 0 };
+// ---- Reception interactions (3E.3) ------------------------------------------------------------------
+// One focused interaction at a time, driven by the SAME pieces the Design Room uses: ApproachInteraction
+// for walk-up points, SeatInteraction for the lounge chairs, planWalk for every route.
+const approachCtl = new ApproachInteraction(avatar, stack, (to) => planWalk(avatar.position, to, walkability, inBounds));
+const receptionState = { focus: "none", status: "idle", seat: "idle" };
+const loungeSeats = LOUNGE_SEAT_IDS.map((id) => {
+  const e = world.get(id);
+  return { id, slot: e.capabilities.lounge!.slots[0], view: mirror.view(id) };
+});
+let loungeSeat: LoungeSeatInteraction | null = null;
+function startApproach(entityId: string): void {
+  loungeSeat?.reset();
+  loungeSeat = null;
+  const spec = world.get(entityId).capabilities.approach!;
+  const r = approachCtl.begin(spec);
+  receptionState.focus = spec.label;
+  receptionState.status = approachCtl.status;
+  if (r.ok) { navDebug.showNav(avatar.position, r); navCtl.setPath(r.path); }
+}
+function startLoungeSit(index: number): void {
+  approachCtl.cancel();
+  const s = loungeSeats[index];
+  loungeSeat = new LoungeSeatInteraction(avatar, stack, s.view, s.slot, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+  receptionState.focus = `lounge chair ${index === 0 ? "west" : "east"}`;
+  loungeSeat.sit();
+}
+/** Click resolution: raycast the built world, then walk up to the first group a Reception interaction
+ *  declares as its pick target (a static group name, or a seat entity's own view). */
+function pickInteraction(cx: number, cy: number): string | null {
+  const r = canvas.getBoundingClientRect();
+  ndc.set(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
+  raycaster.setFromCamera(ndc, R.camera);
+  const hits = raycaster.intersectObject(mirror.root, true);
+  if (!hits.length) return null;
+  const byPick = new Map<string, string>();
+  for (const e of world.entities.values()) {
+    if (e.capabilities.approach && typeof e.props.pick === "string") byPick.set(e.props.pick, e.id);
+    if (e.capabilities.seat && e.roomId === RECEPTION_ROOM.id) byPick.set(e.id, e.id);
+  }
+  for (let n: THREE.Object3D | null = hits[0].object; n; n = n.parent) {
+    const id = byPick.get(n.name);
+    if (id) return id;
+  }
+  return null;
+}
 const edit = new EditSession(world, mirror, walkability, stack);
 const editState = { selected: "none", placement: "—", drift: 0, blockedCells: walkability.dynamicBlockedKeys.length };
 function refreshEditVisuals(): void {
@@ -164,6 +224,14 @@ canvas.addEventListener("pointerup", (e) => {
   const moved = Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y), held = performance.now() - downAt.t;
   downAt = null;
   if (moved > 6 || held > 400 || !params.clickToWalk) return; // a drag = orbit, not a walk
+  const picked = pickInteraction(e.clientX, e.clientY);
+  if (picked) {
+    const ent = world.get(picked);
+    if (ent.capabilities.lounge) startLoungeSit(LOUNGE_SEAT_IDS.indexOf(picked));
+    else startApproach(picked);
+    return;
+  }
+  approachCtl.cancel();
   const p = floorPoint(e.clientX, e.clientY);
   if (p) walkToGround(p.x, p.z);
 });
@@ -177,6 +245,12 @@ cam.add(params, "pitch", 30, 90, 1).onChange(applyCam); cam.add(params, "yaw", -
 cam.add({ reset: () => { params.pitch = 52; params.yaw = 0; params.zoom = 1.32; R.setFocus(DESIGN_ROOM.rect); refresh(); applyCam(); } }, "reset").name("reset view");
 const focusOn = (rect: Rect, fill = 0.9) => { params.zoom = R.focusOn(rect, fill); refresh(); applyCam(); };
 cam.add({ f: () => focusOn(DESIGN_ROOM.rect, 0.78) }, "f").name("focus: Design Room");
+cam.add({ f: () => focusOn(RECEPTION_ROOM.rect, 0.86) }, "f").name("focus: Reception");
+const ENTRANCE_VIEW: Rect = { x: 590, z: 1060, w: 260, d: 170 };
+cam.add({ f: () => focusOn(ENTRANCE_VIEW, 0.9) }, "f").name("focus: Reception entrance");
+// the bottom architectural bar: Meeting → Reception → Project must read as ONE continuous structure
+const FRONT_BAR: Rect = { x: 8, z: 820, w: 1424, d: 425 };
+cam.add({ f: () => focusOn(FRONT_BAR, 0.97) }, "f").name("focus: front bar (Meeting→Reception→Project)");
 cam.add({ f: () => focusOn(plan.frame, 0.96) }, "f").name("focus: whole ground floor");
 cam.add({ f: () => { const p = avatar.position; focusOn({ x: p.x - 130, z: p.z - 100, w: 260, d: 200 }, 0.9); } }, "f").name("focus: Bon");
 const light = gui.addFolder("Light");
@@ -189,6 +263,7 @@ const geo = gui.addFolder("Geometry");
 const rebuild = () => { seat.reset(); mirror.rebuildRoom(DESIGN_ROOM, shellOpts()); door = new SlidingDoor(mirror.view(DOOR_ID), doorEntity.capabilities.door!, doorEntity.transform.pos); seat = new SeatInteraction(avatar, stack, mirror.view(CHAIR_4_ID), chairSeat, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed); };
 geo.add(params, "wallHeight", 20, 110, 1).onFinishChange(rebuild); geo.add(params, "frontWall", ["low", "full", "hidden"]).onChange(rebuild);
 geo.add(params, "sway").name("plant sway").onChange((v: boolean) => (mirror.sway.enabled = v));
+geo.add(params, "ambient").name("powered-electronics idle").onChange((v: boolean) => (mirror.ambient.enabled = v));
 const av = gui.addFolder("Character (production GLB)");
 av.add(params, "avatar").name("show avatar").onChange((v: boolean) => (avatar.root.visible = v));
 av.add(params, "avatarLod", [0, 1, 2]).name("LOD").onChange(loadAvatar);
@@ -202,6 +277,19 @@ sitGui.add({ reset: () => seat.reset() }, "reset").name("reset interaction");
 sitGui.add(seatState, "state").disable().listen(); sitGui.add(seatState, "chairRestError").disable().listen();
 const doorGui = gui.addFolder("Sliding door (design-room/door-east · automatic)");
 doorGui.add(doorState, "state").disable().listen(); doorGui.add(doorState, "open").name("open %").disable().listen(); doorGui.add(doorState, "drift").name("closed-transform drift").disable().listen(); doorGui.add(doorState, "cycles").disable().listen();
+const entryGui = gui.addFolder("Reception entrance (automatic · bi-parting)");
+entryGui.add(entryState, "state").disable().listen(); entryGui.add(entryState, "open").name("open %").disable().listen();
+entryGui.add(entryState, "drift").name("closed-transform drift").disable().listen(); entryGui.add(entryState, "cycles").disable().listen();
+entryGui.add(entryState, "scanner").name("entry scanner (0 blue → 1 green)").disable().listen();
+const rec = gui.addFolder("Reception interactions");
+rec.add({ f: () => startApproach(COUNTER_INTERACTION_ID) }, "f").name("▶ approach reception desk");
+rec.add({ f: () => startApproach(KIOSK_INTERACTION_ID) }, "f").name("▶ use check-in kiosk");
+rec.add({ f: () => startLoungeSit(0) }, "f").name("▶ sit: west lounge chair");
+rec.add({ f: () => startLoungeSit(1) }, "f").name("▶ sit: east lounge chair");
+rec.add({ f: () => { loungeSeat?.stand(); } }, "f").name("▶ stand up");
+rec.add(receptionState, "focus").disable().listen();
+rec.add(receptionState, "status").disable().listen();
+rec.add(receptionState, "seat").disable().listen();
 const editGui = gui.addFolder("Room edit mode (hero plant only)");
 editGui.add(params, "editMode").name("✎ edit mode").onChange((v: boolean) => { edit.setEditMode(v); if (v) edit.select(HERO_PLANT_ID); refreshEditVisuals(); });
 editGui.add({ confirm: () => { const v = edit.confirm(); editState.placement = v.ok ? "committed" : `rejected: ${v.reason}`; refreshEditVisuals(); } }, "confirm").name("✔ confirm placement");
@@ -214,7 +302,19 @@ nav.add(params, "showGrid").name("show grid (green walkable · grey unbuilt inte
 nav.add(params, "showBlocked").name("show blocked cells").onChange((v: boolean) => (navDebug.showBlocked = v));
 nav.add(params, "showRegions").name("show regions / footprints / doors / bounds").onChange((v: boolean) => (navDebug.showRegions = v));
 const HALL_EXEC_DOOR: Vec2 = { x: 728, z: 312 }; // outside stand cell in front of the Executive door
+/** the two ends of a Reception entrance crossing (both V1-walkable; verified by nav tests) */
+const RECEPTION_INSIDE: Vec2 = { x: 600, z: 1096 };
+const RECEPTION_STREET: Vec2 = { x: 720, z: 1216 };
+function placeBonAtEntrance(): void {
+  navCtl.setPath([]);
+  avatar.setPosition(RECEPTION_INSIDE);
+  avatar.setYaw(0);
+}
 nav.add({ go: () => startTour([HALL_EXEC_DOOR, chairSeat.approach]) }, "go").name("▶ tour: Design Room ↔ hall (exec door)");
+// The Reception entrance needs the SAME affordance. Bon spawns in the Design Room, ~39 s of walking away,
+// so without these the automatic entrance simply cannot be observed in the running app.
+nav.add({ go: () => { placeBonAtEntrance(); startTour([RECEPTION_STREET, RECEPTION_INSIDE]); } }, "go").name("▶ tour: Reception entrance (in ↔ out)");
+nav.add({ go: () => { stopTour(); placeBonAtEntrance(); focusOn(ENTRANCE_VIEW, 0.9); } }, "go").name("▶ put Bon at the Reception entrance");
 nav.add({ stop: () => stopTour() }, "stop").name("■ stop tour");
 nav.add(params, "showPath").name("show path").onChange((v: boolean) => (navDebug.showPath = v));
 nav.add(params, "showDestination").name("show destination").onChange((v: boolean) => (navDebug.showDestination = v));
@@ -241,6 +341,25 @@ function scriptedMotion(t: number): void {
   applyCam();
 }
 
+// ---- scanner proximity -------------------------------------------------------------------------------
+// READ-ONLY: this reads the avatar position the loop already has and sets a VISUAL state (blue → green).
+// It changes no navigation, no grid, no region and no geometry — the gates themselves do not move.
+const scannerAt: Vec2 = { x: 0, z: 0 };
+function updateScanners(p: Vec2): void {
+  scannerAt.x = p.x;
+  scannerAt.z = p.z;
+  for (let i = 0; i < GATE_ZONES.length; i++) {
+    let inside = false;
+    for (const r of GATE_ZONES[i]) if (pointInRect(scannerAt, r)) { inside = true; break; }
+    mirror.ambient.setScanner(GATE_SCANNER_IDS[i], inside);
+  }
+  // ONE system: the entrance sensor is green when a body is on the mat OR when the door's own approach test
+  // says someone is coming through. Both are PRESENCE/intent tests — never the door's animation state, so
+  // green leads the panels rather than following them.
+  mirror.ambient.setScanner(ENTRY_SCANNER_ID, pointInRect(scannerAt, ENTRY_ZONE) || entryDoor.wantsOpen(scannerAt, entryPath));
+}
+let entryPath: readonly Vec2[] = [];
+
 // ---- loop --------------------------------------------------------------------------------------------
 const clock = new THREE.Timer();
 let lastFrame = performance.now();
@@ -253,14 +372,26 @@ function loop(): void {
   const t = clock.update().getElapsed();
   if (params.motion) scriptedMotion(t);
   mirror.sway.update(t);
+  mirror.ambient.update(t, dt / 1000); // powered-surface idle animation (screens, sensors, status strips)
   if (params.avatar) {
     seat.update(dt / 1000);
+    loungeSeat?.update(dt / 1000);
+    approachCtl.update(dt / 1000);
     navCtl.update(dt / 1000);
     avatar.update(dt / 1000);
     const bp = avatar.worldPosition();
     door.update(dt / 1000, { x: bp.x, z: bp.z }, navCtl.path);
+    entryPath = navCtl.path;
+    entryDoor.update(dt / 1000, { x: bp.x, z: bp.z }, navCtl.path);
+    updateScanners({ x: bp.x, z: bp.z });
+    entryState.state = entryDoor.state; entryState.open = Math.round(entryDoor.t * 100);
+    entryState.drift = entryDoor.state === "closed" ? Math.round(entryDoor.driftError() * 1e6) / 1e6 : entryState.drift;
+    entryState.cycles = entryDoor.cycles;
+    entryState.scanner = Math.round(mirror.ambient.scannerActivation(ENTRY_SCANNER_ID) * 100) / 100;
     doorState.state = door.state; doorState.open = Math.round(door.t * 100); doorState.drift = door.state === "closed" ? Math.round(door.driftError() * 1e6) / 1e6 : doorState.drift; doorState.cycles = door.cycles;
     seatState.state = seat.status;
+    receptionState.status = approachCtl.status;
+    receptionState.seat = loungeSeat ? loungeSeat.status : "idle";
     seatState.chairRestError = Math.round(seat.chairRestError() * 1000) / 1000;
     avatarState.clip = avatar.currentClip ?? "";
     avatarState.owner = stack.owner;
@@ -283,8 +414,19 @@ loop();
   world, plan, walkability, mirror, R, scene: R.scene, camera: R.camera, renderer: R.renderer, params, stack, avatar, avatarState, navCtl,
   placeCamera: applyCam, placeLight: applyLight, focusOn,
   bench: { device, applyPreset, runCapture, snapshot: () => snapshotRenderer(R.renderer), live: () => liveWindow.summary(), summarize, sceneStats: () => sceneStats(R.scene) },
-  nav: { walkToGround, navState, startTour, stopTour, planWalk: (from: Vec2, to: Vec2) => planWalk(from, to, walkability, inBounds), regionAt: (x: number, z: number) => world.regionAt({ x, z }) },
+  scanners: {
+    set: (id: string, on: boolean) => mirror.ambient.setScanner(id, on),
+    state: () => Object.fromEntries(mirror.ambient.scannerIds.map((id) => [id, Math.round(mirror.ambient.scannerActivation(id) * 100) / 100])),
+    zones: { gates: GATE_ZONES, entry: ENTRY_ZONE },
+  },
+  nav: { walkToGround, navState, startTour, stopTour,
+    placeBonAtEntrance, entranceTour: () => { placeBonAtEntrance(); startTour([RECEPTION_STREET, RECEPTION_INSIDE]); },
+    receptionInside: RECEPTION_INSIDE, receptionStreet: RECEPTION_STREET, entranceView: ENTRANCE_VIEW, planWalk: (from: Vec2, to: Vec2) => planWalk(from, to, walkability, inBounds), regionAt: (x: number, z: number) => world.regionAt({ x, z }) },
   get seat() { return seat; }, seatState,
+  reception: { state: receptionState, approach: approachCtl, startApproach, startLoungeSit,
+    get loungeSeat() { return loungeSeat; }, seats: loungeSeats.map((s) => s.id),
+    counterId: COUNTER_INTERACTION_ID, kioskId: KIOSK_INTERACTION_ID, pick: pickInteraction },
   get door() { return door; }, doorState,
+  get entryDoor() { return entryDoor; }, entryState,
   edit: { session: edit, editState, movePlantTo: (x: number, z: number) => { edit.setEditMode(true); edit.select(HERO_PLANT_ID); const v = edit.preview({ x, z }); refreshEditVisuals(); return v; }, confirm: () => { const v = edit.confirm(); refreshEditVisuals(); return v; }, cancel: () => { edit.cancel(); refreshEditVisuals(); }, reset: () => { edit.reset(); refreshEditVisuals(); }, setEditMode: (v: boolean) => { params.editMode = v; edit.setEditMode(v); if (v) edit.select(HERO_PLANT_ID); refreshEditVisuals(); refresh(); } },
 };
