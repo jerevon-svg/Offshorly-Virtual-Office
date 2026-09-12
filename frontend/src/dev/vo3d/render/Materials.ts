@@ -4,7 +4,9 @@ import * as THREE from "three";
 
 export const PALETTE = {
   floor: 0xf0e8e2,
-  exterior: 0xd9cbbf,
+  exterior: 0xd9cbbf, // ≈ the V1 hall floor (floor.png measures 219,202,187)
+  sidewalk: 0x9a9187,
+  plinth: 0xbfb6ac,
   wall: 0xfaf8f5,
   wallFace: 0xf1ece7,
   wood: 0xcfa876,

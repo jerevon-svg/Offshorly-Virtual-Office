@@ -1,9 +1,10 @@
 // vo3d rooms — DESIGN ROOM definition (data only). World rect comes from the READ-ONLY V1 manifest;
 // shell/baked measurements are room-local (they position a static group at the room origin);
 // every ENTITY below is in WORLD coordinates.
-import type { Rect } from "../core/coords";
-import type { Entity, RoomDef, ShellSpec } from "../world/WorldState";
+import type { Rect, Vec2 } from "../core/coords";
+import type { DoorCapability, Entity, RoomDef, ShellSpec } from "../world/WorldState";
 import { v1FurnitureEntities, v1RoomRect } from "../adapters/v1Manifest";
+import { CELL } from "../adapters/v1Grid";
 import type { DesignBaked } from "../build/baked";
 import type { BoxSpec } from "../build/helpers";
 import type { PlantSpec } from "../build/plants";
@@ -88,6 +89,50 @@ export const DESIGN_SOLIDS: Rect[] = [BAKED.rearCabinet, ...BAKED.bottomCabinets
 
 export const HERO_PLANT_ID = `${DESIGN_ROOM_ID}/plant-10`;
 export const CHAIR_4_ID = `${DESIGN_ROOM_ID}/design-member-chair-4`;
+export const DOOR_ID = `${DESIGN_ROOM_ID}/door-east`;
+
+// ---- the east sliding door: every number below is DERIVED from the shell's measured glass run -----------------
+// Opening = glass.z0 … glass.doorZ1 (the leaf sits 1 unit inside each end). The leaf slides SOUTH over the fixed pane
+// (doorZ1 … z1) and on into the wall (z1 … frontWallZ + T): that pocket is 77.3 long, the leaf 91.6 wide, so an open
+// leaf parks FLUSH with the wall's south end and its leading edge still stands inside the opening. The physically
+// clear passage is therefore z0 … (z0 + 1 + slideDistance), narrower than the V1 '+' band (rows 24–30).
+const DOOR_T = SHELL.wallThickness;
+const DOOR_LEAF_W = SHELL.glass.doorZ1 - SHELL.glass.z0 - 2;
+const DOOR_GLASS_H = SHELL.wallHeight - 6;
+const DOOR_SLIDE = SHELL.frontWallZ + DOOR_T - (SHELL.glass.doorZ1 - 1); // parks flush with the wall end
+/** Bon's skinned bounding box measures 19.6 × 16.9 units walking → 10.5 covers his widest extent */
+const BODY_RADIUS = 10.5;
+const DOOR_CLOSED: Vec2 = { x: wx(RECT.w - DOOR_T / 2 - 0.6), z: wz((SHELL.glass.z0 + SHELL.glass.doorZ1) / 2) }; // 0.6 inside the wall's centre plane: never z-fights the fixed pane it slides over
+const OPENING_Z0 = wz(SHELL.glass.z0);
+const PARKED_EDGE_Z = wz(SHELL.glass.z0 + 1 + DOOR_SLIDE);
+const WALL_X = wx(RECT.w - DOOR_T);
+export const DESIGN_DOOR: DoorCapability = {
+  slide: { x: 0, z: 1 },
+  slideDistance: DOOR_SLIDE,
+  crossing: { x: DOOR_CLOSED.x - (BODY_RADIUS + 4), z: OPENING_Z0, w: 2 * (BODY_RADIUS + 4), d: PARKED_EDGE_Z - OPENING_Z0 },
+  trigger: { x: DOOR_CLOSED.x - 72, z: OPENING_Z0 - 24, w: 144, d: PARKED_EDGE_Z - OPENING_Z0 + 48 }, // 72 units ≈ 2.4 s of walking: the leaf is fully open long before Bon's body reaches it
+  clearance: {
+    bodyRadius: BODY_RADIUS,
+    band: { x: wx(RECT.w) - CELL, z: RECT.z, w: CELL, d: RECT.d }, // the cell column inside the east wall (grid col 19 = the V1 '+' band)
+    solids: [
+      { x: WALL_X, z: RECT.z, w: DOOR_T, d: OPENING_Z0 - RECT.z }, // north jamb (wall + frame post)
+      { x: WALL_X, z: PARKED_EDGE_Z, w: DOOR_T, d: RECT.z + RECT.d - PARKED_EDGE_Z }, // parked leaf + fixed pane + wall
+    ],
+  },
+  timings: { openMs: 650, closeMs: 800, holdMs: 450 },
+};
+
+function doorEntity(): Entity {
+  return {
+    id: DOOR_ID,
+    kind: "sliding-door",
+    roomId: DESIGN_ROOM_ID,
+    transform: { pos: DOOR_CLOSED, yaw: 0 }, // the CLOSED rest transform; interact/Door.ts moves the view, never this
+    capabilities: { door: DESIGN_DOOR },
+    props: { leafW: DOOR_LEAF_W, glassH: DOOR_GLASS_H, handleX: -DOOR_T / 2, handleZ: (SHELL.glass.doorZ1 - SHELL.glass.z0) / 2 - 6 },
+    source: { baked: true },
+  };
+}
 
 function plantEntities(): Entity[] {
   return (BAKED_LOCAL.plants as PlantSpec[]).map((p, i) => {
@@ -127,5 +172,5 @@ export function designRoomEntities(): Entity[] {
       timings: { pullMs: 900, sitMs: 650, slideMs: 1000, standMs: 650, returnMs: 900 },
     },
   };
-  return [...furniture, ...plantEntities()];
+  return [...furniture, ...plantEntities(), doorEntity()];
 }

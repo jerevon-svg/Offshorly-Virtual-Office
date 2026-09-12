@@ -4,7 +4,9 @@ import { Avatar } from "./avatar/Avatar";
 import { ControllerStack, NavigationController } from "./avatar/Controller";
 import { WorldState } from "./world/WorldState";
 import { DESIGN_ROOM, CHAIR_4_ID, designRoomEntities, RECT } from "./rooms/design-room";
-import { Walkability } from "./nav/Walkability";
+import { Walkability, composeStatic } from "./nav/Walkability";
+import { registerGroundFloor } from "./rooms/ground-floor";
+import { clearanceLayer, worldClearances } from "./nav/clearance";
 import { planWalk } from "./nav/planner";
 import { v1Static } from "./adapters/v1Grid";
 import { SeatInteraction } from "./interact/Seat";
@@ -58,6 +60,23 @@ describe("vo3d avatar faces its movement direction", () => {
     for (let i = 0; i < 40; i++) nav.update(1 / 60);
     const r2 = planWalk(av.position, W(40, 56), wk, inBounds); expect(r2.ok).toBe(true); if (r2.ok) nav.setPath(r2.path);
     walkAndCheck(av, nav, "redirect");
+  });
+  it("cross-world legs (Design Room ↔ hall through the real doorway, long straights, turns, redirect) keep facing", () => {
+    const { av, nav } = rig(); const w = new WorldState(); w.addRoom(DESIGN_ROOM); for (const e of designRoomEntities()) w.addEntity(e);
+    registerGroundFloor(w);
+    const worldBounds = (p: Vec2) => w.walkableAt(p);
+    const wk = new Walkability(composeStatic(v1Static, worldBounds, clearanceLayer(worldClearances(w)))); wk.syncFromWorld(w);
+    const approach = W(174.5, 187.8), hallExec = { x: 728, z: 312 }, hallReception = { x: 712, z: 824 }, hallQa = { x: 344, z: 664 };
+    const legs: [string, Vec2, Vec2][] = [["out: approach → exec door", approach, hallExec], ["hall: exec door → reception", hallExec, hallReception], ["hall: reception → QA door", hallReception, hallQa], ["in: QA door → approach", hallQa, approach]];
+    for (const [label, from, to] of legs) { av.setPosition(from); const r = planWalk(from, to, wk, worldBounds); expect(r.ok, label).toBe(true); if (r.ok) { nav.setPath(r.path); walkAndCheck(av, nav, label); expect(av.position.x).toBeCloseTo(r.destination.x, 6); expect(av.position.z).toBeCloseTo(r.destination.z, 6); } }
+    // redirect while crossing the hall: turn around and come back through the door
+    av.setPosition(approach);
+    const r1 = planWalk(approach, hallExec, wk, worldBounds); expect(r1.ok).toBe(true); if (r1.ok) nav.setPath(r1.path);
+    for (let i = 0; i < 1200 && w.regionAt(av.position)?.id !== "shared:ground-floor"; i++) nav.update(1 / 60);
+    for (let i = 0; i < 90; i++) nav.update(1 / 60); // 1.5 s further into the hall
+    expect(w.regionAt(av.position)?.id).toBe("shared:ground-floor"); expect(nav.moving).toBe(true);
+    const r2 = planWalk(av.position, approach, wk, worldBounds); expect(r2.ok).toBe(true); if (r2.ok) { nav.setPath(r2.path); walkAndCheck(av, nav, "redirect back into the Design Room"); }
+    expect(w.regionAt(av.position)?.id).toBe("floor:design-room");
   });
   it("after a chair ride (attach at yaw π → detach) the avatar faces north when walking north", () => {
     const { av, nav } = rig(); const scene = new THREE.Object3D(), chair = new THREE.Object3D(); scene.add(chair); scene.add(av.root);

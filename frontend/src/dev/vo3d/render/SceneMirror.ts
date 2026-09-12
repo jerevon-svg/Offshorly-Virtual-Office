@@ -9,6 +9,8 @@ import { buildDesignBaked, type DesignBaked } from "../build/baked";
 import { finalizeSucculents } from "../build/props";
 import { resetSeed } from "../build/helpers";
 import { SwaySystem } from "./Sway";
+import { buildGroundFloor } from "../build/floorplan";
+import type { GroundFloor } from "../rooms/ground-floor";
 
 export class SceneMirror {
   readonly root = new THREE.Group();
@@ -22,6 +24,12 @@ export class SceneMirror {
     this.root.name = "vo3d-world";
     scene.add(this.root);
     world.changes.on(({ changed }) => changed.forEach((id) => this.applyTransform(id)));
+  }
+  /** The shared ground-floor skeleton (slab, sidewalk, unreconstructed footprints + boundary walls). Static. */
+  buildGroundFloor(plan: GroundFloor): THREE.Group {
+    const g = buildGroundFloor(plan);
+    this.root.add(g);
+    return g;
   }
   /** Build a room's static shell/decor + every entity in it. Deterministic (seed reset per room). */
   buildRoom(room: RoomDef, opts: ShellOptions): void {

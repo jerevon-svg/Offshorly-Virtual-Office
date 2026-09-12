@@ -1,11 +1,16 @@
 // vo3d build — walls, floor, glass run, exterior slab (promoted from designRoom3d/build.ts).
 import * as THREE from "three";
 import { rbox, shadowed } from "./helpers";
-import { glassMat, mat, metal, plastic } from "../render/Materials";
+import { glassMat, mat, plastic } from "../render/Materials";
 import type { ShellSpec } from "../world/WorldState";
 
 // ---- shell ------------------------------------------------------------------------------------------
-export type ShellOptions = { wallHeight: number; frontWall: "low" | "full" | "hidden" };
+export type ShellOptions = {
+  wallHeight: number;
+  frontWall: "low" | "full" | "hidden";
+  /** draw the room's own exterior slab (Phase 1 single-room mode); false once the ground-floor slab exists */
+  exterior?: boolean;
+};
 
 /** Room shell in ROOM-LOCAL units; caller positions the group at the room's world origin. */
 export function buildShell(rect: { w: number; d: number }, SHELL: ShellSpec, opts: ShellOptions): THREE.Group {
@@ -13,10 +18,12 @@ export function buildShell(rect: { w: number; d: number }, SHELL: ShellSpec, opt
   const W = rect.w, D = rect.d, T = SHELL.wallThickness, H = opts.wallHeight, R = SHELL.capRadius;
   const frontZ = SHELL.frontWallZ;
   const wallM = mat("wall", 0.96);
-  const m = SHELL.exteriorMargin;
-  const ext = rbox(W + 2 * m, 3, D + 2 * m, mat("exterior", 1), W / 2, -3, D / 2, 1);
-  ext.castShadow = false;
-  g.add(ext);
+  if (opts.exterior !== false) {
+    const m = SHELL.exteriorMargin;
+    const ext = rbox(W + 2 * m, 3, D + 2 * m, mat("exterior", 1), W / 2, -3, D / 2, 1);
+    ext.castShadow = false;
+    g.add(ext);
+  }
   const floor = rbox(W - 2 * T + 0.2, 1.2, frontZ - T + 0.2, mat("floor", 0.82), W / 2, -1.2, (T + frontZ) / 2, 0.2);
   floor.castShadow = false;
   g.add(floor);
@@ -31,17 +38,17 @@ export function buildShell(rect: { w: number; d: number }, SHELL: ShellSpec, opt
   g.add(rbox(T, H, gz.z0, wallM, rx, 0, gz.z0 / 2, R));
   g.add(rbox(T, H, frontZ + T - gz.z1, wallM, rx, 0, gz.z1 + (frontZ + T - gz.z1) / 2, R));
   const glassH = H - 6;
-  g.add(rbox(T, 3, gz.z1 - gz.z0, plastic("white"), rx, 0, (gz.z0 + gz.z1) / 2, 0.6));
+  // horizontal framing: the header runs the whole glass run; the sill and the mid transom stop at the doorway so the
+  // opening (z0 … doorZ1) is architecturally clear once the leaf is pocketed — only a flush floor track crosses it
+  const fixedMidZ = (gz.doorZ1 + gz.z1) / 2, fixedLen = gz.z1 - gz.doorZ1;
+  g.add(rbox(T, 3, fixedLen, plastic("white"), rx, 0, fixedMidZ, 0.6));
+  g.add(rbox(T, 0.6, gz.doorZ1 - gz.z0, plastic("white"), rx, 0, (gz.z0 + gz.doorZ1) / 2, 0.2));
   g.add(rbox(T, 3, gz.z1 - gz.z0, plastic("white"), rx, glassH + 3, (gz.z0 + gz.z1) / 2, 0.6));
   const postZs = new Set([gz.z0, gz.doorZ1, gz.z1]);
   for (let z = gz.doorZ1 + gz.postEvery; z < gz.z1 - 4; z += gz.postEvery) postZs.add(z);
   for (const z of postZs) g.add(rbox(T, glassH, 2, plastic("white"), rx, 3, z, 0.4));
-  g.add(rbox(T * 0.6, 1.4, gz.z1 - gz.z0, plastic("white"), rx, 3 + glassH * 0.55, (gz.z0 + gz.z1) / 2, 0.4));
-  const doorPane = new THREE.Mesh(new THREE.PlaneGeometry(gz.doorZ1 - gz.z0 - 2, glassH - 1), glassMat());
-  doorPane.rotation.y = Math.PI / 2;
-  doorPane.position.set(rx, 3 + glassH / 2, (gz.z0 + gz.doorZ1) / 2);
-  g.add(shadowed(doorPane, false, false));
-  g.add(rbox(1, 8, 1.2, metal(), rx - T / 2 - 0.6, 24, gz.doorZ1 - 6, 0.3));
+  g.add(rbox(T * 0.6, 1.4, fixedLen, plastic("white"), rx, 3 + glassH * 0.55, fixedMidZ, 0.4));
+  // the door LEAF (+ handle) is an entity (kind "sliding-door", rooms/design-room.ts) so it can move; only the frame lives here
   const pane = new THREE.Mesh(new THREE.PlaneGeometry(gz.z1 - gz.doorZ1 - 2, glassH - 1), glassMat());
   pane.rotation.y = Math.PI / 2;
   pane.position.set(rx, 3 + glassH / 2, (gz.doorZ1 + gz.z1) / 2);

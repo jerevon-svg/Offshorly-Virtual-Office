@@ -36,7 +36,7 @@ describe("vo3d nav — composed walkability over the READ-ONLY V1 grid", () => {
 
   it("rejects clicks outside the floor and on blocked cells; snaps valid clicks to the cell centre", () => {
     const wk = new Walkability(v1Static);
-    expect(planWalk(W(298, 125), { x: RECT.x - 20, z: RECT.z + 100 }, wk, inBounds)).toMatchObject({ ok: false, reason: "outside-room" });
+    expect(planWalk(W(298, 125), { x: RECT.x - 20, z: RECT.z + 100 }, wk, inBounds)).toMatchObject({ ok: false, reason: "outside-world" });
     expect(planWalk(W(298, 125), W(155, 105), wk, inBounds)).toMatchObject({ ok: false, reason: "unwalkable" }); // lead desk
     const r = planWalk(W(298, 125), W(270, 190), wk, inBounds);
     expect(r.ok).toBe(true);

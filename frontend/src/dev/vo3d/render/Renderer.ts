@@ -7,7 +7,7 @@ import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { SSAOPass } from "three/examples/jsm/postprocessing/SSAOPass.js";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
-import type { Rect } from "../core/coords";
+import type { Rect, Vec2 } from "../core/coords";
 
 export type CameraParams = { pitch: number; yaw: number; zoom: number };
 export type LightParams = { azimuth: number; elevation: number; keyIntensity: number; ambientIntensity: number; envIntensity: number; exposure: number };
@@ -30,6 +30,8 @@ export class Renderer {
   lightParams: LightParams = { ...DEFAULT_LIGHT };
   ssaoEnabled = false;
   private readonly CAM_DIST = 1500;
+  private readonly lightDir = new THREE.Vector3(0, 1, 0);
+  private shadowKey = "";
 
   constructor(canvas: HTMLCanvasElement, focus: Rect) {
     this.focus = focus;
@@ -60,7 +62,7 @@ export class Renderer {
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.12;
     this.controls.screenSpacePanning = true;
-    this.controls.minZoom = 0.4;
+    this.controls.minZoom = 0.12; // whole ground floor (1440 × 1244) fits at the default frustum
     this.controls.maxZoom = 6;
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
@@ -96,16 +98,35 @@ export class Renderer {
     this.controls.target.copy(this.target);
     this.controls.update();
   }
+  /** Frame `rect` in view: recentres the orbit target and returns the `camParams.zoom` that fits it. */
+  focusOn(rect: Rect, fill = 0.9): number {
+    this.target.set(rect.x + rect.w / 2, 8, rect.z + rect.d / 2 - 6);
+    this.camera.zoom = 1;
+    const aspect = window.innerWidth / window.innerHeight;
+    const halfNeeded = Math.max(rect.d / 2, rect.w / 2 / aspect) / fill;
+    return Math.round(((this.focus.d * 0.62 + 40) / halfNeeded) * 100) / 100;
+  }
   placeLight(): void {
     const l = this.lightParams;
     const az = THREE.MathUtils.degToRad(l.azimuth), el = THREE.MathUtils.degToRad(l.elevation);
-    const d = new THREE.Vector3(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el));
-    this.key.position.copy(this.key.target.position).addScaledVector(d, 800);
+    this.lightDir.set(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el));
     this.key.intensity = l.keyIntensity;
     this.hemi.intensity = l.ambientIntensity;
     this.scene.environmentIntensity = l.envIntensity;
     this.renderer.toneMappingExposure = l.exposure;
-    const s = Math.max(this.focus.w, this.focus.d) * 0.85;
+    this.updateShadowFrame(true);
+  }
+  /** The shadow frustum follows what is being looked at: centred on the orbit target, sized to the visible
+   *  height (clamped). Keeps Design-Room-scale shadow resolution while zoomed in on a 1440-unit floor. */
+  private updateShadowFrame(force = false): void {
+    const halfVisible = this.camera.top / Math.max(this.camera.zoom, 1e-6);
+    const s = Math.round(THREE.MathUtils.clamp(halfVisible * 1.7, 180, 760));
+    const t: Vec2 = { x: Math.round(this.target.x / 8) * 8, z: Math.round(this.target.z / 8) * 8 };
+    const key = `${s}:${t.x}:${t.z}`;
+    if (!force && key === this.shadowKey) return;
+    this.shadowKey = key;
+    this.key.target.position.set(t.x, 0, t.z);
+    this.key.position.copy(this.key.target.position).addScaledVector(this.lightDir, 800);
     const sc = this.key.shadow.camera;
     sc.left = -s; sc.right = s; sc.top = s; sc.bottom = -s;
     sc.updateProjectionMatrix();
@@ -124,6 +145,8 @@ export class Renderer {
   render(): void {
     this.renderer.info.reset();
     this.controls.update();
+    this.target.copy(this.controls.target); // panning moves the focus; GUI zoom/pitch then respect it
+    this.updateShadowFrame();
     if (this.ssaoEnabled) this.composer.render();
     else this.renderer.render(this.scene, this.camera);
   }

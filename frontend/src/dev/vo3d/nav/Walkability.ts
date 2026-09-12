@@ -2,7 +2,7 @@
 //   effective(cx,cy) = static(cx,cy) AND NOT dynamicFootprint(cx,cy) AND NOT reservation(cx,cy)
 // The static layer is the READ-ONLY V1 grid; dynamic footprints come from WorldState entities
 // flagged `navBlocker`; reservations are short-lived cell holds owned by interactions.
-import { CELL, cellKey, type Cell } from "../adapters/v1Grid";
+import { CELL, COLS, ROWS, cellCentre, cellKey, type Cell } from "../adapters/v1Grid";
 import type { Vec2 } from "../core/coords";
 import type { CellPredicate } from "./pathfind";
 import type { Entity, EntityId, Footprint, WorldState } from "../world/WorldState";
@@ -25,6 +25,18 @@ export function footprintCells(pos: Vec2, fp: Footprint): Cell[] {
       }
   }
   return out;
+}
+
+/** The static layer for a world larger than one room: the READ-ONLY V1 grid AND inside a registered
+ *  walkable world region (cell centre). Memoised per cell — regions never change after registration. */
+export function composeStatic(v1: CellPredicate, inWorld: (p: Vec2) => boolean, ...layers: CellPredicate[]): CellPredicate {
+  const memo = new Uint8Array(COLS * ROWS); // 0 unknown · 1 walkable · 2 not
+  return (cx, cy) => {
+    if (cx < 0 || cy < 0 || cx >= COLS || cy >= ROWS) return false;
+    const i = cy * COLS + cx;
+    if (memo[i] === 0) memo[i] = v1(cx, cy) && inWorld(cellCentre({ cx, cy })) && layers.every((l) => l(cx, cy)) ? 1 : 2;
+    return memo[i] === 1;
+  };
 }
 
 export class Walkability {

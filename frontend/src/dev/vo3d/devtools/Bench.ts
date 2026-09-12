@@ -161,6 +161,27 @@ export function snapshotRenderer(renderer: THREE.WebGLRenderer): RendererSnapsho
   };
 }
 
+export type SceneStats = { meshes: number; instancedMeshes: number; instances: number; triangles: number; geometries: number; materials: number; lights: number };
+/** Static complexity of a scene graph (independent of culling): counts unique geometries/materials, triangles incl. instances. */
+export function sceneStats(root: THREE.Object3D): SceneStats {
+  const geos = new Set<THREE.BufferGeometry>(), mats = new Set<THREE.Material>();
+  let meshes = 0, instancedMeshes = 0, instances = 0, triangles = 0, lights = 0;
+  root.traverse((o) => {
+    if ((o as THREE.Light).isLight) lights++;
+    const m = o as THREE.Mesh;
+    if (!m.isMesh) return;
+    meshes++;
+    geos.add(m.geometry);
+    for (const mm of Array.isArray(m.material) ? m.material : [m.material]) mats.add(mm);
+    const idx = m.geometry.getIndex();
+    const tris = idx ? idx.count / 3 : (m.geometry.getAttribute("position")?.count ?? 0) / 3;
+    const im = m as THREE.InstancedMesh;
+    if (im.isInstancedMesh) { instancedMeshes++; instances += im.count; triangles += tris * im.count; }
+    else triangles += tris;
+  });
+  return { meshes, instancedMeshes, instances, triangles: Math.round(triangles), geometries: geos.size, materials: mats.size, lights };
+}
+
 /** Minimal fixed overlay; updated by the page loop a few times per second. */
 export class Overlay {
   readonly el: HTMLDivElement;

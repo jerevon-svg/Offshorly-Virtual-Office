@@ -1,7 +1,7 @@
 // vo3d world — the AUTHORITATIVE logical state. No THREE here.
 // The Three.js scene mirrors this by stable entity id (render/SceneMirror.ts);
 // navigation derives its dynamic layer from it (nav/Walkability.ts).
-import type { Rect, Vec2 } from "../core/coords";
+import { pointInRect, type Rect, type Vec2 } from "../core/coords";
 import { Emitter } from "../core/events";
 
 export type EntityId = string; // "<roomId>/<local-name>", stable, human-readable
@@ -31,9 +31,26 @@ export type SeatCapability = {
   timings: { pullMs: number; sitMs: number; slideMs: number; standMs: number; returnMs: number };
 };
 
+/** Automatic sliding door (world coords). Consumed by interact/Door.ts (animation) and nav/clearance.ts (routing). */
+export type DoorCapability = {
+  /** unit slide axis from CLOSED (= the entity transform) toward OPEN, and how far the leaf travels */
+  slide: Vec2;
+  slideDistance: number;
+  /** the leaf's sweep band across the doorway: while Bon's body overlaps it the door must be open and may not close */
+  crossing: Rect;
+  /** approach region: a route that will pass through `crossing` starts the door opening from here */
+  trigger: Rect;
+  /** architecture the V1 door band does not know precisely (jambs, fixed pane, parked leaf). Only cells whose centre
+   *  lies in `band` (the doorway's cell column) are judged: they stay walkable only if a body of `bodyRadius` on the
+   *  cell centre clears every solid. Hall cells hugging the wall keep V1's cell-granularity verdict. */
+  clearance: { band: Rect; solids: Rect[]; bodyRadius: number };
+  timings: { openMs: number; closeMs: number; holdMs: number };
+};
+
 /** Small composable optional capabilities — add fields, never a union. */
 export type Capabilities = {
   seat?: SeatCapability;
+  door?: DoorCapability;
   /** foliage sway animation nodes are registered for this entity */
   sway?: true;
   /** can be selected/moved by the room editor */
@@ -77,16 +94,48 @@ export interface RoomDef {
   baked: Record<string, unknown>;
 }
 
+/** A registered walkable (or deliberately non-walkable) part of the ONE world, in world space.
+ *  Regions are checked in registration order; a point belongs to the first region whose rect contains it
+ *  and none of whose `holes` do. Navigation bounds = the union of `walkable` regions. */
+export type RegionKind = "room-floor" | "shared-floor" | "exterior";
+export interface WorldRegion {
+  id: string;
+  kind: RegionKind;
+  rect: Rect;
+  /** cut-outs (e.g. the shared floor minus every room footprint) */
+  holes?: Rect[];
+  /** false = modelled footprint whose interior is not yet walkable (unreconstructed room) */
+  walkable: boolean;
+  roomId?: string;
+}
+
 export type WorldChange = { changed: EntityId[]; version: number };
 
 export class WorldState {
   readonly rooms = new Map<string, RoomDef>();
   readonly entities = new Map<EntityId, Entity>();
+  readonly regions: WorldRegion[] = [];
+  /** the world's outer boundary (the V1 frame once the ground floor is registered) */
+  bounds: Rect | null = null;
   version = 0;
   readonly changes = new Emitter<WorldChange>();
 
   addRoom(room: RoomDef): void {
     this.rooms.set(room.id, room);
+  }
+  addRegion(region: WorldRegion): void {
+    if (this.regions.some((r) => r.id === region.id)) throw new Error(`duplicate region id ${region.id}`);
+    this.regions.push(region);
+  }
+  /** the first region owning `p` (registration order), or null when `p` is outside the modelled world */
+  regionAt(p: Vec2): WorldRegion | null {
+    if (this.bounds && !pointInRect(p, this.bounds)) return null;
+    for (const r of this.regions) if (pointInRect(p, r.rect) && !r.holes?.some((h) => pointInRect(p, h))) return r;
+    return null;
+  }
+  /** navigation bounds: inside a walkable registered region */
+  walkableAt(p: Vec2): boolean {
+    return this.regionAt(p)?.walkable === true;
   }
   addEntity(e: Entity): void {
     if (this.entities.has(e.id)) throw new Error(`duplicate entity id ${e.id}`);

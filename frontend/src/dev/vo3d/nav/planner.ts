@@ -8,11 +8,12 @@ import type { Walkability } from "./Walkability";
 
 export type NavResult =
   | { ok: true; destination: Vec2; path: Vec2[]; cell: Cell }
-  | { ok: false; reason: "outside-room" | "unwalkable" | "unreachable"; destination: Vec2 | null; cell: Cell | null };
+  | { ok: false; reason: "outside-world" | "unwalkable" | "unreachable"; destination: Vec2 | null; cell: Cell | null };
 
-/** `inBounds` restricts clicks to floors the world actually models (the V1 grid also knows corridors we have no geometry for). */
+/** `inBounds` restricts destinations to the walkable regions the world actually models (room floors that are
+ *  reconstructed, shared floor, exterior) — the V1 grid also knows interiors we have no geometry for yet. */
 export function planWalk(from: Vec2, clicked: Vec2, walkability: Walkability, inBounds: (p: Vec2) => boolean): NavResult {
-  if (!inBounds(clicked)) return { ok: false, reason: "outside-room", destination: null, cell: null };
+  if (!inBounds(clicked)) return { ok: false, reason: "outside-world", destination: null, cell: null };
   const walk = walkability.walkable;
   const cell = worldToCell(clicked);
   const destination = cellCentre(cell);

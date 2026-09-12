@@ -20,7 +20,7 @@ describe("vo3d world — Design Room in WORLD coordinates", () => {
     expect(RECT.z).toBeCloseTo(316.19, 2);
     const w = makeWorld();
     const ents = w.inRoom(DESIGN_ROOM.id);
-    expect(ents.filter((e) => e.kind !== "solid").length).toBe(22 + 11); // 22 manifest pieces + 11 plants
+    expect(ents.filter((e) => e.kind !== "solid").length).toBe(22 + 11 + 1); // 22 manifest pieces + 11 plants + the east sliding door
     for (const e of ents) expect(pointInRect(e.transform.pos, RECT), e.id).toBe(true);
     // furniture footprints equal the manifest boxes, centred on the entity
     const chair = w.get(CHAIR_4_ID);

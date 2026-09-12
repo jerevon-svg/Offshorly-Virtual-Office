@@ -2,8 +2,11 @@
 import * as THREE from "three";
 import GUI from "three/examples/jsm/libs/lil-gui.module.min.js";
 import { WorldState } from "../world/WorldState";
-import { DESIGN_ROOM, DESIGN_SOLIDS, CHAIR_4_ID, HERO_PLANT_ID, designRoomEntities } from "../rooms/design-room";
-import { Walkability } from "../nav/Walkability";
+import { DESIGN_ROOM, DESIGN_SOLIDS, CHAIR_4_ID, DOOR_ID, HERO_PLANT_ID, designRoomEntities } from "../rooms/design-room";
+import { Walkability, composeStatic } from "../nav/Walkability";
+import { clearanceLayer, worldClearances } from "../nav/clearance";
+import { SlidingDoor } from "../interact/Door";
+import { registerGroundFloor } from "../rooms/ground-floor";
 import { planWalk, type NavResult } from "../nav/planner";
 import { v1Static } from "../adapters/v1Grid";
 import { Renderer } from "../render/Renderer";
@@ -13,9 +16,9 @@ import { ControllerStack, NavigationController } from "../avatar/Controller";
 import { SeatInteraction } from "../interact/Seat";
 import { EditSession } from "../editor/EditSession";
 import { NavDebug } from "../devtools/NavDebug";
-import { Capture, FrameWindow, Overlay, PRESETS, describeDevice, snapshotRenderer, summarize, type CaptureSummary, type PresetId } from "../devtools/Bench";
+import { Capture, FrameWindow, Overlay, PRESETS, describeDevice, sceneStats, snapshotRenderer, summarize, type CaptureSummary, type PresetId } from "../devtools/Bench";
 import { BON_STANDING_HEIGHT, type AvatarLod } from "../adapters/v1Avatar";
-import { pointInRect, type Vec2 } from "../core/coords";
+import type { Rect, Vec2 } from "../core/coords";
 
 // ---- world -------------------------------------------------------------------------------------
 const world = new WorldState();
@@ -25,10 +28,14 @@ for (const e of designRoomEntities()) world.addEntity(e);
 DESIGN_SOLIDS.forEach((r, i) =>
   world.addEntity({ id: `${DESIGN_ROOM.id}/solid-${i}`, kind: "solid", roomId: DESIGN_ROOM.id, transform: { pos: { x: r.x + r.w / 2, z: r.z + r.d / 2 }, yaw: 0 }, footprint: { shape: "rect", w: r.w, d: r.d }, capabilities: {}, props: {}, source: { baked: true } }),
 );
-const inBounds = (p: Vec2): boolean => [...world.rooms.values()].some((r) => pointInRect(p, r.floorRect));
+// the ground floor: every V1 room footprint, shared floor, sidewalk, door openings (Design Room = the only reconstructed room)
+const plan = registerGroundFloor(world);
+const inBounds = (p: Vec2): boolean => world.walkableAt(p);
 
 // ---- nav ---------------------------------------------------------------------------------------
-const walkability = new Walkability(v1Static);
+// static = READ-ONLY V1 grid AND inside a walkable registered region AND clear of declared architecture (door jambs);
+// dynamic footprints + reservations compose on top
+const walkability = new Walkability(composeStatic(v1Static, inBounds, clearanceLayer(worldClearances(world))));
 walkability.syncFromWorld(world);
 
 // ---- render ------------------------------------------------------------------------------------
@@ -39,12 +46,14 @@ const params = {
   shadows: true, ao: false, sway: true, wallHeight: DESIGN_ROOM.shell.wallHeight, frontWall: "low" as "low" | "full" | "hidden",
   overlay: true, motion: false, preset: "B" as PresetId, captureSeconds: 30,
   avatar: true, avatarLod: 1 as AvatarLod, avatarLit: true, walkSpeed: 30,
-  clickToWalk: true, showGrid: false, showBlocked: false, showPath: true, showDestination: true,
+  clickToWalk: true, showGrid: false, showBlocked: false, showRegions: false, showPath: true, showDestination: true,
   editMode: false,
 };
 const R = new Renderer(canvas, DESIGN_ROOM.rect);
 const mirror = new SceneMirror(world, R.scene);
-mirror.buildRoom(DESIGN_ROOM, { wallHeight: params.wallHeight, frontWall: params.frontWall });
+mirror.buildGroundFloor(plan);
+const shellOpts = () => ({ wallHeight: params.wallHeight, frontWall: params.frontWall, exterior: false });
+mirror.buildRoom(DESIGN_ROOM, shellOpts());
 // solids have no builder: skip them in the mirror by giving them no view (buildEntity would throw) — filtered here
 // (they are never rendered; the baked group already draws them)
 
@@ -67,9 +76,9 @@ avatar.setYaw(Math.PI / 2);
 loadAvatar();
 
 // ---- devtools: nav debug, overlay, bench -------------------------------------------------------
-const navDebug = new NavDebug(R.scene, [DESIGN_ROOM.floorRect], 8);
+const navDebug = new NavDebug(R.scene, { bounds: plan.frame, walkable: walkability.staticLayer, v1: v1Static, regions: world.regions, openings: plan.openings, doors: worldClearances(world).length ? [world.get(DOOR_ID).capabilities.door!] : [] }, 8);
 navDebug.refreshDynamic(walkability);
-const navState = { last: "click the floor", cells: navDebug.cells, walkable: navDebug.walkable };
+const navState = { last: "click the floor", cells: navDebug.cells, walkable: navDebug.walkable, unbuilt: navDebug.unbuilt };
 const device = describeDevice(R.renderer);
 const overlay = new Overlay(document.body);
 const liveWindow = new FrameWindow(3000);
@@ -81,17 +90,29 @@ const benchState = { status: "idle", result: "" };
 function walkToGround(x: number, z: number): NavResult {
   if (stack.owner === "Interaction" || stack.owner === "Editor") {
     navState.last = `ignored: avatar owned by ${stack.owner}`;
-    return { ok: false, reason: "outside-room", destination: null, cell: null };
+    return { ok: false, reason: "outside-world", destination: null, cell: null };
   }
   const result = planWalk(avatar.position, { x, z }, walkability, inBounds);
   navDebug.showNav(avatar.position, result);
-  navState.last = result.ok ? `ok → cell ${result.cell.cx},${result.cell.cy} · ${result.path.length} waypoint(s)` : `rejected: ${result.reason}`;
+  const region = world.regionAt({ x, z });
+  navState.last = result.ok ? `ok → cell ${result.cell.cx},${result.cell.cy} · ${result.path.length} waypoint(s) · ${region?.id ?? "?"}` : `rejected: ${result.reason}${region && !region.walkable ? ` (${region.id} not reconstructed)` : ""}`;
   if (result.ok) navCtl.setPath(result.path);
   return result;
 }
-navCtl.onArrive = () => navDebug.clearNav();
+// dev-only tour: walk the given world points in a loop (visual verification + benchmark driver)
+let tour: { points: Vec2[]; i: number } | null = null;
+function startTour(points: Vec2[]): void { tour = { points, i: 0 }; walkToGround(points[0].x, points[0].z); }
+function stopTour(): void { tour = null; }
+navCtl.onArrive = () => {
+  navDebug.clearNav();
+  if (tour) { tour.i = (tour.i + 1) % tour.points.length; const p = tour.points[tour.i]; walkToGround(p.x, p.z); }
+};
 let seat = new SeatInteraction(avatar, stack, mirror.view(CHAIR_4_ID), chairSeat, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
 const seatState = { state: "idle", chairRestError: 0 };
+// the automatic east door: reacts to Bon's route, owns only its own leaf (navigation keeps owning Bon)
+const doorEntity = world.get(DOOR_ID);
+let door = new SlidingDoor(mirror.view(DOOR_ID), doorEntity.capabilities.door!, doorEntity.transform.pos);
+const doorState = { state: "closed", open: 0, drift: 0, cycles: 0 };
 const edit = new EditSession(world, mirror, walkability, stack);
 const editState = { selected: "none", placement: "—", drift: 0, blockedCells: walkability.dynamicBlockedKeys.length };
 function refreshEditVisuals(): void {
@@ -148,12 +169,16 @@ canvas.addEventListener("pointerup", (e) => {
 });
 
 // ---- GUI -------------------------------------------------------------------------------------------
-const gui = new GUI({ title: "VO 3D — V2 (Design Room)" });
+const gui = new GUI({ title: "VO 3D — V2 (ground floor)" });
 const refresh = () => gui.controllersRecursive().forEach((c) => c.updateDisplay());
 const cam = gui.addFolder("Camera");
 const applyCam = () => { R.camParams = { pitch: params.pitch, yaw: params.yaw, zoom: params.zoom }; R.placeCamera(); };
 cam.add(params, "pitch", 30, 90, 1).onChange(applyCam); cam.add(params, "yaw", -45, 45, 1).onChange(applyCam); cam.add(params, "zoom", 0.5, 3, 0.01).onChange(applyCam);
-cam.add({ reset: () => { params.pitch = 52; params.yaw = 0; params.zoom = 1.32; refresh(); applyCam(); } }, "reset").name("reset view");
+cam.add({ reset: () => { params.pitch = 52; params.yaw = 0; params.zoom = 1.32; R.setFocus(DESIGN_ROOM.rect); refresh(); applyCam(); } }, "reset").name("reset view");
+const focusOn = (rect: Rect, fill = 0.9) => { params.zoom = R.focusOn(rect, fill); refresh(); applyCam(); };
+cam.add({ f: () => focusOn(DESIGN_ROOM.rect, 0.78) }, "f").name("focus: Design Room");
+cam.add({ f: () => focusOn(plan.frame, 0.96) }, "f").name("focus: whole ground floor");
+cam.add({ f: () => { const p = avatar.position; focusOn({ x: p.x - 130, z: p.z - 100, w: 260, d: 200 }, 0.9); } }, "f").name("focus: Bon");
 const light = gui.addFolder("Light");
 const applyLight = () => { R.lightParams = { azimuth: params.lightAzimuth, elevation: params.lightElevation, keyIntensity: params.keyIntensity, ambientIntensity: params.ambientIntensity, envIntensity: params.envIntensity, exposure: params.exposure }; R.placeLight(); };
 light.add(params, "lightAzimuth", -180, 180, 1).onChange(applyLight); light.add(params, "lightElevation", 15, 85, 1).onChange(applyLight);
@@ -161,7 +186,7 @@ light.add(params, "keyIntensity", 0, 5, 0.05).onChange(applyLight); light.add(pa
 light.add(params, "envIntensity", 0, 1.5, 0.05).onChange(applyLight); light.add(params, "exposure", 0.5, 1.6, 0.01).onChange(applyLight);
 light.add(params, "shadows").onChange((v: boolean) => R.setShadows(v)); light.add(params, "ao").name("SSAO (off by default)").onChange((v: boolean) => (R.ssaoEnabled = v));
 const geo = gui.addFolder("Geometry");
-const rebuild = () => { seat.reset(); mirror.rebuildRoom(DESIGN_ROOM, { wallHeight: params.wallHeight, frontWall: params.frontWall }); seat = new SeatInteraction(avatar, stack, mirror.view(CHAIR_4_ID), chairSeat, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed); };
+const rebuild = () => { seat.reset(); mirror.rebuildRoom(DESIGN_ROOM, shellOpts()); door = new SlidingDoor(mirror.view(DOOR_ID), doorEntity.capabilities.door!, doorEntity.transform.pos); seat = new SeatInteraction(avatar, stack, mirror.view(CHAIR_4_ID), chairSeat, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed); };
 geo.add(params, "wallHeight", 20, 110, 1).onFinishChange(rebuild); geo.add(params, "frontWall", ["low", "full", "hidden"]).onChange(rebuild);
 geo.add(params, "sway").name("plant sway").onChange((v: boolean) => (mirror.sway.enabled = v));
 const av = gui.addFolder("Character (production GLB)");
@@ -175,19 +200,25 @@ sitGui.add({ sit: () => { const r = seat.sit(); if (r && !r.ok) seatState.state 
 sitGui.add({ stand: () => seat.stand() }, "stand").name("▶ Stand");
 sitGui.add({ reset: () => seat.reset() }, "reset").name("reset interaction");
 sitGui.add(seatState, "state").disable().listen(); sitGui.add(seatState, "chairRestError").disable().listen();
+const doorGui = gui.addFolder("Sliding door (design-room/door-east · automatic)");
+doorGui.add(doorState, "state").disable().listen(); doorGui.add(doorState, "open").name("open %").disable().listen(); doorGui.add(doorState, "drift").name("closed-transform drift").disable().listen(); doorGui.add(doorState, "cycles").disable().listen();
 const editGui = gui.addFolder("Room edit mode (hero plant only)");
 editGui.add(params, "editMode").name("✎ edit mode").onChange((v: boolean) => { edit.setEditMode(v); if (v) edit.select(HERO_PLANT_ID); refreshEditVisuals(); });
 editGui.add({ confirm: () => { const v = edit.confirm(); editState.placement = v.ok ? "committed" : `rejected: ${v.reason}`; refreshEditVisuals(); } }, "confirm").name("✔ confirm placement");
 editGui.add({ cancel: () => { edit.cancel(); refreshEditVisuals(); } }, "cancel").name("✖ cancel (revert to committed)");
 editGui.add({ reset: () => { edit.reset(); refreshEditVisuals(); } }, "reset").name("reset to original");
 editGui.add(editState, "selected").disable().listen(); editGui.add(editState, "placement").disable().listen(); editGui.add(editState, "drift").disable().listen(); editGui.add(editState, "blockedCells").name("dynamic blocked cells").disable().listen();
-const nav = gui.addFolder("Click-to-walk (V1 grid + composed walkability)");
+const nav = gui.addFolder("Click-to-walk (V1 grid ∧ world regions ∧ ¬dynamic)");
 nav.add(params, "clickToWalk").name("left-click floor → walk");
-nav.add(params, "showGrid").name("show walkable grid").onChange((v: boolean) => (navDebug.showGrid = v));
+nav.add(params, "showGrid").name("show grid (green walkable · grey unbuilt interior)").onChange((v: boolean) => (navDebug.showGrid = v));
 nav.add(params, "showBlocked").name("show blocked cells").onChange((v: boolean) => (navDebug.showBlocked = v));
+nav.add(params, "showRegions").name("show regions / footprints / doors / bounds").onChange((v: boolean) => (navDebug.showRegions = v));
+const HALL_EXEC_DOOR: Vec2 = { x: 728, z: 312 }; // outside stand cell in front of the Executive door
+nav.add({ go: () => startTour([HALL_EXEC_DOOR, chairSeat.approach]) }, "go").name("▶ tour: Design Room ↔ hall (exec door)");
+nav.add({ stop: () => stopTour() }, "stop").name("■ stop tour");
 nav.add(params, "showPath").name("show path").onChange((v: boolean) => (navDebug.showPath = v));
 nav.add(params, "showDestination").name("show destination").onChange((v: boolean) => (navDebug.showDestination = v));
-nav.add(navState, "last").disable().listen(); nav.add(navState, "cells").disable(); nav.add(navState, "walkable").disable();
+nav.add(navState, "last").disable().listen(); nav.add(navState, "cells").disable(); nav.add(navState, "walkable").disable(); nav.add(navState, "unbuilt").name("unbuilt interior cells").disable();
 const bench = gui.addFolder("Benchmark");
 function applyPreset(id: PresetId): void {
   const pr = PRESETS.find((x) => x.id === id)!;
@@ -226,6 +257,9 @@ function loop(): void {
     seat.update(dt / 1000);
     navCtl.update(dt / 1000);
     avatar.update(dt / 1000);
+    const bp = avatar.worldPosition();
+    door.update(dt / 1000, { x: bp.x, z: bp.z }, navCtl.path);
+    doorState.state = door.state; doorState.open = Math.round(door.t * 100); doorState.drift = door.state === "closed" ? Math.round(door.driftError() * 1e6) / 1e6 : doorState.drift; doorState.cycles = door.cycles;
     seatState.state = seat.status;
     seatState.chairRestError = Math.round(seat.chairRestError() * 1000) / 1000;
     avatarState.clip = avatar.currentClip ?? "";
@@ -246,10 +280,11 @@ loop();
 
 // dev console / test-driver surface (same shape as the prototype's __designRoom3d where it matters)
 (window as unknown as { __vo3d: unknown }).__vo3d = {
-  world, walkability, mirror, R, scene: R.scene, camera: R.camera, renderer: R.renderer, params, stack, avatar, avatarState, navCtl,
-  placeCamera: applyCam, placeLight: applyLight,
-  bench: { device, applyPreset, runCapture, snapshot: () => snapshotRenderer(R.renderer), live: () => liveWindow.summary(), summarize },
-  nav: { walkToGround, navState, planWalk: (from: Vec2, to: Vec2) => planWalk(from, to, walkability, inBounds) },
+  world, plan, walkability, mirror, R, scene: R.scene, camera: R.camera, renderer: R.renderer, params, stack, avatar, avatarState, navCtl,
+  placeCamera: applyCam, placeLight: applyLight, focusOn,
+  bench: { device, applyPreset, runCapture, snapshot: () => snapshotRenderer(R.renderer), live: () => liveWindow.summary(), summarize, sceneStats: () => sceneStats(R.scene) },
+  nav: { walkToGround, navState, startTour, stopTour, planWalk: (from: Vec2, to: Vec2) => planWalk(from, to, walkability, inBounds), regionAt: (x: number, z: number) => world.regionAt({ x, z }) },
   get seat() { return seat; }, seatState,
+  get door() { return door; }, doorState,
   edit: { session: edit, editState, movePlantTo: (x: number, z: number) => { edit.setEditMode(true); edit.select(HERO_PLANT_ID); const v = edit.preview({ x, z }); refreshEditVisuals(); return v; }, confirm: () => { const v = edit.confirm(); refreshEditVisuals(); return v; }, cancel: () => { edit.cancel(); refreshEditVisuals(); }, reset: () => { edit.reset(); refreshEditVisuals(); }, setEditMode: (v: boolean) => { params.editMode = v; edit.setEditMode(v); if (v) edit.select(HERO_PLANT_ID); refreshEditVisuals(); refresh(); } },
 };
