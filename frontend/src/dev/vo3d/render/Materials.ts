@@ -43,6 +43,23 @@ export const PALETTE = {
   walnut: 0x6b4a31, //     dark stained oak of the front-bar credenza runs + slat features (measured 107,74,49)
   walnutDark: 0x4a3222, // the reveals/grooves between their modules, and the slat panels' backing board
   plaster: 0xf3ece2, //    the front-bar cove walls: a warmer cream than PALETTE.wall (measured 243,236,226)
+
+  // ---- GAMING ROOM (Phase 5B) ------------------------------------------------------------------
+  // Routed through rooms/gaming.ts THEME, never referenced directly by the builders, so a future
+  // colour/material editor only has to rewrite the THEME table.
+  gamingViolet: 0x6d43d6, //    accent: chair bolsters, west beanbag, rug inlay (measured 109,67,214)
+  gamingBlue: 0x2f6fd0, //      accentAlt: east beanbag, nook pouf, station-B screens
+  gamingLed: 0x8257ff, //       the LED tape itself — brighter and bluer than the accent it lights
+  gamingDark: 0x1b1b22, //      desk tops, console carcasses, chair frames (measured 27,27,34)
+  gamingRug: 0x141a2e, //       the gamepad rug's navy pile (measured 20,26,46)
+  gamingSofa: 0x24242e, //      sofa body — near-black charcoal with a blue cast
+  gamingSofaSeat: 0x2e2e3a, //  its cushions, one step lighter so the seat reads separately
+  neonPink: 0xff5ac8,
+  neonCyan: 0x4fe8ff,
+  neonGreen: 0x5cf08a,
+  gamingPlaster: 0xd2ced3, //   this room's walls: a cooler, darker cream than PALETTE.plaster, so coloured
+  //                            spill has something to tint instead of clipping to white
+  gamingMood: 0xa5a2ab, //      multiply tint for this room's floor only (see build/gaming moodFloor)
 };
 
 // ---- shared materials -------------------------------------------------------------------

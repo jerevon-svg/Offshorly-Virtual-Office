@@ -8,6 +8,7 @@ import { Walkability, composeStatic } from "./nav/Walkability";
 import { registerGroundFloor } from "./rooms/ground-floor";
 import { MEETING_ROOM } from "./rooms/meeting";
 import { PROJECT_ROOM } from "./rooms/project";
+import { GAMING_ROOM } from "./rooms/gaming";
 import { RECEPTION_ROOM } from "./rooms/reception";
 import { clearanceLayer, worldClearances } from "./nav/clearance";
 import { planWalk } from "./nav/planner";
@@ -68,6 +69,7 @@ describe("vo3d avatar faces its movement direction", () => {
     const { av, nav } = rig(); const w = new WorldState(); w.addRoom(DESIGN_ROOM); w.addRoom(RECEPTION_ROOM); for (const e of designRoomEntities()) w.addEntity(e);
     w.addRoom(MEETING_ROOM);
     w.addRoom(PROJECT_ROOM);
+    w.addRoom(GAMING_ROOM);
     registerGroundFloor(w);
     const worldBounds = (p: Vec2) => w.walkableAt(p);
     const wk = new Walkability(composeStatic(v1Static, worldBounds, clearanceLayer(worldClearances(w)))); wk.syncFromWorld(w);

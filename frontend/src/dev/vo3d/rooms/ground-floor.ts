@@ -9,6 +9,7 @@ import { DESIGN_ROOM, SHELL } from "./design-room";
 import { RECEPTION_ROOM } from "./reception";
 import { MEETING_ROOM } from "./meeting";
 import { PROJECT_ROOM } from "./project";
+import { GAMING_ROOM } from "./gaming";
 
 export type FloorRoom = V1Room & {
   /** true = full interior modelled (walkable floor region + furniture); false = footprint/boundary only */
@@ -28,7 +29,7 @@ export interface GroundFloor {
   facadeZ: number;
 }
 
-export const RECONSTRUCTED_ROOM_IDS = new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id]);
+export const RECONSTRUCTED_ROOM_IDS = new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id]);
 const WALL_LESS_ROOM_IDS = new Set(["central-hub"]);
 
 /** PLACEHOLDER FAÇADE ALIGNMENT (Phase 3B). A front-row room's placeholder plate + south wall are derived

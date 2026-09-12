@@ -6,6 +6,9 @@ import { DESIGN_ROOM, DESIGN_SOLIDS, CHAIR_4_ID, DOOR_ID, HERO_PLANT_ID, SHELL a
 import { RECEPTION_ROOM, COUNTER_INTERACTION_ID, ENTRY_DOOR_EAST_ID, ENTRY_DOOR_WEST_ID, ENTRY_SCANNER_ID, ENTRY_ZONE, GATE_SCANNER_IDS, GATE_ZONES, KIOSK_INTERACTION_ID, LOUNGE_SEAT_IDS, receptionEntities } from "../rooms/reception";
 import { NORTH_STRIP as MEETING_NORTH_STRIP } from "../rooms/meeting";
 import { NORTH_STRIP as PROJECT_NORTH_STRIP } from "../rooms/project";
+import { GAMING_ROOM, NORTH_STRIP as GAMING_NORTH_STRIP, WEST_STRIP as GAMING_WEST_STRIP, gamingRoomEntities,
+  BAG_SEAT_IDS, DARTS_INTERACTION_ID, DOOR_LEAF_ID as GAMING_DOOR_ID, FRIDGE_INTERACTION_ID, GAMING_CHAIR_IDS,
+  POSTER_INTERACTION_ID, SOFA_SEAT_ID, TV_INTERACTION_ID as GAMING_TV_INTERACTION_ID } from "../rooms/gaming";
 import { openedCells, openedLayer, v2Static } from "../nav/v2Open";
 import { MEETING_ROOM, MEETING_CHAIR_IDS, KIOSK_INTERACTION_ID as MEETING_KIOSK_INTERACTION_ID, KIOSK_SCANNER_ID as MEETING_KIOSK_SCANNER_ID, KIOSK_ZONE as MEETING_KIOSK_ZONE, meetingRoomEntities } from "../rooms/meeting";
 import { PROJECT_ROOM, CONSOLE_INTERACTION_ID, SOFA_SEAT_IDS, TUB_SEAT_IDS, TV_INTERACTION_ID, projectRoomEntities } from "../rooms/project";
@@ -34,10 +37,12 @@ world.addRoom(DESIGN_ROOM);
 world.addRoom(RECEPTION_ROOM);
 world.addRoom(MEETING_ROOM);
 world.addRoom(PROJECT_ROOM);
+world.addRoom(GAMING_ROOM);
 for (const e of designRoomEntities()) world.addEntity(e);
 for (const e of receptionEntities()) world.addEntity(e);
 for (const e of meetingRoomEntities()) world.addEntity(e);
 for (const e of projectRoomEntities()) world.addEntity(e);
+for (const e of gamingRoomEntities()) world.addEntity(e);
 // baked decor solids (visual comes from the shell builder) participate in placement as footprint-only entities
 DESIGN_SOLIDS.forEach((r, i) =>
   world.addEntity({ id: `${DESIGN_ROOM.id}/solid-${i}`, kind: "solid", roomId: DESIGN_ROOM.id, transform: { pos: { x: r.x + r.w / 2, z: r.z + r.d / 2 }, yaw: 0 }, footprint: { shape: "rect", w: r.w, d: r.d }, capabilities: {}, props: {}, source: { baked: true } }),
@@ -51,7 +56,7 @@ const inBounds = (p: Vec2): boolean => world.walkableAt(p);
 // dynamic footprints + reservations compose on top
 // V2-LOCAL: the V1 grid PLUS the floor 4C's corrected north walls gave back (nav/v2Open.ts). The grid file
 // itself is untouched; only the two declared bands can add a cell.
-const openBands = [MEETING_NORTH_STRIP, PROJECT_NORTH_STRIP];
+const openBands = [MEETING_NORTH_STRIP, PROJECT_NORTH_STRIP, GAMING_NORTH_STRIP, GAMING_WEST_STRIP];
 const walkability = new Walkability(composeStatic(v2Static(v1Static, openedLayer(openBands)), inBounds, clearanceLayer(worldClearances(world))));
 walkability.syncFromWorld(world);
 
@@ -74,6 +79,7 @@ mirror.buildRoom(DESIGN_ROOM, shellOpts());
 mirror.buildRoom(RECEPTION_ROOM, shellOpts());
 mirror.buildRoom(MEETING_ROOM, shellOpts()); // Phase 4B
 mirror.buildRoom(PROJECT_ROOM, shellOpts());
+mirror.buildRoom(GAMING_ROOM, shellOpts()); // Phase 5B
 // solids have no builder: skip them in the mirror by giving them no view (buildEntity would throw) — filtered here
 // (they are never rendered; the baked group already draws them)
 
@@ -142,6 +148,10 @@ let entryDoor = new SlidingDoor(mirror.view(ENTRY_DOOR_WEST_ID), entryWest.capab
   closed: world.get(ENTRY_DOOR_EAST_ID).transform.pos,
 });
 const entryState = { state: "closed", open: 0, drift: 0, cycles: 0, scanner: 0 };
+// the Gaming Room's west entrance: a single glass leaf on the SAME SlidingDoor controller
+const gamingDoorEntity = world.get(GAMING_DOOR_ID);
+let gamingDoor = new SlidingDoor(mirror.view(GAMING_DOOR_ID), gamingDoorEntity.capabilities.door!, gamingDoorEntity.transform.pos);
+const gamingDoorState = { state: "closed", open: 0, drift: 0, cycles: 0 };
 // ---- Reception interactions (3E.3) ------------------------------------------------------------------
 // One focused interaction at a time, driven by the SAME pieces the Design Room uses: ApproachInteraction
 // for walk-up points, SeatInteraction for the lounge chairs, planWalk for every route.
@@ -149,13 +159,27 @@ const approachCtl = new ApproachInteraction(avatar, stack, (to) => planWalk(avat
 const receptionState = { focus: "none", status: "idle", seat: "idle" };
 /** Every FIXED lounge seat in the world, flattened to one slot per entry: Reception's two tub chairs plus
  *  Project's two sofas (two cushions each) and two tub chairs. One list, one controller — no new system. */
-const loungeSeats = [...LOUNGE_SEAT_IDS, ...SOFA_SEAT_IDS, ...TUB_SEAT_IDS].flatMap((id) => {
+const loungeSeats = [...LOUNGE_SEAT_IDS, ...SOFA_SEAT_IDS, ...TUB_SEAT_IDS, SOFA_SEAT_ID, ...BAG_SEAT_IDS].flatMap((id) => {
   const e = world.get(id);
   return e.capabilities.lounge!.slots.map((slot) => ({ id, slot, view: mirror.view(id), label: slot.id }));
 });
 let loungeSeat: LoungeSeatInteraction | null = null;
 /** The six Meeting conference chairs use the MOVABLE pattern — the same SeatInteraction the Design Room
  *  desk chair uses, one instance at a time. */
+let gamingSeat: SeatInteraction | null = null;
+const gamingState = { chair: "none", seat: "idle", chairRestError: 0, slot: "none", door: "closed" };
+function startGamingSit(index: number): void {
+  if (stack.owner === "Interaction") return;
+  loungeSeat?.reset();
+  loungeSeat = null;
+  if (gamingSeat && gamingSeat.state !== "idle") gamingSeat.reset();
+  const id = GAMING_CHAIR_IDS[index];
+  const e = world.get(id);
+  gamingSeat = new SeatInteraction(avatar, stack, mirror.view(id), e.capabilities.seat!, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+  gamingState.chair = `station ${index}`;
+  gamingSeat.sit();
+}
+
 let meetingSeat: SeatInteraction | null = null;
 const meetingState = { chair: "none", seat: "idle", chairRestError: 0, kioskScanner: 0 };
 /** Only an ENGAGED interaction is reset. SeatInteraction.reset() teleports the avatar back to its own
@@ -164,6 +188,7 @@ function clearSeats(): void {
   if (loungeSeat && loungeSeat.state !== "idle") loungeSeat.reset();
   loungeSeat = null;
   if (meetingSeat && meetingSeat.state !== "idle") meetingSeat.reset();
+  if (gamingSeat && gamingSeat.state !== "idle") gamingSeat.reset();
 }
 function startMeetingSit(index: number): void {
   approachCtl.cancel();
@@ -177,6 +202,7 @@ function startMeetingSit(index: number): void {
 function startApproach(entityId: string): void {
   clearSeats();
   meetingSeat = null;
+  gamingSeat = null;
   const spec = world.get(entityId).capabilities.approach!;
   const r = approachCtl.begin(spec);
   receptionState.focus = spec.label;
@@ -187,6 +213,7 @@ function startLoungeSit(index: number): void {
   approachCtl.cancel();
   clearSeats();
   meetingSeat = null;
+  gamingSeat = null;
   const s = loungeSeats[index];
   loungeSeat = new LoungeSeatInteraction(avatar, stack, s.view, s.slot, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
   receptionState.focus = s.label;
@@ -284,6 +311,7 @@ cam.add({ reset: () => { params.pitch = 52; params.yaw = 0; params.zoom = 1.32; 
 const focusOn = (rect: Rect, fill = 0.9) => { params.zoom = R.focusOn(rect, fill); refresh(); applyCam(); };
 cam.add({ f: () => focusOn(DESIGN_ROOM.rect, 0.78) }, "f").name("focus: Design Room");
 cam.add({ f: () => focusOn(RECEPTION_ROOM.rect, 0.86) }, "f").name("focus: Reception");
+cam.add({ f: () => focusOn(GAMING_ROOM.rect, 0.86) }, "f").name("focus: Gaming Room");
 const ENTRANCE_VIEW: Rect = { x: 590, z: 1060, w: 260, d: 170 };
 cam.add({ f: () => focusOn(ENTRANCE_VIEW, 0.9) }, "f").name("focus: Reception entrance");
 // the bottom architectural bar: Meeting → Reception → Project must read as ONE continuous structure
@@ -346,6 +374,26 @@ proj.add({ f: () => startApproach(TV_INTERACTION_ID) }, "f").name("▶ view the 
 proj.add(projState, "slot").disable().listen();
 proj.add(projState, "seat").disable().listen();
 proj.add(projState, "drift").name("furniture drift (always 0)").disable().listen();
+const game = gui.addFolder("Gaming room (5C)");
+["station 0", "station 1", "station 2", "station 3"].forEach((n, i) =>
+  game.add({ f: () => startGamingSit(i) }, "f").name(`▶ sit: ${n}`));
+loungeSeats.forEach((s2, i) => {
+  if (!s2.id.startsWith(GAMING_ROOM.id)) return;
+  game.add({ f: () => { gamingState.slot = s2.label; startLoungeSit(i); } }, "f").name(`▶ sit: ${s2.label}`);
+});
+game.add({ f: () => { gamingSeat?.stand(); loungeSeat?.stand(); } }, "f").name("▶ stand up (gaming)");
+game.add({ f: () => startApproach(GAMING_TV_INTERACTION_ID) }, "f").name("▶ pick a game");
+game.add({ f: () => startApproach(DARTS_INTERACTION_ID) }, "f").name("▶ throw darts");
+game.add({ f: () => startApproach(FRIDGE_INTERACTION_ID) }, "f").name("▶ grab a drink");
+game.add({ f: () => startApproach(POSTER_INTERACTION_ID) }, "f").name("▶ arcade print");
+game.add(gamingState, "chair").disable().listen();
+game.add(gamingState, "slot").disable().listen();
+game.add(gamingState, "seat").disable().listen();
+game.add(gamingState, "chairRestError").name("chair rest drift").disable().listen();
+game.add(gamingDoorState, "state").name("west door").disable().listen();
+game.add(gamingDoorState, "open").name("west door open %").disable().listen();
+game.add(gamingDoorState, "drift").name("west door drift").disable().listen();
+
 const editGui = gui.addFolder("Room edit mode (hero plant only)");
 editGui.add(params, "editMode").name("✎ edit mode").onChange((v: boolean) => { edit.setEditMode(v); if (v) edit.select(HERO_PLANT_ID); refreshEditVisuals(); });
 editGui.add({ confirm: () => { const v = edit.confirm(); editState.placement = v.ok ? "committed" : `rejected: ${v.reason}`; refreshEditVisuals(); } }, "confirm").name("✔ confirm placement");
@@ -435,6 +483,7 @@ function loop(): void {
   if (params.avatar) {
     seat.update(dt / 1000);
     meetingSeat?.update(dt / 1000);
+    gamingSeat?.update(dt / 1000);
     loungeSeat?.update(dt / 1000);
     approachCtl.update(dt / 1000);
     navCtl.update(dt / 1000);
@@ -443,6 +492,7 @@ function loop(): void {
     door.update(dt / 1000, { x: bp.x, z: bp.z }, navCtl.path);
     entryPath = navCtl.path;
     entryDoor.update(dt / 1000, { x: bp.x, z: bp.z }, navCtl.path);
+    gamingDoor.update(dt / 1000, { x: bp.x, z: bp.z }, navCtl.path);
     updateScanners({ x: bp.x, z: bp.z });
     entryState.state = entryDoor.state; entryState.open = Math.round(entryDoor.t * 100);
     entryState.drift = entryDoor.state === "closed" ? Math.round(entryDoor.driftError() * 1e6) / 1e6 : entryState.drift;
@@ -455,6 +505,13 @@ function loop(): void {
     meetingState.seat = meetingSeat ? meetingSeat.status : "idle";
     meetingState.chairRestError = meetingSeat ? Math.round(meetingSeat.chairRestError() * 1000) / 1000 : 0;
     meetingState.kioskScanner = Math.round(mirror.ambient.scannerActivation(MEETING_KIOSK_SCANNER_ID) * 100) / 100;
+    gamingState.seat = gamingSeat ? gamingSeat.status : loungeSeat ? loungeSeat.status : "idle";
+    gamingState.chairRestError = gamingSeat ? Math.round(gamingSeat.chairRestError() * 1000) / 1000 : 0;
+    gamingState.door = gamingDoor.state;
+    gamingDoorState.state = gamingDoor.state;
+    gamingDoorState.open = Math.round(gamingDoor.t * 100);
+    gamingDoorState.drift = gamingDoor.state === "closed" ? Math.round(gamingDoor.driftError() * 1e6) / 1e6 : gamingDoorState.drift;
+    gamingDoorState.cycles = gamingDoor.cycles;
     projState.seat = loungeSeat ? loungeSeat.status : "idle";
     projState.drift = loungeSeat ? Math.round(loungeSeat.furnitureDrift() * 1e6) / 1e6 : 0;
     seatState.chairRestError = Math.round(seat.chairRestError() * 1000) / 1000;
@@ -498,5 +555,13 @@ loop();
     counterId: COUNTER_INTERACTION_ID, kioskId: KIOSK_INTERACTION_ID, pick: pickInteraction },
   get door() { return door; }, doorState,
   get entryDoor() { return entryDoor; }, entryState,
+  gaming: {
+    state: gamingState, doorState: gamingDoorState, startSit: startGamingSit, startApproach,
+    chairs: GAMING_CHAIR_IDS,
+    seats: loungeSeats.map((s2, i) => ({ i, id: s2.id, slot: s2.label })).filter((r) => r.id.startsWith(GAMING_ROOM.id)),
+    startLoungeSit,
+    stand: () => { gamingSeat?.stand(); loungeSeat?.stand(); },
+    get seat() { return gamingSeat; }, get lounge() { return loungeSeat; }, get door() { return gamingDoor; },
+  },
   edit: { session: edit, editState, movePlantTo: (x: number, z: number) => { edit.setEditMode(true); edit.select(HERO_PLANT_ID); const v = edit.preview({ x, z }); refreshEditVisuals(); return v; }, confirm: () => { const v = edit.confirm(); refreshEditVisuals(); return v; }, cancel: () => { edit.cancel(); refreshEditVisuals(); }, reset: () => { edit.reset(); refreshEditVisuals(); }, setEditMode: (v: boolean) => { params.editMode = v; edit.setEditMode(v); if (v) edit.select(HERO_PLANT_ID); refreshEditVisuals(); refresh(); } },
 };

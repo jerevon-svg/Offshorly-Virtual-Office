@@ -3,19 +3,34 @@
 import * as THREE from "three";
 import type { Facing, Rect } from "../core/coords";
 import { cyl, lathe, localSize, placed, rbox, shadowed, slab, sphereGeo } from "./helpers";
-import { contactShadowMat, fabric, mat, metal, plastic, wood } from "../render/Materials";
+import { contactShadowMat, emissiveMat, fabric, mat, metal, plastic, wood, type MatKey } from "../render/Materials";
 import { book, laptop, monitor, mug, smallPot } from "./props";
 
 export type FurnitureKind =
   | "lead-desk" | "member-desk" | "desk-panel" | "curve-desk" | "side-desk"
   | "sofa" | "beanbag" | "rug" | "chair-a" | "chair-b" | "lead-chair"
-  | "tub-chair" | "round-table" | "conference-table" | "lounge-table";
-export const FURNITURE_KINDS: readonly FurnitureKind[] = ["lead-desk", "member-desk", "desk-panel", "curve-desk", "side-desk", "sofa", "beanbag", "rug", "chair-a", "chair-b", "lead-chair", "tub-chair", "round-table", "conference-table", "lounge-table"];
+  | "tub-chair" | "round-table" | "conference-table" | "lounge-table" | "gaming-chair";
+export const FURNITURE_KINDS: readonly FurnitureKind[] = ["lead-desk", "member-desk", "desk-panel", "curve-desk", "side-desk", "sofa", "beanbag", "rug", "chair-a", "chair-b", "lead-chair", "tub-chair", "round-table", "conference-table", "lounge-table", "gaming-chair"];
 export type FurnitureItem = { kind: FurnitureKind; rect: Rect; facing: Facing; mirrored: boolean;
   /** upholstery tone. Default = the Design/Gaming rooms' brighter green; "lounge" = reception's darker olive. */
-  tone?: "lounge" };
+  tone?: "lounge";
+  /** PER-PIECE COLOUR (Phase 5B). When set it overrides `tone` entirely. Rooms route these from their own
+   *  THEME table (see rooms/gaming.ts) so a future colour editor has one place to write. */
+  color?: MatKey;
+  /** seat/cushion colour; falls back to `color` */
+  colorSeat?: MatKey;
+  /** trim colour: chair bolsters, sofa pillows, rug inlay */
+  accent?: MatKey;
+  /** rug plan shape. Default (omitted) = the round rug the Design Room has always built. */
+  shape?: "rect";
+  /** emissive intensity of a rug's accent inlay — printed line art catching light, not a light source */
+  glow?: number;
+  /** SOFA cushion count. Default 2 (every pre-5C sofa). The formula below reduces to the historical
+   *  numbers exactly at 2, so Design's and Project's sofas are untouched to the last decimal. */
+  seats?: number };
 const seatFabric = (t: FurnitureItem, seat = false) =>
-  t.tone === "lounge" ? fabric(seat ? "loungeOliveSeat" : "loungeOlive") : fabric(seat ? "greenSeat" : "green");
+  t.color ? fabric(seat ? (t.colorSeat ?? t.color) : t.color)
+    : t.tone === "lounge" ? fabric(seat ? "loungeOliveSeat" : "loungeOlive") : fabric(seat ? "greenSeat" : "green");
 /** soft contact shadow under a lounge piece (a dark translucent plate just above the floor) */
 function contactShadow(g: THREE.Group, w: number, d: number, round = false): void {
   const m = round ? cyl(w / 2 + 3, 0.02, contactShadowMat(0.15), 0, 0.03, 0) : rbox(w + 5, 0.02, d + 5, contactShadowMat(0.15), 0, 0.03, 0, 2.5);
@@ -165,33 +180,68 @@ function sideDesk(item: FurnitureItem): THREE.Group {
   return g;
 }
 
+/** SOFA cushion layout, exported so a room's seat metadata is derived from the same numbers the geometry
+ *  uses. `lounge` tone cushions sit on an 8-deep deck + 2, 5.6 tall → their TOP surface is 15.6, and their
+ *  local x centre is backW/2 + 0.5 = 5.0 (backW is 9 for the lounge tone). */
+export const SOFA_CUSHION_GAP = 1.2;
+export const SOFA_CUSHION_MARGIN = 0.9;
+export const SOFA_CUSHION_TOP = 15.6;
+export const SOFA_CUSHION_LOCAL_X = 5.0;
+export const SOFA_ARM_W = 6.5;
+export const SOFA_BACK_W = 9;
+/** depth of one cushion for a lounge sofa `d` long with `seats` places */
+export const sofaCushionDepth = (d: number, seats: number): number =>
+  (d - 2 * SOFA_ARM_W - (seats - 1) * SOFA_CUSHION_GAP - 2 * SOFA_CUSHION_MARGIN) / seats;
+/** furniture-local z of cushion `i` */
+export const sofaCushionZ = (i: number, seats: number, cushD: number): number =>
+  (i - (seats - 1) / 2) * (cushD + SOFA_CUSHION_GAP);
+
 function sofa(item: FurnitureItem): THREE.Group {
   // along the left wall: soft deck, two puffy seat cushions, two back cushions
   // against a rounded back panel, rounded arms, short feet, two pillows.
   // The build is authored back-to-WEST, so `facing` is not used here (the manifest gives every sofa the
   // default "south"); `mirrored` flips it back-to-EAST for a sofa on the other side of a composition.
-  const g = placed(item.rect, "north");
-  if (item.mirrored) g.rotation.y = Math.PI;
+  // Authored back-to-WEST with its long axis in local z; `mirrored` flips it back-to-EAST. The Design and
+  // Project rooms only ever need those two and pass the manifest's default "south", so north/south keep
+  // the historical no-rotation behaviour exactly. A room whose sofa runs along X instead — Gaming's backs
+  // onto the south wall and faces the display — passes "east"/"west" and gets the quarter turn.
+  const spun = item.facing === "east" || item.facing === "west";
+  const g = placed(item.rect, spun ? item.facing : "north");
+  if (item.mirrored) g.rotation.y += Math.PI;
   const { w, d } = item.rect;
   const lounge = item.tone === "lounge";
   if (lounge) contactShadow(g, w, d);
   const deckH = 8, armW = lounge ? 6.5 : 5, backW = lounge ? 9 : 7;
   g.add(rbox(w, deckH, d, seatFabric(item), 0, 2, 0, 3, 3));
-  for (let i = 0; i < 4; i++) g.add(cyl(1, 2, mat("greenDark", 0.8), (i % 2 ? 1 : -1) * (w / 2 - 3), 0, (i < 2 ? 1 : -1) * (d / 2 - 4)));
+  const footMat = item.color ? mat("charcoal", 0.8) : mat("greenDark", 0.8);
+  for (let i = 0; i < 4; i++) g.add(cyl(1, 2, footMat, (i % 2 ? 1 : -1) * (w / 2 - 3), 0, (i < 2 ? 1 : -1) * (d / 2 - 4)));
   // lounge tone: a lower, deeper back and rounder arms/cushions so the piece reads as upholstery from the
   // game camera rather than a box; the Design Room's default proportions are unchanged
   const backH = lounge ? 18 : 22, armH = lounge ? 13 : 15;
-  g.add(rbox(backW, backH, d - 1, lounge ? fabric("loungeOlive") : fabric("greenDark"), -w / 2 + backW / 2, 2, 0, lounge ? 4 : 3, 3)); // back panel (wall side)
+  const backMat = item.color ? fabric(item.color) : lounge ? fabric("loungeOlive") : fabric("greenDark");
+  g.add(rbox(backW, backH, d - 1, backMat, -w / 2 + backW / 2, 2, 0, lounge ? 4 : 3, 3)); // back panel (wall side)
   for (const s of [-1, 1]) g.add(rbox(w - backW + 1, armH, armW, seatFabric(item), backW / 2, 2, s * (d / 2 - armW / 2), lounge ? 3.2 : 2.4, 3)); // arms
-  const cushW = w - backW - 1.5, cushD = (d - 2 * armW - 3) / 2;
-  for (const s of [-1, 1]) {
-    g.add(rbox(cushW, lounge ? 5.6 : 4.2, cushD, seatFabric(item, true), backW / 2 + 0.5, deckH + 2, s * (cushD / 2 + 0.6), lounge ? 2.8 : 2, 3)); // seat cushions
-    const back = rbox(lounge ? 6 : 4.5, lounge ? 13 : 12, cushD - 1, seatFabric(item, true), -w / 2 + backW + (lounge ? 2.2 : 1.6), deckH + 2, s * (cushD / 2 + 0.6), lounge ? 2.8 : 2, 3); // back cushions
+  const cushW = w - backW - 1.5;
+  const seats = Math.max(1, item.seats ?? 2);
+  // n cushions, SOFA_CUSHION_GAP between neighbours and SOFA_CUSHION_MARGIN inside each arm.
+  // At n = 2 this yields cushD = (d - 2*armW - 3)/2 and z = ±(cushD/2 + 0.6): the pre-5C numbers exactly.
+  const cushD = (d - 2 * armW - (seats - 1) * SOFA_CUSHION_GAP - 2 * SOFA_CUSHION_MARGIN) / seats;
+  for (let i = 0; i < seats; i++) {
+    const lz = sofaCushionZ(i, seats, cushD);
+    g.add(rbox(cushW, lounge ? 5.6 : 4.2, cushD, seatFabric(item, true), backW / 2 + 0.5, deckH + 2, lz, lounge ? 2.8 : 2, 3)); // seat cushions
+    const back = rbox(lounge ? 6 : 4.5, lounge ? 13 : 12, cushD - 1, seatFabric(item, true), -w / 2 + backW + (lounge ? 2.2 : 1.6), deckH + 2, lz, lounge ? 2.8 : 2, 3); // back cushions
     back.rotation.z = -0.12;
     g.add(back);
   }
   // pillows: the source shows ONE loose cushion per sofa in a matching tone; the Design Room keeps its two
-  if (lounge) {
+  if (item.accent) {
+    // a themed pair: the artwork's gaming sofa carries one accent cushion at each end
+    for (const s2 of [-1, 1]) {
+      const p = rbox(9, 3.4, 9, fabric(s2 < 0 ? item.accent : (item.colorSeat ?? item.accent)), backW / 2 + 1, deckH + 7.2, s2 * d * 0.26, 2, 3);
+      p.rotation.y = s2 * 0.38;
+      g.add(p);
+    }
+  } else if (lounge) {
     const p = rbox(9, 3.4, 9, fabric("cushionCream"), backW / 2 + 1, deckH + 7.6, -d * 0.16, 2, 3);
     p.rotation.y = 0.4;
     g.add(p);
@@ -211,17 +261,37 @@ function beanbag(item: FurnitureItem): THREE.Group {
   const r = Math.min(item.rect.w, item.rect.d) / 2;
   const h = r * 1.05;
   const prof: [number, number][] = [[0, 0.2], [r * 0.55, 0], [r * 0.9, h * 0.18], [r, h * 0.42], [r * 0.9, h * 0.72], [r * 0.6, h * 0.94], [r * 0.25, h], [0, h * 0.95]];
-  const bag = lathe(prof, fabric("green"), 0, 0, 0, 28);
+  const bag = lathe(prof, fabric(item.color ?? "green"), 0, 0, 0, 28);
   bag.rotation.y = 0.6;
   g.add(bag);
-  g.add(cyl(1.4, 0.5, mat("greenDark"), 0, h * 0.94, 0));
+  g.add(cyl(1.4, 0.5, mat(item.color ? "charcoal" : "greenDark", 0.9), 0, h * 0.94, 0)); // stitched crown button
   return g;
 }
 
 function rug(item: FurnitureItem): THREE.Group {
   const g = placed(item.rect, "north");
+  if (item.shape === "rect") {
+    // RECTANGULAR rug (Phase 5B): a low pile slab with an inset border inlay. `glow` makes the inlay
+    // faintly emissive — the Gaming Room's gamepad print reads as printed line art picking up the room's
+    // LEDs, which is why the intensity is a third of a real strip's and it is never animated.
+    const { w, d } = item.rect;
+    const base = rbox(w, 0.7, d, mat(item.color ?? "rug", 1), 0, 0, 0, 1.6);
+    base.castShadow = false;
+    g.add(base);
+    if (item.accent) {
+      const inlay = item.glow ? emissiveMat(item.accent, item.glow, 0.6) : mat(item.accent, 1);
+      const t = 2.2, inset = 7;
+      for (const s of [-1, 1]) {
+        const a = rbox(w - inset * 2, 0.12, t, inlay, 0, 0.7, s * (d / 2 - inset), 0.05);
+        const b = rbox(t, 0.12, d - inset * 2, inlay, s * (w / 2 - inset), 0.7, 0, 0.05);
+        a.castShadow = b.castShadow = false;
+        g.add(a, b);
+      }
+    }
+    return g;
+  }
   const r = Math.min(item.rect.w, item.rect.d) / 2;
-  const m = cyl(r, 0.7, mat("rug", 1), 0, 0, 0);
+  const m = cyl(r, 0.7, mat(item.color ?? "rug", 1), 0, 0, 0);
   m.castShadow = false;
   g.add(m);
   // woven rings
@@ -327,7 +397,7 @@ function roundTable(item: FurnitureItem): THREE.Group {
   g.add(cyl(R * 0.42, 1.1, mat("charcoal", 0.7), 0, 0, 0)); // foot disc
   g.add(cyl(R * 0.22, h - 3.4, mat("charcoal", 0.6), 0, 1.1, 0)); // pedestal
   g.add(cyl(R * 0.9, 1.0, mat("charcoal", 0.8), 0, h - 3.3, 0)); // dark reveal under the top
-  g.add(cyl(R, 2.6, mat("tableWood", 0.55), 0, h - 2.6, 0)); // top
+  g.add(cyl(R, 2.6, mat(item.color ?? "tableWood", 0.55), 0, h - 2.6, 0)); // top
   if (item.tone === "lounge") {
     contactShadow(g, 2 * R, 2 * R, true);
     // the source shows a small potted plant, a cup on a saucer and a dish on each table
@@ -379,6 +449,72 @@ function loungeTable(item: FurnitureItem): THREE.Group {
   return g;
 }
 
+/** RACING-STYLE GAMING CHAIR (Phase 5B). A bucket seat, not a task chair: high winged backrest with
+ *  shoulder bolsters, a separate headrest pillow on a visible spine, a lumbar cushion, deep side bolsters
+ *  on the seat pan, and a 5-star base on castors. `color` is the hull, `accent` the bolster/stripe trim —
+ *  both routed from the room's THEME so the accent is the obvious per-seat personalisation hook later. */
+/** Vertical proportions of the gaming chair, EXPORTED so rooms/gaming.ts's SeatCapability is derived from
+ *  the same numbers the mesh uses and the two can never drift. The cushion sits at seatH - 2.9 and is 3.6
+ *  tall, so its top surface is at 14.7 whatever the chair's plan size. */
+export const GAMING_CHAIR = { seatH: 14, cushionTop: 14.7, cushionLocalZ: 0.2 };
+
+function gamingChair(item: FurnitureItem): THREE.Group {
+  const g = placed(item.rect, item.facing);
+  const { w, d } = localSize(item.rect, item.facing);
+  const seatW = Math.min(w, d) * 0.72;
+  const seatH = GAMING_CHAIR.seatH;
+  const frame = mat(item.color ?? "charcoal", 0.5);
+  const hull = fabric(item.color ?? "charcoal");
+  const trim = fabric(item.accent ?? "greenSeat");
+  // ---- base: five tapered arms on castors, gas lift, hub ----
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2 + 0.3;
+    const len = seatW * 0.58;
+    const leg = rbox(len, 1.4, 1.8, frame, 0, 0.8, 0, 0.55);
+    leg.geometry.translate(len / 2, 0, 0);
+    leg.rotation.y = -a;
+    leg.rotation.z = 0.07;
+    g.add(leg);
+    const wheel = new THREE.Mesh(sphereGeo, mat("charcoal", 0.6));
+    wheel.scale.set(1.25, 1.05, 1.25);
+    wheel.position.set(Math.cos(a) * len * 0.96, 1.0, Math.sin(a) * len * 0.96);
+    g.add(shadowed(wheel));
+  }
+  g.add(cyl(1.35, seatH - 4.6, metal(), 0, 1.6, 0));
+  g.add(cyl(2.8, 1.4, frame, 0, seatH - 4.6, 0));
+  // ---- seat pan: flat centre with a raised bolster down each side ----
+  g.add(rbox(seatW * 0.98, 1.6, seatW * 0.96, frame, 0, seatH - 4.2, 0.2, 0.5));
+  g.add(rbox(seatW * 0.66, 3.6, seatW * 0.92, hull, 0, seatH - 2.9, 0.2, 1.4, 3));
+  for (const s of [-1, 1]) {
+    const bol = rbox(seatW * 0.2, 4.6, seatW * 0.86, trim, s * seatW * 0.4, seatH - 3.2, 0.2, 1.8, 3);
+    bol.rotation.z = -s * 0.18;
+    g.add(bol);
+  }
+  // ---- backrest: tall shell + shoulder wings, reclined about the rear seat edge ----
+  const back = new THREE.Group();
+  back.position.set(0, seatH - 1.4, seatW / 2 - 0.6);
+  back.rotation.x = -0.17;
+  const backH = 26;
+  back.add(rbox(seatW * 0.8, backH, 3.4, hull, 0, 0, 0, 1.5, 3));
+  for (const s of [-1, 1]) {
+    const wing = rbox(seatW * 0.19, backH * 0.9, 4.6, trim, s * seatW * 0.44, 0.6, -0.4, 1.7, 3);
+    wing.rotation.z = s * 0.05;
+    back.add(wing);
+  }
+  back.add(rbox(seatW * 0.5, 4.2, 4.0, trim, 0, 5.4, -1.4, 1.6, 3)); // lumbar cushion
+  back.add(rbox(seatW * 0.9, 1.6, 1.2, frame, 0, backH - 1.2, 0.9, 0.4)); // shell rim
+  // headrest pillow on its visible spine
+  back.add(rbox(seatW * 0.16, 4.2, 1.4, frame, 0, backH - 1.5, 0.2, 0.4));
+  back.add(rbox(seatW * 0.46, 5.2, 3.6, trim, 0, backH + 1.6, -1.0, 1.7, 3));
+  g.add(back);
+  // ---- armrests ----
+  for (const s of [-1, 1]) {
+    g.add(rbox(1.8, 6.2, 1.8, frame, s * (seatW / 2 + 0.6), seatH - 1.6, 1.2, 0.5));
+    g.add(rbox(2.8, 1.6, seatW * 0.52, mat("charcoal", 0.6), s * (seatW / 2 + 0.6), seatH + 4.6, 0.2, 0.7, 3));
+  }
+  return g;
+}
+
 /** a centred rounded rectangle for slab() */
 function roundedRect(w: number, d: number, r: number): THREE.Shape {
   const s = new THREE.Shape();
@@ -423,5 +559,7 @@ export function buildFurniture(item: FurnitureItem): THREE.Group {
       return roundTable(item);
     case "lead-chair":
       return chair(item, "lead");
+    case "gaming-chair":
+      return gamingChair(item);
   }
 }

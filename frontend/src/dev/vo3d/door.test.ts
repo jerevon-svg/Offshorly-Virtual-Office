@@ -5,6 +5,7 @@ import { DESIGN_ROOM, DESIGN_DOOR, DOOR_ID, CHAIR_4_ID, designRoomEntities, RECT
 import { registerGroundFloor } from "./rooms/ground-floor";
 import { MEETING_ROOM } from "./rooms/meeting";
 import { PROJECT_ROOM } from "./rooms/project";
+import { GAMING_ROOM } from "./rooms/gaming";
 import { RECEPTION_ROOM } from "./rooms/reception";
 import { Walkability, composeStatic } from "./nav/Walkability";
 import { clearanceLayer, worldClearances } from "./nav/clearance";
@@ -30,6 +31,7 @@ function rig() {
   for (const e of designRoomEntities()) world.addEntity(e);
   world.addRoom(MEETING_ROOM);
   world.addRoom(PROJECT_ROOM);
+  world.addRoom(GAMING_ROOM);
   registerGroundFloor(world);
   const inBounds = (p: Vec2) => world.walkableAt(p);
   const wk = new Walkability(composeStatic(v1Static, inBounds, clearanceLayer(worldClearances(world))));

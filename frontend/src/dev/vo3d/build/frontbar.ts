@@ -19,7 +19,7 @@
 // abutting runs (Meeting|Reception and Reception|Project) share a single post instead of printing two.
 import * as THREE from "three";
 import { cyl, rbox, shadowed } from "./helpers";
-import { contactShadowMat, emissiveMatUnique, facadeGlassMat, glowMat, mat, metal, plastic, wood } from "../render/Materials";
+import { contactShadowMat, emissiveMatUnique, facadeGlassMat, glowMat, mat, metal, plastic, wood, type MatKey } from "../render/Materials";
 import { animated } from "../render/Ambient";
 import { STRUCT } from "../rooms/reception";
 
@@ -282,6 +282,11 @@ export type CredenzaRunSpec = {
   facing: "north" | "south" | "east" | "west";
   /** module reveals run across the long axis; "x" for a run along x, "z" for a run along z */
   along: "x" | "z";
+  /** carcass colour. Default = the front bar's dark stained oak; the Gaming Room passes its own THEME so
+   *  its media wall is not a warm brown mass in a cool room. */
+  body?: MatKey;
+  /** toe kick / reveal colour, one step darker than `body` */
+  reveal?: MatKey;
   name?: string;
 };
 
@@ -292,20 +297,21 @@ export function credenzaRun(spec: CredenzaRunSpec): THREE.Group {
   const g = new THREE.Group();
   g.name = spec.name ?? "credenza-run";
   const { x, z, w, d, h, modules, along } = spec;
+  const body = spec.body ?? "walnut", reveal = spec.reveal ?? "walnutDark";
   const cx = x + w / 2, cz = z + d / 2;
-  g.add(rbox(w - 4, 3.2, d - 4, mat("walnutDark", 0.9), cx, 0, cz, 0.3)); // recessed toe kick
-  g.add(rbox(w, h - 4.4, d, mat("walnut", 0.78), cx, 3.2, cz, 0.5));
+  g.add(rbox(w - 4, 3.2, d - 4, mat(reveal, 0.9), cx, 0, cz, 0.3)); // recessed toe kick
+  g.add(rbox(w, h - 4.4, d, mat(body, 0.78), cx, 3.2, cz, 0.5));
   // the TOP is the face the game camera actually sees, so it carries the run's colour: the same dark
   // stained oak as the body, finished a little glossier so it reads as a worktop rather than a carcass.
-  g.add(rbox(w + 1.2, 1.2, d + 1.2, mat("walnut", 0.55), cx, h - 1.2, cz, 0.35));
+  g.add(rbox(w + 1.2, 1.2, d + 1.2, mat(body, 0.55), cx, h - 1.2, cz, 0.35));
   // module reveals: thin dark grooves standing 0.1 proud of the face so they never z-fight it
   const len = along === "x" ? w : d, from = along === "x" ? x : z;
   const face = spec.facing === "east" ? x + w + 0.1 : spec.facing === "west" ? x - 0.1 : spec.facing === "south" ? z + d + 0.1 : z - 0.1;
   for (let i = 1; i < modules; i++) {
     const c = from + (len * i) / modules;
     const groove = along === "x"
-      ? rbox(0.7, h - 6.4, 0.5, mat("walnutDark", 0.9), c, 4.2, face, 0.15)
-      : rbox(0.5, h - 6.4, 0.7, mat("walnutDark", 0.9), face, 4.2, c, 0.15);
+      ? rbox(0.7, h - 6.4, 0.5, mat(reveal, 0.9), c, 4.2, face, 0.15)
+      : rbox(0.5, h - 6.4, 0.7, mat(reveal, 0.9), face, 4.2, c, 0.15);
     g.add(groove);
   }
   // one slim pull per module, on the face

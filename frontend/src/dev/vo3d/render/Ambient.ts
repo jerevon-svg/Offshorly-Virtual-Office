@@ -64,6 +64,13 @@ export type AmbientFade = Common & {
 };
 export type AmbientSpec = AmbientPulse | AmbientTravel | AmbientBlip | AmbientFade;
 
+/** A surface that is POWERED but not animated — every glow plane, halo and static emissive fixture.
+ *  It costs nothing per frame; it exists so that switching the idle system off actually reads as the
+ *  electronics powering down, instead of leaving a room full of glow with nothing driving it. */
+type Powered = { m: { opacity?: number; emissiveIntensity?: number }; opacity: number | null; intensity: number | null };
+/** what a powered surface falls to when the system is switched off: spill vanishes, sources go nearly dark */
+const POWER_OFF = { glow: 0, emissive: 0.14 };
+
 type Tinted = { group: string | null; tintA: THREE.Color | null; tintB: THREE.Color | null; target: Tintable | null; gain: number };
 type Channel = Tinted &
   (
@@ -89,7 +96,36 @@ export class AmbientSystem {
   /** scanner id → { target 0|1, smoothed activation } */
   private readonly scanners = new Map<string, { target: number; value: number }>();
   private readonly scratch = new THREE.Color();
-  enabled = true;
+  /** powered-but-unanimated surfaces, keyed by room like the channels */
+  private readonly poweredByRoom = new Map<string, Powered[]>();
+  private _enabled = true;
+
+  /** Master switch for the idle system. Turning it OFF also powers DOWN every registered surface, so the
+   *  difference is immediately visible rather than just "the breathing stopped". */
+  get enabled(): boolean {
+    return this._enabled;
+  }
+  set enabled(on: boolean) {
+    if (on === this._enabled) return;
+    this._enabled = on;
+    this.applyPower(on);
+  }
+  private applyPower(on: boolean): void {
+    for (const list of this.poweredByRoom.values())
+      for (const p of list) {
+        if (p.opacity !== null) p.m.opacity = on ? p.opacity : POWER_OFF.glow;
+        if (p.intensity !== null) p.m.emissiveIntensity = on ? p.intensity : p.intensity * POWER_OFF.emissive;
+      }
+    if (on) return;
+    // animated channels settle to the dim end of their own range
+    for (const channels of this.byRoom.values())
+      for (const c of channels) {
+        if (c.kind === "fade") c.m.opacity = POWER_OFF.glow;
+        else if (c.kind === "pulse") c.m.emissiveIntensity = c.min * POWER_OFF.emissive;
+        else if (c.kind === "blip") c.m.emissiveIntensity = c.base * POWER_OFF.emissive;
+        else if (c.m) c.m.emissiveIntensity = c.fMin * POWER_OFF.emissive;
+      }
+  }
 
   get channelCount(): number {
     let n = 0;
@@ -98,6 +134,12 @@ export class AmbientSystem {
   }
   clearRoom(roomId: string): void {
     this.byRoom.delete(roomId);
+    this.poweredByRoom.delete(roomId);
+  }
+  get poweredCount(): number {
+    let n = 0;
+    for (const v of this.poweredByRoom.values()) n += v.length;
+    return n;
   }
 
   /** THE SCANNER STATE API. `active` = a person is in this scanner's zone.
@@ -118,10 +160,17 @@ export class AmbientSystem {
   /** Walk a freshly built room group and register every mesh tagged with `userData.ambient`. */
   collect(roomId: string, root: THREE.Object3D): number {
     const channels: Channel[] = [];
+    const lit: Powered[] = [];
     let n = 0;
     root.traverse((o) => {
       const spec = o.userData.ambient as AmbientSpec | undefined;
-      if (!spec) return;
+      if (!spec) {
+        if (o.userData.powered) {
+          const pm = (o as THREE.Mesh).material as (THREE.MeshStandardMaterial & THREE.MeshBasicMaterial) | undefined;
+          if (pm) lit.push({ m: pm, opacity: pm.transparent && pm.opacity !== undefined ? pm.opacity : null, intensity: pm.emissiveIntensity ?? null });
+        }
+        return;
+      }
       const material = (o as THREE.Mesh).material as (THREE.MeshStandardMaterial & THREE.MeshBasicMaterial) | undefined;
       const tinted: Tinted = {
         group: spec.group ?? null,
@@ -152,6 +201,8 @@ export class AmbientSystem {
       n++;
     });
     if (channels.length) this.byRoom.set(roomId, channels);
+    if (lit.length) this.poweredByRoom.set(roomId, lit);
+    if (!this._enabled) this.applyPower(false); // a room built while switched off comes up powered down
     return n;
   }
 
@@ -201,5 +252,12 @@ export class AmbientSystem {
 /** Tag a mesh for the ambient system. Returns the mesh so it can be added inline. */
 export function animated<T extends THREE.Object3D>(o: T, spec: AmbientSpec): T {
   o.userData.ambient = spec;
+  return o;
+}
+
+/** Tag a mesh as POWERED but not animated — glow planes, halos, static emissive fixtures. It gains no
+ *  per-frame cost; it only goes dark when the idle system is switched off. */
+export function powered<T extends THREE.Object3D>(o: T): T {
+  o.userData.powered = true;
   return o;
 }

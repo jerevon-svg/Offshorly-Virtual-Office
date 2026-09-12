@@ -26,12 +26,40 @@ export function laptop(cx: number, y0: number, cz: number): THREE.Group {
   g.add(lid);
   return g;
 }
-export function monitor(cx: number, y0: number, cz: number, w = 15, h = 8.5): THREE.Group {
+/** Phase 5B: the desk monitor gained a small options bag so a GAMING station can use the same builder.
+ *  Every field is optional and every default reproduces the original 15 x 8.5 office monitor exactly, so
+ *  existing callers are untouched. */
+export type MonitorOpts = {
+  /** screen surface — pass a uiScreenMat/emissive material for a powered display */
+  screen?: THREE.Material;
+  /** 1 = flat (default). 3 splits the panel into a centre and two toed-in wings: a curved ultrawide. */
+  segments?: number;
+  /** how far the wings toe in, radians (segments > 1 only) */
+  curve?: number;
+  /** slimmer bezel + lower stand, as gaming panels have */
+  slim?: boolean;
+};
+export function monitor(cx: number, y0: number, cz: number, w = 15, h = 8.5, opts: MonitorOpts = {}): THREE.Group {
   const g = new THREE.Group();
-  g.add(cyl(3.2, 0.5, mat("charcoal", 0.5), cx, y0, cz + 1.2, 2.6));
-  g.add(rbox(1.2, 4, 1.8, mat("charcoal", 0.5), cx, y0 + 0.5, cz + 1.2, 0.3));
-  g.add(rbox(w, h, 0.9, mat("charcoal", 0.45), cx, y0 + 3.6, cz + 0.6, 0.5));
-  g.add(rbox(w - 1.2, h - 1.2, 0.15, screenMat(), cx, y0 + 4.2, cz + 0.6 - 0.5, 0.2));
+  const screen = opts.screen ?? screenMat();
+  const bezel = opts.slim ? 0.7 : 1.2;
+  const standH = opts.slim ? 3.2 : 4;
+  g.add(cyl(opts.slim ? 4.2 : 3.2, 0.5, mat("charcoal", 0.5), cx, y0, cz + 1.2, opts.slim ? 3.4 : 2.6));
+  g.add(rbox(opts.slim ? 1.6 : 1.2, standH, 1.8, mat("charcoal", 0.5), cx, y0 + 0.5, cz + 1.2, 0.3));
+  const segs = Math.max(1, opts.segments ?? 1);
+  const curve = opts.curve ?? 0.14;
+  const segW = w / segs;
+  const yPanel = y0 + standH - 0.4;
+  for (let i = 0; i < segs; i++) {
+    const off = (i - (segs - 1) / 2) * segW;
+    const panel = new THREE.Group();
+    // toe the outer segments in around the panel centre so the run reads curved from the game camera
+    panel.position.set(cx + off * Math.cos(curve * Math.sign(off)), 0, cz + 0.6 + Math.abs(off) * Math.sin(curve) * (segs > 1 ? 1 : 0));
+    panel.rotation.y = -Math.sign(off) * curve * (segs > 1 ? 1 : 0);
+    panel.add(rbox(segW + 0.2, h, 0.9, mat("charcoal", 0.45), 0, yPanel, 0, 0.5));
+    panel.add(rbox(segW - bezel * (segs > 1 ? 0.15 : 1), h - bezel, 0.15, screen, 0, yPanel + bezel * 0.5, -0.5, 0.2));
+    g.add(panel);
+  }
   return g;
 }
 export function mug(cx: number, y0: number, cz: number): THREE.Group {

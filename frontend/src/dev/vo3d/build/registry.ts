@@ -7,12 +7,13 @@ import { buildFurniture, FURNITURE_KINDS, type FurnitureKind } from "./furniture
 import { plantFor, type PlantSpec } from "./plants";
 import type { SwayNode } from "../render/Sway";
 import { cyl, rbox, shadowed } from "./helpers";
-import { facadeGlassMat, glassMat, metal } from "../render/Materials";
+import { facadeGlassMat, glassMat, metal, type MatKey } from "../render/Materials";
 import { buildShell, type ShellOptions } from "./shell";
 import { buildDesignBaked, type DesignBaked } from "./baked";
 import { receptionStatic } from "./reception";
 import { meetingStatic } from "./meeting";
 import { projectStatic } from "./project";
+import { gamingStatic } from "./gaming";
 
 export type BuildResult = { group: THREE.Group; sway: SwayNode[] };
 
@@ -36,6 +37,7 @@ export const ROOM_STATIC: Record<string, RoomStaticBuilder> = {
   "reception-room": receptionStatic,
   "meeting-room": meetingStatic,
   "project-room": projectStatic,
+  "gaming-room": gamingStatic,
 };
 
 export function buildEntity(e: Entity): BuildResult {
@@ -48,6 +50,14 @@ export function buildEntity(e: Entity): BuildResult {
       facing: e.props.facing as Facing,
       mirrored: Boolean(e.props.mirrored),
       tone: e.props.tone === "lounge" ? "lounge" : undefined,
+      // Phase 5B colour/shape props (rooms/gaming.ts THEME). Absent on every pre-5B entity, so every
+      // existing piece keeps its historical materials untouched.
+      color: e.props.color as MatKey | undefined,
+      colorSeat: e.props.colorSeat as MatKey | undefined,
+      accent: e.props.accent as MatKey | undefined,
+      shape: e.props.shape === "rect" ? "rect" : undefined,
+      glow: e.props.glow === undefined ? undefined : Number(e.props.glow),
+      seats: e.props.seats === undefined ? undefined : Number(e.props.seats),
     });
     return { group, sway };
   }

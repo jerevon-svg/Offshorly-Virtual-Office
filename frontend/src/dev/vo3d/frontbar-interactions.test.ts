@@ -13,6 +13,7 @@ import {
   PROJECT_ROOM, NORTH_WALL as PROJECT_NORTH_WALL, ARMCHAIRS, CONSOLE_APPROACH, CONSOLE_INTERACTION_ID, SOFAS, SOFA_CUSHION_TOP, SOFA_SEAT_IDS,
   TUB_SEAT_IDS, TV_APPROACH, TV_INTERACTION_ID, NORTH_STRIP as PROJECT_STRIP, TILE_RECT as PROJECT_TILE, projectRoomEntities,
 } from "./rooms/project";
+import { GAMING_ROOM } from "./rooms/gaming";
 import { meetingStatic } from "./build/meeting";
 import { projectStatic } from "./build/project";
 import { TUB_CHAIR, TUB_CUSHION_TOP } from "./build/furniture";
@@ -33,7 +34,7 @@ const BODY_RADIUS = 10.5;
 
 function rig() {
   const world = new WorldState();
-  for (const r of [DESIGN_ROOM, RECEPTION_ROOM, MEETING_ROOM, PROJECT_ROOM]) world.addRoom(r);
+  for (const r of [DESIGN_ROOM, RECEPTION_ROOM, MEETING_ROOM, PROJECT_ROOM, GAMING_ROOM]) world.addRoom(r);
   for (const e of [...designRoomEntities(), ...receptionEntities(), ...meetingRoomEntities(), ...projectRoomEntities()]) world.addEntity(e);
   registerGroundFloor(world);
   const inBounds = (p: Vec2) => world.walkableAt(p);

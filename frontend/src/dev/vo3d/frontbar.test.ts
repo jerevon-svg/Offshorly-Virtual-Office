@@ -8,6 +8,7 @@ import { DESIGN_ROOM, SHELL, designRoomEntities } from "./rooms/design-room";
 import { RECEPTION_ROOM, FACADE, GATE, RECT as RECEPTION_RECT, STRUCT, TILE_RECT as RECEPTION_TILE, receptionEntities } from "./rooms/reception";
 import { MEETING_ROOM, EAST_EDGE, FACADE_DOOR as MEETING_DOOR, TABLE, TILE_RECT as MEETING_TILE, meetingRoomEntities } from "./rooms/meeting";
 import { PROJECT_ROOM, WEST_EDGE, ARMCHAIRS, FACADE_DOOR as PROJECT_DOOR, SOFAS, TILE_RECT as PROJECT_TILE, projectRoomEntities } from "./rooms/project";
+import { GAMING_ROOM } from "./rooms/gaming";
 import { receptionStatic } from "./build/reception";
 import { meetingStatic } from "./build/meeting";
 import { projectStatic } from "./build/project";
@@ -32,6 +33,7 @@ function rig() {
   world.addRoom(RECEPTION_ROOM);
   world.addRoom(MEETING_ROOM);
   world.addRoom(PROJECT_ROOM);
+  world.addRoom(GAMING_ROOM);
   for (const e of designRoomEntities()) world.addEntity(e);
   for (const e of receptionEntities()) world.addEntity(e);
   for (const e of meetingRoomEntities()) world.addEntity(e);
@@ -80,7 +82,8 @@ describe("vo3d front bar — Phase 4B: ONE continuous building", () => {
     ground.traverse((o) => { if (o.name.startsWith("footprint:")) names.push(o.name); });
     expect(names).not.toContain("footprint:meeting-room");
     expect(names).not.toContain("footprint:project-room");
-    expect(names).toHaveLength(7); // the 7 rooms still awaiting their own phase
+    expect(names).not.toContain("footprint:gaming-room"); // Phase 5B
+    expect(names).toHaveLength(6); // the 6 rooms still awaiting their own phase
   });
 
   it("the three tiled floors tile the whole bar at y = 0: abutting, never overlapping, one grout phase", () => {
