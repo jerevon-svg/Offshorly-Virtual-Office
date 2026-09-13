@@ -7,6 +7,7 @@ import type { NavResult } from "../nav/planner";
 import type { CellPredicate } from "../nav/pathfind";
 import type { Walkability } from "../nav/Walkability";
 import type { DoorCapability, WorldRegion } from "../world/WorldState";
+import type { Bucket, DiagnosticReport } from "../nav/diagnostics";
 import type { DoorOpening } from "../adapters/v1Floor";
 
 export type NavDebugWorld = {
@@ -34,6 +35,9 @@ export class NavDebug {
   private readonly pathDots = new THREE.Group();
   private readonly destRing: THREE.Mesh;
   readonly selRing: THREE.Mesh;
+  /** V1 ↔ derived-V2 comparison, one instanced layer per bucket (nav/diagnostics.ts) */
+  private readonly diagMeshes: Record<Bucket, THREE.InstancedMesh>;
+  private readonly strandedMesh: THREE.InstancedMesh;
   private readonly dotGeo = new THREE.SphereGeometry(1.1, 10, 8);
   private readonly dotMat = new THREE.MeshBasicMaterial({ color: 0x2f6fd6 });
   cells = 0; walkable = 0; unbuilt = 0;
@@ -65,6 +69,16 @@ export class NavDebug {
     let si = 0; for (const c of cells) if (c.kind === "s") { const p = cellCentre(c); special.setMatrixAt(si++, m.makeTranslation(p.x, 0.4, p.z)); } special.count = si; special.instanceMatrix.needsUpdate = true;
     this.walkableMesh.add(special);
     this.dynMesh = mk(0xf2b134, 0.5, 64);
+    // THE MIGRATION'S SAFETY NET, drawn: agreement is muted, disagreement is loud. Amber = floor the 2D
+    // painting wrongly blocked and geometry gives back; RED = floor V1 allowed and geometry refuses, the
+    // only bucket that ever needs auditing. Magenta = walkable but unreachable, which is a bug either way.
+    this.diagMeshes = {
+      "agree-walk": mk(0x2fbf71, 0.20, cells.length),
+      "agree-block": mk(0x5a5a5a, 0.18, cells.length),
+      "legacy-open": mk(0xf2b134, 0.55, cells.length),
+      "v2-obstruction": mk(0xd9463b, 0.60, cells.length),
+    };
+    this.strandedMesh = mk(0xd23fbf, 0.75, 256);
     // regions: outline per region (holes too); openings: blue frames across the wall band; bounds: white
     for (const r of world.regions) {
       const col = r.kind === "room-floor" && r.walkable ? 0x2fbf71 : REGION_COLOUR[r.kind] ?? 0xffffff;
@@ -87,11 +101,27 @@ export class NavDebug {
     this.selRing = new THREE.Mesh(new THREE.RingGeometry(selRadius - 0.8, selRadius + 0.6, 40), new THREE.MeshBasicMaterial({ color: 0xf2b134, side: THREE.DoubleSide, transparent: true, opacity: 0.9 }));
     this.selRing.rotation.x = -Math.PI / 2; this.selRing.visible = false;
     this.walkableMesh.visible = false; this.blockedMesh.visible = false; this.unbuiltMesh.visible = false; this.dynMesh.visible = false; this.regionLines.visible = false;
-    this.group.add(this.walkableMesh, this.blockedMesh, this.unbuiltMesh, this.dynMesh, this.regionLines, this.pathLine, this.pathDots, this.destRing, this.selRing);
+    for (const m2 of Object.values(this.diagMeshes)) m2.visible = false;
+    this.strandedMesh.visible = false;
+    this.group.add(this.walkableMesh, this.blockedMesh, this.unbuiltMesh, this.dynMesh, this.regionLines, this.pathLine, this.pathDots, this.destRing, this.selRing, ...Object.values(this.diagMeshes), this.strandedMesh);
   }
   set showGrid(v: boolean) { this.walkableMesh.visible = v; this.unbuiltMesh.visible = v; }
   set showBlocked(v: boolean) { this.blockedMesh.visible = v; this.dynMesh.visible = v; }
   set showRegions(v: boolean) { this.regionLines.visible = v; }
+  set showDiagnostic(v: boolean) { for (const m of Object.values(this.diagMeshes)) m.visible = v; this.strandedMesh.visible = v; }
+  /** paint the V1 ↔ derived comparison over the governed cells */
+  setDiagnostic(report: DiagnosticReport, verdicts: { cell: Cell; bucket: Bucket }[]): void {
+    const m = new THREE.Matrix4();
+    const n: Record<Bucket, number> = { "agree-walk": 0, "agree-block": 0, "legacy-open": 0, "v2-obstruction": 0 };
+    for (const v of verdicts) {
+      const p = cellCentre(v.cell);
+      this.diagMeshes[v.bucket].setMatrixAt(n[v.bucket]++, m.makeTranslation(p.x, 0.5, p.z));
+    }
+    for (const [k, mesh] of Object.entries(this.diagMeshes)) { mesh.count = n[k as Bucket]; mesh.instanceMatrix.needsUpdate = true; }
+    report.strandedCells.slice(0, 256).forEach((c, i) => { const p = cellCentre(c); this.strandedMesh.setMatrixAt(i, m.makeTranslation(p.x, 0.55, p.z)); });
+    this.strandedMesh.count = Math.min(256, report.strandedCells.length);
+    this.strandedMesh.instanceMatrix.needsUpdate = true;
+  }
   set showPath(v: boolean) { this.pathLine.visible = v; this.pathDots.visible = v; }
   showDestination = true;
   refreshDynamic(w: Walkability): number {

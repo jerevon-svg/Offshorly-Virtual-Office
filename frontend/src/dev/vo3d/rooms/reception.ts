@@ -18,6 +18,7 @@ import { TUB_CUSHION_TOP } from "../build/furniture";
 import { v1RoomRect } from "../adapters/v1Manifest";
 import { FACADE_Z } from "../adapters/v1Floor";
 import { CELL } from "../adapters/v1Grid";
+import { kindFootprint } from "./footprint";
 
 export const RECEPTION_ROOM_ID = "reception-room";
 export const RECT: Rect = v1RoomRect(RECEPTION_ROOM_ID); // x 332.33, z 838.47, w 748.955, d 399.102
@@ -135,11 +136,39 @@ export const FLOOR_RECT: Rect = { x: RECT.x, z: RECT.z, w: RECT.w, d: SIDEWALK_Z
  *  from the rect's north edge to the façade plane. */
 export const TILE_RECT: Rect = { x: RECT.x, z: RECT.z, w: RECT.w, d: FACADE.z - RECT.z };
 
+/** RECEPTION'S PHYSICAL ARCHITECTURE, as pure data for derived navigation (7C).
+ *
+ *  Reception has NO side walls and no north wall — the room is bounded by a waist-high glass BALUSTRADE on
+ *  the gate line and by the street façade on the south, and that is all. Only what physically stands in the
+ *  room is declared here; nothing is invented to make the room look enclosed, because nothing else is there.
+ *
+ *    • balustrade — two glass runs on the gate plane (z 890), t = wallThickness/2, stopping at `glassEnd`
+ *      either side so the gate cluster fills the middle. The three '+' LANES between the pedestals are left
+ *      wide open: they are the way in, and the pedestals below are what narrows them.
+ *    • façade     — the south glass wall on FACADE.z, broken by the V1 door span. The two leaves are the
+ *      entry door's own solids (automatic, so parked); the pilasters are already in its clearance band.
+ *
+ *  Every number is the one build/reception.ts extrudes. Nothing is measured off a mesh. */
+export const RECEPTION_WALLS: Rect[] = (() => {
+  const T = STRUCT.wallThickness;
+  const railT = T * 0.5;
+  const xEast = RECT.x + RECT.w;
+  return [
+    // north glass balustrade, west and east of the gate cluster
+    { x: RECT.x, z: GATE.z - railT / 2, w: GATE.glassEnd.west - RECT.x, d: railT },
+    { x: GATE.glassEnd.east, z: GATE.z - railT / 2, w: xEast - GATE.glassEnd.east, d: railT },
+    // south street façade, either side of the V1 door span
+    { x: RECT.x, z: FACADE.z, w: FACADE.door.x0 - RECT.x, d: T },
+    { x: FACADE.door.x1, z: FACADE.z, w: xEast - FACADE.door.x1, d: T },
+  ];
+})();
+
 export const RECEPTION_ROOM: RoomDef = {
   id: RECEPTION_ROOM_ID,
   name: "Reception",
   rect: RECT,
   floorRect: FLOOR_RECT,
+  wallSolids: RECEPTION_WALLS,
   // no `shell`: ShellSpec describes the Design Room's shape (solid north+west, glass east, low south band).
   // Reception is the inverse — glass north, glass south, nothing east or west — so it supplies its own
   // static builder instead of forcing a union onto ShellSpec. See build/reception.ts.
@@ -244,6 +273,10 @@ export const ENTRY_DOOR_EAST_ID = `${RECEPTION_ROOM_ID}/entry-door-east`;
 export const ENTRY_DOOR: DoorCapability = {
   slide: { x: -1, z: 0 }, // the WEST panel drives; the east one mirrors it (SlidingDoor `opposed`)
   slideDistance: ENTRY_LEAF_W,
+  automatic: true,
+  /** the two panels where they rest CLOSED, spanning the V1 opening between them */
+  leaf: { x: ENTRY_LEAF_CLOSED.west.x - ENTRY_LEAF_W / 2, z: ENTRY_DOOR_Z - STRUCT.wallThickness / 2, w: ENTRY_LEAF_W, d: STRUCT.wallThickness },
+  leafOpposed: { x: ENTRY_LEAF_CLOSED.east.x - ENTRY_LEAF_W / 2, z: ENTRY_DOOR_Z - STRUCT.wallThickness / 2, w: ENTRY_LEAF_W, d: STRUCT.wallThickness },
   /** the doorway itself: while a body overlaps this the door must be open and may not close */
   crossing: { x: FACADE.door.x0 - 4, z: ENTRY_DOOR_Z - 18, w: FACADE.door.x1 - FACADE.door.x0 + 8, d: 42 },
   /** approach region. At 30 units/s a body covers the 70-unit approach in 2.3 s and the leaves take 0.9 s,
@@ -296,8 +329,7 @@ function furnitureEntity(id: string, kind: string, x: number, z: number, w: numb
     kind,
     roomId: RECEPTION_ROOM_ID,
     transform: { pos: { x, z }, yaw: 0 },
-    footprint: { shape: "rect", w, d },
-    // no navBlocker: the V1 grid already blocks these cells and stays the single source of truth
+    footprint: kindFootprint(kind, w, d),
     capabilities: {},
     props: { w, d, facing, mirrored, tone: "lounge" },
   };
@@ -371,11 +403,37 @@ function approachEntities(): Entity[] {
   ];
 }
 
+/** RECEPTION'S STATIC ARCHITECTURE AS LOGICAL SOLIDS (7C).
+ *
+ *  build/reception.ts draws these; until now navigation knew about none of them and leaned on the V1 grid's
+ *  painted block. Each is authored from the SAME constant the builder extrudes.
+ *
+ *  The arc counter is a SECTOR, not a box — it is a 32-unit-deep ring segment sweeping ±60° about due
+ *  south, and the staff pocket inside it is real floor V1 blocks wholesale. Compass bearings: due south is
+ *  180°, so the counter spans 120°…240°. */
+export function receptionArchitectureSolids(): Entity[] {
+  const solid = (id: string, footprint: Entity["footprint"], x: number, z: number): Entity => ({
+    id: `${RECEPTION_ROOM_ID}/${id}`, kind: "solid", roomId: RECEPTION_ROOM_ID,
+    transform: { pos: { x, z }, yaw: 0 }, footprint, capabilities: {}, props: {}, source: { baked: true },
+  });
+  const rect = (id: string, r: Rect): Entity => solid(id, { shape: "rect", w: r.w, d: r.d }, r.x + r.w / 2, r.z + r.d / 2);
+  const out: Entity[] = [
+    solid("counter-solid", { shape: "sector", rIn: COUNTER.innerR, rOut: COUNTER.outerR, from: 180 - COUNTER.halfAngleDeg, to: 180 + COUNTER.halfAngleDeg }, COUNTER.centre.x, COUNTER.centre.z),
+    rect("kiosk-solid", { x: KIOSK.x - KIOSK.w / 2, z: KIOSK.z - KIOSK.d / 2, w: KIOSK.w, d: KIOSK.d }),
+  ];
+  // the four speed-gate pedestals and the accessible lane's divider post — the same bodies GATE_CLEARANCE
+  // already names, now as solids in their own right so the gate lanes are narrowed by geometry
+  GATE.pedestals.forEach((cx, i) => out.push(rect(`gate-pedestal-${i}`, { x: cx - GATE.pedestal.w / 2, z: GATE.pedestal.zCentre - GATE.pedestal.d / 2, w: GATE.pedestal.w, d: GATE.pedestal.d })));
+  out.push(solid("gate-bollard", { shape: "circle", r: GATE.bollard.r }, GATE.bollard.x, GATE.pedestal.zCentre));
+  PLANTERS.forEach((p, i) => out.push(solid(`planter-pot-${i}`, { shape: "circle", r: p.r }, p.x, p.z)));
+  return out;
+}
+
 /** Reception's 3C primary forms as world entities. The arc counter, kiosk and planter pots are static
  *  architecture-scale geometry (build/reception.ts); the lounge furniture and the two hero plants are
  *  entities so 3E can hang seat capabilities and the editor off them. */
 export function receptionEntities(): Entity[] {
-  const out: Entity[] = [...entryDoorEntities(), gateClearanceEntity(), ...approachEntities()];
+  const out: Entity[] = [...entryDoorEntities(), gateClearanceEntity(), ...approachEntities(), ...receptionArchitectureSolids()];
   for (const side of ["west", "east"] as const) {
     const m = side === "west" ? (v: number) => v : mirrorX;
     const s = LOUNGE_WEST.sofa;

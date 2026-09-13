@@ -5,6 +5,7 @@ import type { Rect, Vec2 } from "../core/coords";
 import type { DoorCapability, Entity, RoomDef, ShellSpec } from "../world/WorldState";
 import { v1FurnitureEntities, v1RoomRect } from "../adapters/v1Manifest";
 import { CELL } from "../adapters/v1Grid";
+import { BODY_RADIUS } from "../nav/clearance";
 import type { DesignBaked } from "../build/baked";
 import type { BoxSpec } from "../build/helpers";
 import type { PlantSpec } from "../build/plants";
@@ -75,6 +76,22 @@ export const BAKED: DesignBaked = BAKED_LOCAL;
 const wx = (x: number): number => RECT.x + x;
 const wz = (z: number): number => RECT.z + z;
 
+/** THE PHYSICAL WALLS, as pure data for derived navigation (7B).
+ *
+ *  Derived from the ShellSpec that already builds them — the same four runs build/floorplan.ts extrudes, in
+ *  world rects. NOT traversed out of the scene: this is the authored measurement, and the renderer is the
+ *  thing that mirrors it, never the other way round. The east wall is the glass run the sliding door sits
+ *  in, so it is declared whole here and the DOOR capability carves the opening back out (nav/solids.ts
+ *  treats a door's jambs and its live leaf as the only solids inside the doorway's own band). */
+const T = SHELL.wallThickness;
+export const DESIGN_WALLS: Rect[] = [
+  { x: RECT.x, z: RECT.z, w: RECT.w, d: T }, // north
+  { x: RECT.x, z: RECT.z, w: T, d: SHELL.frontWallZ + T }, // west
+  { x: wx(RECT.w - T), z: RECT.z, w: T, d: wz(SHELL.glass.z0) - RECT.z }, // east, north of the opening
+  { x: wx(RECT.w - T), z: wz(SHELL.glass.doorZ1), w: T, d: SHELL.frontWallZ + T - SHELL.glass.doorZ1 }, // east, south of the opening (fixed pane + parked leaf pocket)
+  { x: RECT.x, z: wz(SHELL.frontWallZ), w: RECT.w, d: T }, // south front band
+];
+
 export const DESIGN_ROOM: RoomDef = {
   id: DESIGN_ROOM_ID,
   name: "Design Team",
@@ -82,6 +99,7 @@ export const DESIGN_ROOM: RoomDef = {
   floorRect: { x: wx(SHELL.wallThickness), z: wz(SHELL.wallThickness), w: RECT.w - 2 * SHELL.wallThickness, d: SHELL.frontWallZ - SHELL.wallThickness },
   shell: SHELL,
   baked: BAKED,
+  wallSolids: DESIGN_WALLS,
 };
 
 /** world rects of baked decor that placement must treat as solid (visuals come from build/baked.ts) */
@@ -100,8 +118,6 @@ const DOOR_T = SHELL.wallThickness;
 const DOOR_LEAF_W = SHELL.glass.doorZ1 - SHELL.glass.z0 - 2;
 const DOOR_GLASS_H = SHELL.wallHeight - 6;
 const DOOR_SLIDE = SHELL.frontWallZ + DOOR_T - (SHELL.glass.doorZ1 - 1); // parks flush with the wall end
-/** Bon's skinned bounding box measures 19.6 × 16.9 units walking → 10.5 covers his widest extent */
-const BODY_RADIUS = 10.5;
 const DOOR_CLOSED: Vec2 = { x: wx(RECT.w - DOOR_T / 2 - 0.6), z: wz((SHELL.glass.z0 + SHELL.glass.doorZ1) / 2) }; // 0.6 inside the wall's centre plane: never z-fights the fixed pane it slides over
 const OPENING_Z0 = wz(SHELL.glass.z0);
 const PARKED_EDGE_Z = wz(SHELL.glass.z0 + 1 + DOOR_SLIDE);
@@ -109,7 +125,12 @@ const WALL_X = wx(RECT.w - DOOR_T);
 export const DESIGN_DOOR: DoorCapability = {
   slide: { x: 0, z: 1 },
   slideDistance: DOOR_SLIDE,
+  automatic: true,
   crossing: { x: DOOR_CLOSED.x - (BODY_RADIUS + 4), z: OPENING_Z0, w: 2 * (BODY_RADIUS + 4), d: PARKED_EDGE_Z - OPENING_Z0 },
+  /** the leaf where it rests CLOSED — spanning the opening, one unit inside each end. Derived navigation
+   *  slides this by `slide × slideDistance × openFraction`, which is what makes the doorway route only
+   *  while the door is actually open. */
+  leaf: { x: DOOR_CLOSED.x - DOOR_T / 2, z: OPENING_Z0 + 1, w: DOOR_T, d: DOOR_LEAF_W },
   trigger: { x: DOOR_CLOSED.x - 72, z: OPENING_Z0 - 24, w: 144, d: PARKED_EDGE_Z - OPENING_Z0 + 48 }, // 72 units ≈ 2.4 s of walking: the leaf is fully open long before Bon's body reaches it
   clearance: {
     bodyRadius: BODY_RADIUS,
@@ -138,12 +159,16 @@ function plantEntities(): Entity[] {
   return (BAKED_LOCAL.plants as PlantSpec[]).map((p, i) => {
     const id = `${DESIGN_ROOM_ID}/plant-${i}`;
     const hero = i === BAKED_LOCAL.plants.length - 1;
+    // 7B: a plant STANDING ON THE FLOOR is a logical obstacle and gets a circle footprint; one sitting on a
+    // cabinet or rack shelf (`y > 0`) or hanging from the wall is not in the way of anybody's feet and gets
+    // none. Radius is the pot, not the canopy — a body brushes past leaves.
+    const onFloor = !(p.hanging ?? false) && (p.y ?? 0) === 0;
     return {
       id,
       kind: "plant",
       roomId: DESIGN_ROOM_ID,
       transform: { pos: { x: wx(p.x), z: wz(p.z) }, yaw: 0 },
-      footprint: hero ? { shape: "circle", r: 8 } : undefined, // pot radius 7.2 + clearance
+      footprint: hero ? { shape: "circle", r: 8 } : onFloor ? { shape: "circle", r: p.r * 0.9 } : undefined, // hero: pot radius 7.2 + clearance
       placement: hero ? { movable: true, clearance: 1.5 } : undefined,
       capabilities: hero ? { sway: true, editable: true, navBlocker: true } : { sway: true },
       props: { r: p.r, h: p.h, hanging: p.hanging ?? false, y: p.y ?? 0 },

@@ -7,8 +7,21 @@ import { Emitter } from "../core/events";
 export type EntityId = string; // "<roomId>/<local-name>", stable, human-readable
 export type Transform2 = { pos: Vec2; yaw: number }; // floor objects: position + yaw only
 
-/** Logical footprint, centred on transform.pos (rect is axis-aligned in world space). */
-export type Footprint = { shape: "rect"; w: number; d: number } | { shape: "circle"; r: number };
+/** Logical footprint, centred on transform.pos (rect is axis-aligned in world space).
+ *
+ *  `solid` is the NAVIGATION semantics (7B): physical furniture defaults to SOLID and therefore carves the
+ *  derived walkability field of a reconstructed room. Decorative floor dressing — rugs, mats, floor inlays —
+ *  declares `solid: false`: it has an extent (placement still keeps pieces off it where that matters) but a
+ *  body walks straight over it. Nothing here is ever read from a render mesh. */
+export type FootprintShape =
+  | { shape: "rect"; w: number; d: number }
+  | { shape: "circle"; r: number }
+  /** an annulus SECTOR centred on transform.pos — what a curved bench run actually occupies.
+   *  Bearings are COMPASS degrees (0 = north, 90 = east), matching how curved architecture is authored. */
+  | { shape: "sector"; rIn: number; rOut: number; from: number; to: number };
+export type Footprint = FootprintShape & { solid?: boolean };
+/** the one place the default lives: absent `solid` means SOLID */
+export const isSolid = (fp: Footprint | undefined): boolean => fp !== undefined && fp.solid !== false;
 
 export type Placement = {
   movable: boolean;
@@ -38,6 +51,22 @@ export type DoorCapability = {
   slideDistance: number;
   /** the leaf's sweep band across the doorway: while Bon's body overlaps it the door must be open and may not close */
   crossing: Rect;
+  /** The CLOSED-state leaf footprint in world space. Derived navigation slides it along `slide` by
+   *  `slideDistance × openFraction` to get the leaf's live solid (nav/solids.ts). Pure data: the animated
+   *  view in interact/Door.ts is mirrored FROM the same numbers, never read back INTO them. */
+  leaf?: Rect;
+  /** the counter-sliding second panel of a BI-PARTING door; it moves by the negated `slide`, exactly as
+   *  SlidingDoor's `opposed` leaf does */
+  leafOpposed?: Rect;
+  /** AUTOMATIC: the door opens for whoever walks up to it, so it is never an obstacle to a ROUTE.
+   *
+   *  This matters more than it looks. SlidingDoor only opens when the remaining route already passes
+   *  through its crossing band — so if navigation treated the closed leaf as solid, no route would ever be
+   *  planned through the doorway, the door would never be asked to open, and the room would be sealed. An
+   *  automatic door is therefore modelled at its PARKED extent, which is also what `clearance.solids`
+   *  already describes ("parked leaf + fixed pane + wall"). The live-fraction path stays for a door that
+   *  genuinely obstructs — a manual or locked one — and is exercised by the tests. */
+  automatic?: true;
   /** approach region: a route that will pass through `crossing` starts the door opening from here */
   trigger: Rect;
   /** architecture the V1 door band does not know precisely (jambs, fixed pane, parked leaf). Only cells whose centre
@@ -100,7 +129,10 @@ export type Capabilities = {
   sway?: true;
   /** can be selected/moved by the room editor */
   editable?: true;
-  /** its footprint blocks navigation dynamically (the static V1 grid already covers V1-authored furniture) */
+  /** LEGACY (pre-7B) opt-in: its footprint blocks navigation dynamically on the V1-governed layer, because
+   *  the static V1 grid already covers V1-authored furniture and nothing else was consulted. In a room
+   *  running DERIVED navigation this flag is irrelevant — every solid footprint blocks automatically — and
+   *  Walkability skips derived-room entities on this layer so the two can never double-count. */
   navBlocker?: true;
 };
 
@@ -141,6 +173,10 @@ export interface RoomDef {
   shell?: ShellSpec;
   /** room-local measured decor for the static shell builder (credenza, boards, cabinets, rack, whiteboard) */
   baked?: Record<string, unknown>;
+  /** PURE-DATA world rects of this room's physical walls, for derived navigation (nav/solids.ts).
+   *  Taken from the room's own authored wall constants — NEVER traversed out of a THREE scene. A wall-less
+   *  room (the Central Hub) declares an empty array; `undefined` means "not migrated yet". */
+  wallSolids?: Rect[];
 }
 
 /** A registered walkable (or deliberately non-walkable) part of the ONE world, in world space.
@@ -213,13 +249,16 @@ export class WorldState {
     if (changed.length) this.changes.emit(change);
     return change;
   }
-  /** Solid footprints (as world rects; circles → bounding squares) of every entity except `except`. */
+  /** Solid footprints (as world rects; circles → bounding squares) of every entity except `except`.
+   *  Non-solid footprints (rugs, mats) are extents, not obstacles, and are skipped. */
   solidRects(except?: EntityId): Rect[] {
     const out: Rect[] = [];
     for (const e of this.entities.values()) {
-      if (e.id === except || !e.footprint) continue;
+      if (e.id === except || !e.footprint || !isSolid(e.footprint)) continue;
       const { pos } = e.transform;
       if (e.footprint.shape === "rect") out.push({ x: pos.x - e.footprint.w / 2, z: pos.z - e.footprint.d / 2, w: e.footprint.w, d: e.footprint.d });
+      // a sector's BOUNDING square: placement is a coarse keep-out test, and erring wide is the safe side
+      else if (e.footprint.shape === "sector") out.push({ x: pos.x - e.footprint.rOut, z: pos.z - e.footprint.rOut, w: 2 * e.footprint.rOut, d: 2 * e.footprint.rOut });
       else out.push({ x: pos.x - e.footprint.r, z: pos.z - e.footprint.r, w: 2 * e.footprint.r, d: 2 * e.footprint.r });
     }
     return out;

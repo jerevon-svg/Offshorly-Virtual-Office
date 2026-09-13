@@ -4,9 +4,7 @@ import GUI from "three/examples/jsm/libs/lil-gui.module.min.js";
 import { WorldState } from "../world/WorldState";
 import { DESIGN_ROOM, DESIGN_SOLIDS, CHAIR_4_ID, DOOR_ID, HERO_PLANT_ID, SHELL as DESIGN_SHELL, designRoomEntities } from "../rooms/design-room";
 import { RECEPTION_ROOM, COUNTER_INTERACTION_ID, ENTRY_DOOR_EAST_ID, ENTRY_DOOR_WEST_ID, ENTRY_SCANNER_ID, ENTRY_ZONE, GATE_SCANNER_IDS, GATE_ZONES, KIOSK_INTERACTION_ID, LOUNGE_SEAT_IDS, receptionEntities } from "../rooms/reception";
-import { NORTH_STRIP as MEETING_NORTH_STRIP } from "../rooms/meeting";
-import { NORTH_STRIP as PROJECT_NORTH_STRIP } from "../rooms/project";
-import { GAMING_ROOM, NORTH_STRIP as GAMING_NORTH_STRIP, WEST_STRIP as GAMING_WEST_STRIP, gamingRoomEntities,
+import { GAMING_ROOM, gamingRoomEntities,
   BAG_SEAT_IDS, DARTS_INTERACTION_ID, DOOR_LEAF_ID as GAMING_DOOR_ID, FRIDGE_INTERACTION_ID, GAMING_CHAIR_IDS,
   POSTER_INTERACTION_ID, SOFA_SEAT_ID, TV_INTERACTION_ID as GAMING_TV_INTERACTION_ID } from "../rooms/gaming";
 import { CENTRAL_HUB, OPEN_BANDS as HUB_OPEN_BANDS, centralHubEntities,
@@ -14,6 +12,11 @@ import { CENTRAL_HUB, OPEN_BANDS as HUB_OPEN_BANDS, centralHubEntities,
   MONUMENT_INTERACTION_ID as HUB_MONUMENT_ID, SHELF_INTERACTION_ID as HUB_SHELF_ID, TOUCAN_PERCH } from "../rooms/central-hub";
 import { loadBossStatues } from "../build/hub-monument";
 import { openedCells, openedLayer, v2Static } from "../nav/v2Open";
+import { DerivedNav } from "../nav/derived";
+import { worldToCell } from "../adapters/v1Grid";
+import { NAV_RADIUS } from "../nav/clearance";
+import { Connectivity } from "../nav/connectivity";
+import { compareToV1, summariseReport, verdictFor } from "../nav/diagnostics";
 import { MEETING_ROOM, MEETING_CHAIR_IDS, KIOSK_INTERACTION_ID as MEETING_KIOSK_INTERACTION_ID, KIOSK_SCANNER_ID as MEETING_KIOSK_SCANNER_ID, KIOSK_ZONE as MEETING_KIOSK_ZONE, meetingRoomEntities } from "../rooms/meeting";
 import { PROJECT_ROOM, CONSOLE_INTERACTION_ID, SOFA_SEAT_IDS, TUB_SEAT_IDS, TV_INTERACTION_ID, projectRoomEntities } from "../rooms/project";
 import { ApproachInteraction } from "../interact/Approach";
@@ -62,9 +65,24 @@ const inBounds = (p: Vec2): boolean => world.walkableAt(p);
 // dynamic footprints + reservations compose on top
 // V2-LOCAL: the V1 grid PLUS the floor 4C's corrected north walls gave back (nav/v2Open.ts). The grid file
 // itself is untouched; only the two declared bands can add a cell.
-const openBands = [MEETING_NORTH_STRIP, PROJECT_NORTH_STRIP, GAMING_NORTH_STRIP, GAMING_WEST_STRIP, ...HUB_OPEN_BANDS];
+// 7C — OPENBAND RETIREMENT. A band was always a stopgap: a room declaring, by hand, a patch of floor the
+// 2D painting over-blocked. Now that the room's own geometry answers the question, four of them are
+// RETIRED — Meeting's and Project's north strips and Gaming's north and west strips. Each was measured
+// first: every cell each one opened lies inside derived-governed space AND is reproduced as open by the
+// room's geometry, so removing them changes no cell anywhere (derived-nav.test.ts locks that).
+//
+// The Central Hub's six bands are RETAINED. `hub-apron-south` is NOT fully reproduced — derived navigation
+// blocks one of its cells, correctly, because a body does not fit that close to the monument — and the six
+// are the single 6A record of the island decision. They are inert (every cell they touch is derived-
+// governed), so keeping them costs nothing and retiring them would be deleting evidence for tidiness.
+const openBands = [...HUB_OPEN_BANDS];
 const walkability = new Walkability(composeStatic(v2Static(v1Static, openedLayer(openBands)), inBounds, clearanceLayer(worldClearances(world))));
-walkability.syncFromWorld(world);
+// 7C: GEOMETRY-DERIVED NAVIGATION for EVERY RECONSTRUCTED ROOM. Inside these six the V1 grid is not
+// consulted at all — the floor, the walls, the furniture footprints and the avatar's routing clearance are
+// the authority. The hall, the sidewalk and the five unreconstructed rooms stay exactly as V1 painted them.
+const DERIVED_ROOM_IDS = new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id]);
+const derivedNav = new DerivedNav(world, { roomIds: DERIVED_ROOM_IDS });
+walkability.attachDerived(derivedNav, world);
 
 // ---- render ------------------------------------------------------------------------------------
 const canvas = document.getElementById("stage") as HTMLCanvasElement;
@@ -74,7 +92,7 @@ const params = {
   shadows: true, ao: false, sway: true, ambient: true, wallHeight: DESIGN_SHELL.wallHeight, frontWall: "low" as "low" | "full" | "hidden",
   overlay: true, motion: false, preset: "B" as PresetId, captureSeconds: 30,
   avatar: true, avatarLod: 1 as AvatarLod, avatarLit: true, walkSpeed: 30,
-  clickToWalk: true, showGrid: false, showBlocked: false, showRegions: false, showPath: true, showDestination: true,
+  clickToWalk: true, showGrid: false, showBlocked: false, showRegions: false, showPath: true, showDestination: true, showDiagnostic: false,
   editMode: false,
 };
 const R = new Renderer(canvas, DESIGN_ROOM.rect);
@@ -118,9 +136,26 @@ avatar.setYaw(Math.PI / 2);
 loadAvatar();
 
 // ---- devtools: nav debug, overlay, bench -------------------------------------------------------
-const navDebug = new NavDebug(R.scene, { bounds: plan.frame, walkable: walkability.staticLayer, v1: v1Static, regions: world.regions, openings: plan.openings, doors: worldClearances(world).length ? [world.get(DOOR_ID).capabilities.door!] : [] }, 8);
+// the overlay must show the layer the avatar ACTUALLY walks on — derived inside the six reconstructed
+// rooms, V1 everywhere else — not the V1 static layer it used to draw
+const navDebug = new NavDebug(R.scene, { bounds: plan.frame, walkable: walkability.walkable, v1: v1Static, regions: world.regions, openings: plan.openings, doors: worldClearances(world).length ? [world.get(DOOR_ID).capabilities.door!] : [] }, 8);
 navDebug.refreshDynamic(walkability);
-const navState = { last: "click the floor", cells: navDebug.cells, walkable: navDebug.walkable, unbuilt: navDebug.unbuilt };
+const navState = { last: "click the floor", cells: navDebug.cells, walkable: navDebug.walkable, unbuilt: navDebug.unbuilt,
+  derived: "", disagreement: "", stranded: 0, clearance: "hover a cell", radius: NAV_RADIUS, updates: "0 invalidations / 0 cells" };
+/** Recompute the V1 ↔ derived comparison and repaint it. Cheap enough to run on demand (a plant move, a
+ *  door cycle), never per frame. */
+function refreshDiagnostic(): void {
+  const connected = new Connectivity(walkability.walkable, undefined, walkability.edgeOk);
+  const report = compareToV1(derivedNav, v1Static, walkability.navRadius, world, connected);
+  const verdicts = derivedNav.governedCells().map((c) => verdictFor(derivedNav, v1Static, walkability.navRadius, world, c, connected));
+  navDebug.setDiagnostic(report, verdicts);
+  navState.derived = `${report.governed} cells · ${[...DERIVED_ROOM_IDS].join(" + ")}`;
+  navState.disagreement = `legacy-open ${report.counts["legacy-open"]} · v2-obstruction ${report.counts["v2-obstruction"]}`;
+  navState.stranded = report.strandedCells.length;
+  navState.updates = `${walkability.stats.invalidations} invalidations / ${walkability.stats.cellsInvalidated} cells`;
+  console.info(summariseReport(report));
+}
+refreshDiagnostic();
 const device = describeDevice(R.renderer);
 const overlay = new Overlay(document.body);
 const liveWindow = new FrameWindow(3000);
@@ -138,6 +173,12 @@ function walkToGround(x: number, z: number): NavResult {
   navDebug.showNav(avatar.position, result);
   const region = world.regionAt({ x, z });
   navState.last = result.ok ? `ok → cell ${result.cell.cx},${result.cell.cy} · ${result.path.length} waypoint(s) · ${region?.id ?? "?"}` : `rejected: ${result.reason}${region && !region.walkable ? ` (${region.id} not reconstructed)` : ""}`;
+  const clicked = worldToCell({ x, z });
+  if (derivedNav.governs(clicked.cx, clicked.cy)) {
+    const near = derivedNav.nearestSolid(clicked.cx, clicked.cy);
+    navState.clearance = `${derivedNav.clearanceAt(clicked.cx, clicked.cy).toFixed(1)} / ${walkability.navRadius} needed · nearest ${near?.solid.id ?? "—"} (${near?.solid.from ?? ""})`;
+  } else navState.clearance = `cell ${clicked.cx},${clicked.cy} is V1-governed`;
+  navState.updates = `${walkability.stats.invalidations} invalidations / ${walkability.stats.cellsInvalidated} cells`;
   if (result.ok) navCtl.setPath(result.path);
   return result;
 }
@@ -453,6 +494,7 @@ nav.add(params, "clickToWalk").name("left-click floor → walk");
 nav.add(params, "showGrid").name("show grid (green walkable · grey unbuilt interior)").onChange((v: boolean) => (navDebug.showGrid = v));
 nav.add(params, "showBlocked").name("show blocked cells").onChange((v: boolean) => (navDebug.showBlocked = v));
 nav.add(params, "showRegions").name("show regions / footprints / doors / bounds").onChange((v: boolean) => (navDebug.showRegions = v));
+nav.add(params, "showDiagnostic").name("V1 ↔ derived V2 (amber = legacy over-block · red = real obstruction · magenta = stranded)").onChange((v: boolean) => (navDebug.showDiagnostic = v));
 const HALL_EXEC_DOOR: Vec2 = { x: 728, z: 312 }; // outside stand cell in front of the Executive door
 /** the two ends of a Reception entrance crossing (both V1-walkable; verified by nav tests) */
 const RECEPTION_INSIDE: Vec2 = { x: 600, z: 1096 };
@@ -471,6 +513,12 @@ nav.add({ stop: () => stopTour() }, "stop").name("■ stop tour");
 nav.add(params, "showPath").name("show path").onChange((v: boolean) => (navDebug.showPath = v));
 nav.add(params, "showDestination").name("show destination").onChange((v: boolean) => (navDebug.showDestination = v));
 nav.add(navState, "last").disable().listen(); nav.add(navState, "cells").disable(); nav.add(navState, "walkable").disable(); nav.add(navState, "unbuilt").name("unbuilt interior cells").disable();
+nav.add(navState, "radius").name("NAV_RADIUS (routing)").disable();
+nav.add(navState, "derived").name("derived-governed").disable().listen();
+nav.add(navState, "disagreement").name("V1 ↔ V2").disable().listen();
+nav.add(navState, "stranded").name("walkable but unreachable").disable().listen();
+nav.add(navState, "clearance").name("clearance at last click").disable().listen();
+nav.add(navState, "updates").name("incremental updates").disable().listen();
 const bench = gui.addFolder("Benchmark");
 function applyPreset(id: PresetId): void {
   const pr = PRESETS.find((x) => x.id === id)!;
@@ -563,6 +611,10 @@ function loop(): void {
     entryState.drift = entryDoor.state === "closed" ? Math.round(entryDoor.driftError() * 1e6) / 1e6 : entryState.drift;
     entryState.cycles = entryDoor.cycles;
     entryState.scanner = Math.round(mirror.ambient.scannerActivation(ENTRY_SCANNER_ID) * 100) / 100;
+    // 7B: the leaf is a LIVE SOLID. Its open fraction feeds derived navigation, which repaints only the
+    // cells the leaf can reach — so a closed door genuinely blocks its doorway and an open one genuinely
+    // does not, without a per-frame rebuild (setDoorOpenFraction returns early when nothing moved).
+    walkability.setDoorOpenFraction(world, DOOR_ID, door.offset / door.spec.slideDistance);
     doorState.state = door.state; doorState.open = Math.round(door.t * 100); doorState.drift = door.state === "closed" ? Math.round(door.driftError() * 1e6) / 1e6 : doorState.drift; doorState.cycles = door.cycles;
     seatState.state = seat.status;
     receptionState.status = approachCtl.status;

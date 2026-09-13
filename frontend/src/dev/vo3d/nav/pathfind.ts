@@ -3,6 +3,11 @@
 import { cellKey, type Cell } from "../adapters/v1Grid";
 
 export type CellPredicate = (cx: number, cy: number) => boolean;
+/** May a body step directly from `a` to `b`? Cells are adjacent, but a derived room's stand points move
+ *  WITHIN their cells, so the step itself has to be checked (nav/derived.ts). Default: always yes, which is
+ *  what the V1 grid has always assumed for adjacent cells. */
+export type EdgePredicate = (a: Cell, b: Cell) => boolean;
+const ANY_EDGE: EdgePredicate = () => true;
 
 const DIRS: [number, number, number][] = [
   [1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1],
@@ -12,7 +17,7 @@ function octile(a: Cell, b: Cell): number {
   const dx = Math.abs(a.cx - b.cx), dy = Math.abs(a.cy - b.cy);
   return Math.max(dx, dy) + (Math.SQRT2 - 1) * Math.min(dx, dy);
 }
-export function aStar(walk: CellPredicate, start: Cell, goal: Cell, maxNodes = 20000): Cell[] | null {
+export function aStar(walk: CellPredicate, start: Cell, goal: Cell, maxNodes = 20000, edgeOk: EdgePredicate = ANY_EDGE): Cell[] | null {
   if (!walk(start.cx, start.cy) || !walk(goal.cx, goal.cy)) return null;
   const open: { c: Cell; f: number }[] = [{ c: start, f: octile(start, goal) }];
   const g = new Map<string, number>([[cellKey(start), 0]]);
@@ -36,6 +41,7 @@ export function aStar(walk: CellPredicate, start: Cell, goal: Cell, maxNodes = 2
       const nx = c.cx + dx, ny = c.cy + dy;
       if (!walk(nx, ny)) continue;
       if (dx !== 0 && dy !== 0 && (!walk(c.cx + dx, c.cy) || !walk(c.cx, c.cy + dy))) continue;
+      if (!edgeOk(c, { cx: nx, cy: ny })) continue;
       const nk = `${nx},${ny}`;
       const ng = (g.get(ck) ?? Infinity) + cost;
       if (ng < (g.get(nk) ?? Infinity)) {
@@ -47,7 +53,7 @@ export function aStar(walk: CellPredicate, start: Cell, goal: Cell, maxNodes = 2
   }
   return null;
 }
-export function floodFill(walk: CellPredicate, start: Cell, limit = 20000): Set<string> {
+export function floodFill(walk: CellPredicate, start: Cell, limit = 20000, edgeOk: EdgePredicate = ANY_EDGE): Set<string> {
   const seen = new Set<string>([cellKey(start)]);
   const q: Cell[] = [start];
   while (q.length && seen.size < limit) {
@@ -55,7 +61,7 @@ export function floodFill(walk: CellPredicate, start: Cell, limit = 20000): Set<
     for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
       const n = { cx: c.cx + dx, cy: c.cy + dy };
       const k = cellKey(n);
-      if (seen.has(k) || !walk(n.cx, n.cy)) continue;
+      if (seen.has(k) || !walk(n.cx, n.cy) || !edgeOk(c, n)) continue;
       seen.add(k);
       q.push(n);
     }

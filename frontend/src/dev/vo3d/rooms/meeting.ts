@@ -19,6 +19,7 @@ import { CELL } from "../adapters/v1Grid";
 import { v1RoomRect } from "../adapters/v1Manifest";
 import { FACADE_Z } from "../adapters/v1Floor";
 import { GATE, RECT as RECEPTION_RECT, STRUCT } from "./reception";
+import { kindFootprint } from "./footprint";
 
 export const MEETING_ROOM_ID = "meeting-room";
 export const RECT: Rect = v1RoomRect(MEETING_ROOM_ID); // x 8, z 863.21, w 324.453, d 336.2
@@ -61,11 +62,21 @@ export const FLOOR_RECT: Rect = { x: RECT.x, z: WALL_Z, w: EAST_EDGE - RECT.x, d
  *  plate's grout lines continue Reception's without a seam no matter where the north wall sits. */
 export const TILE_RECT: Rect = { x: FLOOR_RECT.x, z: WALL_OUTER_Z, w: FLOOR_RECT.w, d: FACADE_Z - WALL_OUTER_Z };
 
+/** MEETING'S PHYSICAL WALLS, as pure data for derived navigation (7C) — the same three runs
+ *  build/meeting.ts extrudes, as world rects. Solid north + solid west, glass south on the façade plane,
+ *  and NOTHING east: the tile runs straight on into Reception, and no wall may be invented there. */
+export const MEETING_WALLS: Rect[] = [
+  { x: RECT.x, z: WALL_OUTER_Z, w: EAST_EDGE - RECT.x, d: WALL_T }, // north
+  { x: RECT.x, z: WALL_Z, w: WEST_WALL_X - RECT.x, d: FACADE_Z - WALL_Z }, // west
+  { x: WEST_WALL_X, z: FACADE_Z, w: EAST_EDGE - WEST_WALL_X, d: STRUCT.wallThickness }, // south façade glazing
+];
+
 export const MEETING_ROOM: RoomDef = {
   id: MEETING_ROOM_ID,
   name: "Meeting Room",
   rect: RECT,
   floorRect: FLOOR_RECT,
+  wallSolids: MEETING_WALLS,
   // no `shell`: ShellSpec describes the Design Room's arrangement. Meeting is solid north + solid west,
   // glass south and NOTHING east — it supplies its own static builder (build/meeting.ts).
 };
@@ -144,7 +155,7 @@ function furnitureEntity(id: string, kind: string, x: number, z: number, w: numb
     kind,
     roomId: MEETING_ROOM_ID,
     transform: { pos: { x, z }, yaw: 0 },
-    footprint: { shape: "rect", w, d },
+    footprint: kindFootprint(kind, w, d),
     // no navBlocker: the V1 grid already blocks these cells and stays the single source of truth
     capabilities: {},
     props: { w, d, facing, mirrored: false, ...(tone ? { tone } : {}) },
@@ -157,6 +168,10 @@ function plantEntity(id: string, x: number, z: number, r: number, h: number, y =
     kind: "plant",
     roomId: MEETING_ROOM_ID,
     transform: { pos: { x, z }, yaw: 0 },
+    // 7B: a plant standing ON THE FLOOR is a logical obstacle; one on a shelf or in a planter box is not.
+    // Radius is the pot, not the canopy — a body brushes past leaves. Inert until this room runs derived
+    // navigation; authored now so the rollout is one less thing to remember.
+    footprint: y === 0 ? { shape: "circle", r: r * 0.9 } : undefined,
     capabilities: { sway: true },
     props: { r, h, hanging: false, y, ...(lush ? { lush } : {}), ...(pot ? {} : { pot: false }) },
     source: { baked: true },

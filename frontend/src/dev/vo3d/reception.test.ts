@@ -412,17 +412,45 @@ describe("vo3d Reception — Phase 3D.1 logo inlay & ambient electronics", () =>
     expect(logoAspect()!).toBeCloseTo(SVG_VIEWBOX_ASPECT, 1);
   });
 
-  it("the inlay is real extruded geometry lying on the floor — not a plane, not floating", () => {
+  it("is a floating acrylic sign: no backing plaque, lit silhouettes under real extruded letterforms", () => {
     const g = offshorlyInlay({ area: LOGO_AREA });
     const boxes = meshBoxes(g);
-    expect(boxes.length, "pan + 4 trim bars + one mesh per fill").toBeGreaterThanOrEqual(6);
+    expect(boxes.length, "a shadow + a halo per shape, plus one extruded body per fill").toBeGreaterThanOrEqual(6);
     const all = boxes.reduce((a, b) => a.union(b), new THREE.Box3().makeEmpty());
-    expect(all.min.y).toBeGreaterThanOrEqual(-EPS); // sits ON the floor, never below or hovering
-    expect(all.max.y).toBeLessThan(1.5); // a flush architectural inlay, not a sign standing up
-    // the letterforms have genuine thickness (they are extrusions, not flat quads)
-    const letters = boxes.filter((b) => b.min.y > 0.3);
-    expect(letters.length).toBeGreaterThanOrEqual(2);
-    for (const b of letters) expect(b.max.y - b.min.y).toBeGreaterThan(0.2);
+    expect(all.min.y).toBeGreaterThanOrEqual(-EPS); // mounted ON the tile, never below or hovering
+    expect(all.max.y).toBeLessThan(1.5); // flush architectural signage, not a sign standing up
+
+    // classify by material: an array material is a letterform body, additive is a halo, the rest is shadow
+    const kind = (m: THREE.Mesh): "body" | "halo" | "shadow" =>
+      Array.isArray(m.material) ? "body" : (m.material as THREE.MeshBasicMaterial).blending === THREE.AdditiveBlending ? "halo" : "shadow";
+    const meshes: THREE.Mesh[] = [];
+    g.traverse((o) => { if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh); });
+    const bodies = meshes.filter((m) => kind(m) === "body");
+    const halos = meshes.filter((m) => kind(m) === "halo");
+    const shadows = meshes.filter((m) => kind(m) === "shadow");
+
+    // ONE body per brand fill, with genuine thickness — extrusions, not flat quads
+    expect(bodies).toHaveLength(2);
+    for (const b of bodies) expect(new THREE.Box3().setFromObject(b).max.y).toBeGreaterThan(0.5);
+    // every shape is backlit and grounded
+    expect(halos.length).toBeGreaterThanOrEqual(12);
+    expect(shadows.length).toBe(halos.length);
+    // the wordmark's halo is WHITE (the backlight that floats it) and the symbol's is the brand green
+    const haloColours = new Set(halos.map((m) => (m.material as THREE.MeshBasicMaterial).color.getHex()));
+    expect(haloColours).toEqual(new Set([0xffffff, LOGO_BRAND_GREEN]));
+    // the halo and shadow planes are ordered explicitly, so no camera angle can sort them behind the tile
+    for (const m of [...halos, ...shadows]) expect(typeof m.material).not.toBe("undefined");
+    for (const m of halos) expect((m.material as THREE.Material).userData.floorLayer).toBeTypeOf("number");
+
+    // THE PLAQUE IS GONE: nothing in the sign is a broad opaque slab. The old treatment's pan and its four
+    // bronze trim bars covered the whole area; every mesh here is a letterform or its own lit silhouette.
+    const lockup = inlayFootprint({ area: LOGO_AREA });
+    for (const m of meshes) {
+      const b = new THREE.Box3().setFromObject(m);
+      const isOpaqueSlab = !(m.material as THREE.Material as THREE.MeshBasicMaterial).transparent && !Array.isArray(m.material);
+      if (!isOpaqueSlab) continue;
+      expect(b.max.x - b.min.x, "no full-width backing board").toBeLessThan(lockup.w * 0.95);
+    }
   });
 
   it("the inlay sits in the staff pocket, clear of the counter and centred on the composition axis", () => {

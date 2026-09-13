@@ -2,6 +2,7 @@
 import manifest from "../../../data/office-assets-manifest.json";
 import type { Rect, Facing } from "../core/coords";
 import type { Entity } from "../world/WorldState";
+import { kindFootprint } from "../rooms/footprint";
 
 type Layer = { id: string; kind: string; path: string; x: number; y: number; width: number; height: number };
 const layers = manifest as Layer[];
@@ -59,7 +60,7 @@ export function v1FurnitureEntities(roomId: string, folder: string, roomRect: Re
         kind,
         roomId,
         transform: { pos: { x: cx, z: cz }, yaw: 0 }, // builders orient by `facing`; yaw reserved for editor rotation later
-        footprint: kind === "rug" ? undefined : { shape: "rect", w: l.width, d: l.height },
+        footprint: kindFootprint(kind, l.width, l.height),
         capabilities: {},
         props: { facing, mirrored: cx > roomCentreX, w: l.width, d: l.height },
         source: { v1LayerId: l.id },

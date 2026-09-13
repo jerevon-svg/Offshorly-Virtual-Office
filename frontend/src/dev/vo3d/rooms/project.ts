@@ -19,6 +19,7 @@ import { TUB_CUSHION_TOP } from "../build/furniture";
 import { v1RoomRect } from "../adapters/v1Manifest";
 import { FACADE_Z } from "../adapters/v1Floor";
 import { GATE, RECT as RECEPTION_RECT, STRUCT } from "./reception";
+import { kindFootprint } from "./footprint";
 
 export const PROJECT_ROOM_ID = "project-room";
 export const RECT: Rect = v1RoomRect(PROJECT_ROOM_ID); // x 1079.857, z 842.53, w 352.143, d 395.53
@@ -54,11 +55,20 @@ export const FLOOR_RECT: Rect = { x: WEST_EDGE, z: WALL_Z, w: RECT.x + RECT.w - 
  *  to the WORLD by tiledFloor(), so the bar's floor reads continuous whatever the room's depth. */
 export const TILE_RECT: Rect = { x: FLOOR_RECT.x, z: WALL_OUTER_Z, w: FLOOR_RECT.w, d: FACADE_Z - WALL_OUTER_Z };
 
+/** PROJECT'S PHYSICAL WALLS, as pure data for derived navigation (7C) — the same runs build/project.ts
+ *  extrudes. Solid north + solid east, glass south, and NOTHING west: the tile runs on into Reception. */
+export const PROJECT_WALLS: Rect[] = [
+  { x: WEST_EDGE, z: WALL_OUTER_Z, w: RECT.x + RECT.w - WEST_EDGE, d: WALL_T }, // north
+  { x: EAST_WALL_X, z: WALL_Z, w: RECT.x + RECT.w - EAST_WALL_X, d: FACADE_Z - WALL_Z }, // east
+  { x: WEST_EDGE, z: FACADE_Z, w: EAST_WALL_X - WEST_EDGE, d: STRUCT.wallThickness }, // south façade glazing
+];
+
 export const PROJECT_ROOM: RoomDef = {
   id: PROJECT_ROOM_ID,
   name: "Project Room",
   rect: RECT,
   floorRect: FLOOR_RECT,
+  wallSolids: PROJECT_WALLS,
   // no `shell`: solid north + solid east, glass south, NOTHING west — its own static builder instead.
 };
 
@@ -136,7 +146,7 @@ function furnitureEntity(id: string, kind: string, x: number, z: number, w: numb
     kind,
     roomId: PROJECT_ROOM_ID,
     transform: { pos: { x, z }, yaw: 0 },
-    footprint: { shape: "rect", w, d },
+    footprint: kindFootprint(kind, w, d),
     capabilities: {},
     props: { w, d, facing, mirrored, tone: "lounge" },
   };
@@ -148,6 +158,10 @@ function plantEntity(id: string, x: number, z: number, r: number, h: number, y =
     kind: "plant",
     roomId: PROJECT_ROOM_ID,
     transform: { pos: { x, z }, yaw: 0 },
+    // 7B: a plant standing ON THE FLOOR is a logical obstacle; one on a shelf or in a planter box is not.
+    // Radius is the pot, not the canopy — a body brushes past leaves. Inert until this room runs derived
+    // navigation; authored now so the rollout is one less thing to remember.
+    footprint: y === 0 ? { shape: "circle", r: r * 0.9 } : undefined,
     capabilities: { sway: true },
     props: { r, h, hanging: false, y, ...(lush ? { lush } : {}), ...(pot ? {} : { pot: false }) },
     source: { baked: true },

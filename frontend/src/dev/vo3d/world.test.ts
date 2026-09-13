@@ -3,6 +3,7 @@ import { WorldState } from "./world/WorldState";
 import { validatePlacement } from "./world/placement";
 import { DESIGN_ROOM, DESIGN_SOLIDS, CHAIR_4_ID, HERO_PLANT_ID, designRoomEntities, RECT } from "./rooms/design-room";
 import { v1RoomRect } from "./adapters/v1Manifest";
+import { chairPlanRadius } from "./build/furniture";
 import { pointInRect } from "./core/coords";
 
 function makeWorld(): WorldState {
@@ -22,10 +23,15 @@ describe("vo3d world — Design Room in WORLD coordinates", () => {
     const ents = w.inRoom(DESIGN_ROOM.id);
     expect(ents.filter((e) => e.kind !== "solid").length).toBe(22 + 11 + 1); // 22 manifest pieces + 11 plants + the east sliding door
     for (const e of ents) expect(pointInRect(e.transform.pos, RECT), e.id).toBe(true);
-    // furniture footprints equal the manifest boxes, centred on the entity
+    // Furniture is POSITIONED by the manifest box, but a task chair is no longer SIZED by it: the layer box
+    // carries the PNG's drop shadow and transparent padding, and the built chair is a round five-star base.
+    // The footprint now comes from the builder's own caster maths, so it tracks the geometry that is drawn.
     const chair = w.get(CHAIR_4_ID);
-    expect(chair.footprint?.shape).toBe("rect");
-    if (chair.footprint?.shape === "rect") { expect(chair.footprint.w).toBeCloseTo(18.47, 1); expect(chair.footprint.d).toBeCloseTo(20.77, 1); }
+    expect(chair.footprint?.shape).toBe("circle");
+    if (chair.footprint?.shape === "circle") {
+      expect(chair.footprint.r).toBeCloseTo(chairPlanRadius(18.47, 20.77), 5);
+      expect(chair.footprint.r * 2).toBeLessThan(18.47); // strictly tighter than the art box it replaced
+    }
     expect(chair.transform.pos.x).toBeCloseTo(9.47 + 146.1 + 18.5 / 2, 0);
   });
 

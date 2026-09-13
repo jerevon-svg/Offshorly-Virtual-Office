@@ -50,13 +50,26 @@ export function lathe(profile: [number, number][], m: THREE.Material, cx: number
   mesh.position.set(cx, y0, cz);
   return shadowed(mesh);
 }
-/** Extruded shape lying flat (shape y → world z), thickness `t`, base at y0. */
+/** Extruded shape lying flat, thickness `t`, TOP FACE at `y0 + t`.
+ *
+ *  AXIS MAPPING, stated as it actually is: shape +x → world +x, shape **+y → world −z**. The old comment
+ *  claimed a `scale.z = -1` flipped +y back to +z; it never did. Three composes a matrix as T·R·S, so that
+ *  scale was applied in LOCAL space BEFORE the rotation — it negated the EXTRUSION axis, not the shape's
+ *  y — which meant every slab in the office extruded DOWNWARD from y0 instead of upward. Desktops therefore
+ *  sat a full thickness low (22.4 where deskTop() puts its surface at 24, so every laptop, mug and pot
+ *  placed at DESK_H floated), and the Design Room's lead desk had its entire olive base below the floor.
+ *
+ *  Fixed by removing the scale: the extrusion now runs +y, and the offset puts the TOP face exactly at
+ *  `y0 + t` — the contract every caller already assumed. The shape axis is deliberately LEFT as it is: the
+ *  lead desk's outline is asymmetric in y and was drawn against the current mapping, so flipping it here
+ *  would silently mirror an approved silhouette. A caller whose shape is asymmetric AND authored in corner
+ *  coordinates compensates locally — see curveDesk. */
 export function slab(shape: THREE.Shape, t: number, m: THREE.Material, y0: number, bevel = 0.6): THREE.Mesh {
   const g = new THREE.ExtrudeGeometry(shape, { depth: t, bevelEnabled: bevel > 0, bevelSize: bevel, bevelThickness: bevel * 0.7, bevelSegments: 2, curveSegments: 12 });
   const mesh = new THREE.Mesh(g, m);
-  mesh.rotation.x = -Math.PI / 2; // shape +y → world -z … flip below so shape +y → world +z
-  mesh.scale.z = -1;
-  mesh.position.y = y0 + (bevel > 0 ? bevel * 0.7 : 0);
+  mesh.rotation.x = -Math.PI / 2;
+  // the bevel adds `bevelThickness` beyond each end of `depth`, so this lands the top face on y0 + t
+  mesh.position.y = y0 - (bevel > 0 ? bevel * 0.7 : 0);
   return shadowed(mesh);
 }
 

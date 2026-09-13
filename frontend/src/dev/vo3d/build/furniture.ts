@@ -136,10 +136,26 @@ function deskPanel(item: FurnitureItem): THREE.Group {
 }
 
 function curveDesk(item: FurnitureItem): THREE.Group {
-  // corner wedge joining the column desk to the bottom row: top with the inner
-  // corner cut on a soft diagonal, olive base + flutes along the diagonal
+  // The corner connector joining a side desk COLUMN to the bottom workstation ROW. In the production
+  // reference the two corners are chamfered on their OUTER corner — the left desk's cut faces south-WEST
+  // toward the lounge, the right desk's faces south-EAST — so both runs meet the corner at full width and
+  // the U's inner edge stays unbroken. Nothing cuts inward at the workstation area.
+  //
+  // Getting there needs two independent things right, and they are easy to confuse:
+  //
+  //   WHERE it sits — the slabs are anchored at the rect's SOUTH edge, not its north. slab() maps shape +y
+  //     to world −z, so with world z = (rect.z + d) − y the wedge spans exactly rect.z … rect.z + d: its
+  //     own footprint. Anchoring at rect.z instead drew both slabs a full depth NORTH of the entity, on top
+  //     of the column desk, leaving the desk pad and pot hovering over bare floor.
+  //   WHICH WAY ROUND — mirroring the shape's y values ALSO fixes the position, but flips the wedge so the
+  //     cut points north into the room. Use the anchor, never the y mirror.
+  //
+  // The points below are therefore authored SOUTH-FIRST (y = 0 lands at the greatest z), and `mx` reflects
+  // them so each desk's cut lands on the side AWAY from the room's centre line: the un-mirrored instance is
+  // the reflected one, because the left-hand desk is the one whose outer side is its own +x... which is to
+  // say the sense here is opposite to the plain `mirrored` flag every other builder uses.
   const { w, d } = item.rect;
-  const mx = (x: number) => (item.mirrored ? w - x : x);
+  const mx = (x: number) => (item.mirrored ? x : w - x);
   const shapeOf = (inset: number): THREE.Shape => {
     const s = new THREE.Shape();
     const pts: [number, number][] = [
@@ -157,9 +173,9 @@ function curveDesk(item: FurnitureItem): THREE.Group {
   const top = slab(shapeOf(0), TOP_T, wood("extrude"), DESK_H - TOP_T, 0.7);
   const base = slab(shapeOf(2.4), DESK_H - TOP_T - 1.4, fabric("green"), 0.6, 0.3);
   top.position.x = item.rect.x;
-  top.position.z = item.rect.z;
+  top.position.z = item.rect.z + d; // anchored at the rect's SOUTH edge; see shapeOf above
   base.position.x = item.rect.x;
-  base.position.z = item.rect.z;
+  base.position.z = item.rect.z + d;
   g.add(top, base);
   g.add(smallPot(item.rect.x + mx(w * 0.6), DESK_H, item.rect.z + d * 0.72, 1.5));
   const pad = rbox(7, 0.5, 5, plastic("white"), item.rect.x + mx(w * 0.62), DESK_H, item.rect.z + d * 0.33, 0.2);
@@ -298,6 +314,19 @@ function rug(item: FurnitureItem): THREE.Group {
   // woven rings
   for (let i = 1; i <= 3; i++) g.add(cyl(r * (1 - i * 0.22), 0.12, mat("wood", 1), 0, 0.7, 0));
   return g;
+}
+
+/** THE CHAIR'S REAL PLAN EXTENT, from the same numbers `chair()` builds with.
+ *
+ *  A task chair is a five-star base: the widest thing in plan is the caster ring, not the seat. `chair()`
+ *  derives everything from `seatW = min(w, d) * 0.8`, puts each caster centre at `seatW * 0.52 * 0.97`, and
+ *  gives it a unit sphere — so this is the built chair's silhouette radius, and it moves if the builder
+ *  does. It exists because the V1 asset manifest's layer box (which is what the footprint used to be) is an
+ *  ART bounding box: it carries the PNG's drop shadow and transparent padding, and overstated every Design
+ *  Room chair by 2.3–4.3 units wide and 3.1–11.6 deep. */
+export function chairPlanRadius(w: number, d: number): number {
+  const seatW = Math.min(w, d) * 0.8;
+  return seatW * 0.52 * 0.97 + 1; // caster centre + caster radius (helpers.sphereGeo is a unit sphere)
 }
 
 function chair(item: FurnitureItem, style: "a" | "b" | "lead"): THREE.Group {

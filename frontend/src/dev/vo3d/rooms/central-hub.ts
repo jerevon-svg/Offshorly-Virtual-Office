@@ -17,10 +17,16 @@ import { FACING_YAW, growRect, type Facing, type Rect, type Vec2 } from "../core
 import type { ApproachCapability, Entity, LoungeSeatSlot, RoomDef, SeatCapability } from "../world/WorldState";
 import type { MatKey } from "../render/Materials";
 import type { OpenBand } from "../nav/v2Open";
-import { CELL, COLS, ROWS, cellCentre, v1Static, worldToCell, type Cell } from "../adapters/v1Grid";
-import { openedLayer } from "../nav/v2Open";
+import { CELL, v1Static } from "../adapters/v1Grid";
+import { openedLayer, v2Static } from "../nav/v2Open";
+import { NAV_RADIUS } from "../nav/clearance";
+import { DerivedNav } from "../nav/derived";
+import { Connectivity } from "../nav/connectivity";
+import { requireApproach } from "../nav/approach";
+import { WorldState } from "../world/WorldState";
 import { v1RoomRect } from "../adapters/v1Manifest";
 import { ARMCHAIR, CAFE_CHAIR, SOFA_CUSHION_LOCAL_X, SOFA_CUSHION_TOP, sofaCushionDepth, sofaCushionZ, TUB_CUSHION_TOP } from "../build/furniture";
+import { kindFootprint } from "./footprint";
 
 export const CENTRAL_HUB_ID = "central-hub";
 export const RECT: Rect = v1RoomRect(CENTRAL_HUB_ID); // x 476.245, z 427.509, w 500.519, d 323.444
@@ -384,6 +390,9 @@ export const CENTRAL_HUB: RoomDef = {
   rect: RECT,
   floorRect: FLOOR_RECT,
   // no `shell`, and deliberately no door of any kind: this room has no walls to put one in.
+  // 7B: EXPLICITLY EMPTY, not absent. `undefined` means "not migrated to derived navigation yet";
+  // `[]` is the positive statement that this atrium genuinely has no walls.
+  wallSolids: [],
 };
 
 /** cell-aligned world rect of a V1 cell block, for tests */
@@ -398,7 +407,7 @@ function furniture(id: string, kind: string, x: number, z: number, w: number, d:
     kind,
     roomId: CENTRAL_HUB_ID,
     transform: { pos: { x, z }, yaw: 0 },
-    footprint: { shape: "rect", w, d },
+    footprint: kindFootprint(kind, w, d),
     capabilities: {},
     props: { w, d, facing, mirrored: false, ...props },
   };
@@ -409,12 +418,48 @@ function plantEntity(id: string, x: number, z: number, r: number, h: number, lus
     kind: "plant",
     roomId: CENTRAL_HUB_ID,
     transform: { pos: { x, z }, yaw: 0 },
+    // 7B: a plant standing ON THE FLOOR is a logical obstacle; one growing out of a planter box (`standsIn`)
+    // is not — the BOX is the obstacle, and it is declared in HUB_ARCHITECTURE. Radius is the pot, not the
+    // canopy. This is what makes "move the plant, the floor reopens" true for every plant, not just one.
+    footprint: standsIn === undefined ? { shape: "circle", r: r * 0.9 } : undefined,
     capabilities: { sway: true },
     // `standsIn` = the rim height of a planter the STATIC builder owns: the plant drops its own pot and
     // sits on that soil instead (reception's planters use the same split).
     props: { r, h, hanging: false, y: standsIn ?? 0, ...(standsIn === undefined ? {} : { pot: false }), ...(lush === undefined ? {} : { lush }) },
     source: { baked: true },
   };
+}
+
+/** THE HUB'S STATIC ARCHITECTURE AS LOGICAL SOLIDS (7B).
+ *
+ *  build/central-hub.ts draws the arcs, the counter run, the shelf run and every planter box; until now
+ *  navigation knew about none of them, because the V1 grid blocked their whole bounding boxes and that was
+ *  deemed close enough. Derived navigation replaces the V1 grid inside this room, so each piece has to say
+ *  what it physically occupies — and each one is authored here from the SAME constant the builder extrudes,
+ *  never measured off a mesh.
+ *
+ *  The four bench arcs are SECTORS, not boxes. That distinction is the whole point of the room: V1 blocks a
+ *  12 × 14-cell rectangle where the reality is an annulus with four gaps in it. */
+function solidEntity(id: string, footprint: Entity["footprint"], pos: Vec2): Entity {
+  return { id: `${CENTRAL_HUB_ID}/${id}`, kind: "solid", roomId: CENTRAL_HUB_ID, transform: { pos: { ...pos }, yaw: 0 }, footprint, capabilities: {}, props: {}, source: { baked: true } };
+}
+const rectSolid = (id: string, r: Rect): Entity => solidEntity(id, { shape: "rect", w: r.w, d: r.d }, { x: r.x + r.w / 2, z: r.z + r.d / 2 });
+
+export function hubArchitectureSolids(): Entity[] {
+  const out: Entity[] = [];
+  // the bench island: four annulus sectors, the four gaps between them left as floor
+  for (const a of ARCS)
+    out.push(solidEntity(`arc-solid-${a.id}`, { shape: "sector", rIn: ISLAND.rIn, rOut: ISLAND.rOut, from: a.span.from, to: a.span.to }, ISLAND.centre));
+  // the monument standing on the medallion
+  out.push(rectSolid("monument-solid", MONUMENT_FOOTPRINT));
+  // west pantry run
+  out.push(rectSolid("counter-solid", { x: COUNTER.x, z: COUNTER.z, w: COUNTER.w, d: COUNTER.d }));
+  COUNTER_PLANTERS.forEach((r, i) => out.push(rectSolid(`counter-planter-${i}`, r)));
+  // east library run
+  out.push(rectSolid("shelf-solid", { x: SHELF_RUN.x, z: SHELF_RUN.z, w: SHELF_RUN.w, d: SHELF_RUN.d }));
+  out.push(rectSolid("shelf-planter-solid", SHELF_PLANTER));
+  for (const p of EAST_PLANTERS) out.push(solidEntity(`${p.id}-solid`, { shape: "circle", r: p.r }, { x: p.x, z: p.z }));
+  return out;
 }
 
 /** The hub's movable-in-principle furniture as world entities. Architecture (the plate, the medallion,
@@ -454,6 +499,9 @@ export function centralHubEntities(): Entity[] {
   for (const p of PLANTS) out.push(plantEntity(p.id, p.x, p.z, p.r, p.h, p.lush));
   for (const p of EAST_PLANTERS) out.push(plantEntity(`${p.id}-plant`, p.x, p.z, p.plant.r, p.plant.h, 0.9, p.h - 1));
 
+  // --- static architecture as logical solids (7B) -------------------------------------------------
+  out.push(...hubArchitectureSolids());
+
   return withCentralHubInteractions(out);
 }
 
@@ -463,61 +511,52 @@ export function centralHubEntities(): Entity[] {
 // the exported mesh constants, and the globally deferred seated-facing calibration is NOT touched: each
 // yaw here is the geometric reading of the piece the sitter is actually on.
 
-/** The layer approach points are judged against: the READ-ONLY V1 grid PLUS this room's own OpenBands
- *  (the apron inside the bench ring is V2-local floor, and bench sitters stand on it). */
-const opened = openedLayer(OPEN_BANDS);
-const cellOpen = (cx: number, cy: number): boolean => v1Static(cx, cy) || opened(cx, cy);
-
-/** Cells actually CONNECTED to the floor, flood-filled once from production's own open-corridor anchor.
+/** THE GEOMETRY THE HUB'S STAND POINTS ARE JUDGED AGAINST (7B).
  *
- *  Plain walkability is not enough for a stand point: the V1 grid has isolated 's' cells tucked inside
- *  furniture clusters that a body can never route to, and standNear happily picked them — two approach
- *  points landed on cells no path could reach. Connectivity is the real requirement, so it is the test. */
-const connected: Set<string> = (() => {
-  const seen = new Set<string>();
-  const start = worldToCell({ x: 500, z: 790 });
-  if (!cellOpen(start.cx, start.cy)) return seen;
-  const q: Cell[] = [start];
-  seen.add(`${start.cx},${start.cy}`);
-  while (q.length) {
-    const c = q.pop()!;
-    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
-      const n = { cx: c.cx + dx, cy: c.cy + dy }, k = `${n.cx},${n.cy}`;
-      if (seen.has(k) || n.cx < 0 || n.cy < 0 || n.cx >= COLS || n.cy >= ROWS || !cellOpen(n.cx, n.cy)) continue;
-      seen.add(k);
-      q.push(n);
-    }
-  }
-  return seen;
-})();
-const cellWalkable = (c: Cell): boolean => connected.has(`${c.cx},${c.cy}`);
-
-/** The nearest walkable cell centre to `from`, preferring cells that lie in direction `dir`.
+ *  Until now this room built its own answer: the V1 grid plus its own OpenBands, flood-filled locally, with
+ *  no body-width test at all. That is what produced approach points 79 units from their chair — the V1 grid
+ *  rings every café table with blocked 'o' interaction cells, which sealed the bay's own aisles into a
+ *  pocket nothing could route into, so the search fell through to the far side of the island.
  *
- *  Approach points are DERIVED rather than hand-typed: 24 café chairs at four orientations around six
- *  tables is far too many magic numbers to keep honest, and the V1 grid is the authority on where a body
- *  may stand. Scoring is direction first, distance second, so a chair's stand point lands behind it
- *  wherever the grid allows and falls back to the closest legal cell when it does not. */
-export function standNear(from: Vec2, dir: Vec2): Vec2 {
-  const start = worldToCell(from);
-  const len = Math.hypot(dir.x, dir.z) || 1;
-  const dx0 = dir.x / len, dz0 = dir.z / len;
-  let best: Cell | null = null;
-  let bestScore = -Infinity;
-  // CLOSEST legal cell wins, with `dir` only breaking ties between cells of similar distance. Scoring the
-  // other way round (direction first) put the pantry stand point 76 units away across the café bay.
-  for (let dy = -6; dy <= 6; dy++)
-    for (let dx = -6; dx <= 6; dx++) {
-      const c: Cell = { cx: start.cx + dx, cy: start.cy + dy };
-      if (!cellWalkable(c)) continue;
-      const p = cellCentre(c);
-      const vx = p.x - from.x, vz = p.z - from.z;
-      const m = Math.hypot(vx, vz) || 1;
-      const score = -m + CELL * 0.75 * ((vx / m) * dx0 + (vz / m) * dz0);
-      if (score > bestScore) { bestScore = score; best = c; }
-    }
-  if (!best) throw new Error(`central hub: no walkable stand cell near ${from.x},${from.z}`);
-  return cellCentre(best);
+ *  Now the room asks the SAME derived layer the live world uses. The context is built from this room's own
+ *  entity list, so it cannot drift from what bootstrap wires up (derived-nav.test.ts asserts the two agree):
+ *    • inside the hub  → geometry: floor − arcs − furniture − planters − monument, at NAV_RADIUS
+ *    • outside the hub → the V1 grid + this room's OpenBands, exactly as before
+ *  and connectivity is flooded from production's own hall anchor, so an unreachable cell can never win.
+ */
+export function hubApproachContext(entities: Entity[]): { walk: ReturnType<DerivedNav["predicate"]>; connected: Connectivity; derived: DerivedNav } {
+  const w = new WorldState();
+  w.addRoom(CENTRAL_HUB);
+  w.bounds = { x: 0, z: 0, w: COLS_W, d: ROWS_D };
+  w.addRegion({ id: `floor:${CENTRAL_HUB_ID}`, kind: "room-floor", rect: FLOOR_RECT, walkable: true, roomId: CENTRAL_HUB_ID });
+  w.addRegion({ id: "shared:hall", kind: "shared-floor", rect: { x: 0, z: 0, w: COLS_W, d: ROWS_D }, walkable: true });
+  for (const e of entities) w.addEntity(e);
+  const derived = new DerivedNav(w, { roomIds: new Set([CENTRAL_HUB_ID]) });
+  const fallback = v2Static(v1Static, openedLayer(OPEN_BANDS));
+  const walk = derived.predicate(NAV_RADIUS, fallback);
+  return { walk, connected: new Connectivity(walk, undefined, derived.edge(NAV_RADIUS)), derived };
+}
+/** the V1 frame in world units — the outer bound of the throwaway world above */
+const COLS_W = 90 * CELL;
+const ROWS_D = 78 * CELL;
+
+/** Resolved once per entity build, and handed to every stand point in the room. */
+let CTX: ReturnType<typeof hubApproachContext> | null = null;
+const ctx = (): NonNullable<typeof CTX> => {
+  if (!CTX) throw new Error("central hub: approach context not built — withCentralHubInteractions owns it");
+  return CTX;
+};
+
+/** The nearest CONNECTED, BODY-CLEAR stand point, answered by geometry instead of by the painted grid —
+ *  with a side approach falling out of the scoring rather than needing a hand-typed exception.
+ *
+ *  `from` seeds the cell search (the ideal spot), `target` is what the result is measured AGAINST and
+ *  defaults to `from`. They differ for a café chair: the ideal stand spot is 22 units out behind it, but
+ *  "nearest" has to mean nearest to THE CHAIR — scoring against the ideal spot instead picks a cell that is
+ *  close to a point nobody cares about and can sit 45 units further from the seat it serves. */
+export function standNear(from: Vec2, dir: Vec2, target: Vec2 = from): Vec2 {
+  const { walk, connected, derived } = ctx();
+  return requireApproach(`${target.x},${target.z}`, { target, prefer: dir, from }, walk, connected, (c) => derived.pointOf(c, NAV_RADIUS)).point;
 }
 
 /** yaw that faces the direction (dx, dz) — core/coords' heading convention */
@@ -542,7 +581,7 @@ export function cafeChairSeat(ref: CafeSeatRef): SeatCapability {
   const at = (d: number): Vec2 => ({ x: t.x + out.x * d, z: t.z + out.z * d });
   const preSeat = at(CAFE_CHAIR_OFFSET - 1); // the space the pulled chair vacates
   return {
-    approach: standNear(at(CAFE_CHAIR_OFFSET + 22), out),
+    approach: standNear(at(CAFE_CHAIR_OFFSET + 22), out, { x: ref.x, z: ref.z }),
     preSeat,
     // one waypoint on the chair's own axis first: the stand cell can sit off-axis, and a straight leg from
     // it to the pre-seat point would cut the corner through the table
@@ -667,6 +706,10 @@ function tubSlot(): LoungeSeatSlot {
 
 // ---- walk-up points --------------------------------------------------------------------------------
 // Physical anchors only: somewhere to stand and something to face. No product behaviour in 6C.
+//
+// 7B: these are FUNCTIONS, not constants. A stand point is now resolved against the room's derived geometry,
+// which cannot exist until the room's entity list does — so they are evaluated during assembly rather than
+// at module load.
 export const COUNTER_INTERACTION_ID = `${CENTRAL_HUB_ID}/pantry-interaction`;
 export const SHELF_INTERACTION_ID = `${CENTRAL_HUB_ID}/library-interaction`;
 export const MONUMENT_INTERACTION_ID = `${CENTRAL_HUB_ID}/monument-interaction`;
@@ -674,22 +717,22 @@ export const MONUMENT_INTERACTION_ID = `${CENTRAL_HUB_ID}/monument-interaction`;
 /** In the aisle east of the pantry run, facing the worktop. Aimed at the middle of the run rather than at
  *  the espresso machine specifically: V1 marks the cells directly beside the appliances as interaction
  *  cells (blocked), so aiming there pushed the stand point two cells north of the counter entirely. */
-export const COUNTER_APPROACH: ApproachCapability = {
+export const counterApproach = (): ApproachCapability => ({
   point: standNear({ x: COUNTER.x + COUNTER.w + 14, z: COUNTER.z + COUNTER.d / 2 }, { x: 1, z: 0 }),
   yaw: FACING_YAW.west, label: "Pantry", action: "Grab a coffee",
-};
+});
 /** The library run's west face, at its NORTH end. The aisle beside the run's middle is taken by the east
  *  lounge's round tables and floor planters, so the closest connected cell there is 60-odd units out —
  *  far enough that the avatar would be facing the sectional, not the shelves. */
-export const SHELF_APPROACH: ApproachCapability = {
+export const shelfApproach = (): ApproachCapability => ({
   point: standNear({ x: SHELF_RUN.x - 14, z: SHELF_RUN.z + 18 }, { x: -1, z: 0 }),
   yaw: FACING_YAW.east, label: "Library", action: "Browse the shelves",
-};
+});
 /** At the plaque, facing the monument. The apron south of the ring is the only place you can read it from. */
-export const MONUMENT_APPROACH: ApproachCapability = {
+export const monumentApproach = (): ApproachCapability => ({
   point: standNear({ x: MONUMENT.centre.x, z: MONUMENT.centre.z + MONUMENT.plaque.z + 16 }, { x: 0, z: 1 }),
   yaw: FACING_YAW.north, label: "Boxing Championship", action: "Read the plaque",
-};
+});
 
 // ---- Toucan ----------------------------------------------------------------------------------------
 /** V2's Toucan perch. The legacy V1 coordinate (727, 556) is now INSIDE the boxing monument — it predates
@@ -730,6 +773,9 @@ function approachEntity(id: string, pick: string, approach: ApproachCapability):
  *  and every real lounge piece, and add the three walk-up points. No geometry, no transforms and no ids
  *  change — every 6B entity is the same object it was, with capabilities added. */
 export function withCentralHubInteractions(entities: Entity[]): Entity[] {
+  // 7B: every stand point below is resolved against the room's own geometry, so the derived context is built
+  // from the finished entity list BEFORE the first one is asked for.
+  CTX = hubApproachContext(entities);
   for (const ref of cafeSeats()) {
     const id = cafeChairId(ref.table, ref.side);
     const e = entities.find((x) => x.id === id);
@@ -755,8 +801,8 @@ export function withCentralHubInteractions(entities: Entity[]): Entity[] {
     capabilities: { lounge: { slots: benchSlots() } },
     props: { pick: "hub-island" }, source: { baked: true },
   });
-  entities.push(approachEntity(COUNTER_INTERACTION_ID, "hub-pantry", COUNTER_APPROACH));
-  entities.push(approachEntity(SHELF_INTERACTION_ID, "hub-shelf-run", SHELF_APPROACH));
-  entities.push(approachEntity(MONUMENT_INTERACTION_ID, "hub-monument", MONUMENT_APPROACH));
+  entities.push(approachEntity(COUNTER_INTERACTION_ID, "hub-pantry", counterApproach()));
+  entities.push(approachEntity(SHELF_INTERACTION_ID, "hub-shelf-run", shelfApproach()));
+  entities.push(approachEntity(MONUMENT_INTERACTION_ID, "hub-monument", monumentApproach()));
   return entities;
 }

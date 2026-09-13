@@ -20,6 +20,7 @@ import { CELL } from "../adapters/v1Grid";
 import { v1RoomRect } from "../adapters/v1Manifest";
 import { STRUCT } from "./reception";
 import { GAMING_CHAIR, SOFA_CUSHION_LOCAL_X, SOFA_CUSHION_TOP, sofaCushionDepth, sofaCushionZ } from "../build/furniture";
+import { kindFootprint } from "./footprint";
 
 export const GAMING_ROOM_ID = "gaming-room";
 export const RECT: Rect = v1RoomRect(GAMING_ROOM_ID); // x 1111.28, z 617.97, w 320.718, d 236.872
@@ -207,11 +208,24 @@ export const PLANTS = [
   { id: "plant-se-corner", x: 1404, z: 828, r: 10, h: 29 },
 ];
 
+/** GAMING'S PHYSICAL WALLS, as pure data for derived navigation (7C) — the same runs build/gaming.ts
+ *  extrudes, as world rects. Four sides, all real: solid north/east, solid west NORTH of the door, a glazed
+ *  screen west SOUTH of it, and the opaque-spandrel south partition. The V1 '+' door band (z 720…752) is
+ *  the ONE gap and nothing is declared inside it — the door's own leaf and jambs govern there. */
+export const GAMING_WALLS: Rect[] = [
+  { x: NORTH_WALL.x0, z: NORTH_WALL.z0, w: NORTH_WALL.x1 - NORTH_WALL.x0, d: NORTH_WALL.z1 - NORTH_WALL.z0 },
+  { x: EAST_WALL.x0, z: EAST_WALL.z0, w: EAST_WALL.x1 - EAST_WALL.x0, d: EAST_WALL.z1 - EAST_WALL.z0 },
+  { x: WEST_WALL.x0, z: WEST_WALL.z0, w: WEST_WALL.x1 - WEST_WALL.x0, d: WEST_WALL.z1 - WEST_WALL.z0 },
+  { x: WEST_GLASS.x0, z: WEST_GLASS.z0, w: WEST_GLASS.x1 - WEST_GLASS.x0, d: WEST_GLASS.z1 - WEST_GLASS.z0 },
+  { x: SOUTH_PARTITION.x0, z: SOUTH_PARTITION.z0, w: SOUTH_PARTITION.x1 - SOUTH_PARTITION.x0, d: SOUTH_PARTITION.z1 - SOUTH_PARTITION.z0 },
+];
+
 export const GAMING_ROOM: RoomDef = {
   id: GAMING_ROOM_ID,
   name: "Gaming Room",
   rect: RECT,
   floorRect: FLOOR_RECT,
+  wallSolids: GAMING_WALLS,
   // no `shell`: four walls of three different kinds (solid / glazed screen / glazed partition) — its own
   // static builder instead, exactly as Reception, Meeting and Project do.
 };
@@ -348,6 +362,7 @@ const BODY_RADIUS = 10.5; // Bon's widest walking extent, as Reception measures 
 export const WEST_DOOR: DoorCapability = {
   slide: { x: 0, z: 1 },
   slideDistance: DOOR.z1 - DOOR.z0,
+  automatic: true,
   /** the doorway itself: while a body overlaps this the door must be open and may not close */
   crossing: { x: WEST_OUTER_X - 8, z: DOOR.z0 - 2, w: (WEST_X + 8) - (WEST_OUTER_X - 8), d: DOOR.z1 - DOOR.z0 + 4 },
   /** both approach aprons — the hall lane outside and the room's west lane inside */
@@ -369,7 +384,7 @@ function furniture(id: string, kind: string, x: number, z: number, w: number, d:
     kind,
     roomId: GAMING_ROOM_ID,
     transform: { pos: { x, z }, yaw: 0 },
-    footprint: kind === "rug" ? undefined : { shape: "rect", w, d },
+    footprint: kindFootprint(kind, w, d),
     capabilities: {},
     props: { w, d, facing, mirrored: false, ...props },
   };
@@ -380,6 +395,10 @@ function plantEntity(id: string, x: number, z: number, r: number, h: number): En
     kind: "plant",
     roomId: GAMING_ROOM_ID,
     transform: { pos: { x, z }, yaw: 0 },
+    // 7B: a plant standing ON THE FLOOR is a logical obstacle; one on a shelf or in a planter box is not.
+    // Radius is the pot, not the canopy — a body brushes past leaves. Inert until this room runs derived
+    // navigation; authored now so the rollout is one less thing to remember.
+    footprint: { shape: "circle", r: r * 0.9 },
     capabilities: { sway: true },
     props: { r, h, hanging: false, y: 0 },
     source: { baked: true },

@@ -17,11 +17,14 @@ import {
   ISLAND, MONUMENT, MONUMENT_FOOTPRINT, NORTH_CHAIRS, NOTCH, OPEN_BANDS, PLATE, RECT, SECTIONAL, SHELF_RUN,
   THEME, BOSS_SLOTS, bossSlotWorld, bossUrl, cafeSeats, cafeTables, centralHubEntities,
   BENCH_ENTITY_ID, BENCH_SEAT_R, BENCH_SEAT_Y, CAFE_CHAIR_IDS, CAFE_PULL,
-  COUNTER_APPROACH, COUNTER_INTERACTION_ID, HUB_LOUNGE_IDS, MONUMENT_APPROACH, MONUMENT_INTERACTION_ID,
-  SHELF_APPROACH, SHELF_INTERACTION_ID, TOUCAN_PERCH, benchSlotRefs, cafeChairId,
+  counterApproach, COUNTER_INTERACTION_ID, HUB_LOUNGE_IDS, monumentApproach, MONUMENT_INTERACTION_ID,
+  shelfApproach, SHELF_INTERACTION_ID, TOUCAN_PERCH, benchSlotRefs, cafeChairId,
 } from "./rooms/central-hub";
 import { STATUE_YAW_OFFSET, applyBossStatue, replaceBossStatue } from "./build/hub-monument";
 import { openedCells, openedLayer, v2Static } from "./nav/v2Open";
+import { DerivedNav } from "./nav/derived";
+import { Connectivity } from "./nav/connectivity";
+import { NAV_RADIUS } from "./nav/clearance";
 import { CELL, COLS, ROWS, cellCentre, v1Static, worldToCell } from "./adapters/v1Grid";
 import { CAFE_CHAIR } from "./build/furniture";
 import { pointInRect, type Rect, type Vec2 } from "./core/coords";
@@ -406,23 +409,20 @@ describe("central hub — boss statue slots (TEMPORARY placeholders)", () => {
 
 
 describe("central hub — 6C interactions", () => {
-  /** every cell reachable from production's own open-corridor anchor, on the composed V2 layer */
+  /** Every cell reachable from production's own open-corridor anchor, on the layer the hub ACTUALLY runs.
+   *
+   *  7B: the hub is a DERIVED room now — inside it, walkability is geometry (floor − arcs − furniture −
+   *  planters − monument) judged at NAV_RADIUS, not the V1 grid. Outside it, the V1 grid + this room's
+   *  OpenBands, exactly as before. Reachability is what it always was: a 4-connected flood from the hall. */
   function reachable() {
     const { world } = rig();
-    const open = openedLayer(OPEN_BANDS);
-    const walk = (cx: number, cy: number) => v2Static(v1Static, open)(cx, cy) && world.walkableAt(cellCentre({ cx, cy }));
-    const start = worldToCell({ x: 500, z: 790 });
-    const seen = new Set([`${start.cx},${start.cy}`]);
-    const q = [start];
-    while (q.length) {
-      const c = q.pop()!;
-      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
-        const n = { cx: c.cx + dx, cy: c.cy + dy }, k = `${n.cx},${n.cy}`;
-        if (seen.has(k) || n.cx < 0 || n.cy < 0 || n.cx >= COLS || n.cy >= ROWS || !walk(n.cx, n.cy)) continue;
-        seen.add(k); q.push(n);
-      }
-    }
-    return (p: Vec2) => { const c = worldToCell(p); return seen.has(`${c.cx},${c.cy}`); };
+    const derived = new DerivedNav(world, { roomIds: new Set([CENTRAL_HUB_ID]) });
+    const fallback = (cx: number, cy: number) => v2Static(v1Static, openedLayer(OPEN_BANDS))(cx, cy) && world.walkableAt(cellCentre({ cx, cy }));
+    // the EDGE test matters: derived stand points move within their cells, so a step between two walkable
+    // cells is not automatically walkable. Omitting it here would make the test more permissive than the
+    // layer it is testing.
+    const connected = new Connectivity(derived.predicate(NAV_RADIUS, fallback), undefined, derived.edge(NAV_RADIUS));
+    return (p: Vec2) => connected.at(p);
   }
 
   it("gives all 24 café chairs a MOVABLE seat, each individually reachable", () => {
@@ -504,7 +504,7 @@ describe("central hub — 6C interactions", () => {
   it("adds three reachable walk-up points and no product behaviour", () => {
     const es = centralHubEntities();
     const canReach = reachable();
-    for (const [id, spec] of [[COUNTER_INTERACTION_ID, COUNTER_APPROACH], [SHELF_INTERACTION_ID, SHELF_APPROACH], [MONUMENT_INTERACTION_ID, MONUMENT_APPROACH]] as const) {
+    for (const [id, spec] of [[COUNTER_INTERACTION_ID, counterApproach()], [SHELF_INTERACTION_ID, shelfApproach()], [MONUMENT_INTERACTION_ID, monumentApproach()]] as const) {
       const e = es.find((x) => x.id === id);
       expect(e, id).toBeDefined();
       expect(e!.capabilities.approach!.label).toBe(spec.label);
@@ -527,13 +527,46 @@ describe("central hub — 6C interactions", () => {
     expect(pointInRect({ x: TOUCAN_PERCH.x, z: TOUCAN_PERCH.z }, RECT)).toBe(true);
   });
 
-  it("leaves circulation intact: monument blocked, apron and all four gaps still reachable", () => {
+  it("leaves circulation intact: monument blocked, north/south gaps and their aprons reachable", () => {
     const canReach = reachable();
     const { world } = rig();
     const open = openedLayer(OPEN_BANDS);
     const walk = (p: Vec2) => { const c = worldToCell(p); return v2Static(v1Static, open)(c.cx, c.cy) && world.walkableAt(p); };
     expect(walk(ISLAND.centre)).toBe(false); // the monument still blocks
-    for (const p of [{ x: 680, z: 584 }, { x: 776, z: 584 }, { x: 728, z: 552 }, { x: 728, z: 632 }]) expect(canReach(p), `apron ${p.x},${p.z}`).toBe(true);
-    for (const p of [{ x: 728, z: 504 }, { x: 728, z: 712 }, { x: 648, z: 600 }, { x: 808, z: 600 }]) expect(canReach(p), `gap ${p.x},${p.z}`).toBe(true);
+    // the two AXIAL passages and the apron strips they lead into
+    for (const p of [{ x: 728, z: 552 }, { x: 728, z: 632 }]) expect(canReach(p), `apron ${p.x},${p.z}`).toBe(true);
+    for (const p of [{ x: 728, z: 504 }, { x: 728, z: 712 }]) expect(canReach(p), `gap ${p.x},${p.z}`).toBe(true);
+  });
+
+  /** 7B FINDING — recorded as a test so it cannot quietly change.
+   *
+   *  6A/6B declared the apron and all four bench gaps walkable, and at the granularity available then that
+   *  was the right call: OpenBands judge a CELL CENTRE against a solid, exactly as the V1 grid does, with no
+   *  body width in the question at all. Derived navigation asks the harder question — does Bon FIT — and the
+   *  answer for the east and west halves of the ring is no:
+   *
+   *    • WEST. The monument's base is a 72-unit SQUARE on a 64-unit-radius inner disc, so its corners sit
+   *      only ~13 units from the bench's inner face. The widest way out of the west pocket clears 2.6 units;
+   *      routing needs NAV_RADIUS.
+   *    • EAST. The sectional's west face stands at x 820 and the bench ring's outer edge at x 816.5 — a
+   *      3.5-unit slot. The east pocket's widest exit clears 4.0 units.
+   *
+   *  Both are REAL geometry, not a footprint bug, and neither is this phase's to fix: changing them means
+   *  moving the monument or the sectional, which is a composition decision. Until then the west and east
+   *  bench gaps are ornamental, the ring is walkable as two separate north/south aprons, and the hub's own
+   *  OpenBands over-declare those cells — which is precisely what the diagnostic's v2-obstruction bucket is
+   *  for. Nothing in the room depends on them: all 24 café places and all 16 lounge slots reach their seats. */
+  it("FINDING: the east and west bench gaps are sealed at body width, and nothing depends on them", () => {
+    const canReach = reachable();
+    for (const p of [{ x: 680, z: 584 }, { x: 648, z: 600 }]) expect(canReach(p), `west pocket ${p.x},${p.z}`).toBe(false);
+    for (const p of [{ x: 776, z: 584 }, { x: 808, z: 600 }]) expect(canReach(p), `east pocket ${p.x},${p.z}`).toBe(false);
+    // the cells are genuinely OPEN FLOOR — they are unreachable, not occupied. That distinction is the
+    // whole finding: a body fits there, it just cannot get there.
+    const { world } = rig();
+    const derived = new DerivedNav(world, { roomIds: new Set([CENTRAL_HUB_ID]) });
+    for (const p of [{ x: 680, z: 584 }, { x: 776, z: 584 }, { x: 648, z: 600 }, { x: 808, z: 600 }]) {
+      const c = worldToCell(p);
+      expect(derived.clear(c.cx, c.cy, NAV_RADIUS), `${p.x},${p.z} should be open floor`).toBe(true);
+    }
   });
 });
