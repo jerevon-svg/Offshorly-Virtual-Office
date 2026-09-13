@@ -24,6 +24,7 @@ import { Environment } from "../env/Environment";
 import { ENV_TIME_MODES, TimeOfDay, type EnvTimeMode } from "../env/timeOfDay";
 import { WEATHER_MODES, Weather, type WeatherMode, type WeatherState } from "../env/weather";
 import { ManualWeatherProvider } from "../env/providers/manual";
+import { WEATHER_ATTRIBUTION, officeWeatherProvider } from "../env/providers/office";
 import { GRADE } from "../world/campus";
 import { CAMERA_MODES, CameraModes, type CameraModeId } from "../render/CameraModes";
 import { PlayerMode } from "../player/PlayerMode";
@@ -140,12 +141,22 @@ const scenery = buildExterior();
 // that already existed.
 const env = new Environment(R, scenery, plan.frame, GRADE);
 const timeOfDay = new TimeOfDay();
-// WEATHER: a second, INDEPENDENT axis. No provider is configured in this repo (see env/providers/README),
-// so AUTO resolves through a manual dev provider that reaches no network and holds no key. Swapping in a
-// real provider is a one-line change here and nothing downstream moves.
-const weatherProvider = new ManualWeatherProvider("clear");
+// WEATHER: a second, INDEPENDENT axis.
+//
+// AUTO now reads REAL weather for the office, from OUR backend (GET /weather/office), which holds the
+// WeatherAPI key in its own environment and caches one reading for the whole office. The browser never
+// sees a key. When no backend is configured (VITE_API_URL unset — the bare dev rig), the manual dev
+// provider stands in and AUTO simply reports CLEAR. This was the one-line swap env/providers/README
+// promised: nothing downstream of the WeatherProvider seam moved.
+//
+// THE MANUAL OVERRIDES ARE UNAFFECTED EITHER WAY. Weather.state() consults a provider only while the
+// mode is AUTO; picking CLEAR/CLOUDY/RAIN/HEAVY_RAIN/THUNDERSTORM bypasses it entirely, so a missing
+// key, a dead network or a slow endpoint cannot touch them.
+const manualWeather = new ManualWeatherProvider("clear");
+const liveWeather = officeWeatherProvider();
+const weatherProvider = liveWeather ?? manualWeather;
 const weather = new Weather(weatherProvider);
-const envState = { phase: "—", realPhase: "—", clock: "—", source: "V1 real clock (Asia/Manila)", weather: "—", observed: "—", provider: "—" };
+const envState = { phase: "—", realPhase: "—", clock: "—", source: "V1 real clock (Asia/Manila)", weather: "—", observed: "—", provider: "—", attribution: WEATHER_ATTRIBUTION };
 function applyEnvPhase(force = false): void {
   const now = performance.now();
   const phase = timeOfDay.phase(now);
@@ -155,6 +166,7 @@ function applyEnvPhase(force = false): void {
   envState.weather = w;
   envState.observed = weather.observed;
   envState.provider = weather.source;
+  if (liveWeather) envState.attribution = liveWeather.attribution;
   // Both axes are re-read every frame and BOTH are cheap no-ops when nothing changed: apply() returns
   // false unless the composed presentation actually differs, so a steady state costs two comparisons.
   const weatherChanged = env.setWeather(w, force);
@@ -594,6 +606,9 @@ wxGui.add(envState, "weather").name("in force").listen().disable();
 wxGui.add(envState, "observed").name("provider says").listen().disable();
 wxGui.add(envState, "provider").name("source").listen().disable();
 wxGui.add(params, "envRainInOffice").name("rain in OFFICE mode").onChange((v: boolean) => (env.rainInOffice = v));
+// ATTRIBUTION. WeatherAPI's terms require visible credit wherever their data is shown. It belongs on
+// the panel that shows the reading, not in the 3D scene — the office is the product, not a billboard.
+wxGui.add(envState, "attribution").name("data").listen().disable();
 const geo = gui.addFolder("Geometry");
 const rebuild = () => { seat.reset(); mirror.rebuildRoom(DESIGN_ROOM, shellOpts()); door = new SlidingDoor(mirror.view(DOOR_ID), doorEntity.capabilities.door!, doorEntity.transform.pos); seat = new SeatInteraction(avatar, stack, mirror.view(CHAIR_4_ID), chairSeat, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed); };
 geo.add(params, "wallHeight", 20, 110, 1).onFinishChange(rebuild); geo.add(params, "frontWall", ["low", "full", "hidden"]).onChange(rebuild);
@@ -896,10 +911,13 @@ loop();
     presentation: () => env.presentation,
   },
   weather: {
-    weather, provider: weatherProvider,
+    weather, provider: weatherProvider, live: liveWeather, manual: manualWeather,
     setWeather: setWeatherMode,
-    /** what the provider reports, independent of the dev override */
-    setProvider: (s2: WeatherState) => { weatherProvider.state = s2; weather.invalidate(); applyEnvPhase(true); refresh(); },
+    /** Force a re-read of the live endpoint (the dev panel's refresh). */
+    refetch: () => { weather.invalidate(); applyEnvPhase(true); refresh(); },
+    /** Drive what the MANUAL provider reports, independent of the dev override. Only meaningful
+     *  when no backend is configured and the manual provider is the one AUTO is reading. */
+    setProvider: (s2: WeatherState) => { manualWeather.state = s2; weather.invalidate(); applyEnvPhase(true); refresh(); },
     state: () => env.weather, mode: () => weather.mode, source: () => weather.source,
     rainStats: () => env.rainStats,
     setRainInOffice: (on: boolean) => { params.envRainInOffice = on; env.rainInOffice = on; refresh(); },

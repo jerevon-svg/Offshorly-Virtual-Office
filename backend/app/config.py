@@ -103,6 +103,22 @@ class Settings(BaseSettings):
     # as the answer to it. Explicit markers ("urgent", "asap") never depend on this window.
     TOUCAN_URGENCY_WINDOW_SECONDS: float = 1800.0
 
+    # Real weather for the V2 3D office's AUTO mode (WeatherAPI.com). BACKEND-ONLY, like the
+    # LiveKit and OpenAI blocks above: the key is read here, used only by services/weather.py,
+    # and must never be sent to the browser, logged, or mirrored into a VITE_* var. Empty by
+    # default so a deploy without it fails closed — /weather/office answers 200 with
+    # source="unavailable" and the office keeps running on CLEAR.
+    WEATHER_API_KEY: str = ""
+    # The ONE office location weather is fetched for. WeatherAPI accepts "lat,lon", a city name,
+    # or a postcode; "lat,lon" is used so the reading does not move if a city name is ambiguous.
+    # Default is the Manila office, matching the Asia/Manila clock V1 already runs on.
+    WEATHER_LOCATION: str = "14.5995,120.9842"
+    # How long one upstream reading serves EVERY caller. Weather does not move faster than this,
+    # and the cache is what makes an unauthenticated read safe: request volume cannot become
+    # WeatherAPI request volume. 900s = 96 upstream calls/day against a free tier of ~1M/month.
+    WEATHER_CACHE_SECONDS: float = 900.0
+    WEATHER_TIMEOUT_SECONDS: float = 4.0
+
     # FUTURE multi-worker realtime seam — UNSET AND UNUSED TODAY. When this backend eventually
     # runs more than one worker, Socket.IO needs a cross-process message queue (and the
     # ephemeral registries in app/realtime/state.py need a shared store) for a broadcast made on
