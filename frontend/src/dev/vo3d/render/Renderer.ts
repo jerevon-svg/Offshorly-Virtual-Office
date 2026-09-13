@@ -14,13 +14,26 @@ export type LightParams = { azimuth: number; elevation: number; keyIntensity: nu
 export const DEFAULT_CAMERA: CameraParams = { pitch: 52, yaw: 0, zoom: 1.32 };
 export const DEFAULT_LIGHT: LightParams = { azimuth: -48, elevation: 62, keyIntensity: 2.3, ambientIntensity: 1.25, envIntensity: 0.45, exposure: 1.12 };
 
+// WORLD-SCALE DEPTH RANGE. The camera is orthographic, so its distance from the target changes nothing
+// about framing — only which slice of the world survives the near/far clip. With the office alone, 1500 /
+// 4000 was ample. With an exterior world around it (±5.4k of terrain, see world/campus) that slice clipped
+// the landscape away at roughly 4k out. Ortho depth is LINEAR, so widening the range costs no precision:
+// 24-bit depth over 30k units still resolves finer than a hundredth of a unit.
+//
+// Anything that measures in camera depth has to move with it — that is the SSAO pass (rescaled below) and
+// the environment's fog, which is expressed as offsets from CAM_DIST for exactly this reason.
+const CAM_DIST = 6000;
+const FAR = 15000;
+
 export class Renderer {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
-  readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 4000);
+  readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, FAR);
   readonly controls: OrbitControls;
   readonly key: THREE.DirectionalLight;
   readonly hemi: THREE.HemisphereLight;
+  /** the cool bounce opposite the key; the environment re-colours it per phase */
+  readonly fill: THREE.DirectionalLight;
   private readonly composer: EffectComposer;
   private readonly ssao: SSAOPass;
   /** the world-space focus rect (a room today; the whole office later) */
@@ -29,7 +42,10 @@ export class Renderer {
   camParams: CameraParams = { ...DEFAULT_CAMERA };
   lightParams: LightParams = { ...DEFAULT_LIGHT };
   ssaoEnabled = false;
-  private readonly CAM_DIST = 1500;
+  /** Optional camera POLICY hook, run every frame immediately after OrbitControls has moved the camera
+   *  and before anything reads the target. This is where OFFICE mode's pan/zoom bounds are enforced —
+   *  the renderer itself stays policy-free. See render/CameraModes. */
+  constrain: (() => void) | null = null;
   private readonly lightDir = new THREE.Vector3(0, 1, 0);
   private shadowKey = "";
 
@@ -64,8 +80,8 @@ export class Renderer {
     this.key.shadow.bias = -0.0006;
     this.key.shadow.normalBias = 0.6;
     this.key.shadow.radius = 4;
-    const fill = new THREE.DirectionalLight(0xe4ecff, 0.35);
-    this.scene.add(this.hemi, this.key, this.key.target, fill);
+    this.fill = new THREE.DirectionalLight(0xe4ecff, 0.35);
+    this.scene.add(this.hemi, this.key, this.key.target, this.fill);
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.12;
@@ -76,15 +92,23 @@ export class Renderer {
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     this.ssao = new SSAOPass(this.scene, this.camera, window.innerWidth, window.innerHeight);
     this.ssao.kernelRadius = 14;
-    this.ssao.minDistance = 0.0005;
-    this.ssao.maxDistance = 0.08;
+    // SSAO's min/max are FRACTIONS of the camera's depth range. The range grew with the world (see FAR),
+    // so these are rescaled by the same factor to preserve the world-space distances they used to mean
+    // (2 units and 320 units) — AO looks identical to the single-room build, it just still costs too much
+    // at DPR 2, which is why it stays off by default.
+    this.ssao.minDistance = (0.0005 * 4000) / FAR;
+    this.ssao.maxDistance = (0.08 * 4000) / FAR;
     this.composer.addPass(this.ssao);
     this.composer.addPass(new OutputPass());
     this.setFocus(focus);
-    fill.position.set(focus.x + focus.w, 300, focus.z + focus.d * 1.6);
+    this.fill.position.set(focus.x + focus.w, 300, focus.z + focus.d * 1.6);
     this.placeLight();
     this.resize();
     window.addEventListener("resize", () => this.resize());
+  }
+  /** the orbit distance, in world units — fog/AO distances are measured from it (see CAM_DIST) */
+  get camDist(): number {
+    return CAM_DIST;
   }
   setFocus(rect: Rect): void {
     this.focus = rect;
@@ -96,7 +120,7 @@ export class Renderer {
     const p = this.camParams;
     const pitch = THREE.MathUtils.degToRad(p.pitch), yaw = THREE.MathUtils.degToRad(p.yaw);
     const dir = new THREE.Vector3(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch));
-    this.camera.position.copy(this.target).addScaledVector(dir, this.CAM_DIST);
+    this.camera.position.copy(this.target).addScaledVector(dir, CAM_DIST);
     this.camera.up.set(0, 1, 0);
     this.camera.lookAt(this.target);
     const aspect = window.innerWidth / window.innerHeight;
@@ -161,6 +185,7 @@ export class Renderer {
   render(): void {
     this.renderer.info.reset();
     this.controls.update();
+    this.constrain?.(); // camera-mode bounds get the last word on where the camera may be
     this.target.copy(this.controls.target); // panning moves the focus; GUI zoom/pitch then respect it
     this.updateShadowFrame();
     if (this.ssaoEnabled) this.composer.render();

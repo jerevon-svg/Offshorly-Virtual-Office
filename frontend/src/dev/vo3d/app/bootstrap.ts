@@ -19,6 +19,10 @@ import { Connectivity } from "../nav/connectivity";
 import { compareToV1, summariseReport, verdictFor } from "../nav/diagnostics";
 import { MEETING_ROOM, MEETING_CHAIR_IDS, KIOSK_INTERACTION_ID as MEETING_KIOSK_INTERACTION_ID, KIOSK_SCANNER_ID as MEETING_KIOSK_SCANNER_ID, KIOSK_ZONE as MEETING_KIOSK_ZONE, meetingRoomEntities } from "../rooms/meeting";
 import { PROJECT_ROOM, CONSOLE_INTERACTION_ID, SOFA_SEAT_IDS, TUB_SEAT_IDS, TV_INTERACTION_ID, projectRoomEntities } from "../rooms/project";
+import { buildExterior } from "../build/exterior";
+import { Environment } from "../env/Environment";
+import { ENV_TIME_MODES, TimeOfDay, type EnvTimeMode } from "../env/timeOfDay";
+import { CAMERA_MODES, CameraModes, type CameraModeId } from "../render/CameraModes";
 import { ApproachInteraction } from "../interact/Approach";
 import { LoungeSeatInteraction } from "../interact/LoungeSeat";
 import { Walkability, composeStatic } from "../nav/Walkability";
@@ -91,6 +95,8 @@ const params = {
   lightAzimuth: -48, lightElevation: 62, keyIntensity: 2.3, ambientIntensity: 1.25, envIntensity: 0.45, exposure: 1.12,
   shadows: true, ao: false, sway: true, ambient: true, wallHeight: DESIGN_SHELL.wallHeight, frontWall: "low" as "low" | "full" | "hidden",
   overlay: true, motion: false, preset: "B" as PresetId, captureSeconds: 30,
+  envTime: "auto" as EnvTimeMode, envScenery: true, envFog: true, envSky: true,
+  cameraMode: "office" as CameraModeId,
   avatar: true, avatarLod: 1 as AvatarLod, avatarLit: true, walkSpeed: 30,
   clickToWalk: true, showGrid: false, showBlocked: false, showRegions: false, showPath: true, showDestination: true, showDiagnostic: false,
   editMode: false,
@@ -113,6 +119,37 @@ mirror.buildRoom(CENTRAL_HUB, shellOpts()); // Phase 6B — wall-less atrium: th
 // after the map was last drawn. Without this the statues stand in the scene casting nothing until some
 // unrelated change happens to refresh it. Anything else added after startup needs the same call.
 void loadBossStatues(mirror.root).then(() => R.invalidateShadows());
+
+// ---- environment -------------------------------------------------------------------------------
+// The world OUTSIDE the office (build/exterior) plus the global day/sunset/night presentation that owns
+// sky, sun, ambient, haze and the exterior practical lights. The phase itself comes from V1's real clock
+// through env/timeOfDay — V1 keeps the clock and the boundaries; this only presents them.
+// SCENERY ONLY: the exterior group is added straight to the scene, never to the world/nav graph.
+const scenery = buildExterior();
+const env = new Environment(R, scenery);
+const timeOfDay = new TimeOfDay();
+const envState = { phase: "—", realPhase: "—", clock: "—", source: "V1 real clock (Asia/Manila)" };
+function applyEnvPhase(force = false): void {
+  const phase = timeOfDay.phase(performance.now());
+  envState.phase = phase;
+  envState.realPhase = timeOfDay.realPhase;
+  if (!env.apply(phase, force)) return;
+  R.invalidateShadows(); // the sun moved: every static shadow in the office has to be redrawn
+}
+/** decimal hour -> "HH:MM", for the dev readout only */
+function formatManila(h: number): string {
+  const hh = Math.floor(h) % 24, mm = Math.round((h - Math.floor(h)) * 60);
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+}
+applyEnvPhase(true);
+
+// ---- camera modes ------------------------------------------------------------------------------
+// OFFICE is the default and the product experience: the ground floor framed automatically, fixed pitch
+// and yaw, no orbit, no pan. 3D EXPLORE unlocks the full rig for inspecting the campus. See CameraModes.
+// The fence is the V1 FRAME: the office footprint plus exactly the edge context V1 showed — which
+// includes the exterior sidewalk under Reception, so panning south stops there and the road never
+// appears. See render/CameraModes for why the clamp is viewport-aware rather than target-aware.
+const cameraModes = new CameraModes(R, plan.frame);
 // solids have no builder: skip them in the mirror by giving them no view (buildEntity would throw) — filtered here
 // (they are never rendered; the baked group already draws them)
 
@@ -376,9 +413,30 @@ const gui = new GUI({ title: "VO 3D — V2 (ground floor)" });
 const refresh = () => gui.controllersRecursive().forEach((c) => c.updateDisplay());
 const cam = gui.addFolder("Camera");
 const applyCam = () => { R.camParams = { pitch: params.pitch, yaw: params.yaw, zoom: params.zoom }; R.placeCamera(); };
-cam.add(params, "pitch", 30, 90, 1).onChange(applyCam); cam.add(params, "yaw", -45, 45, 1).onChange(applyCam); cam.add(params, "zoom", 0.5, 3, 0.01).onChange(applyCam);
-cam.add({ reset: () => { params.pitch = 52; params.yaw = 0; params.zoom = 1.32; R.setFocus(DESIGN_ROOM.rect); refresh(); applyCam(); } }, "reset").name("reset view");
-const focusOn = (rect: Rect, fill = 0.9) => { params.zoom = R.focusOn(rect, fill); refresh(); applyCam(); };
+/** mirror whatever the mode policy decided back into the GUI state */
+const syncCam = (p: { pitch: number; yaw: number; zoom: number }) => { params.pitch = p.pitch; params.yaw = p.yaw; params.zoom = p.zoom; refresh(); };
+// THE MODE SWITCH owns both halves of the illusion: the camera policy AND what the environment presents.
+// OFFICE draws no exterior at all (see EnvPresentation) — camera bounds alone cannot stop a 16:9 viewport
+// overflowing a near-square office sideways, and anything out there would spoil the reveal.
+const setCameraMode = (m: CameraModeId) => {
+  params.cameraMode = m;
+  if (env.setPresentation(m === "office" ? "office" : "world")) R.invalidateShadows();
+  syncCam(cameraModes.set(m));
+};
+cam.add(params, "cameraMode", CAMERA_MODES).name("mode: OFFICE / 3D EXPLORE").onChange(setCameraMode);
+// The manual pitch/yaw sliders only bite in EXPLORE — OFFICE pins the orientation, and letting a slider
+// break that would defeat the point of having a fixed mode at all.
+cam.add(params, "pitch", 12, 90, 1).onChange(() => { if (params.cameraMode === "explore") applyCam(); else syncCam(cameraModes.officeParams); });
+cam.add(params, "yaw", -180, 180, 1).onChange(() => { if (params.cameraMode === "explore") applyCam(); else syncCam(cameraModes.officeParams); });
+// In OFFICE the slider IS the wheel: it drives OrbitControls' dolly, whose floor of 1 is the canonical
+// whole-office framing. In EXPLORE it resizes the frustum as before.
+cam.add(params, "zoom", 0.05, 6, 0.01).onChange((v: number) => {
+  if (params.cameraMode === "explore") applyCam();
+  else { R.camera.zoom = Math.max(1, Math.min(6, v)); R.camera.updateProjectionMatrix(); }
+});
+cam.add({ reset: () => setCameraMode(params.cameraMode) }, "reset").name("reset view");
+const focusOn = (rect: Rect, fill = 0.9) => syncCam(cameraModes.focus(rect, fill));
+setCameraMode("office"); // the app opens in the product experience, not in the inspection rig
 cam.add({ f: () => focusOn(DESIGN_ROOM.rect, 0.78) }, "f").name("focus: Design Room");
 cam.add({ f: () => focusOn(RECEPTION_ROOM.rect, 0.86) }, "f").name("focus: Reception");
 cam.add({ f: () => focusOn(GAMING_ROOM.rect, 0.86) }, "f").name("focus: Gaming Room");
@@ -397,6 +455,17 @@ light.add(params, "lightAzimuth", -180, 180, 1).onChange(applyLight); light.add(
 light.add(params, "keyIntensity", 0, 5, 0.05).onChange(applyLight); light.add(params, "ambientIntensity", 0, 3, 0.05).onChange(applyLight);
 light.add(params, "envIntensity", 0, 1.5, 0.05).onChange(applyLight); light.add(params, "exposure", 0.5, 1.6, 0.01).onChange(applyLight);
 light.add(params, "shadows").onChange((v: boolean) => R.setShadows(v)); light.add(params, "ao").name("SSAO (off by default)").onChange((v: boolean) => (R.ssaoEnabled = v));
+// The environment's phase is READ from V1, never written to it. The dropdown is a dev-only VIEW override:
+// AUTO follows the real Manila clock exactly as the 2D office does; the three explicit values are for
+// visual testing and change nothing outside this renderer.
+const envGui = gui.addFolder("Environment (day / sunset / night)");
+envGui.add(params, "envTime", ENV_TIME_MODES).name("time (AUTO = V1 clock)").onChange((v: EnvTimeMode) => { timeOfDay.mode = v; applyEnvPhase(true); refresh(); });
+envGui.add(envState, "phase").name("phase in force").listen().disable();
+envGui.add(envState, "realPhase").name("V1 real clock says").listen().disable();
+envGui.add(envState, "clock").name("Manila time").listen().disable();
+envGui.add(params, "envScenery").name("exterior world").onChange((v: boolean) => { env.sceneryVisible = v; R.invalidateShadows(); });
+envGui.add(params, "envFog").name("distance haze").onChange((v: boolean) => (env.fogEnabled = v));
+envGui.add(params, "envSky").name("sky dome + stars").onChange((v: boolean) => (env.skyVisible = v));
 const geo = gui.addFolder("Geometry");
 const rebuild = () => { seat.reset(); mirror.rebuildRoom(DESIGN_ROOM, shellOpts()); door = new SlidingDoor(mirror.view(DOOR_ID), doorEntity.capabilities.door!, doorEntity.transform.pos); seat = new SeatInteraction(avatar, stack, mirror.view(CHAIR_4_ID), chairSeat, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed); };
 geo.add(params, "wallHeight", 20, 110, 1).onFinishChange(rebuild); geo.add(params, "frontWall", ["low", "full", "hidden"]).onChange(rebuild);
@@ -592,6 +661,8 @@ function loop(): void {
   if (params.motion) scriptedMotion(t);
   mirror.sway.update(t);
   mirror.ambient.update(t, dt / 1000); // powered-surface idle animation (screens, sensors, status strips)
+  applyEnvPhase(); // V1's clock is re-read at most twice a minute and only writes when the phase changes
+  env.follow(); // the sky dome rides the orbit target so panning can never reach its edge
   if (params.avatar) {
     seat.update(dt / 1000);
     meetingSeat?.update(dt / 1000);
@@ -649,6 +720,7 @@ function loop(): void {
   overlayTick += dt;
   if (overlayTick > 250 && params.overlay) {
     overlayTick = 0;
+    envState.clock = formatManila(timeOfDay.hourDecimal);
     overlay.update(liveWindow.summary(), snapshotRenderer(R.renderer), device, `V2 · avatar ${params.avatar ? `LOD${params.avatarLod} · ${avatarState.triangles.toLocaleString()} tris · ${avatarState.clip} · owner ${stack.owner}` : "off"}\n${benchState.status}${lastCapture ? "\nlast: " + benchState.result : ""}`);
   }
 }
@@ -675,6 +747,31 @@ loop();
     startApproach, clear: clearSeats,
     get seat() { return hubSeat; }, get lounge() { return loungeSeat; }, state: hubState },
   openBands, openedCells: () => openedCells(openBands),
+  env: {
+    environment: env, scenery, timeOfDay, state: envState,
+    setTime: (m: EnvTimeMode) => { params.envTime = m; timeOfDay.mode = m; applyEnvPhase(true); refresh(); },
+    phase: () => env.phase, realPhase: () => timeOfDay.realPhase, hour: () => timeOfDay.hourDecimal,
+    stats: scenery.stats,
+    setScenery: (on: boolean) => { params.envScenery = on; env.sceneryVisible = on; R.invalidateShadows(); refresh(); },
+    setFog: (on: boolean) => { params.envFog = on; env.fogEnabled = on; refresh(); },
+    setSky: (on: boolean) => { params.envSky = on; env.skyVisible = on; refresh(); },
+    presentation: () => env.presentation,
+  },
+  cameraModes: {
+    get mode() { return cameraModes.mode; }, set: setCameraMode, officeParams: () => cameraModes.officeParams,
+    focus: (rect: Rect, fill = 0.9) => syncCam(cameraModes.focus(rect, fill)),
+    /** EXPLORE only: free orientation, for driving inspection views */
+    orbit: (pitch: number, yaw: number, zoom?: number) => {
+      if (cameraModes.mode !== "explore") return false; // OFFICE pins the orientation; this is the reveal rig
+      params.pitch = pitch; params.yaw = yaw; if (zoom !== undefined) params.zoom = zoom;
+      applyCam(); refresh(); return true;
+    },
+    /** OFFICE: dolly in (1 = the canonical whole-office framing, the furthest out the mode allows) */
+    dolly: (z: number) => { R.camera.zoom = Math.max(1, Math.min(6, z)); R.camera.updateProjectionMatrix(); },
+    /** OFFICE: drag the view by a world-space delta, exactly as a mouse pan would */
+    pan: (dx: number, dz: number) => { R.controls.target.x += dx; R.controls.target.z += dz; R.camera.position.x += dx; R.camera.position.z += dz; },
+    bounds: () => cameraModes.officeBounds, viewport: () => cameraModes.viewportGroundRect(),
+  },
   meeting: { state: meetingState, startSit: startMeetingSit, stand: () => meetingSeat?.stand(), seat: () => meetingSeat,
     chairIds: MEETING_CHAIR_IDS, kioskScanner: MEETING_KIOSK_SCANNER_ID, kioskZone: MEETING_KIOSK_ZONE },
   project: { state: projState, seats: loungeSeats.map((s2, i) => ({ i, id: s2.id, slot: s2.label })), startSit: startLoungeSit,
