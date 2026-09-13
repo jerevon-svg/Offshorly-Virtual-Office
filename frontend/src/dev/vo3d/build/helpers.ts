@@ -2,6 +2,7 @@
 // deterministic seed, which callers reset per build so rebuilds are identical.
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { Facing, Rect } from "../core/coords";
 
 export type BoxSpec = Rect & { h: number };
@@ -71,4 +72,54 @@ export function placed(rect: Rect, facing: Facing): THREE.Group {
 }
 export function localSize(rect: Rect, facing: Facing): { w: number; d: number } {
   return facing === "east" || facing === "west" ? { w: rect.d, d: rect.w } : { w: rect.w, d: rect.d };
+}
+
+/** BAKE a set of same-material meshes into ONE mesh (Phase 6B).
+ *
+ *  The Central Hub repeats small pieces far more than any earlier room — 24 café chairs alone would cost
+ *  ~240 draw calls built the way the Design Room builds one chair. Every part of such a piece is rigid
+ *  relative to the piece, so the parts can be baked into a single buffer the moment the piece is finished:
+ *  the piece keeps its own Group (and therefore its own transform, its own entity id and its own future
+ *  SeatCapability), it just stops costing one draw call per screw.
+ *
+ *  Deliberately narrow: same material in, one mesh out, world-relative to the meshes' shared parent. It is
+ *  a build-time bake, NOT a scene-graph optimiser — nothing here inspects or rewrites an existing tree. */
+export function bake(meshes: THREE.Mesh[], m: THREE.Material, name = "baked"): THREE.Mesh | null {
+  if (meshes.length === 0) return null;
+  const geos = meshes.map((mesh) => {
+    mesh.updateMatrix();
+    // mergeGeometries needs one uniform attribute layout: every geometry here carries position/normal/uv,
+    // but CylinderGeometry/LatheGeometry are indexed while RoundedBoxGeometry is not.
+    const g = mesh.geometry.index ? mesh.geometry.toNonIndexed() : mesh.geometry.clone();
+    return g.applyMatrix4(mesh.matrix);
+  });
+  const merged = mergeGeometries(geos, false);
+  for (const g of geos) g.dispose();
+  if (!merged) return null; // never in practice: the layouts above are uniform. Caller falls back to parts.
+  const out = new THREE.Mesh(merged, m);
+  out.name = name;
+  return shadowed(out, meshes.some((x) => x.castShadow), meshes.some((x) => x.receiveShadow));
+}
+
+/** Collect into `parts`, then `bake` them: the idiom every Central Hub piece uses.
+ *  `add(mesh)` returns the mesh so it can still be tweaked (rotation, userData) before the bake. */
+export class Baker {
+  private readonly buckets = new Map<THREE.Material, THREE.Mesh[]>();
+  add<T extends THREE.Mesh>(mesh: T): T {
+    const m = mesh.material as THREE.Material;
+    const list = this.buckets.get(m);
+    if (list) list.push(mesh);
+    else this.buckets.set(m, [mesh]);
+    return mesh;
+  }
+  /** one mesh per material, in insertion order */
+  bakeInto(g: THREE.Object3D, name = "baked"): number {
+    let n = 0;
+    for (const [m, meshes] of this.buckets) {
+      const one = bake(meshes, m, `${name}-${n}`);
+      if (one) { g.add(one); n++; } else { for (const mesh of meshes) g.add(mesh); n += meshes.length; }
+    }
+    this.buckets.clear();
+    return n;
+  }
 }

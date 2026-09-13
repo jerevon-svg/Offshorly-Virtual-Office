@@ -18,7 +18,7 @@ import { cyl, rbox, shadowed } from "./helpers";
 import { tiledFloor } from "./tile";
 import { ledStrip } from "./led";
 import { credenzaRun } from "./frontbar";
-import { PALETTE, emissiveMat, emissiveMatUnique, glassMat, glowMat, mat, metal, plastic, uiScreenMat, wood } from "../render/Materials";
+import { PALETTE, emissiveMat, emissiveMatUnique, glassMat, glowMat, mat, metal, plastic, uiScreenMat, wood, FLOOR_LAYER, floorLayer } from "../render/Materials";
 
 // ---- ANIMATION TIMING ---------------------------------------------------------------------------
 // One table so the room breathes as a composition rather than nine unrelated loops. Periods are spread
@@ -75,9 +75,12 @@ const WASH_TOP = STRUCT.wallHeight - 1; // 45
  *  drops the floor to a moody ~150 so coloured light finally has somewhere to land. Nothing global, no
  *  new lights, one mesh; it sits under the rugs and every piece of furniture. */
 function moodFloor(): THREE.Mesh {
-  const m = new THREE.MeshBasicMaterial({
+  // FLOOR_LAYER.tint: this plane MULTIPLIES, so it has to land before every additive glow in the room or
+  // it wipes them out. Without the explicit order that decision was left to the transparent depth sort,
+  // which flipped with camera yaw and took the rug's print and LED border with it.
+  const m = floorLayer(new THREE.MeshBasicMaterial({
     color: PALETTE.gamingMood, blending: THREE.MultiplyBlending, transparent: true, depthWrite: false, toneMapped: false,
-  });
+  }), FLOOR_LAYER.tint);
   const p = rbox(TILE_RECT.w - 0.4, 0.02, TILE_RECT.d - 0.4, m, TILE_RECT.x + TILE_RECT.w / 2, 0.015, TILE_RECT.z + TILE_RECT.d / 2, 0);
   p.castShadow = p.receiveShadow = false;
   return p;

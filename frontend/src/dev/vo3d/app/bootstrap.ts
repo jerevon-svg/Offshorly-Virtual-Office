@@ -9,6 +9,10 @@ import { NORTH_STRIP as PROJECT_NORTH_STRIP } from "../rooms/project";
 import { GAMING_ROOM, NORTH_STRIP as GAMING_NORTH_STRIP, WEST_STRIP as GAMING_WEST_STRIP, gamingRoomEntities,
   BAG_SEAT_IDS, DARTS_INTERACTION_ID, DOOR_LEAF_ID as GAMING_DOOR_ID, FRIDGE_INTERACTION_ID, GAMING_CHAIR_IDS,
   POSTER_INTERACTION_ID, SOFA_SEAT_ID, TV_INTERACTION_ID as GAMING_TV_INTERACTION_ID } from "../rooms/gaming";
+import { CENTRAL_HUB, OPEN_BANDS as HUB_OPEN_BANDS, centralHubEntities,
+  CAFE_CHAIR_IDS, COUNTER_INTERACTION_ID as HUB_COUNTER_ID, HUB_LOUNGE_IDS,
+  MONUMENT_INTERACTION_ID as HUB_MONUMENT_ID, SHELF_INTERACTION_ID as HUB_SHELF_ID, TOUCAN_PERCH } from "../rooms/central-hub";
+import { loadBossStatues } from "../build/hub-monument";
 import { openedCells, openedLayer, v2Static } from "../nav/v2Open";
 import { MEETING_ROOM, MEETING_CHAIR_IDS, KIOSK_INTERACTION_ID as MEETING_KIOSK_INTERACTION_ID, KIOSK_SCANNER_ID as MEETING_KIOSK_SCANNER_ID, KIOSK_ZONE as MEETING_KIOSK_ZONE, meetingRoomEntities } from "../rooms/meeting";
 import { PROJECT_ROOM, CONSOLE_INTERACTION_ID, SOFA_SEAT_IDS, TUB_SEAT_IDS, TV_INTERACTION_ID, projectRoomEntities } from "../rooms/project";
@@ -38,11 +42,13 @@ world.addRoom(RECEPTION_ROOM);
 world.addRoom(MEETING_ROOM);
 world.addRoom(PROJECT_ROOM);
 world.addRoom(GAMING_ROOM);
+world.addRoom(CENTRAL_HUB);
 for (const e of designRoomEntities()) world.addEntity(e);
 for (const e of receptionEntities()) world.addEntity(e);
 for (const e of meetingRoomEntities()) world.addEntity(e);
 for (const e of projectRoomEntities()) world.addEntity(e);
 for (const e of gamingRoomEntities()) world.addEntity(e);
+for (const e of centralHubEntities()) world.addEntity(e);
 // baked decor solids (visual comes from the shell builder) participate in placement as footprint-only entities
 DESIGN_SOLIDS.forEach((r, i) =>
   world.addEntity({ id: `${DESIGN_ROOM.id}/solid-${i}`, kind: "solid", roomId: DESIGN_ROOM.id, transform: { pos: { x: r.x + r.w / 2, z: r.z + r.d / 2 }, yaw: 0 }, footprint: { shape: "rect", w: r.w, d: r.d }, capabilities: {}, props: {}, source: { baked: true } }),
@@ -56,7 +62,7 @@ const inBounds = (p: Vec2): boolean => world.walkableAt(p);
 // dynamic footprints + reservations compose on top
 // V2-LOCAL: the V1 grid PLUS the floor 4C's corrected north walls gave back (nav/v2Open.ts). The grid file
 // itself is untouched; only the two declared bands can add a cell.
-const openBands = [MEETING_NORTH_STRIP, PROJECT_NORTH_STRIP, GAMING_NORTH_STRIP, GAMING_WEST_STRIP];
+const openBands = [MEETING_NORTH_STRIP, PROJECT_NORTH_STRIP, GAMING_NORTH_STRIP, GAMING_WEST_STRIP, ...HUB_OPEN_BANDS];
 const walkability = new Walkability(composeStatic(v2Static(v1Static, openedLayer(openBands)), inBounds, clearanceLayer(worldClearances(world))));
 walkability.syncFromWorld(world);
 
@@ -80,6 +86,15 @@ mirror.buildRoom(RECEPTION_ROOM, shellOpts());
 mirror.buildRoom(MEETING_ROOM, shellOpts()); // Phase 4B
 mirror.buildRoom(PROJECT_ROOM, shellOpts());
 mirror.buildRoom(GAMING_ROOM, shellOpts()); // Phase 5B
+mirror.buildRoom(CENTRAL_HUB, shellOpts()); // Phase 6B — wall-less atrium: the builder owns its own floor plate
+// The monument's two boss statues are sculpted GLBs; the ring ships with procedural placeholders standing
+// in their anchors and swaps them the moment the assets arrive. Fire-and-forget: a missing file leaves the
+// placeholders up and the hub otherwise untouched.
+//
+// The shadow map is only redrawn on demand (Renderer.invalidateShadows), and these land ASYNCHRONOUSLY —
+// after the map was last drawn. Without this the statues stand in the scene casting nothing until some
+// unrelated change happens to refresh it. Anything else added after startup needs the same call.
+void loadBossStatues(mirror.root).then(() => R.invalidateShadows());
 // solids have no builder: skip them in the mirror by giving them no view (buildEntity would throw) — filtered here
 // (they are never rendered; the baked group already draws them)
 
@@ -92,6 +107,7 @@ const avatarState = { status: "loading…", clip: "", position: "", owner: "Idle
 function loadAvatar(): void {
   avatarState.status = `loading LOD${params.avatarLod}…`;
   avatar.load(params.avatarLod).then(() => {
+    R.invalidateShadows(); // a body just entered the scene; it has to enter the shadow map too
     avatarState.status = `LOD${params.avatarLod} loaded · native ${avatar.nativeHeight.toFixed(2)} → ${BON_STANDING_HEIGHT} units`;
     avatarState.triangles = Math.round(avatar.triangles);
   }).catch((e: unknown) => { avatarState.status = `load failed: ${String(e).slice(0, 80)}`; });
@@ -159,7 +175,7 @@ const approachCtl = new ApproachInteraction(avatar, stack, (to) => planWalk(avat
 const receptionState = { focus: "none", status: "idle", seat: "idle" };
 /** Every FIXED lounge seat in the world, flattened to one slot per entry: Reception's two tub chairs plus
  *  Project's two sofas (two cushions each) and two tub chairs. One list, one controller — no new system. */
-const loungeSeats = [...LOUNGE_SEAT_IDS, ...SOFA_SEAT_IDS, ...TUB_SEAT_IDS, SOFA_SEAT_ID, ...BAG_SEAT_IDS].flatMap((id) => {
+const loungeSeats = [...LOUNGE_SEAT_IDS, ...SOFA_SEAT_IDS, ...TUB_SEAT_IDS, SOFA_SEAT_ID, ...BAG_SEAT_IDS, ...HUB_LOUNGE_IDS].flatMap((id) => {
   const e = world.get(id);
   return e.capabilities.lounge!.slots.map((slot) => ({ id, slot, view: mirror.view(id), label: slot.id }));
 });
@@ -182,6 +198,9 @@ function startGamingSit(index: number): void {
 
 let meetingSeat: SeatInteraction | null = null;
 const meetingState = { chair: "none", seat: "idle", chairRestError: 0, kioskScanner: 0 };
+/** The Central Hub's 24 café chairs are MOVABLE seating on the same one-at-a-time SeatInteraction. */
+let hubSeat: SeatInteraction | null = null;
+const hubState = { chair: "none", seat: "idle", chairRestError: 0, slot: "none" };
 /** Only an ENGAGED interaction is reset. SeatInteraction.reset() teleports the avatar back to its own
  *  approach point, so resetting an already-idle controller would yank Bon across the building. */
 function clearSeats(): void {
@@ -189,6 +208,16 @@ function clearSeats(): void {
   loungeSeat = null;
   if (meetingSeat && meetingSeat.state !== "idle") meetingSeat.reset();
   if (gamingSeat && gamingSeat.state !== "idle") gamingSeat.reset();
+  if (hubSeat && hubSeat.state !== "idle") hubSeat.reset();
+}
+function startHubSit(index: number): void {
+  approachCtl.cancel();
+  clearSeats();
+  const id = CAFE_CHAIR_IDS[index];
+  const e = world.get(id);
+  hubSeat = new SeatInteraction(avatar, stack, mirror.view(id), e.capabilities.seat!, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+  hubState.chair = id.split("/")[1];
+  hubSeat.sit();
 }
 function startMeetingSit(index: number): void {
   approachCtl.cancel();
@@ -312,6 +341,8 @@ const focusOn = (rect: Rect, fill = 0.9) => { params.zoom = R.focusOn(rect, fill
 cam.add({ f: () => focusOn(DESIGN_ROOM.rect, 0.78) }, "f").name("focus: Design Room");
 cam.add({ f: () => focusOn(RECEPTION_ROOM.rect, 0.86) }, "f").name("focus: Reception");
 cam.add({ f: () => focusOn(GAMING_ROOM.rect, 0.86) }, "f").name("focus: Gaming Room");
+cam.add({ f: () => focusOn(CENTRAL_HUB.rect, 0.92) }, "f").name("focus: Central Hub");
+cam.add({ f: () => focusOn({ x: 616, z: 480, w: 222, d: 222 }, 0.9) }, "f").name("focus: Hub island");
 const ENTRANCE_VIEW: Rect = { x: 590, z: 1060, w: 260, d: 170 };
 cam.add({ f: () => focusOn(ENTRANCE_VIEW, 0.9) }, "f").name("focus: Reception entrance");
 // the bottom architectural bar: Meeting → Reception → Project must read as ONE continuous structure
@@ -383,6 +414,23 @@ loungeSeats.forEach((s2, i) => {
 });
 game.add({ f: () => { gamingSeat?.stand(); loungeSeat?.stand(); } }, "f").name("▶ stand up (gaming)");
 game.add({ f: () => startApproach(GAMING_TV_INTERACTION_ID) }, "f").name("▶ pick a game");
+
+// ---- Central Hub (6C) --------------------------------------------------------------------------
+const hub = gui.addFolder("Central Hub (6C)");
+[0, 4, 8, 12, 16, 20].forEach((i) => hub.add({ f: () => startHubSit(i) }, "f").name(`▶ sit: ${CAFE_CHAIR_IDS[i].split("/")[1]}`));
+loungeSeats.forEach((s3, i) => {
+  if (!HUB_LOUNGE_IDS.includes(s3.id)) return;
+  hub.add({ f: () => { hubState.slot = s3.label; startLoungeSit(i); } }, "f").name(`▶ sit: ${s3.label}`);
+});
+hub.add({ f: () => { hubSeat?.stand(); loungeSeat?.stand(); } }, "f").name("▶ stand up (hub)");
+hub.add({ f: () => startApproach(HUB_COUNTER_ID) }, "f").name("▶ grab a coffee");
+hub.add({ f: () => startApproach(HUB_SHELF_ID) }, "f").name("▶ browse the shelves");
+hub.add({ f: () => startApproach(HUB_MONUMENT_ID) }, "f").name("▶ read the plaque");
+hub.add(hubState, "chair").disable().listen();
+hub.add(hubState, "slot").disable().listen();
+hub.add(hubState, "seat").disable().listen();
+hub.add(hubState, "chairRestError").name("chair rest drift").disable().listen();
+hub.add({ toucan: `${TOUCAN_PERCH.x}, ${TOUCAN_PERCH.z} @ y${TOUCAN_PERCH.y}` }, "toucan").name("toucan perch").disable();
 game.add({ f: () => startApproach(DARTS_INTERACTION_ID) }, "f").name("▶ throw darts");
 game.add({ f: () => startApproach(FRIDGE_INTERACTION_ID) }, "f").name("▶ grab a drink");
 game.add({ f: () => startApproach(POSTER_INTERACTION_ID) }, "f").name("▶ arcade print");
@@ -471,6 +519,22 @@ let entryPath: readonly Vec2[] = [];
 const clock = new THREE.Timer();
 let lastFrame = performance.now();
 let overlayTick = 0;
+/** True while anything that casts a shadow is still moving. Compared against the last frame rather than
+ *  asking each controller, so a new interaction can never forget to opt in. */
+const lastShadowPose = new THREE.Vector3(Number.NaN, 0, 0);
+let lastShadowClip = "";
+function shadowsAreStale(): boolean {
+  const p = avatar.worldPosition();
+  const clip = avatar.currentClip ?? "";
+  const moved = Math.abs(p.x - lastShadowPose.x) > 0.01 || Math.abs(p.z - lastShadowPose.z) > 0.01 || clip !== lastShadowClip;
+  lastShadowPose.set(p.x, 0, p.z);
+  lastShadowClip = clip;
+  // a walking avatar animates continuously; doors and chairs report their own motion
+  return moved || navCtl.moving || door.state !== "closed" || entryDoor.state !== "closed" || gamingDoor.state !== "closed"
+    || seat.status !== "idle" || approachCtl.status !== "idle"
+    || (meetingSeat?.status ?? "idle") !== "idle" || (gamingSeat?.status ?? "idle") !== "idle"
+    || (hubSeat?.status ?? "idle") !== "idle" || (loungeSeat?.status ?? "idle") !== "idle";
+}
 function loop(): void {
   requestAnimationFrame(loop);
   const now = performance.now();
@@ -484,6 +548,7 @@ function loop(): void {
     seat.update(dt / 1000);
     meetingSeat?.update(dt / 1000);
     gamingSeat?.update(dt / 1000);
+    hubSeat?.update(dt / 1000);
     loungeSeat?.update(dt / 1000);
     approachCtl.update(dt / 1000);
     navCtl.update(dt / 1000);
@@ -505,6 +570,8 @@ function loop(): void {
     meetingState.seat = meetingSeat ? meetingSeat.status : "idle";
     meetingState.chairRestError = meetingSeat ? Math.round(meetingSeat.chairRestError() * 1000) / 1000 : 0;
     meetingState.kioskScanner = Math.round(mirror.ambient.scannerActivation(MEETING_KIOSK_SCANNER_ID) * 100) / 100;
+    hubState.seat = hubSeat ? hubSeat.status : loungeSeat ? loungeSeat.status : "idle";
+    hubState.chairRestError = hubSeat ? Math.round(hubSeat.chairRestError() * 1000) / 1000 : 0;
     gamingState.seat = gamingSeat ? gamingSeat.status : loungeSeat ? loungeSeat.status : "idle";
     gamingState.chairRestError = gamingSeat ? Math.round(gamingSeat.chairRestError() * 1000) / 1000 : 0;
     gamingState.door = gamingDoor.state;
@@ -520,6 +587,10 @@ function loop(): void {
     const p = avatar.worldPosition();
     avatarState.position = `${p.x.toFixed(0)}, ${p.z.toFixed(0)}${navCtl.moving ? ` → ${navCtl.path.length} waypoint(s) left` : ""}`;
   }
+  // The shadow map is only redrawn when something that casts one has moved (Renderer.invalidateShadows).
+  // Anything the avatar does counts: walking, sitting, and the doors/chairs its interactions drive. Plant
+  // sway is deliberately NOT a trigger — a frozen leaf shadow is invisible and it would defeat the point.
+  if (params.avatar && shadowsAreStale()) R.invalidateShadows();
   R.render();
   const sample = { dt, calls: R.renderer.info.render.calls, triangles: R.renderer.info.render.triangles };
   liveWindow.push(sample); capture?.push(sample);
@@ -545,6 +616,12 @@ loop();
     placeBonAtEntrance, entranceTour: () => { placeBonAtEntrance(); startTour([RECEPTION_STREET, RECEPTION_INSIDE]); },
     receptionInside: RECEPTION_INSIDE, receptionStreet: RECEPTION_STREET, entranceView: ENTRANCE_VIEW, planWalk: (from: Vec2, to: Vec2) => planWalk(from, to, walkability, inBounds), regionAt: (x: number, z: number) => world.regionAt({ x, z }) },
   get seat() { return seat; }, seatState,
+  hub: { sit: startHubSit, chairIds: CAFE_CHAIR_IDS, loungeIds: HUB_LOUNGE_IDS, toucanPerch: TOUCAN_PERCH,
+    loungeSlots: loungeSeats.map((l, i) => ({ i, id: l.id, label: l.label })).filter((l) => HUB_LOUNGE_IDS.includes(l.id)),
+    sitLounge: startLoungeSit, stand: () => { hubSeat?.stand(); loungeSeat?.stand(); },
+    approach: { counter: HUB_COUNTER_ID, shelf: HUB_SHELF_ID, monument: HUB_MONUMENT_ID },
+    startApproach, clear: clearSeats,
+    get seat() { return hubSeat; }, get lounge() { return loungeSeat; }, state: hubState },
   openBands, openedCells: () => openedCells(openBands),
   meeting: { state: meetingState, startSit: startMeetingSit, stand: () => meetingSeat?.stand(), seat: () => meetingSeat,
     chairIds: MEETING_CHAIR_IDS, kioskScanner: MEETING_KIOSK_SCANNER_ID, kioskZone: MEETING_KIOSK_ZONE },

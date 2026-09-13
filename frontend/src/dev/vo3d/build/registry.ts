@@ -14,6 +14,7 @@ import { receptionStatic } from "./reception";
 import { meetingStatic } from "./meeting";
 import { projectStatic } from "./project";
 import { gamingStatic } from "./gaming";
+import { centralHubStatic } from "./central-hub";
 
 export type BuildResult = { group: THREE.Group; sway: SwayNode[] };
 
@@ -38,6 +39,7 @@ export const ROOM_STATIC: Record<string, RoomStaticBuilder> = {
   "meeting-room": meetingStatic,
   "project-room": projectStatic,
   "gaming-room": gamingStatic,
+  "central-hub": centralHubStatic,
 };
 
 export function buildEntity(e: Entity): BuildResult {

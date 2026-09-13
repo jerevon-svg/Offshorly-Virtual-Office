@@ -60,6 +60,18 @@ export const PALETTE = {
   gamingPlaster: 0xd2ced3, //   this room's walls: a cooler, darker cream than PALETTE.plaster, so coloured
   //                            spill has something to tint instead of clipping to white
   gamingMood: 0xa5a2ab, //      multiply tint for this room's floor only (see build/gaming moodFloor)
+
+  // ---- CENTRAL HUB (Phase 6B) ------------------------------------------------------------------
+  // Routed through rooms/central-hub.ts THEME, never named directly by a builder. The hub's brief is the
+  // OPPOSITE of the Gaming Room's: warm, pale, social, no saturated light. Every value measured off
+  // src/assets/office/rooms/central-hub.png.
+  hubSage: 0xa8b48c, //     the arc benches' sage-green cushions (measured 168,180,140)
+  hubCamel: 0xb5854e, //    the middle north armchair's tan leather (measured 181,133,78)
+  hubStone: 0xa9a49c, //    the bench/planter shells, shelf carcass and counter plinth — warm grey concrete
+  hubStoneDark: 0x7d7872, // their recessed toe-kicks and shadow reveals
+  hubMonument: 0xd8d1c6, // the boxing-championship monument: one monochrome warm cast stone
+  hubTerrazzo: 0xf2ece3, // the hub's own floor plate: a shade brighter than the hall tile so the plaza
+  //                         reads as a defined place without a single wall
 };
 
 // ---- shared materials -------------------------------------------------------------------
@@ -199,10 +211,13 @@ export function tileMat(): THREE.MeshStandardMaterial {
     map,
     roughness: 0.42,
     metalness: 0,
-    // the floor sits at exactly y = 0, coplanar with the shared ground slab's top face
-    polygonOffset: true,
-    polygonOffsetFactor: -2,
-    polygonOffsetUnits: -2,
+    // NO polygonOffset. It used to be here because the tile's top face is at exactly y = 0, coplanar with
+    // the shared ground slab — but polygonOffsetFactor scales with the polygon's SCREEN-SPACE depth slope,
+    // which grows as the view widens. At whole-floor zoom the floor was being pulled far enough toward the
+    // camera to win the depth test against everything lying on it: the Gaming rug and its print, floor
+    // inlays, plate outlines. Measured: at wide zoom the rug region went from saturation 0.45 to 0.24 with
+    // the offset on, and was identical with it off at close zoom. The slab is now simply dropped 0.05
+    // below the tile (build/floorplan.ts), which is a constant separation that no camera can invert.
   });
 }
 
@@ -239,12 +254,34 @@ export function glowMatUnique(key: MatKey, opacity: number): THREE.MeshBasicMate
   return new THREE.MeshBasicMaterial({ color: PALETTE[key], transparent: true, opacity, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
 }
 
+/** FLOOR OVERLAY STACK — the fix for decoration that vanished depending on camera angle.
+ *
+ *  Every room stacks flat layers within about a unit of the floor: a multiply tint, contact shadows, then
+ *  additive spill/halo/core. three.js sorts TRANSPARENT objects back-to-front by depth, and layers this
+ *  close together have almost identical sort keys — so the order flipped as the camera rotated. Additive
+ *  blending is commutative and does not care, but a MULTIPLY tint does: every glow drawn before it gets
+ *  multiplied down to nothing, and every glow after it survives. Measured on the Gaming rug, the number of
+ *  additive layers landing before the tint swung from 10 to 25 across a yaw sweep, which is why the rug
+ *  went from vivid to flat grey as you turned the camera.
+ *
+ *  So the darkening layers get an explicit, NEGATIVE renderOrder and the additives keep the default. That
+ *  pins the stack to tint → contact shadow → glows regardless of where the camera is. A material declares
+ *  its role here; SceneMirror applies it once per room, so a new room gets this for free.
+ *
+ *  Additives are deliberately left at 0: they commute, and giving them an order would only add churn. */
+export const FLOOR_LAYER = { tint: -20, contact: -10 } as const;
+/** Tag a material with the stack slot it belongs to. Read by SceneMirror.applyFloorLayerOrder. */
+export function floorLayer<T extends THREE.Material>(m: T, slot: number): T {
+  m.userData.floorLayer = slot;
+  return m;
+}
+
 /** Contact-shadow disc/plate under furniture: a soft dark multiply plane just above the floor. */
 export function contactShadowMat(opacity = 0.16): THREE.MeshBasicMaterial {
   const id = `contact:${opacity}`;
   let m = materials.get(id) as THREE.MeshBasicMaterial | undefined;
   if (!m) {
-    m = new THREE.MeshBasicMaterial({ color: 0x3a2e24, transparent: true, opacity, depthWrite: false });
+    m = floorLayer(new THREE.MeshBasicMaterial({ color: 0x3a2e24, transparent: true, opacity, depthWrite: false }), FLOOR_LAYER.contact);
     materials.set(id, m);
   }
   return m;

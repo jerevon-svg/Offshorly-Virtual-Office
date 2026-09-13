@@ -6,8 +6,9 @@ import type { Entity, EntityId, RoomDef, WorldState } from "../world/WorldState"
 import { buildEntity, ROOM_STATIC } from "../build/registry";
 import type { ShellOptions } from "../build/shell";
 import { finalizeSucculents } from "../build/props";
+import { applyFloorLayerOrder } from "./floorLayers";
 import { resetSeed } from "../build/helpers";
-import { SwaySystem } from "./Sway";
+import { SwaySystem, type SwayNode } from "./Sway";
 import { AmbientSystem } from "./Ambient";
 import { buildGroundFloor } from "../build/floorplan";
 import type { GroundFloor } from "../rooms/ground-floor";
@@ -41,9 +42,17 @@ export class SceneMirror {
     const g = new THREE.Group();
     g.name = `room:${room.id}`;
     const buildStatic = ROOM_STATIC[room.id];
-    if (buildStatic) g.add(buildStatic(room, opts));
+    if (buildStatic) {
+      const stat = buildStatic(room, opts);
+      g.add(stat);
+      // A room whose ARCHITECTURE carries planting (the Central Hub's arc beds and planter boxes grow out
+      // of the benches they sit in, so they are not entities) hands its sway nodes up on userData.
+      const swayNodes = stat.userData.sway as SwayNode[] | undefined;
+      if (swayNodes?.length) this.sway.register(`static:${room.id}`, swayNodes);
+    }
     for (const e of this.world.inRoom(room.id)) g.add(this.buildEntityView(e));
     finalizeSucculents(g); // desk succulent anchors → 3 instanced meshes
+    applyFloorLayerOrder(g); // pin the flat floor-overlay stack so blending cannot depend on the camera
     this.ambient.collect(room.id, g); // `userData.ambient` taggings → channels on the shared ambient system
     this.root.add(g);
     this.roomGroups.set(room.id, g);
@@ -74,6 +83,7 @@ export class SceneMirror {
       old.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.geometry.dispose(); });
       this.root.remove(old);
       for (const e of this.world.inRoom(room.id)) { this.views.delete(e.id); this.sway.unregister(e.id); }
+      this.sway.unregister(`static:${room.id}`);
       this.ambient.clearRoom(room.id); // channels are re-collected by buildRoom below
     }
     this.buildRoom(room, opts);

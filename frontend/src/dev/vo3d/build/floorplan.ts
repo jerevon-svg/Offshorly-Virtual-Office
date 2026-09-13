@@ -9,6 +9,8 @@ import type { Facing, Rect } from "../core/coords";
 import { roomSouthZ, type FloorRoom, type GroundFloor } from "../rooms/ground-floor";
 
 const PLINTH_MARGIN = 48;
+/** how far the shared hall slab sits below the rooms' tiled floors, so neither needs a depth bias */
+const SLAB_DROP = 0.05;
 /** how far the shared front ledge stands proud of the hall slab — enough to win the depth test, far too
  *  little to read as a step (the sidewalk beyond it is already 0.2 proud). */
 const LEDGE_LIFT = 0.08;
@@ -20,8 +22,12 @@ export function buildGroundFloor(plan: GroundFloor): THREE.Group {
   const plinth = rbox(F.w + 2 * PLINTH_MARGIN, 5, F.d + 2 * PLINTH_MARGIN, mat("plinth", 1), F.x + F.w / 2, -8, F.z + F.d / 2, 2);
   plinth.castShadow = false;
   g.add(plinth);
-  // the hall floor: the V1 floor.png tone (measured 219,202,187 ≈ PALETTE.exterior); top face at y = 0
-  const slab = rbox(F.w, 3, F.d, mat("exterior", 1), F.x + F.w / 2, -3, F.z + F.d / 2, 1);
+  // The hall floor: the V1 floor.png tone (measured 219,202,187 ≈ PALETTE.exterior). Its top face sits
+  // SLAB_DROP below y = 0 rather than exactly on it. The rooms' tiled floors are at y = 0, and when the two
+  // were coplanar the tile needed a polygonOffset to win — a depth bias that scales with screen-space slope
+  // and, at wide zoom, grew until the floor swallowed the rugs and inlays lying on it. A constant gap is
+  // unambiguous at every zoom and is 0.05 units across a 1440-unit floor: invisible.
+  const slab = rbox(F.w, 3, F.d, mat("exterior", 1), F.x + F.w / 2, -3 - SLAB_DROP, F.z + F.d / 2, 1);
   slab.castShadow = false;
   g.add(slab);
   const S = plan.sidewalk;

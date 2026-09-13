@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CENTRAL_HUB } from "./rooms/central-hub";
 import * as THREE from "three";
 import { Avatar } from "./avatar/Avatar";
 import { ControllerStack, NavigationController } from "./avatar/Controller";
@@ -70,6 +71,7 @@ describe("vo3d avatar faces its movement direction", () => {
     w.addRoom(MEETING_ROOM);
     w.addRoom(PROJECT_ROOM);
     w.addRoom(GAMING_ROOM);
+    w.addRoom(CENTRAL_HUB);
     registerGroundFloor(w);
     const worldBounds = (p: Vec2) => w.walkableAt(p);
     const wk = new Walkability(composeStatic(v1Static, worldBounds, clearanceLayer(worldClearances(w)))); wk.syncFromWorld(w);

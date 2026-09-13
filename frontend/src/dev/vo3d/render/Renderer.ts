@@ -38,6 +38,14 @@ export class Renderer {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
+    // STATIC-SCENE SHADOWS. The ground floor is architecture: 800-odd meshes in the Central Hub alone,
+    // none of which ever move. With three.js' default autoUpdate every one of them is re-drawn into the
+    // shadow map EVERY FRAME — a second full pass that profiling showed costs roughly half the frame
+    // (shadows off: a locked 16.7ms; shadows on: 22–26ms). So the map is redrawn only when something that
+    // casts one has actually changed: the shadow frustum moves, the avatar moves, a door or chair
+    // animates, or the light is repositioned. See invalidateShadows().
+    this.renderer.shadowMap.autoUpdate = false;
+    this.renderer.shadowMap.needsUpdate = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.NeutralToneMapping;
     this.renderer.toneMappingExposure = this.lightParams.exposure;
@@ -114,6 +122,7 @@ export class Renderer {
     this.hemi.intensity = l.ambientIntensity;
     this.scene.environmentIntensity = l.envIntensity;
     this.renderer.toneMappingExposure = l.exposure;
+    this.renderer.shadowMap.needsUpdate = true; // the sun moved
     this.updateShadowFrame(true);
   }
   /** The shadow frustum follows what is being looked at: centred on the orbit target, sized to the visible
@@ -131,9 +140,16 @@ export class Renderer {
     sc.left = -s; sc.right = s; sc.top = s; sc.bottom = -s;
     sc.updateProjectionMatrix();
     this.key.shadow.needsUpdate = true;
+    this.renderer.shadowMap.needsUpdate = true; // the frustum moved: everything in it must be redrawn
+  }
+  /** Redraw the shadow map on the next frame. Cheap to call — three.js clears the flag once it has run,
+   *  so calling it every frame while the avatar walks simply restores per-frame behaviour for that stretch. */
+  invalidateShadows(): void {
+    this.renderer.shadowMap.needsUpdate = true;
   }
   setShadows(on: boolean): void {
     this.renderer.shadowMap.enabled = on;
+    this.renderer.shadowMap.needsUpdate = on;
     this.scene.traverse((o) => { const m = (o as THREE.Mesh).material as THREE.Material | undefined; if (m) m.needsUpdate = true; });
   }
   resize(): void {

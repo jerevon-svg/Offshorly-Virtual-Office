@@ -2,15 +2,16 @@
 // `item.rect` is a WORLD-space footprint rect; groups are positioned at its centre.
 import * as THREE from "three";
 import type { Facing, Rect } from "../core/coords";
-import { cyl, lathe, localSize, placed, rbox, shadowed, slab, sphereGeo } from "./helpers";
+import { Baker, cyl, lathe, localSize, placed, rbox, shadowed, slab, sphereGeo } from "./helpers";
 import { contactShadowMat, emissiveMat, fabric, mat, metal, plastic, wood, type MatKey } from "../render/Materials";
 import { book, laptop, monitor, mug, smallPot } from "./props";
 
 export type FurnitureKind =
   | "lead-desk" | "member-desk" | "desk-panel" | "curve-desk" | "side-desk"
   | "sofa" | "beanbag" | "rug" | "chair-a" | "chair-b" | "lead-chair"
-  | "tub-chair" | "round-table" | "conference-table" | "lounge-table" | "gaming-chair";
-export const FURNITURE_KINDS: readonly FurnitureKind[] = ["lead-desk", "member-desk", "desk-panel", "curve-desk", "side-desk", "sofa", "beanbag", "rug", "chair-a", "chair-b", "lead-chair", "tub-chair", "round-table", "conference-table", "lounge-table", "gaming-chair"];
+  | "tub-chair" | "round-table" | "conference-table" | "lounge-table" | "gaming-chair"
+  | "cafe-table" | "cafe-chair" | "armchair";
+export const FURNITURE_KINDS: readonly FurnitureKind[] = ["lead-desk", "member-desk", "desk-panel", "curve-desk", "side-desk", "sofa", "beanbag", "rug", "chair-a", "chair-b", "lead-chair", "tub-chair", "round-table", "conference-table", "lounge-table", "gaming-chair", "cafe-table", "cafe-chair", "armchair"];
 export type FurnitureItem = { kind: FurnitureKind; rect: Rect; facing: Facing; mirrored: boolean;
   /** upholstery tone. Default = the Design/Gaming rooms' brighter green; "lounge" = reception's darker olive. */
   tone?: "lounge";
@@ -527,6 +528,121 @@ function roundedRect(w: number, d: number, r: number): THREE.Shape {
   return s;
 }
 
+
+// ---- CENTRAL HUB kinds (Phase 6B) --------------------------------------------------------------
+// Three pieces the source plan repeats and no existing kind covers: the octagonal café table, its light
+// dining chair (no castors, no gas lift — chair-a/b are task chairs) and a squared-off lounge armchair
+// that doubles as the two-seat loveseat at `seats: 2`.
+//
+// All three BAKE (helpers.Baker): the finished piece collapses to one mesh per material. The hub repeats
+// the café chair 24 times; built the way the Design Room builds a chair that is ~240 draw calls for
+// furniture nobody looks at closely. Each piece still gets its own Group — and therefore its own
+// transform, entity id and future SeatCapability — so 6C can pull any single one of them out. No existing
+// room is affected: these kinds did not exist before 6B.
+
+/** Vertical proportions of the café chair, EXPORTED so 6C's seat metadata is derived from the same
+ *  numbers the geometry uses and the two can never drift. */
+export const CAFE_CHAIR = { seatH: 13.4, cushionTop: 16.6 };
+/** Café table top surface — the plane a mug or a laptop rests on. */
+export const CAFE_TABLE = { topY: 24 };
+/** Lounge armchair / loveseat seat contact plane. */
+export const ARMCHAIR = { cushionTop: 13.5 };
+
+/** An octagonal prism: CylinderGeometry with 8 radial segments. `across` is the across-FLATS width the
+ *  plan measures, so the circumradius is corrected for the 22.5° half-facet. */
+function octagon(across: number, h: number, m: THREE.Material, y0: number): THREE.Mesh {
+  const R = across / 2 / Math.cos(Math.PI / 8);
+  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(R, R, h, 8), m);
+  mesh.position.set(0, y0 + h / 2, 0);
+  mesh.rotation.y = Math.PI / 8; // flat face toward the sitter, as the source plan draws it
+  return shadowed(mesh);
+}
+
+/** Octagonal café table: white solid top on a slim column and a four-star cast foot. */
+function cafeTable(item: FurnitureItem): THREE.Group {
+  const g = placed(item.rect, "north");
+  const b = new Baker();
+  const across = Math.min(item.rect.w, item.rect.d);
+  const top = mat(item.color ?? "white", 0.34, { metalness: 0.02 });
+  const base = metal();
+  b.add(octagon(across, 2.6, top, CAFE_TABLE.topY - 2.6));
+  b.add(octagon(across * 0.93, 0.9, mat("grout", 0.8), CAFE_TABLE.topY - 3.4)); // shadow reveal under the top
+  b.add(cyl(2.3, CAFE_TABLE.topY - 4.2, base, 0, 1.0, 0, 1.9)); // column
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+    const len = across * 0.30;
+    const leg = rbox(len, 1.5, 2.0, base, 0, 0.5, 0, 0.5);
+    leg.geometry = leg.geometry.clone();
+    leg.geometry.translate(len / 2, 0, 0);
+    leg.rotation.y = -a;
+    b.add(leg);
+  }
+  b.add(cyl(3.0, 1.0, base, 0, 0.2, 0));
+  b.bakeInto(g, "cafe-table");
+  return g;
+}
+
+/** Light dining chair: four tapered metal legs, an upholstered pan and a low curved back. */
+function cafeChair(item: FurnitureItem): THREE.Group {
+  const g = placed(item.rect, item.facing);
+  const { w, d } = localSize(item.rect, item.facing);
+  const b = new Baker();
+  const pad = seatFabric(item, true);
+  const frame = metal();
+  const sw = Math.min(w, d) * 0.92;
+  const seatH = CAFE_CHAIR.seatH;
+  for (const sx of [-1, 1])
+    for (const sz of [-1, 1]) b.add(cyl(0.8, seatH, frame, sx * sw * 0.34, 0, sz * sw * 0.34, 0.55));
+  b.add(rbox(sw * 0.84, 1.6, sw * 0.84, frame, 0, seatH - 1.6, 0, 0.5)); // pan, tucked under the cushion
+  b.add(rbox(sw, 3.2, sw, pad, 0, seatH, 0, 1.5)); // cushion → top at CAFE_CHAIR.cushionTop
+  // back: two slim uprights and a shaped panel, leaning back off the rear cushion edge
+  for (const sx of [-1, 1]) b.add(rbox(1.0, 12.5, 1.0, frame, sx * sw * 0.36, seatH + 2.2, sw * 0.42, 0.35));
+  const back = rbox(sw * 0.98, 10.5, 2.6, pad, 0, seatH + 4.0, sw * 0.44, 1.7);
+  back.rotation.x = -0.11;
+  b.add(back);
+  b.bakeInto(g, "cafe-chair");
+  return g;
+}
+
+/** Squared-off lounge ARMCHAIR, and at `seats: 2` the matching loveseat. Wooden splay legs, a deep seat
+ *  deck, one cushion per seat, a wrapped back and low arms — the north row and the east cluster in the
+ *  source are all this one piece at three colours and two widths. */
+function armchair(item: FurnitureItem): THREE.Group {
+  const g = placed(item.rect, item.facing);
+  const { w, d } = localSize(item.rect, item.facing);
+  const b = new Baker();
+  const body = seatFabric(item);
+  const pad = seatFabric(item, true);
+  const legs = mat("tableWood", 0.6);
+  const seats = Math.max(1, item.seats ?? 1);
+  const armW = w * 0.15, backD = d * 0.17, deckH = 8;
+  contactShadow(g, w, d);
+  b.add(rbox(w, deckH, d, body, 0, 2.2, 0, 3, 3)); // deck
+  b.add(rbox(w, 14.5, backD, body, 0, 2.2, d / 2 - backD / 2, 3.4, 3)); // back shell
+  for (const s of [-1, 1]) b.add(rbox(armW, 11, d - backD, body, s * (w / 2 - armW / 2), 2.2, -backD / 2, 3, 3)); // arms
+  const cw = (w - 2 * armW - 1.6) / seats;
+  for (let i = 0; i < seats; i++) {
+    const lx = (i - (seats - 1) / 2) * (cw + 0.8);
+    b.add(rbox(cw - 0.8, 4.0, d - backD - 2.4, pad, lx, deckH + 1.5, -backD / 2, 2.2, 3)); // seat cushion → 13.5
+    const bc = rbox(cw - 1.4, 11, 4.2, pad, lx, deckH + 2.2, d / 2 - backD - 1.4, 2.4, 3);
+    bc.rotation.x = 0.09;
+    b.add(bc);
+  }
+  if (item.accent) {
+    const p = rbox(9, 3.2, 9, fabric(item.accent), w * 0.22, deckH + 5.8, d * 0.10, 2, 3);
+    p.rotation.y = -0.42;
+    b.add(p);
+  }
+  for (const sx of [-1, 1])
+    for (const sz of [-1, 1]) {
+      const leg = cyl(1.3, 2.4, legs, sx * (w / 2 - 3), 0, sz * (d / 2 - 3), 0.9);
+      leg.rotation.z = -sx * 0.14;
+      b.add(leg);
+    }
+  b.bakeInto(g, "armchair");
+  return g;
+}
+
 export function buildFurniture(item: FurnitureItem): THREE.Group {
   switch (item.kind) {
     case "conference-table":
@@ -561,5 +677,11 @@ export function buildFurniture(item: FurnitureItem): THREE.Group {
       return chair(item, "lead");
     case "gaming-chair":
       return gamingChair(item);
+    case "cafe-table":
+      return cafeTable(item);
+    case "cafe-chair":
+      return cafeChair(item);
+    case "armchair":
+      return armchair(item);
   }
 }

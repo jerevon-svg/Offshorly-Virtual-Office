@@ -110,7 +110,9 @@ export function finalizeSucculents(root: THREE.Object3D): { plants: number; mesh
   const out = [pots, soils, leaves];
   for (const im of out) {
     im.instanceMatrix.needsUpdate = true;
-    shadowed(im);
+    // Desk succulents are 1.5-unit props. They receive shadow (so they sit in the scene) but do not cast:
+    // at this size the shadow is sub-pixel, and there are enough of them to matter in the shadow pass.
+    shadowed(im, false, true);
     root.add(im);
   }
   return { plants: anchors.length, meshes: out };
