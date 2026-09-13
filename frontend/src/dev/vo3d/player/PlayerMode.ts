@@ -1,0 +1,261 @@
+// vo3d player — THE PLAYER CONTROLLER. Owns the avatar, the gameplay camera and the input while PLAYER
+// mode is active, and owns NOTHING otherwise.
+//
+// It is a coordinator, not an engine: movement resolution is PlayerBody, the rig is PlayerCamera, the
+// targeting is PlayerTargeting, the keys are PlayerInput. This file decides only WHO IS DRIVING and WHEN.
+//
+// OWNERSHIP HANDOFF is the delicate part, and it is deliberately explicit in both directions:
+//
+//   enter()   stop whatever was moving Bon (a walk, an approach, a seat), then acquire "Player". Bon is
+//             re-seated on legal floor if an interaction had parked him somewhere a body cannot stand.
+//   interact()release "Player" FIRST, then call V2's own starter. The starter routes with A*, acquires
+//             "Interaction", and plays the existing animation — exactly as the GUI button does. Player
+//             movement goes quiet automatically, because it only moves Bon while it owns him.
+//   update()  when the stack falls back to "Idle" (the seat stood up, the approach finished) PLAYER takes
+//             the avatar back. No polling of interaction internals: the stack IS the signal.
+//   exit()    release, unlock the pointer, restore the avatar's visibility, hand the camera back.
+//
+// The full-transform invariant (avatar/Avatar.ts) is respected: every heading write here goes through
+// setYaw(), never through `rotation.y`.
+import * as THREE from "three";
+import type { Avatar } from "../avatar/Avatar";
+import type { ControllerStack } from "../avatar/Controller";
+import { CLIP_IDLE, CLIP_RUN, CLIP_WALK } from "../adapters/v1Avatar";
+import { headingFor, stepAngle, type Vec2 } from "../core/coords";
+import type { WorldState } from "../world/WorldState";
+import { PlayerBody, type StandTest } from "./PlayerBody";
+import { PlayerCamera, type PlayerView } from "./PlayerCamera";
+import { PlayerHud } from "./PlayerHud";
+import { PlayerInput } from "./PlayerInput";
+import { collectCandidates, pickTarget, type Candidate, type Target } from "./PlayerTargeting";
+
+/** how fast the avatar turns toward its heading in third person (rad/s) — the navigation controller's rate */
+const TURN_RATE = 9;
+/** how far ahead of a moving player a door is told to expect him. One stride: enough for the leaf to be
+ *  clear by the time he arrives, short enough not to open doors he is merely walking past. */
+const DOOR_LOOKAHEAD = 46;
+/** SPRINT. A multiplier on the walk speed and nothing else — no stamina, no state, no second movement
+ *  path. Holding Shift scales the per-frame delta; the delta still goes through PlayerBody.move, which
+ *  sub-steps at a quarter of the body radius REGARDLESS of how long the step is, so sprinting cannot
+ *  tunnel anything walking could not. */
+const SPRINT_MULTIPLIER = 1.8;
+/** THE GROUND SPEED EACH LOCOMOTION CLIP WAS AUTHORED FOR, in units/s. Playback rate is then simply
+ *  "how fast am I actually travelling / how fast does this clip think it is travelling", which is what
+ *  keeps feet planted instead of skating at either speed and at every speed in between.
+ *
+ *  `walking` = 30 is the figure the navigation controller has always used. `running` is derived from the
+ *  clips themselves: the run cycle is 0.667 s against the walk's 1.067 s, so its cadence is 1.6x the
+ *  walk's and it covers ground at about 30 x 1.6. At the sprint speed (1.8 x 30 = 54 u/s) that lands the
+ *  run clip at roughly 1.12x playback — a run being pushed slightly, which is exactly what a sprint is. */
+const CLIP_GROUND_SPEED: Record<string, number> = { [CLIP_WALK]: 30, [CLIP_RUN]: 48 };
+/** ceiling on locomotion playback rate — a spike guard for a long frame, not a look choice */
+const MAX_CLIP_RATE = 2.5;
+
+export type PlayerDeps = {
+  avatar: Avatar;
+  stack: ControllerStack;
+  world: WorldState;
+  canStand: StandTest;
+  /** the laxer test the third-person boom is judged against (walls and unbuilt space only) */
+  cameraProbe: StandTest;
+  camera: THREE.PerspectiveCamera;
+  canvas: HTMLCanvasElement;
+  /** scene node the target marker is parented to */
+  overlayRoot: THREE.Object3D;
+  radius: number;
+  avatarHeight: number;
+  /** walking speed, read live so the GUI slider still applies */
+  speed: () => number;
+  /** hand an entity id to V2's existing interaction starters; returns false if it could not be started */
+  activate: (id: string, kind: Candidate["kind"]) => boolean;
+  /** true when an interaction is engaged and E should stand up instead of sitting down */
+  canStandUp: () => boolean;
+  standUp: () => void;
+  /** stop navigation/approach so PLAYER can take the avatar cleanly */
+  yieldAvatar: () => void;
+};
+
+export class PlayerMode {
+  readonly camera: PlayerCamera;
+  readonly body: PlayerBody;
+  private readonly d: PlayerDeps;
+  private readonly input: PlayerInput;
+  private readonly candidates: Map<string, Candidate[]>;
+  private hud: PlayerHud | null = null;
+  private _active = false;
+  private target: Target | null = null;
+  /** the heading Bon is walking, kept separate from the camera yaw so third person can turn the body only */
+  private heading = 0;
+  private moving = false;
+  /** a one-segment synthetic route handed to the automatic doors, so they open on approach exactly as they
+   *  do for a planned walk — without inventing a second door-trigger path */
+  readonly doorIntent: Vec2[] = [];
+  /** dev/test readout */
+  readonly state = { active: false, view: "third" as PlayerView, locked: false, sprinting: false, target: "—", owner: "", blocked: false, pos: "" };
+
+  constructor(deps: PlayerDeps) {
+    this.d = deps;
+    this.camera = new PlayerCamera(deps.camera, deps.avatarHeight, deps.cameraProbe);
+    this.body = new PlayerBody(deps.avatar.position, deps.radius, deps.canStand);
+    this.candidates = collectCandidates(deps.world);
+    this.input = new PlayerInput(deps.canvas, {
+      onInteract: () => this.interact(),
+      onToggleView: () => this.setView(this.camera.view === "third" ? "first" : "third"),
+      onLockChange: (locked) => { this.state.locked = locked; this.hud?.setLocked(locked); this.refreshHint(); },
+    });
+  }
+
+  get active(): boolean { return this._active; }
+  get view(): PlayerView { return this.camera.view; }
+
+  /** Take over. Returns false when the avatar cannot be placed on legal floor (nothing is changed then). */
+  enter(): boolean {
+    if (this._active) return true;
+    this.d.yieldAvatar();
+    if (!this.body.placeNear(this.d.avatar.position)) return false;
+    if (!this.d.stack.acquire("Player")) return false;
+    this._active = true;
+    this.state.active = true;
+    this.d.avatar.setPosition(this.body.pos);
+    this.heading = this.d.avatar.yaw;
+    this.camera.yaw = this.heading;
+    this.camera.snap();
+    this.applyVisibility();
+    this.hud = new PlayerHud(document.body);
+    this.d.overlayRoot.add(this.hud.marker);
+    this.hud.setLocked(this.input.locked);
+    this.input.enable();
+    this.refreshHint();
+    this.camera.update(this.body.pos, 0);
+    return true;
+  }
+
+  /** Hand everything back. Safe to call when not active. */
+  exit(): void {
+    if (!this._active) return;
+    this._active = false;
+    this.state.active = false;
+    this.input.disable(); // clears every held key, Shift included
+    this.state.sprinting = false;
+    this.d.stack.release("Player");
+    this.d.avatar.root.visible = true;
+    this.d.avatar.play(CLIP_IDLE);
+    if (this.hud) { this.hud.marker.removeFromParent(); this.hud.dispose(); this.hud = null; }
+    this.target = null;
+    this.doorIntent.length = 0;
+  }
+
+  setView(v: PlayerView): void {
+    this.camera.setView(v);
+    this.state.view = v;
+    if (this._active) this.applyVisibility();
+  }
+
+  /** FIRST PERSON hides the avatar outright. It is the simplest solution that is actually clean: the model
+   *  is one skinned mesh whose head and hair sit exactly where the eye camera does, so any near-plane or
+   *  head-bone trick leaves hair strands crossing the view on some frames. A visible body with no head is
+   *  a V1 problem, not a V0 one. */
+  private applyVisibility(): void {
+    this.d.avatar.root.visible = this.camera.view === "third";
+  }
+
+  /** Invoke whatever is targeted, through V2's own interaction path. */
+  interact(): void {
+    if (!this._active) return;
+    if (this.d.canStandUp()) { this.d.standUp(); return; }
+    const t = this.target;
+    if (!t) return;
+    // release FIRST: the starters route with A* and acquire "Interaction", and Player outranks Navigation
+    this.d.stack.release("Player");
+    this.d.avatar.play(CLIP_IDLE);
+    if (!this.d.activate(t.id, t.kind)) this.d.stack.acquire("Player"); // refused: take the avatar back
+  }
+
+  /** One frame. Returns the avatar's ground position so the caller can drive doors/shadows from it. */
+  update(dt: number): Vec2 {
+    const p = this.body.pos;
+    if (!this._active) return p;
+    const owner = this.d.stack.owner;
+    this.state.owner = owner;
+    // an interaction is driving Bon: keep the camera on him, move nothing, and take him back when it ends
+    if (owner !== "Player") {
+      this.state.sprinting = false;
+      const a = this.d.avatar.worldPosition();
+      this.body.pos = { x: a.x, z: a.z };
+      if (owner === "Idle" && this.d.stack.acquire("Player")) { this.body.placeNear(this.body.pos); this.d.avatar.setPosition(this.body.pos); }
+      this.camera.update(this.body.pos, dt);
+      this.updateTarget();
+      return this.body.pos;
+    }
+    const look = this.input.takeLook();
+    if (look.dx || look.dy) this.camera.look(look.dx, look.dy);
+    const axis = this.input.axis;
+    const sprinting = this.input.sprinting;
+    const speed = this.d.speed() * (sprinting ? SPRINT_MULTIPLIER : 1);
+    this.state.sprinting = sprinting;
+    let travelled = 0;
+    if (axis.x || axis.z) {
+      // WASD is CAMERA-RELATIVE: forward is where you are looking, which is what every third-person game
+      // means by W and the only thing that stays intuitive while the camera orbits.
+      const f = this.camera.forward, r = this.camera.right;
+      const dx = (f.x * -axis.z + r.x * axis.x) * speed * dt;
+      const dz = (f.z * -axis.z + r.z * axis.x) * speed * dt;
+      const from = { x: p.x, z: p.z };
+      const res = this.body.move(dx, dz);
+      travelled = res.travelled;
+      this.state.blocked = res.blocked;
+      // face where the body ACTUALLY went (so sliding along a wall turns Bon along it), falling back to
+      // where the player is pushing when he is pinned and went nowhere
+      this.heading = travelled > 1e-4 ? headingFor(res.pos.x - from.x, res.pos.z - from.z) : headingFor(dx, dz);
+    } else this.state.blocked = false;
+
+    this.moving = travelled > 1e-4;
+    this.d.avatar.setPosition(this.body.pos);
+    // FIRST person locks the body to the view; THIRD turns it toward travel, which is what sells "Bon is
+    // walking" rather than "Bon is being slid around".
+    if (this.camera.view === "first") this.d.avatar.setYaw(this.camera.yaw);
+    else if (this.moving) this.d.avatar.setYaw(stepAngle(this.d.avatar.yaw, this.heading, TURN_RATE * dt));
+
+    if (this.moving) {
+      // idle -> walking -> running -> walking -> idle, all through the mixer's own crossfade. Sprinting
+      // with no run clip in the GLB falls back to a faster walk rather than freezing on whatever was
+      // already playing, so an older avatar build still behaves.
+      const clip = sprinting && this.d.avatar.hasClip(CLIP_RUN) ? CLIP_RUN : CLIP_WALK;
+      this.d.avatar.play(clip);
+      // rate from the ground ACTUALLY covered, not from the input: a player scraping along a wall slows
+      // his own stride down instead of moonwalking on the spot
+      this.d.avatar.setClipTimeScale(clip, Math.min(MAX_CLIP_RATE, Math.max(0.15, travelled / dt / CLIP_GROUND_SPEED[clip])));
+      // the lookahead follows the HEADING, not the camera: strafing or backing through a doorway has to
+      // open it too, and at yaw 0 the camera's forward points north whichever way the player is walking
+      this.doorIntent.length = 0;
+      this.doorIntent.push({ x: this.body.pos.x + Math.sin(this.heading) * DOOR_LOOKAHEAD, z: this.body.pos.z - Math.cos(this.heading) * DOOR_LOOKAHEAD });
+    } else {
+      this.d.avatar.play(CLIP_IDLE);
+      this.doorIntent.length = 0;
+    }
+    this.camera.update(this.body.pos, dt);
+    this.updateTarget();
+    this.state.pos = `${this.body.pos.x.toFixed(0)}, ${this.body.pos.z.toFixed(0)}`;
+    return this.body.pos;
+  }
+
+  /** Room-scoped candidate scan. No scene traversal, no raycast: the candidate list was built once. */
+  private updateTarget(): void {
+    const room = this.d.world.regionAt(this.body.pos)?.roomId;
+    const list = room ? this.candidates.get(room) : undefined;
+    const facing = this.camera.view === "first" ? this.camera.forward : { x: Math.sin(this.d.avatar.yaw), z: -Math.cos(this.d.avatar.yaw) };
+    this.target = list ? pickTarget(list, this.body.pos, facing) : null;
+    this.state.target = this.target ? this.target.label : "—";
+    if (this.d.canStandUp()) {
+      this.hud?.setTarget("Stand up", null);
+      this.state.target = "stand up";
+      return;
+    }
+    this.hud?.setTarget(this.target?.label ?? null, this.target ? this.target.pos : null);
+    if (!this.target) this.refreshHint();
+  }
+
+  private refreshHint(): void {
+    this.hud?.setHint(this.input.locked ? "" : "click to look · WASD to walk · Shift to sprint · V first/third · Esc releases");
+  }
+}

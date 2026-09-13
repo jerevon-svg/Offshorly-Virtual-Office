@@ -43,6 +43,10 @@
 // as <id>-rigged-walking.glb; older employee folders (jerevon, bonv2) have
 // <id>-basic-walking_glb_url.glb. The first that exists is used, so both
 // generations of folders keep building unchanged.
+//
+// Running source (2026-09-13): the rig's free bundle contains a RUN as well as a
+// walk, and every character folder already has it on disk. Resolved exactly like
+// the walk, so no character needs regenerating to gain the clip.
 // ---------------------------------------------------------------------------
 
 import { NodeIO } from "@gltf-transform/core";
@@ -134,9 +138,19 @@ const WALKING_CANDIDATES = [
 const walkingSource =
   WALKING_CANDIDATES.find((f) => fs.existsSync(path.join(RAW_DIR, f))) ?? WALKING_CANDIDATES[0];
 
+// Run source: the SAME free bundle the walk comes from (rig step -> basic_animations),
+// saved with the same two naming generations as the walk above.
+const RUNNING_CANDIDATES = [
+  `${character}-rigged-running.glb`, // current rig-step naming (preferred)
+  `${character}-basic-running_glb_url.glb`, // legacy naming (jerevon, bonv2)
+];
+const runningSource =
+  RUNNING_CANDIDATES.find((f) => fs.existsSync(path.join(RAW_DIR, f))) ?? RUNNING_CANDIDATES[0];
+
 const DEFAULT_CLIP_SOURCES = {
   [`${character}-idle-9.glb`]: "idle-9",
   [walkingSource]: "walking",
+  [runningSource]: "running",
   [`${character}-agree-gesture.glb`]: "agree-gesture",
   [`${character}-listening-gesture.glb`]: "listening-gesture",
   [`${character}-sit-on-chair-arms.glb`]: "sit-on-chair-arms",
@@ -261,7 +275,7 @@ async function buildConsolidatedDocument() {
 
   // Drop the placeholder single-frame "clip0" animation baked into the raw
   // rigged export — it carries no real pose data and would otherwise show
-  // up as a 7th (nonsense) clip name in the consolidated output.
+  // up as an extra (nonsense) clip name in the consolidated output.
   for (const anim of baseDoc.getRoot().listAnimations()) {
     anim.dispose();
   }
@@ -284,7 +298,7 @@ async function buildConsolidatedDocument() {
 
   // Each retargeted animation's copyToDocument() call above created a new
   // Buffer in baseDoc (one per source GLB the accessors were copied from),
-  // leaving 7 buffers total. GLB containers require exactly 0-1 buffers —
+  // leaving one per clip source. GLB containers require exactly 0-1 buffers —
   // collapse them all back into one before this document is cloned/written.
   await baseDoc.transform(unpartition());
 

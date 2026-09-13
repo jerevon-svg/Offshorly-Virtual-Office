@@ -64,14 +64,23 @@ describe("vo3d ground floor — every V1 room in ONE world", () => {
     for (const a of rooms) for (const b of rooms) if (a !== b) { const ox = Math.min(a.rect.x + a.rect.w, b.rect.x + b.rect.w) - Math.max(a.rect.x, b.rect.x), oz = Math.min(a.rect.z + a.rect.d, b.rect.z + b.rect.d) - Math.max(a.rect.z, b.rect.z); expect(Math.min(ox, oz) <= CELL, `${a.id} vs ${b.id}`).toBe(true); }
   });
 
-  it("world regions: 6 reconstructed floors, sidewalk, 5 unwalkable footprints, shared floor with room holes; bounds = frame", () => {
+  it("world regions: 6 reconstructed floors, sidewalk, 5 unwalkable footprints, shared floor with room holes, doorway thresholds; bounds = frame", () => {
     const { world, plan } = rig();
     expect(world.bounds).toEqual(FRAME);
     const regions = groundFloorRegions(plan, world);
-    expect(regions.map((r) => r.kind)).toEqual([...Array(6).fill("room-floor"), "exterior", ...Array(5).fill("room-floor"), "shared-floor"]);
-    expect(regions.filter((r) => r.walkable)).toHaveLength(8);
-    expect(regions.filter((r) => r.walkable).map((r) => r.id)).toEqual(["floor:design-room", "floor:gaming-room", "floor:project-room", "floor:meeting-room", "floor:reception-room", "floor:central-hub", "exterior:sidewalk", "shared:ground-floor"]);
-    expect(regions[regions.length - 1].holes).toHaveLength(11);
+    // The doorway thresholds come LAST on purpose: registration order is match order, so landing them
+    // after the shared floor means they can only ever claim what nothing above them already owns — the
+    // unowned strip between a room's floorRect and the shared floor's hole. Nothing that worked before
+    // changes hands. See groundFloorRegions.
+    const doors = [...world.entities.values()].filter((e) => e.capabilities.door);
+    expect(doors.length).toBeGreaterThan(0);
+    expect(regions.map((r) => r.kind)).toEqual([...Array(6).fill("room-floor"), "exterior", ...Array(5).fill("room-floor"), "shared-floor", ...Array(doors.length).fill("room-floor")]);
+    expect(regions.filter((r) => r.walkable)).toHaveLength(8 + doors.length);
+    expect(regions.filter((r) => r.walkable).map((r) => r.id)).toEqual([
+      "floor:design-room", "floor:gaming-room", "floor:project-room", "floor:meeting-room", "floor:reception-room", "floor:central-hub",
+      "exterior:sidewalk", "shared:ground-floor", ...doors.map((e) => `threshold:${e.id}`),
+    ]);
+    expect(regions.find((r) => r.kind === "shared-floor")!.holes).toHaveLength(11);
     expect(world.regionAt(APPROACH)?.id).toBe("floor:design-room");
     expect(world.regionAt({ x: 328, z: 408 })?.id).toBe("shared:ground-floor"); // just outside the Design Room door
     expect(world.regionAt(HALL_EXEC_DOOR)?.id).toBe("shared:ground-floor");

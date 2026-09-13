@@ -11,6 +11,10 @@ export type AvatarLod = keyof typeof BON_LODS;
 /** production clip names baked into the consolidated GLB (render3d/characterAnimationState.ts) */
 export const CLIP_IDLE = "idle-9";
 export const CLIP_WALK = "walking";
+/** Sprint locomotion, consolidated into Bon's GLB on 2026-09-13 from the rig's own free bundle — no
+ *  generation, no re-rig, same 24-joint skeleton. In-place (zero root translation) and seamless, so the
+ *  player controller keeps owning movement exactly as it does for the walk. */
+export const CLIP_RUN = "running";
 export const CLIP_SIT = "sit-on-chair-arms";
 /** standing height in world units: bon's V1 sprite box is 37.2 tall; 36 keeps desks (24) at hip height */
 export const BON_STANDING_HEIGHT = Math.round(bonLayer.height) - 1;

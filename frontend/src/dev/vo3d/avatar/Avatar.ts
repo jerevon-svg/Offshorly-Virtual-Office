@@ -109,6 +109,9 @@ export class Avatar {
     this.current = name;
   }
   setClipTimeScale(name: string, scale: number): void { const a = this.actions[name]; if (a) a.timeScale = scale; }
+  /** does the loaded GLB carry this clip? Lets a caller fall back rather than silently freeze on the
+   *  clip it was already playing (play() returns quietly for an unknown name). */
+  hasClip(name: string): boolean { return this.actions[name] !== undefined; }
   get currentClip(): string | null { return this.current; }
   update(dt: number): void { this.mixer?.update(dt); }
 

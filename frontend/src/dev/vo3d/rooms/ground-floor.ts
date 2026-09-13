@@ -80,6 +80,27 @@ export function groundFloorRegions(plan: GroundFloor, world: WorldState): WorldR
   regions.push({ id: "exterior:sidewalk", kind: "exterior", rect: plan.sidewalk, walkable: true });
   for (const r of plan.rooms) if (!r.reconstructed) regions.push({ id: `footprint:${r.id}`, kind: "room-floor", rect: interiorRect(r.rect), walkable: false, roomId: r.id });
   regions.push({ id: "shared:ground-floor", kind: "shared-floor", rect: plan.frame, holes: plan.rooms.map((r) => interiorRect(r.rect)), walkable: true });
+  // 5. DOORWAY THRESHOLDS — registered LAST, so they claim only what nothing above them claimed.
+  //
+  //  Two different rects describe "where a room is": the shared floor's HOLE is `interiorRect(rect)` (the
+  //  manifest rect shrunk by half a cell), while the room's walkable area is its own `floorRect`. Where a
+  //  room's floorRect is INSET from that hole — the Gaming Room declares its floor at the inner wall faces,
+  //  4.72 units inside the hole on its west side — the difference belongs to NO region at all: the hole
+  //  excludes it from the shared floor, and the floorRect does not reach it. That ring is wall almost
+  //  everywhere, so nothing noticed. At a DOORWAY it is the threshold, and it is a continuous unowned strip
+  //  across the whole opening: measured at Gaming's west door, x 1119.28…1124 over the full z 720…752, which
+  //  is why direct player movement could not enter the room while A* could. A* only ever samples cell
+  //  CENTRES (1112 and 1128 here), and both of those fall outside the strip.
+  //
+  //  So a declared doorway says it is floor. The rect is the door's OWN `clearance.band` — the V1 '+' cells,
+  //  already authored, already the definition of where the opening is — so no geometry is invented, no wall
+  //  moves and no radius changes. Being a walkable REGION only answers "is this floor"; whether a body fits
+  //  is still decided by the derived clearance field or the V1 grid exactly as before.
+  for (const e of world.entities.values()) {
+    const door = e.capabilities.door;
+    if (!door) continue;
+    regions.push({ id: `threshold:${e.id}`, kind: "room-floor", rect: door.clearance.band, walkable: true, roomId: e.roomId });
+  }
   return regions;
 }
 

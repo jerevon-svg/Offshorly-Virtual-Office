@@ -1,15 +1,19 @@
 // vo3d avatar — explicit movement/animation OWNERSHIP. Exactly one owner drives the avatar at a time:
 //   Idle        nobody moving it (idle clip)
 //   Navigation  the path walker (click-to-walk, redirects)
-//   Interaction a state machine (seat) that moves/attaches the root itself
 //   Editor      room edit mode: navigation input is refused while editing
+//   Player      direct WASD control (PLAYER camera mode). Outranks Navigation so entering PLAYER cannot be
+//               stolen back by a stray click-to-walk, and is OUTRANKED by Interaction so that a seat/approach
+//               started FROM player mode still gets the avatar — player/PlayerMode releases and re-acquires
+//               around that handoff rather than fighting for it.
+//   Interaction a state machine (seat) that moves/attaches the root itself
 // Acquire/release are explicit; a lower-priority owner cannot take the avatar from a higher one.
 import { dist, headingFor, stepAngle, type Vec2 } from "../core/coords";
 import { CLIP_IDLE, CLIP_WALK } from "../adapters/v1Avatar";
 import type { Avatar } from "./Avatar";
 
-export type Owner = "Idle" | "Navigation" | "Interaction" | "Editor";
-const PRIORITY: Record<Owner, number> = { Idle: 0, Navigation: 1, Editor: 2, Interaction: 3 };
+export type Owner = "Idle" | "Navigation" | "Interaction" | "Editor" | "Player";
+const PRIORITY: Record<Owner, number> = { Idle: 0, Navigation: 1, Editor: 2, Player: 3, Interaction: 4 };
 
 export class ControllerStack {
   private current: Owner = "Idle";

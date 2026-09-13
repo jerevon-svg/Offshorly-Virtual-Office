@@ -23,6 +23,9 @@ import { buildExterior } from "../build/exterior";
 import { Environment } from "../env/Environment";
 import { ENV_TIME_MODES, TimeOfDay, type EnvTimeMode } from "../env/timeOfDay";
 import { CAMERA_MODES, CameraModes, type CameraModeId } from "../render/CameraModes";
+import { PlayerMode } from "../player/PlayerMode";
+import { makeStandTest } from "../player/standTest";
+import type { PlayerView } from "../player/PlayerCamera";
 import { ApproachInteraction } from "../interact/Approach";
 import { LoungeSeatInteraction } from "../interact/LoungeSeat";
 import { Walkability, composeStatic } from "../nav/Walkability";
@@ -97,6 +100,7 @@ const params = {
   overlay: true, motion: false, preset: "B" as PresetId, captureSeconds: 30,
   envTime: "auto" as EnvTimeMode, envScenery: true, envFog: true, envSky: true,
   cameraMode: "office" as CameraModeId,
+  playerView: "third" as PlayerView,
   avatar: true, avatarLod: 1 as AvatarLod, avatarLit: true, walkSpeed: 30,
   clickToWalk: true, showGrid: false, showBlocked: false, showRegions: false, showPath: true, showDestination: true, showDiagnostic: false,
   editMode: false,
@@ -345,6 +349,60 @@ function pickInteraction(cx: number, cy: number): string | null {
   }
   return null;
 }
+// ---- PLAYER MODE (V0) ---------------------------------------------------------------------------
+// A third camera mode that walks Bon directly. It owns nothing of the world: collision is the SAME derived
+// clearance + V1 walkability that click-to-walk routes on (player/standTest), and every interaction it can
+// invoke is one of the starters above, reached through `activate` below. Entering and leaving is a pure
+// ownership handoff — see player/PlayerMode.
+/** PLAYER shadow frustum half-size. The default frame is sized from the ORTHOGRAPHIC viewport, which means
+ *  nothing once a perspective camera is walking the building; this keeps the 2048 map on the few hundred
+ *  units the player can actually see, which is what makes contact shadows read at eye level. */
+const PLAYER_SHADOW_RADIUS = 300;
+const playerStand = makeStandTest({ world, walkability, derived: derivedNav, radius: NAV_RADIUS });
+/** The third-person boom's probe. Same composition, a token radius: the camera must not end up inside a
+ *  wall or over unbuilt floor, but it may perfectly well fly over a desk — and judging it at the BODY
+ *  radius pulled the boom in to its minimum beside almost every piece of furniture in the building. */
+const playerCameraProbe = makeStandTest({ world, walkability, derived: derivedNav, radius: 2 });
+/** the one bridge from a targeted entity id to V2's existing interaction path. Nothing is reimplemented:
+ *  each branch is the same call the GUI button and the click-to-walk handler already make. */
+function activateInteractable(id: string, kind: "seat" | "lounge" | "approach"): boolean {
+  if (kind === "lounge") {
+    const i = loungeSeats.findIndex((s2) => s2.id === id);
+    if (i < 0) return false;
+    startLoungeSit(i);
+    return true;
+  }
+  if (kind === "seat") {
+    const hub = CAFE_CHAIR_IDS.indexOf(id);
+    if (hub >= 0) { startHubSit(hub); return true; }
+    const meet = MEETING_CHAIR_IDS.indexOf(id);
+    if (meet >= 0) { startMeetingSit(meet); return true; }
+    const game = GAMING_CHAIR_IDS.indexOf(id);
+    if (game >= 0) { startGamingSit(game); return true; }
+    if (id === CHAIR_4_ID) { seat.sit(); return true; }
+    return false;
+  }
+  startApproach(id);
+  return true;
+}
+const engagedSeat = (): { stand: () => void } | null => {
+  for (const s2 of [loungeSeat, hubSeat, meetingSeat, gamingSeat] as ({ state: string; stand: () => void } | null)[])
+    if (s2 && s2.state === "seated") return s2;
+  return seat.status === "seated" ? seat : null;
+};
+const playerMode = new PlayerMode({
+  avatar, stack, world, canStand: playerStand, cameraProbe: playerCameraProbe,
+  camera: R.playerCamera, canvas, overlayRoot: mirror.root,
+  radius: NAV_RADIUS, avatarHeight: BON_STANDING_HEIGHT,
+  speed: () => params.walkSpeed,
+  activate: activateInteractable,
+  canStandUp: () => engagedSeat() !== null,
+  standUp: () => engagedSeat()?.stand(),
+  // hand the avatar over cleanly: stop the walker, cancel a half-finished approach, leave engaged seats
+  // alone (PlayerMode simply does not move Bon while Interaction owns him, and takes over when it ends)
+  yieldAvatar: () => { stopTour(); navCtl.stop(); approachCtl.cancel(); },
+});
+
 const edit = new EditSession(world, mirror, walkability, stack);
 const editState = { selected: "none", placement: "—", drift: 0, blockedCells: walkability.dynamicBlockedKeys.length };
 function refreshEditVisuals(): void {
@@ -371,7 +429,7 @@ function floorPoint(cx: number, cy: number): Vec2 | null {
 let downAt: { x: number; y: number; t: number } | null = null;
 let dragging = false;
 canvas.addEventListener("pointerdown", (e) => {
-  if (e.button !== 0) return;
+  if (e.button !== 0 || playerMode.active) return; // PLAYER owns the canvas: see player/PlayerInput
   if (edit.editMode) {
     const r = canvas.getBoundingClientRect();
     ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
@@ -385,12 +443,13 @@ canvas.addEventListener("pointerdown", (e) => {
   downAt = { x: e.clientX, y: e.clientY, t: performance.now() };
 });
 canvas.addEventListener("pointermove", (e) => {
-  if (!edit.editMode || !dragging) return;
+  if (playerMode.active || !edit.editMode || !dragging) return;
   const p = floorPoint(e.clientX, e.clientY);
   if (p) edit.preview(p);
   refreshEditVisuals();
 });
 canvas.addEventListener("pointerup", (e) => {
+  if (playerMode.active) return;
   if (dragging) { dragging = false; R.controls.enabled = true; refreshEditVisuals(); return; }
   if (!downAt || e.button !== 0) return;
   const moved = Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y), held = performance.now() - downAt.t;
@@ -419,15 +478,48 @@ const syncCam = (p: { pitch: number; yaw: number; zoom: number }) => { params.pi
 // OFFICE draws no exterior at all (see EnvPresentation) — camera bounds alone cannot stop a 16:9 viewport
 // overflowing a near-square office sideways, and anything out there would spoil the reveal.
 const setCameraMode = (m: CameraModeId) => {
+  // PLAYER is a handoff, not a framing: the orthographic rig is left exactly as it was (CameraModes
+  // disables OrbitControls rather than reconfiguring it), so whichever of OFFICE/EXPLORE we came from is
+  // resumed on its own view when we come back. A refused entry (nowhere legal to stand) falls back to
+  // OFFICE rather than leaving a mode selected that nothing is driving.
+  if (playerMode.active && m !== "player") playerMode.exit();
+  if (m === "player") {
+    syncCam(cameraModes.set("player"));
+    if (!playerMode.enter()) { params.cameraMode = "office"; setCameraMode("office"); refresh(); return; }
+    R.setActiveCamera(R.playerCamera);
+    // ONLY the perspective aspect. Calling R.resize() here would also re-place the orthographic camera
+    // from camParams, which would silently discard a hand-orbited EXPLORE view on the way in.
+    R.playerCamera.aspect = window.innerWidth / window.innerHeight;
+    R.playerCamera.updateProjectionMatrix();
+    R.shadowRadius = PLAYER_SHADOW_RADIUS;
+    params.cameraMode = "player";
+    if (env.setPresentation("world")) R.invalidateShadows();
+    R.invalidateShadows();
+    refresh();
+    return;
+  }
   params.cameraMode = m;
   if (env.setPresentation(m === "office" ? "office" : "world")) R.invalidateShadows();
   syncCam(cameraModes.set(m));
+  R.invalidateShadows();
 };
-cam.add(params, "cameraMode", CAMERA_MODES).name("mode: OFFICE / 3D EXPLORE").onChange(setCameraMode);
+cam.add(params, "cameraMode", CAMERA_MODES).name("mode: OFFICE / 3D EXPLORE / PLAYER").onChange(setCameraMode);
 // The manual pitch/yaw sliders only bite in EXPLORE — OFFICE pins the orientation, and letting a slider
 // break that would defeat the point of having a fixed mode at all.
 cam.add(params, "pitch", 12, 90, 1).onChange(() => { if (params.cameraMode === "explore") applyCam(); else syncCam(cameraModes.officeParams); });
 cam.add(params, "yaw", -180, 180, 1).onChange(() => { if (params.cameraMode === "explore") applyCam(); else syncCam(cameraModes.officeParams); });
+const playerGui = gui.addFolder("Player (WASD · Shift sprint · mouse look · E interact)");
+playerGui.add({ go: () => setCameraMode("player") }, "go").name("▶ enter PLAYER");
+playerGui.add({ go: () => setCameraMode("office") }, "go").name("■ leave PLAYER (→ OFFICE)");
+playerGui.add(params, "playerView", ["third", "first"]).name("view: THIRD / FIRST").onChange((v: PlayerView) => playerMode.setView(v));
+playerGui.add({ go: () => { placeBonAtEntrance(); setCameraMode("player"); } }, "go").name("▶ spawn at Reception + enter");
+playerGui.add(playerMode.state, "active").disable().listen();
+playerGui.add(playerMode.state, "locked").name("pointer locked").disable().listen();
+playerGui.add(playerMode.state, "sprinting").name("sprinting (hold Shift)").disable().listen();
+playerGui.add(playerMode.state, "owner").name("avatar owner").disable().listen();
+playerGui.add(playerMode.state, "pos").name("position").disable().listen();
+playerGui.add(playerMode.state, "target").name("targeting").disable().listen();
+playerGui.add(playerMode.state, "blocked").name("collided this frame").disable().listen();
 // In OFFICE the slider IS the wheel: it drives OrbitControls' dolly, whose floor of 1 is the canonical
 // whole-office framing. In EXPLORE it resizes the frustum as before.
 cam.add(params, "zoom", 0.05, 6, 0.01).onChange((v: number) => {
@@ -664,6 +756,9 @@ function loop(): void {
   applyEnvPhase(); // V1's clock is re-read at most twice a minute and only writes when the phase changes
   env.follow(); // the sky dome rides the orbit target so panning can never reach its edge
   if (params.avatar) {
+    // PLAYER steps FIRST: it writes the avatar transform for this frame and yields silently whenever an
+    // interaction owns Bon, so the controllers below still run exactly as they always have.
+    if (playerMode.active) playerMode.update(dt / 1000);
     seat.update(dt / 1000);
     meetingSeat?.update(dt / 1000);
     gamingSeat?.update(dt / 1000);
@@ -673,10 +768,14 @@ function loop(): void {
     navCtl.update(dt / 1000);
     avatar.update(dt / 1000);
     const bp = avatar.worldPosition();
-    door.update(dt / 1000, { x: bp.x, z: bp.z }, navCtl.path);
-    entryPath = navCtl.path;
-    entryDoor.update(dt / 1000, { x: bp.x, z: bp.z }, navCtl.path);
-    gamingDoor.update(dt / 1000, { x: bp.x, z: bp.z }, navCtl.path);
+    // A direct-control player has no planned route, so the automatic doors would only react once his body
+    // was already inside the sweep band. `doorIntent` is a one-segment synthetic route pointing a stride
+    // ahead of him — the SAME input SlidingDoor already consumes, so no door logic changes at all.
+    const route = navCtl.path.length ? navCtl.path : playerMode.doorIntent;
+    door.update(dt / 1000, { x: bp.x, z: bp.z }, route);
+    entryPath = route;
+    entryDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
+    gamingDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
     updateScanners({ x: bp.x, z: bp.z });
     entryState.state = entryDoor.state; entryState.open = Math.round(entryDoor.t * 100);
     entryState.drift = entryDoor.state === "closed" ? Math.round(entryDoor.driftError() * 1e6) / 1e6 : entryState.drift;
@@ -714,12 +813,15 @@ function loop(): void {
   // Anything the avatar does counts: walking, sitting, and the doors/chairs its interactions drive. Plant
   // sway is deliberately NOT a trigger — a frozen leaf shadow is invisible and it would defeat the point.
   if (params.avatar && shadowsAreStale()) R.invalidateShadows();
+  // the shadow frame follows whoever is looking: the orbit target normally, the player when he is walking
+  R.shadowFocus = playerMode.active ? playerMode.body.pos : null;
   R.render();
   const sample = { dt, calls: R.renderer.info.render.calls, triangles: R.renderer.info.render.triangles };
   liveWindow.push(sample); capture?.push(sample);
   overlayTick += dt;
   if (overlayTick > 250 && params.overlay) {
     overlayTick = 0;
+    if (params.playerView !== playerMode.view) { params.playerView = playerMode.view; refresh(); }
     envState.clock = formatManila(timeOfDay.hourDecimal);
     overlay.update(liveWindow.summary(), snapshotRenderer(R.renderer), device, `V2 · avatar ${params.avatar ? `LOD${params.avatarLod} · ${avatarState.triangles.toLocaleString()} tris · ${avatarState.clip} · owner ${stack.owner}` : "off"}\n${benchState.status}${lastCapture ? "\nlast: " + benchState.result : ""}`);
   }
@@ -756,6 +858,21 @@ loop();
     setFog: (on: boolean) => { params.envFog = on; env.fogEnabled = on; refresh(); },
     setSky: (on: boolean) => { params.envSky = on; env.skyVisible = on; refresh(); },
     presentation: () => env.presentation,
+  },
+  player: {
+    mode: playerMode, state: playerMode.state,
+    enter: () => setCameraMode("player"), exit: () => setCameraMode("office"),
+    setView: (v: PlayerView) => { params.playerView = v; playerMode.setView(v); refresh(); },
+    view: () => playerMode.view,
+    camera: R.playerCamera,
+    canStand: playerStand,
+    /** drive the body straight from a test/console, bypassing the keyboard */
+    move: (dx: number, dz: number) => playerMode.body.move(dx, dz),
+    position: () => ({ ...playerMode.body.pos }),
+    teleport: (x: number, z: number) => { const ok = playerMode.body.placeNear({ x, z }); avatar.setPosition(playerMode.body.pos); playerMode.camera.snap(); return ok; },
+    look: (dx: number, dy: number) => playerMode.camera.look(dx, dy),
+    interact: () => playerMode.interact(),
+    target: () => playerMode.state.target,
   },
   cameraModes: {
     get mode() { return cameraModes.mode; }, set: setCameraMode, officeParams: () => cameraModes.officeParams,

@@ -328,8 +328,14 @@ describe("vo3d render — OFFICE and 3D EXPLORE camera modes", () => {
       // the Renderer's OWN focus point: focusOn writes this, placeCamera copies it into the controls
       target: { x: 0, y: 8, z: 0 },
       camera: { top: 0, right: 0, zoom: 1, position: { x: 0, y: 0, z: 0 }, updateProjectionMatrix() {} },
-      controls: { target: { x: 0, y: 8, z: 0 }, enableRotate: true, enablePan: true, screenSpacePanning: true, minZoom: 0.12, maxZoom: 6 },
+      controls: { target: { x: 0, y: 8, z: 0 }, enabled: true, enableRotate: true, enablePan: true, screenSpacePanning: true, minZoom: 0.12, maxZoom: 6 },
       constrain: null as (() => void) | null,
+      // the PLAYER mode's surface: selecting which camera draws, and the shadow-frame override it sets.
+      // OFFICE/EXPLORE only ever CLEAR these — see render/CameraModes.set — so the assertions below are
+      // unchanged; the stand-in simply has to carry the whole surface the policy touches.
+      shadowFocus: null as unknown,
+      shadowRadius: null as number | null,
+      setActiveCamera(_c: unknown) {},
       focusedOn: null as Rect | null,
       focusOn(rect: Rect) { this.focusedOn = rect; this.camera.zoom = 1; this.target.x = rect.x + rect.w / 2; this.target.y = 8; this.target.z = rect.z + rect.d / 2 - 6; return 1; },
       placeCamera() {
@@ -554,12 +560,16 @@ describe("vo3d render — OFFICE vertical pan is bounded through the REAL input 
   function rig() {
     const aspect = window.innerWidth / window.innerHeight;
     const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 15000);
-    const controls = { target: new THREE.Vector3(0, 8, 0), enableRotate: true, enablePan: true, screenSpacePanning: true, minZoom: 0.12, maxZoom: 6 };
+    const controls = { target: new THREE.Vector3(0, 8, 0), enabled: true, enableRotate: true, enablePan: true, screenSpacePanning: true, minZoom: 0.12, maxZoom: 6 };
     const R = {
       focus: REF, camera, controls,
       camParams: { pitch: 0, yaw: 0, zoom: 1 },
       target: new THREE.Vector3(0, 8, 0), // the Renderer's own focus point, as in the real class
       constrain: null as (() => void) | null,
+      // PLAYER-mode surface (see the note on the other stand-in): OFFICE/EXPLORE only clear these
+      shadowFocus: null as unknown,
+      shadowRadius: null as number | null,
+      setActiveCamera(_c: unknown) {},
       focusedOn: null as Rect | null,
       focusOn(rect: Rect) {
         this.focusedOn = rect;

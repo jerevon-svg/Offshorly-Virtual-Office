@@ -26,14 +26,21 @@
 // Leaving EXPLORE cannot leak: returning to OFFICE re-asserts pitch, yaw, framing, zoom limits, bounds
 // and the orbit target, so however the camera was left, it comes back to exactly one canonical view.
 //
+//   PLAYER   gameplay. The orthographic rig is not reconfigured at all — it is simply not the camera being
+//            drawn: PLAYER selects the Renderer's PERSPECTIVE camera and hands every degree of freedom to
+//            player/PlayerCamera. That is why this mode is four lines here and why leaving it cannot
+//            corrupt anything: OrbitControls is disabled for the duration, so nothing writes the ortho
+//            camera or its target while the player walks, and EXPLORE resumes on exactly the view it was
+//            left on. Everything gameplay lives under player/ — this file only decides who is driving.
+//
 // This is deliberately a thin policy object over the existing Renderer. When the toggle becomes
 // production UI, the UI calls set() and nothing else has to change.
 import * as THREE from "three";
 import type { Renderer, CameraParams } from "./Renderer";
 import type { Rect } from "../core/coords";
 
-export type CameraModeId = "office" | "explore";
-export const CAMERA_MODES: CameraModeId[] = ["office", "explore"];
+export type CameraModeId = "office" | "explore" | "player";
+export const CAMERA_MODES: CameraModeId[] = ["office", "explore", "player"];
 
 /** The canonical office framing: V1's fixed overhead read, and the maximum zoom-out in OFFICE mode. The
  *  office COVERS the viewport at that zoom (see frameZoom) — no empty stage is ever in frame. */
@@ -90,6 +97,19 @@ export class CameraModes {
   set(mode: CameraModeId): CameraParams {
     this._mode = mode;
     const c = this.R.controls;
+    if (mode === "player") {
+      // Hand the canvas over whole. OrbitControls stays bound to the orthographic camera but is switched
+      // OFF, so neither it nor the fence can touch the ortho rig while PLAYER owns the view — which is
+      // precisely what makes the round trip back to OFFICE or EXPLORE state-preserving rather than
+      // state-restoring. The perspective camera is selected by the caller's player controller.
+      this.R.constrain = null;
+      c.enabled = false;
+      return { ...this.R.camParams };
+    }
+    c.enabled = true;
+    this.R.setActiveCamera(this.R.camera);
+    this.R.shadowFocus = null;
+    this.R.shadowRadius = null;
     if (mode === "office") {
       this.officeZoom = this.frameZoom(this.bounds, 1, "cover");
       this.aspectAt = window.innerWidth / window.innerHeight;

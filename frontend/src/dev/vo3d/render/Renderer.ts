@@ -29,13 +29,22 @@ export class Renderer {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
   readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, FAR);
+  /** THE PLAYER CAMERA. A second, PERSPECTIVE camera that exists only so PLAYER mode does not have to fake
+   *  a first/third-person view through an orthographic frustum (which cannot be done — ortho has no
+   *  viewpoint, so there is no such thing as standing inside it). It is never made active by this class:
+   *  render/CameraModes decides, and OFFICE/EXPLORE are byte-for-byte unaffected because they simply never
+   *  select it. Near/far are avatar-scale (Bon is 36 units tall), not world-scale like the ortho slice. */
+  readonly playerCamera = new THREE.PerspectiveCamera(55, 1, 1.5, 9000);
   readonly controls: OrbitControls;
   readonly key: THREE.DirectionalLight;
   readonly hemi: THREE.HemisphereLight;
   /** the cool bounce opposite the key; the environment re-colours it per phase */
   readonly fill: THREE.DirectionalLight;
   private readonly composer: EffectComposer;
+  private readonly renderPass: RenderPass;
   private readonly ssao: SSAOPass;
+  /** the camera actually drawn. Defaults to the orthographic rig; only CameraModes ever changes it. */
+  private active: THREE.Camera;
   /** the world-space focus rect (a room today; the whole office later) */
   focus: Rect;
   readonly target = new THREE.Vector3();
@@ -46,6 +55,13 @@ export class Renderer {
    *  and before anything reads the target. This is where OFFICE mode's pan/zoom bounds are enforced —
    *  the renderer itself stays policy-free. See render/CameraModes. */
   constrain: (() => void) | null = null;
+  /** SHADOW FRAME OVERRIDE. The shadow frustum normally follows the orbit target and is sized from the
+   *  orthographic viewport — neither of which means anything when a perspective camera is walking around
+   *  inside the building. A mode that owns its own viewpoint sets these two and the frustum follows IT
+   *  instead. Null (the default) leaves OFFICE and EXPLORE on exactly the behaviour they were approved
+   *  with. This is a camera/lighting knob, not gameplay: the renderer still knows nothing about a player. */
+  shadowFocus: Vec2 | null = null;
+  shadowRadius: number | null = null;
   private readonly lightDir = new THREE.Vector3(0, 1, 0);
   private shadowKey = "";
 
@@ -88,8 +104,10 @@ export class Renderer {
     this.controls.screenSpacePanning = true;
     this.controls.minZoom = 0.12; // whole ground floor (1440 × 1244) fits at the default frustum
     this.controls.maxZoom = 6;
+    this.active = this.camera;
     this.composer = new EffectComposer(this.renderer);
-    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.renderPass = new RenderPass(this.scene, this.camera);
+    this.composer.addPass(this.renderPass);
     this.ssao = new SSAOPass(this.scene, this.camera, window.innerWidth, window.innerHeight);
     this.ssao.kernelRadius = 14;
     // SSAO's min/max are FRACTIONS of the camera's depth range. The range grew with the world (see FAR),
@@ -109,6 +127,17 @@ export class Renderer {
   /** the orbit distance, in world units — fog/AO distances are measured from it (see CAM_DIST) */
   get camDist(): number {
     return CAM_DIST;
+  }
+  /** the camera currently being drawn (the ortho rig unless a mode has selected another) */
+  get activeCamera(): THREE.Camera {
+    return this.active;
+  }
+  /** Select which camera renders. The post pipeline follows, so SSAO keeps working in either. */
+  setActiveCamera(cam: THREE.Camera): void {
+    if (cam === this.active) return;
+    this.active = cam;
+    this.renderPass.camera = cam;
+    this.ssao.camera = cam as THREE.PerspectiveCamera;
   }
   setFocus(rect: Rect): void {
     this.focus = rect;
@@ -153,8 +182,9 @@ export class Renderer {
    *  height (clamped). Keeps Design-Room-scale shadow resolution while zoomed in on a 1440-unit floor. */
   private updateShadowFrame(force = false): void {
     const halfVisible = this.camera.top / Math.max(this.camera.zoom, 1e-6);
-    const s = Math.round(THREE.MathUtils.clamp(halfVisible * 1.7, 180, 760));
-    const t: Vec2 = { x: Math.round(this.target.x / 8) * 8, z: Math.round(this.target.z / 8) * 8 };
+    const s = this.shadowRadius ?? Math.round(THREE.MathUtils.clamp(halfVisible * 1.7, 180, 760));
+    const c = this.shadowFocus ?? this.target;
+    const t: Vec2 = { x: Math.round(c.x / 8) * 8, z: Math.round(c.z / 8) * 8 };
     const key = `${s}:${t.x}:${t.z}`;
     if (!force && key === this.shadowKey) return;
     this.shadowKey = key;
@@ -178,6 +208,8 @@ export class Renderer {
   }
   resize(): void {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.playerCamera.aspect = window.innerWidth / window.innerHeight;
+    this.playerCamera.updateProjectionMatrix();
     this.composer.setSize(window.innerWidth, window.innerHeight);
     this.ssao.setSize(window.innerWidth, window.innerHeight);
     this.placeCamera();
@@ -189,6 +221,6 @@ export class Renderer {
     this.target.copy(this.controls.target); // panning moves the focus; GUI zoom/pitch then respect it
     this.updateShadowFrame();
     if (this.ssaoEnabled) this.composer.render();
-    else this.renderer.render(this.scene, this.camera);
+    else this.renderer.render(this.scene, this.active);
   }
 }
