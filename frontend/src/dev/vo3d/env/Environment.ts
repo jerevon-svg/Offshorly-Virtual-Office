@@ -10,12 +10,22 @@
 // SHADOWS. The renderer redraws the shadow map on demand (Renderer.shadowMap.autoUpdate = false). Moving
 // the sun invalidates it — Renderer.placeLight() already does exactly that — so applying a phase is a
 // correct invalidation point and the map is never left drawn for the previous sun.
+//
+// TWO INDEPENDENT AXES. The environment holds a PHASE (day/sunset/night, from V1's clock via env/timeOfDay)
+// and a WEATHER STATE (from env/weather, which knows nothing about time). Neither is derived from the
+// other and neither is stored inside the other; they meet in exactly one place — env/weatherGrade — which
+// hands back the composed preset. Setting either one re-applies from that single point, so there is no
+// combination of the two that can be reached by one path and not the other.
 import * as THREE from "three";
 import type { Renderer } from "../render/Renderer";
 import type { ExteriorScenery } from "../build/exterior";
-import { ENV_PRESETS, type EnvPreset } from "./presets";
+import type { Rect } from "../core/coords";
+import { type EnvPreset } from "./presets";
+import { Rain } from "./Rain";
 import { Sky } from "./Sky";
 import type { EnvPhase } from "./timeOfDay";
+import { weatherGrade } from "./weatherGrade";
+import type { WeatherState } from "./weather";
 
 /** WHICH WORLD THE ENVIRONMENT IS PRESENTING.
  *
@@ -35,22 +45,62 @@ export class Environment {
   private readonly R: Renderer;
   private readonly scenery: ExteriorScenery | null;
   private readonly sky = new Sky();
+  private readonly rain: Rain;
   private readonly fogColor = new THREE.Color();
+  private readonly centre = new THREE.Vector3();
+  private readonly forward = new THREE.Vector3();
   private current: EnvPhase | null = null;
+  private _weather: WeatherState = "clear";
   private _fog = true;
   private _presentation: EnvPresentation = "world";
+  /** OFFICE draws no campus, but rain is weather, not scenery — see `rainInOffice`. */
+  private _rainInOffice = true;
 
-  constructor(R: Renderer, scenery: ExteriorScenery | null = null) {
+  /** @param dry the office footprint, which it never rains on @param groundY the exterior grade */
+  constructor(R: Renderer, scenery: ExteriorScenery | null = null, dry: Rect = { x: 0, z: 0, w: 0, d: 0 }, groundY = -8) {
     this.R = R;
     this.scenery = scenery;
+    this.rain = new Rain(dry, groundY);
     if (scenery) R.scene.add(scenery.root);
     R.scene.add(this.sky.root);
+    R.scene.add(this.rain.mesh);
   }
 
   /** Called once per frame: keeps the sky dome centred on the orbit target so panning cannot reach its
-   *  edge. Three float writes — cheap enough to do unconditionally. */
-  follow(): void {
+   *  edge, and rides the rain field on whichever camera is actually drawing. A handful of float writes and
+   *  one uniform — no traversal, no allocation, nothing that scales with the scene.
+   *
+   *  WHICH CAMERA. OFFICE and EXPLORE draw the orthographic rig, whose "where am I looking" is the orbit
+   *  target. PLAYER draws the perspective rig, whose orbit target is stale by design (CameraModes leaves
+   *  the ortho rig exactly as it was so the view is resumed on the way back), so the field rides the eye
+   *  instead. The extent likewise comes from what each rig can actually SEE: the ortho viewport's visible
+   *  half-height — the same quantity Renderer.updateShadowFrame sizes itself from — clamped so a
+   *  fully zoomed-out EXPLORE spreads the same streaks thinner instead of asking for a world of rain. */
+  follow(dtSeconds = 0): void {
     this.sky.follow(this.R.target);
+    if (this.rain.active) {
+      const R = this.R;
+      const player = R.activeCamera === R.playerCamera;
+      if (player) this.centre.copy(R.playerCamera.position);
+      else this.centre.copy(R.target);
+      // ORTHO: the field is sized from the visible half-height — the same quantity the shadow frame uses —
+      // and a streak is widened to hold a pixel floor, because a world unit is worth a different number of
+      // pixels at every zoom. PERSPECTIVE already sizes things by depth, so it needs neither.
+      //
+      // PITCH MATTERS AS MUCH AS ZOOM. What a tilted camera sees on the ground is not a square around the
+      // target, it is a trapezoid running away toward the viewer — at 30 deg it reaches roughly twice as
+      // far as the viewport is tall. A box sized from the viewport alone therefore leaves the NEAR half of
+      // the screen dry while it rains in the distance, which is what a first cut of this did. Dividing by
+      // sin(pitch) stretches the box to cover that reach; the floor keeps a near-overhead view from asking
+      // for an infinite one.
+      const visibleHalf = R.camera.top / Math.max(R.camera.zoom, 1e-6);
+      const sinPitch = Math.max(0.34, Math.abs(R.camera.getWorldDirection(this.forward).y));
+      const half = player ? 560 : THREE.MathUtils.clamp((visibleHalf * 1.15) / sinPitch, 360, 1800);
+      const heightPx = R.renderer.domElement.height / R.renderer.getPixelRatio();
+      const worldPerPixel = player || heightPx < 1 ? 0 : (visibleHalf * 2) / heightPx;
+      this.rain.follow(this.centre, half, worldPerPixel);
+      this.rain.update(dtSeconds);
+    }
   }
   get skyVisible(): boolean {
     return this.sky.root.visible;
@@ -61,6 +111,31 @@ export class Environment {
 
   get phase(): EnvPhase | null {
     return this.current;
+  }
+  get weather(): WeatherState {
+    return this._weather;
+  }
+  /** Switch weather. Returns true if it changed. Re-grades and re-parameterises only: no geometry is
+   *  built, no room is rebuilt, no material is recompiled and the world is not reloaded. */
+  setWeather(w: WeatherState, force = false): boolean {
+    if (w === this._weather && !force) return false;
+    this._weather = w;
+    if (this.current) this.apply(this.current, true);
+    return true;
+  }
+  /** Whether rain is drawn in OFFICE presentation. Rain is WEATHER, not campus — it reveals no terrain,
+   *  no road and no lot, so the exterior-hidden illusion survives it and "it is raining outside" reads
+   *  even in the product view. Flipped off here if that is ever not wanted; nothing else changes. */
+  get rainInOffice(): boolean {
+    return this._rainInOffice;
+  }
+  set rainInOffice(on: boolean) {
+    this._rainInOffice = on;
+    if (this.current) this.apply(this.current, true);
+  }
+  /** draw stats for the bench readout */
+  get rainStats(): { draws: number; instances: number; triangles: number } {
+    return this.rain.stats;
   }
   get presentation(): EnvPresentation {
     return this._presentation;
@@ -91,13 +166,18 @@ export class Environment {
   apply(phase: EnvPhase, force = false): boolean {
     if (phase === this.current && !force) return false;
     this.current = phase;
-    this.write(ENV_PRESETS[phase]);
+    // THE ONE COMPOSITION POINT. Weather × phase resolve here and nowhere else.
+    const g = weatherGrade(this._weather, phase);
+    this.rain.setParams(g.rain);
+    this.scenery?.applyWetness(g.wetness);
+    this.write(g.preset);
     return true;
   }
 
   private write(p: EnvPreset): void {
     const R = this.R;
     const office = this._presentation === "office";
+    this.rain.visible = !office || this._rainInOffice;
     // OFFICE: nothing exterior is drawn, and the backdrop is a flat stage tone rather than a sky.
     if (this.scenery) this.scenery.root.visible = !office;
     this.sky.root.visible = !office;

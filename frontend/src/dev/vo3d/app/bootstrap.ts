@@ -22,6 +22,9 @@ import { PROJECT_ROOM, CONSOLE_INTERACTION_ID, SOFA_SEAT_IDS, TUB_SEAT_IDS, TV_I
 import { buildExterior } from "../build/exterior";
 import { Environment } from "../env/Environment";
 import { ENV_TIME_MODES, TimeOfDay, type EnvTimeMode } from "../env/timeOfDay";
+import { WEATHER_MODES, Weather, type WeatherMode, type WeatherState } from "../env/weather";
+import { ManualWeatherProvider } from "../env/providers/manual";
+import { GRADE } from "../world/campus";
 import { CAMERA_MODES, CameraModes, type CameraModeId } from "../render/CameraModes";
 import { PlayerMode } from "../player/PlayerMode";
 import { makeStandTest } from "../player/standTest";
@@ -99,6 +102,7 @@ const params = {
   shadows: true, ao: false, sway: true, ambient: true, wallHeight: DESIGN_SHELL.wallHeight, frontWall: "low" as "low" | "full" | "hidden",
   overlay: true, motion: false, preset: "B" as PresetId, captureSeconds: 30,
   envTime: "auto" as EnvTimeMode, envScenery: true, envFog: true, envSky: true,
+  envWeather: "auto" as WeatherMode, envRainInOffice: true,
   cameraMode: "office" as CameraModeId,
   playerView: "third" as PlayerView,
   avatar: true, avatarLod: 1 as AvatarLod, avatarLit: true, walkSpeed: 30,
@@ -130,15 +134,32 @@ void loadBossStatues(mirror.root).then(() => R.invalidateShadows());
 // through env/timeOfDay — V1 keeps the clock and the boundaries; this only presents them.
 // SCENERY ONLY: the exterior group is added straight to the scene, never to the world/nav graph.
 const scenery = buildExterior();
-const env = new Environment(R, scenery);
+// The office footprint is handed to the environment as the DRY RECTANGLE: rain is never PLACED over it,
+// so a doll-house building with no drawn roof stays dry inside at every camera angle without the rain ever
+// inspecting the scene. GRADE is where rain lands. Neither is a layout change — both are read from data
+// that already existed.
+const env = new Environment(R, scenery, plan.frame, GRADE);
 const timeOfDay = new TimeOfDay();
-const envState = { phase: "—", realPhase: "—", clock: "—", source: "V1 real clock (Asia/Manila)" };
+// WEATHER: a second, INDEPENDENT axis. No provider is configured in this repo (see env/providers/README),
+// so AUTO resolves through a manual dev provider that reaches no network and holds no key. Swapping in a
+// real provider is a one-line change here and nothing downstream moves.
+const weatherProvider = new ManualWeatherProvider("clear");
+const weather = new Weather(weatherProvider);
+const envState = { phase: "—", realPhase: "—", clock: "—", source: "V1 real clock (Asia/Manila)", weather: "—", observed: "—", provider: "—" };
 function applyEnvPhase(force = false): void {
-  const phase = timeOfDay.phase(performance.now());
+  const now = performance.now();
+  const phase = timeOfDay.phase(now);
+  const w = weather.state(now);
   envState.phase = phase;
   envState.realPhase = timeOfDay.realPhase;
-  if (!env.apply(phase, force)) return;
-  R.invalidateShadows(); // the sun moved: every static shadow in the office has to be redrawn
+  envState.weather = w;
+  envState.observed = weather.observed;
+  envState.provider = weather.source;
+  // Both axes are re-read every frame and BOTH are cheap no-ops when nothing changed: apply() returns
+  // false unless the composed presentation actually differs, so a steady state costs two comparisons.
+  const weatherChanged = env.setWeather(w, force);
+  if (!env.apply(phase, force) && !weatherChanged) return;
+  R.invalidateShadows(); // the sun (or the cloud in front of it) moved: static shadows must be redrawn
 }
 /** decimal hour -> "HH:MM", for the dev readout only */
 function formatManila(h: number): string {
@@ -558,6 +579,21 @@ envGui.add(envState, "clock").name("Manila time").listen().disable();
 envGui.add(params, "envScenery").name("exterior world").onChange((v: boolean) => { env.sceneryVisible = v; R.invalidateShadows(); });
 envGui.add(params, "envFog").name("distance haze").onChange((v: boolean) => (env.fogEnabled = v));
 envGui.add(params, "envSky").name("sky dome + stars").onChange((v: boolean) => (env.skyVisible = v));
+// WEATHER is its own axis and its own folder on purpose: it composes WITH the time above rather than
+// replacing it, so every one of the six DAY/SUNSET/NIGHT × CLEAR/RAIN combinations is reachable by
+// picking one value from each dropdown. Switching either is a re-grade, never a rebuild.
+const wxGui = gui.addFolder("Weather (independent of time of day)");
+function setWeatherMode(m: WeatherMode): void {
+  params.envWeather = m;
+  weather.mode = m;
+  applyEnvPhase(true);
+  refresh();
+}
+wxGui.add(params, "envWeather", WEATHER_MODES).name("state (AUTO = provider)").onChange(setWeatherMode);
+wxGui.add(envState, "weather").name("in force").listen().disable();
+wxGui.add(envState, "observed").name("provider says").listen().disable();
+wxGui.add(envState, "provider").name("source").listen().disable();
+wxGui.add(params, "envRainInOffice").name("rain in OFFICE mode").onChange((v: boolean) => (env.rainInOffice = v));
 const geo = gui.addFolder("Geometry");
 const rebuild = () => { seat.reset(); mirror.rebuildRoom(DESIGN_ROOM, shellOpts()); door = new SlidingDoor(mirror.view(DOOR_ID), doorEntity.capabilities.door!, doorEntity.transform.pos); seat = new SeatInteraction(avatar, stack, mirror.view(CHAIR_4_ID), chairSeat, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed); };
 geo.add(params, "wallHeight", 20, 110, 1).onFinishChange(rebuild); geo.add(params, "frontWall", ["low", "full", "hidden"]).onChange(rebuild);
@@ -754,7 +790,7 @@ function loop(): void {
   mirror.sway.update(t);
   mirror.ambient.update(t, dt / 1000); // powered-surface idle animation (screens, sensors, status strips)
   applyEnvPhase(); // V1's clock is re-read at most twice a minute and only writes when the phase changes
-  env.follow(); // the sky dome rides the orbit target so panning can never reach its edge
+  env.follow(dt / 1000); // the sky dome rides the orbit target; the rain field rides the active camera
   if (params.avatar) {
     // PLAYER steps FIRST: it writes the avatar transform for this frame and yields silently whenever an
     // interaction owns Bon, so the controllers below still run exactly as they always have.
@@ -858,6 +894,15 @@ loop();
     setFog: (on: boolean) => { params.envFog = on; env.fogEnabled = on; refresh(); },
     setSky: (on: boolean) => { params.envSky = on; env.skyVisible = on; refresh(); },
     presentation: () => env.presentation,
+  },
+  weather: {
+    weather, provider: weatherProvider,
+    setWeather: setWeatherMode,
+    /** what the provider reports, independent of the dev override */
+    setProvider: (s2: WeatherState) => { weatherProvider.state = s2; weather.invalidate(); applyEnvPhase(true); refresh(); },
+    state: () => env.weather, mode: () => weather.mode, source: () => weather.source,
+    rainStats: () => env.rainStats,
+    setRainInOffice: (on: boolean) => { params.envRainInOffice = on; env.rainInOffice = on; refresh(); },
   },
   player: {
     mode: playerMode, state: playerMode.state,

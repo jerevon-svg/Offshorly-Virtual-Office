@@ -52,10 +52,13 @@ const TMP = new THREE.MeshStandardMaterial();
 type Tintable = { m: THREE.MeshStandardMaterial; base: THREE.Color };
 /** A practical light surface: an emissive fixture or an additive spill plane. */
 type Practical = { m: THREE.MeshStandardMaterial | THREE.MeshBasicMaterial; emissive: number; opacity: number };
+/** A surface that changes when it is WET. Roughness and environment response only — never colour. */
+type Wettable = { m: THREE.MeshStandardMaterial; dryR: number; wetR: number; dryEnv: number; wetEnv: number };
 
 class ExteriorMaterials {
   readonly tintable: Tintable[] = [];
   readonly practicals: Practical[] = [];
+  readonly wettable: Wettable[] = [];
   private readonly cache = new Map<string, THREE.MeshStandardMaterial>();
 
   /** a plain, tintable exterior surface */
@@ -75,6 +78,23 @@ class ExteriorMaterials {
   water(): THREE.MeshStandardMaterial {
     const m = new THREE.MeshStandardMaterial({ color: EX.water, roughness: 0.08, metalness: 0.35, envMapIntensity: 1.6 });
     this.tintable.push({ m, base: new THREE.Color(EX.water) });
+    // THE POND GOES THE OTHER WAY. Rain on still water is a million micro-ripples, so the surface gets
+    // ROUGHER, not smoother: the mirror breaks up and the sheen turns from a hard highlight into a broad
+    // dull one. Same one-line mechanism as the roads, opposite direction — which is the argument for
+    // making wetness a per-material registration rather than one global roughness multiplier.
+    this.wettable.push({ m, dryR: 0.08, wetR: 0.34, dryEnv: 1.6, wetEnv: 1.15 });
+    return m;
+  }
+  /** REGISTER A SURFACE AS ONE THAT VISIBLY WETS. Rain drops its roughness and lifts its environment
+   *  response, so the sky and the street lamps start to sheen off it — which is the whole read of "wet
+   *  asphalt" and costs no new material, no second map and no shader.
+   *
+   *  COLOUR IS DELIBERATELY UNTOUCHED. Wet ground is also DARKER, but darkening the exterior is already
+   *  exteriorTint's job (see env/presets) and the weather grade already pulls it down. Two levers writing
+   *  the same colour channel would fight the moment either is re-graded, so wetness owns roughness and
+   *  tint owns colour, with no overlap. */
+  wet(m: THREE.MeshStandardMaterial, wetRoughness: number, wetEnv = 1.3): THREE.MeshStandardMaterial {
+    if (!this.wettable.some((x) => x.m === m)) this.wettable.push({ m, dryR: m.roughness, wetR: wetRoughness, dryEnv: m.envMapIntensity, wetEnv });
     return m;
   }
   /** Re-declare a registered material's tint base (used where a canvas map supplies the colour). */
@@ -314,6 +334,8 @@ export type ExteriorScenery = {
   applyTint(t: number): void;
   /** 0 = practicals dark, 1 = full (EnvPreset.practicals) */
   applyPracticals(level: number): void;
+  /** 0 = bone dry, 1 = soaked. Roughness/env response only — colour stays with applyTint. */
+  applyWetness(w: number): void;
   stats: { draws: number; instanced: number; instances: number; trees: number; vehicles: number };
 };
 
@@ -326,8 +348,11 @@ export function buildExterior(): ExteriorScenery {
   const ground = new Baker();
   const terrainM = M.surface(EX.terrain), lawnM = M.surface(EX.lawn), lawnDarkM = M.surface(EX.lawnDark);
   const meadowM = M.surface(EX.meadow), padM = M.surface(EX.pad);
-  const roadM = M.surface(EX.asphalt, 0.85), lineM = M.surface(EX.line, 0.7), crossM = M.surface(EX.crossing, 0.7);
-  const pavingM = M.surface(EX.paving, 0.9), pavingWarmM = M.surface(EX.pavingWarm, 0.88), curbM = M.surface(EX.curb, 0.85);
+  // THE WET SET: everything a shower actually pools on. Asphalt goes furthest (a wet road is nearly a
+  // mirror), paving is restrained, the curb barely moves. Lawns, soil and planting are NOT registered —
+  // grass does not gloss, and making it do so is the single fastest way to make rain look like plastic.
+  const roadM = M.wet(M.surface(EX.asphalt, 0.85), 0.3, 1.45), lineM = M.wet(M.surface(EX.line, 0.7), 0.34, 1.3), crossM = M.wet(M.surface(EX.crossing, 0.7), 0.34, 1.3);
+  const pavingM = M.wet(M.surface(EX.paving, 0.9), 0.46, 1.25), pavingWarmM = M.wet(M.surface(EX.pavingWarm, 0.88), 0.46, 1.25), curbM = M.wet(M.surface(EX.curb, 0.85), 0.6, 1.15);
   const soilM = M.surface(EX.soil, 1);
 
   // 1. TERRAIN. One disc, wide enough that no normal gameplay view — at any rotation, at the widest
@@ -596,6 +621,16 @@ export function buildExterior(): ExteriorScenery {
     stats: { draws, instanced, instances, trees: treeCount, vehicles: VEHICLES.length },
     applyTint(t: number) {
       for (const { m, base } of M.tintable) m.color.copy(base).multiplyScalar(t);
+    },
+    applyWetness(w: number) {
+      // Number.isFinite first: Math.max(0, Math.min(1, NaN)) is NaN, and a NaN roughness is not a clamp,
+      // it is a material that renders black.
+      const t = Number.isFinite(w) ? Math.max(0, Math.min(1, w)) : 0;
+      for (const x of M.wettable) {
+        x.m.roughness = x.dryR + (x.wetR - x.dryR) * t;
+        x.m.envMapIntensity = x.dryEnv + (x.wetEnv - x.dryEnv) * t;
+      }
+      // roughness and envMapIntensity are plain uniforms: no recompile, no needsUpdate, no rebuild.
     },
     applyPracticals(level: number) {
       // NOT clamped to 1: the night preset deliberately drives the fixtures past nominal so the pools and
