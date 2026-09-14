@@ -42,7 +42,7 @@ function skirting(axis: "x" | "z", from: number, to: number, at: number): THREE.
  *  furniture. FLOOR_LAYER.tint keeps it beneath the additive overlays so it can never wipe one out. */
 function coolFloor(): THREE.Mesh {
   const m = floorLayer(new THREE.MeshBasicMaterial({
-    color: PALETTE.cmsFloorTint, blending: THREE.MultiplyBlending, transparent: true, depthWrite: false, toneMapped: false,
+    color: PALETTE.cmsFloorTint, blending: THREE.MultiplyBlending, premultipliedAlpha: true, transparent: true, depthWrite: false, toneMapped: false,
   }), FLOOR_LAYER.tint);
   const p = rbox(TILE_RECT.w - 0.4, 0.02, TILE_RECT.d - 0.4, m, TILE_RECT.x + TILE_RECT.w / 2, 0.015, TILE_RECT.z + TILE_RECT.d / 2, 0);
   p.castShadow = p.receiveShadow = false;
@@ -250,7 +250,7 @@ function printStation(): THREE.Group {
   const g = new THREE.Group();
   g.name = "cms-print-credenza";
   const c = PRINT_CREDENZA;
-  g.add(credenzaRun({ ...c, facing: "west", along: "z", body: THEME.blue, reveal: THEME.blueDeep, name: "cms-print-run" }));
+  g.add(credenzaRun({ ...c, facing: "west", along: "z", body: THEME.blue, reveal: THEME.blueDeep, name: "cms-print-run", top: false }));
   const cx = c.x + c.w / 2, topY = c.h;
   g.add(rbox(c.w + 1.4, 1.6, c.d + 1.4, mat(THEME.oak, 0.55), cx, topY - 1.6, c.z + c.d / 2, 0.4)); // oak worktop
   // the printer: a dark block with a paler output tray and a small panel

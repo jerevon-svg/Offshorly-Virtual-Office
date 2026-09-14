@@ -20,7 +20,7 @@ import { book, smallPot } from "./props";
 import { ledStrip } from "./led";
 import { hubMonument } from "./hub-monument";
 import { animated, powered } from "../render/Ambient";
-import { contactShadowMat, emissiveMat, glowMat, mat, metal, plastic, type MatKey } from "../render/Materials";
+import { contactShadowMat, emissiveMat, glowMat, mat, terrazzoMat, metal, plastic, type MatKey } from "../render/Materials";
 import type { RoomDef } from "../world/WorldState";
 import type { SwayNode } from "../render/Sway";
 import {
@@ -75,7 +75,11 @@ function floorPlate(): THREE.Group {
   const g = new THREE.Group();
   g.name = "hub-floor";
   g.add(tiledFloor(RECT));
-  const plate = flatShape(plateShape(0), PLATE.lift, mat(key("plate"), 0.55), 0);
+  // THE PLATE IS CAST TERRAZZO, not a fill. Its own colour is unchanged — hubTerrazzo still sets the tone —
+  // but the aggregate map gives it the one thing a 15,000-unit plate of flat cream could never have: a
+  // surface. The chips are sized in WORLD units (see terrazzoMat), so the plate reads at the same physical
+  // scale as the tile joints running under it out in the hall.
+  const plate = flatShape(plateShape(0), PLATE.lift, terrazzoMat(key("plate"), 0.5, 55), 0);
   plate.castShadow = false;
   g.add(plate);
   // brass outline: the plate path at two insets, the outer one lifted a hair above the plate face

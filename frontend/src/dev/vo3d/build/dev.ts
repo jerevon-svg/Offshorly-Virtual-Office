@@ -42,7 +42,7 @@ function skirting(axis: "x" | "z", from: number, to: number, at: number): THREE.
  *  coolFloor and AI's coolFloor use. FLOOR_LAYER.tint keeps it beneath the additive overlays. */
 function paleFloor(): THREE.Mesh {
   const m = floorLayer(new THREE.MeshBasicMaterial({
-    color: PALETTE.devFloorTint, blending: THREE.MultiplyBlending, transparent: true, depthWrite: false, toneMapped: false,
+    color: PALETTE.devFloorTint, blending: THREE.MultiplyBlending, premultipliedAlpha: true, transparent: true, depthWrite: false, toneMapped: false,
   }), FLOOR_LAYER.tint);
   const p = rbox(TILE_RECT.w - 0.4, 0.02, TILE_RECT.d - 0.4, m, TILE_RECT.x + TILE_RECT.w / 2, 0.015, TILE_RECT.z + TILE_RECT.d / 2, 0);
   p.castShadow = p.receiveShadow = false;
@@ -342,7 +342,7 @@ function pantry(): THREE.Group {
   const g = new THREE.Group();
   g.name = "dev-pantry";
   const c = PANTRY, cz = c.z + c.d / 2, frontZ = c.z;
-  g.add(credenzaRun({ ...c, facing: "north", along: "x", body: THEME.walnut, reveal: THEME.walnutDark, name: "dev-pantry-run" }));
+  g.add(credenzaRun({ ...c, facing: "north", along: "x", body: THEME.walnut, reveal: THEME.walnutDark, name: "dev-pantry-run", top: false }));
   g.add(rbox(c.w + 1.4, 1.6, c.d + 1.4, mat(THEME.walnut, 0.42), c.x + c.w / 2, c.h - 1.6, cz, 0.4)); // worktop
   neonLine(g, c.w - 6, 0.6, 1.0, c.x + c.w / 2, c.h - 4.2, frontZ + 0.3, THEME.neon);
   const topY = c.h;

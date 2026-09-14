@@ -314,7 +314,7 @@ export function hubMonument(): THREE.Group {
   for (const slot of BOSS_SLOTS) g.add(bossAnchor(slot));
 
   g.add(plaque());
-  const sh = cyl(M.base * 0.78, 0.02, contactShadowMat(0.16), 0, M.discY + 0.02, 0);
+  const sh = cyl(M.base * 0.78, 0.02, contactShadowMat(0.16, "round"), 0, M.discY + 0.02, 0);
   sh.castShadow = sh.receiveShadow = false;
   g.add(sh);
   return g;

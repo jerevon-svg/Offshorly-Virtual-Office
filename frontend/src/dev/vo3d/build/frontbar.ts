@@ -285,6 +285,12 @@ export type CredenzaRunSpec = {
   /** carcass colour. Default = the front bar's dark stained oak; the Gaming Room passes its own THEME so
    *  its media wall is not a warm brown mass in a cool room. */
   body?: MatKey;
+  /** OMIT THE RUN'S OWN WORKTOP. Set this when the caller lays its own slab over the run — a white
+   *  worktop on a light-oak carcass, an oak top on blue joinery. Without it BOTH tops end at exactly `h`,
+   *  which puts two full-footprint horizontal faces on one depth plane: they z-fight, and the run shimmers
+   *  and crawls as the camera moves. Five rooms were doing this (QA's storage and supply runs, AI's
+   *  counter, Dev's pantry, CMS's print run) and it is why "the QA cabinets flicker". */
+  top?: boolean;
   /** toe kick / reveal colour, one step darker than `body` */
   reveal?: MatKey;
   name?: string;
@@ -303,7 +309,8 @@ export function credenzaRun(spec: CredenzaRunSpec): THREE.Group {
   g.add(rbox(w, h - 4.4, d, mat(body, 0.78), cx, 3.2, cz, 0.5));
   // the TOP is the face the game camera actually sees, so it carries the run's colour: the same dark
   // stained oak as the body, finished a little glossier so it reads as a worktop rather than a carcass.
-  g.add(rbox(w + 1.2, 1.2, d + 1.2, mat(body, 0.55), cx, h - 1.2, cz, 0.35));
+  // A caller laying its own worktop passes `top: false` — see the field's note for why that matters.
+  if (spec.top !== false) g.add(rbox(w + 1.2, 1.2, d + 1.2, mat(body, 0.55), cx, h - 1.2, cz, 0.35));
   // module reveals: thin dark grooves standing 0.1 proud of the face so they never z-fight it
   const len = along === "x" ? w : d, from = along === "x" ? x : z;
   const face = spec.facing === "east" ? x + w + 0.1 : spec.facing === "west" ? x - 0.1 : spec.facing === "south" ? z + d + 0.1 : z - 0.1;
@@ -333,7 +340,7 @@ export function ledgePlanter(x: number, z: number, r: number, h: number): THREE.
   g.add(cyl(r, h - 0.2, mat("potDark", 0.55, { metalness: 0.08 }), x, 0, z, r * 0.94));
   g.add(cyl(r + 0.6, 1.4, mat("charcoal", 0.5, { metalness: 0.2 }), x, h - 1.4, z));
   g.add(cyl(r - 1.4, 1.0, mat("potDark", 1), x, h - 0.6, z));
-  const shadow = cyl(r + 4, 0.02, contactShadowMat(0.13), x, 0.04, z);
+  const shadow = cyl(r + 4, 0.02, contactShadowMat(0.13, "round"), x, 0.04, z);
   shadow.castShadow = shadow.receiveShadow = false;
   g.add(shadow);
   return g;

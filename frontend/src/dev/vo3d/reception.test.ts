@@ -155,7 +155,7 @@ describe("vo3d Reception — Phase 3B architecture", () => {
   });
 
   it("the tile grid is phased to the WORLD so it continues into Meeting and Project", () => {
-    expect(TILE).toBe(40);
+    expect(TILE).toBe(20); // halved from the V1 graphic pitch to a real ~97 cm slab — see render/Materials TILE
     const uv = worldTileUv(TILE_RECT);
     // texture coordinate of a world point on the top face
     const tcx = (x: number) => ((x - TILE_RECT.x) / TILE_RECT.w) * uv.repeat.x + uv.offset.x;

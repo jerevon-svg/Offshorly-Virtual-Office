@@ -349,7 +349,7 @@ export function planters(): THREE.Group {
     g.add(cyl(p.r, p.h - 0.2, mat("potDark", 0.55, { metalness: 0.08 }), p.x, 0, p.z, p.r * 0.94)); // slight taper
     g.add(cyl(p.r + 0.6, 1.4, mat("charcoal", 0.5, { metalness: 0.2 }), p.x, p.h - 1.4, p.z)); // rolled rim
     g.add(cyl(p.r - 1.4, 1.0, mat("potDark", 1), p.x, p.h - 0.6, p.z)); // dark soil
-    const shadow = cyl(p.r + 5, 0.02, contactShadowMat(0.14), p.x, 0.04, p.z);
+    const shadow = cyl(p.r + 5, 0.02, contactShadowMat(0.14, "round"), p.x, 0.04, p.z);
     shadow.castShadow = shadow.receiveShadow = false;
     g.add(shadow);
   }

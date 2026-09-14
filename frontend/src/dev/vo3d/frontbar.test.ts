@@ -124,7 +124,7 @@ describe("vo3d front bar — Phase 4B: ONE continuous building", () => {
       const want = (x - TILE_PHASE.x) / TILE;
       for (const [name, r] of plates) expect(tc(r, x), `${name} @ ${x}`).toBeCloseTo(want, 6);
     }
-    expect(TILE).toBe(40);
+    expect(TILE).toBe(20); // halved from the V1 graphic pitch to a real ~97 cm slab — see render/Materials TILE
   });
 
   it("ONE façade: the whole bar sits on the shared plane and the glass covers x 8 → 1432 with no gap", () => {

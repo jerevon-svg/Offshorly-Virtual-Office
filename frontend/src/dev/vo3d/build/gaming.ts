@@ -18,7 +18,7 @@ import { cyl, rbox, shadowed } from "./helpers";
 import { tiledFloor } from "./tile";
 import { ledStrip } from "./led";
 import { credenzaRun } from "./frontbar";
-import { PALETTE, emissiveMat, emissiveMatUnique, glassMat, glowMat, mat, metal, plastic, uiScreenMat, wood, FLOOR_LAYER, floorLayer } from "../render/Materials";
+import { PALETTE, emissiveMat, emissiveMatUnique, glassMat, glowMat, glowMatUnique, mat, metal, plastic, uiScreenMat, wood, FLOOR_LAYER, floorLayer } from "../render/Materials";
 
 // ---- ANIMATION TIMING ---------------------------------------------------------------------------
 // One table so the room breathes as a composition rather than nine unrelated loops. Periods are spread
@@ -79,7 +79,7 @@ function moodFloor(): THREE.Mesh {
   // it wipes them out. Without the explicit order that decision was left to the transparent depth sort,
   // which flipped with camera yaw and took the rug's print and LED border with it.
   const m = floorLayer(new THREE.MeshBasicMaterial({
-    color: PALETTE.gamingMood, blending: THREE.MultiplyBlending, transparent: true, depthWrite: false, toneMapped: false,
+    color: PALETTE.gamingMood, blending: THREE.MultiplyBlending, premultipliedAlpha: true, transparent: true, depthWrite: false, toneMapped: false,
   }), FLOOR_LAYER.tint);
   const p = rbox(TILE_RECT.w - 0.4, 0.02, TILE_RECT.d - 0.4, m, TILE_RECT.x + TILE_RECT.w / 2, 0.015, TILE_RECT.z + TILE_RECT.d / 2, 0);
   p.castShadow = p.receiveShadow = false;
@@ -113,9 +113,10 @@ function litEdge(axis: "x" | "z", len: number, t: number, x: number, z: number, 
  *  to all three channels, so anything much above ~0.15 stops tinting the surface and starts pushing it to
  *  white — which is exactly how "intense glow" turns into flat pale rectangles. */
 function auraMat(key: Parameters<typeof emissiveMatUnique>[0], opacity: number): THREE.MeshBasicMaterial {
-  return new THREE.MeshBasicMaterial({
-    color: PALETTE[key], transparent: true, opacity, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false,
-  });
+  // one material per call (a halo may be animated), but the FALLOFF is the shared one every other spill in
+  // the office uses — a halo with a hard rectangular border is the single thing that makes light read as a
+  // sticker, and the room has a lot of halos
+  return glowMatUnique(key, opacity);
 }
 
 // ---- local shape helpers ------------------------------------------------------------------------

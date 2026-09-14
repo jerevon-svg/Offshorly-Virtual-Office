@@ -34,7 +34,7 @@ const seatFabric = (t: FurnitureItem, seat = false) =>
     : t.tone === "lounge" ? fabric(seat ? "loungeOliveSeat" : "loungeOlive") : fabric(seat ? "greenSeat" : "green");
 /** soft contact shadow under a lounge piece (a dark translucent plate just above the floor) */
 function contactShadow(g: THREE.Group, w: number, d: number, round = false): void {
-  const m = round ? cyl(w / 2 + 3, 0.02, contactShadowMat(0.15), 0, 0.03, 0) : rbox(w + 5, 0.02, d + 5, contactShadowMat(0.15), 0, 0.03, 0, 2.5);
+  const m = round ? cyl(w / 2 + 3, 0.02, contactShadowMat(0.15, "round"), 0, 0.03, 0) : rbox(w + 5, 0.02, d + 5, contactShadowMat(0.15), 0, 0.03, 0, 2.5);
   m.castShadow = m.receiveShadow = false;
   g.add(m);
 }

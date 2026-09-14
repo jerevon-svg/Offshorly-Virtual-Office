@@ -1,7 +1,7 @@
 // vo3d build — walls, floor, glass run, exterior slab (promoted from designRoom3d/build.ts).
 import * as THREE from "three";
 import { rbox, shadowed } from "./helpers";
-import { glassMat, mat, plastic } from "../render/Materials";
+import { floorMat, glassMat, mat, plastic } from "../render/Materials";
 import type { ShellSpec } from "../world/WorldState";
 
 // ---- shell ------------------------------------------------------------------------------------------
@@ -20,14 +20,14 @@ export function buildShell(rect: { w: number; d: number }, SHELL: ShellSpec, opt
   const wallM = mat("wall", 0.96);
   if (opts.exterior !== false) {
     const m = SHELL.exteriorMargin;
-    const ext = rbox(W + 2 * m, 3, D + 2 * m, mat("exterior", 1), W / 2, -3, D / 2, 1);
+    const ext = rbox(W + 2 * m, 3, D + 2 * m, floorMat("exterior", 1), W / 2, -3, D / 2, 1);
     ext.castShadow = false;
     g.add(ext);
   }
-  const floor = rbox(W - 2 * T + 0.2, 1.2, frontZ - T + 0.2, mat("floor", 0.82), W / 2, -1.2, (T + frontZ) / 2, 0.2);
+  const floor = rbox(W - 2 * T + 0.2, 1.2, frontZ - T + 0.2, floorMat("floor", 0.82), W / 2, -1.2, (T + frontZ) / 2, 0.2);
   floor.castShadow = false;
   g.add(floor);
-  g.add(rbox(W, 1.6, D - frontZ - T, mat("wallFace", 1), W / 2, -1.6, frontZ + T + (D - frontZ - T) / 2, 0.3)); // exterior ledge
+  g.add(rbox(W, 1.6, D - frontZ - T, floorMat("wallFace", 1), W / 2, -1.6, frontZ + T + (D - frontZ - T) / 2, 0.3)); // exterior ledge
   // skirting inside the rear and left walls
   g.add(rbox(W - 2 * T, 1.6, 0.8, plastic("white"), W / 2, 0, T + 0.4, 0.2));
   g.add(rbox(0.8, 1.6, frontZ - T, plastic("white"), T + 0.4, 0, (T + frontZ) / 2, 0.2));

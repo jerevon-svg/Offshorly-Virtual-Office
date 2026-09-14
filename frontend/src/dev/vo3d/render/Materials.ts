@@ -1,6 +1,7 @@
 // vo3d render — shared material cache + the office palette (warm cream / wood / olive).
 // Promoted from designRoom3d/build.ts (materials block) and layout.ts (PALETTE). ONE cache for the scene.
 import * as THREE from "three";
+import { contactRectAlpha, contactRoundAlpha, glowFalloffAlpha, metalDetail, stoneDetail, stoneTint, terrazzoChips, weaveDetail, woodDetail } from "./detail";
 
 export const PALETTE = {
   floor: 0xf0e8e2,
@@ -29,6 +30,11 @@ export const PALETTE = {
   boardPin: 0x6f8a3d,
   screen: 0x1f2430,
   tile: 0xefe8de, // reception/front-bar polished floor tile (measured off reception-room.png)
+  hallTile: 0xe9ddd0, // the SHARED HALL's own tone of the same tile: one material, one grout grid running
+  //                     unbroken from the street doors through the plaza, laid a half-step warmer and
+  //                     darker than a room's so the circulation zone reads as circulation. The transition
+  //                     is a tone change on a continuous floor, which is how a real building does it —
+  //                     not two unrelated filled shapes meeting at a line.
   grout: 0xc4b7a6,
   bronze: 0xa98a63, // the arc counter's champagne/bronze visitor-facing fascia (measured 135,103,71 lit)
   bronzeDark: 0x6f5738,
@@ -108,7 +114,8 @@ export const PALETTE = {
   cmsRugBorder: 0x44607f, //  its one inset border line, a half-tone darker — that is the whole graphic
   cmsScreen: 0x465e74, //     the member desks' slate privacy screens (measured 70,94,116)
   cmsPlaster: 0xf2f0f2, //    this room's walls: a COOLER white than PALETTE.plaster (measured 244,242,243)
-  cmsFloorTint: 0xe9e9ec, //  multiply tint for THIS room's tile only — the reference floor is cool grey
+  cmsFloorTint: 0xf2f4f8, //  multiply tint for THIS room's tile only — the reference floor is cool grey. Same
+  //                          correction as qaFloorTint: a whisper of cool over the warm tile, not a grey wash.
   cmsBoard: 0xf3f2f1, //      the whiteboard / sticky-wall face
   cmsFrame: 0xc6c6c9, //      chair frames, arms and casters: the light grey the art gives them
 
@@ -172,7 +179,10 @@ export const PALETTE = {
   qaLinenDeep: 0xd2c7b4, //   their piping, seams and the sofa's deck
   qaFrame: 0xc9cac6, //       chair frames, five-star bases, desk legs
   qaPlaster: 0xf8f9f7, //     this room's walls
-  qaFloorTint: 0xd8e2d9, //   multiply tint for THIS room's tile only — the reference floor is 216,222,217
+  qaFloorTint: 0xeef3ec, //   multiply tint for THIS room's tile only. Measured off the flat reference at
+  //                          216,222,217, which as a MULTIPLY over the warm tile landed at a muddy sage —
+  //                          a strongly coloured fill, not a floor. Lightened until the tile still reads as
+  //                          the office's cream stone with a mint CAST, which is what a tinted floor is.
   qaRug: 0xded9d0, //         the lounge rug's oatmeal pile
   qaRugBorder: 0xc9c3b8, //   its one inset border line
   qaBoard: 0xf6f7f5, //       the north whiteboard's face
@@ -229,11 +239,57 @@ function woodTexture(): THREE.CanvasTexture | null {
   return (woodTex = tex);
 }
 
+/** THE METAL TIER. Everything else in the office is a dielectric — paint, plaster, fabric, wood, stone —
+ *  and stays at metalness 0, which is the physically right answer and what the palette was measured under.
+ *  These keys are the exceptions: the pieces the V1 art draws as ACTUAL metal. Listing them here, once, is
+ *  what makes it a hierarchy rather than a per-builder guess — and it means `mat("execBrass")` reads as
+ *  brass wherever it is used, instead of only where a builder remembered to pass a metalness.
+ *
+ *  The value is deliberately below 1: these are lacquered/brushed architectural metals under a soft key,
+ *  not mirrors, and a full 1.0 with no reflection probe but the room environment goes black. */
+const METAL_TIER: Partial<Record<MatKey, number>> = {
+  metal: 0.65,        // the generic chrome/aluminium of legs, arms, five-star bases
+  bronze: 0.55, bronzeDark: 0.5,
+  execBrass: 0.6,
+  caveBronze: 0.55, caveSteel: 0.45,
+  aiFrame: 0.45, devFrame: 0.45, cmsFrame: 0.4, qaFrame: 0.4, // brushed silver/grey furniture frames
+};
+
 export function mat(key: MatKey, roughness = 0.9, extra: Partial<THREE.MeshStandardMaterialParameters> = {}): THREE.MeshStandardMaterial {
   const id = `${key}:${roughness}:${JSON.stringify(extra)}`;
   let m = materials.get(id) as THREE.MeshStandardMaterial | undefined;
   if (!m) {
-    m = new THREE.MeshStandardMaterial({ color: PALETTE[key], roughness, metalness: 0, ...extra });
+    const tier = METAL_TIER[key];
+    // The caller still wins: a builder that already stated a metalness (or brought its own maps) keeps it.
+    const metal = extra.metalness !== undefined ? extra.metalness : (tier ?? 0);
+    const detail = metal > 0.2 && extra.roughnessMap === undefined ? metalDetail() : null;
+    m = new THREE.MeshStandardMaterial({ color: PALETTE[key], roughness, ...extra, metalness: metal, ...(detail ? { roughnessMap: detail } : {}) });
+    materials.set(id, m);
+  }
+  return m;
+}
+
+/** FLOOR SURFACE. A `mat()` with the shared stone breakup, for the big untextured plates: the ground-floor
+ *  slab, the sidewalk, the plinth, the street ledge and every room footprint plate. Colour and roughness
+ *  scalar are the caller's, untouched.
+ *
+ *  A ROUGHNESS MAP ALONE IS NOT ENOUGH HERE, and that was measured rather than assumed: the pixel standard
+ *  deviation over a 420 x 240 patch of the live Design Room floor was 1.95 with the roughness map and 1.95
+ *  without it. At roughness 0.82 under one soft key there is almost no specular left for it to modulate.
+ *  So the breakup that a walker actually sees comes from `stoneTint` on the albedo — near-white, ±3%, no
+ *  hue change — and the roughness map stays for the grazing angles where a highlight does appear. With
+ *  both, the same patch measures 2.55 at a mean of 234.7 against the flat floor's 235.9: broken up, and
+ *  the same tone. See render/detail's stoneTint for why a bump map is not the answer on a surface this
+ *  large and this magnified. */
+export function floorMat(key: MatKey, roughness = 0.9): THREE.MeshStandardMaterial {
+  const id = `floorsurf:${key}:${roughness}`;
+  let m = materials.get(id) as THREE.MeshStandardMaterial | undefined;
+  if (!m) {
+    const stone = stoneDetail(), tint = stoneTint();
+    // `color` still carries the palette value; the near-white tint map multiplies it, so the hue is the
+    // palette's and only the luminance breaks up. Roughness keeps the sheen variation for the angles that
+    // do catch a highlight — the grazing ones — where it is the map that actually shows.
+    m = new THREE.MeshStandardMaterial({ color: PALETTE[key], roughness, metalness: 0, map: tint, roughnessMap: stone });
     materials.set(id, m);
   }
   return m;
@@ -251,20 +307,40 @@ export function wood(kind: "box" | "extrude" = "box", light = false): THREE.Mesh
     }
     // with a grain map the map carries the wood colour; tint only lightly so it does not go orange
     const color = map ? (light ? 0xfff8ee : 0xffffff) : light ? PALETTE.woodLight : PALETTE.wood;
-    m = new THREE.MeshStandardMaterial({ color, roughness: 0.62, metalness: 0, map });
+    m = new THREE.MeshStandardMaterial({ color, roughness: 0.62, metalness: 0, map, roughnessMap: woodDetail(kind) });
     materials.set(id, m);
   }
   return m;
 }
-export const fabric = (key: MatKey = "green") => mat(key, 0.98);
+/** UPHOLSTERY. The weave arrives as BOTH roughness and bump: at roughness 0.98 there is no specular left
+ *  for a roughness map alone to modulate, so without the normal perturbation a sofa stays a flat slab of
+ *  colour. bumpScale is deliberately tiny — this is cloth seen from 3 m, not a macro shot. */
+export const fabric = (key: MatKey = "green"): THREE.MeshStandardMaterial => {
+  const id = `fabric:${key}`;
+  let m = materials.get(id) as THREE.MeshStandardMaterial | undefined;
+  if (!m) {
+    const weave = weaveDetail();
+    m = new THREE.MeshStandardMaterial({ color: PALETTE[key], roughness: 0.98, metalness: 0, roughnessMap: weave, bumpMap: weave, bumpScale: weave ? 0.12 : 0 });
+    materials.set(id, m);
+  }
+  return m;
+};
 export const plastic = (key: MatKey = "white") => mat(key, 0.45);
 export const metal = () => mat("metal", 0.35, { metalness: 0.7 });
 export function screenMat(): THREE.MeshStandardMaterial {
   return mat("screen", 0.25, { emissive: 0x3a5a86, emissiveIntensity: 0.55 });
 }
 // ---- floor tile ------------------------------------------------------------------------------
-/** grout pitch of the front-bar floor tile, in world units (measured: 40 × 40 on reception-room.png) */
-export const TILE = 40;
+/** Grout pitch of the office floor tile, in WORLD UNITS.
+ *
+ *  The V1 art measures 40 × 40 on reception-room.png, and that is what this was. But V1 is a flat painted
+ *  plan: its "tile" is a graphic pitch, not a material. In the 3D building Bon stands 36 units tall, so a
+ *  40-unit tile is a 1.9 m square — a size no floor tile is made in, and at the game camera it read as a
+ *  handful of enormous panels rather than a floor. 20 units is ~97 cm: a large-format porcelain slab,
+ *  which is exactly the premium commercial floor this lobby is meant to be. Halving keeps every existing
+ *  world phase valid (a 40-grid is a subset of a 20-grid), so nothing shifts — the joints just land where
+ *  a real floor's joints would. */
+export const TILE = 20;
 /** world coordinate a grout line falls on: x ≡ 0, z ≡ 32 (mod TILE). Anchored to the WORLD, never to a
  *  room rect, so the same grid continues unbroken into Meeting and Project when they are reconstructed. */
 export const TILE_PHASE = { x: 0, z: 32 };
@@ -317,14 +393,21 @@ function tileTexture(): THREE.CanvasTexture | null {
 }
 
 /** Tile material for ONE floor rect. UVs are world-phased by the caller (build/tile.ts), so each rect needs
- *  its own map instance — the base texture is shared, only the repeat/offset differ. */
-export function tileMat(): THREE.MeshStandardMaterial {
+ *  its own map instance — the base texture is shared, only the repeat/offset differ.
+ *  `tone` multiplies the tile canvas, which is how the hall gets its own shade of the SAME floor. */
+export function tileMat(tone?: MatKey): THREE.MeshStandardMaterial {
   const tex = tileTexture();
   const map = tex ? tex.clone() : null;
   if (map) map.needsUpdate = true;
   return new THREE.MeshStandardMaterial({
-    color: map ? 0xffffff : PALETTE.tile,
+    color: tone ? PALETTE[tone] : map ? 0xffffff : PALETTE.tile,
     map,
+    // The polished-stone breakup is the ONE map here that is shared by reference across every floor rect:
+    // it carries no world phase (it is non-directional mottle, so it has nothing to line up with), which
+    // is exactly why it needs no per-rect clone and costs one upload for the whole office.
+    // The tile's own canvas already carries a colour mottle and the grout, so it needs no tint map — only
+    // the shared roughness breakup, which on a polished surface at 0.42 is the half that does show.
+    roughnessMap: stoneDetail(),
     roughness: 0.42,
     metalness: 0,
     // NO polygonOffset. It used to be here because the tile's top face is at exactly y = 0, coplanar with
@@ -335,6 +418,26 @@ export function tileMat(): THREE.MeshStandardMaterial {
     // the offset on, and was identical with it off at close zoom. The slab is now simply dropped 0.05
     // below the tile (build/floorplan.ts), which is a constant separation that no camera can invert.
   });
+}
+
+/** TERRAZZO — a real cast floor for the pieces that are architectural PLATES rather than tiled fields:
+ *  the Central Hub's island plate today. The chip canvas is near-white and multiplies the palette colour,
+ *  so the plate keeps exactly the tone it was measured at and stops being one flat fill. Shared by
+ *  reference: one canvas, one upload, however many plates use it.
+ *
+ *  `scale` is in WORLD UNITS per canvas tile — terrazzo aggregate is a few centimetres, so the caller sets
+ *  a real-world figure rather than a UV repeat, and the map is cached per scale. */
+export function terrazzoMat(key: MatKey, roughness = 0.5, scale = 60): THREE.MeshStandardMaterial {
+  const id = `terrazzo:${key}:${roughness}:${scale}`;
+  let m = materials.get(id) as THREE.MeshStandardMaterial | undefined;
+  if (!m) {
+    const base = terrazzoChips();
+    const map = base ? base.clone() : null;
+    if (map) { map.repeat.set(1 / scale, 1 / scale); map.needsUpdate = true; } // the plate's UVs are world units
+    m = new THREE.MeshStandardMaterial({ color: PALETTE[key], roughness, metalness: 0, map, roughnessMap: stoneDetail() });
+    materials.set(id, m);
+  }
+  return m;
 }
 
 /** Emissive surface for powered electronics / architectural LEDs. Cached by its parameters. */
@@ -354,20 +457,40 @@ export function emissiveMatUnique(key: MatKey, intensity: number, roughness = 0.
   return new THREE.MeshStandardMaterial({ color: PALETTE[key], emissive: PALETTE[key], emissiveIntensity: intensity, roughness, metalness: 0 });
 }
 
-/** Soft additive light-spill plane (floor glow under a cove, screen wash). Transparent, no depth write. */
+/** ADDITIVE LIGHT SPILL — a floor pool under a cove, a wall wash under a neon tube, a screen's throw.
+ *
+ *  EVERY ONE OF THESE CARRIES THE SHARED FALLOFF, and that is what turns them from decals into light. A
+ *  plane of constant additive colour has a hard border, so the Gaming Room's washes read as bright coloured
+ *  rectangles pasted on the wall — light with a visible edge, which nothing in the real world has. The
+ *  alpha map fades each plane out from its middle (see render/detail glowFalloffAlpha), so the same
+ *  geometry now falls off into the surface it is lying on.
+ *
+ *  Opacity is scaled up to compensate: a falloff throws away most of a rectangle's coverage, so the CORE
+ *  has to be driven harder to leave the light reading at the strength it was approved at. */
+const GLOW_FALLOFF_GAIN = 1.45;
+function glowParams(key: MatKey, opacity: number): THREE.MeshBasicMaterialParameters {
+  const alphaMap = glowFalloffAlpha();
+  return {
+    color: PALETTE[key], transparent: true, opacity: alphaMap ? Math.min(1, opacity * GLOW_FALLOFF_GAIN) : opacity,
+    alphaMap, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false,
+  };
+}
 export function glowMat(key: MatKey, opacity: number): THREE.MeshBasicMaterial {
   const id = `glow:${key}:${opacity}`;
   let m = materials.get(id) as THREE.MeshBasicMaterial | undefined;
   if (!m) {
-    m = new THREE.MeshBasicMaterial({ color: PALETTE[key], transparent: true, opacity, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
+    m = new THREE.MeshBasicMaterial(glowParams(key, opacity));
     materials.set(id, m);
   }
   return m;
 }
 
-/** Like glowMat but NOT cached: an animated glow needs its own material to carry its own opacity/tint. */
+/** Like glowMat but NOT cached: an animated glow needs its own material to carry its own opacity/tint.
+ *  `baseOpacity` on userData is what an animator should scale — it already carries the falloff gain. */
 export function glowMatUnique(key: MatKey, opacity: number): THREE.MeshBasicMaterial {
-  return new THREE.MeshBasicMaterial({ color: PALETTE[key], transparent: true, opacity, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
+  const m = new THREE.MeshBasicMaterial(glowParams(key, opacity));
+  m.userData.baseOpacity = m.opacity;
+  return m;
 }
 
 /** FLOOR OVERLAY STACK — the fix for decoration that vanished depending on camera angle.
@@ -392,12 +515,29 @@ export function floorLayer<T extends THREE.Material>(m: T, slot: number): T {
   return m;
 }
 
-/** Contact-shadow disc/plate under furniture: a soft dark multiply plane just above the floor. */
-export function contactShadowMat(opacity = 0.16): THREE.MeshBasicMaterial {
-  const id = `contact:${opacity}`;
+/** CONTACT SHADOW under furniture — ONE soft-falloff solution for the whole office.
+ *
+ *  It used to be a flat plane of solid 0x3a2e24 at a fixed opacity, which is a DECAL: a hard-edged grey
+ *  rectangle (or disc) sitting on the floor with a visible border, clearly readable as a sticker at every
+ *  zoom. The geometry and the call sites are unchanged; what changed is that the material now carries a
+ *  shared alpha falloff — solid under the piece, smoothly gone by the edge of the plate — so the same
+ *  plane reads as contact occlusion instead of paint.
+ *
+ *  Two shared maps cover every call site: `round` for the discs under pots, chair bases and the monument,
+ *  `rect` (a squircle, so the corners stay soft) for the plates under desks, sofas and credenzas. Both are
+ *  built once in render/detail and handed out by reference — a dozen call sites, two textures.
+ *
+ *  Opacity is raised a little from the old values because a falloff loses the outer ring of coverage the
+ *  hard plate had; the CORE now matches what the plate used to read as. */
+export function contactShadowMat(opacity = 0.16, shape: "rect" | "round" = "rect"): THREE.MeshBasicMaterial {
+  const id = `contact:${opacity}:${shape}`;
   let m = materials.get(id) as THREE.MeshBasicMaterial | undefined;
   if (!m) {
-    m = floorLayer(new THREE.MeshBasicMaterial({ color: 0x3a2e24, transparent: true, opacity, depthWrite: false }), FLOOR_LAYER.contact);
+    const alphaMap = shape === "round" ? contactRoundAlpha() : contactRectAlpha();
+    m = floorLayer(new THREE.MeshBasicMaterial({
+      color: 0x3a2e24, transparent: true, opacity: alphaMap ? Math.min(1, opacity * 1.45) : opacity,
+      alphaMap, depthWrite: false,
+    }), FLOOR_LAYER.contact);
     materials.set(id, m);
   }
   return m;
@@ -427,16 +567,25 @@ export function uiScreenMat(id: string, w: number, h: number, draw: (ctx: Canvas
 export function facadeGlassMat(): THREE.MeshStandardMaterial {
   let m = materials.get("facadeGlass") as THREE.MeshStandardMaterial | undefined;
   if (!m) {
-    m = new THREE.MeshStandardMaterial({ color: 0xbfe0e6, roughness: 0.06, metalness: 0.12, transparent: true, opacity: 0.5, side: THREE.DoubleSide, envMapIntensity: 1.4 });
+    m = new THREE.MeshStandardMaterial({ color: 0xbfe0e6, roughness: 0.04, metalness: 0.12, transparent: true, opacity: 0.5, side: THREE.DoubleSide, envMapIntensity: 1.9, depthWrite: false });
     materials.set("facadeGlass", m);
   }
   return m;
 }
 
+/** DEPTH WRITE IS OFF ON BOTH GLASS MATERIALS, and that is the fix for unstable overlapping glass.
+ *
+ *  A transparent surface that writes depth OCCLUDES whatever is drawn after it, and three.js draws the
+ *  transparent pass back-to-front by object CENTROID — so which of two overlapping panes won was decided
+ *  by whose centre happened to sort first, and that flipped as the camera moved. Reception's façade shows
+ *  it plainly: the run is a line of panes plus the balustrade in front of it, and as the view swung, whole
+ *  panes swapped between "seen through one sheet" and "seen through two", so the interior behind them
+ *  stepped in brightness pane by pane. With depthWrite off no pane can hide another's fragments: every
+ *  sheet the ray crosses contributes, and the result is the same from every angle. */
 export function glassMat(): THREE.MeshStandardMaterial {
   let m = materials.get("glass") as THREE.MeshStandardMaterial | undefined;
   if (!m) {
-    m = new THREE.MeshStandardMaterial({ color: PALETTE.glass, roughness: 0.08, metalness: 0.1, transparent: true, opacity: 0.42, side: THREE.DoubleSide, envMapIntensity: 1.2 });
+    m = new THREE.MeshStandardMaterial({ color: PALETTE.glass, roughness: 0.05, metalness: 0.1, transparent: true, opacity: 0.42, side: THREE.DoubleSide, envMapIntensity: 1.7, depthWrite: false });
     materials.set("glass", m);
   }
   return m;

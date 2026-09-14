@@ -42,7 +42,7 @@ function skirting(axis: "x" | "z", from: number, to: number, at: number): THREE.
  *  beneath the additive overlays so it can never wipe one out. */
 function coolFloor(): THREE.Mesh {
   const m = floorLayer(new THREE.MeshBasicMaterial({
-    color: PALETTE.aiFloorTint, blending: THREE.MultiplyBlending, transparent: true, depthWrite: false, toneMapped: false,
+    color: PALETTE.aiFloorTint, blending: THREE.MultiplyBlending, premultipliedAlpha: true, transparent: true, depthWrite: false, toneMapped: false,
   }), FLOOR_LAYER.tint);
   const p = rbox(TILE_RECT.w - 0.4, 0.02, TILE_RECT.d - 0.4, m, TILE_RECT.x + TILE_RECT.w / 2, 0.015, TILE_RECT.z + TILE_RECT.d / 2, 0);
   p.castShadow = p.receiveShadow = false;
@@ -270,7 +270,7 @@ function counterRun(): THREE.Group {
   const g = new THREE.Group();
   g.name = "ai-counter";
   const c = COUNTER, cx = c.x + c.w / 2, frontX = c.x;
-  g.add(credenzaRun({ ...c, facing: "west", along: "z", body: THEME.counter, reveal: THEME.frame, name: "ai-counter-run" }));
+  g.add(credenzaRun({ ...c, facing: "west", along: "z", body: THEME.counter, reveal: THEME.frame, name: "ai-counter-run", top: false }));
   g.add(rbox(c.w + 1.4, 1.6, c.d + 1.4, mat(THEME.counter, 0.42), cx, c.h - 1.6, c.z + c.d / 2, 0.4)); // worktop
   ledLine(g, 1.0, 0.6, c.d - 6, frontX + 0.3, c.h - 4.0, c.z + c.d / 2);
   const topY = c.h;

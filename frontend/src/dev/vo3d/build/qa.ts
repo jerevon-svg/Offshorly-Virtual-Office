@@ -44,7 +44,7 @@ function skirting(axis: "x" | "z", from: number, to: number, at: number): THREE.
  *  FLOOR_LAYER.tint keeps it beneath the additive overlays so it can never wipe one out. */
 function mintFloor(): THREE.Mesh {
   const m = floorLayer(new THREE.MeshBasicMaterial({
-    color: PALETTE.qaFloorTint, blending: THREE.MultiplyBlending, transparent: true, depthWrite: false, toneMapped: false,
+    color: PALETTE.qaFloorTint, blending: THREE.MultiplyBlending, premultipliedAlpha: true, transparent: true, depthWrite: false, toneMapped: false,
   }), FLOOR_LAYER.tint);
   const p = rbox(TILE_RECT.w - 0.4, 0.02, TILE_RECT.d - 0.4, m, TILE_RECT.x + TILE_RECT.w / 2, 0.015, TILE_RECT.z + TILE_RECT.d / 2, 0);
   p.castShadow = p.receiveShadow = false;
@@ -138,7 +138,7 @@ function storageRun(): THREE.Group {
   const g = new THREE.Group();
   g.name = "qa-credenza";
   const c = CREDENZA, cx = c.x + c.w / 2, cz = c.z + c.d / 2, front = CREDENZA_FRONT;
-  g.add(credenzaRun({ ...c, facing: "south", along: "x", body: THEME.oak, reveal: THEME.oakDark, name: "qa-credenza-run" }));
+  g.add(credenzaRun({ ...c, facing: "south", along: "x", body: THEME.oak, reveal: THEME.oakDark, name: "qa-credenza-run", top: false }));
   g.add(rbox(c.w + 1.6, 1.8, c.d + 1.6, mat(THEME.white, 0.45), cx, c.h - 1.8, cz, 0.4)); // white worktop
   // TEAL box files sitting in the open bays — the run's strongest colour in plan
   const boxes = new Baker();
@@ -166,7 +166,7 @@ function supplyCredenza(): THREE.Group {
   const g = new THREE.Group();
   g.name = "qa-supply";
   const c = EAST_CREDENZA, cz = c.z + c.d / 2;
-  g.add(credenzaRun({ ...c, facing: "west", along: "z", body: THEME.white, reveal: THEME.linenDeep, name: "qa-supply-run" }));
+  g.add(credenzaRun({ ...c, facing: "west", along: "z", body: THEME.white, reveal: THEME.linenDeep, name: "qa-supply-run", top: false }));
   g.add(rbox(c.w + 1.4, 1.6, c.d + 1.4, mat(THEME.white, 0.45), c.x + c.w / 2, c.h - 1.6, cz, 0.4));
   g.add(rbox(3.0, c.h - 6, c.d - 4, mat(THEME.oak, 0.7), c.x + 1.5, 3, cz, 0.3)); // the oak side panel
   const topY = c.h;
