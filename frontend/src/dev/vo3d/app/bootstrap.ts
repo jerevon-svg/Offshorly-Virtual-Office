@@ -9,7 +9,8 @@ import { GAMING_ROOM, gamingRoomEntities,
   POSTER_INTERACTION_ID, SOFA_SEAT_ID, TV_INTERACTION_ID as GAMING_TV_INTERACTION_ID } from "../rooms/gaming";
 import { CENTRAL_HUB, OPEN_BANDS as HUB_OPEN_BANDS, centralHubEntities,
   CAFE_CHAIR_IDS, COUNTER_INTERACTION_ID as HUB_COUNTER_ID, HUB_LOUNGE_IDS,
-  MONUMENT_INTERACTION_ID as HUB_MONUMENT_ID, SHELF_INTERACTION_ID as HUB_SHELF_ID, TOUCAN_PERCH } from "../rooms/central-hub";
+  MONUMENT_INTERACTION_ID as HUB_MONUMENT_ID, SHELF_INTERACTION_ID as HUB_SHELF_ID, TOUCAN_PERCH,
+  CHAMPIONSHIP_ENTRANCE_ID } from "../rooms/central-hub";
 import { EXECUTIVE_ROOM, executiveRoomEntities,
   CABINET_L_INTERACTION_ID, CABINET_R_INTERACTION_ID, CREDENZA_INTERACTION_ID, DOOR_EAST_ID as EXEC_DOOR_EAST_ID,
   DOOR_WEST_ID as EXEC_DOOR_WEST_ID, EXECUTIVE_LOUNGE_IDS, EXECUTIVE_SEAT_IDS, MEDIA_INTERACTION_ID } from "../rooms/executive";
@@ -35,6 +36,12 @@ import { QA_ROOM, qaRoomEntities,
   STORAGE_INTERACTION_ID as QA_STORAGE_ID, SUPPLY_INTERACTION_ID as QA_SUPPLY_ID,
   DOOR_SOUTH_ID as QA_DOOR_SOUTH_ID, WINDOW_INTERACTION_ID as QA_WINDOW_ID } from "../rooms/qa";
 import { loadBossStatues } from "../build/hub-monument";
+import { CAVE_ROOM, CAVE_ID, EXIT_INTERACTION_ID as CAVE_EXIT_ID, SCREEN_INTERACTION_ID as CAVE_SCREEN_ID,
+  FLOOR_RECT as CAVE_FLOOR_RECT, OUTER_RECT as CAVE_OUTER_RECT, SPAWN as CAVE_SPAWN, VESTIBULE_RECT as CAVE_VESTIBULE_RECT,
+  caveEntities, caveStandTest, inCave } from "../rooms/cave";
+import { buildCave, CAVE_METRICS } from "../build/cave";
+import { CaveMedia } from "../media/CaveMedia";
+import { CaveTransition } from "../interact/CaveTransition";
 import { openedCells, openedLayer, v2Static } from "../nav/v2Open";
 import { DerivedNav } from "../nav/derived";
 import { worldToCell } from "../adapters/v1Grid";
@@ -103,6 +110,27 @@ DESIGN_SOLIDS.forEach((r, i) =>
 );
 // the ground floor: every V1 room footprint, shared floor, sidewalk, door openings (Design Room = the only reconstructed room)
 const plan = registerGroundFloor(world);
+// ---- the Championship Cave: a SECOND INTERIOR VOLUME, outside the V1 frame ----------------------
+// The immersive theatre you reach through the hub monument's portal. It is registered as a real room
+// with a real walkable region, and it is EAST OF THE OFFICE — 1,146 units clear of the V1 frame — so
+// it cannot touch a cell of the read-only V1 grid or a square unit of the eleven reconstructed rooms.
+// rooms/cave.ts carries the full reasoning; the three lines here are the whole integration.
+//
+// The world's BOUNDS have to grow to cover it, or WorldState.regionAt refuses every point out there
+// before it even looks at a region. Growing them changes nothing inside the office: a point beyond the
+// frame still belongs to no region and is still not walkable — it is now merely asked.
+world.addRoom(CAVE_ROOM);
+for (const e of caveEntities()) world.addEntity(e);
+world.addRegion({ id: `floor:${CAVE_ID}`, kind: "room-floor", rect: CAVE_FLOOR_RECT, walkable: true, roomId: CAVE_ID });
+// the threshold pocket is south of the floor rect and is its own region: PlayerMode scopes interaction
+// candidates by the region's roomId, so a body standing in an unclaimed recess targets nothing — and the
+// way out lives in that recess (rooms/cave.ts VESTIBULE_RECT)
+world.addRegion({ id: `threshold:${CAVE_ID}`, kind: "room-floor", rect: CAVE_VESTIBULE_RECT, walkable: true, roomId: CAVE_ID });
+world.bounds = {
+  x: Math.min(plan.frame.x, CAVE_OUTER_RECT.x), z: Math.min(plan.frame.z, CAVE_OUTER_RECT.z),
+  w: Math.max(plan.frame.x + plan.frame.w, CAVE_OUTER_RECT.x + CAVE_OUTER_RECT.w) - Math.min(plan.frame.x, CAVE_OUTER_RECT.x),
+  d: Math.max(plan.frame.z + plan.frame.d, CAVE_OUTER_RECT.z + CAVE_OUTER_RECT.d) - Math.min(plan.frame.z, CAVE_OUTER_RECT.z),
+};
 const inBounds = (p: Vec2): boolean => world.walkableAt(p);
 
 // ---- nav ---------------------------------------------------------------------------------------
@@ -170,6 +198,13 @@ mirror.buildRoom(QA_ROOM, shellOpts()); // Phase 11
 // after the map was last drawn. Without this the statues stand in the scene casting nothing until some
 // unrelated change happens to refresh it. Anything else added after startup needs the same call.
 void loadBossStatues(mirror.root).then(() => R.invalidateShadows());
+// THE CAVE'S SCENE GRAPH, built once and added to the SCENE rather than to the office mirror: the two
+// volumes are never drawn at the same time, and keeping them as siblings is what lets one visibility
+// flag turn each of them off whole. It comes back hidden — nothing in here is drawn, and no video is
+// fetched or decoded, until somebody walks through the monument's portal.
+const caveBuild = buildCave();
+R.scene.add(caveBuild.group);
+const caveMedia = new CaveMedia();
 
 // ---- environment -------------------------------------------------------------------------------
 // The world OUTSIDE the office (build/exterior) plus the global day/sunset/night presentation that owns
@@ -537,14 +572,37 @@ function pickInteraction(cx: number, cy: number): string | null {
  *  nothing once a perspective camera is walking the building; this keeps the 2048 map on the few hundred
  *  units the player can actually see, which is what makes contact shadows read at eye level. */
 const PLAYER_SHADOW_RADIUS = 300;
-const playerStand = makeStandTest({ world, walkability, derived: derivedNav, radius: NAV_RADIUS });
+const officeStand = makeStandTest({ world, walkability, derived: derivedNav, radius: NAV_RADIUS });
+/** THE ONE STAND TEST, over BOTH volumes.
+ *
+ *  Inside the CAVE the V1 lattice has nothing to say — the room is outside it — so the question is put
+ *  to the only geometry that describes that room: its shell, its screen ring and its threshold
+ *  (rooms/cave.ts caveStandTest). Everywhere else this is byte-for-byte the office's own test. It is a
+ *  ROUTING of the question, not a relaxation of it: the CAVE's walls stop a body exactly as the
+ *  office's do, and there is no point in either volume where both tests are consulted or neither is. */
+const playerStand = (p: Vec2): boolean => (inCave(p) ? caveStandTest(p, NAV_RADIUS) : officeStand(p));
 /** The third-person boom's probe. Same composition, a token radius: the camera must not end up inside a
  *  wall or over unbuilt floor, but it may perfectly well fly over a desk — and judging it at the BODY
  *  radius pulled the boom in to its minimum beside almost every piece of furniture in the building. */
-const playerCameraProbe = makeStandTest({ world, walkability, derived: derivedNav, radius: 2 });
+const officeCameraProbe = makeStandTest({ world, walkability, derived: derivedNav, radius: 2 });
+const playerCameraProbe = (p: Vec2): boolean => (inCave(p) ? caveStandTest(p, 2) : officeCameraProbe(p));
 /** the one bridge from a targeted entity id to V2's existing interaction path. Nothing is reimplemented:
  *  each branch is the same call the GUI button and the click-to-walk handler already make. */
+/** Assigned just after PLAYER mode is constructed (it needs the body to place). Declared here because
+ *  the interaction bridge below is handed to PlayerMode and therefore has to exist first. */
+let caveTransition: CaveTransition | null = null;
 function activateInteractable(id: string, kind: "seat" | "lounge" | "approach"): boolean {
+  // THE PORTAL, both ways, and the screen's own controls. These are the only three interactions in the
+  // world that are not a seat or a walk-up, so they are branched HERE — in the same bridge every other
+  // verb goes through — rather than given a parallel activation path of their own.
+  //
+  // enter/exit return TRUE: PlayerMode has already released the avatar, the swap happens at black, and
+  // PLAYER takes it back on the next idle frame exactly as it does after a finished seat. The screen
+  // toggle returns FALSE on purpose — pausing a video is not an interaction that should own a body, and
+  // false is what makes PlayerMode re-acquire immediately instead of standing Bon down.
+  if (id === CHAMPIONSHIP_ENTRANCE_ID) return caveTransition?.enter() ?? false;
+  if (id === CAVE_EXIT_ID) return caveTransition?.exit() ?? false;
+  if (id === CAVE_SCREEN_ID) { caveMedia.toggle(); return false; }
   if (kind === "lounge") {
     const i = loungeSeats.findIndex((s2) => s2.id === id);
     if (i < 0) return false;
@@ -581,7 +639,9 @@ const engagedSeat = (): { stand: () => void } | null => {
 };
 const playerMode = new PlayerMode({
   avatar, stack, world, canStand: playerStand, cameraProbe: playerCameraProbe,
-  camera: R.playerCamera, canvas, overlayRoot: mirror.root,
+  // the target marker hangs off the SCENE, not the office group: the CAVE hides the whole office while
+  // you are inside it, and a marker parented to that group would vanish with it
+  camera: R.playerCamera, canvas, overlayRoot: R.scene,
   radius: NAV_RADIUS, avatarHeight: BON_STANDING_HEIGHT,
   speed: () => params.walkSpeed,
   activate: activateInteractable,
@@ -590,6 +650,33 @@ const playerMode = new PlayerMode({
   // hand the avatar over cleanly: stop the walker, cancel a half-finished approach, leave engaged seats
   // alone (PlayerMode simply does not move Bon while Interaction owns him, and takes over when it ends)
   yieldAvatar: () => { stopTour(); navCtl.stop(); approachCtl.cancel(); },
+});
+
+// ---- the Championship Cave: the portal ------------------------------------------------------------
+caveTransition = new CaveTransition({
+  build: caveBuild,
+  media: caveMedia,
+  // the WHOLE office, hidden while you are inside: eleven rooms and a ground floor stop being drawn,
+  // which is most of the reason the CAVE can afford a 270° video at all
+  officeRoot: mirror.root,
+  place: (p, look, pitch) => {
+    if (!playerMode.body.placeNear(p)) return false;
+    avatar.setPosition(playerMode.body.pos);
+    facePlayer(look, pitch); // body AND view, in both of this world's yaw conventions — see facePlayer
+    return true;
+  },
+  portalPoint: () => ({ ...world.get(CHAMPIONSHIP_ENTRANCE_ID).capabilities.approach!.point }),
+  portalLook: { x: 0, z: -1 }, // stepping back out of the monument, looking north into the hub
+  setInterior: (on) => {
+    if (env.setPresentation(on ? "interior" : params.cameraMode === "office" ? "office" : "world")) R.invalidateShadows();
+  },
+  invalidateShadows: () => R.invalidateShadows(),
+  // The portal works from any camera mode: OFFICE hands over to PLAYER first, because a body that is
+  // about to be teleported into a sealed volume has to be the thing driving.
+  requirePlayer: () => {
+    if (!playerMode.active) setCameraMode("player");
+    return playerMode.active;
+  },
 });
 
 const edit = new EditSession(world, mirror, walkability, stack);
@@ -647,7 +734,11 @@ canvas.addEventListener("pointerup", (e) => {
   const picked = pickInteraction(e.clientX, e.clientY);
   if (picked) {
     const ent = world.get(picked);
-    if (ent.capabilities.lounge) startLoungeSit(LOUNGE_SEAT_IDS.indexOf(picked));
+    // the portal is a transition, not a walk-up: clicking it has to mean the same thing pressing E on
+    // it means, or the one interaction in the world that moves you between volumes would behave
+    // differently depending on which camera you happened to be in
+    if (picked === CHAMPIONSHIP_ENTRANCE_ID || picked === CAVE_EXIT_ID || picked === CAVE_SCREEN_ID) activateInteractable(picked, "approach");
+    else if (ent.capabilities.lounge) startLoungeSit(LOUNGE_SEAT_IDS.indexOf(picked));
     else startApproach(picked);
     return;
   }
@@ -971,6 +1062,35 @@ const HALL_EXEC_DOOR: Vec2 = { x: 728, z: 312 }; // outside stand cell in front 
 /** the two ends of a Reception entrance crossing (both V1-walkable; verified by nav tests) */
 const RECEPTION_INSIDE: Vec2 = { x: 600, z: 1096 };
 const RECEPTION_STREET: Vec2 = { x: 720, z: 1216 };
+/** Drop Bon on the monument portal's own walk-up point. The CAVE is on the far side of the office from
+ *  the Design Room spawn, so without this the entrance simply cannot be reached in a dev session. */
+/** POINT THE PLAYER ALONG A WORLD DIRECTION.
+ *
+ *  This world carries TWO yaw conventions that differ by π, and both have to be written or the body and
+ *  the view disagree: an avatar's heading is `atan2(dx, dz)` (core/coords headingFor, which is what
+ *  FACING_YAW and every walk animation speak), while PlayerCamera's is `atan2(dx, −dz)` (its `forward`
+ *  is `(sin y, −cos y)`). Writing only the first is how a teleport lands a player facing the thing he
+ *  just walked out of; writing only the second turns the camera and leaves the body pointing away.
+ *
+ *  So callers hand over a DIRECTION and this converts, once, here. */
+function facePlayer(look: Vec2, pitch?: number): void {
+  avatar.setYaw(Math.atan2(look.x, look.z));
+  playerMode.camera.yaw = Math.atan2(look.x, -look.z);
+  if (pitch !== undefined) playerMode.camera.pitch = pitch;
+  playerMode.camera.snap();
+}
+/** Drop Bon on the monument portal's own walk-up point, facing the monument.
+ *
+ *  Moves whichever thing is actually DRIVING him. PLAYER rewrites the avatar transform from its own
+ *  `body.pos` every frame, so setting the avatar alone while PLAYER is active is undone on the next
+ *  tick — which is how a "go to the portal" button silently leaves you standing in the Design Room. */
+function placeBonAtPortal(): void {
+  const p = world.get(CHAMPIONSHIP_ENTRANCE_ID).capabilities.approach!.point;
+  navCtl.setPath([]);
+  if (playerMode.active) playerMode.body.placeNear(p);
+  avatar.setPosition(playerMode.active ? playerMode.body.pos : p);
+  facePlayer({ x: 0, z: 1 }); // looking south, at the monument's back and the portal cut into it
+}
 function placeBonAtEntrance(): void {
   navCtl.setPath([]);
   avatar.setPosition(RECEPTION_INSIDE);
@@ -991,6 +1111,28 @@ nav.add(navState, "disagreement").name("V1 ↔ V2").disable().listen();
 nav.add(navState, "stranded").name("walkable but unreachable").disable().listen();
 nav.add(navState, "clearance").name("clearance at last click").disable().listen();
 nav.add(navState, "updates").name("incremental updates").disable().listen();
+// ---- Championship Cave -------------------------------------------------------------------------------
+const caveGui = gui.addFolder("Championship Cave (through the hub monument's portal)");
+const caveState = {
+  where: "office", busy: false, transitions: 0, last: "—",
+  video: "absent", muted: false, blocked: "", time: "0 / 0",
+  interior: `${CAVE_METRICS.interior} units  ·  wrap ${Math.round(CAVE_METRICS.wrapLength())}  ·  video ${CAVE_METRICS.videoWidth} wide on a ${CAVE_METRICS.frontChord} chord`,
+};
+caveGui.add({ go: () => caveTransition?.enter() }, "go").name("▶ enter the CAVE (spawns PLAYER at the portal)");
+caveGui.add({ go: () => caveTransition?.exit() }, "go").name("■ leave the CAVE (→ Central Hub)");
+caveGui.add({ go: () => { placeBonAtPortal(); setCameraMode("player"); placeBonAtPortal(); } }, "go").name("▶ put Bon at the monument portal + enter PLAYER");
+caveGui.add({ go: () => caveMedia.toggle() }, "go").name("⏯ play / pause the video");
+caveGui.add({ go: () => caveMedia.setMuted(!caveMedia.state.muted) }, "go").name("🔈 mute / unmute");
+caveGui.add(caveState, "interior").name("interior").disable();
+caveGui.add(caveState, "where").name("volume").disable().listen();
+caveGui.add(caveState, "busy").name("transition running").disable().listen();
+caveGui.add(caveState, "transitions").name("enter/exit count").disable().listen();
+caveGui.add(caveState, "last").name("last transition").disable().listen();
+caveGui.add(caveState, "video").name("video").disable().listen();
+caveGui.add(caveState, "muted").disable().listen();
+caveGui.add(caveState, "time").name("position (s)").disable().listen();
+caveGui.add(caveState, "blocked").name("playback note").disable().listen();
+
 const bench = gui.addFolder("Benchmark");
 function applyPreset(id: PresetId): void {
   const pr = PRESETS.find((x) => x.id === id)!;
@@ -1105,6 +1247,7 @@ function loop(): void {
     devDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
     qaDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
     updateScanners({ x: bp.x, z: bp.z });
+    caveTransition?.update(); // media readout; a no-op outside the CAVE
     entryState.state = entryDoor.state; entryState.open = Math.round(entryDoor.t * 100);
     entryState.drift = entryDoor.state === "closed" ? Math.round(entryDoor.driftError() * 1e6) / 1e6 : entryState.drift;
     entryState.cycles = entryDoor.cycles;
@@ -1184,6 +1327,16 @@ function loop(): void {
   overlayTick += dt;
   if (overlayTick > 250 && params.overlay) {
     overlayTick = 0;
+    if (caveTransition) {
+      caveState.where = caveTransition.state.where;
+      caveState.busy = caveTransition.state.busy;
+      caveState.transitions = caveTransition.state.transitions;
+      caveState.last = caveTransition.state.last;
+      caveState.video = caveMedia.state.status;
+      caveState.muted = caveMedia.state.muted;
+      caveState.blocked = caveMedia.state.blocked;
+      caveState.time = `${caveMedia.state.time} / ${caveMedia.state.duration}`;
+    }
     if (params.playerView !== playerMode.view) { params.playerView = playerMode.view; refresh(); }
     envState.clock = formatManila(timeOfDay.hourDecimal);
     overlay.update(liveWindow.summary(), snapshotRenderer(R.renderer), device, `V2 · avatar ${params.avatar ? `LOD${params.avatarLod} · ${avatarState.triangles.toLocaleString()} tris · ${avatarState.clip} · owner ${stack.owner}` : "off"}\n${benchState.status}${lastCapture ? "\nlast: " + benchState.result : ""}`);
@@ -1233,6 +1386,23 @@ loop();
     state: () => env.weather, mode: () => weather.mode, source: () => weather.source,
     rainStats: () => env.rainStats,
     setRainInOffice: (on: boolean) => { params.envRainInOffice = on; env.rainInOffice = on; refresh(); },
+  },
+  cave: {
+    get transition() { return caveTransition; }, state: caveState, media: caveMedia, mediaState: caveMedia.state,
+    build: caveBuild, group: caveBuild.group, metrics: CAVE_METRICS,
+    enter: () => caveTransition?.enter() ?? false,
+    exit: () => caveTransition?.exit() ?? false,
+    toggle: () => caveTransition?.toggle() ?? false,
+    inside: () => caveTransition?.inside ?? false,
+    play: () => caveMedia.play(), pause: () => caveMedia.pause(), togglePlay: () => caveMedia.toggle(),
+    setMuted: (m: boolean) => caveMedia.setMuted(m),
+    /** put Bon on the portal's stand point, facing it (the CAVE is nowhere near the default spawn) */
+    atPortal: placeBonAtPortal,
+    /** point the player along a world direction, writing BOTH yaw conventions (see facePlayer) */
+    look: (dx: number, dz: number, pitch?: number) => facePlayer({ x: dx, z: dz }, pitch),
+    spawn: CAVE_SPAWN, floorRect: CAVE_FLOOR_RECT, outerRect: CAVE_OUTER_RECT,
+    ids: { portal: CHAMPIONSHIP_ENTRANCE_ID, exit: CAVE_EXIT_ID, screen: CAVE_SCREEN_ID, room: CAVE_ID },
+    canStand: (x: number, z: number) => playerStand({ x, z }),
   },
   player: {
     mode: playerMode, state: playerMode.state,

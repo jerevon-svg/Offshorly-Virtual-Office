@@ -37,9 +37,27 @@ import type { WeatherState } from "./weather";
  *             out there would show. Nothing is deleted or rebuilt — one visibility flag, flipped back the
  *             instant EXPLORE is entered.
  *
- *  The day/sunset/night GRADE is unaffected by either: the office is lit by the same sun at the same time
- *  of day in both presentations. */
-export type EnvPresentation = "world" | "office";
+ *  "interior" — a SEALED INTERIOR VOLUME (the Championship Cave). No sky, no campus, no rain, no fog and
+ *             almost no sun: the room's own emissive surfaces are the light. This is not a darker grade
+ *             of the day/night presentation — it is the statement that the outdoors is not visible from
+ *             in here at all, which is exactly what a windowless theatre means. The phase still ticks
+ *             underneath, so leaving restores whatever time of day it actually is.
+ *
+ *  The day/sunset/night GRADE is unaffected by "world"/"office": the office is lit by the same sun at
+ *  the same time of day in both. "interior" deliberately opts out of it. */
+export type EnvPresentation = "world" | "office" | "interior";
+
+/** THE SEALED-INTERIOR RIG. Fixed, phase-independent, and dark on purpose: a video wall reads as a light
+ *  source only if the room around it is not already lit. Everything is a floor, not a zero — a pitch-black
+ *  room with one bright wall is unreadable, and a walker has to be able to see his own feet. */
+const INTERIOR = {
+  background: 0x04050a,
+  key: { color: 0x8aa4d8, intensity: 0.16, azimuth: -40, elevation: 74 },
+  fill: { color: 0x2a3a5e, intensity: 0.22 },
+  hemi: { sky: 0x2b3550, ground: 0x0a0c12, intensity: 0.34 },
+  envIntensity: 0.06,
+  exposure: 1.05,
+};
 
 export class Environment {
   private readonly R: Renderer;
@@ -176,6 +194,27 @@ export class Environment {
 
   private write(p: EnvPreset): void {
     const R = this.R;
+    // A SEALED INTERIOR short-circuits the whole weather/phase composition: nothing outdoors is drawn,
+    // and the grade that would light it is not applied. One early return, so no later line can leak a sky.
+    if (this._presentation === "interior") {
+      this.rain.visible = false;
+      if (this.scenery) this.scenery.root.visible = false;
+      this.sky.root.visible = false;
+      R.scene.background = this.fogColor.setHex(INTERIOR.background).clone();
+      R.scene.fog = null;
+      R.key.color.setHex(INTERIOR.key.color);
+      R.fill.color.setHex(INTERIOR.fill.color);
+      R.fill.intensity = INTERIOR.fill.intensity;
+      R.hemi.color.setHex(INTERIOR.hemi.sky);
+      R.hemi.groundColor.setHex(INTERIOR.hemi.ground);
+      R.lightParams = {
+        azimuth: INTERIOR.key.azimuth, elevation: INTERIOR.key.elevation,
+        keyIntensity: INTERIOR.key.intensity, ambientIntensity: INTERIOR.hemi.intensity,
+        envIntensity: INTERIOR.envIntensity, exposure: INTERIOR.exposure,
+      };
+      R.placeLight();
+      return;
+    }
     const office = this._presentation === "office";
     this.rain.visible = !office || this._rainInOffice;
     // OFFICE: nothing exterior is drawn, and the backdrop is a flat stage tone rather than a sky.

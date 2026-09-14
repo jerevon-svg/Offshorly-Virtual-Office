@@ -59,6 +59,8 @@ export const THEME = {
   cove: "coveWarm",
   /** the boxing-championship monument: one monochrome cast stone, as the reference is */
   monument: "hubMonument",
+  /** the CAVE portal's head wash and apron spill — the room's ONE cool light, and only inside the recess */
+  portal: "caveCove",
   /** café table tops and the two east round tables */
   tableTop: "white",
   /** the round wooden coffee table and the armchairs' splay legs */
@@ -166,12 +168,50 @@ export const MONUMENT = {
   /** the flush stone medallion disc under the ring (a floor inlay — never a step) */
   discR: 54,
   discY: 0.35,
+  /** THE PODIUM — added when the monument became a WALK-IN.
+   *
+   *  The ring used to sit almost on the floor (a 10.15 deck). It now stands on a full commemorative
+   *  plinth, for two reasons that happen to want the same thing:
+   *
+   *  SCALE. The office's walls are 46 tall and Bon is 36. A hero that tops out at 78 is tall; one that
+   *  tops out at 124 is ARCHITECTURE — you see it over the whole ground floor, and the bosses read as
+   *  civic sculpture rather than as two large figures on a mat. The deck lands at 56.15, a hair above
+   *  the roofline, which is the line that makes the ring look like it was placed there rather than
+   *  grown there.
+   *
+   *  SOMEWHERE TO PUT THE DOOR. A walk-in monument needs a wall to cut a portal into, and 40 units of
+   *  shaft is the first thing in this composition tall enough to take one at full standing height.
+   *
+   *  IT COSTS NO FLOOR. Every number here is VERTICAL: the widest course is `footW` = `base` = 72, so
+   *  MONUMENT_FOOTPRINT is byte-for-byte what it was, the four apron pockets are what they were, and
+   *  every bench gap still works. Growing the monument's PLAN is what the 6B note forbids; growing its
+   *  ELEVATION was always free. */
+  podium: {
+    /** the base flare: the full declared footprint, so the monument meets the floor at its own edge */
+    footW: 72, footH: 3,
+    /** the shaft, held back 2 a side for a continuous shadow reveal — and the course the portal cuts into */
+    bodyW: 68, bodyH: 40,
+    /** the cornice the ring's stepped base lands on */
+    capW: 72, capH: 3,
+  },
+  /** 3 + 40 + 3. Kept as its own constant so the deck arithmetic below reads as a sum, not a guess. */
+  podiumH: 46,
+  /** THE CAVE PORTAL, cut into the podium shaft's NORTH face.
+   *
+   *  NORTH is the whole design of it. The plaque, the two bosses' profiles and the production camera all
+   *  read the monument from the SOUTH; putting the door on the far side means the hub still presents as
+   *  the Boxing Championship centrepiece from every angle that matters, and the entrance is something
+   *  you find by walking round the back of it. That is the discovery this feature is for.
+   *
+   *  The north bench gap (OPEN_BANDS "hub-gap-north") feeds the north apron pocket directly, so the
+   *  approach is on floor that was already walkable — no band moves, no cell opens. */
+  portal: { w: 34, h: 36, depth: 9 },
   /** stepped base: bottom step, then the plinth step */
   base: 72, baseH: 4,
   step: 69, stepH: 4,
   /** the canvas deck and the height of its top surface */
   canvas: 66, canvasH: 1.8,
-  deckY: 0.35 + 4 + 4 + 1.8, // 10.15
+  deckY: 0.35 + 46 + 4 + 4 + 1.8, // 56.15 — disc + podium + base + step + canvas
   /** corner posts, at ±post on both axes */
   post: 31, postR: 2.8, postH: 21,
   /** rope heights ABOVE the deck, and their radius — three a side, as the reference strings them */
@@ -713,6 +753,7 @@ function tubSlot(): LoungeSeatSlot {
 export const COUNTER_INTERACTION_ID = `${CENTRAL_HUB_ID}/pantry-interaction`;
 export const SHELF_INTERACTION_ID = `${CENTRAL_HUB_ID}/library-interaction`;
 export const MONUMENT_INTERACTION_ID = `${CENTRAL_HUB_ID}/monument-interaction`;
+export const CHAMPIONSHIP_ENTRANCE_ID = `${CENTRAL_HUB_ID}/championship-entrance`;
 
 /** In the aisle east of the pantry run, facing the worktop. Aimed at the middle of the run rather than at
  *  the espresso machine specifically: V1 marks the cells directly beside the appliances as interaction
@@ -732,6 +773,18 @@ export const shelfApproach = (): ApproachCapability => ({
 export const monumentApproach = (): ApproachCapability => ({
   point: standNear({ x: MONUMENT.centre.x, z: MONUMENT.centre.z + MONUMENT.plaque.z + 16 }, { x: 0, z: 1 }),
   yaw: FACING_YAW.north, label: "Boxing Championship", action: "Read the plaque",
+});
+/** THE CAVE PORTAL, in the NORTH apron pocket, facing the back of the monument.
+ *
+ *  It stands ~112 from the plaque's own walk-up point — comfortably past PlayerTargeting.REACH (62) —
+ *  so the two interactions can never compete for the same prompt. Read the plaque from the front; find
+ *  the way in from behind. */
+export const championshipEntranceApproach = (): ApproachCapability => ({
+  // 26 back from the podium's north face, not 14: at 14 a first-person head is INSIDE the recess and the
+  // view is nothing but lining. A body's length further out frames the opening against the plinth with
+  // the ring and the two bosses standing over it, which is the shot this entrance is for.
+  point: standNear({ x: MONUMENT.centre.x, z: MONUMENT.centre.z - MONUMENT.base / 2 - 26 }, { x: 0, z: -1 }),
+  yaw: FACING_YAW.south, label: "Championship", action: "Enter Championship",
 });
 
 // ---- Toucan ----------------------------------------------------------------------------------------
@@ -804,5 +857,6 @@ export function withCentralHubInteractions(entities: Entity[]): Entity[] {
   entities.push(approachEntity(COUNTER_INTERACTION_ID, "hub-pantry", counterApproach()));
   entities.push(approachEntity(SHELF_INTERACTION_ID, "hub-shelf-run", shelfApproach()));
   entities.push(approachEntity(MONUMENT_INTERACTION_ID, "hub-monument", monumentApproach()));
+  entities.push(approachEntity(CHAMPIONSHIP_ENTRANCE_ID, "hub-monument-portal", championshipEntranceApproach()));
   return entities;
 }

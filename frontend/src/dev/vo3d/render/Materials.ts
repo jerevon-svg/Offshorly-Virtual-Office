@@ -177,6 +177,17 @@ export const PALETTE = {
   qaRugBorder: 0xc9c3b8, //   its one inset border line
   qaBoard: 0xf6f7f5, //       the north whiteboard's face
   qaScreenUi: 0x14201e, //    the dark UI ground the room's few displays are drawn on
+
+  // ---- THE CHAMPIONSHIP CAVE (the immersive theatre beneath the hub monument) ----------------
+  // A DARK room, which nothing else in this office is. Every tone here is chosen to disappear so the
+  // 270° video is the only thing the eye has to look at — the architecture is a frame, not a subject.
+  caveVoid: 0x07080c, //      the ceiling, the shell behind the screen, every surface meant to vanish
+  caveFloor: 0x141620, //     the floor plate: a hair above the void so a walker can read the ground
+  caveGraphite: 0x1b1e28, //  the screen plinth, the truss runs, the vestibule reveal — the one "material"
+  caveSteel: 0x3a4050, //     edge trims and the truss webs, where a surface has to catch a highlight
+  caveCove: 0x4a7fd6, //      THE ROOM'S ONE ARCHITECTURAL LIGHT: the cool perimeter/threshold line
+  caveCushion: 0x23242c, //   the low floor cushions along the back wall
+  caveBronze: 0xb8925c, //    the monument's own bronze, carried into the portal threshold
 };
 
 // ---- shared materials -------------------------------------------------------------------

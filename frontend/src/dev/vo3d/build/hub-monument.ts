@@ -20,7 +20,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { Baker, cyl, rbox, shadowed } from "./helpers";
 import { flatRing, ringShape } from "./arc";
-import { canvas2d, contactShadowMat, mat, type MatKey } from "../render/Materials";
+import { canvas2d, contactShadowMat, emissiveMat, glowMat, mat, type MatKey } from "../render/Materials";
 import { BOSS_SLOTS, MONUMENT, THEME, bossUrl, type BossSlot } from "../rooms/central-hub";
 import { DRACO_PATH } from "../adapters/v1Avatar";
 
@@ -204,6 +204,63 @@ function plaque(): THREE.Group {
   return g;
 }
 
+// ---- the podium and its portal ----------------------------------------------------------------------
+/** THE PODIUM: foot, shaft, cornice — and the CAVE PORTAL cut into the shaft's north face.
+ *
+ *  The portal is a REAL RECESS, not a painted one. The shaft is built as a box that stops `portal.depth`
+ *  short of its own north face, and the missing 9 units are then put back as two piers and a header —
+ *  so the opening is a genuine void with stone either side of it and a soffit over it, and it reads as
+ *  depth from every angle instead of only from dead ahead.
+ *
+ *  It is deliberately UNSIGNED. No lettering, no arrow, no lit panel: a bronze sill, a cool line washing
+ *  the head, and a dark interior. From the hub it reads as a service reveal in a monument's back; only
+ *  when you walk round and stand in front of it does the prompt appear. That is the discovery. */
+function podium(s: THREE.Material): THREE.Group {
+  const g = new THREE.Group();
+  g.name = "hub-monument-podium";
+  const M = MONUMENT, P = M.podium, Q = M.portal;
+  const b = new Baker();
+  const y0 = M.discY;
+  const bodyY = y0 + P.footH;
+  const half = P.bodyW / 2;
+  const north = -half; // the shaft's north face, monument-local
+
+  b.add(rbox(P.footW, P.footH, P.footW, s, 0, y0, 0, 1.0)); // foot flare
+  // the shaft, stopping short of its own north face so the portal has somewhere to be
+  b.add(rbox(P.bodyW, P.bodyH, P.bodyW - Q.depth, s, 0, bodyY, Q.depth / 2, 0.8));
+  // the missing north skin, minus the opening: a pier each side and a header over it
+  const pierW = (P.bodyW - Q.w) / 2;
+  for (const sx of [-1, 1]) b.add(rbox(pierW, P.bodyH, Q.depth, s, sx * (Q.w + pierW) / 2, bodyY, north + Q.depth / 2, 0.6));
+  b.add(rbox(Q.w, P.bodyH - Q.h, Q.depth, s, 0, bodyY + Q.h, north + Q.depth / 2, 0.6));
+  b.add(rbox(P.capW, P.capH, P.capW, s, 0, y0 + P.footH + P.bodyH, 0, 1.0)); // cornice
+  b.bakeInto(g, "podium");
+
+  // the reveal INSIDE the opening: a near-black lining, so the recess reads as a way in rather than as
+  // a niche with a stone back to it
+  const dark = new Baker();
+  const lining = stoneDeep();
+  dark.add(rbox(Q.w, Q.h, 1.2, lining, 0, bodyY, north + Q.depth - 0.6, 0)); // blind end
+  for (const sx of [-1, 1]) dark.add(rbox(1.2, Q.h, Q.depth, lining, sx * (Q.w / 2 - 0.6), bodyY, north + Q.depth / 2, 0)); // jambs
+  dark.add(rbox(Q.w, 1.2, Q.depth, lining, 0, bodyY + Q.h - 1.2, north + Q.depth / 2, 0)); // soffit
+  dark.bakeInto(g, "podium-portal-lining");
+
+  // the two lines that make it premium instead of industrial: a bronze sill at the threshold, and a cool
+  // wash along the head. Both are the same language the hub's own cove speaks, one step cooler.
+  const sill = rbox(Q.w - 2, 0.9, Q.depth - 1, mat(key("inlay"), 0.35, { metalness: 0.55 }), 0, bodyY, north + Q.depth / 2, 0.3);
+  sill.castShadow = false;
+  g.add(sill);
+  const head = rbox(Q.w - 8, 1.1, 1.4, emissiveMat(key("portal"), 1.3, 0.4), 0, bodyY + Q.h - 3.2, north + 2.2, 0.4);
+  head.castShadow = head.receiveShadow = false;
+  g.add(head);
+  // a soft spill on the apron in front of it — the one thing that catches the eye from across the hub
+  const spill = new THREE.Mesh(new THREE.PlaneGeometry(Q.w + 16, 34), glowMat(key("portal"), 0.07));
+  spill.rotation.x = -Math.PI / 2;
+  spill.position.set(0, M.discY + 0.05, north - 15);
+  spill.castShadow = spill.receiveShadow = false;
+  g.add(spill);
+  return g;
+}
+
 // ---- the monument ----------------------------------------------------------------------------------
 export function hubMonument(): THREE.Group {
   const g = new THREE.Group();
@@ -224,9 +281,13 @@ export function hubMonument(): THREE.Group {
   discRim.castShadow = false;
   g.add(discRim);
 
-  // stepped base
-  b.add(rbox(M.base, M.baseH, M.base, s, 0, M.discY, 0, 1.0));
-  b.add(rbox(M.step, M.stepH, M.step, s, 0, M.discY + M.baseH, 0, 0.9));
+  // THE PODIUM — foot, shaft, cornice. The course that turned this from a sculpture into a building you
+  // can walk into. Nothing here is wider than M.base, so MONUMENT_FOOTPRINT is untouched: see the note
+  // at MONUMENT.podium in rooms/central-hub.ts for why that is the whole constraint.
+  g.add(podium(s));
+  // stepped base, now landing on the cornice rather than on the floor
+  b.add(rbox(M.base, M.baseH, M.base, s, 0, M.discY + M.podiumH, 0, 1.0));
+  b.add(rbox(M.step, M.stepH, M.step, s, 0, M.discY + M.podiumH + M.baseH, 0, 0.9));
   // the canvas, very slightly proud of the step with a shadow reveal under its lip
   b.add(rbox(M.canvas + 1.6, 0.7, M.canvas + 1.6, stoneDeep(), 0, M.deckY - M.canvasH - 0.7, 0, 0.3));
   b.add(rbox(M.canvas, M.canvasH, M.canvas, s, 0, M.deckY - M.canvasH, 0, 0.7));
