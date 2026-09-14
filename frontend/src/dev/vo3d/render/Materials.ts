@@ -72,6 +72,24 @@ export const PALETTE = {
   hubMonument: 0xd8d1c6, // the boxing-championship monument: one monochrome warm cast stone
   hubTerrazzo: 0xf2ece3, // the hub's own floor plate: a shade brighter than the hall tile so the plaza
   //                         reads as a defined place without a single wall
+
+  // ---- EXECUTIVE ROOM (Phase 7) ----------------------------------------------------------------
+  // Routed through rooms/executive.ts THEME, never named directly by a builder. The brief is PREMIUM:
+  // dark stained walnut against warm plaster, cream upholstery, ONE colour accent and brass on the
+  // awards. Every value measured off the Executive Room V1 reference.
+  execWalnut: 0x4a3526, //      desks, award cabinetry, the media console, the north feature wall
+  execWalnutDark: 0x2e2018, //  their reveals, grooves, toe kicks and backing boards
+  execCream: 0xd4c6b0, //       sofa FRAMES. Deliberately a shade under the cushions: seen from the
+  //                            game camera a cream sofa on a cream rug is one flat slab unless the frame
+  //                            reads darker than the cushions sitting in it.
+  execCreamSeat: 0xefe7dc, //   the cushions themselves
+  execOlive: 0x5d6a3f, //       the two lounge armchairs — the room's single colour accent
+  execLeather: 0x262428, //     executive / visitor / workstation chairs: near-black leather
+  execBrass: 0xb08d57, //       award metal, cabinet hardware, the display-wall trim
+  execRug: 0xd8cdba, //         every rug in the room: a warm sand a shade under the floor tile
+  execRugBorder: 0xc7b9a2, //   its one inset border line: a half-tone darker, and that is the whole graphic
+  execLeatherSeat: 0x332f2c, // the lighter hide of a seat/back cushion against the frame
+  execOliveSeat: 0x6b7849, //   the lounge chairs' cushions, one step up from their shells
 };
 
 // ---- shared materials -------------------------------------------------------------------

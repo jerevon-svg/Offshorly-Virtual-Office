@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { EXECUTIVE_ROOM, executiveRoomEntities } from "./rooms/executive";
 import * as THREE from "three";
 import { PlayerBody, type StandTest } from "./player/PlayerBody";
 import { PlayerCamera } from "./player/PlayerCamera";
@@ -25,13 +26,13 @@ import type { Rect, Vec2 } from "./core/coords";
 // ---- a world, exactly as the app builds it ---------------------------------------------------------
 function rig() {
   const world = new WorldState();
-  for (const r of [DESIGN_ROOM, RECEPTION_ROOM, MEETING_ROOM, PROJECT_ROOM, GAMING_ROOM, CENTRAL_HUB]) world.addRoom(r);
-  for (const e of [...designRoomEntities(), ...receptionEntities(), ...meetingRoomEntities(), ...projectRoomEntities(), ...gamingRoomEntities(), ...centralHubEntities()]) world.addEntity(e);
+  for (const r of [DESIGN_ROOM, RECEPTION_ROOM, MEETING_ROOM, PROJECT_ROOM, GAMING_ROOM, CENTRAL_HUB, EXECUTIVE_ROOM]) world.addRoom(r);
+  for (const e of [...designRoomEntities(), ...receptionEntities(), ...meetingRoomEntities(), ...projectRoomEntities(), ...gamingRoomEntities(), ...centralHubEntities(), ...executiveRoomEntities()]) world.addEntity(e);
   registerGroundFloor(world);
   const bands = [...HUB_BANDS];
   const inBounds = (p: Vec2) => world.walkableAt(p);
   const walkability = new Walkability(composeStatic(v2Static(v1Static, openedLayer(bands)), inBounds, clearanceLayer(worldClearances(world))));
-  const derived = new DerivedNav(world, { roomIds: new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id]) });
+  const derived = new DerivedNav(world, { roomIds: new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id]) });
   walkability.attachDerived(derived, world);
   const canStand = makeStandTest({ world, walkability, derived, radius: NAV_RADIUS });
   return { world, walkability, derived, canStand };
@@ -56,9 +57,10 @@ describe("vo3d player — collision reuses the world V2 already owns", () => {
     expect(open).toBeGreaterThan(50); // and the room is genuinely walkable, not trivially empty of hits
     // outside the modelled world entirely
     expect(canStand({ x: -500, z: -500 })).toBe(false);
-    // an UNRECONSTRUCTED room footprint is a registered non-walkable region, so the player is kept out
-    const exec = world.regions.find((r) => r.id === "footprint:executive-room")!;
-    expect(canStand({ x: exec.rect.x + exec.rect.w / 2, z: exec.rect.z + exec.rect.d / 2 })).toBe(false);
+    // an UNRECONSTRUCTED room footprint is a registered non-walkable region, so the player is kept out.
+    // Phase 7 reconstructed the Executive room, so the example moved to the Dev room.
+    const unbuilt = world.regions.find((r) => r.id === "footprint:dev-room")!;
+    expect(canStand({ x: unbuilt.rect.x + unbuilt.rect.w / 2, z: unbuilt.rect.z + unbuilt.rect.d / 2 })).toBe(false);
   });
 
   it("is INTERIOR ONLY in V0: the sidewalk is walkable for routing and refused for the player", () => {
@@ -242,7 +244,7 @@ describe("vo3d player — interaction targeting", () => {
   it("harvests every interactable the world declares, bucketed by room — once, not per frame", () => {
     const { world } = rig();
     const byRoom = collectCandidates(world);
-    for (const id of [DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id])
+    for (const id of [DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id])
       expect(byRoom.get(id)?.length, id).toBeGreaterThan(0);
     // every candidate really carries the capability it claims
     for (const list of byRoom.values())

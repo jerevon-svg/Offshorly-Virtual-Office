@@ -11,6 +11,7 @@ import { MEETING_ROOM } from "./meeting";
 import { PROJECT_ROOM } from "./project";
 import { GAMING_ROOM } from "./gaming";
 import { CENTRAL_HUB } from "./central-hub";
+import { EXECUTIVE_ROOM } from "./executive";
 
 export type FloorRoom = V1Room & {
   /** true = full interior modelled (walkable floor region + furniture); false = footprint/boundary only */
@@ -30,7 +31,7 @@ export interface GroundFloor {
   facadeZ: number;
 }
 
-export const RECONSTRUCTED_ROOM_IDS = new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id]);
+export const RECONSTRUCTED_ROOM_IDS = new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id]);
 /** The Central Hub is a wall-less atrium: V1 draws it as an open lounge on the hall floor, with no wall
  *  ring and no door cells. It STAYS wall-less after reconstruction (Phase 6B) — `walls: false` is what
  *  keeps build/floorplan.ts from ever ringing it, and the hub's own static builder owns its floor plate. */

@@ -5,6 +5,7 @@
 // a monument, 24 café places). Every other reconstructed room stays on the V1 layer, and these tests assert
 // that too: a regression in this phase can only come from the two rooms it switched on.
 import { describe, expect, it } from "vitest";
+import { EXECUTIVE_ROOM, executiveRoomEntities } from "./rooms/executive";
 import { WorldState, type Entity } from "./world/WorldState";
 import { registerGroundFloor } from "./rooms/ground-floor";
 import { DESIGN_ROOM, DESIGN_WALLS, DOOR_ID, HERO_PLANT_ID, designRoomEntities, DESIGN_SOLIDS } from "./rooms/design-room";
@@ -30,13 +31,13 @@ import { v1Static, worldToCell, cellCentre, CELL } from "./adapters/v1Grid";
 import { pointInRect, type Vec2 } from "./core/coords";
 
 /** 7C: every reconstructed room. The hall and the five unreconstructed rooms stay V1-governed. */
-const DERIVED = new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB_ID]);
+const DERIVED = new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB_ID, EXECUTIVE_ROOM.id]);
 
 /** the same wiring bootstrap.ts uses, minus THREE */
 function rig(derivedRooms: ReadonlySet<string> = DERIVED) {
   const world = new WorldState();
-  for (const r of [DESIGN_ROOM, RECEPTION_ROOM, MEETING_ROOM, PROJECT_ROOM, GAMING_ROOM, CENTRAL_HUB]) world.addRoom(r);
-  for (const e of [...designRoomEntities(), ...receptionEntities(), ...meetingRoomEntities(), ...projectRoomEntities(), ...gamingRoomEntities(), ...centralHubEntities()]) world.addEntity(e);
+  for (const r of [DESIGN_ROOM, RECEPTION_ROOM, MEETING_ROOM, PROJECT_ROOM, GAMING_ROOM, CENTRAL_HUB, EXECUTIVE_ROOM]) world.addRoom(r);
+  for (const e of [...designRoomEntities(), ...receptionEntities(), ...meetingRoomEntities(), ...projectRoomEntities(), ...gamingRoomEntities(), ...centralHubEntities(), ...executiveRoomEntities()]) world.addEntity(e);
   DESIGN_SOLIDS.forEach((r, i) =>
     world.addEntity({ id: `${DESIGN_ROOM.id}/solid-${i}`, kind: "solid", roomId: DESIGN_ROOM.id, transform: { pos: { x: r.x + r.w / 2, z: r.z + r.d / 2 }, yaw: 0 }, footprint: { shape: "rect", w: r.w, d: r.d }, capabilities: {}, props: {}, source: { baked: true } } satisfies Entity));
   const plan = registerGroundFloor(world);

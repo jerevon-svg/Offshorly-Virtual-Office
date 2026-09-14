@@ -2,6 +2,7 @@
 // the tests concentrate there: every band must open ONLY physically empty floor, and the V1 grid must
 // come out the other side untouched.
 import { describe, expect, it } from "vitest";
+import { EXECUTIVE_ROOM } from "./rooms/executive";
 import * as THREE from "three";
 import manifest from "../../data/office-assets-manifest.json";
 import { WorldState } from "./world/WorldState";
@@ -39,6 +40,7 @@ function rig() {
   world.addRoom(PROJECT_ROOM);
   world.addRoom(GAMING_ROOM);
   world.addRoom(CENTRAL_HUB);
+  world.addRoom(EXECUTIVE_ROOM);
   for (const e of designRoomEntities()) world.addEntity(e);
   for (const e of centralHubEntities()) world.addEntity(e);
   const plan = registerGroundFloor(world);

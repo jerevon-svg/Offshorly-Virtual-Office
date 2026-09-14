@@ -2,6 +2,7 @@
 // These tests are deliberately about the SEAMS and the shared planes, not about either room's interior
 // detail: the things that break when three rooms are built by three different passes.
 import { describe, expect, it } from "vitest";
+import { EXECUTIVE_ROOM } from "./rooms/executive";
 import { CENTRAL_HUB } from "./rooms/central-hub";
 import * as THREE from "three";
 import { WorldState } from "./world/WorldState";
@@ -36,6 +37,7 @@ function rig() {
   world.addRoom(PROJECT_ROOM);
   world.addRoom(GAMING_ROOM);
   world.addRoom(CENTRAL_HUB);
+  world.addRoom(EXECUTIVE_ROOM);
   for (const e of designRoomEntities()) world.addEntity(e);
   for (const e of receptionEntities()) world.addEntity(e);
   for (const e of meetingRoomEntities()) world.addEntity(e);
@@ -86,7 +88,8 @@ describe("vo3d front bar — Phase 4B: ONE continuous building", () => {
     expect(names).not.toContain("footprint:project-room");
     expect(names).not.toContain("footprint:gaming-room"); // Phase 5B
     expect(names).not.toContain("footprint:central-hub"); // Phase 6B
-    expect(names).toHaveLength(5); // the 5 rooms still awaiting their own phase
+    expect(names).not.toContain("footprint:executive-room"); // Phase 7
+    expect(names).toHaveLength(4); // the 4 rooms still awaiting their own phase
   });
 
   it("the three tiled floors tile the whole bar at y = 0: abutting, never overlapping, one grout phase", () => {

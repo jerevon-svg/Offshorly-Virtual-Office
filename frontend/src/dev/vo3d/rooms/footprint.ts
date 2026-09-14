@@ -16,9 +16,9 @@ import { chairPlanRadius } from "../build/furniture";
 /** task chairs: a five-star caster base, round in plan, and sized by the builder rather than by the art box */
 export const TASK_CHAIR_KINDS: ReadonlySet<string> = new Set(["chair-a", "chair-b", "lead-chair"]);
 /** kinds whose plan is a circle (or a regular polygon close enough to one that a box would lie) */
-export const ROUND_KINDS: ReadonlySet<string> = new Set(["beanbag", "round-table", "cafe-table"]);
+export const ROUND_KINDS: ReadonlySet<string> = new Set(["beanbag", "round-table", "cafe-table", "exec-planter"]);
 /** kinds that lie ON the floor rather than standing on it */
-export const FLOOR_DRESSING_KINDS: ReadonlySet<string> = new Set(["rug", "mat"]);
+export const FLOOR_DRESSING_KINDS: ReadonlySet<string> = new Set(["rug", "mat", "exec-rug"]);
 
 export function kindFootprint(kind: string, w: number, d: number): Footprint {
   if (FLOOR_DRESSING_KINDS.has(kind)) return { shape: "rect", w, d, solid: false };

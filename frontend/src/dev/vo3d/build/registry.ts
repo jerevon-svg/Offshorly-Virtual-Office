@@ -15,6 +15,8 @@ import { meetingStatic } from "./meeting";
 import { projectStatic } from "./project";
 import { gamingStatic } from "./gaming";
 import { centralHubStatic } from "./central-hub";
+import { executiveStatic } from "./executive";
+import { EXEC_KINDS, buildExecFurniture } from "./exec-furniture";
 
 export type BuildResult = { group: THREE.Group; sway: SwayNode[] };
 
@@ -40,6 +42,7 @@ export const ROOM_STATIC: Record<string, RoomStaticBuilder> = {
   "project-room": projectStatic,
   "gaming-room": gamingStatic,
   "central-hub": centralHubStatic,
+  "executive-room": executiveStatic,
 };
 
 export function buildEntity(e: Entity): BuildResult {
@@ -94,6 +97,12 @@ export function buildEntity(e: Entity): BuildResult {
     group.add(rbox(1.2, h - 7, 1.4, metal(), handle * (w / 2 - 1.4), 3.6, 0, 0.3)); // leading stile
     group.add(cyl(0.9, 20, metal(), handle * (w / 2 - 5.5), h * 0.3, -1.6)); // pull handle, room side
     return { group, sway };
+  }
+  // EXECUTIVE ROOM furniture: its own builders, because the shared catalogue above carries the other
+  // rooms' visual identity (see build/exec-furniture.ts). Routed by kind, nothing else changes.
+  if ((EXEC_KINDS as readonly string[]).includes(e.kind)) {
+    const group = buildExecFurniture(e, sway);
+    if (group) return { group, sway };
   }
   if (e.kind === "solid") return { group: new THREE.Group(), sway }; // footprint-only entity (baked decor drawn by the shell builder)
   throw new Error(`no builder for entity kind "${e.kind}" (${e.id})`);
