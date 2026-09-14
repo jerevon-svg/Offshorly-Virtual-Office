@@ -270,3 +270,54 @@ async def test_a_still_eligible_after_leaving_media_can_rejoin():
             "/calls/token", json={"sessionId": "conv-1"}, headers=_headers("a@example.com")
         )
     assert res.status_code == 200
+
+
+# --- standalone meetings (a host may be alone) ----------------------------------------------
+
+async def test_meeting_token_is_minted_for_a_lone_host() -> None:
+    """The whole point of the meeting path: no spatial session, no second person, still a token."""
+    async with await _client() as client:
+        res = await client.post("/meetings/cave-all-hands/token", headers=_headers("a@example.com"))
+
+    assert res.status_code == 200
+    body = res.json()
+    claims = _decode_claims(body["token"])
+    assert claims["sub"] == "a@example.com"
+    assert claims["video"]["room"] == body["room"]
+    assert claims["video"]["roomJoin"] is True
+    # Opaque room name, never the meeting id itself.
+    assert body["room"].startswith("vo-call-")
+    assert "cave-all-hands" not in body["room"]
+
+
+async def test_everyone_asking_for_the_same_meeting_lands_in_one_room() -> None:
+    async with await _client() as client:
+        first = await client.post("/meetings/cave-all-hands/token", headers=_headers("a@example.com"))
+        later = await client.post("/meetings/cave-all-hands/token", headers=_headers("b@example.com"))
+        other = await client.post("/meetings/design-review/token", headers=_headers("a@example.com"))
+
+    assert first.json()["room"] == later.json()["room"]
+    assert other.json()["room"] != first.json()["room"]
+
+
+async def test_meeting_rooms_cannot_collide_with_a_spatial_session() -> None:
+    _seat_two("conv-1")
+    async with await _client() as client:
+        call = await client.post("/calls/token", json={"sessionId": "conv-1"}, headers=_headers("a@example.com"))
+        meeting = await client.post("/meetings/conv-1/token", headers=_headers("a@example.com"))
+
+    # Same string, two namespaces, two rooms — a meeting id can never open a private conversation.
+    assert call.json()["room"] != meeting.json()["room"]
+
+
+async def test_meeting_id_is_validated_not_trusted() -> None:
+    async with await _client() as client:
+        for bad in ["", "   ", "../etc", "a" * 80, "has space", "UPPER%"]:
+            res = await client.post(f"/meetings/{bad}/token", headers=_headers("a@example.com"))
+            assert res.status_code in (400, 404), bad
+
+
+async def test_meeting_token_still_requires_an_identity() -> None:
+    async with await _client() as client:
+        res = await client.post("/meetings/cave-all-hands/token")
+    assert res.status_code in (401, 403)

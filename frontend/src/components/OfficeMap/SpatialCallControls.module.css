@@ -88,3 +88,16 @@
 .expand {
   color: #3f3a4d;
 }
+
+/* Sharing is the loudest state these controls can be in — it is the one that puts your desktop on
+   a 270° wall — so it gets the same treatment as an active camera, in the accent the app uses for
+   "live". */
+.shareOn {
+  color: #0f2f24;
+  background: #8ee3b9;
+  border-color: #6fd0a2;
+}
+
+.shareOn:hover:not(:disabled) {
+  background: #7fdcae;
+}

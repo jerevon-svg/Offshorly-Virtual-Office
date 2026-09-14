@@ -236,6 +236,9 @@ export type CaveBuild = {
   group: THREE.Group;
   /** the two surfaces that sample the video, so the volume can hand them the texture on first entry */
   videoMaterials: THREE.Material[];
+  /** PRESENTATION MODE: the flat front panel a live screen share is shown on. Hidden — and holding
+   *  no texture at all — unless somebody in the call is actually sharing. */
+  presentation: { mesh: THREE.Mesh; material: THREE.MeshBasicMaterial };
 };
 
 /** Build the whole volume. Returns it HIDDEN — interact/CaveTransition owns when it is drawn. */
@@ -374,8 +377,37 @@ export function buildCave(): CaveBuild {
   washPlane.castShadow = washPlane.receiveShadow = false;
   g.add(washPlane);
 
+  // ---- PRESENTATION MODE: the front panel ----------------------------------------------------------
+  // ONE extra mesh, built once, hidden by default and carrying no map until a share exists — so a
+  // session that never presents pays for a quad's worth of vertices and nothing else, ever.
+  //
+  // WHY IT IS A SEPARATE MESH rather than a second material on the ribbon. The ribbon's uv is the
+  // 270° fold (screenTexU): it runs the picture out along the front chord and MIRRORS it round both
+  // wings. That is exactly right for a video of a boxing ring and exactly wrong for a spreadsheet —
+  // a mirrored copy of someone's slides on each wing is unreadable, and stretching one share across
+  // 270° of curve is worse. So a share gets the flat front chord, at true aspect, and the wings get
+  // to be dark; the ribbon's own geometry and uvs are never touched.
+  //
+  // It is FLUSH to the front chord, a hair in front of the ribbon (no z-fighting), exactly
+  // VIDEO_WIDTH × SCREEN.height — the 320 × 180 16:9 panel the room was measured around.
+  const presentMaterial = new THREE.MeshBasicMaterial({
+    color: 0x000000, toneMapped: false, fog: false, side: THREE.FrontSide,
+  });
+  const present = new THREE.Mesh(new THREE.PlaneGeometry(VIDEO_WIDTH, SCREEN.height), presentMaterial);
+  present.name = "cave-presentation-panel";
+  // The front chord is the NORTH straight run of the screen path, at z = SCREEN.inset, facing south
+  // into the room — which is +z, and a PlaneGeometry's front face is already +z. No rotation.
+  present.position.set(wx(W / 2), SCREEN.bottom + SCREEN.height / 2, wz(SCREEN.inset) + 0.7);
+  present.castShadow = present.receiveShadow = false;
+  present.visible = false;
+  g.add(present);
+
   g.visible = false; // NOTHING here is drawn until someone is inside — see interact/CaveTransition
-  return { group: g, videoMaterials: [screenMaterial, reflectMaterial] };
+  return {
+    group: g,
+    videoMaterials: [screenMaterial, reflectMaterial],
+    presentation: { mesh: present, material: presentMaterial },
+  };
 }
 
 /** Hand the one shared VideoTexture to every surface that shows it. Called once, on first entry.
@@ -387,6 +419,164 @@ export function attachCaveVideo(build: CaveBuild, texture: THREE.Texture): void 
     if (basic.map === texture) continue;
     basic.map = texture;
     basic.color.setHex(0xffffff);
+    basic.needsUpdate = true;
+  }
+}
+
+/** Where along the ribbon the FLAT FRONT CHORD sits, on samplePath's own arc-length ruler. The one
+ *  place "the middle of the screen" is defined for anything that lays things out on the wrap. */
+export function frontChordRange(samples: PathSample[]): { s0: number; s1: number; total: number } {
+  const total = samples[samples.length - 1].s;
+  const s0 = (total - VIDEO_WIDTH) / 2;
+  return { s0, s1: s0 + VIDEO_WIDTH, total };
+}
+
+/** The path point at an ARBITRARY arc length — the ribbon's samples are dense but finite, and a
+ *  tile edge lands wherever the layout says it does. Linear between neighbours, which is exact for
+ *  the straight runs and well within a pixel on a 96-radius corner at 14 segments per quadrant. */
+export function sampleAt(samples: PathSample[], s: number): PathSample {
+  const total = samples[samples.length - 1].s;
+  const t = Math.min(Math.max(s, 0), total);
+  for (let i = 0; i < samples.length - 1; i++) {
+    const a = samples[i], b = samples[i + 1];
+    if (b.s < t) continue;
+    const span = b.s - a.s;
+    if (span <= 1e-9) return { ...a, s: t }; // a duplicated corner-join vertex
+    const f = (t - a.s) / span;
+    const nx = a.nx + (b.nx - a.nx) * f, nz = a.nz + (b.nz - a.nz) * f;
+    const len = Math.hypot(nx, nz) || 1;
+    return {
+      x: a.x + (b.x - a.x) * f, z: a.z + (b.z - a.z) * f,
+      nx: nx / len, nz: nz / len, s: t,
+    };
+  }
+  return { ...samples[samples.length - 1], s: t };
+}
+
+/** A STRIP OF THE RIBBON between two arc lengths, with uv running 0…1 across it — the geometry a
+ *  meeting tile is drawn on.
+ *
+ *  WHY A STRIP AND NOT A QUAD. A flat quad wide enough to be a cinematic tile cuts through the
+ *  corner arcs (96 radius) and floats off the wall on the straights' far side. A strip follows the
+ *  real path, so a tile hugs the screen wherever it lands and the gallery can reflow across the
+ *  curve without anybody noticing there is a curve. `lift` floats it just proud of the ribbon along
+ *  the INWARD normal, which is what keeps it out of z-fighting with the wrap behind it.
+ *
+ *  There is no fold here on purpose: screenTexU's mirror belongs to the ONE 270° picture, and a
+ *  participant's face must never be mirrored back on itself. */
+export function ribbonStripGeometry(
+  samples: PathSample[], s0: number, s1: number, y0: number, height: number, lift = 0.9,
+): THREE.BufferGeometry {
+  const span = Math.max(s1 - s0, 1e-6);
+  const pts: PathSample[] = [
+    sampleAt(samples, s0),
+    ...samples.filter((p) => p.s > s0 + 1e-6 && p.s < s1 - 1e-6),
+    sampleAt(samples, s1),
+  ];
+  const n = pts.length;
+  const pos = new Float32Array(n * 2 * 3);
+  const nor = new Float32Array(n * 2 * 3);
+  const uv = new Float32Array(n * 2 * 2);
+  for (let i = 0; i < n; i++) {
+    const p = pts[i];
+    const u = (p.s - s0) / span;
+    for (let k = 0; k < 2; k++) {
+      const o = (i * 2 + k) * 3;
+      pos[o] = ORIGIN.x + p.x + p.nx * lift;
+      pos[o + 1] = k === 0 ? y0 : y0 + height;
+      pos[o + 2] = ORIGIN.z + p.z + p.nz * lift;
+      nor[o] = p.nx; nor[o + 1] = 0; nor[o + 2] = p.nz;
+      const q = (i * 2 + k) * 2;
+      uv[q] = u;
+      uv[q + 1] = k;
+    }
+  }
+  const idx: number[] = [];
+  for (let i = 0; i < n - 1; i++) {
+    const a = i * 2, b = i * 2 + 1, c = (i + 1) * 2, d = (i + 1) * 2 + 1;
+    idx.push(a, c, b, b, c, d);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  g.setAttribute("normal", new THREE.BufferAttribute(nor, 3));
+  g.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  return g;
+}
+
+/** THE WRAP, AS AMBIENT LIGHT rather than as the picture.
+ *
+ *  Used in two meeting states. With a texture (the single-speaker view) the 270° wrap carries a
+ *  DIMMED, mirrored continuation of the same camera — the room fills with the speaker without the
+ *  speaker's face being stretched three metres wide, because the true-aspect copy is on the front
+ *  panel and this is only spill. With null it is the plain dark surround the gallery and the
+ *  presentation sit against.
+ *
+ *  The texture is SHARED with whatever is showing it properly — one decode, two samplers. */
+export function setCaveWrapAmbient(build: CaveBuild, texture: THREE.Texture | null): void {
+  for (const m of build.videoMaterials) {
+    const basic = m as THREE.MeshBasicMaterial;
+    const colour = texture ? WRAP_AMBIENT_LIT : WING_AMBIENT;
+    if (basic.map === texture && basic.color.getHex() === colour) continue;
+    basic.map = texture;
+    basic.color.setHex(colour);
+    basic.needsUpdate = true;
+  }
+}
+
+/** THE WINGS IN PRESENTATION MODE: a dark ambient surround, not a picture.
+ *
+ *  Not black — a black 270° wrap makes the room read as a void and loses the CAVE entirely — and not
+ *  the video either, which would fight the slide for attention and keep a second decode running. A
+ *  low cool grey, lit by nothing, at roughly the luminance the reference cave's unlit panels sit at. */
+const WING_AMBIENT = 0x0c1016;
+
+/** The multiplier the wrap carries when it is showing a dimmed continuation of a live camera.
+ *  Bright enough to light the room, far too dark to compete with the true-aspect copy in front. */
+const WRAP_AMBIENT_LIT = 0x3d4654;
+
+/** SWITCH THE CAVE BETWEEN ITS VIDEO AND A LIVE SHARE.
+ *
+ *  `texture` non-null  → PRESENTATION MODE: the share on the front panel at TRUE ASPECT, the 270°
+ *                        ribbon and its floor reflection dropped to a dark ambient surround.
+ *  `texture` null      → back to normal: the panel is hidden and cleared, and the caller re-attaches
+ *                        the CAVE's own video with attachCaveVideo (which is what restores the
+ *                        ribbon's map and its white multiplier).
+ *
+ *  ASPECT IS FITTED, NEVER STRETCHED. The panel is 16:9; a share rarely is (16:10 and 3:2 laptops,
+ *  a portrait window, a single app). The picture is scaled to fit INSIDE the panel on its tight axis
+ *  and centred, so text keeps its proportions and the unused strip is simply the dark wall behind.
+ *  Scaling the MESH rather than juggling texture repeat/offset is what keeps that true for a source
+ *  whose shape changes mid-share (a presenter switching monitors): one scale, no uv rebuild.
+ *
+ *  Allocation-free on every call: it assigns a map, a colour and a scale on materials that already
+ *  exist, and is called only when something actually changed (CavePresentation.consumeChange). */
+export function setCavePresentation(build: CaveBuild, texture: THREE.Texture | null, aspect = 16 / 9): void {
+  const { mesh, material } = build.presentation;
+  if (!texture) {
+    mesh.visible = false;
+    if (material.map) { material.map = null; material.color.setHex(0x000000); material.needsUpdate = true; }
+    mesh.scale.set(1, 1, 1);
+    return;
+  }
+  if (material.map !== texture) {
+    material.map = texture;
+    material.color.setHex(0xffffff);
+    material.needsUpdate = true;
+  }
+  const a = Number.isFinite(aspect) && aspect > 0 ? aspect : 16 / 9;
+  const panel = VIDEO_WIDTH / SCREEN.height;
+  // wider than the panel → letterbox (lose height); taller → pillarbox (lose width)
+  if (a >= panel) mesh.scale.set(1, panel / a, 1);
+  else mesh.scale.set(a / panel, 1, 1);
+  mesh.visible = true;
+  for (const m of build.videoMaterials) {
+    const basic = m as THREE.MeshBasicMaterial;
+    if (basic.map === null && basic.color.getHex() === WING_AMBIENT) continue;
+    // The map is DROPPED, not just darkened: a material that still samples the video texture keeps
+    // the GPU uploading a frame it no longer shows.
+    basic.map = null;
+    basic.color.setHex(WING_AMBIENT);
     basic.needsUpdate = true;
   }
 }

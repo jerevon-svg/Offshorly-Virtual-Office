@@ -39,8 +39,11 @@ import { loadBossStatues } from "../build/hub-monument";
 import { CAVE_ROOM, CAVE_ID, EXIT_INTERACTION_ID as CAVE_EXIT_ID, SCREEN_INTERACTION_ID as CAVE_SCREEN_ID,
   FLOOR_RECT as CAVE_FLOOR_RECT, OUTER_RECT as CAVE_OUTER_RECT, SPAWN as CAVE_SPAWN, VESTIBULE_RECT as CAVE_VESTIBULE_RECT,
   caveEntities, caveStandTest, inCave } from "../rooms/cave";
-import { buildCave, CAVE_METRICS } from "../build/cave";
+import { buildCave, CAVE_METRICS, attachCaveVideo, setCavePresentation, setCaveWrapAmbient } from "../build/cave";
 import { CaveMedia } from "../media/CaveMedia";
+import { CavePresentation } from "../media/CavePresentation";
+import { CaveLiveShare, CAVE_MEETING_ID } from "../media/CaveLiveShare";
+import { CaveGallery } from "../media/CaveGallery";
 import { CaveTransition } from "../interact/CaveTransition";
 import { openedCells, openedLayer, v2Static } from "../nav/v2Open";
 import { DerivedNav } from "../nav/derived";
@@ -205,6 +208,69 @@ void loadBossStatues(mirror.root).then(() => R.invalidateShadows());
 const caveBuild = buildCave();
 R.scene.add(caveBuild.group);
 const caveMedia = new CaveMedia();
+// PRESENTATION MODE (a live LiveKit screen share on the front panel). Both objects are inert until
+// somebody explicitly connects: the bridge's LiveKit import is dynamic, and the adapter holds no
+// element and no texture until it has BOTH a share and a body in the CAVE. Nothing below runs, or
+// allocates, in an ordinary session.
+const cavePresentation = new CavePresentation();
+const caveGallery = new CaveGallery(caveBuild);
+const caveLiveShare = new CaveLiveShare({
+  onShare: (source, presenter) => cavePresentation.setSource(source, presenter),
+  onCameras: (cameras) => caveGallery.setCameras(cameras),
+});
+
+/** THE ONE PLACE THE CAVE DECIDES WHAT IT IS SHOWING. Called only when something actually changed
+ *  (a share, a camera set, a shape, entering or leaving), never per frame.
+ *
+ *  Four states, in strict priority order:
+ *
+ *    1. A SCREEN SHARE      the front panel carries it at true aspect and stays readable; the
+ *                           cameras move to the two wings; the wrap goes dark behind them. A share
+ *                           is presentation content and outranks every face in the room.
+ *    2. ONE CAMERA          the immersive speaker view: the true-aspect copy on the same front
+ *                           panel, and the 270° wrap carrying a DIMMED continuation of it. The
+ *                           room fills with the speaker without the speaker being stretched.
+ *    3. TWO OR MORE         the gallery owns the whole wrap: tiles across the chord, the corners
+ *                           and the wings, reflowing as people come and go.
+ *    4. NOTHING             SUNTOUCAN, exactly as before — the CAVE with no meeting in it.
+ *
+ *  Every meeting state PAUSES the boxing video, which stops its decode and its audio dead: the room
+ *  never decodes a stream it is not showing, and never plays two soundtracks. Leaving the meeting
+ *  resumes it where it stopped. */
+function applyCaveMode(): void {
+  const inside = caveTransition?.inside ?? false;
+  const share = cavePresentation.texture;
+  const solo = caveGallery.solo;
+
+  if (share) {
+    setCavePresentation(caveBuild, share, cavePresentation.aspect);
+    caveGallery.setMode("wings");
+    caveMedia.pause();
+    return;
+  }
+  if (solo) {
+    // Panel first (it also darkens the wrap), then the wrap is given the dimmed continuation.
+    setCavePresentation(caveBuild, solo.texture, solo.aspect);
+    setCaveWrapAmbient(caveBuild, solo.texture);
+    caveGallery.setMode("full");
+    caveMedia.pause();
+    return;
+  }
+  if (caveGallery.count > 0) {
+    setCavePresentation(caveBuild, null);
+    setCaveWrapAmbient(caveBuild, null);
+    caveGallery.setMode("full");
+    caveMedia.pause();
+    return;
+  }
+  caveGallery.setMode("off");
+  setCavePresentation(caveBuild, null);
+  const video = caveMedia.texture;
+  if (video) attachCaveVideo(caveBuild, video);
+  // Resuming is only right if somebody is actually standing in here; the transition owns play/pause
+  // in every other case.
+  if (inside) caveMedia.play();
+}
 
 // ---- environment -------------------------------------------------------------------------------
 // The world OUTSIDE the office (build/exterior) plus the global day/sunset/night presentation that owns
@@ -1116,6 +1182,8 @@ const caveGui = gui.addFolder("Championship Cave (through the hub monument's por
 const caveState = {
   where: "office", busy: false, transitions: 0, last: "—",
   video: "absent", muted: false, blocked: "", time: "0 / 0",
+  share: "off", presenter: "—", shareSize: "—", liveCalls: "—", shareNote: "",
+  meeting: "—", sharing: false, myMedia: "—", gallery: "—", participants: "—",
   interior: `${CAVE_METRICS.interior} units  ·  wrap ${Math.round(CAVE_METRICS.wrapLength())}  ·  video ${CAVE_METRICS.videoWidth} wide on a ${CAVE_METRICS.frontChord} chord`,
 };
 caveGui.add({ go: () => caveTransition?.enter() }, "go").name("▶ enter the CAVE (spawns PLAYER at the portal)");
@@ -1132,6 +1200,33 @@ caveGui.add(caveState, "video").name("video").disable().listen();
 caveGui.add(caveState, "muted").disable().listen();
 caveGui.add(caveState, "time").name("position (s)").disable().listen();
 caveGui.add(caveState, "blocked").name("playback note").disable().listen();
+// ---- presentation mode: the EXISTING call's screen share, on the front panel ------------------------
+// Watching the live call is opt-in and costs nothing until clicked: the LiveKit import is dynamic.
+const shareParams = { email: "bon@offshorly.com" };
+const shareGui = caveGui.addFolder("meeting + screen share (the app's existing LiveKit stack)");
+shareGui.add(shareParams, "email").name("join as (dev identity)");
+shareGui.add({ go: () => void caveLiveShare.connect(shareParams.email) }, "go").name("① connect to the call store");
+// THE MEETING PATH — a host may press these two alone; people who join later get the same room
+// and the same share.
+shareGui.add({ go: () => void caveLiveShare.connect(shareParams.email).then(() => caveLiveShare.startMeeting()) }, "go")
+  .name(`▶ Start / Join Meeting (${CAVE_MEETING_ID})`);
+shareGui.add({ go: () => void caveLiveShare.setMic(!caveLiveShare.state.mic) }, "go").name("🎤 Mic On / Off");
+shareGui.add({ go: () => void caveLiveShare.setCamera(!caveLiveShare.state.camera) }, "go").name("📹 Camera On / Off");
+shareGui.add({ go: () => void caveLiveShare.setSharing(true) }, "go").name("🖥 Share Screen");
+shareGui.add({ go: () => void caveLiveShare.setSharing(false) }, "go").name("■ Stop Sharing");
+shareGui.add({ go: () => caveLiveShare.leave() }, "go").name("■ leave the meeting / call");
+// A/B testing against the app's own SPATIAL conversation calls stays available, unchanged.
+shareGui.add({ go: () => void caveLiveShare.join() }, "go").name("② join a live SPATIAL call (A/B testing)");
+shareGui.add(caveState, "meeting").name("connected to").disable().listen();
+shareGui.add(caveState, "sharing").name("this browser is sharing").disable().listen();
+shareGui.add(caveState, "myMedia").name("my mic / camera").disable().listen();
+shareGui.add(caveState, "gallery").name("gallery").disable().listen();
+shareGui.add(caveState, "participants").name("cameras on").disable().listen();
+shareGui.add(caveState, "share").name("presentation").disable().listen();
+shareGui.add(caveState, "presenter").name("presenter").disable().listen();
+shareGui.add(caveState, "shareSize").name("source").disable().listen();
+shareGui.add(caveState, "liveCalls").name("calls broadcast").disable().listen();
+shareGui.add(caveState, "shareNote").name("note").disable().listen();
 
 const bench = gui.addFolder("Benchmark");
 function applyPreset(id: PresetId): void {
@@ -1248,6 +1343,16 @@ function loop(): void {
     qaDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
     updateScanners({ x: bp.x, z: bp.z });
     caveTransition?.update(); // media readout; a no-op outside the CAVE
+    // PRESENTATION MODE, driven from the one place that sees every way in and out of the CAVE (the
+    // portal, the GUI, the console driver). Both calls are idempotent early-returns: setActive
+    // compares a boolean, sample() compares two numbers off the element, and the materials are only
+    // touched when consumeChange says something really moved. No allocation on any frame.
+    const insideCave = caveTransition?.inside ?? false;
+    cavePresentation.setActive(insideCave);
+    cavePresentation.sample();
+    caveGallery.setActive(insideCave);
+    caveGallery.sample();
+    if (cavePresentation.consumeChange() || caveGallery.consumeChange()) applyCaveMode();
     entryState.state = entryDoor.state; entryState.open = Math.round(entryDoor.t * 100);
     entryState.drift = entryDoor.state === "closed" ? Math.round(entryDoor.driftError() * 1e6) / 1e6 : entryState.drift;
     entryState.cycles = entryDoor.cycles;
@@ -1336,6 +1441,22 @@ function loop(): void {
       caveState.muted = caveMedia.state.muted;
       caveState.blocked = caveMedia.state.blocked;
       caveState.time = `${caveMedia.state.time} / ${caveMedia.state.duration}`;
+      caveState.share = `${cavePresentation.state.status} · link ${caveLiveShare.state.status}`;
+      caveState.presenter = cavePresentation.state.presenter || caveLiveShare.state.presenter || "—";
+      caveState.shareSize = cavePresentation.state.width
+        ? `${cavePresentation.state.width} × ${cavePresentation.state.height} (${Math.round(cavePresentation.aspect * 100) / 100}:1)`
+        : "—";
+      caveState.liveCalls = caveLiveShare.state.live || "—";
+      caveState.meeting = caveLiveShare.state.session
+        ? `${caveLiveShare.state.kind}: ${caveLiveShare.state.session}`
+        : "—";
+      caveState.sharing = caveLiveShare.state.sharing;
+      caveState.myMedia = `mic ${caveLiveShare.state.mic ? "on" : "off"} · camera ${caveLiveShare.state.camera ? "on" : "off"}`;
+      caveState.gallery = `${caveGallery.state.mode} · ${caveGallery.state.drawn} drawn${caveGallery.state.hidden ? ` · ${caveGallery.state.hidden} not decoded` : ""}`;
+      caveState.participants = caveGallery.state.cameras
+        ? `${caveGallery.state.cameras}${caveGallery.state.names ? ` · ${caveGallery.state.names}` : ""}`
+        : "—";
+      caveState.shareNote = cavePresentation.state.note || caveLiveShare.state.note || "";
     }
     if (params.playerView !== playerMode.view) { params.playerView = playerMode.view; refresh(); }
     envState.clock = formatManila(timeOfDay.hourDecimal);
@@ -1395,6 +1516,29 @@ loop();
     toggle: () => caveTransition?.toggle() ?? false,
     inside: () => caveTransition?.inside ?? false,
     play: () => caveMedia.play(), pause: () => caveMedia.pause(), togglePlay: () => caveMedia.toggle(),
+    /** PRESENTATION MODE, for the console and the Playwright rig. `share.source(track)` takes any
+     *  object with LiveKit's attach/detach surface — which is what lets the whole CAVE half be
+     *  driven with a canvas capture stream, with no LiveKit server in the loop. */
+    presentation: cavePresentation, presentationState: cavePresentation.state,
+    /** The 270° meeting gallery — layout state and the tile meshes, for the console and the rig. */
+    gallery: caveGallery, galleryState: caveGallery.state,
+    share: {
+      link: caveLiveShare, state: caveLiveShare.state,
+      connect: (email: string) => caveLiveShare.connect(email),
+      /** Start (or join) the CAVE's standalone meeting — a host may be alone in it. */
+      startMeeting: (meetingId?: string) => caveLiveShare.startMeeting(meetingId),
+      setSharing: (on: boolean) => caveLiveShare.setSharing(on),
+      setMic: (on: boolean) => caveLiveShare.setMic(on),
+      setCamera: (on: boolean) => caveLiveShare.setCamera(on),
+      meetingId: CAVE_MEETING_ID,
+      join: (sessionId?: string) => caveLiveShare.join(sessionId),
+      leave: () => caveLiveShare.leave(),
+      source: (src: Parameters<typeof cavePresentation.setSource>[0], who = "dev") => {
+        cavePresentation.setSource(src, who);
+      },
+      panel: () => caveBuild.presentation.mesh,
+      live: () => cavePresentation.live,
+    },
     setMuted: (m: boolean) => caveMedia.setMuted(m),
     /** put Bon on the portal's stand point, facing it (the CAVE is nowhere near the default spawn) */
     atPortal: placeBonAtPortal,

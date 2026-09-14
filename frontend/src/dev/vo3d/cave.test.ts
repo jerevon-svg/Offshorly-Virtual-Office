@@ -386,7 +386,10 @@ describe("the built volume", () => {
     const built = buildCave();
     let meshes = 0;
     built.group.traverse((o) => { if ((o as THREE.Mesh).isMesh) meshes++; });
-    expect(meshes).toBeLessThanOrEqual(10);
+    // 11 since presentation mode: the eleventh is the screen-share panel, which is HIDDEN and
+    // carries no map at all until somebody in the call actually shares (cave-presentation.test.ts),
+    // so an ordinary session still draws ten.
+    expect(meshes).toBeLessThanOrEqual(11);
     const screen = built.group.getObjectByName("cave-screen") as THREE.Mesh;
     expect(screen.geometry.getAttribute("position").count).toBeGreaterThan(40); // the curve is real
   });

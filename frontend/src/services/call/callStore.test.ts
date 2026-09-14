@@ -43,10 +43,15 @@ class FakeRoom {
   // denied / no device). Set per-test.
   cameraImpl: ((on: boolean) => Promise<void>) | null = null;
   cameraPublication: { videoTrack: unknown; isMuted: boolean } | null = null;
+  // V1 screen share: same shape as the camera pair above.
+  screenShareCalls: boolean[] = [];
+  screenShareImpl: ((on: boolean) => Promise<void>) | null = null;
+  screenSharePublication: { videoTrack: unknown; isMuted: boolean } | null = null;
   localParticipant = {
     identity: "a@example.com",
     isMicrophoneEnabled: false,
     isCameraEnabled: false,
+    isScreenShareEnabled: false,
     setMicrophoneEnabled: async (on: boolean) => {
       this.micCalls.push(on);
       this.localParticipant.isMicrophoneEnabled = on;
@@ -59,8 +64,19 @@ class FakeRoom {
         ? { videoTrack: { kind: "video", source: "camera" }, isMuted: false }
         : null;
     },
-    getTrackPublication: (source: string) =>
-      source === "camera" ? (this.cameraPublication ?? undefined) : undefined,
+    setScreenShareEnabled: async (on: boolean) => {
+      this.screenShareCalls.push(on);
+      if (this.screenShareImpl) await this.screenShareImpl(on);
+      this.localParticipant.isScreenShareEnabled = on;
+      this.screenSharePublication = on
+        ? { videoTrack: { kind: "video", source: "screen_share" }, isMuted: false }
+        : null;
+    },
+    getTrackPublication: (source: string) => {
+      if (source === "camera") return this.cameraPublication ?? undefined;
+      if (source === "screen_share") return this.screenSharePublication ?? undefined;
+      return undefined;
+    },
   };
   constructor() {
     FakeRoom.instances.push(this);
@@ -1234,5 +1250,232 @@ describe("callStore /calls/token authentication", () => {
     expect(asText).not.toMatch(/api[_-]?key|api[_-]?secret/i);
     // And the module reads no LiveKit credential from build-time env.
     expect(Object.keys(import.meta.env).some((k) => k.includes("LIVEKIT"))).toBe(false);
+  });
+});
+
+// --- V1: screen share ---------------------------------------------------------------------------
+// The CAVE's presentation mode reads exactly one field of this store — `screenShare` — so these
+// pin the field's whole contract: who may fill it, who may empty it, and what never touches it.
+
+describe("callStore screen share", () => {
+  // The authentication block above vi.doMock()s the token away, and a doMock outlives
+  // vi.resetModules() — so this block restores the ordinary signed-in credential first.
+  beforeEach(() => {
+    vi.doMock("../api/client", () => ({ getAuthToken: vi.fn(() => "fake-token") }));
+  });
+
+  it("starts every call with no share and publishes nothing on connect", async () => {
+    const { startOrJoinCall, getCallSnapshot } = await import("./callStore");
+
+    await startOrJoinCall("conv-1");
+
+    expect(FakeRoom.instances[0].screenShareCalls).toEqual([]);
+    expect(getCallSnapshot().screenShareEnabled).toBe(false);
+    expect(getCallSnapshot().screenShare).toBeNull();
+  });
+
+  it("publishes on explicit toggle and asks for the surface's audio, mirroring LiveKit", async () => {
+    const { startOrJoinCall, setScreenShareEnabled, getCallSnapshot } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+
+    await setScreenShareEnabled(true);
+    expect(FakeRoom.instances[0].screenShareCalls).toEqual([true]);
+    expect(getCallSnapshot().screenShareEnabled).toBe(true);
+    // The LOCAL share lands in the same single slot a remote one does, so the presenter's own CAVE
+    // shows what everyone else is seeing through one code path.
+    expect(getCallSnapshot().screenShare?.identity).toBe("a@example.com");
+
+    await setScreenShareEnabled(false);
+    expect(FakeRoom.instances[0].screenShareCalls).toEqual([true, false]);
+    expect(getCallSnapshot().screenShareEnabled).toBe(false);
+    expect(getCallSnapshot().screenShare).toBeNull();
+  });
+
+  it("keeps the call up when the user cancels the picker, and reports nothing", async () => {
+    const { startOrJoinCall, setScreenShareEnabled, getCallSnapshot } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+    FakeRoom.instances[0].screenShareImpl = async () => {
+      throw new Error("Permission denied by system");
+    };
+
+    await setScreenShareEnabled(true);
+
+    expect(getCallSnapshot().status).toBe("connected");
+    expect(getCallSnapshot().screenShareEnabled).toBe(false);
+    // A cancelled picker is a normal user action, not a failure worth showing.
+    expect(getCallSnapshot().screenShareError).toBeNull();
+    expect(getCallSnapshot().screenShare).toBeNull();
+  });
+
+  it("registers a subscribed remote share and never confuses it with a camera", async () => {
+    const { startOrJoinCall, getCallSnapshot } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+    const share = fakeRemoteCamera("sid-screen", "screen_share");
+
+    FakeRoom.instances[0].fire("trackSubscribed", share.track, share.publication, participant("B@Example.com"));
+
+    expect(getCallSnapshot().screenShare).toEqual({ identity: "b@example.com", track: share.track });
+    // The camera registry — which is what draws faces over avatars — is untouched.
+    expect(getCallSnapshot().videoByIdentity).toEqual({});
+  });
+
+  it("clears the share on unsubscribe: the presenter pressed Stop sharing", async () => {
+    const { startOrJoinCall, getCallSnapshot } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+    const room = FakeRoom.instances[0];
+    const share = fakeRemoteCamera("sid-screen", "screen_share");
+    room.fire("trackSubscribed", share.track, share.publication, participant("b@example.com"));
+
+    // livekit-client UNPUBLISHES a screen share (it only mutes cameras), so this is the signal.
+    room.fire("trackUnsubscribed", share.track, share.publication, participant("b@example.com"));
+
+    expect(getCallSnapshot().screenShare).toBeNull();
+  });
+
+  it("clears the share when the presenter vanishes without unpublishing", async () => {
+    const { startOrJoinCall, getCallSnapshot } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+    const room = FakeRoom.instances[0];
+    const share = fakeRemoteCamera("sid-screen", "screen_share");
+    room.fire("trackSubscribed", share.track, share.publication, participant("b@example.com"));
+
+    // A crash / reload / network drop: no unpublish ever arrives.
+    room.fire("participantDisconnected", participant("b@example.com"));
+
+    expect(getCallSnapshot().screenShare).toBeNull();
+  });
+
+  it("a second participant can neither steal nor cancel the live presenter's share", async () => {
+    const { startOrJoinCall, getCallSnapshot } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+    const room = FakeRoom.instances[0];
+    const first = fakeRemoteCamera("sid-b", "screen_share");
+    const second = fakeRemoteCamera("sid-c", "screen_share");
+    room.fire("trackSubscribed", first.track, first.publication, participant("b@example.com"));
+
+    room.fire("trackSubscribed", second.track, second.publication, participant("c@example.com"));
+    expect(getCallSnapshot().screenShare?.identity).toBe("b@example.com");
+
+    // ...and C leaving must not pull B's picture off the wall.
+    room.fire("trackUnsubscribed", second.track, second.publication, participant("c@example.com"));
+    expect(getCallSnapshot().screenShare).toEqual({ identity: "b@example.com", track: first.track });
+  });
+
+  it("re-sharing works repeatedly, and each share is a fresh track", async () => {
+    const { startOrJoinCall, getCallSnapshot } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+    const room = FakeRoom.instances[0];
+
+    for (const sid of ["sid-1", "sid-2", "sid-3"]) {
+      const share = fakeRemoteCamera(sid, "screen_share");
+      room.fire("trackSubscribed", share.track, share.publication, participant("b@example.com"));
+      expect(getCallSnapshot().screenShare?.track).toBe(share.track);
+      room.fire("trackUnsubscribed", share.track, share.publication, participant("b@example.com"));
+      expect(getCallSnapshot().screenShare).toBeNull();
+    }
+  });
+
+  it("drops the share when the call ends, so nothing can outlive the room", async () => {
+    const { startOrJoinCall, leaveCall, getCallSnapshot } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+    const room = FakeRoom.instances[0];
+    const share = fakeRemoteCamera("sid-screen", "screen_share");
+    room.fire("trackSubscribed", share.track, share.publication, participant("b@example.com"));
+
+    leaveCall();
+
+    expect(getCallSnapshot().screenShare).toBeNull();
+    expect(getCallSnapshot().screenShareEnabled).toBe(false);
+  });
+});
+
+// --- standalone meetings (a host may start one ALONE) -------------------------------------------
+// The spatial >=2 rule is the BACKEND's and is unchanged (tests/test_calls_router.py). What is
+// pinned here is that a meeting is the same Room, the same store and a different endpoint.
+
+describe("callStore standalone meeting", () => {
+  beforeEach(() => {
+    vi.doMock("../api/client", () => ({ getAuthToken: vi.fn(() => "fake-token") }));
+  });
+
+  it("hits the meeting endpoint with the id in the PATH and no body", async () => {
+    const fetchFn = mockTokenFetch();
+    const { startOrJoinMeeting, getCallSnapshot } = await import("./callStore");
+
+    await startOrJoinMeeting("Cave-All-Hands");
+
+    const [url, init] = fetchFn.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("http://localhost:4800/meetings/cave-all-hands/token");
+    expect(init.body).toBeUndefined(); // nothing to send: the id is the path, identity is the header
+    expect(new Headers(init.headers).get("Authorization")).toBe("Bearer fake-token");
+    expect(getCallSnapshot().status).toBe("connected");
+    expect(getCallSnapshot().connectedMeetingId).toBe("cave-all-hands");
+    // A meeting is NOT a conversation: it never claims a spatial session.
+    expect(getCallSnapshot().connectedSessionId).toBeNull();
+    expect(getCallSnapshot().connectedBoardId).toBeNull();
+  });
+
+  it("needs no second participant and announces nothing to the spatial registry", async () => {
+    const { startOrJoinMeeting } = await import("./callStore");
+
+    await startOrJoinMeeting("cave-all-hands");
+
+    // A lone host is the normal case here — no call_joined, which describes spatial conversations.
+    expect(lastSocket?.events() ?? []).not.toContain("call_joined");
+    expect(FakeRoom.instances).toHaveLength(1);
+    expect(FakeRoom.instances[0].micCalls).toEqual([true]);
+  });
+
+  it("is idempotent for the same meeting and never opens a second Room", async () => {
+    const { startOrJoinMeeting } = await import("./callStore");
+
+    await startOrJoinMeeting("cave-all-hands");
+    await startOrJoinMeeting("cave-all-hands");
+
+    expect(FakeRoom.instances).toHaveLength(1);
+  });
+
+  it("shares the screen from inside a meeting exactly as it does in a call", async () => {
+    const { startOrJoinMeeting, setScreenShareEnabled, getCallSnapshot } = await import("./callStore");
+    await startOrJoinMeeting("cave-all-hands");
+
+    await setScreenShareEnabled(true);
+
+    expect(FakeRoom.instances[0].screenShareCalls).toEqual([true]);
+    expect(getCallSnapshot().screenShare?.identity).toBe("a@example.com");
+  });
+
+  it("leaving a meeting tells the spatial registry nothing and clears the id", async () => {
+    const { startOrJoinMeeting, leaveCall, getCallSnapshot } = await import("./callStore");
+    await startOrJoinMeeting("cave-all-hands");
+
+    leaveCall();
+
+    expect(getCallSnapshot().connectedMeetingId).toBeNull();
+    expect(getCallSnapshot().status).toBe("idle");
+    expect(lastSocket?.events() ?? []).not.toContain("call_left");
+  });
+
+  it("switching from a spatial call to a meeting releases the spatial claim", async () => {
+    const { startOrJoinCall, startOrJoinMeeting, getCallSnapshot } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+
+    await startOrJoinMeeting("cave-all-hands");
+
+    // The conversation must not keep a stale media claim when this client walks into a meeting.
+    expect(lastSocket?.events() ?? []).toContain("call_left");
+    expect(getCallSnapshot().connectedSessionId).toBeNull();
+    expect(getCallSnapshot().connectedMeetingId).toBe("cave-all-hands");
+  });
+
+  it("surfaces a refused meeting without touching the spatial state", async () => {
+    mockTokenFetch({ detail: "Invalid meeting id" }, false, 400);
+    const { startOrJoinMeeting, getCallSnapshot } = await import("./callStore");
+
+    await startOrJoinMeeting("cave-all-hands");
+
+    expect(getCallSnapshot().status).toBe("error");
+    expect(getCallSnapshot().error).toMatch(/Invalid meeting id/);
+    expect(getCallSnapshot().connectedMeetingId).toBeNull();
   });
 });

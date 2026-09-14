@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.auth.deps import get_current_email
@@ -49,4 +51,47 @@ async def create_call_token(
     # Create-or-reuse: the first caller mints the room, everyone after joins the same one.
     room = call_registry.room_for_session(session_id)
     # Grants/TTL live in services/livekit_tokens.py (shared with board voice, W5-B).
+    return CallTokenOut(**mint_voice_token(email, room))
+
+
+# --- standalone meetings -------------------------------------------------------------------------
+# A SPATIAL CALL is a conversation between avatars who are already standing together, so it
+# requires >=2 people by definition (above, unchanged). A MEETING is the other thing an office
+# needs and this app did not have: a room you open and wait in — an All Hands, a demo in the
+# Championship Cave — where the HOST IS LEGITIMATELY ALONE until people arrive.
+#
+# This is the same shape as W5-B board voice (routers/whiteboards.py), which already mints a token
+# with no minimum head-count for exactly that reason. Nothing new is introduced: same registry,
+# same grants, same TTL, same identity rule, same one LiveKit room per key. No database, no
+# schema, no second calling system, and the spatial rule above is untouched.
+
+# Meeting ids are chosen by the client and become a registry key, so they are constrained rather
+# than trusted: lowercase, url-safe, bounded.
+_MEETING_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+
+
+def meeting_room_key(meeting_id: str) -> str:
+    """The CallRegistry key for a standalone meeting. Namespaced so it can never collide with a
+    spatial session id or a board voice key; the registry still mints an OPAQUE room name for it."""
+    return f"meeting:{meeting_id}"
+
+
+@router.post("/meetings/{meeting_id}/token", response_model=CallTokenOut)
+async def create_meeting_token(
+    meeting_id: str,
+    email: str = Depends(get_current_email),
+) -> CallTokenOut:
+    """Mint a token for a standalone meeting room. ONE HOST MAY START IT ALONE, and everyone who
+    asks for the same meeting id afterwards joins the SAME room — that is the whole point.
+
+    Eligibility is "any signed-in employee", the same rule a room/office whiteboard's voice uses.
+    Identity comes from the verified bearer (or dev) identity, never from the path or the body.
+    """
+    livekit_config()
+    key = meeting_id.strip().lower()
+    if not _MEETING_ID.match(key):
+        raise HTTPException(status_code=400, detail="Invalid meeting id")
+    # Create-or-reuse, exactly like a spatial call: the first arrival mints the room, everyone
+    # after joins it. A lone host who leaves and comes back lands in the same room.
+    room = call_registry.room_for_session(meeting_room_key(key))
     return CallTokenOut(**mint_voice_token(email, room))
