@@ -13,6 +13,11 @@ import { CENTRAL_HUB, OPEN_BANDS as HUB_OPEN_BANDS, centralHubEntities,
 import { EXECUTIVE_ROOM, executiveRoomEntities,
   CABINET_L_INTERACTION_ID, CABINET_R_INTERACTION_ID, CREDENZA_INTERACTION_ID, DOOR_EAST_ID as EXEC_DOOR_EAST_ID,
   DOOR_WEST_ID as EXEC_DOOR_WEST_ID, EXECUTIVE_LOUNGE_IDS, EXECUTIVE_SEAT_IDS, MEDIA_INTERACTION_ID } from "../rooms/executive";
+import { CMS_ROOM, cmsRoomEntities,
+  BOARD_INTERACTION_ID as CMS_BOARD_ID, CMS_LOUNGE_IDS, CMS_SEAT_IDS,
+  COUNTER_INTERACTION_ID as CMS_COUNTER_ID, DOOR_NORTH_ID as CMS_DOOR_NORTH_ID,
+  DOOR_SOUTH_ID as CMS_DOOR_SOUTH_ID, LIBRARY_INTERACTION_ID as CMS_LIBRARY_ID,
+  PRINTER_INTERACTION_ID as CMS_PRINTER_ID, STICKY_INTERACTION_ID as CMS_STICKY_ID } from "../rooms/cms";
 import { loadBossStatues } from "../build/hub-monument";
 import { openedCells, openedLayer, v2Static } from "../nav/v2Open";
 import { DerivedNav } from "../nav/derived";
@@ -38,7 +43,7 @@ import { LoungeSeatInteraction } from "../interact/LoungeSeat";
 import { Walkability, composeStatic } from "../nav/Walkability";
 import { clearanceLayer, worldClearances } from "../nav/clearance";
 import { SlidingDoor } from "../interact/Door";
-import { registerGroundFloor } from "../rooms/ground-floor";
+import { CORRIDOR_BANDS, registerGroundFloor } from "../rooms/ground-floor";
 import { planWalk, type NavResult } from "../nav/planner";
 import { v1Static } from "../adapters/v1Grid";
 import { Renderer } from "../render/Renderer";
@@ -61,6 +66,7 @@ world.addRoom(PROJECT_ROOM);
 world.addRoom(GAMING_ROOM);
 world.addRoom(CENTRAL_HUB);
 world.addRoom(EXECUTIVE_ROOM);
+world.addRoom(CMS_ROOM);
 for (const e of designRoomEntities()) world.addEntity(e);
 for (const e of receptionEntities()) world.addEntity(e);
 for (const e of meetingRoomEntities()) world.addEntity(e);
@@ -68,6 +74,7 @@ for (const e of projectRoomEntities()) world.addEntity(e);
 for (const e of gamingRoomEntities()) world.addEntity(e);
 for (const e of centralHubEntities()) world.addEntity(e);
 for (const e of executiveRoomEntities()) world.addEntity(e);
+for (const e of cmsRoomEntities()) world.addEntity(e);
 // baked decor solids (visual comes from the shell builder) participate in placement as footprint-only entities
 DESIGN_SOLIDS.forEach((r, i) =>
   world.addEntity({ id: `${DESIGN_ROOM.id}/solid-${i}`, kind: "solid", roomId: DESIGN_ROOM.id, transform: { pos: { x: r.x + r.w / 2, z: r.z + r.d / 2 }, yaw: 0 }, footprint: { shape: "rect", w: r.w, d: r.d }, capabilities: {}, props: {}, source: { baked: true } }),
@@ -91,12 +98,15 @@ const inBounds = (p: Vec2): boolean => world.walkableAt(p);
 // blocks one of its cells, correctly, because a body does not fit that close to the monument — and the six
 // are the single 6A record of the island decision. They are inert (every cell they touch is derived-
 // governed), so keeping them costs nothing and retiring them would be deleting evidence for tidiness.
-const openBands = [...HUB_OPEN_BANDS];
+// Phase 8 adds ONE band: the two cell rows the Dev room's clamped placeholder gives back, so the
+// corridor between it and the CMS room is walkable in the grid exactly where it is open in the geometry
+// (rooms/ground-floor PLACEHOLDER_SOUTH_CLAMP). It retires with that room's own reconstruction.
+const openBands = [...HUB_OPEN_BANDS, ...CORRIDOR_BANDS];
 const walkability = new Walkability(composeStatic(v2Static(v1Static, openedLayer(openBands)), inBounds, clearanceLayer(worldClearances(world))));
 // 7C: GEOMETRY-DERIVED NAVIGATION for EVERY RECONSTRUCTED ROOM. Inside these six the V1 grid is not
 // consulted at all — the floor, the walls, the furniture footprints and the avatar's routing clearance are
 // the authority. The hall, the sidewalk and the five unreconstructed rooms stay exactly as V1 painted them.
-const DERIVED_ROOM_IDS = new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id]);
+const DERIVED_ROOM_IDS = new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id, CMS_ROOM.id]);
 const derivedNav = new DerivedNav(world, { roomIds: DERIVED_ROOM_IDS });
 walkability.attachDerived(derivedNav, world);
 
@@ -126,6 +136,7 @@ mirror.buildRoom(PROJECT_ROOM, shellOpts());
 mirror.buildRoom(GAMING_ROOM, shellOpts()); // Phase 5B
 mirror.buildRoom(CENTRAL_HUB, shellOpts()); // Phase 6B — wall-less atrium: the builder owns its own floor plate
 mirror.buildRoom(EXECUTIVE_ROOM, shellOpts()); // Phase 7
+mirror.buildRoom(CMS_ROOM, shellOpts()); // Phase 8
 // The monument's two boss statues are sculpted GLBs; the ring ships with procedural placeholders standing
 // in their anchors and swaps them the moment the assets arrive. Fire-and-forget: a missing file leaves the
 // placeholders up and the hub otherwise untouched.
@@ -296,6 +307,14 @@ let execDoor = new SlidingDoor(mirror.view(EXEC_DOOR_WEST_ID), execDoorWest.capa
   closed: world.get(EXEC_DOOR_EAST_ID).transform.pos,
 });
 const execDoorState = { state: "closed", open: 0, drift: 0, cycles: 0 };
+// the CMS Room's west entrance: bi-parting, on the SAME controller Reception's and Executive's run on —
+// the north panel drives and the south one is its `opposed` mirror
+const cmsDoorNorth = world.get(CMS_DOOR_NORTH_ID);
+let cmsDoor = new SlidingDoor(mirror.view(CMS_DOOR_NORTH_ID), cmsDoorNorth.capabilities.door!, cmsDoorNorth.transform.pos, {
+  view: mirror.view(CMS_DOOR_SOUTH_ID),
+  closed: world.get(CMS_DOOR_SOUTH_ID).transform.pos,
+});
+const cmsDoorState = { state: "closed", open: 0, drift: 0, cycles: 0 };
 // ---- Reception interactions (3E.3) ------------------------------------------------------------------
 // One focused interaction at a time, driven by the SAME pieces the Design Room uses: ApproachInteraction
 // for walk-up points, SeatInteraction for the lounge chairs, planWalk for every route.
@@ -303,7 +322,7 @@ const approachCtl = new ApproachInteraction(avatar, stack, (to) => planWalk(avat
 const receptionState = { focus: "none", status: "idle", seat: "idle" };
 /** Every FIXED lounge seat in the world, flattened to one slot per entry: Reception's two tub chairs plus
  *  Project's two sofas (two cushions each) and two tub chairs. One list, one controller — no new system. */
-const loungeSeats = [...LOUNGE_SEAT_IDS, ...SOFA_SEAT_IDS, ...TUB_SEAT_IDS, SOFA_SEAT_ID, ...BAG_SEAT_IDS, ...HUB_LOUNGE_IDS, ...EXECUTIVE_LOUNGE_IDS].flatMap((id) => {
+const loungeSeats = [...LOUNGE_SEAT_IDS, ...SOFA_SEAT_IDS, ...TUB_SEAT_IDS, SOFA_SEAT_ID, ...BAG_SEAT_IDS, ...HUB_LOUNGE_IDS, ...EXECUTIVE_LOUNGE_IDS, ...CMS_LOUNGE_IDS].flatMap((id) => {
   const e = world.get(id);
   return e.capabilities.lounge!.slots.map((slot) => ({ id, slot, view: mirror.view(id), label: slot.id }));
 });
@@ -338,6 +357,7 @@ function clearSeats(): void {
   if (gamingSeat && gamingSeat.state !== "idle") gamingSeat.reset();
   if (hubSeat && hubSeat.state !== "idle") hubSeat.reset();
   if (execSeat && execSeat.state !== "idle") execSeat.reset();
+  if (cmsSeat && cmsSeat.state !== "idle") cmsSeat.reset();
 }
 function startHubSit(index: number): void {
   approachCtl.cancel();
@@ -360,6 +380,18 @@ function startExecutiveSit(index: number): void {
   execState.chair = id.split("/")[1];
   execSeat.sit();
 }
+/** The CMS Room's nine MOVABLE chairs (two lead, seven member) on the same one-at-a-time controller. */
+let cmsSeat: SeatInteraction | null = null;
+const cmsState = { chair: "none", seat: "idle", chairRestError: 0, slot: "none", door: "closed" };
+function startCmsSit(index: number): void {
+  approachCtl.cancel();
+  clearSeats();
+  const id = CMS_SEAT_IDS[index];
+  const e = world.get(id);
+  cmsSeat = new SeatInteraction(avatar, stack, mirror.view(id), e.capabilities.seat!, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+  cmsState.chair = id.split("/")[1];
+  cmsSeat.sit();
+}
 function startMeetingSit(index: number): void {
   approachCtl.cancel();
   clearSeats();
@@ -374,6 +406,7 @@ function startApproach(entityId: string): void {
   meetingSeat = null;
   gamingSeat = null;
   execSeat = null;
+  cmsSeat = null;
   const spec = world.get(entityId).capabilities.approach!;
   const r = approachCtl.begin(spec);
   receptionState.focus = spec.label;
@@ -386,6 +419,7 @@ function startLoungeSit(index: number): void {
   meetingSeat = null;
   gamingSeat = null;
   execSeat = null;
+  cmsSeat = null;
   const s = loungeSeats[index];
   loungeSeat = new LoungeSeatInteraction(avatar, stack, s.view, s.slot, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
   receptionState.focus = s.label;
@@ -442,6 +476,8 @@ function activateInteractable(id: string, kind: "seat" | "lounge" | "approach"):
     if (game >= 0) { startGamingSit(game); return true; }
     const exec = EXECUTIVE_SEAT_IDS.indexOf(id);
     if (exec >= 0) { startExecutiveSit(exec); return true; }
+    const cms = CMS_SEAT_IDS.indexOf(id);
+    if (cms >= 0) { startCmsSit(cms); return true; }
     if (id === CHAIR_4_ID) { seat.sit(); return true; }
     return false;
   }
@@ -449,7 +485,7 @@ function activateInteractable(id: string, kind: "seat" | "lounge" | "approach"):
   return true;
 }
 const engagedSeat = (): { stand: () => void } | null => {
-  for (const s2 of [loungeSeat, hubSeat, meetingSeat, gamingSeat, execSeat] as ({ state: string; stand: () => void } | null)[])
+  for (const s2 of [loungeSeat, hubSeat, meetingSeat, gamingSeat, execSeat, cmsSeat] as ({ state: string; stand: () => void } | null)[])
     if (s2 && s2.state === "seated") return s2;
   return seat.status === "seated" ? seat : null;
 };
@@ -597,6 +633,7 @@ cam.add({ f: () => focusOn(RECEPTION_ROOM.rect, 0.86) }, "f").name("focus: Recep
 cam.add({ f: () => focusOn(GAMING_ROOM.rect, 0.86) }, "f").name("focus: Gaming Room");
 cam.add({ f: () => focusOn(CENTRAL_HUB.rect, 0.92) }, "f").name("focus: Central Hub");
 cam.add({ f: () => focusOn(EXECUTIVE_ROOM.rect, 0.9) }, "f").name("focus: Executive Room");
+cam.add({ f: () => focusOn(CMS_ROOM.rect, 0.9) }, "f").name("focus: CMS Room");
 cam.add({ f: () => focusOn({ x: 616, z: 480, w: 222, d: 222 }, 0.9) }, "f").name("focus: Hub island");
 const ENTRANCE_VIEW: Rect = { x: 590, z: 1060, w: 260, d: 170 };
 cam.add({ f: () => focusOn(ENTRANCE_VIEW, 0.9) }, "f").name("focus: Reception entrance");
@@ -735,6 +772,26 @@ exec.add(execState, "chairRestError").name("chair rest drift").disable().listen(
 exec.add(execDoorState, "state").name("south door").disable().listen();
 exec.add(execDoorState, "open").name("south door open %").disable().listen();
 exec.add(execDoorState, "drift").name("south door drift").disable().listen();
+// ---- CMS Room (8) ------------------------------------------------------------------------------
+const cms = gui.addFolder("CMS Room (8)");
+CMS_SEAT_IDS.forEach((id, i) => cms.add({ f: () => startCmsSit(i) }, "f").name(`▶ sit: ${id.split("/")[1]}`));
+loungeSeats.forEach((s7, i) => {
+  if (!CMS_LOUNGE_IDS.includes(s7.id)) return;
+  cms.add({ f: () => { cmsState.slot = s7.label; startLoungeSit(i); } }, "f").name(`▶ sit: ${s7.label}`);
+});
+cms.add({ f: () => { cmsSeat?.stand(); loungeSeat?.stand(); } }, "f").name("▶ stand up (CMS)");
+cms.add({ f: () => startApproach(CMS_BOARD_ID) }, "f").name("▶ read the content plan");
+cms.add({ f: () => startApproach(CMS_COUNTER_ID) }, "f").name("▶ make a coffee");
+cms.add({ f: () => startApproach(CMS_LIBRARY_ID) }, "f").name("▶ browse the shelf");
+cms.add({ f: () => startApproach(CMS_STICKY_ID) }, "f").name("▶ read the sticky wall");
+cms.add({ f: () => startApproach(CMS_PRINTER_ID) }, "f").name("▶ collect a printout");
+cms.add(cmsState, "chair").disable().listen();
+cms.add(cmsState, "slot").disable().listen();
+cms.add(cmsState, "seat").disable().listen();
+cms.add(cmsState, "chairRestError").name("chair rest drift").disable().listen();
+cms.add(cmsDoorState, "state").name("west door").disable().listen();
+cms.add(cmsDoorState, "open").name("west door open %").disable().listen();
+cms.add(cmsDoorState, "drift").name("west door drift").disable().listen();
 game.add({ f: () => startApproach(DARTS_INTERACTION_ID) }, "f").name("▶ throw darts");
 game.add({ f: () => startApproach(FRIDGE_INTERACTION_ID) }, "f").name("▶ grab a drink");
 game.add({ f: () => startApproach(POSTER_INTERACTION_ID) }, "f").name("▶ arcade print");
@@ -841,11 +898,11 @@ function shadowsAreStale(): boolean {
   lastShadowPose.set(p.x, 0, p.z);
   lastShadowClip = clip;
   // a walking avatar animates continuously; doors and chairs report their own motion
-  return moved || navCtl.moving || door.state !== "closed" || entryDoor.state !== "closed" || gamingDoor.state !== "closed" || execDoor.state !== "closed"
+  return moved || navCtl.moving || door.state !== "closed" || entryDoor.state !== "closed" || gamingDoor.state !== "closed" || execDoor.state !== "closed" || cmsDoor.state !== "closed"
     || seat.status !== "idle" || approachCtl.status !== "idle"
     || (meetingSeat?.status ?? "idle") !== "idle" || (gamingSeat?.status ?? "idle") !== "idle"
     || (hubSeat?.status ?? "idle") !== "idle" || (loungeSeat?.status ?? "idle") !== "idle"
-    || (execSeat?.status ?? "idle") !== "idle";
+    || (execSeat?.status ?? "idle") !== "idle" || (cmsSeat?.status ?? "idle") !== "idle";
 }
 function loop(): void {
   requestAnimationFrame(loop);
@@ -872,6 +929,7 @@ function loop(): void {
     // no self-healing path — SeatInteraction advances on nothing but this call. executive.test.ts asserts
     // that every SeatInteraction declared in this file appears in this block.
     execSeat?.update(dt / 1000);
+    cmsSeat?.update(dt / 1000);
     loungeSeat?.update(dt / 1000);
     approachCtl.update(dt / 1000);
     navCtl.update(dt / 1000);
@@ -886,6 +944,7 @@ function loop(): void {
     entryDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
     gamingDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
     execDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
+    cmsDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
     updateScanners({ x: bp.x, z: bp.z });
     entryState.state = entryDoor.state; entryState.open = Math.round(entryDoor.t * 100);
     entryState.drift = entryDoor.state === "closed" ? Math.round(entryDoor.driftError() * 1e6) / 1e6 : entryState.drift;
@@ -918,6 +977,13 @@ function loop(): void {
     execDoorState.open = Math.round(execDoor.t * 100);
     execDoorState.drift = execDoor.state === "closed" ? Math.round(execDoor.driftError() * 1e6) / 1e6 : execDoorState.drift;
     execDoorState.cycles = execDoor.cycles;
+    cmsState.seat = cmsSeat ? cmsSeat.status : loungeSeat ? loungeSeat.status : "idle";
+    cmsState.chairRestError = cmsSeat ? Math.round(cmsSeat.chairRestError() * 1000) / 1000 : 0;
+    cmsState.door = cmsDoor.state;
+    cmsDoorState.state = cmsDoor.state;
+    cmsDoorState.open = Math.round(cmsDoor.t * 100);
+    cmsDoorState.drift = cmsDoor.state === "closed" ? Math.round(cmsDoor.driftError() * 1e6) / 1e6 : cmsDoorState.drift;
+    cmsDoorState.cycles = cmsDoor.cycles;
     projState.seat = loungeSeat ? loungeSeat.status : "idle";
     projState.drift = loungeSeat ? Math.round(loungeSeat.furnitureDrift() * 1e6) / 1e6 : 0;
     seatState.chairRestError = Math.round(seat.chairRestError() * 1000) / 1000;
@@ -1042,6 +1108,14 @@ loop();
     approaches: { cabinetWest: CABINET_L_INTERACTION_ID, cabinetEast: CABINET_R_INTERACTION_ID, media: MEDIA_INTERACTION_ID, credenza: CREDENZA_INTERACTION_ID },
     stand: () => { execSeat?.stand(); loungeSeat?.stand(); },
     get seat() { return execSeat; }, get lounge() { return loungeSeat; }, get door() { return execDoor; },
+  },
+  cms: {
+    state: cmsState, doorState: cmsDoorState, startSit: startCmsSit, startApproach, startLoungeSit,
+    chairs: CMS_SEAT_IDS,
+    seats: loungeSeats.map((s6, i) => ({ i, id: s6.id, slot: s6.label })).filter((r) => r.id.startsWith(CMS_ROOM.id)),
+    approaches: { board: CMS_BOARD_ID, counter: CMS_COUNTER_ID, library: CMS_LIBRARY_ID, sticky: CMS_STICKY_ID, printer: CMS_PRINTER_ID },
+    stand: () => { cmsSeat?.stand(); loungeSeat?.stand(); },
+    get seat() { return cmsSeat; }, get lounge() { return loungeSeat; }, get door() { return cmsDoor; },
   },
   edit: { session: edit, editState, movePlantTo: (x: number, z: number) => { edit.setEditMode(true); edit.select(HERO_PLANT_ID); const v = edit.preview({ x, z }); refreshEditVisuals(); return v; }, confirm: () => { const v = edit.confirm(); refreshEditVisuals(); return v; }, cancel: () => { edit.cancel(); refreshEditVisuals(); }, reset: () => { edit.reset(); refreshEditVisuals(); }, setEditMode: (v: boolean) => { params.editMode = v; edit.setEditMode(v); if (v) edit.select(HERO_PLANT_ID); refreshEditVisuals(); refresh(); } },
 };

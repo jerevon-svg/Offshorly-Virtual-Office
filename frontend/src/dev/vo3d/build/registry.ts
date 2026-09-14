@@ -17,6 +17,8 @@ import { gamingStatic } from "./gaming";
 import { centralHubStatic } from "./central-hub";
 import { executiveStatic } from "./executive";
 import { EXEC_KINDS, buildExecFurniture } from "./exec-furniture";
+import { CMS_KINDS, buildCmsFurniture } from "./cms-furniture";
+import { cmsStatic } from "./cms";
 
 export type BuildResult = { group: THREE.Group; sway: SwayNode[] };
 
@@ -43,6 +45,7 @@ export const ROOM_STATIC: Record<string, RoomStaticBuilder> = {
   "gaming-room": gamingStatic,
   "central-hub": centralHubStatic,
   "executive-room": executiveStatic,
+  "cms-room": cmsStatic,
 };
 
 export function buildEntity(e: Entity): BuildResult {
@@ -89,6 +92,10 @@ export function buildEntity(e: Entity): BuildResult {
     const w = Number(e.props.w), h = Number(e.props.h), handle = Number(e.props.handle);
     const group = new THREE.Group();
     group.position.set(e.transform.pos.x, 0, e.transform.pos.z);
+    // the leaf is authored in the XY plane (width along local x, faces along local z). A door in an
+    // EAST/WEST wall is the same leaf turned a quarter, so the carrier takes the entity's own yaw —
+    // 0 for every pre-8 leaf, so Reception's and Executive's entrances are untouched.
+    group.rotation.y = e.transform.yaw;
     const pane = new THREE.Mesh(new THREE.PlaneGeometry(w - 1.6, h - 6.4), facadeGlassMat());
     pane.position.set(0, 3.6 + (h - 6.4) / 2, 0);
     group.add(shadowed(pane, false, false));
@@ -102,6 +109,11 @@ export function buildEntity(e: Entity): BuildResult {
   // rooms' visual identity (see build/exec-furniture.ts). Routed by kind, nothing else changes.
   if ((EXEC_KINDS as readonly string[]).includes(e.kind)) {
     const group = buildExecFurniture(e, sway);
+    if (group) return { group, sway };
+  }
+  // CMS ROOM furniture: its own builders, for the same reason (see build/cms-furniture.ts).
+  if ((CMS_KINDS as readonly string[]).includes(e.kind)) {
+    const group = buildCmsFurniture(e);
     if (group) return { group, sway };
   }
   if (e.kind === "solid") return { group: new THREE.Group(), sway }; // footprint-only entity (baked decor drawn by the shell builder)

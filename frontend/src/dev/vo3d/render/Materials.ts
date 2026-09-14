@@ -90,6 +90,27 @@ export const PALETTE = {
   execRugBorder: 0xc7b9a2, //   its one inset border line: a half-tone darker, and that is the whole graphic
   execLeatherSeat: 0x332f2c, // the lighter hide of a seat/back cushion against the frame
   execOliveSeat: 0x6b7849, //   the lounge chairs' cushions, one step up from their shells
+
+  // ---- CMS ROOM (Phase 8) -------------------------------------------------------------------
+  // The content team's room is the office's one BLUE space. Every value below is measured off the V1
+  // art: rooms/cms-room.png for the architecture and the lounge, and the four separated
+  // furniture/cms-team/*.png for the desks and chairs.
+  cmsBlue: 0x4f8cc0, //       the signature mid blue: the content credenza band, the library carcass
+  cmsBlueDeep: 0x2a5c83, //   drawer pedestals, the lead desks' base, every reveal in the blue joinery
+  cmsNavy: 0x1d3f66, //       the lounge pouf: the deepest blue in the room (measured 34,80,133…0,33,62)
+  cmsSofa: 0x4c8dbf, //       the three-seat sofa's body (measured 79,142,191)
+  cmsSofaSeat: 0x5e9aca, //   its cushions, one step up so the seat reads separately from the frame
+  cmsSeat: 0x11466f, //       task-chair upholstery (measured 14,66,111)
+  cmsSeatLead: 0x3a7fb3, //   the two lead chairs' lighter blue (measured 55,125,177)
+  cmsOak: 0xd8b58c, //        light oak: every desk top, the coffee table, the counter, the east credenza
+  cmsOakDark: 0xa87a4c, //    their edges, legs, plinths and reveals
+  cmsRug: 0x53749c, //        the lounge rug's dusty blue pile (measured 83,116,156)
+  cmsRugBorder: 0x44607f, //  its one inset border line, a half-tone darker — that is the whole graphic
+  cmsScreen: 0x465e74, //     the member desks' slate privacy screens (measured 70,94,116)
+  cmsPlaster: 0xf2f0f2, //    this room's walls: a COOLER white than PALETTE.plaster (measured 244,242,243)
+  cmsFloorTint: 0xe9e9ec, //  multiply tint for THIS room's tile only — the reference floor is cool grey
+  cmsBoard: 0xf3f2f1, //      the whiteboard / sticky-wall face
+  cmsFrame: 0xc6c6c9, //      chair frames, arms and casters: the light grey the art gives them
 };
 
 // ---- shared materials -------------------------------------------------------------------

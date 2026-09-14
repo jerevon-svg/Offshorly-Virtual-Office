@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { EXECUTIVE_ROOM } from "./rooms/executive";
+import { CMS_ROOM } from "./rooms/cms";
 import { CENTRAL_HUB } from "./rooms/central-hub";
 import manifest from "../../data/office-assets-manifest.json";
 import { WorldState } from "./world/WorldState";
@@ -31,6 +32,7 @@ function rig() {
   world.addRoom(GAMING_ROOM);
   world.addRoom(CENTRAL_HUB);
   world.addRoom(EXECUTIVE_ROOM);
+  world.addRoom(CMS_ROOM);
   const plan = registerGroundFloor(world);
   const inBounds = (p: Vec2) => world.walkableAt(p);
   const wk = new Walkability(composeStatic(v1Static, inBounds, clearanceLayer(worldClearances(world))));
@@ -60,13 +62,13 @@ describe("vo3d ground floor — every V1 room in ONE world", () => {
     expect(rooms.find((r) => r.id === "design-room")!.rect).toEqual(DESIGN_ROOM.rect);
     const plan = groundFloor();
     // manifest order, not phase order: project-room and meeting-room precede reception-room in the manifest
-    expect(plan.rooms.filter((r) => r.reconstructed).map((r) => r.id)).toEqual(["executive-room", "design-room", "gaming-room", "project-room", "meeting-room", "reception-room", "central-hub"]);
+    expect(plan.rooms.filter((r) => r.reconstructed).map((r) => r.id)).toEqual(["executive-room", "cms-room", "design-room", "gaming-room", "project-room", "meeting-room", "reception-room", "central-hub"]);
     expect(plan.rooms.find((r) => r.id === "central-hub")!.walls).toBe(false); // Phase 6B: reconstructed AND still wall-less
     // room art boxes never overlap by more than one cell (gaming/project overlap by 12 units in V1) → interiorRects are disjoint
     for (const a of rooms) for (const b of rooms) if (a !== b) { const ox = Math.min(a.rect.x + a.rect.w, b.rect.x + b.rect.w) - Math.max(a.rect.x, b.rect.x), oz = Math.min(a.rect.z + a.rect.d, b.rect.z + b.rect.d) - Math.max(a.rect.z, b.rect.z); expect(Math.min(ox, oz) <= CELL, `${a.id} vs ${b.id}`).toBe(true); }
   });
 
-  it("world regions: 7 reconstructed floors, sidewalk, 4 unwalkable footprints, shared floor with room holes, doorway thresholds; bounds = frame", () => {
+  it("world regions: 8 reconstructed floors, sidewalk, 3 unwalkable footprints, shared floor with room holes, doorway thresholds; bounds = frame", () => {
     const { world, plan } = rig();
     expect(world.bounds).toEqual(FRAME);
     const regions = groundFloorRegions(plan, world);
@@ -76,10 +78,10 @@ describe("vo3d ground floor — every V1 room in ONE world", () => {
     // changes hands. See groundFloorRegions.
     const doors = [...world.entities.values()].filter((e) => e.capabilities.door);
     expect(doors.length).toBeGreaterThan(0);
-    expect(regions.map((r) => r.kind)).toEqual([...Array(7).fill("room-floor"), "exterior", ...Array(4).fill("room-floor"), "shared-floor", ...Array(doors.length).fill("room-floor")]);
-    expect(regions.filter((r) => r.walkable)).toHaveLength(9 + doors.length);
+    expect(regions.map((r) => r.kind)).toEqual([...Array(8).fill("room-floor"), "exterior", ...Array(3).fill("room-floor"), "shared-floor", ...Array(doors.length).fill("room-floor")]);
+    expect(regions.filter((r) => r.walkable)).toHaveLength(10 + doors.length);
     expect(regions.filter((r) => r.walkable).map((r) => r.id)).toEqual([
-      "floor:executive-room", "floor:design-room", "floor:gaming-room", "floor:project-room", "floor:meeting-room", "floor:reception-room", "floor:central-hub",
+      "floor:executive-room", "floor:cms-room", "floor:design-room", "floor:gaming-room", "floor:project-room", "floor:meeting-room", "floor:reception-room", "floor:central-hub",
       "exterior:sidewalk", "shared:ground-floor", ...doors.map((e) => `threshold:${e.id}`),
     ]);
     expect(regions.find((r) => r.kind === "shared-floor")!.holes).toHaveLength(11);
