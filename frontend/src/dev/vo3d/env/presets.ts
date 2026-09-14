@@ -135,26 +135,63 @@ export function lerpHex(a: number, b: number, t: number): number {
   return (r << 16) | (g << 8) | bl;
 }
 
-/** Interpolate two presets. Proof that the presentation data is smoothly blendable — the seam a future
- *  continuous 24h cycle plugs into. NOT used by the environment: V2 applies discrete phases only. */
+/** Interpolate two presets. Proof that the presentation data is smoothly blendable — and, since the
+ *  weather/time TRANSITION landed, the thing the environment actually rides every frame while a grade is
+ *  moving. V2 still only ever TARGETS a discrete phase × weather pair; the blend is how it gets there. */
 export function blendPreset(a: EnvPreset, b: EnvPreset, t: number): EnvPreset {
-  const u = Math.max(0, Math.min(1, t));
+  return blendPresetInto(clonePreset(a), a, b, t);
+}
+
+/** A deep, independently-mutable copy. The seed for a preset a caller intends to write into. */
+export function clonePreset(p: EnvPreset): EnvPreset {
   return {
-    sky: lerpHex(a.sky, b.sky, u),
-    stage: lerpHex(a.stage, b.stage, u),
-    skyGrade: {
-      top: lerpHex(a.skyGrade.top, b.skyGrade.top, u),
-      horizon: lerpHex(a.skyGrade.horizon, b.skyGrade.horizon, u),
-      stars: lerp(a.skyGrade.stars, b.skyGrade.stars, u),
-      moon: lerp(a.skyGrade.moon, b.skyGrade.moon, u),
-    },
-    fog: a.fog && b.fog ? { near: lerp(a.fog.near, b.fog.near, u), far: lerp(a.fog.far, b.fog.far, u) } : u < 0.5 ? a.fog : b.fog,
-    key: { color: lerpHex(a.key.color, b.key.color, u), intensity: lerp(a.key.intensity, b.key.intensity, u), azimuth: lerp(a.key.azimuth, b.key.azimuth, u), elevation: lerp(a.key.elevation, b.key.elevation, u) },
-    fill: { color: lerpHex(a.fill.color, b.fill.color, u), intensity: lerp(a.fill.intensity, b.fill.intensity, u) },
-    hemi: { sky: lerpHex(a.hemi.sky, b.hemi.sky, u), ground: lerpHex(a.hemi.ground, b.hemi.ground, u), intensity: lerp(a.hemi.intensity, b.hemi.intensity, u) },
-    envIntensity: lerp(a.envIntensity, b.envIntensity, u),
-    exposure: lerp(a.exposure, b.exposure, u),
-    exteriorTint: lerp(a.exteriorTint, b.exteriorTint, u),
-    practicals: lerp(a.practicals, b.practicals, u),
+    ...p,
+    skyGrade: { ...p.skyGrade },
+    fog: p.fog ? { ...p.fog } : null,
+    key: { ...p.key },
+    fill: { ...p.fill },
+    hemi: { ...p.hemi },
   };
+}
+
+/** THE ALLOCATION-FREE BLEND. Same maths as blendPreset, written into a preset the caller already owns.
+ *
+ *  This exists because a SMOOTH transition runs the blend once per frame, and a version that returns a
+ *  fresh object (plus five fresh nested ones) would be six allocations per frame for the whole of every
+ *  Clear→Rain fade — exactly the per-frame garbage the environment is otherwise careful never to make.
+ *
+ *  `out` MAY ALIAS `a` — that is the normal call, `blendPresetInto(shown, shown, target, u)`. Every field
+ *  is therefore read from a/b and written to out exactly once, in that order, with no field read back
+ *  after it has been written. */
+export function blendPresetInto(out: EnvPreset, a: EnvPreset, b: EnvPreset, t: number): EnvPreset {
+  const u = Math.max(0, Math.min(1, t));
+  out.sky = lerpHex(a.sky, b.sky, u);
+  out.stage = lerpHex(a.stage, b.stage, u);
+  out.skyGrade.top = lerpHex(a.skyGrade.top, b.skyGrade.top, u);
+  out.skyGrade.horizon = lerpHex(a.skyGrade.horizon, b.skyGrade.horizon, u);
+  out.skyGrade.stars = lerp(a.skyGrade.stars, b.skyGrade.stars, u);
+  out.skyGrade.moon = lerp(a.skyGrade.moon, b.skyGrade.moon, u);
+  // Fog is the one field that can be absent. Two fogged presets interpolate; anything else snaps at the
+  // midpoint rather than inventing a fog that neither end has.
+  if (a.fog && b.fog) {
+    const near = lerp(a.fog.near, b.fog.near, u), far = lerp(a.fog.far, b.fog.far, u);
+    if (out.fog) { out.fog.near = near; out.fog.far = far; } else out.fog = { near, far };
+  } else {
+    const src = u < 0.5 ? a.fog : b.fog;
+    out.fog = src ? (out.fog ? Object.assign(out.fog, src) : { ...src }) : null;
+  }
+  out.key.color = lerpHex(a.key.color, b.key.color, u);
+  out.key.intensity = lerp(a.key.intensity, b.key.intensity, u);
+  out.key.azimuth = lerp(a.key.azimuth, b.key.azimuth, u);
+  out.key.elevation = lerp(a.key.elevation, b.key.elevation, u);
+  out.fill.color = lerpHex(a.fill.color, b.fill.color, u);
+  out.fill.intensity = lerp(a.fill.intensity, b.fill.intensity, u);
+  out.hemi.sky = lerpHex(a.hemi.sky, b.hemi.sky, u);
+  out.hemi.ground = lerpHex(a.hemi.ground, b.hemi.ground, u);
+  out.hemi.intensity = lerp(a.hemi.intensity, b.hemi.intensity, u);
+  out.envIntensity = lerp(a.envIntensity, b.envIntensity, u);
+  out.exposure = lerp(a.exposure, b.exposure, u);
+  out.exteriorTint = lerp(a.exteriorTint, b.exteriorTint, u);
+  out.practicals = lerp(a.practicals, b.practicals, u);
+  return out;
 }

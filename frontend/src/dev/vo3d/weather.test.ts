@@ -8,7 +8,11 @@ import {
   type WeatherObservation, type WeatherProvider, type WeatherState,
 } from "./env/weather";
 import { ManualWeatherProvider } from "./env/providers/manual";
-import { RAIN_PARAMS, WEATHER_WEIGHT, WETNESS, isRaining, weatherGrade, weatherPreset } from "./env/weatherGrade";
+import {
+  LIGHTNING, LIGHTNING_PHASE_GAIN, RAIN_PARAMS, WEATHER_WEIGHT, WETNESS, WIND,
+  isRaining, weatherGrade, weatherPreset,
+} from "./env/weatherGrade";
+import { Lightning, envelope, type ThunderEvent } from "./env/Lightning";
 import { RAIN_POOL, Rain } from "./env/Rain";
 import { buildExterior } from "./build/exterior";
 import { FRAME } from "./adapters/v1Floor";
@@ -379,5 +383,286 @@ describe("vo3d weather — switching costs nothing structural", () => {
     expect(sc.stats).toEqual(expect.objectContaining(before));
     expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+// ENVIRONMENT REACTIONS: wind, standing water, the storm, and the fact that a grade now TRAVELS.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════════
+
+describe("vo3d weather — the reaction tables", () => {
+  it("gives every state a wind, rising with the weather and never still", () => {
+    for (const s of WEATHER_STATES) {
+      expect(WIND[s], s).toBeGreaterThan(0); // a perfectly static world reads as a photograph
+      expect(WIND[s], s).toBeLessThanOrEqual(1);
+    }
+    // the jump that has to be visible is clear → raining
+    expect(WIND.rain).toBeGreaterThan(WIND.cloudy * 2);
+    expect(WIND.clear).toBeLessThan(WIND.rain);
+    expect(WIND.thunderstorm).toBeGreaterThanOrEqual(WIND.heavy_rain);
+  });
+
+  it("schedules lightning only where there is rain to hang it on, and never at strobe rate", () => {
+    expect(LIGHTNING.clear).toBeNull();
+    expect(LIGHTNING.cloudy).toBeNull();
+    for (const s of ["rain", "heavy_rain", "thunderstorm"] as const) {
+      const p = LIGHTNING[s]!;
+      expect(p, s).not.toBeNull();
+      expect(p.minGap, s).toBeGreaterThanOrEqual(8); // the no-strobe floor
+      expect(p.maxGap, s).toBeGreaterThan(p.minGap); // a RANGE, or it is a metronome
+      expect(p.strength, s).toBeGreaterThan(0);
+      expect(p.strength, s).toBeLessThanOrEqual(1);
+    }
+    // a thunderstorm strikes more often and harder than a shower does
+    expect(LIGHTNING.thunderstorm!.minGap).toBeLessThan(LIGHTNING.rain!.minGap);
+    expect(LIGHTNING.thunderstorm!.strength).toBeGreaterThan(LIGHTNING.rain!.strength);
+  });
+
+  it("makes a strike worth most at night and least at noon, without a second lightning table", () => {
+    expect(LIGHTNING_PHASE_GAIN.day).toBeLessThan(LIGHTNING_PHASE_GAIN.sunset);
+    expect(LIGHTNING_PHASE_GAIN.sunset).toBeLessThan(LIGHTNING_PHASE_GAIN.night);
+    expect(LIGHTNING_PHASE_GAIN.night).toBe(1);
+    expect(LIGHTNING_PHASE_GAIN.day).toBeGreaterThan(0); // subtle, not absent
+  });
+
+  it("hands wind and lightning out through the same one-pull grade as rain and wetness", () => {
+    for (const phase of PHASES) {
+      for (const s of WEATHER_STATES) {
+        const g = weatherGrade(s, phase);
+        expect(g.wind).toBe(WIND[s]);
+        expect(g.lightning).toBe(LIGHTNING[s]);
+      }
+    }
+  });
+});
+
+describe("vo3d weather — lightning is a number, not a light", () => {
+  it("rises fast, falls fast, and is gone well inside half a second", () => {
+    expect(envelope(-1)).toBe(0);
+    expect(envelope(0)).toBe(0);
+    expect(envelope(0.035)).toBeCloseTo(1, 5); // the peak, 35ms in
+    expect(envelope(0.02)).toBeGreaterThan(0.4); // still climbing
+    expect(envelope(0.2)).toBeLessThan(0.3); // most of the way down
+    expect(envelope(0.6)).toBeLessThan(0.02); // effectively out
+    // monotonic decay after the peak
+    for (let a = 0.04; a < 0.5; a += 0.02) expect(envelope(a + 0.02)).toBeLessThan(envelope(a));
+  });
+
+  it("never strikes faster than its own floor, and the gaps are not a metronome", () => {
+    const L = new Lightning(12345);
+    L.setParams(LIGHTNING.thunderstorm, "thunderstorm");
+    const at: number[] = [];
+    L.onStrike = (e) => at.push(e.at);
+    for (let i = 0; i < 60_000; i++) L.update(1 / 60); // ~16 minutes of storm
+    expect(at.length).toBeGreaterThan(20); // it did actually storm
+    const gaps: number[] = [];
+    for (let i = 1; i < at.length; i++) gaps.push(at[i] - at[i - 1]);
+    const P = LIGHTNING.thunderstorm!;
+    for (const g of gaps) {
+      expect(g).toBeGreaterThanOrEqual(P.minGap - 0.02);
+      expect(g).toBeLessThanOrEqual(P.maxGap + 0.02);
+    }
+    // NOT REPETITIVE: the gaps have to actually spread across the range, or this is a strobe with a
+    // long period. Anything under a couple of seconds of spread would be one.
+    const mean = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+    const spread = Math.sqrt(gaps.reduce((a, b) => a + (b - mean) ** 2, 0) / gaps.length);
+    expect(spread).toBeGreaterThan(2);
+  });
+
+  it("flashes and returns to exactly nothing between strikes", () => {
+    const L = new Lightning(777);
+    L.setParams(LIGHTNING.thunderstorm, "thunderstorm");
+    const e = L.strike()!;
+    expect(e).not.toBeNull();
+    L.update(0.035);
+    expect(L.flash).toBeGreaterThan(0.1); // the sky is lit
+    expect(L.flash).toBeLessThanOrEqual(1); // and never over-lit
+    for (let i = 0; i < 120; i++) L.update(1 / 60); // two seconds later
+    expect(L.flash).toBe(0); // exactly nothing — not a floor it creeps toward
+  });
+
+  it("emits a thunder event carrying everything a delayed clap needs — and plays nothing", () => {
+    const L = new Lightning(4242);
+    L.setParams(LIGHTNING.heavy_rain, "heavy_rain");
+    const heard: ThunderEvent[] = [];
+    L.onStrike = (e) => heard.push(e);
+    for (let i = 0; i < 30_000; i++) L.update(1 / 60);
+    expect(heard.length).toBeGreaterThan(3);
+    for (const e of heard) {
+      expect(e.state).toBe("heavy_rain");
+      expect(e.distanceKm).toBeGreaterThan(0);
+      expect(e.strength).toBeGreaterThan(0);
+      expect(e.strength).toBeLessThanOrEqual(1);
+      // the real figure: 343 m/s, so the clap lands distance/0.343 seconds after the flash
+      expect(e.delaySeconds).toBeCloseTo(e.distanceKm / 0.343, 5);
+      expect(e.delaySeconds).toBeGreaterThan(1); // a storm has a size; nothing is on top of you
+      expect(typeof e.double).toBe("boolean");
+    }
+    // a near strike is brighter than a far one — the falloff is real, not decoration
+    const near = heard.reduce((a, b) => (a.distanceKm <= b.distanceKm ? a : b));
+    const far = heard.reduce((a, b) => (a.distanceKm >= b.distanceKm ? a : b));
+    expect(near.strength).toBeGreaterThan(far.strength);
+  });
+
+  it("stops dead where a state does not strike, and when the dev panel mutes it", () => {
+    const L = new Lightning(9);
+    L.setParams(LIGHTNING.clear, "clear");
+    expect(L.striking).toBe(false);
+    for (let i = 0; i < 20_000; i++) L.update(1 / 60);
+    expect(L.count).toBe(0);
+    expect(L.flash).toBe(0);
+    expect(L.strike()).toBeNull(); // not even on demand: there is no storm to strike from
+
+    L.setParams(LIGHTNING.thunderstorm, "thunderstorm");
+    L.enabled = false;
+    for (let i = 0; i < 20_000; i++) L.update(1 / 60);
+    expect(L.count).toBe(0);
+  });
+
+  it("gives a double strike a second pulse that re-lights the sky", () => {
+    // drive it with a params object that ALWAYS doubles, so the branch is exercised deterministically
+    const L = new Lightning(31337);
+    L.setParams({ minGap: 999, maxGap: 1000, doubleChance: 1, strength: 1 }, "thunderstorm");
+    const e = L.strike()!;
+    expect(e.double).toBe(true);
+    L.update(0.035);
+    const first = L.flash;
+    for (let i = 0; i < 6; i++) L.update(1 / 60); // ~100ms: the first pulse is falling
+    const trough = L.flash;
+    let peak = 0;
+    for (let i = 0; i < 12; i++) { L.update(1 / 60); peak = Math.max(peak, L.flash); }
+    expect(first).toBeGreaterThan(0.3);
+    expect(peak).toBeGreaterThan(trough); // the sky lit a second time rather than simply decaying
+  });
+});
+
+describe("vo3d weather — a grade travels instead of popping", () => {
+  function fakeRenderer() {
+    return {
+      scene: { background: null as unknown, fog: null as unknown, add() {}, environmentIntensity: 1 },
+      camera: {}, target: new THREE.Vector3(), camDist: 6000,
+      key: new THREE.DirectionalLight(), fill: new THREE.DirectionalLight(), hemi: new THREE.HemisphereLight(),
+      lightParams: {} as never,
+      placeLight() { this.placed++; },
+      applyLightLevels() { this.levels++; },
+      placed: 0, levels: 0,
+    };
+  }
+
+  it("does not land a weather change on the frame it is asked for, and does land on the target", async () => {
+    const { Environment } = await import("./env/Environment");
+    const R = fakeRenderer();
+    const env = new Environment(R as never);
+    env.apply("day"); // the first grade of a session has nothing to fade from: instant
+    expect(env.travelling).toBe(false);
+    expect(env.wetness).toBe(WETNESS.clear);
+
+    env.setWeather("heavy_rain");
+    expect(env.travelling).toBe(true);
+    expect(env.wetness).toBeLessThan(WETNESS.heavy_rain); // still on its way — this is the anti-pop
+    env.tick(0.2);
+    const partway = env.wetness;
+    expect(partway).toBeGreaterThan(0);
+    expect(partway).toBeLessThan(WETNESS.heavy_rain);
+    for (let i = 0; i < 600; i++) env.tick(1 / 60); // ten seconds: comfortably past 4 tau
+    expect(env.travelling).toBe(false);
+    expect(env.wetness).toBeCloseTo(WETNESS.heavy_rain, 6);
+    expect(env.wind).toBeCloseTo(WIND.heavy_rain, 6);
+  });
+
+  it("arrives EXACTLY on CLEAR, so a fair day is byte-for-byte the approved presentation", async () => {
+    const { Environment } = await import("./env/Environment");
+    const R = fakeRenderer();
+    const env = new Environment(R as never);
+    env.apply("night");
+    env.setWeather("thunderstorm");
+    env.settle();
+    env.setWeather("clear");
+    for (let i = 0; i < 900; i++) env.tick(1 / 60);
+    expect(env.travelling).toBe(false);
+    expect(env.wetness).toBe(WETNESS.clear);
+    expect(env.wind).toBe(WIND.clear);
+    // the approved night sky, not something 0.4% away from it
+    expect((R.scene.background as THREE.Color).getHex()).toBe(ENV_PRESETS.night.sky);
+  });
+
+  it("never asks for a shadow redraw while only the WEATHER is travelling", async () => {
+    const { Environment } = await import("./env/Environment");
+    const R = fakeRenderer();
+    const env = new Environment(R as never);
+    env.apply("day");
+    const placedAfterFirstGrade = R.placed;
+    env.setWeather("thunderstorm");
+    for (let i = 0; i < 600; i++) env.tick(1 / 60);
+    // the overcast targets deliberately carry no azimuth/elevation, so the sun cannot have moved and the
+    // ~5s of per-frame re-grading must have gone down the levels-only path every single time
+    expect(R.placed).toBe(placedAfterFirstGrade);
+    expect(R.levels).toBeGreaterThan(100);
+  });
+
+  it("cuts rather than fades when the PRESENTATION changes", async () => {
+    const { Environment } = await import("./env/Environment");
+    const R = fakeRenderer();
+    const env = new Environment(R as never);
+    env.apply("day");
+    env.setWeather("rain");
+    env.settle();
+    expect(env.setPresentation("office")).toBe(true);
+    expect(env.travelling).toBe(false); // a wall does not dissolve
+    expect((R.scene.background as THREE.Color).getHex()).not.toBe(ENV_PRESETS.day.sky);
+  });
+
+  it("turns transitions off for a rig that wants the target on the frame it asked", async () => {
+    const { Environment } = await import("./env/Environment");
+    const env = new Environment(fakeRenderer() as never);
+    env.apply("day");
+    env.transitions = false;
+    env.setWeather("heavy_rain");
+    expect(env.travelling).toBe(false);
+    expect(env.wetness).toBe(WETNESS.heavy_rain);
+  });
+});
+
+describe("vo3d weather — the Cave is sealed against the storm", () => {
+  function fakeRenderer() {
+    return {
+      scene: { background: null as unknown, fog: null as unknown, add() {}, environmentIntensity: 1 },
+      camera: {}, target: new THREE.Vector3(), camDist: 6000,
+      key: new THREE.DirectionalLight(), fill: new THREE.DirectionalLight(), hemi: new THREE.HemisphereLight(),
+      lightParams: {} as never, placeLight() {}, applyLightLevels() {},
+    };
+  }
+
+  it("runs no storm at all inside a sealed interior, and restarts it on the way out", async () => {
+    const { Environment } = await import("./env/Environment");
+    const env = new Environment(fakeRenderer() as never);
+    env.apply("night");
+    env.setWeather("thunderstorm");
+    env.settle();
+    expect(env.storm.striking).toBe(true); // outside: a storm
+
+    env.setPresentation("interior");
+    expect(env.storm.striking).toBe(false); // inside: not a dimmer storm — NO storm
+    expect(env.storm.strike()).toBeNull();
+    for (let i = 0; i < 30_000; i++) env.tick(1 / 60); // eight minutes in the Cave
+    expect(env.storm.count).toBe(0);
+    expect(env.flash).toBe(0); // the outdoors is not observable from a windowless theatre
+
+    env.setPresentation("world");
+    expect(env.storm.striking).toBe(true); // and the weather was still happening the whole time
+  });
+
+  it("keeps a lightning flash out of the interior grade even if one were somehow live", async () => {
+    const { Environment } = await import("./env/Environment");
+    const R = fakeRenderer();
+    const env = new Environment(R as never);
+    env.apply("night");
+    env.setWeather("thunderstorm");
+    env.setPresentation("interior");
+    env.tick(1 / 60);
+    // the sealed rig's own fixed background, unlit by any sky
+    const bg = (R.scene.background as THREE.Color).getHex();
+    expect(bg).toBe(0x04050a);
+    expect(R.scene.fog).toBeNull();
   });
 });

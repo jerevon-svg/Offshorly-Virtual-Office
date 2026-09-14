@@ -38,7 +38,7 @@ const EX = {
   paving: 0xcdc5b7, pavingWarm: 0xd8d0c1, curb: 0xb3aca0, soil: 0x5d5545,
   trunk: 0x7b5f45, canopy: 0x568f3c, canopyLight: 0x6fa74a, canopyDeep: 0x40723a, conifer: 0x3f6b4b,
   beltNear: 0x4f7a4c, beltFar: 0x5d8270, hill: 0x6d8f63, hillFar: 0x7e9a84,
-  hedge: 0x557a3e, pole: 0x474c53, lamp: 0xffe6bd, bollard: 0xb8b1a6,
+  hedge: 0x557a3e, pole: 0x474c53, lamp: 0xffe6bd, bollard: 0xb8b1a6, puddle: 0x2b3a42,
   bench: 0xc09a6a, benchFrame: 0x4a4f55, stone: 0x6e6a62, stoneDark: 0xb9b1a3, signPlinth: 0x4c4944, signFace: 0x22302a,
   glass: 0x2a3944, tyre: 0x25262c, water: 0x5f93a8, shore: 0xa79b85,
 } as const;
@@ -59,6 +59,11 @@ class ExteriorMaterials {
   readonly tintable: Tintable[] = [];
   readonly practicals: Practical[] = [];
   readonly wettable: Wettable[] = [];
+  /** THE WIND, as two shared uniform objects. Every foliage material's compiled program points at THESE
+   *  two objects, so "the wind picked up" is one float write for the whole campus — not a traversal, not
+   *  a per-material loop, and not one matrix per tree. */
+  readonly windGain = { value: 0 };
+  readonly windTime = { value: 0 };
   private readonly cache = new Map<string, THREE.MeshStandardMaterial>();
 
   /** a plain, tintable exterior surface */
@@ -106,6 +111,70 @@ class ExteriorMaterials {
   facet(hex: number, roughness = 0.9): THREE.MeshStandardMaterial {
     return this.surface(hex, roughness, { flatShading: true });
   }
+  /** REGISTER A MATERIAL AS FOLIAGE THAT BENDS IN THE WIND.
+   *
+   *  WHY A SHADER AND NOT THE SWAY SYSTEM. render/Sway already animates planting — by writing a rotation
+   *  onto an Object3D per node, per frame. That is exactly right for the dozen potted plants inside the
+   *  rooms and exactly wrong out here, where the planting is several hundred trees living inside four
+   *  InstancedMeshes: swaying them on the CPU would mean recomposing and re-uploading a whole instance
+   *  matrix buffer every frame, for four buffers, forever. So the bend is moved into the vertex shader,
+   *  where it costs two sines per vertex, touches no buffer, and scales to any number of instances.
+   *
+   *  BENDING, NOT SLIDING. The offset is proportional to HEIGHT ABOVE THE INSTANCE ORIGIN (the geometry
+   *  is authored with its base at y=0), so trunks stay planted and only the crown travels — the whole
+   *  difference between a tree in wind and a tree on a conveyor belt. `flex` is how far the top of a
+   *  100-unit tree moves at full wind, in world units.
+   *
+   *  DECORRELATED PER INSTANCE. The phase seed comes from the instance's own translation column, so two
+   *  trees standing side by side are never in step; without it a row of street trees pumps in unison and
+   *  the whole campus reads as one object.
+   *
+   *  SHADOWS. The depth material is deliberately NOT patched. Shadow maps here are drawn on demand
+   *  (Renderer.shadowMap.autoUpdate = false), so a canopy's shadow is a still frame whatever the crown
+   *  does — patching depth as well would buy a matching shadow only on the frames the map happened to be
+   *  redrawn, at the price of a second shader variant per foliage material. At diorama scale, with a
+   *  crown travelling a few units, the mismatch is not findable by eye. */
+  foliage(m: THREE.MeshStandardMaterial, flex: number): THREE.MeshStandardMaterial {
+    if (m.userData.windFlex !== undefined) return m; // already patched — the cache hands out shared materials
+    m.userData.windFlex = flex;
+    const gain = this.windGain, time = this.windTime;
+    m.onBeforeCompile = (shader) => {
+      shader.uniforms.uWindGain = gain;
+      shader.uniforms.uWindTime = time;
+      shader.vertexShader = `uniform float uWindGain;\nuniform float uWindTime;\n${shader.vertexShader}`.replace(
+        "#include <begin_vertex>",
+        `#include <begin_vertex>
+        {
+          float wHeight = max(transformed.y, 0.0);
+          float wSeed = 0.0;
+          #ifdef USE_INSTANCING
+            wSeed = instanceMatrix[3].x * 0.013 + instanceMatrix[3].z * 0.021;
+          #endif
+          float wAmp = uWindGain * wHeight * ${flex.toFixed(5)};
+          transformed.x += wAmp * (sin(uWindTime * 1.7 + wSeed) + 0.42 * sin(uWindTime * 4.1 + wSeed * 1.9));
+          transformed.z += wAmp * 0.55 * cos(uWindTime * 1.31 + wSeed * 0.7);
+        }`,
+      );
+    };
+    // the program is keyed per flex value, or three canopies patched with three flexes would share one
+    m.customProgramCacheKey = () => `wind:${flex}`;
+    return m;
+  }
+  /** STANDING WATER. One material for every puddle on the campus: near-mirror roughness and a lifted
+   *  environment response, so what it actually shows is the sky and the street lamps — which is what
+   *  makes a puddle read as water rather than as a dark sticker. Opacity is owned by wetness (0 when dry,
+   *  and the whole mesh is then hidden), colour by tint like every other exterior surface. */
+  puddle(): THREE.MeshStandardMaterial {
+    const m = new THREE.MeshStandardMaterial({
+      color: EX.puddle, roughness: 0.06, metalness: 0.22, envMapIntensity: 2.1,
+      transparent: true, opacity: 0, depthWrite: false,
+      polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3,
+    });
+    const alpha = puddleAlphaMap();
+    if (alpha) m.alphaMap = alpha; // soft rim: a hard-edged disc reads as a decal, not as water
+    this.tintable.push({ m, base: new THREE.Color(EX.puddle) });
+    return m;
+  }
   /** a lamp lens / lit sign face: tintable like any other surface, but its EMISSIVE is owned by the
    *  practicals level so the fixture is genuinely off at midday and genuinely lit at night */
   lamp(hex: number, emissive: number, emissiveHex = hex): THREE.MeshStandardMaterial {
@@ -141,6 +210,34 @@ function poolDisc(radius: number, segments: number): THREE.BufferGeometry {
   col[0] = col[1] = col[2] = 1; // the centre vertex; every rim vertex stays at 0
   g.setAttribute("color", new THREE.BufferAttribute(col, 3));
   return g;
+}
+
+/** A flat unit-ish puddle disc, UV-mapped so the shared radial alpha ramp lands centred on it. Slightly
+ *  oval rather than round: nothing on a road is a perfect circle. */
+function puddleDisc(radius: number): THREE.BufferGeometry {
+  return new THREE.CircleGeometry(radius, 14).rotateX(-Math.PI / 2).scale(1, 1, 0.72);
+}
+
+/** ONE 64x64 radial alpha ramp, shared by every puddle. Opaque at the centre, gone at the rim, so the
+ *  edge of a puddle dissolves into the road instead of cutting a circle out of it. Built once; null when
+ *  there is no 2D canvas to build it in (jsdom), in which case the discs simply have hard edges. */
+let puddleAlpha: THREE.CanvasTexture | null | undefined;
+function puddleAlphaMap(): THREE.CanvasTexture | null {
+  if (puddleAlpha !== undefined) return puddleAlpha;
+  puddleAlpha = null;
+  if (typeof document === "undefined") return null;
+  const c = document.createElement("canvas");
+  c.width = c.height = 64;
+  const ctx = c.getContext("2d");
+  if (!ctx) return null;
+  const g = ctx.createRadialGradient(32, 32, 2, 32, 32, 32);
+  g.addColorStop(0, "#ffffff");
+  g.addColorStop(0.55, "#e0e0e0");
+  g.addColorStop(1, "#000000");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 64, 64);
+  puddleAlpha = new THREE.CanvasTexture(c);
+  return puddleAlpha;
 }
 
 /** Merge a set of meshes into ONE geometry (for an InstancedMesh). Reuses the build-time baker. */
@@ -334,10 +431,21 @@ export type ExteriorScenery = {
   applyTint(t: number): void;
   /** 0 = practicals dark, 1 = full (EnvPreset.practicals) */
   applyPracticals(level: number): void;
-  /** 0 = bone dry, 1 = soaked. Roughness/env response only — colour stays with applyTint. */
+  /** 0 = bone dry, 1 = soaked. Roughness/env response, plus whether the puddles are there at all —
+   *  colour stays with applyTint. */
   applyWetness(w: number): void;
+  /** 0 = still air, 1 = the hardest the planting bends (env/weatherGrade WIND). One uniform write. */
+  applyWind(gain: number): void;
+  /** Advance the foliage animation. Seconds; the ONLY per-frame call this module has. */
+  windTick(elapsedSeconds: number): void;
   stats: { draws: number; instanced: number; instances: number; trees: number; vehicles: number };
 };
+
+/** HOW FAR THE TOP TRAVELS AT FULL WIND, per world unit of height. A 100-unit tree's crown moves ~4.2
+ *  units at THUNDERSTORM, ~3 at RAIN and a bare 0.7 in fair weather. Found by eye at office zoom: the
+ *  next step up starts to read as rubber rather than as timber. */
+const CANOPY_FLEX = 0.042;
+const SHRUB_FLEX = 0.009;
 
 export function buildExterior(): ExteriorScenery {
   resetScatter();
@@ -485,7 +593,9 @@ export function buildExterior(): ExteriorScenery {
   const addPair = (geos: { trunk: THREE.BufferGeometry; canopy: THREE.BufferGeometry }, spots: Spot[], kind: string) => {
     if (!spots.length) return;
     root.add(instance(geos.trunk, M.facet(EX.trunk, 0.95), spots, true, `tree-${kind}-trunk`));
-    root.add(instance(geos.canopy, M.facet(CANOPY_TONE[kind]), spots, true, `tree-${kind}-canopy`));
+    // THE CANOPY BENDS, THE TRUNK DOES NOT. A tree that leans as one rigid piece reads as a lamp post
+    // being pushed over; the whole silhouette of wind is a still trunk under a working crown.
+    root.add(instance(geos.canopy, M.foliage(M.facet(CANOPY_TONE[kind]), CANOPY_FLEX), spots, true, `tree-${kind}-canopy`));
     instanced += 2;
     instances += spots.length * 2;
   };
@@ -515,7 +625,8 @@ export function buildExterior(): ExteriorScenery {
       const a = a0 + (a1 - a0) * (i / 6);
       shrubs.push({ x: POND.x + Math.cos(a) * (POND.rx + 16), z: POND.z + Math.sin(a) * (POND.rz + 14), s: 0.5 + rx() * 0.28, yaw: rx() * 6.28 });
     }
-  root.add(instance(shrubGeo(), M.facet(EX.hedge), shrubs, true, "shrubs"));
+  // Shrubs get a fifth of the canopy's travel: a hedge in wind shivers, it does not sway.
+  root.add(instance(shrubGeo(), M.foliage(M.facet(EX.hedge), SHRUB_FLEX), shrubs, true, "shrubs"));
   instanced++; instances += shrubs.length;
 
   // 7b. THE POND. The one water feature in the world: an organic body of water on the Offshorly lot's
@@ -615,6 +726,43 @@ export function buildExterior(): ExteriorScenery {
   const sign = buildMonumentSign(M);
   root.add(sign);
 
+  // 12. STANDING WATER. The wet SET above (roughness + environment response on the asphalt and paving)
+  //     says "this surface is damp"; what it cannot say is "water has collected HERE and not there", and
+  //     an evenly glossed road reads as polished stone rather than as a wet one. These are the puddles
+  //     that break it up — flat discs lying on the carriageways, the parking apron and the drop-off,
+  //     placed once at build time from the same road data the roads themselves were laid from.
+  //
+  //     ONE DRAW CALL, AND NONE WHEN IT IS DRY. Every puddle on the campus is one InstancedMesh sharing
+  //     one material; when wetness is 0 the mesh is hidden and costs nothing at all. This is deliberately
+  //     NOT a reflection: no planar reflector, no second render pass, no SSR. What a puddle shows is the
+  //     scene's existing environment map at a high envMapIntensity and a near-zero roughness, which at
+  //     this scale — and especially under street lamps at night — is the read we were after for free.
+  const puddleM = M.puddle();
+  const puddleSpots: Spot[] = [];
+  const PUDDLE_Y = 0.35; // just proud of the surface it lies on; polygonOffset does the rest
+  for (const road of ROADS) {
+    const r = roadRect(road);
+    const along = road.axis === "x" ? r.w : r.d;
+    // one every ~340 units of carriageway, nudged off the crown toward the gutters where water actually
+    // sits, and skipped a third of the time so the spacing never reads as a pattern
+    for (let t = 180; t < along - 180; t += 340) {
+      if (rx() < 0.34) continue;
+      const across = (rx() < 0.5 ? -1 : 1) * (0.2 + rx() * 0.26);
+      const sx = 0.62 + rx() * 0.9;
+      if (road.axis === "x") puddleSpots.push({ x: r.x + t, z: r.z + r.d * (0.5 + across), y: ROAD_Y + PUDDLE_Y, s: sx, yaw: rx() * 6.28 });
+      else puddleSpots.push({ x: r.x + r.w * (0.5 + across), z: r.z + t, y: ROAD_Y + PUDDLE_Y, s: sx, yaw: rx() * 6.28 });
+    }
+  }
+  for (let i = 0; i < 9; i++) puddleSpots.push({ x: PARKING.x + 30 + rx() * (PARKING.w - 60), z: PARKING.z + 40 + rx() * (PARKING.d - 80), y: PAVING_Y - 0.3 + PUDDLE_Y, s: 0.5 + rx() * 0.55, yaw: rx() * 6.28 });
+  for (let i = 0; i < 4; i++) puddleSpots.push({ x: DROP_OFF.x + 40 + rx() * (DROP_OFF.w - 80), z: DROP_OFF.z + 14 + rx() * (DROP_OFF.d - 28), y: PAVING_Y + PUDDLE_Y, s: 0.42 + rx() * 0.4, yaw: rx() * 6.28 });
+  for (let i = 0; i < 5; i++) puddleSpots.push({ x: PARK_DRIVE.x + 20 + rx() * (PARK_DRIVE.w - 40), z: PARK_DRIVE.z + 20 + rx() * (PARK_DRIVE.d - 40), y: PAVING_Y - 0.3 + PUDDLE_Y, s: 0.45 + rx() * 0.45, yaw: rx() * 6.28 });
+  const puddles = instance(puddleDisc(42), puddleM, puddleSpots, false, "puddles");
+  puddles.visible = false; // dry until a weather grade says otherwise
+  puddles.receiveShadow = false;
+  puddles.renderOrder = 3; // after the ground it lies on, before the rain field (950)
+  root.add(puddles);
+  instanced++; instances += puddleSpots.length;
+
   const draws = groundDraws + instanced + 5 + treads + EXPANSION_LOTS.length * 6; // + terrain, skirt, sign, pond, shore, treads, lot markers
   return {
     root,
@@ -630,7 +778,20 @@ export function buildExterior(): ExteriorScenery {
         x.m.roughness = x.dryR + (x.wetR - x.dryR) * t;
         x.m.envMapIntensity = x.dryEnv + (x.wetEnv - x.dryEnv) * t;
       }
-      // roughness and envMapIntensity are plain uniforms: no recompile, no needsUpdate, no rebuild.
+      // PUDDLES ARRIVE LATE. They stay at nothing until the ground is already damp and only then fade in,
+      // because water that stands has to have had time to collect: a puddle appearing the instant the
+      // first streak lands is the tell that this is a slider and not weather.
+      puddleM.opacity = Math.max(0, (t - 0.32) / 0.68) * 0.72;
+      puddles.visible = puddleM.opacity > 0.01;
+      // roughness, envMapIntensity and opacity are plain uniforms: no recompile, no needsUpdate, no rebuild.
+    },
+    applyWind(gain: number) {
+      M.windGain.value = Number.isFinite(gain) ? Math.max(0, Math.min(1, gain)) : 0;
+    },
+    windTick(elapsedSeconds: number) {
+      // ONE FLOAT, ONCE A FRAME, FOR EVERY TREE ON THE CAMPUS. Skipped entirely in still air, so a clear
+      // day does not pay for an animation nobody can see.
+      if (M.windGain.value > 0.001) M.windTime.value = elapsedSeconds;
     },
     applyPracticals(level: number) {
       // NOT clamped to 1: the night preset deliberately drives the fixtures past nominal so the pools and

@@ -167,14 +167,25 @@ export class Renderer {
     const halfNeeded = Math.max(rect.d / 2, rect.w / 2 / aspect) / fill;
     return Math.round(((this.focus.d * 0.62 + 40) / halfNeeded) * 100) / 100;
   }
-  placeLight(): void {
+  /** WRITE THE LEVELS, MOVE NOTHING. Intensities and exposure only — no direction, no frustum, and
+   *  explicitly NO shadow invalidation.
+   *
+   *  A shadow map stores DEPTH, not brightness, so making the key brighter or the exposure hotter cannot
+   *  invalidate it. That distinction is what lets the environment re-grade every frame — a Clear→Rain
+   *  fade, a lightning flash — without asking for a shadow redraw per frame. `placeLight()` remains the
+   *  path that moves the sun, and it alone pays for the redraw. */
+  applyLightLevels(): void {
     const l = this.lightParams;
-    const az = THREE.MathUtils.degToRad(l.azimuth), el = THREE.MathUtils.degToRad(l.elevation);
-    this.lightDir.set(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el));
     this.key.intensity = l.keyIntensity;
     this.hemi.intensity = l.ambientIntensity;
     this.scene.environmentIntensity = l.envIntensity;
     this.renderer.toneMappingExposure = l.exposure;
+  }
+  placeLight(): void {
+    const l = this.lightParams;
+    const az = THREE.MathUtils.degToRad(l.azimuth), el = THREE.MathUtils.degToRad(l.elevation);
+    this.lightDir.set(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el));
+    this.applyLightLevels();
     this.renderer.shadowMap.needsUpdate = true; // the sun moved
     this.updateShadowFrame(true);
   }

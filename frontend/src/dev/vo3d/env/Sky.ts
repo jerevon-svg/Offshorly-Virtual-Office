@@ -34,6 +34,12 @@ export class Sky {
   private readonly moon: THREE.Mesh;
   private readonly moonHalo: THREE.Mesh;
   private tex: THREE.CanvasTexture | null = null;
+  /** the strip is re-PAINTED in place, never re-created — see apply() */
+  private canvas: HTMLCanvasElement | null = null;
+  /** last painted gradient, so a frame that did not move the grade does not touch the GPU */
+  private paintedTop = -1;
+  private paintedHorizon = -1;
+  private flashAmount = 0;
 
   constructor() {
     this.root.name = "sky";
@@ -91,17 +97,53 @@ export class Sky {
     this.moonHalo.position.multiplyScalar(0.995);
   }
 
+  /** LIGHTNING'S SHARE OF THE SKY. The dome is a MeshBasicMaterial with a map, so its `color` multiplies
+   *  the gradient — and the material is `toneMapped: false`, so a colour above 1 is allowed to blow the
+   *  strip out rather than being rolled back by the tone curve. That is the entire implementation: one
+   *  Color write per frame of a flash, no second dome, no additive quad, no light.
+   *
+   *  @param amount 0…1, already multiplied by the phase's visibility gain by the caller */
+  setFlash(amount: number): void {
+    const a = Number.isFinite(amount) ? Math.max(0, Math.min(1, amount)) : 0;
+    if (a === this.flashAmount) return;
+    this.flashAmount = a;
+    if (this.tex) this.applyFlash();
+  }
+  private applyFlash(): void {
+    // 1 → untouched; the ceiling is a strip lit to roughly 2.5x, which reads as a sky that has gone white
+    // without the horizon band losing its shape entirely.
+    const k = 1 + this.flashAmount * 1.5;
+    this.domeMat.color.setRGB(k, k, k);
+  }
+
   /** Keep the dome centred on whatever the camera is looking at, so its edge is unreachable by panning. */
   follow(target: THREE.Vector3): void {
     this.root.position.copy(target);
   }
 
   apply(grade: SkyGrade): void {
-    this.tex?.dispose();
-    this.tex = gradientTexture(grade.top, grade.horizon);
-    this.domeMat.map = this.tex;
-    if (!this.tex) this.domeMat.color.setHex(grade.top);
-    this.domeMat.needsUpdate = true;
+    // ONE CANVAS, ONE TEXTURE, FOR THE LIFE OF THE SKY. This used to dispose and rebuild both on every
+    // apply(), which was free when a grade changed twice a day and is not free now that a Clear→Rain
+    // transition applies a moving grade every frame. Re-painting 2x64 pixels and flagging the texture is
+    // a ~512-byte upload; allocating a canvas, a texture and a GPU object was the cost that mattered.
+    if (grade.top !== this.paintedTop || grade.horizon !== this.paintedHorizon) {
+      this.paintedTop = grade.top;
+      this.paintedHorizon = grade.horizon;
+      if (!this.canvas) this.canvas = makeStrip();
+      const canvas = this.canvas;
+      const painted = canvas ? paintStrip(canvas, grade.top, grade.horizon) : false;
+      if (painted && canvas && !this.tex) {
+        this.tex = new THREE.CanvasTexture(canvas);
+        this.tex.colorSpace = THREE.SRGBColorSpace;
+        this.domeMat.map = this.tex;
+        this.domeMat.needsUpdate = true; // the only recompile: the frame a map first appears
+      } else if (painted && this.tex) {
+        this.tex.needsUpdate = true;
+      }
+      // no 2D context (jsdom, or a browser refusing one): fall back to a flat zenith tone
+      if (!painted && !this.tex) this.domeMat.color.setHex(grade.top);
+    }
+    if (this.tex) this.applyFlash();
     this.starMat.opacity = grade.stars;
     this.starMat.visible = grade.stars > 0.01;
     (this.moon.material as THREE.MeshBasicMaterial).opacity = grade.moon * 0.92;
@@ -121,14 +163,19 @@ function haloGeo(radius: number): THREE.BufferGeometry {
   return g;
 }
 
-/** A 2 x 64 vertical strip: zenith at the top, horizon at the bottom, eased so the band is not linear. */
-function gradientTexture(top: number, horizon: number): THREE.CanvasTexture | null {
+function makeStrip(): HTMLCanvasElement | null {
   if (typeof document === "undefined") return null;
   const c = document.createElement("canvas");
   c.width = 2;
   c.height = 64;
+  return c;
+}
+
+/** Paint a 2 x 64 vertical strip: zenith at the top, horizon at the bottom, eased so the band is not
+ *  linear. Returns false when there is no 2D context to paint into. */
+function paintStrip(c: HTMLCanvasElement, top: number, horizon: number): boolean {
   const ctx = c.getContext("2d");
-  if (!ctx) return null;
+  if (!ctx) return false;
   const g = ctx.createLinearGradient(0, 0, 0, 64);
   const hex = (v: number) => `#${v.toString(16).padStart(6, "0")}`;
   g.addColorStop(0, hex(top));
@@ -137,7 +184,5 @@ function gradientTexture(top: number, horizon: number): THREE.CanvasTexture | nu
   g.addColorStop(1, hex(horizon));
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, 2, 64);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
+  return true;
 }

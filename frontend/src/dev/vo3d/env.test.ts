@@ -502,6 +502,9 @@ describe("vo3d env — OFFICE presentation keeps the world a secret", () => {
       hemi: new THREE.HemisphereLight(),
       lightParams: {} as never,
       placeLight() {},
+      // the levels-only write the environment takes whenever the SUN has not moved (a weather re-grade,
+      // a lightning flash) — the path that deliberately does NOT invalidate the shadow map
+      applyLightLevels() {},
     };
   }
 
@@ -534,6 +537,10 @@ describe("vo3d env — OFFICE presentation keeps the world a secret", () => {
     env.setPresentation("office");
     for (const phase of ["day", "sunset", "night"] as const) {
       env.apply(phase);
+      // A GRADE NOW TRAVELS. apply() names the target and the world walks to it over ~5s under tick(),
+      // so a test that wants to look at the arrived presentation has to say so. settle() is that, and is
+      // also what the screenshot rig uses.
+      env.settle();
       expect(env.phase).toBe(phase);
       // the backdrop is the phase's flat stage tone, never its sky
       expect((R.scene.background as THREE.Color).getHex()).toBe(ENV_PRESETS[phase].stage);

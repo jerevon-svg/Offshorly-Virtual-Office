@@ -57,6 +57,7 @@ import { buildExterior } from "../build/exterior";
 import { Environment } from "../env/Environment";
 import { ENV_TIME_MODES, TimeOfDay, type EnvTimeMode } from "../env/timeOfDay";
 import { WEATHER_MODES, Weather, type WeatherMode, type WeatherState } from "../env/weather";
+import type { ThunderEvent } from "../env/Lightning";
 import { ManualWeatherProvider } from "../env/providers/manual";
 import { WEATHER_ATTRIBUTION, officeWeatherProvider } from "../env/providers/office";
 import { GRADE } from "../world/campus";
@@ -171,7 +172,7 @@ const params = {
   shadows: true, ao: false, sway: true, ambient: true, wallHeight: DESIGN_SHELL.wallHeight, frontWall: "low" as "low" | "full" | "hidden",
   overlay: true, motion: false, preset: "B" as PresetId, captureSeconds: 30,
   envTime: "auto" as EnvTimeMode, envScenery: true, envFog: true, envSky: true,
-  envWeather: "auto" as WeatherMode, envRainInOffice: true,
+  envWeather: "auto" as WeatherMode, envRainInOffice: true, envTransitions: true, envLightning: true,
   cameraMode: "office" as CameraModeId,
   playerView: "third" as PlayerView,
   avatar: true, avatarLod: 1 as AvatarLod, avatarLit: true, walkSpeed: 30,
@@ -299,7 +300,26 @@ const manualWeather = new ManualWeatherProvider("clear");
 const liveWeather = officeWeatherProvider();
 const weatherProvider = liveWeather ?? manualWeather;
 const weather = new Weather(weatherProvider);
-const envState = { phase: "—", realPhase: "—", clock: "—", source: "V1 real clock (Asia/Manila)", weather: "—", observed: "—", provider: "—", attribution: WEATHER_ATTRIBUTION };
+const envState = {
+  phase: "—", realPhase: "—", clock: "—", source: "V1 real clock (Asia/Manila)", weather: "—", observed: "—",
+  provider: "—", attribution: WEATHER_ATTRIBUTION, wind: "—", wetness: "—", storm: "—", thunder: "none yet",
+};
+// THE THUNDER SEAM, SUBSCRIBED BUT NOT PLAYED.
+//
+// Lightning emits a ThunderEvent the instant the sky lights, carrying the strike's strength, how far away
+// the fiction put it and how many seconds later the clap should be heard. NOTHING HERE PLAYS A SOUND and
+// no audio API is touched: the spatial ambient-audio system is a later phase, and a half-built player
+// waiting for it here would be a competing architecture, not a head start. All this does is print the
+// event on the dev panel and keep the last one where that phase (and a test) can read it.
+let lastThunder: ThunderEvent | null = null;
+/** whoever the dev API / a later audio phase hooked up. Kept BESIDE the readout rather than replacing it,
+ *  so subscribing cannot silently switch the dev panel off. */
+let thunderListener: ((e: ThunderEvent) => void) | null = null;
+env.onThunder = (e) => {
+  lastThunder = e;
+  envState.thunder = `${e.strength.toFixed(2)} @ ${e.distanceKm.toFixed(1)}km — clap in ${e.delaySeconds.toFixed(1)}s${e.double ? " (double)" : ""}`;
+  thunderListener?.(e);
+};
 function applyEnvPhase(force = false): void {
   const now = performance.now();
   const phase = timeOfDay.phase(now);
@@ -924,6 +944,19 @@ wxGui.add(envState, "weather").name("in force").listen().disable();
 wxGui.add(envState, "observed").name("provider says").listen().disable();
 wxGui.add(envState, "provider").name("source").listen().disable();
 wxGui.add(params, "envRainInOffice").name("rain in OFFICE mode").onChange((v: boolean) => (env.rainInOffice = v));
+wxGui.add(envState, "wind").name("wind on foliage").listen().disable();
+wxGui.add(envState, "wetness").name("ground wetness").listen().disable();
+// SMOOTH TRANSITIONS, and the switch that turns them off. A screenshot rig wants the target grade on the
+// frame it asks for it, not a second and a half later; everything else wants the fade.
+wxGui.add(params, "envTransitions").name("smooth transitions").onChange((v: boolean) => (env.transitions = v));
+// THE STORM. Lightning only ever schedules itself under RAIN / HEAVY_RAIN / THUNDERSTORM (env/weatherGrade
+// LIGHTNING), so this switch is a dev mute, not the thing that decides whether it strikes.
+wxGui.add(params, "envLightning").name("lightning").onChange((v: boolean) => (env.storm.enabled = v));
+wxGui.add(envState, "storm").name("next strike").listen().disable();
+wxGui.add({ strike: () => env.storm.strike() }, "strike").name("strike now");
+// The event the ambient-audio phase will consume. Printed here so the seam is visibly live before
+// anything can play it.
+wxGui.add(envState, "thunder").name("last thunder event").listen().disable();
 // ATTRIBUTION. WeatherAPI's terms require visible credit wherever their data is shown. It belongs on
 // the panel that shows the reading, not in the 3D scene — the office is the product, not a billboard.
 wxGui.add(envState, "attribution").name("data").listen().disable();
@@ -1304,6 +1337,10 @@ function loop(): void {
   mirror.sway.update(t);
   mirror.ambient.update(t, dt / 1000); // powered-surface idle animation (screens, sensors, status strips)
   applyEnvPhase(); // V1's clock is re-read at most twice a minute and only writes when the phase changes
+  // THE ENVIRONMENT'S OWN CLOCK: a travelling grade (Clear→Rain, Day→Sunset), the storm scheduler and the
+  // foliage wind. Idle cost is three comparisons; it writes to the renderer only on frames where the
+  // world actually moved. applyEnvPhase above RETARGETS, this is what travels.
+  env.tick(dt / 1000);
   env.follow(dt / 1000); // the sky dome rides the orbit target; the rain field rides the active camera
   if (params.avatar) {
     // PLAYER steps FIRST: it writes the avatar transform for this frame and yields silently whenever an
@@ -1460,6 +1497,11 @@ function loop(): void {
     }
     if (params.playerView !== playerMode.view) { params.playerView = playerMode.view; refresh(); }
     envState.clock = formatManila(timeOfDay.hourDecimal);
+    envState.wind = env.wind.toFixed(2);
+    envState.wetness = env.wetness.toFixed(2);
+    envState.storm = env.storm.striking
+      ? `${env.storm.nextIn.toFixed(0)}s (${env.storm.count} so far)`
+      : "this weather does not strike";
     overlay.update(liveWindow.summary(), snapshotRenderer(R.renderer), device, `V2 · avatar ${params.avatar ? `LOD${params.avatarLod} · ${avatarState.triangles.toLocaleString()} tris · ${avatarState.clip} · owner ${stack.owner}` : "off"}\n${benchState.status}${lastCapture ? "\nlast: " + benchState.result : ""}`);
   }
 }
@@ -1506,6 +1548,15 @@ loop();
     setProvider: (s2: WeatherState) => { manualWeather.state = s2; weather.invalidate(); applyEnvPhase(true); refresh(); },
     state: () => env.weather, mode: () => weather.mode, source: () => weather.source,
     rainStats: () => env.rainStats,
+    // THE REACTION LAYER, for live QA and for the audio phase that comes next.
+    storm: env.storm,
+    strike: () => env.storm.strike(),
+    lastThunder: () => lastThunder,
+    onThunder: (fn: ((e: ThunderEvent) => void) | null) => { thunderListener = fn; },
+    wind: () => env.wind, wetness: () => env.wetness, flash: () => env.flash,
+    setTransitions: (on: boolean) => { params.envTransitions = on; env.transitions = on; refresh(); },
+    settle: () => env.settle(),
+    travelling: () => env.travelling,
     setRainInOffice: (on: boolean) => { params.envRainInOffice = on; env.rainInOffice = on; refresh(); },
   },
   cave: {

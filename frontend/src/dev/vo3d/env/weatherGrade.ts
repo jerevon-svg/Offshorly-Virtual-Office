@@ -41,9 +41,10 @@ export const WEATHER_WEIGHT: Record<WeatherState, number> = {
  *  camera is standing in the lobby or framing the whole campus: the field box changes size constantly with
  *  zoom and pitch, and a fixed streak count would thin out to drizzle every time it grew.
  *
- *  HEAVY_RAIN and THUNDERSTORM deliberately reuse RAIN's machinery at a higher density rather than
- *  pretending to a treatment they do not have yet: no lightning, no wind shear, no gust. That is the
- *  "normalize cleanly rather than receive full effects" contract, made explicit. */
+ *  HEAVY_RAIN and THUNDERSTORM reuse RAIN's machinery at a higher density rather than each getting a
+ *  field of their own. What separates them is no longer only density: WIND and LIGHTNING below are the
+ *  two other axes a state moves along, and both are gains on machinery that already exists rather than
+ *  new systems per state. There is still no gust/shear model — a streak falls the same way in all three. */
 export type RainParams = { perMillion: number; opacity: number; speed: number; length: number };
 export const RAIN_PARAMS: Record<WeatherState, RainParams> = {
   clear: { perMillion: 0, opacity: 0, speed: 0, length: 1 },
@@ -52,6 +53,52 @@ export const RAIN_PARAMS: Record<WeatherState, RainParams> = {
   heavy_rain: { perMillion: 2200, opacity: 0.5, speed: 760, length: 1.22 },
   thunderstorm: { perMillion: 2600, opacity: 0.54, speed: 820, length: 1.34 },
 };
+
+/** HOW HARD THE AIR IS MOVING, per state. Drives the exterior foliage sway (build/exterior applyWind) and
+ *  nothing else — it is a gain on an animation that already runs, not a wind simulation.
+ *
+ *  CLEAR IS NOT ZERO. A perfectly still world reads as a photograph; a fair-weather campus still has a
+ *  breath of air in it. The jump that matters is CLEAR → RAIN, where the canopies visibly start working.
+ *  Nothing above THUNDERSTORM's 1.0: past that the low-poly canopies stop reading as trees bending and
+ *  start reading as trees melting, which was the ceiling found by eye. */
+export const WIND: Record<WeatherState, number> = {
+  clear: 0.16,
+  cloudy: 0.3,
+  rain: 0.7,
+  heavy_rain: 0.9,
+  thunderstorm: 1,
+};
+
+/** LIGHTNING, per state. null = this state never strikes, and the scheduler is not even running.
+ *
+ *  `minGap`/`maxGap` are seconds between strikes, drawn uniformly — the RANGE is what keeps it from
+ *  reading as a metronome, and the minimum is what keeps it from ever reading as a strobe. Even
+ *  THUNDERSTORM's floor of 9s is a long time on screen.
+ *
+ *  RAIN STRIKES TOO, rarely. A Manila shower with the occasional distant flash is the common case, and
+ *  reserving lightning for the THUNDERSTORM code would mean almost never seeing it. */
+export type LightningParams = {
+  /** seconds — the shortest gap between strikes */
+  minGap: number;
+  /** seconds — the longest */
+  maxGap: number;
+  /** 0…1 chance a strike carries a second pulse a beat behind the first */
+  doubleChance: number;
+  /** 0…1 ceiling on how bright a strike of this state can be, before distance falloff */
+  strength: number;
+};
+export const LIGHTNING: Record<WeatherState, LightningParams | null> = {
+  clear: null,
+  cloudy: null,
+  rain: { minGap: 28, maxGap: 72, doubleChance: 0.3, strength: 0.55 },
+  heavy_rain: { minGap: 17, maxGap: 46, doubleChance: 0.42, strength: 0.8 },
+  thunderstorm: { minGap: 9, maxGap: 27, doubleChance: 0.55, strength: 1 },
+};
+
+/** HOW MUCH OF A STRIKE THE EYE ACTUALLY GETS, per phase. Not a second lightning table — one multiplier
+ *  on the one envelope, because a flash is only as visible as the sky it has to out-shine. At noon a
+ *  strike is a flicker at the edge of vision; at night it prints the whole campus on the retina. */
+export const LIGHTNING_PHASE_GAIN: Record<EnvPhase, number> = { day: 0.34, sunset: 0.62, night: 1 };
 
 /** How wet the exterior GROUND reads. Drives roughness only (see build/exterior applyWetness) — colour is
  *  left to exteriorTint so the two levers can never fight over the same channel. */
@@ -123,9 +170,15 @@ export function weatherPreset(state: WeatherState, phase: EnvPhase): EnvPreset {
 }
 
 /** Everything the renderer needs for a state, in one pull. */
-export type WeatherGrade = { preset: EnvPreset; rain: RainParams; wetness: number };
+export type WeatherGrade = { preset: EnvPreset; rain: RainParams; wetness: number; wind: number; lightning: LightningParams | null };
 export function weatherGrade(state: WeatherState, phase: EnvPhase): WeatherGrade {
-  return { preset: weatherPreset(state, phase), rain: RAIN_PARAMS[state], wetness: WETNESS[state] };
+  return {
+    preset: weatherPreset(state, phase),
+    rain: RAIN_PARAMS[state],
+    wetness: WETNESS[state],
+    wind: WIND[state],
+    lightning: LIGHTNING[state],
+  };
 }
 
 /** Does this state draw a rain field at all? (CLEAR and CLOUDY do not.) */
