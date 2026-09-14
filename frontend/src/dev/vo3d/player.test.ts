@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { EXECUTIVE_ROOM, executiveRoomEntities } from "./rooms/executive";
 import { CMS_ROOM, cmsRoomEntities } from "./rooms/cms";
 import { AI_ROOM, aiRoomEntities } from "./rooms/ai";
+import { DEV_ROOM, devRoomEntities } from "./rooms/dev";
+import { QA_ROOM, qaRoomEntities } from "./rooms/qa";
 import * as THREE from "three";
 import { PlayerBody, type StandTest } from "./player/PlayerBody";
 import { PlayerCamera } from "./player/PlayerCamera";
@@ -28,13 +30,13 @@ import type { Rect, Vec2 } from "./core/coords";
 // ---- a world, exactly as the app builds it ---------------------------------------------------------
 function rig() {
   const world = new WorldState();
-  for (const r of [DESIGN_ROOM, RECEPTION_ROOM, MEETING_ROOM, PROJECT_ROOM, GAMING_ROOM, CENTRAL_HUB, EXECUTIVE_ROOM, CMS_ROOM, AI_ROOM]) world.addRoom(r);
-  for (const e of [...designRoomEntities(), ...receptionEntities(), ...meetingRoomEntities(), ...projectRoomEntities(), ...gamingRoomEntities(), ...centralHubEntities(), ...executiveRoomEntities(), ...cmsRoomEntities(), ...aiRoomEntities()]) world.addEntity(e);
+  for (const r of [DESIGN_ROOM, RECEPTION_ROOM, MEETING_ROOM, PROJECT_ROOM, GAMING_ROOM, CENTRAL_HUB, EXECUTIVE_ROOM, CMS_ROOM, AI_ROOM, DEV_ROOM, QA_ROOM]) world.addRoom(r);
+  for (const e of [...designRoomEntities(), ...receptionEntities(), ...meetingRoomEntities(), ...projectRoomEntities(), ...gamingRoomEntities(), ...centralHubEntities(), ...executiveRoomEntities(), ...cmsRoomEntities(), ...aiRoomEntities(), ...devRoomEntities(), ...qaRoomEntities()]) world.addEntity(e);
   registerGroundFloor(world);
   const bands = [...HUB_BANDS];
   const inBounds = (p: Vec2) => world.walkableAt(p);
   const walkability = new Walkability(composeStatic(v2Static(v1Static, openedLayer(bands)), inBounds, clearanceLayer(worldClearances(world))));
-  const derived = new DerivedNav(world, { roomIds: new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id, CMS_ROOM.id, AI_ROOM.id]) });
+  const derived = new DerivedNav(world, { roomIds: new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id, CMS_ROOM.id, AI_ROOM.id, DEV_ROOM.id, QA_ROOM.id]) });
   walkability.attachDerived(derived, world);
   const canStand = makeStandTest({ world, walkability, derived, radius: NAV_RADIUS });
   return { world, walkability, derived, canStand };
@@ -59,10 +61,12 @@ describe("vo3d player — collision reuses the world V2 already owns", () => {
     expect(open).toBeGreaterThan(50); // and the room is genuinely walkable, not trivially empty of hits
     // outside the modelled world entirely
     expect(canStand({ x: -500, z: -500 })).toBe(false);
-    // an UNRECONSTRUCTED room footprint is a registered non-walkable region, so the player is kept out.
-    // Phase 7 reconstructed the Executive room, so the example moved to the Dev room.
-    const unbuilt = world.regions.find((r) => r.id === "footprint:dev-room")!;
-    expect(canStand({ x: unbuilt.rect.x + unbuilt.rect.w / 2, z: unbuilt.rect.z + unbuilt.rect.d / 2 })).toBe(false);
+    // PHASE 11: there is no unreconstructed room footprint left on the floor to be kept out of — every
+    // room answers for its own space now. What replaces it is the same guarantee, made by GEOMETRY: a
+    // point inside a room's own WALL is refused, and its floor the other side of that wall is not.
+    expect(world.regions.some((r) => r.id.startsWith("footprint:")), "a placeholder footprint survives").toBe(false);
+    expect(canStand({ x: 168, z: 602 }), "inside the QA room's north wall").toBe(false);
+    expect(canStand({ x: 171, z: 760 }), "the QA room's own floor").toBe(true);
   });
 
   it("is INTERIOR ONLY in V0: the sidewalk is walkable for routing and refused for the player", () => {
@@ -246,7 +250,7 @@ describe("vo3d player — interaction targeting", () => {
   it("harvests every interactable the world declares, bucketed by room — once, not per frame", () => {
     const { world } = rig();
     const byRoom = collectCandidates(world);
-    for (const id of [DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id, CMS_ROOM.id, AI_ROOM.id])
+    for (const id of [DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id, CMS_ROOM.id, AI_ROOM.id, DEV_ROOM.id, QA_ROOM.id])
       expect(byRoom.get(id)?.length, id).toBeGreaterThan(0);
     // every candidate really carries the capability it claims
     for (const list of byRoom.values())

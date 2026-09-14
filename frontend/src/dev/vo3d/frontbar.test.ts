@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 import { EXECUTIVE_ROOM } from "./rooms/executive";
 import { CMS_ROOM } from "./rooms/cms";
 import { AI_ROOM } from "./rooms/ai";
+import { DEV_ROOM } from "./rooms/dev";
+import { QA_ROOM } from "./rooms/qa";
 import { CENTRAL_HUB } from "./rooms/central-hub";
 import * as THREE from "three";
 import { WorldState } from "./world/WorldState";
@@ -42,6 +44,8 @@ function rig() {
   world.addRoom(EXECUTIVE_ROOM);
   world.addRoom(CMS_ROOM);
   world.addRoom(AI_ROOM);
+  world.addRoom(DEV_ROOM);
+  world.addRoom(QA_ROOM);
   for (const e of designRoomEntities()) world.addEntity(e);
   for (const e of receptionEntities()) world.addEntity(e);
   for (const e of meetingRoomEntities()) world.addEntity(e);
@@ -95,7 +99,9 @@ describe("vo3d front bar — Phase 4B: ONE continuous building", () => {
     expect(names).not.toContain("footprint:executive-room"); // Phase 7
     expect(names).not.toContain("footprint:cms-room"); // Phase 8
     expect(names).not.toContain("footprint:ai-room"); // Phase 9
-    expect(names).toHaveLength(2); // the 2 rooms still awaiting their own phase
+    expect(names).not.toContain("footprint:dev-room"); // Phase 10
+    expect(names).not.toContain("footprint:qa-room"); // Phase 11
+    expect(names).toHaveLength(0); // 11/11: no room is a placeholder any more
   });
 
   it("the three tiled floors tile the whole bar at y = 0: abutting, never overlapping, one grout phase", () => {

@@ -131,6 +131,52 @@ export const PALETTE = {
   aiFloorTint: 0xe6ebfe, //   multiply tint for THIS room's tile only — the reference floor is 216,215,221
   aiScreenUi: 0x0a1526, //    the dark UI ground every display in the room is drawn on
   aiRobot: 0xf2f4f7, //       the service robot's white shell
+
+  // ---- DEV ROOM (Phase 10) ---------------------------------------------------------------------
+  // Routed through rooms/dev.ts THEME, never named directly by a builder. The brief is NIGHT WORKSHOP:
+  // espresso walnut joinery and BLACK LEATHER seating under a cold blue neon line, against the brightest
+  // white walls in the office. It shares no key with the AI Room — that room is carbon + silver + LED,
+  // this one is dark WOOD + leather + NEON, which is what keeps two blue rooms reading as two rooms.
+  // Every value measured off src/assets/office/rooms/dev-room.png and the eight separated
+  // furniture/dev-team/*.png.
+  devWalnut: 0x40301f, //     every desk top, the wall units, the pantry counter (measured 64,48,31)
+  devWalnutDark: 0x241a10, // their plinths, toe kicks and reveals
+  devInk: 0x15161a, //        rack carcasses, screen bezels, the bay desks' base rail (measured 21,22,26)
+  devInkDeep: 0x08090c, //    every recess in the black joinery
+  devNeon: 0x2f8cff, //       THE ROOM'S SIGNATURE: the cove line, the sign tubes, the desk underglow
+  devNeonDeep: 0x0b45b8, //   its deeper core, where a tube is read edge-on
+  devLeather: 0x1b1c21, //    the ten black leather chairs (measured 27,28,33)
+  devLeatherSeat: 0x2b2d34, // their lighter stitched panels
+  devSofa: 0x191a1f, //       the two-seat lounge sofa's black body
+  devSofaSeat: 0x44474e, //   its grey bolster cushions (measured 68,71,78)
+  devFrame: 0x63666d, //      chair arms, five-star bases, counter shoe
+  devPlaster: 0xf7f7f8, //    this room's walls: the brightest white in the office
+  devFloorTint: 0xf1f1f3, //  multiply tint for THIS room's tile only — the reference floor is near-white
+  devScreenUi: 0x0b1020, //   the dark UI ground every display in the room is drawn on
+  devMat: 0x8a8c90, //        the lounge rug's grey pile (measured 138,140,144)
+  devMatBorder: 0x74767b, //  its one inset border line
+  devTerminal: 0x3ddc84, //   the pantry sign's green terminal type — the room's ONE non-blue light
+
+  // ---- QA ROOM (Phase 11) ----------------------------------------------------------------------
+  // Routed through rooms/qa.ts THEME, never named directly by a builder. The brief is CALM STUDIO: a soft
+  // MINT floor, cream linen seating, light oak and white worktops, with one deep TEAL running through the
+  // accents. QA is the only flat-reference room on the floor and the only GREEN one — nothing here is
+  // borrowed from the Design, Dev or CMS palettes. Every value measured off
+  // src/assets/office/rooms/qa-room.png.
+  qaTeal: 0x2f6f67, //        the signature accent: pouf, storage boxes, screens, book covers (measured 47,111,103)
+  qaTealDeep: 0x1e4b45, //    its reveals and the credenza's inset shadows
+  qaOak: 0xd5b587, //         light oak: the credenza carcass, the lounge shelf, the coffee table
+  qaOakDark: 0xa8814e, //     their edges, legs and plinths
+  qaWhite: 0xfbfbf9, //       every desk top and the credenza worktop (measured 251,251,249)
+  qaLinen: 0xe7ded0, //       the sofa and all seven task chairs: warm cream linen (measured 231,222,208)
+  qaLinenDeep: 0xd2c7b4, //   their piping, seams and the sofa's deck
+  qaFrame: 0xc9cac6, //       chair frames, five-star bases, desk legs
+  qaPlaster: 0xf8f9f7, //     this room's walls
+  qaFloorTint: 0xd8e2d9, //   multiply tint for THIS room's tile only — the reference floor is 216,222,217
+  qaRug: 0xded9d0, //         the lounge rug's oatmeal pile
+  qaRugBorder: 0xc9c3b8, //   its one inset border line
+  qaBoard: 0xf6f7f5, //       the north whiteboard's face
+  qaScreenUi: 0x14201e, //    the dark UI ground the room's few displays are drawn on
 };
 
 // ---- shared materials -------------------------------------------------------------------

@@ -15,6 +15,8 @@ import { CENTRAL_HUB } from "./central-hub";
 import { EXECUTIVE_ROOM } from "./executive";
 import { CMS_ROOM } from "./cms";
 import { AI_ROOM } from "./ai";
+import { DEV_ROOM } from "./dev";
+import { QA_ROOM } from "./qa";
 
 export type FloorRoom = V1Room & {
   /** true = full interior modelled (walkable floor region + furniture); false = footprint/boundary only */
@@ -34,7 +36,7 @@ export interface GroundFloor {
   facadeZ: number;
 }
 
-export const RECONSTRUCTED_ROOM_IDS = new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id, CMS_ROOM.id, AI_ROOM.id]);
+export const RECONSTRUCTED_ROOM_IDS = new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id, CMS_ROOM.id, AI_ROOM.id, DEV_ROOM.id, QA_ROOM.id]);
 /** The Central Hub is a wall-less atrium: V1 draws it as an open lounge on the hall floor, with no wall
  *  ring and no door cells. It STAYS wall-less after reconstruction (Phase 6B) — `walls: false` is what
  *  keeps build/floorplan.ts from ever ringing it, and the hub's own static builder owns its floor plate. */
@@ -46,23 +48,16 @@ const WALL_LESS_ROOM_IDS = new Set(["central-hub"]);
  *  continuous band for all 90 columns, so front-row placeholders are clamped to that plane and Reception
  *  builds its real glass on it. This moves PLACEHOLDER GEOMETRY ONLY: room rects, regions, the walkability
  *  grid and room identity are untouched, and Meeting/Project stay unreconstructed. */
-/** PLACEHOLDER CORRIDOR CLAMP (Phase 8). An unreconstructed room's placeholder is drawn at its ART
- *  bounding box, and the Dev room's box runs to z 331.5 — 13.5 units from the CMS room's north wall face
- *  at 345. That is not a corridor: Bon's collision radius alone is 8, so the east–west lane that serves
- *  the Dev room's own south entrance had NO legal standing point in it once CMS was built.
+/** PLACEHOLDER CORRIDOR CLAMP — RETIRED IN PHASE 10.
  *
- *  V1 itself says where that room ends: its south wall band is rows 19–20 (z 304…336), the same doubled
- *  band every other room paints, and the room interior stops at 304. The placeholder is therefore clamped
- *  to 304 — its own V1 line — which opens a 41-unit corridor between it and CMS.
+ *  Phase 8 clamped the UNBUILT Dev room's placeholder to z 304 (its own V1 south-wall line) so the
+ *  east–west corridor between it and the CMS room had somewhere for a body to stand. Phase 10 builds that
+ *  room for real, and rooms/dev.ts SOUTH_Z inherits the very same line as a real 12-unit wall — so the
+ *  clamp has nothing left to clamp and the map is empty.
  *
- *  This moves PLACEHOLDER GEOMETRY AND ITS REGION ONLY, exactly as the front-row façade clamp above does.
- *  The V1 grid file is untouched, the Dev room's rect, room identity and door openings are untouched, and
- *  CMS does not move by a unit. The two cell rows the clamp gives back are declared as an OpenBand
- *  (CORRIDOR_BANDS) so the walkable grid and the built geometry say the same thing — there is no
- *  player-only opening here.
- *
- *  When the Dev room is reconstructed it builds its own real walls and this entry is deleted. */
-export const PLACEHOLDER_SOUTH_CLAMP: Record<string, number> = { "dev-room": 304 };
+ *  It stays as a named, empty seam because it is the ONE place a placeholder may be drawn somewhere other
+ *  than its art box, and floor.test.ts still asserts that only an unreconstructed room may appear in it. */
+export const PLACEHOLDER_SOUTH_CLAMP: Record<string, number> = {};
 
 /** ROOM WORLD SHIFT (Phase 9). A RECONSTRUCTED room BUILT somewhere other than its V1 art box. Unlike the
  *  two clamps above — which move placeholder geometry only — this moves the room itself, so the plan's rect
@@ -101,7 +96,13 @@ export function placeholderRect(room: V1Room): Rect {
  *  placeholder occupies none of it. Cols 69–89 is the run between the north–south hall and the east wall,
  *  which is the whole corridor. The Dev door's own '+' cells are already walkable and unaffected. */
 export const CORRIDOR_BANDS: OpenBand[] = [
-  { id: "dev-cms-corridor", rect: { x: 69 * CELL, z: 19 * CELL, w: 21 * CELL, d: 2 * CELL }, solids: [] },
+  /** Phase 10 — THE DEV ↔ CMS CORRIDOR, now measured against the Dev room's REAL south wall. Phase 8
+   *  declared rows 19–20 open because the clamped placeholder stood on neither; the built wall occupies
+   *  row 19 (z 304…316), so only ROW 20 is corridor. Its centres sit 12 clear of the Dev wall's outer
+   *  face and 17 clear of the CMS room's, both past NAV_RADIUS — dev.test.ts re-derives both distances
+   *  from the two rooms' own geometry, so this band can never outlive what justifies it. The Dev door's
+   *  own '+' cells in row 19 are already walkable and unaffected. */
+  { id: "dev-cms-corridor", rect: { x: 69 * CELL, z: 20 * CELL, w: 21 * CELL, d: 1 * CELL }, solids: [] },
   /** Phase 9 — THE AI ROOM'S SOUTH APRON. V1 blocks row 19 (z 304…320) for every column up to 19 because
    *  the flat render draws the Design Room's north elevation across it. With the Design Room built 16
    *  south (design-room WORLD_SHIFT_Z) that row is real floor between two real walls: its cell centres sit

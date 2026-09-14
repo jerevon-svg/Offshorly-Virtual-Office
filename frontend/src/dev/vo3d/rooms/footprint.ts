@@ -14,11 +14,11 @@ import type { Footprint } from "../world/WorldState";
 import { chairPlanRadius } from "../build/furniture";
 
 /** task chairs: a five-star caster base, round in plan, and sized by the builder rather than by the art box */
-export const TASK_CHAIR_KINDS: ReadonlySet<string> = new Set(["chair-a", "chair-b", "lead-chair", "cms-task-chair", "cms-lead-chair", "ai-task-chair", "ai-lead-chair", "ai-visitor-chair"]);
+export const TASK_CHAIR_KINDS: ReadonlySet<string> = new Set(["chair-a", "chair-b", "lead-chair", "cms-task-chair", "cms-lead-chair", "ai-task-chair", "ai-lead-chair", "ai-visitor-chair", "dev-exec-chair", "dev-task-chair", "qa-task-chair", "qa-lead-chair"]);
 /** kinds whose plan is a circle (or a regular polygon close enough to one that a box would lie) */
-export const ROUND_KINDS: ReadonlySet<string> = new Set(["beanbag", "round-table", "cafe-table", "exec-planter", "cms-pouf", "cms-round-table"]);
+export const ROUND_KINDS: ReadonlySet<string> = new Set(["beanbag", "round-table", "cafe-table", "exec-planter", "cms-pouf", "cms-round-table", "qa-pouf", "qa-round-table"]);
 /** kinds that lie ON the floor rather than standing on it */
-export const FLOOR_DRESSING_KINDS: ReadonlySet<string> = new Set(["rug", "mat", "exec-rug", "cms-rug"]);
+export const FLOOR_DRESSING_KINDS: ReadonlySet<string> = new Set(["rug", "mat", "exec-rug", "cms-rug", "dev-rug", "qa-rug"]);
 
 export function kindFootprint(kind: string, w: number, d: number): Footprint {
   if (FLOOR_DRESSING_KINDS.has(kind)) return { shape: "rect", w, d, solid: false };

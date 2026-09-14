@@ -22,6 +22,8 @@ import {
   LEAD_CHAIR, LEAD_DESK, MEMBER_COLS, MEMBER_ROWS_Z, NORTH_Z, RACKS, RUN_FRONT, SOUTH_Z,
   VISITOR_CHAIRS, WEST_X, aiRoomEntities,
 } from "./rooms/ai";
+import { DEV_ROOM, devRoomEntities } from "./rooms/dev";
+import { QA_ROOM, qaRoomEntities } from "./rooms/qa";
 import { PALETTE } from "./render/Materials";
 import { SlidingDoor } from "./interact/Door";
 import { DerivedNav } from "./nav/derived";
@@ -35,14 +37,14 @@ import { FACING_YAW, pointInRect, type Rect, type Vec2 } from "./core/coords";
 /** the same wiring bootstrap.ts uses, minus THREE */
 function rig() {
   const world = new WorldState();
-  for (const r of [DESIGN_ROOM, RECEPTION_ROOM, MEETING_ROOM, PROJECT_ROOM, GAMING_ROOM, CENTRAL_HUB, EXECUTIVE_ROOM, CMS_ROOM, AI_ROOM]) world.addRoom(r);
+  for (const r of [DESIGN_ROOM, RECEPTION_ROOM, MEETING_ROOM, PROJECT_ROOM, GAMING_ROOM, CENTRAL_HUB, EXECUTIVE_ROOM, CMS_ROOM, AI_ROOM, DEV_ROOM, QA_ROOM]) world.addRoom(r);
   for (const e of [...designRoomEntities(), ...receptionEntities(), ...meetingRoomEntities(), ...projectRoomEntities(),
-    ...gamingRoomEntities(), ...centralHubEntities(), ...executiveRoomEntities(), ...cmsRoomEntities(), ...aiRoomEntities()]) world.addEntity(e);
+    ...gamingRoomEntities(), ...centralHubEntities(), ...executiveRoomEntities(), ...cmsRoomEntities(), ...aiRoomEntities(), ...devRoomEntities(), ...qaRoomEntities()]) world.addEntity(e);
   const plan = registerGroundFloor(world);
   const inBounds = (p: Vec2) => world.walkableAt(p);
   const walkability = new Walkability(composeStatic(v2Static(v1Static, openedLayer([...HUB_BANDS, ...CORRIDOR_BANDS])), inBounds, clearanceLayer(worldClearances(world))));
   const derived = new DerivedNav(world, {
-    roomIds: new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id, CMS_ROOM.id, AI_ROOM.id]),
+    roomIds: new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id, CMS_ROOM.id, AI_ROOM.id, DEV_ROOM.id, QA_ROOM.id]),
   });
   walkability.attachDerived(derived, world);
   const stand = makeStandTest({ world, walkability, derived, radius: NAV_RADIUS });

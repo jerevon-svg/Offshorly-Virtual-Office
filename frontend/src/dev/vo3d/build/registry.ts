@@ -21,6 +21,10 @@ import { CMS_KINDS, buildCmsFurniture } from "./cms-furniture";
 import { cmsStatic } from "./cms";
 import { AI_KINDS, buildAiFurniture } from "./ai-furniture";
 import { aiStatic } from "./ai";
+import { DEV_KINDS, buildDevFurniture } from "./dev-furniture";
+import { devStatic } from "./dev";
+import { QA_KINDS, buildQaFurniture } from "./qa-furniture";
+import { qaStatic } from "./qa";
 
 export type BuildResult = { group: THREE.Group; sway: SwayNode[] };
 
@@ -49,6 +53,8 @@ export const ROOM_STATIC: Record<string, RoomStaticBuilder> = {
   "executive-room": executiveStatic,
   "cms-room": cmsStatic,
   "ai-room": aiStatic,
+  "dev-room": devStatic,
+  "qa-room": qaStatic,
 };
 
 export function buildEntity(e: Entity): BuildResult {
@@ -122,6 +128,16 @@ export function buildEntity(e: Entity): BuildResult {
   // AI ROOM furniture: its own builders, for the same reason (see build/ai-furniture.ts).
   if ((AI_KINDS as readonly string[]).includes(e.kind)) {
     const group = buildAiFurniture(e);
+    if (group) return { group, sway };
+  }
+  // DEV ROOM furniture: its own builders, for the same reason (see build/dev-furniture.ts).
+  if ((DEV_KINDS as readonly string[]).includes(e.kind)) {
+    const group = buildDevFurniture(e);
+    if (group) return { group, sway };
+  }
+  // QA ROOM furniture: its own builders, for the same reason (see build/qa-furniture.ts).
+  if ((QA_KINDS as readonly string[]).includes(e.kind)) {
+    const group = buildQaFurniture(e);
     if (group) return { group, sway };
   }
   if (e.kind === "solid") return { group: new THREE.Group(), sway }; // footprint-only entity (baked decor drawn by the shell builder)

@@ -8,7 +8,6 @@ import manifest from "../../data/office-assets-manifest.json";
 import { SEAT_DIRECTIONS, seatCellKey } from "../../data/seatDirections";
 import { WorldState } from "./world/WorldState";
 import { CORRIDOR_BANDS, PLACEHOLDER_SOUTH_CLAMP, registerGroundFloor, roomSouthZ } from "./rooms/ground-floor";
-import { footprintWallRects } from "./build/floorplan";
 import { makeStandTest } from "./player/standTest";
 import { SeatInteraction } from "./interact/Seat";
 import { ControllerStack, NavigationController } from "./avatar/Controller";
@@ -29,6 +28,8 @@ import {
   cmsRoomEntities,
 } from "./rooms/cms";
 import { AI_ROOM, aiRoomEntities } from "./rooms/ai";
+import { DEV_ROOM, devRoomEntities } from "./rooms/dev";
+import { QA_ROOM, qaRoomEntities } from "./rooms/qa";
 import { PALETTE } from "./render/Materials";
 import { SlidingDoor } from "./interact/Door";
 import { DerivedNav } from "./nav/derived";
@@ -43,14 +44,14 @@ import { FACING_YAW, pointInRect, type Rect, type Vec2 } from "./core/coords";
 /** the same wiring bootstrap.ts uses, minus THREE */
 function rig() {
   const world = new WorldState();
-  for (const r of [DESIGN_ROOM, RECEPTION_ROOM, MEETING_ROOM, PROJECT_ROOM, GAMING_ROOM, CENTRAL_HUB, EXECUTIVE_ROOM, CMS_ROOM, AI_ROOM]) world.addRoom(r);
+  for (const r of [DESIGN_ROOM, RECEPTION_ROOM, MEETING_ROOM, PROJECT_ROOM, GAMING_ROOM, CENTRAL_HUB, EXECUTIVE_ROOM, CMS_ROOM, AI_ROOM, DEV_ROOM, QA_ROOM]) world.addRoom(r);
   for (const e of [...designRoomEntities(), ...receptionEntities(), ...meetingRoomEntities(), ...projectRoomEntities(),
-    ...gamingRoomEntities(), ...centralHubEntities(), ...executiveRoomEntities(), ...cmsRoomEntities(), ...aiRoomEntities()]) world.addEntity(e);
+    ...gamingRoomEntities(), ...centralHubEntities(), ...executiveRoomEntities(), ...cmsRoomEntities(), ...aiRoomEntities(), ...devRoomEntities(), ...qaRoomEntities()]) world.addEntity(e);
   const plan = registerGroundFloor(world);
   const inBounds = (p: Vec2) => world.walkableAt(p);
   const walkability = new Walkability(composeStatic(v2Static(v1Static, openedLayer([...HUB_BANDS, ...CORRIDOR_BANDS])), inBounds, clearanceLayer(worldClearances(world))));
   const derived = new DerivedNav(world, {
-    roomIds: new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id, CMS_ROOM.id, AI_ROOM.id]),
+    roomIds: new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id, CMS_ROOM.id, AI_ROOM.id, DEV_ROOM.id, QA_ROOM.id]),
   });
   walkability.attachDerived(derived, world);
   return { world, plan, inBounds, walkability, derived };
@@ -374,7 +375,7 @@ describe("vo3d CMS room — app wiring", () => {
     // Player mode must be able to activate the room's chairs, or they are GUI-only
     expect(src).toContain("const cms = CMS_SEAT_IDS.indexOf(id);");
     // and its lounge pieces join the one shared lounge-seat list
-    expect(src).toMatch(/EXECUTIVE_LOUNGE_IDS, \.\.\.CMS_LOUNGE_IDS\]/);
+    expect(src).toMatch(/EXECUTIVE_LOUNGE_IDS, \.\.\.CMS_LOUNGE_IDS/);
   });
 });
 
@@ -452,19 +453,22 @@ describe("vo3d CMS room — live Player View corrections", () => {
     }
   });
 
-  it("3. the corridor between CMS and the unbuilt Dev room is walkable geometry, not a player-only gap", () => {
+  it("3. the corridor between CMS and the Dev room is walkable geometry, not a player-only gap", () => {
     const { world, plan, walkability, derived } = rig();
-    // the placeholder's own geometry moved — this is not a nav-only opening
+    // PHASE 10. This corridor was opened in Phase 8 by CLAMPING the unbuilt Dev room's placeholder to
+    // z 304 — its own V1 south-wall line. The Dev room is now reconstructed and its real wall is built on
+    // that same line, so the clamp has retired and the corridor is answered for by geometry both sides.
     const dev = plan.rooms.find((r) => r.id === "dev-room")!;
-    expect(dev.reconstructed).toBe(false);
-    expect(roomSouthZ(dev, plan)).toBe(PLACEHOLDER_SOUTH_CLAMP["dev-room"]);
-    const built = footprintWallRects(dev, plan);
-    for (const w of built) expect(w.z + w.d, "a Dev placeholder wall still stands in the corridor").toBeLessThanOrEqual(304);
-    // …and its unwalkable REGION moved with it, or the clamp would be cosmetic
+    expect(dev.reconstructed).toBe(true);
+    expect(PLACEHOLDER_SOUTH_CLAMP["dev-room"]).toBeUndefined();
+    expect(roomSouthZ(dev, plan)).toBe(dev.rect.z + dev.rect.d); // no clamp left to apply
+    for (const w of DEV_ROOM.wallSolids!) expect(w.z + w.d, "a Dev wall still stands in the corridor").toBeLessThanOrEqual(316);
+    // (that the placeholder shell is no longer BUILT for this room is frontbar.test.ts's assertion)
+    // …and the corridor is walkable floor, or the wall line would be cosmetic
     expect(world.regionAt({ x: 1272, z: 328 })?.id).not.toBe("footprint:dev-room");
     expect(world.regionAt({ x: 1272, z: 328 })?.walkable).toBe(true);
-    // the corridor's clear width: the clamped placeholder to the CMS north wall's outer face
-    expect(Math.round(RECT.z) - 304).toBeGreaterThanOrEqual(2 * NAV_RADIUS);
+    // the corridor's clear width: the Dev room's south wall OUTER face to the CMS north wall's
+    expect(Math.round(RECT.z) - 316).toBeGreaterThanOrEqual(2 * NAV_RADIUS);
     // a PLAYER body can actually stand in it, across its whole length and at NAV_RADIUS
     const stand = makeStandTest({ world, walkability, derived, radius: NAV_RADIUS });
     // The legal standing band runs z 312…336 (the clamped placeholder to one body-radius short of the

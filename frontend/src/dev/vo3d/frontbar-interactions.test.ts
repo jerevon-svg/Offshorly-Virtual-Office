@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import { EXECUTIVE_ROOM } from "./rooms/executive";
 import { CMS_ROOM } from "./rooms/cms";
 import { AI_ROOM } from "./rooms/ai";
+import { DEV_ROOM } from "./rooms/dev";
+import { QA_ROOM } from "./rooms/qa";
 import { CENTRAL_HUB } from "./rooms/central-hub";
 import * as THREE from "three";
 import { WorldState } from "./world/WorldState";
@@ -38,7 +40,7 @@ const BODY_RADIUS = 10.5;
 
 function rig() {
   const world = new WorldState();
-  for (const r of [DESIGN_ROOM, RECEPTION_ROOM, MEETING_ROOM, PROJECT_ROOM, GAMING_ROOM, CENTRAL_HUB, EXECUTIVE_ROOM, CMS_ROOM, AI_ROOM]) world.addRoom(r);
+  for (const r of [DESIGN_ROOM, RECEPTION_ROOM, MEETING_ROOM, PROJECT_ROOM, GAMING_ROOM, CENTRAL_HUB, EXECUTIVE_ROOM, CMS_ROOM, AI_ROOM, DEV_ROOM, QA_ROOM]) world.addRoom(r);
   for (const e of [...designRoomEntities(), ...receptionEntities(), ...meetingRoomEntities(), ...projectRoomEntities()]) world.addEntity(e);
   registerGroundFloor(world);
   const inBounds = (p: Vec2) => world.walkableAt(p);

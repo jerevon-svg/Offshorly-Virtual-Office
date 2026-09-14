@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { EXECUTIVE_ROOM } from "./rooms/executive";
 import { CMS_ROOM } from "./rooms/cms";
 import { AI_ROOM } from "./rooms/ai";
+import { DEV_ROOM } from "./rooms/dev";
+import { QA_ROOM } from "./rooms/qa";
 import { CENTRAL_HUB } from "./rooms/central-hub";
 import * as THREE from "three";
 import manifest from "../../data/office-assets-manifest.json";
@@ -41,6 +43,8 @@ function rig() {
   world.addRoom(EXECUTIVE_ROOM);
   world.addRoom(CMS_ROOM);
   world.addRoom(AI_ROOM);
+  world.addRoom(DEV_ROOM);
+  world.addRoom(QA_ROOM);
   for (const e of designRoomEntities()) world.addEntity(e);
   for (const e of gamingRoomEntities()) world.addEntity(e);
   const plan = registerGroundFloor(world);
@@ -217,6 +221,8 @@ describe("vo3d gaming room — build + lighting budget", () => {
   world.addRoom(EXECUTIVE_ROOM);
   world.addRoom(CMS_ROOM);
   world.addRoom(AI_ROOM);
+  world.addRoom(DEV_ROOM);
+  world.addRoom(QA_ROOM);
     for (const e of gamingRoomEntities()) world.addEntity(e);
     const scene = new THREE.Scene();
     const mirror = new SceneMirror(world, scene);

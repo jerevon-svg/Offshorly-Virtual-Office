@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { EXECUTIVE_ROOM } from "./rooms/executive";
 import { CMS_ROOM } from "./rooms/cms";
 import { AI_ROOM } from "./rooms/ai";
+import { DEV_ROOM } from "./rooms/dev";
+import { QA_ROOM } from "./rooms/qa";
 import { CENTRAL_HUB } from "./rooms/central-hub";
 import manifest from "../../data/office-assets-manifest.json";
 import { WorldState } from "./world/WorldState";
@@ -41,6 +43,8 @@ function rig() {
   world.addRoom(EXECUTIVE_ROOM);
   world.addRoom(CMS_ROOM);
   world.addRoom(AI_ROOM);
+  world.addRoom(DEV_ROOM);
+  world.addRoom(QA_ROOM);
   const plan = registerGroundFloor(world);
   const inBounds = (p: Vec2) => world.walkableAt(p);
   const wk = new Walkability(composeStatic(v1Static, inBounds, clearanceLayer(worldClearances(world))));
@@ -80,13 +84,13 @@ describe("vo3d ground floor — every V1 room in ONE world", () => {
     expect(plan.rooms.find((r) => r.id === "design-room")!.rect).toEqual(DESIGN_ROOM.rect);
     expect(ROOM_WORLD_SHIFT_Z["design-room"]).toBe(16);
     // manifest order, not phase order: project-room and meeting-room precede reception-room in the manifest
-    expect(plan.rooms.filter((r) => r.reconstructed).map((r) => r.id)).toEqual(["ai-room", "executive-room", "cms-room", "design-room", "gaming-room", "project-room", "meeting-room", "reception-room", "central-hub"]);
+    expect(plan.rooms.filter((r) => r.reconstructed).map((r) => r.id)).toEqual(["ai-room", "executive-room", "dev-room", "cms-room", "qa-room", "design-room", "gaming-room", "project-room", "meeting-room", "reception-room", "central-hub"]);
     expect(plan.rooms.find((r) => r.id === "central-hub")!.walls).toBe(false); // Phase 6B: reconstructed AND still wall-less
     // room art boxes never overlap by more than one cell (gaming/project overlap by 12 units in V1) → interiorRects are disjoint
     for (const a of rooms) for (const b of rooms) if (a !== b) { const ox = Math.min(a.rect.x + a.rect.w, b.rect.x + b.rect.w) - Math.max(a.rect.x, b.rect.x), oz = Math.min(a.rect.z + a.rect.d, b.rect.z + b.rect.d) - Math.max(a.rect.z, b.rect.z); expect(Math.min(ox, oz) <= CELL, `${a.id} vs ${b.id}`).toBe(true); }
   });
 
-  it("world regions: 9 reconstructed floors, sidewalk, 2 unwalkable footprints, shared floor with room holes, doorway thresholds; bounds = frame", () => {
+  it("world regions: 11 reconstructed floors, sidewalk, NO unwalkable footprints, shared floor with room holes, doorway thresholds; bounds = frame", () => {
     const { world, plan } = rig();
     expect(world.bounds).toEqual(FRAME);
     const regions = groundFloorRegions(plan, world);
@@ -96,10 +100,10 @@ describe("vo3d ground floor — every V1 room in ONE world", () => {
     // changes hands. See groundFloorRegions.
     const doors = [...world.entities.values()].filter((e) => e.capabilities.door);
     expect(doors.length).toBeGreaterThan(0);
-    expect(regions.map((r) => r.kind)).toEqual([...Array(9).fill("room-floor"), "exterior", ...Array(2).fill("room-floor"), "shared-floor", ...Array(doors.length).fill("room-floor")]);
-    expect(regions.filter((r) => r.walkable)).toHaveLength(11 + doors.length);
+    expect(regions.map((r) => r.kind)).toEqual([...Array(11).fill("room-floor"), "exterior", "shared-floor", ...Array(doors.length).fill("room-floor")]);
+    expect(regions.filter((r) => r.walkable)).toHaveLength(13 + doors.length);
     expect(regions.filter((r) => r.walkable).map((r) => r.id)).toEqual([
-      "floor:ai-room", "floor:executive-room", "floor:cms-room", "floor:design-room", "floor:gaming-room", "floor:project-room", "floor:meeting-room", "floor:reception-room", "floor:central-hub",
+      "floor:ai-room", "floor:executive-room", "floor:dev-room", "floor:cms-room", "floor:qa-room", "floor:design-room", "floor:gaming-room", "floor:project-room", "floor:meeting-room", "floor:reception-room", "floor:central-hub",
       "exterior:sidewalk", "shared:ground-floor", ...doors.map((e) => `threshold:${e.id}`),
     ]);
     expect(regions.find((r) => r.kind === "shared-floor")!.holes).toHaveLength(11);
@@ -108,7 +112,7 @@ describe("vo3d ground floor — every V1 room in ONE world", () => {
     expect(world.regionAt(HALL_EXEC_DOOR)?.id).toBe("shared:ground-floor");
     expect(world.regionAt({ x: 720, z: 600 })).toMatchObject({ id: "floor:central-hub", walkable: true }); // Phase 6B
     expect(world.regionAt({ x: 150, z: 150 })).toMatchObject({ id: "floor:ai-room", walkable: true }); // Phase 9
-    expect(world.regionAt({ x: 168, z: 720 })).toMatchObject({ id: "footprint:qa-room", walkable: false });
+    expect(world.regionAt({ x: 168, z: 720 })).toMatchObject({ id: "floor:qa-room", walkable: true }); // Phase 11
     expect(world.regionAt({ x: 700, z: 1216 })).toMatchObject({ id: "exterior:sidewalk", walkable: true });
     // Reception: its floor owns the gate band, the interior and the entry threshold, and hands off to the
     // sidewalk with NO gap (row 72 centre z=1160 → Reception, row 73 centre z=1176 → sidewalk)
@@ -195,12 +199,11 @@ describe("vo3d ground floor — every V1 room in ONE world", () => {
     const { wk, inBounds } = rig();
     expect(planWalk(APPROACH, { x: -20, z: 400 }, wk, inBounds)).toMatchObject({ ok: false, reason: "outside-world" });
     expect(planWalk(APPROACH, { x: 1500, z: 400 }, wk, inBounds)).toMatchObject({ ok: false, reason: "outside-world" });
-    // Phase 9: the AI room is reconstructed, so the example of an unbuilt interior moved to the QA room
-    // (x 8.08, z 596.5, 320.22 × 258.65), which is still footprint-only.
-    expect(planWalk(APPROACH, { x: 168, z: 720 }, wk, inBounds)).toMatchObject({ ok: false, reason: "outside-world" }); // QA room interior
-    // Phase 7: the Executive room is reconstructed too, so the example of an unbuilt interior moved
-    // again — to the Dev room (x 1111.14, z 8, 320.86 square), which is still footprint-only.
-    expect(planWalk(APPROACH, { x: 1270, z: 168 }, wk, inBounds)).toMatchObject({ ok: false, reason: "outside-world" }); // dev room interior
+    // PHASE 11 retired this example for good: every room on the floor is reconstructed, so there is no
+    // unbuilt interior left to refuse. The QA room, which used to be it, now routes like any other room.
+    expect(planWalk(APPROACH, { x: 168, z: 760 }, wk, inBounds).ok, "the QA room is reconstructed and routable").toBe(true);
+    // Phase 10 reconstructed the Dev room, so the QA room above is the LAST footprint-only interior left
+    // on the floor and the only example this assertion has.
     // this rig carries no OpenBands, so the hub's island cells are still V1-blocked here; the medallion's
     // reachability is proved in central-hub.test.ts, where the bands are in play
     expect(planWalk(APPROACH, { x: 720, z: 600 }, wk, inBounds)).toMatchObject({ ok: false, reason: "unwalkable" });

@@ -32,6 +32,8 @@ import { CENTRAL_HUB, centralHubEntities, OPEN_BANDS as HUB_BANDS } from "./room
 import { EXECUTIVE_ROOM, executiveRoomEntities } from "./rooms/executive";
 import { CMS_ROOM, cmsRoomEntities } from "./rooms/cms";
 import { AI_ROOM, DOOR_STANDS as AI_DOOR_STANDS, SOUTH_OUTER_Z as AI_SOUTH_OUTER, aiRoomEntities } from "./rooms/ai";
+import { DEV_ROOM, devRoomEntities } from "./rooms/dev";
+import { QA_ROOM, qaRoomEntities } from "./rooms/qa";
 import { DerivedNav } from "./nav/derived";
 import { roomSolids } from "./nav/solids";
 import { Walkability, composeStatic } from "./nav/Walkability";
@@ -42,14 +44,14 @@ import { planWalk } from "./nav/planner";
 import { v1RoomRect } from "./adapters/v1Manifest";
 import { type Rect, type Vec2 } from "./core/coords";
 
-const DERIVED = new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id, CMS_ROOM.id, AI_ROOM.id]);
+const DERIVED = new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id, CMS_ROOM.id, AI_ROOM.id, DEV_ROOM.id, QA_ROOM.id]);
 
 /** the same composition app/bootstrap builds */
 function rig() {
   const world = new WorldState();
-  for (const r of [DESIGN_ROOM, RECEPTION_ROOM, MEETING_ROOM, PROJECT_ROOM, GAMING_ROOM, CENTRAL_HUB, EXECUTIVE_ROOM, CMS_ROOM, AI_ROOM]) world.addRoom(r);
+  for (const r of [DESIGN_ROOM, RECEPTION_ROOM, MEETING_ROOM, PROJECT_ROOM, GAMING_ROOM, CENTRAL_HUB, EXECUTIVE_ROOM, CMS_ROOM, AI_ROOM, DEV_ROOM, QA_ROOM]) world.addRoom(r);
   for (const e of [...designRoomEntities(), ...receptionEntities(), ...meetingRoomEntities(), ...projectRoomEntities(),
-    ...gamingRoomEntities(), ...centralHubEntities(), ...executiveRoomEntities(), ...cmsRoomEntities(), ...aiRoomEntities()]) world.addEntity(e);
+    ...gamingRoomEntities(), ...centralHubEntities(), ...executiveRoomEntities(), ...cmsRoomEntities(), ...aiRoomEntities(), ...devRoomEntities(), ...qaRoomEntities()]) world.addEntity(e);
   const plan = registerGroundFloor(world);
   const inBounds = (p: Vec2) => world.walkableAt(p);
   const derived = new DerivedNav(world, { roomIds: DERIVED });
@@ -122,10 +124,11 @@ describe("vo3d — V2 geometry authority: the Design Room is BUILT where V2 says
     // only a GEOMETRY-DERIVED room may declare a shift — an unreconstructed room has no geometry to answer
     // with, so it must stay exactly where V1 paints it
     for (const id of Object.keys(ROOM_WORLD_SHIFT_Z)) expect(DERIVED.has(id), `${id} is shifted but not derived-governed`).toBe(true);
-    // and the V1 grid still governs everything no reconstructed room covers. The QA room is unbuilt, so
-    // its interior is not walkable in V2 even though V1 paints it as floor — V1 stays READ, never rewritten.
+    // and the V1 grid still governs everything no reconstructed room covers. Phase 11 built the LAST of
+    // them, so the example that used to live here — the unbuilt QA interior — is now a derived room floor;
+    // what is asserted instead is that V1's own paint of it is untouched and simply no longer consulted.
     const { world, walkability } = rig();
-    expect(world.regionAt({ x: 168, z: 720 })?.walkable).toBe(false);
+    expect(world.regionAt({ x: 168, z: 720 })).toMatchObject({ id: "floor:qa-room", walkable: true });
     expect(v1Static(10, 45), "V1 still paints the QA interior as floor").toBe(true);
     // a V1-blocked hall cell stays blocked, and a V1-open hall cell stays open, through the composition
     expect(v1Static(25, 2)).toBe(false);

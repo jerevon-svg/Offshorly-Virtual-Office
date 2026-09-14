@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { EXECUTIVE_ROOM } from "./rooms/executive";
 import { CMS_ROOM } from "./rooms/cms";
 import { AI_ROOM } from "./rooms/ai";
+import { DEV_ROOM } from "./rooms/dev";
+import { QA_ROOM } from "./rooms/qa";
 import { CENTRAL_HUB } from "./rooms/central-hub";
 import * as THREE from "three";
 import { Avatar } from "./avatar/Avatar";
@@ -104,6 +106,8 @@ describe("vo3d avatar faces its movement direction", () => {
     w.addRoom(EXECUTIVE_ROOM);
     w.addRoom(CMS_ROOM);
     w.addRoom(AI_ROOM);
+    w.addRoom(DEV_ROOM);
+    w.addRoom(QA_ROOM);
     registerGroundFloor(w);
     const worldBounds = (p: Vec2) => w.walkableAt(p);
     const wk = new Walkability(composeStatic(v1Static, worldBounds, clearanceLayer(worldClearances(w)))); wk.syncFromWorld(w);
