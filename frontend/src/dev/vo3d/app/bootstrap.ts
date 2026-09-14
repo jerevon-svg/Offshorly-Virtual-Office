@@ -82,7 +82,10 @@ import { SceneMirror } from "../render/SceneMirror";
 import { Avatar } from "../avatar/Avatar";
 import { ControllerStack, NavigationController } from "../avatar/Controller";
 import { SeatInteraction } from "../interact/Seat";
-import { EditSession } from "../editor/EditSession";
+import { EditSession, SNAP_DEGREES, SNAP_STEP } from "../editor/EditSession";
+import { applyEditablePolicy, lockLabel, lockReason, type LockReason } from "../editor/editable";
+import { EditorGizmo, yawToward } from "../editor/EditorGizmo";
+import { EditorPanel } from "../editor/EditorPanel";
 import { NavDebug } from "../devtools/NavDebug";
 import { Capture, FrameWindow, Overlay, PRESETS, describeDevice, sceneStats, snapshotRenderer, summarize, type CaptureSummary, type PresetId } from "../devtools/Bench";
 import { BON_STANDING_HEIGHT, type AvatarLod } from "../adapters/v1Avatar";
@@ -140,6 +143,11 @@ world.bounds = {
   d: Math.max(plan.frame.z + plan.frame.d, CAVE_OUTER_RECT.z + CAVE_OUTER_RECT.d) - Math.min(plan.frame.z, CAVE_OUTER_RECT.z),
 };
 const inBounds = (p: Vec2): boolean => world.walkableAt(p);
+
+// ROOM EDITOR V2 — which pieces the editor may arrange. A read-only classification of data the rooms
+// already author (editor/editable.ts), applied once here so no room file carries editor knowledge.
+// Architecture and world-anchored functional furniture are excluded by the rule, not by a list.
+const EDITABLE_IDS = applyEditablePolicy(world);
 
 // ---- nav ---------------------------------------------------------------------------------------
 // static = READ-ONLY V1 grid AND inside a walkable registered region AND clear of declared architecture (door jambs);
@@ -951,15 +959,54 @@ function seatStatuses(): [string, string][] {
 envAudioRef = envAudio;
 
 const edit = new EditSession(world, mirror, walkability, stack);
-const editState = { selected: "none", placement: "—", drift: 0, blockedCells: walkability.dynamicBlockedKeys.length };
+const editGizmo = new EditorGizmo(R.scene);
+const editState = { selected: "none", placement: "—", drift: 0, yawDrift: 0, editable: EDITABLE_IDS.length, history: 0, blockedCells: walkability.dynamicBlockedKeys.length };
+let editPanel: EditorPanel | null = null;
+let editHint = "";
+
+/** ONE refresh for every editor surface: ring + outline, floor marker, lil-gui readouts, the panel. */
 function refreshEditVisuals(): void {
   const pos = edit.currentPos();
   const v = edit.validateCurrent();
-  navDebug.showSelection(edit.editMode && edit.selected ? pos : null, v.ok);
+  const on = edit.editMode && edit.selected !== null;
+  navDebug.showSelection(on ? pos : null, v.ok);
+  if (on && pos) { editGizmo.attachIfNeeded(edit.selected!, edit.view()); editGizmo.sync(pos, edit.currentYaw(), v.ok); }
+  else editGizmo.hide();
   editState.selected = edit.selected ?? "none";
   editState.placement = !edit.selected ? "—" : v.ok ? (edit.previewing ? "valid (unconfirmed)" : "committed") : `invalid: ${v.reason}`;
   editState.drift = Math.round(edit.drift() * 1000) / 1000;
+  editState.yawDrift = edit.yawDrift();
+  editState.history = edit.history.depth;
   editState.blockedCells = navDebug.refreshDynamic(walkability);
+  editPanel?.render({
+    name: edit.selected, room: edit.selected ? world.get(edit.selected).roomId : "",
+    x: pos?.x ?? 0, z: pos?.z ?? 0, yaw: edit.currentYawDegrees(),
+    snap: edit.snap.enabled, snapStep: edit.snap.step, snapDegrees: edit.snap.degrees,
+    status: !edit.selected ? (editHint || `${EDITABLE_IDS.length} editable pieces`) : v.ok ? (edit.previewing ? "valid — unconfirmed" : "placed") : `blocked: ${v.reason}`,
+    valid: v.ok, pending: edit.previewing, canUndo: edit.canUndo, canRedo: edit.canRedo,
+    hint: "drag piece · drag ring to rotate · ⏎ confirm · esc cancel · ⌘Z undo",
+  });
+}
+/** EDIT mode owns a panel for as long as it is on, and nothing when it is off. */
+function setEditMode(on: boolean): void {
+  params.editMode = on;
+  edit.setEditMode(on);
+  if (on && !editPanel) {
+    editPanel = new EditorPanel(document.body, {
+      setAxis: (axis, value) => { edit.setAxis(axis, value); refreshEditVisuals(); },
+      setYaw: (deg) => { edit.setYawDegrees(deg); refreshEditVisuals(); },
+      nudgeYaw: (deg) => { edit.nudgeYawDegrees(deg); refreshEditVisuals(); },
+      setSnap: (v) => { edit.snap.enabled = v; refreshEditVisuals(); },
+      undo: () => { edit.undo(); refreshEditVisuals(); },
+      redo: () => { edit.redo(); refreshEditVisuals(); },
+      confirm: () => { edit.confirm(); refreshEditVisuals(); },
+      cancel: () => { edit.cancel(); refreshEditVisuals(); },
+      reset: () => { edit.reset(); refreshEditVisuals(); },
+      close: () => { setEditMode(false); refresh(); },
+    });
+  }
+  if (!on) { editPanel?.dispose(); editPanel = null; editHint = ""; }
+  refreshEditVisuals();
 }
 
 // ---- pointer: click-to-walk vs orbit drag vs edit drag ------------------------------------------
@@ -974,30 +1021,78 @@ function floorPoint(cx: number, cy: number): Vec2 | null {
   return raycaster.ray.intersectPlane(floorPlane, hit) ? { x: hit.x, z: hit.z } : null;
 }
 let downAt: { x: number; y: number; t: number } | null = null;
-let dragging = false;
+/** what a live editor drag means: nothing, sliding the piece on the floor, or turning it around Y */
+let editDrag: "none" | "move" | "rotate" = "none";
+/** pointer→piece offset captured on grab, so a piece does not jump its centre under the cursor */
+let grabOffset: Vec2 = { x: 0, z: 0 };
+
+/** The FIRST editable piece under the pointer. Architecture and locked functional furniture are not in
+ *  `editable()` at all, so they can never be picked by accident; a click on one reports WHY. */
+function pickEditable(cx: number, cy: number): { id: string } | null {
+  const r = canvas.getBoundingClientRect();
+  ndc.set(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
+  raycaster.setFromCamera(ndc, R.camera);
+  let best: { id: string; d: number } | null = null;
+  for (const en of edit.editable()) {
+    const h = raycaster.intersectObject(mirror.view(en.id), true)[0];
+    if (h && (!best || h.distance < best.d)) best = { id: en.id, d: h.distance };
+  }
+  return best ? { id: best.id } : null;
+}
+/** What the pointer hit when it hit nothing editable — used only to explain the refusal, never to edit. */
+function pickLocked(cx: number, cy: number): { id: string; reason: LockReason } | null {
+  const r = canvas.getBoundingClientRect();
+  ndc.set(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
+  raycaster.setFromCamera(ndc, R.camera);
+  for (const h of raycaster.intersectObject(mirror.root, true)) {
+    for (let o: THREE.Object3D | null = h.object; o; o = o.parent) {
+      const e = world.entities.get(o.name);
+      if (!e) continue;
+      const why = lockReason(e);
+      return why ? { id: e.id, reason: why } : null;
+    }
+  }
+  return null;
+}
 canvas.addEventListener("pointerdown", (e) => {
   if (e.button !== 0 || playerMode.active) return; // PLAYER owns the canvas: see player/PlayerInput
   if (edit.editMode) {
-    const r = canvas.getBoundingClientRect();
-    ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
-    raycaster.setFromCamera(ndc, R.camera);
-    const hitEntity = edit.editable().find((en) => raycaster.intersectObject(mirror.view(en.id), true).length > 0);
-    if (hitEntity) { edit.select(hitEntity.id); dragging = true; R.controls.enabled = false; e.preventDefault(); }
-    else if (!edit.previewing) edit.select(null);
+    const floor = floorPoint(e.clientX, e.clientY);
+    const centre = edit.currentPos();
+    // THE RING WINS. It is drawn outside the piece, so testing it first is what makes a turn a turn and
+    // not a move — exactly the priority a level editor's gizmo has over the object it surrounds.
+    if (centre && floor && edit.selected && editGizmo.onRing(floor, centre)) {
+      editDrag = "rotate"; R.controls.enabled = false; e.preventDefault(); refreshEditVisuals(); return;
+    }
+    const picked = pickEditable(e.clientX, e.clientY);
+    if (picked) {
+      edit.select(picked.id);
+      const p = edit.currentPos()!;
+      grabOffset = floor ? { x: p.x - floor.x, z: p.z - floor.z } : { x: 0, z: 0 };
+      editDrag = "move"; R.controls.enabled = false; editHint = ""; e.preventDefault();
+    } else if (!edit.previewing) {
+      // clicking empty space deselects; clicking a LOCKED piece says so instead of failing silently
+      const blocked = pickLocked(e.clientX, e.clientY);
+      editHint = blocked ? `${blocked.id} — ${lockLabel[blocked.reason]}` : "";
+      edit.select(null);
+      editGizmo.hide();
+    }
     refreshEditVisuals();
     return;
   }
   downAt = { x: e.clientX, y: e.clientY, t: performance.now() };
 });
 canvas.addEventListener("pointermove", (e) => {
-  if (playerMode.active || !edit.editMode || !dragging) return;
+  if (playerMode.active || !edit.editMode || editDrag === "none") return;
   const p = floorPoint(e.clientX, e.clientY);
-  if (p) edit.preview(p);
+  if (!p) return;
+  if (editDrag === "move") edit.preview({ x: p.x + grabOffset.x, z: p.z + grabOffset.z });
+  else { const c = edit.currentPos(); if (c) edit.previewYaw(yawToward(c, p)); } // position held: the pivot IS the transform
   refreshEditVisuals();
 });
 canvas.addEventListener("pointerup", (e) => {
   if (playerMode.active) return;
-  if (dragging) { dragging = false; R.controls.enabled = true; refreshEditVisuals(); return; }
+  if (editDrag !== "none") { editDrag = "none"; R.controls.enabled = true; refreshEditVisuals(); return; }
   if (!downAt || e.button !== 0) return;
   const moved = Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y), held = performance.now() - downAt.t;
   downAt = null;
@@ -1361,12 +1456,35 @@ game.add(gamingDoorState, "state").name("west door").disable().listen();
 game.add(gamingDoorState, "open").name("west door open %").disable().listen();
 game.add(gamingDoorState, "drift").name("west door drift").disable().listen();
 
-const editGui = gui.addFolder("Room edit mode (hero plant only)");
-editGui.add(params, "editMode").name("✎ edit mode").onChange((v: boolean) => { edit.setEditMode(v); if (v) edit.select(HERO_PLANT_ID); refreshEditVisuals(); });
+const editGui = gui.addFolder("Room editor (select → move / rotate → confirm)");
+editGui.add(params, "editMode").name("✎ edit mode").onChange((v: boolean) => { setEditMode(v); });
+editGui.add(edit.snap, "enabled").name(`grid snap (${SNAP_STEP}u · ${SNAP_DEGREES}°)`).listen().onChange(() => refreshEditVisuals());
 editGui.add({ confirm: () => { const v = edit.confirm(); editState.placement = v.ok ? "committed" : `rejected: ${v.reason}`; refreshEditVisuals(); } }, "confirm").name("✔ confirm placement");
 editGui.add({ cancel: () => { edit.cancel(); refreshEditVisuals(); } }, "cancel").name("✖ cancel (revert to committed)");
 editGui.add({ reset: () => { edit.reset(); refreshEditVisuals(); } }, "reset").name("reset to original");
-editGui.add(editState, "selected").disable().listen(); editGui.add(editState, "placement").disable().listen(); editGui.add(editState, "drift").disable().listen(); editGui.add(editState, "blockedCells").name("dynamic blocked cells").disable().listen();
+editGui.add({ undo: () => { edit.undo(); refreshEditVisuals(); } }, "undo").name("↶ undo");
+editGui.add({ redo: () => { edit.redo(); refreshEditVisuals(); } }, "redo").name("↷ redo");
+editGui.add(editState, "selected").disable().listen(); editGui.add(editState, "placement").disable().listen(); editGui.add(editState, "drift").disable().listen();
+editGui.add(editState, "yawDrift").name("yaw drift °").disable().listen();
+editGui.add(editState, "editable").name("editable pieces").disable().listen(); editGui.add(editState, "history").name("undo depth").disable().listen();
+editGui.add(editState, "blockedCells").name("dynamic blocked cells").disable().listen();
+
+// EDITOR KEYS. Capture-phase, scoped to edit mode, and never while a panel field has focus — typing a
+// coordinate must not confirm the placement being typed.
+window.addEventListener("keydown", (e) => {
+  if (!edit.editMode) return;
+  const t = e.target as HTMLElement | null;
+  if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
+  const meta = e.metaKey || e.ctrlKey;
+  if (meta && e.key.toLowerCase() === "z") { e.preventDefault(); if (e.shiftKey) edit.redo(); else edit.undo(); }
+  else if (e.key === "Enter") { e.preventDefault(); edit.confirm(); }
+  else if (e.key === "Escape") { e.preventDefault(); if (edit.previewing) edit.cancel(); else { edit.select(null); editGizmo.hide(); } }
+  else if (e.key.toLowerCase() === "g") { edit.snap.enabled = !edit.snap.enabled; }
+  else if (e.key === "[") { edit.nudgeYawDegrees(-SNAP_DEGREES); }
+  else if (e.key === "]") { edit.nudgeYawDegrees(SNAP_DEGREES); }
+  else return;
+  refreshEditVisuals();
+});
 const nav = gui.addFolder("Click-to-walk (V1 grid ∧ world regions ∧ ¬dynamic)");
 nav.add(params, "clickToWalk").name("left-click floor → walk");
 nav.add(params, "showGrid").name("show grid (green walkable · grey unbuilt interior)").onChange((v: boolean) => (navDebug.showGrid = v));
@@ -1930,5 +2048,18 @@ loop();
     stand: () => { qaSeat?.stand(); loungeSeat?.stand(); },
     get seat() { return qaSeat; }, get lounge() { return loungeSeat; }, get door() { return qaDoor; },
   },
-  edit: { session: edit, editState, movePlantTo: (x: number, z: number) => { edit.setEditMode(true); edit.select(HERO_PLANT_ID); const v = edit.preview({ x, z }); refreshEditVisuals(); return v; }, confirm: () => { const v = edit.confirm(); refreshEditVisuals(); return v; }, cancel: () => { edit.cancel(); refreshEditVisuals(); }, reset: () => { edit.reset(); refreshEditVisuals(); }, setEditMode: (v: boolean) => { params.editMode = v; edit.setEditMode(v); if (v) edit.select(HERO_PLANT_ID); refreshEditVisuals(); refresh(); } },
+  edit: {
+    session: edit, editState, gizmo: editGizmo, editableIds: EDITABLE_IDS,
+    movePlantTo: (x: number, z: number) => { edit.setEditMode(true); edit.select(HERO_PLANT_ID); const v = edit.preview({ x, z }); refreshEditVisuals(); return v; },
+    select: (id: string | null) => { edit.select(id); refreshEditVisuals(); return edit.selected; },
+    move: (x: number, z: number) => { const v = edit.preview({ x, z }); refreshEditVisuals(); return v; },
+    rotate: (deg: number) => { const v = edit.setYawDegrees(deg); refreshEditVisuals(); return v; },
+    setSnap: (on: boolean) => { edit.snap.enabled = on; refreshEditVisuals(); return edit.snap; },
+    confirm: () => { const v = edit.confirm(); refreshEditVisuals(); return v; },
+    cancel: () => { edit.cancel(); refreshEditVisuals(); },
+    reset: () => { edit.reset(); refreshEditVisuals(); },
+    undo: () => { const r = edit.undo(); refreshEditVisuals(); return r; },
+    redo: () => { const r = edit.redo(); refreshEditVisuals(); return r; },
+    setEditMode: (v: boolean) => { setEditMode(v); if (v) edit.select(HERO_PLANT_ID); refreshEditVisuals(); refresh(); },
+  },
 };

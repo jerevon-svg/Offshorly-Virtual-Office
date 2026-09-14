@@ -249,18 +249,23 @@ export class WorldState {
     if (changed.length) this.changes.emit(change);
     return change;
   }
-  /** Solid footprints (as world rects; circles → bounding squares) of every entity except `except`.
-   *  Non-solid footprints (rugs, mats) are extents, not obstacles, and are skipped. */
-  solidRects(except?: EntityId): Rect[] {
-    const out: Rect[] = [];
+  /** Solid footprints (as world rects; circles → bounding squares) of every entity except `except`,
+   *  each tagged with the entity it came from. Non-solid footprints (rugs, mats) are extents, not
+   *  obstacles, and are skipped. */
+  solidEntityRects(except?: EntityId): { id: EntityId; rect: Rect }[] {
+    const out: { id: EntityId; rect: Rect }[] = [];
     for (const e of this.entities.values()) {
       if (e.id === except || !e.footprint || !isSolid(e.footprint)) continue;
       const { pos } = e.transform;
-      if (e.footprint.shape === "rect") out.push({ x: pos.x - e.footprint.w / 2, z: pos.z - e.footprint.d / 2, w: e.footprint.w, d: e.footprint.d });
+      if (e.footprint.shape === "rect") out.push({ id: e.id, rect: { x: pos.x - e.footprint.w / 2, z: pos.z - e.footprint.d / 2, w: e.footprint.w, d: e.footprint.d } });
       // a sector's BOUNDING square: placement is a coarse keep-out test, and erring wide is the safe side
-      else if (e.footprint.shape === "sector") out.push({ x: pos.x - e.footprint.rOut, z: pos.z - e.footprint.rOut, w: 2 * e.footprint.rOut, d: 2 * e.footprint.rOut });
-      else out.push({ x: pos.x - e.footprint.r, z: pos.z - e.footprint.r, w: 2 * e.footprint.r, d: 2 * e.footprint.r });
+      else if (e.footprint.shape === "sector") out.push({ id: e.id, rect: { x: pos.x - e.footprint.rOut, z: pos.z - e.footprint.rOut, w: 2 * e.footprint.rOut, d: 2 * e.footprint.rOut } });
+      else out.push({ id: e.id, rect: { x: pos.x - e.footprint.r, z: pos.z - e.footprint.r, w: 2 * e.footprint.r, d: 2 * e.footprint.r } });
     }
     return out;
+  }
+  /** the same solids, untagged */
+  solidRects(except?: EntityId): Rect[] {
+    return this.solidEntityRects(except).map((s) => s.rect);
   }
 }

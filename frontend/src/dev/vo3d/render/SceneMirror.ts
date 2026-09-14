@@ -19,6 +19,19 @@ export class SceneMirror {
   /** powered-surface idle animation (screens, sensors, status strips) — one update path for the whole world */
   readonly ambient = new AmbientSystem();
   private readonly views = new Map<EntityId, THREE.Group>();
+  /** The rotation a builder BAKED into an entity's group, net of the entity's own authored yaw.
+   *
+   *  Most furniture is built through `placed()`, which already turns the group to face `props.facing`; a
+   *  door leaf instead applies `transform.yaw` itself. Recording `built − authored yaw` reconciles both:
+   *  the live rotation is always `baseYaw + transform.yaw`, which reproduces exactly what the builder
+   *  produced at yaw 0 and lets the editor turn a piece without erasing its authored facing. */
+  private readonly baseYaw = new Map<EntityId, number>();
+  /** Entities whose BUILDER put the group on the transform (local geometry), rather than baking world
+   *  coordinates into its children. Only these can be re-positioned by `applyTransform` at all — a few
+   *  builders (build/furniture curveDesk, and anything else measured straight into world space) return a
+   *  group at the origin, and moving that group would teleport the piece away from its own geometry.
+   *  Recorded here because it is a property of the BUILDER, not of the entity data. */
+  private readonly transformBound = new Set<EntityId>();
   private readonly roomGroups = new Map<string, THREE.Group>();
   private readonly world: WorldState;
 
@@ -61,6 +74,8 @@ export class SceneMirror {
     const { group, sway } = buildEntity(e);
     group.name = e.id;
     if (e.capabilities.sway) this.sway.register(e.id, sway);
+    this.baseYaw.set(e.id, group.rotation.y - e.transform.yaw);
+    if (Math.abs(group.position.x - e.transform.pos.x) < 1e-6 && Math.abs(group.position.z - e.transform.pos.z) < 1e-6) this.transformBound.add(e.id);
     this.views.set(e.id, group);
     return group;
   }
@@ -69,6 +84,14 @@ export class SceneMirror {
     if (!v) throw new Error(`no view for entity ${id}`);
     return v;
   }
+  /** true when re-positioning this entity's group actually moves the piece (see `transformBound`) */
+  isTransformBound(id: EntityId): boolean {
+    return this.transformBound.has(id);
+  }
+  /** the builder-baked rotation of an entity's group; 0 for anything built axis-aligned */
+  baseYawOf(id: EntityId): number {
+    return this.baseYaw.get(id) ?? 0;
+  }
   /** Re-position a view from its committed logical transform (plants/furniture groups are centred on pos). */
   applyTransform(id: EntityId): void {
     const e = this.world.get(id);
@@ -76,13 +99,14 @@ export class SceneMirror {
     if (!v) return;
     v.position.x = e.transform.pos.x;
     v.position.z = e.transform.pos.z;
+    v.rotation.y = this.baseYawOf(id) + e.transform.yaw;
   }
   rebuildRoom(room: RoomDef, opts: ShellOptions): void {
     const old = this.roomGroups.get(room.id);
     if (old) {
       old.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.geometry.dispose(); });
       this.root.remove(old);
-      for (const e of this.world.inRoom(room.id)) { this.views.delete(e.id); this.sway.unregister(e.id); }
+      for (const e of this.world.inRoom(room.id)) { this.views.delete(e.id); this.baseYaw.delete(e.id); this.transformBound.delete(e.id); this.sway.unregister(e.id); }
       this.sway.unregister(`static:${room.id}`);
       this.ambient.clearRoom(room.id); // channels are re-collected by buildRoom below
     }
