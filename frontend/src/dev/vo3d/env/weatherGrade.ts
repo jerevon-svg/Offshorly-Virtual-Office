@@ -98,7 +98,11 @@ export const LIGHTNING: Record<WeatherState, LightningParams | null> = {
 /** HOW MUCH OF A STRIKE THE EYE ACTUALLY GETS, per phase. Not a second lightning table — one multiplier
  *  on the one envelope, because a flash is only as visible as the sky it has to out-shine. At noon a
  *  strike is a flicker at the edge of vision; at night it prints the whole campus on the retina. */
-export const LIGHTNING_PHASE_GAIN: Record<EnvPhase, number> = { day: 0.34, sunset: 0.62, night: 1 };
+/** DAY WAS TOO FAR DOWN TO SEE. 0.34 of a flash against a lit sky is below the threshold at which a
+ *  viewer registers that anything happened at all — the strike was firing correctly and simply could not
+ *  be perceived. Night keeps the full flash (it never needed help); day and sunset are lifted to where
+ *  the event reads, while staying obviously weaker than a night strike, which is the true relationship. */
+export const LIGHTNING_PHASE_GAIN: Record<EnvPhase, number> = { day: 0.58, sunset: 0.8, night: 1 };
 
 /** How wet the exterior GROUND reads. Drives roughness only (see build/exterior applyWetness) — colour is
  *  left to exteriorTint so the two levers can never fight over the same channel. */

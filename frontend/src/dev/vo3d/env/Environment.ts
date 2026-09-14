@@ -21,6 +21,7 @@ import type { Renderer } from "../render/Renderer";
 import type { ExteriorScenery } from "../build/exterior";
 import type { Rect } from "../core/coords";
 import { blendPresetInto, clonePreset, lerpHex, type EnvPreset } from "./presets";
+import { Bolt } from "./Bolt";
 import { Lightning, type ThunderEvent } from "./Lightning";
 import { Rain } from "./Rain";
 import { Sky } from "./Sky";
@@ -73,7 +74,13 @@ const PRESENTATION_FLASH: Record<EnvPresentation, number> = { world: 1, office: 
 
 /** WHAT A FLASH BUYS, per unit of (flash x phase gain x presentation gain). Everything here is a level
  *  or a colour — there is no light to create, no shadow to redraw and no material to recompile. */
-const FLASH = { key: 1.15, ambient: 1.9, env: 0.3, exposure: 0.42, fill: 0.85, sky: 0xe8eeff, skyMix: 0.55 };
+/** RAISED so that a strike is unmistakable without ever being a white screen. The old set was tuned
+ *  against a night sky and read as a flicker in daylight; these are roughly 40% stronger across the board,
+ *  which lands a NIGHT strike at an obvious but still atmospheric pop and a DAY one at something you
+ *  actually notice. Everything here is still a LEVEL or a COLOUR — no light is created, no shadow map is
+ *  invalidated and no material is recompiled, so a brighter flash costs exactly what the old one did.
+ *  `skyMix` stays well under 1: the dome brightens toward a cold white, it never becomes one. */
+const FLASH = { key: 1.6, ambient: 2.6, env: 0.45, exposure: 0.55, fill: 1.2, sky: 0xe8eeff, skyMix: 0.72 };
 
 const INTERIOR = {
   background: 0x04050a,
@@ -122,6 +129,8 @@ export class Environment {
 
   // ---- the storm ------------------------------------------------------------------------------------
   private readonly lightning = new Lightning();
+  /** THE VISIBLE CHANNEL. One line object for the life of the world; see env/Bolt for why it is free. */
+  private readonly bolt = new Bolt();
   private shownFlash = 0;
   /** background is one Color for the life of the environment, written in place */
   private readonly bg = new THREE.Color();
@@ -136,6 +145,7 @@ export class Environment {
     if (scenery) R.scene.add(scenery.root);
     R.scene.add(this.sky.root);
     R.scene.add(this.rain.mesh);
+    R.scene.add(this.bolt.object);
     // seeded from a real grade so neither preset is ever half-built; both are replaced on the first apply
     const seed = weatherGrade("clear", "day");
     this.target = clonePreset(seed.preset);
@@ -143,7 +153,12 @@ export class Environment {
     // THE THUNDER SEAM, FORWARDED AND NOT CONSUMED. Nothing in vo3d plays a sound; this hands the event
     // straight through to whoever set `onThunder`, which today is the dev readout and tomorrow is the
     // spatial ambient-audio phase. See env/Lightning for what the event carries and why.
-    this.lightning.onStrike = (e) => this.onThunder?.(e);
+    // A STRIKE DRAWS ITS OWN CHANNEL, at the distance the event already decided, before the event is
+    // forwarded. No second scheduler and no second source of truth about where or how far away it was.
+    this.lightning.onStrike = (e) => {
+      this.bolt.strike(e.distanceKm, this.centre);
+      this.onThunder?.(e);
+    };
   }
 
   /** THE AUDIO PHASE'S ONE SUBSCRIPTION POINT. Fires the instant the sky lights, carrying the strike's
@@ -323,6 +338,10 @@ export class Environment {
   get storm(): Lightning {
     return this.lightning;
   }
+  /** the visible channel, for the dev readout */
+  get lightningBolt(): Bolt {
+    return this.bolt;
+  }
   /** 0…1 — how lit the sky is by lightning THIS FRAME, after phase and presentation gains */
   get flash(): number {
     return this.shownFlash;
@@ -353,6 +372,8 @@ export class Environment {
         this.shownFlash = f;
         this.writeFlash();
       }
+      // the bolt rides the same number, so it can never be out of step with the sky it is lighting
+      this.bolt.setFlash(this.shownFlash, this._presentation === "world");
     }
     // the foliage clock only runs while there is wind to spend it on (see exterior.windTick)
     this.scenery?.windTick(this.elapsed);

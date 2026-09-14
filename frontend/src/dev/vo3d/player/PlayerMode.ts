@@ -34,19 +34,40 @@ const TURN_RATE = 9;
 /** how far ahead of a moving player a door is told to expect him. One stride: enough for the leaf to be
  *  clear by the time he arrives, short enough not to open doors he is merely walking past. */
 const DOOR_LOOKAHEAD = 46;
+/** THE TWO GROUND SPEEDS, in units/s, and the single place either of them is stated.
+ *
+ *  70 / 100 replaces the original 30 / 54. The old pair was inherited from the click-to-walk router,
+ *  where a stroll is the right read because the camera is watching the office; driving a body yourself at
+ *  that speed makes an office the size of this one feel like a corridor to be endured. Nothing else about
+ *  movement changes: the same WASD, the same camera-relative basis, the same PlayerBody.move, the same
+ *  collision answer from the same DerivedNav / Walkability, the same NAV_RADIUS.
+ *
+ *  TUNNELLING IS UNAFFECTED, and that is arithmetic rather than optimism. PlayerBody splits EVERY step
+ *  into sub-steps no longer than a quarter of the body radius (2 units at NAV_RADIUS 8) regardless of how
+ *  long the step is, so the resolution of the sweep does not depend on speed at all — 100 u/s on a
+ *  stalled-tab 250 ms frame is 25 units, resolved as 13 sub-steps, exactly as 54 u/s was resolved as 7. */
+export const PLAYER_WALK_SPEED = 70;
+export const PLAYER_SPRINT_SPEED = 100;
 /** SPRINT. A multiplier on the walk speed and nothing else — no stamina, no state, no second movement
  *  path. Holding Shift scales the per-frame delta; the delta still goes through PlayerBody.move, which
  *  sub-steps at a quarter of the body radius REGARDLESS of how long the step is, so sprinting cannot
- *  tunnel anything walking could not. */
-const SPRINT_MULTIPLIER = 1.8;
+ *  tunnel anything walking could not.
+ *
+ *  Derived from the pair above rather than written out, so the slider and the sprint stay consistent:
+ *  whatever walk speed is in force, Shift is worth the same proportion of it. */
+export const SPRINT_MULTIPLIER = PLAYER_SPRINT_SPEED / PLAYER_WALK_SPEED;
 /** THE GROUND SPEED EACH LOCOMOTION CLIP WAS AUTHORED FOR, in units/s. Playback rate is then simply
  *  "how fast am I actually travelling / how fast does this clip think it is travelling", which is what
  *  keeps feet planted instead of skating at either speed and at every speed in between.
  *
  *  `walking` = 30 is the figure the navigation controller has always used. `running` is derived from the
  *  clips themselves: the run cycle is 0.667 s against the walk's 1.067 s, so its cadence is 1.6x the
- *  walk's and it covers ground at about 30 x 1.6. At the sprint speed (1.8 x 30 = 54 u/s) that lands the
- *  run clip at roughly 1.12x playback — a run being pushed slightly, which is exactly what a sprint is. */
+ *  walk's and it covers ground at about 30 x 1.6.
+ *
+ *  AT THE TUNED SPEEDS these authored figures do not change — they are properties of the CLIPS, not of
+ *  the player — so the rate simply follows: walking 70 u/s drives the walk cycle at 2.33x and sprinting
+ *  100 u/s drives the run cycle at 2.08x, both under MAX_CLIP_RATE. Feet stay planted at both speeds
+ *  because that is the whole point of dividing by the clip's own ground speed. */
 const CLIP_GROUND_SPEED: Record<string, number> = { [CLIP_WALK]: 30, [CLIP_RUN]: 48 };
 /** ceiling on locomotion playback rate — a spike guard for a long frame, not a look choice */
 const MAX_CLIP_RATE = 2.5;
@@ -91,7 +112,14 @@ export class PlayerMode {
    *  do for a planned walk — without inventing a second door-trigger path */
   readonly doorIntent: Vec2[] = [];
   /** dev/test readout */
-  readonly state = { active: false, view: "third" as PlayerView, locked: false, sprinting: false, target: "—", owner: "", blocked: false, pos: "" };
+  readonly state = {
+    active: false, view: "third" as PlayerView, locked: false, sprinting: false, target: "—",
+    owner: "", blocked: false, pos: "",
+    /** GROUND ACTUALLY COVERED this frame. Already computed for the locomotion clip's playback rate;
+     *  published so the foley layer can pace footsteps off distance rather than off a timer, which is
+     *  what makes them follow 70 and 100 without knowing either number. */
+    travelled: 0,
+  };
 
   constructor(deps: PlayerDeps) {
     this.d = deps;
@@ -137,6 +165,7 @@ export class PlayerMode {
     this.state.active = false;
     this.input.disable(); // clears every held key, Shift included
     this.state.sprinting = false;
+    this.state.travelled = 0;
     this.d.stack.release("Player");
     this.d.avatar.root.visible = true;
     this.d.avatar.play(CLIP_IDLE);
@@ -180,6 +209,7 @@ export class PlayerMode {
     // an interaction is driving Bon: keep the camera on him, move nothing, and take him back when it ends
     if (owner !== "Player") {
       this.state.sprinting = false;
+      this.state.travelled = 0;
       const a = this.d.avatar.worldPosition();
       this.body.pos = { x: a.x, z: a.z };
       if (owner === "Idle" && this.d.stack.acquire("Player")) { this.body.placeNear(this.body.pos); this.d.avatar.setPosition(this.body.pos); }
@@ -208,6 +238,7 @@ export class PlayerMode {
       // where the player is pushing when he is pinned and went nowhere
       this.heading = travelled > 1e-4 ? headingFor(res.pos.x - from.x, res.pos.z - from.z) : headingFor(dx, dz);
     } else this.state.blocked = false;
+    this.state.travelled = travelled;
 
     this.moving = travelled > 1e-4;
     this.d.avatar.setPosition(this.body.pos);

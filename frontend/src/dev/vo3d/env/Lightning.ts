@@ -45,9 +45,27 @@ const SOUND_KM_PER_S = 0.343;
  *  exists so that advancing the envelope never allocates. */
 const SLOTS = 4;
 const ATTACK = 0.035;
+/** LEFT ALONE AT 120 ms, DELIBERATELY. Stretching the decay was the obvious way to make a strike easier
+ *  to see, and it is the wrong one: this file's own rule is that anything slower reads as a UI fade, and
+ *  a 190 ms tail is still ringing two thirds of a second later. Visibility was fixed where the problem
+ *  actually was — the DAY phase gain, which was attenuating the flash below the threshold at which a
+ *  viewer notices it at all (env/weatherGrade LIGHTNING_PHASE_GAIN). */
 const DECAY = 0.12;
 /** below this a pulse contributes nothing visible and is retired */
 const CUTOFF = 0.004;
+
+/** THE OPENING STRIKE, and why it is not a second scheduler.
+ *
+ *  A thunderstorm's authored gap is 9…27 s (env/weatherGrade LIGHTNING). That is the right number for a
+ *  storm you are living through and the wrong one for a storm you have just SELECTED: picking
+ *  THUNDERSTORM and then standing in the rain for twenty-seven seconds does not read as a thunderstorm,
+ *  it reads as rain. So the FIRST gap after the storm is (re)armed is drawn from this much shorter window
+ *  instead, and every gap after it is the authored one again.
+ *
+ *  This is one line of clamping inside the existing countdown — there is no second timer, no second
+ *  strike path and no change to what a strike IS. `strike()` is still the only thing that fires, and the
+ *  storm settles into its own rhythm from the second strike onward. */
+export const OPENING_GAP = { min: 2, max: 5 };
 
 type Pulse = { age: number; amp: number; live: boolean };
 
@@ -79,7 +97,9 @@ export class Lightning {
     this.state = state;
     if (p === this.params) return;
     this.params = p;
-    this.countdown = p ? this.gap(p) : Number.POSITIVE_INFINITY;
+    // ARMING A STRIKING STATE OPENS WITH A SHORT GAP (see OPENING_GAP); everything afterwards is the
+    // authored rhythm, because gap() is what strike() itself re-arms with.
+    this.countdown = p ? OPENING_GAP.min + this.rand() * (OPENING_GAP.max - OPENING_GAP.min) : Number.POSITIVE_INFINITY;
   }
 
   /** 0 = no flash … 1 = full. What the environment spends. */

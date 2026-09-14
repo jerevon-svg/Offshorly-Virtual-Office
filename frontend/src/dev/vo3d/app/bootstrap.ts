@@ -62,7 +62,11 @@ import { ManualWeatherProvider } from "../env/providers/manual";
 import { WEATHER_ATTRIBUTION, officeWeatherProvider } from "../env/providers/office";
 import { GRADE } from "../world/campus";
 import { CAMERA_MODES, CameraModes, type CameraModeId } from "../render/CameraModes";
-import { PlayerMode } from "../player/PlayerMode";
+import { PlayerMode, PLAYER_SPRINT_SPEED, PLAYER_WALK_SPEED, SPRINT_MULTIPLIER } from "../player/PlayerMode";
+import { EnvironmentalAudio } from "../audio/EnvironmentalAudio";
+import { EdgeTracker, Footsteps } from "../audio/events";
+import { CALL_RANGE, Toucan } from "../world/Toucan";
+import { spatial } from "../audio/sfx";
 import { makeStandTest } from "../player/standTest";
 import type { PlayerView } from "../player/PlayerCamera";
 import { ApproachInteraction } from "../interact/Approach";
@@ -175,7 +179,8 @@ const params = {
   envWeather: "auto" as WeatherMode, envRainInOffice: true, envTransitions: true, envLightning: true,
   cameraMode: "office" as CameraModeId,
   playerView: "third" as PlayerView,
-  avatar: true, avatarLod: 1 as AvatarLod, avatarLit: true, walkSpeed: 30,
+  avatar: true, avatarLod: 1 as AvatarLod, avatarLit: true, walkSpeed: PLAYER_WALK_SPEED,
+  envAudio: true, envAudioVolume: 0.7,
   clickToWalk: true, showGrid: false, showBlocked: false, showRegions: false, showPath: true, showDestination: true, showDiagnostic: false,
   editMode: false,
 };
@@ -312,11 +317,17 @@ const envState = {
 // waiting for it here would be a competing architecture, not a head start. All this does is print the
 // event on the dev panel and keep the last one where that phase (and a test) can read it.
 let lastThunder: ThunderEvent | null = null;
+/** forward reference to the environmental mixer, which is built after the environment it listens to */
+let envAudioRef: EnvironmentalAudio | null = null;
 /** whoever the dev API / a later audio phase hooked up. Kept BESIDE the readout rather than replacing it,
  *  so subscribing cannot silently switch the dev panel off. */
 let thunderListener: ((e: ThunderEvent) => void) | null = null;
 env.onThunder = (e) => {
   lastThunder = e;
+  // THE AUDIO PHASE'S CONSUMER, at last. No second scheduler: the delay, the strength and the distance are
+  // all the event's, and the mixer only waits and plays. Declared lazily because the mixer is constructed
+  // further down this file than the environment is.
+  envAudioRef?.thunder(e);
   envState.thunder = `${e.strength.toFixed(2)} @ ${e.distanceKm.toFixed(1)}km — clap in ${e.delaySeconds.toFixed(1)}s${e.double ? " (double)" : ""}`;
   thunderListener?.(e);
 };
@@ -358,6 +369,10 @@ const avatar = new Avatar({ height: BON_STANDING_HEIGHT, lit: params.avatarLit }
 R.scene.add(avatar.root);
 const stack = new ControllerStack();
 const navCtl = new NavigationController(avatar, stack);
+// ONE SPEED, TWO CONSUMERS. The slider drives both the click-to-walk router and the direct-control player;
+// the controller's own class default is the figure the walk clip was authored for, and would otherwise
+// leave the panel reading 70 while a planned walk still ambled at 30.
+navCtl.speed = params.walkSpeed;
 const avatarState = { status: "loading…", clip: "", position: "", owner: "Idle", triangles: 0 };
 function loadAvatar(): void {
   avatarState.status = `loading LOD${params.avatarLod}…`;
@@ -658,7 +673,17 @@ function pickInteraction(cx: number, cy: number): string | null {
  *  nothing once a perspective camera is walking the building; this keeps the 2048 map on the few hundred
  *  units the player can actually see, which is what makes contact shadows read at eye level. */
 const PLAYER_SHADOW_RADIUS = 300;
-const officeStand = makeStandTest({ world, walkability, derived: derivedNav, radius: NAV_RADIUS });
+// EXTERIOR IS OPEN TO THE PLAYER. `allowExterior` was authored false for V0 with the note that the flag
+// "will open it later"; later is now. Nothing about the test relaxes — the sidewalk still has to pass the
+// V1 grid, the rim samples and the region check like every other cell. What it opens is EXACTLY the one
+// registered exterior region (exterior:sidewalk), because that is the only walkable exterior region there
+// is: the campus, its roads, the pond and the future lots are SCENERY, added straight to the scene and
+// never to the world graph, so they answer "not floor" by never having been floor. `world.bounds` is the
+// V1 frame, and regionAt returns null outside it, so there is no unbuilt space to escape into either.
+//
+// PLAYER ONLY. officeStand feeds nothing but playerStand; click-to-walk and A* route on `walkability`
+// and `inBounds`, which are untouched, so navigation behaves exactly as it did.
+const officeStand = makeStandTest({ world, walkability, derived: derivedNav, radius: NAV_RADIUS, allowExterior: true });
 /** THE ONE STAND TEST, over BOTH volumes.
  *
  *  Inside the CAVE the V1 lattice has nothing to say — the room is outside it — so the question is put
@@ -670,7 +695,7 @@ const playerStand = (p: Vec2): boolean => (inCave(p) ? caveStandTest(p, NAV_RADI
 /** The third-person boom's probe. Same composition, a token radius: the camera must not end up inside a
  *  wall or over unbuilt floor, but it may perfectly well fly over a desk — and judging it at the BODY
  *  radius pulled the boom in to its minimum beside almost every piece of furniture in the building. */
-const officeCameraProbe = makeStandTest({ world, walkability, derived: derivedNav, radius: 2 });
+const officeCameraProbe = makeStandTest({ world, walkability, derived: derivedNav, radius: 2, allowExterior: true });
 const playerCameraProbe = (p: Vec2): boolean => (inCave(p) ? caveStandTest(p, 2) : officeCameraProbe(p));
 /** the one bridge from a targeted entity id to V2's existing interaction path. Nothing is reimplemented:
  *  each branch is the same call the GUI button and the click-to-walk handler already make. */
@@ -764,6 +789,166 @@ caveTransition = new CaveTransition({
     return playerMode.active;
   },
 });
+
+// ---- environmental audio ------------------------------------------------------------------------
+// THE WORLD'S OWN SOUND: wind, rain, room tone, the theatre's air, and thunder off the storm's existing
+// event. It owns nothing else — LiveKit still owns every call track and CaveMedia still owns SUNTOUCAN,
+// and this file hands the mixer neither. See audio/EnvironmentalAudio for the full ownership statement.
+//
+// THE LISTENER IS BON, not the camera: the OFFICE and EXPLORE rigs are a director's view of a world Bon
+// is standing in, and pinning the ambience to a camera that can be zoomed out over the whole campus would
+// make the mix a function of the UI. In PLAYER mode the two are the same point anyway.
+const PORTAL_POINT = { ...world.get(CHAMPIONSHIP_ENTRANCE_ID).capabilities.approach!.point };
+const envAudio = new EnvironmentalAudio({
+  sample: (into) => {
+    const a = avatar.worldPosition();
+    const p = { x: a.x, z: a.z };
+    const inside = caveTransition?.inside ?? false;
+    const region = inside ? null : world.regionAt(p);
+    into.inCave = inside;
+    into.regionKind = region?.kind ?? null;
+    into.roomId = region?.roomId ?? null;
+    into.portalDistance = inside ? Number.POSITIVE_INFINITY : Math.hypot(p.x - PORTAL_POINT.x, p.z - PORTAL_POINT.z);
+    // how far from the nearest outer wall of the building — small means "by the glass", which is the one
+    // place an interior is allowed to hear the weather properly. Meaningless outdoors, hence Infinity.
+    const f = plan.frame;
+    into.edgeDistance = region && region.kind !== "exterior"
+      ? Math.min(p.x - f.x, f.x + f.w - p.x, p.z - f.z, f.z + f.d - p.z)
+      : Number.POSITIVE_INFINITY;
+    into.weather = env.weather;
+    into.intensity = weather.intensity;
+    into.phase = env.phase ?? "day";
+  },
+  // THE ONLY THING A CALL IS EVER ASKED. A connected CAVE meeting pulls the whole environmental bus down
+  // so speech sits on top of it; nothing is routed, published, subscribed or muted on the LiveKit side.
+  meeting: () => caveLiveShare.state.status === "connected",
+});
+envAudio.arm(); // nothing is created or played until a real user gesture — see EnvironmentalAudio.arm
+
+// ---- world foley -----------------------------------------------------------------------------------
+// THE WHOLE FOLEY LAYER IS TWO OBJECTS AND ONE FUNCTION. Every sound below is played off a TRANSITION
+// that the world was already reporting — a door's own `state`, a scanner's own activation, a seat's own
+// status — so nothing new is tracked, nothing is polled that was not already on screen in the dev panel,
+// and no interaction code is touched at all. `edges` answers "is this new?" (audio/events) and the mixer
+// answers "play it" (audio/EnvironmentalAudio.play). That is the entire architecture.
+const edges = new EdgeTracker();
+const steps = new Footsteps();
+/** where the listener is and which way he is facing — one object, rewritten, never allocated per event */
+const ear = { pos: { x: 0, z: 0 }, yaw: 0 };
+/** Play a world event AT a place: attenuated by how far away it is and panned by which side it is on. */
+function playAt(kind: Parameters<typeof envAudio.play>[0], at: Vec2, range: number, gain = 1): void {
+  const s2 = spatial(at, ear.pos, ear.yaw, range);
+  if (s2.gain <= 0) return;
+  envAudio.play(kind, { gain: gain * s2.gain, pan: s2.pan });
+}
+/** Every automatic door in the building, paired with the point its sound comes from. Built once. */
+const doorSources: { id: string; door: () => { state: string }; at: Vec2 }[] = [];
+const registerDoorSfx = (id: string, get: () => { state: string } | null | undefined): void => {
+  const e = world.entities.get(id);
+  if (!e) return;
+  doorSources.push({ id, door: () => get() ?? { state: "closed" }, at: { ...e.transform.pos } });
+};
+
+// ---- the toucan ------------------------------------------------------------------------------------
+// An exterior ambient creature, built on the GLB the app already ships (public/toucan/toucan.glb — the
+// same asset V1's 2D ToucanFlyer uses). It is SCENERY: added to the scene, never to the world graph, so
+// it has no footprint, is in no stand test and cannot be collided with.
+const toucan = new Toucan(plan.frame);
+R.scene.add(toucan.root);
+void toucan.load().then((ok) => { if (ok) R.invalidateShadows(); });
+// Every automatic door the building has. Registered by ENTITY ID, so the sound comes from where the door
+// actually is and a door that is rebuilt (the Design Room's, under the geometry sliders) is still found.
+registerDoorSfx(DOOR_ID, () => door);
+registerDoorSfx(ENTRY_DOOR_WEST_ID, () => entryDoor);
+registerDoorSfx(GAMING_DOOR_ID, () => gamingDoor);
+registerDoorSfx(EXEC_DOOR_WEST_ID, () => execDoor);
+registerDoorSfx(CMS_DOOR_NORTH_ID, () => cmsDoor);
+registerDoorSfx(AI_DOOR_ID, () => aiDoor);
+registerDoorSfx(DEV_DOOR_ID, () => devDoor);
+registerDoorSfx(QA_DOOR_NORTH_ID, () => qaDoor);
+
+/** THE ONE FOLEY TICK. Reads state the world was already publishing and plays the transitions.
+ *
+ *  Everything here is edge-gated (audio/events EdgeTracker): a door that is open plays nothing, a
+ *  scanner that is still lit plays nothing, a seated avatar plays nothing. That is what keeps a foley
+ *  layer from becoming a stuck buzzer, and it is why this can safely run at 60 Hz. */
+function worldFoley(dt: number, body: Vec2): void {
+  // THE BIRD FLIES WHETHER OR NOT ANYBODY IS LISTENING. Its update is the flight; the call it returns is
+  // the only part that needs a mixer, so this runs before the audio guard rather than behind it.
+  const outdoors = env.presentation === "world" && !(caveTransition?.inside ?? false);
+  const wantsCall = toucan.update(dt, env.weather, env.phase ?? "day", outdoors);
+  if (!envAudio.running) return;
+  ear.pos.x = body.x;
+  ear.pos.z = body.z;
+  ear.yaw = playerMode.active ? playerMode.camera.yaw : avatar.yaw;
+
+  // DOORS — the servo on the way open, the servo and its stop on the way closed. One sound per real
+  // transition, whatever the frame rate, and nothing at all while a door sits open.
+  for (const d of doorSources) {
+    const st = d.door().state;
+    if (!edges.changed(`door:${d.id}`, st)) continue;
+    if (st === "opening") playAt("doorOpen", d.at, 620);
+    else if (st === "closing") playAt("doorClose", d.at, 620);
+  }
+
+  // SENSORS — a Schmitt trigger, not a threshold: an activation hovering on a single level is exactly
+  // how a detection chirp turns into a stutter.
+  for (const id of mirror.ambient.scannerIds) {
+    if (edges.crossed(`scan:${id}`, mirror.ambient.scannerActivation(id))) envAudio.play("scanner", { gain: 0.7 });
+  }
+
+  // SEATS — the chair being pulled out, the sitter landing, the sitter standing. Every movable-seat
+  // controller in the building publishes the same status vocabulary (interact/Seat SeatState), so one
+  // loop covers all of them and a lounge seat's simpler sit/stand falls out of the same table.
+  for (const [key, st] of seatStatuses()) {
+    if (!edges.changed(`seat:${key}`, st)) continue;
+    if (st === "pullingOut" || st === "returningChair") envAudio.play("chairMove", { gain: 0.8, pitch: 0.95 + Math.random() * 0.1 });
+    else if (st === "sitting") envAudio.play("chairSit", { gain: 0.9 });
+    else if (st === "standing" || st === "slidingOut") envAudio.play("chairStand", { gain: 0.8 });
+  }
+
+  // WALK-UP ACTIVATIONS — the contextual "use the terminal / read the board" interactions. A state
+  // CHANGE is the click; hovering something is not an event and gets no sound.
+  if (edges.changed("approach", approachCtl.status) && approachCtl.status.startsWith("at ")) envAudio.play("click", { gain: 0.8 });
+
+  // FOOTSTEPS — cadence from ground ACTUALLY covered (audio/events Footsteps), so they follow 70 and 100
+  // for free, stop dead when the body stops, and never fire while an interaction is driving the avatar.
+  if (playerMode.active && playerMode.state.owner === "Player") {
+    const moved = playerMode.state.travelled;
+    if (steps.advance(moved, playerMode.state.sprinting)) {
+      envAudio.play("footstep", {
+        hard: playerMode.state.sprinting,
+        gain: playerMode.state.sprinting ? 0.9 : 0.7,
+        // left and right are pitched apart, and each step is jittered, so no two are the same click
+        pitch: (steps.left ? 1.06 : 0.94) * (0.96 + Math.random() * 0.08),
+        pan: steps.left ? -0.12 : 0.12,
+      });
+    }
+  } else steps.reset();
+
+  // THE CAVE PORTAL — the hidden entrance being activated, and the threshold itself. `busy` goes true
+  // exactly once per transition and covers both directions.
+  if (edges.changed("cave", `${caveTransition?.state.where ?? "office"}:${caveTransition?.busy ?? false}`)) {
+    if (caveTransition?.busy) envAudio.play("portal", { gain: 1 });
+  }
+
+  // THE TOUCAN'S CALL — played HERE rather than in the flyer, which owns timing and knows nothing about
+  // audio. Panned and attenuated from where the bird actually is, so a pass overhead is heard to move.
+  if (wantsCall) playAt("toucanCall", toucan.position, CALL_RANGE, 1);
+}
+
+/** Every movable/lounge seat's status, as (key, status) pairs. Rebuilt per frame from references that
+ *  already exist — no controller is registered anywhere and none had to change. */
+function seatStatuses(): [string, string][] {
+  const out: [string, string][] = [["design", seat.status]];
+  const named: [string, { status: string } | null][] = [
+    ["meeting", meetingSeat], ["gaming", gamingSeat], ["hub", hubSeat], ["exec", execSeat],
+    ["cms", cmsSeat], ["ai", aiSeat], ["dev", devSeat], ["qa", qaSeat], ["lounge", loungeSeat],
+  ];
+  for (const [k, c] of named) if (c) out.push([k, c.status]);
+  return out;
+}
+envAudioRef = envAudio;
 
 const edit = new EditSession(world, mirror, walkability, stack);
 const editState = { selected: "none", placement: "—", drift: 0, blockedCells: walkability.dynamicBlockedKeys.length };
@@ -953,13 +1138,44 @@ wxGui.add(params, "envTransitions").name("smooth transitions").onChange((v: bool
 // LIGHTNING), so this switch is a dev mute, not the thing that decides whether it strikes.
 wxGui.add(params, "envLightning").name("lightning").onChange((v: boolean) => (env.storm.enabled = v));
 wxGui.add(envState, "storm").name("next strike").listen().disable();
-wxGui.add({ strike: () => env.storm.strike() }, "strike").name("strike now");
+// ⚡ THE DETERMINISTIC QA PATH. This is the EXISTING strike path — env.storm.strike() is the same method
+// the scheduler itself calls — so a click produces a real ThunderEvent with a real distance, the real
+// speed-of-sound delay, the real flash and the real bolt. There is no second lightning implementation.
+wxGui.add({ strike: () => env.storm.strike() }, "strike").name("⚡ Trigger Lightning (→ delay → thunder)");
 // The event the ambient-audio phase will consume. Printed here so the seam is visibly live before
 // anything can play it.
 wxGui.add(envState, "thunder").name("last thunder event").listen().disable();
 // ATTRIBUTION. WeatherAPI's terms require visible credit wherever their data is shown. It belongs on
 // the panel that shows the reading, not in the 3D scene — the office is the product, not a billboard.
 wxGui.add(envState, "attribution").name("data").listen().disable();
+// ---- environmental audio -------------------------------------------------------------------------
+// ONE SWITCH AND ONE LEVEL, deliberately. This is not a settings system: it is the dev control that
+// proves the mixer starts on a gesture, stops cleanly, and never grows a node. Everything the mix
+// actually does is decided by where Bon is standing, what the weather is and what time it is.
+const audGui = gui.addFolder("Environment audio (world · weather · thunder)");
+audGui.add(params, "envAudio").name("🔊 environment audio").onChange((v: boolean) => { if (v) envAudio.start(); envAudio.setEnabled(v); });
+audGui.add(params, "envAudioVolume", 0, 1, 0.01).name("master volume").onChange((v: number) => envAudio.setVolume(v));
+audGui.add(envAudio.state, "status").name("audio context").listen().disable();
+audGui.add(envAudio.state, "enabled").name("enabled").listen().disable();
+audGui.add(envAudio.state, "zone").name("zone in force").listen().disable();
+audGui.add(envAudio.state, "nodes").name("live audio nodes").listen().disable();
+audGui.add(envAudio.state, "voices").name("one-shot voices").listen().disable();
+audGui.add(envAudio.state, "timers").name("pending timers").listen().disable();
+audGui.add(envAudio.state, "contexts").name("AudioContexts").listen().disable();
+audGui.add(envAudio.state, "claps").name("thunderclaps heard").listen().disable();
+audGui.add(envAudio.state, "suppressed").name("claps suppressed (CAVE)").listen().disable();
+audGui.add(envAudio.state, "duck").name("meeting duck").listen().disable();
+audGui.add(envAudio.state, "sfx").name("foley events played").listen().disable();
+audGui.add(envAudio.state, "dropped").name("foley dropped (pool full)").listen().disable();
+
+// ---- the toucan ----------------------------------------------------------------------------------
+const toucanGui = gui.addFolder("Toucan (exterior ambient life)");
+toucanGui.add(toucan.state, "status").name("status").listen().disable();
+toucanGui.add(toucan.state, "pos").name("position").listen().disable();
+toucanGui.add(toucan.state, "activity").name("weather activity (0 = grounded)").listen().disable();
+toucanGui.add(toucan.state, "calls").name("calls made").listen().disable();
+toucanGui.add(toucan.state, "nextCall").name("next call in (s)").listen().disable();
+toucanGui.add({ f: () => toucan.reset() }, "f").name("▶ restart its lap");
 const geo = gui.addFolder("Geometry");
 const rebuild = () => { seat.reset(); mirror.rebuildRoom(DESIGN_ROOM, shellOpts()); door = new SlidingDoor(mirror.view(DOOR_ID), doorEntity.capabilities.door!, doorEntity.transform.pos); seat = new SeatInteraction(avatar, stack, mirror.view(CHAIR_4_ID), chairSeat, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed); };
 geo.add(params, "wallHeight", 20, 110, 1).onFinishChange(rebuild); geo.add(params, "frontWall", ["low", "full", "hidden"]).onChange(rebuild);
@@ -969,7 +1185,7 @@ const av = gui.addFolder("Character (production GLB)");
 av.add(params, "avatar").name("show avatar").onChange((v: boolean) => (avatar.root.visible = v));
 av.add(params, "avatarLod", [0, 1, 2]).name("LOD").onChange(loadAvatar);
 av.add(params, "avatarLit").name("lit (off = production unlit)").onChange((v: boolean) => avatar.setLit(v));
-av.add(params, "walkSpeed", 8, 70, 1).name("speed (units/s)").onChange((v: number) => (navCtl.speed = v));
+av.add(params, "walkSpeed", 8, 120, 1).name(`speed (units/s) — sprint x${SPRINT_MULTIPLIER.toFixed(2)}`).onChange((v: number) => (navCtl.speed = v));
 av.add(avatarState, "status").disable().listen(); av.add(avatarState, "clip").disable().listen(); av.add(avatarState, "position").disable().listen(); av.add(avatarState, "owner").name("controller owner").disable().listen();
 const sitGui = gui.addFolder("Chair interaction (design-member-chair-4)");
 sitGui.add({ sit: () => { const r = seat.sit(); if (r && !r.ok) seatState.state = seat.status; } }, "sit").name("▶ Sit");
@@ -1342,6 +1558,9 @@ function loop(): void {
   // world actually moved. applyEnvPhase above RETARGETS, this is what travels.
   env.tick(dt / 1000);
   env.follow(dt / 1000); // the sky dome rides the orbit target; the rain field rides the active camera
+  // THE ENVIRONMENTAL MIXER. A no-op until a gesture has started it; after that it is one pure mix
+  // calculation and up to ten float writes — no node is created, connected or looked up on a frame.
+  envAudio.update(dt / 1000);
   if (params.avatar) {
     // PLAYER steps FIRST: it writes the avatar transform for this frame and yields silently whenever an
     // interaction owns Bon, so the controllers below still run exactly as they always have.
@@ -1380,6 +1599,9 @@ function loop(): void {
     qaDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
     updateScanners({ x: bp.x, z: bp.z });
     caveTransition?.update(); // media readout; a no-op outside the CAVE
+    // THE WORLD'S FOLEY, and the toucan's flight. Reads the state everything above just wrote — no
+    // interaction, door or seat controller knows this exists.
+    worldFoley(dt / 1000, { x: bp.x, z: bp.z });
     // PRESENTATION MODE, driven from the one place that sees every way in and out of the CAVE (the
     // portal, the GUI, the console driver). Both calls are idempotent early-returns: setActive
     // compares a boolean, sample() compares two numbers off the element, and the materials are only
@@ -1537,6 +1759,8 @@ loop();
     setFog: (on: boolean) => { params.envFog = on; env.fogEnabled = on; refresh(); },
     setSky: (on: boolean) => { params.envSky = on; env.skyVisible = on; refresh(); },
     presentation: () => env.presentation,
+    bolt: () => env.lightningBolt,
+    boltVisible: () => env.lightningBolt.object.visible,
   },
   weather: {
     weather, provider: weatherProvider, live: liveWeather, manual: manualWeather,
@@ -1558,6 +1782,24 @@ loop();
     settle: () => env.settle(),
     travelling: () => env.travelling,
     setRainInOffice: (on: boolean) => { params.envRainInOffice = on; env.rainInOffice = on; refresh(); },
+  },
+  toucan: {
+    bird: toucan, state: toucan.state, root: toucan.root,
+    position: () => toucan.position, flying: () => toucan.flying,
+    reset: (u?: number) => toucan.reset(u),
+    /** step the flight deterministically from a test/console, bypassing the render loop */
+    step: (dt: number) => toucan.update(dt, env.weather, env.phase ?? "day", env.presentation === "world" && !(caveTransition?.inside ?? false)),
+  },
+  audio: {
+    engine: envAudio, state: envAudio.state,
+    /** fire a foley one-shot straight from the console, for listening to a family in isolation */
+    play: (kind: Parameters<typeof envAudio.play>[0], opts?: Parameters<typeof envAudio.play>[1]) => envAudio.play(kind, opts),
+    edges, steps,
+    start: () => envAudio.start(),
+    setEnabled: (on: boolean) => { params.envAudio = on; if (on) envAudio.start(); envAudio.setEnabled(on); refresh(); },
+    setVolume: (v: number) => { params.envAudioVolume = v; envAudio.setVolume(v); refresh(); },
+    zone: () => envAudio.state.zone,
+    dispose: () => envAudio.dispose(),
   },
   cave: {
     get transition() { return caveTransition; }, state: caveState, media: caveMedia, mediaState: caveMedia.state,
@@ -1601,6 +1843,8 @@ loop();
   },
   player: {
     mode: playerMode, state: playerMode.state,
+    /** the approved ground speeds, for the console and the movement QA rig */
+    speeds: { walk: PLAYER_WALK_SPEED, sprint: PLAYER_SPRINT_SPEED, multiplier: SPRINT_MULTIPLIER, inForce: () => params.walkSpeed },
     enter: () => setCameraMode("player"), exit: () => setCameraMode("office"),
     setView: (v: PlayerView) => { params.playerView = v; playerMode.setView(v); refresh(); },
     view: () => playerMode.view,
