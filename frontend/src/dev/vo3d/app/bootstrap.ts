@@ -18,6 +18,11 @@ import { CMS_ROOM, cmsRoomEntities,
   COUNTER_INTERACTION_ID as CMS_COUNTER_ID, DOOR_NORTH_ID as CMS_DOOR_NORTH_ID,
   DOOR_SOUTH_ID as CMS_DOOR_SOUTH_ID, LIBRARY_INTERACTION_ID as CMS_LIBRARY_ID,
   PRINTER_INTERACTION_ID as CMS_PRINTER_ID, STICKY_INTERACTION_ID as CMS_STICKY_ID } from "../rooms/cms";
+import { AI_ROOM, aiRoomEntities,
+  AI_SEAT_IDS, ARCHITECTURE_INTERACTION_ID as AI_ARCH_ID, COUNTER_INTERACTION_ID as AI_COUNTER_ID,
+  DOOR_LEAF_ID as AI_DOOR_ID, MISSION_INTERACTION_ID as AI_MISSION_ID,
+  PRINTER_INTERACTION_ID as AI_PRINTER_ID, RACKS_INTERACTION_ID as AI_RACKS_ID,
+  ROBOT_INTERACTION_ID as AI_ROBOT_ID } from "../rooms/ai";
 import { loadBossStatues } from "../build/hub-monument";
 import { openedCells, openedLayer, v2Static } from "../nav/v2Open";
 import { DerivedNav } from "../nav/derived";
@@ -67,6 +72,7 @@ world.addRoom(GAMING_ROOM);
 world.addRoom(CENTRAL_HUB);
 world.addRoom(EXECUTIVE_ROOM);
 world.addRoom(CMS_ROOM);
+world.addRoom(AI_ROOM);
 for (const e of designRoomEntities()) world.addEntity(e);
 for (const e of receptionEntities()) world.addEntity(e);
 for (const e of meetingRoomEntities()) world.addEntity(e);
@@ -75,6 +81,7 @@ for (const e of gamingRoomEntities()) world.addEntity(e);
 for (const e of centralHubEntities()) world.addEntity(e);
 for (const e of executiveRoomEntities()) world.addEntity(e);
 for (const e of cmsRoomEntities()) world.addEntity(e);
+for (const e of aiRoomEntities()) world.addEntity(e);
 // baked decor solids (visual comes from the shell builder) participate in placement as footprint-only entities
 DESIGN_SOLIDS.forEach((r, i) =>
   world.addEntity({ id: `${DESIGN_ROOM.id}/solid-${i}`, kind: "solid", roomId: DESIGN_ROOM.id, transform: { pos: { x: r.x + r.w / 2, z: r.z + r.d / 2 }, yaw: 0 }, footprint: { shape: "rect", w: r.w, d: r.d }, capabilities: {}, props: {}, source: { baked: true } }),
@@ -106,7 +113,7 @@ const walkability = new Walkability(composeStatic(v2Static(v1Static, openedLayer
 // 7C: GEOMETRY-DERIVED NAVIGATION for EVERY RECONSTRUCTED ROOM. Inside these six the V1 grid is not
 // consulted at all — the floor, the walls, the furniture footprints and the avatar's routing clearance are
 // the authority. The hall, the sidewalk and the five unreconstructed rooms stay exactly as V1 painted them.
-const DERIVED_ROOM_IDS = new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id, CMS_ROOM.id]);
+const DERIVED_ROOM_IDS = new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id, CMS_ROOM.id, AI_ROOM.id]);
 const derivedNav = new DerivedNav(world, { roomIds: DERIVED_ROOM_IDS });
 walkability.attachDerived(derivedNav, world);
 
@@ -137,6 +144,7 @@ mirror.buildRoom(GAMING_ROOM, shellOpts()); // Phase 5B
 mirror.buildRoom(CENTRAL_HUB, shellOpts()); // Phase 6B — wall-less atrium: the builder owns its own floor plate
 mirror.buildRoom(EXECUTIVE_ROOM, shellOpts()); // Phase 7
 mirror.buildRoom(CMS_ROOM, shellOpts()); // Phase 8
+mirror.buildRoom(AI_ROOM, shellOpts()); // Phase 9
 // The monument's two boss statues are sculpted GLBs; the ring ships with procedural placeholders standing
 // in their anchors and swaps them the moment the assets arrive. Fire-and-forget: a missing file leaves the
 // placeholders up and the hub otherwise untouched.
@@ -315,6 +323,10 @@ let cmsDoor = new SlidingDoor(mirror.view(CMS_DOOR_NORTH_ID), cmsDoorNorth.capab
   closed: world.get(CMS_DOOR_SOUTH_ID).transform.pos,
 });
 const cmsDoorState = { state: "closed", open: 0, drift: 0, cycles: 0 };
+// the AI Room's south entrance: a SINGLE leaf, on the same controller the Gaming Room's west door runs on
+const aiDoorEntity = world.get(AI_DOOR_ID);
+let aiDoor = new SlidingDoor(mirror.view(AI_DOOR_ID), aiDoorEntity.capabilities.door!, aiDoorEntity.transform.pos);
+const aiDoorState = { state: "closed", open: 0, drift: 0, cycles: 0 };
 // ---- Reception interactions (3E.3) ------------------------------------------------------------------
 // One focused interaction at a time, driven by the SAME pieces the Design Room uses: ApproachInteraction
 // for walk-up points, SeatInteraction for the lounge chairs, planWalk for every route.
@@ -358,6 +370,7 @@ function clearSeats(): void {
   if (hubSeat && hubSeat.state !== "idle") hubSeat.reset();
   if (execSeat && execSeat.state !== "idle") execSeat.reset();
   if (cmsSeat && cmsSeat.state !== "idle") cmsSeat.reset();
+  if (aiSeat && aiSeat.state !== "idle") aiSeat.reset();
 }
 function startHubSit(index: number): void {
   approachCtl.cancel();
@@ -392,6 +405,19 @@ function startCmsSit(index: number): void {
   cmsState.chair = id.split("/")[1];
   cmsSeat.sit();
 }
+/** The AI Room's twenty-one MOVABLE chairs (one lead, two visitor, eighteen member) on the same
+ *  one-at-a-time controller. */
+let aiSeat: SeatInteraction | null = null;
+const aiState = { chair: "none", seat: "idle", chairRestError: 0, door: "closed" };
+function startAiSit(index: number): void {
+  approachCtl.cancel();
+  clearSeats();
+  const id = AI_SEAT_IDS[index];
+  const e = world.get(id);
+  aiSeat = new SeatInteraction(avatar, stack, mirror.view(id), e.capabilities.seat!, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+  aiState.chair = id.split("/")[1];
+  aiSeat.sit();
+}
 function startMeetingSit(index: number): void {
   approachCtl.cancel();
   clearSeats();
@@ -407,6 +433,7 @@ function startApproach(entityId: string): void {
   gamingSeat = null;
   execSeat = null;
   cmsSeat = null;
+  aiSeat = null;
   const spec = world.get(entityId).capabilities.approach!;
   const r = approachCtl.begin(spec);
   receptionState.focus = spec.label;
@@ -420,6 +447,7 @@ function startLoungeSit(index: number): void {
   gamingSeat = null;
   execSeat = null;
   cmsSeat = null;
+  aiSeat = null;
   const s = loungeSeats[index];
   loungeSeat = new LoungeSeatInteraction(avatar, stack, s.view, s.slot, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
   receptionState.focus = s.label;
@@ -478,6 +506,8 @@ function activateInteractable(id: string, kind: "seat" | "lounge" | "approach"):
     if (exec >= 0) { startExecutiveSit(exec); return true; }
     const cms = CMS_SEAT_IDS.indexOf(id);
     if (cms >= 0) { startCmsSit(cms); return true; }
+    const ai = AI_SEAT_IDS.indexOf(id);
+    if (ai >= 0) { startAiSit(ai); return true; }
     if (id === CHAIR_4_ID) { seat.sit(); return true; }
     return false;
   }
@@ -485,7 +515,7 @@ function activateInteractable(id: string, kind: "seat" | "lounge" | "approach"):
   return true;
 }
 const engagedSeat = (): { stand: () => void } | null => {
-  for (const s2 of [loungeSeat, hubSeat, meetingSeat, gamingSeat, execSeat, cmsSeat] as ({ state: string; stand: () => void } | null)[])
+  for (const s2 of [loungeSeat, hubSeat, meetingSeat, gamingSeat, execSeat, cmsSeat, aiSeat] as ({ state: string; stand: () => void } | null)[])
     if (s2 && s2.state === "seated") return s2;
   return seat.status === "seated" ? seat : null;
 };
@@ -634,6 +664,7 @@ cam.add({ f: () => focusOn(GAMING_ROOM.rect, 0.86) }, "f").name("focus: Gaming R
 cam.add({ f: () => focusOn(CENTRAL_HUB.rect, 0.92) }, "f").name("focus: Central Hub");
 cam.add({ f: () => focusOn(EXECUTIVE_ROOM.rect, 0.9) }, "f").name("focus: Executive Room");
 cam.add({ f: () => focusOn(CMS_ROOM.rect, 0.9) }, "f").name("focus: CMS Room");
+cam.add({ f: () => focusOn(AI_ROOM.rect, 0.9) }, "f").name("focus: AI Room");
 cam.add({ f: () => focusOn({ x: 616, z: 480, w: 222, d: 222 }, 0.9) }, "f").name("focus: Hub island");
 const ENTRANCE_VIEW: Rect = { x: 590, z: 1060, w: 260, d: 170 };
 cam.add({ f: () => focusOn(ENTRANCE_VIEW, 0.9) }, "f").name("focus: Reception entrance");
@@ -792,6 +823,23 @@ cms.add(cmsState, "chairRestError").name("chair rest drift").disable().listen();
 cms.add(cmsDoorState, "state").name("west door").disable().listen();
 cms.add(cmsDoorState, "open").name("west door open %").disable().listen();
 cms.add(cmsDoorState, "drift").name("west door drift").disable().listen();
+
+// ---- AI Room (9) -------------------------------------------------------------------------------
+const aiRoom = gui.addFolder("AI Room (9)");
+AI_SEAT_IDS.forEach((id, i) => aiRoom.add({ f: () => startAiSit(i) }, "f").name(`▶ sit: ${id.split("/")[1]}`));
+aiRoom.add({ f: () => aiSeat?.stand() }, "f").name("▶ stand up (AI)");
+aiRoom.add({ f: () => startApproach(AI_ROBOT_ID) }, "f").name("▶ wake the robot");
+aiRoom.add({ f: () => startApproach(AI_RACKS_ID) }, "f").name("▶ check the racks");
+aiRoom.add({ f: () => startApproach(AI_MISSION_ID) }, "f").name("▶ read the mission");
+aiRoom.add({ f: () => startApproach(AI_ARCH_ID) }, "f").name("▶ study the diagram");
+aiRoom.add({ f: () => startApproach(AI_COUNTER_ID) }, "f").name("▶ make a coffee");
+aiRoom.add({ f: () => startApproach(AI_PRINTER_ID) }, "f").name("▶ collect a print");
+aiRoom.add(aiState, "chair").disable().listen();
+aiRoom.add(aiState, "seat").disable().listen();
+aiRoom.add(aiState, "chairRestError").name("chair rest drift").disable().listen();
+aiRoom.add(aiDoorState, "state").name("south door").disable().listen();
+aiRoom.add(aiDoorState, "open").name("south door open %").disable().listen();
+aiRoom.add(aiDoorState, "drift").name("south door drift").disable().listen();
 game.add({ f: () => startApproach(DARTS_INTERACTION_ID) }, "f").name("▶ throw darts");
 game.add({ f: () => startApproach(FRIDGE_INTERACTION_ID) }, "f").name("▶ grab a drink");
 game.add({ f: () => startApproach(POSTER_INTERACTION_ID) }, "f").name("▶ arcade print");
@@ -898,11 +946,12 @@ function shadowsAreStale(): boolean {
   lastShadowPose.set(p.x, 0, p.z);
   lastShadowClip = clip;
   // a walking avatar animates continuously; doors and chairs report their own motion
-  return moved || navCtl.moving || door.state !== "closed" || entryDoor.state !== "closed" || gamingDoor.state !== "closed" || execDoor.state !== "closed" || cmsDoor.state !== "closed"
+  return moved || navCtl.moving || door.state !== "closed" || entryDoor.state !== "closed" || gamingDoor.state !== "closed" || execDoor.state !== "closed" || cmsDoor.state !== "closed" || aiDoor.state !== "closed"
     || seat.status !== "idle" || approachCtl.status !== "idle"
     || (meetingSeat?.status ?? "idle") !== "idle" || (gamingSeat?.status ?? "idle") !== "idle"
     || (hubSeat?.status ?? "idle") !== "idle" || (loungeSeat?.status ?? "idle") !== "idle"
-    || (execSeat?.status ?? "idle") !== "idle" || (cmsSeat?.status ?? "idle") !== "idle";
+    || (execSeat?.status ?? "idle") !== "idle" || (cmsSeat?.status ?? "idle") !== "idle"
+    || (aiSeat?.status ?? "idle") !== "idle";
 }
 function loop(): void {
   requestAnimationFrame(loop);
@@ -930,6 +979,7 @@ function loop(): void {
     // that every SeatInteraction declared in this file appears in this block.
     execSeat?.update(dt / 1000);
     cmsSeat?.update(dt / 1000);
+    aiSeat?.update(dt / 1000);
     loungeSeat?.update(dt / 1000);
     approachCtl.update(dt / 1000);
     navCtl.update(dt / 1000);
@@ -945,6 +995,7 @@ function loop(): void {
     gamingDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
     execDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
     cmsDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
+    aiDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
     updateScanners({ x: bp.x, z: bp.z });
     entryState.state = entryDoor.state; entryState.open = Math.round(entryDoor.t * 100);
     entryState.drift = entryDoor.state === "closed" ? Math.round(entryDoor.driftError() * 1e6) / 1e6 : entryState.drift;
@@ -984,6 +1035,13 @@ function loop(): void {
     cmsDoorState.open = Math.round(cmsDoor.t * 100);
     cmsDoorState.drift = cmsDoor.state === "closed" ? Math.round(cmsDoor.driftError() * 1e6) / 1e6 : cmsDoorState.drift;
     cmsDoorState.cycles = cmsDoor.cycles;
+    aiState.seat = aiSeat ? aiSeat.status : "idle";
+    aiState.chairRestError = aiSeat ? Math.round(aiSeat.chairRestError() * 1000) / 1000 : 0;
+    aiState.door = aiDoor.state;
+    aiDoorState.state = aiDoor.state;
+    aiDoorState.open = Math.round(aiDoor.t * 100);
+    aiDoorState.drift = aiDoor.state === "closed" ? Math.round(aiDoor.driftError() * 1e6) / 1e6 : aiDoorState.drift;
+    aiDoorState.cycles = aiDoor.cycles;
     projState.seat = loungeSeat ? loungeSeat.status : "idle";
     projState.drift = loungeSeat ? Math.round(loungeSeat.furnitureDrift() * 1e6) / 1e6 : 0;
     seatState.chairRestError = Math.round(seat.chairRestError() * 1000) / 1000;

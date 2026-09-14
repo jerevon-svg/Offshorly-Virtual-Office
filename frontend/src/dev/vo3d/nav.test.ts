@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { WorldState } from "./world/WorldState";
-import { DESIGN_ROOM, HERO_PLANT_ID, designRoomEntities, RECT } from "./rooms/design-room";
+import { DESIGN_ROOM, HERO_PLANT_ID, WORLD_SHIFT_Z, designRoomEntities, V1_RECT } from "./rooms/design-room";
 import { Walkability, footprintCells } from "./nav/Walkability";
 import { planWalk } from "./nav/planner";
 import { CELL, v1Static, worldToCell } from "./adapters/v1Grid";
@@ -8,8 +8,15 @@ import { v1Path } from "./adapters/v1Pathfinding";
 import { pointInRect, type Vec2 } from "./core/coords";
 import { aStar } from "./nav/pathfind";
 
-const W = (x: number, z: number): Vec2 => ({ x: RECT.x + x, z: RECT.z + z });
-const inBounds = (p: Vec2) => pointInRect(p, DESIGN_ROOM.floorRect);
+// THIS FILE TESTS THE V1 FALLBACK LAYER — `new Walkability(v1Static)`, no DerivedNav — so every probe is
+// addressed in the frame the V1 grid was PAINTED in: the room's V1 art box (V1_RECT), not wherever V2
+// builds the room. The two differ by design-room WORLD_SHIFT_Z; before Phase 9 they were the same rect and
+// this file used the live one, which is what pinned a reconstructed room to V1's coordinates.
+// Geometry-derived navigation for the BUILT room is covered by derived-nav.test.ts and door.test.ts.
+const W = (x: number, z: number): Vec2 => ({ x: V1_RECT.x + x, z: V1_RECT.z + z });
+/** the room's walkable floor, expressed in that same V1 frame */
+const V1_FLOOR = { ...DESIGN_ROOM.floorRect, z: DESIGN_ROOM.floorRect.z - WORLD_SHIFT_Z };
+const inBounds = (p: Vec2) => pointInRect(p, V1_FLOOR);
 function world(): WorldState { const w = new WorldState(); w.addRoom(DESIGN_ROOM); for (const e of designRoomEntities()) w.addEntity(e); return w; }
 function legsWalkable(from: Vec2, path: Vec2[], walk: (cx: number, cy: number) => boolean): void {
   const pts = [from, ...path];
@@ -36,7 +43,7 @@ describe("vo3d nav — composed walkability over the READ-ONLY V1 grid", () => {
 
   it("rejects clicks outside the floor and on blocked cells; snaps valid clicks to the cell centre", () => {
     const wk = new Walkability(v1Static);
-    expect(planWalk(W(298, 125), { x: RECT.x - 20, z: RECT.z + 100 }, wk, inBounds)).toMatchObject({ ok: false, reason: "outside-world" });
+    expect(planWalk(W(298, 125), { x: V1_RECT.x - 20, z: V1_RECT.z + 100 }, wk, inBounds)).toMatchObject({ ok: false, reason: "outside-world" });
     expect(planWalk(W(298, 125), W(155, 105), wk, inBounds)).toMatchObject({ ok: false, reason: "unwalkable" }); // lead desk
     const r = planWalk(W(298, 125), W(270, 190), wk, inBounds);
     expect(r.ok).toBe(true);

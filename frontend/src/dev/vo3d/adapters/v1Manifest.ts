@@ -1,6 +1,6 @@
 // vo3d adapter — READ-ONLY view of the production asset manifest.
 import manifest from "../../../data/office-assets-manifest.json";
-import type { Rect, Facing } from "../core/coords";
+import type { Rect, Facing, Vec2 } from "../core/coords";
 import type { Entity } from "../world/WorldState";
 import { kindFootprint } from "../rooms/footprint";
 
@@ -47,13 +47,13 @@ function facingFor(kind: string, cx: number, roomCentreX: number): Facing {
 }
 
 /** Every separated furniture layer of a room folder as a world-space entity (footprint = manifest box). */
-export function v1FurnitureEntities(roomId: string, folder: string, roomRect: Rect): Entity[] {
+export function v1FurnitureEntities(roomId: string, folder: string, roomRect: Rect, offset: Vec2 = { x: 0, z: 0 }): Entity[] {
   const roomCentreX = roomRect.x + roomRect.w / 2;
   return layers
     .filter((l) => (l.kind === "furniture" || l.kind === "decor") && l.path.includes(`/${folder}/`) && KIND_BY_FILE[l.path.split("/").pop() ?? ""])
     .map((l) => {
       const kind = KIND_BY_FILE[l.path.split("/").pop() ?? ""];
-      const cx = l.x + l.width / 2, cz = l.y + l.height / 2;
+      const cx = l.x + l.width / 2 + offset.x, cz = l.y + l.height / 2 + offset.z;
       const facing = facingFor(kind, cx, roomCentreX);
       return {
         id: `${roomId}/${l.id}`,

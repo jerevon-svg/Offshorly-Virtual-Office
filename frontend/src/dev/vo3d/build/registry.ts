@@ -19,6 +19,8 @@ import { executiveStatic } from "./executive";
 import { EXEC_KINDS, buildExecFurniture } from "./exec-furniture";
 import { CMS_KINDS, buildCmsFurniture } from "./cms-furniture";
 import { cmsStatic } from "./cms";
+import { AI_KINDS, buildAiFurniture } from "./ai-furniture";
+import { aiStatic } from "./ai";
 
 export type BuildResult = { group: THREE.Group; sway: SwayNode[] };
 
@@ -46,6 +48,7 @@ export const ROOM_STATIC: Record<string, RoomStaticBuilder> = {
   "central-hub": centralHubStatic,
   "executive-room": executiveStatic,
   "cms-room": cmsStatic,
+  "ai-room": aiStatic,
 };
 
 export function buildEntity(e: Entity): BuildResult {
@@ -114,6 +117,11 @@ export function buildEntity(e: Entity): BuildResult {
   // CMS ROOM furniture: its own builders, for the same reason (see build/cms-furniture.ts).
   if ((CMS_KINDS as readonly string[]).includes(e.kind)) {
     const group = buildCmsFurniture(e);
+    if (group) return { group, sway };
+  }
+  // AI ROOM furniture: its own builders, for the same reason (see build/ai-furniture.ts).
+  if ((AI_KINDS as readonly string[]).includes(e.kind)) {
+    const group = buildAiFurniture(e);
     if (group) return { group, sway };
   }
   if (e.kind === "solid") return { group: new THREE.Group(), sway }; // footprint-only entity (baked decor drawn by the shell builder)

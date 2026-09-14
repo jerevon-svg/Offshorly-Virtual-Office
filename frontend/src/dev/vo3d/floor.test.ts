@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { EXECUTIVE_ROOM } from "./rooms/executive";
 import { CMS_ROOM } from "./rooms/cms";
+import { AI_ROOM } from "./rooms/ai";
 import { CENTRAL_HUB } from "./rooms/central-hub";
 import manifest from "../../data/office-assets-manifest.json";
 import { WorldState } from "./world/WorldState";
-import { DESIGN_ROOM, designRoomEntities, HERO_PLANT_ID, RECT } from "./rooms/design-room";
-import { groundFloor, groundFloorRegions, registerGroundFloor } from "./rooms/ground-floor";
+import { DESIGN_ROOM, designRoomEntities, HERO_PLANT_ID, RECT , DESIGN_DOOR } from "./rooms/design-room";
+import { groundFloor, groundFloorRegions, registerGroundFloor , ROOM_WORLD_SHIFT_Z } from "./rooms/ground-floor";
 import { MEETING_ROOM } from "./rooms/meeting";
 import { PROJECT_ROOM } from "./rooms/project";
 import { GAMING_ROOM } from "./rooms/gaming";
@@ -20,7 +21,13 @@ import { pointInRect, type Rect, type Vec2 } from "./core/coords";
 
 const APPROACH: Vec2 = { x: RECT.x + 174.5, z: RECT.z + 187.8 }; // chair-4 stand-here cell (11,31)
 const HALL_EXEC_DOOR: Vec2 = { x: 728, z: 312 }; // outside stand in front of the Executive door (45,19)
-const DOOR_BAND: Rect = { x: 304, z: 400, w: 32, d: 64 }; // physically clear door cells col 19 + outside col 20, rows 25–28
+/** The Design Room's doorway, DERIVED from the door itself: its own clearance band widened by one cell to
+ *  take in the hall column just outside, and shortened to the physically clear passage. A route "crosses
+ *  the door" when it passes through this — wherever the room is built. */
+const DOOR_BAND: Rect = (() => {
+  const R = DESIGN_DOOR.clearance.bodyRadius, b = DESIGN_DOOR.clearance.band;
+  return { x: b.x, z: DESIGN_DOOR.crossing.z + R, w: b.w + CELL, d: DESIGN_DOOR.crossing.d - 2 * R };
+})();
 
 function rig() {
   const world = new WorldState();
@@ -33,6 +40,7 @@ function rig() {
   world.addRoom(CENTRAL_HUB);
   world.addRoom(EXECUTIVE_ROOM);
   world.addRoom(CMS_ROOM);
+  world.addRoom(AI_ROOM);
   const plan = registerGroundFloor(world);
   const inBounds = (p: Vec2) => world.walkableAt(p);
   const wk = new Walkability(composeStatic(v1Static, inBounds, clearanceLayer(worldClearances(world))));
@@ -58,17 +66,27 @@ describe("vo3d ground floor — every V1 room in ONE world", () => {
     const v1 = (manifest as { id: string; kind: string; x: number; y: number; width: number; height: number }[]).filter((l) => l.kind === "room");
     expect(rooms.map((r) => r.id)).toEqual(v1.map((l) => l.id));
     expect(rooms).toHaveLength(11);
+    // v1Rooms() reports the READ-ONLY manifest, untouched — every art box exactly as painted
     for (const r of rooms) { const l = v1.find((x) => x.id === r.id)!; expect(r.rect).toEqual({ x: l.x, z: l.y, w: l.width, d: l.height }); expect(pointInRect({ x: r.rect.x, z: r.rect.z }, FRAME)).toBe(true); expect(r.rect.x + r.rect.w).toBeLessThanOrEqual(FRAME.w + 1e-6); }
-    expect(rooms.find((r) => r.id === "design-room")!.rect).toEqual(DESIGN_ROOM.rect);
     const plan = groundFloor();
+    // …and the PLAN reports where each room is actually BUILT. The two differ only by a declared world
+    // shift, which only a geometry-derived (reconstructed) room may carry — see ROOM_WORLD_SHIFT_Z.
+    for (const r of plan.rooms) {
+      const art = v1.find((x) => x.id === r.id)!;
+      const dz = ROOM_WORLD_SHIFT_Z[r.id] ?? 0;
+      if (dz !== 0) expect(r.reconstructed, `${r.id} is shifted but not reconstructed`).toBe(true);
+      expect(r.rect).toEqual({ x: art.x, z: art.y + dz, w: art.width, d: art.height });
+    }
+    expect(plan.rooms.find((r) => r.id === "design-room")!.rect).toEqual(DESIGN_ROOM.rect);
+    expect(ROOM_WORLD_SHIFT_Z["design-room"]).toBe(16);
     // manifest order, not phase order: project-room and meeting-room precede reception-room in the manifest
-    expect(plan.rooms.filter((r) => r.reconstructed).map((r) => r.id)).toEqual(["executive-room", "cms-room", "design-room", "gaming-room", "project-room", "meeting-room", "reception-room", "central-hub"]);
+    expect(plan.rooms.filter((r) => r.reconstructed).map((r) => r.id)).toEqual(["ai-room", "executive-room", "cms-room", "design-room", "gaming-room", "project-room", "meeting-room", "reception-room", "central-hub"]);
     expect(plan.rooms.find((r) => r.id === "central-hub")!.walls).toBe(false); // Phase 6B: reconstructed AND still wall-less
     // room art boxes never overlap by more than one cell (gaming/project overlap by 12 units in V1) → interiorRects are disjoint
     for (const a of rooms) for (const b of rooms) if (a !== b) { const ox = Math.min(a.rect.x + a.rect.w, b.rect.x + b.rect.w) - Math.max(a.rect.x, b.rect.x), oz = Math.min(a.rect.z + a.rect.d, b.rect.z + b.rect.d) - Math.max(a.rect.z, b.rect.z); expect(Math.min(ox, oz) <= CELL, `${a.id} vs ${b.id}`).toBe(true); }
   });
 
-  it("world regions: 8 reconstructed floors, sidewalk, 3 unwalkable footprints, shared floor with room holes, doorway thresholds; bounds = frame", () => {
+  it("world regions: 9 reconstructed floors, sidewalk, 2 unwalkable footprints, shared floor with room holes, doorway thresholds; bounds = frame", () => {
     const { world, plan } = rig();
     expect(world.bounds).toEqual(FRAME);
     const regions = groundFloorRegions(plan, world);
@@ -78,10 +96,10 @@ describe("vo3d ground floor — every V1 room in ONE world", () => {
     // changes hands. See groundFloorRegions.
     const doors = [...world.entities.values()].filter((e) => e.capabilities.door);
     expect(doors.length).toBeGreaterThan(0);
-    expect(regions.map((r) => r.kind)).toEqual([...Array(8).fill("room-floor"), "exterior", ...Array(3).fill("room-floor"), "shared-floor", ...Array(doors.length).fill("room-floor")]);
-    expect(regions.filter((r) => r.walkable)).toHaveLength(10 + doors.length);
+    expect(regions.map((r) => r.kind)).toEqual([...Array(9).fill("room-floor"), "exterior", ...Array(2).fill("room-floor"), "shared-floor", ...Array(doors.length).fill("room-floor")]);
+    expect(regions.filter((r) => r.walkable)).toHaveLength(11 + doors.length);
     expect(regions.filter((r) => r.walkable).map((r) => r.id)).toEqual([
-      "floor:executive-room", "floor:cms-room", "floor:design-room", "floor:gaming-room", "floor:project-room", "floor:meeting-room", "floor:reception-room", "floor:central-hub",
+      "floor:ai-room", "floor:executive-room", "floor:cms-room", "floor:design-room", "floor:gaming-room", "floor:project-room", "floor:meeting-room", "floor:reception-room", "floor:central-hub",
       "exterior:sidewalk", "shared:ground-floor", ...doors.map((e) => `threshold:${e.id}`),
     ]);
     expect(regions.find((r) => r.kind === "shared-floor")!.holes).toHaveLength(11);
@@ -89,7 +107,8 @@ describe("vo3d ground floor — every V1 room in ONE world", () => {
     expect(world.regionAt({ x: 328, z: 408 })?.id).toBe("shared:ground-floor"); // just outside the Design Room door
     expect(world.regionAt(HALL_EXEC_DOOR)?.id).toBe("shared:ground-floor");
     expect(world.regionAt({ x: 720, z: 600 })).toMatchObject({ id: "floor:central-hub", walkable: true }); // Phase 6B
-    expect(world.regionAt({ x: 150, z: 150 })).toMatchObject({ id: "footprint:ai-room", walkable: false });
+    expect(world.regionAt({ x: 150, z: 150 })).toMatchObject({ id: "floor:ai-room", walkable: true }); // Phase 9
+    expect(world.regionAt({ x: 168, z: 720 })).toMatchObject({ id: "footprint:qa-room", walkable: false });
     expect(world.regionAt({ x: 700, z: 1216 })).toMatchObject({ id: "exterior:sidewalk", walkable: true });
     // Reception: its floor owns the gate band, the interior and the entry threshold, and hands off to the
     // sidewalk with NO gap (row 72 centre z=1160 → Reception, row 73 centre z=1176 → sidewalk)
@@ -131,12 +150,28 @@ describe("vo3d ground floor — every V1 room in ONE world", () => {
 
   it("the Design Room doorway connects its floor to the shared hall; unreconstructed doors stay closed", () => {
     const { wk } = rig();
-    // V1 paints the door band as rows 24–30; the physically clear passage (north jamb … parked leaf, minus Bon's radius) is rows 25–28
-    for (let cy = 25; cy <= 28; cy++) { expect(wk.staticLayer(19, cy), `door cell 19,${cy}`).toBe(true); expect(wk.staticLayer(20, cy), `outside cell 20,${cy}`).toBe(true); }
-    for (const cy of [24, 29, 30]) { expect(v1Static(19, cy), `V1 door cell 19,${cy}`).toBe(true); expect(wk.staticLayer(19, cy), `brushes jamb/leaf 19,${cy}`).toBe(false); }
-    expect(wk.staticLayer(18, 27)).toBe(true); // inside stand
-    expect(wk.staticLayer(19, 23)).toBe(false); // wall north of the door
-    expect(wk.staticLayer(19, 17)).toBe(false); // AI door cell: V1-walkable but the AI room is not reconstructed
+    // THE INVARIANT, DERIVED FROM THE DOOR'S GEOMETRY. A V1 '+' cell of the Design Room's door column is
+    // open exactly when its centre falls inside the physically clear passage (the crossing band minus a
+    // body radius at each end) — wherever the room is built. Before Phase 9 this was written as the literal
+    // rows 24–30, which pinned a reconstructed room to V1's painted coordinates.
+    const R = DESIGN_DOOR.clearance.bodyRadius;
+    const clear0 = DESIGN_DOOR.crossing.z + R, clear1 = DESIGN_DOOR.crossing.z + DESIGN_DOOR.crossing.d - R;
+    const col = Math.floor((DESIGN_ROOM.rect.x + DESIGN_ROOM.rect.w - CELL / 2) / CELL);
+    const band = DESIGN_DOOR.clearance.band;
+    let open = 0, shut = 0;
+    for (let cy = Math.floor(band.z / CELL); cy <= Math.floor((band.z + band.d) / CELL); cy++) {
+      if (!v1Static(col, cy)) continue;
+      const centre = cy * CELL + CELL / 2, shouldBeOpen = centre >= clear0 && centre <= clear1;
+      expect(wk.staticLayer(col, cy), `door cell ${col},${cy}`).toBe(shouldBeOpen);
+      if (shouldBeOpen) { expect(wk.staticLayer(col + 1, cy), `outside cell ${col + 1},${cy}`).toBe(true); open++; } else shut++;
+    }
+    expect(open).toBeGreaterThanOrEqual(4);
+    expect(shut).toBeGreaterThanOrEqual(1);
+    expect(wk.staticLayer(col - 1, Math.floor((clear0 + clear1) / 2 / CELL))).toBe(true); // inside stand
+    expect(wk.staticLayer(col, Math.floor((DESIGN_ROOM.rect.z + 4) / CELL))).toBe(false); // wall north of the door
+    // Phase 9: the AI room is reconstructed, so its south doorway is now OPEN on the composed layer —
+    // the threshold region covers the V1 '+' band and the single leaf parks clear of it.
+    expect(wk.staticLayer(19, 17)).toBe(true);
     expect(v1Static(19, 17)).toBe(true);
     expect(wk.staticLayer(20, 19)).toBe(true); // outside stand of the AI door: hall
     // Phase 7: the Executive room is reconstructed, so its doorway is now OPEN on the composed layer —
@@ -151,7 +186,7 @@ describe("vo3d ground floor — every V1 room in ONE world", () => {
     if (out.ok) { expect(out.path.length).toBeGreaterThanOrEqual(3); legsWalkable(APPROACH, out.path, wk.walkable); expect(crossesDoor(APPROACH, out.path)).toBe(true); expect(out.destination).toEqual({ x: (45 + 0.5) * CELL, z: (19 + 0.5) * CELL }); }
     const back = planWalk(HALL_EXEC_DOOR, APPROACH, wk, inBounds);
     expect(back.ok).toBe(true);
-    if (back.ok) { legsWalkable(HALL_EXEC_DOOR, back.path, wk.walkable); expect(crossesDoor(HALL_EXEC_DOOR, back.path)).toBe(true); expect(worldToCell(back.destination)).toEqual({ cx: 11, cy: 31 }); }
+    if (back.ok) { legsWalkable(HALL_EXEC_DOOR, back.path, wk.walkable); expect(crossesDoor(HALL_EXEC_DOOR, back.path)).toBe(true); expect(worldToCell(back.destination)).toEqual(worldToCell(APPROACH)); }
     // far hall destinations: in front of the reception entrance, the QA door, the gaming door
     for (const to of [{ x: 712, z: 824 }, { x: 344, z: 664 }, { x: 1096, z: 728 }]) { const r = planWalk(APPROACH, to, wk, inBounds); expect(r.ok, `${to.x},${to.z}`).toBe(true); if (r.ok) legsWalkable(APPROACH, r.path, wk.walkable); }
   });
@@ -160,14 +195,16 @@ describe("vo3d ground floor — every V1 room in ONE world", () => {
     const { wk, inBounds } = rig();
     expect(planWalk(APPROACH, { x: -20, z: 400 }, wk, inBounds)).toMatchObject({ ok: false, reason: "outside-world" });
     expect(planWalk(APPROACH, { x: 1500, z: 400 }, wk, inBounds)).toMatchObject({ ok: false, reason: "outside-world" });
-    expect(planWalk(APPROACH, { x: 150, z: 150 }, wk, inBounds)).toMatchObject({ ok: false, reason: "outside-world" }); // AI room interior
+    // Phase 9: the AI room is reconstructed, so the example of an unbuilt interior moved to the QA room
+    // (x 8.08, z 596.5, 320.22 × 258.65), which is still footprint-only.
+    expect(planWalk(APPROACH, { x: 168, z: 720 }, wk, inBounds)).toMatchObject({ ok: false, reason: "outside-world" }); // QA room interior
     // Phase 7: the Executive room is reconstructed too, so the example of an unbuilt interior moved
     // again — to the Dev room (x 1111.14, z 8, 320.86 square), which is still footprint-only.
     expect(planWalk(APPROACH, { x: 1270, z: 168 }, wk, inBounds)).toMatchObject({ ok: false, reason: "outside-world" }); // dev room interior
     // this rig carries no OpenBands, so the hub's island cells are still V1-blocked here; the medallion's
     // reachability is proved in central-hub.test.ts, where the bands are in play
     expect(planWalk(APPROACH, { x: 720, z: 600 }, wk, inBounds)).toMatchObject({ ok: false, reason: "unwalkable" });
-    expect(planWalk({ x: 328, z: 312 }, { x: 312, z: 280 }, wk, inBounds)).toMatchObject({ ok: false, reason: "outside-world" }); // step through the AI door
+    expect(planWalk({ x: 328, z: 312 }, { x: 312, z: 264 }, wk, inBounds).ok).toBe(true); // Phase 9: step through the AI door
     // the sidewalk is now REACHABLE — Reception is reconstructed, so the hall → gates → entry door route exists
     const street = planWalk(APPROACH, { x: 700, z: 1216 }, wk, inBounds);
     expect(street.ok).toBe(true);

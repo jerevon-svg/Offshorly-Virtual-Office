@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { EXECUTIVE_ROOM } from "./rooms/executive";
 import { CMS_ROOM } from "./rooms/cms";
+import { AI_ROOM } from "./rooms/ai";
 import { CENTRAL_HUB } from "./rooms/central-hub";
 import * as THREE from "three";
 import { WorldState } from "./world/WorldState";
@@ -47,6 +48,7 @@ function rig() {
   world.addRoom(CENTRAL_HUB);
   world.addRoom(EXECUTIVE_ROOM);
   world.addRoom(CMS_ROOM);
+  world.addRoom(AI_ROOM);
   const plan = registerGroundFloor(world);
   const inBounds = (p: Vec2) => world.walkableAt(p);
   const wk = new Walkability(composeStatic(v1Static, inBounds, clearanceLayer(worldClearances(world))));
@@ -744,6 +746,7 @@ describe("vo3d Reception — Phase 3E.2 gate lane clearance", () => {
   world.addRoom(CENTRAL_HUB);
   world.addRoom(EXECUTIVE_ROOM);
   world.addRoom(CMS_ROOM);
+  world.addRoom(AI_ROOM);
     registerGroundFloor(world);
     const inBounds = (p: Vec2) => world.walkableAt(p);
     const wk = new Walkability(composeStatic(v1Static, inBounds, clearanceLayer(worldClearances(world))));
@@ -811,6 +814,7 @@ describe("vo3d Reception — Phase 3E.2 gate lane clearance", () => {
   world.addRoom(CENTRAL_HUB);
   world.addRoom(EXECUTIVE_ROOM);
   world.addRoom(CMS_ROOM);
+  world.addRoom(AI_ROOM);
     registerGroundFloor(world);
     const inBounds = (p: Vec2) => world.walkableAt(p);
     for (const [i, lane] of GATE.lanes.entries()) {

@@ -11,7 +11,35 @@ import type { BoxSpec } from "../build/helpers";
 import type { PlantSpec } from "../build/plants";
 
 export const DESIGN_ROOM_ID = "design-room";
-export const RECT: Rect = v1RoomRect(DESIGN_ROOM_ID);
+
+/** THE ROOM'S V1 ART BOX, exactly as the manifest paints it. This is the frame the V1 PAINTED GRID was
+ *  authored in, so it stays available for the V1-fallback tests that check V2's planner still agrees with
+ *  the V1 production oracle over the raw grid. Nothing in V2's geometry is positioned from it. */
+export const V1_RECT: Rect = v1RoomRect(DESIGN_ROOM_ID);
+
+/** WORLD SHIFT (Phase 9). The Design Room is BUILT 16 units SOUTH of its V1 art box.
+ *
+ *  WHY. Measured against reconstructed geometry, the band between the AI Room's south wall (z 300) and this
+ *  room's north wall was 16.19 units of clear floor. A body at NAV_RADIUS 8 is 16 wide, so that band had
+ *  0.19 units of legal centre freedom, and it throttled the AI Room's own entrance funnel to 8 — half the
+ *  16 the Gaming Room's entrance gives, which is V2's narrowest accepted passage. The band on the QA side
+ *  was 36.77 clear and carries no route: QA is unbuilt and its V1 door is on its EAST wall.
+ *
+ *  THE BUDGET. There are 52.96 units of clear floor either side of this room's 243.54-unit built depth.
+ *  Two comfortable lanes would need 64, so the space goes where circulation actually is: 16 south leaves
+ *  the AI side 32.19 and the QA side 20.77, both past the 16-unit body minimum.
+ *
+ *  HOW IT STAYS COHERENT. Every wall, entity, footprint, seat, stand point, approach, door rect and baked
+ *  measurement in this file is expressed through RECT / wx() / wz(), and the static builder positions its
+ *  group at room.rect — so the room translates as ONE unit, logical and visual together. The only part that
+ *  does not follow RECT on its own is the separated V1 furniture (absolute world boxes in the manifest),
+ *  which takes the same shift explicitly in designRoomEntities().
+ *
+ *  The V1 manifest, officeWalkabilityGrid.ts and seatDirections.ts are UNTOUCHED. This is a V2-only move:
+ *  V2 navigation inside a reconstructed room comes from its CURRENT geometry (nav/derived.ts), which is
+ *  what makes moving it honest. */
+export const WORLD_SHIFT_Z = 16;
+export const RECT: Rect = { ...V1_RECT, z: V1_RECT.z + WORLD_SHIFT_Z };
 const NATIVE = { width: 1360, height: 1156 }; // design-room.png
 const px = (v: number): number => v * (RECT.w / NATIVE.width);
 const pz = (v: number): number => v * (RECT.d / NATIVE.height);
@@ -178,7 +206,9 @@ function plantEntities(): Entity[] {
 }
 
 export function designRoomEntities(): Entity[] {
-  const furniture = v1FurnitureEntities(DESIGN_ROOM_ID, "design-team", RECT);
+  // the separated V1 furniture boxes are absolute WORLD positions in the manifest, so they are the one
+  // part of this room that does not follow RECT on its own — they take the same shift explicitly
+  const furniture = v1FurnitureEntities(DESIGN_ROOM_ID, "design-team", RECT, { x: 0, z: WORLD_SHIFT_Z });
   const chair = furniture.find((e) => e.id === CHAIR_4_ID);
   if (!chair) throw new Error("design room: chair-4 not found in manifest");
   // ONE interactive seat (proof scope). All values world-space; tuning accepted in the prototype.

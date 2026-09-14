@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { EXECUTIVE_ROOM } from "./rooms/executive";
 import { CMS_ROOM } from "./rooms/cms";
+import { AI_ROOM } from "./rooms/ai";
 import { CENTRAL_HUB } from "./rooms/central-hub";
 import * as THREE from "three";
 import { WorldState } from "./world/WorldState";
@@ -13,7 +14,7 @@ import { RECEPTION_ROOM } from "./rooms/reception";
 import { Walkability, composeStatic } from "./nav/Walkability";
 import { clearanceLayer, worldClearances } from "./nav/clearance";
 import { planWalk } from "./nav/planner";
-import { v1Static, worldToCell } from "./adapters/v1Grid";
+import { CELL, v1Static, worldToCell } from "./adapters/v1Grid";
 import { Avatar } from "./avatar/Avatar";
 import { ControllerStack, NavigationController } from "./avatar/Controller";
 import { SlidingDoor, segmentHitsRect, type DoorState } from "./interact/Door";
@@ -38,6 +39,7 @@ function rig() {
   world.addRoom(CENTRAL_HUB);
   world.addRoom(EXECUTIVE_ROOM);
   world.addRoom(CMS_ROOM);
+  world.addRoom(AI_ROOM);
   registerGroundFloor(world);
   const inBounds = (p: Vec2) => world.walkableAt(p);
   const wk = new Walkability(composeStatic(v1Static, inBounds, clearanceLayer(worldClearances(world))));
@@ -84,9 +86,26 @@ describe("vo3d door — physical clearance through the Design Room doorway", () 
   });
   it("blocks the V1 door cells that would brush the jamb or the parked leaf; routes stay a body radius clear", () => {
     const { wk, walk, nav, av } = rig();
-    for (const cy of [25, 26, 27, 28]) expect(wk.staticLayer(19, cy), `19,${cy}`).toBe(true);
-    for (const cy of [24, 29, 30]) { expect(v1Static(19, cy)).toBe(true); expect(wk.staticLayer(19, cy), `19,${cy}`).toBe(false); }
-    expect(wk.staticLayer(18, 24)).toBe(true); expect(wk.staticLayer(18, 30)).toBe(true); // interior cells next to the wall are untouched
+    // THE INVARIANT, DERIVED FROM THE DOOR'S OWN GEOMETRY rather than from hard-coded V1 rows. The
+    // physically clear passage is the crossing band shrunk by a body radius at each end; a V1 '+' cell in
+    // the door column is open exactly when its centre falls inside that, and blocked when it does not —
+    // wherever the room is built. (Before Phase 9 these were the literal rows 24…30, which is what pinned
+    // the room to V1's painted coordinates; the rule they encoded is unchanged.)
+    const clear0 = DESIGN_DOOR.crossing.z + R, clear1 = DESIGN_DOOR.crossing.z + DESIGN_DOOR.crossing.d - R;
+    const doorCol = Math.floor((RECT.x + RECT.w - CELL / 2) / CELL);
+    let open = 0, shut = 0;
+    const band = DESIGN_DOOR.clearance.band; // the room's own east cell column — nothing outside it is ours
+    for (let cy = Math.floor(band.z / CELL); cy <= Math.floor((band.z + band.d) / CELL); cy++) {
+      if (!v1Static(doorCol, cy)) continue; // only the V1 '+' cells of this column are in question
+      const centre = cy * CELL + CELL / 2;
+      const shouldBeOpen = centre >= clear0 && centre <= clear1;
+      expect(wk.staticLayer(doorCol, cy), `${doorCol},${cy} (centre ${centre})`).toBe(shouldBeOpen);
+      if (shouldBeOpen) open++; else shut++;
+    }
+    expect(open, "the doorway has no clear cells at all").toBeGreaterThanOrEqual(4);
+    expect(shut, "no cell is trimmed for the jamb / parked leaf").toBeGreaterThanOrEqual(1);
+    // interior cells next to the wall are untouched by the door's clearance
+    for (const z of [clear0, clear1]) expect(wk.staticLayer(doorCol - 1, Math.floor(z / CELL))).toBe(true);
     // walk out and back; every sampled body position keeps ≥ bodyRadius from the jambs / parked leaf
     for (const to of [HALL, APPROACH]) {
       av.setPosition(to === HALL ? APPROACH : HALL); walk(to);
@@ -113,7 +132,7 @@ describe("vo3d door — automatic sliding door state machine", () => {
     const seen = run(6000, () => { if (tWhenBodyReachesPlane === null && av.position.x - R <= closed.x + 0.5) tWhenBodyReachesPlane = door.t; });
     expect(seen).toEqual(["closed", "opening", "open", "closing", "closed"]);
     expect(tWhenBodyReachesPlane).toBe(1);
-    expect(worldToCell(av.position)).toEqual({ cx: 11, cy: 31 });
+    expect(worldToCell(av.position)).toEqual(worldToCell(APPROACH));
     expect(view.position.z).toBe(closed.z); expect(door.driftError()).toBe(0);
   });
   it("opens with smooth ease-in/out to the exact open transform and closes with no overshoot", () => {
@@ -158,7 +177,7 @@ describe("vo3d door — automatic sliding door state machine", () => {
     walk(APPROACH); // redirect immediately after crossing: back through the door
     const seen = run();
     expect(seen[seen.length - 1]).toBe("closed"); expect(seen).not.toContain(undefined);
-    expect(worldToCell(av.position)).toEqual({ cx: 11, cy: 31 });
+    expect(worldToCell(av.position)).toEqual(worldToCell(APPROACH));
     expect(door.driftError()).toBe(0);
   });
   it("a body standing in the sweep band keeps the door open indefinitely; it closes once the body leaves", () => {

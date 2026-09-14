@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { EXECUTIVE_ROOM, executiveRoomEntities } from "./rooms/executive";
 import { CMS_ROOM, cmsRoomEntities } from "./rooms/cms";
+import { AI_ROOM, aiRoomEntities } from "./rooms/ai";
 import * as THREE from "three";
 import { PlayerBody, type StandTest } from "./player/PlayerBody";
 import { PlayerCamera } from "./player/PlayerCamera";
@@ -27,13 +28,13 @@ import type { Rect, Vec2 } from "./core/coords";
 // ---- a world, exactly as the app builds it ---------------------------------------------------------
 function rig() {
   const world = new WorldState();
-  for (const r of [DESIGN_ROOM, RECEPTION_ROOM, MEETING_ROOM, PROJECT_ROOM, GAMING_ROOM, CENTRAL_HUB, EXECUTIVE_ROOM, CMS_ROOM]) world.addRoom(r);
-  for (const e of [...designRoomEntities(), ...receptionEntities(), ...meetingRoomEntities(), ...projectRoomEntities(), ...gamingRoomEntities(), ...centralHubEntities(), ...executiveRoomEntities(), ...cmsRoomEntities()]) world.addEntity(e);
+  for (const r of [DESIGN_ROOM, RECEPTION_ROOM, MEETING_ROOM, PROJECT_ROOM, GAMING_ROOM, CENTRAL_HUB, EXECUTIVE_ROOM, CMS_ROOM, AI_ROOM]) world.addRoom(r);
+  for (const e of [...designRoomEntities(), ...receptionEntities(), ...meetingRoomEntities(), ...projectRoomEntities(), ...gamingRoomEntities(), ...centralHubEntities(), ...executiveRoomEntities(), ...cmsRoomEntities(), ...aiRoomEntities()]) world.addEntity(e);
   registerGroundFloor(world);
   const bands = [...HUB_BANDS];
   const inBounds = (p: Vec2) => world.walkableAt(p);
   const walkability = new Walkability(composeStatic(v2Static(v1Static, openedLayer(bands)), inBounds, clearanceLayer(worldClearances(world))));
-  const derived = new DerivedNav(world, { roomIds: new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id, CMS_ROOM.id]) });
+  const derived = new DerivedNav(world, { roomIds: new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id, CMS_ROOM.id, AI_ROOM.id]) });
   walkability.attachDerived(derived, world);
   const canStand = makeStandTest({ world, walkability, derived, radius: NAV_RADIUS });
   return { world, walkability, derived, canStand };
@@ -245,7 +246,7 @@ describe("vo3d player — interaction targeting", () => {
   it("harvests every interactable the world declares, bucketed by room — once, not per frame", () => {
     const { world } = rig();
     const byRoom = collectCandidates(world);
-    for (const id of [DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id, CMS_ROOM.id])
+    for (const id of [DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id, CMS_ROOM.id, AI_ROOM.id])
       expect(byRoom.get(id)?.length, id).toBeGreaterThan(0);
     // every candidate really carries the capability it claims
     for (const list of byRoom.values())

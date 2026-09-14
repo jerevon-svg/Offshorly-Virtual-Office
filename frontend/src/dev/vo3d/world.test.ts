@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { WorldState } from "./world/WorldState";
 import { validatePlacement } from "./world/placement";
-import { DESIGN_ROOM, DESIGN_SOLIDS, CHAIR_4_ID, HERO_PLANT_ID, designRoomEntities, RECT } from "./rooms/design-room";
+import { DESIGN_ROOM, DESIGN_SOLIDS, CHAIR_4_ID, HERO_PLANT_ID, designRoomEntities, RECT , V1_RECT, WORLD_SHIFT_Z } from "./rooms/design-room";
 import { v1RoomRect } from "./adapters/v1Manifest";
 import { chairPlanRadius } from "./build/furniture";
 import { pointInRect } from "./core/coords";
@@ -16,9 +16,13 @@ function makeWorld(): WorldState {
 
 describe("vo3d world — Design Room in WORLD coordinates", () => {
   it("places the room at its V1 frame rect (no room-local origin) and every entity inside it", () => {
-    expect(RECT).toEqual(v1RoomRect("design-room"));
-    expect(RECT.x).toBeCloseTo(9.47, 2);
-    expect(RECT.z).toBeCloseTo(316.19, 2);
+    // the V1 art box is READ straight from the manifest and is never rewritten…
+    expect(V1_RECT).toEqual(v1RoomRect("design-room"));
+    expect(V1_RECT.x).toBeCloseTo(9.47, 2);
+    expect(V1_RECT.z).toBeCloseTo(316.19, 2);
+    // …and the room is BUILT at that box plus its declared world shift, with nothing else changed
+    expect(RECT).toEqual({ ...V1_RECT, z: V1_RECT.z + WORLD_SHIFT_Z });
+    expect(WORLD_SHIFT_Z).toBe(16);
     const w = makeWorld();
     const ents = w.inRoom(DESIGN_ROOM.id);
     expect(ents.filter((e) => e.kind !== "solid").length).toBe(22 + 11 + 1); // 22 manifest pieces + 11 plants + the east sliding door

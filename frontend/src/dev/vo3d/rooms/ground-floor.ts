@@ -6,7 +6,7 @@ import type { OpenBand } from "../nav/v2Open";
 import { CELL } from "../adapters/v1Grid";
 import type { WorldRegion, WorldState } from "../world/WorldState";
 import { FACADE_Z, FRAME, FRONT_ROW_ROOM_IDS, v1DoorOpenings, v1Rooms, v1Sidewalk, type DoorOpening, type V1Room } from "../adapters/v1Floor";
-import { DESIGN_ROOM, SHELL } from "./design-room";
+import { DESIGN_ROOM, SHELL, WORLD_SHIFT_Z as DESIGN_WORLD_SHIFT_Z } from "./design-room";
 import { RECEPTION_ROOM } from "./reception";
 import { MEETING_ROOM } from "./meeting";
 import { PROJECT_ROOM } from "./project";
@@ -14,6 +14,7 @@ import { GAMING_ROOM } from "./gaming";
 import { CENTRAL_HUB } from "./central-hub";
 import { EXECUTIVE_ROOM } from "./executive";
 import { CMS_ROOM } from "./cms";
+import { AI_ROOM } from "./ai";
 
 export type FloorRoom = V1Room & {
   /** true = full interior modelled (walkable floor region + furniture); false = footprint/boundary only */
@@ -33,7 +34,7 @@ export interface GroundFloor {
   facadeZ: number;
 }
 
-export const RECONSTRUCTED_ROOM_IDS = new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id, CMS_ROOM.id]);
+export const RECONSTRUCTED_ROOM_IDS = new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id, CMS_ROOM.id, AI_ROOM.id]);
 /** The Central Hub is a wall-less atrium: V1 draws it as an open lounge on the hall floor, with no wall
  *  ring and no door cells. It STAYS wall-less after reconstruction (Phase 6B) — `walls: false` is what
  *  keeps build/floorplan.ts from ever ringing it, and the hub's own static builder owns its floor plate. */
@@ -63,6 +64,25 @@ const WALL_LESS_ROOM_IDS = new Set(["central-hub"]);
  *  When the Dev room is reconstructed it builds its own real walls and this entry is deleted. */
 export const PLACEHOLDER_SOUTH_CLAMP: Record<string, number> = { "dev-room": 304 };
 
+/** ROOM WORLD SHIFT (Phase 9). A RECONSTRUCTED room BUILT somewhere other than its V1 art box. Unlike the
+ *  two clamps above — which move placeholder geometry only — this moves the room itself, so the plan's rect
+ *  must move with it or the shared floor's hole, the room's region and its built geometry would disagree
+ *  about where the room is.
+ *
+ *  This is only legitimate for a room whose navigation is GEOMETRY-DERIVED (nav/derived.ts): inside such a
+ *  room the V1 painted grid is not consulted, so the room answers for its own space wherever it stands.
+ *  An unreconstructed room may NOT appear here — it has no geometry to answer with.
+ *
+ *  ONE entry: the Design Room, 16 south. The reason and the arithmetic live at design-room WORLD_SHIFT_Z,
+ *  which is the single source of the number; this map only republishes it to the floor plan. */
+export const ROOM_WORLD_SHIFT_Z: Record<string, number> = { "design-room": DESIGN_WORLD_SHIFT_Z };
+
+/** The rect a room ACTUALLY occupies in the world: its V1 art box plus any declared world shift. */
+export function shiftedRect(room: V1Room): Rect {
+  const dz = ROOM_WORLD_SHIFT_Z[room.id];
+  return dz === undefined ? room.rect : { ...room.rect, z: room.rect.z + dz };
+}
+
 export function roomSouthZ(room: V1Room, plan: Pick<GroundFloor, "facadeZ" | "shell">): number {
   const clamp = PLACEHOLDER_SOUTH_CLAMP[room.id];
   if (clamp !== undefined) return clamp;
@@ -73,7 +93,7 @@ export function roomSouthZ(room: V1Room, plan: Pick<GroundFloor, "facadeZ" | "sh
  *  read this, so nothing claims floor the placeholder no longer stands on. */
 export function placeholderRect(room: V1Room): Rect {
   const clamp = PLACEHOLDER_SOUTH_CLAMP[room.id];
-  return clamp === undefined ? room.rect : { ...room.rect, d: clamp - room.rect.z };
+  return clamp === undefined ? shiftedRect(room) : { ...room.rect, d: clamp - room.rect.z };
 }
 
 /** The cells a clamp gives back, declared so navigation agrees with the geometry. V1 paints the Dev
@@ -82,10 +102,22 @@ export function placeholderRect(room: V1Room): Rect {
  *  which is the whole corridor. The Dev door's own '+' cells are already walkable and unaffected. */
 export const CORRIDOR_BANDS: OpenBand[] = [
   { id: "dev-cms-corridor", rect: { x: 69 * CELL, z: 19 * CELL, w: 21 * CELL, d: 2 * CELL }, solids: [] },
+  /** Phase 9 — THE AI ROOM'S SOUTH APRON. V1 blocks row 19 (z 304…320) for every column up to 19 because
+   *  the flat render draws the Design Room's north elevation across it. With the Design Room built 16
+   *  south (design-room WORLD_SHIFT_Z) that row is real floor between two real walls: its cell centres sit
+   *  12 clear of the AI Room's south wall and 20.19 clear of the Design Room's north wall, both past
+   *  NAV_RADIUS — ai.test.ts re-derives both distances from the rooms' own geometry, so this band can never
+   *  outlive the geometry that justifies it.
+   *
+   *  Row 20 is deliberately NOT declared: its centres are 4.19 from the Design Room's wall, so V1 is right
+   *  to block it and declaring it would be a player-only opening. */
+  { id: "ai-design-apron", rect: { x: 1 * CELL, z: 19 * CELL, w: 19 * CELL, d: 1 * CELL }, solids: [] },
 ];
 
 export function groundFloor(): GroundFloor {
-  const rooms = v1Rooms().map((r) => ({ ...r, reconstructed: RECONSTRUCTED_ROOM_IDS.has(r.id), walls: !WALL_LESS_ROOM_IDS.has(r.id) }));
+  // a declared world shift is applied HERE, once, so every consumer of the plan — geometry, regions, the
+  // shared floor's holes and the door openings — sees a room where it is actually built
+  const rooms = v1Rooms().map((r) => ({ ...r, rect: shiftedRect(r), reconstructed: RECONSTRUCTED_ROOM_IDS.has(r.id), walls: !WALL_LESS_ROOM_IDS.has(r.id) }));
   return {
     frame: FRAME,
     rooms,

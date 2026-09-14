@@ -14,7 +14,7 @@ import type { Footprint } from "../world/WorldState";
 import { chairPlanRadius } from "../build/furniture";
 
 /** task chairs: a five-star caster base, round in plan, and sized by the builder rather than by the art box */
-export const TASK_CHAIR_KINDS: ReadonlySet<string> = new Set(["chair-a", "chair-b", "lead-chair", "cms-task-chair", "cms-lead-chair"]);
+export const TASK_CHAIR_KINDS: ReadonlySet<string> = new Set(["chair-a", "chair-b", "lead-chair", "cms-task-chair", "cms-lead-chair", "ai-task-chair", "ai-lead-chair", "ai-visitor-chair"]);
 /** kinds whose plan is a circle (or a regular polygon close enough to one that a box would lie) */
 export const ROUND_KINDS: ReadonlySet<string> = new Set(["beanbag", "round-table", "cafe-table", "exec-planter", "cms-pouf", "cms-round-table"]);
 /** kinds that lie ON the floor rather than standing on it */

@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { EXECUTIVE_ROOM } from "./rooms/executive";
 import { CMS_ROOM } from "./rooms/cms";
+import { AI_ROOM } from "./rooms/ai";
 import * as THREE from "three";
 import manifest from "../../data/office-assets-manifest.json";
 import { WorldState } from "./world/WorldState";
@@ -43,6 +44,7 @@ function rig() {
   world.addRoom(CENTRAL_HUB);
   world.addRoom(EXECUTIVE_ROOM);
   world.addRoom(CMS_ROOM);
+  world.addRoom(AI_ROOM);
   for (const e of designRoomEntities()) world.addEntity(e);
   for (const e of centralHubEntities()) world.addEntity(e);
   const plan = registerGroundFloor(world);

@@ -111,6 +111,26 @@ export const PALETTE = {
   cmsFloorTint: 0xe9e9ec, //  multiply tint for THIS room's tile only — the reference floor is cool grey
   cmsBoard: 0xf3f2f1, //      the whiteboard / sticky-wall face
   cmsFrame: 0xc6c6c9, //      chair frames, arms and casters: the light grey the art gives them
+
+  // ---- AI ROOM (Phase 9) -----------------------------------------------------------------------
+  // Routed through rooms/ai.ts THEME, never named directly by a builder. The brief is COOL TECH: near-
+  // black carbon joinery and ONE electric blue running through every piece of the room, over the palest,
+  // coolest floor in the office, with white-and-silver seating. Every value measured off
+  // src/assets/office/rooms/ai-room.png and the five separated furniture/ai-team/*.png.
+  aiCharcoal: 0x57575c, //    bench and lead desk tops (measured 87,87,92)
+  aiCarbon: 0x22242b, //      the north tech band, rack carcasses, screen bezels (measured 34,36,43)
+  aiCarbonDeep: 0x111318, //  every reveal, plinth and recess in the carbon joinery
+  aiLed: 0x2376e5, //         THE ROOM'S SIGNATURE: every blue LED line in it (measured 35,118,229)
+  aiLedDeep: 0x0e4cba, //     the LED's deeper core, where a strip is read edge-on (measured 14,76,186)
+  aiSeat: 0xeae5e2, //        the eighteen member task chairs: warm white (measured 234,229,226)
+  aiSeatLead: 0xa9a6a6, //    the lead chair's light grey hide (measured 169,166,166)
+  aiSeatVisitor: 0xcac7c9, // the two visitor tub chairs (measured 202,199,201)
+  aiFrame: 0xccc8ca, //       brushed silver arms, five-star bases, counter shoe (measured 204,200,202)
+  aiCounter: 0xf4f5f5, //     the east wall's white lacquer counter run (measured 244,245,245)
+  aiPlaster: 0xf6f7fa, //     this room's walls: the coolest white in the office
+  aiFloorTint: 0xe6ebfe, //   multiply tint for THIS room's tile only — the reference floor is 216,215,221
+  aiScreenUi: 0x0a1526, //    the dark UI ground every display in the room is drawn on
+  aiRobot: 0xf2f4f7, //       the service robot's white shell
 };
 
 // ---- shared materials -------------------------------------------------------------------
