@@ -14,6 +14,7 @@
 import * as THREE from "three";
 import type { RoomDef } from "../world/WorldState";
 import { Baker, cyl, rbox } from "./helpers";
+import { cornice, doorCasing, skirting, type Axis } from "./arch";
 import { tagSurface } from "../editor/surfaces";
 import { tiledFloor } from "./tile";
 import { credenzaRun } from "./frontbar";
@@ -33,11 +34,17 @@ function wallBox(x0: number, x1: number, z0: number, z1: number, h: number): THR
   // ROOM EDITOR: every plaster wall of this room is one addressable surface (editor/surfaces.ts).
   return tagSurface(rbox(x1 - x0, h, z1 - z0, wall(), (x0 + x1) / 2, 0, (z0 + z1) / 2, STRUCT.capRadius), { id: "qa-room/wall", kind: "wall", roomId: "qa-room", label: "QA Room walls", preset: "plaster", size: { u: Math.max(x1 - x0, z1 - z0), v: h } });
 }
-/** A slim skirting along an interior wall face — the detail that stops a plaster box reading as a box. */
-function skirting(axis: "x" | "z", from: number, to: number, at: number): THREE.Mesh {
-  return axis === "x"
-    ? rbox(to - from - 1, 1.8, 1.0, mat(THEME.linenDeep, 0.8), (from + to) / 2, 0, at, 0.2)
-    : rbox(1.0, 1.8, to - from - 1, mat(THEME.linenDeep, 0.8), at, 0, (from + to) / 2, 0.2);
+/** THIS ROOM'S BASEBOARD AND CORNICE, over the shared profiled runs in build/arch.ts.
+ *
+ *  Both were a single rounded box until the high-detail pass: a skirting with no shadow gap at the floor
+ *  and no ceiling moulding at all, which is what made a plaster box read as a plaster box. `dir` is the
+ *  ROOM side of the wall face — the same information the old call sites encoded as a ±0.5 nudge on `at`,
+ *  now stated rather than implied, because a profile has a front and a back where a box did not. */
+function skirt(axis: Axis, from: number, to: number, at: number, dir: 1 | -1): THREE.Mesh {
+  return skirting({ axis, from, to, at, y0: 0, dir, key: THEME.linenDeep, roughness: 0.8 });
+}
+function crown(axis: Axis, from: number, to: number, at: number, dir: 1 | -1): THREE.Mesh {
+  return cornice({ axis, from, to, at, y0: 0, dir, key: THEME.plaster, wallHeight: STRUCT.wallHeight });
 }
 
 /** ROOM-LOCAL FLOOR TONE. The shared ground-floor tile is a warm cream; the QA reference floor is a soft
@@ -90,6 +97,12 @@ function doorSurround(): THREE.Group {
   const fr = plastic("white");
   for (const z of [DOOR.z0 - 4, DOOR.z1 + 4]) g.add(rbox(13, STRUCT.wallHeight, 8, fr, cx, 0, z, STRUCT.capRadius));
   g.add(rbox(STRUCT.wallThickness, STRUCT.wallHeight - 36, DOOR.z1 - DOOR.z0, wall(), cx, 36, (DOOR.z0 + DOOR.z1) / 2, STRUCT.capRadius));
+  // THE ARCHITRAVE + THRESHOLD (build/arch.ts). A head over an opening says "opening"; an opening with no
+  // CASED edge still reads as a rectangle cut in plaster. The casing flanks and heads the reveal on both
+  // faces without entering it (the leaf drives through there), and the threshold is a flush strip at 0.3
+  // — the same device the Design Room's glass run already uses for its floor track. Nav is untouched:
+  // nav/solids.ts never reads a THREE object.
+  g.add(doorCasing({ axis: "z", at: cx, thickness: STRUCT.wallThickness, from: DOOR.z0, to: DOOR.z1, height: 36, casing: THEME.oakDark, threshold: "metal", name: "qa-door-casing" }));
   return g;
 }
 
@@ -223,9 +236,9 @@ export function qaStatic(room: RoomDef, _opts: unknown): THREE.Group {
   g.add(windowWall());
   g.add(doorSurround());
   // skirtings on the three solid faces; the glazed west has its own shoe
-  g.add(skirting("x", WEST_X, EAST_X, NORTH_Z + 0.5));
-  g.add(skirting("x", WEST_X, EAST_X, SOUTH_Z - 0.5));
-  g.add(skirting("z", NORTH_Z, SOUTH_Z, EAST_X - 0.5));
+  g.add(skirt("x", WEST_X, EAST_X, NORTH_Z, 1), crown("x", WEST_X, EAST_X, NORTH_Z, 1));
+  g.add(skirt("x", WEST_X, EAST_X, SOUTH_Z, -1), crown("x", WEST_X, EAST_X, SOUTH_Z, -1));
+  g.add(skirt("z", NORTH_Z, SOUTH_Z, EAST_X, -1), crown("z", NORTH_Z, SOUTH_Z, EAST_X, -1));
   g.add(storageRun());
   g.add(supplyCredenza());
   g.add(loungeShelf());

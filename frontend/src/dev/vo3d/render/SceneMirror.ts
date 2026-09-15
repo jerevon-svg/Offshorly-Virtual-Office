@@ -48,6 +48,10 @@ export class SceneMirror {
   /** The shared ground-floor skeleton (slab, sidewalk, unreconstructed footprints + boundary walls). Static. */
   buildGroundFloor(plan: GroundFloor): THREE.Group {
     const g = buildGroundFloor(plan);
+    // The corridors' planting hands its sway nodes up on userData, the same channel a room's static
+    // planting uses (see buildRoom below) — the ground floor now carries foliage of its own.
+    const swayNodes = g.userData.sway as SwayNode[] | undefined;
+    if (swayNodes?.length) this.sway.register("static:ground-floor", swayNodes);
     this.root.add(g);
     return g;
   }

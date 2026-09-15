@@ -2,6 +2,7 @@
 import * as THREE from "three";
 import { rbox, shadowed } from "./helpers";
 import { floorMat, glassMat, mat, plastic } from "../render/Materials";
+import { cornice, glazingBead, skirting } from "./arch";
 import { tagSurface } from "../editor/surfaces";
 import type { ShellSpec } from "../world/WorldState";
 
@@ -31,9 +32,17 @@ export function buildShell(rect: { w: number; d: number }, SHELL: ShellSpec, opt
   // so its floor and its plaster are that room's two addressable surfaces.
   g.add(tagSurface(floor, { id: "design-room/floor", kind: "floor", roomId: "design-room", label: "Design Room floor", preset: "stone", size: { u: W, v: frontZ } }));
   g.add(rbox(W, 1.6, D - frontZ - T, floorMat("wallFace", 1), W / 2, -1.6, frontZ + T + (D - frontZ - T) / 2, 0.3)); // exterior ledge
-  // skirting inside the rear and left walls
-  g.add(rbox(W - 2 * T, 1.6, 0.8, plastic("white"), W / 2, 0, T + 0.4, 0.2));
-  g.add(rbox(0.8, 1.6, frontZ - T, plastic("white"), T + 0.4, 0, (T + frontZ) / 2, 0.2));
+  // Skirting + cornice inside the rear and left walls, over the shared profiles in build/arch.ts. These
+  // were two flat boxes; the profile adds the floor shadow gap the old slab could not have, and the
+  // cornice gives the room a stated ceiling plane without a ceiling slab the camera would have to see
+  // through. ROOM-LOCAL, like everything else in this builder — the caller positions the group.
+  for (const r of [
+    { axis: "x" as const, from: T, to: W - T, at: T, dir: 1 as const },
+    { axis: "z" as const, from: T, to: frontZ, at: T, dir: 1 as const },
+  ]) {
+    g.add(skirting({ ...r, y0: 0, key: "white", roughness: 0.6 }));
+    g.add(cornice({ ...r, y0: 0, key: "wall", wallHeight: H }));
+  }
   g.add(tagSurface(rbox(W, H, T, wallM, W / 2, 0, T / 2, R), { id: "design-room/wall", kind: "wall", roomId: "design-room", label: "Design Room walls", preset: "plaster", size: { u: W, v: H } }));
   g.add(tagSurface(rbox(T, H, frontZ + T, wallM, T / 2, 0, (frontZ + T) / 2, R), { id: "design-room/wall", kind: "wall", roomId: "design-room", label: "Design Room walls", preset: "plaster", size: { u: W, v: H } }));
   const gz = SHELL.glass;
@@ -56,6 +65,8 @@ export function buildShell(rect: { w: number; d: number }, SHELL: ShellSpec, opt
   pane.rotation.y = Math.PI / 2;
   pane.position.set(rx, 3 + glassH / 2, (gz.doorZ1 + gz.z1) / 2);
   g.add(shadowed(pane, false, false));
+  // the pane is a single-sided plane: without a bead at sill and head it reads as a tinted quad in a hole
+  g.add(glazingBead({ axis: "z", at: rx, from: gz.doorZ1 + 1, to: gz.z1 - 1, y0: 3.2, y1: 3 + glassH, t: T * 0.5 }));
   if (opts.frontWall !== "hidden") {
     const fh = opts.frontWall === "full" ? H : SHELL.frontWallHeight;
     g.add(tagSurface(rbox(W, fh, T, wallM, W / 2, 0, frontZ + T / 2, R), { id: "design-room/wall", kind: "wall", roomId: "design-room", label: "Design Room walls", preset: "plaster", size: { u: W, v: H } }));

@@ -12,6 +12,7 @@
 import * as THREE from "three";
 import type { RoomDef } from "../world/WorldState";
 import { Baker, cyl, rbox } from "./helpers";
+import { cornice, doorCasing, skirting, type Axis } from "./arch";
 import { tagSurface } from "../editor/surfaces";
 import { tiledFloor } from "./tile";
 import { credenzaRun } from "./frontbar";
@@ -32,11 +33,17 @@ function wallBox(x0: number, x1: number, z0: number, z1: number, h: number): THR
   // ROOM EDITOR: every plaster wall of this room is one addressable surface (editor/surfaces.ts).
   return tagSurface(rbox(x1 - x0, h, z1 - z0, wall(), (x0 + x1) / 2, 0, (z0 + z1) / 2, STRUCT.capRadius), { id: "dev-room/wall", kind: "wall", roomId: "dev-room", label: "Dev Room walls", preset: "plaster", size: { u: Math.max(x1 - x0, z1 - z0), v: h } });
 }
-/** A slim skirting along an interior wall face — the detail that stops a plaster box reading as a box. */
-function skirting(axis: "x" | "z", from: number, to: number, at: number): THREE.Mesh {
-  return axis === "x"
-    ? rbox(to - from - 1, 1.8, 1.0, mat(THEME.walnutDark, 0.7), (from + to) / 2, 0, at, 0.2)
-    : rbox(1.0, 1.8, to - from - 1, mat(THEME.walnutDark, 0.7), at, 0, (from + to) / 2, 0.2);
+/** THIS ROOM'S BASEBOARD AND CORNICE, over the shared profiled runs in build/arch.ts.
+ *
+ *  Both were a single rounded box until the high-detail pass: a skirting with no shadow gap at the floor
+ *  and no ceiling moulding at all, which is what made a plaster box read as a plaster box. `dir` is the
+ *  ROOM side of the wall face — the same information the old call sites encoded as a ±0.5 nudge on `at`,
+ *  now stated rather than implied, because a profile has a front and a back where a box did not. */
+function skirt(axis: Axis, from: number, to: number, at: number, dir: 1 | -1): THREE.Mesh {
+  return skirting({ axis, from, to, at, y0: 0, dir, key: THEME.walnutDark, roughness: 0.7 });
+}
+function crown(axis: Axis, from: number, to: number, at: number, dir: 1 | -1): THREE.Mesh {
+  return cornice({ axis, from, to, at, y0: 0, dir, key: THEME.plaster, wallHeight: STRUCT.wallHeight });
 }
 
 /** ROOM-LOCAL FLOOR TONE. The shared ground-floor tile is a warm cream; the Dev reference floor is a near-
@@ -90,10 +97,15 @@ function southScreen(gl: typeof SOUTH_GLASS_W, name: string, jambSide: -1 | 1): 
   return g;
 }
 
-/** The head over the doorway, so it reads as an opening rather than a gap between two screens. */
-function doorHead(): THREE.Mesh {
+/** The head over the doorway, its architrave and its threshold, so it reads as an opening rather than a
+ *  gap between two screens. See build/arch.ts doorCasing for why nothing here enters the reveal. */
+function doorHead(): THREE.Group {
+  const g = new THREE.Group();
+  g.name = "dev-door-head";
   const cz = (SOUTH_GLASS_W.z0 + SOUTH_GLASS_W.z1) / 2;
-  return rbox(DOOR.x1 - DOOR.x0, STRUCT.wallHeight - 36, STRUCT.wallThickness, wall(), (DOOR.x0 + DOOR.x1) / 2, 36, cz, STRUCT.capRadius);
+  g.add(rbox(DOOR.x1 - DOOR.x0, STRUCT.wallHeight - 36, STRUCT.wallThickness, wall(), (DOOR.x0 + DOOR.x1) / 2, 36, cz, STRUCT.capRadius));
+  g.add(doorCasing({ axis: "x", at: cz, thickness: STRUCT.wallThickness, from: DOOR.x0, to: DOOR.x1, height: 36, casing: THEME.walnutDark, threshold: "metal", name: "dev-door-casing" }));
+  return g;
 }
 
 // ---- the north run -----------------------------------------------------------------------------
@@ -393,9 +405,9 @@ export function devStatic(room: RoomDef, _opts: unknown): THREE.Group {
   g.add(southScreen(SOUTH_GLASS_E, "dev-south-glass-east", -1));
   g.add(doorHead());
   // skirtings on the three solid faces; the glazed south has its own shoe
-  g.add(skirting("x", WEST_X, EAST_X, NORTH_Z + 0.5));
-  g.add(skirting("z", NORTH_Z, SOUTH_Z, WEST_X + 0.5));
-  g.add(skirting("z", NORTH_Z, SOUTH_Z, EAST_X - 0.5));
+  g.add(skirt("x", WEST_X, EAST_X, NORTH_Z, 1), crown("x", WEST_X, EAST_X, NORTH_Z, 1));
+  g.add(skirt("z", NORTH_Z, SOUTH_Z, WEST_X, 1), crown("z", NORTH_Z, SOUTH_Z, WEST_X, 1));
+  g.add(skirt("z", NORTH_Z, SOUTH_Z, EAST_X, -1), crown("z", NORTH_Z, SOUTH_Z, EAST_X, -1));
   coveLine(g);
   g.add(bookcase());
   g.add(neonStack("dev-neon-sign", NEON_SIGN.x0, NEON_SIGN.x1, NEON_SIGN.y0, NEON_SIGN.y1, 4));

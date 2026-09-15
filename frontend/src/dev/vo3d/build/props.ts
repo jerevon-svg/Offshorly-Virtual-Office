@@ -44,8 +44,14 @@ export function monitor(cx: number, y0: number, cz: number, w = 15, h = 8.5, opt
   const screen = opts.screen ?? screenMat();
   const bezel = opts.slim ? 0.7 : 1.2;
   const standH = opts.slim ? 3.2 : 4;
-  g.add(cyl(opts.slim ? 4.2 : 3.2, 0.5, mat("charcoal", 0.5), cx, y0, cz + 1.2, opts.slim ? 3.4 : 2.6));
-  g.add(rbox(opts.slim ? 1.6 : 1.2, standH, 1.8, mat("charcoal", 0.5), cx, y0 + 0.5, cz + 1.2, 0.3));
+  // THE STAND, AS A STAND. A tapered cylinder on a box column is a monitor-shaped placeholder: a real
+  // panel sits on a weighted base with a dished top and a cable channel, on a neck that swages into it.
+  // Both are revolved profiles — the same two meshes the plain versions cost — and between them they give
+  // the one piece of hardware that appears on every desk in the office a believable construction.
+  const standR = opts.slim ? 4.2 : 3.2;
+  g.add(lathe([[0, 0.1], [standR, 0], [standR * 0.92, 0.45], [standR * 0.5, 0.62], [standR * 0.42, 0.35], [0, 0.3]], mat("charcoal", 0.5), cx, y0, cz + 1.2, 24));
+  const neckW = opts.slim ? 1.6 : 1.2;
+  g.add(lathe([[0, 0], [neckW * 1.5, 0], [neckW * 1.1, 0.8], [neckW * 0.8, standH * 0.5], [neckW * 0.9, standH], [0, standH]], mat("charcoal", 0.5), cx, y0 + 0.4, cz + 1.2, 12));
   const segs = Math.max(1, opts.segments ?? 1);
   const curve = opts.curve ?? 0.14;
   const segW = w / segs;
@@ -58,6 +64,12 @@ export function monitor(cx: number, y0: number, cz: number, w = 15, h = 8.5, opt
     panel.rotation.y = -Math.sign(off) * curve * (segs > 1 ? 1 : 0);
     panel.add(rbox(segW + 0.2, h, 0.9, mat("charcoal", 0.45), 0, yPanel, 0, 0.5));
     panel.add(rbox(segW - bezel * (segs > 1 ? 0.15 : 1), h - bezel, 0.15, screen, 0, yPanel + bezel * 0.5, -0.5, 0.2));
+    // THE BACK. A 0.9-thick slab has no rear at all, and the game camera looks at the BACK of roughly
+    // half the monitors in this office (any desk facing away from it). A real panel is thin at the bezel
+    // and thickens into a central housing around the VESA plate and the board, which is the silhouette
+    // this adds — plus the little chin bar under the screen that carries the power LED and the logo.
+    panel.add(rbox(segW * 0.62, h * 0.58, 1.3, mat("charcoal", 0.5), 0, yPanel + h * 0.18, 0.85, 0.45));
+    panel.add(rbox(segW * 0.5, 0.55, 0.35, mat("metal", 0.4), 0, yPanel + 0.45, -0.62, 0.15));
     g.add(panel);
   }
   return g;

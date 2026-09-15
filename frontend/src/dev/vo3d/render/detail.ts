@@ -159,6 +159,40 @@ export function stoneTint(): THREE.Texture | null {
   });
 }
 
+/** PLASTER / PAINTED MASONRY — a roughness map and a near-white COLOUR tint, as a PAIR.
+ *
+ *  The same finding `stoneTint` documents applies to every wall in the office: a large matt plate at
+ *  roughness ~0.95 under one soft key has almost no specular left, so a roughness map alone changes
+ *  nothing a walker can see, and three.js' bump term is a screen-space derivative that vanishes when a
+ *  texture is magnified across a 300-unit wall. What DOES read is a low-contrast luminance mottle in the
+ *  albedo — which is also physically what plaster is: a trowelled skim that never dries to one value.
+ *
+ *  Two octaves, no directional feature (a directional one lines up across every room and reads as
+ *  banding) plus a fine orange-peel octave at the frequency a roller leaves. Centred at white and
+ *  swinging about ±2.5%, so it multiplies the measured palette colour without touching its hue: every
+ *  room keeps exactly the wall tone it was measured at, it just stops being one flat fill. */
+export function plasterTint(): THREE.Texture | null {
+  return once("plasterTint", () => {
+    const broad = fbm(2, 2, 2, 733);   // trowel float: very low frequency, very low contrast
+    const peel = fbm(16, 16, 2, 839);  // orange peel: the roller's own grain
+    const t = dataTexture(256, (u, v) => 0.955 + 0.03 * broad(u, v) + 0.018 * peel(u, v));
+    if (t) { t.colorSpace = THREE.SRGBColorSpace; t.repeat.set(6, 6); }
+    return t;
+  });
+}
+/** The plaster pair's roughness half — the same lattice, so the two maps agree. Kept for the grazing
+ *  angles where a wall DOES catch a highlight (a cove wash, a night LED raking down a face), which is
+ *  precisely where a flat roughness betrays a plastic slab. */
+export function plasterDetail(): THREE.Texture | null {
+  return once("plasterRough", () => {
+    const broad = fbm(2, 2, 2, 733);
+    const peel = fbm(16, 16, 2, 839);
+    const t = dataTexture(256, (u, v) => 0.80 + 0.13 * broad(u, v) + 0.07 * peel(u, v));
+    if (t) t.repeat.set(6, 6);
+    return t;
+  });
+}
+
 /** BRUSHED METAL. Anisotropic scratch along U — the difference between "metal" and "chrome ball". */
 export function metalDetail(): THREE.Texture | null {
   return once("metal", () => {

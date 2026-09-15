@@ -12,6 +12,7 @@
 import * as THREE from "three";
 import type { RoomDef } from "../world/WorldState";
 import { Baker, cyl, rbox } from "./helpers";
+import { cornice, doorCasing, skirting, type Axis } from "./arch";
 import { tagSurface } from "../editor/surfaces";
 import { tiledFloor } from "./tile";
 import { credenzaRun } from "./frontbar";
@@ -31,11 +32,17 @@ function wallBox(x0: number, x1: number, z0: number, z1: number, h: number): THR
   // ROOM EDITOR: every plaster wall of this room is one addressable surface (editor/surfaces.ts).
   return tagSurface(rbox(x1 - x0, h, z1 - z0, wall(), (x0 + x1) / 2, 0, (z0 + z1) / 2, STRUCT.capRadius), { id: "ai-room/wall", kind: "wall", roomId: "ai-room", label: "AI Room walls", preset: "plaster", size: { u: Math.max(x1 - x0, z1 - z0), v: h } });
 }
-/** A slim skirting along an interior wall face — the detail that stops a plaster box reading as a box. */
-function skirting(axis: "x" | "z", from: number, to: number, at: number): THREE.Mesh {
-  return axis === "x"
-    ? rbox(to - from - 1, 1.8, 1.0, mat(THEME.carbon, 0.7), (from + to) / 2, 0, at, 0.2)
-    : rbox(1.0, 1.8, to - from - 1, mat(THEME.carbon, 0.7), at, 0, (from + to) / 2, 0.2);
+/** THIS ROOM'S BASEBOARD AND CORNICE, over the shared profiled runs in build/arch.ts.
+ *
+ *  Both were a single rounded box until the high-detail pass: a skirting with no shadow gap at the floor
+ *  and no ceiling moulding at all, which is what made a plaster box read as a plaster box. `dir` is the
+ *  ROOM side of the wall face — the same information the old call sites encoded as a ±0.5 nudge on `at`,
+ *  now stated rather than implied, because a profile has a front and a back where a box did not. */
+function skirt(axis: Axis, from: number, to: number, at: number, dir: 1 | -1): THREE.Mesh {
+  return skirting({ axis, from, to, at, y0: 0, dir, key: THEME.carbon, roughness: 0.7 });
+}
+function crown(axis: Axis, from: number, to: number, at: number, dir: 1 | -1): THREE.Mesh {
+  return cornice({ axis, from, to, at, y0: 0, dir, key: THEME.plaster, wallHeight: STRUCT.wallHeight });
 }
 
 /** ROOM-LOCAL FLOOR TONE. The shared ground-floor tile is a warm cream; the AI reference floor is the
@@ -78,6 +85,12 @@ function southScreen(): THREE.Group {
   // the opening's west jamb and its head, so the doorway reads as an opening rather than a gap in a wall
   g.add(rbox(8, STRUCT.wallHeight, T * 1.15, fr, DOOR.x0 - 4, 0, cz, STRUCT.capRadius));
   g.add(rbox(DOOR.x1 - DOOR.x0, STRUCT.wallHeight - 36, T, wall(), (DOOR.x0 + DOOR.x1) / 2, 36, cz, STRUCT.capRadius));
+  // THE ARCHITRAVE + THRESHOLD (build/arch.ts). A head over an opening says "opening"; an opening with no
+  // CASED edge still reads as a rectangle cut in plaster. The casing flanks and heads the reveal on both
+  // faces without entering it (the leaf drives through there), and the threshold is a flush strip at 0.3
+  // — the same device the Design Room's glass run already uses for its floor track. Nav is untouched:
+  // nav/solids.ts never reads a THREE object.
+  g.add(doorCasing({ axis: "x", at: cz, thickness: T, from: DOOR.x0, to: DOOR.x1, height: 36, casing: THEME.carbon, threshold: "metal", name: "ai-door-casing" }));
   return g;
 }
 
@@ -315,9 +328,9 @@ export function aiStatic(room: RoomDef, _opts: unknown): THREE.Group {
   g.add(wallBox(EAST_WALL.x0, EAST_WALL.x1, EAST_WALL.z0, EAST_WALL.z1, EAST_WALL.h));
   g.add(southScreen());
   // skirtings on the three solid faces; the glazed south has its own shoe
-  g.add(skirting("x", WEST_X, EAST_X, NORTH_Z + 0.5));
-  g.add(skirting("z", NORTH_Z, SOUTH_Z, WEST_X + 0.5));
-  g.add(skirting("z", NORTH_Z, SOUTH_Z, EAST_X - 0.5));
+  g.add(skirt("x", WEST_X, EAST_X, NORTH_Z, 1), crown("x", WEST_X, EAST_X, NORTH_Z, 1));
+  g.add(skirt("z", NORTH_Z, SOUTH_Z, WEST_X, 1), crown("z", NORTH_Z, SOUTH_Z, WEST_X, 1));
+  g.add(skirt("z", NORTH_Z, SOUTH_Z, EAST_X, -1), crown("z", NORTH_Z, SOUTH_Z, EAST_X, -1));
   g.add(robotDock());
   g.add(racks());
   g.add(missionWall());

@@ -4,6 +4,7 @@
 // Room interiors (desks, chairs, plants, glass runs …) are NOT built here — they are per-room phases.
 import * as THREE from "three";
 import { rbox } from "./helpers";
+import { buildCorridors } from "./corridors";
 import { tiledFloor } from "./tile";
 import { floorMat, mat } from "../render/Materials";
 import type { Facing, Rect } from "../core/coords";
@@ -64,6 +65,13 @@ export function buildGroundFloor(plan: GroundFloor): THREE.Group {
     g.add(ledge);
   }
   for (const room of plan.rooms) if (!room.reconstructed) g.add(buildFootprint(room, plan));
+  // THE SERVICE CORRIDORS. Shared circulation, so they belong here rather than to any room: the window
+  // that closes each corridor's north elevation, its corner planting and the V1 vending banks. See
+  // build/corridors.ts for why the composition is V1's and why it takes no walkable floor.
+  const corridors = buildCorridors();
+  g.add(corridors);
+  // the corridor plants' sway nodes ride up on userData, the same channel a room's static planting uses
+  g.userData.sway = corridors.userData.sway;
   return g;
 }
 

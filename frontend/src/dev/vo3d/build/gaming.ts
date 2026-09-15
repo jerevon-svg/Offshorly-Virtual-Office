@@ -15,11 +15,12 @@
 // it is deliberate rather than incidental: see the per-source notes below.
 import * as THREE from "three";
 import { cyl, rbox, shadowed } from "./helpers";
+import { cornice, skirting } from "./arch";
 import { tagSurface } from "../editor/surfaces";
 import { tiledFloor } from "./tile";
 import { ledStrip } from "./led";
 import { credenzaRun } from "./frontbar";
-import { PALETTE, emissiveMat, emissiveMatUnique, glassMat, glowMat, glowMatUnique, mat, metal, plastic, uiScreenMat, wood, FLOOR_LAYER, floorLayer } from "../render/Materials";
+import { PALETTE, emissiveMat, emissiveMatUnique, glassMat, glowMat, glowMatUnique, mat, metal, uiScreenMat, wood, FLOOR_LAYER, floorLayer } from "../render/Materials";
 
 // ---- ANIMATION TIMING ---------------------------------------------------------------------------
 // One table so the room breathes as a composition rather than nine unrelated loops. Periods are spread
@@ -744,9 +745,15 @@ export function gamingStatic(_room: RoomDef): THREE.Group {
   g.add(wallBox(EAST_WALL.x0, EAST_WALL.x1, EAST_WALL.z0, EAST_WALL.z1, EAST_WALL.h));
   g.add(westSide());
   g.add(southPartition());
-  // skirting along the two solid faces the camera sees most
-  g.add(rbox(NORTH_WALL.x1 - NORTH_WALL.x0 - 1, 1.6, 0.9, plastic("white"), (NORTH_WALL.x0 + NORTH_WALL.x1) / 2, 0, NORTH_Z + 0.45, 0.2));
-  g.add(rbox(0.9, 1.6, SOUTH_Z - NORTH_Z - 1, plastic("white"), EAST_X - 0.45, 0, (NORTH_Z + SOUTH_Z) / 2, 0.2));
+  // skirting + cornice along the two solid faces the camera sees most (build/arch.ts profiles: the
+  // baseboard gains its floor shadow gap, and the wall finally states a ceiling plane at its top)
+  for (const r of [
+    { axis: "x" as const, from: NORTH_WALL.x0, to: NORTH_WALL.x1, at: NORTH_Z, dir: 1 as const },
+    { axis: "z" as const, from: NORTH_Z, to: SOUTH_Z, at: EAST_X, dir: -1 as const },
+  ]) {
+    g.add(skirting({ ...r, y0: 0, key: "gamingDark", roughness: 0.6 }));
+    g.add(cornice({ ...r, y0: 0, key: "gamingPlaster", wallHeight: STRUCT.wallHeight }));
+  }
   // ---- fit-out ----
   g.add(mediaWall());
   g.add(nwCabinet());

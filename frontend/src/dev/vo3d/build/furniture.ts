@@ -29,6 +29,10 @@ export type FurnitureItem = { kind: FurnitureKind; rect: Rect; facing: Facing; m
   /** SOFA cushion count. Default 2 (every pre-5C sofa). The formula below reduces to the historical
    *  numbers exactly at 2, so Design's and Project's sofas are untouched to the last decimal. */
   seats?: number };
+/** the sofa's FRAME/back tone — the deck welt and the back panel share it, so the seam reads as the same
+ *  cut of cloth the frame is upholstered in rather than as a stripe of the cushion colour */
+const backMatOf = (t: FurnitureItem): THREE.MeshStandardMaterial =>
+  t.color ? fabric(t.color) : t.tone === "lounge" ? fabric("loungeOlive") : fabric("greenDark");
 const seatFabric = (t: FurnitureItem, seat = false) =>
   t.color ? fabric(seat ? (t.colorSeat ?? t.color) : t.color)
     : t.tone === "lounge" ? fabric(seat ? "loungeOliveSeat" : "loungeOlive") : fabric(seat ? "greenSeat" : "green");
@@ -43,8 +47,19 @@ function contactShadow(g: THREE.Group, w: number, d: number, round = false): voi
 const DESK_H = 24;
 const TOP_T = 2.4;
 
+/** THE DESK TOP. A bevelled EXTRUDED slab, not a rounded box — same one mesh, real edge.
+ *
+ *  A RoundedBoxGeometry rounds all twelve edges by one radius, so a 2.4-thick worktop rounded enough to
+ *  soften its plan corners also rounds its top face into a pillow, and the front edge — the one line of a
+ *  desk a player is ever close to — has no profile at all. ExtrudeGeometry over a rounded rect keeps the
+ *  plan corners and gives the perimeter a genuine chamfer at top AND bottom, which is what a lipped
+ *  worktop has and what catches the key light as a bright edge over a dark reveal.
+ *
+ *  It also fixes the UVs, by accident and for the better: `slab` hands the top face world-unit UVs, so
+ *  `wood("extrude")` lays its grain at one scale across every desk in the office instead of stretching a
+ *  per-face 0..1 map over whatever that desk happens to measure. */
 function deskTop(w: number, d: number, radius = 1.8): THREE.Mesh {
-  return rbox(w, TOP_T, d, wood(), 0, DESK_H - TOP_T, 0, radius, 3);
+  return slab(roundedRect(w, d, Math.min(radius + 0.6, Math.min(w, d) / 2 - 0.1)), TOP_T, wood("extrude"), DESK_H - TOP_T, 0.42);
 }
 /** Olive drawer pedestal with two drawer fronts and small bar handles. */
 function pedestal(w: number, d: number, cx: number, cz: number, h = DESK_H - TOP_T - 0.8): THREE.Group {
@@ -55,11 +70,19 @@ function pedestal(w: number, d: number, cx: number, cz: number, h = DESK_H - TOP
     const y = 0.8 + h * (0.12 + i * 0.44);
     g.add(rbox(w - 1.6, h * 0.36, 0.5, mat("greenSeat", 0.9), cx, y, cz + d / 2 + 0.05, 0.4)); // drawer front
     g.add(rbox(w * 0.45, 0.5, 0.5, metal(), cx, y + h * 0.36 - 1.2, cz + d / 2 + 0.55, 0.2)); // handle
+    // THE GAP BETWEEN THE DRAWERS. Two proud fronts on one carcass with nothing between them read as one
+    // panel with a colour change; the dark reveal is what a drawer bank actually shows, and it is the
+    // cheapest line in this whole pass — one thin box per drawer.
+    g.add(rbox(w - 1.6, 0.5, 0.35, mat("greenDark", 0.95), cx, y + h * 0.36, cz + d / 2 + 0.02, 0.1));
   }
   return g;
 }
+/** A desk leg. `lathe` gives it a swaged waist and a levelling GLIDE at the floor for the same one mesh a
+ *  plain box cost: the glide is the detail that stops a leg looking driven into the tile, and the waist is
+ *  what a drawn steel leg has. */
 function deskLeg(cx: number, cz: number): THREE.Mesh {
-  return rbox(1.4, DESK_H - TOP_T, 1.4, metal(), cx, 0, cz, 0.5);
+  const H = DESK_H - TOP_T;
+  return lathe([[0, 0], [0.95, 0], [0.95, 0.5], [0.72, 0.9], [0.72, H * 0.55], [0.8, H * 0.92], [0.8, H], [0, H]], metal(), cx, 0, cz, 12);
 }
 
 function leadDesk(item: FurnitureItem): THREE.Group {
@@ -231,11 +254,17 @@ function sofa(item: FurnitureItem): THREE.Group {
   const deckH = 8, armW = lounge ? 6.5 : 5, backW = lounge ? 9 : 7;
   g.add(rbox(w, deckH, d, seatFabric(item), 0, 2, 0, 3, 3));
   const footMat = item.color ? mat("charcoal", 0.8) : mat("greenDark", 0.8);
-  for (let i = 0; i < 4; i++) g.add(cyl(1, 2, footMat, (i % 2 ? 1 : -1) * (w / 2 - 3), 0, (i < 2 ? 1 : -1) * (d / 2 - 4)));
+  // turned feet rather than pegs: a profile with a collar and a taper, the same one mesh each
+  for (let i = 0; i < 4; i++)
+    g.add(lathe([[0, 0], [0.75, 0], [1.05, 0.5], [1.05, 1.2], [0.8, 2], [0, 2]], footMat, (i % 2 ? 1 : -1) * (w / 2 - 3), 0, (i < 2 ? 1 : -1) * (d / 2 - 4), 10));
+  // THE DECK WELT. A sofa was a deck slab with cushions set on top of it and no join between them, so the
+  // whole lower half read as one extruded mass. This is the piped seam along the top of the deck — the
+  // line real upholstery is built around — one mesh for the whole piece.
+  g.add(rbox(w + 0.3, 0.6, d + 0.3, backMatOf(item), 0, deckH + 1.6, 0, 3, 3));
   // lounge tone: a lower, deeper back and rounder arms/cushions so the piece reads as upholstery from the
   // game camera rather than a box; the Design Room's default proportions are unchanged
   const backH = lounge ? 18 : 22, armH = lounge ? 13 : 15;
-  const backMat = item.color ? fabric(item.color) : lounge ? fabric("loungeOlive") : fabric("greenDark");
+  const backMat = backMatOf(item);
   g.add(rbox(backW, backH, d - 1, backMat, -w / 2 + backW / 2, 2, 0, lounge ? 4 : 3, 3)); // back panel (wall side)
   for (const s of [-1, 1]) g.add(rbox(w - backW + 1, armH, armW, seatFabric(item), backW / 2, 2, s * (d / 2 - armW / 2), lounge ? 3.2 : 2.4, 3)); // arms
   const cushW = w - backW - 1.5;
@@ -292,15 +321,19 @@ function rug(item: FurnitureItem): THREE.Group {
     // faintly emissive — the Gaming Room's gamepad print reads as printed line art picking up the room's
     // LEDs, which is why the intensity is a third of a real strip's and it is never animated.
     const { w, d } = item.rect;
-    const base = rbox(w, 0.7, d, mat(item.color ?? "rug", 1), 0, 0, 0, 1.6);
+    // A RUG IS NOT A DECAL. 0.7 of flat plate with a 1.6 corner radius has no visible edge at all from
+    // the game camera — the pile just stops at a line, which is what made every rug in the office read as
+    // printed floor. A bevelled extrusion is the same single mesh and gives the perimeter a lit chamfer
+    // over its own contact shadow: the eye reads a mat LYING on the tile, which is the whole job.
+    const base = slab(roundedRect(w, d, 2.2), 1.05, mat(item.color ?? "rug", 1), 0, 0.4);
     base.castShadow = false;
     g.add(base);
     if (item.accent) {
       const inlay = item.glow ? emissiveMat(item.accent, item.glow, 0.6) : mat(item.accent, 1);
       const t = 2.2, inset = 7;
       for (const s of [-1, 1]) {
-        const a = rbox(w - inset * 2, 0.12, t, inlay, 0, 0.7, s * (d / 2 - inset), 0.05);
-        const b = rbox(t, 0.12, d - inset * 2, inlay, s * (w / 2 - inset), 0.7, 0, 0.05);
+        const a = rbox(w - inset * 2, 0.12, t, inlay, 0, 1.05, s * (d / 2 - inset), 0.05);
+        const b = rbox(t, 0.12, d - inset * 2, inlay, s * (w / 2 - inset), 1.05, 0, 0.05);
         a.castShadow = b.castShadow = false;
         g.add(a, b);
       }
@@ -308,11 +341,13 @@ function rug(item: FurnitureItem): THREE.Group {
     return g;
   }
   const r = Math.min(item.rect.w, item.rect.d) / 2;
-  const m = cyl(r, 0.7, mat(item.color ?? "rug", 1), 0, 0, 0);
+  // the round rug gets the same treatment as the rectangular one, as a revolved profile: a rolled outer
+  // edge over a slightly proud field, so the pile has a thickness the camera can see
+  const m = lathe([[0, 0], [r - 0.9, 0], [r, 0.35], [r, 0.8], [r - 0.7, 1.1], [0, 1.1]], mat(item.color ?? "rug", 1), 0, 0, 0, 48);
   m.castShadow = false;
   g.add(m);
   // woven rings
-  for (let i = 1; i <= 3; i++) g.add(cyl(r * (1 - i * 0.22), 0.12, mat("wood", 1), 0, 0.7, 0));
+  for (let i = 1; i <= 3; i++) g.add(cyl(r * (1 - i * 0.22), 0.12, mat("wood", 1), 0, 1.05, 0));
   return g;
 }
 
@@ -347,15 +382,25 @@ function chair(item: FurnitureItem, style: "a" | "b" | "lead"): THREE.Group {
     leg.rotation.y = -a;
     leg.rotation.z = 0.08;
     g.add(leg);
-    const wheel = new THREE.Mesh(sphereGeo, mat("charcoal", 0.6));
-    wheel.scale.set(1, 0.9, 1);
-    wheel.position.set(Math.cos(a) * len * 0.97, 0.9, Math.sin(a) * len * 0.97);
-    g.add(shadowed(wheel));
+    // THE CASTER, AS A CASTER. A scaled unit sphere is a ball, and a ball under a leg is the one piece of
+    // a task chair a player's eye lands on at floor level. A revolved profile is the same single mesh and
+    // gives a twin-wheel caster its real silhouette — hub, tyre shoulders, and the narrow tread that
+    // actually touches the tile — so five of them under every chair in the office cost nothing new.
+    const caster = lathe([[0, 0.05], [0.55, 0], [0.95, 0.35], [1.0, 0.95], [0.6, 1.5], [0.28, 1.65], [0, 1.6]], mat("charcoal", 0.6),
+      Math.cos(a) * len * 0.97, 0, Math.sin(a) * len * 0.97, 10);
+    g.add(caster);
   }
-  g.add(cyl(1.15, seatH - 3.5, metal(), 0, 1.4, 0));
+  // THE GAS LIFT, TELESCOPED. One plain cylinder from the hub to the seat is a pipe; a real lift is a
+  // fat outer sleeve with a thinner chromed column sliding out of it, and the step between the two is the
+  // line that says the seat is height-adjustable. Both from one revolved profile.
+  g.add(lathe([[0, 0], [1.45, 0], [1.45, (seatH - 3.5) * 0.52], [1.02, (seatH - 3.5) * 0.58], [1.02, seatH - 3.5], [0, seatH - 3.5]], metal(), 0, 1.4, 0, 14));
   g.add(cyl(2.4, 1.2, frame, 0, seatH - 3.6, 0));
   g.add(rbox(seatW * 0.9, 1.4, seatW * 0.9, frame, 0, seatH - 3.2, 0.3, 0.6)); // seat pan
   g.add(rbox(seatW, 3.4, seatW, cushion, 0, seatH - 2, 0.3, 1.7, 3)); // cushion
+  // THE WELT. Upholstery is cut panels joined by a seam, and the piped seam round a seat pan is the one
+  // detail that separates a cushion from a block of coloured foam. Kept to a thin band standing just
+  // proud of the cushion's own waist, in the frame tone the chair's stitching is drawn in.
+  g.add(rbox(seatW + 0.25, 0.55, seatW + 0.25, frame, 0, seatH - 1.1, 0.3, 1.8, 3));
   // back: lumbar block + upper shell, tilted back around the rear seat edge
   const back = new THREE.Group();
   back.position.set(0, seatH - 0.5, seatW / 2 - 1.2);
@@ -424,10 +469,12 @@ function roundTable(item: FurnitureItem): THREE.Group {
   const g = placed(item.rect, item.facing);
   const R = Math.min(item.rect.w, item.rect.d) / 2;
   const h = 14;
-  g.add(cyl(R * 0.42, 1.1, mat("charcoal", 0.7), 0, 0, 0)); // foot disc
-  g.add(cyl(R * 0.22, h - 3.4, mat("charcoal", 0.6), 0, 1.1, 0)); // pedestal
+  // foot disc and pedestal as ONE revolved profile: a splayed foot, a swept waist and the column
+  g.add(lathe([[0, 0], [R * 0.42, 0], [R * 0.42, 0.7], [R * 0.3, 1.3], [R * 0.22, 2.4], [R * 0.22, h - 3.4], [0, h - 3.4]], mat("charcoal", 0.65), 0, 0, 0, 24));
   g.add(cyl(R * 0.9, 1.0, mat("charcoal", 0.8), 0, h - 3.3, 0)); // dark reveal under the top
-  g.add(cyl(R, 2.6, mat(item.color ?? "tableWood", 0.55), 0, h - 2.6, 0)); // top
+  // THE TOP, BULLNOSED. A plain cylinder gives a table a sawn edge; the profile rolls the rim over at top
+  // and bottom, which is what a solid timber top has and what makes the edge catch the key light.
+  g.add(lathe([[0, 0], [R - 0.7, 0], [R, 0.55], [R, 2.05], [R - 0.7, 2.6], [0, 2.6]], mat(item.color ?? "tableWood", 0.55), 0, h - 2.6, 0, 48));
   if (item.tone === "lounge") {
     contactShadow(g, 2 * R, 2 * R, true);
     // the source shows a small potted plant, a cup on a saucer and a dish on each table

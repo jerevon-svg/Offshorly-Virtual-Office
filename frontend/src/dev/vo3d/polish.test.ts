@@ -150,9 +150,32 @@ describe("vo3d polish 1 — material hierarchy", () => {
     expect(M.mat("metal", 0.35, { metalness: 0.7 }).metalness).toBe(0.7);
     expect(M.mat("execBrass", 0.4, { metalness: 0 }).metalness).toBe(0);
   });
-  it("gives metal a brushed roughness map, and leaves dielectrics' roughness alone", () => {
+  it("gives metal a brushed roughness map", () => {
     expect(M.mat("execBrass", 0.4).roughnessMap).toBe(detail.metalDetail());
-    expect(M.mat("wall", 0.96).roughnessMap).toBeNull();
+  });
+  // THE SURFACE FAMILIES (V2 high-detail pass). `mat()` used to leave every dielectric's roughness bare,
+  // which meant eleven room builders each asked for the same flat plaster. Two families now carry shared
+  // maps — and, following the finding render/detail's stoneTint documents, an ALBEDO tint is half of each
+  // pair, because on a big matt wall a roughness map alone measures as no change at all.
+  it("gives every plaster wall the shared trowel tint AND its roughness map", () => {
+    for (const k of ["wall", "wallFace", "plaster", "aiPlaster", "devPlaster", "cmsPlaster", "qaPlaster", "gamingPlaster"] as const) {
+      const m = M.mat(k, 0.95);
+      expect(m.map).toBe(detail.plasterTint());
+      expect(m.roughnessMap).toBe(detail.plasterDetail());
+      expect(m.roughness).toBe(0.95); // the approved scalar is the CEILING; the map only modulates it
+    }
+  });
+  it("gives upright cast-stone masses the shared stone pair", () => {
+    const m = M.mat("hubStone", 0.9);
+    expect(m.map).toBe(detail.stoneTint());
+    expect(m.roughnessMap).toBe(detail.stoneDetail());
+  });
+  it("leaves a dielectric OUTSIDE both families untouched, and lets a caller's own maps win", () => {
+    const paint = M.mat("green", 0.9);
+    expect(paint.map).toBeNull();
+    expect(paint.roughnessMap).toBeNull();
+    const own = M.mat("wall", 0.96, { roughnessMap: detail.metalDetail() ?? undefined });
+    expect(own.roughnessMap).toBe(detail.metalDetail());
   });
   it("gives fabric a weave on BOTH roughness and bump — at roughness 0.98 the bump is what shows", () => {
     const f = M.fabric("green");

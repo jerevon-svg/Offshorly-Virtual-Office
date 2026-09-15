@@ -21,6 +21,7 @@ import * as THREE from "three";
 import { cyl, rbox, shadowed } from "./helpers";
 import { contactShadowMat, emissiveMatUnique, facadeGlassMat, glowMat, mat, metal, plastic, wood, type MatKey } from "../render/Materials";
 import { animated } from "../render/Ambient";
+import { PLINTH, glazingBead, profileRun, skirting } from "./arch";
 import { STRUCT } from "../rooms/reception";
 
 export type Span = { x0: number; x1: number };
@@ -91,6 +92,10 @@ export function glassRun(spec: GlassRunSpec): THREE.Group {
     // capping rail: seen from the game camera a frameless pane is almost edge-on and disappears, so the cap
     // is what actually draws the line. Deliberately wider than the pane (the source shows the same profile).
     if (spec.topRail) g.add(rbox(w, 2.6, t * 2.6, metal(), cx, h - 2.6, z, 0.8));
+    // GLAZING BEADS. The pane above is a single-sided plane with no thickness: square-on it reads as
+    // glass, off-axis as a tinted quad floating in an opening. The two long joints are where real glazing
+    // has a gasket, and putting a lit metal edge on them is what gives the sheet a set-in depth.
+    g.add(glazingBead({ axis: "x", at: z, from: s.x0 + 0.3, to: s.x1 - 0.3, y0: sill + 0.2, y1: sill + glassH - 0.4, t }));
     // mullion posts: the run's two ends plus an even division near panelPitch. End posts are inset by half
     // their width so a run NEVER overhangs its span — Reception must not put geometry over a neighbour's edge.
     const panels = Math.max(1, Math.round(w / panelPitch));
@@ -219,14 +224,21 @@ export function coveWall(spec: CoveWallSpec): THREE.Group {
   g.add(rbox(w - 1.2, h - coveY - 2.2, 2.4, mat("wallFace", 1), cx, coveY + 2.2, z1 - 1.4, 0.3));
   // the lip that hides the fixture, standing proud of the wall face
   g.add(rbox(w, 2.2, 2.2, mat("plaster", 0.96), cx, coveY, z1 - 0.4, 0.5));
-  // the LED itself: one warm line tucked under the lip, breathing very slowly and very shallowly
-  const led = rbox(w - 5, 0.55, 0.6, emissiveMatUnique("coveWarm", 1.05, 0.3), cx, coveY - 0.5, z1 + 0.25, 0.2);
+  // THE FIXTURE, then the light. A cove LED used to be a bare emissive bar hanging under the lip, which
+  // is the "glowing shape" failure mode build/led.ts already names: an architectural light is a PHYSICAL
+  // CHANNEL first. This is the extrusion the tape sits in — a slim dark aluminium profile with a return
+  // under its mouth — and the emitter is inset into it, so from the game camera the eye reads a lit
+  // channel rather than a bright rectangle stuck to plaster.
+  g.add(rbox(w - 3, 1.5, 1.4, mat("charcoal", 0.55), cx, coveY - 1.5, z1 + 0.35, 0.25));
+  g.add(rbox(w - 3, 0.35, 0.5, mat("charcoal", 0.6), cx, coveY - 1.9, z1 + 0.95, 0.12)); // the mouth's return
+  // the LED itself: one warm line tucked INSIDE the channel, breathing very slowly and very shallowly
+  const led = rbox(w - 5, 0.55, 0.6, emissiveMatUnique("coveWarm", 1.05, 0.3), cx, coveY - 0.9, z1 + 0.55, 0.2);
   g.add(animated(led, { kind: "pulse", period: 11.5, phase: spec.phase ?? 0, min: 0.98, max: 1.14 }));
   // the wash it throws down the wall face (additive plane, no light, no cost)
   const wash = rbox(w - 7, 15, 0.1, glowMat("coveWarm", 0.04), cx, coveY - 16, z1 + 0.3, 0);
   wash.castShadow = wash.receiveShadow = false;
   g.add(wash);
-  g.add(rbox(w - 0.6, 1.6, 0.9, plastic("white"), cx, 0, z1 + 0.45, 0.2)); // skirting
+  g.add(skirting({ axis: "x", from: x0, to: x1, at: z1, y0: 0, dir: 1, key: "white", roughness: 0.6 }));
   return g;
 }
 
@@ -307,6 +319,17 @@ export function credenzaRun(spec: CredenzaRunSpec): THREE.Group {
   const cx = x + w / 2, cz = z + d / 2;
   g.add(rbox(w - 4, 3.2, d - 4, mat(reveal, 0.9), cx, 0, cz, 0.3)); // recessed toe kick
   g.add(rbox(w, h - 4.4, d, mat(body, 0.78), cx, 3.2, cz, 0.5));
+  // THE PLINTH SHADOW LINE. A carcass standing on a recessed kick still met the floor in one flat step;
+  // the profiled reveal in build/arch.ts puts the dark line where joinery actually has one, which is what
+  // makes a run read as built-in rather than as a box set down on the tile. One mesh for the whole run.
+  {
+    const along = spec.along, faceDir: 1 | -1 = spec.facing === "east" || spec.facing === "south" ? 1 : -1;
+    const kickAt = spec.facing === "east" ? x + w : spec.facing === "west" ? x : spec.facing === "south" ? z + d : z;
+    g.add(profileRun(PLINTH, {
+      axis: along, at: kickAt, from: along === "x" ? x : z, to: along === "x" ? x + w : z + d,
+      y0: 0, dir: faceDir, material: mat(reveal, 0.85), name: `${g.name}-plinth`,
+    }));
+  }
   // the TOP is the face the game camera actually sees, so it carries the run's colour: the same dark
   // stained oak as the body, finished a little glossier so it reads as a worktop rather than a carcass.
   // A caller laying its own worktop passes `top: false` — see the field's note for why that matters.
@@ -321,12 +344,23 @@ export function credenzaRun(spec: CredenzaRunSpec): THREE.Group {
       : rbox(0.5, h - 6.4, 0.7, mat(reveal, 0.9), face, 4.2, c, 0.15);
     g.add(groove);
   }
-  // one slim pull per module, on the face
+  // THE DOOR/DRAWER SPLIT. A module used to be one blank panel between two grooves, which is a carcass
+  // with nothing built into it. Real joinery of this length is a drawer bank over a door: one horizontal
+  // rail groove across the whole run says so in a single mesh, and each module's face is then read as two
+  // components rather than one slab. Standing 0.1 proud of the face, like the vertical reveals.
+  const railY = 3.2 + (h - 4.4) * 0.34;
+  g.add(along === "x"
+    ? rbox(w - 1.4, 0.7, 0.5, mat(reveal, 0.9), cx, railY, face, 0.15)
+    : rbox(0.5, 0.7, d - 1.4, mat(reveal, 0.9), face, railY, cz, 0.15));
+  // two pulls per module — one on the drawer, one on the door below it — so the hardware states the split
   for (let i = 0; i < modules; i++) {
     const c = from + (len * (i + 0.5)) / modules;
-    g.add(along === "x"
-      ? rbox(Math.min(14, (len / modules) * 0.5), 0.7, 0.8, metal(), c, h * 0.62, face, 0.2)
-      : rbox(0.8, 0.7, Math.min(14, (len / modules) * 0.5), metal(), face, h * 0.62, c, 0.2));
+    const pullW = Math.min(14, (len / modules) * 0.5);
+    for (const y of [railY + (h - railY) * 0.42, railY - 2.4]) {
+      g.add(along === "x"
+        ? rbox(pullW, 0.7, 0.8, metal(), c, y, face, 0.2)
+        : rbox(0.8, 0.7, pullW, metal(), face, y, c, 0.2));
+    }
   }
   return g;
 }

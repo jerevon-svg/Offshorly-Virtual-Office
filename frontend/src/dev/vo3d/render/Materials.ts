@@ -1,7 +1,7 @@
 // vo3d render — shared material cache + the office palette (warm cream / wood / olive).
 // Promoted from designRoom3d/build.ts (materials block) and layout.ts (PALETTE). ONE cache for the scene.
 import * as THREE from "three";
-import { contactRectAlpha, contactRoundAlpha, glowFalloffAlpha, metalDetail, stoneDetail, stoneTint, terrazzoChips, weaveDetail, woodDetail } from "./detail";
+import { contactRectAlpha, contactRoundAlpha, glowFalloffAlpha, metalDetail, plasterDetail, plasterTint, stoneDetail, stoneTint, terrazzoChips, weaveDetail, woodDetail } from "./detail";
 
 export const PALETTE = {
   floor: 0xf0e8e2,
@@ -255,6 +255,27 @@ const METAL_TIER: Partial<Record<MatKey, number>> = {
   aiFrame: 0.45, devFrame: 0.45, cmsFrame: 0.4, qaFrame: 0.4, // brushed silver/grey furniture frames
 };
 
+/** THE PLASTER TIER. The keys the V1 art draws as PAINTED MASONRY — every room's walls, the front bar's
+ *  cove plaster, the exterior ledge face. Listing them here, once, is what makes wall material a
+ *  HIERARCHY rather than a per-builder guess: eleven room builders say `mat(THEME.plaster, 0.95)` and all
+ *  eleven now get the same trowel-and-roller breakup without one of them being edited.
+ *
+ *  WHY IT IS ALBEDO AND NOT BUMP. See render/detail's plasterTint: on a 300-unit matt wall under one soft
+ *  key a roughness map alone measures as no change at all, and three.js' bump is a screen-space derivative
+ *  that dies under that much magnification. The tint is near-white (±2.5%) so the measured palette colour
+ *  and hue survive untouched — this breaks up flatness, it does not recolour a room.
+ *
+ *  A caller that brings its OWN albedo or roughness map keeps it: the tier only fills empty slots. */
+const PLASTER_TIER: ReadonlySet<MatKey> = new Set<MatKey>([
+  "wall", "wallFace", "plaster",
+  "gamingPlaster", "aiPlaster", "devPlaster", "cmsPlaster", "qaPlaster",
+]);
+/** THE STONE TIER. Cast//quarried surfaces built as UPRIGHT masses rather than floor plates — the hub's
+ *  bench and planter shells, its monument, the street plinth. `floorMat` already covers the plates. */
+const STONE_TIER: ReadonlySet<MatKey> = new Set<MatKey>([
+  "plinth", "hubStone", "hubStoneDark", "hubMonument",
+]);
+
 export function mat(key: MatKey, roughness = 0.9, extra: Partial<THREE.MeshStandardMaterialParameters> = {}): THREE.MeshStandardMaterial {
   const id = `${key}:${roughness}:${JSON.stringify(extra)}`;
   let m = materials.get(id) as THREE.MeshStandardMaterial | undefined;
@@ -262,8 +283,17 @@ export function mat(key: MatKey, roughness = 0.9, extra: Partial<THREE.MeshStand
     const tier = METAL_TIER[key];
     // The caller still wins: a builder that already stated a metalness (or brought its own maps) keeps it.
     const metal = extra.metalness !== undefined ? extra.metalness : (tier ?? 0);
-    const detail = metal > 0.2 && extra.roughnessMap === undefined ? metalDetail() : null;
-    m = new THREE.MeshStandardMaterial({ color: PALETTE[key], roughness, ...extra, metalness: metal, ...(detail ? { roughnessMap: detail } : {}) });
+    // SURFACE FAMILY → shared detail maps, filling only the slots the caller left empty.
+    const free = { map: extra.map === undefined, rough: extra.roughnessMap === undefined };
+    const surface: Partial<THREE.MeshStandardMaterialParameters> =
+      metal > 0.2
+        ? (free.rough ? { roughnessMap: metalDetail() ?? undefined } : {})
+        : PLASTER_TIER.has(key)
+          ? { ...(free.map ? { map: plasterTint() ?? undefined } : {}), ...(free.rough ? { roughnessMap: plasterDetail() ?? undefined } : {}) }
+          : STONE_TIER.has(key)
+            ? { ...(free.map ? { map: stoneTint() ?? undefined } : {}), ...(free.rough ? { roughnessMap: stoneDetail() ?? undefined } : {}) }
+            : {};
+    m = new THREE.MeshStandardMaterial({ color: PALETTE[key], roughness, ...extra, metalness: metal, ...surface });
     materials.set(id, m);
   }
   return m;
