@@ -37,9 +37,19 @@ export type RoomStaticBuilder = (room: RoomDef, opts: ShellOptions) => THREE.Gro
 function designRoomStatic(room: RoomDef, opts: ShellOptions): THREE.Group {
   if (!room.shell) throw new Error("design room: missing ShellSpec");
   const g = new THREE.Group();
+  const baked = room.baked as DesignBaked;
   g.name = `static:${room.id}`;
   g.position.set(room.rect.x, 0, room.rect.z); // its shell and baked decor are measured ROOM-LOCALLY
-  g.add(buildShell({ w: room.rect.w, d: room.rect.d }, room.shell, opts));
+  // The ceiling cornice must not be drawn across this room's two authored wall displays — the mantra
+  // whiteboard on the rear wall and the pinned boards on the left one both reach into the cornice band.
+  // The shell knows nothing about baked decor, so the room hands it the spans to route around.
+  g.add(buildShell({ w: room.rect.w, d: room.rect.d }, room.shell, {
+    ...opts,
+    corniceGaps: {
+      x: [{ from: baked.whiteboard.x0, to: baked.whiteboard.x1 }],
+      z: baked.boards.map((b) => ({ from: b.z0, to: b.z1 })),
+    },
+  }));
   g.add(buildDesignBaked(room.baked as DesignBaked, room.shell));
   return g;
 }

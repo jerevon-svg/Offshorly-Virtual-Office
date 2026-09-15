@@ -18,6 +18,7 @@ import { offshorlyInlay } from "./logo";
 import { glassRun, subtract } from "./frontbar";
 import { animated } from "../render/Ambient";
 import { arcWall, flatRing, ringShape } from "./arc";
+import { Baker } from "./helpers";
 
 /** The scanner colour language, shared by the gates and the entrance sensors.
  *  IDLE = blue/cyan (powered, waiting). ACTIVE = green (person detected / access approved). */
@@ -356,6 +357,71 @@ export function planters(): THREE.Group {
   return g;
 }
 
+/** THE ENTRANCE MAT. The one detail every polished lobby in the world has and this one did not: a dark
+ *  inset panel in the tile, framed in the counter's own bronze, laid inside the automatic doors on the
+ *  exact V1 door span. It is 0.06 proud — flat floor dressing, walked straight over, and it is what turns
+ *  "the tile happens to end at a doorway" into "this is the way in". */
+function entranceMat(): THREE.Group {
+  const g = new THREE.Group();
+  g.name = "reception-entrance-mat";
+  const { x0, x1 } = FACADE.door;
+  const cx = (x0 + x1) / 2, z0 = FACADE.z - 42, z1 = FACADE.z - 6, cz = (z0 + z1) / 2;
+  const frame = rbox(x1 - x0 + 10, 0.06, z1 - z0 + 8, mat("bronze", 0.42, { metalness: 0.5 }), cx, 0.02, cz, 1.0);
+  const field = rbox(x1 - x0 + 2, 0.06, z1 - z0, mat("charcoal", 0.95), cx, 0.06, cz, 0.8);
+  // ribbed: five slim reveals across the mat, which is what makes it read as a mat rather than a dark
+  // rectangle painted on the floor. One bake.
+  const ribs = new Baker();
+  for (let i = 1; i < 6; i++) ribs.add(rbox(x1 - x0 - 6, 0.05, 1.2, mat("bronzeDark", 0.8), cx, 0.12, z0 + ((z1 - z0) * i) / 6, 0.2));
+  for (const m of [frame, field]) { m.castShadow = false; g.add(m); }
+  ribs.bakeInto(g, "mat-ribs");
+  g.traverse((o) => { o.castShadow = false; });
+  return g;
+}
+
+/** A WAYFINDING PYLON — a free-standing directory slab, one either side of the entrance.
+ *
+ *  The face is tipped 0.34 rad out of vertical for the same reason Meeting's wall panels are: the game
+ *  camera sits due south and looks DOWN, so a perfectly upright board presents its top edge and almost
+ *  nothing else. Tipping it back is what a real lectern-style directory does anyway. */
+function wayfindingPylon(x: number, id: string): THREE.Group {
+  const g = new THREE.Group();
+  g.name = `reception-pylon-${id}`;
+  const z = FACADE.z - 24, H = 42;
+  g.add(rbox(26, 2.2, 16, mat("bronzeDark", 0.7, { metalness: 0.4 }), x, 0, z, 0.6)); // the weighted foot
+  // the cap sits ON the slab rather than flush with it: two tops at the same y with overlapping plans is
+  // exactly the coplanar pair reception.test.ts exists to catch
+  g.add(rbox(22, H - 3.6, 10, plastic("white"), x, 2.2, z, 1.2)); //                    the slab
+  g.add(rbox(22.6, 1.4, 10.6, mat("bronze", 0.4, { metalness: 0.5 }), x, H - 1.4, z, 0.4)); // its cap
+  // THE FACE IS TIPPED HALF A RADIAN, not a token few degrees. The game camera looks DOWN at 52°, so an
+  // upright board presents its top edge and a couple of pixels of face; at this angle the directory is
+  // the thing you see first, which is the entire reason a wayfinding pylon exists.
+  const face = new THREE.Group();
+  face.position.set(x, H * 0.66, z - 5.2);
+  face.rotation.x = -0.5;
+  const panel = rbox(19, 26, 0.5, uiScreenMat(`reception-directory-${id}`, 128, 200, drawDirectory, 0.8), 0, -13, 0, 0.2);
+  panel.castShadow = panel.receiveShadow = false;
+  face.add(panel);
+  g.add(face);
+  return g;
+}
+function drawDirectory(ctx: CanvasRenderingContext2D, w: number, h: number): void {
+  ctx.fillStyle = "#101c2e";
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = "#6fcf5a";
+  ctx.lineWidth = 6;
+  ctx.beginPath(); ctx.arc(w * 0.5, h * 0.12, 13, 0, Math.PI * 2); ctx.stroke();
+  // a directory: eight rows, each a floor marker and a name bar, plus one highlighted row
+  for (let i = 0; i < 8; i++) {
+    const y = h * (0.26 + i * 0.085);
+    ctx.fillStyle = i === 2 ? "#3f8fe0" : "rgba(255,255,255,0.14)";
+    ctx.fillRect(w * 0.1, y, w * 0.8, h * 0.062);
+    ctx.fillStyle = i === 2 ? "#ffffff" : "rgba(255,255,255,0.7)";
+    ctx.fillRect(w * 0.15, y + h * 0.022, w * (0.5 - (i % 3) * 0.07), 3);
+    ctx.fillStyle = "rgba(111,216,255,0.8)";
+    ctx.fillRect(w * 0.74, y + h * 0.022, w * 0.1, 3);
+  }
+}
+
 /** Everything Reception owns structurally in 3B. World space; the mirror adds it as-is.
  *  Builds NO east or west boundary — the artwork has none and the only nearby wall belongs to Meeting. */
 export function receptionStatic(_room: RoomDef): THREE.Group {
@@ -407,5 +473,12 @@ export function receptionStatic(_room: RoomDef): THREE.Group {
   g.add(arcCounter());
   g.add(kioskTotem());
   g.add(planters());
+  // ---- the arrival, finished -------------------------------------------------------------------------
+  // Reception has no plaster walls to case or crown, so its architectural finishing lives at the FLOOR and
+  // at the THRESHOLD, which is where an arrival sequence is read anyway: the inset mat inside the doors,
+  // and a directory pylon either side of the opening, standing on the V1-blocked bands beside the door
+  // span rather than in it.
+  g.add(entranceMat());
+  for (const [x, id] of [[FACADE.door.x0 - 34, "west"], [FACADE.door.x1 + 34, "east"]] as const) g.add(wayfindingPylon(x, id));
   return g;
 }

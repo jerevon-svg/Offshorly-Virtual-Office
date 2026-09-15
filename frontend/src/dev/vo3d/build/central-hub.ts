@@ -20,6 +20,7 @@ import { plantFor } from "./plants";
 import { book, smallPot } from "./props";
 import { ledStrip } from "./led";
 import { hubMonument } from "./hub-monument";
+import { counterNosing, cupStack } from "./detail-props";
 import { animated, powered } from "../render/Ambient";
 import { contactShadowMat, emissiveMat, glowMat, mat, terrazzoMat, metal, plastic, type MatKey } from "../render/Materials";
 import type { RoomDef } from "../world/WorldState";
@@ -235,6 +236,13 @@ function pantryRun(sway: SwayNode[]): THREE.Group {
   g.add(powered(pwr));
   const bowl = APPLIANCES.bowl;
   g.add(cyl(bowl.r, bowl.h, mat("greenDark", 0.7), bowl.x, top, bowl.z, bowl.r * 1.25));
+  // THE WORKTOP'S FRONT EDGE. A 2.6-thick slab with a square arris reads as a sheet of card at any camera
+  // angle; a bullnose with a drip return under it reads as a counter. Shared profile, one draw call, on
+  // the run's EAST face — the side the whole plaza looks at (detail-props counterNosing → arch NOSING).
+  g.add(counterNosing({ axis: "z", at: c.x + c.w + 1, dir: 1, from: c.z - 1, to: c.z + c.d + 1, top: c.h, key: "white", name: "hub-counter-nosing" }));
+  // cups and saucers stacked in the gap between the two machines: the pantry stops being a worktop with
+  // appliances on it and starts being somewhere a drink is actually served
+  g.add(cupStack({ x: 493.5, y0: top, z: 586, columns: 2, key: "white", name: "hub-cups" }));
 
   // the counter's own toe-kick cove — a pantry reads as open when its plinth glows
   g.add(ledStrip({ axis: "z", from: c.z + 3, to: c.z + c.d - 3, at: c.x + c.w - 1.4, y: c.toe - 1.6, dir: 1,
@@ -305,6 +313,9 @@ export function centralHubStatic(_room: RoomDef): THREE.Group {
   g.add(island(sway));
   g.add(pantryRun(sway));
   g.add(shelfRun(sway));
+  // NOTHING FREE-STANDING IS ADDED TO THE PLATE. The hub's whole subject is the OPEN plaza around the
+  // monument, and a plaza is read by the floor you can see across it. Its share of the art pass is at the
+  // pantry counter (its front edge and its service) and nowhere else — see pantryRun above.
   g.userData.sway = sway;
   return g;
 }

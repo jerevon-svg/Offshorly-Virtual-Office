@@ -13,6 +13,7 @@ import { tiledFloor } from "./tile";
 import { emissiveMatUnique, glowMat, mat, metal, plastic, uiScreenMat, wood } from "../render/Materials";
 import { animated } from "../render/Ambient";
 import { coveWall, credenzaRun, facadeSection, ledgePlanter, slatPanel } from "./frontbar";
+import { cornice, runSegments, skirting } from "./arch";
 import { FACADE, STRUCT } from "../rooms/reception";
 import { FACADE_Z } from "../adapters/v1Floor";
 import type { RoomDef } from "../world/WorldState";
@@ -117,7 +118,14 @@ export function projectStatic(_room: RoomDef): THREE.Group {
   // ---- east: solid wall + skirting, with the console standing against it ------------------------------
   const e = EAST_WALL;
   g.add(rbox(e.x1 - e.x0, e.h, e.z1 - e.z0, mat("plaster", 0.96), (e.x0 + e.x1) / 2, 0, (e.z0 + e.z1) / 2, STRUCT.capRadius));
-  g.add(rbox(0.9, 1.6, e.z1 - e.z0 - 0.6, plastic("white"), e.x0 - 0.45, 0, (e.z0 + e.z1) / 2, 0.2));
+  // Same correction Meeting's west elevation gets: the flat 0.9 x 1.6 stripe becomes the shared profiled
+  // baseboard, and the wall finally states a ceiling plane at its top (build/arch.ts). The north wall
+  // keeps coveWall()'s own skirting.
+  g.add(skirting({ axis: "z", from: e.z0, to: e.z1, at: e.x0, y0: 0, dir: -1, key: "white", roughness: 0.6 }));
+  // The cornice terminates either side of the large wall display (z 964…1036, up to y 44) rather than
+  // being drawn across its face — see the same note in build/meeting.ts. build/arch.runSegments.
+  for (const seg of runSegments(e.z0, e.z1, [{ from: WALL_TV.z0, to: WALL_TV.z1 }]))
+    g.add(cornice({ axis: "z", from: seg.from, to: seg.to, at: e.x0, y0: 0, dir: -1, key: "plaster", wallHeight: e.h }));
   g.add(eastConsole());
   g.add(centreBench());
 
@@ -132,5 +140,9 @@ export function projectStatic(_room: RoomDef): THREE.Group {
     endPosts: { start: false }, name: "project-facade",
   }));
   for (const p of LEDGE_PLANTERS) g.add(ledgePlanter(p.x, p.z, p.r, p.h));
+
+  // NO ROOM PROPS. Its share of the art pass is the EAST ELEVATION's finishing, above. The lounge
+  // composition — two sofas, the coffee table, the two tub chairs and the bench between them — is the
+  // authored one, and the floor around it is meant to be open.
   return g;
 }

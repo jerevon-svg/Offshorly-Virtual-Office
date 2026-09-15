@@ -13,6 +13,7 @@ import * as THREE from "three";
 import type { RoomDef } from "../world/WorldState";
 import { Baker, cyl, rbox } from "./helpers";
 import { cornice, doorCasing, skirting, type Axis } from "./arch";
+import { counterNosing } from "./detail-props";
 import { tagSurface } from "../editor/surfaces";
 import { tiledFloor } from "./tile";
 import { credenzaRun } from "./frontbar";
@@ -336,6 +337,11 @@ export function aiStatic(room: RoomDef, _opts: unknown): THREE.Group {
   g.add(missionWall());
   g.add(westDisplays());
   g.add(counterRun());
+  // ---- the tech bar's front edge, and NOTHING else ----------------------------------------------------
+  // The worktop's square arris read as a sheet of card at the game camera; a bullnose with a drip return
+  // under it reads as a counter. That is this room's whole share of the final art pass: the fit-out above
+  // is the authored one and the floor between the benches is meant to be clear.
+  g.add(counterNosing({ axis: "z", at: COUNTER.x - 0.7, dir: -1, from: COUNTER.z - 0.7, to: COUNTER.z + COUNTER.d + 0.7, top: COUNTER.h, key: THEME.counter, name: "ai-counter-nosing" }));
   return g;
 }
 

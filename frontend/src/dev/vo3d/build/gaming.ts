@@ -16,6 +16,7 @@
 import * as THREE from "three";
 import { cyl, rbox, shadowed } from "./helpers";
 import { cornice, skirting } from "./arch";
+import { buntingRun, trophyRow } from "./detail-props";
 import { tagSurface } from "../editor/surfaces";
 import { tiledFloor } from "./tile";
 import { ledStrip } from "./led";
@@ -762,5 +763,21 @@ export function gamingStatic(_room: RoomDef): THREE.Group {
   g.add(deskRun());
   g.add(eastNook());
   g.add(rugPrint());
+  // ---- finishing the two faces the first pass left bare ----------------------------------------------
+  // The west solid wall (north of the door band) and the south partition's spandrel both met the floor on
+  // a single hard line. Same shared profiles as the north and east runs; the partition gets a baseboard
+  // only, because glass — not plaster — is what is above it.
+  g.add(skirting({ axis: "z", from: WEST_WALL.z0, to: WEST_WALL.z1, at: WEST_X, y0: 0, dir: 1, key: "gamingDark", roughness: 0.6 }));
+  g.add(cornice({ axis: "z", from: WEST_WALL.z0, to: WEST_WALL.z1, at: WEST_X, y0: 0, dir: 1, key: "gamingPlaster", wallHeight: STRUCT.wallHeight }));
+  g.add(skirting({ axis: "x", from: WEST_X, to: EAST_X, at: SOUTH_Z, y0: 0, dir: -1, key: "gamingDark", roughness: 0.6 }));
+  // ---- the room's own identity, stated -----------------------------------------------------------------
+  // A premium games room is a room that has HOSTED something. Two shared props say it: a run of pennants
+  // slung wall-to-wall over the lounge, and a row of tournament cups on the free west end of the media
+  // console (clear of the TV, which starts at x 1226).
+  g.add(buntingRun({
+    axis: "x", at: 700, from: WEST_X + 10, to: EAST_X - 10, y: 45, sag: 1.6, drop: 6,
+    colors: [THEME.accent, THEME.accentAlt, "neonPink"], count: 16, name: "gaming-bunting",
+  }));
+  g.add(trophyRow(1190, 1222, MEDIA_CONSOLE.h, MEDIA_CONSOLE.z + MEDIA_CONSOLE.d / 2, 3, "bronze", "gaming-trophies"));
   return g;
 }

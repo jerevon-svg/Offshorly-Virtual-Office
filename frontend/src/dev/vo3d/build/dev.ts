@@ -13,6 +13,7 @@ import * as THREE from "three";
 import type { RoomDef } from "../world/WorldState";
 import { Baker, cyl, rbox } from "./helpers";
 import { cornice, doorCasing, skirting, type Axis } from "./arch";
+import { counterNosing } from "./detail-props";
 import { tagSurface } from "../editor/surfaces";
 import { tiledFloor } from "./tile";
 import { credenzaRun } from "./frontbar";
@@ -418,6 +419,11 @@ export function devStatic(room: RoomDef, _opts: unknown): THREE.Group {
   g.add(teaShelf());
   g.add(schematic());
   g.add(pantry());
+  // ---- the pantry bar's front edge, and NOTHING else ---------------------------------------------------
+  // This room is already the most heavily dressed on the floor — tool wall, build board, neon, servers,
+  // schematic, tea shelf, pantry. What it was missing was an EDGE: the pantry worktop met the air on a
+  // square arris. One bullnose on the face the room stands at, and the fit-out is left exactly as authored.
+  g.add(counterNosing({ axis: "x", at: PANTRY.z - 0.7, dir: -1, from: PANTRY.x + 1, to: PANTRY.x + PANTRY.w - 1, top: PANTRY.h, key: THEME.walnut, name: "dev-pantry-nosing" }));
   return g;
 }
 

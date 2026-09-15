@@ -15,6 +15,7 @@ import * as THREE from "three";
 import type { RoomDef } from "../world/WorldState";
 import { Baker, cyl, rbox } from "./helpers";
 import { cornice, doorCasing, skirting, type Axis } from "./arch";
+import { counterNosing, pinBoard } from "./detail-props";
 import { tagSurface } from "../editor/surfaces";
 import { tiledFloor } from "./tile";
 import { credenzaRun } from "./frontbar";
@@ -242,6 +243,17 @@ export function qaStatic(room: RoomDef, _opts: unknown): THREE.Group {
   g.add(storageRun());
   g.add(supplyCredenza());
   g.add(loungeShelf());
+  // ---- the one thing the reference has and the build did not ------------------------------------------
+  // The file header names it: the wall EAST of the storage run is bare, and the flat reference hangs a
+  // WORK-RATE BOARD there. This is that board — a pinned card field in the room's teal. It is not
+  // decoration added to fill a wall; it is the authored content of that wall, finally built. The storage
+  // run's white worktop gets the shared bullnose at the same time, and the room gets nothing else.
+  g.add(pinBoard({
+    axis: "x", at: NORTH_Z, dir: 1, from: 212, to: 304, y0: 12, y1: 37,
+    frame: THEME.oakDark, board: THEME.board, cards: [THEME.teal, THEME.white, THEME.linenDeep], cols: 5, rows: 3,
+    name: "qa-work-rate-board",
+  }));
+  g.add(counterNosing({ axis: "x", at: CREDENZA_FRONT + 0.8, dir: 1, from: CREDENZA.x + 1, to: CREDENZA.x + CREDENZA.w - 1, top: CREDENZA.h, key: THEME.white, name: "qa-credenza-nosing" }));
   return g;
 }
 

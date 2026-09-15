@@ -298,10 +298,36 @@ export function buildCave(): CaveBuild {
     }
   }
   // service truss: six runs across the ceiling, the reference's exposed black tech deck
+  const steelM = mat(key("steel"), 0.6);
   for (let i = 0; i < 6; i++) {
     const z = 40 + i * ((D - 80) / 5);
-    vest.add(rbox(W - 16, 6, 10, mat(key("steel"), 0.6), wx(W / 2), H - 14, wz(z), 0.8));
+    vest.add(rbox(W - 16, 6, 10, steelM, wx(W / 2), H - 14, wz(z), 0.8));
   }
+
+  // ---- the venue's own architecture: acoustic treatment + a front-of-house position ----------------
+  // Everything above is screen, shell and light. What a real flagship venue ALSO has — and what the
+  // reference frames on either side of the crowd — is TREATMENT on the side walls behind the screen
+  // wings, and a control position at the back. Both are dark-on-dark by design: they read as
+  // construction when the picture lights them and disappear when it does not.
+  //
+  // They stand in the SOUTH third of the side walls (z 344…416), south of where the screen wings end
+  // (SCREEN.wingZ = 320) and north of the cushion run, so neither can ever occlude the picture. And they
+  // go into the STRUCTURE bake using the two materials it already carries — this room's draw-call budget
+  // is stated at the top of the file and tested, and an art pass does not get to spend it.
+  for (const side of [0, 1]) {
+    const px = side === 0 ? 3 : W - 3;
+    for (let i = 0; i < 9; i++) {
+      const z = 344 + i * 9;
+      vest.add(rbox(6, 96, 5.5, graphite, wx(px), 26, wz(z), 0.8)); //                    absorber block
+      vest.add(rbox(2.2, 96, 1.6, steelM, wx(side === 0 ? px + 4 : px - 4), 26, wz(z), 0.4)); // edge return
+    }
+  }
+  // the FOH / control position: a low desk against the west wall behind the crowd, with a raked top.
+  // The one piece of furniture in the room, and it is crew furniture.
+  const foh = { x: 74, z: 398 };
+  vest.add(rbox(76, 26, 26, graphite, wx(foh.x), 0, wz(foh.z), 1.2));
+  vest.add(rbox(80, 2.4, 30, steelM, wx(foh.x), 26, wz(foh.z), 0.6));
+  vest.add(rbox(70, 2.0, 16, graphite, wx(foh.x), 28.4, wz(foh.z - 2), 0.4));
   vest.bakeInto(g, "cave-structure");
 
   // ---- the one architectural light: a cool cove line -----------------------------------------------
@@ -323,6 +349,8 @@ export function buildCave(): CaveBuild {
   const bronzeMat = emissiveMat(key("bronze"), 1.1, 0.4);
   for (const sx of [-1, 1]) cove.add(shadowed(rbox(2, vh - 4, 2, bronzeMat, wx(W / 2 + sx * (vw / 2 - 2)), 2, wz(D + 1), 0.4), false, false));
   cove.add(shadowed(rbox(vw - 6, 2, 2, bronzeMat, wx(W / 2), vh - 4, wz(D + 1), 0.4), false, false));
+  // two console lines on the FOH desk's raked top — the same cool channel, so no new hue and no new mesh
+  for (const dz of [-6, 1]) cove.add(shadowed(rbox(62, 0.6, 1.2, coveMat, wx(74), 30.4, wz(398 + dz), 0.2), false, false));
   cove.bakeInto(g, "cave-cove");
 
   // ---- the back-wall cushion run -------------------------------------------------------------------

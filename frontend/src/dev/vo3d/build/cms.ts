@@ -13,6 +13,7 @@ import * as THREE from "three";
 import type { RoomDef } from "../world/WorldState";
 import { Baker, cyl, lathe, rbox } from "./helpers";
 import { cornice, doorCasing, skirting, type Axis } from "./arch";
+import { counterNosing } from "./detail-props";
 import { tagSurface } from "../editor/surfaces";
 import { tiledFloor } from "./tile";
 import { credenzaRun } from "./frontbar";
@@ -299,6 +300,10 @@ export function cmsStatic(room: RoomDef, _opts: unknown): THREE.Group {
   g.add(teaPoint());
   g.add(eastWall());
   g.add(printStation());
+  // ---- the content credenza's front edge, and NOTHING else --------------------------------------------
+  // The north run already carries the library, the content board and the credenza; the room's own content
+  // wall is the thing it is about. All it needed was the worktop bullnose the rest of the office now has.
+  g.add(counterNosing({ axis: "x", at: CONTENT_CREDENZA.z + CONTENT_CREDENZA.d + 0.7, dir: 1, from: CONTENT_CREDENZA.x + 1, to: CONTENT_CREDENZA.x + CONTENT_CREDENZA.w - 1, top: CONTENT_CREDENZA.h, key: THEME.oak, name: "cms-credenza-nosing" }));
   return g;
 }
 

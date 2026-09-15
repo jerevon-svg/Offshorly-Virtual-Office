@@ -14,6 +14,7 @@ import * as THREE from "three";
 import type { RoomDef } from "../world/WorldState";
 import { Baker, cyl, lathe, rbox } from "./helpers";
 import { cornice, doorCasing, skirting, type Axis } from "./arch";
+import { toeKick } from "./detail-props";
 import { tagSurface } from "../editor/surfaces";
 import { tiledFloor } from "./tile";
 import { credenzaRun, glassRun, slatPanel } from "./frontbar";
@@ -321,5 +322,10 @@ export function executiveStatic(_room: RoomDef): THREE.Group {
     g.add(sconce(WEST_X, z, 1));
     g.add(sconce(EAST_X, z, -1));
   }
+  // ---- restrained premium: ONE addition ---------------------------------------------------------------
+  // A leadership room is read through its JOINERY and its light, not through its props. So the display
+  // credenza gets the plinth reveal every built-in has (the shared PLINTH profile) and that is all — the
+  // sconces already carry the light language and the open floor between the two desks is the point.
+  g.add(toeKick({ axis: "x", at: CREDENZA_SW.z + CREDENZA_SW.d, dir: 1, from: CREDENZA_SW.x + 1, to: CREDENZA_SW.x + CREDENZA_SW.w - 1, key: THEME.woodDark, name: "exec-credenza-plinth" }));
   return g;
 }

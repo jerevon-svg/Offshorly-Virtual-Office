@@ -5,6 +5,7 @@ import { boxFromSpec, rbox, shadowed, type BoxSpec } from "./helpers";
 import { canvas2d, fabric, mat, metal, plastic, wood } from "../render/Materials";
 import { mug, smallPot } from "./props";
 import type { ShellSpec } from "../world/WorldState";
+import { counterNosing } from "./detail-props";
 
 export type DesignBaked = {
   rearCabinet: BoxSpec; rearCabinetModules: number; coffeeMachine: BoxSpec; rearFrames: BoxSpec[]; rearBooks: BoxSpec;
@@ -145,5 +146,26 @@ export function buildDesignBaked(baked: DesignBaked, shell: ShellSpec): THREE.Gr
   const g = new THREE.Group();
   g.name = "baked";
   g.add(rearCabinet(baked), whiteboard(baked, shell), leftBoards(baked, shell), bottomCabinets(baked), plantRack(baked));
+  g.add(studioDressing(baked));
+  return g;
+}
+
+/** THE DESIGN ROOM'S SHARE OF THE FINAL ART PASS — ONE thing, because this room is the oldest and
+ *  densest in the office and the risk here is not under-dressing, it is burying V1's own composition
+ *  under new objects.
+ *
+ *  The long rear credenza is the room's biggest horizontal surface and the one the camera looks across on
+ *  the way in; it met the air on a square arris. It gets the shared worktop bullnose and the room gets
+ *  nothing else. A premium studio reads as premium through its edge details, not through more objects.
+ *
+ *  ROOM-LOCAL, like everything else in this file. */
+function studioDressing(baked: DesignBaked): THREE.Group {
+  const g = new THREE.Group();
+  g.name = "design-studio-dressing";
+  const c = baked.rearCabinet;
+  g.add(counterNosing({
+    axis: "x", at: c.z + c.d, dir: 1, from: c.x + 1, to: c.x + c.w - 1, top: c.h,
+    key: "white", name: "design-credenza-nosing",
+  }));
   return g;
 }

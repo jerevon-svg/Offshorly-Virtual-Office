@@ -132,6 +132,34 @@ export function skirting(spec: SkirtSpec): THREE.Mesh {
   });
 }
 
+/** A span along a wall run that a moulding must not cross. */
+export type RunGap = { from: number; to: number };
+
+/** SPLIT A RUN SO IT ROUTES AROUND WHAT IS ALREADY ON THE WALL.
+ *
+ *  A cornice hangs in the top 7 units of a 46-unit wall, and some walls in this office have an authored
+ *  display up there: the Design Room's mantra whiteboard reaches y 50, its left-hand boards reach 44. A
+ *  moulding run straight through one of those crosses its FACE — the moulding stands 2.4 proud and the
+ *  board's face is 1.4 proud, so the trim is drawn in front of the artwork and cuts the text in half.
+ *
+ *  Terminating the run either side is what a real ceiling trim does when it meets a wall-mounted panel,
+ *  and it is the only option here that leaves the authored display untouched. `clear` is the breathing
+ *  space left on each side. Segments shorter than 2 units are dropped rather than drawn as stubs. */
+export function runSegments(from: number, to: number, gaps: readonly RunGap[] = [], clear = 3): RunGap[] {
+  let out: RunGap[] = [{ from, to }];
+  for (const g of gaps) {
+    const lo = g.from - clear, hi = g.to + clear;
+    out = out.flatMap((s) => {
+      if (hi <= s.from || lo >= s.to) return [s]; //                         the gap misses this segment
+      const parts: RunGap[] = [];
+      if (lo - s.from > 2) parts.push({ from: s.from, to: lo });
+      if (s.to - hi > 2) parts.push({ from: hi, to: s.to });
+      return parts;
+    });
+  }
+  return out;
+}
+
 export type CorniceSpec = SkirtSpec & {
   /** the wall's total height; the cornice hangs from its top */
   wallHeight: number;

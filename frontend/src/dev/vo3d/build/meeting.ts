@@ -14,6 +14,7 @@ import { emissiveMatUnique, mat, plastic, uiScreenMat } from "../render/Material
 import { monitor, smallPot } from "./props";
 import { animated } from "../render/Ambient";
 import { coveWall, credenzaRun, facadeSection, ledgePlanter, slatPanel } from "./frontbar";
+import { cornice, runSegments, skirting } from "./arch";
 import { kioskTotem } from "./reception";
 import { FACADE, STRUCT } from "../rooms/reception";
 import { FACADE_Z } from "../adapters/v1Floor";
@@ -155,7 +156,21 @@ export function meetingStatic(_room: RoomDef): THREE.Group {
   // ---- west: solid wall + skirting; the unit in front of it is a fixed installation ------------------
   const w = WEST_WALL;
   g.add(rbox(w.x1 - w.x0, w.h, w.z1 - w.z0, mat("plaster", 0.96), (w.x0 + w.x1) / 2, 0, (w.z0 + w.z1) / 2, STRUCT.capRadius));
-  g.add(rbox(0.9, 1.6, w.z1 - w.z0 - 0.6, plastic("white"), w.x1 + 0.45, 0, (w.z0 + w.z1) / 2, 0.2));
+  // THE WEST ELEVATION'S FINISHING. It carried a single 0.9 x 1.6 box for a skirting — a painted stripe
+  // with no undercut — and nothing at all at the top, so the only full-height plaster wall in the room
+  // simply stopped. Both are now the shared profiles (build/arch.ts): a baseboard with a real shadow gap,
+  // and a cornice that states the ceiling plane the camera looks in over. The north wall keeps the
+  // skirting coveWall() already builds for it.
+  g.add(skirting({ axis: "z", from: w.z0, to: w.z1, at: w.x1, y0: 0, dir: 1, key: "white", roughness: 0.6 }));
+  // THE CORNICE ROUTES AROUND WHAT IS ALREADY ON THIS WALL. It hangs from 39 to 46 and stands 2.4 proud,
+  // and this elevation carries the framed artwork (to y 44) and the 44-tall walnut backboard — an
+  // unbroken run is drawn straight through both. It therefore terminates either side of them, which is
+  // what a ceiling trim does when it meets a mounted panel. build/arch.runSegments.
+  for (const seg of runSegments(w.z0, w.z1, [
+    { from: WEST_FRAME.z0, to: WEST_FRAME.z1 },
+    { from: WEST_BACKBOARD.z, to: WEST_BACKBOARD.z + WEST_BACKBOARD.d },
+  ]))
+    g.add(cornice({ axis: "z", from: seg.from, to: seg.to, at: w.x1, y0: 0, dir: 1, key: "plaster", wallHeight: w.h }));
   g.add(westWallUnit());
 
   // ---- east: NOTHING. The floor runs into Reception; the kiosk is furniture, not a boundary ----------
@@ -172,5 +187,9 @@ export function meetingStatic(_room: RoomDef): THREE.Group {
   for (const p of LEDGE_PLANTERS) g.add(ledgePlanter(p.x, p.z, p.r, p.h));
 
   g.add(tableProps());
+
+  // NO ROOM PROPS. This room's share of the final art pass is its WEST ELEVATION's finishing, above, and
+  // nothing else: the composition the artwork authored — table, six chairs, the walnut unit, the kiosk —
+  // is complete, and the space around it is deliberate. See the art-direction note in build/detail-props.
   return g;
 }

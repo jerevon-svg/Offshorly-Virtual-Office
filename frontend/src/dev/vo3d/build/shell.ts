@@ -2,7 +2,7 @@
 import * as THREE from "three";
 import { rbox, shadowed } from "./helpers";
 import { floorMat, glassMat, mat, plastic } from "../render/Materials";
-import { cornice, glazingBead, skirting } from "./arch";
+import { cornice, glazingBead, runSegments, skirting, type RunGap } from "./arch";
 import { tagSurface } from "../editor/surfaces";
 import type { ShellSpec } from "../world/WorldState";
 
@@ -12,6 +12,10 @@ export type ShellOptions = {
   frontWall: "low" | "full" | "hidden";
   /** draw the room's own exterior slab (Phase 1 single-room mode); false once the ground-floor slab exists */
   exterior?: boolean;
+  /** Spans on the rear (x) and left (z) walls that the CORNICE must not cross, because the room already
+   *  hangs an authored display there. Supplied by the room's static builder from its own baked decor —
+   *  see ROOM_STATIC.design-room in build/registry.ts. Absent = an unbroken run, as before. */
+  corniceGaps?: { x?: readonly RunGap[]; z?: readonly RunGap[] };
 };
 
 /** Room shell in ROOM-LOCAL units; caller positions the group at the room's world origin. */
@@ -36,12 +40,19 @@ export function buildShell(rect: { w: number; d: number }, SHELL: ShellSpec, opt
   // were two flat boxes; the profile adds the floor shadow gap the old slab could not have, and the
   // cornice gives the room a stated ceiling plane without a ceiling slab the camera would have to see
   // through. ROOM-LOCAL, like everything else in this builder — the caller positions the group.
+  //
+  //  THE CORNICE ROUTES AROUND THE ROOM'S WALL-MOUNTED DISPLAYS. The mantra whiteboard on the rear wall
+  //  reaches y 50 and the two boards on the left wall reach 44, so an unbroken cornice — which hangs from
+  //  39 to 46 and stands 2.4 proud — is drawn ACROSS their faces and cuts the artwork in half. The run
+  //  therefore terminates either side of each of them (build/arch.runSegments), which is what a real
+  //  ceiling trim does when it meets a mounted panel. The skirting is untouched: nothing is at floor level.
   for (const r of [
-    { axis: "x" as const, from: T, to: W - T, at: T, dir: 1 as const },
-    { axis: "z" as const, from: T, to: frontZ, at: T, dir: 1 as const },
+    { axis: "x" as const, from: T, to: W - T, at: T, dir: 1 as const, gaps: opts.corniceGaps?.x },
+    { axis: "z" as const, from: T, to: frontZ, at: T, dir: 1 as const, gaps: opts.corniceGaps?.z },
   ]) {
-    g.add(skirting({ ...r, y0: 0, key: "white", roughness: 0.6 }));
-    g.add(cornice({ ...r, y0: 0, key: "wall", wallHeight: H }));
+    g.add(skirting({ axis: r.axis, from: r.from, to: r.to, at: r.at, dir: r.dir, y0: 0, key: "white", roughness: 0.6 }));
+    for (const seg of runSegments(r.from, r.to, r.gaps ?? []))
+      g.add(cornice({ axis: r.axis, from: seg.from, to: seg.to, at: r.at, dir: r.dir, y0: 0, key: "wall", wallHeight: H }));
   }
   g.add(tagSurface(rbox(W, H, T, wallM, W / 2, 0, T / 2, R), { id: "design-room/wall", kind: "wall", roomId: "design-room", label: "Design Room walls", preset: "plaster", size: { u: W, v: H } }));
   g.add(tagSurface(rbox(T, H, frontZ + T, wallM, T / 2, 0, (frontZ + T) / 2, R), { id: "design-room/wall", kind: "wall", roomId: "design-room", label: "Design Room walls", preset: "plaster", size: { u: W, v: H } }));
@@ -70,6 +81,11 @@ export function buildShell(rect: { w: number; d: number }, SHELL: ShellSpec, opt
   if (opts.frontWall !== "hidden") {
     const fh = opts.frontWall === "full" ? H : SHELL.frontWallHeight;
     g.add(tagSurface(rbox(W, fh, T, wallM, W / 2, 0, frontZ + T / 2, R), { id: "design-room/wall", kind: "wall", roomId: "design-room", label: "Design Room walls", preset: "plaster", size: { u: W, v: H } }));
+    // the front wall's INNER face gets the same baseboard as the other two solid faces — it was the one
+    // wall in this room that still met the floor on a hard line. No cornice: this wall is waist-high
+    // unless the caller asks for "full", so a ceiling moulding would be hanging in mid-air.
+    g.add(skirting({ axis: "x", from: T, to: W - T, at: frontZ, y0: 0, dir: -1, key: "white", roughness: 0.6 }));
+    if (opts.frontWall === "full") g.add(cornice({ axis: "x", from: T, to: W - T, at: frontZ, y0: 0, dir: -1, key: "wall", wallHeight: H }));
   }
   return g;
 }
