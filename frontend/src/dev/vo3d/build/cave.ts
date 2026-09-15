@@ -19,7 +19,7 @@
 // Procedural three.js only. No generated assets. The ONLY external file is the video (media/CaveMedia).
 import * as THREE from "three";
 import { Baker, rbox, shadowed } from "./helpers";
-import { canvas2d, glowMat, emissiveMat, mat, type MatKey } from "../render/Materials";
+import { canvas2d, emissiveMat, mat, type MatKey } from "../render/Materials";
 import {
   FRONT_CHORD, ROOM, SCREEN, THEME, THRESHOLD, VIDEO_WIDTH, ORIGIN, screenPath, type ScreenSegment,
 } from "../rooms/cave";
@@ -219,21 +219,24 @@ function fadeAlpha(): THREE.CanvasTexture | null {
   return t;
 }
 
-/** A soft round wash, for the screen's spill on the floor. */
-function washAlpha(): THREE.CanvasTexture | null {
-  const ctx = canvas2d(128, 128);
-  if (!ctx) return null;
-  const grad = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
-  grad.addColorStop(0, "rgba(255,255,255,0.85)");
-  grad.addColorStop(0.6, "rgba(255,255,255,0.22)");
-  grad.addColorStop(1, "rgba(255,255,255,0)");
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 128, 128);
-  return new THREE.CanvasTexture(ctx.canvas);
-}
+/** THE AUTHORED SCREEN SPILL, and the one place to tune it from.
+ *
+ *  DECAY IS 1, NOT 2, and that is the whole trick. three's punctual falloff is 1 / d^decay, and decay 2
+ *  is the physically correct answer for a POINT. This light is not standing in for a point — it is
+ *  standing in for a 320-unit-wide wall of picture, and a broad emissive surface falls off roughly
+ *  linearly until you are well away from it. At decay 2 across this hall the near/far ratio between
+ *  standing at the screen and standing at the back is over 500x: the front row blows out and everything
+ *  past the middle is already black. At decay 1 it is ~24x, which is the curve the live check wanted —
+ *  strong on a body in the front third, clearly present at mid-hall, effectively gone at the back wall.
+ *
+ *  `distance` closes it off at 340 (the hall is 440 deep), so the rear of the room and the vestibule
+ *  stay cinematically black no matter what the picture is doing. */
+export const SCREEN_LIGHT = { intensity: 60, distance: 340, decay: 1, y: 52, standoff: 10 };
 
 export type CaveBuild = {
   group: THREE.Group;
+  /** the single punctual light that stands in for the picture, so the console can tune it live */
+  screenLight: THREE.PointLight;
   /** the two surfaces that sample the video, so the volume can hand them the texture on first entry */
   videoMaterials: THREE.Material[];
   /** PRESENTATION MODE: the flat front panel a live screen share is shown on. Hidden — and holding
@@ -390,20 +393,38 @@ export function buildCave(): CaveBuild {
   reflect.castShadow = reflect.receiveShadow = false;
   g.add(reflect);
 
-  // a soft wash on the floor in front of the picture — the cheap half of "the screen lights the room"
-  const wash = washAlpha();
-  const washMat = wash
-    ? new THREE.MeshBasicMaterial({ color: 0x9fc2ff, alphaMap: wash, transparent: true, opacity: 0.09, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false, fog: false })
-    : glowMat(key("cove"), 0.035);
-  // kept to the front half and kept FAINT: this is spill from a screen, and a wash strong enough to read
-  // as a layer of haze over the whole floor takes the room's darkness away, which is the one thing the
-  // picture needs from it
-  const washPlane = new THREE.Mesh(new THREE.PlaneGeometry(W * 0.9, D * 0.55), washMat);
-  washPlane.rotation.x = -Math.PI / 2;
-  washPlane.position.set(wx(W / 2), 0.4, wz(D * 0.3));
-  washPlane.name = "cave-screen-wash";
-  washPlane.castShadow = washPlane.receiveShadow = false;
-  g.add(washPlane);
+  // ---- THE SCREEN'S LIGHT ------------------------------------------------------------------------
+  //
+  // WHAT WAS HERE BEFORE, AND WHY IT IS GONE. The screen's spill used to be faked with an additive
+  // radial-gradient PLANE lying on the floor — a 504 x 242 blue ellipse centred on the front third of
+  // the room. In Player View that is not spill at all: a body standing on it walks over a glowing pool
+  // and is lit by nothing, so the brightest object in the volume was a piece of floor rather than the
+  // picture. It competed with the one thing this room exists to show.
+  //
+  // WHAT REPLACES IT. One punctual light at the picture, and nothing else. It is the honest version of
+  // the same idea and it is what a flat plane could never do: it reaches the AVATAR — faces, arms and
+  // clothing pick the screen up when somebody stands near and facing it — and it falls off as an
+  // inverse square, so the back of the hall stays genuinely black. The floor and the truss catch the
+  // same light, which is the "spill on the immediate architecture" the plane was pretending to be.
+  //
+  // WHY ONE LIGHT IS AFFORDABLE HERE, when the rest of the office spends ZERO real-time lights. The
+  // office is not drawn while anybody is inside this volume (CaveTransition hides officeRoot), and this
+  // light lives INSIDE the cave group, so outside the CAVE it is not in the scene's light list at all.
+  // It costs one light across ~10 cave materials plus the avatar, for the seconds somebody is in here.
+  //
+  // It is deliberately NOT driven by the video's colour. Sampling frames to a 1x1 render target every
+  // frame is a real per-frame cost and a real pile of state for a difference the eye can barely make at
+  // this distance; a fixed cool white matching the screen's own cast is the authored answer.
+  //
+  // HEIGHT is the part worth stating: the light sits at 52, not at the picture's centre (106). A source
+  // at picture height rakes DOWN onto heads and leaves faces dark, which reads as a ceiling fixture. At
+  // roughly chest height on a 36-unit body it reads as the screen — which is a wall of light, not a
+  // point — and lands on the face. Its falloff exponent is set for the same reason; see SCREEN_LIGHT.
+  const screenLight = new THREE.PointLight(0xa6c2ff, SCREEN_LIGHT.intensity, SCREEN_LIGHT.distance, SCREEN_LIGHT.decay);
+  screenLight.name = "cave-screen-light";
+  screenLight.position.set(wx(W / 2), SCREEN_LIGHT.y, wz(SCREEN.inset + SCREEN_LIGHT.standoff));
+  screenLight.castShadow = false; // a shadow pass for one light in a room of ten meshes buys nothing
+  g.add(screenLight);
 
   // ---- PRESENTATION MODE: the front panel ----------------------------------------------------------
   // ONE extra mesh, built once, hidden by default and carrying no map until a share exists — so a
@@ -433,6 +454,7 @@ export function buildCave(): CaveBuild {
   g.visible = false; // NOTHING here is drawn until someone is inside — see interact/CaveTransition
   return {
     group: g,
+    screenLight,
     videoMaterials: [screenMaterial, reflectMaterial],
     presentation: { mesh: present, material: presentMaterial },
   };
