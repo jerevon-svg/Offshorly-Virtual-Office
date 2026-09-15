@@ -194,7 +194,7 @@ const params = {
   overlay: true, motion: false, preset: "A" as PresetId, captureSeconds: 30, roomCulling: true,
   envTime: "auto" as EnvTimeMode, envScenery: true, envFog: true, envSky: true,
   envWeather: "auto" as WeatherMode, envRainInOffice: true, envTransitions: true, envLightning: true,
-  cameraMode: "office" as CameraModeId,
+  cameraMode: "office" as CameraModeId, shadowCache: true,
   playerView: "third" as PlayerView,
   avatar: true, avatarLod: 1 as AvatarLod, avatarLit: true, walkSpeed: PLAYER_WALK_SPEED,
   envAudio: true, envAudioVolume: 0.7,
@@ -210,7 +210,12 @@ setStaticBatching(flags.get("batch") !== "0");
 // the whole scene a second time into a normal buffer. Read BEFORE the Renderer is built: the beauty
 // buffer's depth texture and the AO shader patch are both decided once, in its constructor.
 setSSAODepthReuse(flags.get("ao") !== "legacy");
+// SPLIT SHADOW UPDATE (shadow phase) — on by default; `?shadowcache=0` restores the single full redraw
+// per invalidation, which is what the before/after A/B is run against. Applied right after the Renderer
+// is built, below, because the flag has to be read before the first frame.
 const R = new Renderer(canvas, DESIGN_ROOM.rect);
+R.shadowCache = flags.get("shadowcache") !== "0";
+params.shadowCache = R.shadowCache;
 const mirror = new SceneMirror(world, R.scene);
 mirror.buildGroundFloor(plan);
 const shellOpts = () => ({ wallHeight: params.wallHeight, frontWall: params.frontWall, exterior: false });
@@ -399,6 +404,9 @@ const cameraModes = new CameraModes(R, plan.frame);
 // ---- avatar + ownership ------------------------------------------------------------------------
 const avatar = new Avatar({ height: BON_STANDING_HEIGHT, lit: params.avatarLit });
 R.scene.add(avatar.root);
+// Bon is a DYNAMIC shadow caster: his body is composited over the cached static shadow depth every frame
+// he moves, instead of dragging the whole ground floor through the shadow pass with him. See Renderer.
+R.addDynamicCaster(avatar.root);
 const stack = new ControllerStack();
 const navCtl = new NavigationController(avatar, stack);
 // ONE SPEED, TWO CONSUMERS. The slider drives both the click-to-walk router and the direct-control player;
@@ -409,6 +417,7 @@ const avatarState = { status: "loading…", clip: "", position: "", owner: "Idle
 function loadAvatar(): void {
   avatarState.status = `loading LOD${params.avatarLod}…`;
   avatar.load(params.avatarLod).then(() => {
+    R.markDynamicCaster(avatar.root); // the meshes only exist now — re-mark the subtree
     R.invalidateShadows(); // a body just entered the scene; it has to enter the shadow map too
     avatarState.status = `LOD${params.avatarLod} loaded · native ${avatar.nativeHeight.toFixed(2)} → ${BON_STANDING_HEIGHT} units`;
     avatarState.triangles = Math.round(avatar.triangles);
@@ -1027,6 +1036,11 @@ let editHint = "";
 
 /** ONE refresh for every editor surface: ring + outline, floor marker, lil-gui readouts, the panel. */
 function refreshEditVisuals(): void {
+  // THE EDITOR MOVES STATIC WORLD GEOMETRY, so the cached static shadow depth is stale the moment it
+  // touches anything. Before the split shadow update this was masked: every redraw was a full one, so an
+  // edited prop's shadow caught up on the next frame Bon happened to move. It no longer does, and a
+  // preview that leaves a plant's shadow behind is exactly the class of bug the cache must not introduce.
+  R.invalidateShadows();
   const pos = edit.currentPos();
   const v = edit.validateCurrent();
   const on = edit.editMode && edit.selected !== null;
@@ -1776,6 +1790,7 @@ function runCapture(seconds = params.captureSeconds): Promise<CaptureSummary> {
 bench.add(params, "overlay").name("stats overlay").onChange((v: boolean) => (overlay.visible = v));
 // The A/B switch for room-level culling. OFF restores every subtree on the very next frame, which is
 // what makes a BEFORE/AFTER capture a toggle rather than a rebuild.
+bench.add(params, "shadowCache").name("split shadow update (cached static depth)").onChange((v: boolean) => { R.shadowCache = v; R.invalidateShadows(); });
 bench.add(params, "roomCulling").name("room culling (visibility)").onChange(() => { if (!params.roomCulling) mirror.visibility.restoreAll(); R.invalidateShadows(); });
 bench.add(params, "preset", PRESETS.map((p) => p.id)).name("preset (A full · B no SSAO · C no SSAO/shadows · D no SSAO/sway)").onChange(applyPreset);
 bench.add(params, "motion").name("scripted camera motion"); bench.add(params, "captureSeconds", 5, 60, 5);
@@ -1849,8 +1864,10 @@ let crowd: Crowd | null = null;
  *  (so the rate keeps being counted) but does not ask for the redraw — which is the only way to price
  *  what that redraw costs at a given crowd size. The approved shadow behaviour is unchanged. */
 let stressFreezeShadows = false;
-/** frames on which something that casts a shadow had moved, i.e. frames the shadow map was redrawn */
+/** frames on which something that casts a shadow had moved, i.e. frames the shadow map was updated */
 let shadowRedraws = 0;
+/** ...and the subset of those that needed the FULL static redraw rather than the cheap avatar composite */
+let shadowStaticRedraws = 0;
 let framesSeen = 0;
 /** page/runtime errors, collected for the stress report (the harness reads and clears per scenario) */
 const pageErrors: string[] = [];
@@ -1866,14 +1883,26 @@ let overlayTick = 0;
  *  asking each controller, so a new interaction can never forget to opt in. */
 const lastShadowPose = new THREE.Vector3(Number.NaN, 0, 0);
 let lastShadowClip = "";
-function shadowsAreStale(): boolean {
+// THE SPLIT IS BY WHAT MOVED, not by how much. A DYNAMIC caster is a registered avatar body and nothing
+// else: it is drawn into the shadow map over a cached static depth, so it costs ~70 draws instead of the
+// whole ground floor (render/Renderer, updateShadowMaps). ANYTHING ELSE that casts a shadow — a door leaf,
+// a chair an interaction is dragging, a piece of furniture the editor moved — is part of the STATIC world
+// as far as the cache is concerned and must force a full redraw, or its shadow would sit still while it
+// moved. When in doubt the answer is worldMotion(): a needless full redraw costs milliseconds, a missed
+// one is a visible bug.
+function avatarShadowsAreStale(): boolean {
   const p = avatar.worldPosition();
   const clip = avatar.currentClip ?? "";
   const moved = Math.abs(p.x - lastShadowPose.x) > 0.01 || Math.abs(p.z - lastShadowPose.z) > 0.01 || clip !== lastShadowClip;
   lastShadowPose.set(p.x, 0, p.z);
   lastShadowClip = clip;
-  // a walking avatar animates continuously; doors and chairs report their own motion
-  return moved || navCtl.moving || door.state !== "closed" || entryDoor.state !== "closed" || gamingDoor.state !== "closed" || execDoor.state !== "closed" || cmsDoor.state !== "closed" || aiDoor.state !== "closed" || devDoor.state !== "closed" || qaDoor.state !== "closed"
+  // a walking avatar animates continuously
+  return moved || navCtl.moving || (crowd?.moving ?? false);
+}
+/** Something in the WORLD that casts a shadow is animating: doors, and every interaction that drags a
+ *  chair. These invalidate the cached static depth, exactly as they always have. */
+function worldShadowsAreStale(): boolean {
+  return door.state !== "closed" || entryDoor.state !== "closed" || gamingDoor.state !== "closed" || execDoor.state !== "closed" || cmsDoor.state !== "closed" || aiDoor.state !== "closed" || devDoor.state !== "closed" || qaDoor.state !== "closed"
     || seat.status !== "idle" || approachCtl.status !== "idle"
     || (meetingSeat?.status ?? "idle") !== "idle" || (gamingSeat?.status ?? "idle") !== "idle"
     || (hubSeat?.status ?? "idle") !== "idle" || (loungeSeat?.status ?? "idle") !== "idle"
@@ -2023,10 +2052,16 @@ function loop(): void {
   // sway is deliberately NOT a trigger — a frozen leaf shadow is invisible and it would defeat the point.
   framesSeen++;
   // The crowd casts shadows too, so a walking crowd invalidates the map exactly as the hero avatar does.
-  // The counter is what the stress report's shadow-invalidation rate is read from.
-  const shadowStale = (params.avatar && shadowsAreStale()) || (crowd?.moving ?? false);
-  if (shadowStale) shadowRedraws++;
-  if (shadowStale && !stressFreezeShadows) R.invalidateShadows();
+  // The counters are what the stress report's shadow-invalidation rate is read from.
+  const worldStale = worldShadowsAreStale();
+  // avatarShadowsAreStale() carries the pose bookkeeping, so it must run whether or not the world moved
+  const avatarStale = params.avatar ? avatarShadowsAreStale() : false;
+  if (worldStale || avatarStale) shadowRedraws++;
+  if (worldStale) shadowStaticRedraws++;
+  if (!stressFreezeShadows) {
+    if (worldStale) R.invalidateShadows();
+    else if (avatarStale) R.invalidateDynamicShadows();
+  }
   // the shadow frame follows whoever is looking: the orbit target normally, the player when he is walking
   R.shadowFocus = playerMode.active ? playerMode.body.pos : null;
   R.render();
@@ -2091,7 +2126,7 @@ const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms)
 const nextFrames = (): Promise<void> => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
 
 function stressCrowd(): Crowd {
-  if (!crowd) crowd = new Crowd(R.scene, playerStand);
+  if (!crowd) { crowd = new Crowd(R.scene, playerStand); R.addDynamicCaster(crowd.group); }
   return crowd;
 }
 
@@ -2165,19 +2200,23 @@ async function runStressScenario(sc: StressScenario, opts: { seconds?: number; a
   stressState.status = `loading ${sc.count} avatars…`;
   refresh();
   await c.spawn(spawns, { lod: params.avatarLod, labels: true, seed: 7 });
+  R.markDynamicCaster(c.group); // the cloned bodies only exist now
   c.visible = true;
   c.roaming = sc.motion;
   R.invalidateShadows();
   await wait(1500); // let the GLB parse settle, the shadow map redraw, and the crossfades finish
   await nextFrames();
 
-  shadowRedraws = 0; framesSeen = 0;
+  shadowRedraws = 0; shadowStaticRedraws = 0; framesSeen = 0;
+  R.shadowStats.staticPasses = 0; R.shadowStats.dynamicPasses = 0; R.shadowStats.fullPasses = 0; R.shadowStats.skipped = 0; R.shadowStats.frames = 0;
   stressState.status = `capturing ${seconds}s`;
   refresh();
   const frame = await runCapture(seconds);
   const scene = stressSceneSnapshot();
   const memory = stressMemory();
   const invalidationRate = framesSeen ? Math.round((shadowRedraws / framesSeen) * 1000) / 1000 : 0;
+  const staticRedrawRate = framesSeen ? Math.round((shadowStaticRedraws / framesSeen) * 1000) / 1000 : 0;
+  const shadowPasses = { ...R.shadowStats, cache: R.shadowCacheActive };
 
   // ---- attribution A: what do the avatars themselves cost? -------------------------------------
   let avatarCost: ScenarioResult["avatarCost"] = null;
@@ -2249,6 +2288,8 @@ async function runStressScenario(sc: StressScenario, opts: { seconds?: number; a
       dynamicShareMs: staticOnly ? Math.round((live.avgFrameMs - staticOnly.avgFrameMs) * 100) / 100 : null,
       liveCalls: liveSnap.drawCalls, frozenCalls: frozenSnap.drawCalls,
       liveTriangles: liveSnap.triangles, frozenTriangles: frozenSnap.triangles,
+      staticRedrawRate, cacheActive: shadowPasses.cache,
+      staticPasses: shadowPasses.staticPasses, dynamicPasses: shadowPasses.dynamicPasses, fullPasses: shadowPasses.fullPasses, passFrames: shadowPasses.frames,
     };
   }
   stressFreezeShadows = false;
@@ -2290,8 +2331,7 @@ async function runStressMatrix(opts: { seconds?: number; attribution?: boolean; 
 
 /** Put the page back exactly as the product leaves it: no crowd, no frozen shadows, OFFICE camera. */
 async function stressStop(): Promise<void> {
-  crowd?.clear();
-  crowd?.group.removeFromParent();
+  if (crowd) { R.removeDynamicCaster(crowd.group); crowd.clear(); crowd.group.removeFromParent(); }
   crowd = null;
   stressFreezeShadows = false;
   await stressSetCave(false);
@@ -2358,6 +2398,7 @@ stressGui.close();
       await stressSetCave(layout === "cave");
       const c = stressCrowd();
       await c.spawn(planPlacements(layout, count, stressPlacementDeps()), { lod: params.avatarLod, labels: true, seed: 7 });
+      R.markDynamicCaster(c.group);
       c.roaming = motion;
       R.invalidateShadows();
       return c.stats();
@@ -2368,8 +2409,15 @@ stressGui.close();
     placements: (layout: "distributed" | "hub" | "cave", count: number) => planPlacements(layout, count, stressPlacementDeps()),
     setLabels: (on: boolean) => crowd?.setLabels(on),
     /** the live shadow-map invalidation rate since the counters were last reset */
-    shadows: () => ({ frames: framesSeen, redraws: shadowRedraws, rate: framesSeen ? shadowRedraws / framesSeen : 0, frozen: stressFreezeShadows }),
-    resetShadowCounters: () => { framesSeen = 0; shadowRedraws = 0; },
+    shadows: () => ({ frames: framesSeen, redraws: shadowRedraws, staticRedraws: shadowStaticRedraws, rate: framesSeen ? shadowRedraws / framesSeen : 0, frozen: stressFreezeShadows }),
+    /** THE SPLIT SHADOW UPDATE, for the A/B rig: `setCache(false)` is the BEFORE state, live. */
+    shadowCache: {
+      enabled: () => R.shadowCache, active: () => R.shadowCacheActive,
+      setCache: (on: boolean) => { R.shadowCache = on; params.shadowCache = on; R.invalidateShadows(); refresh(); },
+      stats: () => ({ ...R.shadowStats }),
+      resetStats: () => { R.shadowStats.staticPasses = 0; R.shadowStats.dynamicPasses = 0; R.shadowStats.fullPasses = 0; R.shadowStats.skipped = 0; R.shadowStats.frames = 0; },
+    },
+    resetShadowCounters: () => { framesSeen = 0; shadowRedraws = 0; shadowStaticRedraws = 0; },
     errors: () => [...pageErrors],
     device,
     visibleMeshes: () => stressSceneSnapshot().visibleMeshes,

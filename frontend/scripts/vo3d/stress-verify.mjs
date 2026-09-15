@@ -47,6 +47,60 @@ await p.waitForTimeout(1200);
 check("CAVE exited", !(await p.evaluate(() => window.__vo3d.cave.inside())));
 await p.evaluate(() => window.__vo3d.cameraModes.set("office"));
 await p.waitForTimeout(600);
+// ---- SPLIT SHADOW UPDATE correctness -----------------------------------------------------------
+// The cache is only allowed to skip the FULL redraw when nothing static moved. These checks drive the
+// real world objects and assert that each one still forces a static pass.
+check("split shadow update is on by default", await p.evaluate(() => window.__vo3d.stress.shadowCache.enabled()));
+check("split shadow update is active (a dynamic caster is registered)", await p.evaluate(() => window.__vo3d.stress.shadowCache.active()));
+
+const passes = async (fn) => {
+  await p.evaluate(() => window.__vo3d.stress.shadowCache.resetStats());
+  await fn();
+  await p.waitForTimeout(700);
+  return p.evaluate(() => window.__vo3d.stress.shadowCache.stats());
+};
+// an idle world must settle to NO shadow work at all
+const idle = await passes(async () => {});
+check("an idle world stops updating the shadow map entirely", idle.staticPasses === 0 && idle.dynamicPasses === 0 && idle.skipped > 0);
+// a walking avatar must update shadows, but WITHOUT redrawing the static world
+const walking = await passes(async () => { await p.evaluate(() => window.__vo3d.nav.walkToGround(760, 690)); });
+check("a walking avatar composites its shadow every frame", walking.dynamicPasses > 5);
+check("a walking avatar does NOT redraw the static world", walking.staticPasses <= 2);
+await p.waitForTimeout(2500);
+// a SEAT interaction drags a CHAIR — static-world geometry that the cache must not freeze. It also
+// opens the Design Room door on the way, so this covers both animating world objects at once.
+await p.evaluate(() => window.__vo3d.cameraModes.set("office"));
+const seating = await passes(async () => { await p.evaluate(() => window.__vo3d.seat.sit()); });
+check("an animating chair/door redraws the static world every frame", seating.staticPasses + seating.fullPasses > 3);
+// ...and because it invalidates on EVERY frame, the split must stand down and let three do one plain
+// full redraw instead of paying for a probe render + static pass + blit + composite (the thrash guard).
+check("continuous static motion falls back to the plain full redraw", seating.fullPasses > 3);
+await p.evaluate(() => window.__vo3d.seat.stand());
+await p.waitForTimeout(3000);
+await p.evaluate(() => window.__vo3d.seat.reset());
+await p.waitForTimeout(800);
+// the EDITOR moving furniture must force a full redraw
+const edited = await passes(async () => { await p.evaluate(() => window.__vo3d.edit.movePlantTo(300, 300)); });
+check("an editor move redraws the static world", edited.staticPasses + edited.fullPasses >= 1);
+await p.evaluate(() => { window.__vo3d.edit.cancel(); window.__vo3d.edit.setEditMode(false); });
+// a TIME-OF-DAY change moves the sun: full redraw
+const sun = await passes(async () => { await p.evaluate(() => window.__vo3d.env.setTime("sunset")); });
+check("a Day→Sunset change redraws the static world", sun.staticPasses + sun.fullPasses >= 1);
+const night = await passes(async () => { await p.evaluate(() => window.__vo3d.env.setTime("night")); });
+check("a Sunset→Night change redraws the static world", night.staticPasses + night.fullPasses >= 1);
+await p.evaluate(() => window.__vo3d.env.setTime("auto"));
+// a WEATHER change re-grades the sun: full redraw
+const wet = await passes(async () => { await p.evaluate(() => window.__vo3d.weather.setWeather("rain")); });
+check("a weather change redraws the static world", wet.staticPasses + wet.fullPasses >= 1);
+await p.evaluate(() => window.__vo3d.weather.setWeather("auto"));
+// turning the cache OFF must restore the pre-split behaviour
+await p.evaluate(() => window.__vo3d.stress.shadowCache.setCache(false));
+await p.waitForTimeout(500);
+check("cache off reports inactive", !(await p.evaluate(() => window.__vo3d.stress.shadowCache.active())));
+await p.evaluate(() => window.__vo3d.stress.shadowCache.setCache(true));
+await p.waitForTimeout(500);
+check("cache back on reports active", await p.evaluate(() => window.__vo3d.stress.shadowCache.active()));
+
 // shadow counters still tick without stress
 const sh = await p.evaluate(() => window.__vo3d.stress.shadows());
 check("shadow counters live without stress mode", sh.frames > 0);

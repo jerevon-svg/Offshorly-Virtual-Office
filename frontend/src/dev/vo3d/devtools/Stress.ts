@@ -183,6 +183,8 @@ export type ScenarioResult = {
     invalidationRate: number; frozenFrameMs: number; liveFrameMs: number; deltaMs: number; sharePct: number;
     staticOnlyFrameMs: number | null; staticShareMs: number | null; dynamicShareMs: number | null;
     liveCalls: number | null; frozenCalls: number | null; liveTriangles: number | null; frozenTriangles: number | null;
+    /** the split shadow update: how often the FULL static redraw was actually needed, and which path ran */
+    staticRedrawRate: number; cacheActive: boolean; staticPasses: number; dynamicPasses: number; fullPasses: number; passFrames: number;
   } | null;
   errors: string[];
   startedAt: string;

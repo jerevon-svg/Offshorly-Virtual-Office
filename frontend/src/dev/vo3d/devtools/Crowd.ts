@@ -33,6 +33,7 @@ import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { clone as cloneSkinned } from "three/examples/jsm/utils/SkeletonUtils.js";
 import { BON_STANDING_HEIGHT, CAST_IDS, CLIP_IDLE, CLIP_WALK, DRACO_PATH, castLods, type AvatarLod } from "../adapters/v1Avatar";
 import { dist, headingFor, stepAngle, type Vec2 } from "../core/coords";
+import { DYNAMIC_CASTER_LAYER } from "../render/Renderer";
 import { mulberry32 } from "./Stress";
 
 /** walk speed, in world units/s — the figure the `walking` clip's stride was authored for */
@@ -316,7 +317,14 @@ export class Crowd {
   /** MEASUREMENT ONLY. Drop the crowd out of the SHADOW pass while leaving it in the beauty pass, so a
    *  capture can price the dynamic half of a shadow-map redraw against the static half. */
   setCastShadow(on: boolean): void {
-    this.group.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.castShadow = on; });
+    this.group.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      m.castShadow = on;
+      // The split shadow update selects dynamic casters by LAYER, not by castShadow, so a measurement
+      // that only cleared castShadow would still see them composited. Both have to move together.
+      if (on) o.layers.enable(DYNAMIC_CASTER_LAYER); else o.layers.disable(DYNAMIC_CASTER_LAYER);
+    });
   }
 
   setLabels(on: boolean): void {

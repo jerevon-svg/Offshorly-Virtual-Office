@@ -11,6 +11,7 @@
 //   node scripts/vo3d/stress.mjs --only s7-70-cave    # one scenario
 //   node scripts/vo3d/stress.mjs --seconds 10         # shorter captures (smoke run)
 //   node scripts/vo3d/stress.mjs --no-attribution     # skip the crowd/shadow A/B sub-captures
+//   node scripts/vo3d/stress.mjs --url '...vo3d.html?shadowcache=0'   # the pre-split BEFORE state
 //
 // HEADED BY DEFAULT, ON PURPOSE. Headless Chromium falls back to SwiftShader (a software rasteriser),
 // which would produce numbers that say nothing about the product. --headless is available for CI-ish
@@ -206,6 +207,9 @@ function renderMarkdown(report, table) {
       lines.push(`- Shadow invalidation: redrawn on ${(r.shadowCost.invalidationRate * 100).toFixed(1)}% of frames · frozen ${r.shadowCost.frozenFrameMs} ms → live ${r.shadowCost.liveFrameMs} ms = **${r.shadowCost.deltaMs} ms (${r.shadowCost.sharePct}% of the frame)**`);
       if (r.shadowCost.staticOnlyFrameMs !== null) {
         lines.push(`- Shadow split: static casters only ${r.shadowCost.staticOnlyFrameMs} ms → static world share **${r.shadowCost.staticShareMs} ms**, avatar share **${r.shadowCost.dynamicShareMs} ms**`);
+      }
+      if (r.shadowCost.cacheActive !== undefined) {
+        lines.push(`- Shadow update path: ${r.shadowCost.cacheActive ? "SPLIT (cached static depth + avatar composite)" : "FULL redraw per invalidation"} · full static redraws on ${(r.shadowCost.staticRedrawRate * 100).toFixed(1)}% of frames · ${r.shadowCost.staticPasses} static / ${r.shadowCost.dynamicPasses} composite / ${r.shadowCost.fullPasses} full-redraw passes over ${r.shadowCost.passFrames} frames`);
       }
       if (r.shadowCost.liveCalls !== null) {
         lines.push(`- Shadow pass cost in submissions: ${r.shadowCost.frozenCalls} → ${r.shadowCost.liveCalls} calls (+${r.shadowCost.liveCalls - r.shadowCost.frozenCalls}) · ${r.shadowCost.frozenTriangles.toLocaleString()} → ${r.shadowCost.liveTriangles.toLocaleString()} triangles`);
