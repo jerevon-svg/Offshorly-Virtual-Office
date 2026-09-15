@@ -13,6 +13,9 @@ frontend/*.local
 frontend/.env
 frontend/.env.local
 
+# Network stress harness output (frontend/scripts/netstress) — captures, not source
+frontend/scripts/netstress/results/
+
 # Chat backend (backend/)
 backend/node_modules
 backend/dist

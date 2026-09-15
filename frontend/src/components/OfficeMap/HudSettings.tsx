@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import HudIcon from "../HudIcon";
 import { BackgroundMusicControl } from "../../audio/BackgroundMusicControl";
+import { HudGraphicsSettings } from "./HudGraphicsSettings";
 import type { Phase } from "../../data/officePhase";
 import styles from "./HudSettings.module.css";
 
@@ -11,10 +12,12 @@ import styles from "./HudSettings.module.css";
 // border, shadow, entry animation and close button — and the dock, the Toucan and the minimized
 // chat-head rail step aside for it through the EXISTING officeToolOpen path (OfficeMap.tsx).
 //
-// EVERY ROW IS A REAL, WORKING CONTROL. Display and Graphics deliberately still have no rows:
-// this build has no user-settable display or graphics preference to expose (motion reduction
-// comes from the OS via prefers-reduced-motion, and renderer quality is derived from device pixel
-// ratio), and shipping dead toggles would be worse than shipping none.
+// EVERY ROW IS A REAL, WORKING CONTROL. That rule is why Graphics & Display used to be absent
+// entirely: there was no user-settable graphics preference to expose, and shipping dead toggles would
+// have been worse than shipping none. The V2 renderer now has one — three modes and a set of
+// individually safe switches, all of them existing renderer capabilities — so the section is here, in
+// HudGraphicsSettings.tsx, built out of this file's own card/row classes. It is NOT in the Room
+// Editor: the Room Editor changes the office, this changes how the office is drawn for you.
 //
 // Sound is the existing BackgroundMusicControl, mounted a second time. That is safe and
 // intentional: the audio itself lives in a singleton outside the component
@@ -100,6 +103,8 @@ export function HudSettings({ onClose, lighting, onResetHubDemo, devTools }: Hud
               </div>
             </div>
           </section>
+
+          <HudGraphicsSettings />
 
           {lighting && (
             <section className={styles.section} aria-label="Appearance">

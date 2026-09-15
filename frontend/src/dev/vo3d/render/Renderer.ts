@@ -63,6 +63,38 @@ const AO_SCALE = 0.5;
 /** Fallback AO strength. The environment overwrites this per phase the moment it applies a grade. */
 const AO_STRENGTH = 0.6;
 
+/** Every buffer dimension one resize decides, as arithmetic — no GL, no window, no renderer.
+ *
+ *  It is split out because the sizes are the whole substance of the render-scale lever and they are
+ *  otherwise only observable inside a live WebGL context. See renderBufferSizes.test.ts, which pins
+ *  what each Smooth rung actually allocates. */
+export interface RenderBufferSizes {
+  /** what BOTH the renderer and the composer must be told — see resize() for why that is not automatic */
+  pixelRatio: number;
+  /** the beauty/composer render targets, in device pixels */
+  beauty: { width: number; height: number };
+  /** the SSAO/blur targets, in device pixels */
+  ao: { width: number; height: number };
+}
+
+/**
+ * Resolve the buffer dimensions for one framing.
+ *
+ * `renderScale` multiplies BOTH halves, which is the point of the lever: the expensive buffers shrink
+ * with it. At renderScale 1 every number here is exactly what the approved Full Graphics build
+ * allocated, which is what keeps the benchmark untouched — `aoScale` is still applied to the CSS size
+ * rather than to the drawing buffer, preserving the existing (pre-existing) relationship between the
+ * two rather than quietly re-deriving the AO resolution while fixing the scale.
+ */
+export function renderBufferSizes(cssWidth: number, cssHeight: number, devicePixelRatio: number, renderScale: number, aoScale: number): RenderBufferSizes {
+  const pixelRatio = Math.min(devicePixelRatio, 2) * renderScale;
+  return {
+    pixelRatio,
+    beauty: { width: Math.round(cssWidth * pixelRatio), height: Math.round(cssHeight * pixelRatio) },
+    ao: { width: Math.round(cssWidth * aoScale * renderScale), height: Math.round(cssHeight * aoScale * renderScale) },
+  };
+}
+
 // WORLD-SCALE DEPTH RANGE. The camera is orthographic, so its distance from the target changes nothing
 // about framing — only which slice of the world survives the near/far clip. With the office alone, 1500 /
 // 4000 was ample. With an exterior world around it (±5.4k of terrain, see world/campus) that slice clipped
@@ -101,6 +133,16 @@ export class Renderer {
   lightParams: LightParams = { ...DEFAULT_LIGHT };
   /** THE FULL GRAPHICS BASELINE. See the SSAO note at the top of this file for what it costs and why. */
   ssaoEnabled = true;
+  /** GRAPHICS & DISPLAY — the multiplier on the DPR cap. 1 is the approved Full Graphics baseline; a
+   *  smaller value draws the same picture at fewer samples. It is the FIRST lever Smooth spends
+   *  (services/render/graphicsQuality) precisely because nothing leaves the frame when it moves. */
+  private renderScale = 1;
+  /** THE COMPOSER'S OWN PIXEL RATIO, mirrored here because EffectComposer offers no getter for it.
+   *  See resize() for why it has to be pushed at all. */
+  private composerPixelRatio = 0;
+  /** Resolution the AO is computed at, as a fraction of the drawing buffer. AO_SCALE is the Full
+   *  baseline; Smooth may lower it before it gives AO up entirely. */
+  private aoScale = AO_SCALE;
   /** Optional camera POLICY hook, run every frame immediately after OrbitControls has moved the camera
    *  and before anything reads the target. This is where OFFICE mode's pan/zoom bounds are enforced —
    *  the renderer itself stays policy-free. See render/CameraModes. */
@@ -412,12 +454,62 @@ export class Renderer {
     this.renderer.shadowMap.needsUpdate = on;
     this.scene.traverse((o) => { const m = (o as THREE.Mesh).material as THREE.Material | undefined; if (m) m.needsUpdate = true; });
   }
+  /** The DPR the drawing buffer is currently allocated at — read back by the graphics status overlay. */
+  get pixelRatio(): number {
+    return this.renderer.getPixelRatio();
+  }
+  /** GRAPHICS & DISPLAY lever 1 — internal resolution. Clamped so a stored or hand-edited preference
+   *  can never ask for a buffer that is either pointless (>1) or unreadable (<0.5). */
+  setRenderScale(scale: number): void {
+    const next = Math.min(1, Math.max(0.5, scale));
+    if (next === this.renderScale) return;
+    this.renderScale = next;
+    this.resize();
+  }
+  /** GRAPHICS & DISPLAY lever 2 — how many pixels the AO is computed over. Note this is a WEAK lever on
+   *  its own: the slice-4 measurement showed AO cost is scene submission, not fill (quartering the AO
+   *  buffer changed a 34.3 ms frame by nothing). It is here because it is free to move, not because it
+   *  is where the time goes — the time goes to the toggle below. */
+  setAoResolutionScale(scale: number): void {
+    const next = Math.min(1, Math.max(0.2, scale));
+    if (next === this.aoScale) return;
+    this.aoScale = next;
+    this.ssao.setSize(Math.round(window.innerWidth * next), Math.round(window.innerHeight * next));
+  }
+  /** GRAPHICS & DISPLAY lever 3 — shadow map resolution. Dropping the old map is what makes three
+   *  reallocate at the new size; the cached static depth target notices the mismatch on the next
+   *  update and reallocates itself (see updateShadowMaps). Bias, radius, filtering, the caster set and
+   *  the light are all untouched — this is resolution and nothing else. */
+  setShadowMapSize(size: number): void {
+    if (this.key.shadow.mapSize.width === size) return;
+    this.key.shadow.mapSize.set(size, size);
+    this.key.shadow.map?.dispose();
+    this.key.shadow.map = null;
+    this.invalidateShadows();
+  }
   resize(): void {
+    const size = renderBufferSizes(window.innerWidth, window.innerHeight, window.devicePixelRatio, this.renderScale, this.aoScale);
+    this.renderer.setPixelRatio(size.pixelRatio);
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.playerCamera.aspect = window.innerWidth / window.innerHeight;
     this.playerCamera.updateProjectionMatrix();
+    // THE COMPOSER DOES NOT FOLLOW THE RENDERER. EffectComposer samples renderer.getPixelRatio() ONCE,
+    // in its constructor — and when it is handed a render target of its own it does not sample it at
+    // all, it pins the ratio to 1. This build hands it one: the beauty buffer carries the depth texture
+    // the AO reads (see SSAOFromDepth). So without this call the composer's targets stay at the CSS
+    // size for the life of the page, and changing render scale only resized the CANVAS — the scene was
+    // still being rasterised at full resolution and merely blitted down at the end, which is the
+    // opposite of what the lever is for. Pushed BEFORE setSize so the targets are allocated once, at
+    // the final dimensions, rather than resized twice on a rung change.
+    if (this.composerPixelRatio !== size.pixelRatio) {
+      this.composerPixelRatio = size.pixelRatio;
+      this.composer.setPixelRatio(size.pixelRatio);
+    }
     this.composer.setSize(window.innerWidth, window.innerHeight);
-    this.ssao.setSize(Math.round(window.innerWidth * AO_SCALE), Math.round(window.innerHeight * AO_SCALE));
+    // AFTER composer.setSize, which hands every pass the FULL buffer size — the AO runs at its own
+    // fraction of it and has to have the last word. Scaled by renderScale for the same reason the
+    // beauty buffer is: at scale 1 this is byte-for-byte the Full Graphics allocation.
+    this.ssao.setSize(size.ao.width, size.ao.height);
     this.placeCamera();
   }
   // ============================ SPLIT SHADOW UPDATE ===============================================

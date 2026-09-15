@@ -81,6 +81,8 @@ import { DEFAULT_LIGHT, Renderer } from "../render/Renderer";
 import { SceneMirror } from "../render/SceneMirror";
 import { setStaticBatching, staticBatchingEnabled } from "../render/StaticBatch";
 import { setSSAODepthReuse, ssaoDepthReuseEnabled } from "../render/SSAOFromDepth";
+import { createGraphicsEngine } from "../render/GraphicsEngine";
+import { GraphicsController } from "../../../services/render/graphicsController";
 import { Avatar } from "../avatar/Avatar";
 import { ControllerStack, NavigationController } from "../avatar/Controller";
 import { SeatInteraction } from "../interact/Seat";
@@ -427,6 +429,7 @@ const chairSeat = world.get(CHAIR_4_ID).capabilities.seat!;
 avatar.setPosition(chairSeat.approach);
 avatar.setYaw(Math.PI / 2);
 loadAvatar();
+
 
 // ---- devtools: nav debug, overlay, bench -------------------------------------------------------
 // the overlay must show the layer the avatar ACTUALLY walks on — derived inside the six reconstructed
@@ -1776,6 +1779,42 @@ shareGui.add(caveState, "shareSize").name("source").disable().listen();
 shareGui.add(caveState, "liveCalls").name("calls broadcast").disable().listen();
 shareGui.add(caveState, "shareNote").name("note").disable().listen();
 
+// ---- GRAPHICS & DISPLAY ------------------------------------------------------------------------
+// The user's Settings → Graphics & Display preference, applied to THIS renderer. The controller owns
+// the mode and (in Smooth only) the adaptive rung; render/GraphicsEngine owns what each setting does
+// here. Both live outside this file on purpose — the product's settings panel drives the same two
+// modules through the same persisted store, so there is one graphics system rather than a dev one and
+// a product one that drift.
+const graphics = new GraphicsController({
+  engine: createGraphicsEngine(R, {
+    sway: mirror.sway,
+    env,
+    // A USER-ONLY lever (Custom's "Character detail"). The adaptive ladder never calls this: reloading
+    // a GLB is an asset swap, and Smooth is not allowed to reach into loaded world content.
+    setAvatarLod: (lod) => {
+      if (params.avatarLod === lod) return;
+      params.avatarLod = lod;
+      loadAvatar();
+      refresh();
+    },
+  }),
+  startedAtMs: performance.now(),
+});
+const graphicsState = { mode: "—", quality: "—", frame: "—", last: "—" };
+// A resize changes what a frame COSTS (a different drawing buffer, a different number of rooms in
+// view), and a backgrounded tab stops producing frames at all. Measuring across either boundary is
+// measuring nothing, so the window is thrown away — the current quality is kept, only the evidence is.
+window.addEventListener("resize", () => graphics.resetMeasurement(performance.now()));
+document.addEventListener("visibilitychange", () => graphics.resetMeasurement(performance.now()));
+
+// The dev READOUT for it. Read-only: the real control surface is the product's Settings → Graphics &
+// Display panel, which writes the same persisted preference this controller is already listening to.
+const graphicsGui = gui.addFolder("Graphics & Display");
+graphicsGui.add(graphicsState, "mode").name("mode (set in Settings)").disable().listen();
+graphicsGui.add(graphicsState, "quality").name("applied").disable().listen();
+graphicsGui.add(graphicsState, "frame").name("sustained frame").disable().listen();
+graphicsGui.add(graphicsState, "last").name("last adaptation").disable().listen();
+
 const bench = gui.addFolder("Benchmark");
 function applyPreset(id: PresetId): void {
   const pr = PRESETS.find((x) => x.id === id)!;
@@ -1914,6 +1953,18 @@ function loop(): void {
   const now = performance.now();
   const dt = Math.min(250, now - lastFrame);
   lastFrame = now;
+  // SMOOTH's measurement, AND THE ONE PLACE A RUNG CHANGE IS ALLOWED TO LAND. `dt` is the frame that
+  // just finished, so sampling it here measures exactly what sampling it at the bottom did.
+  //
+  // IT HAS TO RUN BEFORE R.render(), NOT AFTER IT. A change of render scale calls Renderer.resize(),
+  // and resizing the canvas REALLOCATES the WebGL drawing buffer, which discards whatever is in it.
+  // Run from the bottom of the loop, that wipes the frame this callback had just drawn, and the
+  // browser then composites an empty canvas — one white flash, exactly on a rung transition, which is
+  // what this ordering was reported for. Adapting first and drawing afterwards means the new buffer is
+  // always filled before the frame is presented. (The store-listener path — a user picking a setting
+  // in Settings — resizes BETWEEN frames, like a window resize always has, and is unaffected either
+  // way.) A no-op in Full and Custom: the controller does not even keep a window outside Smooth.
+  graphics.frame(dt, now);
   const t = clock.update().getElapsed();
   if (params.motion) scriptedMotion(t);
   mirror.sway.update(t);
@@ -2097,6 +2148,11 @@ function loop(): void {
       caveState.shareNote = cavePresentation.state.note || caveLiveShare.state.note || "";
     }
     if (params.playerView !== playerMode.view) { params.playerView = playerMode.view; refresh(); }
+    const gs = graphics.status();
+    graphicsState.mode = gs.mode;
+    graphicsState.quality = gs.mode === "smooth" ? `rung ${gs.level}/3 · scale ${gs.settings.renderScale} · AO ${gs.settings.ambientOcclusion ? "on" : "off"} · shadows ${gs.settings.shadowMapSize}` : `scale ${gs.settings.renderScale} · AO ${gs.settings.ambientOcclusion ? "on" : "off"} · shadows ${gs.settings.shadows ? gs.settings.shadowMapSize : "off"}`;
+    graphicsState.frame = gs.medianFrameMs === null ? "—" : `${gs.medianFrameMs.toFixed(1)} ms median`;
+    graphicsState.last = gs.lastAdaptation ? `${gs.lastAdaptation.action} ${gs.lastAdaptation.from}→${gs.lastAdaptation.to} at ${gs.lastAdaptation.medianMs.toFixed(1)} ms` : "—";
     envState.clock = formatManila(timeOfDay.hourDecimal);
     envState.wind = env.wind.toFixed(2);
     envState.wetness = env.wetness.toFixed(2);
@@ -2158,6 +2214,9 @@ async function stressSetCave(inside: boolean): Promise<void> {
 
 /** FULL GRAPHICS, asserted rather than assumed. */
 function stressApplyFullGraphics(): void {
+  // The capture has to happen at the approved benchmark whatever this machine's own preference says —
+  // a number measured at an adapted rung measures the adaptation. The pin does NOT persist.
+  graphics.pinMode("full");
   applyPreset("A");
   params.motion = false; // scripted camera motion off: the camera must not add variance to the capture
   if (!params.roomCulling) { params.roomCulling = true; refresh(); }

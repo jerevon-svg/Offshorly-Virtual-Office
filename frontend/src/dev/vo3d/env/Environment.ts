@@ -118,6 +118,14 @@ export class Environment {
   private readonly shown: EnvPreset;
   private readonly targetRain: RainParams = { perMillion: 0, opacity: 0, speed: 0, length: 1 };
   private readonly shownRain: RainParams = { perMillion: 0, opacity: 0, speed: 0, length: 1 };
+  /** GRAPHICS & DISPLAY — the shownRain above, after the particle budget has been applied to its
+   *  density. A scratch object rather than a literal so commit() still allocates nothing per frame. */
+  private readonly budgetedRain: RainParams = { perMillion: 0, opacity: 0, speed: 0, length: 1 };
+  /** GRAPHICS & DISPLAY — 0..1 density multiplier on the rain field, and the bolt's own visibility.
+   *  This is a PARTICLE budget only: the weather GRADE (wetness, wind, sky colour, the lightning flash
+   *  that lights the office) is the approved look and is never touched by it, so lowering the budget
+   *  thins the rain rather than changing the weather. */
+  private _particleBudget = 1;
   private targetWetness = 0;
   private shownWetness = 0;
   private targetWind = 0;
@@ -237,6 +245,19 @@ export class Environment {
   set rainInOffice(on: boolean) {
     this._rainInOffice = on;
     if (this.current) this.apply(this.current, true);
+  }
+  /** GRAPHICS & DISPLAY — see the field comment. 1 is the approved Full Graphics density. */
+  get particleBudget(): number {
+    return this._particleBudget;
+  }
+  set particleBudget(v: number) {
+    const next = Math.min(1, Math.max(0, v));
+    if (next === this._particleBudget) return;
+    this._particleBudget = next;
+    // The bolt's GEOMETRY goes with the particles; its FLASH does not — a storm that stops lighting the
+    // room is a different weather, not a cheaper one.
+    this.bolt.object.visible = next > 0;
+    this.commit();
   }
   /** draw stats for the bench readout */
   get rainStats(): { draws: number; instances: number; triangles: number } {
@@ -402,7 +423,14 @@ export class Environment {
 
   /** Push whatever `shown` currently is at the world. */
   private commit(): void {
-    this.rain.setParams(this.shownRain);
+    if (this._particleBudget >= 1) this.rain.setParams(this.shownRain);
+    else {
+      this.budgetedRain.perMillion = this.shownRain.perMillion * this._particleBudget;
+      this.budgetedRain.opacity = this.shownRain.opacity;
+      this.budgetedRain.speed = this.shownRain.speed;
+      this.budgetedRain.length = this.shownRain.length;
+      this.rain.setParams(this.budgetedRain);
+    }
     this.scenery?.applyWetness(this.shownWetness);
     this.scenery?.applyWind(this.shownWind);
     this.write(this.shown);
