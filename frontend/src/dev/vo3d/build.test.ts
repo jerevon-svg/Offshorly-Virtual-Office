@@ -12,7 +12,11 @@ describe("vo3d build — Design Room mirrors the world deterministically", () =>
     mirror.buildRoom(DESIGN_ROOM, { wallHeight: SHELL.wallHeight, frontWall: "low" });
     const count = (o: THREE.Object3D) => { let m = 0, t = 0; o.traverse((c) => { const mm = c as THREE.Mesh; if (mm.isMesh) { m++; const idx = mm.geometry.getIndex(); const n = idx ? idx.count / 3 : mm.geometry.getAttribute("position").count / 3; t += (mm as THREE.InstancedMesh).isInstancedMesh ? n * (mm as THREE.InstancedMesh).count : n; } }); return { m, t: Math.round(t) }; };
     const a = count(mirror.root);
-    expect(a.m).toBeGreaterThan(800); expect(a.t).toBeGreaterThan(100000);
+    // 600, not the 800 this asserted before foliage batching: the Design Room's ~270 blade leaves are
+    // no longer meshes at all (build/plants `leaf()` leaves an Object3D anchor, render/Foliage draws the
+    // lot as two InstancedMeshes). The TRIANGLE floor is untouched on purpose — instancing removes draw
+    // calls, never geometry, so a drop here would mean foliage had actually gone missing.
+    expect(a.m).toBeGreaterThan(600); expect(a.t).toBeGreaterThan(100000);
     // shell group sits at the room's world origin; entity views at their world positions
     const roomGroup = mirror.root.getObjectByName(`room:${DESIGN_ROOM.id}`)!;
     expect(roomGroup.children[0].position.x).toBeCloseTo(RECT.x, 6);

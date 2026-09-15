@@ -32,7 +32,7 @@ import type { Entity } from "../world/WorldState";
 import type { Facing } from "../core/coords";
 import { Baker, cyl, lathe, placed, localSize, rbox, rnd, sphereGeo } from "./helpers";
 import { contactShadowMat, emissiveMat, fabric, glowMat, mat, metal, plastic, type MatKey } from "../render/Materials";
-import { foliage, leafGeometry } from "./plants";
+import { leafAnchor } from "./plants";
 import { laptop, monitor, mug } from "./props";
 import { SOFA_ARM_W, SOFA_CUSHION_GAP, SOFA_CUSHION_MARGIN, sofaCushionZ } from "./furniture";
 
@@ -89,17 +89,15 @@ export function neonLine(g: THREE.Group, w: number, h: number, d: number, x: num
 /** a run of low broadleaf foliage in a trough — the bay bench's centre planter, and the same routine
  *  build/dev.ts uses to green the north run's ledge */
 export function troughPlanting(g: THREE.Group, x0: number, x1: number, y: number, z: number, spread: number): void {
-  const geo = leafGeometry();
   const n = Math.max(3, Math.round((x1 - x0) / 7));
   for (let i = 0; i < n; i++) {
     const cx = x0 + ((x1 - x0) * (i + 0.5)) / n;
     for (let j = 0; j < 5; j++) {
-      const leaf = new THREE.Mesh(geo, foliage(j % 2 === 0));
+      const leaf = leafAnchor(j % 2 === 0, false);
       const a = (j / 5) * Math.PI * 2 + rnd() * 0.7;
       leaf.position.set(cx + Math.cos(a) * spread * 0.3, y, z + Math.sin(a) * spread * 0.3);
       leaf.rotation.set(-0.95 - rnd() * 0.5, a, 0);
       leaf.scale.setScalar(2.4 + rnd() * 1.3);
-      leaf.castShadow = false;
       g.add(leaf);
     }
   }
@@ -110,9 +108,8 @@ function deskPot(g: THREE.Group, cx: number, y0: number, cz: number, r: number):
   const p = new THREE.Group();
   p.position.set(cx, y0, cz);
   p.add(lathe([[r * 0.7, 0], [r * 0.8, 0.4], [r, r * 1.4], [r * 0.92, r * 1.4]], ink("devInkDeep"), 0, 0, 0, 14));
-  const geo = leafGeometry();
   for (let i = 0; i < 11; i++) {
-    const leaf = new THREE.Mesh(geo, foliage(i % 2 === 0));
+    const leaf = leafAnchor(i % 2 === 0, false);
     const a = (i / 11) * Math.PI * 2 + rnd() * 0.5;
     leaf.position.set(Math.cos(a) * r * 0.25, r * 1.35, Math.sin(a) * r * 0.25);
     leaf.rotation.set(-0.85 - rnd() * 0.6, a, 0);

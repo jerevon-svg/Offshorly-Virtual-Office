@@ -1817,6 +1817,7 @@ function loop(): void {
   const t = clock.update().getElapsed();
   if (params.motion) scriptedMotion(t);
   mirror.sway.update(t);
+  mirror.foliage.update(); // blade batches follow the sway pivots; a no-op while sway is off
   mirror.ambient.update(t, dt / 1000); // powered-surface idle animation (screens, sensors, status strips)
   applyEnvPhase(); // V1's clock is re-read at most twice a minute and only writes when the phase changes
   // THE ENVIRONMENT'S OWN CLOCK: a travelling grade (Clear→Rain, Day→Sunset), the storm scheduler and the

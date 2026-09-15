@@ -1,7 +1,7 @@
 // vo3d build — tiered plant family (promoted from designRoom3d/build.ts). Positions are WORLD units.
 // Sway nodes are pushed into the caller's array and registered per entity by the scene mirror.
 import * as THREE from "three";
-import { cyl, rbox, rnd, shadowed } from "./helpers";
+import { cyl, rbox, rnd } from "./helpers";
 import { mat, metal, type MatKey } from "../render/Materials";
 import { pot } from "./props";
 import type { SwayNode } from "../render/Sway";
@@ -42,15 +42,48 @@ export function leafGeometry(): THREE.ShapeGeometry {
 export const foliage = (light: boolean) => mat(light ? "foliageLight" : "foliage", 0.85, { side: THREE.DoubleSide });
 const stemMat = () => mat("greenDark", 0.9);
 
-/** A blade leaf on its own pivot at (x, y, z) inside `parent`; optional sway node. */
+/** userData tag marking a LEAF ANCHOR: a transform-only node standing where one blade's mesh used to be.
+ *  1 = the light foliage material, 0 = the dark one. render/Foliage collects every anchor under a built
+ *  group into one InstancedMesh per material — see the note on `leaf()` below. */
+export const FOLIAGE_KEY = "vo3dLeaf";
+/** Anchor code: bit 0 = the light foliage material, bit 1 = this blade casts/receives shadow.
+ *  Batches are keyed by the code, so a planter's non-casting trough leaves can never be merged into a
+ *  floor plant's casting canopy and quietly gain a shadow the approved build does not have. */
+export const foliageCode = (light: boolean, shadows: boolean): number => (light ? 1 : 0) | (shadows ? 2 : 0);
+
+/** A blade standing where a leaf Mesh used to: the same local transform, no render-list entry.
+ *  `shadows` mirrors what the mesh it replaces did — floor-plant blades were `shadowed()`, the planter
+ *  and desk-trough leaves in the *-furniture builders were not. */
+export function leafAnchor(light: boolean, shadows = true): THREE.Object3D {
+  const o = new THREE.Object3D();
+  o.userData[FOLIAGE_KEY] = foliageCode(light, shadows);
+  return o;
+}
+
+/** A blade leaf on its own pivot at (x, y, z) inside `parent`; optional sway node.
+ *
+ *  THE BLADE ITSELF IS NOT A MESH. There are 3,760 of them in the ground floor, all sharing one
+ *  6-segment ShapeGeometry and one of two materials — 45% of the world's draw calls for 1.8% of its
+ *  triangles, re-submitted a second time by SSAO's normal pass and a third by the shadow map. So the
+ *  blade is an ANCHOR: a plain Object3D carrying exactly the local transform the mesh used to carry
+ *  (scale + droop), which render/Foliage reads back out of `matrixWorld` into an instance matrix.
+ *
+ *  THE PIVOT STAYS A REAL NODE, and its sway node with it. That is the whole point: the approved motion
+ *  is a three-deep chain (trunk → branch → leaf pivot) of independent sinusoids, and reproducing that
+ *  composition in a vertex shader would be re-deriving an approved look. Driving the instance matrices
+ *  from the SAME pivots keeps the motion bit-for-bit what it was and costs one matrix copy per blade,
+ *  not one draw call. An Object3D is not renderable, so it never reaches the render list, the normal
+ *  pass or the shadow map — only the batch does. */
 function leaf(parent: THREE.Object3D, x: number, y: number, z: number, size: number, rotY: number, droop: number, sway: SwayNode[] | null, amp: number, freq: number): THREE.Group {
   const pivot = new THREE.Group();
   pivot.position.set(x, y, z);
   pivot.rotation.y = rotY;
-  const l = new THREE.Mesh(leafGeometry(), foliage(rnd() > 0.45));
+  // rnd() is consumed in exactly the order it was when this built a Mesh — the whole office is seeded
+  // (build/helpers resetSeed), so a reordered draw here would re-roll every plant in the room.
+  const light = rnd() > 0.45;
+  const l = leafAnchor(light); // shadowed(), as the Mesh it replaces was
   l.scale.set(size * 0.72, size * 1.05, 1);
   l.rotation.x = droop;
-  shadowed(l);
   pivot.add(l);
   parent.add(pivot);
   if (sway) sway.push({ obj: pivot, axis: "x", amp, freq, phase: rnd() * Math.PI * 2, base: 0 });

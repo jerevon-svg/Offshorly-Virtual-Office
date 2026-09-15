@@ -19,7 +19,7 @@ import type { Entity } from "../world/WorldState";
 import type { Facing } from "../core/coords";
 import { Baker, cyl, lathe, placed, localSize, rbox, rnd, sphereGeo } from "./helpers";
 import { canvas2d, contactShadowMat, fabric, mat, type MatKey } from "../render/Materials";
-import { foliage, leafGeometry } from "./plants";
+import { leafAnchor } from "./plants";
 import type { SwayNode } from "../render/Sway";
 import { SOFA_CUSHION_GAP, SOFA_CUSHION_LOCAL_X, SOFA_CUSHION_MARGIN, SOFA_ARM_W, sofaCushionZ } from "./furniture";
 
@@ -266,9 +266,8 @@ export function deskPlant(cx: number, y0: number, cz: number, r: number): THREE.
   const g = new THREE.Group();
   g.position.set(cx, y0, cz);
   g.add(lathe([[r * 0.72, 0], [r * 0.82, 0.4], [r, r * 1.5], [r * 0.92, r * 1.5]], mat("execWalnutDark", 0.7), 0, 0, 0, 14));
-  const geo = leafGeometry();
   for (let i = 0; i < 12; i++) {
-    const leaf = new THREE.Mesh(geo, foliage(i % 2 === 0));
+    const leaf = leafAnchor(i % 2 === 0, false);
     const a = (i / 12) * Math.PI * 2 + rnd() * 0.5;
     leaf.position.set(Math.cos(a) * r * 0.25, r * 1.45, Math.sin(a) * r * 0.25);
     leaf.rotation.set(-0.8 - rnd() * 0.6, a, 0);
@@ -292,9 +291,8 @@ function execPlanter(e: Entity, sway: SwayNode[]): THREE.Group {
   sway.push({ obj: crown, axis: "x", amp: 0.012, freq: 0.6 + rnd() * 0.2, phase: rnd() * Math.PI * 2, base: 0 });
   // A pot read from directly overhead is almost all canopy, so the shrub gets enough blades to fill the
   // rim in plan as well as in elevation — a sparse crown reads as an empty pot from the game camera.
-  const geo = leafGeometry();
   for (let i = 0; i < 22; i++) {
-    const leaf = new THREE.Mesh(geo, foliage(i % 3 === 0));
+    const leaf = leafAnchor(i % 3 === 0, false);
     const a = (i / 22) * Math.PI * 2 + rnd() * 0.5;
     const out = 0.18 + rnd() * 0.42;
     leaf.rotation.set(-0.55 - rnd() * 0.75, a, 0);

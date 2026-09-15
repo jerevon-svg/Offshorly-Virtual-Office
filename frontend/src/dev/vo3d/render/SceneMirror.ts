@@ -9,6 +9,7 @@ import { finalizeSucculents } from "../build/props";
 import { applyFloorLayerOrder } from "./floorLayers";
 import { resetSeed } from "../build/helpers";
 import { SwaySystem, type SwayNode } from "./Sway";
+import { FoliageSystem } from "./Foliage";
 import { AmbientSystem } from "./Ambient";
 import { buildGroundFloor } from "../build/floorplan";
 import type { GroundFloor } from "../rooms/ground-floor";
@@ -16,6 +17,9 @@ import type { GroundFloor } from "../rooms/ground-floor";
 export class SceneMirror {
   readonly root = new THREE.Group();
   readonly sway = new SwaySystem();
+  /** blade leaves → one InstancedMesh per built group per foliage material; driven by the sway pivots
+   *  they replace, so the approved motion is unchanged. See render/Foliage. */
+  readonly foliage = new FoliageSystem(this.sway);
   /** powered-surface idle animation (screens, sensors, status strips) — one update path for the whole world */
   readonly ambient = new AmbientSystem();
   private readonly views = new Map<EntityId, THREE.Group>();
@@ -53,6 +57,7 @@ export class SceneMirror {
     const swayNodes = g.userData.sway as SwayNode[] | undefined;
     if (swayNodes?.length) this.sway.register("static:ground-floor", swayNodes);
     this.root.add(g);
+    this.foliage.collect("static:ground-floor", g);
     return g;
   }
   /** Build a room's static architecture + every entity in it. Deterministic (seed reset per room).
@@ -70,6 +75,7 @@ export class SceneMirror {
       // of the benches they sit in, so they are not entities) hands its sway nodes up on userData.
       const swayNodes = stat.userData.sway as SwayNode[] | undefined;
       if (swayNodes?.length) this.sway.register(`static:${room.id}`, swayNodes);
+      this.foliage.collect(`static:${room.id}`, stat);
     }
     for (const e of this.world.inRoom(room.id)) g.add(this.buildEntityView(e));
     finalizeSucculents(g); // desk succulent anchors → 3 instanced meshes
@@ -85,6 +91,10 @@ export class SceneMirror {
     this.baseYaw.set(e.id, group.rotation.y - e.transform.yaw);
     if (Math.abs(group.position.x - e.transform.pos.x) < 1e-6 && Math.abs(group.position.z - e.transform.pos.z) < 1e-6) this.transformBound.add(e.id);
     this.views.set(e.id, group);
+    // Per-ENTITY batching, not per-room: the batch rides the piece's own view, so the editor can move,
+    // turn and delete a plant with no instance bookkeeping at all, and a click on a blade still
+    // raycasts through that view onto the plant (see pickEditable).
+    this.foliage.collect(e.id, group);
     return group;
   }
   /** Build and attach the view of an entity the world has just gained (editor asset placement / an undone
@@ -105,6 +115,7 @@ export class SceneMirror {
   removeEntityView(id: EntityId): void {
     const v = this.views.get(id);
     if (!v) return;
+    this.foliage.clear(id); // before the sweep below: the blade geometry is shared by every other plant
     v.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.geometry.dispose(); });
     v.removeFromParent();
     this.views.delete(id);
@@ -144,6 +155,9 @@ export class SceneMirror {
   rebuildRoom(room: RoomDef, opts: ShellOptions): void {
     const old = this.roomGroups.get(room.id);
     if (old) {
+      // Same reason as removeEntityView: every foliage batch hands back the ONE shared blade geometry.
+      this.foliage.clear(`static:${room.id}`);
+      for (const e of this.world.inRoom(room.id)) this.foliage.clear(e.id);
       old.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.geometry.dispose(); });
       this.root.remove(old);
       for (const e of this.world.inRoom(room.id)) { this.views.delete(e.id); this.baseYaw.delete(e.id); this.transformBound.delete(e.id); this.sway.unregister(e.id); }

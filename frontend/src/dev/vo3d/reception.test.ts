@@ -212,7 +212,7 @@ describe("vo3d Reception — Phase 3B architecture", () => {
     const reception = mirror.root.getObjectByName(`room:${RECEPTION_ROOM.id}`)!;
     // the Design Room's static group is still offset to its room origin (room-local measurements)
     expect(design.children[0].position.x).toBeCloseTo(DESIGN_ROOM.rect.x, 6);
-    expect(count(design)).toBeGreaterThan(800);
+    expect(count(design)).toBeGreaterThan(600); // blade leaves are instanced, not meshes — see build.test
     // Reception's static group is WORLD space
     expect(reception.children[0].position.x).toBe(0);
     expect(count(reception)).toBeGreaterThan(40);
