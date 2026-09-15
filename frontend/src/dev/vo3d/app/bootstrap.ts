@@ -80,6 +80,7 @@ import { v1Static } from "../adapters/v1Grid";
 import { DEFAULT_LIGHT, Renderer } from "../render/Renderer";
 import { SceneMirror } from "../render/SceneMirror";
 import { setStaticBatching, staticBatchingEnabled } from "../render/StaticBatch";
+import { setSSAODepthReuse, ssaoDepthReuseEnabled } from "../render/SSAOFromDepth";
 import { Avatar } from "../avatar/Avatar";
 import { ControllerStack, NavigationController } from "../avatar/Controller";
 import { SeatInteraction } from "../interact/Seat";
@@ -201,7 +202,12 @@ const params = {
 // STATIC BATCHING (V2 slice 3) — on by default; `?batch=0` builds the pre-slice-3 scene graph so the
 // whole-office A/B is two loads of the same page under identical conditions. Read BEFORE the mirror is
 // built, because the batching happens as each group is built and cannot be toggled after the fact.
-setStaticBatching(new URLSearchParams(location.search).get("batch") !== "0");
+const flags = new URLSearchParams(location.search);
+setStaticBatching(flags.get("batch") !== "0");
+// SSAO DEPTH REUSE (V2 slice 4) — on by default; `?ao=legacy` rebuilds the stock SSAOPass, which draws
+// the whole scene a second time into a normal buffer. Read BEFORE the Renderer is built: the beauty
+// buffer's depth texture and the AO shader patch are both decided once, in its constructor.
+setSSAODepthReuse(flags.get("ao") !== "legacy");
 const R = new Renderer(canvas, DESIGN_ROOM.rect);
 const mirror = new SceneMirror(world, R.scene);
 mirror.buildGroundFloor(plan);
@@ -2060,6 +2066,9 @@ loop();
   },
   /** STATIC BATCHING, for the console and the A/B rig. Build-time, so the switch is `?batch=0` + reload. */
   batching: { enabled: staticBatchingEnabled, stats: () => mirror.batching },
+  /** SSAO DEPTH REUSE (slice 4), same shape: construction-time, so the switch is `?ao=legacy` + reload.
+   *  Reported here so an A/B capture can record WHICH path produced it rather than trusting the URL. */
+  ssaoDepthReuse: { enabled: ssaoDepthReuseEnabled, live: () => R.ssaoReusesDepth },
   bench: { device, applyPreset, runCapture, snapshot: () => snapshotRenderer(R.renderer), live: () => liveWindow.summary(), summarize, sceneStats: () => sceneStats(R.scene) },
   scanners: {
     set: (id: string, on: boolean) => mirror.ambient.setScanner(id, on),

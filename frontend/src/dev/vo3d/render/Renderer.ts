@@ -5,13 +5,14 @@
 // is the state every later optimisation pass measures against, the 70-avatar stress scenarios included.
 // Benchmarking this world with AO switched off no longer measures the product.
 //
-//   WHAT IT COSTS TODAY, measured on the ground floor at 1440x810 on an M1: 16.7 ms/frame without AO,
-//   34.3 ms with it. Rendering the AO at a QUARTER of the pixels changed that by nothing at all (34.3 ms),
-//   which rules out fill cost entirely. The scene draws 15,611 CALLS over 13,464 objects per frame, and
-//   SSAOPass re-draws every one of them into a normal buffer before it can compute anything. The AO does
-//   not cost pixels, it costs A SECOND FULL SCENE TRAVERSAL — so the lever that will move this number is
-//   batching/instancing the world, not anything inside this pass. (The shadow map already dodges it: that
-//   is drawn on demand, not per frame. A normal buffer cannot — it is view-dependent, and the view moves.)
+//   WHAT IT COST, measured on the ground floor at 1440x810 on an M1: 16.7 ms/frame without AO, 34.3 ms
+//   with it. Rendering the AO at a QUARTER of the pixels changed that by nothing at all (34.3 ms), which
+//   rules out fill cost entirely. The scene drew 15,611 CALLS over 13,464 objects per frame, and SSAOPass
+//   re-drew every one of them into a normal buffer before it could compute anything: the AO did not cost
+//   pixels, it cost A SECOND FULL SCENE TRAVERSAL. Slices 1-3 took the world's own submission count down
+//   (instancing, room culling, static batching) and SLICE 4 took that second traversal away outright —
+//   the AO now reconstructs its normals from the depth the beauty pass already wrote, so the scene is
+//   submitted once. See render/SSAOFromDepth; `?ao=legacy` puts the stock two-submission pass back.
 //   Recorded here so the optimisation phase starts from the measurement rather than re-deriving it.
 //
 // The Light > SSAO toggle stays live so the pass can still be A/B'd off. Three things had to be fixed
@@ -33,7 +34,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
-import { SSAOPass } from "three/examples/jsm/postprocessing/SSAOPass.js";
+import { SSAOFromDepthPass, makeBeautyTarget, ssaoDepthReuseEnabled } from "./SSAOFromDepth";
 import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import type { Rect, Vec2 } from "../core/coords";
@@ -45,7 +46,8 @@ export const DEFAULT_CAMERA: CameraParams = { pitch: 52, yaw: 0, zoom: 1.32 };
  *  It must stay byte-for-byte equal to ENV_PRESETS.day's light fields — env.test asserts exactly that. */
 export const DEFAULT_LIGHT: LightParams = { azimuth: -48, elevation: 54, keyIntensity: 3.05, ambientIntensity: 0.92, envIntensity: 0.38, exposure: 1.06 };
 
-/** Resolution the AO and its feeding normal pass are rendered at, as a fraction of the drawing buffer. */
+/** Resolution the AO is computed at, as a fraction of the drawing buffer. (Since slice 4 it no longer
+ *  feeds a normal pass of its own — it samples the beauty buffer's full-resolution depth.) */
 const AO_SCALE = 0.5;
 /** Fallback AO strength. The environment overwrites this per phase the moment it applies a grade. */
 const AO_STRENGTH = 0.6;
@@ -78,7 +80,7 @@ export class Renderer {
   readonly fill: THREE.DirectionalLight;
   private readonly composer: EffectComposer;
   private readonly renderPass: RenderPass;
-  private readonly ssao: SSAOPass;
+  private readonly ssao: SSAOFromDepthPass;
   /** the camera actually drawn. Defaults to the orthographic rig; only CameraModes ever changes it. */
   private active: THREE.Camera;
   /** the world-space focus rect (a room today; the whole office later) */
@@ -158,18 +160,24 @@ export class Renderer {
     this.controls.minZoom = 0.12; // whole ground floor (1440 × 1244) fits at the default frustum
     this.controls.maxZoom = 6;
     this.active = this.camera;
-    this.composer = new EffectComposer(this.renderer);
+    // SLICE 4: the composer's beauty buffer carries a DEPTH TEXTURE, and SSAO reads it instead of
+    // re-drawing the scene into a normal buffer of its own (see render/SSAOFromDepth). `?ao=legacy`
+    // leaves the target undefined, which is what puts the stock two-submission pass back for the A/B.
+    const dpr = this.renderer.getPixelRatio();
+    this.composer = ssaoDepthReuseEnabled()
+      ? new EffectComposer(this.renderer, makeBeautyTarget(Math.round(window.innerWidth * dpr), Math.round(window.innerHeight * dpr)))
+      : new EffectComposer(this.renderer);
     this.renderPass = new RenderPass(this.scene, this.camera);
     this.composer.addPass(this.renderPass);
-    this.ssao = new SSAOPass(this.scene, this.camera, Math.round(window.innerWidth * AO_SCALE), Math.round(window.innerHeight * AO_SCALE), 16);
+    this.ssao = new SSAOFromDepthPass(this.scene, this.camera, Math.round(window.innerWidth * AO_SCALE), Math.round(window.innerHeight * AO_SCALE), 16);
     // A CONTACT radius, not an ambient one. 14 units spread the darkening a third of a metre up a wall,
     // which is what made cream architecture read as grubby; 7 keeps it in the crease where two surfaces
     // actually meet — under a desk, behind a chair leg, where a wall lands on a floor.
     this.ssao.kernelRadius = 7;
     // SSAO's min/max are FRACTIONS of the camera's depth range. The range grew with the world (see FAR),
     // so these are rescaled by the same factor to preserve the world-space distances they used to mean
-    // (2 units and 320 units) — AO looks identical to the single-room build, it just still costs too much
-    // at DPR 2, which is why it stays off by default.
+    // (2 units and 320 units) — AO looks identical to the single-room build. Untouched by slice 4: these
+    // are fractions of the camera's depth range, and the depth range did not change, only its source.
     this.ssao.minDistance = (0.0005 * 4000) / FAR;
     this.ssao.maxDistance = (0.03 * 4000) / FAR;
     this.tuneSSAO();
@@ -184,6 +192,10 @@ export class Renderer {
   /** the orbit distance, in world units — fog/AO distances are measured from it (see CAM_DIST) */
   get camDist(): number {
     return CAM_DIST;
+  }
+  /** whether the AO pass actually took the slice-4 depth-reuse path (false under `?ao=legacy`) */
+  get ssaoReusesDepth(): boolean {
+    return this.ssao.reusesDepth;
   }
   /** the camera currently being drawn (the ortho rig unless a mode has selected another) */
   get activeCamera(): THREE.Camera {
