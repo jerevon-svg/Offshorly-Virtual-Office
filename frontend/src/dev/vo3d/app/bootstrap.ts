@@ -94,6 +94,8 @@ import { LedRegistry, ledTagOf, type EmissiveSpec } from "../editor/emissive";
 import { LayoutStore, layoutIsEmpty } from "../editor/persistence";
 import { NavDebug } from "../devtools/NavDebug";
 import { Capture, FrameWindow, Overlay, PRESETS, describeDevice, sceneStats, snapshotRenderer, summarize, type CaptureSummary, type PresetId } from "../devtools/Bench";
+import { Crowd } from "../devtools/Crowd";
+import { STRESS_MATRIX, markdownTable, planPlacements, type ScenarioResult, type StressScenario } from "../devtools/Stress";
 import { BON_STANDING_HEIGHT, type AvatarLod } from "../adapters/v1Avatar";
 import { pointInRect, type Rect, type Vec2 } from "../core/coords";
 
@@ -1839,6 +1841,23 @@ R.cull = () => {
   });
 };
 
+// ---- stress harness state (dev-only, measurement-only) -----------------------------------------
+// Everything here is inert until a stress scenario asks for it: the normal page pays two null checks a
+// frame and nothing else. The crowd itself lives in devtools/Crowd; the matrix in devtools/Stress.
+let crowd: Crowd | null = null;
+/** MEASUREMENT ONLY, and never left on. While true the loop still DECIDES that the shadow map is stale
+ *  (so the rate keeps being counted) but does not ask for the redraw — which is the only way to price
+ *  what that redraw costs at a given crowd size. The approved shadow behaviour is unchanged. */
+let stressFreezeShadows = false;
+/** frames on which something that casts a shadow had moved, i.e. frames the shadow map was redrawn */
+let shadowRedraws = 0;
+let framesSeen = 0;
+/** page/runtime errors, collected for the stress report (the harness reads and clears per scenario) */
+const pageErrors: string[] = [];
+const noteError = (msg: string): void => { if (pageErrors.length < 50) pageErrors.push(msg.slice(0, 300)); };
+window.addEventListener("error", (e) => noteError(`error: ${e.message}`));
+window.addEventListener("unhandledrejection", (e) => noteError(`unhandledrejection: ${String((e as PromiseRejectionEvent).reason)}`));
+
 // ---- loop --------------------------------------------------------------------------------------------
 const clock = new THREE.Timer();
 let lastFrame = performance.now();
@@ -1998,10 +2017,16 @@ function loop(): void {
     const p = avatar.worldPosition();
     avatarState.position = `${p.x.toFixed(0)}, ${p.z.toFixed(0)}${navCtl.moving ? ` → ${navCtl.path.length} waypoint(s) left` : ""}`;
   }
+  crowd?.update(dt / 1000); // no-op until a stress scenario has spawned one
   // The shadow map is only redrawn when something that casts one has moved (Renderer.invalidateShadows).
   // Anything the avatar does counts: walking, sitting, and the doors/chairs its interactions drive. Plant
   // sway is deliberately NOT a trigger — a frozen leaf shadow is invisible and it would defeat the point.
-  if (params.avatar && shadowsAreStale()) R.invalidateShadows();
+  framesSeen++;
+  // The crowd casts shadows too, so a walking crowd invalidates the map exactly as the hero avatar does.
+  // The counter is what the stress report's shadow-invalidation rate is read from.
+  const shadowStale = (params.avatar && shadowsAreStale()) || (crowd?.moving ?? false);
+  if (shadowStale) shadowRedraws++;
+  if (shadowStale && !stressFreezeShadows) R.invalidateShadows();
   // the shadow frame follows whoever is looking: the orbit target normally, the player when he is walking
   R.shadowFocus = playerMode.active ? playerMode.body.pos : null;
   R.render();
@@ -2048,6 +2073,248 @@ function loop(): void {
 }
 loop();
 
+// ---- PERFORMANCE STRESS HARNESS (dev-only, measurement-only) -----------------------------------
+// Phase 1 measures; it does not optimise. Nothing below lowers a quality setting to make a number look
+// better: every scenario is forced back onto the approved FULL GRAPHICS state (preset A — SSAO on via
+// the approved depth reuse, shadows on, sway on — plus room culling, static batching and foliage
+// instancing, the approved DPR, and the environment/weather systems running) before it captures.
+//
+// The two A/B sub-captures each scenario takes exist to ATTRIBUTE cost, not to change it:
+//   • crowd hidden vs crowd visible  → what the avatars themselves cost, per body
+//   • shadow invalidation frozen vs live → what the movement → shadow-map-redraw path costs at scale
+// Both restore the approved state before the scenario result is written.
+const stressState = { status: "idle", scenario: "—", progress: "", lastResult: "" };
+let stressResults: ScenarioResult[] = [];
+
+const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+/** two animation frames — long enough for a just-applied camera/visibility change to have been drawn */
+const nextFrames = (): Promise<void> => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+
+function stressCrowd(): Crowd {
+  if (!crowd) crowd = new Crowd(R.scene, playerStand);
+  return crowd;
+}
+
+/** Every reconstructed room's floor rect, in a stable order. Rooms whose footprint is not walkable
+ *  produce no candidates and drop out of the spread on their own. */
+const STRESS_ROOMS = [DESIGN_ROOM, RECEPTION_ROOM, MEETING_ROOM, PROJECT_ROOM, GAMING_ROOM, CENTRAL_HUB,
+  EXECUTIVE_ROOM, CMS_ROOM, AI_ROOM, DEV_ROOM, QA_ROOM].map((r) => ({ id: r.id, rect: r.rect }));
+const stressPlacementDeps = () => ({ roomRects: STRESS_ROOMS, hubRect: CENTRAL_HUB.rect, caveRect: CAVE_FLOOR_RECT, canStand: playerStand });
+
+/** Put the world in (or out of) the CAVE, through the real portal transition rather than by teleporting
+ *  the camera — the CAVE scenarios have to measure the same volume swap the product performs. */
+async function stressSetCave(inside: boolean): Promise<void> {
+  const at = caveTransition?.inside ?? false;
+  if (at === inside) {
+    if (!inside && params.cameraMode !== "office") setCameraMode("office");
+    return;
+  }
+  if (inside) {
+    placeBonAtPortal();
+    setCameraMode("player");
+    placeBonAtPortal();
+    caveTransition?.enter();
+  } else {
+    caveTransition?.exit();
+  }
+  await wait(900); // FADE_MS is 240 either side; 900 clears the whole state machine with margin
+  if (!inside) setCameraMode("office");
+}
+
+/** FULL GRAPHICS, asserted rather than assumed. */
+function stressApplyFullGraphics(): void {
+  applyPreset("A");
+  params.motion = false; // scripted camera motion off: the camera must not add variance to the capture
+  if (!params.roomCulling) { params.roomCulling = true; refresh(); }
+  if (!params.avatar) { params.avatar = true; avatar.root.visible = true; refresh(); }
+  R.invalidateShadows();
+}
+
+function stressSceneSnapshot(): ScenarioResult["scene"] {
+  const snap = snapshotRenderer(R.renderer);
+  let visibleMeshes = 0;
+  R.scene.traverseVisible((o) => { if ((o as THREE.Mesh).isMesh || (o as THREE.Sprite).isSprite) visibleMeshes++; });
+  return { visibleMeshes, drawCalls: snap.calls, triangles: snap.triangles, geometries: snap.geometries, textures: snap.textures, programs: snap.programs };
+}
+
+function stressMemory(): ScenarioResult["memory"] {
+  const perf = performance as Performance & { memory?: { usedJSHeapSize: number; totalJSHeapSize: number; jsHeapSizeLimit: number } };
+  const m = perf.memory;
+  const mb = (v: number) => Math.round(v / 1048576);
+  return m ? { jsHeapMb: mb(m.usedJSHeapSize), totalHeapMb: mb(m.totalJSHeapSize), limitMb: mb(m.jsHeapSizeLimit) } : { jsHeapMb: null, totalHeapMb: null, limitMb: null };
+}
+
+async function runStressScenario(sc: StressScenario, opts: { seconds?: number; attribution?: boolean } = {}): Promise<ScenarioResult> {
+  const t0 = performance.now();
+  const startedAt = new Date().toISOString();
+  const seconds = opts.seconds ?? sc.seconds;
+  const attribution = opts.attribution ?? true;
+  const ab = Math.max(4, Math.round(seconds * 0.3)); // each A/B sub-capture, in seconds
+  pageErrors.length = 0;
+  stressState.status = "preparing";
+  stressState.scenario = sc.label;
+  refresh();
+
+  stressApplyFullGraphics();
+  await stressSetCave(sc.layout === "cave");
+  if (sc.layout === "hub") focusOn(CENTRAL_HUB.rect, 0.92);
+  else if (sc.layout === "distributed") setCameraMode("office");
+
+  const c = stressCrowd();
+  const spawns = planPlacements(sc.layout, sc.count, stressPlacementDeps());
+  stressState.status = `loading ${sc.count} avatars…`;
+  refresh();
+  await c.spawn(spawns, { lod: params.avatarLod, labels: true, seed: 7 });
+  c.visible = true;
+  c.roaming = sc.motion;
+  R.invalidateShadows();
+  await wait(1500); // let the GLB parse settle, the shadow map redraw, and the crossfades finish
+  await nextFrames();
+
+  shadowRedraws = 0; framesSeen = 0;
+  stressState.status = `capturing ${seconds}s`;
+  refresh();
+  const frame = await runCapture(seconds);
+  const scene = stressSceneSnapshot();
+  const memory = stressMemory();
+  const invalidationRate = framesSeen ? Math.round((shadowRedraws / framesSeen) * 1000) / 1000 : 0;
+
+  // ---- attribution A: what do the avatars themselves cost? -------------------------------------
+  let avatarCost: ScenarioResult["avatarCost"] = null;
+  if (attribution && sc.count > 0) {
+    c.visible = false;
+    R.invalidateShadows();
+    await wait(400);
+    stressState.status = `A/B: crowd hidden (${ab}s)`;
+    refresh();
+    const hidden = await runCapture(ab);
+    const hiddenSnap = stressSceneSnapshot();
+    c.visible = true;
+    R.invalidateShadows();
+    await wait(400);
+    stressState.status = `A/B: crowd visible (${ab}s)`;
+    refresh();
+    const withCrowd = await runCapture(ab);
+    const withSnap = stressSceneSnapshot();
+    const delta = Math.round((withCrowd.avgFrameMs - hidden.avgFrameMs) * 100) / 100;
+    avatarCost = {
+      hiddenFrameMs: hidden.avgFrameMs,
+      crowdFrameMs: withCrowd.avgFrameMs,
+      deltaMs: delta,
+      perAvatarMs: Math.round((delta / sc.count) * 1000) / 1000,
+      deltaCalls: withSnap.drawCalls - hiddenSnap.drawCalls,
+      deltaTriangles: withSnap.triangles - hiddenSnap.triangles,
+    };
+  }
+
+  // ---- attribution B: what does the movement → shadow-map invalidation path cost? ---------------
+  let shadowCost: ScenarioResult["shadowCost"] = null;
+  if (attribution) {
+    stressFreezeShadows = true;
+    await wait(300);
+    stressState.status = `A/B: shadow redraw frozen (${ab}s)`;
+    refresh();
+    const frozen = await runCapture(ab);
+    const frozenSnap = stressSceneSnapshot();
+    stressFreezeShadows = false;
+    R.invalidateShadows();
+    await wait(300);
+    stressState.status = `A/B: shadow redraw live (${ab}s)`;
+    refresh();
+    const live = await runCapture(ab);
+    const liveSnap = stressSceneSnapshot();
+    // THE SPLIT. The crowd keeps moving and keeps drawing; it only stops CASTING. What is left is the
+    // static world being re-shadowed because an avatar moved — the half a static shadow cache could win.
+    let staticOnly: CaptureSummary | null = null;
+    if (sc.count > 0) {
+      c.setCastShadow(false);
+      R.invalidateShadows();
+      await wait(300);
+      stressState.status = `A/B: shadow redraw, static casters only (${ab}s)`;
+      refresh();
+      staticOnly = await runCapture(ab);
+      c.setCastShadow(true);
+      R.invalidateShadows();
+      await wait(300);
+    }
+    const delta = Math.round((live.avgFrameMs - frozen.avgFrameMs) * 100) / 100;
+    shadowCost = {
+      invalidationRate,
+      frozenFrameMs: frozen.avgFrameMs,
+      liveFrameMs: live.avgFrameMs,
+      deltaMs: delta,
+      sharePct: live.avgFrameMs > 0 ? Math.round((delta / live.avgFrameMs) * 1000) / 10 : 0,
+      staticOnlyFrameMs: staticOnly ? staticOnly.avgFrameMs : null,
+      staticShareMs: staticOnly ? Math.round((staticOnly.avgFrameMs - frozen.avgFrameMs) * 100) / 100 : null,
+      dynamicShareMs: staticOnly ? Math.round((live.avgFrameMs - staticOnly.avgFrameMs) * 100) / 100 : null,
+      liveCalls: liveSnap.drawCalls, frozenCalls: frozenSnap.drawCalls,
+      liveTriangles: liveSnap.triangles, frozenTriangles: frozenSnap.triangles,
+    };
+  }
+  stressFreezeShadows = false;
+
+  const snap = snapshotRenderer(R.renderer);
+  const result: ScenarioResult = {
+    config: {
+      id: sc.id, label: sc.label, avatars: sc.count + 1, layout: sc.layout, motion: sc.motion, seconds,
+      lod: params.avatarLod, labels: true, preset: params.preset, ssao: params.ao, ssaoDepthReuse: R.ssaoReusesDepth,
+      shadows: params.shadows, roomCulling: params.roomCulling, staticBatching: staticBatchingEnabled(),
+      pixelRatio: snap.pixelRatio, drawingBuffer: snap.drawingBuffer,
+      camera: `${params.cameraMode}${caveTransition?.inside ? " · inside CAVE" : ""}`,
+      placed: c.size,
+    },
+    frame, scene, memory, avatarCost, shadowCost,
+    errors: [...pageErrors],
+    startedAt,
+    durationMs: Math.round(performance.now() - t0),
+  };
+  stressState.status = "idle";
+  stressState.lastResult = `${sc.label}: ${frame.avgFps} fps · 1% low ${frame.onePercentLowFps} · p95 ${frame.p95FrameMs} ms · calls ${frame.avgDrawCalls}`;
+  refresh();
+  return result;
+}
+
+async function runStressMatrix(opts: { seconds?: number; attribution?: boolean; only?: string[] } = {}): Promise<{ device: typeof device; results: ScenarioResult[]; markdown: string }> {
+  const list = opts.only ? STRESS_MATRIX.filter((s) => opts.only!.includes(s.id)) : STRESS_MATRIX;
+  stressResults = [];
+  for (let i = 0; i < list.length; i++) {
+    stressState.progress = `${i + 1}/${list.length}`;
+    refresh();
+    stressResults.push(await runStressScenario(list[i], opts));
+  }
+  await stressStop();
+  stressState.progress = "done";
+  refresh();
+  return { device, results: stressResults, markdown: markdownTable(stressResults) };
+}
+
+/** Put the page back exactly as the product leaves it: no crowd, no frozen shadows, OFFICE camera. */
+async function stressStop(): Promise<void> {
+  crowd?.clear();
+  crowd?.group.removeFromParent();
+  crowd = null;
+  stressFreezeShadows = false;
+  await stressSetCave(false);
+  stressApplyFullGraphics();
+  R.invalidateShadows();
+  stressState.status = "idle";
+  stressState.scenario = "—";
+  refresh();
+}
+
+const stressGui = gui.addFolder("Stress (dev-only · measurement)");
+stressGui.add({ go: () => void runStressScenario(STRESS_MATRIX[4]) }, "go").name("▶ 70 distributed");
+stressGui.add({ go: () => void runStressScenario(STRESS_MATRIX[5]) }, "go").name("▶ 70 Central Hub");
+stressGui.add({ go: () => void runStressScenario(STRESS_MATRIX[6]) }, "go").name("▶ 70 CAVE");
+stressGui.add({ go: () => void runStressScenario(STRESS_MATRIX[7]) }, "go").name("▶ 70 CAVE + motion");
+stressGui.add({ go: () => void runStressMatrix() }, "go").name("▶▶ run the whole matrix");
+stressGui.add({ go: () => void stressStop() }, "go").name("■ stop + restore");
+stressGui.add(stressState, "status").disable().listen();
+stressGui.add(stressState, "scenario").disable().listen();
+stressGui.add(stressState, "progress").disable().listen();
+stressGui.add(stressState, "lastResult").name("last").disable().listen();
+stressGui.close();
+
 // dev console / test-driver surface (same shape as the prototype's __designRoom3d where it matters)
 (window as unknown as { __vo3d: unknown }).__vo3d = {
   world, plan, walkability, mirror, R, scene: R.scene, camera: R.camera, renderer: R.renderer, params, stack, avatar, avatarState, navCtl,
@@ -2070,6 +2337,44 @@ loop();
    *  Reported here so an A/B capture can record WHICH path produced it rather than trusting the URL. */
   ssaoDepthReuse: { enabled: ssaoDepthReuseEnabled, live: () => R.ssaoReusesDepth },
   bench: { device, applyPreset, runCapture, snapshot: () => snapshotRenderer(R.renderer), live: () => liveWindow.summary(), summarize, sceneStats: () => sceneStats(R.scene) },
+  /** PERFORMANCE STRESS PHASE 1 — the dev-only client/render load harness and its scenario matrix.
+   *  Everything here is inert until called: no crowd exists, and nothing about the product page changes.
+   *  Driven from the console or from scripts/vo3d/stress.mjs. Measurement only — see the block above
+   *  `runStressScenario` for why each sub-capture exists and what it restores. */
+  stress: {
+    matrix: STRESS_MATRIX,
+    state: stressState,
+    run: (id: string, opts?: { seconds?: number; attribution?: boolean }) => {
+      const sc = STRESS_MATRIX.find((s) => s.id === id);
+      return sc ? runStressScenario(sc, opts) : Promise.reject(new Error(`no stress scenario "${id}"`));
+    },
+    runAll: (opts?: { seconds?: number; attribution?: boolean; only?: string[] }) => runStressMatrix(opts),
+    results: () => stressResults,
+    markdown: () => markdownTable(stressResults),
+    stop: () => stressStop(),
+    /** spawn a crowd without capturing — for eyeballing a layout before trusting its numbers */
+    spawn: async (layout: "distributed" | "hub" | "cave", count: number, motion = false) => {
+      stressApplyFullGraphics();
+      await stressSetCave(layout === "cave");
+      const c = stressCrowd();
+      await c.spawn(planPlacements(layout, count, stressPlacementDeps()), { lod: params.avatarLod, labels: true, seed: 7 });
+      c.roaming = motion;
+      R.invalidateShadows();
+      return c.stats();
+    },
+    crowd: () => crowd,
+    stats: () => crowd?.stats() ?? null,
+    members: () => crowd?.info() ?? [],
+    placements: (layout: "distributed" | "hub" | "cave", count: number) => planPlacements(layout, count, stressPlacementDeps()),
+    setLabels: (on: boolean) => crowd?.setLabels(on),
+    /** the live shadow-map invalidation rate since the counters were last reset */
+    shadows: () => ({ frames: framesSeen, redraws: shadowRedraws, rate: framesSeen ? shadowRedraws / framesSeen : 0, frozen: stressFreezeShadows }),
+    resetShadowCounters: () => { framesSeen = 0; shadowRedraws = 0; },
+    errors: () => [...pageErrors],
+    device,
+    visibleMeshes: () => stressSceneSnapshot().visibleMeshes,
+    memory: () => stressMemory(),
+  },
   scanners: {
     set: (id: string, on: boolean) => mirror.ambient.setScanner(id, on),
     state: () => Object.fromEntries(mirror.ambient.scannerIds.map((id) => [id, Math.round(mirror.ambient.scannerActivation(id) * 100) / 100])),

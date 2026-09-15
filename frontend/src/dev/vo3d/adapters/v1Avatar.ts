@@ -19,3 +19,14 @@ export const CLIP_SIT = "sit-on-chair-arms";
 /** standing height in world units: bon's V1 sprite box is 37.2 tall; 36 keeps desks (24) at hip height */
 export const BON_STANDING_HEIGHT = Math.round(bonLayer.height) - 1;
 export const DRACO_PATH = `${import.meta.env.BASE_URL}vendor/draco/`;
+
+/** THE WHOLE SHIPPED CAST, read-only, for the stress harness. Every id here has an approved consolidated
+ *  GLB in the production registry — five distinct meshes/skeletons/texture sets, which is what makes a
+ *  crowd built from them cost what a real roomful of employees costs rather than one model repeated. */
+export const CAST_IDS: readonly string[] = Object.keys(LIVE_3D_CHARACTERS);
+export type CastId = string;
+/** the three LOD urls a cast member ships, with the registry's own LOD1→LOD0 / LOD2→LOD1 fallbacks */
+export function castLods(id: CastId): Record<AvatarLod, string> {
+  const c = LIVE_3D_CHARACTERS[id];
+  return { 0: c.glbUrl, 1: c.lod1GlbUrl ?? c.glbUrl, 2: c.lod2GlbUrl ?? c.lod1GlbUrl ?? c.glbUrl };
+}
