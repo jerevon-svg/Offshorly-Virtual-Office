@@ -157,6 +157,32 @@ export class AmbientSystem {
     return [...this.scanners.keys()];
   }
 
+  /** MATERIAL SWAP NOTICE. The room editor replaces a strip's or a surface's material with one it owns
+   *  (copy-on-write over the shared cache — editor/surfaces.ts, editor/emissive.ts). Every channel and
+   *  powered surface here holds a MATERIAL REFERENCE, so without this the animation would keep writing to
+   *  the material that is no longer on screen and the edited one would sit frozen.
+   *
+   *  Baselines are re-read from the new material, which is the correct reading of an edit: the designer
+   *  just set what "full brightness" means for this fixture, so that is what powering it back on restores. */
+  retarget(from: THREE.Material, to: THREE.Material): number {
+    let n = 0;
+    const next = to as THREE.MeshStandardMaterial & THREE.MeshBasicMaterial;
+    for (const channels of this.byRoom.values())
+      for (const c of channels) {
+        if (c.target === (from as unknown as Tintable)) c.target = next;
+        if (c.m === (from as unknown as Emissive & { opacity: number })) { (c as { m: unknown }).m = next; n++; }
+      }
+    for (const list of this.poweredByRoom.values())
+      for (const p of list)
+        if (p.m === (from as unknown as Powered["m"])) {
+          p.m = next;
+          if (p.opacity !== null) p.opacity = next.opacity ?? p.opacity;
+          if (p.intensity !== null) p.intensity = next.emissiveIntensity ?? p.intensity;
+          n++;
+        }
+    return n;
+  }
+
   /** Walk a freshly built room group and register every mesh tagged with `userData.ambient`. */
   collect(roomId: string, root: THREE.Object3D): number {
     const channels: Channel[] = [];

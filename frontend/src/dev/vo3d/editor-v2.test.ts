@@ -14,7 +14,7 @@ import { v1Static } from "./adapters/v1Grid";
 import { SceneMirror } from "./render/SceneMirror";
 import { EditSession, SNAP_STEP } from "./editor/EditSession";
 import { applyEditablePolicy, isEditable, lockReason } from "./editor/editable";
-import { TransformHistory } from "./editor/History";
+import { TransformHistory, type TransformEntry } from "./editor/History";
 import { EditorGizmo, yawToward } from "./editor/EditorGizmo";
 import { ControllerStack } from "./avatar/Controller";
 import type { Vec2 } from "./core/coords";
@@ -67,20 +67,25 @@ describe("room editor v2 — selection policy", () => {
       expect(e.capabilities.editable, `${e.id} (${why}) must stay locked`).toBeUndefined();
       expect(e.placement?.movable, `${e.id} (${why}) must stay unplaceable`).toBeFalsy();
     }
-    // the three refusal classes are all actually exercised by the real rooms
+    // architecture is still refused by the real rooms
     const reasons = new Set([...world.entities.values()].map(lockReason).filter(Boolean));
     expect(reasons).toContain("structural");
-    expect(reasons).toContain("functional");
   });
-  it("FUNCTIONAL SAFETY: nothing carrying a world-anchored seat / lounge / approach / door anchor is editable", () => {
+  it("SLICE 2: architecture stays locked, and functional furniture is now editable because its anchors move", () => {
     const world = policyWorld();
     applyEditablePolicy(world);
+    let functional = 0;
     for (const e of world.entities.values()) {
       const c = e.capabilities;
-      if (c.seat || c.lounge || c.approach || c.door || c.clearance) {
-        expect(isEditable(e), `${e.id} carries gameplay anchors and must not be editable`).toBe(false);
+      if (c.door || c.clearance) {
+        expect(isEditable(e), `${e.id} is architecture and must not be editable`).toBe(false);
+      } else if (c.seat || c.lounge || c.approach) {
+        functional++;
+        // it may still be refused for a NON-anchor reason (no footprint, baked) — never for its anchors
+        expect(lockReason(e), `${e.id} must not be refused for its anchors`).not.toBe("functional");
       }
     }
+    expect(functional).toBeGreaterThan(10); // the rooms really do author this many
   });
   it("the hero plant keeps its authored clearance and its capabilities survive the policy", () => {
     const world = policyWorld();
@@ -301,7 +306,7 @@ describe("room editor v2 — undo / redo over WorldState commits", () => {
     const h = new TransformHistory(3);
     for (let i = 0; i < 10; i++) h.push({ id: "e", before: { pos: { x: i, z: 0 }, yaw: 0 }, after: { pos: { x: i + 1, z: 0 }, yaw: 0 } });
     expect(h.depth).toBe(3);
-    expect(h.undo()!.after.pos.x).toBe(10);
+    expect((h.undo() as TransformEntry).after.pos.x).toBe(10);
   });
   it("undo selects whatever it moved, so the designer sees the piece that changed", () => {
     const { world, edit } = rig();

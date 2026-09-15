@@ -85,7 +85,10 @@ import { SeatInteraction } from "../interact/Seat";
 import { EditSession, SNAP_DEGREES, SNAP_STEP } from "../editor/EditSession";
 import { applyEditablePolicy, lockLabel, lockReason, type LockReason } from "../editor/editable";
 import { EditorGizmo, yawToward } from "../editor/EditorGizmo";
-import { EditorPanel } from "../editor/EditorPanel";
+import { EditorPanel, type PanelMode } from "../editor/EditorPanel";
+import { ASSET_LIBRARY, findAsset } from "../editor/library";
+import { SurfaceRegistry, surfaceTagOf, type SurfaceSpec } from "../editor/surfaces";
+import { LedRegistry, ledTagOf, type EmissiveSpec } from "../editor/emissive";
 import { NavDebug } from "../devtools/NavDebug";
 import { Capture, FrameWindow, Overlay, PRESETS, describeDevice, sceneStats, snapshotRenderer, summarize, type CaptureSummary, type PresetId } from "../devtools/Bench";
 import { BON_STANDING_HEIGHT, type AvatarLod } from "../adapters/v1Avatar";
@@ -504,10 +507,15 @@ const approachCtl = new ApproachInteraction(avatar, stack, (to) => planWalk(avat
 const receptionState = { focus: "none", status: "idle", seat: "idle" };
 /** Every FIXED lounge seat in the world, flattened to one slot per entry: Reception's two tub chairs plus
  *  Project's two sofas (two cushions each) and two tub chairs. One list, one controller — no new system. */
-const loungeSeats = [...LOUNGE_SEAT_IDS, ...SOFA_SEAT_IDS, ...TUB_SEAT_IDS, SOFA_SEAT_ID, ...BAG_SEAT_IDS, ...HUB_LOUNGE_IDS, ...EXECUTIVE_LOUNGE_IDS, ...CMS_LOUNGE_IDS, ...DEV_LOUNGE_IDS, ...QA_LOUNGE_IDS].flatMap((id) => {
-  const e = world.get(id);
-  return e.capabilities.lounge!.slots.map((slot) => ({ id, slot, view: mirror.view(id), label: slot.id }));
-});
+const loungeSeats = [...LOUNGE_SEAT_IDS, ...SOFA_SEAT_IDS, ...TUB_SEAT_IDS, SOFA_SEAT_ID, ...BAG_SEAT_IDS, ...HUB_LOUNGE_IDS, ...EXECUTIVE_LOUNGE_IDS, ...CMS_LOUNGE_IDS, ...DEV_LOUNGE_IDS, ...QA_LOUNGE_IDS].flatMap((id) =>
+  world.get(id).capabilities.lounge!.slots.map((s, i) => ({
+    id, index: i, view: mirror.view(id), label: s.id,
+    // THE SLOT IS READ WHEN A SIT STARTS, NEVER CACHED. The room editor may have moved this sofa since
+    // boot, and a moved piece's slots are rewritten in the same world transaction as its transform
+    // (editor/anchors.ts). Holding the slot OBJECT here would have walked Bon to where the sofa used to be.
+    get slot() { return world.get(id).capabilities.lounge!.slots[i]; },
+  })),
+);
 let loungeSeat: LoungeSeatInteraction | null = null;
 /** The six Meeting conference chairs use the MOVABLE pattern — the same SeatInteraction the Design Room
  *  desk chair uses, one instance at a time. */
@@ -806,7 +814,8 @@ caveTransition = new CaveTransition({
 // THE LISTENER IS BON, not the camera: the OFFICE and EXPLORE rigs are a director's view of a world Bon
 // is standing in, and pinning the ambience to a camera that can be zoomed out over the whole campus would
 // make the mix a function of the UI. In PLAYER mode the two are the same point anyway.
-const PORTAL_POINT = { ...world.get(CHAMPIONSHIP_ENTRANCE_ID).capabilities.approach!.point };
+/** Read LIVE, never cached: the monument is an editable piece, and its approach point rides its transform. */
+const portalPoint = (): Vec2 => world.get(CHAMPIONSHIP_ENTRANCE_ID).capabilities.approach!.point;
 const envAudio = new EnvironmentalAudio({
   sample: (into) => {
     const a = avatar.worldPosition();
@@ -816,7 +825,7 @@ const envAudio = new EnvironmentalAudio({
     into.inCave = inside;
     into.regionKind = region?.kind ?? null;
     into.roomId = region?.roomId ?? null;
-    into.portalDistance = inside ? Number.POSITIVE_INFINITY : Math.hypot(p.x - PORTAL_POINT.x, p.z - PORTAL_POINT.z);
+    into.portalDistance = inside ? Number.POSITIVE_INFINITY : (() => { const q = portalPoint(); return Math.hypot(p.x - q.x, p.z - q.z); })();
     // how far from the nearest outer wall of the building — small means "by the glass", which is the one
     // place an interior is allowed to hear the weather properly. Meaningless outdoors, hence Infinity.
     const f = plan.frame;
@@ -958,8 +967,25 @@ function seatStatuses(): [string, string][] {
 }
 envAudioRef = envAudio;
 
-const edit = new EditSession(world, mirror, walkability, stack);
+// ROOM EDITOR V2 — SLICE 2. The two addressable registries. They are populated from the room groups the
+// mirror has ALREADY built (builders tag their meshes; nothing here knows a room), and both are handed the
+// ambient system's retarget hook so a copy-on-write material swap never orphans a pulse or a power-down.
+const surfaces = new SurfaceRegistry();
+const leds = new LedRegistry();
+surfaces.retarget = (from, to) => { mirror.ambient.retarget(from, to); };
+leds.retarget = (from, to) => { mirror.ambient.retarget(from, to); };
+for (const room of world.rooms.values()) {
+  const g = mirror.roomGroup(room.id);
+  if (!g) continue;
+  surfaces.collect(room.id, g);
+  leds.collect(room.id, g);
+}
+
+const edit = new EditSession(world, mirror, walkability, stack, { surfaces, leds });
 const editGizmo = new EditorGizmo(R.scene);
+let editMode2: PanelMode = "object";
+/** the library item the Assets tab has armed: the next floor click places it */
+let armedAsset: string | null = null;
 const editState = { selected: "none", placement: "—", drift: 0, yawDrift: 0, editable: EDITABLE_IDS.length, history: 0, blockedCells: walkability.dynamicBlockedKeys.length };
 let editPanel: EditorPanel | null = null;
 let editHint = "";
@@ -978,21 +1004,64 @@ function refreshEditVisuals(): void {
   editState.yawDrift = edit.yawDrift();
   editState.history = edit.history.depth;
   editState.blockedCells = navDebug.refreshDynamic(walkability);
+  const surf = edit.selectedSurface ? surfaces.get(edit.selectedSurface) : null;
+  const led = edit.selectedLed ? leds.get(edit.selectedLed) : null;
   editPanel?.render({
-    name: edit.selected, room: edit.selected ? world.get(edit.selected).roomId : "",
+    mode: editMode2,
+    name: edit.selected ?? surf?.tag.label ?? led?.tag.label ?? null,
+    room: edit.selected ? world.get(edit.selected).roomId : (surf?.tag.roomId ?? led?.tag.roomId ?? ""),
     x: pos?.x ?? 0, z: pos?.z ?? 0, yaw: edit.currentYawDegrees(),
     snap: edit.snap.enabled, snapStep: edit.snap.step, snapDegrees: edit.snap.degrees,
-    status: !edit.selected ? (editHint || `${EDITABLE_IDS.length} editable pieces`) : v.ok ? (edit.previewing ? "valid — unconfirmed" : "placed") : `blocked: ${v.reason}`,
-    valid: v.ok, pending: edit.previewing, canUndo: edit.canUndo, canRedo: edit.canRedo,
-    hint: "drag piece · drag ring to rotate · ⏎ confirm · esc cancel · ⌘Z undo",
+    status: editStatus(v, surf !== null || led !== null),
+    valid: v.ok || edit.selected === null, pending: edit.hasPending, canUndo: edit.canUndo, canRedo: edit.canRedo,
+    deleteBlocked: edit.selected ? deleteHint(edit.selected) : "nothing selected",
+    assetKey: armedAsset,
+    surfaces: surfaces.all().map((e) => ({ id: e.id, label: e.tag.label, kind: e.tag.kind })),
+    surfaceId: edit.selectedSurface, surfaceSpec: surf ? { ...surf.preview } : null,
+    leds: leds.all().map((e) => ({ id: e.id, label: `${e.tag.label}` })),
+    ledId: edit.selectedLed, ledSpec: led ? { ...led.preview } : null,
+    hint: editMode2 === "assets" ? "pick an asset · click the floor to place · ⏎ confirm · esc cancel"
+      : editMode2 === "object" ? "drag piece · drag ring to rotate · ⏎ confirm · esc cancel · ⌘Z undo"
+      : "click a surface or light in the scene · ⏎ apply · esc cancel",
   });
 }
+/** THE MODE SWITCH — one focused tool at a time, and one implementation of what that means, so the dev
+ *  handle and the panel button can never drift apart. */
+function setEditorMode(m: PanelMode): PanelMode {
+  editMode2 = m;
+  if (m !== "assets") armedAsset = null;
+  if (m === "object" || m === "assets") { edit.selectSurface(null); edit.selectLed(null); }
+  else edit.select(null);
+  refreshEditVisuals();
+  return editMode2;
+}
+
+/** One status line for four modes. */
+function editStatus(v: ReturnType<typeof edit.validateCurrent>, treatment: boolean): string {
+  if (edit.selected) return v.ok ? (edit.previewing ? (edit.pending ? "new piece — unconfirmed" : "valid — unconfirmed") : "placed") : `blocked: ${v.reason}`;
+  if (treatment) return edit.hasPending ? "treatment — unapplied" : "applied";
+  if (editMode2 === "assets") return armedAsset ? "click the floor to place" : "pick an asset";
+  return editHint || `${EDITABLE_IDS.length} editable pieces · ${surfaces.size} surfaces · ${leds.size} lights`;
+}
+function deleteHint(id: string): string | null {
+  const why = edit.deleteBlockedBecause(id);
+  return why === null ? null : why === "system" ? "gameplay piece — movable, but protected from deletion" : "not an editable piece";
+}
+
 /** EDIT mode owns a panel for as long as it is on, and nothing when it is off. */
 function setEditMode(on: boolean): void {
   params.editMode = on;
   edit.setEditMode(on);
   if (on && !editPanel) {
     editPanel = new EditorPanel(document.body, {
+      setMode: setEditorMode,
+      duplicate: () => { edit.duplicate(); refreshEditVisuals(); },
+      remove: () => { edit.remove(); refreshEditVisuals(); },
+      pickAsset: (key) => { armedAsset = key; refreshEditVisuals(); },
+      pickSurface: (id) => { edit.selectSurface(id); refreshEditVisuals(); },
+      setSurface: (spec: SurfaceSpec) => { edit.previewSurface(spec); refreshEditVisuals(); },
+      pickLed: (id) => { edit.selectLed(id); refreshEditVisuals(); },
+      setLed: (spec: EmissiveSpec) => { edit.previewLed(spec); refreshEditVisuals(); },
       setAxis: (axis, value) => { edit.setAxis(axis, value); refreshEditVisuals(); },
       setYaw: (deg) => { edit.setYawDegrees(deg); refreshEditVisuals(); },
       nudgeYaw: (deg) => { edit.nudgeYawDegrees(deg); refreshEditVisuals(); },
@@ -1005,7 +1074,7 @@ function setEditMode(on: boolean): void {
       close: () => { setEditMode(false); refresh(); },
     });
   }
-  if (!on) { editPanel?.dispose(); editPanel = null; editHint = ""; }
+  if (!on) { editPanel?.dispose(); editPanel = null; editHint = ""; armedAsset = null; editMode2 = "object"; }
   refreshEditVisuals();
 }
 
@@ -1054,8 +1123,40 @@ function pickLocked(cx: number, cy: number): { id: string; reason: LockReason } 
   }
   return null;
 }
+/** The first addressable SURFACE or LED channel under the pointer — how Surface and Lighting mode select.
+ *  Deliberately the same raycast the object picker uses; only the tag it looks for differs. */
+function pickTagged(cx: number, cy: number): { surface?: string; led?: string } | null {
+  const r = canvas.getBoundingClientRect();
+  ndc.set(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
+  raycaster.setFromCamera(ndc, R.camera);
+  for (const h of raycaster.intersectObject(mirror.root, true)) {
+    if (editMode2 === "lighting") { const t = ledTagOf(h.object); if (t) return { led: t.id }; }
+    else { const t = surfaceTagOf(h.object); if (t) return { surface: t.id }; }
+  }
+  return null;
+}
 canvas.addEventListener("pointerdown", (e) => {
   if (e.button !== 0 || playerMode.active) return; // PLAYER owns the canvas: see player/PlayerInput
+  if (edit.editMode && (editMode2 === "surface" || editMode2 === "lighting")) {
+    // SURFACE / LIGHTING mode retargets the click entirely: a floor is a surface here, not a place to
+    // drop something, and the orbit camera keeps the drag.
+    const t = pickTagged(e.clientX, e.clientY);
+    if (t?.surface) edit.selectSurface(t.surface);
+    else if (t?.led) edit.selectLed(t.led);
+    refreshEditVisuals();
+    return;
+  }
+  if (edit.editMode && editMode2 === "assets" && armedAsset) {
+    const p = floorPoint(e.clientX, e.clientY);
+    const item = findAsset(armedAsset);
+    if (p && item) {
+      const r = edit.placeAsset(item, p);
+      editHint = r.id ? "" : `cannot place here: ${r.check.ok ? "" : r.check.reason}`;
+      if (r.id) { editDrag = "move"; grabOffset = { x: 0, z: 0 }; R.controls.enabled = false; e.preventDefault(); }
+      refreshEditVisuals();
+      return;
+    }
+  }
   if (edit.editMode) {
     const floor = floorPoint(e.clientX, e.clientY);
     const centre = edit.currentPos();
@@ -1272,7 +1373,16 @@ toucanGui.add(toucan.state, "calls").name("calls made").listen().disable();
 toucanGui.add(toucan.state, "nextCall").name("next call in (s)").listen().disable();
 toucanGui.add({ f: () => toucan.reset() }, "f").name("▶ restart its lap");
 const geo = gui.addFolder("Geometry");
-const rebuild = () => { seat.reset(); mirror.rebuildRoom(DESIGN_ROOM, shellOpts()); door = new SlidingDoor(mirror.view(DOOR_ID), doorEntity.capabilities.door!, doorEntity.transform.pos); seat = new SeatInteraction(avatar, stack, mirror.view(CHAIR_4_ID), chairSeat, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed); };
+const rebuild = () => {
+  seat.reset();
+  mirror.rebuildRoom(DESIGN_ROOM, shellOpts());
+  // the room's meshes are new objects, so its addressable surfaces and lights are re-collected with them
+  const g = mirror.roomGroup(DESIGN_ROOM.id);
+  if (g) { surfaces.collect(DESIGN_ROOM.id, g); leds.collect(DESIGN_ROOM.id, g); }
+  if (edit.selectedSurface?.startsWith(DESIGN_ROOM.id)) edit.selectSurface(null);
+  door = new SlidingDoor(mirror.view(DOOR_ID), doorEntity.capabilities.door!, doorEntity.transform.pos);
+  seat = new SeatInteraction(avatar, stack, mirror.view(CHAIR_4_ID), chairSeat, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+};
 geo.add(params, "wallHeight", 20, 110, 1).onFinishChange(rebuild); geo.add(params, "frontWall", ["low", "full", "hidden"]).onChange(rebuild);
 geo.add(params, "sway").name("plant sway").onChange((v: boolean) => (mirror.sway.enabled = v));
 geo.add(params, "ambient").name("powered-electronics idle").onChange((v: boolean) => (mirror.ambient.enabled = v));
@@ -1462,6 +1572,8 @@ editGui.add(edit.snap, "enabled").name(`grid snap (${SNAP_STEP}u · ${SNAP_DEGRE
 editGui.add({ confirm: () => { const v = edit.confirm(); editState.placement = v.ok ? "committed" : `rejected: ${v.reason}`; refreshEditVisuals(); } }, "confirm").name("✔ confirm placement");
 editGui.add({ cancel: () => { edit.cancel(); refreshEditVisuals(); } }, "cancel").name("✖ cancel (revert to committed)");
 editGui.add({ reset: () => { edit.reset(); refreshEditVisuals(); } }, "reset").name("reset to original");
+editGui.add({ duplicate: () => { edit.duplicate(); refreshEditVisuals(); } }, "duplicate").name("⧉ duplicate selection");
+editGui.add({ remove: () => { const r = edit.remove(); if (!r.ok) editHint = `delete refused: ${r.reason}`; refreshEditVisuals(); } }, "remove").name("🗑 delete selection");
 editGui.add({ undo: () => { edit.undo(); refreshEditVisuals(); } }, "undo").name("↶ undo");
 editGui.add({ redo: () => { edit.redo(); refreshEditVisuals(); } }, "redo").name("↷ redo");
 editGui.add(editState, "selected").disable().listen(); editGui.add(editState, "placement").disable().listen(); editGui.add(editState, "drift").disable().listen();
@@ -1478,8 +1590,10 @@ window.addEventListener("keydown", (e) => {
   const meta = e.metaKey || e.ctrlKey;
   if (meta && e.key.toLowerCase() === "z") { e.preventDefault(); if (e.shiftKey) edit.redo(); else edit.undo(); }
   else if (e.key === "Enter") { e.preventDefault(); edit.confirm(); }
-  else if (e.key === "Escape") { e.preventDefault(); if (edit.previewing) edit.cancel(); else { edit.select(null); editGizmo.hide(); } }
+  else if (e.key === "Escape") { e.preventDefault(); if (edit.hasPending) edit.cancel(); else { edit.select(null); editGizmo.hide(); } }
   else if (e.key.toLowerCase() === "g") { edit.snap.enabled = !edit.snap.enabled; }
+  else if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); edit.remove(); }
+  else if (meta && e.key.toLowerCase() === "d") { e.preventDefault(); editMode2 = "object"; edit.duplicate(); }
   else if (e.key === "[") { edit.nudgeYawDegrees(-SNAP_DEGREES); }
   else if (e.key === "]") { edit.nudgeYawDegrees(SNAP_DEGREES); }
   else return;
@@ -2061,5 +2175,19 @@ loop();
     undo: () => { const r = edit.undo(); refreshEditVisuals(); return r; },
     redo: () => { const r = edit.redo(); refreshEditVisuals(); return r; },
     setEditMode: (v: boolean) => { setEditMode(v); if (v) edit.select(HERO_PLANT_ID); refreshEditVisuals(); refresh(); },
+    // ---- SLICE 2 ---------------------------------------------------------------------------------
+    setMode: setEditorMode,
+    library: () => ASSET_LIBRARY.map((i) => ({ key: `${i.kind}:${i.label}`, category: i.category, label: i.label, kind: i.kind })),
+    place: (key: string, x: number, z: number) => { const item = findAsset(key); if (!item) return { id: null, check: { ok: false, reason: "no-room" } }; const r = edit.placeAsset(item, { x, z }); refreshEditVisuals(); return r; },
+    duplicate: () => { const r = edit.duplicate(); refreshEditVisuals(); return r; },
+    remove: () => { const r = edit.remove(); refreshEditVisuals(); return r; },
+    anchors: (id: string) => world.get(id).capabilities,
+    surfaces: () => surfaces.all().map((e) => ({ id: e.id, label: e.tag.label, kind: e.tag.kind, spec: e.preview, pending: e.pending })),
+    selectSurface: (id: string | null) => { edit.selectSurface(id); refreshEditVisuals(); return edit.selectedSurface; },
+    setSurface: (spec: SurfaceSpec) => { edit.previewSurface(spec); refreshEditVisuals(); return edit.selectedSurface ? surfaces.get(edit.selectedSurface)!.preview : null; },
+    leds: () => leds.all().map((e) => ({ id: e.id, label: e.tag.label, room: e.tag.roomId, spec: e.preview, pending: e.pending })),
+    selectLed: (id: string | null) => { edit.selectLed(id); refreshEditVisuals(); return edit.selectedLed; },
+    setLed: (spec: EmissiveSpec) => { edit.previewLed(spec); refreshEditVisuals(); return edit.selectedLed ? leds.get(edit.selectedLed)!.preview : null; },
+    materialOf: (surfaceId: string) => { const e = surfaces.get(surfaceId); const m = e?.meshes[0]?.mesh.material as THREE.MeshStandardMaterial | undefined; return m ? { uuid: m.uuid, color: m.color.getHex(), roughness: m.roughness } : null; },
   },
 };

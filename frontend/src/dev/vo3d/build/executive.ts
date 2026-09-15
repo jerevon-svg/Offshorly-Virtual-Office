@@ -13,6 +13,7 @@
 import * as THREE from "three";
 import type { RoomDef } from "../world/WorldState";
 import { Baker, cyl, lathe, rbox } from "./helpers";
+import { tagSurface } from "../editor/surfaces";
 import { tiledFloor } from "./tile";
 import { credenzaRun, glassRun, slatPanel } from "./frontbar";
 import { book, laptop, monitor, mug, smallPot } from "./props";
@@ -27,7 +28,8 @@ import {
 
 // ---- shell -------------------------------------------------------------------------------------
 function wallBox(x0: number, x1: number, z0: number, z1: number, h: number): THREE.Mesh {
-  return rbox(x1 - x0, h, z1 - z0, mat(THEME.plaster, 0.95), (x0 + x1) / 2, 0, (z0 + z1) / 2, STRUCT.capRadius);
+  // ROOM EDITOR: every plaster wall of this room is one addressable surface (editor/surfaces.ts).
+  return tagSurface(rbox(x1 - x0, h, z1 - z0, mat(THEME.plaster, 0.95), (x0 + x1) / 2, 0, (z0 + z1) / 2, STRUCT.capRadius), { id: "executive-room/wall", kind: "wall", roomId: "executive-room", label: "Executive Room walls", preset: "plaster", size: { u: Math.max(x1 - x0, z1 - z0), v: h } });
 }
 
 /** A slim skirting along an interior wall face — the detail that stops a plaster box reading as a box. */
@@ -286,7 +288,7 @@ function sconce(x: number, z: number, faceDir: 1 | -1): THREE.Group {
 export function executiveStatic(_room: RoomDef): THREE.Group {
   const g = new THREE.Group();
   g.name = "static:executive-room";
-  g.add(tiledFloor(TILE_RECT));
+  g.add(tiledFloor(TILE_RECT, undefined, undefined, { roomId: "executive-room", label: "Executive Room floor" }));
   // ---- shell: three solid 12-unit walls + the glazed south façade ----
   g.add(wallBox(NORTH_WALL.x0, NORTH_WALL.x1, NORTH_WALL.z0, NORTH_WALL.z1, NORTH_WALL.h));
   g.add(wallBox(WEST_WALL.x0, WEST_WALL.x1, WEST_WALL.z0, WEST_WALL.z1, WEST_WALL.h));

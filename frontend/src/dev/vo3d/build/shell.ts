@@ -2,6 +2,7 @@
 import * as THREE from "three";
 import { rbox, shadowed } from "./helpers";
 import { floorMat, glassMat, mat, plastic } from "../render/Materials";
+import { tagSurface } from "../editor/surfaces";
 import type { ShellSpec } from "../world/WorldState";
 
 // ---- shell ------------------------------------------------------------------------------------------
@@ -26,17 +27,19 @@ export function buildShell(rect: { w: number; d: number }, SHELL: ShellSpec, opt
   }
   const floor = rbox(W - 2 * T + 0.2, 1.2, frontZ - T + 0.2, floorMat("floor", 0.82), W / 2, -1.2, (T + frontZ) / 2, 0.2);
   floor.castShadow = false;
-  g.add(floor);
+  // ROOM EDITOR. buildShell describes ONE room's wall arrangement (the Design Room's — see RoomDef.shell),
+  // so its floor and its plaster are that room's two addressable surfaces.
+  g.add(tagSurface(floor, { id: "design-room/floor", kind: "floor", roomId: "design-room", label: "Design Room floor", preset: "stone", size: { u: W, v: frontZ } }));
   g.add(rbox(W, 1.6, D - frontZ - T, floorMat("wallFace", 1), W / 2, -1.6, frontZ + T + (D - frontZ - T) / 2, 0.3)); // exterior ledge
   // skirting inside the rear and left walls
   g.add(rbox(W - 2 * T, 1.6, 0.8, plastic("white"), W / 2, 0, T + 0.4, 0.2));
   g.add(rbox(0.8, 1.6, frontZ - T, plastic("white"), T + 0.4, 0, (T + frontZ) / 2, 0.2));
-  g.add(rbox(W, H, T, wallM, W / 2, 0, T / 2, R));
-  g.add(rbox(T, H, frontZ + T, wallM, T / 2, 0, (frontZ + T) / 2, R));
+  g.add(tagSurface(rbox(W, H, T, wallM, W / 2, 0, T / 2, R), { id: "design-room/wall", kind: "wall", roomId: "design-room", label: "Design Room walls", preset: "plaster", size: { u: W, v: H } }));
+  g.add(tagSurface(rbox(T, H, frontZ + T, wallM, T / 2, 0, (frontZ + T) / 2, R), { id: "design-room/wall", kind: "wall", roomId: "design-room", label: "Design Room walls", preset: "plaster", size: { u: W, v: H } }));
   const gz = SHELL.glass;
   const rx = W - T / 2;
-  g.add(rbox(T, H, gz.z0, wallM, rx, 0, gz.z0 / 2, R));
-  g.add(rbox(T, H, frontZ + T - gz.z1, wallM, rx, 0, gz.z1 + (frontZ + T - gz.z1) / 2, R));
+  g.add(tagSurface(rbox(T, H, gz.z0, wallM, rx, 0, gz.z0 / 2, R), { id: "design-room/wall", kind: "wall", roomId: "design-room", label: "Design Room walls", preset: "plaster", size: { u: W, v: H } }));
+  g.add(tagSurface(rbox(T, H, frontZ + T - gz.z1, wallM, rx, 0, gz.z1 + (frontZ + T - gz.z1) / 2, R), { id: "design-room/wall", kind: "wall", roomId: "design-room", label: "Design Room walls", preset: "plaster", size: { u: W, v: H } }));
   const glassH = H - 6;
   // horizontal framing: the header runs the whole glass run; the sill and the mid transom stop at the doorway so the
   // opening (z0 … doorZ1) is architecturally clear once the leaf is pocketed — only a flush floor track crosses it
@@ -55,7 +58,7 @@ export function buildShell(rect: { w: number; d: number }, SHELL: ShellSpec, opt
   g.add(shadowed(pane, false, false));
   if (opts.frontWall !== "hidden") {
     const fh = opts.frontWall === "full" ? H : SHELL.frontWallHeight;
-    g.add(rbox(W, fh, T, wallM, W / 2, 0, frontZ + T / 2, R));
+    g.add(tagSurface(rbox(W, fh, T, wallM, W / 2, 0, frontZ + T / 2, R), { id: "design-room/wall", kind: "wall", roomId: "design-room", label: "Design Room walls", preset: "plaster", size: { u: W, v: H } }));
   }
   return g;
 }

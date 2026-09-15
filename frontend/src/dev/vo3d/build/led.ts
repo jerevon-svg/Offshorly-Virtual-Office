@@ -12,6 +12,7 @@ import * as THREE from "three";
 import { rbox } from "./helpers";
 import { emissiveMat, emissiveMatUnique, glowMat, glowMatUnique, mat, type MatKey } from "../render/Materials";
 import { animated, powered } from "../render/Ambient";
+import { tagLed } from "../editor/emissive";
 
 export type LedStripSpec = {
   /** the world axis the strip RUNS along */
@@ -38,6 +39,9 @@ export type LedStripSpec = {
    *  emitted. Costs one ambient channel, so it is reserved for the strips that actually carry a room. */
   washPulse?: { period: number; phase: number; min: number; max: number };
   name?: string;
+  /** ROOM EDITOR: makes this channel addressable (editor/emissive.ts). Rooms that pass it get a strip the
+   *  designer can recolour and dim; rooms that do not are simply not listed. Costs one userData write. */
+  editable?: { roomId: string; label: string };
 };
 
 /** A strip's channel + emitter + (optional) spill, in WORLD space. */
@@ -75,5 +79,7 @@ export function ledStrip(spec: LedStripSpec): THREE.Group {
     // spill has no business glowing once the source is off: animated ones settle through their channel
     g.add(spec.washPulse ? animated(wash, { kind: "fade", ...spec.washPulse }) : powered(wash));
   }
+  if (spec.editable)
+    tagLed(g, { id: g.name, roomId: spec.editable.roomId, label: spec.editable.label, color: spec.color, intensity: inten, glow: spec.wash?.opacity ?? 0 });
   return g;
 }

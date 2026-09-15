@@ -364,7 +364,7 @@ export function receptionStatic(_room: RoomDef): THREE.Group {
   const T = STRUCT.wallThickness;
   const xEast = RECT.x + RECT.w;
 
-  g.add(tiledFloor(TILE_RECT));
+  g.add(tiledFloor(TILE_RECT, undefined, undefined, { roomId: "reception-room", label: "Reception floor" }));
 
   // ---- north: glass balustrade either side of the gate cluster, gate lanes left clear ----------------
   const balustrade = (x0: number, x1: number) =>

@@ -194,7 +194,18 @@ export interface WorldRegion {
   roomId?: string;
 }
 
-export type WorldChange = { changed: EntityId[]; version: number };
+export type WorldChange = { changed: EntityId[]; version: number; added?: EntityId[]; removed?: EntityId[] };
+
+/** The write surface of ONE world transaction. Everything a commit may do to the world lives here, so a
+ *  caller cannot half-apply a change: the version bump and the single change event cover all of it.
+ *  Slice 2 adds `setCapabilities` (gameplay anchors ride the transform — editor/anchors.ts) and
+ *  `add`/`remove` (the editor's asset library places and deletes real entities). */
+export type WorldTx = {
+  setTransform: (id: EntityId, t: Transform2) => void;
+  setCapabilities: (id: EntityId, caps: Capabilities) => void;
+  add: (e: Entity) => void;
+  remove: (id: EntityId) => void;
+};
 
 export class WorldState {
   readonly rooms = new Map<string, RoomDef>();
@@ -234,19 +245,35 @@ export class WorldState {
   inRoom(roomId: string): Entity[] {
     return [...this.entities.values()].filter((e) => e.roomId === roomId);
   }
-  /** Atomic transaction: every setTransform inside is committed together with one version bump + one change event. */
-  commit(fn: (tx: { setTransform: (id: EntityId, t: Transform2) => void }) => void): WorldChange {
+  /** Atomic transaction: every write inside is committed together with one version bump + one change event. */
+  commit(fn: (tx: WorldTx) => void): WorldChange {
     const changed: EntityId[] = [];
+    const added: EntityId[] = [];
+    const removed: EntityId[] = [];
+    const touch = (id: EntityId): void => { if (!changed.includes(id)) changed.push(id); };
     fn({
       setTransform: (id, t) => {
         const e = this.get(id);
         this.entities.set(id, { ...e, transform: { pos: { ...t.pos }, yaw: t.yaw } });
-        changed.push(id);
+        touch(id);
+      },
+      setCapabilities: (id, caps) => {
+        const e = this.get(id);
+        this.entities.set(id, { ...e, capabilities: caps });
+        touch(id);
+      },
+      add: (e) => {
+        this.addEntity(e);
+        added.push(e.id);
+      },
+      remove: (id) => {
+        if (!this.entities.delete(id)) throw new Error(`unknown entity ${id}`);
+        removed.push(id);
       },
     });
     this.version++;
-    const change = { changed, version: this.version };
-    if (changed.length) this.changes.emit(change);
+    const change: WorldChange = { changed, version: this.version, added, removed };
+    if (changed.length || added.length || removed.length) this.changes.emit(change);
     return change;
   }
   /** Solid footprints (as world rects; circles → bounding squares) of every entity except `except`,

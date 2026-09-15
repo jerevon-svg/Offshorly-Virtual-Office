@@ -146,7 +146,7 @@ function drawTerminalUi(ctx: CanvasRenderingContext2D, w: number, h: number): vo
 export function meetingStatic(_room: RoomDef): THREE.Group {
   const g = new THREE.Group();
   g.name = "static:meeting-room";
-  g.add(tiledFloor(TILE_RECT));
+  g.add(tiledFloor(TILE_RECT, undefined, undefined, { roomId: "meeting-room", label: "Meeting Room floor" }));
 
   // ---- north: the cream cove wall that closes the bar's west end ------------------------------------
   g.add(coveWall({ ...NORTH_WALL, phase: 0.0, name: "meeting-cove-wall" }));

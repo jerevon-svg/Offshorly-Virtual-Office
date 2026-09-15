@@ -12,6 +12,7 @@
 import * as THREE from "three";
 import type { RoomDef } from "../world/WorldState";
 import { Baker, cyl, rbox } from "./helpers";
+import { tagSurface } from "../editor/surfaces";
 import { tiledFloor } from "./tile";
 import { credenzaRun } from "./frontbar";
 import { smallPot } from "./props";
@@ -28,7 +29,8 @@ import {
 // ---- shell -------------------------------------------------------------------------------------
 const wall = () => mat(THEME.plaster, 0.95);
 function wallBox(x0: number, x1: number, z0: number, z1: number, h: number): THREE.Mesh {
-  return rbox(x1 - x0, h, z1 - z0, wall(), (x0 + x1) / 2, 0, (z0 + z1) / 2, STRUCT.capRadius);
+  // ROOM EDITOR: every plaster wall of this room is one addressable surface (editor/surfaces.ts).
+  return tagSurface(rbox(x1 - x0, h, z1 - z0, wall(), (x0 + x1) / 2, 0, (z0 + z1) / 2, STRUCT.capRadius), { id: "dev-room/wall", kind: "wall", roomId: "dev-room", label: "Dev Room walls", preset: "plaster", size: { u: Math.max(x1 - x0, z1 - z0), v: h } });
 }
 /** A slim skirting along an interior wall face — the detail that stops a plaster box reading as a box. */
 function skirting(axis: "x" | "z", from: number, to: number, at: number): THREE.Mesh {
@@ -382,7 +384,7 @@ function pantry(): THREE.Group {
 export function devStatic(room: RoomDef, _opts: unknown): THREE.Group {
   const g = new THREE.Group();
   g.name = `static:${room.id}`;
-  g.add(tiledFloor(TILE_RECT));
+  g.add(tiledFloor(TILE_RECT, undefined, undefined, { roomId: "dev-room", label: "Dev Room floor" }));
   g.add(paleFloor());
   g.add(wallBox(NORTH_WALL.x0, NORTH_WALL.x1, NORTH_WALL.z0, NORTH_WALL.z1, NORTH_WALL.h));
   g.add(wallBox(WEST_WALL.x0, WEST_WALL.x1, WEST_WALL.z0, WEST_WALL.z1, WEST_WALL.h));

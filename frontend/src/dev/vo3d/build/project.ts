@@ -107,7 +107,7 @@ function centreBench(): THREE.Group {
 export function projectStatic(_room: RoomDef): THREE.Group {
   const g = new THREE.Group();
   g.name = "static:project-room";
-  g.add(tiledFloor(TILE_RECT));
+  g.add(tiledFloor(TILE_RECT, undefined, undefined, { roomId: "project-room", label: "Project Room floor" }));
 
   // ---- north: the cream cove wall that closes the bar's east end -------------------------------------
   // a different ambient phase from Meeting's, so the two coves never breathe in lockstep

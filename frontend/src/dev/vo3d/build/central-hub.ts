@@ -13,6 +13,7 @@
 // Room's ~20 ambient channels are the thing this room must NOT be.
 import * as THREE from "three";
 import { Baker, cyl, rbox, shadowed } from "./helpers";
+import { tagSurface } from "../editor/surfaces";
 import { flatRing, polar, ringShape, shapeAngle } from "./arc";
 import { tiledFloor } from "./tile";
 import { plantFor } from "./plants";
@@ -74,12 +75,14 @@ function flatShape(shape: THREE.Shape, t: number, m: THREE.Material, y0: number,
 function floorPlate(): THREE.Group {
   const g = new THREE.Group();
   g.name = "hub-floor";
-  g.add(tiledFloor(RECT));
+  g.add(tiledFloor(RECT, undefined, undefined, { roomId: "central-hub", label: "Central Hub tile" }));
   // THE PLATE IS CAST TERRAZZO, not a fill. Its own colour is unchanged — hubTerrazzo still sets the tone —
   // but the aggregate map gives it the one thing a 15,000-unit plate of flat cream could never have: a
   // surface. The chips are sized in WORLD units (see terrazzoMat), so the plate reads at the same physical
   // scale as the tile joints running under it out in the hall.
   const plate = flatShape(plateShape(0), PLATE.lift, terrazzoMat(key("plate"), 0.5, 55), 0);
+  // ROOM EDITOR: the hub's cast plate is its own surface, separate from the tile field around it.
+  tagSurface(plate, { id: "central-hub/plate", kind: "floor", roomId: "central-hub", label: "Central Hub plate", preset: "terrazzo", size: { u: RECT.w, v: RECT.d } });
   plate.castShadow = false;
   g.add(plate);
   // brass outline: the plate path at two insets, the outer one lifted a hair above the plate face
@@ -235,7 +238,7 @@ function pantryRun(sway: SwayNode[]): THREE.Group {
 
   // the counter's own toe-kick cove — a pantry reads as open when its plinth glows
   g.add(ledStrip({ axis: "z", from: c.z + 3, to: c.z + c.d - 3, at: c.x + c.w - 1.4, y: c.toe - 1.6, dir: 1,
-    color: key("cove"), intensity: 1.6, housing: false, wash: { reach: 16, opacity: 0.12 }, name: "hub-counter-cove" }));
+    color: key("cove"), intensity: 1.6, housing: false, wash: { reach: 16, opacity: 0.12 }, name: "hub-counter-cove", editable: { roomId: "central-hub", label: "Counter cove" } }));
   for (const p of COUNTER_PLANTERS) {
     const n = p.d > 40 ? 2 : 1;
     for (let i = 0; i < n; i++) g.add(bedPlant(plantFor({ x: p.x + p.w / 2, z: p.z + (p.d * (i + 0.5)) / n, y: 17, r: n > 1 ? 7 : 8, h: n > 1 ? 17 : 20, lush: 0.9, pot: false }, sway)));

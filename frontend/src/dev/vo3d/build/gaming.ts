@@ -15,6 +15,7 @@
 // it is deliberate rather than incidental: see the per-source notes below.
 import * as THREE from "three";
 import { cyl, rbox, shadowed } from "./helpers";
+import { tagSurface } from "../editor/surfaces";
 import { tiledFloor } from "./tile";
 import { ledStrip } from "./led";
 import { credenzaRun } from "./frontbar";
@@ -155,7 +156,8 @@ function controllerOutline(w: number, h: number, inset: number): THREE.Shape {
 
 // ---- architecture -------------------------------------------------------------------------------
 function wallBox(x0: number, x1: number, z0: number, z1: number, h: number): THREE.Mesh {
-  return rbox(x1 - x0, h, z1 - z0, mat("gamingPlaster", 0.96), (x0 + x1) / 2, 0, (z0 + z1) / 2, STRUCT.capRadius);
+  // ROOM EDITOR: every plaster wall of this room is one addressable surface (editor/surfaces.ts).
+  return tagSurface(rbox(x1 - x0, h, z1 - z0, mat("gamingPlaster", 0.96), (x0 + x1) / 2, 0, (z0 + z1) / 2, STRUCT.capRadius), { id: "gaming-room/wall", kind: "wall", roomId: "gaming-room", label: "Gaming Room walls", preset: "plaster", size: { u: Math.max(x1 - x0, z1 - z0), v: h } });
 }
 
 /** The west side: solid plaster north of the V1 door band, the artwork's black-framed glazed screen
@@ -230,7 +232,7 @@ function southPartition(): THREE.Group {
     // the emitter is a 2-unit bar, so the WASH carries this one: a wide patch of floor and spandrel
     // swinging 0.05 → 0.44 in opacity is what "the purple light is breathing" actually looks like
     pulse: { period: BEAT.cove, phase: 0, min: 0.30, max: 1.7 },
-    washPulse: { period: BEAT.cove, phase: 0.06, min: 0.05, max: 0.44 }, name: "gaming-south-cove",
+    washPulse: { period: BEAT.cove, phase: 0.06, min: 0.05, max: 0.44 }, name: "gaming-south-cove", editable: { roomId: "gaming-room", label: "South cove" },
   }));
   return g;
 }
@@ -280,7 +282,7 @@ function mediaWall(): THREE.Group {
     axis: "x", from: c.x + 8, to: c.x + c.w - 8, at: c.z + c.d - 0.9, y: 1.8, dir: 1,
     color: THEME.accent, intensity: 1.9, housing: false, wash: { reach: 22, opacity: 0.22 },
     pulse: { period: BEAT.cove, phase: 0.4, min: 0.45, max: 1.5 },
-    washPulse: { period: BEAT.cove, phase: 0.45, min: 0.05, max: 0.4 }, name: "gaming-console-backlight",
+    washPulse: { period: BEAT.cove, phase: 0.45, min: 0.05, max: 0.4 }, name: "gaming-console-backlight", editable: { roomId: "gaming-room", label: "Console backlight" },
   }));
   // the floor directly in front of the media run picks the backlight up — the single biggest cue that the
   // north wall is powered rather than merely dark-painted
@@ -401,7 +403,7 @@ function nwCabinet(): THREE.Group {
     const y = 4 + ((c.h - 8) * i) / c.shelves;
     g.add(rbox(c.w - 4, 0.9, c.d - 4, mat("gamingDark", 0.5), cx, y, cz + 1.6, 0.2));
     // STATIC shelf lighting: bare tape under each shelf lip. The carcass already is the fixture.
-    g.add(ledStrip({ axis: "x", from: c.x + 3, to: c.x + c.w - 3, at: cz + c.d / 2 - 2.4, y: y + 1.0, dir: 1, color: THEME.accentAlt, intensity: 1.45, housing: false, name: `gaming-nw-shelf-${i}` }));
+    g.add(ledStrip({ axis: "x", from: c.x + 3, to: c.x + c.w - 3, at: cz + c.d / 2 - 2.4, y: y + 1.0, dir: 1, color: THEME.accentAlt, intensity: 1.45, housing: false, name: `gaming-nw-shelf-${i}`, editable: { roomId: "gaming-room", label: `NW shelf ${i + 1}` } }));
     // controllers on the shelf, as small silhouettes
     for (let k = 0; k < 3; k++) g.add(rbox(9, 2.2, 5.5, mat(k === 1 ? "white" : "charcoal", 0.6), c.x + 9 + k * 16, y + 0.9, cz + 1.2, 1.6));
   }
@@ -486,7 +488,7 @@ function deskRun(): THREE.Group {
   g.add(rbox(len - 10, 0.6, 5.5, mat("charcoal", 0.9), (r.x0 + r.x1) / 2, top - 0.5, 830, 0.2));
   g.add(ledStrip({
     axis: "x", from: r.x0 + 8, to: r.x1 - 8, at: 830.6, y: top - 0.4, dir: -1,
-    color: THEME.accentAlt, intensity: 1.5, housing: false, name: "gaming-desk-cable-channel",
+    color: THEME.accentAlt, intensity: 1.5, housing: false, name: "gaming-desk-cable-channel", editable: { roomId: "gaming-room", label: "Desk cable channel" },
   }));
 
   // CHANNEL 2 — the desk underglow. The fixture is where a real one goes, in a channel under the front
@@ -496,7 +498,7 @@ function deskRun(): THREE.Group {
   // pitched to actually register on a cream tiled floor instead of vanishing into it.
   g.add(ledStrip({
     axis: "x", from: r.x0 + 6, to: r.x1 - 6, at: r.z0 - 1.0, y: 5.5, dir: -1,
-    color: THEME.ledHue, intensity: 0.7, wash: { reach: 38, opacity: 0.07 }, name: "gaming-desk-underglow",
+    color: THEME.ledHue, intensity: 0.7, wash: { reach: 38, opacity: 0.07 }, name: "gaming-desk-underglow", editable: { roomId: "gaming-room", label: "Desk underglow" },
   }));
   // CHANNEL 3 — RGB energy FLOWING along the run. The strip itself is now a steady dim base and this is
   // the bright segment travelling over it. Its floor pool is a CHILD of the segment, so the light on the
@@ -735,7 +737,7 @@ function rugPrint(): THREE.Group {
 export function gamingStatic(_room: RoomDef): THREE.Group {
   const g = new THREE.Group();
   g.name = "static:gaming-room";
-  g.add(tiledFloor(TILE_RECT));
+  g.add(tiledFloor(TILE_RECT, undefined, undefined, { roomId: "gaming-room", label: "Gaming Room floor" }));
   g.add(moodFloor()); // room-local contrast, so the RGB below can actually read
   // ---- shell: four real 12-unit walls (see rooms/gaming.ts for why none of them is 54 units deep) ----
   g.add(wallBox(NORTH_WALL.x0, NORTH_WALL.x1, NORTH_WALL.z0, NORTH_WALL.z1, NORTH_WALL.h));

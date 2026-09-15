@@ -216,7 +216,7 @@ export function canvas2d(w: number, h: number): CanvasRenderingContext2D | null 
 // UV scales (rounded boxes have per-face 0..1 UVs; extruded tops have UVs in
 // world units).
 let woodTex: THREE.CanvasTexture | null | undefined;
-function woodTexture(): THREE.CanvasTexture | null {
+export function woodTexture(): THREE.CanvasTexture | null {
   if (woodTex !== undefined) return woodTex;
   const ctx = canvas2d(256, 256);
   if (!ctx) return (woodTex = null);
@@ -346,7 +346,7 @@ export const TILE = 20;
 export const TILE_PHASE = { x: 0, z: 32 };
 
 let tileTex: THREE.CanvasTexture | null | undefined;
-function tileTexture(): THREE.CanvasTexture | null {
+export function tileTexture(): THREE.CanvasTexture | null {
   if (tileTex !== undefined) return tileTex;
   const N = 256;
   const ctx = canvas2d(N, N);

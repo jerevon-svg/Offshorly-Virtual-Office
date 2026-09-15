@@ -83,7 +83,7 @@ export function smallPot(cx: number, y0: number, cz: number, r = 1.5): THREE.Gro
 }
 const SUCCULENT_LEAVES = 6;
 export function finalizeSucculents(root: THREE.Object3D): { plants: number; meshes: THREE.InstancedMesh[] } {
-  root.updateMatrixWorld(true);
+  root.updateWorldMatrix(true, true); // ancestors too: `root` may be an entity view just added to its room
   const anchors: THREE.Object3D[] = [];
   root.traverse((o) => {
     if (typeof o.userData[SUCCULENT_KEY] === "number") anchors.push(o);
@@ -95,9 +95,21 @@ export function finalizeSucculents(root: THREE.Object3D): { plants: number; mesh
   const soils = new THREE.InstancedMesh(soilGeo, mat("potDark", 0.95), anchors.length);
   const leaves = new THREE.InstancedMesh(leafGeometry(), foliage(false), anchors.length * SUCCULENT_LEAVES);
   const m = new THREE.Matrix4(), local = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
+  // INSTANCE MATRICES ARE ROOT-LOCAL, NOT WORLD.
+  //
+  // The instanced meshes are added as CHILDREN of `root`, so three draws each instance at
+  // `root.matrixWorld × instanceMatrix`. Baking the anchor's WORLD matrix straight in only works while
+  // `root` itself sits at the origin — which the room group does, and which a single ENTITY view does
+  // NOT: the room editor finalizes a newly placed desk on its own view, and that view is already
+  // translated to the desk's world position, so every succulent was drawn at twice the desk's position
+  // and dragged the view's bounding box (and the editor's rotation ring with it) back toward the origin.
+  // Expressing the anchor in root-local space is correct for both callers and is a no-op for a room
+  // group at identity.
+  const toLocal = new THREE.Matrix4().copy(root.matrixWorld).invert();
+  const anchorLocal = new THREE.Matrix4();
   anchors.forEach((a, i) => {
     const r = a.userData[SUCCULENT_KEY] as number;
-    const world = a.matrixWorld;
+    const world = anchorLocal.multiplyMatrices(toLocal, a.matrixWorld);
     pots.setMatrixAt(i, m.copy(world).multiply(local.makeScale(r, r, r)));
     soils.setMatrixAt(i, m.copy(world).multiply(local.compose(new THREE.Vector3(0, r * 1.45, 0), q.identity(), new THREE.Vector3(r, r, r))));
     for (let j = 0; j < SUCCULENT_LEAVES; j++) {

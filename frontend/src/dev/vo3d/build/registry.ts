@@ -9,6 +9,7 @@ import type { SwayNode } from "../render/Sway";
 import { cyl, rbox, shadowed } from "./helpers";
 import { facadeGlassMat, glassMat, metal, type MatKey } from "../render/Materials";
 import { buildShell, type ShellOptions } from "./shell";
+import { ledStrip } from "./led";
 import { buildDesignBaked, type DesignBaked } from "./baked";
 import { receptionStatic } from "./reception";
 import { meetingStatic } from "./meeting";
@@ -139,6 +140,21 @@ export function buildEntity(e: Entity): BuildResult {
   if ((QA_KINDS as readonly string[]).includes(e.kind)) {
     const group = buildQaFurniture(e);
     if (group) return { group, sway };
+  }
+  // EDITOR-PLACED LIGHT. The same build/led.ts channel every room's architectural strip is built from —
+  // an emissive bar in a housing plus one additive spill, and no real-time light. Built LOCALLY (centred
+  // on the origin) so the group rides the entity transform and the editor can move and turn it.
+  if (e.kind === "led-strip") {
+    const w = Number(e.props.w) || 60;
+    const g = ledStrip({
+      axis: "x", from: -w / 2, to: w / 2, at: 0, y: Number(e.props.y) || 2,
+      color: (e.props.color as MatKey) ?? "cyan", intensity: Number(e.props.intensity) || 1.6,
+      wash: { reach: Number(e.props.reach) || 20, opacity: Number(e.props.glow) || 0.18 },
+      name: `led:${e.id}`, editable: { roomId: e.roomId, label: e.id.split("/")[1] ?? e.id },
+    });
+    g.position.set(e.transform.pos.x, 0, e.transform.pos.z);
+    g.rotation.y = e.transform.yaw;
+    return { group: g, sway };
   }
   if (e.kind === "solid") return { group: new THREE.Group(), sway }; // footprint-only entity (baked decor drawn by the shell builder)
   throw new Error(`no builder for entity kind "${e.kind}" (${e.id})`);

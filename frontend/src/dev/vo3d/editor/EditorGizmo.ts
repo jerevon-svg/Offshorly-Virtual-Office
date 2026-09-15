@@ -11,6 +11,14 @@ const VALID = 0xf2b134; // the selection amber NavDebug already uses
 const INVALID = 0xd9463b;
 const RING_MARGIN = 7;
 const MIN_RADIUS = 12;
+/** Ceiling on the ring, in world units — a 280-unit-wide piece.
+ *
+ *  The largest thing the office actually authors is the Executive lounge rug at ~110, so this clamps
+ *  nothing real. It exists because the ring is derived from a MEASUREMENT, and a measurement can be wrong:
+ *  one child left in world space inside a group that is already positioned drags the bounding box back
+ *  toward the world origin and produces a ring hundreds of units across, swallowing the room. That class
+ *  of bug is fixed where it happens, but the gizmo should not be the thing that fails when it recurs. */
+const MAX_RADIUS = 140;
 
 export class EditorGizmo {
   readonly root = new THREE.Group();
@@ -22,6 +30,9 @@ export class EditorGizmo {
   private readonly knobMat: THREE.MeshBasicMaterial;
   private readonly outlineMat: THREE.LineBasicMaterial;
   private readonly box = new THREE.Box3();
+  private readonly scratch = new THREE.Box3();
+  private readonly toLocal = new THREE.Matrix4();
+  private readonly rel = new THREE.Matrix4();
   private radius = MIN_RADIUS;
   private attachedTo: string | null = null;
 
@@ -60,15 +71,16 @@ export class EditorGizmo {
   get ringRadius(): number { return this.radius; }
 
   /** Re-measure for a newly selected view. `null` hides everything.
-   *  The outline is the piece's WORLD-aligned extent, measured once on selection — deliberately the same
+   *  The outline is the piece's own extent, measured once on selection — deliberately the same
    *  axis-aligned reading the logical footprint takes, and cheap enough to never touch a drag frame. */
   attach(view: THREE.Group | null): void {
     this.root.visible = view !== null;
     if (!view) return;
-    this.box.setFromObject(view);
+    this.measureLocal(view, this.box);
     const size = new THREE.Vector3();
     this.box.getSize(size);
-    this.radius = Math.max(MIN_RADIUS, Math.hypot(size.x, size.z) / 2 + RING_MARGIN);
+    const measured = Math.hypot(size.x, size.z) / 2 + RING_MARGIN;
+    this.radius = Number.isFinite(measured) ? Math.min(MAX_RADIUS, Math.max(MIN_RADIUS, measured)) : MIN_RADIUS;
     const h = Math.max(size.y, 2);
     this.outline.scale.set(Math.max(size.x, 2), h, Math.max(size.z, 2));
     this.ring.scale.set(this.radius, 1, this.radius);
@@ -85,6 +97,47 @@ export class EditorGizmo {
     // model forward is +z at yaw 0 (core/coords), so the knob shows the piece's facing, not an arbitrary mark
     this.knob.position.set(centre.x + Math.sin(yaw) * this.radius, 1.6, centre.z + Math.cos(yaw) * this.radius);
   }
+  /** The selection's extent in ITS OWN frame, not the world's.
+   *
+   *  `Box3.setFromObject` reads world matrices, so a piece measured that way is only as local as its
+   *  geometry happens to be: a child that carries world coordinates inside a group that is already
+   *  positioned puts a corner of the box near the world origin, and the ring then spans half the office.
+   *  Re-expressing every child in the view's own frame makes the ring describe the OBJECT — the same
+   *  number wherever in the building the piece is standing, and the same for a newly placed asset as for
+   *  the authored one beside it.
+   *
+   *  An instanced child is measured by its INSTANCES, not by the one leaf its geometry describes — a
+   *  plant is almost entirely instanced foliage, and reading the geometry alone would ring it at the
+   *  minimum radius however big it is. Those instance matrices are local to the instanced mesh, so they
+   *  are carried into the view's frame with everything else. */
+  private measureLocal(view: THREE.Group, into: THREE.Box3): void {
+    view.updateWorldMatrix(true, true);
+    this.toLocal.copy(view.matrixWorld).invert();
+    into.makeEmpty();
+    view.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      const inst = mesh as unknown as THREE.InstancedMesh;
+      if (!mesh.isMesh && !inst.isInstancedMesh) return;
+      let bb: THREE.Box3 | null = null;
+      if (inst.isInstancedMesh) {
+        if (!inst.boundingBox) inst.computeBoundingBox();
+        bb = inst.boundingBox;
+      } else {
+        const geo = mesh.geometry;
+        if (!geo) return;
+        if (!geo.boundingBox) geo.computeBoundingBox();
+        bb = geo.boundingBox;
+      }
+      // An EMPTY bounding box is +Infinity/-Infinity, and transforming that yields NaN — which then
+      // poisons the union, the radius and finally the ring's scale, leaving no gizmo at all. Geometry
+      // with no vertices is real (a finalized succulent anchor, a placeholder), so it is skipped here.
+      if (!bb || bb.isEmpty()) return;
+      this.scratch.copy(bb).applyMatrix4(this.rel.multiplyMatrices(this.toLocal, mesh.matrixWorld));
+      into.union(this.scratch);
+    });
+    if (into.isEmpty()) into.set(new THREE.Vector3(-MIN_RADIUS, 0, -MIN_RADIUS), new THREE.Vector3(MIN_RADIUS, 2, MIN_RADIUS));
+  }
+
   /** Re-measure only when the SELECTION changed — measuring is a traversal and must not touch a drag frame. */
   attachIfNeeded(id: string, view: THREE.Group | null): void {
     if (this.attachedTo === id && this.root.visible) return;

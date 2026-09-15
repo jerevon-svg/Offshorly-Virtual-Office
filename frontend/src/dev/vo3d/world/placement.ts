@@ -2,7 +2,7 @@
 import { circleOverlapsRect, growRect, type Rect, type Vec2 } from "../core/coords";
 import type { Entity, EntityId, WorldState } from "./WorldState";
 
-export type PlacementCheck = { ok: true } | { ok: false; reason: "not-movable" | "outside-room" | "overlaps-furniture" };
+export type PlacementCheck = { ok: true } | { ok: false; reason: "not-movable" | "outside-room" | "overlaps-furniture" | "anchor-blocked" | "no-room" | "protected" };
 
 /** May `entity` stand at `pos`? Inside its room's floor (minus its own extent) and clear of every other
  *  solid footprint.

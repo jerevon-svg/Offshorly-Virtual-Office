@@ -39,7 +39,11 @@ export class SceneMirror {
     this.world = world;
     this.root.name = "vo3d-world";
     scene.add(this.root);
-    world.changes.on(({ changed }) => changed.forEach((id) => this.applyTransform(id)));
+    world.changes.on(({ changed, added, removed }) => {
+      removed?.forEach((id) => this.removeEntityView(id));
+      added?.forEach((id) => this.addEntityView(id));
+      changed.forEach((id) => this.applyTransform(id));
+    });
   }
   /** The shared ground-floor skeleton (slab, sidewalk, unreconstructed footprints + boundary walls). Static. */
   buildGroundFloor(plan: GroundFloor): THREE.Group {
@@ -78,6 +82,38 @@ export class SceneMirror {
     if (Math.abs(group.position.x - e.transform.pos.x) < 1e-6 && Math.abs(group.position.z - e.transform.pos.z) < 1e-6) this.transformBound.add(e.id);
     this.views.set(e.id, group);
     return group;
+  }
+  /** Build and attach the view of an entity the world has just gained (editor asset placement / an undone
+   *  delete). The piece joins its own room's group, so it is disposed and rebuilt with that room. */
+  addEntityView(id: EntityId): THREE.Group | null {
+    const e = this.world.entities.get(id);
+    if (!e || this.views.has(id)) return null;
+    const g = this.roomGroups.get(e.roomId);
+    if (!g) return null; // an unreconstructed room has no group to add to
+    const v = this.buildEntityView(e);
+    g.add(v);
+    finalizeSucculents(v);
+    applyFloorLayerOrder(v);
+    return v;
+  }
+  /** Detach and dispose the view of an entity the world has just lost. Geometry is released; the shared
+   *  material cache is not touched, because every other piece in the office is still using it. */
+  removeEntityView(id: EntityId): void {
+    const v = this.views.get(id);
+    if (!v) return;
+    v.traverse((o) => { const m = o as THREE.Mesh; if (m.isMesh) m.geometry.dispose(); });
+    v.removeFromParent();
+    this.views.delete(id);
+    this.baseYaw.delete(id);
+    this.transformBound.delete(id);
+    this.sway.unregister(id);
+  }
+  /** a room's built group — what the editor's surface / LED registries collect from */
+  roomGroup(roomId: string): THREE.Group | null {
+    return this.roomGroups.get(roomId) ?? null;
+  }
+  hasView(id: EntityId): boolean {
+    return this.views.has(id);
   }
   view(id: EntityId): THREE.Group {
     const v = this.views.get(id);
