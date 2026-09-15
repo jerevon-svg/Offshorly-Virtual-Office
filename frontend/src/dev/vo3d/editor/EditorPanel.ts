@@ -38,6 +38,10 @@ export type PanelActions = {
   confirm: () => void;
   cancel: () => void;
   reset: () => void;
+  /** PERSISTENCE (V2): write the committed layout to local storage */
+  save: () => void;
+  /** PERSISTENCE (V2): drop the saved layout and put the production-authored office back */
+  resetLayout: () => void;
   close: () => void;
 };
 export type PanelState = {
@@ -66,6 +70,10 @@ export type PanelState = {
   leds: { id: string; label: string }[];
   ledId: string | null;
   ledSpec: EmissiveSpec | null;
+  /** is there anything a Save would write? */
+  layoutDirty: boolean;
+  /** one line about the saved layout — restored / saved / nothing saved */
+  layoutNote: string;
 };
 
 const CARD =
@@ -123,6 +131,9 @@ export class EditorPanel {
   private readonly snapBtn: HTMLButtonElement;
   private readonly dupBtn: HTMLButtonElement;
   private readonly delBtn: HTMLButtonElement;
+  private readonly saveBtn: HTMLButtonElement;
+  private readonly authoredBtn: HTMLButtonElement;
+  private readonly layoutNote: HTMLDivElement;
   private readonly undoBtn: HTMLButtonElement;
   private readonly redoBtn: HTMLButtonElement;
   private readonly confirmBtn: HTMLButtonElement;
@@ -260,6 +271,19 @@ export class EditorPanel {
     this.panes = { object, assets, surface, lighting };
 
     // ---- shared footer -----------------------------------------------------------------------------
+    // ---- PERSISTENCE (V2) --------------------------------------------------------------------------
+    // Deliberately ABOVE undo/redo and separated from Confirm: Confirm commits one edit to the running
+    // world, Save commits the whole layout to disk. Conflating them is how a designer loses a room.
+    const saveRow = el("div", "display:flex;gap:6px;margin-bottom:4px;");
+    this.saveBtn = el("button", BTN, "⌁ Save layout");
+    this.authoredBtn = el("button", BTN + "flex:0 0 auto;padding:6px 8px;opacity:0.75;", "Authored");
+    this.saveBtn.title = "save every confirmed edit so it survives a refresh";
+    this.authoredBtn.title = "Reset to Authored Layout — discard saved edits and restore the production office";
+    this.saveBtn.onclick = a.save;
+    this.authoredBtn.onclick = a.resetLayout;
+    saveRow.append(this.saveBtn, this.authoredBtn);
+    this.layoutNote = el("div", "margin-bottom:8px;font-size:10px;opacity:0.42;line-height:1.3;", "");
+
     const histRow = el("div", ROW);
     this.undoBtn = el("button", BTN, "↶ Undo");
     this.redoBtn = el("button", BTN, "↷ Redo");
@@ -279,7 +303,7 @@ export class EditorPanel {
     this.hint = el("div", "margin-top:8px;font-size:10px;opacity:0.42;line-height:1.35;",
       "drag piece · drag ring to rotate · ⏎ confirm · esc cancel · ⌘Z undo");
 
-    this.root.append(head, modeRow, this.chip, object, assets, surface, lighting, histRow, actRow, this.hint);
+    this.root.append(head, modeRow, this.chip, object, assets, surface, lighting, saveRow, this.layoutNote, histRow, actRow, this.hint);
     this.renderAssets();
     parent.appendChild(this.root);
   }
@@ -387,6 +411,11 @@ export class EditorPanel {
       b.style.opacity = on ? "1" : "0.34";
       b.style.cursor = on ? "pointer" : "default";
     }
+    this.saveBtn.disabled = !s.layoutDirty;
+    this.saveBtn.style.opacity = s.layoutDirty ? "1" : "0.4";
+    this.saveBtn.style.cursor = s.layoutDirty ? "pointer" : "default";
+    this.layoutNote.textContent = s.layoutNote;
+
     const canConfirm = s.valid && s.pending;
     this.confirmBtn.disabled = !canConfirm;
     this.confirmBtn.style.opacity = canConfirm ? "1" : "0.4";

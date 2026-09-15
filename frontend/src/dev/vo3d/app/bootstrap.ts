@@ -89,6 +89,7 @@ import { EditorPanel, type PanelMode } from "../editor/EditorPanel";
 import { ASSET_LIBRARY, findAsset } from "../editor/library";
 import { SurfaceRegistry, surfaceTagOf, type SurfaceSpec } from "../editor/surfaces";
 import { LedRegistry, ledTagOf, type EmissiveSpec } from "../editor/emissive";
+import { LayoutStore, layoutIsEmpty } from "../editor/persistence";
 import { NavDebug } from "../devtools/NavDebug";
 import { Capture, FrameWindow, Overlay, PRESETS, describeDevice, sceneStats, snapshotRenderer, summarize, type CaptureSummary, type PresetId } from "../devtools/Bench";
 import { BON_STANDING_HEIGHT, type AvatarLod } from "../adapters/v1Avatar";
@@ -974,12 +975,26 @@ const surfaces = new SurfaceRegistry();
 const leds = new LedRegistry();
 surfaces.retarget = (from, to) => { mirror.ambient.retarget(from, to); };
 leds.retarget = (from, to) => { mirror.ambient.retarget(from, to); };
+
+// PERSISTENCE. The store takes the AUTHORED baseline here — after applyEditablePolicy, before a single
+// saved edit is replayed — which is what makes "Reset to Authored Layout" a restore rather than a guess.
+const layout = new LayoutStore({ world, mirror, walkability, surfaces, leds });
+const savedLayout = layout.load();
+// ENTITIES BEFORE COLLECT: a restored LED strip has to be in its room group before the registries walk it,
+// or the piece would come back without being addressable in the Lighting tab.
+const restored = savedLayout ? layout.restoreEntities(savedLayout) : null;
 for (const room of world.rooms.values()) {
   const g = mirror.roomGroup(room.id);
   if (!g) continue;
   surfaces.collect(room.id, g);
   leds.collect(room.id, g);
 }
+const restoredTreatments = savedLayout ? layout.restoreTreatments(savedLayout) : null;
+let layoutNote = restored && restoredTreatments
+  ? `restored ${restored.moved} moved · ${restored.added} added · ${restored.deleted} deleted · ${restoredTreatments.surfaces + restoredTreatments.leds} treatments`
+  : "no saved layout";
+if (restored && restoredTreatments && restored.skipped + restoredTreatments.skipped > 0)
+  layoutNote += ` · ${restored.skipped + restoredTreatments.skipped} stale entries dropped`;
 
 const edit = new EditSession(world, mirror, walkability, stack, { surfaces, leds });
 const editGizmo = new EditorGizmo(R.scene);
@@ -1020,6 +1035,8 @@ function refreshEditVisuals(): void {
     surfaceId: edit.selectedSurface, surfaceSpec: surf ? { ...surf.preview } : null,
     leds: leds.all().map((e) => ({ id: e.id, label: `${e.tag.label}` })),
     ledId: edit.selectedLed, ledSpec: led ? { ...led.preview } : null,
+    layoutDirty: !layoutIsEmpty(layout.counts(edit.pending)),
+    layoutNote,
     hint: editMode2 === "assets" ? "pick an asset · click the floor to place · ⏎ confirm · esc cancel"
       : editMode2 === "object" ? "drag piece · drag ring to rotate · ⏎ confirm · esc cancel · ⌘Z undo"
       : "click a surface or light in the scene · ⏎ apply · esc cancel",
@@ -1071,6 +1088,22 @@ function setEditMode(on: boolean): void {
       confirm: () => { edit.confirm(); refreshEditVisuals(); },
       cancel: () => { edit.cancel(); refreshEditVisuals(); },
       reset: () => { edit.reset(); refreshEditVisuals(); },
+      // SAVE IS EXPLICIT and excludes the unconfirmed placement, so a piece still under the cursor is
+      // never written. Cancel has no path here at all: nothing but this button persists anything.
+      save: () => {
+        const doc = layout.save(edit.pending);
+        layoutNote = doc
+          ? `saved ${doc.moved.length} moved · ${doc.added.length} added · ${doc.deleted.length} deleted · ${doc.surfaces.length + doc.leds.length} treatments`
+          : "local storage unavailable — nothing saved";
+        refreshEditVisuals();
+      },
+      resetLayout: () => {
+        const r = layout.resetToAuthored();
+        edit.history.clear();
+        edit.select(null);
+        layoutNote = `reset to authored · ${r.moved} moved · ${r.added} added · ${r.deleted} deleted reverted`;
+        refreshEditVisuals();
+      },
       close: () => { setEditMode(false); refresh(); },
     });
   }
