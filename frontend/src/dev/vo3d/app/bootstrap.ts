@@ -187,7 +187,7 @@ const params = {
   lightAzimuth: DEFAULT_LIGHT.azimuth, lightElevation: DEFAULT_LIGHT.elevation, keyIntensity: DEFAULT_LIGHT.keyIntensity,
   ambientIntensity: DEFAULT_LIGHT.ambientIntensity, envIntensity: DEFAULT_LIGHT.envIntensity, exposure: DEFAULT_LIGHT.exposure,
   shadows: true, ao: true, sway: true, ambient: true, wallHeight: DESIGN_SHELL.wallHeight, frontWall: "low" as "low" | "full" | "hidden",
-  overlay: true, motion: false, preset: "A" as PresetId, captureSeconds: 30,
+  overlay: true, motion: false, preset: "A" as PresetId, captureSeconds: 30, roomCulling: true,
   envTime: "auto" as EnvTimeMode, envScenery: true, envFog: true, envSky: true,
   envWeather: "auto" as WeatherMode, envRainInOffice: true, envTransitions: true, envLightning: true,
   cameraMode: "office" as CameraModeId,
@@ -219,7 +219,13 @@ mirror.buildRoom(QA_ROOM, shellOpts()); // Phase 11
 // The shadow map is only redrawn on demand (Renderer.invalidateShadows), and these land ASYNCHRONOUSLY —
 // after the map was last drawn. Without this the statues stand in the scene casting nothing until some
 // unrelated change happens to refresh it. Anything else added after startup needs the same call.
-void loadBossStatues(mirror.root).then(() => R.invalidateShadows());
+void loadBossStatues(mirror.root).then(() => {
+  R.invalidateShadows();
+  // ...and so does room-level culling: the statues joined the Central Hub's subtree AFTER its bounds
+  // were measured, so those bounds are re-taken. (They stand well inside the room, but a visibility
+  // system that quietly runs on stale bounds is the kind that pops once, months later.)
+  mirror.visibility.invalidate();
+});
 // THE CAVE'S SCENE GRAPH, built once and added to the SCENE rather than to the office mirror: the two
 // volumes are never drawn at the same time, and keeping them as siblings is what lets one visibility
 // flag turn each of them off whole. It comes back hidden — nothing in here is drawn, and no video is
@@ -1755,6 +1761,9 @@ function runCapture(seconds = params.captureSeconds): Promise<CaptureSummary> {
   return capture.done.then((r) => { lastCapture = r; capture = null; benchState.status = "idle"; benchState.result = `${params.preset}${params.motion ? "/motion" : "/idle"}: ${r.avgFps} fps · med ${r.medianFrameMs} ms · p95 ${r.p95FrameMs} ms · worst ${r.worstFrameMs} ms · calls ${r.avgDrawCalls}`; refresh(); return r; });
 }
 bench.add(params, "overlay").name("stats overlay").onChange((v: boolean) => (overlay.visible = v));
+// The A/B switch for room-level culling. OFF restores every subtree on the very next frame, which is
+// what makes a BEFORE/AFTER capture a toggle rather than a rebuild.
+bench.add(params, "roomCulling").name("room culling (visibility)").onChange(() => { if (!params.roomCulling) mirror.visibility.restoreAll(); R.invalidateShadows(); });
 bench.add(params, "preset", PRESETS.map((p) => p.id)).name("preset (A full · B no SSAO · C no SSAO/shadows · D no SSAO/sway)").onChange(applyPreset);
 bench.add(params, "motion").name("scripted camera motion"); bench.add(params, "captureSeconds", 5, 60, 5);
 bench.add({ run: () => void runCapture() }, "run").name("▶ run capture");
@@ -1786,6 +1795,38 @@ function updateScanners(p: Vec2): void {
   mirror.ambient.setScanner(MEETING_KIOSK_SCANNER_ID, pointInRect(scannerAt, MEETING_KIOSK_ZONE));
 }
 let entryPath: readonly Vec2[] = [];
+
+// ---- room-level visibility ---------------------------------------------------------------------------
+// The POLICY half of render/RoomVisibility: which camera is authoritative, which room may never be
+// hidden, and whether the shadow frustum has to be consulted at all. The system itself holds no
+// knowledge of the world, the player or the camera modes — it is handed all three here, once a frame,
+// through the Renderer's `cull` hook (which runs after the shadow frame has settled).
+//
+// CAMERA VISIBILITY IS AUTHORITATIVE. `R.activeCamera` is whichever camera the modes selected: the
+// orthographic rig in OFFICE and EXPLORE, the perspective rig in PLAYER. Nothing here looks at the
+// player's position to decide what to draw — a user standing in Reception can look straight down the
+// hall, and the overhead framing shows the whole floor.
+//
+// THE ONE GAMEPLAY CONCESSION is `keep`: the room the avatar is standing in stays visible whatever the
+// frustum says. Its cost is at most one room; its value is that no camera bug, no bounds error and no
+// mid-threshold frame can ever make the floor under Bon's feet disappear.
+const avatarRoomProbe: Vec2 = { x: 0, z: 0 };
+function playerRoomId(): string | null {
+  const p = avatar.worldPosition();
+  avatarRoomProbe.x = p.x;
+  avatarRoomProbe.z = p.z;
+  return world.regionAt(avatarRoomProbe)?.roomId ?? null;
+}
+R.cull = () => {
+  mirror.visibility.enabled = params.roomCulling;
+  mirror.visibility.update(R.activeCamera, {
+    light: R.key,
+    // With shadows off nothing can be cast, so the light frustum stops widening the test and the
+    // culling gets tighter — which is exactly right, and is why preset C sees more of it than preset A.
+    shadows: R.renderer.shadowMap.enabled,
+    keep: playerRoomId(),
+  });
+};
 
 // ---- loop --------------------------------------------------------------------------------------------
 const clock = new THREE.Timer();
@@ -1991,7 +2032,7 @@ function loop(): void {
     envState.storm = env.storm.striking
       ? `${env.storm.nextIn.toFixed(0)}s (${env.storm.count} so far)`
       : "this weather does not strike";
-    overlay.update(liveWindow.summary(), snapshotRenderer(R.renderer), device, `V2 · avatar ${params.avatar ? `LOD${params.avatarLod} · ${avatarState.triangles.toLocaleString()} tris · ${avatarState.clip} · owner ${stack.owner}` : "off"}\n${benchState.status}${lastCapture ? "\nlast: " + benchState.result : ""}`);
+    overlay.update(liveWindow.summary(), snapshotRenderer(R.renderer), device, `V2 · avatar ${params.avatar ? `LOD${params.avatarLod} · ${avatarState.triangles.toLocaleString()} tris · ${avatarState.clip} · owner ${stack.owner}` : "off"}\nrooms ${mirror.visibility.roomCount - mirror.visibility.culled}/${mirror.visibility.roomCount} drawn · ${mirror.visibility.culled} culled${params.roomCulling ? "" : " (culling off)"}\n${benchState.status}${lastCapture ? "\nlast: " + benchState.result : ""}`);
   }
 }
 loop();
@@ -2000,6 +2041,18 @@ loop();
 (window as unknown as { __vo3d: unknown }).__vo3d = {
   world, plan, walkability, mirror, R, scene: R.scene, camera: R.camera, renderer: R.renderer, params, stack, avatar, avatarState, navCtl,
   placeCamera: applyCam, placeLight: applyLight, focusOn,
+  /** ROOM-LEVEL CULLING, for the console and the A/B rig. `setEnabled(false)` is the BEFORE state. */
+  visibility: {
+    system: mirror.visibility,
+    setEnabled: (on: boolean) => { params.roomCulling = on; if (!on) mirror.visibility.restoreAll(); R.invalidateShadows(); refresh(); },
+    enabled: () => params.roomCulling,
+    culled: () => mirror.visibility.culled,
+    rooms: () => mirror.visibility.roomCount,
+    states: () => mirror.visibility.states(),
+    hidden: () => mirror.visibility.hiddenIds(),
+    /** meshes actually submitted this frame — what culling is supposed to move */
+    visibleMeshes: () => { let n = 0; R.scene.traverseVisible((o) => { if ((o as THREE.Mesh).isMesh) n++; }); return n; },
+  },
   bench: { device, applyPreset, runCapture, snapshot: () => snapshotRenderer(R.renderer), live: () => liveWindow.summary(), summarize, sceneStats: () => sceneStats(R.scene) },
   scanners: {
     set: (id: string, on: boolean) => mirror.ambient.setScanner(id, on),

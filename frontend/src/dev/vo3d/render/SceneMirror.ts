@@ -11,6 +11,7 @@ import { resetSeed } from "../build/helpers";
 import { SwaySystem, type SwayNode } from "./Sway";
 import { FoliageSystem } from "./Foliage";
 import { AmbientSystem } from "./Ambient";
+import { RoomVisibility } from "./RoomVisibility";
 import { buildGroundFloor } from "../build/floorplan";
 import type { GroundFloor } from "../rooms/ground-floor";
 
@@ -22,6 +23,10 @@ export class SceneMirror {
   readonly foliage = new FoliageSystem(this.sway);
   /** powered-surface idle animation (screens, sensors, status strips) — one update path for the whole world */
   readonly ambient = new AmbientSystem();
+  /** ROOM-LEVEL CULLING. This class is the only thing that owns room subtrees, so it is the only thing
+   *  that can register them; the policy itself (which camera, which margins, shadow safety) lives in
+   *  render/RoomVisibility and is driven per frame by the Renderer's `cull` hook. */
+  readonly visibility = new RoomVisibility();
   private readonly views = new Map<EntityId, THREE.Group>();
   /** The rotation a builder BAKED into an entity's group, net of the entity's own authored yaw.
    *
@@ -83,6 +88,7 @@ export class SceneMirror {
     this.ambient.collect(room.id, g); // `userData.ambient` taggings → channels on the shared ambient system
     this.root.add(g);
     this.roomGroups.set(room.id, g);
+    this.visibility.register(room.id, g, room.rect);
   }
   private buildEntityView(e: Entity): THREE.Group {
     const { group, sway } = buildEntity(e);
@@ -108,6 +114,7 @@ export class SceneMirror {
     g.add(v);
     finalizeSucculents(v);
     applyFloorLayerOrder(v);
+    this.visibility.invalidate(e.roomId); // the room just grew
     return v;
   }
   /** Detach and dispose the view of an entity the world has just lost. Geometry is released; the shared
@@ -122,6 +129,9 @@ export class SceneMirror {
     this.baseYaw.delete(id);
     this.transformBound.delete(id);
     this.sway.unregister(id);
+    // the entity is already gone from the world by the time this runs, so its room cannot be named:
+    // re-measure every room's bounds rather than guess. Editor deletes only.
+    this.visibility.invalidate();
   }
   /** a room's built group — what the editor's surface / LED registries collect from */
   roomGroup(roomId: string): THREE.Group | null {
@@ -151,6 +161,7 @@ export class SceneMirror {
     v.position.x = e.transform.pos.x;
     v.position.z = e.transform.pos.z;
     v.rotation.y = this.baseYawOf(id) + e.transform.yaw;
+    this.visibility.invalidate(e.roomId); // an edited piece can push the room's bounds out
   }
   rebuildRoom(room: RoomDef, opts: ShellOptions): void {
     const old = this.roomGroups.get(room.id);
@@ -163,6 +174,7 @@ export class SceneMirror {
       for (const e of this.world.inRoom(room.id)) { this.views.delete(e.id); this.baseYaw.delete(e.id); this.transformBound.delete(e.id); this.sway.unregister(e.id); }
       this.sway.unregister(`static:${room.id}`);
       this.ambient.clearRoom(room.id); // channels are re-collected by buildRoom below
+      this.visibility.unregister(room.id); // re-registered, and re-measured, by buildRoom below
     }
     this.buildRoom(room, opts);
   }

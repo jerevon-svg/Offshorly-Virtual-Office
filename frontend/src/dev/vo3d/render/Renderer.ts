@@ -99,6 +99,14 @@ export class Renderer {
    *  with. This is a camera/lighting knob, not gameplay: the renderer still knows nothing about a player. */
   shadowFocus: Vec2 | null = null;
   shadowRadius: number | null = null;
+  /** Optional VISIBILITY hook, run every frame after the shadow frame has been settled and before
+   *  anything is drawn. Room-level culling lives behind it (render/RoomVisibility, driven by
+   *  app/bootstrap) — the renderer itself still knows nothing about rooms.
+   *
+   *  THE ORDER MATTERS. updateShadowFrame() may have just moved the light and flagged the shadow map for
+   *  a redraw; running the cull after it means the visibility the shadow pass sees is the visibility that
+   *  was decided against THIS frame's shadow frustum, never the previous one's. */
+  cull: (() => void) | null = null;
   private readonly lightDir = new THREE.Vector3(0, 1, 0);
   private shadowKey = "";
 
@@ -310,6 +318,7 @@ export class Renderer {
     this.constrain?.(); // camera-mode bounds get the last word on where the camera may be
     this.target.copy(this.controls.target); // panning moves the focus; GUI zoom/pitch then respect it
     this.updateShadowFrame();
+    this.cull?.(); // room subtrees that cannot contribute to this frame drop out of every pass at once
     if (this.ssaoEnabled) {
       // AN ORTHO CAMERA'S PROJECTION MATRIX CHANGES WITH ZOOM, and SSAOPass only ever samples it in
       // setSize(). Two matrix copies a frame is the whole cost of AO that is correct at every zoom.
