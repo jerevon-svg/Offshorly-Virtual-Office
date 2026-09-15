@@ -126,13 +126,25 @@ const OVERCAST: Record<EnvPhase, EnvOverlay> = {
     stage: 0xd5d2ce,
     skyGrade: { top: 0x8e9ea9, horizon: 0xc0c7c9, stars: 0, moon: 0 },
     fog: { near: 900, far: 3400 }, // the murk closes in; the far landscape goes first
-    key: { color: 0xdfe6ef, intensity: 1.15 },
+    // THESE ARE RELATIVE TO THE CLEAR-SKY BASE, and the base moved. The Full Graphics re-grade spends its
+    // budget on the sun and holds ambient low; an overcast target left at its old absolute ambient would
+    // now be BRIGHTER than a clear noon, which is the one thing a storm must never be. The relationship —
+    // key cut to roughly a third, ambient lifted by about a sixth, exposure trimmed — is what is preserved.
+    key: { color: 0xdfe6ef, intensity: 0.9 },
     fill: { color: 0xd7e2f0, intensity: 0.5 },
-    hemi: { sky: 0xe9e2d7, ground: 0xa8a59d, intensity: 1.45 },
-    envIntensity: 0.62,
-    exposure: 1.14,
+    hemi: { sky: 0xe9e2d7, ground: 0xa8a59d, intensity: 1.08 },
+    envIntensity: 0.46,
+    // EXPOSURE IS WHAT MAKES OVERCAST MOODY, not the ambient. The ambient has a job — it is lifted above
+    // the clear-sky base precisely so interiors do not go dark when the key is cut, and weather.test holds
+    // that contract. Exposure is the global that darkens everything without touching how the rooms are
+    // lit, which is exactly the "flat, grey and a bit dimmer" a rainy day actually looks like.
+    exposure: 0.96,
     exteriorTint: 0.74,
     practicals: 0.5, // street lamps come on in the gloom — the first read that something changed outside
+    // OVERCAST IS THE LOW-CONTACT CONDITION. Cloud is one enormous soft light source, so real creases get
+    // filled in and a screen-space darkening that stayed at clear-sky strength would be the one thing
+    // announcing that the AO is a post effect rather than light.
+    ao: 0.4,
   },
   // Rain at dusk. The warm band survives but goes bruised and hazy rather than golden.
   sunset: {
@@ -140,13 +152,14 @@ const OVERCAST: Record<EnvPhase, EnvOverlay> = {
     stage: 0xc7aa9a,
     skyGrade: { top: 0x8c6a63, horizon: 0xd4a58a, stars: 0, moon: 0 },
     fog: { near: 800, far: 2900 },
-    key: { color: 0xe7a377, intensity: 1.2 },
+    key: { color: 0xe7a377, intensity: 1.0 },
     fill: { color: 0xe0c3b4, intensity: 0.46 },
-    hemi: { sky: 0xe6c3a6, ground: 0x7e6a60, intensity: 1.2 },
-    envIntensity: 0.68,
-    exposure: 1.18,
+    hemi: { sky: 0xe6c3a6, ground: 0x7e6a60, intensity: 0.84 },
+    envIntensity: 0.56,
+    exposure: 1.0,
     exteriorTint: 0.7,
     practicals: 1.0,
+    ao: 0.44,
   },
   // A wet night. THE STARS GO OUT — cloud cover is the reason it is raining, so a full star field over a
   // downpour would be the one thing that gives the whole composition away.
@@ -155,13 +168,18 @@ const OVERCAST: Record<EnvPhase, EnvOverlay> = {
     stage: 0x232a3a,
     skyGrade: { top: 0x0c1220, horizon: 0x232c3e, stars: 0, moon: 0.12 },
     fog: { near: 700, far: 2500 },
-    key: { color: 0x8496b8, intensity: 0.34 },
+    key: { color: 0x8496b8, intensity: 0.3 }, // cloud over a moon: the last hard light in the world goes
     fill: { color: 0x5d6f9e, intensity: 0.16 },
-    hemi: { sky: 0x7d6a5e, ground: 0x1e2432, intensity: 0.8 },
-    envIntensity: 0.64,
-    exposure: 1.12,
+    hemi: { sky: 0x55607a, ground: 0x171d2c, intensity: 0.3 },
+    envIntensity: 0.2,
+    // still BELOW a clear night's own exposure would be wrong the other way — cloud over a city glows a
+    // little. A touch up from 0.92, nowhere near day.
+    exposure: 0.64,
     exteriorTint: 0.19,
-    practicals: 1.6, // a wet street is carried by its lamps
+    // A WET STREET IS CARRIED BY ITS LAMPS, and it has to out-do a clear night, which now runs its own
+    // fixtures at 1.75. This was 1.6 against a 1.45 clear night; the base moved, so this moves with it.
+    practicals: 2.0,
+    ao: 0.3,
   },
 };
 

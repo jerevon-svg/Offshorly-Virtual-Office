@@ -3,9 +3,16 @@
 // One flat data record per phase. Every global knob the environment owns lives here and nowhere else, so
 // the presentation can be re-graded without touching a builder, a room or a light.
 //
-// DAY is deliberately byte-for-byte the lighting V2's rooms were built and approved under (Renderer's
-// DEFAULT_LIGHT), so switching the environment on does not re-grade a single interior at midday. Only the
-// background changes, because there is now a world where the cream void used to be.
+// DAY and Renderer's DEFAULT_LIGHT are ONE grade expressed twice (the renderer has to stand up before the
+// environment exists). They move together or not at all; env.test asserts they are equal field for field.
+//
+// THE FULL GRAPHICS TARGET. The table was re-graded in one pass for depth rather than brightness. The
+// single idea behind all three phases: A DIRECTIONAL KEY ONLY READS AS FAR AS THE AMBIENT LETS IT. The old
+// grade lit rooms with a strong key AND a strong hemisphere, so every shadow was filled back in before it
+// landed and the world read flat and creamy. Each phase now spends more of its budget on the DIRECTION and
+// less on the FILL — key up, hemisphere/IBL down, exposure trimmed so the highlights stay clean rather
+// than blowing — which is what buys architectural shadows, a lit side and a shadow side, and avatars that
+// are modelled by the sun instead of floodlit from everywhere at once.
 //
 // FUTURE-COMPATIBILITY, stated so it is not re-litigated later:
 //   • WEATHER (next phase) multiplies/overrides these fields rather than replacing the table — a
@@ -42,39 +49,63 @@ export type EnvPreset = {
    *  around the building needs a ground tone of its own — V1's flat stage, graded by time of day. It is a
    *  backdrop, never a landscape: nothing about it hints that a world exists. */
   stage: number;
+  /** CONTACT OCCLUSION, 0 = none … 1 = stock SSAOPass. Graded per phase for the same reason exposure is:
+   *  AO is a darkening, and how much darkening a scene can absorb depends on how lit it already is. A hard
+   *  midday key already carves its own creases, and a night interior has almost no light left to remove —
+   *  so both sit lower than the raking, high-contrast sunset. Kept well under 1 throughout: past roughly
+   *  0.7 the office's cream walls stop reading as occluded and start reading as dirty. */
+  ao: number;
 };
 
 export const ENV_PRESETS: Record<EnvPhase, EnvPreset> = {
-  // Clean natural daylight. Warm key high in the sky, soft shadows, practicals off, fresh landscape.
+  // BRIGHT, RICH DAYLIGHT WITH SHADOWS IN IT. The sun is the loudest thing in the frame (2.3 -> 3.05) and
+  // the hemisphere that used to fill its shadows straight back in is pulled down to match (1.25 -> 0.92),
+  // so what lands on the floor is a real shadow rather than a tint. Exposure comes DOWN with the key going
+  // up (1.12 -> 1.06): the same trade a camera makes, and what keeps cream architecture clean instead of
+  // washed. The sun also drops 62 -> 54 degrees — a midday sun straight overhead casts almost nothing a
+  // top-down camera can see, and eight degrees is worth about 40% more shadow length for no other change.
   day: {
     sky: 0xa8cde6,
     fog: { near: 1400, far: 5200 },
     skyGrade: { top: 0x77b4e4, horizon: 0xcfe6f2, stars: 0, moon: 0 },
     stage: 0xe7ded4,
-    key: { color: 0xfff1e0, intensity: 2.3, azimuth: -48, elevation: 62 },
-    fill: { color: 0xe4ecff, intensity: 0.35 },
-    hemi: { sky: 0xfff4ea, ground: 0xcdb9a6, intensity: 1.25 },
-    envIntensity: 0.45,
-    exposure: 1.12,
+    key: { color: 0xfff4e6, intensity: 3.05, azimuth: -48, elevation: 54 },
+    // the shadow side is lit by SKY, and sky is blue. Cooler and slightly weaker than before, so the
+    // unlit faces read as in-shadow rather than as a second, dimmer sun.
+    fill: { color: 0xdbe7ff, intensity: 0.3 },
+    hemi: { sky: 0xfff4ea, ground: 0xcdb9a6, intensity: 0.92 },
+    envIntensity: 0.38,
+    exposure: 1.06,
     exteriorTint: 1,
     practicals: 0,
+    ao: 0.55,
   },
-  // Warm orange/pink atmosphere. The key drops to 18° — long raking shadows across the campus — swings
-  // round to the west, and the exposure lifts slightly so glass picks up the sky instead of going flat.
+  // GOLDEN HOUR. The key swings round to the west and rakes at 15°, so shadows run roughly four times
+  // their midday length, and it is the STRONGEST key of the three — a low sun is a bright one, and the
+  // whole read is a hot lit side against a cool shadow side. Exposure comes DOWN from the old grade for
+  // the same reason day's did: the brightness now lives in the direction, not in the exposure.
   sunset: {
     sky: 0xea8f56,
     fog: { near: 1100, far: 4400 },
     skyGrade: { top: 0xd9694e, horizon: 0xffc07a, stars: 0, moon: 0 },
     stage: 0xd8ad8c,
-    // 16 deg, swung round to the west: shadows rake roughly four times their midday length while still
+    // 15 deg, swung round to the west: shadows rake roughly four times their midday length while still
     // fitting the shadow frustum (below ~14 deg a lamp post's shadow runs off the end of the map).
-    key: { color: 0xff9436, intensity: 2.55, azimuth: -112, elevation: 16 },
-    fill: { color: 0xffb98a, intensity: 0.34 },
-    hemi: { sky: 0xffc48c, ground: 0x7f5f4c, intensity: 1.0 },
-    envIntensity: 0.6,
-    exposure: 1.22,
+    key: { color: 0xff9a3c, intensity: 3.2, azimuth: -112, elevation: 15 },
+    // THE WARM/COOL SPLIT IS THE WHOLE POINT OF SUNSET, and the old fill was working against it: a warm
+    // orange bounce opposite a warm orange sun leaves every face the same colour and the raking light with
+    // nothing to rake against. The fill is now the COOL half of the sky, so a surface turned away from the
+    // sun goes blue-shadowed while the sunlit face goes gold. Same one light, opposite colour.
+    fill: { color: 0x8aa2d8, intensity: 0.42 },
+    // the ambient comes down hard too: a low sun is a low-ambient condition, and holding the hemisphere at
+    // day levels is what previously turned the golden hour into an orange filter over a flat room.
+    hemi: { sky: 0xffc48c, ground: 0x6b5a54, intensity: 0.7 },
+    envIntensity: 0.46,
+    exposure: 1.14,
     exteriorTint: 0.9,
     practicals: 0.62,
+    // the phase with the most contrast to work with, so it can carry the most contact occlusion
+    ao: 0.66,
   },
   // Cool blue moonlight. The ambient stays high enough that interiors and the landscape both read; the
   // EXTERIOR is darkened by exteriorTint rather than by pulling the lights down, which would take the
@@ -85,22 +116,44 @@ export const ENV_PRESETS: Record<EnvPhase, EnvPreset> = {
     skyGrade: { top: 0x070d24, horizon: 0x1d2c52, stars: 0.95, moon: 1 },
     stage: 0x27304a,
     // moonlight: cool, low, and from the opposite side to the day sun
-    key: { color: 0x8fa8e0, intensity: 0.52, azimuth: 26, elevation: 62 },
-    fill: { color: 0x6179bd, intensity: 0.14 },
-    // A WARM hemisphere sky colour with the ambient pulled right down. Hemisphere `color` lights
-    // UP-FACING surfaces, which indoors means every floor and desk — so this is what keeps the office
-    // feeling occupied and lamp-lit rather than washed white, without one room-specific light. The
-    // landscape gets the same warm term but is taken back down by exteriorTint below.
-    hemi: { sky: 0x8a705a, ground: 0x222b40, intensity: 0.72 },
-    // The IBL is a WARM interior studio environment (RoomEnvironment). Leaning on it at night is how the
-    // office keeps a warm, readable inside while the street goes cold and dark: it is a global term, so no
-    // room is special-cased, and the exterior is pulled back down by exteriorTint instead.
-    // The IBL is a warm interior studio environment (RoomEnvironment); leaning on it is the other half
-    // of a warm inside against a cold outside.
-    envIntensity: 0.58,
-    exposure: 1.14,
-    exteriorTint: 0.22,
-    practicals: 1.45,
+    // THE MOON IS NIGHT'S SUNSET SUN. Sunset has an unmistakable identity because its key is strong AND
+    // strongly coloured; night needs the same treatment in the opposite direction, or it is just a scene
+    // with the lights turned down. So the key is LIFTED hard (0.52 -> 1.25) and its colour saturated to a
+    // real moon blue, which is what puts visible cool light on floors, worktops, planting and avatars, and
+    // leaves everything it does not reach in a cool shadow. What still makes it read as NIGHT is the
+    // AMBIENT and the EXPOSURE below being a fraction of day's — never a weak or absent key, which only
+    // ever produces a flat, crushed image in which nothing is modelled and nothing is grounded.
+    key: { color: 0x86b0ff, intensity: 1.25, azimuth: 26, elevation: 62 },
+    fill: { color: 0x3f5aa8, intensity: 0.16 },
+    // THE HEMISPHERE IS NOW COOL, AND THAT IS THE WHOLE FIX. Hemisphere `color` lights UP-FACING
+    // surfaces, which from this camera is almost the entire image — every floor, every desk, every
+    // worktop. Holding it WARM (which is what the grade used to do, to keep interiors feeling occupied)
+    // meant night rendered as a slightly dimmer DAY: same cream floors, same warm cast, no read at all.
+    // Cool moonlight on the broad surfaces is what finally separates the two times of day.
+    //
+    // The office does not go cold as a result, because the warmth was never the hemisphere's job to do:
+    // every room already carries its own warm emissive fixtures — the Executive sconces and shelf coves,
+    // the Project/Meeting cove walls, the Dev cove line, every screen and LED strip. None of them is
+    // touched by any light in this table, so as the lit budget comes down they are what is left, which
+    // is exactly what a warm interior at night looks like from outside it.
+    hemi: { sky: 0x486cb4, ground: 0x0d1220, intensity: 0.26 },
+    // The IBL is a WARM interior studio environment (RoomEnvironment), and it is KEPT — small. It is the
+    // low warm bounce off furniture that stops a cool key over a cool hemisphere turning the whole floor
+    // plate into one flat blue wash. It is no longer what carries night's brightness, though: leaning on
+    // it was how the old grade kept the office readable, and that is precisely what stopped night being
+    // dark. The exterior is pulled down separately by exteriorTint.
+    envIntensity: 0.18,
+    // BELOW DAY'S EXPOSURE, which is what finally makes night read as night. Everything emissive in the
+    // world — screens, LED strips, the practicals, every Ambient channel in every room — is unaffected by
+    // any of the four lights above, so pulling the LIT budget down is the entire mechanism by which they
+    // become the brightest thing on screen. No emissive is touched, no interior light is added, and no
+    // room is special-cased: the fixtures get prominent because everything around them stopped shouting.
+    exposure: 0.74,
+    exteriorTint: 0.2,
+    practicals: 1.75,
+    // least of the three: there is barely any lit surface left to take light off, and AO on an already
+    // dark interior only ever reads as mud.
+    ao: 0.42,
   },
 };
 
@@ -193,5 +246,6 @@ export function blendPresetInto(out: EnvPreset, a: EnvPreset, b: EnvPreset, t: n
   out.exposure = lerp(a.exposure, b.exposure, u);
   out.exteriorTint = lerp(a.exteriorTint, b.exteriorTint, u);
   out.practicals = lerp(a.practicals, b.practicals, u);
+  out.ao = lerp(a.ao, b.ao, u);
   return out;
 }

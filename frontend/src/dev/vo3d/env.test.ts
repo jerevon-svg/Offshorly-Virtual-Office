@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { phaseForHour } from "../../data/officePhase";
 import { ENV_TIME_MODES, TimeOfDay, envPhaseFor, envPhaseForHour } from "./env/timeOfDay";
 import { ENV_PRESETS, blendPreset, lerpHex, overlay } from "./env/presets";
+import { DEFAULT_LIGHT } from "./render/Renderer";
 import {
   CROSSINGS, EXPANSION_LOTS, GRADE, GROVES, LOTS, OFFSHORLY_LOT, PARKING, POND, PODIUM, ROADS, ROAD_Y,
   SPECIMENS, TREE_LINES, VEHICLES, WORLD_CENTRE, WORLD_RADIUS, roadById, roadRect,
@@ -66,14 +67,45 @@ describe("vo3d env — V1 is the source of truth for the clock", () => {
 });
 
 describe("vo3d env — the presentation table", () => {
-  it("leaves DAY identical to the lighting the rooms were built under", () => {
+  // DAY and Renderer.DEFAULT_LIGHT are one grade written in two places (the renderer stands up before the
+  // environment exists). The old test froze DAY at literal numbers to protect the rooms' original grade;
+  // the Full Graphics target replaces those numbers, so what is worth asserting is no longer WHICH numbers
+  // they are but that the two copies still agree and that DAY is still a clean, un-lit-from-nowhere noon.
+  it("keeps DAY and the renderer's standalone default the same single grade", () => {
     const d = ENV_PRESETS.day;
-    expect(d.key).toEqual({ color: 0xfff1e0, intensity: 2.3, azimuth: -48, elevation: 62 });
-    expect(d.hemi.intensity).toBe(1.25);
-    expect(d.envIntensity).toBe(0.45);
-    expect(d.exposure).toBe(1.12);
+    expect(d.key.intensity).toBe(DEFAULT_LIGHT.keyIntensity);
+    expect(d.key.azimuth).toBe(DEFAULT_LIGHT.azimuth);
+    expect(d.key.elevation).toBe(DEFAULT_LIGHT.elevation);
+    expect(d.hemi.intensity).toBe(DEFAULT_LIGHT.ambientIntensity);
+    expect(d.envIntensity).toBe(DEFAULT_LIGHT.envIntensity);
+    expect(d.exposure).toBe(DEFAULT_LIGHT.exposure);
     expect(d.exteriorTint).toBe(1);
     expect(d.practicals).toBe(0);
+  });
+
+  it("spends DAY's budget on the sun rather than on the fill, which is what puts shadows in it", () => {
+    const d = ENV_PRESETS.day;
+    // the key has to out-shout everything that fills its own shadows back in, by a wide margin
+    expect(d.key.intensity).toBeGreaterThan(3);
+    expect(d.key.intensity).toBeGreaterThan((d.hemi.intensity + d.envIntensity + d.fill.intensity) * 1.5);
+    // a sun directly overhead casts nothing a top-down camera can see; one low enough to rake is the point
+    expect(d.key.elevation).toBeLessThan(60);
+    expect(d.key.elevation).toBeGreaterThan(45);
+    // exposure comes DOWN as the key goes up, or a brighter sun is just a blown-out one
+    expect(d.exposure).toBeLessThan(1.1);
+    // the shadow side is lit by sky, and sky is blue: fill must be cooler than the warm key
+    expect(d.fill.color & 255).toBeGreaterThan((d.fill.color >> 16) & 255);
+  });
+
+  it("grades contact occlusion per phase, strongest where there is most contrast to carry it", () => {
+    const [d, s, n] = [ENV_PRESETS.day, ENV_PRESETS.sunset, ENV_PRESETS.night];
+    for (const q of [d, s, n]) {
+      expect(q.ao).toBeGreaterThan(0);
+      // past ~0.7 the office's cream architecture reads as dirty rather than occluded
+      expect(q.ao).toBeLessThanOrEqual(0.7);
+    }
+    expect(s.ao).toBeGreaterThan(d.ao); // the raking phase has the most contrast to spend
+    expect(n.ao).toBeLessThan(d.ao); // and the darkest has the least
   });
 
   it("moves day -> sunset -> night in the direction the brief asks for", () => {
@@ -87,13 +119,22 @@ describe("vo3d env — the presentation table", () => {
     // the exterior darkens, but the global ambient stays high enough to keep interiors readable
     expect(n.exteriorTint).toBeLessThan(s.exteriorTint);
     expect(s.exteriorTint).toBeLessThanOrEqual(d.exteriorTint);
-    // Interiors must not go black with the street. Two global terms carry that, and both are asserted
-    // because the night grade deliberately trades one for the other: an ambient budget that stays up,
-    // and a WARM hemisphere sky colour — hemisphere `color` lights up-facing surfaces, i.e. every floor
-    // and desk indoors, which is what makes the office read occupied rather than washed white.
-    expect(n.hemi.intensity + n.envIntensity).toBeGreaterThan(1.1);
-    expect((n.hemi.sky >> 16) & 255).toBeGreaterThan(n.hemi.sky & 255);
-    expect(n.exposure).toBeGreaterThan(1);
+    // NIGHT MUST ACTUALLY BE DARKER THAN DAY. This is what makes every emissive in the world — screens,
+    // LED strips, the exterior practicals — the brightest thing on screen without one of them being touched.
+    expect(n.key.intensity + n.hemi.intensity + n.envIntensity)
+      .toBeLessThan((d.key.intensity + d.hemi.intensity + d.envIntensity) * 0.45);
+    expect(n.exposure).toBeLessThan(d.exposure);
+    // ...but interiors must not go BLACK with the street, and a figure must still be modelled rather than
+    // silhouetted, so neither the ambient budget nor the moon is allowed near zero.
+    expect(n.hemi.intensity + n.envIntensity).toBeGreaterThan(0.3);
+    expect(n.key.intensity).toBeGreaterThan(0.3);
+    expect(n.exposure).toBeGreaterThan(0.6);
+    // THE HEMISPHERE MUST BE COOL. It lights up-facing surfaces — from the office camera, nearly the whole
+    // image — so a warm one renders night as a dimmer day, which is exactly what it used to do. The warm
+    // half of a night interior comes from the rooms' own emissive coves and screens, which no light here
+    // touches, and from the warm IBL; it must not come from the hemisphere.
+    expect(n.hemi.sky & 255).toBeGreaterThan((n.hemi.sky >> 16) & 255);
+    expect(n.key.color & 255).toBeGreaterThan((n.key.color >> 16) & 255);
   });
 
   it("grades sunset and night hard enough to read as different times of day, not tints", () => {
@@ -119,7 +160,7 @@ describe("vo3d env — the presentation table", () => {
     expect(rainy.key.intensity).toBe(0.9);
     expect(rainy.key.azimuth).toBe(ENV_PRESETS.day.key.azimuth); // untouched fields survive
     expect(rainy.exteriorTint).toBe(0.8);
-    expect(ENV_PRESETS.day.key.intensity).toBe(2.3); // and the table itself is not mutated
+    expect(ENV_PRESETS.day.key.intensity).toBe(DEFAULT_LIGHT.keyIntensity); // the table itself is not mutated
 
     expect(lerpHex(0x000000, 0xffffff, 0.5)).toBe(0x808080);
     const mid = blendPreset(ENV_PRESETS.sunset, ENV_PRESETS.night, 0.5);

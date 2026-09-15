@@ -89,6 +89,10 @@ const INTERIOR = {
   hemi: { sky: 0x2b3550, ground: 0x0a0c12, intensity: 0.34 },
   envIntensity: 0.06,
   exposure: 1.05,
+  // A SEALED, NEARLY UNLIT VOLUME IS WHERE CONTACT OCCLUSION EARNS THE MOST. With almost no directional
+  // light there are no cast shadows to ground anything, so screen-space AO is the only thing telling the
+  // eye that a seat sits ON the tier rather than floating over it.
+  ao: 0.6,
 };
 
 export class Environment {
@@ -443,6 +447,7 @@ export class Environment {
         keyIntensity: INTERIOR.key.intensity, ambientIntensity: INTERIOR.hemi.intensity,
         envIntensity: INTERIOR.envIntensity, exposure: INTERIOR.exposure,
       };
+      R.aoStrength = INTERIOR.ao;
       this.lastAz = INTERIOR.key.azimuth;
       this.lastEl = INTERIOR.key.elevation;
       R.placeLight();
@@ -490,6 +495,9 @@ export class Environment {
       this.lastEl = p.key.elevation;
       R.placeLight();
     } else R.applyLightLevels();
+    // AO rides the travelling grade like every other global, so Day -> Sunset -> Night eases its contact
+    // occlusion across too rather than snapping it on the frame the phase flips. One uniform write.
+    R.aoStrength = p.ao;
     this.sky.apply(p.skyGrade);
     this.scenery?.applyTint(p.exteriorTint);
     this.scenery?.applyPracticals(p.practicals);

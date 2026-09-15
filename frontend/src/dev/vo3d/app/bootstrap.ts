@@ -77,7 +77,7 @@ import { SlidingDoor } from "../interact/Door";
 import { CORRIDOR_BANDS, registerGroundFloor } from "../rooms/ground-floor";
 import { planWalk, type NavResult } from "../nav/planner";
 import { v1Static } from "../adapters/v1Grid";
-import { Renderer } from "../render/Renderer";
+import { DEFAULT_LIGHT, Renderer } from "../render/Renderer";
 import { SceneMirror } from "../render/SceneMirror";
 import { Avatar } from "../avatar/Avatar";
 import { ControllerStack, NavigationController } from "../avatar/Controller";
@@ -184,9 +184,10 @@ walkability.attachDerived(derivedNav, world);
 const canvas = document.getElementById("stage") as HTMLCanvasElement;
 const params = {
   pitch: 52, yaw: 0, zoom: 1.32,
-  lightAzimuth: -48, lightElevation: 62, keyIntensity: 2.3, ambientIntensity: 1.25, envIntensity: 0.45, exposure: 1.12,
-  shadows: true, ao: false, sway: true, ambient: true, wallHeight: DESIGN_SHELL.wallHeight, frontWall: "low" as "low" | "full" | "hidden",
-  overlay: true, motion: false, preset: "B" as PresetId, captureSeconds: 30,
+  lightAzimuth: DEFAULT_LIGHT.azimuth, lightElevation: DEFAULT_LIGHT.elevation, keyIntensity: DEFAULT_LIGHT.keyIntensity,
+  ambientIntensity: DEFAULT_LIGHT.ambientIntensity, envIntensity: DEFAULT_LIGHT.envIntensity, exposure: DEFAULT_LIGHT.exposure,
+  shadows: true, ao: true, sway: true, ambient: true, wallHeight: DESIGN_SHELL.wallHeight, frontWall: "low" as "low" | "full" | "hidden",
+  overlay: true, motion: false, preset: "A" as PresetId, captureSeconds: 30,
   envTime: "auto" as EnvTimeMode, envScenery: true, envFog: true, envSky: true,
   envWeather: "auto" as WeatherMode, envRainInOffice: true, envTransitions: true, envLightning: true,
   cameraMode: "office" as CameraModeId,
@@ -1329,9 +1330,9 @@ cam.add({ f: () => { const p = avatar.position; focusOn({ x: p.x - 130, z: p.z -
 const light = gui.addFolder("Light");
 const applyLight = () => { R.lightParams = { azimuth: params.lightAzimuth, elevation: params.lightElevation, keyIntensity: params.keyIntensity, ambientIntensity: params.ambientIntensity, envIntensity: params.envIntensity, exposure: params.exposure }; R.placeLight(); };
 light.add(params, "lightAzimuth", -180, 180, 1).onChange(applyLight); light.add(params, "lightElevation", 15, 85, 1).onChange(applyLight);
-light.add(params, "keyIntensity", 0, 5, 0.05).onChange(applyLight); light.add(params, "ambientIntensity", 0, 3, 0.05).onChange(applyLight);
+light.add(params, "keyIntensity", 0, 6, 0.05).onChange(applyLight); light.add(params, "ambientIntensity", 0, 3, 0.05).onChange(applyLight);
 light.add(params, "envIntensity", 0, 1.5, 0.05).onChange(applyLight); light.add(params, "exposure", 0.5, 1.6, 0.01).onChange(applyLight);
-light.add(params, "shadows").onChange((v: boolean) => R.setShadows(v)); light.add(params, "ao").name("SSAO (off by default)").onChange((v: boolean) => (R.ssaoEnabled = v));
+light.add(params, "shadows").onChange((v: boolean) => R.setShadows(v)); light.add(params, "ao").name("SSAO (Full Graphics baseline — off for A/B)").onChange((v: boolean) => (R.ssaoEnabled = v));
 // The environment's phase is READ from V1, never written to it. The dropdown is a dev-only VIEW override:
 // AUTO follows the real Manila clock exactly as the 2D office does; the three explicit values are for
 // visual testing and change nothing outside this renderer.
