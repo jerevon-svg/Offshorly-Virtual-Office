@@ -79,6 +79,7 @@ import { planWalk, type NavResult } from "../nav/planner";
 import { v1Static } from "../adapters/v1Grid";
 import { DEFAULT_LIGHT, Renderer } from "../render/Renderer";
 import { SceneMirror } from "../render/SceneMirror";
+import { setStaticBatching, staticBatchingEnabled } from "../render/StaticBatch";
 import { Avatar } from "../avatar/Avatar";
 import { ControllerStack, NavigationController } from "../avatar/Controller";
 import { SeatInteraction } from "../interact/Seat";
@@ -197,6 +198,10 @@ const params = {
   clickToWalk: true, showGrid: false, showBlocked: false, showRegions: false, showPath: true, showDestination: true, showDiagnostic: false,
   editMode: false,
 };
+// STATIC BATCHING (V2 slice 3) — on by default; `?batch=0` builds the pre-slice-3 scene graph so the
+// whole-office A/B is two loads of the same page under identical conditions. Read BEFORE the mirror is
+// built, because the batching happens as each group is built and cannot be toggled after the fact.
+setStaticBatching(new URLSearchParams(location.search).get("batch") !== "0");
 const R = new Renderer(canvas, DESIGN_ROOM.rect);
 const mirror = new SceneMirror(world, R.scene);
 mirror.buildGroundFloor(plan);
@@ -2053,6 +2058,8 @@ loop();
     /** meshes actually submitted this frame — what culling is supposed to move */
     visibleMeshes: () => { let n = 0; R.scene.traverseVisible((o) => { if ((o as THREE.Mesh).isMesh) n++; }); return n; },
   },
+  /** STATIC BATCHING, for the console and the A/B rig. Build-time, so the switch is `?batch=0` + reload. */
+  batching: { enabled: staticBatchingEnabled, stats: () => mirror.batching },
   bench: { device, applyPreset, runCapture, snapshot: () => snapshotRenderer(R.renderer), live: () => liveWindow.summary(), summarize, sceneStats: () => sceneStats(R.scene) },
   scanners: {
     set: (id: string, on: boolean) => mirror.ambient.setScanner(id, on),

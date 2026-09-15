@@ -12,6 +12,7 @@ import { SwaySystem, type SwayNode } from "./Sway";
 import { FoliageSystem } from "./Foliage";
 import { AmbientSystem } from "./Ambient";
 import { RoomVisibility } from "./RoomVisibility";
+import { addStats, batchStatic, type BatchStats } from "./StaticBatch";
 import { buildGroundFloor } from "../build/floorplan";
 import type { GroundFloor } from "../rooms/ground-floor";
 
@@ -27,6 +28,8 @@ export class SceneMirror {
    *  that can register them; the policy itself (which camera, which margins, shadow safety) lives in
    *  render/RoomVisibility and is driven per frame by the Renderer's `cull` hook. */
   readonly visibility = new RoomVisibility();
+  /** What STATIC BATCHING collapsed, cumulative over every group built so far (see render/StaticBatch). */
+  batching: BatchStats = { merged: 0, batches: 0, singletons: 0, skipped: 0 };
   private readonly views = new Map<EntityId, THREE.Group>();
   /** The rotation a builder BAKED into an entity's group, net of the entity's own authored yaw.
    *
@@ -63,6 +66,9 @@ export class SceneMirror {
     if (swayNodes?.length) this.sway.register("static:ground-floor", swayNodes);
     this.root.add(g);
     this.foliage.collect("static:ground-floor", g);
+    // STATIC BATCHING last: the foliage pass has already lifted the blades out into InstancedMeshes, so
+    // what is left here is the skeleton itself — slab, sidewalk, footprints, boundary walls, corridors.
+    this.batching = addStats(this.batching, batchStatic(g, frozen(swayNodes), "batch:ground-floor"));
     return g;
   }
   /** Build a room's static architecture + every entity in it. Deterministic (seed reset per room).
@@ -73,18 +79,26 @@ export class SceneMirror {
     const g = new THREE.Group();
     g.name = `room:${room.id}`;
     const buildStatic = ROOM_STATIC[room.id];
+    let staticGroup: THREE.Group | null = null;
+    let staticSway: SwayNode[] | undefined;
     if (buildStatic) {
       const stat = buildStatic(room, opts);
+      staticGroup = stat;
       g.add(stat);
       // A room whose ARCHITECTURE carries planting (the Central Hub's arc beds and planter boxes grow out
       // of the benches they sit in, so they are not entities) hands its sway nodes up on userData.
       const swayNodes = stat.userData.sway as SwayNode[] | undefined;
+      staticSway = swayNodes;
       if (swayNodes?.length) this.sway.register(`static:${room.id}`, swayNodes);
       this.foliage.collect(`static:${room.id}`, stat);
     }
     for (const e of this.world.inRoom(room.id)) g.add(this.buildEntityView(e));
     finalizeSucculents(g); // desk succulent anchors → 3 instanced meshes
     applyFloorLayerOrder(g); // pin the flat floor-overlay stack so blending cannot depend on the camera
+    // STATIC BATCHING, after floor ordering (it reads the renderOrder that pass writes) and before the
+    // ambient collect (which must see the final tree). Scoped per subtree: the room's architecture is one
+    // scope, and every entity view is its own — nothing merges across a piece's boundary.
+    if (staticGroup) this.batching = addStats(this.batching, batchStatic(staticGroup, frozen(staticSway), `batch:${room.id}`));
     this.ambient.collect(room.id, g); // `userData.ambient` taggings → channels on the shared ambient system
     this.root.add(g);
     this.roomGroups.set(room.id, g);
@@ -101,6 +115,9 @@ export class SceneMirror {
     // turn and delete a plant with no instance bookkeeping at all, and a click on a blade still
     // raycasts through that view onto the plant (see pickEditable).
     this.foliage.collect(e.id, group);
+    // ...and then collapse what is left of the piece into one mesh per material. The GROUP survives, so
+    // the entity id, the editor transform, picking, the gizmo and disposal are all exactly as before.
+    this.batching = addStats(this.batching, batchStatic(group, frozen(sway), `batch:${e.id}`));
     return group;
   }
   /** Build and attach the view of an entity the world has just gained (editor asset placement / an undone
@@ -178,4 +195,11 @@ export class SceneMirror {
     }
     this.buildRoom(room, opts);
   }
+}
+
+/** The objects the sway system animates — their subtrees are never batched (see render/StaticBatch). */
+function frozen(nodes: SwayNode[] | undefined): ReadonlySet<THREE.Object3D> {
+  const s = new Set<THREE.Object3D>();
+  if (nodes) for (const n of nodes) s.add(n.obj);
+  return s;
 }
