@@ -18,9 +18,12 @@
 //   • Rendering resolution is the cheapest lever of all and the only one that removes work without
 //     removing anything from the picture — nothing disappears, it is drawn at fewer samples.
 //
-// So the ladder spends resolution first, shadow resolution second, and only gives up SSAO at the very
-// bottom rung. Room culling, static batching, foliage instancing and the split shadow update are NEVER
-// levers: they are unconditional wins that are always on, at every level and in every mode.
+// So the ladder spends SECONDARY COST first (the AO buffer and the environment's particle budget),
+// resolution second, shadow resolution third, and only gives up SSAO at the very bottom rung. Render
+// density is deliberately NOT the first thing spent: characters are the visual priority of the office
+// and they carry all of the frame's high-frequency detail, so a density cut is the most visible quality
+// loss per millisecond saved. Room culling, static batching, foliage instancing and the split shadow
+// update are NEVER levers: they are unconditional wins, at every level and in every mode.
 
 /** What the user picks. Exactly three; there is no hidden fourth. */
 export type GraphicsMode = "smooth" | "full" | "custom";
@@ -86,8 +89,9 @@ export const MAX_QUALITY_LEVEL: QualityLevel = 3;
  *
  * Read it as a spending order rather than four presets:
  *   3 → the approved benchmark.
- *   2 → resolution only. Every system is still running and every effect is still on screen; the frame
- *       is simply drawn at 85% and the AO buffer at 35% instead of 50%. Nothing leaves the picture.
+ *   2 → SECONDARY COST ONLY, and no loss of render density. The frame is still drawn at the full
+ *       approved density — characters are untouched — while the AO buffer drops to 35% and the rain
+ *       thins to its reduced budget. Nothing leaves the picture and nobody gets blurrier.
  *   1 → resolution again (75%), plus the shadow map halves to 1024 and rain thins out. Shadows,
  *       SSAO, sway, weather and the grade all remain — the office still looks like the office.
  *   0 → the floor. SSAO is given up (the largest single cost), rain particles stop and sway stops.
@@ -123,13 +127,20 @@ export const SMOOTH_LADDER: readonly Readonly<GraphicsSettings>[] = Object.freez
     avatarDetail: "high" as AvatarDetail,
   }),
   Object.freeze({
-    renderScale: 0.85,
+    // CHARACTERS ARE PROTECTED, so rung 2 does NOT touch render density. Render scale is the lever that
+    // costs the most VISIBLE quality per unit of time saved, because characters carry all of the frame's
+    // high-frequency detail (hair, faces, silhouettes) while the architecture is broad and flat and
+    // survives a downsample almost unchanged. So the first response to a struggling machine spends the
+    // SECONDARY costs — the AO buffer and the environment's particle budget — and leaves every pixel of
+    // the picture, and every character in it, at the approved density. Rungs 1 and 0 below still spend
+    // resolution: this reorders what is given up first, it does not remove the lever.
+    renderScale: 1,
     ambientOcclusion: true,
     aoResolutionScale: 0.35,
     shadows: true,
     shadowMapSize: 2048,
     weatherEffects: true,
-    effectsDetail: "full" as EffectsDetail,
+    effectsDetail: "reduced" as EffectsDetail,
     foliageSway: true,
     avatarDetail: "high" as AvatarDetail,
   }),

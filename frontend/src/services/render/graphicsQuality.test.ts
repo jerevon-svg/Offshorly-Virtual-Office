@@ -66,15 +66,25 @@ describe("the Smooth ladder", () => {
     }
   });
 
-  it("spends resolution before it gives up an effect", () => {
-    // Rung 2 is a pure resolution trim: every system is still on, nothing has left the picture.
+  it("spends SECONDARY cost before it spends render density — characters are protected", () => {
+    // Rung 2 is the first response to a struggling machine, and it must not blur anybody: the frame is
+    // still drawn at the approved density, so every character keeps the quality Full gives them. What it
+    // gives up is the AO buffer's resolution and the environment's particle budget.
     const [, , second, full] = SMOOTH_LADDER;
-    expect(second.renderScale).toBeLessThan(full.renderScale);
+    expect(second.renderScale).toBe(full.renderScale);
+    expect(second.aoResolutionScale).toBeLessThan(full.aoResolutionScale);
+    expect(second.effectsDetail).toBe("reduced");
+    // and nothing has actually left the picture
     expect(second.ambientOcclusion).toBe(true);
     expect(second.shadows).toBe(true);
     expect(second.foliageSway).toBe(true);
     expect(second.weatherEffects).toBe(true);
-    expect(second.effectsDetail).toBe("full");
+  });
+
+  it("still spends render density at the lower rungs — the lever is reordered, not removed", () => {
+    const [floor, first, second] = SMOOTH_LADDER;
+    expect(first.renderScale).toBeLessThan(second.renderScale);
+    expect(floor.renderScale).toBeLessThan(first.renderScale);
   });
 
   it("keeps shadows on at every rung, including the floor", () => {

@@ -78,16 +78,38 @@ export interface RenderBufferSizes {
 }
 
 /**
+ * THE QUALITY CEILING, in device pixels per CSS pixel. Full Graphics renders at this density whatever
+ * the display reports: a DPR-1 monitor SUPERSAMPLES up to it, a DPR-3 monitor is capped down to it.
+ *
+ * WHY IT IS NOT `window.devicePixelRatio`. The composer owns the whole image — every pass renders into
+ * its own target, so the canvas' `antialias: true` is bypassed and there is no MSAA/FXAA/SMAA anywhere
+ * in the chain (every target is `samples: 0`). Supersampling through this ratio is therefore V2's ONLY
+ * antialiasing. Tying it to the display tied the quality floor to the monitor: the same build, the same
+ * Full Graphics setting and the same avatar measured 2.81% strong-speckle pixels on the hair at density
+ * 1 against 0.48% at density 2 — an 83% difference nobody chose, decided by which screen was plugged in.
+ * The validation captures that approved V2 were all taken at density 2 (the stress harness forces
+ * deviceScaleFactor 2), so this makes every display render what the benchmark measured.
+ *
+ * It is a TARGET AND A CAP, not a multiplier: 1 → 2, 1.5 → 2, 2 → 2, 3 → 2. Never 4.
+ */
+export const TARGET_RENDER_DENSITY = 2;
+
+/**
  * Resolve the buffer dimensions for one framing.
  *
  * `renderScale` multiplies BOTH halves, which is the point of the lever: the expensive buffers shrink
  * with it. At renderScale 1 every number here is exactly what the approved Full Graphics build
  * allocated, which is what keeps the benchmark untouched — `aoScale` is still applied to the CSS size
  * rather than to the drawing buffer, preserving the existing (pre-existing) relationship between the
- * two rather than quietly re-deriving the AO resolution while fixing the scale.
+ * two rather than quietly re-deriving the AO resolution while fixing the scale. That relationship is
+ * now the SAME on every display, which it was not while the beauty half followed the monitor and the
+ * AO half followed the CSS size.
  */
-export function renderBufferSizes(cssWidth: number, cssHeight: number, devicePixelRatio: number, renderScale: number, aoScale: number): RenderBufferSizes {
-  const pixelRatio = Math.min(devicePixelRatio, 2) * renderScale;
+export function renderBufferSizes(cssWidth: number, cssHeight: number, devicePixelRatio: number, renderScale: number, aoScale: number, targetDensity = TARGET_RENDER_DENSITY): RenderBufferSizes {
+  // Raise a low-DPR display to the target, clamp a high-DPR one down to it. The display is still read
+  // rather than ignored — it simply no longer decides the ceiling.
+  const density = Math.min(Math.max(devicePixelRatio, targetDensity), targetDensity);
+  const pixelRatio = density * renderScale;
   return {
     pixelRatio,
     beauty: { width: Math.round(cssWidth * pixelRatio), height: Math.round(cssHeight * pixelRatio) },
@@ -209,7 +231,10 @@ export class Renderer {
   constructor(canvas: HTMLCanvasElement, focus: Rect) {
     this.focus = focus;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    // The TARGET density, not the display's — see TARGET_RENDER_DENSITY. resize() re-asserts this at the
+    // end of the constructor; setting it here too means the beauty target below is allocated once, at the
+    // final size, instead of being built at the display's ratio and immediately reallocated.
+    this.renderer.setPixelRatio(renderBufferSizes(window.innerWidth, window.innerHeight, window.devicePixelRatio, 1, AO_SCALE).pixelRatio);
     this.renderer.shadowMap.enabled = true;
     // STATIC-SCENE SHADOWS. The ground floor is architecture: 800-odd meshes in the Central Hub alone,
     // none of which ever move. With three.js' default autoUpdate every one of them is re-drawn into the

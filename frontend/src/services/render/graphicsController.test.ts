@@ -118,9 +118,11 @@ describe("Smooth", () => {
   it("only pushes the switches that actually changed", () => {
     const r = rig({ mode: "smooth" });
     starve(r.controller, WARMUP_MS + DEGRADE_SUSTAIN_MS + 500);
-    // 3 → 2 changes render scale and AO resolution, and nothing else.
+    // 3 → 2 spends SECONDARY cost only — the AO buffer and the effects budget. Render scale is
+    // deliberately NOT in this list: the first response to a struggling machine must not blur characters.
     const changed = r.calls.slice(9).map(([n]) => n);
-    expect(changed.sort()).toEqual(["aoResolutionScale", "renderScale"]);
+    expect(changed.sort()).toEqual(["aoResolutionScale", "effectsDetail"]);
+    expect(changed).not.toContain("renderScale");
   });
 
   it("never touches avatar detail while adapting", () => {
