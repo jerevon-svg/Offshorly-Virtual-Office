@@ -57,7 +57,11 @@ export const ROADS: Road[] = [
   // the main street: the office's address, running east-west along the south (street-façade) side
   { id: "road-main", axis: "x", at: 1620, width: ROAD_W, from: -ROAD_RUN, to: ROAD_RUN, lanes: 2 },
   // the back street closing the block to the north
-  { id: "road-north", axis: "x", at: -1028, width: ROAD_W, from: -ROAD_RUN, to: ROAD_RUN, lanes: 2 },
+  // THE BACK STREET, moved north (was at -1028) to open the REAR CAMPUS. Offshorly's lot now runs deep
+  // enough behind the building to hold the AI Lab and the lake behind it without either crossing a road,
+  // which is the whole spatial idea: office → landscaped rear → hidden Lab → water → tree line. Every
+  // lot boundary is derived from this road's edges, so they follow it; the office itself does not move.
+  { id: "road-north", axis: "x", at: -2100, width: ROAD_W, from: -ROAD_RUN, to: ROAD_RUN, lanes: 2 },
   // the two cross streets that make Offshorly a corner property
   { id: "road-west", axis: "z", at: -948, width: ROAD_W, from: -ROAD_RUN, to: ROAD_RUN, lanes: 2 },
   { id: "road-east", axis: "z", at: 2288, width: ROAD_W, from: -ROAD_RUN, to: ROAD_RUN, lanes: 2 },
@@ -222,41 +226,73 @@ export const TREE_LINES: TreeLine[] = [
 ];
 
 export const GROVES: Grove[] = [
-  // the Offshorly lot's own north lawn: one grove, set to the west so the pond has open water around it
-  { id: "grove-north-lawn", kind: "broad", x: 120, z: -620, rx: 300, rz: 170, count: 11 },
-  { id: "grove-pond-head", kind: "round", x: 1180, z: -430, rx: 190, rz: 130, count: 7 },
-  { id: "grove-east-lawn", kind: "broad", x: 1880, z: 420, rx: 150, rz: 300, count: 8 },
-  // the vacant parcels: ONE grove each, tucked into the far corner from the frontage, so the developable
-  // ground stays visibly clear
+  // ---- THE REAR CAMPUS: the planting that HIDES THE AI LAB, and then gives it back ----------------
+  // The rule here is SCREENS WITH GAPS, never a hedge, and NOTHING IS MIRRORED. A solid tree wall would
+  // make the Lab a locked door and a symmetrical one would read as an avenue; what the rear campus
+  // should feel like is landscape that happens to have a building in it. So every cluster below differs
+  // from its opposite number in position, size, count and species, and the approach threads between them.
+  //
+  //   1. REAR SCREEN — stands just off the building's north face, so the Lab is NOT visible from the
+  //      office's own back door. This is what makes the walk round the east flank necessary.
+  { id: "grove-rear-west", kind: "broad", x: 120, z: -132, rx: 250, rz: 58, count: 7 },
+  { id: "grove-rear-mid", kind: "round", x: 560, z: -108, rx: 130, rz: 44, count: 5 },
+  { id: "grove-rear-east", kind: "broad", x: 1250, z: -126, rx: 215, rz: 66, count: 7 },
+  //   2. APPROACH FRAME — east of the podium, so the run north feels like a lane rather than a field.
+  //      Two loose stands at different depths, not a row.
+  { id: "grove-approach-east", kind: "tall", x: 1720, z: -150, rx: 155, rz: 185, count: 6 },
+  { id: "grove-approach-far", kind: "round", x: 1640, z: 380, rx: 110, rz: 230, count: 5 },
+  //   3. LAB SCREEN — the last veil, immediately south of the plinth. The gap between its two halves
+  //      (x 650…850) is EXACTLY where the entrance walk arrives, so the building resolves out of the
+  //      planting as you turn into it instead of appearing all at once. The east half is heavier and
+  //      set further back than the west, so the two sides never read as a pair.
+  { id: "grove-lab-screen-west", kind: "round", x: 495, z: -352, rx: 155, rz: 26, count: 6 },
+  { id: "grove-lab-screen-east", kind: "broad", x: 1010, z: -338, rx: 160, rz: 30, count: 8 },
+  //   4. FLANKS — heavy planting down both sides of the Lab, so it is only ever seen from the front or
+  //      from directly above. This is what hides it from the east approach until you are past it.
+  { id: "grove-lab-flank-west", kind: "broad", x: 180, z: -700, rx: 125, rz: 235, count: 10 },
+  { id: "grove-lab-flank-west-n", kind: "conifer", x: 275, z: -985, rx: 145, rz: 85, count: 5 },
+  { id: "grove-lab-flank-east", kind: "round", x: 1300, z: -620, rx: 140, rz: 205, count: 9 },
+  { id: "grove-lab-flank-east-n", kind: "broad", x: 1215, z: -940, rx: 130, rz: 95, count: 6 },
+  //   5. THE LAKE SHORE — dense round the west, east and far side, and DELIBERATELY OPEN on the Lab's
+  //      side, so the water is the view from inside the Lab and the tree line closes the world beyond it.
+  { id: "grove-lake-west", kind: "round", x: -10, z: -1360, rx: 155, rz: 285, count: 10 },
+  { id: "grove-lake-east", kind: "round", x: 1495, z: -1450, rx: 170, rz: 265, count: 10 },
+  { id: "grove-lake-north", kind: "conifer", x: 700, z: -1905, rx: 530, rz: 115, count: 12 },
+  // ---- the vacant parcels: ONE grove each, tucked into the far corner from the frontage ------------
   { id: "grove-lot-south", kind: "broad", x: 120, z: 2320, rx: 420, rz: 230, count: 11 },
   { id: "grove-lot-east", kind: "round", x: 3620, z: 180, rx: 230, rz: 380, count: 11 },
   { id: "grove-lot-west", kind: "round", x: -2180, z: 900, rx: 250, rz: 330, count: 11 },
-  // the open country north of the block: three loose stands, nothing else
-  { id: "grove-field-a", kind: "conifer", x: -1450, z: -2100, rx: 380, rz: 260, count: 12 },
+  // ---- open country beyond the back street --------------------------------------------------------
+  { id: "grove-field-a", kind: "conifer", x: -1500, z: -2560, rx: 380, rz: 260, count: 12 },
   { id: "grove-field-b", kind: "conifer", x: 900, z: -2650, rx: 440, rz: 300, count: 13 },
-  { id: "grove-field-c", kind: "conifer", x: 2700, z: -1900, rx: 320, rz: 240, count: 10 },
+  { id: "grove-field-c", kind: "conifer", x: 2700, z: -2520, rx: 320, rz: 240, count: 10 },
 ];
 
 export const SPECIMENS: Specimen[] = [
   { kind: "tall", x: ENTRY_X - 400, z: PODIUM.z + PODIUM.d + 44, s: 1.15 },
   { kind: "tall", x: ENTRY_X + 400, z: PODIUM.z + PODIUM.d + 44, s: 1.15 },
   { kind: "broad", x: 700, z: -180, s: 1.3 },
-  { kind: "broad", x: 1760, z: -820, s: 1.25 },
+  // was x 1760, z -820 on the old north lawn. It now stands in the Lab's east flank planting — the one
+  // existing tree the rear composition moves, and it moves rather than being felled.
+  { kind: "broad", x: 1290, z: -830, s: 1.25 },
 ];
 
 // ---- THE POND ----------------------------------------------------------------------------------------
-/** The one water feature: a landscaped pond on the Offshorly lot's north lawn. Its outline is an organic
- *  closed curve (see build/exterior pondShape) rather than a circle, ringed by a shallow shore band and a
- *  single curved path spur. Deliberately the only "feature" out there — the rest of that lawn is grass. */
-export const POND = { x: 760, z: -560, rx: 390, rz: 215 };
+/** THE LAKE. The one water feature, and since the rear campus opened it is a genuine body of water at the
+ *  BACK of the property rather than an ornamental pond on the lawn: 1240 x 660, sitting directly BEHIND
+ *  the AI Lab so the Lab reads against water from inside it and from every approach. Its outline is an
+ *  organic closed curve (see build/exterior pondShape) rather than a circle, ringed by a shallow shore
+ *  band and a path spur along its south side. Nothing else is out there — the rest is grass and trees. */
+export const POND = { x: 740, z: -1430, rx: 740, rz: 340 };
 /** how far the shore/beach band extends past the water line */
 export const POND_SHORE = 34;
 /** the two benches that look out over it, and the short path that reaches them */
 export const POND_BENCHES: { x: number; z: number; yaw: number }[] = [
-  { x: 620, z: -300, yaw: Math.PI },
-  { x: 880, z: -300, yaw: Math.PI },
+  { x: 566, z: -1016, yaw: Math.PI },
+  { x: 914, z: -1016, yaw: Math.PI },
 ];
-export const POND_PATH: Rect = { x: 560, z: -290, w: 400, d: 46 };
+/** the walk from the AI Lab's rear opening down to the water, on the Lab's own centre line */
+export const POND_PATH: Rect = { x: 706, z: -1092, w: 68, d: 58 };
 
 // ---- VEHICLES ----------------------------------------------------------------------------------------
 /** The Philippine transport mix. A FEW, placed one by one: nothing is scattered and no road is filled. */

@@ -54,6 +54,8 @@ import { compareToV1, summariseReport, verdictFor } from "../nav/diagnostics";
 import { MEETING_ROOM, MEETING_CHAIR_IDS, KIOSK_INTERACTION_ID as MEETING_KIOSK_INTERACTION_ID, KIOSK_SCANNER_ID as MEETING_KIOSK_SCANNER_ID, KIOSK_ZONE as MEETING_KIOSK_ZONE, meetingRoomEntities } from "../rooms/meeting";
 import { PROJECT_ROOM, CONSOLE_INTERACTION_ID, SOFA_SEAT_IDS, TUB_SEAT_IDS, TV_INTERACTION_ID, projectRoomEntities } from "../rooms/project";
 import { buildExterior } from "../build/exterior";
+import { buildAiLab } from "../build/ailab";
+import { aiLabStandTest, inAiLabZone } from "../world/ailab";
 import { Environment } from "../env/Environment";
 import { ENV_TIME_MODES, TimeOfDay, type EnvTimeMode } from "../env/timeOfDay";
 import { WEATHER_MODES, Weather, type WeatherMode, type WeatherState } from "../env/weather";
@@ -328,6 +330,16 @@ const scenery = buildExterior();
 // inspecting the scene. GRADE is where rain lands. Neither is a layout change — both are read from data
 // that already existed.
 const env = new Environment(R, scenery, plan.frame, GRADE);
+
+// ---- THE AI LAB: a hidden R&D annexe on the north-east lawn --------------------------------------
+// SCENERY-SHAPED, exactly like the campus above it: one group added straight to the scene, never to the
+// world graph, the room mirror, the nav grid, the editor or the shadow-caster set. Its walkability is
+// its OWN geometry (world/ailab), composed into the player's stand test beside the office's and the
+// CAVE's — the same off-grid pattern, for the same reason: the V1 lattice does not reach out here.
+// It is hidden in OFFICE mode, which is the one framing whose cost is the product experience.
+const aiLab = buildAiLab();
+R.scene.add(aiLab.group);
+aiLab.group.visible = false;
 const timeOfDay = new TimeOfDay();
 // WEATHER: a second, INDEPENDENT axis.
 //
@@ -740,12 +752,18 @@ const officeStand = makeStandTest({ world, walkability, derived: derivedNav, rad
  *  (rooms/cave.ts caveStandTest). Everywhere else this is byte-for-byte the office's own test. It is a
  *  ROUTING of the question, not a relaxation of it: the CAVE's walls stop a body exactly as the
  *  office's do, and there is no point in either volume where both tests are consulted or neither is. */
-const playerStand = (p: Vec2): boolean => (inCave(p) ? caveStandTest(p, NAV_RADIUS) : officeStand(p));
+const playerStand = (p: Vec2): boolean =>
+  inCave(p) ? caveStandTest(p, NAV_RADIUS)
+  : inAiLabZone(p, NAV_RADIUS) ? aiLabStandTest(p, NAV_RADIUS)
+  : officeStand(p);
 /** The third-person boom's probe. Same composition, a token radius: the camera must not end up inside a
  *  wall or over unbuilt floor, but it may perfectly well fly over a desk — and judging it at the BODY
  *  radius pulled the boom in to its minimum beside almost every piece of furniture in the building. */
 const officeCameraProbe = makeStandTest({ world, walkability, derived: derivedNav, radius: 2, allowExterior: true });
-const playerCameraProbe = (p: Vec2): boolean => (inCave(p) ? caveStandTest(p, 2) : officeCameraProbe(p));
+const playerCameraProbe = (p: Vec2): boolean =>
+  inCave(p) ? caveStandTest(p, 2)
+  : inAiLabZone(p, 2) ? aiLabStandTest(p, 2)
+  : officeCameraProbe(p);
 /** the one bridge from a targeted entity id to V2's existing interaction path. Nothing is reimplemented:
  *  each branch is the same call the GUI button and the click-to-walk handler already make. */
 /** Assigned just after PLAYER mode is constructed (it needs the body to place). Declared here because
@@ -1310,12 +1328,18 @@ const setCameraMode = (m: CameraModeId) => {
     R.playerCamera.updateProjectionMatrix();
     R.shadowRadius = PLAYER_SHADOW_RADIUS;
     params.cameraMode = "player";
+    aiLab.group.visible = true; // you can walk out to it, so it has to be there to walk to
     if (env.setPresentation("world")) R.invalidateShadows();
     R.invalidateShadows();
     refresh();
     return;
   }
   params.cameraMode = m;
+  // OFFICE is the product framing and its camera fence is the V1 frame, so the Lab is not merely
+  // off-screen there — it is unreachable by that camera. Hiding it takes its whole subtree out of
+  // projectObject, SSAO's normal pass and the shadow pass in one boolean, so the default experience
+  // pays nothing at all for it. EXPLORE is where it is meant to be discovered.
+  aiLab.group.visible = m === "explore";
   if (env.setPresentation(m === "office" ? "office" : "world")) R.invalidateShadows();
   syncCam(cameraModes.set(m));
   R.invalidateShadows();
@@ -1970,6 +1994,7 @@ function loop(): void {
   mirror.sway.update(t);
   mirror.foliage.update(); // blade batches follow the sway pivots; a no-op while sway is off
   mirror.ambient.update(t, dt / 1000); // powered-surface idle animation (screens, sensors, status strips)
+  if (aiLab.group.visible) aiLab.tick(t); // the agents' status pulse — one sin() and six float writes
   applyEnvPhase(); // V1's clock is re-read at most twice a minute and only writes when the phase changes
   // THE ENVIRONMENT'S OWN CLOCK: a travelling grade (Clear→Rain, Day→Sunset), the storm scheduler and the
   // foliage wind. Idle cost is three comparisons; it writes to the renderer only on frames where the

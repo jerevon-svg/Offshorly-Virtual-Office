@@ -290,8 +290,13 @@ describe("vo3d build — the exterior world stays inside its performance budget"
     expect(draws).toBeLessThanOrEqual(80);
     expect(instanced).toBeGreaterThanOrEqual(12);
     expect(tris).toBeLessThan(250_000);
-    // the polish pass CUT planting: the world used to carry well over 300 near trees
-    expect(scenery.stats.trees).toBeLessThan(170);
+    // The polish pass CUT planting: the world used to carry well over 300 near trees, and was brought
+    // under 170. RE-BASED TO 220 when the rear campus opened: the AI Lab's concealment planting — the
+    // rear screen, the lab screen, the two flanks and the lake shore — is the whole reason that area
+    // reads as somewhere you discover rather than a building in a field, so it is a deliberate spend,
+    // not drift. It is still a third below the pre-polish world, and it costs nothing in submissions:
+    // every tree is instanced, and `draws` above is unchanged by it.
+    expect(scenery.stats.trees).toBeLessThan(220);
     expect(scenery.stats.trees).toBeGreaterThan(60);
     expect(scenery.stats.vehicles).toBe(VEHICLES.length);
   });
