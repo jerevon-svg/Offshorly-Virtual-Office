@@ -10,8 +10,10 @@
 // status and multiplayer remain deferred, and V2 still makes no API call of its own — which is what
 // keeps apiFetch's 401 -> /login redirect off this route entirely.
 import { useEffect, useRef, useState } from "react";
+import { resolveVo3dHomeDesk } from "../adapters/v1HomeDesk";
 import { resolveVo3dIdentity } from "../adapters/v1Identity";
 import type { Vo3dIdentity } from "./identity";
+import type { Vo3dHomeDesk } from "./spawn";
 import type { Vo3dWorld } from "./world";
 
 // WHY THE CANVAS IS NOT JSX. Three separate reasons, all load-bearing:
@@ -49,7 +51,7 @@ function loadWorld(): Promise<typeof import("./world")> {
 
 type Phase =
   | { kind: "loading" }
-  | { kind: "ready"; identity: Vo3dIdentity | null }
+  | { kind: "ready"; identity: Vo3dIdentity | null; homeDesk: Vo3dHomeDesk | null }
   | { kind: "error"; message: string };
 
 /** Drop `?world=v2` and reload into the normal V1 office. A plain location assignment rather than a
@@ -82,14 +84,23 @@ export function Vo3dHost() {
     // `null` is a legitimate answer (V1 could not parse an identity) and is passed through as "no
     // identity" — NOT as a guess that this is Bon.
     const identity = resolveVo3dIdentity();
+    // Phase 3, and read exactly like the identity above: a synchronous look at data V1 already had —
+    // the painted seats, the room table, the signed-in user — and not a request, a socket or a session.
+    // Null means V1 knows of no desk for this person, and the world then keeps its own default spawn.
+    //
+    // A DESK IS NOT AN ARRIVAL. Nothing here says the employee is checked in, at work, or anywhere at
+    // all; V1's attendance gate (spawnPlacement.ts) is the only thing that may say that, and V2 does not
+    // ask it. The preview stands you where your desk is, which is why the readout below names the room
+    // rather than announcing a status.
+    const homeDesk = resolveVo3dHomeDesk();
 
     void loadWorld()
       .then(({ createVo3dWorld }) => {
         // The unmount may have already run — StrictMode's cleanup fires within the same tick that this
         // import was started in. Building a world now would be building one nobody will ever dispose.
         if (cancelled) return;
-        world = createVo3dWorld(canvas, identity ?? undefined);
-        setPhase({ kind: "ready", identity });
+        world = createVo3dWorld(canvas, identity ?? undefined, homeDesk ?? undefined);
+        setPhase({ kind: "ready", identity, homeDesk });
       })
       .catch((e: unknown) => {
         if (cancelled) return;
@@ -173,6 +184,38 @@ export function Vo3dHost() {
           <span style={{ opacity: 0.7 }}>
             {" · "}
             {phase.identity.avatarId ?? "no 3D avatar"}
+          </span>
+        </div>
+      )}
+      {phase.kind === "ready" && phase.homeDesk && (
+        // THE DESK READOUT. Room, seat point and facing — the three values the spawn was computed from,
+        // so a real session can be checked from the outside without opening the dev panel. The point is
+        // in V1 FRAME UNITS, which is the basis the adapter works in; the world applies its own room
+        // shift on top (app/spawn.ts homeDeskWorldPoint), so this is the INPUT to the placement, not the
+        // body's final position — that one is in the avatar panel, where it updates as you walk.
+        <div
+          data-testid="vo3d-home-desk"
+          data-room-id={phase.homeDesk.roomId}
+          data-seat-x={String(phase.homeDesk.point.x)}
+          data-seat-z={String(phase.homeDesk.point.z)}
+          data-facing={phase.homeDesk.facing}
+          style={{
+            position: "absolute",
+            top: 44,
+            right: 12,
+            zIndex: 1003,
+            font: "12px/1.4 system-ui, sans-serif",
+            padding: "6px 10px",
+            borderRadius: 8,
+            background: "rgba(30,24,20,0.72)",
+            color: "#f4ede4",
+            pointerEvents: "none",
+          }}
+        >
+          desk preview
+          <span style={{ opacity: 0.7 }}>
+            {" · "}
+            {phase.homeDesk.roomId}
           </span>
         </div>
       )}

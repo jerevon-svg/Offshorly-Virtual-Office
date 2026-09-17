@@ -93,3 +93,15 @@ describe("resolveVo3dIdentity", () => {
     expect(JSON.stringify(resolveVo3dIdentity())).not.toContain("@");
   });
 });
+
+describe("an avatar id V2 cannot draw", () => {
+  it("resolves to null for an employee whose character is 2D-only", () => {
+    // "lui" is a real V1 avatar — a full sprite set in data/avatarRegistry — with no consolidated GLB in
+    // render3d/live3dCharacters. V1 renders them; V2 has no body for them, and says so rather than
+    // handing the world an id its registry will not answer for (which threw, and blanked the preview).
+    signIn("lui@offshorly.com", "Lui");
+    const id = resolveVo3dIdentity()!;
+    expect(id.displayName).toBe("Lui");
+    expect(id.avatarId).toBeNull();
+  });
+});

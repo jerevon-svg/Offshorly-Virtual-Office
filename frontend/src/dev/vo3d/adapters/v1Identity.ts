@@ -7,6 +7,7 @@
 import { getCurrentUser } from "../../../auth/currentUserStore";
 import { getCurrentUserId } from "../../../auth/useAuthGate";
 import { avatarIdForEmail } from "../../../data/avatarIdentity";
+import { hasCastLods } from "./v1Avatar";
 import type { Vo3dIdentity } from "../app/identity";
 
 /** The value getCurrentUserId() returns when it could NOT read a real id.
@@ -37,6 +38,13 @@ function isDevBypass(): boolean {
  * with no identity at all, which is exactly the standalone behaviour, instead of the app asserting that
  * whoever is at the keyboard is Bon.
  */
+/** The employee's own 3D character, or null when V2 has no body to put them in — either because V1 knows
+ *  of no character for them at all, or because the one it knows is 2D-only. Never somebody else's. */
+function live3dAvatarId(email: string): string | null {
+  const id = avatarIdForEmail(email);
+  return id && hasCastLods(id) ? id : null;
+}
+
 export function resolveVo3dIdentity(): Vo3dIdentity | null {
   const user = getCurrentUser();
   if (!user || !user.email) return null;
@@ -54,9 +62,16 @@ export function resolveVo3dIdentity(): Vo3dIdentity | null {
 
   return {
     displayName,
-    // THE ONLY IDENTITY KEY THAT IS ACTUALLY CONFIRMED. avatarIdForEmail returns null for anyone with
-    // no registered character — passed straight through, never widened to a fallback.
-    avatarId: avatarIdForEmail(user.email),
+    // THE ONLY IDENTITY KEY THAT IS ACTUALLY CONFIRMED — and narrowed to what V2 can actually draw.
+    //
+    // avatarIdForEmail returns null for anyone with no registered character, and that null is passed
+    // straight through, never widened to a fallback. But a NON-null answer is not enough on its own:
+    // V1's registry names the character that renders a person there, where a 2D SPRITE SET is a complete
+    // answer ("lui" is one — a real employee, a real V1 avatar, no consolidated GLB). V2 has only GLBs,
+    // so for that person its honest answer is the same "no character yet" an unmapped person gets, and
+    // hasCastLods is what distinguishes the two. Before this check the id was handed on and the world
+    // threw looking it up in the 3D registry, which blanked the whole preview.
+    avatarId: live3dAvatarId(user.email),
     employeeId,
     source,
   };

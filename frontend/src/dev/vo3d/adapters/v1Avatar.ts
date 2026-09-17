@@ -25,6 +25,17 @@ export const DRACO_PATH = `${import.meta.env.BASE_URL}vendor/draco/`;
  *  crowd built from them cost what a real roomful of employees costs rather than one model repeated. */
 export const CAST_IDS: readonly string[] = Object.keys(LIVE_3D_CHARACTERS);
 export type CastId = string;
+/** Does this avatar id have an approved 3D character at all?
+ *
+ *  NOT every avatar id does. data/avatarRegistry.ts maps a person to the character that renders them in
+ *  V1, where a 2D SPRITE SET is enough — "lui" is exactly that: a real employee with a real V1 avatar and
+ *  no consolidated GLB. V2 draws nothing but GLBs, so its answer for that person has to be "no character
+ *  yet", the same explicit absence app/world.ts already shows for an unmapped employee. Asking castLods
+ *  directly would instead throw on the missing registry row and take the whole world down with it. */
+export function hasCastLods(id: CastId): boolean {
+  return Object.prototype.hasOwnProperty.call(LIVE_3D_CHARACTERS, id);
+}
+
 /** the three LOD urls a cast member ships, with the registry's own LOD1→LOD0 / LOD2→LOD1 fallbacks */
 export function castLods(id: CastId): Record<AvatarLod, string> {
   const c = LIVE_3D_CHARACTERS[id];

@@ -32,6 +32,7 @@ import {
 } from "../../data/officeGrid";
 import { doorStandForRoom } from "../../data/doorStandPoints";
 import { seatsForRoomId, type Seat } from "../../data/roomSeats";
+import { resolveHomeDesk } from "../../data/homeSeat";
 import { computeEmptySeats, seatCentroidKey, type SeatTarget } from "../../data/emptySeats";
 import type { Pt } from "../../data/walkable-zones";
 import { DOOR_ANIM_MS, DOOR_LAYERS_BY_ROOM } from "../../data/officeDoors";
@@ -260,29 +261,6 @@ function computeCoverScale(): number {
 // below for every door-gated walk (check-in, chat/pat approach, checkout
 // exit).
 export const ROOM_FIT_MULTIPLIER = 1.6;
-
-// Plain nearest-seat lookup for a room's hand-painted seats, used only to
-// give the LIVE player (bon) a real seat to walk to on check-in — deliberately
-// separate from rosterLayers.ts's email-sorted seat assignment for OTHER
-// colleagues' static portraits, since bon isn't part of that roster list.
-// Returns null if the room has no painted seats yet (fallback: don't add a
-// walk leg, keep today's exact behavior).
-function nearestSeatTo(roomId: string, point: Pt): Seat | null {
-  const seats = seatsForRoomId(roomId);
-  if (seats.length === 0) return null;
-  let best = seats[0];
-  let bestDist = Infinity;
-  for (const seat of seats) {
-    const dx = seat.x - point.x;
-    const dy = seat.y - point.y;
-    const dist = dx * dx + dy * dy;
-    if (dist < bestDist) {
-      bestDist = dist;
-      best = seat;
-    }
-  }
-  return best;
-}
 
 // Messenger-style floating chat stack layout — see the render block further down (search
 // "floatingChatRightOffsets"). Windows are laid out right-to-left along the bottom edge; an
@@ -3277,14 +3255,11 @@ export function OfficeMap() {
   // walk_arrived (see moveSelf arrival.facing call sites above), so OTHER
   // clients and the DB see the correct facing too. Peers restore their own
   // facing correctly via PeerWalker's stable-state snap.
+  // The rule itself now lives in data/homeSeat.ts, unchanged — this is the
+  // same resolution, reading the same stores, from the one module the VO3D V2
+  // preview also reads so the two can never drift apart.
   function resolveOwnSeat(): Seat | null {
-    const flatRoomId = roomIdForPerson(currentUser?.email, currentUser?.team ?? null) ?? FALLBACK_ROOM_ID;
-    const doorPair = doorStandForRoom(flatRoomId);
-    if (doorPair) return nearestSeatTo(flatRoomId, doorPair.inStand);
-    const flatRoom = rooms.find((r) => r.id === flatRoomId);
-    if (!flatRoom) return null;
-    const center = { x: flatRoom.x + flatRoom.width / 2, y: flatRoom.y + flatRoom.height / 2 };
-    return nearestSeatTo(flatRoomId, center);
+    return resolveHomeDesk(currentUser?.email, currentUser?.team ?? null).seat;
   }
 
   function resolveAssignedRoomLayer(): AssetLayer {

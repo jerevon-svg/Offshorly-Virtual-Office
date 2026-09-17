@@ -16,7 +16,10 @@ const identity = readFileSync("src/dev/vo3d/app/identity.ts", "utf8");
 
 describe("createVo3dWorld's identity parameter", () => {
   it("is optional, so every existing caller keeps compiling", () => {
-    expect(world).toContain("createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdentity)");
+    // Matched loosely at the tail: later phases append their own optional parameters (Phase 3's
+    // `homeDesk`), and what this case is about is that IDENTITY is still the second one and still
+    // optional — not that the signature never grew.
+    expect(world).toMatch(/createVo3dWorld\(canvas: HTMLCanvasElement, identity\?: Vo3dIdentity[,)]/);
   });
 
   it("selects the employee's own LOD set through the production registry", () => {
@@ -25,7 +28,9 @@ describe("createVo3dWorld's identity parameter", () => {
 
   it("resolves to null — not to Bon — when the employee has no registered character", () => {
     // The ternary is the whole rule: identity present but avatarId falsy => null => nothing loaded.
-    expect(world).toContain("identity.avatarId ? castLods(identity.avatarId) : null");
+    // The guard added with Phase 3: an avatar id V2's GLB registry does not know (a V1 sprite-only
+    // character such as "lui") resolves to the SAME null, rather than throwing inside castLods.
+    expect(world).toContain("identity.avatarId && hasCastLods(identity.avatarId) ? castLods(identity.avatarId) : null");
     expect(world).toContain("const avatarMissing = avatarLods === null");
   });
 

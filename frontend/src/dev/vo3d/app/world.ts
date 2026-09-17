@@ -77,7 +77,8 @@ import { LoungeSeatInteraction } from "../interact/LoungeSeat";
 import { Walkability, composeStatic } from "../nav/Walkability";
 import { clearanceLayer, worldClearances } from "../nav/clearance";
 import { SlidingDoor } from "../interact/Door";
-import { CORRIDOR_BANDS, registerGroundFloor } from "../rooms/ground-floor";
+import { CORRIDOR_BANDS, ROOM_WORLD_SHIFT_Z, registerGroundFloor } from "../rooms/ground-floor";
+import { v1Rooms } from "../adapters/v1Floor";
 import { planWalk, type NavResult } from "../nav/planner";
 import { v1Static } from "../adapters/v1Grid";
 import { DEFAULT_LIGHT, Renderer } from "../render/Renderer";
@@ -101,9 +102,10 @@ import { NavDebug } from "../devtools/NavDebug";
 import { Capture, FrameWindow, Overlay, PRESETS, describeDevice, sceneStats, snapshotRenderer, summarize, type CaptureSummary, type PresetId } from "../devtools/Bench";
 import { Crowd } from "../devtools/Crowd";
 import { STRESS_MATRIX, markdownTable, planPlacements, type ScenarioResult, type StressScenario } from "../devtools/Stress";
-import { BON_STANDING_HEIGHT, castLods, type AvatarLod } from "../adapters/v1Avatar";
+import { BON_STANDING_HEIGHT, castLods, hasCastLods, type AvatarLod } from "../adapters/v1Avatar";
 import type { Vo3dIdentity } from "./identity";
-import { pointInRect, type Rect, type Vec2 } from "../core/coords";
+import { homeDeskWorldPoint, type Vo3dHomeDesk } from "./spawn";
+import { FACING_YAW, pointInRect, type Rect, type Vec2 } from "../core/coords";
 
 /** What a mounted V2 world hands back. `dispose()` is idempotent and, once called, the world is dead:
  *  the canvas it was given has had its WebGL context force-lost and CANNOT be reused (see
@@ -120,8 +122,13 @@ export interface Vo3dWorld {
  *  `identity` is the signed-in employee, ALREADY RESOLVED by the caller (app/Vo3dHost.tsx via
  *  adapters/v1Identity). It is optional, and omitting it is not a degraded mode: the standalone dev page
  *  (app/bootstrap.ts, dev/vo3d.html) passes nothing and gets byte-for-byte the behaviour it always had.
- *  This world never fetches it, never stores it and never re-reads it — it is a value, taken once. */
-export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdentity): Vo3dWorld {
+ *  This world never fetches it, never stores it and never re-reads it — it is a value, taken once.
+ *
+ *  `homeDesk` is the same kind of value for WHERE that employee's desk is (app/spawn.ts, resolved by
+ *  adapters/v1HomeDesk). Omitting it keeps the default spawn below, byte for byte. It is a PREVIEW of a
+ *  desk and nothing more: this world reads no attendance, restores no persisted position and writes
+ *  nothing back, so it may never be presented as "checked in". */
+export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdentity, homeDesk?: Vo3dHomeDesk): Vo3dWorld {
   // ---- LIFECYCLE ---------------------------------------------------------------------------------
   // The three things a top-level module body never had to think about, because the document outlived it.
   //
@@ -495,8 +502,14 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   //                           them in Bon's body — is the exact failure data/avatarIdentity.ts refuses to
   //                           make in V1 ("a real unmapped person has no character yet"). V2 has no 3D
   //                           placeholder to stand in, so the honest answer is an empty one.
+  //
+  //   The third case covers TWO different absences, and both resolve to the same honest answer: an
+  //   employee with no avatar id at all, and one whose avatar id names a V1 SPRITE character that was
+  //   never given a 3D body (data/avatarRegistry lists people V2's GLB registry does not — "lui" is one
+  //   today). hasCastLods is what tells them apart from a real cast member; without it the second case
+  //   threw inside castLods and took the whole world down instead of showing the missing-avatar state.
   const avatarLods: Record<AvatarLod, string> | null | undefined =
-    identity === undefined ? undefined : identity.avatarId ? castLods(identity.avatarId) : null;
+    identity === undefined ? undefined : identity.avatarId && hasCastLods(identity.avatarId) ? castLods(identity.avatarId) : null;
   /** True when this world knows WHO the player is but has no character to put them in. */
   const avatarMissing = avatarLods === null;
   const avatar = new Avatar({ height: BON_STANDING_HEIGHT, lit: params.avatarLit, lods: avatarLods ?? undefined });
@@ -515,7 +528,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   const who = identity
     ? `${identity.displayName} · ${identity.avatarId ?? "no 3D avatar"} (${identity.source})`
     : "standalone · default character";
-  const avatarState = { who, status: "loading…", clip: "", position: "", owner: "Idle", triangles: 0 };
+  const avatarState = { who, spawn: homeDesk ? "resolving…" : "default (Design Room chair 4)", status: "loading…", clip: "", position: "", owner: "Idle", triangles: 0 };
   function loadAvatar(): void {
     if (avatarMissing) {
       // Not an error and not a retry: there is no asset to ask for. Stated once, and the LOD selector
@@ -924,6 +937,44 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // alone (PlayerMode simply does not move Bon while Interaction owns him, and takes over when it ends)
     yieldAvatar: () => { stopTour(); navCtl.stop(); approachCtl.cancel(); },
   });
+
+  // ---- the home-desk spawn (Phase 3) ---------------------------------------------------------------
+  // WHERE THE SIGNED-IN EMPLOYEE STARTS: at their own desk, when V1 knows of one. Everything above this
+  // line already ran the DEFAULT spawn (the Design Room chair's approach point, set beside the avatar's
+  // construction), and that is what stays when `homeDesk` is undefined — the standalone dev page, and any
+  // session whose desk could not be resolved, are untouched.
+  //
+  // IT RUNS HERE, and could not run earlier: the collision-safe placement below is PlayerBody.placeNear,
+  // and the body only exists once PlayerMode has been built. Nothing between the default placement and
+  // this point reads the avatar's position — every consumer of it (planWalk, the seat interactions, the
+  // camera's "focus: Bon") is a closure called later — so moving the body here changes nothing but where
+  // it stands.
+  //
+  // WHAT IS AND IS NOT DECIDED HERE:
+  //   • V1 decided WHICH desk, in V1 coordinates (adapters/v1HomeDesk, over data/homeSeat).
+  //   • V2 decides WHERE that is in the world it actually built — a room may stand away from its V1 art
+  //     box (the Design Room is 16 south, rooms/design-room WORLD_SHIFT_Z), and homeDeskWorldPoint applies
+  //     that from ROOM_WORLD_SHIFT_Z, the one table that holds it.
+  //   • V2 decides whether a BODY FITS. A seat centroid is the point the chair is drawn at, so the
+  //     player's 8-unit body usually does not fit on it; placeNear searches outward in rings for the
+  //     nearest point its own stand test accepts, which is the same test every WASD step is judged by.
+  //     A desk with nothing legal within six body radii is REFUSED, not forced — the default spawn stands
+  //     and the readout says so, because dropping a body inside the furniture is worse than not moving it.
+  //   • Nobody decides ATTENDANCE. This is a preview of a desk; no session is read, claimed or written.
+  if (homeDesk) {
+    const target = homeDeskWorldPoint(homeDesk.point, v1Rooms(), ROOM_WORLD_SHIFT_Z);
+    const at = (p: Vec2): string => `${p.x.toFixed(1)}, ${p.z.toFixed(1)}`;
+    if (playerMode.body.placeNear(target)) {
+      const placed = playerMode.body.pos;
+      avatar.setPosition(placed);
+      avatar.setYaw(FACING_YAW[homeDesk.facing]);
+      const nudged = Math.hypot(placed.x - target.x, placed.z - target.z);
+      avatarState.spawn = `${homeDesk.roomId} desk · ${at(placed)} facing ${homeDesk.facing}${nudged > 0.01 ? ` (${nudged.toFixed(1)} clear of the seat at ${at(target)})` : ""}`;
+    } else {
+      avatarState.spawn = `${homeDesk.roomId} desk at ${at(target)} has no standable point — kept the default spawn`;
+      console.warn(`vo3d: no standable point near the ${homeDesk.roomId} desk; keeping the default spawn`);
+    }
+  }
 
   // ---- the Championship Cave: the portal ------------------------------------------------------------
   caveTransition = new CaveTransition({
@@ -1605,7 +1656,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   av.add(params, "avatarLod", [0, 1, 2]).name("LOD").onChange(loadAvatar);
   av.add(params, "avatarLit").name("lit (off = production unlit)").onChange((v: boolean) => avatar.setLit(v));
   av.add(params, "walkSpeed", 8, 120, 1).name(`speed (units/s) — sprint x${SPRINT_MULTIPLIER.toFixed(2)}`).onChange((v: number) => (navCtl.speed = v));
-  av.add(avatarState, "who").name("player").disable().listen(); av.add(avatarState, "status").disable().listen(); av.add(avatarState, "clip").disable().listen(); av.add(avatarState, "position").disable().listen(); av.add(avatarState, "owner").name("controller owner").disable().listen();
+  av.add(avatarState, "who").name("player").disable().listen(); av.add(avatarState, "spawn").name("spawn").disable().listen(); av.add(avatarState, "status").disable().listen(); av.add(avatarState, "clip").disable().listen(); av.add(avatarState, "position").disable().listen(); av.add(avatarState, "owner").name("controller owner").disable().listen();
   const sitGui = gui.addFolder("Chair interaction (design-member-chair-4)");
   sitGui.add({ sit: () => { const r = seat.sit(); if (r && !r.ok) seatState.state = seat.status; } }, "sit").name("▶ Sit");
   sitGui.add({ stand: () => seat.stand() }, "stand").name("▶ Stand");
