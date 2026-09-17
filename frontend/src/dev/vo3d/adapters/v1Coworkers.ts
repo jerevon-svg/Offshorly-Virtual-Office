@@ -96,8 +96,16 @@ export function resolveVo3dCoworkers(
       email,
       displayName,
       avatarId,
-      // THEIR OWN BOX, never bonLayer's — see the header note.
+      // THEIR OWN BOX, never bonLayer's — see the header note. Carried onto the coworker as well as
+      // consumed here, because Phase 4B's persisted-position conversion (adapters/v1CoworkerPositions.ts)
+      // has to undo the SAME top-left origin against the SAME box, and re-deriving the roster seating a
+      // second time to find it is how the two would drift apart.
+      box: { width: layer.width, height: layer.height },
       point: { x: layer.x + layer.width / 2, z: layer.y + layer.height / 2 },
+      // DERIVED, always. Phase 4B may replace this with a live persisted position afterwards, through
+      // adapters/v1CoworkerPositions.ts — this module stays the roster-only answer, so a caller that never
+      // applies positions (and the standalone dev page, which never calls either) behaves exactly as 4A.
+      posSource: "desk",
       // A layer with no sitDirection is an overflow-grid occupant in a room with no default direction;
       // rosterLayers already falls back to "front" there, and so does this.
       facing: FACING_BY_DIRECTION[layer.sitDirection ?? "front"],

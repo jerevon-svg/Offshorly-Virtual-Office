@@ -1694,16 +1694,18 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // did with it, and the two are not the same question. A person can be resolved and still not be
   // standing anywhere — no legal point near their desk — and that difference is invisible from outside.
   const cw = gui.addFolder("Coworkers (V1 roster, read-only)");
-  const coworkerState = { rendered: 0, unplaced: "—", missing: "—", triangles: 0, state: "none pushed" };
+  const coworkerState = { rendered: 0, live: 0, unplaced: "—", missing: "—", triangles: 0, state: "none pushed" };
   function refreshCoworkerState(): void {
     const st = coworkers.getStats();
     coworkerState.rendered = st.rendered;
+    coworkerState.live = st.live;
     coworkerState.unplaced = st.unplaced.length ? st.unplaced.join(", ") : "—";
     coworkerState.missing = st.missingAvatar.length ? st.missingAvatar.join(", ") : "—";
     coworkerState.triangles = st.triangles;
     coworkerState.state = st.loading ? "loading…" : st.rendered > 0 ? "live" : "none";
   }
   cw.add(coworkerState, "rendered").name("bodies in the world").disable().listen();
+  cw.add(coworkerState, "live").name("on a live V1 position").disable().listen();
   cw.add(coworkerState, "state").name("coworker status").disable().listen();
   cw.add(coworkerState, "unplaced").name("no standable desk").disable().listen();
   cw.add(coworkerState, "missing").name("no 3D avatar").disable().listen();
@@ -2354,7 +2356,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       avatarState.position = `${p.x.toFixed(0)}, ${p.z.toFixed(0)}${navCtl.moving ? ` → ${navCtl.path.length} waypoint(s) left` : ""}`;
     }
     crowd?.update(dt / 1000); // no-op until a stress scenario has spawned one
-    coworkers.update(dt / 1000); // mixers only — Phase 4A coworkers never move
+    // MIXERS ONLY, and that is the whole per-frame cost of the coworker system. A Phase 4B body moves when
+    // V1 says that person arrived somewhere new — inside sync(), once — never from in here, so nothing on
+    // this line can invalidate a shadow or touch a transform.
+    coworkers.update(dt / 1000);
     // The shadow map is only redrawn when something that casts one has moved (Renderer.invalidateShadows).
     // Anything the avatar does counts: walking, sitting, and the doors/chairs its interactions drive. Plant
     // sway is deliberately NOT a trigger — a frozen leaf shadow is invisible and it would defeat the point.
@@ -2693,6 +2698,16 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
      *  Reported here so an A/B capture can record WHICH path produced it rather than trusting the URL. */
     ssaoDepthReuse: { enabled: ssaoDepthReuseEnabled, live: () => R.ssaoReusesDepth },
     bench: { device, applyPreset, runCapture, snapshot: () => snapshotRenderer(R.renderer), live: () => liveWindow.summary(), summarize, sceneStats: () => sceneStats(R.scene) },
+    /** PHASE 4B VERIFICATION SURFACE — read-only, and the one place a multi-tab check reads coworker
+     *  geometry from. `positions()` gives each rendered body's DISPLAY NAME, world x/z and whether that
+     *  spot came from V1's live persisted position or from the derived desk. No email, no roster row,
+     *  nothing derived from the session; the DOM readout in app/Vo3dHost.tsx stays counts-only for the
+     *  same reason. Nothing here can write: there is no setter, and the world itself never emits. */
+    coworkers: {
+      stats: () => coworkers.getStats(),
+      positions: () => coworkers.positions(),
+      count: () => coworkers.size,
+    },
     /** PERFORMANCE STRESS PHASE 1 — the dev-only client/render load harness and its scenario matrix.
      *  Everything here is inert until called: no crowd exists, and nothing about the product page changes.
      *  Driven from the console or from scripts/vo3d/stress.mjs. Measurement only — see the block above

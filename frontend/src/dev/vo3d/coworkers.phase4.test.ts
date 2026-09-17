@@ -135,8 +135,16 @@ describe("emailKey", () => {
 // Placement
 // ---------------------------------------------------------------------------
 
-function coworker(email: string, point: Vec2): Vo3dCoworker {
-  return { email, displayName: email.split("@")[0], avatarId: "bon", point, facing: "south" };
+function coworker(email: string, point: Vec2, posSource: Vo3dCoworker["posSource"] = "desk"): Vo3dCoworker {
+  return {
+    email,
+    displayName: email.split("@")[0],
+    avatarId: "bon",
+    point,
+    box: { width: 26, height: 37 },
+    posSource,
+    facing: "south",
+  };
 }
 
 const IDENTITY = (p: Vec2): Vec2 => p;
@@ -195,6 +203,62 @@ describe("placeCoworkers", () => {
         expect(d).toBeGreaterThanOrEqual(8);
       }
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Placement — live positions (Phase 4B)
+// ---------------------------------------------------------------------------
+
+describe("placeCoworkers with live positions", () => {
+  it("stands a live body exactly where V1 says, even shoulder to shoulder with somebody else", () => {
+    // Two people one unit apart — well inside MIN_SEPARATION. The desk body is placed first and claims
+    // the spot; the live body is V1's truth and is drawn as-is rather than corrected.
+    const list = [coworker("a@x.com", { x: 100, z: 200 }), coworker("b@x.com", { x: 101, z: 200 }, "live")];
+    const { placed, unplaced } = placeCoworkers(list, IDENTITY, ANYWHERE, 8);
+    expect(unplaced).toEqual([]);
+    expect(placed[1].pos).toEqual({ x: 101, z: 200 });
+  });
+
+  it("NEVER lets a moving coworker reposition a stationary one — the whole point of the rule", () => {
+    // Sorted by email, so the live body is placed FIRST and would have claimed the spot under the old
+    // shared-list rule, pushing the desk body onto a ring it never asked for.
+    const alone = placeCoworkers([coworker("z@x.com", { x: 100, z: 200 })], IDENTITY, ANYWHERE, 8);
+    const crowded = placeCoworkers(
+      [coworker("a@x.com", { x: 100, z: 200 }, "live"), coworker("z@x.com", { x: 100, z: 200 })],
+      IDENTITY,
+      ANYWHERE,
+      8,
+    );
+    expect(crowded.placed[1].pos).toEqual(alone.placed[0].pos);
+  });
+
+  it("draws two live bodies on one point honestly rather than inventing a correction", () => {
+    const list = [coworker("a@x.com", { x: 50, z: 50 }, "live"), coworker("b@x.com", { x: 50, z: 50 }, "live")];
+    const { placed } = placeCoworkers(list, IDENTITY, ANYWHERE, 8);
+    expect(placed[0].pos).toEqual({ x: 50, z: 50 });
+    expect(placed[1].pos).toEqual({ x: 50, z: 50 });
+  });
+
+  it("keeps the desk-to-desk separation rule exactly as Phase 4A had it", () => {
+    const list = [coworker("a@x.com", { x: 100, z: 200 }), coworker("b@x.com", { x: 101, z: 200 })];
+    const { placed } = placeCoworkers(list, IDENTITY, ANYWHERE, 8);
+    expect(placed[1].pos).not.toEqual({ x: 101, z: 200 });
+  });
+
+  it("still refuses a live position V2's own floor cannot stand a body on", () => {
+    // A persisted position is V1's truth about V1's floor; V2 has rooms V1 never had. Refusing is the same
+    // refusal Phase 3 makes for the signed-in employee's own desk.
+    const list = [coworker("a@x.com", { x: 100, z: 200 }, "live")];
+    const { placed, unplaced } = placeCoworkers(list, IDENTITY, () => false, 8);
+    expect(placed).toEqual([]);
+    expect(unplaced).toEqual(["a"]);
+  });
+
+  it("applies the world transform to a live point too, so a shifted room moves its occupants", () => {
+    const shift = (p: Vec2): Vec2 => ({ x: p.x, z: p.z + 16 });
+    const { placed } = placeCoworkers([coworker("a@x.com", { x: 10, z: 20 }, "live")], shift, ANYWHERE, 8);
+    expect(placed[0].pos).toEqual({ x: 10, z: 36 });
   });
 });
 

@@ -11,10 +11,21 @@
 // (data/rosterLayers.ts officePeopleToLayers — the email-sorted per-room assignment, NOT data/homeSeat's
 // resolveHomeDesk, which answers a different question and hands EVERY person in a room the same chair).
 //
-// It is NOT a live position. Phase 4A reads no movement socket, no positions_snapshot, no walk event and
-// no attendance: every point here is DERIVED from the roster, and the body that renders it never moves.
-// So this says "this is the desk V1 gives this person", never "this person is sitting there right now" —
-// and nothing built on it may dress it up as presence. Live positions are Phase 4B's problem.
+// PHASE 4B MAKES THE POSITION LIVE — AND NOTHING ELSE. A coworker may now stand at the position V1 has
+// actually persisted for them (services/presence/movementSync's stable state) instead of at their derived
+// desk, and `posSource` says which of those two facts a given `point` is. Everything else about this
+// contract is unchanged, deliberately:
+//   • STILL READ-ONLY. Nothing is emitted; no walk_started, no walk_arrived, no position is ever written.
+//   • STILL NOT ATTENDANCE. A persisted position is "where V1 last saw this person stop", not "this person
+//     is in the building" — employee_positions is NOT attendance-gated and keeps a stale row for someone
+//     who checked out hours ago. V1's offline predicate is what decides visibility, exactly as in 4A, and
+//     it runs BEFORE any position is applied so stale movement data can never resurrect a checked-out
+//     employee at a desk.
+//   • STILL A SNAP, NOT A WALK. Only the arrived/stable half of the movement feed is read. The in-flight
+//     half (`active`, its path, duration and server clock offset) is deliberately never touched, so a peer
+//     mid-walk simply stays where they last stopped until they arrive. Interpolation is a later phase.
+//   • STILL DERIVED-BY-DEFAULT. Before the first positions_snapshot, and for every person V1 has no
+//     persisted row for, the Phase 4A desk is what renders. A position is never fabricated.
 //
 // COORDINATES ARE V1'S, deliberately, exactly as app/spawn.ts's Vo3dHomeDesk is: `point` is in the V1
 // frame, and applying a room's V2 world shift is world.ts's job (through the same homeDeskWorldPoint the
@@ -32,10 +43,33 @@ export interface Vo3dCoworker {
    *  never becomes a Vo3dCoworker at all; they are counted in `missingAvatar` instead. It must NEVER be
    *  widened to somebody else's character, which is the same rule app/identity.ts states for self. */
   avatarId: string;
-  /** The assigned seat's centroid, IN V1 FRAME UNITS, already a ground centre point (the adapter undoes
-   *  the layer's top-left origin using THAT PERSON'S OWN box, never Bon's — see the adapter). */
+  /** WHERE THIS PERSON STANDS, IN V1 FRAME UNITS, already a ground centre point (the adapter undoes
+   *  the layer's top-left origin using THAT PERSON'S OWN box, never Bon's — see the adapter).
+   *
+   *  Phase 4B: this is EITHER the derived desk centroid OR the centre of their live persisted position,
+   *  and `posSource` says which. It is never a blend of the two and never a guess. */
   point: Vec2;
-  /** The seat's OWN fixed direction. The direction belongs to the chair, never to whoever sits in it. */
+  /** WHICH FACT `point` IS. Phase 4B's whole distinction, carried explicitly rather than inferred:
+   *
+   *    "desk" — V1's roster seating (data/rosterLayers.ts). Everyone starts here, and anyone V1 has no
+   *             persisted position for STAYS here forever. It says "this is the desk V1 gives them".
+   *    "live" — V1's own last-arrived persisted position (services/presence/movementSync's stable state,
+   *             backed by employee_positions). It says "this is where V1 last saw them stop".
+   *
+   *  world/Coworkers.ts reads this for exactly one decision — a live point is V1's truth and is never
+   *  nudged by V2's separation rule, while a desk point still is (see placeCoworkers). */
+  posSource: "desk" | "live";
+  /** THAT PERSON'S OWN V1 sprite box (data/rosterLayers.ts gives a live-3D employee their own manifest
+   *  dimensions, scaled by their room's overflow scale — micah and angelo are deliberately taller).
+   *
+   *  Carried because the top-left -> centre conversion of a persisted position must use THIS box and no
+   *  other; adapters/v1Pathfinding.ts converts through bonLayer's halves and is a tests-only oracle for
+   *  precisely that reason. Resolving it once, here, is what stops the position adapter from re-deriving
+   *  the roster seating a second time and drifting from it. */
+  box: { width: number; height: number };
+  /** The direction this person faces. For a desk point that is the SEAT's own fixed direction (the
+   *  direction belongs to the chair, never to whoever sits in it); for a live point it is the facing V1
+   *  recorded when they arrived, translated out of V1's sprite vocabulary. */
   facing: Facing;
 }
 
