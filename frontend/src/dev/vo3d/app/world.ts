@@ -101,7 +101,8 @@ import { NavDebug } from "../devtools/NavDebug";
 import { Capture, FrameWindow, Overlay, PRESETS, describeDevice, sceneStats, snapshotRenderer, summarize, type CaptureSummary, type PresetId } from "../devtools/Bench";
 import { Crowd } from "../devtools/Crowd";
 import { STRESS_MATRIX, markdownTable, planPlacements, type ScenarioResult, type StressScenario } from "../devtools/Stress";
-import { BON_STANDING_HEIGHT, type AvatarLod } from "../adapters/v1Avatar";
+import { BON_STANDING_HEIGHT, castLods, type AvatarLod } from "../adapters/v1Avatar";
+import type { Vo3dIdentity } from "./identity";
 import { pointInRect, type Rect, type Vec2 } from "../core/coords";
 
 /** What a mounted V2 world hands back. `dispose()` is idempotent and, once called, the world is dead:
@@ -114,8 +115,13 @@ export interface Vo3dWorld {
 /** BUILD A V2 WORLD ON `canvas`. Everything below this line is the module body app/bootstrap.ts used to
  *  run as top-level side effects, wrapped verbatim and indented one level — no statement was reordered,
  *  renamed or rewritten. The only deletions are the `document.getElementById("stage")` lookup (the canvas
- *  is a parameter now) and nothing else; the additions are the disposal bookkeeping, each marked LIFECYCLE. */
-export function createVo3dWorld(canvas: HTMLCanvasElement): Vo3dWorld {
+ *  is a parameter now) and nothing else; the additions are the disposal bookkeeping, each marked LIFECYCLE.
+ *
+ *  `identity` is the signed-in employee, ALREADY RESOLVED by the caller (app/Vo3dHost.tsx via
+ *  adapters/v1Identity). It is optional, and omitting it is not a degraded mode: the standalone dev page
+ *  (app/bootstrap.ts, dev/vo3d.html) passes nothing and gets byte-for-byte the behaviour it always had.
+ *  This world never fetches it, never stores it and never re-reads it — it is a value, taken once. */
+export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdentity): Vo3dWorld {
   // ---- LIFECYCLE ---------------------------------------------------------------------------------
   // The three things a top-level module body never had to think about, because the document outlived it.
   //
@@ -481,7 +487,19 @@ export function createVo3dWorld(canvas: HTMLCanvasElement): Vo3dWorld {
   // (they are never rendered; the baked group already draws them)
 
   // ---- avatar + ownership ------------------------------------------------------------------------
-  const avatar = new Avatar({ height: BON_STANDING_HEIGHT, lit: params.avatarLit });
+  // WHICH BODY THE PLAYER GETS. Three cases, and the third one is a deliberate ABSENCE:
+  //   no identity          -> undefined -> Avatar's own BON_LODS default. The standalone page, unchanged.
+  //   identity + avatarId  -> that employee's own three LOD urls, straight from the production registry.
+  //   identity, no avatarId-> null. NOTHING IS LOADED. A real employee with no approved 3D asset set is
+  //                           shown an explicit missing-avatar state, because the alternative — dressing
+  //                           them in Bon's body — is the exact failure data/avatarIdentity.ts refuses to
+  //                           make in V1 ("a real unmapped person has no character yet"). V2 has no 3D
+  //                           placeholder to stand in, so the honest answer is an empty one.
+  const avatarLods: Record<AvatarLod, string> | null | undefined =
+    identity === undefined ? undefined : identity.avatarId ? castLods(identity.avatarId) : null;
+  /** True when this world knows WHO the player is but has no character to put them in. */
+  const avatarMissing = avatarLods === null;
+  const avatar = new Avatar({ height: BON_STANDING_HEIGHT, lit: params.avatarLit, lods: avatarLods ?? undefined });
   R.scene.add(avatar.root);
   // Bon is a DYNAMIC shadow caster: his body is composited over the cached static shadow depth every frame
   // he moves, instead of dragging the whole ground floor through the shadow pass with him. See Renderer.
@@ -492,8 +510,19 @@ export function createVo3dWorld(canvas: HTMLCanvasElement): Vo3dWorld {
   // the controller's own class default is the figure the walk clip was authored for, and would otherwise
   // leave the panel reading 70 while a planned walk still ambled at 30.
   navCtl.speed = params.walkSpeed;
-  const avatarState = { status: "loading…", clip: "", position: "", owner: "Idle", triangles: 0 };
+  /** The player label for the dev readout: who this world thinks you are, and which character it drew.
+   *  Name and character id only — never the email, the id or anything from the session. */
+  const who = identity
+    ? `${identity.displayName} · ${identity.avatarId ?? "no 3D avatar"} (${identity.source})`
+    : "standalone · default character";
+  const avatarState = { who, status: "loading…", clip: "", position: "", owner: "Idle", triangles: 0 };
   function loadAvatar(): void {
+    if (avatarMissing) {
+      // Not an error and not a retry: there is no asset to ask for. Stated once, and the LOD selector
+      // below re-states it rather than firing a load that would 404.
+      avatarState.status = `no 3D avatar registered for ${identity?.displayName ?? "this employee"} — nothing loaded`;
+      return;
+    }
     avatarState.status = `loading LOD${params.avatarLod}…`;
     avatar.load(params.avatarLod).then(() => {
       if (disposed) return; // LIFECYCLE: the world was unmounted while this was in flight
@@ -1576,7 +1605,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement): Vo3dWorld {
   av.add(params, "avatarLod", [0, 1, 2]).name("LOD").onChange(loadAvatar);
   av.add(params, "avatarLit").name("lit (off = production unlit)").onChange((v: boolean) => avatar.setLit(v));
   av.add(params, "walkSpeed", 8, 120, 1).name(`speed (units/s) — sprint x${SPRINT_MULTIPLIER.toFixed(2)}`).onChange((v: number) => (navCtl.speed = v));
-  av.add(avatarState, "status").disable().listen(); av.add(avatarState, "clip").disable().listen(); av.add(avatarState, "position").disable().listen(); av.add(avatarState, "owner").name("controller owner").disable().listen();
+  av.add(avatarState, "who").name("player").disable().listen(); av.add(avatarState, "status").disable().listen(); av.add(avatarState, "clip").disable().listen(); av.add(avatarState, "position").disable().listen(); av.add(avatarState, "owner").name("controller owner").disable().listen();
   const sitGui = gui.addFolder("Chair interaction (design-member-chair-4)");
   sitGui.add({ sit: () => { const r = seat.sit(); if (r && !r.ok) seatState.state = seat.status; } }, "sit").name("▶ Sit");
   sitGui.add({ stand: () => seat.stand() }, "stand").name("▶ Stand");

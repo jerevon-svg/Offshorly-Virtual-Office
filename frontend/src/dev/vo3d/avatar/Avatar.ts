@@ -34,16 +34,22 @@ export class Avatar {
   yaw = 0;
   private height: number;
   private lit: boolean;
+  /** THE THREE GLB URLS THIS INSTANCE LOADS FROM, one per LOD. Per-instance rather than the module
+   *  constant it used to read directly, so a world can put the player in the body of whoever is actually
+   *  signed in (app/world.ts passes adapters/v1Avatar's castLods(avatarId)). Defaults to BON_LODS, which
+   *  is what makes the standalone dev page — and every existing caller — behave exactly as before. */
+  private readonly lods: Record<AvatarLod, string>;
 
-  constructor(opts: { height: number; lit: boolean }) {
+  constructor(opts: { height: number; lit: boolean; lods?: Record<AvatarLod, string> }) {
     this.height = opts.height;
     this.lit = opts.lit;
+    this.lods = opts.lods ?? BON_LODS;
     this.root.name = "avatar";
     this.root.add(this.model);
   }
 
   async load(lod: AvatarLod): Promise<void> {
-    const gltf = await gltfLoader().loadAsync(BON_LODS[lod]);
+    const gltf = await gltfLoader().loadAsync(this.lods[lod]);
     this.dispose();
     this.gltf = gltf;
     const scene = gltf.scene;

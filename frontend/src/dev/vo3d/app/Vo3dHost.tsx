@@ -1,9 +1,17 @@
 // vo3d app — THE REACT HOST. The counterpart to bootstrap.ts: that file mounts the V2 world on a page
 // it owns forever, this one mounts the SAME world inside V1's React tree, where it can be unmounted.
 //
-// Reached only through V1's DEV-only `?world=v2` route (see App.tsx). Phase 1 is a FULLSCREEN technical
-// preview and nothing more: no V1 HUD, chat, identity, movement or attendance is mounted alongside it.
+// Reached only through V1's DEV-only `?world=v2` route (see App.tsx). Still a FULLSCREEN technical
+// preview: no V1 HUD, chat, movement or attendance is mounted alongside it.
+//
+// Phase 2 adds exactly ONE thing to that list — READ-ONLY IDENTITY. This component resolves the employee
+// V1 has already signed in (adapters/v1Identity) and hands the world their own 3D character. It is a
+// read and nothing else: no fetch, no store, no subscription, no write back. Movement sync, attendance,
+// status and multiplayer remain deferred, and V2 still makes no API call of its own — which is what
+// keeps apiFetch's 401 -> /login redirect off this route entirely.
 import { useEffect, useRef, useState } from "react";
+import { resolveVo3dIdentity } from "../adapters/v1Identity";
+import type { Vo3dIdentity } from "./identity";
 import type { Vo3dWorld } from "./world";
 
 // WHY THE CANVAS IS NOT JSX. Three separate reasons, all load-bearing:
@@ -39,7 +47,10 @@ function loadWorld(): Promise<typeof import("./world")> {
   return worldModule;
 }
 
-type Phase = { kind: "loading" } | { kind: "ready" } | { kind: "error"; message: string };
+type Phase =
+  | { kind: "loading" }
+  | { kind: "ready"; identity: Vo3dIdentity | null }
+  | { kind: "error"; message: string };
 
 /** Drop `?world=v2` and reload into the normal V1 office. A plain location assignment rather than a
  *  router navigation: V2 has scattered listeners and GPU state across window, document and document.body,
@@ -64,13 +75,21 @@ export function Vo3dHost() {
     let world: Vo3dWorld | null = null;
     let cancelled = false;
 
+    // RESOLVED HERE, PER MOUNT, and never hoisted to module scope. Two reasons: App.tsx renders this
+    // component only after useAuthGate reaches "allowed", so inside the effect the answer is already
+    // known and synchronous — there is no loading state to model; and StrictMode's mount -> cleanup ->
+    // mount re-runs this effect, which must re-read rather than reuse a value captured at import time.
+    // `null` is a legitimate answer (V1 could not parse an identity) and is passed through as "no
+    // identity" — NOT as a guess that this is Bon.
+    const identity = resolveVo3dIdentity();
+
     void loadWorld()
       .then(({ createVo3dWorld }) => {
         // The unmount may have already run — StrictMode's cleanup fires within the same tick that this
         // import was started in. Building a world now would be building one nobody will ever dispose.
         if (cancelled) return;
-        world = createVo3dWorld(canvas);
-        setPhase({ kind: "ready" });
+        world = createVo3dWorld(canvas, identity ?? undefined);
+        setPhase({ kind: "ready", identity });
       })
       .catch((e: unknown) => {
         if (cancelled) return;
@@ -124,6 +143,63 @@ export function Vo3dHost() {
           <button type="button" onClick={backToV1} style={{ font: "inherit", padding: "6px 12px" }}>
             Back to V1
           </button>
+        </div>
+      )}
+      {phase.kind === "ready" && phase.identity && (
+        // THE REDACTED READOUT. Deliberately carries the display name, the resolved character id and
+        // where the identity came from — and NOTHING else. No email, no employee id, no token, nothing
+        // derived from the session. It exists so a real signed-in session can be verified from the
+        // outside (including by an automated check) without anything sensitive being on screen.
+        <div
+          data-testid="vo3d-identity"
+          data-display-name={phase.identity.displayName}
+          data-avatar-id={phase.identity.avatarId ?? ""}
+          data-avatar-missing={phase.identity.avatarId === null ? "true" : "false"}
+          data-source={phase.identity.source}
+          style={{
+            position: "absolute",
+            top: 12,
+            right: 12,
+            zIndex: 1003,
+            font: "12px/1.4 system-ui, sans-serif",
+            padding: "6px 10px",
+            borderRadius: 8,
+            background: "rgba(30,24,20,0.72)",
+            color: "#f4ede4",
+            pointerEvents: "none",
+          }}
+        >
+          {phase.identity.displayName}
+          <span style={{ opacity: 0.7 }}>
+            {" · "}
+            {phase.identity.avatarId ?? "no 3D avatar"}
+          </span>
+        </div>
+      )}
+      {phase.kind === "ready" && phase.identity?.avatarId === null && (
+        // The explicit missing-avatar state. It says the character is absent, names the person it is
+        // absent FOR, and offers nothing that looks like a retry — there is no asset to fetch. The one
+        // thing it must never do is imply the empty world is somebody else's body.
+        <div
+          role="status"
+          data-testid="vo3d-missing-avatar"
+          style={{
+            position: "absolute",
+            bottom: 16,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 1003,
+            maxWidth: 520,
+            textAlign: "center",
+            font: "12px/1.5 system-ui, sans-serif",
+            padding: "8px 14px",
+            borderRadius: 8,
+            background: "rgba(30,24,20,0.82)",
+            color: "#f4ede4",
+          }}
+        >
+          No 3D avatar is registered for {phase.identity.displayName} yet, so no character is shown. The
+          world is fully explorable.
         </div>
       )}
       {phase.kind === "ready" && (

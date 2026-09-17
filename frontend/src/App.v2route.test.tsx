@@ -21,7 +21,9 @@ vi.mock("./components/LoadingCover/LoadingCover", () => ({
 vi.mock("./audio/BackgroundMusicControl", () => ({
   BackgroundMusicControl: () => null,
 }));
-vi.mock("./auth/useAuthGate", () => ({ useAuthGate: () => "allowed" }));
+// getCurrentUserId is part of this module's surface too — Phase 2's identity resolver reads it, and the
+// real one is a module singleton the mock must stand in for or the V2 route throws on mount.
+vi.mock("./auth/useAuthGate", () => ({ useAuthGate: () => "allowed", getCurrentUserId: () => "bon" }));
 vi.mock("./services/render/telemetry", () => ({ initDeviceTierTelemetry: () => {} }));
 
 // The V2 world is mocked at the same seam Vo3dHost imports it from, so no WebGL is needed.
@@ -81,5 +83,32 @@ describe("V1's shared renderer in V2 mode", () => {
     // Nothing that could reach the shared renderer is in the tree at all.
     expect(document.querySelector("[data-testid='v1-office']")).toBeNull();
     spy.mockRestore();
+  });
+
+  // PHASE 2 re-assertion. Reading V1's identity means the V2 route now imports V1 modules it did not
+  // before (auth/currentUserStore, auth/useAuthGate, data/avatarIdentity). None of them touches WebGL —
+  // only CharacterCanvas, ToucanFlyer and glbCache reach the shared renderer, and none is in this tree.
+  // This case exists so that stays true the next time someone widens what identity reads.
+  it("is still never constructed once a signed-in employee is resolved", async () => {
+    const { setCurrentUserFromMeResponse, resetCurrentUserForTests } = await import(
+      "./auth/currentUserStore"
+    );
+    setCurrentUserFromMeResponse({
+      id: "atlas-1",
+      email: "jerevon@offshorly.com",
+      full_name: "Bon",
+      role: "dev",
+      team: null,
+    });
+    const shared = await import("./render3d/SharedRenderer");
+    const spy = vi.spyOn(shared, "renderToCanvas");
+
+    await renderAppAt("?world=v2");
+    await screen.findByTestId("vo3d-host");
+    await waitFor(() => expect(disposes).toHaveLength(1), { timeout: 5000 });
+
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+    resetCurrentUserForTests();
   });
 });
