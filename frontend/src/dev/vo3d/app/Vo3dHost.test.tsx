@@ -20,7 +20,8 @@ vi.mock("./world", async () => ({
     if (behaviour === "throws") throw new Error("boom in createVo3dWorld");
     const dispose = vi.fn();
     mounts.push({ canvas, dispose });
-    return { dispose };
+    // Phase 4A: the world is a Vo3dWorld, and the host pushes the roster into it on creation.
+    return { dispose, setCoworkers: vi.fn() };
   },
 }));
 

@@ -28,10 +28,11 @@
 //     and 70 extra draw calls at full crowd, which is the honest worst case. `setLabels(false)` takes
 //     them out so their share of the frame can be measured rather than assumed.
 import * as THREE from "three";
-import { GLTFLoader, type GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { clone as cloneSkinned } from "three/examples/jsm/utils/SkeletonUtils.js";
-import { BON_STANDING_HEIGHT, CAST_IDS, CLIP_IDLE, CLIP_WALK, DRACO_PATH, castLods, type AvatarLod } from "../adapters/v1Avatar";
+import { BON_STANDING_HEIGHT, CAST_IDS, CLIP_IDLE, CLIP_WALK, type AvatarLod } from "../adapters/v1Avatar";
+// Parse-once/clone-per-body and the nameplate canvas moved to avatar/CastPrototypes.ts when world/
+// Coworkers.ts became the second caller — same code, one copy. See that module's header.
+import { castLabelTexture, prototypeFor, type CastPrototype } from "../avatar/CastPrototypes";
 import { dist, headingFor, stepAngle, type Vec2 } from "../core/coords";
 import { DYNAMIC_CASTER_LAYER } from "../render/Renderer";
 import { mulberry32 } from "./Stress";
@@ -55,85 +56,7 @@ export type CrowdSpawn = {
 
 export type CrowdMemberInfo = { name: string; character: string; status: CrowdStatus; x: number; z: number; clip: string };
 
-let loader: GLTFLoader | null = null;
-function gltfLoader(): GLTFLoader {
-  if (loader) return loader;
-  const draco = new DRACOLoader();
-  draco.setDecoderPath(DRACO_PATH);
-  loader = new GLTFLoader();
-  loader.setDRACOLoader(draco);
-  return loader;
-}
 
-/** One parsed character, prepared once: scaled/centred, materials built, triangles counted. */
-type Prototype = { id: string; gltf: GLTF; scene: THREE.Group; clips: THREE.AnimationClip[]; triangles: number; headY: number };
-
-const prototypes = new Map<string, Promise<Prototype>>();
-
-async function prototypeFor(id: string, lod: AvatarLod): Promise<Prototype> {
-  const key = `${id}@${lod}`;
-  let p = prototypes.get(key);
-  if (p) return p;
-  p = gltfLoader().loadAsync(castLods(id)[lod]).then((gltf) => {
-    const scene = gltf.scene;
-    scene.updateMatrixWorld(true);
-    const box = new THREE.Box3().setFromObject(scene);
-    const native = box.max.y - box.min.y;
-    const s = BON_STANDING_HEIGHT / native;
-    scene.scale.setScalar(s);
-    scene.position.set((-(box.min.x + box.max.x) / 2) * s, -box.min.y * s, (-(box.min.z + box.max.z) / 2) * s);
-    let triangles = 0;
-    scene.traverse((o) => {
-      const m = o as THREE.Mesh;
-      if (!m.isMesh) return;
-      m.castShadow = true;
-      m.receiveShadow = true;
-      m.frustumCulled = false;
-      const idx = m.geometry.getIndex();
-      triangles += idx ? idx.count / 3 : m.geometry.getAttribute("position").count / 3;
-      const src = (Array.isArray(m.material) ? m.material : [m.material]) as THREE.MeshStandardMaterial[];
-      // ONE material per source material per CHARACTER — clones share these by reference, exactly as
-      // production does. Built with avatar/Avatar.ts's recipe so the crowd shades like the hero avatar.
-      const lit = src.map((sm) => {
-        const mm = new THREE.MeshStandardMaterial({ map: sm.map ?? null, color: sm.color?.clone() ?? new THREE.Color(0xffffff), roughness: 0.9, metalness: 0, side: sm.side, transparent: sm.transparent, opacity: sm.opacity, alphaTest: sm.alphaTest });
-        if (mm.map) mm.map.anisotropy = 8;
-        return mm;
-      });
-      m.material = Array.isArray(m.material) ? lit : lit[0];
-    });
-    return { id, gltf, scene, clips: gltf.animations, triangles: Math.round(triangles), headY: BON_STANDING_HEIGHT };
-  });
-  prototypes.set(key, p);
-  return p;
-}
-
-/** A nameplate texture. One per body (unique names), disposed with the crowd. */
-function labelTexture(name: string, status: CrowdStatus): THREE.CanvasTexture {
-  const c = document.createElement("canvas");
-  c.width = 256; c.height = 64;
-  const g = c.getContext("2d")!;
-  g.fillStyle = "rgba(28,24,20,0.72)";
-  g.beginPath();
-  // rounded pill
-  const r = 18;
-  g.moveTo(r, 4); g.lineTo(c.width - r, 4); g.quadraticCurveTo(c.width - 4, 4, c.width - 4, 4 + r);
-  g.lineTo(c.width - 4, 60 - r); g.quadraticCurveTo(c.width - 4, 60, c.width - r, 60);
-  g.lineTo(r, 60); g.quadraticCurveTo(4, 60, 4, 60 - r);
-  g.lineTo(4, 4 + r); g.quadraticCurveTo(4, 4, r, 4);
-  g.fill();
-  g.fillStyle = STATUS_DOT[status];
-  g.beginPath(); g.arc(28, 32, 9, 0, Math.PI * 2); g.fill();
-  g.fillStyle = "#f6efe6";
-  g.font = "600 24px ui-sans-serif, system-ui, sans-serif";
-  g.textBaseline = "middle";
-  g.fillText(name, 46, 26);
-  g.fillStyle = "rgba(246,239,230,0.66)";
-  g.font = "400 15px ui-sans-serif, system-ui, sans-serif";
-  g.fillText(status, 46, 47);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
 
 class Member {
   readonly root = new THREE.Group();
@@ -152,7 +75,7 @@ class Member {
   private dwell = 0;
   private rng: () => number;
 
-  constructor(proto: Prototype, spawn: CrowdSpawn, name: string, status: CrowdStatus, rng: () => number) {
+  constructor(proto: CastPrototype, spawn: CrowdSpawn, name: string, status: CrowdStatus, rng: () => number) {
     this.name = name;
     this.character = proto.id;
     this.status = status;
@@ -177,7 +100,7 @@ class Member {
 
   addLabel(): void {
     if (this.label) return;
-    const tex = labelTexture(this.name, this.status);
+    const tex = castLabelTexture(this.name, this.status, STATUS_DOT[this.status]);
     const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: true, transparent: true }));
     sprite.scale.set(26, 6.5, 1);
     sprite.position.set(0, BON_STANDING_HEIGHT + 6, 0);

@@ -105,6 +105,8 @@ import { STRESS_MATRIX, markdownTable, planPlacements, type ScenarioResult, type
 import { BON_STANDING_HEIGHT, castLods, hasCastLods, type AvatarLod } from "../adapters/v1Avatar";
 import type { Vo3dIdentity } from "./identity";
 import { homeDeskWorldPoint, type Vo3dHomeDesk } from "./spawn";
+import { Coworkers } from "../world/Coworkers";
+import type { Vo3dCoworker } from "./coworkers";
 import { FACING_YAW, pointInRect, type Rect, type Vec2 } from "../core/coords";
 
 /** What a mounted V2 world hands back. `dispose()` is idempotent and, once called, the world is dead:
@@ -112,6 +114,14 @@ import { FACING_YAW, pointInRect, type Rect, type Vec2 } from "../core/coords";
  *  render/Renderer.dispose). A remount must be given a FRESH canvas element. */
 export interface Vo3dWorld {
   dispose(): void;
+  /** PHASE 4A — the roster's coworkers, pushed in from outside.
+   *
+   *  The world never fetches them: app/Vo3dHost.tsx owns the V1 subscriptions (React owns subscriptions,
+   *  the world owns scene objects) and calls this whenever the roster changes. `missingAvatar` is carried
+   *  alongside because the readout has to be able to say who V1 lists but V2 cannot draw, rather than
+   *  quietly showing a smaller office. Never called by the standalone dev page, which therefore builds no
+   *  coworker bodies at all and costs exactly what it always did. */
+  setCoworkers(list: readonly Vo3dCoworker[], missingAvatar?: readonly string[]): void;
 }
 
 /** BUILD A V2 WORLD ON `canvas`. Everything below this line is the module body app/bootstrap.ts used to
@@ -976,6 +986,29 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     }
   }
 
+  // ---- the roster's coworkers (Phase 4A) -----------------------------------------------------------
+  // STATIC, READ-ONLY BODIES for the real employees V1's roster lists. Built here, after playerMode, for
+  // the same reason the home-desk spawn above is: the placement search is judged by `playerStand`, the
+  // world's own body test, and a coworker has to be refused exactly where the player would be.
+  //
+  // Empty until somebody pushes a roster in (setCoworkers below). The standalone dev page never does, so
+  // dev/vo3d.html builds an empty group and pays nothing — no fetch, no GLB, no draw call.
+  //
+  // V1 DECIDED WHO AND WHERE, in V1 coordinates (adapters/v1Coworkers over data/rosterLayers). V2 decides
+  // where that is in the world it actually built, through the SAME homeDeskWorldPoint the signed-in
+  // employee's own desk goes through — one room-shift table, not two.
+  const coworkers = new Coworkers({
+    parent: R.scene,
+    canStand: playerStand,
+    radius: NAV_RADIUS,
+    toWorld: (p) => homeDeskWorldPoint(p, v1Rooms(), ROOM_WORLD_SHIFT_Z),
+    lod: 1,
+    // Their idle animation moves them every frame, so they are dynamic casters like the stress crowd;
+    // the shadow map is invalidated only when the POPULATION changes, not per frame.
+    onChanged: () => R.invalidateShadows(),
+  });
+  R.addDynamicCaster(coworkers.group);
+
   // ---- the Championship Cave: the portal ------------------------------------------------------------
   caveTransition = new CaveTransition({
     build: caveBuild,
@@ -1656,6 +1689,27 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   av.add(params, "avatarLod", [0, 1, 2]).name("LOD").onChange(loadAvatar);
   av.add(params, "avatarLit").name("lit (off = production unlit)").onChange((v: boolean) => avatar.setLit(v));
   av.add(params, "walkSpeed", 8, 120, 1).name(`speed (units/s) — sprint x${SPRINT_MULTIPLIER.toFixed(2)}`).onChange((v: number) => (navCtl.speed = v));
+  // ---- the roster's coworkers, as the world actually built them (Phase 4A) -------------------------
+  // The DOM readout in app/Vo3dHost.tsx reports what V1's ROSTER said; this one reports what the WORLD
+  // did with it, and the two are not the same question. A person can be resolved and still not be
+  // standing anywhere — no legal point near their desk — and that difference is invisible from outside.
+  const cw = gui.addFolder("Coworkers (V1 roster, read-only)");
+  const coworkerState = { rendered: 0, unplaced: "—", missing: "—", triangles: 0, state: "none pushed" };
+  function refreshCoworkerState(): void {
+    const st = coworkers.getStats();
+    coworkerState.rendered = st.rendered;
+    coworkerState.unplaced = st.unplaced.length ? st.unplaced.join(", ") : "—";
+    coworkerState.missing = st.missingAvatar.length ? st.missingAvatar.join(", ") : "—";
+    coworkerState.triangles = st.triangles;
+    coworkerState.state = st.loading ? "loading…" : st.rendered > 0 ? "live" : "none";
+  }
+  cw.add(coworkerState, "rendered").name("bodies in the world").disable().listen();
+  cw.add(coworkerState, "state").name("coworker status").disable().listen();
+  cw.add(coworkerState, "unplaced").name("no standable desk").disable().listen();
+  cw.add(coworkerState, "missing").name("no 3D avatar").disable().listen();
+  cw.add(coworkerState, "triangles").name("triangles").disable().listen();
+  cw.add({ go: () => { for (const b of coworkers.group.children) console.log("coworker", b.name, b.position.x.toFixed(1), b.position.z.toFixed(1)); } }, "go").name("log every body to the console");
+
   av.add(avatarState, "who").name("player").disable().listen(); av.add(avatarState, "spawn").name("spawn").disable().listen(); av.add(avatarState, "status").disable().listen(); av.add(avatarState, "clip").disable().listen(); av.add(avatarState, "position").disable().listen(); av.add(avatarState, "owner").name("controller owner").disable().listen();
   const sitGui = gui.addFolder("Chair interaction (design-member-chair-4)");
   sitGui.add({ sit: () => { const r = seat.sit(); if (r && !r.ok) seatState.state = seat.status; } }, "sit").name("▶ Sit");
@@ -2300,6 +2354,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       avatarState.position = `${p.x.toFixed(0)}, ${p.z.toFixed(0)}${navCtl.moving ? ` → ${navCtl.path.length} waypoint(s) left` : ""}`;
     }
     crowd?.update(dt / 1000); // no-op until a stress scenario has spawned one
+    coworkers.update(dt / 1000); // mixers only — Phase 4A coworkers never move
     // The shadow map is only redrawn when something that casts one has moved (Renderer.invalidateShadows).
     // Anything the avatar does counts: walking, sitting, and the doors/chairs its interactions drive. Plant
     // sway is deliberately NOT a trigger — a frozen leaf shadow is invisible and it would defeat the point.
@@ -2951,6 +3006,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     editGizmo.dispose();
     // Dev-only bodies, present only when a stress scenario or `?monkey=1` asked for them.
     crowd?.clear(); // Crowd's teardown is clear(): it disposes every member's clone, textures included
+    R.removeDynamicCaster(coworkers.group);
+    coworkers.dispose(); // bodies, mixers and nameplate canvases; the shared prototypes outlive the world
     monkey?.dispose();
     avatar.dispose();
     toucan.dispose();
@@ -2977,5 +3034,14 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     R.dispose();
   }
 
-  return { dispose };
+  return {
+    dispose,
+    // Fire-and-forget: sync() loads GLBs, and a caller in a React effect has nothing useful to await.
+    // Its own generation guard drops a load that lands after a newer roster, and its disposed guard drops
+    // one that lands after the world is gone.
+    setCoworkers: (list, missingAvatar) => {
+      void coworkers.sync(list, missingAvatar).then(refreshCoworkerState);
+      refreshCoworkerState();
+    },
+  };
 }

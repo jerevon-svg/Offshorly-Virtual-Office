@@ -24,20 +24,9 @@
 import { getCurrentUser } from "../../../auth/currentUserStore";
 import { resolveHomeDesk } from "../../../data/homeSeat";
 import { roomIdForPerson } from "../../../data/roomIdentity";
-import type { WalkDirection } from "../../../data/bonWalkFrames";
-import type { Facing } from "../core/coords";
+import { FACING_BY_DIRECTION } from "./v1Facing";
 import type { Vo3dHomeDesk } from "../app/spawn";
 
-/** V1's sprite facing → V2's world facing. V1 names the direction the CAMERA sees ("front" = the sprite's
- *  front is toward the viewer); V2 names the compass direction the body looks along. The office is drawn
- *  with south toward the viewer, so the two vocabularies line up one-to-one — the same reading every
- *  reconstructed room's seat comments already record ("facing 'front' = south into its desk"). */
-const FACING_BY_DIRECTION: Record<WalkDirection, Facing> = {
-  front: "south",
-  back: "north",
-  left: "west",
-  right: "east",
-};
 
 /**
  * The signed-in employee's own desk, or NULL when V1 does not know of one.

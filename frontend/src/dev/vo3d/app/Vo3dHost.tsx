@@ -4,12 +4,32 @@
 // Reached only through V1's DEV-only `?world=v2` route (see App.tsx). Still a FULLSCREEN technical
 // preview: no V1 HUD, chat, movement or attendance is mounted alongside it.
 //
-// Phase 2 adds exactly ONE thing to that list — READ-ONLY IDENTITY. This component resolves the employee
-// V1 has already signed in (adapters/v1Identity) and hands the world their own 3D character. It is a
-// read and nothing else: no fetch, no store, no subscription, no write back. Movement sync, attendance,
-// status and multiplayer remain deferred, and V2 still makes no API call of its own — which is what
-// keeps apiFetch's 401 -> /login redirect off this route entirely.
-import { useEffect, useRef, useState } from "react";
+// Phase 2 added exactly ONE thing to that list — READ-ONLY IDENTITY: the employee V1 has already signed
+// in (adapters/v1Identity), handed to the world as their own 3D character. Phase 3 added their desk.
+//
+// PHASE 4A ADDS THE ROSTER, and with it the first NETWORK READ this route has ever done. That is a real
+// change to this file's old promise of "no fetch, no store, no subscription", and it is deliberate and
+// bounded:
+//   • It is V1's OWN roster hook (services/office/useOfficeRoster) and V1's OWN offline-lineup hook, used
+//     exactly as V1's office uses them. No new endpoint, no new socket, no second copy of either rule.
+//   • It is READ-ONLY in both directions: nothing is emitted, published or written back, and no movement
+//     socket is opened at all (Phase 4A coworkers are static — live positions are Phase 4B).
+//   • It is NON-BLOCKING. The world is built from the identity and desk exactly as before and never waits
+//     on the roster; coworkers are pushed in afterwards, whenever and if ever they arrive. A roster that
+//     fails, hangs or returns nothing leaves a fully explorable, fully working world.
+//   • REACT OWNS THE SUBSCRIPTIONS (these hooks, unsubscribed on unmount) and the WORLD OWNS THE SCENE
+//     OBJECTS (Coworkers.dispose). Neither reaches into the other.
+// A 401 still cannot redirect this route into /login by surprise: apiFetch already navigates on its own,
+// and useOfficeRoster surfaces every other failure as state rather than throwing.
+import { useEffect, useMemo, useRef, useState } from "react";
+import { resolveVo3dCoworkers, selfEmailKey } from "../adapters/v1Coworkers";
+import { useOfficeRoster } from "../../../services/office/useOfficeRoster";
+import { useOfflineLineup } from "../../../services/presence/offlineLineupClient";
+import {
+  computeOfflineEmailSet,
+  computeServerLineupEmailSet,
+} from "../../../services/presence/offlineLineupPlacement";
+import { EMPTY_COWORKER_SET } from "./coworkers";
 import { resolveVo3dHomeDesk } from "../adapters/v1HomeDesk";
 import { resolveVo3dIdentity } from "../adapters/v1Identity";
 import type { Vo3dIdentity } from "./identity";
@@ -66,6 +86,41 @@ function backToV1(): void {
 export function Vo3dHost() {
   const hostRef = useRef<HTMLDivElement>(null);
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
+  // The live world, for the coworker effect below. A ref rather than state on purpose: the world is not
+  // rendered by React and must not re-render anything when it appears.
+  const worldRef = useRef<Vo3dWorld | null>(null);
+
+  // V1's roster, exactly as V1's own office reads it. Both hooks are safe to hold here: useOfficeRoster
+  // fetches once and then follows an SSE stream (real mode only — it does not open one in mock), and
+  // useOfflineLineup joins the app's existing lineup socket read-only. Neither is ever emitted to.
+  const roster = useOfficeRoster();
+  const offlineLineup = useOfflineLineup();
+
+  // V1'S OWN VISIBILITY PREDICATE, INCLUDING THE MODE SWITCH — not a V2 re-reading of it.
+  // services/presence/offlineLineupPlacement.ts owns both halves and OfficeMap.tsx picks between them the
+  // same way: real mode trusts Atlas presence, mock mode does NOT, because MockOfficeService's statuses
+  // are a fixed deterministic spread that check-in never updates (Bon is hard-coded OFFLINE there), so
+  // the app's own server lineup is the only truthful offline signal in mock. Getting this backwards
+  // parks a checked-in employee on the sidewalk — the exact bug that fix was written for.
+  const offlineEmails = useMemo(
+    () =>
+      import.meta.env.VITE_OFFICE_INTEGRATION_MODE === "real"
+        ? computeOfflineEmailSet(roster.people)
+        : computeServerLineupEmailSet(offlineLineup),
+    [roster.people, offlineLineup],
+  );
+
+  // Resolved OUTSIDE the mount effect so a roster change re-runs this and nothing else — the world is
+  // never rebuilt for it. Self is excluded by email here, which is why the viewer never gets a second
+  // body: their own avatar is already the one the world spawned at their desk in Phase 3.
+  const coworkerSet = useMemo(
+    () => (roster.people.length > 0 ? resolveVo3dCoworkers(roster.people, offlineEmails, selfEmailKey()) : EMPTY_COWORKER_SET),
+    [roster.people, offlineEmails],
+  );
+
+  // The roster, readable at world-creation time without making the creation effect depend on it.
+  const coworkerSetRef = useRef(coworkerSet);
+  coworkerSetRef.current = coworkerSet;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -100,6 +155,10 @@ export function Vo3dHost() {
         // import was started in. Building a world now would be building one nobody will ever dispose.
         if (cancelled) return;
         world = createVo3dWorld(canvas, identity ?? undefined, homeDesk ?? undefined);
+        worldRef.current = world;
+        // The roster may have resolved while the world module was still loading — push what we have now,
+        // or those coworkers wait for the next roster change that may never come.
+        world.setCoworkers(coworkerSetRef.current.coworkers, coworkerSetRef.current.missingAvatar);
         setPhase({ kind: "ready", identity, homeDesk });
       })
       .catch((e: unknown) => {
@@ -114,11 +173,22 @@ export function Vo3dHost() {
       cancelled = true;
       // Idempotent by construction: this cleanup runs once per effect run, and Vo3dWorld.dispose() is
       // itself guarded (app/world.ts), so a double call is a no-op rather than a teardown of a dead world.
+      // Only if it is still OURS. StrictMode runs mount -> cleanup -> mount, and a cleanup that cleared
+      // the ref unconditionally would blank the ref the SECOND mount had just filled.
+      if (worldRef.current === world) worldRef.current = null;
       world?.dispose();
       world = null;
       canvas.remove();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the world is built ONCE per mount; the
+    // roster is delivered through the effect below and through coworkerSetRef, never by rebuilding it.
   }, []);
+
+  // THE ONE WRITE INTO THE WORLD. Runs on every roster change and on nothing else; a world that is not
+  // built yet is simply skipped (the creation effect pushes the current set itself when it finishes).
+  useEffect(() => {
+    worldRef.current?.setCoworkers(coworkerSet.coworkers, coworkerSet.missingAvatar);
+  }, [coworkerSet]);
 
   return (
     <div
@@ -217,6 +287,40 @@ export function Vo3dHost() {
             {" · "}
             {phase.homeDesk.roomId}
           </span>
+        </div>
+      )}
+      {phase.kind === "ready" && (roster.people.length > 0 || roster.error !== null) && (
+        // THE COWORKER READOUT. How many real employees are standing in the world, and — just as
+        // important — how many V1 lists that V2 could not draw, so a smaller office is never silently
+        // smaller. Deliberately carries COUNTS and an error flag, never an email or a status: the
+        // nameplates in the world already say who is there, and this route's readouts stay redacted.
+        <div
+          data-testid="vo3d-coworkers"
+          data-count={String(coworkerSet.coworkers.length)}
+          data-missing-avatar={String(coworkerSet.missingAvatar.length)}
+          data-roster-error={roster.error ? "true" : "false"}
+          style={{
+            position: "absolute",
+            top: 76,
+            right: 12,
+            zIndex: 1003,
+            font: "12px/1.4 system-ui, sans-serif",
+            padding: "6px 10px",
+            borderRadius: 8,
+            background: "rgba(30,24,20,0.72)",
+            color: "#f4ede4",
+            pointerEvents: "none",
+          }}
+        >
+          {roster.error
+            ? "roster unavailable — no coworkers shown"
+            : `${coworkerSet.coworkers.length} coworker${coworkerSet.coworkers.length === 1 ? "" : "s"}`}
+          {!roster.error && coworkerSet.missingAvatar.length > 0 && (
+            <span style={{ opacity: 0.7 }}>
+              {" · "}
+              {coworkerSet.missingAvatar.length} without a 3D avatar
+            </span>
+          )}
         </div>
       )}
       {phase.kind === "ready" && phase.identity?.avatarId === null && (

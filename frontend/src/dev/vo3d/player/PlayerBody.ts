@@ -88,15 +88,29 @@ export class PlayerBody {
    *  avatar happens to be standing where only an interaction had put it (mid-seat, on an approach mark).
    *  Returns false when nothing within range works, in which case the caller should refuse the mode. */
   placeNear(p: Vec2): boolean {
-    if (this.canStand(p)) { this.pos = { x: p.x, z: p.z }; return true; }
-    for (let ring = 1; ring <= SPAWN_RINGS; ring++) {
-      const r = ring * this.radius;
-      for (let i = 0; i < 12; i++) {
-        const a = (i / 12) * Math.PI * 2;
-        const q = { x: p.x + Math.cos(a) * r, z: p.z + Math.sin(a) * r };
-        if (this.canStand(q)) { this.pos = q; return true; }
-      }
-    }
-    return false;
+    const q = standablePointNear(p, this.radius, this.canStand);
+    if (!q) return false;
+    this.pos = q;
+    return true;
   }
+}
+
+/** THE SPAWN SEARCH, as a pure function: the nearest point to `p` a body of `radius` may stand at, or
+ *  null when nothing within SPAWN_RINGS radii works.
+ *
+ *  Lifted out of placeNear (which now delegates to it, unchanged in behaviour) so world/Coworkers.ts can
+ *  place a roster body by exactly the test the player is placed by, instead of authoring a second search
+ *  that agrees until one of them is tuned. Returning null rather than a forced point is the load-bearing
+ *  part: dropping a body inside the furniture is worse than not placing it at all. */
+export function standablePointNear(p: Vec2, radius: number, canStand: StandTest): Vec2 | null {
+  if (canStand(p)) return { x: p.x, z: p.z };
+  for (let ring = 1; ring <= SPAWN_RINGS; ring++) {
+    const r = ring * radius;
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * Math.PI * 2;
+      const q = { x: p.x + Math.cos(a) * r, z: p.z + Math.sin(a) * r };
+      if (canStand(q)) return q;
+    }
+  }
+  return null;
 }
