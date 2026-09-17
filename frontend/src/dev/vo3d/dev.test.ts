@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import devBuildSource from "./build/dev.ts?raw";
 // Vite `?raw` import — loads bootstrap.ts's own source text as a string, the same trick executive.test.ts,
 // cms.test.ts and ai.test.ts use to guard app wiring.
-import bootstrapSource from "./app/bootstrap.ts?raw";
+import bootstrapSource from "./app/world.ts?raw";
 import manifest from "../../data/office-assets-manifest.json";
 import { SEAT_DIRECTIONS } from "../../data/seatDirections";
 import { WorldState, isSolid } from "./world/WorldState";

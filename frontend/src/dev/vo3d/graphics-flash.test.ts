@@ -22,17 +22,19 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-const source = readFileSync("src/dev/vo3d/app/bootstrap.ts", "utf8");
+const source = readFileSync("src/dev/vo3d/app/world.ts", "utf8");
 const rendererSource = readFileSync("src/dev/vo3d/render/Renderer.ts", "utf8");
 
-/** The body of `function loop()`, up to the closing brace at column 0, with `//` comments removed.
+/** The body of `function loop()`, up to its closing brace, with `//` comments removed.
  *
  *  The comments have to go: the block explaining this very ordering quotes `R.render()` by name, and a
  *  source-order assertion that can be satisfied by PROSE is not an assertion about the code. */
 function loopBody(): string {
   const start = source.indexOf("function loop(): void {");
   expect(start).toBeGreaterThan(-1);
-  const end = source.indexOf("\n}\n", start);
+  // Phase 0b: the module body moved inside createVo3dWorld(), so loop()'s closing brace is indented one
+  // level. Matched by its own indentation rather than at column 0, which is what it used to be.
+  const end = source.indexOf("\n  }\n", start);
   expect(end).toBeGreaterThan(start);
   return source
     .slice(start, end)

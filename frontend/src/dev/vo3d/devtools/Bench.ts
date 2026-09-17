@@ -195,6 +195,13 @@ export class Overlay {
   set visible(v: boolean) {
     this.el.style.display = v ? "block" : "none";
   }
+  /** Takes the overlay's div back out of the document. It is appended to a parent the constructor does
+   *  not own (app/bootstrap passes document.body), so without this every mount leaves another
+   *  #bench-overlay behind — stacked exactly on top of each other, showing stale numbers. Idempotent:
+   *  Element.remove() on an already-detached node is a no-op. */
+  dispose(): void {
+    this.el.remove();
+  }
   update(live: CaptureSummary, snap: RendererSnapshot, dev: DeviceInfo, status: string): void {
     this.el.textContent = [
       `fps ${live.avgFps.toFixed(0).padStart(4)}   avg ${live.avgFrameMs.toFixed(1)} ms   p95 ${live.p95FrameMs.toFixed(1)} ms`,

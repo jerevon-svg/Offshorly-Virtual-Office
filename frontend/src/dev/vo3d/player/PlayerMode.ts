@@ -174,6 +174,15 @@ export class PlayerMode {
     this.doorIntent.length = 0;
   }
 
+  /** Give back everything that does NOT die with the renderer's canvas: the window/document key,
+   *  pointer-lock and mouse-move listeners PlayerInput holds, and the HUD div parked on document.body.
+   *  exit() covers both when the mode is active; input.disable() is repeated unconditionally (it is
+   *  idempotent) so a world torn down while OFFICE mode was showing is still left with nothing attached. */
+  dispose(): void {
+    this.exit();
+    this.input.disable();
+  }
+
   setView(v: PlayerView): void {
     this.camera.setView(v);
     this.state.view = v;

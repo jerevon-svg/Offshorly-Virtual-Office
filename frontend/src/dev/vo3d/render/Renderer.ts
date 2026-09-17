@@ -227,6 +227,20 @@ export class Renderer {
   private staticStreak = 0;
   /** dev/report readout — how the shadow map was updated over the last stretch of frames */
   readonly shadowStats = { staticPasses: 0, dynamicPasses: 0, fullPasses: 0, skipped: 0, frames: 0 };
+  /** THE WINDOW-RESIZE HANDLER, held as a field so dispose() can actually remove it. It used to be an
+   *  inline closure passed straight to addEventListener, which is unremovable — fine for a page that
+   *  lives as long as the document, not fine once the world can be unmounted: a stale listener would
+   *  keep calling resize() on a dead renderer for the rest of the session, once per mount ever made.
+   *  Declared ABOVE the constructor purely so the reading order matches the initialisation order (class
+   *  fields run before the constructor body either way). */
+  private readonly onWindowResize = (): void => {
+    this.resize();
+  };
+  /** dispose() is idempotent; see it for what this guards. */
+  private disposed = false;
+  /** The PMREM cubemap behind scene.environment. Built by this constructor, referenced by nothing else,
+   *  freed by dispose() — held in a field only so dispose() has something to free. */
+  private readonly environmentTexture: THREE.Texture;
 
   constructor(canvas: HTMLCanvasElement, focus: Rect) {
     this.focus = focus;
@@ -254,8 +268,13 @@ export class Renderer {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.info.autoReset = false;
     this.scene.background = new THREE.Color(0xe7ded4);
+    // The generator is a scratch pipeline, not a resource the scene needs afterwards: it is disposed the
+    // moment it has produced the cubemap (three's own documented pattern). The TEXTURE it returned is kept
+    // — it is this renderer's alone, nothing else ever references it, and dispose() frees it below.
     const pmrem = new THREE.PMREMGenerator(this.renderer);
-    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    this.environmentTexture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    pmrem.dispose();
+    this.scene.environment = this.environmentTexture;
     this.scene.environmentIntensity = this.lightParams.envIntensity;
     this.hemi = new THREE.HemisphereLight(0xfff4ea, 0xcdb9a6, this.lightParams.ambientIntensity);
     this.key = new THREE.DirectionalLight(0xfff1e0, this.lightParams.keyIntensity);
@@ -306,7 +325,7 @@ export class Renderer {
     this.fill.position.set(focus.x + focus.w, 300, focus.z + focus.d * 1.6);
     this.placeLight();
     this.resize();
-    window.addEventListener("resize", () => this.resize());
+    window.addEventListener("resize", this.onWindowResize);
   }
   /** the orbit distance, in world units — fog/AO distances are measured from it (see CAM_DIST) */
   get camDist(): number {
@@ -725,5 +744,47 @@ export class Renderer {
       u.cameraInverseProjectionMatrix.value.copy(this.active.projectionMatrixInverse);
       this.composer.render();
     } else this.renderer.render(this.scene, this.active);
+  }
+
+  /** RELEASE EVERYTHING THIS RENDERER OWNS. Idempotent; the object is dead afterwards.
+   *
+   *  WHAT "OWNS" MEANS HERE, and why the list is this short. Only resources CONSTRUCTED BY THIS CLASS are
+   *  released: the resize listener, OrbitControls, the composer's buffers and its passes' private targets,
+   *  the shadow maps, and the WebGL context itself. The SCENE IS DELIBERATELY NOT WALKED. V2's geometries,
+   *  materials and textures come from process-lifetime caches that hand the SAME objects to every world
+   *  ever built (render/Materials' `materials` map, render/detail's texture cache, build/helpers' shared
+   *  sphereGeo/unitCyl, build/plants' leafGeo, build/exterior's puddleAlpha, the module-level GLTFLoaders).
+   *  A scene.traverse(...dispose()) here would free objects the NEXT world still expects to be live, and
+   *  the second mount would render with dead materials. Those caches are meant to outlive any one world;
+   *  their cost is bounded at one cache total, not one per mount.
+   *
+   *  THE CANVAS DOES NOT SURVIVE THIS. forceContextLoss() is what actually hands the GPU context back
+   *  (renderer.dispose() alone leaves it alive until GC, and browsers cap contexts at ~8–16 — V1 already
+   *  holds one of its own in render3d/SharedRenderer). A canvas whose context has been force-lost cannot
+   *  be reused, so a remount must be given a FRESH canvas element. */
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    window.removeEventListener("resize", this.onWindowResize);
+    this.controls.dispose();
+    // EffectComposer.dispose() frees only renderTarget1/2 and its own copy pass — NOT the passes it was
+    // given. SSAOPass in particular holds four render targets and four materials of its own, so the
+    // passes are disposed explicitly first. Iterating composer.passes rather than naming them covers the
+    // OutputPass, which is constructed inline in the constructor and never stored in a field.
+    for (const pass of this.composer.passes) pass.dispose();
+    this.composer.dispose();
+    // Created by three for THIS renderer's key light, and by this class for the split-shadow cache and
+    // the 1×1 static probe respectively — all three are ours.
+    this.key.shadow.map?.dispose();
+    this.key.shadow.map = null;
+    this.staticShadowRT?.dispose();
+    this.staticShadowRT = null;
+    this.staticProbeTarget.dispose();
+    // The PMREM cubemap this constructor generated. Unlike everything hanging off the scene graph it is
+    // NOT shared with any other world — it is produced per renderer, from a throwaway RoomEnvironment.
+    this.scene.environment = null;
+    this.environmentTexture.dispose();
+    this.renderer.dispose();
+    this.renderer.forceContextLoss();
   }
 }

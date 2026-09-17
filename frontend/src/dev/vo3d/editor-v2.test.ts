@@ -2,7 +2,7 @@
 // undo/redo over WorldState commits, and the functional-object safety rule.
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
-import bootstrapSource from "./app/bootstrap.ts?raw";
+import bootstrapSource from "./app/world.ts?raw";
 import { WorldState } from "./world/WorldState";
 import { DESIGN_ROOM, DESIGN_SOLIDS, HERO_PLANT_ID, designRoomEntities, RECT, SHELL } from "./rooms/design-room";
 import { MEETING_ROOM, meetingRoomEntities } from "./rooms/meeting";

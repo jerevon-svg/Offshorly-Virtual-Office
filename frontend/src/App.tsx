@@ -4,6 +4,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { useAuthGate } from "./auth/useAuthGate";
 import { BackgroundMusicControl } from "./audio/BackgroundMusicControl";
 import { ChatTestPage } from "./pages/ChatTestPage";
+import { Vo3dHost } from "./dev/vo3d/app/Vo3dHost";
 import { initDeviceTierTelemetry } from "./services/render/telemetry";
 import { LoadingCover } from "./components/LoadingCover/LoadingCover";
 import { setStartupSignal } from "./startup/startupReadiness";
@@ -16,6 +17,14 @@ import { setStartupSignal } from "./startup/startupReadiness";
 // `vite dev` session.
 const isChatTestRoute =
   import.meta.env.DEV && new URLSearchParams(window.location.search).has("chatTest");
+
+// DEV-ONLY V2 world route (V1 <-> V2 integration, Phase 1). Same build-time contract as the chat-test
+// route above: `import.meta.env.DEV` is statically false in `vite build`, so this constant folds to
+// false, the branch below becomes unreachable, and the Vo3dHost import (and with it the entire
+// dev/vo3d world, which is only ever reached through Vo3dHost's dynamic import) is dropped from the
+// production bundle. `?world=v2` is only meaningful in a `vite dev` session.
+const isV2WorldRoute =
+  import.meta.env.DEV && new URLSearchParams(window.location.search).get("world") === "v2";
 
 // Split out so the dev-test route (below) never calls useAuthGate at all —
 // calling it conditionally from a single App() body would violate the
@@ -49,6 +58,22 @@ function OfficeApp() {
     // useAuthGate already redirects (to HOME_PATH or LOGIN_PATH
     // respectively); render nothing while that happens.
     return null;
+  }
+
+  // V2 PREVIEW. Deliberately placed AFTER the auth gate (so V2 is reached with exactly the same session
+  // guarantees V1 has) and INSTEAD OF the whole V1 tree rather than inside it. The second part is the
+  // renderer-isolation requirement, not a layout choice: V1's WebGL context is the lazily-built module
+  // singleton in render3d/SharedRenderer.ts, shared by every CharacterCanvas under OfficeStage,
+  // ProfileCharacter and ToucanFlyer, and it has no production teardown. Not RENDERING OfficeMap is what
+  // keeps that singleton from ever being constructed; hiding it with CSS would not. LoadingCover is
+  // omitted for the same class of reason — it waits on startup signals only OfficeMap publishes
+  // (startup/startupReadiness.ts), so it would hang over V2 forever.
+  if (isV2WorldRoute) {
+    return (
+      <ErrorBoundary>
+        <Vo3dHost />
+      </ErrorBoundary>
+    );
   }
 
   return (

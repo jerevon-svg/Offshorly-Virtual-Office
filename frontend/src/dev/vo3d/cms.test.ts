@@ -3,7 +3,7 @@ import cmsBuildSource from "./build/cms.ts?raw";
 import * as THREE from "three";
 // Vite `?raw` import — loads bootstrap.ts's own source text as a string, the same trick
 // executive.test.ts uses to guard app wiring.
-import bootstrapSource from "./app/bootstrap.ts?raw";
+import bootstrapSource from "./app/world.ts?raw";
 import manifest from "../../data/office-assets-manifest.json";
 import { SEAT_DIRECTIONS, seatCellKey } from "../../data/seatDirections";
 import { WorldState } from "./world/WorldState";

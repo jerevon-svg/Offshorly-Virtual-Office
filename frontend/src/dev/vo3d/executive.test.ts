@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 // Vite `?raw` import — loads bootstrap.ts's own source text as a string, the same trick
 // OfficeMap.moveSelfGuard.test.ts and viteOptimizeDeps.test.ts use to guard app wiring.
-import bootstrapSource from "./app/bootstrap.ts?raw";
+import bootstrapSource from "./app/world.ts?raw";
 import { Avatar } from "./avatar/Avatar";
 import { ControllerStack, NavigationController } from "./avatar/Controller";
 import { SeatInteraction } from "./interact/Seat";

@@ -5,7 +5,7 @@
 // over in memory, which is exactly what a reload is.
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
-import bootstrapSource from "./app/bootstrap.ts?raw";
+import bootstrapSource from "./app/world.ts?raw";
 import { WorldState } from "./world/WorldState";
 import { DESIGN_ROOM, DESIGN_SOLIDS, CHAIR_4_ID, designRoomEntities, SHELL } from "./rooms/design-room";
 import { Walkability } from "./nav/Walkability";

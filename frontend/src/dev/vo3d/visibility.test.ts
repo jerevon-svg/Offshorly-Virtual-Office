@@ -12,7 +12,7 @@ import * as THREE from "three";
 import { RoomVisibility, SHOW_MARGIN, HIDE_MARGIN } from "./render/RoomVisibility";
 import rendererSrc from "./render/Renderer.ts?raw";
 import mirrorSrc from "./render/SceneMirror.ts?raw";
-import bootstrapSrc from "./app/bootstrap.ts?raw";
+import bootstrapSrc from "./app/world.ts?raw";
 
 function camera(): THREE.OrthographicCamera {
   const c = new THREE.OrthographicCamera(-100, 100, 100, -100, 1, 1000);
