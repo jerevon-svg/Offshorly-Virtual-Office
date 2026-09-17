@@ -55,6 +55,7 @@ import { MEETING_ROOM, MEETING_CHAIR_IDS, KIOSK_INTERACTION_ID as MEETING_KIOSK_
 import { PROJECT_ROOM, CONSOLE_INTERACTION_ID, SOFA_SEAT_IDS, TUB_SEAT_IDS, TV_INTERACTION_ID, projectRoomEntities } from "../rooms/project";
 import { buildExterior } from "../build/exterior";
 import { buildAiLab } from "../build/ailab";
+import { MonkeyAvatar } from "../avatar/MonkeyAvatar";
 import { aiLabStandTest, inAiLabZone } from "../world/ailab";
 import { Environment } from "../env/Environment";
 import { ENV_TIME_MODES, TimeOfDay, type EnvTimeMode } from "../env/timeOfDay";
@@ -340,6 +341,25 @@ const env = new Environment(R, scenery, plan.frame, GRADE);
 const aiLab = buildAiLab();
 R.scene.add(aiLab.group);
 aiLab.group.visible = false;
+// THE AI LAB MONKEY — DEV-ONLY, OFF BY DEFAULT. `?monkey=1` constructs it; without
+// the flag nothing is created, nothing is fetched and the render loop's hook is a
+// null-guarded no-op, so the normal office is byte-for-byte the scene it was.
+// It follows the Lab's own visibility, so it is hidden in OFFICE framing too.
+const monkey = flags.get("monkey") === "1" ? new MonkeyAvatar() : null;
+if (monkey) {
+  R.scene.add(monkey.root);
+  void monkey.load().then((ok) => {
+    if (ok) {
+      monkey.visible = aiLab.group.visible;
+      // THE TOUCAN AI SCIENTIST OUTFIT — its own flag, so the bare approved
+      // master stays one URL away: `?monkey=1` undressed, `&outfit=1` dressed.
+      if (flags.get("outfit") === "1") monkey.dress();
+      // warm-ivory sclera correction; `?eyes=0` keeps the shipped grey texture
+      if (flags.get("eyes") !== "0") void monkey.warmEyes();
+      R.invalidateShadows();
+    }
+  });
+}
 const timeOfDay = new TimeOfDay();
 // WEATHER: a second, INDEPENDENT axis.
 //
@@ -1329,6 +1349,7 @@ const setCameraMode = (m: CameraModeId) => {
     R.shadowRadius = PLAYER_SHADOW_RADIUS;
     params.cameraMode = "player";
     aiLab.group.visible = true; // you can walk out to it, so it has to be there to walk to
+    if (monkey) monkey.visible = true;
     if (env.setPresentation("world")) R.invalidateShadows();
     R.invalidateShadows();
     refresh();
@@ -1340,6 +1361,7 @@ const setCameraMode = (m: CameraModeId) => {
   // projectObject, SSAO's normal pass and the shadow pass in one boolean, so the default experience
   // pays nothing at all for it. EXPLORE is where it is meant to be discovered.
   aiLab.group.visible = m === "explore";
+  if (monkey) monkey.visible = aiLab.group.visible;
   if (env.setPresentation(m === "office" ? "office" : "world")) R.invalidateShadows();
   syncCam(cameraModes.set(m));
   R.invalidateShadows();
@@ -1466,6 +1488,29 @@ toucanGui.add(toucan.state, "activity").name("weather activity (0 = grounded)").
 toucanGui.add(toucan.state, "calls").name("calls made").listen().disable();
 toucanGui.add(toucan.state, "nextCall").name("next call in (s)").listen().disable();
 toucanGui.add({ f: () => toucan.reset() }, "f").name("▶ restart its lap");
+
+// ---- the AI Lab monkey (dev-only; the folder only exists with ?monkey=1) ----
+if (monkey) {
+  const mk = gui.addFolder("AI Lab monkey (dev, ?monkey=1)");
+  mk.add(monkey.state, "status").name("status").listen().disable();
+  mk.add(monkey.state, "clip").name("clip playing").listen().disable();
+  mk.add(monkey.state, "triangles").name("triangles").listen().disable();
+  mk.add(monkey.state, "joints").name("joints").listen().disable();
+  mk.add(monkey.state, "nativeHeight").name("source height (units)").listen().disable();
+  const moving = { walking: false };
+  mk.add(moving, "walking").name("walking (else restpose)").onChange((v: boolean) => monkey.setMoving(v));
+  mk.add(monkey.state, "outfitTriangles").name("outfit triangles").listen().disable();
+  const eyes = { warm: flags.get("eyes") !== "0" };
+  mk.add(eyes, "warm").name("warm ivory eyes").onChange((v: boolean) => {
+    if (v) void monkey.warmEyes(); else monkey.restoreEyes();
+    R.invalidateShadows();
+  });
+  const dressed = { on: flags.get("outfit") === "1" };
+  mk.add(dressed, "on").name("Toucan AI Scientist outfit").onChange((v: boolean) => {
+    if (v) monkey.dress(); else monkey.undress();
+    R.invalidateShadows();
+  });
+}
 const geo = gui.addFolder("Geometry");
 const rebuild = () => {
   seat.reset();
@@ -1995,6 +2040,7 @@ function loop(): void {
   mirror.foliage.update(); // blade batches follow the sway pivots; a no-op while sway is off
   mirror.ambient.update(t, dt / 1000); // powered-surface idle animation (screens, sensors, status strips)
   if (aiLab.group.visible) aiLab.tick(t); // the agents' status pulse — one sin() and six float writes
+  monkey?.update(dt / 1000); // dev-only; a no-op while the monkey is hidden or absent
   applyEnvPhase(); // V1's clock is re-read at most twice a minute and only writes when the phase changes
   // THE ENVIRONMENT'S OWN CLOCK: a travelling grade (Clear→Rain, Day→Sunset), the storm scheduler and the
   // foliage wind. Idle cost is three comparisons; it writes to the renderer only on frames where the
@@ -2556,6 +2602,19 @@ stressGui.close();
     travelling: () => env.travelling,
     setRainInOffice: (on: boolean) => { params.envRainInOffice = on; env.rainInOffice = on; refresh(); },
   },
+  // dev-only; null unless ?monkey=1
+  monkey: monkey ? {
+    avatar: monkey, state: monkey.state, root: monkey.root,
+    visible: () => monkey.visible,
+    setMoving: (v: boolean) => monkey.setMoving(v),
+    hasClip: (n: string) => monkey.hasClip(n),
+    dress: () => monkey.dress(), undress: () => monkey.undress(), dressed: () => monkey.dressed,
+    warmEyes: () => monkey.warmEyes(), restoreEyes: () => monkey.restoreEyes(),
+    position: () => ({ x: monkey.root.position.x, y: monkey.root.position.y, z: monkey.root.position.z }),
+  } : null,
+  setCameraMode,
+  /** dev-only camera helper: frame an arbitrary world rect (used to look at the Lab) */
+  focusRect: (rect: { x: number; z: number; w: number; d: number }, fill = 0.9) => focusOn(rect, fill),
   toucan: {
     bird: toucan, state: toucan.state, root: toucan.root,
     position: () => toucan.position, flying: () => toucan.flying,
