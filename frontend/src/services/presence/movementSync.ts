@@ -22,6 +22,10 @@ import { getAuthToken } from "../api/client";
 export type Pt = { x: number; y: number };
 export type Facing = "front" | "back" | "left" | "right";
 export type MovementState = "standing" | "sitting";
+/** How peers replay a movement. Absent from every V1 client and means "eased" — V1's own PeerWalker
+ *  curve. The V2 3D office publishes "linear" for a free-movement LEG (a constant-speed sample of WASD
+ *  running): easing a sample of continuous motion halts the body at both ends of every leg. */
+export type WalkPacing = "eased" | "linear";
 
 export interface ActiveMovement {
   movementId: string;
@@ -30,12 +34,16 @@ export interface ActiveMovement {
   roomId: string | null;
   durationMs: number;
   startedAt: number; // server epoch ms
+  pacing?: WalkPacing;
   serverTime?: number; // serverTime the snapshot that carried this active movement was stamped with (snapshot-sourced actives only)
 }
 
 export interface StableMovementState {
   pos: Pt;
   facing: Facing;
+  /** The V2 3D office's exact resting yaw in radians, beside V1's four-word `facing`. Present only when
+   *  the arriving client published one (a V2 session) and it came through finite; a V1 arrival has none. */
+  yaw?: number;
   state: MovementState;
   seatKey: string | null;
   roomId: string | null;
@@ -54,6 +62,7 @@ export interface WalkStartedPayload {
   path: Pt[];
   roomId: string | null;
   durationMs: number;
+  pacing?: WalkPacing;
 }
 
 export interface WalkArrivedPayload {
@@ -63,6 +72,8 @@ export interface WalkArrivedPayload {
   state: MovementState;
   seatKey: string | null;
   roomId: string | null;
+  /** radians, finite — see StableMovementState.yaw */
+  yaw?: number;
 }
 
 interface PeerWalkStartedEvent {
@@ -74,6 +85,7 @@ interface PeerWalkStartedEvent {
   roomId: string | null;
   durationMs: number;
   startedAt: number;
+  pacing?: WalkPacing | null;
 }
 
 interface PeerWalkArrivedEvent {
@@ -85,6 +97,7 @@ interface PeerWalkArrivedEvent {
   state: MovementState;
   seatKey: string | null;
   roomId: string | null;
+  yaw?: number | null;
 }
 
 interface PositionsSnapshotEntry {
@@ -96,6 +109,7 @@ interface PositionsSnapshotEntry {
   seatKey: string | null;
   roomId: string | null;
   updatedAt: number;
+  yaw?: number | null;
   active: {
     movementId: string;
     origin: Pt;
@@ -103,8 +117,17 @@ interface PositionsSnapshotEntry {
     roomId: string | null;
     durationMs: number;
     startedAt: number;
+    pacing?: WalkPacing | null;
   } | null;
 }
+
+/** The optional wire fields, admitted only in the shape they were specified: a yaw that is a finite
+ *  number, a pacing that is one of the two words. Anything else is simply absent, exactly as a V1
+ *  client's payload is — never a NaN in the store and never an unknown pacing a replay would trip on. */
+const yawField = (v: unknown): { yaw: number } | Record<string, never> =>
+  typeof v === "number" && Number.isFinite(v) ? { yaw: v } : {};
+const pacingField = (v: unknown): { pacing: WalkPacing } | Record<string, never> =>
+  v === "eased" || v === "linear" ? { pacing: v } : {};
 
 interface PositionsSnapshotEvent {
   entries: PositionsSnapshotEntry[];
@@ -206,6 +229,7 @@ export function applySnapshot(
         state: entry.state,
         seatKey: entry.seatKey,
         roomId: entry.roomId,
+        ...yawField(entry.yaw),
       },
       active: entry.active
         ? {
@@ -215,6 +239,7 @@ export function applySnapshot(
             roomId: entry.active.roomId,
             durationMs: entry.active.durationMs,
             startedAt: entry.active.startedAt,
+            ...pacingField(entry.active.pacing),
             serverTime: event.serverTime,
           }
         : null,
@@ -243,6 +268,7 @@ export function applyStarted(
       state: "standing",
       seatKey: existing?.stable.seatKey ?? null,
       roomId: event.roomId,
+      ...yawField(existing?.stable.yaw),
     },
     active: {
       movementId: event.movementId,
@@ -251,6 +277,7 @@ export function applyStarted(
       roomId: event.roomId,
       durationMs: event.durationMs,
       startedAt: event.startedAt,
+      ...pacingField(event.pacing),
     },
   });
   return next;
@@ -276,6 +303,7 @@ export function applyArrived(
       state: event.state,
       seatKey: event.seatKey,
       roomId: event.roomId,
+      ...yawField(event.yaw),
     },
     active: null,
   });
@@ -357,6 +385,7 @@ export function emitWalkStarted(payload: WalkStartedPayload): void {
     path: capPath(payload.path),
     roomId: payload.roomId,
     durationMs: sanitizeDurationMs(payload.durationMs),
+    ...pacingField(payload.pacing),
   });
 }
 
@@ -370,6 +399,7 @@ export function emitWalkArrived(payload: WalkArrivedPayload): void {
     state: payload.state,
     seatKey: payload.seatKey,
     roomId: payload.roomId,
+    ...yawField(payload.yaw),
   });
 }
 

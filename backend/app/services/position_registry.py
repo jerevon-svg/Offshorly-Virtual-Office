@@ -38,6 +38,10 @@ class StableState:
     room_id: str | None
     revision: int
     updated_at: int  # epoch ms
+    # The V2 3D office's exact resting yaw, radians, beside V1's four-word `facing`. None for every
+    # arrival a V1 client publishes and for every row persisted before the column existed; a 3D peer
+    # falls back to `facing` then. Persisted, so a reload restores the exact orientation.
+    yaw: float | None = None
 
 
 @dataclass
@@ -53,6 +57,9 @@ class ActiveMovement:
     duration_ms: int
     started_at: int  # epoch ms
     revision: int
+    # "eased" | "linear" | None (== eased). How peers replay it — see socket.py's _PACINGS. Not
+    # persisted: an in-flight movement never is.
+    pacing: str | None = None
 
 
 @dataclass
@@ -84,6 +91,7 @@ class PositionRegistry:
         room_id: str | None,
         duration_ms: int,
         started_at: int,
+        pacing: str | None = None,
     ) -> int:
         """Store the new active movement (superseding any prior one) and fold the
         walking-supersedes-sitting transition into the same revision bump: stable.state becomes
@@ -116,6 +124,7 @@ class PositionRegistry:
             duration_ms=duration_ms,
             started_at=started_at,
             revision=rev,
+            pacing=pacing,
         )
         return rev
 
@@ -130,6 +139,7 @@ class PositionRegistry:
         seat_key: str | None,
         room_id: str | None,
         now_ms: int,
+        yaw: float | None = None,
     ) -> StableState | None:
         """Accept only if there is an active movement for `email` whose movementId matches.
         Returns the new StableState on acceptance, or None when the arrival is stale/reordered
@@ -147,6 +157,7 @@ class PositionRegistry:
             room_id=room_id,
             revision=rev,
             updated_at=now_ms,
+            yaw=yaw,
         )
         entry.stable = stable
         entry.active = None
@@ -184,6 +195,7 @@ class PositionRegistry:
                     "roomId": entry.active.room_id,
                     "durationMs": entry.active.duration_ms,
                     "startedAt": entry.active.started_at,
+                    "pacing": entry.active.pacing,
                 }
             entries.append(
                 {
@@ -195,6 +207,7 @@ class PositionRegistry:
                     "seatKey": stable.seat_key,
                     "roomId": stable.room_id,
                     "updatedAt": stable.updated_at,
+                    "yaw": stable.yaw,
                     "active": active_wire,
                 }
             )
@@ -225,6 +238,7 @@ class PositionRegistry:
                     room_id=row.get("room_id"),
                     revision=db_revision,
                     updated_at=updated_at_ms,
+                    yaw=row.get("yaw"),
                 )
                 self._revision_by_email[email] = max(self._revision_by_email.get(email, 0), db_revision)
             else:

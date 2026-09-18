@@ -11,20 +11,27 @@ type Call =
   | { call: "started"; origin: Vec2; path: Vec2[]; durationMs: number }
   | { call: "arrived"; at: Vec2; facing: Facing };
 
-function recorder(): { sink: Vo3dSelfMovementSink; calls: Call[] } {
+/** `yaws` and `pacings` are recorded beside the calls rather than inside them, so every assertion on the
+ *  Phase 5 call shapes stays byte-for-byte what it was — the Phase 6B fields are additive on the wire and
+ *  additive here. One entry per arrived / per started respectively. */
+function recorder(): { sink: Vo3dSelfMovementSink; calls: Call[]; yaws: number[]; pacings: (string | undefined)[] } {
   const calls: Call[] = [];
+  const yaws: number[] = [];
+  const pacings: (string | undefined)[] = [];
   const sink: Vo3dSelfMovementSink = {
     state: { started: 0, arrived: 0, refused: 0, wire: [] },
-    started: (origin, path, durationMs) => {
+    started: (origin, path, durationMs, pacing) => {
       sink.state.started++;
       calls.push({ call: "started", origin, path: [...path], durationMs });
+      pacings.push(pacing);
     },
-    arrived: (at, facing) => {
+    arrived: (at, facing, yaw) => {
       sink.state.arrived++;
       calls.push({ call: "arrived", at, facing });
+      yaws.push(yaw);
     },
   };
-  return { sink, calls };
+  return { sink, calls, yaws, pacings };
 }
 
 /** Walk the feed in 16 ms frames along a straight line at `speed` units/s, starting from `from`. */
@@ -462,5 +469,41 @@ describe("event counts per walk (the 'two walk_started' investigation)", () => {
     for (let t = 0; t < 2100; t += 16) feed.frame(16, { x: 600, z: 1050 - t / 14 }, 0, true);
     feed.frame(16, { x: 600, z: 900 }, 0, false);
     expect(calls.map((c) => c.call)).toEqual(["started", "arrived"]);
+  });
+});
+
+
+describe("Phase 6B — the actual resting yaw goes out with every arrival; legs are marked linear", () => {
+  it("publishes the body's OWN yaw on a planned arrival, wrapped to (-π, π], not the route's heading", () => {
+    // The controller turns at a finite rate and not at all on the frame the path empties, so the body's
+    // yaw at arrival is whatever it reached — here deliberately NOT the heading of the path it walked.
+    const { sink, calls, yaws } = recorder();
+    const feed = new SelfMovementFeed(sink);
+    feed.planned({ x: 0, z: 0 }, [{ x: 100, z: 0 }], 1428);
+    feed.frame(16, { x: 40, z: 0 }, 1.1, true);
+    feed.frame(16, { x: 100, z: 0 }, 1.1 + 2 * Math.PI, false); // a yaw that has wound past π
+    expect(calls[1]).toMatchObject({ call: "arrived" });
+    expect(yaws[0]).toBeCloseTo(1.1, 10);
+    expect(facingForYaw(yaws[0])).toBe(calls[1].call === "arrived" ? calls[1].facing : "");
+  });
+
+  it("marks a free-movement leg linear and carries the yaw at the moment the leg closed", () => {
+    const { sink, calls, yaws, pacings } = recorder();
+    const feed = new SelfMovementFeed(sink);
+    feed.frame(16, { x: 0, z: 0 }, 0.4, false);
+    drive(feed, { x: 0, z: 0 }, 1, 0, 400, 100, 0.4); // one full leg
+    expect(calls[0].call).toBe("started");
+    expect(pacings[0]).toBe("linear");
+    // Its arrival is held back for the leg's duration and then carries that yaw.
+    drive(feed, { x: 40, z: 0 }, 1, 0, 400, 100, 0.4);
+    expect(calls.filter((c) => c.call === "arrived")).toHaveLength(1);
+    expect(yaws[0]).toBeCloseTo(0.4, 10);
+  });
+
+  it("does not mark a planned walk linear: V1's eased replay is still the account of a click-to-walk", () => {
+    const { sink, pacings } = recorder();
+    const feed = new SelfMovementFeed(sink);
+    feed.planned({ x: 0, z: 0 }, [{ x: 100, z: 0 }], 1428);
+    expect(pacings[0]).toBeUndefined();
   });
 });

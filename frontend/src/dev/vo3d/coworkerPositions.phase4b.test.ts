@@ -323,3 +323,25 @@ describe("applyLivePositions with a walk in flight", () => {
     expect(countLivePositions(out)).toBe(2);
   });
 });
+
+
+describe("Phase 6B — the exact yaw and the pacing come through the adapter, or not at all", () => {
+  it("surfaces a stable yaw wrapped to (-π, π], and nothing when V1 relayed none", () => {
+    const set = setOf(coworker("a@x.com"));
+    const withYaw = applyLivePositions(set, [peer("a@x.com", { x: 100, y: 100 }, { yaw: 3.5 })], true);
+    expect(withYaw.coworkers[0].yaw).toBeCloseTo(3.5 - 2 * Math.PI, 10);
+    const legacy = applyLivePositions(set, [peer("a@x.com", { x: 100, y: 100 })], true);
+    expect("yaw" in legacy.coworkers[0]).toBe(false);
+    expect(legacy.coworkers[0].facing).toBe("south"); // the four-word account is still there
+  });
+
+  it("surfaces a linear pacing on the walk and leaves an eased or absent one implicit", () => {
+    const set = setOf(coworker("a@x.com"));
+    const active = { movementId: "m1", origin: { x: 100, y: 100 }, path: [{ x: 140, y: 100 }], roomId: null, durationMs: 400, startedAt: 0 };
+    const linear = applyLivePositions(set, [peer("a@x.com", { x: 100, y: 100 }, {}, { ...active, pacing: "linear" })], true, 0);
+    expect(linear.coworkers[0].walk?.pacing).toBe("linear");
+    const eased = applyLivePositions(set, [peer("a@x.com", { x: 100, y: 100 }, {}, active)], true, 0);
+    expect(eased.coworkers[0].walk).toBeDefined();
+    expect("pacing" in eased.coworkers[0].walk!).toBe(false);
+  });
+});

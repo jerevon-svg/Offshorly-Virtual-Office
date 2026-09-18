@@ -393,8 +393,8 @@ describe("Coworkers — the read-only verification surface", () => {
     const cw = makeCoworkers();
     await cw.sync([movedTo(A, 42), B]);
     expect(cw.positions()).toEqual([
-      { name: "a", x: 42, z: 0, source: "live" },
-      { name: "b", x: 200, z: 0, source: "desk" },
+      { name: "a", x: 42, z: 0, yaw: 0, source: "live", movementId: null, clip: "" },
+      { name: "b", x: 200, z: 0, yaw: 0, source: "desk", movementId: null, clip: "" },
     ]);
     expect(JSON.stringify(cw.positions())).not.toContain("@");
   });

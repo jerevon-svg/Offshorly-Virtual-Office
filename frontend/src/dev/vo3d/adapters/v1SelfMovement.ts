@@ -89,7 +89,7 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
   const identity = resolveVo3dIdentity();
   if (!identity) return null;
   const box = selfSpriteBox(identity.avatarId);
-  const state = { started: 0, arrived: 0, refused: 0, wire: [] as string[] };
+  const state = { started: 0, arrived: 0, refused: 0, wire: [] as string[], movementId: null as string | null };
   /** Append to the bounded wire log. SHAPES ONLY — never a position: this array is read from the dev
    *  console and the verification harness, and one employee's coordinates do not belong in either. */
   const note = (line: string): void => {
@@ -104,7 +104,7 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
 
   return {
     state,
-    started(origin, path, durationMs) {
+    started(origin, path, durationMs, pacing) {
       const originTopLeft = toTopLeft(origin, box);
       const pathTopLeft = path.map((p) => toTopLeft(p, box));
       // REFUSED WHOLE, never trimmed. A walk that leaves the V1 frame is not a V1 walk, and publishing
@@ -121,11 +121,12 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
       const superseded = active ? ` supersedes=${active.movementId.slice(0, 8)}` : "";
       active = { movementId, roomId };
       state.started++;
-      note(`started id=${movementId.slice(0, 8)} pts=${path.length} ms=${Math.round(durationMs)} room=${roomId ?? "-"}${superseded}`);
+      state.movementId = movementId;
+      note(`started id=${movementId.slice(0, 8)} pts=${path.length} ms=${Math.round(durationMs)} room=${roomId ?? "-"}${pacing ? ` ${pacing}` : ""}${superseded}`);
       // capPath and the duration round+clamp both live inside this call, in V1's module.
-      emitWalkStarted({ movementId, origin: originTopLeft, path: pathTopLeft, roomId, durationMs });
+      emitWalkStarted({ movementId, origin: originTopLeft, path: pathTopLeft, roomId, durationMs, ...(pacing ? { pacing } : {}) });
     },
-    arrived(at, facing) {
+    arrived(at, facing, yaw) {
       const current = active;
       active = null;
       if (!current) {
@@ -142,11 +143,15 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
         return;
       }
       state.arrived++;
-      note(`arrived id=${current.movementId.slice(0, 8)} facing=${DIRECTION_BY_FACING[facing]}`);
+      // The yaw is an orientation, not a place, so it may sit in the wire log beside the facing word.
+      note(`arrived id=${current.movementId.slice(0, 8)} facing=${DIRECTION_BY_FACING[facing]} yaw=${yaw.toFixed(3)}`);
       emitWalkArrived({
         movementId: current.movementId,
         at: atTopLeft,
         facing: DIRECTION_BY_FACING[facing],
+        // PHASE 6B — the exact value beside V1's word. Finite by construction (wrapAngle of a finite yaw);
+        // the store and the backend both refuse anything else on the way in.
+        ...(Number.isFinite(yaw) ? { yaw } : {}),
         // NOT A SEAT AND NOT A SESSION — see the header. V2 publishes where the body is, nothing more.
         state: "standing",
         seatKey: null,

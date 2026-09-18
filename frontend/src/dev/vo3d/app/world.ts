@@ -107,7 +107,7 @@ import type { Vo3dIdentity } from "./identity";
 import { homeDeskWorldPoint, v1FramePoint, type Vo3dHomeDesk } from "./spawn";
 import { plannedDurationMs, SelfMovementFeed, type Vo3dSelfMovementSink } from "./selfMovement";
 import { gateRects, mayEnterOffice, routeEntersOffice, zoneAt, type AccessGeometry, type OfficeAccess, type Zone } from "./access";
-import { Coworkers } from "../world/Coworkers";
+import { Coworkers, facingTrace } from "../world/Coworkers";
 import type { Vo3dCoworker } from "./coworkers";
 import { FACING_YAW, pointInRect, type Facing, type Rect, type Vec2 } from "../core/coords";
 
@@ -635,8 +635,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     ? new SelfMovementFeed(
         {
           state: selfMovement.state,
-          started: (origin, path, durationMs) => selfMovement.started(toV1Frame(origin), path.map(toV1Frame), durationMs),
-          arrived: (at, facing) => selfMovement.arrived(toV1Frame(at), facing),
+          started: (origin, path, durationMs, pacing) => selfMovement.started(toV1Frame(origin), path.map(toV1Frame), durationMs, pacing),
+          arrived: (at, facing, yaw) => selfMovement.arrived(toV1Frame(at), facing, yaw),
         },
         // WHERE V1 CAN HOLD A POSITION AT ALL — the V1 frame, and nothing outside it. V2's world extends
         // well past it (the campus legs, the AI Lab at negative z, the CAVE at x 2600) and V1 has no
@@ -3021,10 +3021,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     ssaoDepthReuse: { enabled: ssaoDepthReuseEnabled, live: () => R.ssaoReusesDepth },
     bench: { device, applyPreset, runCapture, snapshot: () => snapshotRenderer(R.renderer), live: () => liveWindow.summary(), summarize, sceneStats: () => sceneStats(R.scene) },
     /** PHASE 4B VERIFICATION SURFACE — read-only, and the one place a multi-tab check reads coworker
-     *  geometry from. `positions()` gives each rendered body's DISPLAY NAME, world x/z and whether that
-     *  spot came from V1's live persisted position or from the derived desk. No email, no roster row,
-     *  nothing derived from the session; the DOM readout in app/Vo3dHost.tsx stays counts-only for the
-     *  same reason. Nothing here can write: there is no setter, and the world itself never emits. */
+     *  geometry from. `positions()` gives each rendered body's DISPLAY NAME, world x/z, the yaw it is
+     *  looking along (Phase 6B: whether a diagonal walk kept its heading is a question about rotation)
+     *  and whether that spot came from V1's live persisted position or from the derived desk. No email,
+     *  no roster row, nothing derived from the session; the DOM readout in app/Vo3dHost.tsx stays
+     *  counts-only for the same reason. Nothing here can write: there is no setter, and the world itself never emits. */
     coworkers: {
       stats: () => coworkers.getStats(),
       positions: () => coworkers.positions(),
@@ -3033,6 +3034,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
        *  else on this surface; `positions()` already reports where each body IS, live, as it walks. */
       walking: () => coworkers.getStats().walking,
       moving: () => coworkers.moving,
+      /** PHASE 6B DIAGNOSTIC — the last few arrival facing decisions: the route's own final heading, what
+       *  that quantises to, what V1 published, whether the two agreed and the yaw the body was given.
+       *  Bounded to the last 8, anonymous (angles and compass points only) and read-only. This is what a
+       *  two-session check reads to tell "the gate refused" apart from "the gate never ran". */
+      facingTrace: () => facingTrace(),
     },
     /** PHASE 5 VERIFICATION SURFACE — the counters, and the ONE driver a two-session check needs.
      *
@@ -3053,6 +3059,12 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       walkTo: (x: number, z: number) => walkToGround(x, z),
       position: () => ({ ...avatar.position }),
       v1Position: () => toV1Frame(avatar.position),
+      /** PHASE 6B DIAGNOSTICS — the signed-in employee's OWN body, for comparison with how a peer's
+       *  `coworkers.positions()` row for the same person reads: exact yaw, the movement id last
+       *  published (first 8 chars, as the wire log prints it) and the clip playing. Read-only. */
+      yaw: () => avatar.yaw,
+      movementId: () => selfMovement?.state.movementId?.slice(0, 8) ?? null,
+      clip: () => avatar.currentClip ?? "",
     },
     /** PHASE 5 ACCESS SURFACE — read-only, plus the one setter a two-session check needs in order to
      *  exercise the boundary without a real check-out. `setAccess` is the SAME entry point app/Vo3dHost

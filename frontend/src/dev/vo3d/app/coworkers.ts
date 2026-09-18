@@ -44,6 +44,12 @@ import type { Facing, Vec2 } from "../core/coords";
  *  ran, not a live clock — the world adds its own frame time on top. That is what keeps a walking office
  *  from re-rendering React sixty times a second, and `movementId` is what lets the world tell a NEW
  *  movement from the same one being handed to it again. */
+/** How a replay paces a route. "eased" is V1's PeerWalker curve (core/coords easeInOutQuad) and the
+ *  default for every walk V1 itself publishes; "linear" is a constant-speed sample of continuous free
+ *  movement, which must not be eased or the body halts at both ends of every leg. A local vocabulary
+ *  rather than a type import, so the world's module graph stays free of V1 (app/world.ts's rule). */
+export type Vo3dWalkPacing = "eased" | "linear";
+
 export interface Vo3dCoworkerWalk {
   /** V1's own movement id. The world starts a replay when this changes and ignores a repeat of it, so a
    *  re-render caused by somebody else's event cannot restart this person's walk. */
@@ -59,6 +65,8 @@ export interface Vo3dCoworkerWalk {
    *  before this viewer connected arrives most of the way through, and the replay starts there rather
    *  than snapping the body back to the origin. */
   elapsedMs: number;
+  /** See Vo3dWalkPacing. Absent means eased. */
+  pacing?: Vo3dWalkPacing;
 }
 
 export interface Vo3dCoworker {
@@ -100,6 +108,11 @@ export interface Vo3dCoworker {
    *  direction belongs to the chair, never to whoever sits in it); for a live point it is the facing V1
    *  recorded when they arrived, translated out of V1's sprite vocabulary. */
   facing: Facing;
+  /** PHASE 6B — the EXACT yaw this person came to rest at, radians in V2's own yaw space, when the
+   *  session that walked them published one (a V2 session does; a V1 one cannot). `facing` above is the
+   *  four-word account of the same fact and is what everything V1 reads; this is what the body is turned
+   *  to when present, and `facing` is what it falls back to when not. Never derived, never inferred. */
+  yaw?: number;
   /** PHASE 6A — their walk, if one is in flight. Absent for everybody standing still, which is almost
    *  everybody almost always.
    *

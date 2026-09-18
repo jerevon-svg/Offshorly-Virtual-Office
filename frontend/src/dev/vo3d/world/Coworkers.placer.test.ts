@@ -276,9 +276,11 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-/** the scene as a comparable fact: who is standing where, rounded exactly as the dev readout rounds */
+/** the scene as a comparable fact: who is standing where, rounded exactly as the dev readout rounds.
+ *  WHERE ONLY — the dev readout also carries each body's yaw (Phase 6B), and this measures placement
+ *  against the pure placer, which has no opinion about which way anybody looks. */
 function snapshot(c: Coworkers) {
-  return c.positions();
+  return c.positions().map((p) => ({ name: p.name, x: p.x, z: p.z, source: p.source }));
 }
 
 describe("Coworkers.sync — the cache is invisible from the scene graph", () => {
@@ -341,7 +343,7 @@ describe("Coworkers.sync — the cache is invisible from the scene graph", () =>
     flushPending();
     await slow;
     const here = coworkers.positions().find((p) => p.name === base[1].displayName);
-    expect(here).toEqual({ name: base[1].displayName, x: 400 + 4 * 6 + 5, z: 260 - 3, source: "live" });
+    expect(here).toEqual({ name: base[1].displayName, x: 400 + 4 * 6 + 5, z: 260 - 3, yaw: 0, source: "live", movementId: null, clip: "" });
     expect(coworkers.size).toBe(4);
   });
 

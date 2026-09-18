@@ -283,6 +283,26 @@ def _ms_to_dt(ms: int) -> datetime:
 
 _FACINGS = {"front", "back", "left", "right"}
 _MOVE_STATES = {"standing", "sitting"}
+# How a peer should replay a movement. Optional on the wire and absent from every V1 client, which
+# means "eased" — V1's own PeerWalker curve. "linear" is what the V2 3D office publishes for a free-
+# movement LEG (a constant-speed 400 ms sample of WASD running): easing a sample of continuous motion
+# brings the body to a halt at both ends of every leg, which is the stop-and-go peers were seeing.
+_PACINGS = {"eased", "linear"}
+
+
+def _is_optional_yaw(v) -> bool:
+    """The V2 3D office's actual resting yaw in radians, optional. V1's four-word `facing` stays the
+    compatibility vocabulary; this is the exact value beside it. Absent/None is legal (every V1 client);
+    when present it must be a real finite number — a bool, a string or NaN/inf is malformed input."""
+    if v is None:
+        return True
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    return v == v and v not in (float("inf"), float("-inf"))
+
+
+def _is_optional_pacing(v) -> bool:
+    return v is None or v in _PACINGS
 
 
 def _is_room_id(v) -> bool:
@@ -312,6 +332,8 @@ def _valid_walk_started_payload(payload) -> bool:
         return False
     if not (100 <= duration_ms <= 20000):
         return False
+    if not _is_optional_pacing(payload.get("pacing")):
+        return False
     return True
 
 
@@ -330,6 +352,8 @@ def _valid_walk_arrived_payload(payload) -> bool:
     if seat_key is not None and not isinstance(seat_key, str):
         return False
     if not _is_room_id(payload.get("roomId")):
+        return False
+    if not _is_optional_yaw(payload.get("yaw")):
         return False
     return True
 
@@ -865,6 +889,7 @@ async def walk_started(sid: str, payload: dict | None) -> None:
         path = [{"x": p["x"], "y": p["y"]} for p in payload["path"]]
         room_id = payload.get("roomId")
         duration_ms = payload["durationMs"]
+        pacing = payload.get("pacing")  # None for every V1 client — see _PACINGS
         started_at = _now_ms()
 
         revision = position_registry.start(
@@ -875,6 +900,7 @@ async def walk_started(sid: str, payload: dict | None) -> None:
             room_id=room_id,
             duration_ms=duration_ms,
             started_at=started_at,
+            pacing=pacing,
         )
 
         await sio.emit(
@@ -888,6 +914,7 @@ async def walk_started(sid: str, payload: dict | None) -> None:
                 "roomId": room_id,
                 "durationMs": duration_ms,
                 "startedAt": started_at,
+                "pacing": pacing,
             },
             skip_sid=sid,
         )
@@ -914,6 +941,8 @@ async def walk_arrived(sid: str, payload: dict | None) -> None:
         state = payload["state"]
         seat_key = payload.get("seatKey")
         room_id = payload.get("roomId")
+        raw_yaw = payload.get("yaw")
+        yaw = float(raw_yaw) if raw_yaw is not None else None  # validated finite above
 
         stable = position_registry.arrive(
             email,
@@ -924,6 +953,7 @@ async def walk_arrived(sid: str, payload: dict | None) -> None:
             seat_key=seat_key,
             room_id=room_id,
             now_ms=_now_ms(),
+            yaw=yaw,
         )
         if stable is None:
             return  # stale/wrong movementId — ignore silently
@@ -941,6 +971,7 @@ async def walk_arrived(sid: str, payload: dict | None) -> None:
                     room_id=stable.room_id,
                     revision=stable.revision,
                     updated_at=_ms_to_dt(stable.updated_at),
+                    yaw=stable.yaw,
                 )
         except Exception as exc:  # noqa: BLE001
             _logger.exception(exc)
@@ -956,6 +987,7 @@ async def walk_arrived(sid: str, payload: dict | None) -> None:
                 "state": stable.state,
                 "seatKey": stable.seat_key,
                 "roomId": stable.room_id,
+                "yaw": stable.yaw,
             },
             skip_sid=sid,
         )

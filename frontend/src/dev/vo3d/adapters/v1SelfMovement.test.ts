@@ -99,7 +99,7 @@ describe("createV1SelfMovementSink", () => {
     signIn();
     const sink = createV1SelfMovementSink()!;
     sink.started({ x: 600, z: 500 }, [{ x: 640, z: 520 }], 900);
-    sink.arrived({ x: 640, z: 520 }, "west");
+    sink.arrived({ x: 640, z: 520 }, "west", 1.234);
 
     const started = emitWalkStarted.mock.calls[0][0];
     const arrived = emitWalkArrived.mock.calls[0][0];
@@ -119,7 +119,7 @@ describe("createV1SelfMovementSink", () => {
     // claim about a walk that never happened.
     signIn();
     const sink = createV1SelfMovementSink()!;
-    sink.arrived({ x: 600, z: 500 }, "south");
+    sink.arrived({ x: 600, z: 500 }, "south", 1.234);
     expect(emitWalkArrived).not.toHaveBeenCalled();
     expect(sink.state.arrived).toBe(0);
   });
@@ -133,7 +133,7 @@ describe("createV1SelfMovementSink", () => {
     expect(emitWalkStarted).not.toHaveBeenCalled();
     expect(sink.state).toMatchObject({ started: 0, arrived: 0, refused: 1 });
     // ...and the arrival that follows it is not sent either: there is no movement to resolve.
-    sink.arrived({ x: 2600, z: 520 }, "south");
+    sink.arrived({ x: 2600, z: 520 }, "south", 1.234);
     expect(emitWalkArrived).not.toHaveBeenCalled();
   });
 
@@ -149,7 +149,7 @@ describe("createV1SelfMovementSink", () => {
     signIn();
     const sink = createV1SelfMovementSink()!;
     sink.started({ x: 600, z: 500 }, [{ x: 640, z: 520 }], 900);
-    sink.arrived({ x: 2600, z: 520 }, "south"); // walked on into the CAVE before the leg resolved
+    sink.arrived({ x: 2600, z: 520 }, "south", 1.234); // walked on into the CAVE before the leg resolved
     expect(emitWalkArrived).not.toHaveBeenCalled();
     expect(sink.state).toMatchObject({ started: 1, arrived: 0, refused: 1 });
   });
@@ -205,14 +205,14 @@ describe("the wire log (the evidence surface)", () => {
     const sink = createV1SelfMovementSink()!;
     sink.started({ x: 600, z: 1050 }, [{ x: 600, z: 900 }], 2100);
     sink.started({ x: 600, z: 980 }, [{ x: 500, z: 700 }], 4200);
-    sink.arrived({ x: 500, z: 700 }, "north");
+    sink.arrived({ x: 500, z: 700 }, "north", 1.234);
 
     const ids = emitWalkStarted.mock.calls.map((c) => c[0].movementId);
     expect(new Set(ids).size).toBe(2);
     expect(sink.state.wire).toHaveLength(3);
     expect(sink.state.wire[0]).toMatch(/^started id=\w+ pts=1 ms=2100 room=/);
     expect(sink.state.wire[1]).toContain(`supersedes=${ids[0].slice(0, 8)}`);
-    expect(sink.state.wire[2]).toMatch(/^arrived id=\w+ facing=back$/);
+    expect(sink.state.wire[2]).toMatch(/^arrived id=\w+ facing=back yaw=-?[\d.]+$/);
     // The arrival answers the SECOND movement — the first was abandoned, exactly as V1 abandons one.
     expect(emitWalkArrived.mock.calls[0][0].movementId).toBe(ids[1]);
   });
@@ -231,12 +231,37 @@ describe("the wire log (the evidence surface)", () => {
     const sink = createV1SelfMovementSink()!;
     for (let i = 0; i < 40; i++) {
       sink.started({ x: 600, z: 1050 }, [{ x: 601 + i, z: 900 }], 2100);
-      sink.arrived({ x: 601 + i, z: 900 }, "north");
+      sink.arrived({ x: 601 + i, z: 900 }, "north", 1.234);
     }
     expect(sink.state.wire.length).toBeLessThanOrEqual(24);
     for (const line of sink.state.wire) {
       expect(line).not.toMatch(/\b(600|900|1050)\b/);
       expect(line).not.toContain("x=");
     }
+  });
+});
+
+
+describe("Phase 6B — the exact yaw and the pacing go on the wire, optionally", () => {
+  beforeEach(() => { emitWalkStarted.mockReset(); emitWalkArrived.mockReset(); });
+  afterEach(() => { resetCurrentUserForTests(); __resetCurrentUserIdForTest(); });
+
+  it("carries the resting yaw beside V1's four-word facing, and the pacing beside the duration", () => {
+    setCurrentUserFromMeResponse({ id: 1, email: "jerevon@offshorly.com", name: "Bon", role: "employee" } as never);
+    const sink = createV1SelfMovementSink()!;
+    sink.started({ x: 600, z: 500 }, [{ x: 640, z: 520 }], 400, "linear");
+    expect(emitWalkStarted.mock.calls[0][0].pacing).toBe("linear");
+    sink.arrived({ x: 640, z: 520 }, "west", -2.356);
+    const arrived = emitWalkArrived.mock.calls[0][0];
+    expect(arrived.facing).toBe("left");
+    expect(arrived.yaw).toBe(-2.356);
+    expect(sink.state.movementId).toBe(emitWalkStarted.mock.calls[0][0].movementId);
+  });
+
+  it("omits the pacing for a planned walk, so a V1 reader sees exactly the payload it always saw", () => {
+    setCurrentUserFromMeResponse({ id: 1, email: "jerevon@offshorly.com", name: "Bon", role: "employee" } as never);
+    const sink = createV1SelfMovementSink()!;
+    sink.started({ x: 600, z: 500 }, [{ x: 640, z: 520 }], 400);
+    expect("pacing" in emitWalkStarted.mock.calls[0][0]).toBe(false);
   });
 });

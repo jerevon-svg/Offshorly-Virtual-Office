@@ -308,3 +308,46 @@ describe("movementSync — first-snapshot readiness", () => {
     expect(hasReceivedPositionsSnapshot()).toBe(true);
   });
 });
+
+
+describe("movementSync — Phase 6B optional fields (yaw on arrival, pacing on start)", () => {
+  const started = (over: Record<string, unknown> = {}) => ({
+    email: "A@x.com", movementId: "m1", revision: 2, origin: { x: 0, y: 0 }, path: [{ x: 10, y: 0 }],
+    roomId: null, durationMs: 400, startedAt: 1000, ...over,
+  });
+  const arrived = (over: Record<string, unknown> = {}) => ({
+    email: "A@x.com", movementId: "m1", revision: 3, at: { x: 10, y: 0 }, facing: "right" as const,
+    state: "standing" as const, seatKey: null, roomId: null, ...over,
+  });
+
+  it("applyArrived stores a finite yaw and drops anything else, so a V1 arrival simply has none", () => {
+    const withYaw = applyArrived(applyStarted(new Map(), started()), arrived({ yaw: -2.356 }));
+    expect(withYaw.get("a@x.com")!.stable.yaw).toBe(-2.356);
+    const legacy = applyArrived(applyStarted(new Map(), started()), arrived());
+    expect("yaw" in legacy.get("a@x.com")!.stable).toBe(false);
+    const nan = applyArrived(applyStarted(new Map(), started()), arrived({ yaw: Number.NaN }));
+    expect("yaw" in nan.get("a@x.com")!.stable).toBe(false);
+  });
+
+  it("applyStarted keeps the stable yaw (position and facing are untouched until arrival) and carries pacing", () => {
+    let m = applyArrived(applyStarted(new Map(), started()), arrived({ yaw: 0.5 }));
+    m = applyStarted(m, started({ movementId: "m2", revision: 4, pacing: "linear" }));
+    expect(m.get("a@x.com")!.stable.yaw).toBe(0.5);
+    expect(m.get("a@x.com")!.active!.pacing).toBe("linear");
+    const eased = applyStarted(new Map(), started({ pacing: "bouncy" }));
+    expect("pacing" in eased.get("a@x.com")!.active!).toBe(false);
+  });
+
+  it("applySnapshot restores both, which is what a reload reads", () => {
+    const m = applySnapshot(new Map(), {
+      serverTime: 5000,
+      entries: [{
+        email: "a@x.com", revision: 9, updatedAt: 4000, pos: { x: 1, y: 2 }, facing: "front", state: "standing",
+        seatKey: null, roomId: null, yaw: 2.9,
+        active: { movementId: "m9", origin: { x: 1, y: 2 }, path: [{ x: 5, y: 2 }], roomId: null, durationMs: 400, startedAt: 4900, pacing: "linear" },
+      }],
+    });
+    expect(m.get("a@x.com")!.stable.yaw).toBe(2.9);
+    expect(m.get("a@x.com")!.active!.pacing).toBe("linear");
+  });
+});

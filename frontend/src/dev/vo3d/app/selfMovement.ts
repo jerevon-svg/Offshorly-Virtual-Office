@@ -27,7 +27,12 @@
 // used here — it would either move the avatar twice or broadcast a duration the avatar does not honour.
 // What IS reused is everything below the walk: the events, the socket, the movement-id rule, the path
 // cap, the duration sanitiser and the facing vocabulary. See adapters/v1SelfMovement.ts.
-import { dist, facingForYaw, type Facing, type Vec2 } from "../core/coords";
+import { dist, facingForYaw, wrapAngle, type Facing, type Vec2 } from "../core/coords";
+
+/** How a peer replays a movement — the same two words app/coworkers.ts's Vo3dWalkPacing spells, restated
+ *  rather than imported so this module keeps exactly one import (spawn.phase5.test.ts holds it to that:
+ *  the feed must stay loadable by the standalone page). "linear" is what a free-movement leg is. */
+export type SelfWalkPacing = "eased" | "linear";
 
 /** WHERE V2 PUBLISHES A MOVEMENT TO. Implemented by adapters/v1SelfMovement.ts for a real signed-in
  *  session, and by nothing at all for the standalone dev page — which therefore emits nothing, exactly as
@@ -42,11 +47,17 @@ export interface Vo3dSelfMovementSink {
   /** A movement has begun: from `origin`, along `path`, taking `durationMs`. Pairs with exactly one
    *  `arrived` or with a superseding `started` (V1's own redirect rule — a newer walk_started outranks
    *  the movement it replaces, and the abandoned one's arrival is simply never sent). */
-  started(origin: Vec2, path: readonly Vec2[], durationMs: number): void;
+  started(origin: Vec2, path: readonly Vec2[], durationMs: number, pacing?: SelfWalkPacing): void;
   /** That movement ended HERE, facing this way. `at` is where the body actually stopped, which for an
    *  interrupted walk is not the end of the path it was given — the backend validates the arrival against
-   *  the active movement id, never against the path, so the truth is what gets persisted. */
-  arrived(at: Vec2, facing: Facing): void;
+   *  the active movement id, never against the path, so the truth is what gets persisted.
+   *
+   *  `yaw` is the body's ACTUAL resting rotation, radians, wrapped to (-π, π] — Phase 6B. `facing` is the
+   *  same fact in V1's four words and stays beside it for every V1 reader; a 3D peer turns to `yaw`. It
+   *  is the yaw the body HAS, never the heading it was travelling: the navigation controller turns at a
+   *  finite rate and does not turn at all on the frame a path empties, so the two differ on any short or
+   *  sharp final segment — which is exactly the difference a peer could not see and V1 could not say. */
+  arrived(at: Vec2, facing: Facing, yaw: number): void;
   /** Counters for the dev readout — how many movements went out, and how many were refused because they
    *  were not expressible as a V1 position. Numbers only, never a coordinate.
    *
@@ -54,7 +65,7 @@ export interface Vo3dSelfMovementSink {
    *  to tell a planned walk, a sampled free leg, a boundary snap and a redirect apart after the fact, and
    *  a count alone cannot. It carries SHAPES — the event, the movement id, how many waypoints, how long —
    *  and no coordinates, for the same redaction reason the DOM readout is counts-only. */
-  readonly state: { started: number; arrived: number; refused: number; wire: string[] };
+  readonly state: { started: number; arrived: number; refused: number; wire: string[]; movementId?: string | null };
 }
 
 /** THE PLANNED-WALK DURATION V2 WILL ACTUALLY TAKE, in ms.
@@ -162,7 +173,7 @@ export class SelfMovementFeed {
   private lastYaw = 0;
   /** A leg's arrival, held until its replay would have finished. Never more than one: a leg cannot be
    *  closed without the previous one's arrival being flushed first. */
-  private pending: { at: Vec2; facing: Facing; dueInMs: number } | null = null;
+  private pending: { at: Vec2; facing: Facing; yaw: number; dueInMs: number } | null = null;
 
   private readonly inRange: InRangeTest;
   /** Was the body somewhere V1 can hold a position, last frame? Starts true so a world built inside the
@@ -208,7 +219,7 @@ export class SelfMovementFeed {
     if (this.mode.kind === "free") this.closeFreeLeg(pos, yaw);
     else if (this.mode.kind === "planned") {
       this.mode = { kind: "idle" };
-      this.sink.arrived(pos, facingForYaw(yaw));
+      this.sink.arrived(pos, facingForYaw(yaw), wrapAngle(yaw));
     }
     this.mode = { kind: "idle" };
     this.flushPending();
@@ -269,7 +280,7 @@ export class SelfMovementFeed {
       if (!nowInRange) {
         // `last` is still the previous, in-frame sample — close the leg there, not out here.
         if (this.mode.kind === "free" && this.last) this.closeFreeLeg(this.last, yaw);
-        else if (this.mode.kind === "planned" && this.last) { this.mode = { kind: "idle" }; this.sink.arrived(this.last, facingForYaw(yaw)); }
+        else if (this.mode.kind === "planned" && this.last) { this.mode = { kind: "idle" }; this.sink.arrived(this.last, facingForYaw(yaw), wrapAngle(yaw)); }
         this.mode = { kind: "idle" };
         this.last = pos;
         return;
@@ -277,7 +288,7 @@ export class SelfMovementFeed {
       this.mode = { kind: "idle" };
       this.flushPending();
       this.sink.started(pos, [pos], MIN_DURATION_MS);
-      this.sink.arrived(pos, facingForYaw(yaw));
+      this.sink.arrived(pos, facingForYaw(yaw), wrapAngle(yaw));
       this.last = pos;
       return;
     }
@@ -305,7 +316,7 @@ export class SelfMovementFeed {
       // follows it there; nothing guarantees that here.
       this.mode = { kind: "idle" };
       this.last = pos;
-      this.sink.arrived(pos, facingForYaw(yaw));
+      this.sink.arrived(pos, facingForYaw(yaw), wrapAngle(yaw));
       return;
     }
 
@@ -322,7 +333,7 @@ export class SelfMovementFeed {
       this.mode = { kind: "idle" };
       this.flushPending();
       this.sink.started(from, [pos], MIN_DURATION_MS);
-      this.sink.arrived(pos, facingForYaw(yaw));
+      this.sink.arrived(pos, facingForYaw(yaw), wrapAngle(yaw));
       this.last = pos;
       return;
     }
@@ -381,14 +392,15 @@ export class SelfMovementFeed {
     // and a peer replay that never resolves.
     this.flushPending();
     const durationMs = Math.max(MIN_DURATION_MS, leg.movingMs);
-    this.sink.started(leg.origin, points, durationMs);
-    this.pending = { at: end, facing: facingForYaw(yaw), dueInMs: durationMs };
+    // LINEAR: a leg is a constant-speed sample of motion that did not stop, and is replayed as one.
+    this.sink.started(leg.origin, points, durationMs, "linear");
+    this.pending = { at: end, facing: facingForYaw(yaw), yaw: wrapAngle(yaw), dueInMs: durationMs };
   }
 
   private flushPending(): void {
     const p = this.pending;
     if (!p) return;
     this.pending = null;
-    this.sink.arrived(p.at, p.facing);
+    this.sink.arrived(p.at, p.facing, p.yaw);
   }
 }

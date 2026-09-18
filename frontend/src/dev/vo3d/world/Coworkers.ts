@@ -12,6 +12,21 @@
 // turn-toward-travel devtools/Crowd.ts has always used for cast bodies, on the same eased curve V1's own
 // PeerWalker replays it with (core/coords easeInOutQuad).
 //
+// PHASE 6B: THEY FACE EXACTLY WHAT THE WALKER FACES, AND A RUN IS A RUN. Two things V1's wire could not
+// say, now said by two optional fields V1 clients never send and never read:
+//   • `yaw` on walk_arrived — the walking body's ACTUAL resting rotation. V1's four-word `facing` stays
+//     beside it for every V1 reader; a body here is turned to `yaw` when present and to the compass yaw
+//     of `facing` when not. Nothing is inferred from the route: an earlier cut turned the body onto the
+//     route's final heading and was wrong whenever the walker's own turn had not finished (a short or
+//     sharp final segment), which is often. The turn onto the received yaw is taken at the body's own
+//     turn rate as the last beat of the walk, never snapped.
+//   • `pacing: "linear"` on walk_started — a free-movement LEG (PLAYER mode's 400 ms samples) is a
+//     constant-speed slice of motion that did not stop, and is replayed as one. Easing it on V1's curve
+//     halted the body at both ends of every leg, and dropping to idle between legs restarted the walk
+//     clip 2.5 times a second: the "moving, pausing, moving" peers saw. A leg that runs out now holds
+//     its pose for a short grace (LEG_GRACE_MS) — the arrival that follows says whether it stopped.
+// Turning in place is still not synchronised: it publishes no movement and no arrival.
+//
 // THE STABLE POSITION IS STILL THE AUTHORITY. A replay is what the body does between two facts, never a
 // fact of its own: it is started by a movement id, replaced by the next movement id, and always settled
 // by the arrival that follows. Nothing here extrapolates past the end of a route, and nothing here
@@ -41,20 +56,17 @@
 // desk is worse than a body that is honestly absent.
 import * as THREE from "three";
 import { clone as cloneSkinned } from "three/examples/jsm/utils/SkeletonUtils.js";
-import { BON_STANDING_HEIGHT, CLIP_IDLE, CLIP_WALK, type AvatarLod } from "../adapters/v1Avatar";
+import { BON_STANDING_HEIGHT, CLIP_IDLE, CLIP_RUN, CLIP_WALK, type AvatarLod } from "../adapters/v1Avatar";
 import { castLabelTexture, prototypeFor, type CastPrototype } from "../avatar/CastPrototypes";
-import { dist, FACING_YAW, stepAngle, type Vec2 } from "../core/coords";
+import { dist, FACING_YAW, stepAngle, wrapAngle, type Facing, type Vec2 } from "../core/coords";
 import { standablePointNear, type StandTest } from "../player/PlayerBody";
-import type { Vo3dCoworker } from "../app/coworkers";
+import type { Vo3dCoworker, Vo3dWalkPacing } from "../app/coworkers";
+import { PLAYER_SPRINT_SPEED, PLAYER_WALK_SPEED } from "../player/PlayerMode";
 import { ReplayWalk } from "./coworkerWalk";
 
 /** How fast a coworker turns toward their direction of travel, rad/s. The navigation controller's rate,
  *  which is also what devtools/Crowd.ts turns its bodies at — one figure for every walking body in V2. */
 const TURN_RATE = 7;
-/** The ground speed the `walking` clip was authored for, units/s. Playback rate is then "how fast am I
- *  actually travelling / how fast does this clip think it is", which is what keeps feet planted at any
- *  replay speed. The same 30 NavigationController divides by and PlayerMode names explicitly. */
-const WALK_CLIP_GROUND_SPEED = 30;
 /** Ceiling on locomotion playback rate — a spike guard for a long frame, not a look choice. */
 const MAX_CLIP_RATE = 2.5;
 /** Below this, a correction is not worth animating: the body is already there. */
@@ -69,6 +81,43 @@ const RECONCILE_EPSILON = 0.5;
 const RECONCILE_MAX = 24;
 /** How long a glided correction takes. Short enough to be a settle, long enough not to be a jump. */
 const RECONCILE_MS = 260;
+
+/** PHASE 6B DIAGNOSTIC — the last few ARRIVALS this world resolved: which movement, whether an exact yaw
+ *  came with it, V1's four-word facing beside it, and the yaw the body was turned to. Bounded, read-only,
+ *  and anonymous: a movement id prefix and angles, never a name, an email or a roster row. */
+const ARRIVAL_TRACE_CAP = 8;
+export type ArrivalDecision = {
+  /** first 8 chars of the movement id this arrival resolved, as the publisher's wire log prints it */
+  movementId: string;
+  /** the exact yaw V1 relayed, or null for an arrival with none (a V1 client, or a pre-6B row) */
+  receivedYaw: number | null;
+  /** V1's four-word facing, translated — what the body falls back to */
+  facing: Facing;
+  /** the yaw the body was turned to */
+  applied: number;
+};
+const arrivals: ArrivalDecision[] = [];
+/** Read the trace. A copy, so a console cannot mutate the world's own buffer. */
+export const facingTrace = (): ArrivalDecision[] => arrivals.map((d) => ({ ...d }));
+
+/** Below this, two yaws are the same yaw. */
+const YAW_EPSILON = 1e-3;
+/** HOW LONG A LEG THAT RAN OUT HOLDS ITS POSE before the body is taken to have stopped, ms.
+ *
+ *  A free-movement leg's end is ambiguous by construction: the publisher closes a leg every 400 ms and
+ *  the peer cannot tell "paused between legs" from "stopped" until either the next walk_started lands or
+ *  nothing does. Both land one network hop after the leg's own clock runs out. Idling in that gap is what
+ *  restarted the walk clip at every leg boundary; extrapolating through it would be inventing a position.
+ *  So the body holds still, in its last pose, for at most this long — enough for the next leg on any
+ *  realistic hop, short enough that a real stop reads as a stop. The arrival, when it lands, is still what
+ *  turns the body; only the CLIP decision waits. */
+const LEG_GRACE_MS = 200;
+/** The ground speed each locomotion clip was authored for, units/s — the same figures player/PlayerMode
+ *  uses for the signed-in employee's own body, so a peer's feet land where the local's do. */
+const CLIP_GROUND_SPEED: Record<string, number> = { [CLIP_WALK]: 30, [CLIP_RUN]: 48 };
+/** A movement whose MEAN speed is at least this runs; below it walks. Half way between the two speeds the
+ *  player can move at, so a walk at 70 is a walk and a sprint at 100 is a run, with margin either side. */
+const RUN_FROM_SPEED = (PLAYER_WALK_SPEED + PLAYER_SPRINT_SPEED) / 2;
 
 /** How close two DESK-PLACED coworkers may stand before the second is nudged to the next legal ring. Half
  *  a body rather than a full one: the roster's own per-room seating already gives everyone a distinct
@@ -279,6 +328,14 @@ class CoworkerBody {
   /** Is a reconciliation glide running right now? Distinct from `replay !== null`, which is also true for
    *  a real walk, and from `playedId`, which survives its own replay. */
   private settling = false;
+  /** The yaw an arrival asked for, still being turned onto at TURN_RATE — the last beat of a walk. Null
+   *  when the body faces what it was last told to. A placement never sets this; it turns at once. */
+  private targetYaw: number | null = null;
+  /** Time left in a linear leg's grace, ms — see LEG_GRACE_MS. Zero for every body not between legs. */
+  private coastMs = 0;
+  /** Which locomotion clip this body's current movement plays, chosen once per movement by its mean
+   *  speed (see beginWalk). */
+  private locomotion: string = CLIP_WALK;
 
   constructor(proto: CastPrototype, name: string, at: Vec2, yaw: number, phase: number) {
     this.avatarId = proto.id;
@@ -317,6 +374,8 @@ class CoworkerBody {
 
   get moving(): boolean { return this.replay !== null; }
   get clip(): string { return this.current; }
+  /** Which way this body is looking, radians. Read-only, and read by the dev surface alone. */
+  get facingYaw(): number { return this.yaw; }
   get pos(): Vec2 { return { x: this.root.position.x, z: this.root.position.z }; }
   /** The movement this body has been given, running or finished, so a re-push of the same one is
    *  recognised and ignored. See `playedId`. */
@@ -326,16 +385,25 @@ class CoworkerBody {
    *  next one, and it REPLACES whatever was running, exactly as V1's own store replaces a superseded
    *  movement. The body is not first snapped back to the origin: the replay's own fast-forward puts it
    *  where the walk currently is, which for a redirect is about where the body already stood. */
-  beginWalk(movementId: string, worldPath: readonly Vec2[], durationMs: number, elapsedMs: number): void {
-    this.replay = new ReplayWalk(movementId, worldPath, durationMs, elapsedMs);
+  beginWalk(movementId: string, worldPath: readonly Vec2[], durationMs: number, elapsedMs: number, pacing: Vo3dWalkPacing = "eased"): void {
+    this.replay = new ReplayWalk(movementId, worldPath, durationMs, elapsedMs, pacing);
     this.playedId = movementId;
     this.settleYaw = null;
     this.settling = false;
+    // A new movement owns the rotation from here: a turn an arrival had queued is moot, and a leg that
+    // follows another ends the grace the previous one was holding its pose through.
+    this.targetYaw = null;
+    this.coastMs = 0;
+    // The clip is a property of the MOVEMENT — its mean speed — chosen once, so an eased walk does not
+    // break into a run at the peak of its own curve. A prototype without a run clip walks faster instead.
+    this.locomotion = this.replay.meanSpeed >= RUN_FROM_SPEED && this.actions[CLIP_RUN] ? CLIP_RUN : CLIP_WALK;
     const at = this.replay.position;
     this.root.position.set(at.x, 0, at.z);
   }
 
-  /** THE AUTHORITATIVE POSITION HAS ARRIVED. Returns true when anything changed.
+  /** THE AUTHORITATIVE POSITION HAS ARRIVED, and the yaw to face: the exact one V1 relayed when the
+   *  walking session published it (Phase 6B), or the compass yaw of V1's four-word facing when it did
+   *  not. Returns true when anything changed or a turn was queued.
    *
    *  A GLIDE IS ONLY EVER THE SEAM AT THE END OF A REPLAY, and that is what `playedId` gates. A replay can
    *  finish a little away from the position V1 finally vouches for — clock offset, a rounding difference,
@@ -345,17 +413,19 @@ class CoworkerBody {
    *  once. Gliding those would make where a coworker stands depend on how recently it was told, which is
    *  exactly what the Phase 4C cache-equivalence test measures — and would have been wrong anyway.
    *
+   *  THE SAME RULE FOR THE ROTATION. Resolving a walk turns the body onto `yaw` at its own turn rate (the
+   *  walker's body turned at that rate too, and an instant snap of the last degrees is the jerk this
+   *  phase set out to remove); a placement is turned at once, like it is moved.
+   *
    *  So, in order:
-   *    already there   — snap (no motion at all) and take the facing. The normal end of a replay that
-   *                      finished where V1 said it would.
-   *    seam, short way — glide. The last units of a walk.
-   *    anything else   — snap. An interrupted walk, a reconnect correction, or an ordinary placement: the
-   *                      honest answer is "they are there", and sliding across the room would draw a
-   *                      journey nobody took. */
+   *    already there   — settle, turning smoothly if this resolves a walk. The normal end of a replay.
+   *    seam, short way — glide, and take the yaw when the glide lands.
+   *    anything else   — snap. An interrupted walk, a reconnect correction, or an ordinary placement. */
   reconcileTo(at: Vec2, yaw: number): boolean {
     const d = dist(this.pos, at);
-    if (d <= RECONCILE_EPSILON) return this.settle(at, yaw);
-    if ((this.playedId !== null || this.settling) && d <= RECONCILE_MAX) {
+    const resolvesWalk = this.playedId !== null || this.settling;
+    if (d <= RECONCILE_EPSILON) return this.settle(at, yaw, resolvesWalk);
+    if (resolvesWalk && d <= RECONCILE_MAX) {
       // Re-glided only when the target actually moved: a repeated sync toward the same point must not
       // restart the settle and leave the body creeping forever.
       if (!this.settling || !this.replay || dist(this.replay.end, at) > RECONCILE_EPSILON) {
@@ -368,16 +438,38 @@ class CoworkerBody {
       this.playedId = null;
       return true;
     }
-    return this.settle(at, yaw);
+    return this.settle(at, yaw, false);
   }
 
-  /** Stop replaying anything and take the authoritative pose. */
-  private settle(at: Vec2, yaw: number): boolean {
+  /** Stop replaying anything and take the authoritative pose. The position is taken at once either way;
+   *  the rotation is queued onto `targetYaw` when this resolves a walk and taken at once otherwise. A leg's
+   *  grace (`coastMs`) is deliberately NOT touched: the arrival of a leg is not yet the news that the
+   *  person stopped — the next walk_started, or its absence, is. */
+  private settle(at: Vec2, yaw: number, turnSmoothly: boolean): boolean {
     this.replay = null;
     this.settleYaw = null;
     this.settling = false;
     this.playedId = null;
-    return this.snapTo(at, yaw);
+    if (!turnSmoothly) {
+      // A re-push of the very yaw a queued turn is already heading for must not cut that turn short and
+      // snap it — the same "identical fact re-applied" rule the position glide has.
+      if (this.targetYaw !== null && Math.abs(wrapAngle(this.targetYaw - yaw)) <= YAW_EPSILON) return this.moveTo(at);
+      this.targetYaw = null;
+      return this.snapTo(at, yaw);
+    }
+    let moved = this.moveTo(at);
+    if (Math.abs(wrapAngle(yaw - this.yaw)) > YAW_EPSILON) {
+      this.targetYaw = yaw;
+      moved = true;
+    } else this.targetYaw = null;
+    return moved;
+  }
+
+  /** Position only. True when it changed. */
+  private moveTo(at: Vec2): boolean {
+    if (this.root.position.x === at.x && this.root.position.z === at.z) return false;
+    this.root.position.set(at.x, 0, at.z);
+    return true;
   }
 
   /** Snap to a new spot. Returns TRUE only when something actually moved.
@@ -406,9 +498,10 @@ class CoworkerBody {
     this.label = sprite;
   }
 
-  /** One frame. Advances a replay if there is one, then the mixer — the same order Crowd's member uses.
-   *  Returns TRUE when the body's transform changed, which is what the caller turns into a cheap dynamic
-   *  shadow invalidation (a walking coworker costs the composite pass, never the static redraw). */
+  /** One frame. Advances a replay if there is one, then any queued turn, then the mixer — the same order
+   *  Crowd's member uses. Returns TRUE when the body's transform changed, which is what the caller turns
+   *  into a cheap dynamic shadow invalidation (a walking coworker costs the composite pass, never the
+   *  static redraw). */
   update(dt: number): boolean {
     let moved = false;
     if (this.replay) {
@@ -420,30 +513,54 @@ class CoworkerBody {
         this.root.rotation.set(0, this.yaw, 0);
         moved = true;
       }
-      if (moved && this.actions[CLIP_WALK]) {
-        this.play(CLIP_WALK);
-        // Rate from the ground ACTUALLY covered this frame, so a replay that is slower or faster than the
-        // clip was authored for still lands its feet instead of skating or sprinting on the spot.
-        this.actions[CLIP_WALK].timeScale = Math.min(
-          MAX_CLIP_RATE,
-          Math.max(0.15, step.travelled / Math.max(dt, 1e-4) / WALK_CLIP_GROUND_SPEED),
-        );
+      if (moved) {
+        this.play(this.locomotion);
+        const action = this.actions[this.locomotion];
+        // Rate from the ground ACTUALLY covered this frame, against the speed THIS clip was authored for,
+        // so a replay that is slower or faster than the clip still lands its feet instead of skating.
+        if (action) {
+          action.timeScale = Math.min(
+            MAX_CLIP_RATE,
+            Math.max(0.15, step.travelled / Math.max(dt, 1e-4) / CLIP_GROUND_SPEED[this.locomotion]),
+          );
+        }
       }
       if (this.replay.done) {
-        // The route has run out. The body idles where it ended and waits for the arrival to tell it which
-        // way to face — unless this was a reconciliation glide, which already knew.
+        // The route has run out. A reconciliation glide already knew its yaw; a peer walk waits for the
+        // arrival to say — and until it does, the body idles where it ended.
+        const legRanOut = this.replay.pacing === "linear" && !this.settling;
         this.replay = null;
         this.settling = false;
         if (this.settleYaw !== null) {
-          this.yaw = this.settleYaw;
-          this.root.rotation.set(0, this.yaw, 0);
+          this.targetYaw = this.settleYaw;
           this.settleYaw = null;
-          moved = true;
         }
+        if (legRanOut) {
+          // A LEG THAT RAN OUT IS NOT A STOP — see LEG_GRACE_MS. Hold the pose: the clip is frozen rather
+          // than left running (feet sliding on a body that is not moving) or swapped for idle (a walk clip
+          // restarted from its first frame at every leg boundary). No position is invented meanwhile.
+          this.coastMs = LEG_GRACE_MS;
+          const action = this.actions[this.locomotion];
+          if (action) action.timeScale = 0;
+        } else this.play(CLIP_IDLE);
+      }
+    } else if (this.coastMs > 0) {
+      this.coastMs -= dt * 1000;
+      if (this.coastMs <= 0) {
+        this.coastMs = 0;
         this.play(CLIP_IDLE);
       }
     } else {
       this.play(CLIP_IDLE);
+    }
+    if (this.targetYaw !== null) {
+      // The last beat of a walk: onto the yaw the arrival asked for, at the rate the body turns.
+      const next = stepAngle(this.yaw, this.targetYaw, TURN_RATE * dt);
+      const remaining = Math.abs(wrapAngle(this.targetYaw - next));
+      this.yaw = remaining <= YAW_EPSILON ? this.targetYaw : next;
+      if (remaining <= YAW_EPSILON) this.targetYaw = null;
+      this.root.rotation.set(0, this.yaw, 0);
+      moved = true;
     }
     this.mixer.update(dt);
     return moved;
@@ -455,6 +572,8 @@ class CoworkerBody {
     this.playedId = null;
     this.settleYaw = null;
     this.settling = false;
+    this.targetYaw = null;
+    this.coastMs = 0;
   }
 
   /** Geometry and materials are the PROTOTYPE's and are shared with every sibling — disposing them here
@@ -488,9 +607,25 @@ export type CoworkerStats = {
   loading: boolean;
 };
 
-/** One rendered body, for the dev verification surface. Display name and world position only — the same
- *  two facts the scene graph already carries in `root.name`, and deliberately NOT the email. */
-export type CoworkerPosition = { name: string; x: number; z: number; source: "desk" | "live" };
+/** One rendered body, for the dev verification surface. Display name, world position and which way it is
+ *  looking — the same facts the scene graph already carries in `root.name` and `root.rotation`, and
+ *  deliberately NOT the email.
+ *
+ *  `yaw` is there for Phase 6B: whether a diagonal walk KEPT its heading or was squared up by the arrival
+ *  is a question about rotation, and a two-session check had no way to ask it. Radians, as the body holds
+ *  them (core/coords FACING_YAW's convention), rounded like x and z so a readout is stable to compare. */
+export type CoworkerPosition = {
+  name: string;
+  x: number;
+  z: number;
+  yaw: number;
+  source: "desk" | "live";
+  /** the movement this body is replaying or last resolved, first 8 chars, or null — compare with the
+   *  walker's own `selfMovement.movementId()` */
+  movementId: string | null;
+  /** the clip playing — idle, walking or running — for telling a position stutter from an animation one */
+  clip: string;
+};
 
 export interface CoworkersDeps {
   parent: THREE.Object3D;
@@ -565,6 +700,9 @@ export class Coworkers {
         name: body.displayName,
         x: Math.round(body.root.position.x * 10) / 10,
         z: Math.round(body.root.position.z * 10) / 10,
+        yaw: Math.round(body.facingYaw * 1000) / 1000,
+        movementId: body.movementId?.slice(0, 8) ?? null,
+        clip: body.clip,
         source: this.wanted.get(email)?.coworker.posSource ?? "desk",
       });
     }
@@ -665,7 +803,7 @@ export class Coworkers {
       // Deterministic per person rather than random: the same viewer reloading, and two viewers looking
       // at the same room, see the same stagger instead of a fresh shuffle.
       const phase = phaseFor(coworker.email);
-      const body = new CoworkerBody(proto, coworker.displayName, pos, FACING_YAW[coworker.facing], phase);
+      const body = new CoworkerBody(proto, coworker.displayName, pos, coworker.yaw ?? FACING_YAW[coworker.facing], phase);
       // PHASE 6A — A NEWCOMER MAY ALREADY BE WALKING. `applyPositions` only reaches bodies that exist, and
       // this one did not until now: somebody whose character was still downloading when their movement
       // started, or anybody at all on the very first sync. The walk comes from the NEWEST spot (like the
@@ -676,6 +814,7 @@ export class Coworkers {
           coworker.walk.path.map(this.deps.toWorld),
           coworker.walk.durationMs,
           coworker.walk.elapsedMs,
+          coworker.walk.pacing,
         );
       }
       this.group.add(body.root);
@@ -716,12 +855,18 @@ export class Coworkers {
       const walk = spot.coworker.walk;
       if (walk) {
         if (body.movementId !== walk.movementId) {
-          body.beginWalk(walk.movementId, walk.path.map(this.deps.toWorld), walk.durationMs, walk.elapsedMs);
+          body.beginWalk(walk.movementId, walk.path.map(this.deps.toWorld), walk.durationMs, walk.elapsedMs, walk.pacing);
           moved = true;
         }
         continue;
       }
-      if (body.reconcileTo(spot.pos, FACING_YAW[spot.coworker.facing])) moved = true;
+      // PHASE 6B — the exact yaw the walking session published, or V1's compass word when it did not.
+      const yaw = spot.coworker.yaw ?? FACING_YAW[spot.coworker.facing];
+      if (body.movementId !== null) {
+        arrivals.push({ movementId: body.movementId.slice(0, 8), receivedYaw: spot.coworker.yaw ?? null, facing: spot.coworker.facing, applied: yaw });
+        if (arrivals.length > ARRIVAL_TRACE_CAP) arrivals.shift();
+      }
+      if (body.reconcileTo(spot.pos, yaw)) moved = true;
     }
     return moved;
   }

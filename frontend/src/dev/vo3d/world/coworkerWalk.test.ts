@@ -154,3 +154,55 @@ describe("ReplayWalk", () => {
     expect(w.total).toBeCloseTo(300);
   });
 });
+
+// Phase 6B — the route's own ending, which is what a body keeps facing once the walk is over.
+describe("the heading a route ends on", () => {
+  it("is the direction of the last segment, whatever the earlier ones did", () => {
+    const w = new ReplayWalk("m", [{ x: 0, z: 0 }, { x: 0, z: 100 }, { x: 100, z: 100 }], 1000);
+    expect(w.finalHeading).toBeCloseTo(Math.atan2(100, 0), 10);
+  });
+
+  it("is a fact about the PATH, not about how the replay was clocked", () => {
+    // Fast-forwarded to its end, advanced frame by frame, or never advanced at all: one answer.
+    const path = [{ x: 0, z: 0 }, { x: 300, z: -300 }];
+    const untouched = new ReplayWalk("m", path, 1000);
+    const fastForwarded = new ReplayWalk("m", path, 1000, 1000);
+    const stepped = new ReplayWalk("m", path, 1000);
+    for (let i = 0; i < 70; i++) stepped.advance(16);
+    expect(untouched.finalHeading).toBeCloseTo(Math.atan2(300, -300), 10);
+    expect(fastForwarded.finalHeading).toBe(untouched.finalHeading);
+    expect(stepped.finalHeading).toBe(untouched.finalHeading);
+  });
+
+  it("looks back past a zero-length tail rather than reporting nothing", () => {
+    const w = new ReplayWalk("m", [{ x: 0, z: 0 }, { x: 50, z: 50 }, { x: 50, z: 50 }], 1000);
+    expect(w.finalHeading).toBeCloseTo(Math.atan2(50, 50), 10);
+  });
+
+  it("is null for a route with no distance in it — there is no direction to keep", () => {
+    expect(new ReplayWalk("m", [{ x: 7, z: 7 }], 1000).finalHeading).toBeNull();
+    expect(new ReplayWalk("m", [{ x: 7, z: 7 }, { x: 7, z: 7 }], 1000).finalHeading).toBeNull();
+  });
+});
+
+
+// Phase 6B — a linear replay for a free-movement leg, and the mean speed the clip is chosen by.
+describe("pacing", () => {
+  const LEG = [{ x: 0, z: 0 }, { x: 40, z: 0 }];
+  it("eased is the default and halts at both ends; linear moves at one speed throughout", () => {
+    const eased = new ReplayWalk("e", LEG, 400);
+    const linear = new ReplayWalk("l", LEG, 400, 0, "linear");
+    const first = { e: eased.advance(40).travelled, l: linear.advance(40).travelled };
+    for (let i = 0; i < 8; i++) { eased.advance(40); linear.advance(40); }
+    const last = { e: eased.advance(40).travelled, l: linear.advance(40).travelled };
+    expect(first.e).toBeLessThan(first.l / 4); // the ease barely moves off the line
+    expect(last.e).toBeLessThan(last.l / 4); // ...and barely moves onto the end
+    expect(first.l).toBeCloseTo(4, 6);
+    expect(last.l).toBeCloseTo(4, 6);
+  });
+
+  it("reports the mean speed of the whole route, in units per second", () => {
+    expect(new ReplayWalk("l", LEG, 400, 0, "linear").meanSpeed).toBeCloseTo(100, 6);
+    expect(new ReplayWalk("e", LEG, 400).meanSpeed).toBeCloseTo(100, 6); // pacing does not change the mean
+  });
+});

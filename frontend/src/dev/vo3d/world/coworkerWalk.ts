@@ -24,6 +24,7 @@
 //   • IT DOES NOT OWN THE CLOCK. `advance` is given milliseconds. The caller's frame loop is the clock,
 //     and a test is the clock in a test.
 import { dist, easeInOutQuad, headingFor, type Vec2 } from "../core/coords";
+import type { Vo3dWalkPacing } from "../app/coworkers";
 
 /** What one frame of a replay produced. */
 export interface ReplayStep {
@@ -50,6 +51,9 @@ export interface ReplayStep {
 export class ReplayWalk {
   readonly movementId: string;
   readonly durationMs: number;
+  /** "eased" replays on V1's curve; "linear" at constant speed. A free-movement leg is a sample of motion
+   *  that did not stop at either end, so easing it would invent a halt at every leg boundary. */
+  readonly pacing: Vo3dWalkPacing;
   /** total ground the route covers */
   readonly total: number;
   private readonly pts: readonly Vec2[];
@@ -58,10 +62,19 @@ export class ReplayWalk {
   private elapsed: number;
   /** distance along the route at the last reported step, so `travelled` is a delta and not a total */
   private covered: number;
+  /** WHICH WAY THE ROUTE ENDS GOING — the direction of its last segment with any length in it, or null
+   *  for a route with no distance at all. Phase 6B.
+   *
+   *  A fact about the PATH, not about the frames: computed once from the polyline, so it is the same
+   *  answer whether the walk was replayed at 60fps, fast-forwarded most of the way, or never advanced at
+   *  all. Reading the last `advance`'s heading instead would make it depend on where a frame boundary
+   *  happened to land, and a final frame that covered a rounding-sized distance reports nothing. */
+  readonly finalHeading: number | null;
 
-  constructor(movementId: string, path: readonly Vec2[], durationMs: number, elapsedMs = 0) {
+  constructor(movementId: string, path: readonly Vec2[], durationMs: number, elapsedMs = 0, pacing: Vo3dWalkPacing = "eased") {
     this.movementId = movementId;
     this.durationMs = Math.max(1, durationMs);
+    this.pacing = pacing;
     const pts = path.length > 0 ? path : [{ x: 0, z: 0 }];
     const cum: number[] = [0];
     for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + dist(pts[i], pts[i - 1]));
@@ -72,6 +85,15 @@ export class ReplayWalk {
     // push it past its own end (which would read as "done" before the body had moved at all).
     this.elapsed = Math.min(this.durationMs, Math.max(0, elapsedMs));
     this.covered = this.distanceAt(this.elapsed);
+    // Backwards from the end past any repeated points: a route may legally finish with a zero-length
+    // segment (two identical waypoints), and that segment has no direction to report.
+    let heading: number | null = null;
+    for (let i = pts.length - 1; i >= 1; i--) {
+      const dx = pts[i].x - pts[i - 1].x;
+      const dz = pts[i].z - pts[i - 1].z;
+      if (Math.hypot(dx, dz) > 1e-6) { heading = headingFor(dx, dz); break; }
+    }
+    this.finalHeading = heading;
   }
 
   /** Has the walk run out? A done walk is not advanced again and its body idles at `end`. */
@@ -82,6 +104,13 @@ export class ReplayWalk {
   /** The last point of the route — where this walk says the body finishes. */
   get end(): Vec2 {
     return this.pts[this.pts.length - 1];
+  }
+
+  /** Ground covered per second over the whole route — a fact about the MOVEMENT, stable for its duration,
+   *  which is what the locomotion clip (walk or run) is chosen by. Choosing by the instantaneous speed
+   *  would flip an eased walk into a run at its mid-point, where the curve peaks at 1.5x the mean. */
+  get meanSpeed(): number {
+    return (this.total / this.durationMs) * 1000;
   }
 
   /** Where the body is right now, without advancing anything. */
@@ -105,7 +134,8 @@ export class ReplayWalk {
   /** ON V1'S OWN CURVE. See core/coords easeInOutQuad: the same quadratic in/out V1's walker eases every
    *  path with, so the two offices place the same person at the same point at the same moment. */
   private distanceAt(elapsedMs: number): number {
-    return easeInOutQuad(Math.min(1, elapsedMs / this.durationMs)) * this.total;
+    const t = Math.min(1, elapsedMs / this.durationMs);
+    return (this.pacing === "linear" ? t : easeInOutQuad(t)) * this.total;
   }
 
   /** The point `d` units along the route, by segment. */

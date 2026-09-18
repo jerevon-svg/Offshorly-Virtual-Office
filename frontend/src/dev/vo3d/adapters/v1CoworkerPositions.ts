@@ -41,7 +41,7 @@ import { FRAME } from "./v1Floor";
 import { FACING_BY_DIRECTION } from "./v1Facing";
 import type { ActiveMovement, PeerMovementState, Pt } from "../../../services/presence/movementSync";
 import type { Vo3dCoworker, Vo3dCoworkerSet, Vo3dCoworkerWalk } from "../app/coworkers";
-import type { Vec2 } from "../core/coords";
+import { wrapAngle, type Vec2 } from "../core/coords";
 
 /** How far outside the V1 frame a persisted position may still be believed.
  *
@@ -105,6 +105,8 @@ export function resolveWalk(
     path: [toCentre(active.origin, box), ...active.path.map((p) => toCentre(p, box))],
     durationMs: active.durationMs,
     elapsedMs: Math.min(active.durationMs, Math.max(0, elapsed)),
+    // Only the one word that changes anything: absent and "eased" are the same replay.
+    ...(active.pacing === "linear" ? { pacing: "linear" as const } : {}),
   };
 }
 
@@ -165,6 +167,9 @@ export function applyLivePositions(
       // more, so the chair's direction is no longer the fact about them. Translated through the one
       // sprite-vocabulary table both other adapters use.
       facing: FACING_BY_DIRECTION[peer.stable.facing],
+      // PHASE 6B — the exact yaw beside it, when the arriving session published one. Wrapped, not
+      // trusted to be: the store already refused anything non-finite (movementSync's yawField).
+      ...(typeof peer.stable.yaw === "number" ? { yaw: wrapAngle(peer.stable.yaw) } : {}),
       posSource: "live",
       ...(walk ? { walk } : {}),
     };

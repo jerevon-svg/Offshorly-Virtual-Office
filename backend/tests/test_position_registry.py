@@ -222,6 +222,7 @@ def test_snapshot_shape():
             "seatKey": None,
             "roomId": "design-team",
             "updatedAt": 1000,
+            "yaw": None,  # a V1 arrival carries none; the V2 3D office's exact yaw when it does
             "active": {
                 "movementId": "m1",
                 "origin": {"x": 0.0, "y": 0.0},
@@ -229,6 +230,7 @@ def test_snapshot_shape():
                 "roomId": "design-team",
                 "durationMs": 750,
                 "startedAt": 1000,
+                "pacing": None,  # unmarked == eased, V1's own replay
             },
         }
     ]

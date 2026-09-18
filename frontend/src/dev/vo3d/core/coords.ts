@@ -28,6 +28,10 @@ export function stepAngle(from: number, to: number, maxStep: number): number {
   return from + Math.max(-maxStep, Math.min(maxStep, d));
 }
 export const dist = (a: Vec2, b: Vec2): number => Math.hypot(a.x - b.x, a.z - b.z);
+/** The same angle, expressed in (-π, π]. `stepAngle` wraps the DELTA it takes but not the value it
+ *  returns, so a yaw that has turned a few times can sit outside that range; a yaw that goes on the
+ *  wire, or is compared to one that came off it, is wrapped first so two viewers agree on the number. */
+export const wrapAngle = (a: number): number => Math.atan2(Math.sin(a), Math.cos(a));
 
 /** THE INVERSE of FACING_YAW: the compass facing a yaw is closest to.
  *

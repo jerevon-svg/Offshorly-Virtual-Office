@@ -3,9 +3,9 @@
 // real reconciliation and the real walker with no asset and no renderer.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as THREE from "three";
-import { Coworkers } from "./Coworkers";
+import { Coworkers, facingTrace } from "./Coworkers";
 import type { Vo3dCoworker, Vo3dCoworkerWalk } from "../app/coworkers";
-import type { Vec2 } from "../core/coords";
+import { FACING_YAW, type Vec2 } from "../core/coords";
 
 vi.mock("../avatar/CastPrototypes", () => ({
   prototypeFor: (id: string) =>
@@ -17,7 +17,7 @@ const EMAIL = "micah@offshorly.com";
 /** 300 units due north, origin first — the shape the adapter produces. */
 const ROUTE: Vec2[] = [{ x: 600, z: 800 }, { x: 600, z: 500 }];
 
-function coworker(point: Vec2, walk?: Vo3dCoworkerWalk, facing: Vo3dCoworker["facing"] = "south"): Vo3dCoworker {
+function coworker(point: Vec2, walk?: Vo3dCoworkerWalk, facing: Vo3dCoworker["facing"] = "south", yaw?: number): Vo3dCoworker {
   return {
     email: EMAIL,
     displayName: "Micah",
@@ -26,6 +26,7 @@ function coworker(point: Vec2, walk?: Vo3dCoworkerWalk, facing: Vo3dCoworker["fa
     box: { width: 26, height: 37 },
     posSource: "live",
     facing,
+    ...(yaw !== undefined ? { yaw } : {}),
     ...(walk ? { walk } : {}),
   };
 }
@@ -231,5 +232,125 @@ describe("a placement is not a walk", () => {
     await cw.sync([coworker({ x: 608, z: 500 })]); // an ordinary move afterwards
     expect(cw.moving).toBe(false);
     expect(at()).toEqual({ x: 608, z: 500 });
+  });
+});
+
+// ── Phase 6B ─────────────────────────────────────────────────────────────────────────────────────────
+// The facing a walk ends on. The wire now carries the walker's ACTUAL resting yaw beside V1's four-word
+// facing; the body turns onto it at its own rate when present and falls back to the compass word when not.
+describe("the facing a walk ends on", () => {
+  const DIAGONAL: Vec2[] = [{ x: 600, z: 800 }, { x: 900, z: 500 }];
+  /** deliberately NOT the route's heading (2.356): the walker's own turn stopped short of it */
+  const RESTING = 2.9;
+  let parent: THREE.Group;
+  const yaw = (): number => {
+    const root = parent.getObjectByName("coworker:Micah");
+    if (!root) throw new Error("no body");
+    return root.rotation.y;
+  };
+  beforeEach(() => {
+    parent = new THREE.Group();
+    cw = new Coworkers({ parent, canStand: () => true, radius: 8, toWorld: (p) => p, lod: 1 });
+  });
+
+  it("turns onto the EXACT yaw the walker published, smoothly, as the last beat of the walk", async () => {
+    await cw.sync([coworker(DIAGONAL[0], walk("m1", DIAGONAL))]);
+    run(3100);
+    const before = yaw();
+    await cw.sync([coworker({ x: 900, z: 500 }, undefined, "north", RESTING)]);
+    // Not snapped: still where the replay left it, a turn queued.
+    expect(yaw()).toBeCloseTo(before, 5);
+    run(16);
+    expect(yaw()).not.toBeCloseTo(before, 3); // moving...
+    run(400);
+    expect(yaw()).toBeCloseTo(RESTING, 6); // ...and there, exactly
+  });
+
+  it("takes the yaw even when the arrival lands BEFORE the replay's own clock runs out", async () => {
+    await cw.sync([coworker(DIAGONAL[0], walk("m1", DIAGONAL))]);
+    run(2900);
+    await cw.sync([coworker({ x: 900, z: 500 }, undefined, "north", RESTING)]);
+    run(500);
+    expect(yaw()).toBeCloseTo(RESTING, 6);
+    expect(cw.moving).toBe(false);
+  });
+
+  it("KEEPS it across the stream of unchanged roster syncs that follows", async () => {
+    await cw.sync([coworker(DIAGONAL[0], walk("m1", DIAGONAL))]);
+    run(3100);
+    await cw.sync([coworker({ x: 900, z: 500 }, undefined, "north", RESTING)]);
+    for (let i = 0; i < 40; i++) {
+      await cw.sync([coworker({ x: 900, z: 500 }, undefined, "north", RESTING)]);
+      cw.update(0.016);
+    }
+    expect(yaw()).toBeCloseTo(RESTING, 6);
+    expect(cw.update(0.016)).toBe(false); // and nothing keeps moving
+  });
+
+  it("falls back to V1's four-word facing when no yaw came — a V1 walker, or a pre-6B row", async () => {
+    await cw.sync([coworker(DIAGONAL[0], walk("m1", DIAGONAL))]);
+    run(3100);
+    await cw.sync([coworker({ x: 900, z: 500 }, undefined, "west")]);
+    run(500);
+    expect(yaw()).toBe(FACING_YAW.west);
+  });
+
+  it("takes the yaw through a GLIDED seam too", async () => {
+    await cw.sync([coworker(DIAGONAL[0], walk("m1", DIAGONAL))]);
+    run(3100);
+    await cw.sync([coworker({ x: 912, z: 500 }, undefined, "north", RESTING)]); // 12 units out
+    expect(cw.moving).toBe(true);
+    run(800);
+    expect(cw.moving).toBe(false);
+    expect(at().x).toBeCloseTo(912, 1);
+    expect(yaw()).toBeCloseTo(RESTING, 6);
+  });
+
+  it("a REDIRECT's arrival yaw is the one that counts, not the abandoned walk's", async () => {
+    await cw.sync([coworker(DIAGONAL[0], walk("m1", DIAGONAL))]);
+    run(1000);
+    const second: Vec2[] = [{ x: 600, z: 700 }, { x: 500, z: 400 }];
+    await cw.sync([coworker(DIAGONAL[0], walk("m2", second, 2000))]);
+    run(2100);
+    await cw.sync([coworker({ x: 500, z: 400 }, undefined, "north", -2.7)]);
+    run(600);
+    expect(yaw()).toBeCloseTo(-2.7, 6);
+  });
+
+  it("an INTERRUPTED walk snaps to where the walker really stopped and turns onto the yaw it really has", async () => {
+    await cw.sync([coworker(DIAGONAL[0], walk("m1", DIAGONAL))]);
+    run(800);
+    await cw.sync([coworker({ x: 200, z: 300 }, undefined, "north", 1.9)]);
+    expect(cw.moving).toBe(false);
+    expect(at()).toEqual({ x: 200, z: 300 });
+    run(600);
+    expect(yaw()).toBeCloseTo(1.9, 6);
+  });
+
+  it("a PLACEMENT turns at once, like it moves at once — never a queued turn for a body that did not walk", async () => {
+    await cw.sync([coworker({ x: 600, z: 500 }, undefined, "south", 0.7)]);
+    expect(yaw()).toBe(0.7);
+    await cw.sync([coworker({ x: 608, z: 500 }, undefined, "south", 1.2)]);
+    expect(yaw()).toBe(1.2);
+    expect(at()).toEqual({ x: 608, z: 500 });
+  });
+
+  it("records each resolved arrival on the dev surface, anonymously and bounded", async () => {
+    await cw.sync([coworker(DIAGONAL[0], walk("m1", DIAGONAL))]);
+    run(3100);
+    await cw.sync([coworker({ x: 900, z: 500 }, undefined, "north", RESTING)]);
+    expect(facingTrace().at(-1)).toEqual({ movementId: "m1", receivedYaw: RESTING, facing: "north", applied: RESTING });
+    await cw.sync([coworker({ x: 900, z: 500 }, walk("m2", [{ x: 900, z: 500 }, { x: 900, z: 300 }]))]);
+    run(3100);
+    await cw.sync([coworker({ x: 900, z: 300 }, undefined, "north")]);
+    expect(facingTrace().at(-1)).toEqual({ movementId: "m2", receivedYaw: null, facing: "north", applied: FACING_YAW.north });
+    expect(JSON.stringify(facingTrace())).not.toContain("Micah");
+    for (let i = 0; i < 12; i++) {
+      await cw.sync([coworker({ x: 900, z: 300 }, walk(`x${i}`, [{ x: 900, z: 300 }, { x: 900, z: 300 }], 100))]);
+      run(200);
+      await cw.sync([coworker({ x: 900, z: 300 }, undefined, "north")]);
+    }
+    expect(facingTrace().length).toBeLessThanOrEqual(8);
+    expect(cw.positions()[0]).toMatchObject({ movementId: null, clip: "" }); // no clips in the stub prototype
   });
 });
