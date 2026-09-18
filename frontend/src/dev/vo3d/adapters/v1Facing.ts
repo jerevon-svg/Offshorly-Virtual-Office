@@ -17,3 +17,10 @@ export const FACING_BY_DIRECTION: Record<WalkDirection, Facing> = {
   left: "west",
   right: "east",
 };
+
+/** The same one-to-one table read the other way, for the direction V2 now has to PUBLISH rather than
+ *  consume (Phase 5: the signed-in employee's own walk_arrived facing). Derived from the table above so
+ *  the two can never disagree — a hand-written second literal is exactly what the header warns about. */
+export const DIRECTION_BY_FACING: Record<Facing, WalkDirection> = Object.fromEntries(
+  (Object.keys(FACING_BY_DIRECTION) as WalkDirection[]).map((d) => [FACING_BY_DIRECTION[d], d]),
+) as Record<Facing, WalkDirection>;

@@ -61,3 +61,28 @@ export function homeDeskWorldPoint(point: Vec2, artBoxes: readonly V1ArtBox[], s
   const dz = box ? shifts[box.id] ?? 0 : 0;
   return { x: point.x, z: point.z + dz };
 }
+
+/** THE INVERSE of homeDeskWorldPoint: a point in the BUILT world, expressed back in V1 frame units.
+ *
+ *  Needed the moment V2 stopped only READING V1's coordinates and started PUBLISHING into them (Phase 5:
+ *  the signed-in employee's own movement). The forward direction asks which V1 art box contains a V1
+ *  point; the inverse has to ask which room's SHIFTED rect — where the room actually stands in the world —
+ *  contains the world point, and then undo that room's shift.
+ *
+ *  Only rooms with a declared shift are consulted, because a room with no shift returns the point
+ *  unchanged either way, and a point in no shifted room is the corridor/exterior case — also unchanged.
+ *
+ *  NOT A BIJECTION IN THE SEAM BAND, and deliberately not faked into one: a shifted room's art box and
+ *  its shifted rect overlap over all but `dz` units, and the `dz`-deep strip each end belongs to exactly
+ *  one of the two. A point there resolves to whichever rect actually contains it, which is the honest
+ *  answer — that strip is the room's own wall/floor seam, not a place a body stands and walks from.
+ *
+ *  Pure, and given its inputs rather than importing them, exactly like homeDeskWorldPoint above. */
+export function v1FramePoint(p: Vec2, artBoxes: readonly V1ArtBox[], shifts: Record<string, number>): Vec2 {
+  for (const box of artBoxes) {
+    const dz = shifts[box.id] ?? 0;
+    if (dz === 0) continue;
+    if (pointInRect(p, { ...box.rect, z: box.rect.z + dz })) return { x: p.x, z: p.z - dz };
+  }
+  return p;
+}

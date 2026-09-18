@@ -27,11 +27,21 @@
 //     fails, hangs or returns nothing leaves a fully explorable, fully working world.
 //   • REACT OWNS THE SUBSCRIPTIONS (these hooks, unsubscribed on unmount) and the WORLD OWNS THE SCENE
 //     OBJECTS (Coworkers.dispose). Neither reaches into the other.
+// PHASE 5 IS THE FIRST WRITE THIS ROUTE HAS EVER MADE, and it is the one item that genuinely leaves the
+// read-only promise above: the signed-in employee's OWN movement is published through V1's existing
+// walk_started/walk_arrived pipeline, so every other employee sees them move exactly as if they were in
+// V1's office. The bounds are all in adapters/v1SelfMovement.ts; the two that matter here are that it is
+// still V1'S OWN SOCKET (no second connection, no new event) and that it publishes only the SELF row —
+// nothing about anybody else is ever written. Its companion is the restore below: V2 now starts you where
+// V1 last saw you stop, so movement is published from V1's position rather than from a desk preview.
+//
 // A 401 still cannot redirect this route into /login by surprise: apiFetch already navigates on its own,
 // and useOfficeRoster surfaces every other failure as state rather than throwing.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { resolveVo3dCoworkers, selfEmailKey } from "../adapters/v1Coworkers";
 import { applyLivePositions, countLivePositions } from "../adapters/v1CoworkerPositions";
+import { createV1SelfMovementSink, resolveV1SelfPosition } from "../adapters/v1SelfMovement";
+import { useV1OfficeAccess } from "../adapters/v1Attendance";
 import { useOfficeRoster } from "../../../services/office/useOfficeRoster";
 import { useOfflineLineup } from "../../../services/presence/offlineLineupClient";
 import {
@@ -102,6 +112,12 @@ export function Vo3dHost() {
   // The live world, for the coworker effect below. A ref rather than state on purpose: the world is not
   // rendered by React and must not re-render anything when it appears.
   const worldRef = useRef<Vo3dWorld | null>(null);
+  // PHASE 5 verification flags — two booleans, for the redacted readout at the bottom of this file. They
+  // say whether this session is publishing movement at all and whether V1's position restore has landed,
+  // which is what an outside check (automated or human) needs in order to trust the rest. Never a
+  // coordinate: the world's own dev panel is where geometry is read from.
+  const [selfPublishing, setSelfPublishing] = useState(false);
+  const [selfRestored, setSelfRestored] = useState(false);
 
   // V1's roster, exactly as V1's own office reads it. Both hooks are safe to hold here: useOfficeRoster
   // fetches once and then follows an SSE stream (real mode only — it does not open one in mock), and
@@ -159,9 +175,43 @@ export function Vo3dHost() {
   );
   const livePositionCount = useMemo(() => countLivePositions(coworkerSet), [coworkerSet]);
 
+  // PHASE 5 — WHERE V1 SAYS *THIS* EMPLOYEE IS. The same store Phase 4B reads for everybody else, read
+  // for the one row it deliberately excludes: self. positions_snapshot carries it, which is why V1's own
+  // office waits on `snapshotReady` before deciding a spawn, and why this is gated on the same flag.
+  //
+  // Null is the common, correct answer — no snapshot yet, no identity, or V1 has never recorded a
+  // position for this employee — and the world then keeps Phase 3's home-desk preview.
+  const selfPosition = useMemo(
+    () => resolveV1SelfPosition(peerMovements, snapshotReady),
+    [peerMovements, snapshotReady],
+  );
+
+  // PHASE 5 — V1'S ATTENDANCE, AS THE ONE AUTHORITY OVER THE WORKING-OFFICE BOUNDARY.
+  //
+  // Read through V1's own services/attendance (adapters/v1Attendance), never re-decided here and never
+  // written. The refresh key is the pair of live signals this host already holds: the offline lineup and
+  // the movement-snapshot flag. The backend broadcasts the lineup on every check-in/check-out transition
+  // and re-sends the snapshot on every (re)connect, so between them they are a reliable HINT that
+  // something may have changed — which is all they are used for. Neither is the answer: the lineup is
+  // in-memory and per-process on the backend and would fail OPEN across a restart (see the adapter).
+  const accessRefreshKey = useMemo(
+    () => `${offlineLineup.map((e) => e.email).join(",")}|${snapshotReady}`,
+    [offlineLineup, snapshotReady],
+  );
+  const officeAccess = useV1OfficeAccess(accessRefreshKey);
+
   // The roster, readable at world-creation time without making the creation effect depend on it.
   const coworkerSetRef = useRef(coworkerSet);
   coworkerSetRef.current = coworkerSet;
+  // Same trick for the restore: the snapshot may land before the world module has finished loading, in
+  // which case the creation effect applies what we already have rather than waiting for a change that
+  // may never come.
+  const selfPositionRef = useRef(selfPosition);
+  selfPositionRef.current = selfPosition;
+  // Same again for the access answer: the world's gate starts CLOSED, so a world built after the read has
+  // already resolved must be told at once rather than waiting for the answer to change.
+  const officeAccessRef = useRef(officeAccess);
+  officeAccessRef.current = officeAccess;
 
   useEffect(() => {
     const host = hostRef.current;
@@ -189,14 +239,28 @@ export function Vo3dHost() {
     // ask it. The preview stands you where your desk is, which is why the readout below names the room
     // rather than announcing a status.
     const homeDesk = resolveVo3dHomeDesk();
+    // PHASE 5, and read exactly like the two above: a synchronous look at the identity V1 already had.
+    // NULL when V1 could not parse a signed-in employee, and the world then publishes nothing at all —
+    // the standalone behaviour. It opens no socket of its own: emitWalkStarted/emitWalkArrived join the
+    // module-level connection services/presence/movementSync already owns and the hooks above already use.
+    const selfMovement = createV1SelfMovementSink();
+    setSelfPublishing(selfMovement !== null);
 
     void loadWorld()
       .then(({ createVo3dWorld }) => {
         // The unmount may have already run — StrictMode's cleanup fires within the same tick that this
         // import was started in. Building a world now would be building one nobody will ever dispose.
         if (cancelled) return;
-        world = createVo3dWorld(canvas, identity ?? undefined, homeDesk ?? undefined);
+        world = createVo3dWorld(canvas, identity ?? undefined, homeDesk ?? undefined, selfMovement ?? undefined);
         worldRef.current = world;
+        // V1's snapshot may have resolved while the world module was loading — apply it now, or this
+        // employee stands at their desk preview until a movement change that may never arrive.
+        // ACCESS BEFORE THE RESTORE, deliberately: the restore is refused while the gate is shut and the
+        // persisted position is inside the working office, so telling the world who this employee is
+        // first is what lets a checked-in one land on their own desk on the first attempt.
+        if (selfMovement) world.setOfficeAccess(officeAccessRef.current);
+        const restore = selfPositionRef.current;
+        if (restore && world.restoreSelf(restore.point, restore.facing)) setSelfRestored(true);
         // The roster may have resolved while the world module was still loading — push what we have now,
         // or those coworkers wait for the next roster change that may never come.
         world.setCoworkers(coworkerSetRef.current.coworkers, coworkerSetRef.current.missingAvatar);
@@ -230,6 +294,23 @@ export function Vo3dHost() {
   useEffect(() => {
     worldRef.current?.setCoworkers(coworkerSet.coworkers, coworkerSet.missingAvatar);
   }, [coworkerSet]);
+
+  // THE RESTORE, pushed in the same way and with the same shape: React owns the subscription, the world
+  // owns the body. Safe to run on every movement change — restoreSelf is a one-shot that refuses once it
+  // has landed or once the player has taken control (see its contract), so a repeated call is a no-op
+  // rather than a body being yanked back mid-walk.
+  useEffect(() => {
+    if (!selfPosition) return;
+    if (worldRef.current?.restoreSelf(selfPosition.point, selfPosition.facing)) setSelfRestored(true);
+  }, [selfPosition]);
+
+  // THE ACCESS PUSH. Same shape as the two writes above — React owns the read, the world owns the gate —
+  // and pushed only for a session with a real identity: the standalone-equivalent case (no identity, no
+  // publishing) is left with the world's own default, which is a gate nobody is asking to cross.
+  useEffect(() => {
+    if (!selfPublishing) return;
+    worldRef.current?.setOfficeAccess(officeAccess);
+  }, [officeAccess, selfPublishing]);
 
   return (
     <div
@@ -368,6 +449,44 @@ export function Vo3dHost() {
             <span style={{ opacity: 0.7 }}>
               {" · "}
               {coworkerSet.missingAvatar.length} without a 3D avatar
+            </span>
+          )}
+        </div>
+      )}
+      {phase.kind === "ready" && (
+        // THE MOVEMENT READOUT (Phase 5). Two facts and nothing else: is this session publishing the
+        // employee's own movement into V1 at all, and did V1's own persisted position land before they
+        // started walking. Both are booleans by design — the position itself is this employee's location,
+        // and the rule the coworker readout above states applies to their own row just as strictly.
+        <div
+          data-testid="vo3d-self-movement"
+          data-publishing={selfPublishing ? "true" : "false"}
+          data-restored={selfRestored ? "true" : "false"}
+          data-office-access={officeAccess}
+          style={{
+            position: "absolute",
+            top: 108,
+            right: 12,
+            zIndex: 1003,
+            font: "12px/1.4 system-ui, sans-serif",
+            padding: "6px 10px",
+            borderRadius: 8,
+            background: "rgba(30,24,20,0.72)",
+            color: "#f4ede4",
+            pointerEvents: "none",
+          }}
+        >
+          {selfPublishing ? "movement → V1" : "movement not published"}
+          {selfPublishing && (
+            <span style={{ opacity: 0.7 }}>
+              {" · "}
+              {selfRestored ? "restored from V1" : "desk preview"}
+              {" · "}
+              {officeAccess === "permitted"
+                ? "office open"
+                : officeAccess === "denied"
+                  ? "checked out — Reception, outdoors and the Lab only"
+                  : "checking attendance…"}
             </span>
           )}
         </div>

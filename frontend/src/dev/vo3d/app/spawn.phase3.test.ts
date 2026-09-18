@@ -24,7 +24,10 @@ const code = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, "").repla
 
 describe("the standalone world is untouched", () => {
   it("takes the home desk as an OPTIONAL third parameter", () => {
-    expect(world).toContain("createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdentity, homeDesk?: Vo3dHomeDesk)");
+    // Phase 5 appended a fourth optional parameter (the self-movement sink) — the point of this case is
+    // that the desk is still optional and still third, so the standalone page's zero-argument call is
+    // unchanged. spawn.phase5.test.ts owns the fourth one.
+    expect(world).toContain("identity?: Vo3dIdentity, homeDesk?: Vo3dHomeDesk");
   });
 
   it("still gives the dev page its own default spawn, unconditionally", () => {

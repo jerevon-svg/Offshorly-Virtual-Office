@@ -3,7 +3,7 @@ import * as THREE from "three";
 import GUI from "three/examples/jsm/libs/lil-gui.module.min.js";
 import { WorldState } from "../world/WorldState";
 import { DESIGN_ROOM, DESIGN_SOLIDS, CHAIR_4_ID, DOOR_ID, HERO_PLANT_ID, SHELL as DESIGN_SHELL, designRoomEntities } from "../rooms/design-room";
-import { RECEPTION_ROOM, COUNTER_INTERACTION_ID, ENTRY_DOOR_EAST_ID, ENTRY_DOOR_WEST_ID, ENTRY_SCANNER_ID, ENTRY_ZONE, GATE_SCANNER_IDS, GATE_ZONES, KIOSK_INTERACTION_ID, LOUNGE_SEAT_IDS, receptionEntities } from "../rooms/reception";
+import { RECEPTION_ROOM, COUNTER_INTERACTION_ID, ENTRY_DOOR_EAST_ID, ENTRY_DOOR_WEST_ID, ENTRY_SCANNER_ID, ENTRY_ZONE, GATE, GATE_SCANNER_IDS, GATE_ZONES, KIOSK_INTERACTION_ID, LOUNGE_SEAT_IDS, RECEPTION_ROOM_ID, receptionEntities } from "../rooms/reception";
 import { GAMING_ROOM, gamingRoomEntities,
   BAG_SEAT_IDS, DARTS_INTERACTION_ID, DOOR_LEAF_ID as GAMING_DOOR_ID, FRIDGE_INTERACTION_ID, GAMING_CHAIR_IDS,
   POSTER_INTERACTION_ID, SOFA_SEAT_ID, TV_INTERACTION_ID as GAMING_TV_INTERACTION_ID } from "../rooms/gaming";
@@ -47,7 +47,7 @@ import { CaveGallery } from "../media/CaveGallery";
 import { CaveTransition } from "../interact/CaveTransition";
 import { openedCells, openedLayer, v2Static } from "../nav/v2Open";
 import { DerivedNav } from "../nav/derived";
-import { worldToCell } from "../adapters/v1Grid";
+import { CELL, worldToCell, type Cell } from "../adapters/v1Grid";
 import { NAV_RADIUS } from "../nav/clearance";
 import { Connectivity } from "../nav/connectivity";
 import { compareToV1, summariseReport, verdictFor } from "../nav/diagnostics";
@@ -78,7 +78,7 @@ import { Walkability, composeStatic } from "../nav/Walkability";
 import { clearanceLayer, worldClearances } from "../nav/clearance";
 import { SlidingDoor } from "../interact/Door";
 import { CORRIDOR_BANDS, ROOM_WORLD_SHIFT_Z, registerGroundFloor } from "../rooms/ground-floor";
-import { v1Rooms } from "../adapters/v1Floor";
+import { FACADE_Z, FRAME, v1Rooms } from "../adapters/v1Floor";
 import { planWalk, type NavResult } from "../nav/planner";
 import { v1Static } from "../adapters/v1Grid";
 import { casterPoseMoved, DEFAULT_LIGHT, Renderer, type CasterPose } from "../render/Renderer";
@@ -104,10 +104,12 @@ import { Crowd } from "../devtools/Crowd";
 import { STRESS_MATRIX, markdownTable, planPlacements, type ScenarioResult, type StressScenario } from "../devtools/Stress";
 import { BON_STANDING_HEIGHT, castLods, hasCastLods, type AvatarLod } from "../adapters/v1Avatar";
 import type { Vo3dIdentity } from "./identity";
-import { homeDeskWorldPoint, type Vo3dHomeDesk } from "./spawn";
+import { homeDeskWorldPoint, v1FramePoint, type Vo3dHomeDesk } from "./spawn";
+import { plannedDurationMs, SelfMovementFeed, type Vo3dSelfMovementSink } from "./selfMovement";
+import { gateRects, mayEnterOffice, routeEntersOffice, zoneAt, type AccessGeometry, type OfficeAccess, type Zone } from "./access";
 import { Coworkers } from "../world/Coworkers";
 import type { Vo3dCoworker } from "./coworkers";
-import { FACING_YAW, pointInRect, type Rect, type Vec2 } from "../core/coords";
+import { FACING_YAW, pointInRect, type Facing, type Rect, type Vec2 } from "../core/coords";
 
 /** What a mounted V2 world hands back. `dispose()` is idempotent and, once called, the world is dead:
  *  the canvas it was given has had its WebGL context force-lost and CANNOT be reused (see
@@ -122,6 +124,30 @@ export interface Vo3dWorld {
    *  quietly showing a smaller office. Never called by the standalone dev page, which therefore builds no
    *  coworker bodies at all and costs exactly what it always did. */
   setCoworkers(list: readonly Vo3dCoworker[], missingAvatar?: readonly string[]): void;
+  /** PHASE 5 — STAND THE SIGNED-IN EMPLOYEE WHERE V1 LAST SAW THEM STOP.
+   *
+   *  `point` is in V1 FRAME UNITS (adapters/v1SelfMovement resolveV1SelfPosition); this world applies its
+   *  own room shift, exactly as the home-desk spawn and the coworkers do, and then judges whether a body
+   *  fits there with the same stand test every WASD step is judged by.
+   *
+   *  FIRES AT MOST ONCE, AND NEVER AFTER THE PLAYER HAS TAKEN CONTROL — the same rule V1's own spawn
+   *  restore follows (OfficeMap.tsx's spawnMovedRef: "if they've already moved, the spawn point stopped
+   *  being meaningful"). Returns true only when the body was actually moved. The host calls it whenever
+   *  V1's movement snapshot resolves, which may be before or after this world finished building, so every
+   *  refusal is silent and idempotent. */
+  restoreSelf(point: Vec2, facing: Facing): boolean;
+  /** PHASE 5 — V1'S ANSWER ABOUT THIS EMPLOYEE'S WORK SESSION, pushed in from outside.
+   *
+   *  The world never asks: app/Vo3dHost.tsx owns the read (adapters/v1Attendance over V1's own
+   *  services/attendance) and calls this whenever the answer changes. There is no second attendance
+   *  authority here and no status is ever written back — see app/access.ts.
+   *
+   *  What it changes is ONE thing: whether Reception's speed gates are passable. Everything else about
+   *  movement is untouched, so a denied employee still walks freely in Reception, on the street, along
+   *  the campus and through the AI Lab. `denied` additionally stands a body that is already inside the
+   *  working office back on Reception's public side, because the alternative is being sealed in.
+   *  `unknown` shuts the gate but never moves anybody. Never called by the standalone dev page. */
+  setOfficeAccess(access: OfficeAccess): void;
 }
 
 /** BUILD A V2 WORLD ON `canvas`. Everything below this line is the module body app/bootstrap.ts used to
@@ -138,7 +164,7 @@ export interface Vo3dWorld {
  *  adapters/v1HomeDesk). Omitting it keeps the default spawn below, byte for byte. It is a PREVIEW of a
  *  desk and nothing more: this world reads no attendance, restores no persisted position and writes
  *  nothing back, so it may never be presented as "checked in". */
-export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdentity, homeDesk?: Vo3dHomeDesk): Vo3dWorld {
+export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdentity, homeDesk?: Vo3dHomeDesk, selfMovement?: Vo3dSelfMovementSink): Vo3dWorld {
   // ---- LIFECYCLE ---------------------------------------------------------------------------------
   // The three things a top-level module body never had to think about, because the document outlived it.
   //
@@ -589,11 +615,167 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   let lastCapture: CaptureSummary | null = null;
   const benchState = { status: "idle", result: "" };
 
+  // ---- the self-movement feed (Phase 5) ------------------------------------------------------------
+  // V2 DRIVES THE BODY; V1 CARRIES THE MOVEMENT. `selfMovement` is the sink the caller handed over
+  // (app/Vo3dHost.tsx via adapters/v1SelfMovement) and is UNDEFINED for the standalone dev page, which
+  // therefore builds no feed, publishes nothing and costs nothing — byte for byte the behaviour
+  // dev/vo3d.html always had. See app/selfMovement.ts for what the feed decides and why.
+  //
+  // THE COORDINATE BOUNDARY IS HERE, ONCE. The feed and everything above it work in world units; the
+  // sink speaks V1 frame units. "Where a V2 room actually stands" is V2's own fact about its own geometry
+  // (ROOM_WORLD_SHIFT_Z, one table), so undoing it belongs on this side of the line — the same split the
+  // home-desk spawn and the coworkers' `toWorld` already make, run in the opposite direction.
+  //
+  // `v1Rooms()` is resolved ONCE here rather than per call: this conversion now runs on every published
+  // waypoint, and rebuilding an 11-room array inside a per-frame path was the kind of quiet cost Phase 4C
+  // spent its time removing.
+  const selfFrameRooms = v1Rooms();
+  const toV1Frame = (p: Vec2): Vec2 => v1FramePoint(p, selfFrameRooms, ROOM_WORLD_SHIFT_Z);
+  const selfFeed = selfMovement
+    ? new SelfMovementFeed(
+        {
+          state: selfMovement.state,
+          started: (origin, path, durationMs) => selfMovement.started(toV1Frame(origin), path.map(toV1Frame), durationMs),
+          arrived: (at, facing) => selfMovement.arrived(toV1Frame(at), facing),
+        },
+        // WHERE V1 CAN HOLD A POSITION AT ALL — the V1 frame, and nothing outside it. V2's world extends
+        // well past it (the campus legs, the AI Lab at negative z, the CAVE at x 2600) and V1 has no
+        // coordinate for any of that. The feed uses this to CLOSE a leg at the boundary instead of
+        // accumulating across it, which is what fixes the return from outside: without it, a leg whose
+        // origin was out there was refused whole by the adapter and every peer stayed at the last place
+        // V2 managed to publish. Deliberately stricter than the adapter's own out-of-frame slack, so
+        // anything the feed offers is something the adapter can express.
+        (p) => pointInRect(toV1Frame(p), FRAME),
+      )
+    : null;
+  /** Has the person at the keyboard moved themselves yet? Gates the one-shot V1 position restore below,
+   *  the same way V1's own spawnMovedRef gates its: a restore that lands mid-walk would yank somebody out
+   *  of a walk they started, and once they have moved, where they started stopped being meaningful. */
+  let selfMovedByUser = false;
+  /** The restore has already landed; it is a one-shot. */
+  let selfRestored = false;
+
+  // ---- the working-office boundary (Phase 5) -------------------------------------------------------
+  // WHAT REQUIRES A CHECK-IN, AND WHAT DOES NOT. Attendance and world access are separate: being checked
+  // out never logs anybody out of V2 and never stops them exploring. Reception, the street, the campus
+  // legs and the AI Lab stay open at every attendance state — and they are all reachable without touching
+  // the office, because the Lab is approached entirely OUTSIDE the V1 frame (world/ailab.ts's APRON →
+  // LEG_N → PATH_W → PATH_IN, east then north of the frame). What requires a confirmed V1 check-in is the
+  // WORKING OFFICE: everything past Reception's speed gates.
+  //
+  // V1 IS THE AUTHORITY AND THE ONLY ONE. The answer arrives through setOfficeAccess below, read by
+  // app/Vo3dHost.tsx from V1's own services/attendance. This file decides no work session, writes none,
+  // and holds no status — see app/access.ts for why the offline lineup is NOT the authority (it fails
+  // open across a backend restart) and why `unknown` shuts the gate without moving anybody.
+  const accessGeom: AccessGeometry = {
+    frame: FRAME,
+    facadeZ: FACADE_Z,
+    receptionRect: v1Rooms().find((r) => r.id === RECEPTION_ROOM_ID)!.rect,
+    gateZ: GATE.z,
+  };
+  /** Reception's PUBLIC side, a known-legal stand point south of the gates. The same point the entrance
+   *  dev button has always used (RECEPTION_INSIDE below is now this constant), so "where a body goes when
+   *  it may not be in the office" and "where the entrance tour starts" cannot drift apart. */
+  const OFFICE_EXIT_STAND: Vec2 = { x: 600, z: 1096 };
+  /** THE GATE, AS THE ONLY THING THAT ACTUALLY BLOCKS. Rasterised once from the three lane rects and
+   *  handed to Walkability's OWN reservation mechanism — the same one seat interactions use — because
+   *  every mover in this world already consults it: the router through `walkable`, and the body through
+   *  the stand test's `walkability.walkable` (player/standTest.ts). Closing the lanes therefore closes
+   *  walking, A* pathfinding and Player Mode in one place, with no new blocking mechanism and no second
+   *  code path to keep in step. A teleport does not route, so those are guarded separately (mayPlaceAt).
+   *
+   *  It is ~35 cells: the three passages and nothing else. Every other walkable cell in the building
+   *  stays walkable, which is what keeps this a boundary rather than a global movement block. */
+  const gateCells = (() => {
+    const out: Cell[] = [];
+    for (const r of gateRects(GATE.lanes, { z0: GATE.bandZ0, z1: GATE.bandZ1 }))
+      for (let cy = Math.floor(r.z / CELL); cy <= Math.floor((r.z + r.d - 0.001) / CELL); cy++)
+        for (let cx = Math.floor(r.x / CELL); cx <= Math.floor((r.x + r.w - 0.001) / CELL); cx++)
+          out.push({ cx, cy });
+    return out;
+  })();
+  const GATE_RESERVATION = "office-access-gate";
+  let officeAccess: OfficeAccess = "unknown";
+  const accessState = { access: "unknown", gate: "closed", zone: "—", ejections: 0 };
+  /** A restore that arrived while the gate was shut and the target was inside the office. Held rather than
+   *  discarded: the employee may be checked in and simply waiting on the read, and their persisted
+   *  position is still the right answer once V1 confirms it. Retried from setOfficeAccess. */
+  let pendingRestore: { point: Vec2; facing: Facing } | null = null;
+
+  const zoneOf = (p: Vec2): Zone => zoneAt(p, accessGeom);
+  /** May a body be PUT at this point? The teleport/restore counterpart of the closed lanes — routing is
+   *  already refused by the reservation, but nothing routes a placement, so the boundary is asked here
+   *  directly. Covers the V1 position restore, the two dev placement buttons and the CAVE portal. */
+  const mayPlaceAt = (p: Vec2): boolean => mayEnterOffice(officeAccess) || zoneOf(p) !== "office";
+
+  // Closed until V1 says otherwise. The world is built before the attendance read resolves, so the gate
+  // starts shut — the one direction where being wrong for half a second is harmless.
+  walkability.reserve(GATE_RESERVATION, gateCells);
+
+  function setOfficeAccess(next: OfficeAccess): void {
+    if (disposed || next === officeAccess) return;
+    officeAccess = next;
+    accessState.access = next;
+    if (mayEnterOffice(next)) {
+      walkability.release(GATE_RESERVATION);
+      accessState.gate = "open";
+    } else {
+      walkability.reserve(GATE_RESERVATION, gateCells);
+      accessState.gate = "closed";
+      // A WALK ALREADY QUEUED UNDER THE OLD ANSWER must not be honoured: the router cleared it when the
+      // lanes were open, and the waypoints do not re-consult walkability as they are consumed. Stopping
+      // it here is the same stop an interruption performs, so the self-movement feed resolves the
+      // movement at the body's real position rather than leaving peers at a destination nobody reached.
+      if (routeEntersOffice(navCtl.path, accessGeom)) navCtl.stop();
+      // DENIED MOVES A BODY; UNKNOWN NEVER DOES. A confirmed checkout with the employee still inside
+      // (the V2 route opened while checked out, or a checkout from another tab) would otherwise seal them
+      // in behind their own closed gate. `unknown` is excluded deliberately: relocating a checked-in
+      // employee for the half second before their check-in is confirmed is the worse failure.
+      if (next === "denied") ejectFromOffice();
+    }
+    navDebug.refreshDynamic(walkability);
+    if (pendingRestore && mayEnterOffice(officeAccess)) {
+      const r = pendingRestore;
+      pendingRestore = null;
+      restoreSelf(r.point, r.facing);
+    }
+  }
+
+  /** Stand a denied body back on Reception's public side. A PLACEMENT, not a movement — the feed is told
+   *  so (Feed.placed), because this is V2 enforcing V1's own rule, not the employee walking anywhere. */
+  function ejectFromOffice(): void {
+    if (zoneOf(avatar.position) !== "office") return;
+    navCtl.stop();
+    // RESOLVE THE WALK FIRST, WHERE THE BODY REALLY IS. Stopping the walker and moving the body in the
+    // same tick never gives frame() its chance to resolve an interrupted walk, so without this the
+    // walk_started that was in flight would never get its walk_arrived: peers keep replaying a route to a
+    // destination nobody reached, and nothing durable is written for where they actually stopped. Observed
+    // in a two-session run, not hypothesised.
+    selfFeed?.interrupt(avatar.position, avatar.yaw);
+    if (!playerMode.body.placeNear(OFFICE_EXIT_STAND)) return;
+    const placed = playerMode.body.pos;
+    avatar.setPosition(placed);
+    selfFeed?.placed(placed);
+    if (playerMode.active) playerMode.camera.snap();
+    accessState.ejections++;
+    avatarState.spawn = `checked out — stood back on Reception's public side at ${placed.x.toFixed(1)}, ${placed.z.toFixed(1)}`;
+    R.invalidateShadows();
+  }
+
   // ---- interactions -------------------------------------------------------------------------------
   function walkToGround(x: number, z: number): NavResult {
     if (stack.owner === "Interaction" || stack.owner === "Editor") {
       navState.last = `ignored: avatar owned by ${stack.owner}`;
       return { ok: false, reason: "outside-world", destination: null, cell: null };
+    }
+    // THE BOUNDARY, STATED RATHER THAN IMPLIED. The closed lanes already make an office destination
+    // unreachable, so this changes no outcome — it changes the REASON, from "unreachable" (which reads as
+    // a pathfinding failure) to a refusal the readout can name. The router is still the thing that
+    // enforces it; this is the honest message in front of it.
+    if (!mayEnterOffice(officeAccess) && zoneOf({ x, z }) === "office") {
+      navState.last = `refused: the working office needs a confirmed V1 check-in (attendance ${officeAccess})`;
+      navDebug.showNav(avatar.position, { ok: false, reason: "unreachable", destination: { x, z }, cell: worldToCell({ x, z }) });
+      return { ok: false, reason: "unreachable", destination: { x, z }, cell: worldToCell({ x, z }) };
     }
     const result = planWalk(avatar.position, { x, z }, walkability, inBounds);
     navDebug.showNav(avatar.position, result);
@@ -605,7 +787,17 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       navState.clearance = `${derivedNav.clearanceAt(clicked.cx, clicked.cy).toFixed(1)} / ${walkability.navRadius} needed · nearest ${near?.solid.id ?? "—"} (${near?.solid.from ?? ""})`;
     } else navState.clearance = `cell ${clicked.cx},${clicked.cy} is V1-governed`;
     navState.updates = `${walkability.stats.invalidations} invalidations / ${walkability.stats.cellsInvalidated} cells`;
-    if (result.ok) navCtl.setPath(result.path);
+    if (result.ok) {
+      // The ORIGIN is read before the walker touches anything (setPath only queues waypoints), so the
+      // published movement starts exactly where the body stands. Published only when the walker actually
+      // TOOK the path — setPath refuses while a higher-priority owner holds the avatar, and announcing a
+      // walk that is not going to happen would leave every peer replaying a route nobody walked.
+      const origin = avatar.position;
+      if (navCtl.setPath(result.path)) {
+        selfMovedByUser = true;
+        selfFeed?.planned(origin, result.path, plannedDurationMs(origin, result.path, navCtl.speed));
+      }
+    }
     return result;
   }
   // dev-only tour: walk the given world points in a loop (visual verification + benchmark driver)
@@ -1051,6 +1243,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // which is most of the reason the CAVE can afford a 270° video at all
     officeRoot: mirror.root,
     place: (p, look, pitch) => {
+      // The CAVE itself is outside the frame, but the portal point it returns you to is in the hub.
+      if (!mayPlaceAt(p)) return false;
       if (!playerMode.body.placeNear(p)) return false;
       avatar.setPosition(playerMode.body.pos);
       facePlayer(look, pitch); // body AND view, in both of this world's yaw conventions — see facePlayer
@@ -1542,6 +1736,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       R.shadowRadius = PLAYER_SHADOW_RADIUS;
       R.shadowFocusQuantum = PLAYER_SHADOW_FOCUS_QUANTUM;
       params.cameraMode = "player";
+      // Taking direct control counts as having moved yourself: a V1 position restore landing afterwards
+      // would teleport a player mid-stride. Same rule as the click-to-walk path above.
+      selfMovedByUser = true;
       aiLab.group.visible = true; // you can walk out to it, so it has to be there to walk to
       if (monkey) monkey.visible = true;
       if (env.setPresentation("world")) R.invalidateShadows();
@@ -1748,6 +1945,20 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   cw.add({ go: () => { for (const b of coworkers.group.children) console.log("coworker", b.name, b.position.x.toFixed(1), b.position.z.toFixed(1)); } }, "go").name("log every body to the console");
 
   av.add(avatarState, "who").name("player").disable().listen(); av.add(avatarState, "spawn").name("spawn").disable().listen(); av.add(avatarState, "status").disable().listen(); av.add(avatarState, "clip").disable().listen(); av.add(avatarState, "position").disable().listen(); av.add(avatarState, "owner").name("controller owner").disable().listen();
+  // PHASE 5 readout: how much of this session's movement reached V1, and how much was refused because it
+  // was not expressible as a V1 position (outside the frame — the campus, the Lab, the CAVE). Counts
+  // only, never a coordinate: a panel that printed one would be publishing a location into the page.
+  if (selfMovement) {
+    const acc = av.addFolder("working-office access (V1 attendance)");
+    acc.add(accessState, "access").name("V1 says").disable().listen();
+    acc.add(accessState, "gate").name("Reception gates").disable().listen();
+    acc.add(accessState, "zone").name("standing in").disable().listen();
+    acc.add(accessState, "ejections").name("ejections from office").disable().listen();
+    const pub = av.addFolder("published to V1");
+    pub.add(selfMovement.state, "started").name("walk_started").disable().listen();
+    pub.add(selfMovement.state, "arrived").name("walk_arrived").disable().listen();
+    pub.add(selfMovement.state, "refused").name("refused (outside V1 frame)").disable().listen();
+  }
   const sitGui = gui.addFolder("Chair interaction (design-member-chair-4)");
   sitGui.add({ sit: () => { const r = seat.sit(); if (r && !r.ok) seatState.state = seat.status; } }, "sit").name("▶ Sit");
   sitGui.add({ stand: () => seat.stand() }, "stand").name("▶ Stand");
@@ -1963,7 +2174,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   nav.add(params, "showDiagnostic").name("V1 ↔ derived V2 (amber = legacy over-block · red = real obstruction · magenta = stranded)").onChange((v: boolean) => (navDebug.showDiagnostic = v));
   const HALL_EXEC_DOOR: Vec2 = { x: 728, z: 312 }; // outside stand cell in front of the Executive door
   /** the two ends of a Reception entrance crossing (both V1-walkable; verified by nav tests) */
-  const RECEPTION_INSIDE: Vec2 = { x: 600, z: 1096 };
+  const RECEPTION_INSIDE: Vec2 = OFFICE_EXIT_STAND;
   const RECEPTION_STREET: Vec2 = { x: 720, z: 1216 };
   /** Drop Bon on the monument portal's own walk-up point. The CAVE is on the far side of the office from
    *  the Design Room spawn, so without this the entrance simply cannot be reached in a dev session. */
@@ -1989,12 +2200,18 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  tick — which is how a "go to the portal" button silently leaves you standing in the Design Room. */
   function placeBonAtPortal(): void {
     const p = world.get(CHAMPIONSHIP_ENTRANCE_ID).capabilities.approach!.point;
+    // The monument stands in the hub, which is working office. A placement does not route, so the closed
+    // lanes cannot refuse it — the boundary is asked directly.
+    if (!mayPlaceAt(p)) { navState.last = "refused: the monument is inside the working office"; return; }
     navCtl.setPath([]);
     if (playerMode.active) playerMode.body.placeNear(p);
     avatar.setPosition(playerMode.active ? playerMode.body.pos : p);
     facePlayer({ x: 0, z: 1 }); // looking south, at the monument's back and the portal cut into it
   }
   function placeBonAtEntrance(): void {
+    // Reception's public side, so this is open at every attendance state — the guard is here for the same
+    // reason the one above is: a placement is the one movement nothing routes.
+    if (!mayPlaceAt(RECEPTION_INSIDE)) return;
     navCtl.setPath([]);
     avatar.setPosition(RECEPTION_INSIDE);
     avatar.setYaw(0);
@@ -2279,6 +2496,16 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       || (hubSeat?.moved ?? false) || (execSeat?.moved ?? false) || (cmsSeat?.moved ?? false)
       || (aiSeat?.moved ?? false) || (devSeat?.moved ?? false) || (qaSeat?.moved ?? false);
   }
+  // THE ONE FLUSH dispose() CANNOT DO. A reload, a tab close or a back navigation tears the document down
+  // WITHOUT unmounting React, so app/Vo3dHost.tsx's cleanup — and therefore dispose() — never runs. The
+  // leg in flight would then never be resolved, and the employee's durable position would stay one leg
+  // behind where they actually stopped: V1 would restore them to it on the way back in.
+  //
+  // `pagehide` rather than `beforeunload`: it is the event that fires for a real navigation AND for a tab
+  // being discarded, and it does not ask the browser for an unload prompt. The emit is best-effort — the
+  // socket may already be going — which is why it is a flush of state that is otherwise correct, never the
+  // only thing keeping it correct.
+  onWindow("pagehide", () => selfFeed?.dispose());
   function loop(): void {
     // LIFECYCLE. The loop used to re-schedule itself unconditionally, which is correct for a page that
     // lives as long as the document and a leak for a world that can be unmounted: the callback keeps
@@ -2340,6 +2567,14 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       navCtl.update(dt / 1000);
       avatar.update(dt / 1000);
       const bp = avatar.worldPosition();
+      // PHASE 5 — PUBLISH THE EMPLOYEE'S OWN MOVEMENT. Deliberately here: every controller that can move
+      // Bon has already written this frame's transform, so the feed sees the body's real position whether
+      // it was moved by the planner, by PLAYER mode's WASD, by a seat or by a portal — and needs to know
+      // about none of them. `navCtl.path.length > 0` is the one extra signal: it separates a planned walk
+      // (announced up front by walkToGround) from free movement, and is how a planned walk's end — or its
+      // interruption — is detected. A no-op when no sink was handed over (the standalone dev page).
+      selfFeed?.frame(dt, { x: bp.x, z: bp.z }, avatar.yaw, navCtl.path.length > 0);
+      accessState.zone = zoneOf({ x: bp.x, z: bp.z });
       // A direct-control player has no planned route, so the automatic doors would only react once his body
       // was already inside the sweep band. `doorIntent` is a one-segment synthetic route pointing a stride
       // ahead of him — the SAME input SlidingDoor already consumes, so no door logic changes at all.
@@ -2788,6 +3023,38 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       positions: () => coworkers.positions(),
       count: () => coworkers.size,
     },
+    /** PHASE 5 VERIFICATION SURFACE — the counters, and the ONE driver a two-session check needs.
+     *
+     *  `walkTo` is the PRODUCTION click-to-walk entry point: the very same walkToGround the canvas's
+     *  pointerup handler calls, with the same planner, the same ownership rules and the same publishing.
+     *  It exists here so a V1↔V2 check can drive a real planned walk to a known cell deterministically
+     *  instead of guessing where a raycast will land — there is no test-only movement path, and adding one
+     *  is exactly what "do not create a competing movement system" rules out.
+     *
+     *  Everything else is read-only. `v1Position` is the same conversion the sink publishes through, so a
+     *  check can compare what V2 believes against what V1's own store received. */
+    selfMovement: {
+      publishing: selfMovement !== undefined,
+      state: () => (selfMovement ? { ...selfMovement.state, wire: [...selfMovement.state.wire] } : null),
+      /** What actually went on the wire, newest last — shapes only, never a coordinate. */
+      wire: () => (selfMovement ? [...selfMovement.state.wire] : []),
+      restored: () => selfRestored,
+      walkTo: (x: number, z: number) => walkToGround(x, z),
+      position: () => ({ ...avatar.position }),
+      v1Position: () => toV1Frame(avatar.position),
+    },
+    /** PHASE 5 ACCESS SURFACE — read-only, plus the one setter a two-session check needs in order to
+     *  exercise the boundary without a real check-out. `setAccess` is the SAME entry point app/Vo3dHost
+     *  pushes V1's answer through: it does not decide attendance, it delivers an answer, so a test driving
+     *  it is driving the production path rather than a test-only one. V1's own service stays the only
+     *  thing that can produce that answer in a real session. */
+    access: {
+      state: () => ({ ...accessState }),
+      zoneAt: (x: number, z: number) => zoneOf({ x, z }),
+      gateCells: () => gateCells.map((c) => ({ ...c })),
+      mayPlaceAt: (x: number, z: number) => mayPlaceAt({ x, z }),
+      setAccess: (a: OfficeAccess) => setOfficeAccess(a),
+    },
     /** PERFORMANCE STRESS PHASE 1 — the dev-only client/render load harness and its scenario matrix.
      *  Everything here is inert until called: no crowd exists, and nothing about the product page changes.
      *  Driven from the console or from scripts/vo3d/stress.mjs. Measurement only — see the block above
@@ -3106,6 +3373,12 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     disposed = true;               // every async continuation above checks this before touching anything
     cancelAnimationFrame(rafHandle); // the frame already asked for; the guard in loop() stops it re-arming
 
+    // PHASE 5 FIRST, and before anything is torn down: the movement socket is V1's module-level singleton
+    // and OUTLIVES this world, so this is the last chance to resolve a movement still in flight. Without
+    // it, leaving the route would leave the previous leg's arrival unsent and the employee's durable
+    // position one leg stale — a position V1 would then restore them to. Touches no scene object.
+    selfFeed?.dispose();
+
     // PLAYER first: it owns window/document key + pointer-lock listeners and a document.body HUD, none of
     // which belong to the canvas and so none of which die with the context.
     playerMode.dispose();
@@ -3143,8 +3416,51 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     R.dispose();
   }
 
+  /** THE ONE-SHOT V1 POSITION RESTORE — see Vo3dWorld.restoreSelf for the contract.
+   *
+   *  Modelled on the home-desk spawn above and refusing for the same reasons: V1 decided WHERE (in V1
+   *  coordinates), V2 decides where that is in the world it actually built (one room-shift table) and
+   *  whether a BODY FITS there (placeNear, judged by the same stand test as every WASD step). A position
+   *  with nothing legal within six body radii is refused rather than forced, and the home desk stands.
+   *
+   *  It also CLEARS ANY QUEUED WALK. Restoring a body while the planner still holds waypoints would have
+   *  the walker immediately drag it back toward a route planned from the old position. */
+  function restoreSelf(point: Vec2, facing: Facing): boolean {
+    if (disposed || selfRestored || selfMovedByUser) return false;
+    const target = homeDeskWorldPoint(point, selfFrameRooms, ROOM_WORLD_SHIFT_Z);
+    // A PERSISTED POSITION IS NOT A PERMISSION. V1 keeps employee_positions whatever attendance says, so
+    // an employee who checked out at their desk still has an office position on file — restoring it would
+    // be the one bypass that needs no walking at all. Refused while the gate is shut, and HELD rather
+    // than spent when the answer is merely `unknown`: the read usually resolves to a confirmed check-in a
+    // moment later, and that employee's own desk is then exactly where they belong.
+    if (!mayPlaceAt(target)) {
+      if (officeAccess === "unknown") pendingRestore = { point, facing };
+      avatarState.spawn = `${avatarState.spawn} · V1 position is inside the working office (attendance ${officeAccess})`;
+      return false;
+    }
+    if (!playerMode.body.placeNear(target)) {
+      avatarState.spawn = `${avatarState.spawn} · V1 position at ${target.x.toFixed(1)}, ${target.z.toFixed(1)} has no standable point`;
+      return false;
+    }
+    selfRestored = true;
+    navCtl.setPath([]);
+    const placed = playerMode.body.pos;
+    avatar.setPosition(placed);
+    // A PLACEMENT, NOT A MOVEMENT — and the feed has to be told, or the jump from the desk preview to
+    // here is published as a walk to the position V1 already holds (a revision bump and a DB write for
+    // no new fact, with placeNear's clearance nudge overwriting V1's own number). See Feed.placed.
+    selfFeed?.placed(placed);
+    avatar.setYaw(FACING_YAW[facing]);
+    if (playerMode.active) playerMode.camera.snap();
+    avatarState.spawn = `restored from V1 · ${placed.x.toFixed(1)}, ${placed.z.toFixed(1)} facing ${facing}`;
+    R.invalidateShadows(); // a body moved; the cached depth has it in the old place
+    return true;
+  }
+
   return {
     dispose,
+    restoreSelf,
+    setOfficeAccess,
     // Fire-and-forget: sync() loads GLBs, and a caller in a React effect has nothing useful to await.
     // Its own generation guard drops a load that lands after a newer roster, and its disposed guard drops
     // one that lands after the world is gone.

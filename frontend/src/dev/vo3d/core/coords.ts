@@ -28,3 +28,26 @@ export function stepAngle(from: number, to: number, maxStep: number): number {
   return from + Math.max(-maxStep, Math.min(maxStep, d));
 }
 export const dist = (a: Vec2, b: Vec2): number => Math.hypot(a.x - b.x, a.z - b.z);
+
+/** THE INVERSE of FACING_YAW: the compass facing a yaw is closest to.
+ *
+ *  Defined as the inverse of the TABLE rather than re-derived from the heading arithmetic, so a yaw the
+ *  table produced always round-trips back to the facing it came from — whatever convention the table
+ *  encodes. Re-deriving it (`atan2`) is how the two would drift apart, and this world already carries two
+ *  yaw conventions that differ by π (see app/world.ts facePlayer).
+ *
+ *  Ties (a yaw exactly 45° between two facings) resolve to the NORTH/SOUTH axis, which is the same
+ *  tie-break V1's own directionBetween takes (its `Math.abs(dx) > Math.abs(dy)` is strict, so an exact
+ *  diagonal falls through to front/back). */
+export function facingForYaw(yaw: number): Facing {
+  let best: Facing = "south";
+  let bestDelta = Infinity;
+  for (const facing of ["south", "north", "east", "west"] as const) {
+    let d = yaw - FACING_YAW[facing];
+    while (d > Math.PI) d -= 2 * Math.PI;
+    while (d < -Math.PI) d += 2 * Math.PI;
+    const delta = Math.abs(d);
+    if (delta < bestDelta) { bestDelta = delta; best = facing; }
+  }
+  return best;
+}

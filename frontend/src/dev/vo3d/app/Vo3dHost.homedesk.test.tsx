@@ -21,7 +21,7 @@ vi.mock("./world", () => ({
   createVo3dWorld: (_canvas: HTMLCanvasElement, id?: Vo3dIdentity, desk?: Vo3dHomeDesk) => {
     mounts.push({ identity: id, homeDesk: desk });
     // Phase 4A: the world is a Vo3dWorld, and the host pushes the roster into it on creation.
-    return { dispose: vi.fn(), setCoworkers: vi.fn() };
+    return { dispose: vi.fn(), setCoworkers: vi.fn(), restoreSelf: vi.fn(() => false), setOfficeAccess: vi.fn() };
   },
 }));
 

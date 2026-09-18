@@ -1,0 +1,204 @@
+// vo3d adapter — THE ONE PLACE V2 WRITES INTO V1. Phase 5, and the first write this route has ever done.
+//
+// Phases 4A/4B were read-only in both directions and said so at length. This module is the deliberate,
+// bounded exception, and every bound is here rather than spread across the world:
+//
+//   • IT EMITS V1'S OWN TWO EVENTS ON V1'S OWN SOCKET and nothing else. services/presence/movementSync
+//     owns a MODULE-LEVEL singleton connection (app/Vo3dHost.tsx already joins it read-only through
+//     usePeerMovements), and emitWalkStarted/emitWalkArrived are the same functions V1's own office calls.
+//     No new event name, no new endpoint, no second socket, no HTTP.
+//   • V1'S RULES BELOW THE WALK ARE REUSED, NOT RESTATED. The movement-id rule (makeMovementId), the
+//     64-point path cap (capPath, inside emitWalkStarted), the backend's [100, 20000] duration window
+//     (sanitizeDurationMs, also inside emitWalkStarted), the server-issued revision ordering and the
+//     sprite-facing vocabulary (v1Facing) are all V1's. What this file adds is one coordinate conversion
+//     and one refusal.
+//   • IT PUBLISHES ONLY WHAT IS EXPRESSIBLE AS A V1 POSITION. V2's world extends far outside the V1
+//     frame — the campus, the AI Lab, and the Championship CAVE out at x 2600 — and V1 has no floor
+//     there. adapters/v1CoworkerPositions' own isUsablePosition is the predicate, used here in the
+//     opposite direction: a movement whose origin or any waypoint is not a believable V1 position is
+//     REFUSED WHOLE and counted, never clamped into the frame. While the employee is out there, peers
+//     keep the last position V2 actually published, which is the same "they stayed where they stopped"
+//     Phase 4B already shows for a peer mid-walk.
+//   • IT NEVER CLAIMS A SEAT OR A SESSION. Every arrival is `state: "standing"`, `seatKey: null`. V2's
+//     seat entities have no V1 seat-centroid key (V1's own seatCentroidKey is painted-chair geometry),
+//     and inventing one would make V1 hide a real chair from everybody else. An employee sitting in V2
+//     therefore reads to V1 as standing at that chair — the position is true, the pose is not claimed.
+//     Attendance is likewise not read and not asserted: see the standing note in app/spawn.ts.
+//
+// WHY NOT makeMoveSelf. See the header of app/selfMovement.ts — that funnel owns V1's walker, and V2's
+// body is moved by V2's controllers. This file is the half of it that is transport.
+import { bonLayer, npcCharacterLayers } from "../../../data/office-layout";
+import { roomOf } from "../../../data/officePathfinding";
+import { makeMovementId } from "../../../components/OfficeMap/useSelfMovement";
+import {
+  emitWalkArrived,
+  emitWalkStarted,
+  type PeerMovementState,
+  type Pt,
+} from "../../../services/presence/movementSync";
+import { isUsablePosition } from "./v1CoworkerPositions";
+import { DIRECTION_BY_FACING, FACING_BY_DIRECTION } from "./v1Facing";
+import { resolveVo3dIdentity } from "./v1Identity";
+import { emailKey, selfEmailKey } from "./v1Coworkers";
+import type { Vo3dSelfMovementSink } from "../app/selfMovement";
+import type { Facing, Vec2 } from "../core/coords";
+
+/** THE SIGNED-IN EMPLOYEE'S OWN SPRITE BOX, by exactly V1's rule.
+ *
+ *  components/OfficeMap/OfficeMap.tsx resolves `playerCharacterLayer` as "bonLayer when the character id
+ *  is bon, otherwise that id's own manifest character layer, otherwise bonLayer" — and the box matters
+ *  because every position on V1's wire is a sprite TOP-LEFT, so undoing it needs THIS person's own
+ *  width/height. micah and angelo are deliberately taller for raised-arm headroom (data/rosterLayers.ts
+ *  says so, and adapters/v1CoworkerPositions leans on the same fact for everybody else), so reusing
+ *  bon's halves would offset them by several units on every peer's screen and in the DB.
+ *
+ *  adapters/v1Pathfinding.ts converts through bonLayer's halves unconditionally and is a TESTS-ONLY
+ *  oracle for precisely this reason; it must not be reached for here. */
+export function selfSpriteBox(avatarId: string | null): { width: number; height: number } {
+  if (avatarId && avatarId !== "bon") {
+    const layer = npcCharacterLayers.find((l) => l.id === avatarId);
+    if (layer) return { width: layer.width, height: layer.height };
+  }
+  return { width: bonLayer.width, height: bonLayer.height };
+}
+
+/** V1 frame-unit CENTRE point → the sprite top-left V1's wire and DB speak. */
+const toTopLeft = (centre: Vec2, box: { width: number; height: number }): Pt => ({
+  x: centre.x - box.width / 2,
+  y: centre.z - box.height / 2,
+});
+
+/** The manifest/roomLayers-namespace room id V1's walk events carry, resolved by V1's OWN lookup against
+ *  the body's CENTRE — the same call, with the same argument, that every moveSelf call site in
+ *  OfficeMap.tsx makes (`roomOf(bc)?.id ?? null`). Not the flat rooms/teamRooms namespace: those two id
+ *  schemes are different tables and V1's wire carries this one. */
+const roomIdAt = (centre: Vec2): string | null => roomOf({ x: centre.x, y: centre.z })?.id ?? null;
+
+/**
+ * THE SINK V2's world publishes the signed-in employee's movement through, or NULL when there is nobody
+ * to publish as.
+ *
+ * Null — not a guess and not a default identity — whenever V1 could not parse a signed-in employee
+ * (currentUserStore empty, a malformed /auth/me). app/world.ts then builds exactly the world the
+ * standalone dev page builds: nothing is emitted, and no movement leaves the browser.
+ *
+ * The identity is read ONCE, here, per mount, the same way adapters/v1Identity and adapters/v1HomeDesk are
+ * read once per mount by app/Vo3dHost.tsx — this is a value taken at mount, never a subscription.
+ */
+export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
+  const identity = resolveVo3dIdentity();
+  if (!identity) return null;
+  const box = selfSpriteBox(identity.avatarId);
+  const state = { started: 0, arrived: 0, refused: 0, wire: [] as string[] };
+  /** Append to the bounded wire log. SHAPES ONLY — never a position: this array is read from the dev
+   *  console and the verification harness, and one employee's coordinates do not belong in either. */
+  const note = (line: string): void => {
+    state.wire.push(line);
+    if (state.wire.length > 24) state.wire.shift();
+  };
+  /** The movement currently in flight, and the room it was started in. Held so the arrival carries the
+   *  SAME movementId (the backend accepts an arrival only against the active one) and so an arrival for a
+   *  movement that was never published is never sent — an unpaired walk_arrived is rejected server-side,
+   *  and sending one would be a lie about a walk that did not happen. */
+  let active: { movementId: string; roomId: string | null } | null = null;
+
+  return {
+    state,
+    started(origin, path, durationMs) {
+      const originTopLeft = toTopLeft(origin, box);
+      const pathTopLeft = path.map((p) => toTopLeft(p, box));
+      // REFUSED WHOLE, never trimmed. A walk that leaves the V1 frame is not a V1 walk, and publishing
+      // the part of it that happens to be inside would broadcast a route the employee did not take.
+      if (!isUsablePosition(originTopLeft) || pathTopLeft.some((p) => !isUsablePosition(p))) {
+        state.refused++;
+        note(`refused-started pts=${path.length}`);
+        return;
+      }
+      const movementId = makeMovementId();
+      // The room the walk is FOR, taken from where it ends — the same reading V1's own call sites use
+      // (they pass the goal's `roomOf`, not the origin's).
+      const roomId = roomIdAt(path[path.length - 1]);
+      const superseded = active ? ` supersedes=${active.movementId.slice(0, 8)}` : "";
+      active = { movementId, roomId };
+      state.started++;
+      note(`started id=${movementId.slice(0, 8)} pts=${path.length} ms=${Math.round(durationMs)} room=${roomId ?? "-"}${superseded}`);
+      // capPath and the duration round+clamp both live inside this call, in V1's module.
+      emitWalkStarted({ movementId, origin: originTopLeft, path: pathTopLeft, roomId, durationMs });
+    },
+    arrived(at, facing) {
+      const current = active;
+      active = null;
+      if (!current) {
+        note("arrived-dropped (no movement in flight)");
+        return;
+      }
+      const atTopLeft = toTopLeft(at, box);
+      if (!isUsablePosition(atTopLeft)) {
+        // The movement was published but the body ended somewhere V1 cannot hold. Leaving it unresolved
+        // is the honest outcome: nothing is persisted, and the peer's replay simply runs out at the end of
+        // the path it was given rather than being told a position that is not one.
+        state.refused++;
+        note(`refused-arrived id=${current.movementId.slice(0, 8)}`);
+        return;
+      }
+      state.arrived++;
+      note(`arrived id=${current.movementId.slice(0, 8)} facing=${DIRECTION_BY_FACING[facing]}`);
+      emitWalkArrived({
+        movementId: current.movementId,
+        at: atTopLeft,
+        facing: DIRECTION_BY_FACING[facing],
+        // NOT A SEAT AND NOT A SESSION — see the header. V2 publishes where the body is, nothing more.
+        state: "standing",
+        seatKey: null,
+        roomId: current.roomId,
+      });
+    },
+  };
+}
+
+/** Where V1 last saw the SIGNED-IN employee stop, as V2 needs it, or null when V1 holds no such fact. */
+export interface Vo3dSelfPosition {
+  /** V1 FRAME-UNIT CENTRE point, the same basis Vo3dHomeDesk.point is in — app/world.ts applies its own
+   *  room shift on top, through the same homeDeskWorldPoint every other placement goes through. */
+  point: Vec2;
+  facing: Facing;
+}
+
+/**
+ * THE OTHER HALF OF PHASE 5, and the reason the write above is safe to make: V2 starts you where V1 says
+ * you are, not where your desk is.
+ *
+ * Phase 3's home desk is a PREVIEW (app/spawn.ts says so). Publishing movement from a preview would mean
+ * every entry into the V2 route silently relocated the employee to their desk and then broadcast walks
+ * from it. Reading V1's own persisted position first is what keeps V1 the authority: V2 begins where V1
+ * left off, and a reload — in either office — comes back to the same place.
+ *
+ * PURE, and given its inputs rather than fetching them, exactly like adapters/v1CoworkerPositions: the
+ * host subscribes through V1's own hooks and hands the snapshot in.
+ *
+ * `stable` AND ONLY `stable`, for the same reason Phase 4B reads only that half: it is the position V1
+ * last saw this employee ARRIVE at, which is the only one that is durable. An `active` movement belongs
+ * to whichever session is walking it and is not a place to put a body.
+ *
+ * `snapshotReady` is the gate, not an optimisation — before the first positions_snapshot the store is
+ * empty, and an empty store is indistinguishable from "this employee has never moved".
+ */
+export function resolveV1SelfPosition(
+  peers: readonly PeerMovementState[],
+  snapshotReady: boolean,
+  box: { width: number; height: number } = selfSpriteBox(resolveVo3dIdentity()?.avatarId ?? null),
+): Vo3dSelfPosition | null {
+  if (!snapshotReady) return null;
+  const self = selfEmailKey();
+  if (!self) return null;
+  // SELF IS IN THE SNAPSHOT. positions_snapshot replays the whole registry including the connecting
+  // employee's own row, which is exactly why V1's OfficeMap waits on this flag before deciding a spawn.
+  // Phase 4A's coworker set excludes self by email, so this is the only place that row is ever read.
+  const peer = peers.find((p) => emailKey(p.email) === self);
+  if (!peer || !isUsablePosition(peer.stable.pos)) return null;
+  return {
+    // The one conversion, their own box's halves and nothing else — the mirror of toTopLeft above.
+    point: { x: peer.stable.pos.x + box.width / 2, z: peer.stable.pos.y + box.height / 2 },
+    facing: FACING_BY_DIRECTION[peer.stable.facing],
+  };
+}

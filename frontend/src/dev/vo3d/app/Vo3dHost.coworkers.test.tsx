@@ -20,6 +20,8 @@ vi.mock("./world", async () => ({
     const pushes: Push[] = [];
     const world = {
       dispose: vi.fn(),
+      restoreSelf: vi.fn(() => false),
+      setOfficeAccess: vi.fn(),
       setCoworkers: (coworkers: readonly Vo3dCoworker[], missingAvatar?: readonly string[]) => {
         pushes.push({ coworkers, missingAvatar });
       },
