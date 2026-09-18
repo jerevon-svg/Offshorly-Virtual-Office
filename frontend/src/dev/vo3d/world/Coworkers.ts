@@ -216,9 +216,18 @@ export interface CoworkersDeps {
   /** V1 frame point -> built V2 world point, room shifts applied */
   toWorld: (p: Vec2) => Vec2;
   lod?: AvatarLod;
-  /** called after bodies are added or removed, so the world can redraw its shadows */
-  onChanged?: () => void;
+  /** WHAT KIND of change a sync produced, because the two cost the renderer different things.
+   *
+   *  "population" — a body was added or removed. The new clone's MESHES only exist now, so they still
+   *                 have to join the dynamic-caster layer before the composite pass can draw them.
+   *  "position"   — the same bodies, somewhere new. Nothing was created; only the composite is stale.
+   *
+   *  A sync that does both reports "population", which is the superset. */
+  onChanged?: (change: CoworkerChange) => void;
 }
+
+/** See CoworkersDeps.onChanged. */
+export type CoworkerChange = "population" | "position";
 
 /** THE COWORKERS. One group in the scene; everything in it is disposable in one call. */
 export class Coworkers {
@@ -290,21 +299,26 @@ export class Coworkers {
     this.lastMissingAvatar = [...missingAvatar];
 
     // ---- population reconciliation, first half: who no longer belongs -------------------------------
-    let changed = false;
+    // REMOVAL AND MOVEMENT ARE COUNTED APART. They used to share one `changed` flag, which meant the world
+    // could not tell a body appearing (new meshes, which need the caster layer) from a body sliding across
+    // the floor (nothing new at all). See CoworkersDeps.onChanged.
+    let removed = false;
     for (const [email, body] of [...this.bodies]) {
       const next = this.wanted.get(email);
       // An avatarId change is a different character, not a moved one — the body has to be rebuilt.
       if (!next || next.coworker.avatarId !== body.avatarId) {
         body.dispose();
         this.bodies.delete(email);
-        changed = true;
+        removed = true;
       }
     }
 
     // ---- position updates, for everyone who already has a body -------------------------------------
     // Synchronous, and the only thing the cheap path does. A body whose coordinates are unchanged is not
-    // written to at all, so `changed` stays false and the shadow map is left alone.
-    if (this.applyPositions()) changed = true;
+    // written to at all, so `moved` stays false and the shadow map is left alone.
+    const moved = this.applyPositions();
+    /** a sync that both removed somebody and moved somebody reports the superset */
+    const reported: CoworkerChange | null = removed ? "population" : moved ? "position" : null;
 
     // ---- THE CHEAP PATH: same people, somewhere new ------------------------------------------------
     const newcomers = placed.filter(
@@ -312,7 +326,7 @@ export class Coworkers {
     );
     if (newcomers.length === 0) {
       this.publishStats(this.loading.size > 0);
-      if (changed) this.deps.onChanged?.();
+      if (reported) this.deps.onChanged?.(reported);
       return;
     }
 
@@ -325,7 +339,7 @@ export class Coworkers {
     const additions = placed.filter((p) => !this.bodies.has(p.coworker.email));
     this.loading = new Set(additions.map((p) => p.coworker.email));
     this.publishStats(true);
-    if (changed) this.deps.onChanged?.();
+    if (reported) this.deps.onChanged?.(reported);
 
     // Loaded in parallel, added in list order, so the scene graph order does not depend on which GLB
     // happened to resolve first. prototypeFor is cached per (character, LOD), so a second person of the
@@ -367,7 +381,7 @@ export class Coworkers {
 
     this.loading.clear();
     this.publishStats(false);
-    if (added) this.deps.onChanged?.();
+    if (added) this.deps.onChanged?.("population");
   }
 
   /** THE POSITION HALF. Moves every rendered body to its latest spot and reports whether ANY of them

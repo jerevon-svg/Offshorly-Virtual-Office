@@ -481,6 +481,7 @@ describe("vo3d player — camera mode ownership", () => {
       constrain: null as (() => void) | null,
       shadowFocus: null as Vec2 | null,
       shadowRadius: null as number | null,
+      shadowFocusQuantum: null as number | null,
       activeCamera: null as unknown,
       setActiveCamera(c: unknown) { this.activeCamera = c; },
       focusOn(rect: Rect) { this.camera.zoom = 1; this.target.x = rect.x + rect.w / 2; this.target.y = 8; this.target.z = rect.z + rect.d / 2 - 6; return 1; },
@@ -542,6 +543,7 @@ describe("vo3d player — camera mode ownership", () => {
     modes.set("player");
     R.shadowRadius = 300;
     R.shadowFocus = { x: 500, z: 500 };
+    R.shadowFocusQuantum = 64;
     const back = modes.set("office");
     expect(back.pitch).toBe(OFFICE_VIEW.pitch);
     expect(back.yaw).toBe(OFFICE_VIEW.yaw);
@@ -553,5 +555,8 @@ describe("vo3d player — camera mode ownership", () => {
     expect(R.constrain).not.toBeNull(); // the fence is back
     expect(R.shadowRadius).toBeNull(); // and the player's shadow override was cleared
     expect(R.shadowFocus).toBeNull();
+    // ...including the coarse focus GRID. Left behind, the orbit target would re-centre the shadow frame
+    // in 64-unit jumps, which is a visible lurch on a mode that pans rather than walks.
+    expect(R.shadowFocusQuantum).toBeNull();
   });
 });

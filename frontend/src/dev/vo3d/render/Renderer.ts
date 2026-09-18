@@ -57,6 +57,39 @@ export const DEFAULT_LIGHT: LightParams = { azimuth: -48, elevation: 54, keyInte
  *  frames of continuous static motion — spends almost all of itself on the cheaper full redraw. */
 const STATIC_THRASH_FRAMES = 3;
 
+/** HOW FAR THE SHADOW FRAME MOVES AT A TIME, in world units — the grid the frustum centre is snapped to.
+ *  Every step of it costs a FULL STATIC REDRAW (updateShadowFrame -> invalidateShadows), because the
+ *  cached depth is not merely stale at a new centre, it is misaligned. So the quantum is a redraw-rate
+ *  lever: crossings per second are speed / quantum, per axis.
+ *
+ *  8 is the ORBIT default and stays exactly what OFFICE and EXPLORE were approved with — a panning orbit
+ *  target moves in user-sized nudges, not continuously, so its crossing rate is already near zero. A mode
+ *  that drives the focus CONTINUOUSLY overrides it (see shadowFocusQuantum). */
+const SHADOW_FOCUS_QUANTUM = 8;
+
+/** RE-SNAP THRESHOLD, as a fraction of the quantum. Exactly 0.5 is plain rounding and is what the frame
+ *  used to do; anything above it is HYSTERESIS, and it is here for one failure mode only: a focus sitting
+ *  ON a cell boundary and wobbling across it — a body pinned to a wall, a damped orbit target settling —
+ *  would otherwise re-snap, and pay a full static redraw, on EVERY frame it wobbled. The excess (0.05 of
+ *  a quantum) is the width of the dead band, and it costs that same fraction of extra centre drift.
+ *
+ *  It does not change the SET of centres (still multiples of the quantum) nor the spacing between them
+ *  (still one quantum), so the orbit modes keep the frames they always had. */
+const SHADOW_SNAP_HYSTERESIS = 0.55;
+
+/** WHERE THE SHADOW FRAME SHOULD BE CENTRED THIS FRAME, given where it is centred now.
+ *
+ *  Pure, and exported, because this one decision is the entire redraw-rate lever and it is otherwise only
+ *  observable inside a live WebGL context: every centre it returns that differs from `centre` costs a full
+ *  static shadow pass. See shadowFocus.test.ts, which pins the crossing rate at each speed and quantum.
+ *
+ *  `centre` may be NaN (nothing settled yet) — the comparison is written so that fails and re-snaps. */
+export function snapShadowCentre(centre: Vec2, focus: Vec2, quantum: number, force = false): Vec2 {
+  const band = quantum * SHADOW_SNAP_HYSTERESIS;
+  if (!force && Math.abs(focus.x - centre.x) <= band && Math.abs(focus.z - centre.z) <= band) return centre;
+  return { x: Math.round(focus.x / quantum) * quantum, z: Math.round(focus.z / quantum) * quantum };
+}
+
 /** Resolution the AO is computed at, as a fraction of the drawing buffer. (Since slice 4 it no longer
  *  feeds a normal pass of its own — it samples the beauty buffer's full-resolution depth.) */
 const AO_SCALE = 0.5;
@@ -176,6 +209,17 @@ export class Renderer {
    *  with. This is a camera/lighting knob, not gameplay: the renderer still knows nothing about a player. */
   shadowFocus: Vec2 | null = null;
   shadowRadius: number | null = null;
+  /** THE FOCUS GRID, overridden. Null leaves the frame on SHADOW_FOCUS_QUANTUM, which is what OFFICE and
+   *  EXPLORE were approved with. A mode whose focus moves CONTINUOUSLY — PLAYER walks at 70 u/s and
+   *  sprints at 100 — sets a coarser one, because at 8 units a walk re-centres the frustum, and therefore
+   *  redraws every static caster in the building, up to eleven times a SECOND.
+   *
+   *  THE TRADE IS COVERAGE, and it is the only thing to weigh here: the frustum is a fixed square around
+   *  the snapped centre, so a coarser grid lets the body sit further from the middle of it — up to
+   *  `quantum * SHADOW_SNAP_HYSTERESIS` per axis. Shadow RESOLUTION is untouched: the frustum keeps its
+   *  size, so a texel keeps covering exactly the same amount of floor. See PLAYER_SHADOW_FOCUS_QUANTUM in
+   *  app/world for the sizing, and CameraModes for where both overrides are given back. */
+  shadowFocusQuantum: number | null = null;
   /** Optional VISIBILITY hook, run every frame after the shadow frame has been settled and before
    *  anything is drawn. Room-level culling lives behind it (render/RoomVisibility, driven by
    *  app/bootstrap) — the renderer itself still knows nothing about rooms.
@@ -186,6 +230,9 @@ export class Renderer {
   cull: (() => void) | null = null;
   private readonly lightDir = new THREE.Vector3(0, 1, 0);
   private shadowKey = "";
+  /** THE SNAPPED CENTRE CURRENTLY IN FORCE, in world units — what the hysteresis above is measured from.
+   *  NaN until the first frame has settled it; `force` and the NaN both take the same branch. */
+  private readonly shadowCentre: Vec2 = { x: Number.NaN, z: Number.NaN };
   // ---- SPLIT SHADOW UPDATE (see the block comment above updateShadowMaps) ----
   /** A/B switch. Off = the pre-split behaviour exactly: one flag, one full redraw of every caster. */
   shadowCache = true;
@@ -436,7 +483,13 @@ export class Renderer {
     const halfVisible = this.camera.top / Math.max(this.camera.zoom, 1e-6);
     const s = this.shadowRadius ?? Math.round(THREE.MathUtils.clamp(halfVisible * 1.7, 180, 760));
     const c = this.shadowFocus ?? this.target;
-    const t: Vec2 = { x: Math.round(c.x / 8) * 8, z: Math.round(c.z / 8) * 8 };
+    // THE FRAME IS HELD STILL UNTIL THE FOCUS HAS EARNED A MOVE. Re-snapping is not free — it is a full
+    // static redraw of the whole building — so it happens only once the focus has drifted out of the dead
+    // band around the centre currently in force, and then it goes straight to the nearest grid point
+    // rather than following the focus. NaN on the first frame fails the comparison and takes the branch.
+    const t = this.shadowCentre;
+    const next = snapShadowCentre(t, c, this.shadowFocusQuantum ?? SHADOW_FOCUS_QUANTUM, force);
+    t.x = next.x; t.z = next.z;
     const key = `${s}:${t.x}:${t.z}`;
     if (!force && key === this.shadowKey) return;
     this.shadowKey = key;

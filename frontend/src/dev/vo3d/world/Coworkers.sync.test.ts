@@ -307,6 +307,76 @@ describe("Coworkers.sync — shadow invalidation", () => {
     await cw.sync([A]);
     expect(onChanged).toHaveBeenCalled();
   });
+
+  // PHASE 4C STAGE 1. The world does two DIFFERENT things with these two reasons — a "population" change
+  // re-marks the new clone's meshes onto the dynamic-caster layer, a "position" change does not — so a
+  // sync that mislabels itself either leaves a body casting no shadow or re-marks the whole group on every
+  // step somebody takes. Nothing here asserts a full static invalidation: a coworker is never in the
+  // cached static depth, so there is nothing of it for them to stale.
+  it("labels a pure MOVE as a position change — no new meshes exist", async () => {
+    const { cw, onChanged } = withOnChanged();
+    await cw.sync([A, B]);
+    onChanged.mockClear();
+    await cw.sync([A, movedTo(B, 900)]);
+    expect(onChanged).toHaveBeenCalledTimes(1);
+    expect(onChanged).toHaveBeenCalledWith("position");
+  });
+
+  it("labels an ARRIVAL as a population change — the clone's meshes only exist now", async () => {
+    const { cw, onChanged } = withOnChanged();
+    await cw.sync([A]);
+    onChanged.mockClear();
+    await cw.sync([A, B]);
+    expect(onChanged).toHaveBeenCalledWith("population");
+  });
+
+  it("labels a DEPARTURE as a population change", async () => {
+    const { cw, onChanged } = withOnChanged();
+    await cw.sync([A, B]);
+    onChanged.mockClear();
+    await cw.sync([A]);
+    expect(onChanged).toHaveBeenCalledWith("population");
+  });
+
+  it("labels a CHARACTER SWAP as a population change — the old body is rebuilt, not moved", async () => {
+    const { cw, onChanged } = withOnChanged();
+    await cw.sync([A]);
+    onChanged.mockClear();
+    await cw.sync([{ ...A, avatarId: "micah" }]);
+    expect(onChanged).toHaveBeenCalledWith("population");
+  });
+
+  it("reports the SUPERSET when one person leaves and another moves in the same sync", async () => {
+    // Both happened, so the world must take the population path: skipping the re-mark here would leave
+    // whatever is rebuilt afterwards off the caster layer.
+    const { cw, onChanged } = withOnChanged();
+    await cw.sync([A, B]);
+    onChanged.mockClear();
+    await cw.sync([movedTo(A, 700)]);
+    expect(onChanged).toHaveBeenCalledWith("population");
+  });
+
+  it("labels a LATE-LANDING character as a population change once its GLB resolves", async () => {
+    // The async half: the body is added long after sync() returned, and that is the moment its meshes
+    // first exist. If this arrived as anything but "population" the late body would never be marked.
+    autoResolve = false;
+    const { cw, onChanged } = withOnChanged();
+    const load = cw.sync([A]);
+    onChanged.mockClear();
+    flushPending();
+    await load;
+    expect(cw.size).toBe(1);
+    expect(onChanged).toHaveBeenCalledWith("population");
+  });
+
+  it("a stream of MOVES never reports a population change — the re-mark is not per-step work", async () => {
+    const { cw, onChanged } = withOnChanged();
+    await cw.sync([A, B]);
+    onChanged.mockClear();
+    for (let x = 100; x <= 500; x += 100) await cw.sync([A, movedTo(B, x)]);
+    expect(onChanged).toHaveBeenCalledTimes(5);
+    expect(onChanged.mock.calls.every((c) => c[0] === "position")).toBe(true);
+  });
 });
 
 describe("Coworkers — the read-only verification surface", () => {

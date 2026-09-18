@@ -110,6 +110,7 @@ export class CameraModes {
     this.R.setActiveCamera(this.R.camera);
     this.R.shadowFocus = null;
     this.R.shadowRadius = null;
+    this.R.shadowFocusQuantum = null;
     if (mode === "office") {
       this.officeZoom = this.frameZoom(this.bounds, 1, "cover");
       this.aspectAt = window.innerWidth / window.innerHeight;

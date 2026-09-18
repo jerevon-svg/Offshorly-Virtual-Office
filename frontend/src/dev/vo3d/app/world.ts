@@ -852,6 +852,21 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  nothing once a perspective camera is walking the building; this keeps the 2048 map on the few hundred
    *  units the player can actually see, which is what makes contact shadows read at eye level. */
   const PLAYER_SHADOW_RADIUS = 300;
+  /** PLAYER shadow-frame GRID, in world units — how far the player walks before the frustum re-centres,
+   *  and therefore before every static caster in the building is redrawn into the shadow map.
+   *
+   *  WHY IT IS NOT THE ORBIT DEFAULT OF 8. OFFICE and EXPLORE move their focus in user-sized nudges; a
+   *  player moves it CONTINUOUSLY, at PLAYER_WALK_SPEED (70 u/s) and PLAYER_SPRINT_SPEED (100). Swept over
+   *  every heading, an 8 grid re-centres up to 11 times a second walking and 15 sprinting — a full static
+   *  pass on 19% of walking frames and 26% of sprinting ones, for a building that has not moved. At 64 the
+   *  same sweep gives 1.6/s and 2.3/s, i.e. 2.7% and 3.8% at 60 fps (shadowFocus.test.ts pins both).
+   *
+   *  WHY 64 AND NOT MORE. The frustum is a fixed 2 x PLAYER_SHADOW_RADIUS square around the snapped
+   *  centre, so the grid spends COVERAGE: at 64 the body can sit up to 64 * 0.55 = 35.2 units off-centre
+   *  per axis (49.8 on the diagonal), leaving at worst 250 of the 300 units of shadowed ground ahead of
+   *  him instead of 294. 64 is the coarsest grid that still keeps that loss under a sixth. Shadow
+   *  RESOLUTION is untouched — the frustum keeps its size, so a texel keeps covering the same floor. */
+  const PLAYER_SHADOW_FOCUS_QUANTUM = 64;
   // EXTERIOR IS OPEN TO THE PLAYER. `allowExterior` was authored false for V0 with the note that the flag
   // "will open it later"; later is now. Nothing about the test relaxes — the sidewalk still has to pass the
   // V1 grid, the rim samples and the region check like every other cell. What it opens is EXACTLY the one
@@ -1004,8 +1019,21 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     toWorld: (p) => homeDeskWorldPoint(p, v1Rooms(), ROOM_WORLD_SHIFT_Z),
     lod: 1,
     // Their idle animation moves them every frame, so they are dynamic casters like the stress crowd;
-    // the shadow map is invalidated only when the POPULATION changes, not per frame.
-    onChanged: () => R.invalidateShadows(),
+    // the shadow map is invalidated only when a sync actually changed something, not per frame.
+    onChanged: (change) => {
+      // THE MESHES ONLY EXIST NOW. addDynamicCaster below marks the group ONCE, while it is still empty —
+      // every body is cloned in afterwards, so without this re-mark none of them ever joins
+      // DYNAMIC_CASTER_LAYER and compositeDynamicShadows (which draws that layer and nothing else) skips
+      // them entirely: coworkers stood in the office casting no shadow at all. The hero avatar and the
+      // stress crowd already do exactly this re-mark for exactly this reason. Meshes only — markDynamicCaster
+      // skips the nameplate Sprite, which must NOT be on the layer or it casts a rectangle on the floor.
+      if (change === "population") R.markDynamicCaster(coworkers.group);
+      // A COWORKER CANNOT STALE THE CACHED STATIC DEPTH. The static pass hides the whole dynamic-caster
+      // group before it draws (Renderer.hideDynamicCasters), so no coworker is ever IN that depth — which
+      // makes the full invalidateShadows() this used to call a redraw of ~2,800 static casters for a body
+      // that is not in the pass. Only the composite is stale.
+      R.invalidateDynamicShadows();
+    },
   });
   R.addDynamicCaster(coworkers.group);
 
@@ -1506,6 +1534,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       R.playerCamera.aspect = window.innerWidth / window.innerHeight;
       R.playerCamera.updateProjectionMatrix();
       R.shadowRadius = PLAYER_SHADOW_RADIUS;
+      R.shadowFocusQuantum = PLAYER_SHADOW_FOCUS_QUANTUM;
       params.cameraMode = "player";
       aiLab.group.visible = true; // you can walk out to it, so it has to be there to walk to
       if (monkey) monkey.visible = true;
