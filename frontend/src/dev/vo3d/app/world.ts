@@ -81,7 +81,7 @@ import { CORRIDOR_BANDS, ROOM_WORLD_SHIFT_Z, registerGroundFloor } from "../room
 import { v1Rooms } from "../adapters/v1Floor";
 import { planWalk, type NavResult } from "../nav/planner";
 import { v1Static } from "../adapters/v1Grid";
-import { DEFAULT_LIGHT, Renderer } from "../render/Renderer";
+import { casterPoseMoved, DEFAULT_LIGHT, Renderer, type CasterPose } from "../render/Renderer";
 import { SceneMirror } from "../render/SceneMirror";
 import { setStaticBatching, staticBatchingEnabled } from "../render/StaticBatch";
 import { setSSAODepthReuse, ssaoDepthReuseEnabled } from "../render/SSAOFromDepth";
@@ -689,6 +689,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     loungeSeat?.reset();
     loungeSeat = null;
     if (gamingSeat && gamingSeat.state !== "idle") gamingSeat.reset();
+    R.invalidateShadows(); // SEE clearSeats: a reset SNAPS a chair back and nothing else will report it
     const id = GAMING_CHAIR_IDS[index];
     const e = world.get(id);
     gamingSeat = new SeatInteraction(avatar, stack, mirror.view(id), e.capabilities.seat!, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
@@ -714,6 +715,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     if (aiSeat && aiSeat.state !== "idle") aiSeat.reset();
     if (devSeat && devSeat.state !== "idle") devSeat.reset();
     if (qaSeat && qaSeat.state !== "idle") qaSeat.reset();
+    // A RESET SNAPS ITS CHAIR back to the rest transform, and the interaction is usually discarded right
+    // afterwards — so there is no later update() to report that move through SeatInteraction.moved, and
+    // the chair would keep the shadow of the pose it was dragged to. Before stage 4b this was covered by
+    // accident: the replacement interaction's non-idle status held the whole static world stale anyway.
+    R.invalidateShadows();
   }
   function startHubSit(index: number): void {
     approachCtl.cancel();
@@ -1701,7 +1707,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   }
   const geo = gui.addFolder("Geometry");
   const rebuild = () => {
-    seat.reset();
+    seat.reset(); // the room is rebuilt (and re-shadowed) below, so the chair snap-back is covered
     mirror.rebuildRoom(DESIGN_ROOM, shellOpts());
     // the room's meshes are new objects, so its addressable surfaces and lights are re-collected with them
     const g = mirror.roomGroup(DESIGN_ROOM.id);
@@ -1745,7 +1751,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   const sitGui = gui.addFolder("Chair interaction (design-member-chair-4)");
   sitGui.add({ sit: () => { const r = seat.sit(); if (r && !r.ok) seatState.state = seat.status; } }, "sit").name("▶ Sit");
   sitGui.add({ stand: () => seat.stand() }, "stand").name("▶ Stand");
-  sitGui.add({ reset: () => seat.reset() }, "reset").name("reset interaction");
+  sitGui.add({ reset: () => { seat.reset(); R.invalidateShadows(); } }, "reset").name("reset interaction");
   sitGui.add(seatState, "state").disable().listen(); sitGui.add(seatState, "chairRestError").disable().listen();
   const doorGui = gui.addFolder("Sliding door (design-room/door-east · automatic)");
   doorGui.add(doorState, "state").disable().listen(); doorGui.add(doorState, "open").name("open %").disable().listen(); doorGui.add(doorState, "drift").name("closed-transform drift").disable().listen(); doorGui.add(doorState, "cycles").disable().listen();
@@ -2200,8 +2206,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   let overlayTick = 0;
   /** True while anything that casts a shadow is still moving. Compared against the last frame rather than
    *  asking each controller, so a new interaction can never forget to opt in. */
-  const lastShadowPose = new THREE.Vector3(Number.NaN, 0, 0);
-  let lastShadowClip = "";
+  const lastShadowPose: CasterPose = { x: Number.NaN, z: 0, yaw: Number.NaN, clip: "" };
   // THE SPLIT IS BY WHAT MOVED, not by how much. A DYNAMIC caster is a registered avatar body and nothing
   // else: it is drawn into the shadow map over a cached static depth, so it costs ~70 draws instead of the
   // whole ground floor (render/Renderer, updateShadowMaps). ANYTHING ELSE that casts a shadow — a door leaf,
@@ -2211,22 +2216,68 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // one is a visible bug.
   function avatarShadowsAreStale(): boolean {
     const p = avatar.worldPosition();
-    const clip = avatar.currentClip ?? "";
-    const moved = Math.abs(p.x - lastShadowPose.x) > 0.01 || Math.abs(p.z - lastShadowPose.z) > 0.01 || clip !== lastShadowClip;
-    lastShadowPose.set(p.x, 0, p.z);
-    lastShadowClip = clip;
+    // POSITION, HEADING AND CLIP — casterPoseMoved is where that decision lives and is tested. Yaw joined
+    // it in stage 4b: an approach ends by turning on the spot, and a seat sequence turns Bon into the
+    // chair, both of which used to be covered only because the controller was holding the whole static
+    // world stale. They now cost the cheap dynamic composite that the moving body always should have.
+    const next: CasterPose = { x: p.x, z: p.z, yaw: avatar.yaw, clip: avatar.currentClip ?? "" };
+    const moved = casterPoseMoved(lastShadowPose, next);
+    lastShadowPose.x = next.x; lastShadowPose.z = next.z; lastShadowPose.yaw = next.yaw; lastShadowPose.clip = next.clip;
     // a walking avatar animates continuously
     return moved || navCtl.moving || (crowd?.moving ?? false);
   }
-  /** Something in the WORLD that casts a shadow is animating: doors, and every interaction that drags a
-   *  chair. These invalidate the cached static depth, exactly as they always have. */
+  /** A/B SWITCH, MEASUREMENT ONLY, never left on. True restores the pre-stage-4 rule exactly — a door is
+   *  stale for as long as it is not closed, the hold included — so the two rules can be captured inside
+   *  ONE page session. Run-to-run frame-time drift on this machine is larger than what the fix is worth,
+   *  so an A/B that spans two browser launches cannot see it; this is how the numbers in the report were
+   *  produced. Nothing reads it in the product: it defaults to false and only the dev surface writes it. */
+  let doorStaleLegacy = false;
+  /** The same A/B switch for the INTERACTION half of the predicate (stage 4b): true restores the
+   *  pre-fix rule — any seat or approach that is not idle holds the whole static world stale. */
+  let interactionStaleLegacy = false;
+  function doorsAreStale(): boolean {
+    if (doorStaleLegacy) {
+      return door.state !== "closed" || entryDoor.state !== "closed" || gamingDoor.state !== "closed" || execDoor.state !== "closed"
+        || cmsDoor.state !== "closed" || aiDoor.state !== "closed" || devDoor.state !== "closed" || qaDoor.state !== "closed";
+    }
+    return door.moved || entryDoor.moved || gamingDoor.moved || execDoor.moved || cmsDoor.moved || aiDoor.moved || devDoor.moved || qaDoor.moved;
+  }
+  /** Something in the WORLD that casts a shadow is MOVING: a door leaf, and every interaction that drags
+   *  a chair. These invalidate the cached static depth, exactly as they always have. */
   function worldShadowsAreStale(): boolean {
-    return door.state !== "closed" || entryDoor.state !== "closed" || gamingDoor.state !== "closed" || execDoor.state !== "closed" || cmsDoor.state !== "closed" || aiDoor.state !== "closed" || devDoor.state !== "closed" || qaDoor.state !== "closed"
-      || seat.status !== "idle" || approachCtl.status !== "idle"
-      || (meetingSeat?.status ?? "idle") !== "idle" || (gamingSeat?.status ?? "idle") !== "idle"
-      || (hubSeat?.status ?? "idle") !== "idle" || (loungeSeat?.status ?? "idle") !== "idle"
-      || (execSeat?.status ?? "idle") !== "idle" || (cmsSeat?.status ?? "idle") !== "idle"
-      || (aiSeat?.status ?? "idle") !== "idle" || (devSeat?.status ?? "idle") !== "idle" || (qaSeat?.status ?? "idle") !== "idle";
+    // DOORS ARE ASKED WHAT MOVED, NOT WHAT STATE THEY ARE IN. `state !== "closed"` also covers the HOLD,
+    // during which the leaf stands still and the redraw it asked for reproduced the previous shadow map
+    // exactly. Worse, an unbroken streak of static invalidations trips Renderer's THRASH FALLBACK, so the
+    // split shadow update stands down and every frame pays a full redraw of ~2,800 static casters: the
+    // held-open door was making the cache it was supposed to benefit from give up. SlidingDoor.moved is
+    // true on exactly the frames the leaf's transform changed, which is what a shadow map depends on —
+    // a moving door still forces its full redraw, on every frame it moves, including the one it lands on.
+    //
+    // THE SEATS ANSWER THE SAME QUESTION, and two controllers have left this list entirely.
+    // A SeatInteraction moves a CHAIR — a static caster — but only in four of its eleven states; for the
+    // walk over, the glide onto the cushion, the whole SEATED hold and the walk away it writes nothing
+    // static, and `status !== "idle"` was reporting all of it. APPROACH and LOUNGE-SEAT never touch
+    // world geometry at all: approach walks the body and turns it, and LoungeSeatInteraction is built
+    // around a sofa that by construction never moves (see its furnitureDrift invariant). Both used to
+    // hold the static world stale FOREVER after they finished, because their terminal status is
+    // "at <label>" / "seated", not "idle" — measured at 139 full redraws in 139 stationary frames.
+    // What they do move is the avatar, which is a DYNAMIC caster with its own test above.
+    // NOTE for the day this A/B switch goes: five room wiring tests (ai/cms/dev/qa/executive) assert the
+    // `(xSeat?.status ?? "idle") !== "idle"` text below as their "this seat is wired into shadow
+    // staleness" guard. Deleting the legacy branch means re-pointing those five regexes at `xSeat?.moved`.
+    if (interactionStaleLegacy) {
+      return doorsAreStale()
+        || seat.status !== "idle" || approachCtl.status !== "idle"
+        || (meetingSeat?.status ?? "idle") !== "idle" || (gamingSeat?.status ?? "idle") !== "idle"
+        || (hubSeat?.status ?? "idle") !== "idle" || (loungeSeat?.status ?? "idle") !== "idle"
+        || (execSeat?.status ?? "idle") !== "idle" || (cmsSeat?.status ?? "idle") !== "idle"
+        || (aiSeat?.status ?? "idle") !== "idle" || (devSeat?.status ?? "idle") !== "idle" || (qaSeat?.status ?? "idle") !== "idle";
+    }
+    return doorsAreStale()
+      || seat.moved
+      || (meetingSeat?.moved ?? false) || (gamingSeat?.moved ?? false)
+      || (hubSeat?.moved ?? false) || (execSeat?.moved ?? false) || (cmsSeat?.moved ?? false)
+      || (aiSeat?.moved ?? false) || (devSeat?.moved ?? false) || (qaSeat?.moved ?? false);
   }
   function loop(): void {
     // LIFECYCLE. The loop used to re-schedule itself unconditionally, which is correct for a page that
@@ -2778,6 +2829,20 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
         resetStats: () => { R.shadowStats.staticPasses = 0; R.shadowStats.dynamicPasses = 0; R.shadowStats.fullPasses = 0; R.shadowStats.skipped = 0; R.shadowStats.frames = 0; },
       },
       resetShadowCounters: () => { framesSeen = 0; shadowRedraws = 0; shadowStaticRedraws = 0; },
+      /** THE DOOR STALENESS RULE, for the A/B rig: `setLegacy(true)` is the BEFORE state (a door is
+       *  stale for its whole open hold), live and reversible. Measurement only — see doorStaleLegacy. */
+      doorStale: {
+        legacy: () => doorStaleLegacy,
+        setLegacy: (on: boolean) => { doorStaleLegacy = on; R.invalidateShadows(); },
+        moving: () => [door, entryDoor, gamingDoor, execDoor, cmsDoor, aiDoor, devDoor, qaDoor].filter((d) => d.moved).length,
+      },
+      /** THE SEAT/APPROACH STALENESS RULE, same rig, same meaning: `setLegacy(true)` is the BEFORE
+       *  state, in which any non-idle seat or approach holds the whole static world stale. */
+      interactionStale: {
+        legacy: () => interactionStaleLegacy,
+        setLegacy: (on: boolean) => { interactionStaleLegacy = on; R.invalidateShadows(); },
+        movingChairs: () => [seat, meetingSeat, gamingSeat, hubSeat, execSeat, cmsSeat, aiSeat, devSeat, qaSeat].filter((c) => c?.moved).length,
+      },
       errors: () => [...pageErrors],
       device,
       visibleMeshes: () => stressSceneSnapshot().visibleMeshes,

@@ -90,6 +90,31 @@ export function snapShadowCentre(centre: Vec2, focus: Vec2, quantum: number, for
   return { x: Math.round(focus.x / quantum) * quantum, z: Math.round(focus.z / quantum) * quantum };
 }
 
+/** THE POSE A DYNAMIC CASTER'S SHADOW WAS LAST DRAWN FROM. Position in world units, heading in radians,
+ *  and the clip it was playing — the three things that change what its silhouette looks like. */
+export type CasterPose = { x: number; z: number; yaw: number; clip: string };
+/** Below these the pose is treated as unchanged: 0.01 unit is far under a pixel at office zoom, and
+ *  0.003 rad is far under one frame of the slowest turn in the world (4.2 rad/s ⇒ 0.07 rad/frame). */
+const CASTER_MOVE_EPS = 0.01;
+const CASTER_TURN_EPS = 0.003;
+
+/** HAS A DYNAMIC CASTER MOVED ENOUGH TO NEED RE-COMPOSITING INTO THE SHADOW MAP?
+ *
+ *  Pure, and exported, for the same reason snapShadowCentre is: it decides a per-frame redraw and is
+ *  otherwise only observable inside a live GL context. YAW IS PART OF IT — a body that turns on the spot
+ *  changes neither x nor z nor clip, and before stage 4b nothing in this test noticed, because the
+ *  interaction controllers were reporting the whole WORLD stale for the duration of a turn and the full
+ *  redraw covered it. `prev` may hold NaN (nothing drawn yet); the comparisons are written so that
+ *  re-composites rather than skips. */
+export function casterPoseMoved(prev: CasterPose, next: CasterPose): boolean {
+  if (next.clip !== prev.clip) return true;
+  if (!(Math.abs(next.x - prev.x) <= CASTER_MOVE_EPS) || !(Math.abs(next.z - prev.z) <= CASTER_MOVE_EPS)) return true;
+  let d = next.yaw - prev.yaw;
+  while (d > Math.PI) d -= 2 * Math.PI;
+  while (d < -Math.PI) d += 2 * Math.PI;
+  return !(Math.abs(d) <= CASTER_TURN_EPS);
+}
+
 /** Resolution the AO is computed at, as a fraction of the drawing buffer. (Since slice 4 it no longer
  *  feeds a normal pass of its own — it samples the beauty buffer's full-resolution depth.) */
 const AO_SCALE = 0.5;

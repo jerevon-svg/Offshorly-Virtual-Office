@@ -32,6 +32,17 @@ export class SeatInteraction {
   private sceneParent: THREE.Object3D | null = null;
   private readonly glideFrom = new THREE.Vector3();
   private readonly glideTo = new THREE.Vector3();
+  /** DID THE CHAIR ACTUALLY MOVE on the last update()? — the shadow map's input, for the same reason
+   *  SlidingDoor.moved exists. The chair is a STATIC caster: a frame it moves costs a full redraw of
+   *  every static caster in the building, and a frame it does not move cannot change the shadow map at
+   *  all. `status !== "idle"` was standing in for this, but it is true for the whole SEATED state as
+   *  well — a chair tucked in and holding perfectly still for as long as Bon stays in it — and for the
+   *  walk to the chair, the glide into it and the walk away, none of which touch the chair. Measured:
+   *  139 of 139 frames redrawn while nothing moved. The avatar's own motion is a DYNAMIC caster and is
+   *  invalidated separately (app/world's avatarShadowsAreStale), so nothing here has to cover it. */
+  moved = false;
+  private readonly prevChairPos = new THREE.Vector3();
+  private readonly prevChairQuat = new THREE.Quaternion();
   private walk: Vec2[] = [];
   private readonly avatar: Avatar;
   private readonly stack: ControllerStack;
@@ -79,6 +90,7 @@ export class SeatInteraction {
   }
   stand(): void { if (this.state === "seated") this.setState("slidingOut"); }
   reset(): void {
+    this.moved = true; // the chair is snapped back to its rest transform below
     if (this.sceneParent && this.avatar.root.parent !== this.sceneParent) this.avatar.detachTo(this.sceneParent);
     this.chair.position.copy(this.restPos);
     this.chair.quaternion.copy(this.restQuat);
@@ -98,7 +110,16 @@ export class SeatInteraction {
     return this.walk.length === 0;
   }
 
+  /** Step the sequence, then report whether the CHAIR's transform changed — the one thing in here the
+   *  static shadow map depends on. Wrapped rather than flagged per state so a new state, or a state that
+   *  stops writing the chair, cannot get the answer wrong. */
   update(dt: number): void {
+    this.prevChairPos.copy(this.chair.position);
+    this.prevChairQuat.copy(this.chair.quaternion);
+    this.step(dt);
+    this.moved = !this.chair.position.equals(this.prevChairPos) || !this.chair.quaternion.equals(this.prevChairQuat);
+  }
+  private step(dt: number): void {
     const a = this.avatar, sp = this.spec, T = sp.timings;
     switch (this.state) {
       case "idle": case "seated": return;

@@ -38,6 +38,18 @@ export class SlidingDoor {
   readonly spec: DoorCapability;
   /** how many full open→close cycles completed (diagnostics) */
   cycles = 0;
+  /** DID THE LEAF ACTUALLY MOVE on the last update()? — the shadow map's input, and the reason it is a
+   *  flag rather than a state test. A door is a STATIC caster: any frame its leaf moves costs a full
+   *  redraw of every static caster in the building (app/world's worldShadowsAreStale → Renderer
+   *  .invalidateShadows). But `state !== "closed"` is true for the whole HOLD as well, and a held-open
+   *  door is standing perfectly still — those redraws produce a shadow map identical to the last one.
+   *  Measured while walking through the Design Room door: 119 of 202 static redraws were held-open
+   *  frames. So staleness is derived from the transform that was written, not from the state machine:
+   *  `moved` is true on exactly the frames the leaf's offset changed — opening, closing, the frame it
+   *  lands closed, and a reset that snaps it back — and false while it is merely open. */
+  moved = false;
+  /** the offset last written to the leaf, so apply() can tell a move from a re-write of the same pose */
+  private applied = 0;
 
   /** the second, counter-sliding panel of a bi-parting door (null for a single-leaf door) */
   private readonly opposed: { view: THREE.Object3D; closed: Vec2 } | null;
@@ -96,6 +108,8 @@ export class SlidingDoor {
   reset(): void { this.state = "closed"; this.t = 0; this.hold = 0; this.apply(); }
   private apply(): void {
     const o = this.offset;
+    this.moved = o !== this.applied;
+    this.applied = o;
     this.view.position.x = this.closed.x + this.spec.slide.x * o;
     this.view.position.z = this.closed.z + this.spec.slide.z * o;
     if (this.opposed) {
