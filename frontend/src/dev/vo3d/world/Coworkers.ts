@@ -95,23 +95,129 @@ export function placeCoworkers(
   canStand: StandTest,
   radius: number,
 ): CoworkerPlacementResult {
-  const placed: CoworkerPlacement[] = [];
-  const unplaced: string[] = [];
-  const taken: Vec2[] = [];
-  const free: StandTest = (p) => canStand(p) && taken.every((t) => dist(t, p) >= MIN_SEPARATION);
-
-  for (const coworker of list) {
-    const live = coworker.posSource === "live";
-    const pos = standablePointNear(toWorld(coworker.point), radius, live ? canStand : free);
-    if (!pos) {
-      unplaced.push(coworker.displayName);
-      continue;
-    }
-    if (!live) taken.push(pos);
-    placed.push({ coworker, pos });
-  }
-  return { placed, unplaced };
+  return new CoworkerPlacer(toWorld, canStand, radius).place(list);
 }
+
+/**
+ * THE SAME PLACEMENT, KEPT BETWEEN CALLS (Phase 4C stage 3). `place()` returns exactly what
+ * placeCoworkers returns for the same arguments — it IS placeCoworkers, which is now a one-shot instance
+ * of this — and differs only in refusing to redo work whose answer cannot have changed.
+ *
+ * WHY THIS EXISTS. The search above is not cheap: standablePointNear probes the world's stand test once
+ * at the point and then up to SPAWN_RINGS x 12 times around it, and that test walks a region lookup, a
+ * clearance/grid sample and eight rim samples every probe. Phase 4B made positions LIVE, so `sync()` — and
+ * with it this whole pass — now runs on every positions tick rather than once per roster change, and a
+ * roomful of stationary people were paying the full search several times a second so that one person
+ * could take a step. That is the measured main-thread spike this stage removes.
+ *
+ * WHAT MAY BE REUSED, AND WHY IT IS SOUND. The two kinds of point are already independent by construction
+ * (see placeCoworkers above), and that independence is exactly what makes them separately cacheable:
+ *
+ *   LIVE — placed against `canStand` ALONE, reading nothing about anybody else and writing nothing to
+ *          `taken`. So one live coworker's answer is a pure function of THEIR OWN point, and is memoised
+ *          per email on that point. Somebody who did not move is not re-searched; somebody who did is,
+ *          and nobody else is disturbed by it — the same guarantee Phase 4B states, now also the reason
+ *          the cache is safe.
+ *   DESK — placed against `canStand` PLUS separation from the desk bodies BEFORE them in order. So the
+ *          whole desk sub-sequence is a pure function of its own ordered (email, point) list, and is
+ *          cached as ONE unit keyed on exactly that. Any change to it — somebody joined, left, was
+ *          reseated, or flipped between desk and live — misses the key and re-runs the entire desk pass
+ *          from scratch, in the original order, so the order-dependent separation resolution is never
+ *          applied incrementally. A desk point only changes when V1's roster seating does, which is a
+ *          population event, not a positions tick.
+ *
+ * WHAT IT ASSUMES, STATED SO IT CAN BE CHECKED: that `toWorld`, `canStand` and `radius` answer the same
+ * way for the lifetime of the placer. They do — all three are built once per world (world.ts's
+ * playerStand closes over `walkability` and `derivedNav`, both `const` and never rebuilt; doorways are
+ * baked into the grid at build time through openedLayer, not toggled), and a rebuilt world builds a new
+ * Coworkers and therefore a new placer. `invalidate()` is there for the day that stops being true.
+ */
+export class CoworkerPlacer {
+  /** A sentinel no real key can equal: the empty roster's key is "", which is a legitimate hit. */
+  private deskKey: string | null = null;
+  /** The last desk pass, in desk order — null for a desk coworker who had nowhere legal to stand. */
+  private deskSpots: (Vec2 | null)[] = [];
+  /** Per-email memo of the live pass. Rebuilt every call from the hits, so a coworker who leaves the
+   *  roster leaves the cache with them rather than accumulating forever. */
+  private liveSpots = new Map<string, LiveSpot>();
+
+  private readonly toWorld: (p: Vec2) => Vec2;
+  private readonly canStand: StandTest;
+  private readonly radius: number;
+
+  constructor(toWorld: (p: Vec2) => Vec2, canStand: StandTest, radius: number) {
+    this.toWorld = toWorld;
+    this.canStand = canStand;
+    this.radius = radius;
+  }
+
+  /** Byte-for-byte placeCoworkers, minus the work that cannot have changed. */
+  place(list: readonly Vo3dCoworker[]): CoworkerPlacementResult {
+    const deskSpots = this.deskPass(list);
+
+    const placed: CoworkerPlacement[] = [];
+    const unplaced: string[] = [];
+    const liveSpots = new Map<string, LiveSpot>();
+    let d = 0;
+
+    for (const coworker of list) {
+      let pos: Vec2 | null;
+      if (coworker.posSource === "live") {
+        const { x, z } = coworker.point;
+        const hit = this.liveSpots.get(coworker.email);
+        // Keyed on the V1-frame point, before toWorld: the transform is a constant of this placer, so two
+        // equal inputs to it have equal outputs, and skipping the call is part of the saving.
+        pos = hit && hit.x === x && hit.z === z ? hit.pos : standablePointNear(this.toWorld(coworker.point), this.radius, this.canStand);
+        liveSpots.set(coworker.email, { x, z, pos });
+      } else {
+        pos = deskSpots[d++];
+      }
+      if (!pos) {
+        unplaced.push(coworker.displayName);
+        continue;
+      }
+      placed.push({ coworker, pos });
+    }
+
+    this.liveSpots = liveSpots;
+    return { placed, unplaced };
+  }
+
+  /** Forget everything. Only needed if the world's floor itself were ever rebuilt under a live placer. */
+  invalidate(): void {
+    this.deskKey = null;
+    this.deskSpots = [];
+    this.liveSpots.clear();
+  }
+
+  /** THE DESK HALF, all or nothing. Either the ordered desk roster is the one already solved — in which
+   *  case its solution is still correct, separation and all — or none of it is and the whole pass re-runs
+   *  in list order, exactly as the uncached function did. */
+  private deskPass(list: readonly Vo3dCoworker[]): (Vec2 | null)[] {
+    let key = "";
+    for (const c of list) {
+      if (c.posSource === "live") continue;
+      key += `${c.email}|${c.point.x}|${c.point.z};`;
+    }
+    if (key === this.deskKey) return this.deskSpots;
+
+    const spots: (Vec2 | null)[] = [];
+    const taken: Vec2[] = [];
+    const free: StandTest = (p) => this.canStand(p) && taken.every((t) => dist(t, p) >= MIN_SEPARATION);
+    for (const coworker of list) {
+      if (coworker.posSource === "live") continue;
+      const pos = standablePointNear(this.toWorld(coworker.point), this.radius, free);
+      if (pos) taken.push(pos);
+      spots.push(pos);
+    }
+    this.deskKey = key;
+    this.deskSpots = spots;
+    return spots;
+  }
+}
+
+/** One memoised live answer: the V1-frame point it was computed for, and what it came out as. */
+type LiveSpot = { x: number; z: number; pos: Vec2 | null };
 
 /** One coworker's body: a clone, a mixer, an idle action and a nameplate. */
 class CoworkerBody {
@@ -233,6 +339,11 @@ export type CoworkerChange = "population" | "position";
 export class Coworkers {
   readonly group = new THREE.Group();
   private readonly deps: CoworkersDeps;
+  /** THE PLACEMENT PASS, kept across syncs rather than rebuilt per call — see CoworkerPlacer. This is the
+   *  whole of Phase 4C stage 3: with live positions arriving several times a second, re-searching a
+   *  standing spot for every stationary person on every tick was the measured main-thread spike. The
+   *  answers it reuses are the answers the uncached pass would have recomputed identically. */
+  private readonly placer: CoworkerPlacer;
   private bodies = new Map<string, CoworkerBody>();
   /** THE LATEST PLACEMENT for everyone who should have a body, by email. Rewritten by every sync,
    *  population or position. A GLB that lands mid-flight reads its body's spot from HERE rather than from
@@ -258,6 +369,7 @@ export class Coworkers {
 
   constructor(deps: CoworkersDeps) {
     this.deps = deps;
+    this.placer = new CoworkerPlacer(deps.toWorld, deps.canStand, deps.radius);
     this.group.name = "coworkers";
     deps.parent.add(this.group);
   }
@@ -293,7 +405,7 @@ export class Coworkers {
   async sync(list: readonly Vo3dCoworker[], missingAvatar: readonly string[] = []): Promise<void> {
     if (this.disposed) return;
 
-    const { placed, unplaced } = placeCoworkers(list, this.deps.toWorld, this.deps.canStand, this.deps.radius);
+    const { placed, unplaced } = this.placer.place(list);
     this.wanted = new Map(placed.map((p) => [p.coworker.email, p]));
     this.lastUnplaced = unplaced;
     this.lastMissingAvatar = [...missingAvatar];
@@ -425,6 +537,7 @@ export class Coworkers {
     this.disposed = true;
     for (const body of this.bodies.values()) body.dispose();
     this.bodies.clear();
+    this.placer.invalidate();
     this.wanted.clear();
     this.loading.clear();
     this.lastUnplaced = [];
