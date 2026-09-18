@@ -21,9 +21,10 @@
 //     who checked out hours ago. V1's offline predicate is what decides visibility, exactly as in 4A, and
 //     it runs BEFORE any position is applied so stale movement data can never resurrect a checked-out
 //     employee at a desk.
-//   • STILL A SNAP, NOT A WALK. Only the arrived/stable half of the movement feed is read. The in-flight
-//     half (`active`, its path, duration and server clock offset) is deliberately never touched, so a peer
-//     mid-walk simply stays where they last stopped until they arrive. Interpolation is a later phase.
+//   • PHASE 4B WAS A SNAP, NOT A WALK — it read only the arrived/stable half of the movement feed, so a
+//     peer mid-walk stayed where they last stopped until they arrived. PHASE 6A ADDS THE OTHER HALF, as
+//     `walk` below: the in-flight route, its duration and how far in it is. The stable half is unchanged
+//     and still authoritative; the walk is what the body does on the way there.
 //   • STILL DERIVED-BY-DEFAULT. Before the first positions_snapshot, and for every person V1 has no
 //     persisted row for, the Phase 4A desk is what renders. A position is never fabricated.
 //
@@ -31,6 +32,34 @@
 // frame, and applying a room's V2 world shift is world.ts's job (through the same homeDeskWorldPoint the
 // home desk already goes through), so the adapter never has to know a V2 room moved.
 import type { Facing, Vec2 } from "../core/coords";
+
+/** ONE COWORKER'S WALK THAT IS STILL HAPPENING. Phase 6A, and the half of V1's movement feed Phase 4B
+ *  deliberately left unread.
+ *
+ *  It is V1's published account of a movement in progress: the route, how long it takes, and how far in it
+ *  was when this value was produced. world/Coworkers.ts replays it (world/coworkerWalk.ts does the
+ *  arithmetic); nothing here is computed by V2.
+ *
+ *  IT CHANGES ONLY WHEN THE MOVEMENT DOES, never per frame. `elapsedMs` is a stamp taken when the adapter
+ *  ran, not a live clock — the world adds its own frame time on top. That is what keeps a walking office
+ *  from re-rendering React sixty times a second, and `movementId` is what lets the world tell a NEW
+ *  movement from the same one being handed to it again. */
+export interface Vo3dCoworkerWalk {
+  /** V1's own movement id. The world starts a replay when this changes and ignores a repeat of it, so a
+   *  re-render caused by somebody else's event cannot restart this person's walk. */
+  movementId: string;
+  /** The route in V1 FRAME UNITS as ground centre points, ORIGIN FIRST — same basis and same per-person
+   *  box conversion as `point`. app/world.ts applies its own room shift to every point of it, through the
+   *  same homeDeskWorldPoint a desk goes through. */
+  path: Vec2[];
+  /** How long V1 said the whole walk takes. Not recomputed from the distance: the publisher's own figure
+   *  is what every other viewer is replaying against. */
+  durationMs: number;
+  /** How far into the walk this value was produced, from V1's server clock offset. A movement that began
+   *  before this viewer connected arrives most of the way through, and the replay starts there rather
+   *  than snapping the body back to the origin. */
+  elapsedMs: number;
+}
 
 export interface Vo3dCoworker {
   /** THE KEY: the person's email, trimmed and lowercased. Every V1 feed joins on this form (roster
@@ -71,6 +100,14 @@ export interface Vo3dCoworker {
    *  direction belongs to the chair, never to whoever sits in it); for a live point it is the facing V1
    *  recorded when they arrived, translated out of V1's sprite vocabulary. */
   facing: Facing;
+  /** PHASE 6A — their walk, if one is in flight. Absent for everybody standing still, which is almost
+   *  everybody almost always.
+   *
+   *  `point` above STAYS AUTHORITATIVE while this is present: it is where V1 last saw this person stop,
+   *  and it is what the body settles on when the walk resolves. The walk is the in-flight picture, not a
+   *  replacement for the stable fact — which is what makes a late, lost or superseded arrival recoverable
+   *  rather than a body stranded wherever the replay happened to run out. */
+  walk?: Vo3dCoworkerWalk;
 }
 
 export interface Vo3dCoworkerSet {

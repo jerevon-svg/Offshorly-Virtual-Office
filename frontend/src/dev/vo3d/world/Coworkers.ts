@@ -6,11 +6,17 @@
 // hooks and pushes a resolved list in. React owns subscriptions, the world owns scene objects, and
 // neither reaches into the other.
 //
-// SNAP, NEVER WALK. Every body stands where its Vo3dCoworker says and plays one idle clip. There is no
-// roam, no path, no target and no locomotion: devtools/Crowd.ts (which this is modelled on) has all of
-// that for the stress harness, and it is deliberately absent here. Phase 4B reads only the ARRIVED half
-// of V1's movement feed, so a body's position changes in one step, when V1 says that person stopped
-// somewhere new. Interpolating between those steps is a later phase.
+// PHASE 6A: THEY WALK NOW. Phase 4B moved a body in one step when V1 said that person had stopped
+// somewhere new, which was correct and looked like a teleport. A body now REPLAYS the movement V1
+// published — the route and the duration the walking client sent — with the same clip pair, crossfade and
+// turn-toward-travel devtools/Crowd.ts has always used for cast bodies, on the same eased curve V1's own
+// PeerWalker replays it with (core/coords easeInOutQuad).
+//
+// THE STABLE POSITION IS STILL THE AUTHORITY. A replay is what the body does between two facts, never a
+// fact of its own: it is started by a movement id, replaced by the next movement id, and always settled
+// by the arrival that follows. Nothing here extrapolates past the end of a route, and nothing here
+// invents a position when the feed goes quiet — see applyPositions for the three cases and
+// world/coworkerWalk.ts for what the replay refuses to do.
 //
 // TWO KINDS OF CHANGE, AND THEY MUST NOT BE THE SAME CODE PATH. `sync()` is called for both, and tells
 // them apart itself:
@@ -35,11 +41,34 @@
 // desk is worse than a body that is honestly absent.
 import * as THREE from "three";
 import { clone as cloneSkinned } from "three/examples/jsm/utils/SkeletonUtils.js";
-import { BON_STANDING_HEIGHT, CLIP_IDLE, type AvatarLod } from "../adapters/v1Avatar";
+import { BON_STANDING_HEIGHT, CLIP_IDLE, CLIP_WALK, type AvatarLod } from "../adapters/v1Avatar";
 import { castLabelTexture, prototypeFor, type CastPrototype } from "../avatar/CastPrototypes";
-import { dist, FACING_YAW, type Vec2 } from "../core/coords";
+import { dist, FACING_YAW, stepAngle, type Vec2 } from "../core/coords";
 import { standablePointNear, type StandTest } from "../player/PlayerBody";
 import type { Vo3dCoworker } from "../app/coworkers";
+import { ReplayWalk } from "./coworkerWalk";
+
+/** How fast a coworker turns toward their direction of travel, rad/s. The navigation controller's rate,
+ *  which is also what devtools/Crowd.ts turns its bodies at — one figure for every walking body in V2. */
+const TURN_RATE = 7;
+/** The ground speed the `walking` clip was authored for, units/s. Playback rate is then "how fast am I
+ *  actually travelling / how fast does this clip think it is", which is what keeps feet planted at any
+ *  replay speed. The same 30 NavigationController divides by and PlayerMode names explicitly. */
+const WALK_CLIP_GROUND_SPEED = 30;
+/** Ceiling on locomotion playback rate — a spike guard for a long frame, not a look choice. */
+const MAX_CLIP_RATE = 2.5;
+/** Below this, a correction is not worth animating: the body is already there. */
+const RECONCILE_EPSILON = 0.5;
+/** THE WIDEST CORRECTION THAT IS GLIDED RATHER THAN SNAPPED, in units.
+ *
+ *  A replay can end up a little away from the position V1 finally vouches for — clock offset, a rounding
+ *  difference, a frame boundary. Sliding a body 20 units to settle that reads as the last step of the
+ *  walk; snapping it reads as a glitch. Anything LARGER is not jitter, it is news: an interrupted walk
+ *  that stopped somewhere else entirely, or a correction after a reconnect. Those are snapped, because
+ *  gliding across the office would be V2 inventing a journey nobody took. */
+const RECONCILE_MAX = 24;
+/** How long a glided correction takes. Short enough to be a settle, long enough not to be a jump. */
+const RECONCILE_MS = 260;
 
 /** How close two DESK-PLACED coworkers may stand before the second is nudged to the next legal ring. Half
  *  a body rather than a full one: the roster's own per-room seating already gives everyone a distinct
@@ -219,14 +248,37 @@ export class CoworkerPlacer {
 /** One memoised live answer: the V1-frame point it was computed for, and what it came out as. */
 type LiveSpot = { x: number; z: number; pos: Vec2 | null };
 
-/** One coworker's body: a clone, a mixer, an idle action and a nameplate. */
+/** One coworker's body: a clone, a mixer, its clips, a nameplate — and, Phase 6A, a walk it may be
+ *  replaying. Locomotion is modelled on devtools/Crowd.ts's member, which has walked cast bodies around
+ *  this world since the stress harness: same clip pair, same crossfade, same turn-toward-travel. What is
+ *  different is where the route comes from — V1's wire rather than a random roam target. */
 class CoworkerBody {
   readonly root = new THREE.Group();
   readonly avatarId: string;
   readonly displayName: string;
   readonly triangles: number;
   private readonly mixer: THREE.AnimationMixer;
+  private readonly actions: Record<string, THREE.AnimationAction> = {};
+  private current = "";
   private label: THREE.Sprite | null = null;
+  private yaw: number;
+  /** The walk being replayed, or null when standing. */
+  private replay: ReplayWalk | null = null;
+  /** THE LAST MOVEMENT ID THIS BODY HAS BEEN GIVEN, kept after its replay finishes.
+   *
+   *  Not the same question as "what is running": a replay ends when its duration runs out, which is
+   *  usually BEFORE the walk_arrived that resolves it lands. Between those two moments the feed keeps
+   *  handing over the same movement, and asking the live replay would answer "nothing is running" and
+   *  restart the walk from its origin on every re-render — a body flung back down its own route,
+   *  repeatedly. V1's own PeerWalker keeps exactly this field for exactly this reason. */
+  private playedId: string | null = null;
+  /** The yaw to settle on when the current replay finishes — set only for a reconciliation glide, where
+   *  the authoritative facing is already known. A peer replay leaves it undefined and keeps the heading
+   *  it was travelling, until the arrival that follows supplies the real one. */
+  private settleYaw: number | null = null;
+  /** Is a reconciliation glide running right now? Distinct from `replay !== null`, which is also true for
+   *  a real walk, and from `playedId`, which survives its own replay. */
+  private settling = false;
 
   constructor(proto: CastPrototype, name: string, at: Vec2, yaw: number, phase: number) {
     this.avatarId = proto.id;
@@ -236,17 +288,111 @@ class CoworkerBody {
     this.root.name = `coworker:${name}`;
     this.root.add(body);
     this.root.position.set(at.x, 0, at.z);
+    this.yaw = yaw;
     this.root.rotation.set(0, yaw, 0);
     this.mixer = new THREE.AnimationMixer(body);
-    const clip = proto.clips.find((c) => c.name === CLIP_IDLE);
-    if (clip) {
-      const action = this.mixer.clipAction(clip);
-      action.reset().setEffectiveWeight(1).play();
-      // Stagger the idle phase, or a roomful of people breathe in perfect lockstep — and, more to the
-      // point, every skeleton hits its keyframe boundaries on the same frame.
-      action.time = phase * (clip.duration || 1);
-    }
+    // EVERY clip the prototype carries, bound once. The prototypes are the same consolidated GLBs the
+    // hero avatar and the stress crowd use, so `walking` is there; hasClip is still asked before it is
+    // played, because an older asset without it must fall back rather than freeze mid-pose.
+    for (const clip of proto.clips) this.actions[clip.name] = this.mixer.clipAction(clip);
+    this.play(CLIP_IDLE, 0);
+    const idle = this.actions[CLIP_IDLE];
+    // Stagger the idle phase, or a roomful of people breathe in perfect lockstep — and, more to the
+    // point, every skeleton hits its keyframe boundaries on the same frame.
+    if (idle) idle.time = phase * (idle.getClip().duration || 1);
     this.addLabel(name);
+  }
+
+  /** Crossfade to a clip, byte-for-byte the switch Avatar.play and Crowd's member use. */
+  private play(name: string, fade = 0.25): void {
+    if (this.current === name) return;
+    const next = this.actions[name];
+    if (!next) return;
+    const prev = this.current ? this.actions[this.current] : null;
+    next.reset().setEffectiveWeight(1).play();
+    if (prev && fade > 0) prev.crossFadeTo(next, fade, false);
+    else if (prev) prev.stop();
+    this.current = name;
+  }
+
+  get moving(): boolean { return this.replay !== null; }
+  get clip(): string { return this.current; }
+  get pos(): Vec2 { return { x: this.root.position.x, z: this.root.position.z }; }
+  /** The movement this body has been given, running or finished, so a re-push of the same one is
+   *  recognised and ignored. See `playedId`. */
+  get movementId(): string | null { return this.playedId; }
+
+  /** START REPLAYING A MOVEMENT V1 PUBLISHED. Called once per movement id — a redirect is simply the
+   *  next one, and it REPLACES whatever was running, exactly as V1's own store replaces a superseded
+   *  movement. The body is not first snapped back to the origin: the replay's own fast-forward puts it
+   *  where the walk currently is, which for a redirect is about where the body already stood. */
+  beginWalk(movementId: string, worldPath: readonly Vec2[], durationMs: number, elapsedMs: number): void {
+    this.replay = new ReplayWalk(movementId, worldPath, durationMs, elapsedMs);
+    this.playedId = movementId;
+    this.settleYaw = null;
+    this.settling = false;
+    const at = this.replay.position;
+    this.root.position.set(at.x, 0, at.z);
+  }
+
+  /** THE AUTHORITATIVE POSITION HAS ARRIVED. Returns true when anything changed.
+   *
+   *  A GLIDE IS ONLY EVER THE SEAM AT THE END OF A REPLAY, and that is what `playedId` gates. A replay can
+   *  finish a little away from the position V1 finally vouches for — clock offset, a rounding difference,
+   *  a frame boundary — and sliding the last few units reads as the end of the walk while snapping reads
+   *  as a glitch. A body that has NOT been replaying anything has no such seam: its position is a
+   *  PLACEMENT (a desk, a roster reseat, a separation nudge, a first sync), and a placement is applied at
+   *  once. Gliding those would make where a coworker stands depend on how recently it was told, which is
+   *  exactly what the Phase 4C cache-equivalence test measures — and would have been wrong anyway.
+   *
+   *  So, in order:
+   *    already there   — snap (no motion at all) and take the facing. The normal end of a replay that
+   *                      finished where V1 said it would.
+   *    seam, short way — glide. The last units of a walk.
+   *    anything else   — snap. An interrupted walk, a reconnect correction, or an ordinary placement: the
+   *                      honest answer is "they are there", and sliding across the room would draw a
+   *                      journey nobody took. */
+  reconcileTo(at: Vec2, yaw: number): boolean {
+    const d = dist(this.pos, at);
+    if (d <= RECONCILE_EPSILON) return this.settle(at, yaw);
+    if ((this.playedId !== null || this.settling) && d <= RECONCILE_MAX) {
+      // Re-glided only when the target actually moved: a repeated sync toward the same point must not
+      // restart the settle and leave the body creeping forever.
+      if (!this.settling || !this.replay || dist(this.replay.end, at) > RECONCILE_EPSILON) {
+        this.replay = new ReplayWalk(`settle:${at.x.toFixed(2)},${at.z.toFixed(2)}`, [this.pos, at], RECONCILE_MS);
+        this.settleYaw = yaw;
+        this.settling = true;
+      }
+      // The movement is resolved; only the glide is still running. Clearing the id here is what stops a
+      // later, unrelated placement change from being treated as another seam.
+      this.playedId = null;
+      return true;
+    }
+    return this.settle(at, yaw);
+  }
+
+  /** Stop replaying anything and take the authoritative pose. */
+  private settle(at: Vec2, yaw: number): boolean {
+    this.replay = null;
+    this.settleYaw = null;
+    this.settling = false;
+    this.playedId = null;
+    return this.snapTo(at, yaw);
+  }
+
+  /** Snap to a new spot. Returns TRUE only when something actually moved.
+   *
+   *  The return value is what keeps the shadow map honest. A coworker's idle clip deforms them every
+   *  frame but their ROOT never drifts, so the only thing that can invalidate their shadow is this call —
+   *  and only when it changes something. Reporting "moved" for a sync that re-applied identical
+   *  coordinates would redraw the shadow map on every snapshot tick, which at a roomful of people costs
+   *  more than the bodies do. */
+  private snapTo(at: Vec2, yaw: number): boolean {
+    if (this.root.position.x === at.x && this.root.position.z === at.z && this.yaw === yaw) return false;
+    this.root.position.set(at.x, 0, at.z);
+    this.yaw = yaw;
+    this.root.rotation.set(0, yaw, 0);
+    return true;
   }
 
   /** COMPACT: the name and nothing else. No status, no dot — Phase 4A measures no presence detail, and a
@@ -260,24 +406,55 @@ class CoworkerBody {
     this.label = sprite;
   }
 
-  /** Snap to a new spot. Returns TRUE only when something actually moved.
-   *
-   *  The return value is what keeps the shadow map honest. A coworker's idle clip deforms them every
-   *  frame but their ROOT never drifts, so the only thing that can invalidate their shadow is this call —
-   *  and only when it changes something. Reporting "moved" for a sync that re-applied identical
-   *  coordinates would redraw the shadow map on every snapshot tick, which at a roomful of people costs
-   *  more than the bodies do. */
-  moveTo(at: Vec2, yaw: number): boolean {
-    if (this.root.position.x === at.x && this.root.position.z === at.z && this.root.rotation.y === yaw) {
-      return false;
+  /** One frame. Advances a replay if there is one, then the mixer — the same order Crowd's member uses.
+   *  Returns TRUE when the body's transform changed, which is what the caller turns into a cheap dynamic
+   *  shadow invalidation (a walking coworker costs the composite pass, never the static redraw). */
+  update(dt: number): boolean {
+    let moved = false;
+    if (this.replay) {
+      const step = this.replay.advance(dt * 1000);
+      moved = step.travelled > 1e-6;
+      this.root.position.set(step.pos.x, 0, step.pos.z);
+      if (step.heading !== null) {
+        this.yaw = stepAngle(this.yaw, step.heading, TURN_RATE * dt);
+        this.root.rotation.set(0, this.yaw, 0);
+        moved = true;
+      }
+      if (moved && this.actions[CLIP_WALK]) {
+        this.play(CLIP_WALK);
+        // Rate from the ground ACTUALLY covered this frame, so a replay that is slower or faster than the
+        // clip was authored for still lands its feet instead of skating or sprinting on the spot.
+        this.actions[CLIP_WALK].timeScale = Math.min(
+          MAX_CLIP_RATE,
+          Math.max(0.15, step.travelled / Math.max(dt, 1e-4) / WALK_CLIP_GROUND_SPEED),
+        );
+      }
+      if (this.replay.done) {
+        // The route has run out. The body idles where it ended and waits for the arrival to tell it which
+        // way to face — unless this was a reconciliation glide, which already knew.
+        this.replay = null;
+        this.settling = false;
+        if (this.settleYaw !== null) {
+          this.yaw = this.settleYaw;
+          this.root.rotation.set(0, this.yaw, 0);
+          this.settleYaw = null;
+          moved = true;
+        }
+        this.play(CLIP_IDLE);
+      }
+    } else {
+      this.play(CLIP_IDLE);
     }
-    this.root.position.set(at.x, 0, at.z);
-    this.root.rotation.set(0, yaw, 0);
-    return true;
+    this.mixer.update(dt);
+    return moved;
   }
 
-  update(dt: number): void {
-    this.mixer.update(dt);
+  /** Stop replaying without moving the body — for a walk whose person left the roster mid-stride. */
+  stopWalk(): void {
+    this.replay = null;
+    this.playedId = null;
+    this.settleYaw = null;
+    this.settling = false;
   }
 
   /** Geometry and materials are the PROTOTYPE's and are shared with every sibling — disposing them here
@@ -300,6 +477,8 @@ class CoworkerBody {
 
 export type CoworkerStats = {
   rendered: number;
+  /** of `rendered`, how many are replaying a walk right now (Phase 6A). A count, never who. */
+  walking: number;
   /** of `rendered`, how many stand on a LIVE persisted position rather than their derived desk (Phase
    *  4B). A count, never a list of who — the readouts this feeds stay redacted. */
   live: number;
@@ -359,7 +538,7 @@ export class Coworkers {
    *  batch captured several syncs ago. */
   private lastUnplaced: string[] = [];
   private lastMissingAvatar: string[] = [];
-  private stats: CoworkerStats = { rendered: 0, live: 0, unplaced: [], missingAvatar: [], triangles: 0, loading: false };
+  private stats: CoworkerStats = { rendered: 0, walking: 0, live: 0, unplaced: [], missingAvatar: [], triangles: 0, loading: false };
   /** Bumped by every POPULATION sync. A GLB that lands after a newer roster arrived belongs to a world
    *  state that no longer exists, and is dropped rather than added — the roster can change while 8 MB is
    *  in flight. Deliberately NOT bumped by a position sync: doing so would cancel every in-flight load
@@ -419,6 +598,7 @@ export class Coworkers {
       const next = this.wanted.get(email);
       // An avatarId change is a different character, not a moved one — the body has to be rebuilt.
       if (!next || next.coworker.avatarId !== body.avatarId) {
+        body.stopWalk();
         body.dispose();
         this.bodies.delete(email);
         removed = true;
@@ -486,6 +666,18 @@ export class Coworkers {
       // at the same room, see the same stagger instead of a fresh shuffle.
       const phase = phaseFor(coworker.email);
       const body = new CoworkerBody(proto, coworker.displayName, pos, FACING_YAW[coworker.facing], phase);
+      // PHASE 6A — A NEWCOMER MAY ALREADY BE WALKING. `applyPositions` only reaches bodies that exist, and
+      // this one did not until now: somebody whose character was still downloading when their movement
+      // started, or anybody at all on the very first sync. The walk comes from the NEWEST spot (like the
+      // position beside it), and its own elapsed time puts them part way along rather than at the origin.
+      if (coworker.walk) {
+        body.beginWalk(
+          coworker.walk.movementId,
+          coworker.walk.path.map(this.deps.toWorld),
+          coworker.walk.durationMs,
+          coworker.walk.elapsedMs,
+        );
+      }
       this.group.add(body.root);
       this.bodies.set(email, body);
       added = true;
@@ -496,17 +688,58 @@ export class Coworkers {
     if (added) this.deps.onChanged?.("population");
   }
 
-  /** THE POSITION HALF. Moves every rendered body to its latest spot and reports whether ANY of them
-   *  actually moved. Touches nothing else: no mixer, no action, no clone, no nameplate — an idle clip
-   *  that is already playing keeps playing, mid-cycle, through any number of these. */
+  /** THE POSITION HALF, and after Phase 6A the MOVEMENT half too. Still synchronous, still touching no
+   *  clone and no nameplate, and still reporting whether anything changed.
+   *
+   *  THREE CASES PER BODY, and the movement id is what tells them apart:
+   *
+   *    A NEW MOVEMENT (`walk` present, id differs from what the body is replaying) — start replaying it.
+   *      That covers a fresh walk, a REDIRECT (V1 publishes a successor with its own id and never an
+   *      arrival for the one it replaced, so the successor simply takes over), and a movement already in
+   *      flight when this viewer connected (its own fast-forward puts the body mid-route).
+   *
+   *    THE SAME MOVEMENT (ids match) — leave it entirely alone. This is the case that makes the walk
+   *      smooth: a re-render caused by somebody ELSE's event re-pushes this person's unchanged walk
+   *      several times a second, and snapping them to their stable position on each one is precisely the
+   *      stutter Phase 4B had. The stable half is deliberately not applied while its own walk is running;
+   *      the walk is the newer account of the same person.
+   *
+   *    NO MOVEMENT (`walk` absent) — the authoritative stable position governs, through reconcileTo:
+   *      already-there snaps, a short gap glides, a long one snaps. That is the arrival, the interrupted
+   *      walk, the late arrival and the reconnect correction, all in one rule.
+   */
   private applyPositions(): boolean {
     let moved = false;
     for (const [email, body] of this.bodies) {
       const spot = this.wanted.get(email);
       if (!spot) continue;
-      if (body.moveTo(spot.pos, FACING_YAW[spot.coworker.facing])) moved = true;
+      const walk = spot.coworker.walk;
+      if (walk) {
+        if (body.movementId !== walk.movementId) {
+          body.beginWalk(walk.movementId, walk.path.map(this.deps.toWorld), walk.durationMs, walk.elapsedMs);
+          moved = true;
+        }
+        continue;
+      }
+      if (body.reconcileTo(spot.pos, FACING_YAW[spot.coworker.facing])) moved = true;
     }
     return moved;
+  }
+
+  /** How many bodies are replaying a walk. Read by the stats and by the world's shadow gate. */
+  private get walkingCount(): number {
+    let n = 0;
+    for (const body of this.bodies.values()) if (body.moving) n++;
+    return n;
+  }
+
+  /** IS ANYBODY WALKING? The world's frame loop folds this into its dynamic-shadow gate exactly as it
+   *  already folds `crowd.moving`: a walking body deforms AND translates every frame, so the cheap
+   *  composite pass is stale while it does. The static depth cache is never touched by this — a coworker
+   *  is a registered dynamic caster and is hidden before the static pass draws. */
+  get moving(): boolean {
+    for (const body of this.bodies.values()) if (body.moving) return true;
+    return false;
   }
 
   private publishStats(loading: boolean): void {
@@ -518,6 +751,7 @@ export class Coworkers {
     }
     this.stats = {
       rendered: this.bodies.size,
+      walking: this.walkingCount,
       live,
       unplaced: this.lastUnplaced,
       missingAvatar: this.lastMissingAvatar,
@@ -526,10 +760,20 @@ export class Coworkers {
     };
   }
 
-  /** Mixers only — nobody moves in this phase. */
-  update(dt: number): void {
-    if (!this.group.visible) return;
-    for (const body of this.bodies.values()) body.update(dt);
+  /** ONE FRAME. Mixers, and — Phase 6A — whatever walk each body is replaying.
+   *
+   *  The cost per body is a handful of arithmetic ops plus the mixer update that was always here; the
+   *  replay math is a segment lookup on a precomputed cumulative table (world/coworkerWalk.ts), not a
+   *  search. A room of standing people pays exactly what it paid before: `replay` is null for all of them
+   *  and the branch is not taken.
+   *
+   *  Returns TRUE when any body's transform changed, so the caller can invalidate the dynamic composite
+   *  and nothing else. */
+  update(dt: number): boolean {
+    if (!this.group.visible) return false;
+    let moved = false;
+    for (const body of this.bodies.values()) if (body.update(dt)) moved = true;
+    return moved;
   }
 
   dispose(): void {
@@ -543,7 +787,7 @@ export class Coworkers {
     this.lastUnplaced = [];
     this.lastMissingAvatar = [];
     this.group.removeFromParent();
-    this.stats = { rendered: 0, live: 0, unplaced: [], missingAvatar: [], triangles: 0, loading: false };
+    this.stats = { rendered: 0, walking: 0, live: 0, unplaced: [], missingAvatar: [], triangles: 0, loading: false };
   }
 }
 

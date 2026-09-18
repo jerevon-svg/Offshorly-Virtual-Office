@@ -51,3 +51,19 @@ export function facingForYaw(yaw: number): Facing {
   }
   return best;
 }
+
+/** THE EASE V1's OWN WALKER USES, restated here so V2 can replay a V1 walk on the same curve.
+ *
+ *  Phase 6A replays a coworker's walk from the path and duration V1 published. If V2 interpolated that
+ *  linearly while V1's PeerWalker eases it (components/OfficeMap/useCharacterWalk.ts's `ease`, the same
+ *  quadratic in/out), the SAME person would be at different points along the SAME path at the same moment
+ *  depending on which office you were looking at — up to about an eighth of the path's length apart in
+ *  mid-walk. They would still arrive together, which is exactly what makes the discrepancy easy to miss.
+ *
+ *  So this is a deliberate second copy of a four-line curve rather than a shared import: the world must
+ *  stay loadable with no V1 module in its graph (app/world.ts's standing rule). What keeps the two honest
+ *  is a test — coworkerWalk.test.ts asserts this agrees with V1's `ease` at sampled t, so the day one of
+ *  them is retuned the other is told. */
+export function easeInOutQuad(t: number): number {
+  return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+}

@@ -4,7 +4,7 @@
 // the point of the split is that the whole "which fact is this person's position" decision is testable as
 // arithmetic, and only the snapping is left to the scene module.
 import { describe, expect, it } from "vitest";
-import { applyLivePositions, countLivePositions, isUsablePosition } from "./adapters/v1CoworkerPositions";
+import { applyLivePositions, countLivePositions, countWalking, isUsablePosition, resolveWalk } from "./adapters/v1CoworkerPositions";
 import type { Vo3dCoworker, Vo3dCoworkerSet } from "./app/coworkers";
 import type { PeerMovementState } from "../../services/presence/movementSync";
 
@@ -178,6 +178,148 @@ describe("countLivePositions", () => {
     const set = setOf(coworker("a@x.com"), coworker("b@x.com"), coworker("c@x.com"));
     expect(countLivePositions(set)).toBe(0);
     const out = applyLivePositions(set, [peer("a@x.com", { x: 1, y: 1 }), peer("c@x.com", { x: 2, y: 2 })], true);
+    expect(countLivePositions(out)).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------
+// Phase 6A — the OTHER half of the same feed: the walk still in flight. Same module, same purity, same
+// per-person box; what is new is that a movement in progress is now readable at all.
+// ---------------------------------------------------------------------------------------------------
+
+/** An in-flight movement in the shape movementSync holds, with TOP-LEFT points as the wire carries them. */
+function active(
+  movementId: string,
+  origin: { x: number; y: number },
+  path: { x: number; y: number }[],
+  durationMs = 3000,
+  startedAt = 1_000_000,
+): PeerMovementState["active"] {
+  return { movementId, origin, path, roomId: null, durationMs, startedAt };
+}
+
+describe("resolveWalk", () => {
+  const NOW = 1_002_000; // two seconds after the movements below started, on the local clock
+
+  it("is null for somebody standing still — the normal case for almost everybody", () => {
+    expect(resolveWalk(null, BON_BOX, 0, NOW)).toBeNull();
+  });
+
+  it("converts every point through THAT PERSON'S OWN box, origin first", () => {
+    const w = resolveWalk(
+      active("m1", { x: 100, y: 200 }, [{ x: 100, y: 300 }, { x: 200, y: 300 }]),
+      TALL_BOX,
+      0,
+      NOW,
+    );
+    expect(w).not.toBeNull();
+    // top-left + half the box = the ground centre, exactly as the stable half is converted.
+    expect(w!.path).toEqual([
+      { x: 115, z: 224 },
+      { x: 115, z: 324 },
+      { x: 215, z: 324 },
+    ]);
+    expect(w!.movementId).toBe("m1");
+    expect(w!.durationMs).toBe(3000);
+  });
+
+  it("carries V1's own duration rather than recomputing one from the distance", () => {
+    // Every other viewer is replaying against the publisher's figure; deriving a second one here is how
+    // two offices end up disagreeing about how long the same walk takes.
+    const w = resolveWalk(active("m1", { x: 100, y: 200 }, [{ x: 100, y: 900 }], 777), BON_BOX, 0, NOW);
+    expect(w!.durationMs).toBe(777);
+  });
+
+  it("computes elapsed from V1's server clock offset, and clamps it", () => {
+    const at = (offset: number, now: number) =>
+      resolveWalk(active("m1", { x: 100, y: 200 }, [{ x: 100, y: 300 }], 3000, 1_000_000), BON_BOX, offset, now)!
+        .elapsedMs;
+    expect(at(0, 1_001_500)).toBe(1500);
+    // The server is 500 ms ahead of this client: the walk is that much further along than the local clock
+    // alone would say. The same arithmetic V1's PeerWalker fast-forwards with.
+    expect(at(500, 1_001_500)).toBe(2000);
+    // Skew must not rewind a walk or push it past its own end.
+    expect(at(-9_000_000, 1_001_500)).toBe(0);
+    expect(at(9_000_000, 1_001_500)).toBe(3000);
+  });
+
+  it("refuses a route it cannot express, WHOLE rather than in part", () => {
+    // Same predicate the stable half is judged by. A walk out to the campus or the CAVE is not a V1 walk,
+    // and drawing the inside half of it would be somebody else's journey.
+    expect(resolveWalk(active("m1", { x: 100, y: 200 }, [{ x: 2600, y: 400 }]), BON_BOX, 0, NOW)).toBeNull();
+    expect(resolveWalk(active("m1", { x: 2600, y: 400 }, [{ x: 100, y: 200 }]), BON_BOX, 0, NOW)).toBeNull();
+    expect(resolveWalk(active("m1", { x: NaN, y: 200 }, [{ x: 100, y: 200 }]), BON_BOX, 0, NOW)).toBeNull();
+  });
+
+  it("refuses an empty path or a duration the arithmetic cannot use", () => {
+    expect(resolveWalk(active("m1", { x: 100, y: 200 }, []), BON_BOX, 0, NOW)).toBeNull();
+    expect(resolveWalk(active("m1", { x: 100, y: 200 }, [{ x: 100, y: 300 }], 0), BON_BOX, 0, NOW)).toBeNull();
+    expect(resolveWalk(active("m1", { x: 100, y: 200 }, [{ x: 100, y: 300 }], -1), BON_BOX, 0, NOW)).toBeNull();
+  });
+});
+
+describe("applyLivePositions with a walk in flight", () => {
+  it("attaches the walk AND keeps the stable position authoritative", () => {
+    const set = setOf(coworker("micah@offshorly.com", TALL_BOX));
+    const out = applyLivePositions(
+      set,
+      [peer("micah@offshorly.com", { x: 400, y: 500 }, {}, active("m1", { x: 400, y: 500 }, [{ x: 400, y: 700 }]))],
+      true,
+      0,
+    );
+    const c = out.coworkers[0];
+    // `point` is still V1's last ARRIVED position — the thing the body settles on.
+    expect(c.point).toEqual({ x: 415, z: 524 });
+    expect(c.posSource).toBe("live");
+    expect(c.walk?.movementId).toBe("m1");
+    expect(c.walk?.path[0]).toEqual({ x: 415, z: 524 });
+  });
+
+  it("attaches a walk even when that person's persisted position is unusable", () => {
+    // Two independent facts: a corrupt stable row is no reason to refuse a route that is fine. The body
+    // keeps its derived desk as the thing it settles on.
+    const set = setOf(coworker("micah@offshorly.com", BON_BOX, { x: 100, z: 200 }));
+    const out = applyLivePositions(
+      set,
+      [peer("micah@offshorly.com", { x: 1e9, y: 500 }, {}, active("m1", { x: 400, y: 500 }, [{ x: 400, y: 700 }]))],
+      true,
+      0,
+    );
+    const c = out.coworkers[0];
+    expect(c.point).toEqual({ x: 100, z: 200 });
+    expect(c.posSource).toBe("desk");
+    expect(c.walk?.movementId).toBe("m1");
+  });
+
+  it("attaches nothing before V1's first positions_snapshot", () => {
+    const set = setOf(coworker("micah@offshorly.com"));
+    const out = applyLivePositions(
+      set,
+      [peer("micah@offshorly.com", { x: 400, y: 500 }, {}, active("m1", { x: 400, y: 500 }, [{ x: 400, y: 700 }]))],
+      false,
+      0,
+    );
+    expect(out).toBe(set);
+    expect(out.coworkers[0].walk).toBeUndefined();
+  });
+
+  it("leaves a standing coworker with no walk field at all", () => {
+    const out = applyLivePositions(setOf(coworker("micah@offshorly.com")), [peer("micah@offshorly.com", { x: 400, y: 500 })], true, 0);
+    expect(out.coworkers[0].walk).toBeUndefined();
+    expect(countWalking(out)).toBe(0);
+  });
+
+  it("counts who is walking, and nothing more", () => {
+    const out = applyLivePositions(
+      setOf(coworker("a@x.com"), coworker("b@x.com")),
+      [
+        peer("a@x.com", { x: 400, y: 500 }, {}, active("m1", { x: 400, y: 500 }, [{ x: 400, y: 700 }])),
+        peer("b@x.com", { x: 600, y: 500 }),
+      ],
+      true,
+      0,
+    );
+    expect(countWalking(out)).toBe(1);
     expect(countLivePositions(out)).toBe(2);
   });
 });

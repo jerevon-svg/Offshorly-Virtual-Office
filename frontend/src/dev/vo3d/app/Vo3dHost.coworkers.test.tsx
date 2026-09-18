@@ -84,6 +84,9 @@ vi.mock("../../../services/presence/movementSync", async () => {
       return peerMovements;
     },
     useMovementSnapshotReady: () => snapshotReady,
+    // Phase 6A: the host reads V1's last-snapshot clock offset to say how far into a walk a peer is.
+    // Zero here, so a test's `startedAt` is measured against the test's own clock.
+    getServerClockOffsetMs: () => 0,
   };
 });
 

@@ -2424,6 +2424,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   /** True while anything that casts a shadow is still moving. Compared against the last frame rather than
    *  asking each controller, so a new interaction can never forget to opt in. */
   const lastShadowPose: CasterPose = { x: Number.NaN, z: 0, yaw: Number.NaN, clip: "" };
+  /** Did any coworker's transform change this frame? Written by the loop's coworkers.update call and read
+   *  by the dynamic-shadow gate below, in that order, so a walking body's shadow follows it. Kept as a
+   *  frame variable rather than asked of the system twice: `coworkers.moving` would answer "is a walk in
+   *  flight", which is nearly the same and not quite — a replay's last frame covers no ground. */
+  let coworkersMoved = false;
   // THE SPLIT IS BY WHAT MOVED, not by how much. A DYNAMIC caster is a registered avatar body and nothing
   // else: it is drawn into the shadow map over a cached static depth, so it costs ~70 draws instead of the
   // whole ground floor (render/Renderer, updateShadowMaps). ANYTHING ELSE that casts a shadow — a door leaf,
@@ -2440,8 +2445,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     const next: CasterPose = { x: p.x, z: p.z, yaw: avatar.yaw, clip: avatar.currentClip ?? "" };
     const moved = casterPoseMoved(lastShadowPose, next);
     lastShadowPose.x = next.x; lastShadowPose.z = next.z; lastShadowPose.yaw = next.yaw; lastShadowPose.clip = next.clip;
-    // a walking avatar animates continuously
-    return moved || navCtl.moving || (crowd?.moving ?? false);
+    // a walking avatar animates continuously — and so does a coworker replaying a movement V1 published
+    return moved || navCtl.moving || (crowd?.moving ?? false) || coworkersMoved;
   }
   /** A/B SWITCH, MEASUREMENT ONLY, never left on. True restores the pre-stage-4 rule exactly — a door is
    *  stale for as long as it is not closed, the hold included — so the two rules can be captured inside
@@ -2671,10 +2676,12 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       avatarState.position = `${p.x.toFixed(0)}, ${p.z.toFixed(0)}${navCtl.moving ? ` → ${navCtl.path.length} waypoint(s) left` : ""}`;
     }
     crowd?.update(dt / 1000); // no-op until a stress scenario has spawned one
-    // MIXERS ONLY, and that is the whole per-frame cost of the coworker system. A Phase 4B body moves when
-    // V1 says that person arrived somewhere new — inside sync(), once — never from in here, so nothing on
-    // this line can invalidate a shadow or touch a transform.
-    coworkers.update(dt / 1000);
+    // MIXERS, AND — Phase 6A — whatever walk each coworker is replaying. A room of standing people costs
+    // exactly what it did before (their replay is null and the branch is not taken); a walking one costs a
+    // segment lookup on a precomputed table per body. The return value says whether any transform changed,
+    // and feeds the DYNAMIC shadow gate below — never the static redraw, because a coworker is a
+    // registered dynamic caster and is hidden before the static pass draws.
+    coworkersMoved = coworkers.update(dt / 1000);
     // The shadow map is only redrawn when something that casts one has moved (Renderer.invalidateShadows).
     // Anything the avatar does counts: walking, sitting, and the doors/chairs its interactions drive. Plant
     // sway is deliberately NOT a trigger — a frozen leaf shadow is invisible and it would defeat the point.
@@ -3022,6 +3029,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       stats: () => coworkers.getStats(),
       positions: () => coworkers.positions(),
       count: () => coworkers.size,
+      /** PHASE 6A — is anybody replaying a walk right now, and how many. Counts only, like everything
+       *  else on this surface; `positions()` already reports where each body IS, live, as it walks. */
+      walking: () => coworkers.getStats().walking,
+      moving: () => coworkers.moving,
     },
     /** PHASE 5 VERIFICATION SURFACE — the counters, and the ONE driver a two-session check needs.
      *

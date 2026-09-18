@@ -14,6 +14,11 @@
 //     exactly as V1's office uses them. No new endpoint, no new socket, no second copy of either rule.
 //   • It is READ-ONLY in both directions: nothing is emitted, published or written back.
 //
+// PHASE 6A MAKES THEM WALK. The same subscription, the same store, one more field read from it: each
+// peer's IN-FLIGHT movement (its route and duration) alongside the arrived position Phase 4B already
+// read. Still nothing is emitted for anybody but self, still no second socket, and the stable position
+// stays the authority — see adapters/v1CoworkerPositions and world/Coworkers.
+//
 // PHASE 4B MAKES THOSE COWORKERS STAND WHERE V1 LAST SAW THEM STOP, and adds no new kind of dependency to
 // the list above — one more of V1's own hooks over one more of V1's own module-level singletons:
 //   • services/presence/movementSync owns ITS socket the way offlineLineupClient owns its. usePeerMovements
@@ -39,12 +44,13 @@
 // and useOfficeRoster surfaces every other failure as state rather than throwing.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { resolveVo3dCoworkers, selfEmailKey } from "../adapters/v1Coworkers";
-import { applyLivePositions, countLivePositions } from "../adapters/v1CoworkerPositions";
+import { applyLivePositions, countLivePositions, countWalking } from "../adapters/v1CoworkerPositions";
 import { createV1SelfMovementSink, resolveV1SelfPosition } from "../adapters/v1SelfMovement";
 import { useV1OfficeAccess } from "../adapters/v1Attendance";
 import { useOfficeRoster } from "../../../services/office/useOfficeRoster";
 import { useOfflineLineup } from "../../../services/presence/offlineLineupClient";
 import {
+  getServerClockOffsetMs,
   useMovementSnapshotReady,
   usePeerMovements,
 } from "../../../services/presence/movementSync";
@@ -170,10 +176,20 @@ export function Vo3dHost() {
   // Anyone V1 holds no usable position for keeps the desk resolveVo3dCoworkers gave them. Nothing is
   // fabricated, and the two facts stay distinguishable through Vo3dCoworker.posSource.
   const coworkerSet = useMemo(
-    () => applyLivePositions(rosterSet, peerMovements, snapshotReady),
+    // PHASE 6A — the same call, now also carrying each peer's IN-FLIGHT walk. `getServerClockOffsetMs()`
+    // is V1's own last-snapshot clock offset, read (not subscribed to) at exactly the moment this memo
+    // runs, which is exactly when a movement event arrived: the adapter needs it to say how far into a
+    // walk we are, and V1's PeerWalker fast-forwards with the same value.
+    //
+    // THIS MEMO STILL RUNS ONLY ON AN EVENT, never per frame. `usePeerMovements` notifies on
+    // walk_started, walk_arrived and positions_snapshot and on nothing else, and the walk it produces
+    // carries a movement id rather than a live clock — so the world can tell a new movement from the same
+    // one being handed over again, and a re-render caused by somebody else cannot restart a walk.
+    () => applyLivePositions(rosterSet, peerMovements, snapshotReady, getServerClockOffsetMs()),
     [rosterSet, peerMovements, snapshotReady],
   );
   const livePositionCount = useMemo(() => countLivePositions(coworkerSet), [coworkerSet]);
+  const walkingCount = useMemo(() => countWalking(coworkerSet), [coworkerSet]);
 
   // PHASE 5 — WHERE V1 SAYS *THIS* EMPLOYEE IS. The same store Phase 4B reads for everybody else, read
   // for the one row it deliberately excludes: self. positions_snapshot carries it, which is why V1's own
@@ -426,6 +442,7 @@ export function Vo3dHost() {
           data-testid="vo3d-coworkers"
           data-count={String(coworkerSet.coworkers.length)}
           data-live-positions={String(livePositionCount)}
+          data-walking={String(walkingCount)}
           data-snapshot-ready={snapshotReady ? "true" : "false"}
           data-missing-avatar={String(coworkerSet.missingAvatar.length)}
           data-roster-error={roster.error ? "true" : "false"}

@@ -5,12 +5,22 @@
 // snapshot in. So this module opens no socket, issues no request, emits nothing, and cannot trigger
 // apiFetch's 401 -> /login redirect.
 //
-// THE ONE HALF OF THE MOVEMENT FEED THIS READS. services/presence/movementSync.ts carries two things per
-// peer: `stable` (the last position they ARRIVED at) and `active` (a walk currently in flight, with its
-// path, duration and server clock offset). This reads `stable` AND ONLY `stable`. A peer mid-walk keeps
-// the position they last stopped at until their walk_arrived lands, and then jumps. That is the whole of
-// Phase 4B's "snap on arrival": the in-flight half is not consumed, so there is no interpolation to get
-// wrong and no clock arithmetic to drift. Walking is a later phase.
+// BOTH HALVES OF THE MOVEMENT FEED, NOW. services/presence/movementSync.ts carries two things per peer:
+// `stable` (the last position they ARRIVED at) and `active` (a walk currently in flight, with its path,
+// duration and server-stamped start).
+//
+//   Phase 4B read `stable` and only `stable`: a peer mid-walk kept the position they last stopped at
+//   until their walk_arrived landed, and then jumped. Correct, and visibly a teleport.
+//
+//   PHASE 6A ALSO READS `active`, as Vo3dCoworker.walk — the route, the duration and how far in it is by
+//   V1's own server clock. `stable` REMAINS THE AUTHORITY and is still what `point` reports; the walk is
+//   only what the body does on the way to it. That split is what makes every awkward case recoverable: a
+//   superseded walk is replaced by its successor, an interrupted one is corrected by the arrival that
+//   follows it, and a walk whose arrival is lost still leaves the body on a position V1 vouches for.
+//
+// THE CLOCK OFFSET IS PASSED IN, not read here, for the same reason `snapshotReady` is: this module stays
+// pure and given its inputs, and the host already owns every subscription (getServerClockOffsetMs is a
+// plain read of movementSync's own last-snapshot offset — the same one V1's PeerWalker fast-forwards with).
 //
 // TOP-LEFT -> CENTRE, THROUGH THAT PERSON'S OWN BOX. A `stable.pos` is in the SAME coordinate space as
 // `layer.x`/`layer.y` (movementSync's own header says so, and V1's OfficeMap.tsx resolveMemberCenter does
@@ -29,8 +39,9 @@
 // would be a second copy of an ordering rule that agrees until one of them is edited.
 import { FRAME } from "./v1Floor";
 import { FACING_BY_DIRECTION } from "./v1Facing";
-import type { PeerMovementState, Pt } from "../../../services/presence/movementSync";
-import type { Vo3dCoworker, Vo3dCoworkerSet } from "../app/coworkers";
+import type { ActiveMovement, PeerMovementState, Pt } from "../../../services/presence/movementSync";
+import type { Vo3dCoworker, Vo3dCoworkerSet, Vo3dCoworkerWalk } from "../app/coworkers";
+import type { Vec2 } from "../core/coords";
 
 /** How far outside the V1 frame a persisted position may still be believed.
  *
@@ -51,6 +62,50 @@ export function isUsablePosition(pos: Pt | null | undefined): boolean {
   if (pos.x < FRAME.x - OUT_OF_FRAME_SLACK || pos.x > FRAME.x + FRAME.w + OUT_OF_FRAME_SLACK) return false;
   if (pos.y < FRAME.z - OUT_OF_FRAME_SLACK || pos.y > FRAME.z + FRAME.d + OUT_OF_FRAME_SLACK) return false;
   return true;
+}
+
+/** Undo a sprite's TOP-LEFT origin against THAT person's own box — the one conversion this module does,
+ *  applied identically to a stable position and to every point of a walk. */
+const toCentre = (p: Pt, box: { width: number; height: number }): Vec2 => ({
+  x: p.x + box.width / 2,
+  z: p.y + box.height / 2,
+});
+
+/**
+ * ONE PEER'S IN-FLIGHT WALK, as the world needs it — or null when there is nothing to replay.
+ *
+ * Refused, and the body left to its stable position, whenever the movement is not something V2 can draw
+ * honestly:
+ *   • no active movement at all, which is the normal case for almost everybody almost always;
+ *   • an empty path, or any point of it that is not a believable V1 position (isUsablePosition, the same
+ *     predicate the stable half is judged by) — a route V2 cannot express is not replayed in part;
+ *   • a duration that is not a positive number, which would make the progress arithmetic meaningless.
+ *
+ * THE ORIGIN IS PATH[0]. V1 publishes them separately (`origin` plus the waypoints to visit), and a
+ * replay needs one continuous polyline starting where the body actually was.
+ *
+ * ELAPSED IS V1'S OWN FAST-FORWARD ARITHMETIC, not a second version of it: `startedAt` is server epoch
+ * ms, `serverClockOffsetMs` is serverTime - Date.now() from the last snapshot, and the difference is how
+ * far in the walk is on this client's clock. Clamped to [0, durationMs] for the same reason V1's
+ * PeerWalker clamps it — clock skew must not rewind a walk or push it past its end.
+ */
+export function resolveWalk(
+  active: ActiveMovement | null,
+  box: { width: number; height: number },
+  serverClockOffsetMs: number,
+  now = Date.now(),
+): Vo3dCoworkerWalk | null {
+  if (!active || !Array.isArray(active.path) || active.path.length === 0) return null;
+  if (!Number.isFinite(active.durationMs) || active.durationMs <= 0) return null;
+  if (!isUsablePosition(active.origin) || active.path.some((p) => !isUsablePosition(p))) return null;
+  const elapsed = now + serverClockOffsetMs - active.startedAt;
+  if (!Number.isFinite(elapsed)) return null;
+  return {
+    movementId: active.movementId,
+    path: [toCentre(active.origin, box), ...active.path.map((p) => toCentre(p, box))],
+    durationMs: active.durationMs,
+    elapsedMs: Math.min(active.durationMs, Math.max(0, elapsed)),
+  };
 }
 
 /**
@@ -78,6 +133,7 @@ export function applyLivePositions(
   set: Vo3dCoworkerSet,
   peers: readonly PeerMovementState[],
   snapshotReady: boolean,
+  serverClockOffsetMs = 0,
 ): Vo3dCoworkerSet {
   if (!snapshotReady || set.coworkers.length === 0 || peers.length === 0) return set;
 
@@ -87,21 +143,30 @@ export function applyLivePositions(
   let changed = false;
   const coworkers: Vo3dCoworker[] = set.coworkers.map((coworker) => {
     const peer = byEmail.get(coworker.email);
-    if (!peer || !isUsablePosition(peer.stable.pos)) return coworker;
+    if (!peer) return coworker;
+    // PHASE 6A — the walk is resolved even for a peer whose STABLE position is unusable. The two halves
+    // are independent facts: a corrupt persisted row is no reason to refuse a route that is fine, and the
+    // body simply keeps its derived desk as the thing it settles on.
+    const walk = resolveWalk(peer.active, coworker.box, serverClockOffsetMs);
+    if (!isUsablePosition(peer.stable.pos)) {
+      if (!walk) return coworker;
+      // `changed` has to be set here too, or the by-reference return below discards this mapped array —
+      // a set in which the ONLY thing that changed is somebody's walk would come back unmodified.
+      changed = true;
+      return { ...coworker, walk };
+    }
 
     changed = true;
     return {
       ...coworker,
       // The conversion, in one place: their own box's halves, and nothing else.
-      point: {
-        x: peer.stable.pos.x + coworker.box.width / 2,
-        z: peer.stable.pos.y + coworker.box.height / 2,
-      },
+      point: toCentre(peer.stable.pos, coworker.box),
       // V1's recorded arrival facing replaces the seat's own direction — they are not at the seat any
       // more, so the chair's direction is no longer the fact about them. Translated through the one
       // sprite-vocabulary table both other adapters use.
       facing: FACING_BY_DIRECTION[peer.stable.facing],
       posSource: "live",
+      ...(walk ? { walk } : {}),
     };
   });
 
@@ -109,6 +174,13 @@ export function applyLivePositions(
   // `missingAvatar` is carried through untouched: it is a roster fact, and a position cannot create or
   // cure a missing 3D character.
   return { coworkers, missingAvatar: set.missingAvatar };
+}
+
+/** How many of a set have a walk in flight. For the readouts, a count and never a list of who. */
+export function countWalking(set: Vo3dCoworkerSet): number {
+  let n = 0;
+  for (const coworker of set.coworkers) if (coworker.walk) n++;
+  return n;
 }
 
 /** How many of a set stand on a live persisted position rather than a derived desk. For the host's
