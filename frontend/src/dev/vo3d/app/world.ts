@@ -109,10 +109,13 @@ import { plannedDurationMs, SelfMovementFeed, type Vo3dSelfMovementSink } from "
 import { gateRects, mayEnterOffice, routeEntersOffice, zoneAt, type AccessGeometry, type OfficeAccess, type Zone } from "./access";
 import { Coworkers, facingTrace, type SeatAnchorPose } from "../world/Coworkers";
 import type { Vo3dCoworker } from "./coworkers";
+import type { Vo3dCoworkerInteractions, Vo3dCoworkerSelection, Vo3dScreenAnchor } from "./interactions";
+import { coworkerEmailOf, personCandidateId, REACH as TARGET_REACH, type Candidate } from "../player/PlayerTargeting";
+import { standablePointNear } from "../player/PlayerBody";
 import { markSeatFacingSaved, parseSeatAnchorId, SEAT_FACINGS, seatAnchorId, seatFacingFor, seatFacingTable, seatedYawFor, setSeatFacingOverride, subscribeSeatFacing, unsavedSeatFacingCount, type SeatFacing } from "./seats";
 import type { LoungeSeatSlot, SeatCapability } from "../world/WorldState";
 import { deskSeatContact } from "../interact/seatContact";
-import { FACING_YAW, pointInRect, type Facing, type Rect, type Vec2 } from "../core/coords";
+import { FACING_YAW, pointInRect, stepAngle, wrapAngle, type Facing, type Rect, type Vec2 } from "../core/coords";
 
 /** What a mounted V2 world hands back. `dispose()` is idempotent and, once called, the world is dead:
  *  the canvas it was given has had its WebGL context force-lost and CANNOT be reused (see
@@ -161,6 +164,25 @@ export interface Vo3dWorld {
    *  working office back on Reception's public side, because the alternative is being sealed in.
    *  `unknown` shuts the gate but never moves anybody. Never called by the standalone dev page. */
   setOfficeAccess(access: OfficeAccess): void;
+  /** PHASE 6D — WHO THE HOST HEARS FROM WHEN A COWORKER IS SELECTED, pushed in like every other write on
+   *  this interface. Null unsubscribes. The world dispatches nothing itself: see app/interactions.ts. */
+  setCoworkerInteractions(handlers: Vo3dCoworkerInteractions | null): void;
+  /** PHASE 6D — WHERE THAT PERSON IS ON SCREEN RIGHT NOW, for an anchored card. Recomputed from the live
+   *  camera and the live body on every call (the host calls it per animation frame), because both move.
+   *  Null for somebody this world has no body for. */
+  coworkerAnchor(email: string): Vo3dScreenAnchor | null;
+  /** PHASE 6D — THE HOST DISMISSED THE MENU (Escape, an outside press, an action taken). Told to the
+   *  world so the two agree on who is selected: without it the world would still hold the last person and
+   *  a second click on the SAME body would be recognised as "already selected" and open nothing. */
+  clearCoworkerSelection(): void;
+  /** PHASE 6D — WALK THIS EMPLOYEE UP TO THAT PERSON AND TURN TO FACE THEM.
+   *
+   *  The ONE verb of Phase 6D the world owns, because moving this body is its job: it routes through the
+   *  same planner, the same attendance boundary and the same Phase 5 movement sink every other walk goes
+   *  through (walkToGround), so peers replay it exactly as they replay a click-to-walk. Returns false when
+   *  the person has no body, or when no standable spot beside them exists, or when the walk was refused.
+   *  `Vo3dCoworkerInteractions.onApproachArrived` fires once the turn finishes. */
+  approachCoworker(email: string): boolean;
 }
 
 /** BUILD A V2 WORLD ON `canvas`. Everything below this line is the module body app/bootstrap.ts used to
@@ -797,6 +819,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
 
   // ---- interactions -------------------------------------------------------------------------------
   function walkToGround(x: number, z: number): NavResult {
+    // PHASE 6D — a new walk supersedes an approach in flight: whatever this route is for, it is not
+    // "stop in front of that person and turn to them" any more. approachCoworker re-arms it immediately
+    // AFTER calling through here, which is why this cannot be conditional on where the walk is going.
+    coworkerApproach = null;
     if (stack.owner === "Interaction" || stack.owner === "Editor") {
       // PHASE 6C — a floor click while SEATED stands the body up (the same stand the GUI button and
       // PLAYER mode's key perform); the destination itself is not honoured, because the stand sequence
@@ -850,6 +876,12 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   navCtl.onArrive = () => {
     navDebug.clearNav();
     approachCtl.onArrived();
+    // PHASE 6D — the walk part of an approach is done; the turn begins (see the frame loop), aimed from
+    // where the body actually stopped at where that person actually is now.
+    if (coworkerApproach) {
+      resolveApproachYaw();
+      coworkerApproach.turning = true;
+    }
     if (tour) { tour.i = (tour.i + 1) % tour.points.length; const p = tour.points[tour.i]; walkToGround(p.x, p.z); }
   };
   // PHASE 6C — THE CONFIGURED FACING, applied at the ONE point each interaction is given its data: the
@@ -1125,9 +1157,15 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   /** Click resolution: raycast the built world, then walk up to the first group a Reception interaction
    *  declares as its pick target (a static group name, or a seat entity's own view). */
   function pickInteraction(cx: number, cy: number): string | null {
+    return pickInteractionHit(cx, cy)?.id ?? null;
+  }
+  /** The same pick, carrying HOW FAR AWAY the winning hit was — what Phase 6D weighs a coworker body
+   *  against. Split out rather than changing pickInteraction's shape, so every existing caller is byte
+   *  for byte unaffected. */
+  function pickInteractionHit(cx: number, cy: number): { id: string; distance: number } | null {
     const r = canvas.getBoundingClientRect();
     ndc.set(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
-    raycaster.setFromCamera(ndc, R.camera);
+    raycaster.setFromCamera(ndc, R.activeCamera);
     const hits = raycaster.intersectObject(mirror.root, true);
     if (!hits.length) return null;
     const byPick = new Map<string, string>();
@@ -1141,7 +1179,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     for (const hit of hits) {
       for (let n: THREE.Object3D | null = hit.object; n; n = n.parent) {
         const id = byPick.get(n.name);
-        if (id) return id;
+        if (id) return { id, distance: hit.distance };
       }
     }
     return null;
@@ -1205,7 +1243,18 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   /** Assigned just after PLAYER mode is constructed (it needs the body to place). Declared here because
    *  the interaction bridge below is handed to PlayerMode and therefore has to exist first. */
   let caveTransition: CaveTransition | null = null;
-  function activateInteractable(id: string, kind: "seat" | "lounge" | "approach", near?: Vec2): boolean {
+  function activateInteractable(id: string, kind: "seat" | "lounge" | "approach" | "person", near?: Vec2): boolean {
+    // PHASE 6D — A PERSON. The one activation that starts nothing in this world: it SELECTS, and the host
+    // decides what a selection means (app/interactions.ts). The pointer is handed back so the card that
+    // opens can actually be used, and false is returned because no interaction took the avatar.
+    if (kind === "person") {
+      const email = coworkerEmailOf(id);
+      const who = email ? coworkers.within(avatar.position, TARGET_REACH).find((c) => c.email === email) : null;
+      if (!who) return false;
+      if (playerMode.active) playerMode.releasePointer();
+      selectCoworker({ email: who.email, displayName: who.displayName });
+      return false;
+    }
     // THE PORTAL, both ways, and the screen's own controls. These are the only three interactions in the
     // world that are not a seat or a walk-up, so they are branched HERE — in the same bridge every other
     // verb goes through — rather than given a parallel activation path of their own.
@@ -1350,6 +1399,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     radius: NAV_RADIUS, avatarHeight: BON_STANDING_HEIGHT,
     speed: () => params.walkSpeed,
     activate: activateInteractable,
+    // PHASE 6D — the coworkers, re-read per frame because they move. Empty until a host subscribes, so
+    // the standalone dev page targets exactly what it always did.
+    dynamicCandidates: coworkerCandidates,
     canStandUp: () => engagedSeat() !== null,
     standUp: () => engagedSeat()?.stand(),
     // hand the avatar over cleanly: stop the walker, cancel a half-finished approach, leave engaged seats
@@ -1433,6 +1485,118 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     },
   });
   R.addDynamicCaster(coworkers.group);
+
+  // ---- PHASE 6D: EMPLOYEE INTERACTIONS -------------------------------------------------------------
+  // SELECTING a coworker, ANCHORING a card to them, and WALKING UP TO THEM. Those three things and no
+  // others: what a selection then MEANS — chat, call, ask to join, view profile — is V1's own code
+  // running in app/Vo3dHost.tsx, through V1's own services, exactly as OfficeMap.tsx runs it. See
+  // app/interactions.ts for why the line is drawn there.
+  /** How far in front of somebody an approach stops, in world units. Two body radii plus a little: close
+   *  enough to be talking, far enough that neither body is inside the other. */
+  const APPROACH_GAP = NAV_RADIUS * 2 + 6;
+  /** Close enough to the approach point that walking there would be a twitch, in world units. */
+  const ARRIVED_EPSILON = 2;
+  /** rad/s — the SAME unhurried turn interact/Approach.ts gives a walk-up to a desk or a kiosk. */
+  const APPROACH_TURN_RATE = 4.2;
+  let coworkerInteractions: Vo3dCoworkerInteractions | null = null;
+  /** Who is selected right now, so a repeat click on the same body is not republished as a new selection
+   *  (the menu would re-mount and lose its own state) and a dismissal is only sent when there was one. */
+  let selectedCoworker: string | null = null;
+  /** The approach in flight: who it is aimed at, and the yaw to settle on.
+   *
+   *  `yaw` IS RESOLVED WHEN THE TURN BEGINS, NOT WHEN THE WALK IS DISPATCHED. The dispatch-time value is
+   *  a bearing from the PLANNED stand point to where that person was THEN, and neither of those survives
+   *  the walk: the planner stops the body near the requested cell rather than exactly on it, and the
+   *  person is free to take a step (or several) while you cross the room. Facing the bearing computed at
+   *  dispatch left the body looking a few degrees past them in a live two-browser run, and would leave it
+   *  looking at empty floor if they had moved. The dispatch value is kept only as the fallback for
+   *  somebody who is no longer rendered by the time the walk ends. */
+  let coworkerApproach: { email: string; yaw: number; turning: boolean } | null = null;
+  /** Re-aim at the person from where the body actually came to rest. Falls back to whatever the approach
+   *  was dispatched with when they are no longer drawn. */
+  function resolveApproachYaw(): void {
+    if (!coworkerApproach) return;
+    const at = coworkers.pointOf(coworkerApproach.email);
+    if (at) coworkerApproach.yaw = yawToward(avatar.position, at);
+  }
+
+  /** Tell the host who is selected. Idempotent on the same person; `null` clears. */
+  function selectCoworker(sel: Vo3dCoworkerSelection | null): void {
+    if ((sel?.email ?? null) === selectedCoworker) return;
+    selectedCoworker = sel?.email ?? null;
+    coworkerInteractions?.onSelect(sel);
+  }
+
+  /** WHO IS UNDER THE POINTER, with the distance the caller needs to weigh it against its own pick. */
+  function pickCoworkerAt(cx: number, cy: number): { email: string; displayName: string; distance: number } | null {
+    const r = canvas.getBoundingClientRect();
+    ndc.set(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
+    raycaster.setFromCamera(ndc, R.activeCamera);
+    return coworkers.pick(raycaster);
+  }
+
+  const projected = new THREE.Vector3();
+  function coworkerAnchor(email: string): Vo3dScreenAnchor | null {
+    const head = coworkers.headPoint(email);
+    if (!head) return null;
+    const r = canvas.getBoundingClientRect();
+    // THE ACTIVE CAMERA, not the orthographic one: PLAYER mode walks a perspective camera and an
+    // anchored card has to follow the body through it exactly as it does in OFFICE. `z` past 1 is behind
+    // the near/far range — behind the viewer, in practice — and is reported as not visible rather than
+    // projected to a mirrored point in front of them.
+    projected.copy(head).project(R.activeCamera);
+    const clientX = r.left + ((projected.x + 1) / 2) * r.width;
+    const clientY = r.top + ((1 - projected.y) / 2) * r.height;
+    const onScreen = projected.z <= 1 && clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
+    return { clientX, clientY, visible: onScreen };
+  }
+
+  /** PLAYER mode's per-frame coworker candidates. Distance-filtered by this module (it holds the bodies),
+   *  scored by PlayerTargeting (it holds the judgement) — see Coworkers.within. */
+  function coworkerCandidates(): readonly Candidate[] {
+    if (!coworkerInteractions) return [];
+    const here = avatar.position;
+    return coworkers.within(here, TARGET_REACH).map((c) => ({
+      id: personCandidateId(c.email),
+      kind: "person" as const,
+      pos: c.pos,
+      label: c.displayName,
+      // People belong to no room bucket; PLAYER mode adds them to whichever bucket it is scoring, so this
+      // is only ever read back as a label. The room the person is standing in is V1's question, not ours.
+      roomId: "",
+    }));
+  }
+
+  /** WALK UP TO A PERSON. The approach point is a standable spot APPROACH_GAP away from them, on the side
+   *  the body is already coming from — walking round somebody to stand on their far side is not what
+   *  "approach" means, and V1's own approachCharacter picks the near side too. */
+  function approachCoworker(email: string): boolean {
+    const at = coworkers.pointOf(email);
+    if (!at) return false;
+    const from = avatar.position;
+    const away = Math.hypot(from.x - at.x, from.z - at.z);
+    // Already there: no walk, just turn. A zero-length walk would publish a movement to where the body
+    // already stands, which every peer would replay as a twitch.
+    const dir = away > 1e-3 ? { x: (from.x - at.x) / away, z: (from.z - at.z) / away } : { x: 0, z: 1 };
+    const wanted = { x: at.x + dir.x * APPROACH_GAP, z: at.z + dir.z * APPROACH_GAP };
+    const spot = standablePointNear(wanted, NAV_RADIUS, playerStand);
+    if (!spot) {
+      navState.last = `approach refused: no standable point beside ${email}`;
+      return false;
+    }
+    const yaw = yawToward(spot, at);
+    if (Math.hypot(spot.x - from.x, spot.z - from.z) <= ARRIVED_EPSILON) {
+      // Standing there already — turn on the spot and report the arrival on the next frame the turn ends.
+      coworkerApproach = { email, yaw, turning: true };
+      resolveApproachYaw();
+      return true;
+    }
+    const result = walkToGround(spot.x, spot.z);
+    if (!result.ok) return false;
+    coworkerApproach = { email, yaw, turning: false };
+    return true;
+  }
+
 
   // ---- the Championship Cave: the portal ------------------------------------------------------------
   caveTransition = new CaveTransition({
@@ -1892,7 +2056,20 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     const moved = Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y), held = performance.now() - downAt.t;
     downAt = null;
     if (moved > 6 || held > 400 || !params.clickToWalk) return; // a drag = orbit, not a walk
-    const picked = pickInteraction(e.clientX, e.clientY);
+    // PHASE 6D — A BODY IS PICKED BEFORE THE FURNITURE IT IS STANDING AMONG, but only when it is actually
+    // in FRONT of it: a colleague behind a desk must not steal the desk's own click, and one standing in
+    // front of a chair must not lose to the chair. The two picks are weighed by hit distance, which is the
+    // only honest comparison — both rays are the same ray.
+    const person = pickCoworkerAt(e.clientX, e.clientY);
+    const hit = pickInteractionHit(e.clientX, e.clientY);
+    if (person && (!hit || person.distance <= hit.distance)) {
+      selectCoworker({ email: person.email, displayName: person.displayName });
+      return;
+    }
+    // Anything else is a dismissal: selecting a chair, a door or a patch of floor is not selecting a
+    // person, and leaving the card up over a world that has moved on is how it ends up pointing at nobody.
+    selectCoworker(null);
+    const picked = hit?.id ?? null;
     if (picked) {
       const ent = world.get(picked);
       // the portal is a transition, not a walk-up: clicking it has to mean the same thing pressing E on
@@ -2839,7 +3016,27 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // about none of them. `navCtl.path.length > 0` is the one extra signal: it separates a planned walk
       // (announced up front by walkToGround) from free movement, and is how a planned walk's end — or its
       // interruption — is detected. A no-op when no sink was handed over (the standalone dev page).
-      selfFeed?.frame(dt, { x: bp.x, z: bp.z }, avatar.yaw, navCtl.path.length > 0);
+      // PHASE 6D — THE LAST BEAT OF AN APPROACH: turn onto the person you walked up to, at the same
+      // unhurried rate every other interaction turns at. Done HERE, before the feed is told, for the
+      // reason Phase 6B added an exact arrival yaw in the first place — a walk_arrived published
+      // mid-turn tells every other browser this employee is facing a direction they are about to leave.
+      // `turning` therefore also holds the planned walk open for those few hundred milliseconds: the feed
+      // resolves a planned walk when the planner goes quiet, and quiet is not the same as finished.
+      if (coworkerApproach?.turning) {
+        const next = stepAngle(avatar.yaw, coworkerApproach.yaw, APPROACH_TURN_RATE * (dt / 1000));
+        avatar.setYaw(next);
+        if (Math.abs(wrapAngle(coworkerApproach.yaw - next)) < 0.02) {
+          avatar.setYaw(coworkerApproach.yaw);
+          const arrived = coworkerApproach.email;
+          coworkerApproach = null;
+          // Published FIRST (the line below sees `turning` false and resolves the walk with this exact
+          // yaw), reported to the host after — V1's quest signal must never outrun the movement that
+          // earned it.
+          selfFeed?.frame(0, { x: bp.x, z: bp.z }, avatar.yaw, false);
+          coworkerInteractions?.onApproachArrived(arrived);
+        }
+      }
+      selfFeed?.frame(dt, { x: bp.x, z: bp.z }, avatar.yaw, navCtl.path.length > 0 || coworkerApproach?.turning === true);
       accessState.zone = zoneOf({ x: bp.x, z: bp.z });
       // A direct-control player has no planned route, so the automatic doors would only react once his body
       // was already inside the sweep band. `doorIntent` is a one-segment synthetic route pointing a stride
@@ -3302,6 +3499,26 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
        *  Bounded to the last 8, anonymous (angles and compass points only) and read-only. This is what a
        *  two-session check reads to tell "the gate refused" apart from "the gate never ran". */
       facingTrace: () => facingTrace(),
+      /** PHASE 6D VERIFICATION SURFACE — the PRODUCTION entry points, not a test-only copy of them.
+       *  `select` is what a click and PLAYER mode's interact key both call, `anchor` is what the host's
+       *  own card reads every frame, and `approach` is the world's one Phase 6D verb. A scripted check
+       *  drives these so it exercises the real path instead of guessing where a raycast will land. */
+      interact: {
+        select: (email: string) => {
+          const who = coworkers.within(avatar.position, Number.POSITIVE_INFINITY).find((c) => c.email === email);
+          if (!who) return false;
+          selectCoworker({ email: who.email, displayName: who.displayName });
+          return true;
+        },
+        clear: () => selectCoworker(null),
+        selected: () => selectedCoworker,
+        anchor: (email: string) => coworkerAnchor(email),
+        approach: (email: string) => approachCoworker(email),
+        /** whether an approach is in flight, and whether it has reached the turn */
+        approaching: () => (coworkerApproach ? { email: coworkerApproach.email, turning: coworkerApproach.turning } : null),
+        /** what PLAYER mode would score this frame — ids and labels only */
+        candidates: () => coworkerCandidates().map((c) => ({ id: c.id, label: c.label })),
+      },
     },
     /** PHASE 5 VERIFICATION SURFACE — the counters, and the ONE driver a two-session check needs.
      *
@@ -3814,5 +4031,17 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       void coworkers.sync(list, missingAvatar).then(refreshCoworkerState);
       refreshCoworkerState();
     },
+    setCoworkerInteractions: (handlers) => {
+      coworkerInteractions = handlers;
+      // Unsubscribing drops any selection with it: the host that would have been told about it is gone.
+      if (!handlers) selectedCoworker = null;
+    },
+    coworkerAnchor,
+    clearCoworkerSelection: () => {
+      // The host already closed its card, so it is not told again — this only resyncs the world's idea of
+      // what is selected. Same one-way shape as every other host->world write on this interface.
+      selectedCoworker = null;
+    },
+    approachCoworker,
   };
 }

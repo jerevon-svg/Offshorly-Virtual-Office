@@ -30,6 +30,7 @@ vi.mock("./world", async () => ({
       setCoworkers: vi.fn(),
       setOfficeAccess: (a: unknown) => { access.push(a); },
       setOccupiedSeats: vi.fn(),
+      setCoworkerInteractions: vi.fn(), clearCoworkerSelection: vi.fn(), coworkerAnchor: vi.fn(() => null), approachCoworker: vi.fn(() => false),
       standUp: vi.fn(),
       access,
       restoreSelf: (point: Vec2, facing: Facing) => {

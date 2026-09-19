@@ -21,7 +21,7 @@ vi.mock("./world", async () => ({
     const dispose = vi.fn();
     mounts.push({ canvas, dispose });
     // Phase 4A: the world is a Vo3dWorld, and the host pushes the roster into it on creation.
-    return { dispose, setCoworkers: vi.fn(), restoreSelf: vi.fn(() => false), setOfficeAccess: vi.fn(), setOccupiedSeats: vi.fn(), standUp: vi.fn() };
+    return { dispose, setCoworkers: vi.fn(), restoreSelf: vi.fn(() => false), setOfficeAccess: vi.fn(), setOccupiedSeats: vi.fn(), setCoworkerInteractions: vi.fn(), clearCoworkerSelection: vi.fn(), coworkerAnchor: vi.fn(() => null), approachCoworker: vi.fn(() => false), standUp: vi.fn() };
   },
 }));
 

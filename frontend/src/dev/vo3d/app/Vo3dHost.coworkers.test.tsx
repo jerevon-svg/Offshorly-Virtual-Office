@@ -23,6 +23,7 @@ vi.mock("./world", async () => ({
       restoreSelf: vi.fn(() => false),
       setOfficeAccess: vi.fn(),
       setOccupiedSeats: vi.fn(),
+      setCoworkerInteractions: vi.fn(), clearCoworkerSelection: vi.fn(), coworkerAnchor: vi.fn(() => null), approachCoworker: vi.fn(() => false),
       standUp: vi.fn(),
       setCoworkers: (coworkers: readonly Vo3dCoworker[], missingAvatar?: readonly string[]) => {
         pushes.push({ coworkers, missingAvatar });

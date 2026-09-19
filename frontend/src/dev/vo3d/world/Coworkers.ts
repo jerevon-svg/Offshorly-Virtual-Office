@@ -300,6 +300,11 @@ export class CoworkerPlacer {
   }
 }
 
+/** PHASE 6D — the height an anchored interaction card hangs off, in world units: exactly where the
+ *  nameplate sprite already sits (see addLabel), so the card and the name agree about where a person's
+ *  head is instead of each having their own idea of it. */
+const HEAD_ANCHOR_Y = BON_STANDING_HEIGHT + 6;
+
 /** One memoised live answer: the V1-frame point it was computed for, and what it came out as. */
 type LiveSpot = { x: number; z: number; pos: Vec2 | null };
 
@@ -1032,6 +1037,57 @@ export class Coworkers {
    *
    *  Returns TRUE when any body's transform changed, so the caller can invalidate the dynamic composite
    *  and nothing else. */
+  /** PHASE 6D — WHO IS UNDER THE POINTER. The caller sets the ray (it owns the camera and the canvas);
+   *  this answers which coworker it hit and how far away, so the caller can weigh that against whatever
+   *  its OWN pick found — a body standing behind a desk must not beat the desk, and a body in front of
+   *  one must not lose to it.
+   *
+   *  The bodies are raycast DIRECTLY, not through the scene: they live in this group and nowhere else, and
+   *  the nameplate sprite is deliberately included — clicking somebody's name is clicking them. */
+  pick(raycaster: THREE.Raycaster): { email: string; displayName: string; distance: number } | null {
+    if (!this.group.visible) return null;
+    const hits = raycaster.intersectObject(this.group, true);
+    if (hits.length === 0) return null;
+    // The hit's own subtree root IS the body (Coworkers.group's children are CoworkerBody.root), so the
+    // owning email is found by walking up to the child of this group — never by name-matching.
+    for (const hit of hits) {
+      for (let n: THREE.Object3D | null = hit.object; n; n = n.parent) {
+        if (n.parent !== this.group) continue;
+        for (const [email, body] of this.bodies) {
+          if (body.root !== n) continue;
+          return { email, displayName: body.displayName, distance: hit.distance };
+        }
+      }
+    }
+    return null;
+  }
+
+  /** PHASE 6D — the world point an anchored card hangs off: the top of this person's head, which is where
+   *  their nameplate already sits. Null for somebody with no body (not rendered, or still loading). */
+  headPoint(email: string): THREE.Vector3 | null {
+    const body = this.bodies.get(email);
+    return body ? body.root.position.clone().setY(HEAD_ANCHOR_Y) : null;
+  }
+
+  /** PHASE 6D — where this person's body stands, in world units. Null when they have none. */
+  pointOf(email: string): Vec2 | null {
+    const body = this.bodies.get(email);
+    return body ? { ...body.pos } : null;
+  }
+
+  /** PHASE 6D — everybody within `reach` of `p`. PLAYER mode's targeting scores a handful of candidates
+   *  per frame and needs them as plain data; this is the only shape of that data the world hands out.
+   *  Deliberately a distance filter and nothing more — the CONE is PlayerTargeting's judgement, not this
+   *  module's, and duplicating it here is how the two would drift. */
+  within(p: Vec2, reach: number): { email: string; displayName: string; pos: Vec2 }[] {
+    const out: { email: string; displayName: string; pos: Vec2 }[] = [];
+    for (const [email, body] of this.bodies) {
+      const q = body.pos;
+      if (Math.hypot(q.x - p.x, q.z - p.z) <= reach) out.push({ email, displayName: body.displayName, pos: q });
+    }
+    return out;
+  }
+
   update(dt: number): boolean {
     if (!this.group.visible) return false;
     let moved = false;

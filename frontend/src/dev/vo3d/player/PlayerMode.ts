@@ -29,6 +29,9 @@ import { PlayerHud } from "./PlayerHud";
 import { PlayerInput } from "./PlayerInput";
 import { collectCandidates, pickTarget, type Candidate, type Target } from "./PlayerTargeting";
 
+/** Shared empty list, so a frame with no dynamic candidates allocates nothing. */
+const EMPTY_CANDIDATES: readonly Candidate[] = [];
+
 /** how fast the avatar turns toward its heading in third person (rad/s) — the navigation controller's rate */
 const TURN_RATE = 9;
 /** how far ahead of a moving player a door is told to expect him. One stride: enough for the leaf to be
@@ -89,6 +92,11 @@ export type PlayerDeps = {
   speed: () => number;
   /** hand an entity id to V2's existing interaction starters; returns false if it could not be started */
   activate: (id: string, kind: Candidate["kind"]) => boolean;
+  /** PHASE 6D — candidates that MOVE, re-read every frame instead of harvested once at construction:
+   *  the coworkers. Absent (the standalone dev page, and every phase before 6D) means there are none and
+   *  this costs a single undefined check per frame. The scoring itself is untouched — the same pickTarget
+   *  judges a person and a chair, so a chair you are standing on cannot be stolen by somebody behind you. */
+  dynamicCandidates?: () => readonly Candidate[];
   /** true when an interaction is engaged and E should stand up instead of sitting down */
   canStandUp: () => boolean;
   standUp: () => void;
@@ -197,12 +205,25 @@ export class PlayerMode {
     this.d.avatar.root.visible = this.camera.view === "third";
   }
 
+  /** PHASE 6D — give the pointer back so a DOM card can be used. PLAYER mode grabs the pointer to look
+   *  around; an interaction menu is unusable while it holds it. Releasing is all this does — the mode
+   *  stays active, the body keeps standing where it is, and one click on the canvas takes the pointer
+   *  back exactly as it did on the way in. */
+  releasePointer(): void {
+    this.input.unlock();
+  }
+
   /** Invoke whatever is targeted, through V2's own interaction path. */
   interact(): void {
     if (!this._active) return;
     if (this.d.canStandUp()) { this.d.standUp(); return; }
     const t = this.target;
     if (!t) return;
+    // PHASE 6D — A PERSON IS NOT A HANDOFF. Selecting a coworker opens a menu; it moves nobody and owns
+    // nothing, so the avatar is never released here. Releasing and re-acquiring it (what every other kind
+    // does, because the starters route with A* and take "Interaction") would drop Bon into an idle clip
+    // for a frame for a menu that has not even been answered yet.
+    if (t.kind === "person") { this.d.activate(t.id, t.kind); return; }
     // release FIRST: the starters route with A* and acquire "Interaction", and Player outranks Navigation
     this.d.stack.release("Player");
     this.d.avatar.play(CLIP_IDLE);
@@ -284,7 +305,13 @@ export class PlayerMode {
     const room = this.d.world.regionAt(this.body.pos)?.roomId;
     const list = room ? this.candidates.get(room) : undefined;
     const facing = this.camera.view === "first" ? this.camera.forward : { x: Math.sin(this.d.avatar.yaw), z: -Math.cos(this.d.avatar.yaw) };
-    this.target = list ? pickTarget(list, this.body.pos, facing) : null;
+    // PHASE 6D — the static room bucket PLUS whoever is standing here right now. People are added
+    // regardless of which room the body is in (they are not in any bucket, and a coworker in the hall is
+    // still a person you are looking at); pickTarget's reach and cone are what bound them, as for
+    // everything else.
+    const dynamic = this.d.dynamicCandidates?.() ?? EMPTY_CANDIDATES;
+    const all = dynamic.length === 0 ? list : list ? [...list, ...dynamic] : dynamic;
+    this.target = all && all.length > 0 ? pickTarget(all, this.body.pos, facing) : null;
     this.state.target = this.target ? this.target.label : "—";
     if (this.d.canStandUp()) {
       this.hud?.setTarget("Stand up", null);

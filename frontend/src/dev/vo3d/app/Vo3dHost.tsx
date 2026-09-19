@@ -62,6 +62,7 @@ import {
   computeServerLineupEmailSet,
 } from "../../../services/presence/offlineLineupPlacement";
 import { EMPTY_COWORKER_SET } from "./coworkers";
+import { Vo3dCoworkerInteractions } from "./Vo3dCoworkerInteractions";
 import { resolveVo3dHomeDesk } from "../adapters/v1HomeDesk";
 import { resolveVo3dIdentity } from "../adapters/v1Identity";
 import type { Vo3dIdentity } from "./identity";
@@ -411,6 +412,13 @@ export function Vo3dHost() {
             Back to V1
           </button>
         </div>
+      )}
+      {/* PHASE 6D — EMPLOYEE INTERACTIONS. Mounted only once the world exists (it subscribes to it) and
+          only for a session V1 could identify: a preview with no signed-in employee has nobody to chat,
+          call or walk up to, and every service below would be routing on a guess. Everything it renders
+          is V1's own — see Vo3dCoworkerInteractions.tsx. */}
+      {phase.kind === "ready" && phase.identity && (
+        <Vo3dCoworkerInteractions worldRef={worldRef} ready people={roster.people} officeAccess={officeAccess} />
       )}
       {phase.kind === "ready" && phase.identity && (
         // THE REDACTED READOUT. Deliberately carries the display name, the resolved character id and

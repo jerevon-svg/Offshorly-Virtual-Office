@@ -16,7 +16,11 @@
 import type { Vec2 } from "../core/coords";
 import type { EntityId, WorldState } from "../world/WorldState";
 
-export type InteractKind = "seat" | "lounge" | "approach";
+/** PHASE 6D adds "person": a COWORKER, targeted exactly like a chair is. It is the one kind whose
+ *  candidates are not static — people walk — so they are supplied per frame rather than harvested once
+ *  (see PlayerDeps.dynamicCandidates), and the one kind whose activation does not move this body: it
+ *  opens the interaction menu, which is the host's business. */
+export type InteractKind = "seat" | "lounge" | "approach" | "person";
 export type Candidate = { id: EntityId; kind: InteractKind; pos: Vec2; label: string; roomId: string };
 export type Target = Candidate & { distance: number };
 
@@ -28,6 +32,14 @@ const CLOSE_ENOUGH = 20;
 
 const labelFor = (id: EntityId, kind: InteractKind, fallback?: string): string =>
   fallback ?? `${kind === "approach" ? "Use" : "Sit"} — ${id.split("/").slice(1).join("/") || id}`;
+
+/** PHASE 6D — the entity-id namespace a coworker candidate occupies. It is NOT a world entity (nobody
+ *  registered a person in WorldState and nobody should) — it is an address the activation bridge can
+ *  route on, and `coworkerEmailOf` is its one reader. */
+export const PERSON_ID_PREFIX = "person/";
+export const personCandidateId = (email: string): EntityId => `${PERSON_ID_PREFIX}${email}`;
+export const coworkerEmailOf = (id: EntityId): string | null =>
+  id.startsWith(PERSON_ID_PREFIX) ? id.slice(PERSON_ID_PREFIX.length) : null;
 
 /** Harvest every interactable the world declares, bucketed by room. Call once: entities are static. */
 export function collectCandidates(world: WorldState): Map<string, Candidate[]> {

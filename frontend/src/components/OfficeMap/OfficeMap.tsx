@@ -164,13 +164,7 @@ import {
 } from "../../services/chat/roomRequestsClient";
 import { DndRequestQueue } from "./DndRequestQueue";
 import { TalkRequestToast } from "./TalkRequestToast";
-import {
-  cancelTalkRequest,
-  createTalkRequest,
-  onTalkRequestCancelled,
-  onTalkRequestResolved,
-  TalkRequestCooldownError,
-} from "../../services/chat/talkRequestsClient";
+import { useTalkPermissionGate } from "./useTalkPermissionGate";
 import { RoomLockedToast } from "./RoomLockedToast";
 import { emitDndSet, useDndEmails } from "../../services/presence/dndClient";
 import { emitGlobalChatActive, useGlobalChatActiveEmails } from "../../services/presence/globalChatActivityClient";
@@ -2261,86 +2255,11 @@ export function OfficeMap() {
     setRoomEntryGate({ ...gate, pendingRequestId: null });
   }
 
-  // Person-level DND protection (feature spec section 7) — same shape as roomEntryGate above,
-  // but gates Chat/Approach against a specific DND PERSON rather than a room's door. `resume`
-  // re-runs the exact approachCharacter call the gate short-circuited. `cooldownUntil` is set
-  // only right after a decline (server-authoritative — see talkRequestsClient's
-  // TalkRequestCooldownError) so the toast can show "try again in Xm" without polling.
-  const [personGate, setPersonGate] = useState<{
-    targetEmail: string;
-    targetName: string;
-    kind: "chat" | "approach";
-    resume: () => void;
-    pendingRequestId: string | null;
-  } | null>(null);
-  const personGateRef = useRef(personGate);
-  personGateRef.current = personGate;
-  const [personGateDeclined, setPersonGateDeclined] = useState(false);
-  const [personGateCooldownUntil, setPersonGateCooldownUntil] = useState<string | null>(null);
-  const personGateDeclinedTimerRef = useRef<number | undefined>(undefined);
-
-  useEffect(() => {
-    const offResolved = onTalkRequestResolved((req) => {
-      const gate = personGateRef.current;
-      if (!gate || gate.pendingRequestId !== req.id) return;
-      if (req.state === "accepted") {
-        // One-shot: consume the permission immediately, then clear — a future interruption
-        // while the target remains DND requires another request (feature spec section 8/9).
-        setPersonGate(null);
-        gate.resume();
-      } else if (req.state === "declined") {
-        setPersonGate(null);
-        setPersonGateDeclined(true);
-        setPersonGateCooldownUntil(null); // this decline's own cooldown isn't known client-side until the NEXT create attempt 429s
-        window.clearTimeout(personGateDeclinedTimerRef.current);
-        personGateDeclinedTimerRef.current = window.setTimeout(() => setPersonGateDeclined(false), 3000);
-      }
-    });
-    const offCancelled = onTalkRequestCancelled((req) => {
-      const gate = personGateRef.current;
-      if (!gate || gate.pendingRequestId !== req.id) return;
-      // Target turned DND off (or otherwise went stale) while waiting — same "fall back to the
-      // resting gate state" reasoning as room-entry's onCancelled handler. If they're no longer
-      // DND at all, drop the gate entirely and let the original action proceed normally.
-      if (!dndEmailsRef.current.has(gate.targetEmail)) {
-        setPersonGate(null);
-        gate.resume();
-        return;
-      }
-      setPersonGate({ ...gate, pendingRequestId: null });
-    });
-    return () => {
-      offResolved();
-      offCancelled();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  async function handleRequestTalk() {
-    const gate = personGateRef.current;
-    if (!gate || gate.pendingRequestId) return;
-    try {
-      const req = await createTalkRequest(gate.targetEmail, gate.kind);
-      setPersonGate((current) => (current && current.targetEmail === gate.targetEmail ? { ...current, pendingRequestId: req.id } : current));
-    } catch (err) {
-      if (err instanceof TalkRequestCooldownError) {
-        setPersonGate(null);
-        setPersonGateDeclined(true);
-        setPersonGateCooldownUntil(err.cooldownUntil);
-        window.clearTimeout(personGateDeclinedTimerRef.current);
-        personGateDeclinedTimerRef.current = window.setTimeout(() => setPersonGateDeclined(false), 3000);
-        return;
-      }
-      console.error("[talkRequests] failed to send talk request", err);
-    }
-  }
-
-  function handleCancelTalkRequest() {
-    const gate = personGateRef.current;
-    if (!gate?.pendingRequestId) return;
-    void cancelTalkRequest(gate.pendingRequestId).catch(() => {});
-    setPersonGate({ ...gate, pendingRequestId: null });
-  }
+  // Person-level DND protection (feature spec section 7) — same shape as roomEntryGate above, but gates
+  // Chat/Approach against a specific DND PERSON rather than a room's door. The whole lifecycle now lives
+  // in useTalkPermissionGate, because the V2 world (dev/vo3d) gates the same three verbs against the same
+  // people and a second copy of a permission rule is how two surfaces end up disagreeing.
+  const talkGate = useTalkPermissionGate(dndEmails);
 
   // Break/Lunch auto-walk (client-side-only, see statusMovement.ts): tracks
   // the PREVIOUS manualStatus so the effect below only fires on a genuine
@@ -4075,11 +3994,7 @@ export function OfficeMap() {
     // Abandon any stale gate toast left over from a PREVIOUS DND-gated attempt at a different
     // target — any new character-menu interaction supersedes it, same "new attempt cancels the
     // old one" reasoning as cancelPendingDoorWalks for the room-entry gate.
-    if (personGateRef.current && personGateRef.current.targetEmail !== target.id.trim().toLowerCase()) {
-      const stale = personGateRef.current;
-      if (stale.pendingRequestId) void cancelTalkRequest(stale.pendingRequestId).catch(() => {});
-      setPersonGate(null);
-    }
+    talkGate.supersede(target.id.trim().toLowerCase());
 
     // Person-level DND protection (feature spec section 7): Chat/Approach/Call must not auto-walk
     // or open a spatial conversation with a DND person from outside — gate behind Request
@@ -4105,14 +4020,13 @@ export function OfficeMap() {
       const targetEmail = target.id.trim().toLowerCase();
       if (dndEmails.has(targetEmail)) {
         setMenu(null);
-        setPersonGate({
+        talkGate.open({
           targetEmail,
           targetName: name,
           // "call" rides the existing "chat" talk-request kind — it IS a request to talk, and
           // the backend's CreateTalkRequestIn enum is deliberately left untouched. The call
           // intent itself is remembered separately in resume() below.
           kind: action === "call" ? "chat" : action,
-          pendingRequestId: null,
           resume: () => {
             if (action === "approach") {
               approachCharacter(target, (arriveCenter, targetCenter) => {
@@ -5845,14 +5759,7 @@ export function OfficeMap() {
         onKnock={() => void handleKnock()}
         onCancel={handleCancelKnock}
       />
-      <TalkRequestToast
-        targetName={personGate?.targetName ?? null}
-        pendingRequestId={personGate?.pendingRequestId ?? null}
-        declined={personGateDeclined}
-        cooldownUntil={personGateCooldownUntil}
-        onRequest={() => void handleRequestTalk()}
-        onCancel={handleCancelTalkRequest}
-      />
+      <TalkRequestToast {...talkGate.toastProps} />
       {toast && <div className={styles.toast}>{toast}</div>}
       {onboarding === "checkinPrompt" && (
         <CheckinModal onYes={startCheckin} onNotNow={() => setOnboarding("done")} />
