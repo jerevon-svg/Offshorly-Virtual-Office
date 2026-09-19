@@ -1,6 +1,10 @@
 // vo3d app — wires world → nav → render → avatar → interactions → editor → devtools. Dev-only entry.
 import * as THREE from "three";
 import GUI from "three/examples/jsm/libs/lil-gui.module.min.js";
+import {
+  getExperiencePreferences,
+  subscribeExperience,
+} from "../../../services/settings/experiencePreferences";
 import { WorldState } from "../world/WorldState";
 import { DESIGN_ROOM, DESIGN_SOLIDS, CHAIR_4_ID, DOOR_ID, HERO_PLANT_ID, SHELL as DESIGN_SHELL, designRoomEntities } from "../rooms/design-room";
 import { RECEPTION_ROOM, COUNTER_INTERACTION_ID, ENTRY_DOOR_EAST_ID, ENTRY_DOOR_WEST_ID, ENTRY_SCANNER_ID, ENTRY_ZONE, GATE, GATE_SCANNER_IDS, GATE_ZONES, KIOSK_INTERACTION_ID, LOUNGE_SEAT_IDS, RECEPTION_ROOM_ID, receptionEntities } from "../rooms/reception";
@@ -118,6 +122,42 @@ import type { LoungeSeatSlot, SeatCapability } from "../world/WorldState";
 import { deskSeatContact } from "../interact/seatContact";
 import { FACING_YAW, pointInRect, stepAngle, wrapAngle, type Facing, type Rect, type Vec2 } from "../core/coords";
 
+/** PHASE 7C — THE CAVE MEETING, as the HUD sees it.
+ *
+ *  Every field is read from things that already existed: `inside` is CaveTransition's own state, and the
+ *  rest is media/CaveLiveShare's state, which is itself a mirror of services/call/callStore — the app's
+ *  ONE LiveKit call system. Nothing here is a second meeting model. */
+export interface Vo3dCaveMeetingState {
+  /** True while the viewer is standing inside the Championship Cave. */
+  inside: boolean;
+  status: "off" | "connecting" | "connected" | "error";
+  /** The meeting (or spatial session) this page is connected to, or "". */
+  session: string;
+  kind: "—" | "meeting" | "spatial";
+  mic: boolean;
+  camera: boolean;
+  sharing: boolean;
+  /** Live cameras in the room, this client's included — the only honest head-count available. */
+  cameras: number;
+  /** Who is sharing a screen right now, or "". */
+  presenter: string;
+  /** The last thing that went wrong, in the store's own words, or "". */
+  note: string;
+}
+
+/** The verbs. Each one is a straight pass to CaveLiveShare, which is a straight pass to the app's call
+ *  store — the same functions V1's own call controls call. */
+export interface Vo3dCaveMeeting {
+  subscribe(listener: (state: Vo3dCaveMeetingState) => void): () => void;
+  /** Connect this page to the call store as `email`, then create-or-join the Cave meeting room. The
+   *  SERVER decides which of the two it is; see routers/calls.py create_meeting_token. */
+  start(email: string): Promise<void>;
+  setMic(on: boolean): Promise<void>;
+  setCamera(on: boolean): Promise<void>;
+  setSharing(on: boolean): Promise<void>;
+  leave(): void;
+}
+
 /** What a mounted V2 world hands back. `dispose()` is idempotent and, once called, the world is dead:
  *  the canvas it was given has had its WebGL context force-lost and CANNOT be reused (see
  *  render/Renderer.dispose). A remount must be given a FRESH canvas element. */
@@ -198,6 +238,11 @@ export interface Vo3dWorld {
   setDevToolsVisible(on: boolean): void;
   /** Whether the rig is currently showing, so a checkbox can render the real state. */
   devToolsVisible(): boolean;
+  /** PHASE 7C — the Championship Cave's meeting, for the HUD. */
+  readonly caveMeeting: Vo3dCaveMeeting;
+  /** PHASE 7C — told whenever that switch moves, and once immediately. The host's own diagnostic
+   *  readouts ride it so they are developer-only exactly as the inspection panel is. */
+  subscribeDevTools(listener: (visible: boolean) => void): () => void;
   /** PART 4 — SWITCH VIEW. The same entry point the dev GUI's mode dropdown uses, so a switcher in the
    *  HUD and the GUI can never disagree. Switching does NOT move the avatar, change attendance, presence
    *  or any conversation: OFFICE and 3D EXPLORE only reconfigure the orbit rig, and PLAYER is a camera
@@ -438,6 +483,34 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // allocates, in an ordinary session.
   const cavePresentation = new CavePresentation();
   const caveGallery = new CaveGallery(caveBuild);
+  /** PHASE 7C — the Cave meeting, pushed to the HUD. Edge-triggered off a signature rather than sent
+   *  every frame: the HUD renders React, and a meeting whose mic did not change is not news. */
+  const caveMeetingListeners = new Set<(s: Vo3dCaveMeetingState) => void>();
+  let lastCaveMeetingSignature = "";
+  function readCaveMeeting(): Vo3dCaveMeetingState {
+    const st = caveLiveShare.state;
+    return {
+      inside: caveTransition?.inside ?? false,
+      status: st.status,
+      session: st.session,
+      kind: st.kind,
+      mic: st.mic,
+      camera: st.camera,
+      sharing: st.sharing,
+      cameras: st.cameras,
+      presenter: st.presenter,
+      note: st.note,
+    };
+  }
+  function notifyCaveMeetingIfChanged(): void {
+    if (caveMeetingListeners.size === 0) return;
+    const next = readCaveMeeting();
+    const signature = Object.values(next).join("|");
+    if (signature === lastCaveMeetingSignature) return;
+    lastCaveMeetingSignature = signature;
+    for (const cb of caveMeetingListeners) cb(next);
+  }
+
   const caveLiveShare = new CaveLiveShare({
     onShare: (source, presenter) => cavePresentation.setSource(source, presenter),
     onCameras: (cameras) => caveGallery.setCameras(cameras),
@@ -1812,6 +1885,12 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // make the mix a function of the UI. In PLAYER mode the two are the same point anyway.
   /** Read LIVE, never cached: the monument is an editable piece, and its approach point rides its transform. */
   const portalPoint = (): Vec2 => world.get(CHAMPIONSHIP_ENTRANCE_ID).capabilities.approach!.point;
+  /** Set once the lil-gui panel is built, so a preference written from the Settings panel repaints the
+   *  inspection rig's rows too. Null until then — the preference still applies, the GUI just does not
+   *  exist to repaint. */
+  let guiRefresh: (() => void) | null = null;
+  const refreshGuiIfBuilt = (): void => guiRefresh?.();
+
   const envAudio = new EnvironmentalAudio({
     sample: (into) => {
       const a = avatar.worldPosition();
@@ -1837,6 +1916,28 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     meeting: () => caveLiveShare.state.status === "connected",
   });
   envAudio.arm(); // nothing is created or played until a real user gesture — see EnvironmentalAudio.arm
+
+  // SETTINGS -> AUDIO -> OFFICE SOUND. The employee's own preference for the ambient bed, read from the
+  // SHARED store (services/settings/experiencePreferences) exactly as the graphics controller reads its
+  // own. The dev GUI's two rows below still drive envAudio directly and are still the inspection rig's;
+  // this is the product control, and it wins at startup and whenever the panel writes.
+  //
+  // `params` is kept in step so the GUI's readouts do not disagree with what is actually playing.
+  const applyAmbientPreference = (): void => {
+    const { ambientAudio, ambientVolume } = getExperiencePreferences();
+    params.envAudio = ambientAudio;
+    params.envAudioVolume = ambientVolume;
+    if (ambientAudio) envAudio.start();
+    envAudio.setEnabled(ambientAudio);
+    envAudio.setVolume(ambientVolume);
+  };
+  applyAmbientPreference();
+  // Cancelled in dispose(): the store outlives this world, so a world that did not unsubscribe would
+  // keep a disposed EnvironmentalAudio alive through the listener set.
+  const unsubscribeAmbient = subscribeExperience(() => {
+    applyAmbientPreference();
+    refreshGuiIfBuilt();
+  });
 
   // ---- world foley -----------------------------------------------------------------------------------
   // THE WHOLE FOLEY LAYER IS TWO OBJECTS AND ONE FUNCTION. Every sound below is played off a TRANSITION
@@ -2307,8 +2408,17 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   function applyDevToolsVisible(): void {
     gui.domElement.style.display = devToolsVisible ? "" : "none";
     overlay.visible = devToolsVisible && params.overlay;
+    // PHASE 7C — the host's own readouts follow the SAME switch. They are diagnostics too (see
+    // Vo3dHost.tsx): a redacted identity line, a desk-preview line, coworker counts and a movement/access
+    // line, all of which were sitting over an employee's office in the top-right corner. Told rather than
+    // polled, so nothing is scanning for a boolean every frame.
+    for (const cb of devToolsListeners) cb(devToolsVisible);
   }
+  const devToolsListeners = new Set<(on: boolean) => void>();
   const refresh = () => gui.controllersRecursive().forEach((c) => c.updateDisplay());
+  // The ambient-preference subscriber above is installed before the GUI exists; this is how it repaints
+  // the GUI's rows once it does, without reaching for a `refresh` that was not defined yet.
+  guiRefresh = refresh;
   const cam = gui.addFolder("Camera");
   const applyCam = () => { R.camParams = { pitch: params.pitch, yaw: params.yaw, zoom: params.zoom }; R.placeCamera(); };
   /** mirror whatever the mode policy decided back into the GUI state */
@@ -3291,6 +3401,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       qaDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
       updateScanners({ x: bp.x, z: bp.z });
       caveTransition?.update(); // media readout; a no-op outside the CAVE
+      notifyCaveMeetingIfChanged();
       // THE WORLD'S FOLEY, and the toucan's flight. Reads the state everything above just wrote — no
       // interaction, door or seat controller knows this exists.
       worldFoley(dt / 1000, { x: bp.x, z: bp.z });
@@ -4179,6 +4290,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     caveMedia.dispose();
     // Audio: stops every source, disconnects every node, closes the AudioContext and unbinds the
     // document-level gesture listeners it armed itself with.
+    unsubscribeAmbient();
     envAudio.dispose();
     // The graphics controller is subscribed to the SHARED preferences store (services/render) — that
     // subscription outlives this world unless it is cancelled.
@@ -4317,6 +4429,30 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       applyDevToolsVisible();
     },
     devToolsVisible: () => devToolsVisible,
+    caveMeeting: {
+      subscribe: (listener) => {
+        caveMeetingListeners.add(listener);
+        listener(readCaveMeeting());
+        return () => caveMeetingListeners.delete(listener);
+      },
+      // ONE ENTRY POINT, and it is create-or-join because that is what the server does: everybody who
+      // asks for CAVE_MEETING_ID gets the same room, and the first arrival mints it. The client is not
+      // told whether it created or joined — see the Phase 7C notes.
+      start: async (email: string) => {
+        await caveLiveShare.connect(email);
+        await caveLiveShare.startMeeting();
+        notifyCaveMeetingIfChanged();
+      },
+      setMic: async (on: boolean) => { await caveLiveShare.setMic(on); notifyCaveMeetingIfChanged(); },
+      setCamera: async (on: boolean) => { await caveLiveShare.setCamera(on); notifyCaveMeetingIfChanged(); },
+      setSharing: async (on: boolean) => { await caveLiveShare.setSharing(on); notifyCaveMeetingIfChanged(); },
+      leave: () => { caveLiveShare.leave(); notifyCaveMeetingIfChanged(); },
+    },
+    subscribeDevTools: (listener) => {
+      devToolsListeners.add(listener);
+      listener(devToolsVisible);
+      return () => devToolsListeners.delete(listener);
+    },
     setViewMode: (mode) => {
       if (params.cameraMode === mode) return;
       setCameraMode(mode);

@@ -72,6 +72,11 @@ function OfficeApp() {
     return (
       <ErrorBoundary>
         <Vo3dHost />
+        {/* PHASE 7C — THE SAME hidden instance V1 gets below, for the same one reason: armAutoplay().
+            Without it the V2 route never armed the music singleton at all, so Settings -> Audio could
+            move the stored volume while nothing was ever playing — a control that looked live and was
+            not. It is the SAME singleton (audio/backgroundMusic.ts), not a second player. */}
+        <BackgroundMusicControl hidden />
       </ErrorBoundary>
     );
   }

@@ -384,6 +384,24 @@ export function Vo3dHost() {
     worldRef.current?.setOfficeAccess(officeAccess);
   }, [officeAccess, selfPublishing]);
 
+  // PHASE 7C — THE READOUTS BELOW ARE DEVELOPER DIAGNOSTICS, so they follow the developer switch.
+  //
+  // They were being painted over an employee's office: a redacted identity line, a desk-preview line,
+  // coworker counts and a movement/access line, stacked down the top-right corner at z-index 1003. Every
+  // one of them exists to let a real session be verified from OUTSIDE — which is why they are HIDDEN
+  // rather than removed, and hidden with `display: none` rather than by unmounting: the elements and
+  // their data-* attributes stay in the DOM, so every automated check that reads them still reads them,
+  // and `?gui=1` (or Settings -> Developer) still shows the text to a human who wants it.
+  const [devVisible, setDevVisible] = useState(false);
+  useEffect(() => {
+    if (phase.kind !== "ready") return;
+    const world = worldRef.current;
+    if (!world?.subscribeDevTools) return;
+    return world.subscribeDevTools(setDevVisible);
+  }, [phase.kind]);
+  /** The one style every diagnostic readout adds. Keeps them queryable while they are not on screen. */
+  const diagnostic = devVisible ? undefined : ({ display: "none" } as const);
+
   return (
     <div
       ref={hostRef}
@@ -456,6 +474,7 @@ export function Vo3dHost() {
             background: "rgba(30,24,20,0.72)",
             color: "#f4ede4",
             pointerEvents: "none",
+            ...diagnostic,
           }}
         >
           {phase.identity.displayName}
@@ -488,6 +507,7 @@ export function Vo3dHost() {
             background: "rgba(30,24,20,0.72)",
             color: "#f4ede4",
             pointerEvents: "none",
+            ...diagnostic,
           }}
         >
           desk preview
@@ -529,6 +549,7 @@ export function Vo3dHost() {
             background: "rgba(30,24,20,0.72)",
             color: "#f4ede4",
             pointerEvents: "none",
+            ...diagnostic,
           }}
         >
           {roster.error
@@ -563,6 +584,7 @@ export function Vo3dHost() {
             background: "rgba(30,24,20,0.72)",
             color: "#f4ede4",
             pointerEvents: "none",
+            ...diagnostic,
           }}
         >
           {selfPublishing ? "movement → V1" : "movement not published"}

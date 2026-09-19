@@ -1,6 +1,6 @@
-// vo3d app — PART 4: THE VIEW SWITCHER.
+// vo3d app — PART 4 / PHASE 7C: SWITCHING VIEW, WITH NO CHROME AT ALL.
 //
-// Three deliberately DIFFERENT experiences, offered as three buttons and never merged:
+// Three deliberately DIFFERENT experiences, and they have not changed:
 //
 //   Office   the default. A fixed top-down read of the whole floor, V1's own framing, with V1's mouse
 //            contract underneath it (left-drag pans, right-click moves, wheel zooms).
@@ -10,19 +10,41 @@
 //            reconfigures the orbit rig (render/CameraModes).
 //   Player   direct control of the avatar, with its own first/third-person cameras and pointer lock.
 //
-// ALWAYS REACHABLE. This is NOT inside HudDock: the dock steps aside whenever a tool owns the screen and
-// is hidden outright in Player, and a view switcher that disappeared with it would strand somebody in a
-// mode they could not leave. It is the one control that outlives the dock.
-import { useEffect, useState } from "react";
+// WHAT THIS COMPONENT IS NOW: the C key, and nothing else. It renders null. The three-tab strip became a
+// camera button, the camera button was removed, and the 3rd/1st pair and the pointer hint went with it —
+// so the office's corners hold no permanent widget of any kind and the world is the whole screen.
+//
+// NOTHING FUNCTIONAL LEFT WITH THE PIXELS. Every way to change a view still exists:
+//   C           cycles Office -> 3D -> Player -> Office, bound here.
+//   V           first/third person inside PLAYER, bound where it has always been bound —
+//               player/PlayerInput, which owns the keyboard while PLAYER is active. A second listener
+//               here would toggle twice per press, which is why there has never been one.
+//   Settings    -> General picks the view (switches immediately AND sets the starting preference), and
+//               -> Controls is where both keys are written down for somebody who has not met them.
+// All of them go through the one `world.setViewMode` / `world.setPlayerView` entry point the dev GUI's
+// dropdown uses, so no two of them can ever disagree.
+//
+// The pointer contract is likewise unchanged and still owned by player/PlayerInput: a click on the world
+// takes the pointer, Esc gives it back (PlayerInput deliberately leaves Esc to the browser, as the one
+// guaranteed way out), and the dock follows that lock — see app/Vo3dHud. The world draws its own
+// "click to look · WASD to walk · Shift to sprint · V first/third · Esc releases" line over the avatar,
+// which is where that instruction now lives.
+//
+// IT STILL SUBSCRIBES, because C has to know what "next" means. Keeping the subscription here rather
+// than lifting the key into the HUD keeps the view state in one place.
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Vo3dWorld } from "./world";
 import type { Vo3dViewMode } from "./viewMode";
-import styles from "./Vo3dViewSwitcher.module.css";
+import { isTypingTarget } from "./keyGuard";
 
-const MODES: { id: Vo3dViewMode; label: string; hint: string }[] = [
-  { id: "office", label: "Office", hint: "Top-down view of the whole office" },
-  { id: "explore", label: "3D", hint: "Free camera — explore the office and outside" },
-  { id: "player", label: "Player", hint: "Walk your avatar directly" },
-];
+/** The cycle, in the order C walks. */
+export const VIEW_CYCLE: readonly Vo3dViewMode[] = ["office", "explore", "player"];
+
+/** The one next-view rule, exported so the C binding and its tests agree by construction. */
+export function nextViewMode(mode: Vo3dViewMode): Vo3dViewMode {
+  const i = VIEW_CYCLE.indexOf(mode);
+  return VIEW_CYCLE[(i + 1) % VIEW_CYCLE.length] ?? "office";
+}
 
 export interface Vo3dViewSwitcherProps {
   worldRef: { current: Vo3dWorld | null };
@@ -33,76 +55,43 @@ export interface Vo3dViewSwitcherProps {
 
 export function Vo3dViewSwitcher({ worldRef, ready, onViewModeChange }: Vo3dViewSwitcherProps) {
   const [mode, setMode] = useState<Vo3dViewMode>("office");
-  const [playerView, setPlayerView] = useState<"first" | "third">("third");
-  const [pointerLocked, setPointerLocked] = useState(false);
 
   useEffect(() => {
     const world = worldRef.current;
     if (!ready || !world) return;
-    const offMode = world.subscribeViewMode((m) => {
+    return world.subscribeViewMode((m) => {
       setMode(m);
       onViewModeChange?.(m);
     });
-    const offView = world.subscribePlayerView(setPlayerView);
-    return () => {
-      offMode();
-      offView();
-    };
   }, [onViewModeChange, ready, worldRef]);
 
-  // POINTER STATE, read from the browser rather than guessed: it is what decides whether these buttons
-  // can be clicked at all, so the hint below has to say which of the two states the player is in.
-  useEffect(() => {
-    const onChange = () => setPointerLocked(document.pointerLockElement !== null);
-    document.addEventListener("pointerlockchange", onChange);
-    onChange();
-    return () => document.removeEventListener("pointerlockchange", onChange);
-  }, []);
+  // The mode the KEY acts on is read from a ref, not from the effect's closure: the world pushes view
+  // changes outside React's batching, so a handler re-bound on every `mode` render can still be running
+  // against the previous value for a frame.
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
 
-  return (
-    <div className={styles.wrap} data-testid="vo3d-view-switcher">
-      <div className={styles.group} role="group" aria-label="View">
-        {MODES.map((m) => (
-          <button
-            key={m.id}
-            type="button"
-            className={m.id === mode ? `${styles.tab} ${styles.active}` : styles.tab}
-            aria-pressed={m.id === mode}
-            title={m.hint}
-            data-testid={`view-${m.id}`}
-            onClick={() => worldRef.current?.setViewMode(m.id)}
-          >
-            {m.label}
-          </button>
-        ))}
-      </div>
-      {mode === "player" && (
-        <div className={styles.group} role="group" aria-label="Player camera">
-          {(["third", "first"] as const).map((v) => (
-            <button
-              key={v}
-              type="button"
-              className={v === playerView ? `${styles.tab} ${styles.active}` : styles.tab}
-              aria-pressed={v === playerView}
-              title={v === "third" ? "Third person (V)" : "First person (V)"}
-              data-testid={`player-view-${v}`}
-              onClick={() => worldRef.current?.setPlayerView(v)}
-            >
-              {v === "third" ? "3rd" : "1st"}
-            </button>
-          ))}
-        </div>
-      )}
-      {mode === "player" && (
-        // THE POINTER CONTRACT, stated rather than left to be discovered. Esc is deliberately left to the
-        // browser by player/PlayerInput — it is the one guaranteed way out of a locked pointer — so the
-        // honest instruction is "Esc to use the HUD, click the world to play on".
-        <span className={styles.hint} data-testid="vo3d-player-hint">
-          {pointerLocked ? "Esc to use the HUD" : "Click the world to play"}
-        </span>
-      )}
-    </div>
-  );
+  const cycle = useCallback(() => {
+    worldRef.current?.setViewMode(nextViewMode(modeRef.current));
+  }, [worldRef]);
+
+  // C. Modifier presses are left alone (Cmd/Ctrl+C is a copy, and taking it would be the kind of
+  // shortcut that makes a product feel broken), and app/keyGuard keeps it out of anything a person is
+  // typing into or any modal that has taken the screen.
+  useEffect(() => {
+    if (!ready) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.code !== "KeyC") return;
+      if (event.metaKey || event.ctrlKey || event.altKey || event.repeat) return;
+      if (isTypingTarget(event)) return;
+      event.preventDefault();
+      cycle();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [cycle, ready]);
+
+  return null;
 }
 
 export default Vo3dViewSwitcher;

@@ -24,7 +24,8 @@
 
 .panel {
   position: relative;
-  width: min(480px, 94vw);
+  width: min(780px, 94vw);
+  height: min(600px, 88vh);
   max-height: 88vh;
   box-sizing: border-box;
   background: #fdfcfa;
@@ -112,15 +113,110 @@
   outline-offset: 2px;
 }
 
+/* ---- two panes ------------------------------------------------------------------------- */
+/* Categories left, the chosen category's controls right — the arrangement every game settings menu
+   uses, and the reason is the same one here: the list is the map, so nobody has to scroll a panel to
+   find out what it can set. The shell around it is untouched. */
+.layout {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 196px minmax(0, 1fr);
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 10px 16px 16px;
+  border-right: 1px solid rgba(24, 20, 34, 0.07);
+}
+
+.navItem {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: none;
+  padding: 9px 11px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.navItem:hover {
+  background: rgba(24, 20, 34, 0.04);
+}
+
+.navItem:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: 1px;
+}
+
+/* THE SELECTED STATE, and it has to be unmistakable: the panel's own green, a filled surface and a
+   left marker, so the chosen category reads at a glance from across the panel. */
+.navItem[aria-selected="true"] {
+  background: rgba(75, 185, 106, 0.12);
+  border-color: rgba(75, 185, 106, 0.42);
+}
+
+.navItem[aria-selected="true"] .navLabel {
+  color: #22623a;
+}
+
+.navLabel {
+  font-size: 13.5px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #241f30;
+}
+
+.navHint {
+  font-size: 11px;
+  line-height: 1.3;
+  color: rgba(36, 31, 48, 0.55);
+}
+
+/* Developer is not one of somebody's settings. It is set apart rather than styled loudly — a rule
+   above it and the amber ink the panel already uses for its DEV chrome. */
+.navItem[data-dev="true"] {
+  margin-top: 8px;
+  border-top: 1px solid rgba(24, 20, 34, 0.07);
+  border-radius: 0 0 12px 12px;
+  padding-top: 12px;
+}
+
+.navItem[data-dev="true"] .navLabel {
+  color: #7a5310;
+}
+
+.navItem[data-dev="true"][aria-selected="true"] {
+  background: rgba(255, 214, 138, 0.3);
+  border-color: rgba(255, 200, 120, 0.55);
+}
+
 /* ---- body ------------------------------------------------------------------------------ */
 .body {
-  flex: 1;
   min-height: 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 16px 22px 18px;
+  padding: 14px 22px 18px;
+}
+
+.body:focus-visible {
+  outline: none;
+}
+
+.paneHint {
+  margin: 0;
+  font-size: 12.5px;
+  color: rgba(36, 31, 48, 0.5);
 }
 
 .section {
@@ -186,6 +282,108 @@
   font-weight: 600;
   color: rgba(36, 31, 48, 0.55);
   font-variant-numeric: tabular-nums;
+}
+
+.rowValue {
+  flex: none;
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(36, 31, 48, 0.72);
+  font-variant-numeric: tabular-nums;
+}
+
+/* One slider treatment for every range in this panel, so sensitivity and volume are the same control
+   rather than two that happen to look similar. */
+.slider {
+  width: 100%;
+  margin: 0;
+  accent-color: #4bb96a;
+  cursor: pointer;
+}
+
+.slider:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.slider:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: 3px;
+}
+
+/* ---- key bindings (a reference, not a control) ------------------------------------------ */
+.bindings {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 5px 12px;
+  margin: 0;
+}
+
+.binding {
+  display: contents;
+}
+
+.bindingKey {
+  margin: 0;
+  justify-self: start;
+  padding: 3px 8px;
+  border-radius: 7px;
+  border: 1px solid rgba(24, 20, 34, 0.12);
+  background: #fdfcfa;
+  box-shadow: 0 1px 0 rgba(24, 20, 34, 0.09);
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.bindingAction {
+  margin: 0;
+  align-self: center;
+  font-size: 12.5px;
+  color: rgba(36, 31, 48, 0.72);
+}
+
+/* ---- inline actions --------------------------------------------------------------------- */
+.buttonRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.actionButton {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  padding: 7px 13px;
+  border-radius: 10px;
+  border: 1px solid rgba(24, 20, 34, 0.14);
+  background: #fdfcfa;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #241f30;
+}
+
+.actionButton:hover:not(:disabled) {
+  background: rgba(24, 20, 34, 0.05);
+}
+
+.actionButton:disabled {
+  cursor: progress;
+  opacity: 0.55;
+}
+
+.actionButton:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: 2px;
+}
+
+.actionDanger {
+  border-color: rgba(200, 62, 62, 0.35);
+  color: #a3352f;
+}
+
+.actionDanger:hover:not(:disabled) {
+  background: rgba(200, 62, 62, 0.08);
 }
 
 /* ---- toggle ---------------------------------------------------------------------------- */
@@ -417,11 +615,60 @@
   font-weight: 700;
 }
 
+/* NARROW SCREENS. Two panes need two panes' worth of width; below that the nav becomes a horizontal
+   strip of chips above the content, which is the same information in the shape that fits. */
+@media (max-width: 680px) {
+  .panel {
+    height: min(640px, 90vh);
+  }
+
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  .nav {
+    flex-direction: row;
+    gap: 6px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 12px 16px;
+    border-right: 0;
+    border-bottom: 1px solid rgba(24, 20, 34, 0.07);
+    scrollbar-width: none;
+  }
+
+  .nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .navItem {
+    flex: none;
+    padding: 7px 12px;
+    border-radius: 999px;
+    border-color: rgba(24, 20, 34, 0.1);
+    white-space: nowrap;
+  }
+
+  .navItem[data-dev="true"] {
+    margin-top: 0;
+    border-top: 1px solid rgba(24, 20, 34, 0.1);
+    border-radius: 999px;
+    padding-top: 7px;
+  }
+
+  /* The hint is the pane's job at this width — a chip only has room for its name. */
+  .navHint {
+    display: none;
+  }
+}
+
 @media (max-width: 520px) {
   .header {
     padding: 16px 14px 0 16px;
   }
 
+  .nav,
   .body,
   .footer {
     padding-left: 16px;

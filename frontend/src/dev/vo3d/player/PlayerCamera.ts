@@ -21,6 +21,7 @@
 import * as THREE from "three";
 import type { Vec2 } from "../core/coords";
 import type { StandTest } from "./PlayerBody";
+import { getExperiencePreferences } from "../../../services/settings/experiencePreferences";
 
 export type PlayerView = "third" | "first";
 
@@ -68,8 +69,16 @@ export class PlayerCamera {
    *  it toward east (+x) — which is screen-right for the viewer. So a rightward mouse delta must ADD to
    *  yaw. It used to subtract, which turned the view left when the mouse went right. */
   look(dx: number, dy: number): void {
-    this.yaw += dx * LOOK_SENSITIVITY;
-    this.pitch = THREE.MathUtils.clamp(this.pitch - dy * LOOK_SENSITIVITY, PITCH_LIMIT[this.view].min, PITCH_LIMIT[this.view].max);
+    // THE EMPLOYEE'S OWN FEEL. LOOK_SENSITIVITY stays the authored baseline; Settings -> Controls scales
+    // it and can flip the vertical axis. Read per call rather than cached: the store hands back the same
+    // frozen object until something changes, so this is a property read, and a sensitivity the player
+    // drags in the panel has to take effect on the very next mouse move rather than on the next mode
+    // switch. Nothing else about the camera is a preference.
+    const prefs = getExperiencePreferences();
+    const rate = LOOK_SENSITIVITY * prefs.lookSensitivity;
+    const pitchSign = prefs.invertLook ? 1 : -1;
+    this.yaw += dx * rate;
+    this.pitch = THREE.MathUtils.clamp(this.pitch + pitchSign * dy * rate, PITCH_LIMIT[this.view].min, PITCH_LIMIT[this.view].max);
   }
   setView(v: PlayerView): void {
     if (v === this.view) return;

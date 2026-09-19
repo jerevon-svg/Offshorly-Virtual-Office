@@ -13,6 +13,8 @@
 // POINTER LOCK is requested on a click in the canvas and released by Esc (the browser does that itself)
 // or by leaving the mode. Mouse-look is read ONLY while locked, so an unlocked player can still click the
 // GUI without the view spinning. `lockchange` lets the owner re-render its prompt.
+import { isTypingTarget } from "../app/keyGuard";
+
 const MOVE_KEYS: Record<string, { x: number; z: number }> = {
   KeyW: { x: 0, z: -1 }, ArrowUp: { x: 0, z: -1 },
   KeyS: { x: 0, z: 1 }, ArrowDown: { x: 0, z: 1 },
@@ -29,14 +31,10 @@ export type PlayerInputHandlers = {
   onLockChange: (locked: boolean) => void;
 };
 
-/** true when the event belongs to something the user is typing in or driving with the mouse */
-function isUiTarget(e: Event): boolean {
-  const t = e.target as HTMLElement | null;
-  if (!t || !t.closest) return false;
-  if (t.closest("input, textarea, select, option, [contenteditable='true'], .lil-gui")) return true;
-  const a = document.activeElement as HTMLElement | null;
-  return !!a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA" || a.isContentEditable);
-}
+/** true when the event belongs to something the user is typing in, driving with the mouse, or to a
+ *  modal that has taken the screen. PHASE 7C moved the rule itself into app/keyGuard so the camera
+ *  shortcut and this file cannot disagree about what counts as typing; the behaviour is unchanged. */
+const isUiTarget = isTypingTarget;
 
 export class PlayerInput {
   /** accumulated mouse delta since the last read, in pixels */

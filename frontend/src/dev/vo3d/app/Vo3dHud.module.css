@@ -9,59 +9,6 @@
   gap: 4px;
 }
 
-/* THE MINIMAL PLAYER HUD. Bottom-centre where the dock would be — the eye is already trained there —
-   but a short strip rather than the full dock, so an immersive view is never permanently obstructed.
-   Same cream card family as the world menu and the view switcher. */
-.playerBar {
-  position: fixed;
-  left: 50%;
-  bottom: 16px;
-  transform: translateX(-50%);
-  z-index: 50;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
-  border-radius: 999px;
-  border: 1px solid rgba(24, 20, 34, 0.08);
-  background: #fdfcfa;
-  box-shadow: 0 12px 32px rgba(18, 16, 28, 0.18), 0 2px 6px rgba(18, 16, 28, 0.08);
-}
-
-.playerStatus {
-  display: flex;
-  align-items: center;
-  padding-right: 4px;
-  border-right: 1px solid rgba(24, 20, 34, 0.08);
-}
-
-.playerTool {
-  position: relative;
-  display: grid;
-  place-items: center;
-  width: 38px;
-  height: 38px;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
-  cursor: pointer;
-}
-.playerTool:hover { background: rgba(24, 20, 34, 0.06); }
-.playerTool:focus-visible { outline: 2px solid #6366f1; outline-offset: 1px; }
-
-.playerBadge {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  min-width: 15px;
-  padding: 0 4px;
-  border-radius: 999px;
-  background: #ef4444;
-  color: #fff;
-  font: 700 10px/15px inherit;
-  text-align: center;
-}
-
 /* Settings > Developer. Inherits V1's HudSettings row treatment; only the checkbox row's own layout
    lives here, since the panel has no control of this exact shape. */
 .devToggle {

@@ -29,10 +29,14 @@
 // starts typing or a message lands, a few times a minute. The POSITION changes every frame, for every
 // body, and is written straight onto each element's style from one rAF loop through refs. Putting that in
 // state would re-render this subtree sixty times a second for a room of people who are merely breathing.
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import HudIcon from "../../../components/HudIcon";
 import type { Vo3dWorld } from "./world";
 import type { Vo3dScreenAnchor } from "./interactions";
+import {
+  getExperiencePreferences,
+  subscribeExperience,
+} from "../../../services/settings/experiencePreferences";
 import styles from "./Vo3dOverheads.module.css";
 
 /** What is drawn over one person.
@@ -101,7 +105,29 @@ const UNREAD_ICON_EM = "2.15em";
  *  OVERHEAD_CLEARANCE_PX ordering: a taller element underneath pushes the badge further up. */
 const CLEARANCE = { sentText: 13, typing: 8, status: 7, none: 2 };
 
-export function Vo3dOverheads({ worldRef, ready, overheads, onOpenConversation }: Vo3dOverheadsProps) {
+export function Vo3dOverheads({ worldRef, ready, overheads: incoming, onOpenConversation }: Vo3dOverheadsProps) {
+  // SETTINGS -> INTERFACE, applied here and only here. Two switches, and each one removes ELEMENTS from
+  // the rows below rather than changing any of them: the nameplate, the bubble, the dots and the badge
+  // are exactly the approved designs, they are simply not drawn for somebody who asked for a clear view.
+  // Filtering the data (rather than hiding with CSS) is deliberate — a hidden unread badge is still a
+  // focusable button, and an overhead with nothing left in it should not occupy an anchor at all.
+  const prefs = useSyncExternalStore(subscribeExperience, getExperiencePreferences, getExperiencePreferences);
+  const overheads = useMemo(() => {
+    if (prefs.nameplates && prefs.worldChatIndicators) return incoming;
+    const kept: Vo3dOverhead[] = [];
+    for (const o of incoming) {
+      const next: Vo3dOverhead = { email: o.email, displayName: o.displayName };
+      if (prefs.nameplates) next.status = o.status;
+      if (prefs.worldChatIndicators) {
+        next.sentText = o.sentText;
+        next.typing = o.typing;
+        next.unread = o.unread;
+      }
+      if (next.status || next.sentText || next.typing || next.unread) kept.push(next);
+    }
+    return kept;
+  }, [incoming, prefs.nameplates, prefs.worldChatIndicators]);
+
   const nodes = useRef(new Map<string, HTMLDivElement | null>());
   const emails = useMemo(() => overheads.map((o) => o.email), [overheads]);
   // Read by the frame loop without re-subscribing it every time the set changes.

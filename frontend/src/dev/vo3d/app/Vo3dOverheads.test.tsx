@@ -6,6 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Vo3dOverheads, SELF_OVERHEAD_KEY, type Vo3dOverhead } from "./Vo3dOverheads";
 import type { Vo3dWorld } from "./world";
 import type { Vo3dScreenAnchor } from "./interactions";
+import {
+  __resetExperiencePreferencesForTests,
+  setExperiencePreference,
+} from "../../../services/settings/experiencePreferences";
 
 const ALEX = "alex@offshorly.com";
 const MICAH = "micah@offshorly.com";
@@ -231,5 +235,62 @@ describe("where it is drawn", () => {
     mount([]);
     pumpFrame();
     expect(askedFor).toHaveLength(0);
+  });
+});
+
+// ---- PHASE 7C — SETTINGS -> INTERFACE ------------------------------------------------------------
+// The two switches remove elements; they never restyle one. What matters is that turning one off takes
+// the element out of the DOM (a hidden unread badge is still a focusable button) and that turning the
+// other off leaves the first one alone.
+describe("the in-world display preferences", () => {
+  const both: Vo3dOverhead[] = [
+    { email: ALEX, displayName: "Alex", status: { color: "#4bb96a", shortName: "Available" } },
+    { email: MICAH, displayName: "Micah", typing: true, unread: { conversationId: "c1", count: 2 } },
+  ];
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    __resetExperiencePreferencesForTests();
+  });
+
+  it("draws everything by default", () => {
+    render(<Vo3dOverheads worldRef={worldRef} ready overheads={both} onOpenConversation={onOpenConversation} />);
+    expect(screen.getByTestId(`overhead-status-${ALEX}`)).toBeInTheDocument();
+    expect(screen.getByTestId(`overhead-typing-${MICAH}`)).toBeInTheDocument();
+    expect(screen.getByTestId(`overhead-unread-${MICAH}`)).toBeInTheDocument();
+  });
+
+  it("drops the nameplate — and the whole anchor with it — when nameplates are off", () => {
+    act(() => setExperiencePreference("nameplates", false));
+    render(<Vo3dOverheads worldRef={worldRef} ready overheads={both} onOpenConversation={onOpenConversation} />);
+    expect(screen.queryByTestId(`overhead-status-${ALEX}`)).not.toBeInTheDocument();
+    // Alex had nothing but a nameplate, so there is no longer anything to anchor for him.
+    expect(screen.queryByTestId(`overhead-${ALEX}`)).not.toBeInTheDocument();
+    // Chat is a separate switch and is untouched.
+    expect(screen.getByTestId(`overhead-typing-${MICAH}`)).toBeInTheDocument();
+    expect(screen.getByTestId(`overhead-unread-${MICAH}`)).toBeInTheDocument();
+  });
+
+  it("drops bubbles, dots and unread badges when overhead chat is off, keeping nameplates", () => {
+    act(() => setExperiencePreference("worldChatIndicators", false));
+    render(
+      <Vo3dOverheads
+        worldRef={worldRef}
+        ready
+        overheads={[...both, { email: "jan@offshorly.com", displayName: "Jan", sentText: "hello" }]}
+        onOpenConversation={onOpenConversation}
+      />,
+    );
+    expect(screen.getByTestId(`overhead-status-${ALEX}`)).toBeInTheDocument();
+    expect(screen.queryByTestId(`overhead-typing-${MICAH}`)).not.toBeInTheDocument();
+    expect(screen.queryByTestId(`overhead-unread-${MICAH}`)).not.toBeInTheDocument();
+    expect(screen.queryByTestId("overhead-text-jan@offshorly.com")).not.toBeInTheDocument();
+  });
+
+  it("reacts to a switch flipped while the world is on screen", () => {
+    render(<Vo3dOverheads worldRef={worldRef} ready overheads={both} onOpenConversation={onOpenConversation} />);
+    expect(screen.getByTestId(`overhead-status-${ALEX}`)).toBeInTheDocument();
+    act(() => setExperiencePreference("nameplates", false));
+    expect(screen.queryByTestId(`overhead-status-${ALEX}`)).not.toBeInTheDocument();
   });
 });

@@ -4,7 +4,7 @@
 //
 // V1's dock, pills and spotlight are REAL here — they are the thing under test. Only the panels that
 // fetch are stubbed, and only so these stay about wiring.
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Vo3dHud } from "./Vo3dHud";
 import type { Vo3dWorld } from "./world";
@@ -12,6 +12,10 @@ import type { V1Attendance } from "../adapters/v1Attendance";
 import type { Vo3dViewMode } from "./viewMode";
 import { resetCurrentUserForTests, setCurrentUserFromMeResponse } from "../../../auth/currentUserStore";
 import type { AssetLayer } from "../../../types/office";
+import {
+  __resetExperiencePreferencesForTests,
+  setExperiencePreference,
+} from "../../../services/settings/experiencePreferences";
 
 const SELF = "bon@offshorly.com";
 const ALEX = "alex@offshorly.com";
@@ -100,8 +104,8 @@ function attendanceOf(status: "CHECKED_IN" | "CHECKED_OUT", checkedInAt: string 
   };
 }
 
-function mount(attendance = attendanceOf("CHECKED_IN", new Date(Date.now() - 90 * 60_000).toISOString())) {
-  return render(
+function hud(attendance = attendanceOf("CHECKED_IN", new Date(Date.now() - 90 * 60_000).toISOString())) {
+  return (
     <Vo3dHud
       worldRef={worldRef}
       ready
@@ -119,17 +123,36 @@ function mount(attendance = attendanceOf("CHECKED_IN", new Date(Date.now() - 90 
       onOpenDirectMessage={onOpenDirectMessage}
       onStartGroup={onStartGroup}
       overlayToolOpen={overlayToolOpen}
-    />,
+    />
   );
 }
 
+function mount(attendance?: V1Attendance) {
+  return render(hud(attendance));
+}
+
+/** Drive the browser's pointer-lock state the way the canvas would. jsdom implements neither the
+ *  property nor the event, which is exactly why the HUD must not read it with `!== null`. */
+const exitPointerLock = vi.fn();
+function lockPointer(locked: boolean) {
+  Object.defineProperty(document, "pointerLockElement", { value: locked ? canvas : null, configurable: true });
+  act(() => {
+    document.dispatchEvent(new Event("pointerlockchange"));
+  });
+}
+const canvas = document.createElement("canvas");
+
 beforeEach(() => {
+  Object.defineProperty(document, "pointerLockElement", { value: null, configurable: true });
+  Object.defineProperty(document, "exitPointerLock", { value: exitPointerLock, configurable: true });
+  exitPointerLock.mockReset();
   viewMode = "office";
   viewModeSubs = [];
   conversations = [];
   overlayToolOpen = false;
   vi.clearAllMocks();
   localStorage.clear();
+  __resetExperiencePreferencesForTests();
   setCurrentUserFromMeResponse({ id: 1, email: SELF, full_name: "Bon" } as never);
 });
 afterEach(() => resetCurrentUserForTests());
@@ -167,45 +190,62 @@ describe("the dock", () => {
 });
 
 describe("Player Mode", () => {
-  it("hides the dock — without unmounting it, so every control keeps its state", async () => {
+  // PHASE 7C — PLAYER GETS THE SAME DOCK. It used to get a four-button strip, which meant the immersive
+  // view quietly had fewer tools. What actually differs in PLAYER is whether the mouse can reach the
+  // DOM, so the dock now follows the POINTER LOCK rather than the mode.
+  it("keeps the full dock in PLAYER, with no second minimal strip", async () => {
     viewMode = "player";
     mount();
     const dock = await screen.findByTestId("hud-dock");
-    // still mounted...
-    expect(dock.isConnected).toBe(true);
-    // ...and hidden by the dock's own class, not by a conditional render
-    expect(dock.className).toMatch(/hidden/i);
-  });
-
-  it("shows the dock again the moment the world returns to OFFICE", async () => {
-    viewMode = "player";
-    mount();
-    const dock = await screen.findByTestId("hud-dock");
-    expect(dock.className).toMatch(/hidden/i);
-    notifyViewMode("office");
-    await waitFor(() => expect(screen.getByTestId("hud-dock").className).not.toMatch(/hidden/i));
-  });
-
-  it("swaps the full dock for a MINIMAL strip that still reaches real tools", async () => {
-    mount();
-    await screen.findByTestId("hud-dock");
+    expect(dock.className).not.toMatch(/hidden/i);
     expect(screen.queryByTestId("vo3d-player-hud")).toBeNull();
-    notifyViewMode("player");
-    const bar = await screen.findByTestId("vo3d-player-hud");
-    // essential, daily-use tools — never the whole dock laid over an immersive view
-    for (const label of ["Open Tasks", "Open Company Hub", "Open Global Team Map"]) {
-      expect(bar.querySelector(`[aria-label="${label}"]`)).toBeTruthy();
+    // Every daily-use tool is the dock's own, in PLAYER exactly as in OFFICE.
+    for (const label of ["Search for a person", "Open Tasks", "Open Company Hub", "Open Global Team Map"]) {
+      expect(screen.getByRole("button", { name: label })).toBeTruthy();
     }
-    fireEvent.click(bar.querySelector('[aria-label="Open Tasks"]')!);
+    fireEvent.click(screen.getByRole("button", { name: "Open Tasks" }));
     expect(await screen.findByTestId("tasks")).toBeTruthy();
   });
 
-  it("states the pointer contract rather than leaving it to be discovered", async () => {
+  it("hides the dock — without unmounting it — for exactly as long as the pointer is locked", async () => {
+    viewMode = "player";
     mount();
-    await screen.findByTestId("hud-dock");
-    notifyViewMode("player");
-    expect((await screen.findByTestId("vo3d-player-hint")).textContent).toMatch(/click the world|esc/i);
+    const dock = await screen.findByTestId("hud-dock");
+    expect(dock.className).not.toMatch(/hidden/i);
+
+    lockPointer(true);
+    // still mounted, and hidden by the dock's own class rather than by a conditional render
+    await waitFor(() => expect(screen.getByTestId("hud-dock").className).toMatch(/hidden/i));
+    expect(screen.getByTestId("hud-dock").isConnected).toBe(true);
+
+    lockPointer(false); // Esc
+    await waitFor(() => expect(screen.getByTestId("hud-dock").className).not.toMatch(/hidden/i));
   });
+
+  it("releases the pointer itself when a tool takes the screen", async () => {
+    viewMode = "player";
+    overlayToolOpen = false;
+    const view = mount();
+    await screen.findByTestId("hud-dock");
+
+    lockPointer(true);
+    await waitFor(() => expect(screen.getByTestId("hud-dock").className).toMatch(/hidden/i));
+    exitPointerLock.mockClear();
+
+    // A tool takes the screen (here the overlay's own — the one visibility rule covers every tool).
+    // A panel the player cannot click is worse than no panel, so the HUD hands the pointer back rather
+    // than making them discover Esc first.
+    overlayToolOpen = true;
+    view.rerender(hud());
+    expect(exitPointerLock).toHaveBeenCalledTimes(1);
+
+    // Closing it does NOT re-lock and does NOT move anybody: the world is untouched on the way out.
+    overlayToolOpen = false;
+    setViewMode.mockClear();
+    view.rerender(hud());
+    expect(setViewMode).not.toHaveBeenCalled();
+  });
+
 });
 
 describe("working time", () => {
@@ -324,33 +364,151 @@ describe("the restored tools", () => {
   });
 });
 
-describe("the view switcher", () => {
-  it("stays on screen when the dock steps aside, and in Player", async () => {
+describe("switching view", () => {
+  // PHASE 7C CLEANUP — there is NO permanent view widget. Switching is C or Settings -> General, and
+  // the office's top-left corner is empty rather than holding a button.
+  it("puts no view control on screen at all", async () => {
     mount();
     await screen.findByTestId("hud-dock");
-    expect(screen.getByTestId("vo3d-view-switcher")).toBeTruthy();
+    expect(screen.queryByTestId("vo3d-view-switcher")).toBeNull();
+    expect(screen.queryByTestId("vo3d-camera-button")).toBeNull();
+    expect(screen.queryByTestId("view-explore")).toBeNull();
+  });
+
+  it("puts nothing on screen in PLAYER either — the corners stay empty in every view", async () => {
+    mount();
+    act(() => notifyViewMode("player"));
+    await screen.findByTestId("hud-dock");
+    for (const id of ["vo3d-view-switcher", "player-view-third", "player-view-first", "vo3d-player-hint"]) {
+      expect(screen.queryByTestId(id)).toBeNull();
+    }
+  });
+
+  describe("the C shortcut", () => {
+    it("cycles Office -> 3D -> Player -> Office, through the world's own entry point", async () => {
+      mount();
+      await screen.findByTestId("hud-dock");
+      fireEvent.keyDown(window, { code: "KeyC", key: "c" });
+      expect(setViewMode).toHaveBeenLastCalledWith("explore");
+      act(() => notifyViewMode("explore"));
+      fireEvent.keyDown(window, { code: "KeyC", key: "c" });
+      expect(setViewMode).toHaveBeenLastCalledWith("player");
+      act(() => notifyViewMode("player"));
+      fireEvent.keyDown(window, { code: "KeyC", key: "c" });
+      expect(setViewMode).toHaveBeenLastCalledWith("office");
+    });
+
+    it("does not fire while somebody is typing, or inside a panel", async () => {
+      mount();
+      await screen.findByTestId("hud-dock");
+
+      const field = document.createElement("input");
+      document.body.appendChild(field);
+      fireEvent.keyDown(field, { code: "KeyC", key: "c" });
+      expect(setViewMode).not.toHaveBeenCalled();
+      field.remove();
+
+      const dialog = document.createElement("div");
+      dialog.setAttribute("role", "dialog");
+      const inner = document.createElement("span");
+      dialog.appendChild(inner);
+      document.body.appendChild(dialog);
+      fireEvent.keyDown(inner, { code: "KeyC", key: "c" });
+      expect(setViewMode).not.toHaveBeenCalled();
+      dialog.remove();
+
+      // …and Cmd/Ctrl+C is a copy, not a camera.
+      fireEvent.keyDown(window, { code: "KeyC", key: "c", metaKey: true });
+      expect(setViewMode).not.toHaveBeenCalled();
+    });
+
+    it("leaves V to player/PlayerInput, which has always owned it", async () => {
+      mount();
+      await screen.findByTestId("hud-dock");
+      act(() => notifyViewMode("player"));
+      fireEvent.keyDown(window, { code: "KeyV", key: "v" });
+      // A second listener here would toggle first/third twice per press. PlayerInput is the one that
+      // binds V, while PLAYER is active — this file must add nothing.
+      expect(setPlayerView).not.toHaveBeenCalled();
+    });
+  });
+
+  it("keeps first/third person as a world entry point, with no button of its own", async () => {
+    mount();
+    await screen.findByTestId("hud-dock");
+    act(() => notifyViewMode("player"));
+    expect(screen.queryByTestId("player-view-first")).toBeNull();
+    // The verb still exists and is still the one V drives through player/PlayerInput.
+    worldRef.current.setPlayerView("first");
+    expect(setPlayerView).toHaveBeenCalledWith("first");
+  });
+});
+
+// ---- PHASE 7C — HUD REFINEMENT --------------------------------------------------------------------
+describe("the HUD under a screen-owning tool", () => {
+  it("steps the dock aside in PLAYER for a tool, and C still gets you out", async () => {
+    mount();
+    act(() => notifyViewMode("player"));
+    await screen.findByTestId("hud-dock");
+
     fireEvent.click(screen.getByRole("button", { name: "Open Tasks" }));
     await waitFor(() => expect(screen.getByTestId("hud-dock").className).toMatch(/hidden/i));
-    expect(screen.getByTestId("vo3d-view-switcher")).toBeTruthy();
-    notifyViewMode("player");
-    expect(await screen.findByTestId("vo3d-view-switcher")).toBeTruthy();
+    // Nothing is on screen to leave PLAYER with — which is fine, because the key is not on screen
+    // either. The panel is a modal, so C is correctly refused while it holds focus…
+    setViewMode.mockClear();
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    document.body.appendChild(dialog);
+    fireEvent.keyDown(dialog, { code: "KeyC", key: "c" });
+    expect(setViewMode).not.toHaveBeenCalled();
+    dialog.remove();
+    // …and works again from the world once the tool is closed.
+    fireEvent.keyDown(window, { code: "KeyC", key: "c" });
+    expect(setViewMode).toHaveBeenLastCalledWith("office");
+  });
+});
+
+describe("the starting-view preference", () => {
+  it("does not touch the camera when the office is the chosen view", async () => {
+    mount();
+    await screen.findByTestId("hud-dock");
+    expect(setViewMode).not.toHaveBeenCalled();
   });
 
-  it("offers the three views and switches through the world's own entry point", async () => {
+  // PHASE 7C — it is also a LIVE control. Picking a view in Settings used to write the preference and
+  // leave the camera where it was, so the panel looked broken until the next launch.
+  it("switches the camera immediately when the preference changes in Settings", async () => {
     mount();
-    await screen.findByTestId("vo3d-view-switcher");
-    for (const id of ["office", "explore", "player"]) expect(screen.getByTestId(`view-${id}`)).toBeTruthy();
-    expect(screen.getByTestId("view-office").getAttribute("aria-pressed")).toBe("true");
-    fireEvent.click(screen.getByTestId("view-explore"));
+    await screen.findByTestId("hud-dock");
+    expect(setViewMode).not.toHaveBeenCalled();
+
+    act(() => setExperiencePreference("defaultView", "player"));
+    expect(setViewMode).toHaveBeenLastCalledWith("player");
+
+    act(() => setExperiencePreference("defaultView", "office"));
+    expect(setViewMode).toHaveBeenLastCalledWith("office");
+  });
+
+  it("does not re-apply the preference when the employee switches view by hand", async () => {
+    setExperiencePreference("defaultView", "explore");
+    mount();
+    await screen.findByTestId("hud-dock");
+    expect(setViewMode).toHaveBeenCalledTimes(1);
+
+    // The camera button does not touch the preference, so nothing here pulls the view back.
+    act(() => notifyViewMode("office"));
+    expect(setViewMode).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens in the chosen view once, and never overrides a later manual switch", async () => {
+    setExperiencePreference("defaultView", "explore");
+    const { rerender } = mount();
+    await screen.findByTestId("hud-dock");
     expect(setViewMode).toHaveBeenCalledWith("explore");
-  });
+    expect(setViewMode).toHaveBeenCalledTimes(1);
 
-  it("offers first/third person ONLY inside Player View", async () => {
-    mount();
-    await screen.findByTestId("vo3d-view-switcher");
-    expect(screen.queryByTestId("player-view-first")).toBeNull();
-    notifyViewMode("player");
-    fireEvent.click(await screen.findByTestId("player-view-first"));
-    expect(setPlayerView).toHaveBeenCalledWith("first");
+    notifyViewMode("office");
+    rerender(<div />);
+    expect(setViewMode).toHaveBeenCalledTimes(1);
   });
 });

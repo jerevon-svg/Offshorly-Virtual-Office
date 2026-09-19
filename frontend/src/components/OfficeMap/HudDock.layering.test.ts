@@ -299,8 +299,11 @@ describe("flyouts open upward, into the office rather than off the bottom edge",
 
   it("settings is a modal on the same family layer, with the same clamps", () => {
     expect(zIndexOf(settingsCss, "backdrop")).toEqual([60]);
-    expect(decl(settingsCss, "panel", "width")).toBe("min(480px, 94vw)");
+    // PHASE 7C widened it for its two panes (categories left, controls right). The CLAMPS are what this
+    // file is about and they are unchanged: it never exceeds the viewport, in either axis.
+    expect(decl(settingsCss, "panel", "width")).toBe("min(780px, 94vw)");
     expect(decl(settingsCss, "panel", "max-height")).toBe("88vh");
+    expect(decl(settingsCss, "panel", "height")).toBe("min(600px, 88vh)");
   });
 
   it("every flyout is width-clamped and height-capped, so none can push the page around", () => {

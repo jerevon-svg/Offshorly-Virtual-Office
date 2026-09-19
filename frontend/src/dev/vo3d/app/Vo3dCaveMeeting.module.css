@@ -1,0 +1,69 @@
+/* The Cave meeting panel. Bottom-left, clear of the bottom-centre dock and of the camera button's
+   top-left corner, on the same cream card family as the world menu and the camera button — it is part
+   of the office, not debug chrome. Below the z-index 60 modal family: a tool that owns the screen owns
+   it here too. */
+.panel {
+  position: fixed;
+  left: 16px;
+  bottom: calc(var(--vo3d-dock-clearance, var(--vo-dock-clearance, 104px)) - 8px);
+  z-index: 45;
+  width: min(280px, calc(100vw - 32px));
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.08);
+  box-shadow: 0 12px 32px rgba(18, 16, 28, 0.18), 0 2px 6px rgba(18, 16, 28, 0.08);
+  color: #241f30;
+  font: 500 13px/1.35 inherit;
+  transition: bottom 160ms ease-out;
+}
+
+.head { display: flex; flex-direction: column; gap: 2px; }
+.title { font-size: 14px; font-weight: 800; letter-spacing: -0.01em; }
+.sub { font-size: 12px; color: rgba(36, 31, 48, 0.6); }
+
+.primary {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  text-align: center;
+  padding: 9px 12px;
+  border-radius: 12px;
+  background: #2f6b45;
+  color: #fdfcfa;
+  font-size: 13px;
+  font-weight: 700;
+}
+.primary:hover:not(:disabled) { background: #275939; }
+.primary:disabled { opacity: 0.55; cursor: not-allowed; }
+.primary:focus-visible { outline: 2px solid #4bb96a; outline-offset: 2px; }
+
+.controls { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+
+.control {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  text-align: center;
+  padding: 8px 6px;
+  border-radius: 10px;
+  border: 1px solid rgba(24, 20, 34, 0.12);
+  background: #fdfcfa;
+  font-size: 12px;
+  font-weight: 700;
+}
+.control:hover:not(:disabled) { background: rgba(24, 20, 34, 0.05); }
+.control:disabled { opacity: 0.55; cursor: progress; }
+.control:focus-visible { outline: 2px solid #4bb96a; outline-offset: 2px; }
+
+.on { border-color: rgba(75, 185, 106, 0.5); background: rgba(75, 185, 106, 0.12); color: #22623a; }
+
+.leave { grid-column: 1 / -1; border-color: rgba(200, 62, 62, 0.35); color: #a3352f; }
+.leave:hover:not(:disabled) { background: rgba(200, 62, 62, 0.08); }
+
+.note { margin: 0; font-size: 12px; color: rgba(36, 31, 48, 0.6); }
+.problem { color: #a3352f; }

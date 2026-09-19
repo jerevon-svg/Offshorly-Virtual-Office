@@ -36,12 +36,12 @@
 // ONE HUD SYSTEM, THREE PRESENTATIONS (Part 5). The tools, their state and their subscriptions are the
 // same objects in every view — only what is put on screen changes:
 //
-//   Office / 3D   the full established dock. 3D is a looked-at world like Office, so there is no reason
-//                 to take daily-use controls away from somebody exploring it.
-//   Player        a MINIMAL strip: the availability pill, and the handful of tools an employee actually
-//                 reaches for mid-session (Chat, Hub, Map, Tasks). The full dock is never laid over an
-//                 immersive view, and the tools are never taken away either — opening one from here is
-//                 the same panel, with the same state, that the dock opens.
+//   Office / 3D   the full established dock.
+//   Player        THE SAME FULL DOCK (Phase 7C). It used to be a four-button strip, which meant an
+//                 immersive view quietly had fewer tools than the other two. What actually differs in
+//                 PLAYER is not which tools exist but whether the mouse can reach them, so the dock now
+//                 steps aside for exactly as long as the POINTER IS LOCKED and comes back on Esc — and
+//                 opening a tool releases the lock itself, so nobody has to know that rule.
 //
 // The dock is HIDDEN, not unmounted, whenever it steps aside (HudDock's own `hidden` prop, which exists
 // for exactly this), so nothing is re-mounted and no subscription is dropped on a view change.
@@ -50,15 +50,16 @@
 // deliberately leaves Esc to the browser, as the one guaranteed way out), the strip is then clickable,
 // and one click on the world takes the pointer back. The view switcher states which of the two you are
 // in rather than leaving it to be discovered.
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Vo3dWorld } from "./world";
-import type { Vo3dViewMode } from "./viewMode";
 import type { Vo3dCoworkerAction } from "./CoworkerActionMenu";
 import { emailKey, selfEmailKey } from "../adapters/v1Coworkers";
 import type { V1Attendance } from "../adapters/v1Attendance";
 import HudIcon from "../../../components/HudIcon";
 import { HudDock, type HudDockEntry } from "../../../components/OfficeMap/HudDock";
 import { Vo3dViewSwitcher } from "./Vo3dViewSwitcher";
+import { Vo3dCaveMeeting } from "./Vo3dCaveMeeting";
+import { isPointerLocked } from "./keyGuard";
 import { HudSettings } from "../../../components/OfficeMap/HudSettings";
 import { PlayerHud } from "../../../components/OfficeMap/PlayerHud";
 import { StatusPicker } from "../../../components/OfficeMap/StatusPicker";
@@ -83,6 +84,11 @@ import { getCurrentUserId } from "../../../auth/useAuthGate";
 import type { OfficeStatus } from "../../../services/presence/status";
 import type { AssetLayer } from "../../../types/office";
 import type { OfficePerson } from "../../../services/office/floorMerge";
+import {
+  getExperiencePreferences,
+  subscribeExperience,
+  type DefaultViewPreference,
+} from "../../../services/settings/experiencePreferences";
 import styles from "./Vo3dHud.module.css";
 
 // Global Team Map — React.lazy so MapLibre (~250 KB) only loads when someone opens the map. V1's own rule.
@@ -126,7 +132,6 @@ export function Vo3dHud({
   onOpenDirectMessage, onStartGroup, overlayToolOpen,
 }: Vo3dHudProps) {
   const self = selfEmailKey();
-  const [viewMode, setViewMode] = useState<Vo3dViewMode>("office");
   /** V1's own dock-tool slot: at most one full-screen tool from the dock at a time. */
   const [dockTool, setDockTool] = useState<null | "search" | "chat">(null);
   const [tasksOpen, setTasksOpen] = useState(false);
@@ -140,12 +145,32 @@ export function Vo3dHud({
   const companyHub = useCompanyHub();
   const claimableCount = useClaimableCount();
 
-  // WHICH CAMERA IS DRIVING. Pushed by the world; told once on subscribe, so the first render after the
-  // world lands is already correct rather than assuming OFFICE.
+  // SETTINGS -> GENERAL -> STARTING VIEW, applied exactly once, on the first frame this world is ready.
+  // It is a preference about how the office OPENS, so re-applying it on any later change would take the
+  // camera away from somebody who had since switched views by hand. "office" is the world's own default
+  // and needs no call at all.
+  //
+  // PHASE 7C — and it is ALSO a live control. Picking a view in Settings used to write the preference and
+  // leave the camera where it was, so the panel looked broken until the next launch. The rule is now the
+  // honest one: the STARTUP value is applied once when the world is ready, and every later CHANGE to the
+  // preference (which can only come from somebody choosing one in Settings) switches the camera there and
+  // then. A view the employee picked from the camera button is never overridden, because that does not
+  // touch the preference at all.
+  const lastDefaultView = useRef<DefaultViewPreference | null>(null);
   useEffect(() => {
     const world = worldRef.current;
     if (!ready || !world) return;
-    return world.subscribeViewMode(setViewMode);
+    const apply = () => {
+      const { defaultView } = getExperiencePreferences();
+      if (defaultView === lastDefaultView.current) return;
+      const first = lastDefaultView.current === null;
+      lastDefaultView.current = defaultView;
+      // "office" is the world's own opening view, so the first pass has nothing to do for it.
+      if (first && defaultView === "office") return;
+      world.setViewMode(defaultView);
+    };
+    apply();
+    return subscribeExperience(apply);
   }, [ready, worldRef]);
 
   // V1's own session clock. `timeInMs` is the SERVER's checked_in_at, not a mount timestamp, so a reload
@@ -169,6 +194,16 @@ export function Vo3dHud({
     void refreshClaimable();
   }, [ready, tasksOpen]);
 
+  // THE LOCK, read from the browser rather than inferred. Esc releases it (player/PlayerInput leaves Esc
+  // to the browser deliberately) and a click on the world takes it back.
+  const [pointerLocked, setPointerLocked] = useState(false);
+  useEffect(() => {
+    const onChange = () => setPointerLocked(isPointerLocked());
+    document.addEventListener("pointerlockchange", onChange);
+    onChange();
+    return () => document.removeEventListener("pointerlockchange", onChange);
+  }, []);
+
   // ONE CONDITION for "a tool owns the screen". V1's officeToolOpen, line for line in spirit: the dock
   // steps aside for ANY of them, and a future tool joins by extending this expression. The dock is
   // HIDDEN, never unmounted, so every tool keeps its own state and subscriptions while it is out of view.
@@ -188,7 +223,21 @@ export function Vo3dHud({
   // leave a band of empty space, and rise again when it returns. Published as a CSS variable rather than
   // threaded through props: every panel that needs to clear the dock reads the same value, and V1's own
   // --vo-dock-clearance (which already re-declares itself on short viewports) stays the measure.
-  const dockVisible = !(viewMode === "player" || officeToolOpen);
+  // PHASE 7C — ONE HUD IN ALL THREE VIEWS. PLAYER used to get a four-button strip of its own; it now gets
+  // V1's whole dock, because "the tools are never taken away" is easier to keep by not taking them away.
+  // What genuinely differs in PLAYER is not which tools exist, it is whether the mouse can reach them: a
+  // pointer-LOCKED player cannot click any DOM at all, so the dock steps aside for exactly as long as the
+  // lock is held and comes back the moment Esc releases it. That is the same `hidden` prop and the same
+  // one visibility rule, driven by the real browser state instead of by the mode.
+  // OPENING A TOOL RELEASES THE POINTER. A panel the player cannot click is worse than no panel, and the
+  // alternative — asking them to press Esc first — is a rule nobody can be told. Releasing the lock does
+  // NOT stop PLAYER or move the body: PlayerInput clears its held keys on the way out (and on blur), so
+  // closing the tool leaves the avatar exactly where it was standing.
+  useEffect(() => {
+    if (officeToolOpen && isPointerLocked()) document.exitPointerLock();
+  }, [officeToolOpen]);
+
+  const dockVisible = !(pointerLocked || officeToolOpen);
   useEffect(() => {
     const root = document.documentElement;
     root.style.setProperty("--vo3d-dock-clearance", dockVisible ? "var(--vo-dock-clearance, 104px)" : "16px");
@@ -347,35 +396,13 @@ export function Vo3dHud({
           />
         }
       />
-      {viewMode === "player" && (
-        // THE MINIMAL PLAYER HUD. Same controls, same handlers, same panels as the dock's — this is a
-        // presentation of the one HUD system, not a second one. Nothing decorative: every button here
-        // opens something real.
-        <div className={styles.playerBar} data-testid="vo3d-player-hud">
-          <div className={styles.playerStatus}>{statusPicker}</div>
-          <button type="button" className={styles.playerTool} aria-label="Open Tasks" onClick={() => setTasksOpen(true)}>
-            <HudIcon name="tasks" />
-          </button>
-          {chatMode === "real" && (
-            <button
-              type="button"
-              className={styles.playerTool}
-              aria-label={unreadTotal > 0 ? `${unreadTotal} unread message${unreadTotal === 1 ? "" : "s"}` : "Conversations"}
-              onClick={() => setDockTool((tool) => (tool === "chat" ? null : "chat"))}
-            >
-              <HudIcon name="chat" />
-              {unreadTotal > 0 && <span className={styles.playerBadge}>{unreadTotal > 9 ? "9+" : unreadTotal}</span>}
-            </button>
-          )}
-          <button type="button" className={styles.playerTool} aria-label="Open Company Hub" onClick={() => openCompanyHub("manual")}>
-            <HudIcon name="hub" />
-          </button>
-          <button type="button" className={styles.playerTool} aria-label="Open Global Team Map" onClick={() => setTeamMapOpen(true)}>
-            <HudIcon name="map" />
-          </button>
-        </div>
-      )}
+      {/* THE C KEY, and nothing on screen — see Vo3dViewSwitcher. Switching view is C or Settings ->
+          General; V (first/third) stays with player/PlayerInput, which owns the keyboard in PLAYER. */}
       <Vo3dViewSwitcher worldRef={worldRef} ready={ready} />
+      {/* PHASE 7C — the Championship Cave's meeting, offered only to somebody standing in it. Every
+          control is V1's own call store through media/CaveLiveShare; see Vo3dCaveMeeting.tsx for what is
+          deliberately NOT there yet and why. */}
+      {!officeToolOpen && <Vo3dCaveMeeting worldRef={worldRef} ready={ready} selfId={selfId} />}
       <SearchSpotlight
         open={dockTool === "search"}
         onClose={() => setDockTool(null)}
@@ -462,6 +489,10 @@ export function Vo3dHud({
       {settingsOpen && (
         <HudSettings
           onClose={() => setSettingsOpen(false)}
+          // THIS is the world the Controls / Interface / starting-view / ambience rows write to:
+          // PlayerCamera, Vo3dOverheads and world.ts all read the same preference store. V1's 2D office
+          // passes nothing and is offered none of them.
+          worldExperience
           // PART 6 — the developer inspection rig lives behind V1's OWN Settings > Developer section,
           // which is where V1 already relocated its day/night scrubber and checkout debug panel. DEV
           // builds only: HudSettings renders this slot in its own DEV-gated section, so production never
