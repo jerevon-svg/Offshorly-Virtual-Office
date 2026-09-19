@@ -48,7 +48,7 @@ import { applyLivePositions, countLivePositions, countSeated, countWalking } fro
 import { createV1SelfMovementSink, resolveV1SelfPosition } from "../adapters/v1SelfMovement";
 import { anchorForSeatKey } from "../adapters/v1Seats";
 import { seatCentroidKey } from "../../../data/emptySeats";
-import { useV1OfficeAccess } from "../adapters/v1Attendance";
+import { useV1Attendance } from "../adapters/v1Attendance";
 import { useOfficeRoster } from "../../../services/office/useOfficeRoster";
 import { useOfflineLineup } from "../../../services/presence/offlineLineupClient";
 import {
@@ -62,7 +62,7 @@ import {
   computeServerLineupEmailSet,
 } from "../../../services/presence/offlineLineupPlacement";
 import { EMPTY_COWORKER_SET } from "./coworkers";
-import { Vo3dCoworkerInteractions } from "./Vo3dCoworkerInteractions";
+import { Vo3dOverlay } from "./Vo3dOverlay";
 import { resolveVo3dHomeDesk } from "../adapters/v1HomeDesk";
 import { resolveVo3dIdentity } from "../adapters/v1Identity";
 import type { Vo3dIdentity } from "./identity";
@@ -192,6 +192,9 @@ export function Vo3dHost() {
     () => applyLivePositions(rosterSet, peerMovements, snapshotReady, getServerClockOffsetMs()),
     [rosterSet, peerMovements, snapshotReady],
   );
+  // PHASE 7A — who the overlay's Search may offer: exactly the people this world draws a body for.
+  // Sorted and joined from the set that already decided it, so no second filter exists to disagree.
+  const drawnEmails = useMemo(() => coworkerSet.coworkers.map((c) => c.email), [coworkerSet]);
   const livePositionCount = useMemo(() => countLivePositions(coworkerSet), [coworkerSet]);
   const walkingCount = useMemo(() => countWalking(coworkerSet), [coworkerSet]);
   const seatedCount = useMemo(() => countSeated(coworkerSet), [coworkerSet]);
@@ -245,7 +248,11 @@ export function Vo3dHost() {
     () => `${offlineLineup.map((e) => e.email).join(",")}|${snapshotReady}`,
     [offlineLineup, snapshotReady],
   );
-  const officeAccess = useV1OfficeAccess(accessRefreshKey);
+  // PHASE 7A — the SAME single read, now also carrying V1's attendance record: the branded HUD's
+  // availability pill and working-time clock are two more facts off it, and a second hook would mean a
+  // second poller and two answers that can disagree by an interval.
+  const attendance = useV1Attendance(accessRefreshKey);
+  const officeAccess = attendance.access;
 
   // The roster, readable at world-creation time without making the creation effect depend on it.
   const coworkerSetRef = useRef(coworkerSet);
@@ -413,12 +420,19 @@ export function Vo3dHost() {
           </button>
         </div>
       )}
-      {/* PHASE 6D — EMPLOYEE INTERACTIONS. Mounted only once the world exists (it subscribes to it) and
-          only for a session V1 could identify: a preview with no signed-in employee has nobody to chat,
-          call or walk up to, and every service below would be routing on a guess. Everything it renders
-          is V1's own — see Vo3dCoworkerInteractions.tsx. */}
+      {/* PHASES 6D + 7A — EVERY PIECE OF DOM OVER THE WORLD: the employee interaction card and its
+          services, and the branded HUD. Mounted only once the world exists (the overlay subscribes to it)
+          and only for a session V1 could identify: a preview with no signed-in employee has nobody to
+          chat, call or walk up to, no progression to show and no work session to clock. Everything it
+          renders is V1's own — see Vo3dOverlay.tsx. */}
       {phase.kind === "ready" && phase.identity && (
-        <Vo3dCoworkerInteractions worldRef={worldRef} ready people={roster.people} officeAccess={officeAccess} />
+        <Vo3dOverlay
+          worldRef={worldRef}
+          ready
+          people={roster.people}
+          drawnEmails={drawnEmails}
+          attendance={attendance}
+        />
       )}
       {phase.kind === "ready" && phase.identity && (
         // THE REDACTED READOUT. Deliberately carries the display name, the resolved character id and

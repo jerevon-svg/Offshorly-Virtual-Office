@@ -54,6 +54,14 @@ import { ErrorBoundary } from "../ErrorBoundary";
 import { OfficeStage } from "./OfficeStage";
 import { remapSelfKey } from "./responderMap";
 import {
+  CHAT_BUBBLE_RAIL_GAP,
+  CHAT_BUBBLE_SIZE,
+  computeFloatingChatRightOffsets,
+  FLOATING_CHAT_EDGE_MARGIN,
+  SPATIAL_WINDOW_KEY,
+  TOUCAN_WINDOW_KEY,
+} from "./chatWindowLayout";
+import {
   applyPeerTypingUpdate,
   deriveAnyTypingCharacterIds,
   deriveSpatialTypingCharacterIds,
@@ -274,38 +282,6 @@ const CHECKOUT_CAMERA_SETTLE_MS = 700;
 /** How long a goodbye / sign-off bubble stays up. On the way in it also doubles as the wait
  *  before the walk begins, which is why it must stay comfortably longer than the camera. */
 const CHECKOUT_GOODBYE_MS = 2000;
-
-const FLOATING_CHAT_EDGE_MARGIN = 16;
-const FLOATING_CHAT_EXPANDED_WIDTH = 320;
-const FLOATING_CHAT_MINIMIZED_WIDTH = 220;
-const FLOATING_CHAT_GAP = 12;
-// Synthetic key for the single spatial ("Character -> Chat") slot in the combined floating
-// layout — distinct from any real conversationId/peer-email key a remote window could have.
-const SPATIAL_WINDOW_KEY = "__spatial__";
-// Synthetic key for the Toucan assistant panel's slot in the same floating layout. The panel is
-// just another conversation-shaped window: it keeps the rightmost slot it has always occupied,
-// and DM/group windows opened while it is up stack to its LEFT instead of underneath it.
-const TOUCAN_WINDOW_KEY = "__toucan__";
-// Minimized remote DM/group windows collapse to a circular avatar in a vertical rail stacked
-// above the Toucan button (bottom-right). While the rail has anything in it the horizontal
-// window stack starts to its left instead of at the edge.
-const CHAT_BUBBLE_SIZE = 52;
-const CHAT_BUBBLE_RAIL_GAP = 12;
-
-// Pure layout pass: given an ordered list (index 0 = rightmost/newest) of {key, minimized},
-// returns each key's `right` CSS offset in px so windows stack without overlapping.
-function computeFloatingChatRightOffsets(
-  items: { key: string; minimized: boolean }[],
-  baseMargin: number = FLOATING_CHAT_EDGE_MARGIN,
-): Map<string, number> {
-  const offsets = new Map<string, number>();
-  let cursor = baseMargin;
-  for (const item of items) {
-    offsets.set(item.key, cursor);
-    cursor += (item.minimized ? FLOATING_CHAT_MINIMIZED_WIDTH : FLOATING_CHAT_EXPANDED_WIDTH) + FLOATING_CHAT_GAP;
-  }
-  return offsets;
-}
 
 // A CHECKED_IN spawn waits for movement-sync's first positions_snapshot (the only carrier of
 // self's persisted position) for at most this long; a missing/dead movement socket (pure mock

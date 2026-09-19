@@ -37,7 +37,7 @@
 // REFRESH keeps the last answer V1 actually gave, and only a failed FIRST read leaves `unknown`. A real
 // check-out is still caught by the doorbell immediately, or by the next successful poll.
 import { useEffect, useRef, useState } from "react";
-import { attendanceService } from "../../../services/attendance";
+import { attendanceService, type AttendanceRecord } from "../../../services/attendance";
 import { getCurrentUserId } from "../../../auth/useAuthGate";
 import { getCurrentUser } from "../../../auth/currentUserStore";
 import type { OfficeAccess } from "../app/access";
@@ -89,8 +89,27 @@ export const FOCUS_MIN_GAP_MS = 5_000;
  * Every listener and the interval are removed on unmount, and a response that lands afterwards is
  * dropped — this route is mounted and unmounted repeatedly (StrictMode alone does it twice).
  */
+/** PHASE 7A — V1's attendance answer AND the record it was read from, from ONE poller.
+ *
+ *  Phase 5 needed only the boundary verdict, so that is all this adapter returned. The branded HUD needs
+ *  two more facts off the SAME read — whether the employee is checked in (the availability picker's own
+ *  gate) and when the session started (the working-time pill's clock) — and reading them with a second
+ *  hook would mean a second interval, a second focus listener and two answers that can disagree by a
+ *  poll. `useV1OfficeAccess` is now a projection of this, so every existing caller is unchanged. */
+export interface V1Attendance {
+  access: OfficeAccess;
+  /** V1's own record, or null before the first read resolves (and after a failed first read). */
+  record: AttendanceRecord | null;
+}
+
+/** Phase 5's answer alone — the boundary verdict, unchanged. */
 export function useV1OfficeAccess(refreshKey: unknown): OfficeAccess {
+  return useV1Attendance(refreshKey).access;
+}
+
+export function useV1Attendance(refreshKey: unknown): V1Attendance {
   const [access, setAccess] = useState<OfficeAccess>("unknown");
+  const [record, setRecord] = useState<AttendanceRecord | null>(null);
   /** The live read, owned by the mount effect and called by the refreshKey effect below. */
   const readRef = useRef<() => void>(() => {});
 
@@ -116,8 +135,11 @@ export function useV1OfficeAccess(refreshKey: unknown): OfficeAccess {
       const gen = ++generation;
       attendanceService
         .getMine(getCurrentUserId() ?? "")
-        .then((record) => {
-          if (!cancelled && gen === generation) setAccess(accessForStatus(record?.status));
+        .then((next) => {
+          if (!cancelled && gen === generation) {
+            setAccess(accessForStatus(next?.status));
+            setRecord(next ?? null);
+          }
         })
         .catch(() => {
           // Deliberately nothing. See the header: a failed refresh keeps the last answer V1 gave, and a
@@ -170,5 +192,5 @@ export function useV1OfficeAccess(refreshKey: unknown): OfficeAccess {
     readRef.current();
   }, [refreshKey]);
 
-  return access;
+  return { access, record };
 }

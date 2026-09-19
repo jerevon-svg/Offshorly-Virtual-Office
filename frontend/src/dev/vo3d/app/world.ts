@@ -102,7 +102,7 @@ import { NavDebug } from "../devtools/NavDebug";
 import { Capture, FrameWindow, Overlay, PRESETS, describeDevice, sceneStats, snapshotRenderer, summarize, type CaptureSummary, type PresetId } from "../devtools/Bench";
 import { Crowd } from "../devtools/Crowd";
 import { STRESS_MATRIX, markdownTable, planPlacements, type ScenarioResult, type StressScenario } from "../devtools/Stress";
-import { BON_STANDING_HEIGHT, castLods, hasCastLods, type AvatarLod } from "../adapters/v1Avatar";
+import { BON_STANDING_HEIGHT, castLods, CLIP_IDLE, CLIP_TALK_AGREE, CLIP_TALK_LISTEN, hasCastLods, type AvatarLod } from "../adapters/v1Avatar";
 import type { Vo3dIdentity } from "./identity";
 import { homeDeskWorldPoint, v1FramePoint, type Vo3dHomeDesk } from "./spawn";
 import { plannedDurationMs, SelfMovementFeed, type Vo3dSelfMovementSink } from "./selfMovement";
@@ -110,6 +110,7 @@ import { gateRects, mayEnterOffice, routeEntersOffice, zoneAt, type AccessGeomet
 import { Coworkers, facingTrace, type SeatAnchorPose } from "../world/Coworkers";
 import type { Vo3dCoworker } from "./coworkers";
 import type { Vo3dCoworkerInteractions, Vo3dCoworkerSelection, Vo3dScreenAnchor } from "./interactions";
+import type { Vo3dViewMode } from "./viewMode";
 import { coworkerEmailOf, personCandidateId, REACH as TARGET_REACH, type Candidate } from "../player/PlayerTargeting";
 import { standablePointNear } from "../player/PlayerBody";
 import { markSeatFacingSaved, parseSeatAnchorId, SEAT_FACINGS, seatAnchorId, seatFacingFor, seatFacingTable, seatedYawFor, setSeatFacingOverride, subscribeSeatFacing, unsavedSeatFacingCount, type SeatFacing } from "./seats";
@@ -171,10 +172,57 @@ export interface Vo3dWorld {
    *  camera and the live body on every call (the host calls it per animation frame), because both move.
    *  Null for somebody this world has no body for. */
   coworkerAnchor(email: string): Vo3dScreenAnchor | null;
+  /** PHASE 7B — the same answer for several people at once, for the overhead chat layer's frame loop. */
+  coworkerAnchors(emails: readonly string[]): Record<string, Vo3dScreenAnchor>;
+  /** PART 1 — the viewer's OWN head, so their "You" pill hangs where everybody else's does. Null while
+   *  the body is not drawn (first person hides it). */
+  selfAnchor(): Vo3dScreenAnchor | null;
+  /** PHASE 7A — WHICH CAMERA IS DRIVING, pushed out to the host as it changes and once immediately, so a
+   *  subscriber never has to guess the current mode. The branded HUD is hidden while PLAYER owns the
+   *  pointer and shown over OFFICE and EXPLORE. Returns its own unsubscribe. */
+  subscribeViewMode(listener: (mode: Vo3dViewMode) => void): () => void;
+  /** SPATIAL CONVERSATION POSES, pushed in from outside.
+   *
+   *  `byEmail` names, for each coworker in a conversation, the clip their body should REST in — V1's own
+   *  listening / agree gestures, which are already in the consolidated GLB. `self` is the same answer for
+   *  the signed-in employee's own avatar. Anybody absent goes back to an ordinary idle.
+   *
+   *  THE WORLD DECIDES NOTHING HERE. Who is in a spatial conversation and who is typing into it are V1's
+   *  session and typing feeds, read in app/Vo3dOverlay.tsx and resolved through V1's OWN
+   *  render3d/characterAnimationState. Walking, sitting and facing all still outrank the pose, exactly as
+   *  they do in V1's resolver. */
+  setConversationPoses(byEmail: ReadonlyMap<string, string | null>, self: string | null): void;
+  /** PART 6 — SHOW OR HIDE THE DEVELOPER INSPECTION RIG (the lil-gui panel and the frame-time overlay).
+   *  Off by default in a signed-in session; the V1 Settings panel's Developer section owns the switch, and
+   *  `?gui=1` opens it directly. Nothing is removed — every control stays exactly where it was. */
+  setDevToolsVisible(on: boolean): void;
+  /** Whether the rig is currently showing, so a checkbox can render the real state. */
+  devToolsVisible(): boolean;
+  /** PART 4 — SWITCH VIEW. The same entry point the dev GUI's mode dropdown uses, so a switcher in the
+   *  HUD and the GUI can never disagree. Switching does NOT move the avatar, change attendance, presence
+   *  or any conversation: OFFICE and 3D EXPLORE only reconfigure the orbit rig, and PLAYER is a camera
+   *  handoff (see render/CameraModes). A refused PLAYER entry falls back to OFFICE. */
+  setViewMode(mode: Vo3dViewMode): void;
+  /** PART 4 — first- or third-person inside PLAYER. A no-op outside it. */
+  setPlayerView(view: "first" | "third"): void;
+  /** PART 4 — which of the two PLAYER cameras is live; told at once on subscribe. */
+  subscribePlayerView(listener: (view: "first" | "third") => void): () => void;
+  /** PHASE 7A — leave PLAYER mode and return to the OFFICE camera. The one verb the HUD needs, because a
+   *  pointer-locked player cannot reach any DOM control to get out. Same entry point the GUI button uses. */
+  exitPlayerMode(): void;
+  /** PHASE 7A — SELECT A PERSON THE HOST PICKED, rather than one the pointer hit: the branded HUD's
+   *  Search locates somebody by name, and "locate" in a 3D world means the same thing a click on their
+   *  body means. Returns false for anybody this world is not currently drawing — Search then simply
+   *  selects nobody rather than opening a card over empty floor. */
+  selectCoworkerByEmail(email: string): boolean;
   /** PHASE 6D — THE HOST DISMISSED THE MENU (Escape, an outside press, an action taken). Told to the
    *  world so the two agree on who is selected: without it the world would still hold the last person and
    *  a second click on the SAME body would be recognised as "already selected" and open nothing. */
   clearCoworkerSelection(): void;
+  /** PHASE 7A PARITY — ease back to the view the employee had before a selection was framed. V1's
+   *  closeCharacterMenu does this on dismiss; V1 deliberately does NOT do it when an action was taken
+   *  (opening a chat panel must not yank the camera), so the host calls this only where V1 does. */
+  restoreCameraView(): void;
   /** PHASE 6D — WALK THIS EMPLOYEE UP TO THAT PERSON AND TURN TO FACE THEM.
    *
    *  The ONE verb of Phase 6D the world owns, because moving this body is its job: it routes through the
@@ -1512,6 +1560,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  looking at empty floor if they had moved. The dispatch value is kept only as the fallback for
    *  somebody who is no longer rendered by the time the walk ends. */
   let coworkerApproach: { email: string; yaw: number; turning: boolean } | null = null;
+  /** The clip the signed-in employee's own body should rest in while standing in a conversation, or null.
+   *  Applied ONLY while the ControllerStack is idle — that is, nothing is walking, seating, editing or
+   *  direct-controlling this body — so it can never fight the walker, a seat or PLAYER mode's own
+   *  locomotion. `avatar.play` is guarded on the current clip, so re-applying it costs nothing. */
+  let selfConversationClip: string | null = null;
   /** Re-aim at the person from where the body actually came to rest. Falls back to whatever the approach
    *  was dispatched with when they are no longer drawn. */
   function resolveApproachYaw(): void {
@@ -1520,10 +1573,98 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     if (at) coworkerApproach.yaw = yawToward(avatar.position, at);
   }
 
+  /** PHASE 7A PARITY — SMOOTH OFFICE FOCUS ON A PERSON.
+   *
+   *  V1 frames the employee you clicked: OfficeMap.handleCharacterClick eases the map to that character at
+   *  its maximum zoom over 500ms, and closing the card eases back to the whole-office view
+   *  (resetToInitialView). V2 snapped instead, because the only focus verb it had — cameraModes.focus —
+   *  writes the camera immediately; that is right for a GUI button and wrong for an interaction.
+   *
+   *  THE DESTINATION IS NOT RECOMPUTED HERE. It is read back OUT of cameraModes.focus: the destination is
+   *  applied, the resulting target and dolly are captured, the camera is put straight back where it was,
+   *  and the tween runs between the two. So the framing, the pitch/yaw policy and — crucially — the OFFICE
+   *  fence are the existing ones, and no second copy of that arithmetic exists to drift from them.
+   *
+   *  OFFICE ONLY. PLAYER owns its own camera and EXPLORE is the inspection rig; neither is reframed. */
+  const FOCUS_MS = 500;
+  /** How much ground the focus frames around a person, in world units — a desk's worth of context, which
+   *  at the office pitch reads as V1's tight character zoom rather than a face fill. */
+  const FOCUS_HALF_EXTENT = 150;
+  let camTween: { t: number; fromTarget: THREE.Vector3; toTarget: THREE.Vector3; fromZoom: number; toZoom: number } | null = null;
+  /** Where the camera stood before the first focus of a selection, so closing the card can ease back to
+   *  it — V1's resetToInitialView, except it restores the view the employee actually had rather than the
+   *  canonical framing, which is the same promise and kinder to somebody who had panned somewhere. */
+  let camBeforeFocus: { target: THREE.Vector3; zoom: number } | null = null;
+
+  const easeOut = (k: number): number => 1 - Math.pow(1 - k, 3);
+
+  /** Begin easing to a captured destination. Cancels whatever tween was running. */
+  function startCamTween(toTarget: THREE.Vector3, toZoom: number): void {
+    camTween = {
+      t: 0,
+      fromTarget: R.controls.target.clone(),
+      toTarget: toTarget.clone(),
+      fromZoom: R.camera.zoom,
+      toZoom,
+    };
+  }
+  /** ANY manual camera input abandons the tween immediately — a focus must never fight the wheel or a
+   *  drag. Registered on the canvas beside the other pointer handlers. */
+  function cancelCamTween(): void {
+    camTween = null;
+  }
+  onCanvas("wheel", cancelCamTween);
+
+  function focusCameraOn(at: Vec2): boolean {
+    if (playerMode.active || params.cameraMode !== "office") return false;
+    const beforeTarget = R.controls.target.clone();
+    const beforeZoom = R.camera.zoom;
+    // Apply the EXISTING focus to learn where it lands (target, dolly, fence included), then undo it.
+    cameraModes.focus(
+      { x: at.x - FOCUS_HALF_EXTENT, z: at.z - FOCUS_HALF_EXTENT, w: FOCUS_HALF_EXTENT * 2, d: FOCUS_HALF_EXTENT * 2 },
+      0.9,
+    );
+    const toTarget = R.controls.target.clone();
+    const toZoom = R.camera.zoom;
+    R.controls.target.copy(beforeTarget);
+    R.camera.zoom = beforeZoom;
+    R.camera.updateProjectionMatrix();
+    R.placeCamera();
+    if (!camBeforeFocus) camBeforeFocus = { target: beforeTarget, zoom: beforeZoom };
+    startCamTween(toTarget, toZoom);
+    return true;
+  }
+
+  /** Ease back to wherever the camera was before the selection was focused. V1's closeCharacterMenu. */
+  function restoreCameraView(): void {
+    const before = camBeforeFocus;
+    camBeforeFocus = null;
+    if (!before || playerMode.active || params.cameraMode !== "office") return;
+    startCamTween(before.target, before.zoom);
+  }
+
+  /** One frame of the tween. Called from the render loop, before OrbitControls is updated. */
+  function updateCamTween(dtMs: number): void {
+    if (!camTween) return;
+    camTween.t = Math.min(1, camTween.t + dtMs / FOCUS_MS);
+    const k = easeOut(camTween.t);
+    R.controls.target.lerpVectors(camTween.fromTarget, camTween.toTarget, k);
+    R.camera.zoom = camTween.fromZoom + (camTween.toZoom - camTween.fromZoom) * k;
+    R.camera.updateProjectionMatrix();
+    R.placeCamera();
+    if (camTween.t >= 1) camTween = null;
+  }
+
   /** Tell the host who is selected. Idempotent on the same person; `null` clears. */
   function selectCoworker(sel: Vo3dCoworkerSelection | null): void {
     if ((sel?.email ?? null) === selectedCoworker) return;
     selectedCoworker = sel?.email ?? null;
+    // PHASE 7A PARITY — FRAME THE PERSON, as V1's own character click does. A no-op in PLAYER (which owns
+    // its camera) and in EXPLORE (the inspection rig), and a no-op for somebody with no body.
+    if (sel) {
+      const at = coworkers.pointOf(sel.email);
+      if (at) focusCameraOn(at);
+    }
     coworkerInteractions?.onSelect(sel);
   }
 
@@ -1536,9 +1677,17 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   }
 
   const projected = new THREE.Vector3();
+  const projectedUp = new THREE.Vector3();
+  const SELF_HEAD = new THREE.Vector3();
+  /** The same head height the coworker bodies hang their nameplates at, for the viewer's own avatar. */
+  const HEAD_ANCHOR_Y_SELF = BON_STANDING_HEIGHT + 6;
   function coworkerAnchor(email: string): Vo3dScreenAnchor | null {
     const head = coworkers.headPoint(email);
     if (!head) return null;
+    return anchorForWorldPoint(head);
+  }
+  /** ONE PROJECTION, for self and for every peer — see Vo3dScreenAnchor. */
+  function anchorForWorldPoint(head: THREE.Vector3): Vo3dScreenAnchor {
     const r = canvas.getBoundingClientRect();
     // THE ACTIVE CAMERA, not the orthographic one: PLAYER mode walks a perspective camera and an
     // anchored card has to follow the body through it exactly as it does in OFFICE. `z` past 1 is behind
@@ -1548,7 +1697,33 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     const clientX = r.left + ((projected.x + 1) / 2) * r.width;
     const clientY = r.top + ((1 - projected.y) / 2) * r.height;
     const onScreen = projected.z <= 1 && clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
-    return { clientX, clientY, visible: onScreen };
+    // PHASE 7B — one world unit, in CSS pixels, AT THIS BODY'S DEPTH. Measured rather than assumed, so it
+    // is right for both cameras and for a body near the camera versus one across the room.
+    projectedUp.copy(head).setY(head.y + 1).project(R.activeCamera);
+    const scale = Math.abs((projectedUp.y - projected.y) / 2) * r.height;
+    return { clientX, clientY, visible: onScreen, scale };
+  }
+
+  /** PART 1 — THE SIGNED-IN EMPLOYEE'S OWN HEAD, in the same screen-space form as a coworker's.
+   *
+   *  V1 shows the viewer a "You" nameplate over their own avatar, with their own presence; V2 showed them
+   *  nothing, because the overhead layer only ever knew about OTHER people's bodies. The head height is
+   *  the same one the coworker anchors use, so self and peers hang their pills at an identical gap. */
+  function selfAnchor(): Vo3dScreenAnchor | null {
+    const p = avatar.worldPosition();
+    return anchorForWorldPoint(SELF_HEAD.set(p.x, HEAD_ANCHOR_Y_SELF, p.z));
+  }
+
+  /** PHASE 7B — MANY ANCHORS IN ONE CALL. The overhead layer asks for every person it is drawing something
+   *  over, once per animation frame; going through `coworkerAnchor` per person would re-read the canvas
+   *  rect and re-derive the same camera state N times a frame. Somebody with no body is simply absent. */
+  function coworkerAnchors(emails: readonly string[]): Record<string, Vo3dScreenAnchor> {
+    const out: Record<string, Vo3dScreenAnchor> = {};
+    for (const email of emails) {
+      const a = coworkerAnchor(email);
+      if (a) out[email] = a;
+    }
+    return out;
   }
 
   /** PLAYER mode's per-frame coworker candidates. Distance-filtered by this module (it holds the bodies),
@@ -2039,7 +2214,33 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       refreshEditVisuals();
       return;
     }
+    // A press is the start of a possible drag: abandon any focus tween so the camera never fights a pan.
+    cancelCamTween();
     downAt = { x: e.clientX, y: e.clientY, t: performance.now() };
+  });
+  // PART 3 — RIGHT-CLICK MOVES THE AVATAR, V1's own contract (OfficeMap's right-click-to-move, with
+  // `allowRightClickPan: false` so the button is exclusively movement). OFFICE releases the right button
+  // from OrbitControls for exactly this; 3D EXPLORE keeps it as pan and therefore never moves anybody,
+  // which is the promise that mode makes.
+  let rightDownAt: { x: number; y: number; t: number } | null = null;
+  onCanvas("pointerdown", (e) => {
+    if (e.button !== 2 || playerMode.active || edit.editMode) return;
+    cancelCamTween();
+    rightDownAt = { x: e.clientX, y: e.clientY, t: performance.now() };
+  });
+  onCanvas("contextmenu", (e) => {
+    // The browser menu would swallow the gesture and leave the avatar standing there.
+    if (!playerMode.active) e.preventDefault();
+  });
+  onCanvas("pointerup", (e) => {
+    if (e.button !== 2) return;
+    const down = rightDownAt;
+    rightDownAt = null;
+    if (!down || playerMode.active || edit.editMode || params.cameraMode !== "office") return;
+    if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) return; // a drag is not a destination
+    approachCtl.cancel();
+    const p = floorPoint(e.clientX, e.clientY);
+    if (p) walkToGround(p.x, p.z);
   });
   onCanvas("pointermove", (e) => {
     if (playerMode.active || !edit.editMode || editDrag === "none") return;
@@ -2084,13 +2285,29 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       else startApproach(picked);
       return;
     }
-    approachCtl.cancel();
-    const p = floorPoint(e.clientX, e.clientY);
-    if (p) walkToGround(p.x, p.z);
+    // PART 3 — A LEFT CLICK SELECTS; IT DOES NOT WALK. V1's left button picks a character, a seat or a
+    // room and its right button is what moves the avatar, and OFFICE now matches that. Landing on nothing
+    // interactable is therefore a DESELECT, which the selectCoworker(null) above has already done.
   });
 
   // ---- GUI -------------------------------------------------------------------------------------------
   const gui = new GUI({ title: "VO 3D — V2 (ground floor)" });
+  // PART 6 — DEVELOPER DIAGNOSTICS ARE OFF BY DEFAULT.
+  //
+  // This panel is an inspection rig: 330-odd controllers over seat facings, room editors, nav debugging,
+  // shadow counters, stress harnesses and render internals. Every one of them is developer-only by
+  // intent, and none of them should be sitting over an employee's office — which is what was happening,
+  // because the panel and the frame-time overlay mounted visible and covered the HUD's right-hand side.
+  //
+  // They are not REMOVED (that would take functionality away) — they are hidden behind one switch, which
+  // the V1 Settings panel owns (Settings -> Developer) and which `?gui=1` also opens for a direct link.
+  // The standalone dev page keeps them on, because inspection is the whole reason that page exists.
+  const guiForcedOn = new URLSearchParams(window.location.search).get("gui") === "1";
+  let devToolsVisible = guiForcedOn || identity === undefined;
+  function applyDevToolsVisible(): void {
+    gui.domElement.style.display = devToolsVisible ? "" : "none";
+    overlay.visible = devToolsVisible && params.overlay;
+  }
   const refresh = () => gui.controllersRecursive().forEach((c) => c.updateDisplay());
   const cam = gui.addFolder("Camera");
   const applyCam = () => { R.camParams = { pitch: params.pitch, yaw: params.yaw, zoom: params.zoom }; R.placeCamera(); };
@@ -2099,6 +2316,16 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // THE MODE SWITCH owns both halves of the illusion: the camera policy AND what the environment presents.
   // OFFICE draws no exterior at all (see EnvPresentation) — camera bounds alone cannot stop a 16:9 viewport
   // overflowing a near-square office sideways, and anything out there would spoil the reveal.
+  /** PHASE 7A — view-mode subscribers. A Set so a StrictMode double-subscribe cannot double-notify. */
+  const viewModeListeners = new Set<(mode: Vo3dViewMode) => void>();
+  const playerViewListeners = new Set<(view: "first" | "third") => void>();
+  const notifyPlayerView = (): void => {
+    for (const l of playerViewListeners) l(params.playerView);
+  };
+  const notifyViewMode = (): void => {
+    const mode = params.cameraMode as Vo3dViewMode;
+    for (const l of viewModeListeners) l(mode);
+  };
   const setCameraMode = (m: CameraModeId) => {
     // PLAYER is a handoff, not a framing: the orthographic rig is left exactly as it was (CameraModes
     // disables OrbitControls rather than reconfiguring it), so whichever of OFFICE/EXPLORE we came from is
@@ -2124,6 +2351,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       if (env.setPresentation("world")) R.invalidateShadows();
       R.invalidateShadows();
       refresh();
+      notifyViewMode();
       return;
     }
     params.cameraMode = m;
@@ -2136,6 +2364,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     if (env.setPresentation(m === "office" ? "office" : "world")) R.invalidateShadows();
     syncCam(cameraModes.set(m));
     R.invalidateShadows();
+    notifyViewMode();
   };
   cam.add(params, "cameraMode", CAMERA_MODES).name("mode: OFFICE / 3D EXPLORE / PLAYER").onChange(setCameraMode);
   // The manual pitch/yaw sliders only bite in EXPLORE — OFFICE pins the orientation, and letting a slider
@@ -2145,7 +2374,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   const playerGui = gui.addFolder("Player (WASD · Shift sprint · mouse look · E interact)");
   playerGui.add({ go: () => setCameraMode("player") }, "go").name("▶ enter PLAYER");
   playerGui.add({ go: () => setCameraMode("office") }, "go").name("■ leave PLAYER (→ OFFICE)");
-  playerGui.add(params, "playerView", ["third", "first"]).name("view: THIRD / FIRST").onChange((v: PlayerView) => playerMode.setView(v));
+  playerGui.add(params, "playerView", ["third", "first"]).name("view: THIRD / FIRST").onChange((v: PlayerView) => { playerMode.setView(v); notifyPlayerView(); });
   playerGui.add({ go: () => { placeBonAtEntrance(); setCameraMode("player"); } }, "go").name("▶ spawn at Reception + enter");
   playerGui.add(playerMode.state, "active").disable().listen();
   playerGui.add(playerMode.state, "locked").name("pointer locked").disable().listen();
@@ -2742,7 +2971,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     benchState.status = `capturing ${seconds}s · preset ${params.preset}${params.motion ? " · motion" : " · idle"}`;
     return capture.done.then((r) => { lastCapture = r; capture = null; benchState.status = "idle"; benchState.result = `${params.preset}${params.motion ? "/motion" : "/idle"}: ${r.avgFps} fps · med ${r.medianFrameMs} ms · p95 ${r.p95FrameMs} ms · worst ${r.worstFrameMs} ms · calls ${r.avgDrawCalls}`; refresh(); return r; });
   }
-  bench.add(params, "overlay").name("stats overlay").onChange((v: boolean) => (overlay.visible = v));
+  bench.add(params, "overlay").name("stats overlay").onChange((v: boolean) => { overlay.visible = devToolsVisible && v; });
   // The A/B switch for room-level culling. OFF restores every subtree on the very next frame, which is
   // what makes a BEFORE/AFTER capture a toggle rather than a rebuild.
   bench.add(params, "shadowCache").name("split shadow update (cached static depth)").onChange((v: boolean) => { R.shadowCache = v; R.invalidateShadows(); });
@@ -2946,6 +3175,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // in Settings — resizes BETWEEN frames, like a window resize always has, and is unaffected either
     // way.) A no-op in Full and Custom: the controller does not even keep a window outside Smooth.
     graphics.frame(dt, now);
+    updateCamTween(dt);
     const t = clock.update().getElapsed();
     if (params.motion) scriptedMotion(t);
     mirror.sway.update(t);
@@ -3036,6 +3266,14 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
           coworkerInteractions?.onApproachArrived(arrived);
         }
       }
+      // THE CONVERSATION POSE, applied where every other clip decision has already been made this frame.
+      // Gated on an idle ControllerStack so walking, seating, an interaction and PLAYER mode all outrank
+      // it — the same ordering V1's own resolveCharacterAnimState uses.
+      // ALWAYS ASSERT THE RESTING CLIP, not only when there is a pose. Applying the pose alone meant that
+      // when it CLEARED — typing stopped, the conversation ended — nothing ever wrote the idle back, so
+      // the body stayed frozen in the gesture it happened to be in. `avatar.play` is guarded on the
+      // current clip, so re-asserting it every frame costs nothing.
+      if (stack.owner === "Idle" && !seatedNow()) avatar.play(selfConversationClip ?? CLIP_IDLE);
       selfFeed?.frame(dt, { x: bp.x, z: bp.z }, avatar.yaw, navCtl.path.length > 0 || coworkerApproach?.turning === true);
       accessState.zone = zoneOf({ x: bp.x, z: bp.z });
       // A direct-control player has no planned route, so the automatic doors would only react once his body
@@ -3516,7 +3754,30 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
         approach: (email: string) => approachCoworker(email),
         /** whether an approach is in flight, and whether it has reached the turn */
         approaching: () => (coworkerApproach ? { email: coworkerApproach.email, turning: coworkerApproach.turning } : null),
-        /** what PLAYER mode would score this frame — ids and labels only */
+        /** DIAGNOSTIC DRIVER — put self into a named conversation pose through the PRODUCTION entry point,
+       *  so a clip can be looked at without arranging a two-browser session first. Read the result back
+       *  with `clips()`. Null returns the body to its ordinary idle. */
+      pose: (clip: string | null) => {
+        selfConversationClip = clip;
+        playerMode.setConversationClip(clip);
+      },
+      /** THE CONVERSATION POSES, live: what clip each rendered body is actually playing, plus self's.
+       *  Read-only, and the one way to tell "the gesture clip is missing from this GLB" apart from
+       *  "nobody is in a conversation". */
+      clips: () => ({
+        peers: coworkers.restingClips(),
+        self: avatar.currentClip ?? "",
+        selfWanted: selfConversationClip,
+        selfOwner: stack.owner,
+        selfListen: avatar.clipDebug(CLIP_TALK_LISTEN),
+        selfAgree: avatar.clipDebug(CLIP_TALK_AGREE),
+      }),
+      /** PART 1 — how many baked 3D nameplate sprites are still visible. Must be 0 whenever a host owns
+       *  the overheads, or a character carries two labels. Read-only. */
+      spriteLabels: () => coworkers.visibleLabelCount(),
+      /** PHASE 7A PARITY — the office camera's live framing, for a focus check. Read-only. */
+      camera: () => ({ zoom: R.camera.zoom, target: { x: R.controls.target.x, z: R.controls.target.z }, tweening: camTween !== null }),
+      /** what PLAYER mode would score this frame — ids and labels only */
         candidates: () => coworkerCandidates().map((c) => ({ id: c.id, label: c.label })),
       },
     },
@@ -4015,6 +4276,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     return true;
   }
 
+  // PART 6 — applied once, after every folder above has been added, so hiding the rig hides all of it.
+  applyDevToolsVisible();
+
   return {
     dispose,
     restoreSelf,
@@ -4033,10 +4297,65 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     },
     setCoworkerInteractions: (handlers) => {
       coworkerInteractions = handlers;
+      // A HOST OWNS THE NAMEPLATES. Its DOM overhead layer draws V1's presence pill — dot, short name,
+      // detail label — and replaces it with a bubble or typing dots; a baked sprite can do none of that.
+      // Unsubscribing hands them straight back, so the standalone dev page is untouched.
+      coworkers.setLabelsVisible(handlers === null);
       // Unsubscribing drops any selection with it: the host that would have been told about it is gone.
       if (!handlers) selectedCoworker = null;
     },
+    setConversationPoses: (byEmail, self) => {
+      coworkers.setConversationClips(byEmail);
+      selfConversationClip = self;
+      // PLAYER MODE drives its own clips every frame, so it cannot be told through the idle-gated line in
+      // the render loop — it is handed the pose and picks it as its own resting clip instead. Walking and
+      // sprinting still outrank it there, exactly as they do everywhere else.
+      playerMode.setConversationClip(self);
+    },
+    setDevToolsVisible: (on) => {
+      devToolsVisible = on;
+      applyDevToolsVisible();
+    },
+    devToolsVisible: () => devToolsVisible,
+    setViewMode: (mode) => {
+      if (params.cameraMode === mode) return;
+      setCameraMode(mode);
+      refresh();
+    },
+    setPlayerView: (view) => {
+      if (!playerMode.active || params.playerView === view) return;
+      params.playerView = view;
+      playerMode.setView(view);
+      notifyPlayerView();
+      refresh();
+    },
+    subscribePlayerView: (listener) => {
+      playerViewListeners.add(listener);
+      listener(params.playerView);
+      return () => playerViewListeners.delete(listener);
+    },
+    subscribeViewMode: (listener) => {
+      viewModeListeners.add(listener);
+      // Told at once: a host that subscribes after the world was built would otherwise sit on its own
+      // default until the next mode change, which may never come.
+      listener(params.cameraMode as Vo3dViewMode);
+      return () => viewModeListeners.delete(listener);
+    },
+    exitPlayerMode: () => {
+      if (playerMode.active) setCameraMode("office");
+    },
+    selectCoworkerByEmail: (email) => {
+      // The same `within` read the pointer path and PLAYER targeting use, unbounded — Search is a
+      // name lookup across the whole office, not a reach check.
+      const who = coworkers.within(avatar.position, Number.POSITIVE_INFINITY).find((c) => c.email === email);
+      if (!who) return false;
+      selectCoworker({ email: who.email, displayName: who.displayName });
+      return true;
+    },
+    restoreCameraView,
     coworkerAnchor,
+    coworkerAnchors,
+    selfAnchor: () => (avatar.root.visible ? selfAnchor() : null),
     clearCoworkerSelection: () => {
       // The host already closed its card, so it is not told again — this only resyncs the world's idea of
       // what is selected. Same one-way shape as every other host->world write on this interface.

@@ -5,15 +5,20 @@
 
 /* The spatial chat slot. Bottom-right, above the world, clear of the dev GUI panel's top-right column.
    Pointer events are its own; the canvas behind it keeps receiving everything else. */
+/* PART 2 — ABOVE THE DOCK, NEVER BEHIND IT. `--vo-dock-clearance` is V1's own measure of the space the
+   bottom dock occupies (src/index.css, and it already re-declares itself on short viewports). The overlay
+   overrides `--vo3d-dock-clearance` to 0 whenever the dock is hidden — a tool has taken the screen, or
+   PLAYER owns it — so the windows drop to the bottom edge and come back up with the dock. `right` is
+   written per window by the shared floating-stack layout. */
 .chatSlot {
   position: fixed;
-  right: 16px;
-  bottom: 16px;
-  z-index: 22;
+  bottom: calc(var(--vo3d-dock-clearance, var(--vo-dock-clearance, 104px)) - 8px);
+  z-index: 140;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   pointer-events: auto;
+  transition: bottom 160ms ease-out;
 }
 
 /* Transient message — the same cream card family as the world menu, one step smaller. */

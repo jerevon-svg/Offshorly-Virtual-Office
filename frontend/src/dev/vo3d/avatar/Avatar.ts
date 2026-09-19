@@ -124,6 +124,13 @@ export class Avatar {
    *  clip it was already playing (play() returns quietly for an unknown name). */
   hasClip(name: string): boolean { return this.actions[name] !== undefined; }
   get currentClip(): string | null { return this.current; }
+  /** DIAGNOSTIC: what the mixer is really doing with a clip — is it bound, running, and at what weight.
+   *  `currentClip` alone cannot tell "the pose is playing" from "the pose was asked for and the GLB had
+   *  no such clip", which is exactly the distinction a missing local gesture turns on. */
+  clipDebug(name: string): { bound: boolean; running: boolean; weight: number } {
+    const a = this.actions[name];
+    return { bound: a !== undefined, running: a?.isRunning() ?? false, weight: a?.getEffectiveWeight() ?? 0 };
+  }
   update(dt: number): void { this.mixer?.update(dt); }
 
   dispose(): void {

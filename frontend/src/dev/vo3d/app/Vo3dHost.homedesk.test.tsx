@@ -21,7 +21,7 @@ vi.mock("./world", () => ({
   createVo3dWorld: (_canvas: HTMLCanvasElement, id?: Vo3dIdentity, desk?: Vo3dHomeDesk) => {
     mounts.push({ identity: id, homeDesk: desk });
     // Phase 4A: the world is a Vo3dWorld, and the host pushes the roster into it on creation.
-    return { dispose: vi.fn(), setCoworkers: vi.fn(), restoreSelf: vi.fn(() => false), setOfficeAccess: vi.fn(), setOccupiedSeats: vi.fn(), setCoworkerInteractions: vi.fn(), clearCoworkerSelection: vi.fn(), coworkerAnchor: vi.fn(() => null), approachCoworker: vi.fn(() => false), standUp: vi.fn() };
+    return { dispose: vi.fn(), setCoworkers: vi.fn(), restoreSelf: vi.fn(() => false), setOfficeAccess: vi.fn(), setOccupiedSeats: vi.fn(), setCoworkerInteractions: vi.fn(), subscribeViewMode: () => () => {}, subscribePlayerView: () => () => {}, setViewMode: vi.fn(), setPlayerView: vi.fn(), devToolsVisible: () => false, setDevToolsVisible: vi.fn(), setConversationPoses: vi.fn(), exitPlayerMode: vi.fn(), selectCoworkerByEmail: vi.fn(() => false), clearCoworkerSelection: vi.fn(), coworkerAnchor: vi.fn(() => null), approachCoworker: vi.fn(() => false), standUp: vi.fn() };
   },
 }));
 

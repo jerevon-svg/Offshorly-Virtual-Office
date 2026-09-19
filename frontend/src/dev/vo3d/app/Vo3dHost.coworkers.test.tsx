@@ -23,7 +23,7 @@ vi.mock("./world", async () => ({
       restoreSelf: vi.fn(() => false),
       setOfficeAccess: vi.fn(),
       setOccupiedSeats: vi.fn(),
-      setCoworkerInteractions: vi.fn(), clearCoworkerSelection: vi.fn(), coworkerAnchor: vi.fn(() => null), approachCoworker: vi.fn(() => false),
+      setCoworkerInteractions: vi.fn(), subscribeViewMode: () => () => {}, subscribePlayerView: () => () => {}, setViewMode: vi.fn(), setPlayerView: vi.fn(), devToolsVisible: () => false, setDevToolsVisible: vi.fn(), setConversationPoses: vi.fn(), exitPlayerMode: vi.fn(), selectCoworkerByEmail: vi.fn(() => false), clearCoworkerSelection: vi.fn(), coworkerAnchor: vi.fn(() => null), approachCoworker: vi.fn(() => false),
       standUp: vi.fn(),
       setCoworkers: (coworkers: readonly Vo3dCoworker[], missingAvatar?: readonly string[]) => {
         pushes.push({ coworkers, missingAvatar });

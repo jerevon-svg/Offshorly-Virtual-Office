@@ -389,6 +389,31 @@ class CoworkerBody {
     this.current = name;
   }
 
+  /** THE CONVERSATION POSE THIS BODY SHOULD REST IN, or null for an ordinary idle. Set from the spatial
+   *  session feed; it only ever REPLACES the idle clip, so walking, sitting and every facing rule above
+   *  are untouched (V1's own resolveCharacterAnimState puts walking and sitting ahead of it too). */
+  private conversationClip: string | null = null;
+  /** The clip a standing, stationary body rests in — idle, unless it is in a conversation. */
+  private get restingClip(): string {
+    return this.conversationClip ?? CLIP_IDLE;
+  }
+  /** Enter/leave a conversation pose. Applied immediately only when the body is actually standing
+   *  still: a walking or seated body picks it up when it next comes to rest, which is what keeps this
+   *  from fighting the movement replay or the seat. */
+  setConversationClip(clip: string | null): void {
+    if (this.conversationClip === clip) return;
+    this.conversationClip = clip;
+    if (this.replay === null && this.coastMs === 0 && this.seatedIn === null) this.play(this.restingClip);
+  }
+
+  /** See Coworkers.setLabelsVisible. */
+  setLabelVisible(on: boolean): void {
+    if (this.label) this.label.visible = on;
+  }
+  get labelVisible(): boolean {
+    return this.label?.visible ?? false;
+  }
+
   get moving(): boolean { return this.replay !== null; }
   get clip(): string { return this.current; }
   /** Which way this body is looking, radians. Read-only, and read by the dev surface alone. */
@@ -450,7 +475,7 @@ class CoworkerBody {
     if (this.seatedIn === null) return;
     this.seatedIn = null;
     this.root.position.y = 0;
-    this.play(CLIP_IDLE);
+    this.play(this.restingClip);
   }
 
   /** THE AUTHORITATIVE POSITION HAS ARRIVED, and the yaw to face: the exact one V1 relayed when the
@@ -599,16 +624,19 @@ class CoworkerBody {
           this.coastMs = LEG_GRACE_MS;
           const action = this.actions[this.locomotion];
           if (action) action.timeScale = 0;
-        } else this.play(CLIP_IDLE);
+        } else this.play(this.restingClip);
       }
     } else if (this.coastMs > 0) {
       this.coastMs -= dt * 1000;
       if (this.coastMs <= 0) {
         this.coastMs = 0;
-        this.play(CLIP_IDLE);
+        this.play(this.restingClip);
       }
     } else {
-      this.play(CLIP_IDLE);
+      // STANDING STILL. `restingClip`, not CLIP_IDLE: this branch runs every frame for every stationary
+      // body, so leaving it hard-coded silently overwrote the conversation pose one frame after it was
+      // applied. `play` is guarded on the current clip, so re-asserting it per frame costs nothing.
+      this.play(this.restingClip);
     }
     if (this.targetYaw !== null) {
       // The last beat of a walk: onto the yaw the arrival asked for, at the rate the body turns.
@@ -753,6 +781,10 @@ export class Coworkers {
    *  each time anybody took a step, and nobody would ever finish loading. */
   private generation = 0;
   private disposed = false;
+  /** See setLabelsVisible. Remembered so a body cloned later is created in the same state. */
+  private labelsVisible = true;
+  /** The latest conversation poses, kept so a body cloned afterwards is created already in one. */
+  private conversationClips = new Map<string, string | null>();
 
   constructor(deps: CoworkersDeps) {
     this.deps = deps;
@@ -879,6 +911,9 @@ export class Coworkers {
       // at the same room, see the same stagger instead of a fresh shuffle.
       const phase = phaseFor(coworker.email);
       const body = new CoworkerBody(proto, coworker.displayName, pos, coworker.yaw ?? FACING_YAW[coworker.facing], phase);
+      // A body cloned after the host took over the nameplates must not bring a sprite one back with it.
+      body.setLabelVisible(this.labelsVisible);
+      body.setConversationClip(this.conversationClips.get(email) ?? null);
       // PHASE 6A — A NEWCOMER MAY ALREADY BE WALKING. `applyPositions` only reaches bodies that exist, and
       // this one did not until now: somebody whose character was still downloading when their movement
       // started, or anybody at all on the very first sync. The walk comes from the NEWEST spot (like the
@@ -1037,6 +1072,42 @@ export class Coworkers {
    *
    *  Returns TRUE when any body's transform changed, so the caller can invalidate the dynamic composite
    *  and nothing else. */
+  /** PHASE 7A PARITY — SHOW OR HIDE THE 3D NAMEPLATES.
+   *
+   *  A body's nameplate is a baked sprite: it can carry a name and nothing else. V1's nameplate is a
+   *  PRESENCE pill — a status dot, a short name, and a detail label for the active statuses — and it is
+   *  REPLACED by a chat bubble or typing dots rather than stacked under them. None of that is expressible
+   *  in a baked texture, so when a host is present it renders those pills in the DOM overhead layer
+   *  (app/Vo3dOverheads.tsx) and turns these off. The standalone dev page has no host and keeps them. */
+  setLabelsVisible(on: boolean): void {
+    this.labelsVisible = on;
+    for (const body of this.bodies.values()) body.setLabelVisible(on);
+  }
+
+  /** THE CONVERSATION POSES, pushed in from outside exactly as the roster, the occupancy and the access
+   *  answer are: React derives who is in a spatial conversation (and who is typing into it) from V1's own
+   *  session and typing feeds, and the world only applies it to a body. Anybody absent from the map goes
+   *  back to an ordinary idle. Nothing here reads a session or a keystroke. */
+  setConversationClips(byEmail: ReadonlyMap<string, string | null>): void {
+    this.conversationClips = new Map(byEmail);
+    for (const [email, body] of this.bodies) body.setConversationClip(byEmail.get(email) ?? null);
+  }
+
+  /** Which clip each rendered body is resting in — read-only, for the dev verification surface. */
+  restingClips(): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const [email, body] of this.bodies) out[email] = body.clip;
+    return out;
+  }
+
+  /** PART 1 — how many bodies still show a baked nameplate sprite. Zero whenever a host owns the
+   *  overheads; anything else means a character is wearing two labels. */
+  visibleLabelCount(): number {
+    let n = 0;
+    for (const body of this.bodies.values()) if (body.labelVisible) n++;
+    return n;
+  }
+
   /** PHASE 6D — WHO IS UNDER THE POINTER. The caller sets the ray (it owns the camera and the canvas);
    *  this answers which coworker it hit and how far away, so the caller can weigh that against whatever
    *  its OWN pick found — a body standing behind a desk must not beat the desk, and a body in front of

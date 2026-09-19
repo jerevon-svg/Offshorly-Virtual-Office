@@ -16,6 +16,12 @@ export const CLIP_WALK = "walking";
  *  player controller keeps owning movement exactly as it does for the walk. */
 export const CLIP_RUN = "running";
 export const CLIP_SIT = "sit-on-chair-arms";
+/** THE CONVERSATION CLIPS, and they are not new art: they are two of the six states V1's own
+ *  render3d/characterAnimationState.ts already resolves, baked into the SAME consolidated GLB V2 loads
+ *  (build-character-lods.mjs's CLIP_SOURCES). V2 simply had not named them. `listening` is what a member
+ *  of a spatial conversation stands in; `agree` is what they do while actually typing into it. */
+export const CLIP_TALK_LISTEN = "listening-gesture";
+export const CLIP_TALK_AGREE = "agree-gesture";
 /** standing height in world units: bon's V1 sprite box is 37.2 tall; 36 keeps desks (24) at hip height */
 export const BON_STANDING_HEIGHT = Math.round(bonLayer.height) - 1;
 export const DRACO_PATH = `${import.meta.env.BASE_URL}vendor/draco/`;

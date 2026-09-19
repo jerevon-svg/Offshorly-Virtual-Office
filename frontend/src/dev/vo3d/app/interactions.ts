@@ -36,6 +36,15 @@ export interface Vo3dScreenAnchor {
   clientX: number;
   clientY: number;
   visible: boolean;
+  /** PHASE 7B — HOW BIG A WORLD UNIT IS IN CSS PIXELS at this body's depth.
+   *
+   *  The overhead chat elements are world-space furniture, exactly as the nameplate above them is: they
+   *  must shrink as the camera pulls back and grow as it closes in, or a bubble that reads correctly in
+   *  OFFICE swamps the character in PLAYER. V1 gets this for free by living inside a scaled stage; V2 has
+   *  a real camera, so the factor is measured — project the head, project a point one unit above it, and
+   *  take the pixel distance. Correct for the orthographic and the perspective camera alike, and for a
+   *  body at the near edge versus one across the room. */
+  scale: number;
 }
 
 /** THE HOST'S END of the contract, pushed into the world the same way the coworker roster and the office

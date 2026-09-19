@@ -28,7 +28,7 @@ vi.mock("./world", async () => ({
       setOfficeAccess: vi.fn(),
       setOccupiedSeats: (ids: readonly string[]) => { occupied.push([...ids]); },
       standUp: vi.fn(),
-      setCoworkerInteractions: vi.fn(),
+      setCoworkerInteractions: vi.fn(), subscribeViewMode: () => () => {}, subscribePlayerView: () => () => {}, setViewMode: vi.fn(), setPlayerView: vi.fn(), devToolsVisible: () => false, setDevToolsVisible: vi.fn(), setConversationPoses: vi.fn(), exitPlayerMode: vi.fn(), selectCoworkerByEmail: vi.fn(() => false),
       clearCoworkerSelection: vi.fn(),
       coworkerAnchor: vi.fn(() => null),
       approachCoworker: vi.fn(() => false),

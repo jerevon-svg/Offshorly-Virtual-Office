@@ -1,0 +1,188 @@
+/* Phase 7B — the world-space chat elements, matched to V1's office pills.
+   Metrics are V1's TalkingBubble/ChatAttentionIndicator values, expressed in WORLD units: the layer is
+   unscaled and each anchor carries its own scale(), so a bubble is the same size relative to the
+   character at every zoom and in every camera — the presence system's established rule. */
+
+.layer {
+  position: fixed;
+  inset: 0;
+  z-index: 19; /* under the world action menu (20/21) and the dock, over the canvas */
+  pointer-events: none;
+}
+
+/* NO will-change, and no scale(). Either one promotes this to a compositor layer that is rasterised once
+   at its layout size and then stretched — which is exactly what made the pills blurry. The frame loop
+   writes a real font-size instead, and everything below is in `em`. */
+.anchor {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 50% 100%;
+  /* Sub-pixel text positioning stays on; the loop already rounds the translate to whole pixels. */
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+}
+
+/* TYPING — the SAME PILL as the nameplate, with dots where the name goes. V1 states the rule plainly:
+   StatusLabel and TalkingBubble share one pill treatment and are mutually exclusive, so the indicator is
+   the name pill in another state rather than a second, smaller element beside it. Identical height,
+   padding, radius, background, shadow and em-based metrics — and therefore identical sharpness and
+   camera scaling, since it inherits the anchor's font-size like everything else. */
+.bubble {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.34em;
+  height: calc(1.4em + 0.34em);
+  /* The name pill's own 0.66em sides, widened a touch so three dots read as a considered row rather
+     than as a cramped one. */
+  padding: 0.17em 0.75em;
+  border-radius: 999px;
+  background: rgba(26, 26, 26, 0.85);
+  box-shadow: 0 0.33em 1.3em rgba(0, 0, 0, 0.25);
+  font-size: 1em;
+  line-height: 1.4;
+}
+
+.dot {
+  width: 0.34em;
+  height: 0.34em;
+  border-radius: 50%;
+  background: #f5f5f5;
+  animation: overheadDot 1.1s infinite ease-in-out;
+}
+.dot:nth-child(2) { animation-delay: 0.16s; }
+.dot:nth-child(3) { animation-delay: 0.32s; }
+
+@keyframes overheadDot {
+  0%, 60%, 100% { opacity: 0.35; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-0.16em); }
+}
+
+/* What they just said — same pill, wrapped to at most three lines like V1's .bubbleText. */
+/* WHAT THEY JUST SAID — the same pill family again, allowed to wrap to three lines (V1's own
+   -webkit-line-clamp: 3), so a message reads as the nameplate having spoken rather than as a
+   different widget. */
+.bubbleText {
+  box-sizing: border-box;
+  max-width: 7.6em;
+  padding: 0.17em 0.66em;
+  border-radius: 0.66em;
+  background: rgba(26, 26, 26, 0.85);
+  box-shadow: 0 0.33em 1.3em rgba(0, 0, 0, 0.25);
+  color: #f5f5f5;
+  font-weight: 600;
+  font-size: 1em;
+  line-height: 1.4;
+  text-align: center;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+/* Unread — the free-floating soft-3D chat icon with its halo and HUD-badge count, no backing pill,
+   exactly as V1's ChatAttentionIndicator reads. Clickable, so it opts back into pointer events. */
+.unread {
+  position: relative;
+  font-size: 1em;
+  pointer-events: auto;
+  border: 0;
+  padding: 0;
+  background: none;
+  cursor: pointer;
+  /* The premium glow, in em so it grows and shrinks with the icon instead of blooming at distance. */
+  filter: drop-shadow(0 0 0.34em rgba(99, 102, 241, 0.6)) drop-shadow(0 0.12em 0.14em rgba(18, 16, 28, 0.38));
+  animation: overheadPop 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.unreadIcon {
+  display: block;
+  width: 2em;
+  height: 2em;
+  animation: overheadBob 2.6s ease-in-out infinite;
+}
+.unreadIcon :global(svg),
+.unreadIcon :global(img) {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* The count rides the same em scale. Sized against the icon so the badge keeps its proportion to the
+   glyph at every zoom, and given the pill's own shadow treatment so it reads as one object with it. */
+.unreadCount {
+  position: absolute;
+  top: -0.22em;
+  right: -0.34em;
+  min-width: 1.15em;
+  padding: 0 0.28em;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.82em;
+  line-height: 1.45;
+  text-align: center;
+  box-shadow: 0 0.16em 0.5em rgba(18, 16, 28, 0.35);
+}
+
+@keyframes overheadPop {
+  from { opacity: 0; transform: scale(0.6); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes overheadBob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-0.2em); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dot, .unread, .unreadIcon { animation: none; }
+}
+
+/* NAME + STATUS — V1's StatusLabel, metric for metric: 6px/600 text on a 1.4 line box, 1px 4px padding,
+   a 3px inline dot with a 2.5px gap, and the same dark translucent pill. Expressed here in world units
+   because the anchor carries the scale; V1 gets the same effect from its scaled stage. This is QUIET
+   IDENTITY in the overhead hierarchy — the unread indicator is the attention element — so it sits close
+   and small, and a chat bubble replaces it outright rather than pushing it down. */
+.pill {
+  box-sizing: border-box;
+  display: inline-block;
+  height: calc(1.4em + 0.34em);
+  padding: 0.17em 0.66em;
+  border-radius: 999px;
+  background: rgba(26, 26, 26, 0.85);
+  color: #f5f5f5;
+  font-size: 1em;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  box-shadow: 0 0.33em 1.3em rgba(0, 0, 0, 0.25);
+}
+
+.statusDot {
+  display: inline-block;
+  vertical-align: middle;
+  box-sizing: border-box;
+  width: 0.5em;
+  height: 0.5em;
+  min-width: 0.5em;
+  min-height: 0.5em;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  margin-right: 0.42em;
+}
+
+.pillText {
+  display: inline;
+  vertical-align: baseline;
+  white-space: nowrap;
+}

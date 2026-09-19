@@ -124,6 +124,14 @@ export class CameraModes {
       this.R.camParams = { pitch: OFFICE_VIEW.pitch, yaw: OFFICE_VIEW.yaw, zoom: this.officeZoom };
       c.enableRotate = false;
       c.enablePan = true; // dragging inside the office is normal V1 navigation — the fence does the work
+      // V1'S MOUSE CONTRACT, which is what OFFICE is for: LEFT-DRAG PANS THE MAP and RIGHT-CLICK MOVES THE
+      // AVATAR. OrbitControls' defaults are LEFT=rotate / RIGHT=pan, and with rotation disabled that left
+      // a left-drag doing nothing at all while the right button — V1's move-to button — panned instead.
+      // RIGHT is released entirely here so app/world.ts's own handler owns it, exactly as V1 sets
+      // `allowRightClickPan: false` for the same reason.
+      c.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: null };
+      // Touch keeps its natural pair: one finger pans, two pinch-zoom. Rotation is off in this mode.
+      c.touches = { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_PAN };
       // GROUND-PLANE PANNING, and this is load-bearing rather than cosmetic.
       //
       // OrbitControls' screen-space panning moves the target along the CAMERA'S OWN Y AXIS. At the office
@@ -147,6 +155,10 @@ export class CameraModes {
     } else {
       c.enableRotate = true;
       c.enablePan = true;
+      // 3D VIEW is the free camera: orbit on the left, pan on the right, wheel to zoom — the rig's own
+      // defaults, restored explicitly so leaving OFFICE cannot leak OFFICE's button map into it.
+      c.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+      c.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
       c.screenSpacePanning = true; // free-flying inspection rig: unchanged from before the modes existed
       c.minZoom = EXPLORE_ZOOM.min;
       c.maxZoom = EXPLORE_ZOOM.max;

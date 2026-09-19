@@ -119,6 +119,17 @@ export class PlayerMode {
   /** a one-segment synthetic route handed to the automatic doors, so they open on approach exactly as they
    *  do for a planned walk — without inventing a second door-trigger path */
   readonly doorIntent: Vec2[] = [];
+  /** THE CLIP A STANDING PLAYER RESTS IN — an ordinary idle, unless a conversation pose has been set.
+   *  Walking and sprinting still outrank it (they are chosen first, above), which is the same ordering
+   *  V1's own resolveCharacterAnimState uses and the same one the coworker bodies follow. */
+  private conversationClip: string | null = null;
+  setConversationClip(clip: string | null): void {
+    this.conversationClip = clip;
+  }
+  private get restingClip(): string {
+    return this.conversationClip ?? CLIP_IDLE;
+  }
+
   /** dev/test readout */
   readonly state = {
     active: false, view: "third" as PlayerView, locked: false, sprinting: false, target: "—",
@@ -291,7 +302,7 @@ export class PlayerMode {
       this.doorIntent.length = 0;
       this.doorIntent.push({ x: this.body.pos.x + Math.sin(this.heading) * DOOR_LOOKAHEAD, z: this.body.pos.z - Math.cos(this.heading) * DOOR_LOOKAHEAD });
     } else {
-      this.d.avatar.play(CLIP_IDLE);
+      this.d.avatar.play(this.restingClip);
       this.doorIntent.length = 0;
     }
     this.camera.update(this.body.pos, dt);
