@@ -22,6 +22,8 @@ vi.mock("./world", async () => ({
       dispose: vi.fn(),
       restoreSelf: vi.fn(() => false),
       setOfficeAccess: vi.fn(),
+      setOccupiedSeats: vi.fn(),
+      standUp: vi.fn(),
       setCoworkers: (coworkers: readonly Vo3dCoworker[], missingAvatar?: readonly string[]) => {
         pushes.push({ coworkers, missingAvatar });
       },
@@ -84,6 +86,7 @@ vi.mock("../../../services/presence/movementSync", async () => {
       return peerMovements;
     },
     useMovementSnapshotReady: () => snapshotReady,
+    subscribeSeatRejected: () => () => {},
     // Phase 6A: the host reads V1's last-snapshot clock offset to say how far into a walk a peer is.
     // Zero here, so a test's `startedAt` is measured against the test's own clock.
     getServerClockOffsetMs: () => 0,

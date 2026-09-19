@@ -17,7 +17,7 @@ import { SlidingDoor } from "./interact/Door";
 import { LoungeSeatInteraction } from "./interact/LoungeSeat";
 import { PELVIS_BELOW_HIPS } from "./interact/seatContact";
 import { TUB_CHAIR, TUB_CUSHION_TOP } from "./build/furniture";
-import { COUNTER_APPROACH, KIOSK_APPROACH, COUNTER_INTERACTION_ID, KIOSK_INTERACTION_ID, LOUNGE_SEAT_IDS, LOUNGE_SEATS, TUB_CUSHION_TOP_Y, TUB_SINK } from "./rooms/reception";
+import { COUNTER_APPROACH, KIOSK_APPROACH, COUNTER_INTERACTION_ID, KIOSK_INTERACTION_ID, LOUNGE_SEAT_IDS, RECEPTION_LOUNGE_IDS, LOUNGE_SEATS, TUB_CUSHION_TOP_Y, TUB_SINK } from "./rooms/reception";
 import { FACING_YAW } from "./core/coords";
 import { PALETTE } from "./render/Materials";
 import { pointInRect } from "./core/coords";
@@ -889,11 +889,12 @@ describe("vo3d Reception — Phase 3E.3 interactions", () => {
     expect(COUNTER_APPROACH.point.z).toBeGreaterThan(COUNTER.centre.z); // convex (south) side
   });
 
-  it("exactly the two north lounge chairs are sittable — nothing decorative is", () => {
+  it("every lounge piece a person can sit on is sittable (Phase 6C) — tables and plants are not", () => {
     const all = receptionEntities();
     const sittable = all.filter((e) => e.capabilities.lounge).map((e) => e.id);
-    expect(sittable.sort()).toEqual([...LOUNGE_SEAT_IDS].sort());
-    for (const kind of ["sofa", "round-table", "plant"]) {
+    expect(sittable.sort()).toEqual([...RECEPTION_LOUNGE_IDS].sort());
+    expect(sittable).toEqual(expect.arrayContaining(LOUNGE_SEAT_IDS));
+    for (const kind of ["round-table", "plant"]) {
       expect(all.filter((e) => e.kind === kind && (e.capabilities.lounge || e.capabilities.seat))).toHaveLength(0);
     }
     // Reception seating is FIXED: no Reception entity carries the movable desk-chair capability

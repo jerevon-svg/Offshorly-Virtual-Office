@@ -134,6 +134,17 @@ interface PositionsSnapshotEvent {
   serverTime: number;
 }
 
+/** `seat_rejected` — sent to the ARRIVING client only, when its `walk_arrived` claimed a seat another
+ *  employee already holds. The server has accepted the arrival as STANDING at the same position (that
+ *  is what it broadcast and persisted), so the local body should stand up. V1 clients receive and
+ *  ignore it today; the 3D office stands its body up (dev/vo3d/app/Vo3dHost). */
+export interface SeatRejectedEvent {
+  movementId: string;
+  seatKey: string;
+  /** who holds it — lowercased email, for a readout; never required to act */
+  heldBy: string;
+}
+
 function socketBase(): string {
   const raw = import.meta.env.VITE_CHAT_SOCKET_URL;
   if (!raw) {
@@ -145,6 +156,7 @@ function socketBase(): string {
 }
 
 let socketInstance: Socket | null = null;
+const seatRejectedListeners = new Set<(e: SeatRejectedEvent) => void>();
 const peers = new Map<string, PeerMovementState>();
 let peersSnapshot: PeerMovementState[] = [];
 const listeners = new Set<() => void>();
@@ -356,8 +368,23 @@ function ensureSocket(): Socket | null {
     notify();
   });
 
+  socket.on("seat_rejected", (payload?: SeatRejectedEvent) => {
+    if (!payload?.movementId || typeof payload.seatKey !== "string") return;
+    for (const listener of seatRejectedListeners) listener(payload);
+  });
+
   socketInstance = socket;
   return socket;
+}
+
+/** Subscribe to `seat_rejected` for THIS session's own arrivals. Establishes the connection on first
+ *  use, like the hooks. Returns the unsubscribe. */
+export function subscribeSeatRejected(listener: (e: SeatRejectedEvent) => void): () => void {
+  ensureSocket();
+  seatRejectedListeners.add(listener);
+  return () => {
+    seatRejectedListeners.delete(listener);
+  };
 }
 
 /** Tells the server this user has started walking a path. No-op if the
@@ -447,5 +474,6 @@ export function __resetForTests(): void {
   serverClockOffsetMs = 0;
   snapshotReceived = false;
   devEmail = null;
+  seatRejectedListeners.clear();
   notify();
 }

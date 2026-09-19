@@ -308,3 +308,52 @@ def test_snapshot_without_own_email_is_unchanged():
 
     assert [entry["email"] for entry in snapshot] == ["a@example.com"]
     assert snapshot[0]["active"] is not None
+
+
+# ---- Phase 6C: seat occupancy -------------------------------------------------------------------
+
+
+def _sit(registry, email, movement_id, seat_key, now_ms=1500):
+    return registry.arrive(
+        email,
+        movement_id=movement_id,
+        at={"x": 10.0, "y": 0.0},
+        facing="front",
+        state="sitting",
+        seat_key=seat_key,
+        room_id="dev-team",
+        now_ms=now_ms,
+    )
+
+
+def test_seat_holder_is_the_seated_employee_with_no_walk_in_flight():
+    registry = PositionRegistry()
+    _start(registry, email="a@example.com", movement_id="m1")
+    _sit(registry, "a@example.com", "m1", "100,200")
+
+    assert registry.seat_holder("100,200") == "a@example.com"
+    assert registry.seat_holder("999,999") is None
+    # the holder asking about their own seat is not "another employee"
+    assert registry.seat_holder("100,200", exclude_email="a@example.com") is None
+
+
+def test_seat_holder_is_released_by_the_next_walk_started():
+    registry = PositionRegistry()
+    _start(registry, email="a@example.com", movement_id="m1")
+    _sit(registry, "a@example.com", "m1", "100,200")
+    _start(registry, email="a@example.com", movement_id="m2", started_at=2000)
+
+    # walking supersedes sitting: stable.state is standing and the key is cleared
+    assert registry.get("a@example.com").stable.seat_key is None
+    assert registry.seat_holder("100,200") is None
+
+
+def test_seat_holder_ignores_a_standing_employee_and_a_seeded_row_with_a_walk():
+    registry = PositionRegistry()
+    _start(registry, email="a@example.com", movement_id="m1")
+    registry.arrive(
+        "a@example.com", movement_id="m1", at={"x": 1.0, "y": 1.0}, facing="front",
+        state="standing", seat_key="100,200", room_id=None, now_ms=1500,
+    )
+    # a standing row carrying a stale key does not hold the seat
+    assert registry.seat_holder("100,200") is None

@@ -167,6 +167,22 @@ class PositionRegistry:
     def get(self, email: str) -> PositionEntry | None:
         return self._entries.get(email)
 
+    def seat_holder(self, seat_key: str, *, exclude_email: str | None = None) -> str | None:
+        """Who currently OCCUPIES `seat_key`: the employee (other than `exclude_email`) whose stable
+        state is `sitting` on it with no movement in flight — the same two conditions every client's
+        occupancy read uses. None when the seat is free. Read-only; `walk_arrived` consults it before
+        accepting a `sitting` arrival so two employees cannot both be persisted into one chair.
+
+        This registry is a single in-process dict and the check-then-arrive in the socket handler has
+        no await between the two, so within one worker the decision is serialised. It is NOT a
+        distributed lock: a multi-worker deployment would need shared state to make the same promise."""
+        for email, entry in self._entries.items():
+            if email == exclude_email or entry.active is not None or entry.stable is None:
+                continue
+            if entry.stable.state == "sitting" and entry.stable.seat_key == seat_key:
+                return email
+        return None
+
     def snapshot(self, own_email: str | None = None) -> list[dict[str, Any]]:
         """Wire shape for `positions_snapshot`. Stable-ordered by email for deterministic tests.
         Only emits entries that have stable state (every active movement always has an

@@ -19,11 +19,16 @@
 //     REFUSED WHOLE and counted, never clamped into the frame. While the employee is out there, peers
 //     keep the last position V2 actually published, which is the same "they stayed where they stopped"
 //     Phase 4B already shows for a peer mid-walk.
-//   • IT NEVER CLAIMS A SEAT OR A SESSION. Every arrival is `state: "standing"`, `seatKey: null`. V2's
-//     seat entities have no V1 seat-centroid key (V1's own seatCentroidKey is painted-chair geometry),
-//     and inventing one would make V1 hide a real chair from everybody else. An employee sitting in V2
-//     therefore reads to V1 as standing at that chair — the position is true, the pose is not claimed.
-//     Attendance is likewise not read and not asserted: see the standing note in app/spawn.ts.
+//   • IT CLAIMS A SEAT ONLY THROUGH THE VALIDATED MAPPING (Phase 6C). An arrival that names a V2 seat
+//     anchor is published as V1's own `state: "sitting"` with V1's own seat key — the centroid key of the
+//     ONE painted chair adapters/v1Seats resolved that anchor to — and `at` is that chair's centroid (as a
+//     sprite top-left), because that is where V1 draws a sitter and what V1's own click-to-sit publishes.
+//     `facing` is the V1 chair's OWN direction (V1's rule: the direction belongs to the chair), the exact
+//     V2 yaw rides beside it as before. A V2-ONLY chair — one the mapping could not identify — is
+//     published as SITTING too, with the namespaced `v2:<anchor>` key (adapters/v1Seats v2SeatKey) at the
+//     body's true position, and counted as `v2OnlySeat`. A sitter is never published as standing; a V1
+//     centroid key is never invented.
+//     Attendance is still not read and not asserted: see the standing note in app/spawn.ts.
 //
 // WHY NOT makeMoveSelf. See the header of app/selfMovement.ts — that funnel owns V1's walker, and V2's
 // body is moved by V2's controllers. This file is the half of it that is transport.
@@ -38,6 +43,8 @@ import {
 } from "../../../services/presence/movementSync";
 import { isUsablePosition } from "./v1CoworkerPositions";
 import { DIRECTION_BY_FACING, FACING_BY_DIRECTION } from "./v1Facing";
+import { anchorForSeatKey, v1SeatForAnchor, v2SeatKey } from "./v1Seats";
+import { seatFacingFor } from "../app/seats";
 import { resolveVo3dIdentity } from "./v1Identity";
 import { emailKey, selfEmailKey } from "./v1Coworkers";
 import type { Vo3dSelfMovementSink } from "../app/selfMovement";
@@ -89,7 +96,7 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
   const identity = resolveVo3dIdentity();
   if (!identity) return null;
   const box = selfSpriteBox(identity.avatarId);
-  const state = { started: 0, arrived: 0, refused: 0, wire: [] as string[], movementId: null as string | null };
+  const state = { started: 0, arrived: 0, refused: 0, wire: [] as string[], movementId: null as string | null, seated: 0, v2OnlySeat: 0 };
   /** Append to the bounded wire log. SHAPES ONLY — never a position: this array is read from the dev
    *  console and the verification harness, and one employee's coordinates do not belong in either. */
   const note = (line: string): void => {
@@ -126,14 +133,61 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
       // capPath and the duration round+clamp both live inside this call, in V1's module.
       emitWalkStarted({ movementId, origin: originTopLeft, path: pathTopLeft, roomId, durationMs, ...(pacing ? { pacing } : {}) });
     },
-    arrived(at, facing, yaw) {
+    arrived(at, facing, yaw, seat) {
       const current = active;
       active = null;
       if (!current) {
         note("arrived-dropped (no movement in flight)");
         return;
       }
+      // PHASE 6C — A SEAT V1 KNOWS. The position published is the V1 chair's centroid, not the 3D body's
+      // root (which sits a couple of units off the cushion by the sit clip's own hip offset): V1 draws its
+      // sitter centred on the centroid and its restore finds the seat by exactly this key in the room under
+      // this centre (spawnPlacement.ts findSeat), so anything else would restore as "desk".
+      const v1Seat = seat ? v1SeatForAnchor(seat) : null;
+      if (v1Seat) {
+        state.arrived++;
+        state.seated++;
+        // THE CONFIGURED FACING (data/seatFacing.json), which for a mapped seat was seeded from V1's own
+        // table and may since have been corrected by hand; V1's direction is the fallback for an anchor the
+        // table does not know. Both offices then show the sitter facing the same way.
+        const seatFacing = seatFacingFor(seat!) ?? v1Seat.direction;
+        note(`arrived id=${current.movementId.slice(0, 8)} sitting facing=${seatFacing} yaw=${yaw.toFixed(3)}`);
+        emitWalkArrived({
+          movementId: current.movementId,
+          at: toTopLeft({ x: v1Seat.x, z: v1Seat.y }, box),
+          facing: seatFacing,
+          ...(Number.isFinite(yaw) ? { yaw } : {}),
+          state: "sitting",
+          seatKey: v1Seat.key,
+          roomId: current.roomId,
+        });
+        return;
+      }
       const atTopLeft = toTopLeft(at, box);
+      if (seat) {
+        // A V2-ONLY CHAIR: sitting, at the body's true position, under the namespaced key — see the header.
+        if (!isUsablePosition(atTopLeft)) {
+          state.refused++;
+          note(`refused-arrived id=${current.movementId.slice(0, 8)}`);
+          return;
+        }
+        state.arrived++;
+        state.seated++;
+        state.v2OnlySeat++;
+        const seatFacing = seatFacingFor(seat) ?? DIRECTION_BY_FACING[facing];
+        note(`arrived id=${current.movementId.slice(0, 8)} sitting v2-only facing=${seatFacing} yaw=${yaw.toFixed(3)}`);
+        emitWalkArrived({
+          movementId: current.movementId,
+          at: atTopLeft,
+          facing: seatFacing,
+          ...(Number.isFinite(yaw) ? { yaw } : {}),
+          state: "sitting",
+          seatKey: v2SeatKey(seat),
+          roomId: current.roomId,
+        });
+        return;
+      }
       if (!isUsablePosition(atTopLeft)) {
         // The movement was published but the body ended somewhere V1 cannot hold. Leaving it unresolved
         // is the honest outcome: nothing is persisted, and the peer's replay simply runs out at the end of
@@ -152,7 +206,7 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
         // PHASE 6B — the exact value beside V1's word. Finite by construction (wrapAngle of a finite yaw);
         // the store and the backend both refuse anything else on the way in.
         ...(Number.isFinite(yaw) ? { yaw } : {}),
-        // NOT A SEAT AND NOT A SESSION — see the header. V2 publishes where the body is, nothing more.
+        // STANDING — see the header. V2 publishes where the body is, nothing more.
         state: "standing",
         seatKey: null,
         roomId: current.roomId,
@@ -167,6 +221,11 @@ export interface Vo3dSelfPosition {
    *  room shift on top, through the same homeDeskWorldPoint every other placement goes through. */
   point: Vec2;
   facing: Facing;
+  /** PHASE 6C — the V2 seat anchor V1 says this employee is SITTING in (state "sitting" and a seat key
+   *  the mapping knows), or absent. A sitting row whose seat V2 cannot identify restores as STANDING at
+   *  the centroid — the honest fallback, and the same one V1's own restore takes for a seat it cannot
+   *  find (spawnPlacement.ts → "desk"). */
+  seat?: string;
 }
 
 /**
@@ -201,9 +260,13 @@ export function resolveV1SelfPosition(
   // Phase 4A's coworker set excludes self by email, so this is the only place that row is ever read.
   const peer = peers.find((p) => emailKey(p.email) === self);
   if (!peer || !isUsablePosition(peer.stable.pos)) return null;
+  // SEATED ONLY WHEN V1 SAYS SO AND NO WALK IS IN FLIGHT — the same two conditions V1's own occupancy
+  // reads (OfficeMap.tsx occupiedCentroidKeys: `!p.active && state === "sitting" && seatKey`).
+  const anchor = !peer.active && peer.stable.state === "sitting" ? anchorForSeatKey(peer.stable.seatKey) : null;
   return {
     // The one conversion, their own box's halves and nothing else — the mirror of toTopLeft above.
     point: { x: peer.stable.pos.x + box.width / 2, z: peer.stable.pos.y + box.height / 2 },
     facing: FACING_BY_DIRECTION[peer.stable.facing],
+    ...(anchor ? { seat: anchor.id } : {}),
   };
 }

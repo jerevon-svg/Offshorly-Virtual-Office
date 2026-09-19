@@ -29,6 +29,8 @@ vi.mock("./world", async () => ({
       dispose: vi.fn(),
       setCoworkers: vi.fn(),
       setOfficeAccess: (a: unknown) => { access.push(a); },
+      setOccupiedSeats: vi.fn(),
+      standUp: vi.fn(),
       access,
       restoreSelf: (point: Vec2, facing: Facing) => {
         restores.push({ point, facing });
@@ -74,6 +76,7 @@ vi.mock("../../../services/presence/movementSync", async () => {
     ...actual,
     usePeerMovements: () => peerMovements,
     useMovementSnapshotReady: () => snapshotReady,
+    subscribeSeatRejected: () => () => {},
   };
 });
 

@@ -44,13 +44,16 @@
 // and useOfficeRoster surfaces every other failure as state rather than throwing.
 import { useEffect, useMemo, useRef, useState } from "react";
 import { resolveVo3dCoworkers, selfEmailKey } from "../adapters/v1Coworkers";
-import { applyLivePositions, countLivePositions, countWalking } from "../adapters/v1CoworkerPositions";
+import { applyLivePositions, countLivePositions, countSeated, countWalking } from "../adapters/v1CoworkerPositions";
 import { createV1SelfMovementSink, resolveV1SelfPosition } from "../adapters/v1SelfMovement";
+import { anchorForSeatKey } from "../adapters/v1Seats";
+import { seatCentroidKey } from "../../../data/emptySeats";
 import { useV1OfficeAccess } from "../adapters/v1Attendance";
 import { useOfficeRoster } from "../../../services/office/useOfficeRoster";
 import { useOfflineLineup } from "../../../services/presence/offlineLineupClient";
 import {
   getServerClockOffsetMs,
+  subscribeSeatRejected,
   useMovementSnapshotReady,
   usePeerMovements,
 } from "../../../services/presence/movementSync";
@@ -190,6 +193,33 @@ export function Vo3dHost() {
   );
   const livePositionCount = useMemo(() => countLivePositions(coworkerSet), [coworkerSet]);
   const walkingCount = useMemo(() => countWalking(coworkerSet), [coworkerSet]);
+  const seatedCount = useMemo(() => countSeated(coworkerSet), [coworkerSet]);
+
+  // PHASE 6C — WHICH CHAIRS ARE TAKEN, by V1's own two occupancy rules (OfficeMap.tsx occupiedCentroidKeys)
+  // translated through the validated seat mapping into V2 anchor ids:
+  //   • a synced peer occupies a seat exactly when their stable state says "sitting" with a seat key and no
+  //     walk is in flight — self's own row excluded, since one's own chair is not "occupied by another";
+  //   • a roster person with NO movement entry occupies the desk seat V1 seated them at (their derived
+  //     point IS that seat's centroid), which goes stale the instant a walk of theirs is published — exactly
+  //     as V1 reads it. Only people V2 actually draws are counted here (rosterSet has already dropped the
+  //     offline and the avatar-less), which is narrower than V1's full roster by construction.
+  // Sorted, so an unchanged set is an unchanged array and the world is not pushed for nothing.
+  const occupiedSeatIds = useMemo(() => {
+    const self = selfEmailKey();
+    const synced = new Set(peerMovements.map((p) => p.email));
+    const ids = new Set<string>();
+    for (const c of rosterSet.coworkers) {
+      if (synced.has(c.email)) continue;
+      const anchor = anchorForSeatKey(seatCentroidKey(c.point.x, c.point.z));
+      if (anchor) ids.add(anchor.id);
+    }
+    for (const p of peerMovements) {
+      if (p.email === self || p.active || p.stable.state !== "sitting" || !p.stable.seatKey) continue;
+      const anchor = anchorForSeatKey(p.stable.seatKey);
+      if (anchor) ids.add(anchor.id);
+    }
+    return [...ids].sort();
+  }, [rosterSet, peerMovements]);
 
   // PHASE 5 — WHERE V1 SAYS *THIS* EMPLOYEE IS. The same store Phase 4B reads for everybody else, read
   // for the one row it deliberately excludes: self. positions_snapshot carries it, which is why V1's own
@@ -224,6 +254,8 @@ export function Vo3dHost() {
   // may never come.
   const selfPositionRef = useRef(selfPosition);
   selfPositionRef.current = selfPosition;
+  const occupiedSeatIdsRef = useRef(occupiedSeatIds);
+  occupiedSeatIdsRef.current = occupiedSeatIds;
   // Same again for the access answer: the world's gate starts CLOSED, so a world built after the read has
   // already resolved must be told at once rather than waiting for the answer to change.
   const officeAccessRef = useRef(officeAccess);
@@ -275,8 +307,9 @@ export function Vo3dHost() {
         // persisted position is inside the working office, so telling the world who this employee is
         // first is what lets a checked-in one land on their own desk on the first attempt.
         if (selfMovement) world.setOfficeAccess(officeAccessRef.current);
+        world.setOccupiedSeats(occupiedSeatIdsRef.current);
         const restore = selfPositionRef.current;
-        if (restore && world.restoreSelf(restore.point, restore.facing)) setSelfRestored(true);
+        if (restore && world.restoreSelf(restore.point, restore.facing, restore.seat)) setSelfRestored(true);
         // The roster may have resolved while the world module was still loading — push what we have now,
         // or those coworkers wait for the next roster change that may never come.
         world.setCoworkers(coworkerSetRef.current.coworkers, coworkerSetRef.current.missingAvatar);
@@ -317,8 +350,23 @@ export function Vo3dHost() {
   // rather than a body being yanked back mid-walk.
   useEffect(() => {
     if (!selfPosition) return;
-    if (worldRef.current?.restoreSelf(selfPosition.point, selfPosition.facing)) setSelfRestored(true);
+    if (worldRef.current?.restoreSelf(selfPosition.point, selfPosition.facing, selfPosition.seat)) setSelfRestored(true);
   }, [selfPosition]);
+
+  // PHASE 6C — THE OCCUPANCY PUSH. Same shape again: React derives, the world refuses. Runs on every
+  // movement or roster change; the creation effect pushes the current set itself when the world lands.
+  useEffect(() => {
+    worldRef.current?.setOccupiedSeats(occupiedSeatIds);
+  }, [occupiedSeatIds]);
+
+  // PHASE 6C — THE BACKEND'S VERDICT ON A SEAT CLAIM. When this session's own walk_arrived named a seat
+  // somebody else already held, the server accepted it as STANDING and tells only this client; the body
+  // stands up so what the employee sees matches what everybody else was told. Only for a publishing
+  // session — a session with no identity never claims a seat.
+  useEffect(() => {
+    if (!selfPublishing) return;
+    return subscribeSeatRejected(() => worldRef.current?.standUp());
+  }, [selfPublishing]);
 
   // THE ACCESS PUSH. Same shape as the two writes above — React owns the read, the world owns the gate —
   // and pushed only for a session with a real identity: the standalone-equivalent case (no identity, no
@@ -443,6 +491,8 @@ export function Vo3dHost() {
           data-count={String(coworkerSet.coworkers.length)}
           data-live-positions={String(livePositionCount)}
           data-walking={String(walkingCount)}
+          data-seated={String(seatedCount)}
+          data-occupied-seats={String(occupiedSeatIds.length)}
           data-snapshot-ready={snapshotReady ? "true" : "false"}
           data-missing-avatar={String(coworkerSet.missingAvatar.length)}
           data-roster-error={roster.error ? "true" : "false"}

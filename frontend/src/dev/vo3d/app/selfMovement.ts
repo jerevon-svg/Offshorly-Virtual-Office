@@ -56,8 +56,13 @@ export interface Vo3dSelfMovementSink {
    *  same fact in V1's four words and stays beside it for every V1 reader; a 3D peer turns to `yaw`. It
    *  is the yaw the body HAS, never the heading it was travelling: the navigation controller turns at a
    *  finite rate and does not turn at all on the frame a path empties, so the two differ on any short or
-   *  sharp final segment — which is exactly the difference a peer could not see and V1 could not say. */
-  arrived(at: Vec2, facing: Facing, yaw: number): void;
+   *  sharp final segment — which is exactly the difference a peer could not see and V1 could not say.
+   *
+   *  `seat` — PHASE 6C — is the V2 SEAT ANCHOR the body ended this movement sitting in (app/seats.ts
+   *  ids), or absent for a body that stopped standing. The sink decides what V1 is told: a chair V1 knows
+   *  becomes `state: "sitting"` with V1's own seat key, a V2-only chair is published as standing at the
+   *  chair (adapters/v1Seats). The feed never learns V1's seat vocabulary. */
+  arrived(at: Vec2, facing: Facing, yaw: number, seat?: string): void;
   /** Counters for the dev readout — how many movements went out, and how many were refused because they
    *  were not expressible as a V1 position. Numbers only, never a coordinate.
    *
@@ -65,7 +70,7 @@ export interface Vo3dSelfMovementSink {
    *  to tell a planned walk, a sampled free leg, a boundary snap and a redirect apart after the fact, and
    *  a count alone cannot. It carries SHAPES — the event, the movement id, how many waypoints, how long —
    *  and no coordinates, for the same redaction reason the DOM readout is counts-only. */
-  readonly state: { started: number; arrived: number; refused: number; wire: string[]; movementId?: string | null };
+  readonly state: { started: number; arrived: number; refused: number; wire: string[]; movementId?: string | null; seated?: number; v2OnlySeat?: number };
 }
 
 /** THE PLANNED-WALK DURATION V2 WILL ACTUALLY TAKE, in ms.
@@ -139,7 +144,11 @@ export type InRangeTest = (p: Vec2) => boolean;
 type Mode =
   | { kind: "idle" }
   | { kind: "planned" }
-  | { kind: "free"; origin: Vec2; points: Vec2[]; movingMs: number; stillMs: number; sinceSample: number };
+  | { kind: "free"; origin: Vec2; points: Vec2[]; movingMs: number; stillMs: number; sinceSample: number }
+  /** PHASE 6C — the body is in a chair. Nothing it does there is a movement: the chair tucking in and
+   *  rolling out carries it a few units, the seated clip breathes, and none of that is published. The
+   *  seated arrival has already said everything V1 needs; the next thing worth a word is standing up. */
+  | { kind: "seated" };
 
 /**
  * WHAT TURNS V2's CONTINUOUS MOVEMENT INTO V1 MOVEMENTS.
@@ -173,7 +182,7 @@ export class SelfMovementFeed {
   private lastYaw = 0;
   /** A leg's arrival, held until its replay would have finished. Never more than one: a leg cannot be
    *  closed without the previous one's arrival being flushed first. */
-  private pending: { at: Vec2; facing: Facing; yaw: number; dueInMs: number } | null = null;
+  private pending: { at: Vec2; facing: Facing; yaw: number; dueInMs: number; seat?: string } | null = null;
 
   private readonly inRange: InRangeTest;
   /** Was the body somewhere V1 can hold a position, last frame? Starts true so a world built inside the
@@ -216,6 +225,15 @@ export class SelfMovementFeed {
    *
    *  `pos` is where the body IS, which for an interrupted walk is not the end of its path. */
   interrupt(pos: Vec2, yaw: number): void {
+    if (this.mode.kind === "seated") {
+      // A seated body has nothing in flight and is NOT stood up by an interruption: the seated arrival is
+      // the truth about where they are, and a teardown mid-sit must leave V1 holding it so the reload
+      // restores the chair. Only an arrival still held back for a leg is flushed.
+      this.flushPending();
+      this.last = pos;
+      this.lastYaw = yaw;
+      return;
+    }
     if (this.mode.kind === "free") this.closeFreeLeg(pos, yaw);
     else if (this.mode.kind === "planned") {
       this.mode = { kind: "idle" };
@@ -239,13 +257,82 @@ export class SelfMovementFeed {
    *  It is NOT for the deliberate relocations — the Reception/portal dev buttons, the CAVE transition.
    *  Those really do move the employee, and the teleport branch in frame() publishes them as the snaps
    *  they are. */
-  placed(pos: Vec2): void {
-    this.mode = { kind: "idle" };
+  placed(pos: Vec2, seated = false): void {
+    // PHASE 6C — a seated RESTORE is a placement into the chair V1 already holds for this employee: silent,
+    // like every placement, and it leaves the feed in the seated hold so the chair's own motion is not
+    // published either. stood() is what ends it, exactly as after a sit the body performed itself.
+    this.mode = seated ? { kind: "seated" } : { kind: "idle" };
     this.last = pos;
     // A placement can cross V1's frame boundary (the CAVE portal does exactly that), so the flag has to
     // follow the body — otherwise the next frame reads as a transition that never happened.
     this.wasInRange = this.inRange(pos);
   }
+
+  /** PHASE 6C — THE BODY HAS SAT DOWN IN `seat`, here, facing `yaw`.
+   *
+   *  Called by app/world.ts the frame a seat interaction reaches its seated pose. Whatever movement brought
+   *  the body here is resolved AS the seated arrival — V1's own sit is a walk whose walk_arrived says
+   *  `sitting` (components/OfficeMap/useSelfMovement.ts's `arrival` metadata), and this is the same shape:
+   *
+   *    a free leg still accumulating (the walk up to the chair, the step into the gap) is closed and
+   *      published, and its arrival — held back for the leg's replay as always — is the seated one;
+   *    an arrival already held for the previous leg is re-pointed at the seat: that movement is the one
+   *      that ended in the chair;
+   *    nothing in flight (a body that was already standing at the chair) is a minimum-duration movement
+   *      to the seat with its seated arrival sent at once — the same honest snap a teleport publishes,
+   *      because V1 has no arrival without a movement to hang it on.
+   *
+   *  Then the feed holds in `seated` until stood(): see Mode. */
+  seated(pos: Vec2, yaw: number, seat: string): void {
+    if (this.mode.kind === "seated") return;
+    const facing = facingForYaw(yaw);
+    const wrapped = wrapAngle(yaw);
+    if (this.mode.kind === "planned") {
+      this.mode = { kind: "idle" };
+      this.flushPending();
+      this.sink.arrived(pos, facing, wrapped, seat);
+    } else {
+      if (this.mode.kind === "free") this.closeFreeLeg(pos, yaw);
+      if (this.pending) {
+        this.pending = { ...this.pending, at: pos, facing, yaw: wrapped, seat };
+      } else {
+        this.sink.started(this.last ?? pos, [pos], MIN_DURATION_MS);
+        this.sink.arrived(pos, facing, wrapped, seat);
+      }
+    }
+    this.mode = { kind: "seated" };
+    this.last = pos;
+    this.lastYaw = yaw;
+  }
+
+  /** PHASE 6C — THE BODY HAS LEFT ITS CHAIR. Ends the seated hold; from here the chair rolling out, the
+   *  stand-up glide and the walk away are ordinary free legs, and the first walk_started among them is
+   *  what releases the seat on V1's side (the backend clears the seat key on every walk_started). No
+   *  arrival is fabricated here: standing up is not yet a place the body has stopped. */
+  stood(pos: Vec2, yaw: number): void {
+    if (this.mode.kind !== "seated") return;
+    this.flushPending();
+    this.mode = { kind: "idle" };
+    this.last = pos;
+    this.lastYaw = yaw;
+  }
+
+  /** PHASE 6C — THE SEATED BODY TURNED IN ITS CHAIR (the dev tool changed this seat's facing). V1's wire has
+   *  no "I turned" word, so this is the smallest honest movement: a minimum-duration movement to the very
+   *  same point, resolved at once as the same seated arrival with the new yaw — exactly the snap a teleport
+   *  publishes. Peers re-seat the body at the new yaw; the seat is released and re-taken within one
+   *  revision pair, which the backend's occupancy check permits for the holder. A no-op unless seated. */
+  reseated(pos: Vec2, yaw: number, seat: string): void {
+    if (this.mode.kind !== "seated") return;
+    this.flushPending();
+    this.sink.started(pos, [pos], MIN_DURATION_MS);
+    this.sink.arrived(pos, facingForYaw(yaw), wrapAngle(yaw), seat);
+    this.last = pos;
+    this.lastYaw = yaw;
+  }
+
+  /** Is the feed holding a seated body? Read by the world's readout and by tests. */
+  get isSeated(): boolean { return this.mode.kind === "seated"; }
 
   /**
    * One frame, AFTER everything that moves the avatar has written this frame's transform.
@@ -260,6 +347,13 @@ export class SelfMovementFeed {
     if (this.pending) {
       this.pending.dueInMs -= dtMs;
       if (this.pending.dueInMs <= 0) this.flushPending();
+    }
+
+    // PHASE 6C — SEATED: the chair may carry the body a few units (tuck, roll-out) and nothing about that
+    // is a movement. Track the position so stood() and a later leg start from where the body really is.
+    if (this.mode.kind === "seated") {
+      this.last = pos;
+      return;
     }
 
     // THE EDGE OF V1'S WORLD, HANDLED AS AN EDGE. V2's campus legs, the AI Lab and the CAVE are all
@@ -401,6 +495,6 @@ export class SelfMovementFeed {
     const p = this.pending;
     if (!p) return;
     this.pending = null;
-    this.sink.arrived(p.at, p.facing, p.yaw);
+    this.sink.arrived(p.at, p.facing, p.yaw, p.seat);
   }
 }

@@ -121,6 +121,12 @@ export interface Vo3dCoworker {
    *  replacement for the stable fact — which is what makes a late, lost or superseded arrival recoverable
    *  rather than a body stranded wherever the replay happened to run out. */
   walk?: Vo3dCoworkerWalk;
+  /** PHASE 6C — the V2 SEAT ANCHOR this person is sitting in (app/seats.ts ids), when V1's stable state
+   *  says "sitting" with a seat key the mapping (adapters/v1Seats) identifies, and no walk is in flight.
+   *  Absent for everybody standing, and for a sitter in a chair V2 cannot identify — who is then drawn
+   *  standing at V1's centroid, honestly. world/Coworkers.ts puts a body with this on the chair's own
+   *  cushion at the chair's own yaw playing the seated clip; `point` stays the authoritative V1 fact. */
+  seat?: string;
 }
 
 export interface Vo3dCoworkerSet {

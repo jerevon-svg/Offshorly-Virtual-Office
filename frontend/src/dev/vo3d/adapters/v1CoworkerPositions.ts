@@ -39,6 +39,7 @@
 // would be a second copy of an ordering rule that agrees until one of them is edited.
 import { FRAME } from "./v1Floor";
 import { FACING_BY_DIRECTION } from "./v1Facing";
+import { anchorForSeatKey } from "./v1Seats";
 import type { ActiveMovement, PeerMovementState, Pt } from "../../../services/presence/movementSync";
 import type { Vo3dCoworker, Vo3dCoworkerSet, Vo3dCoworkerWalk } from "../app/coworkers";
 import { wrapAngle, type Vec2 } from "../core/coords";
@@ -159,6 +160,10 @@ export function applyLivePositions(
     }
 
     changed = true;
+    // PHASE 6C — SEATED, by the same two conditions V1's own occupancy reads (OfficeMap.tsx
+    // occupiedCentroidKeys: no walk in flight, state "sitting", a seat key) plus one of V2's: the mapping
+    // knows the chair. A V1 sitter in a chair V2 cannot identify keeps the standing placement below.
+    const anchor = !walk && peer.stable.state === "sitting" ? anchorForSeatKey(peer.stable.seatKey) : null;
     return {
       ...coworker,
       // The conversion, in one place: their own box's halves, and nothing else.
@@ -172,6 +177,7 @@ export function applyLivePositions(
       ...(typeof peer.stable.yaw === "number" ? { yaw: wrapAngle(peer.stable.yaw) } : {}),
       posSource: "live",
       ...(walk ? { walk } : {}),
+      ...(anchor ? { seat: anchor.id } : {}),
     };
   });
 
@@ -179,6 +185,13 @@ export function applyLivePositions(
   // `missingAvatar` is carried through untouched: it is a roster fact, and a position cannot create or
   // cure a missing 3D character.
   return { coworkers, missingAvatar: set.missingAvatar };
+}
+
+/** How many of a set are seated in a chair V2 identified. For the readouts, a count and never who. */
+export function countSeated(set: Vo3dCoworkerSet): number {
+  let n = 0;
+  for (const coworker of set.coworkers) if (coworker.seat) n++;
+  return n;
 }
 
 /** How many of a set have a walk in flight. For the readouts, a count and never a list of who. */

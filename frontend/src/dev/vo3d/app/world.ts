@@ -107,8 +107,11 @@ import type { Vo3dIdentity } from "./identity";
 import { homeDeskWorldPoint, v1FramePoint, type Vo3dHomeDesk } from "./spawn";
 import { plannedDurationMs, SelfMovementFeed, type Vo3dSelfMovementSink } from "./selfMovement";
 import { gateRects, mayEnterOffice, routeEntersOffice, zoneAt, type AccessGeometry, type OfficeAccess, type Zone } from "./access";
-import { Coworkers, facingTrace } from "../world/Coworkers";
+import { Coworkers, facingTrace, type SeatAnchorPose } from "../world/Coworkers";
 import type { Vo3dCoworker } from "./coworkers";
+import { markSeatFacingSaved, parseSeatAnchorId, SEAT_FACINGS, seatAnchorId, seatFacingFor, seatFacingTable, seatedYawFor, setSeatFacingOverride, subscribeSeatFacing, unsavedSeatFacingCount, type SeatFacing } from "./seats";
+import type { LoungeSeatSlot, SeatCapability } from "../world/WorldState";
+import { deskSeatContact } from "../interact/seatContact";
 import { FACING_YAW, pointInRect, type Facing, type Rect, type Vec2 } from "../core/coords";
 
 /** What a mounted V2 world hands back. `dispose()` is idempotent and, once called, the world is dead:
@@ -135,7 +138,17 @@ export interface Vo3dWorld {
    *  being meaningful"). Returns true only when the body was actually moved. The host calls it whenever
    *  V1's movement snapshot resolves, which may be before or after this world finished building, so every
    *  refusal is silent and idempotent. */
-  restoreSelf(point: Vec2, facing: Facing): boolean;
+  restoreSelf(point: Vec2, facing: Facing, seat?: string): boolean;
+  /** PHASE 6C — WHICH SEAT ANCHORS OTHER EMPLOYEES OCCUPY (app/seats.ts ids), pushed in from outside.
+   *
+   *  The world never decides occupancy: app/Vo3dHost.tsx derives it from V1's own movement feed and roster
+   *  (the same two sources V1's OfficeMap.tsx occupiedCentroidKeys reads) through the validated seat
+   *  mapping, and calls this whenever it changes. What the world does with it is ONE thing: refuse to start
+   *  a sit in an occupied anchor. The backend remains the authority for a simultaneous attempt. */
+  setOccupiedSeats(ids: readonly string[]): void;
+  /** PHASE 6C — stand the signed-in employee up if seated (the backend rejected the seat claim, or any
+   *  other outside reason). A no-op while standing. */
+  standUp(): void;
   /** PHASE 5 — V1'S ANSWER ABOUT THIS EMPLOYEE'S WORK SESSION, pushed in from outside.
    *
    *  The world never asks: app/Vo3dHost.tsx owns the read (adapters/v1Attendance over V1's own
@@ -579,6 +592,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       R.invalidateShadows(); // a body just entered the scene; it has to enter the shadow map too
       avatarState.status = `LOD${params.avatarLod} loaded · native ${avatar.nativeHeight.toFixed(2)} → ${BON_STANDING_HEIGHT} units`;
       avatarState.triangles = Math.round(avatar.triangles);
+      // PHASE 6C — a seated RESTORE that landed before the GLB did was posed without the clip's hip data
+      // (seatContact reads it from the loaded rig). Re-pose it now, in place, with the real numbers.
+      if (restoredSeat?.state === "seated") restoredSeat.setSeatedYaw(restoredSeat.spec.seatedYaw);
+      if (restoredLounge?.state === "seated") restoredLounge.setSeatedYaw(restoredLounge.slot.seatedYaw);
     }).catch((e: unknown) => { if (disposed) return; avatarState.status = `load failed: ${String(e).slice(0, 80)}`; });
   }
   const chairSeat = world.get(CHAIR_4_ID).capabilities.seat!;
@@ -636,7 +653,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
         {
           state: selfMovement.state,
           started: (origin, path, durationMs, pacing) => selfMovement.started(toV1Frame(origin), path.map(toV1Frame), durationMs, pacing),
-          arrived: (at, facing, yaw) => selfMovement.arrived(toV1Frame(at), facing, yaw),
+          // PHASE 6C — `seat` MUST ride through here. Dropping it published every sit as a standing arrival
+          // at the body position: the seated browser saw itself sitting and every other browser stood it
+          // beside the chair (the observed A/B mismatch). world.seatWiring.test.ts pins this line.
+          arrived: (at, facing, yaw, seat) => selfMovement.arrived(toV1Frame(at), facing, yaw, seat),
         },
         // WHERE V1 CAN HOLD A POSITION AT ALL — the V1 frame, and nothing outside it. V2's world extends
         // well past it (the campus legs, the AI Lab at negative z, the CAVE at x 2600) and V1 has no
@@ -700,7 +720,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   /** A restore that arrived while the gate was shut and the target was inside the office. Held rather than
    *  discarded: the employee may be checked in and simply waiting on the read, and their persisted
    *  position is still the right answer once V1 confirms it. Retried from setOfficeAccess. */
-  let pendingRestore: { point: Vec2; facing: Facing } | null = null;
+  let pendingRestore: { point: Vec2; facing: Facing; seat?: string } | null = null;
 
   const zoneOf = (p: Vec2): Zone => zoneAt(p, accessGeom);
   /** May a body be PUT at this point? The teleport/restore counterpart of the closed lanes — routing is
@@ -737,15 +757,28 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     if (pendingRestore && mayEnterOffice(officeAccess)) {
       const r = pendingRestore;
       pendingRestore = null;
-      restoreSelf(r.point, r.facing);
+      restoreSelf(r.point, r.facing, r.seat);
     }
   }
 
   /** Stand a denied body back on Reception's public side. A PLACEMENT, not a movement — the feed is told
    *  so (Feed.placed), because this is V2 enforcing V1's own rule, not the employee walking anywhere. */
   function ejectFromOffice(): void {
-    if (zoneOf(avatar.position) !== "office") return;
+    if (zoneOf(avatar.worldPosition()) !== "office") return;
     navCtl.stop();
+    // PHASE 6C — A SEATED BODY IS STOOD UP FIRST. The interactions own the avatar while it sits (and have
+    // it parented to the chair); resetting them returns the chair and the avatar before the body is moved.
+    // The feed leaves its seated hold here and is NOT told `placed` below, so the jump to Reception is
+    // published as the snap it is — that walk_started is what releases the seat on V1's side.
+    const wasSeated = selfSeatedPublished;
+    if (wasSeated) {
+      const wp = avatar.worldPosition();
+      selfFeed?.stood({ x: wp.x, z: wp.z }, avatar.yaw);
+      selfSeatedPublished = false;
+      currentSeatAnchor = null;
+      clearSeats();
+      if (seat.state !== "idle") seat.reset();
+    }
     // RESOLVE THE WALK FIRST, WHERE THE BODY REALLY IS. Stopping the walker and moving the body in the
     // same tick never gives frame() its chance to resolve an interrupted walk, so without this the
     // walk_started that was in flight would never get its walk_arrived: peers keep replaying a route to a
@@ -755,7 +788,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     if (!playerMode.body.placeNear(OFFICE_EXIT_STAND)) return;
     const placed = playerMode.body.pos;
     avatar.setPosition(placed);
-    selfFeed?.placed(placed);
+    if (!wasSeated) selfFeed?.placed(placed);
     if (playerMode.active) playerMode.camera.snap();
     accessState.ejections++;
     avatarState.spawn = `checked out — stood back on Reception's public side at ${placed.x.toFixed(1)}, ${placed.z.toFixed(1)}`;
@@ -765,6 +798,16 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // ---- interactions -------------------------------------------------------------------------------
   function walkToGround(x: number, z: number): NavResult {
     if (stack.owner === "Interaction" || stack.owner === "Editor") {
+      // PHASE 6C — a floor click while SEATED stands the body up (the same stand the GUI button and
+      // PLAYER mode's key perform); the destination itself is not honoured, because the stand sequence
+      // walks the body back to the chair's approach cell and owns it until then. Standing is what
+      // releases the seat on V1's side; the employee clicks again to walk on.
+      const engaged = engagedSeat();
+      if (stack.owner === "Interaction" && engaged) {
+        engaged.stand();
+        navState.last = "standing up — click again to walk";
+        return { ok: false, reason: "outside-world", destination: null, cell: null };
+      }
       navState.last = `ignored: avatar owned by ${stack.owner}`;
       return { ok: false, reason: "outside-world", destination: null, cell: null };
     }
@@ -809,7 +852,16 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     approachCtl.onArrived();
     if (tour) { tour.i = (tour.i + 1) % tour.points.length; const p = tour.points[tour.i]; walkToGround(p.x, p.z); }
   };
-  let seat = new SeatInteraction(avatar, stack, mirror.view(CHAIR_4_ID), chairSeat, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+  // PHASE 6C — THE CONFIGURED FACING, applied at the ONE point each interaction is given its data: the
+  // authored spec with `seatedYaw` replaced by data/seatFacing.json's word for that anchor (app/seats.ts
+  // seatedYawFor). The world's own entity data is never written to; the peer pose and the published yaw
+  // read the same function, so all three agree by construction.
+  const seatSpecFor = (entityId: string): SeatCapability => {
+    const spec = world.get(entityId).capabilities.seat!;
+    return { ...spec, seatedYaw: seatedYawFor(entityId, spec.seatedYaw) };
+  };
+  const slotFor = (entityId: string, slot: LoungeSeatSlot): LoungeSeatSlot => ({ ...slot, seatedYaw: seatedYawFor(seatAnchorId(entityId, slot.id), slot.seatedYaw) });
+  let seat = new SeatInteraction(avatar, stack, mirror.view(CHAIR_4_ID), seatSpecFor(CHAIR_4_ID), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
   const seatState = { state: "idle", chairRestError: 0 };
   // the automatic east door: reacts to Bon's route, owns only its own leaf (navigation keeps owning Bon)
   const doorEntity = world.get(DOOR_ID);
@@ -862,7 +914,12 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   const receptionState = { focus: "none", status: "idle", seat: "idle" };
   /** Every FIXED lounge seat in the world, flattened to one slot per entry: Reception's two tub chairs plus
    *  Project's two sofas (two cushions each) and two tub chairs. One list, one controller — no new system. */
-  const loungeSeats = [...LOUNGE_SEAT_IDS, ...SOFA_SEAT_IDS, ...TUB_SEAT_IDS, SOFA_SEAT_ID, ...BAG_SEAT_IDS, ...HUB_LOUNGE_IDS, ...EXECUTIVE_LOUNGE_IDS, ...CMS_LOUNGE_IDS, ...DEV_LOUNGE_IDS, ...QA_LOUNGE_IDS].flatMap((id) =>
+  // PHASE 6C — EVERY piece of fixed seating in the world is sittable, not only the ones a room file
+  // exported. The explicit list keeps its order (the GUI buttons index into it); anything with a lounge
+  // capability it missed is appended, so a new sofa is sittable the day it is authored.
+  const listedLoungeIds = new Set([...LOUNGE_SEAT_IDS, ...SOFA_SEAT_IDS, ...TUB_SEAT_IDS, SOFA_SEAT_ID, ...BAG_SEAT_IDS, ...HUB_LOUNGE_IDS, ...EXECUTIVE_LOUNGE_IDS, ...CMS_LOUNGE_IDS, ...DEV_LOUNGE_IDS, ...QA_LOUNGE_IDS]);
+  const unlistedLoungeIds = [...world.entities.values()].filter((e) => e.capabilities.lounge && !listedLoungeIds.has(e.id)).map((e) => e.id);
+  const loungeSeats = [...LOUNGE_SEAT_IDS, ...SOFA_SEAT_IDS, ...TUB_SEAT_IDS, SOFA_SEAT_ID, ...BAG_SEAT_IDS, ...HUB_LOUNGE_IDS, ...EXECUTIVE_LOUNGE_IDS, ...CMS_LOUNGE_IDS, ...DEV_LOUNGE_IDS, ...QA_LOUNGE_IDS, ...unlistedLoungeIds].flatMap((id) =>
     world.get(id).capabilities.lounge!.slots.map((s, i) => ({
       id, index: i, view: mirror.view(id), label: s.id,
       // THE SLOT IS READ WHEN A SIT STARTS, NEVER CACHED. The room editor may have moved this sofa since
@@ -872,6 +929,42 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     })),
   );
   let loungeSeat: LoungeSeatInteraction | null = null;
+  // ---- PHASE 6C — seat identity, occupancy and the seated hand-off to V1 ------------------------------
+  /** The seat anchor (app/seats.ts id) the signed-in employee is sitting in or walking to sit in, or null.
+   *  Set by every sit starter below and cleared when the body leaves the chair; it is what the feed's
+   *  seated arrival names, and what a peer resolves back into the same chair. */
+  let currentSeatAnchor: string | null = null;
+  /** Has the feed been told the body is seated? Mirrors the interaction states below, one transition at a
+   *  time, so seated() and stood() are each called exactly once per sit. */
+  let selfSeatedPublished = false;
+  /** Anchors other employees occupy right now — pushed by the host (Vo3dWorld.setOccupiedSeats). */
+  let occupiedSeatIds = new Set<string>();
+  const seatSyncState = { anchor: "none", seated: "no", occupied: 0, refusals: 0 };
+  /** THE RESTORE SLOTS: a seat interaction constructed by restoreSelf for a chair V1 says this employee is
+   *  already sitting in. One movable, one fixed; whichever kind the anchor is. Ticked in the frame loop
+   *  and reset by clearSeats exactly like the per-room holders, so stand() and every later step are the
+   *  ordinary sequence. */
+  let restoredSeat: SeatInteraction | null = null;
+  let restoredLounge: LoungeSeatInteraction | null = null;
+  /** ANY OTHER movable chair: a seat-capability entity none of the per-room starters above lists. Same
+   *  one-at-a-time controller, so every chair in the world is sittable by construction. */
+  let otherSeat: SeatInteraction | null = null;
+  function startOtherSit(id: string): void {
+    approachCtl.cancel();
+    clearSeats();
+    currentSeatAnchor = id;
+    otherSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    otherSeat.sit();
+  }
+  /** The chair's own seated yaw for an anchor — what the seated arrival publishes, rather than the body's
+   *  mid-turn yaw on the frame the glide begins. Null for an anchor this world has no chair for. */
+  function seatedYawOf(anchor: string): number | null {
+    const { entityId, slotId } = parseSeatAnchorId(anchor);
+    if (!world.entities.has(entityId)) return null;
+    const e = world.get(entityId);
+    const authored = slotId === undefined ? e.capabilities.seat?.seatedYaw : e.capabilities.lounge?.slots.find((s2) => s2.id === slotId)?.seatedYaw;
+    return authored === undefined ? null : seatedYawFor(anchor, authored);
+  }
   /** The six Meeting conference chairs use the MOVABLE pattern — the same SeatInteraction the Design Room
    *  desk chair uses, one instance at a time. */
   let gamingSeat: SeatInteraction | null = null;
@@ -883,8 +976,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     if (gamingSeat && gamingSeat.state !== "idle") gamingSeat.reset();
     R.invalidateShadows(); // SEE clearSeats: a reset SNAPS a chair back and nothing else will report it
     const id = GAMING_CHAIR_IDS[index];
-    const e = world.get(id);
-    gamingSeat = new SeatInteraction(avatar, stack, mirror.view(id), e.capabilities.seat!, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    currentSeatAnchor = id;
+    gamingSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
     gamingState.chair = `station ${index}`;
     gamingSeat.sit();
   }
@@ -899,6 +992,12 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   function clearSeats(): void {
     if (loungeSeat && loungeSeat.state !== "idle") loungeSeat.reset();
     loungeSeat = null;
+    if (restoredSeat && restoredSeat.state !== "idle") restoredSeat.reset();
+    restoredSeat = null;
+    if (restoredLounge && restoredLounge.state !== "idle") restoredLounge.reset();
+    restoredLounge = null;
+    if (otherSeat && otherSeat.state !== "idle") otherSeat.reset();
+    otherSeat = null;
     if (meetingSeat && meetingSeat.state !== "idle") meetingSeat.reset();
     if (gamingSeat && gamingSeat.state !== "idle") gamingSeat.reset();
     if (hubSeat && hubSeat.state !== "idle") hubSeat.reset();
@@ -917,8 +1016,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     approachCtl.cancel();
     clearSeats();
     const id = CAFE_CHAIR_IDS[index];
-    const e = world.get(id);
-    hubSeat = new SeatInteraction(avatar, stack, mirror.view(id), e.capabilities.seat!, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    currentSeatAnchor = id;
+    hubSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
     hubState.chair = id.split("/")[1];
     hubSeat.sit();
   }
@@ -929,8 +1028,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     approachCtl.cancel();
     clearSeats();
     const id = EXECUTIVE_SEAT_IDS[index];
-    const e = world.get(id);
-    execSeat = new SeatInteraction(avatar, stack, mirror.view(id), e.capabilities.seat!, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    currentSeatAnchor = id;
+    execSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
     execState.chair = id.split("/")[1];
     execSeat.sit();
   }
@@ -941,8 +1040,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     approachCtl.cancel();
     clearSeats();
     const id = CMS_SEAT_IDS[index];
-    const e = world.get(id);
-    cmsSeat = new SeatInteraction(avatar, stack, mirror.view(id), e.capabilities.seat!, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    currentSeatAnchor = id;
+    cmsSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
     cmsState.chair = id.split("/")[1];
     cmsSeat.sit();
   }
@@ -954,8 +1053,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     approachCtl.cancel();
     clearSeats();
     const id = AI_SEAT_IDS[index];
-    const e = world.get(id);
-    aiSeat = new SeatInteraction(avatar, stack, mirror.view(id), e.capabilities.seat!, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    currentSeatAnchor = id;
+    aiSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
     aiState.chair = id.split("/")[1];
     aiSeat.sit();
   }
@@ -967,8 +1066,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     approachCtl.cancel();
     clearSeats();
     const id = DEV_SEAT_IDS[index];
-    const e = world.get(id);
-    devSeat = new SeatInteraction(avatar, stack, mirror.view(id), e.capabilities.seat!, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    currentSeatAnchor = id;
+    devSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
     devState.chair = id.split("/")[1];
     devSeat.sit();
   }
@@ -980,8 +1079,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     approachCtl.cancel();
     clearSeats();
     const id = QA_SEAT_IDS[index];
-    const e = world.get(id);
-    qaSeat = new SeatInteraction(avatar, stack, mirror.view(id), e.capabilities.seat!, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    currentSeatAnchor = id;
+    qaSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
     qaState.chair = id.split("/")[1];
     qaSeat.sit();
   }
@@ -989,8 +1088,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     approachCtl.cancel();
     clearSeats();
     const id = MEETING_CHAIR_IDS[index];
-    const e = world.get(id);
-    meetingSeat = new SeatInteraction(avatar, stack, mirror.view(id), e.capabilities.seat!, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    currentSeatAnchor = id;
+    meetingSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
     meetingState.chair = id.split("/")[1];
     meetingSeat.sit();
   }
@@ -1018,7 +1117,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     aiSeat = null;
     devSeat = null;
     const s = loungeSeats[index];
-    loungeSeat = new LoungeSeatInteraction(avatar, stack, s.view, s.slot, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    currentSeatAnchor = seatAnchorId(s.id, s.slot.id);
+    loungeSeat = new LoungeSeatInteraction(avatar, stack, s.view, slotFor(s.id, s.slot), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
     receptionState.focus = s.label;
     loungeSeat.sit();
   }
@@ -1035,9 +1135,14 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       if (e.capabilities.approach && typeof e.props.pick === "string") byPick.set(e.props.pick, e.id);
       if (e.capabilities.seat || e.capabilities.lounge) byPick.set(e.id, e.id);
     }
-    for (let n: THREE.Object3D | null = hits[0].object; n; n = n.parent) {
-      const id = byPick.get(n.name);
-      if (id) return id;
+    // THE FIRST HIT THAT IS INTERACTABLE, not the first hit. A seat is often seen past something that is
+    // not one — the lead chair behind its desk's edge, the south tub chairs through the façade glazing —
+    // and taking hits[0] alone made exactly those pieces unclickable (Phase 6C detection audit).
+    for (const hit of hits) {
+      for (let n: THREE.Object3D | null = hit.object; n; n = n.parent) {
+        const id = byPick.get(n.name);
+        if (id) return id;
+      }
     }
     return null;
   }
@@ -1100,7 +1205,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   /** Assigned just after PLAYER mode is constructed (it needs the body to place). Declared here because
    *  the interaction bridge below is handed to PlayerMode and therefore has to exist first. */
   let caveTransition: CaveTransition | null = null;
-  function activateInteractable(id: string, kind: "seat" | "lounge" | "approach"): boolean {
+  function activateInteractable(id: string, kind: "seat" | "lounge" | "approach", near?: Vec2): boolean {
     // THE PORTAL, both ways, and the screen's own controls. These are the only three interactions in the
     // world that are not a seat or a walk-up, so they are branched HERE — in the same bridge every other
     // verb goes through — rather than given a parallel activation path of their own.
@@ -1112,13 +1217,50 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     if (id === CHAMPIONSHIP_ENTRANCE_ID) return caveTransition?.enter() ?? false;
     if (id === CAVE_EXIT_ID) return caveTransition?.exit() ?? false;
     if (id === CAVE_SCREEN_ID) { caveMedia.toggle(); return false; }
+    if (kind === "lounge" || kind === "seat") {
+      // PHASE 5's BOUNDARY, ASKED HERE TOO. A chair inside the working office is not a way past Reception's
+      // gates for a checked-out employee: the approach route would be refused by the closed lanes anyway,
+      // but this is the same explicit refusal walkToGround gives, so the readout names the reason.
+      const at = world.entities.has(id) ? world.get(id).transform.pos : null;
+      if (at && !mayEnterOffice(officeAccess) && zoneOf(at) === "office") {
+        seatSyncState.refusals++;
+        navState.last = `refused: the working office needs a confirmed V1 check-in (attendance ${officeAccess})`;
+        return false;
+      }
+    }
     if (kind === "lounge") {
-      const i = loungeSeats.findIndex((s2) => s2.id === id);
-      if (i < 0) return false;
+      // THE FIRST FREE CUSHION of this piece. A sofa is one entity with several anchors, and occupancy
+      // (Phase 6C) is per anchor — so a sofa with somebody on one cushion still seats you on another.
+      // ...and of those, the one NEAREST the point clicked (or the body, for the E key) — so a click on the
+      // left end of a sofa seats you on the left cushion, not always the first one authored.
+      const ref = near ?? avatar.position;
+      const e = world.get(id);
+      let i = -1, best = Infinity;
+      loungeSeats.forEach((s2, k) => {
+        if (s2.id !== id || occupiedSeatIds.has(seatAnchorId(s2.id, s2.slot.id))) return;
+        const d = Math.hypot(e.transform.pos.x + s2.slot.contactLocal.x - ref.x, e.transform.pos.z + s2.slot.contactLocal.z - ref.z);
+        if (d < best) { best = d; i = k; }
+      });
+      if (i < 0) {
+        if (loungeSeats.some((s2) => s2.id === id)) { seatSyncState.refusals++; navState.last = `refused: ${id} is occupied`; }
+        return false;
+      }
+      selfMovedByUser = true;
       startLoungeSit(i);
       return true;
     }
     if (kind === "seat") {
+      // PHASE 6C — AN OCCUPIED CHAIR CANNOT BE SELECTED. V1's rule (an occupied seat gets no click-to-sit
+      // marker), applied to the same fact through the seat mapping. The backend still arbitrates a
+      // simultaneous attempt; this is the local refusal that keeps the common case from ever reaching it.
+      if (occupiedSeatIds.has(id)) {
+        seatSyncState.refusals++;
+        navState.last = `refused: ${id} is occupied`;
+        return false;
+      }
+      // Sitting down by choice counts as having moved yourself — a V1 restore landing afterwards must not
+      // yank the body out of the chair (same rule as click-to-walk and PLAYER mode).
+      selfMovedByUser = true;
       const hub = CAFE_CHAIR_IDS.indexOf(id);
       if (hub >= 0) { startHubSit(hub); return true; }
       const meet = MEETING_CHAIR_IDS.indexOf(id);
@@ -1135,17 +1277,71 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       if (dev >= 0) { startDevSit(dev); return true; }
       const qa = QA_SEAT_IDS.indexOf(id);
       if (qa >= 0) { startQaSit(qa); return true; }
-      if (id === CHAIR_4_ID) { seat.sit(); return true; }
+      if (id === CHAIR_4_ID) { clearSeats(); currentSeatAnchor = CHAIR_4_ID; seat.sit(); return true; }
+      if (world.entities.has(id) && world.get(id).capabilities.seat) { startOtherSit(id); return true; }
       return false;
     }
     startApproach(id);
     return true;
   }
   const engagedSeat = (): { stand: () => void } | null => {
-    for (const s2 of [loungeSeat, hubSeat, meetingSeat, gamingSeat, execSeat, cmsSeat, aiSeat, devSeat, qaSeat] as ({ state: string; stand: () => void } | null)[])
+    for (const s2 of [loungeSeat, hubSeat, meetingSeat, gamingSeat, execSeat, cmsSeat, aiSeat, devSeat, qaSeat, restoredSeat, restoredLounge, otherSeat] as ({ state: string; stand: () => void } | null)[])
       if (s2 && s2.state === "seated") return s2;
     return seat.status === "seated" ? seat : null;
   };
+  /** PHASE 6C — is the signed-in body in a chair, by the interactions' own states? "sitting" and the
+   *  tuck-in count: the body is committed to the chair from the glide on, and the seated arrival should
+   *  go out then rather than a second and a half later when the chair finishes rolling in. */
+  const seatedNow = (): boolean => {
+    for (const s2 of [seat, hubSeat, meetingSeat, gamingSeat, execSeat, cmsSeat, aiSeat, devSeat, qaSeat, restoredSeat, otherSeat])
+      if (s2 && (s2.state === "sitting" || s2.state === "slidingIn" || s2.state === "seated")) return true;
+    for (const l of [loungeSeat, restoredLounge]) if (l && (l.state === "sitting" || l.state === "seated")) return true;
+    return false;
+  };
+  /** Is ANY seat interaction under way (approaching, pulling the chair, sitting, leaving…)? While one is,
+   *  `currentSeatAnchor` names the seat it is for and must not be cleared by the previous seat ending. */
+  const seatEngaged = (): boolean => {
+    for (const s2 of [seat, hubSeat, meetingSeat, gamingSeat, execSeat, cmsSeat, aiSeat, devSeat, qaSeat, restoredSeat, otherSeat, loungeSeat, restoredLounge])
+      if (s2 && s2.state !== "idle") return true;
+    return false;
+  };
+  /** PHASE 6C — a PEER's chair, for world/Coworkers. Resolves an anchor to the cushion point and yaw the
+   *  body takes there, over the chair's live view. A movable chair a peer occupies is TUCKED IN to the same
+   *  `seatedTuck` the local sit parks it at, so the peer sits where the local would and the chair reads as
+   *  taken; the rest transform is kept and put back on release. Fixed seating is never written to. */
+  const peerSeatRest = new Map<string, { pos: THREE.Vector3; quat: THREE.Quaternion }>();
+  function peerSeatAnchor(id: string): SeatAnchorPose | null {
+    const { entityId, slotId } = parseSeatAnchorId(id);
+    if (!world.entities.has(entityId) || !mirror.hasView(entityId)) return null;
+    const e = world.get(entityId);
+    const view = mirror.view(entityId);
+    if (slotId === undefined) {
+      const spec = e.capabilities.seat;
+      if (!spec) return null;
+      if (!peerSeatRest.has(id)) {
+        peerSeatRest.set(id, { pos: view.position.clone(), quat: view.quaternion.clone() });
+        view.position.addScaledVector(new THREE.Vector3(spec.pullDir.x, 0, spec.pullDir.z), spec.seatedTuck);
+        R.invalidateShadows(); // a static caster moved
+      }
+      return { contact: deskSeatContact(view, spec), yaw: seatedYawFor(id, spec.seatedYaw), kind: "seat" };
+    }
+    const slot = e.capabilities.lounge?.slots.find((s2) => s2.id === slotId);
+    if (!slot) return null;
+    view.updateMatrixWorld(true);
+    const contact = new THREE.Vector3(slot.contactLocal.x, slot.contactLocal.y, slot.contactLocal.z).applyMatrix4(view.matrixWorld);
+    return { contact, yaw: seatedYawFor(id, slot.seatedYaw), kind: "lounge", ...(slot.sink !== undefined ? { sink: slot.sink } : {}) };
+  }
+  function releasePeerSeat(id: string): void {
+    const rest = peerSeatRest.get(id);
+    if (!rest) return;
+    peerSeatRest.delete(id);
+    const { entityId } = parseSeatAnchorId(id);
+    if (!mirror.hasView(entityId)) return;
+    const view = mirror.view(entityId);
+    view.position.copy(rest.pos);
+    view.quaternion.copy(rest.quat);
+    R.invalidateShadows();
+  }
   const playerMode = new PlayerMode({
     avatar, stack, world, canStand: playerStand, cameraProbe: playerCameraProbe,
     // the target marker hangs off the SCENE, not the office group: the CAVE hides the whole office while
@@ -1216,6 +1412,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     radius: NAV_RADIUS,
     toWorld: (p) => homeDeskWorldPoint(p, v1Rooms(), ROOM_WORLD_SHIFT_Z),
     lod: 1,
+    // PHASE 6C — seated peers sit on this world's own chairs; see peerSeatAnchor.
+    seatAnchor: peerSeatAnchor,
+    releaseSeat: releasePeerSeat,
     // Their idle animation moves them every frame, so they are dynamic casters like the stress crowd;
     // the shadow map is invalidated only when a sync actually changed something, not per frame.
     onChanged: (change) => {
@@ -1700,7 +1899,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // it means, or the one interaction in the world that moves you between volumes would behave
       // differently depending on which camera you happened to be in
       if (picked === CHAMPIONSHIP_ENTRANCE_ID || picked === CAVE_EXIT_ID || picked === CAVE_SCREEN_ID) activateInteractable(picked, "approach");
-      else if (ent.capabilities.lounge) startLoungeSit(LOUNGE_SEAT_IDS.indexOf(picked));
+      // PHASE 6C — a chair click SITS, through the same bridge PLAYER mode's E key uses (occupancy refusal
+      // included). Before this, Office View walked up to a desk chair and faced it, and a non-Reception
+      // sofa indexed a list it was not in.
+      else if (ent.capabilities.seat) activateInteractable(picked, "seat");
+      else if (ent.capabilities.lounge) activateInteractable(picked, "lounge", floorPoint(e.clientX, e.clientY) ?? undefined);
       else startApproach(picked);
       return;
     }
@@ -1911,7 +2114,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     if (g) { surfaces.collect(DESIGN_ROOM.id, g); leds.collect(DESIGN_ROOM.id, g); }
     if (edit.selectedSurface?.startsWith(DESIGN_ROOM.id)) edit.selectSurface(null);
     door = new SlidingDoor(mirror.view(DOOR_ID), doorEntity.capabilities.door!, doorEntity.transform.pos);
-    seat = new SeatInteraction(avatar, stack, mirror.view(CHAIR_4_ID), chairSeat, (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    seat = new SeatInteraction(avatar, stack, mirror.view(CHAIR_4_ID), seatSpecFor(CHAIR_4_ID), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
   };
   geo.add(params, "wallHeight", 20, 110, 1).onFinishChange(rebuild); geo.add(params, "frontWall", ["low", "full", "hidden"]).onChange(rebuild);
   geo.add(params, "sway").name("plant sway").onChange((v: boolean) => (mirror.sway.enabled = v));
@@ -1959,8 +2162,41 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     pub.add(selfMovement.state, "arrived").name("walk_arrived").disable().listen();
     pub.add(selfMovement.state, "refused").name("refused (outside V1 frame)").disable().listen();
   }
+  // ---- PHASE 6C — SEAT FACING (dev tool) ---------------------------------------------------------------
+  // Sit in a chair, pick a word, watch the body turn; every other browser turns their copy of you on the
+  // next sync. "save to project" POSTs the whole table to the Vite dev server (vite.config.ts writes
+  // src/dev/vo3d/data/seatFacing.json); "copy JSON" is the fallback when the dev server is not Vite's.
+  const facingState = { anchor: "none (sit in a seat)", facing: "front" as SeatFacing, unsaved: 0, status: "" };
+  const facingGui = gui.addFolder("Seat facing (front / back / left / right)");
+  facingGui.add(facingState, "anchor").name("seat").disable().listen();
+  const facingCtl = facingGui.add(facingState, "facing", [...SEAT_FACINGS]).name("faces").onChange((f: SeatFacing) => {
+    if (!currentSeatAnchor || seatFacingFor(currentSeatAnchor) === f) return;
+    setSeatFacingOverride(currentSeatAnchor, f);
+  });
+  facingGui.add(facingState, "unsaved").name("unsaved edits").disable().listen();
+  facingGui.add(facingState, "status").name("status").disable().listen();
+  facingGui.add({ save: () => {
+    facingState.status = "saving…";
+    fetch(`${import.meta.env.BASE_URL}__vo3d/seat-facing`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(seatFacingTable()) })
+      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); markSeatFacingSaved(); facingState.status = "saved to src/dev/vo3d/data/seatFacing.json"; })
+      .catch((e: unknown) => { facingState.status = `save failed (${String(e).slice(0, 40)}) — use copy JSON`; });
+  } }, "save").name("▶ save to project");
+  facingGui.add({ copy: () => {
+    void navigator.clipboard?.writeText(JSON.stringify(seatFacingTable(), null, 2) + "\n").then(() => { facingState.status = "table copied — paste into src/dev/vo3d/data/seatFacing.json"; });
+  } }, "copy").name("▶ copy JSON");
+  /** Apply a changed facing to whoever sits there: the local body's interaction and every peer body. */
+  disposers.push(subscribeSeatFacing((id, f) => {
+    const yaw = seatedYawFor(id, 0);
+    for (const s2 of [seat, hubSeat, meetingSeat, gamingSeat, execSeat, cmsSeat, aiSeat, devSeat, qaSeat, restoredSeat, otherSeat]) if (s2 && currentSeatAnchor === id) s2.setSeatedYaw(yaw);
+    for (const l of [loungeSeat, restoredLounge]) if (l && currentSeatAnchor === id) l.setSeatedYaw(yaw);
+    coworkers.reposeSeated(id);
+    // Tell every other browser: republish the seated arrival with the new yaw (Feed.reseated).
+    if (currentSeatAnchor === id && selfSeatedPublished) { const wp = avatar.worldPosition(); selfFeed?.reseated({ x: wp.x, z: wp.z }, yaw, id); }
+    facingState.status = `${id.split("/")[1]} → ${f}`;
+    R.invalidateShadows();
+  }));
   const sitGui = gui.addFolder("Chair interaction (design-member-chair-4)");
-  sitGui.add({ sit: () => { const r = seat.sit(); if (r && !r.ok) seatState.state = seat.status; } }, "sit").name("▶ Sit");
+  sitGui.add({ sit: () => { clearSeats(); currentSeatAnchor = CHAIR_4_ID; const r = seat.sit(); if (r && !r.ok) seatState.state = seat.status; } }, "sit").name("▶ Sit");
   sitGui.add({ stand: () => seat.stand() }, "stand").name("▶ Stand");
   sitGui.add({ reset: () => { seat.reset(); R.invalidateShadows(); } }, "reset").name("reset interaction");
   sitGui.add(seatState, "state").disable().listen(); sitGui.add(seatState, "chairRestError").disable().listen();
@@ -2567,11 +2803,36 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       aiSeat?.update(dt / 1000);
       devSeat?.update(dt / 1000);
       qaSeat?.update(dt / 1000);
+      restoredSeat?.update(dt / 1000);
+      otherSeat?.update(dt / 1000);
       loungeSeat?.update(dt / 1000);
+      restoredLounge?.update(dt / 1000);
       approachCtl.update(dt / 1000);
       navCtl.update(dt / 1000);
       avatar.update(dt / 1000);
       const bp = avatar.worldPosition();
+      // PHASE 6C — THE SEATED HAND-OFF. One transition each way, read from the interactions' own states:
+      // the frame the body commits to a chair the feed resolves the movement that brought it there as a
+      // seated arrival in that chair (the chair's own yaw, not the body's mid-turn one); the frame it
+      // leaves, the feed resumes publishing the ordinary legs that walk it away.
+      const nowSeated = seatedNow();
+      if (nowSeated !== selfSeatedPublished) {
+        selfSeatedPublished = nowSeated;
+        if (nowSeated && currentSeatAnchor) selfFeed?.seated({ x: bp.x, z: bp.z }, seatedYawOf(currentSeatAnchor) ?? avatar.yaw, currentSeatAnchor);
+        else if (!nowSeated) {
+          selfFeed?.stood({ x: bp.x, z: bp.z }, avatar.yaw);
+          // CLEARED ONLY WHEN NO SIT IS UNDER WAY. Choosing another chair while seated resets the old
+          // interaction and starts the new one in the same call — the frame after, the body is not
+          // seated (it is approaching), and clearing here wiped the NEW anchor, so that sit was never
+          // published as seated: every browser but this one saw the person standing at the chair.
+          if (!seatEngaged()) currentSeatAnchor = null;
+        }
+      }
+      seatSyncState.anchor = currentSeatAnchor ?? "none";
+      seatSyncState.seated = nowSeated ? "yes" : "no";
+      facingState.anchor = currentSeatAnchor ?? "none (sit in a seat)";
+      facingState.unsaved = unsavedSeatFacingCount();
+      if (currentSeatAnchor) { const f = seatFacingFor(currentSeatAnchor); if (f && f !== facingState.facing) { facingState.facing = f; facingCtl.updateDisplay(); } }
       // PHASE 5 — PUBLISH THE EMPLOYEE'S OWN MOVEMENT. Deliberately here: every controller that can move
       // Bon has already written this frame's transform, so the feed sees the body's real position whether
       // it was moved by the planner, by PLAYER mode's WASD, by a seat or by a portal — and needs to know
@@ -3034,6 +3295,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
        *  else on this surface; `positions()` already reports where each body IS, live, as it walks. */
       walking: () => coworkers.getStats().walking,
       moving: () => coworkers.moving,
+      /** PHASE 6C — how many peers sit in a chair this world identified; `positions()` names the anchor. */
+      seated: () => coworkers.getStats().seated,
       /** PHASE 6B DIAGNOSTIC — the last few arrival facing decisions: the route's own final heading, what
        *  that quantises to, what V1 published, whether the two agreed and the yaw the body was given.
        *  Bounded to the last 8, anonymous (angles and compass points only) and read-only. This is what a
@@ -3057,6 +3320,20 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       wire: () => (selfMovement ? [...selfMovement.state.wire] : []),
       restored: () => selfRestored,
       walkTo: (x: number, z: number) => walkToGround(x, z),
+      /** PHASE 6C — the PRODUCTION sit entry point (the same bridge a chair click and the E key use), and
+       *  what the feed currently holds: the anchor the body is in or heading for, whether the seated
+       *  arrival has gone out, and how many sits were refused as occupied. */
+      sit: (anchorId: string) => {
+        const { entityId } = parseSeatAnchorId(anchorId);
+        if (!world.entities.has(entityId)) return false;
+        const e = world.get(entityId);
+        return activateInteractable(entityId, e.capabilities.seat ? "seat" : e.capabilities.lounge ? "lounge" : "approach");
+      },
+      standUp: () => engagedSeat()?.stand(),
+      seat: () => ({ ...seatSyncState, feedSeated: selfFeed?.isSeated ?? false, otherSeat: otherSeat?.state ?? "none", facing: currentSeatAnchor ? seatFacingFor(currentSeatAnchor) : null }),
+      /** PHASE 6C — the dev tool's verbs, for a scripted check: set a seat's facing and read the table. */
+      setSeatFacing: (anchorId: string, facing: SeatFacing) => setSeatFacingOverride(anchorId, facing),
+      seatFacingTable: () => seatFacingTable(),
       position: () => ({ ...avatar.position }),
       v1Position: () => toV1Frame(avatar.position),
       /** PHASE 6B DIAGNOSTICS — the signed-in employee's OWN body, for comparison with how a peer's
@@ -3448,7 +3725,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *
    *  It also CLEARS ANY QUEUED WALK. Restoring a body while the planner still holds waypoints would have
    *  the walker immediately drag it back toward a route planned from the old position. */
-  function restoreSelf(point: Vec2, facing: Facing): boolean {
+  function restoreSelf(point: Vec2, facing: Facing, seatAnchor?: string): boolean {
     if (disposed || selfRestored || selfMovedByUser) return false;
     const target = homeDeskWorldPoint(point, selfFrameRooms, ROOM_WORLD_SHIFT_Z);
     // A PERSISTED POSITION IS NOT A PERMISSION. V1 keeps employee_positions whatever attendance says, so
@@ -3457,9 +3734,26 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // than spent when the answer is merely `unknown`: the read usually resolves to a confirmed check-in a
     // moment later, and that employee's own desk is then exactly where they belong.
     if (!mayPlaceAt(target)) {
-      if (officeAccess === "unknown") pendingRestore = { point, facing };
+      if (officeAccess === "unknown") pendingRestore = { point, facing, ...(seatAnchor ? { seat: seatAnchor } : {}) };
       avatarState.spawn = `${avatarState.spawn} · V1 position is inside the working office (attendance ${officeAccess})`;
       return false;
+    }
+    // PHASE 6C — SEATED RESTORE. V1 says this employee is sitting in a chair the mapping identified: land
+    // in it already seated (SeatInteraction.restoreSeated / LoungeSeatInteraction.restoreSeated), behind
+    // the SAME access gate the standing restore just passed — a persisted seat is no more a permission
+    // than a persisted position. Silent to the feed (placed, seated) exactly as the standing restore is.
+    // A chair this world cannot seat the body in falls through to the standing restore at the centroid.
+    if (seatAnchor && restoreIntoSeat(seatAnchor)) {
+      selfRestored = true;
+      navCtl.setPath([]);
+      currentSeatAnchor = seatAnchor;
+      selfSeatedPublished = true;
+      const wp = avatar.worldPosition();
+      selfFeed?.placed({ x: wp.x, z: wp.z }, true);
+      if (playerMode.active) playerMode.camera.snap();
+      avatarState.spawn = `restored from V1 · seated in ${seatAnchor}`;
+      R.invalidateShadows();
+      return true;
     }
     if (!playerMode.body.placeNear(target)) {
       avatarState.spawn = `${avatarState.spawn} · V1 position at ${target.x.toFixed(1)}, ${target.z.toFixed(1)} has no standable point`;
@@ -3480,10 +3774,39 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     return true;
   }
 
+  /** Construct the right interaction for `anchor` and put the body in it seated. False when this world
+   *  has no such chair or the avatar could not be acquired. */
+  function restoreIntoSeat(anchor: string): boolean {
+    const { entityId, slotId } = parseSeatAnchorId(anchor);
+    if (!world.entities.has(entityId) || !mirror.hasView(entityId)) return false;
+    const e = world.get(entityId);
+    const planner = (to: Vec2): NavResult => planWalk(avatar.position, to, walkability, inBounds);
+    clearSeats();
+    if (slotId === undefined) {
+      const spec = e.capabilities.seat;
+      if (!spec) return false;
+      const si = new SeatInteraction(avatar, stack, mirror.view(entityId), seatSpecFor(entityId), planner, () => params.walkSpeed);
+      if (!si.restoreSeated()) return false;
+      restoredSeat = si;
+      return true;
+    }
+    const slot = e.capabilities.lounge?.slots.find((s2) => s2.id === slotId);
+    if (!slot) return false;
+    const li = new LoungeSeatInteraction(avatar, stack, mirror.view(entityId), slotFor(entityId, slot), planner, () => params.walkSpeed);
+    if (!li.restoreSeated()) return false;
+    restoredLounge = li;
+    return true;
+  }
+
   return {
     dispose,
     restoreSelf,
     setOfficeAccess,
+    setOccupiedSeats: (ids) => {
+      occupiedSeatIds = new Set(ids);
+      seatSyncState.occupied = occupiedSeatIds.size;
+    },
+    standUp: () => engagedSeat()?.stand(),
     // Fire-and-forget: sync() loads GLBs, and a caller in a React effect has nothing useful to await.
     // Its own generation guard drops a load that lands after a newer roster, and its disposed guard drops
     // one that lands after the world is gone.

@@ -14,7 +14,7 @@
 import type { Rect } from "../core/coords";
 import type { ApproachCapability, ClearanceCapability, DoorCapability, Entity, LoungeSeatCapability, LoungeSeatSlot, RoomDef } from "../world/WorldState";
 import { FACING_YAW } from "../core/coords";
-import { TUB_CUSHION_TOP } from "../build/furniture";
+import { SOFA_CUSHION_GAP, SOFA_CUSHION_LOCAL_X, SOFA_CUSHION_MARGIN, SOFA_CUSHION_TOP, TUB_CUSHION_TOP } from "../build/furniture";
 import { v1RoomRect } from "../adapters/v1Manifest";
 import { FACADE_Z } from "../adapters/v1Floor";
 import { CELL } from "../adapters/v1Grid";
@@ -387,6 +387,59 @@ export const LOUNGE_SEATS: LoungeSeatCapability[] = [{ slots: [loungeSlot(false)
 
 export const LOUNGE_SEAT_IDS = [`${RECEPTION_ROOM_ID}/tub-chair-west-0`, `${RECEPTION_ROOM_ID}/tub-chair-east-0`];
 
+/** PHASE 6C — THE REST OF THE LOUNGE IS SITTABLE TOO: each sofa's two cushions and the south tub chair,
+ *  on each side. Until now they were decorative by decision ("do not make every decorative object
+ *  interactable"); the seating phase reverses that for anything a person can sit on. V1 already counts
+ *  them as seats (seatDirections "reception-room": the sofas at 416/1024,1056 and the south chairs at
+ *  480/960,1112), so this also closes a V1↔V2 gap: a V1 sitter there was drawn standing.
+ *
+ *  Contact metadata is the builders' own: the sofa is the SAME `sofa` builder the Executive Room's slots
+ *  are measured against (SOFA_CUSHION_TOP / SOFA_CUSHION_LOCAL_X, cushions along local z at the builder's
+ *  two-cushion spacing), the chair the same tub chair. The stand point for a sofa is the one V1-walkable
+ *  strip between its front and the lounge table; each cushion's last waypoint is level with itself. */
+const SOFA_CONTACT_FORWARD = 1.5;
+const SOFA_SINK = 0.3;
+/** the `sofa` builder's two-cushion centres along local z (lounge tone: 6.5-unit arms) */
+function sofaCushionOffsets(d: number): number[] {
+  const armW = 6.5, seats = 2;
+  const cushD = (d - 2 * armW - (seats - 1) * SOFA_CUSHION_GAP - 2 * SOFA_CUSHION_MARGIN) / seats;
+  return [-(cushD / 2 + 0.6), cushD / 2 + 0.6];
+}
+function sofaSlots(mirror: boolean): LoungeSeatCapability {
+  const m = (x: number) => (mirror ? mirrorX(x) : x);
+  const s = LOUNGE_WEST.sofa;
+  const cz = s.z + s.d / 2;
+  const side = mirror ? "east" : "west";
+  return {
+    slots: sofaCushionOffsets(s.d).map((lz, i) => ({
+      id: `sofa-${side}-${i === 0 ? "north" : "south"}`,
+      // the builder is authored back-to-west and the east piece is mirrored by its transform, so one local works for both
+      contactLocal: { x: SOFA_CUSHION_LOCAL_X + SOFA_CONTACT_FORWARD, y: SOFA_CUSHION_TOP, z: lz },
+      seatedYaw: mirror ? FACING_YAW.west : FACING_YAW.east, // authored fallback; data/seatFacing.json decides
+      approach: { x: m(448), z: cz }, // the 26-unit strip between the sofa's front (x 435) and the table (x 461), clear of both tub chairs
+      approachToSeat: [{ x: m(440), z: cz + lz }],
+      sink: SOFA_SINK,
+      timings: { sitMs: 750, standMs: 700 },
+    })),
+  };
+}
+function southChairSlot(mirror: boolean): LoungeSeatCapability {
+  const m = (x: number) => (mirror ? mirrorX(x) : x);
+  const c = LOUNGE_WEST.chairs[1];
+  return {
+    slots: [{
+      id: `lounge-${mirror ? "east" : "west"}-south`,
+      contactLocal: { x: 0, y: TUB_CUSHION_TOP_Y, z: 3.5 },
+      seatedYaw: FACING_YAW.north, // the chair faces north, toward the table; the table decides
+      approach: { x: m(c.x + 34), z: c.z }, // east of the chair, in the lane toward the kiosk column
+      approachToSeat: [{ x: m(c.x + 24), z: c.z }],
+      sink: TUB_SINK,
+      timings: { sitMs: 750, standMs: 700 },
+    }],
+  };
+}
+export const RECEPTION_LOUNGE_IDS = [...LOUNGE_SEAT_IDS, `${RECEPTION_ROOM_ID}/sofa-west`, `${RECEPTION_ROOM_ID}/sofa-east`, `${RECEPTION_ROOM_ID}/tub-chair-west-1`, `${RECEPTION_ROOM_ID}/tub-chair-east-1`];
+
 /** The two walk-up interaction points, as footprint-free entities carrying an `approach` capability.
  *  `pick` names the static scene group a click must hit to offer the action. */
 export const COUNTER_INTERACTION_ID = `${RECEPTION_ROOM_ID}/counter-interaction`;
@@ -439,12 +492,13 @@ export function receptionEntities(): Entity[] {
     const s = LOUNGE_WEST.sofa;
     const sofaCx = m(s.x + s.w / 2);
     // the sofa builder is authored back-to-west; `mirrored` puts the east sofa's back on the east side
-    out.push(furnitureEntity(`sofa-${side}`, "sofa", sofaCx, s.z + s.d / 2, s.w, s.d, "south", side === "east"));
+    const sofa = furnitureEntity(`sofa-${side}`, "sofa", sofaCx, s.z + s.d / 2, s.w, s.d, "south", side === "east");
+    sofa.capabilities = { ...sofa.capabilities, lounge: sofaSlots(side === "east") }; // Phase 6C: two cushions each
+    out.push(sofa);
     LOUNGE_WEST.chairs.forEach((c, i) => {
       const e = furnitureEntity(`tub-chair-${side}-${i}`, "tub-chair", m(c.x), c.z, c.w, c.d, c.facing);
-      // only the NORTH chair of each lounge is sittable — the south one is tucked against the façade and
-      // the sofas/tables stay decorative ("do not make every decorative object interactable")
-      if (i === 0) e.capabilities = { ...e.capabilities, lounge: LOUNGE_SEATS[side === "east" ? 1 : 0] };
+      // both chairs are sittable (Phase 6C); the tables stay decorative
+      e.capabilities = { ...e.capabilities, lounge: i === 0 ? LOUNGE_SEATS[side === "east" ? 1 : 0] : southChairSlot(side === "east") };
       out.push(e);
     });
     const t = LOUNGE_WEST.table;

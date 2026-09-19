@@ -1,6 +1,8 @@
 /// <reference types="vitest/config" />
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
+import { writeFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 
 // Atlas reverse-proxies this app at https://atlas.offshorly.com/virtual-office,
 // so all built asset URLs must carry the /virtual-office/ prefix. ES-module
@@ -10,6 +12,43 @@ import react from '@vitejs/plugin-react'
 // from `import.meta.env.BASE_URL` instead of a hardcoded leading-slash
 // literal, or it will resolve against Atlas's root instead of this app.
 const BASE_PATH = "/virtual-office/";
+
+// DEV-ONLY: the V2 world's "Seat facing" tool (src/dev/vo3d/app/world.ts) POSTs the whole seat-facing
+// table here and this writes it into the PROJECT — src/dev/vo3d/data/seatFacing.json — so a direction
+// fixed in the browser is a change in the repo, not in localStorage. Never part of a build: it is a
+// configureServer hook, and `vite build` has no server. Strictly validated: an object of anchor id →
+// one of the four V1 words, nothing else is written.
+const SEAT_FACING_FILE = resolve(__dirname, "src/dev/vo3d/data/seatFacing.json");
+const SEAT_FACING_WORDS = new Set(["front", "back", "left", "right"]);
+function vo3dSeatFacingWriter(): Plugin {
+  return {
+    name: "vo3d-seat-facing-writer",
+    apply: "serve",
+    configureServer(server) {
+      server.middlewares.use(`${BASE_PATH}__vo3d/seat-facing`, (req, res) => {
+        if (req.method !== "POST") { res.statusCode = 405; res.end(); return; }
+        let body = "";
+        req.on("data", (chunk: Buffer) => { body += chunk.toString(); if (body.length > 1_000_000) req.destroy(); });
+        req.on("end", () => {
+          try {
+            const table = JSON.parse(body) as Record<string, unknown>;
+            if (!table || typeof table !== "object" || Array.isArray(table)) throw new Error("not an object");
+            const clean: Record<string, string> = {};
+            for (const [id, word] of Object.entries(table)) {
+              if (!/^[a-z0-9-]+\/[a-z0-9-]+(#[a-z0-9-]+)?$/i.test(id) || typeof word !== "string" || !SEAT_FACING_WORDS.has(word)) throw new Error(`bad entry ${id}`);
+              clean[id] = word;
+            }
+            const sorted = Object.fromEntries(Object.keys(clean).sort().map((k) => [k, clean[k]]));
+            writeFileSync(SEAT_FACING_FILE, JSON.stringify(sorted, null, 2) + "\n");
+            res.statusCode = 204; res.end();
+          } catch (e) {
+            res.statusCode = 400; res.end(String(e));
+          }
+        });
+      });
+    },
+  };
+}
 
 // Vite's `base` only rewrites URLs inside the built HTML/JS — it does NOT
 // change where files are physically emitted. Render's publish dir serves
@@ -38,7 +77,7 @@ export default defineConfig(({ mode }) => ({
     outDir: "dist/virtual-office",
     emptyOutDir: true,
   },
-  plugins: [react()],
+  plugins: [react(), vo3dSeatFacingWriter()],
   // Excalidraw is only ever reached through React.lazy (WhiteboardEditor) so it stays out of the
   // main bundle. In dev that means Vite's dependency optimizer never sees it at startup — it
   // DISCOVERS it on the first "open a whiteboard", pre-bundles it, and then forces a full page

@@ -56,13 +56,14 @@
 // desk is worse than a body that is honestly absent.
 import * as THREE from "three";
 import { clone as cloneSkinned } from "three/examples/jsm/utils/SkeletonUtils.js";
-import { BON_STANDING_HEIGHT, CLIP_IDLE, CLIP_RUN, CLIP_WALK, type AvatarLod } from "../adapters/v1Avatar";
+import { BON_STANDING_HEIGHT, CLIP_IDLE, CLIP_RUN, CLIP_WALK, type AvatarLod, CLIP_SIT } from "../adapters/v1Avatar";
 import { castLabelTexture, prototypeFor, type CastPrototype } from "../avatar/CastPrototypes";
 import { dist, FACING_YAW, stepAngle, wrapAngle, type Facing, type Vec2 } from "../core/coords";
 import { standablePointNear, type StandTest } from "../player/PlayerBody";
 import type { Vo3dCoworker, Vo3dWalkPacing } from "../app/coworkers";
 import { PLAYER_SPRINT_SPEED, PLAYER_WALK_SPEED } from "../player/PlayerMode";
 import { ReplayWalk } from "./coworkerWalk";
+import { deskSeatedRootForRig, sceneRig, seatedRootForRig, type SeatedRig } from "../interact/seatContact";
 
 /** How fast a coworker turns toward their direction of travel, rad/s. The navigation controller's rate,
  *  which is also what devtools/Crowd.ts turns its bodies at — one figure for every walking body in V2. */
@@ -240,7 +241,12 @@ export class CoworkerPlacer {
 
     for (const coworker of list) {
       let pos: Vec2 | null;
-      if (coworker.posSource === "live") {
+      if (coworker.seat) {
+        // PHASE 6C — a seated body is placed by its chair (Coworkers.applyPositions), not by the stand
+        // test: a chair's footprint is exactly the kind of point the test refuses. The V1 point is carried
+        // through unchanged so a world with no chair for the anchor still has the honest fallback.
+        pos = this.toWorld(coworker.point);
+      } else if (coworker.posSource === "live") {
         const { x, z } = coworker.point;
         const hit = this.liveSpots.get(coworker.email);
         // Keyed on the V1-frame point, before toWorld: the transform is a constant of this placer, so two
@@ -336,11 +342,17 @@ class CoworkerBody {
   /** Which locomotion clip this body's current movement plays, chosen once per movement by its mean
    *  speed (see beginWalk). */
   private locomotion: string = CLIP_WALK;
+  /** PHASE 6C — the seat anchor this body is seated in, or null while standing/walking. */
+  seatedIn: string | null = null;
+  /** The clips-and-scale reading the seated pose is computed from — the shared prototype's, which is the
+   *  same consolidated GLB the hero avatar plays, so the formula lands both bodies alike. */
+  private readonly rig: SeatedRig;
 
   constructor(proto: CastPrototype, name: string, at: Vec2, yaw: number, phase: number) {
     this.avatarId = proto.id;
     this.displayName = name;
     this.triangles = proto.triangles;
+    this.rig = sceneRig(proto.scene, proto.clips);
     const body = cloneSkinned(proto.scene) as THREE.Group;
     this.root.name = `coworker:${name}`;
     this.root.add(body);
@@ -386,6 +398,8 @@ class CoworkerBody {
    *  movement. The body is not first snapped back to the origin: the replay's own fast-forward puts it
    *  where the walk currently is, which for a redirect is about where the body already stood. */
   beginWalk(movementId: string, worldPath: readonly Vec2[], durationMs: number, elapsedMs: number, pacing: Vo3dWalkPacing = "eased"): void {
+    // A walk stands a seated body up first — V1 clears the seat on every walk_started, and so does this.
+    if (this.seatedIn !== null) this.standUp();
     this.replay = new ReplayWalk(movementId, worldPath, durationMs, elapsedMs, pacing);
     this.playedId = movementId;
     this.settleYaw = null;
@@ -399,6 +413,39 @@ class CoworkerBody {
     this.locomotion = this.replay.meanSpeed >= RUN_FROM_SPEED && this.actions[CLIP_RUN] ? CLIP_RUN : CLIP_WALK;
     const at = this.replay.position;
     this.root.position.set(at.x, 0, at.z);
+  }
+
+  /** PHASE 6C — SIT THIS BODY IN `anchor`, at the pose the world resolved for it. The root is put where
+   *  the sit clip's pelvis meets the cushion — deskSeatedRootForRig for a movable chair (interact/Seat's
+   *  own formula), seatedRootForRig for fixed seating (interact/LoungeSeat's) — at the chair's own yaw,
+   *  and the seated clip plays. Any replay, queued turn or leg grace is dropped: the seated arrival is the
+   *  authoritative account of where this person is. Returns true when anything changed. */
+  sitAt(anchor: string, pose: SeatAnchorPose): boolean {
+    const root = pose.kind === "seat"
+      ? deskSeatedRootForRig(this.rig, pose.contact, pose.yaw)
+      : seatedRootForRig(this.rig, pose.contact, pose.yaw, pose.sink ?? 0);
+    const same = this.seatedIn === anchor && this.root.position.equals(root) && this.yaw === pose.yaw;
+    this.replay = null;
+    this.playedId = null;
+    this.settleYaw = null;
+    this.settling = false;
+    this.targetYaw = null;
+    this.coastMs = 0;
+    this.seatedIn = anchor;
+    this.root.position.copy(root);
+    this.yaw = pose.yaw;
+    this.root.rotation.set(0, pose.yaw, 0);
+    this.play(this.actions[CLIP_SIT] ? CLIP_SIT : CLIP_IDLE);
+    return !same;
+  }
+
+  /** PHASE 6C — leave the chair: back on the floor at the same x/z, idling. The position that follows
+   *  (an arrival, a walk) is applied by the caller as for any standing body. */
+  standUp(): void {
+    if (this.seatedIn === null) return;
+    this.seatedIn = null;
+    this.root.position.y = 0;
+    this.play(CLIP_IDLE);
   }
 
   /** THE AUTHORITATIVE POSITION HAS ARRIVED, and the yaw to face: the exact one V1 relayed when the
@@ -503,6 +550,11 @@ class CoworkerBody {
    *  into a cheap dynamic shadow invalidation (a walking coworker costs the composite pass, never the
    *  static redraw). */
   update(dt: number): boolean {
+    if (this.seatedIn !== null) {
+      // Seated: the clip breathes, the root does not move. Nothing below may play idle over the sit.
+      this.mixer.update(dt);
+      return false;
+    }
     let moved = false;
     if (this.replay) {
       const step = this.replay.advance(dt * 1000);
@@ -598,6 +650,8 @@ export type CoworkerStats = {
   rendered: number;
   /** of `rendered`, how many are replaying a walk right now (Phase 6A). A count, never who. */
   walking: number;
+  /** of `rendered`, how many are seated in a chair this world identified (Phase 6C). A count, never who. */
+  seated: number;
   /** of `rendered`, how many stand on a LIVE persisted position rather than their derived desk (Phase
    *  4B). A count, never a list of who — the readouts this feeds stay redacted. */
   live: number;
@@ -623,9 +677,17 @@ export type CoworkerPosition = {
   /** the movement this body is replaying or last resolved, first 8 chars, or null — compare with the
    *  walker's own `selfMovement.movementId()` */
   movementId: string | null;
-  /** the clip playing — idle, walking or running — for telling a position stutter from an animation one */
+  /** the clip playing — idle, walking, running or seated — for telling a position stutter from an animation one */
   clip: string;
+  /** PHASE 6C — the seat anchor this body is seated in, or null */
+  seat: string | null;
 };
+
+/** PHASE 6C — WHERE A SEAT ANCHOR PUTS A BODY, answered by the world (which owns the chair views).
+ *  `contact` is the cushion point in world space; `yaw` the chair's own seated rotation; `kind` selects
+ *  the pose formula (a movable desk chair and fixed lounge seating land the pelvis differently — see
+ *  interact/seatContact); `sink` is the lounge cushion's compression. */
+export type SeatAnchorPose = { contact: THREE.Vector3; yaw: number; kind: "seat" | "lounge"; sink?: number };
 
 export interface CoworkersDeps {
   parent: THREE.Object3D;
@@ -636,6 +698,12 @@ export interface CoworkersDeps {
   /** V1 frame point -> built V2 world point, room shifts applied */
   toWorld: (p: Vec2) => Vec2;
   lod?: AvatarLod;
+  /** PHASE 6C — resolve a seat anchor id to the pose a body takes in it, or null for an anchor this world
+   *  has no chair for. The world implements it over its own chair views (and tucks the chair in while it
+   *  is occupied, as the local sit does); this module only asks. Absent = nobody can be drawn seated. */
+  seatAnchor?: (id: string) => SeatAnchorPose | null;
+  /** PHASE 6C — the anchor is no longer occupied by the body that held it; the world returns the chair. */
+  releaseSeat?: (id: string) => void;
   /** WHAT KIND of change a sync produced, because the two cost the renderer different things.
    *
    *  "population" — a body was added or removed. The new clone's MESHES only exist now, so they still
@@ -673,7 +741,7 @@ export class Coworkers {
    *  batch captured several syncs ago. */
   private lastUnplaced: string[] = [];
   private lastMissingAvatar: string[] = [];
-  private stats: CoworkerStats = { rendered: 0, walking: 0, live: 0, unplaced: [], missingAvatar: [], triangles: 0, loading: false };
+  private stats: CoworkerStats = { rendered: 0, walking: 0, seated: 0, live: 0, unplaced: [], missingAvatar: [], triangles: 0, loading: false };
   /** Bumped by every POPULATION sync. A GLB that lands after a newer roster arrived belongs to a world
    *  state that no longer exists, and is dropped rather than added — the roster can change while 8 MB is
    *  in flight. Deliberately NOT bumped by a position sync: doing so would cancel every in-flight load
@@ -704,6 +772,7 @@ export class Coworkers {
         movementId: body.movementId?.slice(0, 8) ?? null,
         clip: body.clip,
         source: this.wanted.get(email)?.coworker.posSource ?? "desk",
+        seat: body.seatedIn,
       });
     }
     return out.sort((a, b) => a.name.localeCompare(b.name));
@@ -736,6 +805,7 @@ export class Coworkers {
       const next = this.wanted.get(email);
       // An avatarId change is a different character, not a moved one — the body has to be rebuilt.
       if (!next || next.coworker.avatarId !== body.avatarId) {
+        if (body.seatedIn !== null) this.deps.releaseSeat?.(body.seatedIn);
         body.stopWalk();
         body.dispose();
         this.bodies.delete(email);
@@ -816,6 +886,11 @@ export class Coworkers {
           coworker.walk.elapsedMs,
           coworker.walk.pacing,
         );
+      } else if (coworker.seat) {
+        // PHASE 6C — a newcomer may already be SEATED (the first sync of a session finds most people
+        // wherever V1 last saw them, chairs included).
+        const pose = seatedPose(this.deps.seatAnchor?.(coworker.seat) ?? null, coworker.yaw);
+        if (pose) body.sitAt(coworker.seat, pose);
       }
       this.group.add(body.root);
       this.bodies.set(email, body);
@@ -855,10 +930,31 @@ export class Coworkers {
       const walk = spot.coworker.walk;
       if (walk) {
         if (body.movementId !== walk.movementId) {
+          if (body.seatedIn !== null) this.deps.releaseSeat?.(body.seatedIn);
           body.beginWalk(walk.movementId, walk.path.map(this.deps.toWorld), walk.durationMs, walk.elapsedMs, walk.pacing);
           moved = true;
         }
         continue;
+      }
+      // PHASE 6C — SEATED. The chair, not the position, says where the body is: V1's `at` for a sitter is
+      // the painted centroid (adapters/v1SelfMovement publishes exactly that), which is the chair's
+      // footprint, not a standable point — so the stand-test placement is skipped and the anchor's own
+      // cushion is used. An anchor this world cannot resolve falls through to the standing rule.
+      const seat = spot.coworker.seat;
+      if (seat) {
+        const pose = seatedPose(this.deps.seatAnchor?.(seat) ?? null, spot.coworker.yaw);
+        if (pose) {
+          if (body.seatedIn !== seat || Math.abs(wrapAngle(body.facingYaw - pose.yaw)) > YAW_EPSILON) {
+            if (body.seatedIn !== null) this.deps.releaseSeat?.(body.seatedIn);
+            if (body.sitAt(seat, pose)) moved = true;
+          }
+          continue;
+        }
+      }
+      if (body.seatedIn !== null) {
+        this.deps.releaseSeat?.(body.seatedIn);
+        body.standUp();
+        moved = true;
       }
       // PHASE 6B — the exact yaw the walking session published, or V1's compass word when it did not.
       const yaw = spot.coworker.yaw ?? FACING_YAW[spot.coworker.facing];
@@ -869,6 +965,27 @@ export class Coworkers {
       if (body.reconcileTo(spot.pos, yaw)) moved = true;
     }
     return moved;
+  }
+
+  /** PHASE 6C — a seat's configured facing changed (dev tool): every body seated in `anchor` (or in any
+   *  seat, when omitted) asks the world for its pose again and takes it. Position and clip are unchanged
+   *  unless the pose says otherwise. Returns true when anything moved. */
+  reposeSeated(anchor?: string): boolean {
+    let moved = false;
+    for (const body of this.bodies.values()) {
+      if (body.seatedIn === null || (anchor !== undefined && body.seatedIn !== anchor)) continue;
+      const pose = this.deps.seatAnchor?.(body.seatedIn) ?? null;
+      if (pose && body.sitAt(body.seatedIn, pose)) moved = true;
+    }
+    if (moved) this.deps.onChanged?.("position");
+    return moved;
+  }
+
+  /** How many bodies are seated. Read by the stats. */
+  private get seatedCount(): number {
+    let n = 0;
+    for (const body of this.bodies.values()) if (body.seatedIn !== null) n++;
+    return n;
   }
 
   /** How many bodies are replaying a walk. Read by the stats and by the world's shadow gate. */
@@ -897,6 +1014,7 @@ export class Coworkers {
     this.stats = {
       rendered: this.bodies.size,
       walking: this.walkingCount,
+      seated: this.seatedCount,
       live,
       unplaced: this.lastUnplaced,
       missingAvatar: this.lastMissingAvatar,
@@ -924,7 +1042,10 @@ export class Coworkers {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    for (const body of this.bodies.values()) body.dispose();
+    for (const body of this.bodies.values()) {
+      if (body.seatedIn !== null) this.deps.releaseSeat?.(body.seatedIn);
+      body.dispose();
+    }
     this.bodies.clear();
     this.placer.invalidate();
     this.wanted.clear();
@@ -932,8 +1053,17 @@ export class Coworkers {
     this.lastUnplaced = [];
     this.lastMissingAvatar = [];
     this.group.removeFromParent();
-    this.stats = { rendered: 0, walking: 0, live: 0, unplaced: [], missingAvatar: [], triangles: 0, loading: false };
+    this.stats = { rendered: 0, walking: 0, seated: 0, live: 0, unplaced: [], missingAvatar: [], triangles: 0, loading: false };
   }
+}
+
+/** THE YAW A SEATED PEER TAKES: the yaw the SITTER published (their own configured facing, exact, Phase
+ *  6B's wire field) when there is one, else the local table's facing for the anchor (`pose.yaw`) — which is
+ *  what a V1 sitter, who publishes no yaw, gets. The published one wins so every browser shows exactly
+ *  what the sitter sees, including a facing edited in the dev tool before it is saved. */
+function seatedPose(pose: SeatAnchorPose | null, publishedYaw: number | undefined): SeatAnchorPose | null {
+  if (!pose) return null;
+  return publishedYaw === undefined ? pose : { ...pose, yaw: wrapAngle(publishedYaw) };
 }
 
 /** A stable 0..1 from an email — the idle-phase stagger, deterministic per person. */

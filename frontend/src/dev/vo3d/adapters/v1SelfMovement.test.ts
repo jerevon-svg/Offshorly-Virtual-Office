@@ -265,3 +265,95 @@ describe("Phase 6B — the exact yaw and the pacing go on the wire, optionally",
     expect("pacing" in emitWalkStarted.mock.calls[0][0]).toBe(false);
   });
 });
+
+describe("Phase 6C — a seat V1 knows becomes V1's own sitting arrival", () => {
+  // The executive workstation chair is identified by geometry (V2 authored it on the V1 art box); the
+  // mapping test pins that. Everything below reads the expected V1 seat FROM the mapping, never by hand.
+  const CHAIR = "executive-room/workstation-chair";
+
+  it("publishes state sitting, V1's seat key, the CENTROID as the position and the CHAIR's direction", async () => {
+    const { v1SeatForAnchor } = await import("./v1Seats");
+    const v1Seat = v1SeatForAnchor(CHAIR)!;
+    expect(v1Seat).not.toBeNull();
+    signIn();
+    const sink = createV1SelfMovementSink()!;
+    // The body ended a couple of units off the cushion, as the sit clip's hip offset always leaves it.
+    sink.started({ x: v1Seat.x - 20, z: v1Seat.y }, [{ x: v1Seat.x - 2, z: v1Seat.y + 1.5 }], 600);
+    sink.arrived({ x: v1Seat.x - 2, z: v1Seat.y + 1.5 }, "north", Math.PI, CHAIR);
+    const arrived = emitWalkArrived.mock.calls[0][0];
+    expect(arrived.state).toBe("sitting");
+    expect(arrived.seatKey).toBe(v1Seat.key);
+    // V1's own click-to-sit publishes seat − box/2 (OfficeMap.tsx seatGoal); so does this.
+    expect(arrived.at).toEqual({ x: v1Seat.x - bonLayer.width / 2, y: v1Seat.y - bonLayer.height / 2 });
+    // The direction belongs to the chair (V1's rule), not to the body's compass heading.
+    expect(arrived.facing).toBe(v1Seat.direction);
+    // The exact V2 yaw still rides beside it for 3D peers.
+    expect(arrived.yaw).toBe(Math.PI);
+    expect(sink.state).toMatchObject({ arrived: 1, seated: 1, v2OnlySeat: 0 });
+    expect(sink.state.wire.at(-1)).toContain("sitting");
+  });
+
+  it("publishes a V2-ONLY chair as SITTING under the namespaced v2: key, at the body, and counts it", async () => {
+    const { v2SeatKey } = await import("./v1Seats");
+    signIn();
+    const sink = createV1SelfMovementSink()!;
+    sink.started({ x: 700, z: 600 }, [{ x: 720, z: 610 }], 600);
+    sink.arrived({ x: 720, z: 610 }, "south", 0, "central-hub/cafe-chair-0-north");
+    const arrived = emitWalkArrived.mock.calls[0][0];
+    expect(arrived.state).toBe("sitting");
+    expect(arrived.seatKey).toBe(v2SeatKey("central-hub/cafe-chair-0-north"));
+    // NOT a V1 centroid key: the namespace is what keeps it from ever being mistaken for one.
+    expect(arrived.seatKey).toMatch(/^v2:/);
+    expect(arrived.at).toEqual({ x: 720 - bonLayer.width / 2, y: 610 - bonLayer.height / 2 });
+    expect(arrived.facing).toBe("front");
+    expect(sink.state).toMatchObject({ arrived: 1, seated: 1, v2OnlySeat: 1 });
+    expect(sink.state.wire.at(-1)).toContain("v2-only");
+  });
+
+  it("restores the SEAT ANCHOR from a sitting row whose key V2 identifies, and none from a standing row", async () => {
+    const { v1SeatForAnchor } = await import("./v1Seats");
+    const v1Seat = v1SeatForAnchor(CHAIR)!;
+    signIn();
+    const half = { x: bonLayer.width / 2, y: bonLayer.height / 2 };
+    const sitting: PeerMovementState = {
+      email: BON_EMAIL, revision: 9, active: null,
+      stable: { pos: { x: v1Seat.x - half.x, y: v1Seat.y - half.y }, facing: v1Seat.direction, state: "sitting", seatKey: v1Seat.key, roomId: "executive-team" },
+    };
+    const r = resolveV1SelfPosition([sitting], true)!;
+    expect(r.seat).toBe(CHAIR);
+    expect(r.point.x).toBeCloseTo(v1Seat.x, 6);
+    expect(r.point.z).toBeCloseTo(v1Seat.y, 6);
+    // standing: no seat
+    expect(resolveV1SelfPosition([peer(BON_EMAIL, { x: 600, y: 500 })], true)!.seat).toBeUndefined();
+    // sitting on a key V2 has no chair for: no seat, position still restores (standing at the centroid)
+    const unknown: PeerMovementState = { ...sitting, stable: { ...sitting.stable, seatKey: "1,1" } };
+    expect(resolveV1SelfPosition([unknown], true)!.seat).toBeUndefined();
+    // a V2-only seat restores by its namespaced key
+    const v2only: PeerMovementState = { ...sitting, stable: { ...sitting.stable, seatKey: "v2:central-hub/cafe-chair-0-north" } };
+    expect(resolveV1SelfPosition([v2only], true)!.seat).toBe("central-hub/cafe-chair-0-north");
+    // a walk in flight outranks the seated row, as V1's own occupancy read does
+    const walking: PeerMovementState = { ...sitting, active: { movementId: "m", origin: { x: 0, y: 0 }, path: [{ x: 1, y: 1 }], roomId: null, durationMs: 500, startedAt: 0 } };
+    expect(resolveV1SelfPosition([walking], true)!.seat).toBeUndefined();
+  });
+});
+
+describe("Phase 6C — the published facing is the CONFIGURED seat facing", () => {
+  it("a mapped seat publishes the configured word (seeded from V1), and an override changes it", async () => {
+    const { v1SeatForAnchor } = await import("./v1Seats");
+    const { __resetSeatFacingForTests, seatFacingFor, setSeatFacingOverride } = await import("../app/seats");
+    const CHAIR = "executive-room/workstation-chair";
+    const v1Seat = v1SeatForAnchor(CHAIR)!;
+    expect(seatFacingFor(CHAIR)).toBe(v1Seat.direction);
+    signIn();
+    const sink = createV1SelfMovementSink()!;
+    sink.started({ x: v1Seat.x - 20, z: v1Seat.y }, [{ x: v1Seat.x, z: v1Seat.y }], 600);
+    sink.arrived({ x: v1Seat.x, z: v1Seat.y }, "south", 0, CHAIR);
+    expect(emitWalkArrived.mock.calls[0][0].facing).toBe(v1Seat.direction);
+    setSeatFacingOverride(CHAIR, "left");
+    sink.started({ x: v1Seat.x - 20, z: v1Seat.y }, [{ x: v1Seat.x, z: v1Seat.y }], 600);
+    sink.arrived({ x: v1Seat.x, z: v1Seat.y }, "south", Math.PI / 2, CHAIR);
+    expect(emitWalkArrived.mock.calls[1][0].facing).toBe("left");
+    expect(emitWalkArrived.mock.calls[1][0].state).toBe("sitting");
+    __resetSeatFacingForTests();
+  });
+});

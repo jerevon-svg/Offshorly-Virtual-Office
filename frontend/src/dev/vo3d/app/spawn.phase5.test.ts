@@ -107,11 +107,16 @@ describe("what the adapter is not allowed to do", () => {
     expect(src).not.toContain("20000");
   });
 
-  it("claims no seat and no attendance", () => {
+  it("claims a seat ONLY through the validated V1 mapping (Phase 6C), and never attendance", () => {
     const src = code(adapter);
+    // standing, seat-less, is still the default arrival...
     expect(src).toContain('state: "standing"');
     expect(src).toContain("seatKey: null");
-    expect(src).not.toContain("sitting");
+    // ...and the ONE sitting arrival is gated on adapters/v1Seats resolving the anchor to a V1 seat,
+    // with V1's own key — never an invented one.
+    expect(src).toContain('state: "sitting"');
+    expect(src).toContain("v1SeatForAnchor");
+    expect(src).toContain("seatKey: v1Seat.key");
     expect(src).not.toContain("attendance");
     expect(src).not.toContain("CHECKED_IN");
   });

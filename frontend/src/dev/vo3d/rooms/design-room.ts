@@ -1,8 +1,9 @@
 // vo3d rooms — DESIGN ROOM definition (data only). World rect comes from the READ-ONLY V1 manifest;
 // shell/baked measurements are room-local (they position a static group at the room origin);
 // every ENTITY below is in WORLD coordinates.
-import type { Rect, Vec2 } from "../core/coords";
-import type { DoorCapability, Entity, RoomDef, ShellSpec } from "../world/WorldState";
+import { FACING_YAW, headingFor, type Facing, type Rect, type Vec2 } from "../core/coords";
+import type { DoorCapability, Entity, LoungeSeatCapability, RoomDef, SeatCapability, ShellSpec } from "../world/WorldState";
+import { SOFA_CUSHION_GAP, SOFA_CUSHION_LOCAL_X, SOFA_CUSHION_MARGIN } from "../build/furniture";
 import { v1FurnitureEntities, v1RoomRect } from "../adapters/v1Manifest";
 import { CELL } from "../adapters/v1Grid";
 import { BODY_RADIUS } from "../nav/clearance";
@@ -205,6 +206,96 @@ function plantEntities(): Entity[] {
   });
 }
 
+/** THE OTHER SEVEN DESK CHAIRS (Phase 6C). Until now only chair 4 carried a seat capability ("proof
+ *  scope"), so the Design Room's other chairs could not be sat in at all. Each now gets the SAME accepted
+ *  numbers chair 4 was tuned with, expressed relative to the chair along its PULL axis (away from the desk,
+ *  the opposite of the facing the manifest gave it) and a SIDE axis (which lane the body approaches from,
+ *  chosen per chair so two neighbours never share a stand cell). Chair 4 itself keeps its literal block. */
+const DESIGN_CHAIR = { side: 19.2, back: 16.1, preSeatBack: 6.8, waypointSide: 12.7, pullDistance: 22, seatedTuck: 7, cushionTopY: 14.4, cushionLocalZ: 0.3, sitDepth: 3.5,
+  timings: { pullMs: 900, sitMs: 650, slideMs: 1000, standMs: 650, returnMs: 900 } };
+const FORWARD: Record<Facing, Vec2> = { north: { x: 0, z: -1 }, south: { x: 0, z: 1 }, west: { x: -1, z: 0 }, east: { x: 1, z: 0 } };
+/** +1 / −1 along (pull.z, −pull.x): for a north-facing chair +1 is east (chair 4's lane); for the west-facing
+ *  pair at x 94 +1 is north; for the east-facing pair at x 235 +1 is south; for the lead chair +1 is west. The
+ *  lower chair of each pair uses the lane BETWEEN the pair — south of it the curve desks leave no stand cell. */
+export const DESIGN_CHAIR_SIDE: Readonly<Record<string, 1 | -1>> = {
+  "design-chair-3": 1, "design-member-chair5": 1,
+  "design-member-chair1": 1, "design-member-chair2": 1,
+  "design-member-chair7": -1, "design-member-chair6": -1,
+  "design-lead-chair": -1,
+};
+export function designChairSeat(pos: Vec2, facing: Facing, sideSign: 1 | -1): SeatCapability {
+  const T = DESIGN_CHAIR;
+  const f = FORWARD[facing];
+  const pull = { x: -f.x, z: -f.z };
+  const side = { x: pull.z * sideSign, z: -pull.x * sideSign };
+  const at = (sideUnits: number, backUnits: number): Vec2 => ({ x: pos.x + side.x * sideUnits + pull.x * backUnits, z: pos.z + side.z * sideUnits + pull.z * backUnits });
+  const preSeat = at(0, T.preSeatBack);
+  return {
+    approach: at(T.side, T.back),
+    preSeat,
+    approachToSeat: [at(T.waypointSide, T.preSeatBack), preSeat],
+    pullDir: pull,
+    pullDistance: T.pullDistance,
+    seatedTuck: T.seatedTuck,
+    cushionTopY: T.cushionTopY,
+    cushionLocal: { x: 0, z: T.cushionLocalZ },
+    sitDepth: T.sitDepth,
+    // the yaw whose body forward IS `facing` (+z model): the authored fallback; data/seatFacing.json decides
+    seatedYaw: headingFor(f.x, f.z),
+    timings: T.timings,
+  };
+}
+export const DESIGN_SEAT_IDS = [CHAIR_4_ID, ...Object.keys(DESIGN_CHAIR_SIDE).map((id) => `${DESIGN_ROOM_ID}/${id}`)];
+
+/** THE SIDE SOFA AND THE BEANBAG (Phase 6C): fixed lounge seating, until now with no capability at all —
+ *  so the click picker had no name for them and nothing could start a sit. V1 counts the sofa as three
+ *  seats and the beanbag as one (seatDirections "design-team").
+ *
+ *  Contact metadata is the builders' own. The `sofa` builder (build/furniture.ts, plain tone: 5-unit
+ *  arms, 4.2-unit cushions on an 8-unit deck at y 2) draws TWO cushions along local z, back to local −x —
+ *  the piece is authored back-to-west and un-mirrored (x 48 is west of the room's centre), so its sitters
+ *  face east into the room, V1's "right". The beanbag is a lathe of height 1.05·r; a body settles into its
+ *  dimple. The sofa is boxed in on its east by the curve desk (to z 504) and the side desk (from z 518),
+ *  so both cushions share the one stand cell on the open floor NORTH of the sofa and step in through the
+ *  14-unit gap between the two desks; the beanbag is approached from the open cell NORTH of it — the floor
+ *  to its east and south is inside the bottom cabinets' clearance (DESIGN_SOLIDS). */
+export const DESIGN_SOFA_ID = `${DESIGN_ROOM_ID}/design-side-sofa`;
+export const DESIGN_BEANBAG_ID = `${DESIGN_ROOM_ID}/design-side-beanbag`;
+export const DESIGN_LOUNGE_IDS = [DESIGN_SOFA_ID, DESIGN_BEANBAG_ID];
+const DESIGN_SOFA_CUSHION_TOP = 8 + 2 + 4.2; // deck at y 2, 8 high; plain-tone cushion 4.2 high
+const DESIGN_SOFA_DEPTH_UNITS = 70.5; // the manifest box (design-side-sofa.png), which the builder fills
+function designSofaLounge(pos: Vec2): LoungeSeatCapability {
+  const armW = 5, seats = 2;
+  const cushD = (DESIGN_SOFA_DEPTH_UNITS - 2 * armW - (seats - 1) * SOFA_CUSHION_GAP - 2 * SOFA_CUSHION_MARGIN) / seats;
+  const gapZ = 511; // world z: the centre of the 14-unit gap between the curve desk (ends 504) and the side desk (starts 518)
+  const approach = { x: pos.x, z: pos.z - DESIGN_SOFA_DEPTH_UNITS / 2 - 12 }; // open floor north of the sofa's north arm
+  return {
+    slots: [-(cushD / 2 + 0.6), cushD / 2 + 0.6].map((lz, i) => ({
+      id: i === 0 ? "sofa-north" : "sofa-south",
+      contactLocal: { x: SOFA_CUSHION_LOCAL_X + 1.5, y: DESIGN_SOFA_CUSHION_TOP, z: lz },
+      seatedYaw: FACING_YAW.east, // authored fallback (label-by-value, as every room authors); data/seatFacing.json decides
+      approach,
+      approachToSeat: [{ x: pos.x + 14, z: approach.z + 6 }, { x: pos.x + 17, z: gapZ }],
+      sink: 0.3,
+      timings: { sitMs: 750, standMs: 700 },
+    })),
+  };
+}
+function designBeanbagLounge(pos: Vec2, r: number): LoungeSeatCapability {
+  const h = r * 1.05;
+  return {
+    slots: [{
+      id: "beanbag-seat",
+      contactLocal: { x: 0, y: h * 0.8, z: 0 },
+      seatedYaw: FACING_YAW.south, // V1 "front"; the table decides
+      approach: { x: pos.x, z: pos.z - r - 10 },
+      approachToSeat: [{ x: pos.x, z: pos.z - r - 2 }],
+      sink: 1.2,
+      timings: { sitMs: 750, standMs: 700 },
+    }],
+  };
+}
+
 export function designRoomEntities(): Entity[] {
   // the separated V1 furniture boxes are absolute WORLD positions in the manifest, so they are the one
   // part of this room that does not follow RECT on its own — they take the same shift explicitly
@@ -227,5 +318,15 @@ export function designRoomEntities(): Entity[] {
       timings: { pullMs: 900, sitMs: 650, slideMs: 1000, standMs: 650, returnMs: 900 },
     },
   };
+  const sofa = furniture.find((e) => e.id === DESIGN_SOFA_ID);
+  const beanbag = furniture.find((e) => e.id === DESIGN_BEANBAG_ID);
+  if (!sofa || !beanbag) throw new Error("design room: side sofa / beanbag not found in manifest");
+  sofa.capabilities = { ...sofa.capabilities, lounge: designSofaLounge(sofa.transform.pos) };
+  beanbag.capabilities = { ...beanbag.capabilities, lounge: designBeanbagLounge(beanbag.transform.pos, Math.min(beanbag.props.w as number, beanbag.props.d as number) / 2) };
+  for (const [layerId, sideSign] of Object.entries(DESIGN_CHAIR_SIDE)) {
+    const e = furniture.find((x) => x.id === `${DESIGN_ROOM_ID}/${layerId}`);
+    if (!e) throw new Error(`design room: ${layerId} not found in manifest`);
+    e.capabilities = { ...e.capabilities, seat: designChairSeat(e.transform.pos, e.props.facing as Facing, sideSign) };
+  }
   return [...furniture, ...plantEntities(), doorEntity()];
 }

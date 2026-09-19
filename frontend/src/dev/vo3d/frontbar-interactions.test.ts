@@ -403,11 +403,11 @@ describe("vo3d — 4C regression: the fixed/movable split and Reception are unto
     const movable = [...world.entities.values()].filter((e) => e.capabilities.seat);
     const fixed = [...world.entities.values()].filter((e) => e.capabilities.lounge);
     expect(movable.map((e) => e.roomId).every((r) => r === DESIGN_ROOM.id || r === MEETING_ROOM.id)).toBe(true);
-    expect(fixed.map((e) => e.roomId).every((r) => r === RECEPTION_ROOM.id || r === PROJECT_ROOM.id)).toBe(true);
+    expect(fixed.map((e) => e.roomId).every((r) => r === RECEPTION_ROOM.id || r === PROJECT_ROOM.id || r === DESIGN_ROOM.id)).toBe(true);
     for (const e of movable) expect(e.capabilities.lounge).toBeUndefined();
     for (const e of fixed) expect(e.capabilities.seat).toBeUndefined();
-    expect(movable).toHaveLength(7); // the Design Room desk chair + six conference chairs
-    expect(fixed).toHaveLength(6); // Reception's two tub chairs + Project's two sofas and two tub chairs
+    expect(movable).toHaveLength(14); // the Design Room's eight desk chairs (Phase 6C: all of them) + six conference chairs
+    expect(fixed).toHaveLength(12); // Reception's four tub chairs and two sofas + the Design Room's sofa and beanbag (Phase 6C) + Project's two sofas and two tub chairs
   });
 
   it("Reception keeps its two lounge seats, four gate scanners and entrance scanner", () => {

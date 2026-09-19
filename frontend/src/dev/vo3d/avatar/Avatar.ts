@@ -79,7 +79,9 @@ export class Avatar {
     this.mixer = new THREE.AnimationMixer(scene);
     for (const clip of gltf.animations) this.actions[clip.name] = this.mixer.clipAction(clip);
     this.current = null;
-    this.play(CLIP_IDLE, 0);
+    // THE CLIP ASKED FOR BEFORE THE GLB LANDED WINS. A seated restore (Phase 6C) can put the body in a chair
+    // while the model is still downloading; forcing idle here left that body sitting in the idle pose.
+    this.play(this.requested ?? CLIP_IDLE, 0);
   }
   setLit(lit: boolean): void {
     this.lit = lit;
@@ -104,7 +106,10 @@ export class Avatar {
   worldPosition(): THREE.Vector3 { return this.root.getWorldPosition(new THREE.Vector3()); }
 
   // ---- animation ----
+  /** The clip most recently asked for, whether or not the GLB was there to play it — see load(). */
+  private requested: string | null = null;
   play(name: string, fade = 0.25): void {
+    this.requested = name;
     if (this.current === name) return;
     const next = this.actions[name];
     if (!next) return;

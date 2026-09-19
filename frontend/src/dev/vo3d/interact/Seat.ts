@@ -10,16 +10,13 @@ import { CLIP_IDLE, CLIP_SIT } from "../adapters/v1Avatar";
 import { headingFor, stepAngle, type Vec2 } from "../core/coords";
 import type { NavResult } from "../nav/planner";
 import type { SeatCapability } from "../world/WorldState";
+import { avatarRig, deskSeatContact, deskSeatedRootForRig } from "./seatContact";
 
 export type SeatState =
   | "idle" | "approaching" | "pullingOut" | "enteringGap" | "sitting" | "slidingIn"
   | "seated" | "slidingOut" | "standing" | "leavingGap" | "returningChair";
 
 const easeInOut = (t: number): number => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
-function hipsOfClip(clip: THREE.AnimationClip, scale: number): THREE.Vector3 {
-  const track = clip.tracks.find((t) => /Hips\.position$/.test(t.name)) as THREE.VectorKeyframeTrack | undefined;
-  return track ? new THREE.Vector3(track.values[0], track.values[1], track.values[2]).multiplyScalar(scale) : new THREE.Vector3();
-}
 
 export class SeatInteraction {
   state: SeatState = "idle";
@@ -47,12 +44,14 @@ export class SeatInteraction {
   private readonly avatar: Avatar;
   private readonly stack: ControllerStack;
   private readonly chair: THREE.Object3D;
+  /** A COPY of the entity's capability: `seatedYaw` on it is this interaction's, so the configured facing
+   *  (app/seats.ts seatedYawFor) can be applied without writing into the world's data. */
   readonly spec: SeatCapability;
   private readonly requestWalk: (to: Vec2) => NavResult;
   private readonly walkSpeed: () => number;
 
   constructor(avatar: Avatar, stack: ControllerStack, chair: THREE.Object3D, spec: SeatCapability, requestWalk: (to: Vec2) => NavResult, walkSpeed: () => number = () => 30) {
-    this.avatar = avatar; this.stack = stack; this.chair = chair; this.spec = spec; this.requestWalk = requestWalk; this.walkSpeed = walkSpeed;
+    this.avatar = avatar; this.stack = stack; this.chair = chair; this.spec = { ...spec }; this.requestWalk = requestWalk; this.walkSpeed = walkSpeed;
     this.restPos.copy(chair.position);
     this.restQuat.copy(chair.quaternion);
     const dir = new THREE.Vector3(spec.pullDir.x, 0, spec.pullDir.z);
@@ -61,22 +60,12 @@ export class SeatInteraction {
   }
   get ownsAvatar(): boolean { return this.state !== "idle"; }
 
-  private seatWorld(): THREE.Vector3 {
-    this.chair.updateMatrixWorld(true);
-    return new THREE.Vector3(this.spec.cushionLocal.x, this.spec.cushionTopY, this.spec.cushionLocal.z + this.spec.sitDepth).applyMatrix4(this.chair.matrixWorld);
-  }
-  /** root position that puts the sit clip's pelvis on the cushion (from clip data; no hard-coded offsets) */
+  private seatWorld(): THREE.Vector3 { return deskSeatContact(this.chair, this.spec); }
+  /** root position that puts the sit clip's pelvis on the cushion (from clip data; no hard-coded offsets).
+   *  The arithmetic lives in seatContact.deskSeatedRootForRig so a peer on this chair gets the same pose. */
   private seatedRootFor(seat: THREE.Vector3): THREE.Vector3 {
-    const g = this.avatar.gltf;
-    if (!g) return seat.clone();
-    const arm = g.scene.getObjectByName("Armature");
-    const scale = (arm?.scale.x ?? 1) * g.scene.scale.x;
-    const sit = g.animations.find((c) => c.name === CLIP_SIT), idle = g.animations.find((c) => c.name === CLIP_IDLE);
-    if (!sit || !idle) return seat.clone();
-    const hs = hipsOfClip(sit, scale), hi = hipsOfClip(idle, scale);
-    const dx = hs.x - hi.x, dz = hs.z - hi.z, h = this.spec.seatedYaw;
-    const wx = dx * Math.cos(h) + dz * Math.sin(h), wz = -dx * Math.sin(h) + dz * Math.cos(h);
-    return new THREE.Vector3(seat.x - wx, Math.max(0, seat.y - hs.y - 0.6), seat.z - wz);
+    const rig = avatarRig(this.avatar);
+    return rig ? deskSeatedRootForRig(rig, seat, this.spec.seatedYaw) : seat.clone();
   }
 
   sit(): NavResult | null {
@@ -89,6 +78,39 @@ export class SeatInteraction {
     return res;
   }
   stand(): void { if (this.state === "seated") this.setState("slidingOut"); }
+  /** PHASE 6C — THE CONFIGURED FACING CHANGED (dev tool). Takes the new yaw for every later step, and if the
+   *  body is already seated re-poses it in place: the same seated root (the hip-offset compensation depends
+   *  on yaw) at the new yaw. Position on the cushion, height and clip are untouched. */
+  setSeatedYaw(yaw: number): void {
+    this.spec.seatedYaw = yaw;
+    if (this.state !== "seated") return;
+    const a = this.avatar;
+    if (this.sceneParent && a.root.parent !== this.sceneParent) a.detachTo(this.sceneParent);
+    a.root.position.copy(this.seatedRootFor(this.seatWorld()));
+    a.setYaw(yaw);
+    a.attachTo(this.chair);
+  }
+  /** PHASE 6C — LAND IN THE CHAIR ALREADY SEATED, with no walk, pull, glide or slide: the pose the
+   *  sequence would have ended in, applied at once. For a reload/reconnect that finds V1 holding a
+   *  seated state for this employee: the chair is tucked, the body is on the cushion at the chair's own
+   *  yaw playing the seated clip, and the avatar is owned exactly as after a normal sit — so stand() and
+   *  every later step behave identically. Refused (false) unless idle and the avatar can be acquired. */
+  restoreSeated(): boolean {
+    if (this.state !== "idle") return false;
+    if (!this.stack.acquire("Interaction")) { this.status = "avatar owned elsewhere"; return false; }
+    this.moved = true;
+    this.walk = [];
+    this.chair.position.copy(this.tuckedPos);
+    this.chair.quaternion.copy(this.restQuat);
+    const a = this.avatar;
+    this.sceneParent = a.root.parent;
+    a.root.position.copy(this.seatedRootFor(this.seatWorld()));
+    a.setYaw(this.spec.seatedYaw);
+    a.play(CLIP_SIT, 0);
+    a.attachTo(this.chair);
+    this.setState("seated");
+    return true;
+  }
   reset(): void {
     this.moved = true; // the chair is snapped back to its rest transform below
     if (this.sceneParent && this.avatar.root.parent !== this.sceneParent) this.avatar.detachTo(this.sceneParent);

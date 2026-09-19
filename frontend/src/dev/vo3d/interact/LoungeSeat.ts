@@ -39,6 +39,7 @@ export class LoungeSeatInteraction {
   private readonly stack: ControllerStack;
   /** the furniture, read ONLY for its world matrix; never written to */
   private readonly furniture: THREE.Object3D;
+  /** A COPY of the slot: `seatedYaw` on it is this interaction's (app/seats.ts seatedYawFor). */
   readonly slot: LoungeSeatSlot;
   private readonly requestWalk: (to: Vec2) => NavResult;
   private readonly walkSpeed: () => number;
@@ -49,7 +50,7 @@ export class LoungeSeatInteraction {
     this.avatar = avatar;
     this.stack = stack;
     this.furniture = furniture;
-    this.slot = slot;
+    this.slot = { ...slot };
     this.requestWalk = requestWalk;
     this.walkSpeed = walkSpeed;
     this.furnitureAtStart.copy(furniture.position);
@@ -83,6 +84,28 @@ export class LoungeSeatInteraction {
     this.walk = [...res.path];
     this.setState("approaching");
     return res;
+  }
+  /** PHASE 6C — the FIXED-seating counterpart of SeatInteraction.restoreSeated: the seated pose at once,
+   *  for a reload/reconnect that finds V1 holding this slot for the employee. Nothing is walked or glided;
+   *  the furniture is untouched as always. Refused (false) unless idle and the avatar can be acquired. */
+  restoreSeated(): boolean {
+    if (this.state !== "idle") return false;
+    if (!this.stack.acquire("Interaction")) { this.status = "avatar owned elsewhere"; return false; }
+    this.walk = [];
+    const a = this.avatar;
+    a.root.position.copy(this.seatedRootPosition());
+    a.setYaw(this.slot.seatedYaw);
+    a.play(CLIP_SIT, 0);
+    this.occupiedBy = this.slot.id;
+    this.setState("seated");
+    return true;
+  }
+  /** PHASE 6C — the configured facing changed: take the new yaw, and re-pose a seated body in place. */
+  setSeatedYaw(yaw: number): void {
+    this.slot.seatedYaw = yaw;
+    if (this.state !== "seated") return;
+    this.avatar.root.position.copy(this.seatedRootPosition());
+    this.avatar.setYaw(yaw);
   }
   stand(): void {
     if (this.state === "seated") {

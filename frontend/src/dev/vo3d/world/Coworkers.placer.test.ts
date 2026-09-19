@@ -343,7 +343,7 @@ describe("Coworkers.sync — the cache is invisible from the scene graph", () =>
     flushPending();
     await slow;
     const here = coworkers.positions().find((p) => p.name === base[1].displayName);
-    expect(here).toEqual({ name: base[1].displayName, x: 400 + 4 * 6 + 5, z: 260 - 3, yaw: 0, source: "live", movementId: null, clip: "" });
+    expect(here).toEqual({ name: base[1].displayName, x: 400 + 4 * 6 + 5, z: 260 - 3, yaw: 0, source: "live", movementId: null, clip: "", seat: null });
     expect(coworkers.size).toBe(4);
   });
 

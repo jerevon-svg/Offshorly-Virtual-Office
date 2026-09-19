@@ -944,6 +944,21 @@ async def walk_arrived(sid: str, payload: dict | None) -> None:
         raw_yaw = payload.get("yaw")
         yaw = float(raw_yaw) if raw_yaw is not None else None  # validated finite above
 
+        # SEAT OCCUPANCY (Phase 6C). A `sitting` arrival onto a seat another employee already holds is
+        # accepted as STANDING at the same position — the position is true, the pose is not granted —
+        # and the arriving client alone is told (`seat_rejected`) so it can stand its body up. Everyone
+        # else simply sees a standing arrival. Decided here, synchronously against the in-memory
+        # registry, with no await between the check and `arrive`: serialised within this worker, and
+        # not claimed to be more than that (see PositionRegistry.seat_holder).
+        rejected_seat: str | None = None
+        holder: str | None = None
+        if state == "sitting" and seat_key is not None:
+            holder = position_registry.seat_holder(seat_key, exclude_email=email)
+            if holder is not None:
+                rejected_seat = seat_key
+                state = "standing"
+                seat_key = None
+
         stable = position_registry.arrive(
             email,
             movement_id=movement_id,
@@ -957,6 +972,13 @@ async def walk_arrived(sid: str, payload: dict | None) -> None:
         )
         if stable is None:
             return  # stale/wrong movementId — ignore silently
+
+        if rejected_seat is not None:
+            await sio.emit(
+                "seat_rejected",
+                {"movementId": movement_id, "seatKey": rejected_seat, "heldBy": holder},
+                to=sid,
+            )
 
         try:
             async with async_session_maker() as session:
