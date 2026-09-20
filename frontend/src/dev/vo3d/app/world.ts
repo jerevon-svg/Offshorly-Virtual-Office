@@ -137,8 +137,18 @@ export interface Vo3dCaveMeetingState {
   mic: boolean;
   camera: boolean;
   sharing: boolean;
-  /** Live cameras in the room, this client's included — the only honest head-count available. */
+  /** Live cameras in the room, this client's included. */
   cameras: number;
+  /** PHASE 7D. People in the room, this client's included — LiveKit's own membership. 0 until
+   *  connected, because before that nothing tells this client who is in there (see Vo3dCaveMeeting). */
+  people: number;
+  /** PHASE 7D. Is a meeting already running, from the SERVER's broadcast — the one fact that can be
+   *  known BEFORE joining, and therefore the one that decides Start versus Join. */
+  live: boolean;
+  /** Current host's email, or "". */
+  host: string;
+  /** True when the host is this viewer. */
+  isHost: boolean;
   /** Who is sharing a screen right now, or "". */
   presenter: string;
   /** The last thing that went wrong, in the store's own words, or "". */
@@ -156,6 +166,23 @@ export interface Vo3dCaveMeeting {
   setCamera(on: boolean): Promise<void>;
   setSharing(on: boolean): Promise<void>;
   leave(): void;
+  /** PHASE 7D. Offer this meeting to one person — the MEETING invitation, not the spatial ring. */
+  invite(email: string): void;
+  /** PHASE 7D. Walk the viewer INTO the Cave, through the real portal transition the door and the dev
+   *  driver already use — no teleport and no second entry path.
+   *
+   *  Accepting an invitation needs it: joining the meeting's media without moving the body left the
+   *  accepter in a room they were not standing in, so they had no Cave panel, no screen and no way to
+   *  leave. The meeting is a thing you do in a place, and this is that place. */
+  enter(): boolean;
+  /** PHASE 7D. WATCH the meeting without joining it: opens the call store's socket so this client
+   *  hears `meeting_presence`, and NOTHING else. No token, no LiveKit room, no microphone, no camera.
+   *
+   *  It exists because the bridge is lazy by design (Phase 7C: opening the V2 page must cost no
+   *  LiveKit SDK and no network), and that laziness made Start-vs-Join wrong for exactly the person it
+   *  matters to — somebody walking into a Cave where a meeting is already running has, by definition,
+   *  not pressed anything yet, so without this they are offered "Start" for a meeting that exists. */
+  observe(email: string): Promise<void>;
 }
 
 /** What a mounted V2 world hands back. `dispose()` is idempotent and, once called, the world is dead:
@@ -182,7 +209,7 @@ export interface Vo3dWorld {
    *  being meaningful"). Returns true only when the body was actually moved. The host calls it whenever
    *  V1's movement snapshot resolves, which may be before or after this world finished building, so every
    *  refusal is silent and idempotent. */
-  restoreSelf(point: Vec2, facing: Facing, seat?: string): boolean;
+  restoreSelf(point: Vec2, facing: Facing, seat?: string, place?: string): boolean;
   /** PHASE 6C — WHICH SEAT ANCHORS OTHER EMPLOYEES OCCUPY (app/seats.ts ids), pushed in from outside.
    *
    *  The world never decides occupancy: app/Vo3dHost.tsx derives it from V1's own movement feed and roster
@@ -248,6 +275,12 @@ export interface Vo3dWorld {
    *  or any conversation: OFFICE and 3D EXPLORE only reconfigure the orbit rig, and PLAYER is a camera
    *  handoff (see render/CameraModes). A refused PLAYER entry falls back to OFFICE. */
   setViewMode(mode: Vo3dViewMode): void;
+  /** PHASE 7D — ASK FOR THE POINTER FROM THE CALLER'S OWN GESTURE. A pointer-lock request is only
+   *  granted inside a user gesture, so entering PLAYER has to ask from the keypress that entered it
+   *  rather than waiting for a click on the world. A no-op outside PLAYER. */
+  requestPointerLock(): void;
+  /** True while the browser refused our last request and unlocked mouse-look is carrying the mode. */
+  subscribeLockState(listener: (locked: boolean, unlockedLook: boolean) => void): () => void;
   /** PART 4 — first- or third-person inside PLAYER. A no-op outside it. */
   setPlayerView(view: "first" | "third"): void;
   /** PART 4 — which of the two PLAYER cameras is live; told at once on subscribe. */
@@ -498,6 +531,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       camera: st.camera,
       sharing: st.sharing,
       cameras: st.cameras,
+      people: st.people,
+      live: st.live,
+      host: st.host,
+      isHost: st.isHost,
       presenter: st.presenter,
       note: st.note,
     };
@@ -800,6 +837,12 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
           // at the body position: the seated browser saw itself sitting and every other browser stood it
           // beside the chair (the observed A/B mismatch). world.seatWiring.test.ts pins this line.
           arrived: (at, facing, yaw, seat) => selfMovement.arrived(toV1Frame(at), facing, yaw, seat),
+          // PHASE 7D — the named-place snap, converted through the SAME frame mapping as everything else.
+          enteredPlace: (at, yaw, room, localAt) => selfMovement.enteredPlace(toV1Frame(at), yaw, room, localAt),
+          // The ANCHOR goes through the V1 frame mapping like every other V1 coordinate; `from`/`to`
+          // are world points in the place's own frame and are deliberately NOT converted.
+          movedInPlace: (anchor, from, to, yaw, room) =>
+            selfMovement.movedInPlace(toV1Frame(anchor), from, to, yaw, room),
         },
         // WHERE V1 CAN HOLD A POSITION AT ALL — the V1 frame, and nothing outside it. V2's world extends
         // well past it (the campus legs, the AI Lab at negative z, the CAVE at x 2600) and V1 has no
@@ -863,7 +906,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   /** A restore that arrived while the gate was shut and the target was inside the office. Held rather than
    *  discarded: the employee may be checked in and simply waiting on the read, and their persisted
    *  position is still the right answer once V1 confirms it. Retried from setOfficeAccess. */
-  let pendingRestore: { point: Vec2; facing: Facing; seat?: string } | null = null;
+  let pendingRestore: { point: Vec2; facing: Facing; seat?: string; place?: string } | null = null;
 
   const zoneOf = (p: Vec2): Zone => zoneAt(p, accessGeom);
   /** May a body be PUT at this point? The teleport/restore counterpart of the closed lanes — routing is
@@ -900,7 +943,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     if (pendingRestore && mayEnterOffice(officeAccess)) {
       const r = pendingRestore;
       pendingRestore = null;
-      restoreSelf(r.point, r.facing, r.seat);
+      restoreSelf(r.point, r.facing, r.seat, r.place);
     }
   }
 
@@ -1847,8 +1890,30 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
 
 
   // ---- the Championship Cave: the portal ------------------------------------------------------------
+  // PHASE 7D — the CAVE's name on the movement wire. A roomId is any string server-side (socket.py's
+  // _is_room_id), so this needs no backend change and collides with no V1 room id.
+  const CAVE_PLACE_ID = "championship-cave";
+  /** PHASE 7D — WHERE EACH PERSON IN THE CAVE IS, from what they actually published.
+   *
+   *  This replaces a hash-of-email slot table, and the difference is the whole point: that one was a
+   *  MEMBERSHIP renderer — it could say "they are in the Cave" and never "where" — so a body pinned to
+   *  its slot no matter how far its owner walked. The feed now publishes real Cave coordinates
+   *  (app/selfMovement localLeg), so this only has to read them.
+   *
+   *  A peer inside the Cave whose local position has not arrived yet — a restart cleared it, or they
+   *  have not moved since — keeps `point`, which puts them at the portal. Honest, and self-correcting
+   *  the moment they take a step. */
+  const placeWorldPoint = (c: Vo3dCoworker): Vo3dCoworker =>
+    c.place === CAVE_PLACE_ID && c.localPoint ? { ...c, worldPoint: c.localPoint } : c;
   caveTransition = new CaveTransition({
     build: caveBuild,
+    // PHASE 7D — MULTIPLAYER. The CAVE is outside V1's coordinate frame, so a body inside it has no
+    // position the movement wire can carry and, before this, crossing the boundary published nothing:
+    // every other browser left the employee standing at the portal, with their nameplate out in the hub
+    // and no avatar in the room. Naming the place is what the feed publishes ALONGSIDE the last real
+    // in-frame point, so peers can put the body where it actually is (adapters/v1CoworkerPositions).
+    // Told BEFORE the swap so the boundary crossing in the next frame already knows where this is going.
+    onWhere: (where) => selfFeed?.entering(where === "cave" ? CAVE_PLACE_ID : null),
     media: caveMedia,
     // the WHOLE office, hidden while you are inside: eleven rooms and a ground floor stop being drawn,
     // which is most of the reason the CAVE can afford a 270° video at all
@@ -2429,6 +2494,12 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   /** PHASE 7A — view-mode subscribers. A Set so a StrictMode double-subscribe cannot double-notify. */
   const viewModeListeners = new Set<(mode: Vo3dViewMode) => void>();
   const playerViewListeners = new Set<(view: "first" | "third") => void>();
+  // PHASE 7D — who wants to know whether the pointer is ours, and whether the unlocked fallback is
+  // carrying PLAYER. Drives the recovery hint and nothing else.
+  const lockStateListeners = new Set<(locked: boolean, unlockedLook: boolean) => void>();
+  playerMode.onLockState = (locked, unlockedLook) => {
+    for (const cb of lockStateListeners) cb(locked, unlockedLook);
+  };
   const notifyPlayerView = (): void => {
     for (const l of playerViewListeners) l(params.playerView);
   };
@@ -3526,7 +3597,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
         caveState.shareSize = cavePresentation.state.width
           ? `${cavePresentation.state.width} × ${cavePresentation.state.height} (${Math.round(cavePresentation.aspect * 100) / 100}:1)`
           : "—";
-        caveState.liveCalls = caveLiveShare.state.live || "—";
+        caveState.liveCalls = caveLiveShare.state.broadcast || "—";
         caveState.meeting = caveLiveShare.state.session
           ? `${caveLiveShare.state.kind}: ${caveLiveShare.state.session}`
           : "—";
@@ -4315,7 +4386,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *
    *  It also CLEARS ANY QUEUED WALK. Restoring a body while the planner still holds waypoints would have
    *  the walker immediately drag it back toward a route planned from the old position. */
-  function restoreSelf(point: Vec2, facing: Facing, seatAnchor?: string): boolean {
+  function restoreSelf(point: Vec2, facing: Facing, seatAnchor?: string, place?: string): boolean {
     if (disposed || selfRestored || selfMovedByUser) return false;
     const target = homeDeskWorldPoint(point, selfFrameRooms, ROOM_WORLD_SHIFT_Z);
     // A PERSISTED POSITION IS NOT A PERMISSION. V1 keeps employee_positions whatever attendance says, so
@@ -4324,7 +4395,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // than spent when the answer is merely `unknown`: the read usually resolves to a confirmed check-in a
     // moment later, and that employee's own desk is then exactly where they belong.
     if (!mayPlaceAt(target)) {
-      if (officeAccess === "unknown") pendingRestore = { point, facing, ...(seatAnchor ? { seat: seatAnchor } : {}) };
+      if (officeAccess === "unknown") pendingRestore = { point, facing, ...(seatAnchor ? { seat: seatAnchor } : {}), ...(place ? { place } : {}) };
       avatarState.spawn = `${avatarState.spawn} · V1 position is inside the working office (attendance ${officeAccess})`;
       return false;
     }
@@ -4333,6 +4404,34 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // the SAME access gate the standing restore just passed — a persisted seat is no more a permission
     // than a persisted position. Silent to the feed (placed, seated) exactly as the standing restore is.
     // A chair this world cannot seat the body in falls through to the standing restore at the centroid.
+    // PHASE 7D — RESTORED INTO THE CAVE. V1 holds a named place beside the position for this employee,
+    // and peers already read it (adapters/v1CoworkerPositions) — so before this, a reload put the person
+    // back at the portal while every other browser correctly drew them inside, and the two views
+    // disagreed about a fact that was on the wire all along.
+    //
+    // `point` is still the real in-frame position V1 holds, so the ACCESS GATE above has already run
+    // against it: a persisted place is no more a permission than a persisted position, and an employee
+    // who may not be in the office may not be restored into its Cave either.
+    //
+    // NOTHING ELSE IS RESUMED. Being in the Cave and being in a meeting are separate facts and only the
+    // first is persisted, so this starts no meeting, joins no call, publishes no media and changes no
+    // attendance. An UNKNOWN place name falls through to the ordinary restore below, which is exactly
+    // what happened before any of this existed.
+    if (place === CAVE_PLACE_ID && caveTransition) {
+      // Seed the feed with the IN-FRAME point first, silently. The body is about to be somewhere V1
+      // cannot describe, and the feed's boundary publish re-states the place FROM its last in-frame
+      // sample — which has to be this portal, not the Cave position it is about to hold.
+      selfFeed?.placed(target);
+      if (caveTransition.restoreInside()) {
+        selfRestored = true;
+        navCtl.setPath([]);
+        if (playerMode.active) playerMode.camera.snap();
+        avatarState.spawn = "restored from V1 · inside the Championship Cave";
+        R.invalidateShadows();
+        return true;
+      }
+      // Could not land in there: fall through and restore in the office, which is still true of them.
+    }
     if (seatAnchor && restoreIntoSeat(seatAnchor)) {
       selfRestored = true;
       navCtl.setPath([]);
@@ -4404,7 +4503,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // Its own generation guard drops a load that lands after a newer roster, and its disposed guard drops
     // one that lands after the world is gone.
     setCoworkers: (list, missingAvatar) => {
-      void coworkers.sync(list, missingAvatar).then(refreshCoworkerState);
+      // PHASE 7D — PEOPLE WHO ARE IN THE CAVE. The feed says so by NAME (`place`), because the CAVE is
+      // outside V1's coordinate frame and no `point` can mean "in there". This is the one place that
+      // knows what the name refers to — it owns the geometry — so it resolves the name to a real world
+      // position here and hands the placer a `worldPoint` it can use directly.
+      void coworkers.sync(list.map(placeWorldPoint), missingAvatar).then(refreshCoworkerState);
       refreshCoworkerState();
     },
     setCoworkerInteractions: (handlers) => {
@@ -4447,11 +4550,23 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       setCamera: async (on: boolean) => { await caveLiveShare.setCamera(on); notifyCaveMeetingIfChanged(); },
       setSharing: async (on: boolean) => { await caveLiveShare.setSharing(on); notifyCaveMeetingIfChanged(); },
       leave: () => { caveLiveShare.leave(); notifyCaveMeetingIfChanged(); },
+      invite: (email: string) => { caveLiveShare.invite(email); },
+      enter: () => caveTransition?.enter() ?? false,
+      observe: async (email: string) => {
+        await caveLiveShare.connect(email);
+        notifyCaveMeetingIfChanged();
+      },
     },
     subscribeDevTools: (listener) => {
       devToolsListeners.add(listener);
       listener(devToolsVisible);
       return () => devToolsListeners.delete(listener);
+    },
+    requestPointerLock: () => { if (playerMode.active) playerMode.requestPointerLock(); },
+    subscribeLockState: (listener) => {
+      lockStateListeners.add(listener);
+      listener(playerMode.pointerLocked, playerMode.unlockedLook);
+      return () => lockStateListeners.delete(listener);
     },
     setViewMode: (mode) => {
       if (params.cameraMode === mode) return;

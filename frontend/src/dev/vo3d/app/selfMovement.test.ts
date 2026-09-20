@@ -9,7 +9,11 @@ import { FACING_YAW, facingForYaw, type Facing, type Vec2 } from "../core/coords
 
 type Call =
   | { call: "started"; origin: Vec2; path: Vec2[]; durationMs: number }
-  | { call: "arrived"; at: Vec2; facing: Facing };
+  | { call: "arrived"; at: Vec2; facing: Facing }
+  /** PHASE 7D — "they are in this named place now", the CAVE's boundary publish. */
+  | { call: "placed"; at: Vec2; room: string | null; localAt?: Vec2 }
+  /** PHASE 7D — one leg of real movement inside a named place: the anchor V1 keeps, and the real walk. */
+  | { call: "inPlace"; anchor: Vec2; from: Vec2; to: Vec2[]; room: string };
 
 /** `yaws` and `pacings` are recorded beside the calls rather than inside them, so every assertion on the
  *  Phase 5 call shapes stays byte-for-byte what it was — the Phase 6B fields are additive on the wire and
@@ -24,6 +28,16 @@ function recorder(): { sink: Vo3dSelfMovementSink; calls: Call[]; yaws: number[]
       sink.state.started++;
       calls.push({ call: "started", origin, path: [...path], durationMs });
       pacings.push(pacing);
+    },
+    movedInPlace: (anchor, from, to, _yaw, room) => {
+      sink.state.started++;
+      sink.state.arrived++;
+      calls.push({ call: "inPlace", anchor, from, to: [...to], room });
+    },
+    enteredPlace: (at, _yaw, room, localAt) => {
+      sink.state.started++;
+      sink.state.arrived++;
+      calls.push({ call: "placed", at, room, ...(localAt ? { localAt } : {}) });
     },
     arrived: (at, facing, yaw) => {
       sink.state.arrived++;
@@ -296,10 +310,12 @@ describe("the edge of V1's coordinate frame", () => {
     feed.frame(16, { x: 1460, z: 600 }, 0, false); // outside
     feed.frame(16, { x: 1460, z: 600 }, 0, false);
     feed.frame(16, { x: 1430, z: 600 }, FACING_YAW.west, false); // first in-frame sample
-    expect(calls).toEqual([
-      { call: "started", origin: { x: 1430, z: 600 }, path: [{ x: 1430, z: 600 }], durationMs: 100 },
-      { call: "arrived", at: { x: 1430, z: 600 }, facing: "west" },
-    ]);
+    // PHASE 7D: the same snap, now expressed as the sink's own `placed` verb — one call carrying the
+    // point AND the place, instead of a started/arrived pair that could say only the point. The adapter
+    // still publishes it as exactly that pair on the wire (adapters/v1SelfMovement), so nothing about
+    // what peers receive changed. `room: null` is the fact that matters here: coming back INTO the frame
+    // clears whatever named place they were in.
+    expect(calls).toEqual([{ call: "placed", at: { x: 1430, z: 600 }, room: null }]);
 
     calls.length = 0;
     const end = drive(feed, { x: 1430, z: 600 }, -1, 0, 320, 70, FACING_YAW.west);
@@ -352,6 +368,8 @@ describe("free-movement latency, measured rather than asserted by eye", () => {
       state: { started: 0, arrived: 0, refused: 0, wire: [] },
       started: (_o, path) => calls.push({ call: "started", path: [...path] }),
       arrived: (at) => calls.push({ call: "arrived", at }),
+      enteredPlace: (at) => calls.push({ call: "arrived", at }),
+      movedInPlace: (anchor) => calls.push({ call: "arrived", at: anchor }),
     };
     const feed = new SelfMovementFeed(sink);
     let pos = { x: 0, z: 0 };
@@ -505,5 +523,120 @@ describe("Phase 6B — the actual resting yaw goes out with every arrival; legs 
     const feed = new SelfMovementFeed(sink);
     feed.planned({ x: 0, z: 0 }, [{ x: 100, z: 0 }], 1428);
     expect(pacings[0]).toBeUndefined();
+  });
+});
+
+// PHASE 7D — TELLING PEERS WHERE YOU WENT WHEN V1 HAS NO WORD FOR IT.
+//
+// The CAVE is at x 2600, outside V1's frame entirely. Crossing that boundary used to publish nothing
+// beyond closing the leg at the edge, so every other browser left the employee standing at the portal —
+// nameplate in the hub, no avatar in the room. Naming the place is the whole fix: the POINT stays the
+// last real in-frame one (so V1 still holds a true position), and the NAME says where they actually are.
+describe("a named place beyond the frame", () => {
+  const inFrameOnly = (p: { x: number; z: number }) => p.x >= 0 && p.x <= 1440 && p.z >= 0 && p.z <= 900;
+
+  it("publishes the place alongside the last in-frame point on the way out", () => {
+    const { sink, calls } = recorder();
+    const feed = new SelfMovementFeed(sink, inFrameOnly);
+    feed.frame(16, { x: 1400, z: 600 }, 0, false); // inside, by the portal
+    feed.entering("championship-cave");
+    feed.frame(16, { x: 2600, z: 400 }, 0, false); // stepped through
+
+    const placed = calls.find((c) => c.call === "placed");
+    // The anchor V1 keeps, the place they went, AND where they landed in it — so a peer draws them
+    // inside immediately rather than in the doorway until their first step.
+    expect(placed).toEqual({
+      call: "placed", at: { x: 1400, z: 600 }, room: "championship-cave", localAt: { x: 2600, z: 400 },
+    });
+  });
+
+  it("publishes nothing extra for an UNNAMED excursion — a campus leg behaves as it always did", () => {
+    const { sink, calls } = recorder();
+    const feed = new SelfMovementFeed(sink, inFrameOnly);
+    feed.frame(16, { x: 1400, z: 600 }, 0, false);
+    feed.frame(16, { x: 2600, z: 400 }, 0, false);
+
+    expect(calls.some((c) => c.call === "placed")).toBe(false);
+  });
+
+  it("clears the place on the way back in", () => {
+    const { sink, calls } = recorder();
+    const feed = new SelfMovementFeed(sink, inFrameOnly);
+    feed.frame(16, { x: 1400, z: 600 }, 0, false);
+    feed.entering("championship-cave");
+    feed.frame(16, { x: 2600, z: 400 }, 0, false);
+    calls.length = 0;
+
+    feed.entering(null);
+    feed.frame(16, { x: 1400, z: 600 }, FACING_YAW.west, false);
+
+    expect(calls).toEqual([{ call: "placed", at: { x: 1400, z: 600 }, room: null }]);
+  });
+
+  it("never invents a coordinate — the point published is always one the body really occupied", () => {
+    const { sink, calls } = recorder();
+    const feed = new SelfMovementFeed(sink, inFrameOnly);
+    feed.frame(16, { x: 1400, z: 600 }, 0, false);
+    feed.entering("championship-cave");
+    feed.frame(16, { x: 2600, z: 400 }, 0, false);
+
+    for (const c of calls) {
+      const at = c.call === "placed" ? c.at : c.call === "arrived" ? c.at : null;
+      if (at) expect(inFrameOnly(at)).toBe(true);
+    }
+  });
+
+  // PHASE 7D — THE FEATURE. Movement out here used to be published as nothing at all, which is why two
+  // people standing in the CAVE could not see each other walk. It is now published as an ordinary leg
+  // whose V1 half never moves.
+  it("publishes real legs while the body walks around out there", () => {
+    const { sink, calls } = recorder();
+    const feed = new SelfMovementFeed(sink, inFrameOnly);
+    feed.frame(16, { x: 1400, z: 600 }, 0, false);
+    feed.entering("championship-cave");
+    feed.frame(16, { x: 2600, z: 400 }, 0, false);
+    calls.length = 0;
+
+    // Far enough apart to clear the sampler; the first sample only establishes where the leg starts.
+    feed.frame(16, { x: 2660, z: 400 }, 0, false);
+    feed.frame(16, { x: 2720, z: 400 }, 0, false);
+
+    const legs = calls.filter((c) => c.call === "inPlace");
+    expect(legs.length).toBeGreaterThan(0);
+    const leg = legs[legs.length - 1];
+    if (leg.call !== "inPlace") throw new Error("expected an inPlace leg");
+    expect(leg.room).toBe("championship-cave");
+    // THE REAL WALK, in the place's own frame.
+    expect(leg.to[leg.to.length - 1]).toEqual({ x: 2720, z: 400 });
+    // AND THE V1 HALF NEVER MOVES: the anchor is the in-frame point they left from, every time.
+    expect(leg.anchor).toEqual({ x: 1400, z: 600 });
+    expect(inFrameOnly(leg.anchor)).toBe(true);
+  });
+
+  it("does not publish a leg for a twitch — the sampler is the office's own", () => {
+    const { sink, calls } = recorder();
+    const feed = new SelfMovementFeed(sink, inFrameOnly);
+    feed.frame(16, { x: 1400, z: 600 }, 0, false);
+    feed.entering("championship-cave");
+    feed.frame(16, { x: 2600, z: 400 }, 0, false);
+    calls.length = 0;
+
+    feed.frame(16, { x: 2601, z: 400 }, 0, false);
+    feed.frame(16, { x: 2602, z: 400 }, 0, false);
+
+    expect(calls.filter((c) => c.call === "inPlace")).toEqual([]);
+  });
+
+  it("publishes no leg for an UNNAMED excursion — there is no frame to say the numbers are in", () => {
+    const { sink, calls } = recorder();
+    const feed = new SelfMovementFeed(sink, inFrameOnly);
+    feed.frame(16, { x: 1400, z: 600 }, 0, false);
+    feed.frame(16, { x: 2600, z: 400 }, 0, false);
+    calls.length = 0;
+
+    feed.frame(16, { x: 2660, z: 400 }, 0, false);
+    feed.frame(16, { x: 2720, z: 400 }, 0, false);
+
+    expect(calls).toEqual([]);
   });
 });

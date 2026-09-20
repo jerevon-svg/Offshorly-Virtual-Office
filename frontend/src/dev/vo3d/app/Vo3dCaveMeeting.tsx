@@ -9,19 +9,19 @@
 // mic / camera / screen-share publications. Nothing is mocked, nothing is duplicated, and there is no
 // second signalling path. If a button is not backed by one of those calls it is not on screen.
 //
-// THE ONE THING IT DOES NOT DO, STATED HONESTLY. The panel cannot say "Start" versus "Join" before you
-// are in the room, because nothing tells it. The backend's meeting endpoint is deliberately
-// create-or-reuse (routers/calls.py: "the first caller mints the room, everyone after joins the same
-// one") and the socket's active-call broadcast carries SPATIAL conversations only — callStore says so on
-// the field itself: "A meeting never announces call_joined/call_left". So there is no meeting-presence
-// signal to read, and a button that guessed would be lying half the time. It says what is true of both
-// cases — you open the Cave meeting, and whoever else opens it is in there with you — and the
-// participant count appears the moment there is a real one to show. A real Start/Join split needs a
-// backend meeting-presence signal; that is Phase 7D work, listed as such.
+// PHASE 7D CLOSED THE TWO GAPS 7C LISTED. The panel now says Start versus Join before you are in the
+// room, because the server finally tells it: `meeting_presence` carries who is in each meeting and who
+// hosts it, and callStore keeps it in `meetings` (see the backend's socket.py call_joined, which now
+// accepts a meetingId). `live` is the SERVER's answer and exists before this client joins anything;
+// `people` is LiveKit's and exists only once it has. The button reads the first, the head-count the
+// second, and neither guesses.
 //
-// INVITE is likewise absent rather than fake: there is no meeting-invite service. sendCallInvite is the
-// SPATIAL ring (it invites somebody to a conversation between two avatars, not to a room), so wiring it
-// to this button would send the wrong thing.
+// INVITE is now real, and is the MEETING invitation — a separate ring from the spatial one on purpose.
+// sendCallInvite invites somebody to a conversation between two avatars; this offers them a room.
+//
+// ENTERING THE CAVE STILL STARTS NOTHING. Everything below is behind an explicit press; walking in
+// connects to nothing, publishes nothing, and asks for no token. Start and Join then behave exactly as
+// every other call in this app does, microphone included (V1's mic-on-connect, deliberately unchanged).
 import { useCallback, useEffect, useState } from "react";
 import type { Vo3dWorld, Vo3dCaveMeetingState } from "./world";
 import styles from "./Vo3dCaveMeeting.module.css";
@@ -32,14 +32,20 @@ export interface Vo3dCaveMeetingProps {
   /** The viewer's own identity, as the rest of the HUD knows it. Handed to the call store so this page
    *  joins as the signed-in employee rather than as the dev default. */
   selfId: string;
+  /** PHASE 7D — open the employee picker to invite somebody to THIS meeting. The picker itself is the
+   *  HUD's (components/Chat/EmployeePickerModal, the same one New Message uses), because it is a
+   *  screen-owning modal and every one of those joins the dock's single visibility rule — see
+   *  Vo3dHud.tsx. This panel only says WHEN to open it; it neither owns the roster nor sends the
+   *  invitation. Omitted where nothing can host a picker, in which case no Invite row appears. */
+  onInvite?: () => void;
 }
 
 const EMPTY: Vo3dCaveMeetingState = {
   inside: false, status: "off", session: "", kind: "—",
-  mic: false, camera: false, sharing: false, cameras: 0, presenter: "", note: "",
+  mic: false, camera: false, sharing: false, cameras: 0, people: 0, live: false, host: "", isHost: false, presenter: "", note: "",
 };
 
-export function Vo3dCaveMeeting({ worldRef, ready, selfId }: Vo3dCaveMeetingProps) {
+export function Vo3dCaveMeeting({ worldRef, ready, selfId, onInvite }: Vo3dCaveMeetingProps) {
   const [state, setState] = useState<Vo3dCaveMeetingState>(EMPTY);
   const [busy, setBusy] = useState(false);
 
@@ -48,6 +54,17 @@ export function Vo3dCaveMeeting({ worldRef, ready, selfId }: Vo3dCaveMeetingProp
     if (!ready || !world?.caveMeeting) return;
     return world.caveMeeting.subscribe(setState);
   }, [ready, worldRef]);
+
+  // WALKING IN IS WATCHING, NOT JOINING. Entering the Cave opens the call store's socket so this
+  // client hears which meeting is running and who hosts it — and that is all it does: no token, no
+  // room, no microphone, no camera. Without it the panel offers "Start" to somebody standing in a
+  // live meeting, because a lazy bridge has nothing to read (see world.ts's observe).
+  //
+  // Idempotent: connect() returns immediately once the store is loaded, so re-entering costs nothing.
+  useEffect(() => {
+    if (!state.inside || !selfId) return;
+    void worldRef.current?.caveMeeting?.observe(selfId);
+  }, [state.inside, selfId, worldRef]);
 
   const run = useCallback(async (fn: () => Promise<void> | void) => {
     setBusy(true);
@@ -71,14 +88,14 @@ export function Vo3dCaveMeeting({ worldRef, ready, selfId }: Vo3dCaveMeetingProp
     <div className={styles.panel} data-testid="vo3d-cave-meeting" data-status={state.status}>
       <div className={styles.head}>
         <span className={styles.title}>Championship Cave</span>
-        <span className={styles.sub}>
+        <span className={styles.sub} data-testid="cave-meeting-sub">
           {connected
-            ? state.cameras > 0
-              ? `In the meeting · ${state.cameras} camera${state.cameras === 1 ? "" : "s"} on`
-              : "In the meeting"
+            ? describeRoom(state.people, state.cameras)
             : connecting
               ? "Connecting…"
-              : "Open the Cave meeting — everyone who opens it lands in the same room"}
+              : state.live
+                ? describeRunning(state.host, selfId)
+                : "No meeting yet — start one and others can join you"}
         </span>
       </div>
 
@@ -90,7 +107,7 @@ export function Vo3dCaveMeeting({ worldRef, ready, selfId }: Vo3dCaveMeetingProp
           data-testid="cave-meeting-start"
           onClick={() => meeting && void run(() => meeting.start(selfId))}
         >
-          {connecting ? "Connecting…" : "Start or join meeting"}
+          {connecting ? "Connecting…" : state.live ? "Join meeting" : "Start meeting"}
         </button>
       ) : (
         <div className={styles.controls}>
@@ -124,6 +141,22 @@ export function Vo3dCaveMeeting({ worldRef, ready, selfId }: Vo3dCaveMeetingProp
           >
             {state.sharing ? "🖥 Stop sharing" : "🖥 Share screen"}
           </button>
+          {/* INVITE. Offered only to somebody who is actually IN the meeting — you cannot invite
+              anybody into a room you have not joined, and the server refuses it anyway. Pressing it
+              opens the picker; the confirmation the inviter sees afterwards is the existing meeting
+              notice card ("Waiting for X to join"), driven by real store state rather than by a
+              second toast of this panel's own. */}
+          {onInvite && (
+            <button
+              type="button"
+              className={styles.control}
+              disabled={busy}
+              data-testid="cave-meeting-invite"
+              onClick={onInvite}
+            >
+              ＋ Invite
+            </button>
+          )}
           <button
             type="button"
             className={`${styles.control} ${styles.leave}`}
@@ -136,6 +169,11 @@ export function Vo3dCaveMeeting({ worldRef, ready, selfId }: Vo3dCaveMeetingProp
         </div>
       )}
 
+      {connected && state.host && (
+        <p className={styles.note} data-testid="cave-meeting-host">
+          {state.isHost ? "You are hosting." : `${shortName(state.host)} is hosting.`}
+        </p>
+      )}
       {connected && state.presenter && (
         <p className={styles.note} data-testid="cave-meeting-presenter">
           {state.sharing ? "You are sharing your screen." : `${state.presenter} is sharing a screen.`}
@@ -148,6 +186,32 @@ export function Vo3dCaveMeeting({ worldRef, ready, selfId }: Vo3dCaveMeetingProp
       )}
     </div>
   );
+}
+
+/** Who is hosting a meeting this viewer has not joined yet. The server's own answer. */
+function describeRunning(host: string, selfId: string): string {
+  if (!host) return "A meeting is running — join it";
+  if (host === selfId) return "Your meeting is running — join it";
+  return `${shortName(host)} is hosting — join them`;
+}
+
+/** The local part of an email, capitalised. The Cave panel has no roster of its own (it is driven by
+ *  the world, not by React's people list), and an email is what the server reports a host as. */
+function shortName(email: string): string {
+  const local = email.split("@")[0] || email;
+  return local.charAt(0).toUpperCase() + local.slice(1);
+}
+
+/** PHASE 7D — THE HEAD-COUNT, and exactly how far it goes. Once connected, LiveKit tells this client
+ *  who else is in the room, so "in the meeting" can finally say whether anybody else is. It still
+ *  cannot say Start versus Join BEFORE connecting, because nothing tells it then: see this file's
+ *  header and the backend contract in the Phase 7D report. A count shown after joining is a fact; a
+ *  label guessed before joining would not be. */
+function describeRoom(people: number, cameras: number): string {
+  const others = Math.max(0, people - 1);
+  const who =
+    others <= 0 ? "In the meeting · you're the only one here" : `In the meeting · ${people} people`;
+  return cameras > 0 ? `${who} · ${cameras} camera${cameras === 1 ? "" : "s"} on` : who;
 }
 
 export default Vo3dCaveMeeting;

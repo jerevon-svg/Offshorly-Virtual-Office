@@ -63,6 +63,32 @@ export interface Vo3dSelfMovementSink {
    *  becomes `state: "sitting"` with V1's own seat key, a V2-only chair is published as standing at the
    *  chair (adapters/v1Seats). The feed never learns V1's seat vocabulary. */
   arrived(at: Vec2, facing: Facing, yaw: number, seat?: string): void;
+  /** PHASE 7D — THE BODY IS NOW IN A NAMED PLACE V1 HAS NO COORDINATE FOR.
+   *
+   *  NOT to be confused with the feed's own `placed()` below, which means the opposite: that one is a
+   *  SILENT placement ("the body was put here, publish nothing"). This one publishes.
+   *
+   *  The CAVE is at x 2600, outside V1's frame entirely (see `inRange` below), so a body inside it has no
+   *  position the movement wire can carry. Before this, crossing that boundary published nothing at all
+   *  and every peer left the employee standing at the last in-frame point — the hub, just outside the
+   *  portal — which is exactly what "their pill is outside the Cave and their avatar is nowhere" was.
+   *
+   *  Nothing is fabricated. `at` is the real, in-frame point the body left from (the portal it stepped
+   *  through), so V1 and any V1 client still hold a true position for them; `room` is the extra fact that
+   *  says where they actually went. Peers that understand the room put the body there (adapters/
+   *  v1CoworkerPositions); peers that do not still see them at the portal, which is where V1 thinks they
+   *  are and is not a lie.
+   *
+   *  Published as the same minimum-duration movement pair every other snap uses — this protocol's way of
+   *  saying "they are here now" — so no new event, no new validation and no backend change. */
+  enteredPlace(at: Vec2, yaw: number, room: string | null, localAt?: Vec2): void;
+  /** PHASE 7D — ONE LEG OF REAL MOVEMENT INSIDE A NAMED PLACE.
+   *
+   *  `anchor` is the in-frame point V1 keeps holding for this employee and is republished unchanged on
+   *  every leg — nothing out-of-frame is ever written as a V1 coordinate. `from`/`to` are the real
+   *  movement, in `room`'s frame. Published as an ordinary started/arrived pair so peers replay it
+   *  through the interpolation every office walk already uses. */
+  movedInPlace(anchor: Vec2, from: Vec2, to: readonly Vec2[], yaw: number, room: string): void;
   /** Counters for the dev readout — how many movements went out, and how many were refused because they
    *  were not expressible as a V1 position. Numbers only, never a coordinate.
    *
@@ -188,6 +214,14 @@ export class SelfMovementFeed {
   /** Was the body somewhere V1 can hold a position, last frame? Starts true so a world built inside the
    *  frame — every real session — does not open with a spurious re-entry snap. */
   private wasInRange = true;
+  /** PHASE 7D — the named place the body is in (or about to be in) beyond V1's frame, or null. Set by the
+   *  world when a portal takes the body somewhere V1 cannot describe; read on the boundary crossing. */
+  private place: string | null = null;
+  /** PHASE 7D — the last IN-FRAME point before leaving, republished as `at` on every local leg so V1's
+   *  own coordinate never moves while somebody walks around a place it cannot describe. */
+  private anchor: Vec2 | null = null;
+  /** Where the last local leg ended, so the next one starts from a real previous position. */
+  private localLast: Vec2 | null = null;
 
   constructor(sink: Vo3dSelfMovementSink, inRange: InRangeTest = () => true) {
     this.sink = sink;
@@ -331,6 +365,29 @@ export class SelfMovementFeed {
     this.lastYaw = yaw;
   }
 
+  /** PHASE 7D — ONE LEG OF MOVEMENT INSIDE A NAMED PLACE.
+   *
+   *  Sampled on the SAME rule an in-frame free leg is (SAMPLE_UNITS of travel), so the event rate for
+   *  walking the CAVE is the event rate for walking the same distance in the office — no new timer and
+   *  no second movement system. `at`/`origin` are the anchor, unchanged every time; only the local
+   *  coordinates move, which is exactly why the server can skip the database write. */
+  private localLeg(pos: Vec2, yaw: number): void {
+    const anchor = this.anchor;
+    if (!anchor) return;
+    const from = this.localLast;
+    if (from && dist(from, pos) < SAMPLE_UNITS) return;
+    this.localLast = pos;
+    if (!from) return; // the first sample only establishes where this leg starts
+    this.sink.movedInPlace(anchor, from, [pos], wrapAngle(yaw), this.place!);
+  }
+
+  /** PHASE 7D — NAME THE PLACE BEYOND THE FRAME the body is entering, before it gets there, or null on
+   *  the way back. Called by the portal itself, which is the only thing that knows; the boundary crossing
+   *  in frame() is what actually publishes it, so a portal that is refused publishes nothing. */
+  entering(place: string | null): void {
+    this.place = place;
+  }
+
   /** Is the feed holding a seated body? Read by the world's readout and by tests. */
   get isSeated(): boolean { return this.mode.kind === "seated"; }
 
@@ -376,20 +433,50 @@ export class SelfMovementFeed {
         if (this.mode.kind === "free" && this.last) this.closeFreeLeg(this.last, yaw);
         else if (this.mode.kind === "planned" && this.last) { this.mode = { kind: "idle" }; this.sink.arrived(this.last, facingForYaw(yaw), wrapAngle(yaw)); }
         this.mode = { kind: "idle" };
+        // PHASE 7D — SAY WHERE THEY WENT. The leg above ends at the boundary, which is true but not the
+        // whole truth: they are in a named place out there. Publishing it at the SAME in-frame point adds
+        // the fact without inventing a coordinate. Only when the world has named one — an unnamed
+        // excursion (a campus leg) behaves exactly as it did.
+        if (this.place && this.last) {
+          this.anchor = this.last;
+          // The position they landed on, published WITH the entry — otherwise a peer draws them at the
+          // portal until they happen to take their first step, which reads as somebody standing in the
+          // doorway of a room they are plainly inside.
+          this.localLast = pos;
+          this.sink.enteredPlace(this.last, wrapAngle(yaw), this.place, pos);
+        }
         this.last = pos;
         return;
       }
       this.mode = { kind: "idle" };
       this.flushPending();
-      this.sink.started(pos, [pos], MIN_DURATION_MS);
-      this.sink.arrived(pos, facingForYaw(yaw), wrapAngle(yaw));
+      // BACK INSIDE THE FRAME: a plain snap to where they re-appeared, and the room fact is cleared with
+      // it — they are demonstrably not in the CAVE any more.
+      this.sink.enteredPlace(pos, wrapAngle(yaw), null);
       this.last = pos;
+      this.place = null;
+      this.anchor = null;
+      this.localLast = null;
       return;
     }
     if (!nowInRange) {
-      // Out of V1's world entirely: track the body so the return transition has a `last` to compare
-      // against, and publish nothing. Movement out here is real, and deliberately unrepresented.
-      this.mode = { kind: "idle" };
+      // PHASE 7D — MOVEMENT OUT HERE IS REAL, AND NOW REPRESENTED.
+      //
+      // It used to be published as nothing at all, which is why two people standing in the CAVE could
+      // not see each other walk. What changed is not WHERE it is published — `anchor` below stays the
+      // last real in-frame point, so V1 still holds the portal for them and nothing out-of-frame is
+      // ever written as a V1 coordinate — but that the real position now rides ALONGSIDE it, in the
+      // frame `place` names. Peers who understand the place replay it through the same interpolation
+      // every office walk uses; peers who do not see exactly what they saw before.
+      //
+      // Only inside a NAMED place. An unnamed excursion (a campus leg) is still unrepresented, because
+      // there is no frame to say those numbers are in.
+      if (!this.place || !this.anchor) {
+        this.mode = { kind: "idle" };
+        this.last = pos;
+        return;
+      }
+      this.localLeg(pos, yaw);
       this.last = pos;
       return;
     }

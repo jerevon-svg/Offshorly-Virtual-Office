@@ -54,6 +54,7 @@ import { CLIP_TALK_AGREE } from "../adapters/v1Avatar";
 import { useAutoStatusDetection } from "../../../services/presence/useAutoStatusDetection";
 import { isConnectedToMedia } from "../../../services/call/callStore";
 import type { ChatMessage } from "../../../services/chat";
+import { isAuthoredMessage } from "../../../services/chat/types";
 import { officePeopleToLayers } from "../../../data/rosterLayers";
 import { ACTIVE_DETAIL_STATUSES, mapAtlasToOfficeStatus, STATUS_META, type OfficeStatus } from "../../../services/presence/status";
 import { useDndEmails } from "../../../services/presence/dndClient";
@@ -61,6 +62,16 @@ import { useTalkPermissionGate } from "../../../components/OfficeMap/useTalkPerm
 import { TalkRequestToast } from "../../../components/OfficeMap/TalkRequestToast";
 import { CallInvitePrompt } from "../../../components/OfficeMap/CallInvitePrompt";
 import { SpatialCallControls } from "../../../components/OfficeMap/SpatialCallControls";
+import { CallOverlay } from "../../../components/OfficeMap/CallOverlay";
+import { Vo3dCallBar } from "./Vo3dCallBar";
+import { Vo3dMeetingChat } from "./Vo3dMeetingChat";
+import {
+  expireReactions,
+  joinMeetingChat,
+  leaveMeetingChat,
+  useMeetingChat,
+} from "../../../services/meeting/meetingChatClient";
+import { isPointerLocked } from "./keyGuard";
 import { EmployeeProfile } from "../../../components/OfficeMap/EmployeeProfile";
 import { ConversationView } from "../../../components/Chat/ConversationView";
 import { buildChatAttentionByLayerId } from "../../../components/OfficeMap/chatAttention";
@@ -118,6 +129,63 @@ export interface Vo3dOverlayProps {
 
 /** How long a transient message stays up, ms — V1's own character-menu toast timings. */
 const TOAST_MS = 2400;
+
+/** HOW LONG ANY MESSAGE HANGS OVER ITS SENDER'S HEAD, ms. V1's own spatial bubble life, and the ONE
+ *  figure for both kinds of bubble — a meeting message and a spatial message are the same thing
+ *  happening in two places, so they get the same life and the same timer, below. */
+const OVERHEAD_BUBBLE_MS = 4500;
+/** A long message belongs in the panel; over a head it is a preview and an invitation to open it. */
+const MEETING_BUBBLE_CHARS = 70;
+
+function bubbleText(text: string): string {
+  return text.length <= MEETING_BUBBLE_CHARS ? text : `${text.slice(0, MEETING_BUBBLE_CHARS - 1)}…`;
+}
+
+/** THE ONE OVERHEAD-BUBBLE TIMER, used by the spatial path and the meeting path alike.
+ *
+ *  This is V1's own mechanism, lifted verbatim out of handleTalkingMessage: per-person state, a
+ *  per-person timeout that removes the entry when it expires, and a ref of live timers so they can all
+ *  be cancelled at once. The meeting bubbles USED to be derived instead — a useMemo that filtered
+ *  `messages` on `Date.now() - atMs`, which is correct the instant it runs and wrong every instant
+ *  after, because nothing schedules a render at expiry. A meeting bubble therefore sat over its
+ *  sender's head until the next unrelated render happened to knock it off, which is the "stays
+ *  visible for too long" being fixed here. Derivation cannot expire anything; only a clock can.
+ *
+ *  `show` RESTARTS the life on every message: the previous timeout is cancelled before the new one is
+ *  armed, so a fast second message cannot be cut short by the first one's expiry (V1 overwrote the
+ *  handle without cancelling, and had exactly that bug). */
+function useOverheadBubbles(ttlMs: number) {
+  const [texts, setTexts] = useState<Record<string, string>>({});
+  const timersRef = useRef<Record<string, number>>({});
+
+  const clearAll = useCallback(() => {
+    for (const id of Object.values(timersRef.current)) window.clearTimeout(id);
+    timersRef.current = {};
+    setTexts((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+  }, []);
+
+  const show = useCallback((key: string, text: string) => {
+    window.clearTimeout(timersRef.current[key]);
+    setTexts((prev) => ({ ...prev, [key]: text }));
+    timersRef.current[key] = window.setTimeout(() => {
+      delete timersRef.current[key];
+      setTexts((prev) => {
+        if (!(key in prev)) return prev;
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+    }, ttlMs);
+  }, [ttlMs]);
+
+  // No bubble may outlive the overlay that owns it.
+  useEffect(() => clearAll, [clearAll]);
+
+  // MEMOISED because callers put this object in effect and callback dependency lists. A fresh object
+  // every render would re-run the feed effect on every render and make handleTalkingMessage unstable
+  // for the conversation views it is handed to.
+  return useMemo(() => ({ texts, show, clearAll }), [texts, show, clearAll]);
+}
 
 /** V1's resolver, asked only the question V2 can answer here. `isWalking` / `isSitting` are deliberately
  *  false: those are facts the world holds about a body, and it already puts both ahead of this pose. A
@@ -284,8 +352,9 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }
    *  and a stop from one must never clear another. */
   const [peerTyping, setPeerTyping] = useState<PeerTypingState>({});
   const peerTypingTimersRef = useRef<Record<string, number>>({});
-  /** What each person just said, cleared on V1's own 4.5s timer. */
-  const [talkingTextById, setTalkingTextById] = useState<Record<string, string>>({});
+  /** What each person just said, cleared on V1's own 4.5s timer (useOverheadBubbles). */
+  const spatialBubbles = useOverheadBubbles(OVERHEAD_BUBBLE_MS);
+  const talkingTextById = spatialBubbles.texts;
   /** IS THE VIEWER TYPING IN THE SPATIAL CHAT. Fed by the spatial panel's onTypingChange — real keystroke
    *  activity on V1's own 2.5s idle timer, never send history.
    *
@@ -295,7 +364,6 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }
    *  new conversation. The overhead is asking "am I typing", and that is the value it gets; the session
    *  scoping is done separately, against the live session membership, where it belongs. */
   const [selfTyping, setSelfTyping] = useState(false);
-  const talkingTimersRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
     const unsubscribe = chatService.onTyping?.((update) => {
@@ -334,21 +402,13 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }
    *  id dedupe there, so this runs exactly once per message. Self is keyed to the overhead layer's
    *  reserved self row, since the viewer has no coworker body to hang it on. */
   const handleTalkingMessage = useCallback((msg: ChatMessage) => {
+    // PHASE 7D: ONLY A ROW SOMEBODY ACTUALLY WROTE BECOMES A SPEECH BUBBLE. `messages` now also carries
+    // system records (a missed call), whose text is "" — without this they would pop an EMPTY bubble
+    // over the caller's body in the V2 world, through the overhead layer Phase 7A/7B built.
+    if (!isAuthoredMessage(msg)) return;
     const email = emailKey(msg.senderId) === self ? SELF_OVERHEAD_KEY : emailKey(msg.senderId);
-    window.clearTimeout(talkingTimersRef.current[email]);
-    setTalkingTextById((prev) => ({ ...prev, [email]: msg.text }));
-    talkingTimersRef.current[email] = window.setTimeout(() => {
-      setTalkingTextById((prev) => {
-        const next = { ...prev };
-        delete next[email];
-        return next;
-      });
-    }, 4500);
-  }, [self]);
-
-  useEffect(() => () => {
-    for (const id of Object.values(talkingTimersRef.current)) window.clearTimeout(id);
-  }, []);
+    spatialBubbles.show(email, msg.text);
+  }, [self, spatialBubbles]);
 
   // ---- the world subscription -----------------------------------------------------------------------
   // React owns the consequences, the world owns the scene — the same shape as every other write across
@@ -383,6 +443,28 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }
     setSelection(null);
     worldRef.current?.clearCoworkerSelection();
   }, [worldRef]);
+
+  // ---- PHASE 7D: WHERE THE CAMERAS ARE SHOWN --------------------------------------------------------
+  // THE CAVE HAS A SCREEN, so it does not need tiles. Its curved front panel and wings already render
+  // every live camera in the meeting (media/CaveGallery, driven by the same callStore videoByIdentity
+  // these tiles read), so a floating tile over each body inside the Cave is the SAME video drawn twice —
+  // once at meeting scale on the wall everyone is looking at, and once as a postage stamp above a head
+  // in front of it, the viewer's own included.
+  //
+  // SUPPRESSED, NOT DISABLED. Nothing here turns a camera off, detaches a shared track, leaves the room
+  // or touches call state: the overheads simply stop being given a track while the viewer is in the
+  // Cave, so React unmounts those tiles and CallVideoElement detaches each one with ITS OWN element —
+  // leaving the gallery's attachment to the very same track untouched. Walking out hands the tracks
+  // back and the tiles return, because this is derived state and nothing was destroyed.
+  //
+  // ONE SOURCE FOR "AM I IN THE CAVE": the world's own caveMeeting feed, which is CaveTransition's
+  // `inside` — the same flag the Cave panel appears on. No second notion of location.
+  const [insideCave, setInsideCave] = useState(false);
+  useEffect(() => {
+    const world = worldRef.current;
+    if (!ready || !world?.caveMeeting) return;
+    return world.caveMeeting.subscribe((s) => setInsideCave(s.inside));
+  }, [ready, worldRef]);
 
   // ---- the live anchor ------------------------------------------------------------------------------
   // THE CARD FOLLOWS THE PERSON. Their body moves (a replayed peer walk) and so does the camera (PLAYER
@@ -445,6 +527,116 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }
     pendingCallTargetRef.current = null;
     void startSpatialCall(activeSpatialSession.sessionId);
   }, [activeSpatialSession, startSpatialCall]);
+
+  // ---- PHASE 7D: THE MEETING'S CHAT ------------------------------------------------------------
+  // SUBSCRIBED TO THE MEETING THIS CLIENT IS ACTUALLY IN, and to nothing else. `connectedMeetingId`
+  // is the call store's own answer, so there is no second idea of meeting membership — and because
+  // joinMeetingChat is idempotent for the same id, leaving the Cave and walking back into the same
+  // live meeting re-uses the subscription rather than opening a second one.
+  const meetingChat = useMeetingChat();
+  const connectedMeetingId = callState.connectedMeetingId;
+  // GATED ON *CONNECTED*, NOT MERELY ON HAVING AN ID. `connectedMeetingId` is set the moment the
+  // handshake begins, but the server only counts somebody as a participant once their media socket has
+  // announced `call_joined` — which happens after it resolves. Asking for the history in between is a
+  // request from somebody the server does not yet see in the meeting, and it is answered with nothing:
+  // a rejoin came back to an empty panel while everybody else still had the conversation.
+  const inMeeting = Boolean(connectedMeetingId) && callState.status === "connected";
+  useEffect(() => {
+    if (!inMeeting || !connectedMeetingId) {
+      leaveMeetingChat();
+      return;
+    }
+    joinMeetingChat(connectedMeetingId);
+  }, [inMeeting, connectedMeetingId]);
+
+  // Reactions expire on the frame loop that is already running for the overhead anchors rather than
+  // on a timer of their own, so a meeting with nothing happening in it costs nothing.
+  useEffect(() => {
+    if (meetingChat.reactions.length === 0) return;
+    let raf = 0;
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      expireReactions();
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [meetingChat.reactions.length]);
+
+  /** WHAT EACH PERSON IN THE MEETING JUST SAID OR SENT, keyed the way the overhead layer keys
+   *  everybody — email, with the viewer under the reserved self key. A meeting message becomes the
+   *  SAME world-space bubble a spatial message does, so a reader does not have to learn a second
+   *  visual language for "they said something"; a long one stays in the panel and only previews. */
+  const meeting = useOverheadBubbles(OVERHEAD_BUBBLE_MS);
+  const meetingBubbles = meeting.texts;
+  /** Message ids already handled. Without it every render would re-show the whole feed, and a late
+   *  joiner's history — which arrives in one batch — would pop a bubble over everybody at once. */
+  const seenMessagesRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!inMeeting) return;
+    const now = Date.now();
+    for (const m of meetingChat.messages) {
+      if (seenMessagesRef.current.has(m.id)) continue;
+      seenMessagesRef.current.add(m.id);
+      // History is remembered so it is never shown twice, but only a message that is still WITHIN its
+      // life becomes a bubble — replayed backlog belongs in the panel, not over a head.
+      if (now - m.atMs > OVERHEAD_BUBBLE_MS) continue;
+      meeting.show(m.email === self ? SELF_OVERHEAD_KEY : m.email, bubbleText(m.text));
+    }
+  }, [inMeeting, meetingChat.messages, meeting, self]);
+
+  // LEAVING OR ENDING THE MEETING TAKES ITS BUBBLES WITH IT. Without this the last thing said would
+  // hang over people for up to a full bubble-life after the meeting they said it in stopped existing,
+  // and the ids would still be marked seen if the same meeting were rejoined.
+  useEffect(() => {
+    if (inMeeting) return;
+    seenMessagesRef.current = new Set();
+    meeting.clearAll();
+  }, [inMeeting, meeting]);
+
+  const meetingReactions = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const r of meetingChat.reactions) {
+      out[r.email === self ? SELF_OVERHEAD_KEY : r.email] = r.token;
+    }
+    return out;
+  }, [meetingChat.reactions, self]);
+
+  // ---- PHASE 7D: reaching the call you are already in ------------------------------------------------
+  // THE EXPANDED VIEW is V1's own components/OfficeMap/CallOverlay, mounted here exactly as V1 mounts it:
+  // pure UI state, no call lifecycle. It is the only place either office renders the other side's CAMERA,
+  // and V2 previously had no way to open it at all — the chat header's Expand button was never given a
+  // handler, so a video call in V2 was audible and invisible.
+  const [callExpanded, setCallExpanded] = useState(false);
+  // A call that ends takes its expanded view with it, so the next call does not open into a stale one.
+  useEffect(() => {
+    if (callState.status !== "connected") setCallExpanded(false);
+  }, [callState.status]);
+
+  // THE POINTER LOCK, RELEASED ONLY WHERE AN ANSWER IS REQUIRED. A pointer-locked player cannot click any
+  // DOM, so a ring they cannot accept and an expanded view they cannot leave are both dead ends. These
+  // are the same two conditions Vo3dHud already applies to its own tools (officeToolOpen) — releasing the
+  // lock does NOT stop PLAYER or move the body; PlayerInput clears its held keys on the way out.
+  //
+  // Deliberately NOT released merely because a call is connected: taking the mouse off somebody mid-walk
+  // every time a colleague speaks would be worse than the problem it solved. The call bar stays visible
+  // while locked and says which key returns the mouse.
+  useEffect(() => {
+    if (!callState.incoming && !callExpanded) return;
+    if (isPointerLocked()) document.exitPointerLock();
+  }, [callState.incoming, callExpanded]);
+
+  // WHERE THE TOP-CENTRE CALL COLUMN STARTS in V2. The dev route's "Back to V1" escape hatch is parked
+  // at top: 12 / z-index 1003 in that same column (app/Vo3dHost.tsx), so the call notice and the call bar
+  // begin below it here and at the window edge in V1. Published as the one variable both stylesheets
+  // read, exactly as the dock publishes its own clearance.
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--vo-call-notice-top", "52px");
+    return () => {
+      root.style.removeProperty("--vo-call-notice-top");
+    };
+  }, []);
 
   // ---- the actions ----------------------------------------------------------------------------------
   /** Walk up to this person and, when the panel is wanted, open it on arrival. Split out because chat, the
@@ -601,7 +793,9 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }
     const drawn = drawnEmails.map((e) => emailKey(e));
     const out: Vo3dOverhead[] = [];
     for (const email of drawn) {
-      const sentText = talkingTextById[email];
+      // PHASE 7D — a meeting message outranks a spatial one for the same person: it is the newer
+      // thing they said, and in a meeting it is the conversation everybody is in.
+      const sentText = meetingBubbles[email] ?? talkingTextById[email];
       const typing = typingIds.has(email);
       const attention = chatAttention[email];
       // IN CONVERSATION, from V1's OWN signal. V1 reads a peer's presence off Atlas, which the mock rig
@@ -609,9 +803,17 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }
       // and is what V1 itself drives the peer talking visual from (its talkingCharacterIdsFromSessions).
       // It only ever UPGRADES the label — it never suppresses a message or the typing dots above it.
       const status = inConversationEmails.has(email) ? "IN_CONVERSATION" : statusByEmail[email];
+      // PHASE 7D — THEIR CAMERA. callStore keys videoByIdentity by the LiveKit identity, which is the
+      // lowercased email the token was minted for, so it is already the same key the bodies are drawn
+      // under — no mapping, no lookup table, and no way for a track to land over the wrong person. The
+      // map only ever contains participants of the room THIS client is connected to, so nothing is
+      // shown for a call the viewer is not in.
+      // Inside the Cave the meeting's own screen shows this camera — see the note above.
+      const video = insideCave ? undefined : callState.videoByIdentity[email];
+      const reaction = meetingReactions[email];
       // Somebody V1 has no status for AND who has nothing to say gets no overhead at all — V1 renders
-      // nothing for them either, rather than an empty pill.
-      if (!sentText && !typing && !attention && !status) continue;
+      // nothing for them either, rather than an empty pill. A live camera is reason enough on its own.
+      if (!sentText && !typing && !attention && !status && !video && !reaction) continue;
       const layer = layersByEmail.get(email);
       const displayName = layer?.name?.trim() || email.split("@")[0] || email;
       out.push({
@@ -620,6 +822,8 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }
         ...(sentText ? { sentText } : {}),
         ...(typing ? { typing } : {}),
         ...(attention ? { unread: { conversationId: attention.conversationId, count: attention.count } } : {}),
+        ...(video ? { video } : {}),
+        ...(reaction ? { reaction } : {}),
         ...(status
           ? {
               status: {
@@ -637,8 +841,13 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }
     // own effective status (the same selfStatusStore the availability picker writes). Self is not in
     // `drawnEmails` — resolveVo3dCoworkers excludes them by design — so the row is added here, with the
     // reserved key the overhead layer anchors to the player's body rather than to a coworker's.
-    const selfText = talkingTextById[SELF_OVERHEAD_KEY];
-    if (selfStatus || typingIds.has(self) || selfText) {
+    const selfText = meetingBubbles[SELF_OVERHEAD_KEY] ?? talkingTextById[SELF_OVERHEAD_KEY];
+    const selfReaction = meetingReactions[SELF_OVERHEAD_KEY];
+    // THE VIEWER'S OWN CAMERA rides the same map under the viewer's own identity — callStore puts the
+    // local camera in videoByIdentity deliberately, "so self video needs no separate field". Anchored to
+    // the player's own body by the reserved self key, exactly as their nameplate is.
+    const selfVideo = insideCave ? undefined : callState.videoByIdentity[self];
+    if (selfStatus || typingIds.has(self) || selfText || selfVideo || selfReaction) {
       out.push({
         email: SELF_OVERHEAD_KEY,
         displayName: "You",
@@ -650,6 +859,8 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }
         // applies the same one-of-three priority — so the "You" pill BECOMES the dots while typing and
         // returns to the status underneath when the idle timer fires.
         ...(typingIds.has(self) ? { typing: true } : {}),
+        ...(selfVideo ? { video: selfVideo } : {}),
+        ...(selfReaction ? { reaction: selfReaction } : {}),
         status: selfStatus ? {
           color: STATUS_META[selfStatus].color,
           shortName: "You",
@@ -658,7 +869,7 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }
       });
     }
     return out;
-  }, [chatAttention, drawnEmails, inConversationEmails, layersByEmail, self, selfStatus, statusByEmail, talkingTextById, typingIds]);
+  }, [callState.videoByIdentity, chatAttention, drawnEmails, inConversationEmails, insideCave, layersByEmail, meetingBubbles, meetingReactions, self, selfStatus, statusByEmail, talkingTextById, typingIds]);
 
   // THE CONVERSATION POSES. Resolved by V1's OWN resolveCharacterAnimState, not by a rule invented here,
   // and pushed into the world the same way the roster and the occupancy are. Only the two conversation
@@ -765,7 +976,46 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }
         />
       )}
       <TalkRequestToast {...talkGate.toastProps} />
-      <CallInvitePrompt resolveDisplayName={resolveDisplayName} />
+      <CallInvitePrompt
+        resolveDisplayName={resolveDisplayName}
+        // PHASE 7D. Only the V2 world can join a meeting, so only it offers the invitation. The join
+        // is the world's own one entry point (app/world.ts caveMeeting.start), the same one the Cave
+        // panel's button uses — there is no second path into a meeting.
+        onAcceptMeeting={() => {
+          const meeting = worldRef.current?.caveMeeting;
+          if (!meeting) return;
+          // WALK IN FIRST, then join. A meeting is a thing you do in a place: joining the media without
+          // moving the body left the accepter connected but standing outside the Cave, with no panel,
+          // no screen and no way to leave. Entering is the real portal transition, the same one the
+          // door uses; `start` is the same create-or-join the Cave panel's own button calls.
+          meeting.enter();
+          void meeting.start(self);
+        }}
+      />
+      {/* PHASE 7D — the live call, reachable in OFFICE, 3D and PLAYER. It stands down while the spatial
+          chat panel is showing the very same controls in its header (see Vo3dCallBar.tsx). */}
+      <Vo3dCallBar
+        selfId={self}
+        resolveDisplayName={resolveDisplayName}
+        onExpand={() => setCallExpanded(true)}
+        controlsShownElsewhere={Boolean(openChat) && !chatMinimized}
+      />
+      {/* PHASE 7D — the meeting's own chat. Collapsed by default, never over the curved screen, and
+          quieter still while somebody is sharing. Gated on genuinely being IN the meeting. */}
+      <Vo3dMeetingChat
+        active={inMeeting}
+        selfId={self}
+        resolveDisplayName={resolveDisplayName}
+        presenting={Boolean(callState.screenShare)}
+        // Enter hands the mouse back from its own keypress — the one moment a browser grants a lock.
+        onResumePointer={() => worldRef.current?.requestPointerLock()}
+      />
+      <CallOverlay
+        expanded={callExpanded}
+        onMinimize={() => setCallExpanded(false)}
+        resolveDisplayName={resolveDisplayName}
+        selfIdentity={self}
+      />
       {remoteWindows.map((w) =>
         w.kind === "dm" ? (
           <div key={w.key} className={styles.chatSlot} style={slotStyle(w.key)}>
@@ -811,7 +1061,7 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }
             // SELF TYPING — the same edge V1 wires: real keystrokes on V1's 2.5s idle timer, scoped to
             // the conversation this panel is open on.
             onTypingChange={setSelfTyping}
-            headerExtra={<SpatialCallControls sessionId={openConversationId} />}
+            headerExtra={<SpatialCallControls sessionId={openConversationId} onExpand={() => setCallExpanded(true)} />}
             minimized={chatMinimized}
             onMinimizeToggle={() => setChatMinimized((v) => !v)}
             onConversationOpen={(conversationId) => {

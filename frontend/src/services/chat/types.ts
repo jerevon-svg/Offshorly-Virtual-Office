@@ -1,3 +1,12 @@
+/** PHASE 7D — WHAT A ROW IS. "text" is an ordinary message somebody typed. Anything else is a SYSTEM
+ *  RECORD the server wrote about this conversation: it has no author and no body (`text` is ""), and it
+ *  must never be rendered as a bubble, spoken as an avatar speech bubble, or counted as a message.
+ *
+ *  Always present on the wire (the column defaults to "text", so pre-7D rows arrive as "text" too), but
+ *  optional here so the mock service and any hand-built fixture stay valid without it — readers should
+ *  treat a missing value as "text". */
+export type ChatMessageKind = "text" | "call_missed";
+
 export interface ChatMessage {
   id: string;
   conversationId: string;
@@ -11,6 +20,10 @@ export interface ChatMessage {
   readBy: string[];
   // True for the mock-only auto-echo reply — Phase 3 removes echo entirely.
   mock?: boolean;
+  kind?: ChatMessageKind;
+  /** Structured detail for a system row — for "call_missed", { callType, reason }. Null/absent for
+   *  every ordinary message, exactly as `meta` is null on the column. */
+  meta?: { callType?: string; reason?: string } | null;
   // @mentions V1 — server-validated (real conversation participant) emails mentioned in this
   // message. Always an array, never undefined/null on the wire (see backend's
   // serialize_message_dict) — empty for both "no mentions" and pre-mentions-feature rows.
@@ -203,4 +216,12 @@ export interface ChatService {
   // socket.io does not auto-reconnect after an auth/namespace connect_error,
   // so recovery requires an explicit call (wired to a UI Retry button).
   reconnect?(): void;
+}
+
+/** THE ONE TEST for "is this a row somebody actually wrote". Every consumer the Phase 7D audit found —
+ *  the conversation views, both offices' avatar speech-bubble handlers, the reaction affordance — asks
+ *  this rather than comparing to a literal, so adding a second system kind later cannot miss one of them.
+ *  An absent `kind` is "text": pre-7D rows and mock fixtures both arrive that way. */
+export function isAuthoredMessage(msg: Pick<ChatMessage, "kind">): boolean {
+  return (msg.kind ?? "text") === "text";
 }

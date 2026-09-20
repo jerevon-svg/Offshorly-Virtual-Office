@@ -42,6 +42,7 @@ import {
   type Pt,
 } from "../../../services/presence/movementSync";
 import { isUsablePosition } from "./v1CoworkerPositions";
+import { facingForYaw } from "../core/coords";
 import { DIRECTION_BY_FACING, FACING_BY_DIRECTION } from "./v1Facing";
 import { anchorForSeatKey, v1SeatForAnchor, v2SeatKey } from "./v1Seats";
 import { seatFacingFor } from "../app/seats";
@@ -79,6 +80,10 @@ const toTopLeft = (centre: Vec2, box: { width: number; height: number }): Pt => 
  *  the body's CENTRE — the same call, with the same argument, that every moveSelf call site in
  *  OfficeMap.tsx makes (`roomOf(bc)?.id ?? null`). Not the flat rooms/teamRooms namespace: those two id
  *  schemes are different tables and V1's wire carries this one. */
+/** PHASE 7D. The movement protocol's own floor for a published duration — the same one the feed uses for
+ *  every snap. A "they are here now" statement still has to be a movement on this wire. */
+const SNAP_DURATION_MS = 100;
+
 const roomIdAt = (centre: Vec2): string | null => roomOf({ x: centre.x, y: centre.z })?.id ?? null;
 
 /**
@@ -132,6 +137,79 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
       note(`started id=${movementId.slice(0, 8)} pts=${path.length} ms=${Math.round(durationMs)} room=${roomId ?? "-"}${pacing ? ` ${pacing}` : ""}${superseded}`);
       // capPath and the duration round+clamp both live inside this call, in V1's module.
       emitWalkStarted({ movementId, origin: originTopLeft, path: pathTopLeft, roomId, durationMs, ...(pacing ? { pacing } : {}) });
+    },
+    /** PHASE 7D — "THEY ARE IN THE CAVE NOW." The same minimum-duration pair a snap always uses, with the
+     *  room stated OUTRIGHT instead of derived from the point: the point is the portal they stepped
+     *  through (a real, in-frame position V1 keeps holding for them) and the room is where they actually
+     *  went. Nothing new on the wire — `roomId` is already carried by both events and already validated
+     *  server-side as any string — so no backend change and no new event.
+     *
+     *  Supersedes anything in flight, exactly as `started` does: arriving somewhere is the end of it. */
+    /** PHASE 7D — the leg, published as the pair every movement uses. The V1 half never moves: origin,
+     *  path and `at` are all the anchor, so `employee_positions` keeps the portal and the server skips
+     *  the write entirely (its v1_fields_changed check). The local half is the real walk. */
+    movedInPlace(anchor, from, to, yaw, room) {
+      const anchorTopLeft = toTopLeft(anchor, box);
+      if (!isUsablePosition(anchorTopLeft)) {
+        state.refused++;
+        note(`refused-inplace room=${room}`);
+        return;
+      }
+      const movementId = makeMovementId();
+      active = null;
+      state.started++;
+      state.arrived++;
+      state.movementId = movementId;
+      note(`inplace id=${movementId.slice(0, 8)} room=${room} pts=${to.length}`);
+      emitWalkStarted({
+        movementId,
+        origin: anchorTopLeft,
+        path: [anchorTopLeft],
+        roomId: room,
+        durationMs: SNAP_DURATION_MS,
+        // The local walk, in the place's own frame. NOT run through toTopLeft: that conversion undoes
+        // a V1 sprite box's origin, and these are world points in a frame V1 has no sprites in.
+        localOrigin: { x: from.x, y: from.z },
+        localPath: to.map((p) => ({ x: p.x, y: p.z })),
+      });
+      emitWalkArrived({
+        movementId,
+        at: anchorTopLeft,
+        facing: DIRECTION_BY_FACING[facingForYaw(yaw)],
+        ...(Number.isFinite(yaw) ? { yaw } : {}),
+        state: "standing",
+        seatKey: null,
+        roomId: room,
+        localAt: { x: to[to.length - 1].x, y: to[to.length - 1].z },
+      });
+    },
+    enteredPlace(at, yaw, room, localAt) {
+      const atTopLeft = toTopLeft(at, box);
+      if (!isUsablePosition(atTopLeft)) {
+        state.refused++;
+        note(`refused-entered room=${room ?? "-"}`);
+        return;
+      }
+      const movementId = makeMovementId();
+      active = null;
+      state.started++;
+      state.arrived++;
+      state.movementId = movementId;
+      note(`entered id=${movementId.slice(0, 8)} room=${room ?? "-"} yaw=${yaw.toFixed(3)}`);
+      emitWalkStarted({
+        movementId, origin: atTopLeft, path: [atTopLeft], roomId: room, durationMs: SNAP_DURATION_MS,
+        ...(localAt ? { localOrigin: { x: localAt.x, y: localAt.z }, localPath: [{ x: localAt.x, y: localAt.z }] } : {}),
+      });
+      emitWalkArrived({
+        movementId,
+        at: atTopLeft,
+        facing: DIRECTION_BY_FACING[facingForYaw(yaw)],
+        ...(Number.isFinite(yaw) ? { yaw } : {}),
+        state: "standing",
+        seatKey: null,
+        roomId: room,
+        ...(localAt ? { localAt: { x: localAt.x, y: localAt.z } } : {}),
+      });
     },
     arrived(at, facing, yaw, seat) {
       const current = active;
@@ -221,6 +299,10 @@ export interface Vo3dSelfPosition {
    *  room shift on top, through the same homeDeskWorldPoint every other placement goes through. */
   point: Vec2;
   facing: Facing;
+  /** PHASE 7D — a named place beyond V1's coordinate frame this employee was last in (the CAVE), or
+   *  absent. `point` remains the real in-frame position V1 holds for them, so a world that does not
+   *  recognise the name restores them there, which is exactly what it did before this existed. */
+  place?: string;
   /** PHASE 6C — the V2 seat anchor V1 says this employee is SITTING in (state "sitting" and a seat key
    *  the mapping knows), or absent. A sitting row whose seat V2 cannot identify restores as STANDING at
    *  the centroid — the honest fallback, and the same one V1's own restore takes for a seat it cannot
@@ -268,5 +350,13 @@ export function resolveV1SelfPosition(
     point: { x: peer.stable.pos.x + box.width / 2, z: peer.stable.pos.y + box.height / 2 },
     facing: FACING_BY_DIRECTION[peer.stable.facing],
     ...(anchor ? { seat: anchor.id } : {}),
+    // PHASE 7D — THE NAMED PLACE V1 HOLDS FOR THIS EMPLOYEE, carried through exactly as the peer adapter
+    // carries it. Without it a reload put the signed-in employee back at `point` — the portal — while
+    // every other browser, reading the same persisted row, correctly drew them inside the CAVE. The two
+    // views disagreed about one fact that was on the wire the whole time.
+    //
+    // The adapter still does not know what any name MEANS: it is a string from the persisted row, and the
+    // world decides whether it recognises it (an unknown place simply restores at `point`).
+    ...(peer.stable.roomId ? { place: peer.stable.roomId } : {}),
   };
 }

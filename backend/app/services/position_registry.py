@@ -42,6 +42,19 @@ class StableState:
     # arrival a V1 client publishes and for every row persisted before the column existed; a 3D peer
     # falls back to `facing` then. Persisted, so a reload restores the exact orientation.
     yaw: float | None = None
+    # PHASE 7D — THE CAVE-LOCAL POSITION, and the one rule that keeps it safe.
+    #
+    # The Championship Cave is outside V1's coordinate frame entirely, so `x`/`y` above CANNOT
+    # describe a body inside it — they stay the last real in-frame point (the portal), which is what
+    # V1 keeps holding for that employee and what V1's own office keeps drawing.
+    #
+    # `local_*` is where they actually are, in the frame `room_id` names. It is EPHEMERAL BY DESIGN:
+    # carried in this in-memory registry and on the wire, and NEVER passed to position_repo — see
+    # socket.py's walk_arrived, which persists `x`/`y` and nothing from here. A reload therefore
+    # restores through the portal point + room_id exactly as it does today, and `employee_positions`
+    # neither gains a column nor changes a value.
+    local_x: float | None = None
+    local_y: float | None = None
 
 
 @dataclass
@@ -57,6 +70,10 @@ class ActiveMovement:
     duration_ms: int
     started_at: int  # epoch ms
     revision: int
+    # PHASE 7D — the same movement expressed in `room_id`'s local frame, when the client published
+    # one. `origin`/`path` above stay V1's, so a V1 peer replays exactly the walk it always did.
+    local_origin: dict[str, float] | None = None
+    local_path: list[dict[str, float]] | None = None
     # "eased" | "linear" | None (== eased). How peers replay it — see socket.py's _PACINGS. Not
     # persisted: an in-flight movement never is.
     pacing: str | None = None
@@ -67,6 +84,10 @@ class PositionEntry:
     email: str
     stable: StableState | None = None
     active: ActiveMovement | None = None
+    # PHASE 7D — has this employee's V1 position ever reached `employee_positions`? Needed because the
+    # Cave write-skip below may only skip a write that would be REDUNDANT, and the very first arrival
+    # is never redundant even when `start()` has pre-seeded an identical stable in memory.
+    persisted: bool = False
 
 
 class PositionRegistry:
@@ -92,6 +113,8 @@ class PositionRegistry:
         duration_ms: int,
         started_at: int,
         pacing: str | None = None,
+        local_origin: dict[str, float] | None = None,
+        local_path: list[dict[str, float]] | None = None,
     ) -> int:
         """Store the new active movement (superseding any prior one) and fold the
         walking-supersedes-sitting transition into the same revision bump: stable.state becomes
@@ -125,6 +148,8 @@ class PositionRegistry:
             started_at=started_at,
             revision=rev,
             pacing=pacing,
+            local_origin=local_origin,
+            local_path=local_path,
         )
         return rev
 
@@ -140,6 +165,7 @@ class PositionRegistry:
         room_id: str | None,
         now_ms: int,
         yaw: float | None = None,
+        local_at: dict[str, float] | None = None,
     ) -> StableState | None:
         """Accept only if there is an active movement for `email` whose movementId matches.
         Returns the new StableState on acceptance, or None when the arrival is stale/reordered
@@ -158,10 +184,44 @@ class PositionRegistry:
             revision=rev,
             updated_at=now_ms,
             yaw=yaw,
+            local_x=local_at["x"] if local_at else None,
+            local_y=local_at["y"] if local_at else None,
         )
         entry.stable = stable
         entry.active = None
         return stable
+
+    def mark_persisted(self, email: str) -> None:
+        """The caller wrote this employee's stable state to the database."""
+        entry = self._entries.get(email)
+        if entry is not None:
+            entry.persisted = True
+
+    def v1_fields_changed(self, email: str, *, at: dict[str, float], facing: str, state: str,
+                          seat_key: str | None, room_id: str | None) -> bool:
+        """PHASE 7D — WOULD THIS ARRIVAL CHANGE ANYTHING V1 PERSISTS?
+
+        Called BEFORE `arrive`, so it compares against the stable state still on file. Walking around
+        the Cave republishes the SAME in-frame portal point on every leg (only the local coordinates
+        move), and persisting that would be a row write per step for a V1 fact that did not change.
+        Returns False for exactly that case, and True for anything a V1 client would see differently —
+        so an ordinary office walk is persisted exactly as it always was.
+
+        Deliberately does not consider yaw or the local coordinates: yaw rides the same row and is
+        cheap to keep current, and the local coordinates are never persisted at all."""
+        entry = self._entries.get(email)
+        prev = entry.stable if entry else None
+        # Never persisted: this arrival is the first real fact about them, whatever `start()` seeded.
+        if prev is None or entry is None or not entry.persisted:
+            return True
+        return (
+            prev.x != at["x"]
+            or prev.y != at["y"]
+            or prev.facing != facing
+            or prev.state != state
+            or prev.seat_key != seat_key
+            or prev.room_id != room_id
+        )
 
     # -- reads ---------------------------------------------------------------------------------
     def get(self, email: str) -> PositionEntry | None:
@@ -209,6 +269,8 @@ class PositionRegistry:
                     "origin": entry.active.origin,
                     "path": entry.active.path,
                     "roomId": entry.active.room_id,
+                    **({"localOrigin": entry.active.local_origin} if entry.active.local_origin else {}),
+                    **({"localPath": entry.active.local_path} if entry.active.local_path else {}),
                     "durationMs": entry.active.duration_ms,
                     "startedAt": entry.active.started_at,
                     "pacing": entry.active.pacing,
@@ -222,6 +284,7 @@ class PositionRegistry:
                     "state": stable.state,
                     "seatKey": stable.seat_key,
                     "roomId": stable.room_id,
+                    **({"localAt": {"x": stable.local_x, "y": stable.local_y}} if stable.local_x is not None and stable.local_y is not None else {}),
                     "updatedAt": stable.updated_at,
                     "yaw": stable.yaw,
                     "active": active_wire,
@@ -241,6 +304,7 @@ class PositionRegistry:
             email = row["email"]
             db_revision = int(row["revision"])
             entry = self._entries.get(email)
+            # It came FROM the database, so whatever this loop leaves in memory is already persisted.
             if entry is None or entry.stable is None:
                 entry = self._entries.setdefault(email, PositionEntry(email=email))
                 updated_at = row["updated_at"]
@@ -259,6 +323,7 @@ class PositionRegistry:
                 self._revision_by_email[email] = max(self._revision_by_email.get(email, 0), db_revision)
             else:
                 self._revision_by_email[email] = max(self._revision_by_email.get(email, 0), db_revision)
+            entry.persisted = True
 
     def reset(self) -> None:
         """Test-only helper — mirrors the pattern socket tests use to clear other module-level

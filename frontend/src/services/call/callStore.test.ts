@@ -15,7 +15,10 @@ class FakeSocket {
     this.emitted.push({ event, payload });
     return this;
   }
+  /** PHASE 7D: recorded, because "did this needlessly drop the socket" is now a thing under test. */
+  disconnected = false;
   disconnect() {
+    this.disconnected = true;
     return this;
   }
   trigger(event: string, payload?: unknown) {
@@ -47,6 +50,8 @@ class FakeRoom {
   screenShareCalls: boolean[] = [];
   screenShareImpl: ((on: boolean) => Promise<void>) | null = null;
   screenSharePublication: { videoTrack: unknown; isMuted: boolean } | null = null;
+  /** PHASE 7D. LiveKit's own room membership — the source the snapshot's `participants` reads. */
+  remoteParticipants = new Map<string, { identity: string }>();
   localParticipant = {
     identity: "a@example.com",
     isMicrophoneEnabled: false,
@@ -1006,6 +1011,49 @@ describe("callStore camera", () => {
   });
 });
 
+// --- Phase 7D: live room membership -------------------------------------------------------------
+
+describe("callStore participants", () => {
+  it("is empty until the room is actually connected", async () => {
+    const { getCallSnapshot, startOrJoinCall } = await import("./callStore");
+    expect(getCallSnapshot().participants).toEqual([]);
+
+    const gate = gateConnect();
+    const pending = startOrJoinCall("conv-1");
+    await gate.entered;
+    // CONNECTING is not connected: a head-count shown during the handshake would be a guess.
+    expect(getCallSnapshot().participants).toEqual([]);
+    gate.release();
+    await pending;
+    expect(getCallSnapshot().participants).toEqual(["a@example.com"]);
+  });
+
+  it("reports LiveKit's own membership, self included, lowercased and sorted", async () => {
+    const { getCallSnapshot, startOrJoinCall } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+    const room = FakeRoom.instances[0];
+    room.remoteParticipants.set("c", { identity: "C@Example.com" });
+    room.remoteParticipants.set("b", { identity: "b@example.com" });
+    room.fire("participantConnected", participant("b@example.com"));
+
+    expect(getCallSnapshot().participants).toEqual([
+      "a@example.com",
+      "b@example.com",
+      "c@example.com",
+    ]);
+  });
+
+  it("empties on leave, so no surface keeps a head-count for a call that ended", async () => {
+    const { getCallSnapshot, leaveCall, startOrJoinCall } = await import("./callStore");
+    await startOrJoinCall("conv-1");
+    FakeRoom.instances[0].remoteParticipants.set("b", { identity: "b@example.com" });
+    expect(getCallSnapshot().participants).toHaveLength(2);
+
+    leaveCall();
+    expect(getCallSnapshot().participants).toEqual([]);
+  });
+});
+
 // --- Stage B: remote camera video ---------------------------------------------------------------
 
 describe("callStore remote video", () => {
@@ -1415,14 +1463,20 @@ describe("callStore standalone meeting", () => {
     expect(getCallSnapshot().connectedBoardId).toBeNull();
   });
 
-  it("needs no second participant and announces nothing to the spatial registry", async () => {
+  it("needs no second participant, and announces itself as a MEETING", async () => {
     const { startOrJoinMeeting } = await import("./callStore");
 
     await startOrJoinMeeting("cave-all-hands");
 
-    // A lone host is the normal case here — no call_joined, which describes spatial conversations.
-    expect(lastSocket?.events() ?? []).not.toContain("call_joined");
+    // A lone host is the normal case here. PHASE 7D: it DOES announce itself now — that emit is what
+    // gives the server a meeting to report, and therefore what makes Start-vs-Join, the head-count
+    // and the host exist at all. The payload carries a meetingId and NO sessionId, which is exactly
+    // how the server tells the two apart (its call_joined handler branches on it).
+    const joins = lastSocket?.emitted.filter((e) => e.event === "call_joined") ?? [];
+    expect(joins).toHaveLength(1);
+    expect(joins[0].payload).toEqual({ meetingId: "cave-all-hands" });
     expect(FakeRoom.instances).toHaveLength(1);
+    // V1's mic-on-connect, deliberately unchanged for Start and Join alike.
     expect(FakeRoom.instances[0].micCalls).toEqual([true]);
   });
 
@@ -1445,7 +1499,7 @@ describe("callStore standalone meeting", () => {
     expect(getCallSnapshot().screenShare?.identity).toBe("a@example.com");
   });
 
-  it("leaving a meeting tells the spatial registry nothing and clears the id", async () => {
+  it("leaving a meeting announces the departure and clears the id", async () => {
     const { startOrJoinMeeting, leaveCall, getCallSnapshot } = await import("./callStore");
     await startOrJoinMeeting("cave-all-hands");
 
@@ -1453,7 +1507,36 @@ describe("callStore standalone meeting", () => {
 
     expect(getCallSnapshot().connectedMeetingId).toBeNull();
     expect(getCallSnapshot().status).toBe("idle");
-    expect(lastSocket?.events() ?? []).not.toContain("call_left");
+    // PHASE 7D: without this the host never transfers and the meeting never ends. The server resolves
+    // WHICH room from the socket id, so the payload is the same empty one a spatial leave sends.
+    expect(lastSocket?.events() ?? []).toContain("call_left");
+  });
+
+  it("re-asserts a meeting claim after a reconnect, so a host is not handed away underneath them", async () => {
+    const { startOrJoinMeeting } = await import("./callStore");
+    await startOrJoinMeeting("cave-all-hands");
+
+    // The server's registry is per-socket-id, so a reconnect arrives as a new sid with no memory.
+    lastSocket?.trigger("connect");
+
+    const joins = lastSocket?.emitted.filter((e) => e.event === "call_joined") ?? [];
+    expect(joins).toHaveLength(2);
+    expect(joins[1].payload).toEqual({ meetingId: "cave-all-hands" });
+  });
+
+  it("keeps meeting presence out of the spatial feed it reads", async () => {
+    const { getCallSnapshot, startOrJoinMeeting } = await import("./callStore");
+    await startOrJoinMeeting("cave-all-hands");
+
+    lastSocket?.trigger("meeting_presence", {
+      meetings: [{ meetingId: "cave-all-hands", participants: ["a@example.com"], host: "a@example.com" }],
+    });
+
+    // Two separate fields for two separate broadcasts: `calls` is conversations, `meetings` is rooms.
+    expect(getCallSnapshot().meetings).toEqual([
+      { meetingId: "cave-all-hands", participants: ["a@example.com"], host: "a@example.com" },
+    ]);
+    expect(getCallSnapshot().calls).toEqual([]);
   });
 
   it("switching from a spatial call to a meeting releases the spatial claim", async () => {
@@ -1477,5 +1560,98 @@ describe("callStore standalone meeting", () => {
     expect(getCallSnapshot().status).toBe("error");
     expect(getCallSnapshot().error).toMatch(/Invalid meeting id/);
     expect(getCallSnapshot().connectedMeetingId).toBeNull();
+  });
+});
+
+
+// PHASE 7D — RE-SEEDING AN IDENTITY MUST NOT DROP THE SOCKET.
+//
+// The server cleans up BY SID, so a needless disconnect is not cosmetic: it told the server this person
+// had gone. That cancelled an invitation one tick after it was sent (the recipient's notice vanished and
+// the inviter never heard why), and it dropped the sender's meeting claim, handing the host away while
+// they were still in the room. Both Phase 7D blockers were this.
+describe("setDevIdentity and the socket", () => {
+  it("keeps the connection when the same identity is seeded again", async () => {
+    const { setDevIdentity, ensureCallSocket } = await import("./callStore");
+    setDevIdentity("bon@example.com");
+    ensureCallSocket();
+    const first = lastSocket;
+    expect(first).toBeTruthy();
+
+    // Every routine re-seed: a re-render, or the Cave panel remounting and calling connect() again.
+    setDevIdentity("bon@example.com");
+    setDevIdentity("  Bon@Example.com  "); // same person, different spelling
+    ensureCallSocket();
+
+    expect(lastSocket).toBe(first);
+    expect(first?.disconnected).toBe(false);
+  });
+
+  it("still opens a fresh socket when the identity genuinely changes", async () => {
+    const { setDevIdentity, ensureCallSocket } = await import("./callStore");
+    setDevIdentity("bon@example.com");
+    ensureCallSocket();
+    const first = lastSocket;
+
+    setDevIdentity("angelo@example.com");
+    ensureCallSocket();
+
+    expect(lastSocket).not.toBe(first);
+    expect(first?.disconnected).toBe(true);
+  });
+
+  it("delivers a meeting invitation to the recipient and keeps it there", async () => {
+    const { getCallSnapshot, setDevIdentity, ensureCallSocket } = await import("./callStore");
+    setDevIdentity("b@example.com");
+    ensureCallSocket();
+
+    lastSocket?.trigger("meeting_invite_incoming", {
+      inviteId: "i1", fromEmail: "a@example.com", toEmail: "b@example.com", meetingId: "cave-all-hands",
+    });
+    expect(getCallSnapshot().incomingMeetingInvite?.inviteId).toBe("i1");
+
+    // A re-seed of the SAME identity must not disturb it — this is the sequence that used to end with
+    // the server cancelling the invite out from under the recipient.
+    setDevIdentity("b@example.com");
+    expect(getCallSnapshot().incomingMeetingInvite?.inviteId).toBe("i1");
+  });
+
+  it("clears the recipient's notice when the invitation is genuinely withdrawn", async () => {
+    const { getCallSnapshot, setDevIdentity, ensureCallSocket } = await import("./callStore");
+    setDevIdentity("b@example.com");
+    ensureCallSocket();
+    lastSocket?.trigger("meeting_invite_incoming", {
+      inviteId: "i1", fromEmail: "a@example.com", toEmail: "b@example.com", meetingId: "cave-all-hands",
+    });
+
+    lastSocket?.trigger("meeting_invite_cancelled", {
+      inviteId: "i1", fromEmail: "a@example.com", toEmail: "b@example.com", reason: "caller_left",
+    });
+
+    expect(getCallSnapshot().incomingMeetingInvite).toBeNull();
+    // The recipient is not shown an outcome card for an offer they never acted on.
+    expect(getCallSnapshot().meetingInviteOutcome).toBeNull();
+  });
+
+  it("does not let a meeting invitation touch a spatial ring", async () => {
+    const { getCallSnapshot, setDevIdentity, ensureCallSocket } = await import("./callStore");
+    setDevIdentity("b@example.com");
+    ensureCallSocket();
+    lastSocket?.trigger("call_invite_incoming", {
+      inviteId: "s1", fromEmail: "a@example.com", toEmail: "b@example.com",
+    });
+    lastSocket?.trigger("meeting_invite_incoming", {
+      inviteId: "m1", fromEmail: "a@example.com", toEmail: "b@example.com", meetingId: "cave-all-hands",
+    });
+
+    expect(getCallSnapshot().incoming?.inviteId).toBe("s1");
+    expect(getCallSnapshot().incomingMeetingInvite?.inviteId).toBe("m1");
+
+    // Resolving the meeting one leaves the spatial ring untouched.
+    lastSocket?.trigger("meeting_invite_declined", {
+      inviteId: "m1", fromEmail: "a@example.com", toEmail: "b@example.com",
+    });
+    expect(getCallSnapshot().incomingMeetingInvite).toBeNull();
+    expect(getCallSnapshot().incoming?.inviteId).toBe("s1");
   });
 });

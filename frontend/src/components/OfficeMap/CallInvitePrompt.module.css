@@ -1,84 +1,116 @@
-/* Ringing UI. Deliberately matches DndRequestUI.module.css's toast language (same corner, same
-   dark translucent card, same button shapes) so the office chrome stays consistent — this is not
-   a call modal. Stacked ABOVE the DND toast's bottom:100px so a ring and a DND gate can coexist. */
-
-.toast {
+/* THE CALL NOTICE — one card, one place, every call state.
+ *
+ * PHASE 7D. This used to be a dark translucent toast in the bottom-right corner, borrowed from the DND
+ * toast's language. Three things were wrong with that. It sat in the SAME corner as the floating chat
+ * windows and BELOW them (z 28 against their 140), so a ring that arrived while a conversation was open
+ * was invisible and unanswerable. It looked nothing like the office around it — the world menu, the
+ * camera button, the Cave panel and the call bar are all one cream card family, and this was the only
+ * piece of call chrome that wasn't. And each of its states drew itself differently, so "Alex is calling",
+ * "Calling Alex" and "Alex is offline" read as three unrelated popups rather than one conversation with
+ * the viewer.
+ *
+ * It is now the same card in the same place for all six states, directly above the call bar it hands over
+ * to (dev/vo3d/app/Vo3dCallBar.module.css — same top-centre column, same surface, same type scale). Top
+ * centre is deliberate and shared with the bar: the dock owns bottom-centre, the chat windows own
+ * bottom-right, the Cave panel owns the left edge. A ring must be reachable while all three are on screen.
+ *
+ * Shared by BOTH offices. V1's OfficeMap and V2's Vo3dOverlay each mount exactly one of these, which is
+ * what keeps the two from drifting into two different rings. */
+.card {
   position: fixed;
-  /* Still stacked 76px above the DND toast, which now clears the bottom dock. */
-  bottom: calc(var(--vo-dock-clearance, 104px) + 160px);
-  right: 24px;
-  z-index: 28;
-  min-width: 260px;
-  max-width: 320px;
-  background: rgba(26, 26, 26, 0.95);
-  border: 1px solid rgba(59, 130, 246, 0.45);
-  border-radius: 10px;
-  padding: 14px 16px;
-  backdrop-filter: blur(4px);
-  color: #f0f0f0;
+  /* The office sets this to 16. V2's dev route raises it, because its "Back to V1" escape hatch parks in
+     the same top-centre column at z 1003 (dev/vo3d/app/Vo3dHost.tsx) and would sit over the card. One
+     variable rather than a V2 copy of this stylesheet — same pattern as --vo3d-dock-clearance. */
+  top: var(--vo-call-notice-top, 16px);
+  left: 50%;
+  transform: translateX(-50%);
+  /* Above the floating chat windows (z 140 in both offices) — answering a call must never mean closing a
+     conversation first — and above the call bar (145), which it stacks on top of. Below the z 160 modal
+     family that owns the screen outright. */
+  z-index: 152;
+  box-sizing: border-box;
+  width: min(360px, calc(100vw - 32px));
   display: flex;
   flex-direction: column;
   gap: 10px;
+  padding: 13px 15px;
+  border-radius: 16px;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.08);
+  box-shadow: 0 12px 32px rgba(18, 16, 28, 0.18), 0 2px 6px rgba(18, 16, 28, 0.08);
+  color: #241f30;
+  font: 500 13px/1.35 inherit;
+  animation: callNoticeIn 180ms ease-out;
 }
 
-.text {
-  font-size: 13px;
-  line-height: 1.4;
+@keyframes callNoticeIn {
+  from { opacity: 0; transform: translate(-50%, -8px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
 }
 
-.name {
-  font-weight: 600;
+@media (prefers-reduced-motion: reduce) {
+  .card { animation: none; }
 }
 
-.actionsRow {
+.head { display: flex; flex-direction: column; gap: 2px; }
+
+/* THE ONE HIERARCHY every state uses: a state name, then the sentence about this person. */
+.title {
   display: flex;
-  flex-direction: row;
-  gap: 8px;
-  justify-content: center;
-}
-
-.accept {
-  all: unset;
-  cursor: pointer;
-  flex: 1;
-  text-align: center;
-  color: #fff;
-  background: #16a34a;
+  align-items: center;
+  gap: 7px;
   font-size: 13px;
-  font-weight: 600;
-  padding: 9px 12px;
-  border-radius: 6px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
 }
-.accept:hover {
-  background: #15803d;
-}
-
-.decline {
-  all: unset;
-  cursor: pointer;
-  flex: 1;
-  text-align: center;
-  color: #fecaca;
-  background: rgba(239, 68, 68, 0.18);
-  font-size: 13px;
-  font-weight: 600;
-  padding: 9px 12px;
-  border-radius: 6px;
-}
-.decline:hover {
-  background: rgba(239, 68, 68, 0.3);
-}
-
-.secondary {
-  all: unset;
-  cursor: pointer;
-  align-self: center;
-  color: #d4d4d4;
+.body {
   font-size: 12px;
-  padding: 7px 12px;
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: rgba(36, 31, 48, 0.62);
 }
-.secondary:hover {
-  background: rgba(255, 255, 255, 0.08);
+.name { font-weight: 700; color: rgba(36, 31, 48, 0.82); }
+
+/* The state dot. Colour is the ONLY thing that varies between states — never the layout, so a card that
+   changes state under the viewer does not move its own buttons. */
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: rgba(36, 31, 48, 0.35); }
+.ringing .dot { background: #4bb96a; animation: callNoticePulse 1.4s ease-in-out infinite; }
+.waiting .dot { background: #d8a33a; animation: callNoticePulse 1.4s ease-in-out infinite; }
+.ended .dot { background: #a3352f; }
+
+@keyframes callNoticePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .ringing .dot, .waiting .dot { animation: none; }
+}
+
+.actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+.action {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  text-align: center;
+  padding: 8px 14px;
+  border-radius: 11px;
+  font-size: 12px;
+  font-weight: 700;
+  border: 1px solid rgba(24, 20, 34, 0.12);
+  background: #fdfcfa;
+  color: #241f30;
+}
+.action:hover { background: rgba(24, 20, 34, 0.05); }
+.action:focus-visible { outline: 2px solid #4bb96a; outline-offset: 2px; }
+
+/* ACCEPT is the one primary action in this card, in the office's own green — the same green the Cave
+   panel's Start button uses, so "the affirmative thing" looks the same wherever it is offered. */
+.accept {
+  border-color: transparent;
+  background: #2f6b45;
+  color: #fdfcfa;
+}
+.accept:hover { background: #275939; }
+
+.decline { border-color: rgba(200, 62, 62, 0.35); color: #a3352f; }
+.decline:hover { background: rgba(200, 62, 62, 0.08); }

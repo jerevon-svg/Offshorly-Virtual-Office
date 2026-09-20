@@ -294,3 +294,129 @@ describe("the in-world display preferences", () => {
     expect(screen.queryByTestId(`overhead-status-${ALEX}`)).not.toBeInTheDocument();
   });
 });
+
+// PHASE 7D — A CALL CAMERA OVER THE RIGHT BODY.
+//
+// The association is the thing to pin: callStore keys videoByIdentity by the LiveKit identity, which is
+// the lowercased email the bodies are already drawn under, so a track can only ever be rendered in the
+// anchor of the person it belongs to. These also pin the two rules that differ from every other overhead
+// — video is ADDITIVE rather than one-of-three, and neither display switch hides it.
+describe("the call camera over a body", () => {
+  /** A stand-in for a LiveKit camera track: the two methods the element actually calls. */
+  const fakeTrack = () => {
+    const t = {
+      attached: [] as HTMLElement[],
+      detached: [] as HTMLElement[],
+      attach(el: HTMLElement) {
+        t.attached.push(el);
+        return el;
+      },
+      detach(el: HTMLElement) {
+        t.detached.push(el);
+        return el;
+      },
+    };
+    return t;
+  };
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    __resetExperiencePreferencesForTests();
+  });
+
+  it("renders the track inside THAT person's anchor and nobody else's", () => {
+    const alexCam = fakeTrack();
+    render(
+      <Vo3dOverheads
+        worldRef={worldRef}
+        ready
+        overheads={[
+          { email: ALEX, displayName: "Alex", video: alexCam as never },
+          { email: MICAH, displayName: "Micah", status: { color: "#4bb96a", shortName: "Micah" } },
+        ]}
+        onOpenConversation={onOpenConversation}
+      />,
+    );
+    const tile = screen.getByTestId(`overhead-video-${ALEX}`);
+    expect(screen.getByTestId(`overhead-${ALEX}`)).toContainElement(tile);
+    expect(screen.queryByTestId(`overhead-video-${MICAH}`)).not.toBeInTheDocument();
+    // The element is really wired to the track, not merely drawn.
+    expect(alexCam.attached).toHaveLength(1);
+  });
+
+  it("gives somebody with ONLY a camera an anchor of their own", () => {
+    render(
+      <Vo3dOverheads
+        worldRef={worldRef}
+        ready
+        overheads={[{ email: ALEX, displayName: "Alex", video: fakeTrack() as never }]}
+        onOpenConversation={onOpenConversation}
+      />,
+    );
+    expect(screen.getByTestId(`overhead-video-${ALEX}`)).toBeInTheDocument();
+  });
+
+  it("is ADDITIVE — a nameplate, a bubble or a badge still shows beneath it", () => {
+    render(
+      <Vo3dOverheads
+        worldRef={worldRef}
+        ready
+        overheads={[
+          {
+            email: ALEX,
+            displayName: "Alex",
+            video: fakeTrack() as never,
+            sentText: "on my way",
+            unread: { conversationId: "c1", count: 1 },
+          },
+        ]}
+        onOpenConversation={onOpenConversation}
+      />,
+    );
+    expect(screen.getByTestId(`overhead-video-${ALEX}`)).toBeInTheDocument();
+    expect(screen.getByTestId(`overhead-text-${ALEX}`)).toBeInTheDocument();
+    expect(screen.getByTestId(`overhead-unread-${ALEX}`)).toBeInTheDocument();
+  });
+
+  it("detaches with ITS OWN element when the camera goes off, leaving other surfaces attached", () => {
+    const cam = fakeTrack();
+    const { rerender } = render(
+      <Vo3dOverheads
+        worldRef={worldRef}
+        ready
+        overheads={[{ email: ALEX, displayName: "Alex", video: cam as never }]}
+        onOpenConversation={onOpenConversation}
+      />,
+    );
+    const el = cam.attached[0];
+    rerender(
+      <Vo3dOverheads
+        worldRef={worldRef}
+        ready
+        overheads={[{ email: ALEX, displayName: "Alex", status: { color: "#4bb96a", shortName: "Alex" } }]}
+        onOpenConversation={onOpenConversation}
+      />,
+    );
+    expect(screen.queryByTestId(`overhead-video-${ALEX}`)).not.toBeInTheDocument();
+    // WITH the element, never the no-argument detach() that would rip the expanded CallOverlay's own
+    // element off the same track.
+    expect(cam.detached).toEqual([el]);
+  });
+
+  it("is not hidden by either in-world display switch — a camera is call media, not chrome", () => {
+    act(() => {
+      setExperiencePreference("nameplates", false);
+      setExperiencePreference("worldChatIndicators", false);
+    });
+    render(
+      <Vo3dOverheads
+        worldRef={worldRef}
+        ready
+        overheads={[{ email: ALEX, displayName: "Alex", video: fakeTrack() as never, typing: true }]}
+        onOpenConversation={onOpenConversation}
+      />,
+    );
+    expect(screen.getByTestId(`overhead-video-${ALEX}`)).toBeInTheDocument();
+    expect(screen.queryByTestId(`overhead-typing-${ALEX}`)).not.toBeInTheDocument();
+  });
+});

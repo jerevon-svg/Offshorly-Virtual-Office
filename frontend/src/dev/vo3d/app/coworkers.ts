@@ -96,6 +96,21 @@ export interface Vo3dCoworker {
    *  world/Coworkers.ts reads this for exactly one decision — a live point is V1's truth and is never
    *  nudged by V2's separation rule, while a desk point still is (see placeCoworkers). */
   posSource: "desk" | "live";
+  /** PHASE 7D — A NAMED PLACE OUTSIDE V1'S COORDINATE FRAME this person is in, or absent.
+   *
+   *  V1's wire carries a `roomId` beside every position, and the CAVE publishes itself through it
+   *  (adapters/v1SelfMovement's `placed`) because the CAVE is at x 2600 — outside the frame entirely, so
+   *  `point` cannot describe it. `point` therefore stays the last REAL in-frame position they had (the
+   *  portal), and this says where they actually went. A world that knows the place puts the body there;
+   *  one that does not leaves them at the portal, which is where V1 thinks they are. */
+  place?: string;
+  /** PHASE 7D — WHERE THEY ACTUALLY ARE inside that place, in the place's own world frame, when they
+   *  have published it. Absent until they move (the server never persists it), and `point` — the
+   *  portal — is the honest fallback meanwhile. */
+  localPoint?: Vec2;
+  /** PHASE 7D — an ALREADY-WORLD-SPACE position that overrides `point`, for a place `toWorld` cannot
+   *  reach. Set only by the world itself, which is the only thing that knows where its own CAVE is. */
+  worldPoint?: Vec2;
   /** THAT PERSON'S OWN V1 sprite box (data/rosterLayers.ts gives a live-3D employee their own manifest
    *  dimensions, scaled by their room's overflow scale — micah and angelo are deliberately taller).
    *

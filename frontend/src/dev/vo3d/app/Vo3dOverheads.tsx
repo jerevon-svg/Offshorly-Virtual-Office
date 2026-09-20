@@ -31,6 +31,8 @@
 // state would re-render this subtree sixty times a second for a room of people who are merely breathing.
 import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import HudIcon from "../../../components/HudIcon";
+import { CallVideoElement } from "../../../components/OfficeMap/CallVideoElement";
+import type { SpatialVideoTrack } from "../../../services/call/callStore";
 import type { Vo3dWorld } from "./world";
 import type { Vo3dScreenAnchor } from "./interactions";
 import {
@@ -60,6 +62,19 @@ export interface Vo3dOverhead {
    *  for the statuses V1 spells out (ACTIVE_DETAIL_STATUSES). Absent when V1 has no status for them, in
    *  which case they get no pill — V1 renders none either. */
   status?: { color: string; shortName: string; detail?: string };
+  /** PHASE 7D — THEIR CAMERA, over their body. A LIVE track from callStore's videoByIdentity, which
+   *  holds only unmuted cameras of the room THIS client is connected to; a camera that goes off leaves
+   *  the map and the tile unmounts with it, so there is no muted-but-present state to draw and no stale
+   *  last frame to strand over an avatar.
+   *
+   *  ADDITIVE, like the unread badge and unlike the one-of-three above: somebody can be talking, typing
+   *  or merely present AND on camera at the same time, and suppressing either would be a lie about one
+   *  of them. */
+  video?: SpatialVideoTrack;
+  /** PHASE 7D — A REACTION OR STICKER, in flight over this person's head. Additive like the camera and
+   *  unlike the one-of-three below: somebody can be talking AND cheering. Cleared by its own TTL in
+   *  the meeting chat client, so nothing here has a timer. */
+  reaction?: string;
 }
 
 /** The reserved key for the viewer's own row. It is not an email on purpose: self has no coworker body
@@ -118,12 +133,21 @@ export function Vo3dOverheads({ worldRef, ready, overheads: incoming, onOpenConv
     for (const o of incoming) {
       const next: Vo3dOverhead = { email: o.email, displayName: o.displayName };
       if (prefs.nameplates) next.status = o.status;
+      // A meeting reaction is not world chrome and is not a nameplate: it is something a colleague
+      // just did, in a meeting this viewer is in. Neither switch hides it, for the same reason
+      // neither hides a camera.
+      next.reaction = o.reaction;
       if (prefs.worldChatIndicators) {
         next.sentText = o.sentText;
         next.typing = o.typing;
         next.unread = o.unread;
       }
-      if (next.status || next.sentText || next.typing || next.unread) kept.push(next);
+      // NEITHER SWITCH HIDES A CAMERA. "Nameplates" and "world chat indicators" are about world chrome;
+      // a colleague's live camera in a call this viewer is IN is call media, and turning off nameplates
+      // must not silently drop somebody out of view mid-conversation. Leaving the call is how you stop
+      // seeing it — that is the control, and it is already on the call bar.
+      next.video = o.video;
+      if (next.status || next.sentText || next.typing || next.unread || next.video || next.reaction) kept.push(next);
     }
     return kept;
   }, [incoming, prefs.nameplates, prefs.worldChatIndicators]);
@@ -188,6 +212,21 @@ export function Vo3dOverheads({ worldRef, ready, overheads: incoming, onOpenConv
             data-testid={`overhead-${o.email}`}
           >
             <div className={styles.stack} style={{ paddingBottom: `${HEAD_GAP / BASE_FONT_UNITS}em` }}>
+              {/* THE CAMERA, highest in the stack so it never covers the name, the bubble or the badge —
+                  the same top-of-column place V1's SpatialVideoTile occupies above its avatar, at V1's
+                  own size in world units (see the stylesheet). Sized in `em` like everything else here,
+                  so it rides the anchor's measured camera scale and grows and shrinks with the body
+                  instead of pinning itself to one on-screen size. */}
+              {o.video && (
+                <div className={styles.videoTile} data-testid={`overhead-video-${o.email}`}>
+                  <CallVideoElement track={o.video} className={styles.video} />
+                </div>
+              )}
+              {o.reaction && (
+                <div className={styles.reaction} data-testid={`overhead-reaction-${o.email}`} aria-hidden="true">
+                  {o.reaction}
+                </div>
+              )}
               {o.unread && (
                 <button
                   type="button"

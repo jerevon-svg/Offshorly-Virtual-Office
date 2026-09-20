@@ -24,11 +24,13 @@
 // All of them go through the one `world.setViewMode` / `world.setPlayerView` entry point the dev GUI's
 // dropdown uses, so no two of them can ever disagree.
 //
-// The pointer contract is likewise unchanged and still owned by player/PlayerInput: a click on the world
-// takes the pointer, Esc gives it back (PlayerInput deliberately leaves Esc to the browser, as the one
-// guaranteed way out), and the dock follows that lock — see app/Vo3dHud. The world draws its own
-// "click to look · WASD to walk · Shift to sprint · V first/third · Esc releases" line over the avatar,
-// which is where that instruction now lives.
+// THE POINTER CONTRACT, as of PHASE 7D. Entering PLAYER asks for the lock from the C keypress itself,
+// because that is the only moment a browser will grant one — waiting for a click on the world made the
+// mode feel like it had not started. Esc still gives the pointer back (PlayerInput leaves Esc to the
+// browser, the one guaranteed way out), a world click is still the recapture route, and the dock still
+// follows the lock (app/Vo3dHud). A refused request is not a dead end: unlocked mouse-look takes over
+// immediately and a contextual hint says how to get the real thing back. The permanent centre-screen
+// "click to look" pill is gone with it — the view indicator below says what this mode is, once.
 //
 // IT STILL SUBSCRIBES, because C has to know what "next" means. Keeping the subscription here rather
 // than lifting the key into the HUD keeps the view state in one place.
@@ -72,7 +74,17 @@ export function Vo3dViewSwitcher({ worldRef, ready, onViewModeChange }: Vo3dView
   modeRef.current = mode;
 
   const cycle = useCallback(() => {
-    worldRef.current?.setViewMode(nextViewMode(modeRef.current));
+    const world = worldRef.current;
+    if (!world) return;
+    const next = nextViewMode(modeRef.current);
+    world.setViewMode(next);
+    // PHASE 7D — ASK FOR THE POINTER FROM THIS KEYPRESS, SYNCHRONOUSLY.
+    //
+    // A pointer-lock request is only granted inside a user gesture, and this handler IS one. Deferring
+    // it — to an effect, a subscription callback, or the next tick — is precisely why entering PLAYER
+    // used to do nothing until you clicked the world. Asked once per press and never retried on a
+    // timer: the browser rate-limits repeats, and unlocked mouse-look carries the mode if it refuses.
+    if (next === "player") world.requestPointerLock();
   }, [worldRef]);
 
   // C. Modifier presses are left alone (Cmd/Ctrl+C is a copy, and taking it would be the kind of

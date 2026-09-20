@@ -34,8 +34,40 @@ vi.mock("../../../services/presence/spatialSessionStore", () => ({
 
 const callInvite = vi.fn((_email: string) => {});
 const startOrJoin = vi.fn((_id: string) => Promise.resolve());
+/** PHASE 7D. Live cameras the store is reporting, set per test. */
+let callVideo: Record<string, unknown> = {};
+
+/** PHASE 7D meeting chat, driven per test. */
+let callStatus = "idle";
+let callMeetingId: string | null = null;
+type MeetingMsg = { id: string; email: string; text: string; atMs: number };
+let meetingMessages: MeetingMsg[] = [];
+/** Pushes a new meeting snapshot into the mounted overlay, the way the real socket store would. */
+let pushMeeting: ((messages: MeetingMsg[]) => void) | null = null;
+
+vi.mock("../../../services/meeting/meetingChatClient", async () => {
+  const React = await import("react");
+  return {
+    useMeetingChat: () => {
+      const [snap, setSnap] = React.useState(() => ({ messages: meetingMessages, reactions: [] }));
+      React.useEffect(() => {
+        pushMeeting = (messages) => setSnap({ messages, reactions: [] });
+        return () => { pushMeeting = null; };
+      }, []);
+      return snap;
+    },
+    joinMeetingChat: vi.fn(),
+    leaveMeetingChat: vi.fn(),
+    sendMeetingChat: vi.fn(),
+    sendMeetingReaction: vi.fn(),
+    expireReactions: vi.fn(),
+  };
+});
+
 vi.mock("../../../services/call/callStore", () => ({
-  useCallState: () => ({ acceptedPeerEmail: null, incoming: null, outgoing: null, outcome: null, calls: {}, status: "idle", error: null }),
+  // `videoByIdentity` is not optional on the real snapshot (callStore always publishes a map, empty when
+  // nobody has a camera on) — Phase 7D's overhead cameras read it, so the stand-in has to carry it too.
+  useCallState: () => ({ acceptedPeerEmail: null, incoming: null, outgoing: null, outcome: null, calls: {}, status: callStatus, error: null, videoByIdentity: callVideo, participants: [], connectedMeetingId: callMeetingId }),
   callParticipantsFor: () => [] as string[],
   clearAcceptedPeer: vi.fn(),
   getCallSnapshot: () => ({ status: "idle", error: null }),
@@ -113,6 +145,14 @@ let handlers: Handlers | null = null;
 const approachCoworker = vi.fn(() => true);
 const clearSelection = vi.fn();
 const poses: { peers: Map<string, string | null>; self: string | null }[] = [];
+let caveInside = false;
+let caveSubs: ((s: { inside: boolean }) => void)[] = [];
+/** Walk the viewer into (or out of) the Cave, the way CaveTransition would. */
+function setCaveInside(inside: boolean) {
+  caveInside = inside;
+  act(() => caveSubs.forEach((cb) => cb({ inside })));
+}
+
 const world = {
   setCoworkerInteractions: (h: Handlers | null) => { handlers = h; },
   // Phase 7B's overhead layer asks for anchors every frame; a fixed one is enough here — WHERE they land
@@ -135,6 +175,24 @@ const world = {
   restoreCameraView: vi.fn(),
   coworkerAnchor: () => ({ clientX: 400, clientY: 300, visible: true }),
   approachCoworker,
+  // PHASE 7D. The Cave's own feed, which the overlay reads for one fact: whether the viewer is inside.
+  // Driven by `caveInside` so a test can walk somebody in and out.
+  caveMeeting: {
+    subscribe: (cb: (s: { inside: boolean }) => void) => {
+      caveSubs.push(cb);
+      cb({ inside: caveInside });
+      return () => { caveSubs = caveSubs.filter((x) => x !== cb); };
+    },
+    // Walking in only WATCHES the meeting (world.ts observe): no token, no room, no media.
+    enter: vi.fn(() => true),
+    observe: vi.fn(async () => {}),
+    start: vi.fn(async () => {}),
+    setMic: vi.fn(async () => {}),
+    setCamera: vi.fn(async () => {}),
+    setSharing: vi.fn(async () => {}),
+    leave: vi.fn(),
+    invite: vi.fn(),
+  },
 } as unknown as Vo3dWorld;
 const worldRef = { current: world };
 
@@ -147,6 +205,9 @@ const people: OfficePerson[] = [
 ];
 
 beforeEach(() => {
+  callVideo = {};
+  caveInside = false;
+  caveSubs = [];
   conversations = [];
   typingListeners = [];
   poses.length = 0;
@@ -542,5 +603,143 @@ describe("the sender's own bubble", () => {
     send(view, SELF, "once", "same-id");
     send(view, SELF, "once", "same-id");
     expect(screen.getAllByTestId("overhead-text-__self__")).toHaveLength(1);
+  });
+});
+
+
+// PHASE 7D — WHERE A CAMERA IS SHOWN, AND WHERE IT IS NOT.
+//
+// The Cave's curved screen already renders every live camera in the meeting (media/CaveGallery, from
+// the SAME callStore videoByIdentity these tiles read). A floating tile above each head inside the Cave
+// is therefore the same video twice — at meeting scale on the wall, and as a stamp in front of it.
+//
+// What is pinned here is that suppression is DERIVED, not destructive: nothing turns a camera off or
+// detaches a track, the overheads are simply not given one while inside, and walking out hands them
+// straight back. The normal office is untouched.
+describe("call cameras inside the Cave", () => {
+  const camera = () => ({ attach: vi.fn(), detach: vi.fn() });
+
+  it("floats a tile over a coworker in the ordinary office", async () => {
+    callVideo = { [ALEX]: camera() };
+    mount();
+    expect(await screen.findByTestId(`overhead-video-${ALEX}`)).toBeInTheDocument();
+  });
+
+  it("shows none inside the Cave — the screen has them", async () => {
+    callVideo = { [ALEX]: camera(), [SELF]: camera() };
+    mount();
+    await screen.findByTestId(`overhead-video-${ALEX}`);
+
+    setCaveInside(true);
+
+    await waitFor(() => expect(screen.queryByTestId(`overhead-video-${ALEX}`)).toBeNull());
+    // The viewer's own camera too: it is on the wall in front of them like everybody else's.
+    expect(screen.queryByTestId("overhead-video-__self__")).toBeNull();
+  });
+
+  it("hands them back on the way out, with no stale tile left behind", async () => {
+    callVideo = { [ALEX]: camera() };
+    mount();
+    setCaveInside(true);
+    await waitFor(() => expect(screen.queryByTestId(`overhead-video-${ALEX}`)).toBeNull());
+
+    setCaveInside(false);
+
+    expect(await screen.findByTestId(`overhead-video-${ALEX}`)).toBeInTheDocument();
+  });
+
+  it("suppresses the tile only — the track itself is never detached by leaving it out", async () => {
+    const cam = camera();
+    callVideo = { [ALEX]: cam };
+    mount();
+    await screen.findByTestId(`overhead-video-${ALEX}`);
+    expect(cam.attach).toHaveBeenCalledTimes(1);
+
+    setCaveInside(true);
+    await waitFor(() => expect(screen.queryByTestId(`overhead-video-${ALEX}`)).toBeNull());
+
+    // React unmounted the element, so CallVideoElement detached ITS OWN element — and only that one.
+    // The gallery's attachment to the same track is a different element and is untouched here.
+    expect(cam.detach).toHaveBeenCalledTimes(1);
+    expect(cam.detach).toHaveBeenCalledWith(expect.anything());
+  });
+});
+
+
+// PHASE 7D — THE OVERHEAD BUBBLE IS ON A CLOCK, NOT ON A RENDER.
+//
+// A meeting message was previously DERIVED: a memo over the feed that filtered on
+// `Date.now() - atMs`. That is right the instant it runs and wrong every instant after, because
+// nothing schedules a render at expiry — so the bubble hung over its sender's head until some
+// unrelated render happened to knock it off. These pin the actual clock, which is the very same one
+// the spatial bubbles above run on (useOverheadBubbles).
+describe("meeting bubbles expire", () => {
+  /** Put the viewer in a connected meeting and hand back a pusher for its feed.
+   *
+   *  Fake timers go on AFTER mounting, for the reason the spatial block above records — `waitFor`
+   *  polls on real timers — but BEFORE the first push, so that every bubble timeout these tests then
+   *  arm is a fake one they can actually advance. A push is synchronous inside act(), so the
+   *  assertions below use the sync queries rather than the waitFor-backed find*. */
+  async function inMeeting() {
+    callStatus = "connected";
+    callMeetingId = "meeting:cave";
+    mount();
+    await waitFor(() => expect(pushMeeting).not.toBeNull());
+    vi.useFakeTimers();
+    return (messages: MeetingMsg[]) => act(() => pushMeeting!(messages));
+  }
+  const msg = (id: string, text: string, atMs = Date.now()): MeetingMsg => ({ id, email: SELF, text, atMs });
+
+  afterEach(() => {
+    callStatus = "idle";
+    callMeetingId = null;
+    meetingMessages = [];
+    vi.useRealTimers();
+  });
+
+  it("shows a meeting message over its sender, then RESTORES the name/status pill", async () => {
+    const push = await inMeeting();
+    push([msg("m1", "starting now")]);
+    expect(screen.getByTestId("overhead-text-__self__").textContent).toBe("starting now");
+
+    act(() => { vi.advanceTimersByTime(4600); });
+    expect(screen.queryByTestId("overhead-text-__self__")).toBeNull();
+    expect(screen.getByTestId("overhead-status-__self__")).toBeTruthy();
+  });
+
+  it("RESTARTS the life on a second message instead of letting the first one's timer cut it short", async () => {
+    const push = await inMeeting();
+    push([msg("m1", "first")]);
+    expect(screen.getByTestId("overhead-text-__self__").textContent).toBe("first");
+
+    act(() => { vi.advanceTimersByTime(3000); });
+    push([msg("m1", "first"), msg("m2", "second")]);
+    // 3s past the FIRST message — which would already have expired had its timer survived — but only
+    // 3s into the second's own life, so the second is still up and reads as the second.
+    act(() => { vi.advanceTimersByTime(3000); });
+    expect(screen.getByTestId("overhead-text-__self__").textContent).toBe("second");
+    // ...and it goes on its own schedule, leaving nothing stale behind.
+    act(() => { vi.advanceTimersByTime(1800); });
+    expect(screen.queryByTestId("overhead-text-__self__")).toBeNull();
+  });
+
+  it("CLEARS the bubble when the meeting ends, rather than letting it outlive the meeting", async () => {
+    const push = await inMeeting();
+    push([msg("m1", "see you")]);
+    expect(screen.getByTestId("overhead-text-__self__")).toBeTruthy();
+
+    callStatus = "idle";
+    callMeetingId = null;
+    // Any render now that the call is gone — the real store pushes one on disconnect.
+    push([msg("m1", "see you")]);
+    expect(screen.queryByTestId("overhead-text-__self__")).toBeNull();
+    expect(screen.getByTestId("overhead-status-__self__")).toBeTruthy();
+  });
+
+  it("does NOT pop a bubble for backlog a late joiner is handed", async () => {
+    const push = await inMeeting();
+    push([msg("old", "said ages ago", Date.now() - 60_000), msg("older", "and before that", Date.now() - 90_000)]);
+    expect(screen.queryByTestId("overhead-text-__self__")).toBeNull();
+    expect(screen.getByTestId("overhead-status-__self__")).toBeTruthy();
   });
 });

@@ -16,6 +16,8 @@ function recorder(): { sink: Vo3dSelfMovementSink; calls: Call[] } {
   const sink: Vo3dSelfMovementSink = {
     state: { started: 0, arrived: 0, refused: 0, wire: [] },
     started: (origin, path, durationMs, pacing) => { calls.push({ call: "started", origin, path: [...path], durationMs, ...(pacing ? { pacing } : {}) }); },
+    enteredPlace: (at, yaw, room) => { calls.push({ call: "placed", at, yaw, room } as never); },
+    movedInPlace: (anchor, from, to, yaw, room) => { calls.push({ call: "inPlace", anchor, from, to, yaw, room } as never); },
     arrived: (at, facing, yaw, seat) => { calls.push({ call: "arrived", at, facing, yaw, ...(seat ? { seat } : {}) }); },
   };
   return { sink, calls };

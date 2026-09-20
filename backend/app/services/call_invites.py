@@ -65,7 +65,7 @@ class CallInviteRegistry:
             if key in (inv["from_email"], inv["to_email"])
         ]
 
-    def create(self, *, from_email: str, from_sid: str, to_email: str) -> dict:
+    def create(self, *, from_email: str, from_sid: str, to_email: str, extra: dict | None = None) -> dict:
         """Mint a pending invite. Callers MUST have already run the preconditions (recipient
         online / not DND / not busy, no pending_between) — this registry holds state, it does not
         police policy."""
@@ -76,6 +76,10 @@ class CallInviteRegistry:
             "to_email": _normalize_email(to_email),
             "from_sid": from_sid,
             "created_at": datetime.now(timezone.utc),
+            # PHASE 7D. Carried so a SECOND instance of this registry can serve meeting invitations
+            # without a second copy of its TTL / single-shot resolve / glare / disconnect logic. Only
+            # keys `wire()` knows about reach a client; anything else stays server-side like from_sid.
+            **(extra or {}),
         }
         self._invites[invite_id] = invite
         return invite
@@ -143,9 +147,15 @@ class CallInviteRegistry:
 
 
 def wire(invite: dict) -> dict:
-    """Client-facing shape. from_sid and created_at stay server-side."""
-    return {
+    """Client-facing shape. from_sid and created_at stay server-side.
+
+    PHASE 7D: `meetingId` rides along only when the invite has one, so a spatial ring's wire shape is
+    byte-for-byte what it has always been and no existing client sees a new field."""
+    out = {
         "inviteId": invite["inviteId"],
         "fromEmail": invite["from_email"],
         "toEmail": invite["to_email"],
     }
+    if invite.get("meeting_id"):
+        out["meetingId"] = invite["meeting_id"]
+    return out

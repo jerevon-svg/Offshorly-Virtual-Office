@@ -148,7 +148,17 @@ export class PlayerMode {
     this.input = new PlayerInput(deps.canvas, {
       onInteract: () => this.interact(),
       onToggleView: () => this.setView(this.camera.view === "third" ? "first" : "third"),
-      onLockChange: (locked) => { this.state.locked = locked; this.hud?.setLocked(locked); this.refreshHint(); },
+      onLockChange: (locked) => {
+        this.state.locked = locked;
+        this.hud?.setLocked(locked);
+        this.refreshHint();
+        if (locked) this.lockDenied = false;
+        this.onLockState?.(locked, this.input.usingUnlockedLook);
+      },
+      onLockDenied: () => {
+        this.lockDenied = true;
+        this.onLockState?.(false, true);
+      },
     });
   }
 
@@ -333,7 +343,27 @@ export class PlayerMode {
     if (!this.target) this.refreshHint();
   }
 
+  /** PHASE 7D — THE PERSISTENT CENTRE-SCREEN PILL IS GONE.
+   *
+   *  "click to look · WASD to walk · …" sat over the avatar for as long as the pointer was unlocked,
+   *  which was most of the time and directly in the middle of the view. It said the wrong thing too:
+   *  entering PLAYER now takes the pointer from the view-switch gesture itself, so clicking the world
+   *  is a recovery route rather than the way in.
+   *
+   *  What replaced it: the view-switch indicator, which says PLAYER VIEW and its controls once, briefly,
+   *  on entry (app/Vo3dViewIndicator) — and a contextual recovery hint shown only when the browser
+   *  actually refused the lock. A permanent instruction for a state that is usually fine is chrome. */
   private refreshHint(): void {
-    this.hud?.setHint(this.input.locked ? "" : "click to look · WASD to walk · Shift to sprint · V first/third · Esc releases");
+    this.hud?.setHint("");
   }
+
+  /** PHASE 7D — the browser refused our last request, so a recovery hint is warranted. */
+  lockDenied = false;
+  /** Told whenever the lock state or the fallback changes, so the overlay can show the right hint. */
+  onLockState: ((locked: boolean, unlockedLook: boolean) => void) | null = null;
+
+  /** PHASE 7D — take the pointer from the caller's own gesture (the C key, or chat's Enter). */
+  requestPointerLock(): void { this.input.requestLock(); }
+  get pointerLocked(): boolean { return this.input.locked; }
+  get unlockedLook(): boolean { return this.input.usingUnlockedLook; }
 }

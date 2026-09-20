@@ -23,9 +23,20 @@ import * as THREE from "three";
 import { ribbonStripGeometry, samplePath, frontChordRange, type CaveBuild, type PathSample } from "../build/cave";
 import { SCREEN } from "../rooms/cave";
 import type { PresentationSource } from "./CavePresentation";
+import { profileImageFor } from "../../../data/portraits";
 
 /** One participant's live camera, as the store already models it. */
-export type GalleryCamera = { identity: string; track: PresentationSource };
+/** ONE PERSON IN THE MEETING — not one camera.
+ *
+ *  PHASE 7D. The gallery used to be a list of live camera tracks, which meant a meeting where nobody
+ *  had a camera on drew nothing and the room fell back to the boxing video while three people sat in
+ *  it talking. Membership is the roster now and a camera is a PROPERTY of a member: `track` present
+ *  means show their video, absent means show who they are. The list therefore reflects who is in the
+ *  room, which is what a meeting gallery is. */
+export type GalleryMember = { identity: string; track?: PresentationSource };
+
+/** @deprecated the old camera-only shape; kept as an alias so nothing outside had to be renamed. */
+export type GalleryCamera = GalleryMember;
 
 /** "off" = nothing · "full" = the whole wrap is the gallery · "wings" = a share owns the front. */
 export type GalleryMode = "off" | "full" | "wings";
@@ -130,6 +141,10 @@ export class CaveGallery {
    *  and on again is a new entry, and a re-layout never re-creates an element that is still live. */
   private readonly sources = new Map<PresentationSource, Source>();
   private readonly labels = new Map<string, THREE.CanvasTexture>();
+  /** PHASE 7D. identity -> the card drawn for somebody whose camera is off: their profile portrait on
+   *  a dark ground. Cached like the name labels, and for the same reason — a reflow must not redraw
+   *  one, and a meeting of twelve holds twelve small canvases rather than twelve decoding videos. */
+  private readonly placeholders = new Map<string, THREE.CanvasTexture>();
   private tiles: Tile[] = [];
   private cameras: GalleryCamera[] = [];
   private mode: GalleryMode = "off";
@@ -148,10 +163,16 @@ export class CaveGallery {
   /** The only camera in the meeting, for the immersive single-speaker view — null otherwise. */
   get solo(): { texture: THREE.VideoTexture; aspect: number } | null {
     if (this.cameras.length !== 1) return null;
-    const s = this.sources.get(this.cameras[0].track);
+    // A lone member with NO camera is not a speaker to fill the room with — they get an ordinary
+    // tile showing who they are, and the immersive view waits for an actual picture.
+    const track = this.cameras[0].track;
+    if (!track) return null;
+    const s = this.sources.get(track);
     return s ? { texture: s.texture, aspect: s.aspect } : null;
   }
 
+  /** HOW MANY PEOPLE ARE IN THE MEETING, camera or not. This is what tells the CAVE to show a gallery
+   *  at all rather than the boxing video (app/world.ts applyCaveMode), so it must count members. */
   get count(): number {
     return this.cameras.length;
   }
@@ -206,11 +227,15 @@ export class CaveGallery {
 
   private sync(): void {
     const drawnCameras = this.active && this.mode !== "off" ? this.cameras.slice(0, MAX_TILES) : [];
-    // A solo camera is shown by the front panel + the ambient wrap, not by a tile (see the header).
-    const tiled = this.mode === "full" && drawnCameras.length === 1 ? [] : drawnCameras;
+    // A solo CAMERA is shown by the front panel + the ambient wrap, not by a tile (see the header).
+    // PHASE 7D: only when they actually have one. A lone member with their camera off has no picture
+    // to fill the room with, so excluding them from the tiles drew an empty wall for the commonest
+    // state of all — one person who has just started the meeting.
+    const soloCamera = this.mode === "full" && drawnCameras.length === 1 && Boolean(drawnCameras[0].track);
+    const tiled = soloCamera ? [] : drawnCameras;
     // The SOLO source still needs its element, so elements follow drawnCameras, not `tiled`.
     this.reconcileSources(drawnCameras);
-    const slots = galleryLayout(tiled.map((c) => this.sources.get(c.track)?.aspect ?? 16 / 9), {
+    const slots = galleryLayout(tiled.map((c) => (c.track ? this.sources.get(c.track)?.aspect ?? 16 / 9 : 16 / 9)), {
       total: this.front.total, front: this.front, mode: this.mode,
     });
     this.drawTiles(tiled, slots);
@@ -224,8 +249,10 @@ export class CaveGallery {
   }
 
   /** Create an element+texture for every camera that should be live, drop the rest. */
-  private reconcileSources(wanted: GalleryCamera[]): void {
-    const keep = new Set(wanted.map((c) => c.track));
+  private reconcileSources(wanted: GalleryMember[]): void {
+    // Only members who actually have a camera own an element. A camera-off member costs nothing here:
+    // their tile is a cached canvas, not a decoding <video>.
+    const keep = new Set(wanted.map((c) => c.track).filter(Boolean));
     for (const [track, s] of this.sources) {
       if (keep.has(track)) continue;
       this.sources.delete(track);
@@ -233,7 +260,7 @@ export class CaveGallery {
     }
     if (typeof document === "undefined") return;
     for (const cam of wanted) {
-      if (this.sources.has(cam.track)) continue;
+      if (!cam.track || this.sources.has(cam.track)) continue;
       const el = document.createElement("video");
       // MUTED, always: the meeting's audio is callStore's and is played exactly once.
       el.muted = true;
@@ -261,21 +288,90 @@ export class CaveGallery {
    *  per person who ever turned a camera on: past a couple of screenfuls, drop the ones nobody in
    *  the current list needs. */
   private trimLabels(): void {
-    if (this.labels.size <= MAX_TILES * 2) return;
+    if (this.labels.size <= MAX_TILES * 2 && this.placeholders.size <= MAX_TILES * 2) return;
     const live = new Set(this.cameras.map((c) => c.identity));
     for (const [identity, tex] of this.labels) {
       if (live.has(identity)) continue;
       tex.dispose();
       this.labels.delete(identity);
     }
+    for (const [identity, tex] of this.placeholders) {
+      if (live.has(identity)) continue;
+      tex.dispose();
+      this.placeholders.delete(identity);
+    }
   }
 
-  private drawTiles(cameras: GalleryCamera[], slots: TileSlot[]): void {
+  /** THE CAMERA-OFF CARD. A 16:9 canvas with the person's own portrait drawn to cover it, dimmed, so
+   *  a wall of camera-off members reads as a room of people rather than a row of black holes.
+   *
+   *  The portrait is the office's OWN (data/portraits — the same source the dock, the picker and the
+   *  profile use); nobody gets a second likeness. It loads asynchronously and marks the gallery dirty
+   *  on arrival, so the tile appears immediately with the initial and fills in a frame later rather
+   *  than blocking the meeting on a network round trip. Somebody with no portrait keeps the initial. */
+  private placeholderTexture(identity: string): THREE.CanvasTexture | null {
+    const cached = this.placeholders.get(identity);
+    if (cached) return cached;
+    if (typeof document === "undefined") return null;
+    const canvas = document.createElement("canvas");
+    canvas.width = 640; canvas.height = 360;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    const draw = (img?: HTMLImageElement) => {
+      ctx.fillStyle = "#14161f";
+      ctx.fillRect(0, 0, 640, 360);
+      if (img && img.naturalWidth > 0) {
+        // COVER, centred: a portrait-shaped image on a wide tile is cropped, never squashed.
+        const scale = Math.max(640 / img.naturalWidth, 360 / img.naturalHeight);
+        const w = img.naturalWidth * scale;
+        const h = img.naturalHeight * scale;
+        ctx.drawImage(img, (640 - w) / 2, (360 - h) / 2, w, h);
+        // A touch of shade so the name strip below it stays the brightest thing on the tile.
+        ctx.fillStyle = "rgba(10,12,18,0.28)";
+        ctx.fillRect(0, 0, 640, 360);
+      } else {
+        ctx.fillStyle = "#3b4256";
+        ctx.beginPath();
+        ctx.arc(320, 175, 86, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "#e8eef7";
+        ctx.font = "600 96px system-ui, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(shortName(identity).charAt(0).toUpperCase() || "?", 320, 182);
+        ctx.textAlign = "left";
+      }
+    };
+    draw();
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.generateMipmaps = false;
+    tex.minFilter = THREE.LinearFilter;
+    this.placeholders.set(identity, tex);
+
+    const src = profileImageFor(identity, () => "");
+    if (src && typeof Image !== "undefined") {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        draw(img);
+        tex.needsUpdate = true;
+        // The picture arrived after the tile was drawn: nothing MOVED, but the wall changed.
+        this.dirty = true;
+      };
+      img.onerror = () => {};
+      img.src = src;
+    }
+    return tex;
+  }
+
+  private drawTiles(cameras: GalleryMember[], slots: TileSlot[]): void {
     for (let i = 0; i < Math.max(slots.length, this.tiles.length); i++) {
       const slot = slots[i];
       if (!slot) { const t = this.tiles[i]; if (t) { t.mesh.visible = false; t.label.visible = false; } continue; }
       const tile = this.tiles[i] ?? this.makeTile();
-      const source = this.sources.get(cameras[i].track);
+      const member = cameras[i];
+      const source = member.track ? this.sources.get(member.track) : undefined;
       // Geometry is per-layout: dispose the old strip rather than leaking one per reflow.
       tile.mesh.geometry.dispose();
       tile.mesh.geometry = ribbonStripGeometry(this.samples, slot.s0, slot.s1, slot.y, slot.height);
@@ -283,10 +379,14 @@ export class CaveGallery {
       tile.label.geometry = ribbonStripGeometry(
         this.samples, slot.s0, slot.s1, slot.y - LABEL_HEIGHT, LABEL_HEIGHT, 1.0,
       );
-      tile.material.map = source?.texture ?? null;
-      tile.material.color.setHex(source ? 0xffffff : 0x000000);
+      // CAMERA ON -> their picture. CAMERA OFF -> who they are: their profile portrait, the same one
+      // every other surface in the office uses, on a dark card. Never a blank black strip, which read
+      // as a broken tile rather than as somebody sitting there with their camera off.
+      const placeholder = source ? null : this.placeholderTexture(member.identity);
+      tile.material.map = source?.texture ?? placeholder;
+      tile.material.color.setHex(source || placeholder ? 0xffffff : 0x000000);
       tile.material.needsUpdate = true;
-      tile.labelMaterial.map = this.labelTexture(cameras[i].identity);
+      tile.labelMaterial.map = this.labelTexture(member.identity);
       tile.labelMaterial.needsUpdate = true;
       tile.mesh.visible = true;
       tile.label.visible = true;
@@ -337,6 +437,8 @@ export class CaveGallery {
   dispose(): void {
     for (const [, s] of this.sources) releaseSource(s);
     this.sources.clear();
+    for (const [, tex] of this.placeholders) tex.dispose();
+    this.placeholders.clear();
     for (const t of this.tiles) {
       t.mesh.geometry.dispose(); t.material.dispose();
       t.label.geometry.dispose(); t.labelMaterial.dispose();

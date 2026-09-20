@@ -345,3 +345,211 @@ describe("Phase 6B — the exact yaw and the pacing come through the adapter, or
     expect("pacing" in eased.coworkers[0].walk!).toBe(false);
   });
 });
+
+// PHASE 7D — THE PLACE A POSITION CANNOT DESCRIBE.
+//
+// The CAVE is outside V1's coordinate frame, so somebody inside it publishes their last real in-frame
+// point (the portal) plus the place NAME on the wire's existing `roomId`. This adapter's only job is to
+// carry that name through: it does not know what "championship-cave" refers to — the world owns its own
+// geometry — and it must not drop a fact peers need.
+describe("applyLivePositions — a named place", () => {
+  const set = (c: Partial<Vo3dCoworker> = {}): Vo3dCoworkerSet => ({
+    coworkers: [
+      {
+        email: "b@x.com", displayName: "B", avatarId: "a1",
+        box: { width: 26, height: 37 }, point: { x: 0, z: 0 }, posSource: "desk", ...c,
+      } as Vo3dCoworker,
+    ],
+    missingAvatar: [],
+  });
+
+  it("carries the place through beside the position", () => {
+    const out = applyLivePositions(
+      set(),
+      [peer("b@x.com", { x: 100, y: 200 }, { roomId: "championship-cave" })],
+      true,
+    );
+    expect(out.coworkers[0].place).toBe("championship-cave");
+    // The POSITION is still the real in-frame one — nothing is invented, and a client that does not
+    // understand the place still draws them somewhere true.
+    expect(out.coworkers[0].posSource).toBe("live");
+    expect(out.coworkers[0].point).toBeTruthy();
+  });
+
+  it("carries an ordinary V1 room through the same way, and leaves it absent when there is none", () => {
+    const withRoom = applyLivePositions(set(), [peer("b@x.com", { x: 1, y: 2 }, { roomId: "design-team" })], true);
+    expect(withRoom.coworkers[0].place).toBe("design-team");
+
+    const without = applyLivePositions(set(), [peer("b@x.com", { x: 1, y: 2 })], true);
+    expect(without.coworkers[0].place).toBeUndefined();
+  });
+
+  it("drops the place when the peer comes back into the frame with none", () => {
+    const inCave = applyLivePositions(set(), [peer("b@x.com", { x: 1, y: 2 }, { roomId: "championship-cave" })], true);
+    expect(inCave.coworkers[0].place).toBe("championship-cave");
+
+    const back = applyLivePositions(set(), [peer("b@x.com", { x: 1, y: 2 }, { roomId: null })], true);
+    expect(back.coworkers[0].place).toBeUndefined();
+  });
+
+  it("never invents a worldPoint — only the world may resolve a place to its own geometry", () => {
+    const out = applyLivePositions(set(), [peer("b@x.com", { x: 1, y: 2 }, { roomId: "championship-cave" })], true);
+    expect(out.coworkers[0].worldPoint).toBeUndefined();
+  });
+});
+
+// PHASE 7D — THE SIGNED-IN EMPLOYEE'S OWN RESTORE, from the same persisted row peers read.
+//
+// The bug this closes: a reload put the person back at `point` — the portal — while every other browser,
+// reading the SAME row, correctly drew them inside the CAVE. The fact was on the wire the whole time;
+// only the self resolver dropped it.
+describe("resolveV1SelfPosition — the persisted place", () => {
+  const SELF = "self@x.com";
+
+  function selfPeer(stable: Partial<PeerMovementState["stable"]> = {}): PeerMovementState {
+    return peer(SELF, { x: 400, y: 300 }, stable);
+  }
+
+  it("carries the place through beside the position", async () => {
+    const { resolveV1SelfPosition } = await import("./adapters/v1SelfMovement");
+    const { setCurrentUserFromMeResponse } = await import("../../auth/currentUserStore");
+    setCurrentUserFromMeResponse({ email: SELF, name: "Self" } as never);
+
+    const out = resolveV1SelfPosition([selfPeer({ roomId: "championship-cave" })], true, { width: 26, height: 37 });
+    expect(out?.place).toBe("championship-cave");
+    // The POSITION is untouched — a world that does not recognise the place restores exactly as before.
+    expect(out?.point).toEqual({ x: 413, z: 318.5 });
+  });
+
+  it("leaves the place absent when V1 holds none, so ordinary restores are unchanged", async () => {
+    const { resolveV1SelfPosition } = await import("./adapters/v1SelfMovement");
+    const { setCurrentUserFromMeResponse } = await import("../../auth/currentUserStore");
+    setCurrentUserFromMeResponse({ email: SELF, name: "Self" } as never);
+
+    expect(resolveV1SelfPosition([selfPeer()], true, { width: 26, height: 37 })?.place).toBeUndefined();
+  });
+
+  it("carries an unrecognised place through unchanged — the world decides what it knows", async () => {
+    const { resolveV1SelfPosition } = await import("./adapters/v1SelfMovement");
+    const { setCurrentUserFromMeResponse } = await import("../../auth/currentUserStore");
+    setCurrentUserFromMeResponse({ email: SELF, name: "Self" } as never);
+
+    const out = resolveV1SelfPosition([selfPeer({ roomId: "somewhere-that-no-longer-exists" })], true, { width: 26, height: 37 });
+    expect(out?.place).toBe("somewhere-that-no-longer-exists");
+    // And the position is still a real one to fall back to.
+    expect(out?.point).toEqual({ x: 413, z: 318.5 });
+  });
+
+  it("agrees with what the PEER adapter resolves from the very same row", async () => {
+    const { resolveV1SelfPosition } = await import("./adapters/v1SelfMovement");
+    const { setCurrentUserFromMeResponse } = await import("../../auth/currentUserStore");
+    setCurrentUserFromMeResponse({ email: SELF, name: "Self" } as never);
+
+    const row = selfPeer({ roomId: "championship-cave" });
+    const mine = resolveV1SelfPosition([row], true, { width: 26, height: 37 });
+    const theirs = applyLivePositions(
+      {
+        coworkers: [{
+          email: SELF, displayName: "Self", avatarId: "a1",
+          box: { width: 26, height: 37 }, point: { x: 0, z: 0 }, posSource: "desk",
+        } as Vo3dCoworker],
+        missingAvatar: [],
+      },
+      [row],
+      true,
+    );
+    // The disagreement that caused the bug is impossible when both read the same field.
+    expect(mine?.place).toBe(theirs.coworkers[0].place);
+  });
+});
+
+// PHASE 7D — REAL MOVEMENT INSIDE A PLACE V1 CANNOT DESCRIBE.
+//
+// The previous round gave membership only: a peer in the Cave was pinned to a hash-of-email slot and
+// never moved. The wire now carries the real position and the real walk in the place's own frame,
+// beside the V1 coordinates that keep their original meaning.
+describe("applyLivePositions / resolveWalk — a place's own frame", () => {
+  const set = (): Vo3dCoworkerSet => ({
+    coworkers: [{
+      email: "b@x.com", displayName: "B", avatarId: "a1",
+      box: { width: 26, height: 37 }, point: { x: 0, z: 0 }, posSource: "desk",
+    } as Vo3dCoworker],
+    missingAvatar: [],
+  });
+
+  it("uses the published local position, not a slot and not the V1 point", () => {
+    const out = applyLivePositions(
+      set(),
+      [peer("b@x.com", { x: 1400, y: 600 }, { roomId: "championship-cave", localPos: { x: 2733, y: 851 } })],
+      true,
+    );
+    expect(out.coworkers[0].localPoint).toEqual({ x: 2733, z: 851 });
+    // The V1 point is still the in-frame one, untouched — nothing out-of-frame became a V1 coordinate.
+    expect(out.coworkers[0].point).toEqual({ x: 1413, z: 618.5 });
+  });
+
+  it("leaves localPoint absent when the peer has not published one yet", () => {
+    const out = applyLivePositions(
+      set(),
+      [peer("b@x.com", { x: 1400, y: 600 }, { roomId: "championship-cave" })],
+      true,
+    );
+    // The portal is the honest fallback until they take a step.
+    expect(out.coworkers[0].localPoint).toBeUndefined();
+    expect(out.coworkers[0].place).toBe("championship-cave");
+  });
+
+  it("replays the LOCAL path when one is in flight, so a peer walks rather than teleports", () => {
+    const walk = resolveWalk(
+      {
+        movementId: "m1",
+        origin: { x: 1400, y: 600 },
+        path: [{ x: 1400, y: 600 }],
+        localOrigin: { x: 2700, y: 800 },
+        localPath: [{ x: 2760, y: 800 }, { x: 2820, y: 840 }],
+        roomId: "championship-cave",
+        durationMs: 400,
+        startedAt: 1_000,
+      } as never,
+      { width: 26, height: 37 },
+      0,
+      1_200,
+    );
+    // The real walk, in the place's frame, with no sprite-box conversion applied to it.
+    expect(walk?.path).toEqual([
+      { x: 2700, z: 800 }, { x: 2760, z: 800 }, { x: 2820, z: 840 },
+    ]);
+    // And it interpolates: halfway through a 400ms leg.
+    expect(walk?.elapsedMs).toBe(200);
+    expect(walk?.durationMs).toBe(400);
+  });
+
+  it("falls back to the V1 path when no local one was published", () => {
+    const walk = resolveWalk(
+      {
+        movementId: "m1", origin: { x: 100, y: 100 }, path: [{ x: 200, y: 100 }],
+        roomId: null, durationMs: 400, startedAt: 1_000,
+      } as never,
+      { width: 26, height: 37 },
+      0,
+      1_200,
+    );
+    // Converted through the box halves, exactly as an ordinary office walk always was.
+    expect(walk?.path).toEqual([{ x: 113, z: 118.5 }, { x: 213, z: 118.5 }]);
+  });
+
+  it("refuses a local path with a non-finite point rather than replaying it", () => {
+    const walk = resolveWalk(
+      {
+        movementId: "m1", origin: { x: 1400, y: 600 }, path: [{ x: 1400, y: 600 }],
+        localOrigin: { x: 2700, y: 800 }, localPath: [{ x: Number.NaN, y: 800 }],
+        roomId: "championship-cave", durationMs: 400, startedAt: 1_000,
+      } as never,
+      { width: 26, height: 37 },
+      0,
+      1_200,
+    );
+    // Falls back to the V1 path — never NaN into the interpolation.
+    expect(walk?.path).toEqual([{ x: 1413, z: 618.5 }, { x: 1413, z: 618.5 }]);
+  });
+});

@@ -68,6 +68,11 @@ function makeSnapshot(over: Partial<CallSnapshot> = {}): CallSnapshot {
     screenShare: null,
     screenShareEnabled: false,
     screenShareError: null,
+    participants: [],
+    meetings: [],
+    incomingMeetingInvite: null,
+    outgoingMeetingInvite: null,
+    meetingInviteOutcome: null,
     ...over,
   };
 }

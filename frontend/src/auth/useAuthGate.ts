@@ -20,6 +20,7 @@ import { setDevIdentity as setTalkRequestsClientDevIdentity } from "../services/
 import { setDevIdentity as setToucanDevIdentity } from "../services/toucan";
 import { setDevIdentity as setAttendanceDevIdentity } from "../services/attendance";
 import { setDevIdentity as setTeamMapDevIdentity } from "../services/teamMap";
+import { setDevIdentity as setMeetingChatDevIdentity } from "../services/meeting/meetingChatClient";
 
 // Boot-time permission gate for the Virtual Office. Calls Atlas's
 // GET /api/v1/auth/me and checks the can_view_virtual_office flag.
@@ -252,6 +253,7 @@ function seedDevBypassIdentity(): void {
   setHubClientDevIdentity(email);
   setAttendanceDevIdentity(email);
   setTeamMapDevIdentity(email);
+  setMeetingChatDevIdentity(email);
   setFeedClientDevIdentity(email);
   setQuestsClientDevIdentity(email);
   // Seeds the notifications REST client AND its socket identity in one call.

@@ -317,7 +317,7 @@ export function Vo3dHost() {
         if (selfMovement) world.setOfficeAccess(officeAccessRef.current);
         world.setOccupiedSeats(occupiedSeatIdsRef.current);
         const restore = selfPositionRef.current;
-        if (restore && world.restoreSelf(restore.point, restore.facing, restore.seat)) setSelfRestored(true);
+        if (restore && world.restoreSelf(restore.point, restore.facing, restore.seat, restore.place)) setSelfRestored(true);
         // The roster may have resolved while the world module was still loading — push what we have now,
         // or those coworkers wait for the next roster change that may never come.
         world.setCoworkers(coworkerSetRef.current.coworkers, coworkerSetRef.current.missingAvatar);
@@ -358,7 +358,7 @@ export function Vo3dHost() {
   // rather than a body being yanked back mid-walk.
   useEffect(() => {
     if (!selfPosition) return;
-    if (worldRef.current?.restoreSelf(selfPosition.point, selfPosition.facing, selfPosition.seat)) setSelfRestored(true);
+    if (worldRef.current?.restoreSelf(selfPosition.point, selfPosition.facing, selfPosition.seat, selfPosition.place)) setSelfRestored(true);
   }, [selfPosition]);
 
   // PHASE 6C — THE OCCUPANCY PUSH. Same shape again: React derives, the world refuses. Runs on every

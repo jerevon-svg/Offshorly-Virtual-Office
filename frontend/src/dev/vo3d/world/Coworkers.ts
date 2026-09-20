@@ -241,7 +241,12 @@ export class CoworkerPlacer {
 
     for (const coworker of list) {
       let pos: Vec2 | null;
-      if (coworker.seat) {
+      if (coworker.worldPoint) {
+        // PHASE 7D — A PLACE V1 CANNOT DESCRIBE. The world has already resolved this to a real point in
+        // its own space (the CAVE), so `toWorld` is skipped entirely — there is no V1 frame point to
+        // convert. Still stand-tested, so a body never lands inside geometry.
+        pos = standablePointNear(coworker.worldPoint, this.radius, this.canStand);
+      } else if (coworker.seat) {
         // PHASE 6C — a seated body is placed by its chair (Coworkers.applyPositions), not by the stand
         // test: a chair's footprint is exactly the kind of point the test refuses. The V1 point is carried
         // through unchanged so a world with no chair for the anchor still has the honest fallback.

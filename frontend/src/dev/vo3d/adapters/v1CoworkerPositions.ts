@@ -101,6 +101,26 @@ export function resolveWalk(
   if (!isUsablePosition(active.origin) || active.path.some((p) => !isUsablePosition(p))) return null;
   const elapsed = now + serverClockOffsetMs - active.startedAt;
   if (!Number.isFinite(elapsed)) return null;
+  // PHASE 7D — A WALK IN A PLACE V1 CANNOT DESCRIBE. The local path is already world points in that
+  // place's own frame, so it is replayed AS IS: no box-halves conversion (there is no V1 sprite out
+  // there) and, deliberately, no isUsablePosition check — that one is the guard on V1 COORDINATES and
+  // widening it is exactly what would let Cave numbers leak into the office. These are checked for
+  // being real points instead.
+  //
+  // Everything else about the replay is identical, which is the reason this reads so short: the
+  // interpolation, the pacing and the elapsed clock do not care which frame the numbers are in.
+  if (active.localOrigin && active.localPath?.length) {
+    const local = [active.localOrigin, ...active.localPath];
+    if (local.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y))) {
+      return {
+        movementId: active.movementId,
+        path: local.map((p) => ({ x: p.x, z: p.y })),
+        durationMs: active.durationMs,
+        elapsedMs: Math.min(active.durationMs, Math.max(0, elapsed)),
+        ...(active.pacing === "linear" ? { pacing: "linear" as const } : {}),
+      };
+    }
+  }
   return {
     movementId: active.movementId,
     path: [toCentre(active.origin, box), ...active.path.map((p) => toCentre(p, box))],
@@ -176,6 +196,13 @@ export function applyLivePositions(
       // trusted to be: the store already refused anything non-finite (movementSync's yawField).
       ...(typeof peer.stable.yaw === "number" ? { yaw: wrapAngle(peer.stable.yaw) } : {}),
       posSource: "live",
+      // PHASE 7D — carried through untouched. The adapter does not know what any place NAME means (the
+      // CAVE is the world's own geometry, not V1's); it only refuses to drop a fact the wire carried.
+      ...(peer.stable.roomId ? { place: peer.stable.roomId } : {}),
+      // PHASE 7D — the real position inside that place. Straight through, unconverted: these are world
+      // points in the place's own frame, not V1 sprite coordinates, so the box-halves conversion that
+      // `point` gets would be meaningless here.
+      ...(peer.stable.localPos ? { localPoint: { x: peer.stable.localPos.x, z: peer.stable.localPos.y } } : {}),
       ...(walk ? { walk } : {}),
       ...(anchor ? { seat: anchor.id } : {}),
     };

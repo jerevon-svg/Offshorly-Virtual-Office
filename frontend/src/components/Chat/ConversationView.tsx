@@ -3,6 +3,7 @@ import { formatCharacterName } from "../../data/office-layout";
 import { chatMode, chatService } from "../../services/chat";
 import { TOUCAN_AVATAR_GLYPH, TOUCAN_DISPLAY_NAME, isToucanSender } from "../../services/chat/toucanSender";
 import { applyReactionUpdate } from "../../services/chat/reactions";
+import { isAuthoredMessage } from "../../services/chat/types";
 import type { ChatMessage, ConnectionState } from "../../services/chat";
 import type { AssetLayer } from "../../types/office";
 import { ChatComposer } from "./ChatComposer";
@@ -503,6 +504,32 @@ export function ConversationView({
             const dayLabel = formatDayDivider(msg.sentAt);
             const showDivider = dayLabel !== lastDayLabel;
             lastDayLabel = dayLabel;
+            // PHASE 7D — A SYSTEM RECORD, not a message. It has no author, no body, no bubble, no
+            // avatar, no delivery status and no reactions: it is a line the conversation states about
+            // itself. Handled here, before any of the bubble machinery below, so none of that
+            // machinery has to learn about it.
+            if (!isAuthoredMessage(msg)) {
+              return (
+                <div key={msg.id} className={styles.messageGroup}>
+                  {showDivider && (
+                    <div className={styles.dayDivider}>
+                      <hr className={styles.dayDividerLine} />
+                      <span className={styles.dayDividerLabel}>{dayLabel}</span>
+                      <hr className={styles.dayDividerLine} />
+                    </div>
+                  )}
+                  <div className={styles.systemRow} data-kind={msg.kind} data-testid="chat-system-row">
+                    <span className={styles.systemIcon} aria-hidden="true">📞</span>
+                    <span className={styles.systemText}>
+                      {msg.senderId === selfId
+                        ? `You called ${peerName} — no answer`
+                        : `Missed call from ${peerName}`}
+                    </span>
+                    <span className={styles.systemTime}>{formatMessageTime(msg.sentAt)}</span>
+                  </div>
+                </div>
+              );
+            }
             const isOwn = msg.senderId === selfId;
             // A1.4 — a DM has exactly one human peer, but Toucan can also author messages here.
             // Never dress its messages as the peer's: distinct avatar + explicit name line.

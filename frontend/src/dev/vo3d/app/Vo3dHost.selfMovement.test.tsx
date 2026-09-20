@@ -30,7 +30,7 @@ vi.mock("./world", async () => ({
       setCoworkers: vi.fn(),
       setOfficeAccess: (a: unknown) => { access.push(a); },
       setOccupiedSeats: vi.fn(),
-      setCoworkerInteractions: vi.fn(), subscribeViewMode: () => () => {}, subscribePlayerView: () => () => {}, setViewMode: vi.fn(), setPlayerView: vi.fn(), devToolsVisible: () => false, setDevToolsVisible: vi.fn(), setConversationPoses: vi.fn(), exitPlayerMode: vi.fn(), selectCoworkerByEmail: vi.fn(() => false), clearCoworkerSelection: vi.fn(), coworkerAnchor: vi.fn(() => null), approachCoworker: vi.fn(() => false),
+      setCoworkerInteractions: vi.fn(), subscribeViewMode: () => () => {}, subscribePlayerView: () => () => {}, setViewMode: vi.fn(), requestPointerLock: vi.fn(), setPlayerView: vi.fn(), devToolsVisible: () => false, setDevToolsVisible: vi.fn(), setConversationPoses: vi.fn(), exitPlayerMode: vi.fn(), selectCoworkerByEmail: vi.fn(() => false), clearCoworkerSelection: vi.fn(), coworkerAnchor: vi.fn(() => null), coworkerAnchors: vi.fn(() => ({})), approachCoworker: vi.fn(() => false),
       standUp: vi.fn(),
       access,
       restoreSelf: (point: Vec2, facing: Facing) => {

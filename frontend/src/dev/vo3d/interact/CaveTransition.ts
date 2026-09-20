@@ -51,6 +51,9 @@ export type CaveTransitionDeps = {
   setInterior: (on: boolean) => void;
   /** the sun moved / half the scene appeared: the static shadow map has to be redrawn */
   invalidateShadows: () => void;
+  /** PHASE 7D — told which side the body is about to be on, BEFORE the swap. The multiplayer feed uses
+   *  it to name the place it is publishing (app/world.ts); a refused transition never calls it. */
+  onWhere?: (where: CaveWhere) => void;
   /** make sure PLAYER owns the avatar before a swap; false = refuse the transition */
   requirePlayer: () => boolean;
 };
@@ -94,6 +97,31 @@ export class CaveTransition {
     return true;
   }
 
+  /** PHASE 7D — PUT THE WORLD IN THE CAVE BECAUSE THAT IS WHERE THIS EMPLOYEE ALREADY WAS.
+   *
+   *  A RESTORE, not a transition: no fade (there is nothing to hide — the world has not been drawn yet),
+   *  no busy gate, and no `requirePlayer` refusal, because nothing is being taken from anybody. It runs
+   *  the SAME swap every entry runs, so the office is hidden, the interior lighting is applied and the
+   *  body lands on the same spawn — there is no second way into this room.
+   *
+   *  It starts NO meeting and touches no call: being in the Cave and being in a meeting are different
+   *  facts, and only the first one is persisted. Returns false if the swap could not land, leaving the
+   *  caller to restore in the office as before. */
+  restoreInside(): boolean {
+    if (this.inside) return true;
+    // PLAYER MUST OWN THE AVATAR, exactly as it must for an ordinary entry. Skipping this was a real
+    // bug: the world came up inside the Cave and looked right, but nothing owned the body, so the
+    // person could not walk — and, because the feed only publishes what the body does, nobody else
+    // saw them move either. A restore takes the avatar from nobody, so this succeeds in practice;
+    // refusing when it does not is still correct, and restoreSelf then restores them in the office.
+    if (!this.d.requirePlayer()) {
+      this.state.last = "refused: PLAYER could not take the avatar for a restore";
+      return false;
+    }
+    this.swapTo("cave");
+    return this.inside;
+  }
+
   /** Whichever way it goes from here. The one verb a key binding or a GUI button needs. */
   toggle(): boolean {
     return this._where === "office" ? this.enter() : this.exit();
@@ -103,10 +131,16 @@ export class CaveTransition {
    *  every frame that shows a half-swapped world is a frame that shows the seam. */
   private swapTo(to: CaveWhere): void {
     const inCave = to === "cave";
+    // Announced BEFORE the body moves, so the movement feed's next boundary crossing already knows what
+    // to call this place. Announced here rather than in enter()/exit() so an aborted swap (nowhere legal
+    // to land, below) is the only path that can leave the two out of step — and that path restores it.
+    this.d.onWhere?.(to);
     const landed = inCave
       ? this.d.place(SPAWN, SPAWN_LOOK, SPAWN_PITCH)
       : this.d.place(this.d.portalPoint(), this.d.portalLook);
     if (!landed) {
+      // Nothing moved after all: take the announcement back.
+      this.d.onWhere?.(this._where);
       // Nowhere legal on the far side: abort rather than leave a body inside geometry. The fade still
       // completes, so the player is never left staring at a black screen.
       this.state.last = `refused: no standable ground at the ${to} end`;

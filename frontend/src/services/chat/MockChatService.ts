@@ -117,6 +117,9 @@ export class MockChatService implements ChatService {
       senderId: input.senderId,
       text: input.text,
       sentAt: new Date().toISOString(),
+      // PHASE 7D: the mock rig emits the same shape real mode does. Missed calls are a REAL-mode
+      // feature (the server writes them), so the mock only ever produces authored messages.
+      kind: "text",
       // Mock mode has no server-side receipt tracking — always empty, never populated.
       deliveredTo: [],
       readBy: [],
@@ -141,6 +144,7 @@ export class MockChatService implements ChatService {
             senderId: peerId,
             text: canned(),
             sentAt: new Date().toISOString(),
+            kind: "text",
             deliveredTo: [],
             readBy: [],
             mentionedEmails: [],

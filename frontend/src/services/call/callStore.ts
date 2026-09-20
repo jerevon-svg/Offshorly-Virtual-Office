@@ -51,6 +51,8 @@ export interface CallInvite {
   inviteId: string;
   fromEmail: string;
   toEmail: string;
+  /** PHASE 7D. Present only on a MEETING invitation — the room being offered. */
+  meetingId?: string;
 }
 
 /** Terminal ring outcome the caller (or recipient) needs to see once, then dismiss. */
@@ -72,6 +74,16 @@ export type CallTarget =
    *  token service; only the endpoint and the "who may join" rule differ (backend
    *  routers/calls.py: any signed-in employee, no head-count). */
   | { kind: "meeting"; meetingId: string };
+
+/** PHASE 7D — a standalone meeting the server is broadcasting, with its host. Separate from
+ *  `CallEntry` because it is a separate broadcast for a separate thing: `calls` describes
+ *  CONVERSATIONS and is matched against conversation ids, and a meeting is not one. */
+export interface MeetingEntry {
+  meetingId: string;
+  participants: string[];
+  /** The current host's email, or "" while the server has nobody in the room. */
+  host: string;
+}
 
 export interface CallSnapshot {
   status: CallStatus;
@@ -135,6 +147,32 @@ export interface CallSnapshot {
   /** Peer email whose Accept just landed — OfficeMap consumes this to run the EXISTING
    *  approach/spatial-panel flow, then clears it. Never triggers media directly. */
   acceptedPeerEmail: string | null;
+  /** PHASE 7D. Standalone meetings the SERVER is broadcasting, host included. This is the only thing
+   *  a client that has NOT joined can read, and therefore the only honest source of "Start" versus
+   *  "Join" before connecting — `participants` below is LiveKit's view and exists only once you are
+   *  already in. Empty when no meeting is running anywhere. */
+  meetings: MeetingEntry[];
+  /** PHASE 7D. An incoming invitation to a MEETING, or null. Deliberately a separate field from
+   *  `incoming`: that is a ring to a conversation between two avatars, this is an offer of a room,
+   *  and one must never resolve the other. */
+  incomingMeetingInvite: CallInvite | null;
+  /** This client's outgoing meeting invitation, or null. */
+  outgoingMeetingInvite: CallInvite | null;
+  /** Why a meeting invitation ended without being accepted. Cleared on dismiss. */
+  meetingInviteOutcome: CallInviteOutcome | null;
+  /** PHASE 7D. WHO IS ACTUALLY IN THE ROOM THIS CLIENT IS CONNECTED TO — read from LiveKit itself
+   *  (localParticipant + remoteParticipants), lowercased and sorted, self always included.
+   *
+   *  It is deliberately NOT a second call registry and it never replaces `calls`: that field is the
+   *  SERVER's broadcast and is the only thing a client who has NOT joined can read, which is why Start
+   *  vs Join for a spatial session still comes from there. This one answers the different question a
+   *  CONNECTED client can answer for itself and previously could not see at all — "how many of us are
+   *  in here" — which is the only honest head-count a MEETING has, since a meeting never announces
+   *  call_joined/call_left (see the fields above and the backend's socket.py gate).
+   *
+   *  Empty whenever `status` is not "connected". LiveKit already raises ParticipantConnected /
+   *  ParticipantDisconnected into this store's notify(), so it is live without a new subscription. */
+  participants: string[];
 }
 
 function socketBase(): string {
@@ -171,6 +209,12 @@ let calls: CallEntry[] = [];
 let outgoing: CallInvite | null = null;
 let incoming: CallInvite | null = null;
 let inviteOutcome: CallInviteOutcome | null = null;
+// PHASE 7D — meetings. Separate slots from the spatial ring above, for the reason stated on the
+// snapshot fields: a meeting invitation and a call to a person are different offers.
+let meetings: MeetingEntry[] = [];
+let incomingMeetingInvite: CallInvite | null = null;
+let outgoingMeetingInvite: CallInvite | null = null;
+let meetingInviteOutcome: CallInviteOutcome | null = null;
 let acceptedPeerEmail: string | null = null;
 let audioPlaybackBlocked = false;
 // Elements holding remote audio, one per subscribed remote track. livekit-client does NOT play
@@ -235,14 +279,37 @@ function getSnapshot(): CallSnapshot {
       screenShare,
       screenShareEnabled,
       screenShareError,
+      participants: currentParticipants(),
+      meetings,
+      incomingMeetingInvite,
+      outgoingMeetingInvite,
+      meetingInviteOutcome,
     };
   }
   return cached;
 }
 
-/** DEV-ONLY: mirrors spatialSessionStore.setDevIdentity exactly. */
+/** DEV-ONLY: mirrors spatialSessionStore.setDevIdentity exactly, with ONE correction.
+ *
+ *  RE-SEEDING THE SAME IDENTITY MUST NOT DROP THE SOCKET. Tearing it down is right when the identity
+ *  genuinely CHANGES — the connection authenticates as one person and a new one has to be opened — but
+ *  this used to do it on every call, and callers re-seed the same address routinely: `useAuthGate` on a
+ *  re-render, and `CaveLiveShare.connect()` every time the Cave panel remounts.
+ *
+ *  A dropped socket is not a cosmetic churn here. The server cleans up BY SID, so each needless
+ *  disconnect told it, wrongly, that this person had gone:
+ *    * `meeting_invites.clear_sid` cancelled an invitation the moment after it was sent — the recipient's
+ *      notice vanished, and the inviter, whose socket was the one that went, never heard the
+ *      cancellation and sat on a "Waiting for them to join" card forever;
+ *    * `call_registry.clear_sid` dropped the person's meeting claim, handing the host to somebody else
+ *      while they were still standing in the Cave.
+ *
+ *  Both of those were Phase 7D blockers and both were this one line. Comparing before disconnecting is
+ *  the fix: an unchanged identity keeps its connection, a changed one still gets a fresh socket. */
 export function setDevIdentity(email: string | null): void {
-  devEmail = email ? email.trim().toLowerCase() : null;
+  const next = email ? email.trim().toLowerCase() : null;
+  if (next === devEmail) return;
+  devEmail = next;
   if (socketInstance) {
     socketInstance.disconnect();
     socketInstance = null;
@@ -266,6 +333,81 @@ function ensureSocket(): Socket | null {
     calls = payload?.calls ?? [];
     notify();
   });
+
+  // PHASE 7D — STANDALONE MEETINGS. Its own event, never folded into spatial_calls: that feed is
+  // matched against conversation ids by every chat surface, and a meeting is not a conversation. The
+  // server sends this once on connect as well, so a client that walks into the Cave already knows
+  // whether a meeting is running before it asks for a token.
+  socket.on("meeting_presence", (payload: { meetings?: MeetingEntry[] } | undefined) => {
+    meetings = payload?.meetings ?? [];
+    notify();
+  });
+
+  socket.on("meeting_invite_incoming", (inv: CallInvite | undefined) => {
+    if (!inv?.inviteId) return;
+    incomingMeetingInvite = inv;
+    meetingInviteOutcome = null;
+    notify();
+  });
+
+  socket.on("meeting_invite_ringing", (inv: CallInvite | undefined) => {
+    if (!inv?.inviteId) return;
+    outgoingMeetingInvite = inv;
+    meetingInviteOutcome = null;
+    notify();
+  });
+
+  socket.on("meeting_invites", (payload: { invites?: CallInvite[] } | undefined) => {
+    // Reconnect/reload: restore whichever side of an in-flight invitation this client is on.
+    for (const inv of payload?.invites ?? []) {
+      if (inv.toEmail === selfEmail()) incomingMeetingInvite = inv;
+      else outgoingMeetingInvite = inv;
+    }
+    notify();
+  });
+
+  socket.on("meeting_invite_accepted", (inv: CallInvite | undefined) => {
+    clearMeetingInvite(inv);
+    // The RECIPIENT's own client is the one that joins, from its own Accept. Nothing is joined here
+    // for either side — this event only clears the prompts.
+    notify();
+  });
+
+  socket.on("meeting_invite_declined", (inv: CallInvite | undefined) => {
+    const wasOutgoing = outgoingMeetingInvite?.inviteId === inv?.inviteId;
+    clearMeetingInvite(inv);
+    if (wasOutgoing && inv) {
+      meetingInviteOutcome = { kind: "declined", peerEmail: inv.toEmail, reason: null };
+    }
+    notify();
+  });
+
+  socket.on("meeting_invite_cancelled", (inv: (CallInvite & { reason?: string }) | undefined) => {
+    const wasIncoming = incomingMeetingInvite?.inviteId === inv?.inviteId;
+    clearMeetingInvite(inv);
+    if (wasIncoming) meetingInviteOutcome = null; // the recipient simply stops being offered it
+    else if (inv) {
+      meetingInviteOutcome = {
+        kind: inv.reason === "timeout" ? "timeout" : "cancelled",
+        peerEmail: inv.toEmail,
+        reason: inv.reason ?? null,
+      };
+    }
+    notify();
+  });
+
+  socket.on(
+    "meeting_invite_failed",
+    (payload: { toEmail?: string; reason?: string } | undefined) => {
+      outgoingMeetingInvite = null;
+      meetingInviteOutcome = {
+        kind: "failed",
+        peerEmail: payload?.toEmail ?? "",
+        reason: payload?.reason ?? null,
+      };
+      notify();
+    },
+  );
 
   // --- ringing (call invites) ------------------------------------------------------------
   // Transport only: every handler below moves transient ring state. None of them touch LiveKit,
@@ -343,6 +485,12 @@ function ensureSocket(): Socket | null {
   socket.on("connect", () => {
     if (connectedSessionId && status === "connected") {
       socket.emit("call_joined", { sessionId: connectedSessionId });
+    }
+    // PHASE 7D: the same re-assert for a meeting. Without it a reconnect silently drops this client
+    // out of the meeting's presence — and, if they were hosting, hands the meeting to somebody else
+    // while they are still sitting in it.
+    if (connectedMeetingId && status === "connected") {
+      socket.emit("call_joined", { meetingId: connectedMeetingId });
     }
   });
 
@@ -471,6 +619,31 @@ function detachAllRemoteAudio(): void {
 // --- camera video registry -------------------------------------------------------------------
 // CAMERA ONLY, everywhere below: every entry point filters on Track.Source.Camera, so a future
 // screen-share publication can never be mistaken for somebody's face.
+
+/** Stable empty list, so a disconnected snapshot never hands React a fresh array. */
+const NO_PARTICIPANTS: readonly string[] = [];
+
+/** PHASE 7D. Room membership straight off the live Room — no cache to go stale, because the snapshot
+ *  itself is only rebuilt when something notified. Sorted so a tile order or a name list does not
+ *  reshuffle when somebody else joins. */
+function currentParticipants(): string[] {
+  const r = room;
+  if (!r || status !== "connected") return NO_PARTICIPANTS as string[];
+  const out: string[] = [];
+  const me = normalizeIdentity(r.localParticipant?.identity);
+  if (me) out.push(me);
+  // Defensive against the Room shape rather than assuming it: this runs on EVERY snapshot rebuild, and
+  // a snapshot read must never be the thing that throws. A room mid-teardown, or a livekit-client whose
+  // participant map moved, degrades to "just me" instead of taking the whole call UI down.
+  const remotes = r.remoteParticipants;
+  if (remotes && typeof remotes.values === "function") {
+    for (const p of remotes.values()) {
+      const id = normalizeIdentity(p?.identity);
+      if (id && !out.includes(id)) out.push(id);
+    }
+  }
+  return out.sort();
+}
 
 function normalizeIdentity(identity: string | undefined): string {
   return identity?.trim().toLowerCase() ?? "";
@@ -677,6 +850,7 @@ async function connectTo(target: CallTarget): Promise<void> {
     r.on(RoomEvent.Disconnected, () => {
       if (room !== r) return;
       const wasSpatial = connectedSessionId !== null;
+      const wasMeeting = connectedMeetingId;
       room = null;
       status = "idle";
       connectedSessionId = null;
@@ -695,6 +869,10 @@ async function connectTo(target: CallTarget): Promise<void> {
       // call_left is a SPATIAL fact; board voice presence is derived from this snapshot by the
       // editor and sent over the whiteboard socket instead.
       if (wasSpatial) ensureSocket()?.emit("call_left");
+      // PHASE 7D: a meeting must announce its departure too, or the host never transfers and the
+      // meeting never ends. The server resolves WHICH room from the socket id, so the payload is the
+      // same empty one a spatial leave sends.
+      else if (wasMeeting) ensureSocket()?.emit("call_left");
     });
     const syncParticipants = () => {
       if (room === r) notify();
@@ -814,6 +992,11 @@ async function connectTo(target: CallTarget): Promise<void> {
 
     // Announced only AFTER the real connection succeeded — never optimistically on click.
     if (target.kind === "spatial") ensureSocket()?.emit("call_joined", { sessionId: target.sessionId });
+    // PHASE 7D — A MEETING ANNOUNCES ITSELF TOO, and this is what makes Start-vs-Join, the head-count
+    // and the host possible at all: before this the server had no way to know anybody was in a meeting
+    // (its call_joined handler gated on spatial membership, which a meeting has none of). Emitted only
+    // AFTER the real connection succeeded, exactly like the spatial line above.
+    if (target.kind === "meeting") ensureSocket()?.emit("call_joined", { meetingId: target.meetingId });
   } catch (err) {
     if (myGeneration !== generation) return;
     teardownRoom();
@@ -842,6 +1025,7 @@ async function connectTo(target: CallTarget): Promise<void> {
 export function leaveCall(): void {
   generation += 1; // invalidates any in-flight connect
   const wasSpatial = connectedSessionId !== null;
+  const wasMeeting = connectedMeetingId !== null;
   teardownRoom();
   status = "idle";
   connectedSessionId = null;
@@ -850,8 +1034,8 @@ export function leaveCall(): void {
   micEnabled = false;
   error = null;
   notify();
-  // Spatial-only (see the Disconnected handler): board voice never announces itself here.
-  if (wasSpatial) ensureSocket()?.emit("call_left");
+  // Spatial or MEETING (see the Disconnected handler): board voice never announces itself here.
+  if (wasSpatial || wasMeeting) ensureSocket()?.emit("call_left");
 }
 
 /** Local mute/unmute. LiveKit is the source of truth; the boolean here only drives the button. */
@@ -1005,6 +1189,49 @@ export function clearCameraError(): void {
  * Ring someone. Sends ONLY the intent — no walk, no chat panel, no spatial session, no token, no
  * microphone. Everything spatial and media-related waits for the recipient's Accept.
  */
+/** Clear whichever slot this invitation occupied. Both are checked because a terminal event fans out
+ *  to BOTH parties (see the backend's _emit_meeting_invite_terminal) and each side holds a different one. */
+function clearMeetingInvite(inv: { inviteId?: string } | undefined): void {
+  if (!inv?.inviteId) return;
+  if (incomingMeetingInvite?.inviteId === inv.inviteId) incomingMeetingInvite = null;
+  if (outgoingMeetingInvite?.inviteId === inv.inviteId) outgoingMeetingInvite = null;
+}
+
+/** PHASE 7D. Offer somebody a MEETING. Intent only — no token, no room, no microphone on either side;
+ *  the recipient's own client connects if and when they accept. */
+export function sendMeetingInvite(toEmail: string, meetingId: string): void {
+  ensureSocket()?.emit("meeting_invite", { toEmail: toEmail.trim().toLowerCase(), meetingId });
+}
+
+export function acceptMeetingInvite(): void {
+  const inv = incomingMeetingInvite;
+  if (!inv) return;
+  ensureSocket()?.emit("meeting_invite_accept", { inviteId: inv.inviteId });
+}
+
+export function declineMeetingInvite(): void {
+  const inv = incomingMeetingInvite;
+  if (!inv) return;
+  ensureSocket()?.emit("meeting_invite_decline", { inviteId: inv.inviteId });
+}
+
+export function cancelMeetingInvite(): void {
+  const inv = outgoingMeetingInvite;
+  if (!inv) return;
+  ensureSocket()?.emit("meeting_invite_cancel", { inviteId: inv.inviteId });
+}
+
+export function dismissMeetingInviteOutcome(): void {
+  if (!meetingInviteOutcome) return;
+  meetingInviteOutcome = null;
+  notify();
+}
+
+/** The meeting the server says is running under this id, or undefined. THE source for Start vs Join. */
+export function meetingFor(snapshot: CallSnapshot, meetingId: string): MeetingEntry | undefined {
+  return snapshot.meetings.find((m) => m.meetingId === meetingId);
+}
+
 export function sendCallInvite(toEmail: string): void {
   if (!toEmail) return;
   inviteOutcome = null;

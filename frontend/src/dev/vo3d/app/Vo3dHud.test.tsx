@@ -70,6 +70,14 @@ const exitPlayerMode = vi.fn();
 const selectCoworkerByEmail = vi.fn((_email: string) => true);
 const setViewMode = vi.fn((_m: Vo3dViewMode) => {});
 const setPlayerView = vi.fn((_v: "first" | "third") => {});
+const caveInvite = vi.fn((_email: string) => {});
+/** A viewer standing in the Cave, already in the meeting — the only state that offers Invite. */
+const caveMeetingState = {
+  inside: true, status: "connected", session: "cave-all-hands", kind: "meeting",
+  mic: true, camera: false, sharing: false, cameras: 0, people: 1,
+  live: true, host: "bon@offshorly.com", isHost: true, presenter: "", note: "",
+};
+
 const world = {
   subscribeViewMode: (cb: (m: Vo3dViewMode) => void) => {
     viewModeSubs.push(cb);
@@ -79,10 +87,25 @@ const world = {
   subscribePlayerView: (cb: (v: "first" | "third") => void) => { cb("third"); return () => {}; },
   setViewMode,
   setPlayerView,
+  requestPointerLock: vi.fn(),
   devToolsVisible: () => false,
   setDevToolsVisible: vi.fn(),
   exitPlayerMode,
   selectCoworkerByEmail,
+  // PHASE 7D. The Cave's meeting bridge, as the panel and the invite picker reach it.
+  caveMeeting: {
+    subscribe: (cb: (s: { inside: boolean; status: string }) => void) => {
+      cb(caveMeetingState as never);
+      return () => {};
+    },
+    start: vi.fn(async () => {}),
+    setMic: vi.fn(async () => {}),
+    setCamera: vi.fn(async () => {}),
+    setSharing: vi.fn(async () => {}),
+    leave: vi.fn(),
+    observe: vi.fn(async () => {}),
+    invite: caveInvite,
+  },
 } as unknown as Vo3dWorld;
 const worldRef = { current: world };
 
@@ -510,5 +533,44 @@ describe("the starting-view preference", () => {
     notifyViewMode("office");
     rerender(<div />);
     expect(setViewMode).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+// PHASE 7D — THE INVITE PATH, end to end inside the HUD.
+//
+// The panel raises the request, the HUD owns the picker (a screen-owning modal, so it joins the one
+// visibility rule every other tool joins), and the world's meeting bridge sends it. What is pinned here
+// is that the picker's confirm reaches `caveMeeting.invite` and NOT any spatial-call path.
+describe("inviting somebody to the Cave meeting", () => {
+  beforeEach(() => {
+    caveInvite.mockClear();
+  });
+
+  it("opens the picker from the panel and sends the MEETING invitation on confirm", async () => {
+    mount();
+    fireEvent.click(await screen.findByTestId("cave-meeting-invite"));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(dialog).toHaveTextContent("Invite to the Cave meeting");
+
+    fireEvent.click(screen.getByText("Alex Cruz"));
+    expect(caveInvite).toHaveBeenCalledWith(ALEX);
+    // A spatial ring is a different offer and must never be sent from here.
+    expect(onCoworkerAction).not.toHaveBeenCalled();
+  });
+
+  it("steps the dock aside while the picker owns the screen, and brings it back after", async () => {
+    mount();
+    expect(screen.getByTestId("hud-dock").className).not.toMatch(/hidden/i);
+    fireEvent.click(await screen.findByTestId("cave-meeting-invite"));
+    // Hidden by the dock's own class, never unmounted — the rule every other tool here follows, so the
+    // dock keeps its state and subscriptions while the picker is up.
+    await waitFor(() => expect(screen.getByTestId("hud-dock").className).toMatch(/hidden/i));
+
+    fireEvent.click(screen.getByLabelText("Close"));
+    await waitFor(() => expect(screen.getByTestId("hud-dock").className).not.toMatch(/hidden/i));
+    // Closing the picker invites nobody.
+    expect(caveInvite).not.toHaveBeenCalled();
   });
 });

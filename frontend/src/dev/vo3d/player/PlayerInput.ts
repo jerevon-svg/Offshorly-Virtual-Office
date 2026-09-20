@@ -29,6 +29,9 @@ export type PlayerInputHandlers = {
   onInteract: () => void;
   onToggleView: () => void;
   onLockChange: (locked: boolean) => void;
+  /** PHASE 7D — a pointer-lock request was made from a real gesture and the browser refused it. The
+   *  owner shows a recovery hint; mouse-look keeps working unlocked in the meantime. */
+  onLockDenied?: () => void;
 };
 
 /** true when the event belongs to something the user is typing in, driving with the mouse, or to a
@@ -44,6 +47,20 @@ export class PlayerInput {
   private readonly canvas: HTMLCanvasElement;
   private readonly h: PlayerInputHandlers;
   private attached = false;
+  /** PHASE 7D — UNLOCKED MOUSE-LOOK. Entering PLAYER used to need a click on the world before the
+   *  camera would move at all, which made switching views feel like the mode had not started. Now the
+   *  view switch asks for the lock from its own gesture, and when the browser says no (an iframe, a
+   *  denied permission, a re-request too soon after Esc) the look still works — read from ordinary
+   *  pointer movement rather than from lock deltas.
+   *
+   *  It is deliberately NOT always on: while locked, `movementX/Y` is the only correct source (it keeps
+   *  turning past the edge of the screen, which is what 360° look means), and mixing the two would
+   *  double every delta. This is the fallback path and nothing else. */
+  private unlockedLook = false;
+  private lastClient: { x: number; y: number } | null = null;
+  /** Set while a request we made is in flight, so `lockchange` can tell "granted" from "the user
+   *  pressed Esc" and we never re-ask on our own. */
+  private requesting = false;
 
   constructor(canvas: HTMLCanvasElement, handlers: PlayerInputHandlers) {
     this.canvas = canvas;
@@ -93,12 +110,65 @@ export class PlayerInput {
     document.removeEventListener("pointerlockchange", this.onLockChange);
     this.held.clear();
     this.dx = this.dy = 0;
+    this.unlockedLook = false;
+    this.lastClient = null;
     this.unlock();
   }
 
   unlock(): void {
     if (this.locked) document.exitPointerLock();
   }
+
+  /** PHASE 7D — TAKE THE POINTER, FROM A REAL GESTURE.
+   *
+   *  Called synchronously out of the C-key handler and out of the chat's Enter, because a pointer-lock
+   *  request is only granted inside a user gesture: deferring it by even a tick is how "entering Player
+   *  View does nothing until you click" happened in the first place.
+   *
+   *  Called at most once per gesture and never on a timer — the browser rate-limits repeated requests
+   *  and a loop of them is worse than none. If it is refused, unlocked look turns on immediately so the
+   *  mode is still usable, and the owner is told so it can show a recovery hint. */
+  requestLock(): void {
+    if (!this.attached || this.locked || this.requesting) return;
+    this.requesting = true;
+    let settled = false;
+    const granted = () => {
+      if (settled) return;
+      settled = true;
+      this.requesting = false;
+      this.unlockedLook = false;
+      this.lastClient = null;
+    };
+    const denied = () => {
+      if (settled) return;
+      settled = true;
+      this.requesting = false;
+      // USABLE ANYWAY. The camera moves with the mouse; only the 360° wrap is lost.
+      this.unlockedLook = true;
+      this.lastClient = null;
+      this.h.onLockDenied?.();
+    };
+    document.addEventListener("pointerlockchange", granted, { once: true });
+    document.addEventListener("pointerlockerror", denied, { once: true });
+    try {
+      const attempt = this.canvas.requestPointerLock() as unknown as Promise<void> | undefined;
+      if (attempt && typeof attempt.then === "function") attempt.then(granted).catch(denied);
+    } catch {
+      denied();
+    }
+    // A request that is simply ignored (no event either way) must not leave the mode dead: fall back
+    // shortly after, which is still well inside "immediately" for a person switching views.
+    window.setTimeout(() => { if (!this.locked) denied(); }, 250);
+  }
+
+  /** Unlocked look is a fallback, not a mode the user chose — anything that genuinely takes the mouse
+   *  back (a click that locks, leaving PLAYER) turns it off. */
+  stopUnlockedLook(): void {
+    this.unlockedLook = false;
+    this.lastClient = null;
+  }
+
+  get usingUnlockedLook(): boolean { return this.unlockedLook; }
 
   private readonly onKeyDown = (e: KeyboardEvent): void => {
     if (isUiTarget(e) || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -117,16 +187,30 @@ export class PlayerInput {
 
   private readonly onMouseDown = (e: MouseEvent): void => {
     if (e.button !== 0 || isUiTarget(e)) return;
-    if (!this.locked) { void this.canvas.requestPointerLock(); return; } // first click grabs the pointer
+    // A WORLD CLICK REMAINS THE RECAPTURE ROUTE, for the case the browser refused the switch's own
+    // request. It is a fallback now rather than the only way in.
+    if (!this.locked) { this.requestLock(); return; }
     this.h.onInteract(); // a click while locked is the same verb as E
   };
   private readonly onMouseMove = (e: MouseEvent): void => {
-    if (!this.locked) return;
-    this.dx += e.movementX;
-    this.dy += e.movementY;
+    if (this.locked) {
+      this.dx += e.movementX;
+      this.dy += e.movementY;
+      return;
+    }
+    // THE FALLBACK. Only after a refused request, only over the world, and never while the pointer is
+    // over a piece of UI — dragging across the HUD must not spin the camera.
+    if (!this.unlockedLook || isUiTarget(e)) { this.lastClient = null; return; }
+    const prev = this.lastClient;
+    this.lastClient = { x: e.clientX, y: e.clientY };
+    if (!prev) return;
+    this.dx += e.clientX - prev.x;
+    this.dy += e.clientY - prev.y;
   };
   private readonly onLockChange = (): void => {
-    if (!this.locked) { this.dx = this.dy = 0; this.held.clear(); }
+    // Esc (or any release) ends the fallback too: the person asked for the mouse back, and a camera
+    // that kept following it would be exactly the "it stole my pointer" complaint.
+    if (!this.locked) { this.dx = this.dy = 0; this.held.clear(); this.unlockedLook = false; this.lastClient = null; }
     this.h.onLockChange(this.locked);
   };
 }

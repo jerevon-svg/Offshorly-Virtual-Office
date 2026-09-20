@@ -38,6 +38,7 @@ import type { Pt } from "../../data/walkable-zones";
 import { DOOR_ANIM_MS, DOOR_LAYERS_BY_ROOM } from "../../data/officeDoors";
 import type { AssetLayer } from "../../types/office";
 import { chatMode, chatService } from "../../services/chat";
+import { isAuthoredMessage } from "../../services/chat/types";
 import type { ChatMessage } from "../../services/chat";
 import type { Conversation } from "../../services/chat/types";
 import { useUnreadTotal } from "../../services/chat/useUnreadTotal";
@@ -1310,6 +1311,10 @@ export function OfficeMap() {
 
   function handleTalkingMessage(msg: ChatMessage) {
     window.clearTimeout(talkingTimersRef.current[msg.senderId]);
+    // PHASE 7D: ONLY A ROW SOMEBODY ACTUALLY WROTE BECOMES A SPEECH BUBBLE. `messages` now also
+    // carries system records (a missed call), whose text is "" — without this they would pop an
+    // EMPTY bubble over the caller's avatar the moment one landed.
+    if (!isAuthoredMessage(msg)) return;
     setTalkingTextById((prev) => ({ ...prev, [msg.senderId]: msg.text }));
     talkingTimersRef.current[msg.senderId] = window.setTimeout(() => {
       setTalkingTextById((prev) => {

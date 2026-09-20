@@ -58,6 +58,7 @@ import type { V1Attendance } from "../adapters/v1Attendance";
 import HudIcon from "../../../components/HudIcon";
 import { HudDock, type HudDockEntry } from "../../../components/OfficeMap/HudDock";
 import { Vo3dViewSwitcher } from "./Vo3dViewSwitcher";
+import { Vo3dViewIndicator } from "./Vo3dViewIndicator";
 import { Vo3dCaveMeeting } from "./Vo3dCaveMeeting";
 import { isPointerLocked } from "./keyGuard";
 import { HudSettings } from "../../../components/OfficeMap/HudSettings";
@@ -142,6 +143,10 @@ export function Vo3dHud({
   const [boardsOpen, setBoardsOpen] = useState(false);
   const [teamMapOpen, setTeamMapOpen] = useState(false);
   const [chatPickerMode, setChatPickerMode] = useState<null | "message" | "group">(null);
+  // PHASE 7D — inviting somebody to the Cave meeting. Its own flag rather than a third `chatPickerMode`
+  // value: that one is gated on chatMode === "real" and its confirm opens a conversation, neither of
+  // which is true here. Same modal component, different question.
+  const [invitePickerOpen, setInvitePickerOpen] = useState(false);
   const companyHub = useCompanyHub();
   const claimableCount = useClaimableCount();
 
@@ -217,6 +222,7 @@ export function Vo3dHud({
     boardsOpen ||
     teamMapOpen ||
     chatPickerMode !== null ||
+    invitePickerOpen ||
     overlayToolOpen;
   // PART 2 — WHAT IS BELOW THE PANELS. The floating chat windows sit above the dock, so when the dock
   // steps aside (a tool has the screen, or PLAYER owns it) they must drop to the bottom edge rather than
@@ -399,10 +405,38 @@ export function Vo3dHud({
       {/* THE C KEY, and nothing on screen — see Vo3dViewSwitcher. Switching view is C or Settings ->
           General; V (first/third) stays with player/PlayerInput, which owns the keyboard in PLAYER. */}
       <Vo3dViewSwitcher worldRef={worldRef} ready={ready} />
+      {/* PHASE 7D — says which view C just switched to, briefly. Non-interactive, so it cannot get in
+          the way of a drag, an orbit or a click on the floor under it. */}
+      <Vo3dViewIndicator worldRef={worldRef} ready={ready} />
       {/* PHASE 7C — the Championship Cave's meeting, offered only to somebody standing in it. Every
           control is V1's own call store through media/CaveLiveShare; see Vo3dCaveMeeting.tsx for what is
           deliberately NOT there yet and why. */}
-      {!officeToolOpen && <Vo3dCaveMeeting worldRef={worldRef} ready={ready} selfId={selfId} />}
+      {!officeToolOpen && (
+        <Vo3dCaveMeeting
+          worldRef={worldRef}
+          ready={ready}
+          selfId={selfId}
+          onInvite={() => setInvitePickerOpen(true)}
+        />
+      )}
+      {invitePickerOpen && (
+        // THE SAME PICKER New Message uses, asked a different question. Single mode: one person per
+        // invitation, exactly as the server mints them. The roster is V1's own (pickerPeople, already
+        // built above and already minus the viewer), so only real employees can be offered a meeting.
+        <EmployeePickerModal
+          mode="single"
+          title="Invite to the Cave meeting"
+          people={pickerPeople}
+          onClose={() => setInvitePickerOpen(false)}
+          onConfirm={(emails) => {
+            setInvitePickerOpen(false);
+            // Straight to the world's own meeting bridge — the MEETING invitation, never the spatial
+            // ring. What the inviter sees next is the existing notice card, driven by the store's
+            // outgoing-invitation state; this deliberately raises no toast of its own.
+            if (emails[0]) worldRef.current?.caveMeeting?.invite(emails[0]);
+          }}
+        />
+      )}
       <SearchSpotlight
         open={dockTool === "search"}
         onClose={() => setDockTool(null)}

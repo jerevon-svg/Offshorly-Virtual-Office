@@ -239,3 +239,89 @@ describe("the gallery's media lifecycle", () => {
     expect(shortName("jan.dela.cruz@offshorly.com")).toBe("jan dela cruz");
   });
 });
+
+// PHASE 7D — THE GALLERY IS THE ROOM, NOT THE CAMERAS.
+//
+// A meeting where nobody has turned a camera on is still a meeting, and the wall used to fall back to
+// the boxing video while people sat in it talking. Membership drives the tiles now; a camera is a
+// property of a member. These pin the four states the CAVE's screen has to tell apart.
+describe("members without cameras", () => {
+  /** Members as CaveLiveShare now builds them: everybody in the room, camera optional. */
+  const members = (...names: string[]) => names.map((identity) => ({ identity }));
+
+  it("draws a tile per member when every camera is off", () => {
+    const g = new CaveGallery(buildCave());
+    g.setActive(true);
+    g.setMode("full");
+    g.setCameras(members("a@x.com", "b@x.com", "c@x.com"));
+
+    expect(g.count).toBe(3);
+    expect(g.state.drawn).toBe(3);
+    // And not one <video> element: a camera-off member costs a cached canvas, never a decode.
+    expect(els().length).toBe(0);
+  });
+
+  it("counts members, so the CAVE shows a gallery rather than the boxing video", () => {
+    const g = new CaveGallery(buildCave());
+    g.setActive(true);
+    g.setMode("full");
+    g.setCameras(members("a@x.com"));
+    // applyCaveMode keys the whole decision off this: > 0 means "there is a meeting to show".
+    expect(g.count).toBeGreaterThan(0);
+  });
+
+  it("does not give a lone camera-off member the immersive speaker view", () => {
+    const g = new CaveGallery(buildCave());
+    g.setActive(true);
+    g.setMode("full");
+    g.setCameras(members("a@x.com"));
+    // `solo` fills the whole room with one person's picture — there is no picture here.
+    expect(g.solo).toBeNull();
+    expect(g.state.drawn).toBe(1);
+  });
+
+  it("still gives a lone member WITH a camera the immersive view", () => {
+    const g = new CaveGallery(buildCave());
+    g.setActive(true);
+    g.setMode("full");
+    g.setCameras(cams("a@x.com"));
+    expect(g.solo).not.toBeNull();
+    g.dispose();
+  });
+
+  it("mixes cameras and portraits in one wall, and attaches only the real ones", () => {
+    const g = new CaveGallery(buildCave());
+    g.setActive(true);
+    g.setMode("full");
+    g.setCameras([...cams("a@x.com"), ...members("b@x.com", "c@x.com")]);
+
+    expect(g.count).toBe(3);
+    expect(g.state.drawn).toBe(3);
+    expect(els().length).toBe(1);
+    g.dispose();
+  });
+
+  it("empties when the last participant leaves, which is what restores the boxing video", () => {
+    const g = new CaveGallery(buildCave());
+    g.setActive(true);
+    g.setMode("full");
+    g.setCameras(members("a@x.com", "b@x.com"));
+    expect(g.count).toBe(2);
+
+    g.setCameras([]);
+
+    expect(g.count).toBe(0);
+    expect(g.state.drawn).toBe(0);
+    expect(els().length).toBe(0);
+  });
+
+  it("names every member, camera on or off", () => {
+    const g = new CaveGallery(buildCave());
+    g.setActive(true);
+    g.setMode("full");
+    g.setCameras([...cams("angelo@x.com"), ...members("micah@x.com")]);
+    expect(g.state.names).toContain(shortName("angelo@x.com"));
+    expect(g.state.names).toContain(shortName("micah@x.com"));
+    g.dispose();
+  });
+});

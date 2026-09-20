@@ -186,3 +186,58 @@
   vertical-align: baseline;
   white-space: nowrap;
 }
+
+/* PHASE 7D — A CALL CAMERA OVER A BODY, in V1's own numbers.
+   V1's SpatialVideoTile is 48x36 with an 18px lift, in a design frame where a character is ~37 units
+   tall (the same frame BASE_FONT_UNITS documents). V2's bodies are ~37 world units too, and 1em here is
+   BASE_FONT_UNITS = 6 world units — so 48/6 = 8em, 36/6 = 6em, 18/6 = 3em reproduces V1's tile at the
+   same size relative to the body, at every zoom and in every camera. Do not "round these up": they were
+   a live visual judgement in V1 and the point is that the two offices show the same tile.
+
+   Deliberately NOT mirrored and deliberately 4:3 — both matching V1. `flex: none` because the stack is a
+   flex column and the video's intrinsic size would otherwise let it be squeezed. */
+.videoTile {
+  flex: none;
+  width: 8em;
+  height: 6em;
+  margin-bottom: 3em;
+  border-radius: 0.67em;
+  overflow: hidden;
+  background: #1a1a1a;
+  border: 0.17em solid rgba(255, 255, 255, 0.7);
+  box-shadow: 0 0.33em 1.33em rgba(0, 0, 0, 0.35);
+  /* Never steal a click from the character underneath — the whole avatar stays clickable, so the
+     interaction menu keeps working while somebody is on camera. V1's rule, same words. */
+  pointer-events: none;
+}
+
+.videoTile .video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  /* COVER, as V1: a letterboxed camera in a small floating tile reads as a broken image. */
+  object-fit: cover;
+}
+
+/* PHASE 7D — A MEETING REACTION over somebody's head. Sized in `em` like everything else here, so it
+   rides the anchor's measured camera scale rather than sitting at one on-screen size. Subtle on
+   purpose: it rises a little and settles, because a reaction that bounces is a reaction that competes
+   with the presentation behind it. */
+.reaction {
+  flex: none;
+  margin-bottom: 1.2em;
+  font-size: 3.4em;
+  line-height: 1;
+  text-align: center;
+  filter: drop-shadow(0 0.08em 0.16em rgba(0, 0, 0, 0.55));
+  animation: reactionIn 260ms ease-out;
+}
+
+@keyframes reactionIn {
+  from { opacity: 0; transform: translateY(0.5em) scale(0.8); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reaction { animation: none; }
+}

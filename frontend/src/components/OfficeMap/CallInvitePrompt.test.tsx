@@ -38,6 +38,11 @@ function snap(over: Partial<CallSnapshot> = {}): CallSnapshot {
     screenShare: null,
     screenShareEnabled: false,
     screenShareError: null,
+    participants: [],
+    meetings: [],
+    incomingMeetingInvite: null,
+    outgoingMeetingInvite: null,
+    meetingInviteOutcome: null,
     error: null,
     calls: [],
     outgoing: null,
@@ -122,7 +127,7 @@ describe("CallInvitePrompt", () => {
     ["cancelled", null, /Call cancelled/],
     ["failed", "offline", /is offline/],
     ["failed", "dnd", /Do Not Disturb/],
-    ["failed", "busy", /already in a call/],
+    ["failed", "busy", /currently in another call/],
   ] as const)("reports the %s outcome (%s)", (kind, reason, pattern) => {
     snapshot = snap({
       inviteOutcome: { kind, peerEmail: "angelo@example.com", reason },
@@ -147,5 +152,68 @@ describe("CallInvitePrompt", () => {
     });
     const { container } = renderPrompt();
     expect(container).toBeEmptyDOMElement();
+  });
+});
+
+// PHASE 7D — ONE CARD FOR ALL SIX STATES. These pin the thing the redesign is FOR: every call state is
+// the same card in the same place with the same hierarchy, and only the words, the tone and the buttons
+// differ. Before this, ringing-in, ringing-out and the four endings were three unrelated popups.
+describe("the unified call notice", () => {
+  const STATES: Array<[string, Partial<CallSnapshot>, string, string[]]> = [
+    [
+      "incoming",
+      { incoming: { inviteId: "i", fromEmail: "bon@example.com", toEmail: "angelo@example.com" } },
+      "ringing",
+      ["Decline", "Accept"],
+    ],
+    [
+      "calling",
+      { outgoing: { inviteId: "i", fromEmail: "bon@example.com", toEmail: "angelo@example.com" } },
+      "waiting",
+      ["Cancel"],
+    ],
+    ["declined", { inviteOutcome: { kind: "declined", peerEmail: "angelo@example.com", reason: null } }, "ended", ["Dismiss"]],
+    ["unanswered", { inviteOutcome: { kind: "timeout", peerEmail: "angelo@example.com", reason: null } }, "ended", ["Dismiss"]],
+    ["cancelled", { inviteOutcome: { kind: "cancelled", peerEmail: "angelo@example.com", reason: null } }, "ended", ["Dismiss"]],
+    ["offline", { inviteOutcome: { kind: "failed", peerEmail: "angelo@example.com", reason: "offline" } }, "ended", ["Dismiss"]],
+    ["failed", { inviteOutcome: { kind: "failed", peerEmail: "angelo@example.com", reason: null } }, "ended", ["Dismiss"]],
+  ];
+
+  it.each(STATES)("%s is the same card, with its own tone and actions", (_name, over, tone, actions) => {
+    snapshot = snap(over);
+    renderPrompt();
+    const card = screen.getByTestId("call-notice");
+    expect(card).toHaveAttribute("data-tone", tone);
+    // The one hierarchy: a state title, a sentence, and an actions row — present in every state.
+    expect(card.textContent?.trim().length ?? 0).toBeGreaterThan(0);
+    for (const label of actions) expect(screen.getByText(label)).toBeInTheDocument();
+  });
+
+  it("never shows two cards at once, whatever the store is holding", () => {
+    snapshot = snap({
+      incoming: { inviteId: "i", fromEmail: "bon@example.com", toEmail: "angelo@example.com" },
+      outgoing: { inviteId: "o", fromEmail: "angelo@example.com", toEmail: "bon@example.com" },
+      inviteOutcome: { kind: "timeout", peerEmail: "angelo@example.com", reason: null },
+    });
+    renderPrompt();
+    expect(screen.getAllByTestId("call-notice")).toHaveLength(1);
+  });
+
+  it("says who could not be reached, not just that something failed", () => {
+    snapshot = snap({ inviteOutcome: { kind: "failed", peerEmail: "angelo@example.com", reason: "offline" } });
+    renderPrompt();
+    expect(screen.getByTestId("call-notice")).toHaveTextContent("Can't reach Angelo");
+    expect(screen.getByTestId("call-notice")).toHaveTextContent("Angelo is offline.");
+  });
+
+  it("only the incoming ring is an alert — the rest are not interruptions", () => {
+    snapshot = snap({ incoming: { inviteId: "i", fromEmail: "bon@example.com", toEmail: "a@example.com" } });
+    const { unmount } = renderPrompt();
+    expect(screen.getByTestId("call-notice")).toHaveAttribute("role", "alert");
+    unmount();
+
+    snapshot = snap({ outgoing: { inviteId: "o", fromEmail: "a@example.com", toEmail: "angelo@example.com" } });
+    renderPrompt();
+    expect(screen.getByTestId("call-notice")).not.toHaveAttribute("role", "alert");
   });
 });

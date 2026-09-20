@@ -37,6 +37,12 @@ def serialize_message_dict(
         "deliveredTo": list(delivered_to),
         "readBy": list(read_by),
         "mentionedEmails": list(message.mentioned_emails or []),
+        # PHASE 7D. `kind` is always present and always a string — pre-7D rows read "text" from the
+        # column default, so no client has to treat it as optional. `meta` is null for every ordinary
+        # message and carries a system row's structured detail, exactly like mentionedEmails above it
+        # is empty for every pre-mentions row. Readers BRANCH on kind (see models/message.py).
+        "kind": getattr(message, "kind", None) or "text",
+        "meta": getattr(message, "meta", None),
         "reactions": [
             {"emoji": r["emoji"], "count": r["count"], "reactors": list(r["reactors"])}
             for r in (reactions or [])
@@ -75,6 +81,10 @@ class ChatMessageOut(BaseModel):
     # Grouped emoji reactions — one entry per distinct emoji. Same "always a list, never null"
     # convention as mentioned_emails above: a message nobody reacted to serializes as [].
     reactions: list[MessageReactionOut] = Field(default_factory=list)
+    # PHASE 7D — what this row IS. Defaulted rather than required so the REST shape stays backward
+    # compatible for any caller constructing one by hand; the column itself is NOT NULL.
+    kind: str = "text"
+    meta: dict | None = None
 
     @field_serializer("sent_at")
     def _serialize_sent_at(self, dt: datetime) -> str:

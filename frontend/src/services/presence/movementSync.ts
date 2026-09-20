@@ -31,6 +31,9 @@ export interface ActiveMovement {
   movementId: string;
   origin: Pt;
   path: Pt[];
+  /** PHASE 7D — the same in-flight walk in `roomId`'s local frame, when the publisher sent one. */
+  localOrigin?: Pt;
+  localPath?: Pt[];
   roomId: string | null;
   durationMs: number;
   startedAt: number; // server epoch ms
@@ -40,6 +43,10 @@ export interface ActiveMovement {
 
 export interface StableMovementState {
   pos: Pt;
+  /** PHASE 7D — where they actually are, in the frame `roomId` names. EPHEMERAL: the server never
+   *  persists it (employee_positions holds `pos` and nothing else), so it is absent after a restart
+   *  or a reload until that employee moves again — and `pos` is the honest fallback meanwhile. */
+  localPos?: Pt;
   facing: Facing;
   /** The V2 3D office's exact resting yaw in radians, beside V1's four-word `facing`. Present only when
    *  the arriving client published one (a V2 session) and it came through finite; a V1 arrival has none. */
@@ -63,11 +70,19 @@ export interface WalkStartedPayload {
   roomId: string | null;
   durationMs: number;
   pacing?: WalkPacing;
+  /** PHASE 7D — THE SAME MOVEMENT IN `roomId`'S OWN FRAME, for a place V1 has no coordinates for
+   *  (the Championship Cave). `origin`/`path` above stay V1's and keep their meaning exactly: the
+   *  last real in-frame point, which is what V1 persists and what V1's office draws. Optional and
+   *  additive — a client that sends neither is the client that existed before this. */
+  localOrigin?: Pt;
+  localPath?: Pt[];
 }
 
 export interface WalkArrivedPayload {
   movementId: string;
   at: Pt;
+  /** PHASE 7D — where they really stopped, in `roomId`'s frame. `at` stays V1's in-frame point. */
+  localAt?: Pt;
   facing: Facing;
   state: MovementState;
   seatKey: string | null;
@@ -86,6 +101,8 @@ interface PeerWalkStartedEvent {
   durationMs: number;
   startedAt: number;
   pacing?: WalkPacing | null;
+  localOrigin?: Pt | null;
+  localPath?: Pt[] | null;
 }
 
 interface PeerWalkArrivedEvent {
@@ -98,6 +115,7 @@ interface PeerWalkArrivedEvent {
   seatKey: string | null;
   roomId: string | null;
   yaw?: number | null;
+  localAt?: Pt | null;
 }
 
 interface PositionsSnapshotEntry {
@@ -110,6 +128,7 @@ interface PositionsSnapshotEntry {
   roomId: string | null;
   updatedAt: number;
   yaw?: number | null;
+  localAt?: Pt | null;
   active: {
     movementId: string;
     origin: Pt;
@@ -118,6 +137,8 @@ interface PositionsSnapshotEntry {
     durationMs: number;
     startedAt: number;
     pacing?: WalkPacing | null;
+    localOrigin?: Pt | null;
+    localPath?: Pt[] | null;
   } | null;
 }
 
@@ -241,6 +262,7 @@ export function applySnapshot(
         state: entry.state,
         seatKey: entry.seatKey,
         roomId: entry.roomId,
+        ...(entry.localAt ? { localPos: entry.localAt } : {}),
         ...yawField(entry.yaw),
       },
       active: entry.active
@@ -251,6 +273,8 @@ export function applySnapshot(
             roomId: entry.active.roomId,
             durationMs: entry.active.durationMs,
             startedAt: entry.active.startedAt,
+            ...(entry.active.localOrigin ? { localOrigin: entry.active.localOrigin } : {}),
+            ...(entry.active.localPath ? { localPath: entry.active.localPath } : {}),
             ...pacingField(entry.active.pacing),
             serverTime: event.serverTime,
           }
@@ -280,6 +304,9 @@ export function applyStarted(
       state: "standing",
       seatKey: existing?.stable.seatKey ?? null,
       roomId: event.roomId,
+      // The walk's own local origin is the freshest local fact there is; keeping the previous one
+      // would leave a body a leg behind until this walk resolves.
+      ...(event.localOrigin ? { localPos: event.localOrigin } : existing?.stable.localPos ? { localPos: existing.stable.localPos } : {}),
       ...yawField(existing?.stable.yaw),
     },
     active: {
@@ -289,6 +316,8 @@ export function applyStarted(
       roomId: event.roomId,
       durationMs: event.durationMs,
       startedAt: event.startedAt,
+      ...(event.localOrigin ? { localOrigin: event.localOrigin } : {}),
+      ...(event.localPath ? { localPath: event.localPath } : {}),
       ...pacingField(event.pacing),
     },
   });
@@ -311,6 +340,9 @@ export function applyArrived(
     revision: event.revision,
     stable: {
       pos: event.at,
+      // PHASE 7D. Absent clears it: an arrival with no local coordinate is an arrival back inside
+      // V1's frame, and holding the old one would strand the body in a Cave they have left.
+      ...(event.localAt ? { localPos: event.localAt } : {}),
       facing: event.facing,
       state: event.state,
       seatKey: event.seatKey,
@@ -412,6 +444,10 @@ export function emitWalkStarted(payload: WalkStartedPayload): void {
     path: capPath(payload.path),
     roomId: payload.roomId,
     durationMs: sanitizeDurationMs(payload.durationMs),
+    // PHASE 7D — capped by the SAME rule the V1 path is, because the server replays both through
+    // one interpolation and validates both with one point check.
+    ...(payload.localOrigin ? { localOrigin: payload.localOrigin } : {}),
+    ...(payload.localPath?.length ? { localPath: capPath(payload.localPath) } : {}),
     ...pacingField(payload.pacing),
   });
 }
@@ -426,6 +462,7 @@ export function emitWalkArrived(payload: WalkArrivedPayload): void {
     state: payload.state,
     seatKey: payload.seatKey,
     roomId: payload.roomId,
+    ...(payload.localAt ? { localAt: payload.localAt } : {}),
     ...yawField(payload.yaw),
   });
 }
