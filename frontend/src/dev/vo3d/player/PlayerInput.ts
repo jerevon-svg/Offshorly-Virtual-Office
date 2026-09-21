@@ -24,10 +24,15 @@ const MOVE_KEYS: Record<string, { x: number; z: number }> = {
 
 /** Shift = sprint. Held, never toggled: releasing it returns to walking on the very next frame. */
 const SPRINT_KEYS = new Set(["ShiftLeft", "ShiftRight"]);
+/** Space = jump. An EDGE, never a held state — see onKeyDown. */
+const JUMP_KEY = "Space";
 
 export type PlayerInputHandlers = {
   onInteract: () => void;
   onToggleView: () => void;
+  /** Space went down, once per press. The owner decides whether a jump is possible; this only reports
+   *  the press. */
+  onJump: () => void;
   onLockChange: (locked: boolean) => void;
   /** PHASE 7D — a pointer-lock request was made from a real gesture and the browser refused it. The
    *  owner shows a recovery hint; mouse-look keeps working unlocked in the meantime. */
@@ -176,6 +181,26 @@ export class PlayerInput {
     // Shift rides in the same held set as the movement keys, so the blur handler's "clear everything"
     // covers it too: tabbing away mid-sprint cannot leave the player running when they come back.
     if (SPRINT_KEYS.has(e.code)) { this.held.add(e.code); return; }
+    // SPACE IS AN EDGE, AND THE BROWSER MUST NOT SEE IT.
+    //
+    // preventDefault FIRST and unconditionally: Space scrolls the page (and clicks whatever button has
+    // focus), and a player driving their body with the pointer unlocked would scroll the whole app out
+    // from under the canvas on every jump. The guard at the top of this handler has already let a real
+    // text field, a lil-gui control and a modal keep the key, so this only ever suppresses a Space the
+    // world owns.
+    //
+    // THE EDGE: `held` is what makes a HELD Space one jump rather than a machine gun. The browser
+    // repeats keydown while a key is down (`e.repeat`, and some environments do not set it), so the
+    // press is reported only on the transition into `held`, and keyup — or the blur handler — is what
+    // re-arms it. There is no "jumping" state here at all: PlayerJump refuses a second one in mid-air,
+    // which is where the no-double-jump rule belongs.
+    if (e.code === JUMP_KEY) {
+      e.preventDefault();
+      if (e.repeat || this.held.has(JUMP_KEY)) return;
+      this.held.add(JUMP_KEY);
+      this.h.onJump();
+      return;
+    }
     if (e.code === "KeyE") { this.h.onInteract(); e.preventDefault(); return; }
     if (e.code === "KeyV") { this.h.onToggleView(); e.preventDefault(); }
     // Esc is deliberately NOT handled: the browser's own pointer-lock escape is the one users expect,

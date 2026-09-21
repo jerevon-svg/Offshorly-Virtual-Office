@@ -341,7 +341,7 @@ describe("vo3d QA Room — Phase 11: the LAST room, reconstructed from a flat re
     expect(src).toContain("for (const e of qaRoomEntities()) world.addEntity(e);");
     expect(src).toContain("mirror.buildRoom(QA_ROOM, shellOpts());");
     expect(src).toMatch(/DERIVED_ROOM_IDS = new Set\(\[[^\]]*QA_ROOM\.id/);
-    expect(src).toContain("qaDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);");
+    expect(src).toContain("qaDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);");
     // THE EXECUTIVE-CHAIR BUG GUARD. A movable SeatInteraction that is never ticked animates nothing and
     // locks the avatar. One controller serves all 7 chairs, and it MUST be in the per-frame update.
     expect(src).toContain("qaSeat?.update(dt / 1000);");

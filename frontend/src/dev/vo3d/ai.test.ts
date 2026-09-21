@@ -284,7 +284,7 @@ describe("vo3d AI Room — Phase 9: the V1 room reconstructed in true 3D", () =>
     expect(src).toContain("for (const e of aiRoomEntities()) world.addEntity(e);");
     expect(src).toContain("mirror.buildRoom(AI_ROOM, shellOpts());");
     expect(src).toMatch(/DERIVED_ROOM_IDS = new Set\(\[[^\]]*AI_ROOM\.id/);
-    expect(src).toContain("aiDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);");
+    expect(src).toContain("aiDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);");
     // THE EXECUTIVE-CHAIR BUG GUARD. A movable SeatInteraction that is never ticked animates nothing and
     // locks the avatar. One controller serves all 21 chairs, and it MUST be in the per-frame update.
     expect(src).toContain("aiSeat?.update(dt / 1000);");

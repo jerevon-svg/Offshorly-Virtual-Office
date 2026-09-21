@@ -330,14 +330,16 @@ describe("vo3d player — mouse look", () => {
 });
 
 describe("vo3d player — sprint", () => {
-  /** Bon's GLB carries exactly six clips and none of them is a run, so sprint is a SPEED change that the
-   *  existing walk clip is played faster against. These tests pin that contract rather than a clip name. */
+  /** Sprint is a SPEED change first and a clip change only where the rig can honour one: bon-v3 ships
+   *  `running`, the other four shipped packages do not and play the walk faster instead (avatar/gait).
+   *  These tests pin the INPUT contract, which is the same either way. */
   function inputRig() {
     const canvas = document.createElement("canvas");
-    const input = new PlayerInput(canvas, { onInteract: () => {}, onToggleView: () => {}, onLockChange: () => {} });
+    const jumps: number[] = [];
+    const input = new PlayerInput(canvas, { onInteract: () => {}, onToggleView: () => {}, onJump: () => jumps.push(1), onLockChange: () => {} });
     input.enable();
     const key = (type: "keydown" | "keyup", code: string) => window.dispatchEvent(new KeyboardEvent(type, { code, bubbles: true }));
-    return { input, key, done: () => input.disable() };
+    return { input, key, jumps, done: () => input.disable() };
   }
 
   it("is off by default and on while Shift is held", () => {

@@ -95,6 +95,7 @@ const CAMERA_BINDINGS: readonly { keys: string; action: string }[] = [
 const BINDINGS: readonly { keys: string; action: string }[] = [
   { keys: "W A S D", action: "Walk" },
   { keys: "Shift", action: "Sprint (held)" },
+  { keys: "Space", action: "Jump" },
   { keys: "E", action: "Interact — sit, stand, use a door" },
   { keys: "Esc", action: "Release the mouse and use the HUD" },
   { keys: "Click the world", action: "Take the mouse back and play on" },

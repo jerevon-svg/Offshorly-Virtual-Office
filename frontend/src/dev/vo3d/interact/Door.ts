@@ -13,6 +13,18 @@ import type { DoorCapability } from "../world/WorldState";
 
 export type DoorState = "closed" | "opening" | "open" | "closing";
 
+/** ONE BODY A DOOR MAY REACT TO: where it stands, and the route it is about to take.
+ *
+ *  The local employee has always been passed as the `bon`/`path` pair below; this is the SAME pair, for
+ *  everybody else in the building. A door has no idea whose body it is looking at and deliberately does
+ *  not: it opens for a body in its sweep band or a route through it, whoever owns that body, which is
+ *  what makes two people crossing in opposite directions work without a single line about either of
+ *  them. See update()'s `others`. */
+export type DoorBody = { pos: Vec2; path: readonly Vec2[] };
+
+/** Shared empty list, so a frame with nobody else near a door allocates nothing. */
+const NO_BODIES: readonly DoorBody[] = [];
+
 const smooth = (t: number): number => t * t * (3 - 2 * t); // smoothstep: eases in and out, C1 on reversal
 
 /** does the segment a→b touch `rect` (axis-aligned slab test)? */
@@ -80,10 +92,36 @@ export class SlidingDoor {
     return false;
   }
 
-  /** Step by dt seconds given Bon's world position and his remaining navigation route. Moves only the door. */
-  update(dt: number, bon: Vec2, path: readonly Vec2[]): void {
-    const inBand = this.bodyInCrossing(bon);
-    const want = inBand || this.wantsOpen(bon, path);
+  /** Is ANY of these bodies standing in the sweep band? The hold's input — see update(). */
+  private anyInCrossing(others: readonly DoorBody[]): boolean {
+    for (const b of others) if (this.bodyInCrossing(b.pos)) return true;
+    return false;
+  }
+
+  /**
+   * Step by dt seconds given Bon's world position and his remaining navigation route. Moves only the door.
+   *
+   * `others` — MULTIPLAYER. Every OTHER body the world currently draws (the replicated coworkers), each
+   * with its own remaining route, judged by exactly the same two tests the local body is judged by. It
+   * is an ordinary OR across all of them, and that is the whole of the multiplayer rule:
+   *
+   *   • a remote employee walking up opens the door, because their route passes through the band;
+   *   • two employees using one door cannot close it on each other, because the hold is reset while ANY
+   *     body is still in the crossing — the second person's presence keeps `want` true after the first
+   *     has cleared;
+   *   • an opposite-direction crossing is symmetric by construction: neither body is privileged and the
+   *     rects are direction-free;
+   *   • a body that disappears — a disconnect, a teleport, a room change, a seat — simply stops being in
+   *     the list, so the door falls through its ordinary hold and closes on its own timing. There is no
+   *     per-person state to leak and nothing to recover.
+   *
+   * Nothing about the LOCAL behaviour changes: with an empty list this is byte-for-byte the door that
+   * shipped, which is why every existing caller and test passes the same three arguments it always did.
+   */
+  update(dt: number, bon: Vec2, path: readonly Vec2[], others: readonly DoorBody[] = NO_BODIES): void {
+    const inBand = this.bodyInCrossing(bon) || this.anyInCrossing(others);
+    let want = inBand || this.wantsOpen(bon, path);
+    if (!want) for (const b of others) if (this.wantsOpen(b.pos, b.path)) { want = true; break; }
     const { openMs, closeMs, holdMs } = this.spec.timings;
     switch (this.state) {
       case "closed":

@@ -1501,6 +1501,49 @@ async def walk_arrived(sid: str, payload: dict | None) -> None:
         await _emit_unexpected(sid, exc)
 
 
+# How often one connection may broadcast a jump, ms. The client cannot legitimately exceed this — its
+# own jump refuses a second takeoff before it has landed (~600 ms, dev/vo3d/player/PlayerJump) — so this
+# is purely a floor under a misbehaving or replaying client, not a gameplay rule. Held in the socket
+# session, which dies with the connection: no module state, nothing to grow, nothing to clean up.
+_JUMP_MIN_INTERVAL_MS = 400
+
+
+@sio.on("jump")
+async def jump(sid: str, payload: dict | None = None) -> None:
+    """PURELY COSMETIC, PURELY TRANSIENT: "this employee just jumped, now".
+
+    THE SMALLEST THING THAT COULD WORK, and deliberately not part of the movement pipeline:
+
+      • NO PAYLOAD IS TRUSTED — none is even read. The identity is the server-verified session email,
+        exactly as every other handler here takes it, and the only other field is the server's own
+        clock. A client cannot assert a height, a position, a room or a duration, so there is nothing
+        here that could influence collision, pathfinding, seating or room access.
+      • NO STATE. Nothing is written to position_registry, nothing is persisted, no revision is issued
+        and no DB table is touched — so there is no migration, and no way for a jump to survive a
+        reconnect, a snapshot or a restart as a body stuck in the air.
+      • NO ORDERING PROBLEM TO SOLVE. A jump is one instant, not a transition between two states, so
+        there is nothing for a revision to order. A duplicate is refused by the receiver (a body
+        already in the air cannot take off again) and a late one is dropped by the receiver against
+        `at`. Both rules live where the arc does; see dev/vo3d/world/Coworkers.
+      • BACKWARD COMPATIBLE BY CONSTRUCTION. Clients that never emit `jump` behave exactly as before;
+        clients that never listen for `peer_jump` ignore an event they do not handle, which is what
+        Socket.IO does with an unregistered event name anyway.
+
+    Modelled on `seat_rejected`: a relay, not a fact about the world.
+    """
+    try:
+        session_data = await sio.get_session(sid)
+        email = session_data["email"]
+        now = _now_ms()
+        last = session_data.get("jump_at")
+        if isinstance(last, int) and now - last < _JUMP_MIN_INTERVAL_MS:
+            return  # silent drop, this file's convention for input it will not act on
+        await sio.save_session(sid, {**session_data, "jump_at": now})
+        await sio.emit("peer_jump", {"email": email, "at": now}, skip_sid=sid)
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
 @sio.on("join_conversation")
 async def join_conversation(sid: str, payload: dict | None) -> None:
     try:

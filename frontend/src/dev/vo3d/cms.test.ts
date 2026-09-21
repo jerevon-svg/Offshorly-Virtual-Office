@@ -371,7 +371,7 @@ describe("vo3d CMS room — app wiring", () => {
     expect(src).toContain("for (const e of cmsRoomEntities()) world.addEntity(e);");
     expect(src).toContain("mirror.buildRoom(CMS_ROOM, shellOpts());");
     expect(src).toMatch(/DERIVED_ROOM_IDS = new Set\(\[[^\]]*CMS_ROOM\.id/);
-    expect(src).toContain("cmsDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);");
+    expect(src).toContain("cmsDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);");
     // Player mode must be able to activate the room's chairs, or they are GUI-only
     expect(src).toContain("const cms = CMS_SEAT_IDS.indexOf(id);");
     // and its lounge pieces join the one shared lounge-seat list

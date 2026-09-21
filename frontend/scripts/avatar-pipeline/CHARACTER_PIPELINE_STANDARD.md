@@ -9,7 +9,7 @@ character-specific: no Bon/Alex constants, no per-employee scale values.
 |---|---|---|---|
 | Image-to-3D | `POST /v1/image-to-3d` | 30 | `ai_model: latest`, `pose_mode: t-pose`, 2K texture, GLB, multi-view thumbnails, `should_remesh: false` |
 | Remesh | `POST /v2/remesh` | 5 | `target_polycount: 280000` (under Meshy's 300k rigging cap) |
-| Rig | `POST /v1/rigging` | 5 | defaults; bundled walking is reused, running is discarded |
+| Rig | `POST /v1/rigging` | 5 | defaults; the bundled **walking AND running** are both kept — see section 7 |
 | Animations | `POST /v1/animations` | 5×3 | idle per the character's **idle profile** (below), `agree-gesture`=25, `listening-gesture`=47, `sit-on-chair-arms`=33, `sitting-answering`=307 |
 
 Run via `meshy-generate-employee-3d.mjs <id> <png> --pose-mode=t-pose` then
@@ -122,18 +122,51 @@ OfficeStage remains the safety ceiling.
 
 ## 7. Runtime contract
 
-All six clips must be named exactly: `idle-9`, `walking`, `agree-gesture`,
-`listening-gesture`, `sit-on-chair-arms`, `sitting-answering`. 24 bones, one
-skinned mesh, one shared base-colour image, unlit material, no normal/metallic
-maps.
+All **seven** clips must be named exactly: `idle-9`, `walking`, **`running`**,
+`agree-gesture`, `listening-gesture`, `sit-on-chair-arms`, `sitting-answering`
+— `scripts/avatar-pipeline/lod-policy.mjs`'s `REQUIRED_CLIP_NAMES` is the one
+authoritative list and everything else imports it. 24 bones, one skinned mesh,
+one shared base-colour image, unlit material, no normal/metallic maps.
+
+### `running` is mandatory, and a fast walk is not a run
+
+The run comes free with the rig step, in the same `basic_animations` bundle as
+the walk (`<id>-rigged-running.glb`), so there is no extra generation and no
+extra credit — it only has to be kept and packed. It was added to the required
+list on 2026-09-13, after bon-v3; the four packages built before that shipped
+without it, and the gap was invisible because the runtime fell back to a faster
+walk. Three checks now make that impossible to repeat:
+
+| Check | Where | Catches |
+|---|---|---|
+| source map | `build-character-lods.mjs` `CLIP_SOURCES` drift check | a required clip with no source file |
+| per-tier output | `build-character-lods.mjs`, after each tier is built | a clip lost *during* LOD generation |
+| shipped packages | `src/render3d/shippedClips.realAssets.test.ts` | any registered character whose LOD0/1/2 on disk is missing a clip, or whose `running` is the same length as its `walking` (a re-timed walk) |
+
+**Never substitute an accelerated walk for a packaged run clip.** The runtime
+keeps a walk fallback (`src/dev/vo3d/avatar/gait.ts`, which plays the walk cycle
+at the ground speed the body is actually covering) and that is deliberate — it
+is for LEGACY packages and for a character mid-pipeline, not a licence to ship
+one. A character whose raw bundle genuinely has no run animation must have it
+generated, not faked.
+
+**Adding `running` to an already-shipped package** — use
+`repack-running-clip.mjs <id> <shipped-dir>`, not a full rebuild. It retargets
+the existing raw run clip into the LOD GLBs already on disk and touches nothing
+else: no simplify, no texture re-encode, no idle re-solve, so appearance cannot
+move. A full `build-character-lods.mjs` re-run is the right tool for a NEW
+character, and the wrong risk for one in production whose exact original
+`--clip-source` flags are not recorded anywhere.
 
 ## 8. Integration
 
 Add the entry to `LIVE_3D_CHARACTERS` — including its `idleProfile`, which the
 type requires — keep the previous asset folder on disk as the rollback, and
 validate all three GLBs through GLTFLoader + the vendored Draco decoder
-(`clip-validate.mjs`) before shipping: 24 joints, one skinned mesh, all six
-clips present at every LOD.
+(`clip-validate.mjs`) before shipping: 24 joints, one skinned mesh, every
+`REQUIRED_CLIP_NAMES` clip present at every LOD. The validator imports that list
+rather than restating it — its own stale copy is exactly how four packages
+passed while missing `running`.
 
 A rebuild that only swaps a clip still needs its silhouette re-checked against
 the character's frame, since the layer geometry was calibrated against the old

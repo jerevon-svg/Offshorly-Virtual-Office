@@ -42,7 +42,7 @@ describe("Vo3dViewIndicator", () => {
   it.each([
     ["office", "OFFICE VIEW", "Right-click to walk · Drag to pan · Scroll to zoom"],
     ["explore", "3D VIEW", "Drag to orbit · Scroll to zoom · Explore freely"],
-    ["player", "PLAYER VIEW", "Mouse to look · WASD to move · V to switch camera"],
+    ["player", "PLAYER VIEW", "Mouse to look · WASD to move · Space to jump · V to switch camera"],
   ] as const)("announces %s with its own controls", (mode, title, hint) => {
     mount();
     push(mode === "office" ? "explore" : "office"); // move away first, so `mode` is a real change

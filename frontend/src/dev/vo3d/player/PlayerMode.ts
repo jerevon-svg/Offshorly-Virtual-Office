@@ -21,12 +21,14 @@ import * as THREE from "three";
 import type { Avatar } from "../avatar/Avatar";
 import type { ControllerStack } from "../avatar/Controller";
 import { CLIP_IDLE, CLIP_RUN, CLIP_WALK } from "../adapters/v1Avatar";
+import { locomotionClip, locomotionRate } from "../avatar/gait";
 import { headingFor, stepAngle, type Vec2 } from "../core/coords";
 import type { WorldState } from "../world/WorldState";
 import { PlayerBody, type StandTest } from "./PlayerBody";
 import { PlayerCamera, type PlayerView } from "./PlayerCamera";
 import { PlayerHud } from "./PlayerHud";
 import { PlayerInput } from "./PlayerInput";
+import { AIRBORNE_POSE_PHASE, PlayerJump } from "./PlayerJump";
 import { collectCandidates, pickTarget, type Candidate, type Target } from "./PlayerTargeting";
 
 /** Shared empty list, so a frame with no dynamic candidates allocates nothing. */
@@ -35,8 +37,13 @@ const EMPTY_CANDIDATES: readonly Candidate[] = [];
 /** how fast the avatar turns toward its heading in third person (rad/s) — the navigation controller's rate */
 const TURN_RATE = 9;
 /** how far ahead of a moving player a door is told to expect him. One stride: enough for the leaf to be
- *  clear by the time he arrives, short enough not to open doors he is merely walking past. */
-const DOOR_LOOKAHEAD = 46;
+ *  clear by the time he arrives, short enough not to open doors he is merely walking past.
+ *
+ *  EXPORTED because world/Coworkers gives a REPLICATED body the same courtesy, by the same figure: a
+ *  peer whose replayed leg has run out still has a heading, and a door that expected the local employee
+ *  one stride ahead but a coworker not at all is the asymmetry that let somebody walk through a shut
+ *  door on the other browser. One number, one meaning, one place. */
+export const DOOR_LOOKAHEAD = 46;
 /** THE TWO GROUND SPEEDS, in units/s, and the single place either of them is stated.
  *
  *  70 / 100 replaces the original 30 / 54. The old pair was inherited from the click-to-walk router,
@@ -59,21 +66,12 @@ export const PLAYER_SPRINT_SPEED = 100;
  *  Derived from the pair above rather than written out, so the slider and the sprint stay consistent:
  *  whatever walk speed is in force, Shift is worth the same proportion of it. */
 export const SPRINT_MULTIPLIER = PLAYER_SPRINT_SPEED / PLAYER_WALK_SPEED;
-/** THE GROUND SPEED EACH LOCOMOTION CLIP WAS AUTHORED FOR, in units/s. Playback rate is then simply
- *  "how fast am I actually travelling / how fast does this clip think it is travelling", which is what
- *  keeps feet planted instead of skating at either speed and at every speed in between.
- *
- *  `walking` = 30 is the figure the navigation controller has always used. `running` is derived from the
- *  clips themselves: the run cycle is 0.667 s against the walk's 1.067 s, so its cadence is 1.6x the
- *  walk's and it covers ground at about 30 x 1.6.
- *
- *  AT THE TUNED SPEEDS these authored figures do not change — they are properties of the CLIPS, not of
- *  the player — so the rate simply follows: walking 70 u/s drives the walk cycle at 2.33x and sprinting
- *  100 u/s drives the run cycle at 2.08x, both under MAX_CLIP_RATE. Feet stay planted at both speeds
- *  because that is the whole point of dividing by the clip's own ground speed. */
-const CLIP_GROUND_SPEED: Record<string, number> = { [CLIP_WALK]: 30, [CLIP_RUN]: 48 };
-/** ceiling on locomotion playback rate — a spike guard for a long frame, not a look choice */
-const MAX_CLIP_RATE = 2.5;
+/** THE LOCOMOTION CLIP AND ITS PLAYBACK RATE now come from avatar/gait, which world/Coworkers reads too
+ *  — the numbers were duplicated here and there, and the shared module is also where the "this package
+ *  has no run clip" fallback is made to look right rather than skate. See its header. */
+
+/** The airborne pose is AIRBORNE_POSE_PHASE, shared with every replicated body — see player/PlayerJump.
+ *  Avatar.freezeClipAt does the holding; landing restores the rate. */
 
 export type PlayerDeps = {
   avatar: Avatar;
@@ -109,6 +107,10 @@ export class PlayerMode {
   readonly body: PlayerBody;
   private readonly d: PlayerDeps;
   private readonly input: PlayerInput;
+  /** THE VERTICAL HALF OF MOVEMENT, and the only thing in this mode that is not on the floor plane.
+   *  Horizontal movement is untouched by it — see player/PlayerJump's header for why that is the whole
+   *  collision argument. */
+  private readonly vertical = new PlayerJump();
   private readonly candidates: Map<string, Candidate[]>;
   private hud: PlayerHud | null = null;
   /** PHASE 7E — remembered across enter/exit, because the HUD is built on entry: a modal opened in OFFICE
@@ -136,7 +138,7 @@ export class PlayerMode {
   /** dev/test readout */
   readonly state = {
     active: false, view: "third" as PlayerView, locked: false, sprinting: false, target: "—",
-    owner: "", blocked: false, pos: "",
+    owner: "", blocked: false, pos: "", airborne: false, height: 0,
     /** GROUND ACTUALLY COVERED this frame. Already computed for the locomotion clip's playback rate;
      *  published so the foley layer can pace footsteps off distance rather than off a timer, which is
      *  what makes them follow 70 and 100 without knowing either number. */
@@ -151,6 +153,7 @@ export class PlayerMode {
     this.input = new PlayerInput(deps.canvas, {
       onInteract: () => this.interact(),
       onToggleView: () => this.setView(this.camera.view === "third" ? "first" : "third"),
+      onJump: () => this.jump(),
       onLockChange: (locked) => {
         this.state.locked = locked;
         this.hud?.setLocked(locked);
@@ -200,6 +203,13 @@ export class PlayerMode {
     this.state.sprinting = false;
     this.state.travelled = 0;
     this.d.stack.release("Player");
+    // BACK ON THE FLOOR, and the frozen airborne pose released with it: a mode left mid-jump must not
+    // hand the next owner a floating body or a walk clip whose time scale is still zero.
+    this.vertical.reset();
+    this.state.airborne = false;
+    this.state.height = 0;
+    this.d.avatar.setPosition(this.d.avatar.position);
+    this.d.avatar.setClipTimeScale(CLIP_WALK, 1);
     this.d.avatar.root.visible = true;
     this.d.avatar.play(CLIP_IDLE);
     if (this.hud) { this.hud.marker.removeFromParent(); this.hud.dispose(); this.hud = null; }
@@ -246,6 +256,25 @@ export class PlayerMode {
     this.input.unlock();
   }
 
+  /** SPACE WAS PRESSED. Refused — silently, changing nothing — unless PLAYER is active AND actually
+   *  owns the avatar (a seat, an approach or a menu is driving it otherwise) AND the body is on the
+   *  floor. Those three are the whole gate: no double jump, no jump out of a chair, no jump in a view
+   *  that is not this one, because this handler is only bound while PLAYER's input is enabled. */
+  jump(): void {
+    if (!this._active || !this.d.stack.owns("Player")) return;
+    // ONLY A JUMP THAT ACTUALLY TOOK IS PUBLISHED. `start` refuses one in mid-air, so a held Space, a
+    // key repeat and a second press all produce exactly one relay — the traffic is bounded by the arc,
+    // not by the keyboard.
+    if (this.vertical.start()) this.onJumped?.();
+  }
+
+  /** Told when this body really left the floor, so the world can relay it to the other browsers. Null
+   *  on the standalone dev page and in every test that does not care, exactly like `onLockState`. */
+  onJumped: (() => void) | null = null;
+
+  /** Is the body off the floor? Read by the dev surface and the tests. */
+  get airborne(): boolean { return this.vertical.airborne; }
+
   /** Invoke whatever is targeted, through V2's own interaction path. */
   interact(): void {
     if (!this._active) return;
@@ -259,6 +288,7 @@ export class PlayerMode {
     if (t.kind === "person") { this.d.activate(t.id, t.kind); return; }
     // release FIRST: the starters route with A* and acquire "Interaction", and Player outranks Navigation
     this.d.stack.release("Player");
+    this.landNow();
     this.d.avatar.play(CLIP_IDLE);
     if (!this.d.activate(t.id, t.kind)) this.d.stack.acquire("Player"); // refused: take the avatar back
   }
@@ -273,6 +303,9 @@ export class PlayerMode {
     if (owner !== "Player") {
       this.state.sprinting = false;
       this.state.travelled = 0;
+      // Somebody else is driving the body; a jump cannot continue through a seat or an approach, and
+      // leaving one running would fight whatever they write into the transform.
+      this.landNow();
       const a = this.d.avatar.worldPosition();
       this.body.pos = { x: a.x, z: a.z };
       if (owner === "Idle" && this.d.stack.acquire("Player")) { this.body.placeNear(this.body.pos); this.d.avatar.setPosition(this.body.pos); }
@@ -304,33 +337,71 @@ export class PlayerMode {
     this.state.travelled = travelled;
 
     this.moving = travelled > 1e-4;
-    this.d.avatar.setPosition(this.body.pos);
+    // THE VERTICAL HALF, stepped AFTER the horizontal one and written into the same transform. The
+    // horizontal answer above is untouched by it — same WASD, same camera basis, same PlayerBody.move,
+    // same stand test — so airborne movement is ordinary movement that happens to be drawn higher, and
+    // every wall, desk, door and access rule still applies at full height.
+    const landed = this.vertical.update(dt);
+    this.state.airborne = this.vertical.airborne;
+    this.state.height = this.vertical.height;
+    this.d.avatar.setPosition(this.body.pos, this.vertical.height);
     // FIRST person locks the body to the view; THIRD turns it toward travel, which is what sells "Bon is
     // walking" rather than "Bon is being slid around".
     if (this.camera.view === "first") this.d.avatar.setYaw(this.camera.yaw);
     else if (this.moving) this.d.avatar.setYaw(stepAngle(this.d.avatar.yaw, this.heading, TURN_RATE * dt));
 
-    if (this.moving) {
+    // LANDING RESTORES THE CLIP, once, on the frame it happens: the airborne pose froze the walk cycle,
+    // and the locomotion branch below re-writes the rate every frame it runs — but the RESTING branch
+    // does not, so a jump that ends standing still would leave the idle playing over a walk action
+    // stopped at zero. Restoring here rather than in each branch keeps that one line in one place.
+    if (landed) this.d.avatar.setClipTimeScale(CLIP_WALK, 1);
+
+    if (this.vertical.airborne) {
+      // IN THE AIR. The pose is held (avatar/Avatar.freezeClipAt) rather than animated: no shipped
+      // character package carries a jump clip, and the arc itself is what sells the motion. Takeoff and
+      // landing are the crossfades into and out of it.
+      this.d.avatar.freezeClipAt(CLIP_WALK, AIRBORNE_POSE_PHASE);
+    } else if (this.moving) {
       // idle -> walking -> running -> walking -> idle, all through the mixer's own crossfade. Sprinting
       // with no run clip in the GLB falls back to a faster walk rather than freezing on whatever was
-      // already playing, so an older avatar build still behaves.
-      const clip = sprinting && this.d.avatar.hasClip(CLIP_RUN) ? CLIP_RUN : CLIP_WALK;
+      // already playing, so an older avatar build still behaves — avatar/gait owns that rule and the
+      // rate that makes the fallback keep its feet on the ground instead of skating.
+      const clip = locomotionClip(sprinting, this.d.avatar.hasClip(CLIP_RUN));
       this.d.avatar.play(clip);
       // rate from the ground ACTUALLY covered, not from the input: a player scraping along a wall slows
       // his own stride down instead of moonwalking on the spot
-      this.d.avatar.setClipTimeScale(clip, Math.min(MAX_CLIP_RATE, Math.max(0.15, travelled / dt / CLIP_GROUND_SPEED[clip])));
+      this.d.avatar.setClipTimeScale(clip, locomotionRate(clip, travelled / dt));
+    } else {
+      this.d.avatar.play(this.restingClip);
+    }
+
+    if (this.moving) {
       // the lookahead follows the HEADING, not the camera: strafing or backing through a doorway has to
       // open it too, and at yaw 0 the camera's forward points north whichever way the player is walking
       this.doorIntent.length = 0;
       this.doorIntent.push({ x: this.body.pos.x + Math.sin(this.heading) * DOOR_LOOKAHEAD, z: this.body.pos.z - Math.cos(this.heading) * DOOR_LOOKAHEAD });
     } else {
-      this.d.avatar.play(this.restingClip);
       this.doorIntent.length = 0;
     }
     this.camera.update(this.body.pos, dt);
     this.updateTarget();
     this.state.pos = `${this.body.pos.x.toFixed(0)}, ${this.body.pos.z.toFixed(0)}`;
     return this.body.pos;
+  }
+
+  /** PUT THE BODY BACK ON THE FLOOR NOW, with no landing frame: the avatar is being handed to somebody
+   *  else (an interaction, a seat) or the mode is ending. Idempotent, and cheap enough to call every
+   *  frame of a handoff. */
+  private landNow(): void {
+    if (!this.vertical.airborne && this.state.height === 0) return;
+    this.vertical.reset();
+    this.state.airborne = false;
+    this.state.height = 0;
+    // The one write, on the one frame: `y` alone, never the whole transform. A handoff can land on a
+    // frame where an interaction is about to own the root (and may have re-parented it into a carrier),
+    // and re-asserting x/z here would be this mode writing a position it no longer owns.
+    this.d.avatar.root.position.y = 0;
+    this.d.avatar.setClipTimeScale(CLIP_WALK, 1);
   }
 
   /** Room-scoped candidate scan. No scene traversal, no raycast: the candidate list was built once. */

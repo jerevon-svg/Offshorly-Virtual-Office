@@ -53,6 +53,7 @@ import { useOfficeRoster } from "../../../services/office/useOfficeRoster";
 import { useOfflineLineup } from "../../../services/presence/offlineLineupClient";
 import {
   getServerClockOffsetMs,
+  subscribePeerJump,
   subscribeSeatRejected,
   useMovementSnapshotReady,
   usePeerMovements,
@@ -375,6 +376,22 @@ export function Vo3dHost() {
     if (!selfPublishing) return;
     return subscribeSeatRejected(() => worldRef.current?.standUp());
   }, [selfPublishing]);
+
+  // SOMEBODY ELSE JUMPED. The last of the peer feeds, and the smallest: a transient relay, subscribed
+  // exactly as `seat_rejected` is, pushed straight at the world. Deliberately NOT a store hook — a jump
+  // lasts about 600 ms and moves one body's y, and running it through the roster's snapshot would
+  // re-render every consumer twice a jump for something React does not draw.
+  //
+  // The age is measured against the SERVER clock the movement feed already tracks, so a relay that was
+  // delayed is dropped by the world rather than drawn as a hop that is not happening. Subscribed for
+  // every session that has a socket at all, publishing or not: watching other people jump does not
+  // require being able to jump yourself.
+  useEffect(() => {
+    return subscribePeerJump((e) => {
+      const nowOnServer = Date.now() + getServerClockOffsetMs();
+      worldRef.current?.peerJumped(e.email, Math.max(0, nowOnServer - e.at));
+    });
+  }, []);
 
   // THE ACCESS PUSH. Same shape as the two writes above — React owns the read, the world owns the gate —
   // and pushed only for a session with a real identity: the standalone-equivalent case (no identity, no

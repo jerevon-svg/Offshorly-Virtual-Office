@@ -89,6 +89,14 @@ export interface Vo3dSelfMovementSink {
    *  movement, in `room`'s frame. Published as an ordinary started/arrived pair so peers replay it
    *  through the interpolation every office walk already uses. */
   movedInPlace(anchor: Vec2, from: Vec2, to: readonly Vec2[], yaw: number, room: string): void;
+  /** THIS EMPLOYEE JUST JUMPED. A transient, cosmetic relay and NOT a movement: it carries no
+   *  position, no duration and no id, it pairs with nothing, it resolves nothing in flight, and the
+   *  feed above never calls it — the world does, straight from the takeoff.
+   *
+   *  It lives on this interface anyway because this interface is the one seam between V2's world and
+   *  V1's socket, and the alternative was a second one. OPTIONAL: the standalone dev page's sink does
+   *  not implement it, and a jump there simply stays local, exactly as everything else there does. */
+  jumped?(): void;
   /** Counters for the dev readout — how many movements went out, and how many were refused because they
    *  were not expressible as a V1 position. Numbers only, never a coordinate.
    *
@@ -96,7 +104,7 @@ export interface Vo3dSelfMovementSink {
    *  to tell a planned walk, a sampled free leg, a boundary snap and a redirect apart after the fact, and
    *  a count alone cannot. It carries SHAPES — the event, the movement id, how many waypoints, how long —
    *  and no coordinates, for the same redaction reason the DOM readout is counts-only. */
-  readonly state: { started: number; arrived: number; refused: number; wire: string[]; movementId?: string | null; seated?: number; v2OnlySeat?: number };
+  readonly state: { started: number; arrived: number; refused: number; wire: string[]; movementId?: string | null; seated?: number; v2OnlySeat?: number; jumps?: number };
 }
 
 /** THE PLANNED-WALK DURATION V2 WILL ACTUALLY TAKE, in ms.

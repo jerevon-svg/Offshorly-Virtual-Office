@@ -266,7 +266,7 @@ describe("Controls", () => {
     render(<HudSettings onClose={() => {}} worldExperience />);
     openCategory("Controls");
     const pane = screen.getByTestId("settings-pane-controls");
-    for (const key of ["W A S D", "Shift", "E", "V", "Esc", "Right-click"]) {
+    for (const key of ["W A S D", "Shift", "Space", "E", "V", "Esc", "Right-click"]) {
       expect(within(pane).getByText(key)).toBeInTheDocument();
     }
   });

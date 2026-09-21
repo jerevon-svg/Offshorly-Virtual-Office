@@ -166,6 +166,22 @@ export interface SeatRejectedEvent {
   heldBy: string;
 }
 
+/** `peer_jump` — SOMEBODY JUMPED, JUST NOW. A transient relay, deliberately NOT part of the peers
+ *  store: a jump is one instant rather than a transition between two positions, so it carries no
+ *  revision, bumps nothing, persists nothing and cannot be replayed out of a snapshot. It reaches
+ *  listeners the way `seat_rejected` does and never re-renders the roster.
+ *
+ *  It says WHO and WHEN, and nothing else — no height, no position, no duration. The receiver
+ *  reconstructs the arc from its own physics (dev/vo3d/player/PlayerJump), which is what keeps the
+ *  vertical purely cosmetic: nothing a client sends can move a body horizontally, open a door or
+ *  reach a room it may not enter. */
+export interface PeerJumpEvent {
+  /** lowercased email, stamped by the server from the verified session — never client-supplied */
+  email: string;
+  /** server epoch ms the jump was relayed at, for the receiver's staleness window */
+  at: number;
+}
+
 function socketBase(): string {
   const raw = import.meta.env.VITE_CHAT_SOCKET_URL;
   if (!raw) {
@@ -178,6 +194,7 @@ function socketBase(): string {
 
 let socketInstance: Socket | null = null;
 const seatRejectedListeners = new Set<(e: SeatRejectedEvent) => void>();
+const peerJumpListeners = new Set<(e: PeerJumpEvent) => void>();
 const peers = new Map<string, PeerMovementState>();
 let peersSnapshot: PeerMovementState[] = [];
 const listeners = new Set<() => void>();
@@ -405,6 +422,16 @@ function ensureSocket(): Socket | null {
     for (const listener of seatRejectedListeners) listener(payload);
   });
 
+  socket.on("peer_jump", (payload?: PeerJumpEvent) => {
+    // The same shape check every other inbound event gets. `at` is the server's own clock and must be
+    // a real number for the receiver's staleness window to mean anything; anything else is dropped
+    // rather than passed on as a NaN nobody can compare against.
+    if (typeof payload?.email !== "string" || !payload.email) return;
+    if (typeof payload.at !== "number" || !Number.isFinite(payload.at)) return;
+    const event: PeerJumpEvent = { email: payload.email.toLowerCase(), at: payload.at };
+    for (const listener of peerJumpListeners) listener(event);
+  });
+
   socketInstance = socket;
   return socket;
 }
@@ -417,6 +444,25 @@ export function subscribeSeatRejected(listener: (e: SeatRejectedEvent) => void):
   return () => {
     seatRejectedListeners.delete(listener);
   };
+}
+
+/** Subscribe to `peer_jump`. Establishes the connection on first use, like the hooks. Returns the
+ *  unsubscribe. Deliberately a plain listener rather than a store hook: a jump lasts about 600 ms and
+ *  drives one body's transform, and pushing it through useSyncExternalStore would re-render every
+ *  consumer of the roster twice a jump for something React does not draw. */
+export function subscribePeerJump(listener: (e: PeerJumpEvent) => void): () => void {
+  ensureSocket();
+  peerJumpListeners.add(listener);
+  return () => {
+    peerJumpListeners.delete(listener);
+  };
+}
+
+/** THIS USER JUST JUMPED. Fire and forget: no id, no position, no duration, no acknowledgement — the
+ *  server stamps the identity and the time, and peers reconstruct the arc themselves. A no-op when the
+ *  connection cannot be opened (not signed in), exactly like the two emitters below. */
+export function emitJump(): void {
+  ensureSocket()?.emit("jump");
 }
 
 /** Tells the server this user has started walking a path. No-op if the
@@ -512,5 +558,6 @@ export function __resetForTests(): void {
   snapshotReceived = false;
   devEmail = null;
   seatRejectedListeners.clear();
+  peerJumpListeners.clear();
   notify();
 }

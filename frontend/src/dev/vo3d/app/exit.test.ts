@@ -203,7 +203,7 @@ describe("the world holds the exit and decides nothing about it", () => {
     // Holding the floor is not enough by itself: a body on the mat overlaps the doorway's own crossing
     // rect, which is all SlidingDoor needs to open. It is shown a body that is nowhere near it instead,
     // so the leaves close on their own timing and SlidingDoor keeps no new state.
-    expect(src).toContain("entryDoor.update(dt / 1000, exitHeld ? DOOR_SUPPRESSED : { x: bp.x, z: bp.z }, exitHeld ? NO_ROUTE : route)");
+    expect(src).toContain("entryDoor.update(dt / 1000, exitHeld ? DOOR_SUPPRESSED : { x: bp.x, z: bp.z }, exitHeld ? NO_ROUTE : route, exitHeld ? NO_BODIES : peerBodies)");
     expect(src).not.toContain("entryDoor.reset()");
   });
 

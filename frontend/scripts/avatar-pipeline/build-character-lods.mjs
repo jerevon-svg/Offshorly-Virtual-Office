@@ -483,6 +483,23 @@ async function main() {
     fs.writeFileSync(outPath, bytes);
     const triangles = await reportTriangleCount(doc);
     const clipNames = doc.getRoot().listAnimations().map((a) => a.getName());
+    // THE OUTPUT SIDE OF THE CLIP CONTRACT. The CLIP_SOURCES check above guards
+    // the INPUT — that every required clip has a source file named for it — and
+    // that is not the same statement: a clip can be dropped between the
+    // consolidated document and a tier (a transform that prunes an unreferenced
+    // animation, a simplify that strips a channel), and nothing used to notice.
+    // Four shipped packages went out without `running` and the runtime quietly
+    // walked those employees for weeks, so a missing clip now FAILS THE BUILD
+    // per tier rather than being reported at the end and read past.
+    const missingClips = REQUIRED_CLIP_NAMES.filter((n) => !clipNames.includes(n));
+    if (missingClips.length > 0) {
+      throw new Error(
+        `${tier.name} lost required clip(s) during LOD generation: ${missingClips.join(", ")}\n` +
+          `  built: ${clipNames.join(", ")}\n` +
+          `  A package without a genuine clip must not ship. Do NOT substitute an accelerated walk —\n` +
+          `  the runtime's fallback (src/dev/vo3d/avatar/gait.ts) is for LEGACY packages, not new ones.`,
+      );
+    }
     const textures = doc.getRoot().listTextures().map((t) => `${t.getMimeType()} ${(t.getSize() || []).join("x")} ${(t.getImage().byteLength / 1024).toFixed(0)}KB`);
     results.push({
       tier: tier.name,

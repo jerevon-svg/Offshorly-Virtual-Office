@@ -120,6 +120,22 @@ export class Avatar {
     this.current = name;
   }
   setClipTimeScale(name: string, scale: number): void { const a = this.actions[name]; if (a) a.timeScale = scale; }
+  /** HOLD A CLIP STILL AT ONE POSE — the whole of the procedural airborne pose (player/PlayerMode).
+   *
+   *  No shipped character package carries a jump clip (only bon-v3 even has `running`), and generating
+   *  one is asset work. What the existing rig and runtime CAN do is stop a clip on a chosen frame: the
+   *  walk cycle's contact pose is legs split and arms counter-swung, which is a readable jump silhouette
+   *  and costs nothing but the mixer call that was already there.
+   *
+   *  `phase` is 0..1 of the clip's own duration, so it is resolution-independent. A no-op for a clip the
+   *  loaded GLB does not carry, exactly like play(); the caller restores the time scale on landing. */
+  freezeClipAt(name: string, phase: number): void {
+    const a = this.actions[name];
+    if (!a) return;
+    this.play(name, 0.12);
+    a.timeScale = 0;
+    a.time = (a.getClip().duration || 0) * Math.min(1, Math.max(0, phase));
+  }
   /** does the loaded GLB carry this clip? Lets a caller fall back rather than silently freeze on the
    *  clip it was already playing (play() returns quietly for an unknown name). */
   hasClip(name: string): boolean { return this.actions[name] !== undefined; }

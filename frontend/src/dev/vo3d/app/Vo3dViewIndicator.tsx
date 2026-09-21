@@ -20,7 +20,7 @@ import styles from "./Vo3dViewIndicator.module.css";
 const VIEWS: Record<Vo3dViewMode, { title: string; hint: string }> = {
   office: { title: "OFFICE VIEW", hint: "Right-click to walk · Drag to pan · Scroll to zoom" },
   explore: { title: "3D VIEW", hint: "Drag to orbit · Scroll to zoom · Explore freely" },
-  player: { title: "PLAYER VIEW", hint: "Mouse to look · WASD to move · V to switch camera" },
+  player: { title: "PLAYER VIEW", hint: "Mouse to look · WASD to move · Space to jump · V to switch camera" },
 };
 
 /** Long enough to read two short lines, short enough that it is gone before it is furniture. */

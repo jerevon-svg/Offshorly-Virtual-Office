@@ -80,7 +80,7 @@ import { ApproachInteraction } from "../interact/Approach";
 import { LoungeSeatInteraction } from "../interact/LoungeSeat";
 import { Walkability, composeStatic } from "../nav/Walkability";
 import { clearanceLayer, worldClearances } from "../nav/clearance";
-import { SlidingDoor } from "../interact/Door";
+import { SlidingDoor, type DoorBody } from "../interact/Door";
 import { CORRIDOR_BANDS, ROOM_WORLD_SHIFT_Z, registerGroundFloor } from "../rooms/ground-floor";
 import { FACADE_Z, FRAME, v1Rooms } from "../adapters/v1Floor";
 import { planWalk, type NavResult } from "../nav/planner";
@@ -220,6 +220,13 @@ export interface Vo3dWorld {
   /** PHASE 6C — stand the signed-in employee up if seated (the backend rejected the seat claim, or any
    *  other outside reason). A no-op while standing. */
   standUp(): void;
+  /** A PEER JUMPED — draw it. Pushed in from outside like every other fact about other people:
+   *  app/Vo3dHost.tsx owns the subscription to V1's socket, the world owns the bodies. `ageMs` is how
+   *  long ago the server relayed it, so a late one can be dropped rather than drawn as a phantom hop.
+   *
+   *  Cosmetic and vertical only — it cannot move anybody, open a door or reach a room. Returns whether
+   *  a body actually took off, for the verification surface. */
+  peerJumped(email: string, ageMs?: number): boolean;
   /** PHASE 5 — V1'S ANSWER ABOUT THIS EMPLOYEE'S WORK SESSION, pushed in from outside.
    *
    *  The world never asks: app/Vo3dHost.tsx owns the read (adapters/v1Attendance over V1's own
@@ -955,6 +962,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  the exit is held — see the frame loop. */
   const DOOR_SUPPRESSED: Vec2 = { x: -1e6, z: -1e6 };
   const NO_ROUTE: readonly Vec2[] = [];
+  /** …and nobody at all, for the same suppression — see the entrance door in the frame loop. */
+  const NO_BODIES: readonly DoorBody[] = [];
   let officeAccess: OfficeAccess = "unknown";
   const accessState = { access: "unknown", gate: "closed", zone: "—", ejections: 0, sensors: "refusing (red)" };
   /** A restore that arrived while the gate was shut and the target was inside the office. Held rather than
@@ -1712,6 +1721,12 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // alone (PlayerMode simply does not move Bon while Interaction owns him, and takes over when it ends)
     yieldAvatar: () => { stopTour(); navCtl.stop(); approachCtl.cancel(); },
   });
+  // THE LOCAL TAKEOFF, STRAIGHT OUT TO THE OTHER BROWSERS. Not through SelfMovementFeed: that funnel
+  // turns continuous motion into V1 movements, and a jump is neither continuous nor a movement — it
+  // would have to be smuggled into a leg that may not exist (a standing jump publishes nothing at all)
+  // or into one that started 300 ms ago. One call, one relay, no state. The standalone dev page's sink
+  // is absent and one there stays local, exactly as everything else does.
+  playerMode.onJumped = () => selfMovement?.jumped?.();
 
   // ---- the home-desk spawn (Phase 3) ---------------------------------------------------------------
   // WHERE THE SIGNED-IN EMPLOYEE STARTS: at their own desk, when V1 knows of one. Everything above this
@@ -3684,7 +3699,16 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // was already inside the sweep band. `doorIntent` is a one-segment synthetic route pointing a stride
       // ahead of him — the SAME input SlidingDoor already consumes, so no door logic changes at all.
       const route = navCtl.path.length ? navCtl.path : playerMode.doorIntent;
-      door.update(dt / 1000, { x: bp.x, z: bp.z }, route);
+      // MULTIPLAYER DOORS. Every OTHER body the world is drawing, as the doors see them — read once per
+      // frame and handed to all of them. The doors were driven by the local employee alone, which is why
+      // the other browser could watch somebody walk through a shut leaf: their door had never been told
+      // that anybody but its own viewer existed. Nothing new is on the wire and no door state is shared
+      // — these bodies ARE V1's replicated positions and movements, already on the floor (see
+      // Coworkers.doorBodies). Order matters only in that it is the PREVIOUS frame's coworker transforms
+      // (coworkers.update runs later in the loop); one frame of lag against a door that takes ~600 ms to
+      // open is not observable.
+      const peerBodies = coworkers.doorBodies();
+      door.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);
       entryPath = route;
       // PHASE 7E — THE ENTRANCE DOORS STAY SHUT WHILE THE EXIT IS HELD. An employee standing on the mat
       // overlaps the doorway's own crossing rect, which is all SlidingDoor needs to open — so holding the
@@ -3694,13 +3718,17 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // own timing, reverses correctly if it was already opening, and SlidingDoor itself is untouched —
       // no new state, no new API, and every other door in the building behaves identically to before.
       const exitHeld = exitState.held === "yes";
-      entryDoor.update(dt / 1000, exitHeld ? DOOR_SUPPRESSED : { x: bp.x, z: bp.z }, exitHeld ? NO_ROUTE : route);
-      gamingDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
-      execDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
-      cmsDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
-      aiDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
-      devDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
-      qaDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
+      // THE SUPPRESSION IS THE WHOLE DOOR, coworkers included. Phase 7E holds the entrance SHUT while
+      // the exit gate is held, and a leaf that slid back because a peer happened to be walking past
+      // would defeat exactly the threshold that hold exists to keep closed. Every other door sees
+      // everybody.
+      entryDoor.update(dt / 1000, exitHeld ? DOOR_SUPPRESSED : { x: bp.x, z: bp.z }, exitHeld ? NO_ROUTE : route, exitHeld ? NO_BODIES : peerBodies);
+      gamingDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);
+      execDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);
+      cmsDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);
+      aiDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);
+      devDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);
+      qaDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);
       updateScanners({ x: bp.x, z: bp.z });
       caveTransition?.update(); // media readout; a no-op outside the CAVE
       notifyCaveMeetingIfChanged();
@@ -4142,6 +4170,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       /** PHASE 6A — is anybody replaying a walk right now, and how many. Counts only, like everything
        *  else on this surface; `positions()` already reports where each body IS, live, as it walks. */
       walking: () => coworkers.getStats().walking,
+      /** how many peer bodies are mid-jump right now — the two-browser check's readout */
+      airborne: () => coworkers.airborneCount,
+      /** DEV: drive a peer jump locally, without a second browser. Same entry point the relay uses. */
+      jump: (email: string) => coworkers.jump(email),
       moving: () => coworkers.moving,
       /** PHASE 6C — how many peers sit in a chair this world identified; `positions()` names the anchor. */
       seated: () => coworkers.getStats().seated,
@@ -4757,6 +4789,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // Unsubscribing drops any selection with it: the host that would have been told about it is gone.
       if (!handlers) selectedCoworker = null;
     },
+    peerJumped: (email, ageMs = 0) => coworkers.jump(email, ageMs),
     setConversationPoses: (byEmail, self) => {
       coworkers.setConversationClips(byEmail);
       selfConversationClip = self;

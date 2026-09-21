@@ -113,6 +113,19 @@ export class ReplayWalk {
     return (this.total / this.durationMs) * 1000;
   }
 
+  /** THE WAYPOINTS STILL AHEAD of where this replay currently stands — the remaining route, in the same
+   *  shape a navigation controller's `path` has, so a door can consume a peer's route through exactly
+   *  the test it consumes the local employee's (interact/Door's DoorBody).
+   *
+   *  Ahead is measured against `covered`, the distance along the route reported by the last `advance`,
+   *  so it shortens as the walk proceeds and is empty for a walk that has run out. Allocates only for a
+   *  body that is actually moving; a room of standing people never calls it. */
+  remaining(): Vec2[] {
+    const out: Vec2[] = [];
+    for (let i = 1; i < this.pts.length; i++) if (this.cum[i] > this.covered) out.push(this.pts[i]);
+    return out;
+  }
+
   /** Where the body is right now, without advancing anything. */
   get position(): Vec2 {
     return this.pointAt(this.covered);

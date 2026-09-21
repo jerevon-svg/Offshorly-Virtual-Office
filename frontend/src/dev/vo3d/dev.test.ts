@@ -377,7 +377,7 @@ describe("vo3d Dev Room — Phase 10: the V1 room reconstructed in true 3D", () 
     expect(src).toContain("for (const e of devRoomEntities()) world.addEntity(e);");
     expect(src).toContain("mirror.buildRoom(DEV_ROOM, shellOpts());");
     expect(src).toMatch(/DERIVED_ROOM_IDS = new Set\(\[[^\]]*DEV_ROOM\.id/);
-    expect(src).toContain("devDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);");
+    expect(src).toContain("devDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);");
     // THE EXECUTIVE-CHAIR BUG GUARD. A movable SeatInteraction that is never ticked animates nothing and
     // locks the avatar. One controller serves all 22 chairs, and it MUST be in the per-frame update.
     expect(src).toContain("devSeat?.update(dt / 1000);");

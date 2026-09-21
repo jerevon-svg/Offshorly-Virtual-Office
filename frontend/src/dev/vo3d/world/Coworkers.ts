@@ -60,16 +60,17 @@ import { BON_STANDING_HEIGHT, CLIP_IDLE, CLIP_RUN, CLIP_WALK, type AvatarLod, CL
 import { castLabelTexture, prototypeFor, type CastPrototype } from "../avatar/CastPrototypes";
 import { dist, FACING_YAW, stepAngle, wrapAngle, type Facing, type Vec2 } from "../core/coords";
 import { standablePointNear, type StandTest } from "../player/PlayerBody";
+import { AIRBORNE_POSE_PHASE, JUMP_DURATION_MS, PlayerJump } from "../player/PlayerJump";
 import type { Vo3dCoworker, Vo3dWalkPacing } from "../app/coworkers";
-import { PLAYER_SPRINT_SPEED, PLAYER_WALK_SPEED } from "../player/PlayerMode";
+import { DOOR_LOOKAHEAD, PLAYER_SPRINT_SPEED, PLAYER_WALK_SPEED } from "../player/PlayerMode";
+import { locomotionClip, locomotionRate } from "../avatar/gait";
+import type { DoorBody } from "../interact/Door";
 import { ReplayWalk } from "./coworkerWalk";
 import { deskSeatedRootForRig, sceneRig, seatedRootForRig, type SeatedRig } from "../interact/seatContact";
 
 /** How fast a coworker turns toward their direction of travel, rad/s. The navigation controller's rate,
  *  which is also what devtools/Crowd.ts turns its bodies at — one figure for every walking body in V2. */
 const TURN_RATE = 7;
-/** Ceiling on locomotion playback rate — a spike guard for a long frame, not a look choice. */
-const MAX_CLIP_RATE = 2.5;
 /** Below this, a correction is not worth animating: the body is already there. */
 const RECONCILE_EPSILON = 0.5;
 /** THE WIDEST CORRECTION THAT IS GLIDED RATHER THAN SNAPPED, in units.
@@ -101,6 +102,13 @@ const arrivals: ArrivalDecision[] = [];
 /** Read the trace. A copy, so a console cannot mutate the world's own buffer. */
 export const facingTrace = (): ArrivalDecision[] => arrivals.map((d) => ({ ...d }));
 
+/** HOW LATE A RELAYED JUMP MAY BE AND STILL BE WORTH DRAWING, ms. One whole arc: any later and the
+ *  jump it describes has already finished everywhere else. See Coworkers.jump. */
+const JUMP_STALE_MS = JUMP_DURATION_MS;
+
+/** A standing body's route: shared, so a room of stationary people allocates nothing per frame. */
+const EMPTY_ROUTE: readonly Vec2[] = [];
+
 /** Below this, two yaws are the same yaw. */
 const YAW_EPSILON = 1e-3;
 /** HOW LONG A LEG THAT RAN OUT HOLDS ITS POSE before the body is taken to have stopped, ms.
@@ -113,9 +121,9 @@ const YAW_EPSILON = 1e-3;
  *  realistic hop, short enough that a real stop reads as a stop. The arrival, when it lands, is still what
  *  turns the body; only the CLIP decision waits. */
 const LEG_GRACE_MS = 200;
-/** The ground speed each locomotion clip was authored for, units/s — the same figures player/PlayerMode
- *  uses for the signed-in employee's own body, so a peer's feet land where the local's do. */
-const CLIP_GROUND_SPEED: Record<string, number> = { [CLIP_WALK]: 30, [CLIP_RUN]: 48 };
+// THE CLIP CHOICE AND ITS PLAYBACK RATE are avatar/gait's, which player/PlayerMode reads too — a peer's
+// feet land where the local body's do because it is literally the same function, including the "this
+// package ships no run clip" fallback and the rate that keeps it from skating.
 /** A movement whose MEAN speed is at least this runs; below it walks. Half way between the two speeds the
  *  player can move at, so a walk at 70 is a walk and a sprint at 100 is a run, with margin either side. */
 const RUN_FROM_SPEED = (PLAYER_WALK_SPEED + PLAYER_SPRINT_SPEED) / 2;
@@ -352,6 +360,21 @@ class CoworkerBody {
   /** Which locomotion clip this body's current movement plays, chosen once per movement by its mean
    *  speed (see beginWalk). */
   private locomotion: string = CLIP_WALK;
+  /** THE DIRECTION THIS BODY WAS LAST SEEN TRAVELLING, radians, or null for a body that has not moved
+   *  since it was placed. Kept for the door probe alone — a peer whose leg has run out (LEG_GRACE_MS) or
+   *  whose replay is between waypoints still has a heading, and a door that is told nothing about it
+   *  closes in their face. Written from the replay's own step heading, never from `yaw`, which lags it
+   *  by the turn rate. */
+  private travelHeading: number | null = null;
+  /** THE JUMP THIS BODY IS IN THE MIDDLE OF — the SAME class the local player's own body uses
+   *  (player/PlayerJump), given the same constants, so the arc a peer draws is the arc the jumper
+   *  saw. Purely cosmetic and purely vertical: it writes `root.position.y` and nothing else, so a
+   *  coworker's x/z stays exactly what the replicated movement said it was.
+   *
+   *  Nothing about it is persistent. It is reset by every way a body can stop being a standing body —
+   *  sitting, standing up, a walk being dropped, disposal — and it terminates on its own besides, so
+   *  there is no path that leaves somebody hanging in the air. */
+  private readonly vertical = new PlayerJump();
   /** PHASE 6C — the seat anchor this body is seated in, or null while standing/walking. */
   seatedIn: string | null = null;
   /** The clips-and-scale reading the seated pose is computed from — the shared prototype's, which is the
@@ -380,6 +403,38 @@ class CoworkerBody {
     // point, every skeleton hits its keyframe boundaries on the same frame.
     if (idle) idle.time = phase * (idle.getClip().duration || 1);
     this.addLabel(name);
+  }
+
+  /** SOMEBODY RELAYED A JUMP FOR THIS BODY. Refused — changing nothing — while it is already in the
+   *  air (a duplicate relay, a retry) or seated, which is the whole of the duplicate rule: the same
+   *  no-double-jump test the local body applies, applied here. Returns whether it took. */
+  jump(): boolean {
+    if (this.seatedIn !== null) return false;
+    return this.vertical.start();
+  }
+
+  /** Is this body in the air? Read by the dev surface and the tests. */
+  get airborne(): boolean { return this.vertical.airborne; }
+
+  /** Back on the floor NOW, with no landing frame, and the frozen pose released with it. Called from
+   *  every transition out of "standing body" — see `vertical`. */
+  private land(): void {
+    if (!this.vertical.airborne && this.root.position.y === 0) return;
+    this.vertical.reset();
+    this.root.position.y = 0;
+    const walk = this.actions[CLIP_WALK];
+    if (walk) walk.timeScale = 1;
+  }
+
+  /** HOLD A CLIP STILL AT ONE POSE — the airborne pose, and Avatar.freezeClipAt's twin for a cloned
+   *  body. See player/PlayerJump's AIRBORNE_POSE_PHASE for why the walk cycle stands in for a jump
+   *  clip no package ships. A no-op for a rig without the clip, exactly like `play`. */
+  private freezeAt(name: string, phase: number): void {
+    const a = this.actions[name];
+    if (!a) return;
+    this.play(name, 0.12);
+    a.timeScale = 0;
+    a.time = (a.getClip().duration || 0) * Math.min(1, Math.max(0, phase));
   }
 
   /** Crossfade to a clip, byte-for-byte the switch Avatar.play and Crowd's member use. */
@@ -424,6 +479,32 @@ class CoworkerBody {
   /** Which way this body is looking, radians. Read-only, and read by the dev surface alone. */
   get facingYaw(): number { return this.yaw; }
   get pos(): Vec2 { return { x: this.root.position.x, z: this.root.position.z }; }
+
+  /** WHAT THE AUTOMATIC DOORS SEE OF THIS BODY: where it stands, and the route it is about to take.
+   *
+   *  Exactly the pair the local employee is judged by (interact/Door's DoorBody), assembled from what
+   *  this body already knows, in the order of how much it knows:
+   *
+   *    replaying a route   — the waypoints still ahead of it. The best answer there is, and the same
+   *                          shape a local planned walk hands the door, so a peer opens a door at the
+   *                          same distance the walker does on their own screen.
+   *    moving, no route left — one segment a stride along the travel heading. A free-movement leg only
+   *                          describes the next 400 ms, and it runs out a network hop before the next
+   *                          one lands; without this the door would shut in the gap. Deliberately
+   *                          player/PlayerMode's own DOOR_LOOKAHEAD, for the same reason and by the same
+   *                          number.
+   *    standing            — no route at all. A body merely stood near a door does not open it; one
+   *                          stood IN the doorway still holds it, because that is a position test
+   *                          (SlidingDoor.bodyInCrossing) and not a route one.
+   */
+  doorBody(): DoorBody {
+    const ahead = this.replay?.remaining();
+    if (ahead && ahead.length > 0) return { pos: this.pos, path: ahead };
+    const h = this.travelHeading;
+    if (h === null) return { pos: this.pos, path: EMPTY_ROUTE };
+    const p = this.pos;
+    return { pos: p, path: [{ x: p.x + Math.sin(h) * DOOR_LOOKAHEAD, z: p.z - Math.cos(h) * DOOR_LOOKAHEAD }] };
+  }
   /** The movement this body has been given, running or finished, so a re-push of the same one is
    *  recognised and ignored. See `playedId`. */
   get movementId(): string | null { return this.playedId; }
@@ -445,7 +526,7 @@ class CoworkerBody {
     this.coastMs = 0;
     // The clip is a property of the MOVEMENT — its mean speed — chosen once, so an eased walk does not
     // break into a run at the peak of its own curve. A prototype without a run clip walks faster instead.
-    this.locomotion = this.replay.meanSpeed >= RUN_FROM_SPEED && this.actions[CLIP_RUN] ? CLIP_RUN : CLIP_WALK;
+    this.locomotion = locomotionClip(this.replay.meanSpeed >= RUN_FROM_SPEED, this.actions[CLIP_RUN] !== undefined);
     const at = this.replay.position;
     this.root.position.set(at.x, 0, at.z);
   }
@@ -460,6 +541,7 @@ class CoworkerBody {
       ? deskSeatedRootForRig(this.rig, pose.contact, pose.yaw)
       : seatedRootForRig(this.rig, pose.contact, pose.yaw, pose.sink ?? 0);
     const same = this.seatedIn === anchor && this.root.position.equals(root) && this.yaw === pose.yaw;
+    this.land(); // a body taken into a chair mid-jump is in the chair, not above it
     this.replay = null;
     this.playedId = null;
     this.settleYaw = null;
@@ -479,6 +561,7 @@ class CoworkerBody {
   standUp(): void {
     if (this.seatedIn === null) return;
     this.seatedIn = null;
+    this.land();
     this.root.position.y = 0;
     this.play(this.restingClip);
   }
@@ -591,26 +674,33 @@ class CoworkerBody {
       return false;
     }
     let moved = false;
+    // THE VERTICAL HALF, stepped before the horizontal one and written after it. Everything below
+    // keeps setting the root's x/z (and a y of 0) exactly as it did; the single write at the bottom is
+    // what puts this body back in the air afterwards, so no branch here has to know a jump exists.
+    const landed = this.vertical.update(dt);
+    const airborne = this.vertical.airborne;
+    if (landed) {
+      // Landing restores the frozen clip's rate ONCE, before the branches below choose what to play —
+      // the locomotion branch overwrites it anyway, the resting branch does not.
+      const walk = this.actions[CLIP_WALK];
+      if (walk) walk.timeScale = 1;
+    }
     if (this.replay) {
       const step = this.replay.advance(dt * 1000);
       moved = step.travelled > 1e-6;
       this.root.position.set(step.pos.x, 0, step.pos.z);
       if (step.heading !== null) {
+        this.travelHeading = step.heading;
         this.yaw = stepAngle(this.yaw, step.heading, TURN_RATE * dt);
         this.root.rotation.set(0, this.yaw, 0);
         moved = true;
       }
-      if (moved) {
+      if (moved && !airborne) {
         this.play(this.locomotion);
         const action = this.actions[this.locomotion];
         // Rate from the ground ACTUALLY covered this frame, against the speed THIS clip was authored for,
         // so a replay that is slower or faster than the clip still lands its feet instead of skating.
-        if (action) {
-          action.timeScale = Math.min(
-            MAX_CLIP_RATE,
-            Math.max(0.15, step.travelled / Math.max(dt, 1e-4) / CLIP_GROUND_SPEED[this.locomotion]),
-          );
-        }
+        if (action) action.timeScale = locomotionRate(this.locomotion, step.travelled / Math.max(dt, 1e-4));
       }
       if (this.replay.done) {
         // The route has run out. A reconciliation glide already knew its yaw; a peer walk waits for the
@@ -629,19 +719,32 @@ class CoworkerBody {
           this.coastMs = LEG_GRACE_MS;
           const action = this.actions[this.locomotion];
           if (action) action.timeScale = 0;
-        } else this.play(this.restingClip);
+        } else if (!airborne) this.play(this.restingClip);
       }
     } else if (this.coastMs > 0) {
       this.coastMs -= dt * 1000;
       if (this.coastMs <= 0) {
         this.coastMs = 0;
-        this.play(this.restingClip);
+        this.travelHeading = null; // the leg really was a stop; stop telling doors to expect them
+        if (!airborne) this.play(this.restingClip);
       }
     } else {
+      this.travelHeading = null;
       // STANDING STILL. `restingClip`, not CLIP_IDLE: this branch runs every frame for every stationary
       // body, so leaving it hard-coded silently overwrote the conversation pose one frame after it was
       // applied. `play` is guarded on the current clip, so re-asserting it per frame costs nothing.
-      this.play(this.restingClip);
+      if (!airborne) this.play(this.restingClip);
+    }
+    if (airborne) {
+      // IN THE AIR, over whatever the branches above decided the body was doing horizontally — the
+      // walk replay keeps advancing x/z underneath, which is what makes a jump mid-walk read as a
+      // jump mid-walk rather than a hop from a standstill.
+      this.freezeAt(CLIP_WALK, AIRBORNE_POSE_PHASE);
+      this.root.position.y = this.vertical.height;
+      moved = true;
+    } else if (this.root.position.y !== 0) {
+      this.root.position.y = 0; // the landing frame, and any branch above that wrote a y of its own
+      moved = true;
     }
     if (this.targetYaw !== null) {
       // The last beat of a walk: onto the yaw the arrival asked for, at the rate the body turns.
@@ -658,6 +761,7 @@ class CoworkerBody {
 
   /** Stop replaying without moving the body — for a walk whose person left the roster mid-stride. */
   stopWalk(): void {
+    this.land();
     this.replay = null;
     this.playedId = null;
     this.settleYaw = null;
@@ -670,6 +774,7 @@ class CoworkerBody {
    *  would blank every other body of the same character. Only what this body owns goes: its mixer's
    *  bindings, its nameplate canvas, and its own node. */
   dispose(): void {
+    this.land();
     if (this.label) {
       const m = this.label.material;
       m.map?.dispose();
@@ -719,6 +824,9 @@ export type CoworkerPosition = {
   clip: string;
   /** PHASE 6C — the seat anchor this body is seated in, or null */
   seat: string | null;
+  /** is this body in the air right now (a relayed jump) — for telling a replicated jump from a
+   *  dropped one across two browsers */
+  airborne: boolean;
 };
 
 /** PHASE 6C — WHERE A SEAT ANCHOR PUTS A BODY, answered by the world (which owns the chair views).
@@ -790,6 +898,8 @@ export class Coworkers {
   private labelsVisible = true;
   /** The latest conversation poses, kept so a body cloned afterwards is created already in one. */
   private conversationClips = new Map<string, string | null>();
+  /** Scratch for doorBodies() — see there. */
+  private readonly doorProbe: DoorBody[] = [];
 
   constructor(deps: CoworkersDeps) {
     this.deps = deps;
@@ -815,6 +925,7 @@ export class Coworkers {
         clip: body.clip,
         source: this.wanted.get(email)?.coworker.posSource ?? "desk",
         seat: body.seatedIn,
+        airborne: body.airborne,
       });
     }
     return out.sort((a, b) => a.name.localeCompare(b.name));
@@ -1169,6 +1280,55 @@ export class Coworkers {
     let moved = false;
     for (const body of this.bodies.values()) if (body.update(dt)) moved = true;
     return moved;
+  }
+
+  /** SOMEBODY JUMPED — start the arc on their body, if this world is drawing one for them.
+   *
+   *  `ageMs` is how long ago the server relayed it, from the server clock the movement feed already
+   *  tracks. A relay older than one whole jump has already finished on every other screen, and
+   *  starting it now would draw a hop that is not happening — so it is dropped rather than played
+   *  late. That is the entire staleness rule, and it is also why a reconnect cannot resurrect a jump:
+   *  nothing replays these, and a snapshot carries none.
+   *
+   *  Returns true when a body actually took off — false for somebody this world has no body for (not
+   *  rendered, still loading, or off the roster), for a stale relay, for a duplicate while they are
+   *  already in the air, and for a seated body. */
+  jump(email: string, ageMs = 0): boolean {
+    if (ageMs > JUMP_STALE_MS) return false;
+    const body = this.bodies.get(email.trim().toLowerCase());
+    if (!body) return false;
+    const took = body.jump();
+    if (took) this.deps.onChanged?.("position");
+    return took;
+  }
+
+  /** How many bodies are in the air right now. A count, never who — the same redaction the rest of
+   *  the stats keep. */
+  get airborneCount(): number {
+    let n = 0;
+    for (const body of this.bodies.values()) if (body.airborne) n++;
+    return n;
+  }
+
+  /** EVERY RENDERED BODY AS A DOOR SEES IT — the multiplayer half of the automatic doors.
+   *
+   *  The doors are driven from the bodies the world is ALREADY drawing, which are already derived from
+   *  V1's replicated positions and movements. Nothing new is on the wire, no door state is shared, and
+   *  no employee is tracked: a door asks, every frame, "who is standing in me or heading through me",
+   *  and this is the list it asks about. That is also why recovery is free — somebody who disconnects,
+   *  teleports, sits down or leaves the roster simply stops appearing here, and the door closes on its
+   *  ordinary timing with nothing to clean up.
+   *
+   *  The returned array is REUSED between calls: it is consumed synchronously by the frame's door
+   *  updates and never retained, and a walking office would otherwise allocate one per frame.
+   *
+   *  Hidden bodies (`group.visible` false) are nobody: if the world is not drawing them, a door reacting
+   *  to them would be reacting to something the viewer cannot see. */
+  doorBodies(): readonly DoorBody[] {
+    this.doorProbe.length = 0;
+    if (!this.group.visible) return this.doorProbe;
+    for (const body of this.bodies.values()) this.doorProbe.push(body.doorBody());
+    return this.doorProbe;
   }
 
   dispose(): void {

@@ -38,6 +38,7 @@ import { makeMovementId } from "../../../components/OfficeMap/useSelfMovement";
 import {
   emitWalkArrived,
   emitWalkStarted,
+  emitJump,
   type PeerMovementState,
   type Pt,
 } from "../../../services/presence/movementSync";
@@ -101,7 +102,7 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
   const identity = resolveVo3dIdentity();
   if (!identity) return null;
   const box = selfSpriteBox(identity.avatarId);
-  const state = { started: 0, arrived: 0, refused: 0, wire: [] as string[], movementId: null as string | null, seated: 0, v2OnlySeat: 0 };
+  const state = { started: 0, arrived: 0, refused: 0, wire: [] as string[], movementId: null as string | null, seated: 0, v2OnlySeat: 0, jumps: 0 };
   /** Append to the bounded wire log. SHAPES ONLY — never a position: this array is read from the dev
    *  console and the verification harness, and one employee's coordinates do not belong in either. */
   const note = (line: string): void => {
@@ -116,6 +117,15 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
 
   return {
     state,
+    /** THE ONE WRITE ON THIS ROUTE THAT IS NOT A MOVEMENT. No position leaves the browser and nothing
+     *  is persisted: the server stamps the identity and the time and relays it, peers draw an arc from
+     *  their own physics, and the employee's V1 position is untouched throughout. Deliberately NOT run
+     *  through isUsablePosition — there is no position in it to judge. */
+    jumped() {
+      state.jumps = (state.jumps ?? 0) + 1;
+      note("jump");
+      emitJump();
+    },
     started(origin, path, durationMs, pacing) {
       const originTopLeft = toTopLeft(origin, box);
       const pathTopLeft = path.map((p) => toTopLeft(p, box));

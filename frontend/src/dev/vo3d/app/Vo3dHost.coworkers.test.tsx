@@ -88,6 +88,14 @@ vi.mock("../../../services/presence/movementSync", async () => {
     },
     useMovementSnapshotReady: () => snapshotReady,
     subscribeSeatRejected: () => () => {},
+    // The jump relay. Counted alongside the movement subscription, because the unmount tests are
+    // about the host leaving NOTHING attached and a new subscription that leaked would pass silently.
+    subscribePeerJump: () => {
+      movementSubscribers.jumps += 1;
+      return () => {
+        movementSubscribers.jumps -= 1;
+      };
+    },
     // Phase 6A: the host reads V1's last-snapshot clock offset to say how far into a walk a peer is.
     // Zero here, so a test's `startedAt` is measured against the test's own clock.
     getServerClockOffsetMs: () => 0,
@@ -96,7 +104,7 @@ vi.mock("../../../services/presence/movementSync", async () => {
 
 let peerMovements: PeerMovementState[] = [];
 let snapshotReady = false;
-const movementSubscribers = { count: 0 };
+const movementSubscribers = { count: 0, jumps: 0 };
 
 /** One arrived/stable entry, as V1's store holds it. Positions are V1 sprite TOP-LEFT. */
 function at(email: string, x: number, y: number, facing: PeerMovementState["stable"]["facing"] = "front"): PeerMovementState {
@@ -125,6 +133,7 @@ beforeEach(() => {
   rosterError = null;
   rosterSubscribers.count = 0;
   movementSubscribers.count = 0;
+  movementSubscribers.jumps = 0;
   peerMovements = [];
   snapshotReady = false;
   resetCurrentUserForTests();
@@ -227,8 +236,10 @@ describe("Vo3dHost coworkers (Phase 4A)", () => {
       </StrictMode>,
     );
     await waitFor(() => expect(movementSubscribers.count).toBeGreaterThan(0), { timeout: WORLD_IMPORT_TIMEOUT });
+    expect(movementSubscribers.jumps).toBeGreaterThan(0);
     view.unmount();
     expect(movementSubscribers.count).toBe(0);
+    expect(movementSubscribers.jumps).toBe(0);
   }, TEST_TIMEOUT);
 
   it("does not push a roster into a world that has already been disposed", async () => {
