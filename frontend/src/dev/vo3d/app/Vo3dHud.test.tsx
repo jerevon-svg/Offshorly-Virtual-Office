@@ -883,3 +883,61 @@ describe("notification destinations", () => {
     expect(onOpenConversation).not.toHaveBeenCalled();
   });
 });
+
+// ---- V1 PARITY: A CHECKED-OUT EMPLOYEE HAS NO DOCK -------------------------------------------------
+// V1's office suppresses the whole HUD until a confirmed check-in; V2 was handing a checked-out employee
+// every tool in the building. What these assert is that the suppression rides V1'S OWN answer, that it
+// HIDES rather than unmounts (so nothing a panel, a conversation or the bell is holding is thrown away
+// by a checkout), and that it is CONFIRMED-ONLY — an unknown answer takes nothing away.
+describe("the checked-out dock", () => {
+  const unknownAttendance = (): V1Attendance => ({
+    access: "unknown",
+    record: null,
+    apply: vi.fn(),
+    refresh: vi.fn(),
+  });
+
+  it("hides the dock — without unmounting it — when V1 says CHECKED_OUT", async () => {
+    mount(attendanceOf("CHECKED_OUT", null));
+    const dock = await screen.findByTestId("hud-dock");
+    expect(dock.className).toMatch(/hidden/i);
+    // HIDDEN, never unmounted: the tools and their state are still there behind it.
+    expect(dock.isConnected).toBe(true);
+  });
+
+  it("takes the Toucan summon with it, on the same one rule", async () => {
+    mount(attendanceOf("CHECKED_OUT", null));
+    await screen.findByTestId("hud-dock");
+    expect(screen.queryByTestId("vo3d-toucan-summon")).toBeNull();
+  });
+
+  it("keeps the dock while V1's answer is still UNKNOWN — only a confirmed CHECKED_OUT hides it", async () => {
+    mount(unknownAttendance());
+    const dock = await screen.findByTestId("hud-dock");
+    expect(dock.className).not.toMatch(/hidden/i);
+  });
+
+  it("brings the SAME dock back the moment attendance reads CHECKED_IN, with no reload and no remount", async () => {
+    const { rerender } = mount(attendanceOf("CHECKED_OUT", null));
+    const before = await screen.findByTestId("hud-dock");
+    expect(before.className).toMatch(/hidden/i);
+
+    rerender(hud(attendanceOf("CHECKED_IN", new Date(Date.now() - 90 * 60_000).toISOString())));
+
+    const after = await screen.findByTestId("hud-dock");
+    expect(after.className).not.toMatch(/hidden/i);
+    // THE SAME NODE — the proof that nothing below it was torn down and rebuilt across the transition.
+    expect(after).toBe(before);
+    expect(screen.getByTestId("vo3d-toucan-summon")).toBeTruthy();
+  });
+
+  it("still hides the dock for the pointer lock and for an open tool, checked in", async () => {
+    mount();
+    const dock = await screen.findByTestId("hud-dock");
+    expect(dock.className).not.toMatch(/hidden/i);
+    lockPointer(true);
+    await waitFor(() => expect(screen.getByTestId("hud-dock").className).toMatch(/hidden/i));
+    lockPointer(false);
+    await waitFor(() => expect(screen.getByTestId("hud-dock").className).not.toMatch(/hidden/i));
+  });
+});

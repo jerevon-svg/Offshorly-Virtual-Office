@@ -318,7 +318,26 @@ export function Vo3dHud({
     if (officeToolOpen && isPointerLocked()) document.exitPointerLock();
   }, [officeToolOpen]);
 
-  const dockVisible = !(pointerLocked || officeToolOpen);
+  // V1 PARITY — A CHECKED-OUT EMPLOYEE HAS NO DOCK. V1's office suppresses the whole HUD until a
+  // confirmed check-in (components/OfficeMap/OfficeMap.tsx); V2 was showing every tool — chat, Tasks,
+  // Rewards, Boards, the Map — to somebody whose work session is over. This joins the ONE visibility
+  // rule above rather than adding a second mechanism, so it is `hidden` and not an unmount: every
+  // panel, conversation and notification subscription survives the checkout and is exactly where it
+  // was when the next check-in brings the dock back, with no reload.
+  //
+  // THE AUTHORITY IS V1'S, AND ONLY ITS CONFIRMED ANSWER COUNTS. `attendance.access` is the same value
+  // app/access.ts gates the working office with (adapters/v1Attendance maps CHECKED_OUT -> "denied"),
+  // so there is no second attendance flag here. `unknown` — the first read still in flight, or a failed
+  // one — deliberately KEEPS the dock: this file follows the same rule the boundary does, where an
+  // unknown answer never takes anything away from somebody who may well be checked in. Only "denied",
+  // which is V1 saying CHECKED_OUT, hides it.
+  //
+  // WHAT THIS DOES NOT TOUCH: the Reception kiosk and its Check In row (app/Vo3dKioskCard.tsx, anchored
+  // world cards the overlay renders), movement, the access gates and the world boundary. A checked-out
+  // employee still walks Reception, the street and the AI Lab exactly as before — they simply carry no
+  // office dock while they do it.
+  const checkedOut = attendance.access === "denied";
+  const dockVisible = !(pointerLocked || officeToolOpen || checkedOut);
   useEffect(() => {
     const root = document.documentElement;
     root.style.setProperty("--vo3d-dock-clearance", dockVisible ? "var(--vo-dock-clearance, 104px)" : "16px");
