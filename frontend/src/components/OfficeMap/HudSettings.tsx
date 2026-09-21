@@ -88,12 +88,11 @@ export interface HudSettingsProps {
    *  checkout debug panel, the 3D inspection rig's switch — passed through as the EXISTING components
    *  with their existing handlers (see OfficeMap.tsx, Vo3dHud.tsx). Undefined in production builds. */
   devTools?: ReactNode;
-  /** TEMPORARY — PRESENTATION ENVIRONMENT SWITCHER (demo only, DEV builds only). A caller-supplied
-   *  section given its own category, so the time-of-day and weather choices are reachable WITHOUT
-   *  opening the Developer inspection rig and everything unrelated in it. Undefined everywhere else
-   *  (V1's office passes nothing), and the category does not render at all when it is.
-   *  TO REMOVE: delete this prop, the "environment" entry in CATEGORY_ORDER, its case in the category
-   *  filter and its pane below — four short edits, all marked TEMPORARY. */
+  /** ENVIRONMENT — the employee's time-of-day and weather choice for the 3D office, supplied by the
+   *  caller as its own section so this panel stays the layout and owns none of it (Vo3dHud.tsx passes
+   *  dev/vo3d/app/Vo3dEnvironmentPanel). Undefined where there is no 3D world to honour it — V1's 2D
+   *  office passes nothing — and the category then does not render at all, per this panel's oldest
+   *  rule that a category with nothing real in it does not exist. */
   environment?: ReactNode;
 }
 
@@ -115,8 +114,8 @@ const CATEGORY_ORDER: readonly Category[] = [
   { id: "graphics", label: "Graphics", hint: "How much work each frame spends" },
   { id: "audio", label: "Audio", hint: "Music and office ambience" },  // narrowed below without a world
   { id: "privacy", label: "Privacy", hint: "What you share with coworkers" },
-  // TEMPORARY — presentation environment switcher. Sits directly above Developer because that is where
-  // these two choices live today; it is the same controls without the rest of the rig.
+  // Sits directly above Developer: it is the last of the employee-facing categories, and the two
+  // choices in it are the ones the inspection rig also exposes — as a session override, not a setting.
   { id: "environment", label: "Environment", hint: "Time of day and weather" },
   { id: "developer", label: "Developer", hint: "Testing and inspection tools" },
 ];
@@ -142,7 +141,7 @@ export function HudSettings({
           case "interface":
             return worldExperience;
           case "environment":
-            return Boolean(environment); // TEMPORARY — see the prop
+            return Boolean(environment); // only where a 3D world is listening — see the prop
           case "developer":
             return hasDeveloper;
           default:
@@ -315,7 +314,7 @@ export function HudSettings({
 
             {active === "privacy" && <HudPrivacySettings />}
 
-            {/* TEMPORARY — presentation environment switcher. The section itself is the caller's. */}
+            {/* The section itself is the caller's; this panel only gives it a home. */}
             {active === "environment" && environment}
 
             {active === "developer" && (

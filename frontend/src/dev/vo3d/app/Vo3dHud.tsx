@@ -77,7 +77,6 @@ import { Vo3dCaveMeeting } from "./Vo3dCaveMeeting";
 import { isPointerLocked, isTypingTarget } from "./keyGuard";
 import type { ToucanSummonState } from "../../../components/OfficeMap/toucanSummon";
 import { HudSettings } from "../../../components/OfficeMap/HudSettings";
-// TEMPORARY — presentation environment switcher (demo only). Delete with the `environment` prop below.
 import { Vo3dEnvironmentPanel } from "./Vo3dEnvironmentPanel";
 import { PlayerHud } from "../../../components/OfficeMap/PlayerHud";
 import { StatusPicker } from "../../../components/OfficeMap/StatusPicker";
@@ -686,11 +685,11 @@ export function Vo3dHud({
           // PlayerCamera, Vo3dOverheads and world.ts all read the same preference store. V1's 2D office
           // passes nothing and is offered none of them.
           worldExperience
-          // TEMPORARY — PRESENTATION ENVIRONMENT SWITCHER (demo only). The SAME day/sunset/night and
-          // weather controls the dev GUI has, in their own Settings category, so a presentation never has
-          // to open the inspection rig. DEV builds only, adds no state, persists nothing, and the rig
-          // itself is untouched and still there. See app/Vo3dEnvironmentPanel.tsx for how to remove it.
-          environment={import.meta.env.DEV ? <Vo3dEnvironmentPanel worldRef={worldRef} /> : undefined}
+          // SETTINGS -> ENVIRONMENT. The employee's own time-of-day and weather choice, offered wherever
+          // there is a 3D world to honour it (V1's 2D office passes nothing and is offered no category).
+          // The panel owns no state: it reads and writes services/settings/environmentPreferences, which
+          // world.ts subscribes to — so this call site needs no world reference and no wiring.
+          environment={<Vo3dEnvironmentPanel />}
           // PART 6 — the developer inspection rig lives behind V1's OWN Settings > Developer section,
           // which is where V1 already relocated its day/night scrubber and checkout debug panel. DEV
           // builds only: HudSettings renders this slot in its own DEV-gated section, so production never

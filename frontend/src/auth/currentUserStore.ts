@@ -62,6 +62,13 @@ function subscribe(listener: () => void): () => void {
   };
 }
 
+// The same subscription for the non-React readers. Module-level stores that key anything PER EMPLOYEE
+// (services/settings/environmentPreferences) are imported long before /auth/me lands, so they need to be
+// told when the identity arrives rather than capturing "nobody" at import time.
+export function subscribeCurrentUser(listener: () => void): () => void {
+  return subscribe(listener);
+}
+
 // Re-renders subscribers once the gate's /auth/me response lands. Returns
 // null on the first paint — callers must handle that, since the identity is
 // genuinely not known yet at that point.

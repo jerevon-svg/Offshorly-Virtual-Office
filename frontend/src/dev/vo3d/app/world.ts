@@ -5,6 +5,10 @@ import {
   getExperiencePreferences,
   subscribeExperience,
 } from "../../../services/settings/experiencePreferences";
+import {
+  getEnvironmentPreferences,
+  subscribeEnvironmentPreferences,
+} from "../../../services/settings/environmentPreferences";
 import { WorldState } from "../world/WorldState";
 import { DESIGN_ROOM, DESIGN_SOLIDS, CHAIR_4_ID, DOOR_ID, HERO_PLANT_ID, SHELL as DESIGN_SHELL, designRoomEntities } from "../rooms/design-room";
 import { RECEPTION_ROOM, COUNTER_INTERACTION_ID, FACADE as FACADE_SPEC, ENTRY_DOOR_EAST_ID, ENTRY_DOOR_WEST_ID, ENTRY_SCANNER_ID, ENTRY_ZONE, GATE, GATE_SCANNER_IDS, GATE_ZONES, KIOSK_INTERACTION_ID, KIOSK_SCANNER_ID, KIOSK_ZONE, LOUNGE_SEAT_IDS, RECEPTION_ROOM_ID, receptionEntities } from "../rooms/reception";
@@ -192,16 +196,6 @@ export interface Vo3dCaveMeeting {
  *  the canvas it was given has had its WebGL context force-lost and CANNOT be reused (see
  *  render/Renderer.dispose). A remount must be given a FRESH canvas element. */
 
-/** TEMPORARY — see Vo3dWorld.presentationEnv. The two dev-GUI dropdowns, as a plain read/write pair. */
-export interface Vo3dPresentationEnv {
-  /** The time-of-day override in force. "auto" follows V1's real Manila clock, exactly as the 2D office does. */
-  time(): EnvTimeMode;
-  setTime(mode: EnvTimeMode): void;
-  /** The weather override in force. "auto" is whatever the configured provider reports. */
-  weather(): WeatherMode;
-  setWeather(mode: WeatherMode): void;
-}
-
 export interface Vo3dWorld {
   dispose(): void;
   /** PHASE 4A — the roster's coworkers, pushed in from outside.
@@ -307,24 +301,6 @@ export interface Vo3dWorld {
    *  THE WORLD DECIDES NOTHING HERE and learns nothing about any conversation: the payload is a bare
    *  boolean per email — see services/presence/globalChatActivityClient.ts. */
   setGlobalChatActive(emails: ReadonlySet<string>, self: boolean): void;
-  /** ──────────────────────────────────────────────────────────────────────────────────────────────
-   *  TEMPORARY — PRESENTATION ENVIRONMENT SWITCHER (demo only, DEV builds only).
-   *
-   *  A read/write VIEW of the two dev-GUI dropdowns that already exist ("Environment (day / sunset /
-   *  night)" and "Weather (independent of time of day)"), so a presentation surface can offer those two
-   *  choices WITHOUT opening the inspection rig full of unrelated technical controls.
-   *
-   *  IT ADDS NO STATE AND NO LOGIC. Each setter is the dev GUI's own onChange body: the same
-   *  `timeOfDay.mode` / `weather.mode`, the same `applyEnvPhase(true)` re-grade, and the same `refresh()`
-   *  that keeps the lil-gui rows showing the truth — so the two surfaces can never disagree and neither
-   *  is authoritative over the other. Nothing here rebuilds the world, touches the avatar, the camera,
-   *  attendance or any preference.
-   *
-   *  TO REMOVE AFTER THE DEMO: delete this member, its implementation in the returned object, the
-   *  `environment` prop at the Vo3dHud call site, app/Vo3dEnvironmentPanel.tsx and HudSettings's
-   *  `environment` prop. The dev GUI is untouched by all of it.
-   *  ────────────────────────────────────────────────────────────────────────────────────────────── */
-  readonly presentationEnv: Vo3dPresentationEnv;
   /** PART 6 — SHOW OR HIDE THE DEVELOPER INSPECTION RIG (the lil-gui panel and the frame-time overlay).
    *  Off by default in a signed-in session; the V1 Settings panel's Developer section owns the switch, and
    *  `?gui=1` opens it directly. Nothing is removed — every control stays exactly where it was. */
@@ -843,6 +819,24 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     const hh = Math.floor(h) % 24, mm = Math.round((h - Math.floor(h)) * 60);
     return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
   }
+  // SETTINGS -> ENVIRONMENT -> THIS WORLD. The employee's own time-of-day and weather choice, read from
+  // the SHARED store (services/settings/environmentPreferences) exactly as the ambient bed below reads
+  // its own. That store is the ONE source of truth for the choice; this world does not remember it, it
+  // applies it — which is why the choice survives a reload, a canvas remount and every view change,
+  // none of which this object does.
+  //
+  // AUTO on either axis writes "auto" here, which is the value TimeOfDay/Weather already default to, so
+  // the automatic behaviour underneath is reached by the same code path it always was.
+  //
+  // `params` is kept in step so the inspection rig's rows never disagree with what is on screen.
+  const applyEnvironmentPreference = (): void => {
+    const { time, weather: wx } = getEnvironmentPreferences();
+    params.envTime = time;
+    timeOfDay.mode = time;
+    params.envWeather = wx;
+    weather.mode = wx;
+  };
+  applyEnvironmentPreference();
   applyEnvPhase(true);
 
   // ---- camera modes ------------------------------------------------------------------------------
@@ -2497,6 +2491,13 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     applyAmbientPreference();
     refreshGuiIfBuilt();
   });
+  // The same contract for the environment choice: the panel writes the store, the store tells this
+  // world, and the world re-grades. Cancelled in dispose() for the same reason — the store outlives it.
+  const unsubscribeEnvironment = subscribeEnvironmentPreferences(() => {
+    applyEnvironmentPreference();
+    applyEnvPhase(true);
+    refreshGuiIfBuilt();
+  });
 
   // ---- world foley -----------------------------------------------------------------------------------
   // THE WHOLE FOLEY LAYER IS TWO OBJECTS AND ONE FUNCTION. Every sound below is played off a TRANSITION
@@ -3152,6 +3153,13 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // The environment's phase is READ from V1, never written to it. The dropdown is a dev-only VIEW override:
   // AUTO follows the real Manila clock exactly as the 2D office does; the three explicit values are for
   // visual testing and change nothing outside this renderer.
+  //
+  // IT IS A SESSION OVERRIDE, AND IT DOES NOT PERSIST. The employee-facing choice lives in
+  // services/settings/environmentPreferences (Settings -> Environment) and this row deliberately does
+  // NOT write to it: a developer poking at the rig must never silently rewrite what somebody saved.
+  // So this moves the running world only — the next write from the panel, and the next reload, both
+  // land back on the saved preference. The reverse direction IS wired: a panel write repaints this row
+  // (refreshGuiIfBuilt), so the rig always shows what is actually on screen.
   const envGui = gui.addFolder("Environment (day / sunset / night)");
   envGui.add(params, "envTime", ENV_TIME_MODES).name("time (AUTO = V1 clock)").onChange((v: EnvTimeMode) => { timeOfDay.mode = v; applyEnvPhase(true); refresh(); });
   envGui.add(envState, "phase").name("phase in force").listen().disable();
@@ -3162,7 +3170,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   envGui.add(params, "envSky").name("sky dome + stars").onChange((v: boolean) => (env.skyVisible = v));
   // WEATHER is its own axis and its own folder on purpose: it composes WITH the time above rather than
   // replacing it, so every one of the six DAY/SUNSET/NIGHT × CLEAR/RAIN combinations is reachable by
-  // picking one value from each dropdown. Switching either is a re-grade, never a rebuild.
+  // picking one value from each dropdown. Switching either is a re-grade, never a rebuild. Same
+  // session-override rule as the time row above: nothing here writes the saved preference.
   const wxGui = gui.addFolder("Weather (independent of time of day)");
   function setWeatherMode(m: WeatherMode): void {
     params.envWeather = m;
@@ -5025,6 +5034,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // Audio: stops every source, disconnects every node, closes the AudioContext and unbinds the
     // document-level gesture listeners it armed itself with.
     unsubscribeAmbient();
+    unsubscribeEnvironment();
     envAudio.dispose();
     // The graphics controller is subscribed to the SHARED preferences store (services/render) — that
     // subscription outlives this world unless it is cancelled.
@@ -5198,14 +5208,6 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // the render loop — it is handed the pose and picks it as its own resting clip instead. Walking and
       // sprinting still outrank it there, exactly as they do everywhere else.
       playerMode.setConversationClip(self);
-    },
-    // TEMPORARY — PRESENTATION ENVIRONMENT SWITCHER. Every line below is the dev GUI's own handler,
-    // reached by a second caller. See the interface note for how to remove it.
-    presentationEnv: {
-      time: () => timeOfDay.mode,
-      setTime: (mode) => { params.envTime = mode; timeOfDay.mode = mode; applyEnvPhase(true); refresh(); },
-      weather: () => weather.mode,
-      setWeather: (mode) => setWeatherMode(mode),
     },
     setGlobalChatActive: (emails, self) => {
       coworkers.setGlobalChatActive(emails);
