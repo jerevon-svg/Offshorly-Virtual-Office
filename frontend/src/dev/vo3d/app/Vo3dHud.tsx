@@ -132,6 +132,13 @@ export interface Vo3dHudProps {
    *  state machines over one localStorage draft. So there is one, and it lives with the callers that
    *  change it. */
   checkoutFlow: ReturnType<typeof useCheckoutFlow>;
+  /** START A CHECKOUT — the host's OWN entry point (app/Vo3dOverlay.tsx's `startCheckout`), which is the
+   *  same one the Reception exit card's "Check Out" row uses. Passed in rather than calling
+   *  `checkoutFlow.startCheckout` directly from here: the host's wrapper also closes the exit card and
+   *  un-dismisses the success card, and a dock button that skipped those would be a second, subtly
+   *  different way to begin the same journey. Optional so a HUD mounted without a host handler (tests,
+   *  and any future caller with no exit journey) simply does not offer the button. */
+  onStartCheckout?: () => void;
   /** The coworkers V2 is actually drawing, as V1 layers — Search offers these and nobody else, because
    *  a person the world has no body for cannot be located in it. */
   peopleLayers: readonly AssetLayer[];
@@ -194,7 +201,7 @@ export interface Vo3dHudProps {
 }
 
 export function Vo3dHud({
-  worldRef, ready, attendance, checkoutFlow, peopleLayers, statusByEmail, onCoworkerAction, onOpenProfile,
+  worldRef, ready, attendance, checkoutFlow, onStartCheckout, peopleLayers, statusByEmail, onCoworkerAction, onOpenProfile,
   onOpenConversation,
   people, selfId, conversations, unreadTotal, resolveDisplayName, onSelectConversation,
   onOpenDirectMessage, onStartGroup, overlayToolOpen, onOpenCurrentRoom, roomDiscoveryActive = false,
@@ -249,6 +256,17 @@ export function Vo3dHud({
   const hasCheckedIn = attendance.record?.status === "CHECKED_IN";
 
   const timeTrackingVisible = import.meta.env.DEV || isRealZohoMode();
+  /** IS THE CHECK OUT BUTTON OFFERED? V1's `checkoutOfferable`, character for character
+   *  (OfficeMap.tsx): on the clock, and the flow not already running.
+   *
+   *  `state === "IDLE"` is what keeps this out of the 8-hour reminder's way — and out of its own. While
+   *  the reminder toast is up the flow is in REMINDER_SHOWN, and while any panel of the journey is open
+   *  it is in one of those states, so the button is not there to be pressed a second time. The reminder
+   *  keeps its own entry into the same `onStartCheckout`; this adds a second DOOR, never a second flow.
+   *
+   *  It is also why nothing here decides anything about attendance or Zoho: the button's whole job is to
+   *  call the host's existing entry point. */
+  const checkoutOfferable = hasCheckedIn && checkoutFlow.state === "IDLE" && timeTrackingVisible && !!onStartCheckout;
 
   // The Tasks badge must be right BEFORE Tasks is ever opened — fetched once the HUD exists and re-fetched
   // whenever the panel closes (a claim inside it already refreshes on confirmation). V1's own rule.
@@ -486,6 +504,16 @@ export function Vo3dHud({
         node: (
           <div className={styles.timeGroup}>
             <WorkingStatusIndicator compact state={checkoutFlow.state} workedLabel={checkoutFlow.workedLabel} />
+            {checkoutOfferable && (
+              <button
+                type="button"
+                className={styles.checkoutButton}
+                onClick={onStartCheckout}
+                aria-label="Check out"
+              >
+                Check out
+              </button>
+            )}
           </div>
         ) },
     );

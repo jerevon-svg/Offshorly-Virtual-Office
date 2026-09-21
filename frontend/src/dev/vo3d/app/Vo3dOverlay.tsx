@@ -155,6 +155,7 @@ import {
 } from "../../../services/presence/spatialSessionStore";
 import type { AssetLayer } from "../../../types/office";
 import type { OfficePerson } from "../../../services/office/floorMerge";
+import { openCompanyHub } from "../../../services/hub/companyHubStore";
 import styles from "./Vo3dOverlay.module.css";
 
 export interface Vo3dOverlayProps {
@@ -306,6 +307,21 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
    *  one: two clicks in the same frame both read the state from the same render, so only a value that
    *  changes synchronously can refuse the second one. */
   const kioskPendingRef = useRef(false);
+  /** THE WELCOME HUB, ONCE PER WORK SESSION.
+   *
+   *  V1 ends its check-in by opening the Company Hub in "checkin" mode (OfficeMap.tsx's finishArrival),
+   *  which is the "what's new / here is your day" screen whose primary button is "Enter Office". V2 had
+   *  the same Hub — the HUD's button opens it in "manual" mode — but nothing opened it on arrival, so the
+   *  welcome was simply missing from the V2 journey. It is opened HERE, from the one place that learns a
+   *  check-in actually happened in V2: the kiosk's confirmed response.
+   *
+   *  KEYED ON THE SERVER'S `checked_in_at`, the same session identity the checkout flow's new-session
+   *  reset uses. A second confirmed answer for the SAME session (a retry whose first response was lost)
+   *  reopens nothing; a genuinely new session after a checkout is a new welcome, which is V1's behaviour
+   *  too. A failed or unconfirmed check-in never reaches this, and neither does a session that was
+   *  already open when the view mounted — a refresh, a V1→V2 view switch, or another tab's check-in are
+   *  all observations of an existing session, not this client checking in. */
+  const welcomeHubSessionRef = useRef<string | null>(null);
 
   // ---- PHASE 7E: LEAVING ---------------------------------------------------------------------------
   // V1'S CHECKOUT STATE MACHINE, and the only instance of it in V2. It was created in the HUD when the
@@ -786,6 +802,15 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
         if (record?.status !== "CHECKED_IN") throw new Error("Check-in not confirmed by server");
         attendance.apply(record);
         setKioskPhase("idle");
+        // THE WELCOME. The kiosk card has nothing left to say once the answer is green, and the Hub is a
+        // full-screen overlay, so the card is closed rather than left floating behind it; walking up
+        // again reopens it exactly as before.
+        const sessionKey = record.checkedInAt ?? "checked-in";
+        if (welcomeHubSessionRef.current !== sessionKey) {
+          welcomeHubSessionRef.current = sessionKey;
+          setKioskOpen(false);
+          openCompanyHub("checkin");
+        }
       })
       .catch(() => {
         // FAIL CLOSED: the shared answer is left exactly as V1 last stated it, so nothing is granted on a
@@ -2074,6 +2099,10 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
         ready={ready}
         attendance={attendance}
         checkoutFlow={checkoutFlow}
+        // THE DOCK'S CHECK OUT BUTTON — the SAME entry the Reception exit card's "Check Out" row uses,
+        // not a second one. The dock is the door you can reach from anywhere in the building; the exit
+        // card is the one you meet by walking to the doors. Both start this one journey.
+        onStartCheckout={checkoutOffered ? startCheckout : undefined}
         peopleLayers={peopleLayers}
         statusByEmail={statusByEmail}
         onCoworkerAction={runAction}

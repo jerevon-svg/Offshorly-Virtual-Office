@@ -148,6 +148,9 @@ const onOpenCurrentRoom = vi.fn();
 const onCallToucan = vi.fn();
 const onAskToucanAboutBoard = vi.fn((_b: { id: string; title: string }) => {});
 const onClearToucanBoardContext = vi.fn();
+const onStartCheckout = vi.fn();
+/** Set per test: an undefined handler is a host with no checkout journey, which offers no button. */
+let checkoutHandler: (() => void) | undefined = onStartCheckout;
 let conversations: never[] = [];
 let overlayToolOpen = false;
 let toucanAvailable = true;
@@ -166,11 +169,14 @@ function attendanceOf(status: "CHECKED_IN" | "CHECKED_OUT", checkedInAt: string 
 /** PHASE 7E — the flow moved to app/Vo3dOverlay.tsx (it is driven by the exit journey now) and is passed
  *  in. The HUD is still tested against a REAL `useCheckoutFlow`, created here exactly as the overlay
  *  creates it, so the working-time pill and the availability gate are exercised against the real hook. */
+/** The live flow the mounted HUD is reading, so a test can drive it the way the host does. */
+let startedFlow: ReturnType<typeof useCheckoutFlow> | null = null;
 type HudProps = Omit<Parameters<typeof Vo3dHud>[0], "checkoutFlow">;
 function Hud(props: HudProps) {
   const rec = props.attendance.record;
   const timeInMs = rec?.status === "CHECKED_IN" && rec.checkedInAt ? Date.parse(rec.checkedInAt) : null;
   const flow = useCheckoutFlow({ employeeId: getCurrentUserId(), timeInMs, hourDecimal: 0 });
+  startedFlow = flow;
   return <Vo3dHud {...props} checkoutFlow={flow} />;
 }
 
@@ -201,6 +207,7 @@ function hud(attendance = attendanceOf("CHECKED_IN", new Date(Date.now() - 90 * 
       onCallToucan={onCallToucan}
       onAskToucanAboutBoard={onAskToucanAboutBoard}
       onClearToucanBoardContext={onClearToucanBoardContext}
+      onStartCheckout={checkoutHandler}
     />
   );
 }
@@ -228,6 +235,8 @@ beforeEach(() => {
   viewModeSubs = [];
   conversations = [];
   overlayToolOpen = false;
+  checkoutHandler = onStartCheckout;
+  onStartCheckout.mockClear();
   toucanAvailable = true;
   toucanCalled = false;
   toucanState = "roaming";
@@ -342,6 +351,56 @@ describe("working time", () => {
     mount(attendanceOf("CHECKED_OUT", null));
     await screen.findByTestId("hud-dock");
     expect(screen.queryByText(/\dh \d+m/)).toBeNull();
+  });
+
+  // ---- THE CHECK OUT BUTTON -----------------------------------------------------------------------
+  // V1's dock has one directly under the same pill (OfficeMap.tsx's `checkoutOfferable`), and
+  // WorkingStatusIndicator's `compact` form exists for exactly that pairing. What these assert is that
+  // V2's copy runs V1's flow through the HOST's existing entry point and adds no rule of its own.
+  const checkoutBtn = () => screen.queryByRole("button", { name: "Check out" });
+
+  it("offers Check out directly below the working-time pill while on the clock", async () => {
+    mount();
+    await screen.findByTestId("hud-dock");
+    const button = checkoutBtn();
+    expect(button).toBeTruthy();
+    // DIRECTLY BELOW, not merely somewhere in the dock: same group, pill first.
+    const group = button!.parentElement!;
+    expect(group.textContent).toMatch(/1h 30m/);
+    expect(group.firstElementChild!.textContent).toMatch(/1h 30m/);
+    expect(group.lastElementChild).toBe(button);
+  });
+
+  it("starts the HOST's existing checkout journey, and nothing else", async () => {
+    mount();
+    await screen.findByTestId("hud-dock");
+    fireEvent.click(checkoutBtn()!);
+    expect(onStartCheckout).toHaveBeenCalledTimes(1);
+  });
+
+  it("is not offered to an employee who is not checked in", async () => {
+    mount(attendanceOf("CHECKED_OUT", null));
+    await screen.findByTestId("hud-dock");
+    expect(checkoutBtn()).toBeNull();
+  });
+
+  it("is not offered once the journey is already running — no second entry into one flow", async () => {
+    mount();
+    await screen.findByTestId("hud-dock");
+    fireEvent.click(checkoutBtn()!);
+    // The host starts the flow; the dock sees a non-IDLE state and stands down. (Driven here by the
+    // real hook through the same button the reminder and the exit card also reach.)
+    act(() => { startedFlow?.startCheckout(); });
+    await waitFor(() => expect(checkoutBtn()).toBeNull());
+  });
+
+  it("is not offered at all when the host passes no checkout entry point", async () => {
+    checkoutHandler = undefined;
+    mount();
+    await screen.findByTestId("hud-dock");
+    expect(checkoutBtn()).toBeNull();
+    // ...and the pill it sits under is unaffected.
+    expect(screen.getByText(/1h 30m/)).toBeTruthy();
   });
 });
 

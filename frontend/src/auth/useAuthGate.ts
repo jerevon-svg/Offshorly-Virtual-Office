@@ -8,6 +8,7 @@ import { setDevIdentity as setRequestsClientDevIdentity } from "../services/chat
 import { setDevIdentity as setOfflineLineupDevIdentity } from "../services/presence/offlineLineupClient";
 import { setDevIdentity as setSpatialWalkDevIdentity } from "../services/presence/movementSync";
 import { setDevIdentity as setHubClientDevIdentity } from "../services/hub/hubClient";
+import { setDevIdentity as setForecastClientDevIdentity } from "../services/weather/forecastClient";
 import { setDevIdentity as setFeedClientDevIdentity } from "../services/feed/feedClient";
 import { setDevIdentity as setQuestsClientDevIdentity } from "../services/quests/questsClient";
 import { setDevIdentity as setNotificationsDevIdentity } from "../services/notifications/notificationsStore";
@@ -251,6 +252,12 @@ function seedDevBypassIdentity(): void {
   setOfflineLineupDevIdentity(email);
   setSpatialWalkDevIdentity(email);
   setHubClientDevIdentity(email);
+  // The Company Hub's weather card reads /weather/search and /weather/forecast on the SAME backend
+  // and behind the same get_current_email dependency as the Hub's own items, so it needs the same
+  // identity. Without this line the card was the one Hub surface that 401'd on the :5174 rig while
+  // everything around it worked — found by live smoke test, not by any unit test, because every test
+  // mocks the client. (/weather/office is unauthenticated and needs no seeding.)
+  setForecastClientDevIdentity(email);
   setAttendanceDevIdentity(email);
   setTeamMapDevIdentity(email);
   setMeetingChatDevIdentity(email);

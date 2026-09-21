@@ -21,6 +21,7 @@ import { readFileSync } from "node:fs";
 import { isTypingTarget } from "./keyGuard";
 import { manilaWorkDate } from "../../../components/OfficeMap/useCheckoutFlow";
 import { saveSessionStart } from "../../../data/checkoutStorage";
+import { closeCompanyHub, getCompanyHubSnapshot, openCompanyHub, resetCompanyHubForTests } from "../../../services/hub/companyHubStore";
 
 const SELF = "bon@offshorly.com";
 const ALEX = "alex@offshorly.com";
@@ -270,6 +271,15 @@ vi.mock("../../../services/attendance", () => ({
   attendanceService: { getMine: vi.fn(), checkIn: (id: string) => checkIn(id), checkOut: (id: string) => checkOut(id) },
   attendanceMode: "mock",
 }));
+// THE COMPANY HUB'S FEED, at the client boundary. The STORE is the real one — what the welcome tests
+// assert is that V2 drives V1's own store into "checkin" mode, so stubbing the store would test nothing.
+const fetchHubItems = vi.fn(async () => [] as unknown[]);
+vi.mock("../../../services/hub/hubClient", () => ({
+  fetchHubItems: () => fetchHubItems(),
+  dismissHubItem: vi.fn(),
+  acknowledgeHubItem: vi.fn(),
+  actOnHubItem: vi.fn(),
+}));
 // V1's Zoho service, at the boundary the checkout flow calls. Nothing about the flow itself is stubbed.
 const submitTimeLogs = vi.fn(async () => ({ success: true, submissionId: "sub-1", entriesCreated: 1, submittedAt: "2026-09-20T09:00:00Z" }));
 vi.mock("../../../services/zoho", () => ({
@@ -467,10 +477,12 @@ beforeEach(() => {
   setDepartureDestination.mockClear();
   localStorage.clear();
   checkIn.mockImplementation(async () => CHECKED_IN_RECORD);
+  resetCompanyHubForTests();
   vi.clearAllMocks();
+  fetchHubItems.mockImplementation(async () => []);
   setCurrentUserFromMeResponse({ id: 1, email: SELF, name: "Bon" } as never);
 });
-afterEach(() => { resetCurrentUserForTests(); resetSelfStatusForTests(); });
+afterEach(() => { resetCurrentUserForTests(); resetSelfStatusForTests(); resetCompanyHubForTests(); });
 
 function mount() {
   return render(
@@ -1120,6 +1132,105 @@ describe("the Reception kiosk", () => {
     await waitFor(() => expect(screen.queryByTestId("world-menu")).toBeNull());
     await arriveAt();
     expect(screen.getByRole("menu", { name: "Reception check-in kiosk" })).toBeTruthy();
+  });
+});
+
+// ---- THE WELCOME COMPANY HUB ------------------------------------------------------------------------
+// V1 ends a check-in by opening the Company Hub in "checkin" mode (OfficeMap.tsx's finishArrival), whose
+// primary button is "Enter Office". V2 reaches the same store — the Hub itself is rendered by
+// app/Vo3dHud.tsx and is unchanged — so these assert the ONE thing V2 owns: which events open it, in
+// which mode, and how many times.
+
+const hub = () => getCompanyHubSnapshot();
+
+describe("the welcome Company Hub after a V2 check-in", () => {
+  it("opens once, in checkin mode, on a CONFIRMED check-in", async () => {
+    attendance = "denied";
+    mount();
+    await arriveAt();
+    expect(hub().isOpen).toBe(false); // walking up to the kiosk is not checking in
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Check In$/i }));
+    await waitFor(() => expect(hub().isOpen).toBe(true));
+    expect(hub().mode).toBe("checkin");
+    // ...and the feed is (re)fetched, so the welcome is this session's, never a cached one.
+    await waitFor(() => expect(fetchHubItems).toHaveBeenCalledTimes(1));
+    // The kiosk card does not stay floating behind the full-screen Hub.
+    await waitFor(() => expect(screen.queryByTestId("world-menu")).toBeNull());
+  });
+
+  it("does NOT open on a FAILED check-in", async () => {
+    attendance = "denied";
+    checkIn.mockImplementation(async () => { throw new Error("network"); });
+    mount();
+    await arriveAt();
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Check In$/i }));
+    await screen.findByRole("menuitem", { name: /Try again/i });
+    expect(hub().isOpen).toBe(false);
+    expect(fetchHubItems).not.toHaveBeenCalled();
+  });
+
+  it("does NOT open when the server answers with something other than CHECKED_IN", async () => {
+    attendance = "denied";
+    checkIn.mockImplementation(async (): Promise<Rec> => CHECKED_OUT_RECORD);
+    mount();
+    await arriveAt();
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Check In$/i }));
+    await screen.findByRole("menuitem", { name: /Try again/i });
+    expect(hub().isOpen).toBe(false);
+  });
+
+  it("does NOT open when the kiosk is CANCELLED instead of used", async () => {
+    attendance = "denied";
+    mount();
+    await arriveAt();
+    fireEvent.click(screen.getByRole("menuitem", { name: /Close/i }));
+    await waitFor(() => expect(screen.queryByTestId("world-menu")).toBeNull());
+    expect(checkIn).not.toHaveBeenCalled();
+    expect(hub().isOpen).toBe(false);
+  });
+
+  it("does NOT open for a session that was ALREADY open — a refresh, a view switch, another tab", async () => {
+    // The shared answer is already CHECKED_IN when the view mounts, which is what a reload or a V1→V2
+    // switch looks like from here. Nothing in V2 checked anybody in, so there is nothing to welcome.
+    attendance = "permitted";
+    checkedInAt = CHECKED_IN_RECORD.checkedInAt;
+    mount();
+    await arriveAt();
+    expect(screen.queryByRole("menuitem", { name: /Check In/i })).toBeNull();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(hub().isOpen).toBe(false);
+    expect(fetchHubItems).not.toHaveBeenCalled();
+  });
+
+  it("DOES NOT REOPEN for the same session when a retry returns the same confirmed record", async () => {
+    attendance = "denied";
+    mount();
+    await arriveAt();
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Check In$/i }));
+    await waitFor(() => expect(hub().isOpen).toBe(true));
+    // The employee reads it and presses "Enter Office".
+    act(() => closeCompanyHub());
+    expect(hub().isOpen).toBe(false);
+    // A second confirmed answer for the SAME `checked_in_at` — the shape a retry whose first response was
+    // lost takes — must not throw the welcome screen back over the office. (The shared answer is still
+    // "denied" here because `apply` is a stub, so the kiosk still offers the row; that is exactly the
+    // situation the guard has to survive.)
+    await arriveAt();
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Check In$/i }));
+    await waitFor(() => expect(checkIn).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(attendanceApply).toHaveBeenCalledTimes(2));
+    expect(hub().isOpen).toBe(false);
+    expect(fetchHubItems).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the HUD's own manual reopening alone", async () => {
+    attendance = "permitted";
+    mount();
+    act(() => openCompanyHub("manual"));
+    expect(hub().isOpen).toBe(true);
+    expect(hub().mode).toBe("manual");
+    act(() => closeCompanyHub());
+    expect(hub().isOpen).toBe(false);
   });
 });
 

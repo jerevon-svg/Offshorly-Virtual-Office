@@ -9,6 +9,52 @@
   gap: 4px;
 }
 
+/* CHECK OUT — the dock's own end-of-day affordance, sitting directly under the working-time pill, which
+   is the arrangement WorkingStatusIndicator's `compact` form was written for ("the dock groups it
+   directly above the Check out button").
+
+   It wears the dock's surface contract rather than V1's flat mint chip: the same soft cream face, the
+   same 1px hairline and the same inset highlight the summon button and the dock card use, so the one new
+   control in V2's chrome does not read as a control borrowed from the 2D office. The behaviour and the
+   gate are V1's exactly; only the skin is V2's.
+
+   It never grows the dock: the pill above it already sets the group's width, and the button stretches to
+   match it. */
+.checkoutButton {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  text-align: center;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.08);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.85) inset,
+    0 1px 3px rgba(28, 22, 45, 0.07);
+  color: #3f3a4d;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  transition: transform 140ms cubic-bezier(0.22, 1, 0.36, 1), background 140ms ease, color 140ms ease;
+}
+
+.checkoutButton:hover {
+  background: #fffefb;
+  color: #1c1826;
+  transform: translateY(-1px);
+}
+
+.checkoutButton:active {
+  transform: translateY(0);
+}
+
+.checkoutButton:focus-visible {
+  outline: 2px solid rgba(94, 92, 230, 0.7);
+  outline-offset: 2px;
+}
+
 /* Settings > Developer. Inherits V1's HudSettings row treatment; only the checkbox row's own layout
    lives here, since the panel has no control of this exact shape. */
 .devToggle {
