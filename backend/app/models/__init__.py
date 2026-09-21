@@ -3,6 +3,7 @@ from app.models.attendance import EmployeeAttendance
 from app.models.avatar import Avatar
 from app.models.badge import BadgeAward, BadgeProgress
 from app.models.conversation import Conversation, ConversationParticipant
+from app.models.employee_permission import EmployeePermission
 from app.models.feed import FeedComment, FeedPost, FeedReaction
 from app.models.hub import HubItem, HubItemState
 from app.models.message import Message
@@ -37,6 +38,7 @@ __all__ = [
     "ConversationParticipant",
     "ConversationRequest",
     "EmployeeAttendance",
+    "EmployeePermission",
     "EmployeePosition",
     "FeedComment",
     "FeedPost",

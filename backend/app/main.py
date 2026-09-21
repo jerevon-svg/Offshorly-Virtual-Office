@@ -24,6 +24,7 @@ from app.routers import feed as feed_router
 from app.routers import hub as hub_router
 from app.routers import missions as missions_router
 from app.routers import notifications as notifications_router
+from app.routers import permissions as permissions_router
 from app.routers import progression as progression_router
 from app.routers import quests as quests_router
 from app.routers import requests as requests_router
@@ -142,6 +143,7 @@ fastapi_app.include_router(badges_router.router)
 fastapi_app.include_router(rewards_router.router)
 fastapi_app.include_router(whiteboards_router.router)
 fastapi_app.include_router(team_map_router.router)
+fastapi_app.include_router(permissions_router.router)
 
 
 # Faithful port of backend/src/http.ts's error shape: REST error responses always come back as
