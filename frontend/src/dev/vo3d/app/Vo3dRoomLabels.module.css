@@ -1,0 +1,68 @@
+/* vo3d — ROOM DISCOVERY LABELS. The NBA 2K court treatment: the room's name set large and bold straight
+   over its floor, with nothing around it. No card, no pill, no border, no backing plate and no pin — the
+   shadow is what separates the type from the floor, exactly as painted court lettering is read against
+   the wood. */
+
+.layer {
+  position: fixed;
+  inset: 0;
+  /* The layer is a pass-through: only the words themselves take a pointer, so clicking the floor,
+     a chair or a colleague still reaches the world underneath. */
+  pointer-events: none;
+  /* Under the panels and the modals (Room Details is 145), over the world. */
+  z-index: 40;
+}
+
+.label {
+  all: unset;
+  position: absolute;
+  top: 0;
+  left: 0;
+  box-sizing: border-box;
+  pointer-events: auto;
+  cursor: pointer;
+  /* Every metric in `em` so the whole label rides the one font-size the frame loop writes. */
+  padding: 0.12em 0.34em;
+  /* The wrap is DECIDED by the sizing pass and written into the text as a newline, so the browser must
+     honour it and must not invent one of its own — a box-driven wrap would break wherever the element
+     happened to end and undo the fit. */
+  white-space: pre-line;
+  text-align: center;
+  color: #ffffff;
+  font-weight: 900;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+  line-height: 1;
+  /* THE ONLY SEPARATION FROM THE FLOOR. A tight dark drop plus a wider soft one: the first keeps the
+     glyph edges crisp over a light floor, the second lifts the word off a busy one. No glow, no stroke,
+     no plate. */
+  text-shadow:
+    0 0.035em 0.06em rgba(16, 14, 24, 0.55),
+    0 0.12em 0.32em rgba(16, 14, 24, 0.42);
+  /* Hidden until the first frame places it, or it flashes at the top-left corner. */
+  visibility: hidden;
+  transition:
+    opacity 140ms ease,
+    text-shadow 140ms ease;
+  opacity: 0.93;
+}
+
+.label:hover,
+.label:focus-visible {
+  opacity: 1;
+  text-shadow:
+    0 0.035em 0.06em rgba(16, 14, 24, 0.6),
+    0 0.14em 0.36em rgba(16, 14, 24, 0.5);
+}
+
+.label:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: 0.1em;
+  border-radius: 0.12em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .label {
+    transition: none;
+  }
+}

@@ -17,6 +17,7 @@
 // no invented role, project or assignment — see roomDetails.ts for what each field actually is.
 import { useEffect, useRef } from "react";
 import sidebar from "../../../components/OfficeMap/RoomSidebar.module.css";
+import HudIcon from "../../../components/HudIcon";
 import styles from "./Vo3dRoomDetails.module.css";
 import { STATUS_META } from "../../../services/presence/status";
 import { roomSubtitle, type Vo3dRoomDetails as Details } from "./roomDetails";
@@ -29,9 +30,14 @@ export interface Vo3dRoomDetailsProps {
   onClose: () => void;
   /** A row was pressed. The overlay decides what selecting somebody means — this file never does. */
   onSelectPerson: (email: string, displayName: string) => void;
+  /** THIS ROOM'S BOARDS — V1's own room-sidebar entry point (its `onOpenWhiteboards`). Absent means the
+   *  room has no boards to offer and NO BUTTON IS DRAWN, which is the honest answer for the Central Hub:
+   *  the wall-less shared space has no flat room rect, so nothing keyed on that namespace — a roster row
+   *  or a board scope — can answer for it (see data/office-layout's own note). */
+  onOpenWhiteboards?: () => void;
 }
 
-export function Vo3dRoomDetails({ details, side = "right", onClose, onSelectPerson }: Vo3dRoomDetailsProps) {
+export function Vo3dRoomDetails({ details, side = "right", onClose, onSelectPerson, onOpenWhiteboards }: Vo3dRoomDetailsProps) {
   // V1's own close-animation caching: the component stays mounted and only a CSS class toggles, so the
   // content must survive the slide-out instead of blanking halfway through it.
   const lastDetailsRef = useRef<Details | null>(null);
@@ -81,6 +87,20 @@ export function Vo3dRoomDetails({ details, side = "right", onClose, onSelectPers
           </div>
         </div>
         <div className={sidebar.headerActions}>
+          {/* V1's OWN room-sidebar boards button, in V1's own slot and wearing V1's own class — the
+              stylesheet this panel already borrows carries `.whiteboardsBtn`, so nothing new is styled. */}
+          {onOpenWhiteboards && (
+            <button
+              type="button"
+              className={sidebar.whiteboardsBtn}
+              onClick={onOpenWhiteboards}
+              aria-label="Open whiteboards"
+              title="Whiteboards"
+              data-testid="vo3d-room-boards"
+            >
+              <HudIcon name="boards" size="20px" />
+            </button>
+          )}
           <button type="button" className={sidebar.closeBtn} onClick={onClose} aria-label="Close">
             ✕
           </button>

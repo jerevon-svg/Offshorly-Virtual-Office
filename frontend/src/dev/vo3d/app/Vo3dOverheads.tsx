@@ -81,6 +81,15 @@ export interface Vo3dOverhead {
  *  and no `coworkerAnchor`, and keying it off the signed-in address would make it look like one. */
 export const SELF_OVERHEAD_KEY = "__self__";
 
+/** PHASE 7G — the reserved key for THE BIRD. Same reasoning as the self key: the toucan is not a person,
+ *  has no email and no coworker body, so it is anchored to its own world position (world.ts toucanAnchor)
+ *  rather than to a roster entry.
+ *
+ *  What it ever carries is BIRD TALK — "Squawk squawk…", and nothing else. V1 is explicit that the
+ *  world-space pill must never mirror an assistant reply (that is the panel's job and only the panel's),
+ *  which is why the overlay feeds this row a fixed string off a boolean rather than any response text. */
+export const TOUCAN_OVERHEAD_KEY = "__toucan__";
+
 export interface Vo3dOverheadsProps {
   worldRef: { current: Vo3dWorld | null };
   ready: boolean;
@@ -166,9 +175,12 @@ export function Vo3dOverheads({ worldRef, ready, overheads: incoming, onOpenConv
       raf = requestAnimationFrame(tick);
       const list = emailsRef.current;
       if (list.length === 0) return;
-      const peers = list.filter((e) => e !== SELF_OVERHEAD_KEY);
+      const peers = list.filter((e) => e !== SELF_OVERHEAD_KEY && e !== TOUCAN_OVERHEAD_KEY);
       const anchors: Record<string, Vo3dScreenAnchor | null> = world.coworkerAnchors(peers);
-      if (peers.length !== list.length) anchors[SELF_OVERHEAD_KEY] = world.selfAnchor();
+      if (list.includes(SELF_OVERHEAD_KEY)) anchors[SELF_OVERHEAD_KEY] = world.selfAnchor();
+      // The bird moves faster than anything else overhead, so its anchor is read on the same frame as
+      // everybody else's rather than through any state of its own.
+      if (list.includes(TOUCAN_OVERHEAD_KEY)) anchors[TOUCAN_OVERHEAD_KEY] = world.toucanAnchor?.() ?? null;
       for (const email of list) {
         const node = nodes.current.get(email);
         if (!node) continue;

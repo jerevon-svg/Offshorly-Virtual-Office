@@ -73,6 +73,7 @@ import { PlayerMode, PLAYER_SPRINT_SPEED, PLAYER_WALK_SPEED, SPRINT_MULTIPLIER }
 import { EnvironmentalAudio } from "../audio/EnvironmentalAudio";
 import { EdgeTracker, Footsteps } from "../audio/events";
 import { CALL_RANGE, Toucan } from "../world/Toucan";
+import type { ToucanSummonState } from "../../../components/OfficeMap/toucanSummon";
 import { spatial } from "../audio/sfx";
 import { makeStandTest } from "../player/standTest";
 import type { PlayerView } from "../player/PlayerCamera";
@@ -113,8 +114,9 @@ import { plannedDurationMs, SelfMovementFeed, type Vo3dSelfMovementSink } from "
 import { gateRects, mayEnterOffice, routeEntersOffice, zoneAt, type AccessGeometry, type OfficeAccess, type Zone } from "./access";
 import { Coworkers, facingTrace, type SeatAnchorPose } from "../world/Coworkers";
 import type { Vo3dCoworker } from "./coworkers";
+import { CAVE_PLACE_ID as CAVE_PLACE, coworkersInSameVolume } from "./coworkers";
 import type { Vo3dCoworkerInteractions, Vo3dCoworkerSelection, Vo3dScreenAnchor } from "./interactions";
-import { exploreFrameZoom, roomFrameMode, roomFrameRect, ROOM_FRAME_FILL } from "./roomFocus";
+import { exploreFrameZoom, roomFrameMode, roomFrameRect, roomLabelRects, ROOM_FRAME_FILL } from "./roomFocus";
 import type { Vo3dViewMode } from "./viewMode";
 import { coworkerEmailOf, personCandidateId, REACH as TARGET_REACH, type Candidate } from "../player/PlayerTargeting";
 import { standablePointNear } from "../player/PlayerBody";
@@ -325,6 +327,19 @@ export interface Vo3dWorld {
    *  world so the two agree on who is selected: without it the world would still hold the last person and
    *  a second click on the SAME body would be recognised as "already selected" and open nothing. */
   clearCoworkerSelection(): void;
+  /** ROOM DISCOVERY — EVERY ROOM THAT CAN CARRY A LABEL, by V1 manifest room id, in a stable order.
+   *  Read ONCE by the label layer to build its DOM; the positions come from roomLabelAnchors below. */
+  roomLabelIds(): string[];
+  /** ROOM DISCOVERY — WHERE EACH OF THOSE LABELS BELONGS ON SCREEN RIGHT NOW, the same per-frame answer
+   *  coworkerAnchors gives for a body and measured through the same projection, so a label tracks a pan,
+   *  an orbit and a zoom exactly as a nameplate does. `scale` is one world unit in CSS pixels at that
+   *  room's depth, which is what lets the type read as painted on the floor rather than pinned to the UI. */
+  roomLabelAnchors(): Record<string, Vo3dRoomLabelAnchor>;
+  /** ROOM DISCOVERY — WASH THE FLOOR OF ONE ROOM, or none. The hover feedback for a label, and the only
+   *  thing discovery draws INTO the scene: a single translucent quad, moved and resized to the hovered
+   *  room. It casts no shadow, writes no depth and changes no material, so nothing about the office's
+   *  lighting, navigation or picking is touched. Null clears it. */
+  setRoomHighlight(roomId: string | null): void;
   /** ROOM DETAILS PARITY — WHICH ROOM THE SIGNED-IN BODY IS STANDING IN, as the V1 manifest room layer id
    *  (see Vo3dCoworkerInteractions.onRoomSelected for why that is the id). Null in the shared hall, on the
    *  street and anywhere outside the modelled world.
@@ -354,6 +369,39 @@ export interface Vo3dWorld {
    *  the person has no body, or when no standable spot beside them exists, or when the walk was refused.
    *  `Vo3dCoworkerInteractions.onApproachArrived` fires once the turn finishes. */
   approachCoworker(email: string): boolean;
+  /** PHASE 7G — THE TOUCAN, as the HUD reaches it. One bird, one mode switch; see world/Toucan.ts. */
+  toucanSummon: Vo3dToucanSummon;
+  /** Where the bird is on screen right now, for the world-space pill over it. Null while it is not being
+   *  drawn (its ambient lap is hidden in the OFFICE presentation) or while it is behind the camera. */
+  toucanAnchor(): Vo3dScreenAnchor | null;
+}
+
+/** PHASE 7G — CALLING THE BIRD.
+ *
+ *  V1's contract, in V2's world: `call()` is the intent ("come here"), the world flies the bird to this
+ *  body, and the ARRIVAL is what the host waits for before opening the assistant — exactly as V1's office
+ *  waits for its own `attending`. `release()` withdraws the intent and the bird goes home; it says nothing
+ *  about the conversation, which lives on the server and is never touched from here. */
+/** ROOM DISCOVERY — a label's anchor, plus THE ROOM'S OWN PROJECTED FOOTPRINT in CSS pixels.
+ *
+ *  The footprint is what the type is fitted to (see roomFocus's roomLabelFontPx): the name is set as
+ *  large as it will comfortably sit inside its own floor, so a big room wears big type at the same zoom a
+ *  small one wears small type — and a name that fits inside its own floor cannot reach into the room next
+ *  door. Measured from the rect's four corners through the live camera, so it is honest in both the
+ *  near-orthographic OFFICE view and the perspective of 3D EXPLORE. */
+export interface Vo3dRoomLabelAnchor extends Vo3dScreenAnchor {
+  widthPx: number;
+  heightPx: number;
+}
+
+export interface Vo3dToucanSummon {
+  /** Come here. Idempotent: calling an already-parked bird re-reports `attending` and moves nobody. */
+  call(): void;
+  /** Let it go. The bird flies to its perch and eventually rejoins its lap; nothing is deleted. */
+  release(): void;
+  /** V1's own coarse state. Pushed on every real change and once immediately on subscribe. */
+  subscribe(listener: (state: ToucanSummonState) => void): () => void;
+  state(): ToucanSummonState;
 }
 
 /** BUILD A V2 WORLD ON `canvas`. Everything below this line is the module body app/bootstrap.ts used to
@@ -2007,6 +2055,47 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     else easeExploreFrame(rect, ROOM_FRAME_FILL);
   }
 
+  /** ROOM DISCOVERY — the rooms that can be labelled, resolved once from the world's own regions. */
+  const roomFrameSource = { floorRectOf: (id: string) => world.rooms.get(id)?.floorRect, regions: world.regions };
+  const labelRects = roomLabelRects(roomFrameSource);
+  /** HOW HIGH A LABEL FLOATS above the floor it names, in world units. Low enough to read as painted on
+   *  the court (the reference), high enough to clear desks and chairs rather than sitting among them. */
+  const ROOM_LABEL_Y = 14;
+  const labelPoints = new Map(
+    labelRects.map((r) => [r.roomId, new THREE.Vector3(r.rect.x + r.rect.w / 2, ROOM_LABEL_Y, r.rect.z + r.rect.d / 2)]),
+  );
+
+  /** THE HOVER WASH. One quad, reused: a per-room mesh would be eleven more objects in the scene for a
+   *  thing only ever shown one at a time. Unlit, unshadowed and depth-tested, so furniture still occludes
+   *  it and it cannot alter a single light or material. */
+  const roomHighlight = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({ color: 0xfdfcfa, transparent: true, opacity: 0.11, depthWrite: false }),
+  );
+  roomHighlight.rotation.x = -Math.PI / 2;
+  roomHighlight.castShadow = false;
+  roomHighlight.receiveShadow = false;
+  roomHighlight.renderOrder = 2;
+  roomHighlight.visible = false;
+  roomHighlight.matrixAutoUpdate = true;
+  R.scene.add(roomHighlight);
+  disposers.push(() => {
+    R.scene.remove(roomHighlight);
+    roomHighlight.geometry.dispose();
+    (roomHighlight.material as THREE.Material).dispose();
+  });
+  function setRoomHighlight(roomId: string | null): void {
+    const rect = roomId ? labelRects.find((r) => r.roomId === roomId)?.rect : undefined;
+    if (!rect) {
+      roomHighlight.visible = false;
+      return;
+    }
+    // A hair above the floor so it washes the surface instead of z-fighting with it.
+    roomHighlight.position.set(rect.x + rect.w / 2, 0.35, rect.z + rect.d / 2);
+    roomHighlight.scale.set(rect.w, rect.d, 1);
+    roomHighlight.visible = true;
+  }
+
   /** Ease back to wherever the camera was before the SELECTION was focused. V1's closeCharacterMenu. */
   function restoreCameraView(): void {
     const before = camBeforeFocus;
@@ -2073,6 +2162,22 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     return coworkers.pick(raycaster);
   }
 
+  /** PHASE 7G — is the pointer on the bird? Its own ray against its own group, using the ACTIVE camera
+   *  so it works in OFFICE and in 3D EXPLORE alike. A generous sphere rather than the mesh: the model is
+   *  13 units long and hovering, and asking somebody to hit a wing is not an interaction. */
+  const TOUCAN_PICK = new THREE.Sphere(new THREE.Vector3(), 1);
+  function pickToucanAt(cx: number, cy: number): boolean {
+    const r = canvas.getBoundingClientRect();
+    ndc.set(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
+    raycaster.setFromCamera(ndc, R.activeCamera);
+    TOUCAN_PICK.center.copy(toucan.worldPosition);
+    // ASKED, not assumed: the bird owns its own size, so changing its scale cannot leave the click target
+    // behind. Generous by design — the model is a hovering bird and asking somebody to hit a wing is not
+    // an interaction.
+    TOUCAN_PICK.radius = toucan.pickRadius;
+    return raycaster.ray.intersectsSphere(TOUCAN_PICK);
+  }
+
   const projected = new THREE.Vector3();
   const projectedUp = new THREE.Vector3();
   const SELF_HEAD = new THREE.Vector3();
@@ -2109,6 +2214,38 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   function selfAnchor(): Vo3dScreenAnchor | null {
     const p = avatar.worldPosition();
     return anchorForWorldPoint(SELF_HEAD.set(p.x, HEAD_ANCHOR_Y_SELF, p.z));
+  }
+
+  /** ROOM DISCOVERY — the label's anchor AND the room's projected footprint, in one pass.
+   *
+   *  The four corners are projected at the label's own height rather than the rect being scaled by the
+   *  centre's `scale`: in 3D EXPLORE the far edge of a room is further from the camera than the near one,
+   *  and a single depth would over-report the floor by exactly the amount that makes a name overrun its
+   *  own walls. Reuses the corner vector, so this allocates nothing per frame. */
+  const ROOM_CORNER = new THREE.Vector3();
+  function roomLabelAnchor(roomId: string, point: THREE.Vector3): Vo3dRoomLabelAnchor {
+    const base = anchorForWorldPoint(point);
+    const rect = labelRects.find((r) => r.roomId === roomId)?.rect;
+    if (!rect) return { ...base, widthPx: 0, heightPx: 0 };
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const [cx, cz] of [
+      [rect.x, rect.z], [rect.x + rect.w, rect.z], [rect.x, rect.z + rect.d], [rect.x + rect.w, rect.z + rect.d],
+    ] as const) {
+      const corner = anchorForWorldPoint(ROOM_CORNER.set(cx, point.y, cz));
+      minX = Math.min(minX, corner.clientX); maxX = Math.max(maxX, corner.clientX);
+      minY = Math.min(minY, corner.clientY); maxY = Math.max(maxY, corner.clientY);
+    }
+    return { ...base, widthPx: maxX - minX, heightPx: maxY - minY };
+  }
+
+  /** PHASE 7G — THE BIRD'S OWN ANCHOR, for the world-space "Squawk squawk…" pill over it. A HAIR ABOVE
+   *  the bird rather than at it, so the pill clears the wings; not visible while the bird is not being
+   *  drawn, which is also how the pill disappears with it. */
+  const TOUCAN_HEAD = new THREE.Vector3();
+  function toucanAnchor(): Vo3dScreenAnchor | null {
+    if (!toucan.flying) return null;
+    const p = toucan.worldPosition;
+    return anchorForWorldPoint(TOUCAN_HEAD.set(p.x, p.y + 9, p.z));
   }
 
   /** PHASE 7B — MANY ANCHORS IN ONE CALL. The overhead layer asks for every person it is drawing something
@@ -2173,7 +2310,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // ---- the Championship Cave: the portal ------------------------------------------------------------
   // PHASE 7D — the CAVE's name on the movement wire. A roomId is any string server-side (socket.py's
   // _is_room_id), so this needs no backend change and collides with no V1 room id.
-  const CAVE_PLACE_ID = "championship-cave";
+  // The place name and the same-volume rule both live in app/coworkers, so the world that RESOLVES the
+  // name and the rule that FILTERS on it cannot drift apart.
+  const CAVE_PLACE_ID = CAVE_PLACE;
   /** PHASE 7E — THE AI LAB'S NAME ON THE MOVEMENT WIRE, on exactly the same terms as the CAVE's above: a
    *  roomId is any string server-side, so this needs no backend change and collides with no V1 room id.
    *
@@ -2196,6 +2335,30 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // PHASE 7E — the AI Lab joins it, for the identical reason and with an identical mapping: both places
     // are outside V1's frame, so a peer's `localPoint` IS their real world position out there.
     (c.place === CAVE_PLACE_ID || c.place === AI_LAB_PLACE_ID) && c.localPoint ? { ...c, worldPoint: c.localPoint } : c;
+  /** PHASE 7D FOLLOW-UP — ONE VOLUME AT A TIME.
+   *
+   *  The CAVE is a separate interior volume standing 1,146 units east of the V1 frame, and its geometry
+   *  is NEVER DRAWN while nobody is inside it (rooms/cave.ts states this as the contract). A peer who
+   *  walks in keeps being drawn at their real Cave coordinates — so from the office they appeared as a
+   *  body, with a nameplate, standing in an empty field beyond the campus, which is what the screenshot
+   *  shows. The room they are in is invisible; the person in it was not.
+   *
+   *  The fix is the same rule the geometry already follows, applied to the bodies: draw the people who
+   *  are in the volume you are in. The signal is the one the feed already publishes and this file already
+   *  reads — `place` — so nothing new is computed, carried or networked.
+   *
+   *  THE AI LAB IS DELIBERATELY NOT INCLUDED. It is a real building on the drawn campus, so somebody
+   *  standing in it is standing somewhere you can see. Only the Cave is invisible from outside. */
+  let rosterList: readonly Vo3dCoworker[] = [];
+  let rosterMissingAvatar: readonly string[] | undefined;
+  let rosterInsideCave = false;
+  function syncRoster(): void {
+    rosterInsideCave = caveTransition?.inside ?? false;
+    const sameVolume = coworkersInSameVolume(rosterList, rosterInsideCave);
+    void coworkers.sync(sameVolume.map(placeWorldPoint), rosterMissingAvatar).then(refreshCoworkerState);
+    refreshCoworkerState();
+  }
+
   caveTransition = new CaveTransition({
     build: caveBuild,
     // PHASE 7D — MULTIPLAYER. The CAVE is outside V1's coordinate frame, so a body inside it has no
@@ -2323,9 +2486,41 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // An exterior ambient creature, built on the GLB the app already ships (public/toucan/toucan.glb — the
   // same asset V1's 2D ToucanFlyer uses). It is SCENERY: added to the scene, never to the world graph, so
   // it has no footprint, is in no stand test and cannot be collided with.
-  const toucan = new Toucan(plan.frame);
+  // THE PERCH IS THE HUB'S OWN, passed in rather than imported by the flyer: rooms/central-hub declares
+  // TOUCAN_PERCH precisely so that "whatever integrates Toucan into V2 reads this", and a released bird
+  // has somewhere to go that is real geometry instead of a coordinate invented here.
+  // …AND THE ROOMS IT WANDERS THROUGH are the office's OWN, not a second list: `labelRects` is the same
+  // set of room rects Room Discovery letters and the camera frames, so the bird's indoor stops cannot
+  // drift from the building and nothing new has to be maintained when a room moves.
+  const toucanStops = labelRects.map((r) => ({ x: r.rect.x + r.rect.w / 2, z: r.rect.z + r.rect.d / 2 }));
+  const toucan = new Toucan(plan.frame, TOUCAN_PERCH, toucanStops);
   R.scene.add(toucan.root);
   void toucan.load().then((ok) => { if (disposed) return; if (ok) R.invalidateShadows(); }); // LIFECYCLE guard, as above
+  // ---- PHASE 7G: CALLING THE TOUCAN -----------------------------------------------------------------
+  // The whole of the world's part in it. The INTENT is a boolean; the flight, the park point, the arrival
+  // radius, the way home and the wing rhythm are all world/Toucan.ts's (and, under that, V1's own summon
+  // machine). What is published is V1's coarse state, so the host can do exactly what V1's office does:
+  // open the assistant when the bird ARRIVES, not when the button is pressed.
+  let toucanCalled = false;
+  let toucanReported: ToucanSummonState = "roaming";
+  const toucanListeners = new Set<(state: ToucanSummonState) => void>();
+  function publishToucanState(): void {
+    const next = toucan.summonState;
+    if (next === toucanReported) return;
+    toucanReported = next;
+    for (const listener of toucanListeners) listener(next);
+  }
+  function callToucan(): void {
+    toucanCalled = true;
+    // Told at once rather than on the next frame, so a click that lands on an already-parked bird
+    // re-reports `attending` immediately and the panel opens from the gesture that asked for it.
+    toucan.setSummonTarget({ x: avatar.position.x, z: avatar.position.z });
+    publishToucanState();
+  }
+  function releaseToucan(): void {
+    toucanCalled = false;
+    toucan.setSummonTarget(null);
+  }
   // Every automatic door the building has. Registered by ENTITY ID, so the sound comes from where the door
   // actually is and a door that is rebuilt (the Design Room's, under the geometry sliders) is still found.
   registerDoorSfx(DOOR_ID, () => door);
@@ -2346,7 +2541,13 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // THE BIRD FLIES WHETHER OR NOT ANYBODY IS LISTENING. Its update is the flight; the call it returns is
     // the only part that needs a mixer, so this runs before the audio guard rather than behind it.
     const outdoors = env.presentation === "world" && !(caveTransition?.inside ?? false);
+    // THE PARK ANCHOR, every frame while the bird is called — this body, wherever it has walked to. Null
+    // is the release, and the bird reads both through the same one setter (world/Toucan setSummonTarget).
+    toucan.setSummonTarget(toucanCalled ? { x: body.x, z: body.z } : null);
     const wantsCall = toucan.update(dt, env.weather, env.phase ?? "day", outdoors);
+    // ARRIVAL IS AN EVENT THE HOST WAITS FOR. Published after the step that could have changed it, and
+    // only on a real transition — this runs at 60 Hz.
+    publishToucanState();
     if (!envAudio.running) return;
     ear.pos.x = body.x;
     ear.pos.z = body.z;
@@ -2718,6 +2919,14 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // in FRONT of it: a colleague behind a desk must not steal the desk's own click, and one standing in
     // front of a chair must not lose to the chair. The two picks are weighed by hit distance, which is the
     // only honest comparison — both rays are the same ray.
+    // PHASE 7G — THE BIRD IS PICKED FIRST. It is small, it is in the air and nothing else is ever where
+    // it is, so there is no contest to weigh: a click on the toucan is a click on the toucan. And it
+    // means the SAME thing the summon button means — come here — so there is one entry point into the
+    // assistant and not a second one hiding on the model.
+    if (toucan.flying && pickToucanAt(e.clientX, e.clientY)) {
+      callToucan();
+      return;
+    }
     const person = pickCoworkerAt(e.clientX, e.clientY);
     const hit = pickInteractionHit(e.clientX, e.clientY);
     if (person && (!hit || person.distance <= hit.distance)) {
@@ -2972,6 +3181,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   toucanGui.add(toucan.state, "activity").name("weather activity (0 = grounded)").listen().disable();
   toucanGui.add(toucan.state, "calls").name("calls made").listen().disable();
   toucanGui.add(toucan.state, "nextCall").name("next call in (s)").listen().disable();
+  toucanGui.add(toucan.state, "phase").name("summon phase").listen().disable();
+  toucanGui.add({ f: () => callToucan() }, "f").name("▶ call it here");
+  toucanGui.add({ f: () => releaseToucan() }, "f").name("▶ release it");
   toucanGui.add({ f: () => toucan.reset() }, "f").name("▶ restart its lap");
 
   // ---- the AI Lab monkey (dev-only; the folder only exists with ?monkey=1) ----
@@ -3874,6 +4086,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // compares a boolean, sample() compares two numbers off the element, and the materials are only
       // touched when consumeChange says something really moved. No allocation on any frame.
       const insideCave = caveTransition?.inside ?? false;
+      // CROSSING THE PORTAL CHANGES WHO IS VISIBLE, and it is not a roster event, so the edge is caught
+      // here — beside the presentation switch that hides and shows the geometry for the same reason.
+      // Edge-gated: this is a 60 Hz loop and a re-sync is a GLB pass.
+      if (insideCave !== rosterInsideCave) syncRoster();
       cavePresentation.setActive(insideCave);
       cavePresentation.sample();
       caveGallery.setActive(insideCave);
@@ -4544,6 +4760,12 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       reset: (u?: number) => toucan.reset(u),
       /** step the flight deterministically from a test/console, bypassing the render loop */
       step: (dt: number) => toucan.update(dt, env.weather, env.phase ?? "day", env.presentation === "world" && !(caveTransition?.inside ?? false)),
+      // PHASE 7G — drive the summon from a test or the console. `call`/`release` are the real handlers the
+      // button and the model click use, so there is nothing test-only about the path being exercised.
+      call: callToucan, release: releaseToucan, summonState: () => toucan.summonState,
+      summoned: () => toucan.summonActive,
+      /** the park anchor the loop would write this frame, for stepping a summon without a render loop */
+      aim: (at: Vec2 | null) => toucan.setSummonTarget(at),
     },
     audio: {
       engine: envAudio, state: envAudio.state,
@@ -4911,8 +5133,13 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // outside V1's coordinate frame and no `point` can mean "in there". This is the one place that
       // knows what the name refers to — it owns the geometry — so it resolves the name to a real world
       // position here and hands the placer a `worldPoint` it can use directly.
-      void coworkers.sync(list.map(placeWorldPoint), missingAvatar).then(refreshCoworkerState);
-      refreshCoworkerState();
+      //
+      // …AND ONLY THE ONES IN THIS VOLUME are handed on — see syncRoster. The list is remembered rather
+      // than consumed, because the answer also changes when the VIEWER crosses the portal, which is not
+      // a roster event.
+      rosterList = list;
+      rosterMissingAvatar = missingAvatar;
+      syncRoster();
     },
     setCoworkerInteractions: (handlers) => {
       coworkerInteractions = handlers;
@@ -5015,6 +5242,26 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     coworkerAnchor,
     coworkerAnchors,
     selfAnchor: () => (avatar.root.visible ? selfAnchor() : null),
+    toucanAnchor,
+    // PHASE 7G. The intent, and V1's own coarse state pushed out as it changes — the host opens the
+    // assistant on ARRIVAL, exactly as V1's office does.
+    toucanSummon: {
+      call: callToucan,
+      release: releaseToucan,
+      state: () => toucan.summonState,
+      subscribe: (listener: (state: ToucanSummonState) => void) => {
+        toucanListeners.add(listener);
+        listener(toucan.summonState); // once immediately, so a subscriber never has to guess
+        return () => { toucanListeners.delete(listener); };
+      },
+    },
+    roomLabelIds: () => labelRects.map((r) => r.roomId),
+    roomLabelAnchors: () => {
+      const out: Record<string, Vo3dRoomLabelAnchor> = {};
+      for (const [roomId, point] of labelPoints) out[roomId] = roomLabelAnchor(roomId, point);
+      return out;
+    },
+    setRoomHighlight,
     currentRoomId: () => playerRoomId(),
     setSelectedRoom: (roomId) => {
       if (roomId === selectedRoom) return;

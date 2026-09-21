@@ -21,6 +21,15 @@
   transition: bottom 160ms ease-out;
 }
 
+/* A MINIMIZED WINDOW IS REALLY HIDDEN. `hidden` is a UA `display: none`, and an author `display: flex`
+   on the same element silently outranks it — which is exactly what happened: the minimized window kept
+   its wide header AND grew a bubble in the rail, so one conversation appeared twice. V1's own slot
+   carries no `display` at all, which is why it never had this. Kept as an attribute selector rather than
+   a second class so the markup stays the plain `hidden={w.minimized}` V1 writes. */
+.chatSlot[hidden] {
+  display: none;
+}
+
 /* Transient message — the same cream card family as the world menu, one step smaller. */
 .toast {
   position: fixed;
@@ -38,4 +47,154 @@
   font: 500 13px/1.35 system-ui, sans-serif;
   text-align: center;
   pointer-events: none;
+}
+
+/* THE MINIMIZED-CONVERSATION RAIL — V1's own treatment, value for value (OfficeMap.module.css's
+   .chatBubble* family), because a minimized chat should look identical in both worlds. A minimized
+   conversation is a circular employee avatar stacked at the bottom-right, never a wide header bar
+   abandoned in the window row.
+
+   WHERE IT SITS: hard against the right edge, ABOVE the Toucan summon button (58px tall at bottom:18),
+   so the two never overlap. A fixed offset rather than one measured off the bird, so the rail does not
+   jump when the Toucan is called or released. `column-reverse` grows the stack UPWARD from the corner,
+   which keeps the newest bubble closest to the thumb and to the button. */
+.bubbleRail {
+  position: fixed;
+  right: 18px;
+  bottom: 88px;
+  z-index: 140;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: center;
+  gap: 10px;
+  /* Never let a long rail push off the top of the window; the oldest bubbles scroll rather than vanish. */
+  max-height: calc(100vh - 160px);
+  overflow-y: auto;
+  overflow-x: visible;
+  scrollbar-width: none;
+}
+
+.bubbleRail::-webkit-scrollbar {
+  display: none;
+}
+
+.bubbleWrap {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  flex: none;
+}
+
+.bubble {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  position: relative;
+  display: block;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 2px solid #fdfcfa;
+  background: #e8e4f0;
+  box-shadow: 0 6px 18px rgba(18, 16, 28, 0.28);
+  overflow: visible;
+  transition: transform 120ms ease;
+}
+
+.bubble:hover {
+  transform: translateY(-2px);
+}
+
+.bubble:focus-visible,
+.bubbleClose:focus-visible {
+  outline: 2px solid #4bb96a;
+  outline-offset: 2px;
+}
+
+.bubbleImage {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+}
+
+.bubbleInitials {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 700;
+  color: rgba(36, 31, 48, 0.75);
+}
+
+.bubbleBadge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  border: 2px solid #fdfcfa;
+  background: #2f6b45;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Close sits on the bubble's outer edge and only appears on hover/focus, so the rail stays calm — and so
+   that RESTORING and CLOSING stay two plainly different gestures rather than one ambiguous one. */
+.bubbleClose {
+  all: unset;
+  position: absolute;
+  left: -6px;
+  top: -6px;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  border: 1px solid rgba(24, 20, 34, 0.12);
+  background: #fdfcfa;
+  color: #3f3a4d;
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.bubbleWrap:hover .bubbleClose,
+.bubbleClose:focus-visible {
+  opacity: 1;
+}
+
+/* NARROW VIEWPORTS. The Toucan button moves above the dock's strip below this width, so the rail moves
+   up with it and the two keep their gap. */
+@media (max-width: 900px) {
+  .bubbleRail {
+    right: 16px;
+    bottom: calc(var(--vo3d-dock-clearance, var(--vo-dock-clearance, 104px)) + 72px);
+    max-height: calc(100vh - 260px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bubble,
+  .bubbleClose {
+    transition: none;
+  }
+  .bubble:hover {
+    transform: none;
+  }
 }

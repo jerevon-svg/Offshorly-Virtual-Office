@@ -28,6 +28,23 @@
 // reads, the DM panel's own incoming messages, and V1's typing channel. No second chat subscription and
 // no second unread store exist.
 //
+// PHASE 7G ADDS THE TOUCAN — V1's assistant, unrebuilt. Nothing about the assistant itself is here:
+// components/OfficeMap/ToucanAssistantPanel is mounted unforked and it still owns its own transcript,
+// its own service (services/toucan), its own history, memories, action confirmations, delegation banner
+// and error handling. What lives HERE is only what a host has to supply: the window's slot in the same
+// right-to-left stack the chat windows use, the board the viewer asked about, the proactive return
+// briefing's summon, and the one conversation opener its return card hands a conversation id to.
+//
+// PHASE 7G — AND THE BIRD IS REAL. What the dock and the lower-right summon button do is CALL IT; the
+// world flies it (world/Toucan, over V1's own summon machine) and this file opens the assistant at the
+// moment it ARRIVES — `toucanState === "attending"`, which is V1's office sequence line for line. Release
+// withdraws the summon and the bird goes home to the Central Hub's perch; the conversation is untouched,
+// because it never lived here.
+//
+// CONTINUITY BETWEEN V1 AND V2 IS THE SERVER'S, not this file's. The transcript is seeded on MOUNT from
+// toucanService.loadLatestConversation(), so walking out of V1's office and into V2's world lands in the
+// same conversation, mid-thread — and no conversation is created by opening the panel in either place.
+//
 // PHASE 7A ADDS THE BRANDED HUD, rendered from here rather than beside it, because the two surfaces share
 // facts that must not be derived twice: ONE roster-to-layer map, ONE presence map, ONE profile modal, ONE
 // toast, and above all ONE action handler — the dock's Search offers Chat and Call on a person, and those
@@ -38,6 +55,7 @@ import type { Vo3dCoworkerSelection, Vo3dScreenAnchor } from "./interactions";
 import type { Vo3dWorld } from "./world";
 import { CoworkerActionMenu, type Vo3dCoworkerAction } from "./CoworkerActionMenu";
 import { Vo3dRoomDetails } from "./Vo3dRoomDetails";
+import { Vo3dRoomLabels } from "./Vo3dRoomLabels";
 import { resolveRoomDetails } from "./roomDetails";
 import { roomLayers, FRAME_WIDTH } from "../../../data/office-layout";
 import { emailKey, selfEmailKey } from "../adapters/v1Coworkers";
@@ -55,7 +73,16 @@ import { isRealZohoMode } from "../../../services/zoho";
 import { mayEnterOffice } from "./access";
 import type { V1Attendance } from "../adapters/v1Attendance";
 import { Vo3dHud } from "./Vo3dHud";
-import { Vo3dOverheads, SELF_OVERHEAD_KEY, type Vo3dOverhead } from "./Vo3dOverheads";
+import { Vo3dOverheads, SELF_OVERHEAD_KEY, TOUCAN_OVERHEAD_KEY, type Vo3dOverhead } from "./Vo3dOverheads";
+import { WhiteboardPanel } from "../../../components/Whiteboard/WhiteboardPanel";
+import { type WhiteboardScope } from "../../../services/whiteboard/whiteboardClient";
+import { flatRoomIdForRoomLayer, formatRoomName } from "../../../data/office-layout";
+import { profileImageFor } from "../../../data/portraits";
+import {
+  CHAT_BUBBLE_RAIL_GAP,
+  CHAT_BUBBLE_SIZE,
+} from "../../../components/OfficeMap/chatWindowLayout";
+import type { ToucanSummonState } from "../../../components/OfficeMap/toucanSummon";
 import { useSelfStatus } from "../../../services/presence/selfStatusStore";
 import {
   applyPeerTypingUpdate,
@@ -85,19 +112,27 @@ import {
   leaveMeetingChat,
   useMeetingChat,
 } from "../../../services/meeting/meetingChatClient";
-import { isPointerLocked } from "./keyGuard";
+import { isPointerLocked, isTypingTarget } from "./keyGuard";
 import { EmployeeProfile } from "../../../components/OfficeMap/EmployeeProfile";
 import { ConversationView } from "../../../components/Chat/ConversationView";
 import { buildChatAttentionByLayerId } from "../../../components/OfficeMap/chatAttention";
 import { useUnreadTotal } from "../../../services/chat/useUnreadTotal";
 import { createJoinRequest } from "../../../services/chat/requestsClient";
-import { chatService } from "../../../services/chat";
+import { chatMode, chatService } from "../../../services/chat";
 import { GroupConversationView } from "../../../components/Chat/GroupConversationView";
 import {
   computeFloatingChatRightOffsets,
   FLOATING_CHAT_EDGE_MARGIN,
   SPATIAL_WINDOW_KEY,
+  TOUCAN_WINDOW_KEY,
 } from "../../../components/OfficeMap/chatWindowLayout";
+import { ToucanAssistantPanel } from "../../../components/OfficeMap/ToucanAssistantPanel";
+import { subscribeToucanChannelConnected, toucanService, type ToucanCatchUp } from "../../../services/toucan";
+import {
+  readBriefedSince,
+  shouldBriefOnReturn,
+  writeBriefedSince,
+} from "../../../components/OfficeMap/toucanReturnBriefing";
 import { resolveConversationSlot } from "../../../components/OfficeMap/clusterFormation";
 import type { Conversation } from "../../../services/chat/types";
 import {
@@ -393,10 +428,26 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
     setRemoteWindows((prev) => prev.map((w) => (w.key === key ? { ...w, minimized: !w.minimized } : w)));
   }, []);
   const [chatMinimized, setChatMinimized] = useState(false);
+  /** WHICH BOARD IS OPEN, if any — V1's own `whiteboardTarget`, shape for shape. One at a time, because
+   *  the panel owns the screen; null is closed.
+   *
+   *  THE SCOPE IS V1'S CONTRACT, unchanged: `{kind:"conversation"}` for a DM **and** a group (there is no
+   *  second contract for the two — a conversation id is a conversation id), `{kind:"room"}` for a room's
+   *  boards. Nothing here creates, names or persists anything; services/whiteboard owns all of it. */
+  const [whiteboardTarget, setWhiteboardTarget] = useState<{ scope: WhiteboardScope; title: string } | null>(null);
+  const openConversationBoard = useCallback((conversationId: string, title: string) => {
+    setWhiteboardTarget({ scope: { kind: "conversation", id: conversationId }, title });
+  }, []);
   const [profileEmail, setProfileEmail] = useState<string | null>(null);
   /** ROOM DETAILS — the selected room, as the V1 MANIFEST room layer id the world reports. One at a time,
    *  exactly like the selected coworker, and null means the panel is closed. */
   const [roomDetailsId, setRoomDetailsId] = useState<string | null>(null);
+  /** ROOM DISCOVERY — are the room-name labels up. A view-independent preference: switching to PLAYER
+   *  hides them without forgetting that they were on, so coming back restores what the employee chose. */
+  const [roomDiscovery, setRoomDiscovery] = useState(false);
+  /** WHICH CAMERA IS DRIVING, from the world's own feed — the same one the HUD reads, so the labels and
+   *  the dock can never disagree about which view is on screen. */
+  const [viewMode, setViewMode] = useState<"office" | "explore" | "player">("office");
   const [toast, setToast] = useState<string | null>(null);
   const toastTimerRef = useRef<number | undefined>(undefined);
 
@@ -502,6 +553,27 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
    *  new conversation. The overhead is asking "am I typing", and that is the value it gets; the session
    *  scoping is done separately, against the live session membership, where it belongs. */
   const [selfTyping, setSelfTyping] = useState(false);
+  // THE TOUCAN'S two-value share of this block — the rest of it (the board context, the return briefing,
+  // the release and the panel itself) lives together further down, under "THE TOUCAN". These two are
+  // here because the conversation-pose pass below reads them, and V1 splits the same declaration for the
+  // same reason.
+  /** Is the assistant panel up. Its own lifetime: releasing closes it and deletes nothing, so reopening
+   *  takes the panel's MOUNT path and lands back in the same server-side conversation. NOT what the
+   *  controls set — the bird is called first and this follows on its arrival. */
+  const [toucanOpen, setToucanOpen] = useState(false);
+  /** Has the bird been CALLED. V1's `toucanCalled`: the intent, held here, separate from where the bird
+   *  has actually got to. */
+  const [toucanCalled, setToucanCalled] = useState(false);
+  /** Where the bird has got to, straight off the world — "roaming" until it is called, "approaching"
+   *  while it is in the air, "attending" once it is parked beside this body. */
+  const [toucanState, setToucanState] = useState<ToucanSummonState>("roaming");
+  /** A reply is being prepared. Drives the bird's world-space pill and nothing else: V1 is explicit that
+   *  the pill carries BIRD TALK only and must never mirror the assistant's real answer, which is why the
+   *  panel reports a boolean here and there is no channel through which text could reach the bird. */
+  const [toucanPending, setToucanPending] = useState(false);
+  /** Real keystrokes in the Toucan composer, on the panel's own idle timer. Fed ONLY to the body's
+   *  conversation pose — never to the overhead typing dots, which V1 deliberately leaves out too. */
+  const [toucanTyping, setToucanTyping] = useState(false);
 
   useEffect(() => {
     const unsubscribe = chatService.onTyping?.((update) => {
@@ -1210,8 +1282,16 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
         } : undefined,
       });
     }
+    // PHASE 7G — THE BIRD'S OWN PILL, on the one overhead layer this world already has. Anchored to the
+    // toucan's world position rather than to a body (TOUCAN_OVERHEAD_KEY), and carrying BIRD TALK only:
+    // one fixed string, shown while a reply is being prepared. V1 draws exactly this line and for exactly
+    // this reason — the meaningful answer belongs in the panel, and a bird in an office behaves like a
+    // bird.
+    if (toucanPending) {
+      out.push({ email: TOUCAN_OVERHEAD_KEY, displayName: "Toucan", sentText: "Squawk squawk…" });
+    }
     return out;
-  }, [callState.videoByIdentity, chatAttention, drawnEmails, inConversationEmails, insideCave, layersByEmail, meetingBubbles, meetingReactions, self, selfStatus, statusByEmail, talkingTextById, typingIds]);
+  }, [callState.videoByIdentity, chatAttention, drawnEmails, inConversationEmails, insideCave, layersByEmail, meetingBubbles, meetingReactions, self, selfStatus, statusByEmail, talkingTextById, toucanPending, typingIds]);
 
   // THE CONVERSATION POSES. Resolved by V1's OWN resolveCharacterAnimState, not by a rule invented here,
   // and pushed into the world the same way the roster and the occupancy are. Only the two conversation
@@ -1224,8 +1304,15 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
     for (const email of drawnEmails.map((e) => emailKey(e))) {
       poses.set(email, conversationClipFor(inConversationEmails.has(email), typingIds.has(email)));
     }
-    world.setConversationPoses(poses, conversationClipFor(inConversationEmails.has(self), typingIds.has(self)));
-  }, [drawnEmails, inConversationEmails, ready, self, typingIds, worldRef]);
+    // AN OPEN TOUCAN SESSION IS A CONVERSATION, for the viewer's own body only. V1 does exactly this —
+    // it adds the viewer's own layer id to the same two arrays this resolver is driven from — so talking
+    // to the assistant animates through the EXISTING seam rather than a new one, and stops the same way.
+    // Nothing is sent to anybody else: no chat conversation, no spatial session, no socket event.
+    world.setConversationPoses(
+      poses,
+      conversationClipFor(inConversationEmails.has(self) || toucanOpen, typingIds.has(self) || (toucanOpen && toucanTyping)),
+    );
+  }, [drawnEmails, inConversationEmails, ready, self, toucanOpen, toucanTyping, typingIds, worldRef]);
 
   /** Clicking the unread indicator opens that person's DM — the SAME panel the Chat action opens, in the
    *  same slot. Marking-as-read is left entirely to the panel, which is what makes the indicator go away. */
@@ -1316,9 +1403,52 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
   /** OPEN THE ROOM THE BODY IS STANDING IN — the dock's Room tile, and the only entry PLAYER mode can use
    *  (a pointer-locked player cannot click a floor region). The world answers from the SAME regions the
    *  click path reads, so the two entries can never disagree about which room you are in. */
+  useEffect(() => {
+    const world = worldRef.current;
+    if (!ready || !world) return;
+    return world.subscribeViewMode((mode) => setViewMode(mode));
+  }, [ready, worldRef]);
+
+  /** OFFICE AND 3D EXPLORE TAKE THE TREATMENT; PLAYER IS UNCHANGED. Not a preference — the labels are a
+   *  DOM layer over a floor you are looking down at, and a first-person player is not looking down at
+   *  one. Their Room tile keeps the behaviour it shipped with (see the tile handler below). */
+  const roomLabelsVisible = roomDiscovery && viewMode !== "player";
+
+  /** ESC DISMISSES THE LABELS. Deliberately BEFORE Room Details' own Escape would matter: the panel
+   *  handles its own key while it is open, and this listener is only mounted while the labels are up, so
+   *  the two never both act on one press. */
+  useEffect(() => {
+    if (!roomLabelsVisible) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || isTypingTarget(e)) return;
+      setRoomDiscovery(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [roomLabelsVisible]);
+
+  /** A ROOM NAME WAS CLICKED. Exactly what a click on that room's FLOOR does — the world is told which
+   *  room is selected (which frames it through the existing smooth focus) and the panel opens. The labels
+   *  stay up: hopping from room to room is the whole point of discovery, and the panel is docked to one
+   *  edge rather than over the floor. */
+  const openRoomFromLabel = useCallback(
+    (roomId: string) => {
+      worldRef.current?.setSelectedRoom?.(roomId);
+      setRoomDetailsId(roomId);
+    },
+    [worldRef],
+  );
+
   const openCurrentRoom = useCallback(() => {
     const world = worldRef.current;
     if (!world) return;
+    // OFFICE / 3D EXPLORE: the tile is the discovery TOGGLE. The labels are how you pick a room there,
+    // so opening one from the dock as well would be a second answer to the same question.
+    if (viewMode !== "player") {
+      setRoomDiscovery((on) => !on);
+      return;
+    }
+    // PLAYER: unchanged. No labels are drawn, so the tile still opens the room the body is standing in.
     const roomId = world.currentRoomId?.() ?? null;
     if (!roomId) {
       showToast("Step into a room to see who’s in it.");
@@ -1326,7 +1456,7 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
     }
     world.setSelectedRoom?.(roomId);
     setRoomDetailsId(roomId);
-  }, [showToast, worldRef]);
+  }, [showToast, viewMode, worldRef]);
 
   /** SELECTING SOMEBODY FROM THE PANEL runs V1's EXISTING employee interactions and adds none of its own:
    *  it makes the same selection a click on their body makes (world.selectCoworkerByEmail, which is also
@@ -1352,14 +1482,169 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
     [closeRoomDetails, self, worldRef],
   );
 
+  // ---- THE TOUCAN -----------------------------------------------------------------------------------
+  // Every line below is a HOST concern. The assistant, its conversation, its actions, its permissions and
+  // its error handling are the panel's and the service's, untouched.
+
+  // (toucanOpen / toucanTyping are declared with the chat state far above, because the body's
+  //  conversation pose — which is computed up there — reads both.)
+  /** W5-C — the board the viewer pressed "Ask Toucan" on, from the dock's Boards panel. */
+  const [toucanBoardContext, setToucanBoardContext] = useState<{ boardId: string; title: string } | null>(null);
+  /** A5 — the catch-up that qualified as a genuine return, handed to the panel to speak once. */
+  const [toucanReturnBriefing, setToucanReturnBriefing] = useState<ToucanCatchUp | null>(null);
+  const toucanBriefedSinceRef = useRef<string | null>(null);
+
+  /** V1's own toucan-chrome gate, in V2's terms: offered to somebody V1 says is checked in, and taken
+   *  away again while the exit journey owns the screen — a parked assistant beside a departing avatar is
+   *  exactly what V1 refuses to leave behind. */
+  const toucanAvailable =
+    attendance.record?.status === "CHECKED_IN" && checkoutFlow.state !== "CHECKED_OUT" && !checkoutPanelOpen;
+
+  /** COME HERE — the one handler behind the summon button, the dock tile, the T key, a click on the bird
+   *  itself and the Boards seam. It opens NOTHING: it tells the world to fly the bird, and the arrival
+   *  effect below is what opens the assistant. That ordering is the whole difference between a companion
+   *  and a chat icon, and it is V1's. */
+  const callToucan = useCallback(() => {
+    setToucanCalled(true);
+    // OPTIONAL, like every other world verb this file reaches (selectCoworkerByEmail, caveMeeting): the
+    // host can mount this overlay over a world that does not carry the bird, and a missing companion must
+    // never be an exception on a button press.
+    worldRef.current?.toucanSummon?.call();
+  }, [worldRef]);
+
+  /** RELEASE, V1's own: the panel closes, the bird is let go — and NOTHING is deleted. The transcript,
+   *  the memories and the conversation id are the server's, so re-summoning takes the panel's mount path
+   *  and lands back in the same conversation. The bird flies home to the hub's perch (world/Toucan). */
+  const releaseToucan = useCallback(() => {
+    setToucanCalled(false);
+    worldRef.current?.toucanSummon?.release();
+    setToucanOpen(false);
+    setToucanBoardContext(null);
+    setToucanReturnBriefing(null);
+    setToucanPending(false);
+    // Never leave the body stuck mid-gesture.
+    setToucanTyping(false);
+  }, [worldRef]);
+
+  /** WHERE THE BIRD IS, pushed by the world on every real change and once on subscribe. */
+  useEffect(() => {
+    const world = worldRef.current;
+    if (!ready || !world?.toucanSummon) return;
+    return world.toucanSummon.subscribe(setToucanState);
+  }, [ready, worldRef]);
+
+  // ARRIVAL OPENS THE ASSISTANT — V1's own line, and the reason the controls do not open it themselves.
+  // Gated on the INTENT as well as the state, so a bird that happens to be parked when somebody releases
+  // it cannot re-open the panel behind them.
+  useEffect(() => {
+    if (toucanCalled && toucanState === "attending") setToucanOpen(true);
+  }, [toucanCalled, toucanState]);
+
+  // CHECKOUT (and anything else that takes the chrome away) LETS THE BIRD GO, exactly as V1 refuses to
+  // leave it parked beside a departing avatar with an orphaned panel.
+  useEffect(() => {
+    if (!toucanAvailable && (toucanOpen || toucanCalled)) releaseToucan();
+  }, [releaseToucan, toucanAvailable, toucanCalled, toucanOpen]);
+
+  // THE POINTER LOCK, on the same rule the incoming ring and the expanded call use above: a panel a
+  // pointer-locked player cannot click is a dead end, and the briefing can open this one without anybody
+  // having touched the dock. Releasing the lock does not stop PLAYER or move the body.
+  useEffect(() => {
+    if (toucanOpen && isPointerLocked()) document.exitPointerLock();
+  }, [toucanOpen]);
+
+  /** The return card's Open button, which knows a conversation only by its id. Resolved against the rows
+   *  this overlay ALREADY holds (useUnreadTotal) before asking the server for them again, and handed to
+   *  the one conversation opener — the inbox's, the Map's and New Message's — so it cannot become a
+   *  second way to open a conversation. */
+  const openConversationById = useCallback((conversationId: string) => {
+    const known = conversations.find((c) => c.id === conversationId);
+    if (known) {
+      openConversation(known);
+      return;
+    }
+    void chatService
+      .listConversations()
+      .then((list) => {
+        const conv = list.find((c) => c.id === conversationId);
+        if (conv) openConversation(conv);
+      })
+      .catch(() => {});
+  }, [conversations, openConversation]);
+
+  // A5 — PROACTIVE RETURN BRIEFING, V1's implementation reached through V1's own modules. The trigger is
+  // the server's catch-up and nothing else, and the dedup key is its frozen absence boundary, remembered
+  // per viewer in localStorage by toucanReturnBriefing.ts — the SAME key V1's office writes, so a return
+  // briefed in one world is never briefed again in the other.
+  useEffect(() => {
+    let cancelled = false;
+    const unsubscribe = subscribeToucanChannelConnected(() => {
+      Promise.resolve()
+        .then(() => toucanService.getCatchUp())
+        .then((catchUp) => {
+          if (cancelled || !catchUp) return;
+          const viewer = getCurrentUserId();
+          const already = toucanBriefedSinceRef.current ?? readBriefedSince(viewer);
+          if (shouldBriefOnReturn(catchUp, already)) setToucanReturnBriefing(catchUp);
+        })
+        .catch(() => {});
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!toucanReturnBriefing || !toucanAvailable) return;
+    const since = toucanReturnBriefing.activity.since;
+    if (toucanBriefedSinceRef.current === since) return;
+    toucanBriefedSinceRef.current = since;
+    writeBriefedSince(getCurrentUserId(), since);
+    // SUMMONS THE BIRD, exactly as the button does — the briefing is Toucan coming to find you, so it
+    // arrives the same way rather than materialising a panel out of nowhere.
+    callToucan();
+  }, [callToucan, toucanAvailable, toucanReturnBriefing]);
+
+  /** W5-C's seam, from the dock's Boards panel. V1's own two lines: note the board, then summon — the
+   *  EXISTING panel opens on arrival, scoped to that board. */
+  const askToucanAboutBoard = useCallback((board: { id: string; title: string }) => {
+    setToucanBoardContext({ boardId: board.id, title: board.title });
+    callToucan();
+  }, [callToucan]);
+
+  /** ONE CONDITION for "a panel this file owns has the screen" — V1 lists `whiteboardTarget` in its own
+   *  officeToolOpen for exactly this reason, so the dock, the pointer lock and the minimized-chat rail
+   *  all step aside for a board the same way they do for Room Details. */
+  const overlayToolOpen = profileEmail !== null || checkoutPanelOpen || roomDetailsId !== null || whiteboardTarget !== null;
+
+  /** The FLAT room id for the open Room Details panel — the namespace a room's boards are keyed on, and
+   *  null for a room that has no flat twin. */
+  const roomBoardScope = useMemo(
+    () => (roomDetailsId ? flatRoomIdForRoomLayer(roomDetailsId) : null),
+    [roomDetailsId],
+  );
+
   /** WHERE EACH WINDOW SITS. V1's own right-to-left stack (chatWindowLayout), so a spatial window and
    *  several Global Chat windows share one row instead of landing on top of each other. */
+  /** THE MINIMIZED ONES. V1 turns a minimized Global Chat window into a circular avatar in a vertical
+   *  rail at the bottom-right corner — not a header bar left lying in the row — so this is the same
+   *  split it makes: out of the horizontal stack, into the rail. */
+  const minimizedRemote = useMemo(() => remoteWindows.filter((w) => w.minimized), [remoteWindows]);
+
   const windowOffsets = useMemo(() => {
     const items: { key: string; minimized: boolean }[] = [];
+    // The Toucan keeps the RIGHTMOST slot while it is open (it never minimizes), so a conversation
+    // opened from its own return card lands BESIDE it rather than on top of it. V1's order.
+    if (toucanOpen) items.push({ key: TOUCAN_WINDOW_KEY, minimized: false });
     for (const w of remoteWindows) if (!w.minimized) items.push({ key: w.key, minimized: false });
     if (openChat || openGroupConv) items.push({ key: SPATIAL_WINDOW_KEY, minimized: chatMinimized });
-    return computeFloatingChatRightOffsets(items, FLOATING_CHAT_EDGE_MARGIN);
-  }, [chatMinimized, openChat, openGroupConv, remoteWindows]);
+    // CLEAR THE RAIL. V1's own base offset: while anything is minimized, the horizontal stack starts to
+    // the LEFT of the bubble column instead of underneath it.
+    const base =
+      FLOATING_CHAT_EDGE_MARGIN + (minimizedRemote.length > 0 ? CHAT_BUBBLE_SIZE + CHAT_BUBBLE_RAIL_GAP : 0);
+    return computeFloatingChatRightOffsets(items, base);
+  }, [chatMinimized, minimizedRemote.length, openChat, openGroupConv, remoteWindows, toucanOpen]);
   const slotStyle = (key: string) => ({ right: windowOffsets.get(key) ?? FLOATING_CHAT_EDGE_MARGIN });
 
   const menuVisible = selection !== null && anchor !== null && anchor.visible;
@@ -1467,9 +1752,13 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
         resolveDisplayName={resolveDisplayName}
         selfIdentity={self}
       />
+      {/* Every remote window stays MOUNTED whatever its state — a minimized one is only HIDDEN here and
+          drawn as a bubble in the rail below, so its messages, its draft, its scroll position, its socket
+          subscriptions and its read receipts are all untouched by minimizing. V1's own rule, and the
+          reason restoring one is instant rather than a reload. */}
       {remoteWindows.map((w) =>
         w.kind === "dm" ? (
-          <div key={w.key} className={styles.chatSlot} style={slotStyle(w.key)}>
+          <div key={w.key} className={styles.chatSlot} hidden={w.minimized} style={slotStyle(w.key)}>
             <ConversationView
               peer={peerLayerFor(w.peerEmail)}
               selfId={self}
@@ -1479,10 +1768,14 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
               minimized={w.minimized}
               onMinimizeToggle={() => toggleRemote(w.key)}
               onClose={() => closeRemote(w.key)}
+              // V1's own DM board entry point, and its own signature: the panel hands up the conversation
+              // id it already resolved, so the board is scoped to THIS one-to-one conversation and never
+              // to a guess made from an email.
+              onOpenWhiteboard={chatMode === "real" ? openConversationBoard : undefined}
             />
           </div>
         ) : (
-          <div key={w.key} className={styles.chatSlot} style={slotStyle(w.key)}>
+          <div key={w.key} className={styles.chatSlot} hidden={w.minimized} style={slotStyle(w.key)}>
             <GroupConversationView
               conversationId={w.conversationId}
               selfId={self}
@@ -1492,9 +1785,77 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
               minimized={w.minimized}
               onMinimizeToggle={() => toggleRemote(w.key)}
               onClose={() => closeRemote(w.key)}
+              // The GROUP's own conversation id — the same `{kind:"conversation"}` scope a DM uses, which
+              // is V1's contract and not a second one.
+              onOpenWhiteboard={
+                chatMode === "real"
+                  ? () => openConversationBoard(w.conversationId, w.title ?? "Group")
+                  : undefined
+              }
             />
           </div>
         ),
+      )}
+      {/* THE RAIL — V1's minimized conversations, as circular employee avatars stacked above the Toucan
+          button. Each one carries its own unread count and its own close, because minimizing and closing
+          are different decisions: the bubble RESTORES (the very same toggle the window header's minus
+          runs) and the ✕ beside it CLOSES (the same closeRemote the header's ✕ runs). No second chat
+          state exists here — a bubble is a view of a window that is already open.
+
+          It steps aside for a panel that owns the screen, exactly as the dock and the Toucan button do. */}
+      {minimizedRemote.length > 0 && !overlayToolOpen && (
+        <div className={styles.bubbleRail} aria-label="Minimized conversations">
+          {minimizedRemote.map((w) => {
+            const name =
+              w.kind === "dm"
+                ? resolveDisplayName(w.peerEmail)
+                : w.title
+                  || w.participantIds.filter((e) => emailKey(e) !== self).map(resolveDisplayName).join(", ")
+                  || "Group";
+            // A group wears one of its members' faces, as V1's rail does — the roster has no portrait
+            // for a conversation, and a generic glyph would make two groups indistinguishable.
+            const portraitEmail =
+              w.kind === "dm" ? w.peerEmail : (w.participantIds.find((e) => emailKey(e) !== self) ?? "");
+            const portrait = profileImageFor(portraitEmail, () => "");
+            const conv = conversations.find((c) =>
+              w.kind === "group"
+                ? c.id === w.conversationId
+                : (c.type ?? "dm") !== "group" && c.participantIds.some((id) => emailKey(id) === w.peerEmail),
+            );
+            // THE SAME ROWS the dock's badge and the inbox read (useUnreadTotal) — messages that land
+            // while a conversation is minimized raise its bubble's count, and opening it clears it,
+            // because the panel behind the bubble is the thing that marks them read.
+            const unread = conv?.unreadCount ?? 0;
+            return (
+              <div key={w.key} className={styles.bubbleWrap}>
+                <button
+                  type="button"
+                  className={styles.bubble}
+                  onClick={() => toggleRemote(w.key)}
+                  aria-label={`Restore chat with ${name}${unread > 0 ? `, ${unread} unread` : ""}`}
+                  title={name}
+                  data-testid={`vo3d-chat-bubble-${w.key}`}
+                >
+                  {portrait ? (
+                    <img className={styles.bubbleImage} src={portrait} alt="" draggable={false} />
+                  ) : (
+                    <span className={styles.bubbleInitials}>{name.trim().charAt(0).toUpperCase() || "?"}</span>
+                  )}
+                  {unread > 0 && <span className={styles.bubbleBadge}>{unread > 99 ? "99+" : unread}</span>}
+                </button>
+                <button
+                  type="button"
+                  className={styles.bubbleClose}
+                  onClick={() => closeRemote(w.key)}
+                  aria-label={`Close chat with ${name}`}
+                  title="Close"
+                >
+                  ×
+                </button>
+              </div>
+            );
+          })}
+        </div>
       )}
       {openChat && (
         <div className={styles.chatSlot} style={slotStyle(SPATIAL_WINDOW_KEY)}>
@@ -1513,6 +1874,9 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
             // the conversation this panel is open on.
             onTypingChange={setSelfTyping}
             headerExtra={<SpatialCallControls sessionId={openConversationId} onExpand={() => setCallExpanded(true)} />}
+            // The SPATIAL DM's board — the same conversation, so the same board, whether you reached it
+            // by walking up to somebody or from the inbox.
+            onOpenWhiteboard={chatMode === "real" ? openConversationBoard : undefined}
             minimized={chatMinimized}
             onMinimizeToggle={() => setChatMinimized((v) => !v)}
             onConversationOpen={(conversationId) => {
@@ -1543,6 +1907,11 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
             isSpatial
             onIncomingMessage={handleTalkingMessage}
             onTypingChange={setSelfTyping}
+            onOpenWhiteboard={
+              chatMode === "real"
+                ? () => openConversationBoard(openGroupConv.id, openGroupConv.title ?? "Group")
+                : undefined
+            }
             minimized={chatMinimized}
             onMinimizeToggle={() => setChatMinimized((v) => !v)}
             onClose={() => {
@@ -1553,6 +1922,57 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
           />
         </div>
       )}
+      {/* THE WHITEBOARD — V1's OWN PANEL, unforked, and the only one in the app. It owns its own boards,
+          its access rules, its realtime session and its persistence; all this file supplies is WHICH
+          scope to show and where the Ask Toucan button goes. Opening or closing it touches no
+          conversation: every chat window stays mounted behind it, so a board is something you open
+          BESIDE a conversation rather than instead of it. */}
+      {chatMode === "real" && whiteboardTarget && (
+        <WhiteboardPanel
+          scope={whiteboardTarget.scope}
+          title={whiteboardTarget.title}
+          resolveDisplayName={resolveDisplayName}
+          onClose={() => {
+            setWhiteboardTarget(null);
+            // V1's own rule: the board you were asking Toucan about goes with the panel that showed it.
+            setToucanBoardContext(null);
+          }}
+          // W5-C's EXISTING seam, the same one the dock's Boards panel uses — one Ask Toucan, not two.
+          onAskToucan={toucanAvailable ? askToucanAboutBoard : undefined}
+        />
+      )}
+      {/* THE TOUCAN PANEL — V1's component, unforked, in the floating window stack's rightmost slot.
+          Its lifetime is the SESSION, not any flight phase (V2 has no bird): it stays mounted while open
+          so the transcript, the draft and any in-flight question survive a view switch, a walk or a
+          panel opening over it. W5-C lifts it above the whiteboard overlay (z-index 1200) while a board
+          question is in flight, exactly as V1 lifts it. */}
+      {toucanOpen && (
+        <div
+          className={styles.chatSlot}
+          style={{ ...slotStyle(TOUCAN_WINDOW_KEY), ...(toucanBoardContext ? { zIndex: 1300 } : {}) }}
+          data-testid="vo3d-toucan"
+        >
+          <ToucanAssistantPanel
+            onRelease={releaseToucan}
+            onTypingChange={setToucanTyping}
+            // A BOOLEAN, and the bird's pill is built from it — see the overhead row below and V1's own
+            // note on why no response text may ever reach the world-space bubble.
+            onPendingChange={setToucanPending}
+            onOpenConversation={openConversationById}
+            returnBriefing={toucanReturnBriefing}
+            boardContext={toucanBoardContext}
+            onClearBoardContext={() => setToucanBoardContext(null)}
+          />
+        </div>
+      )}
+      {/* ROOM DISCOVERY — the room names over the floor. Mounted only where the treatment applies, so
+          PLAYER keeps exactly the behaviour it shipped with. */}
+      <Vo3dRoomLabels
+        worldRef={worldRef}
+        ready={ready}
+        active={roomLabelsVisible}
+        onSelectRoom={openRoomFromLabel}
+      />
       {/* ROOM DETAILS — V1's room panel, in V2's world. Always mounted so the slide-out animates and its
           content survives the close, exactly as V1's RoomSidebar stays mounted. */}
       <Vo3dRoomDetails
@@ -1560,6 +1980,15 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
         side={roomDetailsSide}
         onClose={closeRoomDetails}
         onSelectPerson={selectRoomPerson}
+        // THIS ROOM'S BOARDS — V1's own room-sidebar entry point. The scope is the FLAT room id, which is
+        // the namespace boards are keyed on, resolved through V1's own helper from the manifest layer id
+        // the world reports. `null` (the Central Hub, which has no flat twin) offers no button at all
+        // rather than inventing a scope that nothing could answer for.
+        onOpenWhiteboards={
+          chatMode === "real" && roomBoardScope
+            ? () => setWhiteboardTarget({ scope: { kind: "room", id: roomBoardScope }, title: formatRoomName(roomDetailsId!) })
+            : undefined
+        }
       />
       {profileEmail && (
         <EmployeeProfile
@@ -1595,6 +2024,7 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
         onStartGroup={startGroup}
         // ROOM DETAILS — the dock's Room tile, and the ONLY entry PLAYER mode has (see openCurrentRoom).
         onOpenCurrentRoom={openCurrentRoom}
+        roomDiscoveryActive={roomLabelsVisible}
         // The profile modal is the overlay's own screen-owning panel, so it joins the dock's ONE
         // visibility rule rather than being a case the dock does not know about.
         // CHECKOUT IS THE SOLE FOCUS while it is up. It joins V1's own one-line "a tool owns the screen"
@@ -1603,7 +2033,16 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
         // Reception exit CARD is deliberately not here — it is an anchored world card, not a tool.
         // ROOM DETAILS joins the same one-line rule, as it does in V1 (OfficeMap's officeToolOpen lists
         // roomSidebar): the dock and the pointer lock step aside for a focused side panel.
-        overlayToolOpen={profileEmail !== null || checkoutPanelOpen || roomDetailsId !== null}
+        overlayToolOpen={overlayToolOpen}
+        // THE TOUCAN. The dock owns the tile; everything else about it is above. The panel is a floating
+        // WINDOW, so it deliberately does NOT join `overlayToolOpen` — the dock stays up beside it and
+        // every other tool stays reachable while it is open, which is how it behaves in V1's office.
+        toucanAvailable={toucanAvailable}
+        toucanCalled={toucanCalled}
+        toucanState={toucanState}
+        onCallToucan={callToucan}
+        onAskToucanAboutBoard={askToucanAboutBoard}
+        onClearToucanBoardContext={() => setToucanBoardContext(null)}
       />
     </>
   );

@@ -117,6 +117,9 @@ vi.mock("../../../services/chat", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../services/chat")>();
   return {
     ...actual,
+    // REAL MODE, because that is the only mode in which V1 offers the inbox, the group windows and the
+    // whiteboard entry points at all — the parity this file now covers does not exist in mock mode.
+    chatMode: "real",
     chatService: {
       ...actual.chatService,
       onTyping: (cb: (u: { senderId: string; conversationId: string; isTyping: boolean }) => void) => {
@@ -131,7 +134,13 @@ vi.mock("../../../services/chat", async (importOriginal) => {
 // wiring rather than about a chat transport or a profile fetch.
 // The stub forwards V1's own onTypingChange edge, which is the seam under test.
 vi.mock("../../../components/Chat/ConversationView", () => ({
-  ConversationView: ({ peer, onTypingChange, onIncomingMessage }: { peer: { id: string }; onTypingChange?: (t: boolean) => void; onIncomingMessage?: (m: unknown) => void }) => (
+  ConversationView: ({ peer, onTypingChange, onIncomingMessage, onMinimizeToggle, onOpenWhiteboard }: {
+    peer: { id: string };
+    onTypingChange?: (t: boolean) => void;
+    onIncomingMessage?: (m: unknown) => void;
+    onMinimizeToggle?: () => void;
+    onOpenWhiteboard?: (conversationId: string, title: string) => void;
+  }) => (
     <div
       data-testid="conversation"
       ref={(el) => {
@@ -142,6 +151,38 @@ vi.mock("../../../components/Chat/ConversationView", () => ({
       }}
     >
       {peer.id}
+      {onMinimizeToggle && (
+        <button type="button" aria-label={`minimize ${peer.id}`} onClick={onMinimizeToggle} />
+      )}
+      {onOpenWhiteboard && (
+        <button type="button" aria-label={`board ${peer.id}`} onClick={() => onOpenWhiteboard("conv-dm", peer.id)} />
+      )}
+    </div>
+  ),
+}));
+// The GROUP window and the WHITEBOARD both fetch on mount; stubbed so these stay about the WIRING —
+// which scope a board is opened at, and that a conversation is never disturbed by one.
+vi.mock("../../../components/Chat/GroupConversationView", () => ({
+  GroupConversationView: ({ conversationId, onMinimizeToggle, onOpenWhiteboard }: {
+    conversationId: string; onMinimizeToggle?: () => void; onOpenWhiteboard?: () => void;
+  }) => (
+    <div data-testid="group-conversation">
+      {conversationId}
+      {onMinimizeToggle && <button type="button" aria-label={`minimize ${conversationId}`} onClick={onMinimizeToggle} />}
+      {onOpenWhiteboard && <button type="button" aria-label={`board ${conversationId}`} onClick={onOpenWhiteboard} />}
+    </div>
+  ),
+}));
+vi.mock("../../../components/Whiteboard/WhiteboardPanel", () => ({
+  WhiteboardPanel: ({ scope, title, onClose, onAskToucan }: {
+    scope: { kind: string; id: string }; title: string; onClose: () => void;
+    onAskToucan?: (b: { id: string; title: string }) => void;
+  }) => (
+    <div data-testid="whiteboard" data-scope={`${scope.kind}:${scope.id}`} data-title={title}>
+      <button type="button" aria-label="close board" onClick={onClose} />
+      {onAskToucan && (
+        <button type="button" aria-label="ask toucan about board" onClick={() => onAskToucan({ id: "b1", title })} />
+      )}
     </div>
   ),
 }));
@@ -149,6 +190,43 @@ vi.mock("../../../components/OfficeMap/EmployeeProfile", () => ({
   EmployeeProfile: ({ email }: { email: string }) => <div data-testid="profile">{email}</div>,
 }));
 vi.mock("../../../components/OfficeMap/SpatialCallControls", () => ({ SpatialCallControls: () => null }));
+// PHASE 7G — V1's Toucan panel. Stubbed for the same reason ConversationView is: it loads a transcript
+// from the service on mount, and what is under test here is the HOST's part — the slot it lands in, the
+// board it was asked about, the typing edge it reports and the conversation opener its return card uses.
+// The real panel's own behaviour is components/OfficeMap/Toucan*.test.tsx's subject.
+vi.mock("../../../components/OfficeMap/ToucanAssistantPanel", () => ({
+  ToucanAssistantPanel: ({ onRelease, onTypingChange, onPendingChange, onOpenConversation, boardContext }: {
+    onRelease: () => void;
+    onTypingChange?: (t: boolean) => void;
+    onPendingChange?: (p: boolean) => void;
+    onOpenConversation?: (id: string) => void;
+    boardContext?: { boardId: string; title: string } | null;
+  }) => (
+    <div data-testid="toucan-panel">
+      {boardContext ? <span data-testid="toucan-board">{boardContext.boardId}</span> : null}
+      <button type="button" aria-label="toucan-release" onClick={onRelease} />
+      <button type="button" aria-label="toucan-type-on" onClick={() => onTypingChange?.(true)} />
+      <button type="button" aria-label="toucan-type-off" onClick={() => onTypingChange?.(false)} />
+      <button type="button" aria-label="toucan-open-conversation" onClick={() => onOpenConversation?.("conv-9")} />
+      <button type="button" aria-label="toucan-pending-on" onClick={() => onPendingChange?.(true)} />
+    </div>
+  ),
+}));
+// A5's proactive return briefing reaches the overlay through V1's own Toucan channel. Both halves are
+// driven per test so the summon can be asserted without a socket.
+let toucanConnected: (() => void)[] = [];
+let catchUp: unknown = null;
+vi.mock("../../../services/toucan", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../services/toucan")>();
+  return {
+    ...actual,
+    subscribeToucanChannelConnected: (cb: () => void) => {
+      toucanConnected.push(cb);
+      return () => { toucanConnected = toucanConnected.filter((x) => x !== cb); };
+    },
+    toucanService: { ...actual.toucanService, getCatchUp: async () => catchUp },
+  };
+});
 // PHASE 7E — V1'S OWN ATTENDANCE SERVICE, stubbed at the boundary the overlay actually calls. Everything
 // about the kiosk that matters is WHICH calls reach this and how its answer is treated.
 type Rec = { email: string; status: string; checkedInAt: string | null; checkedOutAt: string | null };
@@ -183,6 +261,20 @@ const clearSelection = vi.fn();
 /** ROOM DETAILS — the world's two room verbs, and its answer for "which room am I standing in". */
 let currentRoomId: string | null = "design-room";
 const setSelectedRoom = vi.fn();
+/** ROOM DISCOVERY — the label layer's three world reads, and the view the world says is driving. */
+const setRoomHighlight = vi.fn();
+const ROOM_LABEL_IDS = ["design-room", "dev-room", "central-hub"];
+/** How big each of those floors is ON SCREEN this frame — what a name is checked against for overflow. */
+let roomFootprints: Record<string, { widthPx: number; heightPx: number }> = {};
+/** One world unit in CSS pixels: the camera zoom, and the ONE input to the shared label size. */
+let roomScale = 1.2;
+let viewMode: "office" | "explore" | "player" = "office";
+let viewModeSubs: ((m: "office" | "explore" | "player") => void)[] = [];
+/** Switch the camera mode the way the world's own feed would. */
+function setViewMode(mode: typeof viewMode) {
+  viewMode = mode;
+  act(() => viewModeSubs.forEach((cb) => cb(mode)));
+}
 /** Whether the world is DRAWING the person Search / a Room Details row asked to select. */
 let worldHasBody = true;
 const selectByEmail = vi.fn((_email: string) => worldHasBody);
@@ -195,7 +287,31 @@ function setCaveInside(inside: boolean) {
   act(() => caveSubs.forEach((cb) => cb({ inside })));
 }
 
+/** PHASE 7G — THE WORLD'S BIRD, as the overlay reaches it. `call`/`release` are recorded and the state is
+ *  pushed by the test, which is exactly the shape the real world publishes: the HUD asks for a summon and
+ *  the ARRIVAL comes back later, on its own frame. */
+const toucanCall = vi.fn();
+const toucanRelease = vi.fn();
+let toucanSubs: ((s: "roaming" | "approaching" | "attending") => void)[] = [];
+let toucanPhase: "roaming" | "approaching" | "attending" = "roaming";
+/** Fly the bird, the way the world's frame loop would. */
+function flyToucan(phase: "roaming" | "approaching" | "attending") {
+  toucanPhase = phase;
+  act(() => toucanSubs.forEach((cb) => cb(phase)));
+}
+
 const world = {
+  toucanSummon: {
+    call: () => { toucanCall(); },
+    release: () => { toucanRelease(); },
+    state: () => toucanPhase,
+    subscribe: (cb: (s: "roaming" | "approaching" | "attending") => void) => {
+      toucanSubs.push(cb);
+      cb(toucanPhase);
+      return () => { toucanSubs = toucanSubs.filter((x) => x !== cb); };
+    },
+  },
+  toucanAnchor: () => ({ clientX: 200, clientY: 140, visible: true, scale: 1 }),
   setCoworkerInteractions: (h: Handlers | null) => { handlers = h; },
   // Phase 7B's overhead layer asks for anchors every frame; a fixed one is enough here — WHERE they land
   // is Vo3dOverheads.test.tsx's subject, WHAT is overhead is this file's.
@@ -205,7 +321,23 @@ const world = {
   setExitAuthorized,
   setDepartureDestination,
   setInteractionPromptHidden,
-  subscribeViewMode: (cb: (m: "office" | "explore" | "player") => void) => { cb("office"); return () => {}; },
+  subscribeViewMode: (cb: (m: "office" | "explore" | "player") => void) => {
+    viewModeSubs.push(cb);
+    cb(viewMode);
+    return () => { viewModeSubs = viewModeSubs.filter((x) => x !== cb); };
+  },
+  roomLabelIds: () => ROOM_LABEL_IDS,
+  // PROJECTED FOOTPRINTS, not just anchors: the label's type is FITTED to its room's own screen box, so a
+  // stub that reported no box would leave the sizing untested. The Central Hub is deliberately the big
+  // floor here and Design the small one, which is the comparison the fit exists to make.
+  roomLabelAnchors: () =>
+    Object.fromEntries(
+      ROOM_LABEL_IDS.map((id) => [id, {
+        clientX: 200, clientY: 200, visible: true, scale: roomScale,
+        ...(roomFootprints[id] ?? { widthPx: 400, heightPx: 300 }),
+      }]),
+    ),
+  setRoomHighlight,
   subscribePlayerView: (cb: (v: "first" | "third") => void) => { cb("third"); return () => {}; },
   setViewMode: vi.fn(),
   setPlayerView: vi.fn(),
@@ -253,6 +385,19 @@ const people: OfficePerson[] = [
 
 beforeEach(() => {
   callVideo = {};
+  roomScale = 1.2;
+  roomFootprints = {
+    // A DEFAULT-ZOOM office, in round numbers off a real screenshot: the hub is the big central floor and
+    // the other two are side rooms. All three can carry the shared size — Design only by wrapping, which
+    // is exactly the adjustment the sizing rule prefers.
+    "central-hub": { widthPx: 700, heightPx: 360 },
+    "dev-room": { widthPx: 430, heightPx: 300 },
+    "design-room": { widthPx: 420, heightPx: 270 },
+  };
+  toucanSubs = [];
+  toucanPhase = "roaming";
+  toucanConnected = [];
+  catchUp = null;
   caveInside = false;
   caveSubs = [];
   conversations = [];
@@ -262,6 +407,8 @@ beforeEach(() => {
   sessions = [];
   attendance = "permitted";
   currentRoomId = "design-room";
+  viewMode = "office";
+  viewModeSubs = [];
   worldHasBody = true;
   handlers = null;
   checkIn.mockClear();
@@ -1500,9 +1647,10 @@ describe("room details", () => {
     expect(setSelectedRoom).toHaveBeenCalledWith(null);
   });
 
-  it("is reachable from the dock — the only entry a pointer-locked PLAYER has", async () => {
+  it("is reachable from the dock in PLAYER, where the labels are not drawn — unchanged behaviour", async () => {
     currentRoomId = "dev-room";
     mount();
+    setViewMode("player");
     fireEvent.click(roomTile());
     await waitFor(() => expect(panel().dataset.open).toBe("true"));
     expect(screen.getByText("Dev Room")).toBeTruthy();
@@ -1510,9 +1658,10 @@ describe("room details", () => {
     expect(setSelectedRoom).toHaveBeenCalledWith("dev-room");
   });
 
-  it("says so rather than opening an empty panel when the body is not in a room", async () => {
+  it("says so rather than opening an empty panel when a PLAYER is not in a room", async () => {
     currentRoomId = null;
     mount();
+    setViewMode("player");
     fireEvent.click(roomTile());
     expect(await screen.findByText(/Step into a room/)).toBeTruthy();
     expect(panel().dataset.open).toBe("false");
@@ -1545,6 +1694,127 @@ describe("room details", () => {
     expect((await screen.findByTestId("profile")).textContent).toBe(SELF);
   });
 
+  // ---- ROOM DISCOVERY: the names over the floor ------------------------------------------------------
+  const labels = () => screen.queryAllByTestId("vo3d-room-label");
+
+  it("the dock tile toggles the labels in OFFICE, and each label is the room's own name", async () => {
+    mount();
+    expect(labels()).toHaveLength(0);
+    fireEvent.click(roomTile());
+    await waitFor(() => expect(labels().length).toBeGreaterThan(0));
+    expect(screen.getByText("Design Room")).toBeTruthy();
+    expect(screen.getByText("Dev Room")).toBeTruthy();
+    // …and the same tile puts them away again.
+    fireEvent.click(roomTile());
+    await waitFor(() => expect(labels()).toHaveLength(0));
+  });
+
+  it("letters every room at ONE shared size, prominent at the default zoom", async () => {
+    mount();
+    fireEvent.click(roomTile());
+    await waitFor(() => expect(labels().length).toBeGreaterThan(0));
+    const sizeOf = (id: string) =>
+      Number.parseFloat((document.querySelector(`[data-room-id="${id}"]`) as HTMLElement).style.fontSize);
+
+    // PROMINENT AT DEFAULT ZOOM. The first version projected a fixed cap height in world units, which at
+    // this zoom fell under its own hide floor and drew nothing at all.
+    await waitFor(() => expect(sizeOf("central-hub")).toBeGreaterThan(24));
+    // AND ONE SIZE FOR ALL OF THEM. The second version sized each room to its own floor, which put
+    // several typographic scales on one screen — the big hub and the small side room now read as one
+    // system, because the room's own dimensions get no vote.
+    expect(sizeOf("dev-room")).toBeCloseTo(sizeOf("central-hub"), 3);
+    expect(sizeOf("design-room")).toBeCloseTo(sizeOf("central-hub"), 3);
+    for (const id of ROOM_LABEL_IDS) {
+      expect((document.querySelector(`[data-room-id="${id}"]`) as HTMLElement).style.visibility).toBe("visible");
+    }
+  });
+
+  it("scales the shared size with the zoom, together", async () => {
+    mount();
+    fireEvent.click(roomTile());
+    const sizeOf = (id: string) =>
+      Number.parseFloat((document.querySelector(`[data-room-id="${id}"]`) as HTMLElement).style.fontSize);
+    await waitFor(() => expect(sizeOf("central-hub")).toBeGreaterThan(0));
+    const before = sizeOf("central-hub");
+    const beforeDev = sizeOf("dev-room");
+    expect(before).toBeCloseTo(beforeDev, 3);
+    // Zoom in: one world unit measures more pixels, so the shared size grows and takes every label with
+    // it. (Far enough in, the shared size outgrows what a small room can hold and that room takes its
+    // minimum adjustment — which is the rule working, not the set drifting apart.)
+    roomScale = 2;
+    await waitFor(() => expect(sizeOf("central-hub")).toBeGreaterThan(before));
+    expect(sizeOf("dev-room")).toBeGreaterThan(beforeDev);
+  });
+
+  it("shrinks or wraps ONLY the room that would otherwise overflow", async () => {
+    // A room far too narrow to carry its name on one line at the shared size.
+    roomFootprints = { ...roomFootprints, "design-room": { widthPx: 150, heightPx: 260 } };
+    mount();
+    fireEvent.click(roomTile());
+    const node = (id: string) => document.querySelector(`[data-room-id="${id}"]`) as HTMLElement;
+    await waitFor(() => expect(node("central-hub").style.fontSize).not.toBe(""));
+    const shared = Number.parseFloat(node("central-hub").style.fontSize);
+    // Wrapped onto two lines rather than shrunk away to nothing — a narrow room would rather read at
+    // full size on two lines.
+    expect(node("design-room").textContent).toBe("Design\nRoom");
+    expect(Number.parseFloat(node("design-room").style.fontSize)).toBeLessThanOrEqual(shared);
+    // And nobody else moved.
+    expect(Number.parseFloat(node("dev-room").style.fontSize)).toBeCloseTo(shared, 3);
+    expect(node("dev-room").textContent).toBe("Dev Room");
+  });
+
+  it("still refuses to draw anything at a zoom where the type would be a smear", async () => {
+    roomScale = 0.05;
+    mount();
+    fireEvent.click(roomTile());
+    const label = await screen.findByText("Central Hub");
+    // The ONE thing that hides a label now, and only a camera a very long way out reaches it.
+    await waitFor(() => expect(label.style.visibility).toBe("hidden"));
+  });
+
+  it("shows them in 3D EXPLORE too, and never in PLAYER", async () => {
+    mount();
+    setViewMode("explore");
+    fireEvent.click(roomTile());
+    await waitFor(() => expect(labels().length).toBeGreaterThan(0));
+    // PLAYER keeps its own behaviour: the labels go away without the preference being forgotten…
+    setViewMode("player");
+    await waitFor(() => expect(labels()).toHaveLength(0));
+    // …so coming back restores what the employee chose, rather than making them ask twice.
+    setViewMode("office");
+    await waitFor(() => expect(labels().length).toBeGreaterThan(0));
+  });
+
+  it("Escape dismisses the labels", async () => {
+    mount();
+    fireEvent.click(roomTile());
+    await waitFor(() => expect(labels().length).toBeGreaterThan(0));
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(labels()).toHaveLength(0));
+  });
+
+  it("washes the hovered room's floor, and clears it on the way out", async () => {
+    mount();
+    fireEvent.click(roomTile());
+    const label = await screen.findByText("Dev Room");
+    fireEvent.pointerEnter(label);
+    expect(setRoomHighlight).toHaveBeenCalledWith("dev-room");
+    fireEvent.pointerLeave(label);
+    expect(setRoomHighlight).toHaveBeenLastCalledWith(null);
+  });
+
+  it("clicking a name opens Room Details through the SAME selection a floor click makes", async () => {
+    mount();
+    fireEvent.click(roomTile());
+    fireEvent.click(await screen.findByText("Dev Room"));
+    await waitFor(() => expect(panel().dataset.open).toBe("true"));
+    expect(screen.getByTestId("vo3d-room-subtitle").textContent).toBe("0 people in the room");
+    // The world is told, which is what frames the room through the existing smooth focus.
+    expect(setSelectedRoom).toHaveBeenCalledWith("dev-room");
+    // The labels stay up — hopping between rooms is the whole point of discovery.
+    expect(labels().length).toBeGreaterThan(0);
+  });
+
   it("joins the ONE 'a tool owns the screen' rule, exactly as V1's room sidebar does", async () => {
     mount();
     const dock = screen.getByTestId("hud-dock");
@@ -1553,5 +1823,310 @@ describe("room details", () => {
     // The dock steps aside for a focused side panel — same rule, same mechanism, no second one. Hidden
     // by the dock's own class, never unmounted, so nothing loses its state or its subscriptions.
     await waitFor(() => expect(screen.getByTestId("hud-dock").className).toMatch(/hidden/i));
+  });
+});
+
+// PHASE 7G — THE TOUCAN, IN V2: A BIRD YOU CALL.
+//
+// Nothing here tests the assistant, and nothing here tests the flight. Every assertion is about the
+// SEQUENCE, which is the thing this phase exists to fix: a control calls the BIRD, the world flies it,
+// and the panel opens on ARRIVAL — never straight off the click.
+describe("the Toucan", () => {
+  const lastPose = () => poses[poses.length - 1];
+  /** Press the summon button and let the bird arrive, the way the world would. */
+  const summonAndArrive = async () => {
+    fireEvent.click(await screen.findByTestId("vo3d-toucan-summon"));
+    flyToucan("approaching");
+    flyToucan("attending");
+    return screen.findByTestId("toucan-panel");
+  };
+
+  it("calls the BIRD on a press, and opens nothing until it has arrived", async () => {
+    mount();
+    fireEvent.click(await screen.findByTestId("vo3d-toucan-summon"));
+    expect(toucanCall).toHaveBeenCalledTimes(1);
+    // IN THE AIR. This is the whole correction: no panel yet.
+    flyToucan("approaching");
+    expect(screen.queryByTestId("toucan-panel")).toBeNull();
+    // ARRIVED.
+    flyToucan("attending");
+    await screen.findByTestId("toucan-panel");
+  });
+
+  it("releases the bird when the panel is dismissed, and deletes nothing", async () => {
+    mount();
+    await summonAndArrive();
+    fireEvent.click(screen.getByLabelText("toucan-release"));
+    expect(toucanRelease).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(screen.queryByTestId("toucan-panel")).toBeNull());
+    // The transcript is the server's, so calling it back lands in the same conversation — the panel
+    // simply takes its mount path again.
+    await summonAndArrive();
+  });
+
+  it("does NOT reopen the panel when a released bird is still parked", async () => {
+    mount();
+    await summonAndArrive();
+    fireEvent.click(screen.getByLabelText("toucan-release"));
+    await waitFor(() => expect(screen.queryByTestId("toucan-panel")).toBeNull());
+    // The world has not flown it home yet, so it re-reports "attending" — the intent is gone, so this
+    // must not put the panel back up behind somebody who just closed it.
+    flyToucan("attending");
+    expect(screen.queryByTestId("toucan-panel")).toBeNull();
+  });
+
+  it("keeps the RIGHTMOST slot in the same window stack the chat windows use", async () => {
+    mount();
+    await summonAndArrive();
+    expect((screen.getByTestId("vo3d-toucan") as HTMLElement).style.right).toBe("16px");
+
+    act(() => handlers!.onSelect({ email: ALEX, displayName: "Alex Cruz" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /^chat$/i }));
+    await screen.findByTestId("conversation");
+    expect((screen.getByTestId("vo3d-toucan") as HTMLElement).style.right).toBe("16px");
+    const chatSlot = screen.getByTestId("conversation").parentElement as HTMLElement;
+    expect(chatSlot.style.right).toBe("348px");
+  });
+
+  it("gives the bird its world-space pill while a reply is being prepared — and only bird talk", async () => {
+    mount();
+    await summonAndArrive();
+    fireEvent.click(screen.getByLabelText("toucan-pending-on"));
+    const pill = await screen.findByTestId("overhead-text-__toucan__");
+    // BIRD TALK ONLY. V1's rule: the meaningful reply belongs in the panel, and no channel exists
+    // through which response text could reach this bubble.
+    expect(pill.textContent).toBe("Squawk squawk…");
+  });
+
+  it("animates the viewer's own body through the EXISTING conversation seam while they type to it", async () => {
+    mount();
+    await waitFor(() => expect(lastPose()).toBeTruthy());
+    await summonAndArrive();
+    fireEvent.click(screen.getByLabelText("toucan-type-on"));
+    await waitFor(() => expect(lastPose().self).toBe("agree-gesture"));
+    expect(lastPose().peers.get(ALEX)).toBeNull();
+    expect(screen.queryByTestId("overhead-typing-__self__")).toBeNull();
+
+    fireEvent.click(screen.getByLabelText("toucan-type-off"));
+    await waitFor(() => expect(lastPose().self).toBeNull());
+  });
+
+  it("sends the return card's conversation through the ONE existing opener", async () => {
+    conversations = [{ id: "conv-9", participantIds: [SELF, ALEX], type: "dm" } as never];
+    mount();
+    await summonAndArrive();
+    fireEvent.click(screen.getByLabelText("toucan-open-conversation"));
+    expect((await screen.findByTestId("conversation")).textContent).toBe(ALEX);
+  });
+
+  it("releases the pointer lock when the PANEL opens — not when the bird is called", async () => {
+    const exit = vi.fn();
+    Object.defineProperty(document, "pointerLockElement", { value: document.createElement("canvas"), configurable: true });
+    Object.defineProperty(document, "exitPointerLock", { value: exit, configurable: true });
+    mount();
+    await screen.findByTestId("hud-dock");
+    // T IS THE PLAYER'S PATH, and the only one available here: the button and the dock are DOM and both
+    // step aside while the pointer is held.
+    expect(screen.queryByTestId("vo3d-toucan-summon")).toBeNull();
+    fireEvent.keyDown(window, { code: "KeyT" });
+    expect(toucanCall).toHaveBeenCalledTimes(1);
+    // Summoning keeps the mouse: a called bird must not interrupt a walk.
+    flyToucan("approaching");
+    expect(exit).not.toHaveBeenCalled();
+    // The text box is what needs the pointer back.
+    flyToucan("attending");
+    await screen.findByTestId("toucan-panel");
+    expect(exit).toHaveBeenCalled();
+    Object.defineProperty(document, "pointerLockElement", { value: null, configurable: true });
+  });
+
+  it("summons the bird on a genuine return, and remembers the boundary so it never briefs twice", async () => {
+    catchUp = {
+      activity: { since: "2026-09-20T01:00:00Z", sinceReason: "last_active", importantCount: 2 },
+      conversations: [],
+      delegatedUrgentCount: 0,
+    };
+    mount();
+    await waitFor(() => expect(toucanConnected.length).toBeGreaterThan(0));
+    await act(async () => { for (const cb of toucanConnected) cb(); });
+    // THE BIRD IS CALLED, not a panel conjured: a briefing is Toucan coming to find you.
+    await waitFor(() => expect(toucanCall).toHaveBeenCalled());
+    flyToucan("attending");
+    await screen.findByTestId("toucan-panel");
+
+    fireEvent.click(screen.getByLabelText("toucan-release"));
+    await waitFor(() => expect(screen.queryByTestId("toucan-panel")).toBeNull());
+    await act(async () => { for (const cb of toucanConnected) cb(); });
+    expect(screen.queryByTestId("toucan-panel")).toBeNull();
+  });
+
+  it("does not summon itself when the catch-up is not a real observed absence", async () => {
+    catchUp = {
+      activity: { since: "2026-09-20T01:00:00Z", sinceReason: "fallback", importantCount: 9 },
+      conversations: [],
+      delegatedUrgentCount: 0,
+    };
+    mount();
+    await waitFor(() => expect(toucanConnected.length).toBeGreaterThan(0));
+    await act(async () => { for (const cb of toucanConnected) cb(); });
+    expect(toucanCall).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("toucan-panel")).toBeNull();
+  });
+
+  it("lets the bird go when checkout takes the chrome away", async () => {
+    mount();
+    await summonAndArrive();
+    // V1 refuses to leave a bird parked beside a departing avatar with an orphaned panel.
+    await openCheckoutPanel();
+    await waitFor(() => expect(screen.queryByTestId("toucan-panel")).toBeNull());
+    expect(toucanRelease).toHaveBeenCalled();
+  });
+});
+
+// ---- V1 PARITY: MINIMIZED CONVERSATIONS, AND WHITEBOARDS -------------------------------------------
+//
+// Both are V1 features being brought over intact rather than rebuilt, so what is asserted is the WIRING:
+// that a minimized window becomes a bubble WITHOUT being unmounted, that restoring is the same toggle the
+// header runs, and that a board is opened at the right scope for each of V1's four conversation entry
+// points and its room one.
+/** The world reports a room selection — the same signal a floor click or the dock's Room tile makes. */
+async function selectRoom(roomId: string | null) {
+  await waitFor(() => expect(handlers).not.toBeNull());
+  act(() => handlers!.onRoomSelected!(roomId));
+}
+/** The dock's Chat tile, whose accessible name is the inbox's, not the caption's. */
+const inboxTile = () => screen.getByRole("button", { name: /Conversations|unread message/ });
+
+describe("minimized conversations", () => {
+  /** Open a Global Chat DM as a REMOTE window (the inbox route, not a walk). */
+  async function openRemoteDm() {
+    conversations = [{ id: "conv-9", type: "dm", participantIds: [SELF, ALEX], unreadCount: 0 } as never];
+    mount();
+    fireEvent.click(inboxTile());
+    fireEvent.click(await screen.findByRole("button", { name: /Alex Cruz/ }));
+    return screen.findByTestId("conversation");
+  }
+
+  it("minimizes into a circular avatar button and restores from it", async () => {
+    await openRemoteDm();
+    fireEvent.click(screen.getByLabelText(`minimize ${ALEX}`));
+
+    const bubble = await screen.findByLabelText(/^Restore chat with Alex Cruz/);
+    // THE WINDOW IS STILL MOUNTED, only hidden — which is what preserves its messages, its draft and its
+    // scroll position across a minimize. A bubble is a view of an open window, never a replacement one.
+    expect(screen.getByTestId("conversation")).toBeTruthy();
+    expect((screen.getByTestId("conversation").parentElement as HTMLElement).hidden).toBe(true);
+
+    fireEvent.click(bubble);
+    await waitFor(() => expect((screen.getByTestId("conversation").parentElement as HTMLElement).hidden).toBe(false));
+    expect(screen.queryByLabelText(new RegExp("^Restore chat with"))).toBeNull();
+  });
+
+  it("keeps minimizing and closing as two different decisions", async () => {
+    await openRemoteDm();
+    fireEvent.click(screen.getByLabelText(`minimize ${ALEX}`));
+    await screen.findByLabelText(new RegExp("^Restore chat with"));
+    // The ✕ beside the bubble CLOSES — the window goes, and with it the bubble.
+    fireEvent.click(screen.getByLabelText(new RegExp("^Close chat with")));
+    await waitFor(() => expect(screen.queryByTestId("conversation")).toBeNull());
+    expect(screen.queryByLabelText(new RegExp("^Restore chat with"))).toBeNull();
+  });
+
+  it("carries the unread count of a conversation that is minimized", async () => {
+    conversations = [{ id: "conv-9", type: "dm", participantIds: [SELF, ALEX], unreadCount: 4 } as never];
+    mount();
+    fireEvent.click(inboxTile());
+    fireEvent.click(await screen.findByRole("button", { name: /Alex Cruz/ }));
+    await screen.findByTestId("conversation");
+    fireEvent.click(screen.getByLabelText(`minimize ${ALEX}`));
+    // The SAME rows the dock badge and the inbox read — no second unread store exists for the rail, which
+    // is why the dock's own badge is also showing 4 and the label has to be matched precisely.
+    const bubble = await screen.findByLabelText("Restore chat with Alex Cruz, 4 unread");
+    expect(bubble.textContent).toContain("4");
+  });
+
+  it("clears the rail's column for the windows still open beside it", async () => {
+    await openRemoteDm();
+    // A second conversation beside it, so there is a row to observe.
+    act(() => handlers!.onSelect({ email: ALEX, displayName: "Alex Cruz" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /^chat$/i }));
+    const slotOf = (el: HTMLElement) => (el.parentElement as HTMLElement).style.right;
+    const spatialSlot = () => {
+      const open = screen.getAllByTestId("conversation").filter((c) => !(c.parentElement as HTMLElement).hidden);
+      return slotOf(open[open.length - 1]);
+    };
+    // Two expanded windows: the second sits one full window-width to the left of the first.
+    await waitFor(() => expect(spatialSlot()).toBe("348px"));
+
+    fireEvent.click(screen.getAllByLabelText(`minimize ${ALEX}`)[0]);
+    // The minimized one leaves the ROW for the rail, and V1's own base offset then starts the row to the
+    // LEFT of the bubble column (16 edge + 52 bubble + 12 gap) instead of underneath it.
+    await waitFor(() => expect(spatialSlot()).toBe("80px"));
+  });
+
+  it("steps aside for a panel that owns the screen, as the dock and the Toucan button do", async () => {
+    await openRemoteDm();
+    fireEvent.click(screen.getByLabelText(`minimize ${ALEX}`));
+    await screen.findByLabelText(new RegExp("^Restore chat with"));
+    await selectRoom("design-room");
+    await waitFor(() => expect(screen.queryByLabelText(new RegExp("^Restore chat with"))).toBeNull());
+  });
+});
+
+describe("whiteboards", () => {
+  const board = () => screen.getByTestId("whiteboard");
+
+  it("opens a DM board on that ONE-TO-ONE conversation, and leaves the conversation open", async () => {
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    act(() => handlers!.onSelect({ email: ALEX, displayName: "Alex Cruz" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: /^chat$/i }));
+    await screen.findByTestId("conversation");
+
+    fireEvent.click(screen.getByLabelText(`board ${ALEX}`));
+    // V1'S CONTRACT: a DM board is a CONVERSATION scope, on the id the panel itself resolved.
+    expect((await screen.findByTestId("whiteboard")).dataset.scope).toBe("conversation:conv-dm");
+    // The conversation is untouched — a board opens BESIDE it, never instead of it.
+    expect(screen.getByTestId("conversation")).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("close board"));
+    await waitFor(() => expect(screen.queryByTestId("whiteboard")).toBeNull());
+    expect(screen.getByTestId("conversation")).toBeTruthy();
+  });
+
+  it("opens a GROUP board on that group's own conversation — the same scope kind, not a second one", async () => {
+    conversations = [{ id: "grp-1", type: "group", participantIds: [SELF, ALEX], title: "Design Sync" } as never];
+    mount();
+    fireEvent.click(inboxTile());
+    fireEvent.click(await screen.findByRole("button", { name: /Design Sync/ }));
+    await screen.findByTestId("group-conversation");
+    fireEvent.click(screen.getByLabelText("board grp-1"));
+    expect((await screen.findByTestId("whiteboard")).dataset.scope).toBe("conversation:grp-1");
+    expect(board().dataset.title).toBe("Design Sync");
+  });
+
+  it("opens a ROOM's boards from Room Details, at the FLAT room id boards are keyed on", async () => {
+    mount();
+    await selectRoom("design-room");
+    fireEvent.click(await screen.findByTestId("vo3d-room-boards"));
+    // Not the manifest layer id: the flat namespace is what a board scope can be answered for.
+    expect((await screen.findByTestId("whiteboard")).dataset.scope).toBe("room:design-team");
+  });
+
+  it("offers NO room board for a space that has no flat room of its own", async () => {
+    mount();
+    await selectRoom("central-hub");
+    // The wall-less shared space has art but no flat rect, so nothing keyed on that namespace can answer
+    // for it — V1 says so itself. No button is better than a scope nothing could serve.
+    expect(screen.queryByTestId("vo3d-room-boards")).toBeNull();
+  });
+
+  it("keeps ONE Ask Toucan, shared with the dock's own boards panel", async () => {
+    mount();
+    await selectRoom("design-room");
+    fireEvent.click(await screen.findByTestId("vo3d-room-boards"));
+    fireEvent.click(await screen.findByLabelText("ask toucan about board"));
+    // The EXISTING summon, not a second path into the assistant.
+    expect(toucanCall).toHaveBeenCalled();
   });
 });

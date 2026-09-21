@@ -5,6 +5,8 @@
 // V1's dock, pills and spotlight are REAL here — they are the thing under test. Only the panels that
 // fetch are stubbed, and only so these stay about wiring.
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+// @ts-expect-error node:fs is untyped under tsconfig.app.json (types: ["vite/client"] only).
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Vo3dHud } from "./Vo3dHud";
 import { useCheckoutFlow } from "../../../components/OfficeMap/useCheckoutFlow";
@@ -48,8 +50,19 @@ vi.mock("../../../components/OfficeMap/RewardsPanel", () => ({ RewardsPanel: () 
 vi.mock("../../../components/OfficeMap/CompanyHub", () => ({ CompanyHub: () => <div data-testid="hub" /> }));
 vi.mock("../../../components/OfficeMap/HudSettings", () => ({ HudSettings: () => <div data-testid="settings" /> }));
 vi.mock("../../../components/Whiteboard/WhiteboardPanel", () => ({
-  WhiteboardPanel: ({ scope, title }: { scope: { kind: string; id: string }; title: string }) => (
-    <div data-testid="boards">{`${scope.kind}:${scope.id}:${title}`}</div>
+  WhiteboardPanel: ({ scope, title, onAskToucan, onClose }: {
+    scope: { kind: string; id: string }; title: string;
+    onAskToucan?: (b: { id: string; title: string }) => void; onClose: () => void;
+  }) => (
+    <div data-testid="boards">
+      {`${scope.kind}:${scope.id}:${title}`}
+      {/* aria-label only, so the panel's own textContent assertion stays exactly what it was. */}
+      {onAskToucan && (
+        <button type="button" aria-label="Ask Toucan about this board"
+          onClick={() => onAskToucan({ id: "b1", title: "Sprint plan" })} />
+      )}
+      <button type="button" aria-label="Close boards" onClick={onClose} />
+    </div>
   ),
 }));
 vi.mock("../../../components/TeamMap/TeamMapPanel", () => ({ default: () => <div data-testid="map" /> }));
@@ -120,8 +133,14 @@ const onSelectConversation = vi.fn((_c: unknown) => {});
 const onOpenDirectMessage = vi.fn((_e: string) => {});
 const onStartGroup = vi.fn((_e: string[], _n?: string) => {});
 const onOpenCurrentRoom = vi.fn();
+const onCallToucan = vi.fn();
+const onAskToucanAboutBoard = vi.fn((_b: { id: string; title: string }) => {});
+const onClearToucanBoardContext = vi.fn();
 let conversations: never[] = [];
 let overlayToolOpen = false;
+let toucanAvailable = true;
+let toucanCalled = false;
+let toucanState: "roaming" | "approaching" | "attending" = "roaming";
 
 function attendanceOf(status: "CHECKED_IN" | "CHECKED_OUT", checkedInAt: string | null): V1Attendance {
   return {
@@ -163,6 +182,12 @@ function hud(attendance = attendanceOf("CHECKED_IN", new Date(Date.now() - 90 * 
       onStartGroup={onStartGroup}
       overlayToolOpen={overlayToolOpen}
       onOpenCurrentRoom={onOpenCurrentRoom}
+      toucanAvailable={toucanAvailable}
+      toucanCalled={toucanCalled}
+      toucanState={toucanState}
+      onCallToucan={onCallToucan}
+      onAskToucanAboutBoard={onAskToucanAboutBoard}
+      onClearToucanBoardContext={onClearToucanBoardContext}
     />
   );
 }
@@ -190,6 +215,9 @@ beforeEach(() => {
   viewModeSubs = [];
   conversations = [];
   overlayToolOpen = false;
+  toucanAvailable = true;
+  toucanCalled = false;
+  toucanState = "roaming";
   vi.clearAllMocks();
   localStorage.clear();
   __resetExperiencePreferencesForTests();
@@ -589,5 +617,140 @@ describe("inviting somebody to the Cave meeting", () => {
     await waitFor(() => expect(screen.getByTestId("hud-dock").className).not.toMatch(/hidden/i));
     // Closing the picker invites nobody.
     expect(caveInvite).not.toHaveBeenCalled();
+  });
+});
+
+// PHASE 7G — CALLING THE BIRD.
+//
+// The assistant is not under test here (it is V1's component, with V1's tests, mounted by the overlay)
+// and neither is the flight (world/Toucan has its own). What is pinned is the ENTRY FLOW, which is the
+// thing this phase exists to correct: two controls, both of which CALL THE BIRD and neither of which
+// opens a panel, plus the one control a pointer-locked player can actually reach.
+describe("calling the Toucan", () => {
+  it("offers V1's dedicated lower-right summon button", async () => {
+    mount();
+    const button = await screen.findByTestId("vo3d-toucan-summon");
+    expect(button).toHaveAccessibleName("Call the toucan");
+    fireEvent.click(button);
+    // IT CALLS THE BIRD. It does not open anything — arrival is what opens the assistant, and that is
+    // the overlay's effect, not this file's business.
+    expect(onCallToucan).toHaveBeenCalledTimes(1);
+  });
+
+  it("says the bird is on its way, and refuses a second summon while it flies", async () => {
+    toucanCalled = true;
+    toucanState = "approaching";
+    mount();
+    const button = await screen.findByTestId("vo3d-toucan-summon");
+    expect(button).toHaveAccessibleName("Toucan is on its way");
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(onCallToucan).not.toHaveBeenCalled();
+  });
+
+  it("becomes Ask once the bird is parked", async () => {
+    toucanCalled = true;
+    toucanState = "attending";
+    mount();
+    const button = await screen.findByTestId("vo3d-toucan-summon");
+    expect(button).toHaveAccessibleName("Ask the toucan");
+    expect(button).not.toBeDisabled();
+    // Pressing it again is not an error: V1 treats it as "come here", which an already-parked bird
+    // answers by staying exactly where it is.
+    fireEvent.click(button);
+    expect(onCallToucan).toHaveBeenCalledTimes(1);
+  });
+
+  it("is the ONLY Toucan control on the HUD — the duplicate dock tile is gone", async () => {
+    mount();
+    const dock = await screen.findByTestId("hud-dock");
+    // The tile used to live in here doing the very same thing the round button does. Two controls side
+    // by side is not two ways in, it is one duplicated affordance.
+    expect(dock.textContent).not.toMatch(/toucan/i);
+    expect(dock.querySelector('[aria-label="Toucan"]')).toBeNull();
+    // Exactly one Toucan entry point on the whole HUD, and it is the round button.
+    const controls = screen.getAllByRole("button").filter((b) => /toucan/i.test(b.getAttribute("aria-label") ?? ""));
+    expect(controls).toHaveLength(1);
+    expect(controls[0]).toBe(screen.getByTestId("vo3d-toucan-summon"));
+  });
+
+  it("lives in the BOTTOM-RIGHT CORNER, outside the dock and owing it nothing", async () => {
+    mount();
+    const button = await screen.findByTestId("vo3d-toucan-summon");
+    // Outside the dock's DOM: the dock owns layout and holds no feature state, and this is a
+    // fixed-position sibling of it, not a tile in it.
+    expect(screen.getByTestId("hud-dock").contains(button)).toBe(false);
+
+    // jsdom applies no CSS-module styles, so the PLACEMENT is asserted against the stylesheet itself —
+    // which is the thing that regressed when the button was parked beside the dock instead.
+    const css = readFileSync("src/dev/vo3d/app/Vo3dHud.module.css", "utf8");
+    const rule = css.slice(css.indexOf(".summon {"), css.indexOf("}", css.indexOf(".summon {")));
+    expect(rule).toMatch(/right:\s*18px/);
+    expect(rule).toMatch(/bottom:\s*18px/);
+    // Nothing measured off the centre-anchored dock any more — a corner is a corner. (The 50% that
+    // remains in the rule is the border-radius, which is what makes it round.)
+    expect(rule).not.toMatch(/right:\s*calc\(50%/);
+    expect(css).not.toMatch(/--vo3d-dock-half/);
+  });
+
+  it("summons on T, which is the one control a pointer-locked PLAYER can use", async () => {
+    mount();
+    await screen.findByTestId("hud-dock");
+    lockPointer(true);
+    // The dock and the button are both DOM and both gone while the pointer is held.
+    expect(screen.queryByTestId("vo3d-toucan-summon")).toBeNull();
+    fireEvent.keyDown(window, { code: "KeyT" });
+    expect(onCallToucan).toHaveBeenCalledTimes(1);
+    // AND THE LOCK IS STILL HELD. Summoning must not take the mouse off somebody mid-walk; the panel
+    // that eventually opens is what releases it, in the overlay.
+    expect(exitPointerLock).not.toHaveBeenCalled();
+    lockPointer(false);
+  });
+
+  it("leaves T alone for anybody who is typing, and for a modifier chord", async () => {
+    mount();
+    await screen.findByTestId("hud-dock");
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    fireEvent.keyDown(input, { code: "KeyT" });
+    fireEvent.keyDown(window, { code: "KeyT", metaKey: true });
+    fireEvent.keyDown(window, { code: "KeyT", repeat: true });
+    expect(onCallToucan).not.toHaveBeenCalled();
+    input.remove();
+  });
+
+  it("offers neither control, nor the key, when V1's attendance gate says it should not", async () => {
+    toucanAvailable = false;
+    mount();
+    await screen.findByTestId("hud-dock");
+    expect(screen.queryByTestId("vo3d-toucan-summon")).toBeNull();
+    expect(screen.queryByLabelText("Toucan")).toBeNull();
+    fireEvent.keyDown(window, { code: "KeyT" });
+    expect(onCallToucan).not.toHaveBeenCalled();
+  });
+
+  it("hides the summon button while a tool owns the screen, exactly as the dock steps aside", async () => {
+    mount();
+    await screen.findByTestId("vo3d-toucan-summon");
+    fireEvent.click(screen.getByLabelText("Open Tasks"));
+    await waitFor(() => expect(screen.queryByTestId("vo3d-toucan-summon")).toBeNull());
+  });
+
+  it("gives Boards W5-C's existing Ask Toucan seam, and drops the board when the panel closes", async () => {
+    mount();
+    fireEvent.click(await screen.findByLabelText("Open office whiteboards"));
+    fireEvent.click(await screen.findByLabelText("Ask Toucan about this board"));
+    expect(onAskToucanAboutBoard).toHaveBeenCalledWith({ id: "b1", title: "Sprint plan" });
+
+    fireEvent.click(screen.getByLabelText("Close boards"));
+    expect(onClearToucanBoardContext).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers Boards no Toucan button at all while the assistant is not available", async () => {
+    toucanAvailable = false;
+    mount();
+    fireEvent.click(await screen.findByLabelText("Open office whiteboards"));
+    await screen.findByTestId("boards");
+    expect(screen.queryByLabelText("Ask Toucan about this board")).toBeNull();
   });
 });

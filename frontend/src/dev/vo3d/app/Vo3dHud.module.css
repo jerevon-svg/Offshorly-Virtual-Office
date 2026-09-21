@@ -19,3 +19,89 @@
   color: #241f30;
   cursor: pointer;
 }
+
+/* PHASE 7G — THE SUMMON BUTTON: the one Toucan control on the HUD.
+   V1's office has a dedicated round button that calls the bird, and that button IS the Toucan
+   experience's front door. It wears the dock's own surface contract (the #fdfcfa card, the same 1px
+   hairline, the same three-layer shadow) so the two pieces of chrome read as one system instead of a
+   mint circle borrowed from the 2D office.
+
+   WHERE IT SITS: the BOTTOM-RIGHT CORNER, which is V1's own placement. It owes the dock nothing and is
+   measured against nothing — the corner is the position, so it cannot drift when the dock's contents
+   change and it needs no observer to follow it.
+
+   IT DOES NOT COLLIDE WITH WHAT SHARES THAT EDGE. The floating conversation windows and the Toucan panel
+   itself stack at --vo3d-dock-clearance (~96px up) and clear it; every full-screen tool takes the button
+   away entirely through the dock's own one visibility rule, so it can never sit on top of a panel.
+
+   It is OUTSIDE the dock's DOM on purpose: the dock "owns layout and nothing else" and holds no feature
+   state, and a fixed-position sibling is how every other corner affordance in this app relates to it. */
+.summon {
+  all: unset;
+  box-sizing: border-box;
+  position: fixed;
+  --vo3d-summon-size: 58px;
+  /* Safe, equal spacing from both screen edges. */
+  right: 18px;
+  bottom: 18px;
+  z-index: 71;
+  cursor: pointer;
+  width: var(--vo3d-summon-size);
+  height: var(--vo3d-summon-size);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.07);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.8) inset,
+    0 2px 6px rgba(28, 22, 45, 0.06),
+    0 14px 36px rgba(28, 22, 45, 0.14);
+  transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1), background 160ms ease, bottom 160ms ease-out;
+}
+
+.summon:hover:not(:disabled) {
+  background: #fffefb;
+  transform: translateY(-2px);
+}
+
+.summon:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+/* ON ITS WAY. Not a spinner and not a disabled grey: the bird is genuinely in the air and the button
+   says so, with the same soft pulse the HUD uses for work in flight. */
+.summon:disabled {
+  cursor: default;
+  animation: summonPending 1.6s ease-in-out infinite;
+}
+
+/* PARKED. The one lit state, matching a dock tile whose panel is open. */
+.summonCalled {
+  background: #f1eefe;
+  border-color: rgba(94, 92, 230, 0.28);
+}
+
+@keyframes summonPending {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.62; }
+}
+
+/* NARROW VIEWPORTS. Below roughly this width the centred dock grows wide enough (its own
+   `max-width: calc(100vw - 24px)`) for its right end to reach this corner, so the button stacks ABOVE the
+   dock's strip instead of overlapping it. V1 makes the same move at the same breakpoint, for the same
+   reason. */
+@media (max-width: 900px) {
+  .summon {
+    --vo3d-summon-size: 50px;
+    right: 16px;
+    bottom: calc(var(--vo3d-dock-clearance, var(--vo-dock-clearance, 104px)) + 10px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .summon { transition: none; }
+  .summon:hover:not(:disabled) { transform: none; }
+  .summon:disabled { animation: none; opacity: 0.72; }
+}

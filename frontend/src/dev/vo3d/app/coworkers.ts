@@ -156,3 +156,25 @@ export interface Vo3dCoworkerSet {
 }
 
 export const EMPTY_COWORKER_SET: Vo3dCoworkerSet = { coworkers: [], missingAvatar: [] };
+
+/** THE CAVE'S PLACE NAME on the movement feed. One spelling, shared by the world that resolves it and by
+ *  the rule below, so the two cannot drift. */
+export const CAVE_PLACE_ID = "championship-cave";
+
+/** WHO IS IN THE SAME VOLUME AS THE VIEWER — the roster the world should actually draw.
+ *
+ *  The Championship Cave is a separate interior volume 1,146 units east of the V1 frame, and its geometry
+ *  is never drawn while nobody is inside it (rooms/cave.ts states that as its contract). A peer who walks
+ *  in keeps publishing real Cave coordinates, so before this they were drawn — as a body with a nameplate
+ *  standing in an empty field beyond the campus. The room was invisible; the person in it was not.
+ *
+ *  This applies the geometry's own rule to the bodies, off the `place` the feed already publishes: no new
+ *  state, no new message, nothing networked. The AI Lab is deliberately NOT included — it is a real
+ *  building on the drawn campus, so somebody standing in it is somewhere you can actually see.
+ */
+export function coworkersInSameVolume<T extends { place?: string }>(
+  list: readonly T[],
+  insideCave: boolean,
+): T[] {
+  return list.filter((c) => (c.place === CAVE_PLACE_ID) === insideCave);
+}

@@ -20,6 +20,20 @@
 //   Boards        V1's WhiteboardPanel on the office room board — the same scope V1's Boards tile opens.
 //   Map           V1's TeamMapPanel, lazily imported exactly as V1 imports it.
 //   Hub / Tasks / Rewards / Notifs / Settings — V1's panels, unchanged.
+//   Toucan        V1's BIRD, and through it V1's assistant — reached from ONE control: the round summon
+//                 button in the bottom-right corner, outside this dock and owing it nothing. V1's own
+//                 front door, in V1's own place, because a companion you call is not the same product as
+//                 one more chat icon in a strip.
+//
+//                 THERE WAS BRIEFLY ALSO A DOCK TILE. It has been removed: two controls doing the same
+//                 thing, side by side, is not two ways in — it is one duplicated affordance, and the
+//                 round button is the one that reads as the bird. Nothing was lost with it; PLAYER's
+//                 reach is the T key (below), which was always the answer for a pointer-locked view
+//                 rather than the tile.
+//
+//                 The button opens nothing: world/Toucan flies the bird, and the ARRIVAL is what opens
+//                 the assistant, which is V1's own sequence. The panel and all of its state live in
+//                 app/Vo3dOverlay.tsx (it owns the floating window stack the panel sits in).
 //
 // ONE VISIBILITY RULE. V1 has a single `officeToolOpen` line that every full-screen tool joins, and the
 // dock and the Toucan step aside for all of them. V2 had a Search-only special case, which meant opening
@@ -60,7 +74,8 @@ import { HudDock, type HudDockEntry } from "../../../components/OfficeMap/HudDoc
 import { Vo3dViewSwitcher } from "./Vo3dViewSwitcher";
 import { Vo3dViewIndicator } from "./Vo3dViewIndicator";
 import { Vo3dCaveMeeting } from "./Vo3dCaveMeeting";
-import { isPointerLocked } from "./keyGuard";
+import { isPointerLocked, isTypingTarget } from "./keyGuard";
+import type { ToucanSummonState } from "../../../components/OfficeMap/toucanSummon";
 import { HudSettings } from "../../../components/OfficeMap/HudSettings";
 import { PlayerHud } from "../../../components/OfficeMap/PlayerHud";
 import { StatusPicker } from "../../../components/OfficeMap/StatusPicker";
@@ -141,12 +156,31 @@ export interface Vo3dHudProps {
    *  in all three views — so the tile is what makes the panel reachable from every view rather than from
    *  two of them. It is the same panel and the same rooms either way. */
   onOpenCurrentRoom: () => void;
+  /** ROOM DISCOVERY — is the label layer up, so the tile can read as the toggle it is. Owned by the
+   *  overlay (it renders the labels); the dock only lights the tile. */
+  roomDiscoveryActive?: boolean;
+  /** THE TOUCAN, whose bird belongs to the world and whose panel belongs to the overlay (see the header).
+   *  This file offers the two controls that CALL it and the Boards -> "Ask Toucan" seam W5-C already
+   *  built into WhiteboardPanel. */
+  toucanAvailable: boolean;
+  /** Has the bird been called — what lights both controls, and what makes the button say "Ask" rather
+   *  than "Call". Not "is the panel open": the bird is called first and the panel follows on arrival. */
+  toucanCalled: boolean;
+  /** V1's own coarse bird state, straight off the world. "approaching" is what makes the button say the
+   *  bird is on its way instead of pretending the click did nothing. */
+  toucanState: ToucanSummonState;
+  /** COME HERE. Both controls and the T key run this one handler; it never opens a panel. */
+  onCallToucan: () => void;
+  onAskToucanAboutBoard: (board: { id: string; title: string }) => void;
+  /** Closing the board panel drops the board the viewer was asking about, exactly as it does in V1. */
+  onClearToucanBoardContext: () => void;
 }
 
 export function Vo3dHud({
   worldRef, ready, attendance, checkoutFlow, peopleLayers, statusByEmail, onCoworkerAction, onOpenProfile,
   people, selfId, conversations, unreadTotal, resolveDisplayName, onSelectConversation,
-  onOpenDirectMessage, onStartGroup, overlayToolOpen, onOpenCurrentRoom,
+  onOpenDirectMessage, onStartGroup, overlayToolOpen, onOpenCurrentRoom, roomDiscoveryActive = false,
+  toucanAvailable, toucanCalled, toucanState, onCallToucan, onAskToucanAboutBoard, onClearToucanBoardContext,
 }: Vo3dHudProps) {
   const self = selfEmailKey();
   /** V1's own dock-tool slot: at most one full-screen tool from the dock at a time. */
@@ -315,6 +349,34 @@ export function Vo3dHud({
     [people, selfId],
   );
 
+  // V1'S OWN THREE LABELS, word for word. A bird in the air is not a broken button: it says so, and it
+  // refuses the second press rather than re-issuing a summon that is already under way.
+  const toucanPending = toucanCalled && toucanState === "approaching";
+  const toucanLabel =
+    toucanState === "attending" ? "Ask the toucan" : toucanCalled ? "Toucan is on its way" : "Call the toucan";
+
+  // T — SUMMON WITHOUT LOSING THE MOUSE. This is the one Toucan control a pointer-locked PLAYER can
+  // actually use: the dock and the button are DOM and a locked pointer cannot reach either, and asking
+  // somebody to press Esc, click a button and click back into the world is not a companion you call.
+  // Pressing it keeps the lock, keeps the body walking and keeps every other key — it only tells the
+  // world to send the bird. The lock is released later, by the overlay, at the moment the panel with a
+  // text box in it actually opens.
+  //
+  // Guarded exactly as C is (Vo3dViewSwitcher): modifiers left alone, repeats ignored, and app/keyGuard
+  // keeps it out of anything somebody is typing into or any modal that has taken the screen.
+  useEffect(() => {
+    if (!ready || !toucanAvailable) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.code !== "KeyT") return;
+      if (event.metaKey || event.ctrlKey || event.altKey || event.repeat) return;
+      if (isTypingTarget(event)) return;
+      event.preventDefault();
+      onCallToucan();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onCallToucan, ready, toucanAvailable]);
+
   const statusPicker = <StatusPicker checkedIn={hasCheckedIn && checkoutFlow.state !== "CHECKED_OUT"} />;
 
   // Order is V1's, left to right: Profile | Coins+XP | Search | Hub | Tasks | Rewards | Map |
@@ -326,8 +388,12 @@ export function Vo3dHud({
       ariaLabel: "Open Company Hub", active: companyHub.isOpen, onClick: () => openCompanyHub("manual") },
     // ROOM DETAILS. Sits next to Search because it answers the same kind of question — who is where —
     // and it is the one tool here that is about the room you are standing in rather than the office.
+    // ROOM DISCOVERY. In OFFICE and 3D EXPLORE this TOGGLES the room-name labels over the floor; in
+    // PLAYER, where those labels are not drawn, it keeps its original behaviour and opens the details of
+    // the room the body is standing in. One tile, one handler — the overlay decides which, because it is
+    // the only side that knows the view and owns the labels.
     { kind: "action", key: "room", icon: <HudIcon name="room" />, label: "Room",
-      ariaLabel: "Open room details", onClick: onOpenCurrentRoom },
+      ariaLabel: "Open room details", active: roomDiscoveryActive, onClick: onOpenCurrentRoom },
     { kind: "action", key: "tasks", icon: <HudIcon name="tasks" />, label: "Tasks",
       ariaLabel: "Open Tasks", active: tasksOpen, badge: claimableCount, onClick: () => setTasksOpen(true) },
     ...(chatMode === "real"
@@ -412,6 +478,23 @@ export function Vo3dHud({
           />
         }
       />
+      {/* PHASE 7G — V1'S SUMMON BUTTON, restored, and the ONLY Toucan control on the HUD. Round, dedicated,
+          and parked in the BOTTOM-RIGHT CORNER, which is where V1 puts it. It hides on the SAME one rule the dock uses (a tool owns the
+          screen, or PLAYER has the pointer), so it can never sit on top of a panel and can never be a
+          control a locked player is invited to click — that is what the T key is for. */}
+      {toucanAvailable && dockVisible && (
+        <button
+          type="button"
+          className={`${styles.summon}${toucanCalled ? ` ${styles.summonCalled}` : ""}`}
+          onClick={onCallToucan}
+          disabled={toucanPending}
+          aria-label={toucanLabel}
+          title={toucanLabel}
+          data-testid="vo3d-toucan-summon"
+        >
+          <HudIcon name="toucan" size="32px" />
+        </button>
+      )}
       {/* THE C KEY, and nothing on screen — see Vo3dViewSwitcher. Switching view is C or Settings ->
           General; V (first/third) stays with player/PlayerInput, which owns the keyboard in PLAYER. */}
       <Vo3dViewSwitcher worldRef={worldRef} ready={ready} />
@@ -502,8 +585,15 @@ export function Vo3dHud({
         <WhiteboardPanel
           scope={{ kind: "room", id: OFFICE_ROOM_ID }}
           title="Office"
-          onClose={() => setBoardsOpen(false)}
+          onClose={() => {
+            setBoardsOpen(false);
+            // V1's own rule: the board you were asking about goes with the panel that showed it.
+            onClearToucanBoardContext();
+          }}
           resolveDisplayName={resolveDisplayName}
+          // W5-C's EXISTING seam, offered here for the first time in V2 — the same Toucan panel opens,
+          // scoped to this board. The board itself is never written to; W5-C is read-only.
+          onAskToucan={toucanAvailable ? onAskToucanAboutBoard : undefined}
         />
       )}
       {teamMapOpen && (
