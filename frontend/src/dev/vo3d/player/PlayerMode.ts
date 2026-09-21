@@ -111,6 +111,9 @@ export class PlayerMode {
   private readonly input: PlayerInput;
   private readonly candidates: Map<string, Candidate[]>;
   private hud: PlayerHud | null = null;
+  /** PHASE 7E — remembered across enter/exit, because the HUD is built on entry: a modal opened in OFFICE
+   *  and still up when PLAYER is entered must not get its primary button covered. */
+  private promptHidden = false;
   private _active = false;
   private target: Target | null = null;
   /** the heading Bon is walking, kept separate from the camera yaw so third person can turn the body only */
@@ -179,6 +182,7 @@ export class PlayerMode {
     this.camera.snap();
     this.applyVisibility();
     this.hud = new PlayerHud(document.body);
+    this.hud.setPromptHidden(this.promptHidden);
     this.d.overlayRoot.add(this.hud.marker);
     this.hud.setLocked(this.input.locked);
     this.input.enable();
@@ -230,6 +234,14 @@ export class PlayerMode {
    *  around; an interaction menu is unusable while it holds it. Releasing is all this does — the mode
    *  stays active, the body keeps standing where it is, and one click on the canvas takes the pointer
    *  back exactly as it did on the way in. */
+  /** PHASE 7E — hide the centre-screen "[E] …" line while a modal owns the screen; it is drawn exactly
+   *  where a modal's primary button sits. Nothing else about PLAYER changes: the crosshair, the floor
+   *  ring, the input and the camera are untouched, and targeting keeps running underneath. */
+  setPromptHidden(hidden: boolean): void {
+    this.promptHidden = hidden;
+    this.hud?.setPromptHidden(hidden);
+  }
+
   releasePointer(): void {
     this.input.unlock();
   }

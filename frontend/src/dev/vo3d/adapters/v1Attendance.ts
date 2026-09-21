@@ -6,6 +6,12 @@
 // never writes: no check-in, no check-out, no time log. V2 asks a question and maps the answer onto the
 // boundary contract in app/access.ts.
 //
+// PHASE 7E ADDS `apply`, AND IT IS NOT A WRITE EITHER. The Reception kiosk (app/Vo3dKioskCard.tsx, driven
+// from app/Vo3dOverlay.tsx) performs a check-in through V1'S OWN `attendanceService.checkIn()` — the same
+// call V1's Reception menu makes, against the same endpoint and the same row — and hands the confirmed
+// RESPONSE back here so every reader of this hook sees it without a round trip. The decision is still the
+// server's, the record is still `employee_attendance`, and this module still issues nothing but GETs.
+//
 // WHAT V1 ACTUALLY OFFERS, AND WHY THIS HAS TO POLL AT ALL. Both halves were checked before anything was
 // built here:
 //
@@ -36,7 +42,7 @@
 // timed out would shut a checked-in employee out of their own office over a network blip — so a failed
 // REFRESH keeps the last answer V1 actually gave, and only a failed FIRST read leaves `unknown`. A real
 // check-out is still caught by the doorbell immediately, or by the next successful poll.
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { attendanceService, type AttendanceRecord } from "../../../services/attendance";
 import { getCurrentUserId } from "../../../auth/useAuthGate";
 import { getCurrentUser } from "../../../auth/currentUserStore";
@@ -100,6 +106,20 @@ export interface V1Attendance {
   access: OfficeAccess;
   /** V1's own record, or null before the first read resolves (and after a failed first read). */
   record: AttendanceRecord | null;
+  /** PHASE 7E — ADOPT A RECORD V1 HAS JUST RETURNED, without waiting for the next read.
+   *
+   *  THIS IS STILL NOT A SECOND AUTHORITY, and the distinction is exact: the caller does not decide
+   *  anything here, it hands over the RESPONSE BODY of a `services/attendance` call it has just made
+   *  against the same `employee_attendance` row this hook polls. The alternative — POST, then wait for a
+   *  refresh to observe it — would leave a confirmed check-in with the gate still shut for a round trip,
+   *  and would make the same request twice for an answer the client is already holding.
+   *
+   *  It supersedes any read in flight (the generation is bumped), so a GET issued before the check-in can
+   *  never land afterwards and put the stale answer back. */
+  apply(record: AttendanceRecord): void;
+  /** PHASE 7E — ask for an immediate re-read, on top of the doorbell and the interval. Used by the retry
+   *  path, where what is wanted is V1's current answer rather than a second write. */
+  refresh(): void;
 }
 
 /** Phase 5's answer alone — the boundary verdict, unchanged. */
@@ -112,6 +132,9 @@ export function useV1Attendance(refreshKey: unknown): V1Attendance {
   const [record, setRecord] = useState<AttendanceRecord | null>(null);
   /** The live read, owned by the mount effect and called by the refreshKey effect below. */
   const readRef = useRef<() => void>(() => {});
+  /** PHASE 7E — the live `apply`, owned by the same effect so it shares the generation counter that keeps
+   *  a slow response from overwriting a newer answer. A no-op before the effect runs and after unmount. */
+  const applyRef = useRef<(next: AttendanceRecord) => void>(() => {});
 
   useEffect(() => {
     if (!getCurrentUser()?.email) return;
@@ -154,6 +177,14 @@ export function useV1Attendance(refreshKey: unknown): V1Attendance {
         });
     };
     readRef.current = read;
+    applyRef.current = (next: AttendanceRecord): void => {
+      if (cancelled) return;
+      // Bumping the generation is what makes this safe: any read already in flight is now stale by
+      // definition — it was issued against the state BEFORE this record — and its `.then` will be dropped.
+      generation++;
+      setAccess(accessForStatus(next?.status));
+      setRecord(next ?? null);
+    };
     read();
 
     /** A focus/visibility read, floored — see FOCUS_MIN_GAP_MS. */
@@ -174,6 +205,7 @@ export function useV1Attendance(refreshKey: unknown): V1Attendance {
     return () => {
       cancelled = true;
       readRef.current = () => {};
+      applyRef.current = () => {};
       window.clearInterval(timer);
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibility);
@@ -192,5 +224,7 @@ export function useV1Attendance(refreshKey: unknown): V1Attendance {
     readRef.current();
   }, [refreshKey]);
 
-  return { access, record };
+  const apply = useCallback((next: AttendanceRecord) => applyRef.current(next), []);
+  const refresh = useCallback(() => readRef.current(), []);
+  return { access, record, apply, refresh };
 }

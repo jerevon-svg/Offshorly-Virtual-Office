@@ -159,6 +159,19 @@ export class Walkability {
   isDynamicallyBlocked(cx: number, cy: number): boolean {
     return this.blocked.has(`${cx},${cy}`);
   }
+  /** PHASE 7E — IS THIS CELL RESERVED? Reservations only — not the dynamic entity footprints that share
+   *  `blocked` with them.
+   *
+   *  A reservation is a DELIBERATE CLOSURE placed by the world (today: Reception's gate lanes while V1 has
+   *  not confirmed a check-in). It outranks every navigation layer, including a derived room's geometry,
+   *  because it is not a statement about geometry at all. `walkable` below already gives it that rank; this
+   *  exists so the PLAYER's stand test can give it the same rank without also re-applying furniture
+   *  footprints that a derived room deliberately judges for itself. */
+  isReserved(cx: number, cy: number): boolean {
+    const k = `${cx},${cy}`;
+    for (const s of this.reservations.values()) if (s.has(k)) return true;
+    return false;
+  }
   /** the composed predicate: derived geometry where a reconstructed room governs, V1 everywhere else */
   readonly walkable: CellPredicate = (cx, cy) => {
     if (this.blocked.has(`${cx},${cy}`)) return false;

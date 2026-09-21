@@ -213,3 +213,58 @@ describe("AtlasZohoService instances", () => {
     expect(typeof svc.submitTimeLogs).toBe("function");
   });
 });
+
+// ---- THE 422 -----------------------------------------------------------------------------------------
+// Atlas's TimeLogEntryIn.task_id is a REQUIRED string and its schema has no category field
+// (Offshorlyreporting backend/app/schemas/office.py). Our own validator offers "select a task, OR choose
+// an approved category instead", so a category-only entry was legal here, went out as `task_id: null`,
+// and came back as an opaque "Submission failed (HTTP 422)".
+describe("an entry Atlas's contract cannot carry is never sent", () => {
+  const CATEGORY_ONLY = {
+    projectId: null, taskId: null, category: "Meetings", timeSpentMinutes: 60, workDescription: "standup",
+  };
+  const REAL = {
+    projectId: "p1", taskId: "t1", category: null, timeSpentMinutes: 60, workDescription: "shipped it",
+  };
+
+  it("fails WITHOUT a request rather than letting the server 422", async () => {
+    apiFetch.mockClear();
+    const result = await new AtlasZohoService().submitTimeLogs({
+      employeeId: "e1", workDate: "2026-09-21", entries: [CATEGORY_ONLY],
+    });
+    expect(apiFetch).not.toHaveBeenCalled();
+    expect(result.success).toBe(false);
+  });
+
+  it("says WHICH entry and what to do about it, instead of a status code", async () => {
+    const result = await new AtlasZohoService().submitTimeLogs({
+      employeeId: "e1", workDate: "2026-09-21", entries: [REAL, CATEGORY_ONLY],
+    });
+    expect(result.error).toContain("Entry 2");
+    expect(result.error).not.toContain("422");
+    expect(result.error).toMatch(/task/i);
+  });
+
+  it("names every offending entry, not just the first", async () => {
+    const result = await new AtlasZohoService().submitTimeLogs({
+      employeeId: "e1", workDate: "2026-09-21", entries: [CATEGORY_ONLY, REAL, CATEGORY_ONLY],
+    });
+    expect(result.error).toContain("Entry 1");
+    expect(result.error).toContain("Entry 3");
+    expect(result.error).not.toContain("Entry 2");
+  });
+
+  it("sends a fully-specified log exactly as before", async () => {
+    apiFetch.mockClear();
+    apiFetch.mockResolvedValue(jsonResponse({
+      success: true, submission_id: "s1", submitted_at: "2026-09-21T09:00:00Z", entries_created: 1, failures: [],
+    }));
+    const result = await new AtlasZohoService().submitTimeLogs({
+      employeeId: "e1", workDate: "2026-09-21", entries: [REAL],
+    });
+    expect(apiFetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse((apiFetch.mock.calls[0][1] as { body: string }).body);
+    expect(body.entries[0].task_id).toBe("t1");
+    expect(result.success).toBe(true);
+  });
+});

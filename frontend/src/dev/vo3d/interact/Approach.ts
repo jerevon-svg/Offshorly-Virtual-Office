@@ -24,6 +24,23 @@ export class ApproachInteraction {
   /** set while walking so the caller can drive its own navigation controller with this route */
   route: Vec2[] = [];
   spec: ApproachCapability | null = null;
+  /** PHASE 7E — WHICH ENTITY THIS APPROACH IS AIMED AT, when the caller named one.
+   *
+   *  The capability alone cannot answer that: `spec` is the walk-up point and a human label, and two
+   *  entities may legitimately share a label. Carrying the id HERE rather than in the caller is what makes
+   *  the lifecycle correct by construction — every existing `cancel()` call site (a click-to-walk, a sit,
+   *  a portal, the editor) clears it without knowing it exists, and a refused walk never sets it. */
+  private targetId: string | null = null;
+  /** PHASE 7E — FIRED ONCE, at the instant the turn completes and the state becomes `arrived`.
+   *
+   *  Only for an approach that was given an entity id. It is a NOTIFICATION, not a dispatch: this class
+   *  has no idea what the caller does with it, which is the same line app/interactions.ts draws for a
+   *  coworker selection. Set by app/world.ts; null on the standalone dev page, where nobody is listening.
+   *
+   *  IT CANNOT DOUBLE-FIRE. The transition below leaves `turning`, and `update()` returns immediately in
+   *  every other state — so the frames that keep arriving after an arrival do nothing. A second call is a
+   *  second `begin()`, which is a second approach and genuinely is a second arrival. */
+  onArrivedAtTarget: ((entityId: string) => void) | null = null;
 
   constructor(avatar: Avatar, stack: ControllerStack, requestWalk: (to: Vec2) => NavResult) {
     this.avatar = avatar;
@@ -34,17 +51,22 @@ export class ApproachInteraction {
     return this.state === "turning";
   }
 
-  /** Begin an approach. Returns the nav result so the caller can hand the route to its walk controller. */
-  begin(spec: ApproachCapability): NavResult {
+  /** Begin an approach. Returns the nav result so the caller can hand the route to its walk controller.
+   *
+   *  `entityId` is optional and purely for the arrival notification (PHASE 7E) — an approach without one
+   *  behaves exactly as it always has. */
+  begin(spec: ApproachCapability, entityId: string | null = null): NavResult {
     const result = this.requestWalk(spec.point);
     if (!result.ok) {
       this.state = "idle";
       this.spec = null;
+      this.targetId = null;
       this.route = [];
       this.status = `unreachable: ${result.reason}`;
       return result;
     }
     this.spec = spec;
+    this.targetId = entityId;
     this.route = result.path.slice();
     this.state = "walking";
     this.status = `walking to ${spec.label}`;
@@ -63,6 +85,7 @@ export class ApproachInteraction {
     if (this.state === "turning") this.stack.release("Interaction");
     this.state = "idle";
     this.spec = null;
+    this.targetId = null;
     this.route = [];
     this.status = "idle";
   }
@@ -80,6 +103,10 @@ export class ApproachInteraction {
       this.stack.release("Interaction");
       this.state = "arrived";
       this.status = `at ${this.spec.label}`;
+      // PHASE 7E — LAST, and only once the state has already moved on: a listener that cancels or starts
+      // another approach from inside this callback must not have its work undone by the lines above.
+      const arrived = this.targetId;
+      if (arrived) this.onArrivedAtTarget?.(arrived);
     }
   }
 }

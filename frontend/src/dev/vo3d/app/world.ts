@@ -7,7 +7,7 @@ import {
 } from "../../../services/settings/experiencePreferences";
 import { WorldState } from "../world/WorldState";
 import { DESIGN_ROOM, DESIGN_SOLIDS, CHAIR_4_ID, DOOR_ID, HERO_PLANT_ID, SHELL as DESIGN_SHELL, designRoomEntities } from "../rooms/design-room";
-import { RECEPTION_ROOM, COUNTER_INTERACTION_ID, ENTRY_DOOR_EAST_ID, ENTRY_DOOR_WEST_ID, ENTRY_SCANNER_ID, ENTRY_ZONE, GATE, GATE_SCANNER_IDS, GATE_ZONES, KIOSK_INTERACTION_ID, LOUNGE_SEAT_IDS, RECEPTION_ROOM_ID, receptionEntities } from "../rooms/reception";
+import { RECEPTION_ROOM, COUNTER_INTERACTION_ID, FACADE as FACADE_SPEC, ENTRY_DOOR_EAST_ID, ENTRY_DOOR_WEST_ID, ENTRY_SCANNER_ID, ENTRY_ZONE, GATE, GATE_SCANNER_IDS, GATE_ZONES, KIOSK_INTERACTION_ID, KIOSK_SCANNER_ID, KIOSK_ZONE, LOUNGE_SEAT_IDS, RECEPTION_ROOM_ID, receptionEntities } from "../rooms/reception";
 import { GAMING_ROOM, gamingRoomEntities,
   BAG_SEAT_IDS, DARTS_INTERACTION_ID, DOOR_LEAF_ID as GAMING_DOOR_ID, FRIDGE_INTERACTION_ID, GAMING_CHAIR_IDS,
   POSTER_INTERACTION_ID, SOFA_SEAT_ID, TV_INTERACTION_ID as GAMING_TV_INTERACTION_ID } from "../rooms/gaming";
@@ -120,7 +120,7 @@ import { standablePointNear } from "../player/PlayerBody";
 import { markSeatFacingSaved, parseSeatAnchorId, SEAT_FACINGS, seatAnchorId, seatFacingFor, seatFacingTable, seatedYawFor, setSeatFacingOverride, subscribeSeatFacing, unsavedSeatFacingCount, type SeatFacing } from "./seats";
 import type { LoungeSeatSlot, SeatCapability } from "../world/WorldState";
 import { deskSeatContact } from "../interact/seatContact";
-import { FACING_YAW, pointInRect, stepAngle, wrapAngle, type Facing, type Rect, type Vec2 } from "../core/coords";
+import { FACING_YAW, circleOverlapsRect, pointInRect, stepAngle, wrapAngle, type Facing, type Rect, type Vec2 } from "../core/coords";
 
 /** PHASE 7C — THE CAVE MEETING, as the HUD sees it.
  *
@@ -233,8 +233,24 @@ export interface Vo3dWorld {
    *  `unknown` shuts the gate but never moves anybody. Never called by the standalone dev page. */
   setOfficeAccess(access: OfficeAccess): void;
   /** PHASE 6D — WHO THE HOST HEARS FROM WHEN A COWORKER IS SELECTED, pushed in like every other write on
-   *  this interface. Null unsubscribes. The world dispatches nothing itself: see app/interactions.ts. */
+   *  this interface. Null unsubscribes. The world dispatches nothing itself: see app/interactions.ts.
+   *  PHASE 7E — the same handlers also receive `onInteractionArrived`, the walk-up-to-a-fixture signal. */
   setCoworkerInteractions(handlers: Vo3dCoworkerInteractions | null): void;
+  /** PHASE 7E — AUTHORISE THIS DEPARTURE, or take the authorisation back.
+   *
+   *  The exit is held shut for a CHECKED-IN employee and for nobody else: a checked-out one is exploring
+   *  and was never stopped, and an employee V1 has not answered for is never trapped inside. Held by the
+   *  SAME Walkability reservation the Reception gates use — so the router, click-to-walk, every approach
+   *  and PLAYER mode all obey it at once, and the automatic doors stay shut because a body can no longer
+   *  reach or route through their crossing.
+   *
+   *  `true` opens it for ONE departure and re-arms itself once the employee comes back inside. It is an
+   *  answer about a door and says nothing about attendance: the host has either sent them to the AI Lab
+   *  still checked in, or finished V1's own check-out. This never writes either. */
+  setExitAuthorized(on: boolean): void;
+  /** PHASE 7E — name where an authorised departure is heading, so peers see them arrive there rather than
+   *  stop at the façade. A label on the movement wire and nothing else. */
+  setDepartureDestination(place: "ai-lab" | null): void;
   /** PHASE 6D — WHERE THAT PERSON IS ON SCREEN RIGHT NOW, for an anchored card. Recomputed from the live
    *  camera and the live body on every call (the host calls it per animation frame), because both move.
    *  Null for somebody this world has no body for. */
@@ -288,6 +304,10 @@ export interface Vo3dWorld {
   /** PHASE 7A — leave PLAYER mode and return to the OFFICE camera. The one verb the HUD needs, because a
    *  pointer-locked player cannot reach any DOM control to get out. Same entry point the GUI button uses. */
   exitPlayerMode(): void;
+  /** PHASE 7E — hide PLAYER's centre-screen "[E] …" interaction line while a modal owns the screen.
+   *  It is drawn at the middle of the viewport, which is where a modal's primary button sits. Presentation
+   *  only: targeting, input, the crosshair and the floor ring all keep running underneath. */
+  setInteractionPromptHidden(hidden: boolean): void;
   /** PHASE 7A — SELECT A PERSON THE HOST PICKED, rather than one the pointer hit: the branded HUD's
    *  Search locates somebody by name, and "locate" in a 3D world means the same thing a click on their
    *  body means. Returns false for anybody this world is not currently drawing — Search then simply
@@ -901,8 +921,42 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     return out;
   })();
   const GATE_RESERVATION = "office-access-gate";
+  /** PHASE 7E — THE EXIT, held the same way and for the same reason the gate is.
+   *
+   *  THE DOORWAY, AND ONLY THE DOORWAY. This was first rasterised from the door's `clearance.band` — the
+   *  V1 '+' span, which is FIVE cell rows deep (z 1120…1200) because that is what the leaves sweep and
+   *  what the grid paints as openable. Reserving all of it walled off the doorway PLUS sixty-odd units of
+   *  PUBLIC PAVEMENT in front of it, which is not this gate's to hold: an employee walking the sidewalk
+   *  past their own entrance was stopped by it, and one coming back from the AI Lab could not reach the
+   *  doors at all.
+   *
+   *  So it is the OPENING: the V1 door span, two cell rows deep from the façade plane. That covers the
+   *  threshold and the leaf line — enough that a body (radius 10.5 in a 16-unit grid) cannot straddle it —
+   *  and stops at the building line, where the street begins.
+   *
+   *  Reserving it stops the body, the router and PLAYER mode at once, and it keeps the doors SHUT without
+   *  touching SlidingDoor at all: a door opens for a body in its crossing or a route through it, and a
+   *  reservation makes both impossible. */
+  const EXIT_RESERVATION = "office-exit-door";
+  const FACADE_DOOR = FACADE_SPEC.door;
+  const EXIT_BAND: Rect = { x: FACADE_DOOR.x0, z: FACADE_SPEC.z, w: FACADE_DOOR.x1 - FACADE_DOOR.x0, d: 2 * CELL };
+  const exitCells = (() => {
+    const out: Cell[] = [];
+    for (let cy = Math.floor(EXIT_BAND.z / CELL); cy <= Math.floor((EXIT_BAND.z + EXIT_BAND.d - 0.001) / CELL); cy++)
+      for (let cx = Math.floor(EXIT_BAND.x / CELL); cx <= Math.floor((EXIT_BAND.x + EXIT_BAND.w - 0.001) / CELL); cx++) out.push({ cx, cy });
+    return out;
+  })();
+  let exitAuthorized = false;
+  /** Set once an authorised body has actually left the frame, so the authorisation is spent on the way
+   *  back in rather than lingering for the rest of the session. */
+  let exitUsed = false;
+  const exitState = { held: "no", authorized: "no", prompts: 0 };
+  /** A position no door's trigger can reach, and an empty route. What the entrance doors are shown while
+   *  the exit is held — see the frame loop. */
+  const DOOR_SUPPRESSED: Vec2 = { x: -1e6, z: -1e6 };
+  const NO_ROUTE: readonly Vec2[] = [];
   let officeAccess: OfficeAccess = "unknown";
-  const accessState = { access: "unknown", gate: "closed", zone: "—", ejections: 0 };
+  const accessState = { access: "unknown", gate: "closed", zone: "—", ejections: 0, sensors: "refusing (red)" };
   /** A restore that arrived while the gate was shut and the target was inside the office. Held rather than
    *  discarded: the employee may be checked in and simply waiting on the read, and their persisted
    *  position is still the right answer once V1 confirms it. Retried from setOfficeAccess. */
@@ -939,6 +993,24 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // employee for the half second before their check-in is confirmed is the worse failure.
       if (next === "denied") ejectFromOffice();
     }
+    // NO LOCAL GRANT SURVIVES THE ANSWER THAT ENDED IT.
+    //
+    // `exitAuthorized` is a permission this session handed out — for an AI Lab trip, or for the walk out
+    // after a confirmed check-out — and it belongs to the work session it was granted in. Once V1 says
+    // anything other than CHECKED_IN, that session is over, so the grant is dropped rather than left to be
+    // spent later by a body that has since checked in again. It costs a checked-out employee nothing: the
+    // exit is only ever HELD for a confirmed check-in (see applyExitGate), so they still walk out freely.
+    //
+    // This is the one direction a stale flag could have mattered: without it, an employee who checked out
+    // and checked straight back in at the kiosk without leaving would start their new session with the
+    // doors already unheld — a grant nobody made for that session.
+    if (!mayEnterOffice(next)) {
+      exitAuthorized = false;
+      exitUsed = false;
+      exitPrompted = false;
+      exitState.authorized = "no";
+    }
+    applyExitGate(avatar.worldPosition());
     navDebug.refreshDynamic(walkability);
     if (pendingRestore && mayEnterOffice(officeAccess)) {
       const r = pendingRestore;
@@ -946,6 +1018,71 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       restoreSelf(r.point, r.facing, r.seat, r.place);
     }
   }
+
+  /** IS THE EXIT HOLDABLE FROM WHERE THE BODY ACTUALLY IS?
+   *
+   *  A reservation is a wall, and a wall is only a boundary if you are on one side of it. Two cases where
+   *  holding this one would TRAP rather than stop:
+   *
+   *    • THE BODY IS OUTSIDE. Somebody on the street is coming HOME, and coming home is not a decision
+   *      anybody needs to be asked about — they are still checked in, and the office behind Reception is
+   *      guarded by its own gate regardless. Holding the doorway against them is how an employee ends up
+   *      standing at their own front door unable to open it.
+   *    • THE BODY OVERLAPS THE DOORWAY. The stand test refuses every point whose body circle touches a
+   *      reserved cell, so a body standing IN the opening when the reservation lands cannot step out of it
+   *      in any direction — including backwards. It is released until they are clear, and re-applied the
+   *      moment they are, which is a beat later and inside the building.
+   *
+   *  Neither case can be reached while the exit is already held: a held doorway is unreachable, so a body
+   *  can only be in or beyond it if it got there while the exit was open. */
+  const exitHoldable = (at: Vec2): boolean =>
+    zoneOf(at) !== "outside" && !circleOverlapsRect(at, NAV_RADIUS, EXIT_BAND);
+
+  /** Hold or release the exit from the facts that decide it, and from nothing else. Called every frame
+   *  with the body's real position; the walkability write happens only when the answer actually changes,
+   *  so the per-frame cost is one zone test and one circle test. */
+  let exitHeldNow = false;
+  function applyExitGate(at: Vec2): void {
+    const hold = mayEnterOffice(officeAccess) && !exitAuthorized && exitHoldable(at);
+    exitState.authorized = exitAuthorized ? "yes" : "no";
+    if (hold === exitHeldNow) return;
+    exitHeldNow = hold;
+    exitState.held = hold ? "yes" : "no";
+    if (hold) {
+      walkability.reserve(EXIT_RESERVATION, exitCells);
+      // A WALK ALREADY QUEUED THROUGH THE DOORWAY must not be honoured — the same reason, and the same
+      // stop, as the access gate above: waypoints do not re-consult walkability as they are consumed.
+      if (navCtl.path.some((p) => pointInRect(p, EXIT_BAND))) navCtl.stop();
+    } else {
+      walkability.release(EXIT_RESERVATION);
+    }
+    navDebug.refreshDynamic(walkability);
+  }
+  function setExitAuthorized(on: boolean): void {
+    if (disposed || on === exitAuthorized) return;
+    exitAuthorized = on;
+    exitUsed = false;
+    exitPrompted = false;
+    applyExitGate(avatar.worldPosition());
+  }
+  /** PHASE 7E — WHERE THIS DEPARTURE IS GOING, told to the feed BEFORE the body crosses V1's frame.
+   *
+   *  The boundary publish is the only chance to name the destination: app/selfMovement.ts closes the leg at
+   *  the last in-frame sample and, if a place is set, says which place at that same point. Setting it after
+   *  they are already out there is too late — peers would have watched them walk to the façade and stop.
+   *
+   *  Purely a LABEL on the movement wire. No attendance, no status, no access. A departure that is then
+   *  cancelled clears it, and coming back inside clears it in the frame loop. */
+  function setDepartureDestination(place: "ai-lab" | null): void {
+    if (disposed) return;
+    selfFeed?.entering(place === "ai-lab" ? AI_LAB_PLACE_ID : null);
+  }
+  /** Has the exit prompt already been raised for this approach? Cleared when the body steps off the mat,
+   *  so walking away and coming back asks again — and standing on it does not ask sixty times a second. */
+  let exitPrompted = false;
+  /** Is the signed-in body inside the AI Lab right now? Edge-detected in the frame loop below. */
+  let selfInAiLab = false;
+  const aiLabState = { inside: "no" };
 
   /** Stand a denied body back on Reception's public side. A PLACEMENT, not a movement — the feed is told
    *  so (Feed.placed), because this is V2 enforcing V1's own rule, not the employee walking anywhere. */
@@ -1298,7 +1435,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     aiSeat = null;
     devSeat = null;
     const spec = world.get(entityId).capabilities.approach!;
-    const r = approachCtl.begin(spec);
+    // PHASE 7E — the id travels WITH the approach, so the arrival notification can name what was reached
+    // rather than guessing from a label. The controller drops it on every cancel, so a stale id is
+    // impossible (interact/Approach.ts).
+    const r = approachCtl.begin(spec, entityId);
     receptionState.focus = spec.label;
     receptionState.status = approachCtl.status;
     if (r.ok) { navDebug.showNav(avatar.position, r); navCtl.setPath(r.path); }
@@ -1663,6 +1803,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   /** rad/s — the SAME unhurried turn interact/Approach.ts gives a walk-up to a desk or a kiosk. */
   const APPROACH_TURN_RATE = 4.2;
   let coworkerInteractions: Vo3dCoworkerInteractions | null = null;
+  // PHASE 7E — A WALK-UP TO A FIXTURE, REPORTED THE SAME WAY A WALK-UP TO A PERSON IS. One line, because
+  // the pieces were already here: interact/Approach.ts owns the arrival (and its fire-once guarantee) and
+  // this contract is how the world tells the host anything at all. The world still decides nothing about
+  // what a kiosk or a counter MEANS — see app/interactions.ts.
+  approachCtl.onArrivedAtTarget = (entityId) => coworkerInteractions?.onInteractionArrived?.(entityId);
   /** Who is selected right now, so a repeat click on the same body is not republished as a new selection
    *  (the menu would re-mount and lose its own state) and a dismissal is only sent when there was one. */
   let selectedCoworker: string | null = null;
@@ -1893,6 +2038,14 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // PHASE 7D — the CAVE's name on the movement wire. A roomId is any string server-side (socket.py's
   // _is_room_id), so this needs no backend change and collides with no V1 room id.
   const CAVE_PLACE_ID = "championship-cave";
+  /** PHASE 7E — THE AI LAB'S NAME ON THE MOVEMENT WIRE, on exactly the same terms as the CAVE's above: a
+   *  roomId is any string server-side, so this needs no backend change and collides with no V1 room id.
+   *
+   *  The Lab is not a portal — you WALK there, out of the building and across the campus — so the name is
+   *  attached the moment the departure is authorised rather than at a threshold. That is what lets the feed
+   *  say where somebody went as they cross V1's frame boundary, instead of leaving peers with a body
+   *  parked at the façade (app/selfMovement.ts). */
+  const AI_LAB_PLACE_ID = "ai-lab";
   /** PHASE 7D — WHERE EACH PERSON IN THE CAVE IS, from what they actually published.
    *
    *  This replaces a hash-of-email slot table, and the difference is the whole point: that one was a
@@ -1904,7 +2057,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  have not moved since — keeps `point`, which puts them at the portal. Honest, and self-correcting
    *  the moment they take a step. */
   const placeWorldPoint = (c: Vo3dCoworker): Vo3dCoworker =>
-    c.place === CAVE_PLACE_ID && c.localPoint ? { ...c, worldPoint: c.localPoint } : c;
+    // PHASE 7E — the AI Lab joins it, for the identical reason and with an identical mapping: both places
+    // are outside V1's frame, so a peer's `localPoint` IS their real world position out there.
+    (c.place === CAVE_PLACE_ID || c.place === AI_LAB_PLACE_ID) && c.localPoint ? { ...c, worldPoint: c.localPoint } : c;
   caveTransition = new CaveTransition({
     build: caveBuild,
     // PHASE 7D — MULTIPLAYER. The CAVE is outside V1's coordinate frame, so a body inside it has no
@@ -2743,6 +2898,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     acc.add(accessState, "access").name("V1 says").disable().listen();
     acc.add(accessState, "gate").name("Reception gates").disable().listen();
     acc.add(accessState, "zone").name("standing in").disable().listen();
+    acc.add(accessState, "sensors").name("gate sensors").disable().listen();
+    acc.add(exitState, "held").name("exit held").disable().listen();
+    acc.add(exitState, "authorized").name("exit authorised").disable().listen();
+    acc.add(exitState, "prompts").name("exit prompts").disable().listen();
+    acc.add(aiLabState, "inside").name("in the AI Lab").disable().listen();
     acc.add(accessState, "ejections").name("ejections from office").disable().listen();
     const pub = av.addFolder("published to V1");
     pub.add(selfMovement.state, "started").name("walk_started").disable().listen();
@@ -3186,6 +3346,39 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // the Meeting terminal speaks the same BLUE-idle / GREEN-detected language, driven by the same
     // read-only proximity test — no navigation, no grid, no geometry
     mirror.ambient.setScanner(MEETING_KIOSK_SCANNER_ID, pointInRect(scannerAt, MEETING_KIOSK_ZONE));
+    // PHASE 7E — WHAT A GATE SAYS WHEN SOMEBODY ARRIVES AT IT. Blue is the resting state for everyone;
+    // the access bar and lamp answer as a body enters the lane and ease back to blue behind them. This
+    // only chooses WHICH answer — green once V1 has confirmed a check-in, red until then.
+    //
+    // IT DECIDES NOTHING. The lane is opened or closed by the Walkability reservation alone (setOfficeAccess
+    // above), which is held from the same `officeAccess` read here every frame — so a blue gate is still a
+    // shut gate, and no animation can ever let anybody through.
+    //
+    // The ENTRANCE sensor is deliberately NOT included: a checked-out employee is welcome through the
+    // front door and into Reception — the doors are not what is refusing them. Only the gates are, and
+    // even they refuse with a reservation rather than with a colour.
+    const permitted = mayEnterOffice(officeAccess);
+    for (const id of GATE_SCANNER_IDS) mirror.ambient.setScannerDenied(id, !permitted);
+    // The kiosk answers the same way, on the same terms: BLUE at rest, and green or red only while
+    // somebody is actually standing at it (KIOSK_ZONE, the same read-only proximity test as every other
+    // scanner here). Which of the two it shows is V1's answer, never a click.
+    mirror.ambient.setScannerDenied(KIOSK_SCANNER_ID, !permitted);
+    mirror.ambient.setScanner(KIOSK_SCANNER_ID, pointInRect(scannerAt, KIOSK_ZONE));
+    // PHASE 7E — THE EXIT PROMPT. Raised where every other proximity test here is raised, from the same
+    // read-only position, and only while the exit is actually held: a checked-out employee walking out is
+    // asked nothing, because nothing is stopping them. The world does not decide what leaving MEANS — it
+    // reports that somebody is trying to (app/interactions.ts).
+    const onMat = pointInRect(scannerAt, ENTRY_ZONE);
+    if (!onMat) {
+      // THEY WALKED AWAY. Told once, on the edge, so the card cannot follow them back across the room —
+      // and `exitPrompted` clearing here is also what makes a second approach ask again.
+      if (exitPrompted) coworkerInteractions?.onExitAbandoned?.();
+      exitPrompted = false;
+    } else if (!exitPrompted && exitState.held === "yes") {
+      exitPrompted = true;
+      exitState.prompts++;
+      coworkerInteractions?.onExitIntercepted?.();
+    }
   }
   let entryPath: readonly Vec2[] = [];
 
@@ -3456,14 +3649,52 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // current clip, so re-asserting it every frame costs nothing.
       if (stack.owner === "Idle" && !seatedNow()) avatar.play(selfConversationClip ?? CLIP_IDLE);
       selfFeed?.frame(dt, { x: bp.x, z: bp.z }, avatar.yaw, navCtl.path.length > 0 || coworkerApproach?.turning === true);
-      accessState.zone = zoneOf({ x: bp.x, z: bp.z });
+      const zoneNow = zoneOf({ x: bp.x, z: bp.z });
+      if (zoneNow !== accessState.zone) {
+        accessState.zone = zoneNow;
+        // PHASE 7E — one edge, for the one thing the host reads from it (app/interactions.ts).
+        coworkerInteractions?.onZoneChanged?.(zoneNow);
+      }
+      // PHASE 7E — AN AUTHORISED DEPARTURE IS SPENT ON THE WAY BACK. The authorisation exists for one
+      // trip; once the body has actually left the frame and come back inside, the exit re-arms itself, so
+      // the next attempt to leave asks again. Nothing about attendance is touched either way.
+      applyExitGate({ x: bp.x, z: bp.z });
+      if (exitAuthorized) {
+        if (accessState.zone === "outside") exitUsed = true;
+        else if (exitUsed) setExitAuthorized(false); // they went, and they are back
+        // …OR THEY CHANGED THEIR MIND. An authorisation that was never spent must not sit open for the
+        // rest of the session: stepping off the mat and back into the building withdraws it, so the next
+        // attempt to leave asks again. Measured off the mat AND the doorway band, or the authorisation
+        // would be withdrawn from under somebody mid-stride through the doors.
+        else if (!pointInRect({ x: bp.x, z: bp.z }, ENTRY_ZONE) && !pointInRect({ x: bp.x, z: bp.z }, EXIT_BAND)) setExitAuthorized(false);
+      }
+      // …AND THE LAB IS NAMED WHILE THEY ARE IN IT. `entering` only records the name; app/selfMovement.ts
+      // is what publishes it, at the frame boundary and for every step taken out there. Set from the
+      // body's real position, so a return clears it without anybody having to remember to.
+      const inLab = inAiLabZone({ x: bp.x, z: bp.z }, NAV_RADIUS);
+      if (inLab !== selfInAiLab) {
+        selfInAiLab = inLab;
+        aiLabState.inside = inLab ? "yes" : "no";
+        // The CAVE owns `place` while you are inside it; the two volumes never overlap, so this can never
+        // rename a Cave occupant.
+        if (caveTransition?.state.where !== "cave") selfFeed?.entering(inLab || exitAuthorized ? AI_LAB_PLACE_ID : null);
+      }
+      accessState.sensors = mirror.ambient.scannerDenied(GATE_SCANNER_IDS[0]) ? "refusing (red)" : "clear (green)";
       // A direct-control player has no planned route, so the automatic doors would only react once his body
       // was already inside the sweep band. `doorIntent` is a one-segment synthetic route pointing a stride
       // ahead of him — the SAME input SlidingDoor already consumes, so no door logic changes at all.
       const route = navCtl.path.length ? navCtl.path : playerMode.doorIntent;
       door.update(dt / 1000, { x: bp.x, z: bp.z }, route);
       entryPath = route;
-      entryDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
+      // PHASE 7E — THE ENTRANCE DOORS STAY SHUT WHILE THE EXIT IS HELD. An employee standing on the mat
+      // overlaps the doorway's own crossing rect, which is all SlidingDoor needs to open — so holding the
+      // FLOOR was not enough on its own: the leaves slid back over a threshold nobody could cross.
+      //
+      // The door is fed a body that is nowhere near it, rather than frozen or reset: it then closes on its
+      // own timing, reverses correctly if it was already opening, and SlidingDoor itself is untouched —
+      // no new state, no new API, and every other door in the building behaves identically to before.
+      const exitHeld = exitState.held === "yes";
+      entryDoor.update(dt / 1000, exitHeld ? DOOR_SUPPRESSED : { x: bp.x, z: bp.z }, exitHeld ? NO_ROUTE : route);
       gamingDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
       execDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
       cmsDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route);
@@ -4014,6 +4245,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       gateCells: () => gateCells.map((c) => ({ ...c })),
       mayPlaceAt: (x: number, z: number) => mayPlaceAt({ x, z }),
       setAccess: (a: OfficeAccess) => setOfficeAccess(a),
+      exit: () => ({ ...exitState }),
+    setExitAuthorized,
+      exitCells: () => exitCells.map((c) => ({ ...c })),
+      aiLab: () => ({ ...aiLabState }),
     },
     /** PERFORMANCE STRESS PHASE 1 — the dev-only client/render load harness and its scenario matrix.
      *  Everything here is inert until called: no crowd exists, and nothing about the product page changes.
@@ -4493,7 +4728,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   return {
     dispose,
     restoreSelf,
+    setInteractionPromptHidden: (hidden: boolean) => playerMode.setPromptHidden(hidden),
     setOfficeAccess,
+    setExitAuthorized,
+    setDepartureDestination,
     setOccupiedSeats: (ids) => {
       occupiedSeatIds = new Set(ids);
       seatSyncState.occupied = occupiedSeatIds.size;

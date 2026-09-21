@@ -7,6 +7,8 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Vo3dHud } from "./Vo3dHud";
+import { useCheckoutFlow } from "../../../components/OfficeMap/useCheckoutFlow";
+import { getCurrentUserId } from "../../../auth/useAuthGate";
 import type { Vo3dWorld } from "./world";
 import type { V1Attendance } from "../adapters/v1Attendance";
 import type { Vo3dViewMode } from "./viewMode";
@@ -124,12 +126,25 @@ function attendanceOf(status: "CHECKED_IN" | "CHECKED_OUT", checkedInAt: string 
   return {
     access: status === "CHECKED_IN" ? "permitted" : "denied",
     record: { email: SELF, status, checkedInAt, checkedOutAt: null },
+    apply: vi.fn(),
+    refresh: vi.fn(),
   };
+}
+
+/** PHASE 7E — the flow moved to app/Vo3dOverlay.tsx (it is driven by the exit journey now) and is passed
+ *  in. The HUD is still tested against a REAL `useCheckoutFlow`, created here exactly as the overlay
+ *  creates it, so the working-time pill and the availability gate are exercised against the real hook. */
+type HudProps = Omit<Parameters<typeof Vo3dHud>[0], "checkoutFlow">;
+function Hud(props: HudProps) {
+  const rec = props.attendance.record;
+  const timeInMs = rec?.status === "CHECKED_IN" && rec.checkedInAt ? Date.parse(rec.checkedInAt) : null;
+  const flow = useCheckoutFlow({ employeeId: getCurrentUserId(), timeInMs, hourDecimal: 0 });
+  return <Vo3dHud {...props} checkoutFlow={flow} />;
 }
 
 function hud(attendance = attendanceOf("CHECKED_IN", new Date(Date.now() - 90 * 60_000).toISOString())) {
   return (
-    <Vo3dHud
+    <Hud
       worldRef={worldRef}
       ready
       attendance={attendance}

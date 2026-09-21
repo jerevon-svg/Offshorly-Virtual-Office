@@ -33,6 +33,14 @@ export function makeStandTest({ world, walkability, derived, radius, allowExteri
     if (!allowExterior && region.kind === "exterior") return false;
     // 2. the body centre, judged by whoever governs its cell
     const c = worldToCell(p);
+    // PHASE 7E — A RESERVATION OUTRANKS EVERY GOVERNOR, and asking FIRST is the whole point.
+    //
+    // This was the bug: Reception is a DERIVED room, so the branch below never consulted
+    // `walkability.walkable` for a cell inside it — and `walkable` is where a reservation is enforced. The
+    // router obeyed the closed gate lanes and PLAYER mode walked straight through them, because the two
+    // were asking different questions of different layers. A reservation is not a statement about geometry
+    // (the lanes are perfectly clear floor), so no geometric layer can answer for it.
+    if (walkability.isReserved(c.cx, c.cy)) return false;
     if (derived.governs(c.cx, c.cy)) {
       if (derived.clearanceAtPoint(p) < radius) return false;
     } else if (!walkability.walkable(c.cx, c.cy)) return false;
@@ -43,6 +51,9 @@ export function makeStandTest({ world, walkability, derived, radius, allowExteri
     for (const [ox, oz] of RIM) {
       const q = { x: p.x + ox * radius, z: p.z + oz * radius };
       const qc = worldToCell(q);
+      // The rim too: a lane is ~2 cells wide, so a body whose centre has not yet reached it can still have
+      // put a shoulder through. Same rule, same reason as the centre above.
+      if (walkability.isReserved(qc.cx, qc.cy)) return false;
       if (derived.governs(qc.cx, qc.cy)) {
         if (derived.clearanceAtPoint(q) <= 0) return false;
       } else if (!walkability.walkable(qc.cx, qc.cy)) return false;

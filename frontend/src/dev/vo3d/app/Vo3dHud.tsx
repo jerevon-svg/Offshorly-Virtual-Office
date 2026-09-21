@@ -78,10 +78,9 @@ import { OFFICE_ROOM_ID } from "../../../services/whiteboard/whiteboardClient";
 import { chatMode } from "../../../services/chat";
 import type { Conversation } from "../../../services/chat/types";
 import { WorkingStatusIndicator } from "../../../components/OfficeMap/checkout/WorkingStatusIndicator";
-import { useCheckoutFlow } from "../../../components/OfficeMap/useCheckoutFlow";
+import type { useCheckoutFlow } from "../../../components/OfficeMap/useCheckoutFlow";
 import { refreshClaimable, useClaimableCount } from "../../../services/quests/claimableStore";
 import { isRealZohoMode } from "../../../services/zoho";
-import { getCurrentUserId } from "../../../auth/useAuthGate";
 import type { OfficeStatus } from "../../../services/presence/status";
 import type { AssetLayer } from "../../../types/office";
 import type { OfficePerson } from "../../../services/office/floorMerge";
@@ -100,6 +99,14 @@ export interface Vo3dHudProps {
   ready: boolean;
   /** V1's attendance, from the ONE poller app/Vo3dHost.tsx already runs (adapters/v1Attendance). */
   attendance: V1Attendance;
+  /** PHASE 7E — V1'S CHECKOUT STATE MACHINE, owned by app/Vo3dOverlay.tsx and passed in.
+   *
+   *  It used to be created here, when the working-time pill was the only thing that read it. The exit
+   *  journey reads and DRIVES it — the Check Out choice starts it, its panels run over the world, and its
+   *  arrival at CHECKED_OUT is what posts the attendance — and two `useCheckoutFlow` instances would be two
+   *  state machines over one localStorage draft. So there is one, and it lives with the callers that
+   *  change it. */
+  checkoutFlow: ReturnType<typeof useCheckoutFlow>;
   /** The coworkers V2 is actually drawing, as V1 layers — Search offers these and nobody else, because
    *  a person the world has no body for cannot be located in it. */
   peopleLayers: readonly AssetLayer[];
@@ -128,7 +135,7 @@ export interface Vo3dHudProps {
 }
 
 export function Vo3dHud({
-  worldRef, ready, attendance, peopleLayers, statusByEmail, onCoworkerAction, onOpenProfile,
+  worldRef, ready, attendance, checkoutFlow, peopleLayers, statusByEmail, onCoworkerAction, onOpenProfile,
   people, selfId, conversations, unreadTotal, resolveDisplayName, onSelectConversation,
   onOpenDirectMessage, onStartGroup, overlayToolOpen,
 }: Vo3dHudProps) {
@@ -178,18 +185,8 @@ export function Vo3dHud({
     return subscribeExperience(apply);
   }, [ready, worldRef]);
 
-  // V1's own session clock. `timeInMs` is the SERVER's checked_in_at, not a mount timestamp, so a reload
-  // (or a second browser) resumes the same session rather than restarting it — V1's rule, kept.
-  const timeInMs = useMemo(() => {
-    if (attendance.record?.status !== "CHECKED_IN") return null;
-    const parsed = attendance.record.checkedInAt ? Date.parse(attendance.record.checkedInAt) : NaN;
-    return Number.isFinite(parsed) ? parsed : Date.now();
-  }, [attendance.record]);
-  // `hourDecimal` is part of useCheckoutFlow's params for API stability and is not read by the reminder
-  // trigger (see the hook). V2 has its own day/night clock in the world and deliberately does not feed it
-  // in here: this HUD uses the flow for the worked-time label only.
-  const checkoutFlow = useCheckoutFlow({ employeeId: getCurrentUserId(), timeInMs, hourDecimal: 0 });
   const hasCheckedIn = attendance.record?.status === "CHECKED_IN";
+
   const timeTrackingVisible = import.meta.env.DEV || isRealZohoMode();
 
   // The Tasks badge must be right BEFORE Tasks is ever opened — fetched once the HUD exists and re-fetched

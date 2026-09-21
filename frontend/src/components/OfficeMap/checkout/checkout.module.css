@@ -1,11 +1,29 @@
-/* Shared dark-translucent palette for the checkout flow — matches
-   CheckinModal/CharacterActionMenu conventions. */
+/* Shared palette for the checkout flow.
+   ----------------------------------------------------------------------------------------------
+   THE --vo-co-* CONTRACT. Every value a THEME would change is read from a custom property whose
+   fallback is this flow's ORIGINAL dark-translucent appearance — the same pattern .statusBadge and
+   .debugPanel already use for placement (--vo-chrome-*). Nothing but appearance is variable: no
+   layout rule, no state class and no component here changes with it.
+
+   V1's office defines none of them, so V1's checkout renders from the fallbacks and is unchanged.
+   V2 wraps the same components in a themed container (dev/vo3d/app/Vo3dCheckoutPanels.module.css)
+   which redefines them to the office's cream card family — the surface, hairline, radius, shadow,
+   pill buttons and green primary documented against the reminder card further down this file.
+
+   The properties, all optional:
+     surface   --vo-co-scrim --vo-co-surface --vo-co-line --vo-co-radius --vo-co-shadow --vo-co-blur
+     text      --vo-co-ink --vo-co-ink-soft --vo-co-title-size --vo-co-title-weight
+     controls  --vo-co-btn-radius --vo-co-primary-bg --vo-co-primary-ink --vo-co-primary-hover
+               --vo-co-secondary-ink --vo-co-hover --vo-co-focus
+     fields    --vo-co-field-bg --vo-co-field-line --vo-co-field-ink
+     accents   --vo-co-danger --vo-co-warn --vo-co-card-bg --vo-co-card-line
+   ---------------------------------------------------------------------------------------------- */
 
 .backdrop {
   position: fixed;
   inset: 0;
   z-index: 30;
-  background: rgba(0, 0, 0, 0.35);
+  background: var(--vo-co-scrim, rgba(0, 0, 0, 0.35));
 }
 
 .panel {
@@ -14,30 +32,32 @@
   left: 50%;
   transform: translate(-50%, -50%);
   z-index: 31;
-  min-width: 320px;
-  max-width: 480px;
+  min-width: var(--vo-co-min-width, 320px);
+  max-width: var(--vo-co-max-width, 480px);
   max-height: 80vh;
   overflow-y: auto;
-  background: rgba(26, 26, 26, 0.95);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 10px;
-  padding: 20px;
-  backdrop-filter: blur(4px);
+  background: var(--vo-co-surface, rgba(26, 26, 26, 0.95));
+  border: 1px solid var(--vo-co-line, rgba(255, 255, 255, 0.12));
+  border-radius: var(--vo-co-radius, 10px);
+  padding: var(--vo-co-pad, 20px);
+  backdrop-filter: var(--vo-co-blur, blur(4px));
+  box-shadow: var(--vo-co-shadow, none);
   display: flex;
   flex-direction: column;
   gap: 14px;
-  color: #f0f0f0;
+  color: var(--vo-co-ink, #f0f0f0);
 }
 
 .title {
-  font-size: 16px;
-  font-weight: 600;
+  font-size: var(--vo-co-title-size, 16px);
+  font-weight: var(--vo-co-title-weight, 600);
+  letter-spacing: var(--vo-co-title-tracking, normal);
   text-align: center;
 }
 
 .body {
-  font-size: 13px;
-  color: rgba(240, 240, 240, 0.75);
+  font-size: var(--vo-co-body-size, 13px);
+  color: var(--vo-co-ink-soft, rgba(240, 240, 240, 0.75));
   text-align: center;
   line-height: 1.5;
 }
@@ -58,16 +78,18 @@
 .primary {
   all: unset;
   cursor: pointer;
-  color: #1a1a1a;
-  background: #f0f0f0;
-  font-size: 14px;
-  padding: 10px 14px;
-  border-radius: 6px;
+  color: var(--vo-co-primary-ink, #1a1a1a);
+  background: var(--vo-co-primary-bg, #f0f0f0);
+  border: 1px solid var(--vo-co-primary-bg, transparent);
+  font-size: var(--vo-co-btn-size, 14px);
+  padding: var(--vo-co-btn-pad, 10px 14px);
+  border-radius: var(--vo-co-btn-radius, 6px);
   font-weight: 600;
   text-align: center;
 }
 .primary:hover {
-  background: #ffffff;
+  background: var(--vo-co-primary-hover, #ffffff);
+  border-color: var(--vo-co-primary-hover, transparent);
 }
 .primary:disabled {
   opacity: 0.4;
@@ -77,14 +99,14 @@
 .secondary {
   all: unset;
   cursor: pointer;
-  color: rgba(240, 240, 240, 0.75);
-  font-size: 13px;
-  padding: 8px 14px;
-  border-radius: 6px;
+  color: var(--vo-co-secondary-ink, rgba(240, 240, 240, 0.75));
+  font-size: var(--vo-co-btn-size, 13px);
+  padding: var(--vo-co-btn-pad, 8px 14px);
+  border-radius: var(--vo-co-btn-radius, 6px);
   text-align: center;
 }
 .secondary:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--vo-co-hover, rgba(255, 255, 255, 0.08));
 }
 
 /* Working status badge — the small persistent "Working · 4h 49m" pill.
@@ -343,17 +365,30 @@
 }
 .label {
   font-size: 12px;
-  color: rgba(240, 240, 240, 0.6);
+  color: var(--vo-co-ink-soft, rgba(240, 240, 240, 0.6));
 }
 .select,
 .input,
 .textarea {
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 6px;
-  color: #f0f0f0;
+  background: var(--vo-co-field-bg, rgba(255, 255, 255, 0.06));
+  border: 1px solid var(--vo-co-field-line, rgba(255, 255, 255, 0.12));
+  border-radius: var(--vo-co-field-radius, 6px);
+  color: var(--vo-co-field-ink, #f0f0f0);
   font-size: 13px;
   padding: 8px 10px;
+}
+.select:focus-visible,
+.input:focus-visible,
+.textarea:focus-visible {
+  outline: 2px solid var(--vo-co-focus, rgba(255, 255, 255, 0.35));
+  outline-offset: 1px;
+}
+.primary:focus-visible,
+.secondary:focus-visible,
+.addBtn:focus-visible,
+.removeBtn:focus-visible {
+  outline: 2px solid var(--vo-co-focus, rgba(255, 255, 255, 0.35));
+  outline-offset: 2px;
 }
 .textarea {
   resize: vertical;
@@ -372,16 +407,16 @@
 }
 .durationUnit {
   font-size: 12px;
-  color: rgba(240, 240, 240, 0.6);
+  color: var(--vo-co-ink-soft, rgba(240, 240, 240, 0.6));
 }
 .entryCard {
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--vo-co-card-line, rgba(255, 255, 255, 0.1));
+  border-radius: var(--vo-co-card-radius, 8px);
+  background: var(--vo-co-card-bg, rgba(255, 255, 255, 0.03));
 }
 .entryHeader {
   display: flex;
@@ -390,38 +425,39 @@
 }
 .entryHeader span {
   font-size: 12px;
-  color: rgba(240, 240, 240, 0.6);
+  color: var(--vo-co-ink-soft, rgba(240, 240, 240, 0.6));
 }
 .removeBtn {
   all: unset;
   cursor: pointer;
-  color: rgba(240, 120, 120, 0.85);
+  color: var(--vo-co-danger, rgba(240, 120, 120, 0.85));
   font-size: 12px;
 }
 .addBtn {
   all: unset;
+  box-sizing: border-box;
   cursor: pointer;
-  color: rgba(240, 240, 240, 0.85);
+  color: var(--vo-co-ink, rgba(240, 240, 240, 0.85));
   font-size: 13px;
-  border: 1px dashed rgba(255, 255, 255, 0.2);
-  border-radius: 6px;
+  border: 1px dashed var(--vo-co-field-line, rgba(255, 255, 255, 0.2));
+  border-radius: var(--vo-co-btn-radius, 6px);
   padding: 8px;
   text-align: center;
 }
 .addBtn:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--vo-co-hover, rgba(255, 255, 255, 0.06));
 }
 .allocationLine {
   font-size: 12px;
-  color: rgba(240, 240, 240, 0.7);
+  color: var(--vo-co-ink-soft, rgba(240, 240, 240, 0.7));
   text-align: center;
 }
 .allocationLine.warn {
-  color: rgba(240, 180, 90, 0.95);
+  color: var(--vo-co-warn, rgba(240, 180, 90, 0.95));
 }
 .loadingHint {
   font-size: 11px;
-  color: rgba(240, 240, 240, 0.5);
+  color: var(--vo-co-ink-soft, rgba(240, 240, 240, 0.5));
 }
 
 /* Time summary panel — read-only grid. */
@@ -432,17 +468,17 @@
   font-size: 13px;
 }
 .summaryLabel {
-  color: rgba(240, 240, 240, 0.6);
+  color: var(--vo-co-ink-soft, rgba(240, 240, 240, 0.6));
 }
 .summaryValue {
-  color: #f0f0f0;
+  color: var(--vo-co-ink, #f0f0f0);
   font-weight: 600;
   text-align: right;
 }
 
 .error {
   font-size: 12px;
-  color: rgba(240, 120, 120, 0.9);
+  color: var(--vo-co-danger, rgba(240, 120, 120, 0.9));
 }
 
 /* Debug panel. */

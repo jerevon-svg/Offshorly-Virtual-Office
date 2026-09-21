@@ -38,6 +38,17 @@ import type { Vo3dCoworkerSelection, Vo3dScreenAnchor } from "./interactions";
 import type { Vo3dWorld } from "./world";
 import { CoworkerActionMenu, type Vo3dCoworkerAction } from "./CoworkerActionMenu";
 import { emailKey, selfEmailKey } from "../adapters/v1Coworkers";
+import { KIOSK_INTERACTION_ID } from "../rooms/reception";
+import { Vo3dKioskCard, type Vo3dKioskState } from "./Vo3dKioskCard";
+import { attendanceService } from "../../../services/attendance";
+import { getCurrentUserId } from "../../../auth/useAuthGate";
+import { Vo3dExitCard } from "./Vo3dExitCard";
+import { Vo3dCheckoutPanels } from "./Vo3dCheckoutPanels";
+import panelStyles from "./Vo3dCheckoutPanels.module.css";
+import { manilaWorkDate, useCheckoutFlow } from "../../../components/OfficeMap/useCheckoutFlow";
+import type { CheckoutState } from "../../../data/checkoutState";
+import { loadSessionStart } from "../../../data/checkoutStorage";
+import { isRealZohoMode } from "../../../services/zoho";
 import { mayEnterOffice } from "./access";
 import type { V1Attendance } from "../adapters/v1Attendance";
 import { Vo3dHud } from "./Vo3dHud";
@@ -221,11 +232,115 @@ function conversationClipFor(inConversation: boolean, isTyping: boolean): string
   return state === "agree-gesture" ? CLIP_TALK_AGREE : null;
 }
 
+/** PHASE 7E — the checkout states that put a PANEL on the screen, and therefore the ones during which
+ *  nothing may dismiss anything on the employee's behalf. Everything else in the flow is either not
+ *  started (IDLE), a toast (REMINDER_SHOWN) or finished (CHECKED_OUT). */
+const CHECKOUT_PANEL_STATES: ReadonlySet<CheckoutState> = new Set<CheckoutState>([
+  "CHECKOUT_CONFIRMATION", "SAYING_GOODBYE", "WALKING_TO_RECEPTION", "AT_RECEPTION",
+  "EDITING_TIME_LOG", "REVIEWING", "SUBMITTING", "SUBMISSION_FAILED", "CHECKOUT_SUCCESS", "WALKING_TO_EXIT",
+]);
+
 export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }: Vo3dOverlayProps) {
   const officeAccess = attendance.access;
   const self = selfEmailKey();
   const [selection, setSelection] = useState<Vo3dCoworkerSelection | null>(null);
   const [anchor, setAnchor] = useState<Vo3dScreenAnchor | null>(null);
+  // ---- PHASE 7E: THE RECEPTION CHECK-IN KIOSK ------------------------------------------------------
+  // Open only after WALKING to it (app/interactions.ts onInteractionArrived), which is why there is no
+  // click-to-open path: the kiosk is a thing you use by standing at it, exactly as the seats and the
+  // Cave portal are. `kioskPhase` is THIS CLIENT'S request state and nothing more — what is TRUE about
+  // the work session is `attendance`, which comes from V1 and is never inferred from a button press.
+  const [kioskOpen, setKioskOpen] = useState(false);
+  const [kioskAnchor, setKioskAnchor] = useState<Vo3dScreenAnchor | null>(null);
+  const [kioskPhase, setKioskPhase] = useState<"idle" | "submitting" | "failed">("idle");
+  /** THE DOUBLE-SUBMIT GUARD, a ref and not state for the reason V1's own `checkinRequestPendingRef` is
+   *  one: two clicks in the same frame both read the state from the same render, so only a value that
+   *  changes synchronously can refuse the second one. */
+  const kioskPendingRef = useRef(false);
+
+  // ---- PHASE 7E: LEAVING ---------------------------------------------------------------------------
+  // V1'S CHECKOUT STATE MACHINE, and the only instance of it in V2. It was created in the HUD when the
+  // working-time pill was all that read it; the exit journey drives it, so it lives here with the handlers
+  // that change it and is handed down. Two instances would be two state machines over one stored draft.
+  //
+  // `timeInMs` is the SERVER's checked_in_at, not a mount timestamp, so a reload — or a second browser —
+  // resumes the same session rather than restarting the clock. V1's rule, kept.
+  const liveTimeInMs = useMemo(() => {
+    if (attendance.record?.status !== "CHECKED_IN") return null;
+    const parsed = attendance.record.checkedInAt ? Date.parse(attendance.record.checkedInAt) : NaN;
+    return Number.isFinite(parsed) ? parsed : Date.now();
+  }, [attendance.record]);
+  /** THE SESSION THAT JUST ENDED STILL HAS A LENGTH.
+   *
+   *  `liveTimeInMs` is null the moment attendance reads CHECKED_OUT, which is correct for the HUD pill and
+   *  wrong for the success card: it reported "Not checked in yet" against the very day it had just logged.
+   *  The start time is therefore held for as long as the flow is still showing something about that
+   *  session, and released once it is dismissed and the flow is idle again. */
+  const lastSessionStartRef = useRef<number | null>(null);
+  if (liveTimeInMs !== null) lastSessionStartRef.current = liveTimeInMs;
+  const employeeId = getCurrentUserId();
+  // `hourDecimal` is part of the params for API stability and is not read by the reminder trigger.
+  const checkoutFlow = useCheckoutFlow({ employeeId, timeInMs: liveTimeInMs ?? lastSessionStartRef.current, hourDecimal: 0 });
+  /** What the PANELS are told. The flow itself always gets the held value (its own worked-time maths must
+   *  not go blank mid-checkout); the panels drop it once everything is dismissed and idle again. */
+  const timeInMs = liveTimeInMs ?? (checkoutFlow.state === "IDLE" ? null : lastSessionStartRef.current);
+  const [exitOpen, setExitOpen] = useState(false);
+  const [exitAnchor, setExitAnchor] = useState<Vo3dScreenAnchor | null>(null);
+  const [successCardDismissed, setSuccessCardDismissed] = useState(false);
+  /** Is V1's checkout flow mid-journey? Read inside the world's own callback, which is bound once and must
+   *  not close over a stale value. */
+  const checkoutBusyRef = useRef(false);
+  const [frozenCheckoutAtMs, setFrozenCheckoutAtMs] = useState<number | null>(null);
+  /** IS THE VIEWER OUT OF THE BUILDING? The world's own boundary answer (app/interactions.ts).
+   *
+   *  This used to be "is the body standing inside the AI Lab", and that was the bug: the Lab's own floor
+   *  is one patch of an excursion that also crosses the campus and the pavement, so presence flicked back
+   *  to Available the moment somebody stepped off it — including for the whole walk home. The excursion is
+   *  the thing being described, and its boundary is the building's, not the Lab's. */
+  const [outsideBuilding, setOutsideBuilding] = useState(false);
+  /** V1's own gate on the checkout UI: without a real Zoho integration the flow logs into the void, so the
+   *  row is not offered. Identical condition to OfficeMap.tsx's. */
+  const checkoutOffered = import.meta.env.DEV || isRealZohoMode();
+
+  // A NEW WORK SESSION RESETS THE FLOW, exactly as V1's applyAttendance({ newSession: true }) does.
+  // Without it, an employee who checked out earlier today and then checked in again at the kiosk finds the
+  // flow still resumed to CHECKED_OUT from local storage — the availability picker stays disabled and the
+  // working-time pill renders nothing.
+  //
+  // DERIVED FROM THE SERVER RECORD, NOT FROM THE BUTTON. V1 can be imperative because it OWNS the
+  // transition; V2 observes one that may equally have happened in another tab or in V1 itself, so the
+  // server's `checked_in_at` IS the session identity. Comparing against the marker `saveSessionStart`
+  // already writes is what makes it fire exactly once per real check-in — running it on every mount would
+  // throw away an employee's unsent time-log entries on a page refresh.
+  useEffect(() => {
+    const startedAt = attendance.record?.status === "CHECKED_IN" ? attendance.record.checkedInAt : null;
+    if (!startedAt) return;
+    if (loadSessionStart(employeeId, manilaWorkDate())?.startedAt === startedAt) return;
+    checkoutFlow.beginNewSession(startedAt);
+    setSuccessCardDismissed(false);
+    setFrozenCheckoutAtMs(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attendance.record?.status, attendance.record?.checkedInAt, employeeId]);
+
+  useEffect(() => {
+    if (checkoutFlow.submissionResult?.submittedAt) setFrozenCheckoutAtMs(new Date(checkoutFlow.submissionResult.submittedAt).getTime());
+  }, [checkoutFlow.submissionResult]);
+  // WHICH STATES ACTUALLY OWN THE SCREEN. Written as the list rather than as "not IDLE", because the two
+  // that look busy and are not matter: REMINDER_SHOWN is the 8-hour TOAST — a nudge, not a panel, and one
+  // that is showing for anybody who has been on the clock a while — and CHECKED_OUT is the finished state.
+  // Treating either as busy silently disabled the auto-dismiss for exactly the people most likely to be
+  // walking to the door.
+  /** IS A CHECKOUT PANEL OWNING THE SCREEN RIGHT NOW? One derivation, read by three things: the busy guard
+   *  below, the HUD's own "a tool owns the screen" line, and the wrapper that makes it a real modal. */
+  const checkoutPanelOpen = CHECKOUT_PANEL_STATES.has(checkoutFlow.state) || (checkoutFlow.state === "CHECKED_OUT" && !successCardDismissed);
+  checkoutBusyRef.current = CHECKOUT_PANEL_STATES.has(checkoutFlow.state);
+
+  // PLAYER's "[E] …" line is drawn dead centre, which is exactly where a checkout panel's primary button
+  // sits — the two were overlapping. Driven from the SAME `checkoutPanelOpen` the dock and the modal role
+  // already use, so it cannot get out of step with them, and restored the moment the panel closes.
+  useEffect(() => {
+    worldRef.current?.setInteractionPromptHidden?.(checkoutPanelOpen);
+  }, [checkoutPanelOpen, ready, worldRef]);
   const [openChat, setOpenChat] = useState<AssetLayer | null>(null);
   const [openConversationId, setOpenConversationId] = useState<string | null>(null);
   /** The group conversation panel. Mutually exclusive with the DM panel by construction — opening either
@@ -334,6 +449,16 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }
   useAutoStatusDetection({
     inConversation: inConv,
     offline: !mayEnterOffice(attendance.access),
+    // PHASE 7E — OUT OF THE OFFICE. The AI Lab, the campus between here and there, and the walk back: one
+    // excursion, one answer, held for all of it. Still checked in, still on the clock, simply not at their
+    // desk — and it ends only on confirmed re-entry past the façade, which is reachable solely through the
+    // entrance, so walking up to the building from outside changes nothing.
+    //
+    // IT FORCES NOTHING. `away` is one auto condition among several; V1's own precedence (status.ts:
+    // OFFLINE > DND > IN_CALL > IN_CONVERSATION > AWAY > manual) decides what is actually shown, so a
+    // checked-out viewer still reads OFFLINE, a call still reads IN_CALL, and coming back in simply
+    // uncovers whatever the person had chosen for themselves.
+    away: outsideBuilding,
     inCall: isConnectedToMedia(callState),
   });
 
@@ -422,6 +547,27 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }
       // exactly where OfficeMap.tsx emits it: after a finished approach, keyed on the same email. The
       // server still rejects self and non-roster targets.
       onApproachArrived: (email) => emitApproachArrived(email),
+      // PHASE 7E — WALKED UP TO A FIXTURE. Reception's kiosk is the only one that opens anything today;
+      // every other walk-up point is still the ambient "you are here" it has always been.
+      onInteractionArrived: (entityId) => {
+        if (entityId !== KIOSK_INTERACTION_ID) return;
+        setKioskPhase("idle");
+        setKioskOpen(true);
+      },
+      // PHASE 7E — they walked up to the exit and the world stopped them. Ask what leaving means.
+      onExitIntercepted: () => setExitOpen(true),
+      // …and they walked off without answering. Close the card: the question was about leaving, and they
+      // are not leaving. NOTHING is authorised by this, exactly as Cancel authorises nothing — walking
+      // back up to the doors asks again.
+      //
+      // A CHECKOUT IN PROGRESS IS NEVER INTERRUPTED. Once Check Out is chosen the card is already closed
+      // and V1's own panels own the screen, with the draft they are holding; the guard is explicit anyway,
+      // because "the dialog closes itself" must never be able to mean "somebody's time log vanished".
+      onExitAbandoned: () => {
+        if (checkoutBusyRef.current) return;
+        setExitOpen(false);
+      },
+      onZoneChanged: (zone) => setOutsideBuilding(zone === "outside"),
     });
     return () => world.setCoworkerInteractions(null);
   }, [ready, worldRef]);
@@ -491,6 +637,185 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [selection?.email, worldRef]);
+
+  // THE KIOSK CARD FOLLOWS THE BODY, for the same reason and through the same loop shape. The employee is
+  // standing AT the kiosk when this opens, so their own anchor is the kiosk's position on screen — and it
+  // still moves, because the camera does (a pan in OFFICE, every frame in PLAYER). `selfAnchor` is the
+  // world's existing API for exactly this; nothing new is measured.
+  useEffect(() => {
+    if (!kioskOpen) {
+      setKioskAnchor(null);
+      return;
+    }
+    let raf = 0;
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      const next = worldRef.current?.selfAnchor() ?? null;
+      setKioskAnchor((prev) => {
+        if (!next) return prev === null ? prev : null;
+        if (prev && prev.visible === next.visible && Math.abs(prev.clientX - next.clientX) < 0.5 && Math.abs(prev.clientY - next.clientY) < 0.5) return prev;
+        return next;
+      });
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [kioskOpen, worldRef]);
+
+  // THE CHECK-IN ITSELF — V1's `startCheckin`, restated with V2's consequences instead of V1's walk.
+  //
+  // ONE AUTHORITY: `attendanceService.checkIn()` is the same call V1's Reception menu makes, against the
+  // same endpoint and the same `employee_attendance` row. Nothing here decides that somebody is checked in;
+  // the server does, and a response that is not CHECKED_IN is treated as a FAILURE rather than believed —
+  // V1 throws on exactly that case too.
+  //
+  // THE GATE OPENS BECAUSE THE SHARED ANSWER CHANGED, not because this handler opened it. `attendance.apply`
+  // publishes the confirmed record into the one poller every reader shares (adapters/v1Attendance), and
+  // app/Vo3dHost.tsx's existing effect pushes the resulting access into the world. There is no second path
+  // to the gate and this function knows nothing about walkability.
+  const runCheckIn = useCallback(() => {
+    if (kioskPendingRef.current) return;
+    kioskPendingRef.current = true;
+    setKioskPhase("submitting");
+    attendanceService
+      .checkIn(getCurrentUserId())
+      .then((record) => {
+        if (record?.status !== "CHECKED_IN") throw new Error("Check-in not confirmed by server");
+        attendance.apply(record);
+        setKioskPhase("idle");
+      })
+      .catch(() => {
+        // FAIL CLOSED: the shared answer is left exactly as V1 last stated it, so nothing is granted on a
+        // failed request. A retry is offered; `refresh` asks V1 again in case the write actually landed
+        // and only the response was lost, which is also what stops a retry from double-checking-in.
+        setKioskPhase("failed");
+        attendance.refresh();
+      })
+      .finally(() => {
+        kioskPendingRef.current = false;
+      });
+  }, [attendance]);
+
+  // The exit card follows the body, through the same loop and for the same reason as the kiosk card.
+  useEffect(() => {
+    if (!exitOpen) {
+      setExitAnchor(null);
+      return;
+    }
+    let raf = 0;
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      const next = worldRef.current?.selfAnchor() ?? null;
+      setExitAnchor((prev) => {
+        if (!next) return prev === null ? prev : null;
+        if (prev && prev.visible === next.visible && Math.abs(prev.clientX - next.clientX) < 0.5 && Math.abs(prev.clientY - next.clientY) < 0.5) return prev;
+        return next;
+      });
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [exitOpen, worldRef]);
+
+  /** THE AI LAB. An authorised departure and nothing else: the exit opens for this one trip, the world is
+   *  told where they are going so peers see them arrive there rather than stop at the façade, and the work
+   *  session is not touched in any way. No attendance call, no status write, no check-out. */
+  const goToAiLab = useCallback(() => {
+    setExitOpen(false);
+    worldRef.current?.setDepartureDestination("ai-lab");
+    worldRef.current?.setExitAuthorized(true);
+  }, [worldRef]);
+
+  /** CHECK OUT. Hands straight to V1's own flow at its own entry point. The exit stays SHUT: it is opened
+   *  by the effect below, once that flow has actually reached CHECKED_OUT. */
+  const startCheckout = useCallback(() => {
+    setExitOpen(false);
+    setSuccessCardDismissed(false);
+    checkoutFlow.startCheckout();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checkoutFlow.startCheckout]);
+
+  /** CANCEL. Closes the card and does nothing else — the exit stays held, and the work session is
+   *  untouched. Escape and an outside press land here too. */
+  const cancelExit = useCallback(() => setExitOpen(false), []);
+
+  // THE ONE PLACE V2 ENDS A WORK SESSION, and it is downstream of everything.
+  //
+  // V1's rule, restated with V2's consequences: an explicit checkout is the ONLY thing that ends the
+  // server-side session, and it is reached solely through Log Time → submit → exit. `useCheckoutFlow` gets
+  // to CHECKED_OUT only after a successful Zoho submission, so the POST below cannot run before the time
+  // log is safely recorded — which is also why it is keyed on the flow's transition rather than on a
+  // button. A failed or abandoned submission never reaches this state, so attendance is left alone.
+  //
+  // IT CANNOT DOUBLE-SUBMIT: the effect fires on the EDGE into CHECKED_OUT, and the pending ref refuses a
+  // second call while one is in flight.
+  // THE LAST TWO TRANSITIONS, WHICH V2 HAD NO ONE TO MAKE.
+  //
+  // `useCheckoutFlow` stops at CHECKOUT_SUCCESS: reaching CHECKED_OUT takes `startExitWalk()` then
+  // `finishExit()`, and in V1 those are driven by its scripted walk out of the building. V2 has no such
+  // walk — the employee walks themselves — so nobody called them, and the flow sat at CHECKOUT_SUCCESS
+  // forever. Nothing downstream ever ran: no success card (it renders only at CHECKED_OUT), no attendance
+  // POST, no goodbye and no door. A submitted time log simply went quiet.
+  //
+  // So they are passed through here, immediately and in the hook's own order — the same thing this file
+  // already does with SAYING_GOODBYE and WALKING_TO_RECEPTION at the other end of the flow, and for the
+  // same reason: the states describe a walk V2 does not perform. Reached ONLY from a successful
+  // submission, because CHECKOUT_SUCCESS is reachable only from one.
+  useEffect(() => {
+    if (checkoutFlow.state !== "CHECKOUT_SUCCESS") return;
+    checkoutFlow.startExitWalk();
+    checkoutFlow.finishExit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checkoutFlow.state]);
+
+  const checkoutPostedRef = useRef(false);
+  const prevFlowStateRef = useRef(checkoutFlow.state);
+  useEffect(() => {
+    const prev = prevFlowStateRef.current;
+    prevFlowStateRef.current = checkoutFlow.state;
+    if (checkoutFlow.state !== "CHECKED_OUT" || prev === "CHECKED_OUT") return;
+    if (checkoutPostedRef.current) return;
+    checkoutPostedRef.current = true;
+    attendanceService
+      .checkOut(employeeId)
+      .then((record) => {
+        attendance.apply(record);
+        // THE DEPARTURE, and every part of it is something that already exists.
+        //
+        //   the goodbye   the SAME overhead bubble a chat message uses, on self's own reserved row.
+        //   the doors     `setExitAuthorized` releases the exit reservation, so the entrance doors stop
+        //                 being suppressed and open for the body on approach — SlidingDoor's own
+        //                 behaviour, on its own timing — and close behind them on its own hold timer.
+        //                 Nothing is animated or scripted here.
+        //   the office    `record` is CHECKED_OUT, so the same answer that opens the exit re-holds
+        //                 Reception's gates behind them. One fact, two consequences, no second switch.
+        //
+        // NOBODY IS MOVED. No teleport and no scripted walk: the employee walks out themselves, which is
+        // why the door is opened rather than the body. And it happens ONLY here — downstream of a
+        // confirmed Zoho submission and a confirmed attendance POST — so a failed or abandoned checkout
+        // reaches none of it.
+        spatialBubbles.show(SELF_OVERHEAD_KEY, "Ciao Ciao!");
+        worldRef.current?.setExitAuthorized(true);
+      })
+      .catch(() => {
+        // The local flow completed but the server did not hear it. Attendance is left exactly as V1 last
+        // stated it — nothing is granted, nothing is revoked — and the next read reconciles.
+        showToast("Checked out here, but the office couldn't save it. It will retry next time you open the office.");
+      })
+      .finally(() => {
+        checkoutPostedRef.current = false;
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [checkoutFlow.state]);
+
+  /** What the card shows. V1'S ANSWER OUTRANKS THIS CLIENT'S REQUEST STATE in both directions: a confirmed
+   *  CHECKED_IN closes off the action even if this tab still thinks a request failed, and an unconfirmed
+   *  answer never offers one. */
+  const kioskState: Vo3dKioskState = useMemo(() => {
+    if (kioskPhase === "submitting") return "submitting";
+    if (officeAccess === "permitted") return "checkedIn";
+    if (kioskPhase === "failed") return "failed";
+    if (officeAccess === "denied") return "checkedOut";
+    return "unknown";
+  }, [kioskPhase, officeAccess]);
 
   // ---- V1's own post-accept convergence -------------------------------------------------------------
   // A ring was accepted by either side: converge through the SAME approach + chat-panel flow the "chat"
@@ -975,6 +1300,50 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }
           targetInActiveCall={callParticipantsFor(callState, activeSpatialSession?.sessionId ?? null).includes(selection.email)}
         />
       )}
+      {kioskOpen && kioskAnchor?.visible && (
+        <Vo3dKioskCard
+          state={kioskState}
+          anchor={{ clientX: kioskAnchor.clientX, clientY: kioskAnchor.clientY }}
+          onCheckIn={runCheckIn}
+          onClose={() => setKioskOpen(false)}
+        />
+      )}
+      {exitOpen && exitAnchor?.visible && (
+        <Vo3dExitCard
+          anchor={{ clientX: exitAnchor.clientX, clientY: exitAnchor.clientY }}
+          onAiLab={goToAiLab}
+          onCheckOut={startCheckout}
+          onCancel={cancelExit}
+          showCheckOut={checkoutOffered}
+          workedLabel={timeInMs === null ? undefined : checkoutFlow.workedLabel}
+        />
+      )}
+      {checkoutOffered && (
+        // THE V2 PRESENTATION WRAPPER. Two jobs and no logic:
+        //
+        //   • it carries the V2 theme, as CUSTOM PROPERTIES the shared checkout stylesheet already reads
+        //     (see checkout.module.css's --vo-co-* contract). V1's office never renders this wrapper, so
+        //     V1's checkout keeps the stylesheet's own defaults and is pixel-for-pixel unchanged.
+        //   • it declares the modal, which is how V2's existing conventions learn about it: app/keyGuard
+        //     treats a `role="dialog"` as owning the keyboard, so C and WASD stop reaching the world
+        //     while a panel is up, without a single new listener.
+        //
+        // It is always mounted and never unmounts the panels: `hidden` is presentation, and the flow's
+        // state, its draft and its Zoho work all live in the hook regardless.
+        <div
+          className={panelStyles.scope}
+          data-testid="vo3d-checkout"
+          {...(checkoutPanelOpen ? { role: "dialog" as const, "aria-modal": true, "aria-label": "Checking out" } : {})}
+        >
+          <Vo3dCheckoutPanels
+            flow={checkoutFlow}
+            timeInMs={timeInMs}
+            frozenCheckoutAtMs={frozenCheckoutAtMs}
+            successCardDismissed={successCardDismissed}
+            onDismissSuccessCard={() => setSuccessCardDismissed(true)}
+          />
+        </div>
+      )}
       <TalkRequestToast {...talkGate.toastProps} />
       <CallInvitePrompt
         resolveDisplayName={resolveDisplayName}
@@ -1121,6 +1490,7 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }
         worldRef={worldRef}
         ready={ready}
         attendance={attendance}
+        checkoutFlow={checkoutFlow}
         peopleLayers={peopleLayers}
         statusByEmail={statusByEmail}
         onCoworkerAction={runAction}
@@ -1135,7 +1505,11 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }
         onStartGroup={startGroup}
         // The profile modal is the overlay's own screen-owning panel, so it joins the dock's ONE
         // visibility rule rather than being a case the dock does not know about.
-        overlayToolOpen={profileEmail !== null}
+        // CHECKOUT IS THE SOLE FOCUS while it is up. It joins V1's own one-line "a tool owns the screen"
+        // rule rather than getting a second mechanism: the dock steps aside, the pointer lock is released
+        // and PLAYER's keys stop reaching the world, exactly as they do for Tasks or the inbox. The
+        // Reception exit CARD is deliberately not here — it is an anchored world card, not a tool.
+        overlayToolOpen={profileEmail !== null || checkoutPanelOpen}
       />
     </>
   );

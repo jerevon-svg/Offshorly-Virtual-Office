@@ -10,12 +10,14 @@ type Props = {
   allocation: Allocation;
   workedLabel: string;
   onBack: () => void;
+  /** PHASE 7E — OPTIONAL: rendered only when supplied, so V1's review is unchanged. */
+  onCancel?: () => void;
   onSubmit: () => void;
 };
 
 // "Ready to check out?" review step — [Back] / [Submit log and check out].
 // Submit disabled until allocation.isFullyAllocated with no validation errors.
-export function TimeLogReview({ entries, allocation, workedLabel, onBack, onSubmit }: Props) {
+export function TimeLogReview({ entries, allocation, workedLabel, onBack, onCancel, onSubmit }: Props) {
   const canSubmit = allocation.isFullyAllocated && allocation.errors.length === 0;
   return (
     <div className={styles.panel}>
@@ -39,6 +41,11 @@ export function TimeLogReview({ entries, allocation, workedLabel, onBack, onSubm
         <button className={styles.primary} onClick={onSubmit} disabled={!canSubmit}>
           Submit log and check out
         </button>
+        {onCancel && (
+          <button className={styles.secondary} onClick={onCancel}>
+            Cancel checkout
+          </button>
+        )}
         <button className={styles.secondary} onClick={onBack}>
           Back
         </button>

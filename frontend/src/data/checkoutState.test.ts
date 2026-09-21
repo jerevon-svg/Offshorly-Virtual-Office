@@ -24,14 +24,29 @@ describe("canTransition", () => {
     ["WALKING_TO_EXIT", "CHECKED_OUT"],
     // Same-day re-check-in: a confirmed attendance Check In starts a new session.
     ["CHECKED_OUT", "IDLE"],
+    // PHASE 7E — THE TWO WAYS OUT. Every other state in the flow had an escape; these two did not, so an
+    // employee in the time-log form had no transition to make and nothing to press. Both land on IDLE,
+    // the same destination "Not yet" and "Save and return later" already use.
+    ["AT_RECEPTION", "IDLE"],
+    ["EDITING_TIME_LOG", "IDLE"],
+    ["EDITING_TIME_LOG", "AT_RECEPTION"],
+    ["REVIEWING", "IDLE"],
   ] as [CheckoutState, CheckoutState][])("%s -> %s is legal", (from, to) => {
     expect(canTransition(from, to)).toBe(true);
+  });
+
+  it("NOTHING escapes a submission in flight or a completed checkout", () => {
+    // The two states that deliberately carry no way back: a request is in the air, and a recorded time
+    // log is not un-doable from a button. Adding an escape to either would be the dangerous kind.
+    for (const to of ["IDLE", "AT_RECEPTION", "EDITING_TIME_LOG", "REVIEWING"] as CheckoutState[]) {
+      expect(canTransition("SUBMITTING", to), `SUBMITTING -> ${to}`).toBe(false);
+      expect(canTransition("CHECKOUT_SUCCESS", to), `CHECKOUT_SUCCESS -> ${to}`).toBe(false);
+    }
   });
 
   it.each([
     ["IDLE", "AT_RECEPTION"],
     ["AT_RECEPTION", "WALKING_TO_RECEPTION"],
-    ["EDITING_TIME_LOG", "AT_RECEPTION"],
     ["CHECKED_OUT", "AT_RECEPTION"],
     ["CHECKED_OUT", "WALKING_TO_EXIT"],
     ["SUBMITTING", "EDITING_TIME_LOG"],

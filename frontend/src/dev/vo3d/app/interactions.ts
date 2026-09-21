@@ -57,4 +57,49 @@ export interface Vo3dCoworkerInteractions {
    *  only signal V1 can get for "walked up to a coworker" (the walk is client-side), and it is what the
    *  host emits the Onboarding Questline's approach_arrived from — the same one OfficeMap.tsx emits. */
   onApproachArrived(email: string): void;
+  /** PHASE 7E — A WALK-UP TO A PLACE, not to a person: the body finished walking to an entity's declared
+   *  approach point AND finished turning to face it. `entityId` is the world entity's own id (for example
+   *  Reception's `reception-room/kiosk-interaction`), which is all the world has and all the host needs to
+   *  decide what that particular fixture means.
+   *
+   *  THE SAME LINE AS EVERY OTHER MEMBER HERE. The world walks the body and says where it stopped; it
+   *  opens nothing, fetches nothing and knows nothing about attendance, check-in or any other workflow a
+   *  fixture might stand for. That decision is the host's, in V1's own code, exactly as `onSelect` is.
+   *
+   *  FIRES ONCE PER APPROACH (interact/Approach.ts owns that guarantee), and never for an approach that
+   *  was cancelled, interrupted or refused as unreachable. Optional so a host that has no use for world
+   *  fixtures — and every existing test double — stays valid without stubbing it. */
+  onInteractionArrived?(entityId: string): void;
+  /** PHASE 7E — A CHECKED-IN EMPLOYEE WALKED UP TO THE EXIT while the exit is still held shut.
+   *
+   *  Leaving the building is a DECISION, not a door: an employee on their way out is either stepping over
+   *  to the AI Lab (still checked in, still on the clock) or ending their working day (V1's Log Time →
+   *  Zoho → check-out). The world cannot tell those apart and has no business guessing, so it does what it
+   *  does everywhere else — it stops the body at the boundary and says so.
+   *
+   *  THE WORLD HOLDS THE EXIT, THE HOST OPENS IT. This fires when the body enters the entrance mat with
+   *  the exit reservation still in place; nothing about attendance changes, the doors stay shut, and the
+   *  employee stays exactly where they are until the host calls `setExitAuthorized(true)` — or does not.
+   *  Fires on ARRIVAL, not on every frame, so walking back and forth re-asks rather than spamming. Never
+   *  fires for somebody V1 has not confirmed as checked in: there is nothing to decide, and their exit was
+   *  never held. */
+  onExitIntercepted?(): void;
+  /** PHASE 7E — THEY WALKED AWAY FROM THE EXIT without answering.
+   *
+   *  Walking off is an answer in itself, and the same one Cancel gives: the question was about leaving, and
+   *  they are no longer leaving. Nothing is authorised, the exit stays held and the work session is
+   *  untouched — this exists so a card cannot follow somebody back across the room. Re-approaching raises
+   *  `onExitIntercepted` again, so nothing is lost by dismissing it. */
+  onExitAbandoned?(): void;
+  /** PHASE 7E — WHICH SIDE OF THE BUILDING'S OWN BOUNDARY THE BODY IS ON (app/access.ts `Zone`).
+   *
+   *  Edge-triggered. The host reads exactly one thing from it: somebody who is `outside` is out of the
+   *  office — at the AI Lab, on the way there, or on the way back — and their presence should say so for
+   *  the whole excursion rather than flickering as they step between the Lab's floor and the pavement.
+   *
+   *  RE-ENTRY IS THE ONLY WAY BACK. `outside` ends when the body is genuinely past the façade plane, which
+   *  is reachable only through the entrance, so merely walking up to the building changes nothing. The
+   *  world reports geography; what it MEANS for presence is the host's decision, made with V1's own store
+   *  and its own precedence — nothing here forces a status. */
+  onZoneChanged?(zone: "office" | "reception" | "outside"): void;
 }

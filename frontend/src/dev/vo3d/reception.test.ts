@@ -17,6 +17,7 @@ import { SlidingDoor } from "./interact/Door";
 import { LoungeSeatInteraction } from "./interact/LoungeSeat";
 import { PELVIS_BELOW_HIPS } from "./interact/seatContact";
 import { TUB_CHAIR, TUB_CUSHION_TOP } from "./build/furniture";
+import { KIOSK_SCANNER_ID } from "./rooms/reception";
 import { COUNTER_APPROACH, KIOSK_APPROACH, COUNTER_INTERACTION_ID, KIOSK_INTERACTION_ID, LOUNGE_SEAT_IDS, RECEPTION_LOUNGE_IDS, LOUNGE_SEATS, TUB_CUSHION_TOP_Y, TUB_SINK } from "./rooms/reception";
 import { FACING_YAW } from "./core/coords";
 import { PALETTE } from "./render/Materials";
@@ -561,8 +562,15 @@ describe("vo3d Reception — scanner state language (BLUE idle → GREEN detecte
     const built = buildReception();
     const sys = new AmbientSystem();
     sys.collect("reception-room", built);
-    expect(sys.scannerIds.sort()).toEqual([...GATE_SCANNER_IDS, ENTRY_SCANNER_ID].sort());
+    // PHASE 7E — the kiosk joined them: it is the attendance readout, lit by V1's answer rather than by
+    // proximity (rooms/reception KIOSK_SCANNER_ID, driven from app/world.ts).
+    expect(sys.scannerIds.sort()).toEqual([...GATE_SCANNER_IDS, ENTRY_SCANNER_ID, KIOSK_SCANNER_ID].sort());
     const band = built.getObjectByName(`speed-gate:${GATE.pedestals[1]}`)!;
+    // PHASE 7E — the gate's status bar. It is now an ACCESS INDICATOR (`access: true`, render/Ambient.ts),
+    // which changes only WHICH colour the ramp points at: green for a confirmed check-in, red without one.
+    // With the check-in confirmed (the default `deny` is cleared below) this is byte-for-byte the blue →
+    // green → blue language it has always spoken. The refused half lives in render/Ambient.deny.test.ts.
+    sys.setScannerDenied(GATE_SCANNER_IDS[1], false);
     const tinted = specs(band).find(({ s }) => s.kind === "pulse" && s.tint)!.o as THREE.Mesh;
     const mtl = tinted.material as THREE.MeshStandardMaterial;
 

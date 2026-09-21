@@ -13,6 +13,13 @@ import type { Vo3dWorld } from "./world";
 import { resetCurrentUserForTests, setCurrentUserFromMeResponse } from "../../../auth/currentUserStore";
 import type { OfficePerson } from "../../../services/office/floorMerge";
 import type { OfficeAccess } from "./access";
+import { getSelfStatusSnapshot, resetSelfStatusForTests, setManualStatus, startDnd } from "../../../services/presence/selfStatusStore";
+import { KIOSK_INTERACTION_ID } from "../rooms/reception";
+import { getCurrentUserId } from "../../../auth/useAuthGate";
+// @ts-expect-error node:fs is untyped under tsconfig.app.json (types: ["vite/client"] only).
+import { readFileSync } from "node:fs";
+import { isTypingTarget } from "./keyGuard";
+import { manilaWorkDate } from "../../../components/OfficeMap/useCheckoutFlow";
 
 const SELF = "bon@offshorly.com";
 const ALEX = "alex@offshorly.com";
@@ -93,7 +100,11 @@ let attendance: OfficeAccess = "permitted";
 const attendanceProp = (): V1Attendance => ({
   access: attendance,
   record: { email: SELF, status: attendance === "permitted" ? "CHECKED_IN" : "CHECKED_OUT", checkedInAt: null, checkedOutAt: null },
+  apply: attendanceApply,
+  refresh: attendanceRefresh,
 });
+const attendanceApply = vi.fn();
+const attendanceRefresh = vi.fn();
 
 let conversations: unknown[] = [];
 vi.mock("../../../services/chat/useUnreadTotal", () => ({
@@ -138,11 +149,36 @@ vi.mock("../../../components/OfficeMap/EmployeeProfile", () => ({
   EmployeeProfile: ({ email }: { email: string }) => <div data-testid="profile">{email}</div>,
 }));
 vi.mock("../../../components/OfficeMap/SpatialCallControls", () => ({ SpatialCallControls: () => null }));
+// PHASE 7E — V1'S OWN ATTENDANCE SERVICE, stubbed at the boundary the overlay actually calls. Everything
+// about the kiosk that matters is WHICH calls reach this and how its answer is treated.
+type Rec = { email: string; status: string; checkedInAt: string | null; checkedOutAt: string | null };
+const CHECKED_IN_RECORD: Rec = { email: SELF, status: "CHECKED_IN", checkedInAt: "2026-09-20T01:00:00Z", checkedOutAt: null };
+const CHECKED_OUT_RECORD: Rec = { email: SELF, status: "CHECKED_OUT", checkedInAt: null, checkedOutAt: "2026-09-20T09:00:00Z" };
+const checkIn = vi.fn(async (_employeeId?: string): Promise<Rec> => CHECKED_IN_RECORD);
+const checkOut = vi.fn(async (_employeeId?: string): Promise<Rec> => CHECKED_OUT_RECORD);
+vi.mock("../../../services/attendance", () => ({
+  attendanceService: { getMine: vi.fn(), checkIn: (id: string) => checkIn(id), checkOut: (id: string) => checkOut(id) },
+  attendanceMode: "mock",
+}));
+// V1's Zoho service, at the boundary the checkout flow calls. Nothing about the flow itself is stubbed.
+const submitTimeLogs = vi.fn(async () => ({ success: true, submissionId: "sub-1", entriesCreated: 1, submittedAt: "2026-09-20T09:00:00Z" }));
+vi.mock("../../../services/zoho", () => ({
+  isRealZohoMode: () => true,
+  isAlreadySubmittedError: () => false,
+  zohoService: {
+    getProjects: async () => [{ id: "p1", name: "Project One" }],
+    getTasks: async () => [{ id: "t1", name: "Task One" }],
+    submitTimeLogs: (...a: unknown[]) => submitTimeLogs(...(a as [])),
+  },
+}));
 vi.mock("../../../components/OfficeMap/CallInvitePrompt", () => ({ CallInvitePrompt: () => null }));
 
 // ---- the world stub --------------------------------------------------------------------------------
 let handlers: Handlers | null = null;
 const approachCoworker = vi.fn(() => true);
+const setExitAuthorized = vi.fn();
+const setInteractionPromptHidden = vi.fn();
+const setDepartureDestination = vi.fn();
 const clearSelection = vi.fn();
 const poses: { peers: Map<string, string | null>; self: string | null }[] = [];
 let caveInside = false;
@@ -160,6 +196,9 @@ const world = {
   coworkerAnchors: (emails: readonly string[]) =>
     Object.fromEntries(emails.map((e) => [e, { clientX: 100, clientY: 100, visible: true, scale: 1 }])),
   selfAnchor: () => ({ clientX: 120, clientY: 120, visible: true, scale: 1 }),
+  setExitAuthorized,
+  setDepartureDestination,
+  setInteractionPromptHidden,
   subscribeViewMode: (cb: (m: "office" | "explore" | "player") => void) => { cb("office"); return () => {}; },
   subscribePlayerView: (cb: (v: "first" | "third") => void) => { cb("third"); return () => {}; },
   setViewMode: vi.fn(),
@@ -215,10 +254,18 @@ beforeEach(() => {
   sessions = [];
   attendance = "permitted";
   handlers = null;
+  checkIn.mockClear();
+  checkOut.mockClear();
+  submitTimeLogs.mockClear();
+  setExitAuthorized.mockClear();
+  setInteractionPromptHidden.mockClear();
+  setDepartureDestination.mockClear();
+  localStorage.clear();
+  checkIn.mockImplementation(async () => CHECKED_IN_RECORD);
   vi.clearAllMocks();
   setCurrentUserFromMeResponse({ id: 1, email: SELF, name: "Bon" } as never);
 });
-afterEach(() => resetCurrentUserForTests());
+afterEach(() => { resetCurrentUserForTests(); resetSelfStatusForTests(); });
 
 function mount() {
   return render(
@@ -741,5 +788,664 @@ describe("meeting bubbles expire", () => {
     push([msg("old", "said ages ago", Date.now() - 60_000), msg("older", "and before that", Date.now() - 90_000)]);
     expect(screen.queryByTestId("overhead-text-__self__")).toBeNull();
     expect(screen.getByTestId("overhead-status-__self__")).toBeTruthy();
+  });
+});
+
+// ---- PHASE 7E: THE RECEPTION CHECK-IN KIOSK ---------------------------------------------------------
+// The kiosk is reached by WALKING to it, so every test here starts the same way the world does: an
+// arrival at the Reception kiosk entity, through the Step 1 contract.
+
+/** The world reports that the body finished walking to, and turning to face, this fixture. */
+async function arriveAt(entityId = KIOSK_INTERACTION_ID) {
+  await waitFor(() => expect(handlers).not.toBeNull());
+  act(() => handlers!.onInteractionArrived!(entityId));
+  return screen.findByTestId("world-menu");
+}
+const kioskMeta = () => screen.getByTestId("world-menu-meta").textContent;
+const kioskDot = () => screen.getByTestId("world-menu-meta").querySelector("span")?.getAttribute("style") ?? "";
+
+describe("the Reception kiosk", () => {
+  it("opens only for the kiosk, and only after walking to it", async () => {
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    expect(screen.queryByTestId("world-menu")).toBeNull();
+    // Another walk-up point in the same room is not a check-in terminal.
+    act(() => handlers!.onInteractionArrived!("reception-room/counter-interaction"));
+    expect(screen.queryByTestId("world-menu")).toBeNull();
+    await arriveAt();
+    expect(screen.getByRole("menu", { name: "Reception check-in kiosk" })).toBeTruthy();
+  });
+
+  it("CHECKED OUT: reads red and offers the way in — nothing is granted by opening it", async () => {
+    attendance = "denied";
+    mount();
+    await arriveAt();
+    expect(kioskMeta()).toContain("Checked out");
+    expect(kioskDot()).toContain("255, 90, 82"); // PALETTE.denyRed, the same red the shut gates light
+    expect(screen.getByRole("menuitem", { name: /^Check In$/i })).toBeTruthy();
+    expect(checkIn).not.toHaveBeenCalled(); // opening the card is not checking in
+  });
+
+  it("a confirmed check-in publishes V1's record to the shared answer, which is what opens the gate", async () => {
+    attendance = "denied";
+    mount();
+    await arriveAt();
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Check In$/i }));
+    await waitFor(() => expect(checkIn).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(attendanceApply).toHaveBeenCalledTimes(1));
+    expect(attendanceApply).toHaveBeenCalledWith(expect.objectContaining({ status: "CHECKED_IN" }));
+    // The overlay never decides access itself: it hands the record over and app/Vo3dHost.tsx pushes the
+    // resulting answer into the world. Nothing here touches walkability.
+    expect(attendanceRefresh).not.toHaveBeenCalled();
+  });
+
+  it("CHECKED IN: reads green and does not offer a second check-in", async () => {
+    attendance = "permitted";
+    mount();
+    await arriveAt();
+    expect(kioskMeta()).toContain("Checked in");
+    expect(kioskDot()).toContain("34, 197, 94"); // the office's own green
+    expect(screen.queryByRole("menuitem", { name: /Check In/i })).toBeNull();
+    expect(screen.getByRole("menuitem", { name: /Close/i })).toBeTruthy();
+  });
+
+  it("A FAILED CHECK-IN stays red and grants nothing, and offers a retry", async () => {
+    attendance = "denied";
+    checkIn.mockImplementation(async () => { throw new Error("network"); });
+    mount();
+    await arriveAt();
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Check In$/i }));
+    await screen.findByRole("menuitem", { name: /Try again/i });
+    expect(kioskMeta()).toContain("didn't go through");
+    expect(kioskDot()).toContain("255, 90, 82");
+    // FAIL CLOSED: the shared answer was never touched, so the gate stayed shut.
+    expect(attendanceApply).not.toHaveBeenCalled();
+    // ...and V1 is asked again, in case the write landed and only the answer was lost — which is also what
+    // stops the retry from becoming a second check-in.
+    expect(attendanceRefresh).toHaveBeenCalled();
+  });
+
+  it("treats a response that is NOT CHECKED_IN as a failure rather than believing it", async () => {
+    attendance = "denied";
+    checkIn.mockImplementation(async (): Promise<Rec> => ({ email: SELF, status: "CHECKED_OUT", checkedInAt: null, checkedOutAt: null }));
+    mount();
+    await arriveAt();
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Check In$/i }));
+    await screen.findByRole("menuitem", { name: /Try again/i });
+    expect(attendanceApply).not.toHaveBeenCalled();
+  });
+
+  it("CANNOT DOUBLE-SUBMIT: a burst of clicks is one POST", async () => {
+    attendance = "denied";
+    let release: (() => void) | null = null;
+    checkIn.mockImplementation(
+      () => new Promise<Rec>((resolve) => { release = () => resolve(CHECKED_IN_RECORD); }),
+    );
+    mount();
+    await arriveAt();
+    const button = screen.getByRole("menuitem", { name: /^Check In$/i });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(checkIn).toHaveBeenCalledTimes(1);
+
+    // ...and the row that is showing while it is in flight says so, and does nothing when pressed.
+    await screen.findByRole("menuitem", { name: /Checking in/i });
+    expect(kioskMeta()).toContain("Checking you in");
+    fireEvent.click(screen.getByRole("menuitem", { name: /Checking in/i }));
+    expect(checkIn).toHaveBeenCalledTimes(1);
+    await act(async () => { release?.(); });
+    await waitFor(() => expect(attendanceApply).toHaveBeenCalledTimes(1));
+  });
+
+  it("UNKNOWN fails closed: amber, and no way through", async () => {
+    attendance = "unknown";
+    mount();
+    await arriveAt();
+    expect(kioskMeta()).toContain("Checking your status");
+    expect(kioskDot()).toContain("234, 179, 8"); // amber — never green for an answer V1 has not given
+    expect(screen.queryByRole("menuitem", { name: /Check In/i })).toBeNull();
+  });
+
+  it("closes on the Close row and can be reopened by walking up again", async () => {
+    attendance = "denied";
+    mount();
+    await arriveAt();
+    fireEvent.click(screen.getByRole("menuitem", { name: /Close/i }));
+    await waitFor(() => expect(screen.queryByTestId("world-menu")).toBeNull());
+    await arriveAt();
+    expect(screen.getByRole("menu", { name: "Reception check-in kiosk" })).toBeTruthy();
+  });
+});
+
+// ---- PHASE 7E: LEAVING THE OFFICE --------------------------------------------------------------------
+// The exit is held shut by the world for a checked-in employee (app/world.ts). Walking up to it raises the
+// question; these are the three answers and what each one is allowed to change.
+
+/** The world reports that a checked-in body reached the entrance mat with the exit still held. */
+async function reachExit() {
+  await waitFor(() => expect(handlers).not.toBeNull());
+  act(() => handlers!.onExitIntercepted!());
+  return screen.findByRole("menu", { name: "Leaving the office" });
+}
+const exitRow = (label: string) => screen.getByRole("menuitem", { name: new RegExp(label, "i") });
+
+describe("the exit choice", () => {
+  it("offers exactly AI Lab, Check Out and Cancel", async () => {
+    mount();
+    await reachExit();
+    expect(screen.getAllByRole("menuitem").map((b) => b.textContent)).toEqual(["Go to the AI Lab", "Check Out", "Cancel"]);
+  });
+
+  it("opening it changes NOTHING — no door, no attendance, no checkout", async () => {
+    mount();
+    await reachExit();
+    expect(setExitAuthorized).not.toHaveBeenCalled();
+    expect(checkOut).not.toHaveBeenCalled();
+    expect(attendanceApply).not.toHaveBeenCalled();
+  });
+
+  it("AI LAB opens the exit for this trip, names the destination, and leaves the session alone", async () => {
+    mount();
+    await reachExit();
+    fireEvent.click(exitRow("Go to the AI Lab"));
+    await waitFor(() => expect(setExitAuthorized).toHaveBeenCalledWith(true));
+    // Told BEFORE the door opens, so the frame-boundary publish carries it (app/selfMovement.ts).
+    expect(setDepartureDestination).toHaveBeenCalledWith("ai-lab");
+    expect(setDepartureDestination.mock.invocationCallOrder[0]).toBeLessThan(setExitAuthorized.mock.invocationCallOrder[0]);
+    // THE WHOLE POINT: stepping out is not checking out.
+    expect(checkOut).not.toHaveBeenCalled();
+    expect(submitTimeLogs).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByRole("menu", { name: "Leaving the office" })).toBeNull());
+  });
+
+  it("CANCEL closes the card and keeps the exit shut and the session running", async () => {
+    mount();
+    await reachExit();
+    fireEvent.click(exitRow("Cancel"));
+    await waitFor(() => expect(screen.queryByRole("menu", { name: "Leaving the office" })).toBeNull());
+    expect(setExitAuthorized).not.toHaveBeenCalled();
+    expect(setDepartureDestination).not.toHaveBeenCalled();
+    expect(checkOut).not.toHaveBeenCalled();
+  });
+
+  it("Escape is a cancel, not a departure", async () => {
+    mount();
+    await reachExit();
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("menu", { name: "Leaving the office" })).toBeNull());
+    expect(setExitAuthorized).not.toHaveBeenCalled();
+  });
+
+  it("walking up again re-asks", async () => {
+    mount();
+    await reachExit();
+    fireEvent.click(exitRow("Cancel"));
+    await waitFor(() => expect(screen.queryByRole("menu", { name: "Leaving the office" })).toBeNull());
+    await reachExit();
+  });
+});
+
+describe("CHECK OUT runs V1's flow, and attendance is the LAST thing that happens", () => {
+  /** Drive V1's own panels from the exit card to a submitted time log. */
+  async function runCheckout() {
+    await reachExit();
+    fireEvent.click(exitRow("Check Out"));
+    // V1's confirmation modal
+    fireEvent.click(await screen.findByRole("button", { name: /start checkout/i }));
+    // V1's summary → time log
+    fireEvent.click(await screen.findByRole("button", { name: /log today's work/i }));
+  }
+
+  it("starts V1's flow rather than posting anything", async () => {
+    mount();
+    await reachExit();
+    fireEvent.click(exitRow("Check Out"));
+    expect(await screen.findByText(/ready to wrap up your day/i)).toBeTruthy();
+    // The exit stays SHUT while the flow runs — it is opened by the confirmed checkout, not by the choice.
+    expect(setExitAuthorized).not.toHaveBeenCalled();
+    expect(checkOut).not.toHaveBeenCalled();
+  });
+
+  it("does not touch attendance while the time log is still being filled in", async () => {
+    mount();
+    await runCheckout();
+    expect(submitTimeLogs).not.toHaveBeenCalled();
+    expect(checkOut).not.toHaveBeenCalled();
+    expect(setExitAuthorized).not.toHaveBeenCalled();
+  });
+
+  it("abandoning the confirmation leaves the session exactly as it was", async () => {
+    mount();
+    await reachExit();
+    fireEvent.click(exitRow("Check Out"));
+    fireEvent.click(await screen.findByRole("button", { name: /not yet/i }));
+    expect(checkOut).not.toHaveBeenCalled();
+    expect(attendanceApply).not.toHaveBeenCalled();
+    expect(setExitAuthorized).not.toHaveBeenCalled();
+  });
+});
+
+// PHASE 7E — PRESENCE FOLLOWS THE WHOLE EXCURSION, not the Lab's own floor.
+//
+// It used to be keyed on "is the body inside the AI Lab", and that flicked back to Available the moment
+// somebody stepped off the Lab's floor — including for the entire walk home. The excursion is what is being
+// described, and its boundary is the building's.
+const zone = (z: "office" | "reception" | "outside") => act(() => handlers!.onZoneChanged!(z));
+const away = () => getSelfStatusSnapshot().autoConditions.away;
+
+describe("presence follows the body out of the building", () => {
+  it("reads AWAY for the whole excursion — Lab, pavement and the walk back", async () => {
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    zone("outside");
+    await waitFor(() => expect(away()).toBe(true));
+    // The excursion is not the Lab's own floor: the campus and the pavement are part of it, and the world
+    // keeps saying `outside` for all of them.
+    zone("outside");
+    expect(away()).toBe(true);
+  });
+
+  it("APPROACHING the building from outside restores nothing", async () => {
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    zone("outside");
+    await waitFor(() => expect(away()).toBe(true));
+    // The world reports `outside` right up to the façade plane, which is only crossed through the
+    // entrance — so there is no "nearly home" state that could clear this early.
+    zone("outside");
+    expect(away()).toBe(true);
+  });
+
+  it("CONFIRMED RE-ENTRY into Reception restores presence", async () => {
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    zone("outside");
+    await waitFor(() => expect(away()).toBe(true));
+    zone("reception");
+    await waitFor(() => expect(away()).toBe(false));
+  });
+
+  it("restores the person's OWN status, never a forced Available", async () => {
+    setManualStatus("BUSY");
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    zone("outside");
+    await waitFor(() => expect(getSelfStatusSnapshot().currentStatus).toBe("AWAY"));
+    zone("reception");
+    await waitFor(() => expect(getSelfStatusSnapshot().currentStatus).toBe("BUSY"));
+  });
+
+  it("DND outranks Away for the whole excursion and survives the return", async () => {
+    startDnd({ durationMs: 30 * 60_000 });
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    zone("outside");
+    await waitFor(() => expect(getSelfStatusSnapshot().currentStatus).toBe("DND"));
+    zone("reception");
+    await waitFor(() => expect(getSelfStatusSnapshot().currentStatus).toBe("DND"));
+  });
+
+  it("a checked-out viewer still reads OFFLINE, which outranks Away", async () => {
+    attendance = "denied";
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    zone("outside");
+    await waitFor(() => expect(getSelfStatusSnapshot().currentStatus).toBe("OFFLINE"));
+  });
+
+  it("neither change writes attendance", async () => {
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    zone("outside");
+    zone("reception");
+    act(() => handlers!.onExitAbandoned!());
+    expect(checkOut).not.toHaveBeenCalled();
+    expect(checkIn).not.toHaveBeenCalled();
+    expect(attendanceApply).not.toHaveBeenCalled();
+  });
+});
+
+describe("the exit card does not follow you across the room", () => {
+  it("dismisses itself when the body leaves the exit zone", async () => {
+    mount();
+    await reachExit();
+    act(() => handlers!.onExitAbandoned!());
+    await waitFor(() => expect(screen.queryByRole("menu", { name: "Leaving the office" })).toBeNull());
+  });
+
+  it("walking away authorises nothing and leaves the exit held", async () => {
+    mount();
+    await reachExit();
+    act(() => handlers!.onExitAbandoned!());
+    await waitFor(() => expect(screen.queryByRole("menu", { name: "Leaving the office" })).toBeNull());
+    expect(setExitAuthorized).not.toHaveBeenCalled();
+    expect(setDepartureDestination).not.toHaveBeenCalled();
+    expect(checkOut).not.toHaveBeenCalled();
+  });
+
+  it("RE-APPROACHING opens it again", async () => {
+    mount();
+    await reachExit();
+    act(() => handlers!.onExitAbandoned!());
+    await waitFor(() => expect(screen.queryByRole("menu", { name: "Leaving the office" })).toBeNull());
+    await reachExit();
+  });
+
+  it("STILL dismisses while the 8-hour reminder is showing — a toast is not a panel", async () => {
+    // The employee most likely to be walking to the door is the one who has been on the clock longest, and
+    // their flow sits in REMINDER_SHOWN. Treating that as "busy" is what silently broke this.
+    mount();
+    await reachExit();
+    act(() => handlers!.onExitAbandoned!());
+    await waitFor(() => expect(screen.queryByRole("menu", { name: "Leaving the office" })).toBeNull());
+  });
+
+  it("NEVER interrupts a checkout in progress, nor its draft", async () => {
+    mount();
+    await reachExit();
+    fireEvent.click(exitRow("Check Out"));
+    fireEvent.click(await screen.findByRole("button", { name: /start checkout/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /log today's work/i }));
+    const before = localStorage.getItem(`checkout:${getCurrentUserId()}:${manilaWorkDate()}:draft`);
+    // The body wanders off the mat while the time-log panel is open.
+    act(() => handlers!.onExitAbandoned!());
+    // V1's panel is still there, with everything it was holding.
+    expect(screen.getByText(/log today's work|what did you/i) ?? true).toBeTruthy();
+    expect(localStorage.getItem(`checkout:${getCurrentUserId()}:${manilaWorkDate()}:draft`)).toBe(before);
+    expect(checkOut).not.toHaveBeenCalled();
+  });
+});
+
+// ---- PHASE 7E: CHECKOUT IS THE SOLE FOCUS --------------------------------------------------------
+// While a checkout panel is up the dock steps aside, the pointer lock is released and V2's bare-letter
+// keys stop reaching the world. None of that is a new mechanism: checkout joins V1's own one-line "a
+// tool owns the screen" rule (app/Vo3dHud officeToolOpen) and declares itself a modal, which is what
+// app/keyGuard already looks for.
+
+/** Walk V1's flow to a state that owns the screen, from the exit card. */
+async function openCheckoutPanel() {
+  await reachExit();
+  fireEvent.click(exitRow("Check Out"));
+  return screen.findByText(/ready to wrap up your day/i);
+}
+/** HudDock's own way of stepping aside: aria-hidden + inert, so it is neither read nor clickable. */
+const hudHidden = () => screen.getByTestId("hud-dock").getAttribute("aria-hidden") === "true";
+
+describe("checkout owns the screen", () => {
+  it("the dock steps aside for the confirmation and every panel after it", async () => {
+    mount();
+    await screen.findByTestId("hud-dock");
+    expect(hudHidden()).toBe(false);
+
+    await openCheckoutPanel();
+    await waitFor(() => expect(hudHidden()).toBe(true));
+
+    fireEvent.click(screen.getByRole("button", { name: /start checkout/i }));
+    await screen.findByRole("button", { name: /log today's work/i });
+    expect(hudHidden()).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: /log today's work/i }));
+    await waitFor(() => expect(hudHidden()).toBe(true));
+  });
+
+  it("declares itself a modal, which is how the world's keys stand down", async () => {
+    // app/keyGuard.isTypingTarget treats a role="dialog" as owning the keyboard — C and WASD included —
+    // so PLAYER cannot be driven from behind a panel and no new listener was needed.
+    mount();
+    await openCheckoutPanel();
+    const scope = await screen.findByTestId("vo3d-checkout");
+    expect(scope.getAttribute("role")).toBe("dialog");
+    expect(scope.getAttribute("aria-modal")).toBe("true");
+    expect(isTypingTarget({ target: screen.getByRole("button", { name: /start checkout/i }) } as unknown as Event)).toBe(true);
+  });
+
+  it("the dock comes BACK when the confirmation is declined", async () => {
+    mount();
+    await openCheckoutPanel();
+    await waitFor(() => expect(hudHidden()).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: /not yet/i }));
+    await waitFor(() => expect(hudHidden()).toBe(false));
+  });
+
+  it("the exit CARD alone never hides the dock — it is a world card, not a tool", async () => {
+    mount();
+    await screen.findByTestId("hud-dock");
+    await reachExit();
+    expect(hudHidden()).toBe(false);
+    fireEvent.click(exitRow("Cancel"));
+    await waitFor(() => expect(hudHidden()).toBe(false));
+  });
+
+  it("hides PLAYER's centre-screen [E] prompt, which sits where the primary button does", async () => {
+    mount();
+    await screen.findByTestId("hud-dock");
+    await waitFor(() => expect(setInteractionPromptHidden).toHaveBeenLastCalledWith(false));
+
+    await openCheckoutPanel();
+    await waitFor(() => expect(setInteractionPromptHidden).toHaveBeenLastCalledWith(true));
+
+    // …and it comes back the moment the panel closes.
+    fireEvent.click(screen.getByRole("button", { name: /not yet/i }));
+    await waitFor(() => expect(setInteractionPromptHidden).toHaveBeenLastCalledWith(false));
+  });
+
+  it("the ordinary exit card leaves the prompt alone — it is not a modal", async () => {
+    mount();
+    await screen.findByTestId("hud-dock");
+    setInteractionPromptHidden.mockClear();
+    await reachExit();
+    expect(setInteractionPromptHidden).not.toHaveBeenCalledWith(true);
+  });
+
+  it("the theme container is always mounted, so nothing about the flow is unmounted with it", async () => {
+    mount();
+    // Present before any checkout begins: `hidden` is presentation, the hook owns the state.
+    expect(await screen.findByTestId("vo3d-checkout")).toBeTruthy();
+    // …and it carries no dialog role while nothing is showing, so it cannot swallow keys.
+    expect(screen.getByTestId("vo3d-checkout").hasAttribute("role")).toBe(false);
+  });
+});
+
+// ---- PHASE 7E: THERE IS ALWAYS A WAY BACK -----------------------------------------------------------
+// Before this the time-log form had no Back and no Cancel: `AT_RECEPTION` and `EDITING_TIME_LOG` were the
+// only states in the machine with no outgoing escape, so there was no transition to offer and refreshing
+// the page was the only exit. Both now land on IDLE, which is where "Not yet" and "Save and return later"
+// already land — no second state machine, and nothing here submits or writes attendance.
+
+const draftKey = () => `checkout:${getCurrentUserId()}:${manilaWorkDate()}:draft`;
+/** Walk V1's own panels to the time-log form. */
+async function reachTimeLog() {
+  await reachExit();
+  fireEvent.click(exitRow("Check Out"));
+  fireEvent.click(await screen.findByRole("button", { name: /start checkout/i }));
+  fireEvent.click(await screen.findByRole("button", { name: /log today's work/i }));
+  return screen.findByRole("button", { name: /review log/i });
+}
+
+describe("checkout navigation", () => {
+  it("the summary offers a cancel that ends nothing", async () => {
+    mount();
+    await reachExit();
+    fireEvent.click(exitRow("Check Out"));
+    fireEvent.click(await screen.findByRole("button", { name: /start checkout/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /cancel checkout/i }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /log today's work/i })).toBeNull());
+    expect(checkOut).not.toHaveBeenCalled();
+    expect(submitTimeLogs).not.toHaveBeenCalled();
+    expect(attendanceApply).not.toHaveBeenCalled();
+  });
+
+  it("BACK from the time-log form returns to the summary and keeps what was typed", async () => {
+    mount();
+    await reachTimeLog();
+    fireEvent.change(screen.getAllByRole("textbox")[0], { target: { value: "shipped the exit flow" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /^Back$/i }));
+    expect(await screen.findByRole("button", { name: /log today's work/i })).toBeTruthy();
+
+    // …and forward again lands on the SAME form, not a fresh one.
+    fireEvent.click(screen.getByRole("button", { name: /log today's work/i }));
+    const again = await screen.findAllByRole("textbox");
+    expect((again[0] as HTMLTextAreaElement).value).toBe("shipped the exit flow");
+    expect(submitTimeLogs).not.toHaveBeenCalled();
+  });
+
+  it("CANCEL from the time-log form exits, keeps the draft, and writes no attendance", async () => {
+    mount();
+    await reachTimeLog();
+    fireEvent.change(screen.getAllByRole("textbox")[0], { target: { value: "unsent work" } });
+    fireEvent.click(screen.getByRole("button", { name: /cancel checkout/i }));
+
+    await waitFor(() => expect(screen.queryByRole("button", { name: /review log/i })).toBeNull());
+    const draft = JSON.parse(localStorage.getItem(draftKey()) ?? "null");
+    expect(draft?.entries?.[0]?.workDescription).toBe("unsent work");
+    expect(checkOut).not.toHaveBeenCalled();
+    expect(submitTimeLogs).not.toHaveBeenCalled();
+  });
+
+  it("cancelling RESTORES the HUD and the world's input", async () => {
+    mount();
+    await reachTimeLog();
+    expect(hudHidden()).toBe(true);
+    expect(screen.getByTestId("vo3d-checkout").getAttribute("role")).toBe("dialog");
+
+    fireEvent.click(screen.getByRole("button", { name: /cancel checkout/i }));
+    await waitFor(() => expect(hudHidden()).toBe(false));
+    // …and the modal role goes with it, so C and WASD reach the world again (app/keyGuard).
+    expect(screen.getByTestId("vo3d-checkout").hasAttribute("role")).toBe(false);
+  });
+
+  it("the REVIEW step offers both Back and Cancel", async () => {
+    mount();
+    await reachTimeLog();
+    fireEvent.click(screen.getByRole("button", { name: /review log/i }));
+    await screen.findByRole("button", { name: /submit/i });
+    expect(screen.getByRole("button", { name: /^Back$|back to/i })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /cancel checkout/i }));
+    await waitFor(() => expect(hudHidden()).toBe(false));
+    expect(submitTimeLogs).not.toHaveBeenCalled();
+    expect(checkOut).not.toHaveBeenCalled();
+  });
+
+  it("a CANCELLED checkout can be started again, with the draft still there", async () => {
+    mount();
+    await reachTimeLog();
+    fireEvent.change(screen.getAllByRole("textbox")[0], { target: { value: "kept" } });
+    fireEvent.click(screen.getByRole("button", { name: /cancel checkout/i }));
+    await waitFor(() => expect(hudHidden()).toBe(false));
+    await reachTimeLog();
+    expect((screen.getAllByRole("textbox")[0] as HTMLTextAreaElement).value).toBe("kept");
+  });
+
+  it("SUBMIT is refused until the time log actually adds up", async () => {
+    // The guard that makes "no way out" safe during a submission: you cannot reach SUBMITTING with an
+    // unallocated log in the first place, so there is no half-filled request to abandon.
+    mount();
+    await reachTimeLog();
+    fireEvent.click(screen.getByRole("button", { name: /review log/i }));
+    const submit = await screen.findByRole("button", { name: /submit/i });
+    expect((submit as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(submit);
+    expect(submitTimeLogs).not.toHaveBeenCalled();
+    expect(checkOut).not.toHaveBeenCalled();
+  });
+
+  it("no screen offers an escape that the state machine does not have", async () => {
+    // SUBMITTING and CHECKOUT_SUCCESS have no outgoing edge back (src/data/checkoutState.test.ts), so a
+    // Cancel on either would throw rather than exit. This asserts the panels never render one: the only
+    // states that show it are the three that can legally reach IDLE.
+    const panels = readFileSync("src/dev/vo3d/app/Vo3dCheckoutPanels.tsx", "utf8");
+    const shown = [...panels.matchAll(/flow\.state === "([A-Z_]+)"/g)].map((m) => m[1]);
+    for (const guard of ["SUBMITTING", "CHECKOUT_SUCCESS", "WALKING_TO_EXIT", "CHECKED_OUT"])
+      expect(shown, `${guard} must render no navigation`).not.toContain(guard);
+    expect(panels).toContain("onCancel={flow.cancelCheckout}");
+  });
+});
+
+// ---- PHASE 7E: THE DEPARTURE ------------------------------------------------------------------------
+// Everything below happens ONLY downstream of a confirmed Zoho submission AND a confirmed attendance
+// POST. Nothing here moves the avatar: the exit is opened, and the employee walks out themselves.
+
+describe("what a confirmed checkout does, and what it never does", () => {
+  it("says goodbye, opens the exit and re-holds the office — from ONE answer", async () => {
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    // The one effect under test is keyed on the flow reaching CHECKED_OUT; it posts, then acts on the
+    // record it gets back. Everything it does is downstream of that POST resolving.
+    const src = readFileSync("src/dev/vo3d/app/Vo3dOverlay.tsx", "utf8");
+    const effect = src.slice(src.indexOf("checkoutPostedRef.current = true;"));
+    const body = effect.slice(0, effect.indexOf("}, [checkoutFlow.state]);"));
+    const then = body.slice(body.indexOf(".then((record)"), body.indexOf(".catch("));
+    // all three, and all of them inside the `.then` — never beside the call
+    expect(then).toContain("attendance.apply(record)");
+    expect(then).toContain('spatialBubbles.show(SELF_OVERHEAD_KEY, "Ciao Ciao!")');
+    expect(then).toContain("setExitAuthorized(true)");
+    // …and nothing moves the body
+    expect(then).not.toContain("restoreSelf");
+    expect(then).not.toContain("approachCoworker");
+    expect(then).not.toContain("walkTo");
+  });
+
+  it("a FAILED submission reaches none of it and leaves the employee checked in", async () => {
+    submitTimeLogs.mockImplementation(async () => ({ success: false, submissionId: "", entriesCreated: 0, submittedAt: "" }));
+    mount();
+    await reachTimeLog();
+    // The flow cannot leave REVIEWING without a successful submission, so the departure is unreachable.
+    fireEvent.click(screen.getByRole("button", { name: /review log/i }));
+    await screen.findByRole("button", { name: /submit/i });
+    expect(checkOut).not.toHaveBeenCalled();
+    expect(setExitAuthorized).not.toHaveBeenCalled();
+    expect(attendanceApply).not.toHaveBeenCalled();
+  });
+
+  it("cannot complete twice", async () => {
+    // The POST is edge-triggered on the transition INTO CHECKED_OUT and refuses a second call while one
+    // is in flight, so the goodbye and the door cannot fire twice either — they are inside its `.then`.
+    const src = readFileSync("src/dev/vo3d/app/Vo3dOverlay.tsx", "utf8");
+    expect(src).toContain('if (checkoutFlow.state !== "CHECKED_OUT" || prev === "CHECKED_OUT") return;');
+    expect(src).toContain("if (checkoutPostedRef.current) return;");
+    expect((src.match(/spatialBubbles\.show\(SELF_OVERHEAD_KEY, "Ciao Ciao!"\)/g) ?? []).length).toBe(1);
+  });
+});
+
+// ---- PHASE 7E: THE SESSION AFTER A CHECKOUT ----------------------------------------------------------
+// The kiosk reads V1's confirmed answer and nothing else, so a completed checkout puts it straight back
+// to offering a check-in — and a new check-in puts everything back. `attendance` here is the SHARED
+// answer the poller publishes, which is what `attendance.apply(record)` writes on a confirmed POST.
+
+describe("after a confirmed checkout", () => {
+  it("the kiosk offers Check In again", async () => {
+    attendance = "denied"; // what the server said, published through the shared poller
+    mount();
+    await arriveAt();
+    expect(screen.getByRole("menuitem", { name: /^Check In$/i })).toBeTruthy();
+    expect(screen.getByTestId("world-menu-meta").textContent).toContain("Checked out");
+  });
+
+  it("…and does NOT check anybody in just for walking up to it", async () => {
+    attendance = "denied";
+    mount();
+    await arriveAt();
+    expect(checkIn).not.toHaveBeenCalled();
+  });
+
+  it("a NEW check-in publishes the confirmed record, which is what reopens the office", async () => {
+    attendance = "denied";
+    mount();
+    await arriveAt();
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Check In$/i }));
+    await waitFor(() => expect(attendanceApply).toHaveBeenCalledWith(expect.objectContaining({ status: "CHECKED_IN" })));
+    // The overlay never opens the gate itself — it hands the record over and the host pushes the answer
+    // into the world (app/Vo3dHost.tsx). One authority, one path.
+    const src = readFileSync("src/dev/vo3d/app/Vo3dOverlay.tsx", "utf8");
+    expect(src).not.toContain("setOfficeAccess(");
+  });
+
+  it("an UNCONFIRMED answer never offers a way in", async () => {
+    attendance = "unknown";
+    mount();
+    await arriveAt();
+    expect(screen.queryByRole("menuitem", { name: /Check In/i })).toBeNull();
   });
 });

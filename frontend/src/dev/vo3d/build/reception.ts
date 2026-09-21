@@ -13,7 +13,7 @@ import { tiledFloor } from "./tile";
 import { contactShadowMat, emissiveMat, emissiveMatUnique, glowMat, glowMatUnique, mat, metal, plastic, uiScreenMat, PALETTE } from "../render/Materials";
 import { monitor, mug, smallPot } from "./props";
 import type { RoomDef } from "../world/WorldState";
-import { COUNTER, ENTRY_DOOR_Z, ENTRY_LEAF_W, ENTRY_SCANNER_ID, FACADE, GATE, GATE_SCANNER_IDS, KIOSK, LOGO_AREA, PLANTERS, RECT, STRUCT, TILE_RECT } from "../rooms/reception";
+import { COUNTER, ENTRY_DOOR_Z, ENTRY_LEAF_W, ENTRY_SCANNER_ID, FACADE, GATE, GATE_SCANNER_IDS, KIOSK, KIOSK_SCANNER_ID, LOGO_AREA, PLANTERS, RECT, STRUCT, TILE_RECT } from "../rooms/reception";
 import { offshorlyInlay } from "./logo";
 import { glassRun, subtract } from "./frontbar";
 import { animated } from "../render/Ambient";
@@ -47,33 +47,39 @@ export function speedGate(cx: number, index = 0): THREE.Group {
   reader.rotation.x = 0.12;
   g.add(animated(reader, { kind: "pulse", period: 4.6, phase: ph, min: 0.72, max: 1.12, group, activeGain: 0.5 }));
   g.add(rbox(w - 3.2, 0.4, 14.5, metal(), cx, h + 0.5, z0 + 10.5, 0.2)); // reader bezel
+  // PHASE 7E — THE READER'S OWN ELECTRONICS STAY BLUE. It still responds to somebody arriving (activeGain
+  // brightens it, as it always did); what it no longer does is change COLOUR, because the answer is not
+  // its to give. Only the access bar and the status lamp below carry green or red.
   g.add(animated(rbox(w - 3.6, 0.05, 13.5, glowMatUnique("cyan", 0.2), cx, h + 1.3, z0 + 10.5, 0.2), {
-    kind: "fade", period: 4.6, phase: ph, min: 0.07, max: 0.22, group, tint: SCANNER_TINT, activeGain: 0.8,
+    kind: "fade", period: 4.6, phase: ph, min: 0.07, max: 0.22, group, activeGain: 0.8,
   }));
 
   // the main status band: a wide lit strip down the top plate + a large soft halo above it
   const bandZ = z0 + d - 16, bandL = d - 30;
+  // PHASE 7E — THE ACCESS BAR. This strip, the halo it casts and the segment that runs along it are the
+  // one thing a person reads for "may I go through": red while V1 has not confirmed a check-in, green once
+  // it has. `access` is what confines the refusal colour to them — see render/Ambient.ts.
   g.add(animated(rbox(6, 0.5, bandL, emissiveMatUnique("cyan", 1.6, 0.3), cx, h + 0.82, bandZ, 0.25), {
-    kind: "pulse", period: 4.6, phase: ph, min: 0.34, max: 0.78, group, tint: SCANNER_TINT, activeGain: 0.7,
+    kind: "pulse", period: 4.6, phase: ph, min: 0.34, max: 0.78, group, tint: SCANNER_TINT, activeGain: 0.7, access: true,
   }));
   g.add(animated(rbox(w - 1.5, 0.05, bandL + 10, glowMatUnique("cyan", 0.25), cx, h + 1.35, bandZ, 0.3), {
-    kind: "fade", period: 4.6, phase: (ph + 0.08) % 1, min: 0.07, max: 0.24, group, tint: SCANNER_TINT, activeGain: 0.8,
+    kind: "fade", period: 4.6, phase: (ph + 0.08) % 1, min: 0.07, max: 0.24, group, tint: SCANNER_TINT, activeGain: 0.8, access: true,
   }));
   // a bright segment travelling the length of the band — the visible "scanning" motion
   // NB: must sit ABOVE the band's top face (band base h+0.82, 0.5 tall) or the sweep is buried inside it
   g.add(animated(rbox(5.6, 0.3, 7.5, emissiveMatUnique("cyan", 0, 0.25), cx, h + 1.36, 0, 0.2), {
     kind: "travel", axis: "z", from: bandZ - bandL / 2 + 4, to: bandZ + bandL / 2 - 4, period: 4.4,
-    phase: (index * 0.33) % 1, fade: { min: 0, max: 1.9 }, group, tint: SCANNER_TINT, activeGain: 0.5,
+    phase: (index * 0.33) % 1, fade: { min: 0, max: 1.9 }, group, tint: SCANNER_TINT, activeGain: 0.5, access: true,
   }));
   // lane-facing light lines on both long faces: what someone walking the lane sees at eye level
   for (const side of [-1, 1])
     g.add(animated(rbox(0.7, 1.6, d - 26, emissiveMatUnique("cyan", 1.3, 0.3), cx + side * (w / 2 - 0.1), h * 0.6, zCentre + 3, 0.2), {
-      kind: "pulse", period: 6.2, phase: (ph + 0.5) % 1, min: 0.5, max: 1.05, group, tint: SCANNER_TINT, activeGain: 0.8,
+      kind: "pulse", period: 6.2, phase: (ph + 0.5) % 1, min: 0.5, max: 1.05, group, activeGain: 0.8,
     }));
   // status indicator at the south end — BLUE while idle, GREEN only on detection (no always-green READY)
   // 0.64 tall, not 0.5: at 0.5 its top face landed on the status band's top plane where the two overlap
   g.add(animated(cyl(1.7, 0.64, emissiveMatUnique("cyan", 1.6, 0.3), cx, h + 0.82, z0 + d - 4.2), {
-    kind: "pulse", period: 3.4, phase: (index * 0.19) % 1, min: 0.45, max: 1.15, group, tint: SCANNER_TINT, activeGain: 0.9,
+    kind: "pulse", period: 3.4, phase: (index * 0.19) % 1, min: 0.45, max: 1.15, group, tint: SCANNER_TINT, activeGain: 0.9, access: true,
   }));
   return g;
 }
@@ -284,7 +290,7 @@ export type KioskSpec = { x: number; z: number; w: number; d: number; h: number 
 /** The dark screened totem. Defaults to Reception's own kiosk, so `kioskTotem()` is byte-identical to what
  *  3C built; Meeting passes its own footprint, screen id and UI painter for the self-service terminal the
  *  artwork puts on its east side (same object family, no duplicated builder). */
-export function kioskTotem(spec: KioskSpec = KIOSK, opts: { name?: string; uiId?: string; draw?: (ctx: CanvasRenderingContext2D, w: number, h: number) => void; scanner?: string } = {}): THREE.Group {
+export function kioskTotem(spec: KioskSpec = KIOSK, opts: { name?: string; uiId?: string; draw?: (ctx: CanvasRenderingContext2D, w: number, h: number) => void; scanner?: string; accessIndicator?: boolean } = {}): THREE.Group {
   const g = new THREE.Group();
   g.name = opts.name ?? "reception-kiosk";
   const { x, z, w, d, h } = spec;
@@ -297,17 +303,21 @@ export function kioskTotem(spec: KioskSpec = KIOSK, opts: { name?: string; uiId?
   // the panel itself breathes very slightly (screen luminance), so it never reads as a static picture
   const screen = rbox(sw, 0.5, sd, uiScreenMat(opts.uiId ?? "kiosk-ui", 128, 224, opts.draw ?? drawKioskUi, 1.0, true), x, h + 1.45, z - d * 0.1, 0.25);
   const scan = opts.scanner;
+  // PHASE 7E — ON AN ACCESS KIOSK (Reception's), the screen's own electronics keep their blue and only the
+  // status lamp answers. Every other terminal built from this factory — the Meeting room's — keeps the
+  // blue-idle / green-on-detection language on all of them, unchanged.
+  const glassTint = opts.accessIndicator ? {} : { tint: SCANNER_TINT };
   g.add(animated(screen, { kind: "pulse", period: 7.5, phase: 0.1, min: 0.93, max: 1.08, ...(scan ? { group: scan, activeGain: 0.35 } : {}) }));
   // a gentle highlight sweeping down the glass — the "waiting for interaction" tell
   const zTop = z - d * 0.1 - sd / 2, zBot = z - d * 0.1 + sd / 2;
   g.add(animated(rbox(sw - 2, 0.12, 3.4, emissiveMatUnique("cyan", 0, 0.25), x, h + 1.72, 0, 0.12), {
     kind: "travel", axis: "z", from: zTop + 2, to: zBot - 2, period: 6.8, phase: 0.0, fade: { min: 0, max: 0.55 },
-    ...(scan ? { group: scan, tint: SCANNER_TINT, activeGain: 0.6 } : {}),
+    ...(scan ? { group: scan, ...glassTint, activeGain: 0.6 } : {}),
   }));
   // the primary action tile softly pulses (it sits over the blue tile drawn in the UI canvas)
   g.add(animated(rbox(sw * 0.7, 0.1, sd * 0.13, emissiveMatUnique("cyan", 0, 0.3), x, h + 1.7, z - d * 0.1 + sd * 0.12, 0.1), {
     kind: "pulse", period: 2.9, phase: 0.35, min: 0.14, max: 0.5,
-    ...(scan ? { group: scan, tint: SCANNER_TINT, activeGain: 0.7 } : {}),
+    ...(scan ? { group: scan, ...glassTint, activeGain: 0.7 } : {}),
   }));
   // subtle screen wash on the totem top and the floor just south of it
   const wash = rbox(sw + 6, 0.05, sd + 8, glowMat("cyan", 0.06), x, h + 1.05, z - d * 0.1, 0.2);
@@ -319,7 +329,11 @@ export function kioskTotem(spec: KioskSpec = KIOSK, opts: { name?: string; uiId?
   // no scanner and keeps its steady green power light exactly as 3D built it.
   g.add(animated(rbox(w - 12, 0.4, 0.5, emissiveMatUnique(scan ? "cyan" : "readyGreen", 1.2, 0.3), x, 4, z + d / 2 + 0.05, 0.15), {
     kind: "pulse", period: 4.1, phase: 0.6, min: 0.85, max: 1.45,
-    ...(scan ? { group: scan, tint: SCANNER_TINT, activeGain: 0.6 } : {}),
+    // PHASE 7E — OPT-IN, and only Reception's kiosk opts in: it is the one that carries an ANSWER (red
+    // refused / green checked in). Every other terminal built from this factory — the Meeting room's —
+    // keeps the blue-idle / green-on-detection language unchanged. Its screen, the glass sweep and the
+    // action tile are untouched blue electronics either way, exactly as 3C drew them.
+    ...(scan ? { group: scan, tint: SCANNER_TINT, activeGain: 0.6, ...(opts.accessIndicator ? { access: true as const } : {}) } : {}),
   }));
   return g;
 }
@@ -471,7 +485,10 @@ export function receptionStatic(_room: RoomDef): THREE.Group {
   // the brand floor inlay sits in the staff pocket, north of the counter and clear of it
   g.add(offshorlyInlay({ area: LOGO_AREA }));
   g.add(arcCounter());
-  g.add(kioskTotem());
+  // PHASE 7E — WIRED TO ITS OWN STATUS CHANNEL, through the `scanner` option this builder already has (see
+  // kioskTotem: a wired kiosk idles blue and lights on state). Nothing is added: the same screen, sweep,
+  // action tile and LED now read the attendance answer app/world.ts pushes into KIOSK_SCANNER_ID.
+  g.add(kioskTotem(KIOSK, { scanner: KIOSK_SCANNER_ID, accessIndicator: true }));
   g.add(planters());
   // ---- the arrival, finished -------------------------------------------------------------------------
   // Reception has no plaster walls to case or crown, so its architectural finishing lives at the FLOOR and

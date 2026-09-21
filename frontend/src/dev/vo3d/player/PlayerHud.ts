@@ -13,6 +13,10 @@ export class PlayerHud {
   /** one ring, moved to the target — never rebuilt, never traversed for */
   readonly marker: THREE.Mesh;
   private shownLabel = "";
+  /** PHASE 7E — suppressed while a modal owns the screen. The prompt is drawn at the centre of the
+   *  viewport, which is exactly where a modal's primary button sits, so the two collide. Only the prompt
+   *  is affected: the crosshair and the floor ring are unchanged. */
+  private promptHidden = false;
 
   constructor(parent: HTMLElement) {
     this.root = document.createElement("div");
@@ -41,7 +45,7 @@ export class PlayerHud {
     if (label !== this.shownLabel) {
       this.shownLabel = label ?? "";
       this.prompt.textContent = label ? `[E] ${label}` : "";
-      this.prompt.style.opacity = label ? "1" : "0";
+      this.applyPromptOpacity(label ? "1" : "0");
     }
     if (at) this.marker.position.set(at.x, 0.6, at.z);
     this.marker.visible = at !== null;
@@ -53,7 +57,20 @@ export class PlayerHud {
   setHint(text: string): void {
     if (this.shownLabel) return;
     this.prompt.textContent = text;
-    this.prompt.style.opacity = text ? "0.8" : "0";
+    this.applyPromptOpacity(text ? "0.8" : "0");
+  }
+  /** PHASE 7E — hide or restore the prompt line. Idempotent, and it remembers what the prompt WOULD be
+   *  showing, so un-hiding restores the live target rather than a stale or blank line. */
+  setPromptHidden(hidden: boolean): void {
+    if (hidden === this.promptHidden) return;
+    this.promptHidden = hidden;
+    this.applyPromptOpacity(this.naturalOpacity);
+  }
+  /** The opacity the prompt would have if nothing were suppressing it. */
+  private naturalOpacity = "0";
+  private applyPromptOpacity(next: string): void {
+    this.naturalOpacity = next;
+    this.prompt.style.opacity = this.promptHidden ? "0" : next;
   }
   dispose(): void {
     this.root.remove();

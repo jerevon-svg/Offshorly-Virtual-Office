@@ -19,6 +19,14 @@ export interface UseAutoStatusDetectionParams {
    *  the moment they leave the call, which is what returns them to
    *  IN_CONVERSATION while they stay in the spatial session. */
   inCall: boolean;
+  /** PHASE 7E — AWAY FOR A REASON THE IDLE TIMER CANNOT SEE: the viewer has walked out of the building to
+   *  somewhere that is not their desk (V2's AI Lab). They are still checked in and still on the clock; they
+   *  are simply not at work in the sense "Available" means.
+   *
+   *  OR-ed with the idle timer below rather than replacing it, because the two are independent facts and
+   *  either one alone is a true reason to read Away. Omitted by callers that have no such place — V1's own
+   *  office passes nothing and behaves exactly as it always has. */
+  away?: boolean;
 }
 
 // Mounted once in OfficeMap. Owns idle (Away) detection via DOM listeners +
@@ -31,8 +39,25 @@ export function useAutoStatusDetection({
   inConversation,
   offline,
   inCall,
+  away = false,
 }: UseAutoStatusDetectionParams): void {
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** TWO INDEPENDENT REASONS, ONE CONDITION.
+   *
+   *  `away` is a single auto condition in the store, but there are two true things that can set it: the
+   *  idle timer, and the caller (V2's employee is out of the building). Writing it from either place alone
+   *  meant each could silently clear the other — an idle employee who walked back inside stopped reading
+   *  Away even though nothing had woken them, and vice versa. So both reasons are tracked here and the
+   *  condition is always their OR. */
+  const idleAwayRef = useRef(false);
+  const awayRef = useRef(away);
+  awayRef.current = away;
+  const syncAway = () => setAutoCondition("away", awayRef.current || idleAwayRef.current);
+
+  // The caller's own reason, applied whenever it changes.
+  useEffect(() => {
+    setAutoCondition("away", away || idleAwayRef.current);
+  }, [away]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -47,12 +72,16 @@ export function useAutoStatusDetection({
     function armIdleTimer() {
       clearIdleTimer();
       idleTimerRef.current = setTimeout(() => {
-        setAutoCondition("away", true);
+        idleAwayRef.current = true;
+        syncAway();
       }, IDLE_THRESHOLD_MS);
     }
 
     function markActive() {
-      setAutoCondition("away", false);
+      // Activity clears the IDLE reason and only that one. Somebody walking around the AI Lab is
+      // generating input constantly and is still away from their desk.
+      idleAwayRef.current = false;
+      syncAway();
       armIdleTimer();
     }
 

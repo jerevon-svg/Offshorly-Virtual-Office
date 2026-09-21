@@ -10,6 +10,7 @@
 //   travel — a small emissive mesh sliding along one local axis and looping (status-strip sweep, UI scan)
 //   blip   — a rare, short, eased brightening (scanner sparkle); long period, per-instance phase
 import * as THREE from "three";
+import { PALETTE } from "./Materials";
 
 type Emissive = { emissiveIntensity: number };
 type Tintable = { color: THREE.Color; emissive?: THREE.Color };
@@ -25,6 +26,17 @@ type Common = {
   tint?: Tint;
   /** extra emissive/opacity gain at full activation */
   activeGain?: number;
+  /** PHASE 7E — THIS CHANNEL IS THE SCANNER'S ACCESS INDICATOR, and only these change colour when the
+   *  scanner is refusing.
+   *
+   *  The distinction is the whole fix: a gate's reader screen, its glass wash and its lane-facing light
+   *  lines are the fixture's own BLUE ELECTRONICS and must stay blue whatever attendance says. What a
+   *  person reads for "may I go through" is the status bar and the status lamp — so those, and nothing
+   *  else, carry this flag.
+   *
+   *  A flagged channel is also not a proximity light: it shows the STATE, not who is standing near it.
+   *  Red while refused, green once V1 has confirmed a check-in. */
+  access?: true;
 };
 
 export type AmbientPulse = Common & {
@@ -71,7 +83,7 @@ type Powered = { m: { opacity?: number; emissiveIntensity?: number }; opacity: n
 /** what a powered surface falls to when the system is switched off: spill vanishes, sources go nearly dark */
 const POWER_OFF = { glow: 0, emissive: 0.14 };
 
-type Tinted = { group: string | null; tintA: THREE.Color | null; tintB: THREE.Color | null; target: Tintable | null; gain: number };
+type Tinted = { group: string | null; tintA: THREE.Color | null; tintB: THREE.Color | null; target: Tintable | null; gain: number; access: boolean };
 type Channel = Tinted &
   (
     | { kind: "pulse"; m: Emissive; period: number; phase: number; min: number; span: number }
@@ -90,11 +102,29 @@ const breathe = (u: number): number => {
  *  responding) and lets go slowly, so a scanner never snaps or flickers as someone brushes past. */
 const ATTACK = 6.5, RELEASE = 2.2;
 
+/** THE THIRD STATE: REFUSED. Phase 7E.
+ *
+ *  A speed gate that is shut, and a kiosk that cannot admit you, are not "idle" — reading blue for both
+ *  "waiting" and "you may not pass" is the one thing this status language must not do. So a scanner may be
+ *  marked DENIED, and while it is, its channels lerp toward red instead of green.
+ *
+ *  NOTHING ELSE CHANGES. No mesh, no material, no channel and no builder is added or edited: the denied
+ *  colour substitutes for the `tint.active` a channel already declared, through the same single lerp that
+ *  was already running. A scanner with no tint (the kiosk's screen breath) is unaffected, as it is today. */
+const DENY_TINT = new THREE.Color(PALETTE.denyRed);
+/** WHICH WAY AN ACCESS INDICATOR ANSWERS when nobody has told it. Refused: green is a STATEMENT that V1
+ *  has confirmed something, so it may never be the default. It costs nothing to be wrong this way — the
+ *  indicator only leaves blue when somebody is actually at the lane, and app/world.ts has set the real
+ *  answer on every frame long before then. A scanner with no access channels is unaffected either way. */
+const DENIED_BY_DEFAULT = true;
+
 export class AmbientSystem {
   /** keyed by room so rebuilding one room never drops another room's channels */
   private readonly byRoom = new Map<string, Channel[]>();
-  /** scanner id → { target 0|1, smoothed activation } */
-  private readonly scanners = new Map<string, { target: number; value: number }>();
+  /** scanner id → { target 0|1, smoothed activation, refused }. `deny` is the Phase 7E third state and is
+   *  deliberately NOT part of `value`: it changes what the colour ramp lerps TOWARD, never how far along
+   *  it a body's proximity has pushed it. */
+  private readonly scanners = new Map<string, { target: number; value: number; deny: boolean }>();
   private readonly scratch = new THREE.Color();
   /** powered-but-unanimated surfaces, keyed by room like the channels */
   private readonly poweredByRoom = new Map<string, Powered[]>();
@@ -147,7 +177,18 @@ export class AmbientSystem {
   setScanner(id: string, active: boolean): void {
     const s = this.scanners.get(id);
     if (s) s.target = active ? 1 : 0;
-    else this.scanners.set(id, { target: active ? 1 : 0, value: 0 });
+    else this.scanners.set(id, { target: active ? 1 : 0, value: 0, deny: DENIED_BY_DEFAULT });
+  }
+  /** PHASE 7E — mark this scanner REFUSED (red) or cleared (green when detected). Idempotent, creates the
+   *  scanner if it is set before its room is built, and never touches the proximity activation. */
+  setScannerDenied(id: string, denied: boolean): void {
+    const s = this.scanners.get(id);
+    if (s) s.deny = denied;
+    else this.scanners.set(id, { target: 0, value: 0, deny: denied });
+  }
+  /** Is this scanner currently refusing? Exposed for the diagnostics readout and its tests. */
+  scannerDenied(id: string): boolean {
+    return this.scanners.get(id)?.deny ?? false;
   }
   /** current smoothed activation, 0 = idle/blue … 1 = detected/green */
   scannerActivation(id: string): number {
@@ -204,8 +245,11 @@ export class AmbientSystem {
         tintB: spec.tint ? new THREE.Color(spec.tint.active) : null,
         target: spec.tint && material ? material : null,
         gain: spec.activeGain ?? 0,
+        access: spec.access === true,
       };
-      if (spec.group && !this.scanners.has(spec.group)) this.scanners.set(spec.group, { target: 0, value: 0 });
+      // A scanner is born REFUSING. Only an explicit `setScannerDenied(id, false)` — which in this world
+      // means V1 has confirmed a check-in — may ever turn an access indicator green.
+      if (spec.group && !this.scanners.has(spec.group)) this.scanners.set(spec.group, { target: 0, value: 0, deny: DENIED_BY_DEFAULT });
       if (spec.kind === "pulse") {
         if (!material || material.emissiveIntensity === undefined) return;
         channels.push({ ...tinted, kind: "pulse", m: material, period: spec.period, phase: spec.phase, min: spec.min, span: spec.max - spec.min });
@@ -244,7 +288,8 @@ export class AmbientSystem {
     }
     for (const channels of this.byRoom.values()) {
       for (const c of channels) {
-        const act = c.group ? (this.scanners.get(c.group)?.value ?? 0) : 0;
+        const scanner = c.group ? this.scanners.get(c.group) : undefined;
+        const act = scanner?.value ?? 0;
         const gain = 1 + act * c.gain;
         if (c.kind === "pulse") {
           const u = ((t / c.period + c.phase) % 1 + 1) % 1;
@@ -264,9 +309,17 @@ export class AmbientSystem {
             c.m.emissiveIntensity = (c.fMin + c.fSpan * edge * edge * (3 - 2 * edge)) * gain;
           }
         }
-        // BLUE → GREEN: one lerp into the material's own colours, no allocation
+        // THE SAME RAMP AS EVER — the activation is what drives it, and BLUE IS THE RESTING STATE. What
+        // an `access` channel changes is only WHERE the ramp points: toward green when V1 has confirmed a
+        // check-in, toward red when it has not. So a gate sits blue for everybody, answers as somebody
+        // arrives at the lane, and eases back to blue behind them.
+        //
+        // BLUE IS NOT PERMISSION and red is not enforcement: this writes a colour into a material and
+        // nothing else. What actually opens the lane is the Walkability reservation in app/world.ts, which
+        // is held or released by V1's answer alone and never by anything here.
         if (c.target && c.tintA && c.tintB) {
-          this.scratch.lerpColors(c.tintA, c.tintB, act);
+          const to = c.access && (scanner?.deny ?? DENIED_BY_DEFAULT) ? DENY_TINT : c.tintB;
+          this.scratch.lerpColors(c.tintA, to, act);
           c.target.color.copy(this.scratch);
           if (c.target.emissive) c.target.emissive.copy(this.scratch);
         }

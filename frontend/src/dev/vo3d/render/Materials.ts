@@ -41,6 +41,8 @@ export const PALETTE = {
   gateLed: 0x2f9fe0,
   cyan: 0x6fd8ff, // powered-electronics status light (gates, sensors)
   readyGreen: 0x62e393,
+  denyRed: 0xff5a52, // the REFUSED half of the same status language (a closed speed gate, a kiosk that
+  //                    cannot let you through). Read against cyan and readyGreen, never used as paint.
   coveWarm: 0xffc27a, // the counter's architectural LED cove
   uiNavy: 0x14213a, // kiosk / monitor UI ground
   loungeOlive: 0x5f6a38, // reception lounge upholstery — measured (74,65,33)…(90,95,55), darker than PALETTE.green

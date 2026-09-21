@@ -76,6 +76,11 @@ export const GATE = {
  *  sets a visual state. Each gate lights when someone is in either lane it borders. */
 export const GATE_SCANNER_IDS = ["gate-0", "gate-1", "gate-2", "gate-3"];
 export const ENTRY_SCANNER_ID = "entry";
+/** PHASE 7E — THE KIOSK'S OWN STATUS CHANNEL. Not a proximity zone like the four above: the kiosk is the
+ *  ATTENDANCE READOUT, so what lights it is V1's answer about this employee's work session, not where
+ *  anybody is standing. Green = checked in, red = checked out. The mesh, the LED and the materials are the
+ *  ones build/reception.ts already builds for a scanner-wired kiosk — this only names the channel. */
+export const KIOSK_SCANNER_ID = "reception-kiosk";
 
 /** GATE CLEARANCE. The V1 '+' lanes are authored at 16-unit cells and are deliberately generous: a body of
  *  10.5 radius standing on a lane cell centre overhangs the painted lane by 2.5 units on each side, and the
@@ -357,6 +362,12 @@ export const KIOSK_APPROACH: ApproachCapability = {
   label: "Check-in kiosk",
   action: "Use kiosk",
 };
+
+/** THE KIOSK'S DETECTION ZONE — the floor an employee stands on to use it, measured around its own
+ *  approach point above. The SAME read-only proximity test the gates and the Meeting terminal use
+ *  (app/world.ts updateScanners), so the kiosk's status lamp rests BLUE like everything else and only
+ *  answers while somebody is actually standing at it. Touches no navigation, no grid and no gameplay. */
+export const KIOSK_ZONE: Rect = { x: KIOSK_APPROACH.point.x - 20, z: KIOSK_APPROACH.point.z - 16, w: 40, d: 36 };
 
 /** FIXED lounge seating for a north tub chair, given for the WEST side; the east one mirrors about AXIS.
  *  The chair never moves — see interact/LoungeSeat.ts. Contact metadata is measured, not eyeballed:

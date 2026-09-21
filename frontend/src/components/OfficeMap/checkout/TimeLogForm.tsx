@@ -18,6 +18,11 @@ type Props = {
   onAddEntry: () => void;
   onRemoveEntry: (index: number) => void;
   onContinue: () => void;
+  /** PHASE 7E — OPTIONAL, and rendered only when supplied. V1's office passes neither and its form is
+   *  unchanged; V2 supplies both because its checkout is reached by walking to the door, where "I changed
+   *  my mind" is a thing people do. Neither submits anything. */
+  onBack?: () => void;
+  onCancel?: () => void;
 };
 
 // Hours + minutes input for one entry's time spent. Entering "8" and "17"
@@ -102,6 +107,8 @@ export function TimeLogForm({
   onAddEntry,
   onRemoveEntry,
   onContinue,
+  onBack,
+  onCancel,
 }: Props) {
   const projectsLoading = projects.length === 0;
 
@@ -237,6 +244,20 @@ export function TimeLogForm({
         <button className={styles.primary} onClick={onContinue}>
           Review log
         </button>
+        {(onBack || onCancel) && (
+          <div className={styles.actionsRow}>
+            {onBack && (
+              <button className={styles.secondary} onClick={onBack}>
+                Back
+              </button>
+            )}
+            {onCancel && (
+              <button className={styles.secondary} onClick={onCancel}>
+                Cancel checkout
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
