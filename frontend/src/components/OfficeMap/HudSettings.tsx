@@ -88,9 +88,16 @@ export interface HudSettingsProps {
    *  checkout debug panel, the 3D inspection rig's switch — passed through as the EXISTING components
    *  with their existing handlers (see OfficeMap.tsx, Vo3dHud.tsx). Undefined in production builds. */
   devTools?: ReactNode;
+  /** TEMPORARY — PRESENTATION ENVIRONMENT SWITCHER (demo only, DEV builds only). A caller-supplied
+   *  section given its own category, so the time-of-day and weather choices are reachable WITHOUT
+   *  opening the Developer inspection rig and everything unrelated in it. Undefined everywhere else
+   *  (V1's office passes nothing), and the category does not render at all when it is.
+   *  TO REMOVE: delete this prop, the "environment" entry in CATEGORY_ORDER, its case in the category
+   *  filter and its pane below — four short edits, all marked TEMPORARY. */
+  environment?: ReactNode;
 }
 
-type CategoryId = "general" | "controls" | "interface" | "graphics" | "audio" | "privacy" | "developer";
+type CategoryId = "general" | "controls" | "interface" | "graphics" | "audio" | "privacy" | "environment" | "developer";
 
 interface Category {
   id: CategoryId;
@@ -108,6 +115,9 @@ const CATEGORY_ORDER: readonly Category[] = [
   { id: "graphics", label: "Graphics", hint: "How much work each frame spends" },
   { id: "audio", label: "Audio", hint: "Music and office ambience" },  // narrowed below without a world
   { id: "privacy", label: "Privacy", hint: "What you share with coworkers" },
+  // TEMPORARY — presentation environment switcher. Sits directly above Developer because that is where
+  // these two choices live today; it is the same controls without the rest of the rig.
+  { id: "environment", label: "Environment", hint: "Time of day and weather" },
   { id: "developer", label: "Developer", hint: "Testing and inspection tools" },
 ];
 
@@ -117,6 +127,7 @@ export function HudSettings({
   worldExperience = false,
   onResetHubDemo,
   devTools,
+  environment,
 }: HudSettingsProps) {
   const hasDeveloper = Boolean(onResetHubDemo || devTools);
 
@@ -130,6 +141,8 @@ export function HudSettings({
           case "controls":
           case "interface":
             return worldExperience;
+          case "environment":
+            return Boolean(environment); // TEMPORARY — see the prop
           case "developer":
             return hasDeveloper;
           default:
@@ -151,7 +164,7 @@ export function HudSettings({
             ? { ...category, hint: "Office background music" }
             : category,
       ),
-    [hasDeveloper, lighting, worldExperience],
+    [environment, hasDeveloper, lighting, worldExperience],
   );
 
   const [active, setActive] = useState<CategoryId>(() => categories[0]?.id ?? "graphics");
@@ -301,6 +314,9 @@ export function HudSettings({
             {active === "audio" && <HudAudioSettings world={worldExperience} />}
 
             {active === "privacy" && <HudPrivacySettings />}
+
+            {/* TEMPORARY — presentation environment switcher. The section itself is the caller's. */}
+            {active === "environment" && environment}
 
             {active === "developer" && (
               <section className={styles.section} aria-label="Developer">

@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CheckoutReminderToast, WORKING_HOURS_ANCHOR, placeReminder, tailTipX } from "./CheckoutReminderToast";
+import { CheckoutReminderToast, WORKING_HOURS_ANCHOR, anchorUsable, placeReminder, tailTipX } from "./CheckoutReminderToast";
 
 // The 8h reminder card: copy for the initial and follow-up states, and that every control reaches
 // the checkout flow's own handlers (Later / X = snooze, Start checkout = the existing flow).
@@ -191,5 +191,36 @@ describe("CheckoutReminderToast — content-hugging width", () => {
     expect(decl("reminderTitle", "padding-right")).toBe("30px");
     expect(decl("reminderClose", "top")).toBe("10px");
     expect(decl("reminderClose", "right")).toBe("10px");
+  });
+});
+
+// WHICH ANCHORS ARE WORTH AIMING AT. The dock hides by transform + opacity, never by `display`, so a
+// slid-out dock still reports a rect — one sitting below the viewport. Placing against it puts the card
+// off the bottom of the screen, where the employee can neither read the reminder nor dismiss it. V2 slides
+// its dock out routinely (a pointer-locked player cannot click DOM at all, and every screen-owning tool
+// steps it aside), which is what turned this from theory into a bug worth a guard.
+describe("anchorUsable", () => {
+  const VIEWPORT = 800;
+
+  it("accepts a dock sitting where a dock sits", () => {
+    expect(anchorUsable({ top: 700, bottom: 760, width: 120, height: 60 }, VIEWPORT)).toBe(true);
+  });
+
+  it("rejects a dock that has slid out below the viewport", () => {
+    // .hidden translates the dock down by its own height + 24px; the rect goes with it.
+    expect(anchorUsable({ top: 884, bottom: 944, width: 120, height: 60 }, VIEWPORT)).toBe(false);
+  });
+
+  it("rejects an anchor scrolled off the top as well", () => {
+    expect(anchorUsable({ top: -80, bottom: -20, width: 120, height: 60 }, VIEWPORT)).toBe(false);
+  });
+
+  it("rejects an element that has never been laid out, and a missing one", () => {
+    expect(anchorUsable({ top: 0, bottom: 0, width: 0, height: 0 }, VIEWPORT)).toBe(false);
+    expect(anchorUsable(undefined, VIEWPORT)).toBe(false);
+  });
+
+  it("accepts a dock only partly on screen — half a dock is still something to point at", () => {
+    expect(anchorUsable({ top: 780, bottom: 840, width: 120, height: 60 }, VIEWPORT)).toBe(true);
   });
 });

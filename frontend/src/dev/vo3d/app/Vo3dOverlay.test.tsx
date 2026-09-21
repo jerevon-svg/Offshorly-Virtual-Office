@@ -20,6 +20,7 @@ import { getCurrentUserId } from "../../../auth/useAuthGate";
 import { readFileSync } from "node:fs";
 import { isTypingTarget } from "./keyGuard";
 import { manilaWorkDate } from "../../../components/OfficeMap/useCheckoutFlow";
+import { saveSessionStart } from "../../../data/checkoutStorage";
 
 const SELF = "bon@offshorly.com";
 const ALEX = "alex@offshorly.com";
@@ -27,6 +28,16 @@ const ALEX = "alex@offshorly.com";
 // ---- V1's services, at the module boundary ---------------------------------------------------------
 let dndEmails = new Set<string>();
 vi.mock("../../../services/presence/dndClient", () => ({ useDndEmails: () => dndEmails }));
+
+// GLOBAL CHAT ACTIVITY — V1's own presence service, mocked here the way dndClient is: the real module
+// opens a socket, and what this file is testing is that V2 publishes and consumes THAT service rather
+// than one of its own. `globalChatEmails` stands in for the server's broadcast snapshot.
+let globalChatEmails = new Set<string>();
+const globalChatEmits: boolean[] = [];
+vi.mock("../../../services/presence/globalChatActivityClient", () => ({
+  emitGlobalChatActive: (on: boolean) => { globalChatEmits.push(on); },
+  useGlobalChatActiveEmails: () => globalChatEmails,
+}));
 
 let sessions: { sessionId: string; members: string[] }[] = [];
 const approachArrived = vi.fn((_email: string) => {});
@@ -97,9 +108,12 @@ vi.mock("../../../services/chat/talkRequestsClient", () => ({
 
 // V1's OWN attendance answer, as the host resolves it and hands it down.
 let attendance: OfficeAccess = "permitted";
+/** The SERVER's check-in time, which is the only clock the 8-hour reminder is measured from. Null (no
+ *  session length at all) everywhere it always was; the reminder tests set it back nine hours. */
+let checkedInAt: string | null = null;
 const attendanceProp = (): V1Attendance => ({
   access: attendance,
-  record: { email: SELF, status: attendance === "permitted" ? "CHECKED_IN" : "CHECKED_OUT", checkedInAt: null, checkedOutAt: null },
+  record: { email: SELF, status: attendance === "permitted" ? "CHECKED_IN" : "CHECKED_OUT", checkedInAt, checkedOutAt: null },
   apply: attendanceApply,
   refresh: attendanceRefresh,
 });
@@ -186,8 +200,26 @@ vi.mock("../../../components/Whiteboard/WhiteboardPanel", () => ({
     </div>
   ),
 }));
+// The modal's own tabs and feed are V1's and are tested there; what V2 owns is the DEEP-LINK it hands
+// them, so the stub reports the landing props verbatim.
 vi.mock("../../../components/OfficeMap/EmployeeProfile", () => ({
-  EmployeeProfile: ({ email }: { email: string }) => <div data-testid="profile">{email}</div>,
+  EmployeeProfile: ({ email, initialTab, focusPostId, onClose }: {
+    email: string; initialTab?: string; focusPostId?: string | null; onClose: () => void;
+  }) => (
+    <div data-testid="profile" data-tab={initialTab ?? ""} data-focus-post={focusPostId ?? ""}>
+      {email}
+      <button type="button" aria-label="close profile" onClick={onClose} />
+    </div>
+  ),
+}));
+// The bell is V1's; what V2 owns is the destination handler it is given (app/Vo3dHud's `navigate`), and
+// the only way to reach it without a server-backed list is to capture it.
+let notificationNavigate: ((d: { kind: string; email?: string; postId?: string | null; conversationId?: string }) => boolean | void) | null = null;
+vi.mock("../../../components/OfficeMap/NotificationCenter", () => ({
+  NotificationCenter: ({ label, onNavigate }: { label?: string; onNavigate?: (d: never) => boolean | void }) => {
+    notificationNavigate = onNavigate as typeof notificationNavigate;
+    return <button type="button">{label ?? "Notifs"}</button>;
+  },
 }));
 vi.mock("../../../components/OfficeMap/SpatialCallControls", () => ({ SpatialCallControls: () => null }));
 // PHASE 7G — V1's Toucan panel. Stubbed for the same reason ConversationView is: it loads a transcript
@@ -250,6 +282,13 @@ vi.mock("../../../services/zoho", () => ({
   },
 }));
 vi.mock("../../../components/OfficeMap/CallInvitePrompt", () => ({ CallInvitePrompt: () => null }));
+// The reminder's bell entry. Mocked at the producer so the counting below is of REQUESTS, not of rows:
+// the server's own per-work-date dedupe is not this file's subject, and there is no server here.
+const announceWorkHoursReached = vi.fn(async () => ({ created: true }));
+vi.mock("../../../services/notifications/notificationsClient", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../services/notifications/notificationsClient")>()),
+  announceWorkHoursReached: () => announceWorkHoursReached(),
+}));
 
 // ---- the world stub --------------------------------------------------------------------------------
 let handlers: Handlers | null = null;
@@ -279,6 +318,8 @@ function setViewMode(mode: typeof viewMode) {
 let worldHasBody = true;
 const selectByEmail = vi.fn((_email: string) => worldHasBody);
 const poses: { peers: Map<string, string | null>; self: string | null }[] = [];
+/** Every setGlobalChatActive the overlay pushes into the world — the V1-parity presence pose. */
+const globalChatPushes: { peers: string[]; self: boolean }[] = [];
 let caveInside = false;
 let caveSubs: ((s: { inside: boolean }) => void)[] = [];
 /** Walk the viewer into (or out of) the Cave, the way CaveTransition would. */
@@ -344,6 +385,9 @@ const world = {
   setConversationPoses: (peers: Map<string, string | null>, self: string | null) => {
     poses.push({ peers: new Map(peers), self });
   },
+  setGlobalChatActive: (emails: ReadonlySet<string>, self: boolean) => {
+    globalChatPushes.push({ peers: [...emails].sort(), self });
+  },
   devToolsVisible: () => false,
   setDevToolsVisible: vi.fn(),
   exitPlayerMode: vi.fn(),
@@ -403,9 +447,13 @@ beforeEach(() => {
   conversations = [];
   typingListeners = [];
   poses.length = 0;
+  globalChatPushes.length = 0;
+  globalChatEmits.length = 0;
+  globalChatEmails = new Set();
   dndEmails = new Set();
   sessions = [];
   attendance = "permitted";
+  checkedInAt = null;
   currentRoomId = "design-room";
   viewMode = "office";
   viewModeSubs = [];
@@ -2128,5 +2176,252 @@ describe("whiteboards", () => {
     fireEvent.click(await screen.findByLabelText("ask toucan about board"));
     // The EXISTING summon, not a second path into the assistant.
     expect(toucanCall).toHaveBeenCalled();
+  });
+});
+
+// ---- V1/V2 FINAL PARITY: GLOBAL CHAT ACTIVITY ----------------------------------------------------
+// The presence fact V1 publishes and consumes through services/presence/globalChatActivityClient.ts, and
+// the only thing it drives: a SEATED employee plays `sitting-answering` while they have a visible,
+// non-minimized Global Chat window open. V2 was silent on both halves, so a V2 user looked idle to a V1
+// viewer and a V1 user's open window never reached a V2 one.
+//
+// What is asserted here is the WIRING — that V2 speaks the SAME service, in both directions, with the
+// same rules about what counts. The clip swap itself is asserted against the real bodies in
+// world/Coworkers.globalChat.test.ts; the socket contract is V1's and is covered by that client's tests.
+describe("global chat activity (V1 parity)", () => {
+  const lastPush = () => globalChatPushes[globalChatPushes.length - 1];
+
+  async function openRemoteDm() {
+    conversations = [{ id: "conv-9", type: "dm", participantIds: [SELF, ALEX], unreadCount: 0 } as never];
+    mount();
+    fireEvent.click(screen.getByRole("button", { name: /Conversations|unread message/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Alex Cruz/ }));
+    return screen.findByTestId("conversation");
+  }
+
+  it("says nothing at all while no Global Chat window is open", async () => {
+    mount();
+    await waitFor(() => expect(globalChatPushes.length).toBeGreaterThan(0));
+    // Edge-triggered: a false that was never a true is never emitted, or the server refcount would be
+    // told about every idle mount.
+    expect(globalChatEmits).toEqual([]);
+    expect(lastPush()).toEqual({ peers: [], self: false });
+  });
+
+  it("publishes TRUE when a remote DM window opens, and pushes the viewer's own body with it", async () => {
+    await openRemoteDm();
+    await waitFor(() => expect(globalChatEmits).toEqual([true]));
+    await waitFor(() => expect(lastPush().self).toBe(true));
+  });
+
+  it("publishes FALSE when that window is minimized, and TRUE again when it is restored", async () => {
+    await openRemoteDm();
+    await waitFor(() => expect(globalChatEmits).toEqual([true]));
+
+    fireEvent.click(screen.getByLabelText(`minimize ${ALEX}`));
+    await waitFor(() => expect(globalChatEmits).toEqual([true, false]));
+    expect(lastPush().self).toBe(false);
+
+    fireEvent.click(await screen.findByLabelText(/^Restore chat with Alex Cruz/));
+    await waitFor(() => expect(globalChatEmits).toEqual([true, false, true]));
+    expect(lastPush().self).toBe(true);
+  });
+
+  it("reports FALSE on unmount so peers stop seeing an answering body", async () => {
+    conversations = [{ id: "conv-9", type: "dm", participantIds: [SELF, ALEX], unreadCount: 0 } as never];
+    const view = mount();
+    fireEvent.click(screen.getByRole("button", { name: /Conversations|unread message/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Alex Cruz/ }));
+    await waitFor(() => expect(globalChatEmits).toEqual([true]));
+
+    view.unmount();
+    expect(globalChatEmits).toEqual([true, false]);
+  });
+
+  it("consumes the server snapshot: a peer's open window reaches that peer's body", async () => {
+    globalChatEmails = new Set([ALEX]);
+    mount();
+    await waitFor(() => expect(lastPush()).toEqual({ peers: [ALEX], self: false }));
+  });
+
+  it("never sends the viewer's own email as a peer — self is its own answer", async () => {
+    globalChatEmails = new Set([SELF, ALEX]);
+    mount();
+    await waitFor(() => expect(lastPush()).toEqual({ peers: [ALEX], self: true }));
+  });
+});
+
+// ---- V1/V2 FINAL PARITY: PROFILE DEEP-LINKS ------------------------------------------------------
+// EmployeeProfile has always taken `initialTab` / `focusPostId`; V2 simply never passed them, so a
+// feed-post notification opened the right PERSON on the wrong TAB with nothing highlighted — which
+// looks like a working link. The landing is reset on close, the panel's single exit point, so a profile
+// opened any other way can never inherit it.
+describe("profile deep-links (V1 parity)", () => {
+  const profile = () => screen.getByTestId("profile");
+
+  it("opens an ordinary profile on the default tab, with nothing focused", async () => {
+    mount();
+    await select();
+    fireEvent.click(row("View Profile"));
+    await screen.findByTestId("profile");
+    expect(profile().getAttribute("data-tab")).toBe("profile");
+    expect(profile().getAttribute("data-focus-post")).toBe("");
+  });
+
+  it("opens a feed-post notification on the Feed tab, with that post to focus", async () => {
+    mount();
+    await waitFor(() => expect(notificationNavigate).not.toBeNull());
+    act(() => { notificationNavigate!({ kind: "profileFeed", email: ALEX, postId: "post-42" }); });
+    await screen.findByTestId("profile");
+    expect(profile().textContent).toBe(ALEX);
+    expect(profile().getAttribute("data-tab")).toBe("feed");
+    expect(profile().getAttribute("data-focus-post")).toBe("post-42");
+  });
+
+  it("drops the landing on close, so the next ordinary open is not still on the Feed", async () => {
+    mount();
+    await waitFor(() => expect(notificationNavigate).not.toBeNull());
+    act(() => { notificationNavigate!({ kind: "profileFeed", email: ALEX, postId: "post-42" }); });
+    await screen.findByTestId("profile");
+
+    fireEvent.click(screen.getByLabelText("close profile"));
+    await waitFor(() => expect(screen.queryByTestId("profile")).toBeNull());
+
+    await select();
+    fireEvent.click(row("View Profile"));
+    await screen.findByTestId("profile");
+    expect(profile().getAttribute("data-tab")).toBe("profile");
+    expect(profile().getAttribute("data-focus-post")).toBe("");
+  });
+
+  it("routes a conversation notification into the host's existing opener", async () => {
+    conversations = [{ id: "conv-9", type: "dm", participantIds: [SELF, ALEX], unreadCount: 0 } as never];
+    mount();
+    await waitFor(() => expect(notificationNavigate).not.toBeNull());
+    act(() => { notificationNavigate!({ kind: "conversation", conversationId: "conv-9" }); });
+    // The SAME remote window the inbox opens — not a second panel and not a spatial one.
+    expect(await screen.findByTestId("conversation")).toBeTruthy();
+  });
+});
+
+// ---- THE 8-HOUR REMINDER IN V2 --------------------------------------------------------------------
+// V1 has always had this; V2 ran the same `useCheckoutFlow` (so the state machine advanced and the bell
+// entry was posted) but rendered nothing for REMINDER_SHOWN, so the employee saw no card. The fix is a
+// render, not a mechanism: no second timer, no reminder state, no storage. These pin the behaviours that
+// would silently regress if anybody later "tidied" the card into the checkout panel family.
+describe("the 8-hour reminder", () => {
+  /** A session that started `ago` ms back AND WAS RECORDED THEN — which is what a session this long
+   *  actually looks like. The marker is not decoration: the overlay's "a new check-in resets the flow"
+   *  effect is keyed on it, so omitting it models a brand-new check-in that happens to be nine hours old
+   *  — something that cannot occur, and that the reset correctly cancels the reminder for. */
+  function mountAfter(ago: number) {
+    checkedInAt = new Date(Date.now() - ago).toISOString();
+    saveSessionStart(getCurrentUserId(), manilaWorkDate(), checkedInAt);
+    return mount();
+  }
+  /** Nine hours on the clock — past the hook's 480-minute threshold, and nothing else changed. */
+  const mountPastEightHours = () => mountAfter(9 * 60 * 60_000);
+  const reminder = () => screen.queryByTestId("checkout-reminder");
+
+  it("does not show before eight worked hours", async () => {
+    mountAfter(60 * 60_000);
+    await screen.findByTestId("vo3d-checkout");
+    expect(reminder()).toBeNull();
+    expect(announceWorkHoursReached).not.toHaveBeenCalled();
+  });
+
+  it("shows V1's own card once the threshold is crossed, and posts the ONE bell entry", async () => {
+    mountPastEightHours();
+    const card = await screen.findByTestId("checkout-reminder");
+    expect(card.textContent).toMatch(/8 hours reached/i);
+    expect(card.textContent).toMatch(/ready to wrap up/i);
+    expect(announceWorkHoursReached).toHaveBeenCalledTimes(1);
+  });
+
+  it("checks nobody out and submits no time log by merely appearing", async () => {
+    mountPastEightHours();
+    await screen.findByTestId("checkout-reminder");
+    expect(checkOut).not.toHaveBeenCalled();
+    expect(submitTimeLogs).not.toHaveBeenCalled();
+    expect(setExitAuthorized).not.toHaveBeenCalled();
+  });
+
+  it("is a nudge, not a panel: the world keeps the screen", async () => {
+    mountPastEightHours();
+    await screen.findByTestId("checkout-reminder");
+    // The checkout wrapper does NOT become a modal for it — REMINDER_SHOWN is deliberately absent from
+    // CHECKOUT_PANEL_STATES, which is what keeps the dock, the pointer lock and the keys where they were.
+    expect(screen.getByTestId("vo3d-checkout").hasAttribute("role")).toBe(false);
+  });
+
+  it("Later dismisses it through the flow's existing snooze", async () => {
+    mountPastEightHours();
+    await screen.findByTestId("checkout-reminder");
+    fireEvent.click(screen.getByRole("button", { name: /^later$/i }));
+    await waitFor(() => expect(reminder()).toBeNull());
+    // Snoozing is not checking out, and it does not re-post the bell.
+    expect(checkOut).not.toHaveBeenCalled();
+    expect(announceWorkHoursReached).toHaveBeenCalledTimes(1);
+  });
+
+  it("dismisses from the ✕ too — it is the same Later", async () => {
+    mountPastEightHours();
+    await screen.findByTestId("checkout-reminder");
+    fireEvent.click(screen.getByRole("button", { name: /dismiss reminder/i }));
+    await waitFor(() => expect(reminder()).toBeNull());
+  });
+
+  it("comes back as the FOLLOW-UP once the snooze elapses, without a second bell entry", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mountPastEightHours();
+      await screen.findByTestId("checkout-reminder");
+      fireEvent.click(screen.getByRole("button", { name: /^later$/i }));
+      await waitFor(() => expect(reminder()).toBeNull());
+
+      // THE HOOK'S OWN 30 MINUTES, and its own once-a-minute tick — no timer of this file's own.
+      // The clock is JUMPED and then a single tick is delivered, rather than 31 ticks being played out:
+      // every tick re-renders the whole overlay, and replaying half an hour of them takes long enough
+      // under a loaded suite to time the test out. What the hook actually reacts to is the value of
+      // Date.now() at a tick, which is exactly what this produces.
+      await act(async () => {
+        vi.setSystemTime(Date.now() + 31 * 60_000);
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      const card = await screen.findByTestId("checkout-reminder");
+      expect(card.textContent).toMatch(/still here/i);
+      expect(announceWorkHoursReached).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("Start checkout opens the EXISTING journey — the confirmation, and nothing posted", async () => {
+    mountPastEightHours();
+    await screen.findByTestId("checkout-reminder");
+    fireEvent.click(screen.getByRole("button", { name: /start checkout/i }));
+    expect(await screen.findByText(/ready to wrap up your day/i)).toBeTruthy();
+    // The card steps aside for the flow it started.
+    expect(reminder()).toBeNull();
+    expect(checkOut).not.toHaveBeenCalled();
+    expect(submitTimeLogs).not.toHaveBeenCalled();
+  });
+
+  it("is ONE card — switching view does not stack a second one", async () => {
+    mountPastEightHours();
+    await screen.findByTestId("checkout-reminder");
+    act(() => { viewMode = "player"; viewModeSubs.forEach((cb) => cb("player")); });
+    act(() => { viewMode = "office"; viewModeSubs.forEach((cb) => cb("office")); });
+    expect(screen.getAllByTestId("checkout-reminder")).toHaveLength(1);
+    expect(announceWorkHoursReached).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to the stylesheet placement while the dock is not anchorable", async () => {
+    // jsdom lays nothing out, so every rect is zero — exactly the "no usable anchor" case a slid-out
+    // dock produces in the browser. The card must still be on screen and usable.
+    mountPastEightHours();
+    const card = await screen.findByTestId("checkout-reminder");
+    await waitFor(() => expect(card.getAttribute("data-anchored")).toBe("false"));
+    expect(screen.getByRole("button", { name: /^later$/i })).toBeTruthy();
   });
 });

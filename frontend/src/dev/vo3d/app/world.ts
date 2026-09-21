@@ -191,6 +191,17 @@ export interface Vo3dCaveMeeting {
 /** What a mounted V2 world hands back. `dispose()` is idempotent and, once called, the world is dead:
  *  the canvas it was given has had its WebGL context force-lost and CANNOT be reused (see
  *  render/Renderer.dispose). A remount must be given a FRESH canvas element. */
+
+/** TEMPORARY — see Vo3dWorld.presentationEnv. The two dev-GUI dropdowns, as a plain read/write pair. */
+export interface Vo3dPresentationEnv {
+  /** The time-of-day override in force. "auto" follows V1's real Manila clock, exactly as the 2D office does. */
+  time(): EnvTimeMode;
+  setTime(mode: EnvTimeMode): void;
+  /** The weather override in force. "auto" is whatever the configured provider reports. */
+  weather(): WeatherMode;
+  setWeather(mode: WeatherMode): void;
+}
+
 export interface Vo3dWorld {
   dispose(): void;
   /** PHASE 4A — the roster's coworkers, pushed in from outside.
@@ -285,6 +296,35 @@ export interface Vo3dWorld {
    *  render3d/characterAnimationState. Walking, sitting and facing all still outrank the pose, exactly as
    *  they do in V1's resolver. */
   setConversationPoses(byEmail: ReadonlyMap<string, string | null>, self: string | null): void;
+  /** GLOBAL CHAT ACTIVITY POSES, pushed in from outside — V1's `isGlobalChatActive`.
+   *
+   *  `emails` is the set of lowercased coworker emails the presence socket says currently have at least
+   *  one visible, non-minimized Global Chat (remote DM/group) window open; `self` is the same answer for
+   *  the signed-in employee, derived locally so it works with no socket. A SEATED body in that set plays
+   *  `sitting-answering`; everybody else plays the ordinary sit. Standing is never affected, exactly as
+   *  render3d/characterAnimationState.ts orders it.
+   *
+   *  THE WORLD DECIDES NOTHING HERE and learns nothing about any conversation: the payload is a bare
+   *  boolean per email — see services/presence/globalChatActivityClient.ts. */
+  setGlobalChatActive(emails: ReadonlySet<string>, self: boolean): void;
+  /** ──────────────────────────────────────────────────────────────────────────────────────────────
+   *  TEMPORARY — PRESENTATION ENVIRONMENT SWITCHER (demo only, DEV builds only).
+   *
+   *  A read/write VIEW of the two dev-GUI dropdowns that already exist ("Environment (day / sunset /
+   *  night)" and "Weather (independent of time of day)"), so a presentation surface can offer those two
+   *  choices WITHOUT opening the inspection rig full of unrelated technical controls.
+   *
+   *  IT ADDS NO STATE AND NO LOGIC. Each setter is the dev GUI's own onChange body: the same
+   *  `timeOfDay.mode` / `weather.mode`, the same `applyEnvPhase(true)` re-grade, and the same `refresh()`
+   *  that keeps the lil-gui rows showing the truth — so the two surfaces can never disagree and neither
+   *  is authoritative over the other. Nothing here rebuilds the world, touches the avatar, the camera,
+   *  attendance or any preference.
+   *
+   *  TO REMOVE AFTER THE DEMO: delete this member, its implementation in the returned object, the
+   *  `environment` prop at the Vo3dHud call site, app/Vo3dEnvironmentPanel.tsx and HudSettings's
+   *  `environment` prop. The dev GUI is untouched by all of it.
+   *  ────────────────────────────────────────────────────────────────────────────────────────────── */
+  readonly presentationEnv: Vo3dPresentationEnv;
   /** PART 6 — SHOW OR HIDE THE DEVELOPER INSPECTION RIG (the lil-gui panel and the frame-time overlay).
    *  Off by default in a signed-in session; the V1 Settings panel's Developer section owns the switch, and
    *  `?gui=1` opens it directly. Nothing is removed — every control stays exactly where it was. */
@@ -5158,6 +5198,21 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // the render loop — it is handed the pose and picks it as its own resting clip instead. Walking and
       // sprinting still outrank it there, exactly as they do everywhere else.
       playerMode.setConversationClip(self);
+    },
+    // TEMPORARY — PRESENTATION ENVIRONMENT SWITCHER. Every line below is the dev GUI's own handler,
+    // reached by a second caller. See the interface note for how to remove it.
+    presentationEnv: {
+      time: () => timeOfDay.mode,
+      setTime: (mode) => { params.envTime = mode; timeOfDay.mode = mode; applyEnvPhase(true); refresh(); },
+      weather: () => weather.mode,
+      setWeather: (mode) => setWeatherMode(mode),
+    },
+    setGlobalChatActive: (emails, self) => {
+      coworkers.setGlobalChatActive(emails);
+      // The signed-in employee's own body. Held on the Avatar rather than in the seat interactions
+      // because it is a fact about the PERSON: every seat already asks for CLIP_SIT and gets the right
+      // clip back without knowing this exists (avatar/Avatar.ts's resolveClip).
+      avatar.setGlobalChatActive(self);
     },
     setDevToolsVisible: (on) => {
       devToolsVisible = on;

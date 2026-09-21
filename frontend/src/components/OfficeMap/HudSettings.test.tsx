@@ -375,3 +375,48 @@ describe("DEV gating", () => {
     }
   });
 });
+
+// TEMPORARY — PRESENTATION ENVIRONMENT SWITCHER (demo only). Delete this block with the `environment`
+// prop. What matters is that it is strictly OPT-IN: V1's office passes nothing and must be unable to
+// tell the prop exists, and supplying it must not disturb the Developer category or anything else.
+describe("the temporary Environment category", () => {
+  it("does not exist at all for a caller that supplies no environment section", () => {
+    render(<HudSettings onClose={() => {}} lighting={lighting} worldExperience />);
+    expect(screen.queryByRole("tab", { name: /environment/i })).not.toBeInTheDocument();
+  });
+
+  it("appears as its own category, above Developer, and shows the caller's section", () => {
+    render(
+      <HudSettings
+        onClose={() => {}}
+        worldExperience
+        environment={<div data-testid="env-section" />}
+        devTools={<div data-testid="dev-panels" />}
+      />,
+    );
+    const tabs = screen.getAllByRole("tab").map((t) => t.textContent ?? "");
+    const env = tabs.findIndex((t) => /Environment/.test(t));
+    const dev = tabs.findIndex((t) => /Developer/.test(t));
+    expect(env).toBeGreaterThan(-1);
+    expect(env).toBeLessThan(dev);
+
+    openCategory("Environment");
+    expect(screen.getByTestId("env-section")).toBeInTheDocument();
+    // It is NOT the Developer pane wearing another name: the rig's own tools are not here.
+    expect(screen.queryByTestId("dev-panels")).not.toBeInTheDocument();
+  });
+
+  it("leaves the Developer category exactly where it was and still reachable", () => {
+    render(
+      <HudSettings
+        onClose={() => {}}
+        worldExperience
+        environment={<div data-testid="env-section" />}
+        devTools={<div data-testid="dev-panels" />}
+      />,
+    );
+    openCategory("Developer");
+    expect(screen.getByTestId("dev-panels")).toBeInTheDocument();
+    expect(screen.queryByTestId("env-section")).not.toBeInTheDocument();
+  });
+});

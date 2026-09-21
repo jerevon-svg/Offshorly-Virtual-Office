@@ -16,6 +16,12 @@ export const CLIP_WALK = "walking";
  *  player controller keeps owning movement exactly as it does for the walk. */
 export const CLIP_RUN = "running";
 export const CLIP_SIT = "sit-on-chair-arms";
+/** THE SEATED "answering" LOOP — the same clip V1's resolver names for a seated employee who has at
+ *  least one visible, non-minimized Global Chat window open (render3d/characterAnimationState.ts's
+ *  `isGlobalChatActive` branch). Baked into the SAME consolidated GLB as the rest; V2 simply had not
+ *  named it. It NEVER replaces anything but CLIP_SIT — standing plus Global Chat stays an ordinary idle,
+ *  exactly as it does in V1. */
+export const CLIP_SIT_ANSWER = "sitting-answering";
 /** THE CONVERSATION CLIPS, and they are not new art: they are two of the six states V1's own
  *  render3d/characterAnimationState.ts already resolves, baked into the SAME consolidated GLB V2 loads
  *  (build-character-lods.mjs's CLIP_SOURCES). V2 simply had not named them. `listening` is what a member

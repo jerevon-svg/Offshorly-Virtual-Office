@@ -31,6 +31,7 @@ import {
   CLIP_IDLE,
   CLIP_RUN,
   CLIP_SIT,
+  CLIP_SIT_ANSWER,
   CLIP_TALK_AGREE,
   CLIP_TALK_LISTEN,
   CLIP_WALK,
@@ -47,7 +48,7 @@ const REQUIRED_CLIPS = [
   CLIP_TALK_AGREE,
   CLIP_TALK_LISTEN,
   CLIP_SIT,
-  "sitting-answering", // the one V2 has no constant for; V1's CharacterCanvas resolves it by name
+  CLIP_SIT_ANSWER,
 ];
 
 const io = new NodeIO()

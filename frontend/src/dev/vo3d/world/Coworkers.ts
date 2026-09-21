@@ -56,7 +56,7 @@
 // desk is worse than a body that is honestly absent.
 import * as THREE from "three";
 import { clone as cloneSkinned } from "three/examples/jsm/utils/SkeletonUtils.js";
-import { BON_STANDING_HEIGHT, CLIP_IDLE, CLIP_RUN, CLIP_WALK, type AvatarLod, CLIP_SIT } from "../adapters/v1Avatar";
+import { BON_STANDING_HEIGHT, CLIP_IDLE, CLIP_RUN, CLIP_WALK, type AvatarLod, CLIP_SIT, CLIP_SIT_ANSWER } from "../adapters/v1Avatar";
 import { castLabelTexture, prototypeFor, type CastPrototype } from "../avatar/CastPrototypes";
 import { dist, FACING_YAW, stepAngle, wrapAngle, type Facing, type Vec2 } from "../core/coords";
 import { standablePointNear, type StandTest } from "../player/PlayerBody";
@@ -466,6 +466,26 @@ class CoworkerBody {
     if (this.replay === null && this.coastMs === 0 && this.seatedIn === null) this.play(this.restingClip);
   }
 
+  /** GLOBAL CHAT ACTIVITY — V1's `isGlobalChatActive` for this PEER, broadcast as a bare boolean per
+   *  email (services/presence/globalChatActivityClient.ts) and pushed in from app/Vo3dOverlay exactly as
+   *  the conversation poses are. It carries no conversation, no participants and no contents. */
+  private globalChatActive = false;
+  /** THE CLIP A SEATED BODY RESTS IN. V1's resolver, in V2's terms: seated + an open Global Chat window
+   *  is `sitting-answering`, seated alone is the folded-arms sit, and a package carrying neither falls
+   *  back to the idle rather than freezing. STANDING is deliberately not a case here — standing plus
+   *  Global Chat is an ordinary idle in V1 too. */
+  private get seatedClip(): string {
+    if (this.globalChatActive && this.actions[CLIP_SIT_ANSWER]) return CLIP_SIT_ANSWER;
+    return this.actions[CLIP_SIT] ? CLIP_SIT : CLIP_IDLE;
+  }
+  /** Enter/leave the seated answering pose. Only a SEATED body changes anything now; a standing or
+   *  walking one remembers it and picks it up the moment it sits. */
+  setGlobalChatActive(on: boolean): void {
+    if (this.globalChatActive === on) return;
+    this.globalChatActive = on;
+    if (this.seatedIn !== null) this.play(this.seatedClip);
+  }
+
   /** See Coworkers.setLabelsVisible. */
   setLabelVisible(on: boolean): void {
     if (this.label) this.label.visible = on;
@@ -552,7 +572,7 @@ class CoworkerBody {
     this.root.position.copy(root);
     this.yaw = pose.yaw;
     this.root.rotation.set(0, pose.yaw, 0);
-    this.play(this.actions[CLIP_SIT] ? CLIP_SIT : CLIP_IDLE);
+    this.play(this.seatedClip);
     return !same;
   }
 
@@ -898,6 +918,9 @@ export class Coworkers {
   private labelsVisible = true;
   /** The latest conversation poses, kept so a body cloned afterwards is created already in one. */
   private conversationClips = new Map<string, string | null>();
+  /** WHO CURRENTLY HAS A GLOBAL CHAT WINDOW OPEN, lowercased emails. Kept for the same reason the poses
+   *  are: a body cloned (or re-seated) after the fact must be created already answering. */
+  private globalChatActiveEmails: ReadonlySet<string> = new Set();
   /** Scratch for doorBodies() — see there. */
   private readonly doorProbe: DoorBody[] = [];
 
@@ -1030,6 +1053,9 @@ export class Coworkers {
       // A body cloned after the host took over the nameplates must not bring a sprite one back with it.
       body.setLabelVisible(this.labelsVisible);
       body.setConversationClip(this.conversationClips.get(email) ?? null);
+      // Before any sitAt below, so a newcomer who arrives ALREADY SEATED and already in a Global
+      // Chat window lands on the answering loop rather than on the sit for one crossfade.
+      body.setGlobalChatActive(this.globalChatActiveEmails.has(email));
       // PHASE 6A — A NEWCOMER MAY ALREADY BE WALKING. `applyPositions` only reaches bodies that exist, and
       // this one did not until now: somebody whose character was still downloading when their movement
       // started, or anybody at all on the very first sync. The walk comes from the NEWEST spot (like the
@@ -1207,6 +1233,15 @@ export class Coworkers {
   setConversationClips(byEmail: ReadonlyMap<string, string | null>): void {
     this.conversationClips = new Map(byEmail);
     for (const [email, body] of this.bodies) body.setConversationClip(byEmail.get(email) ?? null);
+  }
+
+  /** GLOBAL CHAT ACTIVITY, pushed in exactly as the conversation poses are: the set of lowercased emails
+   *  the presence socket says currently have a visible, non-minimized Global Chat window. Anybody absent
+   *  goes back to the ordinary sit. The world decides nothing — see
+   *  services/presence/globalChatActivityClient.ts and app/Vo3dOverlay.tsx. */
+  setGlobalChatActive(emails: ReadonlySet<string>): void {
+    this.globalChatActiveEmails = new Set(emails);
+    for (const [email, body] of this.bodies) body.setGlobalChatActive(emails.has(email));
   }
 
   /** Which clip each rendered body is resting in — read-only, for the dev verification surface. */

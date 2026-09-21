@@ -77,6 +77,8 @@ import { Vo3dCaveMeeting } from "./Vo3dCaveMeeting";
 import { isPointerLocked, isTypingTarget } from "./keyGuard";
 import type { ToucanSummonState } from "../../../components/OfficeMap/toucanSummon";
 import { HudSettings } from "../../../components/OfficeMap/HudSettings";
+// TEMPORARY — presentation environment switcher (demo only). Delete with the `environment` prop below.
+import { Vo3dEnvironmentPanel } from "./Vo3dEnvironmentPanel";
 import { PlayerHud } from "../../../components/OfficeMap/PlayerHud";
 import { StatusPicker } from "../../../components/OfficeMap/StatusPicker";
 import { TasksPanel, type TasksTab } from "../../../components/OfficeMap/TasksPanel";
@@ -109,6 +111,14 @@ import styles from "./Vo3dHud.module.css";
 // Global Team Map — React.lazy so MapLibre (~250 KB) only loads when someone opens the map. V1's own rule.
 const TeamMapPanel = lazy(() => import("../../../components/TeamMap/TeamMapPanel"));
 
+/** WHERE AN EmployeeProfile SHOULD LAND when something opened it with a destination in mind — V1's own
+ *  `profileLanding` shape (components/OfficeMap/OfficeMap.tsx), moved across unchanged so a feed-post
+ *  notification opens the Feed tab with that post highlighted here exactly as it does there. */
+export type Vo3dProfileLanding = {
+  tab: "profile" | "feed" | "achievements";
+  postId: string | null;
+};
+
 export interface Vo3dHudProps {
   worldRef: { current: Vo3dWorld | null };
   ready: boolean;
@@ -128,8 +138,15 @@ export interface Vo3dHudProps {
   statusByEmail: Record<string, OfficeStatus>;
   /** Phase 6D's own action handler, reused verbatim so Search's Chat/Call are the menu's Chat/Call. */
   onCoworkerAction: (email: string, displayName: string, action: Vo3dCoworkerAction) => void;
-  /** Open a profile. Owned by the host so the HUD and the interaction menu share one profile modal. */
-  onOpenProfile: (email: string) => void;
+  /** Open a profile. Owned by the host so the HUD and the interaction menu share one profile modal.
+   *  `landing` is V1's deep-link: which tab to open on and which feed post to highlight. Omitted means
+   *  the default Profile tab, which is what every ordinary opener (the pill, the menu, Search) wants. */
+  onOpenProfile: (email: string, landing?: Vo3dProfileLanding) => void;
+  /** OPEN A CONVERSATION BY ID — the host's EXISTING `openConversationById`, the same one the Toucan
+   *  panel is already handed. Notification routing performs it through here rather than growing an
+   *  opener of its own; omitted (or chat not in real mode) makes a conversation destination an honest
+   *  refusal, exactly as V1 refuses it outside real mode. */
+  onOpenConversation?: (conversationId: string) => void;
   /** V1's roster, for the Map and for the New Message / New Group Chat pickers. */
   people: readonly OfficePerson[];
   /** The viewer's chat identity, and V1's own conversation rows + unread total (useUnreadTotal). */
@@ -178,6 +195,7 @@ export interface Vo3dHudProps {
 
 export function Vo3dHud({
   worldRef, ready, attendance, checkoutFlow, peopleLayers, statusByEmail, onCoworkerAction, onOpenProfile,
+  onOpenConversation,
   people, selfId, conversations, unreadTotal, resolveDisplayName, onSelectConversation,
   onOpenDirectMessage, onStartGroup, overlayToolOpen, onOpenCurrentRoom, roomDiscoveryActive = false,
   toucanAvailable, toucanCalled, toucanState, onCallToucan, onAskToucanAboutBoard, onClearToucanBoardContext,
@@ -298,11 +316,16 @@ export function Vo3dHud({
   const navigate = useCallback((destination: NotificationDestination): boolean => {
     switch (destination.kind) {
       case "profileFeed":
-        onOpenProfile(destination.email);
+        // V1's own deep-link, restored: the Feed tab, with the post the notification is about
+        // highlighted and scrolled to (EmployeeProfile's initialTab / focusPostId). A destination
+        // carrying no post id is still a Feed landing — that is what V1 does with it too.
+        onOpenProfile(destination.email, { tab: "feed", postId: destination.postId });
         return true;
       case "achievements":
         if (!self) return false;
-        onOpenProfile(self);
+        // Badges live on the viewer's OWN profile (progression is self-only by API design), on the
+        // Achievements tab — V1's word for word.
+        onOpenProfile(self, { tab: "achievements", postId: null });
         return true;
       case "quests":
         setTasksTab("quests");
@@ -315,14 +338,22 @@ export function Vo3dHud({
       case "hub":
         openCompanyHub("manual");
         return true;
-      // "conversation" and "checkout" are honestly refused rather than half-performed: the conversation
-      // list is Phase 7B's and check-out is not offered here at all (see the header). NotificationCenter
-      // keeps the panel open on a false, which is the correct outcome for a destination that does not
-      // exist yet — it does not pretend to have navigated.
+      case "conversation":
+        // V1'S OWN BRANCH, through V1's own gate: outside real mode there is no conversation to open, so
+        // this refuses rather than half-performing. The opener itself is the host's existing
+        // `openConversationById` — the same one the inbox, the Map and the Toucan panel already use, so
+        // which slot the panel lands in and how unread is cleared are decided in exactly one place.
+        if (chatMode !== "real" || !onOpenConversation) return false;
+        onOpenConversation(destination.conversationId);
+        return true;
+      // "checkout" is honestly refused rather than half-performed: check-out is not offered from the bell
+      // here at all (see the header) — its entry point is deliberately Reception, not a notification.
+      // NotificationCenter keeps the panel open on a false, which is the correct outcome for a
+      // destination this surface does not perform — it does not pretend to have navigated.
       default:
         return false;
     }
-  }, [onOpenProfile, self]);
+  }, [onOpenConversation, onOpenProfile, self]);
 
   /** Search's row actions, all three routed into work that already exists. */
   const locate = useCallback((layer: AssetLayer) => {
@@ -627,6 +658,11 @@ export function Vo3dHud({
           // PlayerCamera, Vo3dOverheads and world.ts all read the same preference store. V1's 2D office
           // passes nothing and is offered none of them.
           worldExperience
+          // TEMPORARY — PRESENTATION ENVIRONMENT SWITCHER (demo only). The SAME day/sunset/night and
+          // weather controls the dev GUI has, in their own Settings category, so a presentation never has
+          // to open the inspection rig. DEV builds only, adds no state, persists nothing, and the rig
+          // itself is untouched and still there. See app/Vo3dEnvironmentPanel.tsx for how to remove it.
+          environment={import.meta.env.DEV ? <Vo3dEnvironmentPanel worldRef={worldRef} /> : undefined}
           // PART 6 — the developer inspection rig lives behind V1's OWN Settings > Developer section,
           // which is where V1 already relocated its day/night scrubber and checkout debug panel. DEV
           // builds only: HudSettings renders this slot in its own DEV-gated section, so production never

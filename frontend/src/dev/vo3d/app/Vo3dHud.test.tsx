@@ -16,6 +16,7 @@ import type { V1Attendance } from "../adapters/v1Attendance";
 import type { Vo3dViewMode } from "./viewMode";
 import { resetCurrentUserForTests, setCurrentUserFromMeResponse } from "../../../auth/currentUserStore";
 import type { AssetLayer } from "../../../types/office";
+import type { NotificationDestination } from "../../../components/OfficeMap/NotificationCenter";
 import {
   __resetExperiencePreferencesForTests,
   setExperiencePreference,
@@ -42,8 +43,18 @@ vi.mock("../../../services/quests/claimableStore", () => ({
   useClaimableCount: () => 2,
   refreshClaimable: vi.fn(),
 }));
+// The bell itself is V1's and is tested there; what this file owns is the DESTINATION HANDLER V2 hands
+// it. The stub therefore keeps the button and captures `onNavigate` so the branches can be driven
+// directly, which is the only way to reach them without a server-backed notification list.
+let navigate: ((d: NotificationDestination) => boolean | void) | null = null;
 vi.mock("../../../components/OfficeMap/NotificationCenter", () => ({
-  NotificationCenter: ({ label }: { label: string }) => <button type="button">{label}</button>,
+  NotificationCenter: ({ label, onNavigate }: {
+    label: string;
+    onNavigate?: (d: NotificationDestination) => boolean | void;
+  }) => {
+    navigate = onNavigate ?? null;
+    return <button type="button">{label}</button>;
+  },
 }));
 vi.mock("../../../components/OfficeMap/TasksPanel", () => ({ TasksPanel: () => <div data-testid="tasks" /> }));
 vi.mock("../../../components/OfficeMap/RewardsPanel", () => ({ RewardsPanel: () => <div data-testid="rewards" /> }));
@@ -128,7 +139,8 @@ const layer = (email: string, name: string): AssetLayer =>
   ({ id: email, kind: "character", path: "", x: 0, y: 0, width: 26, height: 37, transform: null, name }) as AssetLayer;
 
 const onCoworkerAction = vi.fn((_e: string, _n: string, _a: string) => {});
-const onOpenProfile = vi.fn((_e: string) => {});
+const onOpenProfile = vi.fn((_e: string, _landing?: { tab: string; postId: string | null }) => {});
+const onOpenConversation = vi.fn((_id: string) => {});
 const onSelectConversation = vi.fn((_c: unknown) => {});
 const onOpenDirectMessage = vi.fn((_e: string) => {});
 const onStartGroup = vi.fn((_e: string[], _n?: string) => {});
@@ -172,6 +184,7 @@ function hud(attendance = attendanceOf("CHECKED_IN", new Date(Date.now() - 90 * 
       statusByEmail={{ [ALEX]: "AVAILABLE" }}
       onCoworkerAction={onCoworkerAction}
       onOpenProfile={onOpenProfile}
+      onOpenConversation={onOpenConversation}
       people={[{ email: ALEX, displayName: "Alex Cruz" } as never]}
       selfId={SELF}
       conversations={conversations}
@@ -752,5 +765,62 @@ describe("calling the Toucan", () => {
     fireEvent.click(await screen.findByLabelText("Open office whiteboards"));
     await screen.findByTestId("boards");
     expect(screen.queryByLabelText("Ask Toucan about this board")).toBeNull();
+  });
+});
+
+// ---- V1/V2 FINAL PARITY: NOTIFICATION ROUTING + PROFILE DEEP-LINKS --------------------------------
+// Two of the three gaps the parity audit found, and both of them were SILENT: the bell's own panel
+// closes on a truthy answer and stays put on a false, so a destination that was quietly refused looks
+// exactly like one that worked but landed on the wrong tab. These drive `onNavigate` directly, which is
+// the handler V2 owns — the panel, the list and the read-marking are V1's and are tested there.
+describe("notification destinations", () => {
+  /** The handler the bell was actually handed, after a render. */
+  async function navigateTo(destination: NotificationDestination): Promise<boolean | void> {
+    mount();
+    await screen.findByText("Notifs");
+    expect(navigate).not.toBeNull();
+    return navigate!(destination);
+  }
+
+  it("opens a feed-post notification on the FEED tab, with that post to focus", async () => {
+    const answer = await navigateTo({ kind: "profileFeed", email: ALEX, postId: "post-42" });
+    expect(answer).toBe(true);
+    expect(onOpenProfile).toHaveBeenCalledWith(ALEX, { tab: "feed", postId: "post-42" });
+  });
+
+  it("still lands on the Feed tab when the notification names no particular post", async () => {
+    await navigateTo({ kind: "profileFeed", email: ALEX, postId: null });
+    expect(onOpenProfile).toHaveBeenCalledWith(ALEX, { tab: "feed", postId: null });
+  });
+
+  it("opens a badge notification on the viewer's OWN Achievements tab", async () => {
+    const answer = await navigateTo({ kind: "achievements" });
+    expect(answer).toBe(true);
+    expect(onOpenProfile).toHaveBeenCalledWith(SELF, { tab: "achievements", postId: null });
+  });
+
+  it("routes a conversation notification into the host's EXISTING opener, not a second one", async () => {
+    const answer = await navigateTo({ kind: "conversation", conversationId: "conv-7" });
+    expect(answer).toBe(true);
+    expect(onOpenConversation).toHaveBeenCalledWith("conv-7");
+    // The inbox's own opener is a DIFFERENT seam and must not have been reached as well.
+    expect(onSelectConversation).not.toHaveBeenCalled();
+  });
+
+  it("refuses a conversation destination honestly when the host offers no opener", async () => {
+    render(<Hud {...({
+      ...hud().props,
+      onOpenConversation: undefined,
+    } as HudProps)} />);
+    await screen.findByText("Notifs");
+    expect(navigate!({ kind: "conversation", conversationId: "conv-7" })).toBe(false);
+    expect(onOpenConversation).not.toHaveBeenCalled();
+  });
+
+  it("leaves CHECKOUT refused — its entry point is Reception, deliberately not the bell", async () => {
+    const answer = await navigateTo({ kind: "checkout" });
+    expect(answer).toBe(false);
+    expect(onOpenProfile).not.toHaveBeenCalled();
+    expect(onOpenConversation).not.toHaveBeenCalled();
   });
 });

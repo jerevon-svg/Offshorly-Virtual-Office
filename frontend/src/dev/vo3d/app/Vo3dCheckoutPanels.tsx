@@ -23,6 +23,7 @@
 // CHECKOUT_SUCCESS onwards, because the time log is recorded and a checkout cannot be un-done from a
 // button. Both are properties of `useCheckoutFlow`'s own transition table, not of this file: those states
 // have no edge back, so there is nothing here that could offer one.
+import { CheckoutReminderToast } from "../../../components/OfficeMap/checkout/CheckoutReminderToast";
 import { CheckoutConfirmModal } from "../../../components/OfficeMap/checkout/CheckoutConfirmModal";
 import { TimeSummaryPanel } from "../../../components/OfficeMap/checkout/TimeSummaryPanel";
 import { TimeLogForm } from "../../../components/OfficeMap/checkout/TimeLogForm";
@@ -47,6 +48,29 @@ export interface Vo3dCheckoutPanelsProps {
 export function Vo3dCheckoutPanels({ flow, timeInMs, frozenCheckoutAtMs, successCardDismissed, onDismissSuccessCard }: Vo3dCheckoutPanelsProps) {
   return (
     <>
+      {/* THE 8-HOUR REMINDER — V1's own card, on V1's own state, unforked.
+       *
+       *  The trigger, the 480-minute threshold, the 30-minute snooze, the "Still here?" follow-up and the
+       *  one-per-work-date bell entry are all `useCheckoutFlow`'s and are not touched here: this file was
+       *  simply never rendering the state the hook was already reaching, so a V2 employee passed 8 hours
+       *  and saw nothing while the bell row was posted behind their back. Every prop below is the same one
+       *  OfficeMap.tsx passes — no second timer, no reminder state of its own, no storage.
+       *
+       *  IT IS NOT A MODAL and must not become one. It sits outside the checkout panel family on purpose:
+       *  REMINDER_SHOWN is deliberately absent from Vo3dOverlay's CHECKOUT_PANEL_STATES, so the dock stays
+       *  up, the pointer lock is kept and the world stays usable behind it. The card portals to <body>, so
+       *  the wrapper's `role="dialog"` (which is only set for the real panels anyway) never covers it.
+       *
+       *  "Start checkout" is `startCheckout` — the SAME entry the Reception exit card and the dock use, so
+       *  the journey it opens is the existing one. Nothing here checks anybody out or submits a time log;
+       *  the reminder's only powers are to snooze itself and to open the confirmation. */}
+      <CheckoutReminderToast
+        visible={flow.reminderVisible}
+        followUp={flow.reminderFollowUp}
+        workedLabel={flow.workedLabel}
+        onLater={flow.dismissReminderForLater}
+        onStartCheckout={flow.startCheckout}
+      />
       <CheckoutConfirmModal
         visible={flow.state === "CHECKOUT_CONFIRMATION"}
         onNotYet={flow.cancelConfirmation}

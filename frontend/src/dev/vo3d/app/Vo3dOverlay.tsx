@@ -72,7 +72,7 @@ import { loadSessionStart } from "../../../data/checkoutStorage";
 import { isRealZohoMode } from "../../../services/zoho";
 import { mayEnterOffice } from "./access";
 import type { V1Attendance } from "../adapters/v1Attendance";
-import { Vo3dHud } from "./Vo3dHud";
+import { Vo3dHud, type Vo3dProfileLanding } from "./Vo3dHud";
 import { Vo3dOverheads, SELF_OVERHEAD_KEY, TOUCAN_OVERHEAD_KEY, type Vo3dOverhead } from "./Vo3dOverheads";
 import { WhiteboardPanel } from "../../../components/Whiteboard/WhiteboardPanel";
 import { type WhiteboardScope } from "../../../services/whiteboard/whiteboardClient";
@@ -99,6 +99,10 @@ import { isAuthoredMessage } from "../../../services/chat/types";
 import { officePeopleToLayers } from "../../../data/rosterLayers";
 import { ACTIVE_DETAIL_STATUSES, mapAtlasToOfficeStatus, STATUS_META, type OfficeStatus } from "../../../services/presence/status";
 import { useDndEmails } from "../../../services/presence/dndClient";
+import {
+  emitGlobalChatActive,
+  useGlobalChatActiveEmails,
+} from "../../../services/presence/globalChatActivityClient";
 import { useTalkPermissionGate } from "../../../components/OfficeMap/useTalkPermissionGate";
 import { TalkRequestToast } from "../../../components/OfficeMap/TalkRequestToast";
 import { CallInvitePrompt } from "../../../components/OfficeMap/CallInvitePrompt";
@@ -439,6 +443,17 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
     setWhiteboardTarget({ scope: { kind: "conversation", id: conversationId }, title });
   }, []);
   const [profileEmail, setProfileEmail] = useState<string | null>(null);
+  // WHERE THE PROFILE SHOULD LAND when something opened it with a destination in mind (today: a feed-post
+  // notification, which wants the Feed tab with that post highlighted). V1's own `profileLanding`, reset
+  // on CLOSE — the panel's single exit point — so a profile opened any other way (the dock pill, the
+  // interaction menu, Search, the Map) always lands on the default tab.
+  const [profileLanding, setProfileLanding] = useState<Vo3dProfileLanding>({ tab: "profile", postId: null });
+  /** THE ONE PROFILE OPENER. Every caller goes through it, so the landing can never be left over from a
+   *  previous open: an ordinary open explicitly resets it. */
+  const openProfile = useCallback((email: string, landing?: Vo3dProfileLanding) => {
+    setProfileLanding(landing ?? { tab: "profile", postId: null });
+    setProfileEmail(email);
+  }, []);
   /** ROOM DETAILS — the selected room, as the V1 MANIFEST room layer id the world reports. One at a time,
    *  exactly like the selected coworker, and null means the panel is closed. */
   const [roomDetailsId, setRoomDetailsId] = useState<string | null>(null);
@@ -1089,7 +1104,7 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
 
       if (action === "viewProfile") {
         closeMenu();
-        setProfileEmail(email);
+        openProfile(email);
         return;
       }
 
@@ -1166,7 +1181,7 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
       sendCallInvite(email);
     },
     [
-      activeSpatialSession, closeMenu, dismissMenu, dndEmails, officeAccess, self,
+      activeSpatialSession, closeMenu, dismissMenu, dndEmails, officeAccess, openProfile, self,
       sessionForEmail, showToast, startSpatialCall, talkGate, walkUpTo,
     ],
   );
@@ -1313,6 +1328,49 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
       conversationClipFor(inConversationEmails.has(self) || toucanOpen, typingIds.has(self) || (toucanOpen && toucanTyping)),
     );
   }, [drawnEmails, inConversationEmails, ready, self, toucanOpen, toucanTyping, typingIds, worldRef]);
+
+  // ---- GLOBAL CHAT ACTIVITY (V1 parity) ------------------------------------------------------------
+  // The presence fact V1 publishes and consumes through services/presence/globalChatActivityClient.ts,
+  // restored here UNCHANGED: the same socket, the same `global_chat_active` / `global_chat_activity`
+  // events, the same bare-boolean payload. No new network contract, and nothing about any conversation
+  // leaves this client.
+  //
+  // TRUE while >=1 remote DM/group window is open and NOT minimized — V2's `remoteWindows` is the exact
+  // twin of V1's `remoteChatWindows`. The SPATIAL window (openChat / openGroupConv) deliberately never
+  // counts, in V2 as in V1: standing with somebody is not Global Chat.
+  const selfGlobalChatActive = remoteWindows.some((w) => !w.minimized);
+  // Edge-triggered, exactly as V1 does it: the client refcounts per socket, so repeated identical values
+  // must not be emitted, and the ref is what makes an unchanged render silent.
+  const selfGlobalChatActiveRef = useRef(false);
+  useEffect(() => {
+    if (selfGlobalChatActiveRef.current === selfGlobalChatActive) return;
+    selfGlobalChatActiveRef.current = selfGlobalChatActive;
+    emitGlobalChatActive(selfGlobalChatActive);
+  }, [selfGlobalChatActive]);
+  // CLEANUP — V1's own unmount rule. Leaving V2 (a view switch that unmounts the overlay, a sign-out, a
+  // navigation) with a window still open must report false, or peers keep seeing this person answering
+  // until the socket eventually drops.
+  useEffect(
+    () => () => {
+      if (selfGlobalChatActiveRef.current) {
+        selfGlobalChatActiveRef.current = false;
+        emitGlobalChatActive(false);
+      }
+    },
+    [],
+  );
+  // THE PEERS. Server-broadcast snapshot, authoritative on every (re)connect — so a V1 client's open
+  // window is seen here and a V2 client's open window is seen there, which is the whole point of reusing
+  // the service rather than inventing a V2 one. Self is OR'd in from the LOCAL derivation so the viewer's
+  // own body reacts immediately and still works in mock mode with no socket at all.
+  const globalChatActiveEmails = useGlobalChatActiveEmails();
+  useEffect(() => {
+    const world = worldRef.current;
+    if (!ready || !world) return;
+    const peers = new Set<string>();
+    for (const email of globalChatActiveEmails) if (email !== self) peers.add(email);
+    world.setGlobalChatActive(peers, selfGlobalChatActive || globalChatActiveEmails.has(self));
+  }, [globalChatActiveEmails, ready, self, selfGlobalChatActive, worldRef]);
 
   /** Clicking the unread indicator opens that person's DM — the SAME panel the Chat action opens, in the
    *  same slot. Marking-as-read is left entirely to the panel, which is what makes the indicator go away. */
@@ -1473,13 +1531,13 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
       const key = emailKey(email);
       closeRoomDetails();
       if (key === self) {
-        setProfileEmail(key);
+        openProfile(key);
         return;
       }
       if (worldRef.current?.selectCoworkerByEmail?.(key)) return;
-      setProfileEmail(key);
+      openProfile(key);
     },
-    [closeRoomDetails, self, worldRef],
+    [closeRoomDetails, openProfile, self, worldRef],
   );
 
   // ---- THE TOUCAN -----------------------------------------------------------------------------------
@@ -1995,7 +2053,13 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
           email={profileEmail}
           viewerEmail={self}
           roster={people as OfficePerson[]}
-          onClose={() => setProfileEmail(null)}
+          // V1'S DEEP-LINK, unchanged: the tab to open on and the feed post to highlight and scroll to.
+          initialTab={profileLanding.tab}
+          focusPostId={profileLanding.postId}
+          onClose={() => {
+            setProfileEmail(null);
+            setProfileLanding({ tab: "profile", postId: null });
+          }}
         />
       )}
       {toast && <div className={styles.toast}>{toast}</div>}
@@ -2013,7 +2077,11 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
         peopleLayers={peopleLayers}
         statusByEmail={statusByEmail}
         onCoworkerAction={runAction}
-        onOpenProfile={setProfileEmail}
+        onOpenProfile={openProfile}
+        // NOTIFICATION ROUTING — the host's EXISTING conversation opener, handed to the bell. No new
+        // navigation model: the inbox, the Map, the Toucan panel and now a notification all land in the
+        // same slot through the same function.
+        onOpenConversation={chatMode === "real" ? openConversationById : undefined}
         people={people}
         selfId={self}
         conversations={conversations}

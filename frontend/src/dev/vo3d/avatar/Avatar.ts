@@ -6,7 +6,7 @@
 import * as THREE from "three";
 import { GLTFLoader, type GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
-import { BON_LODS, CLIP_IDLE, DRACO_PATH, type AvatarLod } from "../adapters/v1Avatar";
+import { BON_LODS, CLIP_IDLE, CLIP_SIT, CLIP_SIT_ANSWER, DRACO_PATH, type AvatarLod } from "../adapters/v1Avatar";
 import type { Vec2 } from "../core/coords";
 
 let loader: GLTFLoader | null = null;
@@ -106,18 +106,41 @@ export class Avatar {
   worldPosition(): THREE.Vector3 { return this.root.getWorldPosition(new THREE.Vector3()); }
 
   // ---- animation ----
-  /** The clip most recently asked for, whether or not the GLB was there to play it — see load(). */
+  /** The clip most recently asked for, whether or not the GLB was there to play it — see load(). Kept
+   *  UNRESOLVED (the caller's own word), so a later Global Chat flip re-resolves it — see
+   *  setGlobalChatActive. */
   private requested: string | null = null;
+  /** GLOBAL CHAT ACTIVITY for the signed-in employee — V1's `isGlobalChatActive`, pushed in from
+   *  app/Vo3dOverlay through the world facade. It is a presence fact about the PERSON, not about the
+   *  seat, which is why it lives here and not in the seat interactions: every one of them already asks
+   *  for CLIP_SIT and gets the right clip without knowing this exists. */
+  private globalChatActive = false;
+  /** V1's resolver, applied to one clip name: seated + an open Global Chat window plays the answering
+   *  loop instead of the folded-arms sit. Everything else is returned untouched — a STANDING body in
+   *  Global Chat keeps its ordinary idle, exactly as resolveCharacterAnimState orders it. A package
+   *  without the clip falls back to the sit rather than freezing. */
+  private resolveClip(name: string): string {
+    if (name !== CLIP_SIT || !this.globalChatActive) return name;
+    return this.actions[CLIP_SIT_ANSWER] ? CLIP_SIT_ANSWER : name;
+  }
+  /** Enter/leave the seated answering pose. Only a body that is actually ASKING for the seated clip
+   *  changes anything: a walking or standing avatar simply remembers it for the next sit. */
+  setGlobalChatActive(on: boolean): void {
+    if (this.globalChatActive === on) return;
+    this.globalChatActive = on;
+    if (this.requested === CLIP_SIT) this.play(CLIP_SIT);
+  }
   play(name: string, fade = 0.25): void {
     this.requested = name;
-    if (this.current === name) return;
-    const next = this.actions[name];
+    const resolved = this.resolveClip(name);
+    if (this.current === resolved) return;
+    const next = this.actions[resolved];
     if (!next) return;
     const prev = this.current ? this.actions[this.current] : null;
     next.reset().setEffectiveWeight(1).play();
     if (prev && fade > 0) prev.crossFadeTo(next, fade, false);
     else if (prev) prev.stop();
-    this.current = name;
+    this.current = resolved;
   }
   setClipTimeScale(name: string, scale: number): void { const a = this.actions[name]; if (a) a.timeScale = scale; }
   /** HOLD A CLIP STILL AT ONE POSE — the whole of the procedural airborne pose (player/PlayerMode).
