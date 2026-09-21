@@ -59,3 +59,47 @@ describe("the focus tween", () => {
     expect(frames[0].zoom).toBeCloseTo(4, 6);
   });
 });
+
+// ---- THE RECENTRE, not just the zoom -----------------------------------------------------------------
+// The tween always eased its DOLLY correctly and never eased its TARGET: the lerped point was written to
+// controls.target and then placeCamera copied the renderer's own target straight back over it, so every
+// frame restored the destination and the recentre snapped. Framing a ROOM moves the target far enough for
+// that to be the whole gesture, so the pan is pinned here alongside the zoom.
+describe("the focus recentre", () => {
+  type P = { x: number; z: number };
+  const lerp = (a: P, b: P, k: number): P => ({ x: a.x + (b.x - a.x) * k, z: a.z + (b.z - a.z) * k });
+
+  /** The same step the loop runs, over a point instead of a scalar. */
+  function runPan(from: P, to: P, steps: number[]): P[] {
+    let t = 0;
+    const out: P[] = [];
+    for (const dt of steps) {
+      t = Math.min(1, t + dt / FOCUS_MS);
+      out.push(lerp(from, to, easeOut(t)));
+    }
+    return out;
+  }
+
+  it("actually moves in between — a recentre that only appears on the last frame is a snap", () => {
+    const frames = runPan({ x: 0, z: 0 }, { x: 1200, z: 800 }, Array(30).fill(16));
+    const mid = frames[Math.floor(frames.length / 2)];
+    expect(mid.x).toBeGreaterThan(0);
+    expect(mid.x).toBeLessThan(1200);
+  });
+
+  it("arrives exactly on the room's centre, and no further", () => {
+    const frames = runPan({ x: 0, z: 0 }, { x: 1200, z: 800 }, Array(40).fill(16));
+    const last = frames[frames.length - 1];
+    expect(last.x).toBeCloseTo(1200, 6);
+    expect(last.z).toBeCloseTo(800, 6);
+    expect(Math.max(...frames.map((f) => f.x))).toBeCloseTo(1200, 6);
+  });
+
+  it("is monotonic on both axes: no overshoot, no backtrack", () => {
+    const frames = runPan({ x: 0, z: 900 }, { x: 1200, z: 100 }, Array(40).fill(16));
+    for (let i = 1; i < frames.length; i++) {
+      expect(frames[i].x).toBeGreaterThanOrEqual(frames[i - 1].x);
+      expect(frames[i].z).toBeLessThanOrEqual(frames[i - 1].z);
+    }
+  });
+});

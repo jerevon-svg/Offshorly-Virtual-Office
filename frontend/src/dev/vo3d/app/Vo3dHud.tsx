@@ -129,15 +129,24 @@ export interface Vo3dHudProps {
   onOpenDirectMessage: (email: string) => void;
   /** Start a group conversation with these people — New Group Chat's destination. */
   onStartGroup: (emails: string[], groupName?: string) => void;
-  /** True while the overlay owns the screen with a panel of its own (the profile modal), so the ONE
-   *  visibility rule below covers those too rather than only the tools this file holds. */
+  /** True while the overlay owns the screen with a panel of its own (the profile modal, checkout, Room
+   *  Details), so the ONE visibility rule below covers those too rather than only the tools this file
+   *  holds. */
   overlayToolOpen: boolean;
+  /** ROOM DETAILS — open the panel for the room the body is standing in. Owned by the overlay (it holds
+   *  the roster the panel is built from); this file only offers the tile.
+   *
+   *  WHY A TILE AT ALL, when Office and 3D can just click the floor: PLAYER mode cannot. A pointer-locked
+   *  player has no cursor to aim at a floor region, and the dock is the ONE surface Phase 7C guarantees
+   *  in all three views — so the tile is what makes the panel reachable from every view rather than from
+   *  two of them. It is the same panel and the same rooms either way. */
+  onOpenCurrentRoom: () => void;
 }
 
 export function Vo3dHud({
   worldRef, ready, attendance, checkoutFlow, peopleLayers, statusByEmail, onCoworkerAction, onOpenProfile,
   people, selfId, conversations, unreadTotal, resolveDisplayName, onSelectConversation,
-  onOpenDirectMessage, onStartGroup, overlayToolOpen,
+  onOpenDirectMessage, onStartGroup, overlayToolOpen, onOpenCurrentRoom,
 }: Vo3dHudProps) {
   const self = selfEmailKey();
   /** V1's own dock-tool slot: at most one full-screen tool from the dock at a time. */
@@ -315,6 +324,10 @@ export function Vo3dHud({
       ariaLabel: "Search for a person", active: dockTool === "search", onClick: () => setDockTool("search") },
     { kind: "action", key: "hub", icon: <HudIcon name="hub" />, label: "Hub",
       ariaLabel: "Open Company Hub", active: companyHub.isOpen, onClick: () => openCompanyHub("manual") },
+    // ROOM DETAILS. Sits next to Search because it answers the same kind of question — who is where —
+    // and it is the one tool here that is about the room you are standing in rather than the office.
+    { kind: "action", key: "room", icon: <HudIcon name="room" />, label: "Room",
+      ariaLabel: "Open room details", onClick: onOpenCurrentRoom },
     { kind: "action", key: "tasks", icon: <HudIcon name="tasks" />, label: "Tasks",
       ariaLabel: "Open Tasks", active: tasksOpen, badge: claimableCount, onClick: () => setTasksOpen(true) },
     ...(chatMode === "real"

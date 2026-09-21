@@ -119,6 +119,7 @@ const onOpenProfile = vi.fn((_e: string) => {});
 const onSelectConversation = vi.fn((_c: unknown) => {});
 const onOpenDirectMessage = vi.fn((_e: string) => {});
 const onStartGroup = vi.fn((_e: string[], _n?: string) => {});
+const onOpenCurrentRoom = vi.fn();
 let conversations: never[] = [];
 let overlayToolOpen = false;
 
@@ -161,6 +162,7 @@ function hud(attendance = attendanceOf("CHECKED_IN", new Date(Date.now() - 90 * 
       onOpenDirectMessage={onOpenDirectMessage}
       onStartGroup={onStartGroup}
       overlayToolOpen={overlayToolOpen}
+      onOpenCurrentRoom={onOpenCurrentRoom}
     />
   );
 }

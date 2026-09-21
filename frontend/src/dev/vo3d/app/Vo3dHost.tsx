@@ -467,6 +467,11 @@ export function Vo3dHost() {
           people={roster.people}
           drawnEmails={drawnEmails}
           attendance={attendance}
+          // ROOM DETAILS reads two more fields off the SAME roster this host already holds: whether the
+          // first load is still in flight (so an empty list cannot read as an empty room) and Atlas's
+          // room id -> name map (so a live PROJECT / CLIQ_CHANNEL room can be named). No second fetch.
+          rosterLoading={roster.loading}
+          roomNames={roster.roomNames}
         />
       )}
       {phase.kind === "ready" && phase.identity && (

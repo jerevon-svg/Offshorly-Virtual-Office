@@ -17,6 +17,7 @@ import memoryIcon from "../assets/hud-icons/memory.png";
 import notificationsIcon from "../assets/hud-icons/notifications.png";
 import quillIcon from "../assets/hud-icons/quill.png";
 import rewardsIcon from "../assets/hud-icons/rewards.png";
+import roomIcon from "../assets/hud-icons/room.png";
 import searchIcon from "../assets/hud-icons/search.png";
 import settingsIcon from "../assets/hud-icons/settings.png";
 import videoIcon from "../assets/hud-icons/video.png";
@@ -46,6 +47,9 @@ export const HUD_ICONS = {
   notifications: notificationsIcon,
   quill: quillIcon,
   rewards: rewardsIcon,
+  // An open cutaway room — floor plate, two walls, a doorway and a pin. Deliberately NOT `people`
+  // (two figures, which is "who", not "where") and NOT `hub` (a closed building, which is the company).
+  room: roomIcon,
   search: searchIcon,
   settings: settingsIcon,
   video: videoIcon,

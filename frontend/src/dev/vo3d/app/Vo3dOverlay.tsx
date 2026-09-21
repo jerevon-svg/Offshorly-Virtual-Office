@@ -37,6 +37,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Vo3dCoworkerSelection, Vo3dScreenAnchor } from "./interactions";
 import type { Vo3dWorld } from "./world";
 import { CoworkerActionMenu, type Vo3dCoworkerAction } from "./CoworkerActionMenu";
+import { Vo3dRoomDetails } from "./Vo3dRoomDetails";
+import { resolveRoomDetails } from "./roomDetails";
+import { roomLayers, FRAME_WIDTH } from "../../../data/office-layout";
 import { emailKey, selfEmailKey } from "../adapters/v1Coworkers";
 import { KIOSK_INTERACTION_ID } from "../rooms/reception";
 import { Vo3dKioskCard, type Vo3dKioskState } from "./Vo3dKioskCard";
@@ -129,6 +132,13 @@ export interface Vo3dOverlayProps {
    *  down rather than read back out of the world: React owns this fact, and asking the scene for it
    *  would mean polling a thing that changes without telling React. */
   drawnEmails: readonly string[];
+  /** ROOM DETAILS — the rest of V1's roster state the panel needs, passed down from the host's ONE
+   *  useOfficeRoster rather than re-subscribed here. `rosterLoading` is what keeps "still loading" from
+   *  reading as "nobody is here", and `roomNames` is Atlas's room id -> name map, which is the only way a
+   *  live PROJECT / CLIQ_CHANNEL room can be named rather than leaked as a raw id. Both optional so the
+   *  standalone callers and the existing test mounts stay valid. */
+  rosterLoading?: boolean;
+  roomNames?: ReadonlyMap<string, string>;
   /** V1's OWN answer about this employee's work session, passed down from the host rather than re-read
    *  here. The host already holds it (adapters/v1Attendance, the same read Phase 5's office boundary
    *  gates on) and asking a second time would be a second poller against the same endpoint for the same
@@ -240,7 +250,7 @@ const CHECKOUT_PANEL_STATES: ReadonlySet<CheckoutState> = new Set<CheckoutState>
   "EDITING_TIME_LOG", "REVIEWING", "SUBMITTING", "SUBMISSION_FAILED", "CHECKOUT_SUCCESS", "WALKING_TO_EXIT",
 ]);
 
-export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }: Vo3dOverlayProps) {
+export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, rosterLoading = false, roomNames }: Vo3dOverlayProps) {
   const officeAccess = attendance.access;
   const self = selfEmailKey();
   const [selection, setSelection] = useState<Vo3dCoworkerSelection | null>(null);
@@ -384,6 +394,9 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }
   }, []);
   const [chatMinimized, setChatMinimized] = useState(false);
   const [profileEmail, setProfileEmail] = useState<string | null>(null);
+  /** ROOM DETAILS — the selected room, as the V1 MANIFEST room layer id the world reports. One at a time,
+   *  exactly like the selected coworker, and null means the panel is closed. */
+  const [roomDetailsId, setRoomDetailsId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimerRef = useRef<number | undefined>(undefined);
 
@@ -568,6 +581,10 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }
         setExitOpen(false);
       },
       onZoneChanged: (zone) => setOutsideBuilding(zone === "outside"),
+      // ROOM DETAILS — V1's own room click, in V2's world. The world reports which of its floor regions
+      // was picked (a manifest room id, or null for the hall / a person / a fixture / outside); what that
+      // room CONTAINS is resolved here from V1's roster, in app/roomDetails.ts.
+      onRoomSelected: (roomId) => setRoomDetailsId(roomId),
     });
     return () => world.setCoworkerInteractions(null);
   }, [ready, worldRef]);
@@ -1270,6 +1287,71 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }
     return [...layersByEmail.entries()].filter(([email]) => drawn.has(email)).map(([, layer]) => layer);
   }, [layersByEmail, drawnEmails]);
 
+  // ---- ROOM DETAILS ---------------------------------------------------------------------------------
+  // The whole panel, in three values. Nothing is fetched and nothing is subscribed: `people` is the host's
+  // one roster and this recomputes whenever it changes, which is what keeps occupancy live as V1's
+  // presence stream moves somebody between rooms.
+  const roomDetails = useMemo(
+    () => resolveRoomDetails({ roomId: roomDetailsId, people, roomNames, loading: rosterLoading, selfEmail: self }),
+    [roomDetailsId, people, roomNames, rosterLoading, self],
+  );
+
+  /** WHICH EDGE THE PANEL DOCKS AGAINST. V1's rule, unchanged: a room on the right half of the floor
+   *  opens the panel on the left, so the panel never covers the room it is describing. The room's own
+   *  manifest rect is the measure, exactly as it is in OfficeMap. */
+  const roomDetailsSide = useMemo<"left" | "right">(() => {
+    const layer = roomLayers.find((r) => r.id === roomDetailsId);
+    if (!layer) return "right";
+    return layer.x + layer.width / 2 > FRAME_WIDTH / 2 ? "left" : "right";
+  }, [roomDetailsId]);
+
+  /** CLOSE, and tell the world — otherwise it still holds this room and a click on the very same floor
+   *  would be deduped away as "already selected", opening nothing. The same contract clearCoworkerSelection
+   *  has, for the same reason. */
+  const closeRoomDetails = useCallback(() => {
+    setRoomDetailsId(null);
+    worldRef.current?.setSelectedRoom?.(null);
+  }, [worldRef]);
+
+  /** OPEN THE ROOM THE BODY IS STANDING IN — the dock's Room tile, and the only entry PLAYER mode can use
+   *  (a pointer-locked player cannot click a floor region). The world answers from the SAME regions the
+   *  click path reads, so the two entries can never disagree about which room you are in. */
+  const openCurrentRoom = useCallback(() => {
+    const world = worldRef.current;
+    if (!world) return;
+    const roomId = world.currentRoomId?.() ?? null;
+    if (!roomId) {
+      showToast("Step into a room to see who’s in it.");
+      return;
+    }
+    world.setSelectedRoom?.(roomId);
+    setRoomDetailsId(roomId);
+  }, [showToast, worldRef]);
+
+  /** SELECTING SOMEBODY FROM THE PANEL runs V1's EXISTING employee interactions and adds none of its own:
+   *  it makes the same selection a click on their body makes (world.selectCoworkerByEmail, which is also
+   *  what the dock's Search Locate does), so the anchored CoworkerActionMenu opens over them with Chat,
+   *  Call, Approach, View Profile and Ask to Join already wired to `runAction`.
+   *
+   *  TWO HONEST FALLBACKS, because the roster lists people the world is not drawing (offline, or no 3D
+   *  character yet) and because you cannot walk up to yourself:
+   *    • self          → V1's own profile modal, which is what the HUD already opens for "me".
+   *    • no body drawn → the same profile modal, rather than a card anchored to empty floor.
+   *  Either way the room panel closes, exactly as V1's own character click closes its room sidebar. */
+  const selectRoomPerson = useCallback(
+    (email: string, _displayName: string) => {
+      const key = emailKey(email);
+      closeRoomDetails();
+      if (key === self) {
+        setProfileEmail(key);
+        return;
+      }
+      if (worldRef.current?.selectCoworkerByEmail?.(key)) return;
+      setProfileEmail(key);
+    },
+    [closeRoomDetails, self, worldRef],
+  );
+
   /** WHERE EACH WINDOW SITS. V1's own right-to-left stack (chatWindowLayout), so a spatial window and
    *  several Global Chat windows share one row instead of landing on top of each other. */
   const windowOffsets = useMemo(() => {
@@ -1471,6 +1553,14 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }
           />
         </div>
       )}
+      {/* ROOM DETAILS — V1's room panel, in V2's world. Always mounted so the slide-out animates and its
+          content survives the close, exactly as V1's RoomSidebar stays mounted. */}
+      <Vo3dRoomDetails
+        details={roomDetails}
+        side={roomDetailsSide}
+        onClose={closeRoomDetails}
+        onSelectPerson={selectRoomPerson}
+      />
       {profileEmail && (
         <EmployeeProfile
           email={profileEmail}
@@ -1503,13 +1593,17 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance }
         onSelectConversation={openConversation}
         onOpenDirectMessage={openRemoteDirectMessage}
         onStartGroup={startGroup}
+        // ROOM DETAILS — the dock's Room tile, and the ONLY entry PLAYER mode has (see openCurrentRoom).
+        onOpenCurrentRoom={openCurrentRoom}
         // The profile modal is the overlay's own screen-owning panel, so it joins the dock's ONE
         // visibility rule rather than being a case the dock does not know about.
         // CHECKOUT IS THE SOLE FOCUS while it is up. It joins V1's own one-line "a tool owns the screen"
         // rule rather than getting a second mechanism: the dock steps aside, the pointer lock is released
         // and PLAYER's keys stop reaching the world, exactly as they do for Tasks or the inbox. The
         // Reception exit CARD is deliberately not here — it is an anchored world card, not a tool.
-        overlayToolOpen={profileEmail !== null || checkoutPanelOpen}
+        // ROOM DETAILS joins the same one-line rule, as it does in V1 (OfficeMap's officeToolOpen lists
+        // roomSidebar): the dock and the pointer lock step aside for a focused side panel.
+        overlayToolOpen={profileEmail !== null || checkoutPanelOpen || roomDetailsId !== null}
       />
     </>
   );

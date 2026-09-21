@@ -57,6 +57,22 @@ export interface Vo3dCoworkerInteractions {
    *  only signal V1 can get for "walked up to a coworker" (the walk is client-side), and it is what the
    *  host emits the Onboarding Questline's approach_arrived from — the same one OfficeMap.tsx emits. */
   onApproachArrived(email: string): void;
+  /** ROOM DETAILS PARITY — A ROOM WAS SELECTED, or the selection was dropped.
+   *
+   *  `roomId` is the world's OWN region id (WorldState.regionAt().roomId), which is the V1 MANIFEST room
+   *  layer id — "design-room", "dev-room", "central-hub" — because the ground floor's regions are built
+   *  from those very rects (rooms/ground-floor.ts over adapters/v1Floor's v1Rooms). So the world is not
+   *  inventing a room vocabulary here any more than it invents an email: it is handing back V1's own id.
+   *
+   *  Null means "no room": a click that landed on a person, on a fixture, on the shared hall, on the
+   *  sidewalk, or outside the modelled world. The host closes its panel on null rather than leaving it
+   *  pinned to a room the viewer has clicked away from — V1's own rule (OfficeMap clears roomSidebar on a
+   *  character, seat, reception or HR-desk click).
+   *
+   *  THE WORLD STILL DECIDES NOTHING. It has never read a roster row and does not know who is in that
+   *  room; it reports which of its own floor regions was picked and stops there. Optional, so the
+   *  standalone dev page and every existing test double stay valid without stubbing it. */
+  onRoomSelected?(roomId: string | null): void;
   /** PHASE 7E — A WALK-UP TO A PLACE, not to a person: the body finished walking to an entity's declared
    *  approach point AND finished turning to face it. `entityId` is the world entity's own id (for example
    *  Reception's `reception-room/kiosk-interaction`), which is all the world has and all the host needs to

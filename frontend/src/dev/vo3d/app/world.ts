@@ -114,6 +114,7 @@ import { gateRects, mayEnterOffice, routeEntersOffice, zoneAt, type AccessGeomet
 import { Coworkers, facingTrace, type SeatAnchorPose } from "../world/Coworkers";
 import type { Vo3dCoworker } from "./coworkers";
 import type { Vo3dCoworkerInteractions, Vo3dCoworkerSelection, Vo3dScreenAnchor } from "./interactions";
+import { exploreFrameZoom, roomFrameMode, roomFrameRect, ROOM_FRAME_FILL } from "./roomFocus";
 import type { Vo3dViewMode } from "./viewMode";
 import { coworkerEmailOf, personCandidateId, REACH as TARGET_REACH, type Candidate } from "../player/PlayerTargeting";
 import { standablePointNear } from "../player/PlayerBody";
@@ -324,6 +325,23 @@ export interface Vo3dWorld {
    *  world so the two agree on who is selected: without it the world would still hold the last person and
    *  a second click on the SAME body would be recognised as "already selected" and open nothing. */
   clearCoworkerSelection(): void;
+  /** ROOM DETAILS PARITY — WHICH ROOM THE SIGNED-IN BODY IS STANDING IN, as the V1 manifest room layer id
+   *  (see Vo3dCoworkerInteractions.onRoomSelected for why that is the id). Null in the shared hall, on the
+   *  street and anywhere outside the modelled world.
+   *
+   *  This is the PLAYER-view entry point: a pointer-locked player cannot click a floor region, so the
+   *  HUD's Room tile asks "which room am I in" instead — the same question, answered from the same
+   *  regions, with no second notion of location. Read on demand, never polled. */
+  currentRoomId(): string | null;
+  /** ROOM DETAILS PARITY — THE HOST OPENED OR CLOSED THE PANEL ITSELF (the dock's Room tile, Escape, the
+   *  close button). Nothing is announced back, exactly as clearCoworkerSelection announces nothing:
+   *  without it the world would still hold the last room and a click on that same floor would be deduped
+   *  away as "already selected", opening nothing.
+   *
+   *  OPENING A ROOM THIS WAY ALSO FRAMES IT, so the tile and a floor click land on the same view rather
+   *  than on two. Closing (null) frames nothing and moves nothing — the camera is left exactly where the
+   *  employee has it, panned or zoomed. PLAYER is refused outright: the camera belongs to the body there. */
+  setSelectedRoom(roomId: string | null): void;
   /** PHASE 7A PARITY — ease back to the view the employee had before a selection was framed. V1's
    *  closeCharacterMenu does this on dismiss; V1 deliberately does NOT do it when an action was taken
    *  (opening a chat panel must not yank the camera), so the host calls this only where V1 does. */
@@ -1866,7 +1884,28 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   /** How much ground the focus frames around a person, in world units — a desk's worth of context, which
    *  at the office pitch reads as V1's tight character zoom rather than a face fill. */
   const FOCUS_HALF_EXTENT = 150;
-  let camTween: { t: number; fromTarget: THREE.Vector3; toTarget: THREE.Vector3; fromZoom: number; toZoom: number } | null = null;
+  /** HOW A TWEENED FRAME IS APPLIED, and the two are not interchangeable:
+   *
+   *    "place"  OFFICE. Pitch and yaw are PINNED in this mode, so the camera may be rebuilt from
+   *             camParams every frame: the renderer's own `target` is what moves, and placeCamera derives
+   *             the position, the frustum and controls.target from it. The fence then gets the last word,
+   *             exactly as it does after a manual drag.
+   *    "pan"    3D EXPLORE. The orbit angle is the USER'S — this is the free inspection rig — so nothing
+   *             may be rebuilt from camParams: placeCamera would snap their pitch and yaw back to
+   *             whatever the policy last recorded. Instead the orbit target and the camera position are
+   *             translated by the SAME delta, which is exactly how OrbitControls itself pans and how the
+   *             fence moves the pair (CameraModes.clamp). The orbit is left untouched. */
+  type CamTween = {
+    t: number;
+    fromTarget: THREE.Vector3;
+    toTarget: THREE.Vector3;
+    fromZoom: number;
+    toZoom: number;
+    apply: "place" | "pan";
+  };
+  let camTween: CamTween | null = null;
+  /** Scratch, so a per-frame tween allocates nothing. */
+  const camTweenAt = new THREE.Vector3();
   /** Where the camera stood before the first focus of a selection, so closing the card can ease back to
    *  it — V1's resetToInitialView, except it restores the view the employee actually had rather than the
    *  canonical framing, which is the same promise and kinder to somebody who had panned somewhere. */
@@ -1874,14 +1913,20 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
 
   const easeOut = (k: number): number => 1 - Math.pow(1 - k, 3);
 
-  /** Begin easing to a captured destination. Cancels whatever tween was running. */
-  function startCamTween(toTarget: THREE.Vector3, toZoom: number): void {
+  /** Begin easing to a captured destination. Cancels whatever tween was running.
+   *
+   *  `from` is read off controls.target rather than off the renderer's own target, because controls.target
+   *  is the one that is TRUE after a manual pan: OFFICE's fence moves it (and the camera) without writing
+   *  the renderer's target, so the two diverge the moment somebody drags the map. Starting from the stale
+   *  one is what a jump looks like. */
+  function startCamTween(toTarget: THREE.Vector3, toZoom: number, apply: "place" | "pan"): void {
     camTween = {
       t: 0,
       fromTarget: R.controls.target.clone(),
       toTarget: toTarget.clone(),
       fromZoom: R.camera.zoom,
       toZoom,
+      apply,
     };
   }
   /** ANY manual camera input abandons the tween immediately — a focus must never fight the wheel or a
@@ -1890,44 +1935,107 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     camTween = null;
   }
   onCanvas("wheel", cancelCamTween);
+  // …and so does GRABBING THE MAP. A left-drag pans in OFFICE and orbits in 3D EXPLORE, and in OFFICE the
+  // tween rebuilds the camera every frame — so without this the pan is overwritten as fast as it is made
+  // and the view feels stuck for half a second. Cancelling on the press (not the drag) means a manual
+  // gesture always wins immediately. A plain click is unaffected: the selection it makes starts its own
+  // tween on pointerup, after this has run.
+  onCanvas("pointerdown", (e) => {
+    if (e.button === 0) cancelCamTween();
+  });
 
-  function focusCameraOn(at: Vec2): boolean {
-    if (playerMode.active || params.cameraMode !== "office") return false;
+  /** OFFICE's framing, captured and re-run as a tween. The destination is READ BACK OUT of the existing
+   *  cameraModes.focus — apply it, note where it landed (target, dolly and fence included), put the camera
+   *  straight back, then ease between the two. So the framing policy, the dolly ceiling and the fence are
+   *  the shipped ones and no second copy of that arithmetic exists to drift from them. */
+  function easeOfficeFrame(rect: Rect, fill: number, remember: boolean): boolean {
     const beforeTarget = R.controls.target.clone();
     const beforeZoom = R.camera.zoom;
-    // Apply the EXISTING focus to learn where it lands (target, dolly, fence included), then undo it.
-    cameraModes.focus(
-      { x: at.x - FOCUS_HALF_EXTENT, z: at.z - FOCUS_HALF_EXTENT, w: FOCUS_HALF_EXTENT * 2, d: FOCUS_HALF_EXTENT * 2 },
-      0.9,
-    );
+    cameraModes.focus(rect, fill);
     const toTarget = R.controls.target.clone();
     const toZoom = R.camera.zoom;
-    R.controls.target.copy(beforeTarget);
+    R.target.copy(beforeTarget);
     R.camera.zoom = beforeZoom;
-    R.camera.updateProjectionMatrix();
     R.placeCamera();
-    if (!camBeforeFocus) camBeforeFocus = { target: beforeTarget, zoom: beforeZoom };
-    startCamTween(toTarget, toZoom);
+    if (remember && !camBeforeFocus) camBeforeFocus = { target: beforeTarget, zoom: beforeZoom };
+    startCamTween(toTarget, toZoom, "place");
     return true;
   }
 
-  /** Ease back to wherever the camera was before the selection was focused. V1's closeCharacterMenu. */
+  /** 3D EXPLORE's framing. Deliberately NOT cameraModes.focus: that path ends in placeCamera, which
+   *  rebuilds the camera from camParams and would therefore throw away the pitch and yaw the user has
+   *  orbited to — in the one mode whose whole purpose is free orbit. Instead the orbit target eases to the
+   *  room's centre and the DOLLY eases to whatever fits it, with the angle untouched.
+   *
+   *  The fit itself is app/roomFocus.ts's exploreFrameZoom. */
+  function easeExploreFrame(rect: Rect, fill: number): void {
+    const c = R.controls;
+    const toZoom = exploreFrameZoom(rect, R.camera.top, fill, c.minZoom, c.maxZoom);
+    startCamTween(new THREE.Vector3(rect.x + rect.w / 2, R.target.y, rect.z + rect.d / 2), toZoom, "pan");
+  }
+
+  function focusCameraOn(at: Vec2): boolean {
+    // PERSON FOCUS IS UNCHANGED: OFFICE only, the same extent, the same fill, and it is the one focus that
+    // records a view to come back to (closing the card eases there — V1's closeCharacterMenu).
+    if (playerMode.active || params.cameraMode !== "office") return false;
+    return easeOfficeFrame(
+      { x: at.x - FOCUS_HALF_EXTENT, z: at.z - FOCUS_HALF_EXTENT, w: FOCUS_HALF_EXTENT * 2, d: FOCUS_HALF_EXTENT * 2 },
+      0.9,
+      true,
+    );
+  }
+
+  /** ROOM FOCUS — V1's `focusRoom`, which centres and frames the room a click opened.
+   *
+   *  THREE DELIBERATE DIFFERENCES from the person focus above:
+   *    • IT WORKS IN 3D EXPLORE TOO, through the pan-only path, because framing a room is exactly what
+   *      that view is for. It never switches mode, and it never touches pitch or yaw.
+   *    • IT IS REFUSED IN PLAYER, whole. The camera belongs to the body there; nothing is moved, zoomed or
+   *      detached, and the Room tile simply opens the panel over the world it is already showing.
+   *    • IT REMEMBERS NOTHING. `camBeforeFocus` is the SELECTION's memory — the view a dismissed employee
+   *      card eases back to — and a room framing must not write it, or closing a person's card afterwards
+   *      would yank the camera to a pre-room view nobody asked for. Closing the room panel therefore leaves
+   *      the camera exactly where it is, including wherever the employee has panned it since.
+   *
+   *  A room with no rect of its own (nothing this world models) is simply not framed. */
+  function frameRoom(roomId: string | null): void {
+    const how = roomFrameMode(params.cameraMode, playerMode.active, roomId);
+    if (how === "none" || !roomId) return;
+    const rect = roomFrameRect({ floorRectOf: (id) => world.rooms.get(id)?.floorRect, regions: world.regions }, roomId);
+    if (!rect) return;
+    if (how === "office") easeOfficeFrame(rect, ROOM_FRAME_FILL, false);
+    else easeExploreFrame(rect, ROOM_FRAME_FILL);
+  }
+
+  /** Ease back to wherever the camera was before the SELECTION was focused. V1's closeCharacterMenu. */
   function restoreCameraView(): void {
     const before = camBeforeFocus;
     camBeforeFocus = null;
     if (!before || playerMode.active || params.cameraMode !== "office") return;
-    startCamTween(before.target, before.zoom);
+    startCamTween(before.target, before.zoom, "place");
   }
 
-  /** One frame of the tween. Called from the render loop, before OrbitControls is updated. */
+  /** One frame of the tween. Called from the render loop, before OrbitControls is updated.
+   *
+   *  THE RECENTRE USED TO SNAP, and this is where. Writing the eased point into `controls.target` and then
+   *  calling placeCamera undoes it in the same breath — placeCamera ends with `controls.target.copy(this
+   *  .target)`, so every frame put the destination straight back. Only the zoom was ever easing. Each
+   *  branch below writes the point the camera is actually built from for that mode. */
   function updateCamTween(dtMs: number): void {
     if (!camTween) return;
     camTween.t = Math.min(1, camTween.t + dtMs / FOCUS_MS);
     const k = easeOut(camTween.t);
-    R.controls.target.lerpVectors(camTween.fromTarget, camTween.toTarget, k);
+    camTweenAt.lerpVectors(camTween.fromTarget, camTween.toTarget, k);
     R.camera.zoom = camTween.fromZoom + (camTween.toZoom - camTween.fromZoom) * k;
-    R.camera.updateProjectionMatrix();
-    R.placeCamera();
+    if (camTween.apply === "place") {
+      R.target.copy(camTweenAt);
+      R.placeCamera(); // rebuilds position + frustum from camParams and copies R.target into controls.target
+    } else {
+      // Translate the pair, leaving the orbit direction exactly as the user left it.
+      R.camera.position.add(camTweenAt).sub(R.controls.target);
+      R.controls.target.copy(camTweenAt);
+      R.camera.updateProjectionMatrix();
+    }
     if (camTween.t >= 1) camTween = null;
   }
 
@@ -1942,6 +2050,19 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       if (at) focusCameraOn(at);
     }
     coworkerInteractions?.onSelect(sel);
+  }
+
+  /** WHICH ROOM IS SELECTED, or null. Deduped for the same reason selectCoworker is: the host's panel is
+   *  React state, and re-announcing the same room on every click would re-open a panel the viewer had
+   *  just closed. Told to the host and nowhere else — the world keeps no notion of what a room "is". */
+  let selectedRoom: string | null = null;
+  function selectRoom(roomId: string | null): void {
+    if (roomId === selectedRoom) return;
+    selectedRoom = roomId;
+    // FRAME IT, exactly as V1's room click does (OfficeMap's focusRoom, called right before it opens the
+    // sidebar). Dropping a selection frames nothing — leaving is not a place to go.
+    frameRoom(roomId);
+    coworkerInteractions?.onRoomSelected?.(roomId);
   }
 
   /** WHO IS UNDER THE POINTER, with the distance the caller needs to weigh it against its own pick. */
@@ -2600,6 +2721,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     const person = pickCoworkerAt(e.clientX, e.clientY);
     const hit = pickInteractionHit(e.clientX, e.clientY);
     if (person && (!hit || person.distance <= hit.distance)) {
+      // Selecting a PERSON drops the room selection, exactly as V1's handleCharacterClick clears its room
+      // sidebar: one world selection at a time, and the card that opens is about them, not about the floor.
+      selectRoom(null);
       selectCoworker({ email: person.email, displayName: person.displayName });
       return;
     }
@@ -2608,6 +2732,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     selectCoworker(null);
     const picked = hit?.id ?? null;
     if (picked) {
+      // Same rule as a person: a chair, a door or the portal is its own interaction, and V1 closes the
+      // room panel for every one of them (seat, reception and HR-desk clicks all setRoomSidebar(null)).
+      selectRoom(null);
       const ent = world.get(picked);
       // the portal is a transition, not a walk-up: clicking it has to mean the same thing pressing E on
       // it means, or the one interaction in the world that moves you between volumes would behave
@@ -2622,8 +2749,15 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       return;
     }
     // PART 3 — A LEFT CLICK SELECTS; IT DOES NOT WALK. V1's left button picks a character, a seat or a
-    // room and its right button is what moves the avatar, and OFFICE now matches that. Landing on nothing
-    // interactable is therefore a DESELECT, which the selectCoworker(null) above has already done.
+    // room and its right button is what moves the avatar, and OFFICE now matches that.
+    //
+    // ROOM DETAILS PARITY — …AND A ROOM IS THE THIRD THING IT PICKS. V1's left click on a room layer opens
+    // that room's details panel; the V2 equivalent of "the room layer" is the floor region under the
+    // pointer, so the click is resolved to a ground point and asked which region owns it. Landing on the
+    // shared hall, the sidewalk or outside the world gives no roomId, which is a DESELECT — the same
+    // outcome this branch already had.
+    const ground = floorPoint(e.clientX, e.clientY);
+    selectRoom(ground ? world.regionAt(ground)?.roomId ?? null : null);
   });
 
   // ---- GUI -------------------------------------------------------------------------------------------
@@ -4871,6 +5005,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // name lookup across the whole office, not a reach check.
       const who = coworkers.within(avatar.position, Number.POSITIVE_INFINITY).find((c) => c.email === email);
       if (!who) return false;
+      // A host-driven selection is still a selection, so it drops the room the same way a click on a body
+      // does — one world selection at a time, whichever surface made it.
+      selectRoom(null);
       selectCoworker({ email: who.email, displayName: who.displayName });
       return true;
     },
@@ -4878,6 +5015,12 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     coworkerAnchor,
     coworkerAnchors,
     selfAnchor: () => (avatar.root.visible ? selfAnchor() : null),
+    currentRoomId: () => playerRoomId(),
+    setSelectedRoom: (roomId) => {
+      if (roomId === selectedRoom) return;
+      selectedRoom = roomId;
+      frameRoom(roomId);
+    },
     clearCoworkerSelection: () => {
       // The host already closed its card, so it is not told again — this only resyncs the world's idea of
       // what is selected. Same one-way shape as every other host->world write on this interface.

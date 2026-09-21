@@ -10,6 +10,7 @@ import {
   FRAME_WIDTH,
   bonLayer,
   charactersInRoom,
+  flatRoomIdAt,
   formatCharacterName,
   officeAssetLayers,
   npcCharacterLayers,
@@ -3309,19 +3310,6 @@ export function OfficeMap() {
       // door-pair branch's no-seat case above.
       moveSelf({ path, roomId: layer.id, arrival: { state: "standing", facing: "front" }, onArrive: finishArrival });
     }, zoomOutMs);
-  }
-
-  // Looks up the flat rects/teamRooms-namespace room id (e.g. "design-team")
-  // containing `point`, or null if outside every flat room. This is the same
-  // id scheme doorStandForRoom/doorStandPoints.ts classifies stand points
-  // against — NOT the roomLayers/manifest scheme (e.g. "design-room") that
-  // roomOf()/findPath's goalRoomId use. Mirrors the flat-rect containment
-  // check doorStandPoints.ts itself uses internally.
-  function flatRoomIdAt(point: { x: number; y: number }): string | null {
-    const room = rooms.find(
-      (r) => point.x >= r.x && point.x <= r.x + r.width && point.y >= r.y && point.y <= r.y + r.height,
-    );
-    return room?.id ?? null;
   }
 
   // Checkout's OUTWARD door-gate: used by beginWalkToReception (leaving the

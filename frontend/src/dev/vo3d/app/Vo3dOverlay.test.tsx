@@ -180,6 +180,12 @@ const setExitAuthorized = vi.fn();
 const setInteractionPromptHidden = vi.fn();
 const setDepartureDestination = vi.fn();
 const clearSelection = vi.fn();
+/** ROOM DETAILS — the world's two room verbs, and its answer for "which room am I standing in". */
+let currentRoomId: string | null = "design-room";
+const setSelectedRoom = vi.fn();
+/** Whether the world is DRAWING the person Search / a Room Details row asked to select. */
+let worldHasBody = true;
+const selectByEmail = vi.fn((_email: string) => worldHasBody);
 const poses: { peers: Map<string, string | null>; self: string | null }[] = [];
 let caveInside = false;
 let caveSubs: ((s: { inside: boolean }) => void)[] = [];
@@ -209,7 +215,9 @@ const world = {
   devToolsVisible: () => false,
   setDevToolsVisible: vi.fn(),
   exitPlayerMode: vi.fn(),
-  selectCoworkerByEmail: vi.fn(() => true),
+  selectCoworkerByEmail: (email: string) => selectByEmail(email),
+  currentRoomId: () => currentRoomId,
+  setSelectedRoom: setSelectedRoom,
   clearCoworkerSelection: clearSelection,
   restoreCameraView: vi.fn(),
   coworkerAnchor: () => ({ clientX: 400, clientY: 300, visible: true }),
@@ -253,6 +261,8 @@ beforeEach(() => {
   dndEmails = new Set();
   sessions = [];
   attendance = "permitted";
+  currentRoomId = "design-room";
+  worldHasBody = true;
   handlers = null;
   checkIn.mockClear();
   checkOut.mockClear();
@@ -1447,5 +1457,101 @@ describe("after a confirmed checkout", () => {
     mount();
     await arriveAt();
     expect(screen.queryByRole("menuitem", { name: /Check In/i })).toBeNull();
+  });
+});
+
+// ---- ROOM DETAILS ------------------------------------------------------------------------------------
+// V1/V2 parity for components/OfficeMap/RoomSidebar. WHAT the panel is allowed to say is
+// Vo3dRoomDetails.test.tsx's subject; this is about the WIRING — which world signal opens it, which one
+// closes it, how it is reached from a view that has no cursor, and that a row runs V1's EXISTING employee
+// interactions rather than a second set of its own.
+describe("room details", () => {
+  /** The world reports a picked floor region, exactly as a left click on a room's floor makes it. */
+  async function pickRoom(roomId: string | null = "design-room") {
+    await waitFor(() => expect(handlers).not.toBeNull());
+    act(() => handlers!.onRoomSelected!(roomId));
+  }
+  const panel = () => screen.getByTestId("vo3d-room-details");
+  const roomTile = () => screen.getByRole("button", { name: "Open room details" });
+
+  it("opens on the world's room signal, named and counted from V1's own roster", async () => {
+    mount();
+    await pickRoom("design-room");
+    await waitFor(() => expect(panel().dataset.open).toBe("true"));
+    expect(screen.getByText("Design Room")).toBeTruthy();
+    // Both roster rows live in "design-team" — the FLAT id behind the manifest id the world reported.
+    expect(screen.getByTestId("vo3d-room-subtitle").textContent).toBe("2 people in the room");
+    expect(screen.getAllByTestId("vo3d-room-person")).toHaveLength(2);
+  });
+
+  it("closes when the world drops the room — a click on a person, a fixture or the hall", async () => {
+    mount();
+    await pickRoom("design-room");
+    await waitFor(() => expect(panel().dataset.open).toBe("true"));
+    await pickRoom(null);
+    await waitFor(() => expect(panel().dataset.open).toBe("false"));
+  });
+
+  it("closing tells the world, so the very same floor can be clicked again", async () => {
+    mount();
+    await pickRoom("design-room");
+    fireEvent.click(await screen.findByRole("button", { name: "Close" }));
+    await waitFor(() => expect(panel().dataset.open).toBe("false"));
+    expect(setSelectedRoom).toHaveBeenCalledWith(null);
+  });
+
+  it("is reachable from the dock — the only entry a pointer-locked PLAYER has", async () => {
+    currentRoomId = "dev-room";
+    mount();
+    fireEvent.click(roomTile());
+    await waitFor(() => expect(panel().dataset.open).toBe("true"));
+    expect(screen.getByText("Dev Room")).toBeTruthy();
+    // The world is told, or a later click on that same floor would be deduped away as "already selected".
+    expect(setSelectedRoom).toHaveBeenCalledWith("dev-room");
+  });
+
+  it("says so rather than opening an empty panel when the body is not in a room", async () => {
+    currentRoomId = null;
+    mount();
+    fireEvent.click(roomTile());
+    expect(await screen.findByText(/Step into a room/)).toBeTruthy();
+    expect(panel().dataset.open).toBe("false");
+  });
+
+  it("selecting a row makes the SAME world selection a click on their body makes", async () => {
+    mount();
+    await pickRoom("design-room");
+    fireEvent.click(await screen.findByRole("button", { name: /Alex Cruz/ }));
+    expect(selectByEmail).toHaveBeenCalledWith(ALEX);
+    // V1's own character click closes the room panel; so does this.
+    await waitFor(() => expect(panel().dataset.open).toBe("false"));
+    // …and no second action path was invented: the action card is what the world's selection opens.
+    expect(screen.queryByTestId("profile")).toBeNull();
+  });
+
+  it("falls back to V1's profile modal for somebody the world is not drawing", async () => {
+    worldHasBody = false;
+    mount();
+    await pickRoom("design-room");
+    fireEvent.click(await screen.findByRole("button", { name: /Alex Cruz/ }));
+    expect(await screen.findByTestId("profile")).toBeTruthy();
+  });
+
+  it("opens the viewer's own profile for their own row — you cannot walk up to yourself", async () => {
+    mount();
+    await pickRoom("design-room");
+    fireEvent.click(await screen.findByRole("button", { name: /Bon/ }));
+    expect(selectByEmail).not.toHaveBeenCalled();
+    expect((await screen.findByTestId("profile")).textContent).toBe(SELF);
+  });
+
+  it("joins the ONE 'a tool owns the screen' rule, exactly as V1's room sidebar does", async () => {
+    mount();
+    const dock = screen.getByTestId("hud-dock");
+    expect(dock.className).not.toMatch(/hidden/i);
+    await pickRoom("design-room");
+    // The dock steps aside for a focused side panel — same rule, same mechanism, no second one. Hidden
+    // by the dock's own class, never unmounted, so nothing loses its state or its subscriptions.
+    await waitFor(() => expect(screen.getByTestId("hud-dock").className).toMatch(/hidden/i));
   });
 });
