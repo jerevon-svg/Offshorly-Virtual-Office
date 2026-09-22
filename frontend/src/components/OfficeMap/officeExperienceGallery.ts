@@ -17,8 +17,8 @@
 //
 // A card is only honest if the picture on it is a capture of a place that exists, so a season appears
 // here only when its decoration layer has actually shipped AND somebody has photographed it. Halloween
-// arrived that way in Phase 9B (season/halloween + a real capture of the decorated Central Hub);
-// Christmas is still absent from SEASONAL_PRESENTATION because its layer does not exist yet.
+// arrived that way in Phase 9B (season/halloween + a real capture of the decorated Central Hub), and
+// White Christmas the same way in the checkpoint after it (season/christmas + its own capture).
 //
 // An experience the server lists but that has no presentation here produces NO CARD at all. That is a
 // belt-and-braces second lock, not the real one — the real one is the server's IMPLEMENTED_EXPERIENCES
@@ -112,6 +112,25 @@ export function galleryFor(catalog: ExperienceCatalog): readonly OfficeExperienc
   for (const value of catalog.available) add(value, false);
   for (const value of catalog.previewable) add(value, true);
   return [...PERMANENT_GALLERY, ...seasonal];
+}
+
+/** THE NAME OF ONE OFFICE, wherever it has to be said in a sentence rather than drawn on a card.
+ *
+ *  Two callers need it and they used to disagree: CreatorStudioPanel had a private copy while
+ *  OfficeExperiencePanel's status line had none at all and simply assumed every office was either the
+ *  3D one or the Classic one — so it told a Creator standing in the Halloween office that they were in
+ *  the Classic Office. One helper, asked in both places, is what stops a third caller repeating it.
+ *
+ *  The permanent gallery is asked FIRST (those offices have had proper names since Phase 8), then the
+ *  seasonal presentation table. An identifier with neither is named after itself rather than invented,
+ *  because the Studio has to be able to describe a season that has not shipped without pretending it
+ *  has. */
+export function experienceLabel(value: OfficeExperience): string {
+  const permanent = PERMANENT_GALLERY.find((entry) => entry.value === value);
+  if (permanent) return permanent.label;
+  const seasonal = SEASONAL_PRESENTATION[value];
+  if (seasonal) return seasonal.label;
+  return `${value.charAt(0).toUpperCase()}${value.slice(1)} Office`;
 }
 
 /** A belt-and-braces check that the gallery and the server cannot drift: every entry offered as

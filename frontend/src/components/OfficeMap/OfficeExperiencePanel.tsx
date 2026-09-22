@@ -26,11 +26,12 @@
 import { useState, useSyncExternalStore } from "react";
 import styles from "./HudSettings.module.css";
 import { ExperienceCards } from "./ExperienceCards";
-import { galleryFor } from "./officeExperienceGallery";
+import { experienceLabel, galleryFor } from "./officeExperienceGallery";
 import { allowedExperiences } from "../../services/office/experienceCatalog";
 import { useExperienceCatalog } from "../../services/office/useExperienceCatalog";
 import {
   getOfficeExperience,
+  getStoredOfficeExperience,
   setOfficeExperience,
   subscribeOfficeExperience,
   resolveOfficeExperience,
@@ -59,6 +60,17 @@ export function OfficeExperiencePanel() {
   // Resolved against the SAME allowed set App.tsx used, so a card is never marked as the office you
   // are in when the server would not have let you into it.
   const open = resolveOfficeExperience(window.location.search, allowed, catalog.default);
+  // WHAT AN ORDINARY LOAD WOULD OPEN — the same resolution with the URL's say taken away. This, not
+  // `saved`, is what "your saved office" means in the status line below: somebody who has never chosen
+  // still HAS an office they get every morning (the company default), and telling them their saved
+  // office was the 3D one when the company default had been moved to Classic was the same class of
+  // lie as naming a season after the wrong office.
+  const wouldOpen = resolveOfficeExperience("", allowed, catalog.default);
+  // The employee's own EXPLICIT choice, or null. Only used to tell "this is simply what opens" apart
+  // from "this is what you picked", and to notice a saved office the server no longer lists.
+  const chosen = getStoredOfficeExperience();
+  const strandedChoice =
+    catalog.status === "ok" && chosen !== null && !allowed.includes(chosen) ? chosen : null;
   // The choice picked but not yet confirmed. Null means nothing is pending.
   const [pending, setPending] = useState<OfficeExperience | null>(null);
   const current = open;
@@ -115,13 +127,22 @@ export function OfficeExperiencePanel() {
           </>
         ) : (
           <p className={styles.cardStatus} data-testid="office-experience-status">
-            {open !== saved
-              ? open === "classic"
-                ? "You are in the Classic Office for this tab only — your saved office is the 3D Office. Pick Classic Office to keep it."
-                : "You are in the 3D Office for this tab only — your saved office is the Classic Office. Pick 3D Office to keep it."
-              : open === "v2"
-                ? "You are in the 3D Office. It opens by default."
-                : "You are in the Classic Office. It opens every time you sign in until you change this."}
+            {/* EVERY OFFICE IS NAMED, never assumed. This line used to be two hardcoded sentences about
+                the 3D office and the Classic one, written before a season could be either of them —
+                so a Creator previewing Halloween was told "You are in the Classic Office", and an
+                employee sent to `?world=v1` with Christmas saved was told their saved office was the
+                3D one. Both were flatly false, on the one surface whose whole job is to say where you
+                are. */}
+            {open !== wouldOpen
+              ? `You are in the ${experienceLabel(open)} for this tab only — your saved office is the ${experienceLabel(wouldOpen)}. Pick ${experienceLabel(open)} to keep it.`
+              : strandedChoice !== null
+                ? /* Their choice survived the season being unpublished (services/settings/officeExperience
+                     keeps it on purpose); what changed is that the company turned it off. Saying so is the
+                     difference between "your office moved" and "somebody moved your office". */
+                  `You are in the ${experienceLabel(open)}. The ${experienceLabel(strandedChoice)} you chose is not available right now, so this one opens until it is back.`
+                : chosen === null
+                  ? `You are in the ${experienceLabel(open)}. It opens by default.`
+                  : `You are in the ${experienceLabel(open)}. It opens every time you sign in until you change this.`}
           </p>
         )}
       </div>

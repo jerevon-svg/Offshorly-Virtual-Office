@@ -22,7 +22,7 @@
 import { useState } from "react";
 import styles from "./HudSettings.module.css";
 import { useExperienceCatalog } from "../../services/office/useExperienceCatalog";
-import { PERMANENT_GALLERY, SEASONAL_PRESENTATION } from "./officeExperienceGallery";
+import { experienceLabel } from "./officeExperienceGallery";
 import {
   setDefaultExperience,
   setExperiencePublication,
@@ -50,23 +50,6 @@ const STATE_LABEL: Record<ReturnType<typeof publicationState>, string> = {
   published: "Published to everyone",
   ready: "Ready — only you can see it",
 };
-
-function titleCase(value: string): string {
-  return value.charAt(0).toUpperCase() + value.slice(1);
-}
-
-/** The card's display name. A season that has shipped has a real label in the gallery's presentation
- *  table; one that has not is named after its identifier rather than invented — this section must be
- *  able to describe an office that does not exist yet without pretending it does. */
-function experienceLabel(value: OfficeExperience): string {
-  // The permanent offices have had proper names since Phase 8 ("3D Office", not "V2 Office"), and the
-  // Studio's default line names one of them most of the time — so the gallery is asked FIRST. A
-  // season that has shipped has a name in the presentation table; one that has not is named after its
-  // identifier rather than invented, because this section has to be able to describe an office that
-  // does not exist yet without pretending it does.
-  const permanent = PERMANENT_GALLERY.find((entry) => entry.value === value);
-  return permanent?.label ?? SEASONAL_PRESENTATION[value]?.label ?? `${titleCase(value)} Office`;
-}
 
 export function CreatorStudioPanel() {
   const catalog = useExperienceCatalog();

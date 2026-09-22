@@ -17,6 +17,7 @@ import { SEASONAL_PRESENTATION } from "./officeExperienceGallery";
 import { __resetExperienceCatalogForTests } from "../../services/office/experienceCatalogStore";
 import {
   getOfficeExperience,
+  setOfficeExperience,
   __resetOfficeExperienceForTests,
 } from "../../services/settings/officeExperience";
 import { resetCurrentUserForTests } from "../../auth/currentUserStore";
@@ -191,5 +192,65 @@ describe("when the catalog cannot be read", () => {
     render(<OfficeExperiencePanel />);
     await waitFor(() => expect(apiFetch).toHaveBeenCalled());
     expect(screen.queryByTestId("office-experience-catalog-offline")).toBeNull();
+  });
+});
+
+// THE STATUS LINE HAS TO NAME THE OFFICE YOU ARE ACTUALLY IN, and until this block existed it could
+// not: it was two hardcoded sentences about the 3D office and the Classic one, written before a
+// season could be either of them. Every case here failed before the line became label-driven — a
+// Creator previewing Halloween was told "You are in the Classic Office", which is the one thing this
+// paragraph exists to get right. The suite passed throughout, which is why these cases are here.
+describe("what the status line says you are in", () => {
+  const status = () => screen.getByTestId("office-experience-status");
+
+  it("names a season the Creator is previewing, rather than calling it the Classic Office", async () => {
+    serverAnswer({ previewable: ["halloween"], creator: true });
+    setOfficeExperience("halloween");
+
+    render(<OfficeExperiencePanel />);
+    await screen.findByRole("radio", { name: new RegExp(SEASONAL_PRESENTATION.halloween!.label, "i") });
+
+    await waitFor(() => expect(status()).toHaveTextContent(/You are in the Halloween Office/i));
+    expect(status()).not.toHaveTextContent(/Classic Office/i);
+  });
+
+  it("names the saved season when a URL override is showing something else for this tab", async () => {
+    window.history.replaceState({}, "", "/?world=v1");
+    try {
+      serverAnswer({ previewable: ["christmas"], creator: true });
+      setOfficeExperience("christmas");
+
+      render(<OfficeExperiencePanel />);
+      await waitFor(() => expect(status()).toHaveTextContent(/this tab only/i));
+      // The old line said "your saved office is the 3D Office" here, which was simply untrue.
+      expect(status()).toHaveTextContent(/saved office is the White Christmas Office/i);
+      expect(status()).not.toHaveTextContent(/saved office is the 3D Office/i);
+    } finally {
+      window.history.replaceState({}, "", "/");
+    }
+  });
+
+  // A SAVED SEASON SURVIVES BEING UNPUBLISHED (officeExperience.ts keeps it on purpose) and the
+  // employee is put back in the 3D office. Saying only "this opens every time you sign in" would tell
+  // them their own choice was the thing that had changed.
+  it("explains a saved office the server no longer lists, instead of ignoring it", async () => {
+    serverAnswer(); // halloween neither available nor previewable any more
+    setOfficeExperience("halloween");
+
+    render(<OfficeExperiencePanel />);
+    await waitFor(() => expect(status()).toHaveTextContent(/You are in the 3D Office/i));
+    expect(status()).toHaveTextContent(/Halloween Office you chose is not available right now/i);
+    // AND THE CHOICE IS STILL THERE. The message is the whole response; nothing erases what they picked.
+    expect(window.localStorage.getItem("vo:officeExperience:v1:anon")).toBe(JSON.stringify("halloween"));
+  });
+
+  it("does not claim an unavailable saved office when the catalog simply could not be read", async () => {
+    // beforeEach leaves apiFetch rejecting. The offline note already explains this case; a second,
+    // contradicting sentence about the season being unpublished would be a guess stated as a fact.
+    setOfficeExperience("halloween");
+
+    render(<OfficeExperiencePanel />);
+    await screen.findByTestId("office-experience-catalog-offline");
+    expect(status()).not.toHaveTextContent(/not available right now/i);
   });
 });
