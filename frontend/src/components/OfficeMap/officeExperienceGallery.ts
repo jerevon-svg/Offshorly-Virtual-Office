@@ -33,6 +33,7 @@ import { PERMANENT_OFFICE_EXPERIENCES, type OfficeExperience } from "../../servi
 import office3dArt from "../../assets/experience/office-3d.webp";
 import officeClassicArt from "../../assets/experience/office-classic.webp";
 import officeHalloweenArt from "../../assets/experience/office-halloween.webp";
+import officeChristmasArt from "../../assets/experience/office-christmas.webp";
 
 export interface OfficeExperienceEntry {
   value: OfficeExperience;
@@ -56,14 +57,18 @@ export interface OfficeExperienceEntry {
  *  THE ART IS A REAL CAPTURE, like every other card in this gallery — the decorated Central Hub,
  *  photographed through the app's own camera with the HUD off (src/assets/experience/*.webp). This
  *  gallery has never put a drawing or a generated image on a card and does not start now: a card is
- *  a promise that the place on it exists.
- *
- *  CHRISTMAS IS STILL ABSENT because its decoration layer is. */
+ *  a promise that the place on it exists. Both seasonal captures are frames the local rig actually
+ *  rendered; neither is concept art, and nothing here was generated. */
 export const SEASONAL_PRESENTATION: Partial<Record<OfficeExperience, Omit<OfficeExperienceEntry, "value">>> = {
   halloween: {
     label: "Halloween Office",
     hint: "The same office, after dark",
     art: officeHalloweenArt,
+  },
+  christmas: {
+    label: "White Christmas Office",
+    hint: "The same office, under snow",
+    art: officeChristmasArt,
   },
 };
 

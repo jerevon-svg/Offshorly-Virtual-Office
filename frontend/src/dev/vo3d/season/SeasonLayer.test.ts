@@ -13,7 +13,13 @@ const ROOMS: SeasonRoom[] = [
 
 function deps(scene: THREE.Object3D) {
   const setEnvOverlay = vi.fn<(g: Record<EnvPhase, EnvOverlay> | null, p: EnvPhase | null) => void>();
-  return { scene, rooms: ROOMS, doors: [], setEnvOverlay, invalidateShadows: vi.fn() };
+  const setSnowfall = vi.fn();
+  return {
+    scene, rooms: ROOMS, doors: [], setEnvOverlay, setSnowfall,
+    frame: { x: 0, z: 0, w: 1440, d: 1244 },
+    sidewalk: { x: 200, z: 1160, w: 900, d: 70 },
+    invalidateShadows: vi.fn(),
+  };
 }
 
 let scene: THREE.Scene;
@@ -27,11 +33,21 @@ describe("which themes build a layer", () => {
     expect(d.setEnvOverlay).not.toHaveBeenCalled();
   });
 
-  it("builds nothing for a season with no decoration layer", () => {
-    // Christmas is a KNOWN identifier with no implementation. It must produce an undecorated office
-    // rather than a half-decorated one.
-    expect(createSeasonLayer("christmas", deps(scene))).toBeNull();
-    expect(scene.children).toHaveLength(0);
+  it("builds and attaches Christmas, and hands the environment its grade AND its snowfall", () => {
+    const d = deps(scene);
+    const layer = createSeasonLayer("christmas", d);
+    expect(layer).not.toBeNull();
+    expect(scene.getObjectByName("season:christmas")).toBeDefined();
+    expect(layer!.stats.pieces).toBeGreaterThan(20);
+    // the hanging snowflake drift, which is the instanced flock this season puts in `bats`
+    expect(layer!.stats.bats).toBeGreaterThan(20);
+    const [grade, autoPhase] = d.setEnvOverlay.mock.calls[0];
+    expect(grade).not.toBeNull();
+    // AUTO IS NOT OVERRIDDEN, unlike Halloween's. All three phases are graded to be beautiful, so
+    // the real clock keeps deciding — see christmas/grade.ts.
+    expect(autoPhase).toBeNull();
+    // The precipitation channel is asked for snow, in the four numbers weather already speaks in.
+    expect(d.setSnowfall).toHaveBeenCalledWith(expect.objectContaining({ perMillion: expect.any(Number) }));
   });
 
   it("builds and attaches Halloween, and hands the environment its grade", () => {
@@ -89,25 +105,71 @@ describe("disposal", () => {
   });
 });
 
-describe("what the layer must never touch", () => {
+describe.each(["halloween", "christmas"] as const)("what the %s layer must never touch", (theme) => {
   it("adds exactly one root to the scene and nothing else", () => {
-    createSeasonLayer("halloween", deps(scene));
+    createSeasonLayer(theme, deps(scene));
     expect(scene.children).toHaveLength(1);
-    expect(scene.children[0].name).toBe("season:halloween");
+    expect(scene.children[0].name).toBe(`season:${theme}`);
   });
 
   it("creates no real-time lights — every glow is emissive geometry plus an additive plane", () => {
     // The office's whole lighting budget depends on this: build/led.ts and build/exterior.ts both
-    // state it, and a season full of candles is exactly where it would be tempting to break it.
-    createSeasonLayer("halloween", deps(scene));
+    // state it, and a season full of candles or fairy lights is exactly where it would be tempting
+    // to break it.
+    createSeasonLayer(theme, deps(scene));
     let lights = 0;
     scene.traverse((o) => { if ((o as THREE.Light).isLight) lights++; });
     expect(lights).toBe(0);
   });
 
   it("is deterministic — the same rooms decorate identically on every build", () => {
-    const a = createSeasonLayer("halloween", deps(new THREE.Scene()))!;
-    const b = createSeasonLayer("halloween", deps(new THREE.Scene()))!;
+    const a = createSeasonLayer(theme, deps(new THREE.Scene()))!;
+    const b = createSeasonLayer(theme, deps(new THREE.Scene()))!;
     expect(a.stats).toEqual(b.stats);
+  });
+
+  it("removes every object it added and frees every geometry it made", () => {
+    const d = deps(scene);
+    const layer = createSeasonLayer(theme, d)!;
+    const geometries: THREE.BufferGeometry[] = [];
+    scene.traverse((o) => { const m = o as THREE.Mesh; if (m.geometry) geometries.push(m.geometry); });
+    expect(geometries.length).toBeGreaterThan(20);
+    const disposed = geometries.map((g) => vi.spyOn(g, "dispose"));
+
+    layer.dispose();
+
+    expect(scene.children).toHaveLength(0);
+    for (const spy of disposed) expect(spy).toHaveBeenCalled();
+    // The environment is handed back BOTH of the things the season took: its grade and, for a season
+    // that asked for one, its precipitation.
+    expect(d.setEnvOverlay).toHaveBeenLastCalledWith(null, null);
+    if (theme === "christmas") expect(d.setSnowfall).toHaveBeenLastCalledWith(null);
+  });
+});
+
+// ══ THE DECORATIONS STAY OUT OF THE WAY, AND IT IS CHECKED RATHER THAN ASSERTED IN A COMMENT ══
+//
+// Nav-inertness is architectural (nav/solids.ts never reads a THREE object), so nothing here can
+// block a cell. What a decoration CAN do is stand in front of somebody, and that is a property of
+// WHERE things are — so it is measured.
+describe("christmas placement safety", () => {
+  it("hangs nothing below head height and pokes nothing through the roof", () => {
+    const layer = createSeasonLayer("christmas", deps(scene))!;
+    // An avatar is ~30 tall. The hanging band's own floor is 6 below the 34-unit hanging line — the
+    // same allowance the bat flock takes — and nothing may reach the 46-unit wall head.
+    const HANG_FLOOR = 28;
+    const WALL_HEAD = 46;
+    let checked = 0;
+    scene.traverse((o) => {
+      if (!o.name.startsWith("xm:flakes") && !o.name.startsWith("xm:icicles")) return;
+      const box = new THREE.Box3().setFromObject(o);
+      if (!box.isEmpty()) {
+        expect(box.min.y).toBeGreaterThanOrEqual(HANG_FLOOR);
+        expect(box.max.y).toBeLessThanOrEqual(WALL_HEAD);
+        checked++;
+      }
+    });
+    expect(checked).toBeGreaterThan(0);
+    layer.dispose();
   });
 });

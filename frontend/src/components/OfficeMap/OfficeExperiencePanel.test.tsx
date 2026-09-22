@@ -13,6 +13,7 @@ vi.mock("../../services/api/client", () => ({ getAuthToken: () => "a-token" }));
 vi.stubEnv("VITE_CHAT_SOCKET_URL", "http://vo-backend.test");
 
 import { OfficeExperiencePanel } from "./OfficeExperiencePanel";
+import { SEASONAL_PRESENTATION } from "./officeExperienceGallery";
 import { __resetExperienceCatalogForTests } from "../../services/office/experienceCatalogStore";
 import {
   getOfficeExperience,
@@ -141,13 +142,31 @@ describe("what the gallery shows", () => {
 
   it("does not invent a card for a season the server lists but this build cannot picture", async () => {
     // The server should never list one before its decoration ships — but if it did, a card with no
-    // capture behind it is the one thing this gallery has never been willing to draw. Christmas is
-    // the live example: a known identifier with no layer and no capture.
+    // capture behind it is the one thing this gallery has never been willing to draw.
+    //
+    // BOTH SHIPPED SEASONS ARE NOW PICTURABLE, so the unpicturable case is created here by taking one
+    // presentation back out. That is exactly the state the NEXT season starts in, and it is the state
+    // this rule exists for — naming whichever season happens to be unshipped today would have made
+    // this test expire the moment it shipped.
+    const saved = SEASONAL_PRESENTATION.christmas;
+    delete SEASONAL_PRESENTATION.christmas;
+    try {
+      serverAnswer({ available: ["v2", "classic", "christmas"] });
+      render(<OfficeExperiencePanel />);
+      await waitFor(() => expect(apiFetch).toHaveBeenCalled());
+      expect(screen.getAllByRole("radio")).toHaveLength(2);
+      expect(screen.queryByRole("radio", { name: /christmas/i })).toBeNull();
+    } finally {
+      SEASONAL_PRESENTATION.christmas = saved;
+    }
+  });
+
+  it("shows the White Christmas card once the server lists it", async () => {
     serverAnswer({ available: ["v2", "classic", "christmas"] });
     render(<OfficeExperiencePanel />);
     await waitFor(() => expect(apiFetch).toHaveBeenCalled());
-    expect(screen.getAllByRole("radio")).toHaveLength(2);
-    expect(screen.queryByRole("radio", { name: /christmas/i })).toBeNull();
+    expect(screen.getAllByRole("radio")).toHaveLength(3);
+    expect(screen.getByRole("radio", { name: /christmas/i })).toBeTruthy();
   });
 });
 

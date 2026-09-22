@@ -53,6 +53,13 @@ const BASE_WIDTH = 1.05;
 const MIN_WIDTH_PX = 2.4;
 /** how far the field must reach beyond the office before there is anywhere for it to rain */
 const RING_MARGIN = 220;
+/** A FLAKE'S HALF-SIZE in world units, and the pixel floor it is held above.
+ *
+ *  Snow has the same problem rain has under the orthographic camera — a world unit is worth a
+ *  different number of pixels at every zoom — and the same fix, at a larger floor: a streak only has
+ *  to be visible, whereas a flake has to be RECOGNISABLE as a round thing rather than as a dot. */
+const BASE_FLAKE = 4.6;
+const MIN_FLAKE_PX = 5.2;
 
 const VERT = /* glsl */ `
 attribute vec4 aSeed;      // strip pick + x placement · z placement · fall phase · per-streak variation
@@ -70,6 +77,10 @@ uniform float uSpeed;
 uniform float uLength;
 uniform float uWidth;
 uniform float uOpacity;
+// SNOW MODE — 0 = rain, 1 = snow. One branch, because a season's snowfall is the SAME FIELD with a
+// different motion and a different shape, not a second particle system. See the header note.
+uniform float uSnow;
+uniform float uFlake;      // a flake's half-size in world units, pixel-floored by the caller
 varying vec2  vQuad;
 varying float vAlpha;
 
@@ -90,6 +101,13 @@ void main() {
   float fall = fract(aSeed.z + uTime * speed / uHeight);
   float y = uTop - fall * uHeight;
 
+  // A FLAKE DRIFTS, IT DOES NOT FALL. Two out-of-phase sines on the horizontal axes, decorrelated per
+  // flake by its own seed, are the whole of the motion — no simulation, no state, no CPU work: the
+  // same twenty floats a frame that rain already costs.
+  float ph = aSeed.z * 6.2831853;
+  vec2 sway = vec2(sin(uTime * 0.55 + ph), cos(uTime * 0.41 + ph * 1.7)) * (9.0 + aSeed.w * 13.0);
+  xz += sway * uSnow;
+
   // fade in under the cloud base and out where it lands, so nothing pops into or out of existence
   float ends = smoothstep(uTop, uTop - uHeight * 0.18, y) * smoothstep(uGround - 4.0, uGround + 46.0, y);
 
@@ -100,7 +118,8 @@ void main() {
   vec2 dirUp = fl > 1e-4 ? up.xy / fl : vec2(0.0, 1.0);
   vec2 dirRight = vec2(dirUp.y, -dirUp.x);
   // Looking straight down the rain, streaks collapse to specks. Let them go rather than draw confetti.
-  float axis = smoothstep(0.06, 0.34, fl);
+  // A FLAKE IS EXEMPT: it is round, so there is no angle at which it stops reading.
+  float axis = mix(smoothstep(0.06, 0.34, fl), 1.0, uSnow);
 
   // Per-streak brightness, decorrelated from speed so the field has depth rather than a visible ordering.
   float shade = 0.62 + fract(aSeed.z * 7.31) * 0.62;
@@ -109,7 +128,11 @@ void main() {
   float live = step(0.002, vAlpha);
 
   vec4 mv = viewMatrix * vec4(xz.x, y, xz.y, 1.0);
-  mv.xy += (dirRight * (position.x * uWidth) + dirUp * (position.y * uLength * (0.75 + aSeed.w * 0.5))) * live;
+  // A STREAK IS LONG AND THIN; A FLAKE IS SQUARE. Both carry the same per-particle size variation, so
+  // a snowfield has near and far flakes in it rather than one uniform sheet.
+  float halfW = mix(uWidth, uFlake, uSnow);
+  float halfL = mix(uLength, uFlake, uSnow) * (0.75 + aSeed.w * 0.5);
+  mv.xy += (dirRight * (position.x * halfW) + dirUp * (position.y * halfL)) * live;
   vQuad = position.xy;
   gl_Position = projectionMatrix * mv;
 }
@@ -117,17 +140,21 @@ void main() {
 
 const FRAG = /* glsl */ `
 uniform vec3 uColor;
+uniform float uSnow;
 varying vec2 vQuad;
 varying float vAlpha;
 
 void main() {
   if (vAlpha <= 0.0) discard;
-  // soft along the streak and soft across it — a stylized taper, no texture
-  float a = vAlpha;
-  a *= smoothstep(-0.5, -0.2, vQuad.y);
-  a *= 1.0 - smoothstep(0.24, 0.5, vQuad.y);
-  a *= 1.0 - smoothstep(0.32, 0.5, abs(vQuad.x));
-  gl_FragColor = vec4(uColor, a);
+  // RAIN: soft along the streak and soft across it — a stylized taper, no texture.
+  float streak = smoothstep(-0.5, -0.2, vQuad.y)
+               * (1.0 - smoothstep(0.24, 0.5, vQuad.y))
+               * (1.0 - smoothstep(0.32, 0.5, abs(vQuad.x)));
+  // SNOW: a soft round flake with a brighter core. Procedural for the same reason the streak is —
+  // a texture fetch per fragment over a full-screen snowfield is the one cost this field cannot pay.
+  float d = length(vQuad);
+  float flake = (1.0 - smoothstep(0.08, 0.5, d)) * (0.72 + 0.28 * (1.0 - smoothstep(0.0, 0.16, d)));
+  gl_FragColor = vec4(uColor, vAlpha * mix(streak, flake, uSnow));
   #include <colorspace_fragment>
 }
 `;
@@ -186,6 +213,8 @@ export class Rain {
         uLength: { value: BASE_LENGTH },
         uWidth: { value: BASE_WIDTH },
         uOpacity: { value: 0 },
+        uSnow: { value: 0 },
+        uFlake: { value: BASE_FLAKE },
         // A MEDIUM cool slate, not white. The office is a cream miniature under a bright key, and a pale
         // streak at a believable opacity simply disappears against it; a mid-tone reads as rain over the
         // building AND still reads as a bright streak against night asphalt, which one colour has to do
@@ -204,6 +233,24 @@ export class Rain {
     this.mesh.renderOrder = 950; // after the scene's own transparents (light spills, glass)
     this.mesh.visible = false;
     quad.dispose();
+  }
+
+  /** SWITCH THE FIELD BETWEEN RAIN AND SNOW.
+   *
+   *  A season asks for this (see season/SeasonLayer.ts). It is TWO UNIFORM WRITES: the shape/motion
+   *  branch and the colour. Nothing is rebuilt, nothing is re-allocated, the seed buffer is untouched
+   *  and the four-strip placement — the thing that makes it impossible for a particle to exist over
+   *  the building at all — is exactly the same field. That is the entire reason snow is this rather
+   *  than a second system: "no snow indoors" is a property the office already has. */
+  set snow(on: boolean) {
+    this.mat.uniforms.uSnow.value = on ? 1 : 0;
+    // Rain is a MEDIUM cool slate so one blend mode can read over both cream architecture and night
+    // asphalt (see uColor below). Snow has the opposite job — it must read as WHITE against a sky and
+    // against a lit building — and it is helped by never being drawn over the building at all.
+    (this.mat.uniforms.uColor.value as THREE.Color).setHex(on ? 0xf4fbff : 0x93afc9);
+  }
+  get snow(): boolean {
+    return this.mat.uniforms.uSnow.value === 1;
   }
 
   /** Switch weather. Uniforms and one integer — no buffer is rebuilt and no world is reloaded. */
@@ -270,6 +317,7 @@ export class Rain {
     (u.uCdf.value as THREE.Vector4).set(aA * inv, (aA + aB) * inv, (aA + aB + aC) * inv, 1);
 
     u.uWidth.value = Math.max(BASE_WIDTH, worldPerPixel * MIN_WIDTH_PX);
+    u.uFlake.value = Math.max(BASE_FLAKE, worldPerPixel * MIN_FLAKE_PX);
     // A taller column for a wider field, so the rain reads as depth rather than as a low ceiling of drops.
     const ht = Math.max(340, Math.min(760, h * 0.62));
     u.uHeight.value = ht;

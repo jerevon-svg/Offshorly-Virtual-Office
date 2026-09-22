@@ -62,8 +62,14 @@ KNOWN_EXPERIENCES: tuple[str, ...] = PERMANENT_EXPERIENCES + SEASONAL_EXPERIENCE
 #: attach/dispose. Being here does NOT publish it: it means a Creator may now preview it privately and
 #: may choose to publish it. Nothing is published by this change.
 #:
-#: CHRISTMAS IS DELIBERATELY STILL ABSENT. Its decoration layer does not exist.
-IMPLEMENTED_EXPERIENCES: frozenset[str] = frozenset({*PERMANENT_EXPERIENCES, EXPERIENCE_HALLOWEEN})
+#: CHRISTMAS JOINED NEXT, on exactly the same terms, once its own decoration layer shipped in the
+#: frontend (frontend/src/dev/vo3d/season/christmas/) — the grade, the builders, the placement tables,
+#: the snowfall request and the layer's attach/dispose, plus its UI skin and its gallery capture.
+#: Being here does NOT publish it either: it means a Creator may now preview it privately and may
+#: choose to publish it. Nothing is published by this change, and the company default is untouched.
+IMPLEMENTED_EXPERIENCES: frozenset[str] = frozenset(
+    {*PERMANENT_EXPERIENCES, EXPERIENCE_HALLOWEEN, EXPERIENCE_CHRISTMAS}
+)
 
 #: The company-wide default, as a key in `company_settings`. One key, one row, one meaning.
 SETTING_DEFAULT_EXPERIENCE = "office_experience.default"

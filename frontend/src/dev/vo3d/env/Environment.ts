@@ -114,6 +114,14 @@ export class Environment {
    *  thunderstorm stack rather than fight — and every manual time and weather control keeps working,
    *  because the overlay modifies whatever the employee chose instead of replacing it. */
   private _season: Record<EnvPhase, EnvOverlay> | null = null;
+  /** A SEASON'S OWN PRECIPITATION, and the whole of how snow reaches the screen.
+   *
+   *  Null is the ordinary office: the weather state owns the field. Non-null and the field is put into
+   *  SNOW MODE and driven by these four numbers instead — the same four the weather grade speaks in,
+   *  so the transition, the particle budget, the office-presentation gate and env/Rain's outdoor-only
+   *  placement all apply to it with no change. The weather's LIGHTING is untouched: a season replaces
+   *  what falls, not what the sky is doing. */
+  private _snowfall: RainParams | null = null;
   /** OFFICE draws no campus, but rain is weather, not scenery — see `rainInOffice`. */
   private _rainInOffice = true;
 
@@ -321,6 +329,18 @@ export class Environment {
     return this._season;
   }
 
+  /** Install or clear a season's snowfall. Re-applies immediately and travels through the ordinary
+   *  transition, so putting the snow up is the weather arriving rather than a cut. */
+  set snowfall(spec: RainParams | null) {
+    this._snowfall = spec ? { ...spec } : null;
+    this.rain.snow = spec !== null;
+    if (this.current) this.apply(this.current, true);
+  }
+
+  get snowfall(): RainParams | null {
+    return this._snowfall;
+  }
+
   apply(phase: EnvPhase, force = false): boolean {
     if (phase === this.current && !force) return false;
     const first = this.current === null;
@@ -331,10 +351,15 @@ export class Environment {
     const g = weatherGrade(this._weather, phase);
     const preset = this._season ? overlay(g.preset, this._season[phase]) : g.preset;
     blendPresetInto(this.target, preset, preset, 1);
-    this.targetRain.perMillion = g.rain.perMillion;
-    this.targetRain.opacity = g.rain.opacity;
-    this.targetRain.speed = g.rain.speed;
-    this.targetRain.length = g.rain.length;
+    // WHAT IS FALLING. A season's snowfall REPLACES the weather's own precipitation rather than adding
+    // to it: one field draws one thing, and rain falling through a white Christmas would be incoherent
+    // as well as twice the fill rate. Everything else the weather decides — the grade, the wetness, the
+    // wind, the storm — is untouched below, so a stormy Christmas is still a storm.
+    const precipitation = this._snowfall ?? g.rain;
+    this.targetRain.perMillion = precipitation.perMillion;
+    this.targetRain.opacity = precipitation.opacity;
+    this.targetRain.speed = precipitation.speed;
+    this.targetRain.length = precipitation.length;
     this.targetWetness = g.wetness;
     this.targetWind = g.wind;
     // A SEALED INTERIOR HAS NO STORM. Not a dimmer one — none: the scheduler is stopped outright, so
@@ -342,9 +367,9 @@ export class Environment {
     this.lightning.setParams(this._presentation === "interior" ? null : g.lightning, this._weather);
     // STREAK SPEED AND LENGTH ARE NOT FADED. Only how MUCH rain there is fades; how fast a drop falls is
     // a property of the drop, and ramping it up from zero reads as rain in treacle for the first second.
-    if (g.rain.perMillion > 0) {
-      this.shownRain.speed = g.rain.speed;
-      this.shownRain.length = g.rain.length;
+    if (precipitation.perMillion > 0) {
+      this.shownRain.speed = precipitation.speed;
+      this.shownRain.length = precipitation.length;
     }
     if (first || !this._transitions) this.settle();
     else {

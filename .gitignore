@@ -49,3 +49,9 @@ lerna-debug.log*
 # Kept on disk and referenced by docs/HALLOWEEN_POLISH_BACKLOG.md, but not in the repository:
 # the only seasonal image the product ships is src/assets/experience/office-halloween.webp.
 frontend/.halloween-shots/
+
+# Local White Christmas verification screenshots — the same arrangement, and the same reasons, as the
+# Halloween set above (~60MB of working evidence from the mock rig). Kept on disk and referenced by
+# docs/CHRISTMAS_POLISH_BACKLOG.md; the only Christmas image the product ships is
+# src/assets/experience/office-christmas.webp.
+frontend/.christmas-shots/

@@ -865,11 +865,19 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     scene: R.scene,
     rooms: [...world.rooms.values()].map((r) => ({ id: r.id, rect: r.rect, floorRect: r.floorRect })),
     doors: plan.openings,
+    // The two exterior rects, for the seasons that decorate outside the building. Both come straight
+    // from the floor plan, so nothing here invents a coordinate.
+    frame: plan.frame,
+    sidewalk: plan.sidewalk,
     setEnvOverlay: (grade, autoPhase) => {
       env.season = grade;
       seasonAutoPhase = autoPhase;
       applyEnvPhase(true);
     },
+    // A SEASON MAY CHANGE WHAT IS FALLING, AND NOTHING ELSE ABOUT THE WEATHER. env/Environment swaps
+    // the existing precipitation field into snow mode; the employee's own manual weather and time
+    // choices, the storm, the wetness and the wind are all still whatever they chose.
+    setSnowfall: (spec) => { env.snowfall = spec; },
     invalidateShadows: () => R.invalidateShadows(),
   });
 

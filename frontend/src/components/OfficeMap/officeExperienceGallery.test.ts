@@ -13,13 +13,29 @@ function catalog(overrides: Partial<ExperienceCatalog> = {}): ExperienceCatalog 
 }
 
 describe("which seasons this build can picture", () => {
-  it("has Halloween, whose decoration layer shipped in Phase 9B, and not Christmas", () => {
-    // A card is a promise that the place on it exists. Halloween has a layer AND a real capture;
-    // Christmas has neither, so it must not be picturable — the second lock behind the server's own
-    // IMPLEMENTED_EXPERIENCES gate.
-    expect(Object.keys(SEASONAL_PRESENTATION)).toEqual(["halloween"]);
+  it("has both shipped seasons, each with a real capture", () => {
+    // A card is a promise that the place on it exists, so an entry here means BOTH halves shipped:
+    // the decoration layer under dev/vo3d/season/, and a photograph of the office it produces.
+    // Halloween arrived that way in Phase 9B and White Christmas the same way after it.
+    expect(Object.keys(SEASONAL_PRESENTATION).sort()).toEqual(["christmas", "halloween"]);
     expect(SEASONAL_PRESENTATION.halloween?.art).toBeTruthy();
-    expect(SEASONAL_PRESENTATION.christmas).toBeUndefined();
+    expect(SEASONAL_PRESENTATION.christmas?.art).toBeTruthy();
+  });
+
+  it("pictures nothing for a season this build does not know how to draw", () => {
+    // THE SECOND LOCK, behind the server's own IMPLEMENTED_EXPERIENCES gate, and it has to keep being
+    // tested even when every known season happens to be picturable — because the NEXT season starts
+    // out unpicturable and this is what stops a card promising it early.
+    const saved = SEASONAL_PRESENTATION.christmas;
+    delete SEASONAL_PRESENTATION.christmas;
+    try {
+      const entries = galleryFor(
+        catalog({ available: ["v2", "classic"], previewable: ["christmas"], creator: true }),
+      );
+      expect(entries.map((entry) => entry.value)).toEqual(["v2", "classic"]);
+    } finally {
+      SEASONAL_PRESENTATION.christmas = saved;
+    }
   });
 
   it("shows the two permanent offices, each with a real capture", () => {
@@ -32,11 +48,15 @@ describe("which seasons this build can picture", () => {
     }
   });
 
-  it("shows a listed Halloween, and still nothing for a Christmas this build cannot picture", () => {
+  it("shows a published Halloween and a Creator's unpublished Christmas, labelled apart", () => {
     const entries = galleryFor(
       catalog({ available: ["v2", "classic", "halloween"], previewable: ["christmas"], creator: true }),
     );
-    expect(entries.map((entry) => entry.value)).toEqual(["v2", "classic", "halloween"]);
+    expect(entries.map((entry) => entry.value)).toEqual(["v2", "classic", "halloween", "christmas"]);
+    // The private preview is SELECTABLE — that is the point of it — but it is marked, so a Creator is
+    // never in any doubt about whether their colleagues can see what they are looking at.
+    expect(entries.find((e) => e.value === "halloween")?.unpublished).toBeUndefined();
+    expect(entries.find((e) => e.value === "christmas")?.unpublished).toBe(true);
   });
 });
 

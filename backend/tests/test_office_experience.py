@@ -86,19 +86,20 @@ async def test_every_seasonal_experience_is_listed_with_its_real_state():
     """The Studio has to be able to say WHY a season cannot be published, so a record exists for each
     one whether or not it has a row — and `implemented` tells the two apart.
 
-    Phase 9B shipped Halloween's decoration layer, so it is implemented and previewable but NOT
-    published. Christmas has no layer, so it is neither."""
+    Phase 9B shipped Halloween's decoration layer and the White Christmas pass shipped Christmas's,
+    so BOTH are implemented and previewable — and NEITHER is published. Implemented is not published,
+    and that separation is the whole point of having two fields."""
     await _make_creator()
     async with _client() as client:
         body = (await client.get("/office/experience", headers=_as(CREATOR))).json()
     names = {record["experience"]: record for record in body["publications"]}
     assert set(names) == {"halloween", "christmas"}
     assert names["halloween"]["implemented"] is True
-    assert names["christmas"]["implemented"] is False
+    assert names["christmas"]["implemented"] is True
     assert all(record["published"] is False for record in names.values())
     # IMPLEMENTED IS NOT PUBLISHED. Halloween is the Creator's private preview and nobody else's.
     assert "halloween" not in body["available"]
-    assert body["previewable"] == ["halloween"]
+    assert body["previewable"] == ["halloween", "christmas"]
 
 
 # --- the Creator capability -----------------------------------------------------------------------
@@ -211,11 +212,18 @@ async def test_permanent_experiences_cannot_be_unpublished():
     assert body["available"] == ["v2", "classic"]
 
 
-async def test_unimplemented_experience_cannot_be_published():
-    """THE GATE. Christmas has no decoration layer in this build, so the server refuses to publish it
-    — the client is never the thing deciding that. (Halloween's layer shipped in Phase 9B, which is
-    why the example moved: the gate is about the CODE, not about the calendar.)"""
+async def test_unimplemented_experience_cannot_be_published(monkeypatch):
+    """THE GATE: a season with no decoration layer in this build cannot be published, previewed or
+    chosen, and the SERVER is what refuses it — the client is never the thing deciding that.
+
+    THE GATE IS ABOUT THE CODE, NOT ABOUT THE CALENDAR, so this test no longer names whichever season
+    happens to be unshipped today. Both seasons now have layers, so the unimplemented case is created
+    here by taking one back out of IMPLEMENTED_EXPERIENCES — which is exactly the state this build was
+    in before each of them shipped, and the state the next season will start in."""
     await _make_creator()
+    monkeypatch.setattr(
+        experience_repo, "IMPLEMENTED_EXPERIENCES", frozenset({"v2", "classic", "halloween"})
+    )
     async with _client() as client:
         response = await client.put(
             "/office/experience/christmas/publication", json={"published": True}, headers=_as(CREATOR)
@@ -228,6 +236,21 @@ async def test_unimplemented_experience_cannot_be_published():
         catalog = await experience_repo.catalog_for(session, creator=True)
     assert "christmas" not in catalog.available
     assert "christmas" not in catalog.previewable
+
+
+async def test_a_creator_may_privately_preview_christmas_without_it_being_published():
+    """WHITE CHRISTMAS IS CREATOR-ONLY UNTIL SOMEBODY PUBLISHES IT. It is implemented, so a Creator
+    gets it in `previewable`; it is unpublished, so it is in nobody's `available` — not the Creator's
+    either — and it is not the default."""
+    await _make_creator()
+    async with _client() as client:
+        creator_body = (await client.get("/office/experience", headers=_as(CREATOR))).json()
+        other_body = (await client.get("/office/experience", headers=_as(STAFF))).json()
+    assert "christmas" in creator_body["previewable"]
+    assert "christmas" not in creator_body["available"]
+    assert other_body["previewable"] == []
+    assert "christmas" not in other_body["available"]
+    assert creator_body["default"] == "v2"
 
 
 async def test_an_unpublished_experience_cannot_become_the_default():
@@ -321,7 +344,9 @@ async def test_creator_publishes_and_everyone_can_then_open_it(implemented_hallo
         assert published.status_code == 200
         assert "halloween" in published.json()["available"]
         # It leaves the Creator's PREVIEW set the moment it is public — it is not private any more.
-        assert published.json()["previewable"] == []
+        # The OTHER season stays in it, which is what makes this an assertion about publication rather
+        # than about the set being emptied.
+        assert published.json()["previewable"] == ["christmas"]
         staff_view = (await client.get("/office/experience", headers=_as(STAFF))).json()
     assert "halloween" in staff_view["available"]
     assert staff_view["previewable"] == []
@@ -335,7 +360,7 @@ async def test_an_implemented_unpublished_season_is_previewable_only_by_the_crea
     async with _client() as client:
         creator_view = (await client.get("/office/experience", headers=_as(CREATOR))).json()
         staff_view = (await client.get("/office/experience", headers=_as(STAFF))).json()
-    assert creator_view["previewable"] == ["halloween"]
+    assert creator_view["previewable"] == ["halloween", "christmas"]
     assert "halloween" not in creator_view["available"]
     assert staff_view["previewable"] == []
     assert "halloween" not in staff_view["available"]

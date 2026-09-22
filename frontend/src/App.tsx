@@ -13,6 +13,7 @@ import { allowedExperiences } from "./services/office/experienceCatalog";
 import { loadExperienceCatalog } from "./services/office/experienceCatalogStore";
 import { applyExperienceTheme, clearExperienceTheme } from "./services/settings/experienceTheme";
 import "./styles/halloweenTheme.css";
+import "./styles/christmasTheme.css";
 
 // DEV-ONLY chat test harness entry point (see src/pages/ChatTestPage.tsx).
 // `import.meta.env.DEV` is Vite's build-time flag — false in every built/
@@ -97,8 +98,9 @@ function OfficeApp() {
   }, []);
 
   // DRESS THE INTERFACE FOR THE RESOLVED EXPERIENCE. One attribute on <html>; the skin is a
-  // stylesheet scoped to it (styles/halloweenTheme.css), so the ordinary 3D office and Classic are
-  // never styled and switching away cannot leak. Runs after the office is resolved, and undresses on
+  // stylesheet scoped to it — one per season (styles/halloweenTheme.css, styles/christmasTheme.css) —
+  // so the ordinary 3D office and Classic are never styled and switching away cannot leak. Runs
+  // after the office is resolved, and undresses on
   // unmount so a remount never inherits the previous experience's chrome.
   useEffect(() => {
     applyExperienceTheme(experienceRef.current);
