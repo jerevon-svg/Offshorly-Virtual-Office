@@ -120,23 +120,36 @@ describe("Vo3dHost", () => {
     expect(document.querySelectorAll("canvas")).toHaveLength(0);
   });
 
+  // PHASE 8 FOLLOW-UP — A FAILED WORLD SHOWS THE FAILURE, AND ONE WAY OUT OF IT.
+  //
+  // The boot cover is NOT rendered here: a branded screen still reporting progress over a world that has
+  // died would be a lie, and it would sit on top of the only control that gets the employee working.
   it("shows the error state, not a crash, when the world throws while starting", async () => {
     behaviour = "throws";
     render(<Vo3dHost />);
 
-    expect(await screen.findByText(/failed to start/i)).toBeInTheDocument();
+    expect(await screen.findByText(/couldn't start/i)).toBeInTheDocument();
     expect(screen.getByText(/boom in createVo3dWorld/)).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: /back to v1/i })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /open classic office/i })).toHaveLength(1);
+    // The cover is gone, so nothing is covering the message.
+    expect(screen.queryByTestId("loading-cover")).toBeNull();
     expect(mounts).toHaveLength(0);
   });
 
-  it("shows a loading state before the world is ready and a way back once it is", async () => {
+  // PHASE 8 FOLLOW-UP — THE OFFICE'S OWN BRANDED COVER, over the whole boot.
+  //
+  // It is mounted before `import("./world")` is even issued, so the lazy fetch and the world build are
+  // both underneath it, and it lifts on startup/startupReadiness signals rather than on a timer. What
+  // this case pins is that it is THERE and that it is the real component — the beige placeholder and its
+  // permanent "Back to V1" button are both gone, because Classic is chosen in Settings, not escaped to.
+  it("boots under the office's branded loading cover, with no way to 'go back' parked over the world", async () => {
     render(<Vo3dHost />);
-    expect(screen.getByRole("status")).toHaveTextContent(/loading/i);
+    expect(screen.getByTestId("loading-cover")).toBeInTheDocument();
+    expect(screen.queryByText(/loading vo 3d v2/i)).toBeNull();
 
     await waitFor(() => expect(mounts).toHaveLength(1), { timeout: WORLD_IMPORT_TIMEOUT });
-    await waitFor(() => expect(screen.queryByRole("status")).toBeNull(), { timeout: WORLD_IMPORT_TIMEOUT });
-    expect(screen.getByRole("button", { name: /back to v1/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /back to v1/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /classic/i })).toBeNull();
   }, TEST_TIMEOUT);
 
   it("tolerates a second cleanup pass (dispose is called at most once per world)", async () => {

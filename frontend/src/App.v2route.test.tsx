@@ -1,8 +1,9 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// The `?world=v2` switch is read ONCE at module scope (App.tsx), exactly like the chat-test route, so
-// each case sets the URL and then imports a fresh copy of the module.
+// PHASE 8 — the office is resolved ONCE PER MOUNT, after the auth gate opens (App.tsx): the `?world=`
+// override first, then this employee's saved preference, then the default. Each case sets the URL and the
+// stored preference and then imports a fresh copy of the module, so nothing carries between cases.
 async function renderAppAt(search: string) {
   window.history.replaceState({}, "", `/${search}`);
   vi.resetModules();
@@ -42,27 +43,91 @@ beforeEach(() => {
 
 afterEach(() => {
   window.history.replaceState({}, "", "/");
+  window.localStorage.clear();
 });
 
-describe("?world=v2 route", () => {
-  it("renders V1's office by default", async () => {
-    await renderAppAt("");
-    expect(screen.getByTestId("v1-office")).toBeInTheDocument();
-    expect(screen.queryByTestId("vo3d-host")).toBeNull();
-  });
+/** Write a saved preference for the employee the auth mock signs in — no identity is set in these cases,
+ *  so the store's own key for "signed in but unidentified" is the one being written. */
+const PREF_KEY = "vo:officeExperience:v1:anon";
+function savePreference(value: "v2" | "classic"): void {
+  window.localStorage.setItem(PREF_KEY, JSON.stringify(value));
+}
 
-  it("renders the V2 host INSTEAD OF V1's office at ?world=v2", async () => {
-    await renderAppAt("?world=v2");
+describe("which office a URL opens", () => {
+  it("renders the 3D office by default, with no parameter at all", async () => {
+    await renderAppAt("");
     expect(await screen.findByTestId("vo3d-host")).toBeInTheDocument();
     expect(screen.queryByTestId("v1-office")).toBeNull();
     // LoadingCover waits on startup signals only OfficeMap publishes, so it must not be mounted either.
     expect(screen.queryByTestId("v1-loading-cover")).toBeNull();
   });
 
-  it("ignores any other value of ?world", async () => {
+  it("renders Classic on a bare URL when that is the saved preference", async () => {
+    savePreference("classic");
+    await renderAppAt("");
+    expect(screen.getByTestId("v1-office")).toBeInTheDocument();
+    expect(screen.queryByTestId("vo3d-host")).toBeNull();
+  });
+
+  it("survives a reload: the saved Classic preference is read again on a fresh mount", async () => {
+    savePreference("classic");
+    const first = await renderAppAt("");
+    expect(screen.getByTestId("v1-office")).toBeInTheDocument();
+    first.unmount();
+    await renderAppAt("");
+    expect(screen.getByTestId("v1-office")).toBeInTheDocument();
+  });
+
+  it("falls back to the 3D office when the saved value is not one the UI could have written", async () => {
+    window.localStorage.setItem(PREF_KEY, JSON.stringify("nonsense"));
+    await renderAppAt("");
+    expect(await screen.findByTestId("vo3d-host")).toBeInTheDocument();
+  });
+
+  it("falls back to the 3D office when the stored payload is not even JSON", async () => {
+    window.localStorage.setItem(PREF_KEY, "{oops");
+    await renderAppAt("");
+    expect(await screen.findByTestId("vo3d-host")).toBeInTheDocument();
+  });
+
+  // THE OVERRIDE BEATS THE PREFERENCE, in both directions. That is what makes `?world=` a support and QA
+  // lever which needs no deploy and cannot be locked out by a bad saved value — including the case that
+  // matters most, an employee whose saved 3D office will not start.
+  it("?world=v1 opens Classic even when the preference says 3D", async () => {
+    savePreference("v2");
     await renderAppAt("?world=v1");
     expect(screen.getByTestId("v1-office")).toBeInTheDocument();
     expect(screen.queryByTestId("vo3d-host")).toBeNull();
+  });
+
+  it("?world=v2 opens the 3D office even when the preference says Classic", async () => {
+    savePreference("classic");
+    await renderAppAt("?world=v2");
+    expect(await screen.findByTestId("vo3d-host")).toBeInTheDocument();
+    expect(screen.queryByTestId("v1-office")).toBeNull();
+  });
+
+  it("treats any other value of ?world as no override at all and uses the preference", async () => {
+    savePreference("classic");
+    await renderAppAt("?world=banana");
+    expect(screen.getByTestId("v1-office")).toBeInTheDocument();
+  });
+});
+
+// WHERE A SETTINGS SWITCH NAVIGATES. The override is dropped in BOTH directions — saving "3D Office"
+// while `?world=v1` is still in the URL would save one office and open the other — and nothing else about
+// the URL is touched, so an existing deep link keeps whatever it was carrying.
+describe("the URL a Settings switch navigates to", () => {
+  it("drops an existing world override and keeps every other parameter", async () => {
+    const { switchUrl } = await import("./services/settings/officeExperience");
+    expect(switchUrl("https://x.test/virtual-office/?world=v1&room=dev&tab=2")).toBe(
+      "https://x.test/virtual-office/?room=dev&tab=2",
+    );
+    expect(switchUrl("https://x.test/virtual-office/?world=v2")).toBe("https://x.test/virtual-office/");
+    // Nothing to drop is not a special case, and a fragment is not a parameter.
+    expect(switchUrl("https://x.test/virtual-office/?deep=link#frag")).toBe(
+      "https://x.test/virtual-office/?deep=link#frag",
+    );
   });
 });
 

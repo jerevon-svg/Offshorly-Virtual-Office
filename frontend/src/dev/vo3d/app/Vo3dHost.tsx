@@ -66,6 +66,9 @@ import { EMPTY_COWORKER_SET } from "./coworkers";
 import { Vo3dOverlay } from "./Vo3dOverlay";
 import { resolveVo3dHomeDesk } from "../adapters/v1HomeDesk";
 import { resolveVo3dIdentity } from "../adapters/v1Identity";
+import { LoadingCover } from "../../../components/LoadingCover/LoadingCover";
+import { setStartupSignal } from "../../../startup/startupReadiness";
+import { openClassicOffice } from "../../../services/settings/officeExperience";
 import type { Vo3dIdentity } from "./identity";
 import type { Vo3dHomeDesk } from "./spawn";
 import type { Vo3dWorld } from "./world";
@@ -108,14 +111,6 @@ type Phase =
   | { kind: "ready"; identity: Vo3dIdentity | null; homeDesk: Vo3dHomeDesk | null }
   | { kind: "error"; message: string };
 
-/** Drop `?world=v2` and reload into the normal V1 office. A plain location assignment rather than a
- *  router navigation: V2 has scattered listeners and GPU state across window, document and document.body,
- *  and a full document teardown is the one teardown that cannot leave anything behind. */
-function backToV1(): void {
-  const url = new URL(window.location.href);
-  url.searchParams.delete("world");
-  window.location.href = url.toString();
-}
 
 export function Vo3dHost() {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -416,6 +411,39 @@ export function Vo3dHost() {
     if (!world?.subscribeDevTools) return;
     return world.subscribeDevTools(setDevVisible);
   }, [phase.kind]);
+  // THE BOOT COVER'S SIGNALS, PUBLISHED FROM V2'S OWN FACTS.
+  //
+  // startup/startupReadiness is the shared contract components/LoadingCover reads; V1's office publishes
+  // the same five and `auth` is already published by App.tsx for both offices. Each one below is a
+  // question V2 can genuinely answer, mapped onto V1's stage rather than invented:
+  //
+  //   transform    the world module has loaded AND the world is built — V2's "the office is there".
+  //   roster       V1's roster read has RESOLVED. Not "found people": an empty office and a failed
+  //                fetch are both answers, and waiting past either would hang the cover on a question
+  //                that is already settled.
+  //   attendance   V1 has given an answer, or there is nobody to ask about (the standalone rig).
+  //   selfPlaced   the body is where it is going to be — restored from V1's snapshot, or at its home
+  //                desk because the snapshot had nothing for this employee. `snapshotReady` is what
+  //                settles that either way, and it is the same flag the spawn decision itself waits on.
+  //
+  // NO FAKE PROGRESS AND NO TIMER ANYWHERE IN HERE. Every signal is an event that really happened, and
+  // the only bound is LoadingCover's own long safety cap, which exists so that a signal that can never
+  // arrive shows the office anyway instead of covering it forever.
+  const identityResolved = phase.kind === "ready" ? phase.identity : null;
+  const worldReady = phase.kind === "ready";
+  useEffect(() => {
+    setStartupSignal("transform", worldReady);
+  }, [worldReady]);
+  useEffect(() => {
+    setStartupSignal("roster", !roster.loading);
+  }, [roster.loading]);
+  useEffect(() => {
+    setStartupSignal("attendance", attendance.access !== "unknown" || identityResolved === null);
+  }, [attendance.access, identityResolved]);
+  useEffect(() => {
+    setStartupSignal("selfPlaced", worldReady && (snapshotReady || identityResolved === null));
+  }, [worldReady, snapshotReady, identityResolved]);
+
   /** The one style every diagnostic readout adds. Keeps them queryable while they are not on screen. */
   const diagnostic = devVisible ? undefined : ({ display: "none" } as const);
 
@@ -425,9 +453,24 @@ export function Vo3dHost() {
       data-testid="vo3d-host"
       style={{ position: "fixed", inset: 0, overflow: "hidden", background: "#e7ded4" }}
     >
-      {phase.kind !== "ready" && (
+      {/* THE OFFICE'S OWN BOOT COVER, not a second one. components/LoadingCover is the branded screen V1
+          has always booted under — the same artwork, the same staged progress, the same rotating tips —
+          and it is driven by the shared startup/startupReadiness signals this host publishes above. It
+          was omitted from V2 only because nothing here published those signals; now that something does,
+          V2 boots under the same screen rather than a beige placeholder.
+
+          IT COVERS THE WHOLE BOOT: this component is mounted before `import("./world")` has even been
+          issued, so the lazy fetch, the world build and V1's roster/attendance/position restore are all
+          underneath it. It lifts on the signals, never on a timer, and its own safety cap is what keeps
+          a signal that can never arrive from becoming an indefinite wait.
+
+          IT IS NOT RENDERED ON FAILURE. A cover still cheerfully reporting progress over a world that
+          has died would be a lie, and it would hide the one control that gets the employee out. */}
+      {phase.kind !== "error" && <LoadingCover />}
+
+      {phase.kind === "error" && (
         <div
-          role="status"
+          role="alert"
           style={{
             position: "absolute",
             inset: 0,
@@ -435,23 +478,34 @@ export function Vo3dHost() {
             flexDirection: "column",
             alignItems: "center",
             justifyContent: "center",
-            gap: 12,
+            gap: 14,
             color: "#5b5048",
             font: "14px/1.5 system-ui, sans-serif",
             textAlign: "center",
             padding: 24,
           }}
         >
-          {phase.kind === "loading" ? (
-            <span>Loading VO 3D V2…</span>
-          ) : (
-            <>
-              <span>VO 3D V2 failed to start.</span>
-              <span style={{ opacity: 0.7, maxWidth: 520 }}>{phase.message}</span>
-            </>
-          )}
-          <button type="button" onClick={backToV1} style={{ font: "inherit", padding: "6px 12px" }}>
-            Back to V1
+          <span style={{ fontSize: 17, fontWeight: 600 }}>The 3D office couldn't start.</span>
+          <span style={{ opacity: 0.75, maxWidth: 520 }}>{phase.message}</span>
+          {/* THE ONE WAY OUT OF AN OFFICE THAT DID NOT START, and the only place a "go to Classic" control
+              belongs. It does NOT write the preference — see openClassicOffice: one bad load is not a
+              decision to leave, and an employee who fixes whatever broke should find their 3D office
+              waiting for them, not silently swapped. Leaving for good is a Settings decision. */}
+          <button
+            type="button"
+            onClick={openClassicOffice}
+            style={{
+              font: "inherit",
+              fontWeight: 600,
+              padding: "9px 18px",
+              borderRadius: 10,
+              border: "1px solid rgba(0,0,0,0.14)",
+              background: "#fff",
+              color: "#33403a",
+              cursor: "pointer",
+            }}
+          >
+            Open Classic Office
           </button>
         </div>
       )}
@@ -654,32 +708,13 @@ export function Vo3dHost() {
           world is fully explorable.
         </div>
       )}
-      {phase.kind === "ready" && (
-        // TOP-CENTRE, above everything. V2's world claims three corners of the window with panels it
-        // parks on document.body — the bench readout top-left (devtools/Bench.ts, z-index 10), the
-        // editor panel bottom-left (editor/EditorPanel.ts, z-index 1002) and lil-gui down the whole
-        // right edge (z-index 1001) — and the one way out of the preview must not sit under any of them.
-        <button
-          type="button"
-          onClick={backToV1}
-          style={{
-            position: "absolute",
-            top: 12,
-            left: "50%",
-            transform: "translateX(-50%)",
-            zIndex: 1003,
-            font: "12px/1.4 system-ui, sans-serif",
-            padding: "6px 10px",
-            borderRadius: 8,
-            border: "none",
-            cursor: "pointer",
-            background: "rgba(30,24,20,0.72)",
-            color: "#f4ede4",
-          }}
-        >
-          Back to V1
-        </button>
-      )}
+      {/* THERE IS NO "BACK TO V1" BUTTON OVER THE OFFICE, AND THAT IS THE POINT. One lived here through
+          the preview, from when V2 was a thing you opened with a URL parameter and left again. Classic is
+          not the thing you escape back to — it is a permanent office an employee may simply prefer — so
+          choosing between them belongs in Settings -> General -> Office Experience with the rest of the
+          preferences, not parked over the world as though V2 were a detour. The only remaining
+          Classic control in this file is on the FAILURE screen above, where it is the sole way out of an
+          office that did not start. */}
     </div>
   );
 }

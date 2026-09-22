@@ -100,7 +100,22 @@ vi.mock("../../../services/call/callStore", () => ({
 }));
 
 const joinRequest = vi.fn((_id: string) => Promise.resolve({ id: "r1" }));
-vi.mock("../../../services/chat/requestsClient", () => ({ createJoinRequest: (id: string) => joinRequest(id) }));
+/** PHASE 8 — THE RECIPIENT SIDE. These three arrays are what the pending-request hooks return, so a test
+ *  can put a request in front of the V2 overlay the way the server would and then press the button.
+ *  Reset in beforeEach below; the resolve spies are what prove the answer went back through V1's own
+ *  client rather than through anything this world invented. */
+let pendingJoin: unknown[] = [];
+let pendingTalk: unknown[] = [];
+let pendingRoom: unknown[] = [];
+const resolveJoin = vi.fn((_id: string, _d: string) => Promise.resolve({ id: "r1", state: "accepted" }));
+const resolveTalk = vi.fn((_id: string, _d: string) => Promise.resolve({ id: "t1", state: "accepted" }));
+const resolveRoom = vi.fn((_id: string, _d: string) => Promise.resolve({ id: "m1", state: "accepted" }));
+
+vi.mock("../../../services/chat/requestsClient", () => ({
+  createJoinRequest: (id: string) => joinRequest(id),
+  usePendingRequests: () => pendingJoin,
+  resolveRequest: (id: string, d: string) => resolveJoin(id, d),
+}));
 
 const talkRequest = vi.fn((_email: string, _kind: string) => Promise.resolve({ id: "t1" }));
 vi.mock("../../../services/chat/talkRequestsClient", () => ({
@@ -108,7 +123,14 @@ vi.mock("../../../services/chat/talkRequestsClient", () => ({
   cancelTalkRequest: vi.fn(() => Promise.resolve()),
   onTalkRequestResolved: () => () => {},
   onTalkRequestCancelled: () => () => {},
+  usePendingTalkRequests: () => pendingTalk,
+  resolveTalkRequest: (id: string, d: string) => resolveTalk(id, d),
   TalkRequestCooldownError: class extends Error { cooldownUntil: string | null = null; },
+}));
+
+vi.mock("../../../services/chat/roomRequestsClient", () => ({
+  usePendingRoomRequests: () => pendingRoom,
+  resolveRoomEntryRequest: (id: string, d: string) => resolveRoom(id, d),
 }));
 
 // V1's OWN attendance answer, as the host resolves it and hands it down.
@@ -465,6 +487,9 @@ beforeEach(() => {
   globalChatEmits.length = 0;
   globalChatEmails = new Set();
   dndEmails = new Set();
+  pendingJoin = [];
+  pendingTalk = [];
+  pendingRoom = [];
   dndEmits.length = 0;
   sessions = [];
   attendance = "permitted";
@@ -2589,5 +2614,65 @@ describe("the viewer's own DND, on the wire", () => {
     await waitFor(() => expect(dndEmits).toEqual([true]));
     view.unmount();
     expect(dndEmits).toEqual([true]);
+  });
+});
+
+
+// PHASE 8 — THE RECIPIENT SIDE, WHICH V2 DID NOT HAVE.
+//
+// V2 could already ASK: createJoinRequest from the coworker menu, and TalkRequestToast's "ask to talk"
+// for a DND coworker. It mounted nothing that could ANSWER. Neither request type has a TTL and neither
+// raises a notification, so a request aimed at somebody sitting in V2 stranded outright — and stranded
+// the asker with it, in whichever world THEY were in.
+//
+// These cases assert the two things that matter and nothing else: the request is SHOWN, and answering it
+// goes back through V1'S OWN client. The components are V1's, so their internals are V1's tests' business.
+describe("inbound requests reach a recipient who is in V2", () => {
+  const JOIN_REQ = {
+    id: "r1", kind: "join", conversationId: "c1", requesterEmail: ALEX, state: "pending",
+    resolverEmail: null, resultConversationId: null, payload: null, resolvedAt: null,
+    createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z",
+  };
+  const TALK_REQ = {
+    id: "t1", targetEmail: SELF, requesterEmail: ALEX, kind: "chat", state: "pending",
+    resolverEmail: null, resolvedAt: null,
+    createdAt: "2026-01-01T00:00:01Z", updatedAt: "2026-01-01T00:00:01Z",
+  };
+  const ROOM_REQ = {
+    id: "m1", roomId: "dev-room", requesterEmail: ALEX, state: "pending",
+    resolverEmail: null, resolvedAt: null,
+    createdAt: "2026-01-01T00:00:02Z", updatedAt: "2026-01-01T00:00:02Z",
+  };
+
+  it("shows an Ask-to-Join and sends the accept through V1's requestsClient", async () => {
+    pendingJoin = [JOIN_REQ];
+    mount();
+    const accept = await screen.findByRole("button", { name: /allow/i });
+    fireEvent.click(accept);
+    await waitFor(() => expect(resolveJoin).toHaveBeenCalledWith("r1", "accept"));
+  });
+
+  it("shows a DND talk request and sends the decline through V1's talkRequestsClient", async () => {
+    pendingTalk = [TALK_REQ];
+    mount();
+    const decline = await screen.findByRole("button", { name: /decline/i });
+    fireEvent.click(decline);
+    await waitFor(() => expect(resolveTalk).toHaveBeenCalledWith("t1", "decline"));
+  });
+
+  it("shows a room-entry knock and sends the accept through V1's roomRequestsClient", async () => {
+    pendingRoom = [ROOM_REQ];
+    mount();
+    const accept = await screen.findByRole("button", { name: /allow/i });
+    fireEvent.click(accept);
+    await waitFor(() => expect(resolveRoom).toHaveBeenCalledWith("m1", "accept"));
+  });
+
+  // The gate is V1's, restated nowhere: both surfaces are mounted on `chatMode === "real"`, so the mock
+  // chat rig shows neither. Nothing pending means nothing rendered either way — this is the case that
+  // catches a queue that decided to render an empty shell over the world.
+  it("renders nothing at all when there is nothing pending", () => {
+    mount();
+    expect(screen.queryByRole("button", { name: /allow/i })).toBeNull();
   });
 });

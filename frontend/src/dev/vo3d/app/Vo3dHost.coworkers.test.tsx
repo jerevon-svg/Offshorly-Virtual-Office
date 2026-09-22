@@ -189,7 +189,9 @@ describe("Vo3dHost coworkers (Phase 4A)", () => {
     const readout = await screen.findByTestId("vo3d-coworkers");
     expect(readout.getAttribute("data-roster-error")).toBe("true");
     expect(readout.getAttribute("data-count")).toBe("0");
-    expect(screen.getByRole("button", { name: /back to v1/i })).toBeInTheDocument();
+    // A roster outage is not a failed world: the office is up, so there is no failure screen and no
+    // "open Classic" escape hatch — only the readout saying why it is empty.
+    expect(screen.queryByRole("button", { name: /classic/i })).toBeNull();
   }, TEST_TIMEOUT);
 
   it("adds and removes bodies as the roster changes, without rebuilding the world", async () => {

@@ -107,6 +107,9 @@ import {
 } from "../../../services/presence/globalChatActivityClient";
 import { useTalkPermissionGate } from "../../../components/OfficeMap/useTalkPermissionGate";
 import { TalkRequestToast } from "../../../components/OfficeMap/TalkRequestToast";
+import { DndRequestQueue } from "../../../components/OfficeMap/DndRequestQueue";
+import { useV1RoomPresence } from "../adapters/v1RoomPresence";
+import { JoinRequestPrompt } from "../../../components/OfficeMap/JoinRequestPrompt";
 import { CallInvitePrompt } from "../../../components/OfficeMap/CallInvitePrompt";
 import { SpatialCallControls } from "../../../components/OfficeMap/SpatialCallControls";
 import { CallOverlay } from "../../../components/OfficeMap/CallOverlay";
@@ -298,6 +301,11 @@ const CHECKOUT_PANEL_STATES: ReadonlySet<CheckoutState> = new Set<CheckoutState>
 export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = [], attendance, rosterLoading = false, roomNames }: Vo3dOverlayProps) {
   const officeAccess = attendance.access;
   const self = selfEmailKey();
+
+  // PHASE 8 FOLLOW-UP — V2'S BODY, IN V1'S ROOM REGISTRY. This is what makes a V2 employee's room
+  // lockable and a knock answerable; the queue mounted below is where they answer it. V1's own client,
+  // V1's own flat id namespace, one event per real transition — see adapters/v1RoomPresence.
+  useV1RoomPresence(worldRef, ready, self, attendance.access);
   const [selection, setSelection] = useState<Vo3dCoworkerSelection | null>(null);
   const [anchor, setAnchor] = useState<Vo3dScreenAnchor | null>(null);
   // ---- PHASE 7E: THE RECEPTION CHECK-IN KIOSK ------------------------------------------------------
@@ -1854,6 +1862,39 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
         </div>
       )}
       <TalkRequestToast {...talkGate.toastProps} />
+      {/* PHASE 8 — THE RECIPIENT SIDE OF EVERY REQUEST V2 COULD ALREADY SEND.
+          Until now V2 mounted only the ASKING half: `createJoinRequest` above, and TalkRequestToast's
+          "ask to talk" for a DND coworker. Nothing here ever ANSWERED one. Because neither request type
+          has a TTL and neither raises a notification (backend/app/services/notifications.py writes one
+          kind, and it is not these), a request aimed at somebody sitting in V2 simply stranded — and it
+          stranded for the asker too, in whichever world they were in.
+          These are V1's OWN components, mounted on V1's OWN condition, with V1's OWN props. They each own
+          their polling (usePendingRequests / usePendingRoomRequests / usePendingTalkRequests) against the
+          same services V1 uses, so this adds no socket and no second poller — it adds the one subscriber
+          per request type that this world was missing. DndRequestQueue covers BOTH room-entry knocks and
+          DND talk requests; it merges the two clients itself and keeps their lifecycles separate. */}
+      {chatMode === "real" && (
+        <JoinRequestPrompt
+          resolveDisplayName={resolveDisplayName}
+          onResolved={(req) => {
+            // V1's handler verbatim (OfficeMap.tsx): an approver whose resulting conversation id differs
+            // from the one they have open moves their spatial-session bookkeeping onto the new id. In
+            // today's backend accept_join_request keeps the targeted conversation_id, so this practically
+            // never fires; it is kept because V2 must not be the copy that drifts.
+            if (
+              req.state === "accepted" &&
+              req.resultConversationId &&
+              openConversationId &&
+              req.resultConversationId !== openConversationId
+            ) {
+              emitSpatialSessionLeave();
+              setOpenConversationId(req.resultConversationId);
+              emitSpatialSessionStart(req.resultConversationId);
+            }
+          }}
+        />
+      )}
+      {chatMode === "real" && <DndRequestQueue resolveDisplayName={resolveDisplayName} />}
       <CallInvitePrompt
         resolveDisplayName={resolveDisplayName}
         // PHASE 7D. Only the V2 world can join a meeting, so only it offers the invitation. The join

@@ -105,14 +105,34 @@ describe("the category navigation", () => {
 
   it("describes each category by what this caller actually put in it", () => {
     // A hint that named a row the caller does not supply is the same dead promise a dead control is.
+    // PHASE 8 — General now also holds Office Experience in EVERY caller, so every one of its hints
+    // names that too; what still varies is the part the caller supplied.
     const { unmount } = render(<HudSettings onClose={() => {}} lighting={lighting} />);
-    expect(screen.getByRole("tab", { name: /^General/ })).toHaveTextContent("Office lighting");
+    expect(screen.getByRole("tab", { name: /^General/ })).toHaveTextContent("Which office, and its lighting");
     expect(screen.getByRole("tab", { name: /^Audio/ })).toHaveTextContent("Office background music");
     unmount();
 
     render(<HudSettings onClose={() => {}} worldExperience />);
-    expect(screen.getByRole("tab", { name: /^General/ })).toHaveTextContent("How the office opens");
+    expect(screen.getByRole("tab", { name: /^General/ })).toHaveTextContent("Which office, and how it opens");
     expect(screen.getByRole("tab", { name: /^Audio/ })).toHaveTextContent("Music and office ambience");
+  });
+
+  // PHASE 8 — THE ONE CATEGORY THAT IS NOT THE CALLER'S TO WITHHOLD. Office Experience is how an employee
+  // leaves the office they are in, so it cannot be conditional on what that office happened to pass:
+  // a Classic session that could not reach it would be in a one-way door.
+  it("offers General, with Office Experience in it, even to a caller that supplies nothing", () => {
+    render(<HudSettings onClose={() => {}} />);
+    expect(screen.getByRole("tab", { name: /^General/ })).toBeInTheDocument();
+    expect(screen.getByTestId("office-experience-settings")).toBeInTheDocument();
+  });
+
+  it("puts Office Experience in General for BOTH offices", () => {
+    const { unmount } = render(<HudSettings onClose={() => {}} lighting={lighting} />);
+    expect(screen.getByTestId("office-experience-settings")).toBeInTheDocument();
+    unmount();
+
+    render(<HudSettings onClose={() => {}} worldExperience />);
+    expect(screen.getByTestId("office-experience-settings")).toBeInTheDocument();
   });
 
   it("shows one category at a time, and marks the chosen one", () => {

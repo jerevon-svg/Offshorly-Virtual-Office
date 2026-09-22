@@ -8,6 +8,7 @@ import {
   HudDefaultViewSetting,
   HudInterfaceSettings,
 } from "./HudWorldSettings";
+import { OfficeExperiencePanel } from "./OfficeExperiencePanel";
 import type { Phase } from "../../data/officePhase";
 import styles from "./HudSettings.module.css";
 
@@ -136,7 +137,10 @@ export function HudSettings({
       CATEGORY_ORDER.filter((category) => {
         switch (category.id) {
           case "general":
-            return Boolean(lighting) || worldExperience;
+            // PHASE 8 — ALWAYS. General now holds Office Experience, which is not a caller's to supply:
+            // both offices mount this panel and both must be able to leave. The old condition asked
+            // whether the caller had given General anything, and now the answer is always yes.
+            return true;
           case "controls":
           case "interface":
             return worldExperience;
@@ -156,8 +160,8 @@ export function HudSettings({
                 lighting && worldExperience
                   ? "Lighting and how the office opens"
                   : lighting
-                    ? "Office lighting"
-                    : "How the office opens",
+                    ? "Which office, and its lighting"
+                    : "Which office, and how it opens",
             }
           : category.id === "audio" && !worldExperience
             ? { ...category, hint: "Office background music" }
@@ -303,6 +307,9 @@ export function HudSettings({
                   </section>
                 )}
                 {worldExperience && <HudDefaultViewSetting />}
+                {/* Last in General, and in EVERY caller: this is the one row that is not conditional
+                    on what the host office happens to have. */}
+                <OfficeExperiencePanel />
               </>
             )}
 

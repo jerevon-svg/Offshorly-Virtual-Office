@@ -16,6 +16,10 @@ import {
   type DefaultViewPreference,
 } from "../../services/settings/experiencePreferences";
 import styles from "./HudSettings.module.css";
+import { ExperienceCards, type ExperienceOption } from "./ExperienceCards";
+import officeViewArt from "../../assets/experience/starting-view-office.webp";
+import exploreViewArt from "../../assets/experience/starting-view-explore.webp";
+import playerViewArt from "../../assets/experience/starting-view-player.webp";
 
 // THE 3D WORLD'S OWN SETTINGS — the General / Controls / Interface / Audio rows that only mean anything
 // where there is a 3D world to apply them to.
@@ -35,13 +39,20 @@ function useExperience() {
   return useSyncExternalStore(subscribeExperience, getExperiencePreferences, getExperiencePreferences);
 }
 
-const VIEW_OPTIONS: readonly { value: DefaultViewPreference; label: string; hint: string }[] = [
-  { value: "office", label: "Office", hint: "Top-down view of the whole floor" },
-  { value: "explore", label: "3D", hint: "Free camera — explore the office and outside" },
-  { value: "player", label: "Player", hint: "Walk your avatar directly" },
+/** The three cameras, each shown as itself: these captures are the office through that very camera, so
+ *  the difference between them on screen is the difference the setting makes. The hints are short on
+ *  purpose — the picture carries it now, and a sentence repeating it is the text-heavy row again. */
+const VIEW_OPTIONS: readonly ExperienceOption<DefaultViewPreference>[] = [
+  { value: "office", label: "Office", hint: "The whole floor, from above", art: officeViewArt },
+  { value: "explore", label: "3D", hint: "Free camera, inside and out", art: exploreViewArt },
+  { value: "player", label: "Player", hint: "Third person, behind you", art: playerViewArt },
 ];
 
-/** GENERAL — which camera the office opens in. Applied once, on the first frame the world is ready. */
+/** GENERAL — which camera the office opens in. Applied once, on the first frame the world is ready.
+ *
+ *  THESE THREE ARE V2'S CAMERAS AND NOTHING ELSE'S, which is why this section renders only for a caller
+ *  that passes `worldExperience` — V1's 2D office has no free camera and no player camera, and offering
+ *  them where nothing could honour them would be promising the Classic office something it does not do. */
 export function HudDefaultViewSetting() {
   const { defaultView } = useExperience();
   return (
@@ -53,32 +64,17 @@ export function HudDefaultViewSetting() {
             <HudIcon name="locate" size="24px" />
           </span>
           <div className={styles.cardText}>
-            <span className={styles.rowLabel}>Open the office in</span>
-            <span className={styles.rowHint}>Applies the next time you come in — you can switch any time</span>
+            <span className={styles.rowLabel}>Open the 3D office in</span>
+            <span className={styles.rowHint}>Applies the next time you come in — you can switch any time with C</span>
           </div>
         </div>
-        <div className={styles.choiceList} role="radiogroup" aria-label="Starting view">
-          {VIEW_OPTIONS.map((option) => (
-            <label
-              key={option.value}
-              className={styles.choice}
-              data-selected={defaultView === option.value ? "true" : undefined}
-            >
-              <input
-                type="radio"
-                name="vo-default-view"
-                value={option.value}
-                checked={defaultView === option.value}
-                onChange={() => setExperiencePreference("defaultView", option.value)}
-              />
-              <span className={styles.choiceMark} aria-hidden="true" />
-              <span className={styles.cardText}>
-                <span className={styles.rowLabel}>{option.label}</span>
-                <span className={styles.rowHint}>{option.hint}</span>
-              </span>
-            </label>
-          ))}
-        </div>
+        <ExperienceCards
+          name="vo-default-view"
+          ariaLabel="Starting view"
+          options={VIEW_OPTIONS}
+          value={defaultView}
+          onChange={(value) => setExperiencePreference("defaultView", value)}
+        />
       </div>
     </section>
   );
