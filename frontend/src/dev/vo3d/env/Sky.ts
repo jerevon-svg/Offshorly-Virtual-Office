@@ -25,6 +25,12 @@ export type SkyGrade = {
   stars: number;
   /** 0 = no moon … 1 = full */
   moon: number;
+  /** THE MOON'S OWN COLOUR. Absent = the ordinary pale disc. A season sets it to make the moon a
+   *  hero element — a blood moon is the single most recognisable Halloween sky there is, and it is
+   *  two numbers rather than a new object. */
+  moonColor?: number;
+  /** Multiplier on the moon's drawn size. Absent = 1, the ordinary restrained disc. */
+  moonScale?: number;
 };
 
 export class Sky {
@@ -146,9 +152,18 @@ export class Sky {
     if (this.tex) this.applyFlash();
     this.starMat.opacity = grade.stars;
     this.starMat.visible = grade.stars > 0.01;
-    (this.moon.material as THREE.MeshBasicMaterial).opacity = grade.moon * 0.92;
+    const moonMat = this.moon.material as THREE.MeshBasicMaterial;
+    moonMat.opacity = grade.moon * 0.92;
     this.moon.visible = grade.moon > 0.01;
-    (this.moonHalo.material as THREE.MeshBasicMaterial).opacity = grade.moon * 0.3;
+    // A SEASON MAY RECOLOUR AND RESIZE THE MOON. Both default to the ordinary pale disc when the
+    // grade does not ask, so nothing outside a season sees any change at all.
+    moonMat.color.setHex(grade.moonColor ?? 0xeef2ff);
+    const scale = grade.moonScale ?? 1;
+    this.moon.scale.setScalar(scale);
+    this.moonHalo.scale.setScalar(scale);
+    const haloMaterial = this.moonHalo.material as THREE.MeshBasicMaterial;
+    haloMaterial.opacity = grade.moon * 0.3;
+    haloMaterial.color.setHex(grade.moonColor ?? 0xbcd0ff);
     this.moonHalo.visible = this.moon.visible;
   }
 }

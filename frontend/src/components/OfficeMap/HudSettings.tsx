@@ -9,6 +9,7 @@ import {
   HudInterfaceSettings,
 } from "./HudWorldSettings";
 import { OfficeExperiencePanel } from "./OfficeExperiencePanel";
+import { CreatorStudioPanel } from "./CreatorStudioPanel";
 import type { Phase } from "../../data/officePhase";
 import styles from "./HudSettings.module.css";
 
@@ -310,6 +311,11 @@ export function HudSettings({
                 {/* Last in General, and in EVERY caller: this is the one row that is not conditional
                     on what the host office happens to have. */}
                 <OfficeExperiencePanel />
+                {/* PHASE 9A — directly beneath the gallery it controls, and it renders NOTHING unless
+                    the server reported this caller as a Creator. It is not a category of its own on
+                    purpose: it is a short list of switches about the section above it, and splitting
+                    them would put the offices and the controls over them in two different places. */}
+                <CreatorStudioPanel />
               </>
             )}
 

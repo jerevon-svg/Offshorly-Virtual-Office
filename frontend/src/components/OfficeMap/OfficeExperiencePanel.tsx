@@ -26,7 +26,9 @@
 import { useState, useSyncExternalStore } from "react";
 import styles from "./HudSettings.module.css";
 import { ExperienceCards } from "./ExperienceCards";
-import { OFFICE_EXPERIENCE_GALLERY } from "./officeExperienceGallery";
+import { galleryFor } from "./officeExperienceGallery";
+import { allowedExperiences } from "../../services/office/experienceCatalog";
+import { useExperienceCatalog } from "../../services/office/useExperienceCatalog";
 import {
   getOfficeExperience,
   setOfficeExperience,
@@ -51,7 +53,12 @@ export function OfficeExperiencePanel() {
   // one. Showing `saved` as the selected card then told them "You are in the 3D Office" over a Classic
   // floor. The card now marks the office they are in, which is the question a picture answers.
   const saved = useOfficeExperienceValue();
-  const open = resolveOfficeExperience();
+  const catalog = useExperienceCatalog();
+  const allowed = allowedExperiences(catalog);
+  const gallery = galleryFor(catalog);
+  // Resolved against the SAME allowed set App.tsx used, so a card is never marked as the office you
+  // are in when the server would not have let you into it.
+  const open = resolveOfficeExperience(window.location.search, allowed, catalog.default);
   // The choice picked but not yet confirmed. Null means nothing is pending.
   const [pending, setPending] = useState<OfficeExperience | null>(null);
   const current = open;
@@ -71,7 +78,7 @@ export function OfficeExperiencePanel() {
         <ExperienceCards
           name="office-experience"
           ariaLabel="Office Experience"
-          options={OFFICE_EXPERIENCE_GALLERY}
+          options={gallery}
           value={pending ?? current}
           // A switch is offered whenever confirming would CHANGE something — either the office on screen
           // or the saved choice. That second half is what lets somebody who arrived on `?world=v1` make
@@ -79,6 +86,17 @@ export function OfficeExperiencePanel() {
           // office is still the 3D one, so picking it is a real change and not a no-op.
           onChange={(value) => setPending(value === open && value === saved ? null : value)}
         />
+        {/* A CATALOG THAT COULD NOT BE READ IS SAID OUT LOUD, never quietly absorbed. "your season is
+            missing because the office could not be reached" and "your season was unpublished" are
+            different facts, and an employee whose saved office is not on screen is owed the
+            difference. Nothing was written to their preference — it is still exactly what they chose,
+            and the next successful load honours it. */}
+        {catalog.status === "unavailable" && (
+          <p className={styles.cardStatus} data-testid="office-experience-catalog-offline">
+            Could not reach the office to check which experiences are available, so only the 3D and
+            Classic offices are shown. Your saved choice has not been changed.
+          </p>
+        )}
         {pending ? (
           <>
             <p className={styles.cardStatus} data-testid="office-experience-confirm">

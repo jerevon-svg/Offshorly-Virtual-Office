@@ -20,21 +20,34 @@
 // nothing until that tab is reloaded, which is the correct amount of surprise.
 import { getCurrentUser, subscribeCurrentUser } from "../../auth/currentUserStore";
 
-/** "v2" is the 3D office (dev/vo3d). "classic" is V1's 2D office (components/OfficeMap). */
-export type OfficeExperience = "v2" | "classic";
+/** "v2" is the 3D office (dev/vo3d). "classic" is V1's 2D office (components/OfficeMap). The two
+ *  seasonal values are DECORATIONS OF THE SAME V2 WORLD — same rooms, same navigation, same seating —
+ *  and they are recognised here so a saved or previewed one is a value with a meaning rather than a
+ *  stray string. Recognised is NOT available: see ALLOWED, below. */
+export type OfficeExperience = "v2" | "classic" | "halloween" | "christmas";
 
-/** THE OFFICES AN EMPLOYEE MAY ACTUALLY BE PUT IN, and therefore the only values this store will hold.
+/** EVERY IDENTIFIER THIS BUILD RECOGNISES. The vocabulary, not the permission — being in here only
+ *  means the value has a meaning and may be held in storage, never that anybody may open it. */
+export const KNOWN_OFFICE_EXPERIENCES: readonly OfficeExperience[] = ["v2", "classic", "halloween", "christmas"];
+
+/** THE TWO OFFICES THAT ARE AVAILABLE BY CONSTRUCTION. No server can unpublish them, and they are
+ *  what remains available when the catalog cannot be read at all — which is what guarantees there is
+ *  no state of the backend in which somebody has nowhere to go.
  *
- *  The gallery in components/OfficeMap/officeExperienceGallery may LIST more than this — a seasonal
- *  office that is previewed but not yet available — and the two lists are deliberately not the same
- *  thing. A value that is shown but not yet selectable must never survive a write to storage, or an
- *  employee could be booted into an office that does not exist yet. So this list, not the gallery, is
- *  what the sanitiser below validates against. */
-export const SELECTABLE_OFFICE_EXPERIENCES: readonly OfficeExperience[] = ["v2", "classic"];
+ *  PHASE 9A MOVED THE REST OF THIS QUESTION TO THE SERVER. Which seasonal offices an employee may
+ *  open is now `services/office/experienceCatalog`'s answer for their verified identity, because a
+ *  browser cannot be trusted to hold a fact that an unpublish is supposed to take away. */
+export const PERMANENT_OFFICE_EXPERIENCES: readonly OfficeExperience[] = ["v2", "classic"];
 
-/** @deprecated the older name for SELECTABLE_OFFICE_EXPERIENCES; kept so nothing silently changes
- *  meaning. Prefer the explicit name — "these are the ones that can be picked". */
-export const OFFICE_EXPERIENCES = SELECTABLE_OFFICE_EXPERIENCES;
+/** @deprecated Phase 9A renamed this. It used to mean "the complete set an employee may be put in",
+ *  which is now a server answer and is passed to `resolveOfficeExperience` as `allowed`. What is
+ *  left of the old meaning — the offices that are always selectable — is
+ *  PERMANENT_OFFICE_EXPERIENCES, which this now aliases so no existing reader silently changes
+ *  meaning. */
+export const SELECTABLE_OFFICE_EXPERIENCES: readonly OfficeExperience[] = PERMANENT_OFFICE_EXPERIENCES;
+
+/** @deprecated the oldest name for the same list. */
+export const OFFICE_EXPERIENCES = PERMANENT_OFFICE_EXPERIENCES;
 
 /** THE DEFAULT, AND THE WHOLE ROLLBACK. Flipping this one word puts every employee who has never opened
  *  the setting back into the Classic office — no migration, no deploy of anything else, and every
@@ -50,30 +63,52 @@ function viewerKey(): string {
   return (getCurrentUser()?.email ?? "").trim().toLowerCase() || "anon";
 }
 
-/** Anything that is not one of the two words this app's own UI can write is not a preference, it is a
- *  hand-edited or stale payload — and the answer to that is the default, which is also what somebody
- *  who never opened the setting gets. */
+/** Anything that is not a word this build recognises is not a preference, it is a hand-edited or
+ *  stale payload — and the answer to that is the default.
+ *
+ *  WHY THIS VALIDATES AGAINST THE VOCABULARY AND NOT AGAINST WHAT IS AVAILABLE. A saved "halloween"
+ *  must SURVIVE the season being unpublished: the employee chose it, the company merely turned it
+ *  off for now, and erasing their choice on the way past would mean they came back to the 3D office
+ *  next October with no idea why. So an unavailable-but-known value is kept in storage and filtered
+ *  out at RESOLUTION instead (see `resolveOfficeExperience`), where the server's answer is in hand.
+ *  A tampered "halloween" is held the same way and is equally inert, because holding a value has
+ *  never been what opens an office. */
 function sanitize(value: unknown): OfficeExperience {
-  return SELECTABLE_OFFICE_EXPERIENCES.includes(value as OfficeExperience)
+  return KNOWN_OFFICE_EXPERIENCES.includes(value as OfficeExperience)
     ? (value as OfficeExperience)
     : DEFAULT_OFFICE_EXPERIENCE;
 }
 
-function read(viewer: string): OfficeExperience {
+/** THE RAW STORED CHOICE, or null when this employee has never made one.
+ *
+ *  "NEVER CHOSE" AND "CHOSE THE 3D OFFICE" ARE DIFFERENT FACTS, and Phase 9A is what made the
+ *  difference matter: the company default applies to the first and must not override the second. The
+ *  store used to collapse them — a missing key read as the default — which would have made a Creator
+ *  setting the company default to Classic move everybody who had explicitly chosen the 3D office.
+ *  So the null survives to the one caller that needs it, `resolveOfficeExperience`, and every other
+ *  reader still gets the flattened answer through `getOfficeExperience`.
+ *
+ *  A stored value this build does not recognise is a hand-edited or stale payload, and is reported as
+ *  "never chose" rather than as a choice — the same answer somebody who never opened the setting gets. */
+function readStored(viewer: string): OfficeExperience | null {
   try {
     const stored = window.localStorage.getItem(STORAGE_PREFIX + viewer);
-    if (stored === null) return DEFAULT_OFFICE_EXPERIENCE;
-    return sanitize(JSON.parse(stored));
+    if (stored === null) return null;
+    const parsed: unknown = JSON.parse(stored);
+    return KNOWN_OFFICE_EXPERIENCES.includes(parsed as OfficeExperience) ? (parsed as OfficeExperience) : null;
   } catch {
-    // Storage unavailable (private browsing), or unparseable. The default is correct either way.
-    return DEFAULT_OFFICE_EXPERIENCE;
+    // Storage unavailable (private browsing), or unparseable. "No choice on record" either way.
+    return null;
   }
 }
+
 
 // The identity is not known at import time (useAuthGate fetches it at boot), so the viewer is resolved
 // lazily and re-resolved when it changes rather than captured once.
 let viewer = viewerKey();
-let state: OfficeExperience = read(viewer);
+/** null until this employee makes a choice — see readStored. */
+let stored: OfficeExperience | null = readStored(viewer);
+let state: OfficeExperience = stored ?? DEFAULT_OFFICE_EXPERIENCE;
 const listeners = new Set<() => void>();
 
 function notify(): void {
@@ -85,7 +120,8 @@ function syncViewer(): boolean {
   const next = viewerKey();
   if (next === viewer) return false;
   viewer = next;
-  state = read(viewer);
+  stored = readStored(viewer);
+  state = stored ?? DEFAULT_OFFICE_EXPERIENCE;
   return true;
 }
 
@@ -98,11 +134,22 @@ export function getOfficeExperience(): OfficeExperience {
   return state;
 }
 
+/** This employee's own EXPLICIT choice, or null if they have never made one.
+ *
+ *  The one caller is `resolveOfficeExperience`, which must let the company default through for
+ *  somebody who never chose and must not let it past somebody who did. Everything that renders the
+ *  current selection wants `getOfficeExperience` instead — a picker has to have a card selected. */
+export function getStoredOfficeExperience(): OfficeExperience | null {
+  syncViewer();
+  return stored;
+}
+
 export function setOfficeExperience(next: OfficeExperience): void {
   syncViewer();
   const value = sanitize(next);
-  if (value === state) return;
+  if (value === state && stored !== null) return;
   state = value;
+  stored = value;
   try {
     window.localStorage.setItem(STORAGE_PREFIX + viewer, JSON.stringify(state));
   } catch {
@@ -120,12 +167,24 @@ export function subscribeOfficeExperience(listener: () => void): () => void {
 
 /** The URL's say, when it has one. `?world=v1` and `?world=v2` are an EXPLICIT override for this tab and
  *  they beat the stored preference — that is what makes them a support and QA lever that needs no deploy
- *  and cannot be locked out by a bad saved value. Any other value of `world` is not an override at all
- *  (V1's own route already treated it that way), so it falls through to the preference. */
+ *  and cannot be locked out by a bad saved value. Their meaning is UNCHANGED by Phase 9A.
+ *
+ *  A SEASONAL NAME IS ALSO PARSED, and that is deliberate rather than an oversight. It is how a Creator
+ *  opens a private preview in one tab without changing what they have saved, and it is the same lever
+ *  support already has. It grants nothing: `resolveOfficeExperience` intersects whatever this returns
+ *  with the server's allowed set, so `?world=halloween` typed by an employee who was not listed for it
+ *  resolves exactly as if it had not been typed. Parsing it is not permission — nothing in this module
+ *  is permission.
+ *
+ *  Any other value of `world` is not an override at all (V1's own route already treated it that way), so
+ *  it falls through to the preference. */
 export function officeExperienceFromUrl(search: string): OfficeExperience | null {
   const world = new URLSearchParams(search).get("world");
   if (world === "v1") return "classic";
   if (world === "v2") return "v2";
+  if (world && KNOWN_OFFICE_EXPERIENCES.includes(world as OfficeExperience)) {
+    return world as OfficeExperience;
+  }
   return null;
 }
 
@@ -166,18 +225,47 @@ export function openClassicOffice(): void {
   window.location.href = classicOverrideUrl(window.location.href);
 }
 
-/** THE ONE ANSWER, resolved once per session by App.tsx after the auth gate opens.
+/** THE ONE ANSWER, resolved once per session by App.tsx after the auth gate opens AND after the
+ *  server's catalog has landed.
  *
- *  Order: the URL override, then this employee's saved preference, then the default. It is a plain
- *  function rather than a hook on purpose — the office must NOT change under a signed-in session
- *  because a store changed, and a component that re-read this live would do exactly that. */
-export function resolveOfficeExperience(search = window.location.search): OfficeExperience {
-  return officeExperienceFromUrl(search) ?? getOfficeExperience();
+ *  ORDER, and every step is intersected with what the SERVER allowed:
+ *    1. an allowed URL override          (`?world=…` — support, QA and a Creator's private preview)
+ *    2. an allowed saved preference      (this employee's own explicit choice)
+ *    3. the company default              (already guaranteed allowed; re-checked anyway)
+ *    4. the 3D office                    (available by construction; there is always somewhere to go)
+ *
+ *  THE INTERSECTIONS ARE THE WHOLE SECURITY MODEL. A URL parameter and a localStorage key are both
+ *  things an employee can type, so neither is ever trusted to name an office on its own — each is a
+ *  REQUEST that is granted only if the server already listed that office for this identity. An
+ *  unpublished season therefore cannot be reached by typing its name in either place.
+ *
+ *  `allowed` DEFAULTS TO THE PERMANENT OFFICES rather than to "everything". A caller who forgot to
+ *  pass the catalog, or one running before it landed, gets the 3D or Classic office — never a
+ *  season. Failing open here would have made every other check in this file decorative.
+ *
+ *  It is a plain function rather than a hook on purpose — the office must NOT change under a
+ *  signed-in session because a store or a company setting changed, and a component that re-read this
+ *  live would do exactly that. A new company default reaches an employee on their next ordinary
+ *  load. */
+export function resolveOfficeExperience(
+  search = window.location.search,
+  allowed: readonly OfficeExperience[] = PERMANENT_OFFICE_EXPERIENCES,
+  companyDefault: OfficeExperience = DEFAULT_OFFICE_EXPERIENCE,
+): OfficeExperience {
+  const permit = (value: OfficeExperience | null): OfficeExperience | null =>
+    value !== null && allowed.includes(value) ? value : null;
+  return (
+    permit(officeExperienceFromUrl(search)) ??
+    permit(getStoredOfficeExperience()) ??
+    permit(companyDefault) ??
+    DEFAULT_OFFICE_EXPERIENCE
+  );
 }
 
 /** Tests only — back to the shipped default for whoever is signed in, without touching the listeners. */
 export function __resetOfficeExperienceForTests(): void {
   viewer = viewerKey();
+  stored = null;
   state = DEFAULT_OFFICE_EXPERIENCE;
   notify();
 }

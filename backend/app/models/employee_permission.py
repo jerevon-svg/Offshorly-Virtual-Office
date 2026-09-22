@@ -22,10 +22,17 @@ from app.database import Base
 #: future reader must go through.
 PERMISSION_TIMELOG_EXEMPT = "attendance.timelog_exempt"
 
+#: The VO CREATOR capability (Phase 9A). Holding it lets an employee see unpublished seasonal
+#: office experiences, publish and unpublish them, and set the company-wide default office
+#: (app/routers/office_experience.py). It is a VIRTUAL OFFICE capability and nothing else: it
+#: grants no Atlas management or admin privilege, no access to another employee's data, and no
+#: ability to grant permissions — including this one — to anybody, itself included.
+PERMISSION_EXPERIENCE_CREATOR = "experience.creator"
+
 #: The complete set of permission names this backend recognises. A grant is refused unless its name
 #: is in here, so a typo becomes an error at write time rather than a permission that silently never
 #: matches — and an attacker who somehow reached the repository could not invent a capability.
-KNOWN_PERMISSIONS: frozenset[str] = frozenset({PERMISSION_TIMELOG_EXEMPT})
+KNOWN_PERMISSIONS: frozenset[str] = frozenset({PERMISSION_TIMELOG_EXEMPT, PERMISSION_EXPERIENCE_CREATOR})
 
 
 class EmployeePermission(Base):

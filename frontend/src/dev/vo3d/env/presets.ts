@@ -224,6 +224,19 @@ export function blendPresetInto(out: EnvPreset, a: EnvPreset, b: EnvPreset, t: n
   out.skyGrade.horizon = lerpHex(a.skyGrade.horizon, b.skyGrade.horizon, u);
   out.skyGrade.stars = lerp(a.skyGrade.stars, b.skyGrade.stars, u);
   out.skyGrade.moon = lerp(a.skyGrade.moon, b.skyGrade.moon, u);
+  // THE MOON'S COLOUR AND SIZE, which a season may set and the ordinary grades leave absent.
+  //
+  // THIS LINE IS WHY THE BLOOD MOON DID NOT APPEAR. Every preset travels through this function on
+  // its way to the screen, and it copies skyGrade FIELD BY FIELD — so two fields added to the type
+  // were silently dropped between the grade and the sky, and the moon kept drawing at its default
+  // size and colour while the configured values looked perfectly correct in the source.
+  //
+  // Colour is interpolated like every other colour; SIZE SNAPS AT THE MIDPOINT rather than growing,
+  // because a moon that swells while the light changes reads as a zoom, not as dusk.
+  out.skyGrade.moonColor = a.skyGrade.moonColor !== undefined && b.skyGrade.moonColor !== undefined
+    ? lerpHex(a.skyGrade.moonColor, b.skyGrade.moonColor, u)
+    : (u < 0.5 ? a.skyGrade.moonColor : b.skyGrade.moonColor);
+  out.skyGrade.moonScale = u < 0.5 ? a.skyGrade.moonScale : b.skyGrade.moonScale;
   // Fog is the one field that can be absent. Two fogged presets interpolate; anything else snaps at the
   // midpoint rather than inventing a fog that neither end has.
   if (a.fog && b.fog) {

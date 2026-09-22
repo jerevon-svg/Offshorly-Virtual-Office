@@ -44,3 +44,8 @@ lerna-debug.log*
 # SQLite runtime files
 *.db-shm
 *.db-wal
+
+# Local Halloween verification screenshots (working evidence from the mock rig, ~82MB).
+# Kept on disk and referenced by docs/HALLOWEEN_POLISH_BACKLOG.md, but not in the repository:
+# the only seasonal image the product ships is src/assets/experience/office-halloween.webp.
+frontend/.halloween-shots/

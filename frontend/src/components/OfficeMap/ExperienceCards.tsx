@@ -16,7 +16,9 @@
 //
 // ONE COMPONENT, BOTH PICKERS, AND THE SEASONAL ONES AFTER THEM. An option may be marked `comingSoon`,
 // which renders it as a labelled, unselectable preview — the seam the Halloween and Christmas offices
-// will arrive through, with no second selector and no branch in the selection logic.
+// will arrive through, with no second selector and no branch in the selection logic. Phase 9A added
+// `unpublished`, which is the opposite case: a real, selectable office that only this viewer has been
+// listed for. Both are badges on the same card; neither is a second component.
 import styles from "./ExperienceCards.module.css";
 
 export interface ExperienceOption<T extends string> {
@@ -29,6 +31,14 @@ export interface ExperienceOption<T extends string> {
    *  labelled preview and is NOT selectable: a card that looked available and did nothing would be
    *  worse than not showing it at all. */
   comingSoon?: boolean;
+  /** PHASE 9A — A CREATOR'S PRIVATE PREVIEW: an experience the server listed for this caller alone,
+   *  because they hold the Creator capability and it is not published to the company yet.
+   *
+   *  SELECTABLE, unlike `comingSoon`, and that difference is the whole feature: previewing it on the
+   *  live site is what it is for. It is badged so a Creator is never in any doubt about whether their
+   *  colleagues can see what they are looking at — the one thing that is genuinely easy to forget
+   *  while standing in a decorated office. */
+  unpublished?: boolean;
 }
 
 interface Props<T extends string> {
@@ -51,6 +61,7 @@ export function ExperienceCards<T extends string>({ name, ariaLabel, options, va
               className={styles.card}
               data-selected={selected ? "true" : undefined}
               data-coming-soon={option.comingSoon ? "true" : undefined}
+              data-unpublished={option.unpublished ? "true" : undefined}
               data-value={option.value}
             >
               {/* A REAL RADIO, only visually replaced. Arrow keys walk the group, Space selects, the role
@@ -76,6 +87,9 @@ export function ExperienceCards<T extends string>({ name, ariaLabel, options, va
                     before it would be noise in front of the thing it is describing. */}
                 <img src={option.art} alt="" loading="lazy" decoding="async" />
                 {option.comingSoon && <span className={styles.badge}>Coming soon</span>}
+                {!option.comingSoon && option.unpublished && (
+                  <span className={styles.badge}>Only you</span>
+                )}
                 {selected && !option.comingSoon && (
                   <span className={styles.tick} aria-hidden="true">
                     ✓

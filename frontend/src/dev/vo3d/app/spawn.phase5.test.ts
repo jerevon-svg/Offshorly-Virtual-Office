@@ -56,8 +56,14 @@ describe("v1FramePoint", () => {
 });
 
 describe("the standalone world is still untouched", () => {
-  it("takes the self-movement sink as an OPTIONAL fourth parameter", () => {
-    expect(world).toContain("homeDesk?: Vo3dHomeDesk, selfMovement?: Vo3dSelfMovementSink)");
+  it("takes every parameter after the canvas OPTIONALLY", () => {
+    // THE PROPERTY, not the exact spelling of the signature. What must hold is that the standalone
+    // dev page can still call createVo3dWorld(canvas) with nothing else — every later parameter is
+    // either `?`-optional or defaulted. Phase 9B added a fifth (`season`, defaulted to "none"), and
+    // an exact-string assertion failed on it while the property it was written to protect was intact.
+    expect(world).toContain("homeDesk?: Vo3dHomeDesk");
+    expect(world).toContain("selfMovement?: Vo3dSelfMovementSink");
+    expect(world).toContain('season: SeasonTheme = "none"');
   });
 
   it("still lets the dev page build a world with no arguments at all", () => {

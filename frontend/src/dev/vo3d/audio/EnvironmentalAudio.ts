@@ -22,6 +22,7 @@ import type { ThunderEvent } from "../env/Lightning";
 import { BED_IDS, emptyMix, mixInto, zoneFor, type BedId, type ZoneContext, type ZoneId, type ZoneMix } from "./zones";
 import { birdVoice, brownBuffer, pinkBuffer, thunderVoice } from "./synth";
 import { SFX_LIFETIME_MS, sfxVoice, type SfxKind, type SfxOptions } from "./sfx";
+import { HauntAudio } from "./HauntAudio";
 
 /** HOW FAST A BED TRAVELS to its target, as the time constant of an exponential approach, in seconds.
  *  Long enough that a doorway is a crossfade and not a switch; short enough that stepping outside into a
@@ -114,6 +115,11 @@ export class EnvironmentalAudio {
   private readonly d: EnvAudioDeps;
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
+  /** THE SEASONAL LAYER. Null in the ordinary office and it costs nothing there — not a node, not a
+   *  timer. Built when a season asks for it and only once the context exists, so it inherits the
+   *  lazy-on-user-gesture rule rather than restating it. */
+  private haunt: HauntAudio | null = null;
+  private hauntWanted = 0;
   /** the foley sub-bus. One node for the life of the engine; every one-shot connects to THIS, never to
    *  the destination, so ducking and the master switch reach world events exactly as they reach beds. */
   private sfxBus: GainNode | null = null;
@@ -158,6 +164,20 @@ export class EnvironmentalAudio {
   /** BROWSER AUTOPLAY, RESPECTED. Nothing is created, fetched or played until a real gesture happens —
    *  so a page load is silent, always, and the first sound the user hears is one they asked for by
    *  clicking into the world. Entering PLAYER mode, clicking the canvas or pressing a key all qualify. */
+  /** SEASONAL AMBIENCE, 0 = off. Safe to call before the context is armed — the level is remembered
+   *  and the layer is built when audio starts. Setting 0 disposes it outright, so switching out of a
+   *  season leaves no node and no timer behind. */
+  setSeasonAmbience(level: number): void {
+    this.hauntWanted = Math.max(0, Math.min(1, level));
+    if (this.hauntWanted === 0) {
+      this.haunt?.dispose();
+      this.haunt = null;
+      return;
+    }
+    if (!this.haunt && this.ctx && this.master) this.haunt = new HauntAudio(this.ctx, this.master);
+    this.haunt?.setLevel(this.hauntWanted);
+  }
+
   arm(): void {
     if (this.armed || this.disposed || typeof document === "undefined") return;
     this.armed = true;
@@ -198,6 +218,12 @@ export class EnvironmentalAudio {
     bus.connect(master);
     this.sfxBus = bus;
     for (const spec of BEDS) this.beds.set(spec.id, this.buildBed(ctx, master, spec));
+    // A season asked for its layer before the context existed (the ordinary case: the world is built
+    // long before the first gesture arms audio). Build it now, at the level it asked for.
+    if (this.hauntWanted > 0) {
+      this.haunt = new HauntAudio(ctx, master);
+      this.haunt.setLevel(this.hauntWanted);
+    }
     this.writeMaster();
     if (ctx.state === "suspended") void ctx.resume();
     this.state.status = ctx.state === "running" ? "running" : "suspended";
@@ -387,6 +413,8 @@ export class EnvironmentalAudio {
   /** EVERYTHING GOES. Sources stopped, oscillators stopped, nodes disconnected, timers cleared, context
    *  closed. Called twice is a no-op; the object is dead afterwards and `start()` refuses. */
   dispose(): void {
+    this.haunt?.dispose();
+    this.haunt = null;
     if (this.disposed) return;
     this.disposed = true;
     this.disarm?.();

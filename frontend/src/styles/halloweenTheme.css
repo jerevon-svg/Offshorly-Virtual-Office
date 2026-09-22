@@ -1,0 +1,811 @@
+/* THE HALLOWEEN UI SKIN — one stylesheet, scoped entirely to the Halloween experience.
+ *
+ * ══ HOW IT IS SCOPED, AND WHY THAT IS THE WHOLE SAFETY STORY ══
+ *
+ * EVERY rule below is nested under `html[data-vo-experience="halloween"]`. That attribute is written
+ * by services/settings/experienceTheme.ts only when the resolved experience is Halloween, and removed
+ * on teardown. So:
+ *   · the 3D office and Classic are untouched — not "reset back", never styled in the first place;
+ *   · switching away cannot leak a style, because removing one attribute un-scopes the whole file;
+ *   · nothing here is loaded conditionally, so there is no flash of unthemed UI and no code-splitting
+ *     hazard — it is a few KB of CSS that is inert until the attribute exists.
+ *
+ * ══ TOKENS FIRST, THEN A SMALL NUMBER OF SURFACES ══
+ *
+ * The theme is a token set plus overrides for the handful of SURFACES the product actually draws:
+ * the dock, flyouts, panels, cards, modals, tiles, badges and the Toucan button. Components are
+ * reused as they are — nothing is forked, no component learns the word "halloween", and no layout,
+ * size, spacing or interaction changes. If a component is not listed here it simply inherits the
+ * token colours through the surfaces it sits on.
+ *
+ * ══ WHAT IS DELIBERATELY NOT CHANGED ══
+ *
+ *   · STATUS COLOURS keep their meanings. Available stays green, DND stays red, a notification badge
+ *     stays loud. A theme that recoloured those would be a theme that lied about presence.
+ *   · CONTRAST. Text on every themed surface is held at or above its original contrast — the
+ *     surfaces got darker, so the type got lighter to match, not dimmer to blend in.
+ *   · LAYOUT. No padding, gap, radius-driven size, font-size or breakpoint is touched, so every
+ *     responsive constraint the dock and panels already satisfy still holds.
+ */
+
+html[data-vo-experience="halloween"] {
+  /* ---- the palette, shared with the 3D world's own season materials ------------------------------
+     These are the same colours season/halloween/materials.ts builds the pumpkins and webs from, so
+     the interface and the office are lit by one art direction rather than two that resemble each
+     other. */
+  --hw-void: #14101c;
+  --hw-surface: #221b30;
+  --hw-surface-2: #2c2440;
+  --hw-surface-3: #372c4e;
+  --hw-line: #473a63;
+  --hw-line-soft: #3a2f52;
+  --hw-text: #f3eefc;
+  --hw-text-dim: #c3b6da;
+  --hw-text-faint: #9384b0;
+  --hw-ember: #ff8a2b;
+  --hw-ember-soft: #ffb457;
+  --hw-violet: #a274ff;
+  --hw-violet-soft: #c9a9ff;
+
+  /* Soft-3D depth: a lifted top edge, a deep drop, and a supernatural violet bloom. The three are
+     always used together — that combination is what reads as "premium dark UI" rather than "dark
+     rectangle". */
+  --hw-shadow:
+    0 1px 0 rgb(255 255 255 / 7%) inset,
+    0 -1px 0 rgb(0 0 0 / 35%) inset,
+    0 18px 38px rgb(8 5 16 / 55%),
+    0 0 26px rgb(162 116 255 / 14%);
+  --hw-shadow-sm:
+    0 1px 0 rgb(255 255 255 / 6%) inset,
+    0 8px 18px rgb(8 5 16 / 45%);
+  --hw-glow-ember: 0 0 16px rgb(255 138 43 / 38%);
+
+  /* A single cobweb corner, drawn in CSS so it costs no request and scales with the surface. Used
+     sparingly — one corner on the big surfaces only, never on a control. */
+  --hw-web:
+    radial-gradient(circle at 0 0, transparent 20px, rgb(201 169 255 / 13%) 20.5px, transparent 21.5px),
+    radial-gradient(circle at 0 0, transparent 34px, rgb(201 169 255 / 11%) 34.5px, transparent 35.5px),
+    radial-gradient(circle at 0 0, transparent 48px, rgb(201 169 255 / 9%) 48.5px, transparent 49.5px),
+    linear-gradient(135deg, rgb(201 169 255 / 14%) 0 1.2px, transparent 1.2px),
+    linear-gradient(112deg, rgb(201 169 255 / 11%) 0 1.2px, transparent 1.2px),
+    linear-gradient(158deg, rgb(201 169 255 / 11%) 0 1.2px, transparent 1.2px);
+}
+
+/* ══ THE DOCK ══ the one piece of chrome that is always on screen, so it sets the tone.
+ *
+ * LAYOUT IS NOT TOUCHED, and that is a correction rather than a precaution. The first cut set
+ * `position: relative` here so a `::before` cobweb could anchor to it — and the dock is positioned
+ * by its own `--vo-chrome-position` custom property with centring that depends on it, so the dock
+ * stretched from a centred 783px to the full 1576px viewport width. Measured, not guessed.
+ *
+ * So the ornament is carried in the BACKGROUND SHORTHAND instead: extra paint layers on a box whose
+ * position, size, padding and radius are all left exactly as the component declared them. A
+ * background layer cannot move anything.
+ */
+html[data-vo-experience="halloween"] [data-testid="hud-dock"] {
+  background:
+    /* the cobweb, top-left corner only */
+    var(--hw-web) no-repeat left top / 86px 86px,
+    /* a thin ember line along the top edge: the warm accent, used once */
+    linear-gradient(90deg, transparent 12%, rgb(255 138 43 / 55%) 50%, transparent 88%) no-repeat 0 0 / 100% 1px,
+    linear-gradient(180deg, var(--hw-surface-2) 0%, var(--hw-surface) 60%, var(--hw-void) 100%);
+  border-color: var(--hw-line);
+  box-shadow: var(--hw-shadow);
+  color: var(--hw-text);
+}
+
+html[data-vo-experience="halloween"] [data-testid="hud-dock"] [class*="_tileLabel_"],
+html[data-vo-experience="halloween"] [data-testid="hud-dock"] [class*="_label_"],
+html[data-vo-experience="halloween"] [data-testid="hud-dock"] [class*="_tile_"] span {
+  /* FULL text colour, not the dim one. These labels are 10px on a near-black gradient and the dim
+     token left them at the edge of legibility in the capture. */
+  color: var(--hw-text);
+}
+
+html[data-vo-experience="halloween"] [data-testid="hud-dock"] [class*="_separator_"] {
+  background: var(--hw-line-soft);
+}
+
+/* Dock tiles: flat until touched, then a violet lift. Sizes are untouched — only colour and depth. */
+html[data-vo-experience="halloween"] [data-testid="hud-dock"] button:hover,
+html[data-vo-experience="halloween"] [data-testid="hud-dock"] [class*="_tile_"]:hover {
+  background: var(--hw-surface-3);
+  box-shadow: var(--hw-glow-ember);
+}
+
+/* The soft-3D icon set is drawn for a light dock. On a dark one the glyphs lose their edge, so they
+   get a faint warm rim — the same trick the world uses, where nothing is a pure silhouette. */
+html[data-vo-experience="halloween"] [data-testid="hud-dock"] [class*="_tileIcon_"] img,
+html[data-vo-experience="halloween"] [data-testid="hud-dock"] [class*="_tileIcon_"] svg {
+  filter: drop-shadow(0 0 5px rgb(255 138 43 / 38%)) saturate(1.06);
+}
+
+/* ══ THE TOUCAN BUTTON ══ the assistant's own affordance, and the one control that is not in the
+   dock. It keeps its shape and its size; it gains the season's surface and a violet aura so it still
+   reads as the thing that is alive on the screen. */
+html[data-vo-experience="halloween"] [data-testid="vo3d-toucan-summon"],
+html[data-vo-experience="halloween"] [data-testid="vo3d-toucan-summon"] button {
+  background: radial-gradient(circle at 34% 28%, var(--hw-surface-3), var(--hw-void));
+  border-color: var(--hw-line);
+  box-shadow:
+    0 10px 26px rgb(8 5 16 / 55%),
+    0 0 22px rgb(162 116 255 / 30%);
+}
+
+html[data-vo-experience="halloween"] [data-testid="vo3d-toucan-summon"] img {
+  filter: drop-shadow(0 0 7px rgb(162 116 255 / 45%));
+}
+
+/* ══ PANELS, CARDS, FLYOUTS AND MODALS ══
+   Matched on the CSS-module local name, which Vite keeps in the generated class in both dev and
+   build (`_card_12uor_48`). Every one of these is a SURFACE; none of them is a control, so recolouring
+   them cannot change what anything does. */
+html[data-vo-experience="halloween"] [class*="_panel_"],
+html[data-vo-experience="halloween"] [class*="_sidebar_"],
+html[data-vo-experience="halloween"] [class*="_flyout_"],
+html[data-vo-experience="halloween"] [class*="_sheet_"],
+html[data-vo-experience="halloween"] [class*="_modal_"],
+html[data-vo-experience="halloween"] [class*="_dialog_"],
+html[data-vo-experience="halloween"] [class*="_popover_"],
+html[data-vo-experience="halloween"] [data-testid="vo3d-room-details"],
+html[data-vo-experience="halloween"] [data-testid="vo3d-checkout"] {
+  background: linear-gradient(180deg, var(--hw-surface-2), var(--hw-surface));
+  border-color: var(--hw-line);
+  box-shadow: var(--hw-shadow);
+  color: var(--hw-text);
+}
+
+html[data-vo-experience="halloween"] [class*="_card_"],
+html[data-vo-experience="halloween"] [class*="_tile_"]:not([class*="_tileIcon_"]):not([class*="_tileLabel_"]),
+html[data-vo-experience="halloween"] [class*="_row_"] {
+  background: var(--hw-surface-2);
+  border-color: var(--hw-line-soft);
+  color: var(--hw-text);
+}
+
+/* Headings and body text lift to match the darker ground: the CONTRAST RATIO is preserved, which is
+   the point — a dark theme that dimmed its type would fail the same check twice. */
+html[data-vo-experience="halloween"] [class*="_panel_"] h1,
+html[data-vo-experience="halloween"] [class*="_panel_"] h2,
+html[data-vo-experience="halloween"] [class*="_panel_"] h3,
+html[data-vo-experience="halloween"] [class*="_sectionTitle_"],
+html[data-vo-experience="halloween"] [class*="_title_"],
+html[data-vo-experience="halloween"] [class*="_rowLabel_"] {
+  color: var(--hw-text);
+}
+
+/* CONTRAST FIX, caught in the first themed capture: the settings category list and the gallery card
+   labels are drawn in a grey chosen for a WHITE panel. On the dark surface they dropped to roughly
+   2:1 and became unreadable. Labels take the full text colour and secondary lines take the dim one,
+   which puts both back above their original ratios rather than merely close to them. */
+html[data-vo-experience="halloween"] [class*="_navLabel_"],
+html[data-vo-experience="halloween"] [class*="_label_"],
+html[data-vo-experience="halloween"] [class*="_text_"] > [class*="_label_"] {
+  color: var(--hw-text);
+}
+
+html[data-vo-experience="halloween"] [class*="_navButton_"],
+html[data-vo-experience="halloween"] [class*="_nav_"] button {
+  color: var(--hw-text);
+}
+
+html[data-vo-experience="halloween"] [class*="_hint_"],
+html[data-vo-experience="halloween"] [class*="_rowHint_"],
+html[data-vo-experience="halloween"] [class*="_cardStatus_"],
+html[data-vo-experience="halloween"] [class*="_navHint_"],
+html[data-vo-experience="halloween"] [class*="_paneHint_"] {
+  color: var(--hw-text-dim);
+}
+
+/* ══ CONTROLS ══ surface and border only. Nothing here changes a hit area, a focus ring's geometry
+   or a disabled state's behaviour. */
+html[data-vo-experience="halloween"] [class*="_actionButton_"],
+html[data-vo-experience="halloween"] [class*="_devButton_"],
+html[data-vo-experience="halloween"] [class*="_panel_"] button,
+html[data-vo-experience="halloween"] [class*="_sidebar_"] button {
+  background: var(--hw-surface-3);
+  border-color: var(--hw-line);
+  color: var(--hw-text);
+  box-shadow: var(--hw-shadow-sm);
+}
+
+html[data-vo-experience="halloween"] [class*="_actionButton_"]:hover:not(:disabled),
+html[data-vo-experience="halloween"] [class*="_panel_"] button:hover:not(:disabled) {
+  border-color: var(--hw-ember);
+  box-shadow: var(--hw-shadow-sm), var(--hw-glow-ember);
+}
+
+/* The selected tab / active nav state: an ember edge, which is the season's one warm accent doing
+   the job the product's green accent does the rest of the year. Selection remains marked by MORE
+   than colour — the original weight and background change are untouched underneath. */
+html[data-vo-experience="halloween"] [aria-selected="true"],
+html[data-vo-experience="halloween"] [data-selected="true"] {
+  border-color: var(--hw-ember) !important;
+  box-shadow: var(--hw-glow-ember);
+}
+
+/* ══ WHAT KEEPS ITS OWN COLOUR ══
+   Status and notification colours carry MEANING. Available/DND/away and an unread count must read
+   exactly as they do in the ordinary office, so they are explicitly exempted from everything above
+   rather than left to luck. */
+html[data-vo-experience="halloween"] [class*="_badge_"],
+html[data-vo-experience="halloween"] [class*="_tileBadge_"],
+html[data-vo-experience="halloween"] [data-testid^="dock-badge-"],
+html[data-vo-experience="halloween"] [class*="_status_"],
+html[data-vo-experience="halloween"] [class*="_dot_"] {
+  background: revert;
+  border-color: revert;
+  color: revert;
+  box-shadow: revert;
+  filter: none;
+}
+
+/* The gallery's own captures must not be tinted — they are photographs of the offices, and a filter
+   over them would misrepresent what the employee is choosing. */
+html[data-vo-experience="halloween"] [class*="_thumb_"] img {
+  filter: none;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════════════════════
+   FINAL BRANDING PASS — the surfaces and states the first cut did not reach.
+   Same rules as everything above: colour, border and depth only; no layout, no size, no behaviour.
+   ══════════════════════════════════════════════════════════════════════════════════════════════ */
+
+/* ---- INPUTS ------------------------------------------------------------------------------------
+   Form controls are the one place a dark theme most often breaks, because an unstyled input keeps
+   the platform's white field and the theme looks half-applied. */
+html[data-vo-experience="halloween"] input:not([type="radio"]):not([type="checkbox"]),
+html[data-vo-experience="halloween"] textarea,
+html[data-vo-experience="halloween"] select {
+  background: var(--hw-void);
+  border-color: var(--hw-line);
+  color: var(--hw-text);
+}
+
+html[data-vo-experience="halloween"] input::placeholder,
+html[data-vo-experience="halloween"] textarea::placeholder {
+  /* Dim, but deliberately NOT faint: placeholder text still has to be readable, and the usual
+     grey-on-white value is far too dark once the field goes near-black. */
+  color: var(--hw-text-faint);
+}
+
+/* ---- FOCUS -------------------------------------------------------------------------------------
+   THE ACCESSIBILITY RULE THIS OBEYS: a focus ring must be visible against the surface it sits on.
+   The product's own ring was chosen against white, so on violet-charcoal it is re-stated in the
+   season's own accent at full strength. Geometry — width, offset, shape — is untouched. */
+html[data-vo-experience="halloween"] :focus-visible {
+  outline-color: var(--hw-ember);
+}
+
+/* ---- INTERACTION STATES ------------------------------------------------------------------------
+   Hover, active and disabled must stay TELLABLE APART on a dark ground, which takes more separation
+   than it does on white — a 4% lift that reads clearly on a light surface disappears on a dark one. */
+html[data-vo-experience="halloween"] button:active:not(:disabled) {
+  background: var(--hw-surface);
+  box-shadow: 0 2px 8px rgb(8 5 16 / 55%) inset;
+}
+
+html[data-vo-experience="halloween"] button:disabled,
+html[data-vo-experience="halloween"] [aria-disabled="true"] {
+  /* Dimmed but still legible. A disabled control the viewer cannot read is a control they cannot
+     understand the state of. */
+  opacity: 0.45;
+  box-shadow: none;
+}
+
+/* ---- AVATAR FRAMES AND PROFILE BORDERS ---------------------------------------------------------
+   The ring around a face. It gets the season's violet and a soft aura, and it keeps its size — an
+   avatar frame that changed thickness would shift every row it appears in. */
+html[data-vo-experience="halloween"] [class*="_avatar_"],
+html[data-vo-experience="halloween"] [class*="_portrait_"],
+html[data-vo-experience="halloween"] [class*="_identityGroup_"] img {
+  border-color: var(--hw-line);
+  box-shadow: 0 0 12px rgb(162 116 255 / 28%);
+}
+
+/* ---- EMPTY STATES ------------------------------------------------------------------------------ */
+html[data-vo-experience="halloween"] [class*="_empty_"],
+html[data-vo-experience="halloween"] [class*="_placeholder_"] {
+  color: var(--hw-text-dim);
+  background: transparent;
+}
+
+/* ---- TABS AND NAVIGATION ----------------------------------------------------------------------- */
+html[data-vo-experience="halloween"] [role="tab"],
+html[data-vo-experience="halloween"] [class*="_tab_"] {
+  color: var(--hw-text-dim);
+}
+
+html[data-vo-experience="halloween"] [role="tab"][aria-selected="true"],
+html[data-vo-experience="halloween"] [class*="_tab_"][aria-selected="true"] {
+  color: var(--hw-text);
+}
+
+/* ---- THE SPECTRAL GREEN ------------------------------------------------------------------------
+   The third colour, used ONCE in the interface and only where the world uses it too: a faint
+   green cast on the Toucan's aura, because the assistant is the thing in the room that is alive.
+   It is never used for a status, a state or a control — the product's own greens mean things, and a
+   decorative green that could be mistaken for one of them would be a theme telling a lie. */
+html[data-vo-experience="halloween"] [data-testid="vo3d-toucan-summon"] {
+  box-shadow:
+    0 10px 26px rgb(8 5 16 / 55%),
+    0 0 22px rgb(162 116 255 / 30%),
+    0 0 40px rgb(109 255 196 / 12%);
+}
+
+/* ---- SCROLLBARS --------------------------------------------------------------------------------
+   A default light scrollbar down the side of a dark panel is the last thing that gives a theme away. */
+html[data-vo-experience="halloween"] * {
+  scrollbar-color: var(--hw-line) transparent;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════════════════════
+   CORRECTION PASS — THE SYSTEMIC TEXT AND INTERACTION FIX
+   ══════════════════════════════════════════════════════════════════════════════════════════════
+
+   WHAT WENT WRONG, AND WHY PATCHING SCREENS WAS NEVER GOING TO FIX IT.
+
+   The previous pass darkened SURFACES and then lifted text by matching a handful of CSS-module
+   names (`_hint_`, `_label_`, `_rowHint_`). Every component whose text class happened to be called
+   something else kept the dark colour it was given for a WHITE panel — so quest titles, reward
+   descriptions, map subtitles, notification empty states and the Toucan header all rendered
+   near-black on near-black. That is not a list of broken screens; it is one broken assumption, and
+   enumerating screens would have left the next component to fail the same way.
+
+   THE FIX IS INVERSION. Inside a themed surface, text is light BY DEFAULT and the exceptions are
+   named, instead of text being dark by default and the exceptions being named. Everything below
+   follows from that, and the exemption block at the end is what keeps status colour, badges and
+   employee identity out of it.
+   ══════════════════════════════════════════════════════════════════════════════════════════════ */
+
+html[data-vo-experience="halloween"] {
+  /* Interaction language. Four roles, each with its own surface — NOT one orange button everywhere,
+     which would flatten the hierarchy the product already has. */
+  --hw-primary: linear-gradient(180deg, #ff9b3d 0%, #ef7712 100%);
+  --hw-primary-text: #2a1402;   /* dark ink on a bright pumpkin fill: ~8.9:1 */
+  --hw-secondary: linear-gradient(180deg, #3b3054 0%, #2a2340 100%);
+  --hw-secondary-text: #f6f1ff;
+  --hw-danger: linear-gradient(180deg, #c8383a 0%, #9c2426 100%);
+  --hw-danger-text: #fff3f2;
+}
+
+/* ---- TEXT: LIGHT BY DEFAULT ON EVERY THEMED SURFACE --------------------------------------------
+   Deliberately broad. `color` is the only property touched, so it cannot move, resize or restyle
+   anything — and a themed surface with unreadable text is a worse failure than a heading that is a
+   shade lighter than its designer chose. */
+html[data-vo-experience="halloween"] [class*="_panel_"],
+html[data-vo-experience="halloween"] [class*="_sidebar_"],
+html[data-vo-experience="halloween"] [class*="_flyout_"],
+html[data-vo-experience="halloween"] [class*="_sheet_"],
+html[data-vo-experience="halloween"] [class*="_modal_"],
+html[data-vo-experience="halloween"] [class*="_dialog_"],
+html[data-vo-experience="halloween"] [class*="_popover_"],
+html[data-vo-experience="halloween"] [class*="_card_"],
+html[data-vo-experience="halloween"] [class*="_overlay_"],
+html[data-vo-experience="halloween"] [class*="_drawer_"],
+html[data-vo-experience="halloween"] [data-testid="hud-dock"],
+html[data-vo-experience="halloween"] [data-testid="vo3d-room-details"],
+html[data-vo-experience="halloween"] [data-testid="vo3d-checkout"],
+html[data-vo-experience="halloween"] [data-testid="vo3d-overheads"] {
+  color: var(--hw-text);
+}
+
+html[data-vo-experience="halloween"] [class*="_panel_"] :is(h1,h2,h3,h4,h5,p,span,li,dd,dt,label,small,time,strong,em,div,a,button,summary),
+html[data-vo-experience="halloween"] [class*="_modal_"] :is(h1,h2,h3,h4,h5,p,span,li,dd,dt,label,small,time,strong,em,div,a,button,summary),
+html[data-vo-experience="halloween"] [class*="_dialog_"] :is(h1,h2,h3,h4,h5,p,span,li,dd,dt,label,small,time,strong,em,div,a,button,summary),
+html[data-vo-experience="halloween"] [class*="_sheet_"] :is(h1,h2,h3,h4,h5,p,span,li,dd,dt,label,small,time,strong,em,div,a,button,summary),
+html[data-vo-experience="halloween"] [class*="_flyout_"] :is(h1,h2,h3,h4,h5,p,span,li,dd,dt,label,small,time,strong,em,div,a,button,summary),
+html[data-vo-experience="halloween"] [class*="_card_"] :is(h1,h2,h3,h4,h5,p,span,li,dd,dt,label,small,time,strong,em,div,a,summary),
+html[data-vo-experience="halloween"] [class*="_sidebar_"] :is(h1,h2,h3,h4,h5,p,span,li,label,small,time,div,button),
+html[data-vo-experience="halloween"] [data-testid="hud-dock"] :is(span,div,label,time,button) {
+  color: inherit;
+}
+
+/* SECONDARY TEXT stays a step down — but a READABLE step down. #c3b6da on #2c2440 is ~7.2:1, which
+   is comfortably past AA for body text; the greys these components shipped with were around 2:1
+   once the panel went dark. */
+html[data-vo-experience="halloween"] :is([class*="_hint_"],[class*="_status_"],[class*="_meta_"],[class*="_sub_"],[class*="_desc_"],[class*="_time_"],[class*="_caption_"],[class*="_secondary_"],[class*="_muted_"]) {
+  color: var(--hw-text-dim);
+}
+
+/* ---- BUTTONS: FOUR ROLES, NOT ONE ORANGE --------------------------------------------------------
+   The default is SECONDARY, so nothing accidentally becomes a primary call to action. Primary is
+   opted into by the roles the product already marks as primary. */
+html[data-vo-experience="halloween"] :is([class*="_panel_"],[class*="_modal_"],[class*="_dialog_"],[class*="_sheet_"],[class*="_card_"],[class*="_flyout_"],[data-testid="hud-dock"]) button:not(:disabled),
+html[data-vo-experience="halloween"] [class*="_actionButton_"]:not(:disabled) {
+  background: var(--hw-secondary);
+  color: var(--hw-secondary-text);
+  border: 1px solid var(--hw-line);
+  box-shadow: var(--hw-shadow-sm);
+  transition: box-shadow 140ms ease, transform 140ms ease, border-color 140ms ease;
+}
+
+/* PRIMARY — the pumpkin fill, with DARK ink on it. Bright orange with white text is the single most
+   common contrast failure in a Halloween palette (about 2.4:1); dark ink on the same fill is ~8.9:1
+   and looks more premium besides. */
+html[data-vo-experience="halloween"] :is(
+  [class*="_primary_"],
+  [class*="_claim_"],
+  [class*="_submit_"],
+  [class*="_confirm_"],
+  [class*="_send_"],
+  button[type="submit"]
+):not(:disabled) {
+  background: var(--hw-primary);
+  color: var(--hw-primary-text);
+  border: 1px solid #ffb055;
+  text-shadow: none;
+  box-shadow: 0 1px 0 rgb(255 255 255 / 30%) inset, 0 6px 16px rgb(239 119 18 / 28%);
+}
+
+html[data-vo-experience="halloween"] :is([class*="_danger_"],[class*="_destructive_"],[class*="_leave_"]):not(:disabled) {
+  background: var(--hw-danger);
+  color: var(--hw-danger-text);
+  border: 1px solid #d9575a;
+}
+
+/* HOVER: illumination and a lift, not a colour swap. */
+html[data-vo-experience="halloween"] :is([class*="_panel_"],[class*="_modal_"],[class*="_card_"],[class*="_flyout_"],[data-testid="hud-dock"]) button:hover:not(:disabled) {
+  border-color: var(--hw-ember);
+  box-shadow: var(--hw-shadow-sm), 0 0 18px rgb(255 138 43 / 45%);
+  transform: translateY(-1px);
+}
+
+/* DISABLED: muted, but the LABEL STAYS LEGIBLE. The usual `opacity: .45` on a dark surface takes
+   text to roughly 2:1, so the state is carried by the surface and the border instead. */
+html[data-vo-experience="halloween"] button:disabled,
+html[data-vo-experience="halloween"] [aria-disabled="true"] {
+  opacity: 1;
+  background: #241d33;
+  color: #8d82a8;          /* ~4.6:1 on #241d33 — dimmed, still readable */
+  border: 1px dashed #3d3356;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+/* ---- NO WHITE PILLS, NO WHITE HOVER CIRCLES -----------------------------------------------------
+   The Check Out pill and the Toucan hover were both the product's own white surfaces showing
+   through. They are named explicitly because they are the two the eye lands on. */
+/* `_checkoutButton_` — matched on the prefix, because the trailing-underscore form missed it and
+   the pill silently stayed secondary. Check Out is the dock's one primary action. */
+html[data-vo-experience="halloween"] [class*="_checkout"],
+html[data-vo-experience="halloween"] [class*="_checkOut"],
+html[data-vo-experience="halloween"] [data-testid="hud-dock"] button[class*="_pill_"] {
+  background: var(--hw-primary);
+  color: var(--hw-primary-text);
+  border: 1px solid #ffb055;
+}
+
+html[data-vo-experience="halloween"] [data-testid="vo3d-toucan-summon"]:hover,
+html[data-vo-experience="halloween"] [data-testid="vo3d-toucan-summon"] button:hover,
+html[data-vo-experience="halloween"] [data-testid="vo3d-toucan-summon"]:focus-within {
+  background: radial-gradient(circle at 34% 28%, #4a3a68, #16111f);
+  border-color: var(--hw-ember);
+  box-shadow:
+    0 10px 26px rgb(8 5 16 / 60%),
+    0 0 26px rgb(255 138 43 / 40%),
+    0 0 46px rgb(109 255 196 / 18%);
+}
+
+/* ---- TOOLTIPS ------------------------------------------------------------------------------------ */
+html[data-vo-experience="halloween"] :is([role="tooltip"],[class*="_tooltip_"]) {
+  background: #1b1526;
+  color: var(--hw-text);
+  border: 1px solid var(--hw-line);
+  box-shadow: var(--hw-shadow-sm);
+}
+
+/* ---- AVATAR AND PROFILE FRAMES: CARVED, NOT A FLAT RING -----------------------------------------
+   A layered frame — a dark stone rim, an inner ember line and an outer spectral bloom — built from
+   stacked box-shadows so it adds NO element, NO size and NO layout. Identity, photo and the online
+   dot are untouched; only the ring around them changes. */
+html[data-vo-experience="halloween"] :is([class*="_avatar_"],[class*="_portrait_"],[class*="_identityGroup_"] img) {
+  border-color: #241c33;
+  box-shadow:
+    0 0 0 1px #5b4a7d,
+    0 0 0 3px #1a1426,
+    0 0 0 4px rgb(255 138 43 / 55%),
+    0 2px 10px rgb(0 0 0 / 55%),
+    0 0 18px rgb(162 116 255 / 30%);
+}
+
+html[data-vo-experience="halloween"] :is([class*="_avatar_"],[class*="_portrait_"]):hover {
+  box-shadow:
+    0 0 0 1px #7a63a8,
+    0 0 0 3px #1a1426,
+    0 0 0 4px rgb(255 155 61 / 85%),
+    0 2px 12px rgb(0 0 0 / 60%),
+    0 0 26px rgb(255 138 43 / 35%);
+}
+
+/* ---- THE TOUCAN CHAT, AS ONE COMPONENT FAMILY ---------------------------------------------------
+   Header, body, bubbles, composer and footer were three different surfaces before. One plum family,
+   ivory text, and the composer's stray green border replaced by the season's own ember focus. */
+html[data-vo-experience="halloween"] :is([class*="_toucan_"],[class*="_assistant_"],[class*="_chat_"]) {
+  color: var(--hw-text);
+}
+
+html[data-vo-experience="halloween"] :is([class*="_toucan_"],[class*="_assistant_"]) :is([class*="_header_"],[class*="_title_"],[class*="_name_"]) {
+  color: var(--hw-text);
+}
+
+html[data-vo-experience="halloween"] :is([class*="_bubble_"],[class*="_message_"]) {
+  background: #332a4a;
+  color: var(--hw-text);
+  border: 1px solid var(--hw-line-soft);
+}
+
+html[data-vo-experience="halloween"] :is([class*="_composer_"],[class*="_inputRow_"]) {
+  background: #1b1526;
+  border-color: var(--hw-line);
+}
+
+html[data-vo-experience="halloween"] :is([class*="_composer_"],[class*="_inputRow_"]) :is(input,textarea) {
+  background: transparent;
+  border-color: var(--hw-line);
+  color: var(--hw-text);
+}
+
+html[data-vo-experience="halloween"] :is([class*="_composer_"],[class*="_inputRow_"]) :is(input,textarea):focus {
+  border-color: var(--hw-ember);
+  box-shadow: 0 0 0 2px rgb(255 138 43 / 25%);
+  outline: none;
+}
+
+/* ---- COMPANY HUB ILLUSTRATIONS ------------------------------------------------------------------
+   The hero art is product illustration, not a badge, so it is allowed a seasonal treatment. It is
+   GRADED, never replaced: a warm ember cast and a violet bloom behind it, so it belongs to the
+   haunted office instead of sitting on a dark rectangle. The image itself is untouched on disk. */
+html[data-vo-experience="halloween"] :is([class*="_hero_"],[class*="_announcement_"],[class*="_illustration_"]) img {
+  filter: saturate(0.82) hue-rotate(-12deg) brightness(0.92) drop-shadow(0 0 22px rgb(162 116 255 / 35%));
+}
+
+/* ══ WHAT KEEPS ITS OWN COLOUR — restated last so it wins ══
+   Status, badges, employee photos and EARNED BADGES are exempt from everything above. A badge is a
+   permanent achievement and a status colour is a fact about a person; a season may not restyle
+   either, and employee photos must look like the people they are. */
+html[data-vo-experience="halloween"] :is(
+  [class*="_badge_"],
+  [class*="_tileBadge_"],
+  [class*="_award_"],
+  [class*="_achievement_"],
+  [class*="_statusDot_"],
+  [class*="_presence_"],
+  [data-testid^="dock-badge-"]
+),
+html[data-vo-experience="halloween"] :is([class*="_badge_"],[class*="_award_"],[class*="_achievement_"]) * {
+  background: revert;
+  border-color: revert;
+  color: revert;
+  box-shadow: revert;
+  filter: none;
+  opacity: 1;
+}
+
+html[data-vo-experience="halloween"] :is([class*="_badge_"],[class*="_award_"],[class*="_achievement_"],[class*="_photo_"],[class*="_identityGroup_"]) img {
+  filter: none;
+}
+
+/* ---- THE FOUR THE AUDIT CAUGHT -----------------------------------------------------------------
+   Found by walking every visible text node and computing its real WCAG ratio, not by eye. Each is
+   the same class of mistake in a different direction, and each is fixed at its cause.
+
+   1. CHIPS THAT KEEP A LIGHT BACKGROUND. The level pill (#ffe6ad) and the coin balance (#fdf0d2)
+      are warm light surfaces by design — they are meant to read as gold. The broad light-text rule
+      above lifted their INK to ivory, which put ivory on cream at 1.07:1. They keep their light
+      background, so they need DARK ink: #2a1d05 on #ffe6ad is ~12:1.
+   2. ACCENT LABELS DRAWN FOR A WHITE PANEL. The Settings category accents (a deep green for the
+      selected item, an amber for Developer) were chosen against white and land at 2.3:1 on the
+      themed panel. They keep their MEANING — selected is still green, Developer is still amber —
+      at a value that works on a dark ground. */
+
+/*  3. EMPLOYEE INITIALS ON A LIGHT AVATAR PLACEHOLDER (`_thumbMark_`). Same shape of mistake as the
+       chips, and the one that matters most: these are people's identities. The placeholder disc stays
+       light — it is how the product draws somebody with no photo — so the initials stay dark ink. */
+html[data-vo-experience="halloween"] :is([class*="_level_"], [class*="_balance_"], [class*="_thumbMark_"], [class*="_initial_"], [class*="_monogram_"]),
+html[data-vo-experience="halloween"] :is([class*="_level_"], [class*="_balance_"], [class*="_thumbMark_"], [class*="_initial_"], [class*="_monogram_"]) * {
+  /* `!important` deliberately, and it is the right tool exactly once. The light-text inversion above
+     is intentionally broad — that breadth is what fixed 130 unreadable labels — and it matches these
+     chips' children at a HIGHER specificity than any selector that names the chips can reach without
+     becoming unreadable itself. This is the corrective for that one broad rule, not a habit. */
+  color: #2a1d05 !important;
+}
+
+html[data-vo-experience="halloween"] [class*="_navLabel_"] {
+  /* The default: the panel's own ivory. The two accented states override it below. */
+  color: var(--hw-text);
+}
+
+html[data-vo-experience="halloween"] [aria-selected="true"] [class*="_navLabel_"],
+html[data-vo-experience="halloween"] [class*="_navItem_"][data-active="true"] [class*="_navLabel_"] {
+  /* Selected keeps its green MEANING, lifted to a value that reads on #221b30 (~7.8:1). */
+  color: #7fe3a6;
+}
+
+html[data-vo-experience="halloween"] [class*="_navItem_"][data-dev="true"] [class*="_navLabel_"],
+html[data-vo-experience="halloween"] [data-category="developer"] [class*="_navLabel_"] {
+  /* Developer keeps its amber warning meaning, lifted the same way (~8.4:1). */
+  color: #f0c15a;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════════════════════════
+   THE CHAT FAMILY — Toucan Assistant, employee DMs, group chats and spatial chat
+   ══════════════════════════════════════════════════════════════════════════════════════════════
+
+   WHY ONE BLOCK COVERS ALL OF THEM. ToucanAssistantPanel.module.css imports
+   Chat/ConversationView.module.css directly — its own header says the two "cannot visually drift
+   apart" — so the panel chrome, header, message rows, bubbles, scrolling column and composer are
+   literally the same classes in every chat surface the product has. Theming that one family is
+   therefore the whole job, and it is why the previous pass missed all of it: my selectors named
+   `_bubble_` and `_composer_` but the real surfaces are `_panel_`, `_messages_`, `_inputPill_`
+   and `_textarea_`, painted `#fdfcfa` — a near-white the dark frame was drawn around.
+
+   Every class below is read from that stylesheet, not guessed. */
+
+html[data-vo-experience="halloween"] :is([class*="_panel_"], [class*="_panelMinimized_"]),
+html[data-vo-experience="halloween"] [class*="_messages_"],
+html[data-vo-experience="halloween"] [class*="_header_"],
+html[data-vo-experience="halloween"] [class*="_composer_"],
+html[data-vo-experience="halloween"] [class*="_mediaMenu_"],
+html[data-vo-experience="halloween"] [class*="_emojiPopover_"],
+html[data-vo-experience="halloween"] [class*="_popover_"],
+html[data-vo-experience="halloween"] [class*="_release_"],
+html[data-vo-experience="halloween"] [class*="_attachmentPreview_"],
+html[data-vo-experience="halloween"] [class*="_actionCard_"],
+html[data-vo-experience="halloween"] [class*="_popoverHeading_"] {
+  background: var(--hw-surface) !important;
+  color: var(--hw-text);
+  border-color: var(--hw-line);
+}
+
+/* The conversation column itself gets a touch more depth than the frame, so the window reads as a
+   lit room with a recessed middle rather than one flat slab. */
+html[data-vo-experience="halloween"] [class*="_messages_"] {
+  background: linear-gradient(180deg, #1d1729 0%, #241c33 100%) !important;
+}
+
+/* THE TWO SIDES OF A CONVERSATION MUST STAY TELLABLE APART. Incoming is plum, outgoing is a warmer
+   ember-tinted plum — distinct in hue as well as value, so the distinction survives for anyone who
+   reads value rather than colour. */
+html[data-vo-experience="halloween"] [class*="_peer_"] [class*="_bubbleLine_"],
+html[data-vo-experience="halloween"] [class*="_message_"]:not([class*="_own_"]) {
+  background: #332a4a;
+  color: var(--hw-text);
+  border: 1px solid #443a60;
+}
+
+html[data-vo-experience="halloween"] :is([class*="_own_"], [class*="_rowSelf_"]) [class*="_bubbleLine_"],
+html[data-vo-experience="halloween"] [class*="_own_"][class*="_message_"] {
+  background: linear-gradient(180deg, #5a3a22 0%, #472c19 100%);
+  color: #fff0e0;
+  border: 1px solid #7a4d2c;
+}
+
+/* Names, timestamps, meta, system lines and the seen row. All were dark-on-white by design. */
+html[data-vo-experience="halloween"] :is(
+  [class*="_senderName_"], [class*="_timestamp_"], [class*="_timestampRight_"], [class*="_meta_"],
+  [class*="_subtitle_"], [class*="_seenLabel_"], [class*="_systemText_"], [class*="_systemTime_"],
+  [class*="_dayDividerLabel_"], [class*="_dndHelperText_"]
+) {
+  color: var(--hw-text-dim);
+}
+
+html[data-vo-experience="halloween"] :is([class*="_title_"], [class*="_headerText_"]) {
+  /* The header name read as pale violet on plum in the capture — the one line that names who you
+     are talking to must be the most readable thing in the window. */
+  color: var(--hw-text) !important;
+}
+
+html[data-vo-experience="halloween"] [class*="_dayDividerLine_"] {
+  background: var(--hw-line-soft);
+}
+
+/* THE COMPOSER. The pill and textarea were the last white rectangles; the stray green focus ring
+   becomes the season's ember. */
+html[data-vo-experience="halloween"] :is([class*="_inputPill_"], [class*="_textarea_"], [class*="_pillTextarea_"]) {
+  background: #15101f !important;
+  color: var(--hw-text);
+  border-color: var(--hw-line);
+}
+
+html[data-vo-experience="halloween"] :is([class*="_inputPill_"], [class*="_textarea_"], [class*="_pillTextarea_"])::placeholder {
+  color: var(--hw-text-faint);
+}
+
+html[data-vo-experience="halloween"] :is([class*="_inputPill_"], [class*="_pillTextarea_"]):focus-within,
+html[data-vo-experience="halloween"] [class*="_textarea_"]:focus {
+  border-color: var(--hw-ember);
+  box-shadow: 0 0 0 2px rgb(255 138 43 / 25%);
+  outline: none;
+}
+
+/* Composer controls — attachment, mic, GIF, emoji — and the header's minimize/close. Circular
+   ghost buttons that were white discs. */
+html[data-vo-experience="halloween"] :is(
+  [class*="_iconButton_"], [class*="_emojiToggle_"], [class*="_mediaCluster_"] button,
+  [class*="_minimizeButton_"], [class*="_closeButton_"], [class*="_headerAction_"]
+) {
+  background: #2a2340;
+  color: var(--hw-text);
+  border: 1px solid var(--hw-line-soft);
+}
+
+html[data-vo-experience="halloween"] :is(
+  [class*="_iconButton_"], [class*="_emojiToggle_"], [class*="_minimizeButton_"],
+  [class*="_closeButton_"], [class*="_headerAction_"]
+):hover:not(:disabled) {
+  background: #3b3054;
+  border-color: var(--hw-ember);
+  box-shadow: 0 0 14px rgb(255 138 43 / 35%);
+}
+
+html[data-vo-experience="halloween"] [class*="_iconButtonDisabled_"] {
+  background: #241d33;
+  color: #8d82a8;
+  border: 1px dashed #3d3356;
+}
+
+html[data-vo-experience="halloween"] [class*="_iconButtonActive_"] {
+  background: #3b3054;
+  border-color: var(--hw-ember);
+}
+
+/* SEND is the composer's primary action — pumpkin, with dark ink. */
+html[data-vo-experience="halloween"] [class*="_sendButton_"]:not(:disabled) {
+  background: var(--hw-primary) !important;
+  color: var(--hw-primary-text) !important;
+  border: 1px solid #ffb055;
+}
+
+/* Typing indicator, banners and errors. Errors keep their red MEANING at a value that reads on
+   plum; the connection banner keeps its own alarm colour for the same reason. */
+html[data-vo-experience="halloween"] [class*="_typingBubble_"] {
+  background: #332a4a;
+  border: 1px solid #443a60;
+}
+
+html[data-vo-experience="halloween"] [class*="_typingDot_"] {
+  background: var(--hw-text-dim);
+}
+
+html[data-vo-experience="halloween"] :is([class*="_errorBubble_"], [class*="_errorBanner_"], [class*="_sendError_"]) {
+  background: #3a1d20 !important;
+  color: #ffb4b4;
+  border: 1px solid #6d2f33;
+}
+
+html[data-vo-experience="halloween"] [class*="_connectionBanner_"] {
+  background: #3a2d1a !important;
+  color: #ffd79a;
+  border: 1px solid #6d5320;
+}
+
+/* The empty conversation and the Toucan's "let it go" footer. */
+html[data-vo-experience="halloween"] :is([class*="_popoverEmpty_"], [class*="_release_"]) {
+  background: var(--hw-surface-2) !important;
+  color: var(--hw-text-dim);
+  border-color: var(--hw-line);
+}
+
+/* The Toucan's own avatar disc keeps its warm ground — it is the bird's identity, not chrome — so
+   its glyph stays dark ink on that warm circle rather than inheriting ivory. */
+html[data-vo-experience="halloween"] :is([class*="_toucanAvatar_"], [class*="_headerAvatar_"], [class*="_avatar_"], [class*="_seenAvatar_"]),
+html[data-vo-experience="halloween"] :is([class*="_toucanAvatar_"], [class*="_headerAvatar_"], [class*="_seenAvatar_"]) * {
+  color: #241f30 !important;
+}
+
+/* The 8-hour checkout reminder — the last white card, found by sweeping the live DOM for light
+   surfaces rather than by guessing at names. Its "Later" is secondary and its "Start checkout" is
+   the primary action, which is the same two-role split the rest of the theme uses. */
+html[data-vo-experience="halloween"] [class*="_reminderCard_"] {
+  background: linear-gradient(180deg, var(--hw-surface-2), var(--hw-surface)) !important;
+  color: var(--hw-text);
+  border-color: var(--hw-line);
+  box-shadow: var(--hw-shadow);
+}
+
+html[data-vo-experience="halloween"] [class*="_reminderLater_"] {
+  background: var(--hw-secondary) !important;
+  color: var(--hw-secondary-text) !important;
+  border: 1px solid var(--hw-line);
+}

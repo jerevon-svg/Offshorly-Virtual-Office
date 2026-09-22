@@ -27,6 +27,7 @@ import { Rain } from "./Rain";
 import { Sky } from "./Sky";
 import type { EnvPhase } from "./timeOfDay";
 import { LIGHTNING_PHASE_GAIN, weatherGrade, type RainParams } from "./weatherGrade";
+import { overlay, type EnvOverlay } from "./presets";
 import type { WeatherState } from "./weather";
 
 /** WHICH WORLD THE ENVIRONMENT IS PRESENTING.
@@ -106,6 +107,13 @@ export class Environment {
   private _weather: WeatherState = "clear";
   private _fog = true;
   private _presentation: EnvPresentation = "world";
+  /** A SEASON'S RE-GRADE, composed onto the resolved weather x phase preset in apply().
+   *
+   *  Null is the ordinary office and costs nothing. A season sets one table of per-phase overlays and
+   *  the composition happens at the SAME single point weather already composes at, so a season and a
+   *  thunderstorm stack rather than fight — and every manual time and weather control keeps working,
+   *  because the overlay modifies whatever the employee chose instead of replacing it. */
+  private _season: Record<EnvPhase, EnvOverlay> | null = null;
   /** OFFICE draws no campus, but rain is weather, not scenery — see `rainInOffice`. */
   private _rainInOffice = true;
 
@@ -301,14 +309,28 @@ export class Environment {
    *  from afternoon to dusk on a single frame, is the one thing that gives a weather system away. The
    *  first grade of the session, a presentation switch and an explicit settle() all still land instantly:
    *  there is nothing to fade FROM. */
+  /** Install or clear a season's re-grade. Re-applies immediately so the change is visible without
+   *  waiting for the next phase tick, and travels through the ordinary transition rather than
+   *  snapping — putting the decorations up should feel like the lights changing, not like a cut. */
+  set season(grade: Record<EnvPhase, EnvOverlay> | null) {
+    this._season = grade;
+    if (this.current) this.apply(this.current, true);
+  }
+
+  get season(): Record<EnvPhase, EnvOverlay> | null {
+    return this._season;
+  }
+
   apply(phase: EnvPhase, force = false): boolean {
     if (phase === this.current && !force) return false;
     const first = this.current === null;
     const phaseChanged = phase !== this.current;
     this.current = phase;
-    // THE ONE COMPOSITION POINT. Weather × phase resolve here and nowhere else.
+    // THE ONE COMPOSITION POINT. Weather × phase resolve here and nowhere else — and, since Phase 9B,
+    // a season's overlay lands on top of that resolved pair rather than anywhere else in the pipeline.
     const g = weatherGrade(this._weather, phase);
-    blendPresetInto(this.target, g.preset, g.preset, 1);
+    const preset = this._season ? overlay(g.preset, this._season[phase]) : g.preset;
+    blendPresetInto(this.target, preset, preset, 1);
     this.targetRain.perMillion = g.rain.perMillion;
     this.targetRain.opacity = g.rain.opacity;
     this.targetRain.speed = g.rain.speed;

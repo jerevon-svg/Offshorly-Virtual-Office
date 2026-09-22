@@ -21,6 +21,7 @@ import { setDevIdentity as setTalkRequestsClientDevIdentity } from "../services/
 import { setDevIdentity as setToucanDevIdentity } from "../services/toucan";
 import { setDevIdentity as setAttendanceDevIdentity } from "../services/attendance";
 import { setDevIdentity as setTeamMapDevIdentity } from "../services/teamMap";
+import { setDevIdentity as setExperienceCatalogDevIdentity } from "../services/office/experienceCatalog";
 import { setDevIdentity as setMeetingChatDevIdentity } from "../services/meeting/meetingChatClient";
 
 // Boot-time permission gate for the Virtual Office. Calls Atlas's
@@ -260,6 +261,9 @@ function seedDevBypassIdentity(): void {
   setForecastClientDevIdentity(email);
   setAttendanceDevIdentity(email);
   setTeamMapDevIdentity(email);
+  // Phase 9A — the Office Experience catalog is a VO-backend client like the rest, so the local rig
+  // reaches it the same way: no bearer token exists when the gate is bypassed.
+  setExperienceCatalogDevIdentity(email);
   setMeetingChatDevIdentity(email);
   setFeedClientDevIdentity(email);
   setQuestsClientDevIdentity(email);

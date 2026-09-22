@@ -66,7 +66,9 @@ import { buildAiLab } from "../build/ailab";
 import { MonkeyAvatar } from "../avatar/MonkeyAvatar";
 import { aiLabStandTest, inAiLabZone } from "../world/ailab";
 import { Environment } from "../env/Environment";
-import { ENV_TIME_MODES, TimeOfDay, type EnvTimeMode } from "../env/timeOfDay";
+import { createSeasonLayer, type BuiltSeasonLayer } from "../season/SeasonLayer";
+import type { SeasonTheme } from "../season/season";
+import { ENV_TIME_MODES, TimeOfDay, type EnvPhase, type EnvTimeMode } from "../env/timeOfDay";
 import { WEATHER_MODES, Weather, type WeatherMode, type WeatherState } from "../env/weather";
 import type { ThunderEvent } from "../env/Lightning";
 import { ManualWeatherProvider } from "../env/providers/manual";
@@ -439,7 +441,7 @@ export interface Vo3dToucanSummon {
  *  adapters/v1HomeDesk). Omitting it keeps the default spawn below, byte for byte. It is a PREVIEW of a
  *  desk and nothing more: this world reads no attendance, restores no persisted position and writes
  *  nothing back, so it may never be presented as "checked in". */
-export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdentity, homeDesk?: Vo3dHomeDesk, selfMovement?: Vo3dSelfMovementSink): Vo3dWorld {
+export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdentity, homeDesk?: Vo3dHomeDesk, selfMovement?: Vo3dSelfMovementSink, season: SeasonTheme = "none"): Vo3dWorld {
   // ---- LIFECYCLE ---------------------------------------------------------------------------------
   // The three things a top-level module body never had to think about, because the document outlived it.
   //
@@ -762,6 +764,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     });
   }
   const timeOfDay = new TimeOfDay();
+  /** Set by the season layer when it attaches; null in the ordinary office. See applyEnvPhase. */
+  let seasonAutoPhase: EnvPhase | null = null;
   // WEATHER: a second, INDEPENDENT axis.
   //
   // AUTO now reads REAL weather for the office, from OUR backend (GET /weather/office), which holds the
@@ -805,7 +809,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   };
   function applyEnvPhase(force = false): void {
     const now = performance.now();
-    const phase = timeOfDay.phase(now);
+    // A SEASON SETS WHAT "AUTO" MEANS, AND NOTHING ELSE. A Halloween office at midday fights its own
+    // art direction, so while a season is on and the employee has made NO time choice, AUTO resolves to
+    // the season's intended hour. The moment they pick a time in Settings, `timeOfDay.mode` is no longer
+    // "auto" and this branch stops applying — their choice moves the world, within the season's grade.
+    const phase = seasonAutoPhase !== null && timeOfDay.mode === "auto" ? seasonAutoPhase : timeOfDay.phase(now);
     const w = weather.state(now);
     envState.phase = phase;
     envState.realPhase = timeOfDay.realPhase;
@@ -843,6 +851,27 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   };
   applyEnvironmentPreference();
   applyEnvPhase(true);
+
+  // ══ THE SEASONAL DECORATION LAYER ══
+  //
+  // Attached over the world that has already been built, and it is the ONLY thing in this file a season
+  // touches. It adds its own groups to the scene and hands the Environment one overlay table; it never
+  // reads or writes WorldState, so navigation, collision, seating, doors, avatars and interactions are
+  // the same objects they were a line earlier — not preserved by care here, but unreachable from there.
+  //
+  // `rooms` comes from WorldState rather than from the floor plan because that is where the authored
+  // rect and the walkable floorRect live together, which is what the placement rules measure from.
+  const seasonLayer: BuiltSeasonLayer | null = createSeasonLayer(season, {
+    scene: R.scene,
+    rooms: [...world.rooms.values()].map((r) => ({ id: r.id, rect: r.rect, floorRect: r.floorRect })),
+    doors: plan.openings,
+    setEnvOverlay: (grade, autoPhase) => {
+      env.season = grade;
+      seasonAutoPhase = autoPhase;
+      applyEnvPhase(true);
+    },
+    invalidateShadows: () => R.invalidateShadows(),
+  });
 
   // ---- camera modes ------------------------------------------------------------------------------
   // OFFICE is the default and the product experience: the ground floor framed automatically, fixed pitch
@@ -2474,6 +2503,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     meeting: () => caveLiveShare.state.status === "connected",
   });
   envAudio.arm(); // nothing is created or played until a real user gesture — see EnvironmentalAudio.arm
+  // THE SEASON'S OWN AMBIENCE. Synthesised, not sampled (audio/HauntAudio.ts), and it inherits every
+  // guarantee the mixer already makes: lazy on a user gesture, under the Audio volume and mute, ducked
+  // during a meeting, and never anywhere near LiveKit's streams. Zero in the ordinary office costs
+  // nothing at all, and `dispose()` below takes the layer with it.
+  if (season === "halloween") envAudio.setSeasonAmbience(1);
 
   // SETTINGS -> AUDIO -> OFFICE SOUND. The employee's own preference for the ambient bed, read from the
   // SHARED store (services/settings/experiencePreferences) exactly as the graphics controller reads its
@@ -3972,6 +4006,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     mirror.ambient.update(t, dt / 1000); // powered-surface idle animation (screens, sensors, status strips)
     if (aiLab.group.visible) aiLab.tick(t); // the agents' status pulse — one sin() and six float writes
     monkey?.update(dt / 1000); // dev-only; a no-op while the monkey is hidden or absent
+    // The season's upright glow haloes turn to face whichever camera is drawing. A handful of
+    // quaternion copies; absent entirely in the ordinary office.
+    seasonLayer?.update(R.activeCamera);
     applyEnvPhase(); // V1's clock is re-read at most twice a minute and only writes when the phase changes
     // THE ENVIRONMENT'S OWN CLOCK: a travelling grade (Clear→Rain, Day→Sunset), the storm scheduler and the
     // foliage wind. Idle cost is three comparisons; it writes to the renderer only on frames where the
@@ -5023,6 +5060,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     editPanel?.dispose();
     editPanel = null;
     editGizmo.dispose();
+    // The season's own groups, geometry and materials. It owns everything it made and nothing it did
+    // not, so this is a removal rather than a restore — see season/SeasonLayer.dispose.
+    seasonLayer?.dispose();
     // Dev-only bodies, present only when a stress scenario or `?monkey=1` asked for them.
     crowd?.clear(); // Crowd's teardown is clear(): it disposes every member's clone, textures included
     R.removeDynamicCaster(coworkers.group);

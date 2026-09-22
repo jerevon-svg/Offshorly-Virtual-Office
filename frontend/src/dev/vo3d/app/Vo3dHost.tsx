@@ -43,6 +43,8 @@
 // A 401 still cannot redirect this route into /login by surprise: apiFetch already navigates on its own,
 // and useOfficeRoster surfaces every other failure as state rather than throwing.
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { OfficeExperience } from "../../../services/settings/officeExperience";
+import { seasonForExperience } from "../season/season";
 import { resolveVo3dCoworkers, selfEmailKey } from "../adapters/v1Coworkers";
 import { applyLivePositions, countLivePositions, countSeated, countWalking } from "../adapters/v1CoworkerPositions";
 import { createV1SelfMovementSink, resolveV1SelfPosition } from "../adapters/v1SelfMovement";
@@ -112,8 +114,33 @@ type Phase =
   | { kind: "error"; message: string };
 
 
-export function Vo3dHost() {
+/** WHICH OFFICE EXPERIENCE THIS HOST IS STANDING IN FOR. Every value except "classic" is this same
+ *  V2 world — a season is a decorative layer over it, never a second world — so this changes what is
+ *  DRAWN OVER the office and nothing about what the office IS.
+ *
+ *  Passed down from App.tsx, which resolved it once against the server's catalog. It is deliberately
+ *  not read from the preference store here: this host must show the experience the session was
+ *  resolved to, not whatever a store says now. */
+export interface Vo3dHostProps {
+  experience?: OfficeExperience;
+}
+
+export function Vo3dHost({ experience }: Vo3dHostProps = {}) {
   const hostRef = useRef<HTMLDivElement>(null);
+  // PHASE 9A — THE SEASONAL SEAM, AND TODAY IT IS ALWAYS "none". The backend refuses to publish or
+  // preview a season whose decoration layer has not shipped, and none has, so no employee can be
+  // resolved into one. It is computed and surfaced here rather than left for later because this is
+  // the one place that knows both which experience was resolved and which world is being built — the
+  // decoration layer will be constructed from exactly this value, beside the world it decorates.
+  const season = seasonForExperience(experience);
+  // READ THROUGH A REF BY THE WORLD-BUILDING EFFECT, which runs once per mount. The season cannot
+  // change under a mounted world — App.tsx resolves the experience once after the auth gate and holds
+  // it for the document, and a disposed world's canvas has had its WebGL context force-lost, so there
+  // is nothing to rebuild into. Switching season is a confirmed full-document reload, exactly like
+  // switching to Classic. The ref is what says that to the effect without claiming a dependency the
+  // effect could not honour.
+  const seasonRef = useRef(season);
+  seasonRef.current = season;
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
   // The live world, for the coworker effect below. A ref rather than state on purpose: the world is not
   // rendered by React and must not re-render anything when it appears.
@@ -303,7 +330,7 @@ export function Vo3dHost() {
         // The unmount may have already run — StrictMode's cleanup fires within the same tick that this
         // import was started in. Building a world now would be building one nobody will ever dispose.
         if (cancelled) return;
-        world = createVo3dWorld(canvas, identity ?? undefined, homeDesk ?? undefined, selfMovement ?? undefined);
+        world = createVo3dWorld(canvas, identity ?? undefined, homeDesk ?? undefined, selfMovement ?? undefined, seasonRef.current);
         worldRef.current = world;
         // V1's snapshot may have resolved while the world module was loading — apply it now, or this
         // employee stands at their desk preview until a movement change that may never arrive.
@@ -340,6 +367,7 @@ export function Vo3dHost() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the world is built ONCE per mount; the
     // roster is delivered through the effect below and through coworkerSetRef, never by rebuilding it.
+    // The season is read through seasonRef for the same reason — see its declaration above.
   }, []);
 
   // THE ONE WRITE INTO THE WORLD. Runs on every roster change and on nothing else; a world that is not
@@ -451,6 +479,9 @@ export function Vo3dHost() {
     <div
       ref={hostRef}
       data-testid="vo3d-host"
+      // Observable now so the seam is testable before anything implements it; it is what the
+      // decoration layer will be built from. "none" is the ordinary, undecorated office.
+      data-season={season}
       style={{ position: "fixed", inset: 0, overflow: "hidden", background: "#e7ded4" }}
     >
       {/* THE OFFICE'S OWN BOOT COVER, not a second one. components/LoadingCover is the branded screen V1
