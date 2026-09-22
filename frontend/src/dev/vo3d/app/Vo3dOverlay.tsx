@@ -54,6 +54,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Vo3dCoworkerSelection, Vo3dScreenAnchor } from "./interactions";
 import type { Vo3dWorld } from "./world";
 import { CoworkerActionMenu, type Vo3dCoworkerAction } from "./CoworkerActionMenu";
+import type { Vo3dCoworker } from "./coworkers";
+import { resolveEmployeeLocations, type EmployeeLocation } from "./employeeLocation";
 import { Vo3dRoomDetails } from "./Vo3dRoomDetails";
 import { Vo3dRoomLabels } from "./Vo3dRoomLabels";
 import { resolveRoomDetails } from "./roomDetails";
@@ -172,6 +174,9 @@ export interface Vo3dOverlayProps {
    *  down rather than read back out of the world: React owns this fact, and asking the scene for it
    *  would mean polling a thing that changes without telling React. */
   drawnEmails: readonly string[];
+  /** DISCOVERY — the host's full roster, NOT filtered by volume. Search offers everybody here, so a Cave
+   *  occupant stays findable while the Cave's rendering isolation is left exactly as it is. */
+  coworkers?: readonly Vo3dCoworker[];
   /** ROOM DETAILS — the rest of V1's roster state the panel needs, passed down from the host's ONE
    *  useOfficeRoster rather than re-subscribed here. `rosterLoading` is what keeps "still loading" from
    *  reading as "nobody is here", and `roomNames` is Atlas's room id -> name map, which is the only way a
@@ -290,7 +295,7 @@ const CHECKOUT_PANEL_STATES: ReadonlySet<CheckoutState> = new Set<CheckoutState>
   "EDITING_TIME_LOG", "REVIEWING", "SUBMITTING", "SUBMISSION_FAILED", "CHECKOUT_SUCCESS", "WALKING_TO_EXIT",
 ]);
 
-export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, rosterLoading = false, roomNames }: Vo3dOverlayProps) {
+export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = [], attendance, rosterLoading = false, roomNames }: Vo3dOverlayProps) {
   const officeAccess = attendance.access;
   const self = selfEmailKey();
   const [selection, setSelection] = useState<Vo3dCoworkerSelection | null>(null);
@@ -1484,6 +1489,25 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
       });
   }, [openConversation, refetchConversations, self, showToast]);
 
+  // ---- DISCOVERY: WHERE EACH PERSON IS --------------------------------------------------------------
+  // One label per employee, from the facts the movement feed already publishes (app/employeeLocation.ts).
+  // Recomputed whenever the roster does, which is whenever somebody's position changes — so the label
+  // follows real movement instead of a desk or a cached room. `insideCave` is the viewer's own side of the
+  // sealed volume, which is what decides whether Locate can reach anybody at all.
+  const locationByEmail = useMemo<Record<string, EmployeeLocation>>(() => {
+    const world = worldRef.current;
+    return resolveEmployeeLocations(
+      coworkers.map((c) => ({ email: emailKey(c.email), posSource: c.posSource, place: c.place, point: c.point })),
+      {
+        viewerInsideCave: insideCave,
+        roomName: (id) => roomNames?.get(id) ?? formatRoomName(id),
+        // Read-only, and only when the world is up; without it the resolver stays coarse rather than
+        // guessing at the exterior.
+        ...(ready && world ? { zoneAt: (x: number, z: number) => world.zoneAt(x, z) } : {}),
+      },
+    );
+  }, [coworkers, insideCave, ready, roomNames, worldRef]);
+
   const peopleLayers = useMemo(() => {
     const drawn = new Set(drawnEmails.map((e) => emailKey(e)));
     return [...layersByEmail.entries()].filter(([email]) => drawn.has(email)).map(([, layer]) => layer);
@@ -1774,6 +1798,9 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
           onChoose={handleChoose}
           onClose={closeMenu}
           status={statusByEmail[selection.email]}
+          // DISCOVERY — where they are, kept SEPARATE from the status dot above: one is availability, the
+          // other is place, and collapsing them is how a desk becomes a location.
+          location={locationByEmail[selection.email]}
           unreadCount={chatAttention[selection.email]?.count}
           // Offered only when the target is in a >=2-member session the viewer is NOT already part of —
           // the same condition V1's menu computes, from the same store.
@@ -2136,6 +2163,7 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
         // card is the one you meet by walking to the doors. Both start this one journey.
         onStartCheckout={checkoutOffered ? startCheckout : undefined}
         peopleLayers={peopleLayers}
+        locationByEmail={locationByEmail}
         statusByEmail={statusByEmail}
         onCoworkerAction={runAction}
         onOpenProfile={openProfile}

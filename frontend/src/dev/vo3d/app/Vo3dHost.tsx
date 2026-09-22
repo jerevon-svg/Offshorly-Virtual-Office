@@ -466,6 +466,10 @@ export function Vo3dHost() {
           ready
           people={roster.people}
           drawnEmails={drawnEmails}
+          // DISCOVERY — the SAME roster the world is given, unfiltered by volume, so a Cave occupant can
+          // still be searched for and named even though no body is drawn for them. The overlay resolves
+          // each row to a location label (app/employeeLocation.ts); nothing new is fetched.
+          coworkers={coworkerSet.coworkers}
           attendance={attendance}
           // ROOM DETAILS reads two more fields off the SAME roster this host already holds: whether the
           // first load is still in flight (so an empty list cannot read as an empty room) and Atlas's

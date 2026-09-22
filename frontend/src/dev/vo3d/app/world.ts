@@ -275,6 +275,11 @@ export interface Vo3dWorld {
   /** PART 1 — the viewer's OWN head, so their "You" pill hangs where everybody else's does. Null while
    *  the body is not drawn (first person hides it). */
   selfAnchor(): Vo3dScreenAnchor | null;
+  /** DISCOVERY — which access zone a V1-frame point falls in, read-only. The exterior cannot be read off
+   *  the wire (a room id is only rewritten on a boundary crossing, so somebody on the street still carries
+   *  the room they left), and this is the world's own existing answer — app/access.ts zoneAt over the same
+   *  geometry the gate uses. Exposed, not computed anew: see app/employeeLocation.ts. */
+  zoneAt(x: number, z: number): Zone;
   /** PHASE 7A — WHICH CAMERA IS DRIVING, pushed out to the host as it changes and once immediately, so a
    *  subscriber never has to guess the current mode. The branded HUD is hidden while PLAYER owns the
    *  pointer and shown over OFFICE and EXPLORE. Returns its own unsubscribe. */
@@ -5299,6 +5304,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     coworkerAnchor,
     coworkerAnchors,
     selfAnchor: () => (avatar.root.visible ? selfAnchor() : null),
+    zoneAt: (x, z) => zoneOf({ x, z }),
     toucanAnchor,
     // PHASE 7G. The intent, and V1's own coarse state pushed out as it changes — the host opens the
     // assistant on ARRIVAL, exactly as V1's office does.

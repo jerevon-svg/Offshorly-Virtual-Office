@@ -142,6 +142,9 @@ export interface Vo3dHudProps {
    *  a person the world has no body for cannot be located in it. */
   peopleLayers: readonly AssetLayer[];
   statusByEmail: Record<string, OfficeStatus>;
+  /** DISCOVERY — where each person is (app/employeeLocation.ts), keyed by email exactly as
+   *  `statusByEmail` is. Search renders it beside the status and refuses Locate when it is unreachable. */
+  locationByEmail?: Record<string, { label: string; locatable: boolean }>;
   /** Phase 6D's own action handler, reused verbatim so Search's Chat/Call are the menu's Chat/Call. */
   onCoworkerAction: (email: string, displayName: string, action: Vo3dCoworkerAction) => void;
   /** Open a profile. Owned by the host so the HUD and the interaction menu share one profile modal.
@@ -200,7 +203,7 @@ export interface Vo3dHudProps {
 }
 
 export function Vo3dHud({
-  worldRef, ready, attendance, checkoutFlow, onStartCheckout, peopleLayers, statusByEmail, onCoworkerAction, onOpenProfile,
+  worldRef, ready, attendance, checkoutFlow, onStartCheckout, peopleLayers, statusByEmail, locationByEmail, onCoworkerAction, onOpenProfile,
   onOpenConversation,
   people, selfId, conversations, unreadTotal, resolveDisplayName, onSelectConversation,
   onOpenDirectMessage, onStartGroup, overlayToolOpen, onOpenCurrentRoom, roomDiscoveryActive = false,
@@ -612,6 +615,7 @@ export function Vo3dHud({
         onClose={() => setDockTool(null)}
         people={peopleLayers as AssetLayer[]}
         statusByLayerId={statusByEmail}
+        locationByLayerId={locationByEmail}
         onLocate={locate}
         onChat={(layer) => searchAction(layer, "chat")}
         onCall={(layer) => searchAction(layer, "call")}

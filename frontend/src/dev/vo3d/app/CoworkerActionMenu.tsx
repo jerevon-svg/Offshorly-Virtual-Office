@@ -11,6 +11,7 @@
 // services (app/Vo3dHost.tsx). Nothing decorative is added and nothing is invented: a row exists here
 // only when the thing behind it actually works.
 import { STATUS_META, type OfficeStatus } from "../../../services/presence/status";
+import type { EmployeeLocation } from "./employeeLocation";
 import {
   WorldActionMenu,
   type WorldActionMenuAnchor,
@@ -36,6 +37,9 @@ export interface CoworkerActionMenuProps {
   onClose: () => void;
   /** Their presence, from the SAME Atlas roster status V1's nameplates read. Omitted when unknown. */
   status?: OfficeStatus;
+  /** WHERE they are (app/employeeLocation.ts) — a different question from `status` above and rendered as
+   *  its own line, never merged into the status pill. Omitted when the roster has not resolved one. */
+  location?: EmployeeLocation;
   /** Unread messages waiting from THIS person, from V1's own chat attention map. Badges the Chat row. */
   unreadCount?: number;
   /** True when the target is in a >=2-member spatial session the viewer is not part of (spatialSessionStore). */
@@ -51,6 +55,7 @@ export function CoworkerActionMenu({
   onChoose,
   onClose,
   status,
+  location,
   unreadCount,
   canAskToJoin,
   targetInActiveCall,
@@ -62,7 +67,13 @@ export function CoworkerActionMenu({
     { key: "viewProfile", label: "View Profile", onSelect: () => onChoose("viewProfile") },
   ];
   if (canAskToJoin) items.push({ key: "askToJoin", label: "Ask to Join", onSelect: () => onChoose("askToJoin") });
-  const meta = status ? { color: STATUS_META[status].color, label: STATUS_META[status].label } : undefined;
+  // STATUS AND LOCATION, SIDE BY SIDE. The dot and its word stay exactly what they were; the location is
+  // appended after a separator so "Available · In AI Lab" reads as two facts rather than one.
+  const meta = status
+    ? { color: STATUS_META[status].color, label: location ? `${STATUS_META[status].label} · ${location.label}` : STATUS_META[status].label }
+    : location
+      ? { color: "transparent", label: location.label }
+      : undefined;
 
   return (
     <WorldActionMenu
