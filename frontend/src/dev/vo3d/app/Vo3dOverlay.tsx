@@ -98,7 +98,7 @@ import type { ChatMessage } from "../../../services/chat";
 import { isAuthoredMessage } from "../../../services/chat/types";
 import { officePeopleToLayers } from "../../../data/rosterLayers";
 import { ACTIVE_DETAIL_STATUSES, mapAtlasToOfficeStatus, STATUS_META, type OfficeStatus } from "../../../services/presence/status";
-import { useDndEmails } from "../../../services/presence/dndClient";
+import { emitDndSet, useDndEmails } from "../../../services/presence/dndClient";
 import {
   emitGlobalChatActive,
   useGlobalChatActiveEmails,
@@ -1384,6 +1384,38 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, attendance, 
     },
     [],
   );
+  // ---- SELF DND BROADCAST (V1 parity) ---------------------------------------------------------
+  // V2 already CONSUMED dnd (useDndEmails above, and the talk/approach gate) and already rendered V1's
+  // own StatusPicker, but it never PUBLISHED: emitDndSet had exactly one caller, OfficeMap's effect,
+  // which does not run on the `?world=v2` route (App.tsx renders Vo3dHost INSTEAD of OfficeMap). So a V2
+  // employee was blocked by everybody else's DND while their own stayed invisible. Restored here
+  // UNCHANGED: the same service, the same `dnd_set` event, the same bare boolean.
+  //
+  // THE SAME EDGE-TRIGGER CONTRACT V1 USES, deliberately copied rather than reinvented — see
+  // OfficeMap's prevSelfOfficeStatusRef: the ref is seeded with the CURRENT status so a fresh mount is
+  // never mistaken for a transition, and only a real DND⇄not-DND crossing emits. Repeated renders,
+  // AVAILABLE→BUSY→LUNCH moves and re-entering the route all stay silent, which is what the server's
+  // per-socket refcount requires.
+  //
+  // DURATION AND EXPIRY NEED NOTHING HERE, by the store's own design: a DND session's expiry is what
+  // flips `currentStatus` back off "DND" (services/presence/selfStatusStore.ts, whose comment names this
+  // very effect as the thing that publishes it), so an expiring session emits `false` through exactly
+  // this path. startDnd/endDnd keep owning the local state and the duration; this only reports it.
+  //
+  // NO DOUBLE EMIT: V1 and V2 are mutually exclusive routes (App.tsx returns the V2 tree instead of
+  // OfficeMap), so the two effects can never be mounted at once; and within V2 this overlay is mounted
+  // once. The ref makes a re-render idempotent regardless.
+  const selfIsDnd = selfStatus === "DND";
+  const prevSelfIsDndRef = useRef(selfIsDnd);
+  useEffect(() => {
+    if (prevSelfIsDndRef.current === selfIsDnd) return;
+    prevSelfIsDndRef.current = selfIsDnd;
+    emitDndSet(selfIsDnd);
+  }, [selfIsDnd]);
+  // CLEANUP — V1 has no unmount rule here and neither does this: DND is a durable, persisted session
+  // (localStorage + expiry), not a window that is open or closed, so leaving the route must NOT tell
+  // peers the employee is available again. The server's own disconnect handling owns that.
+
   // THE PEERS. Server-broadcast snapshot, authoritative on every (re)connect — so a V1 client's open
   // window is seen here and a V2 client's open window is seen there, which is the whole point of reusing
   // the service rather than inventing a V2 one. Self is OR'd in from the LOCAL derivation so the viewer's

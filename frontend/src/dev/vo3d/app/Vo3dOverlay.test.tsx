@@ -13,7 +13,7 @@ import type { Vo3dWorld } from "./world";
 import { resetCurrentUserForTests, setCurrentUserFromMeResponse } from "../../../auth/currentUserStore";
 import type { OfficePerson } from "../../../services/office/floorMerge";
 import type { OfficeAccess } from "./access";
-import { getSelfStatusSnapshot, resetSelfStatusForTests, setManualStatus, startDnd } from "../../../services/presence/selfStatusStore";
+import { endDnd, getSelfStatusSnapshot, resetSelfStatusForTests, setManualStatus, startDnd } from "../../../services/presence/selfStatusStore";
 import { KIOSK_INTERACTION_ID } from "../rooms/reception";
 import { getCurrentUserId } from "../../../auth/useAuthGate";
 // @ts-expect-error node:fs is untyped under tsconfig.app.json (types: ["vite/client"] only).
@@ -28,7 +28,11 @@ const ALEX = "alex@offshorly.com";
 
 // ---- V1's services, at the module boundary ---------------------------------------------------------
 let dndEmails = new Set<string>();
-vi.mock("../../../services/presence/dndClient", () => ({ useDndEmails: () => dndEmails }));
+const dndEmits: boolean[] = [];
+vi.mock("../../../services/presence/dndClient", () => ({
+  useDndEmails: () => dndEmails,
+  emitDndSet: (on: boolean) => { dndEmits.push(on); },
+}));
 
 // GLOBAL CHAT ACTIVITY — V1's own presence service, mocked here the way dndClient is: the real module
 // opens a socket, and what this file is testing is that V2 publishes and consumes THAT service rather
@@ -461,6 +465,7 @@ beforeEach(() => {
   globalChatEmits.length = 0;
   globalChatEmails = new Set();
   dndEmails = new Set();
+  dndEmits.length = 0;
   sessions = [];
   attendance = "permitted";
   checkedInAt = null;
@@ -2534,5 +2539,55 @@ describe("the 8-hour reminder", () => {
     const card = await screen.findByTestId("checkout-reminder");
     await waitFor(() => expect(card.getAttribute("data-anchored")).toBe("false"));
     expect(screen.getByRole("button", { name: /^later$/i })).toBeTruthy();
+  });
+});
+
+// ---- SELF DND BROADCAST (V1 parity) ----------------------------------------------------------------
+// V2 consumed dnd and rendered V1's picker but never published it: emitDndSet's only caller was
+// OfficeMap's effect, which never runs on the ?world=v2 route. These pin the edge-trigger contract
+// copied from OfficeMap's prevSelfOfficeStatusRef.
+describe("the viewer's own DND, on the wire", () => {
+  it("says nothing on a plain mount — a fresh mount is not a transition", async () => {
+    mount();
+    await waitFor(() => expect(globalChatPushes.length).toBeGreaterThan(0));
+    expect(dndEmits).toEqual([]);
+  });
+
+  it("does NOT emit for ordinary status moves that never touch DND", async () => {
+    mount();
+    await waitFor(() => expect(globalChatPushes.length).toBeGreaterThan(0));
+    act(() => { setManualStatus("BUSY"); });
+    act(() => { setManualStatus("LUNCH"); });
+    await waitFor(() => expect(getSelfStatusSnapshot().currentStatus).toBe("LUNCH"));
+    expect(dndEmits).toEqual([]);
+  });
+
+  it("publishes TRUE when DND starts and FALSE when it ends", async () => {
+    mount();
+    await waitFor(() => expect(globalChatPushes.length).toBeGreaterThan(0));
+    act(() => { startDnd({ durationMs: 30 * 60_000 }); });
+    await waitFor(() => expect(dndEmits).toEqual([true]));
+    act(() => { endDnd(); });
+    await waitFor(() => expect(dndEmits).toEqual([true, false]));
+  });
+
+  it("emits ONCE per real crossing, however many renders happen in between", async () => {
+    mount();
+    await waitFor(() => expect(globalChatPushes.length).toBeGreaterThan(0));
+    act(() => { startDnd({ durationMs: 30 * 60_000 }); });
+    await waitFor(() => expect(dndEmits).toEqual([true]));
+    act(() => { startDnd({ durationMs: 60 * 60_000 }); });
+    act(() => { setManualStatus("DND"); });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(dndEmits).toEqual([true]);
+  });
+
+  it("does NOT report FALSE on unmount — DND is a durable session, not an open window", async () => {
+    const view = mount();
+    await waitFor(() => expect(globalChatPushes.length).toBeGreaterThan(0));
+    act(() => { startDnd({ durationMs: 30 * 60_000 }); });
+    await waitFor(() => expect(dndEmits).toEqual([true]));
+    view.unmount();
+    expect(dndEmits).toEqual([true]);
   });
 });
