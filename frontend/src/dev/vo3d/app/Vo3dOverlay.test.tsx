@@ -29,10 +29,28 @@ const ALEX = "alex@offshorly.com";
 // ---- V1's services, at the module boundary ---------------------------------------------------------
 let dndEmails = new Set<string>();
 const dndEmits: boolean[] = [];
-vi.mock("../../../services/presence/dndClient", () => ({
-  useDndEmails: () => dndEmails,
-  emitDndSet: (on: boolean) => { dndEmits.push(on); },
-}));
+vi.mock("../../../services/presence/dndClient", async () => {
+  const React = await import("react");
+  const emitDndSet = (on: boolean) => { dndEmits.push(on); };
+  return {
+    useDndEmails: () => dndEmails,
+    emitDndSet,
+    // The SHARED publisher's contract, restated over the mocked emit so what reaches the wire is visible:
+    // edge-triggered, no unmount emit, and a mount that already finds DND publishes TRUE once (the
+    // reload case). Its own behaviour against a socket is dndClient.test.ts's subject; this file proves
+    // V2 hands it the right boolean.
+    useSelfDndPublication: (isDnd: boolean) => {
+      const publishedRef = React.useRef<boolean | null>(null);
+      React.useEffect(() => {
+        if (publishedRef.current === isDnd) return;
+        const firstMount = publishedRef.current === null;
+        publishedRef.current = isDnd;
+        if (firstMount && !isDnd) return;
+        emitDndSet(isDnd);
+      }, [isDnd]);
+    },
+  };
+});
 
 // GLOBAL CHAT ACTIVITY — V1's own presence service, mocked here the way dndClient is: the real module
 // opens a socket, and what this file is testing is that V2 publishes and consumes THAT service rather
@@ -128,9 +146,27 @@ vi.mock("../../../services/chat/talkRequestsClient", () => ({
   TalkRequestCooldownError: class extends Error { cooldownUntil: string | null = null; },
 }));
 
+/** DND ROOM LOCK — the entrant's half of V1's room-request client, driven per test: the knock, its cancel,
+ *  and the server's resolved/cancelled pushes. */
+const knock = vi.fn((_roomId: string) => Promise.resolve({ id: "k1", roomId: "design-team", state: "pending" }));
+const cancelKnock = vi.fn((_id: string) => Promise.resolve({ id: "k1", state: "cancelled" }));
+type RoomReq = { id: string; roomId: string; state: string };
+let roomResolvedListeners: ((r: RoomReq) => void)[] = [];
+let roomCancelledListeners: ((r: RoomReq) => void)[] = [];
 vi.mock("../../../services/chat/roomRequestsClient", () => ({
   usePendingRoomRequests: () => pendingRoom,
   resolveRoomEntryRequest: (id: string, d: string) => resolveRoom(id, d),
+  createRoomEntryRequest: (roomId: string) => knock(roomId),
+  cancelRoomEntryRequest: (id: string) => cancelKnock(id),
+  onRoomRequestResolved: (cb: (r: RoomReq) => void) => { roomResolvedListeners.push(cb); return () => { roomResolvedListeners = roomResolvedListeners.filter((l) => l !== cb); }; },
+  onRoomRequestCancelled: (cb: (r: RoomReq) => void) => { roomCancelledListeners.push(cb); return () => { roomCancelledListeners = roomCancelledListeners.filter((l) => l !== cb); }; },
+}));
+/** V1's room_presence broadcast, as the lock derivation reads it. The adapter's own emits are no-ops here. */
+let roomPresence: { roomId: string; members: string[] }[] = [];
+vi.mock("../../../services/presence/roomPresenceClient", () => ({
+  useRoomPresence: () => roomPresence,
+  emitRoomPresenceEnter: vi.fn(),
+  emitRoomPresenceLeave: vi.fn(),
 }));
 
 // V1's OWN attendance answer, as the host resolves it and hands it down.
@@ -154,6 +190,11 @@ vi.mock("../../../services/chat/useUnreadTotal", () => ({
 
 // V1's typing channel, driven by the test. Everything else about chat stays the real module.
 let typingListeners: ((u: { senderId: string; conversationId: string; isTyping: boolean }) => void)[] = [];
+/** ASK-TO-JOIN — the backend's conversation_upgraded, as RealChatService hands it up. Driven per test. */
+type UpgradePayload = { conversationId: string; oldConversationId: string; participantIds: string[]; title: string | null };
+let upgradeListeners: ((u: UpgradePayload) => void)[] = [];
+/** Runs synchronously inside the group panel's open edge — see the GroupConversationView stub. */
+let afterGroupOpen: ((conversationId: string) => void) | null = null;
 vi.mock("../../../services/chat", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../services/chat")>();
   return {
@@ -167,6 +208,10 @@ vi.mock("../../../services/chat", async (importOriginal) => {
         typingListeners.push(cb);
         return () => { typingListeners = typingListeners.filter((l) => l !== cb); };
       },
+      onConversationUpgraded: (cb: (u: UpgradePayload) => void) => {
+        upgradeListeners.push(cb);
+        return () => { upgradeListeners = upgradeListeners.filter((l) => l !== cb); };
+      },
     },
   };
 });
@@ -175,8 +220,11 @@ vi.mock("../../../services/chat", async (importOriginal) => {
 // wiring rather than about a chat transport or a profile fetch.
 // The stub forwards V1's own onTypingChange edge, which is the seam under test.
 vi.mock("../../../components/Chat/ConversationView", () => ({
-  ConversationView: ({ peer, onTypingChange, onIncomingMessage, onMinimizeToggle, onOpenWhiteboard }: {
+  ConversationView: ({ peer, subtitle, isSpatial, onConversationOpen, onTypingChange, onIncomingMessage, onMinimizeToggle, onOpenWhiteboard }: {
     peer: { id: string };
+    subtitle?: string;
+    isSpatial?: boolean;
+    onConversationOpen?: (conversationId: string) => void;
     onTypingChange?: (t: boolean) => void;
     onIncomingMessage?: (m: unknown) => void;
     onMinimizeToggle?: () => void;
@@ -184,11 +232,18 @@ vi.mock("../../../components/Chat/ConversationView", () => ({
   }) => (
     <div
       data-testid="conversation"
+      // The two props V1's DND cue hangs off. The real panel's rendering of them ("Expect delayed response"
+      // only when !isSpatial && subtitle) is ConversationView.test.tsx's; what THIS file proves is that V2
+      // hands the panel the same inputs V1's office does, in each slot.
+      data-subtitle={subtitle ?? ""}
+      data-spatial={isSpatial ? "yes" : "no"}
       ref={(el) => {
         if (!el) return;
         (el as HTMLDivElement & { __t?: boolean }).__t = true;
         el.addEventListener("test:typing", (e) => onTypingChange?.((e as CustomEvent<boolean>).detail));
         el.addEventListener("test:message", (e) => onIncomingMessage?.((e as CustomEvent).detail));
+        // The real panel's fire-once edge, driven by the test: "my conversation id resolved to <detail>".
+        el.addEventListener("test:open", (e) => onConversationOpen?.((e as CustomEvent<string>).detail));
       }}
     >
       {peer.id}
@@ -203,17 +258,35 @@ vi.mock("../../../components/Chat/ConversationView", () => ({
 }));
 // The GROUP window and the WHITEBOARD both fetch on mount; stubbed so these stay about the WIRING —
 // which scope a board is opened at, and that a conversation is never disturbed by one.
-vi.mock("../../../components/Chat/GroupConversationView", () => ({
-  GroupConversationView: ({ conversationId, onMinimizeToggle, onOpenWhiteboard }: {
-    conversationId: string; onMinimizeToggle?: () => void; onOpenWhiteboard?: () => void;
-  }) => (
-    <div data-testid="group-conversation">
-      {conversationId}
-      {onMinimizeToggle && <button type="button" aria-label={`minimize ${conversationId}`} onClick={onMinimizeToggle} />}
-      {onOpenWhiteboard && <button type="button" aria-label={`board ${conversationId}`} onClick={onOpenWhiteboard} />}
-    </div>
-  ),
-}));
+vi.mock("../../../components/Chat/GroupConversationView", async () => {
+  const React = await import("react");
+  return {
+    GroupConversationView: ({ conversationId, onConversationOpen, onMinimizeToggle, onOpenWhiteboard, onClose }: {
+      conversationId: string; onConversationOpen?: (id: string) => void; onMinimizeToggle?: () => void; onOpenWhiteboard?: () => void; onClose?: () => void;
+    }) => {
+      // The real panel's fire-once edge: onConversationOpen the moment its conversationId prop resolves —
+      // which for a group is on mount, since the id is already known.
+      const fired = React.useRef(false);
+      React.useEffect(() => {
+        if (fired.current) return;
+        fired.current = true;
+        onConversationOpen?.(conversationId);
+        // THE RACE HOOK: something the world does in the same tick as the open edge, before React has
+        // committed whatever state that edge just set — the frame-loop arrival of a turn-on-the-spot
+        // approach lands exactly here in the real browser.
+        afterGroupOpen?.(conversationId);
+      }, [conversationId, onConversationOpen]);
+      return (
+        <div data-testid="group-conversation">
+          {conversationId}
+          {onMinimizeToggle && <button type="button" aria-label={`minimize ${conversationId}`} onClick={onMinimizeToggle} />}
+          {onOpenWhiteboard && <button type="button" aria-label={`board ${conversationId}`} onClick={onOpenWhiteboard} />}
+          {onClose && <button type="button" aria-label={`close ${conversationId}`} onClick={onClose} />}
+        </div>
+      );
+    },
+  };
+});
 vi.mock("../../../components/Whiteboard/WhiteboardPanel", () => ({
   WhiteboardPanel: ({ scope, title, onClose, onAskToucan }: {
     scope: { kind: string; id: string }; title: string; onClose: () => void;
@@ -330,6 +403,9 @@ vi.mock("../../../services/notifications/notificationsClient", async (importOrig
 let handlers: Handlers | null = null;
 const approachCoworker = vi.fn(() => true);
 const setExitAuthorized = vi.fn();
+/** DND ROOM LOCK — the two world writes: which manifest rooms are locked, and the one-shot entry grant. */
+const setLockedRooms = vi.fn((_ids: readonly string[]) => {});
+const authorizeRoomEntry = vi.fn((_id: string | null) => {});
 const setInteractionPromptHidden = vi.fn();
 const setDepartureDestination = vi.fn();
 const clearSelection = vi.fn();
@@ -398,6 +474,8 @@ const world = {
   setExitAuthorized,
   setDepartureDestination,
   setInteractionPromptHidden,
+  setLockedRooms,
+  authorizeRoomEntry,
   subscribeViewMode: (cb: (m: "office" | "explore" | "player") => void) => {
     viewModeSubs.push(cb);
     cb(viewMode);
@@ -482,6 +560,11 @@ beforeEach(() => {
   caveSubs = [];
   conversations = [];
   typingListeners = [];
+  upgradeListeners = [];
+  afterGroupOpen = null;
+  roomPresence = [];
+  roomResolvedListeners = [];
+  roomCancelledListeners = [];
   poses.length = 0;
   globalChatPushes.length = 0;
   globalChatEmits.length = 0;
@@ -2674,5 +2757,481 @@ describe("inbound requests reach a recipient who is in V2", () => {
   it("renders nothing at all when there is nothing pending", () => {
     mount();
     expect(screen.queryByRole("button", { name: /allow/i })).toBeNull();
+  });
+});
+
+// ---- GLOBAL CHAT DND PARITY ------------------------------------------------------------------------
+// V1's remote DM window carries a DND subtitle for a DND peer (OfficeMap.tsx), which ConversationView
+// turns into the header cue and the pinned "Expect delayed response" — for a NON-spatial panel only.
+// These prove V2 hands each slot the same inputs; the rendering itself is ConversationView.test.tsx's.
+describe("Global Chat DND parity", () => {
+  const DND_SUBTITLE = "🔴 DND · Notifications muted";
+
+  it("a remote (Global Chat) DM to a DND peer gets V1's DND subtitle, non-spatial", async () => {
+    dndEmails = new Set([ALEX]);
+    conversations = [{ id: "conv-9", type: "dm", participantIds: [SELF, ALEX], unreadCount: 0 } as never];
+    mount();
+    fireEvent.click(inboxTile());
+    fireEvent.click(await screen.findByRole("button", { name: /Alex Cruz/ }));
+    const panel = await screen.findByTestId("conversation");
+    expect(panel.getAttribute("data-subtitle")).toBe(DND_SUBTITLE);
+    expect(panel.getAttribute("data-spatial")).toBe("no");
+  });
+
+  it("a remote DM to a peer who is NOT DND carries no subtitle", async () => {
+    conversations = [{ id: "conv-9", type: "dm", participantIds: [SELF, ALEX], unreadCount: 0 } as never];
+    mount();
+    fireEvent.click(inboxTile());
+    fireEvent.click(await screen.findByRole("button", { name: /Alex Cruz/ }));
+    expect((await screen.findByTestId("conversation")).getAttribute("data-subtitle")).toBe("");
+  });
+
+  it("the SPATIAL DM never gets the cue, even once the peer turns DND", async () => {
+    const view = mount();
+    await select();
+    fireEvent.click(row("Chat"));
+    const panel = await screen.findByTestId("conversation");
+    expect(panel.getAttribute("data-spatial")).toBe("yes");
+    dndEmails = new Set([ALEX]);
+    view.rerender(<Vo3dOverlay worldRef={worldRef} ready people={people} drawnEmails={[ALEX]} attendance={attendanceProp()} />);
+    expect(screen.getByTestId("conversation").getAttribute("data-subtitle")).toBe("");
+    expect(screen.getByTestId("conversation").getAttribute("data-spatial")).toBe("yes");
+  });
+});
+
+// ---- ASK TO JOIN — THE FORMATION -------------------------------------------------------------------
+// The backend accepts a join and emits conversation_upgraded to every member; V1's office reacts by
+// swapping the stale DM for the group (incumbent) or walking the joiner over and flipping status on
+// arrival. These prove V2 now does the same, through the same classification and the same seams.
+describe("Ask to Join — conversation_upgraded", () => {
+  const MICAH = "micah@offshorly.com";
+  const upgrade = (payload: Partial<UpgradePayload> = {}) =>
+    act(() => {
+      const full: UpgradePayload = {
+        conversationId: "conv-g",
+        oldConversationId: "conv-dm",
+        participantIds: [ALEX, MICAH, SELF],
+        title: null,
+        ...payload,
+      };
+      for (const cb of upgradeListeners) cb(full);
+    });
+
+  /** Open the spatial DM on Alex the way Chat does, and let its panel report the DM's conversation id. */
+  async function openSpatialDm() {
+    mount();
+    await select();
+    fireEvent.click(row("Chat"));
+    const panel = await screen.findByTestId("conversation");
+    act(() => { panel.dispatchEvent(new CustomEvent("test:open", { detail: "conv-dm" })); });
+    expect(sessionStart).toHaveBeenCalledWith("conv-dm");
+    approachCoworker.mockClear();
+    sessionStart.mockClear();
+  }
+
+  it("is ignored when the upgraded conversation does not include this employee", async () => {
+    mount();
+    await waitFor(() => expect(upgradeListeners.length).toBeGreaterThan(0));
+    upgrade({ participantIds: [ALEX, MICAH] });
+    expect(screen.queryByTestId("group-conversation")).toBeNull();
+    expect(sessionLeave).not.toHaveBeenCalled();
+    expect(approachCoworker).not.toHaveBeenCalled();
+  });
+
+  it("INCUMBENT: leaves the stale DM's session, swaps the DM slot for the group, and starts the group session on open", async () => {
+    await openSpatialDm();
+    upgrade();
+    // The DM's session is left explicitly — its panel unmounted by a state swap, not through its onClose.
+    expect(sessionLeave).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("conversation")).toBeNull();
+    expect((await screen.findByTestId("group-conversation")).textContent).toContain("conv-g");
+    // The group panel's own onConversationOpen fires the start — the incumbent is already standing there.
+    await waitFor(() => expect(sessionStart).toHaveBeenCalledWith("conv-g"));
+    expect(sessionStart).toHaveBeenCalledTimes(1);
+    expect(approachCoworker).not.toHaveBeenCalled();
+  });
+
+  it("JOINER: opens the group, joins the session exactly once, and still walks up to an incumbent", async () => {
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    upgrade();
+    expect((await screen.findByTestId("group-conversation")).textContent).toContain("conv-g");
+    // THE INVARIANT: the joiner is a member of the upgraded group's session as soon as it is open.
+    expect(sessionStart).toHaveBeenCalledTimes(1);
+    expect(sessionStart).toHaveBeenCalledWith("conv-g");
+    // The walk still happens — it just owes the session nothing.
+    expect(approachCoworker).toHaveBeenCalledWith(ALEX);
+    act(() => handlers!.onApproachArrived(ALEX));
+    expect(approachArrived).toHaveBeenCalledWith(ALEX);
+    expect(sessionStart).toHaveBeenCalledTimes(1);
+  });
+
+  // THE LIVE BUG, AT THE LOWEST LAYER THAT CARRIES IT. Three real browsers: the upgrade landed, Micah's
+  // group panel opened, Micah could chat — and Micah stayed Available on every screen including his own,
+  // because his spatial_session_start was waiting on an arrival the 3D world never reported. The world's
+  // approach is best-effort: superseded by any newer walk, stopped by the exit gate's own re-arm, and with
+  // no failure path at all. This is that exact contract — the approach is ACCEPTED and then simply never
+  // arrives — and it fails against the previous implementation.
+  it("JOINER: an approach that is accepted and NEVER reports arrival still leaves the joiner in the session", async () => {
+    approachCoworker.mockReturnValue(true);
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    upgrade();
+    await screen.findByTestId("group-conversation");
+    expect(approachCoworker).toHaveBeenCalledWith(ALEX);
+    // No onApproachArrived — ever.
+    expect(sessionStart).toHaveBeenCalledTimes(1);
+    expect(sessionStart).toHaveBeenCalledWith("conv-g");
+  });
+
+  it("JOINER: closing the group leaves the session, and reopening it joins again", async () => {
+    conversations = [{ id: "conv-g", type: "group", participantIds: [ALEX, MICAH, SELF], title: "Trio", unreadCount: 0 } as never];
+    sessions = [{ sessionId: "conv-g", members: [ALEX, MICAH] }];
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    upgrade();
+    await screen.findByTestId("group-conversation");
+    expect(sessionStart).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByLabelText("close conv-g"));
+    expect(sessionLeave).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("group-conversation")).toBeNull();
+    // An arrival after the panel is gone re-joins nothing.
+    act(() => handlers!.onApproachArrived(ALEX));
+    expect(sessionStart).toHaveBeenCalledTimes(1);
+    fireEvent.click(inboxTile());
+    fireEvent.click(await screen.findByRole("button", { name: /Trio/ }));
+    await screen.findByTestId("group-conversation");
+    await waitFor(() => expect(sessionStart).toHaveBeenCalledTimes(2));
+    expect(sessionStart).toHaveBeenLastCalledWith("conv-g");
+  });
+
+  it("JOINER with no body to walk to: still exactly one start, on the same edge", async () => {
+    approachCoworker.mockReturnValueOnce(false);
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    upgrade();
+    await screen.findByTestId("group-conversation");
+    expect(sessionStart).toHaveBeenCalledTimes(1);
+    expect(sessionStart).toHaveBeenCalledWith("conv-g");
+    act(() => handlers!.onApproachArrived(ALEX));
+    expect(sessionStart).toHaveBeenCalledTimes(1);
+  });
+
+  it("the spatial group slot starts its session on open and leaves it on close (V1's rule)", async () => {
+    conversations = [{ id: "conv-g", type: "group", participantIds: [ALEX, MICAH, SELF], title: "Trio", unreadCount: 0 } as never];
+    sessions = [{ sessionId: "conv-g", members: [ALEX, MICAH] }];
+    mount();
+    fireEvent.click(inboxTile());
+    fireEvent.click(await screen.findByRole("button", { name: /Trio/ }));
+    await screen.findByTestId("group-conversation");
+    await waitFor(() => expect(sessionStart).toHaveBeenCalledWith("conv-g"));
+    expect(sessionStart).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByLabelText("close conv-g"));
+    expect(sessionLeave).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("group-conversation")).toBeNull();
+  });
+});
+
+// ---- ASK TO JOIN — THE INVARIANT, UNDER THE WORLD'S REAL ORDERING ------------------------------------
+// The world's arrival fires from its frame loop and can land before React has committed the panel's open
+// edge, after it, or never. The membership must be the same in all three cases: one start, on the group id.
+describe("Ask to Join — the three-way invariant", () => {
+  const MICAH = "micah@offshorly.com";
+  const upgrade = () =>
+    act(() => {
+      for (const cb of upgradeListeners) {
+        cb({ conversationId: "conv-g", oldConversationId: "conv-dm", participantIds: [ALEX, MICAH, SELF], title: null });
+      }
+    });
+
+  it("an arrival landing INSIDE the panel's open edge changes nothing — still one start", async () => {
+    afterGroupOpen = () => handlers!.onApproachArrived(ALEX);
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    upgrade();
+    await screen.findByTestId("group-conversation");
+    expect(sessionStart).toHaveBeenCalledTimes(1);
+    expect(sessionStart).toHaveBeenCalledWith("conv-g");
+  });
+
+  it("an arrival landing BEFORE the panel mounts changes nothing — still one start", async () => {
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    act(() => {
+      for (const cb of upgradeListeners) {
+        cb({ conversationId: "conv-g", oldConversationId: "conv-dm", participantIds: [ALEX, MICAH, SELF], title: null });
+      }
+      handlers!.onApproachArrived(ALEX);
+    });
+    await screen.findByTestId("group-conversation");
+    expect(sessionStart).toHaveBeenCalledTimes(1);
+    expect(sessionStart).toHaveBeenCalledWith("conv-g");
+  });
+
+  it("an arrival at somebody else is irrelevant to the session", async () => {
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    upgrade();
+    await screen.findByTestId("group-conversation");
+    act(() => handlers!.onApproachArrived(MICAH));
+    expect(sessionStart).toHaveBeenCalledTimes(1);
+    expect(sessionStart).toHaveBeenCalledWith("conv-g");
+  });
+
+  it("a DM opened over the group leaves the group's session behind rather than keeping both", async () => {
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    upgrade();
+    await screen.findByTestId("group-conversation");
+    expect(sessionStart).toHaveBeenCalledWith("conv-g");
+    await select(MICAH, "Micah");
+    fireEvent.click(row("Chat"));
+    const panel = await screen.findByTestId("conversation");
+    act(() => { panel.dispatchEvent(new CustomEvent("test:open", { detail: "conv-dm2" })); });
+    expect(sessionStart).toHaveBeenLastCalledWith("conv-dm2");
+  });
+});
+
+// ---- PEER DND, AS EVERY OTHER CLIENT SEES IT -------------------------------------------------------
+// A person's own screen resolves DND from selfStatusStore; everybody else's resolved them from Atlas alone
+// — which never learns about a DND chosen here, and says OFFLINE for somebody it is not tracking at all.
+// resolvePeerStatus (status.ts) overlays the app's DND registry, which only holds people whose socket is
+// connected right now. These prove V2 reads peers through it, in every place a status is shown.
+describe("peer DND from the shared registry", () => {
+  const MICAH = "micah@offshorly.com";
+
+  it("the coworker card shows DND for a peer in the registry, whatever Atlas says", async () => {
+    dndEmails = new Set([ALEX]);
+    mount();
+    await select();
+    expect(screen.getByTestId("world-menu").textContent).toContain("DND");
+  });
+
+  it("a peer Atlas calls OFFLINE but who is DND on this app's socket reads DND, not Offline", async () => {
+    dndEmails = new Set([ALEX]);
+    render(
+      <Vo3dOverlay
+        worldRef={worldRef}
+        ready
+        people={[people[0], { ...people[1], status: "OFFLINE" } as OfficePerson]}
+        drawnEmails={[ALEX]}
+        attendance={attendanceProp()}
+      />,
+    );
+    await select();
+    const card = screen.getByTestId("world-menu").textContent ?? "";
+    expect(card).toContain("DND");
+    expect(card).not.toContain("Offline");
+  });
+
+  it("the overhead pill says DND, and DND outranks In Conversation as in V1's precedence", async () => {
+    dndEmails = new Set([ALEX]);
+    sessions = [{ sessionId: "conv-x", members: [ALEX, MICAH] }];
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    const pill = await screen.findByTestId(`overhead-status-${ALEX}`);
+    expect(pill.textContent).toContain("DND");
+    expect(pill.textContent).not.toContain("In Conversation");
+  });
+
+  it("leaving DND returns the peer to their Atlas presence", async () => {
+    dndEmails = new Set([ALEX]);
+    const view = mount();
+    await select();
+    expect(screen.getByTestId("world-menu").textContent).toContain("DND");
+    dndEmails = new Set();
+    view.rerender(<Vo3dOverlay worldRef={worldRef} ready people={people} drawnEmails={[ALEX]} attendance={attendanceProp()} />);
+    expect(screen.getByTestId("world-menu").textContent).toContain("Available");
+    expect(screen.getByTestId("world-menu").textContent).not.toContain("DND");
+  });
+
+  it("a mount that finds a restored DND session republishes TRUE once — the reload case", async () => {
+    act(() => { startDnd({ durationMs: 30 * 60_000 }); });
+    mount();
+    await waitFor(() => expect(dndEmits).toEqual([true]));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(dndEmits).toEqual([true]);
+    act(() => { endDnd(); });
+    await waitFor(() => expect(dndEmits).toEqual([true, false]));
+  });
+});
+
+// ---- DND ROOM LOCKS — THE ENTRANT'S SIDE, IN V2 --------------------------------------------------------
+// V1 stops a walk into a DND-locked room at the door and offers Request Entry (RoomLockedToast); an accepted
+// knock resumes the held walk once. The world now holds the doorway itself (app/roomLocks.ts, its own tests)
+// and reports "standing at a shut door"; what THIS proves is the wiring: V1's rule decides the lock, the
+// world is told in its ids, V1's toast and client answer, and the world is granted exactly one entry.
+describe("DND room lock — entrant wiring", () => {
+  const MICAH = "micah@offshorly.com";
+  /** Alex is DND and standing in the Design Room (V1's flat id), so design-team is locked. */
+  function lockDesign() {
+    dndEmails = new Set([ALEX]);
+    roomPresence = [{ roomId: "design-team", members: [ALEX] }];
+  }
+  const intercept = (roomLayerId = "design-room") => act(() => handlers!.onRoomLockIntercepted?.(roomLayerId));
+  const abandon = (roomLayerId = "design-room") => act(() => handlers!.onRoomLockAbandoned?.(roomLayerId));
+  const resolved = (r: RoomReq) => act(() => { for (const cb of roomResolvedListeners) cb(r); });
+  const cancelled = (r: RoomReq) => act(() => { for (const cb of roomCancelledListeners) cb(r); });
+
+  it("tells the world which MANIFEST rooms are locked, from V1's rule over V1's feeds", async () => {
+    lockDesign();
+    mount();
+    await waitFor(() => expect(setLockedRooms).toHaveBeenCalledWith(["design-room"]));
+  });
+
+  it("nothing DND in the room → nothing locked; DND but nobody in a room → nothing locked", async () => {
+    roomPresence = [{ roomId: "design-team", members: [ALEX] }];
+    const view = mount();
+    await waitFor(() => expect(setLockedRooms).toHaveBeenCalled());
+    expect(setLockedRooms.mock.calls.at(-1)?.[0]).toEqual([]);
+    dndEmails = new Set([MICAH]);
+    view.rerender(<Vo3dOverlay worldRef={worldRef} ready people={people} drawnEmails={[ALEX]} attendance={attendanceProp()} />);
+    expect(setLockedRooms.mock.calls.at(-1)?.[0]).toEqual([]);
+  });
+
+  it("the lock follows DND and occupancy — it lifts when the occupant leaves or ends DND", async () => {
+    lockDesign();
+    const view = mount();
+    await waitFor(() => expect(setLockedRooms).toHaveBeenCalledWith(["design-room"]));
+    roomPresence = [];
+    view.rerender(<Vo3dOverlay worldRef={worldRef} ready people={people} drawnEmails={[ALEX]} attendance={attendanceProp()} />);
+    expect(setLockedRooms.mock.calls.at(-1)?.[0]).toEqual([]);
+    roomPresence = [{ roomId: "design-team", members: [ALEX] }];
+    view.rerender(<Vo3dOverlay worldRef={worldRef} ready people={people} drawnEmails={[ALEX]} attendance={attendanceProp()} />);
+    expect(setLockedRooms.mock.calls.at(-1)?.[0]).toEqual(["design-room"]);
+    dndEmails = new Set();
+    view.rerender(<Vo3dOverlay worldRef={worldRef} ready people={people} drawnEmails={[ALEX]} attendance={attendanceProp()} />);
+    expect(setLockedRooms.mock.calls.at(-1)?.[0]).toEqual([]);
+  });
+
+  it("standing at the shut door shows V1's RoomLockedToast, naming the room and offering Request Entry", async () => {
+    lockDesign();
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    intercept();
+    expect(await screen.findByText(/Design Team is DND — knock to ask for entry/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Request Entry/ })).toBeTruthy();
+  });
+
+  it("walking away from the door dismisses the offer", async () => {
+    lockDesign();
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    intercept();
+    await screen.findByText(/knock to ask for entry/);
+    abandon();
+    expect(screen.queryByText(/knock to ask for entry/)).toBeNull();
+  });
+
+  it("Request Entry posts the knock against V1's FLAT room id, then waits", async () => {
+    lockDesign();
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    intercept();
+    fireEvent.click(await screen.findByRole("button", { name: /Request Entry/ }));
+    await waitFor(() => expect(knock).toHaveBeenCalledWith("design-team"));
+    expect(await screen.findByText(/Waiting for Design Team to respond/)).toBeTruthy();
+    expect(authorizeRoomEntry).not.toHaveBeenCalled();
+  });
+
+  it("an outstanding knock survives walking away — V1 keeps waiting for the answer", async () => {
+    lockDesign();
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    intercept();
+    fireEvent.click(await screen.findByRole("button", { name: /Request Entry/ }));
+    await screen.findByText(/Waiting for Design Team/);
+    abandon();
+    expect(screen.getByText(/Waiting for Design Team/)).toBeTruthy();
+  });
+
+  it("ACCEPT grants the world exactly one entry into THAT room and clears the toast", async () => {
+    lockDesign();
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    intercept();
+    fireEvent.click(await screen.findByRole("button", { name: /Request Entry/ }));
+    await screen.findByText(/Waiting for Design Team/);
+    resolved({ id: "k1", roomId: "design-team", state: "accepted" });
+    expect(authorizeRoomEntry).toHaveBeenCalledTimes(1);
+    expect(authorizeRoomEntry).toHaveBeenCalledWith("design-room");
+    expect(screen.queryByText(/Waiting for Design Team/)).toBeNull();
+    // A second, stale resolve for the same id is not a second grant.
+    resolved({ id: "k1", roomId: "design-team", state: "accepted" });
+    expect(authorizeRoomEntry).toHaveBeenCalledTimes(1);
+  });
+
+  it("a resolve for somebody else's knock is ignored", async () => {
+    lockDesign();
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    intercept();
+    fireEvent.click(await screen.findByRole("button", { name: /Request Entry/ }));
+    await screen.findByText(/Waiting for Design Team/);
+    resolved({ id: "somebody-elses", roomId: "design-team", state: "accepted" });
+    expect(authorizeRoomEntry).not.toHaveBeenCalled();
+    expect(screen.getByText(/Waiting for Design Team/)).toBeTruthy();
+  });
+
+  it("DECLINE keeps the entrant outside: no grant, and V1's brief 'Entry request declined'", async () => {
+    lockDesign();
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    intercept();
+    fireEvent.click(await screen.findByRole("button", { name: /Request Entry/ }));
+    await screen.findByText(/Waiting for Design Team/);
+    resolved({ id: "k1", roomId: "design-team", state: "declined" });
+    expect(authorizeRoomEntry).not.toHaveBeenCalled();
+    expect(await screen.findByText(/Entry request declined/)).toBeTruthy();
+  });
+
+  it("CANCEL withdraws the knock through V1's client and goes back to the offer — still outside", async () => {
+    lockDesign();
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    intercept();
+    fireEvent.click(await screen.findByRole("button", { name: /Request Entry/ }));
+    await screen.findByText(/Waiting for Design Team/);
+    fireEvent.click(screen.getByRole("button", { name: /Cancel/ }));
+    expect(cancelKnock).toHaveBeenCalledWith("k1");
+    expect(await screen.findByText(/knock to ask for entry/)).toBeTruthy();
+    expect(authorizeRoomEntry).not.toHaveBeenCalled();
+  });
+
+  it("a server-cancelled knock while the room is STILL locked goes back to the offer, with no grant", async () => {
+    lockDesign();
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    intercept();
+    fireEvent.click(await screen.findByRole("button", { name: /Request Entry/ }));
+    await screen.findByText(/Waiting for Design Team/);
+    cancelled({ id: "k1", roomId: "design-team", state: "cancelled" });
+    expect(await screen.findByText(/knock to ask for entry/)).toBeTruthy();
+    expect(authorizeRoomEntry).not.toHaveBeenCalled();
+  });
+
+  it("the room unlocking while waiting: the knock is auto-cancelled, the toast clears, and NO grant is issued — the world's own hold has lifted", async () => {
+    lockDesign();
+    const view = mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    intercept();
+    fireEvent.click(await screen.findByRole("button", { name: /Request Entry/ }));
+    await screen.findByText(/Waiting for Design Team/);
+    // The occupant ended DND: the feeds say the room is open, and the world is told so.
+    dndEmails = new Set();
+    view.rerender(<Vo3dOverlay worldRef={worldRef} ready people={people} drawnEmails={[ALEX]} attendance={attendanceProp()} />);
+    expect(setLockedRooms.mock.calls.at(-1)?.[0]).toEqual([]);
+    cancelled({ id: "k1", roomId: "design-team", state: "cancelled" });
+    expect(screen.queryByText(/Waiting for Design Team/)).toBeNull();
+    expect(screen.queryByText(/knock to ask for entry/)).toBeNull();
+    expect(authorizeRoomEntry).not.toHaveBeenCalled();
+  });
+
+  it("a manifest room with no flat twin raises no toast — there is nothing V1 could knock on", async () => {
+    lockDesign();
+    mount();
+    await waitFor(() => expect(handlers).not.toBeNull());
+    intercept("central-hub");
+    expect(screen.queryByText(/knock to ask for entry/)).toBeNull();
   });
 });

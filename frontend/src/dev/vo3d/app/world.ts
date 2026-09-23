@@ -91,6 +91,7 @@ import { SlidingDoor, type DoorBody } from "../interact/Door";
 import { CORRIDOR_BANDS, ROOM_WORLD_SHIFT_Z, registerGroundFloor } from "../rooms/ground-floor";
 import { FACADE_Z, FRAME, v1Rooms } from "../adapters/v1Floor";
 import { planWalk, type NavResult } from "../nav/planner";
+import { RoomLockController, collectLockableDoors } from "./roomLocks";
 import { v1Static } from "../adapters/v1Grid";
 import { casterPoseMoved, DEFAULT_LIGHT, Renderer, type CasterPose } from "../render/Renderer";
 import { SceneMirror } from "../render/SceneMirror";
@@ -268,6 +269,19 @@ export interface Vo3dWorld {
   /** PHASE 7E — name where an authorised departure is heading, so peers see them arrive there rather than
    *  stop at the façade. A label on the movement wire and nothing else. */
   setDepartureDestination(place: "ai-lab" | null): void;
+  /** DND ROOM LOCKS — WHICH MANIFEST ROOMS V1 SAYS ARE LOCKED, pushed in from outside (app/roomLocks.ts).
+   *
+   *  The host resolves V1's own rule (data/roomLock.ts over the room_presence and dnd_status feeds) and
+   *  translates V1's flat ids through data/office-layout; the world decides nothing about locks. Each locked
+   *  room's door is then held by the SAME Walkability reservation Reception's gates and the exit use — so the
+   *  router, click-to-walk, every approach and PLAYER mode obey it at once — but only while this body is
+   *  OUTSIDE that room: an occupant is never caged, and the hold returns once they have left. A walk aimed
+   *  into a shut room goes to its door and stops; the host is told through onRoomLockIntercepted. */
+  setLockedRooms(roomIds: readonly string[]): void;
+  /** ONE authorised entry into a locked room — an accepted knock. Opens that room's doors for this body,
+   *  resumes the walk the lock held (if any), and is SPENT the moment the body is inside; leaving again
+   *  needs a fresh knock (V1: never a persistent whitelist). Null withdraws an unspent one. */
+  authorizeRoomEntry(roomId: string | null): void;
   /** PHASE 6D — WHERE THAT PERSON IS ON SCREEN RIGHT NOW, for an anchored card. Recomputed from the live
    *  camera and the live body on every call (the host calls it per animation frame), because both move.
    *  Null for somebody this world has no body for. */
@@ -1228,6 +1242,60 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     if (disposed) return;
     selfFeed?.entering(place === "ai-lab" ? AI_LAB_PLACE_ID : null);
   }
+  // ---- DND ROOM LOCKS (app/roomLocks.ts) ---------------------------------------------------------------
+  // V1's door-approach gate, as a doorway that is actually shut. Who is locked arrives through
+  // setLockedRooms; everything below only applies it from the body's real position and reports the edges.
+  const roomLocks = new RoomLockController(
+    collectLockableDoors(world),
+    walkability,
+    (p) => world.regionAt(p)?.roomId ?? null,
+    NAV_RADIUS,
+  );
+  const roomLockState = { locked: "—", held: "—", authorized: "no", prompts: 0 };
+  /** The walk a lock stopped at the door, kept so an accepted knock (or the lock lifting) resumes EXACTLY
+   *  it — V1's `resume` continuation. Dropped by any newer walk. */
+  let roomLockHeldWalk: { roomId: string; destination: Vec2 } | null = null;
+  /** The room whose held door the body is currently standing at, so the host is told once per approach. */
+  let roomLockPrompted: string | null = null;
+  function applyRoomLocks(at: Vec2): void {
+    if (roomLocks.apply(at)) navDebug.refreshDynamic(walkability);
+    // A WALK ALREADY QUEUED THROUGH A DOORWAY THAT HAS JUST BEEN HELD must not be honoured — the same stop,
+    // for the same reason, as the access gate and the exit: waypoints do not re-consult walkability.
+    if (navCtl.path.length > 0 && roomLocks.routeCrossesHeld(navCtl.path)) navCtl.stop();
+    const snap = roomLocks.snapshot();
+    roomLockState.locked = snap.locked.join(",") || "—";
+    roomLockState.held = snap.held.join(",") || "—";
+    roomLockState.authorized = snap.authorized ?? "no";
+    const intercepted = roomLocks.interceptedAt(at);
+    if (intercepted === roomLockPrompted) return;
+    // Told on the edges only: once when they arrive at a shut door, once when they walk away from it.
+    if (roomLockPrompted !== null) coworkerInteractions?.onRoomLockAbandoned?.(roomLockPrompted);
+    roomLockPrompted = intercepted;
+    if (intercepted !== null) {
+      roomLockState.prompts++;
+      coworkerInteractions?.onRoomLockIntercepted?.(intercepted);
+    }
+  }
+  /** The held continuation goes ahead the moment its room no longer refuses this body — an accepted knock,
+   *  or the lock lifting (V1's auto-cancel path re-checks the live lock and proceeds through the open door). */
+  function resumeHeldWalkIfOpen(): void {
+    const held = roomLockHeldWalk;
+    if (!held || roomLocks.refuses(held.roomId, avatar.position)) return;
+    roomLockHeldWalk = null;
+    walkToGround(held.destination.x, held.destination.z);
+  }
+  function setLockedRooms(roomIds: readonly string[]): void {
+    if (disposed) return;
+    roomLocks.setLocked(roomIds);
+    applyRoomLocks(avatar.worldPosition());
+    resumeHeldWalkIfOpen();
+  }
+  function authorizeRoomEntry(roomId: string | null): void {
+    if (disposed) return;
+    roomLocks.authorize(roomId);
+    applyRoomLocks(avatar.worldPosition());
+    resumeHeldWalkIfOpen();
+  }
   /** Has the exit prompt already been raised for this approach? Cleared when the body steps off the mat,
    *  so walking away and coming back asks again — and standing on it does not ask sixty times a second. */
   let exitPrompted = false;
@@ -1289,6 +1357,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       navState.last = `ignored: avatar owned by ${stack.owner}`;
       return { ok: false, reason: "outside-world", destination: null, cell: null };
     }
+    // A NEWER WALK SUPERSEDES A HELD ONE: whatever the lock was holding, this click is what they want now.
+    roomLockHeldWalk = null;
     // THE BOUNDARY, STATED RATHER THAN IMPLIED. The closed lanes already make an office destination
     // unreachable, so this changes no outcome — it changes the REASON, from "unreachable" (which reads as
     // a pathfinding failure) to a refusal the readout can name. The router is still the thing that
@@ -1297,6 +1367,33 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       navState.last = `refused: the working office needs a confirmed V1 check-in (attendance ${officeAccess})`;
       navDebug.showNav(avatar.position, { ok: false, reason: "unreachable", destination: { x, z }, cell: worldToCell({ x, z }) });
       return { ok: false, reason: "unreachable", destination: { x, z }, cell: worldToCell({ x, z }) };
+    }
+    // DND ROOM LOCK — V1's door-approach gate (feature spec sections 3/8). A destination inside a room that is
+    // shut against this body never routes in: the body walks to that room's door and stops outside it, and
+    // the destination is HELD so an accepted knock resumes exactly this walk. The reservation alone already
+    // makes the interior unreachable; this turns "unreachable" into V1's "stop at the door and ask".
+    const lockedTarget = world.regionAt({ x, z })?.roomId ?? null;
+    if (lockedTarget !== null && roomLocks.refuses(lockedTarget, avatar.position)) {
+      coworkerApproach = null;
+      roomLockHeldWalk = { roomId: lockedTarget, destination: { x, z } };
+      const door = roomLocks.nearestDoor(lockedTarget, { x, z });
+      const refused: NavResult = { ok: false, reason: "unreachable", destination: { x, z }, cell: worldToCell({ x, z }) };
+      if (!door) {
+        navState.last = `held: ${lockedTarget} is DND-locked and has no door to wait at`;
+        navDebug.showNav(avatar.position, refused);
+        return refused;
+      }
+      const toDoor = planWalk(avatar.position, door.standPoint, walkability, inBounds);
+      navDebug.showNav(avatar.position, toDoor);
+      navState.last = toDoor.ok ? `held: ${lockedTarget} is DND-locked — walking to its door` : `held: ${lockedTarget} is DND-locked — door unreachable (${toDoor.reason})`;
+      if (toDoor.ok) {
+        const origin = avatar.position;
+        if (navCtl.setPath(toDoor.path)) {
+          selfMovedByUser = true;
+          selfFeed?.planned(origin, toDoor.path, plannedDurationMs(origin, toDoor.path, navCtl.speed));
+        }
+      }
+      return refused;
     }
     const result = planWalk(avatar.position, { x, z }, walkability, inBounds);
     navDebug.showNav(avatar.position, result);
@@ -3359,6 +3456,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     acc.add(exitState, "held").name("exit held").disable().listen();
     acc.add(exitState, "authorized").name("exit authorised").disable().listen();
     acc.add(exitState, "prompts").name("exit prompts").disable().listen();
+    acc.add(roomLockState, "locked").name("dnd-locked rooms").disable().listen();
+    acc.add(roomLockState, "held").name("dnd-held doors").disable().listen();
+    acc.add(roomLockState, "authorized").name("dnd entry authorised").disable().listen();
+    acc.add(roomLockState, "prompts").name("dnd door prompts").disable().listen();
     acc.add(aiLabState, "inside").name("in the AI Lab").disable().listen();
     acc.add(accessState, "ejections").name("ejections from office").disable().listen();
     const pub = av.addFolder("published to V1");
@@ -4119,6 +4220,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // trip; once the body has actually left the frame and come back inside, the exit re-arms itself, so
       // the next attempt to leave asks again. Nothing about attendance is touched either way.
       applyExitGate({ x: bp.x, z: bp.z });
+      applyRoomLocks({ x: bp.x, z: bp.z });
       if (exitAuthorized) {
         if (accessState.zone === "outside") exitUsed = true;
         else if (exitUsed) setExitAuthorized(false); // they went, and they are back
@@ -5053,6 +5155,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   function dispose(): void {
     if (disposed) return;
     disposed = true;               // every async continuation above checks this before touching anything
+    roomLocks.clear();
     cancelAnimationFrame(rafHandle); // the frame already asked for; the guard in loop() stops it re-arming
 
     // PHASE 5 FIRST, and before anything is torn down: the movement socket is V1's module-level singleton
@@ -5223,6 +5326,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     setOfficeAccess,
     setExitAuthorized,
     setDepartureDestination,
+    setLockedRooms,
+    authorizeRoomEntry,
     setOccupiedSeats: (ids) => {
       occupiedSeatIds = new Set(ids);
       seatSyncState.occupied = occupiedSeatIds.size;

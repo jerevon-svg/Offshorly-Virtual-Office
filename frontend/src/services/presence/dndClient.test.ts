@@ -98,3 +98,96 @@ describe("dndClient", () => {
     expect(lastFakeSocket).toBeNull();
   });
 });
+
+// The server's registry is in-memory and cleared by this user's disconnect, so a reconnect arrives with
+// no DND. spatialSessionStore re-asserts its session on "connect"; this is the same pattern for DND.
+describe("dndClient reconnect re-assert", () => {
+  // The last test above swapped in a token-less api/client with vi.doMock, which survives resetModules;
+  // put the signed-in one back so these connect.
+  beforeEach(() => {
+    vi.doMock("../api/client", () => ({ getAuthToken: vi.fn(() => "fake-token") }));
+  });
+
+  it("re-emits dnd_set true on every (re)connect while DND is still wanted", async () => {
+    const { emitDndSet } = await import("./dndClient");
+    emitDndSet(true);
+    lastFakeSocket!.trigger("connect");
+    expect(lastFakeSocket!.emitted).toEqual([
+      { event: "dnd_set", payload: { isDnd: true } },
+      { event: "dnd_set", payload: { isDnd: true } },
+    ]);
+  });
+
+  it("does not re-assert after DND was turned off", async () => {
+    const { emitDndSet } = await import("./dndClient");
+    emitDndSet(true);
+    emitDndSet(false);
+    lastFakeSocket!.trigger("connect");
+    expect(lastFakeSocket!.emitted).toEqual([
+      { event: "dnd_set", payload: { isDnd: true } },
+      { event: "dnd_set", payload: { isDnd: false } },
+    ]);
+  });
+
+  it("does not re-assert on a connection that only ever listened", async () => {
+    const { useDndEmails } = await import("./dndClient");
+    renderHook(() => useDndEmails());
+    lastFakeSocket!.trigger("connect");
+    expect(lastFakeSocket!.emitted).toEqual([]);
+  });
+
+  it("opens no second socket for the re-assert", async () => {
+    const { io } = await import("socket.io-client");
+    const { emitDndSet } = await import("./dndClient");
+    const before = vi.mocked(io).mock.calls.length; // the spy is module-wide and never cleared
+    emitDndSet(true);
+    lastFakeSocket!.trigger("connect");
+    lastFakeSocket!.trigger("connect");
+    expect(vi.mocked(io).mock.calls.length).toBe(before + 1);
+  });
+});
+
+describe("useSelfDndPublication (the shared publisher)", () => {
+  // The last test above swapped in a token-less api/client with vi.doMock, which survives resetModules;
+  // put the signed-in one back so these connect.
+  beforeEach(() => {
+    vi.doMock("../api/client", () => ({ getAuthToken: vi.fn(() => "fake-token") }));
+  });
+
+  it("publishes nothing on a plain mount when DND is off", async () => {
+    const { useSelfDndPublication } = await import("./dndClient");
+    renderHook(() => useSelfDndPublication(false));
+    expect(lastFakeSocket).toBeNull();
+  });
+
+  it("publishes TRUE once on a mount that already finds DND active (reload), then FALSE when it ends", async () => {
+    const { useSelfDndPublication } = await import("./dndClient");
+    const { rerender } = renderHook(({ on }: { on: boolean }) => useSelfDndPublication(on), { initialProps: { on: true } });
+    expect(lastFakeSocket!.emitted).toEqual([{ event: "dnd_set", payload: { isDnd: true } }]);
+    rerender({ on: true });
+    expect(lastFakeSocket!.emitted).toHaveLength(1);
+    rerender({ on: false });
+    expect(lastFakeSocket!.emitted).toEqual([
+      { event: "dnd_set", payload: { isDnd: true } },
+      { event: "dnd_set", payload: { isDnd: false } },
+    ]);
+  });
+
+  it("emits once per real crossing and nothing on unmount", async () => {
+    const { useSelfDndPublication } = await import("./dndClient");
+    const { rerender, unmount } = renderHook(({ on }: { on: boolean }) => useSelfDndPublication(on), { initialProps: { on: false } });
+    rerender({ on: true });
+    rerender({ on: true });
+    expect(lastFakeSocket!.emitted).toEqual([{ event: "dnd_set", payload: { isDnd: true } }]);
+    unmount();
+    expect(lastFakeSocket!.emitted).toHaveLength(1);
+  });
+
+  it("what the hook published is what a reconnect re-asserts", async () => {
+    const { useSelfDndPublication } = await import("./dndClient");
+    renderHook(() => useSelfDndPublication(true));
+    lastFakeSocket!.trigger("connect");
+    expect(lastFakeSocket!.emitted).toHaveLength(2);
+    expect(lastFakeSocket!.emitted[1]).toEqual({ event: "dnd_set", payload: { isDnd: true } });
+  });
+});

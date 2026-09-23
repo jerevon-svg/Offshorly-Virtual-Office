@@ -419,3 +419,50 @@ async def test_session_upgrade_over_the_same_socket_keeps_a_single_membership(se
     await b.disconnect()
     await asyncio.sleep(0.3)
     assert socket_module.spatial_sessions.snapshot() == []
+
+
+async def test_three_way_ask_to_join_upgrade_leaves_all_three_in_one_session(server):
+    """THE ASK-TO-JOIN INVARIANT, end to end over three real sockets.
+
+    A and B are in a spatial DM; C asks to join and is accepted, so accept_join_request mints (or
+    reuses) the group id and every client is told. Each then does what its office does: the two
+    incumbents leave the old id and start the new one, and the JOINER starts the new one when their
+    group panel opens. All three must end up in the SAME session — that is what makes every client
+    render all three as "In Conversation".
+
+    Three live browsers showed the joiner missing from this set: V2 deferred their start until a 3D
+    approach reported arrival, and that approach is best-effort — when it did not arrive, the start was
+    never sent and the person sat in the conversation while the server had never heard of them. The
+    server was always willing; nothing here needed fixing. This pins the contract the client owes it."""
+    a = await _connect_as(server, "a@example.com")
+    b = await _connect_as(server, "b@example.com")
+    c = await _connect_as(server, "c@example.com")
+    await asyncio.sleep(0.2)
+
+    await a.emit("spatial_session_start", {"sessionId": "dm-ab"})
+    await b.emit("spatial_session_start", {"sessionId": "dm-ab"})
+    await asyncio.sleep(0.3)
+    assert socket_module.spatial_sessions.session_of("c@example.com") is None
+
+    # conversation_upgraded: incumbents move, the joiner joins.
+    await a.emit("spatial_session_leave")
+    await a.emit("spatial_session_start", {"sessionId": "group-abc"})
+    await b.emit("spatial_session_leave")
+    await b.emit("spatial_session_start", {"sessionId": "group-abc"})
+    await c.emit("spatial_session_start", {"sessionId": "group-abc"})
+    await asyncio.sleep(0.4)
+
+    assert socket_module.spatial_sessions.snapshot() == [
+        {
+            "sessionId": "group-abc",
+            "members": ["a@example.com", "b@example.com", "c@example.com"],
+        }
+    ]
+    for email in ("a@example.com", "b@example.com", "c@example.com"):
+        assert socket_module.spatial_sessions.session_of(email) == "group-abc"
+
+    await a.disconnect()
+    await b.disconnect()
+    await c.disconnect()
+    await asyncio.sleep(0.3)
+    assert socket_module.spatial_sessions.snapshot() == []

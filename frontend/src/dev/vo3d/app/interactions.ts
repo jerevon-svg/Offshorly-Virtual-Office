@@ -107,6 +107,12 @@ export interface Vo3dCoworkerInteractions {
    *  untouched — this exists so a card cannot follow somebody back across the room. Re-approaching raises
    *  `onExitIntercepted` again, so nothing is lost by dismissing it. */
   onExitAbandoned?(): void;
+  /** DND ROOM LOCK — the body is standing at the shut door of `roomId` (a manifest room id), kept out by a
+   *  DND occupant. Raised once per approach, from the world's frame loop, whichever movement mode brought
+   *  them there; the host shows V1's RoomLockedToast and owns the knock (app/roomLocks.ts). */
+  onRoomLockIntercepted?(roomId: string): void;
+  /** …and they walked away from that door without getting in. */
+  onRoomLockAbandoned?(roomId: string): void;
   /** PHASE 7E — WHICH SIDE OF THE BUILDING'S OWN BOUNDARY THE BODY IS ON (app/access.ts `Zone`).
    *
    *  Edge-triggered. The host reads exactly one thing from it: somebody who is `outside` is out of the

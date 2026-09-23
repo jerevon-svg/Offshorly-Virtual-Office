@@ -78,7 +78,7 @@ import { Vo3dHud, type Vo3dProfileLanding } from "./Vo3dHud";
 import { Vo3dOverheads, SELF_OVERHEAD_KEY, TOUCAN_OVERHEAD_KEY, type Vo3dOverhead } from "./Vo3dOverheads";
 import { WhiteboardPanel } from "../../../components/Whiteboard/WhiteboardPanel";
 import { type WhiteboardScope } from "../../../services/whiteboard/whiteboardClient";
-import { flatRoomIdForRoomLayer, formatRoomName } from "../../../data/office-layout";
+import { flatRoomIdForRoomLayer, formatRoomName, roomLayers as officeRoomLayers, rooms as flatRooms } from "../../../data/office-layout";
 import { profileImageFor } from "../../../data/portraits";
 import {
   CHAT_BUBBLE_RAIL_GAP,
@@ -99,8 +99,8 @@ import { isConnectedToMedia } from "../../../services/call/callStore";
 import type { ChatMessage } from "../../../services/chat";
 import { isAuthoredMessage } from "../../../services/chat/types";
 import { officePeopleToLayers } from "../../../data/rosterLayers";
-import { ACTIVE_DETAIL_STATUSES, mapAtlasToOfficeStatus, STATUS_META, type OfficeStatus } from "../../../services/presence/status";
-import { emitDndSet, useDndEmails } from "../../../services/presence/dndClient";
+import { ACTIVE_DETAIL_STATUSES, resolvePeerStatus, STATUS_META, type OfficeStatus } from "../../../services/presence/status";
+import { useDndEmails, useSelfDndPublication } from "../../../services/presence/dndClient";
 import {
   emitGlobalChatActive,
   useGlobalChatActiveEmails,
@@ -109,6 +109,15 @@ import { useTalkPermissionGate } from "../../../components/OfficeMap/useTalkPerm
 import { TalkRequestToast } from "../../../components/OfficeMap/TalkRequestToast";
 import { DndRequestQueue } from "../../../components/OfficeMap/DndRequestQueue";
 import { useV1RoomPresence } from "../adapters/v1RoomPresence";
+import { useRoomPresence } from "../../../services/presence/roomPresenceClient";
+import { isRoomLocked } from "../../../data/roomLock";
+import { RoomLockedToast } from "../../../components/OfficeMap/RoomLockedToast";
+import {
+  cancelRoomEntryRequest,
+  createRoomEntryRequest,
+  onRoomRequestCancelled,
+  onRoomRequestResolved,
+} from "../../../services/chat/roomRequestsClient";
 import { JoinRequestPrompt } from "../../../components/OfficeMap/JoinRequestPrompt";
 import { CallInvitePrompt } from "../../../components/OfficeMap/CallInvitePrompt";
 import { SpatialCallControls } from "../../../components/OfficeMap/SpatialCallControls";
@@ -142,7 +151,7 @@ import {
   shouldBriefOnReturn,
   writeBriefedSince,
 } from "../../../components/OfficeMap/toucanReturnBriefing";
-import { resolveConversationSlot } from "../../../components/OfficeMap/clusterFormation";
+import { classifyUpgrade, resolveConversationSlot } from "../../../components/OfficeMap/clusterFormation";
 import type { Conversation } from "../../../services/chat/types";
 import {
   callParticipantsFor,
@@ -425,6 +434,20 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
    *  clears the other, which is V1's own rule (two guards that are both false would silently vanish both
    *  panels). One spatial slot, as V1 has. */
   const [openGroupConv, setOpenGroupConv] = useState<{ id: string; participantIds: string[]; title: string | null } | null>(null);
+  /** Always-latest mirror of openConversationId for the socket-driven handlers below (the upgrade
+   *  listener and the world's arrival callback), which are registered once and must not read a stale
+   *  closure — V1's openConversationIdRef, for the same two readers. */
+  const openConversationIdRef = useRef(openConversationId);
+  openConversationIdRef.current = openConversationId;
+  /** ASK-TO-JOIN: the joiner's walk into the new cluster is a WALK AND NOTHING MORE.
+   *
+   *  It used to gate `spatial_session_start` on the world's arrival callback (V1's onJoinerArrived).
+   *  Three live browsers proved why that cannot stand: the 3D approach is best-effort — it is superseded by
+   *  any newer walk, stopped by the exit gate's own re-arm, and never reports failure at all — so an
+   *  approach that does not arrive left the joiner permanently OUT of the authoritative session while their
+   *  group panel sat open in front of them. Membership is shared state every other client reasons about; it
+   *  cannot hang off an animation. It is now established where EVERY other spatial membership in V1 and V2
+   *  is established: the conversation panel's own fire-once open edge. */
   /** GLOBAL CHAT — V1's remote floating windows, and the other half of its slot split.
    *
    *  A SPATIAL window is the one you get by walking up to somebody: it emits spatial_session_start, shows
@@ -496,6 +519,89 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
   const toastTimerRef = useRef<number | undefined>(undefined);
 
   const dndEmails = useDndEmails();
+
+  // ---- DND ROOM LOCKS (V1 parity: feature spec sections 2/3/6/7/8/11) ------------------------------
+  // WHICH ROOMS ARE LOCKED is V1's rule over V1's feeds — data/roomLock.ts's isRoomLocked over the same
+  // room_presence and dnd_status broadcasts OfficeMap reads — evaluated here for every manifest room that
+  // has a flat twin and handed to the world in its own ids. The world turns each locked room's door into a
+  // shut doorway (app/roomLocks.ts, the same Walkability reservation Reception's gates use), so click-to-walk,
+  // approach and PLAYER mode all stop at the door; it decides nothing about locks itself.
+  const roomPresence = useRoomPresence();
+  const lockedRoomLayerIds = useMemo(() => {
+    const out: string[] = [];
+    for (const layer of officeRoomLayers) {
+      const flat = flatRoomIdForRoomLayer(layer.id);
+      if (flat && isRoomLocked(flat, roomPresence, dndEmails)) out.push(layer.id);
+    }
+    return out;
+  }, [dndEmails, roomPresence]);
+  useEffect(() => {
+    if (!ready) return;
+    worldRef.current?.setLockedRooms?.(lockedRoomLayerIds);
+  }, [lockedRoomLayerIds, ready, worldRef]);
+  /** V1's roomEntryGate: set while the body stands at a shut door. `roomId` is V1's FLAT id — what the knock
+   *  is posted against and what the occupant's DndRequestQueue names; `roomLayerId` is the world's id, what
+   *  the authorisation is granted on. The held walk itself lives in the world (its `resume`). */
+  const [roomEntryGate, setRoomEntryGate] = useState<{ roomLayerId: string; roomId: string; roomName: string; pendingRequestId: string | null } | null>(null);
+  const roomEntryGateRef = useRef(roomEntryGate);
+  roomEntryGateRef.current = roomEntryGate;
+  const [roomEntryDeclined, setRoomEntryDeclined] = useState(false);
+  const roomEntryDeclinedTimerRef = useRef<number | undefined>(undefined);
+  const roomPresenceRef = useRef(roomPresence);
+  roomPresenceRef.current = roomPresence;
+  const dndEmailsRef = useRef(dndEmails);
+  dndEmailsRef.current = dndEmails;
+  const roomNameFor = useCallback((flatRoomId: string) => flatRooms.find((r) => r.id === flatRoomId)?.name ?? formatRoomName(flatRoomId), []);
+  useEffect(() => {
+    // V1's handlers (OfficeMap.tsx), against V1's own client. The accept is ONE-SHOT: the world spends the
+    // authorisation the moment the body is inside, so a repeat entry after leaving needs a fresh knock.
+    const offResolved = onRoomRequestResolved((req) => {
+      const gate = roomEntryGateRef.current;
+      if (!gate || gate.pendingRequestId !== req.id) return; // not this viewer's own outstanding knock
+      if (req.state === "accepted") {
+        setRoomEntryGate(null);
+        worldRef.current?.authorizeRoomEntry?.(gate.roomLayerId);
+      } else if (req.state === "declined") {
+        setRoomEntryGate(null);
+        setRoomEntryDeclined(true);
+        window.clearTimeout(roomEntryDeclinedTimerRef.current);
+        roomEntryDeclinedTimerRef.current = window.setTimeout(() => setRoomEntryDeclined(false), 3000);
+      }
+    });
+    const offCancelled = onRoomRequestCancelled((req) => {
+      const gate = roomEntryGateRef.current;
+      if (!gate || gate.pendingRequestId !== req.id) return;
+      // Almost always the server auto-cancelled a stale knock because the room unlocked (spec section 11).
+      // Re-check the LIVE lock rather than assume: if open, the world's own hold has already lifted with the
+      // same feeds and it resumes the held walk itself — nothing to authorise. Otherwise back to "knock".
+      if (!isRoomLocked(gate.roomId, roomPresenceRef.current, dndEmailsRef.current)) {
+        setRoomEntryGate(null);
+        return;
+      }
+      setRoomEntryGate({ ...gate, pendingRequestId: null });
+    });
+    return () => {
+      offResolved();
+      offCancelled();
+      window.clearTimeout(roomEntryDeclinedTimerRef.current);
+    };
+  }, [worldRef]);
+  const handleKnock = useCallback(async () => {
+    const gate = roomEntryGateRef.current;
+    if (!gate || gate.pendingRequestId) return;
+    try {
+      const req = await createRoomEntryRequest(gate.roomId);
+      setRoomEntryGate((current) => (current && current.roomId === gate.roomId ? { ...current, pendingRequestId: req.id } : current));
+    } catch (err) {
+      console.error("[roomRequests] failed to send entry request", err);
+    }
+  }, []);
+  const handleCancelKnock = useCallback(() => {
+    const gate = roomEntryGateRef.current;
+    if (!gate?.pendingRequestId) return;
+    void cancelRoomEntryRequest(gate.pendingRequestId).catch(() => {});
+    setRoomEntryGate({ ...gate, pendingRequestId: null });
+  }, []);
   // The viewer's OWN effective status — the same store the dock's availability picker writes to, so the
   // pill over their head and the pill in the dock can never disagree.
   const { currentStatus: selfStatus } = useSelfStatus();
@@ -521,11 +627,17 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     return map;
   }, [people]);
 
+  // PEER STATUS — V1's own rule (status.ts resolvePeerStatus): the read-only Atlas row, overlaid with the
+  // app's DND registry that Atlas never hears about. Without the overlay a person reads DND on their own
+  // screen and whatever Atlas says (OFFLINE, for somebody Atlas is not tracking) on everybody else's.
   const statusByEmail = useMemo(() => {
     const map: Record<string, OfficeStatus> = {};
-    for (const person of people) map[emailKey(person.email)] = mapAtlasToOfficeStatus(person.status);
+    for (const person of people) {
+      const key = emailKey(person.email);
+      map[key] = resolvePeerStatus(person.status, dndEmails.has(key));
+    }
     return map;
-  }, [people]);
+  }, [dndEmails, people]);
 
   const chatAttention = useMemo(
     () => buildChatAttentionByLayerId({ conversations, selfEmail: self, selfLayerId: self }),
@@ -697,13 +809,27 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
         setExitOpen(false);
       },
       onZoneChanged: (zone) => setOutsideBuilding(zone === "outside"),
+      // DND ROOM LOCK — the body is standing at a shut door, whichever movement mode brought it there. Show
+      // V1's toast for THAT room, named in V1's flat namespace (the knock's and the occupant's).
+      onRoomLockIntercepted: (roomLayerId) => {
+        const flat = flatRoomIdForRoomLayer(roomLayerId);
+        if (!flat) return;
+        setRoomEntryGate((current) =>
+          current?.roomLayerId === roomLayerId ? current : { roomLayerId, roomId: flat, roomName: roomNameFor(flat), pendingRequestId: null },
+        );
+      },
+      // …and they walked away. The OFFER goes with them; an outstanding knock does not — V1 keeps waiting
+      // for the answer (and the accept still opens the door for them, wherever they stand).
+      onRoomLockAbandoned: (roomLayerId) => {
+        setRoomEntryGate((current) => (current && current.roomLayerId === roomLayerId && !current.pendingRequestId ? null : current));
+      },
       // ROOM DETAILS — V1's own room click, in V2's world. The world reports which of its floor regions
       // was picked (a manifest room id, or null for the hall / a person / a fixture / outside); what that
       // room CONTAINS is resolved here from V1's roster, in app/roomDetails.ts.
       onRoomSelected: (roomId) => setRoomDetailsId(roomId),
     });
     return () => world.setCoworkerInteractions(null);
-  }, [ready, worldRef]);
+  }, [ready, roomNameFor, worldRef]);
 
   /** Close the card AND tell the world, so the two agree about who is selected — otherwise a second click
    *  on the same body would be recognised as "already selected" and open nothing. */
@@ -1269,7 +1395,9 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
       // never updates; the server-broadcast spatial_sessions feed carries the same fact to every client
       // and is what V1 itself drives the peer talking visual from (its talkingCharacterIdsFromSessions).
       // It only ever UPGRADES the label — it never suppresses a message or the typing dots above it.
-      const status = inConversationEmails.has(email) ? "IN_CONVERSATION" : statusByEmail[email];
+      // DND outranks it, as in V1's own precedence (status.ts: DND is checked before IN_CONVERSATION).
+      const status =
+        statusByEmail[email] !== "DND" && inConversationEmails.has(email) ? "IN_CONVERSATION" : statusByEmail[email];
       // PHASE 7D — THEIR CAMERA. callStore keys videoByIdentity by the LiveKit identity, which is the
       // lowercased email the token was minted for, so it is already the same key the bodies are drawn
       // under — no mapping, no lookup table, and no way for a track to land over the wrong person. The
@@ -1418,13 +1546,11 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
   // NO DOUBLE EMIT: V1 and V2 are mutually exclusive routes (App.tsx returns the V2 tree instead of
   // OfficeMap), so the two effects can never be mounted at once; and within V2 this overlay is mounted
   // once. The ref makes a re-render idempotent regardless.
-  const selfIsDnd = selfStatus === "DND";
-  const prevSelfIsDndRef = useRef(selfIsDnd);
-  useEffect(() => {
-    if (prevSelfIsDndRef.current === selfIsDnd) return;
-    prevSelfIsDndRef.current = selfIsDnd;
-    emitDndSet(selfIsDnd);
-  }, [selfIsDnd]);
+  //
+  // NOW THE SHARED PUBLISHER (dndClient.ts's useSelfDndPublication), which OfficeMap calls too — the
+  // edge-trigger contract above lives there once, plus the one case it adds: a mount that already finds
+  // a restored DND session publishes TRUE, because the server forgot it when the previous socket left.
+  useSelfDndPublication(selfStatus === "DND");
   // CLEANUP — V1 has no unmount rule here and neither does this: DND is a durable, persisted session
   // (localStorage + expiry), not a window that is open or closed, so leaving the route must NOT tell
   // peers the employee is available again. The server's own disconnect handling owns that.
@@ -1496,6 +1622,36 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
         showToast("Couldn't start that group chat.");
       });
   }, [openConversation, refetchConversations, self, showToast]);
+
+  // ---- ASK-TO-JOIN, THE FORMATION (V1's conversation_upgraded handler) -----------------------------
+  // The backend accepts a join_group request in one transaction (reusing an exact-member group or
+  // creating one — backend/app/repositories/requests.py decides, never this file) and emits
+  // conversation_upgraded to every member. V2 mounted the asking half and the answering half but never
+  // this: the reaction that swaps the stale DM for the group, refreshes the inbox and, for the joiner,
+  // walks the body over. Same classification, same panel swap and same refetch as OfficeMap.tsx.
+  useEffect(() => {
+    const unsubscribe = chatService.onConversationUpgraded?.((payload) => {
+      // Defense in depth — routed to this user's own room, but never assumed.
+      if (!payload.participantIds.some((id) => emailKey(id) === self)) return;
+      const role = classifyUpgrade({ selfEmail: self, openConversationId: openConversationIdRef.current, payload });
+      // The old DM panel unmounts by a plain state swap below, not through its own onClose, so its
+      // spatial-session leave is emitted here. The NEW id's start is owned by the group panel's
+      // onConversationOpen (incumbent) or by the arrival callback (joiner) — never by this handler.
+      if (openConversationIdRef.current === payload.oldConversationId) emitSpatialSessionLeave();
+      setOpenChat(null);
+      setChatMinimized(false);
+      setOpenGroupConv({ id: payload.conversationId, participantIds: payload.participantIds, title: payload.title });
+      void refetchConversations();
+      if (role !== "joiner") return;
+      // JOINER: walk up to an incumbent through the world's own approach — the same walk Chat uses. The
+      // session start is NOT waiting on it (see the note above): the group panel's open edge below has
+      // already made this employee a member, so a walk that is interrupted, refused or never finished
+      // costs them nothing but the stroll.
+      const incumbent = payload.participantIds.map((id) => emailKey(id)).find((id) => id !== self);
+      if (incumbent) worldRef.current?.approachCoworker(incumbent);
+    });
+    return () => unsubscribe?.();
+  }, [refetchConversations, self, worldRef]);
 
   // ---- DISCOVERY: WHERE EACH PERSON IS --------------------------------------------------------------
   // One label per employee, from the facts the movement feed already publishes (app/employeeLocation.ts).
@@ -1862,6 +2018,14 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
         </div>
       )}
       <TalkRequestToast {...talkGate.toastProps} />
+      {/* DND ROOM LOCK — V1's own toast, V1's own props (OfficeMap.tsx): knock, wait, cancel, declined. */}
+      <RoomLockedToast
+        roomName={roomEntryGate?.roomName ?? null}
+        pendingRequestId={roomEntryGate?.pendingRequestId ?? null}
+        declined={roomEntryDeclined}
+        onKnock={() => void handleKnock()}
+        onCancel={handleCancelKnock}
+      />
       {/* PHASE 8 — THE RECIPIENT SIDE OF EVERY REQUEST V2 COULD ALREADY SEND.
           Until now V2 mounted only the ASKING half: `createJoinRequest` above, and TalkRequestToast's
           "ask to talk" for a DND coworker. Nothing here ever ANSWERED one. Because neither request type
@@ -1949,6 +2113,10 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
               // NOT spatial: no session badge, no call controls, no spatial_session_start. This is
               // Global Chat — the same persistent conversation, reached without walking anywhere.
               minimized={w.minimized}
+              // Global Chat DND indicator — V1's own subtitle (OfficeMap.tsx's remote window), the same
+              // dndEmails the talk gate reads. Messaging is never blocked; ConversationView turns this
+              // into the header cue and the pinned "Expect delayed response" for a non-spatial panel.
+              subtitle={dndEmails.has(w.peerEmail) ? "🔴 DND · Notifications muted" : undefined}
               onMinimizeToggle={() => toggleRemote(w.key)}
               onClose={() => closeRemote(w.key)}
               // V1's own DM board entry point, and its own signature: the panel hands up the conversation
@@ -2097,9 +2265,18 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
             }
             minimized={chatMinimized}
             onMinimizeToggle={() => setChatMinimized((v) => !v)}
+            onConversationOpen={(conversationId) => {
+              // V1's rule for the spatial group slot, with NO joiner exception: an open group panel is a
+              // spatial-conversation participant. Fire-once (GroupConversationView's own open edge), which
+              // is what makes this exactly-once for incumbent and joiner alike.
+              setOpenConversationId(conversationId);
+              emitSpatialSessionStart(conversationId);
+            }}
             onClose={() => {
               setSelfTyping(false);
               setOpenGroupConv(null);
+              if (openConversationId) emitSpatialSessionLeave();
+              setOpenConversationId(null);
               setChatMinimized(false);
             }}
           />
