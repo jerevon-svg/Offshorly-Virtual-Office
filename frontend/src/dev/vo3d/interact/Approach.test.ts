@@ -185,7 +185,12 @@ describe("app/world.ts bridges the arrival to the host contract and decides noth
   it("hands every walk-up its entity id and forwards the arrival to the host handlers", () => {
     const src = code(worldSrc);
     expect(src).toContain("approachCtl.begin(spec, entityId)");
-    expect(src).toContain("approachCtl.onArrivedAtTarget = (entityId) => coworkerInteractions?.onInteractionArrived?.(entityId)");
+    // THE FORWARDING, not its syntax. The handler stopped being a bare expression when the elevator
+    // landed: the call control is an ordinary walk-up whose ARRIVAL starts a journey, which is the
+    // world's own verb — the same kind of exception the Cave's portal already is in activateInteractable.
+    // Every other walk-up still reaches the host untouched, and that is what is pinned here.
+    expect(src).toContain("approachCtl.onArrivedAtTarget = (entityId) => {");
+    expect(src).toContain("coworkerInteractions?.onInteractionArrived?.(entityId);");
   });
 
   it("still knows nothing about attendance", () => {

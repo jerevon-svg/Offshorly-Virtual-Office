@@ -22,7 +22,7 @@ import { FACADE_Z } from "../adapters/v1Floor";
 import type { RoomDef } from "../world/WorldState";
 import {
   CHAIR_ROWS, CHAIR_XS, DOOR, EAST_EDGE, EAST_GLASS_X, FACADE_DOOR, GLASS_T, KIOSK, KIOSK_BASE, KIOSK_SLATS,
-  LEDGE_PLANTERS, NORTH_WALL, NW_SLATS, KIOSK_SCANNER_ID, RECT, TABLE, TILE_RECT, WALL_Z, WEST_BACKBOARD,
+  LEDGE_PLANTERS, NORTH_WALL, KIOSK_SCANNER_ID, RECT, TABLE, TILE_RECT, WALL_Z, WEST_BACKBOARD,
   WEST_CREDENZA, WEST_FRAME, WEST_POSTER, WEST_TABLET, WEST_WALL,
 } from "../rooms/meeting";
 
@@ -99,9 +99,8 @@ function westWallUnit(): THREE.Group {
   const t = WEST_TABLET;
   const tablet = tiltedPanel({ x: faceX, z: (t.z0 + t.z1) / 2, y0: t.y0, y1: t.y1, w: t.z1 - t.z0, tilt: TILT, ui: { id: "meeting-tablet-ui", cw: 112, ch: 160, draw: drawTabletUi } });
   g.add(tablet);
-  // the framed artwork on the bare west wall, north of the unit
-  const f = WEST_FRAME;
-  g.add(tiltedPanel({ x: WEST_WALL.x1 + 0.2, z: (f.z0 + f.z1) / 2, y0: f.y0, y1: f.y1, w: f.z1 - f.z0, tilt: 0.26, face: "uiNavy" }));
+  // THE FRAMED ARTWORK IS NOT BUILT: the lift core stands on that stretch of the west wall now
+  // (rooms/meeting.ts WEST_FRAME). Its span is still what the cornice routes around, below.
   // the white patterned vase the source stands on the credenza top
   g.add(cyl(4.4, 8, plastic("white"), WEST_CREDENZA.x + WEST_CREDENZA.w / 2, WEST_CREDENZA.h, 1094, 3.4));
   return g;
@@ -157,7 +156,6 @@ export function meetingStatic(_room: RoomDef): THREE.Group {
 
   // ---- north: the cream cove wall that closes the bar's west end ------------------------------------
   g.add(coveWall({ ...NORTH_WALL, phase: 0.0, name: "meeting-cove-wall" }));
-  g.add(slatPanel({ axis: "x", at: NORTH_WALL.z1, dir: 1, from: NW_SLATS.from, to: NW_SLATS.to, y0: NW_SLATS.y0, y1: NW_SLATS.y1, name: "meeting-nw-slats" }));
 
   // ---- west: solid wall + skirting; the unit in front of it is a fixed installation ------------------
   const w = WEST_WALL;

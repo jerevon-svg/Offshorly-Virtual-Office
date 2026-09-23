@@ -19,6 +19,7 @@ import { CELL } from "../adapters/v1Grid";
 import { v1RoomRect } from "../adapters/v1Manifest";
 import { FACADE_Z } from "../adapters/v1Floor";
 import { GATE, RECT as RECEPTION_RECT, STRUCT } from "./reception";
+import { GROUND_ELEVATOR } from "./elevator";
 import { kindFootprint } from "./footprint";
 
 export const MEETING_ROOM_ID = "meeting-room";
@@ -98,12 +99,20 @@ export const MEETING_WALLS: Rect[] = [
   { x: EAST_GLASS_FACE, z: DOOR.z1, w: GLASS_T, d: FACADE_Z - DOOR.z1 }, // east glazing, south of it
 ];
 
+/** THE LIFT CORE'S WALLS, as this room's own solids.
+ *
+ *  The core is built into the room's north-west corner (rooms/elevator.ts CORE_LOCAL explains why that
+ *  corner), so as far as this room's DERIVED navigation is concerned it is simply more wall: a body
+ *  cannot walk into it, and the floor in front of it is the apron the call plate is pressed from. The
+ *  rects come from the core's own spec — nothing is re-measured here, so the two can never disagree. */
+export const MEETING_CORE_SOLIDS: Rect[] = GROUND_ELEVATOR.solids;
+
 export const MEETING_ROOM: RoomDef = {
   id: MEETING_ROOM_ID,
   name: "Meeting Room",
   rect: RECT,
   floorRect: FLOOR_RECT,
-  wallSolids: MEETING_WALLS,
+  wallSolids: [...MEETING_WALLS, ...MEETING_CORE_SOLIDS],
   // no `shell`: ShellSpec describes the Design Room's arrangement. Meeting is solid north + solid west,
   // glass south and a glazed east frontage with its own entrance — its own static builder (build/meeting.ts).
 };
@@ -116,8 +125,13 @@ export const NORTH_WALL = { x0: RECT.x, x1: EAST_EDGE, z0: WALL_OUTER_Z, z1: WAL
 /** West wall mass, from the north wall down to the façade. */
 export const WEST_WALL = { x0: RECT.x, x1: WEST_WALL_X, z0: WALL_Z, z1: FACADE_Z, h: STRUCT.wallHeight };
 
-/** The wood-slat feature panel in the NW corner (art x 28.6…75.0), mounted on the north wall's face. */
-export const NW_SLATS = { from: 28, to: 75, y0: 11, y1: 44 };
+/** THE WOOD-SLAT FEATURE PANEL IS GONE, and this note is what is left of it.
+ *
+ *  It was mounted on the north wall's south face at x 28…75 — which is inside the lift core's footprint
+ *  (rooms/elevator.ts CORE_LOCAL: x 22…112, z 890…956). The core is built joinery standing on that wall,
+ *  so the panel is not hidden by it, it is REPLACED by it. This is the one authored piece the lift
+ *  displaced; the table, the chairs, the credenza, the west artwork, the kiosk, the glass walls and the
+ *  glass entrance are all clear of it and are untouched. */
 
 /** The painted bi-parting glass door in the street façade. It has NO '+' cells in the V1 grid, so it is
  *  reconstructed as STATIC glass for art fidelity only — see build/frontbar.ts facadeSection. */
@@ -128,7 +142,9 @@ export const FACADE_DOOR = { x0: 188, x1: 257 };
  *  only thing standing on it is the west wall. Nothing else about the grid changes. */
 export const NORTH_STRIP = {
   id: "meeting-north-strip",
-  rect: { x: WEST_WALL_X, z: WALL_Z, w: EAST_EDGE - WEST_WALL_X, d: 60 * 16 - WALL_Z } as Rect, // up to V1's own lane at 960
+  // …EAST OF THE LIFT CORE. The corner the core now stands in was part of this strip; what is left
+  // of it is the floor between the core's east face and Reception's line, which is still real floor.
+  rect: { x: GROUND_ELEVATOR.outer.x + GROUND_ELEVATOR.outer.w, z: WALL_Z, w: EAST_EDGE - (GROUND_ELEVATOR.outer.x + GROUND_ELEVATOR.outer.w), d: 60 * 16 - WALL_Z } as Rect, // up to V1's own lane at 960
   solids: [] as Rect[], // the west wall bounds the band rather than standing in it
 };
 
@@ -161,8 +177,18 @@ export const KIOSK_SLATS = { at: 272, from: 982, to: 1080, y0: 7, y1: 40 };
  *  poster and a wall tablet, with a credenza in front of it and objects on top. */
 export const WEST_BACKBOARD = { x: 22, z: 992, w: 5, d: 112, h: 44 };
 export const WEST_CREDENZA = { x: 27, z: 992, w: 25, d: 112, h: 26, modules: 4 };
-/** framed artwork on the bare west wall, north of the unit (art x 12…22, z 956…986) */
-export const WEST_FRAME = { z0: 962, z1: 990, y0: 16, y1: 44 };
+/** THE FRAMED ARTWORK ON THE WEST WALL IS GONE, and this is what is left of it.
+ *
+ *  It hung at z 962…990 on the wall's inner face — inside the lift core's footprint once the core was
+ *  turned to face east and grew south to take the room's unused north-west corner (rooms/elevator.ts
+ *  CORE_LOCAL: x 22…90, z 890…984). The core is built joinery standing on that wall, so the picture is
+ *  not hidden by it, it is REPLACED by it. With the wood-slat panel, that is the whole of what the lift
+ *  displaced: the table, the chairs, the credenza, the terminal, the glass enclosure and the glass
+ *  entrance are all clear of it and untouched.
+ *
+ *  The span is KEPT as a constant because the west wall's cornice still has to route around what stands
+ *  on that elevation, and the core occupies exactly this stretch of it (build/meeting.ts). */
+export const WEST_FRAME = { z0: 890, z1: 984, y0: 16, y1: 44 };
 /** the two screens on the backboard's east face */
 export const WEST_POSTER = { z0: 998, z1: 1016, y0: 28, y1: 42 };
 export const WEST_TABLET = { z0: 1026, z1: 1050, y0: 24, y1: 40 };
@@ -215,7 +241,13 @@ export function meetingRoomEntities(): Entity[] {
   for (const row of CHAIR_ROWS)
     CHAIR_XS.forEach((x, i) => out.push(furnitureEntity(`chair-${row.facing}-${i}`, "chair-b", x, row.z, CHAIR_W, CHAIR_W, row.facing)));
   // planting: two floor plants flanking the west unit, two on the credenza top, and the ledge palms
-  out.push(plantEntity("plant-nw", 37, 976, 11, 30));
+  // MOVED 4 EAST AND SLIMMED, to stand beside the lift's doors instead of in front of them: the core
+  // (rooms/elevator.ts) opens onto this corner and its approach lane runs where the pot used to be.
+  // MOVED OUT OF THE LIFT'S CORNER — and out of the north strip as well. The core occupies the whole of
+  // the room's north-west corner, and the strip in front of its doors is both the boarding lane and the
+  // room's own north circulation (NORTH_STRIP): a pot standing anywhere in it closes a cell that the
+  // retired open-band evidence says is real floor. It joins the other west-side planting instead.
+  out.push(plantEntity("plant-nw", 72, 1086, 9, 28));
   out.push(plantEntity("plant-sw", 36, 1112, 9, 22));
   out.push(plantEntity("plant-credenza-0", 40, 1066, 7.5, 17, WEST_CREDENZA.h));
   out.push(plantEntity("plant-credenza-1", 40, 1090, 5.5, 12, WEST_CREDENZA.h));

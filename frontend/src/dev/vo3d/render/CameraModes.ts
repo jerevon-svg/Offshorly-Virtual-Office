@@ -53,7 +53,7 @@ export class CameraModes {
   private readonly R: Renderer;
   /** the hard fence: the office footprint and its immediate V1 edge context (the frame includes the
    *  exterior sidewalk under Reception, which is exactly where panning south must stop) */
-  private readonly bounds: Rect;
+  private bounds: Rect;
   private _mode: CameraModeId = "office";
   /** camParams.zoom that frames the whole office; depends on the aspect ratio, so it is re-derived */
   private officeZoom = 1;
@@ -68,6 +68,23 @@ export class CameraModes {
 
   get mode(): CameraModeId {
     return this._mode;
+  }
+  /** MOVE THE FENCE TO ANOTHER FLOOR.
+   *
+   *  OFFICE is a bounded viewport over ONE floor plate, and the whole point of the bound is that the
+   *  camera can never show what is beside or beneath that plate. A building with more than one storey
+   *  therefore has more than one fence, and this is how the floor being looked at hands over its own:
+   *  the canonical framing, the zoom floor and the pan clamp are all re-derived from the new rect, so a
+   *  floor standing in its own world space is framed exactly as the ground floor is and cannot be panned
+   *  off. A no-op for the rect that is already set, so calling it every frame would be free.
+   *
+   *  Re-applied immediately when OFFICE is live (there is a view on screen that must move), and merely
+   *  recorded otherwise — `set("office")` re-reads it on the way in. */
+  setOfficeBounds(rect: Rect): void {
+    const b = this.bounds;
+    if (b.x === rect.x && b.z === rect.z && b.w === rect.w && b.d === rect.d) return;
+    this.bounds = { ...rect };
+    if (this._mode === "office") this.set("office");
   }
   get officeParams(): CameraParams {
     return { pitch: OFFICE_VIEW.pitch, yaw: OFFICE_VIEW.yaw, zoom: this.officeZoom };

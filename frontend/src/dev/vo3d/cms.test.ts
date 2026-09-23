@@ -40,6 +40,7 @@ import { v1Static, worldToCell } from "./adapters/v1Grid";
 import { planWalk } from "./nav/planner";
 import { isSolid } from "./world/WorldState";
 import { FACING_YAW, pointInRect, type Rect, type Vec2 } from "./core/coords";
+import { buildWorldContents } from "./app/worldContents";
 
 /** the same wiring bootstrap.ts uses, minus THREE */
 function rig() {
@@ -367,8 +368,13 @@ describe("vo3d CMS room — app wiring", () => {
 
   it("the room, its entities, its derived navigation and its door are all registered", () => {
     const src = bootstrapSource;
-    expect(src).toContain("world.addRoom(CMS_ROOM);");
-    expect(src).toContain("for (const e of cmsRoomEntities()) world.addEntity(e);");
+    // REGISTRATION IS ASSERTED BY RUNNING THE REAL ASSEMBLY, not by grepping for two source lines.
+    // app/worldContents.ts is the one authoritative place the world is built (it was split out of
+    // app/world.ts after a duplicate lift-core registration stopped the office starting while every
+    // source-grep guard stayed green), and this calls the very same function the product calls.
+    const built = buildWorldContents().world;
+    expect(built.rooms.has(CMS_ROOM.id)).toBe(true);
+    expect(cmsRoomEntities().every((e) => built.entities.has(e.id))).toBe(true);
     expect(src).toContain("mirror.buildRoom(CMS_ROOM, shellOpts());");
     expect(src).toMatch(/DERIVED_ROOM_IDS = new Set\(\[[^\]]*CMS_ROOM\.id/);
     expect(src).toContain("cmsDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);");
