@@ -6,23 +6,29 @@
 // its two screens, and the conference table's desk props.
 // Furniture (table, chairs, plants) is entity-driven — see rooms/meeting.ts meetingRoomEntities.
 //
-// Builds NO east boundary of any kind: the artwork has none and the floor runs straight into Reception.
+// The EAST boundary is a frameless glass partition onto Reception carrying the room's sliding entrance
+// (glazedPartition, build/frontbar.ts). It stands entirely inside Meeting's own footprint.
 import * as THREE from "three";
 import { cyl, rbox } from "./helpers";
 import { tiledFloor } from "./tile";
 import { emissiveMatUnique, mat, plastic, uiScreenMat } from "../render/Materials";
 import { monitor, smallPot } from "./props";
 import { animated } from "../render/Ambient";
-import { coveWall, credenzaRun, facadeSection, ledgePlanter, slatPanel } from "./frontbar";
+import { coveWall, credenzaRun, facadeSection, glazedPartition, ledgePlanter, slatPanel } from "./frontbar";
 import { cornice, runSegments, skirting } from "./arch";
 import { kioskTotem } from "./reception";
 import { FACADE, STRUCT } from "../rooms/reception";
 import { FACADE_Z } from "../adapters/v1Floor";
 import type { RoomDef } from "../world/WorldState";
 import {
-  CHAIR_ROWS, CHAIR_XS, EAST_EDGE, FACADE_DOOR, KIOSK, KIOSK_BASE, KIOSK_SLATS, LEDGE_PLANTERS, NORTH_WALL, NW_SLATS,
-  KIOSK_SCANNER_ID, RECT, TABLE, TILE_RECT, WEST_BACKBOARD, WEST_CREDENZA, WEST_FRAME, WEST_POSTER, WEST_TABLET, WEST_WALL,
+  CHAIR_ROWS, CHAIR_XS, DOOR, EAST_EDGE, EAST_GLASS_X, FACADE_DOOR, GLASS_T, KIOSK, KIOSK_BASE, KIOSK_SLATS,
+  LEDGE_PLANTERS, NORTH_WALL, NW_SLATS, KIOSK_SCANNER_ID, RECT, TABLE, TILE_RECT, WALL_Z, WEST_BACKBOARD,
+  WEST_CREDENZA, WEST_FRAME, WEST_POSTER, WEST_TABLET, WEST_WALL,
 } from "../rooms/meeting";
+
+/** The solid shoe under both the Meeting and the Project screens. Low enough to see straight over from a
+ *  seated eye height, high enough that the two floors never meet on a raw glass edge. */
+export const GLASS_SPANDREL = 8;
 
 /** The desk props the artwork lines up on the conference table: six monitors back to back down the spine
  *  (three serving each row of chairs), a keyboard and mouse at every place, a conference puck in the
@@ -173,7 +179,17 @@ export function meetingStatic(_room: RoomDef): THREE.Group {
     g.add(cornice({ axis: "z", from: seg.from, to: seg.to, at: w.x1, y0: 0, dir: 1, key: "plaster", wallHeight: w.h }));
   g.add(westWallUnit());
 
-  // ---- east: NOTHING. The floor runs into Reception; the kiosk is furniture, not a boundary ----------
+  // ---- east: the GLAZED FRONTAGE onto Reception, with the room's entrance in it ----------------------
+  // The whole assembly stands inside Meeting's own footprint (EAST_GLASS_X is half a thickness west of the
+  // shared line), so not one unit of it crosses into Reception. The two sliding leaves are ENTITIES, not
+  // geometry: they carry the room's DoorCapability and the world's SlidingDoor controller moves them.
+  g.add(glazedPartition({
+    x: EAST_GLASS_X, t: GLASS_T, z0: WALL_Z, z1: FACADE_Z, h: STRUCT.wallHeight,
+    spandrel: GLASS_SPANDREL, panelPitch: FACADE.panelPitch, doorway: DOOR,
+    // where the partition dies into the street façade the two glass walls meet at a corner: the façade run
+    // already carries that post, so this one is suppressed rather than printed a second time.
+    endPosts: { end: false }, name: "meeting-east-glazing",
+  }));
   g.add(kioskAssembly());
 
   // ---- south: this room's share of the SHARED street façade ------------------------------------------

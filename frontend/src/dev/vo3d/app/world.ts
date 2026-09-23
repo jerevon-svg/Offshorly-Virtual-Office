@@ -59,8 +59,8 @@ import { CELL, worldToCell, type Cell } from "../adapters/v1Grid";
 import { NAV_RADIUS } from "../nav/clearance";
 import { Connectivity } from "../nav/connectivity";
 import { compareToV1, summariseReport, verdictFor } from "../nav/diagnostics";
-import { MEETING_ROOM, MEETING_CHAIR_IDS, KIOSK_INTERACTION_ID as MEETING_KIOSK_INTERACTION_ID, KIOSK_SCANNER_ID as MEETING_KIOSK_SCANNER_ID, KIOSK_ZONE as MEETING_KIOSK_ZONE, meetingRoomEntities } from "../rooms/meeting";
-import { PROJECT_ROOM, CONSOLE_INTERACTION_ID, SOFA_SEAT_IDS, TUB_SEAT_IDS, TV_INTERACTION_ID, projectRoomEntities } from "../rooms/project";
+import { MEETING_ROOM, MEETING_CHAIR_IDS, DOOR_NORTH_ID as MEETING_DOOR_NORTH_ID, DOOR_SOUTH_ID as MEETING_DOOR_SOUTH_ID, KIOSK_INTERACTION_ID as MEETING_KIOSK_INTERACTION_ID, KIOSK_SCANNER_ID as MEETING_KIOSK_SCANNER_ID, KIOSK_ZONE as MEETING_KIOSK_ZONE, meetingRoomEntities } from "../rooms/meeting";
+import { PROJECT_ROOM, CONSOLE_INTERACTION_ID, DOOR_NORTH_ID as PROJECT_DOOR_NORTH_ID, DOOR_SOUTH_ID as PROJECT_DOOR_SOUTH_ID, SOFA_SEAT_IDS, TUB_SEAT_IDS, TV_INTERACTION_ID, projectRoomEntities } from "../rooms/project";
 import { buildExterior } from "../build/exterior";
 import { buildAiLab } from "../build/ailab";
 import { MonkeyAvatar } from "../avatar/MonkeyAvatar";
@@ -1488,6 +1488,17 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   let qaDoor = new SlidingDoor(mirror.view(QA_DOOR_NORTH_ID), qaDoorEntity.capabilities.door!, qaDoorEntity.transform.pos,
     { view: mirror.view(QA_DOOR_SOUTH_ID), closed: world.get(QA_DOOR_SOUTH_ID).transform.pos });
   const qaDoorState = { state: "closed", open: 0, drift: 0, cycles: 0 };
+  // the Meeting Room's east entrance and the Project Room's west one: the front bar's two rooms are now
+  // enclosed by glass onto Reception, and each has a BI-PARTING entrance in it — the same controller, the
+  // same north-drives/south-mirrors arrangement as CMS and QA
+  const meetingDoorNorth = world.get(MEETING_DOOR_NORTH_ID);
+  let meetingDoor = new SlidingDoor(mirror.view(MEETING_DOOR_NORTH_ID), meetingDoorNorth.capabilities.door!, meetingDoorNorth.transform.pos,
+    { view: mirror.view(MEETING_DOOR_SOUTH_ID), closed: world.get(MEETING_DOOR_SOUTH_ID).transform.pos });
+  const meetingDoorState = { state: "closed", open: 0, drift: 0, cycles: 0 };
+  const projectDoorNorth = world.get(PROJECT_DOOR_NORTH_ID);
+  let projectDoor = new SlidingDoor(mirror.view(PROJECT_DOOR_NORTH_ID), projectDoorNorth.capabilities.door!, projectDoorNorth.transform.pos,
+    { view: mirror.view(PROJECT_DOOR_SOUTH_ID), closed: world.get(PROJECT_DOOR_SOUTH_ID).transform.pos });
+  const projectDoorState = { state: "closed", open: 0, drift: 0, cycles: 0 };
   // ---- Reception interactions (3E.3) ------------------------------------------------------------------
   // One focused interaction at a time, driven by the SAME pieces the Design Room uses: ApproachInteraction
   // for walk-up points, SeatInteraction for the lounge chairs, planWalk for every route.
@@ -2716,6 +2727,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   registerDoorSfx(AI_DOOR_ID, () => aiDoor);
   registerDoorSfx(DEV_DOOR_ID, () => devDoor);
   registerDoorSfx(QA_DOOR_NORTH_ID, () => qaDoor);
+  registerDoorSfx(MEETING_DOOR_NORTH_ID, () => meetingDoor);
+  registerDoorSfx(PROJECT_DOOR_NORTH_ID, () => projectDoor);
 
   /** THE ONE FOLEY TICK. Reads state the world was already publishing and plays the transitions.
    *
@@ -3529,12 +3542,18 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   meet.add(meetingState, "seat").disable().listen();
   meet.add(meetingState, "chairRestError").name("chair rest drift").disable().listen();
   meet.add(meetingState, "kioskScanner").name("terminal scanner (0 blue → 1 green)").disable().listen();
+  meet.add(meetingDoorState, "state").name("east door").disable().listen();
+  meet.add(meetingDoorState, "open").name("east door open %").disable().listen();
+  meet.add(meetingDoorState, "drift").name("east door drift").disable().listen();
   const proj = gui.addFolder("Project room (4C)");
   const projState = { seat: "idle", slot: "none", drift: 0 };
   loungeSeats.forEach((s2, i) => { if (s2.id.startsWith(PROJECT_ROOM.id)) proj.add({ f: () => { projState.slot = s2.label; startLoungeSit(i); } }, "f").name(`▶ sit: ${s2.label}`); });
   proj.add({ f: () => loungeSeat?.stand() }, "f").name("▶ stand up");
   proj.add({ f: () => startApproach(CONSOLE_INTERACTION_ID) }, "f").name("▶ approach coffee station");
   proj.add({ f: () => startApproach(TV_INTERACTION_ID) }, "f").name("▶ view the project board");
+  proj.add(projectDoorState, "state").name("west door").disable().listen();
+  proj.add(projectDoorState, "open").name("west door open %").disable().listen();
+  proj.add(projectDoorState, "drift").name("west door drift").disable().listen();
   proj.add(projState, "slot").disable().listen();
   proj.add(projState, "seat").disable().listen();
   proj.add(projState, "drift").name("furniture drift (always 0)").disable().listen();
@@ -4034,9 +4053,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   function doorsAreStale(): boolean {
     if (doorStaleLegacy) {
       return door.state !== "closed" || entryDoor.state !== "closed" || gamingDoor.state !== "closed" || execDoor.state !== "closed"
-        || cmsDoor.state !== "closed" || aiDoor.state !== "closed" || devDoor.state !== "closed" || qaDoor.state !== "closed";
+        || cmsDoor.state !== "closed" || aiDoor.state !== "closed" || devDoor.state !== "closed" || qaDoor.state !== "closed"
+        || meetingDoor.state !== "closed" || projectDoor.state !== "closed";
     }
-    return door.moved || entryDoor.moved || gamingDoor.moved || execDoor.moved || cmsDoor.moved || aiDoor.moved || devDoor.moved || qaDoor.moved;
+    return door.moved || entryDoor.moved || gamingDoor.moved || execDoor.moved || cmsDoor.moved || aiDoor.moved || devDoor.moved || qaDoor.moved
+      || meetingDoor.moved || projectDoor.moved;
   }
   /** Something in the WORLD that casts a shadow is MOVING: a door leaf, and every interaction that drags
    *  a chair. These invalidate the cached static depth, exactly as they always have. */
@@ -4276,6 +4297,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       aiDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);
       devDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);
       qaDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);
+      meetingDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);
+      projectDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);
       updateScanners({ x: bp.x, z: bp.z });
       caveTransition?.update(); // media readout; a no-op outside the CAVE
       notifyCaveMeetingIfChanged();
@@ -4350,6 +4373,14 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       devDoorState.cycles = devDoor.cycles;
       qaState.seat = qaSeat ? qaSeat.status : "idle";
       qaState.chairRestError = qaSeat ? Math.round(qaSeat.chairRestError() * 1000) / 1000 : 0;
+      meetingDoorState.state = meetingDoor.state;
+      meetingDoorState.open = Math.round(meetingDoor.t * 100);
+      meetingDoorState.drift = meetingDoor.state === "closed" ? Math.round(meetingDoor.driftError() * 1e6) / 1e6 : meetingDoorState.drift;
+      meetingDoorState.cycles = meetingDoor.cycles;
+      projectDoorState.state = projectDoor.state;
+      projectDoorState.open = Math.round(projectDoor.t * 100);
+      projectDoorState.drift = projectDoor.state === "closed" ? Math.round(projectDoor.driftError() * 1e6) / 1e6 : projectDoorState.drift;
+      projectDoorState.cycles = projectDoor.cycles;
       qaState.door = qaDoor.state;
       qaDoorState.state = qaDoor.state;
       qaDoorState.open = Math.round(qaDoor.t * 100);
@@ -4879,7 +4910,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       doorStale: {
         legacy: () => doorStaleLegacy,
         setLegacy: (on: boolean) => { doorStaleLegacy = on; R.invalidateShadows(); },
-        moving: () => [door, entryDoor, gamingDoor, execDoor, cmsDoor, aiDoor, devDoor, qaDoor].filter((d) => d.moved).length,
+        moving: () => [door, entryDoor, gamingDoor, execDoor, cmsDoor, aiDoor, devDoor, qaDoor, meetingDoor, projectDoor].filter((d) => d.moved).length,
       },
       /** THE SEAT/APPROACH STALENESS RULE, same rig, same meaning: `setLegacy(true)` is the BEFORE
        *  state, in which any non-idle seat or approach holds the whole static world stale. */
@@ -5051,9 +5082,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       pan: (dx: number, dz: number) => { R.controls.target.x += dx; R.controls.target.z += dz; R.camera.position.x += dx; R.camera.position.z += dz; },
       bounds: () => cameraModes.officeBounds, viewport: () => cameraModes.viewportGroundRect(),
     },
-    meeting: { state: meetingState, startSit: startMeetingSit, stand: () => meetingSeat?.stand(), seat: () => meetingSeat,
+    meeting: { state: meetingState, doorState: meetingDoorState, get door() { return meetingDoor; }, startSit: startMeetingSit, stand: () => meetingSeat?.stand(), seat: () => meetingSeat,
       chairIds: MEETING_CHAIR_IDS, kioskScanner: MEETING_KIOSK_SCANNER_ID, kioskZone: MEETING_KIOSK_ZONE },
-    project: { state: projState, seats: loungeSeats.map((s2, i) => ({ i, id: s2.id, slot: s2.label })), startSit: startLoungeSit,
+    project: { state: projState, doorState: projectDoorState, get door() { return projectDoor; },
+      seats: loungeSeats.map((s2, i) => ({ i, id: s2.id, slot: s2.label })), startSit: startLoungeSit,
       stand: () => loungeSeat?.stand(), seat: () => loungeSeat },
     reception: { state: receptionState, approach: approachCtl, startApproach, startLoungeSit,
       get loungeSeat() { return loungeSeat; }, seats: loungeSeats.map((s) => s.id),

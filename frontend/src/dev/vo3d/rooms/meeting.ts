@@ -14,7 +14,7 @@
 //
 // The flat PNG is a BLUEPRINT. Nothing here renders it.
 import { FACING_YAW, type Rect } from "../core/coords";
-import type { ApproachCapability, Entity, RoomDef, SeatCapability } from "../world/WorldState";
+import type { ApproachCapability, DoorCapability, Entity, RoomDef, SeatCapability } from "../world/WorldState";
 import { CELL } from "../adapters/v1Grid";
 import { v1RoomRect } from "../adapters/v1Manifest";
 import { FACADE_Z } from "../adapters/v1Floor";
@@ -62,13 +62,40 @@ export const FLOOR_RECT: Rect = { x: RECT.x, z: WALL_Z, w: EAST_EDGE - RECT.x, d
  *  plate's grout lines continue Reception's without a seam no matter where the north wall sits. */
 export const TILE_RECT: Rect = { x: FLOOR_RECT.x, z: WALL_OUTER_Z, w: FLOOR_RECT.w, d: FACADE_Z - WALL_OUTER_Z };
 
-/** MEETING'S PHYSICAL WALLS, as pure data for derived navigation (7C) — the same three runs
- *  build/meeting.ts extrudes, as world rects. Solid north + solid west, glass south on the façade plane,
- *  and NOTHING east: the tile runs straight on into Reception, and no wall may be invented there. */
+/** THE EAST GLAZED FRONTAGE onto Reception.
+ *
+ *  4B left this side completely open, because the production artwork paints no boundary there. It is now a
+ *  real enclosure: a frameless glass partition on the shared line, with the room's entrance in it.
+ *
+ *  WHY 3 UNITS AND NOT THE 6 EVERY OTHER PARTITION USES. The partition has to live entirely inside
+ *  Meeting's own footprint (nothing may cross into Reception — frontbar.test.ts locks that), so its
+ *  thickness is taken off the room's east lane, and that lane is the only floor from which the kiosk is
+ *  reachable: the terminal's walk-up cell (20, 65) holds a body of NAV_RADIUS only while the glass stays
+ *  east of x 328. 3 gives it 1.3 units of margin; 6 would close the cell and take the terminal with it.
+ *  It is also simply what a frameless interior screen is — the glazing, not the masonry. */
+export const GLASS_T = 3;
+/** the partition plane's centre line, and the inner (room-side) face derived from it */
+export const EAST_GLASS_X = EAST_EDGE - GLASS_T / 2; // 330.83
+export const EAST_GLASS_FACE = EAST_EDGE - GLASS_T; // 329.33
+
+/** THE ENTRANCE. Placed in the NORTH third of the elevation, where both sides are open floor: Meeting's
+ *  own east lane north of the kiosk, and — across the line — Reception's circulation band between the
+ *  speed gates and the west lounge (whose sofa starts at z 949). 48 units of clear opening is two body
+ *  widths, and the two 24-unit leaves park inside the run at either end rather than sliding past it.
+ *  MIRRORED IN PROJECT about Reception's own composition axis, so the bar reads as one piece. */
+export const DOOR = { z0: 914, z1: 962 };
+export const DOOR_LEAF_W = (DOOR.z1 - DOOR.z0) / 2; // 24
+
+/** MEETING'S PHYSICAL WALLS, as pure data for derived navigation (7C) — the same runs build/meeting.ts
+ *  extrudes, as world rects. Solid north + solid west, glass south on the façade plane, and a GLAZED EAST
+ *  frontage broken only by the entrance: the two runs below are the boundary, and the opening between them
+ *  is the one way in. */
 export const MEETING_WALLS: Rect[] = [
   { x: RECT.x, z: WALL_OUTER_Z, w: EAST_EDGE - RECT.x, d: WALL_T }, // north
   { x: RECT.x, z: WALL_Z, w: WEST_WALL_X - RECT.x, d: FACADE_Z - WALL_Z }, // west
   { x: WEST_WALL_X, z: FACADE_Z, w: EAST_EDGE - WEST_WALL_X, d: STRUCT.wallThickness }, // south façade glazing
+  { x: EAST_GLASS_FACE, z: WALL_Z, w: GLASS_T, d: DOOR.z0 - WALL_Z }, // east glazing, north of the entrance
+  { x: EAST_GLASS_FACE, z: DOOR.z1, w: GLASS_T, d: FACADE_Z - DOOR.z1 }, // east glazing, south of it
 ];
 
 export const MEETING_ROOM: RoomDef = {
@@ -78,7 +105,7 @@ export const MEETING_ROOM: RoomDef = {
   floorRect: FLOOR_RECT,
   wallSolids: MEETING_WALLS,
   // no `shell`: ShellSpec describes the Design Room's arrangement. Meeting is solid north + solid west,
-  // glass south and NOTHING east — it supplies its own static builder (build/meeting.ts).
+  // glass south and a glazed east frontage with its own entrance — its own static builder (build/meeting.ts).
 };
 
 // ============================= ARCHITECTURE =====================================================
@@ -262,12 +289,19 @@ export const CHAIR_CLEARANCE = {
 };
 
 // ---- the east self-service terminal ------------------------------------------------------------
-/** Walk-up point for the terminal: cell (20, 65), the open floor east of the kiosk's base cabinet.
- *  The cabinet's east face is x 307 and a 10.5 body on this cell reaches 317.5 — 10.5 units clear. The
- *  north lane and the west side are both blocked by the slatted plant wall, so this is the only body-clear
- *  cell that actually faces the machine. */
+/** Walk-up point for the terminal: the open floor east of the kiosk's base cabinet, in cell (20, 65).
+ *
+ *  CENTRED IN THE LANE RATHER THAN ON THE CELL, and the east glazing is why. 4C put this point on the cell
+ *  centre (328, 1048), which left 21 units of clearance to the cabinet's east face at x 307 and nothing at
+ *  all to the east, because the room had no east boundary. It has one now, and the lane between the
+ *  cabinet and the glass is 22.3 wide — a 21-unit body fits in it exactly once, centred. So the point
+ *  moves 10 units west onto the lane's own centre line: 11.0 clear of the cabinet, 11.3 clear of the
+ *  glass. It is the same cell, the same machine and the same facing; only the sub-cell position changed,
+ *  which is precisely the freedom derived navigation already gives every stand point (nav/derived pointOf).
+ *
+ *  The alternative was to move the kiosk, and the kiosk is the room's authored composition. */
 export const KIOSK_APPROACH: ApproachCapability = {
-  point: { x: 20 * CELL + CELL / 2, z: 65 * CELL + CELL / 2 }, // (328, 1048)
+  point: { x: 318, z: 65 * CELL + CELL / 2 }, // (318, 1048)
   yaw: FACING_YAW.west,
   label: "Meeting room terminal",
   action: "Use terminal",
@@ -278,6 +312,56 @@ export const KIOSK_INTERACTION_ID = `${MEETING_ROOM_ID}/kiosk-interaction`;
  *  navigation, geometry or the grid — exactly like Reception's gate and entrance scanners. */
 export const KIOSK_SCANNER_ID = "meeting-kiosk";
 export const KIOSK_ZONE: Rect = { x: 308, z: 1022, w: 38, d: 66 };
+
+// ---- the east entrance ------------------------------------------------------------------------
+/** Bi-parting glass on the SAME SlidingDoor controller Reception's, Executive's, CMS's and QA's entrances
+ *  run on: the north panel drives and the south one is its `opposed` mirror, so both derive from one `t`
+ *  and neither can drift. AUTOMATIC, so navigation models it PARKED and the room can never seal itself
+ *  (see DoorCapability.automatic). */
+export const DOOR_LEAF_CLOSED = {
+  north: { x: EAST_GLASS_X, z: DOOR.z0 + DOOR_LEAF_W / 2 }, // 926
+  south: { x: EAST_GLASS_X, z: DOOR.z1 - DOOR_LEAF_W / 2 }, // 950
+};
+export const DOOR_NORTH_ID = `${MEETING_ROOM_ID}/entry-door-north`;
+export const DOOR_SOUTH_ID = `${MEETING_ROOM_ID}/entry-door-south`;
+const BODY_RADIUS = 10.5; // Bon's widest walking extent, as every other V2 door measures it
+
+export const ENTRY_DOOR: DoorCapability = {
+  slide: { x: 0, z: -1 },
+  slideDistance: DOOR_LEAF_W,
+  automatic: true,
+  leaf: { x: EAST_GLASS_FACE, z: DOOR.z0, w: GLASS_T, d: DOOR_LEAF_W },
+  leafOpposed: { x: EAST_GLASS_FACE, z: DOOR.z0 + DOOR_LEAF_W, w: GLASS_T, d: DOOR_LEAF_W },
+  /** the doorway itself: while a body overlaps this the door must be open and may not close */
+  crossing: { x: EAST_GLASS_X - 12, z: DOOR.z0 - 4, w: 24, d: DOOR.z1 - DOOR.z0 + 8 },
+  /** both approach aprons — the room's east lane inside and Reception's circulation band outside */
+  trigger: { x: EAST_GLASS_X - 74, z: DOOR.z0 - 40, w: 148, d: DOOR.z1 - DOOR.z0 + 80 },
+  clearance: {
+    bodyRadius: BODY_RADIUS,
+    band: { x: EAST_EDGE - CELL, z: DOOR.z0, w: 2 * CELL, d: DOOR.z1 - DOOR.z0 },
+    solids: [], // nothing stands in the opening: the jambs are the reveal's own posts
+  },
+  timings: { openMs: 900, closeMs: 1100, holdMs: 700 },
+};
+
+/** The two leaves as world entities, so SceneMirror gives each a view the door controller can slide. */
+function entryDoorEntities(): Entity[] {
+  const leaf = { kind: "glass-door-leaf", roomId: MEETING_ROOM_ID, source: { baked: true } as const };
+  return [
+    {
+      ...leaf, id: DOOR_NORTH_ID,
+      transform: { pos: { ...DOOR_LEAF_CLOSED.north }, yaw: -Math.PI / 2 },
+      capabilities: { door: ENTRY_DOOR },
+      props: { w: DOOR_LEAF_W, h: STRUCT.wallHeight, handle: 1 }, // handle on the leading (south) stile
+    },
+    {
+      ...leaf, id: DOOR_SOUTH_ID,
+      transform: { pos: { ...DOOR_LEAF_CLOSED.south }, yaw: -Math.PI / 2 },
+      capabilities: {},
+      props: { w: DOOR_LEAF_W, h: STRUCT.wallHeight, handle: -1 },
+    },
+  ];
+}
 
 function approachEntity(id: string, pick: string, approach: ApproachCapability): Entity {
   return {
@@ -297,5 +381,6 @@ export function withMeetingInteractions(entities: Entity[]): Entity[] {
       e.capabilities = { ...e.capabilities, seat: chairSeat(i, row) };
     }
   entities.push(approachEntity(KIOSK_INTERACTION_ID, "meeting-kiosk-assembly", KIOSK_APPROACH));
+  entities.push(...entryDoorEntities());
   return entities;
 }

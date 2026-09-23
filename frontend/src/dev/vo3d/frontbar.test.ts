@@ -12,8 +12,8 @@ import * as THREE from "three";
 import { WorldState } from "./world/WorldState";
 import { DESIGN_ROOM, SHELL, designRoomEntities } from "./rooms/design-room";
 import { RECEPTION_ROOM, FACADE, GATE, RECT as RECEPTION_RECT, STRUCT, TILE_RECT as RECEPTION_TILE, receptionEntities } from "./rooms/reception";
-import { MEETING_ROOM, EAST_EDGE, FACADE_DOOR as MEETING_DOOR, TABLE, TILE_RECT as MEETING_TILE, meetingRoomEntities } from "./rooms/meeting";
-import { PROJECT_ROOM, WEST_EDGE, ARMCHAIRS, FACADE_DOOR as PROJECT_DOOR, SOFAS, TILE_RECT as PROJECT_TILE, projectRoomEntities } from "./rooms/project";
+import { MEETING_ROOM, DOOR as MEETING_DOOR, DOOR_NORTH_ID as MEETING_DOOR_NORTH_ID, DOOR_SOUTH_ID as MEETING_DOOR_SOUTH_ID, EAST_EDGE, EAST_GLASS_FACE as MEETING_GLASS_FACE, EAST_GLASS_X as MEETING_GLASS_X, ENTRY_DOOR as MEETING_ENTRY_DOOR, FACADE_DOOR as MEETING_FACADE_DOOR, GLASS_T, TABLE, TILE_RECT as MEETING_TILE, meetingRoomEntities } from "./rooms/meeting";
+import { PROJECT_ROOM, WEST_EDGE, WEST_GLASS_FACE as PROJECT_GLASS_FACE, WEST_GLASS_X as PROJECT_GLASS_X, ARMCHAIRS, DOOR_NORTH_ID as PROJECT_DOOR_NORTH_ID, DOOR_SOUTH_ID as PROJECT_DOOR_SOUTH_ID, ENTRY_DOOR as PROJECT_ENTRY_DOOR, FACADE_DOOR as PROJECT_FACADE_DOOR, SOFAS, TILE_RECT as PROJECT_TILE, projectRoomEntities } from "./rooms/project";
 import { GAMING_ROOM } from "./rooms/gaming";
 import { receptionStatic } from "./build/reception";
 import { meetingStatic } from "./build/meeting";
@@ -25,7 +25,8 @@ import { groundFloor, registerGroundFloor } from "./rooms/ground-floor";
 import { FACADE_Z } from "./adapters/v1Floor";
 import { CELL, cellCentre, isDoorCell, v1Static, worldToCell } from "./adapters/v1Grid";
 import { Walkability, composeStatic } from "./nav/Walkability";
-import { clearanceLayer, worldClearances } from "./nav/clearance";
+import { NAV_RADIUS, clearanceLayer, worldClearances } from "./nav/clearance";
+import { DerivedNav } from "./nav/derived";
 import { planWalk } from "./nav/planner";
 import { SceneMirror } from "./render/SceneMirror";
 import type { Rect, Vec2 } from "./core/coords";
@@ -75,7 +76,7 @@ const reception = () => receptionStatic(RECEPTION_ROOM);
 /** every mesh that looks like a glass-run MULLION post: slim in x, tall, on the façade plane. The door
  *  openings are excluded — a bi-parting leaf's meeting stiles are legitimately 2.8 apart and are not
  *  mullions. */
-const DOORS = [FACADE.door, MEETING_DOOR, PROJECT_DOOR];
+const DOORS = [FACADE.door, MEETING_FACADE_DOOR, PROJECT_FACADE_DOOR];
 function facadePosts(g: THREE.Object3D): number[] {
   return meshBoxes(g)
     .filter((b) => b.max.x - b.min.x < 3 && b.max.y - b.min.y > 20 && Math.abs((b.min.z + b.max.z) / 2 - (FACADE_Z + STRUCT.wallThickness / 2)) < 6)
@@ -164,19 +165,75 @@ describe("vo3d front bar — Phase 4B: ONE continuous building", () => {
     for (let i = 1; i < all.length; i++) expect(all[i] - all[i - 1], `gap at ${all[i]}`).toBeGreaterThan(4);
   });
 
-  it("the Reception-facing boundaries are COMPLETELY OPEN — neither room builds a seam wall", () => {
-    const EDGE = 12;
-    for (const [name, g, seam, side] of [["meeting", meeting(), EAST_EDGE, "east"], ["project", project(), WEST_EDGE, "west"]] as const) {
+  it("the Reception-facing boundaries are GLAZED, and every unit of that glazing stays in its own room", () => {
+    // 4B left both seams completely open, because the production artwork paints no boundary there. They are
+    // real enclosures now: a frameless glass partition on each shared line, broken only by the room's own
+    // entrance. The invariant that survives unchanged is the one that matters — NOTHING may cross into
+    // Reception — which is why each partition is a thickness INSIDE its own room rather than straddling.
+    for (const [name, g, seam, side, glassFace] of [
+      ["meeting", meeting(), EAST_EDGE, "east", MEETING_GLASS_FACE],
+      ["project", project(), WEST_EDGE, "west", PROJECT_GLASS_FACE],
+    ] as const) {
       for (const b of meshBoxes(g).filter((x) => x.max.y > 2)) {
-        // nothing may cross into Reception at all
         if (side === "east") expect(b.max.x, `${name} mesh crosses the seam`).toBeLessThanOrEqual(seam + EPS);
         else expect(b.min.x, `${name} mesh crosses the seam`).toBeGreaterThanOrEqual(seam - EPS);
-        // and nothing hugging the seam may be NARROW in x and long in z — that shape IS a boundary wall.
-        // (The north cove wall legitimately reaches the seam, but it runs along x, not along z.)
-        const hugs = side === "east" ? b.max.x > seam - EDGE : b.min.x < seam + EDGE;
-        const wallShaped = b.max.x - b.min.x < 3 * STRUCT.wallThickness;
-        if (hugs && wallShaped) expect(b.max.z - b.min.z, `${name}: long z-run at the ${side} seam`).toBeLessThan(40);
       }
+      // the partition is a real, continuous, full-height boundary on the seam plane — and it is THIN:
+      // 3 units, so the room's own east/west lane keeps the width its fittings need
+      const plane = meshBoxes(g).filter((b) => b.max.y > 20 && (side === "east" ? b.min.x >= glassFace - EPS : b.max.x <= glassFace + EPS));
+      expect(plane.length, `${name} seam glazing members`).toBeGreaterThan(4);
+      expect(Math.max(...plane.map((b) => b.max.y)), `${name} seam glazing height`).toBeCloseTo(STRUCT.wallHeight, 1);
+      expect(Math.abs(seam - glassFace), `${name} partition thickness`).toBe(GLASS_T);
+    }
+  });
+
+  it("each seam carries ONE entrance: a bi-parting glass door, automatic, mirrored room to room", () => {
+    for (const [name, es, north, south, door, plane] of [
+      ["meeting", meetingRoomEntities(), MEETING_DOOR_NORTH_ID, MEETING_DOOR_SOUTH_ID, MEETING_ENTRY_DOOR, MEETING_GLASS_X],
+      ["project", projectRoomEntities(), PROJECT_DOOR_NORTH_ID, PROJECT_DOOR_SOUTH_ID, PROJECT_ENTRY_DOOR, PROJECT_GLASS_X],
+    ] as const) {
+      const leaves = es.filter((e) => e.kind === "glass-door-leaf");
+      expect(leaves.map((e) => e.id), `${name} leaves`).toEqual([north, south]);
+      // exactly ONE of the pair drives; the other is its `opposed` mirror (SlidingDoor)
+      expect(leaves.filter((e) => e.capabilities.door).length, `${name} driving leaf`).toBe(1);
+      for (const e of leaves) expect(e.transform.pos.x, `${name} leaf off the partition plane`).toBeCloseTo(plane, 6);
+      // AUTOMATIC: navigation models it parked, so the room can never seal the door that has to open it
+      expect(door.automatic, `${name} automatic`).toBe(true);
+      expect(door.slideDistance, `${name} leaf travel`).toBe(door.leaf!.d);
+      // the two leaves fill the opening exactly, and nothing else is declared inside it
+      expect(door.leaf!.z).toBe(MEETING_ENTRY_DOOR.leaf!.z); // both rooms share one z span
+      expect(door.leafOpposed!.z).toBe(door.leaf!.z + door.leaf!.d);
+      expect(door.clearance.solids).toEqual([]);
+    }
+  });
+
+  it("the glazing BOUNDS the rooms: you may only cross at the doorway, and both rooms stay reachable", () => {
+    const { world, inBounds } = rig();
+    const derived = new DerivedNav(world, { roomIds: new Set([MEETING_ROOM.id, RECEPTION_ROOM.id, PROJECT_ROOM.id, DESIGN_ROOM.id]) });
+    const wk = new Walkability(composeStatic(v1Static, inBounds, clearanceLayer(worldClearances(world))));
+    wk.attachDerived(derived, world);
+    for (const [name, x] of [["meeting", MEETING_GLASS_X], ["project", PROJECT_GLASS_X]] as const) {
+      // solid where the glass is, open where the doorway is
+      expect(derived.clearanceAtPoint({ x, z: 1050 }), `${name} glazing is solid`).toBe(0);
+      expect(derived.clearanceAtPoint({ x, z: (MEETING_DOOR.z0 + MEETING_DOOR.z1) / 2 }), `${name} doorway is clear`).toBeGreaterThan(NAV_RADIUS);
+    }
+    // a step straight through the glass is refused; the same step at the doorway row is not
+    expect(derived.edgeClear({ cx: 20, cy: 65 }, { cx: 21, cy: 65 }, NAV_RADIUS), "through Meeting's glass").toBe(false);
+    expect(derived.edgeClear({ cx: 20, cy: 58 }, { cx: 21, cy: 58 }, NAV_RADIUS), "through Meeting's doorway").toBe(true);
+    expect(derived.edgeClear({ cx: 67, cy: 65 }, { cx: 68, cy: 65 }, NAV_RADIUS), "through Project's glass").toBe(false);
+    expect(derived.edgeClear({ cx: 67, cy: 58 }, { cx: 68, cy: 58 }, NAV_RADIUS), "through Project's doorway").toBe(true);
+    // and every route between the three rooms still plans — through the doorways, which is the only way
+    const walk = (a: Vec2, b: Vec2) => planWalk(a, b, wk, inBounds);
+    const meetingInside = { x: 168, z: 1096 }, projectInside = { x: 1112, z: 1112 }, receptionInside = { x: 720, z: 1000 };
+    for (const [name, a, b] of [
+      ["reception → meeting", receptionInside, meetingInside],
+      ["meeting → reception", meetingInside, receptionInside],
+      ["reception → project", receptionInside, projectInside],
+      ["project → reception", projectInside, receptionInside],
+    ] as const) {
+      const r = walk(a, b);
+      expect(r.ok, `${name}: ${r.ok ? "" : r.reason}`).toBe(true);
+      if (r.ok) expect(r.path.some((p) => Math.abs(p.z - 936) < 24), `${name} crosses at the doorway`).toBe(true);
     }
   });
 
@@ -199,13 +256,15 @@ describe("vo3d front bar — Phase 4B: ONE continuous building", () => {
   });
 
   it("the painted façade doors are ART ONLY: static glass, no capability, no new V1 door cells", () => {
-    for (const [name, g, door] of [["meeting", meeting(), MEETING_DOOR], ["project", project(), PROJECT_DOOR]] as const) {
+    for (const [name, g, door] of [["meeting", meeting(), MEETING_FACADE_DOOR], ["project", project(), PROJECT_FACADE_DOOR]] as const) {
       const leaves = meshBoxes(g).filter((b) => b.min.x > door.x0 - 2 && b.max.x < door.x1 + 2 && b.max.y > 20 && Math.abs((b.min.z + b.max.z) / 2 - (FACADE_Z + STRUCT.wallThickness / 2)) < 6);
       expect(leaves.length, `${name} door leaves`).toBeGreaterThan(2); // panes + rails + stiles
     }
-    // no entity in either room carries a door capability, and the ONLY '+' cells in the façade band are
-    // still Reception's (grid cols 40–49) — the doors change nothing about navigation
-    for (const e of [...meetingRoomEntities(), ...projectRoomEntities()]) expect(e.capabilities.door, e.id).toBeUndefined();
+    // no entity STANDING IN THE FAÇADE carries a door capability, and the ONLY '+' cells in the façade band
+    // are still Reception's (grid cols 40–49) — the painted street doors change nothing about navigation.
+    // (Each room's Reception-facing entrance IS a real door, but it stands in the seam plane, not here.)
+    for (const e of [...meetingRoomEntities(), ...projectRoomEntities()])
+      if (Math.abs(e.transform.pos.z - FACADE_Z) < 3 * STRUCT.wallThickness) expect(e.capabilities.door, e.id).toBeUndefined();
     const doorCols: number[] = [];
     for (let cx = 0; cx < 90; cx++) if (isDoorCell({ cx, cy: 72 })) doorCols.push(cx);
     expect(doorCols[0]).toBe(40);

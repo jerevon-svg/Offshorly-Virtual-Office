@@ -6,21 +6,23 @@
 // and the low bench between the armchairs.
 // Lounge furniture (sofas, coffee table, tub chairs, plants) is entity-driven — see rooms/project.ts.
 //
-// Builds NO west boundary of any kind: the artwork has none and the floor runs straight into Reception.
+// The WEST boundary is a frameless glass partition onto Reception carrying the room's sliding entrance
+// (glazedPartition, build/frontbar.ts). It stands entirely inside Project's own footprint.
 import * as THREE from "three";
 import { cyl, rbox } from "./helpers";
 import { tiledFloor } from "./tile";
 import { emissiveMatUnique, glowMat, mat, metal, plastic, uiScreenMat, wood } from "../render/Materials";
 import { animated } from "../render/Ambient";
-import { coveWall, credenzaRun, facadeSection, ledgePlanter, slatPanel } from "./frontbar";
+import { coveWall, credenzaRun, facadeSection, glazedPartition, ledgePlanter, slatPanel } from "./frontbar";
 import { cornice, runSegments, skirting } from "./arch";
 import { FACADE, STRUCT } from "../rooms/reception";
 import { FACADE_Z } from "../adapters/v1Floor";
 import type { RoomDef } from "../world/WorldState";
 import {
-  BENCH, CONSOLE, CONSOLE_KIT, EAST_WALL, FACADE_DOOR, LEDGE_PLANTERS, NE_SLATS, NORTH_WALL,
-  RECT, TILE_RECT, WALL_TV, WEST_EDGE,
+  BENCH, CONSOLE, CONSOLE_KIT, DOOR, EAST_WALL, FACADE_DOOR, GLASS_T, LEDGE_PLANTERS, NE_SLATS, NORTH_WALL,
+  RECT, TILE_RECT, WALL_TV, WALL_Z, WEST_EDGE, WEST_GLASS_X,
 } from "../rooms/project";
+import { GLASS_SPANDREL } from "./meeting";
 
 /** the bracket tilt that lifts the east wall's display out of edge-on for the game camera (see below) */
 const TV_TILT = -0.5;
@@ -129,7 +131,17 @@ export function projectStatic(_room: RoomDef): THREE.Group {
   g.add(eastConsole());
   g.add(centreBench());
 
-  // ---- west: NOTHING. The floor runs into Reception ---------------------------------------------------
+  // ---- west: the GLAZED FRONTAGE onto Reception, with the room's entrance in it ------------------------
+  // Meeting's east elevation, mirrored: the same builder, thickness, spandrel, opening and leaf width, so
+  // the two rooms present ONE piece of architecture to Reception. It stands entirely inside Project's own
+  // footprint, and the two sliding leaves are entities carrying the room's DoorCapability.
+  g.add(glazedPartition({
+    x: WEST_GLASS_X, t: GLASS_T, z0: WALL_Z, z1: FACADE_Z, h: STRUCT.wallHeight,
+    spandrel: GLASS_SPANDREL, panelPitch: FACADE.panelPitch, doorway: DOOR,
+    // where the partition dies into the street façade the two glass walls meet at a corner: the façade run
+    // already carries that post, so this one is suppressed rather than printed a second time.
+    endPosts: { end: false }, name: "project-west-glazing",
+  }));
 
   // ---- south: this room's share of the SHARED street façade -------------------------------------------
   // `endPosts.start = false` hands the seam mullion to Reception's run, which already builds a post 0.9

@@ -32,6 +32,7 @@ import { LoungeSeatInteraction } from "./interact/LoungeSeat";
 import { Walkability, composeStatic } from "./nav/Walkability";
 import { clearanceLayer, worldClearances } from "./nav/clearance";
 import { planWalk } from "./nav/planner";
+import { DerivedNav } from "./nav/derived";
 import { CELL, v1Static, worldToCell } from "./adapters/v1Grid";
 import { openedCells, openedLayer, v2Static } from "./nav/v2Open";
 import { FACING_YAW, pointInRect, type Vec2 } from "./core/coords";
@@ -46,8 +47,13 @@ function rig() {
   const inBounds = (p: Vec2) => world.walkableAt(p);
   const bands = [MEETING_STRIP, PROJECT_STRIP];
   const wk = new Walkability(composeStatic(v2Static(v1Static, openedLayer(bands)), inBounds, clearanceLayer(worldClearances(world))));
-  wk.syncFromWorld(world);
-  return { world, wk, inBounds, bands, walk: (a: Vec2, b: Vec2) => planWalk(a, b, wk, inBounds) };
+  // 7C — THE RIG RUNS THE LAYER THE PRODUCT RUNS. This file was written in 4C, when the whole floor was
+  // V1-governed; every room it exercises has since joined DERIVED_ROOM_IDS (app/world.ts), so its routes
+  // were being judged against a grid the office no longer consults. Attaching the derived layer is what
+  // makes "reachable" here mean what it means in the app — geometry, not the 2D painting.
+  const derived = new DerivedNav(world, { roomIds: new Set([DESIGN_ROOM.id, RECEPTION_ROOM.id, MEETING_ROOM.id, PROJECT_ROOM.id, GAMING_ROOM.id, CENTRAL_HUB.id, EXECUTIVE_ROOM.id, CMS_ROOM.id, AI_ROOM.id, DEV_ROOM.id, QA_ROOM.id]) });
+  wk.attachDerived(derived, world);
+  return { world, wk, derived, inBounds, bands, walk: (a: Vec2, b: Vec2) => planWalk(a, b, wk, inBounds) };
 }
 
 /** A headless avatar with just the surface the two seat controllers touch. */
@@ -242,7 +248,12 @@ describe("vo3d Meeting — 4C terminal approach + scanner", () => {
   it("the terminal's walk-up point is walkable, body-clear and reachable from Reception", () => {
     const { wk, walk } = rig();
     const c = worldToCell(KIOSK_APPROACH.point);
-    expect(KIOSK_APPROACH.point).toEqual({ x: c.cx * CELL + CELL / 2, z: c.cy * CELL + CELL / 2 });
+    // ONE CELL, not necessarily its centre. The east glazing narrowed this lane to 22.3 units, so the
+    // point now sits on the LANE's centre line inside cell (20, 65) — the sub-cell freedom derived
+    // navigation gives every stand point (nav/derived pointOf). What must hold is that it is a real cell
+    // of the room, and that a body of BODY_RADIUS standing on it clears everything the room builds.
+    expect({ cx: c.cx, cy: c.cy }).toEqual({ cx: 19, cy: 65 });
+    expect(KIOSK_APPROACH.point.z).toBe(c.cy * CELL + CELL / 2);
     expect(wk.walkable(c.cx, c.cy), "terminal approach cell").toBe(true);
     const clear = bodyClear(KIOSK_APPROACH.point, meetingStatic(MEETING_ROOM));
     expect(clear.ok, `body clearance at the terminal: ${clear.worst.toFixed(1)}`).toBe(true);
