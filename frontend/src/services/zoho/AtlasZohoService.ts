@@ -106,6 +106,32 @@ export class AtlasZohoService implements ZohoTimeLoggingService {
   async submitTimeLogs(
     request: SubmitTimeLogsRequest,
   ): Promise<SubmitTimeLogsResult> {
+    // AN ENTRY WITHOUT A TASK CANNOT BE SENT, and finding that out from the server is the bug this
+    // guard removes.
+    //
+    // Atlas's `TimeLogEntryIn.task_id` is a REQUIRED string and its schema has no category field at all
+    // (backend/app/schemas/office.py). Our own validator, though, offers "select a task, OR choose an
+    // approved category instead" — so a category-only entry is legal here, arrives at Atlas as
+    // `task_id: null`, and is rejected by Pydantic as HTTP 422. The employee saw
+    // "Submission failed (HTTP 422)", which names neither the entry at fault nor anything they could do.
+    //
+    // So the request is not made. Nothing is fabricated and nothing is dropped: the submission fails, the
+    // draft is kept by the flow exactly as any other failure keeps it, the employee stays CHECKED_IN —
+    // and the message says which entry and why. Logging by category needs a server that can carry one;
+    // until Atlas has that field, this is the honest answer rather than a 422.
+    const unsendable = request.entries
+      .map((entry, i) => ({ entry, label: `Entry ${i + 1}` }))
+      .filter(({ entry }) => !entry.taskId);
+    if (unsendable.length > 0) {
+      const which = unsendable.map(({ label }) => label).join(", ");
+      return {
+        success: false,
+        error:
+          `${which}: Zoho Projects needs a project and a task for every entry — ` +
+          "logging against a category alone is not supported yet. Pick a task for it and submit again.",
+      };
+    }
+
     const response = await apiFetch("/api/v1/office/my-timelogs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

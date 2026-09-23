@@ -1,0 +1,452 @@
+// vo3d player — THE PLAYER CONTROLLER. Owns the avatar, the gameplay camera and the input while PLAYER
+// mode is active, and owns NOTHING otherwise.
+//
+// It is a coordinator, not an engine: movement resolution is PlayerBody, the rig is PlayerCamera, the
+// targeting is PlayerTargeting, the keys are PlayerInput. This file decides only WHO IS DRIVING and WHEN.
+//
+// OWNERSHIP HANDOFF is the delicate part, and it is deliberately explicit in both directions:
+//
+//   enter()   stop whatever was moving Bon (a walk, an approach, a seat), then acquire "Player". Bon is
+//             re-seated on legal floor if an interaction had parked him somewhere a body cannot stand.
+//   interact()release "Player" FIRST, then call V2's own starter. The starter routes with A*, acquires
+//             "Interaction", and plays the existing animation — exactly as the GUI button does. Player
+//             movement goes quiet automatically, because it only moves Bon while it owns him.
+//   update()  when the stack falls back to "Idle" (the seat stood up, the approach finished) PLAYER takes
+//             the avatar back. No polling of interaction internals: the stack IS the signal.
+//   exit()    release, unlock the pointer, restore the avatar's visibility, hand the camera back.
+//
+// The full-transform invariant (avatar/Avatar.ts) is respected: every heading write here goes through
+// setYaw(), never through `rotation.y`.
+import * as THREE from "three";
+import type { Avatar } from "../avatar/Avatar";
+import type { ControllerStack } from "../avatar/Controller";
+import { CLIP_IDLE, CLIP_RUN, CLIP_WALK } from "../adapters/v1Avatar";
+import { locomotionClip, locomotionRate } from "../avatar/gait";
+import { headingFor, stepAngle, type Vec2 } from "../core/coords";
+import type { WorldState } from "../world/WorldState";
+import { PlayerBody, type StandTest } from "./PlayerBody";
+import { PlayerCamera, type PlayerView } from "./PlayerCamera";
+import { PlayerHud } from "./PlayerHud";
+import { PlayerInput } from "./PlayerInput";
+import { AIRBORNE_POSE_PHASE, PlayerJump } from "./PlayerJump";
+import { collectCandidates, pickTarget, type Candidate, type Target } from "./PlayerTargeting";
+
+/** Shared empty list, so a frame with no dynamic candidates allocates nothing. */
+const EMPTY_CANDIDATES: readonly Candidate[] = [];
+
+/** how fast the avatar turns toward its heading in third person (rad/s) — the navigation controller's rate */
+const TURN_RATE = 9;
+/** how far ahead of a moving player a door is told to expect him. One stride: enough for the leaf to be
+ *  clear by the time he arrives, short enough not to open doors he is merely walking past.
+ *
+ *  EXPORTED because world/Coworkers gives a REPLICATED body the same courtesy, by the same figure: a
+ *  peer whose replayed leg has run out still has a heading, and a door that expected the local employee
+ *  one stride ahead but a coworker not at all is the asymmetry that let somebody walk through a shut
+ *  door on the other browser. One number, one meaning, one place. */
+export const DOOR_LOOKAHEAD = 46;
+/** THE TWO GROUND SPEEDS, in units/s, and the single place either of them is stated.
+ *
+ *  70 / 100 replaces the original 30 / 54. The old pair was inherited from the click-to-walk router,
+ *  where a stroll is the right read because the camera is watching the office; driving a body yourself at
+ *  that speed makes an office the size of this one feel like a corridor to be endured. Nothing else about
+ *  movement changes: the same WASD, the same camera-relative basis, the same PlayerBody.move, the same
+ *  collision answer from the same DerivedNav / Walkability, the same NAV_RADIUS.
+ *
+ *  TUNNELLING IS UNAFFECTED, and that is arithmetic rather than optimism. PlayerBody splits EVERY step
+ *  into sub-steps no longer than a quarter of the body radius (2 units at NAV_RADIUS 8) regardless of how
+ *  long the step is, so the resolution of the sweep does not depend on speed at all — 100 u/s on a
+ *  stalled-tab 250 ms frame is 25 units, resolved as 13 sub-steps, exactly as 54 u/s was resolved as 7. */
+export const PLAYER_WALK_SPEED = 70;
+export const PLAYER_SPRINT_SPEED = 100;
+/** SPRINT. A multiplier on the walk speed and nothing else — no stamina, no state, no second movement
+ *  path. Holding Shift scales the per-frame delta; the delta still goes through PlayerBody.move, which
+ *  sub-steps at a quarter of the body radius REGARDLESS of how long the step is, so sprinting cannot
+ *  tunnel anything walking could not.
+ *
+ *  Derived from the pair above rather than written out, so the slider and the sprint stay consistent:
+ *  whatever walk speed is in force, Shift is worth the same proportion of it. */
+export const SPRINT_MULTIPLIER = PLAYER_SPRINT_SPEED / PLAYER_WALK_SPEED;
+/** THE LOCOMOTION CLIP AND ITS PLAYBACK RATE now come from avatar/gait, which world/Coworkers reads too
+ *  — the numbers were duplicated here and there, and the shared module is also where the "this package
+ *  has no run clip" fallback is made to look right rather than skate. See its header. */
+
+/** The airborne pose is AIRBORNE_POSE_PHASE, shared with every replicated body — see player/PlayerJump.
+ *  Avatar.freezeClipAt does the holding; landing restores the rate. */
+
+export type PlayerDeps = {
+  avatar: Avatar;
+  stack: ControllerStack;
+  world: WorldState;
+  canStand: StandTest;
+  /** the laxer test the third-person boom is judged against (walls and unbuilt space only) */
+  cameraProbe: StandTest;
+  camera: THREE.PerspectiveCamera;
+  canvas: HTMLCanvasElement;
+  /** scene node the target marker is parented to */
+  overlayRoot: THREE.Object3D;
+  radius: number;
+  avatarHeight: number;
+  /** walking speed, read live so the GUI slider still applies */
+  speed: () => number;
+  /** hand an entity id to V2's existing interaction starters; returns false if it could not be started */
+  activate: (id: string, kind: Candidate["kind"]) => boolean;
+  /** PHASE 6D — candidates that MOVE, re-read every frame instead of harvested once at construction:
+   *  the coworkers. Absent (the standalone dev page, and every phase before 6D) means there are none and
+   *  this costs a single undefined check per frame. The scoring itself is untouched — the same pickTarget
+   *  judges a person and a chair, so a chair you are standing on cannot be stolen by somebody behind you. */
+  dynamicCandidates?: () => readonly Candidate[];
+  /** true when an interaction is engaged and E should stand up instead of sitting down */
+  canStandUp: () => boolean;
+  standUp: () => void;
+  /** stop navigation/approach so PLAYER can take the avatar cleanly */
+  yieldAvatar: () => void;
+};
+
+export class PlayerMode {
+  readonly camera: PlayerCamera;
+  readonly body: PlayerBody;
+  private readonly d: PlayerDeps;
+  private readonly input: PlayerInput;
+  /** THE VERTICAL HALF OF MOVEMENT, and the only thing in this mode that is not on the floor plane.
+   *  Horizontal movement is untouched by it — see player/PlayerJump's header for why that is the whole
+   *  collision argument. */
+  private readonly vertical = new PlayerJump();
+  private readonly candidates: Map<string, Candidate[]>;
+  private hud: PlayerHud | null = null;
+  /** PHASE 7E — remembered across enter/exit, because the HUD is built on entry: a modal opened in OFFICE
+   *  and still up when PLAYER is entered must not get its primary button covered. */
+  private promptHidden = false;
+  private _active = false;
+  private target: Target | null = null;
+  /** the heading Bon is walking, kept separate from the camera yaw so third person can turn the body only */
+  private heading = 0;
+  private moving = false;
+  /** a one-segment synthetic route handed to the automatic doors, so they open on approach exactly as they
+   *  do for a planned walk — without inventing a second door-trigger path */
+  readonly doorIntent: Vec2[] = [];
+  /** THE CLIP A STANDING PLAYER RESTS IN — an ordinary idle, unless a conversation pose has been set.
+   *  Walking and sprinting still outrank it (they are chosen first, above), which is the same ordering
+   *  V1's own resolveCharacterAnimState uses and the same one the coworker bodies follow. */
+  private conversationClip: string | null = null;
+  setConversationClip(clip: string | null): void {
+    this.conversationClip = clip;
+  }
+  private get restingClip(): string {
+    return this.conversationClip ?? CLIP_IDLE;
+  }
+
+  /** dev/test readout */
+  readonly state = {
+    active: false, view: "third" as PlayerView, locked: false, sprinting: false, target: "—",
+    owner: "", blocked: false, pos: "", airborne: false, height: 0,
+    /** GROUND ACTUALLY COVERED this frame. Already computed for the locomotion clip's playback rate;
+     *  published so the foley layer can pace footsteps off distance rather than off a timer, which is
+     *  what makes them follow 70 and 100 without knowing either number. */
+    travelled: 0,
+  };
+
+  constructor(deps: PlayerDeps) {
+    this.d = deps;
+    this.camera = new PlayerCamera(deps.camera, deps.avatarHeight, deps.cameraProbe);
+    this.body = new PlayerBody(deps.avatar.position, deps.radius, deps.canStand);
+    this.candidates = collectCandidates(deps.world);
+    this.input = new PlayerInput(deps.canvas, {
+      onInteract: () => this.interact(),
+      onToggleView: () => this.setView(this.camera.view === "third" ? "first" : "third"),
+      onJump: () => this.jump(),
+      onLockChange: (locked) => {
+        this.state.locked = locked;
+        this.hud?.setLocked(locked);
+        this.refreshHint();
+        if (locked) this.lockDenied = false;
+        this.onLockState?.(locked, this.input.usingUnlockedLook);
+      },
+      onLockDenied: () => {
+        this.lockDenied = true;
+        this.onLockState?.(false, true);
+      },
+    });
+  }
+
+  get active(): boolean { return this._active; }
+  get view(): PlayerView { return this.camera.view; }
+
+  /** Take over. Returns false when the avatar cannot be placed on legal floor (nothing is changed then). */
+  enter(): boolean {
+    if (this._active) return true;
+    this.d.yieldAvatar();
+    if (!this.body.placeNear(this.d.avatar.position)) return false;
+    if (!this.d.stack.acquire("Player")) return false;
+    this._active = true;
+    this.state.active = true;
+    this.d.avatar.setPosition(this.body.pos);
+    this.heading = this.d.avatar.yaw;
+    this.camera.yaw = this.heading;
+    this.camera.snap();
+    this.applyVisibility();
+    this.hud = new PlayerHud(document.body);
+    this.hud.setPromptHidden(this.promptHidden);
+    this.d.overlayRoot.add(this.hud.marker);
+    this.hud.setLocked(this.input.locked);
+    this.input.enable();
+    this.refreshHint();
+    this.camera.update(this.body.pos, 0);
+    return true;
+  }
+
+  /** Hand everything back. Safe to call when not active. */
+  exit(): void {
+    if (!this._active) return;
+    this._active = false;
+    this.state.active = false;
+    this.input.disable(); // clears every held key, Shift included
+    this.state.sprinting = false;
+    this.state.travelled = 0;
+    this.d.stack.release("Player");
+    // BACK ON THE FLOOR, and the frozen airborne pose released with it: a mode left mid-jump must not
+    // hand the next owner a floating body or a walk clip whose time scale is still zero.
+    this.vertical.reset();
+    this.state.airborne = false;
+    this.state.height = 0;
+    this.d.avatar.setPosition(this.d.avatar.position);
+    this.d.avatar.setClipTimeScale(CLIP_WALK, 1);
+    this.d.avatar.root.visible = true;
+    this.d.avatar.play(CLIP_IDLE);
+    if (this.hud) { this.hud.marker.removeFromParent(); this.hud.dispose(); this.hud = null; }
+    this.target = null;
+    this.doorIntent.length = 0;
+  }
+
+  /** Give back everything that does NOT die with the renderer's canvas: the window/document key,
+   *  pointer-lock and mouse-move listeners PlayerInput holds, and the HUD div parked on document.body.
+   *  exit() covers both when the mode is active; input.disable() is repeated unconditionally (it is
+   *  idempotent) so a world torn down while OFFICE mode was showing is still left with nothing attached. */
+  dispose(): void {
+    this.exit();
+    this.input.disable();
+  }
+
+  setView(v: PlayerView): void {
+    this.camera.setView(v);
+    this.state.view = v;
+    if (this._active) this.applyVisibility();
+  }
+
+  /** FIRST PERSON hides the avatar outright. It is the simplest solution that is actually clean: the model
+   *  is one skinned mesh whose head and hair sit exactly where the eye camera does, so any near-plane or
+   *  head-bone trick leaves hair strands crossing the view on some frames. A visible body with no head is
+   *  a V1 problem, not a V0 one. */
+  private applyVisibility(): void {
+    this.d.avatar.root.visible = this.camera.view === "third";
+  }
+
+  /** PHASE 6D — give the pointer back so a DOM card can be used. PLAYER mode grabs the pointer to look
+   *  around; an interaction menu is unusable while it holds it. Releasing is all this does — the mode
+   *  stays active, the body keeps standing where it is, and one click on the canvas takes the pointer
+   *  back exactly as it did on the way in. */
+  /** PHASE 7E — hide the centre-screen "[E] …" line while a modal owns the screen; it is drawn exactly
+   *  where a modal's primary button sits. Nothing else about PLAYER changes: the crosshair, the floor
+   *  ring, the input and the camera are untouched, and targeting keeps running underneath. */
+  setPromptHidden(hidden: boolean): void {
+    this.promptHidden = hidden;
+    this.hud?.setPromptHidden(hidden);
+  }
+
+  releasePointer(): void {
+    this.input.unlock();
+  }
+
+  /** SPACE WAS PRESSED. Refused — silently, changing nothing — unless PLAYER is active AND actually
+   *  owns the avatar (a seat, an approach or a menu is driving it otherwise) AND the body is on the
+   *  floor. Those three are the whole gate: no double jump, no jump out of a chair, no jump in a view
+   *  that is not this one, because this handler is only bound while PLAYER's input is enabled. */
+  jump(): void {
+    if (!this._active || !this.d.stack.owns("Player")) return;
+    // ONLY A JUMP THAT ACTUALLY TOOK IS PUBLISHED. `start` refuses one in mid-air, so a held Space, a
+    // key repeat and a second press all produce exactly one relay — the traffic is bounded by the arc,
+    // not by the keyboard.
+    if (this.vertical.start()) this.onJumped?.();
+  }
+
+  /** Told when this body really left the floor, so the world can relay it to the other browsers. Null
+   *  on the standalone dev page and in every test that does not care, exactly like `onLockState`. */
+  onJumped: (() => void) | null = null;
+
+  /** Is the body off the floor? Read by the dev surface and the tests. */
+  get airborne(): boolean { return this.vertical.airborne; }
+
+  /** Invoke whatever is targeted, through V2's own interaction path. */
+  interact(): void {
+    if (!this._active) return;
+    if (this.d.canStandUp()) { this.d.standUp(); return; }
+    const t = this.target;
+    if (!t) return;
+    // PHASE 6D — A PERSON IS NOT A HANDOFF. Selecting a coworker opens a menu; it moves nobody and owns
+    // nothing, so the avatar is never released here. Releasing and re-acquiring it (what every other kind
+    // does, because the starters route with A* and take "Interaction") would drop Bon into an idle clip
+    // for a frame for a menu that has not even been answered yet.
+    if (t.kind === "person") { this.d.activate(t.id, t.kind); return; }
+    // release FIRST: the starters route with A* and acquire "Interaction", and Player outranks Navigation
+    this.d.stack.release("Player");
+    this.landNow();
+    this.d.avatar.play(CLIP_IDLE);
+    if (!this.d.activate(t.id, t.kind)) this.d.stack.acquire("Player"); // refused: take the avatar back
+  }
+
+  /** One frame. Returns the avatar's ground position so the caller can drive doors/shadows from it. */
+  update(dt: number): Vec2 {
+    const p = this.body.pos;
+    if (!this._active) return p;
+    const owner = this.d.stack.owner;
+    this.state.owner = owner;
+    // an interaction is driving Bon: keep the camera on him, move nothing, and take him back when it ends
+    if (owner !== "Player") {
+      this.state.sprinting = false;
+      this.state.travelled = 0;
+      // Somebody else is driving the body; a jump cannot continue through a seat or an approach, and
+      // leaving one running would fight whatever they write into the transform.
+      this.landNow();
+      const a = this.d.avatar.worldPosition();
+      this.body.pos = { x: a.x, z: a.z };
+      if (owner === "Idle" && this.d.stack.acquire("Player")) { this.body.placeNear(this.body.pos); this.d.avatar.setPosition(this.body.pos); }
+      this.camera.update(this.body.pos, dt);
+      this.updateTarget();
+      return this.body.pos;
+    }
+    const look = this.input.takeLook();
+    if (look.dx || look.dy) this.camera.look(look.dx, look.dy);
+    const axis = this.input.axis;
+    const sprinting = this.input.sprinting;
+    const speed = this.d.speed() * (sprinting ? SPRINT_MULTIPLIER : 1);
+    this.state.sprinting = sprinting;
+    let travelled = 0;
+    if (axis.x || axis.z) {
+      // WASD is CAMERA-RELATIVE: forward is where you are looking, which is what every third-person game
+      // means by W and the only thing that stays intuitive while the camera orbits.
+      const f = this.camera.forward, r = this.camera.right;
+      const dx = (f.x * -axis.z + r.x * axis.x) * speed * dt;
+      const dz = (f.z * -axis.z + r.z * axis.x) * speed * dt;
+      const from = { x: p.x, z: p.z };
+      const res = this.body.move(dx, dz);
+      travelled = res.travelled;
+      this.state.blocked = res.blocked;
+      // face where the body ACTUALLY went (so sliding along a wall turns Bon along it), falling back to
+      // where the player is pushing when he is pinned and went nowhere
+      this.heading = travelled > 1e-4 ? headingFor(res.pos.x - from.x, res.pos.z - from.z) : headingFor(dx, dz);
+    } else this.state.blocked = false;
+    this.state.travelled = travelled;
+
+    this.moving = travelled > 1e-4;
+    // THE VERTICAL HALF, stepped AFTER the horizontal one and written into the same transform. The
+    // horizontal answer above is untouched by it — same WASD, same camera basis, same PlayerBody.move,
+    // same stand test — so airborne movement is ordinary movement that happens to be drawn higher, and
+    // every wall, desk, door and access rule still applies at full height.
+    const landed = this.vertical.update(dt);
+    this.state.airborne = this.vertical.airborne;
+    this.state.height = this.vertical.height;
+    this.d.avatar.setPosition(this.body.pos, this.vertical.height);
+    // FIRST person locks the body to the view; THIRD turns it toward travel, which is what sells "Bon is
+    // walking" rather than "Bon is being slid around".
+    if (this.camera.view === "first") this.d.avatar.setYaw(this.camera.yaw);
+    else if (this.moving) this.d.avatar.setYaw(stepAngle(this.d.avatar.yaw, this.heading, TURN_RATE * dt));
+
+    // LANDING RESTORES THE CLIP, once, on the frame it happens: the airborne pose froze the walk cycle,
+    // and the locomotion branch below re-writes the rate every frame it runs — but the RESTING branch
+    // does not, so a jump that ends standing still would leave the idle playing over a walk action
+    // stopped at zero. Restoring here rather than in each branch keeps that one line in one place.
+    if (landed) this.d.avatar.setClipTimeScale(CLIP_WALK, 1);
+
+    if (this.vertical.airborne) {
+      // IN THE AIR. The pose is held (avatar/Avatar.freezeClipAt) rather than animated: no shipped
+      // character package carries a jump clip, and the arc itself is what sells the motion. Takeoff and
+      // landing are the crossfades into and out of it.
+      this.d.avatar.freezeClipAt(CLIP_WALK, AIRBORNE_POSE_PHASE);
+    } else if (this.moving) {
+      // idle -> walking -> running -> walking -> idle, all through the mixer's own crossfade. Sprinting
+      // with no run clip in the GLB falls back to a faster walk rather than freezing on whatever was
+      // already playing, so an older avatar build still behaves — avatar/gait owns that rule and the
+      // rate that makes the fallback keep its feet on the ground instead of skating.
+      const clip = locomotionClip(sprinting, this.d.avatar.hasClip(CLIP_RUN));
+      this.d.avatar.play(clip);
+      // rate from the ground ACTUALLY covered, not from the input: a player scraping along a wall slows
+      // his own stride down instead of moonwalking on the spot
+      this.d.avatar.setClipTimeScale(clip, locomotionRate(clip, travelled / dt));
+    } else {
+      this.d.avatar.play(this.restingClip);
+    }
+
+    if (this.moving) {
+      // the lookahead follows the HEADING, not the camera: strafing or backing through a doorway has to
+      // open it too, and at yaw 0 the camera's forward points north whichever way the player is walking
+      this.doorIntent.length = 0;
+      this.doorIntent.push({ x: this.body.pos.x + Math.sin(this.heading) * DOOR_LOOKAHEAD, z: this.body.pos.z - Math.cos(this.heading) * DOOR_LOOKAHEAD });
+    } else {
+      this.doorIntent.length = 0;
+    }
+    this.camera.update(this.body.pos, dt);
+    this.updateTarget();
+    this.state.pos = `${this.body.pos.x.toFixed(0)}, ${this.body.pos.z.toFixed(0)}`;
+    return this.body.pos;
+  }
+
+  /** PUT THE BODY BACK ON THE FLOOR NOW, with no landing frame: the avatar is being handed to somebody
+   *  else (an interaction, a seat) or the mode is ending. Idempotent, and cheap enough to call every
+   *  frame of a handoff. */
+  private landNow(): void {
+    if (!this.vertical.airborne && this.state.height === 0) return;
+    this.vertical.reset();
+    this.state.airborne = false;
+    this.state.height = 0;
+    // The one write, on the one frame: `y` alone, never the whole transform. A handoff can land on a
+    // frame where an interaction is about to own the root (and may have re-parented it into a carrier),
+    // and re-asserting x/z here would be this mode writing a position it no longer owns.
+    this.d.avatar.root.position.y = 0;
+    this.d.avatar.setClipTimeScale(CLIP_WALK, 1);
+  }
+
+  /** Room-scoped candidate scan. No scene traversal, no raycast: the candidate list was built once. */
+  private updateTarget(): void {
+    const room = this.d.world.regionAt(this.body.pos)?.roomId;
+    const list = room ? this.candidates.get(room) : undefined;
+    const facing = this.camera.view === "first" ? this.camera.forward : { x: Math.sin(this.d.avatar.yaw), z: -Math.cos(this.d.avatar.yaw) };
+    // PHASE 6D — the static room bucket PLUS whoever is standing here right now. People are added
+    // regardless of which room the body is in (they are not in any bucket, and a coworker in the hall is
+    // still a person you are looking at); pickTarget's reach and cone are what bound them, as for
+    // everything else.
+    const dynamic = this.d.dynamicCandidates?.() ?? EMPTY_CANDIDATES;
+    const all = dynamic.length === 0 ? list : list ? [...list, ...dynamic] : dynamic;
+    this.target = all && all.length > 0 ? pickTarget(all, this.body.pos, facing) : null;
+    this.state.target = this.target ? this.target.label : "—";
+    if (this.d.canStandUp()) {
+      this.hud?.setTarget("Stand up", null);
+      this.state.target = "stand up";
+      return;
+    }
+    this.hud?.setTarget(this.target?.label ?? null, this.target ? this.target.pos : null);
+    if (!this.target) this.refreshHint();
+  }
+
+  /** PHASE 7D — THE PERSISTENT CENTRE-SCREEN PILL IS GONE.
+   *
+   *  "click to look · WASD to walk · …" sat over the avatar for as long as the pointer was unlocked,
+   *  which was most of the time and directly in the middle of the view. It said the wrong thing too:
+   *  entering PLAYER now takes the pointer from the view-switch gesture itself, so clicking the world
+   *  is a recovery route rather than the way in.
+   *
+   *  What replaced it: the view-switch indicator, which says PLAYER VIEW and its controls once, briefly,
+   *  on entry (app/Vo3dViewIndicator) — and a contextual recovery hint shown only when the browser
+   *  actually refused the lock. A permanent instruction for a state that is usually fine is chrome. */
+  private refreshHint(): void {
+    this.hud?.setHint("");
+  }
+
+  /** PHASE 7D — the browser refused our last request, so a recovery hint is warranted. */
+  lockDenied = false;
+  /** Told whenever the lock state or the fallback changes, so the overlay can show the right hint. */
+  onLockState: ((locked: boolean, unlockedLook: boolean) => void) | null = null;
+
+  /** PHASE 7D — take the pointer from the caller's own gesture (the C key, or chat's Enter). */
+  requestPointerLock(): void { this.input.requestLock(); }
+  get pointerLocked(): boolean { return this.input.locked; }
+  get unlockedLook(): boolean { return this.input.usingUnlockedLook; }
+}

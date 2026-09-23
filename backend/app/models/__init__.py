@@ -3,11 +3,13 @@ from app.models.attendance import EmployeeAttendance
 from app.models.avatar import Avatar
 from app.models.badge import BadgeAward, BadgeProgress
 from app.models.conversation import Conversation, ConversationParticipant
+from app.models.employee_permission import EmployeePermission
 from app.models.feed import FeedComment, FeedPost, FeedReaction
 from app.models.hub import HubItem, HubItemState
 from app.models.message import Message
 from app.models.mission import MissionAssignment
 from app.models.notification import Notification
+from app.models.office_experience import CompanySetting, OfficeExperiencePublication
 from app.models.position import EmployeePosition
 from app.models.quest import QuestEvent, QuestProgress
 from app.models.reaction import MessageReaction
@@ -36,7 +38,9 @@ __all__ = [
     "Conversation",
     "ConversationParticipant",
     "ConversationRequest",
+    "CompanySetting",
     "EmployeeAttendance",
+    "EmployeePermission",
     "EmployeePosition",
     "FeedComment",
     "FeedPost",
@@ -47,6 +51,7 @@ __all__ = [
     "MessageReaction",
     "MissionAssignment",
     "Notification",
+    "OfficeExperiencePublication",
     "QuestEvent",
     "QuestProgress",
     "RewardGrant",

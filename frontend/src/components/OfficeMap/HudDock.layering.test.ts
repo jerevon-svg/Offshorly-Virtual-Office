@@ -149,12 +149,34 @@ describe("it stays above what reward FX need, and below everything it must", () 
       [checkoutCss, "reminderCard"],
       [checkoutCss, "walkIndicator"],
       [css("DndRequestUI.module.css"), "toast"],
-      [css("CallInvitePrompt.module.css"), "toast"],
       [css("AudioDebugPanel.module.css"), "panel"],
     ] as const;
     for (const [source, cls] of bottomAnchored) {
       expect(decl(source, cls, "bottom")).toMatch(/var\(--vo-dock-clearance/);
     }
+  });
+
+  // PHASE 7D. THE CALL NOTICE LEFT THIS CORNER, and that is the point: as a bottom-right toast at z 28
+  // it rendered BEHIND the floating chat windows (140) in the same corner, so a ring that arrived during
+  // a conversation could not be seen or answered. It is now a top-centre card that out-ranks them.
+  it("puts the call notice above the floating chat windows rather than beside them", () => {
+    const callCss = css("CallInvitePrompt.module.css");
+    // Top-anchored now — it no longer competes with anything the dock clears.
+    expect(decl(callCss, "card", "top")).toMatch(/var\(--vo-call-notice-top/);
+    expect(decl(callCss, "card", "bottom")).toBeUndefined();
+    // Above the chat windows it used to hide behind, and above the V2 call bar it stacks on.
+    expect(onlyZIndex(callCss, "card")).toBeGreaterThan(onlyZIndex(officeCss, "floatingChatSlot"));
+    expect(onlyZIndex(callCss, "card")).toBeGreaterThan(
+      onlyZIndex(readFileSync("src/dev/vo3d/app/Vo3dCallBar.module.css", "utf8"), "bar"),
+    );
+  });
+
+  // The V2 call bar shares the notice's column and must never paint over the chat windows' controls or
+  // under them: it sits between the two.
+  it("keeps the V2 call bar between the chat windows and the call notice", () => {
+    const barCss = readFileSync("src/dev/vo3d/app/Vo3dCallBar.module.css", "utf8");
+    expect(decl(barCss, "bar", "top")).toMatch(/var\(--vo-call-notice-top/);
+    expect(onlyZIndex(barCss, "bar")).toBeGreaterThan(onlyZIndex(officeCss, "floatingChatSlot"));
   });
 });
 
@@ -299,8 +321,11 @@ describe("flyouts open upward, into the office rather than off the bottom edge",
 
   it("settings is a modal on the same family layer, with the same clamps", () => {
     expect(zIndexOf(settingsCss, "backdrop")).toEqual([60]);
-    expect(decl(settingsCss, "panel", "width")).toBe("min(480px, 94vw)");
+    // PHASE 7C widened it for its two panes (categories left, controls right). The CLAMPS are what this
+    // file is about and they are unchanged: it never exceeds the viewport, in either axis.
+    expect(decl(settingsCss, "panel", "width")).toBe("min(780px, 94vw)");
     expect(decl(settingsCss, "panel", "max-height")).toBe("88vh");
+    expect(decl(settingsCss, "panel", "height")).toBe("min(600px, 88vh)");
   });
 
   it("every flyout is width-clamped and height-capped, so none can push the page around", () => {

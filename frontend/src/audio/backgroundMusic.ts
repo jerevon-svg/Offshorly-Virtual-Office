@@ -137,6 +137,9 @@ export function subscribe(cb: () => void): () => void {
 // components.
 export const __testing = {
   isStarted: () => started,
+  /** The element the module is actually driving, or null before the first gesture. Tests only — it is
+   *  how "the slider moved the sound" can be asserted rather than only "the number changed". */
+  element: () => audio,
   reset: () => {
     audio = null;
     armed = false;

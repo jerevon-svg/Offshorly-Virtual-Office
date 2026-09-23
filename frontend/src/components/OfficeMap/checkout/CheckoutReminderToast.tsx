@@ -45,6 +45,27 @@ export function placeReminder(
   return { left, bottom: viewport.height - anchor.top + GAP_ABOVE_ANCHOR, tailX };
 }
 
+/** IS THIS ANCHOR WORTH AIMING AT? Exported for tests, because the failure it prevents is invisible in
+ *  jsdom and expensive to notice by eye.
+ *
+ *  A dock that has SLID OUT still has a rect: HudDock hides by transform + opacity, never by `display`.
+ *  That rect sits BELOW the viewport, and placing against it puts the card off the bottom of the screen —
+ *  a reminder nobody can see or dismiss. V2 slides its dock out far more often than V1 does (a
+ *  pointer-locked PLAYER cannot click DOM at all, and every screen-owning tool steps it aside), so the
+ *  case stopped being theoretical.
+ *
+ *  An anchor that is not ON SCREEN is therefore treated as NO anchor, and the stylesheet's
+ *  dock-clearance fallback applies — exactly what already happens in the moments before the dock mounts.
+ *  A zero-sized rect (never laid out) is rejected by the same test. */
+export function anchorUsable(
+  rect: { top: number; bottom: number; width: number; height: number } | undefined,
+  viewportHeight: number,
+): boolean {
+  if (!rect) return false;
+  if (rect.width <= 0 && rect.height <= 0) return false;
+  return rect.top < viewportHeight && rect.bottom > 0;
+}
+
 /** Where the tail's tip lands on screen for a placement — what must equal the anchor's centre. */
 export function tailTipX(placement: ReminderPlacement): number {
   return placement.left + placement.tailX;
@@ -89,10 +110,9 @@ export function CheckoutReminderToast({
     const tick = () => {
       const anchor = document.querySelector<HTMLElement>(WORKING_HOURS_ANCHOR);
       const a = anchor?.getBoundingClientRect();
-      const next =
-        a && (a.width > 0 || a.height > 0)
-          ? placeReminder(a, { width: card.offsetWidth }, { width: window.innerWidth, height: window.innerHeight })
-          : null;
+      const next = anchorUsable(a, window.innerHeight)
+        ? placeReminder(a!, { width: card.offsetWidth }, { width: window.innerWidth, height: window.innerHeight })
+        : null;
       setPlacement((prev) => (samePlacement(prev, next) ? prev : next));
       frame = window.requestAnimationFrame(tick);
     };

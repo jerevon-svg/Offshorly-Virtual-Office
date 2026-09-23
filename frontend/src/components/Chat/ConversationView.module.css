@@ -634,3 +634,30 @@
   color: #241f30;
   font-size: 15px;
 }
+
+/* PHASE 7D — A SYSTEM RECORD IN THE TRANSCRIPT (today: a missed call).
+   Deliberately NOT a bubble: it has no author, so it is centred, quiet, and reads as something the
+   conversation says about itself rather than something somebody said. Same muted register as the day
+   divider it sits among. */
+.systemRow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 6px 0;
+  padding: 7px 12px;
+  align-self: center;
+  max-width: 88%;
+  box-sizing: border-box;
+  border-radius: 12px;
+  background: rgba(24, 20, 34, 0.045);
+  border: 1px solid rgba(24, 20, 34, 0.06);
+  color: rgba(36, 31, 48, 0.68);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.systemIcon { font-size: 13px; flex: none; }
+.systemText { min-width: 0; }
+.systemTime { color: rgba(36, 31, 48, 0.45); font-weight: 500; flex: none; }

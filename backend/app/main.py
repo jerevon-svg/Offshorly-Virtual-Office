@@ -24,6 +24,8 @@ from app.routers import feed as feed_router
 from app.routers import hub as hub_router
 from app.routers import missions as missions_router
 from app.routers import notifications as notifications_router
+from app.routers import office_experience as office_experience_router
+from app.routers import permissions as permissions_router
 from app.routers import progression as progression_router
 from app.routers import quests as quests_router
 from app.routers import requests as requests_router
@@ -32,6 +34,7 @@ from app.routers import room_requests as room_requests_router
 from app.routers import talk_requests as talk_requests_router
 from app.routers import team_map as team_map_router
 from app.routers import toucan as toucan_router
+from app.routers import weather as weather_router
 from app.routers import whiteboards as whiteboards_router
 from app.scripts import seed_dev_hub_content as hub_mock
 from app.realtime.state import offline_lineup
@@ -131,6 +134,7 @@ fastapi_app.include_router(talk_requests_router.router)
 fastapi_app.include_router(hub_router.router)
 fastapi_app.include_router(feed_router.router)
 fastapi_app.include_router(toucan_router.router)
+fastapi_app.include_router(weather_router.router)
 fastapi_app.include_router(attendance_router.router)
 fastapi_app.include_router(quests_router.router)
 fastapi_app.include_router(missions_router.router)
@@ -140,6 +144,8 @@ fastapi_app.include_router(badges_router.router)
 fastapi_app.include_router(rewards_router.router)
 fastapi_app.include_router(whiteboards_router.router)
 fastapi_app.include_router(team_map_router.router)
+fastapi_app.include_router(permissions_router.router)
+fastapi_app.include_router(office_experience_router.router)
 
 
 # Faithful port of backend/src/http.ts's error shape: REST error responses always come back as

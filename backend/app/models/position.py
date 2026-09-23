@@ -33,3 +33,7 @@ class EmployeePosition(Base):
     room_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     revision: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # The V2 3D office's exact resting yaw in radians (migration b7c8d9e0f1a2). Nullable: every row
+    # written by a V1 client, and every row from before the column, has none — `facing` is then the
+    # only orientation fact and remains authoritative for V1.
+    yaw: Mapped[float | None] = mapped_column(Float, nullable=True)

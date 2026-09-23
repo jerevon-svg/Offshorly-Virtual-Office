@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 import socketio
@@ -14,6 +14,7 @@ from app.database import Base
 from app.main import app as combined_app
 from app.models.activity_event import EVENT_CALL_MISSED, ActivityEvent
 from app.models.toucan import ToucanAttentionCursor
+from app.models.attendance import EmployeeAttendance
 from app.realtime import socket as socket_module
 from app.repositories import toucan_activity as activity_repo
 
@@ -233,7 +234,17 @@ async def test_checking_back_in_quickly_records_no_absence(server):
 
 async def test_calling_somebody_who_is_not_connected_records_a_missed_call(server):
     """THE CASE T2 EXISTS FOR: no invite is ever minted here, so without this hook the attempt
-    would leave no trace anywhere for the recipient to find when they come back."""
+    would leave no trace anywhere for the recipient to find when they come back.
+
+    PHASE 7D narrowed this: the recipient must be a REAL employee, or the ring never reached anybody
+    and nothing is written (see tests/test_missed_call_socket.py for the negative case). B is given an
+    attendance row here to be that real, currently-offline employee — which is exactly the person this
+    behaviour exists for.
+    """
+    async with app_db.async_session_maker() as session:
+        session.add(EmployeeAttendance(email=B, updated_at=datetime.now(timezone.utc)))
+        await session.commit()
+
     bag = {}
     a = await _connect(server, A, bag)
     await asyncio.sleep(0.2)

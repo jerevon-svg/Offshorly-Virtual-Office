@@ -35,9 +35,12 @@ import { announceWorkHoursReached } from "../../services/notifications/notificat
 const SNOOZE_MINUTES = 30;
 
 // Manila calendar date as "YYYY-MM-DD", independent of browser timezone.
-// Kept local to this hook (rather than officePhase.ts) since it's only
-// needed here for the checkout storage key.
-function manilaWorkDate(now: Date = new Date()): string {
+// Kept with this hook (rather than in officePhase.ts) since it exists for the
+// checkout storage key. EXPORTED for the one other caller that has to build
+// the SAME key: the V2 HUD adopts a new work session by comparing against the
+// marker this hook writes (dev/vo3d/app/Vo3dHud.tsx), and a second copy of the
+// date rule would be a second answer on the stroke of midnight.
+export function manilaWorkDate(now: Date = new Date()): string {
   const formatter = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Manila",
     year: "numeric",
@@ -80,6 +83,8 @@ export interface UseCheckoutFlowResult {
   removeEntry: (index: number) => void;
   goToReview: () => void;
   backToEditing: () => void;
+  backToSummary: () => void;
+  cancelCheckout: () => void;
   submit: (opts?: MockSubmitOptions) => Promise<void>;
   retrySubmit: (opts?: MockSubmitOptions) => Promise<void>;
   saveAndReturnLater: () => void;
@@ -277,6 +282,27 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
     goTo("EDITING_TIME_LOG");
   }
 
+  /** PHASE 7E — back from the time-log form to the working-time summary it was opened from. Entries are
+   *  held in state and are NOT cleared, so stepping back and forward again returns to the same form. */
+  function backToSummary() {
+    goTo("AT_RECEPTION");
+  }
+
+  /** PHASE 7E — LEAVE THE CHECKOUT, keeping everything. The employee is still checked in: this submits
+   *  nothing, ends no work session and writes no attendance — it returns the flow to IDLE, which is where
+   *  "Not yet" and "Save and return later" already return it.
+   *
+   *  ANYTHING TYPED IS KEPT, through the same `saveDraft` the failure panel uses, so reopening checkout
+   *  later restores it. An empty form writes nothing rather than persisting a blank draft over a real one.
+   *  Legal only from the two states that have somewhere to go back to; the confirmation has its own
+   *  "Not yet", and a submitted checkout has no cancel at all. */
+  function cancelCheckout() {
+    if (entries.length > 0) {
+      saveDraft(employeeId, workDate, { entries, breakMinutes, savedAt: new Date().toISOString() });
+    }
+    goTo("IDLE");
+  }
+
   // opts: debug-only escape hatch (forceFail/forceTimeout) so the dev debug
   // panel can simulate Zoho failure/timeout without touching the real mock
   // service's internal call sites. Ignored by McpZohoService (cast below);
@@ -460,6 +486,8 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
     removeEntry,
     goToReview,
     backToEditing,
+    backToSummary,
+    cancelCheckout,
     submit,
     retrySubmit,
     saveAndReturnLater,

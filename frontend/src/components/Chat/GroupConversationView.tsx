@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { chatMode, chatService } from "../../services/chat";
 import { TOUCAN_AVATAR_GLYPH, TOUCAN_DISPLAY_NAME, isToucanSender } from "../../services/chat/toucanSender";
 import { applyReactionUpdate } from "../../services/chat/reactions";
+import { isAuthoredMessage } from "../../services/chat/types";
 import type { ChatMessage, ConnectionState } from "../../services/chat";
 import type { DeliveryReceiptUpdate, ReadReceiptUpdate } from "../../services/chat/types";
 import { ChatComposer } from "./ChatComposer";
@@ -438,7 +439,10 @@ export function GroupConversationView({
         {showOpeningPlaceholder ? (
           <div className={styles.message}>Connecting to chat…</div>
         ) : (
-          messages.map((msg, index) => {
+          // PHASE 7D: system records are DM-only today (a missed call), so none can reach a group —
+          // but the bubble machinery below assumes an authored body, and "cannot happen" is not a
+          // reason to render an empty bubble if it ever does.
+          messages.filter(isAuthoredMessage).map((msg, index) => {
             const dayLabel = formatDayDivider(msg.sentAt);
             const showDivider = dayLabel !== lastDayLabel;
             lastDayLabel = dayLabel;

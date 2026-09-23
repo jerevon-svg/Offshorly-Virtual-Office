@@ -13,7 +13,12 @@ from app.repositories import chat as chat_repo
 from app.repositories import room_requests as room_requests_repo
 from app.repositories import talk_requests as talk_requests_repo
 from app.repositories import toucan_activity as toucan_activity_repo
-from app.schemas.chat import to_iso_z
+from sqlalchemy import select
+
+from app.models.attendance import EmployeeAttendance
+from app.models.message import KIND_CALL_MISSED as MESSAGE_KIND_CALL_MISSED
+from app.schemas.chat import serialize_message_dict, to_iso_z
+from app.services.chat_send import ensure_participant_sockets_in_room
 from app.schemas.room_requests import RoomRequestOut
 from app.schemas.talk_requests import TalkRequestOut
 from app.repositories import position as position_repo
@@ -24,6 +29,9 @@ from app.repositories import whiteboards as wb_repo
 # call sites and tests keep working.
 from app.realtime.state import (
     call_invites,
+    meeting_chat,
+    meeting_hosts,
+    meeting_invites,
     call_registry,
     dnd_registry,
     global_chat_activity,
@@ -36,6 +44,9 @@ from app.realtime.state import (
     whiteboard_rooms,
 )
 from app.services.call_invites import INVITE_TTL_SECONDS
+from app.services.call_registry import MEETING_KEY_PREFIX
+from app.services import meeting_chat as meeting_chat_service
+from app.routers.calls import meeting_room_key, _MEETING_ID
 from app.services.call_invites import wire as invite_wire
 from app.services.chat_assistant import detect_toucan_invocation, schedule_reply
 from app.services.chat_delegation import schedule_delegation_reply
@@ -143,24 +154,110 @@ async def _record_departure(email: str) -> None:
         _logger.warning("failed to record departure for %s", email, exc_info=True)
 
 
-async def _record_missed_call(invite: dict, *, reason: str) -> None:
-    """One unanswered ring, recorded against the RECIPIENT — they are the person who missed it,
-    and the only person who will ever be able to read it back.
+async def _is_valid_recipient(session, email: str, *, caller_email: str) -> bool:
+    """PHASE 7D — DID THIS RING EVER REACH A REAL PERSON?
 
-    `reason` is for the log only and is deliberately not stored: "you missed a call" is the fact
-    worth keeping, and the difference between a timeout and a hang-up is not something Toucan
-    should be repeating back to anyone."""
+    A missed call is only worth recording when there was somebody to miss it. Without this check the
+    `offline` branch wrote a row for ANY string shaped like an email — a `?as=` typo, a stale roster
+    entry, a renamed account — minting a missed call against a subject who does not exist, and (now
+    that a DM carries the record) creating a conversation for them too.
+
+    Answered from state this process already holds, with no Atlas round-trip, because a ring must not
+    depend on a third party being up:
+      * a live authenticated socket — they are here right now;
+      * an existing DM with the caller — these two have demonstrably talked before;
+      * an attendance row — they have checked into this office at least once.
+
+    A person who is merely offline still passes on the second or third test, which is exactly the case
+    the missed call exists for."""
+    if _is_online(email):
+        return True
+    if await chat_repo.get_dm_conversation_id(session, email, caller_email):
+        return True
+    result = await session.execute(
+        select(EmployeeAttendance.email).where(EmployeeAttendance.email == email).limit(1)
+    )
+    return result.first() is not None
+
+
+async def _emit_missed_call_message(conversation_id: str, to_email: str, from_email: str) -> None:
+    """Deliver the missed-call row over the EXACT channel an ordinary message uses — `incoming_message`
+    into the conversation room, then the recipient's own `unread_count`. Not a new notification path:
+    every surface that already reacts to a message (the inbox, the dock badge, the overhead indicator)
+    therefore reacts to this with no change of its own.
+
+    The recipient may have no socket in the conversation room yet (a DM that did not exist a moment ago),
+    so their sockets are joined first, exactly as chat_send does on every send."""
+    async with async_session_maker() as session:
+        messages = await chat_repo.list_messages(session, conversation_id, limit=1)
+        if not messages:
+            return
+        payload = serialize_message_dict(messages[-1], delivered_to=[], read_by=[])
+        await ensure_participant_sockets_in_room(conversation_id, [to_email, from_email])
+        await sio.emit("incoming_message", {"message": payload}, room=conversation_id)
+        count = await chat_repo.unread_count(session, conversation_id, to_email)
+    await sio.emit(
+        "unread_count", {"conversationId": conversation_id, "count": count}, room=user_room(to_email)
+    )
+
+
+async def _record_missed_call(invite: dict, *, reason: str) -> None:
+    """One unanswered ring, recorded against the RECIPIENT — they are the person who missed it.
+
+    PHASE 7D SPLIT THIS INTO TWO WRITES FOR ONE EVENT, and the split is deliberate and permanent:
+
+      * a `messages` row of kind "call_missed" in the DM between the two people. This is the RECORD:
+        it is what the recipient sees, it is durable, it survives a relogin, it counts toward their
+        unread badge and it sits in the conversation they would call back from — all of that reusing
+        chat's existing machinery rather than a second store.
+      * the existing `activity_events` row. This stays the COUNT, for Toucan's "while you were away".
+
+    ONE MISSED CALL IS THEREFORE ONE EVENT ACROSS BOTH SYSTEMS: Toucan counts it once, from
+    activity_events, because repositories/toucan_activity.py excludes non-text rows from its message
+    count. Neither number includes the other's.
+
+    `reason` is stored in the message's `meta` (busy / timeout / offline / caller_left) because the
+    conversation row is allowed to say why, and deliberately still NOT stored on the activity event,
+    whose docstring is right that Toucan should not repeat the difference back to anyone.
+
+    Nothing here may break a ring: every failure is swallowed and logged, as before."""
+    to_email = invite["to_email"]
+    from_email = invite["from_email"]
     try:
         async with async_session_maker() as session:
+            if not await _is_valid_recipient(session, to_email, caller_email=from_email):
+                # Never reached a valid recipient: no row, no event, and above all no conversation
+                # conjured for somebody who is not an employee.
+                _logger.info("ignoring missed call for unknown recipient (%s)", reason)
+                return
+            # The DM is created if it does not exist — an approved consequence: "Micah called you"
+            # is worth a conversation even when the two have never spoken.
+            conv = await chat_repo.upsert_conversation(session, to_email, from_email)
+            await chat_repo.create_system_message(
+                session,
+                conversation_id=conv["id"],
+                # The CALLER is the sender: it is their call, and it makes every existing unread rule
+                # work untouched (a row whose sender is not the reader, after their last_read_at).
+                sender_email=from_email,
+                kind=MESSAGE_KIND_CALL_MISSED,
+                meta={"callType": "spatial", "reason": reason},
+            )
             await toucan_activity_repo.record_missed_call(
                 session,
-                subject_email=invite["to_email"],
-                actor_email=invite["from_email"],
+                subject_email=to_email,
+                actor_email=from_email,
                 reference_id=invite.get("inviteId"),
             )
             await session.commit()
     except Exception:  # a ring must terminate cleanly regardless
         _logger.warning("failed to record missed call (%s)", reason, exc_info=True)
+        return
+    # Told over the SAME channel an ordinary message uses, so an already-connected recipient sees it
+    # land without a refresh. Outside the try above: a delivery failure must not undo a durable write.
+    try:
+        await _emit_missed_call_message(conv["id"], to_email, from_email)
+    except Exception:  # noqa: BLE001
+        _logger.warning("failed to deliver missed call message", exc_info=True)
 
 
 async def _broadcast_offline_lineup() -> None:
@@ -173,6 +270,63 @@ async def _broadcast_spatial_sessions() -> None:
 
 async def _broadcast_spatial_calls() -> None:
     await sio.emit("spatial_calls", {"calls": call_registry.snapshot()})
+
+
+def _meeting_presence_payload() -> dict:
+    """PHASE 7D. Standalone meetings, with their host. A SEPARATE event from `spatial_calls` on
+    purpose: that one describes conversations and its entries are matched against conversation ids by
+    the frontend, so a meeting key must never appear in it (see call_registry.snapshot()).
+
+    `meetingId` is the bare id the client asked for, not the registry key — the "meeting:" namespace is
+    a server-side collision guard and nothing outside this process needs to know about it."""
+    out = []
+    for entry in call_registry.meeting_snapshot():
+        key = entry["sessionId"]
+        out.append(
+            {
+                "meetingId": key[len(MEETING_KEY_PREFIX):],
+                "participants": entry["participants"],
+                "host": meeting_hosts.host_of(key) or "",
+            }
+        )
+    return {"meetings": out}
+
+
+async def _broadcast_meeting_presence() -> None:
+    await sio.emit("meeting_presence", _meeting_presence_payload())
+
+
+def _meeting_key_from_payload(payload: dict) -> str | None:
+    """The one place a client-supplied meeting id becomes a registry key. Constrained by the SAME
+    regex routers/calls.py mints tokens under, so a socket can never register presence against a key
+    the token endpoint would have refused."""
+    raw = payload.get("meetingId")
+    if not isinstance(raw, str):
+        return None
+    key = raw.strip().lower()
+    if not key or not _MEETING_ID.match(key):
+        return None
+    return meeting_room_key(key)
+
+
+def _meeting_key_for_sid(sid: str) -> str | None:
+    """The meeting key this socket's media claim belongs to, or None when it is a spatial call, board
+    voice, or nothing at all. Must be read BEFORE the registry drops the claim."""
+    key = call_registry.key_for_sid(sid)
+    return key if key and key.startswith(MEETING_KEY_PREFIX) else None
+
+
+def _release_meeting_host_for(key: str) -> None:
+    """Somebody left `key`. Recomputed from the registry AFTER the departure, so the host can never
+    disagree with who is actually still in the room. Synchronous on purpose — see meeting_hosts.py.
+
+    PHASE 7D: the LAST one out also ends the meeting's chat. Done here rather than anywhere else so
+    "the meeting ended" stays one event with one set of consequences — the host is released and the
+    conversation is forgotten together, and the next meeting under this id starts genuinely empty."""
+    remaining = call_registry.participants_in_order(key)
+    meeting_hosts.release(key, remaining)
+    if not remaining:
+        meeting_chat.end(key)
 
 
 async def _broadcast_dnd_status() -> None:
@@ -283,6 +437,26 @@ def _ms_to_dt(ms: int) -> datetime:
 
 _FACINGS = {"front", "back", "left", "right"}
 _MOVE_STATES = {"standing", "sitting"}
+# How a peer should replay a movement. Optional on the wire and absent from every V1 client, which
+# means "eased" — V1's own PeerWalker curve. "linear" is what the V2 3D office publishes for a free-
+# movement LEG (a constant-speed 400 ms sample of WASD running): easing a sample of continuous motion
+# brings the body to a halt at both ends of every leg, which is the stop-and-go peers were seeing.
+_PACINGS = {"eased", "linear"}
+
+
+def _is_optional_yaw(v) -> bool:
+    """The V2 3D office's actual resting yaw in radians, optional. V1's four-word `facing` stays the
+    compatibility vocabulary; this is the exact value beside it. Absent/None is legal (every V1 client);
+    when present it must be a real finite number — a bool, a string or NaN/inf is malformed input."""
+    if v is None:
+        return True
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    return v == v and v not in (float("inf"), float("-inf"))
+
+
+def _is_optional_pacing(v) -> bool:
+    return v is None or v in _PACINGS
 
 
 def _is_room_id(v) -> bool:
@@ -291,6 +465,16 @@ def _is_room_id(v) -> bool:
 
 def _is_movement_id(v) -> bool:
     return isinstance(v, str) and 1 <= len(v) <= 64
+
+
+def _is_optional_point(p) -> bool:
+    return p is None or _is_point(p)
+
+
+def _is_optional_path(p) -> bool:
+    """PHASE 7D. A local path is optional, and when present must be a real path — the same check the
+    V1 path gets, because it is replayed by the same interpolation."""
+    return p is None or (isinstance(p, list) and 0 < len(p) <= 64 and all(_is_point(q) for q in p))
 
 
 def _valid_walk_started_payload(payload) -> bool:
@@ -307,10 +491,18 @@ def _valid_walk_started_payload(payload) -> bool:
         return False
     if not _is_room_id(payload.get("roomId")):
         return False
+    # PHASE 7D — the CAVE-LOCAL movement, optional and additive. A client that does not send them is
+    # byte-for-byte the client that existed before, which is what makes this backward compatible.
+    if not _is_optional_point(payload.get("localOrigin")):
+        return False
+    if not _is_optional_path(payload.get("localPath")):
+        return False
     duration_ms = payload.get("durationMs")
     if not isinstance(duration_ms, int) or isinstance(duration_ms, bool):
         return False
     if not (100 <= duration_ms <= 20000):
+        return False
+    if not _is_optional_pacing(payload.get("pacing")):
         return False
     return True
 
@@ -330,6 +522,10 @@ def _valid_walk_arrived_payload(payload) -> bool:
     if seat_key is not None and not isinstance(seat_key, str):
         return False
     if not _is_room_id(payload.get("roomId")):
+        return False
+    if not _is_optional_point(payload.get("localAt")):
+        return False
+    if not _is_optional_yaw(payload.get("yaw")):
         return False
     return True
 
@@ -393,12 +589,24 @@ async def connect(sid: str, environ: dict, auth: dict | None) -> None:
     # than waiting for the next join/leave.
     await sio.emit("spatial_calls", {"calls": call_registry.snapshot()}, to=sid)
 
+    # PHASE 7D, same reasoning for standalone meetings: a client walking into the Cave must know
+    # whether a meeting is already running BEFORE it connects to anything, or its button cannot say
+    # Join rather than Start. Without this the panel is wrong until the next join or leave.
+    await sio.emit("meeting_presence", _meeting_presence_payload(), to=sid)
+
     # Same reasoning for in-flight call invites: a reconnecting/reloading client must get its own
     # pending ring back (either direction) rather than losing the Calling…/incoming prompt. Scoped
     # to invites this person is a party to — an invite is private to its two parties.
     await sio.emit(
         "call_invites",
         {"invites": [invite_wire(i) for i in call_invites.pending_for(email)]},
+        to=sid,
+    )
+
+    # Same reasoning for meeting invitations — a reload must not lose an in-flight one.
+    await sio.emit(
+        "meeting_invites",
+        {"invites": [invite_wire(i) for i in meeting_invites.pending_for(email)]},
         to=sid,
     )
 
@@ -445,10 +653,23 @@ async def disconnect(sid: str) -> None:
     # Media cleanup is BY SID and INDEPENDENT of the spatial cleanup above: a dropped call
     # socket must never imply leaving the spatial conversation (and vice versa). A socket that
     # never joined media is not in this registry, so this is a no-op for it.
+    was_meeting = _meeting_key_for_sid(sid)
     if call_registry.clear_sid(sid):
-        await _broadcast_spatial_calls()
+        # PHASE 7D: a dropped socket ends its media claim wherever it was. A meeting's host leaving
+        # this way is indistinguishable from any other departure, which is the point — the handover
+        # runs off the registry's own remaining membership, not off how the person left.
+        if was_meeting is not None:
+            _release_meeting_host_for(was_meeting)
+            await _broadcast_meeting_presence()
+        else:
+            await _broadcast_spatial_calls()
     # Caller's socket vanished mid-ring: terminate their invite so the recipient's prompt clears.
     # Sid-aware — a socket owning no invite is a no-op here.
+    # PHASE 7D: the meeting inviter's tab went away. Terminate their invitation so the recipient's
+    # prompt clears. Nothing durable is written — an unanswered meeting invitation is not a missed call.
+    meeting_chat.clear_sid(sid)
+    for invite in meeting_invites.clear_sid(sid):
+        await _emit_meeting_invite_terminal(invite, "meeting_invite_cancelled", {"reason": "caller_left"})
     for invite in call_invites.clear_sid(sid):
         # The caller's tab went away mid-ring. From the recipient's side that is indistinguishable
         # from a hang-up, and it is still a call they did not get to answer.
@@ -610,11 +831,27 @@ async def call_joined(sid: str, payload: dict | None) -> None:
     """
     try:
         payload = payload or {}
+        session_data = await sio.get_session(sid)
+        email = session_data["email"]
+
+        # PHASE 7D — A MEETING, not a conversation. Eligibility is "any signed-in employee", the same
+        # rule routers/calls.py mints a meeting token under and deliberately NOT spatial membership:
+        # a meeting is a room you open and wait in, so its host is legitimately alone.
+        #
+        # THE ATOMIC PART is the two synchronous calls below with nothing awaited between them. A
+        # handler cannot be interleaved there, so two people pressing Start at the same instant produce
+        # exactly one host — see meeting_hosts.py for the full argument.
+        meeting_key = _meeting_key_from_payload(payload)
+        if meeting_key is not None:
+            changed = call_registry.join(meeting_key, email, sid)
+            meeting_hosts.ensure_host(meeting_key, email)
+            if changed:
+                await _broadcast_meeting_presence()
+            return
+
         session_id = payload.get("sessionId")
         if not isinstance(session_id, str) or not session_id:
             return
-        session_data = await sio.get_session(sid)
-        email = session_data["email"]
         # Same eligibility gate the token endpoint applies — a client cannot register itself as
         # a participant of a session it isn't spatially in.
         if spatial_sessions.session_of(email) != session_id:
@@ -633,8 +870,14 @@ async def call_left(sid: str, _payload: dict | None = None) -> None:
     try:
         session_data = await sio.get_session(sid)
         email = session_data["email"]
+        # WHICH ROOM this sid was in has to be read BEFORE the leave, because leave() forgets it.
+        was_meeting = _meeting_key_for_sid(sid)
         if call_registry.leave(email, sid):
-            await _broadcast_spatial_calls()
+            if was_meeting is not None:
+                _release_meeting_host_for(was_meeting)
+                await _broadcast_meeting_presence()
+            else:
+                await _broadcast_spatial_calls()
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 
@@ -649,7 +892,14 @@ def _is_in_a_call(email: str) -> bool:
     """Read-only use of the existing CallRegistry: is this person currently connected to media
     anywhere? Drives the 'busy' rejection."""
     key = email.strip().lower()
-    return any(key in entry["participants"] for entry in call_registry.snapshot())
+    # PHASE 7D: MEETINGS COUNT. There is ONE LiveKit Room per client, so somebody in the Cave's
+    # meeting genuinely cannot take a spatial call — accepting would tear their meeting down. Both
+    # snapshots are consulted because snapshot() deliberately excludes meeting keys (see
+    # call_registry.snapshot()).
+    return any(
+        key in entry["participants"]
+        for entry in (*call_registry.snapshot(), *call_registry.meeting_snapshot())
+    )
 
 
 async def _emit_invite_terminal(invite: dict, event: str, extra: dict | None = None) -> None:
@@ -707,6 +957,16 @@ async def call_invite(sid: str, payload: dict | None) -> None:
             await sio.emit("call_invite_failed", fail("dnd"), to=sid)
             return
         if _is_in_a_call(to_email):
+            # PHASE 7D — BUSY IS A MISSED CALL. The recipient is a real person who was reached and
+            # could not take it: their meeting (or call) is deliberately left completely undisturbed —
+            # no invite is minted, so nothing is emitted to them at all — but the attempt is recorded
+            # in their DM with the caller, to be found afterwards. That is the whole feature.
+            #
+            # DND above is UNCHANGED and deliberately still writes nothing: a DND refusal keeps V1's
+            # exact semantics, and the caller is routed to Request Permission to Talk instead.
+            await _record_missed_call(
+                {"to_email": to_email, "from_email": email, "inviteId": None}, reason="busy"
+            )
             await sio.emit("call_invite_failed", fail("busy"), to=sid)
             return
         # One check covers both a duplicate re-invite and glare (both calling at once): the
@@ -739,6 +999,230 @@ async def call_invite_decline(sid: str, payload: dict | None) -> None:
 @sio.on("call_invite_cancel")
 async def call_invite_cancel(sid: str, payload: dict | None) -> None:
     await _resolve_invite(sid, payload, role="caller", event="call_invite_cancelled")
+
+
+# --- PHASE 7D: MEETING CHAT, REACTIONS AND STICKERS ----------------------------------------------
+#
+# EPHEMERAL, AND SCOPED TO ONE MEETING. Nothing here creates a conversation, writes a message row,
+# raises an unread count, records an activity event or credits a quest — see meeting_chat.py for why
+# reusing the DM system would be the wrong answer rather than merely a heavier one.
+#
+# MEMBERSHIP IS THE GATE, and it is the call registry's own: you may say something in a meeting you
+# are IN, and read what is said in it, and nothing else. That is the same authority the host, the
+# head-count and the presence broadcast already use, so there is no second idea of who is in a
+# meeting anywhere in this file.
+
+
+async def _meeting_room_of(sid: str) -> tuple[str | None, str | None]:
+    """The meeting this socket's OWNER is a participant of, as (key, id) — or (None, None).
+
+    BY EMAIL, NOT BY SID, and that distinction is the whole correctness of this surface. Membership is
+    still the call registry's — a client cannot talk its way into a meeting — but the socket carrying
+    a chat message is NOT the socket holding the LiveKit claim: this app opens about ten connections
+    per user by design (see spatial_session.py's ownership note), and meeting chat has its own, like
+    every other presence client. Asking whether THIS sid holds a media claim therefore answered "no"
+    for everybody, and every message was silently dropped."""
+    try:
+        session_data = await sio.get_session(sid)
+    except KeyError:
+        return None, None
+    email = session_data.get("email")
+    if not email:
+        return None, None
+    key = call_registry.meeting_key_for_email(email)
+    if key is None:
+        return None, None
+    return key, key[len(MEETING_KEY_PREFIX):]
+
+
+@sio.on("meeting_chat_send")
+async def meeting_chat_send(sid: str, payload: dict | None) -> None:
+    """Say something in the meeting this socket is in. Relayed to every participant INCLUDING the
+    sender, so one message appears exactly once on every client from one source of truth rather than
+    being drawn locally and again on echo."""
+    try:
+        key, meeting_id = await _meeting_room_of(sid)
+        if key is None:
+            return
+        payload = payload or {}
+        text = payload.get("text")
+        if not isinstance(text, str):
+            return
+        session_data = await sio.get_session(sid)
+        email = session_data["email"]
+        now = asyncio.get_running_loop().time()
+        if not meeting_chat.may_send(sid, now=now):
+            return
+        message = meeting_chat.post(
+            key, email=email, text=text, now_ms=meeting_chat_service.now_ms()
+        )
+        if message is None:
+            return
+        # To every participant's own user room: a meeting has no socket.io room of its own, and its
+        # membership is the registry's. This is the same fan-out the invitations use.
+        for participant in call_registry.participants(key):
+            await sio.emit(
+                "meeting_chat", {"meetingId": meeting_id, **message.wire()}, room=user_room(participant)
+            )
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("meeting_chat_history")
+async def meeting_chat_history(sid: str, _payload: dict | None = None) -> None:
+    """A LATE JOINER ASKS WHAT IT HAS MISSED. Sent only to the asking socket, and only for the meeting
+    it is actually in — which is also why rejoining cannot leak a meeting somebody has left."""
+    try:
+        key, meeting_id = await _meeting_room_of(sid)
+        if key is None:
+            return
+        await sio.emit(
+            "meeting_chat_history",
+            {"meetingId": meeting_id, "messages": meeting_chat.history(key)},
+            to=sid,
+        )
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("meeting_reaction")
+async def meeting_reaction(sid: str, payload: dict | None) -> None:
+    """A reaction or a sticker: one short token, shown briefly over the sender's avatar and gone.
+    Deliberately NOT stored — nothing keeps it, nothing counts it, and a late joiner sees none of the
+    ones they missed, because a reaction is a moment rather than a record."""
+    try:
+        key, meeting_id = await _meeting_room_of(sid)
+        if key is None:
+            return
+        payload = payload or {}
+        token = payload.get("token")
+        # Bounded hard: this string is rendered, so its length is the whole attack surface.
+        if not isinstance(token, str) or not (0 < len(token) <= 16):
+            return
+        session_data = await sio.get_session(sid)
+        email = session_data["email"]
+        now = asyncio.get_running_loop().time()
+        if not meeting_chat.may_react(sid, now=now):
+            return
+        for participant in call_registry.participants(key):
+            await sio.emit(
+                "meeting_reaction",
+                {"meetingId": meeting_id, "email": email.strip().lower(), "token": token},
+                room=user_room(participant),
+            )
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+# --- PHASE 7D: MEETING INVITATIONS ---------------------------------------------------------------
+#
+# A SEPARATE RING, on purpose. `call_invite` invites somebody to a CONVERSATION between two avatars;
+# this invites them to a ROOM. Wiring the spatial ring to a meeting would send the wrong thing and,
+# worse, would let one resolve the other. The two share the registry CLASS (so TTL, single-shot
+# resolve, glare and disconnect cleanup are the same code) and share no state whatsoever.
+#
+# Accepting means exactly one thing on the client: connect to that meetingId. No approach, no spatial
+# session, no chat panel — none of the spatial accept path runs.
+
+
+async def _expire_meeting_invite_later(invite_id: str) -> None:
+    await asyncio.sleep(INVITE_TTL_SECONDS)
+    invite = meeting_invites.resolve(invite_id)
+    if invite is None:
+        return
+    # A meeting invitation that is never answered is NOT a missed call: nobody was calling this
+    # person, they were being offered a room that is still there. Nothing durable is written.
+    await _emit_meeting_invite_terminal(invite, "meeting_invite_cancelled", {"reason": "timeout"})
+
+
+async def _emit_meeting_invite_terminal(invite: dict, event: str, extra: dict | None = None) -> None:
+    payload = {**invite_wire(invite), **(extra or {})}
+    for email in (invite["from_email"], invite["to_email"]):
+        await sio.emit(event, payload, room=user_room(email))
+
+
+@sio.on("meeting_invite")
+async def meeting_invite(sid: str, payload: dict | None) -> None:
+    """Invite one person to a standalone meeting. Mints no token and touches no media — the
+    recipient's own client asks for a token if and when they accept."""
+    try:
+        payload = payload or {}
+        raw = payload.get("toEmail")
+        meeting_key = _meeting_key_from_payload(payload)
+        if not isinstance(raw, str) or not raw.strip() or meeting_key is None:
+            return
+        to_email = raw.strip().lower()
+        session_data = await sio.get_session(sid)
+        email = session_data["email"].strip().lower()
+        meeting_id = meeting_key[len(MEETING_KEY_PREFIX):]
+
+        def fail(reason: str) -> dict:
+            return {"toEmail": to_email, "meetingId": meeting_id, "reason": reason}
+
+        if to_email == email:
+            return
+        if not _is_online(to_email):
+            await sio.emit("meeting_invite_failed", fail("offline"), to=sid)
+            return
+        # DND IS UNCHANGED AND STILL ABSOLUTE. A meeting invitation is as much an interruption as a
+        # ring, so it obeys the same rule V1 already applies — and writes nothing durable either.
+        if dnd_registry.is_dnd(to_email):
+            await sio.emit("meeting_invite_failed", fail("dnd"), to=sid)
+            return
+        if to_email in call_registry.participants(meeting_key):
+            await sio.emit("meeting_invite_failed", fail("already_in"), to=sid)
+            return
+        if _is_in_a_call(to_email):
+            # Busy for a MEETING invitation writes no missed call: nobody rang them, and a room they
+            # were offered is still open for them to walk into later.
+            await sio.emit("meeting_invite_failed", fail("busy"), to=sid)
+            return
+        if meeting_invites.pending_between(email, to_email) is not None:
+            await sio.emit("meeting_invite_failed", fail("already_ringing"), to=sid)
+            return
+
+        invite = meeting_invites.create(
+            from_email=email, from_sid=sid, to_email=to_email, extra={"meeting_id": meeting_id}
+        )
+        await sio.emit("meeting_invite_incoming", invite_wire(invite), room=user_room(to_email))
+        await sio.emit("meeting_invite_ringing", invite_wire(invite), room=user_room(email))
+        asyncio.create_task(_expire_meeting_invite_later(invite["inviteId"]))
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("meeting_invite_accept")
+async def meeting_invite_accept(sid: str, payload: dict | None) -> None:
+    await _resolve_meeting_invite(sid, payload, role="recipient", event="meeting_invite_accepted")
+
+
+@sio.on("meeting_invite_decline")
+async def meeting_invite_decline(sid: str, payload: dict | None) -> None:
+    await _resolve_meeting_invite(sid, payload, role="recipient", event="meeting_invite_declined")
+
+
+@sio.on("meeting_invite_cancel")
+async def meeting_invite_cancel(sid: str, payload: dict | None) -> None:
+    await _resolve_meeting_invite(sid, payload, role="caller", event="meeting_invite_cancelled")
+
+
+async def _resolve_meeting_invite(sid: str, payload: dict | None, *, role: str, event: str) -> None:
+    """Single-shot, authority-checked, and a copy of _resolve_invite's shape against the OTHER
+    registry — a late or double Accept is a harmless no-op either way."""
+    try:
+        payload = payload or {}
+        invite_id = payload.get("inviteId")
+        if not isinstance(invite_id, str) or not invite_id:
+            return
+        session_data = await sio.get_session(sid)
+        email = session_data["email"]
+        invite = meeting_invites.resolve(invite_id, actor_email=email, role=role)
+        if invite is None:
+            return
+        extra = {"reason": "declined"} if event == "meeting_invite_declined" else None
+        await _emit_meeting_invite_terminal(invite, event, extra)
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
 
 
 async def _resolve_invite(sid: str, payload: dict | None, *, role: str, event: str) -> None:
@@ -864,7 +1348,10 @@ async def walk_started(sid: str, payload: dict | None) -> None:
         origin = {"x": payload["origin"]["x"], "y": payload["origin"]["y"]}
         path = [{"x": p["x"], "y": p["y"]} for p in payload["path"]]
         room_id = payload.get("roomId")
+        local_origin = payload.get("localOrigin")
+        local_path = payload.get("localPath")
         duration_ms = payload["durationMs"]
+        pacing = payload.get("pacing")  # None for every V1 client — see _PACINGS
         started_at = _now_ms()
 
         revision = position_registry.start(
@@ -875,6 +1362,9 @@ async def walk_started(sid: str, payload: dict | None) -> None:
             room_id=room_id,
             duration_ms=duration_ms,
             started_at=started_at,
+            pacing=pacing,
+            local_origin=local_origin,
+            local_path=local_path,
         )
 
         await sio.emit(
@@ -888,6 +1378,11 @@ async def walk_started(sid: str, payload: dict | None) -> None:
                 "roomId": room_id,
                 "durationMs": duration_ms,
                 "startedAt": started_at,
+                "pacing": pacing,
+                # PHASE 7D — relayed only when the publisher sent them. An absent key is exactly what
+                # every client saw before this existed, so an older peer is unaffected.
+                **({"localOrigin": local_origin} if local_origin else {}),
+                **({"localPath": local_path} if local_path else {}),
             },
             skip_sid=sid,
         )
@@ -914,6 +1409,33 @@ async def walk_arrived(sid: str, payload: dict | None) -> None:
         state = payload["state"]
         seat_key = payload.get("seatKey")
         room_id = payload.get("roomId")
+        raw_yaw = payload.get("yaw")
+        yaw = float(raw_yaw) if raw_yaw is not None else None  # validated finite above
+        local_at = payload.get("localAt")
+
+        # SEAT OCCUPANCY (Phase 6C). A `sitting` arrival onto a seat another employee already holds is
+        # accepted as STANDING at the same position — the position is true, the pose is not granted —
+        # and the arriving client alone is told (`seat_rejected`) so it can stand its body up. Everyone
+        # else simply sees a standing arrival. Decided here, synchronously against the in-memory
+        # registry, with no await between the check and `arrive`: serialised within this worker, and
+        # not claimed to be more than that (see PositionRegistry.seat_holder).
+        rejected_seat: str | None = None
+        holder: str | None = None
+        if state == "sitting" and seat_key is not None:
+            holder = position_registry.seat_holder(seat_key, exclude_email=email)
+            if holder is not None:
+                rejected_seat = seat_key
+                state = "standing"
+                seat_key = None
+
+        # PHASE 7D — ASKED BEFORE THE ARRIVAL IS APPLIED, because it compares against what is still on
+        # file. Walking around the CAVE republishes the SAME in-frame portal point every leg (only the
+        # local coordinates move), so persisting it would be a row write per step for a V1 fact that
+        # did not change. Ordinary office movement always changes one of these and is written exactly
+        # as before.
+        v1_changed = position_registry.v1_fields_changed(
+            email, at=at, facing=facing, state=state, seat_key=seat_key, room_id=room_id
+        )
 
         stable = position_registry.arrive(
             email,
@@ -924,26 +1446,40 @@ async def walk_arrived(sid: str, payload: dict | None) -> None:
             seat_key=seat_key,
             room_id=room_id,
             now_ms=_now_ms(),
+            yaw=yaw,
+            local_at=local_at,
         )
         if stable is None:
             return  # stale/wrong movementId — ignore silently
 
-        try:
-            async with async_session_maker() as session:
-                await position_repo.upsert_stable(
-                    session,
-                    email=email,
-                    x=stable.x,
-                    y=stable.y,
-                    facing=stable.facing,
-                    state=stable.state,
-                    seat_key=stable.seat_key,
-                    room_id=stable.room_id,
-                    revision=stable.revision,
-                    updated_at=_ms_to_dt(stable.updated_at),
-                )
-        except Exception as exc:  # noqa: BLE001
-            _logger.exception(exc)
+        if rejected_seat is not None:
+            await sio.emit(
+                "seat_rejected",
+                {"movementId": movement_id, "seatKey": rejected_seat, "heldBy": holder},
+                to=sid,
+            )
+
+        # The local coordinates are NEVER passed to the repository: `employee_positions` keeps holding
+        # the V1 point and nothing else, which is why this needs no column and no migration.
+        if v1_changed:
+            try:
+                async with async_session_maker() as session:
+                    await position_repo.upsert_stable(
+                        session,
+                        email=email,
+                        x=stable.x,
+                        y=stable.y,
+                        facing=stable.facing,
+                        state=stable.state,
+                        seat_key=stable.seat_key,
+                        room_id=stable.room_id,
+                        revision=stable.revision,
+                        updated_at=_ms_to_dt(stable.updated_at),
+                        yaw=stable.yaw,
+                    )
+                position_registry.mark_persisted(email)
+            except Exception as exc:  # noqa: BLE001
+                _logger.exception(exc)
 
         await sio.emit(
             "peer_walk_arrived",
@@ -956,9 +1492,54 @@ async def walk_arrived(sid: str, payload: dict | None) -> None:
                 "state": stable.state,
                 "seatKey": stable.seat_key,
                 "roomId": stable.room_id,
+                "yaw": stable.yaw,
+                **({"localAt": local_at} if local_at else {}),
             },
             skip_sid=sid,
         )
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+# How often one connection may broadcast a jump, ms. The client cannot legitimately exceed this — its
+# own jump refuses a second takeoff before it has landed (~600 ms, dev/vo3d/player/PlayerJump) — so this
+# is purely a floor under a misbehaving or replaying client, not a gameplay rule. Held in the socket
+# session, which dies with the connection: no module state, nothing to grow, nothing to clean up.
+_JUMP_MIN_INTERVAL_MS = 400
+
+
+@sio.on("jump")
+async def jump(sid: str, payload: dict | None = None) -> None:
+    """PURELY COSMETIC, PURELY TRANSIENT: "this employee just jumped, now".
+
+    THE SMALLEST THING THAT COULD WORK, and deliberately not part of the movement pipeline:
+
+      • NO PAYLOAD IS TRUSTED — none is even read. The identity is the server-verified session email,
+        exactly as every other handler here takes it, and the only other field is the server's own
+        clock. A client cannot assert a height, a position, a room or a duration, so there is nothing
+        here that could influence collision, pathfinding, seating or room access.
+      • NO STATE. Nothing is written to position_registry, nothing is persisted, no revision is issued
+        and no DB table is touched — so there is no migration, and no way for a jump to survive a
+        reconnect, a snapshot or a restart as a body stuck in the air.
+      • NO ORDERING PROBLEM TO SOLVE. A jump is one instant, not a transition between two states, so
+        there is nothing for a revision to order. A duplicate is refused by the receiver (a body
+        already in the air cannot take off again) and a late one is dropped by the receiver against
+        `at`. Both rules live where the arc does; see dev/vo3d/world/Coworkers.
+      • BACKWARD COMPATIBLE BY CONSTRUCTION. Clients that never emit `jump` behave exactly as before;
+        clients that never listen for `peer_jump` ignore an event they do not handle, which is what
+        Socket.IO does with an unregistered event name anyway.
+
+    Modelled on `seat_rejected`: a relay, not a fact about the world.
+    """
+    try:
+        session_data = await sio.get_session(sid)
+        email = session_data["email"]
+        now = _now_ms()
+        last = session_data.get("jump_at")
+        if isinstance(last, int) and now - last < _JUMP_MIN_INTERVAL_MS:
+            return  # silent drop, this file's convention for input it will not act on
+        await sio.save_session(sid, {**session_data, "jump_at": now})
+        await sio.emit("peer_jump", {"email": email, "at": now}, skip_sid=sid)
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 

@@ -8,6 +8,8 @@ import socketio
 from app.config import settings
 from app.services.call_invites import CallInviteRegistry
 from app.services.call_registry import CallRegistry
+from app.services.meeting_chat import MeetingChatRegistry
+from app.services.meeting_hosts import MeetingHostRegistry
 from app.services.dnd_registry import DndRegistry
 from app.services.global_chat_activity import GlobalChatActivityRegistry
 from app.services.offline_lineup import OfflineLineup
@@ -89,6 +91,19 @@ call_registry = CallRegistry()
 # Ephemeral person-to-person call ringing ("A is calling B") — see call_invites.py for why this is
 # NOT the persisted talk_requests table. Holds no sessionId and no LiveKit room.
 call_invites = CallInviteRegistry()
+
+# PHASE 7D — STANDALONE MEETINGS. Two singletons, both deliberately thin:
+#   * meeting_hosts holds the ONE meeting fact no existing registry can answer (see its module note).
+#     Membership itself stays in call_registry, which already refcounts tabs and cleans up disconnects.
+#   * meeting_invites is a SECOND INSTANCE of the spatial ring's own registry class, not a new one — it
+#     inherits the TTL, the single-shot resolve, the glare check and the sid cleanup, while sharing no
+#     state with spatial rings. A meeting invitation and a call to a person must never resolve each other.
+meeting_hosts = MeetingHostRegistry()
+meeting_invites = CallInviteRegistry()
+
+# PHASE 7D — WHAT IS SAID INSIDE A MEETING. Ephemeral and in-memory by design: a meeting's chat ends
+# with the meeting, writes nothing, and is deliberately NOT the DM system (see meeting_chat.py).
+meeting_chat = MeetingChatRegistry()
 
 # Ephemeral DND-room-lock feature state — see dnd_registry.py/room_presence.py module
 # docstrings. Same in-memory/single-process assumption as the registries above.

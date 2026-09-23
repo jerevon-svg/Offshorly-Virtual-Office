@@ -8,6 +8,7 @@ import { setDevIdentity as setRequestsClientDevIdentity } from "../services/chat
 import { setDevIdentity as setOfflineLineupDevIdentity } from "../services/presence/offlineLineupClient";
 import { setDevIdentity as setSpatialWalkDevIdentity } from "../services/presence/movementSync";
 import { setDevIdentity as setHubClientDevIdentity } from "../services/hub/hubClient";
+import { setDevIdentity as setForecastClientDevIdentity } from "../services/weather/forecastClient";
 import { setDevIdentity as setFeedClientDevIdentity } from "../services/feed/feedClient";
 import { setDevIdentity as setQuestsClientDevIdentity } from "../services/quests/questsClient";
 import { setDevIdentity as setNotificationsDevIdentity } from "../services/notifications/notificationsStore";
@@ -20,6 +21,8 @@ import { setDevIdentity as setTalkRequestsClientDevIdentity } from "../services/
 import { setDevIdentity as setToucanDevIdentity } from "../services/toucan";
 import { setDevIdentity as setAttendanceDevIdentity } from "../services/attendance";
 import { setDevIdentity as setTeamMapDevIdentity } from "../services/teamMap";
+import { setDevIdentity as setExperienceCatalogDevIdentity } from "../services/office/experienceCatalog";
+import { setDevIdentity as setMeetingChatDevIdentity } from "../services/meeting/meetingChatClient";
 
 // Boot-time permission gate for the Virtual Office. Calls Atlas's
 // GET /api/v1/auth/me and checks the can_view_virtual_office flag.
@@ -250,8 +253,18 @@ function seedDevBypassIdentity(): void {
   setOfflineLineupDevIdentity(email);
   setSpatialWalkDevIdentity(email);
   setHubClientDevIdentity(email);
+  // The Company Hub's weather card reads /weather/search and /weather/forecast on the SAME backend
+  // and behind the same get_current_email dependency as the Hub's own items, so it needs the same
+  // identity. Without this line the card was the one Hub surface that 401'd on the :5174 rig while
+  // everything around it worked — found by live smoke test, not by any unit test, because every test
+  // mocks the client. (/weather/office is unauthenticated and needs no seeding.)
+  setForecastClientDevIdentity(email);
   setAttendanceDevIdentity(email);
   setTeamMapDevIdentity(email);
+  // Phase 9A — the Office Experience catalog is a VO-backend client like the rest, so the local rig
+  // reaches it the same way: no bearer token exists when the gate is bypassed.
+  setExperienceCatalogDevIdentity(email);
+  setMeetingChatDevIdentity(email);
   setFeedClientDevIdentity(email);
   setQuestsClientDevIdentity(email);
   // Seeds the notifications REST client AND its socket identity in one call.

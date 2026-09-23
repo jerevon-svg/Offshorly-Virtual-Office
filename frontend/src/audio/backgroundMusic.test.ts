@@ -110,3 +110,51 @@ describe("subscribe", () => {
     expect(cb).not.toHaveBeenCalled();
   });
 });
+
+// ---- PHASE 7C — THE CONTROL ACTUALLY REACHES THE PLAYING ELEMENT ----------------------------------
+// Everything above tests the STORE. What Settings -> Audio is judged on is whether moving its slider
+// moves the sound, and whether turning it off is silence — which is a property of the element, not of
+// the number. These are the assertions that were missing.
+describe("the element the employee actually hears", () => {
+  /** Start playback the way a real gesture does, and hand back the element the module is driving. */
+  function play(): FakeAudio {
+    armAutoplay();
+    document.dispatchEvent(new Event("pointerdown"));
+    const created = (globalThis as unknown as { Audio: typeof FakeAudio }).Audio;
+    expect(created).toBe(FakeAudio);
+    return __testing.element() as unknown as FakeAudio;
+  }
+
+  it("opens at the stored volume and mute, not at the element's defaults", () => {
+    window.localStorage.setItem("vo:bgm:volume", "0.42");
+    window.localStorage.setItem("vo:bgm:muted", "true");
+    __testing.reset();
+    setVolume(0.42);
+    setMuted(true);
+    const el = play();
+    expect(el.volume).toBeCloseTo(0.42);
+    expect(el.muted).toBe(true);
+    expect(el.loop).toBe(true);
+  });
+
+  it("moves the sound the moment the slider moves", () => {
+    const el = play();
+    setVolume(0.8);
+    expect(el.volume).toBeCloseTo(0.8);
+    setVolume(0.1);
+    expect(el.volume).toBeCloseTo(0.1);
+  });
+
+  it("is silent when switched off, and comes back at the volume it was left at", () => {
+    const el = play();
+    setVolume(0.65);
+    setMuted(true);
+    expect(el.muted).toBe(true);
+    // The intended volume is NOT thrown away while it is off — that is what "restores" means.
+    expect(getVolume()).toBeCloseTo(0.65);
+    expect(el.volume).toBeCloseTo(0.65);
+    setMuted(false);
+    expect(el.muted).toBe(false);
+    expect(el.volume).toBeCloseTo(0.65);
+  });
+});

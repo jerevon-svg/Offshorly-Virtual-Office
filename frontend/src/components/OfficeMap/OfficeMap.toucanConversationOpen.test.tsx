@@ -446,9 +446,16 @@ describe("OfficeMap — Notifications and Settings own the screen like the Chats
     await act(async () => {
       fireEvent.click(tile);
     });
-    // vitest runs with DEV true, so the section is present here — and it is present ONLY because
+    // vitest runs with DEV true, so the category is present here — and it is present ONLY because
     // OfficeMap passed the DEV props. HudSettings.test.tsx covers the production shape (no props
-    // -> no section at all), which is the half a DEV-true runner cannot exercise.
+    // -> no tab at all), which is the half a DEV-true runner cannot exercise.
+    //
+    // PHASE 7C: the technical tools are their own category now, deliberately not reachable from any
+    // employee-facing pane — so getting to them means opening that tab.
+    const devTab = view.getByRole("tab", { name: /^Developer/ });
+    await act(async () => {
+      fireEvent.click(devTab);
+    });
     expect(view.getByText(/developer tools/i)).toBeTruthy();
   });
 });

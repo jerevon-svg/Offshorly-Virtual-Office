@@ -10,6 +10,7 @@ import {
   FRAME_WIDTH,
   bonLayer,
   charactersInRoom,
+  flatRoomIdAt,
   formatCharacterName,
   officeAssetLayers,
   npcCharacterLayers,
@@ -32,11 +33,13 @@ import {
 } from "../../data/officeGrid";
 import { doorStandForRoom } from "../../data/doorStandPoints";
 import { seatsForRoomId, type Seat } from "../../data/roomSeats";
+import { resolveHomeDesk } from "../../data/homeSeat";
 import { computeEmptySeats, seatCentroidKey, type SeatTarget } from "../../data/emptySeats";
 import type { Pt } from "../../data/walkable-zones";
 import { DOOR_ANIM_MS, DOOR_LAYERS_BY_ROOM } from "../../data/officeDoors";
 import type { AssetLayer } from "../../types/office";
 import { chatMode, chatService } from "../../services/chat";
+import { isAuthoredMessage } from "../../services/chat/types";
 import type { ChatMessage } from "../../services/chat";
 import type { Conversation } from "../../services/chat/types";
 import { useUnreadTotal } from "../../services/chat/useUnreadTotal";
@@ -52,6 +55,14 @@ import { isRealZohoMode } from "../../services/zoho";
 import { ErrorBoundary } from "../ErrorBoundary";
 import { OfficeStage } from "./OfficeStage";
 import { remapSelfKey } from "./responderMap";
+import {
+  CHAT_BUBBLE_RAIL_GAP,
+  CHAT_BUBBLE_SIZE,
+  computeFloatingChatRightOffsets,
+  FLOATING_CHAT_EDGE_MARGIN,
+  SPATIAL_WINDOW_KEY,
+  TOUCAN_WINDOW_KEY,
+} from "./chatWindowLayout";
 import {
   applyPeerTypingUpdate,
   deriveAnyTypingCharacterIds,
@@ -163,13 +174,7 @@ import {
 } from "../../services/chat/roomRequestsClient";
 import { DndRequestQueue } from "./DndRequestQueue";
 import { TalkRequestToast } from "./TalkRequestToast";
-import {
-  cancelTalkRequest,
-  createTalkRequest,
-  onTalkRequestCancelled,
-  onTalkRequestResolved,
-  TalkRequestCooldownError,
-} from "../../services/chat/talkRequestsClient";
+import { useTalkPermissionGate } from "./useTalkPermissionGate";
 import { RoomLockedToast } from "./RoomLockedToast";
 import { emitDndSet, useDndEmails } from "../../services/presence/dndClient";
 import { emitGlobalChatActive, useGlobalChatActiveEmails } from "../../services/presence/globalChatActivityClient";
@@ -261,29 +266,6 @@ function computeCoverScale(): number {
 // exit).
 export const ROOM_FIT_MULTIPLIER = 1.6;
 
-// Plain nearest-seat lookup for a room's hand-painted seats, used only to
-// give the LIVE player (bon) a real seat to walk to on check-in — deliberately
-// separate from rosterLayers.ts's email-sorted seat assignment for OTHER
-// colleagues' static portraits, since bon isn't part of that roster list.
-// Returns null if the room has no painted seats yet (fallback: don't add a
-// walk leg, keep today's exact behavior).
-function nearestSeatTo(roomId: string, point: Pt): Seat | null {
-  const seats = seatsForRoomId(roomId);
-  if (seats.length === 0) return null;
-  let best = seats[0];
-  let bestDist = Infinity;
-  for (const seat of seats) {
-    const dx = seat.x - point.x;
-    const dy = seat.y - point.y;
-    const dist = dx * dx + dy * dy;
-    if (dist < bestDist) {
-      bestDist = dist;
-      best = seat;
-    }
-  }
-  return best;
-}
-
 // Messenger-style floating chat stack layout — see the render block further down (search
 // "floatingChatRightOffsets"). Windows are laid out right-to-left along the bottom edge; an
 // expanded window reserves EXPANDED_WIDTH, a minimized (header-only) one reserves the narrower
@@ -302,38 +284,6 @@ const CHECKOUT_CAMERA_SETTLE_MS = 700;
 /** How long a goodbye / sign-off bubble stays up. On the way in it also doubles as the wait
  *  before the walk begins, which is why it must stay comfortably longer than the camera. */
 const CHECKOUT_GOODBYE_MS = 2000;
-
-const FLOATING_CHAT_EDGE_MARGIN = 16;
-const FLOATING_CHAT_EXPANDED_WIDTH = 320;
-const FLOATING_CHAT_MINIMIZED_WIDTH = 220;
-const FLOATING_CHAT_GAP = 12;
-// Synthetic key for the single spatial ("Character -> Chat") slot in the combined floating
-// layout — distinct from any real conversationId/peer-email key a remote window could have.
-const SPATIAL_WINDOW_KEY = "__spatial__";
-// Synthetic key for the Toucan assistant panel's slot in the same floating layout. The panel is
-// just another conversation-shaped window: it keeps the rightmost slot it has always occupied,
-// and DM/group windows opened while it is up stack to its LEFT instead of underneath it.
-const TOUCAN_WINDOW_KEY = "__toucan__";
-// Minimized remote DM/group windows collapse to a circular avatar in a vertical rail stacked
-// above the Toucan button (bottom-right). While the rail has anything in it the horizontal
-// window stack starts to its left instead of at the edge.
-const CHAT_BUBBLE_SIZE = 52;
-const CHAT_BUBBLE_RAIL_GAP = 12;
-
-// Pure layout pass: given an ordered list (index 0 = rightmost/newest) of {key, minimized},
-// returns each key's `right` CSS offset in px so windows stack without overlapping.
-function computeFloatingChatRightOffsets(
-  items: { key: string; minimized: boolean }[],
-  baseMargin: number = FLOATING_CHAT_EDGE_MARGIN,
-): Map<string, number> {
-  const offsets = new Map<string, number>();
-  let cursor = baseMargin;
-  for (const item of items) {
-    offsets.set(item.key, cursor);
-    cursor += (item.minimized ? FLOATING_CHAT_MINIMIZED_WIDTH : FLOATING_CHAT_EXPANDED_WIDTH) + FLOATING_CHAT_GAP;
-  }
-  return offsets;
-}
 
 // A CHECKED_IN spawn waits for movement-sync's first positions_snapshot (the only carrier of
 // self's persisted position) for at most this long; a missing/dead movement socket (pure mock
@@ -1362,6 +1312,10 @@ export function OfficeMap() {
 
   function handleTalkingMessage(msg: ChatMessage) {
     window.clearTimeout(talkingTimersRef.current[msg.senderId]);
+    // PHASE 7D: ONLY A ROW SOMEBODY ACTUALLY WROTE BECOMES A SPEECH BUBBLE. `messages` now also
+    // carries system records (a missed call), whose text is "" — without this they would pop an
+    // EMPTY bubble over the caller's avatar the moment one landed.
+    if (!isAuthoredMessage(msg)) return;
     setTalkingTextById((prev) => ({ ...prev, [msg.senderId]: msg.text }));
     talkingTimersRef.current[msg.senderId] = window.setTimeout(() => {
       setTalkingTextById((prev) => {
@@ -2283,86 +2237,11 @@ export function OfficeMap() {
     setRoomEntryGate({ ...gate, pendingRequestId: null });
   }
 
-  // Person-level DND protection (feature spec section 7) — same shape as roomEntryGate above,
-  // but gates Chat/Approach against a specific DND PERSON rather than a room's door. `resume`
-  // re-runs the exact approachCharacter call the gate short-circuited. `cooldownUntil` is set
-  // only right after a decline (server-authoritative — see talkRequestsClient's
-  // TalkRequestCooldownError) so the toast can show "try again in Xm" without polling.
-  const [personGate, setPersonGate] = useState<{
-    targetEmail: string;
-    targetName: string;
-    kind: "chat" | "approach";
-    resume: () => void;
-    pendingRequestId: string | null;
-  } | null>(null);
-  const personGateRef = useRef(personGate);
-  personGateRef.current = personGate;
-  const [personGateDeclined, setPersonGateDeclined] = useState(false);
-  const [personGateCooldownUntil, setPersonGateCooldownUntil] = useState<string | null>(null);
-  const personGateDeclinedTimerRef = useRef<number | undefined>(undefined);
-
-  useEffect(() => {
-    const offResolved = onTalkRequestResolved((req) => {
-      const gate = personGateRef.current;
-      if (!gate || gate.pendingRequestId !== req.id) return;
-      if (req.state === "accepted") {
-        // One-shot: consume the permission immediately, then clear — a future interruption
-        // while the target remains DND requires another request (feature spec section 8/9).
-        setPersonGate(null);
-        gate.resume();
-      } else if (req.state === "declined") {
-        setPersonGate(null);
-        setPersonGateDeclined(true);
-        setPersonGateCooldownUntil(null); // this decline's own cooldown isn't known client-side until the NEXT create attempt 429s
-        window.clearTimeout(personGateDeclinedTimerRef.current);
-        personGateDeclinedTimerRef.current = window.setTimeout(() => setPersonGateDeclined(false), 3000);
-      }
-    });
-    const offCancelled = onTalkRequestCancelled((req) => {
-      const gate = personGateRef.current;
-      if (!gate || gate.pendingRequestId !== req.id) return;
-      // Target turned DND off (or otherwise went stale) while waiting — same "fall back to the
-      // resting gate state" reasoning as room-entry's onCancelled handler. If they're no longer
-      // DND at all, drop the gate entirely and let the original action proceed normally.
-      if (!dndEmailsRef.current.has(gate.targetEmail)) {
-        setPersonGate(null);
-        gate.resume();
-        return;
-      }
-      setPersonGate({ ...gate, pendingRequestId: null });
-    });
-    return () => {
-      offResolved();
-      offCancelled();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  async function handleRequestTalk() {
-    const gate = personGateRef.current;
-    if (!gate || gate.pendingRequestId) return;
-    try {
-      const req = await createTalkRequest(gate.targetEmail, gate.kind);
-      setPersonGate((current) => (current && current.targetEmail === gate.targetEmail ? { ...current, pendingRequestId: req.id } : current));
-    } catch (err) {
-      if (err instanceof TalkRequestCooldownError) {
-        setPersonGate(null);
-        setPersonGateDeclined(true);
-        setPersonGateCooldownUntil(err.cooldownUntil);
-        window.clearTimeout(personGateDeclinedTimerRef.current);
-        personGateDeclinedTimerRef.current = window.setTimeout(() => setPersonGateDeclined(false), 3000);
-        return;
-      }
-      console.error("[talkRequests] failed to send talk request", err);
-    }
-  }
-
-  function handleCancelTalkRequest() {
-    const gate = personGateRef.current;
-    if (!gate?.pendingRequestId) return;
-    void cancelTalkRequest(gate.pendingRequestId).catch(() => {});
-    setPersonGate({ ...gate, pendingRequestId: null });
-  }
+  // Person-level DND protection (feature spec section 7) — same shape as roomEntryGate above, but gates
+  // Chat/Approach against a specific DND PERSON rather than a room's door. The whole lifecycle now lives
+  // in useTalkPermissionGate, because the V2 world (dev/vo3d) gates the same three verbs against the same
+  // people and a second copy of a permission rule is how two surfaces end up disagreeing.
+  const talkGate = useTalkPermissionGate(dndEmails);
 
   // Break/Lunch auto-walk (client-side-only, see statusMovement.ts): tracks
   // the PREVIOUS manualStatus so the effect below only fires on a genuine
@@ -3277,14 +3156,11 @@ export function OfficeMap() {
   // walk_arrived (see moveSelf arrival.facing call sites above), so OTHER
   // clients and the DB see the correct facing too. Peers restore their own
   // facing correctly via PeerWalker's stable-state snap.
+  // The rule itself now lives in data/homeSeat.ts, unchanged — this is the
+  // same resolution, reading the same stores, from the one module the VO3D V2
+  // preview also reads so the two can never drift apart.
   function resolveOwnSeat(): Seat | null {
-    const flatRoomId = roomIdForPerson(currentUser?.email, currentUser?.team ?? null) ?? FALLBACK_ROOM_ID;
-    const doorPair = doorStandForRoom(flatRoomId);
-    if (doorPair) return nearestSeatTo(flatRoomId, doorPair.inStand);
-    const flatRoom = rooms.find((r) => r.id === flatRoomId);
-    if (!flatRoom) return null;
-    const center = { x: flatRoom.x + flatRoom.width / 2, y: flatRoom.y + flatRoom.height / 2 };
-    return nearestSeatTo(flatRoomId, center);
+    return resolveHomeDesk(currentUser?.email, currentUser?.team ?? null).seat;
   }
 
   function resolveAssignedRoomLayer(): AssetLayer {
@@ -3434,19 +3310,6 @@ export function OfficeMap() {
       // door-pair branch's no-seat case above.
       moveSelf({ path, roomId: layer.id, arrival: { state: "standing", facing: "front" }, onArrive: finishArrival });
     }, zoomOutMs);
-  }
-
-  // Looks up the flat rects/teamRooms-namespace room id (e.g. "design-team")
-  // containing `point`, or null if outside every flat room. This is the same
-  // id scheme doorStandForRoom/doorStandPoints.ts classifies stand points
-  // against — NOT the roomLayers/manifest scheme (e.g. "design-room") that
-  // roomOf()/findPath's goalRoomId use. Mirrors the flat-rect containment
-  // check doorStandPoints.ts itself uses internally.
-  function flatRoomIdAt(point: { x: number; y: number }): string | null {
-    const room = rooms.find(
-      (r) => point.x >= r.x && point.x <= r.x + r.width && point.y >= r.y && point.y <= r.y + r.height,
-    );
-    return room?.id ?? null;
   }
 
   // Checkout's OUTWARD door-gate: used by beginWalkToReception (leaving the
@@ -4100,11 +3963,7 @@ export function OfficeMap() {
     // Abandon any stale gate toast left over from a PREVIOUS DND-gated attempt at a different
     // target — any new character-menu interaction supersedes it, same "new attempt cancels the
     // old one" reasoning as cancelPendingDoorWalks for the room-entry gate.
-    if (personGateRef.current && personGateRef.current.targetEmail !== target.id.trim().toLowerCase()) {
-      const stale = personGateRef.current;
-      if (stale.pendingRequestId) void cancelTalkRequest(stale.pendingRequestId).catch(() => {});
-      setPersonGate(null);
-    }
+    talkGate.supersede(target.id.trim().toLowerCase());
 
     // Person-level DND protection (feature spec section 7): Chat/Approach/Call must not auto-walk
     // or open a spatial conversation with a DND person from outside — gate behind Request
@@ -4130,14 +3989,13 @@ export function OfficeMap() {
       const targetEmail = target.id.trim().toLowerCase();
       if (dndEmails.has(targetEmail)) {
         setMenu(null);
-        setPersonGate({
+        talkGate.open({
           targetEmail,
           targetName: name,
           // "call" rides the existing "chat" talk-request kind — it IS a request to talk, and
           // the backend's CreateTalkRequestIn enum is deliberately left untouched. The call
           // intent itself is remembered separately in resume() below.
           kind: action === "call" ? "chat" : action,
-          pendingRequestId: null,
           resume: () => {
             if (action === "approach") {
               approachCharacter(target, (arriveCenter, targetCenter) => {
@@ -5870,14 +5728,7 @@ export function OfficeMap() {
         onKnock={() => void handleKnock()}
         onCancel={handleCancelKnock}
       />
-      <TalkRequestToast
-        targetName={personGate?.targetName ?? null}
-        pendingRequestId={personGate?.pendingRequestId ?? null}
-        declined={personGateDeclined}
-        cooldownUntil={personGateCooldownUntil}
-        onRequest={() => void handleRequestTalk()}
-        onCancel={handleCancelTalkRequest}
-      />
+      <TalkRequestToast {...talkGate.toastProps} />
       {toast && <div className={styles.toast}>{toast}</div>}
       {onboarding === "checkinPrompt" && (
         <CheckinModal onYes={startCheckin} onNotNow={() => setOnboarding("done")} />

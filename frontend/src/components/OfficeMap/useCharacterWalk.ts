@@ -3,7 +3,11 @@ import type { WalkDirection } from "../../data/bonWalkFrames";
 
 type Pt = { x: number; y: number };
 
-function ease(t: number): number {
+// Exported for ONE consumer, and not to be called from V2's render path: dev/vo3d/core/coords.ts carries
+// its own copy of this curve (the V2 world may not import a V1 module), and
+// dev/vo3d/world/coworkerWalk.test.ts imports this one to assert the two still agree. If this is ever
+// retuned, that test is what fails.
+export function ease(t: number): number {
   return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
 }
 

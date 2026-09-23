@@ -1,0 +1,868 @@
+// vo3d render — ONE WebGLRenderer, ONE Scene, ONE orthographic camera, lights and environment.
+// Promoted from designRoom3d/main.ts.
+//
+// SSAO: CORRECTED, TUNED, GRADED — AND ON BY DEFAULT. It is the V2 FULL GRAPHICS BASELINE, which means it
+// is the state every later optimisation pass measures against, the 70-avatar stress scenarios included.
+// Benchmarking this world with AO switched off no longer measures the product.
+//
+//   WHAT IT COST, measured on the ground floor at 1440x810 on an M1: 16.7 ms/frame without AO, 34.3 ms
+//   with it. Rendering the AO at a QUARTER of the pixels changed that by nothing at all (34.3 ms), which
+//   rules out fill cost entirely. The scene drew 15,611 CALLS over 13,464 objects per frame, and SSAOPass
+//   re-drew every one of them into a normal buffer before it could compute anything: the AO did not cost
+//   pixels, it cost A SECOND FULL SCENE TRAVERSAL. Slices 1-3 took the world's own submission count down
+//   (instancing, room culling, static batching) and SLICE 4 took that second traversal away outright —
+//   the AO now reconstructs its normals from the depth the beauty pass already wrote, so the scene is
+//   submitted once. See render/SSAOFromDepth; `?ao=legacy` puts the stock two-submission pass back.
+//   Recorded here so the optimisation phase starts from the measurement rather than re-deriving it.
+//
+// The Light > SSAO toggle stays live so the pass can still be A/B'd off. Three things had to be fixed
+// before any of this was correct enough to be a baseline:
+//   • CORRECTNESS. SSAOPass ships with PERSPECTIVE_CAMERA hard-defined to 1 and only refreshes the
+//     camera projection uniforms inside setSize(). This rig draws an ORTHOGRAPHIC camera that zooms
+//     constantly, so the AO was being computed from a perspective depth conversion against a stale
+//     projection matrix — i.e. it was wrong at every zoom but the one the window was last resized at.
+//     Both are fixed here: the define follows the active camera, and the matrices are refreshed per frame.
+//   • COST, as far as it goes. The AO is rendered at AO_SCALE of the drawing buffer and the sample kernel
+//     drops from 32 to 16. Both are free quality-wise (the result is blurred and multiplied over the
+//     beauty), and both are worth keeping for when the draw-call figure above comes down — they are simply
+//     not where this scene's AO cost is.
+//   • STRENGTH. Stock SSAOPass multiplies raw (1 - occlusion) into the frame with no way to dial it
+//     back, which is what turns a cream wall dirty. One patched line in the composite shader lerps the
+//     AO toward white by `aoStrength`, so the environment can grade contact occlusion per phase the
+//     same way it grades every other global (see env/presets `ao`).
+import * as THREE from "three";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
+import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
+import { SSAOFromDepthPass, makeBeautyTarget, ssaoDepthReuseEnabled } from "./SSAOFromDepth";
+import { OutputPass } from "three/examples/jsm/postprocessing/OutputPass.js";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
+import type { Rect, Vec2 } from "../core/coords";
+
+/** THE DYNAMIC-CASTER LAYER. An avatar's meshes sit on layer 0 (so every camera still draws them
+ *  normally) AND on this one, which is the ONLY thing that separates them from the static world for the
+ *  split shadow update below. Nothing else in the app uses layers, so enabling it changes no other pass. */
+export const DYNAMIC_CASTER_LAYER = 2;
+
+export type CameraParams = { pitch: number; yaw: number; zoom: number };
+export type LightParams = { azimuth: number; elevation: number; keyIntensity: number; ambientIntensity: number; envIntensity: number; exposure: number };
+export const DEFAULT_CAMERA: CameraParams = { pitch: 52, yaw: 0, zoom: 1.32 };
+/** The DAY grade, duplicated here because the renderer has to stand up before the environment exists.
+ *  It must stay byte-for-byte equal to ENV_PRESETS.day's light fields — env.test asserts exactly that. */
+export const DEFAULT_LIGHT: LightParams = { azimuth: -48, elevation: 54, keyIntensity: 3.05, ambientIntensity: 0.92, envIntensity: 0.38, exposure: 1.06 };
+
+/** How many consecutive frames of static invalidation before the split shadow update stands down and
+ *  lets three do one plain full redraw instead. Three is long enough that a one-off change (an asset
+ *  landing, a camera nudge) still takes the cheap path, and short enough that a door cycle — sixty-odd
+ *  frames of continuous static motion — spends almost all of itself on the cheaper full redraw. */
+const STATIC_THRASH_FRAMES = 3;
+
+/** HOW FAR THE SHADOW FRAME MOVES AT A TIME, in world units — the grid the frustum centre is snapped to.
+ *  Every step of it costs a FULL STATIC REDRAW (updateShadowFrame -> invalidateShadows), because the
+ *  cached depth is not merely stale at a new centre, it is misaligned. So the quantum is a redraw-rate
+ *  lever: crossings per second are speed / quantum, per axis.
+ *
+ *  8 is the ORBIT default and stays exactly what OFFICE and EXPLORE were approved with — a panning orbit
+ *  target moves in user-sized nudges, not continuously, so its crossing rate is already near zero. A mode
+ *  that drives the focus CONTINUOUSLY overrides it (see shadowFocusQuantum). */
+const SHADOW_FOCUS_QUANTUM = 8;
+
+/** RE-SNAP THRESHOLD, as a fraction of the quantum. Exactly 0.5 is plain rounding and is what the frame
+ *  used to do; anything above it is HYSTERESIS, and it is here for one failure mode only: a focus sitting
+ *  ON a cell boundary and wobbling across it — a body pinned to a wall, a damped orbit target settling —
+ *  would otherwise re-snap, and pay a full static redraw, on EVERY frame it wobbled. The excess (0.05 of
+ *  a quantum) is the width of the dead band, and it costs that same fraction of extra centre drift.
+ *
+ *  It does not change the SET of centres (still multiples of the quantum) nor the spacing between them
+ *  (still one quantum), so the orbit modes keep the frames they always had. */
+const SHADOW_SNAP_HYSTERESIS = 0.55;
+
+/** WHERE THE SHADOW FRAME SHOULD BE CENTRED THIS FRAME, given where it is centred now.
+ *
+ *  Pure, and exported, because this one decision is the entire redraw-rate lever and it is otherwise only
+ *  observable inside a live WebGL context: every centre it returns that differs from `centre` costs a full
+ *  static shadow pass. See shadowFocus.test.ts, which pins the crossing rate at each speed and quantum.
+ *
+ *  `centre` may be NaN (nothing settled yet) — the comparison is written so that fails and re-snaps. */
+export function snapShadowCentre(centre: Vec2, focus: Vec2, quantum: number, force = false): Vec2 {
+  const band = quantum * SHADOW_SNAP_HYSTERESIS;
+  if (!force && Math.abs(focus.x - centre.x) <= band && Math.abs(focus.z - centre.z) <= band) return centre;
+  return { x: Math.round(focus.x / quantum) * quantum, z: Math.round(focus.z / quantum) * quantum };
+}
+
+/** THE POSE A DYNAMIC CASTER'S SHADOW WAS LAST DRAWN FROM. Position in world units, heading in radians,
+ *  and the clip it was playing — the three things that change what its silhouette looks like. */
+export type CasterPose = { x: number; z: number; yaw: number; clip: string };
+/** Below these the pose is treated as unchanged: 0.01 unit is far under a pixel at office zoom, and
+ *  0.003 rad is far under one frame of the slowest turn in the world (4.2 rad/s ⇒ 0.07 rad/frame). */
+const CASTER_MOVE_EPS = 0.01;
+const CASTER_TURN_EPS = 0.003;
+
+/** HAS A DYNAMIC CASTER MOVED ENOUGH TO NEED RE-COMPOSITING INTO THE SHADOW MAP?
+ *
+ *  Pure, and exported, for the same reason snapShadowCentre is: it decides a per-frame redraw and is
+ *  otherwise only observable inside a live GL context. YAW IS PART OF IT — a body that turns on the spot
+ *  changes neither x nor z nor clip, and before stage 4b nothing in this test noticed, because the
+ *  interaction controllers were reporting the whole WORLD stale for the duration of a turn and the full
+ *  redraw covered it. `prev` may hold NaN (nothing drawn yet); the comparisons are written so that
+ *  re-composites rather than skips. */
+export function casterPoseMoved(prev: CasterPose, next: CasterPose): boolean {
+  if (next.clip !== prev.clip) return true;
+  if (!(Math.abs(next.x - prev.x) <= CASTER_MOVE_EPS) || !(Math.abs(next.z - prev.z) <= CASTER_MOVE_EPS)) return true;
+  let d = next.yaw - prev.yaw;
+  while (d > Math.PI) d -= 2 * Math.PI;
+  while (d < -Math.PI) d += 2 * Math.PI;
+  return !(Math.abs(d) <= CASTER_TURN_EPS);
+}
+
+/** Resolution the AO is computed at, as a fraction of the drawing buffer. (Since slice 4 it no longer
+ *  feeds a normal pass of its own — it samples the beauty buffer's full-resolution depth.) */
+const AO_SCALE = 0.5;
+/** Fallback AO strength. The environment overwrites this per phase the moment it applies a grade. */
+const AO_STRENGTH = 0.6;
+
+/** Every buffer dimension one resize decides, as arithmetic — no GL, no window, no renderer.
+ *
+ *  It is split out because the sizes are the whole substance of the render-scale lever and they are
+ *  otherwise only observable inside a live WebGL context. See renderBufferSizes.test.ts, which pins
+ *  what each Smooth rung actually allocates. */
+export interface RenderBufferSizes {
+  /** what BOTH the renderer and the composer must be told — see resize() for why that is not automatic */
+  pixelRatio: number;
+  /** the beauty/composer render targets, in device pixels */
+  beauty: { width: number; height: number };
+  /** the SSAO/blur targets, in device pixels */
+  ao: { width: number; height: number };
+}
+
+/**
+ * THE QUALITY CEILING, in device pixels per CSS pixel. Full Graphics renders at this density whatever
+ * the display reports: a DPR-1 monitor SUPERSAMPLES up to it, a DPR-3 monitor is capped down to it.
+ *
+ * WHY IT IS NOT `window.devicePixelRatio`. The composer owns the whole image — every pass renders into
+ * its own target, so the canvas' `antialias: true` is bypassed and there is no MSAA/FXAA/SMAA anywhere
+ * in the chain (every target is `samples: 0`). Supersampling through this ratio is therefore V2's ONLY
+ * antialiasing. Tying it to the display tied the quality floor to the monitor: the same build, the same
+ * Full Graphics setting and the same avatar measured 2.81% strong-speckle pixels on the hair at density
+ * 1 against 0.48% at density 2 — an 83% difference nobody chose, decided by which screen was plugged in.
+ * The validation captures that approved V2 were all taken at density 2 (the stress harness forces
+ * deviceScaleFactor 2), so this makes every display render what the benchmark measured.
+ *
+ * It is a TARGET AND A CAP, not a multiplier: 1 → 2, 1.5 → 2, 2 → 2, 3 → 2. Never 4.
+ */
+export const TARGET_RENDER_DENSITY = 2;
+
+/**
+ * Resolve the buffer dimensions for one framing.
+ *
+ * `renderScale` multiplies BOTH halves, which is the point of the lever: the expensive buffers shrink
+ * with it. At renderScale 1 every number here is exactly what the approved Full Graphics build
+ * allocated, which is what keeps the benchmark untouched — `aoScale` is still applied to the CSS size
+ * rather than to the drawing buffer, preserving the existing (pre-existing) relationship between the
+ * two rather than quietly re-deriving the AO resolution while fixing the scale. That relationship is
+ * now the SAME on every display, which it was not while the beauty half followed the monitor and the
+ * AO half followed the CSS size.
+ */
+export function renderBufferSizes(cssWidth: number, cssHeight: number, devicePixelRatio: number, renderScale: number, aoScale: number, targetDensity = TARGET_RENDER_DENSITY): RenderBufferSizes {
+  // Raise a low-DPR display to the target, clamp a high-DPR one down to it. The display is still read
+  // rather than ignored — it simply no longer decides the ceiling.
+  const density = Math.min(Math.max(devicePixelRatio, targetDensity), targetDensity);
+  const pixelRatio = density * renderScale;
+  return {
+    pixelRatio,
+    beauty: { width: Math.round(cssWidth * pixelRatio), height: Math.round(cssHeight * pixelRatio) },
+    ao: { width: Math.round(cssWidth * aoScale * renderScale), height: Math.round(cssHeight * aoScale * renderScale) },
+  };
+}
+
+// WORLD-SCALE DEPTH RANGE. The camera is orthographic, so its distance from the target changes nothing
+// about framing — only which slice of the world survives the near/far clip. With the office alone, 1500 /
+// 4000 was ample. With an exterior world around it (±5.4k of terrain, see world/campus) that slice clipped
+// the landscape away at roughly 4k out. Ortho depth is LINEAR, so widening the range costs no precision:
+// 24-bit depth over 30k units still resolves finer than a hundredth of a unit.
+//
+// Anything that measures in camera depth has to move with it — that is the SSAO pass (rescaled below) and
+// the environment's fog, which is expressed as offsets from CAM_DIST for exactly this reason.
+const CAM_DIST = 6000;
+const FAR = 15000;
+
+export class Renderer {
+  readonly renderer: THREE.WebGLRenderer;
+  readonly scene = new THREE.Scene();
+  readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, FAR);
+  /** THE PLAYER CAMERA. A second, PERSPECTIVE camera that exists only so PLAYER mode does not have to fake
+   *  a first/third-person view through an orthographic frustum (which cannot be done — ortho has no
+   *  viewpoint, so there is no such thing as standing inside it). It is never made active by this class:
+   *  render/CameraModes decides, and OFFICE/EXPLORE are byte-for-byte unaffected because they simply never
+   *  select it. Near/far are avatar-scale (Bon is 36 units tall), not world-scale like the ortho slice. */
+  readonly playerCamera = new THREE.PerspectiveCamera(55, 1, 1.5, 9000);
+  readonly controls: OrbitControls;
+  readonly key: THREE.DirectionalLight;
+  readonly hemi: THREE.HemisphereLight;
+  /** the cool bounce opposite the key; the environment re-colours it per phase */
+  readonly fill: THREE.DirectionalLight;
+  private readonly composer: EffectComposer;
+  private readonly renderPass: RenderPass;
+  private readonly ssao: SSAOFromDepthPass;
+  /** the camera actually drawn. Defaults to the orthographic rig; only CameraModes ever changes it. */
+  private active: THREE.Camera;
+  /** the world-space focus rect (a room today; the whole office later) */
+  focus: Rect;
+  readonly target = new THREE.Vector3();
+  camParams: CameraParams = { ...DEFAULT_CAMERA };
+  lightParams: LightParams = { ...DEFAULT_LIGHT };
+  /** THE FULL GRAPHICS BASELINE. See the SSAO note at the top of this file for what it costs and why. */
+  ssaoEnabled = true;
+  /** GRAPHICS & DISPLAY — the multiplier on the DPR cap. 1 is the approved Full Graphics baseline; a
+   *  smaller value draws the same picture at fewer samples. It is the FIRST lever Smooth spends
+   *  (services/render/graphicsQuality) precisely because nothing leaves the frame when it moves. */
+  private renderScale = 1;
+  /** THE COMPOSER'S OWN PIXEL RATIO, mirrored here because EffectComposer offers no getter for it.
+   *  See resize() for why it has to be pushed at all. */
+  private composerPixelRatio = 0;
+  /** Resolution the AO is computed at, as a fraction of the drawing buffer. AO_SCALE is the Full
+   *  baseline; Smooth may lower it before it gives AO up entirely. */
+  private aoScale = AO_SCALE;
+  /** Optional camera POLICY hook, run every frame immediately after OrbitControls has moved the camera
+   *  and before anything reads the target. This is where OFFICE mode's pan/zoom bounds are enforced —
+   *  the renderer itself stays policy-free. See render/CameraModes. */
+  constrain: (() => void) | null = null;
+  /** SHADOW FRAME OVERRIDE. The shadow frustum normally follows the orbit target and is sized from the
+   *  orthographic viewport — neither of which means anything when a perspective camera is walking around
+   *  inside the building. A mode that owns its own viewpoint sets these two and the frustum follows IT
+   *  instead. Null (the default) leaves OFFICE and EXPLORE on exactly the behaviour they were approved
+   *  with. This is a camera/lighting knob, not gameplay: the renderer still knows nothing about a player. */
+  shadowFocus: Vec2 | null = null;
+  shadowRadius: number | null = null;
+  /** THE FOCUS GRID, overridden. Null leaves the frame on SHADOW_FOCUS_QUANTUM, which is what OFFICE and
+   *  EXPLORE were approved with. A mode whose focus moves CONTINUOUSLY — PLAYER walks at 70 u/s and
+   *  sprints at 100 — sets a coarser one, because at 8 units a walk re-centres the frustum, and therefore
+   *  redraws every static caster in the building, up to eleven times a SECOND.
+   *
+   *  THE TRADE IS COVERAGE, and it is the only thing to weigh here: the frustum is a fixed square around
+   *  the snapped centre, so a coarser grid lets the body sit further from the middle of it — up to
+   *  `quantum * SHADOW_SNAP_HYSTERESIS` per axis. Shadow RESOLUTION is untouched: the frustum keeps its
+   *  size, so a texel keeps covering exactly the same amount of floor. See PLAYER_SHADOW_FOCUS_QUANTUM in
+   *  app/world for the sizing, and CameraModes for where both overrides are given back. */
+  shadowFocusQuantum: number | null = null;
+  /** Optional VISIBILITY hook, run every frame after the shadow frame has been settled and before
+   *  anything is drawn. Room-level culling lives behind it (render/RoomVisibility, driven by
+   *  app/bootstrap) — the renderer itself still knows nothing about rooms.
+   *
+   *  THE ORDER MATTERS. updateShadowFrame() may have just moved the light and flagged the shadow map for
+   *  a redraw; running the cull after it means the visibility the shadow pass sees is the visibility that
+   *  was decided against THIS frame's shadow frustum, never the previous one's. */
+  cull: (() => void) | null = null;
+  private readonly lightDir = new THREE.Vector3(0, 1, 0);
+  private shadowKey = "";
+  /** THE SNAPPED CENTRE CURRENTLY IN FORCE, in world units — what the hysteresis above is measured from.
+   *  NaN until the first frame has settled it; `force` and the NaN both take the same branch. */
+  private readonly shadowCentre: Vec2 = { x: Number.NaN, z: Number.NaN };
+  // ---- SPLIT SHADOW UPDATE (see the block comment above updateShadowMaps) ----
+  /** A/B switch. Off = the pre-split behaviour exactly: one flag, one full redraw of every caster. */
+  shadowCache = true;
+  /** the static world must be re-drawn into the shadow map (light moved, frustum moved, a door/chair/
+   *  asset/room changed) — this is what invalidateShadows() has always meant */
+  private staticShadowDirty = true;
+  /** only the avatars moved: the cached static depth is still valid, they just have to be re-composited */
+  private dynamicShadowDirty = true;
+  /** the cached STATIC-ONLY depth, blitted in and out of the light's own shadow map */
+  private staticShadowRT: THREE.WebGLRenderTarget | null = null;
+  /** roots whose meshes are dynamic casters (the hero avatar, the stress crowd) */
+  private readonly dynamicCasters: THREE.Object3D[] = [];
+  /** THE COMPOSITE'S SCENE. Never part of the world graph: the caster roots are BORROWED into its
+   *  children array for the duration of one render and handed straight back, so nothing is re-parented
+   *  and world transforms keep coming from each root's real parent (a chair carrier included).
+   *
+   *  WHY BORROW RATHER THAN RENDER this.scene. WebGLRenderer.render() walks the whole graph in
+   *  projectObject before it draws anything, and the ground floor is ~3,000 objects — measured at ~6.5 ms
+   *  of pure traversal, which is most of what the cached static pass had just saved. Handing it the ~210
+   *  objects that can actually be drawn skips that. It has to be a Scene rather than a bare Group because
+   *  three only honours overrideMaterial when scene.isScene === true. */
+  private readonly dynamicScene = new THREE.Scene();
+  private static readonly NO_CHILDREN: THREE.Object3D[] = [];
+  /** the shadow camera, restricted to the dynamic-caster layer, used for the composite pass */
+  private readonly dynamicShadowCamera = new THREE.OrthographicCamera();
+  /** THE STATIC PROBE. A 1° camera parked in empty space far under the world, rendered into a 1×1 target.
+   *  Its only job is to give three.js a real render call to hang its OWN shadow pass off — see
+   *  renderStaticShadowPass for why the static half cannot simply call shadowMap.render() directly. */
+  private readonly staticProbeCamera = new THREE.PerspectiveCamera(1, 1, 0.1, 1);
+  private readonly staticProbeTarget = new THREE.WebGLRenderTarget(1, 1);
+  private readonly hiddenCasters: { root: THREE.Object3D; visible: boolean }[] = [];
+  /** colorWrite is off: for a non-VSM shadow map three binds shadow.map.depthTexture as the sampler
+   *  (WebGLLights), so the colour attachment is never read and writing it is pure bandwidth. side is
+   *  BackSide to match what three\'s own depth pass does with a FrontSide material (shadowSide). */
+  private readonly dynamicDepthMaterial = Object.assign(new THREE.MeshDepthMaterial({ side: THREE.BackSide, colorWrite: false }), { fog: false });
+  /** set by invalidateShadows(), consumed once per frame — how the streak below is counted */
+  private staticInvalidatedThisFrame = false;
+  /** consecutive frames on which the static world was invalidated (see THRASH below) */
+  private staticStreak = 0;
+  /** dev/report readout — how the shadow map was updated over the last stretch of frames */
+  readonly shadowStats = { staticPasses: 0, dynamicPasses: 0, fullPasses: 0, skipped: 0, frames: 0 };
+  /** THE WINDOW-RESIZE HANDLER, held as a field so dispose() can actually remove it. It used to be an
+   *  inline closure passed straight to addEventListener, which is unremovable — fine for a page that
+   *  lives as long as the document, not fine once the world can be unmounted: a stale listener would
+   *  keep calling resize() on a dead renderer for the rest of the session, once per mount ever made.
+   *  Declared ABOVE the constructor purely so the reading order matches the initialisation order (class
+   *  fields run before the constructor body either way). */
+  private readonly onWindowResize = (): void => {
+    this.resize();
+  };
+  /** dispose() is idempotent; see it for what this guards. */
+  private disposed = false;
+  /** The PMREM cubemap behind scene.environment. Built by this constructor, referenced by nothing else,
+   *  freed by dispose() — held in a field only so dispose() has something to free. */
+  private readonly environmentTexture: THREE.Texture;
+
+  constructor(canvas: HTMLCanvasElement, focus: Rect) {
+    this.focus = focus;
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    // The TARGET density, not the display's — see TARGET_RENDER_DENSITY. resize() re-asserts this at the
+    // end of the constructor; setting it here too means the beauty target below is allocated once, at the
+    // final size, instead of being built at the display's ratio and immediately reallocated.
+    this.renderer.setPixelRatio(renderBufferSizes(window.innerWidth, window.innerHeight, window.devicePixelRatio, 1, AO_SCALE).pixelRatio);
+    this.renderer.shadowMap.enabled = true;
+    // STATIC-SCENE SHADOWS. The ground floor is architecture: 800-odd meshes in the Central Hub alone,
+    // none of which ever move. With three.js' default autoUpdate every one of them is re-drawn into the
+    // shadow map EVERY FRAME — a second full pass that profiling showed costs roughly half the frame
+    // (shadows off: a locked 16.7ms; shadows on: 22–26ms). So the map is redrawn only when something that
+    // casts one has actually changed: the shadow frustum moves, the avatar moves, a door or chair
+    // animates, or the light is repositioned. See invalidateShadows().
+    this.renderer.shadowMap.autoUpdate = false;
+    this.renderer.shadowMap.needsUpdate = true;
+    // PCF SOFT rather than plain PCF: the edge is filtered over a texel neighbourhood that scales with
+    // distance, which is what separates a long sunset rake (wants a soft tail) from a chair leg on a floor
+    // (wants a tight contact). It costs a few extra samples in the shadowed fragments only — no extra
+    // geometry pass, and the map is still redrawn on demand, so the per-frame budget is unchanged.
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.toneMapping = THREE.NeutralToneMapping;
+    this.renderer.toneMappingExposure = this.lightParams.exposure;
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.info.autoReset = false;
+    this.scene.background = new THREE.Color(0xe7ded4);
+    // The generator is a scratch pipeline, not a resource the scene needs afterwards: it is disposed the
+    // moment it has produced the cubemap (three's own documented pattern). The TEXTURE it returned is kept
+    // — it is this renderer's alone, nothing else ever references it, and dispose() frees it below.
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    this.environmentTexture = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    pmrem.dispose();
+    this.scene.environment = this.environmentTexture;
+    this.scene.environmentIntensity = this.lightParams.envIntensity;
+    this.hemi = new THREE.HemisphereLight(0xfff4ea, 0xcdb9a6, this.lightParams.ambientIntensity);
+    this.key = new THREE.DirectionalLight(0xfff1e0, this.lightParams.keyIntensity);
+    this.key.castShadow = true;
+    this.key.shadow.mapSize.set(2048, 2048);
+    this.key.shadow.camera.near = 200;
+    this.key.shadow.camera.far = 1600;
+    // TIGHTER THAN BEFORE, on purpose. normalBias pushes the sample along the surface normal to kill
+    // acne, and every unit of it is a unit of the shadow DETACHING from the thing casting it — which is
+    // exactly the contact the depth pass is here to sell. 0.6 was enough to float a chair leg; 0.4 still
+    // holds the cream walls clean under a 3.05-intensity key.
+    this.key.shadow.bias = -0.00045;
+    this.key.shadow.normalBias = 0.4;
+    this.key.shadow.radius = 3;
+    this.fill = new THREE.DirectionalLight(0xe4ecff, 0.35);
+    this.scene.add(this.hemi, this.key, this.key.target, this.fill);
+    this.controls = new OrbitControls(this.camera, canvas);
+    this.controls.enableDamping = true;
+    this.controls.dampingFactor = 0.12;
+    this.controls.screenSpacePanning = true;
+    this.controls.minZoom = 0.12; // whole ground floor (1440 × 1244) fits at the default frustum
+    this.controls.maxZoom = 6;
+    this.active = this.camera;
+    // SLICE 4: the composer's beauty buffer carries a DEPTH TEXTURE, and SSAO reads it instead of
+    // re-drawing the scene into a normal buffer of its own (see render/SSAOFromDepth). `?ao=legacy`
+    // leaves the target undefined, which is what puts the stock two-submission pass back for the A/B.
+    const dpr = this.renderer.getPixelRatio();
+    this.composer = ssaoDepthReuseEnabled()
+      ? new EffectComposer(this.renderer, makeBeautyTarget(Math.round(window.innerWidth * dpr), Math.round(window.innerHeight * dpr)))
+      : new EffectComposer(this.renderer);
+    this.renderPass = new RenderPass(this.scene, this.camera);
+    this.composer.addPass(this.renderPass);
+    this.ssao = new SSAOFromDepthPass(this.scene, this.camera, Math.round(window.innerWidth * AO_SCALE), Math.round(window.innerHeight * AO_SCALE), 16);
+    // A CONTACT radius, not an ambient one. 14 units spread the darkening a third of a metre up a wall,
+    // which is what made cream architecture read as grubby; 7 keeps it in the crease where two surfaces
+    // actually meet — under a desk, behind a chair leg, where a wall lands on a floor.
+    this.ssao.kernelRadius = 7;
+    // SSAO's min/max are FRACTIONS of the camera's depth range. The range grew with the world (see FAR),
+    // so these are rescaled by the same factor to preserve the world-space distances they used to mean
+    // (2 units and 320 units) — AO looks identical to the single-room build. Untouched by slice 4: these
+    // are fractions of the camera's depth range, and the depth range did not change, only its source.
+    this.ssao.minDistance = (0.0005 * 4000) / FAR;
+    this.ssao.maxDistance = (0.03 * 4000) / FAR;
+    this.tuneSSAO();
+    this.composer.addPass(this.ssao);
+    this.composer.addPass(new OutputPass());
+    this.setFocus(focus);
+    this.fill.position.set(focus.x + focus.w, 300, focus.z + focus.d * 1.6);
+    this.placeLight();
+    this.resize();
+    window.addEventListener("resize", this.onWindowResize);
+  }
+  /** the orbit distance, in world units — fog/AO distances are measured from it (see CAM_DIST) */
+  get camDist(): number {
+    return CAM_DIST;
+  }
+  /** whether the AO pass actually took the slice-4 depth-reuse path (false under `?ao=legacy`) */
+  get ssaoReusesDepth(): boolean {
+    return this.ssao.reusesDepth;
+  }
+  /** the camera currently being drawn (the ortho rig unless a mode has selected another) */
+  get activeCamera(): THREE.Camera {
+    return this.active;
+  }
+  /** Select which camera renders. The post pipeline follows, so SSAO keeps working in either. */
+  setActiveCamera(cam: THREE.Camera): void {
+    if (cam === this.active) return;
+    this.active = cam;
+    this.renderPass.camera = cam;
+    this.ssao.camera = cam as THREE.PerspectiveCamera;
+    this.followSSAOCamera();
+  }
+  /** 0 = no AO … 1 = stock SSAOPass strength. Graded per phase by the environment. */
+  get aoStrength(): number {
+    return (this.ssao.copyMaterial as THREE.ShaderMaterial).uniforms.aoStrength.value as number;
+  }
+  set aoStrength(v: number) {
+    (this.ssao.copyMaterial as THREE.ShaderMaterial).uniforms.aoStrength.value = THREE.MathUtils.clamp(v, 0, 1);
+  }
+  /** One-time surgery on the stock pass: a strength uniform in the composite, and the ortho define. */
+  private tuneSSAO(): void {
+    const cm = this.ssao.copyMaterial as THREE.ShaderMaterial;
+    cm.uniforms.aoStrength = { value: AO_STRENGTH };
+    cm.fragmentShader = cm.fragmentShader
+      .replace("uniform float opacity;", "uniform float opacity;\n\t\tuniform float aoStrength;")
+      .replace("gl_FragColor = opacity * texel;", "gl_FragColor = vec4( mix( vec3( 1.0 ), texel.rgb * opacity, aoStrength ), 1.0 );");
+    cm.needsUpdate = true;
+    this.followSSAOCamera();
+  }
+  /** Point the AO shader at whichever camera is drawing: projection KIND (the define) and its clip range.
+   *  Stock SSAOPass does neither — it assumes a perspective camera and reads near/far once, at construction. */
+  private followSSAOCamera(): void {
+    const cam = this.active as THREE.Camera & { near?: number; far?: number };
+    const persp = (cam as THREE.PerspectiveCamera).isPerspectiveCamera === true;
+    for (const m of [this.ssao.ssaoMaterial, this.ssao.depthRenderMaterial] as THREE.ShaderMaterial[]) {
+      const want = persp ? 1 : 0;
+      if (m.defines.PERSPECTIVE_CAMERA !== want) { m.defines.PERSPECTIVE_CAMERA = want; m.needsUpdate = true; }
+      m.uniforms.cameraNear.value = cam.near ?? 1;
+      m.uniforms.cameraFar.value = cam.far ?? FAR;
+    }
+  }
+  setFocus(rect: Rect): void {
+    this.focus = rect;
+    this.target.set(rect.x + rect.w / 2, 8, rect.z + rect.d / 2 - 6);
+    this.key.target.position.set(rect.x + rect.w / 2, 0, rect.z + rect.d / 2);
+    this.placeCamera();
+  }
+  placeCamera(): void {
+    const p = this.camParams;
+    const pitch = THREE.MathUtils.degToRad(p.pitch), yaw = THREE.MathUtils.degToRad(p.yaw);
+    const dir = new THREE.Vector3(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch));
+    this.camera.position.copy(this.target).addScaledVector(dir, CAM_DIST);
+    this.camera.up.set(0, 1, 0);
+    this.camera.lookAt(this.target);
+    const aspect = window.innerWidth / window.innerHeight;
+    const halfH = (this.focus.d * 0.62 + 40) / p.zoom;
+    this.camera.top = halfH; this.camera.bottom = -halfH; this.camera.left = -halfH * aspect; this.camera.right = halfH * aspect;
+    this.camera.updateProjectionMatrix();
+    this.controls.target.copy(this.target);
+    this.controls.update();
+  }
+  /** Frame `rect` in view: recentres the orbit target and returns the `camParams.zoom` that fits it. */
+  focusOn(rect: Rect, fill = 0.9): number {
+    this.target.set(rect.x + rect.w / 2, 8, rect.z + rect.d / 2 - 6);
+    this.camera.zoom = 1;
+    const aspect = window.innerWidth / window.innerHeight;
+    const halfNeeded = Math.max(rect.d / 2, rect.w / 2 / aspect) / fill;
+    return Math.round(((this.focus.d * 0.62 + 40) / halfNeeded) * 100) / 100;
+  }
+  /** WRITE THE LEVELS, MOVE NOTHING. Intensities and exposure only — no direction, no frustum, and
+   *  explicitly NO shadow invalidation.
+   *
+   *  A shadow map stores DEPTH, not brightness, so making the key brighter or the exposure hotter cannot
+   *  invalidate it. That distinction is what lets the environment re-grade every frame — a Clear→Rain
+   *  fade, a lightning flash — without asking for a shadow redraw per frame. `placeLight()` remains the
+   *  path that moves the sun, and it alone pays for the redraw. */
+  applyLightLevels(): void {
+    const l = this.lightParams;
+    this.key.intensity = l.keyIntensity;
+    this.hemi.intensity = l.ambientIntensity;
+    this.scene.environmentIntensity = l.envIntensity;
+    this.renderer.toneMappingExposure = l.exposure;
+  }
+  placeLight(): void {
+    const l = this.lightParams;
+    const az = THREE.MathUtils.degToRad(l.azimuth), el = THREE.MathUtils.degToRad(l.elevation);
+    this.lightDir.set(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el));
+    this.applyLightLevels();
+    // THE SUN MOVED: the cached static depth was rendered from the old direction and is now wrong
+    // everywhere. This must go through invalidateShadows(), not straight at three's flag — writing
+    // three's flag alone would leave the cache believing it was still valid and blit stale depth back
+    // over the new pass. Same for the frustum move below.
+    this.invalidateShadows();
+    this.updateShadowFrame(true);
+  }
+  /** The shadow frustum follows what is being looked at: centred on the orbit target, sized to the visible
+   *  height (clamped). Keeps Design-Room-scale shadow resolution while zoomed in on a 1440-unit floor. */
+  private updateShadowFrame(force = false): void {
+    const halfVisible = this.camera.top / Math.max(this.camera.zoom, 1e-6);
+    const s = this.shadowRadius ?? Math.round(THREE.MathUtils.clamp(halfVisible * 1.7, 180, 760));
+    const c = this.shadowFocus ?? this.target;
+    // THE FRAME IS HELD STILL UNTIL THE FOCUS HAS EARNED A MOVE. Re-snapping is not free — it is a full
+    // static redraw of the whole building — so it happens only once the focus has drifted out of the dead
+    // band around the centre currently in force, and then it goes straight to the nearest grid point
+    // rather than following the focus. NaN on the first frame fails the comparison and takes the branch.
+    const t = this.shadowCentre;
+    const next = snapShadowCentre(t, c, this.shadowFocusQuantum ?? SHADOW_FOCUS_QUANTUM, force);
+    t.x = next.x; t.z = next.z;
+    const key = `${s}:${t.x}:${t.z}`;
+    if (!force && key === this.shadowKey) return;
+    this.shadowKey = key;
+    this.key.target.position.set(t.x, 0, t.z);
+    this.key.position.copy(this.key.target.position).addScaledVector(this.lightDir, 800);
+    const sc = this.key.shadow.camera;
+    sc.left = -s; sc.right = s; sc.top = s; sc.bottom = -s;
+    sc.updateProjectionMatrix();
+    this.key.shadow.needsUpdate = true;
+    // THE FRUSTUM MOVED: every cached texel now maps to a different place on the floor, so the cache is
+    // not merely stale, it is misaligned. A full static redraw is the only correct answer.
+    this.invalidateShadows();
+  }
+  /** THE FULL INVALIDATION, and the meaning every existing caller already has: the STATIC world changed
+   *  (a door leaf, a chair, the sun, the shadow frustum, a room built, a volume swapped), so the cached
+   *  static depth is stale and everything has to be re-drawn. */
+  invalidateShadows(): void {
+    this.staticShadowDirty = true;
+    this.dynamicShadowDirty = true;
+    this.staticInvalidatedThisFrame = true;
+    this.renderer.shadowMap.needsUpdate = true;
+  }
+  /** THE CHEAP INVALIDATION: only registered dynamic casters moved. The cached static depth is still
+   *  exactly right, so the next frame restores it and re-composites the avatars over it. */
+  invalidateDynamicShadows(): void {
+    this.dynamicShadowDirty = true;
+    if (!this.shadowCache) this.renderer.shadowMap.needsUpdate = true;
+  }
+  /** Register a subtree whose meshes cast DYNAMIC shadows (an avatar, the stress crowd). Their meshes
+   *  join DYNAMIC_CASTER_LAYER, which is what lets the composite pass draw them and nothing else. */
+  addDynamicCaster(root: THREE.Object3D): void {
+    if (!this.dynamicCasters.includes(root)) this.dynamicCasters.push(root);
+    this.markDynamicCaster(root);
+    this.invalidateShadows(); // a new body has to enter the cached static pass' exclusion list too
+  }
+  removeDynamicCaster(root: THREE.Object3D): void {
+    const i = this.dynamicCasters.indexOf(root);
+    if (i >= 0) this.dynamicCasters.splice(i, 1);
+    this.invalidateShadows();
+  }
+  /** Re-mark a subtree after it has gained meshes (a GLB landed, a body was cloned in).
+   *
+   *  MESHES ONLY. three's own shadow pass draws nothing but meshes, lines and points, so a Sprite in the
+   *  subtree — an avatar's nameplate — is silently excluded from it. The composite, being an ordinary
+   *  render, is not so picky: put a sprite on this layer and its quad writes depth through the override
+   *  depth material and the nameplate starts casting a rectangular shadow on the floor. Groups do not
+   *  need the layer at all: projectObject recurses into children whatever the parent's mask says. */
+  markDynamicCaster(root: THREE.Object3D): void {
+    root.traverse((o) => { if ((o as THREE.Mesh).isMesh) o.layers.enable(DYNAMIC_CASTER_LAYER); });
+  }
+  /** true when the split path is actually in force this frame (dev readout + the A/B report) */
+  get shadowCacheActive(): boolean {
+    return this.shadowCache && this.renderer.shadowMap.enabled && this.dynamicCasters.length > 0;
+  }
+  setShadows(on: boolean): void {
+    this.renderer.shadowMap.enabled = on;
+    this.staticShadowDirty = true;
+    this.dynamicShadowDirty = true;
+    this.renderer.shadowMap.needsUpdate = on;
+    this.scene.traverse((o) => { const m = (o as THREE.Mesh).material as THREE.Material | undefined; if (m) m.needsUpdate = true; });
+  }
+  /** The DPR the drawing buffer is currently allocated at — read back by the graphics status overlay. */
+  get pixelRatio(): number {
+    return this.renderer.getPixelRatio();
+  }
+  /** GRAPHICS & DISPLAY lever 1 — internal resolution. Clamped so a stored or hand-edited preference
+   *  can never ask for a buffer that is either pointless (>1) or unreadable (<0.5). */
+  setRenderScale(scale: number): void {
+    const next = Math.min(1, Math.max(0.5, scale));
+    if (next === this.renderScale) return;
+    this.renderScale = next;
+    this.resize();
+  }
+  /** GRAPHICS & DISPLAY lever 2 — how many pixels the AO is computed over. Note this is a WEAK lever on
+   *  its own: the slice-4 measurement showed AO cost is scene submission, not fill (quartering the AO
+   *  buffer changed a 34.3 ms frame by nothing). It is here because it is free to move, not because it
+   *  is where the time goes — the time goes to the toggle below. */
+  setAoResolutionScale(scale: number): void {
+    const next = Math.min(1, Math.max(0.2, scale));
+    if (next === this.aoScale) return;
+    this.aoScale = next;
+    this.ssao.setSize(Math.round(window.innerWidth * next), Math.round(window.innerHeight * next));
+  }
+  /** GRAPHICS & DISPLAY lever 3 — shadow map resolution. Dropping the old map is what makes three
+   *  reallocate at the new size; the cached static depth target notices the mismatch on the next
+   *  update and reallocates itself (see updateShadowMaps). Bias, radius, filtering, the caster set and
+   *  the light are all untouched — this is resolution and nothing else. */
+  setShadowMapSize(size: number): void {
+    if (this.key.shadow.mapSize.width === size) return;
+    this.key.shadow.mapSize.set(size, size);
+    this.key.shadow.map?.dispose();
+    this.key.shadow.map = null;
+    this.invalidateShadows();
+  }
+  resize(): void {
+    const size = renderBufferSizes(window.innerWidth, window.innerHeight, window.devicePixelRatio, this.renderScale, this.aoScale);
+    this.renderer.setPixelRatio(size.pixelRatio);
+    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.playerCamera.aspect = window.innerWidth / window.innerHeight;
+    this.playerCamera.updateProjectionMatrix();
+    // THE COMPOSER DOES NOT FOLLOW THE RENDERER. EffectComposer samples renderer.getPixelRatio() ONCE,
+    // in its constructor — and when it is handed a render target of its own it does not sample it at
+    // all, it pins the ratio to 1. This build hands it one: the beauty buffer carries the depth texture
+    // the AO reads (see SSAOFromDepth). So without this call the composer's targets stay at the CSS
+    // size for the life of the page, and changing render scale only resized the CANVAS — the scene was
+    // still being rasterised at full resolution and merely blitted down at the end, which is the
+    // opposite of what the lever is for. Pushed BEFORE setSize so the targets are allocated once, at
+    // the final dimensions, rather than resized twice on a rung change.
+    if (this.composerPixelRatio !== size.pixelRatio) {
+      this.composerPixelRatio = size.pixelRatio;
+      this.composer.setPixelRatio(size.pixelRatio);
+    }
+    this.composer.setSize(window.innerWidth, window.innerHeight);
+    // AFTER composer.setSize, which hands every pass the FULL buffer size — the AO runs at its own
+    // fraction of it and has to have the last word. Scaled by renderScale for the same reason the
+    // beauty buffer is: at scale 1 this is byte-for-byte the Full Graphics allocation.
+    this.ssao.setSize(size.ao.width, size.ao.height);
+    this.placeCamera();
+  }
+  // ============================ SPLIT SHADOW UPDATE ===============================================
+  //
+  // WHY. Measured on the 70-avatar stress matrix (devtools/Stress): while avatars move, the shadow map
+  // is invalidated on ~98% of frames and the redraw costs 8.21 ms of a 35.45 ms frame in the office and
+  // 6.34 ms of 34.35 ms in the CAVE. Splitting that cost by caster set showed WHERE it goes:
+  //
+  //        scenario                     static world      the avatars
+  //        70 distributed + motion         5.29 ms          2.92 ms      (+2,054 shadow draw calls)
+  //        70 CAVE + motion                1.22 ms          5.12 ms      (+75 shadow draw calls)
+  //
+  // In the office, two thirds of the bill is RE-DRAWING TWO THOUSAND PIECES OF ARCHITECTURE that did not
+  // move, purely because somebody walked past them. That is the waste this removes, and it removes it
+  // without touching shadow resolution, filtering, bias, the caster set or the art: the static world's
+  // depth is identical, it is simply not recomputed when nothing static changed.
+  //
+  // HOW. The light's shadow map is a real DepthTexture (three r185, non-VSM path), so depth from two
+  // passes composites correctly with an ordinary depth test:
+  //
+  //   STATIC PASS (only when something static changed). Dynamic casters are switched off, three renders
+  //   its own shadow pass for the key light, and the resulting depth is blitted into a cached target
+  //   (renderer.copyTextureToTexture takes the gl.blitFramebuffer/DEPTH_BUFFER_BIT path for a
+  //   DepthTexture — public API, no three internals).
+  //
+  //   DYNAMIC PASS (every frame an avatar moved). The cached static depth is blitted back into the
+  //   light's shadow map and the avatars are drawn over it with a depth material, no clear. Layer
+  //   DYNAMIC_CASTER_LAYER is what selects them: the composite camera is restricted to it, so exactly
+  //   the registered bodies are submitted and nothing else can leak in.
+  //
+  // WHAT IS DELIBERATELY UNCHANGED. invalidateShadows() still means "everything is stale" and every one
+  // of its existing callers — doors, chairs, the editor, the environment grade, the CAVE swap, an async
+  // asset landing, the sun moving, the frustum moving — still triggers a full static redraw. The only
+  // new verb is invalidateDynamicShadows(), and the only caller that may use it is one that knows the
+  // thing that moved is a registered dynamic caster. Get that wrong and a moved chair keeps its old
+  // shadow until the next static invalidation; that is why the split lives here rather than in a caller.
+  private updateShadowMaps(): void {
+    const sm = this.renderer.shadowMap;
+    this.shadowStats.frames++;
+    if (!sm.enabled) { sm.needsUpdate = false; return; }
+    if (!this.shadowCacheActive) { this.staticInvalidatedThisFrame = false; return; } // legacy path
+    // THRASH FALLBACK. Caching only pays when the static world holds still between avatar steps. While
+    // something static changes on EVERY frame — a door cycling, a chair being dragged, a weather or
+    // time-of-day grade travelling — the split does strictly more work than the thing it replaced: a
+    // probe render, a full static pass, a blit AND a composite, instead of one redraw. Measured at 25
+    // avatars in the office it costs 4 ms/frame (34.9 → 30.6 fps). So after a short streak the split
+    // stands down and three's single full redraw takes over, exactly as the pre-split build did; the
+    // dirty flag is deliberately LEFT SET, so the first calm frame re-primes the cache before using it.
+    if (this.staticInvalidatedThisFrame) this.staticStreak++; else this.staticStreak = 0;
+    this.staticInvalidatedThisFrame = false;
+    if (this.staticStreak > STATIC_THRASH_FRAMES) {
+      sm.needsUpdate = true; // three redraws every caster, dynamic ones included — the legacy behaviour
+      this.dynamicShadowDirty = false;
+      this.shadowStats.fullPasses++;
+      return;
+    }
+    if (!this.staticShadowDirty && !this.dynamicShadowDirty) { sm.needsUpdate = false; this.shadowStats.skipped++; return; }
+    // three recreates shadow.map on a type/size change; the cache has to follow it or the blit mismatches
+    const map = this.key.shadow.map;
+    if (map && this.staticShadowRT && (this.staticShadowRT.width !== map.width || this.staticShadowRT.height !== map.height)) {
+      this.staticShadowRT.dispose();
+      this.staticShadowRT = null;
+      this.staticShadowDirty = true;
+    }
+    if (this.staticShadowDirty || this.key.shadow.map === null || this.staticShadowRT === null) {
+      this.renderStaticShadowPass();
+      this.cacheStaticDepth();
+      this.staticShadowDirty = false;
+      this.shadowStats.staticPasses++;
+    } else {
+      this.restoreStaticDepth();
+    }
+    sm.needsUpdate = false; // set BEFORE the composite: renderer.render() runs the shadow pass itself
+    this.compositeDynamicShadows();
+    this.dynamicShadowDirty = false;
+    this.shadowStats.dynamicPasses++;
+  }
+
+  /** THE STATIC-ONLY SHADOW PASS, rendered by three.js itself.
+   *
+   *  It cannot be invoked directly: WebGLShadowMap.render() reads the renderer's current render STATE
+   *  (the light list setProgram needs), and that only exists inside a WebGLRenderer.render() call — call
+   *  it standalone and every caster throws on a null render state. So the pass is hung off a real render
+   *  that is arranged to draw nothing:
+   *
+   *    • the PROBE CAMERA is a 1° frustum parked far below the world, so projectObject frustum-culls the
+   *      entire scene out of the beauty render list — but still pushes the LIGHTS (lights are not
+   *      frustum-culled), which is what puts the key light in shadowsArray and makes three run the pass.
+   *    • the shadow pass itself does NOT use the probe camera's frustum — it culls against the light's own
+   *      (shadow.getFrustum()) and uses the view camera only for the LAYER test, which the probe passes.
+   *      So every static caster is drawn into the shadow map exactly as it always was.
+   *    • the beauty half renders into a 1×1 target.
+   *
+   *  The point of going through three rather than rolling a depth pass by hand is FIDELITY: getDepthMaterial
+   *  carries shadowSide, alphaMap/alphaTest cut-outs, displacement and per-object customDepthMaterial. A
+   *  hand-rolled override material would quietly change what the foliage and cut-out props cast. */
+  private renderStaticShadowPass(): void {
+    const r = this.renderer;
+    const sm = r.shadowMap;
+    const prevTarget = r.getRenderTarget();
+    this.hideDynamicCasters();
+    sm.needsUpdate = true;
+    this.staticProbeCamera.position.set(0, -1e5, 0);
+    this.staticProbeCamera.lookAt(0, -1e5 - 1, 0);
+    this.staticProbeCamera.updateMatrixWorld(true);
+    r.setRenderTarget(this.staticProbeTarget);
+    r.render(this.scene, this.staticProbeCamera);
+    r.setRenderTarget(prevTarget);
+    this.restoreDynamicCasters();
+  }
+  /** Take the avatars out of BOTH lists for the static pass — invisible removes them from the beauty
+   *  render list as well as the shadow pass, which matters because their meshes are frustumCulled = false. */
+  private hideDynamicCasters(): void {
+    this.hiddenCasters.length = 0;
+    for (const root of this.dynamicCasters) {
+      this.hiddenCasters.push({ root, visible: root.visible });
+      root.visible = false;
+    }
+  }
+  private restoreDynamicCasters(): void {
+    for (const h of this.hiddenCasters) h.root.visible = h.visible;
+    this.hiddenCasters.length = 0;
+  }
+
+  /** shadow.map depth → the cache. Creates the cache target on first use. */
+  private cacheStaticDepth(): void {
+    const map = this.key.shadow.map;
+    if (!map || !map.depthTexture) return;
+    if (!this.staticShadowRT) {
+      const rt = new THREE.WebGLRenderTarget(map.width, map.height);
+      rt.depthTexture = new THREE.DepthTexture(map.width, map.height, THREE.UnsignedIntType);
+      rt.depthTexture.format = THREE.DepthFormat;
+      rt.texture.name = "shadow-cache";
+      this.renderer.initRenderTarget(rt); // both sides must exist on the GPU before a blit
+      this.staticShadowRT = rt;
+    }
+    this.renderer.copyTextureToTexture(map.depthTexture, this.staticShadowRT.depthTexture!);
+  }
+
+  /** the cache → shadow.map depth, ready for the avatars to be composited over it */
+  private restoreStaticDepth(): void {
+    const map = this.key.shadow.map;
+    if (!map || !map.depthTexture || !this.staticShadowRT?.depthTexture) return;
+    this.renderer.copyTextureToTexture(this.staticShadowRT.depthTexture, map.depthTexture);
+  }
+
+  /** Draw the registered dynamic casters into the light's shadow map WITHOUT clearing it. */
+  private compositeDynamicShadows(): void {
+    const map = this.key.shadow.map;
+    if (!map) return;
+    const r = this.renderer;
+    const prevTarget = r.getRenderTarget();
+    const prevAutoClear = r.autoClear;
+    // The shadow camera is left exactly as the last STATIC pass placed it — the frustum cannot have
+    // moved without setting staticShadowDirty, so re-deriving it here would only risk drifting from it.
+    const cam = this.dynamicShadowCamera;
+    cam.copy(this.key.shadow.camera as THREE.OrthographicCamera);
+    cam.layers.set(DYNAMIC_CASTER_LAYER);
+    // The borrowed roots read their world transform off their REAL parents, which the beauty pass has
+    // not refreshed yet on a composite-only frame — so the world matrices are settled here first.
+    this.scene.updateMatrixWorld();
+    this.dynamicScene.children = this.dynamicCasters;
+    this.dynamicScene.overrideMaterial = this.dynamicDepthMaterial;
+    r.autoClear = false;
+    r.setRenderTarget(map as unknown as THREE.WebGLRenderTarget);
+    r.render(this.dynamicScene, cam);
+    r.setRenderTarget(prevTarget);
+    r.autoClear = prevAutoClear;
+    this.dynamicScene.children = Renderer.NO_CHILDREN;
+  }
+
+  render(): void {
+    this.renderer.info.reset();
+    this.controls.update();
+    this.constrain?.(); // camera-mode bounds get the last word on where the camera may be
+    this.target.copy(this.controls.target); // panning moves the focus; GUI zoom/pitch then respect it
+    this.updateShadowFrame();
+    this.cull?.(); // room subtrees that cannot contribute to this frame drop out of every pass at once
+    // THE SHADOW MAP IS SETTLED HERE, after culling and before anything is drawn — so the split pass
+    // sees exactly the visibility this frame's beauty pass will see, and three's own shadow pass inside
+    // composer.render() finds needsUpdate already cleared.
+    this.updateShadowMaps();
+    if (this.ssaoEnabled) {
+      // AN ORTHO CAMERA'S PROJECTION MATRIX CHANGES WITH ZOOM, and SSAOPass only ever samples it in
+      // setSize(). Two matrix copies a frame is the whole cost of AO that is correct at every zoom.
+      const u = (this.ssao.ssaoMaterial as THREE.ShaderMaterial).uniforms;
+      u.cameraProjectionMatrix.value.copy(this.active.projectionMatrix);
+      u.cameraInverseProjectionMatrix.value.copy(this.active.projectionMatrixInverse);
+      this.composer.render();
+    } else this.renderer.render(this.scene, this.active);
+  }
+
+  /** RELEASE EVERYTHING THIS RENDERER OWNS. Idempotent; the object is dead afterwards.
+   *
+   *  WHAT "OWNS" MEANS HERE, and why the list is this short. Only resources CONSTRUCTED BY THIS CLASS are
+   *  released: the resize listener, OrbitControls, the composer's buffers and its passes' private targets,
+   *  the shadow maps, and the WebGL context itself. The SCENE IS DELIBERATELY NOT WALKED. V2's geometries,
+   *  materials and textures come from process-lifetime caches that hand the SAME objects to every world
+   *  ever built (render/Materials' `materials` map, render/detail's texture cache, build/helpers' shared
+   *  sphereGeo/unitCyl, build/plants' leafGeo, build/exterior's puddleAlpha, the module-level GLTFLoaders).
+   *  A scene.traverse(...dispose()) here would free objects the NEXT world still expects to be live, and
+   *  the second mount would render with dead materials. Those caches are meant to outlive any one world;
+   *  their cost is bounded at one cache total, not one per mount.
+   *
+   *  THE CANVAS DOES NOT SURVIVE THIS. forceContextLoss() is what actually hands the GPU context back
+   *  (renderer.dispose() alone leaves it alive until GC, and browsers cap contexts at ~8–16 — V1 already
+   *  holds one of its own in render3d/SharedRenderer). A canvas whose context has been force-lost cannot
+   *  be reused, so a remount must be given a FRESH canvas element. */
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    window.removeEventListener("resize", this.onWindowResize);
+    this.controls.dispose();
+    // EffectComposer.dispose() frees only renderTarget1/2 and its own copy pass — NOT the passes it was
+    // given. SSAOPass in particular holds four render targets and four materials of its own, so the
+    // passes are disposed explicitly first. Iterating composer.passes rather than naming them covers the
+    // OutputPass, which is constructed inline in the constructor and never stored in a field.
+    for (const pass of this.composer.passes) pass.dispose();
+    this.composer.dispose();
+    // Created by three for THIS renderer's key light, and by this class for the split-shadow cache and
+    // the 1×1 static probe respectively — all three are ours.
+    this.key.shadow.map?.dispose();
+    this.key.shadow.map = null;
+    this.staticShadowRT?.dispose();
+    this.staticShadowRT = null;
+    this.staticProbeTarget.dispose();
+    // The PMREM cubemap this constructor generated. Unlike everything hanging off the scene graph it is
+    // NOT shared with any other world — it is produced per renderer, from a throwaway RoomEnvironment.
+    this.scene.environment = null;
+    this.environmentTexture.dispose();
+    this.renderer.dispose();
+    this.renderer.forceContextLoss();
+  }
+}

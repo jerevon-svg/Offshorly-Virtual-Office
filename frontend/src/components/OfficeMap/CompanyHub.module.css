@@ -296,6 +296,13 @@
   padding: 56px 8px;
 }
 
+/* With the weather slide below it, the caught-up line is a note above a carousel rather than the
+   whole body, so it stops claiming the vertical space of an empty panel. */
+.emptyCompact {
+  padding: 10px 8px 0;
+  font-size: 14px;
+}
+
 .errorBanner {
   margin: 12px 0 0;
   color: #b3352d;

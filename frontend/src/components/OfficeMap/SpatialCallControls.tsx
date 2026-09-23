@@ -3,6 +3,7 @@ import {
   leaveCall,
   setCameraEnabled,
   setMicEnabled,
+  setScreenShareEnabled,
   startOrJoinCall,
   useCallState,
 } from "../../services/call/callStore";
@@ -121,6 +122,21 @@ export function SpatialCallControls({ sessionId, onExpand }: SpatialCallControls
       >
         <HudIcon name="video" size="18px" />
       </button>
+      {/* V1 SCREEN SHARE. One more track source on the call that is ALREADY connected — no room,
+          no token, no second call path — so it can only ever appear beside the mic and camera of a
+          live call. The CAVE's front panel is the first surface that shows the result; nothing
+          here knows or cares about that. */}
+      <button
+        type="button"
+        className={
+          call.screenShareEnabled ? `${styles.iconButton} ${styles.shareOn}` : styles.iconButton
+        }
+        onClick={() => void setScreenShareEnabled(!call.screenShareEnabled)}
+        aria-label={call.screenShareEnabled ? "Stop sharing your screen" : "Share your screen"}
+        title={call.screenShareError ?? (call.screenShareEnabled ? "Stop sharing" : "Share screen")}
+      >
+        <ScreenShareIcon />
+      </button>
       {/* Stage C. Expands the ALREADY-RUNNING call into the larger overlay. It calls a plain
           callback and touches no media: no token, no republish, no reconnect. */}
       {onExpand && (
@@ -144,6 +160,18 @@ export function SpatialCallControls({ sessionId, onExpand }: SpatialCallControls
         <HangUpIcon />
       </button>
     </div>
+  );
+}
+
+/** A monitor with an up arrow — the universal "share this surface" mark. Local to this file for
+ *  the same reason the chat header's own icons are local to theirs: one consumer, no indirection. */
+function ScreenShareIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="2.5" y="4" width="19" height="13" rx="2" stroke="currentColor" strokeWidth="1.7" />
+      <path d="M8 20.5h8" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+      <path d="M12 13.5V7.5m0 0L9.5 10M12 7.5l2.5 2.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   );
 }
 

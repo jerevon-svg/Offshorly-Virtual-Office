@@ -93,7 +93,15 @@ def build_context_window(
     ordered = sorted(messages, key=lambda m: (m.sent_at, m.id))
     kept = [
         m for m in ordered
-        if m.id != invoking_message_id and not is_toucan_sender(m.sender_email) and m.text.strip()
+        # PHASE 7D: SYSTEM ROWS ARE NOT CONVERSATION. A missed-call record has no author and no body,
+        # so it is excluded explicitly rather than relying on the `m.text.strip()` below to drop it by
+        # accident — an empty-text filter is about empty messages, not about what a row means.
+        if (
+            m.id != invoking_message_id
+            and (getattr(m, "kind", None) or "text") == "text"
+            and not is_toucan_sender(m.sender_email)
+            and m.text.strip()
+        )
     ][-max_messages:]
     window = [
         {"author": author_label(m.sender_email, invoker_email=invoker_email), "text": _clip(m.text, max_message_chars)}

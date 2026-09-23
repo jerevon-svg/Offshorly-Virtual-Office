@@ -161,8 +161,9 @@ describe("CompanyHub", () => {
 
     // All three are REACHABLE, unlike checkin mode — the carousel shows one at a time, so the
     // count and the dots are what prove none was filtered out.
-    expect(screen.getByText("1 of 3")).toBeInTheDocument();
-    expect(screen.getAllByRole("tab")).toHaveLength(3);
+    // 3 items + the weather slide, which is always last so the items still lead.
+    expect(screen.getByText("1 of 4")).toBeInTheDocument();
+    expect(screen.getAllByRole("tab")).toHaveLength(4);
 
     // Item 1 — dismissed: state badge shown, and read-only (no action buttons at all).
     expect(screen.getByText("Old announcement")).toBeInTheDocument();
@@ -190,16 +191,21 @@ describe("CompanyHub", () => {
 
     render(<CompanyHub />);
 
-    expect(screen.getByText("1 of 2")).toBeInTheDocument();
+    expect(screen.getByText("1 of 3")).toBeInTheDocument(); // two items + weather
     expect(screen.getByText("First")).toBeInTheDocument();
     // The footer names what is coming next, per the Hub mock.
     expect(screen.getByText("Next: Second")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Next item" }));
     expect(screen.getByText("Second")).toBeInTheDocument();
-    expect(screen.getByText("2 of 2")).toBeInTheDocument();
+    expect(screen.getByText("2 of 3")).toBeInTheDocument();
 
-    // Wraps forward, and the dots jump directly.
+    // Third slide is weather — reached by the same arrow, part of the same rotation.
+    fireEvent.click(screen.getByRole("button", { name: "Next item" }));
+    expect(screen.getByRole("region", { name: "Weather forecast" })).toBeInTheDocument();
+    expect(screen.getByText("3 of 3")).toBeInTheDocument();
+
+    // Wraps forward past it, back to the first item, and the dots jump directly.
     fireEvent.click(screen.getByRole("button", { name: "Next item" }));
     expect(screen.getByText("First")).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole("tab")[1]);
@@ -210,12 +216,14 @@ describe("CompanyHub", () => {
     expect(screen.getByText("First")).toBeInTheDocument();
   });
 
-  it("shows no carousel chrome for a single item", () => {
+  it("shows carousel chrome for one item, because weather is the second slide", () => {
     mockState.snapshot = makeSnapshot([makeItem({ id: "s-1", title: "Only" })], { mode: "manual" });
     render(<CompanyHub />);
 
     expect(screen.getByText("Only")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Next item" })).not.toBeInTheDocument();
+    expect(screen.getByText("1 of 2")).toBeInTheDocument();
+    expect(screen.getByText("Next: Weather")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Next item" })).toBeInTheDocument();
   });
 
   it("a previously-acknowledged required item does not block Enter Office when reviewed in manual mode", () => {
@@ -229,5 +237,57 @@ describe("CompanyHub", () => {
     render(<CompanyHub />);
 
     expect(screen.getByRole("button", { name: "Close" })).not.toBeDisabled();
+  });
+
+  // ---- the real-world weather card ----------------------------------------------------------
+  // ONE card, mounted once, so both modes have it by construction. What these guard against is a
+  // second one appearing for the welcome, and the card quietly going missing from either mode.
+  const weatherCards = () => screen.queryAllByRole("region", { name: "Weather forecast" });
+
+  it("is NOT repeated under the announcements — it is a slide of its own", () => {
+    mockState.snapshot = makeSnapshot([makeItem({ title: "Announcement one" })], { mode: "checkin" });
+    render(<CompanyHub />);
+    // Announcement showing, weather NOT stacked beneath it.
+    expect(screen.getByText("Announcement one")).toBeInTheDocument();
+    expect(weatherCards()).toHaveLength(0);
+    // ...it is one arrow away, and then it is the only thing on screen.
+    fireEvent.click(screen.getByRole("button", { name: "Next item" }));
+    expect(weatherCards()).toHaveLength(1);
+    expect(screen.queryByText("Announcement one")).not.toBeInTheDocument();
+  });
+
+  it("is reachable as the same single slide in the welcome (checkin) mode", () => {
+    mockState.snapshot = makeSnapshot([makeItem()], { mode: "checkin" });
+    render(<CompanyHub />);
+    fireEvent.click(screen.getByRole("button", { name: "Next item" }));
+    expect(weatherCards()).toHaveLength(1);
+  });
+
+  it("is reachable as the same single slide when the Hub is reopened manually", () => {
+    mockState.snapshot = makeSnapshot([makeItem()], { mode: "manual" });
+    render(<CompanyHub />);
+    fireEvent.click(screen.getByRole("button", { name: "Next item" }));
+    expect(weatherCards()).toHaveLength(1);
+  });
+
+  it("is the whole carousel when there is nothing else in the Hub to read", () => {
+    mockState.snapshot = makeSnapshot([], { mode: "checkin" });
+    render(<CompanyHub />);
+    expect(screen.getByText(/all caught up/i)).toBeInTheDocument();
+    expect(weatherCards()).toHaveLength(1);
+    // One slide, so no arrows — the existing single-slide rule, unchanged.
+    expect(screen.queryByRole("button", { name: "Next item" })).not.toBeInTheDocument();
+  });
+
+  it("leaves Enter Office and the required-item block alone", () => {
+    const required = makeItem({ id: "r-1", priority: "required", myStatus: "unseen" });
+    mockState.snapshot = makeSnapshot([required], { mode: "checkin" });
+    render(<CompanyHub />);
+    // Still blocked by the item, and still blocked while standing on the weather slide — the gate
+    // is the items, not whatever happens to be on screen.
+    expect(screen.getByRole("button", { name: "Enter Office" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Next item" }));
+    expect(weatherCards()).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Enter Office" })).toBeDisabled();
   });
 });

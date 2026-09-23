@@ -147,6 +147,11 @@ async def get_conversation_messages(
                 delivered_to=delivered_to,
                 read_by=read_by,
                 mentioned_emails=list(m.mentioned_emails or []),
+                # PHASE 7D. Built field by field here rather than from the ORM object, so a new column
+                # is invisible on this endpoint unless it is named — which is exactly how the first
+                # missed call came back looking like an empty message.
+                kind=m.kind or "text",
+                meta=m.meta,
                 reactions=[
                     MessageReactionOut(**r) for r in reactions_by_message.get(m.id, [])
                 ],

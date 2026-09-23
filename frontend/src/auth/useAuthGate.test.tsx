@@ -79,6 +79,33 @@ describe("useAuthGate", () => {
     vi.unstubAllGlobals();
   });
 
+  // The other half of the weather-identity fix: seeding happens ONLY inside the dev bypass, so a real
+  // signed-in session must be untouched by it — bearer token, and no dev header smuggled alongside.
+  it("outside the dev bypass, weather requests use the bearer token and send no dev-email header", async () => {
+    import.meta.env.VITE_CHAT_SOCKET_URL = "http://localhost:8002";
+    // A REAL session never runs seedDevBypassIdentity, so the client's dev identity is unset. Cleared
+    // explicitly rather than with resetModules(), which would hand this test a different module
+    // instance from the one useAuthGate seeds and quietly break the bypass specs above.
+    const { setDevIdentity } = await import("../services/weather/forecastClient");
+    setDevIdentity(null);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ source: "weatherapi", results: [], attribution: "" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    try {
+      const { searchCities } = await import("../services/weather/forecastClient");
+      await searchCities("cebu");
+      const [, init] = fetchSpy.mock.calls.at(-1) as [string, RequestInit];
+      const headers = new Headers(init.headers);
+      expect(headers.get("Authorization")).toBe("Bearer valid-token");
+      expect(headers.get("x-dev-email")).toBeNull();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it("redirects to / when can_view_virtual_office is false", async () => {
     vi.stubGlobal(
       "fetch",
@@ -334,6 +361,61 @@ describe("useAuthGate", () => {
     it("scopes getCurrentUserId() to the default bypass email, not the 'bon' fallback id", () => {
       render(<GateProbe />);
       expect(getCurrentUserId()).toBe("jerevon@offshorly.com");
+    });
+
+    // REGRESSION (live smoke test, 2026-09-21): the Company Hub's weather card was the ONE Hub
+    // surface that 401'd on the :5174 mock rig. forecastClient exported setDevIdentity like every
+    // other client, and seedDevBypassIdentity simply never called it — so /weather/search and
+    // /weather/forecast went out with no identity at all while the Hub's own items beside them
+    // loaded fine.
+    //
+    // Asserted through a REAL REQUEST rather than by spying on the setter, because a spy only
+    // proves the setter was called: this proves the identity actually reaches the wire, which is
+    // the thing that was broken. Every other weather test mocks the client, which is exactly why
+    // none of them caught it.
+    it("seeds the weather client, so /weather/* requests carry the dev identity in mock mode", async () => {
+      import.meta.env.VITE_CHAT_SOCKET_URL = "http://localhost:8002";
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(JSON.stringify({ source: "weatherapi", results: [], attribution: "" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+      try {
+        render(<GateProbe />);
+        const { searchCities } = await import("../services/weather/forecastClient");
+        await searchCities("cebu");
+
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+        const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+        expect(url).toContain("/weather/search?q=cebu");
+        expect(new Headers(init.headers).get("x-dev-email")).toBe("jerevon@offshorly.com");
+      } finally {
+        fetchSpy.mockRestore();
+      }
+    });
+
+    it("follows ?as= for the weather client too, so one browser cannot leak another identity", async () => {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: { ...window.location, href: "https://x/virtual-office?as=alex@offshorly.com", search: "?as=alex@offshorly.com" },
+      });
+      import.meta.env.VITE_CHAT_SOCKET_URL = "http://localhost:8002";
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(JSON.stringify({ source: "weatherapi", days: [], attribution: "" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+      try {
+        render(<GateProbe />);
+        const { fetchCityForecast } = await import("../services/weather/forecastClient");
+        await fetchCityForecast("10.3,123.9");
+        const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+        expect(new Headers(init.headers).get("x-dev-email")).toBe("alex@offshorly.com");
+      } finally {
+        fetchSpy.mockRestore();
+      }
     });
     it("?as= takes precedence over VITE_DEV_USER_EMAIL when both are set", () => {
       import.meta.env.VITE_DEV_USER_EMAIL = "lui@offshorly.com";

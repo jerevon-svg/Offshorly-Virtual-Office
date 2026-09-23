@@ -276,3 +276,102 @@ async def test_walk_path_length_cap_enforced(server):
 
     await a.disconnect()
     await b.disconnect()
+
+
+async def test_sitting_on_an_occupied_seat_is_accepted_standing_and_rejected_to_the_sender(server):
+    """Phase 6C. A's seated arrival holds seat "881,258". B's arrival claiming the same seat is
+    persisted and broadcast as STANDING (seatKey None) and B alone hears `seat_rejected`."""
+    a = await _connect_as(server, "a@example.com")
+    b = await _connect_as(server, "b@example.com")
+    await asyncio.sleep(0.2)
+
+    loop = asyncio.get_event_loop()
+    a_sat: asyncio.Future = loop.create_future()
+
+    @b.on("peer_walk_arrived")
+    async def on_b_arrived(data):
+        if data["email"] == "a@example.com" and not a_sat.done():
+            a_sat.set_result(data)
+
+    await a.emit("walk_started", _walk_started_payload(movementId="a1"))
+    await asyncio.sleep(0.1)
+    await a.emit("walk_arrived", _walk_arrived_payload(movementId="a1", state="sitting", seatKey="881,258", roomId="executive-team"))
+    a_payload = await asyncio.wait_for(a_sat, timeout=2)
+    assert a_payload["state"] == "sitting"
+    assert a_payload["seatKey"] == "881,258"
+
+    b_rejected: asyncio.Future = loop.create_future()
+    a_sees_b: asyncio.Future = loop.create_future()
+    a_rejected: asyncio.Future = loop.create_future()
+
+    @b.on("seat_rejected")
+    async def on_b_rejected(data):
+        if not b_rejected.done():
+            b_rejected.set_result(data)
+
+    @a.on("seat_rejected")
+    async def on_a_rejected(data):
+        if not a_rejected.done():
+            a_rejected.set_result(data)
+
+    @a.on("peer_walk_arrived")
+    async def on_a_arrived(data):
+        if data["email"] == "b@example.com" and not a_sees_b.done():
+            a_sees_b.set_result(data)
+
+    await b.emit("walk_started", _walk_started_payload(movementId="b1"))
+    await asyncio.sleep(0.1)
+    await b.emit("walk_arrived", _walk_arrived_payload(movementId="b1", state="sitting", seatKey="881,258", roomId="executive-team"))
+
+    rejection = await asyncio.wait_for(b_rejected, timeout=2)
+    assert rejection == {"movementId": "b1", "seatKey": "881,258", "heldBy": "a@example.com"}
+    relayed = await asyncio.wait_for(a_sees_b, timeout=2)
+    assert relayed["state"] == "standing"
+    assert relayed["seatKey"] is None
+    assert relayed["at"] == {"x": 5, "y": 5}  # the position is true; the pose is not granted
+
+    await asyncio.sleep(0.2)
+    assert not a_rejected.done()
+    # the registry still holds A as the sitter, and B as standing
+    assert socket_module.position_registry.seat_holder("881,258") == "a@example.com"
+    assert socket_module.position_registry.get("b@example.com").stable.state == "standing"
+
+    await a.disconnect()
+    await b.disconnect()
+
+
+async def test_re_sitting_in_your_own_seat_is_not_a_conflict(server):
+    a = await _connect_as(server, "a@example.com")
+    b = await _connect_as(server, "b@example.com")
+    await asyncio.sleep(0.2)
+
+    loop = asyncio.get_event_loop()
+    seen: list = []
+    done: asyncio.Future = loop.create_future()
+
+    @b.on("peer_walk_arrived")
+    async def on_b_arrived(data):
+        seen.append(data)
+        if len(seen) == 2 and not done.done():
+            done.set_result(True)
+
+    rejected: asyncio.Future = loop.create_future()
+
+    @a.on("seat_rejected")
+    async def on_a_rejected(data):
+        if not rejected.done():
+            rejected.set_result(data)
+
+    for mid in ("a1", "a2"):
+        await a.emit("walk_started", _walk_started_payload(movementId=mid))
+        await asyncio.sleep(0.1)
+        await a.emit("walk_arrived", _walk_arrived_payload(movementId=mid, state="sitting", seatKey="100,200", roomId="dev-team"))
+        await asyncio.sleep(0.1)
+
+    await asyncio.wait_for(done, timeout=2)
+    assert [d["state"] for d in seen] == ["sitting", "sitting"]
+    await asyncio.sleep(0.2)
+    assert not rejected.done()
+
+    await a.disconnect()
+    await b.disconnect()

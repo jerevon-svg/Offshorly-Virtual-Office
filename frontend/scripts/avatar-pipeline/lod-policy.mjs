@@ -19,12 +19,19 @@
 // Triangle targets/simplify settings are unchanged (geometry is sufficient).
 // ---------------------------------------------------------------------------
 
-// The six AnimationClip names every consolidated character GLB must carry
+// The AnimationClip names every consolidated character GLB must carry
 // (CharacterCanvas resolves states by these exact strings — see
 // characterAnimationState.ts's CHARACTER_ANIM_STATES).
+//
+// `running` (2026-09-13) is the seventh, and it cost nothing to add: Meshy's
+// rigging step bundles BOTH a walk and a run with every rig for free, and the
+// pipeline has been saving `<id>-rigged-running.glb` alongside the walk since
+// the first character was built. Only the walk was ever wired up. So this is a
+// contract change, not a generation — no API call, no credits, no re-rig.
 export const REQUIRED_CLIP_NAMES = [
   "idle-9",
   "walking",
+  "running",
   "agree-gesture",
   "listening-gesture",
   "sit-on-chair-arms",

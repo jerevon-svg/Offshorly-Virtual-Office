@@ -1,0 +1,230 @@
+// vo3d adapter — V1'S ATTENDANCE, ASKED NOT RE-DECIDED. Phase 5.
+//
+// THE AUTHORITY IS services/attendance, AND THIS FILE CREATES NO SECOND ONE. It calls the same
+// `attendanceService.getMine()` V1's own office calls, against the same backend row
+// (`employee_attendance`, backend/app/routers/attendance.py), for the same employee id V1 resolved. It
+// never writes: no check-in, no check-out, no time log. V2 asks a question and maps the answer onto the
+// boundary contract in app/access.ts.
+//
+// PHASE 7E ADDS `apply`, AND IT IS NOT A WRITE EITHER. The Reception kiosk (app/Vo3dKioskCard.tsx, driven
+// from app/Vo3dOverlay.tsx) performs a check-in through V1'S OWN `attendanceService.checkIn()` — the same
+// call V1's Reception menu makes, against the same endpoint and the same row — and hands the confirmed
+// RESPONSE back here so every reader of this hook sees it without a round trip. The decision is still the
+// server's, the record is still `employee_attendance`, and this module still issues nothing but GETs.
+//
+// WHAT V1 ACTUALLY OFFERS, AND WHY THIS HAS TO POLL AT ALL. Both halves were checked before anything was
+// built here:
+//
+//   • THERE IS NO ATTENDANCE EVENT. backend/app/routers/attendance.py emits exactly one thing on a
+//     check-in or a check-out — `offline_lineup` — and backend/app/realtime/socket.py has no attendance
+//     event of any kind. So there is no change feed to subscribe to.
+//   • V1'S OWN OFFICE DOES NOT NEED ONE. components/OfficeMap/OfficeMap.tsx reads GET /attendance/me ONCE
+//     per resolved identity and is otherwise correct because it OWNS the transitions: check-in and
+//     check-out happen through its own UI, and it applies the response it got back (applyAttendance). V2
+//     is an observer of a session it never changes, so "read it once" is not a mechanism it can borrow.
+//
+// SO THE LINEUP IS A DOORBELL AND THE POLL IS THE FALLBACK, and the distinction is the whole design:
+//
+//   • `offline_lineup` IS attendance-triggered — the backend broadcasts it from inside both endpoints —
+//     so a confirmed check-out revokes office access within one round trip, with no unrelated socket
+//     traffic needed. The caller passes it as `refreshKey`. It is a HINT THAT SOMETHING HAPPENED, never
+//     the answer: the lineup is in-memory and per-process (backend/app/services/offline_lineup.py says
+//     so) and is empty after a restart while people are still checked out, so "absent from the lineup"
+//     does NOT mean "checked in". Using it as the gate would fail OPEN — the exact bypass the boundary
+//     exists to prevent.
+//   • The BOUNDED REFRESH below exists for the one case the doorbell cannot cover: a transition that
+//     happened while this client's socket was down, so the broadcast was never delivered. Window focus
+//     and tab visibility catch the common shape of that (check out in another tab, come back to this
+//     one); the interval catches the rest. Both are visible-only and coalesced — see REFRESH_MS.
+//
+// WHY A FAILED READ DOES NOT REVOKE ANYTHING. `unknown` is fail-closed for ENTRY and that is correct
+// while nothing is known yet. But downgrading a CONFIRMED `permitted` to `unknown` because one request
+// timed out would shut a checked-in employee out of their own office over a network blip — so a failed
+// REFRESH keeps the last answer V1 actually gave, and only a failed FIRST read leaves `unknown`. A real
+// check-out is still caught by the doorbell immediately, or by the next successful poll.
+import { useCallback, useEffect, useRef, useState } from "react";
+import { attendanceService, type AttendanceRecord } from "../../../services/attendance";
+import { getCurrentUserId } from "../../../auth/useAuthGate";
+import { getCurrentUser } from "../../../auth/currentUserStore";
+import type { OfficeAccess } from "../app/access";
+
+/** V1's own mapping, restated nowhere: CHECKED_IN is the only status that opens the working office.
+ *  `canSelfFreeWalk` (components/OfficeMap/spawnPlacement.ts) asks the same question of the same value. */
+export function accessForStatus(status: string | null | undefined): OfficeAccess {
+  if (status === "CHECKED_IN") return "permitted";
+  if (status === "CHECKED_OUT") return "denied";
+  return "unknown";
+}
+
+/** How often the fallback poll runs while the tab is VISIBLE.
+ *
+ *  60 s is chosen against what it is actually for. It is not the mechanism that notices a check-out —
+ *  the lineup broadcast does that in one round trip — it is the backstop for a transition whose broadcast
+ *  was never delivered, which needs to be noticed eventually rather than immediately. One request a
+ *  minute per open V2 tab is a cost that does not need justifying; one every few seconds would be.
+ *
+ *  It is suspended entirely while the tab is hidden, and a hidden tab that comes back is refreshed by the
+ *  focus/visibility handlers instead — so a backgrounded preview costs nothing at all. */
+export const REFRESH_MS = 60_000;
+
+/** The shortest gap between two FOCUS/VISIBILITY-driven reads.
+ *
+ *  Focus is the one trigger a person can generate as fast as they can alt-tab, and a browser fires it for
+ *  window focus as well as tab focus — a two-session run showed several reads arriving from nothing but
+ *  the OS moving focus between windows. So that path, and only that path, is floored.
+ *
+ *  A skipped focus read costs nothing that matters: a real check-out is delivered by the lineup doorbell
+ *  in the same round trip, the interval is still running, and the next focus after the gap reads again.
+ *  The doorbell and the interval are deliberately NOT floored — the doorbell is the attendance-triggered
+ *  path that has to stay immediate, and the interval already is a floor. */
+export const FOCUS_MIN_GAP_MS = 5_000;
+
+/**
+ * V1's answer for the signed-in employee: read on mount, on every `refreshKey` change, on window focus,
+ * on the tab becoming visible, and every REFRESH_MS while visible.
+ *
+ * `unknown` until the first read resolves, and `unknown` forever for a session V1 could not identify —
+ * the standalone case, where there is nobody to ask about and the world is never handed an access answer
+ * at all (app/Vo3dHost.tsx only pushes it for a real identity).
+ *
+ * AT MOST ONE REQUEST IN FLIGHT. A trigger that arrives while a read is running does not start a second
+ * one; it sets a flag and the read is repeated once the first settles, so a burst of triggers (a lineup
+ * broadcast landing at the same moment as a focus event) collapses into one extra request rather than
+ * several. Responses carry a generation so a slow one can never overwrite a newer answer.
+ *
+ * Every listener and the interval are removed on unmount, and a response that lands afterwards is
+ * dropped — this route is mounted and unmounted repeatedly (StrictMode alone does it twice).
+ */
+/** PHASE 7A — V1's attendance answer AND the record it was read from, from ONE poller.
+ *
+ *  Phase 5 needed only the boundary verdict, so that is all this adapter returned. The branded HUD needs
+ *  two more facts off the SAME read — whether the employee is checked in (the availability picker's own
+ *  gate) and when the session started (the working-time pill's clock) — and reading them with a second
+ *  hook would mean a second interval, a second focus listener and two answers that can disagree by a
+ *  poll. `useV1OfficeAccess` is now a projection of this, so every existing caller is unchanged. */
+export interface V1Attendance {
+  access: OfficeAccess;
+  /** V1's own record, or null before the first read resolves (and after a failed first read). */
+  record: AttendanceRecord | null;
+  /** PHASE 7E — ADOPT A RECORD V1 HAS JUST RETURNED, without waiting for the next read.
+   *
+   *  THIS IS STILL NOT A SECOND AUTHORITY, and the distinction is exact: the caller does not decide
+   *  anything here, it hands over the RESPONSE BODY of a `services/attendance` call it has just made
+   *  against the same `employee_attendance` row this hook polls. The alternative — POST, then wait for a
+   *  refresh to observe it — would leave a confirmed check-in with the gate still shut for a round trip,
+   *  and would make the same request twice for an answer the client is already holding.
+   *
+   *  It supersedes any read in flight (the generation is bumped), so a GET issued before the check-in can
+   *  never land afterwards and put the stale answer back. */
+  apply(record: AttendanceRecord): void;
+  /** PHASE 7E — ask for an immediate re-read, on top of the doorbell and the interval. Used by the retry
+   *  path, where what is wanted is V1's current answer rather than a second write. */
+  refresh(): void;
+}
+
+/** Phase 5's answer alone — the boundary verdict, unchanged. */
+export function useV1OfficeAccess(refreshKey: unknown): OfficeAccess {
+  return useV1Attendance(refreshKey).access;
+}
+
+export function useV1Attendance(refreshKey: unknown): V1Attendance {
+  const [access, setAccess] = useState<OfficeAccess>("unknown");
+  const [record, setRecord] = useState<AttendanceRecord | null>(null);
+  /** The live read, owned by the mount effect and called by the refreshKey effect below. */
+  const readRef = useRef<() => void>(() => {});
+  /** PHASE 7E — the live `apply`, owned by the same effect so it shares the generation counter that keeps
+   *  a slow response from overwriting a newer answer. A no-op before the effect runs and after unmount. */
+  const applyRef = useRef<(next: AttendanceRecord) => void>(() => {});
+
+  useEffect(() => {
+    if (!getCurrentUser()?.email) return;
+    let cancelled = false;
+    let inFlight = false;
+    let again = false;
+    let generation = 0;
+    /** When the last read was ISSUED — the floor below measures request spacing, not answer spacing. */
+    let lastAt = 0;
+
+    const read = (): void => {
+      if (cancelled) return;
+      // COALESCE rather than drop: a trigger during a read is a real signal, so it is honoured once the
+      // read in flight settles instead of being thrown away or starting a second request.
+      if (inFlight) {
+        again = true;
+        return;
+      }
+      inFlight = true;
+      lastAt = Date.now();
+      const gen = ++generation;
+      attendanceService
+        .getMine(getCurrentUserId() ?? "")
+        .then((next) => {
+          if (!cancelled && gen === generation) {
+            setAccess(accessForStatus(next?.status));
+            setRecord(next ?? null);
+          }
+        })
+        .catch(() => {
+          // Deliberately nothing. See the header: a failed refresh keeps the last answer V1 gave, and a
+          // failed first read leaves the initial `unknown`, which is already fail-closed for entry.
+        })
+        .finally(() => {
+          inFlight = false;
+          if (!cancelled && again) {
+            again = false;
+            read();
+          }
+        });
+    };
+    readRef.current = read;
+    applyRef.current = (next: AttendanceRecord): void => {
+      if (cancelled) return;
+      // Bumping the generation is what makes this safe: any read already in flight is now stale by
+      // definition — it was issued against the state BEFORE this record — and its `.then` will be dropped.
+      generation++;
+      setAccess(accessForStatus(next?.status));
+      setRecord(next ?? null);
+    };
+    read();
+
+    /** A focus/visibility read, floored — see FOCUS_MIN_GAP_MS. */
+    const readOnFocus = (): void => {
+      if (Date.now() - lastAt < FOCUS_MIN_GAP_MS) return;
+      read();
+    };
+    const onFocus = (): void => readOnFocus();
+    const onVisibility = (): void => {
+      if (document.visibilityState === "visible") readOnFocus();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") read();
+    }, REFRESH_MS);
+
+    return () => {
+      cancelled = true;
+      readRef.current = () => {};
+      applyRef.current = () => {};
+      window.clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
+
+  // THE DOORBELL. `refreshKey` is the caller's live attendance-triggered signal (the offline lineup the
+  // backend broadcasts from inside both attendance endpoints). It asks for a read; it never supplies an
+  // answer. Skipped on the first run, because the mount effect above has already read.
+  const firstKey = useRef(true);
+  useEffect(() => {
+    if (firstKey.current) {
+      firstKey.current = false;
+      return;
+    }
+    readRef.current();
+  }, [refreshKey]);
+
+  const apply = useCallback((next: AttendanceRecord) => applyRef.current(next), []);
+  const refresh = useCallback(() => readRef.current(), []);
+  return { access, record, apply, refresh };
+}

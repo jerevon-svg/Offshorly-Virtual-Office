@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import HudIcon from "../HudIcon";
+import { WeatherForecastCard } from "./WeatherForecastCard";
 import styles from "./CompanyHub.module.css";
 import announcementArt from "../../assets/hub-art/announcement.png";
 import birthdayArt from "../../assets/hub-art/birthday.png";
@@ -82,15 +83,28 @@ export function CompanyHub() {
   const blocked = hasBlockingRequiredItems(items);
   const primaryLabel = mode === "checkin" ? "Enter Office" : "Close";
 
+  // THE CAROUSEL IS NO LONGER JUST THE ITEMS. Weather is a slide of its own, always present and
+  // always last, so the Hub still opens on whatever the company is actually announcing. Modelling it
+  // as an entry in this one list — rather than as something rendered beside the carousel — is what
+  // gives it the dots, the arrows, the counter and the transition for free, and what stops it being
+  // repeated underneath every announcement the way it was.
+  type Slide = { key: string; kind: "item"; item: HubItem } | { key: string; kind: "weather" };
+  const slides: Slide[] = [
+    ...visibleItems.map((item): Slide => ({ key: item.id, kind: "item", item })),
+    { key: "weather", kind: "weather" },
+  ];
+
   // Acting on an item can shorten the list under the carousel (check-in mode drops handled
   // items), so the cursor is clamped rather than left pointing past the end.
-  const count = visibleItems.length;
+  const count = slides.length;
   useEffect(() => {
     if (index > count - 1) setIndex(Math.max(0, count - 1));
   }, [count, index]);
   const safeIndex = Math.min(index, Math.max(0, count - 1));
-  const current: HubItem | undefined = visibleItems[safeIndex];
-  const next = count > 1 ? visibleItems[(safeIndex + 1) % count] : undefined;
+  const slide: Slide | undefined = slides[safeIndex];
+  const current: HubItem | undefined = slide?.kind === "item" ? slide.item : undefined;
+  const nextSlide = count > 1 ? slides[(safeIndex + 1) % count] : undefined;
+  const nextTitle = nextSlide?.kind === "item" ? nextSlide.item.title : nextSlide ? "Weather" : undefined;
 
   async function handleRequiredAction(item: HubItem) {
     setPendingId(item.id);
@@ -148,9 +162,13 @@ export function CompanyHub() {
         <div className={styles.body}>
           {loading && items.length === 0 && <div className={styles.empty}>Loading…</div>}
           {error && <div className={styles.errorBanner}>{error}</div>}
+          {/* Still the same line, now compact: the weather slide sits below it, so the old
+              56px-tall empty state would have pushed the carousel off the panel. */}
           {!loading && isEmpty && !error && (
-            <div className={styles.empty}>You're all caught up! 🎉</div>
+            <div className={`${styles.empty} ${styles.emptyCompact}`}>You're all caught up! 🎉</div>
           )}
+
+          {slide?.kind === "weather" && <WeatherForecastCard />}
 
           {current && (
             /* `key` restarts the slide/fade on every item change — the whole transition, no
@@ -228,9 +246,9 @@ export function CompanyHub() {
 
             <div className={styles.navCenter}>
               <div className={styles.dots} role="tablist" aria-label="Hub items">
-                {visibleItems.map((item, i) => (
+                {slides.map((s, i) => (
                   <button
-                    key={item.id}
+                    key={s.key}
                     role="tab"
                     aria-selected={i === safeIndex}
                     aria-label={`Item ${i + 1} of ${count}`}
@@ -240,7 +258,7 @@ export function CompanyHub() {
                 ))}
               </div>
               <div className={styles.navCount}>{`${safeIndex + 1} of ${count}`}</div>
-              {next && <div className={styles.navNext}>{`Next: ${next.title}`}</div>}
+              {nextTitle && <div className={styles.navNext}>{`Next: ${nextTitle}`}</div>}
             </div>
 
             <button

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from sqlalchemy import and_, case, func, select
+from sqlalchemy import and_, case, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -490,6 +490,52 @@ async def insert_message(
         mentioned_emails=validated_mentions,
     )
     session.add(message)
+    await session.flush()
+    return message
+
+
+async def create_system_message(
+    session: AsyncSession,
+    *,
+    conversation_id: str,
+    sender_email: str,
+    kind: str,
+    meta: dict | None = None,
+    sent_at: datetime | None = None,
+) -> Message:
+    """PHASE 7D — A CONVERSATION EVENT THE SERVER RECORDS, not a message anybody typed.
+
+    Deliberately NOT routed through services/chat_send.send_chat_message, and that is the point rather
+    than a shortcut: that function records a QUEST EVENT for every send. A missed call written through
+    it would credit the CALLER with progress for a call they did not manage to place. This writes the
+    row and bumps the conversation, and does nothing else.
+
+    `text` is always "" — a system row has no body, and the wording of it belongs to whichever client
+    renders it (see models/message.py). `sender_email` is still the person the event is ABOUT, so every
+    existing unread rule works untouched: repositories/chat.py counts rows whose sender is not the
+    reader and whose sent_at is past their last_read_at, which is exactly "Micah's missed call is
+    unread for Bon".
+
+    Callers must have already resolved the conversation (and, for a missed call, verified the recipient
+    is real) — this writes state, it does not police policy."""
+    when = sent_at or datetime.now(timezone.utc)
+    message = Message(
+        conversation_id=conversation_id,
+        sender_email=sender_email.strip().lower(),
+        text="",
+        sent_at=when,
+        mentioned_emails=None,
+        kind=kind,
+        meta=meta,
+    )
+    session.add(message)
+    # The conversation has to move for it to surface anywhere an ordinary message would: the inbox
+    # orders on this, and Phase 7D's whole promise is that a missed call is discoverable the same way.
+    await session.execute(
+        update(Conversation)
+        .where(Conversation.id == conversation_id)
+        .values(last_message_at=when, updated_at=when)
+    )
     await session.flush()
     return message
 

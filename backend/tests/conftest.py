@@ -1,11 +1,73 @@
 from __future__ import annotations
 
-import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
+import os
+import tempfile
 
-import app.models  # noqa: F401 - registers every model on Base.metadata
-from app.database import Base
+import pytest
+
+# --- THE TEST SUITE NEVER OPENS A REAL DATABASE. -------------------------------------------------
+#
+# Settings resolve from backend/.env, and until this block existed the whole suite therefore opened
+# the developer's own virtual_office_fastapi.db: every `Base.metadata.create_all(engine)` in a test
+# module — and the two `drop_all`s — ran against it. That destroyed real local data more than once
+# (see isolated_app_db's history below). Patching fixtures one file at a time left ~45 unpatched.
+#
+# So the redirect happens HERE, at import, BEFORE `app.config` is first imported anywhere in the
+# process: pytest loads conftest.py before any test module, and `settings` is built the moment
+# app.config is imported, with the environment outranking .env. Every engine the app builds for the
+# rest of the session — `app.database.engine`, the sessionmakers, alembic's env — points at a
+# throwaway file. A test's own truncation then cannot reach anything real.
+#
+# FAIL CLOSED: `_assert_test_database` below runs once per session and stops pytest outright if the
+# engine still resolves to anything that is not recognisably a test database — a developer's dev
+# file, the acceptance rig's dev_hub_playground.db, or any Postgres URL.
+_TEST_DB_FILE = os.path.join(tempfile.gettempdir(), f"vo_pytest_{os.getpid()}.db")
+_TEST_DB_URL = f"sqlite+aiosqlite:///{_TEST_DB_FILE}"
+
+
+def _is_test_database_url(url: str) -> bool:
+    """Only in-memory SQLite, this session's own pytest file, or a fixture's isolated_test.db qualify.
+    Everything else — named dev files, anything Postgres — is treated as real."""
+    if not url.startswith("sqlite+aiosqlite://"):
+        return False
+    if url == "sqlite+aiosqlite://" or url.endswith(":memory:"):
+        return True
+    name = url.rsplit("/", 1)[-1]
+    return name.startswith("vo_pytest_") or name == "isolated_test.db"
+
+
+if not _is_test_database_url(os.environ.get("DATABASE_URL", "")):
+    os.environ["DATABASE_URL"] = _TEST_DB_URL
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # noqa: E402
+from sqlalchemy.pool import StaticPool  # noqa: E402
+
+import app.models  # noqa: F401,E402 - registers every model on Base.metadata
+from app.database import Base  # noqa: E402
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _assert_test_database():
+    """The guard. Refuses to run a single test if the app engine is not on a test database."""
+    from app import database as app_db
+    from app.config import settings
+
+    engine_url = str(app_db.engine.url)
+    if not _is_test_database_url(settings.DATABASE_URL) or not _is_test_database_url(engine_url):
+        pytest.exit(
+            "REFUSING TO RUN: the application engine is not on a test database "
+            f"(settings={settings.DATABASE_URL!r}, engine={engine_url!r}). "
+            "Tests create and drop tables on this engine; a dev, rig or production database "
+            "must never be behind it. See tests/conftest.py.",
+            returncode=3,
+        )
+    yield
+    # The session's throwaway file, gone with the session.
+    for suffix in ("", "-wal", "-shm"):
+        try:
+            os.remove(_TEST_DB_FILE + suffix)
+        except FileNotFoundError:
+            pass
 
 
 @pytest.fixture(autouse=True)

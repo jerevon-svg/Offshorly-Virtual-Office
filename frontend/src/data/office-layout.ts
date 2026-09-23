@@ -369,3 +369,42 @@ export const teamRooms: Room[] = TEAM_ROOM_IDS.map((id) => {
   if (!room) throw new Error(`teamRooms: missing room "${id}" in rooms[]`);
   return room;
 });
+
+// ---- THE TWO ROOM ID NAMESPACES, and the one bridge between them --------------
+//
+// This app carries two room id schemes that are NOT interchangeable:
+//
+//   manifest / roomLayers  "design-room", "executive-room", "dev-room", …
+//                          the hand-drawn art layers. What a room CLICK resolves
+//                          to (OfficeMap's onRoomClick, and the vo3d world's own
+//                          WorldState regions, which are built from these rects).
+//   flat / `rooms`         "design-team", "executive-team", "dev-team", …
+//                          the legacy flat rects. What a PERSON carries
+//                          (OfficePerson.roomId, via data/roomIdentity), what
+//                          doorStandPoints classifies against, and what the
+//                          whiteboard room scope is keyed on.
+//
+// Every surface that shows "who is in this room" has to cross that gap, and the
+// only stable link between the two schemes is GEOMETRY — the ids do not agree
+// and never will (see charactersInRoom's note above). OfficeMap worked this out
+// once, inline; it lives here now so V1's office and the vo3d world ask the same
+// question and can never drift into two different answers.
+
+// The flat rects/teamRooms-namespace room id containing `point`, or null when the
+// point is outside every flat room.
+export function flatRoomIdAt(point: { x: number; y: number }): string | null {
+  const room = rooms.find(
+    (r) => point.x >= r.x && point.x <= r.x + r.width && point.y >= r.y && point.y <= r.y + r.height,
+  );
+  return room?.id ?? null;
+}
+
+// The flat room id for a MANIFEST room layer id, resolved through that layer's own
+// centre. Null for a manifest room with no flat twin — "central-hub" is exactly
+// that: the wall-less shared space has art but no flat rect, so nothing keyed on
+// the flat namespace (a roster row, a board scope) can answer for it.
+export function flatRoomIdForRoomLayer(roomLayerId: string): string | null {
+  const layer = roomLayers.find((r) => r.id === roomLayerId);
+  if (!layer) return null;
+  return flatRoomIdAt({ x: layer.x + layer.width / 2, y: layer.y + layer.height / 2 });
+}

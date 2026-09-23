@@ -1,0 +1,76 @@
+/* vo3d app — THE V2 THEME FOR V1'S CHECKOUT (Phase 7E).
+   ------------------------------------------------------------------------------------------------
+   NO COMPONENT IS RESTYLED HERE, AND NONE IS FORKED. This file sets the --vo-co-* custom properties
+   that components/OfficeMap/checkout/checkout.module.css already reads, on a container V2 wraps the
+   flow in. V1's office never renders that container, so V1's checkout falls back to the stylesheet's
+   own values and is pixel-for-pixel what it has always been.
+
+   EVERY VALUE BELOW IS THE OFFICE'S OWN, taken from the cream card family the rest of V2 already
+   uses — the same one checkout.module.css documents for the 8-hour reminder card:
+
+     surface / hairline / radius / shadow   RoomSidebar .sidebar, ConversationListPanel .panel
+                                            (#fdfcfa, rgba(24,20,34,.08), 22px, the family's shadow)
+     primary                                Whiteboard .buttonPrimary (#2f6b45, hover #275a3a)
+     neutral surface button                 Whiteboard .button (#fffefc, .12 hairline)
+     focus ring                             the family's #4bb96a
+     ink                                    #241f30, soft at 70%
+
+   Nothing is animated and nothing is decorated: the panels are a form somebody fills in at the end
+   of their day, and the point of the theme is that they stop looking like a different product.
+   ------------------------------------------------------------------------------------------------ */
+
+.scope {
+  display: block;
+  width: 0;
+  height: 0;
+
+  /* ---- surface ---- */
+  /* A slightly deeper scrim than V1's: this is the sole focus, and the 3D world behind it is busy. */
+  --vo-co-scrim: rgba(18, 16, 28, 0.46);
+  --vo-co-surface: #fdfcfa;
+  --vo-co-line: rgba(24, 20, 34, 0.08);
+  --vo-co-radius: 22px;
+  --vo-co-pad: 22px;
+  --vo-co-blur: none;
+  --vo-co-shadow: 0 28px 70px rgba(18, 16, 28, 0.32), 0 2px 8px rgba(18, 16, 28, 0.12);
+  /* The Zoho form is the widest thing in the flow and the one that has to stay readable. */
+  --vo-co-min-width: 340px;
+  --vo-co-max-width: 460px;
+
+  /* ---- text ---- */
+  --vo-co-ink: #241f30;
+  --vo-co-ink-soft: rgba(36, 31, 48, 0.7);
+  --vo-co-title-size: 19px;
+  --vo-co-title-weight: 800;
+  --vo-co-title-tracking: -0.02em;
+  --vo-co-body-size: 13.5px;
+
+  /* ---- controls ---- */
+  --vo-co-btn-radius: 999px;
+  --vo-co-btn-size: 13.5px;
+  --vo-co-btn-pad: 10px 16px;
+  --vo-co-primary-bg: #2f6b45;
+  --vo-co-primary-ink: #ffffff;
+  --vo-co-primary-hover: #275a3a;
+  --vo-co-secondary-ink: rgba(36, 31, 48, 0.7);
+  --vo-co-hover: rgba(24, 20, 34, 0.05);
+  --vo-co-focus: #4bb96a;
+
+  /* ---- fields ---- */
+  --vo-co-field-bg: #fffefc;
+  --vo-co-field-line: rgba(24, 20, 34, 0.14);
+  --vo-co-field-ink: #241f30;
+  --vo-co-field-radius: 10px;
+
+  /* ---- accents ---- */
+  /* Destructive and warning inks that read on cream rather than on charcoal. */
+  --vo-co-danger: #b4392f;
+  --vo-co-warn: #9a6512;
+  --vo-co-card-bg: rgba(24, 20, 34, 0.025);
+  --vo-co-card-line: rgba(24, 20, 34, 0.08);
+  --vo-co-card-radius: 14px;
+}
+
+/* The container itself draws NOTHING. Every panel inside it is `position: fixed` and stays exactly
+   where V1 puts it; this element exists only to carry the properties above and the dialog role, so it
+   is given no size, no background and no place in the layout. */

@@ -28,6 +28,7 @@ def _position_to_dict(row: EmployeePosition) -> dict[str, Any]:
         "room_id": row.room_id,
         "revision": row.revision,
         "updated_at": row.updated_at,
+        "yaw": row.yaw,
     }
 
 
@@ -43,6 +44,7 @@ async def upsert_stable(
     room_id: str | None,
     revision: int,
     updated_at: datetime,
+    yaw: float | None = None,
 ) -> None:
     """Atomic upsert-by-email for the two dialects this app actually runs on (sqlite locally/in
     tests, Postgres in production — see app/database.py). Both branches use a single
@@ -65,6 +67,7 @@ async def upsert_stable(
         room_id=room_id,
         revision=revision,
         updated_at=updated_at,
+        yaw=yaw,
     )
     bind_name = session.bind.dialect.name if session.bind is not None else ""
     if bind_name == "sqlite":

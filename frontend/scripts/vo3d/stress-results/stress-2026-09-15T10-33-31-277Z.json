@@ -1,0 +1,556 @@
+{
+  "generatedAt": "2026-09-15T10:33:31.277Z",
+  "url": "http://localhost:5173/virtual-office/dev/vo3d.html",
+  "driver": {
+    "headless": false,
+    "channel": "chrome",
+    "deviceScaleFactor": 2,
+    "viewport": {
+      "width": 1440,
+      "height": 810
+    },
+    "attribution": true,
+    "secondsOverride": null,
+    "only": null
+  },
+  "device": {
+    "userAgent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+    "gpuVendor": "Google Inc. (Apple)",
+    "gpuRenderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M1, Unspecified Version)",
+    "hardwareConcurrency": 8,
+    "deviceMemoryGb": 8,
+    "devicePixelRatio": 2
+  },
+  "consoleErrors": [
+    "console.error: Access to fetch at 'http://localhost:8000/weather/office' from origin 'http://localhost:5173' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.",
+    "requestfailed: http://localhost:8000/weather/office — net::ERR_FAILED",
+    "console.error: Failed to load resource: net::ERR_FAILED",
+    "requestfailed: http://localhost:5173/virtual-office/vo3d/suntoucan.mp4 — net::ERR_ABORTED",
+    "requestfailed: http://localhost:5173/virtual-office/vo3d/suntoucan.mp4 — net::ERR_ABORTED",
+    "requestfailed: http://localhost:5173/virtual-office/vo3d/suntoucan.mp4 — net::ERR_ABORTED",
+    "requestfailed: http://localhost:5173/virtual-office/vo3d/suntoucan.mp4 — net::ERR_ABORTED"
+  ],
+  "results": [
+    {
+      "config": {
+        "id": "s1-baseline-1",
+        "label": "1 avatar — baseline",
+        "avatars": 1,
+        "layout": "distributed",
+        "motion": false,
+        "seconds": 20,
+        "lod": 1,
+        "labels": true,
+        "preset": "A",
+        "ssao": true,
+        "ssaoDepthReuse": true,
+        "shadows": true,
+        "roomCulling": true,
+        "staticBatching": true,
+        "pixelRatio": 2,
+        "drawingBuffer": "2880×1620",
+        "camera": "office",
+        "placed": 0
+      },
+      "frame": {
+        "seconds": 20,
+        "frames": 1010,
+        "avgFps": 50.5,
+        "avgFrameMs": 19.81,
+        "medianFrameMs": 19.6,
+        "p95FrameMs": 21.3,
+        "p99FrameMs": 22.7,
+        "worstFrameMs": 27.7,
+        "onePercentLowFps": 44.1,
+        "avgDrawCalls": 2791,
+        "avgTriangles": 2319938
+      },
+      "scene": {
+        "visibleMeshes": 2917,
+        "drawCalls": 2791,
+        "triangles": 2319938,
+        "geometries": 2578,
+        "textures": 58,
+        "programs": 33
+      },
+      "memory": {
+        "jsHeapMb": 299,
+        "totalHeapMb": 360,
+        "limitMb": 4192
+      },
+      "avatarCost": null,
+      "shadowCost": {
+        "invalidationRate": 0,
+        "frozenFrameMs": 19.88,
+        "liveFrameMs": 19.75,
+        "deltaMs": -0.13,
+        "sharePct": -0.7
+      },
+      "errors": [],
+      "startedAt": "2026-09-15T10:27:20.776Z",
+      "durationMs": 34207
+    },
+    {
+      "config": {
+        "id": "s2-10",
+        "label": "10 avatars — distributed",
+        "avatars": 10,
+        "layout": "distributed",
+        "motion": false,
+        "seconds": 20,
+        "lod": 1,
+        "labels": true,
+        "preset": "A",
+        "ssao": true,
+        "ssaoDepthReuse": true,
+        "shadows": true,
+        "roomCulling": true,
+        "staticBatching": true,
+        "pixelRatio": 2,
+        "drawingBuffer": "2880×1620",
+        "camera": "office",
+        "placed": 9
+      },
+      "frame": {
+        "seconds": 20,
+        "frames": 952,
+        "avgFps": 47.6,
+        "avgFrameMs": 21.02,
+        "medianFrameMs": 20.7,
+        "p95FrameMs": 23.4,
+        "p99FrameMs": 26.5,
+        "worstFrameMs": 45.8,
+        "onePercentLowFps": 37.7,
+        "avgDrawCalls": 2809,
+        "avgTriangles": 3039935
+      },
+      "scene": {
+        "visibleMeshes": 2935,
+        "drawCalls": 2809,
+        "triangles": 3039935,
+        "geometries": 2584,
+        "textures": 81,
+        "programs": 34
+      },
+      "memory": {
+        "jsHeapMb": 342,
+        "totalHeapMb": 403,
+        "limitMb": 4192
+      },
+      "avatarCost": {
+        "hiddenFrameMs": 20.32,
+        "crowdFrameMs": 20.86,
+        "deltaMs": 0.54,
+        "perAvatarMs": 0.06,
+        "deltaCalls": 18,
+        "deltaTriangles": 719997
+      },
+      "shadowCost": {
+        "invalidationRate": 0,
+        "frozenFrameMs": 20.82,
+        "liveFrameMs": 20.86,
+        "deltaMs": 0.04,
+        "sharePct": 0.2
+      },
+      "errors": [],
+      "startedAt": "2026-09-15T10:27:54.983Z",
+      "durationMs": 47706
+    },
+    {
+      "config": {
+        "id": "s3-25",
+        "label": "25 avatars — distributed",
+        "avatars": 25,
+        "layout": "distributed",
+        "motion": false,
+        "seconds": 20,
+        "lod": 1,
+        "labels": true,
+        "preset": "A",
+        "ssao": true,
+        "ssaoDepthReuse": true,
+        "shadows": true,
+        "roomCulling": true,
+        "staticBatching": true,
+        "pixelRatio": 2,
+        "drawingBuffer": "2880×1620",
+        "camera": "office",
+        "placed": 24
+      },
+      "frame": {
+        "seconds": 20,
+        "frames": 890,
+        "avgFps": 44.5,
+        "avgFrameMs": 22.47,
+        "medianFrameMs": 22.2,
+        "p95FrameMs": 24.1,
+        "p99FrameMs": 26.1,
+        "worstFrameMs": 42.1,
+        "onePercentLowFps": 38.3,
+        "avgDrawCalls": 2839,
+        "avgTriangles": 4239932
+      },
+      "scene": {
+        "visibleMeshes": 2965,
+        "drawCalls": 2839,
+        "triangles": 4239932,
+        "geometries": 2584,
+        "textures": 120,
+        "programs": 34
+      },
+      "memory": {
+        "jsHeapMb": 343,
+        "totalHeapMb": 406,
+        "limitMb": 4192
+      },
+      "avatarCost": {
+        "hiddenFrameMs": 20.48,
+        "crowdFrameMs": 22.66,
+        "deltaMs": 2.18,
+        "perAvatarMs": 0.091,
+        "deltaCalls": 48,
+        "deltaTriangles": 1919994
+      },
+      "shadowCost": {
+        "invalidationRate": 0,
+        "frozenFrameMs": 22.77,
+        "liveFrameMs": 22.54,
+        "deltaMs": -0.23,
+        "sharePct": -1
+      },
+      "errors": [],
+      "startedAt": "2026-09-15T10:28:42.691Z",
+      "durationMs": 47200
+    },
+    {
+      "config": {
+        "id": "s4-50",
+        "label": "50 avatars — distributed",
+        "avatars": 50,
+        "layout": "distributed",
+        "motion": false,
+        "seconds": 20,
+        "lod": 1,
+        "labels": true,
+        "preset": "A",
+        "ssao": true,
+        "ssaoDepthReuse": true,
+        "shadows": true,
+        "roomCulling": true,
+        "staticBatching": true,
+        "pixelRatio": 2,
+        "drawingBuffer": "2880×1620",
+        "camera": "office",
+        "placed": 49
+      },
+      "frame": {
+        "seconds": 20,
+        "frames": 843,
+        "avgFps": 42.1,
+        "avgFrameMs": 23.74,
+        "medianFrameMs": 23.7,
+        "p95FrameMs": 25.5,
+        "p99FrameMs": 26.9,
+        "worstFrameMs": 40.2,
+        "onePercentLowFps": 37.2,
+        "avgDrawCalls": 2889,
+        "avgTriangles": 6239927
+      },
+      "scene": {
+        "visibleMeshes": 3015,
+        "drawCalls": 2889,
+        "triangles": 6239927,
+        "geometries": 2584,
+        "textures": 194,
+        "programs": 34
+      },
+      "memory": {
+        "jsHeapMb": 363,
+        "totalHeapMb": 402,
+        "limitMb": 4192
+      },
+      "avatarCost": {
+        "hiddenFrameMs": 20.17,
+        "crowdFrameMs": 23.84,
+        "deltaMs": 3.67,
+        "perAvatarMs": 0.075,
+        "deltaCalls": 98,
+        "deltaTriangles": 3919989
+      },
+      "shadowCost": {
+        "invalidationRate": 0,
+        "frozenFrameMs": 23.98,
+        "liveFrameMs": 23.71,
+        "deltaMs": -0.27,
+        "sharePct": -1.1
+      },
+      "errors": [],
+      "startedAt": "2026-09-15T10:29:29.892Z",
+      "durationMs": 47241
+    },
+    {
+      "config": {
+        "id": "s5-70",
+        "label": "70 avatars — distributed across the office",
+        "avatars": 70,
+        "layout": "distributed",
+        "motion": false,
+        "seconds": 20,
+        "lod": 1,
+        "labels": true,
+        "preset": "A",
+        "ssao": true,
+        "ssaoDepthReuse": true,
+        "shadows": true,
+        "roomCulling": true,
+        "staticBatching": true,
+        "pixelRatio": 2,
+        "drawingBuffer": "2880×1620",
+        "camera": "office",
+        "placed": 69
+      },
+      "frame": {
+        "seconds": 20,
+        "frames": 772,
+        "avgFps": 38.6,
+        "avgFrameMs": 25.91,
+        "medianFrameMs": 25.8,
+        "p95FrameMs": 27.8,
+        "p99FrameMs": 30.5,
+        "worstFrameMs": 47.3,
+        "onePercentLowFps": 32.8,
+        "avgDrawCalls": 2929,
+        "avgTriangles": 7839923
+      },
+      "scene": {
+        "visibleMeshes": 3055,
+        "drawCalls": 2929,
+        "triangles": 7839923,
+        "geometries": 2584,
+        "textures": 283,
+        "programs": 34
+      },
+      "memory": {
+        "jsHeapMb": 347,
+        "totalHeapMb": 404,
+        "limitMb": 4192
+      },
+      "avatarCost": {
+        "hiddenFrameMs": 20.36,
+        "crowdFrameMs": 25.87,
+        "deltaMs": 5.51,
+        "perAvatarMs": 0.08,
+        "deltaCalls": 138,
+        "deltaTriangles": 5519985
+      },
+      "shadowCost": {
+        "invalidationRate": 0,
+        "frozenFrameMs": 25.87,
+        "liveFrameMs": 25.86,
+        "deltaMs": -0.01,
+        "sharePct": 0
+      },
+      "errors": [],
+      "startedAt": "2026-09-15T10:30:17.139Z",
+      "durationMs": 47709
+    },
+    {
+      "config": {
+        "id": "s6-70-hub",
+        "label": "70 avatars — clustered in Central Hub",
+        "avatars": 70,
+        "layout": "hub",
+        "motion": false,
+        "seconds": 20,
+        "lod": 1,
+        "labels": true,
+        "preset": "A",
+        "ssao": true,
+        "ssaoDepthReuse": true,
+        "shadows": true,
+        "roomCulling": true,
+        "staticBatching": true,
+        "pixelRatio": 2,
+        "drawingBuffer": "2880×1620",
+        "camera": "office",
+        "placed": 69
+      },
+      "frame": {
+        "seconds": 20,
+        "frames": 751,
+        "avgFps": 37.5,
+        "avgFrameMs": 26.64,
+        "medianFrameMs": 26.6,
+        "p95FrameMs": 31,
+        "p99FrameMs": 32.7,
+        "worstFrameMs": 97.5,
+        "onePercentLowFps": 30.6,
+        "avgDrawCalls": 537,
+        "avgTriangles": 6332051
+      },
+      "scene": {
+        "visibleMeshes": 3055,
+        "drawCalls": 537,
+        "triangles": 6332051,
+        "geometries": 2585,
+        "textures": 352,
+        "programs": 34
+      },
+      "memory": {
+        "jsHeapMb": 339,
+        "totalHeapMb": 412,
+        "limitMb": 4192
+      },
+      "avatarCost": {
+        "hiddenFrameMs": 16.67,
+        "crowdFrameMs": 26.76,
+        "deltaMs": 10.09,
+        "perAvatarMs": 0.146,
+        "deltaCalls": 138,
+        "deltaTriangles": 5519985
+      },
+      "shadowCost": {
+        "invalidationRate": 0,
+        "frozenFrameMs": 26.46,
+        "liveFrameMs": 26.44,
+        "deltaMs": -0.02,
+        "sharePct": -0.1
+      },
+      "errors": [],
+      "startedAt": "2026-09-15T10:31:04.852Z",
+      "durationMs": 47550
+    },
+    {
+      "config": {
+        "id": "s7-70-cave",
+        "label": "70 avatars — inside the CAVE (worst case)",
+        "avatars": 70,
+        "layout": "cave",
+        "motion": false,
+        "seconds": 20,
+        "lod": 1,
+        "labels": true,
+        "preset": "A",
+        "ssao": true,
+        "ssaoDepthReuse": true,
+        "shadows": true,
+        "roomCulling": true,
+        "staticBatching": true,
+        "pixelRatio": 2,
+        "drawingBuffer": "2880×1620",
+        "camera": "player · inside CAVE",
+        "placed": 69
+      },
+      "frame": {
+        "seconds": 20,
+        "frames": 741,
+        "avgFps": 37,
+        "avgFrameMs": 26.99,
+        "medianFrameMs": 27,
+        "p95FrameMs": 30,
+        "p99FrameMs": 33.2,
+        "worstFrameMs": 40.1,
+        "onePercentLowFps": 30.1,
+        "avgDrawCalls": 152,
+        "avgTriangles": 5640179
+      },
+      "scene": {
+        "visibleMeshes": 148,
+        "drawCalls": 152,
+        "triangles": 5640179,
+        "geometries": 2650,
+        "textures": 426,
+        "programs": 65
+      },
+      "memory": {
+        "jsHeapMb": 334,
+        "totalHeapMb": 407,
+        "limitMb": 4192
+      },
+      "avatarCost": {
+        "hiddenFrameMs": 16.67,
+        "crowdFrameMs": 27.21,
+        "deltaMs": 10.54,
+        "perAvatarMs": 0.153,
+        "deltaCalls": 138,
+        "deltaTriangles": 5519985
+      },
+      "shadowCost": {
+        "invalidationRate": 0,
+        "frozenFrameMs": 27.01,
+        "liveFrameMs": 26.95,
+        "deltaMs": -0.06,
+        "sharePct": -0.2
+      },
+      "errors": [],
+      "startedAt": "2026-09-15T10:31:52.403Z",
+      "durationMs": 48617
+    },
+    {
+      "config": {
+        "id": "s8-70-cave-motion",
+        "label": "70 avatars — CAVE + movement/animation burst",
+        "avatars": 70,
+        "layout": "cave",
+        "motion": true,
+        "seconds": 20,
+        "lod": 1,
+        "labels": true,
+        "preset": "A",
+        "ssao": true,
+        "ssaoDepthReuse": true,
+        "shadows": true,
+        "roomCulling": true,
+        "staticBatching": true,
+        "pixelRatio": 2,
+        "drawingBuffer": "2880×1620",
+        "camera": "player · inside CAVE",
+        "placed": 69
+      },
+      "frame": {
+        "seconds": 20,
+        "frames": 598,
+        "avgFps": 29.9,
+        "avgFrameMs": 33.5,
+        "medianFrameMs": 33.5,
+        "p95FrameMs": 38.7,
+        "p99FrameMs": 42.6,
+        "worstFrameMs": 44.4,
+        "onePercentLowFps": 23.5,
+        "avgDrawCalls": 225,
+        "avgTriangles": 11136319
+      },
+      "scene": {
+        "visibleMeshes": 148,
+        "drawCalls": 227,
+        "triangles": 11268076,
+        "geometries": 2650,
+        "textures": 495,
+        "programs": 65
+      },
+      "memory": {
+        "jsHeapMb": 339,
+        "totalHeapMb": 404,
+        "limitMb": 4192
+      },
+      "avatarCost": {
+        "hiddenFrameMs": 16.67,
+        "crowdFrameMs": 33.71,
+        "deltaMs": 17.04,
+        "perAvatarMs": 0.247,
+        "deltaCalls": 207,
+        "deltaTriangles": 11039832
+      },
+      "shadowCost": {
+        "invalidationRate": 0.977,
+        "frozenFrameMs": 27.89,
+        "liveFrameMs": 33.88,
+        "deltaMs": 5.99,
+        "sharePct": 17.7
+      },
+      "errors": [],
+      "startedAt": "2026-09-15T10:32:41.021Z",
+      "durationMs": 47675
+    }
+  ]
+}

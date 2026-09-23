@@ -549,3 +549,132 @@ async def test_malformed_walk_arrived_payloads_are_dropped(server):
 
     await a.disconnect()
     await b.disconnect()
+
+
+# ---- V2 3D office extensions: exact `yaw` on arrival, `pacing` on start. Both optional; V1 clients
+# send neither and see them as null. ---------------------------------------------------------------
+
+
+async def test_arrival_yaw_is_relayed_persisted_and_restored_in_snapshot(server):
+    a = await _connect_as(server, "a@example.com")
+    b = await _connect_as(server, "b@example.com")
+    await asyncio.sleep(0.2)
+
+    started_task = asyncio.ensure_future(_wait_for_event(b, "peer_walk_started"))
+    await a.emit("walk_started", _walk_started_payload())
+    await started_task
+
+    arrived_task = asyncio.ensure_future(_wait_for_event(b, "peer_walk_arrived"))
+    await a.emit("walk_arrived", _walk_arrived_payload(yaw=-2.3561944901923448))
+    arrived_payload = await arrived_task
+    assert arrived_payload["yaw"] == pytest.approx(-2.3561944901923448)
+    assert arrived_payload["facing"] == "right"  # the four-word vocabulary is untouched beside it
+
+    # A late joiner restores the exact value from the in-memory registry...
+    c = socketio.AsyncClient()
+    snapshot_task = asyncio.ensure_future(
+        _wait_for_event(c, "positions_snapshot", predicate=lambda d: any(e["email"] == "a@example.com" for e in d["entries"]))
+    )
+    await asyncio.wait_for(
+        c.connect(server, auth={"x-dev-email": "c@example.com"}, socketio_path="socket.io", transports=["websocket"]),
+        timeout=5,
+    )
+    snap = await snapshot_task
+    entry = next(e for e in snap["entries"] if e["email"] == "a@example.com")
+    assert entry["yaw"] == pytest.approx(-2.3561944901923448)
+
+    # ...and the durable row carries it too, which is what a process restart reloads from.
+    from app.database import async_session_maker
+
+    async with async_session_maker() as session:
+        rows = await position_repo.list_all(session)
+    row = next(r for r in rows if r["email"] == "a@example.com")
+    assert row["yaw"] == pytest.approx(-2.3561944901923448)
+
+    await a.disconnect()
+    await b.disconnect()
+    await c.disconnect()
+
+
+async def test_arrival_without_yaw_is_legacy_v1_and_relays_null(server):
+    a = await _connect_as(server, "a@example.com")
+    b = await _connect_as(server, "b@example.com")
+    await asyncio.sleep(0.2)
+
+    started_task = asyncio.ensure_future(_wait_for_event(b, "peer_walk_started"))
+    await a.emit("walk_started", _walk_started_payload())
+    await started_task
+    arrived_task = asyncio.ensure_future(_wait_for_event(b, "peer_walk_arrived"))
+    await a.emit("walk_arrived", _walk_arrived_payload())  # no yaw key at all — every V1 client
+    arrived_payload = await arrived_task
+    assert arrived_payload["yaw"] is None
+
+    await a.disconnect()
+    await b.disconnect()
+
+
+async def test_arrival_with_malformed_yaw_is_dropped(server):
+    a = await _connect_as(server, "a@example.com")
+    b = await _connect_as(server, "b@example.com")
+    await asyncio.sleep(0.2)
+
+    started_task = asyncio.ensure_future(_wait_for_event(b, "peer_walk_started"))
+    await a.emit("walk_started", _walk_started_payload())
+    await started_task
+
+    got: list = []
+
+    @b.on("peer_walk_arrived")
+    async def on_arrived(data):
+        got.append(data)
+
+    for bad in ("1.2", True, float("nan"), float("inf")):
+        await a.emit("walk_arrived", _walk_arrived_payload(yaw=bad))
+    await asyncio.sleep(0.3)
+    assert got == []  # silently dropped, like every other malformed movement payload
+
+    await a.disconnect()
+    await b.disconnect()
+
+
+async def test_pacing_is_relayed_on_start_and_in_snapshot_and_defaults_to_null(server):
+    a = await _connect_as(server, "a@example.com")
+    b = await _connect_as(server, "b@example.com")
+    await asyncio.sleep(0.2)
+
+    started_task = asyncio.ensure_future(_wait_for_event(b, "peer_walk_started"))
+    await a.emit("walk_started", _walk_started_payload(pacing="linear"))
+    started_payload = await started_task
+    assert started_payload["pacing"] == "linear"
+
+    c = socketio.AsyncClient()
+    snapshot_task = asyncio.ensure_future(
+        _wait_for_event(c, "positions_snapshot", predicate=lambda d: any(e["email"] == "a@example.com" for e in d["entries"]))
+    )
+    await asyncio.wait_for(
+        c.connect(server, auth={"x-dev-email": "c@example.com"}, socketio_path="socket.io", transports=["websocket"]),
+        timeout=5,
+    )
+    snap = await snapshot_task
+    entry = next(e for e in snap["entries"] if e["email"] == "a@example.com")
+    assert entry["active"]["pacing"] == "linear"
+
+    # An unknown pacing is malformed input and the movement is dropped whole.
+    got: list = []
+
+    @b.on("peer_walk_started")
+    async def on_started(data):
+        got.append(data)
+
+    await a.emit("walk_started", _walk_started_payload(movementId="m2", pacing="bouncy"))
+    await asyncio.sleep(0.3)
+    assert got == []
+
+    # Legacy: no key → null on the wire.
+    started_task = asyncio.ensure_future(_wait_for_event(b, "peer_walk_started"))
+    await a.emit("walk_started", _walk_started_payload(movementId="m3"))
+    assert (await started_task)["pacing"] is None
+
+    await a.disconnect()
+    await b.disconnect()
+    await c.disconnect()

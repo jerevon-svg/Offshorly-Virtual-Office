@@ -12,6 +12,7 @@ import { SpatialCallControls } from "./SpatialCallControls";
 const leaveCall = vi.fn();
 const setMicEnabled = vi.fn();
 const setCameraEnabled = vi.fn();
+const setScreenShareEnabled = vi.fn();
 const startOrJoinCall = vi.fn();
 let snapshot: CallSnapshot;
 
@@ -25,6 +26,7 @@ vi.mock("../../services/call/callStore", async () => {
     leaveCall: (...a: unknown[]) => leaveCall(...a),
     setMicEnabled: (...a: unknown[]) => setMicEnabled(...a),
     setCameraEnabled: (...a: unknown[]) => setCameraEnabled(...a),
+    setScreenShareEnabled: (...a: unknown[]) => setScreenShareEnabled(...a),
     startOrJoinCall: (...a: unknown[]) => startOrJoinCall(...a),
   };
 });
@@ -37,6 +39,15 @@ function snap(over: Partial<CallSnapshot> = {}): CallSnapshot {
     cameraEnabled: false,
     cameraError: null,
     videoByIdentity: {},
+    connectedMeetingId: null,
+    screenShare: null,
+    screenShareEnabled: false,
+    screenShareError: null,
+    participants: [],
+    meetings: [],
+    incomingMeetingInvite: null,
+    outgoingMeetingInvite: null,
+    meetingInviteOutcome: null,
     error: null,
     calls: [],
     outgoing: null,
@@ -166,15 +177,16 @@ describe("SpatialCallControls", () => {
     expect(startOrJoinCall).not.toHaveBeenCalled();
   });
 
-  it("shows exactly three compact controls while connected: mute, camera and leave", () => {
-    // Was two in Stage A; Stage B adds the camera between them. Still icon-only, so the compact
-    // chat header keeps its width.
+  it("shows exactly four compact controls while connected: mute, camera, share and leave", () => {
+    // Was two in Stage A; Stage B added the camera, and V1 screen share adds Share beside it.
+    // Still icon-only, so the compact chat header keeps its width.
     snapshot = snap({ status: "connected", connectedSessionId: "conv-1", micEnabled: true });
     render(<SpatialCallControls sessionId="conv-1" />);
     expect(screen.getByLabelText("Mute microphone")).toBeInTheDocument();
     expect(screen.getByLabelText("Turn camera on")).toBeInTheDocument();
+    expect(screen.getByLabelText("Share your screen")).toBeInTheDocument();
     expect(screen.getByLabelText("Leave call")).toBeInTheDocument();
-    expect(screen.getAllByRole("button")).toHaveLength(3);
+    expect(screen.getAllByRole("button")).toHaveLength(4);
     // No duplicate affordance once connected.
     expect(screen.queryByLabelText("Join call")).not.toBeInTheDocument();
   });
@@ -214,8 +226,8 @@ describe("SpatialCallControls", () => {
 // --- Stage B camera control -------------------------------------------------------------------
 
 describe("SpatialCallControls camera", () => {
-  const connected = () =>
-    snap({ status: "connected", connectedSessionId: "conv-1", micEnabled: true });
+  const connected = (over: Partial<CallSnapshot> = {}) =>
+    snap({ status: "connected", connectedSessionId: "conv-1", micEnabled: true, ...over });
 
   it("offers the camera only while connected, never in the Join state", () => {
     snapshot = snap({
@@ -233,13 +245,32 @@ describe("SpatialCallControls camera", () => {
     expect(screen.queryByLabelText("Turn camera on")).not.toBeInTheDocument();
   });
 
-  it("shows mic, camera and leave in that order once connected", () => {
+  it("shows mic, camera, share and leave in that order once connected", () => {
     snapshot = connected();
     render(<SpatialCallControls sessionId="conv-1" />);
 
     expect(
       screen.getAllByRole("button").map((b) => b.getAttribute("aria-label")),
-    ).toEqual(["Mute microphone", "Turn camera on", "Leave call"]);
+    ).toEqual(["Mute microphone", "Turn camera on", "Share your screen", "Leave call"]);
+  });
+
+  it("toggles the screen share on click — one track source on the call that is already up", () => {
+    snapshot = connected();
+    render(<SpatialCallControls sessionId="conv-1" />);
+
+    screen.getByLabelText("Share your screen").click();
+
+    // No join, no token, no second room: the ONLY thing a share does is publish a track.
+    expect(setScreenShareEnabled).toHaveBeenCalledWith(true);
+    expect(startOrJoinCall).not.toHaveBeenCalled();
+  });
+
+  it("offers Stop sharing while this client is the presenter", () => {
+    snapshot = connected({ screenShareEnabled: true });
+    render(<SpatialCallControls sessionId="conv-1" />);
+
+    screen.getByLabelText("Stop sharing your screen").click();
+    expect(setScreenShareEnabled).toHaveBeenCalledWith(false);
   });
 
   it("defaults to camera off — the call never turns it on by itself", () => {

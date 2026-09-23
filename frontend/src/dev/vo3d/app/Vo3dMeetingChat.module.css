@@ -1,0 +1,170 @@
+/* PHASE 7D — THE MEETING'S CHAT AS A LIVESTREAM OVERLAY.
+ *
+ * WHAT CHANGED AND WHY. It used to be a bordered dark panel with a header and a close button, which in
+ * a room whose whole point is a 270° curved screen read as an application window parked over the show.
+ * A livestream does not do that: the messages simply float at the edge, the oldest fade, and the input
+ * is a thin line you can ignore. There is no panel, no chrome and nothing to close — so there is also
+ * nothing to obscure the screen, the gallery or a presentation.
+ *
+ * RIGHT EDGE, BOTTOM-ALIGNED, and deliberately narrow: the curved screen owns the top and centre, the
+ * meeting panel owns the bottom-left, and the dock owns bottom-centre. */
+.root {
+  position: fixed;
+  right: 16px;
+  bottom: calc(var(--vo3d-dock-clearance, var(--vo-dock-clearance, 104px)) - 8px);
+  /* TALL, NOT CRAMPED. Anchored top AND bottom so the column owns the right-hand side of the screen
+     rather than a short stub above the composer. The top offset clears the call-notice column and the
+     view indicator that sit above it; the bottom offset is the dock's own measure, so the composer can
+     never ride over it. Between the two, the feed takes whatever the viewport actually has. */
+  top: calc(var(--vo-call-notice-top, 16px) + 104px);
+  z-index: 44;
+  width: min(320px, 34vw);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  /* The composer stays pinned at the bottom and the feed grows UPWARD into the space above it. */
+  justify-content: flex-end;
+  gap: 6px;
+  /* The wrapper is transparent to the world; each interactive child takes the pointer back below. */
+  pointer-events: none;
+  font: 500 13px/1.45 inherit;
+}
+
+/* THE FEED. Bottom-aligned so new lines rise, like every livestream chat anybody has used. */
+/* THE FEED FILLS WHAT IS LEFT. `min-height: 0` is load-bearing: without it a flex child refuses to
+   shrink below its content and the column would push the composer off the bottom of the screen on a
+   short viewport. `overflow: hidden` with `justify-content: flex-end` is what gives livestream
+   behaviour for free — new lines arrive at the bottom, older ones are pushed up and clipped away at
+   the top, with no scrollbar and nothing to scroll. */
+.feed {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  /* ROW SPACING. Small enough to stay livestream-compact — no cards, no separators — but enough that
+     consecutive lines stop reading as one block of text. Fewer lines fit as a result, which is fine:
+     the feed clips to its own height and the line bounds are only an upper limit on what is rendered. */
+  gap: 5px;
+  overflow: hidden;
+  /* The feed clips at its top edge, which would otherwise slice a line in half. The mask dissolves
+     that edge instead, so history leaves the column by fading out rather than by being cut. */
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 58px);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 58px);
+  /* Reading only — clicks belong to the world behind it. */
+  pointer-events: none;
+}
+
+/* One line. No bubble, no card: text with a shadow, which is how it stays readable over a bright
+   presentation without putting a box between the viewer and the room. */
+.line {
+  color: #f4f7fb;
+  font-size: 12.5px;
+  /* Looser than the wrapper's 1.45 so a message that wraps to two lines still breathes, and so the
+     name and its message — which stay on one line — sit clear of the rows either side. */
+  line-height: 1.62;
+  word-break: break-word;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9), 0 0 10px rgba(0, 0, 0, 0.55);
+  animation: lineIn 180ms ease-out;
+}
+.who { font-weight: 800; margin-right: 6px; color: #9fd8ff; }
+.own .who { color: #8fe0ab; }
+
+/* OLDER LINES FADE rather than disappear: the history is still there, it simply stops competing.
+   There is one step per line the idle feed renders, so the fade is genuinely progressive — an
+   eight-step ramp under a twelve-line feed left the four oldest sharing one washed-out opacity. */
+.age1 { opacity: 0.94; }
+.age2 { opacity: 0.88; }
+.age3 { opacity: 0.81; }
+.age4 { opacity: 0.74; }
+.age5 { opacity: 0.66; }
+.age6 { opacity: 0.58; }
+.age7 { opacity: 0.5; }
+.age8 { opacity: 0.42; }
+.age9 { opacity: 0.35; }
+.age10 { opacity: 0.29; }
+.age11 { opacity: 0.23; }
+.age12 { opacity: 0.18; }
+
+/* FOCUSED: the person is reading and replying, so the history stops receding and stays legible
+   across the whole column. Same layout, same height — only the fade relaxes. Lines older than the
+   ramp sit on its floor; the feed's own top mask is what carries them out of view. */
+.active .age1, .active .age2, .active .age3, .active .age4 { opacity: 1; }
+.active .age5, .active .age6, .active .age7, .active .age8 { opacity: 0.92; }
+.active .age9, .active .age10 { opacity: 0.84; }
+.active .age11, .active .age12 { opacity: 0.76; }
+
+@keyframes lineIn { from { opacity: 0; transform: translateY(4px); } to { opacity: inherit; transform: none; } }
+
+/* THE COMPACT INPUT. Always there during a meeting, never a panel. */
+.composer {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  /* WRAPS RATHER THAN SQUEEZES. With the reactions inline, a single non-wrapping row crushed the field
+     until its own placeholder read "Pres…" — the one piece of text that has to survive, because it is
+     what tells you the key that opens the chat. */
+  flex-wrap: wrap;
+  row-gap: 4px;
+  padding: 6px 10px;
+  border-radius: 16px;
+  background: rgba(14, 16, 23, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(10px);
+  pointer-events: auto;
+}
+.input {
+  all: unset;
+  /* AFTER the reset, never before: `all: unset` would wipe it back to the inherited `none` and every
+     click would fall through to the canvas — the exact bug this file had once already. */
+  pointer-events: auto;
+  flex: 1 1 100%;
+  /* Never below the width of its own placeholder. */
+  min-width: 132px;
+  color: #f4f7fb;
+  font-size: 12px;
+  padding: 1px 2px;
+}
+.input::placeholder { color: rgba(244, 247, 251, 0.45); }
+.input:focus-visible { outline: none; }
+.composer:focus-within { border-color: rgba(75, 185, 106, 0.55); background: rgba(14, 16, 23, 0.72); }
+
+/* REACTIONS: discreet, on the same line as the input, no tray and no picker to open. */
+.react {
+  all: unset;
+  pointer-events: auto;
+  cursor: pointer;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  font-size: 13px;
+  opacity: 0.8;
+}
+.react:hover { background: rgba(255, 255, 255, 0.14); opacity: 1; }
+.react:focus-visible { outline: 2px solid #4bb96a; outline-offset: 1px; }
+.sticker { width: auto; padding: 0 7px; font-size: 10.5px; font-weight: 700; color: #f4f7fb; }
+
+/* PRESENTING: quieter still — a shorter feed and lower contrast, so the slide keeps the room. Never
+   hidden: the composer stays exactly where it is and stays reachable. */
+.presenting .feed { max-height: 22vh; opacity: 0.72; }
+.presenting .composer { opacity: 0.82; }
+
+/* SHORT VIEWPORTS. The top anchor is what makes the column tall, so it is also what has to give on a
+   laptop in a small window — otherwise the feed would be told to start below the space it has. */
+@media (max-height: 760px) {
+  .root { top: calc(var(--vo-call-notice-top, 16px) + 64px); }
+}
+@media (max-height: 560px) {
+  .root { top: calc(var(--vo-call-notice-top, 16px) + 24px); }
+  .presenting .feed { max-height: 30vh; }
+}
+/* NARROW VIEWPORTS: the column may not eat the whole width of a small window. */
+@media (max-width: 720px) {
+  .root { width: min(280px, 52vw); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .line { animation: none; }
+}

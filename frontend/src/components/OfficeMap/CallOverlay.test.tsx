@@ -64,6 +64,15 @@ function makeSnapshot(over: Partial<CallSnapshot> = {}): CallSnapshot {
     boardError: null,
     audioPlaybackBlocked: false,
     videoByIdentity: {},
+    connectedMeetingId: null,
+    screenShare: null,
+    screenShareEnabled: false,
+    screenShareError: null,
+    participants: [],
+    meetings: [],
+    incomingMeetingInvite: null,
+    outgoingMeetingInvite: null,
+    meetingInviteOutcome: null,
     ...over,
   };
 }

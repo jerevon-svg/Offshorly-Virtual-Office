@@ -46,6 +46,9 @@ export type SearchSpotlightProps = {
   people: AssetLayer[];
   /** The caller's existing peer-status map, keyed by layer id. */
   statusByLayerId: Record<string, OfficeStatus>;
+  /** WHERE each teammate is, keyed by layer id — a compact label beside the status, never merged into it.
+   *  Optional: a caller with no location data renders exactly what it rendered before. */
+  locationByLayerId?: Record<string, { label: string; locatable: boolean }>;
   /** Existing locate/focus/move-to-person behaviour. */
   onLocate: (layer: AssetLayer) => void;
   /** Existing open-DM behaviour. */
@@ -59,6 +62,7 @@ export function SearchSpotlight({
   onClose,
   people,
   statusByLayerId,
+  locationByLayerId,
   onLocate,
   onChat,
   onCall,
@@ -126,6 +130,17 @@ export function SearchSpotlight({
     return statusByLayerId[layer.id] ?? "OFFLINE";
   }
 
+  /** Their location line, when the caller supplied one. Absent is not "unknown" — it is "this caller does
+   *  not do locations", and the row then looks exactly as it always did. */
+  function locationOf(layer: AssetLayer): { label: string; locatable: boolean } | undefined {
+    return locationByLayerId?.[layer.id];
+  }
+  /** Locate is refused for somebody in a volume this viewer cannot see into, or with no live position —
+   *  the button would otherwise look live and do nothing. Unknown to this caller means unchanged: enabled. */
+  function canLocate(layer: AssetLayer): boolean {
+    return locationOf(layer)?.locatable ?? true;
+  }
+
   function avatarOf(layer: AssetLayer): string {
     return profileImageFor(layer.id.includes("@") ? layer.id : null, () => layer.path);
   }
@@ -173,13 +188,18 @@ export function SearchSpotlight({
                         aria-hidden="true"
                       />
                     </span>
-                    <span className={styles.resultStatus}>{STATUS_META[status].label}</span>
+                    <span className={styles.resultStatus}>
+                      {STATUS_META[status].label}
+                      {locationOf(layer) ? ` · ${locationOf(layer)!.label}` : ""}
+                    </span>
                   </div>
                   <div className={styles.actions}>
                     <button
                       type="button"
                       className={styles.actionButton}
                       aria-label={`Locate ${formatCharacterName(layer)}`}
+                      disabled={!canLocate(layer)}
+                      title={canLocate(layer) ? undefined : `${locationOf(layer)?.label ?? "Location unavailable"} — can't locate from here`}
                       onClick={() => run(onLocate, layer)}
                     >
                       <HudIcon name="locate" size="24px" />
@@ -217,6 +237,7 @@ export function SearchSpotlight({
                     type="button"
                     className={styles.recentItem}
                     aria-label={`Locate ${formatCharacterName(layer)}`}
+                    disabled={!canLocate(layer)}
                     onClick={() => run(onLocate, layer)}
                   >
                     <span className={styles.recentAvatarWrap}>

@@ -26,9 +26,17 @@ const TRANSITIONS: Record<CheckoutState, CheckoutState[]> = {
   CHECKOUT_CONFIRMATION: ["SAYING_GOODBYE", "IDLE"], // "Not yet" -> IDLE
   SAYING_GOODBYE: ["WALKING_TO_RECEPTION"],
   WALKING_TO_RECEPTION: ["AT_RECEPTION", "IDLE"], // cancel only allowed pre-arrival
-  AT_RECEPTION: ["EDITING_TIME_LOG"],
-  EDITING_TIME_LOG: ["REVIEWING"],
-  REVIEWING: ["SUBMITTING", "EDITING_TIME_LOG"],
+  // PHASE 7E — THE TWO MISSING WAYS OUT. Every other state in this flow had an escape and these two
+  // did not: once at Reception, the only legal move was forward, so an employee who changed their mind
+  // in the time-log form had no transition to make and nothing to press. Cancelling from either lands
+  // on IDLE — the same destination "Not yet" and "Save and return later" already use — and going back
+  // from the form returns to the summary it came from. Neither submits anything and neither writes
+  // attendance; the draft is preserved by the caller exactly as the failure panel preserves it.
+  AT_RECEPTION: ["EDITING_TIME_LOG", "IDLE"],
+  EDITING_TIME_LOG: ["REVIEWING", "AT_RECEPTION", "IDLE"],
+  // REVIEWING carries the same escape as the form it came from: the entries are still unsent, so leaving
+  // costs nothing and the draft is kept by the caller.
+  REVIEWING: ["SUBMITTING", "EDITING_TIME_LOG", "IDLE"],
   SUBMITTING: ["CHECKOUT_SUCCESS", "SUBMISSION_FAILED"],
   // Retry (EDITING_TIME_LOG/REVIEWING) plus "Save and return later" (IDLE) —
   // SubmissionFailedPanel's only other action, previously missing here,

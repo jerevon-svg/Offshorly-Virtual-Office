@@ -150,3 +150,73 @@ def test_reset_clears_everything():
     assert r.snapshot() == []
     assert r.existing_room_for_session("conv-1") is None
     assert r.clear_sid("sid-a") is False
+
+
+# --- PHASE 7D: arrival order and the meeting/spatial split ---------------------------------------
+
+def test_arrival_order_is_by_first_sid_not_alphabetical():
+    from app.services.call_registry import CallRegistry
+
+    reg = CallRegistry()
+    reg.join("meeting:cave", "micah@x.com", "s1")
+    reg.join("meeting:cave", "bon@x.com", "s2")
+    reg.join("meeting:cave", "angelo@x.com", "s3")
+    # participants() stays alphabetical for a stable UI list; order is a DIFFERENT question.
+    assert reg.participants("meeting:cave") == ["angelo@x.com", "bon@x.com", "micah@x.com"]
+    assert reg.participants_in_order("meeting:cave") == ["micah@x.com", "bon@x.com", "angelo@x.com"]
+
+
+def test_a_second_tab_does_not_renew_arrival_order():
+    from app.services.call_registry import CallRegistry
+
+    reg = CallRegistry()
+    reg.join("meeting:cave", "micah@x.com", "s1")
+    reg.join("meeting:cave", "bon@x.com", "s2")
+    reg.join("meeting:cave", "micah@x.com", "s3")  # micah opens a second tab
+    assert reg.participants_in_order("meeting:cave") == ["micah@x.com", "bon@x.com"]
+
+
+def test_leaving_entirely_and_returning_makes_you_the_newest():
+    from app.services.call_registry import CallRegistry
+
+    reg = CallRegistry()
+    reg.join("meeting:cave", "micah@x.com", "s1")
+    reg.join("meeting:cave", "bon@x.com", "s2")
+    reg.leave("micah@x.com", "s1")
+    reg.join("meeting:cave", "micah@x.com", "s4")
+    assert reg.participants_in_order("meeting:cave") == ["bon@x.com", "micah@x.com"]
+
+
+def test_spatial_snapshot_never_carries_a_meeting():
+    # Load-bearing: the frontend matches spatial_calls entries against CONVERSATION ids.
+    from app.services.call_registry import CallRegistry
+
+    reg = CallRegistry()
+    reg.join("conv-1", "bon@x.com", "s1")
+    reg.join("meeting:cave", "micah@x.com", "s2")
+    assert [e["sessionId"] for e in reg.snapshot()] == ["conv-1"]
+    assert [e["sessionId"] for e in reg.meeting_snapshot()] == ["meeting:cave"]
+
+
+def test_key_for_sid_reports_the_room_a_socket_is_in():
+    from app.services.call_registry import CallRegistry
+
+    reg = CallRegistry()
+    reg.join("meeting:cave", "micah@x.com", "s1")
+    reg.join("conv-1", "bon@x.com", "s2")
+    assert reg.key_for_sid("s1") == "meeting:cave"
+    assert reg.key_for_sid("s2") == "conv-1"
+    assert reg.key_for_sid("nobody") is None
+    # And it is gone once the claim is dropped — which is why callers must read it BEFORE leaving.
+    reg.leave("micah@x.com", "s1")
+    assert reg.key_for_sid("s1") is None
+
+
+def test_order_bookkeeping_is_cleaned_up_with_the_room():
+    from app.services.call_registry import CallRegistry
+
+    reg = CallRegistry()
+    reg.join("meeting:cave", "micah@x.com", "s1")
+    reg.leave("micah@x.com", "s1")
+    assert reg.participants_in_order("meeting:cave") == []
+    assert reg.meeting_snapshot() == []

@@ -7,7 +7,11 @@ type Pt = { x: number; y: number };
 // Generates a movementId: crypto.randomUUID() where available (all modern
 // browsers + jsdom-with-polyfill), falling back to a Math.random-based id
 // for any environment that lacks it (e.g. a stripped-down test runner).
-function makeMovementId(): string {
+//
+// Exported for the ONE other publisher of these events: the V2 world's self-movement sink
+// (dev/vo3d/adapters/v1SelfMovement.ts). V2 drives its own walker and so cannot go through makeMoveSelf
+// below, but the id rule is not V2's to re-decide — a second copy of it is how the two would drift.
+export function makeMovementId(): string {
   const c: { randomUUID?: () => string } | undefined =
     typeof crypto !== "undefined" ? (crypto as unknown as { randomUUID?: () => string }) : undefined;
   if (c?.randomUUID) return c.randomUUID();

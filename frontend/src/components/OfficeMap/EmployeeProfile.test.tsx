@@ -6,6 +6,7 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { EmployeeProfile } from "./EmployeeProfile";
 import type { FeedPost } from "../../services/feed/feedClient";
 import type { OfficePerson } from "../../services/office/floorMerge";
+import { resetSelfStatusForTests, setManualStatus } from "../../services/presence/selfStatusStore";
 
 const {
   fetchFeed,
@@ -434,4 +435,52 @@ describe("EmployeeProfile.module.css has no stale shell overrides", () => {
     expect(raw).not.toMatch(/min\(600px/);
   });
 });
+});
+
+// ---- THE VIEWER'S OWN STATUS --------------------------------------------------------------------
+// The roster row carries Atlas's server-side `status`, which for the signed-in employee goes stale:
+// the card read "Offline" while that same employee's dock pill read Available. The card now reads the
+// SAME store StatusPicker drives (services/presence/selfStatusStore) for the viewer's own profile, and
+// still reads the roster for everybody else's.
+describe("own-profile status", () => {
+  beforeEach(() => {
+    resetSelfStatusForTests();
+    fetchFeed.mockResolvedValue([]);
+    useProgressionStore.mockReturnValue({ progression: null, badges: null });
+  });
+  afterEach(() => resetSelfStatusForTests());
+
+  it("shows the viewer their OWN live status, not the roster's stale one", async () => {
+    setManualStatus("AVAILABLE");
+    // The roster says OFFLINE for this very employee — the exact shape of the reported mismatch.
+    const staleSelf: OfficePerson[] = ROSTER.map((p) =>
+      p.email === "bon@example.com" ? { ...p, status: "OFFLINE" } : p,
+    );
+    render(<EmployeeProfile email="bon@example.com" viewerEmail="bon@example.com" roster={staleSelf} onClose={vi.fn()} />);
+    await screen.findByText("Bon");
+    expect(screen.getByText("Available")).toBeInTheDocument();
+    expect(screen.queryByText("Offline")).toBeNull();
+  });
+
+  it("follows the picker when the viewer changes their own status", async () => {
+    setManualStatus("AVAILABLE");
+    render(<EmployeeProfile email="bon@example.com" viewerEmail="bon@example.com" roster={ROSTER} onClose={vi.fn()} />);
+    await screen.findByText("Available");
+    await waitFor(() => {
+      setManualStatus("BUSY");
+    });
+    await screen.findByText("Busy");
+  });
+
+  it("leaves a COWORKER's card on the roster status it has always shown", async () => {
+    setManualStatus("BUSY");
+    const roster: OfficePerson[] = ROSTER.map((p) =>
+      p.email === "alex@example.com" ? { ...p, status: "OFFLINE" } : p,
+    );
+    render(<EmployeeProfile email="alex@example.com" viewerEmail="bon@example.com" roster={roster} onClose={vi.fn()} />);
+    await screen.findByText("Alex");
+    // The viewer's own BUSY must not leak onto somebody else's card.
+    expect(screen.getByText("Offline")).toBeInTheDocument();
+    expect(screen.queryByText("Busy")).toBeNull();
+  });
 });

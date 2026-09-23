@@ -2,7 +2,7 @@
 // machine. Kept dependency-free (no THREE import) so it's unit testable
 // without a real THREE.js/WebGL context, mirroring angleMath.ts.
 //
-// Every returned value is exactly one of the 6 clip names baked into the
+// Every returned value is exactly one of the clip names baked into the
 // consolidated per-character GLB (see build-character-lods.mjs's
 // CLIP_SOURCES / MESHY_CLIP_MAPPING.md) — CharacterCanvas looks up an
 // AnimationClip by this exact string on the loaded gltf.animations array.
@@ -10,6 +10,10 @@
 export type CharacterAnimState =
   | "idle-9"
   | "walking"
+  /** Sprint locomotion. Ships free with every Meshy rig (the rigging step bundles a walk AND a run);
+   *  consolidated into the character GLB on 2026-09-13. Only the VO3D player controller drives it today —
+   *  V1's own state machine has no sprint input and is deliberately untouched. */
+  | "running"
   | "agree-gesture"
   | "listening-gesture"
   | "sit-on-chair-arms"
@@ -18,6 +22,7 @@ export type CharacterAnimState =
 export const CHARACTER_ANIM_STATES: readonly CharacterAnimState[] = [
   "idle-9",
   "walking",
+  "running",
   "agree-gesture",
   "listening-gesture",
   "sit-on-chair-arms",

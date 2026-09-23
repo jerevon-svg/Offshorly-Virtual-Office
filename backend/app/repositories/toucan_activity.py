@@ -203,6 +203,16 @@ def _viewer_message_conditions(viewer_email: str, since: datetime) -> list[Any]:
     conversation they are not in, and — because only counts leave this module — a number they
     are entitled to tells them nothing about its contents."""
     return [
+        # PHASE 7D — ONE EVENT, COUNTED ONCE. `messages` now also carries SYSTEM rows the server wrote
+        # about the conversation (models/message.py), and the only one today is a missed call. That call
+        # is already counted by _missed_call_count below, off activity_events; counting the row here too
+        # would report the same missed call twice — once as "you missed a call" and once as "you have an
+        # unread message". So the two systems split cleanly and permanently:
+        #   activity_events -> the COUNT of a missed call, for Toucan
+        #   messages        -> the RECORD of it, for the conversation it belongs to and its unread badge
+        # This one predicate is shared by both the message count and the mention count, so the exclusion
+        # lands on both at once.
+        Message.kind == "text",
         Message.sender_email != viewer_email,
         Message.sent_at > since,
         Message.conversation_id.in_(

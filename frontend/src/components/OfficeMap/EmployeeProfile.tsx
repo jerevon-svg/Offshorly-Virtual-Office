@@ -23,6 +23,7 @@ import { profileImageFor } from "../../data/portraits";
 import { SPRITE_SET_BY_AVATAR_ID, characterSprite } from "../../data/bonWalkFrames";
 import { PLACEHOLDER_SPRITE_SET } from "../../services/avatar/placeholder";
 import { mapAtlasToOfficeStatus, STATUS_META } from "../../services/presence/status";
+import { useSelfStatus } from "../../services/presence/selfStatusStore";
 import type { OfficePerson } from "../../services/office/floorMerge";
 
 export interface EmployeeProfileProps {
@@ -323,6 +324,14 @@ export function EmployeeProfile({
   // no progression section. Read from the shared store so it matches the HUD exactly.
   const isSelf = viewerEmail.trim().toLowerCase() === email.trim().toLowerCase();
   const { progression, badges } = useProgressionStore();
+  // YOUR OWN STATUS COMES FROM THE SAME PLACE THE DOCK'S PICKER READS IT. The roster row this card is
+  // built from carries Atlas's `status`, which for the signed-in employee is a stale server-side value —
+  // it said "Offline" while their own dock pill said Available in the same frame. `useSelfStatus` is the
+  // store StatusPicker already drives and reads (services/presence/selfStatusStore), and `currentStatus`
+  // is its resolved answer (manual choice plus the auto conditions), so this is the existing authority
+  // rather than a second status mapping. Only the VIEWER'S OWN card changes; every coworker's profile
+  // still reads the roster exactly as before.
+  const selfStatus = useSelfStatus();
   // Attention dot on the Achievements tab. DERIVED, never stored: the same count the gallery's
   // own header shows, so opening the tab cannot clear it — only claiming can, when refreshBadges
   // brings back a tier with tiersClaimedAt filled in.
@@ -373,7 +382,7 @@ export function EmployeeProfile({
 
   const person = roster.find((p) => p.email.toLowerCase() === email.toLowerCase());
   const name = nameFor(email, roster);
-  const officeStatus = person ? mapAtlasToOfficeStatus(person.status) : null;
+  const officeStatus = isSelf ? selfStatus.currentStatus : person ? mapAtlasToOfficeStatus(person.status) : null;
   const statusMeta = officeStatus ? STATUS_META[officeStatus] : null;
   const hasRecognition = posts.some((p) => p.type === "recognition" || p.type === "congratulation");
 

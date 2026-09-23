@@ -22,20 +22,35 @@ import { getAuthToken } from "../api/client";
 export type Pt = { x: number; y: number };
 export type Facing = "front" | "back" | "left" | "right";
 export type MovementState = "standing" | "sitting";
+/** How peers replay a movement. Absent from every V1 client and means "eased" — V1's own PeerWalker
+ *  curve. The V2 3D office publishes "linear" for a free-movement LEG (a constant-speed sample of WASD
+ *  running): easing a sample of continuous motion halts the body at both ends of every leg. */
+export type WalkPacing = "eased" | "linear";
 
 export interface ActiveMovement {
   movementId: string;
   origin: Pt;
   path: Pt[];
+  /** PHASE 7D — the same in-flight walk in `roomId`'s local frame, when the publisher sent one. */
+  localOrigin?: Pt;
+  localPath?: Pt[];
   roomId: string | null;
   durationMs: number;
   startedAt: number; // server epoch ms
+  pacing?: WalkPacing;
   serverTime?: number; // serverTime the snapshot that carried this active movement was stamped with (snapshot-sourced actives only)
 }
 
 export interface StableMovementState {
   pos: Pt;
+  /** PHASE 7D — where they actually are, in the frame `roomId` names. EPHEMERAL: the server never
+   *  persists it (employee_positions holds `pos` and nothing else), so it is absent after a restart
+   *  or a reload until that employee moves again — and `pos` is the honest fallback meanwhile. */
+  localPos?: Pt;
   facing: Facing;
+  /** The V2 3D office's exact resting yaw in radians, beside V1's four-word `facing`. Present only when
+   *  the arriving client published one (a V2 session) and it came through finite; a V1 arrival has none. */
+  yaw?: number;
   state: MovementState;
   seatKey: string | null;
   roomId: string | null;
@@ -54,15 +69,26 @@ export interface WalkStartedPayload {
   path: Pt[];
   roomId: string | null;
   durationMs: number;
+  pacing?: WalkPacing;
+  /** PHASE 7D — THE SAME MOVEMENT IN `roomId`'S OWN FRAME, for a place V1 has no coordinates for
+   *  (the Championship Cave). `origin`/`path` above stay V1's and keep their meaning exactly: the
+   *  last real in-frame point, which is what V1 persists and what V1's office draws. Optional and
+   *  additive — a client that sends neither is the client that existed before this. */
+  localOrigin?: Pt;
+  localPath?: Pt[];
 }
 
 export interface WalkArrivedPayload {
   movementId: string;
   at: Pt;
+  /** PHASE 7D — where they really stopped, in `roomId`'s frame. `at` stays V1's in-frame point. */
+  localAt?: Pt;
   facing: Facing;
   state: MovementState;
   seatKey: string | null;
   roomId: string | null;
+  /** radians, finite — see StableMovementState.yaw */
+  yaw?: number;
 }
 
 interface PeerWalkStartedEvent {
@@ -74,6 +100,9 @@ interface PeerWalkStartedEvent {
   roomId: string | null;
   durationMs: number;
   startedAt: number;
+  pacing?: WalkPacing | null;
+  localOrigin?: Pt | null;
+  localPath?: Pt[] | null;
 }
 
 interface PeerWalkArrivedEvent {
@@ -85,6 +114,8 @@ interface PeerWalkArrivedEvent {
   state: MovementState;
   seatKey: string | null;
   roomId: string | null;
+  yaw?: number | null;
+  localAt?: Pt | null;
 }
 
 interface PositionsSnapshotEntry {
@@ -96,6 +127,8 @@ interface PositionsSnapshotEntry {
   seatKey: string | null;
   roomId: string | null;
   updatedAt: number;
+  yaw?: number | null;
+  localAt?: Pt | null;
   active: {
     movementId: string;
     origin: Pt;
@@ -103,12 +136,50 @@ interface PositionsSnapshotEntry {
     roomId: string | null;
     durationMs: number;
     startedAt: number;
+    pacing?: WalkPacing | null;
+    localOrigin?: Pt | null;
+    localPath?: Pt[] | null;
   } | null;
 }
+
+/** The optional wire fields, admitted only in the shape they were specified: a yaw that is a finite
+ *  number, a pacing that is one of the two words. Anything else is simply absent, exactly as a V1
+ *  client's payload is — never a NaN in the store and never an unknown pacing a replay would trip on. */
+const yawField = (v: unknown): { yaw: number } | Record<string, never> =>
+  typeof v === "number" && Number.isFinite(v) ? { yaw: v } : {};
+const pacingField = (v: unknown): { pacing: WalkPacing } | Record<string, never> =>
+  v === "eased" || v === "linear" ? { pacing: v } : {};
 
 interface PositionsSnapshotEvent {
   entries: PositionsSnapshotEntry[];
   serverTime: number;
+}
+
+/** `seat_rejected` — sent to the ARRIVING client only, when its `walk_arrived` claimed a seat another
+ *  employee already holds. The server has accepted the arrival as STANDING at the same position (that
+ *  is what it broadcast and persisted), so the local body should stand up. V1 clients receive and
+ *  ignore it today; the 3D office stands its body up (dev/vo3d/app/Vo3dHost). */
+export interface SeatRejectedEvent {
+  movementId: string;
+  seatKey: string;
+  /** who holds it — lowercased email, for a readout; never required to act */
+  heldBy: string;
+}
+
+/** `peer_jump` — SOMEBODY JUMPED, JUST NOW. A transient relay, deliberately NOT part of the peers
+ *  store: a jump is one instant rather than a transition between two positions, so it carries no
+ *  revision, bumps nothing, persists nothing and cannot be replayed out of a snapshot. It reaches
+ *  listeners the way `seat_rejected` does and never re-renders the roster.
+ *
+ *  It says WHO and WHEN, and nothing else — no height, no position, no duration. The receiver
+ *  reconstructs the arc from its own physics (dev/vo3d/player/PlayerJump), which is what keeps the
+ *  vertical purely cosmetic: nothing a client sends can move a body horizontally, open a door or
+ *  reach a room it may not enter. */
+export interface PeerJumpEvent {
+  /** lowercased email, stamped by the server from the verified session — never client-supplied */
+  email: string;
+  /** server epoch ms the jump was relayed at, for the receiver's staleness window */
+  at: number;
 }
 
 function socketBase(): string {
@@ -122,6 +193,8 @@ function socketBase(): string {
 }
 
 let socketInstance: Socket | null = null;
+const seatRejectedListeners = new Set<(e: SeatRejectedEvent) => void>();
+const peerJumpListeners = new Set<(e: PeerJumpEvent) => void>();
 const peers = new Map<string, PeerMovementState>();
 let peersSnapshot: PeerMovementState[] = [];
 const listeners = new Set<() => void>();
@@ -206,6 +279,8 @@ export function applySnapshot(
         state: entry.state,
         seatKey: entry.seatKey,
         roomId: entry.roomId,
+        ...(entry.localAt ? { localPos: entry.localAt } : {}),
+        ...yawField(entry.yaw),
       },
       active: entry.active
         ? {
@@ -215,6 +290,9 @@ export function applySnapshot(
             roomId: entry.active.roomId,
             durationMs: entry.active.durationMs,
             startedAt: entry.active.startedAt,
+            ...(entry.active.localOrigin ? { localOrigin: entry.active.localOrigin } : {}),
+            ...(entry.active.localPath ? { localPath: entry.active.localPath } : {}),
+            ...pacingField(entry.active.pacing),
             serverTime: event.serverTime,
           }
         : null,
@@ -243,6 +321,10 @@ export function applyStarted(
       state: "standing",
       seatKey: existing?.stable.seatKey ?? null,
       roomId: event.roomId,
+      // The walk's own local origin is the freshest local fact there is; keeping the previous one
+      // would leave a body a leg behind until this walk resolves.
+      ...(event.localOrigin ? { localPos: event.localOrigin } : existing?.stable.localPos ? { localPos: existing.stable.localPos } : {}),
+      ...yawField(existing?.stable.yaw),
     },
     active: {
       movementId: event.movementId,
@@ -251,6 +333,9 @@ export function applyStarted(
       roomId: event.roomId,
       durationMs: event.durationMs,
       startedAt: event.startedAt,
+      ...(event.localOrigin ? { localOrigin: event.localOrigin } : {}),
+      ...(event.localPath ? { localPath: event.localPath } : {}),
+      ...pacingField(event.pacing),
     },
   });
   return next;
@@ -272,10 +357,14 @@ export function applyArrived(
     revision: event.revision,
     stable: {
       pos: event.at,
+      // PHASE 7D. Absent clears it: an arrival with no local coordinate is an arrival back inside
+      // V1's frame, and holding the old one would strand the body in a Cave they have left.
+      ...(event.localAt ? { localPos: event.localAt } : {}),
       facing: event.facing,
       state: event.state,
       seatKey: event.seatKey,
       roomId: event.roomId,
+      ...yawField(event.yaw),
     },
     active: null,
   });
@@ -328,8 +417,52 @@ function ensureSocket(): Socket | null {
     notify();
   });
 
+  socket.on("seat_rejected", (payload?: SeatRejectedEvent) => {
+    if (!payload?.movementId || typeof payload.seatKey !== "string") return;
+    for (const listener of seatRejectedListeners) listener(payload);
+  });
+
+  socket.on("peer_jump", (payload?: PeerJumpEvent) => {
+    // The same shape check every other inbound event gets. `at` is the server's own clock and must be
+    // a real number for the receiver's staleness window to mean anything; anything else is dropped
+    // rather than passed on as a NaN nobody can compare against.
+    if (typeof payload?.email !== "string" || !payload.email) return;
+    if (typeof payload.at !== "number" || !Number.isFinite(payload.at)) return;
+    const event: PeerJumpEvent = { email: payload.email.toLowerCase(), at: payload.at };
+    for (const listener of peerJumpListeners) listener(event);
+  });
+
   socketInstance = socket;
   return socket;
+}
+
+/** Subscribe to `seat_rejected` for THIS session's own arrivals. Establishes the connection on first
+ *  use, like the hooks. Returns the unsubscribe. */
+export function subscribeSeatRejected(listener: (e: SeatRejectedEvent) => void): () => void {
+  ensureSocket();
+  seatRejectedListeners.add(listener);
+  return () => {
+    seatRejectedListeners.delete(listener);
+  };
+}
+
+/** Subscribe to `peer_jump`. Establishes the connection on first use, like the hooks. Returns the
+ *  unsubscribe. Deliberately a plain listener rather than a store hook: a jump lasts about 600 ms and
+ *  drives one body's transform, and pushing it through useSyncExternalStore would re-render every
+ *  consumer of the roster twice a jump for something React does not draw. */
+export function subscribePeerJump(listener: (e: PeerJumpEvent) => void): () => void {
+  ensureSocket();
+  peerJumpListeners.add(listener);
+  return () => {
+    peerJumpListeners.delete(listener);
+  };
+}
+
+/** THIS USER JUST JUMPED. Fire and forget: no id, no position, no duration, no acknowledgement — the
+ *  server stamps the identity and the time, and peers reconstruct the arc themselves. A no-op when the
+ *  connection cannot be opened (not signed in), exactly like the two emitters below. */
+export function emitJump(): void {
+  ensureSocket()?.emit("jump");
 }
 
 /** Tells the server this user has started walking a path. No-op if the
@@ -357,6 +490,11 @@ export function emitWalkStarted(payload: WalkStartedPayload): void {
     path: capPath(payload.path),
     roomId: payload.roomId,
     durationMs: sanitizeDurationMs(payload.durationMs),
+    // PHASE 7D — capped by the SAME rule the V1 path is, because the server replays both through
+    // one interpolation and validates both with one point check.
+    ...(payload.localOrigin ? { localOrigin: payload.localOrigin } : {}),
+    ...(payload.localPath?.length ? { localPath: capPath(payload.localPath) } : {}),
+    ...pacingField(payload.pacing),
   });
 }
 
@@ -370,6 +508,8 @@ export function emitWalkArrived(payload: WalkArrivedPayload): void {
     state: payload.state,
     seatKey: payload.seatKey,
     roomId: payload.roomId,
+    ...(payload.localAt ? { localAt: payload.localAt } : {}),
+    ...yawField(payload.yaw),
   });
 }
 
@@ -417,5 +557,7 @@ export function __resetForTests(): void {
   serverClockOffsetMs = 0;
   snapshotReceived = false;
   devEmail = null;
+  seatRejectedListeners.clear();
+  peerJumpListeners.clear();
   notify();
 }
