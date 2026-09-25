@@ -52,9 +52,10 @@ describe("resolveVo3dIdentity", () => {
   });
 
   it("does not let a decorative stock-art name collide into a character", () => {
-    // "nicole" is a hardcoded Figma decoration in the manifest, not a pipeline avatar. V1 refuses the
-    // collision; V2 must inherit that refusal rather than re-deriving it.
-    signIn("nicole@offshorly.com", "Nicole");
+    // "karen" is a hardcoded Figma decoration in the manifest, not a pipeline avatar. V1 refuses the
+    // collision; V2 must inherit that refusal rather than re-deriving it. (nicole was the example until
+    // her live-3D set shipped 2026-09-25.)
+    signIn("karen@offshorly.com", "Karen");
     expect(resolveVo3dIdentity()!.avatarId).toBeNull();
   });
 

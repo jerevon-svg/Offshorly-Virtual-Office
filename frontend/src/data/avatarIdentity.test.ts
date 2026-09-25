@@ -32,12 +32,13 @@ describe("avatarIdForEmail", () => {
   });
 
   it("returns null (not the decorative stock character) when a localpart collides with a hardcoded office-decoration id", () => {
-    // "nicole" is one of the 16 old Figma stock-art placeholder characters in
+    // "karen" is one of the old Figma stock-art placeholder characters in
     // office-assets-manifest.json — decoration only, no animated sprite set.
-    // A real Atlas employee named Nicole must fall through to null (the
+    // A real Atlas employee named Karen must fall through to null (the
     // faceless placeholder), not resolve to that decoration's flat PNG.
-    expect(isKnownAvatarId("nicole")).toBe(false);
-    expect(avatarIdForEmail("nicole@offshorly.com")).toBeNull();
+    // (nicole was the example here until her live-3D set shipped 2026-09-25.)
+    expect(isKnownAvatarId("karen")).toBe(false);
+    expect(avatarIdForEmail("karen@offshorly.com")).toBeNull();
   });
 
   it("returns null for null/undefined/empty input", () => {
@@ -133,5 +134,22 @@ describe("mock self URLs (?as=<email>&deviceTier=T2)", () => {
     // no invented sprite sheets — below the live-3D tier he falls back to the
     // shared faceless placeholder, exactly like any unmapped person.
     expect(SPRITE_SET_BY_AVATAR_ID.angelo).toBeUndefined();
+  });
+
+  it("france, jona, clang, nicole and kael (2026-09-25) join by email to their live-3D sets", async () => {
+    const { LIVE_3D_CHARACTERS } = await import("../render3d/live3dCharacters");
+    const cases: Array<[string, string, RegExp]> = [
+      ["france@offshorly.com", "france", /\/avatars\/france-v1-hq\//],
+      ["jona@offshorly.com", "jona", /\/avatars\/jona-v1-fix-hq\//],
+      // Clarisse's localpart does not match her manifest id: explicit override.
+      ["clarisse@offshorly.com", "clang", /\/avatars\/clang-v1-geo-fix-hq\//],
+      ["Clarisse@Offshorly.com", "clang", /\/avatars\/clang-v1-geo-fix-hq\//],
+      ["nicole@offshorly.com", "nicole", /\/avatars\/nicole-v1-fix-hq\//],
+      ["kael@offshorly.com", "kael", /\/avatars\/kael-v1-fix-hq-idle9\//],
+    ];
+    for (const [email, id, folder] of cases) {
+      expect(avatarIdForEmail(email), email).toBe(id);
+      expect(LIVE_3D_CHARACTERS[id].glbUrl).toMatch(folder);
+    }
   });
 });

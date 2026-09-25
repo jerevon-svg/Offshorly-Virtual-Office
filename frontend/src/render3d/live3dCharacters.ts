@@ -317,6 +317,168 @@ export const LIVE_3D_CHARACTERS: Record<string, Live3dAssetSet> = {
     // measured ndc head 0.761911 @ layer height 39.85
     headTopAboveCenter: 15.181,
   },
+  // france, jona and clang (built 2026-09-25) keep their EXISTING manifest
+  // layer ids and boxes — they were already on the floor as stock-art layers —
+  // except jona, whose 19 x 31.19 box sat under the 33.06-unit canonical
+  // standing height and clipped raised-arm clips 7% above the frame top; it
+  // was scaled uniformly (aspect kept, bottom-centre anchored) to 22.66 x 37.2,
+  // bon's height. Render sizes follow each box's aspect at bon/alex's ~8 px
+  // per frame unit. All three are FEMININE (Meshy Idle_12, action 252) with the
+  // standard whole-arm-chain correction solved from their OWN bind axes
+  // (<chain>-idle-12-armfix-v1.mjs), embedded as `idle-9`.
+  //
+  // Manifest aspect 21.819 / 38.559. Built from france-tpose.png, pose_mode
+  // "t-pose" (image-to-3d 01a0d5ce -> remesh 01a0d5d0-535c -> rig 01a0d5d4-1170).
+  // Idle hands 25.9/27.3 -> 16.0/16.2 outboard of hip, elbows 11.0/14.1.
+  // Measured through france-v1-measure.mjs at 174x308 / layer 38.559: worst
+  // max|x| 1.1920 (sit-on-chair-arms @270deg) x1.08 = 1.2874; HEAD_NDC 0.801897
+  // -> 0.801897 x 38.559 / 2 = 15.460; no pose exceeds the frame top.
+  france: {
+    glbUrl: `${BASE}avatars/france-v1-hq/france-v1-lod0.glb`,
+    lod1GlbUrl: `${BASE}avatars/france-v1-hq/france-v1-lod1.glb`,
+    lod2GlbUrl: `${BASE}avatars/france-v1-hq/france-v1-lod2.glb`,
+    idleProfile: "feminine",
+    renderWidth: 174,
+    renderHeight: 308,
+    // measured max|x| 1.1920 (sit-on-chair-arms @270deg) + 8% margin
+    widthCapacity: 1.29,
+    // measured ndc head 0.801897 @ layer height 38.559
+    headTopAboveCenter: 15.46,
+  },
+  // Manifest aspect 22.66 / 37.2 (recalibrated, see above). Chain `jona-v1-fix`:
+  // Jona's approved, LOCKED jona-v1 t-pose mesh (image-to-3d 01a0d5ce-2d81 ->
+  // remesh 01a0d5cf -> rig 01a0d5d4-116a) with a zero-credit local rig repair.
+  // Meshy seated her LEFT shoulder/arm joints 2.4 units high in the hair (upper
+  // arm 31deg droop, 10.8 long vs her right 13deg / 13.7), so the bundled walk
+  // only half-lowered that arm. output/meshy-employees/_rig-repair.mjs
+  // (mode mirror --hair) re-seated LeftShoulder/LeftArm as the mirror of the
+  // right side with rebuilt inverse binds (rest pose unchanged, max deviation
+  // 3e-5% of height), handed residual hair arm weights to Head (drift 0.51% ->
+  // 0.05%), and transferred clips as world-rotation deltas from each skeleton's
+  // own bind — jan-v1's walk/run/gestures/sits and micah-v5's Idle_12, then the
+  // standard idle arm-chain correction from JONA'S OWN axes (hands 12.8/13.3,
+  // elbows 11.0/14.0). The A-pose jona-v2 build (taller, smaller head — rejected
+  // on proportions) was never committed; it is a local diagnostic reference only.
+  // Measured at 182x298 / layer 37.2: worst max|x| 1.1995 (sitting-answering
+  // @225deg) x1.08 = 1.2955; HEAD_NDC 0.776323 -> 14.440; no top overshoot.
+  jona: {
+    glbUrl: `${BASE}avatars/jona-v1-fix-hq/jona-v1-fix-lod0.glb`,
+    lod1GlbUrl: `${BASE}avatars/jona-v1-fix-hq/jona-v1-fix-lod1.glb`,
+    lod2GlbUrl: `${BASE}avatars/jona-v1-fix-hq/jona-v1-fix-lod2.glb`,
+    idleProfile: "feminine",
+    renderWidth: 182,
+    renderHeight: 298,
+    // measured max|x| 1.1995 (sitting-answering @225deg) + 8% margin
+    widthCapacity: 1.3,
+    // measured ndc head 0.776323 @ layer height 37.2
+    headTopAboveCenter: 14.44,
+  },
+  // Manifest aspect 25.314 / 36.549. Registry key is the manifest id `clang`;
+  // her production email clarisse@offshorly.com is joined to it by
+  // avatarRegistry.ts's EMAIL_TO_AVATAR_ID (the localpart does not match).
+  // Chain `clang-v1-geo-fix`: her clang-v1 t-pose mesh (image-to-3d 01a0d5ce-2de5
+  // -> remesh 01a0d5d0-5438 -> rig 01a0d5d4-11a5), which keeps her face, hair,
+  // flower, top, trousers, shoes and CROSSBODY BAG, with two zero-credit fixes:
+  //  1. GEOMETRY (output/meshy-employees/_clang-legfix.mjs): unlike jona/nicole/
+  //     kael, the v1 MESH had drifted — the trouser segment between cuff and hem
+  //     was ~2.2x too long in head units (waist->floor 0.380 vs clang-tpose.png's
+  //     0.262). Only that segment was compressed (k=0.274, smooth 0.025 ramps,
+  //     shoes/cuff untouched, bag masked to move rigidly with the top), solved so
+  //     the hem lands on the reference: head 0.565 / top 0.176 / waist->floor 0.259
+  //     / hand line 0.420 / span 0.820 vs reference 0.557 / 0.181 / 0.262 / 0.426 /
+  //     0.855 (skeleton-free front renders).
+  //  2. RIG (_rig-repair.mjs clanggeo --hair --hair-cut=0.045 --hair-band=0.03,
+  //     _clang-bagfix.mjs): every joint follows the same height map so it stays on
+  //     its weight blend (hips 0.400 -> 0.283 of height), shoulders re-seated on the
+  //     corrected arm line at the cast's 1.9% offset (Meshy had them in her hair),
+  //     hair handed to Head (head drift 8.44% -> 0%), and the bag — bound 53% to the
+  //     left thigh — handed to Hips so it hangs from the pelvis. Rest pose unchanged
+  //     (3e-5% of height). Clips: jan-v1's walk/run/gestures/sits + micah-v5's
+  //     Idle_12 as world-rotation deltas, then the idle arm-chain correction from
+  //     HER OWN axes (hands 12.8/11.6, elbows 11.1/14.1). the A-pose clang-v2 build
+  //     (bag lost, proportions also drifted) was never committed — diagnostic only.
+  // Measured at 202x292 / layer 36.549: worst max|x| 1.0339 (sit-on-chair-arms
+  // @270deg) x1.08 = 1.1166; HEAD_NDC 0.817775 -> 14.944; no top overshoot.
+  clang: {
+    glbUrl: `${BASE}avatars/clang-v1-geo-fix-hq/clang-v1-geo-fix-lod0.glb`,
+    lod1GlbUrl: `${BASE}avatars/clang-v1-geo-fix-hq/clang-v1-geo-fix-lod1.glb`,
+    lod2GlbUrl: `${BASE}avatars/clang-v1-geo-fix-hq/clang-v1-geo-fix-lod2.glb`,
+    idleProfile: "feminine",
+    renderWidth: 202,
+    renderHeight: 292,
+    // measured max|x| 1.0339 (sit-on-chair-arms @270deg) + 8% margin
+    widthCapacity: 1.12,
+    // measured ndc head 0.817775 @ layer height 36.549
+    headTopAboveCenter: 14.944,
+  },
+  // Manifest aspect 23.337 / 37.2: nicole's stock-art box (20 x 31.88) sat under
+  // the 33.06-unit canonical standing height, so it was scaled uniformly (aspect
+  // kept, bottom-centre anchored) to bon's 37.2, exactly as jona's was.
+  // Chain `nicole-v1-fix`: her approved, LOCKED nicole-v1 t-pose mesh (image-to-3d
+  // 01a0d5ce-2dff -> remesh 01a0d5d0-31f2 -> rig 01a0d5d4-118a) with a zero-credit
+  // local rig repair (output/meshy-employees/_rig-repair.mjs mirror --hair
+  // --hair-cut=0.045 --hair-band=0.03). Meshy seated her LEFT shoulder/arm joint
+  // 5.61% of height above her own T-pose arm line (approved cast 0.7-2.4%; her
+  // right side 1.86%) and let the arm bones own her bob — LeftArm 16,424 verts
+  // reaching 0.183 above the shoulder — so the bundled walk left her arms out
+  // (hand drop 0.60/0.67x torso) and dragged her hair 3.74%. LeftShoulder/LeftArm
+  // were re-seated as the mirror of her right side with rebuilt inverse binds
+  // (rest pose unchanged, 2e-5% of height), hair above shoulder+0.045 was handed
+  // to Head over a 0.03 feather (arm footprint now +0.056/+0.053, head drift 0%),
+  // and clips were transferred as world-rotation deltas from each skeleton's own
+  // bind: jan-v1's walk/run/gestures/sits and micah-v5's Idle_12, then the
+  // standard idle arm-chain correction from NICOLE'S OWN axes (hands 14.1/14.6,
+  // elbows 11.1/14.2). The A-pose nicole-v2/v3 chains (taller, smaller head —
+  // rejected on proportions) stay on disk as diagnostic references only.
+  // Measured at 187x298 / layer 37.2: worst max|x| 1.1779 (sitting-answering
+  // @225deg) x1.08 = 1.2722; HEAD_NDC 0.746182 -> 13.879; no top overshoot.
+  nicole: {
+    glbUrl: `${BASE}avatars/nicole-v1-fix-hq/nicole-v1-fix-lod0.glb`,
+    lod1GlbUrl: `${BASE}avatars/nicole-v1-fix-hq/nicole-v1-fix-lod1.glb`,
+    lod2GlbUrl: `${BASE}avatars/nicole-v1-fix-hq/nicole-v1-fix-lod2.glb`,
+    idleProfile: "feminine",
+    renderWidth: 187,
+    renderHeight: 298,
+    // measured max|x| 1.1779 (sitting-answering @225deg) + 8% margin
+    widthCapacity: 1.28,
+    // measured ndc head 0.746182 @ layer height 37.2
+    headTopAboveCenter: 13.879,
+  },
+  // Manifest aspect 23.023 / 37.2: kael's stock-art box (19 x 30.7) sat under
+  // the 33.06-unit canonical standing height, so it was scaled uniformly (aspect
+  // kept, bottom-centre anchored) to bon's 37.2, as jona's and nicole's were. His
+  // layer's mirror transform is authored for the flat stock PNG; OfficeStage
+  // applies layer transforms to sprites only, so the 3D body is never mirrored.
+  // Chain `kael-v1-fix`: his approved, LOCKED kael-v1 t-pose mesh (image-to-3d
+  // 01a0d5ce-2d95 -> remesh 01a0d5d0-0f94 -> rig 01a0d5d4-1141) with a zero-credit
+  // local rig repair (output/meshy-employees/_rig-repair.mjs mode kael). The mesh
+  // is upright, but Meshy bent his skeleton's upper body FORWARD out of it: head
+  // +30%, neck +26%, shoulders +18% of hips->head ahead of the hips (approved cast
+  // -6..+1%) while elbows/hands sat correctly, so the upper-arm bones pointed
+  // 36-41deg backward and the bundled walk left both arms out (hand drop
+  // 0.46/0.70x torso). Spine02/Spine01/Spine/neck/Head/shoulders/arms were moved
+  // back onto the body line at jan-v1's depth offsets scaled to kael, keeping
+  // every joint's world rotation, with rebuilt inverse binds (rest pose unchanged,
+  // 4e-5% of height); his shoulder HEIGHTS were already in the cast's band and
+  // were not touched, and his weights are Meshy's own. All clips transferred as
+  // world-rotation deltas from each skeleton's own bind from jan-v1 (Idle_9 raw,
+  // walk/run/gestures/sits), then the standard masculine idle arm-chain
+  // correction from KAEL'S OWN axes (hands 16.4/18.0, elbows 8.5/8.5).
+  // The A-pose kael-v2/v3 chains (same skeleton defect) are diagnostic only.
+  // Measured at 184x298 / layer 37.2: worst max|x| 1.2434 (sitting-answering
+  // @225deg) x1.08 = 1.3429; HEAD_NDC 0.745782 -> 13.872; no top overshoot.
+  kael: {
+    glbUrl: `${BASE}avatars/kael-v1-fix-hq-idle9/kael-v1-fix-lod0.glb`,
+    lod1GlbUrl: `${BASE}avatars/kael-v1-fix-hq-idle9/kael-v1-fix-lod1.glb`,
+    lod2GlbUrl: `${BASE}avatars/kael-v1-fix-hq-idle9/kael-v1-fix-lod2.glb`,
+    idleProfile: "masculine",
+    renderWidth: 184,
+    renderHeight: 298,
+    // measured max|x| 1.2434 (sitting-answering @225deg) + 8% margin
+    widthCapacity: 1.35,
+    // measured ndc head 0.745782 @ layer height 37.2
+    headTopAboveCenter: 13.872,
+  },
 };
 
 export function isLive3dEligible(avatarId: string | null | undefined): boolean {

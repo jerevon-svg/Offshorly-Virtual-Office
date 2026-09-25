@@ -110,6 +110,48 @@ const mockPeople = [
     status: "ONLINE" as PresenceStatusValue,
     departmentName: "Dev",
   },
+  // france, jona and clang: same shape as jan (LIVE_3D_ONLY_AVATAR_IDS, no
+  // AvatarSpriteSet, pinned ONLINE as seed baseline). france/jona resolve by
+  // the localpart convention; clang's production email is clarisse@, joined to
+  // `clang` by avatarRegistry.ts's EMAIL_TO_AVATAR_ID. Departments are mock
+  // seed values only.
+  {
+    layerId: "france",
+    email: "france@offshorly.com",
+    displayName: displayNameFor("france"),
+    status: "ONLINE" as PresenceStatusValue,
+    departmentName: "Dev",
+  },
+  {
+    layerId: "jona",
+    email: "jona@offshorly.com",
+    displayName: displayNameFor("jona"),
+    status: "ONLINE" as PresenceStatusValue,
+    departmentName: "Dev",
+  },
+  {
+    layerId: "clang",
+    email: "clarisse@offshorly.com",
+    displayName: displayNameFor("clang"),
+    status: "ONLINE" as PresenceStatusValue,
+    departmentName: "Dev",
+  },
+  {
+    // nicole (2026-09-25): same shape; resolves by the localpart convention.
+    layerId: "nicole",
+    email: "nicole@offshorly.com",
+    displayName: displayNameFor("nicole"),
+    status: "ONLINE" as PresenceStatusValue,
+    departmentName: "Dev",
+  },
+  {
+    // kael (2026-09-25): same shape; resolves by the localpart convention.
+    layerId: "kael",
+    email: "kael@offshorly.com",
+    displayName: displayNameFor("kael"),
+    status: "ONLINE" as PresenceStatusValue,
+    departmentName: "Dev",
+  },
 ];
 
 // Stable-identity lookup into the SAME mock cast the floor renders, so every other mock feed

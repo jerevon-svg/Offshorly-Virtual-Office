@@ -61,11 +61,14 @@ function statusFor(index: number): PresenceStatusValue {
 }
 
 // Mirrors MockOfficeService: Bon's mock identity is the real Atlas email so self-recognition
-// (profile button, DM exclusion) works on the rig; everyone else follows the localpart convention.
+// (profile button, DM exclusion) works on the rig; clang carries Clarisse's real email because her
+// localpart does not match her avatar id; everyone else follows the localpart convention.
 export const MOCK_VIEWER_EMAIL = "jerevon@offshorly.com";
 
 export function mockTeamMapEmailFor(avatarId: string): string {
-  return avatarId === "bon" ? MOCK_VIEWER_EMAIL : mockEmailForAvatarId(avatarId);
+  if (avatarId === "bon") return MOCK_VIEWER_EMAIL;
+  if (avatarId === "clang") return "clarisse@offshorly.com";
+  return mockEmailForAvatarId(avatarId);
 }
 
 function fixtureFor(index: number): { bucket: TeamMapBucket; place: Fixture | null } {
