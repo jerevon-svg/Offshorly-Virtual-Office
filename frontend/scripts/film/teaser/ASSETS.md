@@ -1,6 +1,6 @@
 # FINAL-v2 teaser — required assets
 
-The assets `final_master.py` needs to reproduce **`out/teaser/vo-linkedin-FINAL-v2-master.mp4`** (63.87 s, 1920×1080, 30 fps).
+The assets `final_master.py` needs to reproduce the definitive FINAL-v2 master **`out/teaser/virtual-office-video.mp4`** (63.87 s, 1920×1080, 30 fps).
 Tracked here: the tooling only (`final_master.py`, `logo.mjs`, `capture.sh`, the rig in `../`). Everything below lives in the
 git-ignored `frontend/scripts/film/out/`.
 
@@ -81,7 +81,7 @@ graphics, render scale 0.85, DPR 1, JPEG 95). They're live captures: recapturing
 
 ```
 export FILM_FFMPEG=/path/to/ffmpeg
-python3 frontend/scripts/film/teaser/final_master.py   # → out/teaser/vo-linkedin-FINAL-v2-master.mp4
+python3 frontend/scripts/film/teaser/final_master.py   # → out/teaser/virtual-office-video.mp4
 ```
 Expected anchors: ALIVE 9.80 · EXPERIENCE 16.60 · spatial video (H5) 34.833–36.367 · ding 52.133 · blackout 56.267 ·
 card 59.457 · end 63.857.

@@ -230,7 +230,7 @@ LG = add(os.path.join(HERE, "..", "final", "offshorly-logo-reversed.png")); inpu
 filt.append(f"[{LG}:v]scale=700:-1:flags=lanczos,format=rgba,fade=t=in:st={CARD_IN:.3f}:d=0.9:alpha=1,fade=t=out:st={CARD_OUT - 0.7:.3f}:d=0.7:alpha=1[logo]")
 filt.append(f"[0:v]tpad=stop_duration={END - PIC_END + 0.5:.3f}:color=black,trim=duration={END:.3f},subtitles='{subs}':fontsdir=/System/Library/Fonts[base]")
 filt.append("[base][logo]overlay=(W-w)/2:422:eof_action=pass,format=yuv420p[vout]")
-out = os.path.join(HERE, "vo-linkedin-FINAL-v2-master.mp4")  # FINAL-v2; FINAL (v1) is kept as the fallback
+out = os.path.join(HERE, "virtual-office-video.mp4")  # the definitive FINAL-v2 master; FINAL (v1) is kept as the fallback
 open(os.path.join(HERE, "final-master-filter.txt"), "w").write(";\n".join(filt))
 subprocess.run([FF, "-y", "-hide_banner", "-loglevel", "error", "-i", picture, *inputs, "-filter_complex", ";".join(filt),
                 "-map", "[vout]", "-map", "[aout]", "-t", f"{END:.3f}", "-c:v", "libx264", "-preset", "slow", "-crf", "16", "-r", str(FPS),
