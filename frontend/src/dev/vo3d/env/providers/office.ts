@@ -34,13 +34,18 @@ export const WEATHER_ATTRIBUTION = "Powered by WeatherAPI.com";
 const PATH = "weather/office";
 const TIMEOUT_MS = 6000;
 
-/** Absolute URL from VITE_API_URL, or null when there is no backend configured.
+/** Absolute URL on the VIRTUAL OFFICE backend, or null when there is no backend configured.
  *
- *  Deliberately NOT services/api/client.ts's apiUrl(): that THROWS when VITE_API_URL is unset, and
- *  the vo3d dev entry must boot on a machine with no backend at all. Missing config here is a
- *  normal state — the office runs on the manual provider — not an error. */
+ *  GET /weather/office is served by our own FastAPI app (backend/app/routers/weather.py), so it is
+ *  addressed from VITE_CHAT_SOCKET_URL — the same base every other VO-backend client uses (Hub,
+ *  attendance, the Hub weather card in services/weather/forecastClient.ts). It is NOT an Atlas
+ *  route: VITE_API_URL is the Atlas API in production, where this path does not exist.
+ *
+ *  Deliberately non-throwing, unlike those clients' socketBase(): the vo3d dev entry must boot on a
+ *  machine with no backend at all. Missing config here is a normal state — the office runs on the
+ *  manual provider — not an error. */
 export function officeWeatherUrl(): string | null {
-  const raw = import.meta.env.VITE_API_URL;
+  const raw = import.meta.env.VITE_CHAT_SOCKET_URL;
   if (typeof raw !== "string" || !raw.trim()) return null;
   return `${raw.trim().replace(/\/+$/, "")}/${PATH}`;
 }

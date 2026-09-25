@@ -4,7 +4,7 @@ Two providers implement the `WeatherProvider` seam in `../weather.ts`:
 
 | File | Used when | Reaches the network |
 |---|---|---|
-| `office.ts` | `VITE_API_URL` is set — the normal case | yes, to **our own backend** |
+| `office.ts` | `VITE_CHAT_SOCKET_URL` is set — the normal case | yes, to **our own backend** |
 | `manual.ts` | no backend configured (bare dev rig) | no |
 
 `bootstrap.ts` picks one at startup. Everything downstream of the seam is identical either way, and
@@ -15,7 +15,10 @@ are unaffected by a missing key, a dead endpoint or a slow response.
 
 The browser never talks to WeatherAPI and never holds a key. It calls:
 
-    GET {VITE_API_URL}/weather/office
+    GET {VITE_CHAT_SOCKET_URL}/weather/office
+
+`VITE_CHAT_SOCKET_URL` is the Virtual Office backend (the same base as the Hub, attendance and
+chat). It is **not** `VITE_API_URL`, which is the Atlas API in production and has no such route.
 
 and gets back a state already in the app's own vocabulary:
 

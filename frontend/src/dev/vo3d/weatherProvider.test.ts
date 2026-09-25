@@ -78,6 +78,31 @@ describe("vo3d weather — the manual overrides are untouched by any of this", (
   });
 });
 
+// GET /weather/office lives on the Virtual Office backend. In production VITE_API_URL is the ATLAS
+// API, which has no such route, so building the URL from it silently left AUTO on CLEAR.
+describe("vo3d weather — the endpoint is on the Virtual Office backend, not Atlas", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("builds the URL from VITE_CHAT_SOCKET_URL even when an Atlas VITE_API_URL is also set", () => {
+    vi.stubEnv("VITE_API_URL", "https://atlas-api.example.com");
+    vi.stubEnv("VITE_CHAT_SOCKET_URL", "https://vo-api.example.com");
+    expect(officeWeatherUrl()).toBe("https://vo-api.example.com/weather/office");
+  });
+
+  it("strips any number of trailing slashes and surrounding whitespace", () => {
+    vi.stubEnv("VITE_CHAT_SOCKET_URL", "  https://vo-api.example.com///  ");
+    expect(officeWeatherUrl()).toBe("https://vo-api.example.com/weather/office");
+  });
+
+  it("is null (manual provider, CLEAR) when the VO backend is not configured — never falls back to Atlas", () => {
+    vi.stubEnv("VITE_API_URL", "https://atlas-api.example.com");
+    vi.stubEnv("VITE_CHAT_SOCKET_URL", "");
+    expect(officeWeatherUrl()).toBeNull();
+    vi.stubEnv("VITE_CHAT_SOCKET_URL", "   ");
+    expect(officeWeatherUrl()).toBeNull();
+  });
+});
+
 describe("vo3d weather — nothing about the endpoint can break the office", () => {
   const failures: [string, () => void][] = [
     ["missing/invalid key (backend says unavailable)", () => vi.stubGlobal("fetch", ok({ source: "unavailable", state: "clear", attribution: WEATHER_ATTRIBUTION }))],
