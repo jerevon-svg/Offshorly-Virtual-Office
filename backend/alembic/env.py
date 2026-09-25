@@ -57,7 +57,20 @@ _schema_translate_map = None if _is_sqlite else {None: _VO_SCHEMA}
 
 
 def run_migrations_offline() -> None:
-    """Emit SQL to stdout without a live DB connection (`alembic upgrade --sql`)."""
+    """Emit SQL to stdout without a live DB connection (`alembic upgrade --sql`).
+
+    NOTE: `schema_translate_map` is a `Connection.execution_options()` concept — it is applied by
+    SQLAlchemy's compiler when a statement is executed/compiled *through a live connection*. There
+    is no live connection here (offline mode only renders SQL text), and
+    `EnvironmentContext.configure()` has no `schema_translate_map` parameter of its own (passing one
+    is silently absorbed into `**kw` and does nothing — this was the actual bug in the online path,
+    now fixed below). As a result, `alembic upgrade --sql` output is NOT schema-qualified for VO;
+    every `op.create_table(...)` call renders unqualified, landing in whatever schema the target
+    database's `search_path` defaults to. This is a known, accepted gap: `render.yaml`'s deploy
+    command runs `alembic upgrade head` (the online path, which IS correctly schema-isolated below),
+    not `--sql`/offline generation. Do not add `schema_translate_map=...` back here — it is not a
+    real option and would silently do nothing while looking like it works.
+    """
     context.configure(
         url=config.get_main_option("sqlalchemy.url"),
         target_metadata=target_metadata,
@@ -67,7 +80,6 @@ def run_migrations_offline() -> None:
         compare_server_default=True,
         render_as_batch=_is_sqlite,
         version_table_schema=_target_schema,
-        schema_translate_map=_schema_translate_map,
     )
 
     with context.begin_transaction():
@@ -89,6 +101,48 @@ def run_migrations_online() -> None:
             # have somewhere to land. IF NOT EXISTS keeps re-deploys idempotent.
             connection.execute(text(f"CREATE SCHEMA IF NOT EXISTS {_target_schema}"))
             connection.commit()
+            # `SET search_path` makes *unqualified* names resolve to `virtual_office` for
+            # everything the Postgres server itself resolves by name — both new objects (an
+            # unqualified `CREATE TABLE`/`CREATE INDEX` lands in the first schema on the path) and
+            # existing ones (an unqualified `ALTER TABLE ...`/reflection query for a table not
+            # found in the path's earlier entries resolves against it). This is required in
+            # addition to `schema_translate_map` below: Alembic's own ALTER-family DDL constructs
+            # (`AddColumn`, `DropColumn`, `AlterColumn`/column type/nullable/default/rename,
+            # `RenameTable` — see `alembic/ddl/base.py`) build raw `"ALTER TABLE %s" % name` SQL
+            # strings via `format_table_name()`, which only qualifies with a schema `if schema:` is
+            # truthy — it never consults `schema_translate_map` at all (that mechanism only kicks in
+            # for real SQLAlchemy `Table`-object DDL, e.g. `CREATE TABLE`/`DROP TABLE`). Verified
+            # against live Postgres: without this, `op.add_column`/batch `ADD COLUMN` compiled to an
+            # unqualified `ALTER TABLE conversation_participants ...` and failed with
+            # `UndefinedTable`, even though `schema_translate_map` was correctly applied to the
+            # connection and `CREATE TABLE` calls for the same table landed in `virtual_office` fine.
+            connection.execute(text(f"SET search_path TO {_target_schema}"))
+            # `SET search_path` above opens its own implicit transaction on this connection
+            # (SQLAlchemy 2.0 "autobegin"); it must be explicitly committed here too, just like the
+            # `CREATE SCHEMA` above. Leaving it open would make Alembic's own
+            # `context.begin_transaction()` below nest inside it as a SAVEPOINT instead of owning
+            # the outer transaction — and `with connectable.connect() as connection:` rolls back any
+            # transaction left open at `connection.close()` time, silently discarding every
+            # migration Alembic just ran with no error at all. (Verified against live Postgres:
+            # omitting this `commit()` made `alembic upgrade head` log all 31 revisions successfully,
+            # then leave the database completely untouched — zero tables anywhere, not even in
+            # `public`.)
+            connection.commit()
+
+        if _schema_translate_map is not None:
+            # `schema_translate_map` is NOT a real `EnvironmentContext.configure()` kwarg — it is a
+            # `Connection.execution_options()` concept from SQLAlchemy that the compiler consults
+            # when a statement is executed through *this connection*. Passing it into
+            # `context.configure(...)` (as was previously done) is silently absorbed by that
+            # method's `**kw` and never reaches the compiler, so every unqualified
+            # `op.create_table(...)` call compiled to the DB's default schema (`public`) instead of
+            # `virtual_office`. It must be applied to the connection itself, before that connection
+            # is handed to `context.configure()`, for every DDL/DML statement Alembic emits on it to
+            # actually get schema-translated. Kept alongside `SET search_path` above (not a
+            # replacement for it — see that comment) because it still correctly and explicitly
+            # qualifies `CREATE TABLE`/`DROP TABLE`-style DDL regardless of search_path, and matches
+            # the same mechanism `app/database.py` uses for the app's runtime engine.
+            connection = connection.execution_options(schema_translate_map=_schema_translate_map)
 
         context.configure(
             connection=connection,
@@ -97,7 +151,6 @@ def run_migrations_online() -> None:
             compare_server_default=True,
             render_as_batch=_is_sqlite,
             version_table_schema=_target_schema,
-            schema_translate_map=_schema_translate_map,
         )
         with context.begin_transaction():
             context.run_migrations()
