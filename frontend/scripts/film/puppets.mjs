@@ -1,4 +1,5 @@
-// FILM RIG ONLY — Alex, Angelo, Micah and Jan as REAL realtime clients with no browser.
+// FILM RIG ONLY — the coworkers (Alex, Angelo, Micah, Jan, France, Jona, Nicole, Kael, Clang) as REAL
+// realtime clients with no browser.
 //
 // Each puppet is one Socket.IO connection to the film backend (:8003) authenticated through the
 // existing development identity path (auth { "x-dev-email" }, the same seam `?as=` and
@@ -19,6 +20,11 @@ export const CAST = {
   angelo: { email: "angelo@offshorly.com", name: "Angelo" },
   micah: { email: "micah@offshorly.com", name: "Micah" },
   jan: { email: "jan@offshorly.com", name: "Jan" },
+  france: { email: "france@offshorly.com", name: "France" },
+  jona: { email: "jona@offshorly.com", name: "Jona" },
+  nicole: { email: "nicole@offshorly.com", name: "Nicole" },
+  kael: { email: "kael@offshorly.com", name: "Kael" },
+  clang: { email: "clarisse@offshorly.com", name: "Clang" },   // her account email; the 3D character is Clang
 };
 
 let seq = 0;
