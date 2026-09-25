@@ -48,7 +48,8 @@ class Message(BaseModel):
     kind: Mapped[str] = mapped_column(
         String(24), nullable=False, default="text", server_default="text", index=True
     )
-    # Structured detail for a system row, never for a "text" one. For KIND_CALL_MISSED:
+    # Structured detail for a non-text row, never for a "text" one. For KIND_STICKER: {"stickerId": id}.
+    # For KIND_CALL_MISSED:
     # {"callType": "spatial", "reason": "busy" | "timeout" | "offline" | "caller_left"}. Deliberately
     # NOT free text: the row is a fact, and the wording of it belongs to the client that renders it.
     meta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -58,4 +59,10 @@ class Message(BaseModel):
 # migration — but a new kind is only justified when it is genuinely a conversation event with no author.
 KIND_TEXT = "text"
 KIND_CALL_MISSED = "call_missed"
+# Rich Chat Phase 1 — the one AUTHORED non-text kind. A sticker is somebody's message (it has a sender,
+# reactions, receipts, unread and quest credit exactly like text), but its body is a stable id into the
+# client's trusted sticker registry, never HTML or an asset path: `text` is "" and meta is
+# {"stickerId": "<id>"}. The server validates the id's SHAPE only (see services/chat_send.py), so new
+# artwork is a client-registry change and an id the client no longer knows renders as a fallback.
+KIND_STICKER = "sticker"
 

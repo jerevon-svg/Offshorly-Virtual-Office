@@ -98,6 +98,7 @@ import { useAutoStatusDetection } from "../../../services/presence/useAutoStatus
 import { isConnectedToMedia } from "../../../services/call/callStore";
 import type { ChatMessage } from "../../../services/chat";
 import { isAuthoredMessage } from "../../../services/chat/types";
+import { messageSpeechText } from "../../../services/chat/stickers";
 import { officePeopleToLayers } from "../../../data/rosterLayers";
 import { ACTIVE_DETAIL_STATUSES, resolvePeerStatus, STATUS_META, type OfficeStatus } from "../../../services/presence/status";
 import { useDndEmails, useSelfDndPublication } from "../../../services/presence/dndClient";
@@ -773,7 +774,7 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     // over the caller's body in the V2 world, through the overhead layer Phase 7A/7B built.
     if (!isAuthoredMessage(msg)) return;
     const email = emailKey(msg.senderId) === self ? SELF_OVERHEAD_KEY : emailKey(msg.senderId);
-    spatialBubbles.show(email, msg.text);
+    spatialBubbles.show(email, messageSpeechText(msg));
   }, [self, spatialBubbles]);
 
   // ---- the world subscription -----------------------------------------------------------------------

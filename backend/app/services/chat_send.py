@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.message import KIND_STICKER
 from app.realtime.state import sio, user_room
 from app.repositories import chat as chat_repo
 from app.schemas.chat import serialize_message_dict
@@ -40,6 +42,13 @@ def is_toucan_sender(email: str) -> bool:
     return email.strip().lower() == TOUCAN_CHAT_SENDER
 
 
+# Rich Chat Phase 1 — the SHAPE of a sticker id, never the registry itself. The registry of what each
+# id looks like lives in the client (frontend/src/services/chat/stickers.ts) so artwork can be added or
+# replaced without a backend change; the server only guarantees the stored value is a short, inert slug
+# — no markup, no path, no URL — that the client can look up or fall back from.
+STICKER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
+
+
 class ChatSendError(Exception):
     """A send the caller must surface (bad request / not a participant). `code`/`message` are
     the exact `chat_error` wire strings the socket handler has always emitted."""
@@ -72,6 +81,7 @@ async def send_chat_message(
     origin_sid: str | None = None,
     client_temp_id: str = "",
     join_participant_sockets: bool = False,
+    sticker_id: str | None = None,
 ) -> dict:
     """Persist one message from `sender_email` into `conversation_id` and fan it out.
 
@@ -83,6 +93,10 @@ async def send_chat_message(
     join_participant_sockets: when the conversation may have been created after participants
     connected, migrate their live sockets into the room BEFORE fan-out (see
     ensure_participant_sockets_in_room). Off by default — the socket path never needs it.
+
+    sticker_id: send a sticker instead of text — stored as kind "sticker", meta {"stickerId"},
+    text "" and no mentions. Everything after persistence (quest credit, fan-out, unread) is the
+    same as a text message, because a sticker IS a message somebody sent.
 
     Raises ChatSendError for the caller to surface; returns the serialized saved message."""
     if not conversation_id:
@@ -100,14 +114,22 @@ async def send_chat_message(
             raise ChatSendError("forbidden", "Not a participant")
 
     text = text.strip() if isinstance(text, str) else ""
-    if not text:
-        raise ChatSendError("invalid_message", "Message text is empty")
-
-    # Sender is ALWAYS the server-verified identity handed in by the caller. mentioned_emails is
-    # never trusted as-is — insert_message re-validates every candidate against membership.
-    message = await chat_repo.insert_message(
-        session, conversation_id, sender_email, text, mentioned_emails=mentioned_emails
-    )
+    if sticker_id is not None:
+        if not isinstance(sticker_id, str) or not STICKER_ID_PATTERN.match(sticker_id):
+            raise ChatSendError("invalid_message", "Unknown sticker")
+        if text:
+            raise ChatSendError("invalid_message", "A sticker message carries no text")
+        message = await chat_repo.insert_message(
+            session, conversation_id, sender_email, "", kind=KIND_STICKER, meta={"stickerId": sticker_id}
+        )
+    else:
+        if not text:
+            raise ChatSendError("invalid_message", "Message text is empty")
+        # Sender is ALWAYS the server-verified identity handed in by the caller. mentioned_emails is
+        # never trusted as-is — insert_message re-validates every candidate against membership.
+        message = await chat_repo.insert_message(
+            session, conversation_id, sender_email, text, mentioned_emails=mentioned_emails
+        )
     await chat_repo.touch_conversation(session, conversation_id, message.sent_at)
     conv = await chat_repo.get_conversation_by_id(session, conversation_id)
     # Quest Foundation: the saved message IS the event (its id is the idempotency key), recorded

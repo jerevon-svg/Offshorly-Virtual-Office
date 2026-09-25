@@ -1582,6 +1582,9 @@ async def send_message(sid: str, payload: dict | None) -> None:
         text = text if isinstance(text, str) else ""
         raw_mentions = payload.get("mentionedEmails")
         mentioned_emails = [e for e in raw_mentions if isinstance(e, str)] if isinstance(raw_mentions, list) else None
+        # Rich Chat Phase 1 — present only for a sticker send; its shape is validated by the seam.
+        raw_sticker = payload.get("stickerId")
+        sticker_id = raw_sticker if isinstance(raw_sticker, str) else None
 
         # Sender is ALWAYS the server-verified session email — a client-sent sender id is
         # never trusted, even implicitly.
@@ -1602,6 +1605,7 @@ async def send_message(sid: str, payload: dict | None) -> None:
                     mentioned_emails=mentioned_emails,
                     origin_sid=sid,
                     client_temp_id=client_temp_id,
+                    sticker_id=sticker_id,
                 )
         except ChatSendError as err:
             await sio.emit("chat_error", {"code": err.code, "message": err.message}, to=sid)
@@ -1610,7 +1614,8 @@ async def send_message(sid: str, payload: dict | None) -> None:
         # A1.4.2 — only AFTER the human message is committed and fanned out: an "@Toucan" token
         # schedules Toucan's in-chat reply as a background task, so nothing about the reply can
         # delay or fail this send. The reply re-checks membership itself.
-        prompt = detect_toucan_invocation(text)
+        # A sticker has no text, so it can never invoke Toucan (the saved text is "").
+        prompt = detect_toucan_invocation(saved.get("text") or "")
         if prompt is not None:
             schedule_reply(conversation_id, email, prompt, saved["id"])
         # A2.1 — same ordering guarantee: only after the human message is committed and fanned
