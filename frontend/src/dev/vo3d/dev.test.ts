@@ -45,6 +45,7 @@ import { openedLayer, v2Static } from "./nav/v2Open";
 import { CELL, v1Static } from "./adapters/v1Grid";
 import { planWalk } from "./nav/planner";
 import { FACING_YAW, pointInRect, type Rect, type Vec2 } from "./core/coords";
+import { buildWorldContents } from "./app/worldContents";
 
 /** the same wiring bootstrap.ts uses, minus THREE */
 function rig() {
@@ -373,8 +374,13 @@ describe("vo3d Dev Room — Phase 10: the V1 room reconstructed in true 3D", () 
 
   it("13. the room, its entities, its navigation, its door AND every one of its 22 chairs are wired in", () => {
     const src = bootstrapSource;
-    expect(src).toContain("world.addRoom(DEV_ROOM);");
-    expect(src).toContain("for (const e of devRoomEntities()) world.addEntity(e);");
+    // REGISTRATION IS ASSERTED BY RUNNING THE REAL ASSEMBLY, not by grepping for two source lines.
+    // app/worldContents.ts is the one authoritative place the world is built (it was split out of
+    // app/world.ts after a duplicate lift-core registration stopped the office starting while every
+    // source-grep guard stayed green), and this calls the very same function the product calls.
+    const built = buildWorldContents().world;
+    expect(built.rooms.has(DEV_ROOM.id)).toBe(true);
+    expect(devRoomEntities().every((e) => built.entities.has(e.id))).toBe(true);
     expect(src).toContain("mirror.buildRoom(DEV_ROOM, shellOpts());");
     expect(src).toMatch(/DERIVED_ROOM_IDS = new Set\(\[[^\]]*DEV_ROOM\.id/);
     expect(src).toContain("devDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);");

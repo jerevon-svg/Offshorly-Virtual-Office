@@ -295,12 +295,25 @@ export class Environment {
     }
     return true;
   }
+  /** SUPPRESS THE GROUND FLOOR'S OWN LANDSCAPE, whatever the presentation says.
+   *
+   *  The exterior scenery is built once, around the V1 frame. A storey that stands somewhere else in the
+   *  world (app/floors.ts) would see it sitting off its own windows — the technical separation, visible.
+   *  So a floor that is not the ground one hands its name in here and the landscape stops being drawn;
+   *  that floor supplies its own. Re-asserted by `write` on every grade, so a travelling sun cannot
+   *  quietly bring it back. */
+  private floorScenery: string | null = "ground";
+  sceneryForFloor(floor: string | null): void {
+    this.floorScenery = floor;
+    if (this.scenery && floor === null) this.scenery.root.visible = false;
+    else if (this.current) this.apply(this.current, true);
+  }
   get sceneryVisible(): boolean {
     return this.scenery ? this.scenery.root.visible : false;
   }
   set sceneryVisible(on: boolean) {
     // a manual override, meaningful only in world presentation — office never draws the exterior anyway
-    if (this.scenery && this._presentation === "world") this.scenery.root.visible = on;
+    if (this.scenery && this._presentation === "world" && this.floorScenery !== null) this.scenery.root.visible = on;
   }
   get fogEnabled(): boolean {
     return this._fog;
@@ -531,7 +544,7 @@ export class Environment {
     const office = this._presentation === "office";
     this.rain.visible = !office || this._rainInOffice;
     // OFFICE: nothing exterior is drawn, and the backdrop is a flat stage tone rather than a sky.
-    if (this.scenery) this.scenery.root.visible = !office;
+    if (this.scenery) this.scenery.root.visible = !office && this.floorScenery !== null;
     this.sky.root.visible = !office;
     // ONE Color AND ONE Fog, WRITTEN IN PLACE. Both used to be freshly allocated on every write, which
     // was the right trade when a write happened twice a day; a travelling grade writes every frame.

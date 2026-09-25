@@ -819,7 +819,10 @@ export function OfficeStage({
               top: `${(layer.y / FRAME_HEIGHT) * 100}%`,
               width: `${(layer.width / FRAME_WIDTH) * 100}%`,
               height: `${(layer.height / FRAME_HEIGHT) * 100}%`,
-              ...(layer.transform ? { transform: layer.transform } : {}),
+              // A manifest transform (e.g. kael's scaleY(-1) rotate(180deg)) was authored to face a flat
+              // stock PNG; applied to a live-3D canvas it would MIRROR the model (swapping an asymmetric
+              // hair part), so it only ever applies while the layer draws its sprite.
+              ...(layer.transform && !live3dEntry ? { transform: layer.transform } : {}),
               // .layer sets `overflow: hidden`, which clipped the widened
               // live-3D canvas (widthCapacity) straight back to the wrapper's
               // own width — the real reason wide poses still cropped. Let the

@@ -29,10 +29,10 @@ const OFFICE_EMAIL_DOMAIN = "offshorly.com";
 
 // Deliberately NOT all 20 office-assets-manifest characterLayers ids — 16 of
 // those are hardcoded Figma stock-art decoration with no animated sprite set
-// (e.g. "nicole", "arisha"), not real pipeline-generated avatars. Only ids
+// (e.g. "arisha", "karen"), not real pipeline-generated avatars. Only ids
 // with an actual AvatarSpriteSet (bon/alex/micah/lui) count as "known" here,
 // so a real Atlas employee whose email localpart happens to collide with a
-// decorative name (e.g. nicole@offshorly.com) correctly falls through to
+// decorative name (e.g. karen@offshorly.com) correctly falls through to
 // `null` -> the faceless placeholder, instead of rendering that decoration's
 // flat stock PNG as if it were their avatar.
 //
@@ -47,7 +47,7 @@ const OFFICE_EMAIL_DOMAIN = "offshorly.com";
 // ids) keeps the stock-art names above falling through to `null` exactly as
 // before. Anyone added here MUST have a LIVE_3D_CHARACTERS entry; their 2D
 // fallback is the faceless placeholder, never another person's sprite.
-const LIVE_3D_ONLY_AVATAR_IDS = ["angelo", "jan"] as const;
+const LIVE_3D_ONLY_AVATAR_IDS = ["angelo", "jan", "france", "jona", "clang", "nicole", "kael"] as const;
 
 const KNOWN_AVATAR_IDS = new Set([
   ...Object.keys(SPRITE_SET_BY_AVATAR_ID),

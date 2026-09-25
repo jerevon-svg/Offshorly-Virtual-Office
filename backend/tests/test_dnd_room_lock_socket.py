@@ -133,3 +133,50 @@ async def test_last_dnd_occupant_clearing_dnd_cancels_pending_room_request(serve
 
     await occupant.disconnect()
     await requester.disconnect()
+
+
+# ---- REGISTRY KEYING — THE LIVE TWO-BROWSER BUG --------------------------------------------------
+# Bon set DND and saw "You · DND"; Alex's browser showed him as Offline, and the DND room lock never
+# engaged in ANY movement mode. Both registries stored the socket session's email verbatim while every
+# client compares those broadcasts against lowercased roster emails, so one casing difference made the
+# person invisible as DND and their room permanently unlocked. Asserted at the registry itself — the
+# layer that actually carries the defect — rather than through a socket, so no transport can mask it.
+async def test_dnd_registry_is_keyed_on_the_normalized_email():
+    from app.services.dnd_registry import DndRegistry
+
+    reg = DndRegistry()
+    assert reg.set_dnd(" Bon@Offshorly.com ", True) is True
+    # What every client compares against.
+    assert reg.snapshot() == ["bon@offshorly.com"]
+    assert reg.is_dnd("bon@offshorly.com") is True
+    assert reg.is_dnd("BON@offshorly.com") is True
+    # …and the same person turning it off is the same person, not a second entry.
+    assert reg.set_dnd("BON@OFFSHORLY.COM", True) is False
+    assert reg.set_dnd("bon@offshorly.com", False) is True
+    assert reg.snapshot() == []
+
+
+async def test_room_presence_registry_is_keyed_on_the_normalized_email():
+    from app.services.room_presence import RoomPresenceRegistry
+
+    reg = RoomPresenceRegistry()
+    reg.enter("Bon@Offshorly.com", "design-team")
+    assert reg.occupants("design-team") == ["bon@offshorly.com"]
+    assert reg.room_of("bon@offshorly.com") == "design-team"
+    assert reg.snapshot() == [{"roomId": "design-team", "members": ["bon@offshorly.com"]}]
+    assert reg.leave("BON@OFFSHORLY.COM") == "design-team"
+    assert reg.snapshot() == []
+
+
+async def test_a_differently_cased_occupant_still_locks_their_room():
+    """The two registries are only useful together: is_room_locked pairs them. Before the fix these
+    two spellings were two different people and the room read as OPEN with a DND occupant inside it."""
+    from app.realtime import state as state_module
+
+    state_module.room_presence.enter("Bon@Offshorly.com", "design-team")
+    state_module.dnd_registry.set_dnd("bon@offshorly.com", True)
+    try:
+        assert state_module.is_room_locked("design-team") is True
+    finally:
+        state_module.room_presence.leave("bon@offshorly.com")
+        state_module.dnd_registry.clear("bon@offshorly.com")

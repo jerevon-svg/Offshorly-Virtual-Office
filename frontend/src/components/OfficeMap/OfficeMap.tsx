@@ -119,7 +119,7 @@ import { WorkingStatusIndicator } from "./checkout/WorkingStatusIndicator";
 import { StatusPicker } from "./StatusPicker";
 import { useAutoStatusDetection } from "../../services/presence/useAutoStatusDetection";
 import { endDnd, useSelfStatus } from "../../services/presence/selfStatusStore";
-import { mapAtlasToOfficeStatus, type OfficeStatus } from "../../services/presence/status";
+import { resolvePeerStatus, type OfficeStatus } from "../../services/presence/status";
 import { resolveManualStatusMovement } from "../../services/presence/statusMovement";
 import { emitGoOffline, emitComeOnline, useOfflineLineup } from "../../services/presence/offlineLineupClient";
 import { attendanceService, type AttendanceRecord, type AttendanceStatus } from "../../services/attendance";
@@ -176,7 +176,7 @@ import { DndRequestQueue } from "./DndRequestQueue";
 import { TalkRequestToast } from "./TalkRequestToast";
 import { useTalkPermissionGate } from "./useTalkPermissionGate";
 import { RoomLockedToast } from "./RoomLockedToast";
-import { emitDndSet, useDndEmails } from "../../services/presence/dndClient";
+import { useDndEmails, useSelfDndPublication } from "../../services/presence/dndClient";
 import { emitGlobalChatActive, useGlobalChatActiveEmails } from "../../services/presence/globalChatActivityClient";
 import {
   emitRoomPresenceEnter,
@@ -2126,18 +2126,12 @@ export function OfficeMap() {
     return rooms.find((r) => r.id === roomId)?.name ?? roomId;
   }
 
-  // Edge-triggered self-DND broadcast — mirrors prevManualStatusRef's "initialize to current
-  // value so a fresh mount never counts as a transition" contract exactly. DND was previously
-  // client-side/localStorage-only (no realtime channel); this is the minimal addition making it
-  // visible to other clients, which room-lock derivation needs.
-  const prevSelfOfficeStatusRef = useRef(selfOfficeStatus);
-  useEffect(() => {
-    if (prevSelfOfficeStatusRef.current === selfOfficeStatus) return;
-    const wasDnd = prevSelfOfficeStatusRef.current === "DND";
-    const isDnd = selfOfficeStatus === "DND";
-    prevSelfOfficeStatusRef.current = selfOfficeStatus;
-    if (wasDnd !== isDnd) emitDndSet(isDnd);
-  }, [selfOfficeStatus]);
+  // Self-DND broadcast — the shared publisher (dndClient.ts's useSelfDndPublication), the same one the
+  // V2 world calls: edge-triggered on real DND crossings, plus one TRUE on a mount that already finds a
+  // restored DND session, so a reload republishes what the server forgot at disconnect. DND was
+  // previously client-side/localStorage-only (no realtime channel); this is what makes it visible to
+  // other clients, which room-lock derivation and peer status (resolvePeerStatus) need.
+  useSelfDndPublication(selfOfficeStatus === "DND");
 
   // Edge-triggered self room-occupancy broadcast — fires once per real "crossed into/out of a
   // flat room" transition, reusing the exact same flatRoomIdAt() geometry the door-choreography
@@ -2250,16 +2244,19 @@ export function OfficeMap() {
   // page load never counts as a "transition" and never triggers a walk.
   const prevManualStatusRef = useRef(manualStatus);
   // Peers' status comes from the read-only Atlas presence feed (5 values),
-  // mapped onto our 9-value palette — no backend writes, no new endpoints.
+  // mapped onto our 9-value palette — no backend writes, no new endpoints —
+  // overlaid with the app's own DND registry (dndEmails, the server's
+  // dnd_status broadcast), which Atlas never learns about. resolvePeerStatus
+  // owns that rule; the V2 world applies the same one to the same inputs.
   // Keyed by person.email, which is exactly the layer id rosterLayers.ts
   // assigns roster people (see officePeopleToLayers).
   const statusByLayerId = useMemo<Record<string, OfficeStatus>>(() => {
     const map: Record<string, OfficeStatus> = {};
     for (const person of roster.people) {
-      map[person.email] = mapAtlasToOfficeStatus(person.status);
+      map[person.email] = resolvePeerStatus(person.status, dndEmails.has(person.email.trim().toLowerCase()));
     }
     return map;
-  }, [roster.people]);
+  }, [roster.people, dndEmails]);
 
   // Dev-only preview affordance: ?checkedOut=1 jumps straight into
   // CHECKED_OUT on load, so Bon can preview "avatar standing on the

@@ -9,44 +9,43 @@ import {
   getEnvironmentPreferences,
   subscribeEnvironmentPreferences,
 } from "../../../services/settings/environmentPreferences";
-import { WorldState } from "../world/WorldState";
-import { DESIGN_ROOM, DESIGN_SOLIDS, CHAIR_4_ID, DOOR_ID, HERO_PLANT_ID, SHELL as DESIGN_SHELL, designRoomEntities } from "../rooms/design-room";
-import { RECEPTION_ROOM, COUNTER_INTERACTION_ID, FACADE as FACADE_SPEC, ENTRY_DOOR_EAST_ID, ENTRY_DOOR_WEST_ID, ENTRY_SCANNER_ID, ENTRY_ZONE, GATE, GATE_SCANNER_IDS, GATE_ZONES, KIOSK_INTERACTION_ID, KIOSK_SCANNER_ID, KIOSK_ZONE, LOUNGE_SEAT_IDS, RECEPTION_ROOM_ID, receptionEntities } from "../rooms/reception";
-import { GAMING_ROOM, gamingRoomEntities,
+import { DESIGN_ROOM, CHAIR_4_ID, DOOR_ID, HERO_PLANT_ID, SHELL as DESIGN_SHELL } from "../rooms/design-room";
+import { RECEPTION_ROOM, COUNTER_INTERACTION_ID, FACADE as FACADE_SPEC, ENTRY_DOOR_EAST_ID, ENTRY_DOOR_WEST_ID, ENTRY_SCANNER_ID, ENTRY_ZONE, GATE, GATE_SCANNER_IDS, GATE_ZONES, KIOSK_INTERACTION_ID, KIOSK_SCANNER_ID, KIOSK_ZONE, LOUNGE_SEAT_IDS, RECEPTION_ROOM_ID } from "../rooms/reception";
+import { GAMING_ROOM,
   BAG_SEAT_IDS, DARTS_INTERACTION_ID, DOOR_LEAF_ID as GAMING_DOOR_ID, FRIDGE_INTERACTION_ID, GAMING_CHAIR_IDS,
   POSTER_INTERACTION_ID, SOFA_SEAT_ID, TV_INTERACTION_ID as GAMING_TV_INTERACTION_ID } from "../rooms/gaming";
-import { CENTRAL_HUB, OPEN_BANDS as HUB_OPEN_BANDS, centralHubEntities,
+import { CENTRAL_HUB, OPEN_BANDS as HUB_OPEN_BANDS,
   CAFE_CHAIR_IDS, COUNTER_INTERACTION_ID as HUB_COUNTER_ID, HUB_LOUNGE_IDS,
   MONUMENT_INTERACTION_ID as HUB_MONUMENT_ID, SHELF_INTERACTION_ID as HUB_SHELF_ID, TOUCAN_PERCH,
   CHAMPIONSHIP_ENTRANCE_ID } from "../rooms/central-hub";
-import { EXECUTIVE_ROOM, executiveRoomEntities,
+import { EXECUTIVE_ROOM,
   CABINET_L_INTERACTION_ID, CABINET_R_INTERACTION_ID, CREDENZA_INTERACTION_ID, DOOR_EAST_ID as EXEC_DOOR_EAST_ID,
   DOOR_WEST_ID as EXEC_DOOR_WEST_ID, EXECUTIVE_LOUNGE_IDS, EXECUTIVE_SEAT_IDS, MEDIA_INTERACTION_ID } from "../rooms/executive";
-import { CMS_ROOM, cmsRoomEntities,
+import { CMS_ROOM,
   BOARD_INTERACTION_ID as CMS_BOARD_ID, CMS_LOUNGE_IDS, CMS_SEAT_IDS,
   COUNTER_INTERACTION_ID as CMS_COUNTER_ID, DOOR_NORTH_ID as CMS_DOOR_NORTH_ID,
   DOOR_SOUTH_ID as CMS_DOOR_SOUTH_ID, LIBRARY_INTERACTION_ID as CMS_LIBRARY_ID,
   PRINTER_INTERACTION_ID as CMS_PRINTER_ID, STICKY_INTERACTION_ID as CMS_STICKY_ID } from "../rooms/cms";
-import { AI_ROOM, aiRoomEntities,
+import { AI_ROOM,
   AI_SEAT_IDS, ARCHITECTURE_INTERACTION_ID as AI_ARCH_ID, COUNTER_INTERACTION_ID as AI_COUNTER_ID,
   DOOR_LEAF_ID as AI_DOOR_ID, MISSION_INTERACTION_ID as AI_MISSION_ID,
   PRINTER_INTERACTION_ID as AI_PRINTER_ID, RACKS_INTERACTION_ID as AI_RACKS_ID,
   ROBOT_INTERACTION_ID as AI_ROBOT_ID } from "../rooms/ai";
-import { DEV_ROOM, devRoomEntities,
+import { DEV_ROOM,
   BOARD_INTERACTION_ID as DEV_BOARD_ID, BOOKCASE_INTERACTION_ID as DEV_BOOKCASE_ID,
   DEV_LOUNGE_IDS, DEV_SEAT_IDS, DOOR_LEAF_ID as DEV_DOOR_ID,
   PANTRY_INTERACTION_ID as DEV_PANTRY_ID, SCHEMATIC_INTERACTION_ID as DEV_SCHEMATIC_ID,
   SERVERS_INTERACTION_ID as DEV_SERVERS_ID, TEA_INTERACTION_ID as DEV_TEA_ID,
   TOOL_INTERACTION_ID as DEV_TOOL_ID } from "../rooms/dev";
-import { QA_ROOM, qaRoomEntities,
+import { QA_ROOM,
   DOOR_NORTH_ID as QA_DOOR_NORTH_ID,
   QA_LOUNGE_IDS, QA_SEAT_IDS, SHELF_INTERACTION_ID as QA_SHELF_ID,
   STORAGE_INTERACTION_ID as QA_STORAGE_ID, SUPPLY_INTERACTION_ID as QA_SUPPLY_ID,
   DOOR_SOUTH_ID as QA_DOOR_SOUTH_ID, WINDOW_INTERACTION_ID as QA_WINDOW_ID } from "../rooms/qa";
 import { loadBossStatues } from "../build/hub-monument";
-import { CAVE_ROOM, CAVE_ID, EXIT_INTERACTION_ID as CAVE_EXIT_ID, SCREEN_INTERACTION_ID as CAVE_SCREEN_ID,
-  FLOOR_RECT as CAVE_FLOOR_RECT, OUTER_RECT as CAVE_OUTER_RECT, SPAWN as CAVE_SPAWN, VESTIBULE_RECT as CAVE_VESTIBULE_RECT,
-  caveEntities, caveStandTest, inCave } from "../rooms/cave";
+import { CAVE_ID, EXIT_INTERACTION_ID as CAVE_EXIT_ID, SCREEN_INTERACTION_ID as CAVE_SCREEN_ID,
+  FLOOR_RECT as CAVE_FLOOR_RECT, OUTER_RECT as CAVE_OUTER_RECT, SPAWN as CAVE_SPAWN,
+  caveStandTest, inCave } from "../rooms/cave";
 import { buildCave, CAVE_METRICS, attachCaveVideo, setCavePresentation, setCaveWrapAmbient } from "../build/cave";
 import { CaveMedia } from "../media/CaveMedia";
 import { CavePresentation } from "../media/CavePresentation";
@@ -59,13 +58,13 @@ import { CELL, worldToCell, type Cell } from "../adapters/v1Grid";
 import { NAV_RADIUS } from "../nav/clearance";
 import { Connectivity } from "../nav/connectivity";
 import { compareToV1, summariseReport, verdictFor } from "../nav/diagnostics";
-import { MEETING_ROOM, MEETING_CHAIR_IDS, KIOSK_INTERACTION_ID as MEETING_KIOSK_INTERACTION_ID, KIOSK_SCANNER_ID as MEETING_KIOSK_SCANNER_ID, KIOSK_ZONE as MEETING_KIOSK_ZONE, meetingRoomEntities } from "../rooms/meeting";
-import { PROJECT_ROOM, CONSOLE_INTERACTION_ID, SOFA_SEAT_IDS, TUB_SEAT_IDS, TV_INTERACTION_ID, projectRoomEntities } from "../rooms/project";
+import { MEETING_ROOM, MEETING_CHAIR_IDS, DOOR_NORTH_ID as MEETING_DOOR_NORTH_ID, DOOR_SOUTH_ID as MEETING_DOOR_SOUTH_ID, KIOSK_INTERACTION_ID as MEETING_KIOSK_INTERACTION_ID, KIOSK_SCANNER_ID as MEETING_KIOSK_SCANNER_ID, KIOSK_ZONE as MEETING_KIOSK_ZONE } from "../rooms/meeting";
+import { PROJECT_ROOM, CONSOLE_INTERACTION_ID, DOOR_NORTH_ID as PROJECT_DOOR_NORTH_ID, DOOR_SOUTH_ID as PROJECT_DOOR_SOUTH_ID, SOFA_SEAT_IDS, TUB_SEAT_IDS, TV_INTERACTION_ID } from "../rooms/project";
 import { buildExterior } from "../build/exterior";
 import { buildAiLab } from "../build/ailab";
 import { MonkeyAvatar } from "../avatar/MonkeyAvatar";
 import { aiLabStandTest, inAiLabZone } from "../world/ailab";
-import { Environment } from "../env/Environment";
+import { Environment, type EnvPresentation } from "../env/Environment";
 import { createSeasonLayer, type BuiltSeasonLayer } from "../season/SeasonLayer";
 import type { SeasonTheme } from "../season/season";
 import { ENV_TIME_MODES, TimeOfDay, type EnvPhase, type EnvTimeMode } from "../env/timeOfDay";
@@ -88,9 +87,23 @@ import { LoungeSeatInteraction } from "../interact/LoungeSeat";
 import { Walkability, composeStatic } from "../nav/Walkability";
 import { clearanceLayer, worldClearances } from "../nav/clearance";
 import { SlidingDoor, type DoorBody } from "../interact/Door";
-import { CORRIDOR_BANDS, ROOM_WORLD_SHIFT_Z, registerGroundFloor } from "../rooms/ground-floor";
+import { CORRIDOR_BANDS, ROOM_WORLD_SHIFT_Z } from "../rooms/ground-floor";
+// ---- THE BUILDING'S OTHER FLOORS ----------------------------------------------------------------
+// One registry (app/floors.ts), one core spec (rooms/elevator.ts), one cinematic (interact/
+// FloorTransition.ts), and one deliberately empty upper storey (rooms/floor2.ts). Nothing below this
+// import names "floor 2" except where a second floor is genuinely the subject; everything else reads
+// the registry, so a Gaming floor is a row plus its geometry rather than an edit to a state machine.
+import { FALLBACK_VIEW_MODE, FLOORS, FLOOR_ORDER, GROUND_FLOOR_ID, arrivalViewMode, coworkersOnFloor, floorOfPlace, supportsViewMode, type Vo3dFloorId } from "./floors";
+import { RIDE as ELEVATOR_RIDE, cabinStandTest, inCabin, inVestibule, vestibuleStandTest, type ElevatorSpec } from "../rooms/elevator";
+import { buildCabin, buildElevatorCore, type ElevatorCoreBuild, type LiftBuild } from "../build/elevator";
+import { buildFloor2 } from "../build/floor2";
+import { buildFloor2Context } from "../build/floor2Context";
+import { ELEVATOR as FLOOR2_ELEVATOR, FLOOR2_ID, FRAME as FLOOR2_FRAME, floor2StandTest, onFloor2 } from "../rooms/floor2";
+import { FloorTransition, walkLegs } from "../interact/FloorTransition";
+import { buildWorldContents } from "./worldContents";
 import { FACADE_Z, FRAME, v1Rooms } from "../adapters/v1Floor";
 import { planWalk, type NavResult } from "../nav/planner";
+import { RoomLockController, collectLockableDoors } from "./roomLocks";
 import { v1Static } from "../adapters/v1Grid";
 import { casterPoseMoved, DEFAULT_LIGHT, Renderer, type CasterPose } from "../render/Renderer";
 import { SceneMirror } from "../render/SceneMirror";
@@ -113,7 +126,7 @@ import { NavDebug } from "../devtools/NavDebug";
 import { Capture, FrameWindow, Overlay, PRESETS, describeDevice, sceneStats, snapshotRenderer, summarize, type CaptureSummary, type PresetId } from "../devtools/Bench";
 import { Crowd } from "../devtools/Crowd";
 import { STRESS_MATRIX, markdownTable, planPlacements, type ScenarioResult, type StressScenario } from "../devtools/Stress";
-import { BON_STANDING_HEIGHT, castLods, CLIP_IDLE, CLIP_TALK_AGREE, CLIP_TALK_LISTEN, hasCastLods, type AvatarLod } from "../adapters/v1Avatar";
+import { BON_STANDING_HEIGHT, castLods, CLIP_IDLE, CLIP_TALK_AGREE, CLIP_TALK_LISTEN, CLIP_WALK, hasCastLods, type AvatarLod } from "../adapters/v1Avatar";
 import type { Vo3dIdentity } from "./identity";
 import { homeDeskWorldPoint, v1FramePoint, type Vo3dHomeDesk } from "./spawn";
 import { plannedDurationMs, SelfMovementFeed, type Vo3dSelfMovementSink } from "./selfMovement";
@@ -268,6 +281,19 @@ export interface Vo3dWorld {
   /** PHASE 7E — name where an authorised departure is heading, so peers see them arrive there rather than
    *  stop at the façade. A label on the movement wire and nothing else. */
   setDepartureDestination(place: "ai-lab" | null): void;
+  /** DND ROOM LOCKS — WHICH MANIFEST ROOMS V1 SAYS ARE LOCKED, pushed in from outside (app/roomLocks.ts).
+   *
+   *  The host resolves V1's own rule (data/roomLock.ts over the room_presence and dnd_status feeds) and
+   *  translates V1's flat ids through data/office-layout; the world decides nothing about locks. Each locked
+   *  room's door is then held by the SAME Walkability reservation Reception's gates and the exit use — so the
+   *  router, click-to-walk, every approach and PLAYER mode obey it at once — but only while this body is
+   *  OUTSIDE that room: an occupant is never caged, and the hold returns once they have left. A walk aimed
+   *  into a shut room goes to its door and stops; the host is told through onRoomLockIntercepted. */
+  setLockedRooms(roomIds: readonly string[]): void;
+  /** ONE authorised entry into a locked room — an accepted knock. Opens that room's doors for this body,
+   *  resumes the walk the lock held (if any), and is SPENT the moment the body is inside; leaving again
+   *  needs a fresh knock (V1: never a persistent whitelist). Null withdraws an unspent one. */
+  authorizeRoomEntry(roomId: string | null): void;
   /** PHASE 6D — WHERE THAT PERSON IS ON SCREEN RIGHT NOW, for an anchored card. Recomputed from the live
    *  camera and the live body on every call (the host calls it per animation frame), because both move.
    *  Null for somebody this world has no body for. */
@@ -282,6 +308,21 @@ export interface Vo3dWorld {
    *  the room they left), and this is the world's own existing answer — app/access.ts zoneAt over the same
    *  geometry the gate uses. Exposed, not computed anew: see app/employeeLocation.ts. */
   zoneAt(x: number, z: number): Zone;
+  /** WHICH FLOOR OF THE BUILDING THE SIGNED-IN BODY IS ON. Read-only; the elevator is the only thing
+   *  that changes it. */
+  readonly floor: Vo3dFloorId;
+  /** Told whenever that changes, and once immediately on subscribe. Its own unsubscribe. */
+  subscribeFloor(listener: (floor: Vo3dFloorId) => void): () => void;
+  /** THE VIEWS THE CURRENT FLOOR OFFERS, in the order a cycle walks them. The ground floor offers all
+   *  three; a floor standing in its own world space withholds 3D EXPLORE, because free orbit over a
+   *  storey with no exterior around it would show it as a slab in the void. A view switcher reads this
+   *  rather than hard-coding the cycle, and `setViewMode` clamps to it in any case. */
+  availableViewModes(): readonly Vo3dViewMode[];
+  /** TAKE THE LIFT. From the lobby (or from inside the car) the journey starts at once; from anywhere
+   *  else the employee walks to the call control first — through the same router every other walk uses —
+   *  and the journey begins when they arrive. Refused while a journey is already running, which is what
+   *  makes a mashed button one journey rather than two. Omit `to` for "the other floor". */
+  useElevator(to?: Vo3dFloorId): boolean;
   /** PHASE 7A — WHICH CAMERA IS DRIVING, pushed out to the host as it changes and once immediately, so a
    *  subscriber never has to guess the current mode. The branded HUD is hidden while PLAYER owns the
    *  pointer and shown over OFFICE and EXPLORE. Returns its own unsubscribe. */
@@ -475,56 +516,14 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   }
 
   // ---- world -------------------------------------------------------------------------------------
-  const world = new WorldState();
-  world.addRoom(DESIGN_ROOM);
-  world.addRoom(RECEPTION_ROOM);
-  world.addRoom(MEETING_ROOM);
-  world.addRoom(PROJECT_ROOM);
-  world.addRoom(GAMING_ROOM);
-  world.addRoom(CENTRAL_HUB);
-  world.addRoom(EXECUTIVE_ROOM);
-  world.addRoom(CMS_ROOM);
-  world.addRoom(AI_ROOM);
-  world.addRoom(DEV_ROOM);
-  world.addRoom(QA_ROOM);
-  for (const e of designRoomEntities()) world.addEntity(e);
-  for (const e of receptionEntities()) world.addEntity(e);
-  for (const e of meetingRoomEntities()) world.addEntity(e);
-  for (const e of projectRoomEntities()) world.addEntity(e);
-  for (const e of gamingRoomEntities()) world.addEntity(e);
-  for (const e of centralHubEntities()) world.addEntity(e);
-  for (const e of executiveRoomEntities()) world.addEntity(e);
-  for (const e of cmsRoomEntities()) world.addEntity(e);
-  for (const e of aiRoomEntities()) world.addEntity(e);
-  for (const e of devRoomEntities()) world.addEntity(e);
-  for (const e of qaRoomEntities()) world.addEntity(e);
-  // baked decor solids (visual comes from the shell builder) participate in placement as footprint-only entities
-  DESIGN_SOLIDS.forEach((r, i) =>
-    world.addEntity({ id: `${DESIGN_ROOM.id}/solid-${i}`, kind: "solid", roomId: DESIGN_ROOM.id, transform: { pos: { x: r.x + r.w / 2, z: r.z + r.d / 2 }, yaw: 0 }, footprint: { shape: "rect", w: r.w, d: r.d }, capabilities: {}, props: {}, source: { baked: true } }),
-  );
-  // the ground floor: every V1 room footprint, shared floor, sidewalk, door openings (Design Room = the only reconstructed room)
-  const plan = registerGroundFloor(world);
-  // ---- the Championship Cave: a SECOND INTERIOR VOLUME, outside the V1 frame ----------------------
-  // The immersive theatre you reach through the hub monument's portal. It is registered as a real room
-  // with a real walkable region, and it is EAST OF THE OFFICE — 1,146 units clear of the V1 frame — so
-  // it cannot touch a cell of the read-only V1 grid or a square unit of the eleven reconstructed rooms.
-  // rooms/cave.ts carries the full reasoning; the three lines here are the whole integration.
+  // EVERY ROOM, ENTITY, REGION AND BOUND, assembled by app/worldContents.ts and by nothing else.
   //
-  // The world's BOUNDS have to grow to cover it, or WorldState.regionAt refuses every point out there
-  // before it even looks at a region. Growing them changes nothing inside the office: a point beyond the
-  // frame still belongs to no region and is still not walkable — it is now merely asked.
-  world.addRoom(CAVE_ROOM);
-  for (const e of caveEntities()) world.addEntity(e);
-  world.addRegion({ id: `floor:${CAVE_ID}`, kind: "room-floor", rect: CAVE_FLOOR_RECT, walkable: true, roomId: CAVE_ID });
-  // the threshold pocket is south of the floor rect and is its own region: PlayerMode scopes interaction
-  // candidates by the region's roomId, so a body standing in an unclaimed recess targets nothing — and the
-  // way out lives in that recess (rooms/cave.ts VESTIBULE_RECT)
-  world.addRegion({ id: `threshold:${CAVE_ID}`, kind: "room-floor", rect: CAVE_VESTIBULE_RECT, walkable: true, roomId: CAVE_ID });
-  world.bounds = {
-    x: Math.min(plan.frame.x, CAVE_OUTER_RECT.x), z: Math.min(plan.frame.z, CAVE_OUTER_RECT.z),
-    w: Math.max(plan.frame.x + plan.frame.w, CAVE_OUTER_RECT.x + CAVE_OUTER_RECT.w) - Math.min(plan.frame.x, CAVE_OUTER_RECT.x),
-    d: Math.max(plan.frame.z + plan.frame.d, CAVE_OUTER_RECT.z + CAVE_OUTER_RECT.d) - Math.min(plan.frame.z, CAVE_OUTER_RECT.z),
-  };
+  // It is a separate module for one reason: this file cannot be imported without a WebGL context, so
+  // anything assembled inline here is code no test can run. That is how floor 2's lift core came to be
+  // registered twice and the whole 3D office failed to start. worldContents.ts is pure, and its test
+  // calls the very same function this line calls — see that file's ownership and ordering rules.
+  const { world, plan, elevators: ELEVATORS, elevatorRoomIds: ELEVATOR_ROOM_IDS } = buildWorldContents();
+  const GROUND_ELEVATOR = ELEVATORS[GROUND_FLOOR_ID];
   const inBounds = (p: Vec2): boolean => world.walkableAt(p);
 
   // ROOM EDITOR V2 — which pieces the editor may arrange. A read-only classification of data the rooms
@@ -623,6 +622,40 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // volumes are never drawn at the same time, and keeping them as siblings is what lets one visibility
   // flag turn each of them off whole. It comes back hidden — nothing in here is drawn, and no video is
   // fetched or decoded, until somebody walks through the monument's portal.
+  // THE GROUND FLOOR'S ELEVATOR CORE, added to the office MIRROR rather than to the scene: it is part of
+  // this floor's architecture, so it must be hidden with the office when a body is inside the CAVE or
+  // upstairs, and it must be in the mirror's subtree for the pointer pick (which raycasts `mirror.root`)
+  // to be able to find the call plate.
+  // THE CORES ARE SIBLINGS OF THE FLOORS, NOT CHILDREN OF THEM.
+  //
+  // A core is the front wall and the doors of the car — and while the car is sealed the floor around it
+  // is not drawn at all (interact/FloorTransition setWorldHidden), because the car's tail runs out
+  // through the building. Parenting the core to its floor meant hiding the floor took the doors with it
+  // and the ride looked straight out of the open end of the cabin at the campus. So each core follows
+  // WHICH FLOOR YOU ARE ON and nothing else, and the pointer pick below raycasts them beside the office.
+  const groundElevatorBuild: ElevatorCoreBuild = buildElevatorCore(GROUND_ELEVATOR, FLOORS[GROUND_FLOOR_ID].indicator);
+  R.scene.add(groundElevatorBuild.group);
+  // FLOOR 2, built once and added to the SCENE as a sibling of the office and the CAVE — three volumes,
+  // never two of them drawn at the same time, each turned off whole by one visibility flag. It comes back
+  // HIDDEN: an empty upper storey nobody is standing on costs exactly nothing.
+  const floor2Root = new THREE.Group();
+  floor2Root.name = "floor-2-root";
+  const floor2ElevatorBuild: ElevatorCoreBuild = buildElevatorCore(FLOOR2_ELEVATOR, FLOORS[FLOOR2_ID].indicator);
+  // THE VIEW OUT OF FLOOR 2'S WINDOWS: its own elevated read of the office's exterior, so the storey
+  // reads as the one above the ground floor rather than a plate somewhere else in the world. Its own
+  // group so `applyFloor` can swap it for the ground floor's real campus in one boolean each way.
+  const floor2Context = buildFloor2Context();
+  floor2Root.add(buildFloor2(), floor2Context);
+  floor2Root.visible = false;
+  floor2ElevatorBuild.group.visible = false;
+  R.scene.add(floor2ElevatorBuild.group);
+  R.scene.add(floor2Root);
+  // THE CABIN: ONE car for the whole building, standing ALONE at x 9000 where nothing else in this world
+  // reaches. Nothing crosses it and it crosses nothing — which is the entire reason it is out there
+  // rather than sticking out of the Meeting Room's west wall the way the first build's did. Hidden until
+  // the leaves close on somebody. See rooms/elevator.ts.
+  const cabinBuild: LiftBuild = buildCabin(FLOORS[GROUND_FLOOR_ID].indicator);
+  R.scene.add(cabinBuild.group);
   const caveBuild = buildCave();
   R.scene.add(caveBuild.group);
   const caveMedia = new CaveMedia();
@@ -1228,6 +1261,60 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     if (disposed) return;
     selfFeed?.entering(place === "ai-lab" ? AI_LAB_PLACE_ID : null);
   }
+  // ---- DND ROOM LOCKS (app/roomLocks.ts) ---------------------------------------------------------------
+  // V1's door-approach gate, as a doorway that is actually shut. Who is locked arrives through
+  // setLockedRooms; everything below only applies it from the body's real position and reports the edges.
+  const roomLocks = new RoomLockController(
+    collectLockableDoors(world),
+    walkability,
+    (p) => world.regionAt(p)?.roomId ?? null,
+    NAV_RADIUS,
+  );
+  const roomLockState = { locked: "—", held: "—", authorized: "no", prompts: 0 };
+  /** The walk a lock stopped at the door, kept so an accepted knock (or the lock lifting) resumes EXACTLY
+   *  it — V1's `resume` continuation. Dropped by any newer walk. */
+  let roomLockHeldWalk: { roomId: string; destination: Vec2 } | null = null;
+  /** The room whose held door the body is currently standing at, so the host is told once per approach. */
+  let roomLockPrompted: string | null = null;
+  function applyRoomLocks(at: Vec2): void {
+    if (roomLocks.apply(at)) navDebug.refreshDynamic(walkability);
+    // A WALK ALREADY QUEUED THROUGH A DOORWAY THAT HAS JUST BEEN HELD must not be honoured — the same stop,
+    // for the same reason, as the access gate and the exit: waypoints do not re-consult walkability.
+    if (navCtl.path.length > 0 && roomLocks.routeCrossesHeld(navCtl.path)) navCtl.stop();
+    const snap = roomLocks.snapshot();
+    roomLockState.locked = snap.locked.join(",") || "—";
+    roomLockState.held = snap.held.join(",") || "—";
+    roomLockState.authorized = snap.authorized ?? "no";
+    const intercepted = roomLocks.interceptedAt(at);
+    if (intercepted === roomLockPrompted) return;
+    // Told on the edges only: once when they arrive at a shut door, once when they walk away from it.
+    if (roomLockPrompted !== null) coworkerInteractions?.onRoomLockAbandoned?.(roomLockPrompted);
+    roomLockPrompted = intercepted;
+    if (intercepted !== null) {
+      roomLockState.prompts++;
+      coworkerInteractions?.onRoomLockIntercepted?.(intercepted);
+    }
+  }
+  /** The held continuation goes ahead the moment its room no longer refuses this body — an accepted knock,
+   *  or the lock lifting (V1's auto-cancel path re-checks the live lock and proceeds through the open door). */
+  function resumeHeldWalkIfOpen(): void {
+    const held = roomLockHeldWalk;
+    if (!held || roomLocks.refuses(held.roomId, avatar.position)) return;
+    roomLockHeldWalk = null;
+    walkToGround(held.destination.x, held.destination.z);
+  }
+  function setLockedRooms(roomIds: readonly string[]): void {
+    if (disposed) return;
+    roomLocks.setLocked(roomIds);
+    applyRoomLocks(avatar.worldPosition());
+    resumeHeldWalkIfOpen();
+  }
+  function authorizeRoomEntry(roomId: string | null): void {
+    if (disposed) return;
+    roomLocks.authorize(roomId);
+    applyRoomLocks(avatar.worldPosition());
+    resumeHeldWalkIfOpen();
+  }
   /** Has the exit prompt already been raised for this approach? Cleared when the body steps off the mat,
    *  so walking away and coming back asks again — and standing on it does not ask sixty times a second. */
   let exitPrompted = false;
@@ -1289,6 +1376,16 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       navState.last = `ignored: avatar owned by ${stack.owner}`;
       return { ok: false, reason: "outside-world", destination: null, cell: null };
     }
+    // A NEWER WALK SUPERSEDES A HELD ONE: whatever the lock was holding, this click is what they want now.
+    roomLockHeldWalk = null;
+    // A FLOOR ABOVE THE GROUND ONE IS OFF THE LATTICE, so its walks are planned on its own geometry.
+    //
+    // This is not a second pathfinder. planWalk is welded to V1's 90 x 78 grid — it snaps a cell, floods
+    // it and A*s over it — and no cell of that grid describes anything outside the ground floor. Floor 2
+    // is one convex rectangle with one solid object standing on it, so a straight leg that the floor's
+    // OWN stand test agrees with along its whole length is a complete and honest answer, and a leg that
+    // would cross the lift core is REFUSED rather than approximated or walked through.
+    if (onFloor2({ x, z })) return walkOnFloor(currentFloor, { x, z });
     // THE BOUNDARY, STATED RATHER THAN IMPLIED. The closed lanes already make an office destination
     // unreachable, so this changes no outcome — it changes the REASON, from "unreachable" (which reads as
     // a pathfinding failure) to a refusal the readout can name. The router is still the thing that
@@ -1297,6 +1394,33 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       navState.last = `refused: the working office needs a confirmed V1 check-in (attendance ${officeAccess})`;
       navDebug.showNav(avatar.position, { ok: false, reason: "unreachable", destination: { x, z }, cell: worldToCell({ x, z }) });
       return { ok: false, reason: "unreachable", destination: { x, z }, cell: worldToCell({ x, z }) };
+    }
+    // DND ROOM LOCK — V1's door-approach gate (feature spec sections 3/8). A destination inside a room that is
+    // shut against this body never routes in: the body walks to that room's door and stops outside it, and
+    // the destination is HELD so an accepted knock resumes exactly this walk. The reservation alone already
+    // makes the interior unreachable; this turns "unreachable" into V1's "stop at the door and ask".
+    const lockedTarget = world.regionAt({ x, z })?.roomId ?? null;
+    if (lockedTarget !== null && roomLocks.refuses(lockedTarget, avatar.position)) {
+      coworkerApproach = null;
+      roomLockHeldWalk = { roomId: lockedTarget, destination: { x, z } };
+      const door = roomLocks.nearestDoor(lockedTarget, { x, z });
+      const refused: NavResult = { ok: false, reason: "unreachable", destination: { x, z }, cell: worldToCell({ x, z }) };
+      if (!door) {
+        navState.last = `held: ${lockedTarget} is DND-locked and has no door to wait at`;
+        navDebug.showNav(avatar.position, refused);
+        return refused;
+      }
+      const toDoor = planWalk(avatar.position, door.standPoint, walkability, inBounds);
+      navDebug.showNav(avatar.position, toDoor);
+      navState.last = toDoor.ok ? `held: ${lockedTarget} is DND-locked — walking to its door` : `held: ${lockedTarget} is DND-locked — door unreachable (${toDoor.reason})`;
+      if (toDoor.ok) {
+        const origin = avatar.position;
+        if (navCtl.setPath(toDoor.path)) {
+          selfMovedByUser = true;
+          selfFeed?.planned(origin, toDoor.path, plannedDurationMs(origin, toDoor.path, navCtl.speed));
+        }
+      }
+      return refused;
     }
     const result = planWalk(avatar.position, { x, z }, walkability, inBounds);
     navDebug.showNav(avatar.position, result);
@@ -1320,6 +1444,36 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       }
     }
     return result;
+  }
+  /** THE OFF-LATTICE WALK (see walkToGround). Sampled at NAV_RADIUS every 8 units, which is finer than
+   *  the body is wide, so nothing can be stepped over.
+   *
+   *  NOTHING IS PUBLISHED FROM HERE, deliberately. A planned walk is announced up front in V1 frame
+   *  units, and there are none out here — so the movement feed's own out-of-frame path is what carries
+   *  it: it samples the real position every few units and publishes each leg inside the place it has
+   *  been told about (app/selfMovement's localLeg). Announcing it twice would be the one way to get two
+   *  different accounts of the same walk onto the wire. */
+  function walkOnFloor(floor: Vo3dFloorId, to: Vec2): NavResult {
+    const from = { ...avatar.position };
+    const standable = floor === FLOOR2_ID ? (p: Vec2) => floor2StandTest(p, NAV_RADIUS) : (p: Vec2) => playerStand(p);
+    const cell = worldToCell(to);
+    if (!standable(to)) {
+      navState.last = `rejected: nothing standable at ${to.x.toFixed(0)}, ${to.z.toFixed(0)} on ${floor}`;
+      return { ok: false, reason: "unwalkable", destination: to, cell };
+    }
+    const span = Math.hypot(to.x - from.x, to.z - from.z);
+    const steps = Math.max(1, Math.ceil(span / 8));
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps;
+      if (!standable({ x: from.x + (to.x - from.x) * t, z: from.z + (to.z - from.z) * t })) {
+        navState.last = `rejected: the way across ${floor} is blocked`;
+        return { ok: false, reason: "unreachable", destination: to, cell };
+      }
+    }
+    const path = [{ x: to.x, z: to.z }];
+    navState.last = `ok → ${floor} · straight leg of ${span.toFixed(0)}`;
+    if (navCtl.setPath(path)) selfMovedByUser = true;
+    return { ok: true, destination: { ...to }, path, cell };
   }
   // dev-only tour: walk the given world points in a loop (visual verification + benchmark driver)
   let tour: { points: Vec2[]; i: number } | null = null;
@@ -1391,6 +1545,17 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   let qaDoor = new SlidingDoor(mirror.view(QA_DOOR_NORTH_ID), qaDoorEntity.capabilities.door!, qaDoorEntity.transform.pos,
     { view: mirror.view(QA_DOOR_SOUTH_ID), closed: world.get(QA_DOOR_SOUTH_ID).transform.pos });
   const qaDoorState = { state: "closed", open: 0, drift: 0, cycles: 0 };
+  // the Meeting Room's east entrance and the Project Room's west one: the front bar's two rooms are now
+  // enclosed by glass onto Reception, and each has a BI-PARTING entrance in it — the same controller, the
+  // same north-drives/south-mirrors arrangement as CMS and QA
+  const meetingDoorNorth = world.get(MEETING_DOOR_NORTH_ID);
+  let meetingDoor = new SlidingDoor(mirror.view(MEETING_DOOR_NORTH_ID), meetingDoorNorth.capabilities.door!, meetingDoorNorth.transform.pos,
+    { view: mirror.view(MEETING_DOOR_SOUTH_ID), closed: world.get(MEETING_DOOR_SOUTH_ID).transform.pos });
+  const meetingDoorState = { state: "closed", open: 0, drift: 0, cycles: 0 };
+  const projectDoorNorth = world.get(PROJECT_DOOR_NORTH_ID);
+  let projectDoor = new SlidingDoor(mirror.view(PROJECT_DOOR_NORTH_ID), projectDoorNorth.capabilities.door!, projectDoorNorth.transform.pos,
+    { view: mirror.view(PROJECT_DOOR_SOUTH_ID), closed: world.get(PROJECT_DOOR_SOUTH_ID).transform.pos });
+  const projectDoorState = { state: "closed", open: 0, drift: 0, cycles: 0 };
   // ---- Reception interactions (3E.3) ------------------------------------------------------------------
   // One focused interaction at a time, driven by the SAME pieces the Design Room uses: ApproachInteraction
   // for walk-up points, SeatInteraction for the lounge chairs, planWalk for every route.
@@ -1621,7 +1786,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     const r = canvas.getBoundingClientRect();
     ndc.set(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
     raycaster.setFromCamera(ndc, R.activeCamera);
-    const hits = raycaster.intersectObject(mirror.root, true);
+    const hits = raycaster.intersectObjects([mirror.root, groundElevatorBuild.group, floor2ElevatorBuild.group], true);
     if (!hits.length) return null;
     const byPick = new Map<string, string>();
     for (const e of world.entities.values()) {
@@ -1673,6 +1838,16 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   //
   // PLAYER ONLY. officeStand feeds nothing but playerStand; click-to-walk and A* route on `walkability`
   // and `inBounds`, which are untouched, so navigation behaves exactly as it did.
+  /** THE LIFT'S OWN SPACES, answered on demand rather than cached per frame: the cinematic moves the body
+   *  and the camera between a vestibule and the cabin inside a single tick, and a cached answer is one
+   *  frame stale exactly when it matters. Both are only standable while a journey is running — a lift
+   *  bay is a wall recess the rest of the time, which is what stops anybody walking into one. */
+  const liftActive = (): boolean => floorTransition !== null && floorTransition.currentPhase !== "idle";
+  const vestibuleOf = (p: Vec2): ElevatorSpec | null => {
+    if (!liftActive()) return null;
+    for (const f of FLOOR_ORDER) { const s = specOf(f); if (inVestibule(s, p)) return s; }
+    return null;
+  };
   const officeStand = makeStandTest({ world, walkability, derived: derivedNav, radius: NAV_RADIUS, allowExterior: true });
   /** THE ONE STAND TEST, over BOTH volumes.
    *
@@ -1683,6 +1858,17 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  office's do, and there is no point in either volume where both tests are consulted or neither is. */
   const playerStand = (p: Vec2): boolean =>
     inCave(p) ? caveStandTest(p, NAV_RADIUS)
+    // FLOOR 2 answers from its own geometry for the same reason the CAVE does: it stands outside V1's
+    // 90 x 78 lattice, so neither the V1-governed layer nor DerivedNav (both indexed by that lattice)
+    // has anything to say about it. Its perimeter wall and its lift core stop a body exactly as the
+    // office's walls do — rooms/floor2.ts floor2StandTest is the only place that is decided.
+    // THE CAR, when one is docked. It is a room that moves, so no floor's lattice describes it and it
+    // answers from its own geometry — the same routing of the question the CAVE and floor 2 take. Asked
+    // FIRST of the two floor tests, because while the car is standing at a core its interior overlaps
+    // whatever that floor has behind the wall, and the car is what the body is actually inside.
+    : liftActive() && inCabin(p) ? cabinStandTest(p, NAV_RADIUS)
+    : vestibuleOf(p) !== null ? vestibuleStandTest(vestibuleOf(p)!, p, NAV_RADIUS)
+    : onFloor2(p) ? floor2StandTest(p, NAV_RADIUS)
     : inAiLabZone(p, NAV_RADIUS) ? aiLabStandTest(p, NAV_RADIUS)
     : officeStand(p);
   /** The third-person boom's probe. Same composition, a token radius: the camera must not end up inside a
@@ -1691,6 +1877,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   const officeCameraProbe = makeStandTest({ world, walkability, derived: derivedNav, radius: 2, allowExterior: true });
   const playerCameraProbe = (p: Vec2): boolean =>
     inCave(p) ? caveStandTest(p, 2)
+    : liftActive() && inCabin(p) ? cabinStandTest(p, 2)
+    : vestibuleOf(p) !== null ? vestibuleStandTest(vestibuleOf(p)!, p, 2)
+    : onFloor2(p) ? floor2StandTest(p, 2)
     : inAiLabZone(p, 2) ? aiLabStandTest(p, 2)
     : officeCameraProbe(p);
   /** the one bridge from a targeted entity id to V2's existing interaction path. Nothing is reimplemented:
@@ -1698,6 +1887,14 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   /** Assigned just after PLAYER mode is constructed (it needs the body to place). Declared here because
    *  the interaction bridge below is handed to PlayerMode and therefore has to exist first. */
   let caveTransition: CaveTransition | null = null;
+  /** Assigned beside the CAVE's transition below, and declared here for the same reason: the interaction
+   *  bridge is handed to PlayerMode and therefore has to exist before either of them does. */
+  let floorTransition: FloorTransition | null = null;
+  /** WHICH FLOOR A JOURNEY IS HEADED FOR once the body has walked to the call control. The call plate is
+   *  an ordinary `approach`, so pressing E (or clicking it) walks the employee to the lobby first and the
+   *  journey starts on ARRIVAL — which is what makes "use the elevator" work identically from anywhere in
+   *  the building, in any view, without a second way of moving anybody. */
+  let pendingFloor: Vo3dFloorId | null = null;
   function activateInteractable(id: string, kind: "seat" | "lounge" | "approach" | "person", near?: Vec2): boolean {
     // PHASE 6D — A PERSON. The one activation that starts nothing in this world: it SELECTS, and the host
     // decides what a selection means (app/interactions.ts). The pointer is handed back so the card that
@@ -1718,6 +1915,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // PLAYER takes it back on the next idle frame exactly as it does after a finished seat. The screen
     // toggle returns FALSE on purpose — pausing a video is not an interaction that should own a body, and
     // false is what makes PlayerMode re-acquire immediately instead of standing Bon down.
+    // THE ELEVATOR'S CALL CONTROL. Like the portal, it is neither a seat nor a walk-up-and-look: it is a
+    // journey, so it is branched in the SAME bridge every other verb goes through rather than given a
+    // path of its own. Returning true means PLAYER has released the avatar and something else is driving
+    // it, which is exactly what the cinematic needs.
+    if (id === `${GROUND_ELEVATOR.id}/call` || id === `${FLOOR2_ELEVATOR.id}/call`) return callElevator();
     if (id === CHAMPIONSHIP_ENTRANCE_ID) return caveTransition?.enter() ?? false;
     if (id === CAVE_EXIT_ID) return caveTransition?.exit() ?? false;
     if (id === CAVE_SCREEN_ID) { caveMedia.toggle(); return false; }
@@ -1964,7 +2166,20 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // the pieces were already here: interact/Approach.ts owns the arrival (and its fire-once guarantee) and
   // this contract is how the world tells the host anything at all. The world still decides nothing about
   // what a kiosk or a counter MEANS — see app/interactions.ts.
-  approachCtl.onArrivedAtTarget = (entityId) => coworkerInteractions?.onInteractionArrived?.(entityId);
+  approachCtl.onArrivedAtTarget = (entityId) => {
+    // THE ELEVATOR'S OWN ARRIVAL. The call control is an ordinary approach, so "use the elevator" from
+    // across the building is: walk there through the router everybody else uses, and start the journey
+    // when the body is actually standing at the doors. `pendingFloor` is dropped on any other arrival,
+    // so a walk that was superseded can never start a journey later.
+    if (pendingFloor && entityId.endsWith("/call")) {
+      const to = pendingFloor;
+      pendingFloor = null;
+      floorTransition?.start(to);
+      return;
+    }
+    pendingFloor = null;
+    coworkerInteractions?.onInteractionArrived?.(entityId);
+  };
   /** Who is selected right now, so a repeat click on the same body is not republished as a new selection
    *  (the menu would re-mount and lose its own state) and a dismissal is only sent when there was one. */
   let selectedCoworker: string | null = null;
@@ -2133,7 +2348,19 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
 
   /** ROOM DISCOVERY — the rooms that can be labelled, resolved once from the world's own regions. */
   const roomFrameSource = { floorRectOf: (id: string) => world.rooms.get(id)?.floorRect, regions: world.regions };
+  /** A ROOM YOU CAN INSPECT — Room Discovery's own question, asked once.
+   *
+   *  A region having a roomId does not make it a room: the lift cores and a floor plate carry one so that
+   *  PLAYER mode has something to scope an interaction to (player/PlayerTargeting buckets candidates by
+   *  region roomId), and neither is a place whose occupants, boards or details anybody wants a panel
+   *  about. Excluded by WHAT THEY ARE, so a third floor and its core exclude themselves. */
+  const discoverableRoom = (roomId: string | null | undefined): string | null =>
+    !roomId || ELEVATOR_ROOM_IDS.has(roomId) || roomId === FLOOR2_ID ? null : roomId;
   const labelRects = roomLabelRects(roomFrameSource);
+  /** THE ROOMS ROOM DISCOVERY LETTERS. Not every region with a roomId is a room to letter: a lift car is
+   *  96 x 56 units of sealed box, and a floor is not a room at all. Both are excluded by WHAT THEY ARE
+   *  rather than by name, so a third floor and its core exclude themselves. */
+  const GROUND_ROOM_RECTS = labelRects.filter((r) => discoverableRoom(r.roomId) !== null);
   /** HOW HIGH A LABEL FLOATS above the floor it names, in world units. Low enough to read as painted on
    *  the court (the reference), high enough to clear desks and chairs rather than sitting among them. */
   const ROOM_LABEL_Y = 14;
@@ -2410,7 +2637,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   const placeWorldPoint = (c: Vo3dCoworker): Vo3dCoworker =>
     // PHASE 7E — the AI Lab joins it, for the identical reason and with an identical mapping: both places
     // are outside V1's frame, so a peer's `localPoint` IS their real world position out there.
-    (c.place === CAVE_PLACE_ID || c.place === AI_LAB_PLACE_ID) && c.localPoint ? { ...c, worldPoint: c.localPoint } : c;
+    // …AND SO DOES EVERY FLOOR ABOVE THE GROUND ONE, on exactly the same terms: a storey in its own world
+    // space is a place V1 has no coordinate for, so what a peer publishes for it IS a world point.
+    (c.place === CAVE_PLACE_ID || c.place === AI_LAB_PLACE_ID || (c.place != null && floorOfPlace(c.place) !== GROUND_FLOOR_ID)) && c.localPoint
+      ? { ...c, worldPoint: c.localPoint }
+      : c;
   /** PHASE 7D FOLLOW-UP — ONE VOLUME AT A TIME.
    *
    *  The CAVE is a separate interior volume standing 1,146 units east of the V1 frame, and its geometry
@@ -2428,9 +2659,16 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   let rosterList: readonly Vo3dCoworker[] = [];
   let rosterMissingAvatar: readonly string[] | undefined;
   let rosterInsideCave = false;
+  /** the floor the roster was last synced FOR, so the frame loop can catch a change it did not cause */
+  let rosterFloor: Vo3dFloorId = GROUND_FLOOR_ID;
   function syncRoster(): void {
     rosterInsideCave = caveTransition?.inside ?? false;
-    const sameVolume = coworkersInSameVolume(rosterList, rosterInsideCave);
+    rosterFloor = currentFloor;
+    // ONE VOLUME AT A TIME, TWICE. The Cave's rule is unchanged; the floors apply the SAME rule, on the
+    // SAME signal — the `place` name the movement feed already publishes — so a second storey costs one
+    // filter and nothing on the wire. This is what stops somebody being drawn standing on the ground
+    // floor while they are actually upstairs.
+    const sameVolume = coworkersOnFloor(coworkersInSameVolume(rosterList, rosterInsideCave), currentFloor);
     void coworkers.sync(sameVolume.map(placeWorldPoint), rosterMissingAvatar).then(refreshCoworkerState);
     refreshCoworkerState();
   }
@@ -2469,6 +2707,173 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       return playerMode.active;
     },
   });
+
+  // ---- THE ELEVATOR AND THE FLOORS ABOVE ----------------------------------------------------------
+  //
+  // Everything that makes the world BE one floor rather than another is in `applyFloor`, in one place and
+  // in one tick: which geometry is drawn, which camera fence OFFICE is bounded by, what the environment
+  // presents, and which peers are on the floor you are on. The cinematic calls it once, with the lift
+  // doors shut on both sides (interact/FloorTransition), and nothing else calls it at all.
+
+  const specOf = (floor: Vo3dFloorId): ElevatorSpec => (floor === FLOOR2_ID ? FLOOR2_ELEVATOR : GROUND_ELEVATOR);
+  const coreOf = (floor: Vo3dFloorId): ElevatorCoreBuild => (floor === FLOOR2_ID ? floor2ElevatorBuild : groundElevatorBuild);
+  /** the plate OFFICE is fenced to, per floor */
+  const floorFrameOf = (floor: Vo3dFloorId): Rect => (floor === FLOOR2_ID ? FLOOR2_FRAME : plan.frame);
+  /** WHICH FLOOR THE BODY IS ON. The world's own answer, and the only one: the movement feed's place
+   *  name, the roster filter, the view rules and the camera fence all read it. */
+  let currentFloor: Vo3dFloorId = GROUND_FLOOR_ID;
+  /** the player's own camera pitch, held while the cinematic borrows it */
+  let restorePitch: number | null = null;
+  let cinematicPitch: number | null = null;
+  /** THE VIEW THE EMPLOYEE HAD ON EACH FLOOR, so coming back restores what they left rather than a
+   *  default. Written on departure only — nothing here touches the PERSISTENT starting-view preference
+   *  (components/OfficeMap/HudSettings owns that, and only the Settings radio writes it), because taking
+   *  the lift is not a statement about which view you want the office to open in. */
+  const rememberedView: Partial<Record<Vo3dFloorId, Vo3dViewMode>> = {};
+  const floorListeners = new Set<(floor: Vo3dFloorId) => void>();
+  const notifyFloor = (): void => { for (const l of floorListeners) l(currentFloor); };
+
+  /** ONE PLACE decides which of the building's floors is on screen. THE CABIN IS NOT A FLOOR and is never
+   *  touched here: it stands alone at x 9000 and is shown only while the leaves are shut on somebody. */
+  function applyWorldVisibility(): void {
+    const upstairs = currentFloor !== GROUND_FLOOR_ID;
+    mirror.root.visible = !upstairs;
+    floor2Root.visible = currentFloor === FLOOR2_ID;
+    groundElevatorBuild.group.visible = !upstairs;
+    floor2ElevatorBuild.group.visible = currentFloor === FLOOR2_ID;
+  }
+
+  function applyFloor(to: Vo3dFloorId): void {
+    if (to === currentFloor) return;
+    currentFloor = to;
+    const upstairs = to !== GROUND_FLOOR_ID;
+    applyWorldVisibility();
+    aiLab.group.visible = false;
+    if (monkey) monkey.visible = false;
+    // THE GROUND FLOOR'S CAMPUS IS THE GROUND FLOOR'S. Floor 2 stands 4,560 units east of the V1 frame
+    // and the campus roads run out at 5,400, so from up there the office's own landscape would be sitting
+    // just off the west windows — the technical separation, in plain sight. It is suppressed while
+    // upstairs and the floor's own elevated context (build/floor2Context.ts) stands in for it.
+    env.sceneryForFloor(upstairs ? null : "ground");
+    floor2Context.visible = upstairs;
+    // A floor standing in its own world space has no sky, no campus and no weather around it — it is a
+    // SEALED INTERIOR in exactly the sense the CAVE is, and it takes the same environment rig.
+    if (env.setPresentation(wantedPresentation(params.cameraMode))) R.invalidateShadows();
+    // OFFICE is a bounded viewport over ONE plate; the fence moves with the floor being looked at, so an
+    // upper storey can never be panned off to reveal that it is a slab standing in the void.
+    cameraModes.setOfficeBounds(floorFrameOf(to));
+    // WHO IS DRAWN. One volume at a time, off the `place` the feed already publishes — see syncRoster.
+    syncRoster();
+    R.invalidateShadows();
+    notifyFloor();
+  }
+
+  floorTransition = new FloorTransition({
+    specOf,
+    coreOf,
+    cabin: cabinBuild,
+    indicatorOf: (f) => FLOORS[f].indicator,
+    bodyPos: () => ({ ...playerMode.body.pos }),
+    bodyYaw: () => avatar.yaw,
+    // THE SCRIPTED WALK. Straight legs through the doorway's own centre (rooms/elevator `threshold`), so
+    // no collision test is needed and none is used: the route is clear by construction, and a body being
+    // carried by a cutscene must not catch on the jamb it is walking between.
+    stepWalk: (legs, dt) => {
+      const r = walkLegs(avatar.position, legs, ELEVATOR_RIDE.walkSpeed, dt);
+      avatar.setPosition(r.pos);
+      playerMode.body.pos = { x: r.pos.x, z: r.pos.z };
+      if (r.yaw !== null) {
+        const next = stepAngle(avatar.yaw, r.yaw, dt * 6);
+        avatar.setYaw(next);
+        // THE CAMERA RIDES BEHIND THE BODY. PlayerCamera already follows the body while another owner
+        // drives it; giving it the body's heading — converted into the camera's own convention — is what
+        // keeps the shot over the avatar's shoulder through the approach, the doorway and the walk out.
+        playerMode.camera.yaw = cameraYawFor(next);
+      }
+      if (r.arrived) avatar.play(CLIP_IDLE);
+      else { avatar.play(CLIP_WALK); avatar.setClipTimeScale(CLIP_WALK, ELEVATOR_RIDE.walkSpeed / 30); }
+      return r.arrived;
+    },
+    setYaw: (yaw, snap) => {
+      avatar.setYaw(yaw);
+      playerMode.camera.yaw = cameraYawFor(yaw);
+      if (snap) playerMode.camera.snap();
+    },
+    place: (p, look) => {
+      if (!playerStand(p) && !playerMode.body.placeNear(p)) return false;
+      playerMode.body.pos = { x: p.x, z: p.z };
+      avatar.setPosition(playerMode.body.pos);
+      facePlayer(look, cinematicPitch ?? undefined);
+      return true;
+    },
+    // THE FLOOR SWAP'S WHOLE TECHNIQUE: body and camera move by the SAME vector the car moved by, so
+    // every relative position — and therefore the rendered frame — is preserved across the swap.
+    translateBody: (dx, dz) => {
+      const p = { x: playerMode.body.pos.x + dx, z: playerMode.body.pos.z + dz };
+      playerMode.body.pos = p;
+      avatar.setPosition(p);
+      playerMode.camera.snap();
+      // SILENT. Stepping between a lift bay and the cabin is not a movement anybody made: `placed` is the
+      // feed's own word for "the body was put here, publish nothing" (app/selfMovement.ts), and without it
+      // every journey would broadcast a 9,000-unit teleport to every other browser.
+      selfFeed?.placed(p);
+    },
+    // THE HIGHEST-PRIORITY OWNER, which is the whole of "movement must not fight the sequence": WASD,
+    // click-to-walk, seats and approaches are all refused by avatar/Controller's own rule while this is
+    // held, and PLAYER takes the body back by itself on its next idle frame once it is released.
+    takeAvatar: () => stack.acquire("Interaction"),
+    releaseAvatar: () => stack.release("Interaction"),
+    beginCinematic: () => {
+      rememberedView[currentFloor] = params.cameraMode as Vo3dViewMode;
+      navCtl.stop();
+      approachCtl.cancel();
+      // THE RIDE IS ALWAYS PLAYED IN THIRD PERSON. First person would put the camera inside the avatar's
+      // head, and the whole composition the brief asks for — your own body in the car, the doors ahead,
+      // the read-out above them — depends on seeing the avatar.
+      if (params.playerView !== "third") { params.playerView = "third"; playerMode.setView("third"); notifyPlayerView(); }
+      // the centre-screen "[E] …" line is drawn where the doors are: it has no business in a cutscene
+      playerMode.setPromptHidden(true);
+      if (params.cameraMode !== "player") setCameraMode("player");
+      // KEEP THE SHOT UNDER THE CAR'S CEILING for the duration, and give the player's own pitch back
+      // afterwards — taking the lift must not silently retune their camera.
+      restorePitch = playerMode.camera.pitch;
+      cinematicPitch = CINEMATIC_PITCH;
+      playerMode.camera.pitch = CINEMATIC_PITCH;
+      playerMode.camera.boomScale = CINEMATIC_BOOM_NEAR;
+      playerMode.camera.snap();
+    },
+    endCinematic: (arrivedOn) => {
+      if (restorePitch !== null) { playerMode.camera.pitch = restorePitch; restorePitch = null; }
+      playerMode.camera.boomScale = 1;
+      playerMode.setPromptHidden(false);
+      cinematicPitch = null;
+      const want = arrivalViewMode(rememberedView[arrivedOn] ?? (rememberedView[currentFloor] as Vo3dViewMode) ?? "office", arrivedOn);
+      if (params.cameraMode !== want) setCameraMode(want);
+      else notifyViewMode();
+    },
+    applyFloor,
+    setBoom: (wide) => { playerMode.camera.boomScale = wide ? CINEMATIC_BOOM_WIDE : CINEMATIC_BOOM_NEAR; },
+    // MULTIPLAYER. Told BEFORE the swap, exactly as the CAVE is, so the movement feed's next boundary
+    // crossing already knows what to call this place. `placeId` is null for the ground floor — V1's own
+    // frame describes it and it needs no extra word.
+    onWhere: (to) => selfFeed?.entering(FLOORS[to].placeId),
+    invalidateShadows: () => R.invalidateShadows(),
+  }, GROUND_FLOOR_ID);
+
+  /** THE FLOOR THE LIFT WOULD GO TO FROM HERE. Two floors, so it is the other one; the registry's order
+   *  is what a three-floor selector will read instead. */
+  const otherFloor = (): Vo3dFloorId => FLOOR_ORDER.find((f) => f !== currentFloor) ?? GROUND_FLOOR_ID;
+
+  /** USE THE LIFT. From the apron in front of the doors it starts the journey; from anywhere else it
+   *  walks the employee to the call control first, through the approach the control already carries, and
+   *  the journey begins when they arrive. One entry point for the key, the click, the GUI and the HUD. */
+  function callElevator(to: Vo3dFloorId = otherFloor()): boolean {
+    if (!floorTransition || floorTransition.busy) return false;
+    if (floorTransition.canBoardFrom(playerMode.body.pos)) { pendingFloor = null; return floorTransition.start(to); }
+    pendingFloor = to;
+    startApproach(`${specOf(currentFloor).id}/call`);
+    return true;
+  }
 
   // ---- environmental audio ------------------------------------------------------------------------
   // THE WORLD'S OWN SOUND: wind, rain, room tone, the theatre's air, and thunder off the storm's existing
@@ -2580,7 +2985,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // …AND THE ROOMS IT WANDERS THROUGH are the office's OWN, not a second list: `labelRects` is the same
   // set of room rects Room Discovery letters and the camera frames, so the bird's indoor stops cannot
   // drift from the building and nothing new has to be maintained when a room moves.
-  const toucanStops = labelRects.map((r) => ({ x: r.rect.x + r.rect.w / 2, z: r.rect.z + r.rect.d / 2 }));
+  // …MINUS THE ROOMS THAT ARE NOT ROOMS TO FLY THROUGH: the bird's stops are the GROUND FLOOR's rooms,
+  // the same set Room Discovery letters (GROUND_ROOM_RECTS above).
+  const toucanStops = GROUND_ROOM_RECTS.map((r) => ({ x: r.rect.x + r.rect.w / 2, z: r.rect.z + r.rect.d / 2 }));
   const toucan = new Toucan(plan.frame, TOUCAN_PERCH, toucanStops);
   R.scene.add(toucan.root);
   void toucan.load().then((ok) => { if (disposed) return; if (ok) R.invalidateShadows(); }); // LIFECYCLE guard, as above
@@ -2619,6 +3026,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   registerDoorSfx(AI_DOOR_ID, () => aiDoor);
   registerDoorSfx(DEV_DOOR_ID, () => devDoor);
   registerDoorSfx(QA_DOOR_NORTH_ID, () => qaDoor);
+  registerDoorSfx(MEETING_DOOR_NORTH_ID, () => meetingDoor);
+  registerDoorSfx(PROJECT_DOOR_NORTH_ID, () => projectDoor);
 
   /** THE ONE FOLEY TICK. Reads state the world was already publishing and plays the transitions.
    *
@@ -3037,6 +3446,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // it means, or the one interaction in the world that moves you between volumes would behave
       // differently depending on which camera you happened to be in
       if (picked === CHAMPIONSHIP_ENTRANCE_ID || picked === CAVE_EXIT_ID || picked === CAVE_SCREEN_ID) activateInteractable(picked, "approach");
+      // THE CALL PLATE, for the same reason the portal is here: clicking it has to mean exactly what
+      // pressing E on it means, or the one control that moves you between floors would behave
+      // differently depending on which camera you happened to be in.
+      else if (picked.endsWith("/call") && ELEVATOR_ROOM_IDS.has(world.get(picked).roomId)) callElevator();
       // PHASE 6C — a chair click SITS, through the same bridge PLAYER mode's E key uses (occupancy refusal
       // included). Before this, Office View walked up to a desk chair and faced it, and a non-Reception
       // sofa indexed a list it was not in.
@@ -3054,7 +3467,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // shared hall, the sidewalk or outside the world gives no roomId, which is a DESELECT — the same
     // outcome this branch already had.
     const ground = floorPoint(e.clientX, e.clientY);
-    selectRoom(ground ? world.regionAt(ground)?.roomId ?? null : null);
+    selectRoom(ground ? discoverableRoom(world.regionAt(ground)?.roomId) : null);
   });
 
   // ---- GUI -------------------------------------------------------------------------------------------
@@ -3108,6 +3521,26 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     const mode = params.cameraMode as Vo3dViewMode;
     for (const l of viewModeListeners) l(mode);
   };
+  const onGroundFloor = (): boolean => currentFloor === GROUND_FLOOR_ID;
+  /** WHAT THE ENVIRONMENT PRESENTS, decided in ONE place because three things now have a vote in it and
+   *  the last writer used to win: the camera mode (OFFICE draws no exterior), the CAVE (a sealed
+   *  interior), and the floor (a storey standing in its own world space is a sealed interior too).
+   *
+   *  A SEALED VOLUME OUTRANKS THE CAMERA. Without that, arriving upstairs in Office View restored the
+   *  "office" presentation over a floor that has no stage behind it, and the fix has to live here rather
+   *  than in either caller — the elevator's own `applyFloor` and the mode switch both write it. */
+  /** WHAT THE ENVIRONMENT PRESENTS, decided in one place because two things have a vote in it.
+   *
+   *  THE FLOOR NO LONGER HAS ONE, and removing it is the fix for the cabin changing brightness mid-ride.
+   *  An upper storey used to take the CAVE's sealed-interior rig — a different key, fill, hemi, IBL and
+   *  exposure from the ground floor's — so the moment the world swapped, the whole lighting rig moved
+   *  under a car that is supposed to be one unchanging room, and the arrival read darker than the
+   *  departure. Every floor of this building is now lit by the SAME rig, so there is nothing to change
+   *  and nothing to hide; the floors differ in what is built on them, not in how the sun works.
+   *
+   *  Only the CAVE is still sealed: it genuinely has no outside. */
+  const wantedPresentation = (m: CameraModeId): EnvPresentation =>
+    (caveTransition?.inside ?? false) ? "interior" : m === "office" ? "office" : "world";
   const setCameraMode = (m: CameraModeId) => {
     // PLAYER is a handoff, not a framing: the orthographic rig is left exactly as it was (CameraModes
     // disables OrbitControls rather than reconfiguring it), so whichever of OFFICE/EXPLORE we came from is
@@ -3128,9 +3561,12 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // Taking direct control counts as having moved yourself: a V1 position restore landing afterwards
       // would teleport a player mid-stride. Same rule as the click-to-walk path above.
       selfMovedByUser = true;
-      aiLab.group.visible = true; // you can walk out to it, so it has to be there to walk to
-      if (monkey) monkey.visible = true;
-      if (env.setPresentation("world")) R.invalidateShadows();
+      // …ON THE GROUND FLOOR. The campus, the Lab and the monkey belong to the storey that opens onto
+      // them; from an upper floor there is nothing to walk out to, and drawing them would put the
+      // exterior world beside a sealed interior.
+      aiLab.group.visible = onGroundFloor();
+      if (monkey) monkey.visible = onGroundFloor();
+      if (env.setPresentation(wantedPresentation("player"))) R.invalidateShadows();
       R.invalidateShadows();
       refresh();
       notifyViewMode();
@@ -3141,14 +3577,30 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // off-screen there — it is unreachable by that camera. Hiding it takes its whole subtree out of
     // projectObject, SSAO's normal pass and the shadow pass in one boolean, so the default experience
     // pays nothing at all for it. EXPLORE is where it is meant to be discovered.
-    aiLab.group.visible = m === "explore";
+    aiLab.group.visible = m === "explore" && onGroundFloor();
     if (monkey) monkey.visible = aiLab.group.visible;
-    if (env.setPresentation(m === "office" ? "office" : "world")) R.invalidateShadows();
+    if (env.setPresentation(wantedPresentation(m))) R.invalidateShadows();
     syncCam(cameraModes.set(m));
     R.invalidateShadows();
     notifyViewMode();
   };
-  cam.add(params, "cameraMode", CAMERA_MODES).name("mode: OFFICE / 3D EXPLORE / PLAYER").onChange(setCameraMode);
+  /** THE GUARDED ENTRY POINT every PRODUCT route into a view goes through — the HUD, the C key, the
+   *  Settings panel and the GUI dropdown. `setCameraMode` above stays the raw mechanism, because the
+   *  elevator's own cinematic has to be able to drive it while the guard is refusing everybody else.
+   *
+   *  TWO RULES, and both of them are the floor's:
+   *    1. A JOURNEY IS NOT INTERRUPTIBLE. Switching camera halfway through a lift ride would hand the
+   *       orbit rig a body that a cutscene is carrying; refused outright rather than queued.
+   *    2. A FLOOR ONLY OFFERS WHAT IT HAS. 3D EXPLORE is free orbit over an exterior world, and a storey
+   *       standing in its own world space has none — asking for it upstairs gives PLAYER (app/floors.ts
+   *       FALLBACK_VIEW_MODE), which is the view closest to what the person was doing. */
+  function requestViewMode(m: CameraModeId): void {
+    if (floorTransition?.busy) { refresh(); return; }
+    const want: CameraModeId = supportsViewMode(currentFloor, m as Vo3dViewMode) ? m : FALLBACK_VIEW_MODE;
+    if (params.cameraMode !== want) setCameraMode(want);
+    else refresh();
+  }
+  cam.add(params, "cameraMode", CAMERA_MODES).name("mode: OFFICE / 3D EXPLORE / PLAYER").onChange(requestViewMode);
   // The manual pitch/yaw sliders only bite in EXPLORE — OFFICE pins the orientation, and letting a slider
   // break that would defeat the point of having a fixed mode at all.
   cam.add(params, "pitch", 12, 90, 1).onChange(() => { if (params.cameraMode === "explore") applyCam(); else syncCam(cameraModes.officeParams); });
@@ -3359,6 +3811,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     acc.add(exitState, "held").name("exit held").disable().listen();
     acc.add(exitState, "authorized").name("exit authorised").disable().listen();
     acc.add(exitState, "prompts").name("exit prompts").disable().listen();
+    acc.add(roomLockState, "locked").name("dnd-locked rooms").disable().listen();
+    acc.add(roomLockState, "held").name("dnd-held doors").disable().listen();
+    acc.add(roomLockState, "authorized").name("dnd entry authorised").disable().listen();
+    acc.add(roomLockState, "prompts").name("dnd door prompts").disable().listen();
     acc.add(aiLabState, "inside").name("in the AI Lab").disable().listen();
     acc.add(accessState, "ejections").name("ejections from office").disable().listen();
     const pub = av.addFolder("published to V1");
@@ -3428,12 +3884,18 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   meet.add(meetingState, "seat").disable().listen();
   meet.add(meetingState, "chairRestError").name("chair rest drift").disable().listen();
   meet.add(meetingState, "kioskScanner").name("terminal scanner (0 blue → 1 green)").disable().listen();
+  meet.add(meetingDoorState, "state").name("east door").disable().listen();
+  meet.add(meetingDoorState, "open").name("east door open %").disable().listen();
+  meet.add(meetingDoorState, "drift").name("east door drift").disable().listen();
   const proj = gui.addFolder("Project room (4C)");
   const projState = { seat: "idle", slot: "none", drift: 0 };
   loungeSeats.forEach((s2, i) => { if (s2.id.startsWith(PROJECT_ROOM.id)) proj.add({ f: () => { projState.slot = s2.label; startLoungeSit(i); } }, "f").name(`▶ sit: ${s2.label}`); });
   proj.add({ f: () => loungeSeat?.stand() }, "f").name("▶ stand up");
   proj.add({ f: () => startApproach(CONSOLE_INTERACTION_ID) }, "f").name("▶ approach coffee station");
   proj.add({ f: () => startApproach(TV_INTERACTION_ID) }, "f").name("▶ view the project board");
+  proj.add(projectDoorState, "state").name("west door").disable().listen();
+  proj.add(projectDoorState, "open").name("west door open %").disable().listen();
+  proj.add(projectDoorState, "drift").name("west door drift").disable().listen();
   proj.add(projState, "slot").disable().listen();
   proj.add(projState, "seat").disable().listen();
   proj.add(projState, "drift").name("furniture drift (always 0)").disable().listen();
@@ -3627,6 +4089,43 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  just walked out of; writing only the second turns the camera and leaves the body pointing away.
    *
    *  So callers hand over a DIRECTION and this converts, once, here. */
+  /** Dev affordance, on the same terms as placeBonAtPortal below: the lift lobby is a long walk from the
+   *  Design Room spawn, and a manual verification of a four-second journey should not begin with forty
+   *  seconds of walking. Refused wherever a real body could not stand, exactly as every other placement. */
+  function placeBonAtLift(): void {
+    const spec = specOf(currentFloor);
+    if (!mayPlaceAt(spec.boarding)) { navState.last = "refused: the lift is inside the working office"; return; }
+    if (!playerMode.body.placeNear(spec.boarding)) { navState.last = "refused: no standable point at the lift"; return; }
+    avatar.setPosition(playerMode.body.pos);
+    facePlayer(spec.boardingLook);
+  }
+  /** THE CAMERA'S YAW FOR A BODY YAW. This world carries two yaw conventions that differ by a reflection
+   *  — the avatar's (0 = +z) and PlayerCamera's — and `facePlayer` below converts between them for a LOOK
+   *  vector. The cinematic needs the same conversion for an ANGLE, every frame, without facePlayer's
+   *  snap; getting it wrong puts the third-person boom IN FRONT of the body instead of behind it, which
+   *  is a camera buried in the wall the avatar is walking towards. */
+  const cameraYawFor = (bodyYaw: number): number => Math.atan2(Math.sin(bodyYaw), -Math.cos(bodyYaw));
+  /** THE CINEMATIC'S CAMERA PITCH, and it is a measured number rather than a taste.
+   *
+   *  PlayerCamera's third-person boom is 2.6 body heights — 93.6 units — and it rises `sin(pitch) x boom`
+   *  above the shoulder. At the ordinary play pitch of 0.34 that is 57 units up, which is ELEVEN UNITS
+   *  ABOVE THE CAR'S CEILING: the boom's collision probe is a 2-D test and cannot see a roof, so the shot
+   *  left the lift through the top and looked back down at a grey box. At 0.12 the camera sits at 37 —
+   *  inside the car, at the avatar's own level, which is the composition the ride is for. */
+  const CINEMATIC_PITCH = 0.10;
+  /** The camera's aim is the body's shoulder; inside a tall car the frame wants a little more of what is
+   *  above the avatar than below it, which is what the pitch above buys. */
+  /** …AND HOW MUCH OF THE BOOM IT KEEPS. 0.9 of 94 units is 84 — the live ride at 0.45 was an extreme
+   *  close-up of the back of a head, with the rear wall a few units behind the lens. The car is now 340
+   *  deep and 88 high specifically so this number can be generous: the body sits in the lower middle of
+   *  the frame, there is sky-height above it, the doors and the soffit read clearly ahead, and there are
+   *  still 190 units of car behind the camera. */
+  /** …AND THE TWO BOOM LENGTHS IT USES. NEAR clamps to PlayerCamera's own floor of 0.8 body heights
+   *  (28.8 units): a close over-shoulder that fits inside a 60-deep vestibule and can never leave one.
+   *  WIDE is 0.9 of the play boom (84), which the cabin's eighty units of car behind its bay can hold —
+   *  that is the ride's proper third-person shot. interact/FloorTransition picks between them. */
+  const CINEMATIC_BOOM_NEAR = 0.32;
+  const CINEMATIC_BOOM_WIDE = 0.9;
   function facePlayer(look: Vec2, pitch?: number): void {
     avatar.setYaw(Math.atan2(look.x, look.z));
     playerMode.camera.yaw = Math.atan2(look.x, -look.z);
@@ -3680,6 +4179,18 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     meeting: "—", sharing: false, myMedia: "—", gallery: "—", participants: "—",
     interior: `${CAVE_METRICS.interior} units  ·  wrap ${Math.round(CAVE_METRICS.wrapLength())}  ·  video ${CAVE_METRICS.videoWidth} wide on a ${CAVE_METRICS.frontChord} chord`,
   };
+  // ---- THE ELEVATOR, for manual verification ------------------------------------------------------
+  const liftGui = gui.addFolder("Elevator (multi-floor)");
+  liftGui.add(floorTransition!.state, "floor").name("on floor").disable().listen();
+  liftGui.add(floorTransition!.state, "phase").name("phase").disable().listen();
+  liftGui.add(floorTransition!.state, "busy").name("journey running").disable().listen();
+  liftGui.add(floorTransition!.state, "journeys").name("journeys").disable().listen();
+  liftGui.add(floorTransition!.state, "last").name("last").disable().listen();
+  liftGui.add({ go: () => callElevator() }, "go").name("▶ use the elevator (walks there first)");
+  // PLAYER FIRST, THEN THE PLACEMENT. PlayerMode.enter re-derives the camera yaw from the AVATAR's yaw,
+  // which is the other of this world's two yaw conventions — so placing and facing first, then entering,
+  // leaves the boom in front of the body looking at the back of its head.
+  liftGui.add({ go: () => { requestViewMode("player"); placeBonAtLift(); } }, "go").name("▶ put Bon in the lift lobby + enter PLAYER");
   caveGui.add({ go: () => caveTransition?.enter() }, "go").name("▶ enter the CAVE (spawns PLAYER at the portal)");
   caveGui.add({ go: () => caveTransition?.exit() }, "go").name("■ leave the CAVE (→ Central Hub)");
   caveGui.add({ go: () => { placeBonAtPortal(); setCameraMode("player"); placeBonAtPortal(); } }, "go").name("▶ put Bon at the monument portal + enter PLAYER");
@@ -3933,9 +4444,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   function doorsAreStale(): boolean {
     if (doorStaleLegacy) {
       return door.state !== "closed" || entryDoor.state !== "closed" || gamingDoor.state !== "closed" || execDoor.state !== "closed"
-        || cmsDoor.state !== "closed" || aiDoor.state !== "closed" || devDoor.state !== "closed" || qaDoor.state !== "closed";
+        || cmsDoor.state !== "closed" || aiDoor.state !== "closed" || devDoor.state !== "closed" || qaDoor.state !== "closed"
+        || meetingDoor.state !== "closed" || projectDoor.state !== "closed";
     }
-    return door.moved || entryDoor.moved || gamingDoor.moved || execDoor.moved || cmsDoor.moved || aiDoor.moved || devDoor.moved || qaDoor.moved;
+    return door.moved || entryDoor.moved || gamingDoor.moved || execDoor.moved || cmsDoor.moved || aiDoor.moved || devDoor.moved || qaDoor.moved
+      || meetingDoor.moved || projectDoor.moved;
   }
   /** Something in the WORLD that casts a shadow is MOVING: a door leaf, and every interaction that drags
    *  a chair. These invalidate the cached static depth, exactly as they always have. */
@@ -4119,6 +4632,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // trip; once the body has actually left the frame and come back inside, the exit re-arms itself, so
       // the next attempt to leave asks again. Nothing about attendance is touched either way.
       applyExitGate({ x: bp.x, z: bp.z });
+      applyRoomLocks({ x: bp.x, z: bp.z });
       if (exitAuthorized) {
         if (accessState.zone === "outside") exitUsed = true;
         else if (exitUsed) setExitAuthorized(false); // they went, and they are back
@@ -4174,8 +4688,16 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       aiDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);
       devDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);
       qaDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);
+      meetingDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);
+      projectDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);
       updateScanners({ x: bp.x, z: bp.z });
       caveTransition?.update(); // media readout; a no-op outside the CAVE
+      // THE LIFT. One machine, one clock, stepped by the same dt as everything else in this loop — see
+      // interact/FloorTransition for why that is the whole of its determinism. A no-op while idle.
+      floorTransition?.update(dt);
+      // CHANGING FLOOR CHANGES WHO IS VISIBLE, and it is not a roster event. Edge-gated beside the CAVE's
+      // own check, for the same reason: this is a 60 Hz loop and a re-sync is a GLB pass.
+      if (currentFloor !== rosterFloor) syncRoster();
       notifyCaveMeetingIfChanged();
       // THE WORLD'S FOLEY, and the toucan's flight. Reads the state everything above just wrote — no
       // interaction, door or seat controller knows this exists.
@@ -4248,6 +4770,14 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       devDoorState.cycles = devDoor.cycles;
       qaState.seat = qaSeat ? qaSeat.status : "idle";
       qaState.chairRestError = qaSeat ? Math.round(qaSeat.chairRestError() * 1000) / 1000 : 0;
+      meetingDoorState.state = meetingDoor.state;
+      meetingDoorState.open = Math.round(meetingDoor.t * 100);
+      meetingDoorState.drift = meetingDoor.state === "closed" ? Math.round(meetingDoor.driftError() * 1e6) / 1e6 : meetingDoorState.drift;
+      meetingDoorState.cycles = meetingDoor.cycles;
+      projectDoorState.state = projectDoor.state;
+      projectDoorState.open = Math.round(projectDoor.t * 100);
+      projectDoorState.drift = projectDoor.state === "closed" ? Math.round(projectDoor.driftError() * 1e6) / 1e6 : projectDoorState.drift;
+      projectDoorState.cycles = projectDoor.cycles;
       qaState.door = qaDoor.state;
       qaDoorState.state = qaDoor.state;
       qaDoorState.open = Math.round(qaDoor.t * 100);
@@ -4777,7 +5307,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       doorStale: {
         legacy: () => doorStaleLegacy,
         setLegacy: (on: boolean) => { doorStaleLegacy = on; R.invalidateShadows(); },
-        moving: () => [door, entryDoor, gamingDoor, execDoor, cmsDoor, aiDoor, devDoor, qaDoor].filter((d) => d.moved).length,
+        moving: () => [door, entryDoor, gamingDoor, execDoor, cmsDoor, aiDoor, devDoor, qaDoor, meetingDoor, projectDoor].filter((d) => d.moved).length,
       },
       /** THE SEAT/APPROACH STALENESS RULE, same rig, same meaning: `setLegacy(true)` is the BEFORE
        *  state, in which any non-idle seat or approach holds the whole static world stale. */
@@ -4949,9 +5479,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       pan: (dx: number, dz: number) => { R.controls.target.x += dx; R.controls.target.z += dz; R.camera.position.x += dx; R.camera.position.z += dz; },
       bounds: () => cameraModes.officeBounds, viewport: () => cameraModes.viewportGroundRect(),
     },
-    meeting: { state: meetingState, startSit: startMeetingSit, stand: () => meetingSeat?.stand(), seat: () => meetingSeat,
+    meeting: { state: meetingState, doorState: meetingDoorState, get door() { return meetingDoor; }, startSit: startMeetingSit, stand: () => meetingSeat?.stand(), seat: () => meetingSeat,
       chairIds: MEETING_CHAIR_IDS, kioskScanner: MEETING_KIOSK_SCANNER_ID, kioskZone: MEETING_KIOSK_ZONE },
-    project: { state: projState, seats: loungeSeats.map((s2, i) => ({ i, id: s2.id, slot: s2.label })), startSit: startLoungeSit,
+    project: { state: projState, doorState: projectDoorState, get door() { return projectDoor; },
+      seats: loungeSeats.map((s2, i) => ({ i, id: s2.id, slot: s2.label })), startSit: startLoungeSit,
       stand: () => loungeSeat?.stand(), seat: () => loungeSeat },
     reception: { state: receptionState, approach: approachCtl, startApproach, startLoungeSit,
       get loungeSeat() { return loungeSeat; }, seats: loungeSeats.map((s) => s.id),
@@ -5053,6 +5584,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   function dispose(): void {
     if (disposed) return;
     disposed = true;               // every async continuation above checks this before touching anything
+    roomLocks.clear();
     cancelAnimationFrame(rafHandle); // the frame already asked for; the guard in loop() stops it re-arming
 
     // PHASE 5 FIRST, and before anything is torn down: the movement socket is V1's module-level singleton
@@ -5080,6 +5612,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     toucan.dispose();
     // CAVE media: <video> elements parked on document.body, a LiveKit subscription, and their textures.
     caveTransition?.dispose();
+    groundElevatorBuild.dispose();
+    floor2ElevatorBuild.dispose();
     caveGallery.dispose();
     cavePresentation.dispose();
     caveLiveShare.dispose();
@@ -5158,6 +5692,29 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       }
       // Could not land in there: fall through and restore in the office, which is still true of them.
     }
+    // RESTORED ON THE FLOOR THEY WERE LAST ON, on exactly the Cave's terms and for the same reason: a
+    // floor above the ground one is a named place on the wire, peers already read it, and a reload that
+    // put the person back downstairs while every other browser drew them upstairs would make the two
+    // views disagree about a fact that was on the wire all along.
+    //
+    // A RESTORE, NOT A JOURNEY: no doors, no cinematic, no ownership taken from anybody, and the body is
+    // stood in the arrival lobby rather than inside the car — there is nothing to hide, because the world
+    // has not been drawn yet. Falls through to the ordinary office restore if the floor will not hold it.
+    const restoredFloor = floorOfPlace(place);
+    if (restoredFloor !== GROUND_FLOOR_ID && floorTransition) {
+      selfFeed?.placed(target);
+      if (floorTransition.restoreOn(restoredFloor)) {
+        selfRestored = true;
+        navCtl.setPath([]);
+        if (playerMode.active) playerMode.camera.snap();
+        // A floor that does not offer the view the session opened in has to say so now, before the first
+        // frame, rather than let 3D EXPLORE run for a moment over a slab in the void.
+        requestViewMode(params.cameraMode);
+        avatarState.spawn = `restored from V1 · on ${FLOORS[restoredFloor].name} (${FLOORS[restoredFloor].indicator})`;
+        R.invalidateShadows();
+        return true;
+      }
+    }
     if (seatAnchor && restoreIntoSeat(seatAnchor)) {
       selfRestored = true;
       navCtl.setPath([]);
@@ -5223,6 +5780,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     setOfficeAccess,
     setExitAuthorized,
     setDepartureDestination,
+    setLockedRooms,
+    authorizeRoomEntry,
     setOccupiedSeats: (ids) => {
       occupiedSeatIds = new Set(ids);
       seatSyncState.occupied = occupiedSeatIds.size;
@@ -5311,9 +5870,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       return () => lockStateListeners.delete(listener);
     },
     setViewMode: (mode) => {
-      if (params.cameraMode === mode) return;
-      setCameraMode(mode);
-      refresh();
+      requestViewMode(mode);
     },
     setPlayerView: (view) => {
       if (!playerMode.active || params.playerView === view) return;
@@ -5327,6 +5884,14 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       listener(params.playerView);
       return () => playerViewListeners.delete(listener);
     },
+    get floor() { return currentFloor; },
+    subscribeFloor: (listener) => {
+      floorListeners.add(listener);
+      listener(currentFloor);
+      return () => floorListeners.delete(listener);
+    },
+    availableViewModes: () => FLOORS[currentFloor].viewModes,
+    useElevator: (to) => callElevator(to ?? otherFloor()),
     subscribeViewMode: (listener) => {
       viewModeListeners.add(listener);
       // Told at once: a host that subscribes after the world was built would otherwise sit on its own
@@ -5366,14 +5931,14 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
         return () => { toucanListeners.delete(listener); };
       },
     },
-    roomLabelIds: () => labelRects.map((r) => r.roomId),
+    roomLabelIds: () => GROUND_ROOM_RECTS.map((r) => r.roomId),
     roomLabelAnchors: () => {
       const out: Record<string, Vo3dRoomLabelAnchor> = {};
       for (const [roomId, point] of labelPoints) out[roomId] = roomLabelAnchor(roomId, point);
       return out;
     },
     setRoomHighlight,
-    currentRoomId: () => playerRoomId(),
+    currentRoomId: () => discoverableRoom(playerRoomId()),
     setSelectedRoom: (roomId) => {
       if (roomId === selectedRoom) return;
       selectedRoom = roomId;

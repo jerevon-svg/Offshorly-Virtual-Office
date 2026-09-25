@@ -114,3 +114,21 @@ export const STATUS_TIME_LIMITS_MS: Partial<Record<OfficeStatus, number>> = {
 export function getStatusTimeLimitMs(status: OfficeStatus): number | undefined {
   return STATUS_TIME_LIMITS_MS[status];
 }
+
+// A PEER's status, for nameplates, menus and people lists — the read-only Atlas
+// presence row overlaid with the app's own DND registry (services/presence/
+// dndClient.ts, fed by the server's dnd_status broadcast).
+//
+// Why DND wins here even over an Atlas OFFLINE row: the registry holds an email
+// only while that person's own socket is connected to THIS app (dnd_set puts it
+// there, their disconnect removes it — backend/app/realtime/socket.py), so
+// membership is proof they are connected and chose DND right now. Atlas's row is
+// a different system's opinion of a different session and never learns about a
+// DND chosen here. Without this overlay the person's own client (selfStatusStore,
+// resolveCurrentStatus above) says DND while every other client says whatever
+// Atlas says — including OFFLINE for somebody plainly online. Self is never
+// resolved through this; self keeps resolveCurrentStatus.
+export function resolvePeerStatus(atlas: PresenceStatusValue, isDnd: boolean): OfficeStatus {
+  if (isDnd) return "DND";
+  return mapAtlasToOfficeStatus(atlas);
+}

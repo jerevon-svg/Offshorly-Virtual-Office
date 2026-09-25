@@ -1,4 +1,4 @@
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import { io, type Socket } from "socket.io-client";
 import { getAuthToken } from "../api/client";
 
@@ -24,6 +24,12 @@ function socketBase(): string {
 
 let socketInstance: Socket | null = null;
 let dndEmails: Set<string> = new Set();
+// What THIS client last asked the server to hold for the signed-in user. The server's registry is
+// in-memory and cleared by that user's disconnect (backend/app/realtime/socket.py), so every
+// (re)connect arrives as a stranger with no DND — this is what lets the "connect" handler below
+// re-assert it. Mirrors spatialSessionStore.ts's activeSessionId/"connect" pattern exactly; dnd_set
+// is idempotent server-side (DndRegistry.set_dnd returns False and broadcasts nothing on a no-op).
+let desiredDnd = false;
 const listeners = new Set<() => void>();
 // DEV-ONLY: mirrors spatialSessionStore.ts's devEmail/setDevIdentity exactly.
 let devEmail: string | null = null;
@@ -64,6 +70,13 @@ function ensureSocket(): Socket | null {
     notify();
   });
 
+  // Every (re)connect is a fresh server-side sid whose disconnect predecessor already cleared this
+  // user's DND. Re-assert it exactly once per connect while DND is still wanted; no-op otherwise, and
+  // a no-op server-side too when the very first connect follows the emit that set desiredDnd.
+  socket.on("connect", () => {
+    if (desiredDnd) socket.emit("dnd_set", { isDnd: true });
+  });
+
   socketInstance = socket;
   return socket;
 }
@@ -71,7 +84,30 @@ function ensureSocket(): Socket | null {
 /** Tells the server this user just turned DND on/off. Call exactly once per real transition —
  * never on a poll. No-op if not signed in. */
 export function emitDndSet(isDnd: boolean): void {
+  desiredDnd = isDnd;
   ensureSocket()?.emit("dnd_set", { isDnd });
+}
+
+/** THE ONE PUBLISHER of the signed-in user's own DND, shared by V1's office (OfficeMap.tsx) and the V2
+ * world (Vo3dOverlay.tsx) so the two cannot drift. Edge-triggered: only a real DND⇄not-DND crossing
+ * emits, never a re-render, never an unrelated status move, and never unmount (DND is a durable session
+ * — selfStatusStore — not an open window).
+ *
+ * THE ONE DELIBERATE EXCEPTION TO "a fresh mount is not a transition": a mount that already finds DND
+ * active publishes TRUE once. That is the reload case — the store restored the session from
+ * localStorage, but the server forgot it the moment the old socket disconnected, so every other client
+ * would otherwise read this person as not-DND until they toggled it by hand. The server's own
+ * idempotency makes this harmless when it was in fact still registered. */
+export function useSelfDndPublication(isDnd: boolean): void {
+  // null = nothing published yet by this mount; otherwise the last value handed to emitDndSet.
+  const publishedRef = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (publishedRef.current === isDnd) return;
+    const firstMount = publishedRef.current === null;
+    publishedRef.current = isDnd;
+    if (firstMount && !isDnd) return;
+    emitDndSet(isDnd);
+  }, [isDnd]);
 }
 
 export function getDndEmailsSnapshot(): Set<string> {
@@ -93,5 +129,6 @@ export function resetDndClientForTests(): void {
   socketInstance = null;
   dndEmails = new Set();
   devEmail = null;
+  desiredDnd = false;
   notify();
 }

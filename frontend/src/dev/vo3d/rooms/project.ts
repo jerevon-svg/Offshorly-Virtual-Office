@@ -13,12 +13,13 @@
 //
 // The flat PNG is a BLUEPRINT. Nothing here renders it.
 import { FACING_YAW, type Rect } from "../core/coords";
-import type { ApproachCapability, Entity, LoungeSeatSlot, RoomDef } from "../world/WorldState";
+import type { ApproachCapability, DoorCapability, Entity, LoungeSeatSlot, RoomDef } from "../world/WorldState";
 import { CELL } from "../adapters/v1Grid";
 import { TUB_CUSHION_TOP } from "../build/furniture";
 import { v1RoomRect } from "../adapters/v1Manifest";
 import { FACADE_Z } from "../adapters/v1Floor";
 import { GATE, RECT as RECEPTION_RECT, STRUCT } from "./reception";
+import { DOOR as MEETING_DOOR, GLASS_T as MEETING_GLASS_T } from "./meeting";
 import { kindFootprint } from "./footprint";
 
 export const PROJECT_ROOM_ID = "project-room";
@@ -55,12 +56,34 @@ export const FLOOR_RECT: Rect = { x: WEST_EDGE, z: WALL_Z, w: RECT.x + RECT.w - 
  *  to the WORLD by tiledFloor(), so the bar's floor reads continuous whatever the room's depth. */
 export const TILE_RECT: Rect = { x: FLOOR_RECT.x, z: WALL_OUTER_Z, w: FLOOR_RECT.w, d: FACADE_Z - WALL_OUTER_Z };
 
+/** THE WEST GLAZED FRONTAGE onto Reception — Meeting's east frontage, mirrored.
+ *
+ *  4B left this side completely open because the artwork paints no boundary there. It is now a real
+ *  enclosure: a frameless glass partition standing on the shared line, with the room's entrance in it.
+ *  Thickness, spandrel, opening and leaf width are Meeting's numbers verbatim (rooms/meeting GLASS_T), so
+ *  the two rooms present ONE piece of architecture to Reception rather than two similar ones. The whole
+ *  assembly lives inside Project's own footprint: nothing crosses into Reception. */
+export const GLASS_T = MEETING_GLASS_T;
+/** the partition plane's centre line, and the inner (room-side) face derived from it */
+export const WEST_GLASS_X = WEST_EDGE + GLASS_T / 2; // 1082.785
+export const WEST_GLASS_FACE = WEST_EDGE + GLASS_T; // 1084.285
+
+/** THE ENTRANCE, on Meeting's own z span. Both sides are open floor here: Project's north strip, north of
+ *  the sofas, and — across the line — Reception's circulation band between the speed gates and the east
+ *  lounge, whose sofa runs x 1030…1080 hard against this boundary from z 949 south. Putting the opening
+ *  anywhere in that span would have delivered people into the back of Reception's sofa. */
+export const DOOR = { z0: MEETING_DOOR.z0, z1: MEETING_DOOR.z1 }; // 914 … 962
+export const DOOR_LEAF_W = (DOOR.z1 - DOOR.z0) / 2; // 24
+
 /** PROJECT'S PHYSICAL WALLS, as pure data for derived navigation (7C) — the same runs build/project.ts
- *  extrudes. Solid north + solid east, glass south, and NOTHING west: the tile runs on into Reception. */
+ *  extrudes. Solid north + solid east, glass south, and a GLAZED WEST frontage broken only by the
+ *  entrance: the two runs below are the boundary, and the opening between them is the one way in. */
 export const PROJECT_WALLS: Rect[] = [
   { x: WEST_EDGE, z: WALL_OUTER_Z, w: RECT.x + RECT.w - WEST_EDGE, d: WALL_T }, // north
   { x: EAST_WALL_X, z: WALL_Z, w: RECT.x + RECT.w - EAST_WALL_X, d: FACADE_Z - WALL_Z }, // east
   { x: WEST_EDGE, z: FACADE_Z, w: EAST_WALL_X - WEST_EDGE, d: STRUCT.wallThickness }, // south façade glazing
+  { x: WEST_EDGE, z: WALL_Z, w: GLASS_T, d: DOOR.z0 - WALL_Z }, // west glazing, north of the entrance
+  { x: WEST_EDGE, z: DOOR.z1, w: GLASS_T, d: FACADE_Z - DOOR.z1 }, // west glazing, south of it
 ];
 
 export const PROJECT_ROOM: RoomDef = {
@@ -69,7 +92,8 @@ export const PROJECT_ROOM: RoomDef = {
   rect: RECT,
   floorRect: FLOOR_RECT,
   wallSolids: PROJECT_WALLS,
-  // no `shell`: solid north + solid east, glass south, NOTHING west — its own static builder instead.
+  // no `shell`: solid north + solid east, glass south, and a glazed west frontage with its own entrance —
+  // its own static builder instead.
 };
 
 // ============================= ARCHITECTURE =====================================================
@@ -269,6 +293,55 @@ export const TV_APPROACH: ApproachCapability = {
 export const CONSOLE_INTERACTION_ID = `${PROJECT_ROOM_ID}/console-interaction`;
 export const TV_INTERACTION_ID = `${PROJECT_ROOM_ID}/tv-interaction`;
 
+// ---- the west entrance ------------------------------------------------------------------------
+/** Bi-parting glass on the SAME SlidingDoor controller every other entrance on this floor runs on: the
+ *  north panel drives and the south one is its `opposed` mirror. AUTOMATIC, so navigation models it PARKED
+ *  and the room can never seal itself (see DoorCapability.automatic). */
+export const DOOR_LEAF_CLOSED = {
+  north: { x: WEST_GLASS_X, z: DOOR.z0 + DOOR_LEAF_W / 2 }, // 926
+  south: { x: WEST_GLASS_X, z: DOOR.z1 - DOOR_LEAF_W / 2 }, // 950
+};
+export const DOOR_NORTH_ID = `${PROJECT_ROOM_ID}/entry-door-north`;
+export const DOOR_SOUTH_ID = `${PROJECT_ROOM_ID}/entry-door-south`;
+const BODY_RADIUS = 10.5; // Bon's widest walking extent, as every other V2 door measures it
+
+export const ENTRY_DOOR: DoorCapability = {
+  slide: { x: 0, z: -1 },
+  slideDistance: DOOR_LEAF_W,
+  automatic: true,
+  leaf: { x: WEST_EDGE, z: DOOR.z0, w: GLASS_T, d: DOOR_LEAF_W },
+  leafOpposed: { x: WEST_EDGE, z: DOOR.z0 + DOOR_LEAF_W, w: GLASS_T, d: DOOR_LEAF_W },
+  /** the doorway itself: while a body overlaps this the door must be open and may not close */
+  crossing: { x: WEST_GLASS_X - 12, z: DOOR.z0 - 4, w: 24, d: DOOR.z1 - DOOR.z0 + 8 },
+  /** both approach aprons — the room's north strip inside and Reception's circulation band outside */
+  trigger: { x: WEST_GLASS_X - 74, z: DOOR.z0 - 40, w: 148, d: DOOR.z1 - DOOR.z0 + 80 },
+  clearance: {
+    bodyRadius: BODY_RADIUS,
+    band: { x: WEST_EDGE - CELL, z: DOOR.z0, w: 2 * CELL, d: DOOR.z1 - DOOR.z0 },
+    solids: [], // nothing stands in the opening: the jambs are the reveal's own posts
+  },
+  timings: { openMs: 900, closeMs: 1100, holdMs: 700 },
+};
+
+/** The two leaves as world entities, so SceneMirror gives each a view the door controller can slide. */
+function entryDoorEntities(): Entity[] {
+  const leaf = { kind: "glass-door-leaf", roomId: PROJECT_ROOM_ID, source: { baked: true } as const };
+  return [
+    {
+      ...leaf, id: DOOR_NORTH_ID,
+      transform: { pos: { ...DOOR_LEAF_CLOSED.north }, yaw: -Math.PI / 2 },
+      capabilities: { door: ENTRY_DOOR },
+      props: { w: DOOR_LEAF_W, h: STRUCT.wallHeight, handle: 1 }, // handle on the leading (south) stile
+    },
+    {
+      ...leaf, id: DOOR_SOUTH_ID,
+      transform: { pos: { ...DOOR_LEAF_CLOSED.south }, yaw: -Math.PI / 2 },
+      capabilities: {},
+      props: { w: DOOR_LEAF_W, h: STRUCT.wallHeight, handle: -1 },
+    },
+  ];
+}
+
 function approachEntity(id: string, pick: string, approach: ApproachCapability): Entity {
   return {
     id, kind: "solid", roomId: PROJECT_ROOM_ID,
@@ -292,5 +365,6 @@ export function withProjectInteractions(entities: Entity[]): Entity[] {
   }
   entities.push(approachEntity(CONSOLE_INTERACTION_ID, "project-east-console", CONSOLE_APPROACH));
   entities.push(approachEntity(TV_INTERACTION_ID, "project-wall-tv", TV_APPROACH));
+  entities.push(...entryDoorEntities());
   return entities;
 }

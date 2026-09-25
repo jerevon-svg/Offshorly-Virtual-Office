@@ -17,4 +17,7 @@ export const EMAIL_TO_AVATAR_ID: Record<string, string> = {
   // Lui's real Atlas login email ("louiejie") does not match his sprite id
   // ("lui") by the localpart convention, so it needs an explicit entry here.
   "louiejie@offshorly.com": "lui",
+  // Clarisse's email localpart ("clarisse") does not match her manifest/avatar
+  // id ("clang", the name her office character has always carried).
+  "clarisse@offshorly.com": "clang",
 };

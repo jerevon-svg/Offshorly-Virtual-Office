@@ -125,10 +125,10 @@
     "id": "jona",
     "kind": "character",
     "path": "assets/office/characters/jona.png",
-    "x": 1230.86,
-    "y": 395.66,
-    "width": 19,
-    "height": 31.19,
+    "x": 1229.03,
+    "y": 389.65,
+    "width": 22.66,
+    "height": 37.2,
     "transform": null
   },
   {
@@ -2344,20 +2344,20 @@
     "id": "nicole",
     "kind": "character",
     "path": "assets/office/characters/nicole.png",
-    "x": 716.2,
-    "y": 142.74,
-    "width": 20,
-    "height": 31.88,
+    "x": 714.532,
+    "y": 137.42,
+    "width": 23.337,
+    "height": 37.2,
     "transform": null
   },
   {
     "id": "kael",
     "kind": "character",
     "path": "assets/office/characters/kael.png",
-    "x": 820.92,
-    "y": 192.76,
-    "width": 19,
-    "height": 30.7,
+    "x": 818.909,
+    "y": 186.26,
+    "width": 23.023,
+    "height": 37.2,
     "transform": "scaleY(-1) rotate(180deg)"
   },
   {

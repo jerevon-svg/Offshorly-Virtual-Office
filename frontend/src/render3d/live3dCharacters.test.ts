@@ -69,8 +69,8 @@ describe("live3dCharacters registry (bon-v3 + alex-v2 2026-08-30; micah-v4 + ang
     expect(angelo.renderWidth / angelo.renderHeight).toBeCloseTo(28.18 / 39.85, 2);
   });
 
-  it("registry holds exactly bon, alex, micah, angelo and jan; none references a rollback or another character's assets", () => {
-    expect(Object.keys(LIVE_3D_CHARACTERS).sort()).toEqual(["alex", "angelo", "bon", "jan", "micah"]);
+  it("registry holds exactly bon, alex, micah, angelo, jan, france, jona, clang, nicole and kael; none references a rollback or another character's assets", () => {
+    expect(Object.keys(LIVE_3D_CHARACTERS).sort()).toEqual(["alex", "angelo", "bon", "clang", "france", "jan", "jona", "kael", "micah", "nicole"]);
     expect(isLive3dEligible("alex")).toBe(true);
     expect(isLive3dEligible("micah")).toBe(true);
     expect(isLive3dEligible("angelo")).toBe(true);
@@ -93,6 +93,22 @@ describe("live3dCharacters registry (bon-v3 + alex-v2 2026-08-30; micah-v4 + ang
     for (const url of glbUrlsOf(LIVE_3D_CHARACTERS.jan)) {
       expect(url).toMatch(/\/avatars\/jan-v1-hq-idle9\//);
       expect(url).not.toMatch(/gelo|bon|alex|micah/);
+    }
+    // 2026-09-25: jona/nicole/kael/clang ship locally repaired v1 meshes; unused
+    // attempts (the uncommitted A-pose v2 builds) must not be referenced.
+    const NEW_SETS = { france: "france-v1-hq", jona: "jona-v1-fix-hq", clang: "clang-v1-geo-fix-hq", nicole: "nicole-v1-fix-hq" } as const;
+    for (const [id, folder] of Object.entries(NEW_SETS)) {
+      expect(isLive3dEligible(id)).toBe(true);
+      const [lod0, lod1, lod2] = glbUrlsOf(LIVE_3D_CHARACTERS[id]);
+      const chain = folder.replace(/-hq$/, "");
+      expect(lod0).toMatch(new RegExp(`/avatars/${folder}/${chain}-lod0\\.glb$`));
+      expect(lod1).toMatch(new RegExp(`/avatars/${folder}/${chain}-lod1\\.glb$`));
+      expect(lod2).toMatch(new RegExp(`/avatars/${folder}/${chain}-lod2\\.glb$`));
+    }
+    // kael is masculine, so his set carries the -hq-idle9 folder suffix
+    expect(isLive3dEligible("kael")).toBe(true);
+    for (const [i, url] of glbUrlsOf(LIVE_3D_CHARACTERS.kael).entries()) {
+      expect(url).toMatch(new RegExp(`/avatars/kael-v1-fix-hq-idle9/kael-v1-fix-lod${i}\\.glb$`));
     }
   });
 
@@ -165,7 +181,7 @@ describe("head-to-label gap", () => {
 // that one clip unconditionally, and the choice existed only as prose in each
 // registry comment.
 describe("idle profiles", () => {
-  const MASCULINE = ["alex", "angelo", "bon", "jan"];
+  const MASCULINE = ["alex", "angelo", "bon", "jan", "kael"];
 
   it("every registered character declares a profile", () => {
     for (const [id, entry] of Object.entries(LIVE_3D_CHARACTERS)) {
@@ -173,13 +189,13 @@ describe("idle profiles", () => {
     }
   });
 
-  it("bon, alex, angelo and jan are masculine; micah is the one feminine idle", () => {
+  it("bon, alex, angelo, jan and kael are masculine; micah, france, jona, clang and nicole are feminine", () => {
     const byProfile = (profile: string) =>
       Object.keys(LIVE_3D_CHARACTERS)
         .filter((id) => LIVE_3D_CHARACTERS[id].idleProfile === profile)
         .sort();
     expect(byProfile("masculine")).toEqual(MASCULINE);
-    expect(byProfile("feminine")).toEqual(["micah"]);
+    expect(byProfile("feminine")).toEqual(["clang", "france", "jona", "micah", "nicole"]);
   });
 
   it("a masculine declaration is backed by an Idle_9 asset set, and only those", () => {

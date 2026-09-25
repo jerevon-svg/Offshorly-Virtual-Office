@@ -379,3 +379,91 @@ export function ledgePlanter(x: number, z: number, r: number, h: number): THREE.
   g.add(shadow);
   return g;
 }
+
+// ---- the interior glazed partition ------------------------------------------------------------------
+
+export type ZSpan = { z0: number; z1: number };
+
+export type GlazedPartitionSpec = {
+  /** THE PARTITION PLANE, as a centre line in x. Nothing this builder makes is wider than `t`, so the
+   *  whole assembly lives inside [x − t/2, x + t/2] — which is what lets a room stand one exactly on its
+   *  own boundary without a single unit of geometry crossing into its neighbour. */
+  x: number;
+  t: number;
+  /** the run, along z */
+  z0: number;
+  z1: number;
+  /** head height (STRUCT.wallHeight for the front bar) */
+  h: number;
+  /** the solid shoe under the glass: enough to read as architecture, low enough to see straight over */
+  spandrel: number;
+  /** nominal mullion pitch; each screen divides evenly into whole bays near it */
+  panelPitch: number;
+  /** the entrance opening. The run is broken here, the reveal is jambed and headed, and NOTHING is built
+   *  inside it — the sliding leaves are entities carrying the room's DoorCapability. */
+  doorway?: ZSpan;
+  /** Suppress the mullion at z0 / z1 (both built by default). `glassRun`'s idea, for the same reason:
+   *  where this partition dies into the street façade the two glass walls meet at a CORNER, and a corner
+   *  has one post, not two — the façade's own run already carries it. */
+  endPosts?: { start?: boolean; end?: boolean };
+  name?: string;
+};
+
+/** A FRAMELESS GLASS PARTITION running north–south: solid shoe, brushed sill cap, a pane in slim mullions,
+ *  a capping rail, and — where the room puts its entrance — a cased opening with a head over it.
+ *
+ *  This is `glassRun`'s idea turned through ninety degrees. It is a separate builder rather than an axis
+ *  parameter for the reason build/cms.ts already states at its own west screen: glassRun's proportions
+ *  (×1.25 shoe, ×1.35 mullion, ×2.6 cap) are authored against a ~3-unit façade pane standing in a 6-unit
+ *  wall, and an interior partition between two rooms of one open floor has neither that depth to spend nor
+ *  a neighbour's edge to spare. Every member here is clamped to `t` instead.
+ */
+export function glazedPartition(spec: GlazedPartitionSpec): THREE.Group {
+  const g = new THREE.Group();
+  g.name = spec.name ?? "glazed-partition";
+  const { x, t, h, spandrel } = spec;
+  const fr = plastic("white");
+  const glassH = h - spandrel;
+  const runs: ZSpan[] = (spec.doorway
+    ? [{ z0: spec.z0, z1: spec.doorway.z0 }, { z0: spec.doorway.z1, z1: spec.z1 }]
+    : [{ z0: spec.z0, z1: spec.z1 }]
+  ).filter((r) => r.z1 - r.z0 > 0.5);
+
+  for (const r of runs) {
+    const len = r.z1 - r.z0, cz = (r.z0 + r.z1) / 2;
+    g.add(rbox(t, spandrel, len, mat("plaster", 0.96), x, 0, cz, 0.5)); //            solid shoe
+    g.add(rbox(t, 1.4, len, metal(), x, spandrel - 1.55, cz, 0.3)); //                brushed sill cap
+    // the pane itself: a real slab rather than a plane, because this wall is seen EDGE-ON from the game
+    // camera far more often than square-on, and a zero-thickness quad vanishes at that angle
+    const pane = rbox(t * 0.34, glassH - 1.0, len - 2, facadeGlassMat(), x, spandrel + 0.5, cz, 0.1);
+    g.add(shadowed(pane, false, false));
+    // the two long joints, so the sheet reads as glass SET INTO a frame rather than a tinted quad
+    g.add(glazingBead({ axis: "z", at: x, from: r.z0 + 0.4, to: r.z1 - 0.4, y0: spandrel + 0.4, y1: spandrel + glassH - 0.6, t: t / 1.45 }));
+    // mullions: both ends plus an even division near panelPitch
+    const bays = Math.max(1, Math.round(len / spec.panelPitch));
+    const MULL = Math.min(1.9, len);
+    const ep = spec.endPosts ?? {};
+    for (let i = 0; i <= bays; i++) {
+      if (i === 0 && ep.start === false && r.z0 === spec.z0) continue; // the neighbouring run owns this post
+      if (i === bays && ep.end === false && r.z1 === spec.z1) continue;
+      const at = Math.min(Math.max(r.z0 + (len * i) / bays, r.z0 + MULL / 2), r.z1 - MULL / 2);
+      g.add(rbox(t * 0.85, glassH - 0.3, MULL, fr, x, spandrel, at, 0.4));
+    }
+    g.add(rbox(t, 2.2, len, metal(), x, h - 2.2, cz, 0.6)); //                        capping rail
+  }
+
+  if (spec.doorway) {
+    const d = spec.doorway;
+    const HEAD_Y = 36; // the same reveal height CMS's and QA's entrances use
+    // the opening's two jambs — slim posts IN the partition plane; a jamb is a reveal, not a buttress
+    for (const z of [d.z0 - 2.5, d.z1 + 2.5]) g.add(rbox(t, h, 5, fr, x, 0, z, 0.4));
+    // the head, so the doorway reads as an opening rather than a gap where the glass stopped
+    g.add(rbox(t, h - HEAD_Y, d.z1 - d.z0, mat("plaster", 0.96), x, HEAD_Y, (d.z0 + d.z1) / 2, 0.4));
+    g.add(rbox(t, 1.2, d.z1 - d.z0, metal(), x, HEAD_Y - 1.2, (d.z0 + d.z1) / 2, 0.3)); // head track
+    // and the flush threshold the leaves ride, laid at 0.3 exactly as every other door on this floor
+    const sill = rbox(t, 0.3, d.z1 - d.z0, metal(), x, 0, (d.z0 + d.z1) / 2, 0.1);
+    sill.castShadow = false;
+    g.add(sill);
+  }
+  return g;
+}

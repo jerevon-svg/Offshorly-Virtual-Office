@@ -3,6 +3,7 @@ import {
   getStatusTimeLimitMs,
   mapAtlasToOfficeStatus,
   resolveCurrentStatus,
+  resolvePeerStatus,
   type AutoConditions,
   type OfficeStatus,
 } from "./status";
@@ -138,5 +139,27 @@ describe("angelo's mock presence baseline", () => {
     expect(byEmail["micah@offshorly.com"]).toBe("ONLINE");
     expect(byEmail["alex@offshorly.com"]).toBe("ONLINE");
     expect(byEmail["lui@offshorly.com"]).toBe("AWAY");
+  });
+});
+
+// A peer's status = Atlas row overlaid with the app's own DND registry. Registry membership exists only
+// while that person's socket is connected and DND, so it outranks even an Atlas OFFLINE row — the case
+// where a person read DND on their own screen and Offline on everybody else's.
+describe("resolvePeerStatus", () => {
+  it("is the Atlas mapping when the peer is not DND", () => {
+    const cases: Array<[PresenceStatusValue, OfficeStatus]> = [
+      ["ONLINE", "AVAILABLE"],
+      ["AWAY", "AWAY"],
+      ["IN_MEETING", "IN_CALL"],
+      ["ON_LEAVE", "BREAK"],
+      ["OFFLINE", "OFFLINE"],
+    ];
+    for (const [atlas, expected] of cases) expect(resolvePeerStatus(atlas, false)).toBe(expected);
+  });
+
+  it("is DND whenever the registry says so, including over an Atlas OFFLINE row", () => {
+    for (const atlas of ["ONLINE", "AWAY", "IN_MEETING", "ON_LEAVE", "OFFLINE"] as PresenceStatusValue[]) {
+      expect(resolvePeerStatus(atlas, true)).toBe("DND");
+    }
   });
 });

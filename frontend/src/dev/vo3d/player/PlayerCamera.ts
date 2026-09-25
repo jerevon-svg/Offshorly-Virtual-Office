@@ -50,6 +50,13 @@ export class PlayerCamera {
   /** shared look angles; yaw is the world heading the camera looks ALONG */
   yaw = 0;
   pitch = DEFAULT_PITCH;
+  /** SHORTEN THE BOOM, for a shot that has to hold a small room.
+   *
+   *  The play boom is 2.6 body heights — 94 units — which is right in an office and far too long inside a
+   *  lift car: the avatar ends up a speck at the far end of a corridor of its own floor. A scripted
+   *  sequence sets this for its duration and puts it back afterwards; 1 is the ordinary camera and
+   *  nothing else touches it. */
+  boomScale = 1;
   /** the CAMERA's probe — see the boom-collision note; never the body's */
   private readonly probe: StandTest;
   private readonly height: number;
@@ -132,7 +139,7 @@ export class PlayerCamera {
    *  logical clearance the body does — a probe radius rather than the body radius, so the camera may pass
    *  over a desk it could not stand on. */
   private clearBoom(p: Vec2): number {
-    const full = this.height * BOOM_LENGTH;
+    const full = this.height * BOOM_LENGTH * this.boomScale;
     const min = this.height * BOOM_MIN;
     for (let i = BOOM_SAMPLES; i >= 1; i--) {
       const d = (full * i) / BOOM_SAMPLES;

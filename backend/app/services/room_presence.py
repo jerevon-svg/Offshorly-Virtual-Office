@@ -13,6 +13,14 @@ from __future__ import annotations
 # state is in-memory and per-process. Not built now — out of scope for this stage.
 
 
+def _normalize_email(email: str) -> str:
+    """Same contract, and the same live bug, as dnd_registry._normalize_email: `is_room_locked`
+    pairs `occupants(room_id)` with `DndRegistry.is_dnd(email)`, and every client pairs this
+    registry's broadcast with the DND one (data/roomLock.ts). Two registries keyed on differently
+    cased spellings of the same person can never agree that a room is locked."""
+    return email.strip().lower()
+
+
 class RoomPresenceRegistry:
     def __init__(self) -> None:
         self._room_by_email: dict[str, str] = {}
@@ -20,15 +28,15 @@ class RoomPresenceRegistry:
     def enter(self, email: str, room_id: str) -> None:
         """Place email inside room_id. Idempotent. If email was in a different room, it is moved
         (old membership dropped) — mirrors SpatialSessionRegistry.start."""
-        self._room_by_email[email] = room_id
+        self._room_by_email[_normalize_email(email)] = room_id
 
     def leave(self, email: str) -> str | None:
         """Remove email from whatever room it's in. Returns the room_id it was in (for
         broadcast-only-on-change), or None if it wasn't in any."""
-        return self._room_by_email.pop(email, None)
+        return self._room_by_email.pop(_normalize_email(email), None)
 
     def room_of(self, email: str) -> str | None:
-        return self._room_by_email.get(email)
+        return self._room_by_email.get(_normalize_email(email))
 
     def occupants(self, room_id: str) -> list[str]:
         return sorted(email for email, r in self._room_by_email.items() if r == room_id)

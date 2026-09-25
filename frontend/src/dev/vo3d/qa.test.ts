@@ -44,6 +44,7 @@ import { openedLayer, v2Static } from "./nav/v2Open";
 import { CELL, v1Static } from "./adapters/v1Grid";
 import { planWalk } from "./nav/planner";
 import { FACING_YAW, pointInRect, type Rect, type Vec2 } from "./core/coords";
+import { buildWorldContents } from "./app/worldContents";
 
 const ALL_ROOMS = [DESIGN_ROOM, RECEPTION_ROOM, MEETING_ROOM, PROJECT_ROOM, GAMING_ROOM, CENTRAL_HUB, EXECUTIVE_ROOM, CMS_ROOM, AI_ROOM, DEV_ROOM, QA_ROOM];
 
@@ -337,8 +338,13 @@ describe("vo3d QA Room — Phase 11: the LAST room, reconstructed from a flat re
 
   it("11. the room, its entities, its navigation, its door AND every one of its 7 chairs are wired in", () => {
     const src = bootstrapSource;
-    expect(src).toContain("world.addRoom(QA_ROOM);");
-    expect(src).toContain("for (const e of qaRoomEntities()) world.addEntity(e);");
+    // REGISTRATION IS ASSERTED BY RUNNING THE REAL ASSEMBLY, not by grepping for two source lines.
+    // app/worldContents.ts is the one authoritative place the world is built (it was split out of
+    // app/world.ts after a duplicate lift-core registration stopped the office starting while every
+    // source-grep guard stayed green), and this calls the very same function the product calls.
+    const built = buildWorldContents().world;
+    expect(built.rooms.has(QA_ROOM.id)).toBe(true);
+    expect(qaRoomEntities().every((e) => built.entities.has(e.id))).toBe(true);
     expect(src).toContain("mirror.buildRoom(QA_ROOM, shellOpts());");
     expect(src).toMatch(/DERIVED_ROOM_IDS = new Set\(\[[^\]]*QA_ROOM\.id/);
     expect(src).toContain("qaDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);");

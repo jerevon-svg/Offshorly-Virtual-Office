@@ -42,10 +42,20 @@ import { isTypingTarget } from "./keyGuard";
 /** The cycle, in the order C walks. */
 export const VIEW_CYCLE: readonly Vo3dViewMode[] = ["office", "explore", "player"];
 
-/** The one next-view rule, exported so the C binding and its tests agree by construction. */
-export function nextViewMode(mode: Vo3dViewMode): Vo3dViewMode {
-  const i = VIEW_CYCLE.indexOf(mode);
-  return VIEW_CYCLE[(i + 1) % VIEW_CYCLE.length] ?? "office";
+/** The one next-view rule, exported so the C binding and its tests agree by construction.
+ *
+ *  `available` is the floor's own list (app/floors.ts, published as `world.availableViewModes()`). The
+ *  order is always this file's — C means the same thing everywhere in the building — but a floor that
+ *  does not offer a view is simply not stopped on, so upstairs C alternates Office and Player instead of
+ *  pausing on a 3D mode that would be refused the instant it was asked for. Defaults to all three, so
+ *  every existing caller and test is byte-for-byte unaffected. */
+export function nextViewMode(mode: Vo3dViewMode, available: readonly Vo3dViewMode[] = VIEW_CYCLE): Vo3dViewMode {
+  const cycle = VIEW_CYCLE.filter((m) => available.includes(m));
+  if (cycle.length === 0) return "office";
+  const i = cycle.indexOf(mode);
+  // a mode the floor does not offer (the one you arrived carrying) still has to advance somewhere: the
+  // first offered view is the honest answer, and it is where the arrival rule already put you
+  return i === -1 ? cycle[0] : cycle[(i + 1) % cycle.length];
 }
 
 export interface Vo3dViewSwitcherProps {
@@ -76,7 +86,9 @@ export function Vo3dViewSwitcher({ worldRef, ready, onViewModeChange }: Vo3dView
   const cycle = useCallback(() => {
     const world = worldRef.current;
     if (!world) return;
-    const next = nextViewMode(modeRef.current);
+    // optional-called: a host that hands this a partial world (a test double, an older embed) gets the
+    // three-view cycle it always had rather than a crash on a method it does not implement
+    const next = nextViewMode(modeRef.current, world.availableViewModes?.());
     world.setViewMode(next);
     // PHASE 7D — ASK FOR THE POINTER FROM THIS KEYPRESS, SYNCHRONOUSLY.
     //

@@ -768,10 +768,10 @@ describe("OfficeStage dev-only candidate override (?live3d=bon-v2)", () => {
     });
   });
 
-  it("Unregistered employees remain unchanged (lui stays a sprite; registry has exactly bon, alex, micah, angelo and jan)", () => {
+  it("Unregistered employees remain unchanged (lui stays a sprite; registry has exactly bon, alex, micah, angelo, jan, france, jona, clang, nicole and kael)", () => {
     vi.mocked(detectDeviceTier).mockReturnValue("T2");
     const { container } = renderWith("", "bon");
-    expect(Object.keys(LIVE_3D_CHARACTERS).sort()).toEqual(["alex", "angelo", "bon", "jan", "micah"]);
+    expect(Object.keys(LIVE_3D_CHARACTERS).sort()).toEqual(["alex", "angelo", "bon", "clang", "france", "jan", "jona", "kael", "micah", "nicole"]);
     expect(bonCanvasStubs(container).length).toBe(1);
     // alex is a registered peer within the T2 crowd cap -> one alex canvas.
     expect(alexCanvasStubs(container).length).toBe(1);
@@ -804,6 +804,23 @@ describe("OfficeStage live-3D tier/budget gating (no ?live3d= override)", () => 
       </TransformWrapper>,
     );
   }
+
+  it("a manifest mirror transform applies to kael's sprite but never to his live-3D canvas", () => {
+    // kael's layer carries scaleY(-1) rotate(180deg), authored to face the flat stock PNG. On the
+    // wrapper of a live-3D canvas it would mirror the model and swap his asymmetric hair part.
+    const wrapper = (c: HTMLElement) => c.querySelector<HTMLElement>('[data-character-id="kael"]')!;
+    vi.mocked(detectDeviceTier).mockReturnValue("T0");
+    const spriteView = renderGated("bon");
+    expect(wrapper(spriteView.container).querySelector("canvas, [data-glb-url]")).toBeNull();
+    expect(wrapper(spriteView.container).style.transform).toContain("rotate(180deg)");
+    spriteView.unmount();
+    __resetDeviceTierCacheForTests();
+
+    vi.mocked(detectDeviceTier).mockReturnValue("T2");
+    const canvasView = renderGated("kael");
+    expect(wrapper(canvasView.container).querySelector("[data-glb-url]")?.getAttribute("data-glb-url")).toMatch(/kael-v1-fix-hq-idle9/);
+    expect(wrapper(canvasView.container).style.transform).toBe("");
+  });
 
   it("shows the self avatar (bon) as CharacterCanvas at T1, with no URL param", () => {
     vi.mocked(detectDeviceTier).mockReturnValue("T1");
@@ -851,11 +868,14 @@ describe("OfficeStage live-3D tier/budget gating (no ?live3d= override)", () => 
     const angeloStubs = (c: HTMLElement) =>
       canvasStubs(c).filter((el) => /\/avatars\/gelo-v1-hq(?:-[a-z0-9]+)*\//.test(el.getAttribute("data-glb-url") ?? ""));
 
-    // as a PEER (viewer is micah)
+    // as a PEER (viewer is micah). Since france/jona/clang shipped (2026-09-25)
+    // seven registered peers compete for the T2 cap of 4, so whether angelo wins
+    // a slot is the depth-sort rule's call — either way exactly ONE visual.
     const peerView = renderGated("micah");
-    expect(angeloStubs(peerView.container)).toHaveLength(1);
-    // never doubled up as a sprite as well
-    expect(peerView.container.querySelector('img[src*="angelo"]')).toBeNull();
+    expect(
+      angeloStubs(peerView.container).length +
+        peerView.container.querySelectorAll('img[src*="angelo"]').length,
+    ).toBe(1);
     peerView.unmount();
     __resetDeviceTierCacheForTests();
 
@@ -1347,7 +1367,7 @@ describe("overhead per-character resolver: StatusLabel / TalkingBubble mutual ex
 // distinct, never-loaded GLB urls so each stub is attributable) to reach the
 // "more eligible peers than budget" case.
 describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
-  const SPRITE_RE: Record<string, RegExp> = { bon: /chibi-bon|\/bon-/, alex: /alex/, micah: /micah/, lui: /lui/, angelo: /angelo/, jan: /\/jan\./ };
+  const SPRITE_RE: Record<string, RegExp> = { bon: /chibi-bon|\/bon-/, alex: /alex/, micah: /micah/, lui: /lui/, angelo: /angelo/, jan: /\/jan\./, france: /\/france\./, jona: /\/jona\./, clang: /\/clang\./, nicole: /\/nicole\./, kael: /\/kael\./ };
   // Maps a stub's GLB url back to the avatar id that owns it. The asset FOLDER
   // does not always equal the registry key: angelo's files are the `gelo-v1`
   // pipeline chain, and each character carries its own version suffix
@@ -1359,7 +1379,7 @@ describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
     if (/\/avatars\/jan-v\d+/.test(url)) return "jan";
     // The folder can carry further build-variant suffixes (e.g. the masculine
     // idle rebuild `alex-v2-hq-idle9/`) — match the character, not the variant.
-    const m = url.match(/\/avatars\/(alex|micah|lui)(?:-v\d+)?(?:-[a-z0-9]+)*\//);
+    const m = url.match(/\/avatars\/(alex|micah|lui|france|jona|clang|nicole|kael)(?:-v\d+)?(?:-[a-z0-9]+)*\//);
     return m ? m[1] : "?";
   }
   function stubsOf(container: HTMLElement, id: string): HTMLElement[] {
@@ -1368,13 +1388,13 @@ describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
   function spritesOf(container: HTMLElement, id: string): HTMLImageElement[] {
     return Array.from(container.querySelectorAll<HTMLImageElement>("img")).filter((i) => SPRITE_RE[id].test(i.getAttribute("src") ?? ""));
   }
-  // The registry ships exactly bon/alex/micah/angelo/jan — self plus FOUR
-  // registered peers, which is the crowd these tests need — no fabricated
-  // entries, and no change to any crowd budget. (Named for the four peers
-  // competing for slots; jan joined 2026-09-04.)
-  const REGISTERED_PEERS = ["alex", "micah", "angelo", "jan"];
+  // The registry ships bon/alex/micah/angelo/jan/france/jona/clang — self plus
+  // NINE registered peers — no fabricated entries, and no change to any crowd
+  // budget. (Named for the original four peers competing for slots; jan joined
+  // 2026-09-04, france/jona/clang/nicole/kael 2026-09-25.)
+  const REGISTERED_PEERS = ["alex", "micah", "angelo", "jan", "france", "jona", "clang", "nicole", "kael"];
   function withFourRegistered<T>(fn: () => T): T {
-    expect(Object.keys(LIVE_3D_CHARACTERS).sort()).toEqual(["alex", "angelo", "bon", "jan", "micah"]);
+    expect(Object.keys(LIVE_3D_CHARACTERS).sort()).toEqual(["alex", "angelo", "bon", "clang", "france", "jan", "jona", "kael", "micah", "nicole"]);
     return fn();
   }
   function renderAt(tier: "T0" | "T1" | "T2", props: Record<string, unknown> = {}) {
@@ -1426,7 +1446,7 @@ describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
       expect(peerStubs.length).toBe(2);
       const selected = peerStubs.map(stubOwner);
       const excluded = REGISTERED_PEERS.filter((id) => !selected.includes(id));
-      expect(excluded.length).toBe(2);
+      expect(excluded.length).toBe(REGISTERED_PEERS.length - 2);
       for (const id of excluded) {
         expect(stubsOf(container, id).length).toBe(0);
         expect(spritesOf(container, id).length).toBe(1);
@@ -1456,7 +1476,7 @@ describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
     });
   });
 
-  it("T1 crowd cap 6: T2 crowd cap is still 4 — every peer animated, each at its adaptive tier", () => {
+  it("T1 crowd cap 6: T2 crowd cap is still 4 — the first four peers animated, each at its adaptive tier", () => {
     expect(LIVE_3D_CAP_BY_TIER.T2).toBe(4);
     expect(LIVE_3D_CAP_BY_TIER.T0).toBe(0);
     withFourRegistered(() => {
@@ -1464,13 +1484,19 @@ describe("OfficeStage T1 peer crowd cap (LIVE_3D_CAP_BY_TIER.T1 = 2)", () => {
       // The CAP is unchanged — all four still render live-3D. What changed is
       // the QUALITY each one gets: adaptive LOD keeps the HQ mesh for the
       // self/near/focused character and gives distant peers a cheaper tier,
-      // so a crowd of four never means four ~5MB downloads. Since jan shipped
-      // that is the self allowance PLUS the four registered peers filling the cap.
+      // so a crowd of four never means four ~5MB downloads. That is the self
+      // allowance PLUS the first four registered peers (depth-sort first-come)
+      // filling the cap; since france/jona/clang shipped the rest stay sprites.
       expect(canvasStubs(container).length).toBe(1 + LIVE_3D_CAP_BY_TIER.T2);
-      for (const id of ["bon", ...REGISTERED_PEERS]) {
+      const selected = depthOrder(REGISTERED_PEERS).slice(0, LIVE_3D_CAP_BY_TIER.T2);
+      for (const id of ["bon", ...selected]) {
         const stubs = stubsOf(container, id);
         expect(stubs.length).toBe(1);
         expect(stubs[0].getAttribute("data-glb-url")).toMatch(/-lod[012]\.glb$/);
+      }
+      for (const id of REGISTERED_PEERS.filter((p) => !selected.includes(p))) {
+        expect(stubsOf(container, id).length).toBe(0);
+        expect(spritesOf(container, id).length).toBe(1);
       }
     });
   });
