@@ -2,7 +2,7 @@ import os
 import sys
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import engine_from_config, pool, text
 
 from alembic import context
 
@@ -41,6 +41,20 @@ target_metadata = Base.metadata
 # SQLite cannot ALTER columns in place; batch mode rewrites the table instead.
 _is_sqlite = _sync_url().startswith("sqlite")
 
+# Virtual Office's Postgres database is shared with Atlas's own audit database (same physical
+# instance, same default `public` schema/`alembic_version` row already owned by Atlas). Every VO
+# table — and VO's own alembic version-tracking row — must live inside this dedicated schema so
+# the two apps' migration histories and tables never collide. SQLite has no schema concept and
+# local dev must be completely unaffected, so this is `None` there and every schema-related option
+# below becomes a no-op.
+_VO_SCHEMA = "virtual_office"
+_target_schema = None if _is_sqlite else _VO_SCHEMA
+# `None` (the models' own unqualified/default schema) is translated to `virtual_office` at compile
+# time for every DDL/DML statement Alembic (and, via app/database.py, the app itself) emits — this
+# is what lets the 31 already-shipped migration files keep their historical `op.create_table(...)`
+# calls with no schema argument at all, instead of hand-editing each one.
+_schema_translate_map = None if _is_sqlite else {None: _VO_SCHEMA}
+
 
 def run_migrations_offline() -> None:
     """Emit SQL to stdout without a live DB connection (`alembic upgrade --sql`)."""
@@ -52,6 +66,8 @@ def run_migrations_offline() -> None:
         compare_type=True,
         compare_server_default=True,
         render_as_batch=_is_sqlite,
+        version_table_schema=_target_schema,
+        schema_translate_map=_schema_translate_map,
     )
 
     with context.begin_transaction():
@@ -67,12 +83,21 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
+        if _target_schema is not None:
+            # Alembic does not create schemas on its own — do it up front, in its own transaction,
+            # before configure()/run_migrations() so the version table and every VO table below
+            # have somewhere to land. IF NOT EXISTS keeps re-deploys idempotent.
+            connection.execute(text(f"CREATE SCHEMA IF NOT EXISTS {_target_schema}"))
+            connection.commit()
+
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
             compare_type=True,
             compare_server_default=True,
             render_as_batch=_is_sqlite,
+            version_table_schema=_target_schema,
+            schema_translate_map=_schema_translate_map,
         )
         with context.begin_transaction():
             context.run_migrations()

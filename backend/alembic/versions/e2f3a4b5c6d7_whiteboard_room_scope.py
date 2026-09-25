@@ -34,8 +34,15 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Downgrade schema. Room boards cannot survive a NOT NULL conversation_id — drop them first."""
-    op.execute("DELETE FROM whiteboards WHERE conversation_id IS NULL")
+    """Downgrade schema. Room boards cannot survive a NOT NULL conversation_id — drop them first.
+
+    Uses a compiled Core construct (not a raw SQL string) so the delete goes through
+    the connection's schema_translate_map — on Postgres it resolves to
+    virtual_office.whiteboards instead of accidentally hitting public.whiteboards
+    via search_path; on SQLite (no schema concept) it stays unqualified.
+    """
+    whiteboards = sa.table("whiteboards", sa.column("conversation_id", sa.String(36)))
+    op.execute(whiteboards.delete().where(whiteboards.c.conversation_id.is_(None)))
     with op.batch_alter_table("whiteboards", schema=None) as batch_op:
         batch_op.drop_constraint("ck_whiteboards_one_scope", type_="check")
         batch_op.drop_index("ix_whiteboards_room_id")

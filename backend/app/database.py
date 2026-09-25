@@ -77,6 +77,15 @@ else:
 
 engine = create_async_engine(get_database_url(), **_engine_kwargs)
 
+# Virtual Office's Postgres instance is shared with Atlas's own audit database (same default
+# `public` schema, already owning its own `alembic_version` row — see alembic/env.py's matching
+# comment). Every VO table lives in its own `virtual_office` schema instead; `schema_translate_map`
+# rewrites every unqualified (schema=None) table reference this app's models/queries emit to that
+# schema at the connection level, so no model file needs an explicit `schema=` and SQLite — which
+# has no schema concept — is completely untouched (translate map stays unset there).
+if not _is_sqlite():
+    engine = engine.execution_options(schema_translate_map={None: "virtual_office"})
+
 if _is_sqlite():
     _set_sqlite_pragmas(engine)
 
