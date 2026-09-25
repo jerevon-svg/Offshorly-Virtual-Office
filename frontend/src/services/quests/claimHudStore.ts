@@ -11,8 +11,10 @@ import { useSyncExternalStore } from "react";
 // per item: each claim opens a session, and the strip only starts its exit once the last one has
 // closed and the reward FX has had time to land.
 
-/** Covers the FX's burst + stagger + travel (see rewardFx.ts) plus a beat to read the new total. */
-const HOLD_MS = 1500;
+/** Covers the FX's burst + stagger + travel (~1.3s, see rewardFx.ts), then the count-up and bar
+ * fill that start as the icons land (XP_MS 900, see progressionMeter.ts), plus a beat to read the
+ * new total. 1500 hid the strip mid count-up, so the final value was never seen settling. */
+export const CLAIM_HUD_HOLD_MS = 2600;
 
 let active = 0;
 let visible = false;
@@ -58,7 +60,7 @@ export function endClaimSession(): void {
   hideTimer = setTimeout(() => {
     hideTimer = null;
     if (active === 0) setVisible(false);
-  }, HOLD_MS);
+  }, CLAIM_HUD_HOLD_MS);
 }
 
 /** Test seam — mirrors the reset helpers the other stores expose. */

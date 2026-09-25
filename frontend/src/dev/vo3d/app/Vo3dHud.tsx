@@ -79,6 +79,7 @@ import type { ToucanSummonState } from "../../../components/OfficeMap/toucanSumm
 import { HudSettings } from "../../../components/OfficeMap/HudSettings";
 import { Vo3dEnvironmentPanel } from "./Vo3dEnvironmentPanel";
 import { PlayerHud } from "../../../components/OfficeMap/PlayerHud";
+import { ClaimHud } from "../../../components/OfficeMap/ClaimHud";
 import { StatusPicker } from "../../../components/OfficeMap/StatusPicker";
 import { TasksPanel, type TasksTab } from "../../../components/OfficeMap/TasksPanel";
 import { RewardsPanel } from "../../../components/OfficeMap/RewardsPanel";
@@ -542,6 +543,11 @@ export function Vo3dHud({
 
   return (
     <>
+      {/* V1's claim-time progression strip, mounted exactly as V1 mounts it. Tasks slides this dock
+          off screen (hidden, not unmounted), so without the strip every claim's Coins/XP flew
+          below the viewport and counted up out of sight. It shows only while a claim runs, and
+          rewardFx's findHudTargets skips the hidden dock's inert targets for its visible ones. */}
+      <ClaimHud />
       <HudDock
         // HIDDEN, not unmounted — see the header. Search's spotlight owns the screen the same way it does
         // in V1, so the dock steps out of its way too.

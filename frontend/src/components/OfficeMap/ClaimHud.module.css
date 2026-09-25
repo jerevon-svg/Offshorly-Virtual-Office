@@ -88,3 +88,106 @@
   background: linear-gradient(90deg, #ffcf6b, #ff9f6b);
   transition: width 260ms ease;
 }
+
+/* ---- claim feedback: same gold pulse / level glow language as the Player HUD ------------- */
+.coinsPulse,
+.xpPulse {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  animation: claimHudPulse 650ms ease-out;
+}
+
+.xpHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.level,
+.levelUp {
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #9a6a12;
+  border-radius: 999px;
+  padding: 1px 7px;
+  background: rgba(255, 190, 80, 0.18);
+  white-space: nowrap;
+}
+
+.levelUp {
+  animation: claimHudLevelGlow 2.4s ease-out forwards;
+}
+
+.levelUpCaption {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #ffcf6b, #ff9f6b);
+  color: #3a2308;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  box-shadow: 0 8px 20px rgba(255, 159, 107, 0.35);
+  animation: claimHudCaption 2.4s ease-out forwards;
+}
+
+@keyframes claimHudPulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(255, 190, 80, 0.55);
+    background-color: rgba(255, 214, 122, 0.28);
+  }
+  100% {
+    box-shadow: 0 0 0 8px rgba(255, 190, 80, 0);
+  }
+}
+
+@keyframes claimHudLevelGlow {
+  0% {
+    background-color: rgba(255, 190, 80, 0.5);
+    box-shadow: 0 0 0 1px rgba(255, 190, 80, 0.8), 0 0 16px rgba(255, 190, 80, 0.6);
+  }
+  100% {
+    background-color: rgba(255, 190, 80, 0.18);
+    box-shadow: 0 0 0 1px rgba(255, 190, 80, 0), 0 0 0 rgba(255, 190, 80, 0);
+  }
+}
+
+@keyframes claimHudCaption {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 6px);
+  }
+  15%,
+  75% {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .coinsPulse,
+  .xpPulse,
+  .levelUp,
+  .levelUpCaption {
+    animation: none;
+  }
+  .coinsPulse,
+  .xpPulse {
+    background-color: rgba(255, 214, 122, 0.22);
+  }
+  .fill {
+    transition: none;
+  }
+}
