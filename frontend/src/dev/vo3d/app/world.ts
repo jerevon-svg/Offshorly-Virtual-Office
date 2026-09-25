@@ -803,7 +803,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   //
   // AUTO now reads REAL weather for the office, from OUR backend (GET /weather/office), which holds the
   // WeatherAPI key in its own environment and caches one reading for the whole office. The browser never
-  // sees a key. When no backend is configured (VITE_API_URL unset — the bare dev rig), the manual dev
+  // sees a key. When no backend is configured (VITE_CHAT_SOCKET_URL unset — the bare dev rig), the manual dev
   // provider stands in and AUTO simply reports CLEAR. This was the one-line swap env/providers/README
   // promised: nothing downstream of the WeatherProvider seam moved.
   //
