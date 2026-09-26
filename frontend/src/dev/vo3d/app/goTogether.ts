@@ -86,6 +86,12 @@ export interface Vo3dGoTogetherPort {
   setHooks(hooks: Vo3dGoTogetherHooks | null): void;
   /** start the ride that holdDeparture held; false when it was cancelled meanwhile */
   releaseLift(): boolean;
+  /** THE RIDE MANIFEST: the other party members departing with this body on its NEXT lift ride. The world
+   *  stands them, in their own characters, in its local car (app/liftRiders.ts). Null clears a manifest
+   *  that has not been used yet; a ride already under way keeps its riders to the end. */
+  setRideRiders(emails: readonly string[] | null): void;
+  /** who is standing in this browser's car right now (the console / tests) */
+  riders(): string[];
 }
 
 export interface Vo3dGoTogetherHooks {
@@ -238,7 +244,11 @@ export class GoTogetherController implements Vo3dGoTogetherHooks {
       const index = Math.max(0, prev.members.findIndex((m) => m.email === prevSelf));
       this.finish = { leader: prev.leaderEmail, index, heading: this.heading ?? { x: 0, z: 1 }, dest: prev.destination, due: this.now() + FINISH_DELAY_MS };
     }
-    if (!party || (prev && prev.partyId !== party.partyId)) this.resetJourney();
+    if (!party || (prev && prev.partyId !== party.partyId)) {
+      // A manifest nobody rode with yet is dropped with its party (a ride under way keeps its riders).
+      if (prev) this.port.setRideRiders(null);
+      this.resetJourney();
+    }
     const drive = party !== null && input.isController;
     if (drive !== this.hooked) {
       this.port.setHooks(drive ? this : null);
@@ -264,7 +274,10 @@ export class GoTogetherController implements Vo3dGoTogetherHooks {
     const self = this.port.self();
     if (self.riding || self.floor !== dep.fromFloor || dep.toFloor === self.floor) return;
     this.lastRideAt = this.now();
-    this.port.ride(dep.toFloor as Vo3dFloorId);
+    // THE RIDE MANIFEST: everyone who departed together except this body — the leader and the other ready
+    // members — stands in this browser's car for this ride (app/liftRiders.ts).
+    this.port.setRideRiders([party.leaderEmail, ...dep.members].filter((e) => e !== this.input.selfEmail));
+    if (!this.port.ride(dep.toFloor as Vo3dFloorId)) this.port.setRideRiders(null);
   }
 
   // ---- UI verbs -----------------------------------------------------------------------------------------
@@ -403,7 +416,9 @@ export class GoTogetherController implements Vo3dGoTogetherHooks {
         this.gathering = null;
         this.lastDeparted = readyEmails;
         this.net.depart(from, to, readyEmails);
-        this.port.releaseLift();
+        // The leader's own car carries the members who were ready with them.
+        this.port.setRideRiders(readyEmails);
+        if (!this.port.releaseLift()) this.port.setRideRiders(null);
       }
       return;
     }
@@ -452,6 +467,9 @@ export class GoTogetherController implements Vo3dGoTogetherHooks {
     if (this.following && self.player && !this.prevPlayer && now - this.lastRideEnd > 1500) this.pause();
     this.prevPlayer = self.player;
     if (!this.following) return;
+    // A LIFT TRIP IS UNDER WAY (walking to the doors for the departure or a catch-up): a follow step now
+    // would be a new walk, and a new walk cancels the trip. The leader's floor moving is what comes next.
+    if (self.holding) return;
 
     // CATCH-UP: the leader is on another floor (a missed departure, a reload, a late accept). Take the
     // ordinary lift there — retried, never spammed.

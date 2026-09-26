@@ -923,12 +923,83 @@ export class Coworkers {
   private globalChatActiveEmails: ReadonlySet<string> = new Set();
   /** Scratch for doorBodies() — see there. */
   private readonly doorProbe: DoorBody[] = [];
+  /** GO TOGETHER — TEMPORARY LIFT-CAR OCCUPANTS, by email. The same CoworkerBody a roster person gets, cloned
+   *  from the same cached character prototype, but OUTSIDE the roster: no placement, no replay from the
+   *  wire, no seat, no nameplate, no picking, no door probing. They exist only while a party rides together
+   *  and are the local scene's own props — nothing about them is published or persisted. */
+  private readonly riders = new Map<string, CoworkerBody>();
+  private readonly riderGroup = new THREE.Group();
+  /** Bumped by clearRiders so a prototype that lands after the ride ended adds nobody. */
+  private riderGen = 0;
 
   constructor(deps: CoworkersDeps) {
     this.deps = deps;
     this.placer = new CoworkerPlacer(deps.toWorld, deps.canStand, deps.radius);
     this.group.name = "coworkers";
     deps.parent.add(this.group);
+    this.riderGroup.name = "lift-riders";
+    deps.parent.add(this.riderGroup);
+  }
+
+  // ---- GO TOGETHER: shared lift riders ------------------------------------------------------------------
+
+  /** Add a rider standing at `at`, facing `yaw`, in that person's own character. Async only because the
+   *  prototype may still be fetching (usually it is cached — they were just drawn walking to the lift). */
+  async addRider(email: string, avatarId: string, displayName: string, at: Vec2, yaw: number): Promise<boolean> {
+    const gen = this.riderGen;
+    if (this.riders.has(email)) return false;
+    const proto = await prototypeFor(avatarId, this.deps.lod ?? 1).catch(() => null);
+    if (!proto || this.disposed || gen !== this.riderGen || this.riders.has(email)) return false;
+    const body = new CoworkerBody(proto, displayName, at, yaw, phaseFor(email));
+    body.setLabelVisible(false);
+    this.riders.set(email, body);
+    this.riderGroup.add(body.root);
+    // ONE BODY PER PERSON ON SCREEN: while they ride here, their real avatar (if this floor draws one) waits.
+    const real = this.bodies.get(email);
+    if (real) real.root.visible = false;
+    return true;
+  }
+
+  /** Is this rider still walking (its exit)? */
+  riderWalking(email: string): boolean {
+    return this.riders.get(email)?.moving ?? false;
+  }
+
+  /** Where this person's REAL (roster) body stands — drawn or held hidden behind a rider — or null. */
+  realPointOf(email: string): Vec2 | null {
+    const body = this.bodies.get(email);
+    return body ? { ...body.pos } : null;
+  }
+
+  /** Stand a rider somewhere else at once (the seal: cabin → destination lift bay). */
+  placeRider(email: string, at: Vec2, yaw: number): void {
+    this.riders.get(email)?.reconcileTo(at, yaw);
+  }
+
+  /** Walk a rider along `path` over `durationMs` — the same replay a roster body walks with. */
+  walkRider(email: string, path: readonly Vec2[], durationMs: number): void {
+    const body = this.riders.get(email);
+    if (body && path.length > 0) body.beginWalk(`rider:${email}:${path.length}:${durationMs}`, [body.pos, ...path], durationMs, 0, "linear");
+  }
+
+  removeRider(email: string): void {
+    const body = this.riders.get(email);
+    if (!body) return;
+    this.riderGroup.remove(body.root);
+    body.dispose();
+    this.riders.delete(email);
+    // …and the real avatar is authoritative again.
+    const real = this.bodies.get(email);
+    if (real) real.root.visible = true;
+  }
+
+  clearRiders(): void {
+    this.riderGen++;
+    for (const email of [...this.riders.keys()]) this.removeRider(email);
+  }
+
+  riderEmails(): string[] {
+    return [...this.riders.keys()];
   }
 
   get size(): number { return this.bodies.size; }
@@ -1076,6 +1147,8 @@ export class Coworkers {
       }
       this.group.add(body.root);
       this.bodies.set(email, body);
+      // GO TOGETHER — somebody still standing in this browser's lift car as a rider is not drawn twice.
+      if (this.riders.has(email)) body.root.visible = false;
       added = true;
     }
 
@@ -1294,7 +1367,9 @@ export class Coworkers {
   /** PHASE 6D — where this person's body stands, in world units. Null when they have none. */
   pointOf(email: string): Vec2 | null {
     const body = this.bodies.get(email);
-    return body ? { ...body.pos } : null;
+    // A real body held hidden behind a lift rider answers with the RIDER, which is the one on screen.
+    const shown = this.riders.get(email) ?? body;
+    return shown ? { ...shown.pos } : null;
   }
 
   /** PHASE 6D — everybody within `reach` of `p`. PLAYER mode's targeting scores a handful of candidates
@@ -1311,8 +1386,10 @@ export class Coworkers {
   }
 
   update(dt: number): boolean {
-    if (!this.group.visible) return false;
     let moved = false;
+    // Riders are not roster bodies and are not hidden with them (the car is its own volume).
+    for (const body of this.riders.values()) if (body.update(dt)) moved = true;
+    if (!this.group.visible) return moved;
     for (const body of this.bodies.values()) if (body.update(dt)) moved = true;
     return moved;
   }
@@ -1368,6 +1445,7 @@ export class Coworkers {
 
   dispose(): void {
     if (this.disposed) return;
+    this.clearRiders();
     this.disposed = true;
     for (const body of this.bodies.values()) {
       if (body.seatedIn !== null) this.deps.releaseSeat?.(body.seatedIn);

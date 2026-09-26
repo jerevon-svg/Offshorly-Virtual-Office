@@ -94,7 +94,7 @@ import { CORRIDOR_BANDS, ROOM_WORLD_SHIFT_Z } from "../rooms/ground-floor";
 // import names "floor 2" except where a second floor is genuinely the subject; everything else reads
 // the registry, so a Gaming floor is a row plus its geometry rather than an edit to a state machine.
 import { FALLBACK_VIEW_MODE, FLOORS, FLOOR_ORDER, GROUND_FLOOR_ID, arrivalViewMode, coworkersOnFloor, floorOfPlace, supportsViewMode, type Vo3dFloorId } from "./floors";
-import { RIDE as ELEVATOR_RIDE, cabinStandTest, inCabin, inVestibule, vestibuleStandTest, type ElevatorSpec } from "../rooms/elevator";
+import { CABIN, RIDE as ELEVATOR_RIDE, cabinStandTest, inCabin, inVestibule, vestibuleStandTest, type ElevatorSpec } from "../rooms/elevator";
 import { buildCabin, buildElevatorCore, type ElevatorCoreBuild, type LiftBuild } from "../build/elevator";
 import { buildFloor2 } from "../build/floor2";
 import { buildFloor2Context } from "../build/floor2Context";
@@ -108,6 +108,7 @@ import { deriveRoomSchedule, type Formatters, type LiveRoom, type ScheduledBooki
 import { FloorTransition, walkLegs } from "../interact/FloorTransition";
 import { buildWorldContents } from "./worldContents";
 import type { PartyDestination, Vo3dGoTogetherHooks, Vo3dGoTogetherPort } from "./goTogether";
+import { LIFT_RIDER_SLOTS, LIFT_RIDER_YAW, exitPath, pathLength, slotPoint, type LiftRiderSlot } from "./liftRiders";
 import { FACADE_Z, FRAME, v1Rooms } from "../adapters/v1Floor";
 import { planWalk, type NavResult } from "../nav/planner";
 import { RoomLockController, collectLockableDoors } from "./roomLocks";
@@ -1170,6 +1171,15 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   let heldLift: Vo3dFloorId | null = null;
   /** between FloorTransition's board and alight (see its translateBody dep) */
   let inLiftCar = false;
+  /** GO TOGETHER — SHARED LIFT RIDERS (app/liftRiders.ts). `pendingRiders` is the ride manifest's other
+   *  members, handed in by the party at the coordinated departure and consumed by THIS body's next board;
+   *  `liftRiders` is who is standing in the car (then the vestibule) right now, and in which slot. */
+  let pendingRiders: { emails: readonly string[]; at: number } | null = null;
+  let liftRiders: { list: { email: string; slot: LiftRiderSlot }[]; phase: "riding" | "arrived" | "leaving"; alightAt: number } | null = null;
+  /** a manifest older than this is not this ride's — the departure it belonged to never became a ride */
+  const RIDER_MANIFEST_TTL_MS = 20_000;
+  /** after the alight, a rider whose real avatar has still not appeared on this floor is retired anyway */
+  const RIDER_RETIRE_MS = 16_000;
   let partyHooks: Vo3dGoTogetherHooks | null = null;
   /** The restore has already landed; it is a one-shot. */
   let selfRestored = false;
@@ -1494,6 +1504,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // lift's own walk to its doors goes through startApproach, never through here.
     pendingFloor = null;
     heldLift = null;
+    pendingRiders = null;
     meetingWalk = null;
     // A FLOOR ABOVE THE GROUND ONE IS OFF THE LATTICE, so its walks are planned on its own geometry.
     //
@@ -2285,7 +2296,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     onManualOverride: (owner) => {
       if (floorTransition?.busy) return; // the ride itself is not interruptible (see FloorTransition)
       if (owner !== "Navigation" && !(owner === "Interaction" && approachCtl.state === "walking")) return;
-      stopTour(); navCtl.stop(); approachCtl.cancel(); pendingFloor = null; heldLift = null; meetingWalk = null;
+      stopTour(); navCtl.stop(); approachCtl.cancel(); pendingFloor = null; heldLift = null; pendingRiders = null; meetingWalk = null;
       partyHooks?.onUserMove();
     },
   });
@@ -3050,8 +3061,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // (app/selfMovement.ts) keeps it silent AND, on the way out, says which floor the body is now on —
       // which a plain `placed` could not, so nobody upstairs was ever published. This dep is called twice
       // per ride, in and out (FloorTransition board / alight).
-      if (!inLiftCar) { inLiftCar = true; selfFeed?.boardedLift(p); }
-      else { inLiftCar = false; selfFeed?.alightedLift(p, avatar.yaw); }
+      if (!inLiftCar) { inLiftCar = true; selfFeed?.boardedLift(p); boardLiftRiders(); }
+      else { inLiftCar = false; selfFeed?.alightedLift(p, avatar.yaw); alightLiftRiders({ x: CABIN.mark.x + dx, z: CABIN.mark.z + dz }); }
     },
     // THE HIGHEST-PRIORITY OWNER, which is the whole of "movement must not fight the sequence": WASD,
     // click-to-walk, seats and approaches are all refused by avatar/Controller's own rule while this is
@@ -3078,6 +3089,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       playerMode.camera.snap();
     },
     endCinematic: (arrivedOn) => {
+      // GO TOGETHER — the riders who stood beside this body in the car walk out behind it.
+      exitLiftRiders(specOf(arrivedOn));
       // WALK THERE, continued: the car is upstairs and the body is free again; finish the routed walk on
       // the floor's own geometry. Deferred a tick so the camera mode below settles first.
       if (meetingWalk && arrivedOn === FLOOR2_ID) {
@@ -3143,6 +3156,65 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     if (!playerMode.active) playerMode.body.pos = { x: avatar.position.x, z: avatar.position.z };
     return floorTransition.start(to);
   }
+  // ---- GO TOGETHER: the other party members, standing in THIS browser's car -------------------------
+  // Boarded with the doors shut (the seal), carried to the destination vestibule by the same translation as
+  // the body, walked out behind it, and retired the moment that person's real avatar is drawn on this floor
+  // — so the cabin copy and the real one are never on screen together. A solo ride has no manifest and
+  // none of this runs.
+  function boardLiftRiders(): void {
+    coworkers.clearRiders();
+    liftRiders = null;
+    const manifest = pendingRiders;
+    pendingRiders = null;
+    if (!manifest || performance.now() - manifest.at > RIDER_MANIFEST_TTL_MS) return;
+    const list: { email: string; slot: LiftRiderSlot }[] = [];
+    for (const raw of manifest.emails) {
+      const email = raw.trim().toLowerCase();
+      const c = rosterList.find((r) => r.email === email);
+      const slot = LIFT_RIDER_SLOTS[list.length];
+      if (!c || !slot || list.some((l) => l.email === email)) continue;
+      void coworkers.addRider(email, c.avatarId, c.displayName, slotPoint(CABIN.mark, slot), LIFT_RIDER_YAW);
+      list.push({ email, slot });
+    }
+    liftRiders = list.length ? { list, phase: "riding", alightAt: 0 } : null;
+  }
+  function alightLiftRiders(mark: Vec2): void {
+    if (!liftRiders) return;
+    // Only the bay exists in a vestibule; deeper car slots retire here, behind shut doors.
+    for (const r of liftRiders.list) {
+      if (r.slot.inBay) coworkers.placeRider(r.email, slotPoint(mark, r.slot), LIFT_RIDER_YAW);
+      else coworkers.removeRider(r.email);
+    }
+    liftRiders.list = liftRiders.list.filter((r) => r.slot.inBay);
+    liftRiders.phase = "arrived";
+    liftRiders.alightAt = performance.now();
+  }
+  function exitLiftRiders(spec: ElevatorSpec): void {
+    if (!liftRiders || liftRiders.phase !== "arrived") return;
+    liftRiders.phase = "leaving";
+    for (const r of liftRiders.list) {
+      const from = slotPoint(spec.mark, r.slot);
+      const path = exitPath(r.slot, spec.doorway, spec.boarding);
+      coworkers.walkRider(r.email, path, (pathLength(from, path) / Math.max(1, params.walkSpeed)) * 1000);
+    }
+  }
+  function updateLiftRiders(): void {
+    if (!liftRiders || liftRiders.phase === "riding") return;
+    const late = performance.now() - liftRiders.alightAt > RIDER_RETIRE_MS;
+    const spec = specOf(currentFloor);
+    for (const r of [...liftRiders.list]) {
+      // THE HAND-OFF, once both copies are out of the lift: the rider has finished walking out, and that
+      // person's real avatar (held hidden meanwhile — Coworkers draws one body per person) has left the
+      // bay too. The real one then takes over a few steps from where the rider stood, never inside it.
+      const real = coworkers.realPointOf(r.email);
+      const realOut = real !== null && !inVestibule(spec, real) && Math.hypot(real.x - spec.mark.x, real.z - spec.mark.z) > 30;
+      if (late || (liftRiders.phase === "leaving" && !coworkers.riderWalking(r.email) && realOut)) {
+        coworkers.removeRider(r.email);
+        liftRiders.list = liftRiders.list.filter((x) => x !== r);
+      }
+    }
+    if (liftRiders.list.length === 0) liftRiders = null;
+  }
   function atMeetingRoom(roomId: string): boolean {
     const r = meetingRoom(roomId);
     if (!r || currentFloor !== FLOOR2_ID) return false;
@@ -3189,6 +3261,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       if (!hooks && heldLift) releaseHeldLift();
     },
     releaseLift: releaseHeldLift,
+    setRideRiders: (emails) => {
+      pendingRiders = emails && emails.length ? { emails: [...emails], at: performance.now() } : null;
+    },
+    riders: () => coworkers.riderEmails(),
   };
 
   // ---- environmental audio ------------------------------------------------------------------------
@@ -5131,6 +5207,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // segment lookup on a precomputed table per body. The return value says whether any transform changed,
     // and feeds the DYNAMIC shadow gate below — never the static redraw, because a coworker is a
     // registered dynamic caster and is hidden before the static pass draws.
+    updateLiftRiders();
     coworkersMoved = coworkers.update(dt / 1000);
     // The shadow map is only redrawn when something that casts one has moved (Renderer.invalidateShadows).
     // Anything the avatar does counts: walking, sitting, and the doors/chairs its interactions drive. Plant

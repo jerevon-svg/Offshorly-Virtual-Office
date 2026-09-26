@@ -54,6 +54,8 @@ function rig() {
     atDestination: () => atDest,
     setHooks: (h) => { hooks = h; },
     releaseLift: vi.fn(() => true),
+    setRideRiders: vi.fn(),
+    riders: () => [],
   };
   const net: PartyNet = { gather: vi.fn(), depart: vi.fn(), arrived: vi.fn(), followState: vi.fn() };
   const ctl = new GoTogetherController(port, net, () => t);
@@ -125,8 +127,19 @@ describe("GoTogetherController — follower", () => {
     r.ctl.update({ party: party(), selfEmail: BOB, isController: true });
     r.ctl.onDeparting({ partyId: "p1", departureId: "p1:1", fromFloor: "floor-1", toFloor: "floor-2", members: [CAT] });
     expect(r.port.ride).not.toHaveBeenCalled();
-    r.ctl.onDeparting({ partyId: "p1", departureId: "p1:1", fromFloor: "floor-1", toFloor: "floor-2", members: [BOB] });
+    r.ctl.onDeparting({ partyId: "p1", departureId: "p1:1", fromFloor: "floor-1", toFloor: "floor-2", members: [BOB, CAT] });
     expect(r.port.ride).toHaveBeenCalledWith("floor-2");
+    // this car carries everyone who departed together except this body
+    expect(r.port.setRideRiders).toHaveBeenLastCalledWith([LEAD, CAT]);
+  });
+
+  it("never cancels its own pending lift trip with a follow step", () => {
+    const r = rig();
+    r.ctl.update({ party: party(), selfEmail: BOB, isController: true });
+    r.peers.set(LEAD, { x: 0, z: 300 });
+    r.self.holding = true;
+    r.ctl.tick();
+    expect(r.port.walkNear).not.toHaveBeenCalled();
   });
 
   it("a paused follower is not taken on the departure", () => {
@@ -146,6 +159,7 @@ describe("GoTogetherController — follower", () => {
     r.ctl.update({ party: party({ leaderFloor: "floor-2" }), selfEmail: BOB, isController: true });
     r.ctl.tick();
     expect(r.port.ride).toHaveBeenCalledTimes(1);
+    expect(r.port.setRideRiders).not.toHaveBeenCalled(); // a catch-up ride is a solo ride
     expect(r.ctl.getStatus()).toEqual({ kind: "catching-up", leader: LEAD });
     r.advance(1000);
     r.ctl.tick();
@@ -205,6 +219,7 @@ describe("GoTogetherController — leader", () => {
     r.peers.set(BOB, { x: 30, z: 0 });
     r.ctl.tick();
     expect(r.net.depart).toHaveBeenCalledWith("floor-1", "floor-2", [BOB]);
+    expect(r.port.setRideRiders).toHaveBeenLastCalledWith([BOB]);
     expect(r.port.releaseLift).toHaveBeenCalledTimes(1);
   });
 
@@ -223,6 +238,8 @@ describe("GoTogetherController — leader", () => {
     r.advance(1);
     r.ctl.tick();
     expect(r.net.depart).toHaveBeenCalledWith("floor-1", "floor-2", [BOB]);
+    // the slow member is not in this ride's car
+    expect(r.port.setRideRiders).toHaveBeenLastCalledWith([BOB]);
   });
 
   it("taking control mid-gather cancels it and says so", () => {
@@ -336,6 +353,7 @@ describe("GoTogetherController — leader", () => {
     r.ctl.update({ party: party(), selfEmail: LEAD, isController: true });
     r.ctl.update({ party: null, selfEmail: LEAD, isController: false });
     expect(r.hooks()).toBeNull();
+    expect(r.port.setRideRiders).toHaveBeenLastCalledWith(null);
     expect(r.ctl.getStatus()).toEqual({ kind: "none" });
   });
 });
