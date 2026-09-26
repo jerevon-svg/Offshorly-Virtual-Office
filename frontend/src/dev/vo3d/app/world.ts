@@ -104,6 +104,7 @@ import { buildMeetingFloor, setRoomDisplayTexture } from "../build/floor2Meeting
 import { ISLAND, MEETING_ROOMS, MEETING_ROOM_DEFS, MEETING_ROOM_IDS, meetingDoorCapability, meetingRoom, meetingRoomAt } from "../rooms/floor2Meeting";
 const ISLAND_BENCH_ID = "floor-2/island-bench";
 import { MeetingRoomAccess, type MeetingRoomState } from "./meetingRoomAccess";
+import { deriveRoomSchedule, type Formatters, type LiveRoom, type ScheduledBooking, type ScheduledContext } from "./scheduledRooms";
 import { FloorTransition, walkLegs } from "../interact/FloorTransition";
 import { buildWorldContents } from "./worldContents";
 import { FACADE_Z, FRAME, v1Rooms } from "../adapters/v1Floor";
@@ -184,6 +185,11 @@ export interface Vo3dCaveMeetingState {
    *  room's display (or is already in that room's call) while standing in the room. The same panel, the
    *  same call store; only the meeting id and the screen it lands on differ. */
   room?: string;
+  /** SCHEDULED MEETINGS — that room's stable id (`floor-2/<slug>`), or "". */
+  roomId?: string;
+  /** SCHEDULED MEETINGS — the viewer's own booking of that room when one is in reach (app/scheduledRooms),
+   *  else null. Context only: Start / Join are still the call store's, unchanged. */
+  scheduled?: ScheduledContext | null;
 }
 
 /** The verbs. Each one is a straight pass to CaveLiveShare, which is a straight pass to the app's call
@@ -224,6 +230,11 @@ export interface Vo3dMeetingRooms {
   list(): { id: string; name: string; kind: string; capacity: number }[];
   state(roomId: string): { state: MeetingRoomState; selfAuthorized: boolean } | null;
   setState(roomId: string, state: MeetingRoomState, opts?: { selfAuthorized?: boolean }): boolean;
+  /** SCHEDULED MEETINGS — the floor's bookings and the server's live-room facts, per room id, pushed in
+   *  by the HUD's schedule bridge (and re-pushed on a clock so time-driven states advance). From the
+   *  first push on, the door signs and room access are derived from it (app/scheduledRooms); before
+   *  it, every room is exactly as it was. */
+  setSchedule(rooms: Readonly<Record<string, { bookings: readonly ScheduledBooking[]; live?: LiveRoom }>>, fmt: Formatters): void;
 }
 
 /** What a mounted V2 world hands back. `dispose()` is idempotent and, once called, the world is dead:
@@ -342,6 +353,12 @@ export interface Vo3dWorld {
    *  and the journey begins when they arrive. Refused while a journey is already running, which is what
    *  makes a mashed button one journey rather than two. Omit `to` for "the other floor". */
   useElevator(to?: Vo3dFloorId): boolean;
+  /** SCHEDULED MEETINGS — WALK THERE: to a Meeting Floor room's approach point through the movement that
+   *  already exists. On floor 2 it is an ordinary routed walk; from the ground floor it is the lift's own
+   *  "walk to the doors, ride" journey, and the routed walk continues when the car arrives upstairs.
+   *  "here" when already in or at the room (nothing moves). A click-walk, or a movement key in PLAYER,
+   *  cancels it like any other walk. */
+  walkToMeetingRoom?(roomId: string): "here" | "walking" | "elevator" | "busy" | "unreachable" | "unknown";
   /** PHASE 7A — WHICH CAMERA IS DRIVING, pushed out to the host as it changes and once immediately, so a
    *  subscriber never has to guess the current mode. The branded HUD is hidden while PLAYER owns the
    *  pointer and shown over OFFICE and EXPLORE. Returns its own unsubscribe. */
@@ -726,6 +743,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       presenter: st.presenter,
       note: st.note,
       room: roomVenue ? meetingRoom(roomVenue)?.name ?? "" : "",
+      roomId: roomVenue ?? "",
+      scheduled: roomVenue ? scheduledContext.get(roomVenue) ?? null : null,
     };
   }
   // ---- THE MEETING FLOOR'S ROOM DISPLAYS --------------------------------------------------------------
@@ -734,6 +753,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // (`mf-<slug>`) and its own screen. Nothing here is a second media system.
   /** the room the panel is about: the one the viewer is standing in */
   let roomVenue: string | null = null;
+  /** SCHEDULED MEETINGS — per room, the viewer's own booking in reach (filled by refreshScheduledRooms) */
+  const scheduledContext = new Map<string, ScheduledContext>();
   /** the room whose display the viewer last walked up to; dropped when they leave that room */
   let displayFocus: string | null = null;
   function updateRoomVenue(p: Vec2): void {
@@ -763,7 +784,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   function notifyCaveMeetingIfChanged(): void {
     if (caveMeetingListeners.size === 0) return;
     const next = readCaveMeeting();
-    const signature = Object.values(next).join("|");
+    const signature = JSON.stringify(next);
     if (signature === lastCaveMeetingSignature) return;
     lastCaveMeetingSignature = signature;
     for (const cb of caveMeetingListeners) cb(next);
@@ -1133,6 +1154,12 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  the same way V1's own spawnMovedRef gates its: a restore that lands mid-walk would yank somebody out
    *  of a walk they started, and once they have moved, where they started stopped being meaningful. */
   let selfMovedByUser = false;
+  /** SCHEDULED MEETINGS — a Walk There waiting for the lift to reach the Meeting Floor. Dropped by any
+   *  newer walk, any other arrival, or a movement key; consumed when the car arrives upstairs. */
+  let meetingWalk: { roomId: string } | null = null;
+  /** the lift trip waiting for its walk to the doors (see callElevator); declared up here because
+   *  walkToGround, above the lift code, drops it */
+  let pendingFloor: Vo3dFloorId | null = null;
   /** The restore has already landed; it is a one-shot. */
   let selfRestored = false;
 
@@ -1451,6 +1478,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     }
     // A NEWER WALK SUPERSEDES A HELD ONE: whatever the lock was holding, this click is what they want now.
     roomLockHeldWalk = null;
+    // …and a lift trip still waiting for its approach, and Walk There's continuation — but only a walk that
+    // is actually taken does: a click refused above (the ride itself owns the body) cancels nothing. The
+    // lift's own walk to its doors goes through startApproach, never through here.
+    pendingFloor = null;
+    meetingWalk = null;
     // A FLOOR ABOVE THE GROUND ONE IS OFF THE LATTICE, so its walks are planned on its own geometry.
     //
     // This is not a second pathfinder. planWalk is welded to V1's 90 x 78 grid — it snaps a cell, floods
@@ -1692,13 +1724,40 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // meeting shuts the door) and whether the room's own meeting is live on the call store. Room status
   // only; nobody's personal status is read or written here.
   let liveMeetingIds: ReadonlySet<string> = new Set();
+  /** SCHEDULED MEETINGS — the last schedule pushed in (null until the first push: the pre-schedule rules). */
+  let schedule: { rooms: Readonly<Record<string, { bookings: readonly ScheduledBooking[]; live?: LiveRoom }>>; fmt: Formatters } | null = null;
+  let refreshingSigns = false;
   function refreshMeetingSigns(): void {
+    if (schedule) { refreshScheduledRooms(schedule.rooms, schedule.fmt); return; }
     for (const r of MEETING_ROOMS) {
       const a = meetingAccess.get(r.id)?.state ?? "available";
       const live = liveMeetingIds.has(r.meetingId);
       const st = a === "active" ? "private" : a === "starting" ? "starting" : a === "ended" && !live ? "ended" : live ? "in-meeting" : "available";
       meetingFloor.rooms.get(r.id)?.sign.setState(st);
     }
+  }
+  /** THE SCHEDULED FLOOR: per room, one derivation feeds the three things that already exist — the sign,
+   *  the room access (a private booking's door) and the panel's context. The live flag is the server's
+   *  (the schedule bridge's meeting_presence) or the call store's, whichever has heard first. */
+  function refreshScheduledRooms(rooms: Readonly<Record<string, { bookings: readonly ScheduledBooking[]; live?: LiveRoom }>>, fmt: Formatters): void {
+    if (refreshingSigns) return;
+    refreshingSigns = true;
+    try {
+      const now = Date.now();
+      for (const r of MEETING_ROOMS) {
+        const entry = rooms[r.id];
+        const heard = entry?.live;
+        const live: LiveRoom = liveMeetingIds.has(r.meetingId) && !heard?.live ? { live: true } : heard ?? { live: false };
+        const view = deriveRoomSchedule(entry?.bookings ?? [], live, now, fmt);
+        meetingFloor.rooms.get(r.id)?.sign.setState(view.sign.state, view.sign);
+        meetingAccess.set(r.id, view.access.state, { selfAuthorized: view.access.selfAuthorized });
+        if (view.context) scheduledContext.set(r.id, view.context);
+        else scheduledContext.delete(r.id);
+      }
+    } finally {
+      refreshingSigns = false;
+    }
+    notifyCaveMeetingIfChanged();
   }
   meetingAccess.subscribe(() => refreshMeetingSigns());
   // ---- PHASE 6C — seat identity, occupancy and the seated hand-off to V1 ------------------------------
@@ -2017,7 +2076,28 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  an ordinary `approach`, so pressing E (or clicking it) walks the employee to the lobby first and the
    *  journey starts on ARRIVAL — which is what makes "use the elevator" work identically from anywhere in
    *  the building, in any view, without a second way of moving anybody. */
-  let pendingFloor: Vo3dFloorId | null = null;
+  /** Walk There. See Vo3dWorld.walkToMeetingRoom. */
+  function walkToMeetingRoom(roomId: string): "here" | "walking" | "elevator" | "busy" | "unreachable" | "unknown" {
+    const r = meetingRoom(roomId);
+    if (!r) return "unknown";
+    const at = { x: avatar.position.x, z: avatar.position.z };
+    const arrived = currentFloor === FLOOR2_ID && (pointInRect(at, r.interior) || Math.hypot(at.x - r.approach.x, at.z - r.approach.z) < 48);
+    if (arrived) return "here";
+    // PLAYER HAS NO AUTOMATED WALK, by design: it outranks Navigation so a stray click can never steal the
+    // body from the keys. Walk There is an automated walk, so it hands the view back to OFFICE (the lift
+    // journey changes view the same way) and walks from there; any click then cancels it as usual.
+    if (playerMode.active) setCameraMode("office");
+    if (currentFloor === FLOOR2_ID) return walkToGround(r.approach.x, r.approach.z).ok ? "walking" : "unreachable";
+    if (!floorTransition || floorTransition.busy) return "busy";
+    // The lift's own journey (walk to its call point, board, ride); set AFTER, because the walk to the
+    // doors goes through walkToGround, which drops any Walk There in flight.
+    if (!callElevator(FLOOR2_ID)) return "busy";
+    // callElevator says yes even when the walk to its doors could not be planned; say so honestly
+    // rather than showing "taking the lift" while nothing moves.
+    if (!floorTransition.busy && approachCtl.state !== "walking") { pendingFloor = null; return "unreachable"; }
+    meetingWalk = { roomId };
+    return "elevator";
+  }
   function activateInteractable(id: string, kind: "seat" | "lounge" | "approach" | "person", near?: Vec2): boolean {
     // PHASE 6D — A PERSON. The one activation that starts nothing in this world: it SELECTS, and the host
     // decides what a selection means (app/interactions.ts). The pointer is handed back so the card that
@@ -2187,6 +2267,13 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // hand the avatar over cleanly: stop the walker, cancel a half-finished approach, leave engaged seats
     // alone (PlayerMode simply does not move Bon while Interaction owns him, and takes over when it ends)
     yieldAvatar: () => { stopTour(); navCtl.stop(); approachCtl.cancel(); },
+    // THE KEYS WIN over any automated walk: stop it and whatever was queued behind it (a lift trip, Walk
+    // There). Navigation then releases the body and PLAYER takes it back on its next frame.
+    onManualOverride: (owner) => {
+      if (floorTransition?.busy) return; // the ride itself is not interruptible (see FloorTransition)
+      if (owner !== "Navigation" && !(owner === "Interaction" && approachCtl.state === "walking")) return;
+      stopTour(); navCtl.stop(); approachCtl.cancel(); pendingFloor = null; meetingWalk = null;
+    },
   });
   // THE LOCAL TAKEOFF, STRAIGHT OUT TO THE OTHER BROWSERS. Not through SelfMovementFeed: that funnel
   // turns continuous motion into V1 movements, and a jump is neither continuous nor a movement — it
@@ -2301,6 +2388,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       return;
     }
     pendingFloor = null;
+    meetingWalk = null;
     // A MEETING ROOM'S DISPLAY: walking up to it is what opens that room's meeting panel.
     const displayRoom = entityId.endsWith("/display") ? entityId.slice(0, -"/display".length) : null;
     if (displayRoom && MEETING_ROOM_IDS.has(displayRoom)) {
@@ -2972,6 +3060,13 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       playerMode.camera.snap();
     },
     endCinematic: (arrivedOn) => {
+      // WALK THERE, continued: the car is upstairs and the body is free again; finish the routed walk on
+      // the floor's own geometry. Deferred a tick so the camera mode below settles first.
+      if (meetingWalk && arrivedOn === FLOOR2_ID) {
+        const { roomId } = meetingWalk;
+        meetingWalk = null;
+        setTimeout(() => { if (!disposed) walkToMeetingRoom(roomId); }, 60);
+      } else meetingWalk = null;
       if (restorePitch !== null) { playerMode.camera.pitch = restorePitch; restorePitch = null; }
       playerMode.camera.boomScale = 1;
       playerMode.setPromptHidden(false);
@@ -2998,7 +3093,15 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  the journey begins when they arrive. One entry point for the key, the click, the GUI and the HUD. */
   function callElevator(to: Vo3dFloorId = otherFloor()): boolean {
     if (!floorTransition || floorTransition.busy) return false;
-    if (floorTransition.canBoardFrom(playerMode.body.pos)) { pendingFloor = null; return floorTransition.start(to); }
+    // WHERE THE BODY REALLY IS. Outside PLAYER the player body is not kept in step with the avatar, so
+    // reading it here said "already at the doors" from anywhere on the floor and skipped the routed walk
+    // for the ride's own scripted, uninterruptible one. The avatar is the truth in every view.
+    const at = playerMode.active ? playerMode.body.pos : { x: avatar.position.x, z: avatar.position.z };
+    if (floorTransition.canBoardFrom(at)) {
+      pendingFloor = null;
+      if (!playerMode.active) playerMode.body.pos = { ...at };
+      return floorTransition.start(to);
+    }
     pendingFloor = to;
     startApproach(`${specOf(currentFloor).id}/call`);
     return true;
@@ -6009,6 +6112,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       list: () => MEETING_ROOMS.map((r) => ({ id: r.id, name: r.name, kind: r.kind, capacity: r.capacity })),
       state: (roomId: string) => meetingAccess.get(roomId),
       setState: (roomId: string, state: MeetingRoomState, opts?: { selfAuthorized?: boolean }) => meetingAccess.set(roomId, state, opts),
+      setSchedule: (rooms, fmt) => {
+        schedule = { rooms, fmt };
+        refreshMeetingSigns();
+      },
     },
     subscribeDevTools: (listener) => {
       devToolsListeners.add(listener);
@@ -6044,6 +6151,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     },
     availableViewModes: () => FLOORS[currentFloor].viewModes,
     useElevator: (to) => callElevator(to ?? otherFloor()),
+    walkToMeetingRoom,
     subscribeViewMode: (listener) => {
       viewModeListeners.add(listener);
       // Told at once: a host that subscribes after the world was built would otherwise sit on its own

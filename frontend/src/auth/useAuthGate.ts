@@ -23,6 +23,7 @@ import { setDevIdentity as setAttendanceDevIdentity } from "../services/attendan
 import { setDevIdentity as setTeamMapDevIdentity } from "../services/teamMap";
 import { setDevIdentity as setExperienceCatalogDevIdentity } from "../services/office/experienceCatalog";
 import { setDevIdentity as setMeetingChatDevIdentity } from "../services/meeting/meetingChatClient";
+import { setDevIdentity as setScheduledMeetingsDevIdentity } from "../services/meetings/scheduledMeetingsStore";
 
 // Boot-time permission gate for the Virtual Office. Calls Atlas's
 // GET /api/v1/auth/me and checks the can_view_virtual_office flag.
@@ -265,6 +266,8 @@ function seedDevBypassIdentity(): void {
   // reaches it the same way: no bearer token exists when the gate is bypassed.
   setExperienceCatalogDevIdentity(email);
   setMeetingChatDevIdentity(email);
+  // Scheduled Meetings — REST client and its own socket, seeded together.
+  setScheduledMeetingsDevIdentity(email);
   setFeedClientDevIdentity(email);
   setQuestsClientDevIdentity(email);
   // Seeds the notifications REST client AND its socket identity in one call.

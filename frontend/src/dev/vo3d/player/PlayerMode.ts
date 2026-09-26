@@ -100,6 +100,10 @@ export type PlayerDeps = {
   standUp: () => void;
   /** stop navigation/approach so PLAYER can take the avatar cleanly */
   yieldAvatar: () => void;
+  /** THE ESCAPE HATCH: a movement key pressed while something else owns the body. The world decides:
+   *  an automated walk (a routed walk, or an approach still walking to a fixture such as the lift's
+   *  doors) is stopped along with anything queued behind it; a seat or a lift ride is left alone. */
+  onManualOverride?: (owner: string) => void;
 };
 
 export class PlayerMode {
@@ -301,6 +305,7 @@ export class PlayerMode {
     this.state.owner = owner;
     // an interaction is driving Bon: keep the camera on him, move nothing, and take him back when it ends
     if (owner !== "Player") {
+      if (this.input.axis.x || this.input.axis.z) this.d.onManualOverride?.(owner);
       this.state.sprinting = false;
       this.state.travelled = 0;
       // Somebody else is driving the body; a jump cannot continue through a seat or an approach, and

@@ -1,0 +1,54 @@
+/* The 5-minute meeting reminder. Top-right, clear of the bottom-centre dock, the bottom-left meeting panel
+   and the bottom-right checkout / Toucan corner; the same cream card family as the 8-hour reminder and
+   the room panel. Below the z-index 60 modal family, which it steps behind like the rest of the HUD. */
+.card {
+  position: fixed;
+  top: 76px;
+  right: 16px;
+  z-index: 46;
+  width: min(320px, calc(100vw - 32px));
+  box-sizing: border-box;
+  display: flex;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.08);
+  box-shadow: 0 16px 40px rgba(18, 16, 28, 0.22), 0 2px 6px rgba(18, 16, 28, 0.08);
+  color: #241f30;
+  animation: reminderIn 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes reminderIn { from { opacity: 0; transform: translateY(-8px); } }
+@media (prefers-reduced-motion: reduce) { .card { animation: none; } }
+
+.icon {
+  flex: none; display: flex; align-items: center; justify-content: center;
+  width: 44px; height: 44px; border-radius: 14px; background: #eef4ec;
+}
+.body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.title {
+  all: unset; cursor: pointer; font-size: 16px; font-weight: 800; letter-spacing: -0.01em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.title:hover { text-decoration: underline; text-underline-offset: 2px; }
+.title:focus-visible { outline: 2px solid #4bb96a; outline-offset: 2px; border-radius: 4px; }
+.private { color: #b8453a; font-size: 12px; font-weight: 800; }
+.when { font-size: 13px; color: rgba(36, 31, 48, 0.7); }
+.status { font-size: 12px; font-weight: 700; margin-top: 2px; }
+.status::before { content: "● "; }
+.free { color: #2f8a52; }
+.live { color: #c46a2e; }
+.busy { color: #a56d12; }
+.walkNote { font-size: 12px; color: rgba(36, 31, 48, 0.55); }
+.actions { display: flex; gap: 8px; margin-top: 10px; }
+.primary, .ghost {
+  all: unset; box-sizing: border-box; cursor: pointer; text-align: center;
+  padding: 8px 14px; border-radius: 12px; font-size: 13px; font-weight: 700;
+}
+.primary { flex: 1; background: #2f6b45; color: #fdfcfa; box-shadow: 0 2px 0 #1f4a2f, 0 6px 14px rgba(47, 107, 69, 0.22); }
+.primary:hover:not(:disabled) { background: #275939; }
+.primary:active:not(:disabled) { transform: translateY(1px); box-shadow: 0 1px 0 #1f4a2f; }
+.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.ghost { border: 1px solid rgba(24, 20, 34, 0.12); background: #fffefc; }
+.ghost:hover { background: rgba(24, 20, 34, 0.04); }
+.primary:focus-visible, .ghost:focus-visible { outline: 2px solid #4bb96a; outline-offset: 2px; }

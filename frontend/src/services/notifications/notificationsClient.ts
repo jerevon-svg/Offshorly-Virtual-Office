@@ -20,7 +20,8 @@ export type NavKind =
   | "missions"
   | "achievements"
   | "hub"
-  | "checkout";
+  | "checkout"
+  | "meeting";
 
 export interface AppNotification {
   id: string;

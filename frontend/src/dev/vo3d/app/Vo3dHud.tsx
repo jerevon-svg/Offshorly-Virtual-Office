@@ -106,6 +106,9 @@ import {
   subscribeExperience,
   type DefaultViewPreference,
 } from "../../../services/settings/experiencePreferences";
+import { MeetingsPanel } from "../../../components/Meetings/MeetingsPanel";
+import { useScheduleBridge } from "./useScheduleBridge";
+import { Vo3dMeetingReminder } from "./Vo3dMeetingReminder";
 import styles from "./Vo3dHud.module.css";
 
 // Global Team Map — React.lazy so MapLibre (~250 KB) only loads when someone opens the map. V1's own rule.
@@ -216,6 +219,14 @@ export function Vo3dHud({
   const [tasksOpen, setTasksOpen] = useState(false);
   const [tasksTab, setTasksTab] = useState<TasksTab>("quests");
   const [rewardsOpen, setRewardsOpen] = useState(false);
+  // SCHEDULED MEETINGS — Upcoming Meetings + Schedule, one screen-owning panel.
+  const [meetingsOpen, setMeetingsOpen] = useState(false);
+  /** the meeting a notification or the reminder asked the panel to show */
+  const [meetingsFocus, setMeetingsFocus] = useState<string | null>(null);
+  const openMeetings = useCallback((focus: string | null = null) => {
+    setMeetingsFocus(focus);
+    setMeetingsOpen(true);
+  }, []);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [boardsOpen, setBoardsOpen] = useState(false);
@@ -296,6 +307,7 @@ export function Vo3dHud({
     companyHub.isOpen ||
     tasksOpen ||
     rewardsOpen ||
+    meetingsOpen ||
     settingsOpen ||
     notificationsOpen ||
     boardsOpen ||
@@ -351,7 +363,10 @@ export function Vo3dHud({
   }, [dockVisible]);
 
   /** The z-index 60 modal family the dock must step BELOW rather than merely behind. */
-  const anyModalOpen = companyHub.isOpen || tasksOpen || rewardsOpen || teamMapOpen || overlayToolOpen;
+  const anyModalOpen = companyHub.isOpen || tasksOpen || rewardsOpen || meetingsOpen || teamMapOpen || overlayToolOpen;
+  // THE SCHEDULE, pushed into the world's door signs, room access and in-room panel — and the one
+  // number the dock tile shows: meetings still waiting for this viewer's reply.
+  const awaitingReply = useScheduleBridge(worldRef, ready, selfId);
 
   const navigate = useCallback((destination: NotificationDestination): boolean => {
     switch (destination.kind) {
@@ -378,6 +393,10 @@ export function Vo3dHud({
       case "hub":
         openCompanyHub("manual");
         return true;
+      case "meeting":
+        // By id only: the panel shows the meeting as it is NOW (or says it is no longer scheduled).
+        openMeetings(destination.meetingId);
+        return true;
       case "conversation":
         // V1'S OWN BRANCH, through V1's own gate: outside real mode there is no conversation to open, so
         // this refuses rather than half-performing. The opener itself is the host's existing
@@ -393,7 +412,7 @@ export function Vo3dHud({
       default:
         return false;
     }
-  }, [onOpenConversation, onOpenProfile, self]);
+  }, [onOpenConversation, onOpenProfile, self, openMeetings]);
 
   /** Search's row actions, all three routed into work that already exists. */
   const locate = useCallback((layer: AssetLayer) => {
@@ -490,6 +509,9 @@ export function Vo3dHud({
           ),
         }]
       : []),
+    // SCHEDULED MEETINGS. One tile for the whole feature: Upcoming Meetings, with Schedule inside it.
+    { kind: "action", key: "meetings", icon: <HudIcon name="clock" />, label: "Meetings",
+      ariaLabel: "Open meetings", active: meetingsOpen, badge: awaitingReply, onClick: () => openMeetings() },
     { kind: "action", key: "rewards", icon: <HudIcon name="rewards" />, label: "Rewards",
       ariaLabel: "Open Rewards", active: rewardsOpen, onClick: () => setRewardsOpen(true) },
     ...(chatMode === "real"
@@ -597,6 +619,11 @@ export function Vo3dHud({
           selfId={selfId}
           onInvite={() => setInvitePickerOpen(true)}
         />
+      )}
+      {/* SCHEDULED MEETINGS — the 5-minute reminder with Walk There. Steps aside with the rest of the HUD
+          whenever a tool owns the screen. */}
+      {!officeToolOpen && (
+        <Vo3dMeetingReminder worldRef={worldRef} ready={ready} selfId={selfId} onOpen={(id) => openMeetings(id)} />
       )}
       {invitePickerOpen && (
         // THE SAME PICKER New Message uses, asked a different question. Single mode: one person per
@@ -707,6 +734,15 @@ export function Vo3dHud({
       {companyHub.isOpen && <CompanyHub />}
       {tasksOpen && <TasksPanel tab={tasksTab} onTabChange={setTasksTab} onClose={() => setTasksOpen(false)} />}
       {rewardsOpen && <RewardsPanel onClose={() => setRewardsOpen(false)} />}
+      {meetingsOpen && (
+        <MeetingsPanel
+          selfId={selfId}
+          people={pickerPeople}
+          resolveDisplayName={resolveDisplayName}
+          focusMeetingId={meetingsFocus}
+          onClose={() => setMeetingsOpen(false)}
+        />
+      )}
       {settingsOpen && (
         <HudSettings
           onClose={() => setSettingsOpen(false)}

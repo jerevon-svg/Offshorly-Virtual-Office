@@ -17,6 +17,7 @@ from app.models.redemption import RewardRedemption
 from app.models.reward import RewardGrant
 from app.models.request import ConversationRequest
 from app.models.room_request import RoomEntryRequest
+from app.models.scheduled_meeting import ScheduledMeeting, ScheduledMeetingInvitee
 from app.models.talk_request import TalkRequest
 from app.models.toucan import (
     ToucanAttentionCursor,
@@ -57,6 +58,8 @@ __all__ = [
     "RewardGrant",
     "RewardRedemption",
     "RoomEntryRequest",
+    "ScheduledMeeting",
+    "ScheduledMeetingInvitee",
     "TalkRequest",
     "ToucanAttentionCursor",
     "ToucanConversation",

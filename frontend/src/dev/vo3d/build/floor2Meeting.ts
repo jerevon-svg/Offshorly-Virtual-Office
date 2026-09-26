@@ -346,16 +346,20 @@ export function setRoomDisplayTexture(v: RoomDisplayView, tex: THREE.Texture | n
 
 const KIND_LABEL: Record<MeetingRoomSpec["kind"], string> = { huddle: "Huddle", standard: "Meeting", large: "Meeting", boardroom: "Boardroom", project: "Project room", lounge: "Lounge meeting" };
 /** WHAT THE DOOR SIGN SAYS. Room status only — never anybody's personal status. */
-export type RoomSignState = "available" | "starting" | "in-meeting" | "private" | "ended";
+export type RoomSignState = "available" | "upcoming" | "starting" | "in-meeting" | "private" | "ended";
 const SIGN_LINE: Record<RoomSignState, { text: string; sub?: string; color: string }> = {
   available: { text: "Available", color: "#62e393" },
-  starting: { text: "Meeting starting", color: "#f2c14e" },
+  upcoming: { text: "Upcoming", color: "#7fc4ff" },
+  starting: { text: "Starting Soon", color: "#f2c14e" },
   "in-meeting": { text: "In Meeting", color: "#ff8a4c" },
   private: { text: "In Meeting", sub: "Private · DND", color: "#ff5a52" },
   ended: { text: "Meeting ended", color: "#9aa3ad" },
 };
 
-export interface RoomSignView { setState(state: RoomSignState): void; readonly state: RoomSignState }
+/** SCHEDULED MEETINGS' additions to a sign: the second line ("Product Sync · 2:00 PM", "Next: …"), the
+ *  status word and its small line. Each falls back to the room's printed default. */
+export interface RoomSignDetail { line2?: string; text?: string; sub?: string }
+export interface RoomSignView { setState(state: RoomSignState, detail?: RoomSignDetail): void; readonly state: RoomSignState }
 
 /** THE DOOR SIGN: beside the door on the corridor side, the room's one printed identity —
  *
@@ -371,16 +375,27 @@ function signs(r: MeetingRoomSpec, into: THREE.Group): RoomSignView {
   const tex = canvas ? new THREE.CanvasTexture(canvas) : null;
   if (tex) { tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4; }
   let current: RoomSignState = "available";
-  const draw = (state: RoomSignState): void => {
+  let drawn = "";
+  /** longest prefix of `text` that fits `max` px in the plate's current font, with an ellipsis */
+  const fit = (text: string, max: number): string => {
+    if (!plate || plate.measureText(text).width <= max) return text;
+    let t = text;
+    while (t.length > 1 && plate.measureText(`${t}…`).width > max) t = t.slice(0, -1);
+    return `${t.trimEnd()}…`;
+  };
+  const draw = (state: RoomSignState, detail: RoomSignDetail = {}): void => {
     current = state;
-    if (!plate || !tex) return;
-    const line = SIGN_LINE[state];
+    const key = `${state}|${detail.line2 ?? ""}|${detail.text ?? ""}|${detail.sub ?? ""}`;
+    if (!plate || !tex || key === drawn) return;
+    drawn = key;
+    const base = SIGN_LINE[state];
+    const line = { ...base, text: detail.text ?? base.text, sub: detail.sub ?? base.sub };
     const w = 256, h = 144;
     plate.fillStyle = "#151c27"; plate.fillRect(0, 0, w, h);
     plate.fillStyle = "#ffffff"; plate.font = `800 ${Math.round(h * 0.25)}px system-ui, sans-serif`;
     plate.fillText(r.name.toUpperCase(), w * 0.08, h * 0.32);
     plate.fillStyle = "rgba(255,255,255,0.62)"; plate.font = `500 ${Math.round(h * 0.12)}px system-ui, sans-serif`;
-    plate.fillText(`${KIND_LABEL[r.kind]} · ${r.capacity} seats`, w * 0.08, h * 0.52);
+    plate.fillText(fit(detail.line2 ?? `${KIND_LABEL[r.kind]} · ${r.capacity} seats`, w * 0.86), w * 0.08, h * 0.52);
     plate.fillStyle = line.color; plate.beginPath(); plate.arc(w * 0.1, h * 0.72, h * 0.045, 0, Math.PI * 2); plate.fill();
     plate.font = `700 ${Math.round(h * 0.13)}px system-ui, sans-serif`; plate.fillText(line.text, w * 0.16, h * 0.76);
     if (line.sub) { plate.font = `600 ${Math.round(h * 0.1)}px system-ui, sans-serif`; plate.fillText(line.sub, w * 0.16, h * 0.92); }
@@ -398,7 +413,8 @@ function signs(r: MeetingRoomSpec, into: THREE.Group): RoomSignView {
   s.add(face);
   into.add(s);
   draw("available");
-  return { setState: (st) => { if (st !== current) draw(st); }, get state() { return current; } };
+  // redrawn only when what it says changes (draw() compares the whole text, not just the state)
+  return { setState: (st, detail) => draw(st, detail), get state() { return current; } };
 }
 
 function drawDirectory(ctx: CanvasRenderingContext2D, w: number, h: number): void {

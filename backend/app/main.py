@@ -31,6 +31,7 @@ from app.routers import quests as quests_router
 from app.routers import requests as requests_router
 from app.routers import rewards as rewards_router
 from app.routers import room_requests as room_requests_router
+from app.routers import scheduled_meetings as scheduled_meetings_router
 from app.routers import talk_requests as talk_requests_router
 from app.routers import team_map as team_map_router
 from app.routers import toucan as toucan_router
@@ -81,6 +82,10 @@ async def _start_delegation_sweeper() -> None:
     from app.services.delegation_lifecycle import delegation_sweeper
 
     delegation_sweeper.start()
+    # Scheduled Meetings — the 5-minute reminder; see services/meeting_notifications.py.
+    from app.services.meeting_notifications import meeting_reminder_sweeper
+
+    meeting_reminder_sweeper.start()
 
 
 @fastapi_app.on_event("shutdown")
@@ -88,6 +93,9 @@ async def _stop_delegation_sweeper() -> None:
     from app.services.delegation_lifecycle import delegation_sweeper
 
     await delegation_sweeper.stop()
+    from app.services.meeting_notifications import meeting_reminder_sweeper
+
+    await meeting_reminder_sweeper.stop()
 
 
 @fastapi_app.on_event("startup")
@@ -130,6 +138,7 @@ fastapi_app.include_router(chat_router.router)
 fastapi_app.include_router(calls_router.router)
 fastapi_app.include_router(requests_router.router)
 fastapi_app.include_router(room_requests_router.router)
+fastapi_app.include_router(scheduled_meetings_router.router)
 fastapi_app.include_router(talk_requests_router.router)
 fastapi_app.include_router(hub_router.router)
 fastapi_app.include_router(feed_router.router)

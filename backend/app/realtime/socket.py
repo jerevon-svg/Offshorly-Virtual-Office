@@ -46,6 +46,7 @@ from app.realtime.state import (
 from app.services.call_invites import INVITE_TTL_SECONDS
 from app.services.call_registry import MEETING_KEY_PREFIX
 from app.services import meeting_chat as meeting_chat_service
+from app.services import scheduled_meetings
 from app.routers.calls import meeting_room_key, _MEETING_ID
 from app.services.call_invites import wire as invite_wire
 from app.services.chat_assistant import detect_toucan_invocation, schedule_reply
@@ -287,6 +288,10 @@ def _meeting_presence_payload() -> dict:
                 "meetingId": key[len(MEETING_KEY_PREFIX):],
                 "participants": entry["participants"],
                 "host": meeting_hosts.host_of(key) or "",
+                # SCHEDULED MEETINGS — which booking this live room belongs to (public window facts
+                # only), so every client can tell "the booked meeting is running" from "an earlier or
+                # ad-hoc meeting is still in there". None for anything unbooked.
+                "booking": scheduled_meetings.live_booking_wire(key),
             }
         )
     return {"meetings": out}
@@ -327,6 +332,7 @@ def _release_meeting_host_for(key: str) -> None:
     meeting_hosts.release(key, remaining)
     if not remaining:
         meeting_chat.end(key)
+        scheduled_meetings.release_live(key)
 
 
 async def _broadcast_dnd_status() -> None:
@@ -843,8 +849,23 @@ async def call_joined(sid: str, payload: dict | None) -> None:
         # exactly one host — see meeting_hosts.py for the full argument.
         meeting_key = _meeting_key_from_payload(payload)
         if meeting_key is not None:
+            # SCHEDULED MEETINGS — a private Meeting Floor booking admits only its invitees, here as at
+            # the token endpoint, so a client cannot register itself into a private room's meeting (its
+            # host, chat and reactions) without media. The DB read is awaited BEFORE the atomic part.
+            meeting_id = meeting_key[len(MEETING_KEY_PREFIX):]
+            booking_id = None
+            if scheduled_meetings.is_meeting_floor_meeting(meeting_id):
+                async with async_session_maker() as db:
+                    allowed, booking_id = await scheduled_meetings.admit(db, meeting_id, email)
+                    if allowed and booking_id is None and not call_registry.participants(meeting_key):
+                        early = await scheduled_meetings.early_booking(db, meeting_id, email)
+                        booking_id = early.id if early else None
+                if not allowed:
+                    return
+            fresh = not call_registry.participants(meeting_key)
             changed = call_registry.join(meeting_key, email, sid)
             meeting_hosts.ensure_host(meeting_key, email)
+            scheduled_meetings.bind_live(meeting_key, booking_id, fresh=fresh)
             if changed:
                 await _broadcast_meeting_presence()
             return
@@ -1169,6 +1190,15 @@ async def meeting_invite(sid: str, payload: dict | None) -> None:
         if dnd_registry.is_dnd(to_email):
             await sio.emit("meeting_invite_failed", fail("dnd"), to=sid)
             return
+        # SCHEDULED MEETINGS — the ring is not a way round a private room: under a private booking
+        # both ends must be its invitees. The reason says "private" and nothing about the meeting.
+        if scheduled_meetings.is_meeting_floor_meeting(meeting_id):
+            async with async_session_maker() as db:
+                inviter_ok, _ = await scheduled_meetings.admit(db, meeting_id, email)
+                invitee_ok, _ = await scheduled_meetings.admit(db, meeting_id, to_email)
+            if not (inviter_ok and invitee_ok):
+                await sio.emit("meeting_invite_failed", fail("private"), to=sid)
+                return
         if to_email in call_registry.participants(meeting_key):
             await sio.emit("meeting_invite_failed", fail("already_in"), to=sid)
             return

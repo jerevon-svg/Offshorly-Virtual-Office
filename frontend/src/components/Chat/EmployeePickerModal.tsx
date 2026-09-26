@@ -14,15 +14,31 @@ type EmployeePickerModalProps = {
   /** Multi mode also hands back the optional, already-trimmed group name ("" when left blank).
    *  Single mode never passes a second argument. */
   onConfirm: (emails: string[], groupName?: string) => void;
+  /** Multi mode only — for surfaces that are not New Group Chat (Scheduled Meetings' invitees). Every
+   *  one defaults to New Group Chat's behaviour, so existing callers are unchanged. */
+  minSelected?: number;
+  confirmLabel?: (count: number) => string;
+  showGroupName?: boolean;
+  initialSelected?: string[];
 };
 
 // Shared employee search/select surface for the Global Chat entry points — "New Message" and
 // "Find Person" both resolve to a single picked employee (functionally identical: search, pick
 // one, open/create their DM via the existing idempotent flow), while "New Group Chat" reuses the
 // exact same search/list UI in multi-select mode.
-export function EmployeePickerModal({ mode, title, people, onClose, onConfirm }: EmployeePickerModalProps) {
+export function EmployeePickerModal({
+  mode,
+  title,
+  people,
+  onClose,
+  onConfirm,
+  minSelected = 2,
+  confirmLabel = (n) => `Create Group (${n})`,
+  showGroupName = true,
+  initialSelected,
+}: EmployeePickerModalProps) {
   const [query, setQuery] = useState("");
-  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selected, setSelected] = useState<Set<string>>(() => new Set(initialSelected ?? []));
   const [groupName, setGroupName] = useState("");
 
   const matches = useMemo(() => {
@@ -61,7 +77,7 @@ export function EmployeePickerModal({ mode, title, people, onClose, onConfirm }:
             {mode === "single"
               ? "Pick one person"
               : selected.size === 0
-                ? "Pick two or more people"
+                ? minSelected <= 1 ? "Pick one or more people" : "Pick two or more people"
                 : `${selected.size} selected`}
           </span>
         </div>
@@ -108,7 +124,7 @@ export function EmployeePickerModal({ mode, title, people, onClose, onConfirm }:
         </div>
         {mode === "multi" && (
           <div className={styles.footer}>
-            <input
+            {showGroupName && (<input
               type="text"
               className={styles.groupNameInput}
               placeholder="Group name (optional)"
@@ -116,14 +132,14 @@ export function EmployeePickerModal({ mode, title, people, onClose, onConfirm }:
               maxLength={255}
               value={groupName}
               onChange={(e) => setGroupName(e.target.value)}
-            />
+            />)}
             <button
               type="button"
               className={styles.confirmButton}
-              disabled={selected.size < 2}
+              disabled={selected.size < minSelected}
               onClick={() => onConfirm(Array.from(selected), groupName.trim())}
             >
-              Create Group ({selected.size})
+              {confirmLabel(selected.size)}
             </button>
           </div>
         )}
