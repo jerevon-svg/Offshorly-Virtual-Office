@@ -107,6 +107,7 @@ import { MeetingRoomAccess, type MeetingRoomState } from "./meetingRoomAccess";
 import { deriveRoomSchedule, type Formatters, type LiveRoom, type ScheduledBooking, type ScheduledContext } from "./scheduledRooms";
 import { FloorTransition, walkLegs } from "../interact/FloorTransition";
 import { buildWorldContents } from "./worldContents";
+import type { PartyDestination, Vo3dGoTogetherHooks, Vo3dGoTogetherPort } from "./goTogether";
 import { FACADE_Z, FRAME, v1Rooms } from "../adapters/v1Floor";
 import { planWalk, type NavResult } from "../nav/planner";
 import { RoomLockController, collectLockableDoors } from "./roomLocks";
@@ -359,6 +360,10 @@ export interface Vo3dWorld {
    *  "here" when already in or at the room (nothing moves). A click-walk, or a movement key in PLAYER,
    *  cancels it like any other walk. */
   walkToMeetingRoom?(roomId: string): "here" | "walking" | "elevator" | "busy" | "unreachable" | "unknown";
+  /** GO TOGETHER V1 — the world's primitives for a travel party (app/goTogether.ts): where this body and a
+   *  peer are, the ordinary routed walk, the ordinary lift, Walk There, and two bounded holds on this
+   *  body's OWN lift ride. No second movement system and no second elevator — see goTogether.ts. */
+  goTogether?: Vo3dGoTogetherPort;
   /** PHASE 7A — WHICH CAMERA IS DRIVING, pushed out to the host as it changes and once immediately, so a
    *  subscriber never has to guess the current mode. The branded HUD is hidden while PLAYER owns the
    *  pointer and shown over OFFICE and EXPLORE. Returns its own unsubscribe. */
@@ -1160,6 +1165,12 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   /** the lift trip waiting for its walk to the doors (see callElevator); declared up here because
    *  walkToGround, above the lift code, drops it */
   let pendingFloor: Vo3dFloorId | null = null;
+  /** GO TOGETHER — a lift ride the party's leader is holding at the doors while the party gathers (see
+   *  startLiftRide), and the party's hooks. A click or a movement key drops the held ride like any trip. */
+  let heldLift: Vo3dFloorId | null = null;
+  /** between FloorTransition's board and alight (see its translateBody dep) */
+  let inLiftCar = false;
+  let partyHooks: Vo3dGoTogetherHooks | null = null;
   /** The restore has already landed; it is a one-shot. */
   let selfRestored = false;
 
@@ -1482,6 +1493,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // is actually taken does: a click refused above (the ride itself owns the body) cancels nothing. The
     // lift's own walk to its doors goes through startApproach, never through here.
     pendingFloor = null;
+    heldLift = null;
     meetingWalk = null;
     // A FLOOR ABOVE THE GROUND ONE IS OFF THE LATTICE, so its walks are planned on its own geometry.
     //
@@ -2094,7 +2106,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     if (!callElevator(FLOOR2_ID)) return "busy";
     // callElevator says yes even when the walk to its doors could not be planned; say so honestly
     // rather than showing "taking the lift" while nothing moves.
-    if (!floorTransition.busy && approachCtl.state !== "walking") { pendingFloor = null; return "unreachable"; }
+    // (A ride GO TOGETHER is holding at the doors while the party gathers is a journey under way too.)
+    if (!floorTransition.busy && approachCtl.state !== "walking" && !heldLift) { pendingFloor = null; return "unreachable"; }
     meetingWalk = { roomId };
     return "elevator";
   }
@@ -2272,7 +2285,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     onManualOverride: (owner) => {
       if (floorTransition?.busy) return; // the ride itself is not interruptible (see FloorTransition)
       if (owner !== "Navigation" && !(owner === "Interaction" && approachCtl.state === "walking")) return;
-      stopTour(); navCtl.stop(); approachCtl.cancel(); pendingFloor = null; meetingWalk = null;
+      stopTour(); navCtl.stop(); approachCtl.cancel(); pendingFloor = null; heldLift = null; meetingWalk = null;
+      partyHooks?.onUserMove();
     },
   });
   // THE LOCAL TAKEOFF, STRAIGHT OUT TO THE OTHER BROWSERS. Not through SelfMovementFeed: that funnel
@@ -2384,7 +2398,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     if (pendingFloor && entityId.endsWith("/call")) {
       const to = pendingFloor;
       pendingFloor = null;
-      floorTransition?.start(to);
+      startLiftRide(to);
       return;
     }
     pendingFloor = null;
@@ -2802,6 +2816,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   function approachCoworker(email: string): boolean {
     const at = coworkers.pointOf(email);
     if (!at) return false;
+    partyHooks?.onUserMove();
     const from = avatar.position;
     const away = Math.hypot(from.x - at.x, from.z - at.z);
     // Already there: no walk, just turn. A zero-length walk would publish a movement to where the body
@@ -3030,10 +3045,13 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       playerMode.body.pos = p;
       avatar.setPosition(p);
       playerMode.camera.snap();
-      // SILENT. Stepping between a lift bay and the cabin is not a movement anybody made: `placed` is the
-      // feed's own word for "the body was put here, publish nothing" (app/selfMovement.ts), and without it
-      // every journey would broadcast a 9,000-unit teleport to every other browser.
-      selfFeed?.placed(p);
+      // SILENT. Stepping between a lift bay and the cabin is not a movement anybody made, and without this
+      // every journey would broadcast a 9,000-unit teleport to every other browser. The feed's lift pair
+      // (app/selfMovement.ts) keeps it silent AND, on the way out, says which floor the body is now on —
+      // which a plain `placed` could not, so nobody upstairs was ever published. This dep is called twice
+      // per ride, in and out (FloorTransition board / alight).
+      if (!inLiftCar) { inLiftCar = true; selfFeed?.boardedLift(p); }
+      else { inLiftCar = false; selfFeed?.alightedLift(p, avatar.yaw); }
     },
     // THE HIGHEST-PRIORITY OWNER, which is the whole of "movement must not fight the sequence": WASD,
     // click-to-walk, seats and approaches are all refused by avatar/Controller's own rule while this is
@@ -3065,7 +3083,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       if (meetingWalk && arrivedOn === FLOOR2_ID) {
         const { roomId } = meetingWalk;
         meetingWalk = null;
-        setTimeout(() => { if (!disposed) walkToMeetingRoom(roomId); }, 60);
+        const go = () => { if (!disposed) walkToMeetingRoom(roomId); };
+        // GO TOGETHER — the leader may hold the continuation a bounded moment while the party regroups at
+        // the doors; a click meanwhile tells the party (onUserMove), which then never resumes it.
+        if (!partyHooks?.holdArrival(arrivedOn, go)) setTimeout(go, 60);
       } else meetingWalk = null;
       if (restorePitch !== null) { playerMode.camera.pitch = restorePitch; restorePitch = null; }
       playerMode.camera.boomScale = 1;
@@ -3092,7 +3113,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  walks the employee to the call control first, through the approach the control already carries, and
    *  the journey begins when they arrive. One entry point for the key, the click, the GUI and the HUD. */
   function callElevator(to: Vo3dFloorId = otherFloor()): boolean {
-    if (!floorTransition || floorTransition.busy) return false;
+    if (!floorTransition || floorTransition.busy || heldLift) return false;
     // WHERE THE BODY REALLY IS. Outside PLAYER the player body is not kept in step with the avatar, so
     // reading it here said "already at the doors" from anywhere on the floor and skipped the routed walk
     // for the ride's own scripted, uninterruptible one. The avatar is the truth in every view.
@@ -3100,12 +3121,75 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     if (floorTransition.canBoardFrom(at)) {
       pendingFloor = null;
       if (!playerMode.active) playerMode.body.pos = { ...at };
-      return floorTransition.start(to);
+      return startLiftRide(to);
     }
     pendingFloor = to;
     startApproach(`${specOf(currentFloor).id}/call`);
     return true;
   }
+
+  /** THE ONE PLACE A LIFT RIDE STARTS once the body is at the doors. GO TOGETHER may hold it here — the
+   *  party's leader waiting a bounded moment for the party to gather — and releases it through
+   *  releaseHeldLift. The ride itself is FloorTransition's, unchanged, whoever starts it. */
+  function startLiftRide(to: Vo3dFloorId): boolean {
+    if (!floorTransition) return false;
+    if (partyHooks?.holdDeparture(currentFloor, to)) { heldLift = to; return true; }
+    return floorTransition.start(to);
+  }
+  function releaseHeldLift(): boolean {
+    const to = heldLift;
+    heldLift = null;
+    if (!to || !floorTransition || floorTransition.busy) return false;
+    if (!playerMode.active) playerMode.body.pos = { x: avatar.position.x, z: avatar.position.z };
+    return floorTransition.start(to);
+  }
+  function atMeetingRoom(roomId: string): boolean {
+    const r = meetingRoom(roomId);
+    if (!r || currentFloor !== FLOOR2_ID) return false;
+    const at = { x: avatar.position.x, z: avatar.position.z };
+    return pointInRect(at, r.interior) || Math.hypot(at.x - r.approach.x, at.z - r.approach.z) < 48;
+  }
+  /** GO TOGETHER V1 — see Vo3dWorld.goTogether and app/goTogether.ts. */
+  const goTogetherPort: Vo3dGoTogetherPort = {
+    self: () => ({
+      floor: currentFloor,
+      pos: { x: avatar.position.x, z: avatar.position.z },
+      riding: floorTransition?.busy ?? false,
+      holding: heldLift !== null || pendingFloor !== null,
+      moving: navCtl.moving || approachCtl.state === "walking",
+      player: playerMode.active,
+    }),
+    peer: (email) => coworkers.pointOf(email.trim().toLowerCase()),
+    walkNear: (p) => {
+      if (floorTransition?.busy || heldLift) return false;
+      if (playerMode.active) setCameraMode("office");
+      const spot = standablePointNear(p, NAV_RADIUS, playerStand);
+      return spot ? walkToGround(spot.x, spot.z).ok : false;
+    },
+    ride: (to) => {
+      if (to === currentFloor || !FLOORS[to]) return false;
+      if (playerMode.active) setCameraMode("office");
+      return callElevator(to);
+    },
+    // V1 RESOLVES ROOMS ON THE MEETING FLOOR (Walk There) and plain points on the viewer's own floor. A
+    // point on another floor is a later destination kind, refused honestly rather than half-walked.
+    goTo: (dest: PartyDestination) => {
+      if (dest.roomId && meetingRoom(dest.roomId)) return walkToMeetingRoom(dest.roomId);
+      if (dest.point && dest.floor === currentFloor) return goTogetherPort.walkNear(dest.point) ? "walking" : "unreachable";
+      return "unknown";
+    },
+    atDestination: (dest: PartyDestination) => {
+      if (dest.roomId && meetingRoom(dest.roomId)) return atMeetingRoom(dest.roomId);
+      if (dest.point && dest.floor === currentFloor) return Math.hypot(avatar.position.x - dest.point.x, avatar.position.z - dest.point.z) < 48;
+      return false;
+    },
+    setHooks: (hooks) => {
+      partyHooks = hooks;
+      // NEVER STRANDED AT THE DOORS: a party that goes away mid-gather releases the ride it was holding.
+      if (!hooks && heldLift) releaseHeldLift();
+    },
+    releaseLift: releaseHeldLift,
+  };
 
   // ---- environmental audio ------------------------------------------------------------------------
   // THE WORLD'S OWN SOUND: wind, rain, room tone, the theatre's air, and thunder off the storm's existing
@@ -3627,7 +3711,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) return; // a drag is not a destination
     approachCtl.cancel();
     const p = floorPoint(e.clientX, e.clientY);
-    if (p) walkToGround(p.x, p.z);
+    if (p) { partyHooks?.onUserMove(); walkToGround(p.x, p.z); }
   });
   onCanvas("pointermove", (e) => {
     if (playerMode.active || !edit.editMode || editDrag === "none") return;
@@ -3674,6 +3758,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // room panel for every one of them (seat, reception and HR-desk clicks all setRoomSidebar(null)).
       selectRoom(null);
       const ent = world.get(picked);
+      // GO TOGETHER — walking up to a chair, a kiosk or a portal is the person taking their own body.
+      partyHooks?.onUserMove();
       // the portal is a transition, not a walk-up: clicking it has to mean the same thing pressing E on
       // it means, or the one interaction in the world that moves you between volumes would behave
       // differently depending on which camera you happened to be in
@@ -5365,6 +5451,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // dev console / test-driver surface (same shape as the prototype's __designRoom3d where it matters)
   (window as unknown as { __vo3d: unknown }).__vo3d = {
     world, plan, walkability, mirror, R, scene: R.scene, camera: R.camera, renderer: R.renderer, params, stack, avatar, avatarState, navCtl,
+    /** GO TOGETHER V1 — the party's port on this world (self/peer/walk/ride/holds), for the console. */
+    goTogether: goTogetherPort,
     placeCamera: applyCam, placeLight: applyLight, focusOn,
     /** ROOM-LEVEL CULLING, for the console and the A/B rig. `setEnabled(false)` is the BEFORE state. */
     visibility: {
@@ -6152,6 +6240,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     availableViewModes: () => FLOORS[currentFloor].viewModes,
     useElevator: (to) => callElevator(to ?? otherFloor()),
     walkToMeetingRoom,
+    goTogether: goTogetherPort,
     subscribeViewMode: (listener) => {
       viewModeListeners.add(listener);
       // Told at once: a host that subscribes after the world was built would otherwise sit on its own

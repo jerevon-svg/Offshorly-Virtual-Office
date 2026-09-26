@@ -230,6 +230,10 @@ export class SelfMovementFeed {
   private anchor: Vec2 | null = null;
   /** Where the last local leg ended, so the next one starts from a real previous position. */
   private localLast: Vec2 | null = null;
+  /** THE LIFT — the body is inside the car (boardedLift → alightedLift): nothing it does is movement, and
+   *  `liftAnchor` is the in-frame point it boarded from, the anchor a floor above the frame is named at. */
+  private inLift = false;
+  private liftAnchor: Vec2 | null = null;
 
   constructor(sink: Vo3dSelfMovementSink, inRange: InRangeTest = () => true) {
     this.sink = sink;
@@ -389,6 +393,48 @@ export class SelfMovementFeed {
     this.sink.movedInPlace(anchor, from, [pos], wrapAngle(yaw), this.place!);
   }
 
+  /** THE LIFT'S DOORS HAVE SHUT BEHIND THE BODY and it has been stepped into the car (FloorTransition's
+   *  board). Whatever walk brought it into the lift bay is closed HERE, at the last real position — the bay
+   *  — so peers see them walk in; the step into the car itself is silent (it is the seal, not a movement).
+   *
+   *  WHY THIS EXISTS: the car stands outside V1's frame, so boarding crosses the frame boundary BEFORE the
+   *  ride names the destination (onWhere fires at the floor swap, mid-ride). Treated as an ordinary
+   *  crossing, the floor above was never named at all, and nothing anybody did up there was published —
+   *  nobody on the Meeting Floor could see anybody else. alightedLift names it, on the existing wire. */
+  boardedLift(pos: Vec2): void {
+    const bay = this.last;
+    if (bay) this.interrupt(bay, this.lastYaw);
+    this.liftAnchor = bay && this.inRange(bay) ? bay : this.anchor;
+    this.inLift = true;
+    this.last = pos;
+    this.localLast = null;
+  }
+
+  /** THE CAR HAS REACHED ITS FLOOR and the body is back in that floor's lift bay (FloorTransition's
+   *  alight), with `entering` already told which place that floor is. Publishes the one honest fact — "they
+   *  are here now" — through the same `enteredPlace` a walked-in crossing uses: named at the in-frame point
+   *  they boarded from for a floor beyond the frame, or a plain snap back into the frame for the ground
+   *  floor. The walk out of the bay that follows is published as ordinary movement. */
+  alightedLift(pos: Vec2, yaw: number): void {
+    if (!this.inLift) return;
+    this.inLift = false;
+    this.mode = { kind: "idle" };
+    this.last = pos;
+    this.lastYaw = yaw;
+    this.wasInRange = this.inRange(pos);
+    if (this.wasInRange) {
+      this.sink.enteredPlace(pos, wrapAngle(yaw), null);
+      this.place = null;
+      this.anchor = null;
+      this.localLast = null;
+    } else if (this.place && this.liftAnchor) {
+      this.anchor = this.liftAnchor;
+      this.localLast = pos;
+      this.sink.enteredPlace(this.anchor, wrapAngle(yaw), this.place, pos);
+    }
+    this.liftAnchor = null;
+  }
+
   /** PHASE 7D — NAME THE PLACE BEYOND THE FRAME the body is entering, before it gets there, or null on
    *  the way back. Called by the portal itself, which is the only thing that knows; the boundary crossing
    *  in frame() is what actually publishes it, so a portal that is refused publishes nothing. */
@@ -409,6 +455,11 @@ export class SelfMovementFeed {
    */
   frame(dtMs: number, pos: Vec2, yaw: number, navMoving: boolean): void {
     this.lastYaw = yaw;
+    // IN THE LIFT: the car's own sequence moves the body (aligning, the shot) and none of it is movement.
+    if (this.inLift) {
+      this.last = pos;
+      return;
+    }
     if (this.pending) {
       this.pending.dueInMs -= dtMs;
       if (this.pending.dueInMs <= 0) this.flushPending();

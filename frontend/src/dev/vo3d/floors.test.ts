@@ -541,8 +541,11 @@ describe("app/world.ts wires the floors in", () => {
   });
 
   it("the step between a vestibule and the cabin is SILENT on the wire", () => {
+    // Silent through the feed's lift pair (selfMovement.test.ts proves the car publishes nothing), which
+    // on the way out also names the floor the body is now on.
     const t = src.slice(src.indexOf("translateBody: (dx, dz)"), src.indexOf("takeAvatar:"));
-    expect(t).toContain("selfFeed?.placed(p)");
+    expect(t).toContain("selfFeed?.boardedLift(p)");
+    expect(t).toContain("selfFeed?.alightedLift(p, avatar.yaw)");
   });
 });
 

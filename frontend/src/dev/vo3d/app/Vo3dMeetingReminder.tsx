@@ -1,4 +1,5 @@
-// vo3d app — THE 5-MINUTE MEETING REMINDER, and its one travel action: Walk There.
+// vo3d app — THE 5-MINUTE MEETING REMINDER, and its travel actions: Walk There, and Go Together (walk there
+// WITH the other attendees — app/goTogether.ts; the host owns the picker, this card only offers it).
 //
 // WHAT SAYS "REMIND ME". The server's own reminder notification (backend meeting_notifications.sweep_once)
 // — persisted, deduped, pushed through the notifications store like every other bell entry. This card is
@@ -19,6 +20,7 @@ import type { Vo3dWorld } from "./world";
 import { markRead, useNotifications } from "../../../services/notifications/notificationsStore";
 import { useNow, useScheduledMeetings } from "../../../services/meetings/scheduledMeetingsStore";
 import { formatTime } from "../../../services/meetings/meetingTime";
+import type { ScheduledMeeting } from "../../../services/meetings/scheduledMeetingsClient";
 import HudIcon from "../../../components/HudIcon";
 import styles from "./Vo3dMeetingReminder.module.css";
 
@@ -32,12 +34,16 @@ const roomName = (roomId: string): string => {
   return slug.charAt(0).toUpperCase() + slug.slice(1);
 };
 
-export function Vo3dMeetingReminder({ worldRef, ready, selfId, onOpen }: {
+export function Vo3dMeetingReminder({ worldRef, ready, selfId, onOpen, onGoTogether, inParty = false }: {
   worldRef: { current: Vo3dWorld | null };
   ready: boolean;
   selfId: string;
   /** open the Meetings panel on this meeting */
   onOpen: (meetingId: string) => void;
+  /** GO TOGETHER — offer to pick attendees to walk there with. Absent: the button is not shown. */
+  onGoTogether?: (meeting: ScheduledMeeting) => void;
+  /** already travelling with a party: Go Together is not offered again (Walk There still is) */
+  inParty?: boolean;
 }) {
   const bell = useNotifications();
   const schedule = useScheduledMeetings();
@@ -116,6 +122,13 @@ export function Vo3dMeetingReminder({ worldRef, ready, selfId, onOpen }: {
             }}>
             Walk there
           </button>
+          {onGoTogether && !inParty && worldRef.current?.goTogether && (
+            // OPTIONAL IMMERSION: Walk There stays right beside it and never depends on it.
+            <button type="button" className={styles.ghost} data-testid="meeting-reminder-go-together"
+              onClick={() => onGoTogether(m)}>
+              Go together
+            </button>
+          )}
           <button type="button" className={styles.ghost} data-testid="meeting-reminder-dismiss"
             onClick={() => void markRead(notificationId)}>
             Dismiss

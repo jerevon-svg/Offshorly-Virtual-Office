@@ -109,6 +109,10 @@ import {
 import { MeetingsPanel } from "../../../components/Meetings/MeetingsPanel";
 import { useScheduleBridge } from "./useScheduleBridge";
 import { Vo3dMeetingReminder } from "./Vo3dMeetingReminder";
+import { Vo3dGoTogether } from "./Vo3dGoTogether";
+import { attendeesOf, destinationFor, useMeetingPartyGuard } from "./useMeetingParty";
+import { inviteToParty, useTravelParty } from "../../../services/party/travelPartyStore";
+import type { ScheduledMeeting } from "../../../services/meetings/scheduledMeetingsClient";
 import styles from "./Vo3dHud.module.css";
 
 // Global Team Map — React.lazy so MapLibre (~250 KB) only loads when someone opens the map. V1's own rule.
@@ -236,6 +240,8 @@ export function Vo3dHud({
   // value: that one is gated on chatMode === "real" and its confirm opens a conversation, neither of
   // which is true here. Same modal component, different question.
   const [invitePickerOpen, setInvitePickerOpen] = useState(false);
+  /** GO TOGETHER — the meeting whose attendees the picker is offering, or null */
+  const [goTogetherFor, setGoTogetherFor] = useState<ScheduledMeeting | null>(null);
   const companyHub = useCompanyHub();
   const claimableCount = useClaimableCount();
 
@@ -367,6 +373,9 @@ export function Vo3dHud({
   // THE SCHEDULE, pushed into the world's door signs, room access and in-room panel — and the one
   // number the dock tile shows: meetings still waiting for this viewer's reply.
   const awaitingReply = useScheduleBridge(worldRef, ready, selfId);
+  // GO TOGETHER — the party (if any), and the leader's meeting guard (cancelled / moved while travelling).
+  const travelParty = useTravelParty();
+  useMeetingPartyGuard(selfId);
 
   const navigate = useCallback((destination: NotificationDestination): boolean => {
     switch (destination.kind) {
@@ -438,6 +447,12 @@ export function Vo3dHud({
         .map((p) => ({ email: p.email, displayName: p.displayName ?? p.email })),
     [people, selfId],
   );
+  const nameByEmail = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const p of people) m.set(p.email.trim().toLowerCase(), p.displayName ?? p.email);
+    return m;
+  }, [people]);
+  const nameOf = useCallback((email: string) => nameByEmail.get(email.trim().toLowerCase()) ?? email.split("@")[0], [nameByEmail]);
 
   // V1'S OWN THREE LABELS, word for word. A bird in the air is not a broken button: it says so, and it
   // refuses the second press rather than re-issuing a summon that is already under way.
@@ -623,7 +638,29 @@ export function Vo3dHud({
       {/* SCHEDULED MEETINGS — the 5-minute reminder with Walk There. Steps aside with the rest of the HUD
           whenever a tool owns the screen. */}
       {!officeToolOpen && (
-        <Vo3dMeetingReminder worldRef={worldRef} ready={ready} selfId={selfId} onOpen={(id) => openMeetings(id)} />
+        <Vo3dMeetingReminder worldRef={worldRef} ready={ready} selfId={selfId} onOpen={(id) => openMeetings(id)}
+          onGoTogether={setGoTogetherFor} inParty={travelParty.party !== null} />
+      )}
+      {/* GO TOGETHER — the invitation card and the party chip. Not hidden behind a tool: an invitation
+          expires, and the chip is the escape hatch (Leave / End) while travelling. */}
+      <Vo3dGoTogether worldRef={worldRef} ready={ready} selfId={selfId} nameOf={nameOf} />
+      {goTogetherFor && (
+        // THE SAME PICKER, multi-select from one person, offering only this meeting's attendees.
+        <EmployeePickerModal
+          mode="multi"
+          title="Go together with…"
+          people={pickerPeople.filter((p) => attendeesOf(goTogetherFor, selfId).has(p.email.trim().toLowerCase()))}
+          minSelected={1}
+          showGroupName={false}
+          confirmLabel={(n) => (n === 1 ? "Invite 1 person" : `Invite ${n} people`)}
+          onClose={() => setGoTogetherFor(null)}
+          onConfirm={(emails) => {
+            const m = goTogetherFor;
+            setGoTogetherFor(null);
+            const floor = worldRef.current?.goTogether?.self().floor;
+            if (floor && emails.length > 0) inviteToParty(emails, destinationFor(m), floor);
+          }}
+        />
       )}
       {invitePickerOpen && (
         // THE SAME PICKER New Message uses, asked a different question. Single mode: one person per

@@ -1,0 +1,52 @@
+/* Go Together — the invitation card and the compact party chip. Top-centre, clear of the top-right meeting
+   reminder, the bottom-centre dock and the bottom corners; the same cream card family as the reminder.
+   Below the z-index 60 modal family, which it steps behind like the rest of the HUD. */
+.wrap {
+  position: fixed;
+  top: 76px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 46;
+  width: min(360px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.card, .chip {
+  pointer-events: auto;
+  box-sizing: border-box;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.08);
+  box-shadow: 0 16px 40px rgba(18, 16, 28, 0.22), 0 2px 6px rgba(18, 16, 28, 0.08);
+  color: #241f30;
+  animation: partyIn 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes partyIn { from { opacity: 0; transform: translateY(-8px); } }
+@media (prefers-reduced-motion: reduce) { .card, .chip { animation: none; } }
+.card { padding: 14px 16px; border-radius: 18px; display: flex; flex-direction: column; gap: 4px; }
+.cardTitle { font-size: 15px; font-weight: 800; letter-spacing: -0.01em; }
+.cardSub { font-size: 13px; color: rgba(36, 31, 48, 0.7); }
+.chip {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 8px 8px 14px; border-radius: 999px;
+}
+.dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #4bb96a; }
+.dot.wait { background: #d9a13a; }
+.dot.idle { background: rgba(36, 31, 48, 0.3); }
+.chipText { flex: 1; min-width: 0; font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chipSub { font-weight: 500; color: rgba(36, 31, 48, 0.6); }
+.notice { pointer-events: auto; align-self: center; font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 999px; background: rgba(36, 31, 48, 0.82); color: #fdfcfa; }
+.actions { display: flex; gap: 8px; margin-top: 8px; }
+.chipActions { display: flex; gap: 6px; flex: none; }
+.primary, .ghost {
+  all: unset; box-sizing: border-box; cursor: pointer; text-align: center;
+  padding: 7px 12px; border-radius: 12px; font-size: 13px; font-weight: 700;
+}
+.actions .primary { flex: 1; }
+.primary { background: #2f6b45; color: #fdfcfa; box-shadow: 0 2px 0 #1f4a2f, 0 6px 14px rgba(47, 107, 69, 0.22); }
+.primary:hover { background: #275939; }
+.primary:active { transform: translateY(1px); box-shadow: 0 1px 0 #1f4a2f; }
+.ghost { border: 1px solid rgba(24, 20, 34, 0.12); background: #fffefc; }
+.ghost:hover { background: rgba(24, 20, 34, 0.04); }
+.primary:focus-visible, .ghost:focus-visible { outline: 2px solid #4bb96a; outline-offset: 2px; }
