@@ -71,6 +71,9 @@ export type CaveLiveShareDeps = {
    *  stable order). The store already removes a camera the moment it is muted or unpublished, so
    *  "camera off", "left" and "dropped" all arrive here as the same thing: a shorter list. */
   onCameras: (cameras: GalleryMember[]) => void;
+  /** Every meeting id the server says is running right now (anybody in it) — the Meeting Floor's door
+   *  signs read it. Called only when the set changes. */
+  onMeetings?: (live: ReadonlySet<string>) => void;
 };
 
 export class CaveLiveShare {
@@ -79,6 +82,7 @@ export class CaveLiveShare {
   private unsubscribe: (() => void) | null = null;
   private lastTrack: PresentationSource | null = null;
   private lastCameras: GalleryMember[] = [];
+  private lastLive = "";
   /** Which meeting this Cave is showing, and who this client is — both needed to read the server's
    *  broadcast, which is keyed by meeting id and reports the host as an email. */
   private meetingId = CAVE_MEETING_ID;
@@ -143,6 +147,18 @@ export class CaveLiveShare {
       this.state.status = "error";
       this.state.note = err instanceof Error ? err.message : "could not start the meeting";
     }
+  }
+
+  /** WHICH MEETING THIS BRIDGE IS ABOUT, before joining it: the Cave's, or a Meeting Floor room's own
+   *  (rooms/floor2Meeting meetingId). Start-versus-Join and the host read the server's broadcast for
+   *  exactly this id, so the room panel asks about the right room. */
+  watch(meetingId: string): void {
+    if (meetingId === this.meetingId) return;
+    this.meetingId = meetingId;
+    if (this.store) this.read(this.store.getCallSnapshot());
+  }
+  get watching(): string {
+    return this.meetingId;
   }
 
   /** Mic on/off for THIS client — straight through to the store, which is the source of truth.
@@ -262,6 +278,8 @@ export class CaveLiveShare {
     this.state.sharing = snap.screenShareEnabled;
     this.state.broadcast = snap.calls.map((c) => `${c.sessionId.slice(0, 8)}…(${c.participants.length})`).join(", ");
     // THE SERVER'S VIEW OF THE MEETING, which is the only one that exists before this client joins.
+    const live = snap.meetings.filter((m) => m.participants.length > 0).map((m) => m.meetingId).sort().join("|");
+    if (live !== this.lastLive) { this.lastLive = live; this.d.onMeetings?.(new Set(live ? live.split("|") : [])); }
     const broadcastMeeting = snap.meetings.find((m) => m.meetingId === this.meetingId);
     this.state.live = Boolean(broadcastMeeting && broadcastMeeting.participants.length > 0);
     this.state.host = broadcastMeeting?.host ?? "";

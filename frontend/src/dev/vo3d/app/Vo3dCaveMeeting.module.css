@@ -67,3 +67,31 @@
 
 .note { margin: 0; font-size: 12px; color: rgba(36, 31, 48, 0.6); }
 .problem { color: #a3352f; }
+
+/* THE FOCUSED PRESENTATION — the live share over the whole viewport, exit top-right */
+.focus {
+  position: fixed;
+  inset: 0;
+  /* above the HUD dock and the view hints: a focused presentation owns the screen until it is exited */
+  z-index: 10000;
+  background: rgba(6, 9, 14, 0.94);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.focusStage {
+  width: min(96vw, calc(92vh * 16 / 9));
+  aspect-ratio: 16 / 9;
+}
+.focusExit {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(20, 26, 36, 0.9);
+  color: #fff;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font: 600 13px system-ui, sans-serif;
+  cursor: pointer;
+}

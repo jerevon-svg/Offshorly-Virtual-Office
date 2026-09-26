@@ -98,7 +98,12 @@ import { RIDE as ELEVATOR_RIDE, cabinStandTest, inCabin, inVestibule, vestibuleS
 import { buildCabin, buildElevatorCore, type ElevatorCoreBuild, type LiftBuild } from "../build/elevator";
 import { buildFloor2 } from "../build/floor2";
 import { buildFloor2Context } from "../build/floor2Context";
-import { ELEVATOR as FLOOR2_ELEVATOR, FLOOR2_ID, FRAME as FLOOR2_FRAME, floor2StandTest, onFloor2 } from "../rooms/floor2";
+import { ELEVATOR as FLOOR2_ELEVATOR, FLOOR2_ID, FLOOR2_ROOM, FLOOR_RECT as FLOOR2_FLOOR_RECT, FRAME as FLOOR2_FRAME, floor2StandTest, onFloor2 } from "../rooms/floor2";
+import { makePlateRouter } from "../nav/plateRoute";
+import { buildMeetingFloor, setRoomDisplayTexture } from "../build/floor2Meeting";
+import { ISLAND, MEETING_ROOMS, MEETING_ROOM_DEFS, MEETING_ROOM_IDS, meetingDoorCapability, meetingRoom, meetingRoomAt } from "../rooms/floor2Meeting";
+const ISLAND_BENCH_ID = "floor-2/island-bench";
+import { MeetingRoomAccess, type MeetingRoomState } from "./meetingRoomAccess";
 import { FloorTransition, walkLegs } from "../interact/FloorTransition";
 import { buildWorldContents } from "./worldContents";
 import { FACADE_Z, FRAME, v1Rooms } from "../adapters/v1Floor";
@@ -130,7 +135,7 @@ import { BON_STANDING_HEIGHT, castLods, CLIP_IDLE, CLIP_TALK_AGREE, CLIP_TALK_LI
 import type { Vo3dIdentity } from "./identity";
 import { homeDeskWorldPoint, v1FramePoint, type Vo3dHomeDesk } from "./spawn";
 import { plannedDurationMs, SelfMovementFeed, type Vo3dSelfMovementSink } from "./selfMovement";
-import { gateRects, mayEnterOffice, routeEntersOffice, zoneAt, type AccessGeometry, type OfficeAccess, type Zone } from "./access";
+import { gateRects, mayEnterOffice, presenceZoneAt, routeEntersOffice, zoneAt, type AccessGeometry, type OfficeAccess, type Zone } from "./access";
 import { Coworkers, facingTrace, type SeatAnchorPose } from "../world/Coworkers";
 import type { Vo3dCoworker } from "./coworkers";
 import { CAVE_PLACE_ID as CAVE_PLACE, coworkersInSameVolume } from "./coworkers";
@@ -175,6 +180,10 @@ export interface Vo3dCaveMeetingState {
   presenter: string;
   /** The last thing that went wrong, in the store's own words, or "". */
   note: string;
+  /** THE MEETING FLOOR ROOM this panel is about, by name, or "" — set once the viewer has walked up to a
+   *  room's display (or is already in that room's call) while standing in the room. The same panel, the
+   *  same call store; only the meeting id and the screen it lands on differ. */
+  room?: string;
 }
 
 /** The verbs. Each one is a straight pass to CaveLiveShare, which is a straight pass to the app's call
@@ -205,6 +214,16 @@ export interface Vo3dCaveMeeting {
    *  matters to — somebody walking into a Cave where a meeting is already running has, by definition,
    *  not pressed anything yet, so without this they are offered "Start" for a meeting that exists. */
   observe(email: string): Promise<void>;
+  /** The live presentation's video element, for a focused full-screen view, or null when nothing is shared. */
+  presentation?(): HTMLVideoElement | null;
+}
+
+/** THE MEETING FLOOR'S ROOMS, for the Scheduled Meetings system that will drive them. Room ACCESS only:
+ *  a state change shuts or opens a door and redraws a sign — it never touches anybody's status. */
+export interface Vo3dMeetingRooms {
+  list(): { id: string; name: string; kind: string; capacity: number }[];
+  state(roomId: string): { state: MeetingRoomState; selfAuthorized: boolean } | null;
+  setState(roomId: string, state: MeetingRoomState, opts?: { selfAuthorized?: boolean }): boolean;
 }
 
 /** What a mounted V2 world hands back. `dispose()` is idempotent and, once called, the world is dead:
@@ -357,6 +376,7 @@ export interface Vo3dWorld {
   devToolsVisible(): boolean;
   /** PHASE 7C — the Championship Cave's meeting, for the HUD. */
   readonly caveMeeting: Vo3dCaveMeeting;
+  readonly meetingRooms?: Vo3dMeetingRooms;
   /** PHASE 7C — told whenever that switch moves, and once immediately. The host's own diagnostic
    *  readouts ride it so they are developer-only exactly as the inspection panel is. */
   subscribeDevTools(listener: (visible: boolean) => void): () => void;
@@ -646,6 +666,25 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // group so `applyFloor` can swap it for the ground floor's real campus in one boolean each way.
   const floor2Context = buildFloor2Context();
   floor2Root.add(buildFloor2(), floor2Context);
+  // THE MEETING FLOOR'S DISTRICT (build/floor2Meeting): baked architecture plus the live door leaves,
+  // displays and signs this world drives. Its SEATING and display walk-ups are world entities, built by
+  // the mirror exactly as every ground-floor room's are, then carried under floor 2's root so they are
+  // drawn with that floor and nowhere else.
+  const meetingFloor = buildMeetingFloor();
+  floor2Root.add(meetingFloor.group);
+  for (const room of [FLOOR2_ROOM, ...MEETING_ROOM_DEFS]) {
+    mirror.buildRoom(room, shellOpts());
+    const rg = mirror.roomGroup(room.id);
+    if (!rg) continue;
+    floor2Root.add(rg);
+  }
+  // THE ISLAND BENCH'S SEAT ENTITY is footprint-only ("solid"): its view is built at the origin, and its
+  // slots are authored relative to the island's centre — so the view is put there, or a sit would carry
+  // the body to world (0, 0).
+  if (mirror.hasView(ISLAND_BENCH_ID)) {
+    mirror.view(ISLAND_BENCH_ID).position.set(ISLAND.c.x, 0, ISLAND.c.z);
+    mirror.view(ISLAND_BENCH_ID).updateMatrixWorld(true);
+  }
   floor2Root.visible = false;
   floor2ElevatorBuild.group.visible = false;
   R.scene.add(floor2ElevatorBuild.group);
@@ -686,7 +725,40 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       isHost: st.isHost,
       presenter: st.presenter,
       note: st.note,
+      room: roomVenue ? meetingRoom(roomVenue)?.name ?? "" : "",
     };
+  }
+  // ---- THE MEETING FLOOR'S ROOM DISPLAYS --------------------------------------------------------------
+  // A room's TV is the Cave's presentation path pointed at that room: the SAME call store, the SAME
+  // CaveLiveShare bridge and the SAME CavePresentation texture, with the room's own meeting id
+  // (`mf-<slug>`) and its own screen. Nothing here is a second media system.
+  /** the room the panel is about: the one the viewer is standing in */
+  let roomVenue: string | null = null;
+  /** the room whose display the viewer last walked up to; dropped when they leave that room */
+  let displayFocus: string | null = null;
+  function updateRoomVenue(p: Vec2): void {
+    const r = meetingRoomAt(p);
+    if (!r || (displayFocus && displayFocus !== r.id)) displayFocus = null;
+    // STEPPING INTO A MEETING ROOM IS WHAT OFFERS ITS MEETING: the panel's own Start / Join, for this room.
+    // The TV stays the presentation surface; walking up to it is no longer how you discover the meeting.
+    // …and a room whose call you are still in follows you out, so its Leave button never disappears
+    const stillIn = roomVenue && caveLiveShare.state.status === "connected" && caveLiveShare.watching === meetingRoom(roomVenue)?.meetingId;
+    const next = r ? r.id : stillIn ? roomVenue : null;
+    if (next === roomVenue) return;
+    roomVenue = next;
+    if (next) caveLiveShare.watch(meetingRoom(next)!.meetingId);
+    else if (caveLiveShare.state.status !== "connected") caveLiveShare.watch(CAVE_MEETING_ID);
+    applyRoomDisplays();
+    notifyCaveMeetingIfChanged();
+  }
+  /** A share lands on the display of the room whose call carries it — and on no other. */
+  function applyRoomDisplays(): void {
+    const tex = cavePresentation.texture;
+    const live = caveLiveShare.state.status === "connected" ? caveLiveShare.watching : "";
+    for (const r of MEETING_ROOMS) {
+      const v = meetingFloor.rooms.get(r.id)?.display;
+      if (v) setRoomDisplayTexture(v, tex && live === r.meetingId ? tex : null, cavePresentation.aspect);
+    }
   }
   function notifyCaveMeetingIfChanged(): void {
     if (caveMeetingListeners.size === 0) return;
@@ -700,6 +772,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   const caveLiveShare = new CaveLiveShare({
     onShare: (source, presenter) => cavePresentation.setSource(source, presenter),
     onCameras: (cameras) => caveGallery.setCameras(cameras),
+    onMeetings: (live) => { liveMeetingIds = live; refreshMeetingSigns(); },
   });
 
   /** THE ONE PLACE THE CAVE DECIDES WHAT IT IS SHOWING. Called only when something actually changed
@@ -1382,9 +1455,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     //
     // This is not a second pathfinder. planWalk is welded to V1's 90 x 78 grid — it snaps a cell, floods
     // it and A*s over it — and no cell of that grid describes anything outside the ground floor. Floor 2
-    // is one convex rectangle with one solid object standing on it, so a straight leg that the floor's
-    // OWN stand test agrees with along its whole length is a complete and honest answer, and a leg that
-    // would cross the lift core is REFUSED rather than approximated or walked through.
+    // is routed on its OWN geometry instead: a grid sampled from the floor's own stand test (glass rooms,
+    // tables, lounge, lift core), so a route can never pass anything that same test would stop.
     if (onFloor2({ x, z })) return walkOnFloor(currentFloor, { x, z });
     // THE BOUNDARY, STATED RATHER THAN IMPLIED. The closed lanes already make an office destination
     // unreachable, so this changes no outcome — it changes the REASON, from "unreachable" (which reads as
@@ -1453,6 +1525,17 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  it: it samples the real position every few units and publishes each leg inside the place it has
    *  been told about (app/selfMovement's localLeg). Announcing it twice would be the one way to get two
    *  different accounts of the same walk onto the wire. */
+  const floor2Router = makePlateRouter(FLOOR2_FLOOR_RECT, (p) => floor2StandTest(p, NAV_RADIUS));
+  /** THE MEETING FLOOR'S ROOM ACCESS (app/meetingRoomAccess): every room available until a meeting system
+   *  says otherwise. Room privacy, never presence. */
+  const meetingAccess = new MeetingRoomAccess();
+  /** ONE PLANNER FOR EVERY INTERACTION'S WALK: the ground floor's lattice below, the Meeting Floor's own
+   *  routed grid up there. A seat, a sofa and a display on floor 2 are reached exactly like one downstairs. */
+  const planFor = (to: Vec2): NavResult => {
+    if (!onFloor2(to)) return planWalk(avatar.position, to, walkability, inBounds);
+    const path = floor2Router.route(avatar.position, to);
+    return path ? { ok: true, destination: { ...to }, path, cell: worldToCell(to) } : { ok: false, reason: "unreachable", destination: { ...to }, cell: worldToCell(to) };
+  };
   function walkOnFloor(floor: Vo3dFloorId, to: Vec2): NavResult {
     const from = { ...avatar.position };
     const standable = floor === FLOOR2_ID ? (p: Vec2) => floor2StandTest(p, NAV_RADIUS) : (p: Vec2) => playerStand(p);
@@ -1461,17 +1544,39 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       navState.last = `rejected: nothing standable at ${to.x.toFixed(0)}, ${to.z.toFixed(0)} on ${floor}`;
       return { ok: false, reason: "unwalkable", destination: to, cell };
     }
-    const span = Math.hypot(to.x - from.x, to.z - from.z);
-    const steps = Math.max(1, Math.ceil(span / 8));
-    for (let i = 1; i < steps; i++) {
-      const t = i / steps;
-      if (!standable({ x: from.x + (to.x - from.x) * t, z: from.z + (to.z - from.z) * t })) {
-        navState.last = `rejected: the way across ${floor} is blocked`;
+    // THE MEETING FLOOR IS ROOMS AND CORRIDORS, so its walks are ROUTED (nav/plateRoute): A* over a grid
+    // sampled from this floor's own stand test, pulled tight. Any other off-lattice floor keeps the
+    // straight leg its own stand test agrees with.
+    let path: Vec2[];
+    if (floor === FLOOR2_ID) {
+      // A ROOM IN A PRIVATE MEETING is walked TO, not into: the body stops at its door, outside.
+      const shut = meetingAccess.routeRefused(from, to);
+      if (shut) {
+        const door = meetingRoom(shut)!.approach;
+        const toDoor = floor2Router.route(from, door);
+        navState.last = `held: ${shut} is in a private meeting — walking to its door`;
+        if (toDoor && navCtl.setPath(toDoor)) selfMovedByUser = true;
         return { ok: false, reason: "unreachable", destination: to, cell };
       }
+      const routed = floor2Router.route(from, to);
+      if (!routed) {
+        navState.last = `rejected: no route across ${floor} to ${to.x.toFixed(0)}, ${to.z.toFixed(0)}`;
+        return { ok: false, reason: "unreachable", destination: to, cell };
+      }
+      path = routed;
+    } else {
+      const span = Math.hypot(to.x - from.x, to.z - from.z);
+      const steps = Math.max(1, Math.ceil(span / 8));
+      for (let i = 1; i < steps; i++) {
+        const t = i / steps;
+        if (!standable({ x: from.x + (to.x - from.x) * t, z: from.z + (to.z - from.z) * t })) {
+          navState.last = `rejected: the way across ${floor} is blocked`;
+          return { ok: false, reason: "unreachable", destination: to, cell };
+        }
+      }
+      path = [{ x: to.x, z: to.z }];
     }
-    const path = [{ x: to.x, z: to.z }];
-    navState.last = `ok → ${floor} · straight leg of ${span.toFixed(0)}`;
+    navState.last = `ok → ${floor} · ${path.length} leg(s)`;
     if (navCtl.setPath(path)) selfMovedByUser = true;
     return { ok: true, destination: { ...to }, path, cell };
   }
@@ -1559,7 +1664,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // ---- Reception interactions (3E.3) ------------------------------------------------------------------
   // One focused interaction at a time, driven by the SAME pieces the Design Room uses: ApproachInteraction
   // for walk-up points, SeatInteraction for the lounge chairs, planWalk for every route.
-  const approachCtl = new ApproachInteraction(avatar, stack, (to) => planWalk(avatar.position, to, walkability, inBounds));
+  const approachCtl = new ApproachInteraction(avatar, stack, planFor);
   const receptionState = { focus: "none", status: "idle", seat: "idle" };
   /** Every FIXED lounge seat in the world, flattened to one slot per entry: Reception's two tub chairs plus
    *  Project's two sofas (two cushions each) and two tub chairs. One list, one controller — no new system. */
@@ -1578,6 +1683,24 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     })),
   );
   let loungeSeat: LoungeSeatInteraction | null = null;
+  // THE MEETING FLOOR'S DOORS: one SlidingDoor per room, the same controller every entrance downstairs
+  // runs on, over the leaf build/floor2Meeting made. Ticked only while floor 2 is the floor on screen.
+  const meetingDoors = MEETING_ROOMS.map((r) => ({ room: r, door: new SlidingDoor(meetingFloor.rooms.get(r.id)!.leaf, meetingDoorCapability(r), r.door.leafClosed) }));
+  let meetingDoorsMoved = false;
+  // THE SIGNS FOLLOW THE ROOM'S STATE, and nothing else writes them.
+  // THE DOOR SIGNS: room status from the two facts that exist — the room's access state (a private
+  // meeting shuts the door) and whether the room's own meeting is live on the call store. Room status
+  // only; nobody's personal status is read or written here.
+  let liveMeetingIds: ReadonlySet<string> = new Set();
+  function refreshMeetingSigns(): void {
+    for (const r of MEETING_ROOMS) {
+      const a = meetingAccess.get(r.id)?.state ?? "available";
+      const live = liveMeetingIds.has(r.meetingId);
+      const st = a === "active" ? "private" : a === "starting" ? "starting" : a === "ended" && !live ? "ended" : live ? "in-meeting" : "available";
+      meetingFloor.rooms.get(r.id)?.sign.setState(st);
+    }
+  }
+  meetingAccess.subscribe(() => refreshMeetingSigns());
   // ---- PHASE 6C — seat identity, occupancy and the seated hand-off to V1 ------------------------------
   /** The seat anchor (app/seats.ts id) the signed-in employee is sitting in or walking to sit in, or null.
    *  Set by every sit starter below and cleared when the body leaves the chair; it is what the feed's
@@ -1602,7 +1725,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     approachCtl.cancel();
     clearSeats();
     currentSeatAnchor = id;
-    otherSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    otherSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), planFor, () => params.walkSpeed);
     otherSeat.sit();
   }
   /** The chair's own seated yaw for an anchor — what the seated arrival publishes, rather than the body's
@@ -1770,7 +1893,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     devSeat = null;
     const s = loungeSeats[index];
     currentSeatAnchor = seatAnchorId(s.id, s.slot.id);
-    loungeSeat = new LoungeSeatInteraction(avatar, stack, s.view, slotFor(s.id, s.slot), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    loungeSeat = new LoungeSeatInteraction(avatar, stack, s.view, slotFor(s.id, s.slot), planFor, () => params.walkSpeed);
     receptionState.focus = s.label;
     loungeSeat.sit();
   }
@@ -1786,7 +1909,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     const r = canvas.getBoundingClientRect();
     ndc.set(((cx - r.left) / r.width) * 2 - 1, -((cy - r.top) / r.height) * 2 + 1);
     raycaster.setFromCamera(ndc, R.activeCamera);
-    const hits = raycaster.intersectObjects([mirror.root, groundElevatorBuild.group, floor2ElevatorBuild.group], true);
+    const hits = raycaster.intersectObjects([mirror.root, groundElevatorBuild.group, floor2ElevatorBuild.group, ...(floor2Root.visible ? [floor2Root] : [])], true);
     if (!hits.length) return null;
     const byPick = new Map<string, string>();
     for (const e of world.entities.values()) {
@@ -2178,6 +2301,12 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       return;
     }
     pendingFloor = null;
+    // A MEETING ROOM'S DISPLAY: walking up to it is what opens that room's meeting panel.
+    const displayRoom = entityId.endsWith("/display") ? entityId.slice(0, -"/display".length) : null;
+    if (displayRoom && MEETING_ROOM_IDS.has(displayRoom)) {
+      displayFocus = displayRoom;
+      updateRoomVenue(avatar.position);
+    }
     coworkerInteractions?.onInteractionArrived?.(entityId);
   };
   /** Who is selected right now, so a repeat click on the same body is not republished as a new selection
@@ -2355,7 +2484,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  region roomId), and neither is a place whose occupants, boards or details anybody wants a panel
    *  about. Excluded by WHAT THEY ARE, so a third floor and its core exclude themselves. */
   const discoverableRoom = (roomId: string | null | undefined): string | null =>
-    !roomId || ELEVATOR_ROOM_IDS.has(roomId) || roomId === FLOOR2_ID ? null : roomId;
+    !roomId || ELEVATOR_ROOM_IDS.has(roomId) || roomId === FLOOR2_ID || MEETING_ROOM_IDS.has(roomId) ? null : roomId;
   const labelRects = roomLabelRects(roomFrameSource);
   /** THE ROOMS ROOM DISCOVERY LETTERS. Not every region with a roomId is a room to letter: a lift car is
    *  96 x 56 units of sealed box, and a floor is not a room at all. Both are excluded by WHAT THEY ARE
@@ -4448,7 +4577,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
         || meetingDoor.state !== "closed" || projectDoor.state !== "closed";
     }
     return door.moved || entryDoor.moved || gamingDoor.moved || execDoor.moved || cmsDoor.moved || aiDoor.moved || devDoor.moved || qaDoor.moved
-      || meetingDoor.moved || projectDoor.moved;
+      || meetingDoor.moved || projectDoor.moved || meetingDoorsMoved;
   }
   /** Something in the WORLD that casts a shadow is MOVING: a door leaf, and every interaction that drags
    *  a chair. These invalidate the cached static depth, exactly as they always have. */
@@ -4622,7 +4751,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // current clip, so re-asserting it every frame costs nothing.
       if (stack.owner === "Idle" && !seatedNow()) avatar.play(selfConversationClip ?? CLIP_IDLE);
       selfFeed?.frame(dt, { x: bp.x, z: bp.z }, avatar.yaw, navCtl.path.length > 0 || coworkerApproach?.turning === true);
-      const zoneNow = zoneOf({ x: bp.x, z: bp.z });
+      // PRESENCE'S zone: the Meeting Floor and the lift are inside the office (app/access presenceZoneAt),
+      // so riding up is never read as leaving the building — and never as Away.
+      const zoneNow = presenceZoneAt({ x: bp.x, z: bp.z }, accessGeom, (p) => onFloor2(p) || inCabin(p));
       if (zoneNow !== accessState.zone) {
         accessState.zone = zoneNow;
         // PHASE 7E — one edge, for the one thing the host reads from it (app/interactions.ts).
@@ -4690,6 +4821,20 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       qaDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);
       meetingDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);
       projectDoor.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);
+      // THE MEETING FLOOR: the access rule applied from the body's real position (a private room's doorway
+      // is solid only to a body outside it), then every door. A private room's door does not open for a
+      // body it refuses — it opens for the people inside, so they can always leave.
+      meetingDoorsMoved = false;
+      if (currentFloor === FLOOR2_ID) {
+        if (meetingAccess.apply({ x: bp.x, z: bp.z })) floor2Router.invalidate();
+        for (const md of meetingDoors) {
+          const refused = meetingAccess.refuses(md.room.id) && !meetingAccess.inside(md.room.id, bp);
+          if (refused) md.door.update(dt / 1000, DOOR_SUPPRESSED, NO_ROUTE, peerBodies.filter((b) => meetingAccess.inside(md.room.id, b.pos)));
+          else md.door.update(dt / 1000, { x: bp.x, z: bp.z }, route, peerBodies);
+          if (md.door.moved) meetingDoorsMoved = true;
+        }
+        updateRoomVenue({ x: bp.x, z: bp.z });
+      }
       updateScanners({ x: bp.x, z: bp.z });
       caveTransition?.update(); // media readout; a no-op outside the CAVE
       // THE LIFT. One machine, one clock, stepped by the same dt as everything else in this loop — see
@@ -4711,11 +4856,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // here — beside the presentation switch that hides and shows the geometry for the same reason.
       // Edge-gated: this is a 60 Hz loop and a re-sync is a GLB pass.
       if (insideCave !== rosterInsideCave) syncRoster();
-      cavePresentation.setActive(insideCave);
+      cavePresentation.setActive(insideCave || roomVenue !== null || (currentFloor === FLOOR2_ID && caveLiveShare.watching !== CAVE_MEETING_ID));
       cavePresentation.sample();
       caveGallery.setActive(insideCave);
       caveGallery.sample();
-      if (cavePresentation.consumeChange() || caveGallery.consumeChange()) applyCaveMode();
+      if (cavePresentation.consumeChange() || caveGallery.consumeChange()) { applyCaveMode(); applyRoomDisplays(); }
       entryState.state = entryDoor.state; entryState.open = Math.round(entryDoor.t * 100);
       entryState.drift = entryDoor.state === "closed" ? Math.round(entryDoor.driftError() * 1e6) / 1e6 : entryState.drift;
       entryState.cycles = entryDoor.cycles;
@@ -5844,7 +5989,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // told whether it created or joined — see the Phase 7C notes.
       start: async (email: string) => {
         await caveLiveShare.connect(email);
-        await caveLiveShare.startMeeting();
+        await caveLiveShare.startMeeting(roomVenue ? meetingRoom(roomVenue)!.meetingId : CAVE_MEETING_ID);
+        applyRoomDisplays();
         notifyCaveMeetingIfChanged();
       },
       setMic: async (on: boolean) => { await caveLiveShare.setMic(on); notifyCaveMeetingIfChanged(); },
@@ -5857,6 +6003,12 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
         await caveLiveShare.connect(email);
         notifyCaveMeetingIfChanged();
       },
+      presentation: () => (cavePresentation.live ? cavePresentation.element : null),
+    },
+    meetingRooms: {
+      list: () => MEETING_ROOMS.map((r) => ({ id: r.id, name: r.name, kind: r.kind, capacity: r.capacity })),
+      state: (roomId: string) => meetingAccess.get(roomId),
+      setState: (roomId: string, state: MeetingRoomState, opts?: { selfAuthorized?: boolean }) => meetingAccess.set(roomId, state, opts),
     },
     subscribeDevTools: (listener) => {
       devToolsListeners.add(listener);

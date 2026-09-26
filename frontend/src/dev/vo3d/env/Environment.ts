@@ -49,6 +49,8 @@ import type { WeatherState } from "./weather";
  *  The day/sunset/night GRADE is unaffected by "world"/"office": the office is lit by the same sun at
  *  the same time of day in both. "interior" deliberately opts out of it. */
 export type EnvPresentation = "world" | "office" | "interior";
+/** the lowest the key light may sit while the viewer is on an upper storey (degrees) */
+export const UPSTAIRS_MIN_ELEVATION = 66;
 
 /** THE SEALED-INTERIOR RIG. Fixed, phase-independent, and dark on purpose: a video wall reads as a light
  *  source only if the room around it is not already lit. Everything is a floor, not a zero — a pitch-black
@@ -306,7 +308,8 @@ export class Environment {
   sceneryForFloor(floor: string | null): void {
     this.floorScenery = floor;
     if (this.scenery && floor === null) this.scenery.root.visible = false;
-    else if (this.current) this.apply(this.current, true);
+    // re-apply either way: the upper storey also takes the overhead-sun clamp below
+    if (this.current) this.apply(this.current, true);
   }
   get sceneryVisible(): boolean {
     return this.scenery ? this.scenery.root.visible : false;
@@ -566,9 +569,14 @@ export class Environment {
     R.hemi.color.setHex(p.hemi.sky);
     R.hemi.groundColor.setHex(p.hemi.ground);
     // placeLight() writes the intensities/exposure AND invalidates the shadow map for the new sun.
+    // AN UPPER STOREY IS AN INTERIOR UNDER A CEILING: its light comes from above, never raking in at a
+    // low sun across a roofless plate. Upstairs the key light keeps its colour, azimuth and grade and is
+    // only held at or above UPSTAIRS_MIN_ELEVATION, so shadows ground furniture instead of streaking
+    // across every room — the zoom-dependent stripes Floor 2 showed at low sun.
+    const elevation = this.floorScenery === null ? Math.max(p.key.elevation, UPSTAIRS_MIN_ELEVATION) : p.key.elevation;
     R.lightParams = {
       azimuth: p.key.azimuth,
-      elevation: p.key.elevation,
+      elevation,
       keyIntensity: p.key.intensity,
       ambientIntensity: p.hemi.intensity,
       envIntensity: p.envIntensity,
@@ -578,9 +586,9 @@ export class Environment {
     // carry no azimuth or elevation precisely so that a Clear→Rain fade costs zero shadow redraws, for
     // all that it re-grades every frame. A day→sunset travel does move it, and pays per frame for the
     // ~5s it lasts, twice in an office day. Everything else takes the levels-only path.
-    if (p.key.azimuth !== this.lastAz || p.key.elevation !== this.lastEl) {
+    if (p.key.azimuth !== this.lastAz || elevation !== this.lastEl) {
       this.lastAz = p.key.azimuth;
-      this.lastEl = p.key.elevation;
+      this.lastEl = elevation;
       R.placeLight();
     } else R.applyLightLevels();
     // AO rides the travelling grade like every other global, so Day -> Sunset -> Night eases its contact

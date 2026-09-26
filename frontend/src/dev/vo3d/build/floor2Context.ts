@@ -45,7 +45,11 @@ export function buildFloor2Context(): THREE.Group {
 
   // ---- the ground, and the podium this building stands on ----------------------------------------
   add(rbox(F.w + 2 * REACH, 8, F.d + 2 * REACH, mat("green", 1), cx, -DROP - 8, cz, 0));
-  add(rbox(F.w + 96, DROP, F.d + 96, mat("plinth", 1), cx, -DROP, cz, 2));
+  // THE BUILDING MASS UNDER THE FLOOR stops well short of it. It used to rise to exactly y 0 — the tile's
+  // own plane, across the whole plate — and the two fought in coherent blocks that slid with every Office
+  // View zoom step (an orthographic camera's depth error is uniform, so a coplanar fight is blocks, not
+  // speckle). Its top is hidden under the slab anyway; 10 units below it can never meet the floor.
+  add(rbox(F.w + 96, DROP - 10, F.d + 96, mat("plinth", 1), cx, -DROP, cz, 2));
 
   // ---- the street grid ---------------------------------------------------------------------------
   const roadM = mat("charcoal", 0.95), kerbM = mat("sidewalk", 0.95);

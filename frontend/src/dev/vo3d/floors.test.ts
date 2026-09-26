@@ -227,7 +227,8 @@ describe("the cabin: one car, standing alone", () => {
     expect(FLOOR2_ELEVATOR.outer.w).toBe(GROUND_ELEVATOR.outer.w);
     expect(FLOOR2_ELEVATOR.outer.d).toBe(GROUND_ELEVATOR.outer.d);
     expect(FLOOR2_ELEVATOR.outer.x - GROUND_ELEVATOR.outer.x).toBe(FLOOR2_FRAME.x);
-    expect(FLOOR2_ELEVATOR.outer.z - GROUND_ELEVATOR.outer.z).toBe(FLOOR2_FRAME.z);
+    // floor 2's entrance sits on the Meeting Floor's axis, the centre of the west wall (rooms/floor2.ts)
+    expect(FLOOR2_ELEVATOR.boarding.z - FLOOR2_FRAME.z).toBe(622);
   });
 
   it("the doorway is centred and the leaves pocket inside the piers", () => {
