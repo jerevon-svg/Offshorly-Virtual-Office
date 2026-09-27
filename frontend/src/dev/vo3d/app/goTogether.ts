@@ -17,8 +17,10 @@
 //   • NOBODY IS EVER WAITED ON FOR LONG. Both holds are bounded, only active followers who are actually
 //     near count, and a member who misses the departure simply notices the leader's floor changed and
 //     takes their own lift — catch-up, not failure.
-//   • MANUAL CONTROL ALWAYS WINS. A click, a movement key or switching to PLAYER pauses following
-//     (Resume / Leave); the leader taking control pauses the journey (Continue / End).
+//   • MANUAL CONTROL ALWAYS WINS — deliberately, never by accident. The journey GUIDES the body (the
+//     controller stack's Guided owner), so PLAYER stays on screen with its camera while the system walks,
+//     and the movement keys do not fight the route. A click in OFFICE, or Esc, pauses following (Resume /
+//     Leave); the leader taking control pauses the journey (Continue / End).
 //
 // A LEAF like app/floors.ts: it imports only V2's own coordinate type and the floor ids, so the world, the
 // React host and a test can all read it without dragging either side's dependencies to the other.
@@ -73,8 +75,8 @@ export interface Vo3dGoTogetherPort {
   self(): { floor: Vo3dFloorId; pos: Vec2; riding: boolean; holding: boolean; moving: boolean; player: boolean };
   /** where this person's body is drawn ON THE VIEWER'S FLOOR, or null (other floor, not loaded) */
   peer(email: string): Vec2 | null;
-  /** walk to a standable point near `p` through the ordinary router (hands PLAYER back to OFFICE first,
-   *  exactly as Walk There does — PLAYER has no automated walking) */
+  /** walk to a standable point near `p` through the ordinary router. Under a guided journey (setGuided)
+   *  PLAYER stays on screen; without one PLAYER is handed back to OFFICE first, exactly as Walk There does */
   walkNear(p: Vec2): boolean;
   /** the existing lift journey to `to`: walk to the doors if needed, then the ordinary local ride */
   ride(to: Vo3dFloorId): boolean;
@@ -86,6 +88,10 @@ export interface Vo3dGoTogetherPort {
   setHooks(hooks: Vo3dGoTogetherHooks | null): void;
   /** start the ride that holdDeparture held; false when it was cancelled meanwhile */
   releaseLift(): boolean;
+  /** GUIDED TRAVEL: true while this body's journey is under way — the world then drives it under the
+   *  controller stack's Guided owner (PLAYER keeps its view and camera, the keys do not move it, Esc hands
+   *  it back through onUserMove). False hands it back; a walk still under way finishes as an ordinary one. */
+  setGuided(on: boolean): void;
   /** THE RIDE MANIFEST: the other party members departing with this body on its NEXT lift ride. The world
    *  stands them, in their own characters, in its local car (app/liftRiders.ts). Null clears a manifest
    *  that has not been used yet; a ride already under way keeps its riders to the end. */
@@ -101,7 +107,8 @@ export interface Vo3dGoTogetherHooks {
   /** Asked when a ride ends with a Walk There continuation. Return true to hold the continuation and call
    *  `resume` when ready (the leader regrouping). */
   holdArrival(on: Vo3dFloorId, resume: () => void): boolean;
-  /** The person clicked somewhere, used a movement key over an automated walk, or walked up to someone. */
+  /** The person clicked somewhere, used a movement key over an automated walk, walked up to someone, or
+   *  pressed Esc during a guided journey. */
   onUserMove(): void;
 }
 
@@ -205,11 +212,11 @@ export class GoTogetherController implements Vo3dGoTogetherHooks {
   private lastDeparted: string[] = [];
   // follower
   private following = true;
-  private prevPlayer = false;
+  /** what the port was last told (setGuided) */
+  private guided = false;
   private lastWalkAt = -Infinity;
   private lastTarget: Vec2 | null = null;
   private lastRideAt = -Infinity;
-  private lastRideEnd = -Infinity;
   private wasRiding = false;
   private heading: Vec2 | null = null;
   private lastLeaderPos: Vec2 | null = null;
@@ -288,6 +295,8 @@ export class GoTogetherController implements Vo3dGoTogetherHooks {
     if (!party || !this.isLeader() || !this.input.isController) return;
     this.started = true;
     this.leaderPaused = false;
+    // Guided BEFORE the first step, so the walk it starts keeps PLAYER on screen.
+    this.syncGuided();
     if (this.port.goTo(party.destination) === "here" && this.seenAway) this.arrive();
     this.publish();
   }
@@ -295,7 +304,6 @@ export class GoTogetherController implements Vo3dGoTogetherHooks {
   resume(): void {
     if (!this.isFollower() || this.following) return;
     this.following = true;
-    this.prevPlayer = false;
     this.lastTarget = null;
     this.lastWalkAt = -Infinity;
     this.net.followState(true);
@@ -322,6 +330,8 @@ export class GoTogetherController implements Vo3dGoTogetherHooks {
   }
 
   dispose(): void {
+    if (this.guided) this.port.setGuided(false);
+    this.guided = false;
     if (this.hooked) this.port.setHooks(null);
     this.hooked = false;
     this.listeners.clear();
@@ -377,9 +387,11 @@ export class GoTogetherController implements Vo3dGoTogetherHooks {
       // Just off the lift, the leader's body may not be drawn yet on this floor: give it a moment
       // (bounded) so the last step lands BESIDE them rather than on the same approach point.
       if (!leaderAt && this.port.self().floor === dest.floor && this.now() - due < FINISH_DELAY_MS * 2) return;
-      this.finish = null;
+      // Still guided for this last step (it keeps PLAYER on screen); the walk then finishes as an ordinary one.
       if (leaderAt) this.port.walkNear(followSlot(leaderAt, heading, index));
       else this.port.goTo(dest);
+      this.finish = null;
+      this.syncGuided();
       return;
     }
     const party = this.input.party;
@@ -452,20 +464,15 @@ export class GoTogetherController implements Vo3dGoTogetherHooks {
     const self = this.port.self();
     if (self.riding) {
       this.wasRiding = true;
-      this.prevPlayer = self.player;
       return;
     }
     if (this.wasRiding) {
       this.wasRiding = false;
-      this.lastRideEnd = now;
       this.lastLeaderPos = null;
       this.lastTarget = null;
     }
-    // PLAYER IS MANUAL CONTROL. Following needs OFFICE (walkNear hands PLAYER back, like Walk There), so a
-    // switch INTO PLAYER while following is the person taking the body — except the ride's own cinematic,
-    // which plays in PLAYER framing and hands the view back itself.
-    if (this.following && self.player && !this.prevPlayer && now - this.lastRideEnd > 1500) this.pause();
-    this.prevPlayer = self.player;
+    // PLAYER IS NOT MANUAL CONTROL: a guided follower is walked in whatever view they are in. Only a click,
+    // Esc or a walk-up (onUserMove) pauses following.
     if (!this.following) return;
     // A LIFT TRIP IS UNDER WAY (walking to the doors for the departure or a catch-up): a follow step now
     // would be a new walk, and a new walk cancels the trip. The leader's floor moving is what comes next.
@@ -532,7 +539,6 @@ export class GoTogetherController implements Vo3dGoTogetherHooks {
     this.regroup = null;
     this.lastDeparted = [];
     this.following = true;
-    this.prevPlayer = false;
     this.lastWalkAt = -Infinity;
     this.lastTarget = null;
     this.lastRideAt = -Infinity;
@@ -578,7 +584,24 @@ export class GoTogetherController implements Vo3dGoTogetherHooks {
     return { kind: "following", leader };
   }
 
+  /** Is this body's journey under way? A leader who has set out and not taken control, a follower who is
+   *  following, or a follower's last step after the party arrived. Only the tab that drives the body. */
+  private wantsGuided(): boolean {
+    if (this.finish) return true;
+    const party = this.input.party;
+    if (!party || !this.input.isController) return false;
+    return this.isLeader() ? this.started && !this.leaderPaused : this.following;
+  }
+
+  private syncGuided(): void {
+    const want = this.wantsGuided();
+    if (want === this.guided) return;
+    this.guided = want;
+    this.port.setGuided(want);
+  }
+
   private publish(): void {
+    this.syncGuided();
     const next = this.computeStatus();
     if (JSON.stringify(next) === JSON.stringify(this.status)) return;
     this.status = next;

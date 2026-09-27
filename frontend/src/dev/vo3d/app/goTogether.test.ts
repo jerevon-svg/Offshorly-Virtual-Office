@@ -54,6 +54,7 @@ function rig() {
     atDestination: () => atDest,
     setHooks: (h) => { hooks = h; },
     releaseLift: vi.fn(() => true),
+    setGuided: vi.fn(),
     setRideRiders: vi.fn(),
     riders: () => [],
   };
@@ -169,21 +170,54 @@ describe("GoTogetherController — follower", () => {
     expect(r.port.ride).toHaveBeenCalledTimes(2);
   });
 
-  it("switching into PLAYER is taking control — but the ride's own cinematic is not", () => {
+  it("a follower already in PLAYER is guided, never paused (the live-test failure)", () => {
+    const r = rig();
+    r.self.player = true;
+    r.ctl.update({ party: party(), selfEmail: BOB, isController: true });
+    expect(r.port.setGuided).toHaveBeenLastCalledWith(true);
+    r.peers.set(LEAD, { x: 0, z: 300 });
+    for (let i = 0; i < 5; i++) {
+      r.ctl.tick();
+      r.advance(RETARGET_MS);
+      r.peers.set(LEAD, { x: 0, z: 300 + 40 * (i + 1) });
+    }
+    expect(r.net.followState).not.toHaveBeenCalled();
+    expect(r.ctl.getStatus()).toMatchObject({ kind: "following" });
+    expect(r.port.walkNear).toHaveBeenCalled();
+  });
+
+  it("Esc (onUserMove) hands the body back; Resume guides it again; the party ending releases it", () => {
+    const r = rig();
+    r.self.player = true;
+    r.ctl.update({ party: party(), selfEmail: BOB, isController: true });
+    r.ctl.onUserMove();
+    expect(r.net.followState).toHaveBeenCalledWith(false);
+    expect(r.port.setGuided).toHaveBeenLastCalledWith(false);
+    r.ctl.resume();
+    expect(r.port.setGuided).toHaveBeenLastCalledWith(true);
+    r.ctl.tick(); // still in PLAYER: the resume sticks
+    expect(r.ctl.getStatus()).toMatchObject({ kind: "following" });
+    r.ctl.update({ party: null, selfEmail: BOB, isController: true, endedReason: "left" });
+    expect(r.port.setGuided).toHaveBeenLastCalledWith(false);
+  });
+
+  it("only the driving tab is ever guided", () => {
+    const r = rig();
+    r.ctl.update({ party: party(), selfEmail: BOB, isController: false });
+    r.ctl.tick();
+    expect(r.port.setGuided).not.toHaveBeenCalled();
+  });
+
+  it("stays guided through its last step after the party arrives, then lets go", () => {
     const r = rig();
     r.ctl.update({ party: party(), selfEmail: BOB, isController: true });
-    r.self.riding = true;
-    r.self.player = true;
+    r.ctl.update({ party: null, selfEmail: BOB, isController: true, endedReason: "arrived" });
+    expect(r.port.setGuided).toHaveBeenLastCalledWith(true);
+    r.peers.set(LEAD, { x: 0, z: 100 });
+    r.advance(FINISH_DELAY_MS);
     r.ctl.tick();
-    r.self.riding = false;
-    r.self.player = false;
-    r.advance(100);
-    r.ctl.tick();
-    expect(r.net.followState).not.toHaveBeenCalled();
-    r.advance(2000);
-    r.self.player = true;
-    r.ctl.tick();
-    expect(r.net.followState).toHaveBeenCalledWith(false);
+    expect(r.port.walkNear).toHaveBeenCalledTimes(1);
+    expect(r.port.setGuided).toHaveBeenLastCalledWith(false);
   });
 });
 
@@ -197,6 +231,21 @@ describe("GoTogetherController — leader", () => {
     r.ctl.update({ party: party(), selfEmail: LEAD, isController: true });
     r.ctl.tick();
     expect(r.port.goTo).toHaveBeenCalledTimes(1);
+  });
+
+  it("is guided from the moment it sets out — before the first step — until it takes control", () => {
+    const r = rig();
+    const order: string[] = [];
+    (r.port.setGuided as ReturnType<typeof vi.fn>).mockImplementation((on: boolean) => order.push(`guided:${on}`));
+    (r.port.goTo as ReturnType<typeof vi.fn>).mockImplementation(() => { order.push("goTo"); return "walking"; });
+    r.ctl.update({ party: party({ pending: [CAT] }), selfEmail: LEAD, isController: true });
+    expect(order).toEqual([]); // waiting for answers: the leader's body is their own
+    r.ctl.go();
+    expect(order).toEqual(["guided:true", "goTo"]);
+    r.ctl.onUserMove();
+    expect(order.at(-1)).toBe("guided:false");
+    r.ctl.go(); // Continue
+    expect(order.slice(-2)).toEqual(["guided:true", "goTo"]);
   });
 
   it("with nobody following, rides at once but still announces the departure (for catch-up)", () => {

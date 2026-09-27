@@ -104,6 +104,13 @@ export type PlayerDeps = {
    *  an automated walk (a routed walk, or an approach still walking to a fixture such as the lift's
    *  doors) is stopped along with anything queued behind it; a seat or a lift ride is left alone. */
   onManualOverride?: (owner: string) => void;
+  /** GUIDED TRAVEL (Go Together): true while a system-driven journey holds the body (ControllerStack's
+   *  Guided base). The mode then stays on screen without owning the body: it neither yields the walk nor
+   *  starts an interaction, and the keys do not move anybody. Absent means never. */
+  guided?: () => boolean;
+  /** Is the mouse allowed to turn the camera while somebody else drives the body? True for a guided or
+   *  routed walk; false while a ride or a seat stages its own shot. Absent means never (the old rule). */
+  freeLook?: () => boolean;
 };
 
 export class PlayerMode {
@@ -178,9 +185,11 @@ export class PlayerMode {
   /** Take over. Returns false when the avatar cannot be placed on legal floor (nothing is changed then). */
   enter(): boolean {
     if (this._active) return true;
-    this.d.yieldAvatar();
+    // A GUIDED JOURNEY KEEPS THE BODY: entering PLAYER mid-journey changes the camera, never the walk.
+    const guided = this.d.guided?.() ?? false;
+    if (!guided) this.d.yieldAvatar();
     if (!this.body.placeNear(this.d.avatar.position)) return false;
-    if (!this.d.stack.acquire("Player")) return false;
+    if (!guided && !this.d.stack.acquire("Player")) return false;
     this._active = true;
     this.state.active = true;
     this.d.avatar.setPosition(this.body.pos);
@@ -285,6 +294,9 @@ export class PlayerMode {
     if (this.d.canStandUp()) { this.d.standUp(); return; }
     const t = this.target;
     if (!t) return;
+    // GUIDED TRAVEL: the journey owns the body, so nothing that would walk it somewhere else starts. A
+    // person is still a menu and moves nobody.
+    if (this.d.guided?.() && t.kind !== "person") return;
     // PHASE 6D — A PERSON IS NOT A HANDOFF. Selecting a coworker opens a menu; it moves nobody and owns
     // nothing, so the avatar is never released here. Releasing and re-acquiring it (what every other kind
     // does, because the starters route with A* and take "Interaction") would drop Bon into an idle clip
@@ -306,6 +318,12 @@ export class PlayerMode {
     // an interaction is driving Bon: keep the camera on him, move nothing, and take him back when it ends
     if (owner !== "Player") {
       if (this.input.axis.x || this.input.axis.z) this.d.onManualOverride?.(owner);
+      // GUIDED TRAVEL: the system walks the body, the person keeps the camera. Taken only when allowed, so
+      // a seat or a ride that stages its own shot sees exactly what it always did.
+      if (this.d.freeLook?.()) {
+        const look = this.input.takeLook();
+        if (look.dx || look.dy) this.camera.look(look.dx, look.dy);
+      }
       this.state.sprinting = false;
       this.state.travelled = 0;
       // Somebody else is driving the body; a jump cannot continue through a seat or an approach, and

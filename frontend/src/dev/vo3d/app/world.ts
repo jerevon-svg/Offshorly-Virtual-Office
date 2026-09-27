@@ -108,6 +108,7 @@ import { deriveRoomSchedule, type Formatters, type LiveRoom, type ScheduledBooki
 import { FloorTransition, walkLegs } from "../interact/FloorTransition";
 import { buildWorldContents } from "./worldContents";
 import type { PartyDestination, Vo3dGoTogetherHooks, Vo3dGoTogetherPort } from "./goTogether";
+import { isTypingTarget } from "./keyGuard";
 import { LIFT_RIDER_SLOTS, LIFT_RIDER_YAW, exitPath, pathLength, slotPoint, type LiftRiderSlot } from "./liftRiders";
 import { FACADE_Z, FRAME, v1Rooms } from "../adapters/v1Floor";
 import { planWalk, type NavResult } from "../nav/planner";
@@ -2109,7 +2110,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // PLAYER HAS NO AUTOMATED WALK, by design: it outranks Navigation so a stray click can never steal the
     // body from the keys. Walk There is an automated walk, so it hands the view back to OFFICE (the lift
     // journey changes view the same way) and walks from there; any click then cancels it as usual.
-    if (playerMode.active) setCameraMode("office");
+    // A GUIDED JOURNEY (Go Together) is the exception: Guided outranks PLAYER, so the view stays.
+    if (playerMode.active && !stack.guided) setCameraMode("office");
     if (currentFloor === FLOOR2_ID) return walkToGround(r.approach.x, r.approach.z).ok ? "walking" : "unreachable";
     if (!floorTransition || floorTransition.busy) return "busy";
     // The lift's own journey (walk to its call point, board, ride); set AFTER, because the walk to the
@@ -2293,8 +2295,14 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     yieldAvatar: () => { stopTour(); navCtl.stop(); approachCtl.cancel(); },
     // THE KEYS WIN over any automated walk: stop it and whatever was queued behind it (a lift trip, Walk
     // There). Navigation then releases the body and PLAYER takes it back on its next frame.
+    // GUIDED TRAVEL — PLAYER stays on screen while a journey drives the body, and the mouse keeps the
+    // camera except while the lift or the portal is staging its own shot.
+    guided: () => stack.guided,
+    freeLook: () => (stack.guided || stack.owner === "Navigation") && !floorTransition?.busy && !caveTransition?.busy,
     onManualOverride: (owner) => {
       if (floorTransition?.busy) return; // the ride itself is not interruptible (see FloorTransition)
+      // A GUIDED JOURNEY IS NOT FOUGHT BY THE KEYS: they are ignored until Esc hands the body back.
+      if (stack.guided) return;
       if (owner !== "Navigation" && !(owner === "Interaction" && approachCtl.state === "walking")) return;
       stopTour(); navCtl.stop(); approachCtl.cancel(); pendingFloor = null; heldLift = null; pendingRiders = null; meetingWalk = null;
       partyHooks?.onUserMove();
@@ -2973,6 +2981,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  (components/OfficeMap/HudSettings owns that, and only the Settings radio writes it), because taking
    *  the lift is not a statement about which view you want the office to open in. */
   const rememberedView: Partial<Record<Vo3dFloorId, Vo3dViewMode>> = {};
+  /** the view this ride began in (beginCinematic → endCinematic) */
+  let rideFromView: Vo3dViewMode | null = null;
   const floorListeners = new Set<(floor: Vo3dFloorId) => void>();
   const notifyFloor = (): void => { for (const l of floorListeners) l(currentFloor); };
 
@@ -3071,6 +3081,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     releaseAvatar: () => stack.release("Interaction"),
     beginCinematic: () => {
       rememberedView[currentFloor] = params.cameraMode as Vo3dViewMode;
+      rideFromView = params.cameraMode as Vo3dViewMode;
       navCtl.stop();
       approachCtl.cancel();
       // THE RIDE IS ALWAYS PLAYED IN THIRD PERSON. First person would put the camera inside the avatar's
@@ -3105,7 +3116,12 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       playerMode.camera.boomScale = 1;
       playerMode.setPromptHidden(false);
       cinematicPitch = null;
-      const want = arrivalViewMode(rememberedView[arrivedOn] ?? (rememberedView[currentFloor] as Vo3dViewMode) ?? "office", arrivedOn);
+      // The view the ride BEGAN in is the fallback — `currentFloor` is already the destination by now, so
+      // reading it here fell through to OFFICE on every first arrival. A GUIDED journey keeps the view it
+      // rode in outright: the system is walking this body, the person chose the camera.
+      const from = rideFromView;
+      rideFromView = null;
+      const want = arrivalViewMode((stack.guided ? from : null) ?? rememberedView[arrivedOn] ?? from ?? "office", arrivedOn);
       if (params.cameraMode !== want) setCameraMode(want);
       else notifyViewMode();
     },
@@ -3221,6 +3237,30 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     const at = { x: avatar.position.x, z: avatar.position.z };
     return pointInRect(at, r.interior) || Math.hypot(at.x - r.approach.x, at.z - r.approach.z) < 48;
   }
+  /** GUIDED TRAVEL — the journey holds the body (ControllerStack's Guided base) for as long as the party
+   *  drives it. Ending it hands a walk still under way to ordinary Navigation, so it finishes (or the keys
+   *  stop it) as any routed walk would; a standing body goes back to Idle, where PLAYER re-takes it. */
+  function setGuidedTravel(on: boolean): void {
+    if (on === stack.guided) return;
+    stack.setBase(on ? "Guided" : "Idle");
+    if (!on && navCtl.moving) stack.acquire("Navigation");
+  }
+  /** ESC LEAVES A GUIDED JOURNEY: everything automated stops, the party is told the person took their body
+   *  (a follower pauses, a leader's journey pauses), and PLAYER gets the body back. Never mid-ride. */
+  function cancelGuidedTravel(): boolean {
+    if (!stack.guided || floorTransition?.busy || caveTransition?.busy) return false;
+    stopTour(); navCtl.stop(); approachCtl.cancel(); pendingFloor = null; heldLift = null; pendingRiders = null; meetingWalk = null;
+    partyHooks?.onUserMove();
+    setGuidedTravel(false);
+    return true;
+  }
+  // POINTER LOCK EATS THE FIRST ESC: while PLAYER holds the pointer, Esc only frees it (the browser may not
+  // even deliver that keydown, and one it does deliver is still the unlock press). The next Esc — pointer
+  // already free, nothing being typed — cancels. Two presses, never ambiguous.
+  onWindow("keydown", (e) => {
+    if (e.key !== "Escape" || e.defaultPrevented || !stack.guided || document.pointerLockElement || isTypingTarget(e)) return;
+    cancelGuidedTravel();
+  });
   /** GO TOGETHER V1 — see Vo3dWorld.goTogether and app/goTogether.ts. */
   const goTogetherPort: Vo3dGoTogetherPort = {
     self: () => ({
@@ -3234,13 +3274,13 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     peer: (email) => coworkers.pointOf(email.trim().toLowerCase()),
     walkNear: (p) => {
       if (floorTransition?.busy || heldLift) return false;
-      if (playerMode.active) setCameraMode("office");
+      if (playerMode.active && !stack.guided) setCameraMode("office");
       const spot = standablePointNear(p, NAV_RADIUS, playerStand);
       return spot ? walkToGround(spot.x, spot.z).ok : false;
     },
     ride: (to) => {
       if (to === currentFloor || !FLOORS[to]) return false;
-      if (playerMode.active) setCameraMode("office");
+      if (playerMode.active && !stack.guided) setCameraMode("office");
       return callElevator(to);
     },
     // V1 RESOLVES ROOMS ON THE MEETING FLOOR (Walk There) and plain points on the viewer's own floor. A
@@ -3261,6 +3301,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       if (!hooks && heldLift) releaseHeldLift();
     },
     releaseLift: releaseHeldLift,
+    setGuided: setGuidedTravel,
     setRideRiders: (emails) => {
       pendingRiders = emails && emails.length ? { emails: [...emails], at: performance.now() } : null;
     },
