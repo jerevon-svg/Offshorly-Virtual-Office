@@ -13,10 +13,12 @@ import {
   clearPartyNotice,
   declinePartyInvite,
   leaveParty,
-  onPartyDeparting,
   partyNet,
   useTravelParty,
 } from "../../../services/party/travelPartyStore";
+import { profileImageFor } from "../../../data/portraits";
+import { MEETING_CONTEXT } from "./useMeetingParty";
+import type { PartyPerson } from "./goTogether";
 import styles from "./Vo3dGoTogether.module.css";
 
 const TICK_MS = 250;
@@ -27,6 +29,7 @@ const REFUSALS: Record<string, string> = {
   in_party: "is already going somewhere with someone",
   already_invited: "already has an invitation",
   full: "— the party is full",
+  started: "— the party has already set off",
 };
 
 const ENDINGS: Record<string, string> = {
@@ -56,11 +59,9 @@ export function Vo3dGoTogether({ worldRef, ready, selfId, nameOf }: {
     const ctl = new GoTogetherController(port, partyNet);
     ctlRef.current = ctl;
     const unsub = ctl.subscribe(setStatus);
-    const offDepart = onPartyDeparting((d) => ctl.onDeparting(d));
     const id = window.setInterval(() => ctl.tick(), TICK_MS);
     return () => {
       window.clearInterval(id);
-      offDepart();
       unsub();
       ctl.dispose();
       ctlRef.current = null;
@@ -69,8 +70,8 @@ export function Vo3dGoTogether({ worldRef, ready, selfId, nameOf }: {
 
   const isController = tp.party !== null && tp.controllerSid !== null && tp.controllerSid === tp.socketId;
   useEffect(() => {
-    ctlRef.current?.update({ party: tp.party, selfEmail: selfId, isController, endedReason: tp.endedReason });
-  }, [tp.party, selfId, isController, ready, tp.endedReason]);
+    ctlRef.current?.update({ party: tp.party, selfEmail: selfId, isController });
+  }, [tp.party, selfId, isController, ready]);
 
   // Notices fade on their own.
   const notice = useMemo(() => {
@@ -96,26 +97,58 @@ export function Vo3dGoTogether({ worldRef, ready, selfId, nameOf }: {
       {invite && !party && (
         <div className={styles.card} role="dialog" aria-label="Go Together invitation" data-testid="go-together-invite">
           <span className={styles.cardTitle}>{nameOf(invite.fromEmail)} wants to go together</span>
-          <span className={styles.cardSub}>to {invite.party.destination.label} — you'll walk with them, lift included</span>
+          <span className={styles.cardSub}>{invite.party.destination.label}</span>
           <div className={styles.actions}>
             <button type="button" className={styles.primary} data-testid="go-together-join" onClick={() => acceptPartyInvite(invite.inviteId)}>
               Join
             </button>
+            {/* For a meeting this turns down the WALK, never the meeting: attendance is untouched and the
+                reminder's own Walk There comes back for the same meeting. */}
             <button type="button" className={styles.ghost} data-testid="go-together-decline" onClick={() => declinePartyInvite(invite.inviteId)}>
-              Decline
+              {invite.party.destination.context?.kind === MEETING_CONTEXT ? "I'll walk there" : "Decline"}
             </button>
           </div>
         </div>
       )}
-      {party && <PartyChip status={status} label={label} nameOf={nameOf} ctl={ctl} />}
+      {party && <PartyChip status={status} label={label} leader={party.leaderEmail} self={selfId} nameOf={nameOf} ctl={ctl} />}
       {notice && <span className={styles.notice} role="status" data-testid="go-together-notice">{notice}</span>}
     </div>
   );
 }
 
-function PartyChip({ status, label, nameOf, ctl }: {
+const PERSON_LABEL: Record<PartyPerson["state"], string> = {
+  joined: "Joined", waiting: "Waiting", declined: "Walking there alone", ready: "Ready", "on-the-way": "On the way", paused: "Paused",
+};
+
+/** ONE FACE PER PERSON: full colour once they are in (joined / ready / on the way), muted while waiting or
+ *  out; a small badge says which (✓ joined or ready, ✕ declined, … on the way). The leader carries a thin
+ *  ring. The name is the tooltip and the accessible label. */
+function PartyFaces({ people, nameOf }: { people: PartyPerson[]; nameOf: (email: string) => string }) {
+  return (
+    <ul className={styles.faces} data-testid="go-together-people">
+      {people.map((p) => {
+        const src = profileImageFor(p.email, () => "");
+        const name = nameOf(p.email);
+        const muted = p.state === "waiting" || p.state === "declined" || p.state === "paused";
+        const badge = p.state === "joined" || p.state === "ready" ? "✓" : p.state === "declined" ? "✕" : p.state === "on-the-way" ? "…" : null;
+        const label = `${name}${p.leader ? " (leading)" : ""} · ${PERSON_LABEL[p.state]}`;
+        return (
+          <li key={p.email} className={`${styles.face} ${muted ? styles.faceMuted : ""} ${p.leader ? styles.faceLeader : ""}`}
+            title={label} aria-label={label} data-state={p.state} data-email={p.email}>
+            {src ? <img src={src} alt="" draggable={false} /> : <span className={styles.faceInitial}>{name.trim().charAt(0).toUpperCase() || "?"}</span>}
+            {badge && <span className={`${styles.badge} ${badge === "✓" ? styles.badgeOk : badge === "✕" ? styles.badgeNo : styles.badgeWait}`} aria-hidden="true">{badge}</span>}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function PartyChip({ status, label, leader, self, nameOf, ctl }: {
   status: GoTogetherStatus;
   label: string;
+  leader: string;
+  self: string;
   nameOf: (email: string) => string;
   ctl: GoTogetherController | null;
 }) {
@@ -124,45 +157,54 @@ function PartyChip({ status, label, nameOf, ctl }: {
   let text: React.ReactNode;
   let dot = "";
   let actions: React.ReactNode = null;
+  // Forming and gathering are a small card: the line, an optional place line, then the faces with the
+  // actions beside them (so the destination on the first line is never squeezed by buttons).
+  let people: PartyPerson[] | null = null;
+  let place: string | null = null;
+  let sub: string | null = null;
+  // The truthful guidance while the system walks this body — no promise of a chat that does not exist yet.
+  const guidance = "Auto-travel active · Esc to leave";
   switch (status.kind) {
-    case "leader-waiting":
+    case "leader-forming":
       dot = styles.wait;
-      text = <>Go Together · {label} <span className={styles.chipSub}>· {status.joined} joined{status.pending ? `, ${status.pending} deciding` : ""}</span></>;
-      actions = <>{status.joined > 0 && <button type="button" className={styles.primary} data-testid="go-together-go" onClick={() => ctl?.go()}>Go now</button>}{end}</>;
+      text = <>Going Together · {label}</>;
+      people = status.people;
+      // Pointer lock: Esc frees the cursor (nothing is guided yet, so Esc does nothing else) — then click.
+      actions = <>{status.canStart && <button type="button" className={styles.primary} data-testid="go-together-start" onClick={() => ctl?.startWalking()}>Start Walking</button>}{end}</>;
       break;
-    case "leader-travelling":
-      text = <>Going together to {label} <span className={styles.chipSub}>· {status.joined} with you</span></>;
-      actions = end;
-      break;
-    case "leader-paused":
-      dot = styles.idle;
-      text = <>Paused — you took control <span className={styles.chipSub}>· {label}</span></>;
-      actions = <><button type="button" className={styles.primary} data-testid="go-together-continue" onClick={() => ctl?.go()}>Continue</button>{end}</>;
-      break;
-    case "gathering":
+    case "forming":
       dot = styles.wait;
-      text = status.ready > 0 ? <>Gathering party · {status.ready}/{status.total}</> : <>Gathering at the lift…</>;
-      break;
-    case "regrouping":
-      dot = styles.wait;
-      text = <>Regrouping · {status.ready}/{status.total}</>;
-      break;
-    case "riding":
-      text = <>Riding up together <span className={styles.chipSub}>· {label}</span></>;
-      break;
-    case "following":
-      text = <>Following {nameOf(status.leader)} <span className={styles.chipSub}>· {label}</span></>;
+      text = <>Going Together · {label}</>;
+      place = `Waiting for ${nameOf(status.leader)} to start walking`;
+      people = status.people;
       actions = leave;
       break;
-    case "catching-up":
+    case "rendezvous":
       dot = styles.wait;
-      text = <>Catching up with {nameOf(status.leader)}…</>;
-      actions = leave;
+      text = <>Going Together · {label}</>;
+      place = status.place === "hub" ? "Meeting at Central Hub" : "Gathering here";
+      sub = guidance;
+      people = status.people;
+      actions = leader === self ? end : leave;
+      break;
+    case "party-ready":
+      text = <>Going Together · {label}</>;
+      place = "Everyone's here — setting off together";
+      people = status.people;
+      actions = leader === self ? end : leave;
+      break;
+    case "journey":
+      text = status.riding || status.leg === "ride" ? <>Riding together · {label}</> : <>Going together · {label}</>;
+      place = status.leg === "to_lift" ? "Heading to the lift" : status.leg === "ride" ? "Taking the lift together" : "Walking to the room";
+      sub = guidance;
+      people = status.people;
+      // Mid-ride the lift owns the body (Esc is refused there too); Leave/End come back at the doors.
+      actions = status.riding ? null : leader === self ? end : leave;
       break;
     case "paused":
       dot = styles.idle;
-      text = <>Paused following {nameOf(status.leader)}</>;
-      actions = <><button type="button" className={styles.primary} data-testid="go-together-resume" onClick={() => ctl?.resume()}>Resume</button>{leave}</>;
+      text = <>Paused — you took control <span className={styles.chipSub}>· {label}</span></>;
+      actions = <><button type="button" className={styles.primary} data-testid="go-together-resume" onClick={() => ctl?.resume()}>Resume</button>{status.leader ? end : leave}</>;
       break;
     case "observer":
       dot = styles.idle;
@@ -172,9 +214,22 @@ function PartyChip({ status, label, nameOf, ctl }: {
     default:
       return null;
   }
-  // The leader's gather/regroup/ride carry no End: they are a few seconds long and bounded — and a click
-  // on the floor still takes control at any moment.
-  if (!actions && status.kind !== "riding" && !(status.kind === "gathering" && status.ready > 0) && status.kind !== "regrouping") actions = leave;
+  if (people) {
+    return (
+      <div className={`${styles.chip} ${styles.chipList}`} role="status" data-testid="go-together-chip" data-status={status.kind}>
+        <div className={styles.chipRow}>
+          <span className={`${styles.dot} ${dot}`} aria-hidden="true" />
+          <span className={styles.chipText}>{text}</span>
+        </div>
+        {place && <span className={styles.place}>{place}</span>}
+        {sub && <span className={styles.guidance} data-testid="go-together-guidance">{sub}</span>}
+        <div className={styles.facesRow}>
+          <PartyFaces people={people} nameOf={nameOf} />
+          {actions && <span className={styles.chipActions}>{actions}</span>}
+        </div>
+      </div>
+    );
+  }
   return (
     <div className={styles.chip} role="status" data-testid="go-together-chip" data-status={status.kind}>
       <span className={`${styles.dot} ${dot}`} aria-hidden="true" />

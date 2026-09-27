@@ -1,7 +1,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { io, type Socket } from "socket.io-client";
 import { getAuthToken } from "../api/client";
-import type { PartyDeparture, PartyDestination, PartyNet, PartyWire } from "../../dev/vo3d/app/goTogether";
+import type { PartyDestination, PartyNet, PartyWire } from "../../dev/vo3d/app/goTogether";
 
 // GO TOGETHER V1 — THE ONE client-side copy of this person's travel party, in the module-store idiom of
 // scheduledMeetingsStore.ts. Everything here is the server's (backend services/travel_party.py):
@@ -38,15 +38,19 @@ export interface TravelPartySnapshot {
   lastResults: PartyInviteResult[] | null;
   /** Why the last party ended, for a brief notice; cleared when a new one starts. */
   endedReason: string | null;
+  /** THE JOURNEY'S END, remembered: the destination contexts (e.g. a scheduled meeting's id) a party of
+   *  this person's has ARRIVED at this session. The one seam the meeting side reads — the reminder does not
+   *  offer a second journey to a meeting this person was just walked to, and a later meeting director can
+   *  pick up from here. */
+  arrivedFor: string[];
 }
 
-const EMPTY: TravelPartySnapshot = { party: null, controllerSid: null, socketId: null, invites: [], lastResults: null, endedReason: null };
+const EMPTY: TravelPartySnapshot = { party: null, controllerSid: null, socketId: null, invites: [], lastResults: null, endedReason: null, arrivedFor: [] };
 
 let snapshot: TravelPartySnapshot = EMPTY;
 let socketInstance: Socket | null = null;
 let devEmail: string | null = null;
 const listeners = new Set<() => void>();
-const departureListeners = new Set<(d: PartyDeparture) => void>();
 
 function set(next: Partial<TravelPartySnapshot>): void {
   snapshot = { ...snapshot, ...next };
@@ -106,7 +110,10 @@ function ensureSocket(): void {
   socket.on("travel_party", applyParty);
   socket.on("party_updated", applyParty);
   socket.on("party_ended", (p: { partyId: string; reason: string }) => {
-    if (snapshot.party?.partyId === p.partyId) set({ party: null, controllerSid: null, endedReason: p.reason });
+    if (snapshot.party?.partyId !== p.partyId) return;
+    const ctx = snapshot.party.destination.context;
+    const arrivedFor = p.reason === "arrived" && ctx && !snapshot.arrivedFor.includes(ctx.id) ? [...snapshot.arrivedFor, ctx.id] : snapshot.arrivedFor;
+    set({ party: null, controllerSid: null, endedReason: p.reason, arrivedFor });
   });
   socket.on("party_invites", (p: { invites?: PartyInvite[] }) => set({ invites: p.invites ?? [] }));
   socket.on("party_invite_incoming", (inv: PartyInvite) =>
@@ -114,9 +121,6 @@ function ensureSocket(): void {
   socket.on("party_invite_resolved", (p: { inviteId: string }) =>
     set({ invites: snapshot.invites.filter((i) => i.inviteId !== p.inviteId) }));
   socket.on("party_invite_result", (p: { results?: PartyInviteResult[] }) => set({ lastResults: p.results ?? [] }));
-  socket.on("party_departing", (d: PartyDeparture) => {
-    for (const l of departureListeners) l(d);
-  });
   socketInstance = socket;
 }
 
@@ -137,18 +141,11 @@ export const clearPartyNotice = () => set({ lastResults: null, endedReason: null
 
 /** What app/goTogether.ts's controller says to the server. */
 export const partyNet: PartyNet = {
-  gather: (floor) => emit("party_gather", { floor }),
-  depart: (fromFloor, toFloor, members) => emit("party_depart", { fromFloor, toFloor, members }),
-  arrived: () => emit("party_arrived"),
   followState: (following) => emit("party_follow_state", { following }),
+  where: (floor, roomId, position) => emit("party_where", { floor, roomId, position }),
+  start: () => emit("party_start"),
+  ready: (stageId, floor) => emit("party_ready", { stageId, floor }),
 };
-
-export function onPartyDeparting(cb: (d: PartyDeparture) => void): () => void {
-  departureListeners.add(cb);
-  return () => {
-    departureListeners.delete(cb);
-  };
-}
 
 /** Subscribable hook. Connects on first mount. */
 export function useTravelParty(): TravelPartySnapshot {
@@ -164,7 +161,6 @@ export function resetTravelPartyStoreForTests(): void {
   socketInstance = null;
   devEmail = null;
   snapshot = EMPTY;
-  departureListeners.clear();
 }
 
 export function __setTravelPartySnapshotForTests(next: Partial<TravelPartySnapshot>): void {

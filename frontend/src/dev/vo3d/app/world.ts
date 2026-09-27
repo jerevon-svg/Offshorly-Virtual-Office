@@ -17,7 +17,7 @@ import { GAMING_ROOM,
 import { CENTRAL_HUB, OPEN_BANDS as HUB_OPEN_BANDS,
   CAFE_CHAIR_IDS, COUNTER_INTERACTION_ID as HUB_COUNTER_ID, HUB_LOUNGE_IDS,
   MONUMENT_INTERACTION_ID as HUB_MONUMENT_ID, SHELF_INTERACTION_ID as HUB_SHELF_ID, TOUCAN_PERCH,
-  CHAMPIONSHIP_ENTRANCE_ID } from "../rooms/central-hub";
+  CHAMPIONSHIP_ENTRANCE_ID, RENDEZVOUS as HUB_RENDEZVOUS } from "../rooms/central-hub";
 import { EXECUTIVE_ROOM,
   CABINET_L_INTERACTION_ID, CABINET_R_INTERACTION_ID, CREDENZA_INTERACTION_ID, DOOR_EAST_ID as EXEC_DOOR_EAST_ID,
   DOOR_WEST_ID as EXEC_DOOR_WEST_ID, EXECUTIVE_LOUNGE_IDS, EXECUTIVE_SEAT_IDS, MEDIA_INTERACTION_ID } from "../rooms/executive";
@@ -109,7 +109,7 @@ import { FloorTransition, walkLegs } from "../interact/FloorTransition";
 import { buildWorldContents } from "./worldContents";
 import type { PartyDestination, Vo3dGoTogetherHooks, Vo3dGoTogetherPort } from "./goTogether";
 import { isTypingTarget } from "./keyGuard";
-import { LIFT_RIDER_SLOTS, LIFT_RIDER_YAW, exitPath, pathLength, slotPoint, type LiftRiderSlot } from "./liftRiders";
+import { LIFT_RIDER_YAW, exitPath, lobbyPoint, pathLength, slotPoint, type LiftRiderSlot, type PartyLiftPlan } from "./liftRiders";
 import { FACADE_Z, FRAME, v1Rooms } from "../adapters/v1Floor";
 import { planWalk, type NavResult } from "../nav/planner";
 import { RoomLockController, collectLockableDoors } from "./roomLocks";
@@ -1167,20 +1167,20 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   /** the lift trip waiting for its walk to the doors (see callElevator); declared up here because
    *  walkToGround, above the lift code, drops it */
   let pendingFloor: Vo3dFloorId | null = null;
-  /** GO TOGETHER — a lift ride the party's leader is holding at the doors while the party gathers (see
-   *  startLiftRide), and the party's hooks. A click or a movement key drops the held ride like any trip. */
-  let heldLift: Vo3dFloorId | null = null;
   /** between FloorTransition's board and alight (see its translateBody dep) */
   let inLiftCar = false;
-  /** GO TOGETHER — SHARED LIFT RIDERS (app/liftRiders.ts). `pendingRiders` is the ride manifest's other
-   *  members, handed in by the party at the coordinated departure and consumed by THIS body's next board;
-   *  `liftRiders` is who is standing in the car (then the vestibule) right now, and in which slot. */
-  let pendingRiders: { emails: readonly string[]; at: number } | null = null;
+  /** GO TOGETHER — THE PARTY RIDE (app/liftRiders.ts partyLiftPlan). `pendingLift` is this body's own slot
+   *  and the other riders' slots for the NEXT ride, handed in by the party's ride leg (goTogether port
+   *  `ride`) and consumed by it: the slot at the ride's start, the riders at the board. `liftRiders` is who
+   *  is standing in the car (then the vestibule) right now, and in which slot. */
+  let pendingLift: { plan: PartyLiftPlan; at: number } | null = null;
   let liftRiders: { list: { email: string; slot: LiftRiderSlot }[]; phase: "riding" | "arrived" | "leaving"; alightAt: number } | null = null;
-  /** a manifest older than this is not this ride's — the departure it belonged to never became a ride */
+  /** a manifest older than this is not this ride's — the leg it belonged to never became a ride */
   const RIDER_MANIFEST_TTL_MS = 20_000;
   /** after the alight, a rider whose real avatar has still not appeared on this floor is retired anyway */
   const RIDER_RETIRE_MS = 16_000;
+  /** how long a party ride's doors wait for the others to be drawn walking in before closing anyway */
+  const BOARD_WAIT_MS = 4000;
   let partyHooks: Vo3dGoTogetherHooks | null = null;
   /** The restore has already landed; it is a one-shot. */
   let selfRestored = false;
@@ -1504,8 +1504,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // is actually taken does: a click refused above (the ride itself owns the body) cancels nothing. The
     // lift's own walk to its doors goes through startApproach, never through here.
     pendingFloor = null;
-    heldLift = null;
-    pendingRiders = null;
+    pendingLift = null;
     meetingWalk = null;
     // A FLOOR ABOVE THE GROUND ONE IS OFF THE LATTICE, so its walks are planned on its own geometry.
     //
@@ -1545,7 +1544,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
         const origin = avatar.position;
         if (navCtl.setPath(toDoor.path)) {
           selfMovedByUser = true;
-          selfFeed?.planned(origin, toDoor.path, plannedDurationMs(origin, toDoor.path, navCtl.speed));
+          selfFeed?.planned(origin, toDoor.path, plannedDurationMs(origin, toDoor.path, navCtl.speed), guidedPacing());
         }
       }
       return refused;
@@ -1568,7 +1567,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       const origin = avatar.position;
       if (navCtl.setPath(result.path)) {
         selfMovedByUser = true;
-        selfFeed?.planned(origin, result.path, plannedDurationMs(origin, result.path, navCtl.speed));
+        selfFeed?.planned(origin, result.path, plannedDurationMs(origin, result.path, navCtl.speed), guidedPacing());
       }
     }
     return result;
@@ -1963,7 +1962,14 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     const r = approachCtl.begin(spec, entityId);
     receptionState.focus = spec.label;
     receptionState.status = approachCtl.status;
-    if (r.ok) { navDebug.showNav(avatar.position, r); navCtl.setPath(r.path); }
+    if (r.ok) {
+      navDebug.showNav(avatar.position, r);
+      // PUBLISHED LIKE ANY ROUTED WALK (walkToGround): the walk up to a thing — the lift's call plate, a
+      // reception desk, the monument — was set on the walker but never announced, so every other browser
+      // saw this body frozen where it started while it walked (Go Together: the leader "stuck" at the Hub).
+      const origin = avatar.position;
+      if (navCtl.setPath(r.path)) selfFeed?.planned(origin, r.path, plannedDurationMs(origin, r.path, navCtl.speed), guidedPacing());
+    }
   }
   function startLoungeSit(index: number): void {
     approachCtl.cancel();
@@ -2120,7 +2126,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // callElevator says yes even when the walk to its doors could not be planned; say so honestly
     // rather than showing "taking the lift" while nothing moves.
     // (A ride GO TOGETHER is holding at the doors while the party gathers is a journey under way too.)
-    if (!floorTransition.busy && approachCtl.state !== "walking" && !heldLift) { pendingFloor = null; return "unreachable"; }
+    if (!floorTransition.busy && approachCtl.state !== "walking") { pendingFloor = null; return "unreachable"; }
     meetingWalk = { roomId };
     return "elevator";
   }
@@ -2291,8 +2297,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     canStandUp: () => engagedSeat() !== null,
     standUp: () => engagedSeat()?.stand(),
     // hand the avatar over cleanly: stop the walker, cancel a half-finished approach, leave engaged seats
-    // alone (PlayerMode simply does not move Bon while Interaction owns him, and takes over when it ends)
-    yieldAvatar: () => { stopTour(); navCtl.stop(); approachCtl.cancel(); },
+    // alone (PlayerMode simply does not move Bon while Interaction owns him, and takes over when it ends).
+    // A LIFT TRIP OR WALK THERE WAITING ON THAT APPROACH DIES WITH IT — exactly as the keys' override below
+    // drops it. Left behind, `pendingFloor` read as "a lift trip is under way" forever (goTogether port
+    // `holding`), so Go Together never walked this body to its rendezvous (Bon's Phase 2 live test).
+    yieldAvatar: () => { stopTour(); navCtl.stop(); approachCtl.cancel(); pendingFloor = null; meetingWalk = null; },
     // THE KEYS WIN over any automated walk: stop it and whatever was queued behind it (a lift trip, Walk
     // There). Navigation then releases the body and PLAYER takes it back on its next frame.
     // GUIDED TRAVEL — PLAYER stays on screen while a journey drives the body, and the mouse keeps the
@@ -2304,7 +2313,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // A GUIDED JOURNEY IS NOT FOUGHT BY THE KEYS: they are ignored until Esc hands the body back.
       if (stack.guided) return;
       if (owner !== "Navigation" && !(owner === "Interaction" && approachCtl.state === "walking")) return;
-      stopTour(); navCtl.stop(); approachCtl.cancel(); pendingFloor = null; heldLift = null; pendingRiders = null; meetingWalk = null;
+      stopTour(); navCtl.stop(); approachCtl.cancel(); pendingFloor = null; pendingLift = null; meetingWalk = null;
       partyHooks?.onUserMove();
     },
   });
@@ -3100,20 +3109,18 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       playerMode.camera.snap();
     },
     endCinematic: (arrivedOn) => {
-      // GO TOGETHER — the riders who stood beside this body in the car walk out behind it.
+      // GO TOGETHER — the riders already walked out WITH this body (onLeaving); this is the backstop for a
+      // ride that ended some other way.
       exitLiftRiders(specOf(arrivedOn));
       // WALK THERE, continued: the car is upstairs and the body is free again; finish the routed walk on
       // the floor's own geometry. Deferred a tick so the camera mode below settles first.
       if (meetingWalk && arrivedOn === FLOOR2_ID) {
         const { roomId } = meetingWalk;
         meetingWalk = null;
-        const go = () => { if (!disposed) walkToMeetingRoom(roomId); };
-        // GO TOGETHER — the leader may hold the continuation a bounded moment while the party regroups at
-        // the doors; a click meanwhile tells the party (onUserMove), which then never resumes it.
-        if (!partyHooks?.holdArrival(arrivedOn, go)) setTimeout(go, 60);
+        setTimeout(() => { if (!disposed) walkToMeetingRoom(roomId); }, 60);
       } else meetingWalk = null;
       if (restorePitch !== null) { playerMode.camera.pitch = restorePitch; restorePitch = null; }
-      playerMode.camera.boomScale = 1;
+      playerMode.camera.boomScale = journeyBoom();
       playerMode.setPromptHidden(false);
       cinematicPitch = null;
       // The view the ride BEGAN in is the fallback — `currentFloor` is already the destination by now, so
@@ -3131,6 +3138,20 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // crossing already knows what to call this place. `placeId` is null for the ground floor — V1's own
     // frame describes it and it needs no extra word.
     onWhere: (to) => selfFeed?.entering(FLOORS[to].placeId),
+    // GO TOGETHER — THE DOORS WAIT FOR THE PARTY. This body faces out on its own slot; the others, walking
+    // in on their own browsers, are drawn here by the movement feed a beat behind. Hold the doors until
+    // each of them is drawn inside the vestibule (or is not drawn on this floor at all), bounded, so the
+    // riders that replace them at the seal replace people who visibly walked in.
+    holdClose: (waitedMs) => {
+      const riders = pendingLift?.plan.riders ?? [];
+      if (riders.length === 0 || waitedMs > BOARD_WAIT_MS) return false;
+      const spec = specOf(currentFloor);
+      return riders.some((r) => {
+        const at = coworkers.realPointOf(r.email);
+        return at !== null && !inVestibule(spec, at);
+      });
+    },
+    onLeaving: () => exitLiftRiders(specOf(currentFloor)),
     invalidateShadows: () => R.invalidateShadows(),
   }, GROUND_FLOOR_ID);
 
@@ -3142,7 +3163,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  walks the employee to the call control first, through the approach the control already carries, and
    *  the journey begins when they arrive. One entry point for the key, the click, the GUI and the HUD. */
   function callElevator(to: Vo3dFloorId = otherFloor()): boolean {
-    if (!floorTransition || floorTransition.busy || heldLift) return false;
+    if (!floorTransition || floorTransition.busy) return false;
     // WHERE THE BODY REALLY IS. Outside PLAYER the player body is not kept in step with the avatar, so
     // reading it here said "already at the doors" from anywhere on the floor and skipped the routed walk
     // for the ride's own scripted, uninterruptible one. The avatar is the truth in every view.
@@ -3157,20 +3178,18 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     return true;
   }
 
-  /** THE ONE PLACE A LIFT RIDE STARTS once the body is at the doors. GO TOGETHER may hold it here — the
-   *  party's leader waiting a bounded moment for the party to gather — and releases it through
-   *  releaseHeldLift. The ride itself is FloorTransition's, unchanged, whoever starts it. */
+  /** THE ONE PLACE A LIFT RIDE STARTS once the body is at the doors. A GO TOGETHER ride boards this body
+   *  into its own party slot (pendingLift); every other ride is the solo journey. The ride itself is
+   *  FloorTransition's, unchanged, whoever starts it. */
   function startLiftRide(to: Vo3dFloorId): boolean {
     if (!floorTransition) return false;
-    if (partyHooks?.holdDeparture(currentFloor, to)) { heldLift = to; return true; }
-    return floorTransition.start(to);
-  }
-  function releaseHeldLift(): boolean {
-    const to = heldLift;
-    heldLift = null;
-    if (!to || !floorTransition || floorTransition.busy) return false;
+    // THE LIFT READS THE PLAYER BODY, which is not kept in step with the avatar outside PLAYER: after a walk
+    // to the doors in OFFICE (Walk There from across the floor) it was still where the walk began, and the
+    // ride was refused "not at the elevator". Every start now stands it where the avatar really is.
     if (!playerMode.active) playerMode.body.pos = { x: avatar.position.x, z: avatar.position.z };
-    return floorTransition.start(to);
+    const plan = pendingLift && performance.now() - pendingLift.at <= RIDER_MANIFEST_TTL_MS ? pendingLift.plan : null;
+    if (!plan) pendingLift = null;
+    return floorTransition.start(to, plan?.self ?? null);
   }
   // ---- GO TOGETHER: the other party members, standing in THIS browser's car -------------------------
   // Boarded with the doors shut (the seal), carried to the destination vestibule by the same translation as
@@ -3180,17 +3199,18 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   function boardLiftRiders(): void {
     coworkers.clearRiders();
     liftRiders = null;
-    const manifest = pendingRiders;
-    pendingRiders = null;
+    const manifest = pendingLift;
+    pendingLift = null;
     if (!manifest || performance.now() - manifest.at > RIDER_MANIFEST_TTL_MS) return;
     const list: { email: string; slot: LiftRiderSlot }[] = [];
-    for (const raw of manifest.emails) {
-      const email = raw.trim().toLowerCase();
-      const c = rosterList.find((r) => r.email === email);
-      const slot = LIFT_RIDER_SLOTS[list.length];
-      if (!c || !slot || list.some((l) => l.email === email)) continue;
-      void coworkers.addRider(email, c.avatarId, c.displayName, slotPoint(CABIN.mark, slot), LIFT_RIDER_YAW);
-      list.push({ email, slot });
+    // EVERY RIDER IN THEIR OWN SLOT — the slot of their place in the party, the same on every browser
+    // (app/liftRiders partyLiftPlan), never the one this body stands in.
+    for (const r of manifest.plan.riders) {
+      const email = r.email.trim().toLowerCase();
+      const c = rosterList.find((x) => x.email === email);
+      if (!c || list.some((l) => l.email === email)) continue;
+      void coworkers.addRider(email, c.avatarId, c.displayName, slotPoint(CABIN.mark, r.slot), LIFT_RIDER_YAW);
+      list.push({ email, slot: r.slot });
     }
     liftRiders = list.length ? { list, phase: "riding", alightAt: 0 } : null;
   }
@@ -3231,12 +3251,6 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     }
     if (liftRiders.list.length === 0) liftRiders = null;
   }
-  function atMeetingRoom(roomId: string): boolean {
-    const r = meetingRoom(roomId);
-    if (!r || currentFloor !== FLOOR2_ID) return false;
-    const at = { x: avatar.position.x, z: avatar.position.z };
-    return pointInRect(at, r.interior) || Math.hypot(at.x - r.approach.x, at.z - r.approach.z) < 48;
-  }
   /** GUIDED TRAVEL — the journey holds the body (ControllerStack's Guided base) for as long as the party
    *  drives it. Ending it hands a walk still under way to ordinary Navigation, so it finishes (or the keys
    *  stop it) as any routed walk would; a standing body goes back to Idle, where PLAYER re-takes it. */
@@ -3244,12 +3258,25 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     if (on === stack.guided) return;
     stack.setBase(on ? "Guided" : "Idle");
     if (!on && navCtl.moving) stack.acquire("Navigation");
+    // THE JOURNEY'S FRAMING: a little wider while the system walks this body, so the two or three people
+    // walking with it stay in the shot; PlayerCamera dollies it. A ride's own cinematic boom wins while it
+    // plays, and hands back to this one at its end (endCinematic).
+    if (!floorTransition?.busy) playerMode.camera.boomScale = journeyBoom();
+  }
+  /** HOW PEERS REPLAY THIS BODY'S NEXT ROUTED WALK: on a Guided Journey exactly as it moves (constant speed),
+   *  so the party looks the same on every screen; otherwise V1's eased account (app/selfMovement planned). */
+  function guidedPacing(): "linear" | undefined {
+    return stack.guided ? "linear" : undefined;
+  }
+  /** Ordinary PLAYER framing, or the Guided Journey's slightly wider one. */
+  function journeyBoom(): number {
+    return stack.guided ? GUIDED_JOURNEY_BOOM : 1;
   }
   /** ESC LEAVES A GUIDED JOURNEY: everything automated stops, the party is told the person took their body
    *  (a follower pauses, a leader's journey pauses), and PLAYER gets the body back. Never mid-ride. */
   function cancelGuidedTravel(): boolean {
     if (!stack.guided || floorTransition?.busy || caveTransition?.busy) return false;
-    stopTour(); navCtl.stop(); approachCtl.cancel(); pendingFloor = null; heldLift = null; pendingRiders = null; meetingWalk = null;
+    stopTour(); navCtl.stop(); approachCtl.cancel(); pendingFloor = null; pendingLift = null; meetingWalk = null;
     partyHooks?.onUserMove();
     setGuidedTravel(false);
     return true;
@@ -3261,51 +3288,52 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     if (e.key !== "Escape" || e.defaultPrevented || !stack.guided || document.pointerLockElement || isTypingTarget(e)) return;
     cancelGuidedTravel();
   });
-  /** GO TOGETHER V1 — see Vo3dWorld.goTogether and app/goTogether.ts. */
+  /** GO TOGETHER — see Vo3dWorld.goTogether and app/goTogether.ts. */
   const goTogetherPort: Vo3dGoTogetherPort = {
     self: () => ({
       floor: currentFloor,
       pos: { x: avatar.position.x, z: avatar.position.z },
       riding: floorTransition?.busy ?? false,
-      holding: heldLift !== null || pendingFloor !== null,
+      holding: pendingFloor !== null,
       moving: navCtl.moving || approachCtl.state === "walking",
       player: playerMode.active,
+      room: currentFloor === GROUND_FLOOR_ID ? world.regionAt({ x: avatar.position.x, z: avatar.position.z })?.roomId ?? null : null,
     }),
-    peer: (email) => coworkers.pointOf(email.trim().toLowerCase()),
+    hub: () => ({ floor: GROUND_FLOOR_ID, point: HUB_RENDEZVOUS }),
+    liftLobby: (floor, slot) => (FLOORS[floor] ? lobbyPoint(specOf(floor).boarding, slot) : null),
+    // THE ARRIVAL AREA of a meeting room: in front of its own approach point, facing in. Plain points
+    // (another destination kind) arrive at the point itself.
+    arrival: (dest: PartyDestination) => {
+      const r = dest.roomId ? meetingRoom(dest.roomId) : null;
+      if (r) {
+        const c = { x: r.interior.x + r.interior.w / 2, z: r.interior.z + r.interior.d / 2 };
+        return { floor: FLOOR2_ID, point: { ...r.approach }, into: { x: c.x - r.approach.x, z: c.z - r.approach.z } };
+      }
+      if (dest.point && FLOORS[dest.floor as Vo3dFloorId]) return { floor: dest.floor as Vo3dFloorId, point: { ...dest.point }, into: { x: 0, z: 1 } };
+      return null;
+    },
     walkNear: (p) => {
-      if (floorTransition?.busy || heldLift) return false;
+      if (floorTransition?.busy) return false;
       if (playerMode.active && !stack.guided) setCameraMode("office");
       const spot = standablePointNear(p, NAV_RADIUS, playerStand);
       return spot ? walkToGround(spot.x, spot.z).ok : false;
     },
-    ride: (to) => {
+    ride: (to, plan) => {
       if (to === currentFloor || !FLOORS[to]) return false;
       if (playerMode.active && !stack.guided) setCameraMode("office");
-      return callElevator(to);
-    },
-    // V1 RESOLVES ROOMS ON THE MEETING FLOOR (Walk There) and plain points on the viewer's own floor. A
-    // point on another floor is a later destination kind, refused honestly rather than half-walked.
-    goTo: (dest: PartyDestination) => {
-      if (dest.roomId && meetingRoom(dest.roomId)) return walkToMeetingRoom(dest.roomId);
-      if (dest.point && dest.floor === currentFloor) return goTogetherPort.walkNear(dest.point) ? "walking" : "unreachable";
-      return "unknown";
-    },
-    atDestination: (dest: PartyDestination) => {
-      if (dest.roomId && meetingRoom(dest.roomId)) return atMeetingRoom(dest.roomId);
-      if (dest.point && dest.floor === currentFloor) return Math.hypot(avatar.position.x - dest.point.x, avatar.position.z - dest.point.z) < 48;
-      return false;
+      // callElevator walks to the doors first when needed (or starts the ride at once from the apron); the
+      // plan is in place BEFORE either, and rides with the trip to the board.
+      pendingLift = plan ? { plan, at: performance.now() } : null;
+      const ok = callElevator(to);
+      if (!ok) pendingLift = null;
+      return ok;
     },
     setHooks: (hooks) => {
       partyHooks = hooks;
-      // NEVER STRANDED AT THE DOORS: a party that goes away mid-gather releases the ride it was holding.
-      if (!hooks && heldLift) releaseHeldLift();
     },
-    releaseLift: releaseHeldLift,
     setGuided: setGuidedTravel,
-    setRideRiders: (emails) => {
-      pendingRiders = emails && emails.length ? { emails: [...emails], at: performance.now() } : null;
-    },
     riders: () => coworkers.riderEmails(),
+    peer: (email) => coworkers.pointOf(email.trim().toLowerCase()),
   };
 
   // ---- environmental audio ------------------------------------------------------------------------
@@ -4560,6 +4588,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  WIDE is 0.9 of the play boom (84), which the cabin's eighty units of car behind its bay can hold —
    *  that is the ride's proper third-person shot. interact/FloorTransition picks between them. */
   const CINEMATIC_BOOM_NEAR = 0.32;
+  /** GO TOGETHER — the Guided Journey's framing: ~20% further back than ordinary PLAYER, no more. */
+  const GUIDED_JOURNEY_BOOM = 1.2;
   const CINEMATIC_BOOM_WIDE = 0.9;
   function facePlayer(look: Vec2, pitch?: number): void {
     avatar.setYaw(Math.atan2(look.x, look.z));
@@ -5571,6 +5601,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     world, plan, walkability, mirror, R, scene: R.scene, camera: R.camera, renderer: R.renderer, params, stack, avatar, avatarState, navCtl,
     /** GO TOGETHER V1 — the party's port on this world (self/peer/walk/ride/holds), for the console. */
     goTogether: goTogetherPort,
+    /** the lift's own read-out (phase, floor, last refusal) — the verification harness reads it */
+    lift: () => (floorTransition ? { ...floorTransition.state } : null),
     placeCamera: applyCam, placeLight: applyLight, focusOn,
     /** ROOM-LEVEL CULLING, for the console and the A/B rig. `setEnabled(false)` is the BEFORE state. */
     visibility: {

@@ -524,6 +524,14 @@ describe("Phase 6B — the actual resting yaw goes out with every arrival; legs 
     feed.planned({ x: 0, z: 0 }, [{ x: 100, z: 0 }], 1428);
     expect(pacings[0]).toBeUndefined();
   });
+
+  it("marks a GUIDED planned walk linear when asked: a party compares where everybody is, so the replay must match the body", () => {
+    const { sink, calls, pacings } = recorder();
+    const feed = new SelfMovementFeed(sink);
+    feed.planned({ x: 0, z: 0 }, [{ x: 100, z: 0 }], 1428, "linear");
+    expect(calls[0]).toMatchObject({ call: "started", durationMs: 1428 });
+    expect(pacings[0]).toBe("linear");
+  });
 });
 
 // PHASE 7D — TELLING PEERS WHERE YOU WENT WHEN V1 HAS NO WORD FOR IT.

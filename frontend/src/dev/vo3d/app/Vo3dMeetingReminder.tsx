@@ -34,7 +34,7 @@ const roomName = (roomId: string): string => {
   return slug.charAt(0).toUpperCase() + slug.slice(1);
 };
 
-export function Vo3dMeetingReminder({ worldRef, ready, selfId, onOpen, onGoTogether, inParty = false }: {
+export function Vo3dMeetingReminder({ worldRef, ready, selfId, onOpen, onGoTogether, inParty = false, travelDecided }: {
   worldRef: { current: Vo3dWorld | null };
   ready: boolean;
   selfId: string;
@@ -42,8 +42,12 @@ export function Vo3dMeetingReminder({ worldRef, ready, selfId, onOpen, onGoToget
   onOpen: (meetingId: string) => void;
   /** GO TOGETHER — offer to pick attendees to walk there with. Absent: the button is not shown. */
   onGoTogether?: (meeting: ScheduledMeeting) => void;
-  /** already travelling with a party: Go Together is not offered again (Walk There still is) */
+  /** already travelling with a party, or asked to join one: Go Together is not offered again */
   inParty?: boolean;
+  /** GO TOGETHER OWNS THIS MEETING'S JOURNEY: an invitation waiting for this person's answer, or a party
+   *  they are in, headed for it. That card is the one travel decision; this reminder steps aside for that
+   *  meeting until it is gone ("I'll walk there", End, Leave) and then offers Walk There again. */
+  travelDecided?: ReadonlySet<string>;
 }) {
   const bell = useNotifications();
   const schedule = useScheduledMeetings();
@@ -64,6 +68,7 @@ export function Vo3dMeetingReminder({ worldRef, ready, selfId, onOpen, onGoToget
       const id = typeof n.navPayload?.meetingId === "string" ? n.navPayload.meetingId : null;
       const m = id ? schedule.mine.find((x) => x.id === id) : undefined;
       if (!m || m.status !== "scheduled") continue;
+      if (travelDecided?.has(m.id)) continue;
       const me = m.invitees.find((i) => i.email === selfId);
       if (!me || me.response === "declined") continue;
       const start = Date.parse(m.startsAt);
@@ -72,7 +77,7 @@ export function Vo3dMeetingReminder({ worldRef, ready, selfId, onOpen, onGoToget
       return { notificationId: n.id, meeting: m };
     }
     return null;
-  }, [bell.notifications, schedule.mine, selfId, now, where.roomId]);
+  }, [bell.notifications, schedule.mine, selfId, now, where.roomId, travelDecided]);
 
   if (!current) return null;
   const { meeting: m, notificationId } = current;

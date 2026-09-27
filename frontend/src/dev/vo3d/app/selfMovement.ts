@@ -246,8 +246,14 @@ export class SelfMovementFeed {
    *  A planned walk SUPERSEDES whatever was happening: a previous planned walk is redirected exactly as
    *  V1 redirects one (the new walk_started outranks it; no arrival is sent for the abandoned one), and
    *  an accumulating free leg is dropped rather than published, because this walk's origin is the body's
-   *  real current position and peers snap to it at the start of the replay. */
-  planned(origin: Vec2, path: readonly Vec2[], durationMs: number): void {
+   *  real current position and peers snap to it at the start of the replay.
+   *
+   *  `pacing` is how peers should replay it. Absent — an ordinary click-to-walk — they use V1's eased
+   *  curve, as V1's own walks do. GO TOGETHER's guided walks pass "linear", because that is how the body
+   *  really moves (NavigationController is constant-speed) and a party walking side by side compares
+   *  positions: on the eased curve every peer was drawn up to ~130 units behind and then ~190 AHEAD of
+   *  where they really were, so on every screen the local employee looked like the one trailing. */
+  planned(origin: Vec2, path: readonly Vec2[], durationMs: number, pacing?: SelfWalkPacing): void {
     // A path with no distance in it is not a movement worth a revision bump — V1's own funnel emits
     // NEITHER event for one (useSelfMovement.ts's zero-length-path rule), and this is the same refusal.
     // Clicking the cell you already stand on is the case that produces it.
@@ -255,7 +261,8 @@ export class SelfMovementFeed {
     this.flushPending();
     this.mode = { kind: "planned" };
     this.last = origin;
-    this.sink.started(origin, path, durationMs);
+    if (pacing) this.sink.started(origin, path, durationMs, pacing);
+    else this.sink.started(origin, path, durationMs);
   }
 
   /** RESOLVE WHATEVER IS IN FLIGHT, HERE, NOW — because something outside the movement system is about to

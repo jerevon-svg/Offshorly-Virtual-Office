@@ -64,3 +64,56 @@ export function pathLength(from: Vec2, path: readonly Vec2[]): number {
   }
   return d;
 }
+
+// ---- Phase 3: ONE SLOT PER PERSON, the same on every browser --------------------------------------------
+//
+// A party ride used to stand the viewer on the mark and fill the OTHERS into LIFT_RIDER_SLOTS in manifest
+// order — so every browser had a different arrangement, and (worse) every body walked in to the SAME mark:
+// the real, published bodies of the others converged on one spot while the doors were open, which is the
+// "Bon and Jan looked like one body" of the live test. Now each person owns the slot of their place in the
+// party's order, on every browser: their own body walks to it (FloorTransition's per-journey slot), their
+// rider copy stands in it, their lobby spot lines up in front of it, and their exit fans out from it.
+
+/** Slot 0 is the mark itself; then the rider slots, in the same fill order. */
+export const PARTY_LIFT_SLOTS: readonly LiftRiderSlot[] = [{ rel: { x: 0, z: 0 }, inBay: true }, ...LIFT_RIDER_SLOTS];
+
+export interface PartyLiftPlan {
+  /** where THIS body stands (relative to the mark) */
+  self: LiftRiderSlot;
+  /** everybody else riding, each in their own slot */
+  riders: { email: string; slot: LiftRiderSlot }[];
+}
+
+/** `order` is the party's slot order (its participants); `riding` who is on this ride. Each rider keeps the
+ *  slot of their place in `order`. Only the front bay survives the alight with the body, so a viewer whose
+ *  own slot is a deep one stands on the mark instead and hands their slot to whoever owns the mark. */
+export function partyLiftPlan(order: readonly string[], riding: readonly string[], self: string): PartyLiftPlan {
+  const index = (e: string) => order.indexOf(e);
+  const k = index(self);
+  const own = k >= 0 && PARTY_LIFT_SLOTS[k]?.inBay ? k : 0;
+  const riders: PartyLiftPlan["riders"] = [];
+  for (const email of riding) {
+    if (email === self) continue;
+    let i = index(email);
+    if (i < 0) continue;
+    if (i === own && own !== k) i = k;
+    const slot = PARTY_LIFT_SLOTS[i];
+    if (slot) riders.push({ email, slot });
+  }
+  return { self: PARTY_LIFT_SLOTS[own], riders };
+}
+
+/** THE LOBBY SPOT in front of the doors for a slot: a row across the doors (z), on the apron the lift boards
+ *  from (FloorTransition.canBoardFrom), so the ride starts where the body already stands. Slot 0 is the
+ *  lift's own boarding point — a solo ride is unchanged. */
+const LOBBY_OFFSETS: readonly Vec2[] = [
+  { x: 0, z: 0 }, { x: 0, z: 26 }, { x: 0, z: -26 }, { x: -8, z: 13 }, { x: -8, z: -13 },
+  { x: 4, z: 39 }, { x: 4, z: -39 }, { x: -8, z: 36 }, { x: -8, z: -36 }, { x: 4, z: 0 },
+];
+export function lobbyPoint(boarding: Vec2, slotIndex: number): Vec2 {
+  const o = LOBBY_OFFSETS[slotIndex] ?? LOBBY_OFFSETS[0];
+  return { x: boarding.x + o.x, z: boarding.z + o.z };
+}
+
+/** The lobby spot of the SLOT a body rides in (a slot is found by identity in PARTY_LIFT_SLOTS). */
+export const slotIndexOf = (slot: LiftRiderSlot): number => Math.max(0, PARTY_LIFT_SLOTS.indexOf(slot));

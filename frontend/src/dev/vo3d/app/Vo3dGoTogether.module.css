@@ -50,3 +50,19 @@
 .ghost { border: 1px solid rgba(24, 20, 34, 0.12); background: #fffefc; }
 .ghost:hover { background: rgba(24, 20, 34, 0.04); }
 .primary:focus-visible, .ghost:focus-visible { outline: 2px solid #4bb96a; outline-offset: 2px; }
+/* Phase 2 — forming / gathering: the same chip grown into a small card — the line, a place line, then one
+   face per person with the actions beside them. */
+.chipList { flex-direction: column; align-items: stretch; gap: 6px; border-radius: 18px; padding: 10px 10px 10px 14px; }
+.chipRow { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.place { padding-left: 18px; font-size: 12.5px; font-weight: 700; color: #241f30; }
+.facesRow { display: flex; align-items: center; gap: 10px; padding-left: 18px; }
+.faces { list-style: none; margin: 0; padding: 0; display: flex; gap: 6px; flex: 1; min-width: 0; flex-wrap: wrap; }
+.face { position: relative; width: 28px; height: 28px; flex: none; }
+.face img, .faceInitial { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; display: grid; place-items: center; background: #ece8e1; font-size: 12px; font-weight: 800; color: rgba(36, 31, 48, 0.7); box-shadow: 0 0 0 1.5px #fdfcfa; }
+.faceMuted img, .faceMuted .faceInitial { filter: grayscale(1); opacity: 0.5; }
+.faceLeader img, .faceLeader .faceInitial { box-shadow: 0 0 0 1.5px #fdfcfa, 0 0 0 3px #d9a13a; }
+.badge { position: absolute; right: -3px; bottom: -3px; width: 13px; height: 13px; border-radius: 50%; display: grid; place-items: center; font-size: 8.5px; font-weight: 900; line-height: 1; color: #fdfcfa; box-shadow: 0 0 0 1.5px #fdfcfa; }
+.badgeOk { background: #2f9e57; }
+.badgeNo { background: rgba(36, 31, 48, 0.55); }
+.badgeWait { background: #d9a13a; }
+.guidance { padding-left: 18px; margin-top: -4px; font-size: 11.5px; font-weight: 600; color: rgba(36, 31, 48, 0.55); }

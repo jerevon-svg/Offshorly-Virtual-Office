@@ -52,6 +52,9 @@ from app.services import scheduled_meetings
 from app.routers.calls import meeting_room_key, _MEETING_ID
 from app.services.call_invites import wire as invite_wire
 from app.services.travel_party import (
+    GATHER_DEADLINE_SECONDS as PARTY_GATHER_DEADLINE_SECONDS,
+    LEG_DEADLINE_SECONDS as PARTY_LEG_DEADLINE_SECONDS,
+    READY_BEAT_SECONDS as PARTY_READY_BEAT_SECONDS,
     MAX_PARTY_MEMBERS,
     PARTY_INVITE_TTL_SECONDS,
     PARTY_MAX_LIFETIME_SECONDS,
@@ -1311,9 +1314,9 @@ async def _resolve_invite(sid: str, payload: dict | None, *, role: str, event: s
 
 
 # ---- GO TOGETHER V1 — temporary travel parties ------------------------------------------------------
-# Membership, leadership, destination and two semantic journey moments (gathering, departing). NO
-# movement passes through here: bodies move on walk_started / walk_arrived, and every elevator ride is
-# the rider's own local one. See app/services/travel_party.py.
+# Membership, leadership, destination and the journey's stages (gather → legs → arrived). NO movement
+# passes through here: bodies move on walk_started / walk_arrived, and every elevator ride is the rider's
+# own local one. See app/services/travel_party.py.
 
 
 def _party_pending(party: dict) -> list[dict]:
@@ -1389,7 +1392,57 @@ async def _drop_lost_later(party_id: str, email: str) -> None:
         return
     travel_parties.remove_member(party_id, email)
     await sio.emit("party_ended", {"partyId": party_id, "reason": "disconnected"}, room=user_room(email))
+    await _progress(party)
+
+
+async def _progress(party: dict, *, force: bool = False) -> None:
+    """THE ONE PLACE A PARTY MOVES ON: the gathering to READY (and, a beat later, the first leg), a leg to
+    the next, the last leg to arrival. Called after anything that can complete a barrier — a ready, a pause,
+    somebody leaving — and by the deadlines with force. Always tells the party where it now stands."""
+    pid = party["partyId"]
+    if party["stage"] == "gathering":
+        if travel_parties.finish_gathering(pid, force=force) is not None:
+            asyncio.create_task(_begin_journey_later(pid))
+    elif party["stage"] in ("to_lift", "ride", "to_room"):
+        step = travel_parties.advance(pid, force=force)
+        if step is not None and step["arrived"]:
+            await _end_party(pid, "arrived")
+            return
+        if step is not None:
+            asyncio.create_task(_leg_deadline_later(pid, step["leg"]["stageId"], step["leg"]["kind"]))
     await _emit_party_updated(party)
+
+
+async def _gather_deadline_later(party_id: str, stage_id: str) -> None:
+    """A stuck or unreachable body never holds the party: at the deadline whoever is not there is paused
+    and the party is READY without them."""
+    await asyncio.sleep(PARTY_GATHER_DEADLINE_SECONDS)
+    party = travel_parties.get(party_id)
+    if party is not None and travel_parties.current_stage_id(party) == stage_id:
+        await _progress(party, force=True)
+
+
+async def _begin_journey_later(party_id: str) -> None:
+    """READY, then — after the "Everyone's here" beat — the first leg, for everybody at the same moment."""
+    await asyncio.sleep(PARTY_READY_BEAT_SECONDS)
+    party = travel_parties.get(party_id)
+    leg = travel_parties.begin_journey(party_id) if party is not None else None
+    if leg is None:
+        return
+    asyncio.create_task(_leg_deadline_later(party_id, leg["stageId"], leg["kind"]))
+    await _emit_party_updated(party)
+
+
+async def _leg_deadline_later(party_id: str, stage_id: str, kind: str) -> None:
+    await asyncio.sleep(PARTY_LEG_DEADLINE_SECONDS.get(kind, 45))
+    party = travel_parties.get(party_id)
+    if party is not None and travel_parties.current_stage_id(party) == stage_id:
+        await _progress(party, force=True)
+
+
+def _is_driver(party: dict | None, email: str, sid: str) -> bool:
+    """Only the socket that drives this person's body may speak for where it is."""
+    return party is not None and travel_parties.controller_sid(party, email) == sid
 
 
 async def _party_session(sid: str) -> tuple[str, dict | None]:
@@ -1439,6 +1492,8 @@ async def party_invite(sid: str, payload: dict | None) -> None:
                 reason = "offline"
             elif dnd_registry.is_dnd(to_email):
                 reason = "dnd"  # an invitation is an interruption; DND stays absolute
+            elif party["stage"] != "forming":
+                reason = "started"  # Start Walking closed the invite list
             elif travel_parties.party_of(to_email) is not None:
                 reason = "in_party"
             elif party_invites.pending_between(email, to_email) is not None:
@@ -1508,6 +1563,7 @@ async def party_invite_decline(sid: str, payload: dict | None) -> None:
         await _emit_party_invite_terminal(invite, "declined")
         party = travel_parties.get(invite["party_id"])
         if party is not None:
+            travel_parties.note_declined(party["partyId"], email)
             await _emit_party_updated(party)
             await _end_if_nobody_joined(party["partyId"])
     except Exception as exc:  # noqa: BLE001
@@ -1526,7 +1582,7 @@ async def party_leave(sid: str, _payload: dict | None = None) -> None:
             return
         travel_parties.remove_member(party["partyId"], email)
         await sio.emit("party_ended", {"partyId": party["partyId"], "reason": "left"}, room=user_room(email))
-        await _emit_party_updated(party)
+        await _progress(party)
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 
@@ -1554,51 +1610,74 @@ async def party_follow_state(sid: str, payload: dict | None) -> None:
         if party is None or travel_parties.controller_sid(party, email) != sid:
             return
         if travel_parties.set_following(party["partyId"], email, following):
-            await _emit_party_updated(party)
+            await _progress(party)  # a pause may leave everyone else there
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 
 
-@sio.on("party_gather")
-async def party_gather(sid: str, payload: dict | None) -> None:
-    """The leader has reached the lift and is briefly waiting for the party (or, with floor null, stopped
-    waiting because they took control). Informative only — the leader's own client owns the bounded wait
-    and decides when to depart."""
-    try:
-        floor = (payload or {}).get("floor")
-        if floor is not None and (not isinstance(floor, str) or not 0 < len(floor) <= 32):
-            return
-        email, party = await _party_session(sid)
-        if _leader_driver(party, email, sid) and travel_parties.gather(party["partyId"], floor):
-            await _emit_party_updated(party)
-    except Exception as exc:  # noqa: BLE001
-        await _emit_unexpected(sid, exc)
+def _finite(v: object) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 
 
-@sio.on("party_depart")
-async def party_depart(sid: str, payload: dict | None) -> None:
-    """THE ONE COORDINATION EVENT OF A FLOOR CHANGE. The leader says "we are leaving floor A for B, these
-    members were ready"; everyone in the party hears it at once, and each ready member starts their OWN
-    existing local ride. Nothing about the ride itself is ever streamed."""
+@sio.on("party_where")
+async def party_where(sid: str, payload: dict | None) -> None:
+    """PHASE 2 — this body's OWN place, from the tab that drives it (never a peer's guess from delayed
+    coworker rendering). Kept only while forming: it is what Start Walking decides the rendezvous from."""
     try:
         payload = payload or {}
-        from_floor, to_floor, members = payload.get("fromFloor"), payload.get("toFloor"), payload.get("members")
-        if not all(isinstance(f, str) and 0 < len(f) <= 32 for f in (from_floor, to_floor)):
+        floor, room_id, pos = payload.get("floor"), payload.get("roomId"), payload.get("position")
+        if not isinstance(floor, str) or not 0 < len(floor) <= 32:
             return
-        if not isinstance(members, list):
-            members = []
+        if room_id is not None and (not isinstance(room_id, str) or not 0 < len(room_id) <= 64):
+            return
+        if not isinstance(pos, dict) or not (_finite(pos.get("x")) and _finite(pos.get("z"))):
+            return
+        email, party = await _party_session(sid)
+        if _is_driver(party, email, sid):
+            travel_parties.report_where(
+                party["partyId"], email, floor=floor, room_id=room_id,
+                point={"x": float(pos["x"]), "z": float(pos["z"])},
+            )
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("party_start")
+async def party_start(sid: str, _payload: dict | None = None) -> None:
+    """START WALKING — the leader sets out with whoever has accepted so far. Invitations still unanswered
+    are withdrawn (a late accept can never join a gathering already under way), and the rendezvous is
+    chosen from the participants' own reports."""
+    try:
         email, party = await _party_session(sid)
         if not _leader_driver(party, email, sid):
             return
-        departure = travel_parties.depart(
-            party["partyId"], from_floor=from_floor, to_floor=to_floor,
-            members=[m for m in members if isinstance(m, str)],
-        )
-        if departure is None:
+        rv = travel_parties.start(party["partyId"])
+        if rv is None:
             return
-        for person in travel_parties.people(party):
-            await sio.emit("party_departing", departure, room=user_room(person))
+        for invite in _party_pending(party):
+            if party_invites.resolve(invite["inviteId"]) is not None:
+                await _emit_party_invite_terminal(invite, "cancelled")
+        asyncio.create_task(_gather_deadline_later(party["partyId"], rv["stageId"]))
         await _emit_party_updated(party)
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("party_ready")
+async def party_ready(sid: str, payload: dict | None) -> None:
+    """This body reached its own slot for the current stage (the rendezvous, the lift lobby, off the lift at
+    the destination, the room) — said by the tab that drives it, about itself only."""
+    try:
+        payload = payload or {}
+        stage_id, floor = payload.get("stageId"), payload.get("floor")
+        if not isinstance(stage_id, str) or not stage_id:
+            return
+        if floor is not None and (not isinstance(floor, str) or not 0 < len(floor) <= 32):
+            floor = None
+        email, party = await _party_session(sid)
+        if not _is_driver(party, email, sid) or not travel_parties.mark_ready(party["partyId"], email, stage_id, floor=floor):
+            return
+        await _progress(party)
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 
@@ -1613,17 +1692,6 @@ async def party_destination(sid: str, payload: dict | None) -> None:
         email, party = await _party_session(sid)
         if _leader_driver(party, email, sid) and travel_parties.set_destination(party["partyId"], destination):
             await _emit_party_updated(party)
-    except Exception as exc:  # noqa: BLE001
-        await _emit_unexpected(sid, exc)
-
-
-@sio.on("party_arrived")
-async def party_arrived(sid: str, _payload: dict | None = None) -> None:
-    """The leader reached the actual destination — the only arrival that dissolves the party."""
-    try:
-        email, party = await _party_session(sid)
-        if _leader_driver(party, email, sid):
-            await _end_party(party["partyId"], "arrived")
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 

@@ -1,408 +1,373 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   CATCH_UP_RETRY_MS,
-  FINISH_DELAY_MS,
-  FOLLOW_BACK,
-  GATHER_MIN_MS,
-  GATHER_TIMEOUT_MS,
   GoTogetherController,
-  REGROUP_SETTLE_MS,
-  REGROUP_TIMEOUT_MS,
-  RETARGET_MS,
-  followSlot,
+  RING_SPACING,
+  RV_RETRY_MS,
+  WHERE_MS,
+  arrivalSlot,
+  rendezvousSlot,
+  type PartyLeg,
   type PartyNet,
+  type PartyRendezvous,
   type PartyWire,
   type Vo3dGoTogetherHooks,
   type Vo3dGoTogetherPort,
 } from "./goTogether";
+import { partyLiftPlan } from "./liftRiders";
 import type { Vec2 } from "../core/coords";
 import type { Vo3dFloorId } from "./floors";
 
-// Go Together V1 — the controller against a fake world: formation, rate-limited following, the bounded
-// gather + ONE departure, catch-up after a missed departure, regroup upstairs, manual control and arrival.
+// Go Together — the controller against a fake world: forming moves nobody, the rendezvous, and the journey
+// as server-announced stages every body plays itself (lift lobby → ride → room), with nobody chasing anybody.
 
 const LEAD = "lead@x.com";
 const BOB = "bob@x.com";
 const CAT = "cat@x.com";
+const HUB = { x: 700, z: 460 };
+const APPROACH = { x: 500, z: 300 };
+const INTO = { x: 0, z: -1 };
+const lobby = (i: number): Vec2 => ({ x: 108, z: 937 + i * 26 });
+
+const RV: PartyRendezvous = { stageId: "p1:rv", kind: "hub", participants: [LEAD, BOB, CAT], ready: [] };
 
 function party(over: Partial<PartyWire> = {}): PartyWire {
   return {
     partyId: "p1",
     leaderEmail: LEAD,
-    destination: { floor: "floor-2", roomId: "floor-2/alpha", label: "Alpha" },
-    leaderFloor: "floor-1",
-    phase: "travelling",
-    gatherFloor: null,
-    members: [{ email: BOB, following: true, connected: true }],
+    leaderFollowing: true,
+    destination: { floor: "floor-2", roomId: "floor-2/foxtrot", label: "Product sync · Foxtrot" },
+    members: [{ email: BOB, following: true, connected: true }, { email: CAT, following: true, connected: true }],
     pending: [],
+    declined: [],
+    stage: "gathering",
+    rendezvous: RV,
+    leg: null,
     ...over,
   };
 }
+const leg = (kind: PartyLeg["kind"], over: Partial<PartyLeg> = {}): Partial<PartyWire> => ({
+  stage: kind,
+  leg: {
+    stageId: `p1:${kind}`, kind, floor: kind === "to_room" ? "floor-2" : "floor-1",
+    ...(kind === "to_lift" || kind === "ride" ? { toFloor: "floor-2" } : {}),
+    ...(kind === "ride" ? { riders: [LEAD, BOB, CAT] } : {}),
+    expect: [LEAD, BOB, CAT], ready: [], ...over,
+  },
+});
 
 function rig() {
   let t = 0;
-  const peers = new Map<string, Vec2>();
-  const self = { floor: "floor-1" as Vo3dFloorId, pos: { x: 0, z: 0 }, riding: false, holding: false, moving: false, player: false };
+  const self = { floor: "floor-1" as Vo3dFloorId, pos: { x: 0, z: 0 }, riding: false, holding: false, moving: false, player: true, room: null as string | null };
   let hooks: Vo3dGoTogetherHooks | null = null;
-  let atDest = false;
   const port: Vo3dGoTogetherPort = {
     self: () => ({ ...self, pos: { ...self.pos } }),
-    peer: (e) => peers.get(e) ?? null,
+    hub: () => ({ floor: "floor-1", point: HUB }),
+    liftLobby: (_f, i) => lobby(i),
+    arrival: () => ({ floor: "floor-2", point: APPROACH, into: INTO }),
     walkNear: vi.fn(() => true),
     ride: vi.fn(() => true),
-    goTo: vi.fn(() => "walking" as const),
-    atDestination: () => atDest,
     setHooks: (h) => { hooks = h; },
-    releaseLift: vi.fn(() => true),
     setGuided: vi.fn(),
-    setRideRiders: vi.fn(),
     riders: () => [],
+    peer: () => null,
   };
-  const net: PartyNet = { gather: vi.fn(), depart: vi.fn(), arrived: vi.fn(), followState: vi.fn() };
+  const net: PartyNet = { where: vi.fn(), start: vi.fn(), ready: vi.fn(), followState: vi.fn() };
   const ctl = new GoTogetherController(port, net, () => t);
-  return {
-    ctl, port, net, self, peers,
-    hooks: () => hooks,
-    advance: (ms: number) => { t += ms; },
-    setAtDest: (v: boolean) => { atDest = v; },
-  };
+  return { ctl, port, net, self, hooks: () => hooks, advance: (ms: number) => { t += ms; } };
 }
+type Rig = ReturnType<typeof rig>;
+const as = (r: Rig, email: string, p: PartyWire, isController = true) => r.ctl.update({ party: p, selfEmail: email, isController });
 
-describe("followSlot — the formation", () => {
-  it("puts the first follower straight behind and staggers the rest", () => {
-    const heading = { x: 0, z: 1 };
-    expect(followSlot({ x: 0, z: 100 }, heading, 0)).toEqual({ x: 0, z: 100 - FOLLOW_BACK });
-    const a = followSlot({ x: 0, z: 100 }, heading, 1);
-    const b = followSlot({ x: 0, z: 100 }, heading, 2);
-    expect(a.z).toBeLessThan(100 - FOLLOW_BACK);
-    expect(b.z).toBeLessThan(a.z);
-    expect(Math.sign(a.x)).toBe(-Math.sign(b.x)); // opposite sides: nobody stacks
+describe("the slots — nobody stacks", () => {
+  it("the rendezvous ring keeps every slot at least a body apart", () => {
+    for (let n = 2; n <= 9; n++) {
+      const slots = Array.from({ length: n }, (_, i) => rendezvousSlot(HUB, i, n));
+      for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+        expect(Math.hypot(slots[i].x - slots[j].x, slots[i].z - slots[j].z)).toBeGreaterThanOrEqual(RING_SPACING - 1);
+      }
+    }
   });
 
-  it("aims a little closer while the leader walks, but never past the leader", () => {
-    const heading = { x: 0, z: 1 };
-    for (let i = 0; i < 4; i++) {
-      const moving = followSlot({ x: 0, z: 100 }, heading, i, true);
-      const still = followSlot({ x: 0, z: 100 }, heading, i, false);
-      expect(moving.z).toBeGreaterThanOrEqual(still.z);
-      expect(moving.z).toBeLessThan(100);
+  it("the arrival area is a loose group in FRONT of the room (never past its approach), a body apart", () => {
+    const slots = Array.from({ length: 6 }, (_, i) => arrivalSlot(APPROACH, INTO, i));
+    for (const s of slots) expect(s.z).toBeGreaterThan(APPROACH.z); // `into` is -z: in front is +z
+    for (let i = 0; i < 6; i++) for (let j = i + 1; j < 6; j++) {
+      expect(Math.hypot(slots[i].x - slots[j].x, slots[i].z - slots[j].z)).toBeGreaterThanOrEqual(26);
     }
   });
 });
 
-describe("GoTogetherController — follower", () => {
-  it("installs hooks only in the driving tab", () => {
-    const r = rig();
-    r.ctl.update({ party: party(), selfEmail: BOB, isController: false });
-    expect(r.hooks()).toBeNull();
-    expect(r.ctl.getStatus()).toEqual({ kind: "observer", leader: false });
-    r.ctl.update({ party: party(), selfEmail: BOB, isController: true });
-    expect(r.hooks()).toBe(r.ctl);
-  });
-
-  it("walks toward its slot through ordinary walks, rate-limited, and rests once there", () => {
-    const r = rig();
-    r.ctl.update({ party: party(), selfEmail: BOB, isController: true });
-    r.peers.set(LEAD, { x: 0, z: 300 });
-    r.ctl.tick();
-    expect(r.port.walkNear).toHaveBeenCalledTimes(1);
-    r.self.moving = true;
-    r.advance(100);
-    r.peers.set(LEAD, { x: 0, z: 400 }); // leader moved far, but too soon to re-target
-    r.ctl.tick();
-    expect(r.port.walkNear).toHaveBeenCalledTimes(1);
-    r.advance(RETARGET_MS);
-    r.ctl.tick();
-    expect(r.port.walkNear).toHaveBeenCalledTimes(2);
-    // standing in the slot: no twitch walks
-    r.self.moving = false;
-    r.self.pos = { x: 0, z: 400 - FOLLOW_BACK };
-    r.advance(RETARGET_MS * 3);
-    r.ctl.tick();
-    expect(r.port.walkNear).toHaveBeenCalledTimes(2);
-    expect(r.ctl.getStatus()).toEqual({ kind: "following", leader: LEAD });
-  });
-
-  it("rides its own lift on the party's departure — only when listed, following and on that floor", () => {
-    const r = rig();
-    r.ctl.update({ party: party(), selfEmail: BOB, isController: true });
-    r.ctl.onDeparting({ partyId: "p1", departureId: "p1:1", fromFloor: "floor-1", toFloor: "floor-2", members: [CAT] });
-    expect(r.port.ride).not.toHaveBeenCalled();
-    r.ctl.onDeparting({ partyId: "p1", departureId: "p1:1", fromFloor: "floor-1", toFloor: "floor-2", members: [BOB, CAT] });
-    expect(r.port.ride).toHaveBeenCalledWith("floor-2");
-    // this car carries everyone who departed together except this body
-    expect(r.port.setRideRiders).toHaveBeenLastCalledWith([LEAD, CAT]);
-  });
-
-  it("never cancels its own pending lift trip with a follow step", () => {
-    const r = rig();
-    r.ctl.update({ party: party(), selfEmail: BOB, isController: true });
-    r.peers.set(LEAD, { x: 0, z: 300 });
-    r.self.holding = true;
-    r.ctl.tick();
-    expect(r.port.walkNear).not.toHaveBeenCalled();
-  });
-
-  it("a paused follower is not taken on the departure", () => {
-    const r = rig();
-    r.ctl.update({ party: party(), selfEmail: BOB, isController: true });
-    r.ctl.onUserMove();
-    expect(r.net.followState).toHaveBeenCalledWith(false);
-    expect(r.ctl.getStatus()).toEqual({ kind: "paused", leader: LEAD });
-    r.ctl.onDeparting({ partyId: "p1", departureId: "p1:1", fromFloor: "floor-1", toFloor: "floor-2", members: [BOB] });
-    expect(r.port.ride).not.toHaveBeenCalled();
-    r.ctl.resume();
-    expect(r.net.followState).toHaveBeenLastCalledWith(true);
-  });
-
-  it("catches up on its own lift when the leader is on another floor, retrying without spamming", () => {
-    const r = rig();
-    r.ctl.update({ party: party({ leaderFloor: "floor-2" }), selfEmail: BOB, isController: true });
-    r.ctl.tick();
-    expect(r.port.ride).toHaveBeenCalledTimes(1);
-    expect(r.port.setRideRiders).not.toHaveBeenCalled(); // a catch-up ride is a solo ride
-    expect(r.ctl.getStatus()).toEqual({ kind: "catching-up", leader: LEAD });
-    r.advance(1000);
-    r.ctl.tick();
-    expect(r.port.ride).toHaveBeenCalledTimes(1);
-    r.advance(CATCH_UP_RETRY_MS);
-    r.ctl.tick();
-    expect(r.port.ride).toHaveBeenCalledTimes(2);
-  });
-
-  it("a follower already in PLAYER is guided, never paused (the live-test failure)", () => {
-    const r = rig();
-    r.self.player = true;
-    r.ctl.update({ party: party(), selfEmail: BOB, isController: true });
-    expect(r.port.setGuided).toHaveBeenLastCalledWith(true);
-    r.peers.set(LEAD, { x: 0, z: 300 });
-    for (let i = 0; i < 5; i++) {
+describe("forming", () => {
+  it("acceptance does NOT set out: nobody walks, nobody is guided, until Start Walking", () => {
+    for (const who of [LEAD, BOB]) {
+      const r = rig();
+      as(r, who, party({ stage: "forming", rendezvous: null }));
+      r.advance(5000);
       r.ctl.tick();
-      r.advance(RETARGET_MS);
-      r.peers.set(LEAD, { x: 0, z: 300 + 40 * (i + 1) });
+      expect(r.port.walkNear).not.toHaveBeenCalled();
+      expect(r.port.setGuided).not.toHaveBeenCalled();
     }
-    expect(r.net.followState).not.toHaveBeenCalled();
-    expect(r.ctl.getStatus()).toMatchObject({ kind: "following" });
-    expect(r.port.walkNear).toHaveBeenCalled();
   });
 
-  it("Esc (onUserMove) hands the body back; Resume guides it again; the party ending releases it", () => {
+  it("the leader can Start Walking once somebody accepted — reporting its own place first", () => {
     const r = rig();
-    r.self.player = true;
-    r.ctl.update({ party: party(), selfEmail: BOB, isController: true });
-    r.ctl.onUserMove();
-    expect(r.net.followState).toHaveBeenCalledWith(false);
-    expect(r.port.setGuided).toHaveBeenLastCalledWith(false);
-    r.ctl.resume();
-    expect(r.port.setGuided).toHaveBeenLastCalledWith(true);
-    r.ctl.tick(); // still in PLAYER: the resume sticks
-    expect(r.ctl.getStatus()).toMatchObject({ kind: "following" });
-    r.ctl.update({ party: null, selfEmail: BOB, isController: true, endedReason: "left" });
-    expect(r.port.setGuided).toHaveBeenLastCalledWith(false);
+    as(r, LEAD, party({ stage: "forming", rendezvous: null, members: [{ email: BOB, following: true, connected: true }], pending: [CAT] }));
+    expect(r.ctl.getStatus()).toMatchObject({ kind: "leader-forming", canStart: true });
+    r.ctl.startWalking();
+    expect(r.net.where).toHaveBeenCalledWith("floor-1", null, { x: 0, z: 0 });
+    expect(r.net.start).toHaveBeenCalledTimes(1);
+    const alone = rig();
+    as(alone, LEAD, party({ stage: "forming", rendezvous: null, members: [], declined: [BOB] }));
+    alone.ctl.startWalking();
+    expect(alone.net.start).not.toHaveBeenCalled();
   });
 
-  it("only the driving tab is ever guided", () => {
+  it("each driving tab reports its OWN place, throttled — an observer tab reports and walks nothing", () => {
     const r = rig();
-    r.ctl.update({ party: party(), selfEmail: BOB, isController: false });
+    as(r, BOB, party({ stage: "forming", rendezvous: null }));
+    r.self.room = "design-room";
     r.ctl.tick();
-    expect(r.port.setGuided).not.toHaveBeenCalled();
-  });
-
-  it("stays guided through its last step after the party arrives, then lets go", () => {
-    const r = rig();
-    r.ctl.update({ party: party(), selfEmail: BOB, isController: true });
-    r.ctl.update({ party: null, selfEmail: BOB, isController: true, endedReason: "arrived" });
-    expect(r.port.setGuided).toHaveBeenLastCalledWith(true);
-    r.peers.set(LEAD, { x: 0, z: 100 });
-    r.advance(FINISH_DELAY_MS);
+    expect(r.net.where).toHaveBeenLastCalledWith("floor-1", "design-room", { x: 0, z: 0 });
+    r.self.pos = { x: 100, z: 0 };
     r.ctl.tick();
-    expect(r.port.walkNear).toHaveBeenCalledTimes(1);
-    expect(r.port.setGuided).toHaveBeenLastCalledWith(false);
+    expect(r.net.where).toHaveBeenCalledTimes(1);
+    r.advance(WHERE_MS);
+    r.ctl.tick();
+    expect(r.net.where).toHaveBeenCalledTimes(2);
+    const o = rig();
+    for (const p of [party({ stage: "forming", rendezvous: null }), party(), party(leg("to_lift"))]) {
+      as(o, BOB, p, false);
+      o.ctl.tick();
+    }
+    expect(o.net.where).not.toHaveBeenCalled();
+    expect(o.net.ready).not.toHaveBeenCalled();
+    expect(o.port.walkNear).not.toHaveBeenCalled();
   });
 });
 
-describe("GoTogetherController — leader", () => {
-  it("sets out on its own once everyone has answered", () => {
-    const r = rig();
-    r.ctl.update({ party: party({ pending: [CAT] }), selfEmail: LEAD, isController: true });
-    r.ctl.tick();
-    expect(r.port.goTo).not.toHaveBeenCalled();
-    expect(r.ctl.getStatus()).toMatchObject({ kind: "leader-waiting", joined: 1, pending: 1 });
-    r.ctl.update({ party: party(), selfEmail: LEAD, isController: true });
-    r.ctl.tick();
-    expect(r.port.goTo).toHaveBeenCalledTimes(1);
-  });
-
-  it("is guided from the moment it sets out — before the first step — until it takes control", () => {
+describe("gathering", () => {
+  it("walks, guided (PLAYER kept), to its own ring slot — and says ready only when ITS body is there", () => {
     const r = rig();
     const order: string[] = [];
     (r.port.setGuided as ReturnType<typeof vi.fn>).mockImplementation((on: boolean) => order.push(`guided:${on}`));
-    (r.port.goTo as ReturnType<typeof vi.fn>).mockImplementation(() => { order.push("goTo"); return "walking"; });
-    r.ctl.update({ party: party({ pending: [CAT] }), selfEmail: LEAD, isController: true });
-    expect(order).toEqual([]); // waiting for answers: the leader's body is their own
-    r.ctl.go();
-    expect(order).toEqual(["guided:true", "goTo"]);
-    r.ctl.onUserMove();
-    expect(order.at(-1)).toBe("guided:false");
-    r.ctl.go(); // Continue
-    expect(order.slice(-2)).toEqual(["guided:true", "goTo"]);
+    (r.port.walkNear as ReturnType<typeof vi.fn>).mockImplementation(() => { order.push("walk"); return true; });
+    as(r, BOB, party());
+    r.ctl.tick();
+    expect(order).toEqual(["guided:true", "walk"]);
+    expect(r.port.walkNear).toHaveBeenCalledWith(rendezvousSlot(HUB, 1, 3));
+    r.self.moving = true;
+    r.advance(RV_RETRY_MS);
+    r.ctl.tick();
+    expect(r.net.ready).not.toHaveBeenCalled();
+    r.self.moving = false;
+    r.self.pos = rendezvousSlot(HUB, 1, 3);
+    r.advance(400);
+    r.ctl.tick();
+    r.ctl.tick();
+    expect(r.net.ready).toHaveBeenCalledTimes(1);
+    expect(r.net.ready).toHaveBeenCalledWith("p1:rv", "floor-1");
   });
 
-  it("with nobody following, rides at once but still announces the departure (for catch-up)", () => {
+  it("already together: the ring is round the reported spot, not the hub", () => {
     const r = rig();
-    r.ctl.update({ party: party({ members: [{ email: BOB, following: false, connected: true }] }), selfEmail: LEAD, isController: true });
-    expect(r.ctl.holdDeparture("floor-1", "floor-2")).toBe(false);
-    expect(r.net.depart).toHaveBeenCalledWith("floor-1", "floor-2", []);
+    as(r, CAT, party({ rendezvous: { ...RV, kind: "here", floor: "floor-1", point: { x: 10, z: 20 } } }));
+    r.ctl.tick();
+    expect(r.port.walkNear).toHaveBeenCalledWith(rendezvousSlot({ x: 10, z: 20 }, 2, 3));
   });
 
-  it("gathers briefly and departs together once everyone nearby is ready", () => {
+  it("a stranded 'lift trip' state blocks nothing it should not: holding waits, the world clears it", () => {
     const r = rig();
-    r.ctl.update({ party: party(), selfEmail: LEAD, isController: true });
-    r.peers.set(BOB, { x: 200, z: 0 }); // nearby, not yet at the doors
-    expect(r.ctl.holdDeparture("floor-1", "floor-2")).toBe(true);
-    expect(r.net.gather).toHaveBeenCalledWith("floor-1");
-    r.advance(GATHER_MIN_MS);
-    r.ctl.tick();
-    expect(r.net.depart).not.toHaveBeenCalled();
-    expect(r.ctl.getStatus()).toEqual({ kind: "gathering", ready: 1, total: 2 });
-    r.peers.set(BOB, { x: 30, z: 0 });
-    r.ctl.tick();
-    expect(r.net.depart).toHaveBeenCalledWith("floor-1", "floor-2", [BOB]);
-    expect(r.port.setRideRiders).toHaveBeenLastCalledWith([BOB]);
-    expect(r.port.releaseLift).toHaveBeenCalledTimes(1);
-  });
-
-  it("never waits past the timeout — far or missing members are left to catch up", () => {
-    const r = rig();
-    r.ctl.update({ party: party({ members: [
-      { email: BOB, following: true, connected: true },
-      { email: CAT, following: true, connected: true },
-    ] }), selfEmail: LEAD, isController: true });
-    r.peers.set(BOB, { x: 20, z: 0 });
-    r.peers.set(CAT, { x: 250, z: 0 }); // coming, but slow
-    r.ctl.holdDeparture("floor-1", "floor-2");
-    r.advance(GATHER_TIMEOUT_MS - 1);
-    r.ctl.tick();
-    expect(r.net.depart).not.toHaveBeenCalled();
-    r.advance(1);
-    r.ctl.tick();
-    expect(r.net.depart).toHaveBeenCalledWith("floor-1", "floor-2", [BOB]);
-    // the slow member is not in this ride's car
-    expect(r.port.setRideRiders).toHaveBeenLastCalledWith([BOB]);
-  });
-
-  it("taking control mid-gather cancels it and says so", () => {
-    const r = rig();
-    r.ctl.update({ party: party(), selfEmail: LEAD, isController: true });
-    r.ctl.go();
-    r.peers.set(BOB, { x: 200, z: 0 });
-    r.ctl.holdDeparture("floor-1", "floor-2");
-    r.ctl.onUserMove();
-    expect(r.net.gather).toHaveBeenLastCalledWith(null);
-    r.advance(GATHER_TIMEOUT_MS);
-    r.ctl.tick();
-    expect(r.net.depart).not.toHaveBeenCalled();
-    expect(r.ctl.getStatus()).toMatchObject({ kind: "leader-paused" });
-  });
-
-  it("regroups upstairs, bounded, then continues", () => {
-    const r = rig();
-    r.ctl.update({ party: party(), selfEmail: LEAD, isController: true });
-    r.peers.set(BOB, { x: 20, z: 0 });
-    r.ctl.holdDeparture("floor-1", "floor-2");
-    r.advance(GATHER_MIN_MS);
-    r.ctl.tick(); // departs with BOB
-    r.self.floor = "floor-2";
-    r.peers.delete(BOB); // still in their own car
-    const resume = vi.fn();
-    expect(r.ctl.holdArrival("floor-2", resume)).toBe(true);
-    r.advance(1000);
-    r.ctl.tick();
-    expect(resume).not.toHaveBeenCalled();
-    r.advance(REGROUP_TIMEOUT_MS);
-    r.ctl.tick();
-    expect(resume).toHaveBeenCalledTimes(1);
-  });
-
-  it("a member counts as regrouped only once settled on the floor, not the instant their car arrives", () => {
-    const r = rig();
-    r.ctl.update({ party: party(), selfEmail: LEAD, isController: true });
-    r.peers.set(BOB, { x: 20, z: 0 });
-    r.ctl.holdDeparture("floor-1", "floor-2");
-    r.advance(GATHER_MIN_MS);
-    r.ctl.tick();
-    r.self.floor = "floor-2";
-    const resume = vi.fn();
-    r.ctl.holdArrival("floor-2", resume);
-    r.ctl.tick(); // BOB's arrival is already published, from inside their lift bay
-    r.advance(1000);
-    r.ctl.tick();
-    expect(resume).not.toHaveBeenCalled();
-    r.advance(REGROUP_SETTLE_MS);
-    r.ctl.tick();
-    expect(resume).toHaveBeenCalledTimes(1);
-  });
-
-  it("dissolves only on reaching the actual destination, and only after having set out from elsewhere", () => {
-    const r = rig();
-    r.setAtDest(true);
-    r.ctl.update({ party: party(), selfEmail: LEAD, isController: true });
-    r.self.floor = "floor-2";
-    r.ctl.tick();
-    expect(r.net.arrived).not.toHaveBeenCalled(); // created at the door: nothing to arrive at
-    r.setAtDest(false);
-    r.ctl.tick();
-    r.setAtDest(true);
-    r.ctl.tick();
-    r.ctl.tick();
-    expect(r.net.arrived).toHaveBeenCalledTimes(1);
-  });
-
-  it("re-routes when the destination moves under a travelling leader", () => {
-    const r = rig();
-    r.ctl.update({ party: party(), selfEmail: LEAD, isController: true });
-    r.ctl.go();
-    r.ctl.update({ party: party({ destination: { floor: "floor-2", roomId: "floor-2/bravo", label: "Bravo" } }), selfEmail: LEAD, isController: true });
-    expect(r.port.goTo).toHaveBeenLastCalledWith({ floor: "floor-2", roomId: "floor-2/bravo", label: "Bravo" });
-  });
-
-  it("a follower finishes the walk to its slot when the party arrives, instead of freezing", () => {
-    const r = rig();
-    r.ctl.update({ party: party({ leaderFloor: "floor-2" }), selfEmail: BOB, isController: true });
-    r.self.floor = "floor-2";
-    r.peers.set(LEAD, { x: 0, z: 500 });
-    r.ctl.update({ party: null, selfEmail: BOB, isController: false, endedReason: "arrived" });
-    r.peers.set(LEAD, { x: 0, z: 540 }); // the leader's last walk still replaying here
+    as(r, BOB, party());
+    r.self.holding = true;
     r.ctl.tick();
     expect(r.port.walkNear).not.toHaveBeenCalled();
-    r.advance(FINISH_DELAY_MS);
+    r.self.holding = false;
     r.ctl.tick();
-    expect(r.port.walkNear).toHaveBeenLastCalledWith(followSlot({ x: 0, z: 540 }, { x: 0, z: 1 }, 0));
+    expect(r.port.walkNear).toHaveBeenCalledTimes(1);
   });
 
-  it("a follower still catching up when the party arrives carries on to the destination by Walk There", () => {
+  it("a genuinely unreachable body never claims ready (the server's deadline moves the party on)", () => {
     const r = rig();
-    r.ctl.update({ party: party({ leaderFloor: "floor-2" }), selfEmail: BOB, isController: true });
-    r.self.riding = true; // mid catch-up ride
-    r.ctl.update({ party: null, selfEmail: BOB, isController: false, endedReason: "arrived" });
-    r.advance(FINISH_DELAY_MS);
+    as(r, BOB, party());
+    (r.port.walkNear as ReturnType<typeof vi.fn>).mockReturnValue(false);
+    r.self.pos = { x: -2000, z: -2000 };
+    for (let i = 0; i < 10; i++) { r.advance(RV_RETRY_MS); r.ctl.tick(); }
+    expect(r.net.ready).not.toHaveBeenCalled();
+    expect(r.port.walkNear).toHaveBeenCalledTimes(10);
+  });
+
+  it("a member on another floor takes the lift to the rendezvous first", () => {
+    const r = rig();
+    r.self.floor = "floor-2";
+    as(r, BOB, party());
     r.ctl.tick();
-    expect(r.port.goTo).not.toHaveBeenCalled();
+    expect(r.port.ride).toHaveBeenCalledWith("floor-1");
+    expect(r.port.walkNear).not.toHaveBeenCalled();
+  });
+});
+
+describe("the journey — one party, no chase", () => {
+  it("READY moves nobody: no head start for the leader, the server opens the first leg for everyone", () => {
+    const r = rig();
+    as(r, LEAD, party({ stage: "ready" }));
+    r.advance(10_000);
+    r.ctl.tick();
+    expect(r.port.walkNear).not.toHaveBeenCalled();
+    expect(r.port.ride).not.toHaveBeenCalled();
+    expect(r.ctl.getStatus()).toMatchObject({ kind: "party-ready", place: "hub" });
+  });
+
+  it("TO_LIFT: leader and members alike set out THE MOMENT the leg opens, each to their own lobby slot", () => {
+    const rigs = [LEAD, BOB, CAT].map((who) => {
+      const r = rig();
+      as(r, who, party({ stage: "ready" }));
+      r.advance(900); // mid retry interval of the gathering
+      as(r, who, party(leg("to_lift")));
+      r.ctl.tick();
+      return r;
+    });
+    rigs.forEach((r, i) => {
+      expect(r.port.walkNear).toHaveBeenCalledTimes(1);
+      expect(r.port.walkNear).toHaveBeenCalledWith(lobby(i));
+      expect(r.port.ride).not.toHaveBeenCalled(); // the lift is a barrier: nobody rides first
+    });
+  });
+
+  it("TO_LIFT is ready from this body's own position only; a stale stage's report never repeats", () => {
+    const r = rig();
+    as(r, BOB, party(leg("to_lift")));
+    r.ctl.tick();
+    r.self.pos = lobby(1);
+    r.advance(400);
+    r.ctl.tick();
+    expect(r.net.ready).toHaveBeenCalledWith("p1:to_lift", "floor-1");
+    r.ctl.tick();
+    expect(r.net.ready).toHaveBeenCalledTimes(1);
+  });
+
+  it("RIDE: every rider starts its own lift at once, in its own cabin slot, the others in theirs", () => {
+    const plans = [LEAD, BOB, CAT].map((who, i) => {
+      const r = rig();
+      r.self.pos = lobby(i);
+      as(r, who, party(leg("ride")));
+      r.ctl.tick();
+      expect(r.port.ride).toHaveBeenCalledTimes(1);
+      const [to, plan] = (r.port.ride as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(to).toBe("floor-2");
+      return { who, plan };
+    });
+    // every browser: the same three people, three distinct places, and each person in the SAME place
+    for (const { who, plan } of plans) {
+      expect(plan).toEqual(partyLiftPlan([LEAD, BOB, CAT], [LEAD, BOB, CAT], who));
+      const all = [plan.self.rel, ...plan.riders.map((x: { slot: { rel: Vec2 } }) => x.slot.rel)].map((p: Vec2) => `${p.x},${p.z}`);
+      expect(new Set(all).size).toBe(3);
+    }
+    expect(plans[0].plan.self).toBe(plans[1].plan.riders.find((x: { email: string }) => x.email === LEAD).slot);
+  });
+
+  it("RIDE: not while riding; ready once off the lift upstairs; never a second ride", () => {
+    const r = rig();
+    as(r, BOB, party(leg("ride")));
+    r.ctl.tick();
+    r.self.riding = true;
+    r.advance(CATCH_UP_RETRY_MS * 3);
+    r.ctl.tick();
+    expect(r.net.ready).not.toHaveBeenCalled();
     r.self.riding = false;
     r.self.floor = "floor-2";
     r.ctl.tick();
-    expect(r.port.goTo).not.toHaveBeenCalled(); // a moment for the leader's body to appear
-    r.advance(FINISH_DELAY_MS * 2);
-    r.ctl.tick();
-    expect(r.port.goTo).toHaveBeenCalledWith(party().destination);
+    expect(r.net.ready).toHaveBeenCalledWith("p1:ride", "floor-2");
+    expect(r.port.ride).toHaveBeenCalledTimes(1);
   });
 
-  it("removes its hooks when the party ends", () => {
+  it("RIDE: somebody not on this ride's manifest (resumed after it was drawn up) catches up on a solo lift", () => {
     const r = rig();
-    r.ctl.update({ party: party(), selfEmail: LEAD, isController: true });
-    r.ctl.update({ party: null, selfEmail: LEAD, isController: false });
+    as(r, CAT, party(leg("ride", { riders: [LEAD, BOB], expect: [LEAD, BOB] })));
+    r.ctl.tick();
+    expect(r.port.ride).toHaveBeenCalledWith("floor-2", null);
+  });
+
+  it("TO_ROOM: on the Meeting Floor each walks to its own arrival slot and says ready there", () => {
+    const r = rig();
+    r.self.floor = "floor-2";
+    as(r, CAT, party(leg("to_room")));
+    r.ctl.tick();
+    expect(r.port.walkNear).toHaveBeenCalledWith(arrivalSlot(APPROACH, INTO, 2));
+    r.self.pos = arrivalSlot(APPROACH, INTO, 2);
+    r.advance(400);
+    r.ctl.tick();
+    expect(r.net.ready).toHaveBeenCalledWith("p1:to_room", "floor-2");
+  });
+
+  it("stays guided across every stage, and lets go exactly when the party ends (arrived)", () => {
+    const r = rig();
+    for (const p of [party(), party({ stage: "ready" }), party(leg("to_lift")), party(leg("ride")), party(leg("to_room"))]) {
+      as(r, BOB, p);
+      r.ctl.tick();
+    }
+    expect((r.port.setGuided as ReturnType<typeof vi.fn>).mock.calls).toEqual([[true]]);
+    r.ctl.update({ party: null, selfEmail: BOB, isController: true });
+    expect((r.port.setGuided as ReturnType<typeof vi.fn>).mock.calls).toEqual([[true], [false]]);
     expect(r.hooks()).toBeNull();
-    expect(r.port.setRideRiders).toHaveBeenLastCalledWith(null);
     expect(r.ctl.getStatus()).toEqual({ kind: "none" });
+  });
+
+  it("the card shows the stage and who is at its checkpoint", () => {
+    const r = rig();
+    as(r, BOB, party({ ...leg("to_lift", { ready: [LEAD] }), members: [
+      { email: BOB, following: true, connected: true }, { email: CAT, following: false, connected: true },
+    ] }));
+    expect(r.ctl.getStatus()).toEqual({ kind: "journey", leg: "to_lift", riding: false, people: [
+      { email: LEAD, state: "ready", leader: true }, { email: BOB, state: "on-the-way", leader: false }, { email: CAT, state: "paused", leader: false },
+    ] });
+  });
+});
+
+describe("Esc / leaving", () => {
+  it("Esc pauses THIS person (leader or member): told to the server, guided released, nothing walked", () => {
+    for (const who of [LEAD, BOB]) {
+      const r = rig();
+      as(r, who, party(leg("to_lift")));
+      r.ctl.tick();
+      r.hooks()!.onUserMove();
+      expect(r.net.followState).toHaveBeenCalledWith(false);
+      expect(r.port.setGuided).toHaveBeenLastCalledWith(false);
+      expect(r.ctl.getStatus()).toEqual({ kind: "paused", leader: who === LEAD });
+      r.advance(RV_RETRY_MS * 4);
+      r.ctl.tick();
+      expect(r.port.walkNear).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("Resume rejoins the stage the party is on NOW, at once", () => {
+    const r = rig();
+    as(r, BOB, party(leg("to_lift")));
+    r.hooks()!.onUserMove();
+    as(r, BOB, party({ ...leg("to_room"), members: [{ email: BOB, following: false, connected: true }] }));
+    r.ctl.resume();
+    expect(r.net.followState).toHaveBeenLastCalledWith(true);
+    r.ctl.tick();
+    // still on the ground floor: the lift up first, then the room
+    expect(r.port.ride).toHaveBeenCalledWith("floor-2");
+    expect(r.port.setGuided).toHaveBeenLastCalledWith(true);
+  });
+
+  it("an update already in flight does not undo the Esc just pressed", () => {
+    const r = rig();
+    as(r, BOB, party(leg("to_lift")));
+    r.hooks()!.onUserMove();
+    as(r, BOB, party(leg("to_lift", { ready: [LEAD] }))); // still says following: sent before the pause
+    expect(r.ctl.getStatus()).toMatchObject({ kind: "paused" });
+    as(r, BOB, party({ ...leg("to_lift"), members: [{ email: BOB, following: false, connected: true }] }));
+    as(r, BOB, party({ ...leg("to_lift"), members: [{ email: BOB, following: false, connected: true }] }));
+    expect(r.ctl.getStatus()).toMatchObject({ kind: "paused" });
+  });
+
+  it("a click while forming takes nothing from anybody (no pause)", () => {
+    const r = rig();
+    as(r, BOB, party({ stage: "forming", rendezvous: null }));
+    r.hooks()!.onUserMove();
+    expect(r.net.followState).not.toHaveBeenCalled();
   });
 });

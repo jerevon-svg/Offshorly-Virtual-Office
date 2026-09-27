@@ -110,7 +110,7 @@ import { MeetingsPanel } from "../../../components/Meetings/MeetingsPanel";
 import { useScheduleBridge } from "./useScheduleBridge";
 import { Vo3dMeetingReminder } from "./Vo3dMeetingReminder";
 import { Vo3dGoTogether } from "./Vo3dGoTogether";
-import { attendeesOf, destinationFor, useMeetingPartyGuard } from "./useMeetingParty";
+import { MEETING_CONTEXT, attendeesOf, destinationFor, useMeetingPartyGuard } from "./useMeetingParty";
 import { inviteToParty, useTravelParty } from "../../../services/party/travelPartyStore";
 import type { ScheduledMeeting } from "../../../services/meetings/scheduledMeetingsClient";
 import styles from "./Vo3dHud.module.css";
@@ -376,6 +376,18 @@ export function Vo3dHud({
   // GO TOGETHER — the party (if any), and the leader's meeting guard (cancelled / moved while travelling).
   const travelParty = useTravelParty();
   useMeetingPartyGuard(selfId);
+  // The meetings whose journey Go Together already owns for this person (a party headed there, or an
+  // invitation still waiting for an answer) — the reminder steps aside for exactly those.
+  const travelDecided = useMemo(() => {
+    const ids = new Set<string>();
+    const add = (ctx: { kind: string; id: string } | undefined) => { if (ctx?.kind === MEETING_CONTEXT) ids.add(ctx.id); };
+    add(travelParty.party?.destination.context);
+    for (const i of travelParty.invites) add(i.party.destination.context);
+    // …and a meeting this person's party has already ARRIVED at: the journey is done, so the reminder does not
+    // come back offering a second one (Walk There / Go together) while they wait at the room.
+    for (const id of travelParty.arrivedFor) ids.add(id);
+    return ids;
+  }, [travelParty.party, travelParty.invites, travelParty.arrivedFor]);
 
   const navigate = useCallback((destination: NotificationDestination): boolean => {
     switch (destination.kind) {
@@ -639,7 +651,8 @@ export function Vo3dHud({
           whenever a tool owns the screen. */}
       {!officeToolOpen && (
         <Vo3dMeetingReminder worldRef={worldRef} ready={ready} selfId={selfId} onOpen={(id) => openMeetings(id)}
-          onGoTogether={setGoTogetherFor} inParty={travelParty.party !== null} />
+          onGoTogether={setGoTogetherFor} inParty={travelParty.party !== null || travelParty.invites.length > 0}
+          travelDecided={travelDecided} />
       )}
       {/* GO TOGETHER — the invitation card and the party chip. Not hidden behind a tool: an invitation
           expires, and the chip is the escape hatch (Leave / End) while travelling. */}
