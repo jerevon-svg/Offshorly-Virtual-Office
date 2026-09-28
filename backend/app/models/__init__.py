@@ -7,6 +7,7 @@ from app.models.employee_permission import EmployeePermission
 from app.models.feed import FeedComment, FeedPost, FeedReaction
 from app.models.hub import HubItem, HubItemState
 from app.models.meeting_capture import CaptureConsent, CaptureSession, TranscriptSegment
+from app.models.meeting_intelligence import MeetingIntelligenceEvidence, MeetingIntelligenceItem, MeetingIntelligenceRun
 from app.models.meeting_session import MeetingSession, MeetingSessionAttendance, MeetingSessionGrant
 from app.models.message import Message
 from app.models.mission import MissionAssignment
@@ -53,6 +54,9 @@ __all__ = [
     "CaptureConsent",
     "CaptureSession",
     "TranscriptSegment",
+    "MeetingIntelligenceEvidence",
+    "MeetingIntelligenceItem",
+    "MeetingIntelligenceRun",
     "MeetingSession",
     "MeetingSessionAttendance",
     "MeetingSessionGrant",
