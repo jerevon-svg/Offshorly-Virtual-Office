@@ -1360,8 +1360,12 @@ export class Coworkers {
   /** PHASE 6D — the world point an anchored card hangs off: the top of this person's head, which is where
    *  their nameplate already sits. Null for somebody with no body (not rendered, or still loading). */
   headPoint(email: string): THREE.Vector3 | null {
-    const body = this.bodies.get(email);
-    return body ? body.root.position.clone().setY(HEAD_ANCHOR_Y) : null;
+    // GO TOGETHER — while this person rides here as a lift rider, their real body is HIDDEN (addRider) and
+    // stands wherever it last was; the card (a Travel Chat bubble, a status pill) must hang over the rider,
+    // the one on screen — exactly as pointOf answers. Same parent group, so the same frame. When the rider is
+    // removed at the end of the ride this falls back to the real body: one anchor per person, never two.
+    const shown = this.riders.get(email) ?? this.bodies.get(email);
+    return shown ? shown.root.position.clone().setY(HEAD_ANCHOR_Y) : null;
   }
 
   /** PHASE 6D — where this person's body stands, in world units. Null when they have none. */

@@ -289,3 +289,80 @@ async def test_phase3_journey_runs_leg_by_leg_and_ends_once(server, monkeypatch)
     finally:
         await lead.client.disconnect()
         await bob.client.disconnect()
+
+
+async def test_phase5_travel_chat_reaches_only_current_travellers(server) -> None:
+    lead, bob, cat, eve = await _formed(server, BOB, CAT, "eve@example.com")
+    bob_tab2 = await Peer(BOB).connect(server)
+    chats: dict[str, list[dict]] = {}
+    for p, key in ((lead, "lead"), (bob, "bob"), (cat, "cat"), (eve, "eve"), (bob_tab2, "bob2")):
+        chats[key] = []
+        p.client.on("party_chat", (lambda k: (lambda d: chats[k].append(d)))(key))
+    try:
+        await lead.client.emit("party_invite", {"emails": [BOB, CAT], "destination": DEST, "floor": "floor-1"})
+        assert await _wait(lambda: bob.last("party_invite_incoming") is not None and cat.last("party_invite_incoming") is not None)
+        await bob.client.emit("party_invite_accept", {"inviteId": bob.last("party_invite_incoming")["inviteId"]})
+        await cat.client.emit("party_invite_accept", {"inviteId": cat.last("party_invite_incoming")["inviteId"]})
+        assert await _wait(lambda: socket_module.travel_parties.party_of(CAT) is not None and socket_module.travel_parties.party_of(BOB) is not None)
+        party = socket_module.travel_parties.party_of(LEAD)
+        await lead.client.emit("party_where", {"floor": "floor-1", "roomId": "dev-room", "position": {"x": 0, "z": 0}})
+        await bob.client.emit("party_where", {"floor": "floor-1", "roomId": "dev-room", "position": {"x": 30, "z": 0}})
+        await cat.client.emit("party_where", {"floor": "floor-2", "roomId": None, "position": {"x": 6200, "z": 0}})
+        assert await _wait(lambda: len(party["where"]) == 3)
+
+        # forming: nobody can talk yet
+        await lead.client.emit("party_chat_send", {"text": "too early"})
+        await asyncio.sleep(0.15)
+        assert all(not v for v in chats.values())
+
+        await lead.client.emit("party_start", {})
+        assert await _wait(lambda: party["stage"] == "gathering")
+        await bob.client.emit("party_chat_send", {"text": "  Are we presenting the new version?  ", "to": [CAT, "eve@example.com"]})
+        assert await _wait(lambda: len(chats["lead"]) == 1 and len(chats["bob"]) == 1)
+        msg = chats["lead"][0]
+        assert msg["text"] == "Are we presenting the new version?" and msg["email"] == BOB and msg["partyId"] == party["partyId"]
+        await asyncio.sleep(0.15)
+        # Cat waits upstairs (not merged yet), Eve is outside the party, Bob's other tab does not drive his body;
+        # a client-supplied recipient list is ignored
+        assert chats["cat"] == [] and chats["eve"] == [] and chats["bob2"] == []
+
+        # outsiders and non-driving tabs cannot speak into it
+        await eve.client.emit("party_chat_send", {"text": "let me in"})
+        await bob_tab2.client.emit("party_chat_send", {"text": "second tab"})
+        await cat.client.emit("party_chat_send", {"text": "not merged yet"})
+        await asyncio.sleep(0.4)
+        assert len(chats["lead"]) == 1
+
+        # burst guard, then length cap
+        await lead.client.emit("party_chat_send", {"text": "one"})
+        await lead.client.emit("party_chat_send", {"text": "two"})
+        assert await _wait(lambda: len(chats["bob"]) == 2)
+        await asyncio.sleep(0.4)
+        assert [m["text"] for m in chats["bob"]] == ["Are we presenting the new version?", "one"]
+        await lead.client.emit("party_chat_send", {"text": "x" * 1000})
+        assert await _wait(lambda: len(chats["bob"]) == 3)
+        assert len(chats["bob"][-1]["text"]) == 400
+
+        # jump the journey to the merged walk to the room: Cat now hears new lines (and none of the old ones)
+        party["stage"], party["leg"] = "to_room", {"stageId": "x:to_room", "kind": "to_room", "floor": "floor-2"}
+        party["expect"], party["ready"] = [LEAD, BOB, CAT], set()
+        await asyncio.sleep(0.4)
+        await bob.client.emit("party_chat_send", {"text": "see you upstairs"})
+        assert await _wait(lambda: len(chats["cat"]) == 1)
+        assert chats["cat"][0]["text"] == "see you upstairs"
+
+        # a member who leaves stops hearing it
+        await cat.client.emit("party_leave", {})
+        assert await _wait(lambda: socket_module.travel_parties.party_of(CAT) is None)
+        await asyncio.sleep(0.4)
+        await lead.client.emit("party_chat_send", {"text": "after cat left"})
+        assert await _wait(lambda: chats["bob"][-1]["text"] == "after cat left")
+        await asyncio.sleep(0.15)
+        assert len(chats["cat"]) == 1 and chats["eve"] == []
+        # and she cannot talk into it either
+        await cat.client.emit("party_chat_send", {"text": "stale"})
+        await asyncio.sleep(0.15)
+        assert chats["bob"][-1]["text"] == "after cat left"
+    finally:
+        for p in (lead, bob, cat, eve, bob_tab2):
+            await p.client.disconnect()

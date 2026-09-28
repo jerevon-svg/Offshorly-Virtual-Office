@@ -29,6 +29,18 @@ export interface PartyInviteResult {
   reason?: string;
 }
 
+/** ONE LINE OF TRAVEL CHAT (Phase 5). Relayed by the server to the party's current travellers and kept here
+ *  only in a small rolling window — never history, never persisted, gone when the journey is. */
+export interface TravelChatLine {
+  id: string;
+  email: string;
+  text: string;
+  atMs: number;
+}
+
+/** How many lines the rolling window holds — a glance at the conversation, not a transcript. */
+export const TRAVEL_CHAT_WINDOW = 6;
+
 export interface TravelPartySnapshot {
   party: PartyWire | null;
   controllerSid: string | null;
@@ -43,9 +55,12 @@ export interface TravelPartySnapshot {
    *  offer a second journey to a meeting this person was just walked to, and a later meeting director can
    *  pick up from here. */
   arrivedFor: string[];
+  /** TRAVEL CHAT: the last few lines said on THIS party's journey since this tab started hearing it. Cleared
+   *  whenever the party ends or changes, and by the overlay whenever this person stops being a traveller. */
+  chat: TravelChatLine[];
 }
 
-const EMPTY: TravelPartySnapshot = { party: null, controllerSid: null, socketId: null, invites: [], lastResults: null, endedReason: null, arrivedFor: [] };
+const EMPTY: TravelPartySnapshot = { party: null, controllerSid: null, socketId: null, invites: [], lastResults: null, endedReason: null, arrivedFor: [], chat: [] };
 
 let snapshot: TravelPartySnapshot = EMPTY;
 let socketInstance: Socket | null = null;
@@ -96,7 +111,9 @@ interface PartyPayload {
 
 function applyParty(p: PartyPayload | undefined): void {
   const party = p?.party ?? null;
-  set({ party, controllerSid: party ? p?.controllerSid ?? null : null, ...(party ? { endedReason: null } : {}) });
+  // A different party (or none) takes the old journey's conversation with it.
+  const chat = party && party.partyId === snapshot.party?.partyId ? snapshot.chat : [];
+  set({ party, chat, controllerSid: party ? p?.controllerSid ?? null : null, ...(party ? { endedReason: null } : {}) });
   // A RELOADED DRIVER takes its body back. Only granted by the server while nobody else drives it.
   if (party && (p?.controllerSid ?? null) === null) socketInstance?.emit("party_claim", {});
 }
@@ -113,7 +130,13 @@ function ensureSocket(): void {
     if (snapshot.party?.partyId !== p.partyId) return;
     const ctx = snapshot.party.destination.context;
     const arrivedFor = p.reason === "arrived" && ctx && !snapshot.arrivedFor.includes(ctx.id) ? [...snapshot.arrivedFor, ctx.id] : snapshot.arrivedFor;
-    set({ party: null, controllerSid: null, endedReason: p.reason, arrivedFor });
+    set({ party: null, controllerSid: null, endedReason: p.reason, arrivedFor, chat: [] });
+  });
+  socket.on("party_chat", (m: (TravelChatLine & { partyId?: string }) | undefined) => {
+    // Only this journey's lines, once each (the sender hears its own from the server like everybody else).
+    if (!m?.id || m.partyId !== snapshot.party?.partyId || snapshot.chat.some((c) => c.id === m.id)) return;
+    const line = { id: m.id, email: m.email.toLowerCase(), text: m.text, atMs: m.atMs };
+    set({ chat: [...snapshot.chat, line].slice(-TRAVEL_CHAT_WINDOW) });
   });
   socket.on("party_invites", (p: { invites?: PartyInvite[] }) => set({ invites: p.invites ?? [] }));
   socket.on("party_invite_incoming", (inv: PartyInvite) =>
@@ -138,6 +161,15 @@ export const declinePartyInvite = (inviteId: string) => emit("party_invite_decli
 export const leaveParty = () => emit("party_leave");
 export const setPartyDestination = (destination: PartyDestination) => emit("party_destination", { destination });
 export const clearPartyNotice = () => set({ lastResults: null, endedReason: null });
+/** Say something to the people travelling with you. The server finds the party and its recipients itself. */
+export function sendTravelChat(text: string): void {
+  const clean = text.trim();
+  if (clean) emit("party_chat_send", { text: clean });
+}
+/** This person stopped travelling with the group (paused, arrived, left): forget what was said. */
+export function clearTravelChat(): void {
+  if (snapshot.chat.length) set({ chat: [] });
+}
 
 /** What app/goTogether.ts's controller says to the server. */
 export const partyNet: PartyNet = {

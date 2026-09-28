@@ -319,3 +319,56 @@ def test_everyone_already_in_the_room_arrives_at_once() -> None:
     reg.begin_journey(p["partyId"])
     assert p["expect"] == []
     assert reg.advance(p["partyId"])["arrived"] is True
+
+
+# ---- Phase 5: travel chat membership ------------------------------------------------------------------
+
+
+def test_travel_chat_members_follow_the_journey_and_the_merge() -> None:
+    reg = TravelPartyRegistry()
+    p = _party(reg)
+    for e in ("b@x.com", "up@x.com", "in@x.com"):
+        reg.add_member(p["partyId"], e, f"s-{e}")
+    _at(reg, p, "lead@x.com", "floor-1", "dev-room", 0)
+    _at(reg, p, "b@x.com", "floor-1", "dev-room", 40)
+    _at(reg, p, "up@x.com", "floor-2", None, 6200)
+    _at(reg, p, "in@x.com", "floor-2", "floor-2/alpha")
+    assert reg.chat_members(p) == []  # forming is an invitation list, not a journey
+    rv = reg.start(p["partyId"])
+    downstairs = ["lead@x.com", "b@x.com"]
+    assert reg.chat_members(p) == downstairs  # waiting upstairs / already in the room: not yet travelling
+    for e in downstairs:
+        reg.mark_ready(p["partyId"], e, rv["stageId"], floor="floor-1")
+    reg.finish_gathering(p["partyId"])
+    assert reg.chat_members(p) == downstairs
+    leg = reg.begin_journey(p["partyId"])
+    assert reg.chat_members(p) == downstairs
+    for e in downstairs:
+        reg.mark_ready(p["partyId"], e, leg["stageId"])
+    ride = reg.advance(p["partyId"])["leg"]
+    assert ride["kind"] == "ride" and reg.chat_members(p) == downstairs  # one conversation through the lift
+    for e in downstairs:
+        reg.mark_ready(p["partyId"], e, ride["stageId"])
+    reg.advance(p["partyId"])
+    # THE MERGE: the upstairs waiter joins at to_room; the one already in the room never does
+    assert p["stage"] == "to_room" and reg.chat_members(p) == ["lead@x.com", "b@x.com", "up@x.com"]
+    # paused → out; resumed → back; left → out for good
+    reg.set_following(p["partyId"], "b@x.com", False)
+    assert "b@x.com" not in reg.chat_members(p)
+    reg.set_following(p["partyId"], "b@x.com", True)
+    assert "b@x.com" in reg.chat_members(p)
+    reg.remove_member(p["partyId"], "b@x.com")
+    assert "b@x.com" not in reg.chat_members(p)
+    # a lost driver is out until it reclaims
+    reg.orphan_sid("s-up@x.com")
+    assert "up@x.com" not in reg.chat_members(p)
+
+
+def test_travel_chat_rate_limit_is_per_socket() -> None:
+    reg = TravelPartyRegistry()
+    assert reg.may_chat("s1", now=10.0)
+    assert not reg.may_chat("s1", now=10.1)
+    assert reg.may_chat("s2", now=10.1)
+    assert reg.may_chat("s1", now=10.5)
+    reg.clear_chat_sid("s1")
+    assert reg.may_chat("s1", now=10.6)

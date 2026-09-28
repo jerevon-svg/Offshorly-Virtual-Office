@@ -125,6 +125,9 @@ import { SpatialCallControls } from "../../../components/OfficeMap/SpatialCallCo
 import { CallOverlay } from "../../../components/OfficeMap/CallOverlay";
 import { Vo3dCallBar } from "./Vo3dCallBar";
 import { Vo3dMeetingChat } from "./Vo3dMeetingChat";
+import { Vo3dTravelChat } from "./Vo3dTravelChat";
+import { inTravelChat } from "./travelChat";
+import { clearTravelChat, sendTravelChat, useTravelParty } from "../../../services/party/travelPartyStore";
 import {
   expireReactions,
   joinMeetingChat,
@@ -1201,6 +1204,41 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     meeting.clearAll();
   }, [inMeeting, meeting]);
 
+  // ---- GO TOGETHER PHASE 5: TALKING ON THE WAY -------------------------------------------------------
+  // ONE ROUTING RULE FOR `/`: an active meeting owns it (its existing chat), otherwise an active Go Together
+  // journey this tab is travelling in owns it (the Travel Chat), otherwise neither does. The meeting wins
+  // outright, so the two ephemeral contexts never compete and nothing is carried from one to the other.
+  const travelParty = useTravelParty();
+  const travelling = inTravelChat(
+    travelParty.party,
+    self,
+    travelParty.controllerSid !== null && travelParty.controllerSid === travelParty.socketId,
+  );
+  const chatContext: "meeting" | "travel" | null = inMeeting ? "meeting" : travelling ? "travel" : null;
+  const travelChatLines = travelParty.chat;
+  /** The same world-space bubble a meeting or spatial message uses, for what a fellow traveller just said. */
+  const travel = useOverheadBubbles(OVERHEAD_BUBBLE_MS);
+  const travelBubbles = travel.texts;
+  const seenTravelRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (chatContext !== "travel") return;
+    const now = Date.now();
+    for (const m of travelChatLines) {
+      if (seenTravelRef.current.has(m.id)) continue;
+      seenTravelRef.current.add(m.id);
+      if (now - m.atMs > OVERHEAD_BUBBLE_MS) continue;
+      travel.show(m.email === self ? SELF_OVERHEAD_KEY : m.email, bubbleText(m.text));
+    }
+  }, [chatContext, travelChatLines, travel, self]);
+  // NO LONGER TRAVELLING (arrived, paused, left, or a meeting took over): the conversation is over for this
+  // person — its lines, its bubbles and its seen-ids all go. A later journey starts from nothing.
+  useEffect(() => {
+    if (chatContext === "travel") return;
+    clearTravelChat();
+    seenTravelRef.current = new Set();
+    travel.clearAll();
+  }, [chatContext, travel]);
+
   const meetingReactions = useMemo(() => {
     const out: Record<string, string> = {};
     for (const r of meetingChat.reactions) {
@@ -1402,7 +1440,7 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     for (const email of drawn) {
       // PHASE 7D — a meeting message outranks a spatial one for the same person: it is the newer
       // thing they said, and in a meeting it is the conversation everybody is in.
-      const sentText = meetingBubbles[email] ?? talkingTextById[email];
+      const sentText = meetingBubbles[email] ?? travelBubbles[email] ?? talkingTextById[email];
       const typing = typingIds.has(email);
       const attention = chatAttention[email];
       // IN CONVERSATION, from V1's OWN signal. V1 reads a peer's presence off Atlas, which the mock rig
@@ -1450,7 +1488,7 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     // own effective status (the same selfStatusStore the availability picker writes). Self is not in
     // `drawnEmails` — resolveVo3dCoworkers excludes them by design — so the row is added here, with the
     // reserved key the overhead layer anchors to the player's body rather than to a coworker's.
-    const selfText = meetingBubbles[SELF_OVERHEAD_KEY] ?? talkingTextById[SELF_OVERHEAD_KEY];
+    const selfText = meetingBubbles[SELF_OVERHEAD_KEY] ?? travelBubbles[SELF_OVERHEAD_KEY] ?? talkingTextById[SELF_OVERHEAD_KEY];
     const selfReaction = meetingReactions[SELF_OVERHEAD_KEY];
     // THE VIEWER'S OWN CAMERA rides the same map under the viewer's own identity — callStore puts the
     // local camera in videoByIdentity deliberately, "so self video needs no separate field". Anchored to
@@ -1486,7 +1524,7 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
       out.push({ email: TOUCAN_OVERHEAD_KEY, displayName: "Toucan", sentText: "Squawk squawk…" });
     }
     return out;
-  }, [callState.videoByIdentity, chatAttention, drawnEmails, inConversationEmails, insideCave, layersByEmail, meetingBubbles, meetingReactions, self, selfStatus, statusByEmail, talkingTextById, toucanPending, typingIds]);
+  }, [callState.videoByIdentity, chatAttention, drawnEmails, inConversationEmails, insideCave, layersByEmail, meetingBubbles, meetingReactions, self, travelBubbles, selfStatus, statusByEmail, talkingTextById, toucanPending, typingIds]);
 
   // THE CONVERSATION POSES. Resolved by V1's OWN resolveCharacterAnimState, not by a rule invented here,
   // and pushed into the world the same way the roster and the occupancy are. Only the two conversation
@@ -2106,11 +2144,20 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
       {/* PHASE 7D — the meeting's own chat. Collapsed by default, never over the curved screen, and
           quieter still while somebody is sharing. Gated on genuinely being IN the meeting. */}
       <Vo3dMeetingChat
-        active={inMeeting}
+        active={chatContext === "meeting"}
         selfId={self}
         resolveDisplayName={resolveDisplayName}
         presenting={Boolean(callState.screenShare)}
         // Enter hands the mouse back from its own keypress — the one moment a browser grants a lock.
+        onResumePointer={() => worldRef.current?.requestPointerLock()}
+      />
+      {/* GO TOGETHER PHASE 5 — the journey's own temporary conversation, only while no meeting owns `/`. */}
+      <Vo3dTravelChat
+        active={chatContext === "travel"}
+        selfId={self}
+        lines={travelChatLines}
+        resolveDisplayName={resolveDisplayName}
+        onSend={sendTravelChat}
         onResumePointer={() => worldRef.current?.requestPointerLock()}
       />
       <CallOverlay

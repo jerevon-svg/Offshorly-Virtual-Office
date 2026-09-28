@@ -4,6 +4,8 @@ import math
 import secrets
 import time
 
+from app.services.meeting_chat import MAX_CHARS as CHAT_MAX_CHARS, MIN_INTERVAL_S as CHAT_MIN_INTERVAL_S
+
 # GO TOGETHER V1 — a temporary travel party: one leader, the coworkers who accepted, and where they are
 # going. Nothing else. Ephemeral and in-memory by design, same single-worker caveat as
 # call_invites.py / spatial_session.py: a restart drops every party, which is safe — a party is optional
@@ -66,6 +68,9 @@ LEG_DEADLINE_SECONDS = {"to_lift": 45, "ride": 45, "to_room": 45}
 
 STAGES = ("forming", "gathering", "ready", "to_lift", "ride", "to_room")
 LEGS = ("to_lift", "ride", "to_room")
+# TRAVEL CHAT (Phase 5): the stages in which the party is genuinely on its way — from Start Walking to arrival.
+# Forming is an invitation list, not a journey; arrival ends the party and the conversation with it.
+CHAT_STAGES = ("gathering", "ready", *LEGS)
 
 _FLOOR_MAX = 32
 _ID_MAX = 64
@@ -116,6 +121,8 @@ class TravelPartyRegistry:
         self._parties: dict[str, dict] = {}
         # email -> partyId, for leader AND members: a person is in at most one party
         self._by_email: dict[str, str] = {}
+        # sid -> last travel-chat send time (the per-socket burst guard meeting chat uses)
+        self._last_chat_at: dict[str, float] = {}
 
     # --- lookup -------------------------------------------------------------------------
 
@@ -377,6 +384,35 @@ class TravelPartyRegistry:
             return {"leg": self._open_leg(party, "to_room", floor=leg["toFloor"]), "arrived": False, "stragglers": stragglers}
         return {"leg": None, "arrived": True, "stragglers": stragglers}
 
+    # --- Phase 5: travel chat ------------------------------------------------------------
+
+    def chat_members(self, party: dict) -> list[str]:
+        """WHO IS IN THE TRAVELLING CONVERSATION RIGHT NOW — the only people who may speak in it or hear it.
+        Ephemeral and relay-only (nothing is kept, so nobody is ever replayed an earlier line): the journey's
+        active participants (still in the party, connected, following — a paused, lost or departed person is
+        out until they resume/return), minus anybody not travelling with the group YET: someone already in the
+        room ("arrived") never is, and someone waiting on the destination floor ("wait") joins at `to_room`,
+        the moment the formation picks them up."""
+        if party["stage"] not in CHAT_STAGES:
+            return []
+        out: list[str] = []
+        for email in self.active_participants(party):
+            role = self.role(party, email)
+            if role == "arrived" or (role == "wait" and party["stage"] != "to_room"):
+                continue
+            out.append(email)
+        return out
+
+    def may_chat(self, sid: str, *, now: float) -> bool:
+        last = self._last_chat_at.get(sid)
+        if last is not None and now - last < CHAT_MIN_INTERVAL_S:
+            return False
+        self._last_chat_at[sid] = now
+        return True
+
+    def clear_chat_sid(self, sid: str) -> None:
+        self._last_chat_at.pop(sid, None)
+
     # --- which tab drives each body ------------------------------------------------------
 
     def claim(self, party_id: str, email: str, sid: str) -> bool:
@@ -433,6 +469,7 @@ class TravelPartyRegistry:
         """Test-only: module-level singleton in state.py."""
         self._parties.clear()
         self._by_email.clear()
+        self._last_chat_at.clear()
 
 
 def party_roles(where: dict[str, dict], people: list[str], destination: dict) -> dict[str, str]:

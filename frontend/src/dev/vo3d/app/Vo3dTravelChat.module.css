@@ -1,0 +1,82 @@
+/* GO TOGETHER PHASE 5 — THE TRAVEL CHAT STRIP.
+ *
+ * The same visual language as the meeting's livestream chat (Vo3dMeetingChat.module.css) — shadowed text,
+ * no cards, one translucent composer — and the same bottom-right anchor, so `/` always opens in the same
+ * place. The two never show together: the overlay routes `/` to exactly one of them. Narrower and shorter
+ * than the meeting's column, because this is a few lines exchanged on a walk, not a meeting's back-channel. */
+.root {
+  position: fixed;
+  right: 16px;
+  bottom: calc(var(--vo3d-dock-clearance, var(--vo-dock-clearance, 104px)) - 8px);
+  z-index: 44;
+  width: min(300px, 34vw);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+  font: 500 13px/1.45 inherit;
+}
+
+.feed {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.line {
+  color: #f4f7fb;
+  font-size: 12.5px;
+  line-height: 1.55;
+  word-break: break-word;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9), 0 0 10px rgba(0, 0, 0, 0.55);
+  animation: lineIn 180ms ease-out;
+}
+.who { font-weight: 800; margin-right: 6px; color: #9fd8ff; }
+.own .who { color: #8fe0ab; }
+.age1 { opacity: 0.88; }
+.age2 { opacity: 0.72; }
+.age3 { opacity: 0.56; }
+.active .age1, .active .age2, .active .age3 { opacity: 1; }
+
+@keyframes lineIn { from { opacity: 0; transform: translateY(4px); } to { opacity: inherit; transform: none; } }
+
+.composer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 16px;
+  background: rgba(14, 16, 23, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(10px);
+  pointer-events: auto;
+}
+.composer:focus-within { border-color: rgba(75, 185, 106, 0.55); background: rgba(14, 16, 23, 0.72); }
+.badge {
+  flex: none;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #8fe0ab;
+}
+.input {
+  all: unset;
+  /* AFTER the reset — `all: unset` would otherwise leave the field click-through. */
+  pointer-events: auto;
+  flex: 1 1 auto;
+  min-width: 0;
+  color: #f4f7fb;
+  font-size: 12px;
+  padding: 1px 2px;
+}
+.input::placeholder { color: rgba(244, 247, 251, 0.45); }
+.input:focus-visible { outline: none; }
+
+@media (max-width: 720px) {
+  .root { width: min(280px, 52vw); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .line { animation: none; }
+}

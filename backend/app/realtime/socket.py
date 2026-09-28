@@ -4,6 +4,7 @@ import asyncio
 import logging
 import math
 import re
+import secrets
 from datetime import datetime, timezone
 
 from app.auth.atlas import AtlasAuthError, verify_atlas_token
@@ -52,6 +53,7 @@ from app.services import scheduled_meetings
 from app.routers.calls import meeting_room_key, _MEETING_ID
 from app.services.call_invites import wire as invite_wire
 from app.services.travel_party import (
+    CHAT_MAX_CHARS as TRAVEL_CHAT_MAX_CHARS,
     GATHER_DEADLINE_SECONDS as PARTY_GATHER_DEADLINE_SECONDS,
     LEG_DEADLINE_SECONDS as PARTY_LEG_DEADLINE_SECONDS,
     READY_BEAT_SECONDS as PARTY_READY_BEAT_SECONDS,
@@ -703,6 +705,7 @@ async def disconnect(sid: str) -> None:
     # PHASE 7D: the meeting inviter's tab went away. Terminate their invitation so the recipient's
     # prompt clears. Nothing durable is written — an unanswered meeting invitation is not a missed call.
     meeting_chat.clear_sid(sid)
+    travel_parties.clear_chat_sid(sid)
     for invite in meeting_invites.clear_sid(sid):
         await _emit_meeting_invite_terminal(invite, "meeting_invite_cancelled", {"reason": "caller_left"})
     for invite in call_invites.clear_sid(sid):
@@ -1713,6 +1716,41 @@ async def party_ready(sid: str, payload: dict | None) -> None:
         if not _is_driver(party, email, sid) or not travel_parties.mark_ready(party["partyId"], email, stage_id, floor=floor):
             return
         await _progress(party)
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("party_chat_send")
+async def party_chat_send(sid: str, payload: dict | None) -> None:
+    """TRAVEL CHAT (Phase 5): say something to the people walking with you. Relay-only — nothing is stored,
+    nothing reaches the DM system, the inbox, unread counts, Toucan or quests. The party is found from the
+    sender's own session (a client never names a party or a recipient), only the socket driving the sender's
+    body may speak, and the recipients are the party's CURRENT travelling members (chat_members), each at the
+    socket driving their body — the sender included, so every screen draws one message from one source."""
+    try:
+        text = (payload or {}).get("text")
+        if not isinstance(text, str):
+            return
+        clean = text.strip()[:TRAVEL_CHAT_MAX_CHARS]
+        if not clean:
+            return
+        email, party = await _party_session(sid)
+        if not _is_driver(party, email, sid):
+            return
+        members = travel_parties.chat_members(party)
+        if email not in members or not travel_parties.may_chat(sid, now=asyncio.get_running_loop().time()):
+            return
+        message = {
+            "partyId": party["partyId"],
+            "id": secrets.token_urlsafe(9),
+            "email": email,
+            "text": clean,
+            "atMs": meeting_chat_service.now_ms(),
+        }
+        for member in members:
+            target = travel_parties.controller_sid(party, member)
+            if target is not None:
+                await sio.emit("party_chat", message, to=target)
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 
