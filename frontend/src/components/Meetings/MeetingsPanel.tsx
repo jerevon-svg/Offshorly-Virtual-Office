@@ -68,11 +68,15 @@ export interface MeetingsPanelProps {
 
 // PHASE 8B — the Meeting Twin is one more view: opened from a Receipt with that Receipt's session, and Back
 // (or Escape) returns to the Receipt, then onward to the Memory list with its query/filter/pages intact.
+//
+// PHASE 8C — a Receipt can open a RELATED meeting's Receipt (its continuity timeline). `trail` is the Receipts
+// that led here, so Back walks them in reverse before returning to the list. Revisiting one already on the
+// trail cuts the trail back to it instead of growing a loop, so the stack is never deeper than the path taken.
 type View =
   | { kind: "list" }
   | { kind: "form"; editing: ScheduledMeeting | null }
-  | { kind: "receipt"; sessionId: string }
-  | { kind: "twin"; session: MeetingSessionInfo };
+  | { kind: "receipt"; sessionId: string; trail: string[]; focusItemId?: string }
+  | { kind: "twin"; session: MeetingSessionInfo; trail: string[] };
 type Tab = "upcoming" | "memory";
 
 export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeetingId = null, onClose }: MeetingsPanelProps) {
@@ -84,6 +88,12 @@ export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeeting
   const chooseTab = (t: Tab) => {
     setTab(t);
     if (t === "memory") setMemoryOpened(true);
+  };
+  const receiptBack = (trail: string[]): View =>
+    trail.length ? { kind: "receipt", sessionId: trail[trail.length - 1], trail: trail.slice(0, -1) } : { kind: "list" };
+  const openRelated = (from: string, trail: string[], sessionId: string, focusItemId?: string) => {
+    const at = trail.indexOf(sessionId);
+    setView({ kind: "receipt", sessionId, focusItemId, trail: at >= 0 ? trail.slice(0, at) : [...trail, from] });
   };
   // Leaving a Receipt (Back or Escape) re-reads the Memory on screen: a review there may have changed a
   // preview. The query, filter and loaded pages are kept.
@@ -117,7 +127,8 @@ export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeeting
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape" && !document.querySelector("[data-meetings-picker]")) {
-        if (view.kind === "twin") setView({ kind: "receipt", sessionId: view.session.sessionId });
+        if (view.kind === "twin") setView({ kind: "receipt", sessionId: view.session.sessionId, trail: view.trail });
+        else if (view.kind === "receipt") setView(receiptBack(view.trail));
         else if (view.kind !== "list") setView({ kind: "list" });
         else onClose();
       }
@@ -134,7 +145,7 @@ export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeeting
             <PanelHeader tab={tab} onTab={chooseTab} onClose={onClose} />
             <div className={styles.body}>
               <MeetingMemory memory={memory} resolveDisplayName={resolveDisplayName}
-                onOpen={(sessionId) => setView({ kind: "receipt", sessionId })} />
+                onOpen={(sessionId) => setView({ kind: "receipt", sessionId, trail: [] })} />
             </div>
           </>
         ) : view.kind === "list" ? (
@@ -152,12 +163,15 @@ export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeeting
             flash={flash}
           />
         ) : view.kind === "receipt" ? (
-          <MeetingReceipt sessionId={view.sessionId} resolveDisplayName={resolveDisplayName}
-            onBack={() => setView({ kind: "list" })} onClose={onClose}
-            onAsk={(session) => setView({ kind: "twin", session })} />
+          <MeetingReceipt key={view.sessionId} sessionId={view.sessionId} resolveDisplayName={resolveDisplayName}
+            focusItemId={view.focusItemId ?? null}
+            backLabel={view.trail.length ? "Back to the previous receipt" : "Back to meetings"}
+            onBack={() => setView(receiptBack(view.trail))} onClose={onClose}
+            onAsk={(session) => setView({ kind: "twin", session, trail: view.trail })}
+            onOpenRelated={(sessionId, focusItemId) => openRelated(view.sessionId, view.trail, sessionId, focusItemId)} />
         ) : view.kind === "twin" ? (
           <MeetingTwin session={view.session} resolveDisplayName={resolveDisplayName}
-            onBack={() => setView({ kind: "receipt", sessionId: view.session.sessionId })} onClose={onClose} />
+            onBack={() => setView({ kind: "receipt", sessionId: view.session.sessionId, trail: view.trail })} onClose={onClose} />
         ) : (
           <ScheduleForm
             selfId={selfId}

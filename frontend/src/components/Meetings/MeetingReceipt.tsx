@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import HudIcon from "../HudIcon";
 import {
   EDIT_FIELDS,
@@ -22,6 +22,8 @@ import {
   type ReviewAction,
 } from "../../services/meetings/meetingReceiptClient";
 import { formatDay, formatDuration, formatTime, formatTimeRange } from "../../services/meetings/meetingTime";
+import { hasContinuity, useMeetingContinuity } from "../../services/meetings/meetingContinuity";
+import { MeetingContinuity } from "./MeetingContinuity";
 import panel from "./MeetingsPanel.module.css";
 import styles from "./MeetingReceipt.module.css";
 
@@ -31,6 +33,9 @@ import styles from "./MeetingReceipt.module.css";
 // (services/meetings/meetingReceipt.ts); review controls appear only when the server says the viewer may
 // curate, and every review goes through the existing Phase 7A endpoint. Nothing here creates a task.
 // PHASE 8B — an ended meeting's Receipt offers "Ask this meeting" (the Meeting Twin, same panel, same session).
+// PHASE 8C — "Before & after": the related meetings this viewer may read (components/Meetings/MeetingContinuity),
+// shown only when there is at least one. Another stop opens ITS Receipt (optionally at an item, whose evidence
+// then opens); a line of this meeting focuses that item here.
 
 type Resolve = (email: string) => string;
 
@@ -57,10 +62,29 @@ export interface MeetingReceiptProps {
   onClose: () => void;
   /** Open the Meeting Twin for this session (offered once the meeting has ended). */
   onAsk?: (session: MeetingSessionInfo) => void;
+  /** Open a related meeting's Receipt (from the continuity timeline), optionally at one of its items. */
+  onOpenRelated?: (sessionId: string, focusItemId?: string) => void;
+  /** Open at this item: scrolled to, evidence shown. */
+  focusItemId?: string | null;
+  /** What Back returns to, for its label. */
+  backLabel?: string;
 }
 
-export function MeetingReceipt({ sessionId, resolveDisplayName, onBack, onClose, onAsk }: MeetingReceiptProps) {
+export function MeetingReceipt({
+  sessionId,
+  resolveDisplayName,
+  onBack,
+  onClose,
+  onAsk,
+  onOpenRelated,
+  focusItemId = null,
+  backLabel = "Back to meetings",
+}: MeetingReceiptProps) {
   const r = useMeetingReceipt(sessionId);
+  // A review here changes this meeting's stop in the timeline, so the timeline re-reads after one.
+  const reviewKey = r.latest?.run?.items.map((i) => i.reviewState).join() ?? "";
+  const continuity = useMeetingContinuity(sessionId, reviewKey);
+  const [focus, setFocus] = useState<{ itemId: string; n: number } | null>(focusItemId ? { itemId: focusItemId, n: 0 } : null);
   const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
   const session = r.session;
@@ -85,7 +109,7 @@ export function MeetingReceipt({ sessionId, resolveDisplayName, onBack, onClose,
   return (
     <>
       <header className={panel.header}>
-        <button type="button" className={panel.backButton} onClick={onBack} aria-label="Back to meetings">
+        <button type="button" className={panel.backButton} onClick={onBack} aria-label={backLabel}>
           ‹
         </button>
         <span className={panel.headerIcon} aria-hidden="true">
@@ -122,6 +146,10 @@ export function MeetingReceipt({ sessionId, resolveDisplayName, onBack, onClose,
                 <span className={styles.askChevron} aria-hidden="true">›</span>
               </button>
             )}
+            {hasContinuity(continuity) && onOpenRelated && (
+              <MeetingContinuity continuity={continuity} resolveDisplayName={resolveDisplayName} onOpen={onOpenRelated}
+                onFocusItem={(itemId) => setFocus((f) => ({ itemId, n: (f?.n ?? 0) + 1 }))} />
+            )}
             {run && r.latest?.stale && (
               <Notice testId="receipt-stale">
                 Generated from an earlier version of the transcript, which has changed since.
@@ -143,7 +171,7 @@ export function MeetingReceipt({ sessionId, resolveDisplayName, onBack, onClose,
             {generateError && <p className={panel.error} role="alert">{generateError}</p>}
             {run ? (
               <Intelligence items={run.items} canCurate={canCurate} session={session} resolve={resolveDisplayName}
-                review={r.review} />
+                review={r.review} focus={focus} />
             ) : (
               <div className={styles.notYet} data-testid="receipt-empty">
                 <p className={panel.emptyTitle}>No receipt yet</p>
@@ -245,6 +273,8 @@ interface IntelProps {
   session: MeetingSessionInfo;
   resolve: Resolve;
   review: (itemId: string, action: ReviewAction, content?: ItemContent) => Promise<void>;
+  /** The item to bring into view with its evidence open; `n` changes on every request, so a repeat works. */
+  focus?: { itemId: string; n: number } | null;
 }
 
 const CORE: { type: "decision" | "commitment" | "open_loop"; title: string; empty: string }[] = [
@@ -327,8 +357,16 @@ function ItemCard({
   review,
   variant = "full",
   evidenceOpen = false,
+  focus = null,
 }: IntelProps & { item: IntelligenceItem; variant?: "full" | "compact" | "summary"; evidenceOpen?: boolean }) {
   const [showEvidence, setShowEvidence] = useState(evidenceOpen);
+  const ref = useRef<HTMLElement>(null);
+  const focused = focus?.itemId === item.itemId;
+  useEffect(() => {
+    if (!focused) return;
+    setShowEvidence(true);
+    ref.current?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+  }, [focused, focus?.n]);
   const [showOriginal, setShowOriginal] = useState(false);
   const [editing, setEditing] = useState(false);
   const [confirmReject, setConfirmReject] = useState(false);
@@ -353,8 +391,8 @@ function ItemCard({
 
   const cls = [styles.item, styles[`state_${item.reviewState}`], variant !== "full" ? styles.itemCompact : ""].join(" ");
   return (
-    <article className={cls} data-testid="receipt-item" data-type={item.type} data-state={item.reviewState}
-      data-item-id={item.itemId}>
+    <article ref={ref} className={focused ? `${cls} ${styles.itemFocus}` : cls} data-testid="receipt-item"
+      data-type={item.type} data-state={item.reviewState} data-item-id={item.itemId} data-focused={focused ? "true" : undefined}>
       {item.type === "open_loop" && <span className={styles.eyebrow}>{openLoopLabel(content.kind)}</span>}
       {editing ? (
         <EditForm item={item} session={session} resolve={resolve} busy={busy}

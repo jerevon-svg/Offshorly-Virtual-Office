@@ -218,6 +218,57 @@ export const reviewItem = (
     body: JSON.stringify(content ? { action, content } : { action }),
   });
 
+// PHASE 8C — Meeting Continuity: the related sessions around one session that the caller may read, oldest
+// first, exactly one `isCurrent`. Relations are the server's deterministic rule (same booking, or same title
+// + roster overlap) and every event passed meeting_access; an unreadable session leaves no gap or trace. The
+// only transition the server asserts is `raisedAgain` (the same open loop, word for word); nothing is ever
+// called resolved, superseded or completed.
+export interface ContinuityLine {
+  itemId: string;
+  text: string;
+  reviewState: ReviewState;
+  kind?: string | null;
+  ownerEmail?: string | null;
+}
+
+export interface ContinuityState {
+  runVersion: number;
+  stale: boolean;
+  counts: {
+    decisions: number;
+    decisionsReviewed: number;
+    commitments: number;
+    commitmentsReviewed: number;
+    openLoops: number;
+    openLoopsReviewed: number;
+  };
+  decisions: ContinuityLine[];
+  commitments: ContinuityLine[];
+  openLoops: ContinuityLine[];
+}
+
+export interface ContinuityEvent {
+  sessionId: string;
+  isCurrent: boolean;
+  relation: "same_booking" | "same_series" | null;
+  title: string | null;
+  kind: "scheduled" | "instant";
+  isPrivate: boolean;
+  roomId: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  viewer: { attended: boolean };
+  intelligence: ContinuityState | null;
+  change: { sinceSessionId: string; raisedAgain: { itemId: string; text: string; sinceSessionId: string }[] } | null;
+}
+
+export interface Continuity {
+  sessionId: string;
+  events: ContinuityEvent[];
+}
+
+export const fetchContinuity = (sessionId: string): Promise<Continuity> => request(`/${id(sessionId)}/continuity`);
+
 // PHASE 8B — Meeting Twin: one grounded question about ONE Meeting Session. Same gate and 404 as every read
 // here; `history` is the open view's last few turns, sent as referent context only (the server never stores
 // it and never treats it as evidence). Evidence is always transcript lines of this session.

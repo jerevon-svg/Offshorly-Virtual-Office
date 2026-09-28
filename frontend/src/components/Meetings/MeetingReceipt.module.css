@@ -132,3 +132,6 @@
 /* ---- recent list (Meetings panel) ---- */
 .receiptReady { color: #2f6b45; font-weight: 800; }
 .receiptNone { color: rgba(36, 31, 48, 0.45); font-weight: 700; }
+
+/* PHASE 8C — an item opened from the continuity timeline: a soft ring, not an alarm. */
+.itemFocus { border-color: rgba(47, 107, 69, 0.45); box-shadow: 0 0 0 3px rgba(75, 185, 106, 0.16); }

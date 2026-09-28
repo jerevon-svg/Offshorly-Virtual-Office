@@ -6,7 +6,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.deps import get_current_email
 from app.database import get_db
 from app.schemas.meeting_intelligence import ReviewItemIn, TwinQueryIn
-from app.services import meeting_capture, meeting_intelligence, meeting_memory, meeting_receipt, meeting_twin
+from app.services import (
+    meeting_capture,
+    meeting_continuity,
+    meeting_intelligence,
+    meeting_memory,
+    meeting_receipt,
+    meeting_twin,
+)
 
 # PHASE 6B — authorized reads of what belongs to a Meeting Session. Every read goes through
 # services/meeting_access (inside meeting_capture.read_transcript) BEFORE any content loads; an unauthorized
@@ -25,6 +32,9 @@ from app.services import meeting_capture, meeting_intelligence, meeting_memory, 
 #
 # PHASE 8B — Meeting Twin: one grounded question about one session (services/meeting_twin.py). Same gate, same
 # 404, before the question is read; refusals are stable codes (_TWIN_STATUS). Nothing is stored.
+#
+# PHASE 8C — Meeting Continuity: the related sessions around one session that the caller may read, each
+# through the same gate before its content loads (services/meeting_continuity.py). Same 404.
 
 router = APIRouter(prefix="/meeting-sessions", tags=["meeting-sessions"])
 
@@ -78,6 +88,13 @@ async def get_session(
     session_id: str, email: str = Depends(get_current_email), db: AsyncSession = Depends(get_db)
 ) -> dict:
     return _found(await meeting_receipt.read_session(db, session_id, email))
+
+
+@router.get("/{session_id}/continuity")
+async def get_continuity(
+    session_id: str, email: str = Depends(get_current_email), db: AsyncSession = Depends(get_db)
+) -> dict:
+    return _found(await meeting_continuity.continuity(db, session_id, email))
 
 
 @router.get("/{session_id}/transcript")
