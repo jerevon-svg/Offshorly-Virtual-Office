@@ -12,6 +12,7 @@ import type {
 } from "livekit-client";
 import { getAuthToken } from "../api/client";
 import { getCurrentUser } from "../../auth/currentUserStore";
+import { clearCaptureState, getCaptureState, receiveCaptureState } from "../meetings/meetingCapture";
 
 // Stage A voice calls. ALL LiveKit room lifecycle lives here — deliberately NOT in OfficeMap.tsx,
 // which only reads this store and renders controls.
@@ -89,6 +90,9 @@ export interface MeetingEntry {
   live?: boolean;
   /** PHASE 6A — the durable Meeting Session id, sent only to this meeting's own participants. */
   sessionId?: string;
+  /** PHYSICAL MEETINGS — people this occurrence expects who are not in it yet (booking invitees, explicit
+   *  invitations). Sent only to viewers the occurrence authorizes; Go Together's same-meeting candidates. */
+  invited?: string[];
 }
 
 export interface CallSnapshot {
@@ -360,6 +364,9 @@ function ensureSocket(): Socket | null {
   socket.on("meeting_ended", (p: { meetingId?: string } | undefined) => {
     if (p?.meetingId && p.meetingId === connectedMeetingId) leaveCall();
   });
+
+  // PHASE 6B — this viewer's view of their meeting's capture (sent to participants only, own consent only).
+  socket.on("capture_state", (p: unknown) => receiveCaptureState(p, connectedMeetingId));
 
   socket.on("meeting_invite_ringing", (inv: CallInvite | undefined) => {
     if (!inv?.inviteId) return;
@@ -1044,6 +1051,7 @@ export function leaveCall(): void {
   connectedMeetingId = null;
   micEnabled = false;
   error = null;
+  clearCaptureState();
   notify();
   // Spatial or MEETING (see the Disconnected handler): board voice never announces itself here.
   if (wasSpatial || wasMeeting) ensureSocket()?.emit("call_left");
@@ -1214,6 +1222,65 @@ function clearMeetingInvite(inv: { inviteId?: string } | undefined): void {
  *  meeting's organizer). Leave (leaveCall) is the other one and only ever takes THIS client out. */
 export function endMeetingForEveryone(): void {
   if (connectedMeetingId) ensureSocket()?.emit("meeting_end", { meetingId: connectedMeetingId });
+}
+
+/** PHASE 6B — CAPTURE VERBS for the connected meeting. Intent only: the server decides (in-call host or a
+ *  scheduled meeting's organizer may start/stop; each person decides only their own consent) and acks
+ *  `{ ok, code? }`. The resulting state arrives separately as `capture_state` (meetings/meetingCapture.ts).
+ *  Nothing here records or processes audio. */
+export interface CaptureAck {
+  ok: boolean;
+  code?: string;
+  captureId?: string;
+  consent?: string;
+  segmentId?: string;
+}
+
+const CAPTURE_ACK_TIMEOUT_MS = 10_000;
+
+function emitCapture(event: string, body: Record<string, unknown> = {}): Promise<CaptureAck> {
+  const socket = ensureSocket();
+  if (!socket || !connectedMeetingId) return Promise.resolve({ ok: false, code: "not_in_meeting" });
+  const payload = { meetingId: connectedMeetingId, ...body };
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve({ ok: false, code: "timeout" }), CAPTURE_ACK_TIMEOUT_MS);
+    socket.emit(event, payload, (ack: CaptureAck | undefined) => {
+      clearTimeout(timer);
+      resolve(ack ?? { ok: false, code: "no_ack" });
+    });
+  });
+}
+
+export function startMeetingCapture(): Promise<CaptureAck> {
+  return emitCapture("capture_start");
+}
+
+export function stopMeetingCapture(): Promise<CaptureAck> {
+  return emitCapture("capture_stop");
+}
+
+export function decideMeetingCapture(captureId: string, grant: boolean): Promise<CaptureAck> {
+  return emitCapture("capture_consent", { captureId, decision: grant ? "grant" : "decline" });
+}
+
+/** DEV ONLY — manual verification without any UI: `window.__voCapture` in the browser console. The fake
+ *  segment is attributed by the SERVER to this socket's own identity; the server refuses it outside
+ *  development. No microphone, no audio. */
+if (import.meta.env.DEV && typeof window !== "undefined") {
+  (window as unknown as Record<string, unknown>).__voCapture = {
+    state: getCaptureState,
+    start: startMeetingCapture,
+    stop: stopMeetingCapture,
+    grant: () => decideMeetingCapture(getCaptureState()?.capture?.captureId ?? "", true),
+    decline: () => decideMeetingCapture(getCaptureState()?.capture?.captureId ?? "", false),
+    say: (text: string, startOffsetMs = 0, endOffsetMs = 1000) =>
+      emitCapture("capture_dev_segment", {
+        captureId: getCaptureState()?.capture?.captureId ?? "",
+        text,
+        startOffsetMs,
+        endOffsetMs,
+      }),
+  };
 }
 
 export function sendMeetingInvite(toEmail: string, meetingId: string): void {

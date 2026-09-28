@@ -192,6 +192,18 @@ describe("Directed Meeting — release", () => {
     expect(log.length).toBe(n);
   });
 
+  it("PHYSICAL: a body that is no longer in the room (teleported elsewhere) is released, never walked back", () => {
+    const { s, d, log } = rig();
+    s.meeting = { roomId: ROOM, presenting: false };
+    d.tick();
+    expect(s.directed).toBe(true);
+    s.body = { ...s.body, moving: false, seat: null, seated: false, seatBusy: false, room: "floor-2/alpha" };
+    const n = log.filter((l) => l.startsWith("walk") || l.startsWith("sit")).length;
+    for (let i = 0; i < 5; i++) d.tick();
+    expect(s.directed).toBe(false);
+    expect(log.filter((l) => l.startsWith("walk") || l.startsWith("sit")).length).toBe(n);
+  });
+
   it("Esc / a click suspends for this meeting — no reacquisition loop — until the share state changes", () => {
     const { s, d } = rig();
     s.meeting = { roomId: ROOM, presenting: false };
@@ -351,5 +363,9 @@ describe("Teleport + End meeting seams", () => {
     // accepting an invitation JOINS; it no longer walks anybody anywhere
     const accept = src.slice(src.indexOf("acceptInvite: async"), src.indexOf("end: () => { caveLiveShare.endForEveryone(); },"));
     expect(accept).not.toContain("walkToMeetingRoom(");
+    // PHYSICAL MEETINGS: accepting a room's meeting records the intent and joins no call until arrival
+    const roomBranch = accept.slice(accept.indexOf("INTENT — and nothing else"));
+    expect(roomBranch).not.toContain("startMeeting(");
+    expect(roomBranch).toContain("meetingArrival.intend(");
   });
 });

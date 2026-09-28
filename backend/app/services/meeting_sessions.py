@@ -8,6 +8,7 @@ from datetime import datetime
 
 from app import database as app_db
 from app.models.base import generate_uuid
+from app.models.meeting_capture import STOP_MEETING_EMPTIED, STOP_MEETING_ENDED, STOP_SERVER_RESTART
 from app.models.meeting_session import (
     END_EMPTIED,
     END_ENDED,
@@ -18,6 +19,7 @@ from app.models.meeting_session import (
     KIND_INSTANT,
     KIND_SCHEDULED,
 )
+from app.repositories import meeting_captures as capture_repo
 from app.repositories import meeting_sessions as repo
 from app.repositories import scheduled_meetings as booking_repo
 from app.services.call_registry import MEETING_KEY_PREFIX
@@ -53,6 +55,10 @@ from app.services.meeting_floor_rooms import room_for_meeting_id
 _logger = logging.getLogger(__name__)
 
 RECONNECT_GRACE_S = 30.0
+
+# PHASE 6B: a capture cannot outlive its Meeting Session — closing the session stops its active capture in
+# the same transaction, with the matching reason.
+_CAPTURE_STOP_FOR = {END_ENDED: STOP_MEETING_ENDED, END_EMPTIED: STOP_MEETING_EMPTIED, END_SERVER_RESTART: STOP_SERVER_RESTART}
 
 
 @dataclass
@@ -202,6 +208,9 @@ async def _close(key: str, live: LiveSession, reason: str, at: datetime) -> None
     async with _locks[key]:
         try:
             async with app_db.async_session_maker() as db:
+                await capture_repo.stop_active_for_session(
+                    db, live.session_id, at=at, reason=_CAPTURE_STOP_FOR[reason]
+                )
                 await repo.close(db, live.session_id, at=at, reason=reason)
                 await db.commit()
         except Exception:  # noqa: BLE001
@@ -262,11 +271,20 @@ async def refresh_booking(booking_id: str) -> None:
 async def close_orphans(*, now: datetime) -> int:
     """STARTUP ONLY. The live map is empty in a fresh process, so every session still open in the database
     was left by a process that no longer exists: close it (and its open attendance) as a server restart.
-    The recorded end is this startup time — an upper bound, since the crash itself left no timestamp."""
+    The recorded end is this startup time — an upper bound, since the crash itself left no timestamp.
+    PHASE 6B: every capture still active is closed too, as a restart — never pretended to have continued
+    through the downtime."""
     async with app_db.async_session_maker() as db:
+        await capture_repo.stop_all_active(db, at=now, reason=STOP_SERVER_RESTART)
         count = await repo.close_all_open(db, at=now, reason=END_SERVER_RESTART)
         await db.commit()
     return count
+
+
+def lock_for(key: str) -> asyncio.Lock:
+    """PHASE 6B: the per-meeting lock every session write runs under, shared with services/meeting_capture.py
+    so a capture start / consent / segment can never interleave with the session closing."""
+    return _locks[key]
 
 
 # ---- read-only views of the live map, for presence (synchronous) ----------------------------------------
@@ -276,6 +294,19 @@ def session_id_for(key: str) -> str | None:
     """The live occurrence's durable id, once it is persisted — for PARTICIPANTS only (socket.py decides)."""
     live = _live.get(key)
     return live.session_id if live is not None and live.persisted and live.emptied_at is None else None
+
+
+def invited_for(key: str, viewer: str, participants: list[str]) -> list[str] | None:
+    """PHASE 6B (physical meetings) — everybody this live occurrence authorizes but who is not in it yet: its
+    booking's organizer/invitees and anybody a participant explicitly invited. Go Together reads it to offer a
+    journey to people headed for the SAME meeting. Only for a viewer the occurrence itself authorizes; else None."""
+    if not may_see_live(key, viewer, participants):
+        return None
+    live = _live.get(key)
+    if live is None:
+        return []
+    present = {_norm(p) for p in participants}
+    return sorted((live.invitees | live.invited) - present)
 
 
 def is_private(key: str) -> bool:

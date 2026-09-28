@@ -12,6 +12,10 @@
 // out of the next few minutes (its new time brings a new reminder). A stale notification therefore can
 // never send anybody to the previous room.
 //
+// PHYSICAL MEETINGS: choosing Walk there / Teleport records the intent to attend (app/meetingArrival.ts) — the
+// call is joined on arrival, and only while THIS booking is the one running in the room. Nothing moves until a
+// choice is made; an earlier meeting still running (the viewer's own, or another in the room) is left alone.
+//
 // Dismiss marks the notification read — the same read the bell performs — so it stays dismissed across
 // tabs and reloads. Arriving in the room (or being in its call) retires the card: the room's own panel
 // takes over with the scheduled Start / Join.
@@ -103,6 +107,10 @@ export function Vo3dMeetingReminder({ worldRef, ready, selfId, onOpen, onGoToget
       : { text: `${room} is still occupied — head there and wait nearby`, tone: styles.busy };
 
   const walking = walk?.meetingId === m.id ? walk.result : null;
+  const intend = () => worldRef.current?.caveMeeting?.intend?.(
+    { meetingId: `mf-${m.roomId.split("/")[1]}`, roomId: m.roomId, kind: "scheduled", bookingStartsAt: m.startsAt },
+    selfId,
+  );
   const walkNote =
     walking === "elevator" ? "Taking the lift to the Meeting Floor…"
       : walking === "walking" ? `Walking to ${room}…`
@@ -127,6 +135,7 @@ export function Vo3dMeetingReminder({ worldRef, ready, selfId, onOpen, onGoToget
             // again simply resumes from wherever the body now is.
             disabled={!worldRef.current?.walkToMeetingRoom}
             onClick={() => {
+              intend();
               const result = worldRef.current?.walkToMeetingRoom?.(m.roomId) ?? "unknown";
               setWalk({ meetingId: m.id, result });
             }}>
@@ -135,6 +144,7 @@ export function Vo3dMeetingReminder({ worldRef, ready, selfId, onOpen, onGoToget
           <button type="button" className={styles.ghost} data-testid="meeting-reminder-teleport"
             disabled={!worldRef.current?.teleportToMeetingRoom}
             onClick={() => {
+              intend();
               const result = worldRef.current?.teleportToMeetingRoom?.(m.roomId) ?? "unknown";
               setWalk({ meetingId: m.id, result: result === "teleported" ? "here" : result === "no-space" || result === "busy" ? "busy" : result });
             }}>

@@ -103,6 +103,7 @@ import { makePlateRouter } from "../nav/plateRoute";
 import { buildMeetingFloor, setRoomDisplayTexture } from "../build/floor2Meeting";
 import { ISLAND, MEETING_ROOMS, MEETING_ROOM_DEFS, MEETING_ROOM_IDS, meetingDoorCapability, meetingRoom, meetingRoomAt } from "../rooms/floor2Meeting";
 import { MeetingDirector, presenterSpot, type DirectedSeat, type MeetingDirectorPort } from "./meetingDirector";
+import { MeetingArrival, type ArrivalPhase, type MeetingIntent } from "./meetingArrival";
 const ISLAND_BENCH_ID = "floor-2/island-bench";
 import { MeetingRoomAccess, type MeetingRoomState } from "./meetingRoomAccess";
 import { deriveRoomSchedule, type Formatters, type LiveRoom, type ScheduledBooking, type ScheduledContext } from "./scheduledRooms";
@@ -216,11 +217,18 @@ export interface Vo3dCaveMeeting {
    *  accepter in a room they were not standing in, so they had no Cave panel, no screen and no way to
    *  leave. The meeting is a thing you do in a place, and this is that place. */
   enter(): boolean;
-  /** ACCEPT A MEETING INVITATION — for the meeting the invitation NAMES. A Meeting Floor room's meeting
-   *  (`mf-<slug>`, started by somebody standing in that room) joins that room's call and walks the accepter
-   *  there (Walk There: the lift first when downstairs); only the Cave's own meeting goes through the Cave's
-   *  portal. Resolves to where the accepter is headed. */
-  acceptInvite?(meetingId: string, email: string): Promise<"room" | "cave">;
+  /** ACCEPT A MEETING INVITATION — for the meeting the invitation NAMES. VO meetings are PHYSICAL: accepting a
+   *  Meeting Floor room's meeting (`mf-<slug>`) records the INTENT to attend (app/meetingArrival.ts) and joins
+   *  nothing — the call is joined only on arrival in that room (at once when already there). Nobody is moved;
+   *  how to get there is the employee's choice. Only the Cave's own meeting goes through the Cave's portal.
+   *  Resolves "here" (already there: joins on the next tick), "intending" (on their way, once they choose how) or "cave". */
+  acceptInvite?(meetingId: string, email: string): Promise<"here" | "intending" | "cave">;
+  /** PHYSICAL MEETINGS — record the intent to attend a room's meeting (a scheduled meeting's travel choice).
+   *  Joins on arrival, only while that meeting is the one running there. Moves nobody. */
+  intend?(intent: MeetingIntent, email: string): void;
+  /** the pending intent (not yet joined) and where it stands */
+  intent?(): { intent: MeetingIntent | null; phase: ArrivalPhase; arrived: boolean };
+  clearIntent?(meetingId?: string): void;
   /** END the meeting for everyone (host). Leave is `leave`. */
   end?(): void;
   /** PHASE 7D. WATCH the meeting without joining it: opens the call store's socket so this client
@@ -370,6 +378,9 @@ export interface Vo3dWorld {
    *  "here" when already in or at the room (nothing moves). A click-walk, or a movement key in PLAYER,
    *  cancels it like any other walk. */
   walkToMeetingRoom?(roomId: string): "here" | "walking" | "elevator" | "busy" | "unreachable" | "unknown";
+  /** PHYSICAL IN MEETING — the Meeting Floor room a person's body is in (inside it, or on its doorway spot),
+   *  from this browser's drawn world; `null` email = the viewer. Null when not in one, or no body is drawn. */
+  meetingRoomOf?(email: string | null): string | null;
   /** TELEPORT — the third way to a meeting room (beside Walk There and Go Together): straight to a safe,
    *  free standing spot just inside the room, on its floor, with no walk and no lift. Seating is NOT part of
    *  it — a live meeting's director takes over from there. */
@@ -3499,6 +3510,45 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   }
   const meetingDirector = new MeetingDirector(meetingDirectorPort, identity?.employeeId ?? identity?.displayName ?? "");
   let meetingDirectorClock = 0;
+  // ---- PHYSICAL MEETINGS — Accept → Travel → ARRIVE → Join, and leaving the room leaves the meeting ----------
+  /** the identity the call bridge connects as when an intent is fulfilled (set by acceptInvite / intend) */
+  let arrivalEmail = "";
+  function connectedRoomMeeting(): { meetingId: string; roomId: string } | null {
+    const st = caveLiveShare.state;
+    if (st.status !== "connected" || st.kind !== "meeting") return null;
+    const r = MEETING_ROOMS.find((x) => x.meetingId === st.session);
+    return r ? { meetingId: r.meetingId, roomId: r.id } : null;
+  }
+  const meetingArrival = new MeetingArrival({
+    body: () => {
+      const b = meetingDirectorPort.body();
+      return { room: b.room, atDoor: b.atDoor ?? null, travelling: b.travelling };
+    },
+    connected: connectedRoomMeeting,
+    live: (intent) => {
+      if (intent.kind === "instant") return liveMeetingIds.has(intent.meetingId);
+      // THIS booking is the one running in the room (never an earlier meeting still overrunning in it)
+      const ctx = scheduledContext.get(intent.roomId);
+      return Boolean(ctx && ctx.phase === "live" && ctx.startsAt === intent.bookingStartsAt);
+    },
+    join: (meetingId) => {
+      void (async () => {
+        if (arrivalEmail) await caveLiveShare.connect(arrivalEmail);
+        await caveLiveShare.startMeeting(meetingId);
+        applyRoomDisplays();
+        notifyCaveMeetingIfChanged();
+      })();
+    },
+    // THE ORDINARY LEAVE — the same seam as the Leave button; the server closes the attendance interval.
+    leave: () => { caveLiveShare.leave(); notifyCaveMeetingIfChanged(); },
+  });
+  let meetingArrivalClock = 0;
+  function meetingRoomOf(email: string | null): string | null {
+    const p = email === null ? (currentFloor === FLOOR2_ID ? avatarWorldXZ() : null) : coworkers.pointOf(email.trim().toLowerCase());
+    if (!p) return null;
+    const r = meetingRoomAt(p) ?? MEETING_ROOMS.find((x) => Math.hypot(p.x - x.approach.x, p.z - x.approach.z) < 48);
+    return r?.id ?? null;
+  }
   /** The person took their own body — a click-to-walk, a walk-up, an approach: a journey pauses, a meeting
    *  stops directing. */
   function userTookBody(): void {
@@ -5301,6 +5351,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // walk, never to a frame), then the presenter's turn onto the room at the approach's own rate.
       meetingDirectorClock += dt;
       if (meetingDirectorClock >= 150) { meetingDirectorClock = 0; meetingDirector.tick(); }
+      meetingArrivalClock += dt;
+      if (meetingArrivalClock >= 250) { meetingArrivalClock = 0; meetingArrival.tick(performance.now()); }
       if (directedTurn !== null && !navCtl.moving && (stack.owner === "Guided" || stack.owner === "Idle")) {
         const next = stepAngle(avatar.yaw, directedTurn, APPROACH_TURN_RATE * (dt / 1000));
         avatar.setYaw(next);
@@ -6602,6 +6654,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       enter: () => enterCave(),
       acceptInvite: async (meetingId: string, email: string) => {
         const room = MEETING_ROOMS.find((r) => r.meetingId === meetingId);
+        // connect = the call store's socket only (presence), never a LiveKit room
         await caveLiveShare.connect(email);
         if (!room) {
           // THE CAVE'S OWN MEETING (or an id no room owns): its place is the Cave.
@@ -6611,14 +6664,24 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
           notifyCaveMeetingIfChanged();
           return "cave";
         }
-        // JOINED — and nothing else. Being connected to the meeting is not being in the room: HOW (and
-        // whether) to get there is the employee's own choice (Walk There / Teleport / Go Together, from
-        // the travel card), never an automatic walk.
-        await caveLiveShare.startMeeting(room.meetingId);
-        applyRoomDisplays();
-        notifyCaveMeetingIfChanged();
-        return "room";
+        // INTENT — and nothing else. Accepting is "I mean to attend", not being in it: no call, no attendance,
+        // no In Meeting, no director, no capture consent until the body ARRIVES (meetingArrival). Already
+        // there → the next arrival tick joins at once. HOW to get there is the employee's own choice.
+        arrivalEmail = email;
+        meetingArrival.intend({ meetingId: room.meetingId, roomId: room.id, kind: "instant" });
+        if (meetingArrival.arrivedAt(room.id)) { meetingArrival.tick(performance.now()); return "here"; }
+        return "intending";
       },
+      intend: (intent: MeetingIntent, email: string) => {
+        arrivalEmail = email;
+        void caveLiveShare.connect(email);
+        meetingArrival.intend(intent);
+      },
+      intent: () => {
+        const intent = meetingArrival.intent;
+        return { intent, phase: meetingArrival.phase(), arrived: intent ? meetingArrival.arrivedAt(intent.roomId) : false };
+      },
+      clearIntent: (meetingId?: string) => meetingArrival.clear(meetingId),
       end: () => { caveLiveShare.endForEveryone(); },
       observe: async (email: string) => {
         await caveLiveShare.connect(email);
@@ -6671,6 +6734,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     useElevator: (to) => callElevator(to ?? otherFloor()),
     walkToMeetingRoom,
     teleportToMeetingRoom,
+    meetingRoomOf,
     goTogether: goTogetherPort,
     subscribeViewMode: (listener) => {
       viewModeListeners.add(listener);

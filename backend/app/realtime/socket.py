@@ -49,6 +49,7 @@ from app.realtime.state import (
 from app.services.call_invites import INVITE_TTL_SECONDS
 from app.services.call_registry import MEETING_KEY_PREFIX
 from app.services import meeting_chat as meeting_chat_service
+from app.services import meeting_capture
 from app.services import meeting_sessions
 from app.services import scheduled_meetings
 from app.routers.calls import meeting_room_key, _MEETING_ID
@@ -325,6 +326,10 @@ def _meeting_presence_payload(viewer: str) -> dict:
             # ad-hoc meeting is still in there". None for anything unbooked.
             "booking": scheduled_meetings.live_booking_wire(key),
         }
+        # PHASE 6B (physical meetings): who else this occurrence expects — authorized viewers only.
+        invited = meeting_sessions.invited_for(key, viewer, participants)
+        if invited is not None:
+            item["invited"] = invited
         if viewer in participants:
             session_id = meeting_sessions.session_id_for(key)
             if session_id:
@@ -954,6 +959,11 @@ async def call_joined(sid: str, payload: dict | None) -> None:
             await meeting_sessions.record_join(
                 meeting_key, live, created=created, email=email.strip().lower(), joined=changed, now=now
             )
+            # PHASE 6B — a late joiner (or rejoiner) of a meeting whose capture is active: enrolled as
+            # PENDING if new, their earlier decision kept if not, and told the capture state either way.
+            capture_session = await meeting_capture.on_join(meeting_key, email.strip().lower())
+            if capture_session is not None:
+                await _emit_capture_state(meeting_key, capture_session, [email.strip().lower()])
             if changed:
                 await _broadcast_meeting_presence()
             return
@@ -1277,7 +1287,11 @@ async def meeting_end(sid: str, payload: dict | None) -> None:
         elif not is_host:
             return
         # PHASE 6A: the Meeting Session closes here, immediately — whoever joins this room next is a new one.
-        await meeting_sessions.end(meeting_key, now=datetime.now(timezone.utc))
+        # PHASE 6B: its active capture (if any) stopped in the same write; participants are told before
+        # they leave.
+        closed = await meeting_sessions.end(meeting_key, now=datetime.now(timezone.utc))
+        if closed is not None:
+            await _emit_capture_state(meeting_key, closed, call_registry.participants(meeting_key))
         if private:
             # Who ended a PRIVATE meeting is that meeting's business: only its participants hear it (they
             # are the only clients that act on it — callStore leaves when it is their connected meeting).
@@ -1293,6 +1307,122 @@ async def meeting_end(sid: str, payload: dict | None) -> None:
             await sio.emit("scheduled_meetings_changed", {})
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
+
+
+# ---- PHASE 6B: capture + consent (services/meeting_capture.py owns every rule) ---------------------------
+#
+# Each handler ACKS its caller ({"ok": true, …} or {"ok": false, "code": …}) and pushes `capture_state` to
+# the meeting's PARTICIPANTS only — each in their own user room, with only their own consent — never as a
+# broadcast. Identity is always the socket's authenticated email.
+
+
+async def _emit_capture_state(key: str, session_id: str, emails: list[str]) -> None:
+    host = meeting_hosts.host_of(key)
+    meeting_id = key[len(MEETING_KEY_PREFIX):]
+    for email in dict.fromkeys(e.strip().lower() for e in emails):
+        try:
+            state = await meeting_capture.state_for(session_id, email, host=host)
+            await sio.emit("capture_state", {"meetingId": meeting_id, **state}, room=user_room(email))
+        except Exception:  # noqa: BLE001 — a failed state push must not break the operation that caused it
+            _logger.warning("capture_state push failed for %s", key, exc_info=True)
+
+
+async def _capture_op(sid: str, payload: dict | None, op) -> dict:
+    try:
+        payload = payload or {}
+        key = _meeting_key_from_payload(payload)
+        if key is None:
+            return {"ok": False, "code": "bad_request"}
+        email = (await sio.get_session(sid))["email"].strip().lower()
+        try:
+            return await op(key, email, payload)
+        except meeting_capture.CaptureError as err:
+            return {"ok": False, "code": err.code}
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+        return {"ok": False, "code": "internal_error"}
+
+
+@sio.on("capture_start")
+async def capture_start(sid: str, payload: dict | None) -> dict:
+    """Start capture on the caller's live meeting: its host (or a scheduled meeting's organizer), in the call."""
+
+    async def op(key: str, email: str, _payload: dict) -> dict:
+        capture_id = await meeting_capture.start(
+            key, email, participants=call_registry.participants(key), host=meeting_hosts.host_of(key),
+            now=datetime.now(timezone.utc),
+        )
+        session_id = meeting_sessions.session_id_for(key)
+        if session_id:
+            await _emit_capture_state(key, session_id, call_registry.participants(key))
+        return {"ok": True, "captureId": capture_id}
+
+    return await _capture_op(sid, payload, op)
+
+
+@sio.on("capture_stop")
+async def capture_stop(sid: str, payload: dict | None) -> dict:
+    async def op(key: str, email: str, _payload: dict) -> dict:
+        capture_id = await meeting_capture.stop(
+            key, email, host=meeting_hosts.host_of(key), now=datetime.now(timezone.utc)
+        )
+        session_id = meeting_sessions.session_id_for(key)
+        if session_id:
+            await _emit_capture_state(key, session_id, call_registry.participants(key))
+        return {"ok": True, "captureId": capture_id}
+
+    return await _capture_op(sid, payload, op)
+
+
+@sio.on("capture_consent")
+async def capture_consent(sid: str, payload: dict | None) -> dict:
+    """The caller's OWN decision: {"meetingId", "captureId", "decision": "grant" | "decline"}. Declining
+    changes nothing about their place in the meeting — only what ingestion will accept from them."""
+
+    async def op(key: str, email: str, body: dict) -> dict:
+        decision = body.get("decision")
+        if decision not in ("grant", "decline"):
+            return {"ok": False, "code": "bad_request"}
+        state = await meeting_capture.decide(
+            key, email, str(body.get("captureId") or ""), grant=decision == "grant", now=datetime.now(timezone.utc)
+        )
+        session_id = meeting_sessions.session_id_for(key)
+        if session_id:
+            await _emit_capture_state(key, session_id, [email])
+        return {"ok": True, "consent": state}
+
+    return await _capture_op(sid, payload, op)
+
+
+@sio.on("capture_dev_segment")
+async def capture_dev_segment(sid: str, payload: dict | None) -> dict:
+    """DEVELOPMENT ONLY — the fake transcript source. Stands in for a real adapter's authenticated stream
+    ownership with the one identity this server has already verified: the socket's. A `speakerEmail` in the
+    payload is never used as identity; if it names anybody else the segment is refused outright."""
+    if not settings.is_development:
+        return {"ok": False, "code": "disabled"}
+
+    async def op(_key: str, email: str, body: dict) -> dict:
+        claimed = body.get("speakerEmail")
+        if claimed is not None and (not isinstance(claimed, str) or claimed.strip().lower() != email):
+            return {"ok": False, "code": "speaker_mismatch"}
+        segment = meeting_capture.SegmentIn(
+            start_offset_ms=body.get("startOffsetMs"),
+            end_offset_ms=body.get("endOffsetMs"),
+            text=body.get("text"),
+            confidence=body.get("confidence"),
+            source_segment_ref=body.get("segmentRef"),
+            revision=body.get("revision", 1),
+        )
+        segment_id = await meeting_capture.ingest_segment(
+            str(body.get("captureId") or ""),
+            meeting_capture.SourceIdentity(email=email, source=meeting_capture.SOURCE_FAKE),
+            segment,
+            now=datetime.now(timezone.utc),
+        )
+        return {"ok": True, "segmentId": segment_id}
+
+    return await _capture_op(sid, payload, op)
 
 
 @sio.on("meeting_invite")
@@ -1352,6 +1482,8 @@ async def meeting_invite(sid: str, payload: dict | None) -> None:
         await meeting_sessions.grant_invited(
             meeting_key, inviter=email, to_email=to_email, participants=call_registry.participants(meeting_key)
         )
+        # …and everybody that occurrence authorizes now sees who else is expected (Go Together's candidates).
+        await _broadcast_meeting_presence()
         await sio.emit("meeting_invite_incoming", invite_wire(invite), room=user_room(to_email))
         await sio.emit("meeting_invite_ringing", invite_wire(invite), room=user_room(email))
         asyncio.create_task(_expire_meeting_invite_later(invite["inviteId"]))

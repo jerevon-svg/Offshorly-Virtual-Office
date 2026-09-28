@@ -112,7 +112,8 @@ import { MeetingsPanel } from "../../../components/Meetings/MeetingsPanel";
 import { useScheduleBridge } from "./useScheduleBridge";
 import { Vo3dMeetingReminder } from "./Vo3dMeetingReminder";
 import { Vo3dGoTogether } from "./Vo3dGoTogether";
-import { MEETING_CONTEXT, attendeesOf, destinationFor, useMeetingPartyGuard } from "./useMeetingParty";
+import { INSTANT_MEETING_CONTEXT, MEETING_CONTEXT, scheduledTarget, useMeetingPartyGuard, type GoTogetherTarget } from "./useMeetingParty";
+import { useScheduledMeetings } from "../../../services/meetings/scheduledMeetingsStore";
 import { inviteToParty, useTravelParty } from "../../../services/party/travelPartyStore";
 import type { ScheduledMeeting } from "../../../services/meetings/scheduledMeetingsClient";
 import styles from "./Vo3dHud.module.css";
@@ -248,8 +249,12 @@ export function Vo3dHud({
     const m = (hudCall.meetings ?? []).find((x) => x.meetingId === hudCall.connectedMeetingId);
     return new Set((m?.participants ?? []).map((e) => e.trim().toLowerCase()));
   }, [hudCall.meetings, hudCall.connectedMeetingId]);
-  /** GO TOGETHER — the meeting whose attendees the picker is offering, or null */
-  const [goTogetherFor, setGoTogetherFor] = useState<ScheduledMeeting | null>(null);
+  /** GO TOGETHER — the journey (destination + who may be invited) the picker is offering, or null */
+  const [goTogetherFor, setGoTogetherFor] = useState<GoTogetherTarget | null>(null);
+  const openGoTogetherForScheduled = useCallback((m: ScheduledMeeting) => {
+    const live = (hudCall.meetings ?? []).find((x) => x.meetingId === `mf-${m.roomId.split("/")[1]}`);
+    setGoTogetherFor(scheduledTarget(m, selfId, live));
+  }, [hudCall.meetings, selfId]);
   const companyHub = useCompanyHub();
   const claimableCount = useClaimableCount();
 
@@ -384,6 +389,22 @@ export function Vo3dHud({
   // GO TOGETHER — the party (if any), and the leader's meeting guard (cancelled / moved while travelling).
   const travelParty = useTravelParty();
   useMeetingPartyGuard(selfId);
+  // PHYSICAL MEETINGS — travelling with a party to a meeting IS the intent to attend it: whoever arrives with the
+  // party joins that meeting's call on arrival (app/meetingArrival.ts), never before, and only while it runs.
+  const hudSchedule = useScheduledMeetings();
+  useEffect(() => {
+    const cm = worldRef.current?.caveMeeting;
+    const dest = travelParty.party?.destination;
+    const ctx = dest?.context;
+    if (!ready || !cm?.intend || !dest?.roomId || !ctx) return;
+    const meetingId = `mf-${dest.roomId.split("/")[1]}`;
+    if (cm.intent?.().intent?.meetingId === meetingId) return;
+    if (ctx.kind === INSTANT_MEETING_CONTEXT) cm.intend({ meetingId, roomId: dest.roomId, kind: "instant" }, selfId);
+    else if (ctx.kind === MEETING_CONTEXT) {
+      const m = hudSchedule.mine.find((x) => x.id === ctx.id);
+      if (m) cm.intend({ meetingId, roomId: dest.roomId, kind: "scheduled", bookingStartsAt: m.startsAt }, selfId);
+    }
+  }, [ready, worldRef, travelParty.party, hudSchedule.mine, selfId]);
   // The meetings whose journey Go Together already owns for this person (a party headed there, or an
   // invitation still waiting for an answer) — the reminder steps aside for exactly those.
   const travelDecided = useMemo(() => {
@@ -659,30 +680,30 @@ export function Vo3dHud({
           whenever a tool owns the screen. */}
       {!officeToolOpen && (
         <Vo3dMeetingReminder worldRef={worldRef} ready={ready} selfId={selfId} onOpen={(id) => openMeetings(id)}
-          onGoTogether={setGoTogetherFor} inParty={travelParty.party !== null || travelParty.invites.length > 0}
+          onGoTogether={openGoTogetherForScheduled} inParty={travelParty.party !== null || travelParty.invites.length > 0}
           travelDecided={travelDecided} />
       )}
-      {/* HOW TO GET THERE after joining a room's meeting from elsewhere — Walk there / Teleport / (Go together) /
-          Stay here. Joining never moves anybody on its own. */}
-      {!officeToolOpen && <Vo3dMeetingTravel worldRef={worldRef} ready={ready} />}
+      {/* HOW TO GET THERE after ACCEPTING a room's instant meeting from elsewhere — Go together / Walk there /
+          Teleport. Accepting never joins and never moves anybody; the call is joined on arrival. */}
+      {!officeToolOpen && <Vo3dMeetingTravel worldRef={worldRef} ready={ready} selfId={selfId} onGoTogether={setGoTogetherFor} />}
       {/* GO TOGETHER — the invitation card and the party chip. Not hidden behind a tool: an invitation
           expires, and the chip is the escape hatch (Leave / End) while travelling. */}
       <Vo3dGoTogether worldRef={worldRef} ready={ready} selfId={selfId} nameOf={nameOf} />
       {goTogetherFor && (
-        // THE SAME PICKER, multi-select from one person, offering only this meeting's attendees.
+        // THE SAME PICKER, multi-select from one person, offering only this meeting's still-travelling people.
         <EmployeePickerModal
           mode="multi"
           title="Go together with…"
-          people={pickerPeople.filter((p) => attendeesOf(goTogetherFor, selfId).has(p.email.trim().toLowerCase()))}
+          people={pickerPeople.filter((p) => goTogetherFor.candidates.has(p.email.trim().toLowerCase()))}
           minSelected={1}
           showGroupName={false}
           confirmLabel={(n) => (n === 1 ? "Invite 1 person" : `Invite ${n} people`)}
           onClose={() => setGoTogetherFor(null)}
           onConfirm={(emails) => {
-            const m = goTogetherFor;
+            const target = goTogetherFor;
             setGoTogetherFor(null);
             const floor = worldRef.current?.goTogether?.self().floor;
-            if (floor && emails.length > 0) inviteToParty(emails, destinationFor(m), floor);
+            if (floor && emails.length > 0) inviteToParty(emails, target.destination, floor);
           }}
         />
       )}

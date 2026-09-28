@@ -53,6 +53,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Vo3dCoworkerSelection, Vo3dScreenAnchor } from "./interactions";
 import type { Vo3dWorld } from "./world";
+import { physicallyInMeeting } from "./meetingArrival";
 import { CoworkerActionMenu, type Vo3dCoworkerAction } from "./CoworkerActionMenu";
 import type { Vo3dCoworker } from "./coworkers";
 import { resolveEmployeeLocations, type EmployeeLocation } from "./employeeLocation";
@@ -178,6 +179,7 @@ import styles from "./Vo3dOverlay.module.css";
 import { MEETING_ROOMS } from "../rooms/floor2Meeting";
 /** Every Meeting Floor room's meeting id (`mf-<slug>`) — participation in one of these is IN MEETING. */
 const ROOM_MEETING_IDS: ReadonlySet<string> = new Set(MEETING_ROOMS.map((r) => r.meetingId));
+const roomIdOfMeeting = (meetingId: string): string | null => MEETING_ROOMS.find((r) => r.meetingId === meetingId)?.id ?? null;
 
 
 export interface Vo3dOverlayProps {
@@ -638,13 +640,27 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
   // PEER STATUS — V1's own rule (status.ts resolvePeerStatus): the read-only Atlas row, overlaid with the
   // app's DND registry that Atlas never hears about. Without the overlay a person reads DND on their own
   // screen and whatever Atlas says (OFFLINE, for somebody Atlas is not tracking) on everybody else's.
-  // …and IN MEETING for everybody the SERVER lists in a Meeting Floor room's live meeting (meeting_presence,
-  // broadcast to every client) — the same fact on every screen, not this browser's guess.
-  const inRoomMeetingEmails = useMemo(() => {
-    const set = new Set<string>();
-    for (const m of callState.meetings ?? []) if (ROOM_MEETING_IDS.has(m.meetingId)) for (const e of m.participants) set.add(emailKey(e));
-    return set;
-  }, [callState.meetings]);
+  // …and IN MEETING only for somebody who is BOTH participating (the SERVER's meeting_presence list) AND
+  // physically in that meeting's room (app/meetingArrival.ts physicallyInMeeting). Accepting or travelling is
+  // not being in the meeting. Bodies move without React hearing, so this is looked at again once a second.
+  const [inRoomMeetingEmails, setInRoomMeetingEmails] = useState<ReadonlySet<string>>(() => new Set());
+  const [selfPhysicalRoom, setSelfPhysicalRoom] = useState<string | null>(null);
+  const meetingsRef = useRef(callState.meetings);
+  meetingsRef.current = callState.meetings;
+  useEffect(() => {
+    if (!ready) return;
+    const look = () => {
+      const w = worldRef.current;
+      const roomOf = (e: string) => w?.meetingRoomOf?.(e) ?? null;
+      const next = physicallyInMeeting(meetingsRef.current ?? [], roomIdOfMeeting, roomOf);
+      setInRoomMeetingEmails((prev) => (prev.size === next.size && [...next].every((e) => prev.has(e)) ? prev : next));
+      const mine = w?.meetingRoomOf?.(null) ?? null;
+      setSelfPhysicalRoom((prev) => (prev === mine ? prev : mine));
+    };
+    look();
+    const id = window.setInterval(look, 1000);
+    return () => window.clearInterval(id);
+  }, [ready, worldRef, callState.meetings]);
   const statusByEmail = useMemo(() => {
     const map: Record<string, OfficeStatus> = {};
     for (const person of people) {
@@ -695,8 +711,9 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     // uncovers whatever the person had chosen for themselves.
     away: outsideBuilding,
     inCall: isConnectedToMedia(callState),
-    // SELF in a Meeting Floor room's meeting: connected to that room's call (what everyone else sees too).
-    inMeeting: isConnectedToMedia(callState) && callState.connectedMeetingId !== null && ROOM_MEETING_IDS.has(callState.connectedMeetingId),
+    // SELF in a Meeting Floor room's meeting: connected to that room's call AND physically in that room.
+    inMeeting: isConnectedToMedia(callState) && callState.connectedMeetingId !== null
+      && ROOM_MEETING_IDS.has(callState.connectedMeetingId) && selfPhysicalRoom === roomIdOfMeeting(callState.connectedMeetingId),
   });
 
   const activeSpatialSession = useMemo(

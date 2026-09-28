@@ -152,6 +152,14 @@ export class MeetingDirector {
     // Starting or stopping a share is the person's own meeting action: it lifts a suspension.
     if (shareEdge && this.suspendedFor === m.roomId) this.suspendedFor = null;
     const b = this.port.body();
+    // PHYSICAL MEETINGS: the body is no longer in this room (a teleport elsewhere, a walk out) and nothing of
+    // ours is walking it — stop directing where it stands. Never walk anybody back into a room they left;
+    // leaving the room is leaving the meeting (app/meetingArrival.ts takes them out of the call).
+    if (this.active && !b.moving && b.room !== this.room && b.atDoor !== this.room) {
+      this.release("left the room");
+      this.syncState();
+      return;
+    }
     if (!this.active) {
       // START ONLY WHEN GENUINELY THERE: connected to this room's meeting, standing in this room, and not in
       // the middle of somebody else's journey (Go Together hands the body back on arrival first).

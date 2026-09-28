@@ -32,6 +32,7 @@ from app.routers import requests as requests_router
 from app.routers import rewards as rewards_router
 from app.routers import room_requests as room_requests_router
 from app.routers import scheduled_meetings as scheduled_meetings_router
+from app.routers import meeting_sessions as meeting_sessions_router
 from app.routers import talk_requests as talk_requests_router
 from app.routers import team_map as team_map_router
 from app.routers import toucan as toucan_router
@@ -156,6 +157,7 @@ fastapi_app.include_router(calls_router.router)
 fastapi_app.include_router(requests_router.router)
 fastapi_app.include_router(room_requests_router.router)
 fastapi_app.include_router(scheduled_meetings_router.router)
+fastapi_app.include_router(meeting_sessions_router.router)
 fastapi_app.include_router(talk_requests_router.router)
 fastapi_app.include_router(hub_router.router)
 fastapi_app.include_router(feed_router.router)
