@@ -306,3 +306,58 @@ export interface TwinTurnContext {
 
 export const askTwin = (sessionId: string, question: string, history: TwinTurnContext[] = []): Promise<TwinAnswer> =>
   request(`/${id(sessionId)}/twin/query`, { method: "POST", body: JSON.stringify({ question, history }) });
+
+// PHASE 9B — Organizational Twin ("Ask your Memory"): one grounded question across every ended meeting the
+// caller may read. The server retrieves through Phase 9A (meeting_access first), so an answer can only rest on
+// the caller's own Memory; sources come grouped by meeting in meeting order, each with the exact lines cited.
+// `history` is referent context only, exactly as for the Meeting Twin.
+export interface OrgTwinMemory {
+  source: "intelligence" | "transcript";
+  /** An ItemType, or "discussion" — something said, never promoted to a decision. */
+  type: ItemType | "discussion";
+  text: string;
+  details: ItemContent;
+  reviewState: Exclude<ReviewState, "rejected"> | null;
+  confidence: ConfidenceLevel;
+  uncertainty: string | null;
+  stale: boolean;
+  evidenceComplete: boolean;
+  evidence: TwinEvidence[];
+}
+
+export interface OrgTwinMeeting {
+  sessionId: string;
+  title: string | null;
+  kind: string;
+  isPrivate: boolean;
+  roomId: string | null;
+  startedAt: string;
+  endedAt: string;
+  viewer: { attended: boolean };
+}
+
+export interface OrgTwinSource {
+  meeting: OrgTwinMeeting;
+  memories: OrgTwinMemory[];
+}
+
+export interface OrgTwinAnswer {
+  status: "grounded" | "insufficient";
+  answer: string;
+  uncertainty: string | null;
+  sources: OrgTwinSource[];
+  /** Why nothing was searched or found: "unclear" (say more) or "no_memories". */
+  reason: "no_memories" | "unclear" | null;
+}
+
+/** The viewer's calendar zone, so an answer names a meeting's day as the source list does (formatDay is local). */
+const timeZone = (): string | null => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone ?? null;
+  } catch {
+    return null;
+  }
+};
+
+export const askMemory = (question: string, history: TwinTurnContext[] = []): Promise<OrgTwinAnswer> =>
+  request("/memory/twin/query", { method: "POST", body: JSON.stringify({ question, history, timeZone: timeZone() }) });

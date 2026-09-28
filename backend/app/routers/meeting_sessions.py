@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_email
 from app.database import get_db
-from app.schemas.meeting_intelligence import OrgMemorySearchIn, ReviewItemIn, TwinQueryIn
+from app.schemas.meeting_intelligence import OrgMemorySearchIn, OrgTwinQueryIn, ReviewItemIn, TwinQueryIn
 from app.services import (
     meeting_capture,
     meeting_continuity,
@@ -14,6 +14,7 @@ from app.services import (
     meeting_receipt,
     meeting_twin,
     organizational_memory,
+    organizational_twin,
 )
 
 # PHASE 6B — authorized reads of what belongs to a Meeting Session. Every read goes through
@@ -40,6 +41,9 @@ from app.services import (
 # PHASE 9A — Organizational Memory retrieval: ranked memories across the sessions the caller may read, scoped
 # by meeting_access before any content is searched (services/organizational_memory.py). POST so the query
 # stays out of URLs and access logs. A malformed query/filter is 422 with a stable code. Not a chatbot.
+#
+# PHASE 9B — Organizational Twin: one grounded question across the caller's Memory, retrieved ONLY through
+# 9A (services/organizational_twin.py). Same refusal codes as the Meeting Twin (_TWIN_STATUS). Nothing stored.
 
 router = APIRouter(prefix="/meeting-sessions", tags=["meeting-sessions"])
 
@@ -99,6 +103,19 @@ async def search_organizational_memory(
         )
     except organizational_memory.OrgMemoryError as err:
         raise HTTPException(status_code=422, detail=err.code) from None
+
+
+@router.post("/memory/twin/query")
+async def query_organizational_twin(
+    body: OrgTwinQueryIn, email: str = Depends(get_current_email), db: AsyncSession = Depends(get_db)
+) -> dict:
+    try:
+        return await organizational_twin.ask(
+            db, email, question=body.question, history=[(t.question, t.answer) for t in body.history],
+            time_zone=body.timeZone,
+        )
+    except meeting_twin.TwinError as err:
+        raise HTTPException(status_code=_TWIN_STATUS.get(err.code, 400), detail=err.code) from None
 
 
 @router.get("/{session_id}")

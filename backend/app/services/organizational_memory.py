@@ -120,6 +120,8 @@ class OrganizationalMemoryQuery:
     until: datetime | None
     room_id: str | None  # metadata narrowing inside the authorized scope, never a grant
     limit: int
+    # PHASE 9B — narrowing only: commitments must be owned by this (authenticated) email. See browse_query.
+    owner_email: str | None = None
 
 
 @dataclass(frozen=True)
@@ -257,6 +259,24 @@ def parse_query(
     )
 
 
+def browse_query(
+    email: str, types, *, owner_email: str | None = None, limit: int = DEFAULT_LIMIT
+) -> OrganizationalMemoryQuery:
+    """PHASE 9B — a query with no search words: the newest structured items of `types` in the caller's scope
+    ("What have we decided recently?", "What am I responsible for?"). Same scope, same gate, same content rules
+    as a search; it only drops the word match. Structured types only — a transcript line needs a word to match,
+    so a browse never returns `discussion`. Internal to the Organizational Twin; /memory/search still needs a
+    searchable query."""
+    wanted = frozenset(types or ())
+    if not wanted or not wanted <= ITEM_TYPES or not 1 <= int(limit) <= MAX_LIMIT:
+        raise OrgMemoryError("invalid_filter")
+    return OrganizationalMemoryQuery(
+        asker_email=repo.normalize_email(email or ""), text="", tokens=(), types=wanted, attendance="all",
+        since=None, until=None, room_id=None, limit=int(limit),
+        owner_email=repo.normalize_email(owner_email) if owner_email else None,
+    )
+
+
 # ---- 1. scope (inside candidate_ids only) + 2. the gate ---------------------------------------------------
 
 
@@ -320,7 +340,9 @@ async def _authorized_scope(db: AsyncSession, q: OrganizationalMemoryQuery) -> l
         stmt = stmt.where(mine)
     elif q.attendance == "absent":
         stmt = stmt.where(~mine)
-    stmt = stmt.where(_prefilter(q.tokens)).order_by(MeetingSession.ended_at.desc(), MeetingSession.id)
+    if q.tokens:
+        stmt = stmt.where(_prefilter(q.tokens))
+    stmt = stmt.order_by(MeetingSession.ended_at.desc(), MeetingSession.id)
     ids = (await db.execute(stmt.limit(MAX_SESSIONS))).scalars().all()
     approved = []
     for sid in ids:
@@ -477,10 +499,15 @@ async def retrieve(db: AsyncSession, q: OrganizationalMemoryQuery) -> tuple[Auth
         for item in run_items:
             if q.types and item.item_type not in q.types:
                 continue
-            score, why = _text_match(q, effective_content(item).get("text") or "")
+            content = effective_content(item)
+            if q.owner_email and item.item_type == ITEM_COMMITMENT and (
+                (content.get("ownerEmail") or "").strip().lower() != q.owner_email
+            ):
+                continue
+            score, why = _text_match(q, content.get("text") or "") if q.tokens else (1, ["type"])
             if score:
                 session_hits.append(item_result(item, score, why))
-        if not session_hits and (not q.types or DISCUSSION in q.types):
+        if q.tokens and not session_hits and (not q.types or DISCUSSION in q.types):
             spoken = []
             for n, seg in enumerate(segments):
                 score, why = _text_match(q, seg.text)

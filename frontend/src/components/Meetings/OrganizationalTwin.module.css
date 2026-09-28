@@ -1,0 +1,52 @@
+/* Organizational Twin — "Ask your Memory". Shares the Meeting Twin's conversation language (MeetingTwin.module.css:
+   intro, question chips, answer cards, composer); this file adds only the grouped sources — one quiet card per
+   meeting, in meeting order, each memory tagged by what it is — and the Memory tab's entry row. */
+
+.basis_discussion { color: rgba(36, 31, 48, 0.55); }
+.basis_stale { color: #a56d12; }
+
+.sources { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.meeting {
+  display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 12px;
+  background: #f7f4ee; border: 1px solid rgba(24, 20, 34, 0.05);
+}
+.meetingHead { display: flex; align-items: baseline; gap: 8px; }
+.meetingName { font-size: 13px; font-weight: 800; color: #241f30; }
+.absent { font-size: 11.5px; font-style: italic; color: rgba(36, 31, 48, 0.55); }
+.openReceipt {
+  all: unset; cursor: pointer; margin-left: auto; font-size: 12px; font-weight: 700; color: #2f6b45; border-radius: 6px;
+}
+.openReceipt:hover { text-decoration: underline; }
+.openReceipt:focus-visible { outline: 2px solid #4bb96a; outline-offset: 2px; }
+
+.memories { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.memory { display: flex; flex-direction: column; gap: 3px; }
+.memoryTags { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; font-size: 11.5px; }
+.type { font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; font-size: 10.5px; color: rgba(36, 31, 48, 0.55); }
+.type_decision { color: #2f6b45; }
+.type_commitment { color: #3d5a8a; }
+.type_open_loop { color: #a56d12; }
+.stale { font-weight: 700; color: #a56d12; }
+.memoryText { font-size: 13px; line-height: 1.45; color: #241f30; overflow-wrap: anywhere; }
+.owner { color: rgba(36, 31, 48, 0.6); font-weight: 600; }
+.lines {
+  all: unset; cursor: pointer; align-self: flex-start; font-size: 12px; font-weight: 700; color: #2f6b45; border-radius: 6px;
+}
+.lines:hover { text-decoration: underline; }
+.lines:focus-visible { outline: 2px solid #4bb96a; outline-offset: 2px; }
+
+/* The Memory tab's entry: one calm row above the list — the broader question lives at the Memory level. */
+.entry {
+  all: unset; box-sizing: border-box; cursor: pointer; width: 100%;
+  display: flex; align-items: center; gap: 12px; padding: 11px 14px; border-radius: 16px;
+  background: #eef4ec; border: 1px solid rgba(47, 107, 69, 0.14);
+  transition: border-color 120ms ease, transform 80ms ease;
+}
+.entry:hover { border-color: rgba(47, 107, 69, 0.35); }
+.entry:active { transform: translateY(1px); }
+.entry:focus-visible { outline: 2px solid #4bb96a; outline-offset: 2px; }
+.entryIcon { flex: none; display: flex; }
+.entryText { display: flex; flex-direction: column; gap: 1px; min-width: 0; text-align: left; }
+.entryTitle { font-size: 14px; font-weight: 800; color: #1f4a2f; }
+.entryHint { font-size: 12.5px; color: rgba(31, 74, 47, 0.72); }
+.entryChevron { margin-left: auto; font-size: 20px; color: rgba(31, 74, 47, 0.55); }

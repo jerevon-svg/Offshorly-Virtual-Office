@@ -33,6 +33,8 @@ import { PanelTabs } from "../OfficeMap/PanelTabs";
 import { MeetingMemory } from "./MeetingMemory";
 import { MeetingReceipt } from "./MeetingReceipt";
 import { MeetingTwin } from "./MeetingTwin";
+import { OrganizationalTwin } from "./OrganizationalTwin";
+import { useOrganizationalTwin } from "../../services/meetings/organizationalTwin";
 import type { MeetingSessionInfo } from "../../services/meetings/meetingReceiptClient";
 import styles from "./MeetingsPanel.module.css";
 
@@ -72,11 +74,18 @@ export interface MeetingsPanelProps {
 // PHASE 8C — a Receipt can open a RELATED meeting's Receipt (its continuity timeline). `trail` is the Receipts
 // that led here, so Back walks them in reverse before returning to the list. Revisiting one already on the
 // trail cuts the trail back to it instead of growing a loop, so the stack is never deeper than the path taken.
+//
+// PHASE 9B — "Ask your Memory" (the Organizational Twin) opens from the Memory tab. A source's Receipt opened
+// from it carries `from: "orgtwin"`, so Back at the end of that Receipt's trail returns to the Twin — whose
+// conversation lives HERE (useOrganizationalTwin) and survives the detour — and the Twin's Back returns to
+// Memory with its query, filter and pages intact. "Ask this meeting" from such a Receipt still works as before.
+type From = "list" | "orgtwin";
 type View =
   | { kind: "list" }
   | { kind: "form"; editing: ScheduledMeeting | null }
-  | { kind: "receipt"; sessionId: string; trail: string[]; focusItemId?: string }
-  | { kind: "twin"; session: MeetingSessionInfo; trail: string[] };
+  | { kind: "receipt"; sessionId: string; trail: string[]; focusItemId?: string; from?: From }
+  | { kind: "twin"; session: MeetingSessionInfo; trail: string[]; from?: From }
+  | { kind: "orgtwin" };
 type Tab = "upcoming" | "memory";
 
 export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeetingId = null, onClose }: MeetingsPanelProps) {
@@ -85,21 +94,25 @@ export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeeting
   const [tab, setTab] = useState<Tab>("upcoming");
   const [memoryOpened, setMemoryOpened] = useState(false);
   const memory = useMeetingMemory(memoryOpened);
+  const orgTwin = useOrganizationalTwin();
   const chooseTab = (t: Tab) => {
     setTab(t);
     if (t === "memory") setMemoryOpened(true);
   };
-  const receiptBack = (trail: string[]): View =>
-    trail.length ? { kind: "receipt", sessionId: trail[trail.length - 1], trail: trail.slice(0, -1) } : { kind: "list" };
-  const openRelated = (from: string, trail: string[], sessionId: string, focusItemId?: string) => {
-    const at = trail.indexOf(sessionId);
-    setView({ kind: "receipt", sessionId, focusItemId, trail: at >= 0 ? trail.slice(0, at) : [...trail, from] });
+  const receiptBack = (trail: string[], from: From = "list"): View =>
+    trail.length
+      ? { kind: "receipt", sessionId: trail[trail.length - 1], trail: trail.slice(0, -1), from }
+      : from === "orgtwin" ? { kind: "orgtwin" } : { kind: "list" };
+  const openRelated = (at: string, trail: string[], from: From | undefined, sessionId: string, focusItemId?: string) => {
+    const i = trail.indexOf(sessionId);
+    setView({ kind: "receipt", sessionId, focusItemId, from, trail: i >= 0 ? trail.slice(0, i) : [...trail, at] });
   };
   // Leaving a Receipt (Back or Escape) re-reads the Memory on screen: a review there may have changed a
   // preview. The query, filter and loaded pages are kept.
   const lastView = useRef(view.kind);
   useEffect(() => {
-    if (lastView.current === "receipt" && view.kind === "list" && tab === "memory") void memory.refresh();
+    if ((lastView.current === "receipt" || lastView.current === "orgtwin") && view.kind === "list" && tab === "memory")
+      void memory.refresh();
     lastView.current = view.kind;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view.kind]);
@@ -127,8 +140,9 @@ export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeeting
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape" && !document.querySelector("[data-meetings-picker]")) {
-        if (view.kind === "twin") setView({ kind: "receipt", sessionId: view.session.sessionId, trail: view.trail });
-        else if (view.kind === "receipt") setView(receiptBack(view.trail));
+        if (view.kind === "twin")
+          setView({ kind: "receipt", sessionId: view.session.sessionId, trail: view.trail, from: view.from });
+        else if (view.kind === "receipt") setView(receiptBack(view.trail, view.from));
         else if (view.kind !== "list") setView({ kind: "list" });
         else onClose();
       }
@@ -145,7 +159,8 @@ export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeeting
             <PanelHeader tab={tab} onTab={chooseTab} onClose={onClose} />
             <div className={styles.body}>
               <MeetingMemory memory={memory} resolveDisplayName={resolveDisplayName}
-                onOpen={(sessionId) => setView({ kind: "receipt", sessionId, trail: [] })} />
+                onOpen={(sessionId) => setView({ kind: "receipt", sessionId, trail: [] })}
+                onAsk={() => setView({ kind: "orgtwin" })} />
             </div>
           </>
         ) : view.kind === "list" ? (
@@ -165,13 +180,20 @@ export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeeting
         ) : view.kind === "receipt" ? (
           <MeetingReceipt key={view.sessionId} sessionId={view.sessionId} resolveDisplayName={resolveDisplayName}
             focusItemId={view.focusItemId ?? null}
-            backLabel={view.trail.length ? "Back to the previous receipt" : "Back to meetings"}
-            onBack={() => setView(receiptBack(view.trail))} onClose={onClose}
-            onAsk={(session) => setView({ kind: "twin", session, trail: view.trail })}
-            onOpenRelated={(sessionId, focusItemId) => openRelated(view.sessionId, view.trail, sessionId, focusItemId)} />
+            backLabel={view.trail.length ? "Back to the previous receipt"
+              : view.from === "orgtwin" ? "Back to Ask your Memory" : "Back to meetings"}
+            onBack={() => setView(receiptBack(view.trail, view.from))} onClose={onClose}
+            onAsk={(session) => setView({ kind: "twin", session, trail: view.trail, from: view.from })}
+            onOpenRelated={(sessionId, focusItemId) =>
+              openRelated(view.sessionId, view.trail, view.from, sessionId, focusItemId)} />
         ) : view.kind === "twin" ? (
           <MeetingTwin session={view.session} resolveDisplayName={resolveDisplayName}
-            onBack={() => setView({ kind: "receipt", sessionId: view.session.sessionId, trail: view.trail })} onClose={onClose} />
+            onBack={() => setView({ kind: "receipt", sessionId: view.session.sessionId, trail: view.trail, from: view.from })}
+            onClose={onClose} />
+        ) : view.kind === "orgtwin" ? (
+          <OrganizationalTwin twin={orgTwin} resolveDisplayName={resolveDisplayName}
+            onBack={() => setView({ kind: "list" })} onClose={onClose}
+            onOpenReceipt={(sessionId) => setView({ kind: "receipt", sessionId, trail: [], from: "orgtwin" })} />
         ) : (
           <ScheduleForm
             selfId={selfId}

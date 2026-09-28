@@ -27,6 +27,13 @@ class TwinQueryIn(BaseModel):
     history: list[TwinTurnIn] = []
 
 
+class OrgTwinQueryIn(TwinQueryIn):
+    """PHASE 9B — an Organizational Twin question. `timeZone` (IANA, e.g. "Asia/Manila") only names the day a
+    meeting happened in the asker's calendar; an unknown zone falls back to UTC."""
+
+    timeZone: str | None = None
+
+
 class OrgMemorySearchIn(BaseModel):
     """PHASE 9A — an Organizational Memory retrieval query. Bounds and values are enforced by
     services/organizational_memory.py so a refusal carries a stable code."""

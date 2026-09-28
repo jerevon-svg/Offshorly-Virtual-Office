@@ -1,9 +1,11 @@
 import { useMemo } from "react";
+import HudIcon from "../HudIcon";
 import { formatDay, formatDuration, formatTime } from "../../services/meetings/meetingTime";
 import { previewCounts, previewReview, type MeetingMemory as MemoryHook } from "../../services/meetings/meetingMemory";
 import type { MemoryFilter, MemoryMatch, MemorySession } from "../../services/meetings/meetingReceiptClient";
 import panel from "./MeetingsPanel.module.css";
 import styles from "./MeetingMemory.module.css";
+import twinStyles from "./OrganizationalTwin.module.css";
 
 // PHASE 8A — MEETING MEMORY, the Meetings panel's second tab: ended Meeting Sessions this employee may read,
 // newest first, grouped by day. It DISCOVERS a memory; the Phase 7C Receipt EXPLAINS it — a row opens the
@@ -46,9 +48,11 @@ export interface MeetingMemoryProps {
   memory: MemoryHook;
   resolveDisplayName: (email: string) => string;
   onOpen: (sessionId: string) => void;
+  /** PHASE 9B — open "Ask your Memory" (the Organizational Twin), a question across all of these meetings. */
+  onAsk?: () => void;
 }
 
-export function MeetingMemory({ memory, resolveDisplayName, onOpen }: MeetingMemoryProps) {
+export function MeetingMemory({ memory, resolveDisplayName, onOpen, onAsk }: MeetingMemoryProps) {
   const groups = useMemo(() => {
     const now = new Date();
     const out: { day: string; items: MemorySession[] }[] = [];
@@ -63,6 +67,16 @@ export function MeetingMemory({ memory, resolveDisplayName, onOpen }: MeetingMem
 
   return (
     <div className={styles.library} data-testid="meeting-memory">
+      {onAsk && (
+        <button type="button" className={twinStyles.entry} onClick={onAsk} data-testid="memory-ask">
+          <span className={twinStyles.entryIcon} aria-hidden="true"><HudIcon name="memory" size="28px" /></span>
+          <span className={twinStyles.entryText}>
+            <span className={twinStyles.entryTitle}>Ask your Memory</span>
+            <span className={twinStyles.entryHint}>Decisions, commitments and open questions across your meetings</span>
+          </span>
+          <span className={twinStyles.entryChevron} aria-hidden="true">›</span>
+        </button>
+      )}
       <div className={styles.controls}>
         <input
           type="search"
