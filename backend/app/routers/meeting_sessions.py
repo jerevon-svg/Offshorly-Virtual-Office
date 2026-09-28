@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_email
 from app.database import get_db
 from app.schemas.meeting_intelligence import ReviewItemIn
-from app.services import meeting_capture, meeting_intelligence, meeting_receipt
+from app.services import meeting_capture, meeting_intelligence, meeting_memory, meeting_receipt
 
 # PHASE 6B — authorized reads of what belongs to a Meeting Session. Every read goes through
 # services/meeting_access (inside meeting_capture.read_transcript) BEFORE any content loads; an unauthorized
@@ -18,6 +18,10 @@ from app.services import meeting_capture, meeting_intelligence, meeting_receipt
 #
 # PHASE 7C — Meeting Receipt reads: the caller's recent ended sessions (every row through the same gate) and
 # one session's identity + actual attendance + whether the caller may curate. Same gate, same 404.
+#
+# PHASE 8A — Meeting Memory: a cursor-paged, searchable, filterable list of the caller's ended sessions,
+# every row through the same gate before its content loads (services/meeting_memory.py). `roomId` only
+# narrows it — the room grants nothing. A malformed cursor/filter/query is 422 with a stable code.
 
 router = APIRouter(prefix="/meeting-sessions", tags=["meeting-sessions"])
 
@@ -48,6 +52,22 @@ def _found(out: dict | None) -> dict:
 @router.get("/recent")
 async def list_recent_sessions(email: str = Depends(get_current_email), db: AsyncSession = Depends(get_db)) -> dict:
     return {"sessions": await meeting_receipt.recent(db, email)}
+
+
+@router.get("/memory")
+async def list_memory(
+    q: str = "",
+    filter: str = "all",
+    roomId: str | None = None,
+    cursor: str | None = None,
+    limit: int = Query(meeting_memory.PAGE_SIZE, ge=1, le=meeting_memory.MAX_PAGE),
+    email: str = Depends(get_current_email),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    try:
+        return await meeting_memory.library(db, email, q=q, filter=filter, room_id=roomId, cursor=cursor, limit=limit)
+    except meeting_memory.MemoryQueryError as err:
+        raise HTTPException(status_code=422, detail=err.code) from None
 
 
 @router.get("/{session_id}")

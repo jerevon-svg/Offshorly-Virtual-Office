@@ -18,7 +18,6 @@ const api = vi.hoisted(() => ({
   fetchRuns: vi.fn(),
   generateIntelligence: vi.fn(),
   reviewItem: vi.fn(),
-  fetchRecentSessions: vi.fn(),
 }));
 vi.mock("../../services/meetings/meetingReceiptClient", async (orig) => ({
   ...(await orig<typeof import("../../services/meetings/meetingReceiptClient")>()),

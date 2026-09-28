@@ -1,7 +1,7 @@
 import { getAuthToken } from "../api/client";
 import { devIdentity } from "./scheduledMeetingsClient";
 
-// PHASE 7C — REST client for a Meeting Receipt: the Meeting Session's own reads
+// PHASE 7C — REST client for a Meeting Receipt (and, PHASE 8A, the Meeting Memory list it is found from): the Meeting Session's own reads
 // (backend/app/routers/meeting_sessions.py). Everything is keyed by the Meeting Session id, never the room.
 // The server gates every call with meeting_access: an unauthorized caller gets the same 404 as a missing
 // session, and review/generate need the narrower curate authority (403 otherwise). Same VO-backend base and
@@ -94,7 +94,31 @@ export interface MeetingSessionInfo {
   viewer: { mayCurate: boolean };
 }
 
-export interface RecentSession {
+// PHASE 8A — one Meeting Memory row: an ended Meeting Session the server already let this caller read.
+export interface MemoryPreviewLine {
+  text: string | null;
+  reviewState: ReviewState;
+}
+
+/** The latest succeeded run, active items only, with the Receipt's effective-content rule applied. */
+export interface MemoryPreview {
+  runVersion: number;
+  generatedAt: string | null;
+  stale: boolean;
+  summary: MemoryPreviewLine | null;
+  decisions: MemoryPreviewLine[];
+  counts: { decisions: number; commitments: number; openLoops: number };
+  reviewedCount: number;
+  activeCount: number;
+}
+
+export type MemoryMatch =
+  | { kind: "title" }
+  | { kind: "room" }
+  | { kind: "attendee"; email: string }
+  | { kind: "intelligence"; itemType: ItemType; reviewState: ReviewState; text: string | null };
+
+export interface MemorySession {
   sessionId: string;
   kind: "scheduled" | "instant";
   isPrivate: boolean;
@@ -102,8 +126,27 @@ export interface RecentSession {
   title: string | null;
   startedAt: string;
   endedAt: string;
+  durationMs: number;
   attendeeCount: number;
-  hasIntelligence: boolean;
+  viewer: { attended: boolean };
+  intelligence: MemoryPreview | null;
+  match: MemoryMatch | null;
+}
+
+export type MemoryFilter = "all" | "attended" | "absent";
+
+export interface MemoryPage {
+  sessions: MemorySession[];
+  nextCursor: string | null;
+}
+
+export interface MemoryQuery {
+  q?: string;
+  filter?: MemoryFilter;
+  /** Room CONTEXT only (a narrowing inside what the caller may already read) — the room grants nothing. */
+  roomId?: string;
+  cursor?: string | null;
+  limit?: number;
 }
 
 export type ReviewAction = "confirm" | "edit" | "reject";
@@ -143,7 +186,16 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 const id = (s: string) => encodeURIComponent(s);
 
-export const fetchRecentSessions = (): Promise<{ sessions: RecentSession[] }> => request("/recent");
+export function fetchMemory(query: MemoryQuery = {}): Promise<MemoryPage> {
+  const params = new URLSearchParams();
+  if (query.q) params.set("q", query.q);
+  if (query.filter && query.filter !== "all") params.set("filter", query.filter);
+  if (query.roomId) params.set("roomId", query.roomId);
+  if (query.cursor) params.set("cursor", query.cursor);
+  if (query.limit) params.set("limit", String(query.limit));
+  const qs = params.toString();
+  return request(`/memory${qs ? `?${qs}` : ""}`);
+}
 
 export const fetchSession = (sessionId: string): Promise<MeetingSessionInfo> => request(`/${id(sessionId)}`);
 

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  fetchRecentSessions,
   fetchLatest,
   fetchRuns,
   fetchSession,
@@ -12,7 +11,6 @@ import {
   type ItemType,
   type LatestIntelligence,
   type MeetingSessionInfo,
-  type RecentSession,
   type ReviewAction,
   type RunSummary,
 } from "./meetingReceiptClient";
@@ -165,23 +163,4 @@ export function useMeetingReceipt(sessionId: string) {
   }, [sessionId, load]);
 
   return { ...state, review, generate, reload: load };
-}
-
-/** The caller's recently ended Meeting Sessions (server-gated per row), for opening a Receipt. */
-export function useRecentSessions() {
-  const [state, setState] = useState<{ loading: boolean; sessions: RecentSession[]; error: string | null }>({
-    loading: true,
-    sessions: [],
-    error: null,
-  });
-  useEffect(() => {
-    let alive = true;
-    fetchRecentSessions()
-      .then((r) => alive && setState({ loading: false, sessions: r.sessions, error: null }))
-      .catch((err) => alive && setState({ loading: false, sessions: [], error: err instanceof Error ? err.message : "Could not load" }));
-    return () => {
-      alive = false;
-    };
-  }, []);
-  return state;
 }

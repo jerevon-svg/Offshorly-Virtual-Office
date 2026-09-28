@@ -257,6 +257,15 @@ def _valid_content(item_type: str, content) -> dict:
     return clean
 
 
+def effective_content(item: MeetingIntelligenceItem) -> dict:
+    """What a person should read — the same rule the Receipt applies (services/meetings/meetingReceipt.ts):
+    the human's wording once edited, otherwise what was generated. A rejected item is still returned here;
+    callers that show ACTIVE intelligence (Meeting Memory's preview and search) leave it out themselves."""
+    if item.review_state == REVIEW_EDITED and item.reviewed_content:
+        return item.reviewed_content
+    return item.content
+
+
 def confidence_level(c: float | None) -> str | None:
     """The band a UI shows: "high" (direct, explicit evidence) or "medium" (a reading of ambiguous wording)."""
     if c is None:

@@ -3,15 +3,10 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select, union
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.meeting_session import (
-    MeetingSession,
-    MeetingSessionAttendance,
-    MeetingSessionGrant,
-)
-from app.models.scheduled_meeting import ScheduledMeeting, ScheduledMeetingInvitee
+from app.models.meeting_session import MeetingSession, MeetingSessionAttendance
 from app.repositories import meeting_intelligence as intelligence_repo
 from app.repositories import meeting_sessions as repo
 from app.repositories import scheduled_meetings as booking_repo
@@ -105,17 +100,7 @@ async def recent(db: AsyncSession, email: str, *, limit: int = RECENT_LIMIT) -> 
     email = repo.normalize_email(email)
     if not email:
         return []
-    candidates = union(
-        select(MeetingSession.id.label("sid")).where(MeetingSession.started_by_email == email),
-        select(MeetingSessionGrant.session_id).where(MeetingSessionGrant.email == email),
-        select(MeetingSessionAttendance.session_id).where(MeetingSessionAttendance.email == email),
-        select(MeetingSession.id)
-        .join(ScheduledMeeting, ScheduledMeeting.id == MeetingSession.scheduled_meeting_id)
-        .where(func.lower(ScheduledMeeting.organizer_email) == email),
-        select(MeetingSession.id)
-        .join(ScheduledMeetingInvitee, ScheduledMeetingInvitee.meeting_id == MeetingSession.scheduled_meeting_id)
-        .where(func.lower(ScheduledMeetingInvitee.email) == email),
-    ).subquery()
+    candidates = meeting_access.candidate_ids(email)
     rows = await db.execute(
         select(MeetingSession)
         .where(MeetingSession.id.in_(select(candidates.c.sid)), MeetingSession.ended_at.is_not(None))

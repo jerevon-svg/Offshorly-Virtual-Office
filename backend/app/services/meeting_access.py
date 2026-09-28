@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import logging
 
+from sqlalchemy import Subquery, func, select, union
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.meeting_session import MeetingSession
+from app.models.meeting_session import MeetingSession, MeetingSessionAttendance, MeetingSessionGrant
+from app.models.scheduled_meeting import ScheduledMeeting, ScheduledMeetingInvitee
 from app.repositories import meeting_sessions as repo
 from app.repositories import scheduled_meetings as booking_repo
 
@@ -64,3 +66,22 @@ async def readable(session: AsyncSession, session_id: str, email: str) -> Meetin
     except Exception:  # noqa: BLE001 — an error is a denial, never an accidental grant
         _logger.warning("meeting_access: check failed for session %s", session_id, exc_info=True)
         return None
+
+
+def candidate_ids(email: str) -> Subquery:
+    """SQL NARROWING for lists (the Receipt's Recent, Meeting Memory): the ids of sessions that could pass
+    `readable` for `email`, one select per rule above, so a list can filter, search and page in SQL instead
+    of scanning every meeting. It GRANTS NOTHING — every row a list returns still goes through `readable`
+    first. It lives here so a rule added above is added below in the same change. Column: `sid`.
+    `email` must already be normalized (stripped, lower-cased)."""
+    return union(
+        select(MeetingSession.id.label("sid")).where(MeetingSession.started_by_email == email),
+        select(MeetingSessionGrant.session_id).where(MeetingSessionGrant.email == email),
+        select(MeetingSessionAttendance.session_id).where(MeetingSessionAttendance.email == email),
+        select(MeetingSession.id)
+        .join(ScheduledMeeting, ScheduledMeeting.id == MeetingSession.scheduled_meeting_id)
+        .where(func.lower(ScheduledMeeting.organizer_email) == email),
+        select(MeetingSession.id)
+        .join(ScheduledMeetingInvitee, ScheduledMeetingInvitee.meeting_id == MeetingSession.scheduled_meeting_id)
+        .where(func.lower(ScheduledMeetingInvitee.email) == email),
+    ).subquery()

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import HudIcon from "../HudIcon";
 import { EmployeePickerModal, type EmployeePickerPerson } from "../Chat/EmployeePickerModal";
 import {
@@ -28,10 +28,10 @@ import {
   minutesBetween,
   nextQuarterHour,
 } from "../../services/meetings/meetingTime";
-import { useRecentSessions } from "../../services/meetings/meetingReceipt";
-import type { RecentSession } from "../../services/meetings/meetingReceiptClient";
+import { useMeetingMemory } from "../../services/meetings/meetingMemory";
+import { PanelTabs } from "../OfficeMap/PanelTabs";
+import { MeetingMemory } from "./MeetingMemory";
 import { MeetingReceipt } from "./MeetingReceipt";
-import receiptStyles from "./MeetingReceipt.module.css";
 import styles from "./MeetingsPanel.module.css";
 
 // SCHEDULED MEETINGS V1 — the employee surface: Upcoming Meetings, and the Schedule / Edit form in the
@@ -41,9 +41,11 @@ import styles from "./MeetingsPanel.module.css";
 //
 // Deliberately not a calendar: one chronological list, a compact form, and the existing employee picker.
 //
-// PHASE 7C — below Upcoming, "Recent" lists the viewer's ended Meeting Sessions (server-gated per row) and
-// opens that session's Meeting Receipt in the same shell. The Receipt is keyed by the Meeting Session id,
-// never the room; this is not a meeting history browser.
+// PHASE 7C — a Meeting Receipt opens in the same shell, keyed by the Meeting Session id, never the room.
+//
+// PHASE 8A — two tabs: Upcoming (future and running bookings, unchanged) | Memory (ended Meeting Sessions
+// the viewer may read — components/Meetings/MeetingMemory.tsx). Memory replaced 7C's short Recent list. Its
+// state lives here, not in the tab, so returning from a Receipt keeps the query, filter and loaded pages.
 
 const DURATIONS = [15, 30, 45, 60, 90];
 /** Only the slug is needed to name a room; the grid's names and seats come from the server. */
@@ -63,10 +65,26 @@ export interface MeetingsPanelProps {
 }
 
 type View = { kind: "list" } | { kind: "form"; editing: ScheduledMeeting | null } | { kind: "receipt"; sessionId: string };
+type Tab = "upcoming" | "memory";
 
 export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeetingId = null, onClose }: MeetingsPanelProps) {
   const store = useScheduledMeetings();
   const [view, setView] = useState<View>({ kind: "list" });
+  const [tab, setTab] = useState<Tab>("upcoming");
+  const [memoryOpened, setMemoryOpened] = useState(false);
+  const memory = useMeetingMemory(memoryOpened);
+  const chooseTab = (t: Tab) => {
+    setTab(t);
+    if (t === "memory") setMemoryOpened(true);
+  };
+  // Leaving a Receipt (Back or Escape) re-reads the Memory on screen: a review there may have changed a
+  // preview. The query, filter and loaded pages are kept.
+  const lastView = useRef(view.kind);
+  useEffect(() => {
+    if (lastView.current === "receipt" && view.kind === "list" && tab === "memory") void memory.refresh();
+    lastView.current = view.kind;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view.kind]);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
   const flash = (text: string) => {
@@ -102,8 +120,17 @@ export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeeting
   return (
     <div className={styles.backdrop} onClick={onClose}>
       <div className={styles.panel} role="dialog" aria-label="Meetings" onClick={(e) => e.stopPropagation()} data-testid="meetings-panel">
-        {view.kind === "list" ? (
+        {view.kind === "list" && tab === "memory" ? (
+          <>
+            <PanelHeader tab={tab} onTab={chooseTab} onClose={onClose} />
+            <div className={styles.body}>
+              <MeetingMemory memory={memory} resolveDisplayName={resolveDisplayName}
+                onOpen={(sessionId) => setView({ kind: "receipt", sessionId })} />
+            </div>
+          </>
+        ) : view.kind === "list" ? (
           <UpcomingList
+            tabs={<PanelTabs ariaLabel="Meetings" tabs={TABS} active={tab} onChange={chooseTab} />}
             selfId={selfId}
             meetings={store.mine}
             loading={store.loading}
@@ -112,7 +139,6 @@ export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeeting
             focusMeetingId={focusMeetingId}
             onSchedule={() => setView({ kind: "form", editing: null })}
             onEdit={(m) => setView({ kind: "form", editing: m })}
-            onReceipt={(sessionId) => setView({ kind: "receipt", sessionId })}
             onClose={onClose}
             flash={flash}
           />
@@ -143,9 +169,34 @@ export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeeting
   );
 }
 
+const TABS = [
+  { value: "upcoming", label: "Upcoming" },
+  { value: "memory", label: "Memory" },
+] as const;
+
+/** The Memory tab's header: the same shell as Upcoming's, without Schedule (Memory is only the past). */
+function PanelHeader({ tab, onTab, onClose }: { tab: Tab; onTab: (t: Tab) => void; onClose: () => void }) {
+  return (
+    <header className={styles.header}>
+      <span className={styles.headerIcon} aria-hidden="true">
+        <HudIcon name="clock" size="34px" />
+      </span>
+      <div className={styles.headerText}>
+        <h2 className={styles.title}>Meetings</h2>
+        <p className={styles.subtitle}>Past meetings you can return to</p>
+      </div>
+      <PanelTabs ariaLabel="Meetings" tabs={TABS} active={tab} onChange={onTab} />
+      <button type="button" className={styles.closeButton} onClick={onClose} aria-label="Close meetings">
+        ✕
+      </button>
+    </header>
+  );
+}
+
 // ---- Upcoming Meetings -----------------------------------------------------------------------------
 
 function UpcomingList({
+  tabs,
   selfId,
   meetings,
   loading,
@@ -153,12 +204,11 @@ function UpcomingList({
   resolveDisplayName,
   onSchedule,
   onEdit,
-  onReceipt,
   onClose,
   flash,
   focusMeetingId,
 }: {
-  onReceipt: (sessionId: string) => void;
+  tabs: ReactNode;
   focusMeetingId: string | null;
   selfId: string;
   meetings: ScheduledMeeting[];
@@ -205,8 +255,9 @@ function UpcomingList({
         </span>
         <div className={styles.headerText}>
           <h2 className={styles.title}>Meetings</h2>
-          <p className={styles.subtitle}>Upcoming on the Meeting Floor</p>
+          <p className={styles.subtitle}>On the Meeting Floor</p>
         </div>
+        {tabs}
         <button type="button" className={styles.primary} onClick={onSchedule} data-testid="meetings-schedule">
           Schedule meeting
         </button>
@@ -307,47 +358,8 @@ function UpcomingList({
             })}
           </section>
         ))}
-        <RecentList onReceipt={onReceipt} />
       </div>
     </>
-  );
-}
-
-function RecentList({ onReceipt }: { onReceipt: (sessionId: string) => void }) {
-  const recent = useRecentSessions();
-  if (!recent.sessions.length) return null;
-  return (
-    <section className={styles.group} data-testid="meetings-recent">
-      <h3 className={styles.dayLabel}>Recent</h3>
-      {recent.sessions.map((s: RecentSession) => (
-        <article key={s.sessionId} className={styles.item} data-testid="recent-session" data-session-id={s.sessionId}>
-          <div className={styles.when}>
-            <span className={styles.whenTime}>{formatTime(s.startedAt)}</span>
-            <span className={styles.whenLen}>{formatDuration(Math.max(1, minutesBetween(s.startedAt, s.endedAt)))}</span>
-          </div>
-          <div className={styles.itemBody}>
-            <div className={styles.itemTitle}>
-              <span className={styles.itemName}>{s.title ?? (s.kind === "instant" ? "Instant meeting" : "Meeting")}</span>
-              {s.isPrivate && <span className={styles.privateTag}>Private</span>}
-            </div>
-            <div className={styles.itemMeta}>
-              {s.roomId && <><strong>{roomName(s.roomId)}</strong> · </>}
-              {formatDay(s.startedAt)} · {s.attendeeCount} attended
-            </div>
-            <div className={styles.itemRsvp}>
-              {s.hasIntelligence
-                ? <span className={receiptStyles.receiptReady}>Receipt ready</span>
-                : <span className={receiptStyles.receiptNone}>No receipt yet</span>}
-            </div>
-          </div>
-          <div className={styles.itemActions}>
-            <button type="button" className={styles.ghost} onClick={() => onReceipt(s.sessionId)} data-testid="recent-open">
-              Receipt
-            </button>
-          </div>
-        </article>
-      ))}
-    </section>
   );
 }
 
