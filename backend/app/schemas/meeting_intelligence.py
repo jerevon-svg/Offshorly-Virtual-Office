@@ -25,3 +25,16 @@ class TwinQueryIn(BaseModel):
 
     question: str = ""
     history: list[TwinTurnIn] = []
+
+
+class OrgMemorySearchIn(BaseModel):
+    """PHASE 9A — an Organizational Memory retrieval query. Bounds and values are enforced by
+    services/organizational_memory.py so a refusal carries a stable code."""
+
+    query: str = ""
+    types: list[str] = []
+    attendance: str = "all"
+    since: str | None = None
+    until: str | None = None
+    roomId: str | None = None
+    limit: int = 10

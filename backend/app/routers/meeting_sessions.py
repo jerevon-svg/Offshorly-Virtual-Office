@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_email
 from app.database import get_db
-from app.schemas.meeting_intelligence import ReviewItemIn, TwinQueryIn
+from app.schemas.meeting_intelligence import OrgMemorySearchIn, ReviewItemIn, TwinQueryIn
 from app.services import (
     meeting_capture,
     meeting_continuity,
@@ -13,6 +13,7 @@ from app.services import (
     meeting_memory,
     meeting_receipt,
     meeting_twin,
+    organizational_memory,
 )
 
 # PHASE 6B — authorized reads of what belongs to a Meeting Session. Every read goes through
@@ -35,6 +36,10 @@ from app.services import (
 #
 # PHASE 8C — Meeting Continuity: the related sessions around one session that the caller may read, each
 # through the same gate before its content loads (services/meeting_continuity.py). Same 404.
+#
+# PHASE 9A — Organizational Memory retrieval: ranked memories across the sessions the caller may read, scoped
+# by meeting_access before any content is searched (services/organizational_memory.py). POST so the query
+# stays out of URLs and access logs. A malformed query/filter is 422 with a stable code. Not a chatbot.
 
 router = APIRouter(prefix="/meeting-sessions", tags=["meeting-sessions"])
 
@@ -80,6 +85,19 @@ async def list_memory(
     try:
         return await meeting_memory.library(db, email, q=q, filter=filter, room_id=roomId, cursor=cursor, limit=limit)
     except meeting_memory.MemoryQueryError as err:
+        raise HTTPException(status_code=422, detail=err.code) from None
+
+
+@router.post("/memory/search")
+async def search_organizational_memory(
+    body: OrgMemorySearchIn, email: str = Depends(get_current_email), db: AsyncSession = Depends(get_db)
+) -> dict:
+    try:
+        return await organizational_memory.search(
+            db, email, body.query, types=body.types, attendance=body.attendance, since=body.since,
+            until=body.until, room_id=body.roomId, limit=body.limit,
+        )
+    except organizational_memory.OrgMemoryError as err:
         raise HTTPException(status_code=422, detail=err.code) from None
 
 
