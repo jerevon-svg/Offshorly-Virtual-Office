@@ -18,6 +18,9 @@ from app.models.meeting_intelligence import (
     FAIL_INVALID_OUTPUT,
     FAIL_SERVER_RESTART,
     FAIL_TIMEOUT,
+    ITEM_COMMITMENT,
+    ITEM_OPEN_LOOP,
+    ITEM_SUMMARY,
     ITEM_TYPES,
     ORIGIN_GENERATED,
     REVIEW_CONFIRMED,
@@ -36,6 +39,11 @@ from app.repositories import meeting_captures as capture_repo
 from app.repositories import meeting_intelligence as repo
 from app.services import intelligence_generator, meeting_access
 from app.services.intelligence_generator import (
+    CONFIDENCE_FLOOR,
+    CONFIDENCE_HIGH,
+    CONTENT_FIELDS,
+    OPEN_LOOP_KINDS,
+    TYPE_LIMITS,
     GenerationInput,
     GeneratorUnavailable,
     IntelligenceGenerator,
@@ -82,6 +90,15 @@ from app.services.meeting_capture import _is_organizer
 # as they were). Confirm and reject set the state; edit stores the human wording in `reviewed_content` and
 # never touches the generated `content`. A later review replaces the previous review (no review history in
 # this phase); the AI original always remains.
+#
+# PHASE 7B — MEETING UNDERSTANDING adds the per-type content contract (services/intelligence_generator.py)
+# and enforces it on every draft: only that type's keys, strings within bounds, an open loop's `kind` from
+# the known set; a confidence in the high/medium bands on every item but the summary (below the floor the
+# generator must omit it); an uncertainty on every medium item and on every commitment without an owner; a
+# commitment must be HIGH confidence (a hedge is omitted, not down-rated) and its `ownerEmail` must be the
+# persisted speaker of one of ITS cited segments — a person named in
+# the speech, or merely nearby, is never an owner; per-type item limits. A human edit is held to the same
+# shape (not the speaker rule: the owner a reviewer sets is their call). Still no tasks, no assignment.
 
 _logger = logging.getLogger(__name__)
 
@@ -208,11 +225,25 @@ def fingerprint(segments: list[TranscriptEvidence]) -> str:
 
 
 def _valid_content(item_type: str, content) -> dict:
-    """Every type carries a non-empty `text`; other keys are free JSON but bounded. Raises _InvalidOutput."""
+    """The type's own keys only (services/intelligence_generator.CONTENT_FIELDS): strings within bounds,
+    required ones non-empty, null only where "not established" is meaningful. Raises _InvalidOutput."""
     if item_type not in ITEM_TYPES or not isinstance(content, dict):
         raise _InvalidOutput()
-    text = content.get("text")
-    if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT:
+    fields = CONTENT_FIELDS[item_type]
+    if not set(content) <= set(fields):
+        raise _InvalidOutput()
+    for key, (limit, required, nullable) in fields.items():
+        value = content.get(key)
+        if value is None:
+            if required or (key in content and not nullable):
+                raise _InvalidOutput()
+            continue
+        if not isinstance(value, str) or not value.strip() or len(value) > min(limit, MAX_TEXT):
+            raise _InvalidOutput()
+    if item_type == ITEM_OPEN_LOOP and content["kind"] not in OPEN_LOOP_KINDS:
+        raise _InvalidOutput()
+    owner = content.get("ownerEmail")
+    if owner is not None and "@" not in owner:
         raise _InvalidOutput()
     try:
         encoded = json.dumps(content, ensure_ascii=False, allow_nan=False)
@@ -220,21 +251,47 @@ def _valid_content(item_type: str, content) -> dict:
         raise _InvalidOutput() from None
     if len(encoded.encode()) > MAX_CONTENT_BYTES:
         raise _InvalidOutput()
-    return json.loads(encoded)  # a detached, plain-JSON copy
+    clean = json.loads(encoded)  # a detached, plain-JSON copy
+    if clean.get("ownerEmail") is not None:
+        clean["ownerEmail"] = _norm(clean["ownerEmail"])
+    return clean
 
 
-def _validate_drafts(drafts, snapshot_ids: set[str]) -> list[tuple[ItemDraft, dict, list[str]]]:
+def confidence_level(c: float | None) -> str | None:
+    """The band a UI shows: "high" (direct, explicit evidence) or "medium" (a reading of ambiguous wording)."""
+    if c is None:
+        return None
+    return "high" if c >= CONFIDENCE_HIGH else "medium"
+
+
+def _validate_drafts(drafts, snapshot: dict[str, TranscriptEvidence]) -> list[tuple[ItemDraft, dict, list[str]]]:
     if not isinstance(drafts, list) or len(drafts) > MAX_ITEMS:
         raise _InvalidOutput()
     out = []
+    per_type: defaultdict[str, int] = defaultdict(int)
     for d in drafts:
         if not isinstance(d, ItemDraft):
             raise _InvalidOutput()
         content = _valid_content(d.item_type, d.content)
+        per_type[d.item_type] += 1
+        if per_type[d.item_type] > TYPE_LIMITS[d.item_type]:
+            raise _InvalidOutput()
         c = d.confidence
         if c is not None and (not isinstance(c, (int, float)) or isinstance(c, bool) or not 0.0 <= float(c) <= 1.0):
             raise _InvalidOutput()
-        if d.uncertainty is not None and (not isinstance(d.uncertainty, str) or len(d.uncertainty) > MAX_UNCERTAINTY):
+        if c is None and d.item_type != ITEM_SUMMARY:
+            raise _InvalidOutput()
+        if c is not None and float(c) < CONFIDENCE_FLOOR:  # too weak: the contract says omit it
+            raise _InvalidOutput()
+        if d.item_type == ITEM_COMMITMENT and float(c) < CONFIDENCE_HIGH:  # a hedge is not a commitment
+            raise _InvalidOutput()
+        u = d.uncertainty
+        if u is not None and (not isinstance(u, str) or len(u) > MAX_UNCERTAINTY):
+            raise _InvalidOutput()
+        unsure = (c is not None and float(c) < CONFIDENCE_HIGH) or (
+            d.item_type == ITEM_COMMITMENT and content.get("ownerEmail") is None
+        )
+        if unsure and not (u and u.strip()):
             raise _InvalidOutput()
         ids = d.evidence_segment_ids
         if not isinstance(ids, (tuple, list)) or len(ids) > MAX_EVIDENCE_PER_ITEM:
@@ -243,11 +300,16 @@ def _validate_drafts(drafts, snapshot_ids: set[str]) -> list[tuple[ItemDraft, di
         for sid in ids:
             # Only a segment this run analyzed — which also rules out other meetings, superseded revisions
             # and ids that do not exist.
-            if not isinstance(sid, str) or sid not in snapshot_ids:
+            if not isinstance(sid, str) or sid not in snapshot:
                 raise _InvalidOutput()
             if sid not in cited:
                 cited.append(sid)
         if not cited and d.item_type not in EVIDENCE_OPTIONAL:
+            raise _InvalidOutput()
+        owner = content.get("ownerEmail")
+        # The owner is someone who SPOKE in the cited evidence (the one who accepted) — identity from the
+        # persisted speaker attribution, never from a name in the words.
+        if owner is not None and owner not in {_norm(snapshot[sid].speaker_email) for sid in cited}:
             raise _InvalidOutput()
         out.append((d, content, cited))
     return out
@@ -331,7 +393,7 @@ async def generate(
 
     if failure is None:
         try:
-            validated = _validate_drafts(drafts, {s.segment_id for s in segments})
+            validated = _validate_drafts(drafts, {s.segment_id: s for s in segments})
             cited = sorted({sid for _, _, ids in validated for sid in ids})
             owners = await repo.segment_session_ids(db, cited)
             if any(owners.get(sid) != session.id for sid in cited):  # defense in depth, from the database
@@ -469,6 +531,7 @@ async def _items_wire(db: AsyncSession, items: list[MeetingIntelligenceItem]) ->
             "origin": i.origin,
             "content": i.content,
             "confidence": i.confidence,
+            "confidenceLevel": confidence_level(i.confidence),
             "uncertainty": i.uncertainty,
             "reviewState": i.review_state,
             "reviewedContent": i.reviewed_content,

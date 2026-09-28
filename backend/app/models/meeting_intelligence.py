@@ -90,7 +90,7 @@ class MeetingIntelligenceRun(BaseModel):
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     # RUN_* above.
     status: Mapped[str] = mapped_column(String(16), nullable=False)
-    # Which generator produced it ("fake-v1" in this phase) — provider-neutral, recorded for audit.
+    # Which generator produced it ("fake-v2" in development) — provider-neutral, recorded for audit.
     generator: Mapped[str] = mapped_column(String(64), nullable=False)
     requested_by_email: Mapped[str] = mapped_column(String(255), nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

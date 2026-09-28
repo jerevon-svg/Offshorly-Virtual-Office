@@ -177,7 +177,7 @@ async def test_a_run_analyzes_a_snapshot_and_stores_suggested_items_with_real_ev
     assert res.status_code == 201
     run = res.json()
     assert run["sessionId"] == sid and run["version"] == 1 and run["status"] == "succeeded"
-    assert run["generator"] == "fake-v1" and run["requestedBy"] == ORG and run["failureReason"] is None
+    assert run["generator"] == "fake-v2" and run["requestedBy"] == ORG and run["failureReason"] is None
     assert run["completedAt"] is not None and run["startedAt"].endswith("+00:00")
     assert run["sourceSegmentIds"] == seg and run["source"]["segmentCount"] == 3
     assert run["source"]["throughAt"].startswith("2026-09-28T09:02:02")
@@ -193,9 +193,11 @@ async def test_a_run_analyzes_a_snapshot_and_stores_suggested_items_with_real_ev
     assert ev["segmentId"] == seg[1] and ev["speakerEmail"] == BON and ev["text"] == "decision: ship Friday"
     assert ev["startOffsetMs"] == 1000 and ev["revision"] == 1
     commitment = by_type["commitment"]
-    # Who said it — not an owner, not a task.
-    assert commitment["content"] == {"text": "I will finish the homepage by Friday", "speakerEmail": BON}
-    assert commitment["confidence"] == 0.2 and commitment["uncertainty"]
+    # The marker's own speaker — a suggestion, not a task.
+    assert commitment["content"] == {
+        "text": "I will finish the homepage by Friday", "action": "I will finish the homepage by Friday", "ownerEmail": BON,
+    }
+    assert commitment["confidence"] == 0.8 and commitment["uncertainty"]
 
     latest = (await _get(f"{sid}/intelligence/latest", MICAH)).json()
     assert latest["run"]["runId"] == run["runId"] and latest["stale"] is False
@@ -261,7 +263,7 @@ async def test_evidence_must_be_a_segment_this_run_analyzed_from_the_same_meetin
     [theirs] = await _capture(other, [(ORG, "the other meeting's secret")])
 
     def decision(*ids):
-        return ItemDraft(item_type="decision", content={"text": "x"}, evidence_segment_ids=ids)
+        return ItemDraft(item_type="decision", content={"text": "x"}, evidence_segment_ids=ids, confidence=0.9)
 
     for bad in (
         [decision(theirs)],  # another Meeting Session's segment
