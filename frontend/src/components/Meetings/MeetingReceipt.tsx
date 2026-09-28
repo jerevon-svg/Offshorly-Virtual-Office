@@ -30,6 +30,7 @@ import styles from "./MeetingReceipt.module.css";
 // It lives in the Meetings panel's cream shell. Everything shown is the server's answer for this identity
 // (services/meetings/meetingReceipt.ts); review controls appear only when the server says the viewer may
 // curate, and every review goes through the existing Phase 7A endpoint. Nothing here creates a task.
+// PHASE 8B — an ended meeting's Receipt offers "Ask this meeting" (the Meeting Twin, same panel, same session).
 
 type Resolve = (email: string) => string;
 
@@ -54,9 +55,11 @@ export interface MeetingReceiptProps {
   resolveDisplayName: Resolve;
   onBack: () => void;
   onClose: () => void;
+  /** Open the Meeting Twin for this session (offered once the meeting has ended). */
+  onAsk?: (session: MeetingSessionInfo) => void;
 }
 
-export function MeetingReceipt({ sessionId, resolveDisplayName, onBack, onClose }: MeetingReceiptProps) {
+export function MeetingReceipt({ sessionId, resolveDisplayName, onBack, onClose, onAsk }: MeetingReceiptProps) {
   const r = useMeetingReceipt(sessionId);
   const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState<string | null>(null);
@@ -109,6 +112,16 @@ export function MeetingReceipt({ sessionId, resolveDisplayName, onBack, onClose 
           <>
             <Facts session={session} resolve={resolveDisplayName} />
             <Attendance attendees={session.attendees} resolve={resolveDisplayName} />
+            {onAsk && session.endedAt && (
+              <button type="button" className={styles.askEntry} onClick={() => onAsk(session)} data-testid="receipt-ask">
+                <HudIcon name="chat" size="28px" />
+                <span className={styles.askText}>
+                  <strong>Ask this meeting</strong>
+                  <span>Questions answered from its transcript, with sources</span>
+                </span>
+                <span className={styles.askChevron} aria-hidden="true">›</span>
+              </button>
+            )}
             {run && r.latest?.stale && (
               <Notice testId="receipt-stale">
                 Generated from an earlier version of the transcript, which has changed since.
@@ -431,7 +444,7 @@ function ItemCard({
   );
 }
 
-function EvidenceList({ evidence, resolve }: { evidence: Evidence[]; resolve: Resolve }) {
+export function EvidenceList({ evidence, resolve }: { evidence: Evidence[]; resolve: Resolve }) {
   const ordered = [...evidence].sort((a, b) => a.position - b.position);
   return (
     <ol className={styles.evidence} data-testid="receipt-evidence">

@@ -5,8 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_email
 from app.database import get_db
-from app.schemas.meeting_intelligence import ReviewItemIn
-from app.services import meeting_capture, meeting_intelligence, meeting_memory, meeting_receipt
+from app.schemas.meeting_intelligence import ReviewItemIn, TwinQueryIn
+from app.services import meeting_capture, meeting_intelligence, meeting_memory, meeting_receipt, meeting_twin
 
 # PHASE 6B — authorized reads of what belongs to a Meeting Session. Every read goes through
 # services/meeting_access (inside meeting_capture.read_transcript) BEFORE any content loads; an unauthorized
@@ -22,6 +22,9 @@ from app.services import meeting_capture, meeting_intelligence, meeting_memory, 
 # PHASE 8A — Meeting Memory: a cursor-paged, searchable, filterable list of the caller's ended sessions,
 # every row through the same gate before its content loads (services/meeting_memory.py). `roomId` only
 # narrows it — the room grants nothing. A malformed cursor/filter/query is 422 with a stable code.
+#
+# PHASE 8B — Meeting Twin: one grounded question about one session (services/meeting_twin.py). Same gate, same
+# 404, before the question is read; refusals are stable codes (_TWIN_STATUS). Nothing is stored.
 
 router = APIRouter(prefix="/meeting-sessions", tags=["meeting-sessions"])
 
@@ -129,3 +132,28 @@ async def review_intelligence_item(
         )
     except meeting_intelligence.IntelligenceError as err:
         _raise(err)
+
+
+_TWIN_STATUS = {
+    "not_found": 404,
+    "invalid_question": 422,
+    "meeting_active": 409,
+    "no_transcript": 409,
+    "rate_limited": 429,
+    "answer_rejected": 502,
+    "generator_unavailable": 503,
+    "twin_failed": 503,
+}
+
+
+@router.post("/{session_id}/twin/query")
+async def query_twin(
+    session_id: str, body: TwinQueryIn, email: str = Depends(get_current_email), db: AsyncSession = Depends(get_db)
+) -> dict:
+    try:
+        return await meeting_twin.ask(
+            db, session_id, email, question=body.question, history=[(t.question, t.answer) for t in body.history]
+        )
+    except meeting_twin.TwinError as err:
+        status = _TWIN_STATUS.get(err.code, 400)
+        raise HTTPException(status_code=status, detail="Not found" if status == 404 else err.code) from None

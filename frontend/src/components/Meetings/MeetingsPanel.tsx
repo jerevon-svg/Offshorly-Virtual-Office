@@ -32,6 +32,8 @@ import { useMeetingMemory } from "../../services/meetings/meetingMemory";
 import { PanelTabs } from "../OfficeMap/PanelTabs";
 import { MeetingMemory } from "./MeetingMemory";
 import { MeetingReceipt } from "./MeetingReceipt";
+import { MeetingTwin } from "./MeetingTwin";
+import type { MeetingSessionInfo } from "../../services/meetings/meetingReceiptClient";
 import styles from "./MeetingsPanel.module.css";
 
 // SCHEDULED MEETINGS V1 — the employee surface: Upcoming Meetings, and the Schedule / Edit form in the
@@ -64,7 +66,13 @@ export interface MeetingsPanelProps {
   onClose: () => void;
 }
 
-type View = { kind: "list" } | { kind: "form"; editing: ScheduledMeeting | null } | { kind: "receipt"; sessionId: string };
+// PHASE 8B — the Meeting Twin is one more view: opened from a Receipt with that Receipt's session, and Back
+// (or Escape) returns to the Receipt, then onward to the Memory list with its query/filter/pages intact.
+type View =
+  | { kind: "list" }
+  | { kind: "form"; editing: ScheduledMeeting | null }
+  | { kind: "receipt"; sessionId: string }
+  | { kind: "twin"; session: MeetingSessionInfo };
 type Tab = "upcoming" | "memory";
 
 export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeetingId = null, onClose }: MeetingsPanelProps) {
@@ -109,13 +117,14 @@ export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeeting
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape" && !document.querySelector("[data-meetings-picker]")) {
-        if (view.kind !== "list") setView({ kind: "list" });
+        if (view.kind === "twin") setView({ kind: "receipt", sessionId: view.session.sessionId });
+        else if (view.kind !== "list") setView({ kind: "list" });
         else onClose();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [view.kind, onClose]);
+  }, [view, onClose]);
 
   return (
     <div className={styles.backdrop} onClick={onClose}>
@@ -144,7 +153,11 @@ export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeeting
           />
         ) : view.kind === "receipt" ? (
           <MeetingReceipt sessionId={view.sessionId} resolveDisplayName={resolveDisplayName}
-            onBack={() => setView({ kind: "list" })} onClose={onClose} />
+            onBack={() => setView({ kind: "list" })} onClose={onClose}
+            onAsk={(session) => setView({ kind: "twin", session })} />
+        ) : view.kind === "twin" ? (
+          <MeetingTwin session={view.session} resolveDisplayName={resolveDisplayName}
+            onBack={() => setView({ kind: "receipt", sessionId: view.session.sessionId })} onClose={onClose} />
         ) : (
           <ScheduleForm
             selfId={selfId}

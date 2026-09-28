@@ -217,3 +217,41 @@ export const reviewItem = (
     method: "POST",
     body: JSON.stringify(content ? { action, content } : { action }),
   });
+
+// PHASE 8B — Meeting Twin: one grounded question about ONE Meeting Session. Same gate and 404 as every read
+// here; `history` is the open view's last few turns, sent as referent context only (the server never stores
+// it and never treats it as evidence). Evidence is always transcript lines of this session.
+export interface TwinEvidence {
+  segmentId: string;
+  speakerEmail: string;
+  speakerName: string | null;
+  startOffsetMs: number;
+  endOffsetMs: number;
+  text: string;
+}
+
+/** A receipt interpretation the answer leaned on: a human's reading (edited/confirmed) or a VO suggestion. */
+export interface TwinBasis {
+  type: ItemType;
+  reviewState: Exclude<ReviewState, "rejected">;
+  text: string | null;
+  stale: boolean;
+}
+
+export interface TwinAnswer {
+  sessionId: string;
+  status: "grounded" | "insufficient";
+  answer: string;
+  uncertainty: string | null;
+  evidence: TwinEvidence[];
+  basis: TwinBasis[];
+  intelligence: "none" | "current" | "stale";
+}
+
+export interface TwinTurnContext {
+  question: string;
+  answer: string;
+}
+
+export const askTwin = (sessionId: string, question: string, history: TwinTurnContext[] = []): Promise<TwinAnswer> =>
+  request(`/${id(sessionId)}/twin/query`, { method: "POST", body: JSON.stringify({ question, history }) });
