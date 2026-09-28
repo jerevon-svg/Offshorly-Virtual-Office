@@ -1,0 +1,120 @@
+/* Meeting Receipt — inside the Meetings panel's cream shell (MeetingsPanel.module.css supplies the header,
+   buttons, inputs and empty states). Same palette: #fffefc cards, rgba(24,20,34,·) hairlines, #2f6b45
+   green for human-confirmed, a warm neutral for AI suggestions. Soft depth, no pill-on-pill. */
+
+.facts {
+  display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: 16px;
+  background: #f4f1ea; font-size: 13px; color: rgba(36, 31, 48, 0.78);
+}
+.factRow { display: flex; gap: 10px; align-items: baseline; min-width: 0; }
+.factRow strong { color: #241f30; font-weight: 800; }
+.factLabel {
+  flex: none; width: 56px; font-size: 11px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase;
+  color: rgba(36, 31, 48, 0.45);
+}
+
+.section { display: flex; flex-direction: column; gap: 8px; }
+.sectionTitle {
+  margin: 0; display: flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: rgba(36, 31, 48, 0.5);
+}
+.count { font-size: 11px; font-weight: 800; color: rgba(36, 31, 48, 0.4); letter-spacing: 0; }
+
+.attendees { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.attendee { display: flex; align-items: baseline; gap: 6px; font-size: 13px; }
+.attendeeName { font-weight: 800; }
+.attendeeTime { color: rgba(36, 31, 48, 0.55); font-size: 12px; }
+
+.notice {
+  display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 14px;
+  background: #fbf3e2; border: 1px solid rgba(165, 109, 18, 0.18); color: #6b4a12; font-size: 13px; font-weight: 600;
+}
+.notice > button { margin-left: auto; padding: 6px 12px; font-size: 12.5px; }
+
+.notYet { padding: 24px 12px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+
+/* ---- items ---- */
+.item {
+  position: relative; display: flex; flex-direction: column; gap: 6px; padding: 12px 14px 10px 16px;
+  border-radius: 16px; background: #fffefc; border: 1px solid rgba(24, 20, 34, 0.08);
+  box-shadow: 0 1px 0 rgba(24, 20, 34, 0.04), 0 4px 12px rgba(24, 20, 34, 0.04);
+}
+/* The left rail says who stands behind it: dashed warm = VO's suggestion, solid green = a human. */
+.item::before {
+  content: ""; position: absolute; left: 0; top: 12px; bottom: 12px; width: 3px; border-radius: 0 3px 3px 0;
+}
+.state_suggested::before { background: repeating-linear-gradient(to bottom, #c9b48a 0 5px, transparent 5px 9px); }
+.state_confirmed::before, .state_edited::before { background: #2f6b45; }
+.state_rejected { background: #f7f4ee; box-shadow: none; }
+.state_rejected::before { background: rgba(24, 20, 34, 0.14); }
+.state_rejected .itemText, .state_rejected .summaryText { text-decoration: line-through; color: rgba(36, 31, 48, 0.45); }
+.itemCompact { padding: 10px 12px 8px 14px; box-shadow: none; }
+
+.eyebrow { font-size: 11px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; color: #a56d12; }
+.itemText { margin: 0; font-size: 14.5px; font-weight: 700; line-height: 1.4; color: #241f30; }
+.summaryText { margin: 0; font-size: 14.5px; line-height: 1.55; color: #241f30; }
+.uncertainty { margin: 0; font-size: 12.5px; font-style: italic; color: rgba(36, 31, 48, 0.6); }
+
+.details { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 13px; }
+.details > div { display: flex; gap: 6px; }
+.details dt { color: rgba(36, 31, 48, 0.5); font-weight: 700; }
+.details dd { margin: 0; font-weight: 800; }
+
+.meta { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; color: rgba(36, 31, 48, 0.55); }
+.state { font-weight: 800; }
+.state_suggested .state { color: #8a7143; }
+.state_suggested .state::before { content: "◌ "; }
+.state_confirmed .state, .state_edited .state { color: #2f6b45; }
+.state_confirmed .state::before, .state_edited .state::before { content: "✓ "; }
+.state_rejected .state { color: rgba(36, 31, 48, 0.5); }
+.lessCertain { font-weight: 700; color: #a56d12; }
+.link {
+  all: unset; cursor: pointer; font-weight: 700; color: #2f6b45; border-radius: 6px;
+}
+.link:hover { text-decoration: underline; }
+.link:focus-visible { outline: 2px solid #4bb96a; outline-offset: 2px; }
+.actions { margin-left: auto; display: flex; gap: 6px; }
+.actions > button { padding: 5px 11px; font-size: 12px; border-radius: 10px; }
+
+.original {
+  display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: 10px;
+  background: #f4f1ea; font-size: 13px; color: rgba(36, 31, 48, 0.7);
+}
+.originalLabel { font-size: 11px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; color: rgba(36, 31, 48, 0.45); }
+
+/* ---- evidence ---- */
+.evidence { list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; counter-reset: q; }
+.quote {
+  counter-increment: q; display: flex; flex-direction: column; gap: 2px; padding: 8px 10px 8px 34px; position: relative;
+  border-radius: 12px; background: #f7f4ee;
+}
+.quote::before {
+  content: counter(q); position: absolute; left: 10px; top: 9px; width: 16px; height: 16px; border-radius: 50%;
+  background: #fffefc; font-size: 10px; font-weight: 800; line-height: 16px; text-align: center; color: rgba(36, 31, 48, 0.6);
+}
+.quoteWho { display: flex; gap: 8px; align-items: baseline; font-size: 12px; font-weight: 800; }
+.quoteAt { font-weight: 600; color: rgba(36, 31, 48, 0.45); font-variant-numeric: tabular-nums; }
+.quoteText { font-size: 13.5px; color: #241f30; }
+
+/* ---- topics ---- */
+.topics { display: flex; flex-wrap: wrap; gap: 6px; }
+.topic {
+  all: unset; box-sizing: border-box; cursor: pointer; padding: 6px 12px; border-radius: 12px;
+  background: #fffefc; border: 1px solid rgba(24, 20, 34, 0.1); font-size: 13px; font-weight: 700;
+}
+.topic:hover { border-color: rgba(47, 107, 69, 0.4); }
+.topic:focus-visible { outline: 2px solid #4bb96a; outline-offset: 2px; }
+.topicOn { border-color: #2f6b45; background: #eef4ec; }
+.topicRejected { text-decoration: line-through; color: rgba(36, 31, 48, 0.45); }
+
+/* ---- edit ---- */
+.editForm { display: flex; flex-direction: column; gap: 10px; }
+.textarea { resize: vertical; min-height: 44px; }
+.editActions { display: flex; justify-content: flex-end; gap: 8px; }
+
+.nothing { margin: 0; font-size: 12.5px; color: rgba(36, 31, 48, 0.5); }
+.version { margin: 4px 0 0; font-size: 11.5px; color: rgba(36, 31, 48, 0.42); }
+
+/* ---- recent list (Meetings panel) ---- */
+.receiptReady { color: #2f6b45; font-weight: 800; }
+.receiptNone { color: rgba(36, 31, 48, 0.45); font-weight: 700; }

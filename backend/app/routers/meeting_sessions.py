@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.deps import get_current_email
 from app.database import get_db
 from app.schemas.meeting_intelligence import ReviewItemIn
-from app.services import meeting_capture, meeting_intelligence
+from app.services import meeting_capture, meeting_intelligence, meeting_receipt
 
 # PHASE 6B — authorized reads of what belongs to a Meeting Session. Every read goes through
 # services/meeting_access (inside meeting_capture.read_transcript) BEFORE any content loads; an unauthorized
@@ -15,6 +15,9 @@ from app.services import meeting_capture, meeting_intelligence
 # PHASE 7A — Meeting Intelligence under the same session. Reads use the same gate and the same 404.
 # Generating and reviewing need the narrower curate authority (services/meeting_intelligence.may_curate):
 # a reader who may not curate gets 403; a refused state gets 409 with a stable code as the detail.
+#
+# PHASE 7C — Meeting Receipt reads: the caller's recent ended sessions (every row through the same gate) and
+# one session's identity + actual attendance + whether the caller may curate. Same gate, same 404.
 
 router = APIRouter(prefix="/meeting-sessions", tags=["meeting-sessions"])
 
@@ -40,6 +43,18 @@ def _found(out: dict | None) -> dict:
     if out is None:
         raise HTTPException(status_code=404, detail="Not found")
     return out
+
+
+@router.get("/recent")
+async def list_recent_sessions(email: str = Depends(get_current_email), db: AsyncSession = Depends(get_db)) -> dict:
+    return {"sessions": await meeting_receipt.recent(db, email)}
+
+
+@router.get("/{session_id}")
+async def get_session(
+    session_id: str, email: str = Depends(get_current_email), db: AsyncSession = Depends(get_db)
+) -> dict:
+    return _found(await meeting_receipt.read_session(db, session_id, email))
 
 
 @router.get("/{session_id}/transcript")

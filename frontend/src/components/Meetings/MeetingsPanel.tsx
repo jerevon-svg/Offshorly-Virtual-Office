@@ -28,6 +28,10 @@ import {
   minutesBetween,
   nextQuarterHour,
 } from "../../services/meetings/meetingTime";
+import { useRecentSessions } from "../../services/meetings/meetingReceipt";
+import type { RecentSession } from "../../services/meetings/meetingReceiptClient";
+import { MeetingReceipt } from "./MeetingReceipt";
+import receiptStyles from "./MeetingReceipt.module.css";
 import styles from "./MeetingsPanel.module.css";
 
 // SCHEDULED MEETINGS V1 — the employee surface: Upcoming Meetings, and the Schedule / Edit form in the
@@ -36,6 +40,10 @@ import styles from "./MeetingsPanel.module.css";
 // server stays the only judge of conflicts — the room grid here is a convenience, a 409 is the truth.
 //
 // Deliberately not a calendar: one chronological list, a compact form, and the existing employee picker.
+//
+// PHASE 7C — below Upcoming, "Recent" lists the viewer's ended Meeting Sessions (server-gated per row) and
+// opens that session's Meeting Receipt in the same shell. The Receipt is keyed by the Meeting Session id,
+// never the room; this is not a meeting history browser.
 
 const DURATIONS = [15, 30, 45, 60, 90];
 /** Only the slug is needed to name a room; the grid's names and seats come from the server. */
@@ -54,7 +62,7 @@ export interface MeetingsPanelProps {
   onClose: () => void;
 }
 
-type View = { kind: "list" } | { kind: "form"; editing: ScheduledMeeting | null };
+type View = { kind: "list" } | { kind: "form"; editing: ScheduledMeeting | null } | { kind: "receipt"; sessionId: string };
 
 export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeetingId = null, onClose }: MeetingsPanelProps) {
   const store = useScheduledMeetings();
@@ -83,7 +91,7 @@ export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeeting
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape" && !document.querySelector("[data-meetings-picker]")) {
-        if (view.kind === "form") setView({ kind: "list" });
+        if (view.kind !== "list") setView({ kind: "list" });
         else onClose();
       }
     };
@@ -104,9 +112,13 @@ export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeeting
             focusMeetingId={focusMeetingId}
             onSchedule={() => setView({ kind: "form", editing: null })}
             onEdit={(m) => setView({ kind: "form", editing: m })}
+            onReceipt={(sessionId) => setView({ kind: "receipt", sessionId })}
             onClose={onClose}
             flash={flash}
           />
+        ) : view.kind === "receipt" ? (
+          <MeetingReceipt sessionId={view.sessionId} resolveDisplayName={resolveDisplayName}
+            onBack={() => setView({ kind: "list" })} onClose={onClose} />
         ) : (
           <ScheduleForm
             selfId={selfId}
@@ -141,10 +153,12 @@ function UpcomingList({
   resolveDisplayName,
   onSchedule,
   onEdit,
+  onReceipt,
   onClose,
   flash,
   focusMeetingId,
 }: {
+  onReceipt: (sessionId: string) => void;
   focusMeetingId: string | null;
   selfId: string;
   meetings: ScheduledMeeting[];
@@ -293,8 +307,47 @@ function UpcomingList({
             })}
           </section>
         ))}
+        <RecentList onReceipt={onReceipt} />
       </div>
     </>
+  );
+}
+
+function RecentList({ onReceipt }: { onReceipt: (sessionId: string) => void }) {
+  const recent = useRecentSessions();
+  if (!recent.sessions.length) return null;
+  return (
+    <section className={styles.group} data-testid="meetings-recent">
+      <h3 className={styles.dayLabel}>Recent</h3>
+      {recent.sessions.map((s: RecentSession) => (
+        <article key={s.sessionId} className={styles.item} data-testid="recent-session" data-session-id={s.sessionId}>
+          <div className={styles.when}>
+            <span className={styles.whenTime}>{formatTime(s.startedAt)}</span>
+            <span className={styles.whenLen}>{formatDuration(Math.max(1, minutesBetween(s.startedAt, s.endedAt)))}</span>
+          </div>
+          <div className={styles.itemBody}>
+            <div className={styles.itemTitle}>
+              <span className={styles.itemName}>{s.title ?? (s.kind === "instant" ? "Instant meeting" : "Meeting")}</span>
+              {s.isPrivate && <span className={styles.privateTag}>Private</span>}
+            </div>
+            <div className={styles.itemMeta}>
+              {s.roomId && <><strong>{roomName(s.roomId)}</strong> · </>}
+              {formatDay(s.startedAt)} · {s.attendeeCount} attended
+            </div>
+            <div className={styles.itemRsvp}>
+              {s.hasIntelligence
+                ? <span className={receiptStyles.receiptReady}>Receipt ready</span>
+                : <span className={receiptStyles.receiptNone}>No receipt yet</span>}
+            </div>
+          </div>
+          <div className={styles.itemActions}>
+            <button type="button" className={styles.ghost} onClick={() => onReceipt(s.sessionId)} data-testid="recent-open">
+              Receipt
+            </button>
+          </div>
+        </article>
+      ))}
+    </section>
   );
 }
 
