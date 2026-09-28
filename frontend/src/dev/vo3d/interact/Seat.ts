@@ -78,6 +78,16 @@ export class SeatInteraction {
     return res;
   }
   stand(): void { if (this.state === "seated") this.setState("slidingOut"); }
+  /** DIRECTED MEETING — give up on this chair while still WALKING to it: the body stops where it stands and
+   *  the chair was never touched. Unlike reset(), nothing is teleported. False once the chair is in play. */
+  abandon(): boolean {
+    if (this.state !== "approaching") return false;
+    this.walk = [];
+    this.avatar.play(CLIP_IDLE, 0.15);
+    this.stack.release("Interaction");
+    this.setState("idle");
+    return true;
+  }
   /** PHASE 6C — THE CONFIGURED FACING CHANGED (dev tool). Takes the new yaw for every later step, and if the
    *  body is already seated re-poses it in place: the same seated root (the hip-offset compensation depends
    *  on yaw) at the new yaw. Position on the cushion, height and clip are untouched. */

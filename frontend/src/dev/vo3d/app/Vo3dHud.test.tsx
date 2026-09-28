@@ -700,9 +700,12 @@ describe("inviting somebody to the Cave meeting", () => {
     fireEvent.click(await screen.findByTestId("cave-meeting-invite"));
 
     const dialog = await screen.findByRole("dialog");
-    expect(dialog).toHaveTextContent("Invite to the Cave meeting");
+    expect(dialog).toHaveTextContent("Invite to this meeting");
 
+    // MULTI-INVITE: pick, then confirm — one MEETING invitation per person picked, same meeting.
     fireEvent.click(screen.getByText("Alex Cruz"));
+    expect(caveInvite).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("Invite 1 person"));
     expect(caveInvite).toHaveBeenCalledWith(ALEX);
     // A spatial ring is a different offer and must never be sent from here.
     expect(onCoworkerAction).not.toHaveBeenCalled();

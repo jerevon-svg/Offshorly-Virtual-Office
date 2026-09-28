@@ -457,6 +457,29 @@ def bind_live(meeting_key: str, booking_id: str | None, *, fresh: bool) -> None:
         _live_booking.setdefault(meeting_key, booking_id)
 
 
+async def live_booking(session: AsyncSession, meeting_key: str) -> ScheduledMeeting | None:
+    """The standing booking a LIVE room session is bound to, or None (ad-hoc, or nothing live)."""
+    booking_id = _live_booking.get(meeting_key)
+    if not booking_id:
+        return None
+    meeting = await repo.get(session, booking_id)
+    return meeting if meeting is not None and meeting.status == repo.SCHEDULED else None
+
+
+async def end_live(session: AsyncSession, meeting_key: str) -> ScheduledMeeting | None:
+    """THE HOST ENDED THE MEETING FOR EVERYONE. The booking the live session belongs to is complete —
+    even when that is before its scheduled start (it was started early): it no longer governs the room,
+    its reminder sweep skips it, and its original time never reactivates it. Returns the ended booking,
+    or None for an ad-hoc session. Leaving is not ending: this is only ever called for an explicit End."""
+    meeting = await live_booking(session, meeting_key)
+    if meeting is None:
+        return None
+    meeting.status = repo.ENDED
+    await session.commit()
+    note_booking(meeting)
+    return meeting
+
+
 def release_live(meeting_key: str) -> None:
     """The session emptied. The room goes back to being governed by its schedule."""
     _live_booking.pop(meeting_key, None)

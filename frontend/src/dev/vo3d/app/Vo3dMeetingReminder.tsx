@@ -20,6 +20,7 @@ import type { Vo3dWorld } from "./world";
 import { markRead, useNotifications } from "../../../services/notifications/notificationsStore";
 import { useNow, useScheduledMeetings } from "../../../services/meetings/scheduledMeetingsStore";
 import { formatTime } from "../../../services/meetings/meetingTime";
+import { useCallState } from "../../../services/call/callStore";
 import type { ScheduledMeeting } from "../../../services/meetings/scheduledMeetingsClient";
 import HudIcon from "../../../components/HudIcon";
 import styles from "./Vo3dMeetingReminder.module.css";
@@ -50,6 +51,7 @@ export function Vo3dMeetingReminder({ worldRef, ready, selfId, onOpen, onGoToget
   travelDecided?: ReadonlySet<string>;
 }) {
   const bell = useNotifications();
+  const call = useCallState();
   const schedule = useScheduledMeetings();
   const now = useNow(5_000);
   const [where, setWhere] = useState<{ roomId: string }>({ roomId: "" });
@@ -74,23 +76,26 @@ export function Vo3dMeetingReminder({ worldRef, ready, selfId, onOpen, onGoToget
       const start = Date.parse(m.startsAt);
       if (now < start - SHOW_FROM_MS || now >= Date.parse(m.endsAt)) continue;
       if (where.roomId === m.roomId) continue; // arrived: the room's own panel takes over
+      if (call.status === "connected" && call.connectedMeetingId === `mf-${m.roomId.split("/")[1]}`) continue; // joined: the travel card offers the way
       return { notificationId: n.id, meeting: m };
     }
     return null;
-  }, [bell.notifications, schedule.mine, selfId, now, where.roomId, travelDecided]);
+  }, [bell.notifications, schedule.mine, selfId, now, where.roomId, travelDecided, call.status, call.connectedMeetingId]);
 
   if (!current) return null;
   const { meeting: m, notificationId } = current;
   const room = roomName(m.roomId);
   const start = Date.parse(m.startsAt);
   const minutes = Math.max(0, Math.round((start - now) / 60_000));
-  const when = start > now
-    ? minutes <= 0 ? `Starting now · ${formatTime(m.startsAt)}` : `Starts in ${minutes} min · ${formatTime(m.startsAt)}`
-    : `Started at ${formatTime(m.startsAt)}`;
-
   // THE ROOM RIGHT NOW, from the server's meeting_presence: whose session (if any) is live in it.
   const presence = schedule.presence[`mf-${m.roomId.split("/")[1]}`];
-  const ours = presence?.booking && Date.parse(presence.booking.startsAt) === start;
+  const ours = Boolean(presence?.live && presence.booking && Date.parse(presence.booking.startsAt) === start);
+  // THIS meeting is already running (its host started it early): say so, not "starts in 3 min".
+  const when = ours && start > now
+    ? `Started early · ${formatTime(m.startsAt)}`
+    : start > now
+      ? minutes <= 0 ? `Starting now · ${formatTime(m.startsAt)}` : `Starts in ${minutes} min · ${formatTime(m.startsAt)}`
+      : `Started at ${formatTime(m.startsAt)}`;
   const status = !presence?.live
     ? { text: `${room} is free`, tone: styles.free }
     : ours
@@ -126,6 +131,14 @@ export function Vo3dMeetingReminder({ worldRef, ready, selfId, onOpen, onGoToget
               setWalk({ meetingId: m.id, result });
             }}>
             Walk there
+          </button>
+          <button type="button" className={styles.ghost} data-testid="meeting-reminder-teleport"
+            disabled={!worldRef.current?.teleportToMeetingRoom}
+            onClick={() => {
+              const result = worldRef.current?.teleportToMeetingRoom?.(m.roomId) ?? "unknown";
+              setWalk({ meetingId: m.id, result: result === "teleported" ? "here" : result === "no-space" || result === "busy" ? "busy" : result });
+            }}>
+            Teleport
           </button>
           {onGoTogether && !inParty && worldRef.current?.goTogether && (
             // OPTIONAL IMMERSION: Walk There stays right beside it and never depends on it.

@@ -15,7 +15,10 @@ describe("app/world.ts — an abandoned lift trip does not survive PLAYER taking
   });
 
   it("the port's `holding` is exactly the lift-trip state yieldAvatar clears", () => {
-    expect(src).toContain("holding: pendingFloor !== null,");
+    // …and only while that trip is really walking to the doors (or the portal is running): a stale one can
+    // never hold a stage again (Bon's "Jan walked, Bon stayed idle").
+    expect(src).toContain('holding: (pendingFloor !== null && (approachCtl.state === "walking" || approachCtl.state === "turning")) || (caveTransition?.busy ?? false),');
+    expect(src).toContain("if (!startApproach(`${specOf(currentFloor).id}/call`)) { pendingFloor = null; return false; }");
   });
 });
 

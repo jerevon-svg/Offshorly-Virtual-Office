@@ -93,3 +93,14 @@ describe("panel context", () => {
     expect(derive([booking(0, 60)], live, 5).context?.phase).toBe("live");
   });
 });
+
+describe("started early", () => {
+  it("the host starting the booked meeting before its time makes THAT meeting live, and says so", () => {
+    const b = booking(10, 40);
+    const live = { live: true, booking: { startsAt: b.startsAt, endsAt: b.endsAt, isPrivate: false } };
+    const v = derive([b], live, 2); // eight minutes before the scheduled start
+    expect(v.context).toMatchObject({ title: "Product Sync", phase: "live", startedEarly: true });
+    expect(v.sign.state).toBe("in-meeting");
+    expect(derive([b], live, 12).context).toMatchObject({ phase: "live", startedEarly: false });
+  });
+});

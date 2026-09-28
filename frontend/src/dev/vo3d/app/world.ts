@@ -102,6 +102,7 @@ import { ELEVATOR as FLOOR2_ELEVATOR, FLOOR2_ID, FLOOR2_ROOM, FLOOR_RECT as FLOO
 import { makePlateRouter } from "../nav/plateRoute";
 import { buildMeetingFloor, setRoomDisplayTexture } from "../build/floor2Meeting";
 import { ISLAND, MEETING_ROOMS, MEETING_ROOM_DEFS, MEETING_ROOM_IDS, meetingDoorCapability, meetingRoom, meetingRoomAt } from "../rooms/floor2Meeting";
+import { MeetingDirector, presenterSpot, type DirectedSeat, type MeetingDirectorPort } from "./meetingDirector";
 const ISLAND_BENCH_ID = "floor-2/island-bench";
 import { MeetingRoomAccess, type MeetingRoomState } from "./meetingRoomAccess";
 import { deriveRoomSchedule, type Formatters, type LiveRoom, type ScheduledBooking, type ScheduledContext } from "./scheduledRooms";
@@ -109,7 +110,7 @@ import { FloorTransition, walkLegs } from "../interact/FloorTransition";
 import { buildWorldContents } from "./worldContents";
 import type { PartyDestination, Vo3dGoTogetherHooks, Vo3dGoTogetherPort } from "./goTogether";
 import { isTypingTarget } from "./keyGuard";
-import { LIFT_RIDER_YAW, exitPath, lobbyPoint, pathLength, slotPoint, type LiftRiderSlot, type PartyLiftPlan } from "./liftRiders";
+import { LIFT_RIDER_YAW, exitPath, liftWaitPoint, lobbyPoint, pathLength, slotPoint, type LiftRiderSlot, type PartyLiftPlan } from "./liftRiders";
 import { FACADE_Z, FRAME, v1Rooms } from "../adapters/v1Floor";
 import { planWalk, type NavResult } from "../nav/planner";
 import { RoomLockController, collectLockableDoors } from "./roomLocks";
@@ -215,6 +216,13 @@ export interface Vo3dCaveMeeting {
    *  accepter in a room they were not standing in, so they had no Cave panel, no screen and no way to
    *  leave. The meeting is a thing you do in a place, and this is that place. */
   enter(): boolean;
+  /** ACCEPT A MEETING INVITATION — for the meeting the invitation NAMES. A Meeting Floor room's meeting
+   *  (`mf-<slug>`, started by somebody standing in that room) joins that room's call and walks the accepter
+   *  there (Walk There: the lift first when downstairs); only the Cave's own meeting goes through the Cave's
+   *  portal. Resolves to where the accepter is headed. */
+  acceptInvite?(meetingId: string, email: string): Promise<"room" | "cave">;
+  /** END the meeting for everyone (host). Leave is `leave`. */
+  end?(): void;
   /** PHASE 7D. WATCH the meeting without joining it: opens the call store's socket so this client
    *  hears `meeting_presence`, and NOTHING else. No token, no LiveKit room, no microphone, no camera.
    *
@@ -362,6 +370,10 @@ export interface Vo3dWorld {
    *  "here" when already in or at the room (nothing moves). A click-walk, or a movement key in PLAYER,
    *  cancels it like any other walk. */
   walkToMeetingRoom?(roomId: string): "here" | "walking" | "elevator" | "busy" | "unreachable" | "unknown";
+  /** TELEPORT — the third way to a meeting room (beside Walk There and Go Together): straight to a safe,
+   *  free standing spot just inside the room, on its floor, with no walk and no lift. Seating is NOT part of
+   *  it — a live meeting's director takes over from there. */
+  teleportToMeetingRoom?(roomId: string): "here" | "teleported" | "busy" | "no-space" | "unknown";
   /** GO TOGETHER V1 — the world's primitives for a travel party (app/goTogether.ts): where this body and a
    *  peer are, the ordinary routed walk, the ordinary lift, Walk There, and two bounded holds on this
    *  body's OWN lift ride. No second movement system and no second elevator — see goTogether.ts. */
@@ -1146,6 +1158,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
           // are world points in the place's own frame and are deliberately NOT converted.
           movedInPlace: (anchor, from, to, yaw, room) =>
             selfMovement.movedInPlace(toV1Frame(anchor), from, to, yaw, room),
+          // An upstairs sit (a Meeting Floor chair): anchor mapped like movedInPlace's, the chair's own
+          // point left in the place's frame. Absent on a sink without it — the sit then stays local.
+          ...(selfMovement.satInPlace ? { satInPlace: (anchor: Vec2, at: Vec2, yaw: number, room: string, seat: string) => selfMovement.satInPlace!(toV1Frame(anchor), at, yaw, room, seat) } : {}),
         },
         // WHERE V1 CAN HOLD A POSITION AT ALL — the V1 frame, and nothing outside it. V2's world extends
         // well past it (the campus legs, the AI Lab at negative z, the CAVE at x 2600) and V1 has no
@@ -1793,6 +1808,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   let selfSeatedPublished = false;
   /** Anchors other employees occupy right now — pushed by the host (Vo3dWorld.setOccupiedSeats). */
   let occupiedSeatIds = new Set<string>();
+  /** A stand-up asked for while the body was still sitting down (see Vo3dWorld.standUp). */
+  let standWhenSeated = false;
   const seatSyncState = { anchor: "none", seated: "no", occupied: 0, refusals: 0 };
   /** THE RESTORE SLOTS: a seat interaction constructed by restoreSelf for a chair V1 says this employee is
    *  already sitting in. One movable, one fixed; whichever kind the anchor is. Ticked in the frame loop
@@ -1947,7 +1964,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     meetingState.chair = id.split("/")[1];
     meetingSeat.sit();
   }
-  function startApproach(entityId: string): void {
+  function startApproach(entityId: string): boolean {
     clearSeats();
     meetingSeat = null;
     gamingSeat = null;
@@ -1970,6 +1987,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       const origin = avatar.position;
       if (navCtl.setPath(r.path)) selfFeed?.planned(origin, r.path, plannedDurationMs(origin, r.path, navCtl.speed), guidedPacing());
     }
+    return r.ok;
   }
   function startLoungeSit(index: number): void {
     approachCtl.cancel();
@@ -2130,6 +2148,58 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     meetingWalk = { roomId };
     return "elevator";
   }
+  /** THE SAFE ARRIVAL SPOT for a teleport into a meeting room: just inside its doorway, stepping in toward the
+   *  table and out to either side — standable on the floor's own test (chairs and furniture are solids),
+   *  inside the room, and clear of anybody already drawn there. Null when the room is full up to its door. */
+  function teleportSpot(r: NonNullable<ReturnType<typeof meetingRoom>>): Vec2 | null {
+    const t = r.table.rect;
+    const c = { x: t.x + t.w / 2, z: t.z + t.d / 2 };
+    const dx = c.x - r.entry.x, dz = c.z - r.entry.z, len = Math.hypot(dx, dz) || 1;
+    const f = { x: dx / len, z: dz / len }, side = { x: -f.z, z: f.x };
+    for (const inward of [8, 20, 32]) for (const lat of [0, 18, -18, 34, -34]) {
+      const p = { x: r.entry.x + f.x * inward + side.x * lat, z: r.entry.z + f.z * inward + side.z * lat };
+      if (pointInRect(p, r.interior) && floor2StandTest(p, NAV_RADIUS) && coworkers.within(p, 22).length === 0) return p;
+    }
+    return null;
+  }
+  function teleportToMeetingRoom(roomId: string): "here" | "teleported" | "busy" | "no-space" | "unknown" {
+    const r = meetingRoom(roomId);
+    if (!r) return "unknown";
+    const at = avatarWorldXZ();
+    if (currentFloor === FLOOR2_ID && pointInRect(at, r.interior)) return "here";
+    if (floorTransition?.busy || caveTransition?.busy) return "busy";
+    // THE CAVE is its own volume: out through its portal first (the button can simply be pressed again).
+    if (caveTransition?.inside) { caveTransition.exit(); return "busy"; }
+    const spot = teleportSpot(r);
+    if (!spot) return "no-space";
+    // EVERYTHING THIS BODY WAS DOING ENDS HERE, cleanly: a walk, a lift trip waiting on its approach, Walk
+    // There's continuation, a walk-up to somebody, a Go Together journey (paused — the person chose their
+    // own way), a seat (stood up, and the feed told so). The MEETING itself is untouched.
+    if (guidedHolds.travel) cancelGuidedTravel();
+    stopTour(); navCtl.stop(); approachCtl.cancel();
+    pendingFloor = null; pendingLift = null; meetingWalk = null; coworkerApproach = null; directedTurn = null;
+    if (seatEngaged()) {
+      const wp = avatar.worldPosition();
+      if (selfSeatedPublished) selfFeed?.stood({ x: wp.x, z: wp.z }, avatar.yaw);
+      selfSeatedPublished = false;
+      clearSeats();
+      currentSeatAnchor = null;
+    }
+    // THE FLOOR, as a placement (the same one a reload restore makes) — no ride is faked.
+    if (currentFloor !== FLOOR2_ID && !floorTransition?.restoreOn(FLOOR2_ID)) return "busy";
+    const yaw = yawToward(spot, { x: r.table.rect.x + r.table.rect.w / 2, z: r.table.rect.z + r.table.rect.d / 2 });
+    playerMode.body.pos = { ...spot };
+    avatar.setPosition(spot);
+    avatar.setYaw(yaw);
+    if (playerMode.active) { playerMode.camera.yaw = yaw; playerMode.camera.snap(); }
+    requestViewMode(params.cameraMode);
+    // PUBLISHED as the snap it is: every other browser puts this employee at the spot, facing the room.
+    selfFeed?.teleported(spot, yaw);
+    selfMovedByUser = true;
+    updateRoomVenue(spot);
+    R.invalidateShadows();
+    return "teleported";
+  }
   function activateInteractable(id: string, kind: "seat" | "lounge" | "approach" | "person", near?: Vec2): boolean {
     // PHASE 6D — A PERSON. The one activation that starts nothing in this world: it SELECTS, and the host
     // decides what a selection means (app/interactions.ts). The pointer is handed back so the card that
@@ -2283,6 +2353,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     view.quaternion.copy(rest.quat);
     R.invalidateShadows();
   }
+  /** WHO HOLDS THE CONTROLLER STACK'S GUIDED BASE: a Go Together journey, a Directed Meeting, or both.
+   *  Either keeps the body system-driven; the base drops back to Idle only when neither does. */
+  const guidedHolds = { travel: false, meeting: false };
   const playerMode = new PlayerMode({
     avatar, stack, world, canStand: playerStand, cameraProbe: playerCameraProbe,
     // the target marker hangs off the SCENE, not the office group: the CAVE hides the whole office while
@@ -2294,7 +2367,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // PHASE 6D — the coworkers, re-read per frame because they move. Empty until a host subscribes, so
     // the standalone dev page targets exactly what it always did.
     dynamicCandidates: coworkerCandidates,
-    canStandUp: () => engagedSeat() !== null,
+    // DIRECTED MEETING — the meeting owns the chair; E does not stand the body up (Esc hands it back first).
+    canStandUp: () => !guidedHolds.meeting && engagedSeat() !== null,
     standUp: () => engagedSeat()?.stand(),
     // hand the avatar over cleanly: stop the walker, cancel a half-finished approach, leave engaged seats
     // alone (PlayerMode simply does not move Bon while Interaction owns him, and takes over when it ends).
@@ -2307,6 +2381,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // GUIDED TRAVEL — PLAYER stays on screen while a journey drives the body, and the mouse keeps the
     // camera except while the lift or the portal is staging its own shot.
     guided: () => stack.guided,
+    targetsSuppressed: () => guidedHolds.meeting,
     freeLook: () => (stack.guided || stack.owner === "Navigation") && !floorTransition?.busy && !caveTransition?.busy,
     onManualOverride: (owner) => {
       if (floorTransition?.busy) return; // the ride itself is not interruptible (see FloorTransition)
@@ -2844,7 +2919,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   function approachCoworker(email: string): boolean {
     const at = coworkers.pointOf(email);
     if (!at) return false;
-    partyHooks?.onUserMove();
+    userTookBody();
     const from = avatar.position;
     const away = Math.hypot(from.x - at.x, from.z - at.z);
     // Already there: no walk, just turn. A zero-length walk would publish a movement to where the body
@@ -3099,7 +3174,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       if (params.playerView !== "third") { params.playerView = "third"; playerMode.setView("third"); notifyPlayerView(); }
       // the centre-screen "[E] …" line is drawn where the doors are: it has no business in a cutscene
       playerMode.setPromptHidden(true);
-      if (params.cameraMode !== "player") setCameraMode("player");
+      // The ride's OWN switch into PLAYER is not the person taking their body: entering PLAYER yields the
+      // avatar (which drops a waiting Walk There), and that dropped the walk to the room after the ride —
+      // the accepter of a meeting invitation stood at the doors upstairs. The continuation rides along.
+      if (params.cameraMode !== "player") { const walkThere = meetingWalk; setCameraMode("player"); meetingWalk = walkThere; }
       // KEEP THE SHOT UNDER THE CAR'S CEILING for the duration, and give the player's own pitch back
       // afterwards — taking the lift must not silently retune their camera.
       restorePitch = playerMode.camera.pitch;
@@ -3174,7 +3252,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       return startLiftRide(to);
     }
     pendingFloor = to;
-    startApproach(`${specOf(currentFloor).id}/call`);
+    // A WALK TO THE DOORS THAT COULD NOT BE PLANNED is no lift trip: left set, `pendingFloor` read as "a trip
+    // is under way" forever, and every Go Together stage waiting on it stood still.
+    if (!startApproach(`${specOf(currentFloor).id}/call`)) { pendingFloor = null; return false; }
     return true;
   }
 
@@ -3255,52 +3335,198 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  drives it. Ending it hands a walk still under way to ordinary Navigation, so it finishes (or the keys
    *  stop it) as any routed walk would; a standing body goes back to Idle, where PLAYER re-takes it. */
   function setGuidedTravel(on: boolean): void {
-    if (on === stack.guided) return;
-    stack.setBase(on ? "Guided" : "Idle");
-    if (!on && navCtl.moving) stack.acquire("Navigation");
+    if (on === guidedHolds.travel) return;
+    guidedHolds.travel = on;
+    applyGuidedBase();
     // THE JOURNEY'S FRAMING: a little wider while the system walks this body, so the two or three people
     // walking with it stay in the shot; PlayerCamera dollies it. A ride's own cinematic boom wins while it
     // plays, and hands back to this one at its end (endCinematic).
     if (!floorTransition?.busy) playerMode.camera.boomScale = journeyBoom();
+  }
+  /** The stack's base follows the holds: Guided while either a journey or a meeting directs the body. */
+  function applyGuidedBase(): void {
+    const on = guidedHolds.travel || guidedHolds.meeting;
+    if (on === stack.guided) return;
+    stack.setBase(on ? "Guided" : "Idle");
+    if (!on && navCtl.moving) stack.acquire("Navigation");
   }
   /** HOW PEERS REPLAY THIS BODY'S NEXT ROUTED WALK: on a Guided Journey exactly as it moves (constant speed),
    *  so the party looks the same on every screen; otherwise V1's eased account (app/selfMovement planned). */
   function guidedPacing(): "linear" | undefined {
     return stack.guided ? "linear" : undefined;
   }
-  /** Ordinary PLAYER framing, or the Guided Journey's slightly wider one. */
+  /** Ordinary PLAYER framing, or the Guided Journey's slightly wider one. A Directed Meeting keeps the
+   *  ordinary framing. */
   function journeyBoom(): number {
-    return stack.guided ? GUIDED_JOURNEY_BOOM : 1;
+    return guidedHolds.travel ? GUIDED_JOURNEY_BOOM : 1;
   }
   /** ESC LEAVES A GUIDED JOURNEY: everything automated stops, the party is told the person took their body
    *  (a follower pauses, a leader's journey pauses), and PLAYER gets the body back. Never mid-ride. */
   function cancelGuidedTravel(): boolean {
-    if (!stack.guided || floorTransition?.busy || caveTransition?.busy) return false;
+    if (!guidedHolds.travel || floorTransition?.busy || caveTransition?.busy) return false;
     stopTour(); navCtl.stop(); approachCtl.cancel(); pendingFloor = null; pendingLift = null; meetingWalk = null;
     partyHooks?.onUserMove();
     setGuidedTravel(false);
     return true;
   }
+  /** INTO THE CAVE, from wherever the body is. Its portal is on the ground floor and its exit puts the body
+   *  back there, so a body upstairs is first put on the ground floor (the same placement a restore makes).
+   *  Entering straight from floor 2 — the meeting invitation's accept did — left the world believing it was
+   *  still upstairs after the exit: the ground floor's elevator hidden, the lift "on floor 2", unusable. */
+  function enterCave(): boolean {
+    if (!caveTransition || caveTransition.busy || caveTransition.inside || floorTransition?.busy) return false;
+    if (currentFloor !== GROUND_FLOOR_ID && !floorTransition?.restoreOn(GROUND_FLOOR_ID)) return false;
+    return caveTransition.enter();
+  }
+  /** A JOURNEY THAT STARTS IN THE CAVE leaves through its portal first — no route leads out of that volume.
+   *  True while that is under way (the caller tries again once the body is back in the office). */
+  function leaveCaveForJourney(): boolean {
+    if (!caveTransition?.inside) return false;
+    if (!caveTransition.busy) caveTransition.exit();
+    return true;
+  }
   // POINTER LOCK EATS THE FIRST ESC: while PLAYER holds the pointer, Esc only frees it (the browser may not
   // even deliver that keydown, and one it does deliver is still the unlock press). The next Esc — pointer
   // already free, nothing being typed — cancels. Two presses, never ambiguous.
+  // A DIRECTED MEETING is left the same way: the meeting stops walking the body and stays out of the way
+  // for the rest of this meeting (app/meetingDirector userTookOver) — no reacquisition loop.
   onWindow("keydown", (e) => {
     if (e.key !== "Escape" || e.defaultPrevented || !stack.guided || document.pointerLockElement || isTypingTarget(e)) return;
-    cancelGuidedTravel();
+    if (guidedHolds.travel) cancelGuidedTravel();
+    else if (guidedHolds.meeting) meetingDirector.userTookOver();
   });
+  // ---- DIRECTED MEETING — see app/meetingDirector.ts ----------------------------------------------------
+  /** the yaw a directed body is turning onto on the spot (the presenter facing the room), or null */
+  let directedTurn: number | null = null;
+  const directedSeatCache = new Map<string, DirectedSeat[]>();
+  function directedSeats(roomId: string): DirectedSeat[] {
+    const hit = directedSeatCache.get(roomId);
+    if (hit) return hit;
+    const r = meetingRoom(roomId);
+    const out: DirectedSeat[] = [];
+    if (r) {
+      r.seats.forEach((s2, i) => { const id = `${roomId}/chair-${i}`; if (world.entities.has(id)) out.push({ anchor: id, pos: { x: s2.x, z: s2.z }, kind: "chair" }); });
+      for (const e of world.entities.values()) {
+        if (!e.id.startsWith(`${roomId}/`) || !e.capabilities.lounge) continue;
+        for (const slot of e.capabilities.lounge.slots)
+          out.push({ anchor: seatAnchorId(e.id, slot.id), pos: { x: e.transform.pos.x + slot.contactLocal.x, z: e.transform.pos.z + slot.contactLocal.z }, kind: "lounge" });
+      }
+    }
+    directedSeatCache.set(roomId, out);
+    return out;
+  }
+  const meetingDirectorPort: MeetingDirectorPort = {
+    // ACTUAL PARTICIPATION: this client connected to a Meeting Floor room's own call (the existing call
+    // store, mirrored by CaveLiveShare) — and whether it is the one publishing the screen.
+    meeting: () => {
+      const st = caveLiveShare.state;
+      if (st.status !== "connected" || st.kind !== "meeting") return null;
+      const r = MEETING_ROOMS.find((x) => x.meetingId === st.session);
+      return r ? { roomId: r.id, presenting: st.sharing } : null;
+    },
+    body: () => {
+      const wp = avatar.worldPosition();
+      const pos = { x: wp.x, z: wp.z };
+      const busy = seatEngaged();
+      return {
+        pos,
+        room: currentFloor === FLOOR2_ID ? meetingRoomAt(pos)?.id ?? null : null,
+        // the doorway spot Walk There ends at (walkToMeetingRoom's own "arrived" radius)
+        atDoor: currentFloor === FLOOR2_ID ? MEETING_ROOMS.find((r) => Math.hypot(pos.x - r.approach.x, pos.z - r.approach.z) < 48)?.id ?? null : null,
+        seat: busy ? currentSeatAnchor : null,
+        seated: seatedNow(),
+        seatBusy: busy,
+        moving: navCtl.moving || directedTurn !== null,
+        travelling: guidedHolds.travel || pendingFloor !== null || (floorTransition?.busy ?? false) || (caveTransition?.busy ?? false),
+      };
+    },
+    seats: directedSeats,
+    occupied: () => occupiedSeatIds,
+    sit: (anchor) => {
+      const { entityId, slotId } = parseSeatAnchorId(anchor);
+      if (!world.entities.has(entityId)) return false;
+      navCtl.stop();
+      approachCtl.cancel();
+      if (slotId === undefined) return activateInteractable(entityId, "seat");
+      const e = world.get(entityId);
+      const slot = e.capabilities.lounge?.slots.find((s2) => s2.id === slotId);
+      return activateInteractable(entityId, "lounge", slot ? { x: e.transform.pos.x + slot.contactLocal.x, z: e.transform.pos.z + slot.contactLocal.z } : undefined);
+    },
+    leaveSeat: () => {
+      // Still WALKING to a seat: stop short of it where the body stands (no teleport, the chair untouched).
+      if (otherSeat?.abandon()) { otherSeat = null; currentSeatAnchor = null; return; }
+      if (loungeSeat && loungeSeat.state === "approaching") { loungeSeat.reset(); loungeSeat = null; currentSeatAnchor = null; return; }
+      engagedSeat()?.stand();
+    },
+    stage: (roomId) => {
+      const r = meetingRoom(roomId);
+      if (!r) return null;
+      const t = r.table.rect;
+      const wp = avatar.worldPosition();
+      return presenterSpot(r.screen, { x: t.x + t.w / 2, z: t.z + t.d / 2 }, { x: wp.x, z: wp.z }, (p) => pointInRect(p, r.interior) && floor2StandTest(p, NAV_RADIUS));
+    },
+    walkTo: (p) => walkToGround(p.x, p.z).ok,
+    stopWalk: () => { if (navCtl.moving) navCtl.stop(); directedTurn = null; },
+    face: (yaw) => { directedTurn = yaw; },
+    setDirected: (on) => {
+      if (on === guidedHolds.meeting) return;
+      guidedHolds.meeting = on;
+      applyGuidedBase();
+    },
+  };
+  /** THE PRESENTER'S GESTURE — the existing standing "agree" loop (V1's conversation vocabulary, baked into
+   *  every character's GLB); no new animation asset. */
+  const PRESENTER_CLIP = CLIP_TALK_AGREE;
+  /** the host's conversation poses, kept so the presenter's clip can be layered over them */
+  let hostConversationClips: ReadonlyMap<string, string | null> = new Map();
+  /** whoever the call this client is in says is sharing, when it is somebody else */
+  let presenterEmail = "";
+  function pushCoworkerClips(): void {
+    if (!presenterEmail) { coworkers.setConversationClips(hostConversationClips); return; }
+    const m = new Map(hostConversationClips);
+    m.set(presenterEmail, PRESENTER_CLIP);
+    coworkers.setConversationClips(m);
+  }
+  /** Every participant's browser knows who presents (the call's own screen-share identity), so each draws
+   *  that person's body explaining whenever it stands still — seated attendees are untouched (a sit
+   *  outranks a resting clip), and it ends the moment the share does. */
+  function syncPresenterClip(): void {
+    const st = caveLiveShare.state;
+    const next = st.status === "connected" && st.kind === "meeting" && !st.sharing ? st.presenter.trim().toLowerCase() : "";
+    if (next === presenterEmail) return;
+    presenterEmail = next;
+    pushCoworkerClips();
+  }
+  const meetingDirector = new MeetingDirector(meetingDirectorPort, identity?.employeeId ?? identity?.displayName ?? "");
+  let meetingDirectorClock = 0;
+  /** The person took their own body — a click-to-walk, a walk-up, an approach: a journey pauses, a meeting
+   *  stops directing. */
+  function userTookBody(): void {
+    partyHooks?.onUserMove();
+    meetingDirector.userTookOver();
+  }
+  function avatarWorldXZ(): Vec2 { const w = avatar.worldPosition(); return { x: w.x, z: w.z }; }
   /** GO TOGETHER — see Vo3dWorld.goTogether and app/goTogether.ts. */
   const goTogetherPort: Vo3dGoTogetherPort = {
+    // WORLD coordinates: a seated body is parented to its chair, so `avatar.position` is chair-local — a
+    // person sitting in the destination room read as "in no room", got the travel role and a Join card.
     self: () => ({
       floor: currentFloor,
-      pos: { x: avatar.position.x, z: avatar.position.z },
+      pos: avatarWorldXZ(),
       riding: floorTransition?.busy ?? false,
-      holding: pendingFloor !== null,
+      // A LIFT TRIP OR THE PORTAL UNDER WAY. (A lift trip that is not actually walking to the doors is
+      // stale — callElevator no longer leaves one behind — and must never hold a journey forever.)
+      holding: (pendingFloor !== null && (approachCtl.state === "walking" || approachCtl.state === "turning")) || (caveTransition?.busy ?? false),
       moving: navCtl.moving || approachCtl.state === "walking",
       player: playerMode.active,
-      room: currentFloor === GROUND_FLOOR_ID ? world.regionAt({ x: avatar.position.x, z: avatar.position.z })?.roomId ?? null : null,
+      // the room this body stands in: a ground-floor room, or a Meeting Floor room (floor2Meeting)
+      room: currentFloor === GROUND_FLOOR_ID
+        ? world.regionAt(avatarWorldXZ())?.roomId ?? null
+        : currentFloor === FLOOR2_ID ? meetingRoomAt(avatarWorldXZ())?.id ?? null : null,
     }),
     hub: () => ({ floor: GROUND_FLOOR_ID, point: HUB_RENDEZVOUS }),
     liftLobby: (floor, slot) => (FLOORS[floor] ? lobbyPoint(specOf(floor).boarding, slot) : null),
+    liftWait: (floor, slot) => (FLOORS[floor] ? liftWaitPoint(specOf(floor).boarding, slot) : null),
     // THE ARRIVAL AREA of a meeting room: in front of its own approach point, facing in. Plain points
     // (another destination kind) arrive at the point itself.
     arrival: (dest: PartyDestination) => {
@@ -3314,12 +3540,15 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     },
     walkNear: (p) => {
       if (floorTransition?.busy) return false;
+      // IN THE CAVE: out through its own portal first (the Cave is its own volume — no route leads from it).
+      if (leaveCaveForJourney()) return false;
       if (playerMode.active && !stack.guided) setCameraMode("office");
       const spot = standablePointNear(p, NAV_RADIUS, playerStand);
       return spot ? walkToGround(spot.x, spot.z).ok : false;
     },
     ride: (to, plan) => {
       if (to === currentFloor || !FLOORS[to]) return false;
+      if (leaveCaveForJourney()) return false;
       if (playerMode.active && !stack.guided) setCameraMode("office");
       // callElevator walks to the doors first when needed (or starts the ride at once from the apron); the
       // plan is in place BEFORE either, and rides with the trip to the board.
@@ -3856,7 +4085,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) return; // a drag is not a destination
     approachCtl.cancel();
     const p = floorPoint(e.clientX, e.clientY);
-    if (p) { partyHooks?.onUserMove(); walkToGround(p.x, p.z); }
+    if (p) { userTookBody(); walkToGround(p.x, p.z); }
   });
   onCanvas("pointermove", (e) => {
     if (playerMode.active || !edit.editMode || editDrag === "none") return;
@@ -3904,7 +4133,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       selectRoom(null);
       const ent = world.get(picked);
       // GO TOGETHER — walking up to a chair, a kiosk or a portal is the person taking their own body.
-      partyHooks?.onUserMove();
+      userTookBody();
       // the portal is a transition, not a walk-up: clicking it has to mean the same thing pressing E on
       // it means, or the one interaction in the world that moves you between volumes would behave
       // differently depending on which camera you happened to be in
@@ -5034,6 +5263,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // the frame the body commits to a chair the feed resolves the movement that brought it there as a
       // seated arrival in that chair (the chair's own yaw, not the body's mid-turn one); the frame it
       // leaves, the feed resumes publishing the ordinary legs that walk it away.
+      if (standWhenSeated) {
+        const e = engagedSeat();
+        if (e) { e.stand(); standWhenSeated = false; } else if (!seatEngaged()) standWhenSeated = false;
+      }
       const nowSeated = seatedNow();
       if (nowSeated !== selfSeatedPublished) {
         selfSeatedPublished = nowSeated;
@@ -5064,6 +5297,26 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // mid-turn tells every other browser this employee is facing a direction they are about to leave.
       // `turning` therefore also holds the planned walk open for those few hundred milliseconds: the feed
       // resolves a planned walk when the planner goes quiet, and quiet is not the same as finished.
+      // DIRECTED MEETING — decided a few times a second (it reacts to a share, a seat race or a finished
+      // walk, never to a frame), then the presenter's turn onto the room at the approach's own rate.
+      meetingDirectorClock += dt;
+      if (meetingDirectorClock >= 150) { meetingDirectorClock = 0; meetingDirector.tick(); }
+      if (directedTurn !== null && !navCtl.moving && (stack.owner === "Guided" || stack.owner === "Idle")) {
+        const next = stepAngle(avatar.yaw, directedTurn, APPROACH_TURN_RATE * (dt / 1000));
+        avatar.setYaw(next);
+        if (Math.abs(wrapAngle(directedTurn - next)) < 0.02) {
+          avatar.setYaw(directedTurn);
+          directedTurn = null;
+          // PUBLISHED: where the presenter stands and which way they face — or every other browser keeps the
+          // walk's own arrival yaw (their back to the room) and the last sampled point.
+          selfFeed?.faced({ x: bp.x, z: bp.z }, avatar.yaw);
+        }
+      }
+      // THE PRESENTER EXPLAINS: at their spot, the gesture is the body's resting clip (the walker plays it
+      // between walks); walking there and back stays the walk. Other browsers draw the same clip on this
+      // body from the call's own presenter (see syncPresenterClip) — no new wire.
+      navCtl.restClip = meetingDirector.state.phase === "presenting" && directedTurn === null ? PRESENTER_CLIP : null;
+      syncPresenterClip();
       if (coworkerApproach?.turning) {
         const next = stepAngle(avatar.yaw, coworkerApproach.yaw, APPROACH_TURN_RATE * (dt / 1000));
         avatar.setYaw(next);
@@ -5086,7 +5339,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // the body stayed frozen in the gesture it happened to be in. `avatar.play` is guarded on the
       // current clip, so re-asserting it every frame costs nothing.
       if (stack.owner === "Idle" && !seatedNow()) avatar.play(selfConversationClip ?? CLIP_IDLE);
-      selfFeed?.frame(dt, { x: bp.x, z: bp.z }, avatar.yaw, navCtl.path.length > 0 || coworkerApproach?.turning === true);
+      selfFeed?.frame(dt, { x: bp.x, z: bp.z }, avatar.yaw, navCtl.path.length > 0 || coworkerApproach?.turning === true || directedTurn !== null);
       // PRESENCE'S zone: the Meeting Floor and the lift are inside the office (app/access presenceZoneAt),
       // so riding up is never read as leaving the building — and never as Away.
       const zoneNow = presenceZoneAt({ x: bp.x, z: bp.z }, accessGeom, (p) => onFloor2(p) || inCabin(p));
@@ -5601,6 +5854,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     world, plan, walkability, mirror, R, scene: R.scene, camera: R.camera, renderer: R.renderer, params, stack, avatar, avatarState, navCtl,
     /** GO TOGETHER V1 — the party's port on this world (self/peer/walk/ride/holds), for the console. */
     goTogether: goTogetherPort,
+    /** DIRECTED MEETING — the director's read-out (phase, room, seat target, attempts, suspension). */
+    meetingDirector: { state: meetingDirector.state, port: meetingDirectorPort, holds: guidedHolds },
     /** the lift's own read-out (phase, floor, last refusal) — the verification harness reads it */
     lift: () => (floorTransition ? { ...floorTransition.state } : null),
     placeCamera: applyCam, placeLight: applyLight, focusOn,
@@ -5896,7 +6151,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     cave: {
       get transition() { return caveTransition; }, state: caveState, media: caveMedia, mediaState: caveMedia.state,
       build: caveBuild, group: caveBuild.group, metrics: CAVE_METRICS,
-      enter: () => caveTransition?.enter() ?? false,
+      enter: () => enterCave(),
       exit: () => caveTransition?.exit() ?? false,
       toggle: () => caveTransition?.toggle() ?? false,
       inside: () => caveTransition?.inside ?? false,
@@ -6272,7 +6527,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       occupiedSeatIds = new Set(ids);
       seatSyncState.occupied = occupiedSeatIds.size;
     },
-    standUp: () => engagedSeat()?.stand(),
+    // THE SERVER'S seat_rejected lands a beat after the claim — usually while the body is still gliding
+    // into the chair, where stand() does nothing. Remembered, and carried out the moment the sit completes
+    // (frame loop), so a lost seat race always ends with the body standing (and a Directed Meeting
+    // choosing another chair).
+    standUp: () => { const e = engagedSeat(); if (e) e.stand(); else if (seatEngaged()) standWhenSeated = true; },
     // Fire-and-forget: sync() loads GLBs, and a caller in a React effect has nothing useful to await.
     // Its own generation guard drops a load that lands after a newer roster, and its disposed guard drops
     // one that lands after the world is gone.
@@ -6300,7 +6559,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     },
     peerJumped: (email, ageMs = 0) => coworkers.jump(email, ageMs),
     setConversationPoses: (byEmail, self) => {
-      coworkers.setConversationClips(byEmail);
+      hostConversationClips = byEmail;
+      pushCoworkerClips();
       selfConversationClip = self;
       // PLAYER MODE drives its own clips every frame, so it cannot be told through the idle-gated line in
       // the render loop — it is handed the pose and picks it as its own resting clip instead. Walking and
@@ -6339,7 +6599,27 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       setSharing: async (on: boolean) => { await caveLiveShare.setSharing(on); notifyCaveMeetingIfChanged(); },
       leave: () => { caveLiveShare.leave(); notifyCaveMeetingIfChanged(); },
       invite: (email: string) => { caveLiveShare.invite(email); },
-      enter: () => caveTransition?.enter() ?? false,
+      enter: () => enterCave(),
+      acceptInvite: async (meetingId: string, email: string) => {
+        const room = MEETING_ROOMS.find((r) => r.meetingId === meetingId);
+        await caveLiveShare.connect(email);
+        if (!room) {
+          // THE CAVE'S OWN MEETING (or an id no room owns): its place is the Cave.
+          enterCave();
+          await caveLiveShare.startMeeting(CAVE_MEETING_ID);
+          applyRoomDisplays();
+          notifyCaveMeetingIfChanged();
+          return "cave";
+        }
+        // JOINED — and nothing else. Being connected to the meeting is not being in the room: HOW (and
+        // whether) to get there is the employee's own choice (Walk There / Teleport / Go Together, from
+        // the travel card), never an automatic walk.
+        await caveLiveShare.startMeeting(room.meetingId);
+        applyRoomDisplays();
+        notifyCaveMeetingIfChanged();
+        return "room";
+      },
+      end: () => { caveLiveShare.endForEveryone(); },
       observe: async (email: string) => {
         await caveLiveShare.connect(email);
         notifyCaveMeetingIfChanged();
@@ -6390,6 +6670,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     availableViewModes: () => FLOORS[currentFloor].viewModes,
     useElevator: (to) => callElevator(to ?? otherFloor()),
     walkToMeetingRoom,
+    teleportToMeetingRoom,
     goTogether: goTogetherPort,
     subscribeViewMode: (listener) => {
       viewModeListeners.add(listener);

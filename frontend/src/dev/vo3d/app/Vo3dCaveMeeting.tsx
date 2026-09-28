@@ -107,7 +107,7 @@ export function Vo3dCaveMeeting({ worldRef, ready, selfId, onInvite }: Vo3dCaveM
             {scheduled.isPrivate && <span className={styles.scheduledPrivate}> · Private</span>}
           </span>
           <span className={styles.sub}>
-            Scheduled · {formatTimeRange(scheduled.startsAt, scheduled.endsAt)} · Room {room}
+            {scheduled.startedEarly ? "Started early" : "Scheduled"} · {formatTimeRange(scheduled.startsAt, scheduled.endsAt)} · Room {room}
           </span>
           {occupied && (
             <span className={styles.scheduledNote} data-testid="cave-meeting-occupied">
@@ -199,6 +199,19 @@ export function Vo3dCaveMeeting({ worldRef, ready, selfId, onInvite }: Vo3dCaveM
           >
             Leave meeting
           </button>
+          {/* END is the host's, and ends it for EVERYONE (a scheduled occurrence is then complete) —
+              Leave above only ever takes you out. */}
+          {state.isHost && meeting?.end && (
+            <button
+              type="button"
+              className={`${styles.control} ${styles.leave}`}
+              disabled={busy}
+              data-testid="cave-meeting-end"
+              onClick={() => void run(() => meeting.end!())}
+            >
+              End meeting
+            </button>
+          )}
         </div>
       )}
 

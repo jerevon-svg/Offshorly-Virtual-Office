@@ -242,3 +242,80 @@ def test_a_leg_deadline_pauses_the_stuck_and_moves_on() -> None:
     step = reg.advance(p["partyId"], force=True)
     assert step["stragglers"] == ["b@x.com"] and p["members"]["b@x.com"]["following"] is False
     assert step["leg"]["riders"] == ["lead@x.com"]
+
+
+# ---- destination-aware roles (progressive merge) ---------------------------------------------------------
+
+def _at(reg: TravelPartyRegistry, p: dict, email: str, floor: str, room: str | None, x: float = 0.0) -> None:
+    assert reg.report_where(p["partyId"], email, floor=floor, room_id=room, point={"x": x, "z": 0.0})
+
+
+def test_roles_from_where_each_person_already_is() -> None:
+    reg = TravelPartyRegistry()
+    p = _party(reg)
+    for e in ("up@x.com", "down@x.com"):
+        reg.add_member(p["partyId"], e, f"s-{e}")
+    _at(reg, p, "lead@x.com", "floor-2", "floor-2/alpha")      # already in the room
+    _at(reg, p, "up@x.com", "floor-2", None, 6200)             # on the destination floor
+    _at(reg, p, "down@x.com", "floor-1", "dev-room", 100)      # still downstairs
+    rv = reg.start(p["partyId"])
+    assert p["roles"] == {"lead@x.com": "arrived", "up@x.com": "wait", "down@x.com": "travel"}
+    assert wire(p)["roles"] == p["roles"]
+    # the rendezvous is the downstairs one alone: never the Hub for the upstairs/in-room people
+    assert rv["kind"] == "here" and rv["floor"] == "floor-1"
+    # the gathering waits only for the traveller
+    assert reg.mark_ready(p["partyId"], "down@x.com", rv["stageId"], floor="floor-1")
+    assert reg.finish_gathering(p["partyId"]) == []
+    leg = reg.begin_journey(p["partyId"])
+    assert leg["kind"] == "to_lift" and p["expect"] == ["down@x.com"]
+    assert reg.mark_ready(p["partyId"], "down@x.com", leg["stageId"])
+    ride = reg.advance(p["partyId"])["leg"]
+    assert ride["kind"] == "ride" and ride["riders"] == ["down@x.com"] and p["expect"] == ["down@x.com"]
+    assert reg.mark_ready(p["partyId"], "down@x.com", ride["stageId"])
+    room = reg.advance(p["partyId"])["leg"]
+    # THE MERGE: the walk to the room waits for the rider AND the one who waited upstairs — not the one in it
+    assert room["kind"] == "to_room" and p["expect"] == ["up@x.com", "down@x.com"]
+    assert reg.mark_ready(p["partyId"], "up@x.com", room["stageId"])
+    assert reg.advance(p["partyId"]) is None
+    assert reg.mark_ready(p["partyId"], "down@x.com", room["stageId"])
+    assert reg.advance(p["partyId"])["arrived"] is True
+
+
+def test_two_downstairs_still_gather_before_the_upstairs_merge() -> None:
+    reg = TravelPartyRegistry()
+    p = _party(reg)
+    for e in ("b@x.com", "up@x.com"):
+        reg.add_member(p["partyId"], e, f"s-{e}")
+    _at(reg, p, "lead@x.com", "floor-1", "dev-room", 0)
+    _at(reg, p, "b@x.com", "floor-1", "qa-room", 900)
+    _at(reg, p, "up@x.com", "floor-2", None, 6200)
+    rv = reg.start(p["partyId"])
+    assert rv["kind"] == "hub"
+    assert p["roles"]["up@x.com"] == "wait"
+    # the upstairs person is never paused by the downstairs gathering's deadline
+    assert reg.finish_gathering(p["partyId"], force=True) == ["lead@x.com", "b@x.com"]
+    assert p["members"]["up@x.com"]["following"] is True
+
+
+def test_nobody_to_gather_goes_straight_to_the_room() -> None:
+    reg = TravelPartyRegistry()
+    p = _party(reg)
+    reg.add_member(p["partyId"], "up@x.com", "s-up")
+    _at(reg, p, "lead@x.com", "floor-2", "floor-2/alpha")
+    _at(reg, p, "up@x.com", "floor-2", None, 6200)
+    reg.start(p["partyId"])
+    assert p["stage"] == "ready"
+    leg = reg.begin_journey(p["partyId"])
+    assert leg["kind"] == "to_room" and p["expect"] == ["up@x.com"]
+
+
+def test_everyone_already_in_the_room_arrives_at_once() -> None:
+    reg = TravelPartyRegistry()
+    p = _party(reg)
+    reg.add_member(p["partyId"], "b@x.com", "s-b")
+    _at(reg, p, "lead@x.com", "floor-2", "floor-2/alpha")
+    _at(reg, p, "b@x.com", "floor-2", "floor-2/alpha")
+    reg.start(p["partyId"])
+    reg.begin_journey(p["partyId"])
+    assert p["expect"] == []
+    assert reg.advance(p["partyId"])["arrived"] is True

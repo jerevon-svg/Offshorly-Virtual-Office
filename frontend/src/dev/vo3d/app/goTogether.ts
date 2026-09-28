@@ -92,7 +92,13 @@ export interface PartyWire {
   stage: PartyStage;
   rendezvous: PartyRendezvous | null;
   leg: PartyLeg | null;
+  /** WHERE EACH PERSON ALREADY WAS on the way to the destination at Start Walking (the server decides it
+   *  from their own reports): still to travel, already on the destination floor (meets the party at its lift),
+   *  or already in the room. Absent before Start Walking — everybody travels. */
+  roles?: Record<string, PartyRole>;
 }
+
+export type PartyRole = "travel" | "wait" | "arrived";
 
 // ---- what the world offers (app/world.ts implements it) ----------------------------------------------
 
@@ -104,6 +110,9 @@ export interface Vo3dGoTogetherPort {
   hub(): { floor: Vo3dFloorId; point: Vec2 };
   /** the lobby spot in front of `floor`'s lift for party slot `slot` (app/liftRiders lobbyPoint) */
   liftLobby(floor: Vo3dFloorId, slot: number): Vec2 | null;
+  /** where somebody already on `floor` waits for a party coming up in its lift: beside the arrival lane,
+   *  facing the doors, one spot per waiting person (app/liftRiders liftWaitPoint) */
+  liftWait(floor: Vo3dFloorId, slot: number): Vec2 | null;
   /** the destination's ARRIVAL AREA: the point in front of it and the direction that leads in */
   arrival(dest: PartyDestination): { floor: Vo3dFloorId; point: Vec2; into: Vec2 } | null;
   /** walk to a standable point near `p` through the ordinary router (guided: PLAYER stays on screen) */
@@ -205,6 +214,10 @@ export type GoTogetherStatus =
   /** FORMING: who has accepted, and (leader) whether Start Walking is possible */
   | { kind: "leader-forming"; people: PartyPerson[]; canStart: boolean }
   | { kind: "forming"; leader: string; people: PartyPerson[] }
+  /** already inside the destination room: nothing to do, nobody moves this body */
+  | { kind: "already-here"; people: PartyPerson[] }
+  /** already on the destination floor: waiting at its lift for the others to come up */
+  | { kind: "meeting-upstairs"; people: PartyPerson[] }
   /** GATHERING at the rendezvous */
   | { kind: "rendezvous"; place: "hub" | "here"; people: PartyPerson[] }
   /** READY — "Everyone's here", the beat before the first leg */
@@ -354,6 +367,18 @@ export class GoTogetherController implements Vo3dGoTogetherHooks {
     const order = rv?.participants ?? [];
     const index = order.indexOf(this.input.selfEmail);
     if (index < 0) return;
+    const role = roleOf(party, this.input.selfEmail);
+    // ALREADY IN THE ROOM: this body is where the party is going. Nothing to walk, nothing to report.
+    if (role === "arrived") return;
+    // ALREADY ON THE DESTINATION FLOOR: never sent back down. Until the riders are off the lift, wait beside
+    // its arrival lane; the walk to the room then opens for everybody at once and this body joins it.
+    if (role === "wait" && party.stage !== "to_room") {
+      const floor = party.destination.floor as Vo3dFloorId;
+      const waiting = order.filter((e) => roleOf(party, e) === "wait");
+      const spot = this.port.liftWait(floor, Math.max(0, waiting.indexOf(this.input.selfEmail)));
+      if (spot) this.walkStage(`${party.partyId}:wait`, floor, spot, false);
+      return;
+    }
     if (party.stage === "gathering" && rv) {
       const place = rv.kind === "hub" ? this.port.hub() : rv.floor && rv.point ? { floor: rv.floor as Vo3dFloorId, point: rv.point } : null;
       if (place) this.walkStage(rv.stageId, place.floor, rendezvousSlot(place.point, index, order.length));
@@ -373,7 +398,7 @@ export class GoTogetherController implements Vo3dGoTogetherHooks {
   }
 
   /** A WALKING STAGE: this body, guided, to its own slot `target` on `floor` — and ready once IT is there. */
-  private walkStage(stageId: string, floor: Vo3dFloorId, target: Vec2): void {
+  private walkStage(stageId: string, floor: Vo3dFloorId, target: Vec2, report = true): void {
     if (this.readySent === stageId) return;
     const now = this.now();
     const self = this.port.self();
@@ -391,7 +416,7 @@ export class GoTogetherController implements Vo3dGoTogetherHooks {
     const settled = !self.moving && now - this.walkAt >= 300;
     if (settled && (d <= READY_RADIUS || (this.walks >= RV_FALLBACK_WALKS && d <= RV_FALLBACK_RADIUS))) {
       this.readySent = stageId;
-      this.net.ready(stageId, self.floor);
+      if (report) this.net.ready(stageId, self.floor);
       return;
     }
     if (self.moving || now - this.walkAt < RV_RETRY_MS) return;
@@ -484,6 +509,10 @@ export class GoTogetherController implements Vo3dGoTogetherHooks {
         : { kind: "forming", leader: party.leaderEmail, people };
     }
     if (!this.following) return { kind: "paused", leader: this.isLeader() };
+    const role = roleOf(party, this.input.selfEmail);
+    const everyone = () => this.travellingPeople(party, party.leg?.ready ?? party.rendezvous?.ready ?? []);
+    if (role === "arrived") return { kind: "already-here", people: everyone() };
+    if (role === "wait" && party.stage !== "to_room") return { kind: "meeting-upstairs", people: everyone() };
     const place = party.rendezvous?.kind ?? "here";
     if (party.stage === "gathering") return { kind: "rendezvous", place, people: this.travellingPeople(party, party.rendezvous?.ready ?? []) };
     if (party.stage === "ready" || !party.leg) {
@@ -496,7 +525,8 @@ export class GoTogetherController implements Vo3dGoTogetherHooks {
    *  body back. Only the tab that drives the body. */
   private wantsGuided(): boolean {
     const party = this.input.party;
-    return party !== null && this.input.isController && party.stage !== "forming" && this.following;
+    return party !== null && this.input.isController && party.stage !== "forming" && this.following
+      && roleOf(party, this.input.selfEmail) !== "arrived";
   }
 
   private syncGuided(): void {
@@ -513,6 +543,11 @@ export class GoTogetherController implements Vo3dGoTogetherHooks {
     this.status = next;
     for (const cb of this.listeners) cb(next);
   }
+}
+
+/** This person's role in the journey (everybody travels until Start Walking has decided). */
+export function roleOf(party: PartyWire, email: string): PartyRole {
+  return party.roles?.[email] ?? "travel";
 }
 
 /** The stage a ready report is about: the rendezvous while gathering, the leg while travelling. */

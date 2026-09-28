@@ -1196,6 +1196,36 @@ async def _emit_meeting_invite_terminal(invite: dict, event: str, extra: dict | 
         await sio.emit(event, payload, room=user_room(email))
 
 
+@sio.on("meeting_end")
+async def meeting_end(sid: str, payload: dict | None) -> None:
+    """END MEETING — for everyone, by its host (or, for a scheduled room meeting, its organizer). Distinct
+    from Leave, which only ever takes the leaver out. Every connected client leaves on `meeting_ended`;
+    a scheduled occurrence the session was bound to is persisted as ended (scheduled_meetings.end_live),
+    so it is never pending again for its original time."""
+    try:
+        meeting_key = _meeting_key_from_payload(payload or {})
+        if meeting_key is None or not call_registry.participants(meeting_key):
+            return
+        session_data = await sio.get_session(sid)
+        email = session_data["email"].strip().lower()
+        meeting_id = meeting_key[len(MEETING_KEY_PREFIX):]
+        is_host = (meeting_hosts.host_of(meeting_key) or "").strip().lower() == email
+        ended = None
+        if scheduled_meetings.is_meeting_floor_meeting(meeting_id):
+            async with async_session_maker() as db:
+                booking = await scheduled_meetings.live_booking(db, meeting_key)
+                if not is_host and not (booking is not None and booking.organizer_email == email):
+                    return
+                ended = await scheduled_meetings.end_live(db, meeting_key)
+        elif not is_host:
+            return
+        await sio.emit("meeting_ended", {"meetingId": meeting_id, "by": email})
+        if ended is not None:
+            await sio.emit("scheduled_meetings_changed", {})
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
 @sio.on("meeting_invite")
 async def meeting_invite(sid: str, payload: dict | None) -> None:
     """Invite one person to a standalone meeting. Mints no token and touches no media — the
@@ -1430,7 +1460,8 @@ async def _begin_journey_later(party_id: str) -> None:
     if leg is None:
         return
     asyncio.create_task(_leg_deadline_later(party_id, leg["stageId"], leg["kind"]))
-    await _emit_party_updated(party)
+    # A leg nobody has to walk (everyone it concerns is already there) completes at once.
+    await _progress(party)
 
 
 async def _leg_deadline_later(party_id: str, stage_id: str, kind: str) -> None:
@@ -1657,7 +1688,11 @@ async def party_start(sid: str, _payload: dict | None = None) -> None:
         for invite in _party_pending(party):
             if party_invites.resolve(invite["inviteId"]) is not None:
                 await _emit_party_invite_terminal(invite, "cancelled")
-        asyncio.create_task(_gather_deadline_later(party["partyId"], rv["stageId"]))
+        if party["stage"] == "ready":
+            # nobody to gather (everyone already on the destination floor): the walk to the room, a beat later
+            asyncio.create_task(_begin_journey_later(party["partyId"]))
+        else:
+            asyncio.create_task(_gather_deadline_later(party["partyId"], rv["stageId"]))
         await _emit_party_updated(party)
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)

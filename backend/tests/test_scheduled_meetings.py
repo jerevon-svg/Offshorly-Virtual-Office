@@ -322,3 +322,24 @@ async def test_backend_rooms_match_the_meeting_floor_definition():
     assert [(s, n, int(cap)) for s, n, cap in found] == [(r.slug, r.name, r.capacity) for r in MEETING_FLOOR_ROOMS]
     # The id schemes the frontend derives from each slug.
     assert "id: `floor-2/${d.slug}`" in src and "meetingId: `mf-${d.slug}`" in src
+
+
+async def test_ending_a_live_session_early_completes_that_occurrence():
+    """Started early, then ENDED by the host before its time: the same occurrence is done — it governs
+    nothing, the reminder sweep's window skips it, and its original start never reactivates it."""
+    async with _client() as client:
+        meeting_id = (await _create(client)).json()["id"]
+    call_registry.join("meeting:mf-alpha", ORG, "sid-org")
+    service.bind_live("meeting:mf-alpha", meeting_id, fresh=True)
+    async with async_session_maker() as db:
+        assert (await service.live_booking(db, "meeting:mf-alpha")).id == meeting_id
+        ended = await service.end_live(db, "meeting:mf-alpha")
+        assert ended is not None and ended.status == "ended"
+        # the room, at the occurrence's original start: nothing governs it any more
+        assert await service.admit(db, "mf-alpha", EVE, now=BASE) == (True, None)
+        # a second End (or an ad-hoc session) ends nothing
+        assert await service.end_live(db, "meeting:mf-alpha") is None
+        from app.repositories import scheduled_meetings as repo
+        due = await repo.starting_between(db, after=BASE - timedelta(minutes=10), until=BASE + timedelta(minutes=1))
+        assert meeting_id not in [m.id for m in due]
+    assert service.live_booking_wire("meeting:mf-alpha") is None

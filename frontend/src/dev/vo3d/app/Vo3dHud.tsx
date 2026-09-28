@@ -74,6 +74,8 @@ import { HudDock, type HudDockEntry } from "../../../components/OfficeMap/HudDoc
 import { Vo3dViewSwitcher } from "./Vo3dViewSwitcher";
 import { Vo3dViewIndicator } from "./Vo3dViewIndicator";
 import { Vo3dCaveMeeting } from "./Vo3dCaveMeeting";
+import { Vo3dMeetingTravel } from "./Vo3dMeetingTravel";
+import { useCallState } from "../../../services/call/callStore";
 import { isPointerLocked, isTypingTarget } from "./keyGuard";
 import type { ToucanSummonState } from "../../../components/OfficeMap/toucanSummon";
 import { HudSettings } from "../../../components/OfficeMap/HudSettings";
@@ -240,6 +242,12 @@ export function Vo3dHud({
   // value: that one is gated on chatMode === "real" and its confirm opens a conversation, neither of
   // which is true here. Same modal component, different question.
   const [invitePickerOpen, setInvitePickerOpen] = useState(false);
+  // who is IN the meeting this client is connected to (the server's meeting_presence) — not re-invited
+  const hudCall = useCallState();
+  const inMeetingNow = useMemo(() => {
+    const m = (hudCall.meetings ?? []).find((x) => x.meetingId === hudCall.connectedMeetingId);
+    return new Set((m?.participants ?? []).map((e) => e.trim().toLowerCase()));
+  }, [hudCall.meetings, hudCall.connectedMeetingId]);
   /** GO TOGETHER — the meeting whose attendees the picker is offering, or null */
   const [goTogetherFor, setGoTogetherFor] = useState<ScheduledMeeting | null>(null);
   const companyHub = useCompanyHub();
@@ -654,6 +662,9 @@ export function Vo3dHud({
           onGoTogether={setGoTogetherFor} inParty={travelParty.party !== null || travelParty.invites.length > 0}
           travelDecided={travelDecided} />
       )}
+      {/* HOW TO GET THERE after joining a room's meeting from elsewhere — Walk there / Teleport / (Go together) /
+          Stay here. Joining never moves anybody on its own. */}
+      {!officeToolOpen && <Vo3dMeetingTravel worldRef={worldRef} ready={ready} />}
       {/* GO TOGETHER — the invitation card and the party chip. Not hidden behind a tool: an invitation
           expires, and the chip is the escape hatch (Leave / End) while travelling. */}
       <Vo3dGoTogether worldRef={worldRef} ready={ready} selfId={selfId} nameOf={nameOf} />
@@ -680,16 +691,19 @@ export function Vo3dHud({
         // invitation, exactly as the server mints them. The roster is V1's own (pickerPeople, already
         // built above and already minus the viewer), so only real employees can be offered a meeting.
         <EmployeePickerModal
-          mode="single"
-          title="Invite to the Cave meeting"
-          people={pickerPeople}
+          mode="multi"
+          title="Invite to this meeting"
+          // Nobody already IN it is offered again (the server also refuses a duplicate or a repeat ring).
+          people={pickerPeople.filter((p) => !inMeetingNow.has(p.email.trim().toLowerCase()))}
+          minSelected={1}
+          showGroupName={false}
+          confirmLabel={(n) => (n === 1 ? "Invite 1 person" : `Invite ${n} people`)}
           onClose={() => setInvitePickerOpen(false)}
           onConfirm={(emails) => {
             setInvitePickerOpen(false);
-            // Straight to the world's own meeting bridge — the MEETING invitation, never the spatial
-            // ring. What the inviter sees next is the existing notice card, driven by the store's
-            // outgoing-invitation state; this deliberately raises no toast of its own.
-            if (emails[0]) worldRef.current?.caveMeeting?.invite(emails[0]);
+            // One MEETING invitation per person, all to the SAME meeting — the server mints them one by
+            // one and a second never replaces the first. Each invitee then chooses how to get there.
+            for (const e of emails) worldRef.current?.caveMeeting?.invite(e);
           }}
         />
       )}

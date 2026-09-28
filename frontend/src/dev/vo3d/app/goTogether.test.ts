@@ -64,6 +64,7 @@ function rig() {
     self: () => ({ ...self, pos: { ...self.pos } }),
     hub: () => ({ floor: "floor-1", point: HUB }),
     liftLobby: (_f, i) => lobby(i),
+    liftWait: (_f, i) => ({ x: 6170, z: 568 + i * 108 }),
     arrival: () => ({ floor: "floor-2", point: APPROACH, into: INTO }),
     walkNear: vi.fn(() => true),
     ride: vi.fn(() => true),
@@ -369,5 +370,55 @@ describe("Esc / leaving", () => {
     as(r, BOB, party({ stage: "forming", rendezvous: null }));
     r.hooks()!.onUserMove();
     expect(r.net.followState).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("GoTogetherController — destination-aware roles (progressive merge)", () => {
+  const roles = { [LEAD]: "arrived", [BOB]: "wait", [CAT]: "travel" } as const;
+
+  it("already in the room: nobody walks this body, it is not guided, and the chip says so", () => {
+    const r = rig();
+    r.self.floor = "floor-2";
+    as(r, LEAD, party({ roles }));
+    r.ctl.tick();
+    expect(r.port.walkNear).not.toHaveBeenCalled();
+    expect(r.port.ride).not.toHaveBeenCalled();
+    expect(r.port.setGuided).not.toHaveBeenCalledWith(true);
+    expect(r.ctl.getStatus().kind).toBe("already-here");
+  });
+
+  it("on the destination floor: waits beside the lift upstairs (never rides down), reports nothing until the merge", () => {
+    const r = rig();
+    r.self.floor = "floor-2";
+    r.self.pos = { x: 6400, z: 900 };
+    for (const stage of [{}, leg("to_lift"), leg("ride")]) {
+      as(r, BOB, party({ roles, ...stage }));
+      r.ctl.tick();
+      r.advance(RV_RETRY_MS + 10);
+    }
+    expect(r.port.ride).not.toHaveBeenCalled();
+    expect(r.port.walkNear).toHaveBeenCalledWith({ x: 6170, z: 568 });
+    expect(r.ctl.getStatus().kind).toBe("meeting-upstairs");
+    r.self.pos = { x: 6170, z: 568 };
+    r.ctl.tick();
+    expect(r.net.ready).not.toHaveBeenCalled();
+    expect(r.port.setGuided).toHaveBeenLastCalledWith(true);
+    // THE MERGE: the walk to the room opens for everyone — this body walks its own arrival slot and reports
+    as(r, BOB, party({ roles, ...leg("to_room", { expect: [BOB, CAT] }) }));
+    r.advance(1000);
+    r.ctl.tick();
+    expect(r.port.walkNear).toHaveBeenLastCalledWith(arrivalSlot(APPROACH, INTO, 1));
+    r.self.pos = arrivalSlot(APPROACH, INTO, 1);
+    r.advance(1000);
+    r.ctl.tick();
+    expect(r.net.ready).toHaveBeenCalledWith("p1:to_room", "floor-2");
+  });
+
+  it("still downstairs: the ordinary journey", () => {
+    const r = rig();
+    as(r, CAT, party({ roles }));
+    r.ctl.tick();
+    expect(r.port.walkNear).toHaveBeenCalledWith(rendezvousSlot(HUB, 2, 3));
   });
 });

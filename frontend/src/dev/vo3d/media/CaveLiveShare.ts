@@ -224,6 +224,11 @@ export class CaveLiveShare {
     this.store?.sendMeetingInvite(toEmail, this.meetingId);
   }
 
+  /** END the meeting for everyone (host only — the server decides). Not Leave. */
+  endForEveryone(): void {
+    this.store?.endMeetingForEveryone();
+  }
+
   /** Leave the media call — and NOTHING else, exactly as the app's own Leave does. */
   leave(): void {
     this.store?.leaveCall();

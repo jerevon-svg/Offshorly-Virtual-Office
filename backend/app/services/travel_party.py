@@ -159,6 +159,10 @@ class TravelPartyRegistry:
             "leg": None,
             "legs": 0,
             "expect": [],
+            # DESTINATION-AWARE ROLES, decided at Start Walking from each body's own report (see party_roles):
+            # "travel" still has to reach the destination floor, "wait" is already on it (meets the party at
+            # its lift), "arrived" is already in the destination room (nobody moves them)
+            "roles": {},
             "created_at": now if now is not None else time.time(),
         }
         self._parties[party["partyId"]] = party
@@ -250,9 +254,20 @@ class TravelPartyRegistry:
         people = self.people(party)
         party["participants"] = people
         party["ready"] = set()
-        party["rendezvous"] = {"stageId": f"{party_id}:rv", **choose_rendezvous(party["where"], people)}
-        party["stage"] = "gathering"
+        party["roles"] = party_roles(party["where"], people, party["destination"])
+        travellers = [e for e in people if party["roles"][e] == "travel"]
+        # THE RENDEZVOUS IS FOR THOSE STILL DOWNSTAIRS OF THE DESTINATION. Nobody already on the destination
+        # floor (or in the room) is ever sent back down to meet them.
+        rv = choose_rendezvous(party["where"], travellers) if travellers else {"kind": "here"}
+        party["rendezvous"] = {"stageId": f"{party_id}:rv", **rv}
+        # Nobody left to gather: straight to READY (the caller then opens the walk to the room).
+        party["stage"] = "gathering" if travellers else "ready"
+        if not travellers:
+            party["floor"] = party["destination"]["floor"]
         return party["rendezvous"]
+
+    def role(self, party: dict, email: str) -> str:
+        return party.get("roles", {}).get(_normalize_email(email), "travel")
 
     def active_participants(self, party: dict) -> list[str]:
         """The participants a barrier waits for: still in the party, connected, and following."""
@@ -288,7 +303,10 @@ class TravelPartyRegistry:
 
     def _waiting_for(self, party: dict) -> list[str]:
         active = self.active_participants(party)
-        expect = party["expect"] if party["stage"] in LEGS else party["participants"]
+        if party["stage"] in LEGS:
+            expect = party["expect"]
+        else:  # the gathering waits only for the people it gathers
+            expect = [e for e in party["participants"] if self.role(party, e) == "travel"]
         return [e for e in expect if e in active]
 
     def stage_done(self, party: dict) -> bool:
@@ -325,7 +343,10 @@ class TravelPartyRegistry:
         party["leg"] = {"stageId": f"{party['partyId']}:{party['legs']}:{kind}", "kind": kind, **fields}
         party["stage"] = kind
         party["ready"] = set()
-        party["expect"] = self.active_participants(party)
+        # WHO EACH LEG WAITS FOR: the lift legs, the people riding; the walk to the room, everybody still on
+        # the way — those who waited upstairs join the formation there. Never somebody already in the room.
+        roles = ("travel",) if kind in ("to_lift", "ride") else ("travel", "wait")
+        party["expect"] = [e for e in self.active_participants(party) if self.role(party, e) in roles]
         return party["leg"]
 
     def begin_journey(self, party_id: str) -> dict | None:
@@ -414,6 +435,22 @@ class TravelPartyRegistry:
         self._by_email.clear()
 
 
+def party_roles(where: dict[str, dict], people: list[str], destination: dict) -> dict[str, str]:
+    """WHERE EACH PERSON ALREADY IS ON THE WAY TO THE DESTINATION, from their own reports: in the room
+    ("arrived"), on its floor ("wait"), or still to travel ("travel" — also anybody who has not reported)."""
+    dest_floor, dest_room = destination.get("floor"), destination.get("roomId")
+    out: dict[str, str] = {}
+    for email in people:
+        r = where.get(email)
+        if r is None or r["floor"] != dest_floor:
+            out[email] = "travel"
+        elif dest_room is not None and r["roomId"] == dest_room:
+            out[email] = "arrived"
+        else:
+            out[email] = "wait"
+    return out
+
+
 def choose_rendezvous(where: dict[str, dict], people: list[str]) -> dict:
     """THE CENTRAL HUB RULE. Gather where they already are only when every participant has reported and
     they share a floor, a room/area (both outside any room counts as one area) and no two are more than
@@ -457,6 +494,7 @@ def wire(party: dict, *, pending: list[str] | None = None) -> dict:
             "participants": list(party["participants"]),
             "ready": sorted(party["ready"]) if party["stage"] in ("gathering", "ready") else [],
         },
+        "roles": dict(party.get("roles", {})),
         # the journey leg under way, with its barrier: who it waits for, who has said they are there
         "leg": None if party["leg"] is None or party["stage"] not in LEGS else {
             **party["leg"],

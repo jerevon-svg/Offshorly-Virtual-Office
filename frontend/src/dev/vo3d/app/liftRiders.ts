@@ -115,5 +115,16 @@ export function lobbyPoint(boarding: Vec2, slotIndex: number): Vec2 {
   return { x: boarding.x + o.x, z: boarding.z + o.z };
 }
 
+/** WHERE SOMEBODY ALREADY ON THE FLOOR WAITS for a party coming up in its lift: out of the arrival lane
+ *  (the riders walk out due east through the doorway, rooms/elevator), a few steps back and to either side of
+ *  it, facing the doors — first north, then south, then a row further back. */
+const WAIT_OFFSETS: readonly Vec2[] = [
+  { x: 62, z: -54 }, { x: 62, z: 54 }, { x: 90, z: -54 }, { x: 90, z: 54 }, { x: 118, z: -54 }, { x: 118, z: 54 },
+];
+export function liftWaitPoint(boarding: Vec2, index: number): Vec2 {
+  const o = WAIT_OFFSETS[index % WAIT_OFFSETS.length];
+  return { x: boarding.x + o.x, z: boarding.z + o.z };
+}
+
 /** The lobby spot of the SLOT a body rides in (a slot is found by identity in PARTY_LIFT_SLOTS). */
 export const slotIndexOf = (slot: LiftRiderSlot): number => Math.max(0, PARTY_LIFT_SLOTS.indexOf(slot));

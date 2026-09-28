@@ -53,6 +53,9 @@ export class NavigationController {
   speed = 30; // units/s — the walk clip stride is authored for this speed
   turnRate = 7; // rad/s (~0.14 s for a 90° turn)
   onArrive: (() => void) | null = null;
+  /** THE CLIP A BODY THIS WALKER HOLDS STANDS IN between walks — idle, or a presenter's explaining gesture
+   *  (Directed Meeting). Null means the ordinary idle. */
+  restClip: string | null = null;
   private readonly avatar: Avatar;
   private readonly stack: ControllerStack;
   constructor(avatar: Avatar, stack: ControllerStack) { this.avatar = avatar; this.stack = stack; }
@@ -72,10 +75,10 @@ export class NavigationController {
    *  Guided an empty queue just stands (the release below is a no-op — Guided is the stack's base). */
   update(dt: number): void {
     if (!this.stack.owns("Navigation") && !this.stack.owns("Guided")) return;
-    if (this.path.length === 0) { this.avatar.play(CLIP_IDLE); this.stack.release("Navigation"); return; }
+    if (this.path.length === 0) { this.avatar.play(this.restClip ?? CLIP_IDLE); this.stack.release("Navigation"); return; }
     stepAlong(this.avatar, this.path, this.speed, this.turnRate, dt);
     if (this.path.length === 0) {
-      this.avatar.play(CLIP_IDLE);
+      this.avatar.play(this.restClip ?? CLIP_IDLE);
       this.stack.release("Navigation");
       this.onArrive?.();
     } else {

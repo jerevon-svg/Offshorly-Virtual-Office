@@ -163,3 +163,23 @@ describe("resolvePeerStatus", () => {
     }
   });
 });
+
+describe("IN_MEETING — a Meeting Floor room's live meeting", () => {
+  const base = { away: false, inConversation: false, inCall: false, offline: false };
+  it("outranks an ordinary call and a conversation, never DND or Offline, and never touches the manual status", () => {
+    expect(resolveCurrentStatus("AVAILABLE", { ...base, inCall: true, inMeeting: true })).toBe("IN_MEETING");
+    expect(resolveCurrentStatus("BUSY", { ...base, inMeeting: true, inConversation: true })).toBe("IN_MEETING");
+    expect(resolveCurrentStatus("DND", { ...base, inMeeting: true })).toBe("DND");
+    expect(resolveCurrentStatus("AVAILABLE", { ...base, inMeeting: true, offline: true })).toBe("OFFLINE");
+    // leaving: back to the call / the manual status underneath
+    expect(resolveCurrentStatus("BUSY", { ...base, inCall: true, inMeeting: false })).toBe("IN_CALL");
+    expect(resolveCurrentStatus("BUSY", { ...base })).toBe("BUSY");
+  });
+  it("peers: the server's meeting participants read In Meeting over Atlas's row, DND still wins", async () => {
+    const { resolvePeerStatus } = await import("./status");
+    expect(resolvePeerStatus("OFFLINE", false, true)).toBe("IN_MEETING");
+    expect(resolvePeerStatus("ONLINE", false, true)).toBe("IN_MEETING");
+    expect(resolvePeerStatus("ONLINE", true, true)).toBe("DND");
+    expect(resolvePeerStatus("ONLINE", false)).toBe("AVAILABLE");
+  });
+});

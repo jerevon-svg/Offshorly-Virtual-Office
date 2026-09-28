@@ -89,6 +89,11 @@ export interface Vo3dSelfMovementSink {
    *  movement, in `room`'s frame. Published as an ordinary started/arrived pair so peers replay it
    *  through the interpolation every office walk already uses. */
   movedInPlace(anchor: Vec2, from: Vec2, to: readonly Vec2[], yaw: number, room: string): void;
+  /** THE BODY SAT DOWN INSIDE A NAMED PLACE (a Meeting Floor chair). The in-place pair movedInPlace uses —
+   *  V1 keeps holding `anchor` — resolved as SITTING in `seat` at `at`, so peers seat the body in that very
+   *  chair and the backend's seat arbitration (and `seat_rejected`) covers upstairs chairs too. OPTIONAL:
+   *  a sink without it publishes an upstairs sit as nothing, exactly as before. */
+  satInPlace?(anchor: Vec2, at: Vec2, yaw: number, room: string, seat: string): void;
   /** THIS EMPLOYEE JUST JUMPED. A transient, cosmetic relay and NOT a movement: it carries no
    *  position, no duration and no id, it pairs with nothing, it resolves nothing in flight, and the
    *  feed above never calls it — the world does, straight from the takeoff.
@@ -338,6 +343,16 @@ export class SelfMovementFeed {
    *  Then the feed holds in `seated` until stood(): see Mode. */
   seated(pos: Vec2, yaw: number, seat: string): void {
     if (this.mode.kind === "seated") return;
+    // UPSTAIRS (a named place beyond V1's frame): the in-place seated pair, never a V1 walk that would be
+    // refused whole. The next local leg after standing starts from the chair.
+    if (!this.wasInRange && this.place && this.anchor && this.sink.satInPlace) {
+      this.sink.satInPlace(this.anchor, pos, wrapAngle(yaw), this.place, seat);
+      this.mode = { kind: "seated" };
+      this.last = pos;
+      this.localLast = pos;
+      this.lastYaw = yaw;
+      return;
+    }
     const facing = facingForYaw(yaw);
     const wrapped = wrapAngle(yaw);
     if (this.mode.kind === "planned") {
@@ -358,6 +373,57 @@ export class SelfMovementFeed {
     this.lastYaw = yaw;
   }
 
+  /** TELEPORTED — the body is simply somewhere else now (a meeting room, possibly on another floor). A snap,
+   *  never a walk: upstairs it is the named-place snap every floor arrival already is (V1 keeps holding the
+   *  last in-frame point); inside the frame, the minimum-duration pair. Whatever was in flight is resolved
+   *  first, and the boundary crossing is settled here so the next frame does not publish it again. */
+  teleported(pos: Vec2, yaw: number): void {
+    if (this.inLift) return;
+    this.flushPending();
+    const wrapped = wrapAngle(yaw);
+    if (!this.inRange(pos)) {
+      if (this.wasInRange && this.last && this.inRange(this.last)) this.anchor = this.last;
+      this.wasInRange = false;
+      this.mode = { kind: "idle" };
+      if (this.place && this.anchor) this.sink.enteredPlace(this.anchor, wrapped, this.place, pos);
+      this.localLast = pos;
+    } else {
+      this.wasInRange = true;
+      this.mode = { kind: "idle" };
+      this.sink.started(this.last ?? pos, [pos], MIN_DURATION_MS);
+      this.sink.arrived(pos, facingForYaw(yaw), wrapped);
+    }
+    this.last = pos;
+    this.lastYaw = yaw;
+  }
+
+  /** THE BODY TURNED ON THE SPOT to face something (a presenter squaring up to the room beside the TV).
+   *  V1's wire has no "I turned", and a pure turn is never sampled as movement — so every other browser kept
+   *  the yaw the walk arrived with (the presenter's back to the room) and the last sampled point, a few units
+   *  short. Published as the honest fact: here, facing this way. Upstairs, the in-place leg every upstairs
+   *  move is; in the frame, the planned walk resolved with this yaw, or a minimum-duration snap. */
+  faced(pos: Vec2, yaw: number): void {
+    if (this.inLift || this.mode.kind === "seated") return;
+    const wrapped = wrapAngle(yaw);
+    if (!this.wasInRange) {
+      if (this.place && this.anchor) {
+        this.sink.movedInPlace(this.anchor, this.localLast ?? pos, [pos], wrapped, this.place);
+        this.localLast = pos;
+      }
+      this.last = pos;
+      this.lastYaw = yaw;
+      return;
+    }
+    if (this.mode.kind === "planned") { this.frame(0, pos, yaw, false); return; }
+    if (this.mode.kind === "free") this.closeFreeLeg(pos, yaw);
+    this.flushPending();
+    this.sink.started(this.last ?? pos, [pos], MIN_DURATION_MS);
+    this.sink.arrived(pos, facingForYaw(yaw), wrapped);
+    this.mode = { kind: "idle" };
+    this.last = pos;
+    this.lastYaw = yaw;
+  }
+
   /** PHASE 6C — THE BODY HAS LEFT ITS CHAIR. Ends the seated hold; from here the chair rolling out, the
    *  stand-up glide and the walk away are ordinary free legs, and the first walk_started among them is
    *  what releases the seat on V1's side (the backend clears the seat key on every walk_started). No
@@ -366,6 +432,7 @@ export class SelfMovementFeed {
     if (this.mode.kind !== "seated") return;
     this.flushPending();
     this.mode = { kind: "idle" };
+    if (!this.wasInRange) this.localLast = pos;
     this.last = pos;
     this.lastYaw = yaw;
   }

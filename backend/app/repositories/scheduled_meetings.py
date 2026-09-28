@@ -12,6 +12,9 @@ from app.models.scheduled_meeting import ScheduledMeeting, ScheduledMeetingInvit
 
 SCHEDULED = "scheduled"
 CANCELLED = "cancelled"
+# The host ENDED this occurrence's live session (possibly before its scheduled start): it is done, and —
+# exactly like a cancelled one — it governs, reminds and reactivates nothing any more.
+ENDED = "ended"
 
 
 async def get(session: AsyncSession, meeting_id: str) -> ScheduledMeeting | None:

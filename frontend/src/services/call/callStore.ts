@@ -350,6 +350,11 @@ function ensureSocket(): Socket | null {
     notify();
   });
 
+  // END MEETING — the host ended it for everyone: whoever is still in it leaves, exactly as Leave does.
+  socket.on("meeting_ended", (p: { meetingId?: string } | undefined) => {
+    if (p?.meetingId && p.meetingId === connectedMeetingId) leaveCall();
+  });
+
   socket.on("meeting_invite_ringing", (inv: CallInvite | undefined) => {
     if (!inv?.inviteId) return;
     outgoingMeetingInvite = inv;
@@ -1199,6 +1204,12 @@ function clearMeetingInvite(inv: { inviteId?: string } | undefined): void {
 
 /** PHASE 7D. Offer somebody a MEETING. Intent only — no token, no room, no microphone on either side;
  *  the recipient's own client connects if and when they accept. */
+/** END MEETING for everyone — the host's verb (the server checks it is the host, or a scheduled room
+ *  meeting's organizer). Leave (leaveCall) is the other one and only ever takes THIS client out. */
+export function endMeetingForEveryone(): void {
+  if (connectedMeetingId) ensureSocket()?.emit("meeting_end", { meetingId: connectedMeetingId });
+}
+
 export function sendMeetingInvite(toEmail: string, meetingId: string): void {
   ensureSocket()?.emit("meeting_invite", { toEmail: toEmail.trim().toLowerCase(), meetingId });
 }

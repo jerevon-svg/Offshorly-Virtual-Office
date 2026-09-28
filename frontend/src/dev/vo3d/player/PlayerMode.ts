@@ -111,6 +111,9 @@ export type PlayerDeps = {
   /** Is the mouse allowed to turn the camera while somebody else drives the body? True for a guided or
    *  routed walk; false while a ride or a seat stages its own shot. Absent means never (the old rule). */
   freeLook?: () => boolean;
+  /** DIRECTED MEETING — the meeting owns the chair, so no seat or walk-up is offered (E would be refused);
+   *  a person is still a menu that moves nobody. Absent means never. */
+  targetsSuppressed?: () => boolean;
 };
 
 export class PlayerMode {
@@ -439,6 +442,7 @@ export class PlayerMode {
     const dynamic = this.d.dynamicCandidates?.() ?? EMPTY_CANDIDATES;
     const all = dynamic.length === 0 ? list : list ? [...list, ...dynamic] : dynamic;
     this.target = all && all.length > 0 ? pickTarget(all, this.body.pos, facing) : null;
+    if (this.target && this.target.kind !== "person" && this.d.targetsSuppressed?.()) this.target = null;
     this.state.target = this.target ? this.target.label : "—";
     if (this.d.canStandUp()) {
       this.hud?.setTarget("Stand up", null);

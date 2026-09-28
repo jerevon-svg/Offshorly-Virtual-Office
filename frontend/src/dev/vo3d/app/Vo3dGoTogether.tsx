@@ -88,13 +88,28 @@ export function Vo3dGoTogether({ worldRef, ready, selfId, nameOf }: {
 
   const invite = tp.invites[0] ?? null;
   const party = tp.party;
+  // ALREADY IN THE ROOM THE PARTY IS GOING TO: VO knows, so nobody is asked to say so — the invitation is
+  // taken quietly and the chip reads "You're already here" (the server gives them the "arrived" role).
+  const here = invite && !party ? alreadyAt(worldRef.current, invite.party.destination) : false;
+  const autoAccepted = useRef<string | null>(null);
+  useEffect(() => {
+    if (!invite || party || !here || autoAccepted.current === invite.inviteId) return;
+    autoAccepted.current = invite.inviteId;
+    acceptPartyInvite(invite.inviteId);
+  }, [invite, party, here]);
   if (!invite && !party && !notice) return null;
   const label = party?.destination.label ?? "";
   const ctl = ctlRef.current;
 
   return (
     <div className={styles.wrap} data-testid="go-together">
-      {invite && !party && (
+      {invite && !party && here && (
+        <div className={styles.card} role="status" data-testid="go-together-invite" data-here="true">
+          <span className={styles.cardTitle}>{nameOf(invite.fromEmail)} is going together</span>
+          <span className={styles.cardSub}>You're already here · {invite.party.destination.label}</span>
+        </div>
+      )}
+      {invite && !party && !here && (
         <div className={styles.card} role="dialog" aria-label="Go Together invitation" data-testid="go-together-invite">
           <span className={styles.cardTitle}>{nameOf(invite.fromEmail)} wants to go together</span>
           <span className={styles.cardSub}>{invite.party.destination.label}</span>
@@ -179,6 +194,20 @@ function PartyChip({ status, label, leader, self, nameOf, ctl }: {
       people = status.people;
       actions = leave;
       break;
+    case "already-here":
+      text = <>Going Together · {label}</>;
+      place = "You're already here";
+      people = status.people;
+      actions = leader === self ? end : leave;
+      break;
+    case "meeting-upstairs":
+      dot = styles.wait;
+      text = <>Going Together · {label}</>;
+      place = "Meeting them upstairs";
+      sub = guidance;
+      people = status.people;
+      actions = leader === self ? end : leave;
+      break;
     case "rendezvous":
       dot = styles.wait;
       text = <>Going Together · {label}</>;
@@ -240,3 +269,9 @@ function PartyChip({ status, label, leader, self, nameOf, ctl }: {
 }
 
 export default Vo3dGoTogether;
+
+/** Is this body already standing inside the room a party is going to? Its own world says so. */
+function alreadyAt(world: Vo3dWorld | null, dest: { floor: string; roomId?: string }): boolean {
+  const self = world?.goTogether?.self();
+  return Boolean(self && dest.roomId && self.floor === dest.floor && self.room === dest.roomId);
+}

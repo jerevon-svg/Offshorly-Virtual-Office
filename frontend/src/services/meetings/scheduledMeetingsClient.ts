@@ -18,7 +18,7 @@ export interface ScheduledMeeting {
   startsAt: string;
   endsAt: string;
   isPrivate: boolean;
-  status: "scheduled" | "cancelled";
+  status: "scheduled" | "cancelled" | "ended";
   invitees: { email: string; response: InviteeResponse }[];
   createdAt: string;
   updatedAt: string;

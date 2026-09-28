@@ -193,6 +193,41 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
         localAt: { x: to[to.length - 1].x, y: to[to.length - 1].z },
       });
     },
+    /** DIRECTED MEETING / any upstairs sit — the in-place pair, resolved SITTING under the chair's `v2:` key
+     *  (a Meeting Floor chair is V2-only by construction). V1's own coordinate stays the anchor; the chair's
+     *  real point rides as localAt, like every other upstairs leg. The backend arbitrates the seat exactly
+     *  as downstairs and answers a taken one with `seat_rejected`. */
+    satInPlace(anchor, at, yaw, room, seat) {
+      const anchorTopLeft = toTopLeft(anchor, box);
+      if (!isUsablePosition(anchorTopLeft)) {
+        state.refused++;
+        note(`refused-sat-inplace room=${room}`);
+        return;
+      }
+      const movementId = makeMovementId();
+      active = null;
+      state.started++;
+      state.arrived++;
+      state.seated = (state.seated ?? 0) + 1;
+      state.v2OnlySeat = (state.v2OnlySeat ?? 0) + 1;
+      state.movementId = movementId;
+      const seatFacing = seatFacingFor(seat) ?? DIRECTION_BY_FACING[facingForYaw(yaw)];
+      note(`sat-inplace id=${movementId.slice(0, 8)} room=${room} facing=${seatFacing}`);
+      emitWalkStarted({
+        movementId, origin: anchorTopLeft, path: [anchorTopLeft], roomId: room, durationMs: SNAP_DURATION_MS,
+        localOrigin: { x: at.x, y: at.z }, localPath: [{ x: at.x, y: at.z }],
+      });
+      emitWalkArrived({
+        movementId,
+        at: anchorTopLeft,
+        facing: seatFacing,
+        ...(Number.isFinite(yaw) ? { yaw } : {}),
+        state: "sitting",
+        seatKey: v2SeatKey(seat),
+        roomId: room,
+        localAt: { x: at.x, y: at.z },
+      });
+    },
     enteredPlace(at, yaw, room, localAt) {
       const atTopLeft = toTopLeft(at, box);
       if (!isUsablePosition(atTopLeft)) {

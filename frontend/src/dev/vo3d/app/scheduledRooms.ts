@@ -55,6 +55,8 @@ export interface ScheduledContext {
   /** upcoming: >5 min out · window: its access window, not yet live · live: it is running ·
    *  occupied: its time has come but an earlier or ad-hoc meeting still has the room */
   phase: "upcoming" | "window" | "live" | "occupied";
+  /** live before its scheduled start: the host started THIS meeting early */
+  startedEarly?: boolean;
 }
 
 export interface RoomScheduleView {
@@ -130,7 +132,7 @@ export function deriveRoomSchedule(
   const asContext = (b: ScheduledBooking, phase: ScheduledContext["phase"]): ScheduledContext => ({
     title: label(b), startsAt: b.startsAt, endsAt: b.endsAt, isPrivate: b.isPrivate, phase,
   });
-  if (live.live && session?.viewerIsInvitee) context = asContext(session, "live");
+  if (live.live && session?.viewerIsInvitee) context = { ...asContext(session, "live"), startedEarly: now < ms(session.startsAt) };
   else {
     const mine = bookings.find((b) => b.viewerIsInvitee && approaching(b));
     if (mine) context = asContext(mine, live.live ? "occupied" : inWindow(mine) ? "window" : "upcoming");

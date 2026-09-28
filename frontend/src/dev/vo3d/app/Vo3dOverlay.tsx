@@ -172,6 +172,10 @@ import type { AssetLayer } from "../../../types/office";
 import type { OfficePerson } from "../../../services/office/floorMerge";
 import { openCompanyHub } from "../../../services/hub/companyHubStore";
 import styles from "./Vo3dOverlay.module.css";
+import { MEETING_ROOMS } from "../rooms/floor2Meeting";
+/** Every Meeting Floor room's meeting id (`mf-<slug>`) — participation in one of these is IN MEETING. */
+const ROOM_MEETING_IDS: ReadonlySet<string> = new Set(MEETING_ROOMS.map((r) => r.meetingId));
+
 
 export interface Vo3dOverlayProps {
   /** The live world, or null until it has been built. Held as a ref by the host for the same reason it
@@ -631,14 +635,21 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
   // PEER STATUS — V1's own rule (status.ts resolvePeerStatus): the read-only Atlas row, overlaid with the
   // app's DND registry that Atlas never hears about. Without the overlay a person reads DND on their own
   // screen and whatever Atlas says (OFFLINE, for somebody Atlas is not tracking) on everybody else's.
+  // …and IN MEETING for everybody the SERVER lists in a Meeting Floor room's live meeting (meeting_presence,
+  // broadcast to every client) — the same fact on every screen, not this browser's guess.
+  const inRoomMeetingEmails = useMemo(() => {
+    const set = new Set<string>();
+    for (const m of callState.meetings ?? []) if (ROOM_MEETING_IDS.has(m.meetingId)) for (const e of m.participants) set.add(emailKey(e));
+    return set;
+  }, [callState.meetings]);
   const statusByEmail = useMemo(() => {
     const map: Record<string, OfficeStatus> = {};
     for (const person of people) {
       const key = emailKey(person.email);
-      map[key] = resolvePeerStatus(person.status, dndEmails.has(key));
+      map[key] = resolvePeerStatus(person.status, dndEmails.has(key), inRoomMeetingEmails.has(key));
     }
     return map;
-  }, [dndEmails, people]);
+  }, [dndEmails, people, inRoomMeetingEmails]);
 
   const chatAttention = useMemo(
     () => buildChatAttentionByLayerId({ conversations, selfEmail: self, selfLayerId: self }),
@@ -681,6 +692,8 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     // uncovers whatever the person had chosen for themselves.
     away: outsideBuilding,
     inCall: isConnectedToMedia(callState),
+    // SELF in a Meeting Floor room's meeting: connected to that room's call (what everyone else sees too).
+    inMeeting: isConnectedToMedia(callState) && callState.connectedMeetingId !== null && ROOM_MEETING_IDS.has(callState.connectedMeetingId),
   });
 
   const activeSpatialSession = useMemo(
@@ -2065,9 +2078,15 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
         // PHASE 7D. Only the V2 world can join a meeting, so only it offers the invitation. The join
         // is the world's own one entry point (app/world.ts caveMeeting.start), the same one the Cave
         // panel's button uses — there is no second path into a meeting.
-        onAcceptMeeting={() => {
+        onAcceptMeeting={(meetingId) => {
           const meeting = worldRef.current?.caveMeeting;
           if (!meeting) return;
+          // THE MEETING THE INVITATION NAMES. One started in a Meeting Floor room belongs to that room: the
+          // world joins its call and walks the accepter there. Only the Cave's own meeting is the Cave.
+          if (meeting.acceptInvite) {
+            void meeting.acceptInvite(meetingId, self);
+            return;
+          }
           // WALK IN FIRST, then join. A meeting is a thing you do in a place: joining the media without
           // moving the body left the accepter connected but standing outside the Cave, with no panel,
           // no screen and no way to leave. Entering is the real portal transition, the same one the
