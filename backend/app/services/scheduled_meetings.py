@@ -20,7 +20,7 @@ from app.schemas.scheduled_meetings import (
     ScheduledMeetingOut,
     UpdateScheduledMeetingIn,
 )
-from app.services import meeting_notifications
+from app.services import meeting_notifications, meeting_sessions
 from app.services.call_registry import MEETING_KEY_PREFIX
 from app.services.meeting_floor_rooms import (
     MEETING_FLOOR_ROOMS,
@@ -297,6 +297,9 @@ async def update(
                     session.add(ScheduledMeetingInvitee(meeting_id=meeting.id, email=new_email, response="pending"))
         await session.commit()
     note_booking_if_live(meeting)
+    # PHASE 6A: if this booking's meeting is live right now, its Meeting Session follows the new invitee list.
+    if meeting.id in _live_booking.values():
+        await meeting_sessions.refresh_booking(meeting.id)
     # THE BELL: newcomers are invited; everybody who stays is told only when what they would act on —
     # the title, the room or the time — actually changed.
     now_people = {row.email for row in (await repo.invitees_by_meeting(session, [meeting.id]))[meeting.id]}

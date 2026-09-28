@@ -119,10 +119,11 @@ export function refreshScheduledMeetings(): Promise<void> {
   return inflight;
 }
 
-function onPresence(payload: { meetings?: { meetingId: string; participants: string[]; booking?: BookingWindow | null }[] } | undefined): void {
+function onPresence(payload: { meetings?: { meetingId: string; participants: string[]; live?: boolean; booking?: BookingWindow | null }[] } | undefined): void {
   const next: Record<string, RoomPresence> = {};
   for (const m of payload?.meetings ?? []) {
-    next[m.meetingId] = { live: m.participants.length > 0, booking: m.booking ?? null };
+    // PHASE 6A: a private meeting's participants may be withheld from this viewer — `live` still says so.
+    next[m.meetingId] = { live: m.live ?? m.participants.length > 0, booking: m.booking ?? null };
   }
   set({ presence: next });
 }

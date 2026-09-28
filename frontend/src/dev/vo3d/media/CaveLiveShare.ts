@@ -19,6 +19,10 @@ import type { PresentationSource } from "./CavePresentation";
 import type { GalleryMember } from "./CaveGallery";
 
 type CallStoreModule = typeof import("../../../services/call/callStore");
+
+/** PHASE 6A — liveness from the server's `live` flag (kept local so this module's callStore import stays lazy): a private meeting
+ *  whose people the server withholds from this viewer is still live (`live`), with an empty list. */
+const meetingIsLive = (m: { participants: string[]; live?: boolean }): boolean => m.live ?? m.participants.length > 0;
 type Snapshot = ReturnType<CallStoreModule["getCallSnapshot"]>;
 
 /** THE CAVE'S OWN MEETING ROOM. A fixed id, which is the entire discovery mechanism: everyone who
@@ -283,10 +287,10 @@ export class CaveLiveShare {
     this.state.sharing = snap.screenShareEnabled;
     this.state.broadcast = snap.calls.map((c) => `${c.sessionId.slice(0, 8)}…(${c.participants.length})`).join(", ");
     // THE SERVER'S VIEW OF THE MEETING, which is the only one that exists before this client joins.
-    const live = snap.meetings.filter((m) => m.participants.length > 0).map((m) => m.meetingId).sort().join("|");
+    const live = snap.meetings.filter(meetingIsLive).map((m) => m.meetingId).sort().join("|");
     if (live !== this.lastLive) { this.lastLive = live; this.d.onMeetings?.(new Set(live ? live.split("|") : [])); }
     const broadcastMeeting = snap.meetings.find((m) => m.meetingId === this.meetingId);
-    this.state.live = Boolean(broadcastMeeting && broadcastMeeting.participants.length > 0);
+    this.state.live = Boolean(broadcastMeeting && meetingIsLive(broadcastMeeting));
     this.state.host = broadcastMeeting?.host ?? "";
     this.state.isHost = Boolean(broadcastMeeting?.host && broadcastMeeting.host === this.selfEmail);
     if (snap.status === "error" && snap.error) { this.state.note = snap.error; }

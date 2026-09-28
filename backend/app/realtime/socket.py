@@ -49,6 +49,7 @@ from app.realtime.state import (
 from app.services.call_invites import INVITE_TTL_SECONDS
 from app.services.call_registry import MEETING_KEY_PREFIX
 from app.services import meeting_chat as meeting_chat_service
+from app.services import meeting_sessions
 from app.services import scheduled_meetings
 from app.routers.calls import meeting_room_key, _MEETING_ID
 from app.services.call_invites import wire as invite_wire
@@ -288,32 +289,66 @@ async def _broadcast_spatial_calls() -> None:
     await sio.emit("spatial_calls", {"calls": call_registry.snapshot()})
 
 
-def _meeting_presence_payload() -> dict:
+def _is_private_meeting(key: str) -> bool:
+    """PHASE 6A. A live meeting is private if the occurrence was private when it went live, or its
+    governing booking is private now — either is enough, so a mid-meeting edit can never widen it."""
+    wire = scheduled_meetings.live_booking_wire(key) or {}
+    return meeting_sessions.is_private(key) or bool(wire.get("isPrivate"))
+
+
+def _meeting_presence_payload(viewer: str) -> dict:
     """PHASE 7D. Standalone meetings, with their host. A SEPARATE event from `spatial_calls` on
     purpose: that one describes conversations and its entries are matched against conversation ids by
     the frontend, so a meeting key must never appear in it (see call_registry.snapshot()).
 
     `meetingId` is the bare id the client asked for, not the registry key — the "meeting:" namespace is
-    a server-side collision guard and nothing outside this process needs to know about it."""
+    a server-side collision guard and nothing outside this process needs to know about it.
+
+    PHASE 6A — PER VIEWER. A PRIVATE meeting's participants and host go only to people that occurrence
+    authorizes (meeting_sessions.may_see_live: its participants, organizer, invitees, explicitly invited);
+    everybody else learns only that the room's meeting is `live` — which door signs and Start/Join need —
+    never who is in it. Normal meetings are unchanged. `sessionId`, the durable Meeting Session id, goes
+    to the meeting's own PARTICIPANTS only, so it can never become a way to discover meetings."""
+    viewer = viewer.strip().lower()
     out = []
     for entry in call_registry.meeting_snapshot():
         key = entry["sessionId"]
-        out.append(
-            {
-                "meetingId": key[len(MEETING_KEY_PREFIX):],
-                "participants": entry["participants"],
-                "host": meeting_hosts.host_of(key) or "",
-                # SCHEDULED MEETINGS — which booking this live room belongs to (public window facts
-                # only), so every client can tell "the booked meeting is running" from "an earlier or
-                # ad-hoc meeting is still in there". None for anything unbooked.
-                "booking": scheduled_meetings.live_booking_wire(key),
-            }
-        )
+        participants = entry["participants"]
+        visible = not _is_private_meeting(key) or meeting_sessions.may_see_live(key, viewer, participants)
+        item = {
+            "meetingId": key[len(MEETING_KEY_PREFIX):],
+            "live": True,
+            "participants": participants if visible else [],
+            "host": (meeting_hosts.host_of(key) or "") if visible else "",
+            # SCHEDULED MEETINGS — which booking this live room belongs to (public window facts
+            # only), so every client can tell "the booked meeting is running" from "an earlier or
+            # ad-hoc meeting is still in there". None for anything unbooked.
+            "booking": scheduled_meetings.live_booking_wire(key),
+        }
+        if viewer in participants:
+            session_id = meeting_sessions.session_id_for(key)
+            if session_id:
+                item["sessionId"] = session_id
+        out.append(item)
     return {"meetings": out}
 
 
+def _connected_emails() -> list[str]:
+    """Everybody with a live socket, read off the user rooms every socket joins at connect."""
+    prefix = user_room("")
+    rooms = sio.manager.rooms.get("/", {})
+    return [r[len(prefix):] for r, members in rooms.items() if isinstance(r, str) and r.startswith(prefix) and members]
+
+
 async def _broadcast_meeting_presence() -> None:
-    await sio.emit("meeting_presence", _meeting_presence_payload())
+    """PHASE 6A: one payload per connected person (see _meeting_presence_payload). Every payload is built
+    synchronously first and the emits are handed to one gather, so each emit enqueues its packets in the
+    order the payloads were built — a later broadcast can never be overtaken by an earlier one."""
+    payloads = [(email, _meeting_presence_payload(email)) for email in _connected_emails()]
+    if payloads:
+        await asyncio.gather(
+            *(sio.emit("meeting_presence", payload, room=user_room(email)) for email, payload in payloads)
+        )
 
 
 def _meeting_key_from_payload(payload: dict) -> str | None:
@@ -348,6 +383,14 @@ def _release_meeting_host_for(key: str) -> None:
     if not remaining:
         meeting_chat.end(key)
         scheduled_meetings.release_live(key)
+
+
+async def _record_meeting_departure(key: str, email: str) -> None:
+    """PHASE 6A. `email` is no longer connected to `key` at all (their LAST tab left) — close their
+    attendance interval, and start the session's reconnect grace if nobody is left. Called right after
+    _release_meeting_host_for, which has already applied every live consequence."""
+    emptied = not call_registry.participants(key)
+    await meeting_sessions.record_leave(key, email.strip().lower(), emptied=emptied, now=datetime.now(timezone.utc))
 
 
 async def _broadcast_dnd_status() -> None:
@@ -613,7 +656,7 @@ async def connect(sid: str, environ: dict, auth: dict | None) -> None:
     # PHASE 7D, same reasoning for standalone meetings: a client walking into the Cave must know
     # whether a meeting is already running BEFORE it connects to anything, or its button cannot say
     # Join rather than Start. Without this the panel is wrong until the next join or leave.
-    await sio.emit("meeting_presence", _meeting_presence_payload(), to=sid)
+    await sio.emit("meeting_presence", _meeting_presence_payload(email), to=sid)
 
     # Same reasoning for in-flight call invites: a reconnecting/reloading client must get its own
     # pending ring back (either direction) rather than losing the Calling…/incoming prompt. Scoped
@@ -697,6 +740,7 @@ async def disconnect(sid: str) -> None:
         # runs off the registry's own remaining membership, not off how the person left.
         if was_meeting is not None:
             _release_meeting_host_for(was_meeting)
+            await _record_meeting_departure(was_meeting, email)
             await _broadcast_meeting_presence()
         else:
             await _broadcast_spatial_calls()
@@ -899,10 +943,17 @@ async def call_joined(sid: str, payload: dict | None) -> None:
                         booking_id = early.id if early else None
                 if not allowed:
                     return
+            now = datetime.now(timezone.utc)
             fresh = not call_registry.participants(meeting_key)
             changed = call_registry.join(meeting_key, email, sid)
             meeting_hosts.ensure_host(meeting_key, email)
             scheduled_meetings.bind_live(meeting_key, booking_id, fresh=fresh)
+            # PHASE 6A — still inside the atomic step: which Meeting Session this join belongs to (a NEW
+            # one for a fresh activation, the live one otherwise). Persisted just below.
+            live, created = meeting_sessions.reserve(meeting_key, email, booking_id, now=now)
+            await meeting_sessions.record_join(
+                meeting_key, live, created=created, email=email.strip().lower(), joined=changed, now=now
+            )
             if changed:
                 await _broadcast_meeting_presence()
             return
@@ -933,6 +984,7 @@ async def call_left(sid: str, _payload: dict | None = None) -> None:
         if call_registry.leave(email, sid):
             if was_meeting is not None:
                 _release_meeting_host_for(was_meeting)
+                await _record_meeting_departure(was_meeting, email)
                 await _broadcast_meeting_presence()
             else:
                 await _broadcast_spatial_calls()
@@ -1213,6 +1265,8 @@ async def meeting_end(sid: str, payload: dict | None) -> None:
         email = session_data["email"].strip().lower()
         meeting_id = meeting_key[len(MEETING_KEY_PREFIX):]
         is_host = (meeting_hosts.host_of(meeting_key) or "").strip().lower() == email
+        # PHASE 6A: read before end_live, which stops the booking describing the room.
+        private = _is_private_meeting(meeting_key)
         ended = None
         if scheduled_meetings.is_meeting_floor_meeting(meeting_id):
             async with async_session_maker() as db:
@@ -1222,7 +1276,19 @@ async def meeting_end(sid: str, payload: dict | None) -> None:
                 ended = await scheduled_meetings.end_live(db, meeting_key)
         elif not is_host:
             return
-        await sio.emit("meeting_ended", {"meetingId": meeting_id, "by": email})
+        # PHASE 6A: the Meeting Session closes here, immediately — whoever joins this room next is a new one.
+        await meeting_sessions.end(meeting_key, now=datetime.now(timezone.utc))
+        if private:
+            # Who ended a PRIVATE meeting is that meeting's business: only its participants hear it (they
+            # are the only clients that act on it — callStore leaves when it is their connected meeting).
+            await asyncio.gather(
+                *(
+                    sio.emit("meeting_ended", {"meetingId": meeting_id, "by": email}, room=user_room(p))
+                    for p in call_registry.participants(meeting_key)
+                )
+            )
+        else:
+            await sio.emit("meeting_ended", {"meetingId": meeting_id, "by": email})
         if ended is not None:
             await sio.emit("scheduled_meetings_changed", {})
     except Exception as exc:  # noqa: BLE001
@@ -1280,6 +1346,11 @@ async def meeting_invite(sid: str, payload: dict | None) -> None:
 
         invite = meeting_invites.create(
             from_email=email, from_sid=sid, to_email=to_email, extra={"meeting_id": meeting_id}
+        )
+        # PHASE 6A: an explicit invitation from a participant authorizes the invitee for THIS occurrence,
+        # durably — the invitation itself is memory-only and gone once it resolves.
+        await meeting_sessions.grant_invited(
+            meeting_key, inviter=email, to_email=to_email, participants=call_registry.participants(meeting_key)
         )
         await sio.emit("meeting_invite_incoming", invite_wire(invite), room=user_room(to_email))
         await sio.emit("meeting_invite_ringing", invite_wire(invite), room=user_room(email))

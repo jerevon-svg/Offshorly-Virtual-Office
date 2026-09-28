@@ -33,6 +33,7 @@ def _reset() -> None:
     socket_module.call_registry.reset()
     socket_module.meeting_hosts.reset()
     service.reset_live()
+    socket_module.meeting_sessions.reset()
 
 
 @pytest.fixture
@@ -160,7 +161,7 @@ async def test_meeting_presence_says_which_booking_a_live_room_belongs_to(server
     def entry(mid):
         for snap in reversed(seen):
             for m in snap:
-                if m["meetingId"] == mid and m["participants"]:
+                if m["meetingId"] == mid and m.get("live"):
                     return m
         return None
 
@@ -168,6 +169,8 @@ async def test_meeting_presence_says_which_booking_a_live_room_belongs_to(server
     booking = entry(ALPHA)["booking"]
     # Public window facts only — no title, no id, no invitees.
     assert set(booking) == {"startsAt", "endsAt", "isPrivate"} and booking["isPrivate"] is True
+    # PHASE 6A: Eve is not invited, so the private room is live to her and nothing more — not who is in it.
+    assert entry(ALPHA)["participants"] == [] and entry(ALPHA)["host"] == ""
     assert entry("mf-bravo")["booking"] is None
 
     for c in (org, eve):

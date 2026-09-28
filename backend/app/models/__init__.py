@@ -6,6 +6,7 @@ from app.models.conversation import Conversation, ConversationParticipant
 from app.models.employee_permission import EmployeePermission
 from app.models.feed import FeedComment, FeedPost, FeedReaction
 from app.models.hub import HubItem, HubItemState
+from app.models.meeting_session import MeetingSession, MeetingSessionAttendance, MeetingSessionGrant
 from app.models.message import Message
 from app.models.mission import MissionAssignment
 from app.models.notification import Notification
@@ -48,6 +49,9 @@ __all__ = [
     "FeedReaction",
     "HubItem",
     "HubItemState",
+    "MeetingSession",
+    "MeetingSessionAttendance",
+    "MeetingSessionGrant",
     "Message",
     "MessageReaction",
     "MissionAssignment",

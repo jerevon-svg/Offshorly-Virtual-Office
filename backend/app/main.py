@@ -77,6 +77,23 @@ async def _load_checked_out_into_lineup() -> None:
 
 
 @fastapi_app.on_event("startup")
+async def _close_orphaned_meeting_sessions() -> None:
+    """PHASE 6A — crash/restart recovery for Meeting Sessions. The live map (services/meeting_sessions.py)
+    is in memory, so any session the database still shows as open was left by a process that is gone:
+    close it as `server_restart`. Same degrade-gracefully posture as the hooks above."""
+    from datetime import datetime, timezone
+
+    from app.services import meeting_sessions
+
+    try:
+        closed = await meeting_sessions.close_orphans(now=datetime.now(timezone.utc))
+        if closed:
+            _logger.info("closed %d orphaned meeting session(s) at startup", closed)
+    except Exception as exc:  # noqa: BLE001
+        _logger.exception(exc)
+
+
+@fastapi_app.on_event("startup")
 async def _start_delegation_sweeper() -> None:
     # A2.3 — one periodic task; see services/delegation_lifecycle.py.
     from app.services.delegation_lifecycle import delegation_sweeper

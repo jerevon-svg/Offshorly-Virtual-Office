@@ -80,9 +80,15 @@ export type CallTarget =
  *  CONVERSATIONS and is matched against conversation ids, and a meeting is not one. */
 export interface MeetingEntry {
   meetingId: string;
+  /** PHASE 6A — EMPTY for a private meeting this viewer is not authorized for: the server withholds who
+   *  is in it (and `host`). Read liveness from `live`, never from this list's length. */
   participants: string[];
-  /** The current host's email, or "" while the server has nobody in the room. */
+  /** The current host's email, or "" while the server has nobody in the room (or withholds it). */
   host: string;
+  /** PHASE 6A — the server lists only live meetings; absent from an older server, hence the fallback. */
+  live?: boolean;
+  /** PHASE 6A — the durable Meeting Session id, sent only to this meeting's own participants. */
+  sessionId?: string;
 }
 
 export interface CallSnapshot {
