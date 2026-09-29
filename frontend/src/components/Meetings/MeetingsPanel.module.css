@@ -52,7 +52,7 @@
 .closeButton:hover, .backButton:hover { background: rgba(24, 20, 34, 0.05); }
 
 /* ---- buttons ---- */
-.primary, .ghost, .danger, .choiceOn {
+.primary, .ghost, .danger, .choiceOn, .brief {
   all: unset; box-sizing: border-box; cursor: pointer; flex: none;
   padding: 9px 16px; border-radius: 12px; font-size: 13px; font-weight: 700; text-align: center;
   transition: background-color 120ms ease, box-shadow 120ms ease, transform 80ms ease;
@@ -62,6 +62,13 @@
 .primary:active:not(:disabled) { transform: translateY(1px); box-shadow: 0 1px 0 #1f4a2f; }
 .primary:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
 .ghost { border: 1px solid rgba(24, 20, 34, 0.12); background: #fffefc; color: #241f30; }
+/* PHASE 9C — the pre-meeting Brief: a quiet memory-tinted pill, distinct from the RSVP/edit actions */
+.brief {
+  border: 1px solid rgba(61, 90, 138, 0.28); color: #3d5a8a;
+  background: linear-gradient(135deg, rgba(109, 140, 196, 0.16), rgba(75, 185, 106, 0.1));
+}
+.brief:hover { background: linear-gradient(135deg, rgba(109, 140, 196, 0.24), rgba(75, 185, 106, 0.16)); }
+.brief:focus-visible { outline: 2px solid #6d8cc4; outline-offset: 2px; }
 .ghost:hover:not(:disabled) { background: rgba(24, 20, 34, 0.04); }
 .ghost:disabled { opacity: 0.5; cursor: default; }
 .danger { background: #b8453a; color: #fff; }

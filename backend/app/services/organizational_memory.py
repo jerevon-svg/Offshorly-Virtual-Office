@@ -122,6 +122,10 @@ class OrganizationalMemoryQuery:
     limit: int
     # PHASE 9B — narrowing only: commitments must be owned by this (authenticated) email. See browse_query.
     owner_email: str | None = None
+    # PHASE 9C — narrowing only: restrict the scope to these sessions (the briefing's related set, which the
+    # gate already approved; retrieve() gates every one again anyway), and how many items one meeting may give.
+    session_ids: frozenset[str] | None = None
+    per_session: int = MAX_PER_SESSION
 
 
 @dataclass(frozen=True)
@@ -329,6 +333,8 @@ async def _authorized_scope(db: AsyncSession, q: OrganizationalMemoryQuery) -> l
     )
     if q.room_id:
         stmt = stmt.where(MeetingSession.room_id == q.room_id)
+    if q.session_ids is not None:
+        stmt = stmt.where(MeetingSession.id.in_(sorted(q.session_ids)))
     if q.since:
         stmt = stmt.where(MeetingSession.started_at >= q.since)
     if q.until:
@@ -532,7 +538,7 @@ async def retrieve(db: AsyncSession, q: OrganizationalMemoryQuery) -> tuple[Auth
             if summary is not None:
                 session_hits.append(item_result(summary, 0, []))
         session_hits.sort(key=lambda h: (-h.score, h.order))
-        hits += session_hits[:MAX_PER_SESSION]
+        hits += session_hits[: q.per_session]
 
     hits.sort(key=lambda h: (-h.score, h.order))
     return tuple(h.result for h in hits[: q.limit])

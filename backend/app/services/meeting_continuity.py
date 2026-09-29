@@ -93,8 +93,12 @@ async def _rosters(db: AsyncSession, booking_ids: list[str]) -> dict[str, set[st
     return out
 
 
-async def _related(db: AsyncSession, current: MeetingSession, booking: ScheduledMeeting, email: str) -> dict[str, str]:
-    """Approved related session id → relation. Steps 2–4 of the order above."""
+async def related_sessions(
+    db: AsyncSession, booking: ScheduledMeeting, email: str, *, exclude_id: str | None = None
+) -> dict[str, str]:
+    """Approved related ENDED session id → relation, pairwise with `booking`. Steps 2–4 of the order above.
+    PHASE 9C — the pre-meeting briefing keys this off an UPCOMING booking (no current session); the caller
+    must already be entitled to that booking's roster. `email` must be normalized."""
     candidates = meeting_access.candidate_ids(email)
     title = _normalized(booking.title)
     rows = await db.execute(
@@ -102,7 +106,7 @@ async def _related(db: AsyncSession, current: MeetingSession, booking: Scheduled
         .join(ScheduledMeeting, ScheduledMeeting.id == MeetingSession.scheduled_meeting_id)
         .where(
             MeetingSession.id.in_(select(candidates.c.sid)),
-            MeetingSession.id != current.id,
+            MeetingSession.id != (exclude_id or ""),
             MeetingSession.ended_at.is_not(None),
             (MeetingSession.scheduled_meeting_id == booking.id)
             # a loose SQL prefilter (spaces removed); the exact normalized comparison is below
@@ -161,7 +165,7 @@ async def continuity(db: AsyncSession, session_id: str, email: str) -> dict | No
     if current is None:
         return None
     booking = await db.get(ScheduledMeeting, current.scheduled_meeting_id) if current.scheduled_meeting_id else None
-    relations = await _related(db, current, booking, email) if booking is not None else {}
+    relations = await related_sessions(db, booking, email, exclude_id=current.id) if booking is not None else {}
 
     rows = await db.execute(select(MeetingSession).where(MeetingSession.id.in_([current.id, *relations])))
     sessions = sorted(rows.scalars(), key=lambda s: (_aware(s.started_at), s.id))

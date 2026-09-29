@@ -29,6 +29,8 @@ import {
   nextQuarterHour,
 } from "../../services/meetings/meetingTime";
 import { useMeetingMemory } from "../../services/meetings/meetingMemory";
+import { useBriefingAvailability } from "../../services/meetings/meetingBriefing";
+import { MeetingBriefing } from "./MeetingBriefing";
 import { PanelTabs } from "../OfficeMap/PanelTabs";
 import { MeetingMemory } from "./MeetingMemory";
 import { MeetingReceipt } from "./MeetingReceipt";
@@ -79,13 +81,18 @@ export interface MeetingsPanelProps {
 // from it carries `from: "orgtwin"`, so Back at the end of that Receipt's trail returns to the Twin — whose
 // conversation lives HERE (useOrganizationalTwin) and survives the detour — and the Twin's Back returns to
 // Memory with its query, filter and pages intact. "Ask this meeting" from such a Receipt still works as before.
-type From = "list" | "orgtwin";
+//
+// PHASE 9C — an upcoming card's "Brief" opens the pre-meeting briefing (MeetingBriefing). A source Receipt opened
+// from it carries `from: { brief }`, so Back at the end of that Receipt's trail returns to the same brief, and
+// the brief's Back returns to Upcoming. Memory → Ask your Memory and Receipt → Ask this meeting are unchanged.
+type From = "list" | "orgtwin" | { brief: string };
 type View =
   | { kind: "list" }
   | { kind: "form"; editing: ScheduledMeeting | null }
   | { kind: "receipt"; sessionId: string; trail: string[]; focusItemId?: string; from?: From }
   | { kind: "twin"; session: MeetingSessionInfo; trail: string[]; from?: From }
-  | { kind: "orgtwin" };
+  | { kind: "orgtwin" }
+  | { kind: "brief"; meetingId: string };
 type Tab = "upcoming" | "memory";
 
 export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeetingId = null, onClose }: MeetingsPanelProps) {
@@ -95,6 +102,10 @@ export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeeting
   const [memoryOpened, setMemoryOpened] = useState(false);
   const memory = useMeetingMemory(memoryOpened);
   const orgTwin = useOrganizationalTwin();
+  // PHASE 9C — "Brief" only where the server found useful, authorized history for THIS viewer. Held here, not in
+  // the list, so returning from a Brief or its Receipts doesn't make the affordance blink out and back.
+  const briefable = useBriefingAvailability(
+    store.mine.filter((m) => Date.parse(m.endsAt) > Date.now()).slice(0, 20).map((m) => m.id), store.revision);
   const chooseTab = (t: Tab) => {
     setTab(t);
     if (t === "memory") setMemoryOpened(true);
@@ -102,7 +113,8 @@ export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeeting
   const receiptBack = (trail: string[], from: From = "list"): View =>
     trail.length
       ? { kind: "receipt", sessionId: trail[trail.length - 1], trail: trail.slice(0, -1), from }
-      : from === "orgtwin" ? { kind: "orgtwin" } : { kind: "list" };
+      : from === "orgtwin" ? { kind: "orgtwin" }
+        : typeof from === "object" ? { kind: "brief", meetingId: from.brief } : { kind: "list" };
   const openRelated = (at: string, trail: string[], from: From | undefined, sessionId: string, focusItemId?: string) => {
     const i = trail.indexOf(sessionId);
     setView({ kind: "receipt", sessionId, focusItemId, from, trail: i >= 0 ? trail.slice(0, i) : [...trail, at] });
@@ -168,6 +180,8 @@ export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeeting
             tabs={<PanelTabs ariaLabel="Meetings" tabs={TABS} active={tab} onChange={chooseTab} />}
             selfId={selfId}
             meetings={store.mine}
+            briefable={briefable}
+            onBrief={(meetingId) => setView({ kind: "brief", meetingId })}
             loading={store.loading}
             error={store.error}
             resolveDisplayName={resolveDisplayName}
@@ -181,7 +195,8 @@ export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeeting
           <MeetingReceipt key={view.sessionId} sessionId={view.sessionId} resolveDisplayName={resolveDisplayName}
             focusItemId={view.focusItemId ?? null}
             backLabel={view.trail.length ? "Back to the previous receipt"
-              : view.from === "orgtwin" ? "Back to Ask your Memory" : "Back to meetings"}
+              : view.from === "orgtwin" ? "Back to Ask your Memory"
+                : typeof view.from === "object" ? "Back to the brief" : "Back to meetings"}
             onBack={() => setView(receiptBack(view.trail, view.from))} onClose={onClose}
             onAsk={(session) => setView({ kind: "twin", session, trail: view.trail, from: view.from })}
             onOpenRelated={(sessionId, focusItemId) =>
@@ -190,6 +205,11 @@ export function MeetingsPanel({ selfId, people, resolveDisplayName, focusMeeting
           <MeetingTwin session={view.session} resolveDisplayName={resolveDisplayName}
             onBack={() => setView({ kind: "receipt", sessionId: view.session.sessionId, trail: view.trail, from: view.from })}
             onClose={onClose} />
+        ) : view.kind === "brief" ? (
+          <MeetingBriefing key={view.meetingId} meetingId={view.meetingId} resolveDisplayName={resolveDisplayName}
+            onBack={() => setView({ kind: "list" })} onClose={onClose}
+            onOpenReceipt={(sessionId, focusItemId) =>
+              setView({ kind: "receipt", sessionId, focusItemId, trail: [], from: { brief: view.meetingId } })} />
         ) : view.kind === "orgtwin" ? (
           <OrganizationalTwin twin={orgTwin} resolveDisplayName={resolveDisplayName}
             onBack={() => setView({ kind: "list" })} onClose={onClose}
@@ -248,6 +268,8 @@ function UpcomingList({
   tabs,
   selfId,
   meetings,
+  briefable,
+  onBrief,
   loading,
   error,
   resolveDisplayName,
@@ -261,6 +283,8 @@ function UpcomingList({
   focusMeetingId: string | null;
   selfId: string;
   meetings: ScheduledMeeting[];
+  briefable: ReadonlySet<string>;
+  onBrief: (meetingId: string) => void;
   loading: boolean;
   error: string | null;
   resolveDisplayName: (email: string) => string;
@@ -363,6 +387,12 @@ function UpcomingList({
                     </div>
                   </div>
                   <div className={styles.itemActions}>
+                    {briefable.has(m.id) && (
+                      <button type="button" className={styles.brief} onClick={() => onBrief(m.id)} data-testid="meeting-brief"
+                        aria-label={`Brief for ${m.title}`}>
+                        Brief
+                      </button>
+                    )}
                     {mine ? (
                       confirmCancel === m.id ? (
                         <>

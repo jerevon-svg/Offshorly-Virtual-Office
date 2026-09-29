@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_email
@@ -17,6 +18,7 @@ from app.schemas.scheduled_meetings import (
     ScheduledMeetingOut,
     UpdateScheduledMeetingIn,
 )
+from app.services import meeting_briefing
 from app.services import scheduled_meetings as service
 
 # Scheduled Meetings V1 REST layer — the same dependency pattern as every router here: identity from
@@ -117,4 +119,33 @@ async def respond_to_scheduled_meeting(
 ) -> ScheduledMeetingOut:
     out = await service.respond(db, meeting_id, email, body.response)
     await _announce()
+    return out
+
+
+# PHASE 9C — the pre-meeting briefing (services/meeting_briefing.py). A booking the caller is not on is 404, the
+# same as every other read of it; its history is gated per past Meeting Session inside the service.
+
+
+class BriefingAvailabilityIn(BaseModel):
+    ids: list[str] = Field(default_factory=list, max_length=meeting_briefing.MAX_AVAILABILITY_IDS)
+
+
+@router.post("/briefings/availability")
+async def briefing_availability(
+    body: BriefingAvailabilityIn,
+    email: str = Depends(get_current_email),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    return {"available": await meeting_briefing.availability(db, body.ids, email)}
+
+
+@router.get("/{meeting_id}/briefing")
+async def meeting_briefing_read(
+    meeting_id: str,
+    email: str = Depends(get_current_email),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    out = await meeting_briefing.briefing(db, meeting_id, email)
+    if out is None:
+        raise HTTPException(status_code=404, detail="Meeting not found")
     return out

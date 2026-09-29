@@ -125,3 +125,76 @@ export const cancelMeeting = (id: string): Promise<ScheduledMeeting> =>
 
 export const respondToMeeting = (id: string, response: "accepted" | "declined"): Promise<ScheduledMeeting> =>
   request(`/scheduled-meetings/${encodeURIComponent(id)}/response`, { method: "PATCH", body: JSON.stringify({ response }) });
+
+// PHASE 9C — the pre-meeting briefing for one UPCOMING booking (services/meeting_briefing.py). The server picks
+// the related past Meeting Sessions and authorizes each on its own; a booking the viewer is not on is a 404.
+// Everything here is as recorded: no status, cause, supersession or resolution is ever part of it.
+export interface BriefingEvidence {
+  speakerEmail: string;
+  speakerName: string | null;
+  startOffsetMs: number;
+  text: string;
+}
+
+export interface BriefingEntry {
+  itemId: string;
+  /** The past Meeting Session that recorded it. */
+  sessionId: string;
+  at: string;
+  text: string;
+  reviewState: "suggested" | "confirmed" | "edited";
+  /** From a receipt made before its transcript changed (every cited line is still current). */
+  stale: boolean;
+  evidence: BriefingEvidence[];
+}
+
+export interface BriefingDecision extends BriefingEntry {
+  rationale: string | null;
+  /** The decision's OWN recorded words state a change ("moving launch from Thursday to Friday"). */
+  recordedChange: boolean;
+}
+
+export interface BriefingCommitment extends BriefingEntry {
+  action: string | null;
+  ownerEmail: string | null;
+  deadline: string | null;
+  /** The structured owner is the viewer. */
+  isYours: boolean;
+}
+
+export interface BriefingOpenLoop extends BriefingEntry {
+  kind: string | null;
+  /** Every accessible meeting that recorded the same open item, oldest first; the entry is the latest. */
+  recorded: { sessionId: string; itemId: string; at: string }[];
+}
+
+export interface BriefingSource {
+  sessionId: string;
+  title: string | null;
+  relation: "same_booking" | "same_series";
+  isPrivate: boolean;
+  startedAt: string;
+  endedAt: string;
+  viewer: { attended: boolean };
+  notes: "structured" | "nothing_useful" | "transcript_only" | "none";
+  stale: boolean;
+  review: "reviewed" | "partly" | "suggested" | null;
+  /** Items left out because the lines they cited are no longer in the transcript. */
+  omittedStale: number;
+}
+
+export interface MeetingBriefing {
+  meeting: { id: string; title: string; roomId: string; startsAt: string; endsAt: string; isPrivate: boolean };
+  available: boolean;
+  sources: BriefingSource[];
+  decisions: BriefingDecision[];
+  commitments: BriefingCommitment[];
+  openLoops: BriefingOpenLoop[];
+  keyContext: BriefingEntry[];
+}
+
+export const fetchBriefing = (id: string): Promise<MeetingBriefing> =>
+  request(`/scheduled-meetings/${encodeURIComponent(id)}/briefing`);
+
+export const fetchBriefingAvailability = (ids: string[]): Promise<{ available: string[] }> =>
+  request("/scheduled-meetings/briefings/availability", { method: "POST", body: JSON.stringify({ ids }) });
