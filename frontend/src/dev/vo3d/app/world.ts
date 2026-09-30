@@ -3161,6 +3161,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       playerMode.body.pos = p;
       avatar.setPosition(p);
       playerMode.camera.snap();
+      // THIS frame, not the next: PlayerMode already placed the camera before the lift stepped, so without
+      // this the render would be drawn from the old spot — the empty campus at x 9000 on arrival (the cabin
+      // is hidden on that same tick), and a bay with no body in it on departure.
+      playerMode.camera.update(p, 0);
       // SILENT. Stepping between a lift bay and the cabin is not a movement anybody made, and without this
       // every journey would broadcast a 9,000-unit teleport to every other browser. The feed's lift pair
       // (app/selfMovement.ts) keeps it silent AND, on the way out, says which floor the body is now on —
