@@ -52,6 +52,38 @@ function entry(overrides: Partial<TimeLogEntry> = {}): TimeLogEntry {
 }
 
 describe("validateAllocation", () => {
+  it.each([1440, 1441])("caps a fully allocated entry at 1440 minutes (%d)", (minutes) => {
+    const result = validateAllocation(minutes, [
+      entry({ category: "Meetings", timeSpentMinutes: minutes, workDescription: "work" }),
+    ]);
+    expect(result.isFullyAllocated).toBe(minutes === 1440);
+    expect(result.errors).toEqual(minutes === 1440 ? [] : [
+      "Entry 1: max 24h per entry; add another entry for the rest",
+    ]);
+  });
+
+  it("names each oversized entry", () => {
+    const result = validateAllocation(2883, [1441, 1442].map((minutes) =>
+      entry({ category: "Meetings", timeSpentMinutes: minutes, workDescription: "work" }),
+    ));
+    expect(result.errors).toEqual([
+      "Entry 1: max 24h per entry; add another entry for the rest",
+      "Entry 2: max 24h per entry; add another entry for the rest",
+    ]);
+  });
+
+  it.each([[1440, 1440, 43], [1440, 1440, 1440, 1423]])(
+    "fully allocates a multi-day session across capped entries (%j)", (...minutes) => {
+      const worked = minutes.reduce((sum, value) => sum + value, 0);
+      const result = validateAllocation(worked, minutes.map((timeSpentMinutes) =>
+        entry({ category: "Meetings", timeSpentMinutes, workDescription: "work" }),
+      ));
+      expect(result.errors).toEqual([]);
+      expect(result.isFullyAllocated).toBe(true);
+      expect(result.remainingMinutes).toBe(0);
+    },
+  );
+
   it("errors when there are no entries", () => {
     const result = validateAllocation(120, []);
     expect(result.errors).toContain("Add at least one time log entry.");

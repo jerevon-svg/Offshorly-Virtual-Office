@@ -1,11 +1,23 @@
-import { apiFetch } from "../api/client";
+import { apiFetch, AuthRedirectError } from "../api/client";
 import type {
+  FailureKind,
   SubmitTimeLogsRequest,
   SubmitTimeLogsResult,
   ZohoProject,
   ZohoTask,
   ZohoTimeLoggingService,
 } from "./types";
+
+// ponytail: fixed timeout, not configurable. Raise if a slower real-world
+// submission proves this too tight.
+const SUBMIT_TIMEOUT_MS = 15_000;
+
+function statusToFailureKind(status: number): FailureKind {
+  if (status === 401 || status === 403) return "auth";
+  if (status === 422) return "validation";
+  if (status >= 500) return "transport";
+  return "unknown";
+}
 
 // Real time-logging, through Atlas's backend.
 //
@@ -126,65 +138,98 @@ export class AtlasZohoService implements ZohoTimeLoggingService {
       const which = unsendable.map(({ label }) => label).join(", ");
       return {
         success: false,
+        kind: "validation",
         error:
           `${which}: Zoho Projects needs a project and a task for every entry — ` +
           "logging against a category alone is not supported yet. Pick a task for it and submit again.",
       };
     }
 
-    const response = await apiFetch("/api/v1/office/my-timelogs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        work_date: request.workDate,
-        entries: request.entries.map((entry) => ({
-          task_id: entry.taskId,
-          time_spent_minutes: entry.timeSpentMinutes,
-          work_description: entry.workDescription,
-          // Defaults to billable when the caller doesn't say (decision 3).
-          billable: entry.billable ?? true,
-        })),
-      }),
-    });
+    // Submit-only timeout: a hung request must surface as "couldn't confirm"
+    // (transport), not spin the SUBMITTING state forever. Outcome unknown —
+    // the caller must not treat this as either success or a rejected entry.
+    //
+    // The abort signal must stay live through response.json() too, not just
+    // the initial fetch — a stalled BODY (headers arrive, bytes never
+    // finish) is just as unconfirmed an outcome as a stalled connection, so
+    // the timer is only cleared once every read in this request is done.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), SUBMIT_TIMEOUT_MS);
+    try {
+      const response = await apiFetch("/api/v1/office/my-timelogs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          work_date: request.workDate,
+          entries: request.entries.map((entry) => ({
+            task_id: entry.taskId,
+            time_spent_minutes: entry.timeSpentMinutes,
+            work_description: entry.workDescription,
+            // Defaults to billable when the caller doesn't say (decision 3).
+            billable: entry.billable ?? true,
+          })),
+        }),
+        signal: controller.signal,
+      });
 
-    if (response.status === 409) {
+      if (response.status === 409) {
+        const body = (await response.json()) as {
+          detail?: { submission_id?: string; entries_created?: number };
+        };
+        throw new AlreadySubmittedError(
+          body.detail?.submission_id ?? "",
+          body.detail?.entries_created ?? 0,
+        );
+      }
+
+      if (!response.ok) {
+        return {
+          success: false,
+          kind: statusToFailureKind(response.status),
+          error: `Submission failed (HTTP ${response.status}).`,
+        };
+      }
+
       const body = (await response.json()) as {
-        detail?: { submission_id?: string; entries_created?: number };
+        success: boolean;
+        submission_id: string;
+        submitted_at: string;
+        entries_created: number;
+        failures: { task_id: string; error: string }[];
       };
-      throw new AlreadySubmittedError(
-        body.detail?.submission_id ?? "",
-        body.detail?.entries_created ?? 0,
-      );
-    }
 
-    if (!response.ok) {
+      // `success` mirrors the backend exactly: it is false whenever ANY entry
+      // failed, even though others landed. Do not recompute it from
+      // entries_created — a partial day must never render as a success.
+      return {
+        success: body.success,
+        submissionId: body.submission_id,
+        submittedAt: body.submitted_at,
+        entriesCreated: body.entries_created,
+        failures: body.failures.map((f) => ({ taskId: f.task_id, error: f.error })),
+        kind: body.success ? undefined : body.failures.length > 0 ? "entry-rejection" : "unknown",
+        error: body.success
+          ? undefined
+          : `${body.failures.length} of ${request.entries.length} entries could not be logged.`,
+      };
+    } catch (err) {
+      // AuthRedirectError means apiFetch already redirected to /login before
+      // ever calling fetch — let that propagate as before, it is not a
+      // transport failure. AlreadySubmittedError is a deliberate throw above,
+      // not a fetch/abort error — let it propagate to the caller unchanged.
+      if (err instanceof AuthRedirectError) throw err;
+      if (isAlreadySubmittedError(err)) throw err;
+      const timedOut = err instanceof DOMException && err.name === "AbortError";
       return {
         success: false,
-        error: `Submission failed (HTTP ${response.status}).`,
+        kind: "transport",
+        error: timedOut
+          ? "Couldn't confirm submission through Atlas (timed out)."
+          : "Couldn't confirm submission through Atlas.",
       };
+    } finally {
+      clearTimeout(timer);
     }
-
-    const body = (await response.json()) as {
-      success: boolean;
-      submission_id: string;
-      submitted_at: string;
-      entries_created: number;
-      failures: { task_id: string; error: string }[];
-    };
-
-    // `success` mirrors the backend exactly: it is false whenever ANY entry
-    // failed, even though others landed. Do not recompute it from
-    // entries_created — a partial day must never render as a success.
-    return {
-      success: body.success,
-      submissionId: body.submission_id,
-      submittedAt: body.submitted_at,
-      entriesCreated: body.entries_created,
-      failures: body.failures.map((f) => ({ taskId: f.task_id, error: f.error })),
-      error: body.success
-        ? undefined
-        : `${body.failures.length} of ${request.entries.length} entries could not be logged.`,
-    };
   }
 }
 

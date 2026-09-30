@@ -31,6 +31,23 @@ export interface TimeLogFailure {
   error: string;
 }
 
+/** Why a submission failed, so the panel can word it accurately instead of
+ *  showing one raw HTTP string for everything:
+ *  - "entry-rejection": Atlas reported one or more entries could not be
+ *    logged (per TimeLogFailure). Atlas does not tell us the upstream cause
+ *    per entry — it may be a Zoho rejection, but could also be an upstream
+ *    timeout or auth issue Atlas is relaying — so this must not be worded as
+ *    a confirmed Zoho rejection.
+ *  - "transport": no confirmed response — network error, timeout, or 5xx.
+ *    Outcome UNKNOWN: the entries may or may not have reached Zoho, so a
+ *    retry risks a duplicate. Never implies "Atlas is down" — a 5xx can mean
+ *    missing upstream creds.
+ *  - "auth": 401/403 from Atlas.
+ *  - "validation": 422, or our own pre-flight guard (e.g. task-less entry).
+ *  - "unknown": anything else — treat as outcome UNKNOWN, same as
+ *    "transport", for retry-safety purposes. */
+export type FailureKind = "entry-rejection" | "transport" | "auth" | "validation" | "unknown";
+
 export interface SubmitTimeLogsRequest {
   employeeId: string;
   workDate: string;
@@ -45,6 +62,8 @@ export interface SubmitTimeLogsResult {
   error?: string;
   /** Populated by AtlasZohoService on a partial failure. */
   failures?: TimeLogFailure[];
+  /** Set by AtlasZohoService on any failure; absent on success. */
+  kind?: FailureKind;
 }
 
 export interface ZohoTimeLoggingService {

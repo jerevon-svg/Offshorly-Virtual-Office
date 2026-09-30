@@ -20,6 +20,7 @@ import {
   saveSessionStart,
 } from "../../data/checkoutStorage";
 import { computeWorkedMinutes, formatDuration, validateAllocation } from "../../data/workedTime";
+import { AuthRedirectError } from "../../services/api/client";
 import { isAlreadySubmittedError, zohoService } from "../../services/zoho";
 import type { MockSubmitOptions } from "../../services/zoho/MockZohoService";
 import type {
@@ -315,6 +316,18 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
       return;
     }
 
+    const validation = validateAllocation(workedMinutes, entries);
+    if (!validation.isFullyAllocated) {
+      setSubmissionResult(null);
+      setError(validation.errors.join("\n"));
+      goTo("EDITING_TIME_LOG");
+      return;
+    }
+
+    // Clear any prior attempt's result before this one starts — otherwise a
+    // stale per-entry failure list (or partial-success count) from a
+    // previous try can bleed into this attempt's panel.
+    setSubmissionResult(null);
     setError(null);
     goTo("SUBMITTING");
 
@@ -355,6 +368,14 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
       // that prior submission rather than an error panel — and record it
       // locally, since this branch is reached exactly when local state has
       // drifted from the server (cleared storage, another browser).
+      // HR-7 investigation: a 409 with entries_created: 0 would mean nothing
+      // was ever logged, so treating it as success here would be a false
+      // checkout. Left unchanged — the Atlas backend contract lives in a
+      // separate repo not available from here, so whether entries_created:0
+      // can legitimately occur on a genuine duplicate (vs. always meaning
+      // "no entries exist") could not be confirmed. AtlasZohoService already
+      // defaults entries_created to 0 rather than throwing on a missing
+      // field, so this path silently accepts a zero count today.
       if (isAlreadySubmittedError(err)) {
         const recovered: SubmitTimeLogsResult = {
           success: true,
@@ -375,7 +396,16 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
         breakMinutes,
         savedAt: new Date().toISOString(),
       });
-      setError(err instanceof Error ? err.message : "Submission failed.");
+      const message = err instanceof Error ? err.message : "Submission failed.";
+      setError(message);
+      // Only reached for an exception AtlasZohoService did not itself
+      // classify (e.g. AuthRedirectError, or a service that throws instead
+      // of returning a result) — kind it here so the panel isn't guessing.
+      setSubmissionResult({
+        success: false,
+        error: message,
+        kind: err instanceof AuthRedirectError ? "auth" : "unknown",
+      });
       goTo("SUBMISSION_FAILED");
     }
   }

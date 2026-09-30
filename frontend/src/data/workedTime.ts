@@ -31,6 +31,7 @@ export interface AllocationResult {
 }
 
 const APPROVED_CATEGORY_SET = new Set<string>(APPROVED_CATEGORIES);
+export const MAX_ENTRY_MINUTES = 1440;
 
 // Validates a draft's entries against the worked-minutes budget for the day.
 // Per spec, entries must fully allocate the worked time (no over/under).
@@ -64,6 +65,9 @@ export function validateAllocation(
 
     if (!entry.timeSpentMinutes || entry.timeSpentMinutes <= 0) {
       errors.push(`${label}: enter time spent greater than 0.`);
+    }
+    if (entry.timeSpentMinutes > MAX_ENTRY_MINUTES) {
+      errors.push(`${label}: max 24h per entry; add another entry for the rest`);
     }
 
     if (!entry.workDescription || entry.workDescription.trim().length === 0) {

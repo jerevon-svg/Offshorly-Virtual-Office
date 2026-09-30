@@ -24,6 +24,11 @@ export function SubmissionFailedPanel({
   const failures = result?.failures ?? [];
   const created = result?.entriesCreated ?? 0;
   const partial = created > 0;
+  // "transport" and "unknown" both mean the outcome is UNCONFIRMED — the
+  // request may have reached Zoho before it failed to confirm, so a retry
+  // risks a duplicate. Never word this as "Atlas is down": a 5xx/timeout can
+  // just as easily mean missing upstream creds.
+  const outcomeUnknown = result?.kind === "transport" || result?.kind === "unknown";
 
   return (
     <div className={styles.backdrop}>
@@ -31,7 +36,9 @@ export function SubmissionFailedPanel({
         <div className={styles.title}>
           {partial
             ? "Some entries reached Zoho Projects, others didn't"
-            : "We couldn't submit your work log to Zoho Projects"}
+            : outcomeUnknown
+              ? "Couldn't confirm submission through Atlas"
+              : "We couldn't submit your work log to Zoho Projects"}
         </div>
         <div className={styles.body}>
           {partial ? (
@@ -49,15 +56,24 @@ export function SubmissionFailedPanel({
           )}
         </div>
         {failures.length > 0 && (
-          <ul className={styles.error}>
-            {failures.map((f) => (
-              <li key={f.taskId}>
-                {f.taskId}: {f.error}
-              </li>
-            ))}
-          </ul>
+          <>
+            <div className={styles.error}>Atlas responded; these entries could not be logged.</div>
+            <ul className={styles.error}>
+              {failures.map((f) => (
+                <li key={f.taskId}>
+                  {f.taskId}: Atlas could not log this entry — {f.error}
+                </li>
+              ))}
+            </ul>
+          </>
         )}
         {failures.length === 0 && error && <div className={styles.error}>{error}</div>}
+        {outcomeUnknown && (
+          <div className={styles.error}>
+            We can&apos;t tell whether this reached Zoho before it failed. These entries may
+            already be logged — check Zoho before trying again to avoid duplicates.
+          </div>
+        )}
         <div className={styles.actions}>
           <button className={styles.primary} onClick={onTryAgain}>
             Try again

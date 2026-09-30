@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { APPROVED_CATEGORIES } from "../../../services/zoho/types";
 import type { TimeLogEntry, ZohoProject, ZohoTask } from "../../../services/zoho/types";
 import type { validateAllocation } from "../../../data/workedTime";
-import { composeDuration, formatDuration, splitDuration } from "../../../data/workedTime";
+import { composeDuration, formatDuration, MAX_ENTRY_MINUTES, splitDuration } from "../../../data/workedTime";
 import styles from "./checkout.module.css";
 
 type Allocation = ReturnType<typeof validateAllocation>;
@@ -74,6 +74,7 @@ function DurationField({
           min={0}
           step={1}
           aria-label="Hours"
+          max={MAX_ENTRY_MINUTES / 60}
           value={hours}
           onChange={(e) => commit(e.target.value, minutes)}
         />
@@ -203,6 +204,9 @@ export function TimeLogForm({
               valueMinutes={entry.timeSpentMinutes}
               onChange={(timeSpentMinutes) => onUpdateEntry(index, { timeSpentMinutes })}
             />
+            {allocation.errors.filter((message) => message.startsWith(`Entry ${index + 1}:`)).map((message) => (
+              <div key={message} className={styles.error}>{message}</div>
+            ))}
 
             <div className={styles.field}>
               <label className={styles.label}>Work description</label>
@@ -241,7 +245,7 @@ export function TimeLogForm({
       </div>
 
       <div className={styles.actions}>
-        <button className={styles.primary} onClick={onContinue}>
+        <button className={styles.primary} onClick={onContinue} disabled={!allocation.isFullyAllocated}>
           Review log
         </button>
         {(onBack || onCancel) && (

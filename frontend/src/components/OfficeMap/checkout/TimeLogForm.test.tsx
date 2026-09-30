@@ -1,8 +1,10 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { TimeLogEntry } from "../../../services/zoho/types";
 import { validateAllocation } from "../../../data/workedTime";
 import { TimeLogForm } from "./TimeLogForm";
+import { TimeLogReview } from "./TimeLogReview";
 
 function entry(patch: Partial<TimeLogEntry> = {}): TimeLogEntry {
   return {
@@ -16,13 +18,13 @@ function entry(patch: Partial<TimeLogEntry> = {}): TimeLogEntry {
   } as TimeLogEntry;
 }
 
-function renderForm(entries: TimeLogEntry[], onUpdateEntry = vi.fn()) {
+function renderForm(entries: TimeLogEntry[], onUpdateEntry = vi.fn(), workedMinutes = 497) {
   render(
     <TimeLogForm
       entries={entries}
       projects={[{ id: "p1", name: "Project One" }]}
       tasks={[{ id: "t1", projectId: "p1", name: "Task One" }]}
-      allocation={validateAllocation(497, entries)}
+      allocation={validateAllocation(workedMinutes, entries)}
       workedLabel="8h 17m"
       error={null}
       onUpdateEntry={onUpdateEntry}
@@ -35,6 +37,44 @@ function renderForm(entries: TimeLogEntry[], onUpdateEntry = vi.fn()) {
 }
 
 describe("TimeLogForm time spent (HH:MM)", () => {
+  it("combines 24h + 1m, shows the entry error, and clamps minutes above 59", () => {
+    const onUpdate = vi.fn();
+    function Form() {
+      const [entries, setEntries] = useState([entry()]);
+      return <TimeLogForm entries={entries} projects={[]} tasks={[]}
+        allocation={validateAllocation(1441, entries)} workedLabel="24h 1m" error={null}
+        onUpdateEntry={(index, patch) => {
+          onUpdate(index, patch);
+          setEntries(entries.map((value, i) => i === index ? { ...value, ...patch } : value));
+        }} onAddEntry={vi.fn()} onRemoveEntry={vi.fn()} onContinue={vi.fn()} />;
+    }
+    render(<Form />);
+    fireEvent.change(screen.getByLabelText("Hours"), { target: { value: "24" } });
+    fireEvent.change(screen.getByLabelText("Minutes"), { target: { value: "1" } });
+    expect(onUpdate).toHaveBeenLastCalledWith(0, { timeSpentMinutes: 1441 });
+    expect(screen.getByText("Entry 1: max 24h per entry; add another entry for the rest")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Review log" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Minutes"), { target: { value: "75" } });
+    expect(onUpdate).toHaveBeenLastCalledWith(0, { timeSpentMinutes: 1499 });
+    expect(screen.getByLabelText("Minutes")).toHaveValue(59);
+  });
+
+  it.each([1440, 1441])("gates Review and submit at the entry limit (%d minutes)", (minutes) => {
+    const entries = [entry({ timeSpentMinutes: minutes })];
+    renderForm(entries, vi.fn(), minutes);
+    const reviewButton = screen.getByRole("button", { name: "Review log" });
+    expect(reviewButton).toHaveProperty("disabled", minutes > 1440);
+    const message = "Entry 1: max 24h per entry; add another entry for the rest";
+    expect(screen.queryByText(message) !== null).toBe(minutes > 1440);
+    render(
+      <TimeLogReview entries={entries} allocation={validateAllocation(minutes, entries)}
+        workedLabel="24h" onBack={vi.fn()} onSubmit={vi.fn()} />,
+    );
+    expect(screen.getByRole("button", { name: "Submit log and check out" }))
+      .toHaveProperty("disabled", minutes > 1440);
+    expect(screen.queryAllByText(message)).toHaveLength(minutes > 1440 ? 2 : 0);
+  });
+
   it("shows stored minutes split across the hours and minutes boxes", () => {
     renderForm([entry({ timeSpentMinutes: 497 })]);
     expect((screen.getByLabelText("Hours") as HTMLInputElement).value).toBe("8");
