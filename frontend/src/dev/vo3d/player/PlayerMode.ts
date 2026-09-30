@@ -30,12 +30,18 @@ import { PlayerHud } from "./PlayerHud";
 import { PlayerInput } from "./PlayerInput";
 import { AIRBORNE_POSE_PHASE, PlayerJump } from "./PlayerJump";
 import { collectCandidates, pickTarget, type Candidate, type Target } from "./PlayerTargeting";
+import { ScooterMotion } from "./ScooterMotion";
 
 /** Shared empty list, so a frame with no dynamic candidates allocates nothing. */
 const EMPTY_CANDIDATES: readonly Candidate[] = [];
 
 /** how fast the avatar turns toward its heading in third person (rad/s) — the navigation controller's rate */
 const TURN_RATE = 9;
+/** RIDING: the chase camera's boom (a touch longer, so the road ahead reads at speed), how fast it
+ *  swings in behind the deck (rad/s at speed), and how long a mouse look holds it off */
+const RIDE_BOOM = 1.18;
+const RIDE_CAMERA_FOLLOW = 3.2;
+const RIDE_LOOK_HOLD = 1.2;
 /** how far ahead of a moving player a door is told to expect him. One stride: enough for the leaf to be
  *  clear by the time he arrives, short enough not to open doors he is merely walking past.
  *
@@ -116,6 +122,18 @@ export type PlayerDeps = {
   targetsSuppressed?: () => boolean;
 };
 
+/** A SCOOTER RIDE, as PlayerMode sees it (app/world.ts starts one; world/scooters defines the area).
+ *  `canStand` is the RIDE AREA's stand test (the normal one AND the ride rects); `place` puts the scooter
+ *  model under the rider every frame; `forceEnd` is how PlayerMode itself asks the world to dismount when
+ *  something else takes the avatar or Player View is left. */
+export type RideHooks = {
+  canStand: StandTest;
+  place(pos: Vec2, heading: number, lean: number, speed: number): void;
+  forceEnd(reason: string): void;
+  /** the height the rider's feet stand at (the deck top) */
+  deckTop: number;
+};
+
 export class PlayerMode {
   readonly camera: PlayerCamera;
   readonly body: PlayerBody;
@@ -135,6 +153,36 @@ export class PlayerMode {
   /** the heading Bon is walking, kept separate from the camera yaw so third person can turn the body only */
   private heading = 0;
   private moving = false;
+  /** THE SCOOTER RIDE, while there is one: its handling, its own body (the ride area's stand test, the
+   *  same swept/sliding collision) and the world's hooks */
+  private ride: { motion: ScooterMotion; body: PlayerBody; hooks: RideHooks; lookHold: number; last: Vec2 } | null = null;
+  get riding(): boolean { return this.ride !== null; }
+  /** the ride's live numbers, for the HUD/QA readout */
+  get rideState(): { speed: number; heading: number; lean: number } | null {
+    return this.ride ? { speed: this.ride.motion.speed, heading: this.ride.motion.heading, lean: this.ride.motion.lean } : null;
+  }
+  /** MOUNT: take the current body position and facing onto the deck. `heading` is in the CAMERA's yaw
+   *  convention (forward = (sin h, −cos h)); the default converts the body's current yaw. Refused unless Player View owns the
+   *  avatar and the rider is standing somewhere the ride area allows. */
+  startRide(hooks: RideHooks, heading = Math.PI - this.d.avatar.yaw): boolean {
+    if (!this._active || this.ride || this.d.stack.owner !== "Player" || !hooks.canStand(this.body.pos)) return false;
+    this.landNow();
+    this.ride = { motion: new ScooterMotion(heading), body: new PlayerBody(this.body.pos, this.d.radius, hooks.canStand), hooks, lookHold: 0, last: { ...this.body.pos } };
+    this.camera.boomScale = RIDE_BOOM;
+    this.state.sprinting = false;
+    this.target = null;
+    return true;
+  }
+  /** DISMOUNT (the world has already chosen where the body stands): walking resumes from `at` */
+  endRide(at?: Vec2): void {
+    if (!this.ride) return;
+    this.ride = null;
+    this.camera.boomScale = 1;
+    if (at) this.body.pos = { x: at.x, z: at.z };
+    this.d.avatar.setPosition(this.body.pos, 0);
+    this.d.avatar.play(this.restingClip);
+    this.moving = false;
+  }
   /** a one-segment synthetic route handed to the automatic doors, so they open on approach exactly as they
    *  do for a planned walk — without inventing a second door-trigger path */
   readonly doorIntent: Vec2[] = [];
@@ -213,6 +261,8 @@ export class PlayerMode {
   /** Hand everything back. Safe to call when not active. */
   exit(): void {
     if (!this._active) return;
+    // leaving Player View always ends a ride first — the world dismounts to a safe point
+    if (this.ride) this.ride.hooks.forceEnd("player-exit");
     this._active = false;
     this.state.active = false;
     this.input.disable(); // clears every held key, Shift included
@@ -277,7 +327,7 @@ export class PlayerMode {
    *  floor. Those three are the whole gate: no double jump, no jump out of a chair, no jump in a view
    *  that is not this one, because this handler is only bound while PLAYER's input is enabled. */
   jump(): void {
-    if (!this._active || !this.d.stack.owns("Player")) return;
+    if (!this._active || !this.d.stack.owns("Player") || this.ride) return; // no jumping off a moving deck
     // ONLY A JUMP THAT ACTUALLY TOOK IS PUBLISHED. `start` refuses one in mid-air, so a held Space, a
     // key repeat and a second press all produce exactly one relay — the traffic is bounded by the arc,
     // not by the keyboard.
@@ -294,6 +344,7 @@ export class PlayerMode {
   /** Invoke whatever is targeted, through V2's own interaction path. */
   interact(): void {
     if (!this._active) return;
+    if (this.ride) { this.ride.hooks.forceEnd("dismount"); return; }
     if (this.d.canStandUp()) { this.d.standUp(); return; }
     const t = this.target;
     if (!t) return;
@@ -304,7 +355,7 @@ export class PlayerMode {
     // nothing, so the avatar is never released here. Releasing and re-acquiring it (what every other kind
     // does, because the starters route with A* and take "Interaction") would drop Bon into an idle clip
     // for a frame for a menu that has not even been answered yet.
-    if (t.kind === "person") { this.d.activate(t.id, t.kind); return; }
+    if (t.kind === "person" || t.kind === "ride") { this.d.activate(t.id, t.kind); return; }
     // release FIRST: the starters route with A* and acquire "Interaction", and Player outranks Navigation
     this.d.stack.release("Player");
     this.landNow();
@@ -318,6 +369,12 @@ export class PlayerMode {
     if (!this._active) return p;
     const owner = this.d.stack.owner;
     this.state.owner = owner;
+    // anything that takes the avatar (a click-to-walk, a guided journey, a cinematic) ends the ride first
+    if (this.ride && owner !== "Player") this.ride.hooks.forceEnd(`owner:${owner}`);
+    // THE SAFETY NET: something else relocated the body (a restore, a lift, an ejection, a teleport) — the
+    // scooter does not follow it anywhere; the ride ends where the body now is
+    if (this.ride && Math.hypot(this.body.pos.x - this.ride.last.x, this.body.pos.z - this.ride.last.z) > 30) this.ride.hooks.forceEnd("relocated");
+    if (this.ride) return this.updateRide(dt);
     // an interaction is driving Bon: keep the camera on him, move nothing, and take him back when it ends
     if (owner !== "Player") {
       if (this.input.axis.x || this.input.axis.z) this.d.onManualOverride?.(owner);
@@ -418,6 +475,44 @@ export class PlayerMode {
   /** PUT THE BODY BACK ON THE FLOOR NOW, with no landing frame: the avatar is being handed to somebody
    *  else (an interaction, a seat) or the mode is ending. Idempotent, and cheap enough to call every
    *  frame of a handoff. */
+  /** ONE RIDING FRAME: handling → swept move through the ride area → deck, rider and camera. */
+  private updateRide(dt: number): Vec2 {
+    const ride = this.ride!;
+    const look = this.input.takeLook();
+    if (look.dx || look.dy) { this.camera.look(look.dx, look.dy); ride.lookHold = RIDE_LOOK_HOLD; }
+    else ride.lookHold = Math.max(0, ride.lookHold - dt);
+    const axis = this.input.axis;
+    ride.body.pos = { x: this.body.pos.x, z: this.body.pos.z };
+    const { dx, dz } = ride.motion.step({ throttle: -axis.z, steer: axis.x, boost: this.input.sprinting }, dt);
+    const res = ride.body.move(dx, dz);
+    if (res.blocked) ride.motion.bumped(res.travelled, dt);
+    this.body.pos = res.pos;
+    this.state.blocked = res.blocked;
+    this.state.travelled = res.travelled;
+    this.moving = res.travelled > 1e-4;
+    this.heading = ride.motion.heading;
+    // the rider stands on the deck, facing along it, in the standing idle — no walk cycle while mounted.
+    // TWO YAW CONVENTIONS (core/coords): the ride heading is the CAMERA's (forward = (sin h, −cos h)) and a
+    // body's yaw is headingFor's (forward = (sin a, cos a)), so the body takes π − h
+    this.d.avatar.setPosition(this.body.pos, ride.hooks.deckTop);
+    this.d.avatar.setYaw(Math.PI - ride.motion.heading);
+    this.d.avatar.play(CLIP_IDLE);
+    ride.hooks.place(this.body.pos, ride.motion.heading, ride.motion.lean, ride.motion.speed);
+    // CHASE CAMERA: settles in behind the deck unless the rider is looking round with the mouse
+    if (ride.lookHold <= 0 && this.camera.view === "third") {
+      const rate = RIDE_CAMERA_FOLLOW * (0.35 + 0.65 * Math.min(1, Math.abs(ride.motion.speed) / 120));
+      this.camera.yaw = stepAngle(this.camera.yaw, ride.motion.heading, rate * dt);
+    }
+    if (this.camera.view === "first") this.camera.yaw = ride.motion.heading;
+    this.doorIntent.length = 0;
+    this.camera.update(this.body.pos, dt);
+    this.hud?.setTarget("Dismount", null);
+    this.state.target = "dismount";
+    ride.last = { x: this.body.pos.x, z: this.body.pos.z };
+    this.state.pos = `${this.body.pos.x.toFixed(0)}, ${this.body.pos.z.toFixed(0)}`;
+    return this.body.pos;
+  }
+
   private landNow(): void {
     if (!this.vertical.airborne && this.state.height === 0) return;
     this.vertical.reset();

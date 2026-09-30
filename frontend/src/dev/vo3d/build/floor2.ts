@@ -8,8 +8,8 @@
 //   • a PERIMETER COVE, so the floor is lit by its own architecture;
 //   • no ceiling slab, for the same reason no room downstairs has one: Office View looks down at it.
 //
-// The view THROUGH the glass is build/floor2Context.ts — the elevated exterior that makes this read as
-// the storey above the office rather than a plate somewhere else in the world.
+// The view THROUGH the glass is the ground floor's own campus and AI Lab, re-anchored one storey below
+// this plate (app/world.ts anchorExterior); build/floor2Context.ts supplies only the storey beneath it.
 import * as THREE from "three";
 import { rbox, shadowed } from "./helpers";
 import { TILE, TILE_PHASE, emissiveMat, facadeGlassMat, floorMat, mat, plastic, tileMat } from "../render/Materials";

@@ -163,9 +163,10 @@ export class Rain {
   readonly mesh: THREE.Mesh;
   private readonly geo: THREE.InstancedBufferGeometry;
   private readonly mat: THREE.ShaderMaterial;
-  private readonly ground: number;
+  private ground: number;
   /** the office, padded — the one rectangle it never rains on */
   private readonly dry: { x0: number; z0: number; x1: number; z1: number };
+  private readonly pad: number;
   private t = 0;
   private wanted = false;
   private params: RainParams = { perMillion: 0, opacity: 0, speed: 0, length: 1 };
@@ -176,7 +177,9 @@ export class Rain {
    *  footprint to keep rain, covering wall thickness and the podium lip */
   constructor(dry: Rect, groundY: number, pad = 12) {
     this.ground = groundY;
-    this.dry = { x0: dry.x - pad, z0: dry.z - pad, x1: dry.x + dry.w + pad, z1: dry.z + dry.d + pad };
+    this.pad = pad;
+    this.dry = { x0: 0, z0: 0, x1: 0, z1: 0 };
+    this.setDry(dry);
     const quad = new THREE.PlaneGeometry(1, 1);
     this.geo = new THREE.InstancedBufferGeometry();
     this.geo.index = quad.index;
@@ -233,6 +236,19 @@ export class Rain {
     this.mesh.renderOrder = 950; // after the scene's own transparents (light spills, glass)
     this.mesh.visible = false;
     quad.dispose();
+  }
+
+  /** MOVE THE WEATHER TO ANOTHER STOREY. The building the camera is in is the one it never rains on, and
+   *  the ground under it is where the streaks land — both follow the floor the body is on, because an
+   *  upper storey presents the same exterior one storey below itself (Environment.anchorExterior). */
+  relocate(dry: Rect, groundY: number): void {
+    this.setDry(dry);
+    this.ground = groundY;
+    this.mat.uniforms.uGround.value = groundY;
+  }
+  private setDry(dry: Rect): void {
+    const p = this.pad;
+    this.dry.x0 = dry.x - p; this.dry.z0 = dry.z - p; this.dry.x1 = dry.x + dry.w + p; this.dry.z1 = dry.z + dry.d + p;
   }
 
   /** SWITCH THE FIELD BETWEEN RAIN AND SNOW.

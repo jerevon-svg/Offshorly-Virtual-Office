@@ -43,7 +43,7 @@ import {
   floor2Regions, floor2StandTest, onFloor2,
 } from "./rooms/floor2";
 import { OUTER_RECT as CAVE_OUTER } from "./rooms/cave";
-import { FALLBACK_VIEW_MODE, FLOORS, GROUND_FLOOR_ID, arrivalViewMode, coworkersOnFloor, floorOfPlace, supportsViewMode } from "./app/floors";
+import { FALLBACK_VIEW_MODE, FLOORS, GROUND_FLOOR_ID, STOREY_H, exteriorDrop, arrivalViewMode, coworkersOnFloor, floorOfPlace, supportsViewMode } from "./app/floors";
 import { FloorTransition, walkLegs, type FloorPhase } from "./interact/FloorTransition";
 
 const overlaps = (a: Rect, b: Rect): boolean => a.x < b.x + b.w && b.x < a.x + a.w && a.z < b.z + b.d && b.z < a.z + a.d;
@@ -538,6 +538,25 @@ describe("app/world.ts wires the floors in", () => {
     expect(src).toContain("onWhere: (to) => selfFeed?.entering(FLOORS[to].placeId),");
     expect(src).toContain("coworkersOnFloor(coworkersInSameVolume(rosterList, rosterInsideCave), currentFloor)");
     expect(src).not.toContain("floor_changed");
+  });
+
+  it("presents ONE shared exterior and the REAL AI Lab one storey below an upper floor — never a copy", () => {
+    // a storey must at least clear floor 2's 60-unit wall plus the 10 of structure under its floor
+    expect(STOREY_H).toBeGreaterThanOrEqual(70);
+    expect(STOREY_H).toBeLessThanOrEqual(110); // a second storey, not a tower
+    expect(exteriorDrop(GROUND_FLOOR_ID)).toBe(0);
+    expect(exteriorDrop("floor-2")).toBe(STOREY_H);
+    const a = src.slice(src.indexOf("function anchorExterior"), src.indexOf("function applyFloor"));
+    expect(a).toContain("env.anchorExterior(");
+    expect(a).toContain("aiLab.group.position.set(");
+    const f = src.slice(src.indexOf("function applyFloor"), src.indexOf("floorTransition = new FloorTransition"));
+    expect(f).toContain("anchorExterior();");
+    expect(f).not.toContain("aiLab.group.visible = false");
+    expect(src).not.toContain("sceneryForFloor");
+    expect(src).toContain("const labWanted = (m: CameraModeId): boolean => m !== \"office\";");
+    // the storey-below builder draws no scenery of its own
+    const ctx = readFileSync("src/dev/vo3d/build/floor2Context.ts", "utf8");
+    for (const table of ["ROADS", "TREE_LINES", "GROVES", "PARKING", "POND", "LAB_OUTER"]) expect(ctx).not.toMatch(new RegExp(`\\b${table}\\b`));
   });
 
   it("the step between a vestibule and the cabin is SILENT on the wire", () => {

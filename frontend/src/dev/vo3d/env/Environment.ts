@@ -103,6 +103,8 @@ export class Environment {
   private readonly scenery: ExteriorScenery | null;
   private readonly sky = new Sky();
   private readonly rain: Rain;
+  /** the exterior grade as BUILT (ground floor); an anchored storey offsets it */
+  private readonly groundY: number;
   private readonly centre = new THREE.Vector3();
   private readonly forward = new THREE.Vector3();
   private current: EnvPhase | null = null;
@@ -170,6 +172,7 @@ export class Environment {
   /** @param dry the office footprint, which it never rains on @param groundY the exterior grade */
   constructor(R: Renderer, scenery: ExteriorScenery | null = null, dry: Rect = { x: 0, z: 0, w: 0, d: 0 }, groundY = -8) {
     this.R = R;
+    this.groundY = groundY;
     this.scenery = scenery;
     this.rain = new Rain(dry, groundY);
     if (scenery) R.scene.add(scenery.root);
@@ -297,26 +300,36 @@ export class Environment {
     }
     return true;
   }
-  /** SUPPRESS THE GROUND FLOOR'S OWN LANDSCAPE, whatever the presentation says.
+  /** ONE EXTERIOR, ANCHORED UNDER WHICHEVER STOREY THE BODY IS ON.
    *
-   *  The exterior scenery is built once, around the V1 frame. A storey that stands somewhere else in the
-   *  world (app/floors.ts) would see it sitting off its own windows — the technical separation, visible.
-   *  So a floor that is not the ground one hands its name in here and the landscape stops being drawn;
-   *  that floor supplies its own. Re-asserted by `write` on every grade, so a travelling sun cannot
-   *  quietly bring it back. */
-  private floorScenery: string | null = "ground";
-  sceneryForFloor(floor: string | null): void {
-    this.floorScenery = floor;
-    if (this.scenery && floor === null) this.scenery.root.visible = false;
-    // re-apply either way: the upper storey also takes the overhead-sun clamp below
+   *  The campus is built once, around the V1 frame, and it is the ONLY campus: there is no second copy
+   *  for an upper floor. A storey that stands elsewhere in the world (app/floors.ts — floors are separated
+   *  in x/z because regions and navigation have no y) is given the SAME scenery group, translated so it
+   *  keeps its exact offset from that storey's plate and dropped by the storey's height. Every mesh,
+   *  material, instance, night tint, lamp, puddle and gust is therefore the ground floor's own, seen from
+   *  above. The rain follows it: the storey's footprint stays dry and streaks land on the moved grade.
+   *
+   *  `upstairs` also holds the key light overhead (UPSTAIRS_MIN_ELEVATION): an upper storey is an
+   *  interior under a ceiling and must not take a low raking sun across its roofless rooms. */
+  private upstairs = false;
+  private readonly anchor = new THREE.Vector3();
+  anchorExterior(anchor: { x: number; y: number; z: number }, dry: Rect, upstairs: boolean): void {
+    this.anchor.set(anchor.x, anchor.y, anchor.z);
+    this.upstairs = upstairs;
+    if (this.scenery) this.scenery.root.position.copy(this.anchor);
+    this.rain.relocate(dry, this.groundY + anchor.y);
     if (this.current) this.apply(this.current, true);
+  }
+  /** where the shared exterior currently stands (zero on the ground floor) */
+  get exteriorAnchor(): { x: number; y: number; z: number } {
+    return { x: this.anchor.x, y: this.anchor.y, z: this.anchor.z };
   }
   get sceneryVisible(): boolean {
     return this.scenery ? this.scenery.root.visible : false;
   }
   set sceneryVisible(on: boolean) {
     // a manual override, meaningful only in world presentation — office never draws the exterior anyway
-    if (this.scenery && this._presentation === "world" && this.floorScenery !== null) this.scenery.root.visible = on;
+    if (this.scenery && this._presentation === "world") this.scenery.root.visible = on;
   }
   get fogEnabled(): boolean {
     return this._fog;
@@ -465,7 +478,12 @@ export class Environment {
     }
     // the foliage clock only runs while there is wind to spend it on (see exterior.windTick)
     this.scenery?.windTick(this.elapsed);
+    // THE TRAFFIC, on the WALL clock so every client and both floors agree (world/traffic) — and only while
+    // the exterior is actually drawn: OFFICE, the Cave and a hidden world pay nothing
+    if (this.scenery?.root.visible) this.scenery.trafficTick(this.trafficClock ? this.trafficClock() : Date.now() / 1000);
   }
+  /** DEV/CAPTURE: replace the traffic's wall clock (seconds) — null restores it */
+  trafficClock: (() => number) | null = null;
 
   /** Advance the travelling grade by dt and write the frame it lands on. */
   private step(dt: number): void {
@@ -547,7 +565,7 @@ export class Environment {
     const office = this._presentation === "office";
     this.rain.visible = !office || this._rainInOffice;
     // OFFICE: nothing exterior is drawn, and the backdrop is a flat stage tone rather than a sky.
-    if (this.scenery) this.scenery.root.visible = !office && this.floorScenery !== null;
+    if (this.scenery) this.scenery.root.visible = !office;
     this.sky.root.visible = !office;
     // ONE Color AND ONE Fog, WRITTEN IN PLACE. Both used to be freshly allocated on every write, which
     // was the right trade when a write happened twice a day; a travelling grade writes every frame.
@@ -573,7 +591,7 @@ export class Environment {
     // low sun across a roofless plate. Upstairs the key light keeps its colour, azimuth and grade and is
     // only held at or above UPSTAIRS_MIN_ELEVATION, so shadows ground furniture instead of streaking
     // across every room — the zoom-dependent stripes Floor 2 showed at low sun.
-    const elevation = this.floorScenery === null ? Math.max(p.key.elevation, UPSTAIRS_MIN_ELEVATION) : p.key.elevation;
+    const elevation = this.upstairs ? Math.max(p.key.elevation, UPSTAIRS_MIN_ELEVATION) : p.key.elevation;
     R.lightParams = {
       azimuth: p.key.azimuth,
       elevation,

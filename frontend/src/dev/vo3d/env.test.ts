@@ -9,6 +9,11 @@ import {
   SPECIMENS, TREE_LINES, VEHICLES, WORLD_CENTRE, WORLD_RADIUS, roadById, roadRect,
 } from "./world/campus";
 import { buildExterior } from "./build/exterior";
+import { vehicleGeos, vehicleTriangles } from "./build/vehicles";
+import {
+  PARK_ACCESSIBLE, PARK_AISLE, PARK_CROSSINGS, PARK_DRIVE, PARK_ISLANDS, PARK_LAMPS, PARK_PATHS, PARK_SCREEN, PARK_WALK_STALL,
+  SIDEWALK_W, WALKS, stallRect, LAYBY, LAYBY_WALK, DROP_OFF, VEHICLE_LENGTH, streetLightSpots, roadEdge, type VehicleKind,
+} from "./world/campus";
 import { CameraModes, OFFICE_VIEW } from "./render/CameraModes";
 import { FRAME } from "./adapters/v1Floor";
 import { pointInRect, type Rect } from "./core/coords";
@@ -215,6 +220,93 @@ describe("vo3d world — the campus plan is expandable by construction", () => {
     expect(overlaps(PARKING, PODIUM)).toBe(false);
   });
 
+  it("composes the staff car park: hedge off the pavement, islands clear of the aisle, paths that arrive", () => {
+    const west = roadById("road-west");
+    const sidewalkEastEdge = west.at + west.width / 2 + SIDEWALK_W;
+    // the screen (and so its hedge) sits between the public sidewalk and the stalls, touching neither
+    expect(PARK_SCREEN.x).toBeGreaterThan(sidewalkEastEdge);
+    expect(PARK_SCREEN.x + PARK_SCREEN.w).toBeLessThan(PARKING.x);
+    // islands replace whole stalls and never reach into the aisle; lamps stand on islands
+    for (const i of PARK_ISLANDS) {
+      expect(contains(PARKING, stallRect(i.bank, i.stall))).toBe(true);
+      expect(overlaps(stallRect(i.bank, i.stall), PARK_AISLE)).toBe(false);
+    }
+    for (const l of PARK_LAMPS) expect(PARK_ISLANDS.some((i) => pointInRect(l, stallRect(i.bank, i.stall)))).toBe(true);
+    expect(PARK_AISLE.w).toBeGreaterThanOrEqual(60);
+    // the drive stays on the aisle's centre line
+    expect(PARK_DRIVE.x + PARK_DRIVE.w / 2).toBeCloseTo(PARK_AISLE.x + PARK_AISLE.w / 2, 6);
+    // the mid path runs from the aisle to the link walk; the south path from the drive to the perimeter walk
+    const link = WALKS.find((w) => w.x === -136)!;
+    const perimeterWest = WALKS[2];
+    expect(PARK_PATHS[0].x).toBe(PARK_AISLE.x + PARK_AISLE.w);
+    expect(PARK_PATHS[0].x + PARK_PATHS[0].w).toBe(link.x);
+    expect(PARK_PATHS[0].z).toBeGreaterThanOrEqual(link.z);
+    expect(PARK_PATHS[0].z + PARK_PATHS[0].d).toBeLessThanOrEqual(link.z + link.d);
+    expect(PARK_PATHS[1].x).toBe(PARK_DRIVE.x + PARK_DRIVE.w);
+    expect(PARK_PATHS[1].x + PARK_PATHS[1].w).toBe(perimeterWest.x);
+    // the crossings lie on the aisle and on the drive, on the paths' own lines
+    expect(contains(PARK_AISLE, PARK_CROSSINGS[0].rect)).toBe(true);
+    expect(PARK_CROSSINGS[0].rect.z).toBe(PARK_PATHS[0].z);
+    expect(contains(PARK_DRIVE, PARK_CROSSINGS[1].rect)).toBe(true);
+    // accessible bays flank the walk; nothing is parked on an island, the walk or an accessible bay
+    expect(PARK_ACCESSIBLE).toEqual([PARK_WALK_STALL - 1, PARK_WALK_STALL + 1]);
+    const kept = [...PARK_ISLANDS.map((i) => stallRect(i.bank, i.stall)), stallRect(1, PARK_WALK_STALL), ...PARK_ACCESSIBLE.map((i) => stallRect(1, i))];
+    for (const v of VEHICLES) for (const r of kept) expect(pointInRect(v, r), `${v.kind} at ${v.x},${v.z}`).toBe(false);
+  });
+
+  it("PHASE 1 — no street lamp in a carriageway, the car-park drive or the lay-by; the arrival is clear", () => {
+    const inside = (p: { x: number; z: number }, r: Rect) => p.x > r.x && p.x < r.x + r.w && p.z > r.z && p.z < r.z + r.d;
+    const lamps = streetLightSpots();
+    for (const l of lamps) {
+      for (const r of ROADS) expect(inside(l, roadRect(r)), `lamp ${l.x},${l.z} in ${r.id}`).toBe(false);
+      expect(inside(l, PARK_DRIVE), `lamp ${l.x},${l.z} in the drive`).toBe(false);
+      expect(inside(l, LAYBY), `lamp ${l.x},${l.z} in the lay-by`).toBe(false);
+    }
+    // the forecourt, the diverted walk and the bay stack north → south and end at the carriageway
+    expect(LAYBY_WALK.z).toBe(DROP_OFF.z + DROP_OFF.d);
+    expect(LAYBY.z).toBe(LAYBY_WALK.z + LAYBY_WALK.d);
+    expect(LAYBY.z + LAYBY.d).toBe(roadEdge(roadById("road-main"), -1));
+    // no street tree left standing in the walk or the bay
+    for (const line of TREE_LINES) for (let t = line.from; t <= line.to; t += line.spacing) {
+      const p = line.axis === "x" ? { x: t, z: line.at } : { x: line.at, z: t };
+      if (inside(p, { x: LAYBY_WALK.x, z: LAYBY_WALK.z, w: LAYBY_WALK.w, d: LAYBY.z + LAYBY.d - LAYBY_WALK.z })) {
+        const sc = buildExterior();
+        let near = 0;
+        sc.root.traverse((o) => { const m = o as THREE.InstancedMesh; if (m.isInstancedMesh && m.name.startsWith("tree-") && m.name.endsWith("-trunk")) { const mx = new THREE.Matrix4(), v = new THREE.Vector3(); for (let i = 0; i < m.count; i++) { m.getMatrixAt(i, mx); v.setFromMatrixPosition(mx); if (Math.hypot(v.x - p.x, v.z - p.z) < 12) near++; } } });
+        expect(near, `street tree at ${p.x},${p.z}`).toBe(0);
+      }
+    }
+    // every vehicle is off the public sidewalks: in the car park, or wholly inside the lay-by, clear of lamps
+    for (const v of VEHICLES) {
+      const half = VEHICLE_LENGTH[v.kind] / 2;
+      const bayed = inside(v, LAYBY) && v.x - half >= LAYBY.x && v.x + half <= LAYBY.x + LAYBY.w;
+      expect(inside(v, PARKING) || bayed, `${v.kind} at ${v.x},${v.z}`).toBe(true);
+      for (const l of lamps) if (Math.abs(l.z - v.z) < 34) expect(Math.abs(l.x - v.x) > half + 6, `${v.kind} against lamp ${l.x},${l.z}`).toBe(true);
+    }
+  });
+
+  it("PHASE 2 — the procedural fleet: one attribute layout, lightweight per kind, distinct silhouettes", () => {
+    const dims: Record<string, number[]> = {};
+    for (const k of Object.keys(VEHICLE_LENGTH) as VehicleKind[]) {
+      const g = vehicleGeos(k);
+      for (const part of [g.paint, g.gloss, g.matte]) {
+        expect(part.index).toBeNull(); // BatchedMesh needs every geometry to agree on indexing
+        expect(Object.keys(part.attributes).sort()).toEqual(["color", "normal", "position"]);
+      }
+      expect(vehicleTriangles(g), k).toBeLessThan(4500);
+      const all = new THREE.Box3();
+      for (const part of [g.paint, g.gloss, g.matte]) { part.computeBoundingBox(); all.union(part.boundingBox!); }
+      dims[k] = [all.max.z - all.min.z, all.max.y];
+      // every kind stands on the ground (a tyre may press ~1 unit into it — the contact patch)
+      expect(all.min.y).toBeGreaterThanOrEqual(-1.2);
+    }
+    // the silhouettes differ where they should: the jeepney is the long one, the pickup the tall car, the
+    // supercar the low one, the bike the narrow one
+    expect(dims.jeepney[0]).toBeGreaterThan(dims.pickup[0]);
+    expect(dims.pickup[1]).toBeGreaterThan(dims.sport[1]);
+    expect(dims.sport[1]).toBeGreaterThan(dims.supercar[1] - 1);
+  });
+
   it("puts the horizon further out than the widest normal gameplay view can reach", () => {
     // widest view is roughly 6.7k x 3.8k world units; its half-diagonal must stay inside the terrain
     expect(WORLD_RADIUS).toBeGreaterThan(Math.hypot(6700 / 2, 3800 / 2));
@@ -258,7 +350,8 @@ describe("vo3d world — the landscape is composed, not scattered", () => {
   it("places a restrained, hand-placed Philippine transport mix — no filled roads", () => {
     expect(VEHICLES.length).toBeLessThanOrEqual(14);
     const kinds = new Set(VEHICLES.map((v) => v.kind));
-    expect(kinds).toEqual(new Set(["car", "jeepney", "tricycle", "motorcycle"]));
+    // the sports set in the car park and the Philippine street set in the lay-by
+    for (const k of ["supercar", "supercarWing", "sport", "pickup", "sportbike", "tricycle", "etrike", "jeepney", "kalesa"] as VehicleKind[]) expect(kinds.has(k), k).toBe(true);
     expect(VEHICLES.filter((v) => v.kind === "jeepney").length).toBe(1);
     // nothing is parked ON a carriageway
     for (const v of VEHICLES)
@@ -283,10 +376,21 @@ describe("vo3d build — the exterior world stays inside its performance budget"
       if (!m.isMesh) return;
       draws++;
       if (m.isInstancedMesh) instanced++;
+      const b = o as THREE.BatchedMesh;
+      if (b.isBatchedMesh) {
+        // a batch draws each INSTANCE's geometry range — count those, not the reserved buffer
+        for (let i = 0; i < 1000; i++) { try { tris += (b.getGeometryRangeAt(b.getGeometryIdAt(i))?.count ?? 0) / 3; } catch { break; } }
+        return;
+      }
       const idx = m.geometry.getIndex();
       const per = (idx ? idx.count : m.geometry.getAttribute("position").count) / 3;
       tris += per * (m.isInstancedMesh ? (m.count ?? 1) : 1);
     });
+    // THE WHOLE PARKED FLEET IS TWO DRAWS (build/vehicles + one BatchedMesh per material); moving traffic
+    // adds three more of its own (world/traffic: no shadow casting, unlit lamps)
+    const batches: string[] = [];
+    scenery.root.traverse((o) => { if ((o as THREE.BatchedMesh).isBatchedMesh) batches.push(o.name); });
+    expect(batches.sort()).toEqual(["traffic-gloss", "traffic-lamps", "traffic-matte", "vehicles-gloss", "vehicles-matte"]);
     expect(draws).toBeLessThanOrEqual(80);
     expect(instanced).toBeGreaterThanOrEqual(12);
     expect(tris).toBeLessThan(250_000);
@@ -296,7 +400,9 @@ describe("vo3d build — the exterior world stays inside its performance budget"
     // reads as somewhere you discover rather than a building in a field, so it is a deliberate spend,
     // not drift. It is still a third below the pre-polish world, and it costs nothing in submissions:
     // every tree is instanced, and `draws` above is unchanged by it.
-    expect(scenery.stats.trees).toBeLessThan(220);
+    // RE-BASED TO 230 for the car park's five kerbed-island trees (world/campus PARK_ISLANDS): small,
+    // deliberately placed, and the only planting inside the lot — again zero extra submissions.
+    expect(scenery.stats.trees).toBeLessThan(230);
     expect(scenery.stats.trees).toBeGreaterThan(60);
     expect(scenery.stats.vehicles).toBe(VEHICLES.length);
   });
@@ -306,15 +412,15 @@ describe("vo3d build — the exterior world stays inside its performance budget"
     scenery.root.traverse((o) => { if ((o as THREE.Mesh).isMesh && o.castShadow) casters.push(o.name); });
     expect(casters).not.toContain("distant-belt");
     expect(casters).not.toContain("distant-hills");
-    expect(casters).toContain("car-body");
-    expect(casters).toContain("jeepney-body");
+    expect(casters).toContain("vehicles-gloss");
+    expect(casters).toContain("vehicles-matte");
     expect(casters).toContain("bench-wood");
   });
 
   it("switches its practical lights with the phase, and darkens only its own surfaces", () => {
     const lens = findMaterial(scenery.root, "lamp-lenses") as THREE.MeshStandardMaterial;
     const pool = findMaterial(scenery.root, "lamp-pools");
-    const body = findMaterial(scenery.root, "car-body");
+    const body = findMaterial(scenery.root, "vehicles-gloss");
 
     scenery.applyPracticals(ENV_PRESETS.day.practicals);
     expect(lens.emissiveIntensity).toBe(0);
@@ -592,6 +698,40 @@ describe("vo3d env — OFFICE presentation keeps the world a secret", () => {
       expect((R.scene.background as THREE.Color).getHex()).toBe(ENV_PRESETS[phase].stage);
       expect((R.scene.background as THREE.Color).getHex()).not.toBe(ENV_PRESETS[phase].sky);
     }
+  });
+
+  it("ANCHORS THE ONE EXTERIOR under an upper storey — moved, still drawn, rain relocated, sun held overhead", async () => {
+    const { Environment, UPSTAIRS_MIN_ELEVATION } = await import("./env/Environment");
+    const R = fakeRenderer();
+    const scenery = buildExterior();
+    const env = new Environment(R as never, scenery, { x: 0, z: 0, w: 1440, d: 1244 }, GRADE);
+    env.apply("sunset");
+    env.settle();
+    const groundElevation = (R.lightParams as { elevation: number }).elevation;
+    expect(groundElevation).toBeLessThan(UPSTAIRS_MIN_ELEVATION); // a low sun, on the ground floor
+
+    env.anchorExterior({ x: 6000, y: -84, z: 0 }, { x: 6000, z: 0, w: 1440, d: 1244 }, true);
+    env.settle();
+    // the SAME group, translated — not hidden and not replaced
+    expect(scenery.root.position.toArray()).toEqual([6000, -84, 0]);
+    expect(scenery.root.visible).toBe(true);
+    expect(env.exteriorAnchor).toEqual({ x: 6000, y: -84, z: 0 });
+    expect((R.lightParams as { elevation: number }).elevation).toBeGreaterThanOrEqual(UPSTAIRS_MIN_ELEVATION);
+    // the dev scenery toggle works upstairs too (it used to be refused there)
+    env.sceneryVisible = false;
+    expect(scenery.root.visible).toBe(false);
+    env.sceneryVisible = true;
+    // OFFICE still draws no exterior on any floor
+    env.setPresentation("office");
+    expect(scenery.root.visible).toBe(false);
+    env.setPresentation("world");
+    expect(scenery.root.visible).toBe(true);
+
+    // back on the ground floor: exactly where it was built, and the sun is free again
+    env.anchorExterior({ x: 0, y: 0, z: 0 }, { x: 0, z: 0, w: 1440, d: 1244 }, false);
+    env.settle();
+    expect(scenery.root.position.toArray()).toEqual([0, 0, 0]);
+    expect((R.lightParams as { elevation: number }).elevation).toBe(groundElevation);
   });
 });
 

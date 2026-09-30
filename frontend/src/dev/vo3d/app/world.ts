@@ -93,11 +93,12 @@ import { CORRIDOR_BANDS, ROOM_WORLD_SHIFT_Z } from "../rooms/ground-floor";
 // FloorTransition.ts), and one deliberately empty upper storey (rooms/floor2.ts). Nothing below this
 // import names "floor 2" except where a second floor is genuinely the subject; everything else reads
 // the registry, so a Gaming floor is a row plus its geometry rather than an edit to a state machine.
-import { FALLBACK_VIEW_MODE, FLOORS, FLOOR_ORDER, GROUND_FLOOR_ID, arrivalViewMode, coworkersOnFloor, floorOfPlace, supportsViewMode, type Vo3dFloorId } from "./floors";
+import { FALLBACK_VIEW_MODE, FLOORS, FLOOR_ORDER, GROUND_FLOOR_ID, STOREY_H, arrivalViewMode, exteriorDrop, coworkersOnFloor, floorOfPlace, supportsViewMode, type Vo3dFloorId } from "./floors";
 import { CABIN, RIDE as ELEVATOR_RIDE, cabinStandTest, inCabin, inVestibule, vestibuleStandTest, type ElevatorSpec } from "../rooms/elevator";
 import { buildCabin, buildElevatorCore, type ElevatorCoreBuild, type LiftBuild } from "../build/elevator";
 import { buildFloor2 } from "../build/floor2";
 import { buildFloor2Context } from "../build/floor2Context";
+import { DECK_TOP, clearOfDocks, dockSolids, inRideArea, rideArea, scooterStations, type ScooterDock } from "../world/scooters";
 import { ELEVATOR as FLOOR2_ELEVATOR, FLOOR2_ID, FLOOR2_ROOM, FLOOR_RECT as FLOOR2_FLOOR_RECT, FRAME as FLOOR2_FRAME, floor2StandTest, onFloor2 } from "../rooms/floor2";
 import { makePlateRouter } from "../nav/plateRoute";
 import { buildMeetingFloor, setRoomDisplayTexture } from "../build/floor2Meeting";
@@ -708,11 +709,12 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   const floor2Root = new THREE.Group();
   floor2Root.name = "floor-2-root";
   const floor2ElevatorBuild: ElevatorCoreBuild = buildElevatorCore(FLOOR2_ELEVATOR, FLOORS[FLOOR2_ID].indicator);
-  // THE VIEW OUT OF FLOOR 2'S WINDOWS: its own elevated read of the office's exterior, so the storey
-  // reads as the one above the ground floor rather than a plate somewhere else in the world. Its own
-  // group so `applyFloor` can swap it for the ground floor's real campus in one boolean each way.
-  const floor2Context = buildFloor2Context();
-  floor2Root.add(buildFloor2(), floor2Context);
+  // THE STOREY BELOW FLOOR 2: the podium and the ground storey's mass, under the plate. The view out of
+  // the windows is NOT built here — it is the ground floor's own campus and AI Lab, re-anchored one storey
+  // down by `applyFloor` (build/floor2Context explains the split). Drawn with floor 2, nowhere else.
+  let storeyH = STOREY_H;
+  const floor2Context = buildFloor2Context(exteriorDrop(FLOOR2_ID, storeyH));
+  floor2Root.add(buildFloor2(), floor2Context.group);
   // THE MEETING FLOOR'S DISTRICT (build/floor2Meeting): baked architecture plus the live door leaves,
   // displays and signs this world drives. Its SEATING and display walk-ups are world entities, built by
   // the mirror exactly as every ground-floor room's are, then carried under floor 2's root so they are
@@ -884,7 +886,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // sky, sun, ambient, haze and the exterior practical lights. The phase itself comes from V1's real clock
   // through env/timeOfDay — V1 keeps the clock and the boundaries; this only presents them.
   // SCENERY ONLY: the exterior group is added straight to the scene, never to the world/nav graph.
-  const scenery = buildExterior();
+  // THE SHARED SCOOTERS (world/scooters): two stations on the exterior route, placed off V1's own sidewalk
+  const SCOOTER_STATIONS = scooterStations(plan.sidewalk);
+  const scenery = buildExterior({ scooterStations: SCOOTER_STATIONS });
   // The office footprint is handed to the environment as the DRY RECTANGLE: rain is never PLACED over it,
   // so a doll-house building with no drawn roof stays dry inside at every camera angle without the rain ever
   // inspecting the scene. GRADE is where rain lands. Neither is a layout change — both are read from data
@@ -1473,6 +1477,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   /** Stand a denied body back on Reception's public side. A PLACEMENT, not a movement — the feed is told
    *  so (Feed.placed), because this is V2 enforcing V1's own rule, not the employee walking anywhere. */
   function ejectFromOffice(): void {
+    dismountScooter("ejected");
     if (zoneOf(avatar.worldPosition()) !== "office") return;
     navCtl.stop();
     // PHASE 6C — A SEATED BODY IS STOOD UP FIRST. The interactions own the avatar while it sits (and have
@@ -2211,7 +2216,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     R.invalidateShadows();
     return "teleported";
   }
-  function activateInteractable(id: string, kind: "seat" | "lounge" | "approach" | "person", near?: Vec2): boolean {
+  function activateInteractable(id: string, kind: "seat" | "lounge" | "approach" | "person" | "ride", near?: Vec2): boolean {
+    // A SHARED SCOOTER: mount it (the ride never hands the avatar away — Player View drives it)
+    if (kind === "ride") return mountScooter(id);
     // PHASE 6D — A PERSON. The one activation that starts nothing in this world: it SELECTS, and the host
     // decides what a selection means (app/interactions.ts). The pointer is handed back so the card that
     // opens can actually be used, and false is returned because no interaction took the avatar.
@@ -2377,7 +2384,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     activate: activateInteractable,
     // PHASE 6D — the coworkers, re-read per frame because they move. Empty until a host subscribes, so
     // the standalone dev page targets exactly what it always did.
-    dynamicCandidates: coworkerCandidates,
+    dynamicCandidates: () => { const s = scooterCandidates(); return s.length ? [...coworkerCandidates(), ...s] : coworkerCandidates(); },
     // DIRECTED MEETING — the meeting owns the chair; E does not stand the body up (Esc hands it back first).
     canStandUp: () => !guidedHolds.meeting && engagedSeat() !== null,
     standUp: () => engagedSeat()?.stand(),
@@ -2409,6 +2416,66 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // or into one that started 300 ms ago. One call, one relay, no state. The standalone dev page's sink
   // is absent and one there stays local, exactly as everything else does.
   playerMode.onJumped = () => selfMovement?.jumped?.();
+
+  // ---- SHARED E-SCOOTERS (V1: single-player) ---------------------------------------------------------
+  // Stations and the ride area are world/scooters' data; the handling is player/ScooterMotion; PlayerMode
+  // owns the riding frame. This block only decides WHO may mount WHAT and WHERE a dismount lands.
+  //
+  // THE RIDE AREA IS AN INTERSECTION: a rider stands only where a walker could AND inside the exterior
+  // route's rects — never in an interior, a room, the lift, floor 2, the Cave, a door threshold or the
+  // Lab's porch/hall — and steers round the Lab rack's parked scooters.
+  const RIDE_AREA = rideArea(plan.sidewalk, ENTRY_ZONE.x + ENTRY_ZONE.w);
+  const DOCK_SOLIDS = dockSolids(SCOOTER_STATIONS);
+  const ALL_DOCKS: ScooterDock[] = SCOOTER_STATIONS.flatMap((st) => st.docks);
+  const rideStand = (p: Vec2): boolean =>
+    currentFloor === GROUND_FLOOR_ID && inRideArea(RIDE_AREA, p) && playerStand(p) && clearOfDocks(DOCK_SOLIDS, p, NAV_RADIUS);
+  /** the dock whose scooter is being ridden, or null */
+  let ridingDock: ScooterDock | null = null;
+  const scooterState = { riding: "—", last: "—", mounts: 0 };
+  /** "Ride" is offered only to somebody standing ON the route, on foot, in Player View, on the ground floor */
+  function scooterCandidates(): Candidate[] {
+    if (!playerMode.active || ridingDock || currentFloor !== GROUND_FLOOR_ID || engagedSeat() !== null || stack.guided) return [];
+    if (!rideStand(playerMode.body.pos)) return [];
+    return ALL_DOCKS.map((d) => ({ id: d.id, kind: "ride" as const, pos: d.mount, label: "Ride scooter", roomId: "exterior" }));
+  }
+  function mountScooter(id: string): boolean {
+    const dock = ALL_DOCKS.find((d) => d.id === id);
+    if (!dock || ridingDock || !scenery.scooters) return false;
+    // set off ALONG the route (east or west, in the camera's yaw convention), whichever way the rider was
+    // already facing it — a body yaw's forward is (sin a, cos a), so sin a < 0 is facing west
+    const heading = Math.sin(avatar.yaw) < -0.3 ? -Math.PI / 2 : Math.PI / 2;
+    const ok = playerMode.startRide({
+      canStand: rideStand,
+      deckTop: DECK_TOP,
+      // the scooter model's yaw is the negated avatar heading (models face local −z)
+      place: (p, h, lean) => scenery.scooters!.placeRidden(p.x, p.z, -h, lean),
+      forceEnd: (reason) => dismountScooter(reason),
+    }, heading);
+    if (!ok) return false;
+    ridingDock = dock;
+    scenery.scooters.setDocked(dock.id, false);
+    scenery.scooters.showRidden(true);
+    scenery.scooters.placeRidden(playerMode.body.pos.x, playerMode.body.pos.z, -heading, 0);
+    scooterState.riding = dock.id;
+    scooterState.mounts++;
+    return true;
+  }
+  /** DISMOUNT — always onto a point a walker can stand on: a step to the rider's right, else the left,
+   *  else exactly where they are (which the ride area guarantees is standable). The scooter goes home. */
+  function dismountScooter(reason: string): void {
+    if (!ridingDock) return;
+    const p = playerMode.body.pos, h = playerMode.rideState?.heading ?? avatar.yaw;
+    const rx = Math.cos(h), rz = Math.sin(h); // the rider's right, in the (sin h, −cos h) forward convention
+    const beside = [{ x: p.x + rx * 20, z: p.z + rz * 20 }, { x: p.x - rx * 20, z: p.z - rz * 20 }, { x: p.x + rx * 12, z: p.z + rz * 12 }, { x: p.x - rx * 12, z: p.z - rz * 12 }];
+    const at = beside.find((q) => playerStand(q)) ?? { ...p };
+    const dock = ridingDock;
+    ridingDock = null;
+    playerMode.endRide(at);
+    scenery.scooters?.showRidden(false);
+    scenery.scooters?.setDocked(dock.id, true);
+    scooterState.riding = "—";
+    scooterState.last = `${reason} → ${at.x.toFixed(0)}, ${at.z.toFixed(0)}`;
+  }
 
   // ---- the home-desk spawn (Phase 3) ---------------------------------------------------------------
   // WHERE THE SIGNED-IN EMPLOYEE STARTS: at their own desk, when V1 knows of one. Everything above this
@@ -3091,21 +3158,33 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     floor2ElevatorBuild.group.visible = currentFloor === FLOOR2_ID;
   }
 
+  /** ONE EXTERIOR FOR THE WHOLE BUILDING. The campus (build/exterior) and the real AI Lab are built
+   *  once around the V1 frame. On an upper storey the SAME groups are translated so they keep their exact
+   *  offset from that storey's plate and drop by its height (app/floors STOREY_H) — so the car park, the
+   *  roads, the lake and the Lab are where they were, seen from above. Presentation only: regions, stand
+   *  tests, the Lab's own walkability and the movement wire all stay in their flat world coordinates, and
+   *  nobody can walk out there from upstairs. Everything else about both groups (tint, lamps, puddles,
+   *  wind, the Lab's pulse) is untouched because nothing else knows they moved. */
+  function exteriorAnchorOf(floor: Vo3dFloorId): { x: number; y: number; z: number } {
+    const f = floorFrameOf(floor);
+    return { x: f.x - plan.frame.x, y: -exteriorDrop(floor, storeyH), z: f.z - plan.frame.z };
+  }
+  function anchorExterior(): void {
+    const a = exteriorAnchorOf(currentFloor);
+    env.anchorExterior(a, floorFrameOf(currentFloor), currentFloor !== GROUND_FLOOR_ID);
+    aiLab.group.position.set(a.x, a.y, a.z);
+    floor2Context.setDrop(exteriorDrop(FLOOR2_ID, storeyH));
+  }
+
   function applyFloor(to: Vo3dFloorId): void {
+    dismountScooter("floor");
     if (to === currentFloor) return;
     currentFloor = to;
-    const upstairs = to !== GROUND_FLOOR_ID;
     applyWorldVisibility();
-    aiLab.group.visible = false;
-    if (monkey) monkey.visible = false;
-    // THE GROUND FLOOR'S CAMPUS IS THE GROUND FLOOR'S. Floor 2 stands 4,560 units east of the V1 frame
-    // and the campus roads run out at 5,400, so from up there the office's own landscape would be sitting
-    // just off the west windows — the technical separation, in plain sight. It is suppressed while
-    // upstairs and the floor's own elevated context (build/floor2Context.ts) stands in for it.
-    env.sceneryForFloor(upstairs ? null : "ground");
-    floor2Context.visible = upstairs;
-    // A floor standing in its own world space has no sky, no campus and no weather around it — it is a
-    // SEALED INTERIOR in exactly the sense the CAVE is, and it takes the same environment rig.
+    anchorExterior();
+    aiLab.group.visible = labWanted(params.cameraMode);
+    // the dev-only monkey walks the Lab in ground-floor world coordinates; it stays downstairs
+    if (monkey) monkey.visible = aiLab.group.visible && onGroundFloor();
     if (env.setPresentation(wantedPresentation(params.cameraMode))) R.invalidateShadows();
     // OFFICE is a bounded viewport over ONE plate; the fence moves with the floor being looked at, so an
     // upper storey can never be panned off to reveal that it is a slab standing in the void.
@@ -3256,6 +3335,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  walks the employee to the call control first, through the approach the control already carries, and
    *  the journey begins when they arrive. One entry point for the key, the click, the GUI and the HUD. */
   function callElevator(to: Vo3dFloorId = otherFloor()): boolean {
+    dismountScooter("elevator");
     if (!floorTransition || floorTransition.busy) return false;
     // WHERE THE BODY REALLY IS. Outside PLAYER the player body is not kept in step with the avatar, so
     // reading it here said "already at the doors" from anywhere on the floor and skipped the routed walk
@@ -4268,6 +4348,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     for (const l of viewModeListeners) l(mode);
   };
   const onGroundFloor = (): boolean => currentFloor === GROUND_FLOOR_ID;
+  /** THE AI LAB'S VISIBILITY RULE, unchanged in substance: never in OFFICE (the product framing, whose
+   *  fence cannot reach it), drawn in EXPLORE and PLAYER — on any floor now, because upstairs it is the
+   *  same Lab seen one storey down rather than something to walk out to. */
+  const labWanted = (m: CameraModeId): boolean => m !== "office";
   /** WHAT THE ENVIRONMENT PRESENTS, decided in ONE place because three things now have a vote in it and
    *  the last writer used to win: the camera mode (OFFICE draws no exterior), the CAVE (a sealed
    *  interior), and the floor (a storey standing in its own world space is a sealed interior too).
@@ -4307,11 +4391,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // Taking direct control counts as having moved yourself: a V1 position restore landing afterwards
       // would teleport a player mid-stride. Same rule as the click-to-walk path above.
       selfMovedByUser = true;
-      // …ON THE GROUND FLOOR. The campus, the Lab and the monkey belong to the storey that opens onto
-      // them; from an upper floor there is nothing to walk out to, and drawing them would put the
-      // exterior world beside a sealed interior.
-      aiLab.group.visible = onGroundFloor();
-      if (monkey) monkey.visible = onGroundFloor();
+      // The Lab is part of the ONE shared exterior (see anchorExterior): drawn wherever the campus is,
+      // which upstairs means one storey below the windows. The dev monkey stays on the ground floor.
+      aiLab.group.visible = labWanted("player");
+      if (monkey) monkey.visible = aiLab.group.visible && onGroundFloor();
       if (env.setPresentation(wantedPresentation("player"))) R.invalidateShadows();
       R.invalidateShadows();
       refresh();
@@ -4323,8 +4406,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // off-screen there — it is unreachable by that camera. Hiding it takes its whole subtree out of
     // projectObject, SSAO's normal pass and the shadow pass in one boolean, so the default experience
     // pays nothing at all for it. EXPLORE is where it is meant to be discovered.
-    aiLab.group.visible = m === "explore" && onGroundFloor();
-    if (monkey) monkey.visible = aiLab.group.visible;
+    aiLab.group.visible = labWanted(m);
+    if (monkey) monkey.visible = aiLab.group.visible && onGroundFloor();
     if (env.setPresentation(wantedPresentation(m))) R.invalidateShadows();
     syncCam(cameraModes.set(m));
     R.invalidateShadows();
@@ -6143,6 +6226,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       setFog: (on: boolean) => { params.envFog = on; env.fogEnabled = on; refresh(); },
       setSky: (on: boolean) => { params.envSky = on; env.skyVisible = on; refresh(); },
       presentation: () => env.presentation,
+      /** DEV: live-tune the presentation storey height (app/floors STOREY_H) and read where the exterior stands */
+      storeyHeight: () => storeyH,
+      setStoreyHeight: (h: number) => { storeyH = h; anchorExterior(); R.invalidateShadows(); },
+      exteriorAnchor: () => env.exteriorAnchor,
       bolt: () => env.lightningBolt,
       boltVisible: () => env.lightningBolt.object.visible,
     },
@@ -6257,6 +6344,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       move: (dx: number, dz: number) => playerMode.body.move(dx, dz),
       position: () => ({ ...playerMode.body.pos }),
       teleport: (x: number, z: number) => { const ok = playerMode.body.placeNear({ x, z }); avatar.setPosition(playerMode.body.pos); playerMode.camera.snap(); return ok; },
+      /** SHARED SCOOTERS — the QA rig: stations, ride area, mount/dismount and the live ride numbers */
+      scooters: { stations: SCOOTER_STATIONS, area: RIDE_AREA, state: scooterState, canRide: rideStand, mount: mountScooter, dismount: () => dismountScooter("qa"), ride: () => playerMode.rideState, riding: () => playerMode.riding, candidates: () => scooterCandidates().map((c) => c.id) },
       look: (dx: number, dy: number) => playerMode.camera.look(dx, dy),
       interact: () => playerMode.interact(),
       target: () => playerMode.state.target,

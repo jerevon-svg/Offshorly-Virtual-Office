@@ -24,8 +24,12 @@ import {
   CROSSINGS, DROP_OFF, ENTRY_STAIR, ENTRY_X, EXPANSION_LOTS, GRADE, LOTS, MARK_Y, PARK_DRIVE,
   GROVES, PARKING, PAVING_Y, POND, POND_BENCHES, POND_PATH, POND_SHORE, PODIUM, PODIUM_TOP, ROAD_Y, ROADS,
   SIDEWALK_W, SPECIMENS, STALL_BANKS, STALL_D, STALL_W, TREE_LINES, VEHICLES, WALKS, WORLD_CENTRE,
-  WORLD_RADIUS, benchSpots, pathLightSpots, roadById, roadRect, streetLightSpots, type VehicleKind,
+  WORLD_RADIUS, benchSpots, pathLightSpots, roadById, roadRect, streetLightSpots,   PARK_ACCESSIBLE, PARK_AISLE, PARK_CROSSINGS, PARK_ISLANDS, PARK_LAMPS, PARK_PATHS, PARK_SCREEN, islandCentre, stallRect,
+  LAYBY, LAYBY_WALK, LAYBY_Y,
 } from "../world/campus";
+import { scooterDockGeos, vehicleGeos, type VehicleGeos } from "./vehicles";
+import { SCOOTER_COLOUR, type ScooterStation } from "../world/scooters";
+import { TRAFFIC_LOOPS, buildLoopPath, poseAt } from "../world/traffic";
 import type { Lot } from "../world/campus";
 import type { Rect } from "../core/coords";
 
@@ -38,10 +42,14 @@ const EX = {
   paving: 0xcdc5b7, pavingWarm: 0xd8d0c1, curb: 0xb3aca0, soil: 0x5d5545,
   trunk: 0x7b5f45, canopy: 0x568f3c, canopyLight: 0x6fa74a, canopyDeep: 0x40723a, conifer: 0x3f6b4b,
   beltNear: 0x4f7a4c, beltFar: 0x5d8270, hill: 0x6d8f63, hillFar: 0x7e9a84,
+  accessible: 0x3f6fae,
   hedge: 0x557a3e, pole: 0x474c53, lamp: 0xffe6bd, bollard: 0xb8b1a6, puddle: 0x2b3a42,
   bench: 0xc09a6a, benchFrame: 0x4a4f55, stone: 0x6e6a62, stoneDark: 0xb9b1a3, signPlinth: 0x4c4944, signFace: 0x22302a,
   glass: 0x2a3944, tyre: 0x25262c, water: 0x5f93a8, shore: 0xa79b85,
 } as const;
+
+/** how far a car-park island's kerb stands proud of the asphalt */
+const ISLAND_H = 3;
 
 /** Scratch material for geometry construction only. Merging discards per-mesh materials, so the pieces a
  *  variant is assembled from must NOT allocate (or register) real materials — one instanced mesh gets one
@@ -311,17 +319,6 @@ function shrubGeo(): THREE.BufferGeometry {
   return mergedGeo([blob(TMP, 0, 8, 0, 13, 10, 13), blob(TMP, 7, 13, -4, 8), blob(TMP, -6, 12, 5, 7)]);
 }
 
-/** A stylized parked car: one body geometry (per-instance colour) + one dark geometry (glass + tyres). */
-function carGeos(): { body: THREE.BufferGeometry; dark: THREE.BufferGeometry } {
-  const body = mergedGeo([rbox(46, 16, 104, TMP, 0, 8, 0, 5, 1), rbox(40, 15, 50, TMP, 0, 23, -4, 5, 1)]);
-  const wheels = [-18, 18].flatMap((x) => [-34, 34].map((z) => { const w = cyl(9, 7, TMP, x, 0, z); w.rotation.z = Math.PI / 2; w.position.y = 9; return w; }));
-  const dark = mergedGeo([
-    rbox(37, 11, 20, TMP, 0, 25, -22, 3, 1), // windscreen band
-    rbox(37, 11, 16, TMP, 0, 25, 12, 3, 1), // rear glass
-    ...wheels,
-  ]);
-  return { body, dark };
-}
 
 /** The pond outline: a closed catmull-rom through eight radii-jittered points, so the water reads as a
  *  landscaped body rather than a stamped ellipse. `grow` scales it for the shore band. Deterministic. */
@@ -344,57 +341,8 @@ function pondShape(grow: number): THREE.Shape {
   return sh;
 }
 
-/** THE JEEPNEY. Silhouette first: a long flat-roofed passenger cabin, a short snouted bonnet, the roof
- *  rack, and the deep chrome front bar. No livery, no detailing — it has to read at diorama scale. */
-function jeepneyGeos(): { body: THREE.BufferGeometry; dark: THREE.BufferGeometry } {
-  const body = mergedGeo([
-    rbox(56, 44, 150, TMP, 0, 16, 14, 4, 1), //   passenger cabin
-    rbox(60, 5, 158, TMP, 0, 60, 12, 2, 1), //    flat roof, slightly proud of the body
-    rbox(46, 9, 58, TMP, 0, 65, 26, 2, 1), //     roof rack
-    rbox(50, 28, 50, TMP, 0, 16, -78, 4, 1), //   bonnet
-    rbox(54, 11, 10, TMP, 0, 10, -102, 3, 1), //  front bar
-    rbox(8, 22, 8, TMP, -20, 42, -104, 2, 1), //  the two bonnet-top mirrors/lamps
-    rbox(8, 22, 8, TMP, 20, 42, -104, 2, 1),
-  ]);
-  const wheels = [-29, 29].flatMap((x) => [-70, 48].map((z) => { const w = cyl(16, 10, TMP, x, 0, z); w.rotation.z = Math.PI / 2; w.position.y = 16; return w; }));
-  const dark = mergedGeo([
-    rbox(50, 26, 6, TMP, 0, 28, -56, 2, 1), //    windscreen
-    rbox(6, 24, 140, TMP, -28.5, 26, 16, 2, 1), // the long open side openings
-    rbox(6, 24, 140, TMP, 28.5, 26, 16, 2, 1),
-    ...wheels,
-  ]);
-  return { body, dark };
-}
 
-/** THE TRICYCLE. A small motorcycle with a roofed sidecar bolted to its right — the read is the roof
- *  overhanging one wheel while the bike leans out the other side. */
-function tricycleGeos(): { body: THREE.BufferGeometry; dark: THREE.BufferGeometry } {
-  const body = mergedGeo([
-    rbox(32, 32, 70, TMP, 20, 12, 2, 5, 1), //    sidecar cab
-    rbox(36, 5, 62, TMP, 20, 48, 0, 2, 1), //     its roof — over the SIDECAR only, so the bike reads
-    rbox(4, 16, 4, TMP, 6, 32, -26, 1, 1), //     roof stanchions
-    rbox(4, 16, 4, TMP, 6, 32, 26, 1, 1),
-    rbox(15, 15, 30, TMP, -16, 21, 2, 4, 1), //   the bike's tank + seat, clear of the roof
-    rbox(11, 13, 14, TMP, -16, 23, -20, 3, 1), // its headstock
-    rbox(26, 5, 6, TMP, -16, 36, -24, 2, 1), //   handlebars
-  ]);
-  const wheels = [
-    { x: -16, z: -32 }, { x: -16, z: 28 }, { x: 30, z: 24 },
-  ].map((w) => { const m = cyl(12, 6, TMP, w.x, 0, w.z); m.rotation.z = Math.PI / 2; m.position.y = 12; return m; });
-  const dark = mergedGeo([rbox(28, 18, 4, TMP, 20, 22, -34, 2, 1), ...wheels]);
-  return { body, dark };
-}
 
-/** A MOTORCYCLE: tank, seat, two wheels, a fork. Small enough that anything more would be invisible. */
-function motorcycleGeos(): { body: THREE.BufferGeometry; dark: THREE.BufferGeometry } {
-  const body = mergedGeo([
-    rbox(15, 17, 40, TMP, 0, 20, -2, 4, 1), // tank + seat mass
-    rbox(19, 4, 7, TMP, 0, 38, -26, 2, 1), //  handlebars
-    rbox(8, 20, 7, TMP, 0, 18, -28, 2, 1), //  fork
-  ]);
-  const wheels = [-32, 28].map((z) => { const w = cyl(11, 5, TMP, 0, 0, z); w.rotation.z = Math.PI / 2; w.position.y = 11; return w; });
-  return { body, dark: mergedGeo(wheels) };
-}
 
 /** A street lamp: post + arm + head (one geometry), and its lens (a second, emissive). */
 function lampGeos(): { post: THREE.BufferGeometry; lens: THREE.BufferGeometry } {
@@ -436,9 +384,19 @@ export type ExteriorScenery = {
   applyWetness(w: number): void;
   /** 0 = still air, 1 = the hardest the planting bends (env/weatherGrade WIND). One uniform write. */
   applyWind(gain: number): void;
-  /** Advance the foliage animation. Seconds; the ONLY per-frame call this module has. */
+  /** Advance the foliage animation. Seconds. */
   windTick(elapsedSeconds: number): void;
-  stats: { draws: number; instanced: number; instances: number; trees: number; vehicles: number };
+  /** PLACE THE MOVING TRAFFIC for a moment in time (world/traffic). Pass WALL-CLOCK seconds so every client
+   *  sees the same vehicles in the same places. The caller skips it while the exterior is not drawn. */
+  trafficTick(timeSec: number): void;
+  /** THE SHARED SCOOTERS (world/scooters): hide a docked one while it is being ridden, and place the one
+   *  under the rider. Present only when the builder was given stations. */
+  scooters: {
+    setDocked(dockId: string, docked: boolean): void;
+    showRidden(on: boolean): void;
+    placeRidden(x: number, z: number, yaw: number, lean: number): void;
+  } | null;
+  stats: { draws: number; instanced: number; instances: number; trees: number; vehicles: number; traffic: number; docks: number };
 };
 
 /** HOW FAR THE TOP TRAVELS AT FULL WIND, per world unit of height. A 100-unit tree's crown moves ~4.2
@@ -447,7 +405,9 @@ export type ExteriorScenery = {
 const CANOPY_FLEX = 0.042;
 const SHRUB_FLEX = 0.009;
 
-export function buildExterior(): ExteriorScenery {
+export function buildExterior(opts: { scooterStations?: readonly ScooterStation[] } = {}): ExteriorScenery {
+  const stations = opts.scooterStations ?? [];
+  const docks = stations.flatMap((st) => st.docks);
   resetScatter();
   const M = new ExteriorMaterials();
   const root = new THREE.Group();
@@ -513,6 +473,12 @@ export function buildExterior(): ExteriorScenery {
   // 4. THE OFFSHORLY CAMPUS. Perimeter walk, podium skirt, entry stair, drop-off, parking.
   for (const w of [...WALKS, POND_PATH]) ground.add(flatRect(w, pavingM, PAVING_Y));
   ground.add(flatRect(DROP_OFF, pavingWarmM, PAVING_Y));
+  // THE LAY-BY (world/campus): the sidewalk diverted behind it, the bay itself in the sidewalk band — laid
+  // just above the sidewalk it replaces — and a kerb line between walkers and waiting vehicles
+  ground.add(flatRect(LAYBY_WALK, pavingM, PAVING_Y));
+  ground.add(flatRect(LAYBY, roadM, LAYBY_Y));
+  ground.add(flatRect({ x: LAYBY.x, z: LAYBY.z - 2, w: LAYBY.w, d: 4 }, curbM, LAYBY_Y + 0.06));
+  for (const x of [LAYBY.x - 2, LAYBY.x + LAYBY.w - 2]) ground.add(flatRect({ x, z: LAYBY.z, w: 4, d: LAYBY.d }, curbM, LAYBY_Y + 0.06));
   ground.add(flatRect(PARK_DRIVE, roadM, PAVING_Y - 0.3));
   ground.add(flatRect(PARKING, roadM, PAVING_Y - 0.3));
   // stall lines: two rows either side of the central aisle
@@ -520,6 +486,36 @@ export function buildExterior(): ExteriorScenery {
   for (const bank of STALL_BANKS)
     for (let i = 0; i <= stalls; i++)
       ground.add(flatRect({ x: bank.x, z: PARKING.z + i * STALL_W - 1.5, w: STALL_D, d: 3 }, lineM, PAVING_Y - 0.18));
+  // THE CAR PARK'S COMPOSITION (world/campus PARK_*). Paint, paving and kerbs only — all of it lands in
+  // this baked ground layer, so the only new submission is the accessible-bay blue.
+  //   the planted screen between the west street's sidewalk and the stalls (the hedge moved here)
+  ground.add(flatRect(PARK_SCREEN, soilM, GRADE + 0.5));
+  //   the pedestrian paths: the walk band through the east bank and on across the lawn, and the apron
+  //   head carried past the drive to the perimeter walk
+  for (const r of PARK_PATHS) ground.add(flatRect(r, pavingM, PAVING_Y));
+  //   crossings: bars run the way a pedestrian walks, 12 wide on an 18 pitch like the street crossings
+  for (const c of PARK_CROSSINGS) {
+    const r = c.rect, span = c.along === "x" ? r.d : r.w, n = Math.floor((span + 6) / 18), off0 = (span - (n * 18 - 6)) / 2;
+    for (let i = 0; i < n; i++) {
+      const o = off0 + i * 18;
+      ground.add(flatRect(c.along === "x" ? { x: r.x, z: r.z + o, w: r.w, d: 12 } : { x: r.x + o, z: r.z, w: 12, d: r.d }, crossM, PAVING_Y - 0.12));
+    }
+  }
+  //   a stop bar where the aisle meets the apron crossing
+  ground.add(flatRect({ x: PARK_AISLE.x, z: PARK_AISLE.z + PARK_AISLE.d - 10, w: PARK_AISLE.w, d: 4 }, lineM, PAVING_Y - 0.18));
+  //   accessible bays beside the walk: a blue field and a white badge at the aisle end
+  const accessibleM = M.wet(M.surface(EX.accessible, 0.75), 0.34, 1.3);
+  for (const i of PARK_ACCESSIBLE) {
+    const r = stallRect(1, i);
+    ground.add(flatRect({ x: r.x + 6, z: r.z + 5, w: r.w - 12, d: r.d - 10 }, accessibleM, PAVING_Y - 0.24));
+    ground.add(flatRect({ x: r.x + 22, z: r.z + r.d / 2 - 11, w: 22, d: 22 }, lineM, PAVING_Y - 0.14));
+  }
+  //   kerbed islands: a low kerb box standing on the asphalt, lawn on top
+  for (const isl of PARK_ISLANDS) {
+    const r = stallRect(isl.bank, isl.stall);
+    ground.add(rbox(r.w - 8, ISLAND_H + 0.4, r.d - 8, curbM, r.x + r.w / 2, PAVING_Y - 0.4, r.z + r.d / 2, 0));
+    ground.add(flatRect({ x: r.x + 8, z: r.z + 8, w: r.w - 16, d: r.d - 16 }, lawnM, PAVING_Y + ISLAND_H + 0.1));
+  }
   // The podium skirt: a slightly wider base band UNDER the V1 plinth (whose own base is exactly at GRADE),
   // so the office reads as sitting IN the site rather than resting on it. It must stay entirely below
   // grade — anything above it would cover the ground floor it is supposed to support.
@@ -573,7 +569,10 @@ export function buildExterior(): ExteriorScenery {
   for (const line of TREE_LINES) {
     for (let t = line.from; t <= line.to; t += line.spacing) {
       const s2 = 0.92 + rx() * 0.16, yaw = rx() * 6.28;
-      treeSpots[line.kind].push(line.axis === "x" ? { x: t, z: line.at + jitter(8), s: s2, yaw } : { x: line.at + jitter(8), z: t, s: s2, yaw });
+      const spot = line.axis === "x" ? { x: t, z: line.at + jitter(8), s: s2, yaw } : { x: line.at + jitter(8), z: t, s: s2, yaw };
+      // no street tree in the arrival's walk or bay — computed first so the scatter stream never shifts
+      const inArrival = spot.x > LAYBY_WALK.x - 18 && spot.x < LAYBY_WALK.x + LAYBY_WALK.w + 18 && spot.z > LAYBY_WALK.z - 18 && spot.z < LAYBY.z + LAYBY.d;
+      if (!inArrival) treeSpots[line.kind].push(spot);
     }
   }
   // GROVES: densest at the centre (sqrt keeps the cluster from reading as a ring) and thinning outward
@@ -584,6 +583,12 @@ export function buildExterior(): ExteriorScenery {
     }
   }
   for (const sp of SPECIMENS) treeSpots[sp.kind].push({ x: sp.x, z: sp.z, s: sp.s, yaw: rx() * 6.28 });
+  // ISLAND TREES: one small round tree at the outer end of each car-park island — deterministic (no rx),
+  // so adding them shifts no other scatter in the world. Small on purpose: floor 2 looks over them.
+  PARK_ISLANDS.forEach((isl, k) => {
+    const c = islandCentre(isl), out = isl.bank === 0 ? -1 : 1;
+    treeSpots.round.push({ x: c.x + out * 40, z: c.z, s: 0.72 + (k % 2) * 0.06, yaw: k * 1.7, y: PAVING_Y + ISLAND_H });
+  });
 
   let instanced = 0, instances = 0;
   // One canopy TONE per variant: merging discards per-blob materials, so variety comes from the four
@@ -618,7 +623,19 @@ export function buildExterior(): ExteriorScenery {
       else shrubs.push({ x: r.x + r.w - 46 + jitter(10), z: r.z + r.d * (0.5 + t), s: 0.7 + rx() * 0.3, yaw: rx() * 6.28 });
     }
   }
-  for (let z = PARKING.z; z < PARKING.z + PARKING.d; z += 76) shrubs.push({ x: PARKING.x - 30 + jitter(10), z, s: 0.75 + rx() * 0.3, yaw: rx() * 6.28 });
+  // THE SCREEN HEDGE, in its planted strip (world/campus PARK_SCREEN) instead of on the public sidewalk.
+  // The same three draws per plant as before (so no later scatter moves), plus a deterministic infill
+  // between them so it reads as a hedge rather than a row of bushes.
+  const screenX = PARK_SCREEN.x + PARK_SCREEN.w / 2;
+  for (let z = PARKING.z; z < PARKING.z + PARKING.d; z += 76) {
+    shrubs.push({ x: screenX + jitter(4), z: z + 20, s: 0.72 + rx() * 0.14, yaw: rx() * 6.28 });
+    if (z + 58 < PARKING.z + PARKING.d) shrubs.push({ x: screenX, z: z + 58, s: 0.68, yaw: z * 0.01 });
+  }
+  // two low shrubs per island, flanking the tree
+  PARK_ISLANDS.forEach((isl, k) => {
+    const c = islandCentre(isl), out = isl.bank === 0 ? -1 : 1;
+    for (const dz of [-18, 18]) shrubs.push({ x: c.x + out * 8, z: c.z + dz, s: 0.5, yaw: k + dz, y: PAVING_Y + ISLAND_H });
+  });
   // reeds around the pond: three short arcs, not a continuous fringe
   for (const [a0, a1] of [[0.3, 1.15], [2.5, 3.2], [4.3, 5.1]] as const)
     for (let i = 0; i < 7; i++) {
@@ -668,23 +685,174 @@ export function buildExterior(): ExteriorScenery {
   root.add(instance(hillGeo, M.facet(EX.hillFar), hills, false, "distant-hills"));
   instanced++; instances += hills.length;
 
-  // 9. THE TRANSPORT MIX. Cars, one jeepney, two tricycles and three motorcycles — eleven vehicles in
-  //    total, each placed BY HAND in world/campus's VEHICLES table. Stylized miniatures: the brief is a
-  //    recognisable SILHOUETTE at diorama scale, not a model. Static; no traffic, no pedestrians.
-  //    Two instanced meshes per kind (painted body with per-instance colour, one dark set for glass,
-  //    tyres and trim), so the whole fleet is eight draw calls however many are parked.
-  const VEHICLE_GEOS: Record<VehicleKind, { body: THREE.BufferGeometry; dark: THREE.BufferGeometry }> = {
-    car: carGeos(), jeepney: jeepneyGeos(), tricycle: tricycleGeos(), motorcycle: motorcycleGeos(),
+  // 9. THE PARKED FLEET (build/vehicles). Sports and premium cars in the staff car park, the Philippine
+  //    street set in the lay-by — each placed BY HAND in world/campus's VEHICLES table.
+  //
+  //    TWO DRAW CALLS FOR THE WHOLE FLEET, whatever it holds. Every kind is three geometries (paint, gloss
+  //    detail, matte detail) with one attribute layout, so the fleet is one BatchedMesh per material: the
+  //    GLOSS batch holds every vehicle's paint (tinted per instance with its own colour) and its glass,
+  //    chrome and lamps (instance colour white, so the baked vertex colours show); the MATTE batch holds
+  //    tyres, trim, grilles, fabric and the horse. Both materials are ordinary tintable exterior surfaces,
+  //    so night darkens them with everything else, and the gloss one wets in the rain.
+  const trafficKinds = TRAFFIC_LOOPS.flatMap((l) => l.vehicles.map((v) => v.kind));
+  const fleetKinds = [...new Set([...VEHICLES.map((v) => v.kind), ...trafficKinds, ...(docks.length ? ["scooter" as const] : [])])];
+  const fleetGeos = new Map<string, VehicleGeos>(fleetKinds.map((k) => [k, vehicleGeos(k)]));
+  // the scooter racks ride in the same batches as the fleet: one geometry per rack size
+  for (const st of stations) if (!fleetGeos.has(`dock:${st.base.count}`)) fleetGeos.set(`dock:${st.base.count}`, scooterDockGeos(st.base.count, st.base.spacing));
+  const verts = (pick: (g: VehicleGeos) => THREE.BufferGeometry[]) => [...fleetGeos.values()].reduce((n, g) => n + pick(g).reduce((m, x) => m + x.getAttribute("position").count, 0), 0);
+  const glossM = M.wet(M.surface(0xffffff, 0.32, { vertexColors: true, metalness: 0.16 }), 0.12, 1.5);
+  const matteM = M.surface(0xffffff, 0.84, { vertexColors: true });
+  const white = new THREE.Color(0xffffff);
+  const vm = new THREE.Matrix4(), vq = new THREE.Quaternion(), vp = new THREE.Vector3(), vs = new THREE.Vector3(1, 1, 1), vc = new THREE.Color();
+  const UP = new THREE.Vector3(0, 1, 0);
+  /** one gloss + one matte batch holding every kind's geometry, `slots` vehicles deep */
+  const makeBatches = (slots: number, name: string, withLights: boolean) => {
+    const gloss = new THREE.BatchedMesh(slots * (withLights ? 3 : 2), verts((g) => (withLights ? [g.paint, g.gloss, g.lights] : [g.paint, g.gloss])), 0, glossM);
+    const matte = new THREE.BatchedMesh(slots, verts((g) => [g.matte]), 0, matteM);
+    gloss.name = `${name}-gloss`;
+    matte.name = `${name}-matte`;
+    const ids = new Map<string, { paint: number; gloss: number; matte: number; lights: number }>();
+    for (const [k, g] of fleetGeos) ids.set(k, { paint: gloss.addGeometry(g.paint), gloss: gloss.addGeometry(g.gloss), matte: matte.addGeometry(g.matte), lights: withLights ? gloss.addGeometry(g.lights) : -1 });
+    return { gloss, matte, ids };
   };
-  const bodyMat = M.surface(0xffffff, 0.45);
-  const darkMat = M.surface(EX.glass, 0.35);
-  for (const kind of ["car", "jeepney", "tricycle", "motorcycle"] as VehicleKind[]) {
-    const picks = VEHICLES.filter((v) => v.kind === kind);
-    if (!picks.length) continue;
-    const spots: Spot[] = picks.map((v) => ({ x: v.x, z: v.z, yaw: v.yaw }));
-    root.add(instance(VEHICLE_GEOS[kind].body, bodyMat, spots, true, `${kind}-body`, picks.map((v) => v.colour)));
-    root.add(instance(VEHICLE_GEOS[kind].dark, darkMat, spots, false, `${kind}-dark`));
-    instanced += 2; instances += spots.length * 2;
+
+  // 9a. PARKED: lamps drawn with the gloss detail (they are off, they are just coloured glass)
+  const parked = makeBatches(VEHICLES.length + docks.length + stations.length, "vehicles", true);
+  /** place one parked thing (a vehicle, a docked scooter, a rack); returns its four instance ids */
+  const park = (key: string, x: number, y: number, z: number, yaw: number, colour: number): number[] => {
+    const id = parked.ids.get(key)!;
+    vm.compose(vp.set(x, y, z), vq.setFromAxisAngle(UP, yaw), vs);
+    const out: number[] = [];
+    for (const [geo, c] of [[id.paint, vc.setHex(colour)], [id.gloss, white], [id.lights, white]] as const) {
+      const inst = parked.gloss.addInstance(geo);
+      parked.gloss.setMatrixAt(inst, vm).setColorAt(inst, c);
+      out.push(inst);
+    }
+    const m = parked.matte.addInstance(id.matte);
+    parked.matte.setMatrixAt(m, vm).setColorAt(m, white);
+    out.push(m);
+    return out;
+  };
+  for (const v of VEHICLES) park(v.kind, v.x, v.y ?? GRADE, v.z, v.yaw, v.colour);
+  // SCOOTER STATIONS stand at the WALKING level (the pavement and the Lab's raised walks are at y 0)
+  for (const st of stations) park(`dock:${st.base.count}`, st.base.x, 0, st.base.z, st.base.yaw, SCOOTER_COLOUR);
+  const dockInstances = new Map<string, number[]>();
+  for (const d of docks) dockInstances.set(d.id, park("scooter", d.x, 1.4, d.z, d.yaw, SCOOTER_COLOUR));
+  for (const b of [parked.gloss, parked.matte]) { b.castShadow = true; b.receiveShadow = true; root.add(b); }
+  instanced += 2; instances += VEHICLES.length * 4;
+
+  // 9c. MOVING TRAFFIC (world/traffic): the SAME geometry and materials, in batches of their own because
+  //     the shadow map is drawn on demand (Renderer: autoUpdate = false) — a moving caster would leave its
+  //     shadow behind. So traffic casts nothing and stands on a soft contact disc instead. Its lamps are a
+  //     third, UNLIT batch: bright by day as any lamp lens is, and genuinely glowing after dark, with an
+  //     additive pool on the road ahead driven by the same practicals level as the street lamps.
+  const paths = TRAFFIC_LOOPS.map(buildLoopPath);
+  const movers = paths.flatMap((path, li) => path.loop.vehicles.map((v, vi) => ({ path, li, vi, v })));
+  // one spare slot at the end of every traffic batch is the RIDDEN scooter (it moves, so it casts no shadow
+  // either, and stands on the same contact disc)
+  const rideSlot = docks.length ? 1 : 0;
+  const moving = makeBatches(movers.length + rideSlot, "traffic", false);
+  const lampsBatch = new THREE.BatchedMesh(movers.length + rideSlot, verts((g) => [g.lights]), 0, new THREE.MeshBasicMaterial({ vertexColors: true }));
+  lampsBatch.name = "traffic-lamps";
+  const lampIds = new Map<string, number>();
+  for (const [k, g] of fleetGeos) lampIds.set(k, lampsBatch.addGeometry(g.lights));
+  // the contact disc: soft-edged (vertex alpha, centre 1 → rim 0), stretched to each vehicle's footprint
+  const blobGeo = new THREE.CircleGeometry(1, 20).rotateX(-Math.PI / 2);
+  {
+    const n = blobGeo.getAttribute("position").count, c = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) { c[i * 4] = c[i * 4 + 1] = c[i * 4 + 2] = 0; c[i * 4 + 3] = i === 0 ? 1 : 0; }
+    blobGeo.setAttribute("color", new THREE.BufferAttribute(c, 4));
+  }
+  const blobM = new THREE.MeshBasicMaterial({ color: 0xffffff, vertexColors: true, transparent: true, opacity: 0.5, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 });
+  const blobs = new THREE.InstancedMesh(blobGeo, blobM, movers.length + rideSlot);
+  blobs.name = "traffic-shadows";
+  const pools = new THREE.InstancedMesh(poolDisc(1, 18), M.spill(EX.lamp, 0.42), movers.length + rideSlot);
+  pools.name = "traffic-headlight-pools";
+  const slot = movers.map((mv) => {
+    const id = moving.ids.get(mv.v.kind)!;
+    const paint = moving.gloss.addInstance(id.paint), detail = moving.gloss.addInstance(id.gloss), matte = moving.matte.addInstance(id.matte);
+    const lamp = lampsBatch.addInstance(lampIds.get(mv.v.kind)!);
+    moving.gloss.setColorAt(paint, vc.setHex(mv.v.colour));
+    moving.gloss.setColorAt(detail, white);
+    moving.matte.setColorAt(matte, white);
+    lampsBatch.setColorAt(lamp, white);
+    const box = new THREE.Box3();
+    const g = fleetGeos.get(mv.v.kind)!;
+    for (const part of [g.paint, g.gloss, g.matte]) { part.computeBoundingBox(); box.union(part.boundingBox!); }
+    return { paint, detail, matte, lamp, half: { w: (box.max.x - box.min.x) / 2, l: (box.max.z - box.min.z) / 2, front: -box.min.z } };
+  });
+  for (const b of [moving.gloss, moving.matte, lampsBatch]) {
+    b.castShadow = false; b.receiveShadow = true;
+    // the whole-batch bound is computed once, from wherever the instances first stood; they move, so only
+    // the per-instance test (perObjectFrustumCulled, on by default) is allowed to cull
+    b.frustumCulled = false;
+    root.add(b);
+  }
+  blobs.frustumCulled = false; pools.frustumCulled = false;
+  blobs.renderOrder = 1; pools.renderOrder = 2;
+  root.add(blobs, pools);
+  instanced += 5; instances += movers.length * 6;
+  const pose = { x: 0, z: 0, yaw: 0, heading: 0, speed: 0 };
+  const bs = new THREE.Vector3(), bp = new THREE.Vector3();
+  const trafficTick = (timeSec: number): void => {
+    for (let k = 0; k < movers.length; k++) {
+      const mv = movers[k], sl = slot[k];
+      poseAt(mv.path, mv.vi, timeSec, pose);
+      vq.setFromAxisAngle(UP, pose.yaw);
+      vm.compose(vp.set(pose.x, ROAD_Y, pose.z), vq, vs);
+      moving.gloss.setMatrixAt(sl.paint, vm).setMatrixAt(sl.detail, vm);
+      moving.matte.setMatrixAt(sl.matte, vm);
+      lampsBatch.setMatrixAt(sl.lamp, vm);
+      blobs.setMatrixAt(k, vm.compose(bp.set(pose.x, ROAD_Y + 0.3, pose.z), vq, bs.set(sl.half.w * 1.05, 1, sl.half.l * 0.98)));
+      // the headlight pool: an oval a little ahead of the nose, along the heading
+      const fx = Math.cos(pose.heading), fz = Math.sin(pose.heading);
+      pools.setMatrixAt(k, vm.compose(bp.set(pose.x + fx * (sl.half.front + 30), ROAD_Y + 0.35, pose.z + fz * (sl.half.front + 30)), vq, bs.set(sl.half.w * 1.2, 1, 38)));
+    }
+    blobs.instanceMatrix.needsUpdate = true;
+    pools.instanceMatrix.needsUpdate = true;
+  };
+  trafficTick(0);
+
+  // THE RIDDEN SCOOTER: hidden until somebody mounts one
+  let scooters: ExteriorScenery["scooters"] = null;
+  if (rideSlot) {
+    const id = moving.ids.get("scooter")!;
+    const r = { paint: moving.gloss.addInstance(id.paint), detail: moving.gloss.addInstance(id.gloss), matte: moving.matte.addInstance(id.matte), lamp: lampsBatch.addInstance(lampIds.get("scooter")!) };
+    moving.gloss.setColorAt(r.paint, vc.setHex(SCOOTER_COLOUR));
+    moving.gloss.setColorAt(r.detail, white);
+    moving.matte.setColorAt(r.matte, white);
+    lampsBatch.setColorAt(r.lamp, white);
+    const k = movers.length;
+    const hide = new THREE.Matrix4().makeScale(0, 0, 0);
+    const roll = new THREE.Quaternion(), FWD = new THREE.Vector3(0, 0, -1);
+    const setVisible = (on: boolean) => {
+      moving.gloss.setVisibleAt(r.paint, on); moving.gloss.setVisibleAt(r.detail, on);
+      moving.matte.setVisibleAt(r.matte, on); lampsBatch.setVisibleAt(r.lamp, on);
+      if (!on) { blobs.setMatrixAt(k, hide); pools.setMatrixAt(k, hide); blobs.instanceMatrix.needsUpdate = true; pools.instanceMatrix.needsUpdate = true; }
+    };
+    setVisible(false);
+    scooters = {
+      setDocked(dockId, docked) {
+        const ids = dockInstances.get(dockId);
+        if (!ids) return;
+        for (let i = 0; i < 3; i++) parked.gloss.setVisibleAt(ids[i], docked);
+        parked.matte.setVisibleAt(ids[3], docked);
+      },
+      showRidden: setVisible,
+      placeRidden(x, z, yaw, lean) {
+        // yaw about up, then the lean as a roll about the deck's own forward axis
+        vq.setFromAxisAngle(UP, yaw).multiply(roll.setFromAxisAngle(FWD, lean));
+        vm.compose(vp.set(x, 0, z), vq, vs);
+        moving.gloss.setMatrixAt(r.paint, vm).setMatrixAt(r.detail, vm);
+        moving.matte.setMatrixAt(r.matte, vm);
+        lampsBatch.setMatrixAt(r.lamp, vm);
+        vq.setFromAxisAngle(UP, yaw);
+        blobs.setMatrixAt(k, vm.compose(bp.set(x, 0.3, z), vq, bs.set(8, 1, 23)));
+        pools.setMatrixAt(k, vm.compose(bp.set(x + Math.sin(yaw) * -38, 0.35, z + Math.cos(yaw) * -38), vq, bs.set(12, 1, 22)));
+        blobs.instanceMatrix.needsUpdate = true;
+        pools.instanceMatrix.needsUpdate = true;
+      },
+    };
   }
 
   // 9b. FUTURE COMPANY LOT MARKERS. Offshorly is the first company in a world built to hold others, and
@@ -695,21 +863,31 @@ export function buildExterior(): ExteriorScenery {
   for (const lot of EXPANSION_LOTS) root.add(buildLotMarker(M, lot));
 
   // 10. PRACTICAL LIGHTING. Emissive lenses plus additive ground pools — no real-time lights anywhere.
-  const lamps = streetLightSpots();
+  // the lot lamps are the street lamp's own model, scaled (world/campus PARK_LAMPS): same posts, lenses,
+  // pools and halos, driven by the same practicals — three more instances in each existing mesh
+  const lamps: (Spot & { yaw: number; poolY: number })[] = [
+    ...streetLightSpots().map((l) => ({ ...l, poolY: ROAD_Y + 0.9 })),
+    ...PARK_LAMPS.map((l) => ({ ...l, poolY: PAVING_Y + 0.6 })),
+  ];
   const lg = lampGeos();
   root.add(instance(lg.post, M.surface(EX.pole, 0.55, { metalness: 0.25 }), lamps, true, "lamp-posts"));
   const lensMat = M.lamp(EX.lamp, 2.6);
   root.add(instance(lg.lens, lensMat, lamps, false, "lamp-lenses"));
   const poolGeo = poolDisc(96, 20);
-  const poolSpots = lamps.map((l) => ({ x: l.x + Math.sin(l.yaw) * -34, z: l.z + Math.cos(l.yaw) * -34, y: ROAD_Y + 0.9 }));
+  const poolSpots = lamps.map((l) => {
+    const s = l.s ?? 1;
+    return { x: l.x + Math.sin(l.yaw) * -34 * s, z: l.z + Math.cos(l.yaw) * -34 * s, y: l.poolY, s };
+  });
   root.add(instance(poolGeo, M.spill(EX.lamp, 0.55), poolSpots, false, "lamp-pools"));
   // A soft additive bulb at each head. A billboard would need re-orienting every frame; a low-poly sphere
   // reads as a glow from any orbit angle and costs one more instanced draw call for the whole street grid.
   const haloGeoM = new THREE.IcosahedronGeometry(26, 1);
-  root.add(instance(haloGeoM, M.spill(EX.lamp, 0.16), lamps.map((l) => ({ ...l, y: GRADE + 120 })), false, "lamp-halos"));
+  root.add(instance(haloGeoM, M.spill(EX.lamp, 0.16), lamps.map((l) => ({ ...l, y: GRADE + 120 * (l.s ?? 1) })), false, "lamp-halos"));
   instanced += 4; instances += lamps.length * 4;
 
-  const bollards = pathLightSpots();
+  // two low bollards along the mid-lot path, on the lawn stretch between the lot and the building
+  const midPath = PARK_PATHS[0];
+  const bollards = [...pathLightSpots(), { x: -300, z: midPath.z - 8 }, { x: -200, z: midPath.z + midPath.d + 8 }];
   const bg = bollardGeos();
   root.add(instance(bg.post, M.surface(EX.bollard, 0.7), bollards, true, "bollard-posts"));
   root.add(instance(bg.lens, M.lamp(EX.lamp, 2.2), bollards, false, "bollard-lenses"));
@@ -766,7 +944,9 @@ export function buildExterior(): ExteriorScenery {
   const draws = groundDraws + instanced + 5 + treads + EXPANSION_LOTS.length * 6; // + terrain, skirt, sign, pond, shore, treads, lot markers
   return {
     root,
-    stats: { draws, instanced, instances, trees: treeCount, vehicles: VEHICLES.length },
+    trafficTick,
+    scooters,
+    stats: { draws, instanced, instances, trees: treeCount, vehicles: VEHICLES.length, traffic: movers.length, docks: docks.length },
     applyTint(t: number) {
       for (const { m, base } of M.tintable) m.color.copy(base).multiplyScalar(t);
     },

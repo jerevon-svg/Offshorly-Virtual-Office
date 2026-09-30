@@ -121,8 +121,12 @@ export const ENTRY_X = 707;
 
 /** Employee parking, west of the building. The lot is a TALL strip, so the two banks of perpendicular
  *  stalls are COLUMNS either side of a north-south aisle: 150 stall + 60 aisle + 150 stall across, and
- *  one stall every STALL_W down the length. */
-export const PARKING: Rect = { x: -736, z: 300, w: 360, d: 836 };
+ *  one stall every STALL_W down the length.
+ *
+ *  x -712, not the original -736: the lot used to start 20 units off the west street's sidewalk, so its
+ *  screening hedge stood ON the public pavement. It moved 24 east to open a proper planted strip
+ *  (PARK_SCREEN) between the pavement and the stalls; everything below is derived from this rect. */
+export const PARKING: Rect = { x: -712, z: 300, w: 360, d: 836 };
 /** pitch along the aisle (a stall's width) */
 export const STALL_W = 76;
 /** how deep a stall bites into the lot from its edge (a stall's length) */
@@ -132,12 +136,82 @@ export const STALL_BANKS = [
   { x: PARKING.x, yaw: -Math.PI / 2 },
   { x: PARKING.x + PARKING.w - STALL_D, yaw: Math.PI / 2 },
 ] as const;
-/** the drive off the main street into the parking deck */
-export const PARK_DRIVE: Rect = { x: -626, z: PARKING.z + PARKING.d, w: 140, d: MAIN_N - (PARKING.z + PARKING.d) };
-/** the visitor drop-off apron in front of reception, between the podium edge and the main street */
-export const DROP_OFF: Rect = { x: ENTRY_X - 250, z: PODIUM.z + PODIUM.d + 30, w: 500, d: MAIN_N - (PODIUM.z + PODIUM.d) - 30 };
+/** the drive off the main street into the parking deck, on the aisle's own centre line */
+export const PARK_DRIVE: Rect = { x: PARKING.x + (PARKING.w - 140) / 2, z: PARKING.z + PARKING.d, w: 140, d: MAIN_N - (PARKING.z + PARKING.d) };
+/** THE VISITOR FORECOURT at the foot of the entry stair — pedestrian paving only.
+ *
+ *  It used to run all the way to the main street as one "drop-off" apron, which put it ON the public
+ *  sidewalk: the jeepney parked there stood on the pavement around a street lamp and against a street
+ *  tree. The arrival is now three bands, north to south: this forecourt, the sidewalk diverted behind the
+ *  bay (LAYBY_WALK), and a real lay-by (LAYBY) carved out of the sidewalk band beside the carriageway. */
+export const DROP_OFF: Rect = { x: ENTRY_X - 250, z: PODIUM.z + PODIUM.d + 30, w: 500, d: 42 };
+/** the public sidewalk, diverted behind the lay-by (paved, pedestrian) */
+export const LAYBY_WALK: Rect = { x: DROP_OFF.x, z: DROP_OFF.z + DROP_OFF.d, w: DROP_OFF.w, d: MAIN_N - 84 - (DROP_OFF.z + DROP_OFF.d) };
+/** THE LAY-BY: asphalt in the sidewalk band, open to the carriageway, where the jeepney, the tricycles
+ *  and the kalesa wait. Vehicles here face west — the main street's north lane runs westbound. */
+export const LAYBY: Rect = { x: DROP_OFF.x, z: MAIN_N - 84, w: DROP_OFF.w, d: 84 };
+/** the lay-by's own surface level: just above the sidewalk it replaces */
+export const LAYBY_Y = GRADE + 0.35 + 0.08;
 /** the flight down from the podium to the drop-off — the visitor arrival move */
 export const ENTRY_STAIR: Rect = { x: ENTRY_X - 150, z: PODIUM.z + PODIUM.d, w: 300, d: 30 };
+
+/** the public sidewalk width (SIDEWALK_W below), needed here before it is declared */
+const SIDEWALK_W_ = 84;
+// ---- THE STAFF CAR PARK'S COMPOSITION -------------------------------------------------------------------
+// Restrained on purpose and read from TWO heights — at the pavement and from floor 2's west windows one
+// storey up (app/floors STOREY_H) — so everything here is either paint, paving or a kerbed island, and the
+// only vertical pieces are five modest island trees and three lot lamps that reuse the street lamp.
+/** stalls per bank */
+export const PARK_STALLS = Math.floor(PARKING.d / STALL_W);
+/** the drive aisle between the two banks */
+export const PARK_AISLE: Rect = { x: PARKING.x + STALL_D, z: PARKING.z, w: PARKING.w - 2 * STALL_D, d: PARKING.d };
+/** one stall's footprint: bank 0 is the west (street-side) bank, bank 1 the east (building-side) one */
+export const stallRect = (bank: 0 | 1, i: number): Rect => ({ x: STALL_BANKS[bank].x, z: PARKING.z + i * STALL_W, w: STALL_D, d: STALL_W });
+/** THE SCREEN: a planted strip between the west street's sidewalk and the stalls (the hedge's home) */
+export const PARK_SCREEN: Rect = { x: WEST_E + SIDEWALK_W_ + 4, z: PARKING.z, w: PARKING.x - 4 - (WEST_E + SIDEWALK_W_ + 4), d: PARKING.d };
+/** KERBED ISLANDS, each replacing one stall: the four bank ends and one mid-bank break in the long west
+ *  row. Each carries one small tree; three carry a lot lamp, zig-zagged so the aisle is lit end to end
+ *  (the street lamps on the west sidewalk already light the west bank). None touches the aisle. */
+export const PARK_ISLANDS: { bank: 0 | 1; stall: number; lamp: boolean }[] = [
+  { bank: 0, stall: 0, lamp: false },
+  { bank: 1, stall: 0, lamp: true },
+  { bank: 0, stall: 6, lamp: true },
+  { bank: 0, stall: PARK_STALLS - 1, lamp: false },
+  { bank: 1, stall: PARK_STALLS - 1, lamp: true },
+];
+/** the east-bank stall given over to the pedestrian walk out to the building */
+export const PARK_WALK_STALL = 4;
+/** the pedestrian walk's band through the lot and on to the building (centred on that stall) */
+const WALK_Z = PARKING.z + (PARK_WALK_STALL + 0.5) * STALL_W - 24;
+/** accessible bays: the two east-bank stalls either side of the walk, the shortest route to the door */
+export const PARK_ACCESSIBLE = [PARK_WALK_STALL - 1, PARK_WALK_STALL + 1];
+/** PEDESTRIAN PATHS from the car park to the office's west walk: through the planting-bed gap mid-lot,
+ *  and the apron head carried on past the drive to the perimeter walk at the south end. */
+export const PARK_PATHS: Rect[] = [
+  // the walk band inside the east bank, then the path across the lawn to the link walk (x -136)
+  { x: STALL_BANKS[1].x, z: WALK_Z, w: -136 - STALL_BANKS[1].x, d: 48 },
+  { x: PARK_DRIVE.x + PARK_DRIVE.w, z: PARKING.z + PARKING.d, w: PODIUM.x - 60 - (PARK_DRIVE.x + PARK_DRIVE.w), d: 52 },
+];
+/** painted crossings: over the aisle on the walk's line, and over the drive on the apron head. `along`
+ *  is the direction a pedestrian walks (the bars run that way). */
+export const PARK_CROSSINGS: { rect: Rect; along: "x" | "z" }[] = [
+  { rect: { x: PARK_AISLE.x, z: WALK_Z, w: PARK_AISLE.w, d: 48 }, along: "x" },
+  { rect: { x: PARK_DRIVE.x, z: PARKING.z + PARKING.d, w: PARK_DRIVE.w, d: 52 }, along: "z" },
+];
+/** island centre */
+export const islandCentre = (i: { bank: 0 | 1; stall: number }): { x: number; z: number } => {
+  const r = stallRect(i.bank, i.stall);
+  return { x: r.x + r.w / 2, z: r.z + r.d / 2 };
+};
+/** THE LOT LAMPS: the street lamp's own model at 0.8 scale, standing at the aisle end of its island with
+ *  the arm reaching over the aisle (arm = local -z; yaw -PI/2 points it east, +PI/2 west). */
+export const PARK_LAMP_SCALE = 0.8;
+export const PARK_LAMPS: { x: number; z: number; yaw: number; s: number }[] = PARK_ISLANDS.filter((i) => i.lamp).map((i) => {
+  const r = stallRect(i.bank, i.stall);
+  return i.bank === 0
+    ? { x: r.x + r.w - 14, z: r.z + r.d / 2, yaw: -Math.PI / 2, s: PARK_LAMP_SCALE }
+    : { x: r.x + 14, z: r.z + r.d / 2, yaw: Math.PI / 2, s: PARK_LAMP_SCALE };
+});
 
 /** paved perimeter walk hugging the podium, and the two spurs that connect it to the street network */
 export const WALKS: Rect[] = [
@@ -145,12 +219,14 @@ export const WALKS: Rect[] = [
   { x: PODIUM.x - 60, z: PODIUM.z + PODIUM.d, w: PODIUM.w + 120, d: 60 }, // south
   { x: PODIUM.x - 60, z: PODIUM.z, w: 60, d: PODIUM.d }, // west
   { x: PODIUM.x + PODIUM.w, z: PODIUM.z, w: 60, d: PODIUM.d }, // east
-  { x: PARKING.x, z: PARKING.z + PARKING.d, w: PARKING.w, d: 52 }, // parking apron head
+  // parking apron head, WEST of the drive; east of it the head runs on to the building (PARK_PATHS) and
+  // the drive itself is crossed on a zebra (PARK_CROSSINGS) rather than paved over
+  { x: PARKING.x, z: PARKING.z + PARKING.d, w: PARK_DRIVE.x - PARKING.x, d: 52 },
   { x: -136, z: 300, w: 52, d: 836 }, // parking → building link
 ];
 
 /** public sidewalk bands: one down each side of every road, laid as rects so they can be baked flat */
-export const SIDEWALK_W = 84;
+export const SIDEWALK_W = SIDEWALK_W_;
 
 /** the lawn/field of a lot, minus whatever is paved on it — the builder subtracts, this just names it */
 export const LAWN_INSET = 0;
@@ -158,7 +234,8 @@ export const LAWN_INSET = 0;
 /** street furniture positions. Lights are the only exterior "light source" in the scene and they are
  *  emissive meshes, not real lights — see build/exterior.ts. */
 export function streetLightSpots(spacing = 380): { x: number; z: number; yaw: number }[] {
-  const out: { x: number; z: number; yaw: number }[] = [];
+  const raw: { x: number; z: number; yaw: number }[] = [];
+  const out = raw;
   const span = 2800; // only light the block and a little beyond; the distance is scenery
   for (const r of ROADS) {
     const half = r.width / 2 + 42;
@@ -169,14 +246,35 @@ export function streetLightSpots(spacing = 380): { x: number; z: number; yaw: nu
       }
     }
   }
-  return out;
+  // THE RHYTHM MEETS THE PLAN. A lamp every `spacing` down each verge knows nothing about what else stands
+  // there, so three cases are resolved here, once, for every consumer:
+  //   • a verge lamp that lands inside a CROSS STREET's carriageway (the intersections) is dropped;
+  //   • one that lands in the car park's entrance drive steps to the nearer side of the drive;
+  //   • one that lands in the lay-by moves back onto the diverted sidewalk behind it, arm still over the bay.
+  const inside = (p: { x: number; z: number }, r: Rect) => p.x > r.x && p.x < r.x + r.w && p.z > r.z && p.z < r.z + r.d;
+  const res: { x: number; z: number; yaw: number }[] = [];
+  for (const l of raw) {
+    if (ROADS.some((r) => inside(l, roadRect(r)))) continue;
+    if (inside(l, PARK_DRIVE)) {
+      const west = l.x - PARK_DRIVE.x < PARK_DRIVE.x + PARK_DRIVE.w - l.x;
+      res.push({ ...l, x: west ? PARK_DRIVE.x - 14 : PARK_DRIVE.x + PARK_DRIVE.w + 14 });
+      continue;
+    }
+    if (inside(l, LAYBY)) { res.push({ ...l, z: LAYBY.z - 12 }); continue; }
+    res.push(l);
+  }
+  return res;
 }
 
 /** low path bollards along the campus's own walks — warmer and much smaller than a street lamp */
 export function pathLightSpots(): { x: number; z: number }[] {
   const out: { x: number; z: number }[] = [];
   const w = PODIUM.x - 30, e = PODIUM.x + PODIUM.w + 30, n = PODIUM.z - 30, s = PODIUM.z + PODIUM.d + 30;
-  for (let x = w + 90; x < e; x += 190) out.push({ x, z: n }, { x, z: s });
+  // the south row skips the foot of the entry stair: two bollards used to stand across the visitor's line
+  for (let x = w + 90; x < e; x += 190) {
+    out.push({ x, z: n });
+    if (x < ENTRY_STAIR.x - 8 || x > ENTRY_STAIR.x + ENTRY_STAIR.w + 8) out.push({ x, z: s });
+  }
   for (let z = n + 150; z < s - 60; z += 190) out.push({ x: w, z }, { x: e, z });
   for (let z = 340; z < 1130; z += 180) out.push({ x: -110, z });
   return out;
@@ -221,8 +319,11 @@ export type Specimen = { kind: TreeKind; x: number; z: number; s: number };
 export const TREE_LINES: TreeLine[] = [
   { id: "line-main-north", kind: "round", axis: "x", at: 1400, from: -640, to: 1980, spacing: 208 },
   { id: "line-main-south", kind: "round", axis: "x", at: 1836, from: -640, to: 1980, spacing: 264 },
-  { id: "line-west-verge", kind: "tall", axis: "z", at: -1104, from: -560, to: 1360, spacing: 268 },
-  { id: "line-east-verge", kind: "tall", axis: "z", at: 2246, from: -560, to: 1360, spacing: 268 },
+  // THE VERGE LINES stand on the lawn just beyond each outer sidewalk, mirrored about the block. The east
+  // line used to sit at x 2246 — INSIDE the east street's carriageway, where traffic now runs — and the
+  // west one on its sidewalk, on the same rhythm as the lamps (a trunk and a lamp post at one spot).
+  { id: "line-west-verge", kind: "tall", axis: "z", at: -1172, from: -560, to: 1360, spacing: 268 },
+  { id: "line-east-verge", kind: "tall", axis: "z", at: 2508, from: -560, to: 1360, spacing: 268 },
 ];
 
 export const GROVES: Grove[] = [
@@ -295,26 +396,47 @@ export const POND_BENCHES: { x: number; z: number; yaw: number }[] = [
 export const POND_PATH: Rect = { x: 706, z: -1092, w: 68, d: 58 };
 
 // ---- VEHICLES ----------------------------------------------------------------------------------------
-/** The Philippine transport mix. A FEW, placed one by one: nothing is scattered and no road is filled. */
-export type VehicleKind = "car" | "jeepney" | "tricycle" | "motorcycle";
-export type VehicleSpot = { kind: VehicleKind; x: number; z: number; yaw: number; colour: number };
+/** THE PARKED FLEET (build/vehicles). Sports and premium cars in the staff car park, and the Philippine
+ *  street set — jeepney, tricycle, e-trike and a kalesa — waiting in the lay-by. A FEW, placed one by one:
+ *  nothing is scattered and no road is filled. Every model faces local −z; `yaw` turns it. */
+export type VehicleKind = "supercar" | "supercarWing" | "sport" | "pickup" | "sportbike" | "tricycle" | "etrike" | "jeepney" | "kalesa" | "scooter";
+export type VehicleSpot = { kind: VehicleKind; x: number; z: number; yaw: number; colour: number; y?: number };
+/** body length of each kind along its own axis — the lay-by is packed from these */
+export const VEHICLE_LENGTH: Record<VehicleKind, number> = {
+  supercar: 112, supercarWing: 112, sport: 112, pickup: 132, sportbike: 56, tricycle: 60, etrike: 72, jeepney: 180, kalesa: 144, scooter: 40,
+};
 
 const STALL_MID = (bank: number) => STALL_BANKS[bank].x + STALL_D / 2;
 const stallZ = (i: number) => PARKING.z + (i + 0.5) * STALL_W;
+/** the lay-by, packed west → east with a fixed gap, every vehicle facing west (yaw PI/2 turns −z to −x) */
+const LAYBY_ORDER: { kind: VehicleKind; colour: number }[] = [
+  { kind: "jeepney", colour: 0x2f5fc4 },
+  { kind: "tricycle", colour: 0x2b2d33 },
+  { kind: "etrike", colour: 0x8d949c },
+  { kind: "kalesa", colour: 0x2e7d4f },
+];
+const LAYBY_GAP = 12;
+const laybySpots: VehicleSpot[] = (() => {
+  let x = LAYBY.x + 6;
+  return LAYBY_ORDER.map((v) => {
+    const len = VEHICLE_LENGTH[v.kind];
+    const spot: VehicleSpot = { ...v, x: x + len / 2, z: LAYBY.z + LAYBY.d / 2 + 2, yaw: Math.PI / 2, y: LAYBY_Y };
+    x += len + LAYBY_GAP;
+    return spot;
+  });
+})();
 
 export const VEHICLES: VehicleSpot[] = [
-  // employee parking — half a dozen vehicles in a 22-stall lot reads "occupied", not "texture"
-  { kind: "car", x: STALL_MID(0) + 4, z: stallZ(1), yaw: -Math.PI / 2, colour: 0xd05a52 },
-  { kind: "car", x: STALL_MID(0) + 4, z: stallZ(4), yaw: -Math.PI / 2, colour: 0xf1eee8 },
-  { kind: "car", x: STALL_MID(0) + 4, z: stallZ(8), yaw: -Math.PI / 2, colour: 0x4c515a },
-  { kind: "car", x: STALL_MID(1) - 4, z: stallZ(2), yaw: Math.PI / 2, colour: 0x3f7fd0 },
-  { kind: "car", x: STALL_MID(1) - 4, z: stallZ(6), yaw: Math.PI / 2, colour: 0xdfb352 },
-  { kind: "motorcycle", x: STALL_MID(1) - 30, z: stallZ(9), yaw: Math.PI / 2, colour: 0xc8423a },
-  { kind: "motorcycle", x: STALL_MID(1) - 30, z: stallZ(9) + 44, yaw: Math.PI / 2, colour: 0x2f3238 },
-  // the visitor drop-off: the jeepney is the set piece, a tricycle waiting behind it
-  { kind: "jeepney", x: ENTRY_X - 40, z: DROP_OFF.z + DROP_OFF.d - 66, yaw: Math.PI / 2, colour: 0x2f5fc4 },
-  { kind: "tricycle", x: ENTRY_X + 210, z: DROP_OFF.z + DROP_OFF.d - 64, yaw: Math.PI / 2, colour: 0x1f9d55 },
-  // kerbside on the main street, west of the entry crossing
-  { kind: "tricycle", x: -170, z: 1466, yaw: Math.PI / 2, colour: 0x1f9d55 },
-  { kind: "car", x: 1180, z: 1466, yaw: Math.PI / 2, colour: 0x6f9e7a },
+  // the staff car park: three exotics, two sporty road cars, one angular utility, two sports bikes
+  { kind: "supercarWing", x: STALL_MID(0), z: stallZ(1), yaw: -Math.PI / 2, colour: 0xf2c230 },
+  { kind: "sport", x: STALL_MID(0), z: stallZ(4), yaw: -Math.PI / 2, colour: 0xf1eee8 },
+  { kind: "pickup", x: STALL_MID(0) - 4, z: stallZ(8), yaw: -Math.PI / 2, colour: 0xa3a9b0 },
+  { kind: "sport", x: STALL_MID(1), z: stallZ(2), yaw: Math.PI / 2, colour: 0x3f7fd0 },
+  { kind: "supercar", x: STALL_MID(1), z: stallZ(6), yaw: Math.PI / 2, colour: 0x5ec23a },
+  { kind: "supercarWing", x: STALL_MID(1), z: stallZ(8), yaw: Math.PI / 2, colour: 0xc8262e },
+  // both sports bikes share stall 9
+  { kind: "sportbike", x: STALL_MID(1) - 26, z: stallZ(9) - 17, yaw: Math.PI / 2, colour: 0x6cc93a },
+  { kind: "sportbike", x: STALL_MID(1) - 26, z: stallZ(9) + 17, yaw: Math.PI / 2, colour: 0xc8423a },
+  // the lay-by: the Philippine street set
+  ...laybySpots,
 ];
