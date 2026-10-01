@@ -19,6 +19,10 @@ export interface UseAutoStatusDetectionParams {
    *  the moment they leave the call, which is what returns them to
    *  IN_CONVERSATION while they stay in the spatial session. */
   inCall: boolean;
+  /** Participating in a Meeting Floor room's live meeting — the IN_MEETING auto condition, which outranks
+   *  IN_CALL. False the moment they leave it, which returns them to whatever else is true (their own
+   *  manual status underneath is never touched). */
+  inMeeting?: boolean;
   /** PHASE 7E — AWAY FOR A REASON THE IDLE TIMER CANNOT SEE: the viewer has walked out of the building to
    *  somewhere that is not their desk (V2's AI Lab). They are still checked in and still on the clock; they
    *  are simply not at work in the sense "Available" means.
@@ -39,6 +43,7 @@ export function useAutoStatusDetection({
   inConversation,
   offline,
   inCall,
+  inMeeting = false,
   away = false,
 }: UseAutoStatusDetectionParams): void {
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -120,4 +125,7 @@ export function useAutoStatusDetection({
   useEffect(() => {
     setAutoCondition("inCall", inCall);
   }, [inCall]);
+  useEffect(() => {
+    setAutoCondition("inMeeting", inMeeting);
+  }, [inMeeting]);
 }

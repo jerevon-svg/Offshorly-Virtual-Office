@@ -3,6 +3,7 @@ import { formatCharacterName } from "../../data/office-layout";
 import { chatMode, chatService } from "../../services/chat";
 import { TOUCAN_AVATAR_GLYPH, TOUCAN_DISPLAY_NAME, isToucanSender } from "../../services/chat/toucanSender";
 import { applyReactionUpdate } from "../../services/chat/reactions";
+import { isStickerMessage, stickerIdOf } from "../../services/chat/stickers";
 import { isAuthoredMessage } from "../../services/chat/types";
 import type { ChatMessage, ConnectionState } from "../../services/chat";
 import type { AssetLayer } from "../../types/office";
@@ -12,6 +13,7 @@ import { profileImageFor } from "../../data/portraits";
 import { WhiteboardActionIcon } from "./ChatHeaderIcons";
 import { MessageReactions } from "./MessageReactions";
 import { renderMessageText } from "./MentionText";
+import { StickerView } from "./StickerView";
 import { useMentionComposer } from "./useMentionComposer";
 import styles from "./ConversationView.module.css";
 
@@ -191,7 +193,8 @@ export function ConversationView({
   // Text of the last send that failed — preserved so Retry can resend it
   // without the user having to retype (manual retry only, no auto-retry:
   // there's no server-side idempotency to make an automatic retry safe).
-  const [failedText, setFailedText] = useState<string | null>(null);
+  // Rich Chat Phase 1: a failed sticker send is retried the same way, so the whole payload is kept.
+  const [failedSend, setFailedSend] = useState<{ text: string; stickerId?: string } | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>(
     chatService.getConnectionState?.() ?? "connected",
   );
@@ -364,24 +367,29 @@ export function ConversationView({
     }, TYPING_IDLE_MS);
   }
 
-  function sendText(text: string) {
+  function sendText(text: string, stickerId?: string) {
     if (!conversationId) return;
     window.clearTimeout(typingTimerRef.current);
     onTypingChange?.(false);
     chatService.sendTyping?.({ conversationId, isTyping: false });
     setSendError(null);
-    setFailedText(null);
-    const mentionedEmails = mention.mentionsForSend(text);
+    setFailedSend(null);
+    const mentionedEmails = stickerId ? [] : mention.mentionsForSend(text);
     // Own message arrives via the onMessage subscription above (sendMessage
     // notifies listeners synchronously) — no need to also append it here.
-    chatService.sendMessage({ conversationId, senderId: selfId, text, mentionedEmails }).catch((err: Error) => {
+    chatService.sendMessage({ conversationId, senderId: selfId, text, mentionedEmails, stickerId }).catch((err: Error) => {
       // No automatic retry: the backend has no client_temp_id-based
       // idempotency, so re-emitting from here (rather than a fresh,
       // user-initiated click) risks a duplicate message. Preserve the text
       // so the user doesn't lose what they typed.
       setSendError(err?.message || "Failed to send message.");
-      setFailedText(text);
+      setFailedSend({ text, stickerId });
     });
+  }
+
+  // A sticker is sent immediately and never touches the draft — whatever is typed stays typed.
+  function handleSendSticker(stickerId: string) {
+    sendText("", stickerId);
   }
 
   function handleSend() {
@@ -393,8 +401,8 @@ export function ConversationView({
   }
 
   function handleRetry() {
-    if (!failedText) return;
-    sendText(failedText);
+    if (!failedSend) return;
+    sendText(failedSend.text, failedSend.stickerId);
   }
 
   if (chatDisabled) {
@@ -586,14 +594,20 @@ export function ConversationView({
                         ) : (
                           <span className={styles.avatarSpacer} aria-hidden="true" />
                         ))}
-                      <div className={isOwn ? `${styles.message} ${styles.own}` : `${styles.message} ${styles.peer}`}>
-                        {renderMessageText(
-                          msg.text,
-                          msg.mentionedEmails,
-                          (email) => (routingPeerId && email.toLowerCase() === routingPeerId.toLowerCase() ? peerName : email),
-                          selfId,
-                        )}
-                      </div>
+                      {isStickerMessage(msg) ? (
+                        <div className={styles.stickerMessage}>
+                          <StickerView stickerId={stickerIdOf(msg)} />
+                        </div>
+                      ) : (
+                        <div className={isOwn ? `${styles.message} ${styles.own}` : `${styles.message} ${styles.peer}`}>
+                          {renderMessageText(
+                            msg.text,
+                            msg.mentionedEmails,
+                            (email) => (routingPeerId && email.toLowerCase() === routingPeerId.toLowerCase() ? peerName : email),
+                            selfId,
+                          )}
+                        </div>
+                      )}
                     </div>
                     <div className={styles.meta}>
                       <span className={isOwn ? `${styles.timestamp} ${styles.timestampRight}` : styles.timestamp}>
@@ -651,6 +665,7 @@ export function ConversationView({
           mention.onDraftChanged(text, caret);
         }}
         onSend={handleSend}
+        onSendSticker={handleSendSticker}
       />
       </>
       )}

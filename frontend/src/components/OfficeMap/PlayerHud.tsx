@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import HudIcon from "../HudIcon";
 import styles from "./PlayerHud.module.css";
-import { HUD_TARGET_ATTR, reducedMotion } from "./rewardFx";
+import { HUD_TARGET_ATTR } from "./rewardFx";
+import { LEVEL_UP_MS, useProgressionMeter } from "./progressionMeter";
 import { useCurrentUser } from "../../auth/currentUserStore";
 import { avatarIdForEmail } from "../../data/avatarIdentity";
 import { profileImageFor } from "../../data/portraits";
@@ -28,70 +29,8 @@ import { STATUS_META } from "../../services/presence/status";
 // The Coins area and the XP meter carry [data-hud-target] so the collection FX can find its
 // destinations live, wherever this HUD is laid out.
 
-const XP_MS = 900;
-const COINS_MS = 700;
-const PULSE_MS = 650;
-const LEVEL_UP_MS = 2400;
-
-/** Ease a displayed number toward `target` over `ms` (ease-out cubic). Reduced motion: jump. */
-function useAnimatedNumber(target: number, ms: number): number {
-  const [value, setValue] = useState(target);
-  const shown = useRef(target);
-  useEffect(() => {
-    const start = shown.current;
-    if (start === target) return;
-    if (reducedMotion()) {
-      shown.current = target;
-      setValue(target);
-      return;
-    }
-    const t0 = performance.now();
-    let frame = 0;
-    const tick = (now: number) => {
-      const k = Math.min(1, (now - t0) / ms);
-      const eased = 1 - Math.pow(1 - k, 3);
-      const next = Math.round(start + (target - start) * eased);
-      shown.current = next;
-      setValue(next);
-      if (k < 1) frame = requestAnimationFrame(tick);
-    };
-    frame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(frame);
-  }, [target, ms]);
-  return value;
-}
-
-/** True for PULSE_MS after `trigger` changes (skipping the initial value). */
-function usePulse(trigger: number): boolean {
-  const [on, setOn] = useState(false);
-  const first = useRef(true);
-  useEffect(() => {
-    if (first.current) {
-      first.current = false;
-      return;
-    }
-    setOn(true);
-    const t = window.setTimeout(() => setOn(false), PULSE_MS);
-    return () => window.clearTimeout(t);
-  }, [trigger]);
-  return on;
-}
-
-interface LevelBounds {
-  level: number;
-  start: number;
-  next: number;
-}
-
-/** Which level window the animated XP is currently inside. During a level-crossing claim the
- * meter first fills the OLD window to the threshold, then flips to the new level and continues —
- * a single claim can cross at most one level (max reward 100 XP, smallest window 100 XP). */
-function boundsFor(animatedXp: number, progression: Progression, lastClaim: ClaimFeedback | null): LevelBounds {
-  if (lastClaim?.leveledUp && animatedXp < lastClaim.to.levelStartXp) {
-    return { level: lastClaim.from.level, start: lastClaim.from.levelStartXp, next: lastClaim.from.nextLevelXp };
-  }
-  return { level: progression.level, start: progression.levelStartXp, next: progression.nextLevelXp };
-}
+// Count-up, pulse, level window and Level Up timing live in progressionMeter.ts, shared with the
+// claim-time strip (ClaimHud) so both surfaces animate the same confirmed values the same way.
 
 function firstNameFor(fullName: string | undefined, email: string | undefined): string {
   const first = (fullName ?? "").trim().split(/\s+/)[0];
@@ -206,25 +145,12 @@ function HudBody({
   // Same self-status store the availability picker beside it writes to — the dock avatar's
   // presence dot is the live effective status, never a hardcoded colour.
   const { currentStatus: status } = useSelfStatus();
-  const xp = useAnimatedNumber(progression.xp, XP_MS);
-  const coins = useAnimatedNumber(progression.coins, COINS_MS);
-  const coinsPulsing = usePulse(coinsPulse);
-  const xpPulsing = usePulse(xpPulse);
-  const bounds = boundsFor(xp, progression, lastClaim);
-  const span = Math.max(1, bounds.next - bounds.start);
-  const into = Math.max(0, Math.min(span, xp - bounds.start));
-  const pct = Math.round((into / span) * 100);
-
-  // Level Up treatment: once the animated XP has actually crossed into the new level.
-  const crossed = Boolean(lastClaim?.leveledUp) && lastClaim !== null && xp >= lastClaim.to.levelStartXp;
-  const [levelUpFor, setLevelUpFor] = useState<number | null>(null);
-  useEffect(() => {
-    if (!crossed || !lastClaim) return;
-    setLevelUpFor(lastClaim.id);
-    const t = window.setTimeout(() => setLevelUpFor(null), LEVEL_UP_MS);
-    return () => window.clearTimeout(t);
-  }, [crossed, lastClaim]);
-  const levelUpActive = levelUpFor !== null && levelUpFor === lastClaim?.id;
+  const { coins, coinsPulsing, xpPulsing, bounds, span, into, pct, levelUpActive } = useProgressionMeter(
+    progression,
+    lastClaim,
+    coinsPulse,
+    xpPulse,
+  );
 
   // Badge earned: same restrained caption treatment as Level Up, shown when a badge refresh
   // reports a newly crossed tier. Level Up wins the slot if both happen at once.

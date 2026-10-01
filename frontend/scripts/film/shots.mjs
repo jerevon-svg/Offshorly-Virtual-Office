@@ -285,6 +285,67 @@ async function orbit(ctx, rad, ms, pitchPx = 0) {
 const standAt = (ctx, k, p, q) => walkPuppet(ctx, k, p, { instant: true, yaw: yawTo(p, q) });
 const walkTo = (ctx, k, p, q, speed = 70) => walkPuppet(ctx, k, p, { speed, yaw: q ? yawTo(p, q) : undefined });
 
+// ----------------------------------------------------------------------------------- the opening (polish)
+// A Reception that was already going before Bon arrived: pairs talking in the lounges, people crossing
+// the concourse, someone heading into the Hub, someone arriving behind him. Nobody at the sensor or the
+// kiosk, nobody facing him, and his path (entrance → sensor → kiosk → gates → concourse) stays clear.
+const OPENING_BON_START = { x: 722, z: 1112 };                          // just inside the entrance doors
+const OPENING_CAST = {
+  nicole: { at: { x: 935, z: 1045 }, face: { x: 962, z: 1072 } },      // east lounge, a pair talking
+  kael:   { at: { x: 962, z: 1072 }, face: { x: 935, z: 1045 } },
+  jona:   { at: { x: 772, z: 1124 }, face: { x: 860, z: 1100 } },       // arrives behind Bon, joins the pair
+  france: { at: { x: 430, z: 805 }, face: { x: 380, z: 760 } },         // west end of the concourse, by the lane
+  alex:   { at: { x: 600, z: 810 }, face: { x: 640, z: 824 } },         // a pair on the concourse, west of the lane
+  jan:    { at: { x: 640, z: 824 }, face: { x: 600, z: 810 } },
+  angelo: { at: { x: 1000, z: 758 }, face: { x: 470, z: 756 } },        // about to cross the concourse (north of the pair)
+  micah:  { at: { x: 880, z: 735 }, face: { x: 820, z: 650 } },         // about to head into the Hub
+  clang:  { at: { x: 820, z: 790 }, face: { x: 930, z: 800 } },         // about to drift east
+};
+// where everyone is when the opening ends — the state ALIVE (AliveV2) continues from
+const OPENING_END = {
+  ...OPENING_CAST,
+  jona:   { at: { x: 912, z: 1066 }, face: { x: 935, z: 1045 } },
+  angelo: { at: { x: 420, z: 752 }, face: { x: 430, z: 805 } },
+  micah:  { at: { x: 820, z: 650 }, face: { x: 760, z: 610 } },
+  clang:  { at: { x: 930, z: 800 }, face: { x: 1010, z: 792 } },
+};
+/** montage staging: checked in, chats read, panels shut, the cast where the opening left them, Player view at a spot */
+async function featStage(ctx, at, dir, pitch = 0.2) {
+  await attendance(ctx, "in");
+  await readAll(ctx);
+  await reloadBon(ctx);                                                  // the page re-reads unread state (no stale badges over heads)
+  await ctx.vo(() => __vo3d.weather.setWeather("clear"));                // film override of the live weather: one sky for the whole film
+  await closePanels(ctx);
+  await ctx.click("Dismiss the toucan").catch(() => {});
+  await Promise.all(Object.entries(OPENING_END).map(([k, c]) => walkPuppet(ctx, k, c.at, { instant: true, yaw: yawTo(c.at, c.face) })));
+  await pvAt(ctx, at, dir, "day", pitch);
+  await ctx.sleep(5000);                                                 // weather + light settled before recording
+}
+const featMark = (ctx, what) => ({ what, t: Date.now() / 1000 });
+const HUM_C = { x: 700, z: 782 };    // where the 'meetings' circle forms
+const TEAM_C = { x: 660, z: 786 };   // the celebrating group
+// Office-view framings, as the rects the in-app camera focuses (no digital crop)
+const OPENING_CAM = {
+  wide0: { x: 390, z: 735, w: 700, d: 395 },  wide1: { x: 470, z: 770, w: 530, d: 300 },
+  kiosk: { x: 395, z: 905, w: 360, d: 203 },
+  gates0: { x: 500, z: 740, w: 460, d: 280 }, gates1: { x: 500, z: 700, w: 460, d: 280 },
+  office0: { x: 420, z: 560, w: 620, d: 380 }, office1: { x: 360, z: 520, w: 740, d: 440 },
+};
+const lerpRect = (a, b, e) => ({ x: a.x + (b.x - a.x) * e, z: a.z + (b.z - a.z) * e, w: a.w + (b.w - a.w) * e, d: a.d + (b.d - a.d) * e });
+/** a coworker along a straight line of open floor (no pathfinder), turning to face q on arrival */
+function walkLine(ctx, k, pts, q, speed = 60) { return ctx.puppets.walk(k, pts.map(v1), { speed, yaw: q ? yawTo(pts.at(-1), q) : undefined }); }
+async function camHold(ctx, rect, fill = 0.95) { await ctx.vo(({ rect, fill }) => __vo3d.cameraModes.focus(rect, fill), { rect, fill }); }
+/** an eased in-app camera move between two framings, one focus per frame */
+async function camMove(ctx, a, b, ms, fill = 0.95) {
+  const t0 = Date.now();
+  for (;;) {
+    const s = Math.min(1, (Date.now() - t0) / ms), e = s * s * (3 - 2 * s);
+    await camHold(ctx, lerpRect(a, b, e), fill);
+    if (s >= 1) return;
+    await ctx.sleep(16);
+  }
+}
+
 // ------------------------------------------------------------------------------------------------ shots
 export const SHOTS = {
   Reset: {
@@ -319,6 +380,105 @@ export const SHOTS = {
     },
   },
 
+  ReceptionV2: {
+    about: "OPENING (polish) — a lived-in Reception: Bon walks in, is refused, checks in at the kiosk, goes through; the cast goes about its day",
+    async stage(ctx) {
+      await attendance(ctx, "out");
+      await view(ctx, "office");
+      await Promise.all(Object.entries(OPENING_CAST).map(([k, c]) => walkPuppet(ctx, k, c.at, { instant: true, yaw: yawTo(c.at, c.face) })));
+      await placeBon(ctx, OPENING_BON_START);
+      await ctx.vo(() => __vo3d.env.setTime("day"));
+      await camHold(ctx, OPENING_CAM.wide0);
+      await ctx.sleep(2500);                                              // the time/camera settle before recording
+    },
+    verify: async (ctx) => (await state(ctx)).access === "denied",
+    async go(ctx) {
+      const marks = [];
+      const mark = (what) => marks.push({ what, t: Date.now() / 1000 });
+      const bg = [];                                                      // background life, never awaited by Bon's beats
+      const cue = (ms, fn) => bg.push(ctx.sleep(ms).then(fn).catch(() => {}));
+      // --- beat 1: Bon walks in from the entrance and into the lane; the office is already going ---
+      mark("walk-in");
+      cue(300, () => walkLine(ctx, "angelo", [{ x: 470, z: 756 }], null, 55));        // crosses the concourse, east → west
+      cue(4200, () => walkTo(ctx, "micah", { x: 820, z: 650 }, null, 50));         // heads up into the Hub
+      cue(4800, () => walkTo(ctx, "clang", { x: 930, z: 800 }, null, 45));        // drifts along the concourse, east
+      const push = camMove(ctx, OPENING_CAM.wide0, OPENING_CAM.wide1, 8000);  // still easing in over the refusal
+      await placeBon(ctx, GATE_SENSOR);
+      mark("at-sensor");
+      await push;
+      await ctx.sleep(1400);                                              // the red refusal
+      mark("refused");
+      // --- beat 2: the kiosk; the camera is already there when the card opens ---
+      cue(200, () => walkLine(ctx, "jona", [{ x: 860, z: 1100 }, { x: 912, z: 1066 }], { x: 935, z: 1045 }, 55)); // arrives behind, joins the pair
+      await ctx.vo(() => __vo3d.reception.startApproach(__vo3d.reception.kioskId));
+      await until(ctx, () => [...document.querySelectorAll("[role=menuitem]")].some((e) => e.textContent.trim() === "Check In"), "the kiosk card", undefined, 35000);
+      await camHold(ctx, OPENING_CAM.kiosk);
+      mark("kiosk-card");
+      await ctx.sleep(1300);
+      await ctx.click("Check In");
+      mark("check-in");
+      await until(ctx, () => __vo3d.access.state().access === "permitted", "check-in confirmed");
+      mark("permitted");
+      await ctx.sleep(1800);                                              // the post-check-in Company Hub (real; cut in the edit)
+      await closePanels(ctx);
+      // --- beat 3: through the green gates onto the concourse ---
+      await camHold(ctx, OPENING_CAM.gates0);
+      await ctx.sleep(400);
+      mark("gates-walk");
+      cue(0, () => walkLine(ctx, "angelo", [{ x: 420, z: 752 }], null, 45));
+      const follow = camMove(ctx, OPENING_CAM.gates0, OPENING_CAM.gates1, 6000);
+      await placeBon(ctx, PAST_GATES);
+      await follow;
+      mark("past-gates");
+      // --- beat 4: the office opens up around him (the frame ALIVE transforms) ---
+      await camHold(ctx, OPENING_CAM.office0);
+      await ctx.sleep(300);
+      mark("office");
+      const pull = camMove(ctx, OPENING_CAM.office0, OPENING_CAM.office1, 3800);
+      await placeBon(ctx, { x: 700, z: 745 });
+      await pull;
+      mark("end");
+      await Promise.all(bg);
+      return marks;
+    },
+  },
+
+  AliveV2: {
+    about: "ALIVE (polish) — ReceptionV2's end state, then C: the same populated office turns into true 3D, a slow orbit/zoom",
+    async stage(ctx) {
+      await attendance(ctx, "in");
+      await view(ctx, "office");
+      await Promise.all(Object.entries(OPENING_END).map(([k, c]) => walkPuppet(ctx, k, c.at, { instant: true, yaw: yawTo(c.at, c.face) })));
+      await placeBon(ctx, { x: 700, z: 745 });
+      await ctx.vo(() => __vo3d.env.setTime("day"));
+      await camHold(ctx, OPENING_CAM.office1);
+      await ctx.page.mouse.move(1919, 1079);
+      await ctx.sleep(2500);
+    },
+    verify: async (ctx) => (await state(ctx)).mode === "office" && (await state(ctx)).access === "permitted",
+    async go(ctx) {
+      const marks = [];
+      const mark = (what) => marks.push({ what, t: Date.now() / 1000 });
+      walkLine(ctx, "clang", [{ x: 1010, z: 792 }], null, 40);            // the concourse keeps moving through the reveal
+      walkLine(ctx, "micah", [{ x: 760, z: 610 }], null, 40);
+      await ctx.sleep(900);
+      mark("C");
+      await ctx.page.keyboard.press("KeyC");
+      await until(ctx, () => __vo3d.cameraModes.mode === "explore", "3D view");
+      mark("explore");
+      await ctx.sleep(500);
+      const m = ctx.page.mouse;                                           // a person orbiting: a slow left-drag, then a gentle zoom
+      await m.move(960, 520); await m.down();
+      for (let i = 0; i <= 120; i++) { await m.move(960 + i * ORBIT.dx / 120, 520 + i * ORBIT.dy / 120); await ctx.sleep(24); }
+      await m.up();
+      for (let i = 0; i < ORBIT.zoomSteps; i++) { await m.wheel({ deltaY: -60 }); await ctx.sleep(60); }
+      await m.move(1919, 1079);
+      mark("end");
+      await ctx.sleep(800);
+      return marks;
+    },
+  },
+
   OfficeView: {
     about: "WORLD — the Office view establishing shot, Bon on the concourse, team in the Hub",
     stage: (ctx) => officeBaseline(ctx),
@@ -342,6 +502,386 @@ export const SHOTS = {
       for (let i = 0; i < ORBIT.zoomSteps; i++) { await m.wheel({ deltaY: -60 }); await ctx.sleep(60); }
       await m.move(1919, 1079);
       return state(ctx);
+    },
+  },
+
+  TourV2: {
+    about: "3D TOUR (polish) — three rooms, each one slow orbit turning the SAME way, so hard cuts carry the motion; cast as the opening left them",
+    async stage(ctx) {
+      await attendance(ctx, "in");
+      await Promise.all(Object.entries(OPENING_END).map(([k, c]) => walkPuppet(ctx, k, c.at, { instant: true, yaw: yawTo(c.at, c.face) })));
+      await view(ctx, "explore");
+      await ctx.vo(() => __vo3d.env.setTime("day"));
+      await ctx.page.mouse.move(1919, 1079);
+      await ctx.sleep(2500);
+    },
+    verify: async (ctx) => (await state(ctx)).mode === "explore",
+    async go(ctx) {
+      const marks = [];
+      const rooms = [
+        { x: 40, z: 40, w: 420, d: 300 },     // north-west team room
+        { x: 980, z: 40, w: 420, d: 300 },    // north-east room
+        { x: 1000, z: 560, w: 320, d: 260 },  // east (gaming)
+      ];
+      for (const [i, r] of rooms.entries()) {
+        await ctx.vo((r) => __vo3d.cameraModes.focus(r, 0.95), r);
+        marks.push({ what: `room${i}`, t: Date.now() / 1000 });
+        const n = 150;
+        for (let k = 0; k <= n; k++) { const e = k / n; await ctx.vo(({ p, y }) => __vo3d.cameraModes.orbit(p, y), { p: 44 - 6 * e, y: -24 + 48 * e }); await ctx.sleep(16); }
+      }
+      marks.push({ what: "end", t: Date.now() / 1000 });
+      return marks;
+    },
+  },
+
+  PlayerV2: {
+    about: "EXPERIENCE + RUN (polish) — from 3D, C into Player behind Bon at the east end of the concourse; walk → sprint west past the pair → jump → run on toward Angelo and France",
+    async stage(ctx) {
+      await attendance(ctx, "in");
+      await Promise.all(Object.entries({ ...OPENING_END, clang: { at: { x: 1110, z: 745 }, face: { x: 1160, z: 745 } } }).map(([k, c]) => walkPuppet(ctx, k, c.at, { instant: true, yaw: yawTo(c.at, c.face) })));
+      await view(ctx, "office");
+      await placeBon(ctx, { x: 1040, z: 786 });
+      await placeBon(ctx, { x: 1000, z: 786 });                            // the last step heads WEST, down the concourse (camera clear of the east rail)
+      await ctx.vo(() => { __vo3d.env.setTime("day"); __vo3d.player.mode.camera.pitch = 0.2; });
+      await hideHint(ctx);
+      await view(ctx, "explore");
+      await ctx.page.mouse.move(1919, 1079);
+      await ctx.sleep(2500);
+    },
+    verify: async (ctx) => (await state(ctx)).mode === "explore",
+    async go(ctx) {
+      const k = ctx.page.keyboard, marks = [];
+      const mark = (what) => marks.push({ what, t: Date.now() / 1000 });
+      await ctx.sleep(600);
+      mark("C");
+      await k.press("KeyC");
+      await until(ctx, () => __vo3d.cameraModes.mode === "player", "player view");
+      mark("player");
+      await ctx.sleep(350);
+      await k.down("KeyW"); mark("walk");
+      await ctx.sleep(500);
+      await k.down("ShiftLeft"); mark("sprint");
+      await ctx.sleep(1100);
+      await k.press("Space"); mark("jump");
+      await ctx.sleep(1900);
+      await k.up("ShiftLeft"); await ctx.sleep(500); await k.up("KeyW"); mark("stop");
+      await ctx.sleep(800);
+      return marks;
+    },
+  },
+
+  // ---- FEATURE MONTAGE (polish): each feature opened over the live 3D office in Player view (the product's own
+  // background blur behind the panel), a different backdrop each time, one real interaction each ----
+  FeatSearch: {
+    about: "MONTAGE (polish) — Search: type 'Mi', Micah is found; Alex and Jan talking behind",
+    stage: (ctx) => featStage(ctx, { x: 640, z: 786 }, { x: -1, z: 0 }),
+    async go(ctx) {
+      const m = [featMark(ctx, "open")];
+      await dock(ctx, "Search for a person");
+      m.push(featMark(ctx, "opened"));
+      await ctx.page.keyboard.type("Mi", { delay: 140 });
+      m.push(featMark(ctx, "typed"));
+      await ctx.sleep(1500);
+      return m;
+    },
+  },
+  FeatTasks: {
+    about: "MONTAGE (polish) — Tasks: the Quests list, then the Missions tab (one shot, not two)",
+    stage: (ctx) => featStage(ctx, { x: 700, z: 800 }, { x: 0.2, z: -1 }),
+    async go(ctx) {
+      const m = [featMark(ctx, "open")];
+      await dock(ctx, "Open Tasks");
+      m.push(featMark(ctx, "opened"));
+      await ctx.sleep(1300);
+      await ctx.click("Missions");
+      m.push(featMark(ctx, "missions"));
+      await ctx.sleep(1500);
+      return m;
+    },
+  },
+  FeatToucan: {
+    about: "MONTAGE (polish) — call the toucan: it flies out of the Hub toward Bon and the assistant opens",
+    stage: (ctx) => featStage(ctx, { x: 730, z: 800 }, { x: 0, z: -1 }, 0.1),
+    async go(ctx) {
+      const m = [featMark(ctx, "call")];
+      await ctx.click("Call the toucan");
+      await until(ctx, () => document.body.innerText.includes("Toucan Assistant"), "the toucan arriving", undefined, 30000);
+      m.push(featMark(ctx, "assistant"));
+      await ctx.sleep(1800);
+      return m;
+    },
+  },
+  FeatBoards: {
+    about: "MONTAGE (polish) — the Q4 Office Launch board open; Bon drags 'Celebrate the win' up into the row beside the others",
+    stage: (ctx) => featStage(ctx, { x: 640, z: 786 }, { x: 0, z: -1 }),
+    async go(ctx) {
+      const m = [featMark(ctx, "open")];
+      await dock(ctx, "Open office whiteboards");
+      await ctx.sleep(800);
+      await ctx.click("Q4 Office Launch");
+      await until(ctx, () => [...document.querySelectorAll("canvas")].some((c) => c.closest(".excalidraw")), "the board editor", undefined, 20000);
+      await ctx.sleep(1500);                                              // the scene (the canvas-drawn notes) settles
+      m.push(featMark(ctx, "board"));
+      await ctx.sleep(1000);
+      const mouse = ctx.page.mouse;
+      await mouse.move(840, 666); await mouse.down(); m.push(featMark(ctx, "drag"));
+      for (let i = 1; i <= 45; i++) { const e = i / 45, s = e * e * (3 - 2 * e); await mouse.move(840 + 570 * s, 666 - 200 * s); await ctx.sleep(22); }
+      await mouse.up(); m.push(featMark(ctx, "dropped"));
+      await mouse.move(1919, 1079);
+      await ctx.sleep(1500);
+      return m;
+    },
+  },
+
+  // ---- HUMAN / CULTURE (polish): daylight, Player view, the cast as people sharing a workplace ----
+  HumGather: {
+    about: "HUMAN (polish) — 'meetings': four coworkers converge from different directions into a small circle; Bon at the edge, side-on camera",
+    async stage(ctx) {
+      await featStage(ctx, { x: 620, z: 784 }, { x: 1, z: 0 });
+      const S = { angelo: { x: 900, z: 740 }, jan: { x: 700, z: 900 }, micah: { x: 760, z: 660 }, nicole: { x: 860, z: 830 } };
+      for (const [k, p] of Object.entries(S)) await standAt(ctx, k, p, HUM_C);
+      await standAt(ctx, "alex", { x: 1010, z: 800 }, { x: 1100, z: 800 });
+      await orbit(ctx, 0.55, 300);
+      await ctx.sleep(1500);
+    },
+    async go(ctx) {
+      const m = [featMark(ctx, "go")];
+      const ring = (a) => ({ x: HUM_C.x + 38 * Math.cos(a), z: HUM_C.z + 38 * Math.sin(a) });
+      const plan = [["angelo", -0.6, 62, 0], ["nicole", 0.9, 58, 250], ["jan", 2.2, 70, 120], ["micah", 3.6, 66, 420]];
+      for (const [k, a, sp, delay] of plan) ctx.sleep(delay).then(() => walkTo(ctx, k, ring(a), HUM_C, sp));
+      walkLine(ctx, "alex", [{ x: 1100, z: 800 }], null, 50);
+      await orbit(ctx, 0.25, 3200);
+      m.push(featMark(ctx, "end"));
+      await ctx.sleep(800);
+      return m;
+    },
+  },
+  HumConvo: {
+    about: "HUMAN (polish) — Alex walks up; a spatial DM: typing → 'On my way to the Hub 👋' ('messages'), then round to a balanced side-on two-shot ('conversations')",
+    async stage(ctx) {
+      await featStage(ctx, { x: 640, z: 786 }, { x: 1, z: 0 });
+      await standAt(ctx, "alex", { x: 860, z: 770 }, { x: 640, z: 786 });
+      await standAt(ctx, "micah", { x: 790, z: 730 }, { x: 830, z: 745 }); await standAt(ctx, "jan", { x: 830, z: 745 }, { x: 790, z: 730 });
+      await ctx.sleep(1500);
+    },
+    async go(ctx) {
+      const m = [featMark(ctx, "go")];
+      const bon = await ctx.vo(() => __vo3d.player.position());
+      const AL = { x: bon.x + 58, z: bon.z - 4 };
+      await walkTo(ctx, "alex", AL, bon, 75);
+      m.push(featMark(ctx, "arrived"));
+      await ctx.vo(() => __vo3d.coworkers.interact.select("alex@offshorly.com"));
+      await ctx.sleep(600);
+      await tap(ctx, "Chat");
+      await ctx.sleep(900);
+      const dm = await dmWith(ctx, "alex@offshorly.com");
+      ctx.puppets.emit("alex", "spatial_session_start", { sessionId: dm });
+      await walkPuppet(ctx, "alex", AL, { instant: true, yaw: yawTo(AL, bon) });
+      ctx.puppets.typing("alex", dm, true); m.push(featMark(ctx, "typing"));
+      await ctx.sleep(1400);
+      ctx.puppets.typing("alex", dm, false);
+      ctx.puppets.send("alex", dm, "On my way to the Hub 👋"); m.push(featMark(ctx, "sent"));
+      await ctx.sleep(1400);
+      // close the DM by its own button through the DOM — a mouse move here would be a Player-view camera look
+      await ctx.vo(() => [...document.querySelectorAll("button")].find((e) => /^close/i.test(e.getAttribute("aria-label") ?? ""))?.click());
+      await ctx.sleep(300);
+      m.push(featMark(ctx, "orbit"));
+      await orbit(ctx, -Math.PI * 0.4, 1800);                              // round (north, over open floor) to a near side-on two-shot, balanced
+      m.push(featMark(ctx, "twoshot"));
+      await ctx.sleep(2200);
+      return m;
+    },
+  },
+  HumVideo: {
+    about: "HUMAN (FINAL-v2) — 'conversations': a real spatial video call, set up entirely in staging (Alex's live second client connected, placed, the DM panel shut); recording = Bon turns his camera on and his live video floats up between them",
+    async stage(ctx) {
+      await ctx.api("alex@offshorly.com", "POST", "/attendance/check-in").catch(() => {});
+      const alex = await ctx.extra("alex");                              // 1. the real second client, connected BEFORE anything is placed
+      await alex.reload({ waitUntil: "domcontentloaded" });
+      await alex.waitForFunction(() => document.querySelectorAll("button").length > 0, { timeout: 60000 });
+      await featStage(ctx, { x: 580, z: 786 }, { x: 1, z: 0 });           // 4. ~60 west of the rejected take: no kiosk in front
+      await standAt(ctx, "micah", { x: 740, z: 730 }, { x: 780, z: 745 }); await standAt(ctx, "jan", { x: 780, z: 745 }, { x: 740, z: 730 });
+      const b = await ctx.vo(() => __vo3d.player.position());
+      ctx.film = { ...ctx.film, bon: b, alexAt: { x: b.x + 58, z: b.z - 4 } };
+      await standAt(ctx, "alex", ctx.film.alexAt, b);
+      await ctx.sleep(1200);
+      await ctx.vo(() => __vo3d.coworkers.interact.select("alex@offshorly.com"));
+      await ctx.sleep(600);
+      await tap(ctx, "Call");
+      await alex.waitForFunction(() => [...document.querySelectorAll("button")].some((x) => x.textContent.trim() === "Accept"), { timeout: 20000 });
+      await ctx.click("Accept", alex);
+      await until(ctx, () => !!document.querySelector('[aria-label="Turn camera on"]'), "the call connected", undefined, 20000);
+      await ctx.sleep(1500);
+      ctx.puppets.at.delete("alex");                                      // 2. re-placed AFTER the live client has connected
+      await standAt(ctx, "alex", ctx.film.alexAt, b);
+      // 3. the DM panel shut by its own close control, through the DOM (a mouse move would be a camera look)
+      await ctx.vo(() => [...document.querySelectorAll("button")].find((e) => /^close/i.test(e.getAttribute("aria-label") ?? ""))?.click());
+      await ctx.sleep(600);
+      await ctx.vo(() => { __vo3d.player.mode.camera.boomScale = 0.8; });  // 5. a tighter framing (the Player camera's own boom)
+      await orbit(ctx, -Math.PI * 0.4, 1200);                               // the balanced side-on two-shot
+      await ctx.sleep(2500);
+      if (!(await ctx.vo(() => !!document.querySelector('[aria-label="Turn camera on"]')))) throw new Error("the call dropped during staging");
+    },
+    async go(ctx) {
+      const m = [featMark(ctx, "go")];
+      await ctx.sleep(500);
+      await tap(ctx, "Turn camera on"); m.push(featMark(ctx, "camera"));
+      await until(ctx, () => [...document.querySelectorAll("video")].some((v) => v.videoWidth > 0 && !v.paused), "Bon's video playing", undefined, 15000);
+      m.push(featMark(ctx, "video"));
+      await orbit(ctx, 0.1, 2400);                                         // a slow drift while they talk
+      await ctx.sleep(1200);
+      m.push(featMark(ctx, "end"));
+      await ctx.click("Leave call").catch(() => {});
+      await ctx.vo(() => { __vo3d.player.mode.camera.boomScale = 1; });
+      await ctx.closeExtra("alex");
+      return m;
+    },
+  },
+
+  HumTasks: {
+    about: "HUMAN (polish) — 'tasks': a finished quest claimed; the reward flies to the HUD",
+    stage: (ctx) => featStage(ctx, { x: 520, z: 790 }, { x: 0.3, z: -1 }),
+    async go(ctx) {
+      const m = [featMark(ctx, "go")];
+      await dock(ctx, "Open Tasks");
+      m.push(featMark(ctx, "opened"));
+      await ctx.sleep(700);
+      await ctx.click("Claim"); m.push(featMark(ctx, "claim"));
+      await ctx.sleep(2200);
+      return m;
+    },
+  },
+  HumCards: {
+    about: "HUMAN (polish) — the Hub over the live office: Micah's birthday (wish sent), then Kudos to Alex (given)",
+    stage: (ctx) => featStage(ctx, { x: 700, z: 790 }, { x: 0.4, z: -1 }),
+    async go(ctx) {
+      const m = [featMark(ctx, "go")];
+      await dock(ctx, "Open Company Hub");
+      for (let i = 0; i < 6 && !(await ctx.visible("Happy Birthday, Micah! 🎂")); i++) { await ctx.click("Next item").catch(() => {}); await ctx.sleep(450); }
+      m.push(featMark(ctx, "birthday"));
+      await ctx.sleep(900);
+      await ctx.click("Wish Happy Birthday").catch(() => {}); m.push(featMark(ctx, "wished"));
+      await ctx.sleep(1200);
+      for (let i = 0; i < 6 && !(await ctx.visible("Kudos to Alex 🏆")); i++) { await ctx.click("Next item").catch(() => {}); await ctx.sleep(450); }
+      m.push(featMark(ctx, "kudos"));
+      await ctx.sleep(900);
+      await ctx.click("Give Kudos").catch(() => {}); m.push(featMark(ctx, "given"));
+      await ctx.sleep(1500);
+      return m;
+    },
+  },
+  HumTeam: {
+    about: "HUMAN (polish) — 'celebrating wins' → 'part of a team': a loose group on the concourse cheers (staggered jumps), Bon steps in among them, the camera drifts round",
+    async stage(ctx) {
+      await featStage(ctx, { x: TEAM_C.x - 78, z: TEAM_C.z + 6 }, { x: 1, z: -0.05 }, 0.12);
+      const ring = [["jan", 0.2, 44], ["nicole", 0.95, 40], ["micah", 1.7, 46], ["angelo", -0.55, 42], ["kael", -1.3, 48], ["france", 2.1, 50], ["alex", -1.95, 50]];
+      for (const [k, a, r] of ring) { const p = { x: TEAM_C.x + r * Math.cos(a), z: TEAM_C.z + r * Math.sin(a) }; await standAt(ctx, k, p, TEAM_C); }
+      await standAt(ctx, "jona", { x: 960, z: 740 }, TEAM_C); await standAt(ctx, "clang", { x: 1000, z: 830 }, TEAM_C);
+      await ctx.sleep(1500);
+    },
+    async go(ctx) {
+      const m = [featMark(ctx, "go")];
+      await ctx.sleep(500);
+      m.push(featMark(ctx, "cheer"));
+      for (const [k, d] of [["jan", 0], ["nicole", 140], ["angelo", 260], ["micah", 330], ["kael", 520], ["jan", 700], ["france", 610], ["nicole", 900]]) ctx.sleep(d).then(() => ctx.puppets.jump(k));
+      walkLine(ctx, "jona", [{ x: TEAM_C.x + 60, z: TEAM_C.z - 40 }], TEAM_C, 70);   // someone jogging over to join in
+      await ctx.sleep(1700);
+      m.push(featMark(ctx, "step-in"));
+      await ctx.page.keyboard.down("KeyW"); await ctx.sleep(650); await ctx.page.keyboard.up("KeyW");
+      m.push(featMark(ctx, "among"));
+      await orbit(ctx, 0.7, 3600);
+      m.push(featMark(ctx, "end"));
+      await ctx.sleep(600);
+      return m;
+    },
+  },
+
+  // ---- CAVE + ELEVATOR (polish): clear daylight, settled before recording ----
+  CaveV2: {
+    about: "CAVE (polish) — Player view at the championship portal: the Cave opens around Bon, a slow look round",
+    async stage(ctx) {
+      await attendance(ctx, "in");
+      await ctx.vo(() => { __vo3d.weather.setWeather("clear"); __vo3d.env.setTime("day"); });
+      if (await ctx.vo(() => __vo3d.cave.inside())) { await ctx.vo(() => __vo3d.cave.exit()); await ctx.until(() => !__vo3d.cave.inside(), { timeout: 20000, label: "out of the Cave" }); }
+      await hideHint(ctx);
+      await view(ctx, "player");
+      await ctx.vo(() => __vo3d.cave.atPortal());
+      await ctx.sleep(4000);
+    },
+    async go(ctx) {
+      const m = [featMark(ctx, "go")];
+      await ctx.sleep(600);
+      await ctx.vo(() => __vo3d.cave.enter()); m.push(featMark(ctx, "enter"));
+      await ctx.sleep(5000); m.push(featMark(ctx, "look"));
+      await orbit(ctx, 0.6, 2000);
+      await ctx.sleep(400);
+      await ctx.vo(() => __vo3d.cave.exit()).catch(() => {});
+      return m;
+    },
+  },
+  ElevatorV2: {
+    about: "ELEVATOR (polish) — daylight, settled: Bon walks to the lift, presses E, rides 01 → 02; held through the doors opening",
+    async stage(ctx) {
+      await attendance(ctx, "in");
+      await backToGround(ctx);
+      await ctx.vo(() => { __vo3d.weather.setWeather("clear"); __vo3d.env.setTime("day"); });
+      await hideHint(ctx);
+      await view(ctx, "player");
+      await placeBon(ctx, ELEVATOR_APPROACH, { x: -1, z: 0 });
+      await ctx.sleep(4500);
+    },
+    verify: async (ctx) => (await state(ctx)).mode === "player",
+    async go(ctx) {
+      const t = [featMark(ctx, "go")];
+      const phases = await SHOTS.Elevator.go(ctx);
+      t.push(featMark(ctx, "arriving"));
+      const seen = [];
+      const end = Date.now() + 7000;
+      while (Date.now() < end) { const ph = await liftPhase(ctx); if (ph && ph !== seen.at(-1)) { seen.push(ph); t.push(featMark(ctx, `phase:${ph}`)); } await ctx.sleep(100); }
+      return { phases, marks: t };
+    },
+  },
+
+  ProbeFeatures: {
+    about: "STAGING PROBE — each montage feature opened in Player view, snapped, and its panel measured (never recorded)",
+    async stage(ctx) {
+      await attendance(ctx, "in");
+      await readAll(ctx);
+      await Promise.all(Object.entries(OPENING_END).map(([k, c]) => walkPuppet(ctx, k, c.at, { instant: true, yaw: yawTo(c.at, c.face) })));
+      await pvAt(ctx, { x: 640, z: 786 }, { x: -1, z: 0 }, "day", 0.2);
+      await ctx.sleep(1500);
+    },
+    async go(ctx) {
+      const out = {};
+      const big = () => ctx.vo(() => {
+        const els = [...document.querySelectorAll("[role=dialog],[role=complementary],aside,section,div")].filter((e) => { const r = e.getBoundingClientRect(), s = getComputedStyle(e); return r.width > 200 && r.height > 150 && r.width < 1900 && (s.position === "fixed" || s.position === "absolute") && s.visibility !== "hidden"; });
+        const r = els.map((e) => e.getBoundingClientRect()).sort((a, b) => b.width * b.height - a.width * a.height)[0];
+        return r ? `${Math.round(r.x)},${Math.round(r.y)} ${Math.round(r.width)}x${Math.round(r.height)}` : null;
+      });
+      const steps = [
+        ["search", async () => { await dock(ctx, "Search for a person"); await ctx.page.keyboard.type("Mi", { delay: 120 }); await ctx.sleep(600); }],
+        ["tasks", async () => { await dock(ctx, "Open Tasks"); }],
+        ["boards", async () => { await dock(ctx, "Open office whiteboards"); await ctx.sleep(800); await ctx.click("Q4 Office Launch"); await ctx.sleep(3000); }],
+        ["chat", async () => { await dock(ctx, "Conversations"); }],
+        ["notifs", async () => { await dock(ctx, "Notifications"); }],
+      ];
+      for (const [name, fn] of steps) {
+        try { await fn(); await ctx.sleep(700); out[name] = { rect: await big(), snap: await ctx.snap(`pf-${name}`) }; } catch (e) { out[name] = String(e).slice(0, 160); }
+        await closePanels(ctx); await ctx.sleep(400);
+      }
+      return out;
+    },
+  },
+
+  ProbePV: {
+    about: "STAGING PROBE — Player-view snapshots at candidate run lines (never recorded)",
+    async stage(ctx) { await attendance(ctx, "in"); await Promise.all(Object.entries(OPENING_END).map(([k, c]) => walkPuppet(ctx, k, c.at, { instant: true, yaw: yawTo(c.at, c.face) }))); await hideHint(ctx); },
+    async go(ctx) {
+      const out = [];
+      for (const [name, at, dir] of [["concourse-west", { x: 1000, z: 785 }, { x: -1, z: 0 }], ["westlane-north", { x: 400, z: 830 }, { x: 0, z: -1 }], ["north-east", { x: 380, z: 380 }, { x: 1, z: 0 }], ["concourse-east", { x: 450, z: 785 }, { x: 1, z: 0 }]]) {
+        await pvAt(ctx, at, dir, "day", 0.12); await ctx.sleep(1200); out.push(await ctx.snap(`probe-${name}`));
+      }
+      return out;
     },
   },
 

@@ -102,8 +102,9 @@ export class PlayerCamera {
   }
 
   /** Place the camera for this frame. `p` is the avatar's ground position. */
-  update(p: Vec2, dt: number): void {
-    const eye = this.height * EYE_HEIGHT;
+  /** `y` is the ground the body stands on (0 indoors; the campus's own heights outside) */
+  update(p: Vec2, dt: number, y = 0): void {
+    const eye = this.height * EYE_HEIGHT + y;
     if (this.view === "first") {
       // straight onto the eye line: no smoothing, because lag on your own viewpoint reads as nausea
       this.camera.position.set(p.x, eye, p.z);
@@ -112,7 +113,7 @@ export class PlayerCamera {
       this.primed = true;
       return;
     }
-    const focusY = this.height * SHOULDER_HEIGHT;
+    const focusY = this.height * SHOULDER_HEIGHT + y;
     const boom = this.clearBoom(p);
     const cp = Math.cos(this.pitch);
     const want = new THREE.Vector3(

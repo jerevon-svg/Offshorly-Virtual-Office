@@ -15,6 +15,7 @@ export type OfficeStatus =
   | "LUNCH"
   | "IN_CONVERSATION"
   | "IN_CALL"
+  | "IN_MEETING"
   | "DND"
   | "OFFLINE";
 
@@ -35,6 +36,8 @@ export const STATUS_META: Record<OfficeStatus, StatusMeta> = {
   LUNCH: { label: "Lunch", color: "#D97706", emoji: "🟤", kind: "manual" },
   IN_CONVERSATION: { label: "In Conversation", color: "#3B82F6", emoji: "🔵", kind: "auto" },
   IN_CALL: { label: "In Call", color: "#8B5CF6", emoji: "🟣", kind: "auto" },
+  // Taking part in a Meeting Floor room's meeting (the server's meeting_presence says so, for everyone).
+  IN_MEETING: { label: "In Meeting", color: "#F97316", emoji: "🔶", kind: "auto" },
   DND: { label: "DND", color: "#EF4444", emoji: "🔴", kind: "manual" },
   OFFLINE: { label: "Offline", color: "#6B7280", emoji: "⚫", kind: "auto" },
 };
@@ -52,6 +55,7 @@ export function isManualStatus(value: OfficeStatus): boolean {
 export const ACTIVE_DETAIL_STATUSES: Set<OfficeStatus> = new Set([
   "IN_CONVERSATION",
   "IN_CALL",
+  "IN_MEETING",
   "DND",
 ]);
 
@@ -80,6 +84,8 @@ export interface AutoConditions {
   away: boolean;
   inConversation: boolean;
   inCall: boolean;
+  /** participating in a Meeting Floor room's live meeting — outranks an ordinary call */
+  inMeeting?: boolean;
   offline: boolean;
 }
 
@@ -97,6 +103,7 @@ export function resolveCurrentStatus(
 ): OfficeStatus {
   if (autoConditions.offline) return "OFFLINE";
   if (manualStatus === "DND") return "DND";
+  if (autoConditions.inMeeting) return "IN_MEETING";
   if (autoConditions.inCall) return "IN_CALL";
   if (autoConditions.inConversation) return "IN_CONVERSATION";
   if (autoConditions.away) return "AWAY";
@@ -128,7 +135,10 @@ export function getStatusTimeLimitMs(status: OfficeStatus): number | undefined {
 // resolveCurrentStatus above) says DND while every other client says whatever
 // Atlas says — including OFFLINE for somebody plainly online. Self is never
 // resolved through this; self keeps resolveCurrentStatus.
-export function resolvePeerStatus(atlas: PresenceStatusValue, isDnd: boolean): OfficeStatus {
+export function resolvePeerStatus(atlas: PresenceStatusValue, isDnd: boolean, inMeeting = false): OfficeStatus {
   if (isDnd) return "DND";
+  // THE SERVER'S meeting_presence outranks Atlas's row: a person the room's live meeting lists is here and
+  // in that meeting, whatever a feed that never hears about meetings says (Available, or Offline).
+  if (inMeeting) return "IN_MEETING";
   return mapAtlasToOfficeStatus(atlas);
 }

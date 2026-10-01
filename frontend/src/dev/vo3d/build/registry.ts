@@ -1,12 +1,13 @@
 // vo3d build — entity kind → builder. A builder returns a Group positioned in WORLD space for the
 // entity's current transform; the scene mirror re-positions it on later transform changes.
 import * as THREE from "three";
+import { meetingChair } from "./meetingChair";
 import type { Entity, RoomDef } from "../world/WorldState";
 import type { Facing } from "../core/coords";
 import { buildFurniture, FURNITURE_KINDS, type FurnitureKind } from "./furniture";
 import { plantFor, type PlantSpec } from "./plants";
 import type { SwayNode } from "../render/Sway";
-import { cyl, rbox, shadowed } from "./helpers";
+import { FURNITURE_FACING_Y, cyl, rbox, shadowed } from "./helpers";
 import { facadeGlassMat, glassMat, metal, type MatKey } from "../render/Materials";
 import { buildShell, type ShellOptions } from "./shell";
 import { ledStrip } from "./led";
@@ -87,6 +88,13 @@ export function buildEntity(e: Entity): BuildResult {
       glow: e.props.glow === undefined ? undefined : Number(e.props.glow),
       seats: e.props.seats === undefined ? undefined : Number(e.props.seats),
     });
+    return { group, sway };
+  }
+  if (e.kind === "mf-chair") {
+    // THE MEETING FLOOR'S CHAIR, on its own transform so interact/Seat can roll it (build/meetingChair)
+    const group = meetingChair(e.props.style === "lead" ? "lead" : "task", (e.props.color as MatKey | undefined) ?? "mfCharcoal");
+    group.position.set(e.transform.pos.x, 0, e.transform.pos.z);
+    group.rotation.y = FURNITURE_FACING_Y[e.props.facing as Facing] ?? 0;
     return { group, sway };
   }
   if (e.kind === "plant") {

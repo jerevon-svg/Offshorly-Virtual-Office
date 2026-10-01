@@ -50,6 +50,13 @@ TYPE_KUDOS_RECEIVED = "kudos_received"
 # reaches 8h — see routers/notifications.py — and deduped per Manila work date, so the 30-minute
 # follow-up cards create nothing further.
 TYPE_WORK_HOURS_REACHED = "work_hours_reached"
+# Scheduled Meetings V1 — written only by services/meeting_notifications.py. Every one navigates by
+# meeting id alone (NAV_MEETING), so the client always opens the meeting AS IT IS NOW and a stale
+# notification can never send anybody to a room or a time that has since changed.
+TYPE_MEETING_INVITED = "meeting_invited"
+TYPE_MEETING_UPDATED = "meeting_updated"
+TYPE_MEETING_CANCELLED = "meeting_cancelled"
+TYPE_MEETING_REMINDER = "meeting_reminder"
 
 # ---- navigation destinations ----------------------------------------------------------------
 # The closed set of places a notification can send the viewer. The client owns the mapping from
@@ -61,6 +68,7 @@ NAV_QUESTS = "quests"  # payload: {}
 NAV_MISSIONS = "missions"  # payload: {}
 NAV_ACHIEVEMENTS = "achievements"  # payload: {"badgeId": ...}
 NAV_HUB = "hub"  # payload: {"itemId": ...}
+NAV_MEETING = "meeting"  # payload: {"meetingId": ...} — the client resolves it from /scheduled-meetings/mine
 NAV_CHECKOUT = "checkout"  # payload: {} — the client starts its existing checkout flow
 
 # The realtime event. One event, one shape: the notification plus the recipient's new badge

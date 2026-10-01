@@ -134,6 +134,7 @@ let autoConditions: AutoConditions = {
   away: false,
   inConversation: false,
   inCall: false,
+  inMeeting: false,
   offline: false,
 };
 
@@ -341,7 +342,7 @@ export function resetSelfStatusForTests(): void {
   dndReason = null;
   dndPreviousStatus = null;
   dndUsedTodayMs = 0;
-  autoConditions = { away: false, inConversation: false, inCall: false, offline: false };
+  autoConditions = { away: false, inConversation: false, inCall: false, inMeeting: false, offline: false };
   if (typeof window !== "undefined") {
     try {
       window.localStorage.removeItem(STORAGE_KEY);

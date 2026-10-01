@@ -75,6 +75,20 @@ export function zoneAt(p: Vec2, g: AccessGeometry): Zone {
   return "office";
 }
 
+/** THE ZONE AS PRESENCE READS IT: every normal floor of the building is INSIDE THE OFFICE.
+ *
+ *  `zoneAt` only knows the ground floor's frame, and every upper storey (and the lift cabin) stands in its
+ *  own world space far outside it — so taken literally it called a ride to the Meeting Floor "outside",
+ *  and the host read that as leaving the building and set Away. Floor travel is internal movement: an
+ *  employee on floor 2 is still at work, checked in, in whatever status they had. Actual meeting
+ *  participation, not the floor, is what will change presence later.
+ *
+ *  Deliberately NOT folded into `zoneAt`: that one also gates routing and the checkout ejection, which
+ *  are ground-floor rules standing on ground-floor coordinates. */
+export function presenceZoneAt(p: Vec2, g: AccessGeometry, onUpperFloorOrLift: (p: Vec2) => boolean): Zone {
+  return onUpperFloorOrLift(p) ? "office" : zoneAt(p, g);
+}
+
 /** Does any point of this route enter the working office? Used to refuse a planned walk, and to drop a
  *  walk already queued when V1's answer changes underneath it. */
 export function routeEntersOffice(points: readonly Vec2[], g: AccessGeometry): boolean {

@@ -87,6 +87,18 @@ afterEach(() => {
 });
 
 describe("RealChatService.sendMessage", () => {
+  it("carries a sticker id on the send_message wire payload, and nothing extra for text", async () => {
+    const { RealChatService } = await import("./RealChatService");
+    const service = new RealChatService();
+
+    void service.sendMessage({ conversationId: "conv-a__b", senderId: "a@example.com", text: "", stickerId: "wave" });
+    void service.sendMessage({ conversationId: "conv-a__b", senderId: "a@example.com", text: "plain" });
+
+    const sends = lastFakeSocket!.emitted.filter((e) => e.event === "send_message");
+    expect(sends[0].payload).toMatchObject({ conversationId: "conv-a__b", text: "", stickerId: "wave" });
+    expect((sends[1].payload as { stickerId?: string }).stickerId).toBeUndefined();
+  });
+
   it("resolves with the saved message once message_saved arrives for its clientTempId", async () => {
     const { RealChatService } = await import("./RealChatService");
     const service = new RealChatService();

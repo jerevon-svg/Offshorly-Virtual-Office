@@ -48,6 +48,7 @@ async def server():
     socket_module.call_registry.reset()
     socket_module.call_invites.reset()
     socket_module.meeting_hosts.reset()
+    socket_module.meeting_sessions.reset()
     socket_module.dnd_registry.clear("b@example.com")
 
     config = uvicorn.Config(combined_app, host="127.0.0.1", port=0, log_level="warning", lifespan="off")
@@ -65,6 +66,7 @@ async def server():
     socket_module.call_registry.reset()
     socket_module.call_invites.reset()
     socket_module.meeting_hosts.reset()
+    socket_module.meeting_sessions.reset()
     settings.APP_ENV = original_env
 
 

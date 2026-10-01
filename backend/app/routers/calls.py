@@ -3,10 +3,13 @@ from __future__ import annotations
 import re
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_email
+from app.database import get_db
 from app.realtime.state import call_registry, spatial_sessions
 from app.schemas.calls import CallTokenIn, CallTokenOut
+from app.services import scheduled_meetings
 from app.services.livekit_tokens import livekit_config, mint_voice_token
 
 # Stage A voice calls: the ONE backend endpoint the frontend needs. Mirrors
@@ -80,17 +83,25 @@ def meeting_room_key(meeting_id: str) -> str:
 async def create_meeting_token(
     meeting_id: str,
     email: str = Depends(get_current_email),
+    db: AsyncSession = Depends(get_db),
 ) -> CallTokenOut:
     """Mint a token for a standalone meeting room. ONE HOST MAY START IT ALONE, and everyone who
     asks for the same meeting id afterwards joins the SAME room — that is the whole point.
 
     Eligibility is "any signed-in employee", the same rule a room/office whiteboard's voice uses.
     Identity comes from the verified bearer (or dev) identity, never from the path or the body.
+
+    SCHEDULED MEETINGS: a Meeting Floor room under a PRIVATE booking admits only that booking's
+    invitees (services/scheduled_meetings.py's `admit`). This is the real lock; the room's glass door
+    is only its picture. Every other meeting id is unaffected.
     """
     livekit_config()
     key = meeting_id.strip().lower()
     if not _MEETING_ID.match(key):
         raise HTTPException(status_code=400, detail="Invalid meeting id")
+    allowed, _ = await scheduled_meetings.admit(db, key, email)
+    if not allowed:
+        raise HTTPException(status_code=403, detail="This room is in a private meeting")
     # Create-or-reuse, exactly like a spatial call: the first arrival mints the room, everyone
     # after joins it. A lone host who leaves and comes back lands in the same room.
     room = call_registry.room_for_session(meeting_room_key(key))

@@ -158,4 +158,7 @@ def wire(invite: dict) -> dict:
     }
     if invite.get("meeting_id"):
         out["meetingId"] = invite["meeting_id"]
+    # GO TOGETHER — same rule: present only on a party invitation.
+    if invite.get("party_id"):
+        out["partyId"] = invite["party_id"]
     return out

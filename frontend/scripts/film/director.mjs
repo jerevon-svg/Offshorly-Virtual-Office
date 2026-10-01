@@ -38,9 +38,22 @@ const OUT = resolve(HERE, "out");
 const PROFILES = resolve(HERE, "out/profiles");
 const CAMERA = resolve(HERE, "out/bon-camera.mjpeg");
 const SILENCE = resolve(HERE, "out/silence.wav");
-const CLIPS = resolve(HERE, "out/clips");
 // a private ffmpeg for encoding the page capture (FILM_FFMPEG), else whatever is on PATH
 const FFMPEG = process.env.FILM_FFMPEG ?? "ffmpeg";
+// capture quality (all optional; unset = the original capture):
+//   FILM_DPR=2          hero page density — layout stays 1920×1080 CSS, the screencast is 1920·DPR × 1080·DPR
+//   FILM_GRAPHICS=full  write the product's own Settings preference (vo:graphics:v1) before every load;
+//                       FILM_GRAPHICS=default removes it, so the app's default mode applies
+//   FILM_GRAPHICS_CUSTOM='{"renderScale":0.85}'  the Custom controls stored with FILM_GRAPHICS=custom
+//   FILM_JPEG=95        screencast JPEG quality
+//   FILM_CLIPS=<dir>    where takes land (a test never overwrites out/clips)
+//   FILM_ENCODE=0       keep only the frames + list.txt (no 60 fps intermediate mp4)
+const DPR = Number(process.env.FILM_DPR ?? 1);
+const GRAPHICS = process.env.FILM_GRAPHICS ?? null;
+const GRAPHICS_CUSTOM = JSON.parse(process.env.FILM_GRAPHICS_CUSTOM ?? "{}");
+const JPEG_Q = Number(process.env.FILM_JPEG ?? 92);
+const CLIPS = process.env.FILM_CLIPS ? resolve(process.env.FILM_CLIPS) : resolve(HERE, "out/clips");
+const ENCODE = process.env.FILM_ENCODE !== "0";
 
 const argv = process.argv.slice(2);
 const has = (f) => argv.includes(`--${f}`);
@@ -90,7 +103,7 @@ async function launch(name, { hero }) {
     executablePath: CHROME,
     userDataDir: resolve(PROFILES, name),
     // a recording window uses its REAL size (the full-screen window below); emulation only when headless
-    defaultViewport: hero ? (headless ? { width: 1920, height: 1080, deviceScaleFactor: 1 } : null) : { width: 1280, height: 800, deviceScaleFactor: 1 },
+    defaultViewport: hero ? (headless ? { width: 1920, height: 1080, deviceScaleFactor: DPR } : null) : { width: 1280, height: 800, deviceScaleFactor: 1 },
     ignoreDefaultArgs: ["--enable-automation"],
     args,
   });
@@ -105,6 +118,15 @@ if (!headless) {
   const { windowId } = await cdp.send("Browser.getWindowForTarget");
   await cdp.send("Browser.setWindowBounds", { windowId, bounds: { windowState: "fullscreen" } });
   await bon.bringToFront();
+}
+if (GRAPHICS) {
+  // the same stored preference the Settings graphics switcher writes; applied before any app code runs
+  await bon.evaluateOnNewDocument((mode, custom) => {
+    try {
+      if (mode === "default") localStorage.removeItem("vo:graphics:v1");
+      else localStorage.setItem("vo:graphics:v1", JSON.stringify({ mode, custom }));
+    } catch {}
+  }, GRAPHICS, GRAPHICS_CUSTOM);
 }
 bon.on("pageerror", (e) => errors.push(`bon: ${e}`));
 bon.on("console", (m) => { if (m.type() === "error") errors.push(`bon: ${m.text().slice(0, 200)}`); });
@@ -266,12 +288,21 @@ async function record(name) {
     writes.push(writeFile(resolve(dir, file), Buffer.from(f.data, "base64")));
   });
   await bon.evaluate(() => { const w = window; w.__filmFrames = 0; w.__filmT0 = performance.now(); const tick = () => { w.__filmFrames++; if (w.__filmT0 !== null) requestAnimationFrame(tick); }; requestAnimationFrame(tick); });
-  await cdp.send("Page.startScreencast", { format: "jpeg", quality: 92, maxWidth: 1920, maxHeight: 1080, everyNthFrame: 1 });
+  // the ACTIVE graphics as the app reports it (hidden dev panel rows) + the WebGL drawing buffer, sampled over the take
+  const gfx = () => bon.evaluate(() => {
+    const row = (name) => { for (const r of document.querySelectorAll(".lil-controller, .controller")) { if (r.querySelector(".lil-name, .name")?.textContent?.trim() !== name) continue; const i = r.querySelector("input"); return i ? i.value : r.querySelector(".lil-widget, .widget")?.textContent?.trim() ?? null; } return null; };
+    const c = [...document.querySelectorAll("canvas")].sort((a, b) => b.width * b.height - a.width * a.height)[0];
+    return { mode: row("mode (set in Settings)"), applied: row("applied"), frame: row("sustained frame"), last: row("last adaptation"), buffer: c ? `${c.width}x${c.height}` : null, css: c ? `${c.clientWidth}x${c.clientHeight}` : null, dpr: devicePixelRatio };
+  }).catch((e) => ({ error: String(e).slice(0, 120) }));
+  const gfxLog = [await gfx()];
+  const gfxTimer = setInterval(async () => { const g = await gfx(); if (g.applied !== gfxLog.at(-1).applied || g.buffer !== gfxLog.at(-1).buffer) gfxLog.push(g); }, 1000);
+  await cdp.send("Page.startScreencast", { format: "jpeg", quality: JPEG_Q, maxWidth: 1920 * DPR, maxHeight: 1080 * DPR, everyNthFrame: 1 });
   await sleep(700);
   return {
     async stop() {
       await sleep(1500);
       const r = await bon.evaluate(() => { const ms = performance.now() - window.__filmT0; window.__filmT0 = null; return { frames: window.__filmFrames, ms }; });
+      clearInterval(gfxTimer); gfxLog.push(await gfx());
       await cdp.send("Page.stopScreencast").catch(() => {});
       await Promise.all(writes);
       await cdp.detach().catch(() => {});
@@ -279,12 +310,12 @@ async function record(name) {
       const lines = frames.map((f, i) => `file '${f.file}'\nduration ${Math.max(0.001, ((frames[i + 1]?.t ?? f.t + 1 / 30) - f.t)).toFixed(4)}`);
       lines.push(`file '${frames.at(-1).file}'`);
       await writeFile(resolve(dir, "list.txt"), lines.join("\n"));
-      const out = resolve(CLIPS, `${name}.mp4`);
-      await new Promise((ok, bad) => execFile(FFMPEG, ["-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", resolve(dir, "list.txt"),
+      const out = ENCODE ? resolve(CLIPS, `${name}.mp4`) : null;
+      if (ENCODE) await new Promise((ok, bad) => execFile(FFMPEG, ["-y", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", resolve(dir, "list.txt"),
         "-vf", "fps=60,scale=1920:1080:flags=lanczos,format=yuv420p", "-c:v", "libx264", "-preset", "slow", "-crf", "16", "-movflags", "+faststart", out],
         (e, _o, err) => e ? bad(new Error(String(err || e))) : ok()));
       const span = frames.at(-1).t - frames[0].t;
-      return { path: out, seconds: +span.toFixed(1), captureFps: +((frames.length - 1) / span).toFixed(1), renderFps: +(r.frames / (r.ms / 1000)).toFixed(1), frames: frames.length };
+      return { path: out, seconds: +span.toFixed(1), captureFps: +((frames.length - 1) / span).toFixed(1), renderFps: +(r.frames / (r.ms / 1000)).toFixed(1), frames: frames.length, t0: frames[0].t, jpeg: JPEG_Q, graphics: gfxLog };
     },
   };
 }

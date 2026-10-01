@@ -35,6 +35,7 @@ import { headingFor, stepAngle, type Vec2 } from "../core/coords";
 import { CABIN, RIDE, toCabin, type ElevatorSpec } from "../rooms/elevator";
 import type { ElevatorCoreBuild, LiftBuild } from "../build/elevator";
 import type { Vo3dFloorId } from "../app/floors";
+import { exitPath, lobbyPoint, slotIndexOf, type LiftRiderSlot } from "../app/liftRiders";
 
 export type FloorPhase =
   | "idle" | "framing" | "approach" | "opening" | "boarding" | "aligning"
@@ -72,6 +73,11 @@ export interface FloorTransitionDeps {
    *  back into a proper third-person shot. The change is made a beat AFTER the swap and a beat BEFORE
    *  coming back, never on either frame, and PlayerCamera smooths it into a dolly. */
   setBoom(wide: boolean): void;
+  /** GO TOGETHER — asked once the body stands in the car facing out: true holds the doors open a little
+   *  longer, while the party's other members are still walking in (bounded by the caller). */
+  holdClose?(waitedMs: number): boolean;
+  /** GO TOGETHER — the doors are open at the destination and the body sets off: the riders walk out WITH it */
+  onLeaving?(): void;
   onWhere(to: Vo3dFloorId): void;
   invalidateShadows(): void;
 }
@@ -90,6 +96,12 @@ export class FloorTransition {
   /** true while the body is in the cabin rather than in a floor's vestibule */
   private inCabin = false;
   private legs: Vec2[] = [];
+  /** GO TOGETHER — this journey's own slot (app/liftRiders PARTY_LIFT_SLOTS): the lobby spot it boards from,
+   *  the spot it stands on in the car, and the lane it leaves by, so a party's bodies never share a point.
+   *  Null for an ordinary ride, which is exactly the solo journey it always was. */
+  private slot: LiftRiderSlot | null = null;
+  private leaveEnd: Vec2 | null = null;
+  private aligned = false;
   readonly state = { floor: "floor-1" as Vo3dFloorId, phase: "idle" as FloorPhase, busy: false, journeys: 0, last: "—" };
 
   constructor(deps: FloorTransitionDeps, start: Vo3dFloorId) {
@@ -112,7 +124,7 @@ export class FloorTransition {
     return p.x >= near.x && p.x <= near.x + near.w && p.z >= near.z && p.z <= near.z + near.d;
   }
 
-  start(to: Vo3dFloorId): boolean {
+  start(to: Vo3dFloorId, slot: LiftRiderSlot | null = null): boolean {
     if (this._busy) { this.state.last = "refused: a journey is already running"; return false; }
     if (to === this._floor) { this.state.last = `refused: already on ${to}`; return false; }
     if (!this.canBoardFrom(this.d.bodyPos())) { this.state.last = "refused: not at the elevator"; return false; }
@@ -122,6 +134,7 @@ export class FloorTransition {
     this.stepped = false;
     this.refused = false;
     this.inCabin = false;
+    this.slot = slot;
     // CINEMATIC FRAMING FIRST, THEN THE AVATAR: entering PLAYER acquires an owner that "Interaction"
     // outranks, so taking the avatar first makes the mode switch fail silently.
     this.d.beginCinematic();
@@ -149,11 +162,27 @@ export class FloorTransition {
     this.phase = phase;
     this.state.phase = phase;
     this.elapsed = 0;
+    this.aligned = false;
     const here = this.d.specOf(this.dockedFloor);
-    if (phase === "approach") this.legs = [{ ...here.boarding }];
-    else if (phase === "boarding") this.legs = [{ ...here.threshold }, { ...here.mark }];
-    else if (phase === "leaving") this.legs = [{ ...here.threshold }, { ...here.boarding }];
-    else this.legs = [];
+    const slot = this.slot;
+    if (phase === "approach") this.legs = [slot ? lobbyPoint(here.boarding, slotIndexOf(slot)) : { ...here.boarding }];
+    else if (phase === "boarding") this.legs = slot ? [this.lane(here), this.markOf(here.mark)] : [{ ...here.threshold }, { ...here.mark }];
+    else if (phase === "leaving") {
+      this.legs = slot ? exitPath(slot, here.doorway, here.boarding) : [{ ...here.threshold }, { ...here.boarding }];
+      this.leaveEnd = slot ? { ...this.legs[this.legs.length - 1] } : null;
+      this.d.onLeaving?.();
+    } else this.legs = [];
+  }
+
+  /** The body's own spot for a mark: the mark itself, or the mark plus this journey's slot. */
+  private markOf(mark: Vec2): Vec2 {
+    return this.slot ? { x: mark.x + this.slot.rel.x, z: mark.z + this.slot.rel.z } : { ...mark };
+  }
+
+  /** Through the doorway on this slot's own lane (app/liftRiders exitPath leaves by the same one). */
+  private lane(spec: ElevatorSpec): Vec2 {
+    const lane = this.slot ? Math.max(-10, Math.min(10, this.slot.rel.z * 0.3)) : 0;
+    return { x: spec.threshold.x, z: spec.threshold.z + lane };
   }
 
   /** which floor's vestibule the body is using; meaningless while in the cabin */
@@ -186,7 +215,7 @@ export class FloorTransition {
         if (this.d.stepWalk(this.legs, dt) || this.elapsed > WALK_TIMEOUT_MS) {
           // land on the mark STILL FACING THE WAY IT WALKED — `aligning` is what turns it round, and
           // placing it with the stand look here would snap the turn away before that beat ran
-          this.d.place(spec.mark, spec.boardingLook);
+          this.d.place(this.markOf(spec.mark), spec.boardingLook);
           this.enter("aligning");
         }
         break;
@@ -198,12 +227,16 @@ export class FloorTransition {
         // TURN AND FACE THE DOORS. From here the composition is fixed: the avatar's back to the camera,
         // the leaves ahead, the read-out above them — and, until they shut, the real room past them.
         const want = spec.standYaw;
-        const next = stepAngle(this.d.bodyYaw(), want, dt * TURN_RATE);
-        this.d.setYaw(next);
-        if (Math.abs(wrap(want - next)) < 0.04 || this.elapsed > TURN_TIMEOUT_MS) {
-          this.d.setYaw(want, true);
-          this.enter("closing");
+        if (!this.aligned) {
+          const next = stepAngle(this.d.bodyYaw(), want, dt * TURN_RATE);
+          this.d.setYaw(next);
+          if (Math.abs(wrap(want - next)) < 0.04 || this.elapsed > TURN_TIMEOUT_MS) {
+            this.d.setYaw(want, true);
+            this.aligned = true;
+          }
         }
+        // The doors close once this body faces out — and, on a party ride, once the others are in too.
+        if (this.aligned && !(this.d.holdClose?.(this.elapsed) ?? false)) this.enter("closing");
         break;
       }
       case "closing":
@@ -240,7 +273,7 @@ export class FloorTransition {
         break;
       case "leaving":
         if (this.d.stepWalk(this.legs, dt) || this.elapsed > WALK_TIMEOUT_MS) {
-          this.d.place(spec.boarding, spec.boardingLook);
+          this.d.place(this.leaveEnd ?? spec.boarding, spec.boardingLook);
           this.finish();
         }
         break;
@@ -258,7 +291,7 @@ export class FloorTransition {
     this.d.cabin.setOpen(0);
     this.d.cabin.group.visible = true;
     this.d.translateBody(v.x, v.z);
-    this.d.place(CABIN.mark, { x: 1, z: 0 });
+    this.d.place(this.markOf(CABIN.mark), { x: 1, z: 0 });
     this.inCabin = true;
     this.d.invalidateShadows();
   }
@@ -269,7 +302,7 @@ export class FloorTransition {
     const v = toCabin(to);
     this.d.coreOf(this.to).setOpen(0);
     this.d.translateBody(-v.x, -v.z);
-    this.d.place(to.mark, to.standLook);
+    this.d.place(this.markOf(to.mark), to.standLook);
     this.inCabin = false;
     this.d.cabin.group.visible = false;
     this.d.invalidateShadows();

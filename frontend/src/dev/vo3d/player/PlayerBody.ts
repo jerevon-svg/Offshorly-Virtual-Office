@@ -24,8 +24,16 @@
 // predicate calls only on the frames where something was actually hit.
 import type { Vec2 } from "../core/coords";
 
-/** "may a body stand centred here?" — supplied by the app, which owns the world handles */
-export type StandTest = (p: Vec2) => boolean;
+/** "may a body stand centred here?" — supplied by the app, which owns the world handles. `ctx`, when the
+ *  body is moving with a known height (outdoors): its feet, whether it is airborne and where it steps from
+ *  — see world/exteriorGround TraversalState. A test with no heights to judge simply ignores it. */
+export type StandTest = (p: Vec2, ctx?: StandContext) => boolean;
+export type StandContext = { feet: number; airborne: boolean; from: Vec2 };
+
+/** HEIGHTS FOR ONE MOVE (PlayerMode supplies them outdoors): the feet now, airborne or not, and — while
+ *  grounded — the floor under any point (`support`) so the feet follow each sub-step, and the drop past
+ *  which a grounded body leaves the edge instead of stepping down it (`fallDrop`). */
+export type MoveHeights = { feet: number; airborne: boolean; support?: (p: Vec2) => number; fallDrop?: number };
 
 /** sub-step length as a fraction of the body radius; a quarter of a body cannot skip a solid */
 const SUBSTEP_FRACTION = 0.25;
@@ -39,6 +47,9 @@ export type MoveResult = {
   travelled: number;
   /** true when at least one sub-step was refused, i.e. something was hit */
   blocked: boolean;
+  /** with MoveHeights: the feet after the move, and whether the body went off an edge (the move stops there) */
+  feet?: number;
+  fell?: boolean;
 };
 
 export class PlayerBody {
@@ -58,9 +69,20 @@ export class PlayerBody {
   }
 
   /** Move by a world-space delta, swept and axis-sliding. Returns where it got to. */
-  move(dx: number, dz: number): MoveResult {
+  move(dx: number, dz: number, h?: MoveHeights): MoveResult {
     const total = Math.hypot(dx, dz);
-    if (total < 1e-6) return { pos: { ...this.pos }, travelled: 0, blocked: false };
+    if (total < 1e-6) return h ? { pos: { ...this.pos }, travelled: 0, blocked: false, feet: h.feet, fell: false } : { pos: { ...this.pos }, travelled: 0, blocked: false };
+    let feet = h?.feet ?? 0, fell = false;
+    const stand = (q: Vec2): boolean => (h ? this.canStand(q, { feet, airborne: h.airborne, from: this.pos }) : this.canStand(q));
+    // a grounded sub-step taken: the feet follow the floor, and a drop past `fallDrop` ends the move off the edge
+    const took = (q: Vec2): boolean => {
+      this.pos = q;
+      if (!h || h.airborne || !h.support) return true;
+      const y = h.support(q);
+      if (h.fallDrop !== undefined && feet - y > h.fallDrop) { fell = true; return false; }
+      feet = y;
+      return true;
+    };
     const maxStep = Math.max(1e-3, this.radius * SUBSTEP_FRACTION);
     const steps = Math.ceil(total / maxStep);
     const sx = dx / steps, sz = dz / steps;
@@ -69,7 +91,7 @@ export class PlayerBody {
     for (let i = 0; i < steps; i++) {
       const p = this.pos;
       const full = { x: p.x + sx, z: p.z + sz };
-      if (this.canStand(full)) { this.pos = full; continue; }
+      if (stand(full)) { if (took(full)) continue; break; }
       blocked = true;
       // slide: keep whichever single axis still fits. Tried longest-first so a glancing hit keeps most of
       // its speed instead of snapping to the minor axis.
@@ -77,11 +99,13 @@ export class PlayerBody {
       const axisZ = { x: p.x, z: p.z + sz };
       const first = Math.abs(sx) >= Math.abs(sz) ? axisX : axisZ;
       const second = first === axisX ? axisZ : axisX;
-      if (this.canStand(first)) this.pos = first;
-      else if (this.canStand(second)) this.pos = second;
+      if (stand(first)) { if (!took(first)) break; }
+      else if (stand(second)) { if (!took(second)) break; }
       else break; // a corner: nothing fits, and further sub-steps in this direction will not either
     }
-    return { pos: { ...this.pos }, travelled: Math.hypot(this.pos.x - start.x, this.pos.z - start.z), blocked };
+    const res: MoveResult = { pos: { ...this.pos }, travelled: Math.hypot(this.pos.x - start.x, this.pos.z - start.z), blocked };
+    if (h) { res.feet = feet; res.fell = fell; }
+    return res;
   }
 
   /** Force the body somewhere legal, searching outward from `p`. Used when PLAYER is entered while the

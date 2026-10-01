@@ -31,6 +31,8 @@ from app.routers import quests as quests_router
 from app.routers import requests as requests_router
 from app.routers import rewards as rewards_router
 from app.routers import room_requests as room_requests_router
+from app.routers import scheduled_meetings as scheduled_meetings_router
+from app.routers import meeting_sessions as meeting_sessions_router
 from app.routers import talk_requests as talk_requests_router
 from app.routers import team_map as team_map_router
 from app.routers import toucan as toucan_router
@@ -76,11 +78,48 @@ async def _load_checked_out_into_lineup() -> None:
 
 
 @fastapi_app.on_event("startup")
+async def _close_orphaned_meeting_sessions() -> None:
+    """PHASE 6A — crash/restart recovery for Meeting Sessions. The live map (services/meeting_sessions.py)
+    is in memory, so any session the database still shows as open was left by a process that is gone:
+    close it as `server_restart`. Same degrade-gracefully posture as the hooks above."""
+    from datetime import datetime, timezone
+
+    from app.services import meeting_sessions
+
+    try:
+        closed = await meeting_sessions.close_orphans(now=datetime.now(timezone.utc))
+        if closed:
+            _logger.info("closed %d orphaned meeting session(s) at startup", closed)
+    except Exception as exc:  # noqa: BLE001
+        _logger.exception(exc)
+
+
+@fastapi_app.on_event("startup")
+async def _fail_orphaned_intelligence_runs() -> None:
+    """PHASE 7A — a Meeting Intelligence run still `running` at startup belongs to a process that is gone:
+    record it as failed (`server_restart`) so it neither blocks a retry nor pretends to be in progress."""
+    from datetime import datetime, timezone
+
+    from app.services import meeting_intelligence
+
+    try:
+        failed = await meeting_intelligence.fail_orphans(now=datetime.now(timezone.utc))
+        if failed:
+            _logger.info("failed %d orphaned meeting intelligence run(s) at startup", failed)
+    except Exception as exc:  # noqa: BLE001
+        _logger.exception(exc)
+
+
+@fastapi_app.on_event("startup")
 async def _start_delegation_sweeper() -> None:
     # A2.3 — one periodic task; see services/delegation_lifecycle.py.
     from app.services.delegation_lifecycle import delegation_sweeper
 
     delegation_sweeper.start()
+    # Scheduled Meetings — the 5-minute reminder; see services/meeting_notifications.py.
+    from app.services.meeting_notifications import meeting_reminder_sweeper
+
+    meeting_reminder_sweeper.start()
 
 
 @fastapi_app.on_event("shutdown")
@@ -88,6 +127,9 @@ async def _stop_delegation_sweeper() -> None:
     from app.services.delegation_lifecycle import delegation_sweeper
 
     await delegation_sweeper.stop()
+    from app.services.meeting_notifications import meeting_reminder_sweeper
+
+    await meeting_reminder_sweeper.stop()
 
 
 @fastapi_app.on_event("startup")
@@ -130,6 +172,8 @@ fastapi_app.include_router(chat_router.router)
 fastapi_app.include_router(calls_router.router)
 fastapi_app.include_router(requests_router.router)
 fastapi_app.include_router(room_requests_router.router)
+fastapi_app.include_router(scheduled_meetings_router.router)
+fastapi_app.include_router(meeting_sessions_router.router)
 fastapi_app.include_router(talk_requests_router.router)
 fastapi_app.include_router(hub_router.router)
 fastapi_app.include_router(feed_router.router)

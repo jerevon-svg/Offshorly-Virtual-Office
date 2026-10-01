@@ -28,6 +28,7 @@
 // lawn-level paving — the walk reads as a deliberate elevated approach instead of the avatar floating
 // 8 units over the grass.
 import type { Rect, Vec2 } from "../core/coords";
+import { PAVING_Y } from "./campus";
 
 /** the podium top — the office's own ground plane (world/campus PODIUM_TOP). Everything here decks to it. */
 export const DECK_Y = 0.2;
@@ -339,6 +340,104 @@ export function inAiLabZone(p: Vec2, radius: number): boolean {
   return WALK.some((r) => r.w > 2 * radius && r.d > 2 * radius && inRect(p, r, -radius));
 }
 
+// ============================= THE PLINTH AND THE ENTRANCE, AS BUILT ============================
+// build/ailab draws these; world/exteriorGround reads them. One authority for both.
+
+/** THE PLINTH PLAN in world x/z: the wall polygon grown by the terrace margin, corners cut by 150, and
+ *  notched south round the porch. Its top is the deck datum. */
+export const LAB_PLINTH: readonly Vec2[] = (() => {
+  const m = PLINTH_MARGIN, O = LAB_OUTER;
+  const x0 = O.x - m, x1 = O.x + O.w + m, z0 = O.z - m, z1 = O.z + O.d + m;
+  const c = 150;
+  const px0 = PORCH.x - 54, px1 = PORCH.x + PORCH.w + 54, pz = PORCH.z + PORCH.d + 54;
+  return [
+    { x: x0 + c, z: z0 }, { x: x1 - c, z: z0 }, { x: x1, z: z0 + c }, { x: x1, z: z1 - c }, { x: x1 - c, z: z1 },
+    { x: px1 + 30, z: z1 }, { x: px1, z: pz }, { x: px0, z: pz }, { x: px0 - 30, z: z1 },
+    { x: x0 + c, z: z1 }, { x: x0, z: z1 - c }, { x: x0, z: z0 + c },
+  ];
+})();
+
+/** the plinth's thickness, lawn grade to deck datum */
+export const LAB_DECK_T = DECK_Y - GRADE;
+const ENTRY_CX = PORCH.x + PORCH.w / 2;
+const ENTRY_W = PORCH.w + 60;
+/** THE ENTRANCE FLIGHT as built: STEP_COUNT stone boxes south of the porch lip, each 20 deep and wider
+ *  than the last. `rise` is the box's height above grade (its top is GRADE + rise). */
+export function labEntranceTreads(): { rect: Rect; rise: number }[] {
+  const z0 = PORCH.z + PORCH.d;
+  const out: { rect: Rect; rise: number }[] = [];
+  for (let i = 0; i < STEP_COUNT; i++) {
+    const w = ENTRY_W + i * 26;
+    out.push({ rect: { x: ENTRY_CX - w / 2, z: z0 + i * 20, w, d: 20 }, rise: LAB_DECK_T * (1 - i / STEP_COUNT) });
+  }
+  return out;
+}
+/** the cheek walls either side of the flight (LAB_DECK_T + 12 tall) and the pots that frame them */
+export const LAB_CHEEKS: readonly Rect[] = [-1, 1].map((o) => {
+  const d = PORCH.d + 46, cz = PORCH.z + PORCH.d - PORCH.d / 2 + 14;
+  return { x: ENTRY_CX + o * (ENTRY_W / 2 + 4) - 8, z: cz - d / 2, w: 16, d };
+});
+export const LAB_CHEEK_POTS: readonly Rect[] = [-1, 1].map((o) => ({ x: ENTRY_CX + o * (ENTRY_W / 2 + 4) - 19, z: PORCH.z + PORCH.d - 6, w: 38, d: 38 }));
+
+/** THE TERRACE'S OWN FURNITURE, outside the wall: the lakeside seats (a 16-deep stone bench, `w` long,
+ *  laid along x) and the shrubs that frame the arrival and the corners (radius `r`) */
+export const LAB_TERRACE_BENCHES: readonly { x: number; z: number; w: number }[] = [{ x: 668, z: -1038, w: 76 }, { x: 812, z: -1038, w: 76 }];
+export const LAB_TERRACE_SHRUBS: readonly { x: number; z: number; r: number }[] = [
+  // (EXTERIOR POLISH: the shrub at 470,−424 gave way to the construction scaffold — world/construction)
+  { x: 590, z: -404, r: 15 }, { x: 900, z: -398, r: 13 }, { x: 1010, z: -430, r: 11 },
+  // (EXTERIOR POLISH: the two north-corner shrubs went — each stood half off the plinth's edge, drawn at deck
+  // height over the lawn, and pinched the terrace ring at the corners the clipped beds had just opened)
+  { x: 318, z: -600, r: 14 }, { x: 1160, z: -640, r: 13 },
+];
+
+/** each corner tree's deep planted bed (16 tall). It is a rect, so where the wall cuts the corner on the
+ *  diagonal its outer corner stands out on the terrace — which is why the ground model counts it solid. */
+export const cornerBedRect = (t: { x: number; z: number }): Rect => ({ x: t.x - 34, z: t.z - 30, w: 68, d: 60 });
+/** THE CORNER BED AS BUILT (EXTERIOR POLISH): the rect above, clipped to the INSIDE face of its corner's
+ *  diagonal wall run, so the bed sits in the corner instead of pushing through the wall onto the terrace.
+ *  A convex polygon in world x/z, wound counter-clockwise seen from above (−y). */
+export function cornerBedPoly(t: { x: number; z: number }): Vec2[] {
+  const r = cornerBedRect(t);
+  let poly: Vec2[] = [{ x: r.x, z: r.z }, { x: r.x + r.w, z: r.z }, { x: r.x + r.w, z: r.z + r.d }, { x: r.x, z: r.z + r.d }];
+  // the corner-cut run nearest this bed, and the inside of it (the side the Lab's centre is on)
+  const centre = { x: LAB_OUTER.x + LAB_OUTER.w / 2, z: LAB_OUTER.z + LAB_OUTER.d / 2 };
+  let best: readonly [Vec2, Vec2] | null = null, bd = Infinity;
+  for (const seg of WALL_SEGS) {
+    const [a, c] = seg;
+    if (a.x === c.x || a.z === c.z) continue; // only the diagonal cuts
+    const d = Math.hypot((a.x + c.x) / 2 - t.x, (a.z + c.z) / 2 - t.z);
+    if (d < bd) { bd = d; best = seg; }
+  }
+  if (!best) return poly;
+  const [a, c] = best;
+  const nx = -(c.z - a.z), nz = c.x - a.x, len = Math.hypot(nx, nz);
+  let ux = nx / len, uz = nz / len;
+  if ((centre.x - a.x) * ux + (centre.z - a.z) * uz < 0) { ux = -ux; uz = -uz; }
+  const off = WALL_T / 2 + 1; // keep clear of the wall's inner face
+  const side = (p: Vec2) => (p.x - a.x) * ux + (p.z - a.z) * uz - off;
+  const out: Vec2[] = [];
+  for (let i = 0; i < poly.length; i++) {
+    const p = poly[i], q = poly[(i + 1) % poly.length], sp = side(p), sq = side(q);
+    if (sp >= 0) out.push(p);
+    if ((sp >= 0) !== (sq >= 0)) { const k = sp / (sp - sq); out.push({ x: p.x + (q.x - p.x) * k, z: p.z + (q.z - p.z) * k }); }
+  }
+  poly = out;
+  return poly;
+}
+
+/** THE LAKE STEPS: four stone treads from the lakeside deck's north edge down to the pond path (campus
+ *  POND_PATH), in five even ~1.57 risers — the one walking way between the Lab's plinth and the lawn, so the
+ *  terrace ring, the lakeside deck and the pond shore join the campus without anybody stepping off an
+ *  8-unit edge. Centred on the spur, as wide as the path they land on. */
+export const LAKE_STEPS = { x: 706, w: 68, z0: LAKE_TERRACE.z - 8, depth: 9, count: 4 };
+export function lakeStepTreads(): { rect: Rect; top: number }[] {
+  const out: { rect: Rect; top: number }[] = [];
+  for (let k = 0; k < LAKE_STEPS.count; k++) {
+    const top = DECK_Y - ((k + 1) * (DECK_Y - PAVING_Y)) / (LAKE_STEPS.count + 1);
+    out.push({ rect: { x: LAKE_STEPS.x, z: LAKE_STEPS.z0 - (k + 1) * LAKE_STEPS.depth, w: LAKE_STEPS.w, d: LAKE_STEPS.depth }, top });
+  }
+  return out;
+}
 /** the Lab's centre, for camera focus */
 export const LAB_CENTRE: Vec2 = { x: LAB_OUTER.x + LAB_OUTER.w / 2, z: LAB_OUTER.z + LAB_OUTER.d / 2 };
 /** a good spot to stand on first entering: on the porch landing, facing the hub */

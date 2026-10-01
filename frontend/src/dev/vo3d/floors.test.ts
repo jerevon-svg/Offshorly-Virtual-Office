@@ -43,7 +43,7 @@ import {
   floor2Regions, floor2StandTest, onFloor2,
 } from "./rooms/floor2";
 import { OUTER_RECT as CAVE_OUTER } from "./rooms/cave";
-import { FALLBACK_VIEW_MODE, FLOORS, GROUND_FLOOR_ID, arrivalViewMode, coworkersOnFloor, floorOfPlace, supportsViewMode } from "./app/floors";
+import { FALLBACK_VIEW_MODE, FLOORS, GROUND_FLOOR_ID, STOREY_H, exteriorDrop, arrivalViewMode, coworkersOnFloor, floorOfPlace, supportsViewMode } from "./app/floors";
 import { FloorTransition, walkLegs, type FloorPhase } from "./interact/FloorTransition";
 
 const overlaps = (a: Rect, b: Rect): boolean => a.x < b.x + b.w && b.x < a.x + a.w && a.z < b.z + b.d && b.z < a.z + a.d;
@@ -227,7 +227,8 @@ describe("the cabin: one car, standing alone", () => {
     expect(FLOOR2_ELEVATOR.outer.w).toBe(GROUND_ELEVATOR.outer.w);
     expect(FLOOR2_ELEVATOR.outer.d).toBe(GROUND_ELEVATOR.outer.d);
     expect(FLOOR2_ELEVATOR.outer.x - GROUND_ELEVATOR.outer.x).toBe(FLOOR2_FRAME.x);
-    expect(FLOOR2_ELEVATOR.outer.z - GROUND_ELEVATOR.outer.z).toBe(FLOOR2_FRAME.z);
+    // floor 2's entrance sits on the Meeting Floor's axis, the centre of the west wall (rooms/floor2.ts)
+    expect(FLOOR2_ELEVATOR.boarding.z - FLOOR2_FRAME.z).toBe(622);
   });
 
   it("the doorway is centred and the leaves pocket inside the piers", () => {
@@ -539,9 +540,31 @@ describe("app/world.ts wires the floors in", () => {
     expect(src).not.toContain("floor_changed");
   });
 
+  it("presents ONE shared exterior and the REAL AI Lab one storey below an upper floor — never a copy", () => {
+    // a storey must at least clear floor 2's 60-unit wall plus the 10 of structure under its floor
+    expect(STOREY_H).toBeGreaterThanOrEqual(70);
+    expect(STOREY_H).toBeLessThanOrEqual(110); // a second storey, not a tower
+    expect(exteriorDrop(GROUND_FLOOR_ID)).toBe(0);
+    expect(exteriorDrop("floor-2")).toBe(STOREY_H);
+    const a = src.slice(src.indexOf("function anchorExterior"), src.indexOf("function applyFloor"));
+    expect(a).toContain("env.anchorExterior(");
+    expect(a).toContain("aiLab.group.position.set(");
+    const f = src.slice(src.indexOf("function applyFloor"), src.indexOf("floorTransition = new FloorTransition"));
+    expect(f).toContain("anchorExterior();");
+    expect(f).not.toContain("aiLab.group.visible = false");
+    expect(src).not.toContain("sceneryForFloor");
+    expect(src).toContain("const labWanted = (m: CameraModeId): boolean => m !== \"office\";");
+    // the storey-below builder draws no scenery of its own
+    const ctx = readFileSync("src/dev/vo3d/build/floor2Context.ts", "utf8");
+    for (const table of ["ROADS", "TREE_LINES", "GROVES", "PARKING", "POND", "LAB_OUTER"]) expect(ctx).not.toMatch(new RegExp(`\\b${table}\\b`));
+  });
+
   it("the step between a vestibule and the cabin is SILENT on the wire", () => {
+    // Silent through the feed's lift pair (selfMovement.test.ts proves the car publishes nothing), which
+    // on the way out also names the floor the body is now on.
     const t = src.slice(src.indexOf("translateBody: (dx, dz)"), src.indexOf("takeAvatar:"));
-    expect(t).toContain("selfFeed?.placed(p)");
+    expect(t).toContain("selfFeed?.boardedLift(p)");
+    expect(t).toContain("selfFeed?.alightedLift(p, avatar.yaw)");
   });
 });
 

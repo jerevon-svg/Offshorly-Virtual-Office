@@ -1,7 +1,9 @@
 import HudIcon from "../HudIcon";
 import styles from "./ClaimHud.module.css";
 import { HUD_TARGET_ATTR } from "./rewardFx";
-import { useProgression } from "../../services/quests/progressionStore";
+import { useProgressionMeter } from "./progressionMeter";
+import { useProgressionStore, type ClaimFeedback } from "../../services/quests/progressionStore";
+import type { Progression } from "../../services/quests/questsClient";
 import { useClaimHudVisible } from "../../services/quests/claimHudStore";
 
 // CLAIM-TIME PROGRESSION STRIP.
@@ -12,36 +14,64 @@ import { useClaimHudVisible } from "../../services/quests/claimHudStore";
 // uses — so rewardFx.ts finds it with no change to how particles are spawned or flown.
 //
 // It owns no numbers: the balances come from the same progression store the Player HUD reads, and
-// they update through the existing claim flow (rewardFx commits on particle arrival). Rendered
-// BEFORE HudDock in OfficeMap so that, while it is mounted, findHudTargets' querySelector picks
-// this visible strip rather than the hidden dock's copy.
+// they update through the existing claim flow (rewardFx commits on particle arrival). The count-up,
+// bar fill, level rollover and Level Up timing are PlayerHud's own (progressionMeter.ts), so the
+// strip never shows the final value before the icons land.
+//
+// Rendered BEFORE HudDock in OfficeMap (and Vo3dHud); findHudTargets also skips any target inside
+// an inert / aria-hidden / off-screen HUD, so the hidden dock's copy can never win.
 
 export function ClaimHud() {
   const visible = useClaimHudVisible();
-  const progression = useProgression();
+  const store = useProgressionStore();
 
-  if (!visible || !progression) return null;
+  if (!visible || !store.progression) return null;
+  return (
+    <ClaimHudBody
+      progression={store.progression}
+      lastClaim={store.lastClaim}
+      coinsPulse={store.coinsPulse}
+      xpPulse={store.xpPulse}
+    />
+  );
+}
 
-  const span = progression.nextLevelXp - progression.levelStartXp;
-  const into = progression.xp - progression.levelStartXp;
-  const pct = span > 0 ? Math.min(100, Math.round((into / span) * 100)) : 100;
+interface ClaimHudBodyProps {
+  progression: Progression;
+  lastClaim: ClaimFeedback | null;
+  coinsPulse: number;
+  xpPulse: number;
+}
+
+function ClaimHudBody({ progression, lastClaim, coinsPulse, xpPulse }: ClaimHudBodyProps) {
+  const { coins, coinsPulsing, xpPulsing, bounds, span, into, pct, levelUpActive } = useProgressionMeter(
+    progression,
+    lastClaim,
+    coinsPulse,
+    xpPulse,
+  );
 
   return (
     <div className={styles.strip} data-testid="claim-hud" aria-live="polite">
-      <div className={styles.coins} {...{ [HUD_TARGET_ATTR]: "coins" }} aria-label="Coins balance">
+      <div className={coinsPulsing ? styles.coinsPulse : styles.coins} {...{ [HUD_TARGET_ATTR]: "coins" }} aria-label="Coins balance">
         <HudIcon name="coin" size="19px" />
         <span className={styles.coinsValue} data-testid="claim-hud-coins">
-          {progression.coins.toLocaleString()}
+          {coins.toLocaleString()}
         </span>
       </div>
 
       <div className={styles.divider} aria-hidden="true" />
 
-      <div className={styles.xp} {...{ [HUD_TARGET_ATTR]: "xp" }}>
+      <div className={xpPulsing ? styles.xpPulse : styles.xp} {...{ [HUD_TARGET_ATTR]: "xp" }}>
         <HudIcon name="xp" size="17px" />
         <div className={styles.xpBlock}>
-          <span className={styles.xpValue} data-testid="claim-hud-xp">
-            {`${into} / ${span} XP`}
+          <span className={styles.xpHeader}>
+            <span className={levelUpActive ? styles.levelUp : styles.level} data-testid="claim-hud-level">
+              Lv {bounds.level}
+            </span>
+            <span className={styles.xpValue} data-testid="claim-hud-xp">
+              {`${into} / ${span} XP`}
+            </span>
           </span>
           <div
             className={styles.bar}
@@ -55,6 +85,12 @@ export function ClaimHud() {
           </div>
         </div>
       </div>
+
+      {levelUpActive && (
+        <span className={styles.levelUpCaption} data-testid="claim-hud-level-up" role="status">
+          Level up
+        </span>
+      )}
     </div>
   );
 }

@@ -1,10 +1,8 @@
-// vo3d rooms — FLOOR 2, THE MEETING FLOOR (data only, WORLD coordinates).
+// vo3d rooms — FLOOR 2, THE MEETING FLOOR's plate (data only, WORLD coordinates).
 //
-// DELIBERATELY EMPTY. This milestone builds the multi-floor ARCHITECTURE — the elevator, the transition,
-// the view rules and the floor identity on the wire — and proves it against a floor with nothing on it.
-// No meeting rooms, no boardroom, no huddle rooms, no furniture pass. Everything that is here is here
-// because the floor system could not be shown to work without it: a slab, safe outer bounds, the
-// elevator's arrival architecture, a lobby clearance in front of it, and enough light to see by.
+// This file owns the PLATE: its footprint, its perimeter, its lift entrance and its stand test. The
+// district standing on it — fifteen glass meeting rooms, two corridors, the Commons — is planned in
+// rooms/floor2Meeting.ts, and this plate's stand test consults it.
 //
 // ============================= WHY IT STANDS OUTSIDE THE V1 FRAME ===============================
 // The same reason rooms/cave.ts gives, and it is not a stylistic choice:
@@ -25,7 +23,8 @@
 // walkable floor is that footprint inset by the perimeter wall, which is what a storey of a building is.
 import { growRect, pointInRect, type Rect, type Vec2 } from "../core/coords";
 import type { RoomDef, WorldRegion } from "../world/WorldState";
-import { clearsElevator, defineElevator, type ElevatorSpec } from "./elevator";
+import { CORE_LOCAL, clearsElevator, defineElevator, type ElevatorSpec } from "./elevator";
+import { AXIS_Z, clearsMeetingFloor } from "./floor2Meeting";
 
 export const FLOOR2_ID = "floor-2";
 
@@ -55,10 +54,10 @@ export const WALLS: Rect[] = [
   { x: FRAME.x + FRAME.w - WALL_T, z: FRAME.z, w: WALL_T, d: FRAME.d }, //    east
 ];
 
-/** THE ELEVATOR, at the SAME plan position it occupies downstairs. The shaft is a straight line through
- *  the building: you step out of the car on the same side, on the same axis, into the same lobby
- *  geometry — which is what makes arriving read as arriving on another floor of one building. */
-export const ELEVATOR: ElevatorSpec = defineElevator("elevator-2", ORIGIN);
+/** THE ELEVATOR — the same entrance as downstairs, on the same (west) side, set at the CENTRE of the west
+ *  wall: the Meeting Floor is composed on the lift's axis (rooms/floor2Meeting AXIS_Z), so stepping out
+ *  puts you on the floor's own centre line, looking straight through the Commons to the boardroom. */
+export const ELEVATOR: ElevatorSpec = defineElevator("elevator-2", { x: ORIGIN.x, z: ORIGIN.z + AXIS_Z - (CORE_LOCAL.z + CORE_LOCAL.d / 2) });
 
 /** Where a body lands on arrival, and where it leaves from: the apron in front of the lift's doors. */
 export const SPAWN: Vec2 = ELEVATOR.boarding;
@@ -75,11 +74,12 @@ export const onFloor2 = (p: Vec2): boolean => pointInRect(p, OUTER_RECT);
  *
  *  Floor 2 is outside V1's lattice, so it is neither V1-governed nor DerivedNav-governed (both are
  *  indexed by that 90 x 78 grid) and it answers from its own geometry, exactly as the Cave does. It is a
- *  ROUTING of the question, not a relaxation: the perimeter wall and the lift core genuinely stop a body,
- *  and this is the only place that is decided. */
+ *  ROUTING of the question, not a relaxation: the perimeter wall, the lift core and every glass wall,
+ *  table and lounge piece of the Meeting Floor genuinely stop a body, and this is the only place that
+ *  is decided. */
 export function floor2StandTest(p: Vec2, radius: number): boolean {
   if (!pointInRect(p, growRect(FLOOR_RECT, -radius))) return false;
-  return clearsElevator(ELEVATOR, p, radius);
+  return clearsElevator(ELEVATOR, p, radius) && clearsMeetingFloor(p, radius);
 }
 
 export const FLOOR2_ROOM: RoomDef = {

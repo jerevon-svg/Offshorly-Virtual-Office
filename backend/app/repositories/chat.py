@@ -456,6 +456,9 @@ async def insert_message(
     sender_email: str,
     text: str,
     mentioned_emails: list[str] | None = None,
+    *,
+    kind: str = "text",
+    meta: dict | None = None,
 ) -> Message:
     # Sender is always the server-verified identity — a client-sent sender id is never trusted.
     # Truncate to millisecond precision at insert time (not just on wire serialization) so the
@@ -488,6 +491,8 @@ async def insert_message(
         text=text,
         sent_at=sent_at,
         mentioned_emails=validated_mentions,
+        kind=kind,
+        meta=meta,
     )
     session.add(message)
     await session.flush()

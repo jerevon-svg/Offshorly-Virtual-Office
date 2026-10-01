@@ -6,6 +6,9 @@ import {
   __resetSeatFacingForTests, groundFloorSeatAnchors, isSeatFacing, markSeatFacingSaved, SEAT_FACINGS, seatFacingFor, seatFacingTable,
   seatFacingYaw, seatedYawFor, setSeatFacingOverride, subscribeSeatFacing, unsavedSeatFacingCount, type SeatFacing,
 } from "./seats";
+import { meetingFloorSeatFacings } from "../rooms/floor2Meeting";
+/** the Meeting Floor's configured seats also live in the file (rooms/floor2Meeting) */
+const meetingFloorConfiguredSeatIds = (): string[] => Object.keys(meetingFloorSeatFacings());
 import { seatMapping } from "../adapters/v1Seats";
 import { FACING_YAW } from "../core/coords";
 
@@ -37,7 +40,7 @@ describe("the project file", () => {
       expect(seatFacingFor(a.id)).toBe(table[a.id]);
     }
     // ...and names nothing that is not on the floor (a renamed chair would otherwise keep a ghost entry)
-    const ids = new Set(groundFloorSeatAnchors().map((a) => a.id));
+    const ids = new Set([...groundFloorSeatAnchors().map((a) => a.id), ...meetingFloorConfiguredSeatIds()]);
     for (const id of Object.keys(table)) expect(ids.has(id), `${id} in seatFacing.json is not an anchor`).toBe(true);
   });
 
@@ -79,7 +82,7 @@ describe("resolution", () => {
     // the table is the whole file, sorted, so it can be written back verbatim
     const keys = Object.keys(seatFacingTable());
     expect(keys).toEqual([...keys].sort());
-    expect(keys.length).toBe(groundFloorSeatAnchors().length);
+    expect(keys.length).toBe(groundFloorSeatAnchors().length + meetingFloorConfiguredSeatIds().length);
     markSeatFacingSaved();
     expect(unsavedSeatFacingCount()).toBe(0);
     expect(seatFacingFor("dev-room/bay-chair-n1")).toBe("left");
