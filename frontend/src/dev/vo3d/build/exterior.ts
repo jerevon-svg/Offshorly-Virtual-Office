@@ -22,6 +22,7 @@ import { Baker, bake, rbox, shadowed } from "./helpers";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import { prng, triCount } from "./exteriorGeo";
 import { TREE_VARIANTS, flowerClump, fern, grassTuft, reedClump, shrubGeometry, stone, treeLibrary } from "./exteriorFoliage";
+import { leafCardMaterial } from "./vegetation";
 import { groundFinish, waterMaterial, waterUniforms, windByVertex } from "./exteriorShaders";
 import {
   bedEdgingGeometry, beltGeometries, beltSpots, coverSpots, decalGeometry, drainageGeometry, kerbGeometry, lakeGeometry,
@@ -596,9 +597,9 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
   const lib = treeLibrary();
   let instanced = 0, instances = 0;
   const KINDS: TreeKind[] = ["round", "tall", "broad", "conifer"];
-  type TreeInst = { kind: TreeKind; v: number; spot: Spot & { s: number; yaw: number }; trunk: number; canopy: number; near: boolean };
+  type TreeInst = { kind: TreeKind; v: number; spot: Spot & { s: number; yaw: number }; trunk: number; canopy: number; near: boolean; cards: number };
   const treeList: TreeInst[] = [];
-  for (const kind of KINDS) planted[kind].forEach((t, i) => treeList.push({ kind, v: (i + Math.round(Math.abs(t.x))) % TREE_VARIANTS, spot: t, trunk: -1, canopy: -1, near: false }));
+  for (const kind of KINDS) planted[kind].forEach((t, i) => treeList.push({ kind, v: (i + Math.round(Math.abs(t.x))) % TREE_VARIANTS, spot: t, trunk: -1, canopy: -1, near: false, cards: -1 }));
   const treeCount = treeList.length;
   // SHRUBS ride in the crown batch (same leaf material): the campus's own beds, the parking screen, and a
   // SHORT hedge marking the centre of each vacant parcel's frontage. world/campus campusShrubSpots — the
@@ -623,6 +624,22 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
     canopy: [crowns.addGeometry(v.near.canopy), crowns.addGeometry(v.far.canopy)],
   }));
   const shrubIds = shrubGeos.map((g) => crowns.addGeometry(g));
+  // THE VEGETATION LADDER (`?veg=2`): the near cut's LEAF CARDS in a third batch, each tree's instance shown only
+  // while it is near — one more draw, bounded by NEAR_CAP trees
+  let leafCards: THREE.BatchedMesh | null = null;
+  const cardIds = new Map<string, number>();
+  {
+    let cardVerts = 0;
+    for (const kind of KINDS) for (const v of lib[kind]) if (v.near.cards) cardVerts += vcount(v.near.cards);
+    if (cardVerts > 0) {
+      const cardM = leafCardMaterial(M.windGain, M.windTime, 1.5);
+      M.tintable.push({ m: cardM, base: new THREE.Color(0xffffff) });
+      M.wet(cardM, 0.5, 1.25);
+      leafCards = new THREE.BatchedMesh(treeCount, cardVerts, 0, cardM);
+      leafCards.name = "trees-leaf-cards";
+      for (const kind of KINDS) lib[kind].forEach((v, i) => { if (v.near.cards) cardIds.set(`${kind}:${i}`, leafCards!.addGeometry(v.near.cards)); });
+    }
+  }
   // CONTROLLED VARIATION: a per-tree tint within a narrow band (bark and leaf), and the scatter's own scale/yaw
   const varRnd = prng(0x7ee5);
   const tm = new THREE.Matrix4(), tq = new THREE.Quaternion(), tp = new THREE.Vector3(), ts = new THREE.Vector3(), tc = new THREE.Color();
@@ -633,6 +650,8 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
     tm.compose(tp.set(t.spot.x, t.spot.y ?? GRADE, t.spot.z), tq.setFromAxisAngle(UP_Y, t.spot.yaw), ts.setScalar(t.spot.s));
     trunks.setMatrixAt(t.trunk, tm).setColorAt(t.trunk, tc.setRGB(1, 1, 1).multiplyScalar(0.9 + varRnd() * 0.2));
     crowns.setMatrixAt(t.canopy, tm).setColorAt(t.canopy, tc.setHSL(0.25 + (varRnd() - 0.5) * 0.04, 0.12 + varRnd() * 0.18, 0.5).lerp(new THREE.Color(1, 1, 1), 0.72));
+    const cid = cardIds.get(`${t.kind}:${t.v}`);
+    if (leafCards && cid !== undefined) { t.cards = leafCards.addInstance(cid); leafCards.setMatrixAt(t.cards, tm).setColorAt(t.cards, tc); leafCards.setVisibleAt(t.cards, false); }
   }
   shrubs.forEach((sp, i) => {
     const inst = crowns.addInstance(shrubIds[i % 2]);
@@ -640,6 +659,7 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
     crowns.setMatrixAt(inst, tm).setColorAt(inst, tc.setRGB(1, 1, 1).multiplyScalar(0.88 + varRnd() * 0.22));
   });
   for (const b of [trunks, crowns]) { b.castShadow = true; b.receiveShadow = true; b.frustumCulled = false; root.add(b); }
+  if (leafCards) { leafCards.receiveShadow = true; leafCards.frustumCulled = false; root.add(leafCards); }
   instanced += 2; instances += treeCount * 2 + shrubs.length;
   const nearExtra = Math.max(...KINDS.flatMap((k) => lib[k].map((v) => triCount(v.near.trunk) + triCount(v.near.canopy) - triCount(v.far.trunk) - triCount(v.far.canopy))));
 
@@ -1015,6 +1035,7 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
         const id = geoIds.get(`${t.kind}:${t.v}`)!;
         trunks.setGeometryIdAt(t.trunk, id.trunk[want ? 0 : 1]);
         crowns.setGeometryIdAt(t.canopy, id.canopy[want ? 0 : 1]);
+        if (leafCards && t.cards >= 0) leafCards.setVisibleAt(t.cards, want);
       });
       // GROUND COVER: only within reach of the camera (and not at all from high overhead)
       const r2 = COVER_RANGE * COVER_RANGE;

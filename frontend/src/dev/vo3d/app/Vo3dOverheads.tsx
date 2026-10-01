@@ -40,6 +40,7 @@ import {
   subscribeExperience,
 } from "../../../services/settings/experiencePreferences";
 import styles from "./Vo3dOverheads.module.css";
+import { isAgentOverheadKey } from "../world/monkeyAgentContract";
 
 /** What is drawn over one person.
  *
@@ -175,8 +176,10 @@ export function Vo3dOverheads({ worldRef, ready, overheads: incoming, onOpenConv
       raf = requestAnimationFrame(tick);
       const list = emailsRef.current;
       if (list.length === 0) return;
-      const peers = list.filter((e) => e !== SELF_OVERHEAD_KEY && e !== TOUCAN_OVERHEAD_KEY);
+      const peers = list.filter((e) => e !== SELF_OVERHEAD_KEY && e !== TOUCAN_OVERHEAD_KEY && !isAgentOverheadKey(e));
       const anchors: Record<string, Vo3dScreenAnchor | null> = world.coworkerAnchors(peers);
+      // MONKEYAGENT — AI agents ride this same pill, anchored to their own bodies (reserved key prefix).
+      for (const key of list) if (isAgentOverheadKey(key)) anchors[key] = world.agentPills?.anchor(key) ?? null;
       if (list.includes(SELF_OVERHEAD_KEY)) anchors[SELF_OVERHEAD_KEY] = world.selfAnchor();
       // The bird moves faster than anything else overhead, so its anchor is read on the same frame as
       // everybody else's rather than through any state of its own.

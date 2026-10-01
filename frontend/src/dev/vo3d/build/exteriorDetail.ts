@@ -18,7 +18,9 @@ import {
   BED_Y, CURB_Y, GRADE, LOTS, MARK_Y, PAVING_Y, PLANTING_BEDS, POND_PATH, PARK_PATHS, RAMPS, ROADS, ROAD_Y, SHORE_Y,
   SIDEWALK_W, TERRAIN_Y, WALKS, WORLD_CENTRE, WORLD_RADIUS, campusShrubSpots, campusTreeSpots, roadVisibleSpan, type Ramp,
 } from "../world/campus";
-import { LAB_PLINTH, PAVED } from "../world/ailab";
+import { PAVED } from "../world/ailab";
+import { LAB_FP } from "../world/labVariant";
+const LAB_PLINTH = LAB_FP.plinth;
 import { LAKE } from "../world/water";
 import { exteriorGround, campusTrees, type SurfaceKind } from "../world/exteriorGround";
 import { Part, lin, prng } from "./exteriorGeo";

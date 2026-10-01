@@ -18,9 +18,10 @@
 import * as THREE from "three";
 import { Part, lin, mergePainted, prng } from "./exteriorGeo";
 import type { TreeKind } from "../world/campus";
+import { dressCanopy, shrinkToward, LEAF_CELL } from "./vegetation";
 
 // ---- palette (sRGB hex; the bark and leaf tones the old flat materials used, now with a range) --------
-const BARK = { base: 0x7d5e43, dark: 0x4c3626, light: 0x9a7856, root: 0x5e4532 };
+export const BARK = { base: 0x7d5e43, dark: 0x4c3626, light: 0x9a7856, root: 0x5e4532 };
 const LEAF: Record<TreeKind, { base: number; dark: number; light: number }> = {
   round: { base: 0x5a913e, dark: 0x2f5a2c, light: 0x8fbf55 },
   tall: { base: 0x6aa548, dark: 0x356432, light: 0x9ccc62 },
@@ -36,10 +37,10 @@ const V = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
 const mix = (a: THREE.Color, b: THREE.Color, t: number) => a.clone().lerp(b, Math.max(0, Math.min(1, t)));
 
 // ---- the trunk and its limbs --------------------------------------------------------------------------
-type TubeOpts = { grooves?: number; depth?: number; twist?: number; flare?: { n: number; amp: number; phase: number }; cap?: boolean };
+export type TubeOpts = { grooves?: number; depth?: number; twist?: number; flare?: { n: number; amp: number; phase: number }; cap?: boolean };
 /** A TAPERED LIMB along a polyline, one ring per point, carried by parallel-transported frames so it can
  *  bend without twisting. Grooves are a cosine ridge pattern spiralled up the limb, darker in the valleys. */
-function tube(P: Part, pts: THREE.Vector3[], radii: number[], seg: number, o: TubeOpts = {}): void {
+export function tube(P: Part, pts: THREE.Vector3[], radii: number[], seg: number, o: TubeOpts = {}): void {
   const bark = lin(BARK.base), dark = lin(BARK.dark), light = lin(BARK.light), root = lin(BARK.root);
   let N = new THREE.Vector3();
   const rings: number[][] = [];
@@ -80,7 +81,7 @@ function tube(P: Part, pts: THREE.Vector3[], radii: number[], seg: number, o: Tu
 }
 
 /** a limb leaving `from` along `dir` for `len`, bending by `bend` (added to its direction per segment) */
-function limb(P: Part, from: THREE.Vector3, dir: THREE.Vector3, len: number, r0: number, segs: number, seg: number, bend: THREE.Vector3, o: TubeOpts = {}): THREE.Vector3[] {
+export function limb(P: Part, from: THREE.Vector3, dir: THREE.Vector3, len: number, r0: number, segs: number, seg: number, bend: THREE.Vector3, o: TubeOpts = {}): THREE.Vector3[] {
   const pts = [from.clone()], radii = [r0];
   const d = dir.clone().normalize();
   for (let i = 1; i <= segs; i++) {
@@ -128,10 +129,10 @@ const icoSphere = (() => {
   };
 })();
 
-type Leaf = { base: THREE.Color; dark: THREE.Color; light: THREE.Color };
+export type Leaf = { base: THREE.Color; dark: THREE.Color; light: THREE.Color };
 /** ONE LEAF MASS: a jittered, squashed icosphere, darker underneath and toward the crown's core, lit on top.
  *  `core` is the crown's centre — faces turned toward it are the inside of the canopy and go darkest. */
-function mass(P: Part, rnd: () => number, c: THREE.Vector3, rx: number, ry: number, rz: number, detail: 0 | 1, leaf: Leaf, core: THREE.Vector3, windPerY: number, jitter = 0.32): void {
+export function mass(P: Part, rnd: () => number, c: THREE.Vector3, rx: number, ry: number, rz: number, detail: 0 | 1, leaf: Leaf, core: THREE.Vector3, windPerY: number, jitter = 0.32): void {
   const s = icoSphere(detail);
   const yaw = rnd() * Math.PI * 2, cy = Math.cos(yaw), sy = Math.sin(yaw);
   const hue = (rnd() - 0.5) * 0.06, val = 0.92 + rnd() * 0.16;
@@ -152,7 +153,11 @@ function mass(P: Part, rnd: () => number, c: THREE.Vector3, rx: number, ry: numb
 
 // ---- the species ------------------------------------------------------------------------------------
 export type TreeGeo = { trunk: THREE.BufferGeometry; canopy: THREE.BufferGeometry };
-export type TreeLod = { near: TreeGeo; far: TreeGeo };
+/** NEAR may carry LEAF CARDS (build/vegetation) over a darkened, pulled-in crown — the vegetation ladder */
+export type TreeLod = { near: TreeGeo & { cards?: THREE.BufferGeometry }; far: TreeGeo };
+/** THE VEGETATION LADDER ON CAMPUS TREES, behind `?veg=2` while it is reviewed: only the near cut changes (the
+ *  closest NEAR_CAP trees), so the cost is bounded and the far campus is untouched. Off = byte-for-byte as before. */
+export const VEG_LADDER: boolean = (() => { try { return typeof location !== "undefined" && new URLSearchParams(location.search).get("veg") === "2"; } catch { return false; } })();
 
 /** a broadleaf: trunk height `th`, base radius `r0`, primaries spreading at `spread` (radians off vertical) */
 function broadleaf(kind: TreeKind, seed: number, near: boolean): TreeGeo {
@@ -296,8 +301,19 @@ let library: Record<TreeKind, TreeLod[]> | null = null;
 export function treeLibrary(): Record<TreeKind, TreeLod[]> {
   if (library) return library;
   const make = (kind: TreeKind, seed: number): TreeLod => {
-    const lod = kind === "conifer" ? { near: conifer(seed, true), far: conifer(seed, false) } : { near: broadleaf(kind, seed, true), far: broadleaf(kind, seed, false) };
+    const lod: TreeLod = kind === "conifer" ? { near: conifer(seed, true), far: conifer(seed, false) } : { near: broadleaf(kind, seed, true), far: broadleaf(kind, seed, false) };
     fitCrown(lod.far.canopy, lod.near.canopy);
+    if (VEG_LADDER) {
+      // dress the near crown in leaves: clusters sampled over its masses, which become the dark inner volume
+      const L = LEAF[kind], conifer = kind === "conifer";
+      const tone = { base: lin(L.base), dark: lin(L.dark), light: lin(L.light) };
+      const n = Math.max(90, Math.min(220, Math.round(lod.near.canopy.getAttribute("position").count / 3 / 3.5)));
+      lod.near.cards = dressCanopy(lod.near.canopy, prng(seed * 7 + 3), n, {
+        n: conifer ? 11 : 14, size: conifer ? [6, 9.5] : [6, 10], cells: conifer ? [LEAF_CELL.needles] : [LEAF_CELL.dense, LEAF_CELL.spray, LEAF_CELL.dense, LEAF_CELL.small],
+        tone, wind: (p) => Math.max(0, p.y) * CANOPY_FLEX, flutter: 0.35, outward: 0.55,
+      }, conifer ? 4.5 : kind === "broad" ? 6 : 5.4);
+      lod.near.canopy = shrinkToward(lod.near.canopy, 0.8, 0.45);
+    }
     return lod;
   };
   library = {

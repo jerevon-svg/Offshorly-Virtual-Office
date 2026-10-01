@@ -176,6 +176,8 @@ import type { AssetLayer } from "../../../types/office";
 import type { OfficePerson } from "../../../services/office/floorMerge";
 import { openCompanyHub } from "../../../services/hub/companyHubStore";
 import styles from "./Vo3dOverlay.module.css";
+import demoStyles from "./AiLabDemoChip.module.css";
+import type { AiLabDemoStatus } from "./aiLabDemo";
 import { MEETING_ROOMS } from "../rooms/floor2Meeting";
 /** Every Meeting Floor room's meeting id (`mf-<slug>`) — participation in one of these is IN MEETING. */
 const ROOM_MEETING_IDS: ReadonlySet<string> = new Set(MEETING_ROOMS.map((r) => r.meetingId));
@@ -1451,6 +1453,23 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     return ids;
   }, [spatialSessions]);
 
+  /** MONKEYAGENT — agent pill rows (identity + role · execution state), pushed by the world on every
+   *  execution-state change. Empty unless agents exist (`?monkeyagent=1`). */
+  const [agentRows, setAgentRows] = useState<readonly Vo3dOverhead[]>([]);
+  useEffect(() => {
+    const world = worldRef.current;
+    if (!ready || !world?.agentPills) return;
+    return world.agentPills.subscribe((rows) => setAgentRows(rows));
+  }, [ready, worldRef]);
+
+  /** AI-WORKFORCE DEMO (`?aidemo=1`) — the one predefined command and its live status. Null without the flag. */
+  const [aiDemo, setAiDemo] = useState<AiLabDemoStatus | null>(null);
+  useEffect(() => {
+    const world = worldRef.current;
+    if (!ready || !world?.aiDemo) return;
+    return world.aiDemo.subscribe((st) => setAiDemo(st));
+  }, [ready, worldRef]);
+
   const overheads = useMemo<Vo3dOverhead[]>(() => {
     const drawn = drawnEmails.map((e) => emailKey(e));
     const out: Vo3dOverhead[] = [];
@@ -1537,11 +1556,14 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     // one fixed string, shown while a reply is being prepared. V1 draws exactly this line and for exactly
     // this reason — the meaningful answer belongs in the panel, and a bird in an office behaves like a
     // bird.
-    if (toucanPending) {
+    // (the AI-workforce demo may be giving the bird its own line on the same key — that one wins)
+    if (toucanPending && !agentRows.some((r) => r.email === TOUCAN_OVERHEAD_KEY)) {
       out.push({ email: TOUCAN_OVERHEAD_KEY, displayName: "Toucan", sentText: "Squawk squawk…" });
     }
+    // MONKEYAGENT — the same pill, line one the identity, line two role · execution state.
+    out.push(...agentRows);
     return out;
-  }, [callState.videoByIdentity, chatAttention, drawnEmails, inConversationEmails, insideCave, layersByEmail, meetingBubbles, meetingReactions, self, travelBubbles, selfStatus, statusByEmail, talkingTextById, toucanPending, typingIds]);
+  }, [agentRows, callState.videoByIdentity, chatAttention, drawnEmails, inConversationEmails, insideCave, layersByEmail, meetingBubbles, meetingReactions, self, travelBubbles, selfStatus, statusByEmail, talkingTextById, toucanPending, typingIds]);
 
   // THE CONVERSATION POSES. Resolved by V1's OWN resolveCharacterAnimState, not by a rule invented here,
   // and pushed into the world the same way the roster and the occupancy are. Only the two conversation
@@ -2230,6 +2252,35 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
             />
           </div>
         ),
+      )}
+      {/* AI-WORKFORCE DEMO — the predefined Toucan command (`?aidemo=1` only). The job itself comes from
+          the orchestration source; this chip only submits the command and mirrors the presenter's status. */}
+      {aiDemo && !overlayToolOpen && (
+        <div className={demoStyles.chip} role="region" aria-label="Toucan command">
+          {aiDemo.phase === "running" ? (
+            <>
+              <div className={demoStyles.status}><span className={demoStyles.dot} />{aiDemo.step}</div>
+              {aiDemo.title && <div className={demoStyles.title}>{aiDemo.title}</div>}
+              {aiDemo.transcript.length > 0 && (
+                <ol className={demoStyles.transcript} aria-label="Team conversation" aria-live="polite">
+                  {aiDemo.transcript.map((l, i) => (
+                    <li key={`${i}-${l.who}-${l.text.length}`}><b>{l.who}</b> {l.text}</li>
+                  ))}
+                </ol>
+              )}
+              <button type="button" className={demoStyles.secondary} onClick={() => worldRef.current?.aiDemo?.reset()}>Reset</button>
+            </>
+          ) : (
+            <>
+              {aiDemo.phase === "complete" && <div className={demoStyles.status}><span className={`${demoStyles.dot} ${demoStyles.done}`} />{aiDemo.step}</div>}
+              <button type="button" className={demoStyles.command} onClick={() => worldRef.current?.aiDemo?.start()}>
+                <span className={demoStyles.label}>{aiDemo.phase === "complete" ? "Run again" : "Ask Toucan"}</span>
+                <span className={demoStyles.quote}>“Toucan, handle what Alex asked us to build.”</span>
+              </button>
+            </>
+          )}
+          <div className={demoStyles.mock}>Demo · mock orchestration</div>
+        </div>
       )}
       {/* THE RAIL — V1's minimized conversations, as circular employee avatars stacked above the Toucan
           button. Each one carries its own unread count and its own close, because minimizing and closing

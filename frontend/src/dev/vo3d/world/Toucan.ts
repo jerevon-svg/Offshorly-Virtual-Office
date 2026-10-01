@@ -364,6 +364,13 @@ export class Toucan {
     this.summonTarget = target;
   }
 
+  /** AI-WORKFORCE DEMO — while parked, look at THIS point (the current speaker) instead of the latched
+   *  summon centre. Null hands the facing back to V1's own latch. Presentation only. */
+  private faceOverride: { x: number; y: number } | null = null;
+  setFaceOverride(point: { x: number; z: number } | null): void {
+    this.faceOverride = point ? { x: point.x, y: point.z } : null;
+  }
+
   /** V1's own coarse union. The whole way home reports "roaming", because the only thing a caller acts
    *  on is whether the bird is WITH you — the same reason V1 keeps its public state coarser than its
    *  internal phase. */
@@ -577,7 +584,8 @@ export class Toucan {
     // WHERE IT LOOKS — the same lookAt primitive the ambient lap uses, so there is one orientation path
     // in this file and not two. A parked bird looks at its latched face point; a flying one looks where
     // it is going. Slerped, so a re-aimed leg turns the bird instead of snapping it.
-    if (this.phase === "attending" && this.facePoint) this.aim.set(this.facePoint.x, p.y, this.facePoint.y);
+    const face = this.phase === "attending" ? this.faceOverride ?? this.facePoint : null;
+    if (face) this.aim.set(face.x, p.y, face.y);
     else this.aim.set(this.legTo.x, p.y, this.legTo.y);
     if (this.aim.distanceToSquared(p) > 1e-4) {
       this.look.lookAt(p, this.aim, this.up);
