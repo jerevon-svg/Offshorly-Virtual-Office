@@ -379,7 +379,7 @@ describe("vo3d build — the exterior world stays inside its performance budget"
       const b = o as THREE.BatchedMesh;
       if (b.isBatchedMesh) {
         // a batch draws each INSTANCE's geometry range — count those, not the reserved buffer
-        for (let i = 0; i < 1000; i++) { try { tris += (b.getGeometryRangeAt(b.getGeometryIdAt(i))?.count ?? 0) / 3; } catch { break; } }
+        for (let i = 0; i < 100000; i++) { try { if (b.getVisibleAt(i)) tris += (b.getGeometryRangeAt(b.getGeometryIdAt(i))?.count ?? 0) / 3; } catch { break; } }
         return;
       }
       const idx = m.geometry.getIndex();
@@ -390,10 +390,14 @@ describe("vo3d build — the exterior world stays inside its performance budget"
     // adds three more of its own (world/traffic: no shadow casting, unlit lamps)
     const batches: string[] = [];
     scenery.root.traverse((o) => { if ((o as THREE.BatchedMesh).isBatchedMesh) batches.push(o.name); });
-    expect(batches.sort()).toEqual(["traffic-gloss", "traffic-lamps", "traffic-matte", "vehicles-gloss", "vehicles-matte"]);
+    // EXTERIOR POLISH: every tree is two batches (trunks, crowns — all species, both cuts, the shrubs too), the
+    // ground cover one, the distant belt one
+    expect(batches.sort()).toEqual(["distant-belt", "ground-cover", "traffic-gloss", "traffic-lamps", "traffic-matte", "trees-crowns", "trees-trunks", "vehicles-gloss", "vehicles-matte"]);
     expect(draws).toBeLessThanOrEqual(80);
     expect(instanced).toBeGreaterThanOrEqual(12);
-    expect(tris).toBeLessThan(250_000);
+    // THE WORST CASE, not the resting state: as built every tree stands in its FAR cut, and the camera can
+    // bring at most NEAR_CAP of them to the near cut at once — that ceiling is counted in full
+    expect(tris + scenery.stats.treeLod.nearExtraTris).toBeLessThan(250_000);
     // The polish pass CUT planting: the world used to carry well over 300 near trees, and was brought
     // under 170. RE-BASED TO 220 when the rear campus opened: the AI Lab's concealment planting — the
     // rear screen, the lab screen, the two flanks and the lake shore — is the whole reason that area
@@ -444,7 +448,8 @@ describe("vo3d build — the exterior world stays inside its performance budget"
 
   it("marks every vacant parcel as future company land, and nothing else", () => {
     const markers: string[] = [];
-    scenery.root.traverse((o) => { if (o.name.startsWith("lot-marker:")) markers.push(o.name); });
+    // the markers are baked into the ground layer (EXTERIOR POLISH); the build reports which it laid
+    markers.push(...scenery.stats.lotMarkers);
     expect(markers.length).toBe(EXPANSION_LOTS.length);
     for (const lot of EXPANSION_LOTS) expect(markers).toContain(`lot-marker:${lot.id}`);
     // the developed lot never gets one

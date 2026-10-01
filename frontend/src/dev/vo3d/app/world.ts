@@ -62,6 +62,8 @@ import { MEETING_ROOM, MEETING_CHAIR_IDS, DOOR_NORTH_ID as MEETING_DOOR_NORTH_ID
 import { PROJECT_ROOM, CONSOLE_INTERACTION_ID, DOOR_NORTH_ID as PROJECT_DOOR_NORTH_ID, DOOR_SOUTH_ID as PROJECT_DOOR_SOUTH_ID, SOFA_SEAT_IDS, TUB_SEAT_IDS, TV_INTERACTION_ID } from "../rooms/project";
 import { buildExterior } from "../build/exterior";
 import { buildAiLab } from "../build/ailab";
+import { ConstructionCrew } from "../avatar/ConstructionCrew";
+import { AI_LAB_SITE } from "../world/construction";
 import { MonkeyAvatar } from "../avatar/MonkeyAvatar";
 import { aiLabStandTest, inAiLabZone } from "../world/ailab";
 import { FACADE_WALL_T, RIDE_PROFILE, SURFACE_SPEED, WALK_PROFILE, exteriorGround, speedClassOf, type TraversalState } from "../world/exteriorGround";
@@ -895,6 +897,13 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // inspecting the scene. GRADE is where rain lands. Neither is a layout change — both are read from data
   // that already existed.
   const env = new Environment(R, scenery, plan.frame, GRADE);
+  // THE CONSTRUCTION CREW (avatar/ConstructionCrew): five workers on Bon's rig at the AI Lab's site. Lives
+  // under the exterior root, so it follows the shared exterior's anchor and its visibility; its body is
+  // fetched the first time the exterior is actually drawn, never in the OFFICE framing.
+  const crew = new ConstructionCrew(AI_LAB_SITE);
+  scenery.root.add(crew.group);
+  let crewRequested = false;
+  const crewCam = new THREE.Vector3();
 
   // ---- THE AI LAB: a hidden R&D annexe on the north-east lawn --------------------------------------
   // SCENERY-SHAPED, exactly like the campus above it: one group added straight to the scene, never to the
@@ -5495,6 +5504,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // world actually moved. applyEnvPhase above RETARGETS, this is what travels.
     env.tick(dt / 1000);
     env.follow(dt / 1000); // the sky dome rides the orbit target; the rain field rides the active camera
+    if (scenery.root.visible) {
+      if (!crewRequested) { crewRequested = true; void crew.load(2); }
+      crew.update(Date.now() / 1000, dt / 1000, scenery.root.worldToLocal(R.activeCamera.getWorldPosition(crewCam)));
+    }
     // THE ENVIRONMENTAL MIXER. A no-op until a gesture has started it; after that it is one pure mix
     // calculation and up to ten float writes — no node is created, connected or looked up on a frame.
     envAudio.update(dt / 1000);
@@ -6647,6 +6660,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     R.removeDynamicCaster(coworkers.group);
     coworkers.dispose(); // bodies, mixers and nameplate canvases; the shared prototypes outlive the world
     monkey?.dispose();
+    crew.dispose();
     avatar.dispose();
     toucan.dispose();
     // CAVE media: <video> elements parked on document.body, a LiveKit subscription, and their textures.

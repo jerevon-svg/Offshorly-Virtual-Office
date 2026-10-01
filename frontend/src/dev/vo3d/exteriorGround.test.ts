@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import * as THREE from "three";
 import {
   RIDE_PROFILE, WALK_PROFILE, WORLD_WALK, buildExteriorGround, exteriorGround, exteriorSolids, inWalkableWorld, solidOverlaps, surfaceY,
-  FACADE_WALL_T, type SurfaceKind,
+  FACADE_WALL_T, campusTrees, type SurfaceKind,
 } from "./world/exteriorGround";
 import {
   CROSSINGS, OFFSHORLY_LOT, PARK_ISLANDS, RAMPS, PODIUM_LEDGE_Y, POND, VEHICLES, VEHICLE_BOUNDS,
@@ -136,7 +136,7 @@ describe("exterior ground — labelled points", () => {
 });
 
 describe("exterior ground — solids", () => {
-  const trees = campusTreeSpots().spots;
+  const trees = campusTrees();
   const firstGroveTree = trees.broad[0];
   const lamp = streetLightSpots().find((l) => l.z === 1470 && l.x > 0)!;
   const car = VEHICLES.find((v) => v.kind === "sport")!;
@@ -152,8 +152,16 @@ describe("exterior ground — solids", () => {
     ["a docked Reception scooter", { x: 1156, z: 1183 }, "scooter:"],
     ["the Lab's east wall", { x: 1180, z: -700 }, "lab-wall:"],
     ["a Lab terrace shrub", { x: 590, z: -404 }, "lab-shrub:"],
-    ["a Lab corner bed poking through the wall", { x: CORNER_TREES[0].x - 30, z: CORNER_TREES[0].z - 26 }, "lab-corner-bed:"],
+    // EXTERIOR POLISH: the construction site's fence and scaffold (world/construction)
+    ["the construction yard's fence", { x: 540, z: -320 }, "site:ai-lab:fence"],
+    ["the scaffold against the Lab's south wall", { x: 480, z: -425 }, "site:ai-lab:scaffold"],
   ];
+  // EXTERIOR POLISH: the corner beds are clipped to the inside of their diagonal walls — nothing of them
+  // stands on the terrace any more
+  it("leaves the terrace clear where a corner bed used to poke through the wall", () => {
+    expect(G.solids.some((s) => s.id.startsWith("lab-corner-bed:"))).toBe(false);
+    expect(G.solidAt({ x: CORNER_TREES[0].x - 30, z: CORNER_TREES[0].z - 26 }, 1)).toBeNull();
+  });
   it.each(cases)("%s stops a footprint", (_n, p, prefix) => {
     expect(G.solidAt(p, R)).not.toBeNull();
     // (a bench or sign may stand among shrubs: the one expected must be among what overlaps)
@@ -288,12 +296,12 @@ describe("exterior ground — connectivity on foot (what free roam will open)", 
     ["the lakeside terrace (up the lake steps)", { x: 740, z: -1000 }],
     ["the terrace ring's north run, past the pond benches", { x: 480, z: -1016 }],
   ])("reaches %s", (_n, p) => expect(reached(p)).toBe(true));
-  // …BUT NOT ROUND THE LAB'S CORNERS: each corner tree's 16-tall bed pokes through the diagonal wall onto
-  // the terrace and leaves 10–13 of ring beside the plinth's edge — narrower than a body. A visible
-  // obstacle, honestly modelled; closing the ring is the Lab corners' own fix (visual polish phase).
-  it("does not pass the Lab's corner beds to the west run", () => {
+  // …AND, SINCE THE EXTERIOR POLISH, ALL THE WAY ROUND: the corner beds are clipped inside their diagonal
+  // walls, the two shrubs that hung off the plinth's north corners are gone and the grove trunks that stood
+  // on the stone are stepped off it, so the terrace ring is continuous
+  it("passes round the Lab's corners to the west run", () => {
     expect(G.canOccupy({ x: 270, z: -700 }, R, WALK_PROFILE)).toBe(true);
-    expect(reached({ x: 270, z: -700 })).toBe(false);
+    expect(reached({ x: 270, z: -700 })).toBe(true);
   });
   // PHASE 3: the Lab rack lies ALONG the rear path, its rail on the path's north edge — no longer across it
   it("reaches the walk in to the Lab past the Lab rack (rail along the path's edge)", () => {
@@ -307,19 +315,28 @@ describe("exterior ground — data authority", () => {
   it("the trees the ground reads are exactly the instances the builder draws", async () => {
     const { buildExterior } = await import("./build/exterior");
     const root = buildExterior().root;
-    const spots = campusTreeSpots().spots;
-    for (const kind of Object.keys(spots) as (keyof typeof spots)[]) {
-      const mesh = root.getObjectByName(`tree-${kind}-trunk`) as THREE.InstancedMesh;
-      expect(mesh.count).toBe(spots[kind].length);
-      const m = new THREE.Matrix4(), v = new THREE.Vector3();
-      spots[kind].forEach((s, i) => {
-        mesh.getMatrixAt(i, m);
-        v.setFromMatrixPosition(m);
-        expect(v.x).toBeCloseTo(s.x, 3); // the instance matrix is Float32
-        expect(v.z).toBeCloseTo(s.z, 3);
-      });
+    const planted = campusTrees();
+    const all = Object.values(planted).flat();
+    // EXTERIOR POLISH: every tree is one instance in the trunk batch (and one in the crown batch)
+    const trunks = root.getObjectByName("trees-trunks") as THREE.BatchedMesh;
+    expect(trunks.instanceCount).toBe(all.length);
+    const m = new THREE.Matrix4(), v = new THREE.Vector3();
+    const order = (["round", "tall", "broad", "conifer"] as const).flatMap((k) => planted[k]);
+    order.forEach((s, i) => {
+      trunks.getMatrixAt(i, m);
+      v.setFromMatrixPosition(m);
+      expect(v.x).toBeCloseTo(s.x, 3); // the instance matrix is Float32
+      expect(v.z).toBeCloseTo(s.z, 3);
+    });
+    expect(exteriorSolids().filter((s) => s.kind === "tree").length).toBe(all.length);
+  });
+  it("no trunk stands in a paved path, on the Lab's plinth or in a construction yard", () => {
+    for (const t of Object.values(campusTrees()).flat()) {
+      if (t.y !== undefined) continue;
+      const g = G.groundAt(t);
+      if (g.kind === "bed") continue; // the entry specimens stand in their beds
+      expect(["lawn", "terrain", "shore"], `${t.x},${t.z} on ${g.id}`).toContain(g.kind);
     }
-    expect(exteriorSolids().filter((s) => s.kind === "tree").length).toBe(Object.values(spots).reduce((n, l) => n + l.length, 0));
   });
   it("the approved tree layout is pinned (count and positional checksum)", () => {
     const all = Object.values(campusTreeSpots().spots).flat();

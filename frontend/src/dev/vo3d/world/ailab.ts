@@ -383,13 +383,47 @@ export const LAB_CHEEK_POTS: readonly Rect[] = [-1, 1].map((o) => ({ x: ENTRY_CX
  *  laid along x) and the shrubs that frame the arrival and the corners (radius `r`) */
 export const LAB_TERRACE_BENCHES: readonly { x: number; z: number; w: number }[] = [{ x: 668, z: -1038, w: 76 }, { x: 812, z: -1038, w: 76 }];
 export const LAB_TERRACE_SHRUBS: readonly { x: number; z: number; r: number }[] = [
-  { x: 590, z: -404, r: 15 }, { x: 900, z: -398, r: 13 }, { x: 1010, z: -430, r: 11 }, { x: 470, z: -424, r: 12 },
-  { x: 318, z: -600, r: 14 }, { x: 1160, z: -640, r: 13 }, { x: 330, z: -1000, r: 15 }, { x: 1150, z: -1004, r: 12 },
+  // (EXTERIOR POLISH: the shrub at 470,−424 gave way to the construction scaffold — world/construction)
+  { x: 590, z: -404, r: 15 }, { x: 900, z: -398, r: 13 }, { x: 1010, z: -430, r: 11 },
+  // (EXTERIOR POLISH: the two north-corner shrubs went — each stood half off the plinth's edge, drawn at deck
+  // height over the lawn, and pinched the terrace ring at the corners the clipped beds had just opened)
+  { x: 318, z: -600, r: 14 }, { x: 1160, z: -640, r: 13 },
 ];
 
 /** each corner tree's deep planted bed (16 tall). It is a rect, so where the wall cuts the corner on the
  *  diagonal its outer corner stands out on the terrace — which is why the ground model counts it solid. */
 export const cornerBedRect = (t: { x: number; z: number }): Rect => ({ x: t.x - 34, z: t.z - 30, w: 68, d: 60 });
+/** THE CORNER BED AS BUILT (EXTERIOR POLISH): the rect above, clipped to the INSIDE face of its corner's
+ *  diagonal wall run, so the bed sits in the corner instead of pushing through the wall onto the terrace.
+ *  A convex polygon in world x/z, wound counter-clockwise seen from above (−y). */
+export function cornerBedPoly(t: { x: number; z: number }): Vec2[] {
+  const r = cornerBedRect(t);
+  let poly: Vec2[] = [{ x: r.x, z: r.z }, { x: r.x + r.w, z: r.z }, { x: r.x + r.w, z: r.z + r.d }, { x: r.x, z: r.z + r.d }];
+  // the corner-cut run nearest this bed, and the inside of it (the side the Lab's centre is on)
+  const centre = { x: LAB_OUTER.x + LAB_OUTER.w / 2, z: LAB_OUTER.z + LAB_OUTER.d / 2 };
+  let best: readonly [Vec2, Vec2] | null = null, bd = Infinity;
+  for (const seg of WALL_SEGS) {
+    const [a, c] = seg;
+    if (a.x === c.x || a.z === c.z) continue; // only the diagonal cuts
+    const d = Math.hypot((a.x + c.x) / 2 - t.x, (a.z + c.z) / 2 - t.z);
+    if (d < bd) { bd = d; best = seg; }
+  }
+  if (!best) return poly;
+  const [a, c] = best;
+  const nx = -(c.z - a.z), nz = c.x - a.x, len = Math.hypot(nx, nz);
+  let ux = nx / len, uz = nz / len;
+  if ((centre.x - a.x) * ux + (centre.z - a.z) * uz < 0) { ux = -ux; uz = -uz; }
+  const off = WALL_T / 2 + 1; // keep clear of the wall's inner face
+  const side = (p: Vec2) => (p.x - a.x) * ux + (p.z - a.z) * uz - off;
+  const out: Vec2[] = [];
+  for (let i = 0; i < poly.length; i++) {
+    const p = poly[i], q = poly[(i + 1) % poly.length], sp = side(p), sq = side(q);
+    if (sp >= 0) out.push(p);
+    if ((sp >= 0) !== (sq >= 0)) { const k = sp / (sp - sq); out.push({ x: p.x + (q.x - p.x) * k, z: p.z + (q.z - p.z) * k }); }
+  }
+  poly = out;
+  return poly;
+}
 
 /** THE LAKE STEPS: four stone treads from the lakeside deck's north edge down to the pond path (campus
  *  POND_PATH), in five even ~1.57 risers — the one walking way between the Lab's plinth and the lawn, so the

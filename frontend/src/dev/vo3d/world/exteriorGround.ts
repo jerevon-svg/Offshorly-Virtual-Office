@@ -31,10 +31,13 @@ import {
   benchSpots, bollardSpots, campusTreeSpots, entryStairTreads, islandRect, pondOutline, roadRect, roadVerges,
   streetLightSpots, type TreeKind,
   EXPANSION_LOTS, LOT_MARKER_PLINTH, SHRUB_R, VACANT_PAD_Y, WORLD_CENTRE, campusShrubSpots, lotMarkerSpot, vacantLotGround,
+  TERRAIN_Y, type TreeSpot,
 } from "./campus";
+import { CONSTRUCTION_SITES, constructionSolids } from "./construction";
+import { LAKE, shoreDistance } from "./water";
 import {
-  CORNER_TREES, DECK_Y, LAB_CHEEKS, LAB_CHEEK_POTS, LAB_PLINTH, LAB_TERRACE_BENCHES, LAB_TERRACE_SHRUBS, LAKE_SPUR, LAKE_TERRACE, PAVED, PORCH, WALL_SEGS, WALL_T,
-  cornerBedRect, labEntranceTreads, lakeStepTreads,
+  DECK_Y, LAB_CHEEKS, LAB_CHEEK_POTS, LAB_PLINTH, LAB_TERRACE_BENCHES, LAB_TERRACE_SHRUBS, LAKE_SPUR, LAKE_TERRACE, PAVED, PORCH, WALL_SEGS, WALL_T,
+  labEntranceTreads, lakeStepTreads,
 } from "./ailab";
 import { scooterStations } from "./scooters";
 
@@ -70,7 +73,7 @@ export type Surface = { id: string; kind: SurfaceKind; y: number; slope?: Slope;
 export type GroundSample = { id: string; kind: SurfaceKind; y: number; inCampus: boolean };
 
 /** what stops a body: a round post/trunk, or a box in its own frame (three's rotation.y convention) */
-export type SolidKind = "tree" | "lamp" | "bollard" | "bench" | "vehicle" | "scooter" | "rack" | "sign" | "wall" | "cheek" | "pot" | "shrub";
+export type SolidKind = "tree" | "lamp" | "bollard" | "bench" | "vehicle" | "scooter" | "rack" | "sign" | "wall" | "cheek" | "pot" | "shrub" | "site";
 export type Solid =
   | { id: string; kind: SolidKind; circle: { x: number; z: number; r: number } }
   | { id: string; kind: SolidKind; box: { x: number; z: number; hx: number; hz: number; cos: number; sin: number } };
@@ -327,10 +330,76 @@ function boxSolid(id: string, kind: SolidKind, x: number, z: number, yaw: number
 }
 const rectSolid = (id: string, kind: SolidKind, r: Rect): Solid => ({ id, kind, box: { x: r.x + r.w / 2, z: r.z + r.d / 2, hx: r.w / 2, hz: r.d / 2, cos: 1, sin: 0 } });
 
+/** THE TREES AS PLANTED: world/campus campusTreeSpots (the approved, seeded layout), except that a trunk
+ *  the grove scatter dropped INTO a paved path — through the PATH_LINK causeway, onto the north perimeter
+ *  walk behind the building — is NUDGED just clear of that path's nearest edge (EXTERIOR POLISH), so the
+ *  screen planting keeps its mass. A tree that would land in another path is left out. Trees standing in a
+ *  planting bed (the entry specimens) are where they belong and are not moved. Computed AFTER the draws, so
+ *  the stream and every other tree are untouched. The builder and the ground model both read this. */
+let plantedCache: Record<TreeKind, TreeSpot[]> | null = null;
+export function campusTrees(): Record<TreeKind, TreeSpot[]> {
+  if (plantedCache) return plantedCache;
+  // what a trunk may not stand in: paved paths, construction yards — and the Lab's stone plinth (below)
+  const keepOut: Rect[] = [...PAVED, ...WALKS, POND_PATH, ...PARK_PATHS, ...CONSTRUCTION_SITES.map((c) => c.yard), ...EXPANSION_LOTS.map((l) => vacantLotGround(l).stub),
+    ...ROADS.flatMap((r) => [roadRect(r), ...roadVerges(r).map((v) => v.walk)])];
+  const inBed = (t: Vec2) => PLANTING_BEDS.some((b) => inRect(t, b));
+  const hits = (t: Vec2, r: number) => keepOut.find((p) => t.x > p.x - r && t.x < p.x + p.w + r && t.z > p.z - r && t.z < p.z + p.d + r);
+  const LAB_C = { x: LAB_PLINTH.reduce((a, q) => a + q.x, 0) / LAB_PLINTH.length, z: LAB_PLINTH.reduce((a, q) => a + q.z, 0) / LAB_PLINTH.length };
+  const onPlinth = (t: Vec2, r: number) => inPoly(t, LAB_PLINTH) || [[r, 0], [-r, 0], [0, r], [0, -r]].some(([ox, oz]) => inPoly({ x: t.x + ox, z: t.z + oz }, LAB_PLINTH));
+  const placed: { x: number; z: number; r: number }[] = [];
+  const crowded = (t: Vec2, r: number) => placed.some((q) => Math.hypot(q.x - t.x, q.z - t.z) < q.r + r + 4);
+  // a trunk in the lake (or its roots in the water's edge) stands out onto the beach
+  const wet = (t: Vec2, r: number) => shoreDistance(LAKE, t) > -r - 4;
+  const blocked = (t: Vec2, r: number) => onPlinth(t, r) || !!hits(t, r) || inRect(t, PODIUM) || wet(t, r);
+  const settle = (kind: TreeKind) => (spot: TreeSpot): TreeSpot | null => {
+    const r = TREE_TRUNK_R[kind] * spot.s * 1.6; // the root flare reaches past the trunk
+    if (spot.y !== undefined || inBed(spot) || !blocked(spot, r)) return spot; // as approved
+    let t: TreeSpot = spot;
+    for (let pass = 0; pass < 6 && (blocked(t, r) || crowded(t, r)); pass++) {
+      if (wet(t, r)) {
+        const dx = t.x - LAKE.centre.x, dz = t.z - LAKE.centre.z, d = Math.hypot(dx, dz) || 1;
+        const k = shoreDistance(LAKE, t) + r + 10;
+        t = { ...t, x: t.x + (dx / d) * k, z: t.z + (dz / d) * k };
+      }
+      if (onPlinth(t, r) || crowded(t, r)) {
+        // step outward from the Lab (or simply onward, if it is only crowded) until clear
+        const dx = t.x - LAB_C.x, dz = t.z - LAB_C.z, d = Math.hypot(dx, dz) || 1;
+        for (let k = 4; k < 260; k += 4) {
+          const q = { ...t, x: t.x + (dx / d) * k, z: t.z + (dz / d) * k };
+          if (!onPlinth(q, r) && !crowded(q, r)) { t = q; break; }
+        }
+      }
+      const p = hits(t, r);
+      if (p) {
+        // well clear, not just clear: a trunk stood a hand's width off a raised path leaves a pocket narrower
+        // than a scooter between them, so a nudged tree steps a full body (CLEAR) beyond its own flare
+        const CLEAR = 20;
+        const moves = [
+          { x: p.x - r - CLEAR, z: t.z, d: t.x - (p.x - r) }, { x: p.x + p.w + r + CLEAR, z: t.z, d: p.x + p.w + r - t.x },
+          { x: t.x, z: p.z - r - CLEAR, d: t.z - (p.z - r) }, { x: t.x, z: p.z + p.d + r + CLEAR, d: p.z + p.d + r - t.z },
+        ].sort((a, b) => a.d - b.d);
+        const m = moves.find((q) => !blocked(q, r));
+        if (m) t = { ...t, x: m.x, z: m.z };
+      }
+    }
+    return blocked(t, r) || crowded(t, r) ? null : t;
+  };
+  const all = campusTreeSpots().spots;
+  // the approved trees claim their ground first, so a nudged tree steps round them rather than into them
+  for (const k of Object.keys(all) as TreeKind[]) for (const t of all[k]) { const r = TREE_TRUNK_R[k] * t.s * 1.6; if (t.y !== undefined || inBed(t) || !blocked(t, r)) placed.push({ x: t.x, z: t.z, r }); }
+  const run = (k: TreeKind) => all[k].map((t) => {
+    const out = settle(k)(t);
+    if (out && out !== t) placed.push({ x: out.x, z: out.z, r: TREE_TRUNK_R[k] * t.s * 1.6 });
+    return out;
+  }).filter((t): t is TreeSpot => t !== null);
+  plantedCache = { round: run("round"), tall: run("tall"), broad: run("broad"), conifer: run("conifer") };
+  return plantedCache;
+}
+
 /** EVERY VISIBLE SOLID OBSTACLE on and around the campus, from the placements the builders use. */
 export function exteriorSolids(): Solid[] {
   const out: Solid[] = [];
-  const trees = campusTreeSpots().spots;
+  const trees = campusTrees();
   for (const kind of Object.keys(trees) as TreeKind[])
     trees[kind].forEach((t, i) => out.push({ id: `tree:${kind}:${i}`, kind: "tree", circle: { x: t.x, z: t.z, r: TREE_TRUNK_R[kind] * t.s } }));
   [...streetLightSpots().map((l) => ({ ...l, s: 1 })), ...PARK_LAMPS].forEach((l, i) => out.push({ id: `lamp:${i}`, kind: "lamp", circle: { x: l.x, z: l.z, r: LAMP_BASE_R * l.s } }));
@@ -361,7 +430,10 @@ export function exteriorSolids(): Solid[] {
   });
   LAB_CHEEKS.forEach((r, i) => out.push(rectSolid(`lab-cheek:${i}`, "cheek", r)));
   LAB_CHEEK_POTS.forEach((r, i) => out.push(rectSolid(`lab-cheek-pot:${i}`, "pot", r)));
-  CORNER_TREES.forEach((t, i) => out.push(rectSolid(`lab-corner-bed:${i}`, "pot", cornerBedRect(t))));
+  // (the Lab's corner beds are clipped to the inside of their diagonal walls now — build/ailab cornerBedPoly —
+  // so nothing of them stands on the terrace and the terrace ring is open all the way round)
+  // CONSTRUCTION SITES (world/construction): their fences and scaffolds, from the data the site is drawn from
+  for (const site of CONSTRUCTION_SITES) for (const c of constructionSolids(site)) out.push(rectSolid(c.id, "site", c.rect));
   LAB_TERRACE_SHRUBS.forEach((t, i) => out.push({ id: `lab-shrub:${i}`, kind: "shrub", circle: { x: t.x, z: t.z, r: t.r } }));
   LAB_TERRACE_BENCHES.forEach((t, i) => out.push(rectSolid(`lab-bench:${i}`, "bench", { x: t.x - t.w / 2, z: t.z - 8, w: t.w, d: 16 })));
   return out;
@@ -431,7 +503,7 @@ export function buildExteriorGround(): ExteriorGround {
   surfaces.forEach((s, i) => surfB.insert(s.bbox, i));
   const solidB = new Buckets(area, 64);
   solids.forEach((s, i) => solidB.insert(grow(solidBBox(s), MAX_QUERY_R), i));
-  const TERRAIN: Omit<GroundSample, "inCampus"> = { id: "terrain", kind: "terrain", y: ROAD_Y - 1 };
+  const TERRAIN: Omit<GroundSample, "inCampus"> = { id: "terrain", kind: "terrain", y: TERRAIN_Y };
 
   const inCampus = (p: Vec2): boolean => inRect(p, bounds);
   function groundAt(p: Vec2): GroundSample {

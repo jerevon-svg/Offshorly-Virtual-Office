@@ -301,6 +301,19 @@ export function benchSpots(): { x: number; z: number; yaw: number }[] {
  *  edge, from any rotation. */
 export const WORLD_CENTRE = { x: FRAME.x + FRAME.w / 2, z: FRAME.z + FRAME.d / 2 };
 export const WORLD_RADIUS = 5400;
+/** THE OPEN COUNTRY between the lots, laid a hair under the lawns (EXTERIOR POLISH: it used to sit under the
+ *  carriageways at ROAD_Y − 1, which left a 2.6 lip at every lot edge and 2.95 off every far sidewalk).
+ *  It is now built as cells that never overlap a lot or a street corridor, so it can sit this close. */
+export const TERRAIN_Y = GRADE - 0.3;
+/** how far from WORLD_CENTRE a street is DRAWN: it runs on through the distant tree belt and ends at the foot
+ *  of the horizon ridge (build/exterior), instead of running out across the terrain disc's edge */
+export const ROAD_VIS_R = 4880;
+/** the drawn span of a road along its axis: its own extent clipped to the ROAD_VIS_R circle */
+export function roadVisibleSpan(r: Road): { from: number; to: number } {
+  const c = r.axis === "x" ? WORLD_CENTRE.x : WORLD_CENTRE.z, off = r.at - (r.axis === "x" ? WORLD_CENTRE.z : WORLD_CENTRE.x);
+  const half = Math.sqrt(Math.max(0, ROAD_VIS_R * ROAD_VIS_R - off * off));
+  return { from: Math.max(r.from, c - half), to: Math.min(r.to, c + half) };
+}
 
 // ---- LANDSCAPE COMPOSITION ---------------------------------------------------------------------------
 // V1 scattered trees at random across every lawn and field. It read as noise: ~310 near trees competing

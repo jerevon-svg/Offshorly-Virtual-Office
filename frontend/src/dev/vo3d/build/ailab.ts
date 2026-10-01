@@ -21,6 +21,7 @@
 // so it cannot merge with its neighbours) and the four labels (each carries its own CanvasTexture).
 import * as THREE from "three";
 import { Baker, rbox, cyl, slab } from "./helpers";
+import { shrubGeometry, treeLibrary } from "./exteriorFoliage";
 import { tiledFloor } from "./tile";
 import { opsRobot } from "./ai-furniture";
 import { pot as taperedPot } from "./props";
@@ -33,7 +34,7 @@ import { mat, emissiveMat, emissiveMatUnique, glowMat, glowMatUnique } from "../
 import {
   CORNER_TREES, DECK_Y, ENTRY_X0, ENTRY_X1, GRADE, HALL, HUB, INTERIOR_POTS, LAB_OUTER, LAKE_GAP_X0,
   LAKE_GAP_X1, LAKE_SPUR, LAKE_TERRACE, PAVED, PERIMETER_POTS, PILASTERS, PORCH,
-  SOUTH_BAY, WALL_BEDS, WALL_H, WALL_SEGS, WALL_T, ZONES, LAB_CHEEK_POTS, LAB_CHEEKS, LAB_PLINTH, LAB_TERRACE_BENCHES, LAB_TERRACE_SHRUBS, cornerBedRect, labEntranceTreads, lakeStepTreads,
+  SOUTH_BAY, WALL_BEDS, WALL_H, WALL_SEGS, WALL_T, ZONES, LAB_CHEEK_POTS, LAB_CHEEKS, LAB_PLINTH, LAB_TERRACE_BENCHES, LAB_TERRACE_SHRUBS, cornerBedPoly, labEntranceTreads, lakeStepTreads,
   type Planter, type PlantKind,
 } from "../world/ailab";
 import { AGENTS, AUX_STATUS, STATUS_LABEL, STATUS_PULSE, STATUS_TINT, agentById } from "../world/aiAgents";
@@ -70,6 +71,10 @@ function materials() {
     foliage: mat("foliage", 0.85),
     foliageLight: mat("foliageLight", 0.85),
     soil: mat("potDark", 1),
+    // THE MODELLED TREES (build/exteriorFoliage): bark and leaf colour live in the vertices, so these two
+    // are plain white-based materials of the Lab's own — one draw each for every tree in the room
+    bark: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92 }),
+    leaf: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85, flatShading: true }),
   };
 }
 
@@ -93,10 +98,18 @@ function wallSeg(b: Baker, a: Vec2, c: Vec2, h: number, t: number, m: THREE.Mate
   }
 }
 
-/** a shrub: two offset lumps of leaf, the cheapest thing that reads as planting from every angle */
+/** A SHRUB, in the campus's modelled language (build/exteriorFoliage shrubGeometry): five faceted leaf masses
+ *  round a dark heart, scaled so its spread is 2r — it replaced two stacked cylinders that read as cones.
+ *  Two seeds alternate; the wind weights are dropped (the Lab's planting does not sway). */
+const LAB_SHRUBS = [shrubGeometry(13), shrubGeometry(29, { base: 0x5f8d45, dark: 0x30552b, light: 0x8cb85c })].map((g) => { const c = g.clone(); c.deleteAttribute("wind"); return c; });
+let labShrubSeq = 0;
 function shrub(b: Baker, cx: number, y: number, cz: number, r: number, M: Mats): void {
-  b.add(cyl(r, r * 1.5, M.foliage, cx, y, cz, r * 0.55));
-  b.add(cyl(r * 0.66, r * 1.1, M.foliageLight, cx + r * 0.3, y + r * 0.7, cz - r * 0.25, r * 0.3));
+  const k = labShrubSeq++;
+  const mesh = new THREE.Mesh(LAB_SHRUBS[k % 2], M.leaf);
+  mesh.position.set(cx, y - r * 0.12, cz);
+  mesh.rotation.y = k * 2.17;
+  mesh.scale.set(r / 12, (r / 12) * 0.95, r / 12);
+  b.add(mesh);
 }
 
 /** a planted pot: shell, soil, planting. The reference sets these along every wall and between zones. */
@@ -107,11 +120,46 @@ function pot(b: Baker, r: Rect, M: Mats, tall = false): void {
   shrub(b, cx, DECK_Y + (tall ? 20 : 15), cz, s * 0.34, M);
 }
 
-/** a tree, in the campus's own read: trunk plus three lumps of canopy */
-function tree(b: Baker, cx: number, cz: number, s: number, M: Mats): void {
-  b.add(cyl(5.5 * s, 42 * s, M.reveal, cx, DECK_Y, cz, 4 * s));
-  b.add(cyl(30 * s, 38 * s, M.foliage, cx, DECK_Y + 36 * s, cz, 14 * s));
-  b.add(cyl(22 * s, 24 * s, M.foliageLight, cx - 10 * s, DECK_Y + 56 * s, cz + 7 * s, 9 * s));
+/** A TREE, in the campus's own modelled language (build/exteriorFoliage): grooved trunk, roots, branches and
+ *  layered leaf masses. The Lab is never in the shadow pass and its foliage does not sway, so the near cut
+ *  is merged straight into the bake, its wind weights dropped. `s` keeps the old trees' scale. */
+let labTreeSeq = 0;
+function tree(b: Baker, cx: number, cz: number, s: number, M: Mats, kind: "round" | "tall" = "round", y = DECK_Y): void {
+  const lib = treeLibrary()[kind][labTreeSeq++ % 2].near;
+  const yaw = labTreeSeq * 2.399;
+  const scale = s * (kind === "round" ? 0.8 : 0.62);
+  for (const [geo, m] of [[lib.trunk, M.bark], [lib.canopy, M.leaf]] as const) {
+    const g = geo.clone();
+    if (g.getAttribute("wind")) g.deleteAttribute("wind");
+    const mesh = new THREE.Mesh(g, m);
+    mesh.position.set(cx, y, cz);
+    mesh.rotation.y = yaw;
+    mesh.scale.setScalar(scale);
+    b.add(mesh);
+  }
+}
+
+/** a planted bed on an arbitrary convex plan (the clipped corner beds): stone rim, soil, shrubs */
+function polyBed(b: Baker, poly: Vec2[], h: number, M: Mats, fill: number): void {
+  const shape = (inset: number) => {
+    const cx = poly.reduce((a, p) => a + p.x, 0) / poly.length, cz = poly.reduce((a, p) => a + p.z, 0) / poly.length;
+    const sh = new THREE.Shape();
+    poly.forEach((p, i) => {
+      const dx = p.x - cx, dz = p.z - cz, d = Math.hypot(dx, dz) || 1, k = Math.max(0, d - inset) / d;
+      // slab() maps shape-y to world −z (see plinthShape)
+      const x = cx + dx * k, y = -(cz + dz * k);
+      if (i === 0) sh.moveTo(x, y); else sh.lineTo(x, y);
+    });
+    sh.closePath();
+    return sh;
+  };
+  b.add(slab(shape(0), h, M.stone, DECK_Y, 0.8));
+  b.add(slab(shape(3), 1.4, M.soil, DECK_Y + h - 1.5, 0.3));
+  const cx = poly.reduce((a, p) => a + p.x, 0) / poly.length, cz = poly.reduce((a, p) => a + p.z, 0) / poly.length;
+  for (let i = 0; i < fill; i++) {
+    const p = poly[i % poly.length];
+    shrub(b, cx + (p.x - cx) * 0.55, DECK_Y + h - 1, cz + (p.z - cz) * 0.55, 5.5 + (i % 3) * 2, M);
+  }
 }
 
 /** a bench: seat plate on two stone cheeks, as the reference lines the walls with */
@@ -298,11 +346,9 @@ function hub(b: Baker, flora: THREE.Group, sway: SwayNode[], M: Mats): void {
   // 45-unit canopy over an 88-unit island, which from any overhead angle was a green dome with the whole
   // garden hidden beneath it. This is the same amount of greenery redistributed: a tall slim trunk
   // carrying a 26-unit crown well clear of the ground, so soil, shrubs and the secondary tree all read.
-  b.add(cyl(6, 64, M.reveal, x + 4, DECK_Y + 30, z - 6, 4.4));
-  b.add(cyl(26, 30, M.foliage, x + 4, DECK_Y + 86, z - 6, 12));
-  b.add(cyl(17, 18, M.foliageLight, x - 6, DECK_Y + 104, z + 2, 7));
-  tree(b, x - 30, z + 20, 0.66, M);
-  tree(b, x + 26, z + 26, 0.5, M);
+  tree(b, x + 4, z - 6, 1.55, M, "tall", DECK_Y + 33);
+  tree(b, x - 30, z + 20, 0.66, M, "round", DECK_Y + 33);
+  tree(b, x + 26, z + 26, 0.5, M, "round", DECK_Y + 33);
   for (let i = 0; i < 7; i++) {
     const a = (i / 7) * Math.PI * 2 + 0.45;
     shrub(b, x + Math.cos(a) * (r - 58), DECK_Y + 33, z + Math.sin(a) * (r - 58), 7.5 + (i % 3) * 1.6, M);
@@ -544,7 +590,8 @@ export function buildAiLab(): AiLabBuild {
   // a feature plant and an understorey, composed as one garden rather than as a tree with a pot by it.
   for (let i = 0; i < CORNER_TREES.length; i++) {
     const t = CORNER_TREES[i];
-    bed(b, cornerBedRect(t), 16, M, 5);
+    // the bed follows the corner: clipped to the inside of the diagonal wall (world/ailab cornerBedPoly)
+    polyBed(b, cornerBedPoly(t), 16, M, 5);
     tree(b, t.x + (i % 2 ? 10 : -10), t.z + (i < 2 ? 6 : -6), t.s, M);
     tree(b, t.x + (i % 2 ? -18 : 18), t.z + (i < 2 ? -14 : 14), t.s * 0.54, M);
     flora.add(largePlant({ x: t.x + (i % 2 ? -22 : 22), z: t.z + (i < 2 ? 22 : -22), y: DECK_Y + 15, r: 7.4, h: 44, pot: false, lush: 1.2 }, sway));

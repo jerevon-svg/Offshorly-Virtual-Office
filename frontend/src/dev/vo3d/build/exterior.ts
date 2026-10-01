@@ -18,16 +18,28 @@
 // That is what lets the environment darken the whole exterior at night (EnvPreset.exteriorTint) without
 // reaching into a single interior material.
 import * as THREE from "three";
-import { Baker, bake, cyl, rbox, shadowed } from "./helpers";
+import { Baker, bake, rbox, shadowed } from "./helpers";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { prng, triCount } from "./exteriorGeo";
+import { TREE_VARIANTS, flowerClump, fern, grassTuft, reedClump, shrubGeometry, stone, treeLibrary } from "./exteriorFoliage";
+import { groundFinish, waterMaterial, waterUniforms, windByVertex } from "./exteriorShaders";
+import {
+  bedEdgingGeometry, beltGeometries, beltSpots, coverSpots, decalGeometry, drainageGeometry, kerbGeometry, lakeGeometry,
+  rampEdgeGeometry, rampStripGeometry, ridgeGeometry, shoreGeometry, terrainGeometry, type CoverKind,
+} from "./exteriorDetail";
+import { buildConstructionSite } from "./constructionSite";
+import { CONSTRUCTION_SITES } from "../world/construction";
+import { campusTrees } from "../world/exteriorGround";
 import { canvas2d } from "../render/Materials";
 import {
   CROSSINGS, DROP_OFF, EXPANSION_LOTS, GRADE, LOTS, MARK_Y, PARK_DRIVE,
-  PARKING, PAVING_Y, POND, POND_BENCHES, POND_PATH, POND_SHORE, PODIUM, ROAD_Y, ROADS,
-  STALL_BANKS, STALL_D, STALL_W, VEHICLES, WALKS, WORLD_CENTRE,
-  WORLD_RADIUS, benchSpots, roadById, roadRect, streetLightSpots,   PARK_ACCESSIBLE, PARK_AISLE, PARK_CROSSINGS, PARK_ISLANDS, PARK_LAMPS, PARK_PATHS, PARK_SCREEN, stallRect,
+  PARKING, PAVING_Y, POND_BENCHES, POND_PATH, POND_SHORE, PODIUM, ROAD_Y, ROADS,
+  STALL_BANKS, STALL_D, STALL_W, VEHICLES, WALKS,
+  benchSpots, roadById, roadRect, streetLightSpots,   PARK_ACCESSIBLE, PARK_AISLE, PARK_CROSSINGS, PARK_ISLANDS, PARK_LAMPS, PARK_PATHS, PARK_SCREEN, stallRect,
   LAYBY, LAYBY_WALK, LAYBY_Y,
-  BED_Y, ENTRY_TREADS, ISLAND_H, MONUMENT_SIGN, PLANTING_BEDS, SCATTER_SEED, SHORE_Y, WATER_Y,
-  CURB_Y, RAMPS, type Ramp, LOT_MARKER_PLINTH, VACANT_PAD_Y, vacantLotGround, bollardSpots, campusShrubSpots, campusTreeSpots, lotMarkerSpot, roadVerges, entryStairTreads, pondOutline, scatterStep,
+  BED_Y, ISLAND_H, MONUMENT_SIGN, PLANTING_BEDS, SCATTER_SEED, WATER_Y,
+  RAMPS, type Ramp, LOT_MARKER_PLINTH, VACANT_PAD_Y, vacantLotGround, bollardSpots, campusShrubSpots, campusTreeSpots, lotMarkerSpot, roadVerges, entryStairTreads, scatterStep,
+  roadVisibleSpan, type TreeKind,
 } from "../world/campus";
 import { scooterDockGeos, vehicleGeos, type VehicleGeos } from "./vehicles";
 import { SCOOTER_COLOUR, type ScooterStation } from "../world/scooters";
@@ -48,6 +60,8 @@ const EX = {
   hedge: 0x557a3e, pole: 0x474c53, lamp: 0xffe6bd, bollard: 0xb8b1a6, puddle: 0x2b3a42,
   bench: 0xc09a6a, benchFrame: 0x4a4f55, stone: 0x6e6a62, stoneDark: 0xb9b1a3, signPlinth: 0x4c4944, signFace: 0x22302a,
   glass: 0x2a3944, tyre: 0x25262c, water: 0x5f93a8, shore: 0xa79b85,
+  // the lake's depth range and its lapping edge (build/exteriorShaders waterMaterial)
+  waterShallow: 0x7fb9b0, waterDeep: 0x2f6680, foam: 0xe4efe9, utility: 0x45484c,
 } as const;
 
 
@@ -85,18 +99,21 @@ class ExteriorMaterials {
     }
     return m;
   }
-  /** The pond. A smooth low-roughness surface with a touch of metalness so the IBL and the sun actually
-   *  land on it — that sheen is the whole reason it reads as water and not as blue paint. Tintable like
-   *  every other exterior surface, so it goes deep and cold with the rest of the world at night. */
+  /** THE LAKE'S LIVE STATE: time, rain and wind as shared uniform objects (build/exteriorShaders) */
+  readonly lake = waterUniforms();
+  /** THE LAKE. A smooth, slightly metallic standard surface (so the IBL and the sun land on it) with the
+   *  living-water patch on top: moving waves and glints, shallow/deep colour from world/water's shoreline
+   *  distance, a lapping edge, and rain rings. Tintable like every exterior surface, so it goes deep and cold
+   *  at night; registered wet, so rain roughens the mirror into a broad dull sheen. */
   water(): THREE.MeshStandardMaterial {
-    const m = new THREE.MeshStandardMaterial({ color: EX.water, roughness: 0.08, metalness: 0.35, envMapIntensity: 1.6 });
-    this.tintable.push({ m, base: new THREE.Color(EX.water) });
-    // THE POND GOES THE OTHER WAY. Rain on still water is a million micro-ripples, so the surface gets
-    // ROUGHER, not smoother: the mirror breaks up and the sheen turns from a hard highlight into a broad
-    // dull one. Same one-line mechanism as the roads, opposite direction — which is the argument for
-    // making wetness a per-material registration rather than one global roughness multiplier.
-    this.wettable.push({ m, dryR: 0.08, wetR: 0.34, dryEnv: 1.6, wetEnv: 1.15 });
-    return m;
+    const m = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.07, metalness: 0.22, envMapIntensity: 1.5 });
+    this.tintable.push({ m, base: new THREE.Color(0xffffff) });
+    this.wettable.push({ m, dryR: 0.07, wetR: 0.22, dryEnv: 1.5, wetEnv: 1.2 });
+    return waterMaterial(m, this.lake, { shallow: EX.waterShallow, deep: EX.waterDeep, foam: EX.foam });
+  }
+  /** a tintable surface whose colour lives in its VERTICES (white base) — every modelled exterior piece */
+  painted(roughness = 0.9, extra: Partial<THREE.MeshStandardMaterialParameters> = {}): THREE.MeshStandardMaterial {
+    return this.surface(0xffffff, roughness, { vertexColors: true, ...extra });
   }
   /** REGISTER A SURFACE AS ONE THAT VISIBLY WETS. Rain drops its roughness and lifts its environment
    *  response, so the sky and the street lamps start to sheen off it — which is the whole read of "wet
@@ -248,6 +265,33 @@ function puddleAlphaMap(): THREE.CanvasTexture | null {
   return puddleAlpha;
 }
 
+const UP_Y = new THREE.Vector3(0, 1, 0);
+/** Flatten a built group (a marker, the monument sign) into the ground Baker: each mesh takes its world
+ *  transform (the group's own) so it can merge with every other piece of the same material. */
+function bakeGroup(b: Baker, g: THREE.Group): void {
+  g.updateMatrixWorld(true);
+  for (const c of [...g.children]) {
+    if (!(c instanceof THREE.Mesh)) continue;
+    const m = c.clone();
+    m.geometry = c.geometry.clone().applyMatrix4(c.matrixWorld);
+    m.position.set(0, 0, 0); m.rotation.set(0, 0, 0); m.scale.set(1, 1, 1);
+    b.add(m);
+  }
+}
+/** THE CONSTRUCTION SIGN's face: the canvas as map and emissive map, lit to the practicals like the lot
+ *  markers — readable by day, glowing softly after dusk */
+function constructionSignMat(M: ExteriorMaterials, canvas: HTMLCanvasElement | null): THREE.Material {
+  const base = M.lamp(0x22302a, 1.2, 0xffffff);
+  if (!canvas) return base;
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  base.map = tex; base.emissiveMap = tex; base.color = new THREE.Color(0xffffff);
+  base.needsUpdate = true;
+  M.setBase(base, 0xffffff);
+  return base;
+}
+
 /** Merge a set of meshes into ONE geometry (for an InstancedMesh). Reuses the build-time baker. */
 function mergedGeo(meshes: THREE.Mesh[]): THREE.BufferGeometry {
   const one = bake(meshes, meshes[0].material as THREE.Material);
@@ -283,56 +327,6 @@ let xseed = SCATTER_SEED;
 const rx = (): number => (xseed = scatterStep(xseed)) / 4294967296;
 const resetScatter = (): void => void (xseed = SCATTER_SEED);
 
-// ---- repeated pieces ----------------------------------------------------------------------------------
-const ico = (r: number, detail = 0) => new THREE.IcosahedronGeometry(r, detail);
-function blob(m: THREE.Material, x: number, y: number, z: number, rxs: number, ry = rxs, rzs = rxs): THREE.Mesh {
-  const mesh = new THREE.Mesh(ico(1), m);
-  mesh.scale.set(rxs, ry, rzs);
-  mesh.position.set(x, y, z);
-  return shadowed(mesh);
-}
-
-/** Three broadleaf silhouettes + one conifer. Each returns trunk geometry and canopy geometry separately
- *  so a variant costs exactly two instanced draw calls however many of it stand in the world. */
-function treeGeos(): Record<string, { trunk: THREE.BufferGeometry; canopy: THREE.BufferGeometry }> {
-  const round = {
-    trunk: mergedGeo([cyl(4.4, 30, TMP, 0, 0, 0, 3.4)]),
-    canopy: mergedGeo([blob(TMP, 0, 46, 0, 26, 22, 26), blob(TMP, -14, 58, 5, 16), blob(TMP, 13, 56, -6, 15), blob(TMP, 2, 68, 3, 12)]),
-  };
-  const tall = {
-    trunk: mergedGeo([cyl(3.6, 46, TMP, 0, 0, 0, 2.8)]),
-    canopy: mergedGeo([blob(TMP, 0, 58, 0, 17, 26, 17), blob(TMP, 0, 78, 0, 13, 18, 13), blob(TMP, 1, 94, -1, 9, 11, 9)]),
-  };
-  const broad = {
-    trunk: mergedGeo([cyl(5.2, 22, TMP, 0, 0, 0, 4)]),
-    canopy: mergedGeo([blob(TMP, 0, 36, 0, 31, 17, 29), blob(TMP, -16, 44, -8, 17, 12, 17), blob(TMP, 17, 43, 8, 16, 12, 16)]),
-  };
-  const cone = (r: number, h: number, y: number) => { const c = new THREE.Mesh(new THREE.ConeGeometry(r, h, 7), TMP); c.position.y = y; return shadowed(c); };
-  const conifer = {
-    trunk: mergedGeo([cyl(3, 20, TMP, 0, 0, 0, 2.4)]),
-    canopy: mergedGeo([cone(20, 34, 32), cone(15, 28, 52), cone(10, 24, 70)]),
-  };
-  return { round, tall, broad, conifer };
-}
-
-function shrubGeo(): THREE.BufferGeometry {
-  return mergedGeo([blob(TMP, 0, 8, 0, 13, 10, 13), blob(TMP, 7, 13, -4, 8), blob(TMP, -6, 12, 5, 7)]);
-}
-
-
-/** The pond outline: a closed catmull-rom through eight radii-jittered points, so the water reads as a
- *  landscaped body rather than a stamped ellipse. `grow` scales it for the shore band. Deterministic. */
-function pondShape(grow: number): THREE.Shape {
-  // the outline itself is world/campus pondOutline, shared with the ground model's water test
-  const sh = new THREE.Shape();
-  pondOutline(grow).forEach((p, i) => (i === 0 ? sh.moveTo(p.x, p.y) : sh.lineTo(p.x, p.y)));
-  sh.closePath();
-  return sh;
-}
-
-
-
-
 /** A RAMP as a solid wedge: its sloped top from `fromY` to `toY` along its axis, down to below grade. */
 function rampWedge(r: Ramp, m: THREE.Material): THREE.Mesh {
   const along = r.axis === "x" ? r.rect.w : r.rect.d, across = r.axis === "x" ? r.rect.d : r.rect.w;
@@ -348,23 +342,30 @@ function rampWedge(r: Ramp, m: THREE.Material): THREE.Mesh {
   return shadowed(mesh, false, true);
 }
 
-/** A street lamp: post + arm + head (one geometry), and its lens (a second, emissive). */
+/** A street lamp: post + arm + head (one geometry), and its lens (a second, emissive). REPLACED, not added
+ *  to (EXTERIOR POLISH): the old post was 376 triangles of 20-sided cylinders and rounded boxes — a third
+ *  of a tree each, 115 times over. Eight sides and plain boxes give the same silhouette at under a fifth. */
 function lampGeos(): { post: THREE.BufferGeometry; lens: THREE.BufferGeometry } {
-  const post = mergedGeo([
-    cyl(5.5, 5, TMP, 0, 0, 0),
-    cyl(3.4, 128, TMP, 0, 4, 0, 2.6),
-    rbox(4, 4, 40, TMP, 0, 128, -18, 1.4, 1),
-    rbox(13, 6, 30, TMP, 0, 122, -34, 2.4, 1),
-  ]);
-  const lens = mergedGeo([rbox(10, 2.4, 24, TMP, 0, 120.4, -34, 1, 1)]);
-  return { post, lens };
+  const box = (w: number, h: number, d: number, x: number, y0: number, z: number) => new THREE.BoxGeometry(w, h, d).translate(x, y0 + h / 2, z);
+  const post = mergeGeometries([
+    new THREE.CylinderGeometry(4.6, 6, 6, 8, 1).translate(0, 3, 0), //            the cast base
+    new THREE.CylinderGeometry(2.1, 3.3, 124, 8, 1, true).translate(0, 66, 0), //  the tapered shaft
+    new THREE.CylinderGeometry(2.6, 2.6, 3, 8, 1).translate(0, 27.5, 0), //        a collar
+    box(3.4, 3.4, 38, 0, 126, -17), //                                           the arm
+    box(12, 5.5, 30, 0, 121, -34), //                                            the head
+  ].map((g) => g.toNonIndexed()), false)!;
+  return { post, lens: box(10, 1.2, 24, 0, 120.6, -34).toNonIndexed() };
 }
 
 function bollardGeos(): { post: THREE.BufferGeometry; lens: THREE.BufferGeometry } {
   return {
-    post: mergedGeo([cyl(6, 3, TMP, 0, 0, 0), cyl(4.4, 30, TMP, 0, 2, 0), cyl(5.4, 3, TMP, 0, 35, 0)]),
-    lens: mergedGeo([cyl(4.6, 4, TMP, 0, 31, 0)]),
+    post: mergedGeo([cylLow(6, 3, 0, 8), cylLow(4.4, 30, 2, 8, true), cylLow(5.4, 3, 35, 8)]),
+    lens: mergedGeo([cylLow(4.6, 4, 31, 8, true)]),
   };
+}
+/** a low-sided cylinder mesh for the posts (helpers' cyl is 20-sided) */
+function cylLow(r: number, h: number, y0: number, seg: number, open = false): THREE.Mesh {
+  return new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, seg, 1, open).translate(0, y0 + h / 2, 0), TMP);
 }
 
 function benchGeos(): { wood: THREE.BufferGeometry; frame: THREE.BufferGeometry } {
@@ -402,14 +403,29 @@ export type ExteriorScenery = {
      *  lateral axis, then leaned by `lean` about its forward axis */
     placeRidden(x: number, z: number, yaw: number, lean: number, y?: number, pitch?: number): void;
   } | null;
-  stats: { draws: number; instanced: number; instances: number; trees: number; vehicles: number; traffic: number; docks: number };
+  /** 0 = no rain, 1 = the heaviest: rings on the lake (wetness says how wet things ARE; this is whether
+   *  drops are falling NOW, so the rings stop when the rain does even while the ground stays wet) */
+  applyRain(intensity: number): void;
+  /** DETAIL FOLLOWS THE CAMERA: trees swap to their near cut close to it, ground cover beyond its range is
+   *  culled. `camLocal` is the camera in this root's own frame (the exterior may be anchored upstairs).
+   *  Cheap, and it does its work only when the camera has moved a meaningful distance. */
+  detailTick(camLocal: THREE.Vector3): void;
+  stats: {
+    draws: number; instanced: number; instances: number; trees: number; vehicles: number; traffic: number; docks: number;
+    /** the near-cut tree budget: how many may be near at once, and the most triangles that adds */
+    treeLod: { nearCap: number; nearExtraTris: number; nearNow: number };
+    cover: number;
+    construction: { tris: number; draws: number };
+    /** the lot markers baked into the ground layer, by name (lot-marker:<lot id>) */
+    lotMarkers: string[];
+  };
 };
 
-/** HOW FAR THE TOP TRAVELS AT FULL WIND, per world unit of height. A 100-unit tree's crown moves ~4.2
- *  units at THUNDERSTORM, ~3 at RAIN and a bare 0.7 in fair weather. Found by eye at office zoom: the
- *  next step up starts to read as rubber rather than as timber. */
-const CANOPY_FLEX = 0.042;
-const SHRUB_FLEX = 0.009;
+/** TREE LOD: a tree within NEAR_IN of the camera takes its near cut, and keeps it out to NEAR_OUT; at most
+ *  NEAR_CAP trees (the closest) are near at once, which bounds the worst case whatever the camera does */
+const NEAR_IN = 620, NEAR_OUT = 700, NEAR_CAP = 26;
+/** ground cover is drawn within this distance of the camera */
+const COVER_RANGE = 1350;
 
 export function buildExterior(opts: { scooterStations?: readonly ScooterStation[] } = {}): ExteriorScenery {
   const stations = opts.scooterStations ?? [];
@@ -420,43 +436,51 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
   root.name = "exterior-world";
 
   const ground = new Baker();
-  const terrainM = M.surface(EX.terrain), lawnM = M.surface(EX.lawn), lawnDarkM = M.surface(EX.lawnDark);
-  const meadowM = M.surface(EX.meadow), padM = M.surface(EX.pad);
+  // THE GROUND FINISHES (build/exteriorShaders): mottled, mown and dry-patched grass, slab joints in the
+  // paving, aggregate in the asphalt, joints in the kerbs, mulch in the beds — shader detail on the same
+  // materials, so no draw call and no texture is added
+  const terrainM = groundFinish(M.surface(EX.terrain), "terrain"), lawnM = groundFinish(M.surface(EX.lawn), "lawn-mown"), lawnDarkM = groundFinish(M.surface(EX.lawnDark), "lawn");
+  const meadowM = groundFinish(M.surface(EX.meadow), "lawn"), padM = groundFinish(M.surface(EX.pad, 0.96), "lawn");
   // THE WET SET: everything a shower actually pools on. Asphalt goes furthest (a wet road is nearly a
   // mirror), paving is restrained, the curb barely moves. Lawns, soil and planting are NOT registered —
   // grass does not gloss, and making it do so is the single fastest way to make rain look like plastic.
-  const roadM = M.wet(M.surface(EX.asphalt, 0.85), 0.3, 1.45), lineM = M.wet(M.surface(EX.line, 0.7), 0.34, 1.3), crossM = M.wet(M.surface(EX.crossing, 0.7), 0.34, 1.3);
-  const pavingM = M.wet(M.surface(EX.paving, 0.9), 0.46, 1.25), pavingWarmM = M.wet(M.surface(EX.pavingWarm, 0.88), 0.46, 1.25), curbM = M.wet(M.surface(EX.curb, 0.85), 0.6, 1.15);
-  const soilM = M.surface(EX.soil, 1);
+  const roadM = groundFinish(M.wet(M.surface(EX.asphalt, 0.85), 0.3, 1.45), "asphalt"), lineM = M.wet(M.surface(EX.line, 0.7), 0.34, 1.3), crossM = M.wet(M.surface(EX.crossing, 0.7), 0.34, 1.3);
+  const pavingM = groundFinish(M.wet(M.surface(EX.paving, 0.9), 0.46, 1.25), "paving"), pavingWarmM = groundFinish(M.wet(M.surface(EX.pavingWarm, 0.88), 0.46, 1.25), "paving-warm"), curbM = groundFinish(M.wet(M.surface(EX.curb, 0.85), 0.6, 1.15), "kerb");
+  const soilM = groundFinish(M.surface(EX.soil, 1), "soil");
+  const utilM = M.wet(M.surface(EX.utility, 0.55, { metalness: 0.3 }), 0.2, 1.4);
 
-  // 1. TERRAIN. One disc, wide enough that no normal gameplay view — at any rotation, at the widest
-  //    zoom — can see its edge. Rings of distant planting sit inside it, so the silhouette reads as
-  //    countryside rather than as a plate.
-  const terrain = new THREE.Mesh(new THREE.CircleGeometry(WORLD_RADIUS, 56), terrainM);
-  terrain.rotation.x = -Math.PI / 2;
-  // BELOW the carriageway, not above it: the roads are already a curb below the lawn (ROAD_Y), so a
-  // terrain plate at grade would bury them. Kept close (2.6 units under a 1244-unit floor) so the step
-  // where a lot's lawn meets open country is invisible at gameplay pitch.
-  terrain.position.set(WORLD_CENTRE.x, ROAD_Y - 1, WORLD_CENTRE.z);
-  root.add(shadowed(terrain, false, true));
+  // 1. TERRAIN. Open country at grade (world/campus TERRAIN_Y), built as cells that never overlap a lot or a
+  //    street corridor (build/exteriorDetail) — it used to be one disc under the carriageways, 2.6 below the
+  //    lawns and 2.95 below the far sidewalks, and that lip was visible all round every parcel.
+  {
+    const t = new THREE.Mesh(terrainGeometry(), terrainM);
+    t.name = "terrain";
+    root.add(shadowed(t, false, true));
+  }
 
   // 2. LOTS. Every parcel gets its lawn first; paving is laid over it afterwards.
   for (const lot of LOTS) ground.add(flatRect(lot.rect, lot.kind === "field" ? meadowM : lot.id === "lot-offshorly" ? lawnM : lawnDarkM, GRADE));
 
-  // 3. THE STREET GRID. Carriageway, curb band, sidewalks, centre dashes; then the crossings on top.
+  // 3. THE STREET GRID. Carriageway, sidewalks, centre dashes and real kerb stones; then the crossings. Each
+  //    street is drawn only over its VISIBLE span (world/campus roadVisibleSpan): it runs out through the
+  //    distant belt and ends at the ridge's foot instead of across the world's rim.
   for (const r of ROADS) {
-    const rect = roadRect(r);
-    ground.add(flatRect(rect, roadM, ROAD_Y));
-    for (const v of roadVerges(r)) {
-      ground.add(flatRect(v.walk, pavingM, PAVING_Y));
-      ground.add(flatRect(v.curb, curbM, CURB_Y));
-    }
+    const span = roadVisibleSpan(r);
+    const clip = (x: Rect): Rect => r.axis === "x" ? { ...x, x: span.from, w: span.to - span.from } : { ...x, z: span.from, d: span.to - span.from };
+    ground.add(flatRect(clip(roadRect(r)), roadM, ROAD_Y));
+    for (const v of roadVerges(r)) ground.add(flatRect(clip(v.walk), pavingM, PAVING_Y));
     // dashed centre line
     for (let t = r.from + 60; t < r.to; t += 180) {
+      if (t < span.from || t + 84 > span.to) continue;
       const seg: Rect = r.axis === "x" ? { x: t, z: r.at - 2, w: 84, d: 4 } : { x: r.at - 2, z: t, w: 4, d: 84 };
       ground.add(flatRect(seg, lineM, MARK_Y));
     }
   }
+  // THE KERB STONES: a chamfered profile where every carriageway meets its curb band, replacing the flat
+  // band that floated 1.7 over the road's edge (top at CURB_Y — the ground model's kerb height)
+  ground.add(new THREE.Mesh(kerbGeometry(), curbM));
+  // drainage gullies at the gutters and manhole covers, near the block
+  ground.add(new THREE.Mesh(drainageGeometry(), utilM));
   for (const c of CROSSINGS) {
     const r = roadById(c.roadId);
     for (let i = -3; i <= 3; i++) {
@@ -516,26 +540,23 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
   }
   // The podium skirt: a slightly wider base band UNDER the V1 plinth (whose own base is exactly at GRADE),
   // so the office reads as sitting IN the site rather than resting on it. It must stay entirely below
-  // grade — anything above it would cover the ground floor it is supposed to support.
-  const skirt = rbox(PODIUM.w + 26, 4.8, PODIUM.d + 26, M.surface(EX.stoneDark, 0.9), PODIUM.x + PODIUM.w / 2, GRADE - 5, PODIUM.z + PODIUM.d / 2, 2, 1);
-  root.add(shadowed(skirt, false, true));
-  // The entry stair down to the drop-off: SOLID treads. A flat plane at tread height has nothing beneath
-  // it and reads as a floating slab the moment the camera rotates, so each step is a box standing on grade.
-  const treads = ENTRY_TREADS;
-  const stairM = M.surface(EX.pavingWarm, 0.88);
-  for (const t of entryStairTreads()) {
-    const step = rbox(t.rect.w, t.top - t.base, t.rect.d, stairM, t.rect.x + t.rect.w / 2, t.base, t.rect.z + t.rect.d / 2, 1.2, 1);
-    root.add(shadowed(step, false, true));
-  }
+  // grade — anything above it would cover the ground floor it is supposed to support. Baked with the ground.
+  ground.add(shadowed(rbox(PODIUM.w + 26, 4.8, PODIUM.d + 26, M.surface(EX.stoneDark, 0.9), PODIUM.x + PODIUM.w / 2, GRADE - 5, PODIUM.z + PODIUM.d / 2, 2, 1), false, true));
+  // The entry stair down to the drop-off: SOLID treads, each a box standing on grade, baked with the ground
+  for (const t of entryStairTreads()) ground.add(shadowed(rbox(t.rect.w, t.top - t.base, t.rect.d, pavingWarmM, t.rect.x + t.rect.w / 2, t.base, t.rect.z + t.rect.d / 2, 1.2, 1), false, true));
 
   // THE RAMPS (world/campus RAMPS, Phase 4): solid wedges in the entry flight's warm paving, each standing on
   // grade (or sunk into the plinth ring it crosses) and falling along its axis — the same slope the ground
-  // model walks and rides. Baked with the ground: no new draw.
+  // model walks and rides. FINISHED (EXTERIOR POLISH): a stone edge kerb rides each long side 1.1 proud of the
+  // slope, and a tactile strip marks its top and foot. All baked with the ground: no new draw.
   for (const r of RAMPS) ground.add(rampWedge(r, pavingWarmM));
+  ground.add(new THREE.Mesh(rampEdgeGeometry(), curbM));
+  ground.add(new THREE.Mesh(rampStripGeometry(), lineM));
 
-  // 5. PLANTING BEDS along the podium and the drop-off.
+  // 5. PLANTING BEDS along the podium and the drop-off: mulched soil inside a low stone edging
   const beds = PLANTING_BEDS;
   for (const b of beds) ground.add(flatRect(b, soilM, BED_Y));
+  ground.add(new THREE.Mesh(bedEdgingGeometry(), curbM));
 
   // 6. THE VACANT PARCELS. Each one reads as intentional, maintained, open land waiting for a campus:
   //    a mown pad set back from its frontage, a service drive stub off the road it fronts, a hedge line
@@ -545,88 +566,166 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
     ground.add(flatRect(pad, padM, VACANT_PAD_Y));
     ground.add(flatRect(stub, roadM, PAVING_Y - 0.3));
   }
+  // the lot markers and the monument sign join the bake too: a marker was six draws of its own, the sign three
+  const lotMarkers: string[] = [];
+  for (const lot of EXPANSION_LOTS) { const g = buildLotMarker(M, lot); bakeGroup(ground, g); lotMarkers.push(g.name); }
+  bakeGroup(ground, buildMonumentSign(M));
   const groundDraws = ground.bakeInto(root, "exterior-ground");
 
-  // 7. PLANTING — COMPOSED, NOT SCATTERED. Every tree comes from world/campus's TREE_LINES, GROVES or
-  //    SPECIMENS: tidy rows on the four stretches that frame the block, a handful of organic clusters, a
-  //    few feature trees, and large areas of grass left deliberately empty. Nothing is distributed
-  //    uniformly across a field any more. Everything below is instanced.
-  const trees = treeGeos();
+  // SOFT DECALS: worn verges along every path and contact shading round the Lab's plinth and causeways —
+  // one transparent, vertex-alpha mesh, lit and tinted like the ground under it
+  {
+    const m = M.surface(0xffffff, 1, { vertexColors: true, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+    const d = new THREE.Mesh(decalGeometry(), m);
+    d.name = "ground-decals";
+    d.renderOrder = 1;
+    d.receiveShadow = true;
+    root.add(d);
+  }
+
+  // 7. PLANTING — COMPOSED, NOT SCATTERED, AND NOW MODELLED (build/exteriorFoliage). Every tree still comes
+  //    from world/campus's TREE_LINES, GROVES or SPECIMENS (less any that stood in a paved path — world/
+  //    exteriorGround campusTrees), but each is a built tree: grooved, root-flared trunk, branches, layered
+  //    leaf masses, two seeds per species. ALL OF THEM ARE TWO DRAWS: one BatchedMesh of trunks (bark) and one
+  //    of crowns (leaf, swaying), each holding every species/seed in a NEAR and a FAR cut; detailTick swaps a
+  //    tree to its near cut as the camera comes close, for at most NEAR_CAP trees at a time.
   // the placements are world/campus campusTreeSpots — the FIRST draws after resetScatter, reproduced from
   // the seed so the ground model reads the very trees drawn here; the stream then resumes where it ended
-  const scatter = campusTreeSpots();
-  const treeSpots: Record<string, Spot[]> = scatter.spots;
-  xseed = scatter.seedAfter;
-
+  xseed = campusTreeSpots().seedAfter;
+  const planted = campusTrees();
+  const lib = treeLibrary();
   let instanced = 0, instances = 0;
-  // One canopy TONE per variant: merging discards per-blob materials, so variety comes from the four
-  // silhouettes and their four greens rather than from per-leaf colour. That is the price of one draw call
-  // per variant part, and at diorama scale it reads as a mixed planting.
-  const CANOPY_TONE: Record<string, number> = { round: EX.canopy, tall: EX.canopyLight, broad: EX.canopyDeep, conifer: EX.conifer };
-  const addPair = (geos: { trunk: THREE.BufferGeometry; canopy: THREE.BufferGeometry }, spots: Spot[], kind: string) => {
-    if (!spots.length) return;
-    root.add(instance(geos.trunk, M.facet(EX.trunk, 0.95), spots, true, `tree-${kind}-trunk`));
-    // THE CANOPY BENDS, THE TRUNK DOES NOT. A tree that leans as one rigid piece reads as a lamp post
-    // being pushed over; the whole silhouette of wind is a still trunk under a working crown.
-    root.add(instance(geos.canopy, M.foliage(M.facet(CANOPY_TONE[kind]), CANOPY_FLEX), spots, true, `tree-${kind}-canopy`));
-    instanced += 2;
-    instances += spots.length * 2;
-  };
-  addPair(trees.round, treeSpots.round, "round");
-  addPair(trees.tall, treeSpots.tall, "tall");
-  addPair(trees.broad, treeSpots.broad, "broad");
-  addPair(trees.conifer, treeSpots.conifer, "conifer");
-  const treeCount = Object.values(treeSpots).reduce((n, l) => n + l.length, 0);
-
-  // SHRUBS: the campus's own beds, the pond shore, the parking screen, and a SHORT hedge marking the
-  //   centre of each vacant parcel's frontage — enough to say "maintained", far short of edging the plot.
-  // world/campus campusShrubSpots — the same draws in the same order, resuming the stream where the trees
-  // left it, so the ground model's solids are the very shrubs drawn here
+  const KINDS: TreeKind[] = ["round", "tall", "broad", "conifer"];
+  type TreeInst = { kind: TreeKind; v: number; spot: Spot & { s: number; yaw: number }; trunk: number; canopy: number; near: boolean };
+  const treeList: TreeInst[] = [];
+  for (const kind of KINDS) planted[kind].forEach((t, i) => treeList.push({ kind, v: (i + Math.round(Math.abs(t.x))) % TREE_VARIANTS, spot: t, trunk: -1, canopy: -1, near: false }));
+  const treeCount = treeList.length;
+  // SHRUBS ride in the crown batch (same leaf material): the campus's own beds, the parking screen, and a
+  // SHORT hedge marking the centre of each vacant parcel's frontage. world/campus campusShrubSpots — the
+  // same draws in the same order, resuming the stream where the trees left it, so the ground model's solids
+  // are the very shrubs drawn here. (The pond reeds moved to the ground cover.)
   const planting = campusShrubSpots(xseed);
   xseed = planting.seedAfter;
-  const shrubs: Spot[] = [...planting.beds, ...planting.frontage, ...planting.screen, ...planting.islands, ...planting.reeds];
-  // Shrubs get a fifth of the canopy's travel: a hedge in wind shivers, it does not sway.
-  root.add(instance(shrubGeo(), M.foliage(M.facet(EX.hedge), SHRUB_FLEX), shrubs, true, "shrubs"));
-  instanced++; instances += shrubs.length;
+  const shrubs: Spot[] = [...planting.beds, ...planting.frontage, ...planting.screen, ...planting.islands];
+  const shrubGeos = [shrubGeometry(5), shrubGeometry(9, { base: 0x5f8443, dark: 0x34532a, light: 0x88a95a })];
+  const barkM = M.painted(0.93);
+  const leafM = windByVertex(M.painted(0.86, { flatShading: true }), M.windGain, M.windTime);
+  const vcount = (g: THREE.BufferGeometry) => g.getAttribute("position").count;
+  let trunkVerts = 0, crownVerts = 0;
+  for (const kind of KINDS) for (const v of lib[kind]) { trunkVerts += vcount(v.near.trunk) + vcount(v.far.trunk); crownVerts += vcount(v.near.canopy) + vcount(v.far.canopy); }
+  for (const g of shrubGeos) crownVerts += vcount(g);
+  const trunks = new THREE.BatchedMesh(treeCount, trunkVerts, 0, barkM);
+  const crowns = new THREE.BatchedMesh(treeCount + shrubs.length, crownVerts, 0, leafM);
+  trunks.name = "trees-trunks"; crowns.name = "trees-crowns";
+  const geoIds = new Map<string, { trunk: [number, number]; canopy: [number, number] }>();
+  for (const kind of KINDS) lib[kind].forEach((v, i) => geoIds.set(`${kind}:${i}`, {
+    trunk: [trunks.addGeometry(v.near.trunk), trunks.addGeometry(v.far.trunk)],
+    canopy: [crowns.addGeometry(v.near.canopy), crowns.addGeometry(v.far.canopy)],
+  }));
+  const shrubIds = shrubGeos.map((g) => crowns.addGeometry(g));
+  // CONTROLLED VARIATION: a per-tree tint within a narrow band (bark and leaf), and the scatter's own scale/yaw
+  const varRnd = prng(0x7ee5);
+  const tm = new THREE.Matrix4(), tq = new THREE.Quaternion(), tp = new THREE.Vector3(), ts = new THREE.Vector3(), tc = new THREE.Color();
+  for (const t of treeList) {
+    const id = geoIds.get(`${t.kind}:${t.v}`)!;
+    t.trunk = trunks.addInstance(id.trunk[1]);
+    t.canopy = crowns.addInstance(id.canopy[1]);
+    tm.compose(tp.set(t.spot.x, t.spot.y ?? GRADE, t.spot.z), tq.setFromAxisAngle(UP_Y, t.spot.yaw), ts.setScalar(t.spot.s));
+    trunks.setMatrixAt(t.trunk, tm).setColorAt(t.trunk, tc.setRGB(1, 1, 1).multiplyScalar(0.9 + varRnd() * 0.2));
+    crowns.setMatrixAt(t.canopy, tm).setColorAt(t.canopy, tc.setHSL(0.25 + (varRnd() - 0.5) * 0.04, 0.12 + varRnd() * 0.18, 0.5).lerp(new THREE.Color(1, 1, 1), 0.72));
+  }
+  shrubs.forEach((sp, i) => {
+    const inst = crowns.addInstance(shrubIds[i % 2]);
+    tm.compose(tp.set(sp.x, sp.y ?? GRADE, sp.z), tq.setFromAxisAngle(UP_Y, sp.yaw ?? 0), ts.setScalar(sp.s ?? 1));
+    crowns.setMatrixAt(inst, tm).setColorAt(inst, tc.setRGB(1, 1, 1).multiplyScalar(0.88 + varRnd() * 0.22));
+  });
+  for (const b of [trunks, crowns]) { b.castShadow = true; b.receiveShadow = true; b.frustumCulled = false; root.add(b); }
+  instanced += 2; instances += treeCount * 2 + shrubs.length;
+  const nearExtra = Math.max(...KINDS.flatMap((k) => lib[k].map((v) => triCount(v.near.trunk) + triCount(v.near.canopy) - triCount(v.far.trunk) - triCount(v.far.canopy))));
 
-  // 7b. THE POND. The one water feature in the world: an organic body of water on the Offshorly lot's
-  //     north lawn, with a shallow shore band, a short path spur and two benches looking over it. The rest
-  //     of that lawn is left as open grass on purpose — this is the only thing out there.
-  //     BOTH PLANES SIT ABOVE GRADE. The lot's lawn is one unbroken plane at GRADE, so water sunk below
-  //     it is simply covered — the lawn has no hole to sink into. Stacking the shore just proud of the
-  //     grass and the water just proud of the shore gives the same read (a rimmed body of water) with no
-  //     geometry surgery, which is also how the reflecting-pool version of this brief would be built.
-  const shore = new THREE.Mesh(new THREE.ShapeGeometry(pondShape(1 + POND_SHORE / POND.rx), 1), M.surface(EX.shore, 0.98));
-  shore.rotation.x = -Math.PI / 2;
-  shore.position.set(POND.x, SHORE_Y, POND.z);
-  root.add(shadowed(shore, false, true));
-  const pond = new THREE.Mesh(new THREE.ShapeGeometry(pondShape(1), 1), M.water());
-  pond.rotation.x = -Math.PI / 2;
-  pond.position.set(POND.x, WATER_Y, POND.z);
-  root.add(shadowed(pond, false, false));
+  // 7a. GROUND COVER (build/exteriorDetail coverSpots): grass tufts, flowers, ferns, reeds, pebbles, stones —
+  //     round tree bases, along path edges, in meadow drifts, at the water's edge and in the beds. ONE draw:
+  //     a BatchedMesh of a dozen small geometries, swaying by per-vertex weight (stones never move), culled
+  //     beyond COVER_RANGE of the camera by detailTick.
+  const COVER_GEOS: Record<CoverKind, THREE.BufferGeometry> = {
+    tuft: grassTuft(1, 7, 7, 2.6, { root: 0x4f7a34, tip: 0x9cc25e }),
+    tuftTall: grassTuft(2, 9, 12, 3.2, { root: 0x557a36, tip: 0xb3c46a }),
+    tuftWide: grassTuft(3, 11, 6, 5, { root: 0x4b7332, tip: 0x8fb858 }),
+    flowerWhite: flowerClump(4, 4, 0xf3f0e6, 0xf2c94c),
+    flowerYellow: flowerClump(5, 4, 0xf2c94c, 0xd98a2b),
+    flowerViolet: flowerClump(6, 4, 0xa58ad8, 0xf2e6a0),
+    fern: fern(7, 7, 10, { root: 0x3f6b2e, tip: 0x7fae4f }),
+    reed: reedClump(8),
+    pebble: stone(9, 2.2, 1.2),
+    stone: stone(10, 4.2, 2.6),
+    boulder: stone(11, 11, 7.5, { base: 0x8f897d, dark: 0x5f5a52, light: 0xb7b0a3 }),
+  };
+  const cover = coverSpots();
+  const coverM = windByVertex(M.painted(0.92, { side: THREE.DoubleSide }), M.windGain, M.windTime, 1.6);
+  const coverBatch = new THREE.BatchedMesh(cover.length, Object.values(COVER_GEOS).reduce((n, g) => n + vcount(g), 0), 0, coverM);
+  coverBatch.name = "ground-cover";
+  const coverIds = new Map<CoverKind, number>((Object.keys(COVER_GEOS) as CoverKind[]).map((k) => [k, coverBatch.addGeometry(COVER_GEOS[k])]));
+  const coverInst = cover.map((c) => {
+    const id = coverBatch.addInstance(coverIds.get(c.kind)!);
+    tm.compose(tp.set(c.x, c.y, c.z), tq.setFromAxisAngle(UP_Y, c.yaw), ts.setScalar(c.s));
+    coverBatch.setMatrixAt(id, tm).setColorAt(id, tc.setRGB(1, 1, 1).multiplyScalar(0.86 + varRnd() * 0.26));
+    return id;
+  });
+  coverBatch.castShadow = false; coverBatch.receiveShadow = true; coverBatch.frustumCulled = false;
+  root.add(coverBatch);
+  instanced++; instances += cover.length;
 
-  // 8. THE HORIZON. Two belts of distant planting and a low hill line — cruder geometry, no shadows,
-  //    placed so the world never presents a hard edge or an empty void at the widest gameplay zoom.
-  const belt: Spot[] = [];
-  for (const [radius, count, spread] of [[4000, 190, 300], [4620, 150, 320]] as const) {
-    for (let i = 0; i < count; i++) {
-      const a = (i / count) * Math.PI * 2 + rx() * 0.03;
-      const rr = radius + (rx() - 0.5) * spread;
-      belt.push({ x: WORLD_CENTRE.x + Math.cos(a) * rr, z: WORLD_CENTRE.z + Math.sin(a) * rr, s: 1.1 + rx() * 0.9, yaw: rx() * 6.28 });
+  // 7b. THE LAKE (world/water LAKE). A ring mesh whose every vertex knows how far it is from the waterline,
+  //     so the living-water shader shades the shelf shallow and the middle deep from the same number a future
+  //     swimming phase will read; and a graded beach under and round it, wet at the water and feathering into
+  //     the lawn. Both sit above grade — the lot's lawn has no hole to sink into — exactly as before.
+  {
+    const lake = new THREE.Mesh(lakeGeometry(), M.water());
+    lake.name = "lake";
+    lake.position.y = WATER_Y;
+    lake.renderOrder = 0;
+    root.add(shadowed(lake, false, false));
+    const shoreM = M.wet(groundFinish(M.painted(0.97), "shore"), 0.55, 1.2);
+    const beach = new THREE.Mesh(shoreGeometry(POND_SHORE), shoreM);
+    beach.name = "lake-shore";
+    root.add(shadowed(beach, false, true));
+  }
+
+  // 8. THE HORIZON. A continuous ridge ring (no gaps for the eye to find) and three staggered rows of cheap,
+  //    recognisable distant trees kept off the street corridors — so each road runs out between them and
+  //    ends at the ridge's foot. No shadows; one draw each.
+  {
+    const ridge = new THREE.Mesh(ridgeGeometry(), M.painted(1, { flatShading: true }));
+    ridge.name = "distant-ridge";
+    root.add(shadowed(ridge, false, false));
+    const [firG, broadG] = beltGeometries();
+    const spots = beltSpots();
+    const belt = new THREE.BatchedMesh(spots.length, vcount(firG) + vcount(broadG), 0, M.painted(0.95, { flatShading: true }));
+    belt.name = "distant-belt";
+    const ids = [belt.addGeometry(firG), belt.addGeometry(broadG)];
+    for (const b of spots) {
+      const id = belt.addInstance(ids[b.kind]);
+      tm.compose(tp.set(b.x, GRADE, b.z), tq.setFromAxisAngle(UP_Y, b.yaw), ts.setScalar(b.s));
+      belt.setMatrixAt(id, tm).setColorAt(id, tc.setRGB(1, 1, 1).multiplyScalar(0.85 + varRnd() * 0.25));
     }
+    belt.castShadow = false; belt.receiveShadow = false; belt.frustumCulled = false;
+    root.add(belt);
+    instanced += 2; instances += spots.length + 1;
   }
-  const beltGeo = mergedGeo([blob(TMP, 0, 26, 0, 26, 30, 26), blob(TMP, 14, 44, -8, 15)]);
-  root.add(instance(beltGeo, M.facet(EX.beltNear), belt, false, "distant-belt"));
-  instanced++; instances += belt.length;
-  const hills: Spot[] = [];
-  for (let i = 0; i < 22; i++) {
-    const a = (i / 22) * Math.PI * 2 + rx() * 0.12;
-    const rr = 4950 + rx() * 320;
-    hills.push({ x: WORLD_CENTRE.x + Math.cos(a) * rr, z: WORLD_CENTRE.z + Math.sin(a) * rr, s: 1, yaw: rx() * 6.28, y: GRADE - 60 });
+
+  // 8b. CONSTRUCTION (world/construction): the AI Lab's yard, scaffold and sign — four draws a site
+  const constructionStats = { tris: 0, draws: 0 };
+  const sitePoolGeo = poolDisc(60, 16);
+  for (const site of CONSTRUCTION_SITES) {
+    const built = buildConstructionSite(site, {
+      body: M.painted(0.82),
+      lens: M.lamp(0xfff4dc, 3.2),
+      spill: M.spill(EX.lamp, 0.5),
+      sign: (canvas) => constructionSignMat(M, canvas),
+    }, sitePoolGeo);
+    root.add(built.group);
+    constructionStats.tris += built.tris; constructionStats.draws += built.draws;
   }
-  const hillGeo = mergedGeo([blob(TMP, 0, 0, 0, 520, 190, 460)]);
-  root.add(instance(hillGeo, M.facet(EX.hillFar), hills, false, "distant-hills"));
-  instanced++; instances += hills.length;
 
   // 9. THE PARKED FLEET (build/vehicles). Sports and premium cars in the staff car park, the Philippine
   //    street set in the lay-by — each placed BY HAND in world/campus's VEHICLES table.
@@ -804,7 +903,7 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
   //     service drive, facing the road a visitor would arrive on. Deliberately small and singular — the
   //     point of the parcel is the clean buildable ground behind the sign, not the sign.
   //     NOT a "for sale" board and NOT a building: no company, no gameplay, no ownership model.
-  for (const lot of EXPANSION_LOTS) root.add(buildLotMarker(M, lot));
+  // (baked into the ground layer above — see bakeGroup)
 
   // 10. PRACTICAL LIGHTING. Emissive lenses plus additive ground pools — no real-time lights anywhere.
   // the lot lamps are the street lamp's own model, scaled (world/campus PARK_LAMPS): same posts, lenses,
@@ -825,7 +924,7 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
   root.add(instance(poolGeo, M.spill(EX.lamp, 0.55), poolSpots, false, "lamp-pools"));
   // A soft additive bulb at each head. A billboard would need re-orienting every frame; a low-poly sphere
   // reads as a glow from any orbit angle and costs one more instanced draw call for the whole street grid.
-  const haloGeoM = new THREE.IcosahedronGeometry(26, 1);
+  const haloGeoM = new THREE.IcosahedronGeometry(26, 0);
   root.add(instance(haloGeoM, M.spill(EX.lamp, 0.16), lamps.map((l) => ({ ...l, y: GRADE + 120 * (l.s ?? 1) })), false, "lamp-halos"));
   instanced += 4; instances += lamps.length * 4;
 
@@ -844,8 +943,7 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
   instanced += 2; instances += benches.length * 2;
 
   // 11. IDENTITY. One monument sign at the visitor approach — the only exterior branding, lit after dusk.
-  const sign = buildMonumentSign(M);
-  root.add(sign);
+  // (the monument sign is baked into the ground layer above)
 
   // 12. STANDING WATER. The wet SET above (roughness + environment response on the asphalt and paving)
   //     says "this surface is damp"; what it cannot say is "water has collected HERE and not there", and
@@ -862,7 +960,9 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
   const puddleSpots: Spot[] = [];
   const PUDDLE_Y = 0.35; // just proud of the surface it lies on; polygonOffset does the rest
   for (const road of ROADS) {
-    const r = roadRect(road);
+    // only over the drawn span of the street
+    const span = roadVisibleSpan(road), full = roadRect(road);
+    const r: Rect = road.axis === "x" ? { ...full, x: span.from, w: span.to - span.from } : { ...full, z: span.from, d: span.to - span.from };
     const along = road.axis === "x" ? r.w : r.d;
     // one every ~340 units of carriageway, nudged off the crown toward the gutters where water actually
     // sits, and skipped a third of the time so the spacing never reads as a pattern
@@ -884,12 +984,46 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
   root.add(puddles);
   instanced++; instances += puddleSpots.length;
 
-  const draws = groundDraws + instanced + 5 + treads + EXPANSION_LOTS.length * 6; // + terrain, skirt, sign, pond, shore, treads, lot markers
+  const draws = groundDraws + instanced + 5 + constructionStats.draws; // + terrain, decals, ridge, lake, shore
+  const lastCam = new THREE.Vector3(0, Infinity, 0);
+  const coverVisible = cover.map(() => true);
   return {
     root,
     trafficTick,
     scooters,
-    stats: { draws, instanced, instances, trees: treeCount, vehicles: VEHICLES.length, traffic: movers.length, docks: docks.length },
+    stats: {
+      draws, instanced, instances, trees: treeCount, vehicles: VEHICLES.length, traffic: movers.length, docks: docks.length,
+      treeLod: { nearCap: NEAR_CAP, nearExtraTris: NEAR_CAP * nearExtra, get nearNow() { return treeList.filter((t) => t.near).length; } },
+      cover: cover.length,
+      construction: constructionStats,
+      lotMarkers,
+    },
+    applyRain(intensity: number) {
+      M.lake.uRain.value = Number.isFinite(intensity) ? Math.max(0, Math.min(1, intensity)) : 0;
+    },
+    detailTick(camLocal: THREE.Vector3) {
+      // only when the camera has really moved: a still camera costs one distance test a frame
+      if (lastCam.distanceToSquared(camLocal) < 30 * 30 && lastCam.y !== Infinity) return;
+      lastCam.copy(camLocal);
+      // TREES: rank by distance, the closest NEAR_CAP within reach take (or keep) their near cut
+      const d2 = (t: TreeInst) => (t.spot.x - camLocal.x) ** 2 + (t.spot.z - camLocal.z) ** 2 + ((t.spot.y ?? GRADE) + 40 - camLocal.y) ** 2;
+      const ranked = treeList.map((t) => ({ t, d: d2(t) })).sort((a, b) => a.d - b.d);
+      ranked.forEach(({ t, d }, rank) => {
+        const want = rank < NEAR_CAP && d < (t.near ? NEAR_OUT : NEAR_IN) ** 2;
+        if (want === t.near) return;
+        t.near = want;
+        const id = geoIds.get(`${t.kind}:${t.v}`)!;
+        trunks.setGeometryIdAt(t.trunk, id.trunk[want ? 0 : 1]);
+        crowns.setGeometryIdAt(t.canopy, id.canopy[want ? 0 : 1]);
+      });
+      // GROUND COVER: only within reach of the camera (and not at all from high overhead)
+      const r2 = COVER_RANGE * COVER_RANGE;
+      cover.forEach((c, i) => {
+        const dd = (c.x - camLocal.x) ** 2 + (c.z - camLocal.z) ** 2 + (c.y - camLocal.y) ** 2 * 0.6;
+        const show = dd < r2;
+        if (coverVisible[i] !== show) { coverVisible[i] = show; coverBatch.setVisibleAt(coverInst[i], show); }
+      });
+    },
     applyTint(t: number) {
       for (const { m, base } of M.tintable) m.color.copy(base).multiplyScalar(t);
     },
@@ -915,6 +1049,10 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
       // ONE FLOAT, ONCE A FRAME, FOR EVERY TREE ON THE CAMPUS. Skipped entirely in still air, so a clear
       // day does not pay for an animation nobody can see.
       if (M.windGain.value > 0.001) M.windTime.value = elapsedSeconds;
+      // THE LAKE NEVER STOPS: its clock always runs (water in still air still moves), and the weather's
+      // wind lifts its chop
+      M.lake.uTime.value = elapsedSeconds;
+      M.lake.uWind.value = M.windGain.value;
     },
     applyPracticals(level: number) {
       // NOT clamped to 1: the night preset deliberately drives the fixtures past nominal so the pools and

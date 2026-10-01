@@ -98,6 +98,11 @@ const INTERIOR = {
   ao: 0.6,
 };
 
+/** Player View's fog origin under rain: about the boom behind the avatar (see follow) */
+const PLAYER_FOG_OFFSET = 140;
+/** the streak density at which rain counts as full (RAIN_PARAMS.rain) */
+const RAIN_PARAMS_PER_MILLION_FULL = 1500;
+
 export class Environment {
   private readonly R: Renderer;
   private readonly scenery: ExteriorScenery | null;
@@ -169,6 +174,7 @@ export class Environment {
   /** likewise one Fog: `new THREE.Fog()` per write was free at twice a day and is not free per frame */
   private readonly fogNode = new THREE.Fog(0xffffff, 1, 2);
 
+
   /** @param dry the office footprint, which it never rains on @param groundY the exterior grade */
   constructor(R: Renderer, scenery: ExteriorScenery | null = null, dry: Rect = { x: 0, z: 0, w: 0, d: 0 }, groundY = -8) {
     this.R = R;
@@ -234,6 +240,18 @@ export class Environment {
       const worldPerPixel = player || heightPx < 1 ? 0 : (visibleHalf * 2) / heightPx;
       this.rain.follow(this.centre, half, worldPerPixel);
       this.rain.update(dtSeconds);
+    }
+    // RAIN HAZE IN PLAYER VIEW. write() measures the fog from the ORBIT camera's distance (R.camDist), which
+    // in Player View is thousands of units behind a camera that actually rides ~100 behind the avatar — so
+    // the overcast grade's murk began beyond the horizon and a rainy afternoon read as clear. The offset is
+    // eased toward the player camera only as far as it is RAINING, so every clear (and cloudy) presentation
+    // stays exactly the approved one; under rain the far campus softens into the grey horizon.
+    const R = this.R, fog = this.shown.fog;
+    if (R.scene.fog === this.fogNode && fog) {
+      const rainK = Math.min(1, this.shownRain.perMillion / RAIN_PARAMS_PER_MILLION_FULL);
+      const offset = R.activeCamera === R.playerCamera ? R.camDist + (PLAYER_FOG_OFFSET - R.camDist) * rainK : R.camDist;
+      this.fogNode.near = offset + fog.near;
+      this.fogNode.far = offset + fog.far;
     }
   }
   get skyVisible(): boolean {
@@ -480,8 +498,15 @@ export class Environment {
     this.scenery?.windTick(this.elapsed);
     // THE TRAFFIC, on the WALL clock so every client and both floors agree (world/traffic) — and only while
     // the exterior is actually drawn: OFFICE, the Cave and a hidden world pay nothing
-    if (this.scenery?.root.visible) this.scenery.trafficTick(this.trafficClock ? this.trafficClock() : Date.now() / 1000);
+    if (this.scenery?.root.visible) {
+      this.scenery.trafficTick(this.trafficClock ? this.trafficClock() : Date.now() / 1000);
+      // DETAIL FOLLOWS THE CAMERA (build/exterior detailTick): near-cut trees and ground cover round wherever
+      // the active camera is, in the exterior's own frame — it may be anchored a storey down
+      const cam = this.R.activeCamera;
+      if (cam) this.scenery.detailTick(this.scenery.root.worldToLocal(cam.getWorldPosition(this.camScratch)));
+    }
   }
+  private readonly camScratch = new THREE.Vector3();
   /** DEV/CAPTURE: replace the traffic's wall clock (seconds) — null restores it */
   trafficClock: (() => number) | null = null;
 
@@ -514,6 +539,8 @@ export class Environment {
     }
     this.scenery?.applyWetness(this.shownWetness);
     this.scenery?.applyWind(this.shownWind);
+    // the lake's rain rings follow the rain itself (a streak density, normalised to the heaviest grade)
+    this.scenery?.applyRain(Math.min(1, this.shownRain.perMillion / 2200));
     this.write(this.shown);
     if (this.shownFlash > 0) this.writeFlash(); // a grade write clobbers the levels a live flash had set
   }
