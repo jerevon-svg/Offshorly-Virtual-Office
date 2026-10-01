@@ -381,7 +381,11 @@ class CoworkerBody {
    *  same consolidated GLB the hero avatar plays, so the formula lands both bodies alike. */
   private readonly rig: SeatedRig;
 
-  constructor(proto: CastPrototype, name: string, at: Vec2, yaw: number, phase: number) {
+  /** the ground under a point (the world's exterior ground model; 0 indoors), or null for a flat world */
+  private readonly ground: ((p: Vec2) => number) | null;
+
+  constructor(proto: CastPrototype, name: string, at: Vec2, yaw: number, phase: number, ground: ((p: Vec2) => number) | null = null) {
+    this.ground = ground;
     this.avatarId = proto.id;
     this.displayName = name;
     this.triangles = proto.triangles;
@@ -499,6 +503,7 @@ class CoworkerBody {
   /** Which way this body is looking, radians. Read-only, and read by the dev surface alone. */
   get facingYaw(): number { return this.yaw; }
   get pos(): Vec2 { return { x: this.root.position.x, z: this.root.position.z }; }
+  private groundY(): number { return this.ground ? this.ground(this.root.position) : 0; }
 
   /** WHAT THE AUTOMATIC DOORS SEE OF THIS BODY: where it stands, and the route it is about to take.
    *
@@ -760,11 +765,13 @@ class CoworkerBody {
       // walk replay keeps advancing x/z underneath, which is what makes a jump mid-walk read as a
       // jump mid-walk rather than a hop from a standstill.
       this.freezeAt(CLIP_WALK, AIRBORNE_POSE_PHASE);
-      this.root.position.y = this.vertical.height;
+      this.root.position.y = this.groundY() + this.vertical.height;
       moved = true;
-    } else if (this.root.position.y !== 0) {
-      this.root.position.y = 0; // the landing frame, and any branch above that wrote a y of its own
-      moved = true;
+    } else {
+      // ON THE GROUND the replay has put them on — flat indoors, the campus's own heights outside — so a
+      // peer on the lawn stands on the lawn rather than on the office floor's datum
+      const y = this.groundY();
+      if (this.root.position.y !== y) { this.root.position.y = y; moved = true; } // also the landing frame
     }
     if (this.targetYaw !== null) {
       // The last beat of a walk: onto the yaw the arrival asked for, at the rate the body turns.
@@ -861,6 +868,8 @@ export interface CoworkersDeps {
   canStand: StandTest;
   /** body radius the stand test was built for (NAV_RADIUS) */
   radius: number;
+  /** the ground under a world point (world/exteriorGround outside, 0 indoors); omitted = a flat world */
+  groundY?: (p: Vec2) => number;
   /** V1 frame point -> built V2 world point, room shifts applied */
   toWorld: (p: Vec2) => Vec2;
   lod?: AvatarLod;
@@ -950,6 +959,7 @@ export class Coworkers {
     if (this.riders.has(email)) return false;
     const proto = await prototypeFor(avatarId, this.deps.lod ?? 1).catch(() => null);
     if (!proto || this.disposed || gen !== this.riderGen || this.riders.has(email)) return false;
+    // FLAT: the rider group travels with the lift car, so its bodies stand in the car's frame, not the campus's
     const body = new CoworkerBody(proto, displayName, at, yaw, phaseFor(email));
     body.setLabelVisible(false);
     this.riders.set(email, body);
@@ -1120,7 +1130,7 @@ export class Coworkers {
       // Deterministic per person rather than random: the same viewer reloading, and two viewers looking
       // at the same room, see the same stagger instead of a fresh shuffle.
       const phase = phaseFor(coworker.email);
-      const body = new CoworkerBody(proto, coworker.displayName, pos, coworker.yaw ?? FACING_YAW[coworker.facing], phase);
+      const body = new CoworkerBody(proto, coworker.displayName, pos, coworker.yaw ?? FACING_YAW[coworker.facing], phase, this.deps.groundY ?? null);
       // A body cloned after the host took over the nameplates must not bring a sprite one back with it.
       body.setLabelVisible(this.labelsVisible);
       body.setConversationClip(this.conversationClips.get(email) ?? null);

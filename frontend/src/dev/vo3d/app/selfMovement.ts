@@ -68,7 +68,7 @@ export interface Vo3dSelfMovementSink {
    *  NOT to be confused with the feed's own `placed()` below, which means the opposite: that one is a
    *  SILENT placement ("the body was put here, publish nothing"). This one publishes.
    *
-   *  The CAVE is at x 2600, outside V1's frame entirely (see `inRange` below), so a body inside it has no
+   *  The CAVE is at x −9000, outside V1's frame entirely (see `inRange` below), so a body inside it has no
    *  position the movement wire can carry. Before this, crossing that boundary published nothing at all
    *  and every peer left the employee standing at the last in-frame point — the hub, just outside the
    *  portal — which is exactly what "their pill is outside the Cave and their avatar is nowhere" was.

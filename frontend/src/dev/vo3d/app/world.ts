@@ -64,6 +64,7 @@ import { buildExterior } from "../build/exterior";
 import { buildAiLab } from "../build/ailab";
 import { MonkeyAvatar } from "../avatar/MonkeyAvatar";
 import { aiLabStandTest, inAiLabZone } from "../world/ailab";
+import { FACADE_WALL_T, RIDE_PROFILE, SURFACE_SPEED, WALK_PROFILE, exteriorGround, speedClassOf, type TraversalState } from "../world/exteriorGround";
 import { Environment, type EnvPresentation } from "../env/Environment";
 import { createSeasonLayer, type BuiltSeasonLayer } from "../season/SeasonLayer";
 import type { SeasonTheme } from "../season/season";
@@ -74,7 +75,7 @@ import { ManualWeatherProvider } from "../env/providers/manual";
 import { WEATHER_ATTRIBUTION, officeWeatherProvider } from "../env/providers/office";
 import { GRADE } from "../world/campus";
 import { CAMERA_MODES, CameraModes, type CameraModeId } from "../render/CameraModes";
-import { PlayerMode, PLAYER_SPRINT_SPEED, PLAYER_WALK_SPEED, SPRINT_MULTIPLIER } from "../player/PlayerMode";
+import { PlayerMode, PLAYER_SPRINT_SPEED, PLAYER_WALK_SPEED, SPRINT_MULTIPLIER, type RideGround } from "../player/PlayerMode";
 import { EnvironmentalAudio } from "../audio/EnvironmentalAudio";
 import { EdgeTracker, Footsteps } from "../audio/events";
 import { CALL_RANGE, Toucan } from "../world/Toucan";
@@ -98,7 +99,7 @@ import { CABIN, RIDE as ELEVATOR_RIDE, cabinStandTest, inCabin, inVestibule, ves
 import { buildCabin, buildElevatorCore, type ElevatorCoreBuild, type LiftBuild } from "../build/elevator";
 import { buildFloor2 } from "../build/floor2";
 import { buildFloor2Context } from "../build/floor2Context";
-import { DECK_TOP, clearOfDocks, dockSolids, inRideArea, rideArea, scooterStations, type ScooterDock } from "../world/scooters";
+import { DECK_TOP, SCOOTER_GEOMETRY, riddenScooterOrigin, scooterStations, type ScooterDock } from "../world/scooters";
 import { ELEVATOR as FLOOR2_ELEVATOR, FLOOR2_ID, FLOOR2_ROOM, FLOOR_RECT as FLOOR2_FLOOR_RECT, FRAME as FLOOR2_FRAME, floor2StandTest, onFloor2 } from "../rooms/floor2";
 import { makePlateRouter } from "../nav/plateRoute";
 import { buildMeetingFloor, setRoomDisplayTexture } from "../build/floor2Meeting";
@@ -1067,8 +1068,13 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   //   never given a 3D body (data/avatarRegistry lists people V2's GLB registry does not — "lui" is one
   //   today). hasCastLods is what tells them apart from a real cast member; without it the second case
   //   threw inside castLods and took the whole world down instead of showing the missing-avatar state.
+  //   DEV ONLY — the standalone page (dev/vo3d.html, no identity) may put the player in any cast member's
+  //   body with `?avatar=<castId>`, so every rig can be looked at in the running world (the rider pose is
+  //   validated this way). A signed-in world never reads it.
+  const devAvatar = identity === undefined ? flags.get("avatar") : null;
   const avatarLods: Record<AvatarLod, string> | null | undefined =
-    identity === undefined ? undefined : identity.avatarId && hasCastLods(identity.avatarId) ? castLods(identity.avatarId) : null;
+    identity === undefined ? (devAvatar && hasCastLods(devAvatar) ? castLods(devAvatar) : undefined)
+    : identity.avatarId && hasCastLods(identity.avatarId) ? castLods(identity.avatarId) : null;
   /** True when this world knows WHO the player is but has no character to put them in. */
   const avatarMissing = avatarLods === null;
   const avatar = new Avatar({ height: BON_STANDING_HEIGHT, lit: params.avatarLit, lods: avatarLods ?? undefined });
@@ -1472,6 +1478,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   let exitPrompted = false;
   /** Is the signed-in body inside the AI Lab right now? Edge-detected in the frame loop below. */
   let selfInAiLab = false;
+  /** the ground-floor place this body last published (ai-lab / campus / none) — see the frame loop */
+  let selfPlace: string | null = null;
   const aiLabState = { inside: "no" };
 
   /** Stand a denied body back on Reception's public side. A PLACEMENT, not a movement — the feed is told
@@ -2102,7 +2110,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  (rooms/cave.ts caveStandTest). Everywhere else this is byte-for-byte the office's own test. It is a
    *  ROUTING of the question, not a relaxation of it: the CAVE's walls stop a body exactly as the
    *  office's do, and there is no point in either volume where both tests are consulted or neither is. */
-  const playerStand = (p: Vec2): boolean =>
+  const legacyStand = (p: Vec2): boolean =>
     inCave(p) ? caveStandTest(p, NAV_RADIUS)
     // FLOOR 2 answers from its own geometry for the same reason the CAVE does: it stands outside V1's
     // 90 x 78 lattice, so neither the V1-governed layer nor DerivedNav (both indexed by that lattice)
@@ -2121,13 +2129,65 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  wall or over unbuilt floor, but it may perfectly well fly over a desk — and judging it at the BODY
    *  radius pulled the boom in to its minimum beside almost every piece of furniture in the building. */
   const officeCameraProbe = makeStandTest({ world, walkability, derived: derivedNav, radius: 2, allowExterior: true });
-  const playerCameraProbe = (p: Vec2): boolean =>
+  const legacyCameraProbe = (p: Vec2): boolean =>
     inCave(p) ? caveStandTest(p, 2)
     : liftActive() && inCabin(p) ? cabinStandTest(p, 2)
     : vestibuleOf(p) !== null ? vestibuleStandTest(vestibuleOf(p)!, p, 2)
     : onFloor2(p) ? floor2StandTest(p, 2)
     : inAiLabZone(p, 2) ? aiLabStandTest(p, 2)
     : officeCameraProbe(p);
+  // ---- THE CAMPUS ON FOOT (world/exteriorGround, Phase 3) --------------------------------------------
+  // THE PLAYER'S STAND TEST IS NOW THE SAME ROUTING OF THE QUESTION, with the campus as one more owner. The
+  // office keeps everything north of its façade (and Reception's door mat, where the exit gate and the door
+  // sensor live); the AI Lab keeps its own floor (the ground model's "lab-interior": inside its wall, and
+  // the porch); everything else outside is the campus, answered by the shared WALK profile — surfaces,
+  // heights (no footprint may straddle an edge taller than a step) and the visible solids. A campus
+  // footprint that reaches into the office or the Lab asks THAT owner about those samples, so a wall, a
+  // doorway or the Lab's lake opening is judged exactly where it is drawn, with no seam.
+  //
+  // `legacyStand` above is the pre-campus composition, kept for what must not change yet: the crowd and
+  // stress placement, and the scooter's ride area (full scooter free roam is Phase 4).
+  const ground = exteriorGround();
+  const officePoint = makeStandTest({ world, walkability, derived: derivedNav, radius: 1e-3, allowExterior: true });
+  const inOfficeDomain = (p: Vec2): boolean => pointInRect(p, FRAME) && (p.z < FACADE_Z + FACADE_WALL_T || pointInRect(p, ENTRY_ZONE));
+  const inLabDomain = (p: Vec2): boolean => ground.groundAt(p).kind === "lab-interior";
+  const foreignOwner = (q: Vec2): boolean | null => (inOfficeDomain(q) ? officePoint(q) : inLabDomain(q) ? aiLabStandTest(q, 1e-3) : null);
+  // `motion` (TRAVERSAL): a body moving with known feet — the campus judges its edges against them (a jump
+  // clears a ledge its feet clear; see world/exteriorGround TraversalState). Every floor of the building is
+  // flat and ignores it.
+  const playerStand = (p: Vec2, motion?: TraversalState): boolean =>
+    inCave(p) ? caveStandTest(p, NAV_RADIUS)
+    : liftActive() && inCabin(p) ? cabinStandTest(p, NAV_RADIUS)
+    : vestibuleOf(p) !== null ? vestibuleStandTest(vestibuleOf(p)!, p, NAV_RADIUS)
+    : onFloor2(p) ? floor2StandTest(p, NAV_RADIUS)
+    : inLabDomain(p) ? aiLabStandTest(p, NAV_RADIUS)
+    : inOfficeDomain(p) ? officeStand(p)
+    : ground.canOccupy(p, WALK_PROFILE.footRadius, WALK_PROFILE, foreignOwner, undefined, motion);
+  /** is `p` judged by the campus ground model (not a floor of the building, the Lab's, the Cave or the lift)? */
+  const onCampus = (p: Vec2): boolean =>
+    !(inCave(p) || (liftActive() && inCabin(p)) || vestibuleOf(p) !== null || onFloor2(p) || inLabDomain(p) || inOfficeDomain(p));
+  /** THE GROUND UNDER A POINT: the campus's own heights outside (and the Lab's floor), 0 everywhere a floor
+   *  of the building answers — the office, floor 2, the Cave, the lift. Avatar, PlayerMode's camera and
+   *  every remote body stand on it. */
+  const groundYAt = (p: Vec2): number => (inCave(p) || onFloor2(p) || inOfficeDomain(p) ? 0 : ground.groundAt(p).y);
+  avatar.ground = groundYAt;
+  /** TRAVERSAL — the floor a walker's footprint rests on: the campus's highest ground under it, a floor's own
+   *  height everywhere else */
+  const playerSupport = (p: Vec2): number => (onCampus(p) ? ground.support(p, WALK_PROFILE.footRadius) : groundYAt(p));
+  /** outside, the camera is stopped by what is really there — the building's mass and the tall solids —
+   *  never by lawn or a lower path; the ground model's walkability is not the camera's business */
+  const CAMERA_SOLIDS = ["lab-wall", "lab-cheek", "vehicle", "monument-sign", "lot-marker", "cave-shell", "tree", "lamp", "rack"];
+  const campusCameraClear = (p: Vec2): boolean => { const hit = ground.solidAt(p, 2); return !hit || !CAMERA_SOLIDS.some((k) => hit.startsWith(k)); };
+  const playerCameraProbe = (p: Vec2): boolean =>
+    inCave(p) ? caveStandTest(p, 2)
+    : liftActive() && inCabin(p) ? cabinStandTest(p, 2)
+    : vestibuleOf(p) !== null ? vestibuleStandTest(vestibuleOf(p)!, p, 2)
+    : onFloor2(p) ? floor2StandTest(p, 2)
+    // A BODY INDOORS keeps exactly the camera it always had
+    : inOfficeDomain(playerMode.body.pos) ? legacyCameraProbe(p)
+    : inLabDomain(p) ? aiLabStandTest(p, 2)
+    : inOfficeDomain(p) ? false // the building's mass, seen from outside
+    : campusCameraClear(p);
   /** the one bridge from a targeted entity id to V2's existing interaction path. Nothing is reimplemented:
    *  each branch is the same call the GUI button and the click-to-walk handler already make. */
   /** Assigned just after PLAYER mode is constructed (it needs the body to place). Declared here because
@@ -2376,6 +2436,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   const guidedHolds = { travel: false, meeting: false };
   const playerMode = new PlayerMode({
     avatar, stack, world, canStand: playerStand, cameraProbe: playerCameraProbe,
+    support: playerSupport, dropMax: WALK_PROFILE.dropMax,
     // the target marker hangs off the SCENE, not the office group: the CAVE hides the whole office while
     // you are inside it, and a marker parented to that group would vanish with it
     camera: R.playerCamera, canvas, overlayRoot: R.scene,
@@ -2417,59 +2478,111 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // is absent and one there stays local, exactly as everything else does.
   playerMode.onJumped = () => selfMovement?.jumped?.();
 
-  // ---- SHARED E-SCOOTERS (V1: single-player) ---------------------------------------------------------
-  // Stations and the ride area are world/scooters' data; the handling is player/ScooterMotion; PlayerMode
-  // owns the riding frame. This block only decides WHO may mount WHAT and WHERE a dismount lands.
+  // ---- SHARED E-SCOOTERS (single-player; whole-world free roam, Phase 4) ------------------------------
+  // Stations are world/scooters' data; the handling is player/ScooterMotion; PlayerMode owns the riding
+  // frame. This block decides WHERE a deck may roll, WHO may mount WHAT, and WHERE a dismount lands.
   //
-  // THE RIDE AREA IS AN INTERSECTION: a rider stands only where a walker could AND inside the exterior
-  // route's rects — never in an interior, a room, the lift, floor 2, the Cave, a door threshold or the
-  // Lab's porch/hall — and steers round the Lab rack's parked scooters.
-  const RIDE_AREA = rideArea(plan.sidewalk, ENTRY_ZONE.x + ENTRY_ZONE.w);
-  const DOCK_SOLIDS = dockSolids(SCOOTER_STATIONS);
+  // THE WORLD IS THE RIDE AREA: the ground model's RIDE profile (world/exteriorGround) — every surface a
+  // wheel rolls on, at the speed its class allows, over steps no taller than a kerb, clear of every visible
+  // solid. The old Reception→Lab corridor of rects is retired. Never the office (its floor, its door mat)
+  // nor the Lab's floor or porch, never floor 2, the Cave or the lift (none is on the ground floor's
+  // exterior). The deck's nose and tail are checked as well as the rider, so a 35-long scooter does not
+  // push its front wheel through a lamp post before its rider touches it.
   const ALL_DOCKS: ScooterDock[] = SCOOTER_STATIONS.flatMap((st) => st.docks);
-  const rideStand = (p: Vec2): boolean =>
-    currentFloor === GROUND_FLOOR_ID && inRideArea(RIDE_AREA, p) && playerStand(p) && clearOfDocks(DOCK_SOLIDS, p, NAV_RADIUS);
+  /** the docked scooter the rider is on (or mounting): its empty dock is no obstacle to it */
+  let rideIgnore: string | undefined;
+  /** the heading a mount is being judged for, before the ride (and its heading) exists */
+  let mountHeading = 0;
+  const rideForeign = (q: Vec2): boolean | null => (inOfficeDomain(q) || inLabDomain(q) ? false : null);
+  const DECK_NOSE = -SCOOTER_GEOMETRY.frontZ + 1.5, DECK_TAIL = SCOOTER_GEOMETRY.rearZ + 1.5, DECK_END_R = 5;
+  const rideStand = (p: Vec2, motion?: TraversalState): boolean => {
+    if (currentFloor !== GROUND_FLOOR_ID) return false;
+    if (!ground.canOccupy(p, RIDE_PROFILE.footRadius, RIDE_PROFILE, rideForeign, rideIgnore, motion)) return false;
+    const h = playerMode.rideState?.heading ?? mountHeading, fx = Math.sin(h), fz = -Math.cos(h);
+    if (ground.solidNear({ x: p.x + fx * DECK_NOSE, z: p.z + fz * DECK_NOSE }, DECK_END_R, rideIgnore)
+      || ground.solidNear({ x: p.x - fx * DECK_TAIL, z: p.z - fz * DECK_TAIL }, DECK_END_R, rideIgnore)) return false;
+    // THE LEADING WHEEL meets an edge before the deck's footprint does (the wheels overhang it by ~5): on the
+    // move, the wheel going first is held to the same edge rules — a ledge too tall to roll stops the deck at
+    // its tyre, level, instead of with its front wheel parked on top; a drop too deep to roll stops it at the lip
+    if (!motion?.from) return true;
+    const lead = (p.x - motion.from.x) * fx + (p.z - motion.from.z) * fz >= 0 ? wheelsAt(p, h).front : wheelsAt(p, h).rear;
+    const y = ground.groundAt(lead).y;
+    return motion.airborne ? y <= motion.feet + RIDE_PROFILE.airClear
+      : y - motion.feet <= RIDE_PROFILE.stepUp && motion.feet - y <= RIDE_PROFILE.dropMax;
+  };
+  /** the scooter's two tyre contact points under a rider at `p` riding heading `h` */
+  const wheelsAt = (p: Vec2, h: number): { front: Vec2; rear: Vec2 } => {
+    const o = riddenScooterOrigin(p, h), fx = Math.sin(h), fz = -Math.cos(h), G = SCOOTER_GEOMETRY;
+    return { front: { x: o.x - fx * G.frontZ, z: o.z - fz * G.frontZ }, rear: { x: o.x - fx * G.rearZ, z: o.z - fz * G.rearZ } };
+  };
+  /** THE GROUND UNDER THE DECK (PlayerMode RideHooks.ground): the scooter's origin height and pitch from its
+   *  two wheels' contact points, and the class of the surface under the rider */
+  const scooterGround = (p: Vec2, h: number): RideGround => {
+    const w = wheelsAt(p, h), G = SCOOTER_GEOMETRY;
+    const hf = ground.groundAt(w.front).y;
+    const hr = ground.groundAt(w.rear).y;
+    const span = G.rearZ - G.frontZ, surface = speedClassOf(ground.groundAt(p).kind, RIDE_PROFILE);
+    return { y: hr + ((hf - hr) * G.rearZ) / span, pitch: Math.atan2(hf - hr, span), cap: SURFACE_SPEED[surface], surface };
+  };
+  /** may a rider standing where they are set off on this dock's scooter, and which way? */
+  function mountHeadingFor(dock: ScooterDock): number | null {
+    const prev = rideIgnore;
+    rideIgnore = `scooter:${dock.id}`;
+    // the way they are facing first (a body yaw's forward is (sin a, cos a); the ride's is (sin h, −cos h)),
+    // then the four quarters — a nose-in rack faces the rider away from the open ground
+    const facing = Math.PI - avatar.yaw;
+    const found = [facing, Math.PI / 2, -Math.PI / 2, Math.PI, 0].find((h) => { mountHeading = h; return rideStand(playerMode.body.pos); });
+    rideIgnore = prev;
+    return found ?? null;
+  }
   /** the dock whose scooter is being ridden, or null */
   let ridingDock: ScooterDock | null = null;
   const scooterState = { riding: "—", last: "—", mounts: 0 };
-  /** "Ride" is offered only to somebody standing ON the route, on foot, in Player View, on the ground floor */
+  /** "Ride" is offered to somebody on foot, in Player View, on the ground floor, beside a dock they can set off from */
   function scooterCandidates(): Candidate[] {
     if (!playerMode.active || ridingDock || currentFloor !== GROUND_FLOOR_ID || engagedSeat() !== null || stack.guided) return [];
-    if (!rideStand(playerMode.body.pos)) return [];
-    return ALL_DOCKS.map((d) => ({ id: d.id, kind: "ride" as const, pos: d.mount, label: "Ride scooter", roomId: "exterior" }));
+    return ALL_DOCKS.filter((d) => Math.hypot(d.mount.x - playerMode.body.pos.x, d.mount.z - playerMode.body.pos.z) < 60 && mountHeadingFor(d) !== null)
+      .map((d) => ({ id: d.id, kind: "ride" as const, pos: d.mount, label: "Ride scooter", roomId: "exterior" }));
   }
   function mountScooter(id: string): boolean {
     const dock = ALL_DOCKS.find((d) => d.id === id);
     if (!dock || ridingDock || !scenery.scooters) return false;
-    // set off ALONG the route (east or west, in the camera's yaw convention), whichever way the rider was
-    // already facing it — a body yaw's forward is (sin a, cos a), so sin a < 0 is facing west
-    const heading = Math.sin(avatar.yaw) < -0.3 ? -Math.PI / 2 : Math.PI / 2;
+    const heading = mountHeadingFor(dock);
+    if (heading === null) return false;
+    rideIgnore = `scooter:${dock.id}`;
     const ok = playerMode.startRide({
       canStand: rideStand,
       deckTop: DECK_TOP,
-      // the scooter model's yaw is the negated avatar heading (models face local −z)
-      place: (p, h, lean) => scenery.scooters!.placeRidden(p.x, p.z, -h, lean),
+      ground: scooterGround,
+      support: (p) => ground.support(p, RIDE_PROFILE.footRadius),
+      dropMax: RIDE_PROFILE.dropMax,
+      // the scooter model's yaw is the negated ride heading (models face local −z); it goes where its footZ
+      // stands under the rider's feet (world/scooters SCOOTER_GEOMETRY), on the ground, pitched and leaned
+      place: (p, h, lean, _speed, y, pitch) => { const o = riddenScooterOrigin(p, h); scenery.scooters!.placeRidden(o.x, o.z, -h, lean, y, pitch); },
       forceEnd: (reason) => dismountScooter(reason),
     }, heading);
-    if (!ok) return false;
+    if (!ok) { rideIgnore = undefined; return false; }
     ridingDock = dock;
     scenery.scooters.setDocked(dock.id, false);
     scenery.scooters.showRidden(true);
-    scenery.scooters.placeRidden(playerMode.body.pos.x, playerMode.body.pos.z, -heading, 0);
+    const o = riddenScooterOrigin(playerMode.body.pos, heading), g = scooterGround(playerMode.body.pos, heading);
+    scenery.scooters.placeRidden(o.x, o.z, -heading, 0, g.y, g.pitch);
     scooterState.riding = dock.id;
     scooterState.mounts++;
     return true;
   }
-  /** DISMOUNT — always onto a point a walker can stand on: a step to the rider's right, else the left,
-   *  else exactly where they are (which the ride area guarantees is standable). The scooter goes home. */
+  /** DISMOUNT — always onto visible ground a walker can stand on: a step to the rider's right, else the left,
+   *  else the nearest standable point round them (never water, a solid or beyond the world's edge — the WALK
+   *  stand test refuses all three). The scooter goes home. */
   function dismountScooter(reason: string): void {
     if (!ridingDock) return;
     const p = playerMode.body.pos, h = playerMode.rideState?.heading ?? avatar.yaw;
     const rx = Math.cos(h), rz = Math.sin(h); // the rider's right, in the (sin h, −cos h) forward convention
     const beside = [{ x: p.x + rx * 20, z: p.z + rz * 20 }, { x: p.x - rx * 20, z: p.z - rz * 20 }, { x: p.x + rx * 12, z: p.z + rz * 12 }, { x: p.x - rx * 12, z: p.z - rz * 12 }];
-    const at = beside.find((q) => playerStand(q)) ?? { ...p };
+    const at = beside.find((q) => playerStand(q)) ?? standablePointNear(p, NAV_RADIUS, playerStand) ?? { ...p };
     const dock = ridingDock;
     ridingDock = null;
+    rideIgnore = undefined;
     playerMode.endRide(at);
     scenery.scooters?.showRidden(false);
     scenery.scooters?.setDocked(dock.id, true);
@@ -2530,6 +2643,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     parent: R.scene,
     canStand: playerStand,
     radius: NAV_RADIUS,
+    groundY: groundYAt,
     toWorld: (p) => homeDeskWorldPoint(p, v1Rooms(), ROOM_WORLD_SHIFT_Z),
     lod: 1,
     // PHASE 6C — seated peers sit on this world's own chairs; see peerSeatAnchor.
@@ -3037,6 +3151,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  say where somebody went as they cross V1's frame boundary, instead of leaving peers with a body
    *  parked at the façade (app/selfMovement.ts). */
   const AI_LAB_PLACE_ID = "ai-lab";
+  const CAMPUS_PLACE_ID = "campus";
   /** PHASE 7D — WHERE EACH PERSON IN THE CAVE IS, from what they actually published.
    *
    *  This replaces a hash-of-email slot table, and the difference is the whole point: that one was a
@@ -3052,7 +3167,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // are outside V1's frame, so a peer's `localPoint` IS their real world position out there.
     // …AND SO DOES EVERY FLOOR ABOVE THE GROUND ONE, on exactly the same terms: a storey in its own world
     // space is a place V1 has no coordinate for, so what a peer publishes for it IS a world point.
-    (c.place === CAVE_PLACE_ID || c.place === AI_LAB_PLACE_ID || (c.place != null && floorOfPlace(c.place) !== GROUND_FLOOR_ID)) && c.localPoint
+    // …AND THE CAMPUS (Phase 3 free roam): a peer out on the grounds beyond the frame, on the same terms.
+    (c.place === CAVE_PLACE_ID || c.place === AI_LAB_PLACE_ID || c.place === CAMPUS_PLACE_ID || (c.place != null && floorOfPlace(c.place) !== GROUND_FLOOR_ID)) && c.localPoint
       ? { ...c, worldPoint: c.localPoint }
       : c;
   /** PHASE 7D FOLLOW-UP — ONE VOLUME AT A TIME.
@@ -4994,6 +5110,18 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   nav.add({ stop: () => stopTour() }, "stop").name("■ stop tour");
   nav.add(params, "showPath").name("show path").onChange((v: boolean) => (navDebug.showPath = v));
   nav.add(params, "showDestination").name("show destination").onChange((v: boolean) => (navDebug.showDestination = v));
+  // THE EXTERIOR GROUND MODEL (world/exteriorGround), drawn over the campus. DEV tooling: the overlay
+  // module is imported the first time the toggle is switched on, so it costs nothing until then.
+  const groundDebug = { show: false, mode: "surface" as "surface" | "walk" | "ride" };
+  let groundOverlay: import("../devtools/GroundOverlay").GroundOverlay | null = null;
+  const refreshGroundOverlay = async (): Promise<void> => {
+    if (!groundDebug.show) { groundOverlay?.group.removeFromParent(); return; }
+    if (!groundOverlay) groundOverlay = new (await import("../devtools/GroundOverlay")).GroundOverlay();
+    groundOverlay.paint(groundDebug.mode);
+    if (groundDebug.show) R.scene.add(groundOverlay.group);
+  };
+  nav.add(groundDebug, "show").name("exterior ground overlay (dev)").onChange(() => void refreshGroundOverlay());
+  nav.add(groundDebug, "mode", ["surface", "walk", "ride"]).name("ground overlay mode").onChange(() => void refreshGroundOverlay());
   nav.add(navState, "last").disable().listen(); nav.add(navState, "cells").disable(); nav.add(navState, "walkable").disable(); nav.add(navState, "unbuilt").name("unbuilt interior cells").disable();
   nav.add(navState, "radius").name("NAV_RADIUS (routing)").disable();
   nav.add(navState, "derived").name("derived-governed").disable().listen();
@@ -5504,13 +5632,21 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // …AND THE LAB IS NAMED WHILE THEY ARE IN IT. `entering` only records the name; app/selfMovement.ts
       // is what publishes it, at the frame boundary and for every step taken out there. Set from the
       // body's real position, so a return clears it without anybody having to remember to.
-      const inLab = inAiLabZone({ x: bp.x, z: bp.z }, NAV_RADIUS);
-      if (inLab !== selfInAiLab) {
-        selfInAiLab = inLab;
-        aiLabState.inside = inLab ? "yes" : "no";
-        // The CAVE owns `place` while you are inside it; the two volumes never overlap, so this can never
-        // rename a Cave occupant.
-        if (caveTransition?.state.where !== "cave") selfFeed?.entering(inLab || exitAuthorized ? AI_LAB_PLACE_ID : null);
+      // PHASE 3: "In AI Lab" is the Lab's FLOOR (inside its wall, and the porch), not the grounds round it;
+      // everywhere else beyond V1's frame on the ground floor is the CAMPUS. Published only when the answer
+      // CHANGES, so the departure label set just before the frame is crossed (setDepartureDestination)
+      // stands until the body's own position says otherwise.
+      const bpv = { x: bp.x, z: bp.z };
+      const inLab = inLabDomain(bpv);
+      if (inLab !== selfInAiLab) { selfInAiLab = inLab; aiLabState.inside = inLab ? "yes" : "no"; }
+      if (currentFloor === GROUND_FLOOR_ID) {
+        const place = inLab || exitAuthorized ? AI_LAB_PLACE_ID : !pointInRect(bpv, FRAME) ? CAMPUS_PLACE_ID : null;
+        if (place !== selfPlace) {
+          selfPlace = place;
+          // The CAVE owns `place` while you are inside it; the volumes never overlap, so this can never
+          // rename a Cave occupant.
+          if (caveTransition?.state.where !== "cave") selfFeed?.entering(place);
+        }
       }
       accessState.sensors = mirror.ambient.scannerDenied(GATE_SCANNER_IDS[0]) ? "refusing (red)" : "clear (green)";
       // A direct-control player has no planned route, so the automatic doors would only react once his body
@@ -5756,7 +5892,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   const nextFrames = (): Promise<void> => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
 
   function stressCrowd(): Crowd {
-    if (!crowd) { crowd = new Crowd(R.scene, playerStand); R.addDynamicCaster(crowd.group); }
+    if (!crowd) { crowd = new Crowd(R.scene, legacyStand); R.addDynamicCaster(crowd.group); }
     return crowd;
   }
 
@@ -5764,7 +5900,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  produce no candidates and drop out of the spread on their own. */
   const STRESS_ROOMS = [DESIGN_ROOM, RECEPTION_ROOM, MEETING_ROOM, PROJECT_ROOM, GAMING_ROOM, CENTRAL_HUB,
     EXECUTIVE_ROOM, CMS_ROOM, AI_ROOM, DEV_ROOM, QA_ROOM].map((r) => ({ id: r.id, rect: r.rect }));
-  const stressPlacementDeps = () => ({ roomRects: STRESS_ROOMS, hubRect: CENTRAL_HUB.rect, caveRect: CAVE_FLOOR_RECT, canStand: playerStand });
+  const stressPlacementDeps = () => ({ roomRects: STRESS_ROOMS, hubRect: CENTRAL_HUB.rect, caveRect: CAVE_FLOOR_RECT, canStand: legacyStand });
 
   /** Put the world in (or out of) the CAVE, through the real portal transition rather than by teleporting
    *  the camera — the CAVE scenarios have to measure the same volume swap the product performs. */
@@ -6340,12 +6476,29 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       view: () => playerMode.view,
       camera: R.playerCamera,
       canStand: playerStand,
+      /** PHASE 3 — the campus ground under a point, where the avatar actually stands, and the place published */
+      ground: (x: number, z: number) => ({ ...ground.groundAt({ x, z }), y: groundYAt({ x, z }) }),
+      standY: () => avatar.root.position.y,
+      /** TRAVERSAL — why a walker may not stand at (x, z) (the campus verdict, static or with feet), and the floor it rests on */
+      why: (x: number, z: number, feet?: number, airborne = false) => ground.occupancy({ x, z }, WALK_PROFILE.footRadius, WALK_PROFILE, foreignOwner, undefined, feet === undefined ? undefined : { feet, airborne }),
+      support: (x: number, z: number) => playerSupport({ x, z }),
+      place: () => selfPlace,
       /** drive the body straight from a test/console, bypassing the keyboard */
       move: (dx: number, dz: number) => playerMode.body.move(dx, dz),
       position: () => ({ ...playerMode.body.pos }),
       teleport: (x: number, z: number) => { const ok = playerMode.body.placeNear({ x, z }); avatar.setPosition(playerMode.body.pos); playerMode.camera.snap(); return ok; },
       /** SHARED SCOOTERS — the QA rig: stations, ride area, mount/dismount and the live ride numbers */
-      scooters: { stations: SCOOTER_STATIONS, area: RIDE_AREA, state: scooterState, canRide: rideStand, mount: mountScooter, dismount: () => dismountScooter("qa"), ride: () => playerMode.rideState, riding: () => playerMode.riding, candidates: () => scooterCandidates().map((c) => c.id) },
+      scooters: { stations: SCOOTER_STATIONS, state: scooterState, surface: () => playerMode.rideSurface, canRide: rideStand, mount: mountScooter, dismount: () => dismountScooter("qa"), ride: () => playerMode.rideState, riding: () => playerMode.riding, candidates: () => scooterCandidates().map((c) => c.id),
+        hud: () => playerMode.scooterHudState,
+        /** QA: set the ridden deck down at a test spot (refused where a deck may not stand) */
+        warp: (x: number, z: number, heading: number, speed?: number) => playerMode.warpRide({ x, z }, heading, speed),
+        /** why a deck may not roll at (x, z) facing its current heading: the ground verdict, then its nose/tail */
+        rideWhy: (x: number, z: number) => {
+          const p = { x, z }, h = playerMode.rideState?.heading ?? 0, fx = Math.sin(h), fz = -Math.cos(h);
+          return { ground: ground.occupancy(p, RIDE_PROFILE.footRadius, RIDE_PROFILE, rideForeign, rideIgnore), surface: ground.groundAt(p).id,
+            nose: ground.solidNear({ x: x + fx * DECK_NOSE, z: z + fz * DECK_NOSE }, DECK_END_R, rideIgnore), tail: ground.solidNear({ x: x - fx * DECK_TAIL, z: z - fz * DECK_TAIL }, DECK_END_R, rideIgnore), floor: currentFloor };
+        },
+        rider: () => ({ weight: avatar.ridingWeight, stance: avatar.riderStats.stance, error: { ...avatar.riderStats.error }, clip: avatar.currentClip, root: avatar.root.position.toArray() }) },
       look: (dx: number, dy: number) => playerMode.camera.look(dx, dy),
       interact: () => playerMode.interact(),
       target: () => playerMode.state.target,

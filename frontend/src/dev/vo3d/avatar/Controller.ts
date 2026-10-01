@@ -98,6 +98,8 @@ export function stepAlong(avatar: Avatar, path: Vec2[], speed: number, turnRate:
     if (d <= remaining) { pos.x = tgt.x; pos.z = tgt.z; remaining -= d; path.shift(); }
     else { pos.x += (dx / d) * remaining; pos.z += (dz / d) * remaining; remaining = 0; }
   }
+  // ON THE GROUND the walk crosses (flat indoors; the campus's own heights outside)
+  avatar.settleOnGround();
   const next = path[0];
   if (next) avatar.setYaw(stepAngle(avatar.yaw, headingFor(next.x - pos.x, next.z - pos.z), dt * turnRate));
 }

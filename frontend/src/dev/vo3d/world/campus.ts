@@ -51,6 +51,11 @@ const ROAD_W = 216;
 const ROAD_RUN = 5400;
 
 /** the podium footprint: the V1 frame grown by the plinth margin */
+/** the office podium's plinth ring (build/floorplan): a 5-tall stone box standing on grade, so its top —
+ *  the ledge a body sees between the podium sidewalk and the lower walks — is GRADE + 5 */
+export const PODIUM_PLINTH_H = 5;
+export const PODIUM_LEDGE_Y = GRADE + PODIUM_PLINTH_H;
+
 export const PODIUM: Rect = { x: FRAME.x - PODIUM_MARGIN, z: FRAME.z - PODIUM_MARGIN, w: FRAME.w + 2 * PODIUM_MARGIN, d: FRAME.d + 2 * PODIUM_MARGIN };
 
 export const ROADS: Road[] = [
@@ -393,7 +398,8 @@ export const POND_BENCHES: { x: number; z: number; yaw: number }[] = [
   { x: 914, z: -1016, yaw: Math.PI },
 ];
 /** the walk from the AI Lab's rear opening down to the water, on the Lab's own centre line */
-export const POND_PATH: Rect = { x: 706, z: -1092, w: 68, d: 58 };
+// the path from the lakeside steps (world/ailab lakeStepTreads) down to the water's edge
+export const POND_PATH: Rect = { x: 706, z: -1120, w: 68, d: 86 };
 
 // ---- VEHICLES ----------------------------------------------------------------------------------------
 /** THE PARKED FLEET (build/vehicles). Sports and premium cars in the staff car park, and the Philippine
@@ -403,7 +409,7 @@ export type VehicleKind = "supercar" | "supercarWing" | "sport" | "pickup" | "sp
 export type VehicleSpot = { kind: VehicleKind; x: number; z: number; yaw: number; colour: number; y?: number };
 /** body length of each kind along its own axis — the lay-by is packed from these */
 export const VEHICLE_LENGTH: Record<VehicleKind, number> = {
-  supercar: 112, supercarWing: 112, sport: 112, pickup: 132, sportbike: 56, tricycle: 60, etrike: 72, jeepney: 180, kalesa: 144, scooter: 40,
+  supercar: 112, supercarWing: 112, sport: 112, pickup: 132, sportbike: 56, tricycle: 60, etrike: 72, jeepney: 180, kalesa: 144, scooter: 35,
 };
 
 const STALL_MID = (bank: number) => STALL_BANKS[bank].x + STALL_D / 2;
@@ -440,3 +446,232 @@ export const VEHICLES: VehicleSpot[] = [
   // the lay-by: the Philippine street set
   ...laybySpots,
 ];
+
+// ============================= SHARED SCENERY DATA (build/exterior + world/exteriorGround) ==============
+// Everything below used to be computed inside build/exterior. It lives here so the ground model can read
+// the SAME placements the builder draws — the builder consumes these, nothing is re-authored.
+
+/** the exterior's own scatter stream (build/exterior resets to this at the start of every build) */
+export const SCATTER_SEED = 20260913;
+/** one step of that stream's LCG — the builder and campusTreeSpots share it, so neither can drift */
+export const scatterStep = (seed: number): number => (seed * 1664525 + 1013904223) % 4294967296;
+
+export type TreeSpot = { x: number; z: number; s: number; yaw: number; y?: number };
+/** a trunk's base radius per kind, at scale 1 (build/exterior treeGeos) */
+export const TREE_TRUNK_R: Record<TreeKind, number> = { round: 4.4, tall: 3.6, broad: 5.2, conifer: 3 };
+
+/** how far a car-park island's kerb stands proud of the asphalt */
+export const ISLAND_H = 3;
+/** an island's kerbed footprint (the stall, inset 4 all round) */
+export const islandRect = (i: { bank: 0 | 1; stall: number }): Rect => {
+  const r = stallRect(i.bank, i.stall);
+  return { x: r.x + 4, z: r.z + 4, w: r.w - 8, d: r.d - 8 };
+};
+
+/** EVERY CAMPUS TREE, in the builder's exact draw order. The scatter is the FIRST consumer of the stream
+ *  after the reset, so this reproduces it from the seed alone; `seedAfter` is where the builder resumes
+ *  for the shrubs, belts and puddles. Rows, groves, specimens, then the (deterministic) island trees. */
+export function campusTreeSpots(): { spots: Record<TreeKind, TreeSpot[]>; seedAfter: number } {
+  let seed = SCATTER_SEED;
+  const rx = (): number => (seed = scatterStep(seed)) / 4294967296;
+  const jitter = (n: number) => (rx() - 0.5) * n;
+  const spots: Record<TreeKind, TreeSpot[]> = { round: [], tall: [], broad: [], conifer: [] };
+  for (const line of TREE_LINES) {
+    for (let t = line.from; t <= line.to; t += line.spacing) {
+      const s2 = 0.92 + rx() * 0.16, yaw = rx() * 6.28;
+      const spot = line.axis === "x" ? { x: t, z: line.at + jitter(8), s: s2, yaw } : { x: line.at + jitter(8), z: t, s: s2, yaw };
+      // no street tree in the arrival's walk or bay — computed after the draws so the stream never shifts
+      const inArrival = spot.x > LAYBY_WALK.x - 18 && spot.x < LAYBY_WALK.x + LAYBY_WALK.w + 18 && spot.z > LAYBY_WALK.z - 18 && spot.z < LAYBY.z + LAYBY.d;
+      if (!inArrival) spots[line.kind].push(spot);
+    }
+  }
+  for (const g of GROVES) {
+    for (let i = 0; i < g.count; i++) {
+      const a = rx() * Math.PI * 2, rr = Math.sqrt(rx());
+      spots[g.kind].push({ x: g.x + Math.cos(a) * g.rx * rr, z: g.z + Math.sin(a) * g.rz * rr, s: 0.82 + rx() * 0.5, yaw: rx() * 6.28 });
+    }
+  }
+  for (const sp of SPECIMENS) spots[sp.kind].push({ x: sp.x, z: sp.z, s: sp.s, yaw: rx() * 6.28 });
+  PARK_ISLANDS.forEach((isl, k) => {
+    const c = islandCentre(isl), out = isl.bank === 0 ? -1 : 1;
+    spots.round.push({ x: c.x + out * 40, z: c.z, s: 0.72 + (k % 2) * 0.06, yaw: k * 1.7, y: PAVING_Y + ISLAND_H });
+  });
+  return { spots, seedAfter: seed };
+}
+
+/** PLANTING BEDS along the podium and the drop-off (soil, GRADE + 0.5) */
+export const PLANTING_BEDS: Rect[] = [
+  { x: ENTRY_X - 470, z: PODIUM.z + PODIUM.d + 8, w: 190, d: 62 },
+  { x: ENTRY_X + 280, z: PODIUM.z + PODIUM.d + 8, w: 190, d: 62 },
+  { x: PODIUM.x - 132, z: 180, w: 66, d: 420 },
+  { x: PODIUM.x - 132, z: 700, w: 66, d: 420 },
+  { x: PODIUM.x + PODIUM.w + 66, z: 260, w: 66, d: 700 },
+  { x: 260, z: PODIUM.z - 132, w: 900, d: 66 },
+];
+export const BED_Y = GRADE + 0.5;
+
+/** the monument sign's plinth, centred at (x, z) on the drop-off frontage */
+export const MONUMENT_SIGN = { x: ENTRY_X - 430, z: DROP_OFF.z + 16, w: 260, d: 54 };
+
+/** the low path bollards: the podium ring's lights plus the two on the mid-lot path */
+export function bollardSpots(): { x: number; z: number }[] {
+  const midPath = PARK_PATHS[0];
+  return [...pathLightSpots(), { x: -300, z: midPath.z - 8 }, { x: -200, z: midPath.z + midPath.d + 8 }];
+}
+/** base radii of the repeated posts (build/exterior lampGeos / bollardGeos), at scale 1 */
+export const LAMP_BASE_R = 5.5;
+export const BOLLARD_BASE_R = 6;
+/** a bench's footprint in its own frame (build/exterior benchGeos): 74 long, legs z −15…11 */
+export const BENCH_FOOTPRINT = { x0: -37, x1: 37, z0: -15, z1: 11 };
+
+/** THE ENTRY FLIGHT: from the podium's sidewalk edge down to the drop-off in five even risers (~1.5 each).
+ *  The podium's plinth ring (PODIUM_LEDGE_Y) is itself the middle tread, so one tread stands ON the ring
+ *  (between the frame's edge and the ring's middle) and two stand on grade beyond the podium's edge, in the
+ *  ENTRY_STAIR rect, each wider than the one above. `base` is where each box stands. */
+export const ENTRY_TREADS = 3;
+export function entryStairTreads(): { rect: Rect; top: number; base: number }[] {
+  const ringZ0 = FRAME.z + FRAME.d, ringZ1 = PODIUM.z + PODIUM.d, ringMid = (ringZ0 + ringZ1) / 2;
+  const cx = ENTRY_STAIR.x + ENTRY_STAIR.w / 2, half = ENTRY_STAIR.d / 2;
+  const tread = (w: number, z: number, d: number, top: number, base: number) => ({ rect: { x: cx - w / 2, z, w, d }, top, base });
+  return [
+    tread(ENTRY_STAIR.w, ringZ0, ringMid - ringZ0, PODIUM_LEDGE_Y + 1.5, PODIUM_LEDGE_Y - 0.2),
+    tread(ENTRY_STAIR.w + 16, ENTRY_STAIR.z, half, PODIUM_LEDGE_Y - 1.55, GRADE - 1),
+    tread(ENTRY_STAIR.w + 32, ENTRY_STAIR.z + half, half, PODIUM_LEDGE_Y - 3.1, GRADE - 1),
+  ];
+}
+
+/** THE POND OUTLINE in the builder's shape space (x east, y = NORTH, i.e. world z = POND.z − y): the
+ *  same eight radii-jittered points through three's SplineCurve (Catmull-Rom, open, 64 samples, closed by
+ *  the final straight edge). `grow` scales it for the shore band. */
+export function pondOutline(grow: number): { x: number; y: number }[] {
+  const wob = [1.0, 0.86, 1.08, 0.92, 1.04, 0.82, 1.1, 0.9];
+  const pts: { x: number; y: number }[] = [];
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    pts.push({ x: Math.cos(a) * POND.rx * grow * wob[i], y: Math.sin(a) * POND.rz * grow * wob[(i + 3) % 8] });
+  }
+  const cr = (t: number, p0: number, p1: number, p2: number, p3: number): number => {
+    const v0 = (p2 - p0) * 0.5, v1 = (p3 - p1) * 0.5, t2 = t * t, t3 = t * t2;
+    return (2 * p1 - 2 * p2 + v0 + v1) * t3 + (-3 * p1 + 3 * p2 - 2 * v0 - v1) * t2 + v0 * t + p1;
+  };
+  const n = 64, out: { x: number; y: number }[] = [];
+  for (let i = 0; i <= n; i++) {
+    const p = (pts.length - 1) * ((i % n) / n);
+    const k = Math.floor(p), w = p - k;
+    const p0 = pts[k === 0 ? k : k - 1], p1 = pts[k], p2 = pts[k > pts.length - 2 ? pts.length - 1 : k + 1], p3 = pts[k > pts.length - 3 ? pts.length - 1 : k + 2];
+    out.push({ x: cr(w, p0.x, p1.x, p2.x, p3.x), y: cr(w, p0.y, p1.y, p2.y, p3.y) });
+  }
+  return out;
+}
+/** the water plane and the shore band under it (build/exterior) */
+export const WATER_Y = GRADE + 0.55;
+export const SHORE_Y = GRADE + 0.3;
+
+/** EACH VEHICLE KIND'S FOOTPRINT in its own frame (nose toward −z), measured from build/vehicles'
+ *  geometry — exteriorGround.test pins these to the real bounding boxes. */
+export const VEHICLE_BOUNDS: Record<VehicleKind, { x0: number; x1: number; z0: number; z1: number }> = {
+  supercar: { x0: -29.3, x1: 29.3, z0: -59.2, z1: 58.7 },
+  supercarWing: { x0: -29.3, x1: 29.3, z0: -59.2, z1: 58.7 },
+  sport: { x0: -28, x1: 28, z0: -58.3, z1: 59.3 },
+  pickup: { x0: -32, x1: 32, z0: -67.2, z1: 66.7 },
+  sportbike: { x0: -8, x1: 8, z0: -30.1, z1: 27.3 },
+  tricycle: { x0: -22, x1: 28, z0: -30.5, z1: 28.2 },
+  etrike: { x0: -27.5, x1: 27.5, z0: -39.1, z1: 39.7 },
+  jeepney: { x0: -31, x1: 31, z0: -96.3, z1: 98 },
+  kalesa: { x0: -25.5, x1: 25.5, z0: -78.6, z1: 69 },
+  scooter: { x0: -8.25, x1: 8.25, z0: -16.9, z1: 17.94 },
+};
+
+/** THE RAMPS (Phase 4) — built, visible, and ground for walkers and riders alike. Each falls from `fromY`
+ *  at its rect's min edge to `toY` at its max edge along `axis`, and is sunk into what it crosses.
+ *    · the ACCESSIBLE RAMP beside the entry flight: podium sidewalk → the plinth ring's top (~1:17, staying
+ *      above the ring it crosses) → the lower walk beyond the podium's edge (~1:13)
+ *    · APRON: the podium sidewalk's east end down onto the plinth ring the Lab's east flank (LEG_N) runs on
+ *    · PATH_LINK: from the ring back up to the Lab causeway's own deck
+ *  The last two replace the two 3.2 steps the old scooter corridor floated across. */
+export type Ramp = { id: string; rect: Rect; axis: "x" | "z"; fromY: number; toY: number };
+export const RAMPS: Ramp[] = [
+  { id: "entry-accessible-upper", rect: { x: 892, z: 1238, w: 56, d: PODIUM.z + PODIUM.d - 1238 }, axis: "z", fromY: PODIUM_TOP, toY: PODIUM_LEDGE_Y },
+  { id: "entry-accessible-lower", rect: { x: 892, z: PODIUM.z + PODIUM.d, w: 56, d: 60 }, axis: "z", fromY: PODIUM_LEDGE_Y, toY: PAVING_Y },
+  { id: "apron", rect: { x: 1400, z: 1200, w: 52, d: 40 }, axis: "x", fromY: PODIUM_TOP, toY: PODIUM_LEDGE_Y },
+  { id: "path-link", rect: { x: 1440, z: -24, w: 48, d: 54 }, axis: "z", fromY: PODIUM_TOP, toY: PODIUM_LEDGE_Y },
+];
+/** EACH ROAD'S TWO VERGES as build/exterior lays them: a SIDEWALK_W sidewalk hard against the carriageway
+ *  (at PAVING_Y) and a 10-wide curb band centred on the carriageway edge (at CURB_Y). */
+export const CURB_Y = GRADE + 0.1;
+export function roadVerges(r: Road): { side: -1 | 1; walk: Rect; curb: Rect }[] {
+  return ([-1, 1] as const).map((side) => {
+    const at = r.at + (side * (r.width + SIDEWALK_W_)) / 2;
+    const walk: Rect = r.axis === "x"
+      ? { x: r.from, z: at - SIDEWALK_W_ / 2, w: r.to - r.from, d: SIDEWALK_W_ }
+      : { x: at - SIDEWALK_W_ / 2, z: r.from, w: SIDEWALK_W_, d: r.to - r.from };
+    const curbAt = r.at + (side * r.width) / 2;
+    const curb: Rect = r.axis === "x"
+      ? { x: r.from, z: curbAt - 5, w: r.to - r.from, d: 10 }
+      : { x: curbAt - 5, z: r.from, w: 10, d: r.to - r.from };
+    return { side, walk, curb };
+  });
+}
+
+/** EVERY SHRUB the exterior draws, by planting, in the builder's exact draw order — the stream continues
+ *  from `seed` (where the tree scatter left it) and `seedAfter` is where the builder resumes. The shrub is
+ *  one blob ~14 x s across at its widest, knee to waist high on the cast. */
+export function campusShrubSpots(seed: number): { beds: TreeSpot[]; frontage: TreeSpot[]; screen: TreeSpot[]; islands: TreeSpot[]; reeds: TreeSpot[]; seedAfter: number } {
+  const rx = (): number => (seed = scatterStep(seed)) / 4294967296;
+  const jitter = (n: number) => (rx() - 0.5) * n;
+  const beds: TreeSpot[] = [], frontage: TreeSpot[] = [], screen: TreeSpot[] = [], islands: TreeSpot[] = [], reeds: TreeSpot[] = [];
+  for (const b of PLANTING_BEDS) for (let i = 0; i < Math.max(4, Math.round((b.w * b.d) / 3600)); i++) beds.push({ x: b.x + 14 + rx() * (b.w - 28), z: b.z + 14 + rx() * (b.d - 28), s: 0.8 + rx() * 0.5, yaw: rx() * 6.28 });
+  for (const lot of EXPANSION_LOTS) {
+    const r = lot.rect, n = 9;
+    for (let i = 0; i < n; i++) {
+      const t = (i / (n - 1) - 0.5) * 0.42; // the middle 42% of the frontage only
+      if (lot.frontage === "north") frontage.push({ x: r.x + r.w * (0.5 + t), z: r.z + 46 + jitter(10), s: 0.7 + rx() * 0.3, yaw: rx() * 6.28 });
+      else if (lot.frontage === "west") frontage.push({ x: r.x + 46 + jitter(10), z: r.z + r.d * (0.5 + t), s: 0.7 + rx() * 0.3, yaw: rx() * 6.28 });
+      else frontage.push({ x: r.x + r.w - 46 + jitter(10), z: r.z + r.d * (0.5 + t), s: 0.7 + rx() * 0.3, yaw: rx() * 6.28 });
+    }
+  }
+  // the car park's screen hedge: three draws per plant plus a deterministic infill, so it reads as a hedge
+  const screenX = PARK_SCREEN.x + PARK_SCREEN.w / 2;
+  for (let z = PARKING.z; z < PARKING.z + PARKING.d; z += 76) {
+    screen.push({ x: screenX + jitter(4), z: z + 20, s: 0.72 + rx() * 0.14, yaw: rx() * 6.28 });
+    if (z + 58 < PARKING.z + PARKING.d) screen.push({ x: screenX, z: z + 58, s: 0.68, yaw: z * 0.01 });
+  }
+  // two low shrubs per island, flanking the tree
+  PARK_ISLANDS.forEach((isl, k) => {
+    const c = islandCentre(isl), out = isl.bank === 0 ? -1 : 1;
+    for (const dz of [-18, 18]) islands.push({ x: c.x + out * 8, z: c.z + dz, s: 0.5, yaw: k + dz, y: PAVING_Y + ISLAND_H });
+  });
+  // reeds round the pond: three short arcs, not a continuous fringe
+  for (const [a0, a1] of [[0.3, 1.15], [2.5, 3.2], [4.3, 5.1]] as const)
+    for (let i = 0; i < 7; i++) {
+      const a = a0 + (a1 - a0) * (i / 6);
+      reeds.push({ x: POND.x + Math.cos(a) * (POND.rx + 16), z: POND.z + Math.sin(a) * (POND.rz + 14), s: 0.5 + rx() * 0.28, yaw: rx() * 6.28 });
+    }
+  return { beds, frontage, screen, islands, reeds, seedAfter: seed };
+}
+/** a shrub's footprint radius at scale 1: a little inside its ~14-unit widest blob, so a body brushes the
+ *  foliage rather than stopping in the air in front of it */
+export const SHRUB_R = 11;
+
+/** each vacant parcel's future-lot marker: beside its service drive, one panel-width in from the frontage,
+ *  facing the road; its plinth is 190 x 40 in the marker's own frame */
+export const LOT_MARKER_PLINTH = { w: 190, d: 40 };
+export function lotMarkerSpot(lot: Lot): { x: number; z: number; yaw: number } {
+  const r = lot.rect, INSET = 120;
+  if (lot.frontage === "north") return { x: r.x + r.w / 2 - 210, z: r.z + INSET, yaw: 0 };
+  if (lot.frontage === "west") return { x: r.x + INSET, z: r.z + r.d / 2 - 210, yaw: -Math.PI / 2 };
+  return { x: r.x + r.w - INSET, z: r.z + r.d / 2 - 210, yaw: Math.PI / 2 };
+}
+
+/** A VACANT PARCEL'S OWN GROUND: the mown pad set back from its frontage (GRADE + 0.12) and the service-drive
+ *  stub off the road it fronts (asphalt, PAVING_Y − 0.3) */
+export const VACANT_PAD_Y = GRADE + 0.12;
+export function vacantLotGround(lot: Lot): { pad: Rect; stub: Rect } {
+  const r = lot.rect, inset = 190;
+  const pad: Rect = { x: r.x + inset, z: r.z + inset, w: r.w - 2 * inset, d: r.d - 2 * inset };
+  const stub: Rect =
+    lot.frontage === "north" ? { x: r.x + r.w / 2 - 70, z: r.z, w: 140, d: inset }
+    : lot.frontage === "west" ? { x: r.x, z: r.z + r.d / 2 - 70, w: inset, d: 140 }
+    : { x: r.x + r.w - inset, z: r.z + r.d / 2 - 70, w: inset, d: 140 };
+  return { pad, stub };
+}

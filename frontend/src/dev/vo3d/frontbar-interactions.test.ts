@@ -63,6 +63,7 @@ function stubAvatar(at: Vec2 = { x: 0, z: 0 }) {
   const a = {
     root, yaw: 0, gltf: null, position: { x: 0, z: 0 }, currentClip: "",
     setYaw(y: number) { a.yaw = y; root.rotation.y = y; },
+    settleOnGround() {},
     setPosition(p: Vec2) { root.position.set(p.x, 0, p.z); },
     play(c: string) { a.currentClip = c; },
     setClipTimeScale() {},

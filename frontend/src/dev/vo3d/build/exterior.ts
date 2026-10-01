@@ -21,11 +21,13 @@ import * as THREE from "three";
 import { Baker, bake, cyl, rbox, shadowed } from "./helpers";
 import { canvas2d } from "../render/Materials";
 import {
-  CROSSINGS, DROP_OFF, ENTRY_STAIR, ENTRY_X, EXPANSION_LOTS, GRADE, LOTS, MARK_Y, PARK_DRIVE,
-  GROVES, PARKING, PAVING_Y, POND, POND_BENCHES, POND_PATH, POND_SHORE, PODIUM, PODIUM_TOP, ROAD_Y, ROADS,
-  SIDEWALK_W, SPECIMENS, STALL_BANKS, STALL_D, STALL_W, TREE_LINES, VEHICLES, WALKS, WORLD_CENTRE,
-  WORLD_RADIUS, benchSpots, pathLightSpots, roadById, roadRect, streetLightSpots,   PARK_ACCESSIBLE, PARK_AISLE, PARK_CROSSINGS, PARK_ISLANDS, PARK_LAMPS, PARK_PATHS, PARK_SCREEN, islandCentre, stallRect,
+  CROSSINGS, DROP_OFF, EXPANSION_LOTS, GRADE, LOTS, MARK_Y, PARK_DRIVE,
+  PARKING, PAVING_Y, POND, POND_BENCHES, POND_PATH, POND_SHORE, PODIUM, ROAD_Y, ROADS,
+  STALL_BANKS, STALL_D, STALL_W, VEHICLES, WALKS, WORLD_CENTRE,
+  WORLD_RADIUS, benchSpots, roadById, roadRect, streetLightSpots,   PARK_ACCESSIBLE, PARK_AISLE, PARK_CROSSINGS, PARK_ISLANDS, PARK_LAMPS, PARK_PATHS, PARK_SCREEN, stallRect,
   LAYBY, LAYBY_WALK, LAYBY_Y,
+  BED_Y, ENTRY_TREADS, ISLAND_H, MONUMENT_SIGN, PLANTING_BEDS, SCATTER_SEED, SHORE_Y, WATER_Y,
+  CURB_Y, RAMPS, type Ramp, LOT_MARKER_PLINTH, VACANT_PAD_Y, vacantLotGround, bollardSpots, campusShrubSpots, campusTreeSpots, lotMarkerSpot, roadVerges, entryStairTreads, pondOutline, scatterStep,
 } from "../world/campus";
 import { scooterDockGeos, vehicleGeos, type VehicleGeos } from "./vehicles";
 import { SCOOTER_COLOUR, type ScooterStation } from "../world/scooters";
@@ -48,8 +50,6 @@ const EX = {
   glass: 0x2a3944, tyre: 0x25262c, water: 0x5f93a8, shore: 0xa79b85,
 } as const;
 
-/** how far a car-park island's kerb stands proud of the asphalt */
-const ISLAND_H = 3;
 
 /** Scratch material for geometry construction only. Merging discards per-mesh materials, so the pieces a
  *  variant is assembled from must NOT allocate (or register) real materials — one instanced mesh gets one
@@ -279,9 +279,9 @@ function instance(geo: THREE.BufferGeometry, m: THREE.Material, spots: Spot[], c
 // ---- deterministic scatter ----------------------------------------------------------------------------
 // Its own LCG, NOT build/helpers' shared seed: the exterior must never shift a room's procedural detail by
 // consuming random numbers from the same stream.
-let xseed = 20260913;
-const rx = (): number => ((xseed = (xseed * 1664525 + 1013904223) % 4294967296) / 4294967296);
-const resetScatter = (): void => void (xseed = 20260913);
+let xseed = SCATTER_SEED;
+const rx = (): number => (xseed = scatterStep(xseed)) / 4294967296;
+const resetScatter = (): void => void (xseed = SCATTER_SEED);
 
 // ---- repeated pieces ----------------------------------------------------------------------------------
 const ico = (r: number, detail = 0) => new THREE.IcosahedronGeometry(r, detail);
@@ -323,26 +323,30 @@ function shrubGeo(): THREE.BufferGeometry {
 /** The pond outline: a closed catmull-rom through eight radii-jittered points, so the water reads as a
  *  landscaped body rather than a stamped ellipse. `grow` scales it for the shore band. Deterministic. */
 function pondShape(grow: number): THREE.Shape {
-  const pts: THREE.Vector2[] = [];
-  const wob = [1.0, 0.86, 1.08, 0.92, 1.04, 0.82, 1.1, 0.9];
-  for (let i = 0; i < 8; i++) {
-    const a = (i / 8) * Math.PI * 2;
-    pts.push(new THREE.Vector2(Math.cos(a) * POND.rx * grow * wob[i], Math.sin(a) * POND.rz * grow * wob[(i + 3) % 8]));
-  }
-  const curve = new THREE.SplineCurve(pts);
+  // the outline itself is world/campus pondOutline, shared with the ground model's water test
   const sh = new THREE.Shape();
-  const n = 64;
-  for (let i = 0; i <= n; i++) {
-    // SplineCurve is open; wrapping the sample index closes the loop smoothly
-    const p = curve.getPoint((i % n) / n);
-    if (i === 0) sh.moveTo(p.x, p.y); else sh.lineTo(p.x, p.y);
-  }
+  pondOutline(grow).forEach((p, i) => (i === 0 ? sh.moveTo(p.x, p.y) : sh.lineTo(p.x, p.y)));
   sh.closePath();
   return sh;
 }
 
 
 
+
+/** A RAMP as a solid wedge: its sloped top from `fromY` to `toY` along its axis, down to below grade. */
+function rampWedge(r: Ramp, m: THREE.Material): THREE.Mesh {
+  const along = r.axis === "x" ? r.rect.w : r.rect.d, across = r.axis === "x" ? r.rect.d : r.rect.w;
+  const base = GRADE - 0.5;
+  const sh = new THREE.Shape();
+  sh.moveTo(0, r.fromY); sh.lineTo(along, r.toY); sh.lineTo(along, base); sh.lineTo(0, base); sh.closePath();
+  const geo = new THREE.ExtrudeGeometry(sh, { depth: across, bevelEnabled: false });
+  const mesh = new THREE.Mesh(geo, m);
+  // shape x runs along the ramp; the extrusion (+z) runs across it
+  if (r.axis === "x") mesh.position.set(r.rect.x, 0, r.rect.z);
+  else { mesh.rotation.y = -Math.PI / 2; mesh.position.set(r.rect.x + r.rect.w, 0, r.rect.z); }
+  mesh.updateMatrix();
+  return shadowed(mesh, false, true);
+}
 
 /** A street lamp: post + arm + head (one geometry), and its lens (a second, emissive). */
 function lampGeos(): { post: THREE.BufferGeometry; lens: THREE.BufferGeometry } {
@@ -394,7 +398,9 @@ export type ExteriorScenery = {
   scooters: {
     setDocked(dockId: string, docked: boolean): void;
     showRidden(on: boolean): void;
-    placeRidden(x: number, z: number, yaw: number, lean: number): void;
+    /** the ridden scooter: origin on the ground at (x, y, z), yawed, pitched nose-up by `pitch` about its own
+     *  lateral axis, then leaned by `lean` about its forward axis */
+    placeRidden(x: number, z: number, yaw: number, lean: number, y?: number, pitch?: number): void;
   } | null;
   stats: { draws: number; instanced: number; instances: number; trees: number; vehicles: number; traffic: number; docks: number };
 };
@@ -441,17 +447,9 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
   for (const r of ROADS) {
     const rect = roadRect(r);
     ground.add(flatRect(rect, roadM, ROAD_Y));
-    for (const side of [-1, 1] as const) {
-      const at = r.at + (side * (r.width + SIDEWALK_W)) / 2;
-      const walk: Rect = r.axis === "x"
-        ? { x: r.from, z: at - SIDEWALK_W / 2, w: r.to - r.from, d: SIDEWALK_W }
-        : { x: at - SIDEWALK_W / 2, z: r.from, w: SIDEWALK_W, d: r.to - r.from };
-      ground.add(flatRect(walk, pavingM, PAVING_Y));
-      const curbAt = r.at + (side * r.width) / 2;
-      const curb: Rect = r.axis === "x"
-        ? { x: r.from, z: curbAt - 5, w: r.to - r.from, d: 10 }
-        : { x: curbAt - 5, z: r.from, w: 10, d: r.to - r.from };
-      ground.add(flatRect(curb, curbM, GRADE + 0.1));
+    for (const v of roadVerges(r)) {
+      ground.add(flatRect(v.walk, pavingM, PAVING_Y));
+      ground.add(flatRect(v.curb, curbM, CURB_Y));
     }
     // dashed centre line
     for (let t = r.from + 60; t < r.to; t += 180) {
@@ -523,37 +521,28 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
   root.add(shadowed(skirt, false, true));
   // The entry stair down to the drop-off: SOLID treads. A flat plane at tread height has nothing beneath
   // it and reads as a floating slab the moment the camera rotates, so each step is a box standing on grade.
-  const treads = 4;
+  const treads = ENTRY_TREADS;
   const stairM = M.surface(EX.pavingWarm, 0.88);
-  for (let i = 0; i < treads; i++) {
-    const top = PODIUM_TOP - ((i + 1) * (PODIUM_TOP - GRADE)) / treads;
-    const z0 = ENTRY_STAIR.z + (i * ENTRY_STAIR.d) / treads;
-    const step = rbox(ENTRY_STAIR.w + i * 22, top - GRADE + 1, ENTRY_STAIR.d - (i * ENTRY_STAIR.d) / treads + 16, stairM, ENTRY_STAIR.x + ENTRY_STAIR.w / 2, GRADE - 1, z0 + (ENTRY_STAIR.d - (i * ENTRY_STAIR.d) / treads + 16) / 2, 1.2, 1);
+  for (const t of entryStairTreads()) {
+    const step = rbox(t.rect.w, t.top - t.base, t.rect.d, stairM, t.rect.x + t.rect.w / 2, t.base, t.rect.z + t.rect.d / 2, 1.2, 1);
     root.add(shadowed(step, false, true));
   }
 
+  // THE RAMPS (world/campus RAMPS, Phase 4): solid wedges in the entry flight's warm paving, each standing on
+  // grade (or sunk into the plinth ring it crosses) and falling along its axis — the same slope the ground
+  // model walks and rides. Baked with the ground: no new draw.
+  for (const r of RAMPS) ground.add(rampWedge(r, pavingWarmM));
+
   // 5. PLANTING BEDS along the podium and the drop-off.
-  const beds: Rect[] = [
-    { x: ENTRY_X - 470, z: PODIUM.z + PODIUM.d + 8, w: 190, d: 62 },
-    { x: ENTRY_X + 280, z: PODIUM.z + PODIUM.d + 8, w: 190, d: 62 },
-    { x: PODIUM.x - 132, z: 180, w: 66, d: 420 },
-    { x: PODIUM.x - 132, z: 700, w: 66, d: 420 },
-    { x: PODIUM.x + PODIUM.w + 66, z: 260, w: 66, d: 700 },
-    { x: 260, z: PODIUM.z - 132, w: 900, d: 66 },
-  ];
-  for (const b of beds) ground.add(flatRect(b, soilM, GRADE + 0.5));
+  const beds = PLANTING_BEDS;
+  for (const b of beds) ground.add(flatRect(b, soilM, BED_Y));
 
   // 6. THE VACANT PARCELS. Each one reads as intentional, maintained, open land waiting for a campus:
   //    a mown pad set back from its frontage, a service drive stub off the road it fronts, a hedge line
   //    along the street and groves in the back corners. No building, no sign, no "for sale" language.
   for (const lot of EXPANSION_LOTS) {
-    const r = lot.rect;
-    const inset = 190;
-    ground.add(flatRect({ x: r.x + inset, z: r.z + inset, w: r.w - 2 * inset, d: r.d - 2 * inset }, padM, GRADE + 0.12));
-    const stub: Rect =
-      lot.frontage === "north" ? { x: r.x + r.w / 2 - 70, z: r.z, w: 140, d: inset }
-      : lot.frontage === "west" ? { x: r.x, z: r.z + r.d / 2 - 70, w: inset, d: 140 }
-      : { x: r.x + r.w - inset, z: r.z + r.d / 2 - 70, w: inset, d: 140 };
+    const { pad, stub } = vacantLotGround(lot); // world/campus: the ground model walks the same pad and stub
+    ground.add(flatRect(pad, padM, VACANT_PAD_Y));
     ground.add(flatRect(stub, roadM, PAVING_Y - 0.3));
   }
   const groundDraws = ground.bakeInto(root, "exterior-ground");
@@ -563,32 +552,11 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
   //    few feature trees, and large areas of grass left deliberately empty. Nothing is distributed
   //    uniformly across a field any more. Everything below is instanced.
   const trees = treeGeos();
-  const treeSpots: Record<string, Spot[]> = { round: [], tall: [], broad: [], conifer: [] };
-  const jitter = (n: number) => (rx() - 0.5) * n;
-  // ROWS: evenly spaced, barely jittered — a planted verge should read as planted, not as undergrowth
-  for (const line of TREE_LINES) {
-    for (let t = line.from; t <= line.to; t += line.spacing) {
-      const s2 = 0.92 + rx() * 0.16, yaw = rx() * 6.28;
-      const spot = line.axis === "x" ? { x: t, z: line.at + jitter(8), s: s2, yaw } : { x: line.at + jitter(8), z: t, s: s2, yaw };
-      // no street tree in the arrival's walk or bay — computed first so the scatter stream never shifts
-      const inArrival = spot.x > LAYBY_WALK.x - 18 && spot.x < LAYBY_WALK.x + LAYBY_WALK.w + 18 && spot.z > LAYBY_WALK.z - 18 && spot.z < LAYBY.z + LAYBY.d;
-      if (!inArrival) treeSpots[line.kind].push(spot);
-    }
-  }
-  // GROVES: densest at the centre (sqrt keeps the cluster from reading as a ring) and thinning outward
-  for (const g of GROVES) {
-    for (let i = 0; i < g.count; i++) {
-      const a = rx() * Math.PI * 2, rr = Math.sqrt(rx());
-      treeSpots[g.kind].push({ x: g.x + Math.cos(a) * g.rx * rr, z: g.z + Math.sin(a) * g.rz * rr, s: 0.82 + rx() * 0.5, yaw: rx() * 6.28 });
-    }
-  }
-  for (const sp of SPECIMENS) treeSpots[sp.kind].push({ x: sp.x, z: sp.z, s: sp.s, yaw: rx() * 6.28 });
-  // ISLAND TREES: one small round tree at the outer end of each car-park island — deterministic (no rx),
-  // so adding them shifts no other scatter in the world. Small on purpose: floor 2 looks over them.
-  PARK_ISLANDS.forEach((isl, k) => {
-    const c = islandCentre(isl), out = isl.bank === 0 ? -1 : 1;
-    treeSpots.round.push({ x: c.x + out * 40, z: c.z, s: 0.72 + (k % 2) * 0.06, yaw: k * 1.7, y: PAVING_Y + ISLAND_H });
-  });
+  // the placements are world/campus campusTreeSpots — the FIRST draws after resetScatter, reproduced from
+  // the seed so the ground model reads the very trees drawn here; the stream then resumes where it ended
+  const scatter = campusTreeSpots();
+  const treeSpots: Record<string, Spot[]> = scatter.spots;
+  xseed = scatter.seedAfter;
 
   let instanced = 0, instances = 0;
   // One canopy TONE per variant: merging discards per-blob materials, so variety comes from the four
@@ -612,36 +580,11 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
 
   // SHRUBS: the campus's own beds, the pond shore, the parking screen, and a SHORT hedge marking the
   //   centre of each vacant parcel's frontage — enough to say "maintained", far short of edging the plot.
-  const shrubs: Spot[] = [];
-  for (const b of beds) for (let i = 0; i < Math.max(4, Math.round((b.w * b.d) / 3600)); i++) shrubs.push({ x: b.x + 14 + rx() * (b.w - 28), z: b.z + 14 + rx() * (b.d - 28), s: 0.8 + rx() * 0.5, yaw: rx() * 6.28 });
-  for (const lot of EXPANSION_LOTS) {
-    const r = lot.rect, n = 9;
-    for (let i = 0; i < n; i++) {
-      const t = (i / (n - 1) - 0.5) * 0.42; // the middle 42% of the frontage only
-      if (lot.frontage === "north") shrubs.push({ x: r.x + r.w * (0.5 + t), z: r.z + 46 + jitter(10), s: 0.7 + rx() * 0.3, yaw: rx() * 6.28 });
-      else if (lot.frontage === "west") shrubs.push({ x: r.x + 46 + jitter(10), z: r.z + r.d * (0.5 + t), s: 0.7 + rx() * 0.3, yaw: rx() * 6.28 });
-      else shrubs.push({ x: r.x + r.w - 46 + jitter(10), z: r.z + r.d * (0.5 + t), s: 0.7 + rx() * 0.3, yaw: rx() * 6.28 });
-    }
-  }
-  // THE SCREEN HEDGE, in its planted strip (world/campus PARK_SCREEN) instead of on the public sidewalk.
-  // The same three draws per plant as before (so no later scatter moves), plus a deterministic infill
-  // between them so it reads as a hedge rather than a row of bushes.
-  const screenX = PARK_SCREEN.x + PARK_SCREEN.w / 2;
-  for (let z = PARKING.z; z < PARKING.z + PARKING.d; z += 76) {
-    shrubs.push({ x: screenX + jitter(4), z: z + 20, s: 0.72 + rx() * 0.14, yaw: rx() * 6.28 });
-    if (z + 58 < PARKING.z + PARKING.d) shrubs.push({ x: screenX, z: z + 58, s: 0.68, yaw: z * 0.01 });
-  }
-  // two low shrubs per island, flanking the tree
-  PARK_ISLANDS.forEach((isl, k) => {
-    const c = islandCentre(isl), out = isl.bank === 0 ? -1 : 1;
-    for (const dz of [-18, 18]) shrubs.push({ x: c.x + out * 8, z: c.z + dz, s: 0.5, yaw: k + dz, y: PAVING_Y + ISLAND_H });
-  });
-  // reeds around the pond: three short arcs, not a continuous fringe
-  for (const [a0, a1] of [[0.3, 1.15], [2.5, 3.2], [4.3, 5.1]] as const)
-    for (let i = 0; i < 7; i++) {
-      const a = a0 + (a1 - a0) * (i / 6);
-      shrubs.push({ x: POND.x + Math.cos(a) * (POND.rx + 16), z: POND.z + Math.sin(a) * (POND.rz + 14), s: 0.5 + rx() * 0.28, yaw: rx() * 6.28 });
-    }
+  // world/campus campusShrubSpots — the same draws in the same order, resuming the stream where the trees
+  // left it, so the ground model's solids are the very shrubs drawn here
+  const planting = campusShrubSpots(xseed);
+  xseed = planting.seedAfter;
+  const shrubs: Spot[] = [...planting.beds, ...planting.frontage, ...planting.screen, ...planting.islands, ...planting.reeds];
   // Shrubs get a fifth of the canopy's travel: a hedge in wind shivers, it does not sway.
   root.add(instance(shrubGeo(), M.foliage(M.facet(EX.hedge), SHRUB_FLEX), shrubs, true, "shrubs"));
   instanced++; instances += shrubs.length;
@@ -655,11 +598,11 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
   //     geometry surgery, which is also how the reflecting-pool version of this brief would be built.
   const shore = new THREE.Mesh(new THREE.ShapeGeometry(pondShape(1 + POND_SHORE / POND.rx), 1), M.surface(EX.shore, 0.98));
   shore.rotation.x = -Math.PI / 2;
-  shore.position.set(POND.x, GRADE + 0.3, POND.z);
+  shore.position.set(POND.x, SHORE_Y, POND.z);
   root.add(shadowed(shore, false, true));
   const pond = new THREE.Mesh(new THREE.ShapeGeometry(pondShape(1), 1), M.water());
   pond.rotation.x = -Math.PI / 2;
-  pond.position.set(POND.x, GRADE + 0.55, POND.z);
+  pond.position.set(POND.x, WATER_Y, POND.z);
   root.add(shadowed(pond, false, false));
 
   // 8. THE HORIZON. Two belts of distant planting and a low hill line — cruder geometry, no shadows,
@@ -824,7 +767,7 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
     lampsBatch.setColorAt(r.lamp, white);
     const k = movers.length;
     const hide = new THREE.Matrix4().makeScale(0, 0, 0);
-    const roll = new THREE.Quaternion(), FWD = new THREE.Vector3(0, 0, -1);
+    const roll = new THREE.Quaternion(), FWD = new THREE.Vector3(0, 0, -1), tilt = new THREE.Quaternion(), SIDE = new THREE.Vector3(1, 0, 0);
     const setVisible = (on: boolean) => {
       moving.gloss.setVisibleAt(r.paint, on); moving.gloss.setVisibleAt(r.detail, on);
       moving.matte.setVisibleAt(r.matte, on); lampsBatch.setVisibleAt(r.lamp, on);
@@ -839,16 +782,17 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
         parked.matte.setVisibleAt(ids[3], docked);
       },
       showRidden: setVisible,
-      placeRidden(x, z, yaw, lean) {
-        // yaw about up, then the lean as a roll about the deck's own forward axis
-        vq.setFromAxisAngle(UP, yaw).multiply(roll.setFromAxisAngle(FWD, lean));
-        vm.compose(vp.set(x, 0, z), vq, vs);
+      placeRidden(x, z, yaw, lean, y = 0, pitch = 0) {
+        // yaw about up, then the pitch about the deck's lateral axis (nose up +), then the lean as a roll
+        // about its forward axis
+        vq.setFromAxisAngle(UP, yaw).multiply(tilt.setFromAxisAngle(SIDE, pitch)).multiply(roll.setFromAxisAngle(FWD, lean));
+        vm.compose(vp.set(x, y, z), vq, vs);
         moving.gloss.setMatrixAt(r.paint, vm).setMatrixAt(r.detail, vm);
         moving.matte.setMatrixAt(r.matte, vm);
         lampsBatch.setMatrixAt(r.lamp, vm);
         vq.setFromAxisAngle(UP, yaw);
-        blobs.setMatrixAt(k, vm.compose(bp.set(x, 0.3, z), vq, bs.set(8, 1, 23)));
-        pools.setMatrixAt(k, vm.compose(bp.set(x + Math.sin(yaw) * -38, 0.35, z + Math.cos(yaw) * -38), vq, bs.set(12, 1, 22)));
+        blobs.setMatrixAt(k, vm.compose(bp.set(x, y + 0.3, z), vq, bs.set(8, 1, 23)));
+        pools.setMatrixAt(k, vm.compose(bp.set(x + Math.sin(yaw) * -38, y + 0.35, z + Math.cos(yaw) * -38), vq, bs.set(12, 1, 22)));
         blobs.instanceMatrix.needsUpdate = true;
         pools.instanceMatrix.needsUpdate = true;
       },
@@ -886,8 +830,7 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
   instanced += 4; instances += lamps.length * 4;
 
   // two low bollards along the mid-lot path, on the lawn stretch between the lot and the building
-  const midPath = PARK_PATHS[0];
-  const bollards = [...pathLightSpots(), { x: -300, z: midPath.z - 8 }, { x: -200, z: midPath.z + midPath.d + 8 }];
+  const bollards = bollardSpots();
   const bg = bollardGeos();
   root.add(instance(bg.post, M.surface(EX.bollard, 0.7), bollards, true, "bollard-posts"));
   root.add(instance(bg.lens, M.lamp(EX.lamp, 2.2), bollards, false, "bollard-lenses"));
@@ -991,17 +934,12 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
 function buildLotMarker(M: ExteriorMaterials, lot: Lot): THREE.Group {
   const g = new THREE.Group();
   g.name = `lot-marker:${lot.id}`;
-  const r = lot.rect;
-  // stand it beside the service drive, one panel-width in from the frontage, facing the road
-  const INSET = 120;
-  let x = r.x + r.w / 2, z = r.z + r.d / 2, yaw = 0;
-  if (lot.frontage === "north") { x = r.x + r.w / 2 - 210; z = r.z + INSET; yaw = 0; }
-  else if (lot.frontage === "west") { x = r.x + INSET; z = r.z + r.d / 2 - 210; yaw = -Math.PI / 2; }
-  else { x = r.x + r.w - INSET; z = r.z + r.d / 2 - 210; yaw = Math.PI / 2; }
+  // stand it beside the service drive, one panel-width in from the frontage, facing the road (world/campus)
+  const { x, z, yaw } = lotMarkerSpot(lot);
   g.position.set(x, 0, z);
   g.rotation.y = yaw;
   const stone = M.surface(EX.stone, 0.85), post = M.surface(EX.pole, 0.55, { metalness: 0.25 });
-  g.add(shadowed(rbox(190, 9, 40, M.surface(EX.signPlinth, 0.9), 0, GRADE, 0, 2, 1)));
+  g.add(shadowed(rbox(LOT_MARKER_PLINTH.w, 9, LOT_MARKER_PLINTH.d, M.surface(EX.signPlinth, 0.9), 0, GRADE, 0, 2, 1)));
   g.add(shadowed(rbox(9, 54, 9, post, -72, GRADE + 9, 0, 2, 1)));
   g.add(shadowed(rbox(9, 54, 9, post, 72, GRADE + 9, 0, 2, 1)));
   g.add(shadowed(rbox(176, 52, 10, stone, 0, GRADE + 40, 0, 3, 1)));
@@ -1047,12 +985,12 @@ function lotMarkerMat(base: THREE.MeshStandardMaterial, M: ExteriorMaterials): T
 function buildMonumentSign(M: ExteriorMaterials): THREE.Group {
   const g = new THREE.Group();
   g.name = "offshorly-monument-sign";
-  const x = ENTRY_X - 430, z = DROP_OFF.z + 16;
+  const { x, z } = MONUMENT_SIGN;
   // Dark stone, deliberately: the podium, the paving and the drop-off apron are all cream, and a pale
   // blade in front of them disappears. A graphite monument reads at a glance and gives the lit wordmark
   // something to sit on after dusk.
   const stone = M.surface(EX.stone, 0.85), dark = M.surface(EX.signPlinth, 0.9);
-  g.add(shadowed(rbox(260, 12, 54, dark, x, GRADE, z, 3, 1)));
+  g.add(shadowed(rbox(MONUMENT_SIGN.w, 12, MONUMENT_SIGN.d, dark, x, GRADE, z, 3, 1)));
   g.add(shadowed(rbox(236, 74, 38, stone, x, GRADE + 12, z, 4, 1)));
   const face = M.lamp(0x2b3a33, 2.2, 0x9fe08a);
   const plate = new THREE.Mesh(new THREE.PlaneGeometry(214, 56), signTextMat(face, M));

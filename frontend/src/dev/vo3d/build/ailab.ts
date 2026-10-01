@@ -32,8 +32,8 @@ import type { SwayNode } from "../render/Sway";
 import { mat, emissiveMat, emissiveMatUnique, glowMat, glowMatUnique } from "../render/Materials";
 import {
   CORNER_TREES, DECK_Y, ENTRY_X0, ENTRY_X1, GRADE, HALL, HUB, INTERIOR_POTS, LAB_OUTER, LAKE_GAP_X0,
-  LAKE_GAP_X1, LAKE_SPUR, LAKE_TERRACE, PAVED, PERIMETER_POTS, PILASTERS, PLINTH_MARGIN, PORCH,
-  SOUTH_BAY, STEP_COUNT, WALL_BEDS, WALL_H, WALL_SEGS, WALL_T, ZONES,
+  LAKE_GAP_X1, LAKE_SPUR, LAKE_TERRACE, PAVED, PERIMETER_POTS, PILASTERS, PORCH,
+  SOUTH_BAY, WALL_BEDS, WALL_H, WALL_SEGS, WALL_T, ZONES, LAB_CHEEK_POTS, LAB_CHEEKS, LAB_PLINTH, LAB_TERRACE_BENCHES, LAB_TERRACE_SHRUBS, cornerBedRect, labEntranceTreads, lakeStepTreads,
   type Planter, type PlantKind,
 } from "../world/ailab";
 import { AGENTS, AUX_STATUS, STATUS_LABEL, STATUS_PULSE, STATUS_TINT, agentById } from "../world/aiAgents";
@@ -325,18 +325,10 @@ function hub(b: Baker, flora: THREE.Group, sway: SwayNode[], M: Mats): void {
  *  8.2-unit rise from lawn to plinth that genuinely exists — they read as the arrival from every camera
  *  and they are the plinth's own south face, not an obstacle laid across the path. */
 function entranceStair(b: Baker, M: Mats): void {
-  const z0 = PORCH.z + PORCH.d; // the porch's south lip
-  const w = PORCH.w + 60;
-  for (let i = 0; i < STEP_COUNT; i++) {
-    const t = i / STEP_COUNT;
-    const rise = DECK_T * (1 - t);
-    b.add(rbox(w + i * 26, rise, 20, M.stone, PORCH.x + PORCH.w / 2, GRADE, z0 + 10 + i * 20, 0.8));
-  }
+  for (const t of labEntranceTreads()) b.add(rbox(t.rect.w, t.rise, t.rect.d, M.stone, t.rect.x + t.rect.w / 2, GRADE, t.rect.z + t.rect.d / 2, 0.8));
   // the cheek walls either side of the flight, and the pots that frame it
-  for (const o of [-1, 1]) {
-    b.add(rbox(16, DECK_T + 12, PORCH.d + 46, M.plaster, PORCH.x + PORCH.w / 2 + o * (w / 2 + 4), GRADE, z0 - PORCH.d / 2 + 14, 1));
-    pot(b, { x: PORCH.x + PORCH.w / 2 + o * (w / 2 + 4) - 19, z: z0 - 6, w: 38, d: 38 }, M, true);
-  }
+  for (const c of LAB_CHEEKS) b.add(rbox(c.w, DECK_T + 12, c.d, M.plaster, c.x + c.w / 2, GRADE, c.z + c.d / 2, 1));
+  for (const p of LAB_CHEEK_POTS) pot(b, p, M, true);
 }
 
 /** THE PLINTH, as a chamfered plan that follows the wall polygon, grown by the terrace margin.
@@ -345,25 +337,9 @@ function entranceStair(b: Baker, M: Mats): void {
  *  z (see its own comment: an asymmetric shape "compensates locally"). This plan is asymmetric in z, so
  *  every z is negated on the way in. Authored straight, the plinth lands mirrored across the office. */
 function plinthShape(): THREE.Shape {
-  const m = PLINTH_MARGIN;
-  const O = LAB_OUTER;
-  const x0 = O.x - m, x1 = O.x + O.w + m, z0 = O.z - m, z1 = O.z + O.d + m;
-  const c = 150;
-  const px0 = PORCH.x - 54, px1 = PORCH.x + PORCH.w + 54, pz = PORCH.z + PORCH.d + 54;
   const Y = (wz: number) => -wz;
   const sh = new THREE.Shape();
-  sh.moveTo(x0 + c, Y(z0));
-  sh.lineTo(x1 - c, Y(z0));
-  sh.lineTo(x1, Y(z0 + c));
-  sh.lineTo(x1, Y(z1 - c));
-  sh.lineTo(x1 - c, Y(z1));
-  sh.lineTo(px1 + 30, Y(z1));
-  sh.lineTo(px1, Y(pz));
-  sh.lineTo(px0, Y(pz));
-  sh.lineTo(px0 - 30, Y(z1));
-  sh.lineTo(x0 + c, Y(z1));
-  sh.lineTo(x0, Y(z1 - c));
-  sh.lineTo(x0, Y(z0 + c));
+  LAB_PLINTH.forEach((p, i) => (i === 0 ? sh.moveTo(p.x, Y(p.z)) : sh.lineTo(p.x, Y(p.z))));
   sh.closePath();
   return sh;
 }
@@ -456,6 +432,8 @@ export function buildAiLab(): AiLabBuild {
     b.add(rbox(r.w, 0.5, r.d, M.paving, r.x + r.w / 2, DECK_Y - 0.3, r.z + r.d / 2, 1));
   }
   entranceStair(b, M);
+  // the lake steps: the plinth's one walking way down to the pond path and the lawn
+  for (const t of lakeStepTreads()) b.add(rbox(t.rect.w, t.top - GRADE + 1, t.rect.d, M.stone, t.rect.x + t.rect.w / 2, GRADE - 1, t.rect.z + t.rect.d / 2, 0.8));
   // tiledFloor builds with its top at y 0 (the office datum); the room's floor sits a hair above it
   for (const r of [HALL, SOUTH_BAY, PORCH]) {
     const f = tiledFloor(r, 1.2, "hubTerrazzo");
@@ -566,7 +544,7 @@ export function buildAiLab(): AiLabBuild {
   // a feature plant and an understorey, composed as one garden rather than as a tree with a pot by it.
   for (let i = 0; i < CORNER_TREES.length; i++) {
     const t = CORNER_TREES[i];
-    bed(b, { x: t.x - 34, z: t.z - 30, w: 68, d: 60 }, 16, M, 5);
+    bed(b, cornerBedRect(t), 16, M, 5);
     tree(b, t.x + (i % 2 ? 10 : -10), t.z + (i < 2 ? 6 : -6), t.s, M);
     tree(b, t.x + (i % 2 ? -18 : 18), t.z + (i < 2 ? -14 : 14), t.s * 0.54, M);
     flora.add(largePlant({ x: t.x + (i % 2 ? -22 : 22), z: t.z + (i < 2 ? 22 : -22), y: DECK_Y + 15, r: 7.4, h: 44, pot: false, lush: 1.2 }, sway));
@@ -576,12 +554,9 @@ export function buildAiLab(): AiLabBuild {
     [352, -800, 80, Math.PI / 2], [560, -470, 76, 0], [930, -470, 76, 0]] as const)
     bench(b, bx, bz, bw, byaw, M);
   // the lakeside terrace's own seats, looking out over the water
-  bench(b, 668, -1038, 76, 0, M);
-  bench(b, 812, -1038, 76, 0, M);
+  for (const t of LAB_TERRACE_BENCHES) bench(b, t.x, t.z, t.w, 0, M);
   // planting that frames the arrival, out on the terrace where the steps land
-  for (const [sx, sz, sr] of [[590, -404, 15], [900, -398, 13], [1010, -430, 11], [470, -424, 12],
-    [318, -600, 14], [1160, -640, 13], [330, -1000, 15], [1150, -1004, 12]] as const)
-    shrub(b, sx, DECK_Y, sz, sr, M);
+  for (const t of LAB_TERRACE_SHRUBS) shrub(b, t.x, DECK_Y, t.z, t.r, M);
 
   const baked = b.bakeInto(root, "ai-lab");
 

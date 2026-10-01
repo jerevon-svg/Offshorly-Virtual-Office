@@ -99,7 +99,7 @@ export interface Vo3dCoworker {
   /** PHASE 7D — A NAMED PLACE OUTSIDE V1'S COORDINATE FRAME this person is in, or absent.
    *
    *  V1's wire carries a `roomId` beside every position, and the CAVE publishes itself through it
-   *  (adapters/v1SelfMovement's `placed`) because the CAVE is at x 2600 — outside the frame entirely, so
+   *  (adapters/v1SelfMovement's `placed`) because the CAVE is at x −9000 — outside the frame entirely, so
    *  `point` cannot describe it. `point` therefore stays the last REAL in-frame position they had (the
    *  portal), and this says where they actually went. A world that knows the place puts the body there;
    *  one that does not leaves them at the portal, which is where V1 thinks they are. */

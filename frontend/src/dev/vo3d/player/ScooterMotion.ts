@@ -12,27 +12,42 @@
 /** Tuning. World units (a person is 36 tall; a walk is 70 u/s, a sprint 100). */
 export const SCOOTER = {
   /** cruising top speed, and the Shift boost */
-  maxSpeed: 185,
-  boostSpeed: 225,
+  // TUNED FOR THE WHOLE WORLD (Phase 4b): quick transport, ~3x a sprint on a road. Acceleration, braking and
+  // coasting scale with it (x1.62) so reaching cruise, stopping and rolling to rest take as long as before.
+  maxSpeed: 300,
+  boostSpeed: 380,
   /** rolling up to speed, u/s² */
-  accel: 150,
+  accel: 243,
   /** holding the brake (S while moving forward), and coasting with nothing held */
-  brake: 360,
-  coast: 80,
+  brake: 585,
+  coast: 130,
   /** a slow walk-pace reverse, for backing out of a nose-in stop */
   reverseSpeed: 32,
   /** steering: turn rate at low speed and at top speed, rad/s — quick when slow, calmer when fast */
   turnSlow: 2.9,
-  turnFast: 1.75,
+  turnFast: 2.4,
   /** how fast the held steer input is reached (so a tap is a nudge and a hold is a turn) */
   steerResponse: 9,
   /** lean: radians at full steer and full speed */
   maxLean: 0.16,
   /** hitting a wall keeps this fraction of the speed (the body slides along it) */
   bump: 0.55,
+  /** rolling from a faster surface onto a slower one: how hard the deck sheds the difference, u/s² */
+  surfaceDrag: 220,
+  /** IN THE AIR (a Space hop): the share of the ground turn rate the bars still give — enough to correct a
+   *  line, not to carve — and the speed shed per second (none: the hop keeps the momentum it left with) */
+  airSteer: 0.3,
+  airDrag: 0,
 } as const;
 
-export type ScooterInput = { throttle: number; steer: number; boost: boolean };
+/** THE HOP (player/PlayerJump tuning): snappier than the walk's float — a quick pop of about 12.6 units that
+ *  lands inside half a second, so its length is the deck's speed: ~140 at cruise, ~175 boosted. */
+export const SCOOTER_JUMP = { takeoff: 110, gravity: 480 } as const;
+
+/** `cap` (0…1, default 1): the surface's share of the top speed (world/exteriorGround SURFACE_SPEED) — the
+ *  deck eases down to it at `surfaceDrag`, never snaps */
+/** `airborne`: the wheels are off the ground — no drive, no brake, no surface drag, light steering */
+export type ScooterInput = { throttle: number; steer: number; boost: boolean; cap?: number; airborne?: boolean };
 
 export class ScooterMotion {
   /** signed speed along the heading, u/s (negative = reversing) */
@@ -55,10 +70,18 @@ export class ScooterMotion {
     const target = Math.max(-1, Math.min(1, input.steer));
     this.steer += (target - this.steer) * Math.min(1, S.steerResponse * dt);
     const top = input.boost ? S.boostSpeed : S.maxSpeed;
-    if (throttle > 0) {
+    // the surface's own limit: below `top` (boost/cruise, handled exactly as before), shed at surfaceDrag
+    const surfaceTop = top * Math.max(0.05, Math.min(1, input.cap ?? 1));
+    if (input.airborne) {
+      // nothing to push against: the hop carries the speed it left with
+      const d = S.airDrag * dt;
+      this.speed = Math.abs(this.speed) <= d ? 0 : this.speed - Math.sign(this.speed) * d;
+    } else if (throttle > 0) {
       // rolling forward (or cancelling a reverse first, at braking strength)
       const a = this.speed < 0 ? S.brake : S.accel * throttle;
-      this.speed = Math.min(top, this.speed + a * dt);
+      // accelerate only up to what the surface allows; any excess is shed at surfaceDrag below
+      const aim = Math.min(top, surfaceTop);
+      if (this.speed < aim) this.speed = Math.min(aim, this.speed + a * dt);
       // letting a boost lapse eases back down rather than snapping
       if (this.speed > top) this.speed = Math.max(top, this.speed - S.coast * dt);
     } else if (throttle < 0) {
@@ -68,12 +91,15 @@ export class ScooterMotion {
       const d = S.coast * dt;
       this.speed = Math.abs(this.speed) <= d ? 0 : this.speed - Math.sign(this.speed) * d;
     }
-    if (this.speed > top) this.speed = Math.max(top, this.speed - S.coast * dt);
+    if (!input.airborne) {
+      if (this.speed > top) this.speed = Math.max(top, this.speed - S.coast * dt);
+      if (this.speed > surfaceTop) this.speed = Math.max(surfaceTop, this.speed - S.surfaceDrag * dt);
+    }
     // steering: rate eases from turnSlow to turnFast with speed, and there is some turn even when still
     const k = Math.min(1, Math.abs(this.speed) / S.maxSpeed);
     const rate = S.turnSlow + (S.turnFast - S.turnSlow) * k;
     const moving = Math.abs(this.speed) > 4 ? Math.sign(this.speed) : 1;
-    this.heading += this.steer * rate * dt * moving * (0.45 + 0.55 * Math.min(1, Math.abs(this.speed) / 40));
+    this.heading += this.steer * rate * (input.airborne ? S.airSteer : 1) * dt * moving * (0.45 + 0.55 * Math.min(1, Math.abs(this.speed) / 40));
     // lean follows steer × speed, smoothed
     const want = this.steer * S.maxLean * k;
     this.lean += (want - this.lean) * Math.min(1, 7 * dt);

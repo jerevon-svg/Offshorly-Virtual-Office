@@ -30,6 +30,7 @@ import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import { mergeGeometries, toCreasedNormals } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { VehicleKind } from "../world/campus";
+import { SCOOTER_GEOMETRY } from "../world/scooters";
 
 export type VehicleGeos = { paint: THREE.BufferGeometry; gloss: THREE.BufferGeometry; matte: THREE.BufferGeometry; lights: THREE.BufferGeometry };
 
@@ -455,24 +456,32 @@ function kalesa(): VehicleGeos {
 // The shared-fleet silhouette: a low dark deck on two small fat wheels, a tall single stem in the fleet
 // colour (the paint part — its instance colour), a flat bar with grips and a small display, a lamp on the
 // stem and a tail lamp on the rear fender, a kickstand. Deck top at DECK_TOP (world/scooters) so a rider's
-// feet stand on it.
+// feet stand on it; every rider-facing proportion (bar, grips, rake, wheelbase) is world/scooters
+// SCOOTER_GEOMETRY, sized to the chibi cast so both hands really reach the grips.
 function scooter(): VehicleGeos {
   const P = parts();
-  const R = 4.4, ZF = -14.5, ZR = 13.5;
-  P.matte.push(box(10, 2.6, 27, 0, 4.9, 1, C.trim, 1.2)); //                      deck
-  P.matte.push(box(8.4, 0.5, 21, 0, 6.35, 1.5, C.seat, 0.2)); //                  grip tape
-  P.paint.push(box(10.4, 1.2, 27.4, 0, 3.8, 1, C.white, 0.5)); //                 coloured deck skirt
-  P.paint.push(finish(side([[9, 7.5], [13, 10.2], [19, 9.6], [20, 7.8], [13, 8.6]], 5.5, 0.8, 2), C.white, Math.PI / 5)); // rear fender
+  const { wheelR: R, frontZ: ZF, rearZ: ZR, stemBase: SB, bar: B, gripX: GX } = SCOOTER_GEOMETRY;
+  const top = B.y - 0.6; //                                                          the stem ends just under the bar
+  const stemZ = (y: number) => SB.z + ((y - SB.y) * (B.z - 0.1 - SB.z)) / (top - SB.y); // on the raked stem
+  const deckZ0 = ZF + 1.4, deckZ1 = ZR + 0.8, deckMid = (deckZ0 + deckZ1) / 2, deckLen = deckZ1 - deckZ0;
+  P.matte.push(box(10, 2.6, deckLen, 0, 4.9, deckMid, C.trim, 1.2)); //             deck
+  P.matte.push(box(8.4, 0.5, deckLen - 4.5, 0, 6.35, deckMid + 0.4, C.seat, 0.2)); // grip tape
+  P.paint.push(box(10.4, 1.2, deckLen + 0.4, 0, 3.8, deckMid, C.white, 0.5)); //      coloured deck skirt
+  P.paint.push(finish(side([[ZR - 4.5, 7.5], [ZR - 0.5, 10.2], [ZR + 5.5, 9.6], [ZR + 6.5, 7.8], [ZR - 0.5, 8.6]], 5.5, 0.8, 2), C.white, Math.PI / 5)); // rear fender
   P.matte.push(tube(v3(0, R, ZF), v3(0, 13, ZF + 0.6), 1.3, C.trim, 8)); //         fork
-  P.paint.push(tube(v3(0, 11, ZF + 0.4), v3(0, 22.4, ZF + 2.6), 1.6, C.white, 10)); // the stem, in the fleet colour
-  P.matte.push(finish(side([[-19, 7.6], [-16.5, 10.2], [-12, 10.2], [-10.5, 8]], 5, 0.7, 2), C.trim, Math.PI / 5)); // front mudguard
-  P.matte.push(box(15, 1.5, 1.8, 0, 23, ZF + 2.7, C.trim, 0.6)); //                bar (chest height for a 36-tall rider)
-  pair((s) => P.matte.push(box(3.2, 2.1, 2.3, s * 8.4, 23, ZF + 2.7, C.seat, 0.8)));
-  P.gloss.push(box(4, 1, 2.6, 0, 24, ZF + 2.8, C.glass, 0.4)); //                    display
-  P.lights.push(cylZ(1.3, 1.2, 0, 17, ZF - 0.1, C.head, 10)); //                    stem lamp
-  P.lights.push(box(3, 1, 0.8, 0, 9.6, 20.2, C.tail, 0.3)); //                     tail lamp
-  P.gloss.push(box(1.2, 1.2, 4, 0, 13.2, ZF + 0.7, C.chrome, 0.4)); //               folding clamp
-  P.matte.push(tube(v3(-4.4, 3.8, 6), v3(-6.6, 0.2, 9), 0.5, C.trim, 5)); //        kickstand
+  P.paint.push(tube(v3(0, SB.y, SB.z), v3(0, top, B.z - 0.1), 1.6, C.white, 10)); // the stem, in the fleet colour, raked back
+  P.matte.push(finish(side([[ZF - 4.5, 7.6], [ZF - 2, 10.2], [ZF + 2.5, 10.2], [ZF + 4, 8]], 5, 0.7, 2), C.trim, Math.PI / 5)); // front mudguard
+  P.matte.push(box(2 * GX - 1.2, 1, 1.1, 0, B.y, B.z, C.trim, 0.4)); //            bar
+  // GRIPS thinner than a fist (the cast's hands are 1.7–2.1 thick) and longer than one is wide (3.7–4.6),
+  // so a closed hand hides the rubber and the grip still shows either side of it; their centres are the
+  // rider's targets (avatar/riderPose)
+  pair((s) => P.matte.push(box(4.4, 1.25, 1.3, s * GX, B.y, B.z, C.seat, 0.5)));
+  pair((s) => P.matte.push(box(0.5, 1.4, 1.45, s * (GX + 2.4), B.y, B.z, C.trim, 0.2))); // bar-end caps, just proud of the grip
+  P.gloss.push(box(4, 1, 2.6, 0, B.y + 1, B.z + 0.1, C.glass, 0.4)); //              display
+  P.lights.push(cylZ(1.3, 1.2, 0, 15, stemZ(15) - 1.6, C.head, 10)); //              stem lamp
+  P.lights.push(box(3, 1, 0.8, 0, 9.6, ZR + 6.7, C.tail, 0.3)); //                   tail lamp
+  P.gloss.push(box(1.2, 1.2, 4, 0, 13.2, stemZ(13.2) + 0.3, C.chrome, 0.4)); //      folding clamp
+  P.matte.push(tube(v3(-4.4, 3.8, ZR - 7.5), v3(-6.6, 0.2, ZR - 4.5), 0.5, C.trim, 5)); // kickstand
   wheel(R, 3.2, 0, ZF, 1, C.rimDark, 5, P);
   wheel(R, 3.2, 0, ZR, 1, C.rimDark, 5, P);
   return done(P);

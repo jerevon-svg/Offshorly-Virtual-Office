@@ -1,17 +1,18 @@
-// vo3d — SHARED E-SCOOTERS V1 (single-player): the handling, the ride area, the stations and the exterior's
+// vo3d — SHARED E-SCOOTERS (single-player): the handling, where a deck may roll, the stations and the exterior's
 // dock/ridden-scooter plumbing, held to what they claim.
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
 import { SCOOTER, ScooterMotion } from "./player/ScooterMotion";
-import { DECK_TOP, clearOfDocks, dockSolids, inRideArea, rideArea, scooterStations } from "./world/scooters";
-import { FRAME, v1Sidewalk } from "./adapters/v1Floor";
+import { DECK_TOP, scooterStations } from "./world/scooters";
+import { FACADE_WALL_T, RIDE_PROFILE, SURFACE_SPEED, exteriorGround, speedClassOf } from "./world/exteriorGround";
+import { RAMPS } from "./world/campus";
+import { FACADE_Z, FRAME, v1Sidewalk } from "./adapters/v1Floor";
 import { ENTRY_ZONE, FACADE } from "./rooms/reception";
-import { HALL, PORCH, SOUTH_BAY } from "./world/ailab";
+import { HALL, PORCH } from "./world/ailab";
 import { buildExterior } from "./build/exterior";
-import { pointInRect } from "./core/coords";
+import { pointInRect, type Vec2 } from "./core/coords";
 
 const sidewalk = v1Sidewalk();
-const area = rideArea(sidewalk, ENTRY_ZONE.x + ENTRY_ZONE.w);
 const stations = scooterStations(sidewalk);
 
 describe("vo3d scooter — the handling (player/ScooterMotion)", () => {
@@ -65,40 +66,55 @@ describe("vo3d scooter — the handling (player/ScooterMotion)", () => {
   });
 });
 
-describe("vo3d scooter — the ride area and the stations (world/scooters)", () => {
-  it("is exterior only: every rect is outside the office's walls, clear of the door sensor and short of the Lab porch", () => {
-    for (const r of area) {
-      const insideFrame = r.x >= FRAME.x && r.x + r.w <= FRAME.x + FRAME.w && r.z >= FRAME.z && r.z + r.d <= FRAME.z + FRAME.d;
-      // the only rect inside the V1 frame is the front pavement, which is entirely south of the façade
-      if (insideFrame) expect(r.z).toBeGreaterThan(FACADE.z);
-    }
-    expect(area[0].x).toBeGreaterThanOrEqual(ENTRY_ZONE.x + ENTRY_ZONE.w + 30);
-    for (const r of area) {
-      for (const lab of [HALL, SOUTH_BAY]) expect(r.x + r.w <= lab.x || r.x >= lab.x + lab.w || r.z + r.d <= lab.z || r.z >= lab.z + lab.d).toBe(true);
-      expect(r.z >= PORCH.z + PORCH.d || r.x >= PORCH.x + PORCH.w || r.x + r.w <= PORCH.x || r.z + r.d <= PORCH.z).toBe(true);
-    }
-    // the door itself and the working office are never in it
-    expect(inRideArea(area, { x: (FACADE.door.x0 + FACADE.door.x1) / 2, z: FACADE.z + 30 })).toBe(false);
-    expect(inRideArea(area, { x: 700, z: 600 })).toBe(false);
-  });
-  it("runs continuously from the Reception pavement to the Lab walk (each rect overlaps the next)", () => {
-    for (let i = 0; i + 1 < area.length; i++) {
-      const a = area[i], b = area[i + 1];
-      const overlap = a.x < b.x + b.w && b.x < a.x + a.w && a.z < b.z + b.d && b.z < a.z + a.d;
-      expect(overlap, `rect ${i} → ${i + 1}`).toBe(true);
-    }
-  });
-  it("places 4 docks at Reception and 2 by the Lab, each reachable from the ride area, and the Lab rack leaves the path open", () => {
+describe("vo3d scooter — where a deck may roll (world/exteriorGround RIDE, Phase 4)", () => {
+  const G = exteriorGround();
+  const F = RIDE_PROFILE.footRadius;
+  // the live ride test's refusals (app/world.ts rideForeign): the office's floor and door mat, the Lab's floor
+  const foreign = (q: Vec2): boolean | null =>
+    (pointInRect(q, FRAME) && (q.z < FACADE_Z + FACADE_WALL_T || pointInRect(q, ENTRY_ZONE))) || G.groundAt(q).kind === "lab-interior" ? false : null;
+  const ride = (p: Vec2, ignore?: string) => G.canOccupy(p, F, RIDE_PROFILE, foreign, ignore);
+  it("places 4 docks at Reception and 2 by the Lab; every one sets off onto rideable ground past its own empty dock", () => {
     expect(stations.map((s) => s.docks.length)).toEqual([4, 2]);
-    for (const s of stations) for (const d of s.docks) expect(inRideArea(area, d.mount), d.id).toBe(true);
-    // the Reception docks stand OUT of the walking line (in the planted band against the façade)
+    for (const s of stations) for (const d of s.docks) expect(ride(d.mount, `scooter:${d.id}`), d.id).toBe(true);
+    // the Reception docks stand OUT of the walking line (in the band against the façade)
     for (const d of stations[0].docks) expect(d.z).toBeLessThan(sidewalk.z + 30);
-    const solids = dockSolids(stations);
-    expect(solids.length).toBe(2);
-    // a rider can pass the Lab rack on the path's open half
-    expect(clearOfDocks(solids, { x: stations[1].docks[0].x, z: stations[1].docks[0].z + 20 }, 8)).toBe(true);
-    expect(clearOfDocks(solids, { x: stations[1].docks[0].x, z: stations[1].docks[0].z }, 8)).toBe(false);
     expect(DECK_TOP).toBeGreaterThan(4);
+  });
+  it("the Lab rack lies along the rear path's edge and leaves the path open", () => {
+    const d = stations[1].docks[0];
+    expect(ride({ x: d.x, z: d.z + 26 })).toBe(true);
+    expect(ride({ x: d.x, z: d.z })).toBe(false); // on the other docked scooter's spot
+  });
+  it("never the office (its floor, its door mat) nor the Lab's floor or porch", () => {
+    expect(ride({ x: (FACADE.door.x0 + FACADE.door.x1) / 2, z: FACADE.z + 30 })).toBe(false);
+    expect(ride({ x: 700, z: 600 })).toBe(false);
+    expect(ride({ x: PORCH.x + PORCH.w / 2, z: PORCH.z + PORCH.d / 2 })).toBe(false);
+    expect(ride({ x: HALL.x + 100, z: HALL.z + 200 })).toBe(false);
+  });
+  it("the whole visible world a wheel rolls on: roads fast, paving normal, grass and fields slow off-road", () => {
+    const cls = (p: Vec2) => speedClassOf(G.groundAt(p).kind, RIDE_PROFILE);
+    for (const [p, c] of [[{ x: 300, z: 1640 }, "fast"], [{ x: -532, z: 700 }, "fast"], [{ x: 720, z: 1216 }, "normal"], [{ x: 1100, z: -268 }, "normal"], [{ x: 1800, z: 800 }, "slow"], [{ x: 700, z: -2800 }, "slow"], [{ x: 3500, z: 2200 }, "slow"]] as const) {
+      expect(ride(p), JSON.stringify(p)).toBe(true);
+      expect(cls(p), JSON.stringify(p)).toBe(c);
+    }
+    expect(SURFACE_SPEED.fast).toBe(1);
+    expect(SURFACE_SPEED.slow).toBeLessThan(SURFACE_SPEED.normal);
+    // off the kerb and onto the carriageway rolls (a kerb's worth); a stair and water never do
+    for (let z = 1480; z <= 1560; z += 2) expect(ride({ x: 300, z }), `kerb z ${z}`).toBe(true);
+    expect(ride({ x: 707, z: 1300 })).toBe(false);
+    expect(ride({ x: 740, z: -1300 })).toBe(false);
+  });
+  it("the ramps join the podium to the ground below; the podium's own steps do not", () => {
+    for (const r of RAMPS) {
+      const across = r.axis === "x" ? r.rect.z + r.rect.d / 2 : r.rect.x + r.rect.w / 2;
+      for (let t = -12; t <= (r.axis === "x" ? r.rect.w : r.rect.d) + 12; t += 3) {
+        const p = r.axis === "x" ? { x: r.rect.x + t, z: across } : { x: across, z: r.rect.z + t };
+        expect(ride(p), `${r.id} @ ${t}`).toBe(true);
+      }
+    }
+    // beside the entry ramp, the plinth ring's 3.2 and 4.65 steps stop a deck (they are a walker's steps)
+    expect(ride({ x: 1100, z: 1240 })).toBe(false);
+    expect(ride({ x: 1100, z: 1292 })).toBe(false);
   });
 });
 
@@ -122,8 +138,5 @@ describe("vo3d scooter — drawn with the fleet (build/exterior)", () => {
     s.placeRidden(1200, 1213, 0.4, 0.1);
     const moving = withDocks.root.getObjectByName("traffic-gloss") as THREE.BatchedMesh;
     expect(moving.castShadow).toBe(false); // the ridden scooter moves: it casts no stale shadow
-  });
-  it("keeps the ride area off the vehicle roads entirely", () => {
-    for (const r of area) expect(pointInRect({ x: r.x + r.w / 2, z: r.z + r.d / 2 }, { x: -840, z: -1992, w: 3020, d: 3504 })).toBe(true); // inside the Offshorly lot
   });
 });
