@@ -227,7 +227,7 @@ export const MONKEY_ALBEDO_REF = { fur: 0x914c25, skin: 0xf9d6bb } as const;
  *  shared base — nothing here is a mesh. */
 export type MonkeyIdentity = {
   id: string;
-  /** what the pill says on its first line, e.g. "MILO" */
+  /** the display name the pill leads with, as written ("Milo") — the employee pill's first-word rule */
   name: string;
   look: {
     /** fur/face tints (sRGB hex); undefined = the base texture's own colour */
@@ -247,30 +247,31 @@ export type MonkeyIdentity = {
 export type AgentAssignment = { agentId: string; role: string; projectId?: string; taskTitle?: string };
 
 /** THE EXECUTION STATE — reported by the backend (Agent Harness; mocked for the demo). The ONLY source
- *  of truth for whether a monkey is working. */
+ *  of truth for whether a monkey is working. `ready`, `needs-input` and `awaiting-approval` (shown as
+ *  Needs Approval) are the human-attention states the vocabulary already carries for later phases. */
 export type AgentExecState =
-  | "idle" | "assigned" | "working" | "reviewing" | "awaiting-approval" | "changes-requested" | "done"
-  | "blocked";
-
+  | "idle" | "assigned" | "working" | "reviewing" | "done" | "ready" | "needs-input" | "awaiting-approval"
+  | "changes-requested" | "blocked";
+/** The pill's words, in VO's own display casing (services/presence/status STATUS_META: "In Meeting",
+ *  "Available") — never all caps. */
 export const EXEC_STATE_LABEL: Readonly<Record<AgentExecState, string>> = {
-  idle: "IDLE", assigned: "ASSIGNED", working: "WORKING", reviewing: "REVIEWING",
-  "awaiting-approval": "AWAITING APPROVAL", "changes-requested": "CHANGES REQUESTED", done: "DONE",
-  blocked: "BLOCKED",
+  idle: "Idle", assigned: "Assigned", working: "Working", reviewing: "Reviewing", done: "Done", ready: "Ready",
+  "needs-input": "Needs Input", "awaiting-approval": "Needs Approval", "changes-requested": "Changes Requested",
+  blocked: "Blocked",
 };
-
 /** pill dot colour per execution state (the Lab's own palette where it has one) */
 export const EXEC_STATE_COLOR: Readonly<Record<AgentExecState, string>> = {
-  idle: "#8a96a8", assigned: "#5b8def", working: "#2376e5", reviewing: "#e5a43a",
-  "awaiting-approval": "#9b6bdf", "changes-requested": "#e5793a", done: "#3cae6b", blocked: "#d9534f",
+  idle: "#8a96a8", assigned: "#5b8def", working: "#2376e5", reviewing: "#e5a43a", done: "#3cae6b",
+  ready: "#2fb5a0", "needs-input": "#e5b33a", "awaiting-approval": "#9b6bdf", "changes-requested": "#e5793a",
+  blocked: "#d9534f",
 };
-
 export type FaceExpression = "neutral" | "happy" | "focused" | "surprised" | "sleepy";
 
 export type AgentPosture = "standing" | "seated";
 
 const FACE_FOR: Readonly<Record<AgentExecState, FaceExpression>> = {
-  idle: "neutral", assigned: "happy", working: "focused", reviewing: "focused", "awaiting-approval": "neutral",
-  "changes-requested": "surprised", done: "happy", blocked: "surprised",
+  idle: "neutral", assigned: "happy", working: "focused", reviewing: "focused", done: "happy", ready: "happy",
+  "needs-input": "neutral", "awaiting-approval": "neutral", "changes-requested": "surprised", blocked: "surprised",
 };
 
 /** PRESENTATION, DERIVED from execution state (plus where the body physically is) — one way only.
@@ -302,17 +303,17 @@ export const AGENT_OVERHEAD_PREFIX = "__agent__:";
 export const agentOverheadKey = (agentId: string): string => `${AGENT_OVERHEAD_PREFIX}${agentId}`;
 export const isAgentOverheadKey = (key: string): boolean => key.startsWith(AGENT_OVERHEAD_PREFIX);
 
-/** The pill's status payload (Vo3dOverhead.status): line one the identity, line two role · state.
- *  Task text is deliberately absent — that belongs to the click interaction, not the pill. */
+/** The pill's status payload (Vo3dOverhead.status), built the way an employee's is (Vo3dOverlay): the name
+ *  as written, then a detail only when there is something to say — `Milo` at home, `Milo · Dev · Working`
+ *  on a job. Task text is deliberately absent — that belongs to the click interaction, not the pill. */
 export function agentPillStatus(
   identity: Pick<MonkeyIdentity, "name">,
   assignment: Pick<AgentAssignment, "role"> | null,
   exec: AgentExecState,
-): { color: string; shortName: string; detail: string } {
+): { color: string; shortName: string; detail?: string } {
+  const shortName = identity.name.trim().split(/\s+/)[0] || identity.name;
+  // IDLE IS QUIET: an agent with nothing to do shows its name and dot, like an Available employee
+  if (exec === "idle") return { color: EXEC_STATE_COLOR.idle, shortName };
   const state = EXEC_STATE_LABEL[exec];
-  return {
-    color: EXEC_STATE_COLOR[exec],
-    shortName: identity.name.toUpperCase(),
-    detail: assignment?.role ? `${assignment.role.toUpperCase()} · ${state}` : state,
-  };
+  return { color: EXEC_STATE_COLOR[exec], shortName, detail: assignment?.role ? `${assignment.role} · ${state}` : state };
 }

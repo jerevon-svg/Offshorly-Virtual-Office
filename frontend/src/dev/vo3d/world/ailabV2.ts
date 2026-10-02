@@ -244,6 +244,9 @@ export const HANDOFFS = {
 } as const;
 /** the three gather spots on the briefing ring, facing the perch */
 export const BRIEF_SPOTS = { nova: v3(700, 0, -550), pip: v3(740, 0, -535), milo: v3(780, 0, -550) } as const;
+/** RIGHT UNDER THE PERCH, facing it: where an agent takes the work from the Toucan's beak, and where it comes back
+ *  to report. The perch (34 up) is at a standing monkey's eye level, 13 to the north. */
+export const PERCH_SPOT = v3(TOUCAN_PERCH.x, 0, TOUCAN_PERCH.z + 13);
 export const ROOT_SEATS = { w: v3(620, 0, -700), e: v3(832, 0, -648) } as const;
 
 // ============================== THE PLAYER'S COLLISION =========================================================
@@ -333,6 +336,7 @@ export function buildLabV2Graph(): TraversalGraph {
   // ---- the floor: briefing, handoffs, root seats, the docks, the overlook foot ----
   spoke("g:brief-pip", R(90), [polar(90, ringR), BRIEF_SPOTS.pip], N("g-brief-pip", BRIEF_SPOTS.pip, { yaw: NORTH }));
   spoke("g:brief-nova", R(120), [polar(120, ringR), v3(690, 0, -578), BRIEF_SPOTS.nova], N("g-brief-nova", BRIEF_SPOTS.nova, { yaw: NORTH + 0.25 }));
+  spoke("g:perch-spot", R(90), [polar(90, ringR), PERCH_SPOT], N("g-perch-spot", PERCH_SPOT, { yaw: NORTH }));
   spoke("g:brief-milo", R(60), [polar(60, ringR), v3(790, 0, -578), BRIEF_SPOTS.milo], N("g-brief-milo", BRIEF_SPOTS.milo, { yaw: NORTH - 0.25 }));
   const H = HANDOFFS;
   spoke("g:nm-give", R(150), [polar(150, ringR), v3(615, 0, -560), H.novaMilo.give], N("g-nm-give", H.novaMilo.give, { yaw: 0.42, action: "handoff" }));
@@ -457,7 +461,7 @@ export function buildLabV2Graph(): TraversalGraph {
   const destinations: Record<string, string> = {
     NOVA_HOME: "u1-nova-home", MILO_HOME: "u2-milo-home", PIP_HOME: "b-tip", PIP_HANG: "b-hang", L2_LOOKOUT: "u2-lookout",
     RESIDENCE_DOOR: "u2-res-door", RESIDENCE_INSIDE: "res-inside", RESIDENCE_BALCONY: "bal-door",
-    BRIEFING_RING: "g-brief-pip", BRIEFING_NOVA: "g-brief-nova", BRIEFING_MILO: "g-brief-milo", BRIEFING_PIP: "g-brief-pip",
+    BRIEFING_RING: "g-brief-pip", PERCH_SPOT: "g-perch-spot", BRIEFING_NOVA: "g-brief-nova", BRIEFING_MILO: "g-brief-milo", BRIEFING_PIP: "g-brief-pip",
     ARTIFACT_DOCK: "g-dock-2", ARTIFACT_DOCK_1: "g-dock-1", ARTIFACT_DOCK_2: "g-dock-2", ARTIFACT_DOCK_3: "g-dock-3",
     HANDOFF_NOVA_MILO: "g-nm-give", HANDOFF_NOVA_MILO_RECV: "g-nm-take", HANDOFF_MILO_PIP: "g-mp-give", HANDOFF_MILO_PIP_RECV: "g-mp-take",
     ROOT_SEAT_W: "g-seat-w", ROOT_SEAT_E: "g-seat-e", MASTER_OVERLOOK_FOOT: "g-master-foot",

@@ -383,7 +383,7 @@ const MODE: Record<ScreenState, number> = { offline: 0, idle: 1, active: 2, work
  *  station is merely on, clearly busier while an agent WORKS it, a calm standby when idle, a settled completed
  *  card when DONE — all from the one atlas, one draw. */
 export class ScreenBank {
-  private readonly quads: { owner: string; cell: Cell; idle: Cell; p: THREE.Vector3[]; bright: number; seed: number }[] = [];
+  private readonly quads: { owner: string; cell: Cell; readonly idle: Cell; p: THREE.Vector3[]; bright: number; seed: number }[] = [];
   private geo: THREE.BufferGeometry | null = null;
   private readonly ranges = new Map<string, number[]>();
   private readonly states = new Map<string, ScreenState>();
@@ -443,6 +443,12 @@ export class ScreenBank {
     uv.needsUpdate = true; col.needsUpdate = true; rect.needsUpdate = true; fx.needsUpdate = true;
   }
   get owners(): string[] { return [...this.ranges.keys()]; }
+  /** SWAP WHAT AN OWNER'S SCREENS SHOW (a result slot turning from empty to ready): the content cell changes,
+   *  the state is re-applied, nothing else is rebuilt */
+  setCell(owner: string, cell: Cell): void {
+    for (const q of this.quads) if (q.owner === owner) q.cell = cell;
+    this.setState(owner, this.states.get(owner) ?? "active");
+  }
 }
 
 // ============================== THE SCREEN SHADER =============================================================

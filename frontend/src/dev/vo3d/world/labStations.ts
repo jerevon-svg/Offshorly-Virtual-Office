@@ -149,6 +149,9 @@ export const stationWork = (st: StationDef) => { const t = stationTemplate(st); 
 export const stationNodeId = (st: StationDef) => `st-${st.id.toLowerCase()}`;
 
 // ---- ASSIGNMENT: the seam a population manager will use ---------------------------------------------------
+/** what kind of work a runtime ROLE asks for (orchestration roles → station capabilities) */
+const ROLE_WORK: Readonly<Record<string, string>> = { design: "design", research: "research", dev: "build", build: "build", code: "build", review: "review", qa: "review", test: "review" };
+export const workForRole = (role: string): string => ROLE_WORK[role.trim().toLowerCase()] ?? "general";
 /** Which free station suits this work? Deterministic: founders first get the one set up for them, then the
  *  lowest-numbered free station whose type or capabilities fit. Returns null when the Lab is full for it. */
 export function assignStation(work: string, occupied: ReadonlySet<string>, agentId?: string): StationDef | null {

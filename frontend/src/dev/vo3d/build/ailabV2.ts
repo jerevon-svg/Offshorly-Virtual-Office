@@ -22,7 +22,7 @@ import { windByVertex } from "./exteriorShaders";
 import { prng, lin } from "./exteriorGeo";
 import { buildTreehouse, WindowBank } from "./labTreehouse";
 import { buildLabShell, ContactBank, type LabBakers } from "./labShell";
-import { ARTIFACT_PREVIEW, buildLabWork, type ArtifactSlotState } from "./labWork";
+import { ARTIFACT_LIVE, ARTIFACT_PREVIEW, artifactCell, buildLabWork, galleryLampSpots, slotLampColor, type ArtifactSlotState } from "./labWork";
 import { LAB2_FLOOR_Y } from "../world/ailabV2";
 import { STATIONS } from "../world/labStations";
 
@@ -40,6 +40,11 @@ export type AiLabV2Build = {
   /** WHO IS AT WHICH STATION right now (station ids): an occupied station's screens WORK; when its agent leaves
    *  after real work they settle DONE for a while, then return to the station's own state */
   setOccupancy(occupied: ReadonlySet<string>): void;
+  /** LIVE ORCHESTRATION (app/labWorkforce): a station's screens follow THIS state while it is set — it outranks
+   *  the occupancy rule above, so the screens can never contradict the job. null hands the station back. */
+  setStationActivity(id: string, state: ScreenState | null): void;
+  /** live mode: every station back to standby, every override cleared, the gallery emptied */
+  resetLive(): void;
   /** dev: force the tree's level of detail (null = automatic), and read it */
   forceLod(lod: VegLevel | null): void;
   lod(): VegLevel;
@@ -58,7 +63,12 @@ function mergeCards(gs: THREE.BufferGeometry[]): THREE.BufferGeometry {
   return out;
 }
 
-export function buildAiLabV2(): AiLabV2Build {
+/** `live`: the Lab is driven by the orchestration presenter — floor stations start in STANDBY (they wake when a job
+ *  reaches them) and the result gallery starts EMPTY (a slot fills when an artifact is docked). Without it, the
+ *  approved Phase 3 presentation: founders' stations on, the gallery showing its preview queue. */
+export function buildAiLabV2(opts: { live?: boolean } = {}): AiLabV2Build {
+  const live = !!opts.live;
+  const gallerySlots = live ? ARTIFACT_LIVE : ARTIFACT_PREVIEW;
   const root = new THREE.Group();
   root.name = "ai-lab-v2";
   const lab = new THREE.Group();
@@ -73,7 +83,7 @@ export function buildAiLabV2(): AiLabV2Build {
     leaves: [], bark: new Part(), contact: new ContactBank(), prints: new WindowBank(),
   };
   buildLabShell(B, screens);
-  buildLabWork(B, screens);
+  buildLabWork(B, screens, gallerySlots);
   const th = buildTreehouse(screens);
   const tree = buildLabTree();
 
@@ -105,6 +115,25 @@ export function buildAiLabV2(): AiLabV2Build {
   add("indicators", merge(B.indicators, th.indicators), M.indicator("indicators", 0.95));
   const spill = add("spill", merge(B.spill, th.spill), M.spill("spill", 0.32));
   if (spill) spill.renderOrder = 2;
+  // LIVE: the gallery's lamps follow each slot's state (one instanced draw for the frame lamps, one for the counter's)
+  const lamps = live ? (() => {
+    const spots = galleryLampSpots(), mat = M.indicator("lamps", 0.95);
+    const frameG = new THREE.CylinderGeometry(1.1, 1.1, 0.8, 10), dockG = new THREE.BoxGeometry(3, 0.3, 0.6);
+    for (const g of [frameG, dockG]) g.setAttribute("color", new THREE.BufferAttribute(new Float32Array(g.getAttribute("position").count * 3).fill(1), 3));
+    const frames = new THREE.InstancedMesh(frameG, mat, spots.frames.length), docks = new THREE.InstancedMesh(dockG, mat, spots.docks.length);
+    const m = new THREE.Matrix4();
+    spots.frames.forEach((p, i) => frames.setMatrixAt(i, m.makeTranslation(p.x, p.y + 0.4, p.z)));
+    spots.docks.forEach((p, i) => docks.setMatrixAt(i, m.makeTranslation(p.x, p.y + 0.15, p.z)));
+    frames.name = "ai-lab-v2-gallery-lamps"; docks.name = "ai-lab-v2-dock-lamps";
+    lab.add(frames, docks);
+    const c = new THREE.Color();
+    const set = (i: number, s: ArtifactSlotState) => {
+      frames.setColorAt(i, c.setHex(slotLampColor(s))); frames.instanceColor!.needsUpdate = true;
+      if (i < spots.docks.length) { docks.setColorAt(i, c.setHex(slotLampColor(s))); docks.instanceColor!.needsUpdate = true; }
+    };
+    spots.frames.forEach((_, i) => set(i, "empty"));
+    return { set };
+  })() : null;
   const contact = add("contact", B.contact.geometry(), M.contact());
   if (contact) contact.renderOrder = 1;
   add("prints", B.prints.geometry(), M.printed());
@@ -150,7 +179,7 @@ export function buildAiLabV2(): AiLabV2Build {
   // ---- STATE: every station's screens follow its declared state; the gallery shows its preview queue ----
   for (const st of STATIONS) screens.setState(st.id, st.state === "future" ? "offline" : st.state);
   screens.setState("QA_02", "idle");
-  ARTIFACT_PREVIEW.forEach((s, i) => screens.setState(`artifact-${i + 1}`, s === "empty" ? "idle" : "active"));
+  gallerySlots.forEach((s, i) => screens.setState(`artifact-${i + 1}`, s === "empty" ? "idle" : "active"));
 
   root.traverse((o) => { o.castShadow = false; o.receiveShadow = false; });
   lab.updateMatrixWorld(true);
@@ -163,7 +192,10 @@ export function buildAiLabV2(): AiLabV2Build {
 
   let forced: VegLevel | null = null, lastT = 0;
   // ---- STATION ACTIVITY: working while occupied, done for a while after real work, then the station's own state ----
-  const base = new Map(STATIONS.map((s) => [s.id, (s.state === "future" ? "offline" : s.state) as ScreenState]));
+  // live: the floor's stations idle in standby until a job wakes them (the overlook consoles keep their own state)
+  const declared = (s: (typeof STATIONS)[number]): ScreenState => (s.state === "future" ? "offline" : live && s.at.y === 0 ? "idle" : s.state);
+  const base = new Map(STATIONS.map((s) => [s.id, declared(s)]));
+  const activity = new Map<string, ScreenState>();
   const since = new Map<string, number>(), doneUntil = new Map<string, number>();
   let occ: ReadonlySet<string> = new Set();
   let clock = 0;
@@ -173,7 +205,9 @@ export function buildAiLabV2(): AiLabV2Build {
       const id = st.id, b = base.get(id)!;
       if (b === "offline") continue;
       let want: ScreenState = b;
-      if (occ.has(id)) { if (!since.has(id)) since.set(id, t); want = "working"; }
+      const forced = activity.get(id);
+      if (forced) { since.delete(id); doneUntil.delete(id); want = forced; }
+      else if (occ.has(id)) { if (!since.has(id)) since.set(id, t); want = "working"; }
       else {
         const s0 = since.get(id);
         if (s0 !== undefined) { since.delete(id); if (t - s0 >= REAL_WORK) doneUntil.set(id, t + DONE_HOLD); }
@@ -211,11 +245,18 @@ export function buildAiLabV2(): AiLabV2Build {
     screens,
     setStationState: (id, state) => screens.setState(id, state),
     setArtifactSlot: (i, s) => {
-      // the slot's content cell is fixed at build; a state change here toggles shown/empty (the full queue is
-      // the future job system's)
+      // the slot's content becomes what it now holds (empty / ready / needs input / needs approval)
+      screens.setCell(`artifact-${i + 1}`, artifactCell(s === "empty" ? "ready" : s));
       screens.setState(`artifact-${i + 1}`, s === "empty" ? "idle" : "active");
+      lamps?.set(i, s);
     },
     setOccupancy: (o) => { occ = o; settle(clock); },
+    setStationActivity: (id, s) => { if (s) activity.set(id, s); else activity.delete(id); settle(clock); },
+    resetLive: () => {
+      activity.clear(); since.clear(); doneUntil.clear(); occ = new Set();
+      settle(clock);
+      gallerySlots.forEach((s, i) => { screens.setCell(`artifact-${i + 1}`, artifactCell(s === "empty" ? "ready" : s)); screens.setState(`artifact-${i + 1}`, s === "empty" ? "idle" : "active"); lamps?.set(i, s); });
+    },
     forceLod: (l) => { forced = l; },
     lod: () => veg.level,
   };

@@ -319,7 +319,20 @@ const SLOT_CELL: Record<ArtifactSlotState, Cell> = { ready: "artifact-ready", in
 const SLOT_LAMP: Record<ArtifactSlotState, number> = { ready: 0x7fe0c8, input: 0xf2c06b, approval: 0x8a9cf0, empty: 0x6d7580 };
 /** the preview queue the gallery is built showing (a future job system drives it) */
 export const ARTIFACT_PREVIEW: readonly ArtifactSlotState[] = ["ready", "input", "approval", "empty", "empty", "empty"];
-function gallery(B: LabBakers, screens: ScreenBank): void {
+/** the gallery as the LIVE orchestration starts it: nothing delivered yet (a slot fills only when a job's
+ *  artifact is physically docked — app/labWorkforce) */
+export const ARTIFACT_LIVE: readonly ArtifactSlotState[] = ["empty", "empty", "empty", "empty", "empty", "empty"];
+export const artifactCell = (s: ArtifactSlotState): Cell => SLOT_CELL[s];
+export const slotLampColor = (s: ArtifactSlotState): number => SLOT_LAMP[s];
+/** WHERE THE GALLERY'S LAMPS ARE (Lab-local): one beside each frame, one on the counter front under each dock. The
+ *  live Lab draws these as state-driven instances (build/ailabV2) instead of baking their colour in. */
+export function galleryLampSpots(): { frames: THREE.Vector3[]; docks: THREE.Vector3[] } {
+  const A = ARTIFACT, fz = A.z + 4, c = A.counter;
+  const frames = [0, 1, 2, 3, 4, 5].map((i) => { const x = A.x + ((i % 3) - 1) * 34, y = Math.floor(i / 3) === 0 ? 31 : 14; return new THREE.Vector3(x + 13.4, y + 8.6, fz + 1); });
+  const docks = A.docks.map((d) => new THREE.Vector3(d.x, 6, c.z1 + 0.3));
+  return { frames, docks };
+}
+function gallery(B: LabBakers, screens: ScreenBank, preview: readonly ArtifactSlotState[]): void {
   const A = ARTIFACT, x0 = A.x - A.w / 2, fz = A.z + 4;
   // the wall: plaster body on a stone base, a timber frame, a header with the gallery's sign
   B.stone.box(A.w + 2, 3, 10.8, A.x, 0, A.z, 0xb5ab99); // deeper than the posts: their faces never coincide
@@ -329,12 +342,12 @@ function gallery(B: LabBakers, screens: ScreenBank): void {
   B.dark.box(66, 9, 2, A.x, A.h + 2, A.z + 2, 0x4b3a2a);
   B.prints.add("sign-results", new THREE.Vector3(A.x, A.h + 6.5, A.z + 3.15), 62, 8, 0, true);
   // the six frames (2 rows × 3), each its own owner so a slot changes state alone, a lamp beside each
-  ARTIFACT_PREVIEW.forEach((s, i) => {
+  preview.forEach((s, i) => {
     const col = i % 3, row = Math.floor(i / 3), x = A.x + (col - 1) * 34, y = row === 0 ? 31 : 14;
     B.dark.box(31, 16, 1.2, x, y - 8, fz + 0.2, 0x2f353d);
     B.timber.box(32.4, 1.2, 2, x, y - 9.2, fz + 0.6, 0x8c6644);
     screens.upright(`artifact-${i + 1}`, SLOT_CELL[s], x, y, fz + 0.9, 29, 14.4, 0, "artifact-empty");
-    B.indicators.cyl(1.1, 0.8, x + 13.4, y + 8.6, fz + 1, SLOT_LAMP[s], 10);
+    if (preview !== ARTIFACT_LIVE) B.indicators.cyl(1.1, 0.8, x + 13.4, y + 8.6, fz + 1, SLOT_LAMP[s], 10);
   });
   // the delivery counter: plaster body, a timber top, three inset docks with lit lips
   const c = A.counter, cx = (c.x0 + c.x1) / 2, cz = (c.z0 + c.z1) / 2;
@@ -344,14 +357,14 @@ function gallery(B: LabBakers, screens: ScreenBank): void {
   A.docks.forEach((d, i) => {
     B.metal.box(14, 0.5, 10, d.x, c.h - 0.1, d.z, 0x8d969f);
     B.indicators.box(14, 0.4, 0.6, d.x, c.h + 0.2, d.z + 5.2, i === 1 ? 0x7fe0c8 : 0xc9a25a);
-    B.indicators.box(3, 0.3, 0.6, d.x, 6, c.z1 + 0.3, ARTIFACT_PREVIEW[i] === "empty" ? 0x6d7580 : SLOT_LAMP[ARTIFACT_PREVIEW[i]]);
+    if (preview !== ARTIFACT_LIVE) B.indicators.box(3, 0.3, 0.6, d.x, 6, c.z1 + 0.3, preview[i] === "empty" ? 0x6d7580 : SLOT_LAMP[preview[i]]);
   });
   B.contact.rect(cx, cz, c.x1 - c.x0, c.z1 - c.z0, 0, 0.26, 6);
   B.contact.rect(A.x, A.z, A.w, 8, 0, 0.22, 6);
 }
 
 /** BUILD THE WORK FLOOR into the shared bakers */
-export function buildLabWork(B: LabBakers, screens: ScreenBank): void {
+export function buildLabWork(B: LabBakers, screens: ScreenBank, gallerySlots: readonly ArtifactSlotState[] = ARTIFACT_PREVIEW): void {
   const rnd = prng(57);
   for (const st of STATIONS) station(B, screens, st);
   for (const p of BAY_PROPS) {
@@ -369,7 +382,7 @@ export function buildLabWork(B: LabBakers, screens: ScreenBank): void {
       default: break;
     }
   }
-  gallery(B, screens);
+  gallery(B, screens, gallerySlots);
 }
 function sofa(B: LabBakers, p: Prop): void {
   const cx = p.x + p.w / 2, cz = p.z + p.d / 2;

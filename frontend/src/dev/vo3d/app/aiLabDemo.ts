@@ -22,7 +22,7 @@
 // seconds of work, however long the flight took. It never invents a state, never ends work early, never
 // moves the job on — if the source stops sending, the scene simply holds.
 import * as THREE from "three";
-import type { OrchestrationEvent, OrchestrationSource } from "../world/agentOrchestration";
+import type { ArtifactResult, OrchestrationEvent, OrchestrationSource } from "../world/agentOrchestration";
 import { DEMO_COMMAND } from "../world/agentOrchestration";
 import type { MonkeyAgentProof } from "../avatar/MonkeyAgentProof";
 import type { ToucanSummonState } from "../../../components/OfficeMap/toucanSummon";
@@ -37,6 +37,10 @@ export type AiLabDemoStatus = {
   source: OrchestrationSource["kind"];
   /** the conversation so far, newest last (the in-world bubbles clamp at three lines; this never does) */
   transcript: readonly { who: string; text: string }[];
+  /** the finished deliverable, once there is one (the V2 Lab's presenter fills it; Phase 5 consumes it) */
+  result?: ArtifactResult | null;
+  /** the deliverable has physically reached the human: the View Result action is offered */
+  delivered?: boolean;
 };
 
 export type AiLabDemoDeps = {
@@ -196,9 +200,10 @@ export class AiLabDemo {
   /** PRESENTATION GATES — never about the job, only about whether the scene can show this yet */
   private ready(e: OrchestrationEvent): boolean {
     const atLabEvent = (e.type === "message" && !(e.from === "toucan" && e.to === "user"))
-      || e.type === "agent.assigned" || e.type === "agent.state" || e.type === "job.completed";
+      || e.type === "agent.assigned" || e.type === "agent.state" || e.type === "job.completed"
+      || e.type === "work.handoff" || e.type === "artifact.ready" || e.type === "artifact.collected";
     if (atLabEvent) return this.stage === "atLab";
-    if (e.type === "message" && e.to === "user") return this.stage === "atUser";
+    if ((e.type === "message" && e.to === "user") || e.type === "artifact.delivered") return this.stage === "atUser";
     return true;
   }
 
@@ -240,6 +245,13 @@ export class AiLabDemo {
         }
         return;
       }
+      case "work.handoff":
+        return; // the V1 hall has no physical packet; the V2 Lab's presenter (app/labWorkforce) shows it
+      case "artifact.ready":
+        this.setStatus({ step: "Result ready" });
+        return;
+      case "artifact.collected": case "artifact.delivered":
+        return; // the V1 hall has no physical packet (the V2 Lab's presenter carries it)
       case "job.completed":
         this.enter("done");
         this.setStatus({ phase: "complete", step: e.outcome === "ready-for-review" ? "Ready for review" : "Job failed" });
@@ -287,7 +299,8 @@ export class AiLabDemo {
     this.deps.toucan.setFace(null);
     this.deps.camera.restore();
     for (const id of ["nova", "milo", "pip"]) { this.deps.cast.setGaze(id, null); this.deps.cast.body(id)?.faceToward(null); }
-    this.stage = "standby";
+    // back at your side: the bird's closing line to you is shown from here (it is gated on "atUser")
+    this.enter("toUser");
     this.setStatus({ phase: "complete", step: "Ready for review — Toucan is bringing it to you" });
   }
 

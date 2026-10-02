@@ -288,6 +288,14 @@ export class MonkeyLocomotion {
     P.lookW = 1;
   }
 
+  /** where a packet sits in this agent's hands right now, whether or not it holds one (a packet arriving from
+   *  something that is not an agent — the Toucan's beak — glides into this) */
+  holdMatrix(out: THREE.Matrix4): THREE.Matrix4 | null {
+    if (!this.lastPose) return null;
+    const o = new THREE.Object3D(); o.position.copy(this.lastPose.pos); o.quaternion.copy(this.lastPose.q); o.updateMatrixWorld(true);
+    return carryMatrix(o, out);
+  }
+
   /** where the packet should be drawn now, if this agent holds it */
   packetMatrix(packet: WorkPacket, out: THREE.Matrix4): THREE.Matrix4 | null {
     const t = this.time;

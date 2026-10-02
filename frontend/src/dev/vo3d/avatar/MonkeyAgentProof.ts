@@ -16,13 +16,10 @@
 // model, the shadow set or the room mirror.
 import * as THREE from "three";
 import { MonkeyAgentBody } from "./MonkeyAgentBody";
-import {
-  agentOverheadKey, agentPillStatus,
-  type AgentAssignment, type AgentExecState, type MonkeyIdentity,
-} from "../world/monkeyAgentContract";
+import type { AgentAssignment, AgentExecState, MonkeyIdentity } from "../world/monkeyAgentContract";
 import { MONKEY_DECK_Y, MONKEY_SLOT } from "../world/monkeyAgent";
-import { BON_STANDING_HEIGHT } from "../adapters/v1Avatar";
-import { TOUCAN_OVERHEAD_KEY } from "../app/Vo3dOverheads";
+import { AgentPillBoard, type AgentPillRow } from "./agentPills";
+export type { AgentPillRow };
 
 export const DEMO_IDENTITIES: readonly MonkeyIdentity[] = [
   { id: "milo", name: "Milo",
@@ -39,15 +36,11 @@ export const DEMO_ASSIGNMENTS: Readonly<Record<string, AgentAssignment>> = {
   milo: { agentId: "milo", role: "Dev" }, nova: { agentId: "nova", role: "Design" }, pip: { agentId: "pip", role: "Review" },
 };
 
-/** one overhead row, in the overhead layer's own shape (Vo3dOverhead): the pill, or — while the agent is
- *  speaking — its speech bubble, by the layer's own sentText > status priority */
-export type AgentPillRow = { email: string; displayName: string; status?: { color: string; shortName: string; detail: string }; sentText?: string };
-
 type Member = { body: MonkeyAgentBody; slot: { x: number; z: number; yaw: number } };
 
 /** DEMO SLOTS on the Lab hall's open floor around the reference master's slot (740, -485), clear of the
  *  planted hub ((740, -600) r88) and the zone furniture. Staggered in depth so the longest pills
- *  ("PIP · REVIEW · AWAITING APPROVAL") never overlap: the shared overhead layer has no label collision
+ *  ("Pip · Review · Needs Approval") never overlap: the shared overhead layer has no label collision
  *  handling, and the real Lab layout comes later. */
 export const DEMO_SLOTS: Readonly<Record<string, { x: number; z: number; work: { x: number; z: number } }>> = {
   // `work` is where each turns to while working: out and toward the hall's south side (the demo camera's
@@ -57,17 +50,11 @@ export const DEMO_SLOTS: Readonly<Record<string, { x: number; z: number; work: {
   pip: { x: MONKEY_SLOT.x + 50, z: MONKEY_SLOT.z + 15, work: { x: MONKEY_SLOT.x + 110, z: MONKEY_SLOT.z + 110 } },
 };
 
-/** the overhead layer hangs a pill at the same height over a monkey as over an employee (Coworkers) */
-const PILL_Y = BON_STANDING_HEIGHT + 6;
-
 export class MonkeyAgentProof {
   readonly root = new THREE.Group();
   private members = new Map<string, Member>();
-  private listeners = new Set<(rows: readonly AgentPillRow[]) => void>();
-  /** what each agent is saying right now (presentation — set by the orchestration visual layer) */
-  private lines = new Map<string, string>();
-  /** the toucan's own line while the demo has it speaking (rides the toucan's existing overhead key) */
-  private toucanLine: string | null = null;
+  /** the pills, on the existing overhead layer (shared with the V2 Lab cast) */
+  private readonly pills = new AgentPillBoard(() => [...this.members.values()].map((m) => m.body), () => this.root.visible);
 
   constructor() {
     this.root.name = "monkey-agent-proof";
@@ -104,33 +91,17 @@ export class MonkeyAgentProof {
     const m = this.members.get(id);
     if (!m) return;
     m.body.setExec(exec, assignment === undefined ? m.body.assignment : assignment);
-    this.emit();
+    this.pills.emit();
   }
 
-  rows(): AgentPillRow[] {
-    const rows: AgentPillRow[] = [...this.members.values()].filter((m) => m.body.loaded).map(({ body }) => {
-      const line = this.lines.get(body.identity.id);
-      return {
-        email: agentOverheadKey(body.identity.id),
-        displayName: body.identity.name,
-        status: agentPillStatus(body.identity, body.assignment, body.exec),
-        ...(line ? { sentText: line } : {}),
-      };
-    });
-    if (this.toucanLine) rows.push({ email: TOUCAN_OVERHEAD_KEY, displayName: "Toucan", sentText: this.toucanLine });
-    return rows;
-  }
+  rows(): AgentPillRow[] { return this.pills.rows(); }
 
   /** PRESENTATION: show (or clear) what an agent — or "toucan" — is saying, as the existing speech bubble.
    *  The speaker's mouth moves while it shows. */
   say(id: string, text: string | null): void {
-    if (id === "toucan") this.toucanLine = text;
-    else {
-      if (text) this.lines.set(id, text); else this.lines.delete(id);
-      const b = this.members.get(id)?.body;
-      if (b) b.speaking = !!text;
-    }
-    this.emit();
+    const b = this.members.get(id)?.body;
+    if (b) b.speaking = !!text;
+    this.pills.say(id, text);
   }
 
   /** world position of an agent's head (look-at target) */
@@ -148,22 +119,10 @@ export class MonkeyAgentProof {
     return { x: v.reduce((a, s) => a + s.x, 0) / v.length, z: v.reduce((a, s) => a + s.z, 0) / v.length };
   }
 
-  subscribe(fn: (rows: readonly AgentPillRow[]) => void): () => void {
-    this.listeners.add(fn);
-    fn(this.rows());
-    return () => { this.listeners.delete(fn); };
-  }
-  private emit(): void { const r = this.rows(); for (const fn of this.listeners) fn(r); }
+  subscribe(fn: (rows: readonly AgentPillRow[]) => void): () => void { return this.pills.subscribe(fn); }
 
   /** where the pill hangs, in world space; null when the agent is not drawn */
-  pillPoint(key: string, out: THREE.Vector3): THREE.Vector3 | null {
-    if (!this.root.visible) return null;
-    for (const { body } of this.members.values()) {
-      if (agentOverheadKey(body.identity.id) !== key || !body.loaded) continue;
-      return out.copy(body.root.position).setY(body.root.position.y + PILL_Y);
-    }
-    return null;
-  }
+  pillPoint(key: string, out: THREE.Vector3): THREE.Vector3 | null { return this.pills.point(key, out); }
 
   get visible(): boolean { return this.root.visible; }
   set visible(v: boolean) { this.root.visible = v; }
@@ -185,9 +144,9 @@ export class MonkeyAgentProof {
 
   /** back to the cast's resting state: idle, no lines, facing home (a demo reset) */
   resetPresentation(): void {
-    this.lines.clear(); this.toucanLine = null; this.gazes.clear();
+    this.gazes.clear();
     for (const [id, { body }] of this.members) { body.speaking = false; body.faceToward(null); body.setExec("idle", DEMO_ASSIGNMENTS[id] ?? null); }
-    this.emit();
+    this.pills.clear();
   }
 
   stats(): { triangles: number; draws: number } {
@@ -198,7 +157,7 @@ export class MonkeyAgentProof {
 
   dispose(): void {
     for (const { body } of this.members.values()) body.dispose();
-    this.listeners.clear();
+    this.pills.dispose();
     this.root.removeFromParent();
   }
 }

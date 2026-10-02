@@ -38,3 +38,29 @@ export function chooseVisible(agents: readonly AgentRecord[], budget: Visibility
   }
   return { visible, inside };
 }
+
+// ---- WHERE EACH AGENT LIVES (pure data the orchestration presenter reads; destinations, never coordinates) ----
+export type LabResident = {
+  /** where it rests with nothing to do, and what it is doing there (the node's own action: sit / sleep / perch) */
+  home: string;
+  /** where it waits once briefed, until its part of a job reaches it */
+  standby: string;
+  /** its place on the briefing ring */
+  brief: string;
+  /** seconds from the Toucan's arrival to moving (how quickly its temperament reacts) */
+  react: number;
+  /** not drawn until a job needs it: it comes out of the residence, and goes back in afterwards */
+  hidden?: boolean;
+};
+/** THE FOUNDERS live OUTSIDE (always shown — the population rule's founder priority). Nova reads at her L1 nook, Milo
+ *  sleeps in his L2 pod, Pip perches at the tip of the west limb. Once briefed, Milo waits on the west root seat,
+ *  close to where Nova will bring him the design; Pip waits up on the L1 deck, from where he can leap straight
+ *  down to the review bay. */
+export const LAB_RESIDENTS: Readonly<Record<string, LabResident>> = {
+  nova: { home: "NOVA_HOME", standby: "NOVA_HOME", brief: "BRIEFING_NOVA", react: 0.9 },
+  milo: { home: "MILO_HOME", standby: "ROOT_SEAT_W", brief: "BRIEFING_MILO", react: 2.1 },
+  pip: { home: "PIP_HOME", standby: "IDLE_L1_SE", brief: "BRIEFING_PIP", react: 0.25 },
+};
+/** anyone else lives INSIDE the residence: summoned through its door for a job, back inside afterwards */
+export const residentFor = (id: string): LabResident =>
+  LAB_RESIDENTS[id] ?? { home: "RESIDENCE_INSIDE", standby: "BRIEFING_RING", brief: "BRIEFING_RING", react: 1, hidden: true };

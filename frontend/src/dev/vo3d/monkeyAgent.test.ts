@@ -19,7 +19,7 @@ import draco3d from "draco3dgltf";
 import {
   AGENT_OVERHEAD_PREFIX, BODY_REGIONS, MASTER_DROPPED_JOINTS, MASTER_TO_CONTRACT_JOINT, MONKEY_AGENT_STANDING_HEIGHT,
   MONKEY_BASE_LODS, MONKEY_BUDGETS, MONKEY_CLIP_CONTRACT, MONKEY_HEAD_RATIO, MONKEY_JOINT_LANDMARKS, MONKEY_NATIVE_HEIGHT,
-  MONKEY_SKELETON_JOINTS, MONKEY_SKELETON_PARENTS, MONKEY_SOCKETS, agentOverheadKey, agentPillStatus,
+  MONKEY_SKELETON_JOINTS, MONKEY_SKELETON_PARENTS, MONKEY_SOCKETS, agentOverheadKey, agentPillStatus, EXEC_STATE_LABEL,
   isAgentOverheadKey, presentationFor, regionMask, type AgentExecState, type BodyRegion,
 } from "./world/monkeyAgentContract";
 import { surfaceDeviation } from "./world/meshDeviation";
@@ -83,8 +83,17 @@ describe("MonkeyAgent P0 contract", () => {
   });
 
   it("formats the existing pill as identity + role · state, and keys it apart from people", () => {
-    expect(agentPillStatus({ name: "Milo" }, { role: "Dev" }, "working")).toEqual({ color: "#2376e5", shortName: "MILO", detail: "DEV · WORKING" });
-    expect(agentPillStatus({ name: "Milo" }, null, "idle").detail).toBe("IDLE");
+    // VO's own display casing (the employee pill: "Bon · In Meeting") — never all caps
+    expect(agentPillStatus({ name: "Milo" }, { role: "Dev" }, "working")).toEqual({ color: "#2376e5", shortName: "Milo", detail: "Dev · Working" });
+    expect(agentPillStatus({ name: "Nova" }, { role: "Design" }, "assigned").detail).toBe("Design · Assigned");
+    expect(agentPillStatus({ name: "Pip" }, { role: "Review" }, "reviewing").detail).toBe("Review · Reviewing");
+    // idle is QUIET: the name and the dot, like an Available employee
+    expect(agentPillStatus({ name: "Milo" }, { role: "Dev" }, "idle")).toEqual({ color: "#8a96a8", shortName: "Milo" });
+    // the human-attention states are already in the vocabulary
+    expect(agentPillStatus({ name: "Pip" }, { role: "Review" }, "awaiting-approval").detail).toBe("Review · Needs Approval");
+    expect(agentPillStatus({ name: "Nova" }, { role: "Design" }, "needs-input").detail).toBe("Design · Needs Input");
+    expect(agentPillStatus({ name: "Pip" }, null, "ready").detail).toBe("Ready");
+    for (const label of Object.values(EXEC_STATE_LABEL)) expect(label).not.toBe(label.toUpperCase());
     const k = agentOverheadKey("milo");
     expect(k.startsWith(AGENT_OVERHEAD_PREFIX) && isAgentOverheadKey(k)).toBe(true);
     for (const other of [SELF_OVERHEAD_KEY, TOUCAN_OVERHEAD_KEY, "milo@offshorly.com"]) expect(isAgentOverheadKey(other)).toBe(false);

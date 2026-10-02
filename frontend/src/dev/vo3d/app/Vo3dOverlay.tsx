@@ -178,6 +178,7 @@ import { openCompanyHub } from "../../../services/hub/companyHubStore";
 import styles from "./Vo3dOverlay.module.css";
 import demoStyles from "./AiLabDemoChip.module.css";
 import type { AiLabDemoStatus } from "./aiLabDemo";
+import { AiLabResultPreview } from "./AiLabResultPreview";
 import { MEETING_ROOMS } from "../rooms/floor2Meeting";
 /** Every Meeting Floor room's meeting id (`mf-<slug>`) — participation in one of these is IN MEETING. */
 const ROOM_MEETING_IDS: ReadonlySet<string> = new Set(MEETING_ROOMS.map((r) => r.meetingId));
@@ -1464,6 +1465,10 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
 
   /** AI-WORKFORCE DEMO (`?aidemo=1`) — the one predefined command and its live status. Null without the flag. */
   const [aiDemo, setAiDemo] = useState<AiLabDemoStatus | null>(null);
+  /** the delivered result's preview is open (closed again by any new run or reset — no result, no preview) */
+  const [resultOpen, setResultOpen] = useState(false);
+  const closeResult = useCallback(() => setResultOpen(false), []);
+  useEffect(() => { if (!aiDemo?.delivered) setResultOpen(false); }, [aiDemo?.delivered]);
   useEffect(() => {
     const world = worldRef.current;
     if (!ready || !world?.aiDemo) return;
@@ -2273,6 +2278,13 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
           ) : (
             <>
               {aiDemo.phase === "complete" && <div className={demoStyles.status}><span className={`${demoStyles.dot} ${demoStyles.done}`} />{aiDemo.step}</div>}
+              {aiDemo.phase === "idle" && aiDemo.step && <div className={demoStyles.status}>{aiDemo.step}</div>}
+              {aiDemo.delivered && aiDemo.result && (
+                <button type="button" className={demoStyles.result} onClick={() => setResultOpen(true)}>
+                  <span className={demoStyles.resultIcon} aria-hidden="true" />
+                  <span className={demoStyles.resultText}><b>View Result</b><span>{aiDemo.result.title}</span></span>
+                </button>
+              )}
               <button type="button" className={demoStyles.command} onClick={() => worldRef.current?.aiDemo?.start()}>
                 <span className={demoStyles.label}>{aiDemo.phase === "complete" ? "Run again" : "Ask Toucan"}</span>
                 <span className={demoStyles.quote}>“Toucan, handle what Alex asked us to build.”</span>
@@ -2282,6 +2294,7 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
           <div className={demoStyles.mock}>Demo · mock orchestration</div>
         </div>
       )}
+      {resultOpen && aiDemo?.delivered && aiDemo.result && <AiLabResultPreview result={aiDemo.result} onClose={closeResult} />}
       {/* THE RAIL — V1's minimized conversations, as circular employee avatars stacked above the Toucan
           button. Each one carries its own unread count and its own close, because minimizing and closing
           are different decisions: the bubble RESTORES (the very same toggle the window header's minus

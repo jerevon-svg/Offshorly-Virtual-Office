@@ -371,6 +371,25 @@ export class Toucan {
     this.faceOverride = point ? { x: point.x, y: point.z } : null;
   }
 
+  /** AI-WORKFORCE (V2 Lab) — a parked bird SETTLES on this point instead of hovering beside its summon centre:
+   *  the Lab's briefing perch. Exact height, no breathing hover, wings folded — a landing, not a hover. Null
+   *  hands the park back to V1's own hover. Presentation only; the summon itself is unchanged. */
+  private landing: { x: number; y: number; z: number } | null = null;
+  setLanding(point: { x: number; y: number; z: number } | null): void {
+    this.landing = point ? { ...point } : null;
+  }
+  /** an ERRAND's pace: a directed long flight (the Lab and back) covers ground this many times faster than a
+   *  summon; 1 = V1's own summon timing */
+  private errandPace = 1;
+  setErrandPace(k: number): void { this.errandPace = Math.max(0.5, k); }
+  /** settled on the landing point (attending, and close enough that the glide in has finished) */
+  get landed(): boolean {
+    const l = this.landing;
+    if (!l || this.phase !== "attending") return false;
+    const p = this.root.position;
+    return Math.hypot(p.x - l.x, p.z - l.z) < 3 && Math.abs(p.y - l.y) < 2;
+  }
+
   /** V1's own coarse union. The whole way home reports "roaming", because the only thing a caller acts
    *  on is whether the bird is WITH you — the same reason V1 keeps its public state coarser than its
    *  internal phase. */
@@ -498,7 +517,7 @@ export class Toucan {
     // jitter, because a click should answer the same way every time.
     this.legDuration = Math.max(
       0.2,
-      travelDurationFor(Math.hypot(target.x - this.legFrom.x, target.y - this.legFrom.z), "summon"),
+      travelDurationFor(Math.hypot(target.x - this.legFrom.x, target.y - this.legFrom.z), "summon") / this.errandPace,
     );
     this.legT = 0;
   }
@@ -558,14 +577,15 @@ export class Toucan {
     if (holding) {
       const k = Math.min(1, dt * CLIMB_RATE * 2);
       const sitting = this.phase === "perched" && this.perch;
-      const hx = sitting ? this.perch!.x : this.legTo.x;
-      const hz = sitting ? this.perch!.z : this.legTo.y;
+      const land = this.phase === "attending" ? this.landing : null;
+      const hx = land ? land.x : sitting ? this.perch!.x : this.legTo.x;
+      const hz = land ? land.z : sitting ? this.perch!.z : this.legTo.y;
       p.x += (hx - p.x) * k;
       p.z += (hz - p.z) * k;
       // A perched bird sits still; a hovering one breathes. `visiting` hovers over a room at the indoor
       // height, `attending` beside a shoulder at the park height — one hover, two altitudes.
       const bob = Math.sin(this.t * HOVER.hz * Math.PI * 2) * HOVER.amplitude;
-      const wantY = sitting ? this.perch!.y : (this.phase === "visiting" ? INDOOR.visitY : PARK_Y) + bob;
+      const wantY = land ? land.y : sitting ? this.perch!.y : (this.phase === "visiting" ? INDOOR.visitY : PARK_Y) + bob;
       p.y += (wantY - p.y) * Math.min(1, dt * HOVER_TRACK);
     } else {
       this.legT = Math.min(1, this.legT + dt / this.legDuration);
@@ -664,7 +684,7 @@ export class Toucan {
     this.pitch += (wantPitch - this.pitch) * Math.min(1, dt * PITCH.rate);
     this.posture.rotation.x = this.pitch;
 
-    advanceWingRhythm(this.wing, dt, this.phase !== "perched");
+    advanceWingRhythm(this.wing, dt, this.phase !== "perched" && !this.landed);
     if (this.wings.length) {
       const beat = wingStrokeAngle(this.wing);
       for (let i = 0; i < this.wings.length; i++) this.wings[i].rotation.z = (i === 0 ? 1 : -1) * beat;

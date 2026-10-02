@@ -68,6 +68,7 @@ import { MonkeyAvatar } from "../avatar/MonkeyAvatar";
 import { MonkeyAgentProof, type AgentPillRow } from "../avatar/MonkeyAgentProof";
 import { MonkeyPlayground } from "../playground/monkeyPlayground";
 import { AiLabDemo, type AiLabDemoStatus } from "./aiLabDemo";
+import { LabWorkforce } from "./labWorkforce";
 import { MockOrchestrationSource } from "../world/agentOrchestrationMock";
 import { aiLabStandTest as aiLabStandTestV1, inAiLabZone as inAiLabZoneV1 } from "../world/ailab";
 import { LAB_VARIANT } from "../world/labVariant";
@@ -940,19 +941,27 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // It is hidden in OFFICE mode, which is the one framing whose cost is the product experience.
   // AI LAB V2 (`?ailab=v2`): the treehouse Lab STRUCTURAL BLOCKOUT replaces the production Lab's geometry
   // and stand test; everything else about how the Lab sits in the world (anchoring, visibility) is shared.
-  const aiLabV2 = LAB_VARIANT === "v2" ? buildAiLabV2() : null;
+  // `?aidemo=1` on the V2 Lab: the LIVE Lab — stations in standby and an empty result gallery until a job's
+  // orchestration reaches them (app/labWorkforce). Without it, the approved Phase 3 presentation.
+  const aiDemoRequested = flags.get("aidemo") === "1";
+  const aiLabV2 = LAB_VARIANT === "v2" ? buildAiLabV2({ live: aiDemoRequested }) : null;
   const aiLab: { group: THREE.Group; tick(t: number, camera?: THREE.Camera, viewportH?: number): void } = aiLabV2 ?? buildAiLab();
   if (aiLabV2) { labEnv = aiLabV2.env; for (const k of labEnvCalls) { const v = labEnvLast[k]; if (v !== undefined) labEnv[k](v); } }
   R.scene.add(aiLab.group);
   aiLab.group.visible = false;
   // ... and its real MonkeyAgents, on the V2 traversal graph, running the traversal proof (no orchestration)
+  /** the live workforce presenter, created further down (it needs the toucan); read by the cast's loader */
+  const labWorkforceRef: { current: LabWorkforce | null } = { current: null };
   const labCast = LAB_VARIANT === "v2" ? new MonkeyCastRunner(offsetGraph(buildLabV2Graph(), { x: 0, y: LAB2_FLOOR_Y, z: 0 }), LAB_V2_SCENARIOS) : null;
   if (labCast) {
-    R.scene.add(labCast.root);
+    R.scene.add(labCast.root, labCast.packetRoot);
     void labCast.load().then(() => {
       if (disposed) return;
-      labCast.play(flags.get("labscenario") ?? "proof");
+      // the live workforce resets the cast to everyone at home; otherwise the traversal proof plays
+      if (labWorkforceRef.current) labWorkforceRef.current.reset();
+      else labCast.play(flags.get("labscenario") ?? "proof");
       labCast.root.visible = aiLab.group.visible && onGroundFloor();
+      labCast.packetRoot.visible = onGroundFloor();
     });
   }
   // THE AI LAB MONKEY — DEV-ONLY, OFF BY DEFAULT. `?monkey=1` constructs it; without
@@ -980,7 +989,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // visibility rule as the reference monkey; absent without the flag.
   // `?aidemo=1` (the Wednesday AI-workforce demo) needs the cast too, so it implies `?monkeyagent=1`.
   // (the V1 demo cast and the AI-workforce presenter are V1-Lab features: off while the V2 blockout is built)
-  const aiDemoFlag = flags.get("aidemo") === "1" && LAB_VARIANT !== "v2";
+  const aiDemoFlag = aiDemoRequested && LAB_VARIANT !== "v2";
   const monkeyAgents = (flags.get("monkeyagent") === "1" && LAB_VARIANT !== "v2") || aiDemoFlag ? new MonkeyAgentProof() : null;
   if (monkeyAgents) {
     R.scene.add(monkeyAgents.root);
@@ -3375,7 +3384,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // the dev-only monkey walks the Lab in ground-floor world coordinates; it stays downstairs
     if (monkey) monkey.visible = aiLab.group.visible && onGroundFloor();
     if (monkeyAgents) monkeyAgents.visible = aiLab.group.visible && onGroundFloor();
-    if (labCast) labCast.root.visible = aiLab.group.visible && onGroundFloor();
+    if (labCast) { labCast.root.visible = aiLab.group.visible && onGroundFloor(); labCast.packetRoot.visible = onGroundFloor(); }
     if (env.setPresentation(wantedPresentation(params.cameraMode))) R.invalidateShadows();
     // OFFICE is a bounded viewport over ONE plate; the fence moves with the floor being looked at, so an
     // upper storey can never be panned off to reveal that it is a slab standing in the void.
@@ -4090,6 +4099,55 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       },
     },
   }) : null;
+  // ---- PHASE 4: THE PHYSICAL AI WORKFORCE (`?ailab=v2&aidemo=1`) -------------------------------------
+  // The same mock source and the same toucan / camera seams as the V1 hall's presenter, driving the V2 Lab:
+  // the bird lands on the briefing perch, the cast walks the treehouse graph, stations and the result gallery
+  // follow the job. The bird carries the job's packet from its beak (the same body frame it flies in).
+  const BEAK = new THREE.Vector3(0, -3.2, 2.4);
+  const HANDS = new THREE.Vector3(0, 15, 8.5), handM = new THREE.Matrix4();
+  const beakM = new THREE.Matrix4();
+  labWorkforceRef.current = aiDemoRequested && labCast && aiLabV2 ? new LabWorkforce({
+    source: new MockOrchestrationSource(),
+    cast: labCast,
+    lab: aiLabV2,
+    toucan: {
+      setTarget: (at) => { toucanDirected = at ? { x: at.x, z: at.z } : null; },
+      setFace: (at) => toucan.setFaceOverride(at),
+      setLanding: (at) => toucan.setLanding(at),
+      setPace: (k) => toucan.setErrandPace(k),
+      state: () => toucan.summonState,
+      landed: () => toucan.landed,
+      position: () => toucan.worldPosition,
+      carry: (out) => {
+        if (!toucan.root.visible) return null;
+        toucan.root.updateMatrixWorld();
+        return out.copy(beakM.makeTranslation(BEAK.x, BEAK.y, BEAK.z).premultiply(toucan.root.matrixWorld));
+      },
+    },
+    player: () => ({ x: avatar.position.x, z: avatar.position.z }),
+    // the delivered packet, held in front of the user's body at hand height (the avatar's own frame)
+    userCarry: (out) => {
+      avatar.root.updateMatrixWorld();
+      return out.copy(handM.makeTranslation(HANDS.x, HANDS.y, HANDS.z).premultiply(avatar.root.matrixWorld));
+    },
+    camera: {
+      follow: (get, half = DEMO_FOLLOW_HALF) => {
+        demoCamEnter();
+        const p = get();
+        easeExploreFrame({ x: p.x - half.w, z: p.z - half.d, w: half.w * 2, d: half.d * 2 }, 0.9);
+        demoCamFollow = get;
+      },
+      frame: (rect) => { demoCamEnter(); demoCamFollow = null; easeExploreFrame(rect, 0.9); },
+      restore: () => {
+        demoCamFollow = null;
+        const back = demoCamReturn;
+        demoCamReturn = null;
+        if (back && (back !== params.cameraMode || (back === "player") !== playerMode.active)) setCameraMode(back);
+      },
+    },
+    available: () => onGroundFloor(),
+  }) : null;
+  const labWorkforce = labWorkforceRef.current;
   // Every automatic door the building has. Registered by ENTITY ID, so the sound comes from where the door
   // actually is and a door that is rebuilt (the Design Room's, under the geometry sliders) is still found.
   registerDoorSfx(DOOR_ID, () => door);
@@ -4646,7 +4704,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       aiLab.group.visible = labWanted("player");
       if (monkey) monkey.visible = aiLab.group.visible && onGroundFloor();
     if (monkeyAgents) monkeyAgents.visible = aiLab.group.visible && onGroundFloor();
-    if (labCast) labCast.root.visible = aiLab.group.visible && onGroundFloor();
+    if (labCast) { labCast.root.visible = aiLab.group.visible && onGroundFloor(); labCast.packetRoot.visible = onGroundFloor(); }
       if (env.setPresentation(wantedPresentation("player"))) R.invalidateShadows();
       R.invalidateShadows();
       refresh();
@@ -4661,7 +4719,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     aiLab.group.visible = labWanted(m);
     if (monkey) monkey.visible = aiLab.group.visible && onGroundFloor();
     if (monkeyAgents) monkeyAgents.visible = aiLab.group.visible && onGroundFloor();
-    if (labCast) labCast.root.visible = aiLab.group.visible && onGroundFloor();
+    if (labCast) { labCast.root.visible = aiLab.group.visible && onGroundFloor(); labCast.packetRoot.visible = onGroundFloor(); }
     if (env.setPresentation(wantedPresentation(m))) R.invalidateShadows();
     syncCam(cameraModes.set(m));
     R.invalidateShadows();
@@ -5643,10 +5701,13 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     aiDemo?.update(dt / 1000); // dev-only (`?aidemo=1`): ticks the mock source and the presenter
     monkeyAgents?.update(dt / 1000, R.activeCamera, R.renderer.domElement.clientHeight); // dev-only; a no-op while hidden or absent
     monkeyPlay?.advance(dt / 1000, R.activeCamera, R.renderer.domElement.clientHeight); // dev-only (`?monkeyplay=1`)
-    if (labCast?.root.visible) {
-      labCast.advance(dt / 1000, R.activeCamera, R.renderer.domElement.clientHeight); // dev-only (`?ailab=v2`)
-      // which stations an agent is AT right now (arrived, still there): their screens work
-      if (aiLabV2) {
+    labWorkforce?.update(dt / 1000); // dev-only (`?ailab=v2&aidemo=1`): ticks the mock source and the physical presenter
+    // a live job keeps its clock while the Lab is off screen (nothing is posed); the proof only runs while seen
+    if (labCast && (labCast.root.visible || labWorkforce)) {
+      labCast.advance(dt / 1000, R.activeCamera, R.renderer.domElement.clientHeight, labCast.root.visible); // dev-only (`?ailab=v2`)
+      // which stations an agent is AT right now (arrived, still there): their screens work. (The live
+      // workforce drives its stations from the job instead — app/labWorkforce setStationActivity.)
+      if (aiLabV2 && !labWorkforce) {
         const at = new Set<string>();
         for (const a of labCast.agents.values()) { const n = a.loco.nodeAt(labCast.t); if (a.body.root.visible && n?.startsWith("st-") && !n.endsWith("-app")) at.add(n.slice(3).toUpperCase()); }
         aiLabV2.setOccupancy(at);
@@ -6578,6 +6639,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     labVariant: LAB_VARIANT,
     labV2: aiLabV2,
     labCast,
+    labWorkforce,
+    /** dev-only: the floor the body is on, and a RESTORE onto a floor (the Cave's own placement; ground by default) */
+    floor: () => currentFloor,
+    restoreFloor: (id: Vo3dFloorId = GROUND_FLOOR_ID) => currentFloor === id || !!floorTransition?.restoreOn(id),
+    restoreGroundFloor: () => currentFloor === GROUND_FLOOR_ID || !!floorTransition?.restoreOn(GROUND_FLOOR_ID),
     labGroup: aiLab.group,
     /** dev: take the lift (verification harnesses — the Floor 2 window view of the Lab) */
     elevator: (to?: Vo3dFloorId) => callElevator(to ?? otherFloor()),
@@ -6831,6 +6897,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     monkey?.dispose();
     aiDemo?.reset();
     aiDemo?.dispose();
+    labWorkforce?.reset();
+    labWorkforce?.dispose();
     monkeyAgents?.dispose();
     crew.dispose();
     avatar.dispose();
@@ -7195,10 +7263,15 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     selfAnchor: () => (avatar.root.visible ? selfAnchor() : null),
     zoneAt: (x, z) => zoneOf({ x, z }),
     toucanAnchor,
-    aiDemo: aiDemo ? { start: () => aiDemo.start(), reset: () => aiDemo.reset(), subscribe: (fn: (s: AiLabDemoStatus) => void) => aiDemo.subscribe(fn) } : null,
+    aiDemo: aiDemo ? { start: () => aiDemo.start(), reset: () => aiDemo.reset(), subscribe: (fn: (s: AiLabDemoStatus) => void) => aiDemo.subscribe(fn) }
+      : labWorkforce ? { start: () => labWorkforce.start(), reset: () => labWorkforce.reset(), subscribe: (fn: (s: AiLabDemoStatus) => void) => labWorkforce.subscribe(fn) } : null,
+    // the agents' pills ride the employee overhead layer: the V1 hall's cast, or the V2 Lab's
     agentPills: monkeyAgents ? {
       subscribe: (fn: (rows: readonly AgentPillRow[]) => void) => monkeyAgents.subscribe(fn),
       anchor: (key: string) => { const p = monkeyAgents.pillPoint(key, AGENT_PILL); return p ? anchorForWorldPoint(p) : null; },
+    } : labCast ? {
+      subscribe: (fn: (rows: readonly AgentPillRow[]) => void) => labCast.pills.subscribe(fn),
+      anchor: (key: string) => { const p = labCast.pills.point(key, AGENT_PILL); return p ? anchorForWorldPoint(p) : null; },
     } : null,
     // PHASE 7G. The intent, and V1's own coarse state pushed out as it changes — the host opens the
     // assistant on ARRIVAL, exactly as V1's office does.
