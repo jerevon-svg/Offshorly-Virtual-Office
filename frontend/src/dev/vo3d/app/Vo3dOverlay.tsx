@@ -182,7 +182,7 @@ import { AiLabResultPreview } from "./AiLabResultPreview";
 import { AiLabTaskChat } from "./AiLabTaskChat";
 import { TOUCAN_BUSY_LABEL } from "./toucanActivity";
 import { TOUCAN_AVATAR_GLYPH } from "../../../services/chat/toucanSender";
-import { latestDelivered, type ConversationEntry } from "../world/agentJob";
+import { jobOpen, latestDelivered, readThrough, type ConversationEntry } from "../world/agentJob";
 import { stepFor } from "../world/jobStatusLine";
 import { MEETING_ROOMS } from "../rooms/floor2Meeting";
 /** Every Meeting Floor room's meeting id (`mf-<slug>`) — participation in one of these is IN MEETING. */
@@ -1533,11 +1533,12 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
       for (const w of remoteWindows) {
         if (w.kind !== "task" || w.minimized) continue;
         const j = jobView(w.jobId);
-        if (j && (prev[w.jobId] ?? 0) < j.lastSeq) { if (next === prev) next = { ...prev }; next = { ...next, [w.jobId]: j.lastSeq }; }
+        const to = j ? readThrough(j, aiShownJobId === w.jobId ? aiUnseen ?? [] : []) : 0;
+        if (j && (prev[w.jobId] ?? 0) < to) { if (next === prev) next = { ...prev }; next = { ...next, [w.jobId]: to }; }
       }
       return next;
     });
-  }, [aiJobs, remoteWindows, jobView]);
+  }, [aiJobs, remoteWindows, jobView, aiShownJobId, aiUnseen]);
   const taskUnread = useCallback((jobId: string): number => {
     const j = jobView(jobId);
     if (!j) return 0;
@@ -1551,7 +1552,7 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
   }, [aiJobs, jobsTick]);
   /** the status card for a finished job can be put away; it comes back with the next job */
   const [workforceCardDismissed, setWorkforceCardDismissed] = useState<string | null>(null);
-  const aiJobOpen = !!aiJob && aiJob.status !== "approved" && aiJob.status !== "failed";
+  const aiJobOpen = jobOpen(aiJob);
   const startSampleTask = useCallback(() => {
     if (!aiWorkforce) return;
     void aiWorkforce.startSample().then((res) => { if (!res.ok) showToast(res.error); });

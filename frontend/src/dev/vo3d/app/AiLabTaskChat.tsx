@@ -103,6 +103,8 @@ function Entry({ c, prev, onOpenResult, onRespond }: {
           </div>
         )}
         {!c.resolved && c.need === "needs-input" && <div className={styles.hint}>Reply below to answer.</div>}
+        {/* the Preview's guarded actions are scripted: the decision is real, the deploy it guards is not */}
+        {c.need === "needs-approval" && <div className={styles.hint} data-testid="ailab-approval-preview">Preview — nothing real is deployed or changed.</div>}
       </div>
     );
   }

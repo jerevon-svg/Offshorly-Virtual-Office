@@ -204,6 +204,19 @@ export function projectJob(jobId: string, snapshot: JobSnapshot | null, records:
 }
 
 /** the revision the human is reviewing now (the latest one delivered), if any */
+/** IS THE JOB STILL OPEN — anything left for the team or the human to do on it. Approved, failed and halted (stopped
+ *  with nothing delivered) are over; the Preview's one-task-at-a-time rule and the job card both read this. */
+export function jobOpen(j: Pick<JobSnapshot, "status"> | null): boolean {
+  return !!j && j.status !== "approved" && j.status !== "failed" && j.status !== "halted";
+}
+
+/** HOW FAR AN OPEN TASK WINDOW HAS BEEN READ: everything shown — but never past a record the live Lab is still holding
+ *  back (`unseen`). A chat reply skips the Lab's queue, so it can be shown while earlier Lab records are not yet; reading
+ *  "through" it would mark those read before anyone saw them, and a minimized window would never badge them. */
+export function readThrough(shown: Pick<JobSnapshot, "lastSeq">, unseen: readonly number[]): number {
+  return unseen.length ? Math.min(shown.lastSeq, Math.min(...unseen) - 1) : shown.lastSeq;
+}
+
 export function latestDelivered(j: JobSnapshot): ArtifactRevision | null {
   for (let i = j.artifacts.length - 1; i >= 0; i--) if (j.artifacts[i].delivered) return j.artifacts[i];
   return null;

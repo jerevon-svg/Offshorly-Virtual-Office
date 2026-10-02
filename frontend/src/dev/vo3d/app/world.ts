@@ -66,6 +66,7 @@ import { AI_LAB_SITE } from "../world/construction";
 import type { AgentPillRow } from "../avatar/agentPills";
 import { MonkeyPlayground } from "../playground/monkeyPlayground";
 import type { AiWorkforceStatus } from "./aiWorkforceStatus";
+import { jobOpen } from "../world/agentJob";
 import { LabWorkforce } from "./labWorkforce";
 import { createOrchestrationSource } from "../world/orchestrationSource";
 import { JobClient } from "../world/jobStore";
@@ -4155,10 +4156,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   }) : null;
   const labWorkforce = labWorkforceRef.current;
   /** a job the employee still has a say in (running, waiting on them, or delivered and awaiting review) */
-  const jobOpen = (id: string | null): boolean => {
-    const j = id && labJobs ? labJobs.job(id) : null;
-    return !!j && j.status !== "approved" && j.status !== "failed";
-  };
+  const jobIsOpen = (id: string | null): boolean => jobOpen(id && labJobs ? labJobs.job(id) : null);
   /** THE PRODUCTION ENTRY (Phase 6B): the Preview's one scripted sample task. It runs in the BACKGROUND wherever the
    *  employee is — nothing about starting it moves the camera. ONE open job at a time: the physical presenter shows
    *  one job (the job system itself keeps every job and its history). */
@@ -4166,11 +4164,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     jobs: labJobs,
     subscribe: (fn: (s: AiWorkforceStatus) => void) => labWorkforce.subscribe(fn),
     startSample: async (): Promise<JobCommandResult> => {
-      if (jobOpen(labJobs.latest)) return { ok: false, error: "Finish the current AI Workforce task first" };
+      if (jobIsOpen(labJobs.latest)) return { ok: false, error: "Finish the current AI Workforce task first" };
       ensureLabCast();
       return labJobs.submit(DEMO_COMMAND);
     },
-    canStart: () => !jobOpen(labJobs.latest),
+    canStart: () => !jobIsOpen(labJobs.latest),
     /** WATCH IN LAB: only by the employee's choice, only where it can be shown */
     watch: (on: boolean): boolean => {
       if (on) { ensureLabCast(); if (!watchContextOk()) return false; }
@@ -6914,6 +6912,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     labJobs?.reset(); labJobs?.dispose();
     labWorkforce?.reset();
     labWorkforce?.dispose();
+    labCast?.dispose();
     crew.dispose();
     avatar.dispose();
     toucan.dispose();

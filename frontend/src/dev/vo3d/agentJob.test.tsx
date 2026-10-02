@@ -7,7 +7,7 @@ import { act, render, screen } from "@testing-library/react";
 import { DEMO_COMMAND, DEMO_FEEDBACK, type JobRecord } from "./world/agentOrchestration";
 import { MockOrchestrationSource, planRevision, reviseResult, mockLandingPageResult } from "./world/agentOrchestrationMock";
 import { JobClient, JobStore } from "./world/jobStore";
-import { attentionSignal, projectJob, reviewable, type JobSnapshot } from "./world/agentJob";
+import { attentionSignal, projectJob, readThrough, reviewable, type JobSnapshot } from "./world/agentJob";
 import { AiLabTaskChat } from "./app/AiLabTaskChat";
 
 const fixedNow = () => 1_700_000_000_000;
@@ -302,5 +302,35 @@ describe("the task conversation window owns nothing", () => {
     expect(msgs.length).toBeGreaterThan(shownBefore);
     expect(screen.getByText("Review passed. It's ready.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "View Result" })).toBeTruthy();
+  });
+});
+
+describe("Phase 7 — Preview honesty on guarded actions", () => {
+  it("a scripted deploy approval says nothing real is deployed — before and after the decision", async () => {
+    const { jobs, run } = system();
+    await jobs.submit();
+    const job = finish(jobs, run);
+    await jobs.requestChanges(job.jobId, job.artifacts[0].revisionId, "Make the CTA bolder and deploy it.");
+    run(60);
+    const props = { onClose: () => {}, onSend: () => {}, onOpenResult: () => {}, onRespond: () => {} };
+    const view = render(<AiLabTaskChat job={jobs.job(job.jobId)!} {...props} />);
+    expect(screen.getByRole("button", { name: "Approve" })).toBeTruthy();
+    expect(screen.getByTestId("ailab-approval-preview").textContent).toMatch(/Preview — nothing real is deployed/);
+    view.unmount();
+    const req = jobs.job(job.jobId)!.attention!.requestId;
+    await jobs.respond(job.jobId, req, { kind: "approval", approved: true });
+    run(60);
+    render(<AiLabTaskChat job={jobs.job(job.jobId)!} {...props} />);
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(screen.getByTestId("ailab-approval-preview")).toBeTruthy();
+  });
+});
+
+describe("Phase 7 — reading a task window never marks unshown records read", () => {
+  it("reads through what is shown, but not past the earliest record the live Lab still holds", () => {
+    expect(readThrough({ lastSeq: 12 }, [])).toBe(12);
+    expect(readThrough({ lastSeq: 9 }, [10, 11, 12])).toBe(9);
+    // a chat reply (seq 14) skipped the queue while 10–12 are held: read only through 9
+    expect(readThrough({ lastSeq: 14 }, [10, 11, 12])).toBe(9);
   });
 });

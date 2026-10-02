@@ -17,6 +17,7 @@ import { buildPlan } from "./world/monkeyTraversal";
 import { personaFor } from "./world/monkeyPersona";
 import { DEMO_COMMAND } from "./world/agentOrchestration";
 import type { AiWorkforceStatus } from "./app/aiWorkforceStatus";
+import { emptyJob, jobOpen } from "./world/agentJob";
 
 /** A fake cast: every walk takes `walk` seconds, a handoff transfers 1.15 s after both have arrived. It keeps
  *  the packet's holder the way the runner does (external → glide → agent, agent → agent, agent → rest). */
@@ -628,6 +629,88 @@ describe("Phase 6B — a hidden browser tab is AWAY: no frames, the truth moves 
     for (let i = 0; i < 400; i++) { a.step(0.05); b.step(0.05); b.w.syncPresence(); } // visibilitychange while visible: a no-op
     expect(b.f.log).toEqual(a.f.log);
     expect(b.f.log.filter((l) => l === "startLive").length).toBe(a.f.log.filter((l) => l === "startLive").length);
+  });
+});
+
+describe("Phase 7 — repeated jobs, revisions and decisions leave nothing stuck", () => {
+  /** the last activity each station was given (a station still "working" after the job is over is stuck) */
+  const lastActivity = (log: readonly string[]) => {
+    const m = new Map<string, string>();
+    for (const l of log) { if (l === "reset") { m.clear(); continue; } const i = l.lastIndexOf(":"); m.set(l.slice(0, i), l.slice(i + 1)); }
+    return m;
+  };
+  const until = (r: ReturnType<typeof rig>, ok: () => boolean, max = 9000) => { for (let i = 0; i < max && !ok(); i++) r.step(0.05); return ok(); };
+  const job = (r: ReturnType<typeof rig>) => r.jobs.job(r.jobs.latest!)!;
+  const settledBack = (r: ReturnType<typeof rig>) => r.w.debug().queue.length === 0 && (r.status().unseen ?? []).length === 0 && r.status().phase === "complete";
+  const assertRest = (r: ReturnType<typeof rig>, label: string) => {
+    for (const [st, a] of lastActivity(r.stationLog)) expect(a, `${label}: ${st}`).not.toBe("working");
+    expect(r.w.debug().queue, label).toEqual([]);
+    expect(r.status().unseen ?? [], label).toEqual([]);
+    r.step(0.05);
+    expect(r.target(), `${label}: the bird is free`).toBeNull();
+  };
+
+  it("job → revision with a declined deploy → approve → a second job, on the production path (no resets)", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const r = rig();
+    r.startBackground();
+    expect(until(r, () => job(r).status === "ready" && settledBack(r))).toBe(true);
+    assertRest(r, "rev 1 delivered");
+    const id = r.jobs.latest!;
+    const rev1 = job(r).artifacts.at(-1)!.revisionId;
+
+    // a revision whose build ends on a guarded deploy — declined: nothing is deployed, back to Revision 1
+    expect(r.source.sendSync({ type: "request-revision", jobId: id, revisionId: rev1, feedback: "Fix the broken link and deploy it" }).ok).toBe(true);
+    expect(until(r, () => job(r).status === "waiting")).toBe(true);
+    const req = job(r).attention!;
+    expect(req.kind).toBe("needs-approval");
+    // waiting on the human: the fake work visibly stops — no station is left working
+    expect(until(r, () => r.w.debug().queue.length === 0, 2000)).toBe(true);
+    for (const [st, a] of lastActivity(r.stationLog)) expect(a, `waiting: ${st}`).not.toBe("working");
+    expect(r.source.sendSync({ type: "respond", jobId: id, requestId: req.requestId, response: { kind: "approval", approved: false } }).ok).toBe(true);
+    expect(until(r, () => job(r).status === "ready" && settledBack(r))).toBe(true);
+    expect(job(r).revision).toBe(1);
+    expect(job(r).halted).toHaveLength(1);
+    assertRest(r, "revision declined");
+
+    // approve what they have: the job is over, and a new one may start
+    expect(r.source.sendSync({ type: "approve", jobId: id, revisionId: rev1 }).ok).toBe(true);
+    expect(until(r, () => job(r).status === "approved", 400)).toBe(true);
+    // … and the world SHOWS it: the approval does not sit unseen (the task chat would hold it back while present)
+    expect(until(r, () => r.w.debug().queue.length === 0, 400), `queue ${JSON.stringify(r.w.debug().queue)} phase ${r.status().phase} bird ${r.w.debug().bird}`).toBe(true);
+    expect(jobOpen(job(r))).toBe(false);
+    assertRest(r, "approved");
+
+    // the SECOND job — through job.created, exactly as production submits it
+    const mark = r.f.log.length;
+    expect(r.source.sendSync({ type: "submit", request: DEMO_COMMAND }).ok).toBe(true);
+    expect(r.jobs.latest).not.toBe(id);
+    expect(until(r, () => job(r).status === "ready" && settledBack(r))).toBe(true);
+    expect(r.w.debug().owners).toEqual(["toucan", "nova", "milo", "pip", "artifact", "toucan", "user"]); // a fresh showing
+    expect(sinceMark(r.f.log, mark)).toMatch(/receive nova/);
+    assertRest(r, "second job delivered");
+    expect(warn).not.toHaveBeenCalled(); // no physical gate ever stalled
+    warn.mockRestore();
+  });
+
+  it("the cast is freed on the world's teardown: roots detached, packets gone, idempotent", async () => {
+    const { MonkeyCastRunner } = await import("./avatar/MonkeyCastRunner");
+    const cast = new MonkeyCastRunner(buildLabV2Graph(), {});
+    const scene = new THREE.Group(); scene.add(cast.root, cast.packetRoot);
+    expect(cast.packets.size).toBeGreaterThan(0);
+    cast.dispose();
+    expect(cast.root.parent).toBeNull();
+    expect(cast.packetRoot.parent).toBeNull();
+    expect(cast.packets.size).toBe(0);
+    expect(() => cast.dispose()).not.toThrow();
+  });
+
+  it("a job that ends HALTED (a declined action before anything was delivered) is closed: it never blocks the next task", () => {
+    const halted = { ...emptyJob("j"), status: "halted" as const };
+    expect(jobOpen(halted)).toBe(false);
+    for (const s of ["created", "accepted", "active", "waiting", "ready"] as const) expect(jobOpen({ ...emptyJob("j"), status: s }), s).toBe(true);
+    for (const s of ["approved", "failed", "halted"] as const) expect(jobOpen({ ...emptyJob("j"), status: s }), s).toBe(false);
+    expect(jobOpen(null)).toBe(false);
   });
 });
 

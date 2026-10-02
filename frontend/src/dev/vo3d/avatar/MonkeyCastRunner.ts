@@ -88,10 +88,33 @@ export class MonkeyCastRunner {
     for (const identity of FOUNDER_IDENTITIES.filter((i) => ids.includes(i.id))) {
       const body = new MonkeyAgentBody(identity);
       await body.load();
+      // LIFECYCLE: the world was torn down while this body was loading — free it rather than adopt it
+      if (this.disposed) { body.dispose(); return; }
       const loco = new MonkeyLocomotion(body, this.graph, personaFor(identity.id).profile, this.graph.nodes[0].id);
       this.agents.set(identity.id, { id: identity.id, body, loco });
       this.root.add(body.root);
     }
+  }
+
+  /** THE WORLD'S TEARDOWN: every body, the pill board and the packets are freed (a body still loading is freed when
+   *  it lands — see load) */
+  private disposed = false;
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    for (const a of this.agents.values()) a.body.dispose();
+    this.agents.clear();
+    this.present.clear();
+    this.pills.dispose();
+    this.packetRoot.traverse((o) => {
+      const m = o as THREE.Mesh;
+      if (!m.isMesh) return;
+      m.geometry.dispose();
+      for (const mat of Array.isArray(m.material) ? m.material : [m.material]) mat.dispose();
+    });
+    this.packets.clear();
+    this.root.removeFromParent();
+    this.packetRoot.removeFromParent();
   }
 
   play(id: string): void {

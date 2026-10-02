@@ -1,4 +1,4 @@
-// vo3d app — THE DELIVERED RESULT, inspectable (AI-workforce demo, `?ailab=v2&aidemo=1`).
+// vo3d app — THE DELIVERED RESULT, inspectable (the AI Workforce Preview; the dev-only example feedback needs `?aidemo=1`).
 //
 // Renders ONE ArtifactResult (world/agentOrchestration) — whatever produced it. Nothing about the job is written
 // here: the title, the stages, the checks and the miniature page all come from the payload, so a real Agent
