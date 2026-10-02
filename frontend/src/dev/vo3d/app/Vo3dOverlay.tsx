@@ -179,6 +179,9 @@ import styles from "./Vo3dOverlay.module.css";
 import demoStyles from "./AiLabDemoChip.module.css";
 import type { AiLabDemoStatus } from "./aiLabDemo";
 import { AiLabResultPreview } from "./AiLabResultPreview";
+import { AiLabTaskChat } from "./AiLabTaskChat";
+import taskChatStyles from "./AiLabTaskChat.module.css";
+import { latestDelivered, nameOf } from "../world/agentJob";
 import { MEETING_ROOMS } from "../rooms/floor2Meeting";
 /** Every Meeting Floor room's meeting id (`mf-<slug>`) — participation in one of these is IN MEETING. */
 const ROOM_MEETING_IDS: ReadonlySet<string> = new Set(MEETING_ROOMS.map((r) => r.meetingId));
@@ -1465,10 +1468,27 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
 
   /** AI-WORKFORCE DEMO (`?aidemo=1`) — the one predefined command and its live status. Null without the flag. */
   const [aiDemo, setAiDemo] = useState<AiLabDemoStatus | null>(null);
-  /** the delivered result's preview is open (closed again by any new run or reset — no result, no preview) */
-  const [resultOpen, setResultOpen] = useState(false);
-  const closeResult = useCallback(() => setResultOpen(false), []);
-  useEffect(() => { if (!aiDemo?.delivered) setResultOpen(false); }, [aiDemo?.delivered]);
+  /** PHASE 5 (V2 Lab) — the job system itself: the job's truth lives in its store, not in this component. The
+   *  thread and the result viewer read the job AS SEEN — its truth minus the records the Lab has not shown yet
+   *  (the presenter's `unseen`), so neither runs ahead of the scene beside it. */
+  const aiJobs = ready ? worldRef.current?.aiDemo?.jobs ?? null : null;
+  const [jobsTick, setJobsTick] = useState(0);
+  useEffect(() => aiJobs?.store.subscribe(() => setJobsTick((t) => t + 1)), [aiJobs]);
+  const aiJobId = aiJobs?.latest ?? null;
+  const aiUnseen = aiDemo?.unseen;
+  const aiJob = useMemo(
+    () => (aiJobs && aiJobId ? aiJobs.store.seen(aiJobId, new Set(aiDemo?.jobId === aiJobId ? aiUnseen ?? [] : [])) : null),
+    // jobsTick: the store's own change signal
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [aiJobs, aiJobId, aiUnseen, aiDemo?.jobId, jobsTick],
+  );
+  const [taskChatOpen, setTaskChatOpen] = useState(false);
+  /** which revision the result viewer is open on (null = closed) */
+  const [resultRev, setResultRev] = useState<string | null>(null);
+  const closeResult = useCallback(() => setResultRev(null), []);
+  useEffect(() => { if (!aiJob) { setResultRev(null); setTaskChatOpen(false); } }, [aiJob]);
+  const aiDelivered = aiJob ? latestDelivered(aiJob) : null;
+  const aiLastLine = aiJob ? [...aiJob.conversation].reverse().find((c) => c.kind === "message") : undefined;
   useEffect(() => {
     const world = worldRef.current;
     if (!ready || !world?.aiDemo) return;
@@ -2265,36 +2285,74 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
           {aiDemo.phase === "running" ? (
             <>
               <div className={demoStyles.status}><span className={demoStyles.dot} />{aiDemo.step}</div>
-              {aiDemo.title && <div className={demoStyles.title}>{aiDemo.title}</div>}
-              {aiDemo.transcript.length > 0 && (
+              {aiDemo.title && <div className={demoStyles.title}>{aiDemo.title}{aiJob && aiJob.revision > 1 ? ` · Revision ${aiJob.revision}` : ""}</div>}
+              {!aiJobs && aiDemo.transcript.length > 0 && (
                 <ol className={demoStyles.transcript} aria-label="Team conversation" aria-live="polite">
                   {aiDemo.transcript.map((l, i) => (
                     <li key={`${i}-${l.who}-${l.text.length}`}><b>{l.who}</b> {l.text}</li>
                   ))}
                 </ol>
               )}
-              <button type="button" className={demoStyles.secondary} onClick={() => worldRef.current?.aiDemo?.reset()}>Reset</button>
             </>
           ) : (
             <>
-              {aiDemo.phase === "complete" && <div className={demoStyles.status}><span className={`${demoStyles.dot} ${demoStyles.done}`} />{aiDemo.step}</div>}
+              {aiDemo.phase === "complete" && <div className={demoStyles.status}><span className={`${demoStyles.dot} ${demoStyles.done}`} />{aiJob?.status === "approved" ? "Approved" : aiDemo.step}</div>}
               {aiDemo.phase === "idle" && aiDemo.step && <div className={demoStyles.status}>{aiDemo.step}</div>}
-              {aiDemo.delivered && aiDemo.result && (
-                <button type="button" className={demoStyles.result} onClick={() => setResultOpen(true)}>
-                  <span className={demoStyles.resultIcon} aria-hidden="true" />
-                  <span className={demoStyles.resultText}><b>View Result</b><span>{aiDemo.result.title}</span></span>
-                </button>
-              )}
-              <button type="button" className={demoStyles.command} onClick={() => worldRef.current?.aiDemo?.start()}>
+            </>
+          )}
+          {/* THE TASK CONVERSATION: one job, one thread — opening or closing it never touches the job */}
+          {aiJob && (
+            <button type="button" className={demoStyles.thread} onClick={() => setTaskChatOpen((o) => !o)} aria-expanded={taskChatOpen} data-testid="ailab-open-thread">
+              <span className={demoStyles.threadHead}><b>Task conversation</b><span>{aiJob.conversation.filter((c) => c.kind === "message").length} messages</span></span>
+              {aiLastLine && aiLastLine.kind === "message" && <span className={demoStyles.threadLine}><b>{nameOf(aiLastLine.from)}</b> {aiLastLine.text}</span>}
+            </button>
+          )}
+          {aiDelivered && (aiDemo.phase !== "idle") && (
+            <button type="button" className={demoStyles.result} onClick={() => setResultRev(aiDelivered.revisionId)} data-testid="ailab-view-result">
+              <span className={demoStyles.resultIcon} aria-hidden="true" />
+              <span className={demoStyles.resultText}><b>View Result</b><span>{aiDelivered.revision > 1 ? `Revision ${aiDelivered.revision} · ` : ""}{aiDelivered.title}</span></span>
+            </button>
+          )}
+          {aiDemo.phase === "running" ? (
+            <button type="button" className={demoStyles.secondary} onClick={() => { setTaskChatOpen(false); setResultRev(null); worldRef.current?.aiDemo?.reset(); }}>Reset</button>
+          ) : (
+            <>
+              <button type="button" className={demoStyles.command} onClick={() => { setTaskChatOpen(false); setResultRev(null); worldRef.current?.aiDemo?.start(); }}>
                 <span className={demoStyles.label}>{aiDemo.phase === "complete" ? "Run again" : "Ask Toucan"}</span>
                 <span className={demoStyles.quote}>“Toucan, handle what Alex asked us to build.”</span>
               </button>
+              {aiJobs && aiDemo.phase === "idle" && worldRef.current?.aiDemo?.reenter && (
+                <button type="button" className={demoStyles.link} onClick={() => { void worldRef.current?.aiDemo?.reenter?.(); }} data-testid="ailab-reenter">
+                  Re-enter a job already in progress
+                </button>
+              )}
+              {aiDemo.phase === "complete" && <button type="button" className={demoStyles.link} onClick={() => { setTaskChatOpen(false); setResultRev(null); worldRef.current?.aiDemo?.reset(); }}>Reset</button>}
             </>
           )}
           <div className={demoStyles.mock}>Demo · mock orchestration</div>
         </div>
       )}
-      {resultOpen && aiDemo?.delivered && aiDemo.result && <AiLabResultPreview result={aiDemo.result} onClose={closeResult} />}
+      {aiJobs && aiJob && taskChatOpen && !overlayToolOpen && (
+        <div className={taskChatStyles.slot}>
+          <AiLabTaskChat
+            job={aiJob}
+            onClose={() => setTaskChatOpen(false)}
+            onSend={(text) => { void aiJobs.message(aiJob.jobId, text); }}
+            onOpenResult={(rev) => setResultRev(rev)}
+            onRespond={(requestId, response) => { void aiJobs.respond(aiJob.jobId, requestId, response); }}
+          />
+        </div>
+      )}
+      {aiJobs && aiJob && resultRev && (
+        <AiLabResultPreview
+          job={aiJob}
+          revisionId={resultRev}
+          onSelect={setResultRev}
+          onClose={closeResult}
+          onApprove={(rev) => { void aiJobs.approve(aiJob.jobId, rev); setResultRev(null); }}
+          onRequestChanges={(rev, feedback) => { void aiJobs.requestChanges(aiJob.jobId, rev, feedback); setResultRev(null); }}
+        />
+      )}
       {/* THE RAIL — V1's minimized conversations, as circular employee avatars stacked above the Toucan
           button. Each one carries its own unread count and its own close, because minimizing and closing
           are different decisions: the bubble RESTORES (the very same toggle the window header's minus

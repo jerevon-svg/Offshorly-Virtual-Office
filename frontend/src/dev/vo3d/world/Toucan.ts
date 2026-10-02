@@ -378,6 +378,20 @@ export class Toucan {
   setLanding(point: { x: number; y: number; z: number } | null): void {
     this.landing = point ? { ...point } : null;
   }
+  /** AI-WORKFORCE RE-ENTRY — be parked on `landing` NOW, summoned to `centre` (the summon centre whose park point
+   *  is the landing): VO reopened on a job whose orchestrator is already in the Lab shows it there, it does not
+   *  replay the flight. Presentation only; the next summon decision finds it already attending. */
+  settleAt(centre: Vec2, landing: { x: number; y: number; z: number }): void {
+    this.summonTarget = { x: centre.x, z: centre.z };
+    this.landing = { ...landing };
+    this.root.position.set(landing.x, landing.y, landing.z);
+    this.legFrom.copy(this.root.position);
+    this.legTo.set(landing.x, landing.z);
+    this.legToY = landing.y;
+    this.legT = 1;
+    this.phase = "attending";
+    this.facePoint = null;
+  }
   /** an ERRAND's pace: a directed long flight (the Lab and back) covers ground this many times faster than a
    *  summon; 1 = V1's own summon timing */
   private errandPace = 1;

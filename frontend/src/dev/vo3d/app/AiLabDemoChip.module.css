@@ -94,3 +94,24 @@
 .mock { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: rgba(36, 31, 48, 0.45); }
 @keyframes pulse { 50% { opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) { .dot, .result { animation: none; } }
+
+/* PHASE 5 — the job's thread, and quiet secondary actions */
+.thread {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid rgba(24, 20, 34, 0.1);
+  border-radius: 10px;
+  background: #fff;
+  color: #241f30;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.thread:hover { border-color: rgba(24, 20, 34, 0.22); }
+.thread:focus-visible, .link:focus-visible { outline: 2px solid #2376e5; outline-offset: 2px; }
+.threadHead { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+.threadHead span { color: rgba(36, 31, 48, 0.5); font-weight: 500; }
+.threadLine { font-size: 12px; color: rgba(36, 31, 48, 0.72); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.link { align-self: flex-start; padding: 0; border: 0; background: none; color: #2376e5; font: 600 12px/1.3 system-ui, sans-serif; cursor: pointer; }

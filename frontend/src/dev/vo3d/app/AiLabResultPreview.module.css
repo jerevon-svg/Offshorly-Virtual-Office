@@ -160,3 +160,22 @@
   .art { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { .backdrop, .card { animation: none; } }
+
+/* PHASE 5 — revisions and the review actions */
+.revBadge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; background: #e3f4ee; color: #1f6e56; }
+.revisions { display: flex; gap: 6px; margin-top: 10px; }
+.revTab { padding: 4px 10px; border-radius: 999px; border: 1px solid rgba(36, 31, 48, 0.16); background: transparent; color: #241f30; font: 600 11.5px/1.2 system-ui, sans-serif; cursor: pointer; }
+.revTabOn { background: #241f30; color: #fdfcfa; border-color: #241f30; }
+.ctaBold { padding: 8px 16px; font-size: 12.5px; box-shadow: 0 6px 16px rgba(255, 107, 90, 0.45); }
+.quoteBox { margin: 0; padding: 8px 10px; border-radius: 10px; background: rgba(36, 31, 48, 0.04); font-size: 12px; color: rgba(36, 31, 48, 0.75); }
+.review { display: flex; gap: 8px; }
+.approve, .changes { flex: 1; padding: 8px 10px; border-radius: 10px; font: 700 12.5px/1.2 system-ui, sans-serif; cursor: pointer; }
+.approve { border: 0; background: #241f30; color: #f2b134; }
+.approve:hover { background: #3a3350; }
+.approve:disabled { opacity: 0.45; cursor: default; }
+.changes { border: 1px solid rgba(36, 31, 48, 0.2); background: #fff; color: #241f30; }
+.approve:focus-visible, .changes:focus-visible, .revTab:focus-visible, .example:focus-visible { outline: 2px solid #2376e5; outline-offset: 2px; }
+.feedback { display: flex; flex-direction: column; gap: 6px; }
+.textarea { resize: vertical; padding: 8px 10px; border-radius: 10px; border: 1px solid rgba(36, 31, 48, 0.18); font: 500 12.5px/1.4 system-ui, sans-serif; color: #241f30; background: #fff; }
+.example { align-self: flex-start; padding: 0; border: 0; background: none; color: #2376e5; font: 600 11.5px/1.2 system-ui, sans-serif; cursor: pointer; }
+.approvedLine { margin: 0; font-size: 12px; font-weight: 600; color: #1f6e56; }

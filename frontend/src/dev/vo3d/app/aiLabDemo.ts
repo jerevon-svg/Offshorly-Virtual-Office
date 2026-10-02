@@ -41,6 +41,10 @@ export type AiLabDemoStatus = {
   result?: ArtifactResult | null;
   /** the deliverable has physically reached the human: the View Result action is offered */
   delivered?: boolean;
+  /** the job this scene is showing (V2 Lab) */
+  jobId?: string | null;
+  /** the job's records not yet shown in the scene (V2 Lab): the thread beside it hides exactly these */
+  unseen?: readonly number[];
 };
 
 export type AiLabDemoDeps = {
@@ -93,7 +97,8 @@ export class AiLabDemo {
   constructor(deps: AiLabDemoDeps) {
     this.deps = deps;
     this.status = { phase: "idle", step: "", source: deps.source.kind, transcript: [] };
-    this.unsub = deps.source.subscribe((e) => this.queue.push({ e, at: this.clock }));
+    // the V1 hall shows spoken lines only: written notes and chat belong to the V2 task conversation
+    this.unsub = deps.source.subscribe(({ event: e }) => { if (e.type !== "message" || e.kind === "speech") this.queue.push({ e, at: this.clock }); });
   }
 
   // ---- the HUD's side ----------------------------------------------------------------------------------
@@ -109,7 +114,7 @@ export class AiLabDemo {
   /** the one demo command */
   start(): void {
     this.reset();
-    this.deps.source.submit(DEMO_COMMAND);
+    void this.deps.source.send({ type: "submit", request: DEMO_COMMAND });
   }
 
   /** stop everything and put the scene back: bird home, agents idle, camera where you were */

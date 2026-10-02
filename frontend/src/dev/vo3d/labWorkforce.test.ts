@@ -2,9 +2,10 @@
 // the data it stands on (stations by role, residents, the routes each physical leg needs on the real graph).
 // These lock the seam: the mock source decides WHEN, the presenter decides HOW — by destination, never by
 // coordinate — and the packet, the stations and the gallery only ever follow the job.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import * as THREE from "three";
 import { MockOrchestrationSource } from "./world/agentOrchestrationMock";
+import { JobClient } from "./world/jobStore";
 import { LabWorkforce } from "./app/labWorkforce";
 import type { MonkeyCastRunner } from "./avatar/MonkeyCastRunner";
 import type { AgentAssignment, AgentExecState } from "./world/monkeyAgentContract";
@@ -14,6 +15,8 @@ import { LAB_RESIDENTS, residentFor } from "./world/labPopulation";
 import { buildLabV2Graph } from "./world/ailabV2";
 import { buildPlan } from "./world/monkeyTraversal";
 import { personaFor } from "./world/monkeyPersona";
+import { DEMO_COMMAND } from "./world/agentOrchestration";
+import type { AiLabDemoStatus } from "./app/aiLabDemo";
 
 /** A fake cast: every walk takes `walk` seconds, a handoff transfers 1.15 s after both have arrived. It keeps
  *  the packet's holder the way the runner does (external → glide → agent, agent → agent, agent → rest). */
@@ -76,19 +79,22 @@ function rig() {
   const bird = new THREE.Vector3(1400, 34, 1200);
   const player = { x: 1400, z: 1200 };
   let target: { x: number; z: number } | null = null, landing: { x: number; y: number; z: number } | null = null;
-  const cam = { restores: 0, follows: 0, frames: 0 };
+  const cam = { restores: 0, follows: 0, frames: 0, delivers: 0 };
+  const source = new MockOrchestrationSource();
+  const jobs = new JobClient(source);
   const w = new LabWorkforce({
-    source: new MockOrchestrationSource(),
+    jobs,
     cast: f.cast,
     lab: { setStationActivity: (id, s) => stationLog.push(`${id}:${s}`), setArtifactSlot: (i, s) => slots.push(`${i}:${s}`), resetLive: () => stationLog.push("reset") },
     toucan: {
       setTarget: (at) => { target = at; }, setFace: () => {}, setLanding: (p) => { landing = p; }, setPace: () => {},
+      settle: (c, l) => { target = c; landing = l; bird.set(l.x, l.y, l.z); birdState = "attending"; },
       state: () => birdState, landed: () => !!landing && bird.distanceTo(new THREE.Vector3(landing.x, landing.y, landing.z)) < 1,
       position: () => bird, carry: () => null,
     },
     player: () => player,
     userCarry: () => null,
-    camera: { follow: () => { cam.follows++; }, frame: () => { cam.frames++; }, restore: () => { cam.restores++; } },
+    camera: { follow: () => { cam.follows++; }, frame: () => { cam.frames++; }, deliver: () => { cam.delivers++; }, restore: () => { cam.restores++; } },
     available: () => true,
   });
   /** the bird flies to wherever it is sent in 3 s (to the perch: it lands; to the player: it parks) */
@@ -100,15 +106,19 @@ function rig() {
       birdState = "approaching"; flying += dt;
       if (flying >= 3) { flying = 0; bird.set(landing ? landing.x : player.x, goal.y, landing ? landing.z : player.z); birdState = "attending"; }
     }
+    jobs.tick(dt);
     w.update(dt);
   };
-  return { w, f, stationLog, slots, cam, step, bird, player, status: () => { let s: { phase: string; step: string; delivered?: boolean; result?: unknown } = { phase: "", step: "" }; w.subscribe((x) => { s = x; })(); return s; } };
+  /** the demo controller's Ask Toucan (world.ts labDemo.start): a command to the job system, nothing to the scene */
+  const start = () => { jobs.reset(); w.reset(); return source.sendSync({ type: "submit", request: DEMO_COMMAND }); };
+  const status = () => { let s: AiLabDemoStatus = { phase: "idle", step: "", source: "mock", transcript: [] }; w.subscribe((x) => { s = x; })(); return s; };
+  return { w, f, jobs, source, stationLog, slots, cam, step, bird, player, start, status };
 }
 
 describe("LabWorkforce — the physical presenter", () => {
   it("runs the job end to end: briefing, three stations, three handoffs, a READY slot, and the bird back with you", () => {
     const r = rig();
-    r.w.start();
+    r.start();
     for (let i = 0; i < 4000 && r.status().phase !== "complete"; i++) r.step(0.05);
     expect(r.status()).toMatchObject({ phase: "complete", step: "Result delivered", delivered: true });
     // the deliverable the HUD shows is the job's own result payload
@@ -142,7 +152,7 @@ describe("LabWorkforce — the physical presenter", () => {
 
   it("never shows Lab work before the bird has landed, and holds the briefing for the team", () => {
     const r = rig();
-    r.w.start();
+    r.start();
     let firstAssignedAt = -1, firstBriefAt = -1;
     for (let i = 0; i < 1200; i++) {
       r.step(0.05);
@@ -155,23 +165,228 @@ describe("LabWorkforce — the physical presenter", () => {
 
   it("resets cleanly mid-job and reruns: everyone home, stations reset, nothing duplicated", () => {
     const r = rig();
-    r.w.start();
+    r.start();
     for (let i = 0; i < 900; i++) r.step(0.05);
     r.f.log.length = 0;
-    r.w.reset();
+    r.jobs.reset(); r.w.reset();
     expect(r.stationLog.at(-1)).toBe("reset");
     expect(r.status()).toMatchObject({ phase: "idle", delivered: false, result: null });
     // everyone back home (a fresh live start), every agent idle
     expect(r.f.log[0]).toBe("startLive");
     expect(["nova", "milo", "pip"].every((id) => r.f.cast.agents.get(id)!.body.exec === "idle")).toBe(true);
     r.f.log.length = 0; r.slots.length = 0;
-    r.w.start();
+    r.start();
     for (let i = 0; i < 4000 && r.status().phase !== "complete"; i++) r.step(0.05);
     expect(r.status().phase).toBe("complete");
     expect(r.f.log.filter((l) => l.startsWith("receive")).length).toBe(1);
     expect(r.f.log.filter((l) => l === "collect toucan" || l === "deliver user")).toEqual(["collect toucan", "deliver user"]);
     expect(r.f.holderNow()).toBe("user");
     expect(r.slots).toEqual(["0:ready"]);
+  });
+});
+
+/** run until the presenter has shown everything and the job waits on the human (or `max` steps) */
+function settle(r: ReturnType<typeof rig>, max = 6000) {
+  for (let i = 0; i < max; i++) {
+    r.step(0.05);
+    const id = r.jobs.latest, j = id ? r.jobs.job(id) : null;
+    if (r.status().phase === "complete" && j && (j.status === "ready" || j.status === "approved") && !r.source.running && (r.status().unseen ?? []).length === 0) return;
+  }
+}
+const sinceMark = (log: string[], mark: number) => log.slice(mark).join("\n");
+
+describe("Phase 5 — the job system and the scene", () => {
+  it("one message record feeds the thread AND the bubble — once each, the same text", () => {
+    const r = rig();
+    r.start();
+    settle(r);
+    const job = r.jobs.job(r.jobs.latest!)!;
+    const msgs = job.conversation.filter((c) => c.kind === "message");
+    // every message is ONE record (ids unique) …
+    expect(new Set(msgs.map((m) => (m as { messageId: string }).messageId)).size).toBe(msgs.length);
+    // … and each spoken line was bubbled exactly once, with the record's own text
+    const spoken = msgs.filter((m) => m.kind === "message" && m.tone === "speech" && m.to !== "user") as { from: string; text: string }[];
+    for (const m of spoken) expect(r.f.log.filter((l) => l === `say ${m.from}: ${m.text}`).length, m.text).toBe(1);
+    expect(msgs.filter((m) => m.kind === "message" && m.text === "Direction's ready. All yours.")).toHaveLength(1);
+    // notes are the thread's only: never a bubble
+    for (const m of msgs.filter((m) => m.kind === "message" && m.tone === "note") as { from: string; text: string }[]) expect(r.f.log).not.toContain(`say ${m.from}: ${m.text}`);
+  });
+
+  it("the thread never runs ahead of the scene while the Lab is shown; once caught up it is the whole truth", () => {
+    const r = rig();
+    r.start();
+    let ahead = false;
+    for (let i = 0; i < 1500; i++) {
+      r.step(0.05);
+      const id = r.jobs.latest!, unseen = new Set(r.status().unseen ?? []);
+      const seen = r.jobs.store.seen(id, unseen)!, truth = r.jobs.job(id)!;
+      if (unseen.size > 0) { ahead = true; expect(seen.conversation.length).toBeLessThanOrEqual(truth.conversation.length); }
+    }
+    expect(ahead).toBe(true); // the scene really did lag (flights, walks) …
+    settle(r);
+    const id = r.jobs.latest!;
+    expect(r.status().unseen).toEqual([]); // … and caught up
+    expect(r.jobs.store.seen(id, new Set())).toEqual(r.jobs.job(id));
+  });
+
+  it("Approve is a job command: the job is approved, nothing new starts", async () => {
+    const r = rig();
+    r.start();
+    settle(r);
+    const id = r.jobs.latest!, rev = r.jobs.job(id)!.artifacts[0].revisionId;
+    const mark = r.f.log.length;
+    expect(await r.jobs.approve(id, rev)).toEqual({ ok: true, jobId: id });
+    settle(r, 400);
+    expect(r.jobs.job(id)).toMatchObject({ status: "approved", approvedRevisionId: rev });
+    expect(r.jobs.job(id)!.artifacts[0]).toMatchObject({ approved: true, delivered: true });
+    expect(sinceMark(r.f.log, mark)).not.toMatch(/exec |go |handoff/);
+    expect(r.status().step).toBe("Approved");
+    // nothing can be approved twice, or revised after approval
+    expect((await r.jobs.approve(id, rev)).ok).toBe(false);
+    expect((await r.jobs.requestChanges(id, rev, "more")).ok).toBe(false);
+  });
+
+  it("Request Changes continues the SAME job: Revision 2 through the routed stages, Revision 1 kept, packet chain continued", async () => {
+    const r = rig();
+    r.start();
+    settle(r);
+    const id = r.jobs.latest!;
+    const r1 = r.jobs.job(id)!.artifacts[0];
+    const r1Copy = structuredClone(r1);
+    const mark = r.f.log.length;
+    expect((await r.jobs.requestChanges(id, r1.revisionId, "The hero feels too corporate. Make it more playful and give the CTA more emphasis.")).ok).toBe(true);
+    settle(r);
+    const job = r.jobs.job(id)!;
+    expect(r.jobs.latest).toBe(id); // the same job, not a new one
+    expect(job.status).toBe("ready");
+    expect(job.artifacts.map((a) => a.revisionId)).toEqual([`${id}-artifact-r1`, `${id}-artifact-r2`]);
+    expect(job.artifacts[0]).toEqual({ ...r1Copy }); // Revision 1 untouched
+    expect(job.artifacts[1]).toMatchObject({ artifactId: r1.artifactId, revision: 2, delivered: true, result: { basedOn: r1.revisionId, source: "mock", deliverable: { ctaStyle: "bold" } } });
+    // the human's feedback is a message in the same thread
+    expect(job.conversation.some((c) => c.kind === "message" && c.from === "user" && c.text.startsWith("The hero feels"))).toBe(true);
+    // physically: no second briefing; the packet goes back to the bird, then through the same team, into slot 2
+    const rev = sinceMark(r.f.log, mark);
+    expect(rev).not.toMatch(/go \w+ BRIEFING/);
+    expect(rev).toContain("go nova DESIGN_01");
+    expect(rev).toContain("go pip ARTIFACT_DOCK_2");
+    expect(r.slots).toEqual(["0:ready", "1:ready"]);
+    expect(r.w.debug().owners).toEqual(["toucan", "nova", "milo", "pip", "artifact", "toucan", "user", "toucan", "nova", "milo", "pip", "artifact", "toucan", "user"]);
+    expect(r.cam.delivers).toBe(2); // every delivery is framed
+  });
+
+  it("a revision can skip stages: copy-only goes to Design alone and Nova docks the result", async () => {
+    const r = rig();
+    r.start();
+    settle(r);
+    const id = r.jobs.latest!;
+    const mark = r.f.log.length;
+    await r.jobs.requestChanges(id, r.jobs.job(id)!.artifacts[0].revisionId, "Fix the typo in the headline copy.");
+    settle(r);
+    const rev = sinceMark(r.f.log, mark);
+    expect(rev).toContain("exec nova:working");
+    expect(rev).not.toMatch(/exec (milo|pip):(assigned|working|reviewing)/);
+    expect(rev).toContain("go nova ARTIFACT_DOCK_2");
+    expect(r.jobs.job(id)!.artifacts[1].result?.stages.map((s) => s.role)).toEqual(["Design"]);
+    expect(r.w.debug().owners.slice(7)).toEqual(["toucan", "nova", "artifact", "toucan", "user"]);
+  });
+
+  it("a worker waiting for the human shows WAITING (no fake work) until answered, then carries on", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const r = rig();
+    r.start();
+    settle(r);
+    const id = r.jobs.latest!;
+    await r.jobs.requestChanges(id, r.jobs.job(id)!.artifacts[0].revisionId, "Make the CTA bolder and deploy it.");
+    let waited = false;
+    for (let i = 0; i < 6000 && !waited; i++) { r.step(0.05); waited = r.jobs.job(id)!.status === "waiting" && (r.status().unseen ?? []).length === 0; }
+    expect(waited).toBe(true);
+    expect(r.f.cast.agents.get("milo")!.body.exec).toBe("awaiting-approval");
+    expect(r.stationLog.filter((x) => x.startsWith("BUILD_01")).at(-1)).toBe("BUILD_01:active");
+    // nothing moves on while it waits
+    const n = r.jobs.store.records(id).length;
+    for (let i = 0; i < 400; i++) r.step(0.05);
+    expect(r.jobs.store.records(id).length).toBe(n);
+    const req = r.jobs.job(id)!.attention!.requestId;
+    await r.jobs.respond(id, req, { kind: "approval", approved: true });
+    settle(r);
+    expect(r.jobs.job(id)).toMatchObject({ status: "ready", attention: null });
+    expect(r.jobs.job(id)!.artifacts).toHaveLength(2);
+    // the request was said at the station (a bubble over Milo), and no physical gate ever had to be forced
+    expect(r.f.log).toContain("say milo: Needs your OK to deploy.");
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("a DECLINED approval: the scene shows the stop the job reports — no deploy, no review, the work handed back to you", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const r = rig();
+    r.start();
+    settle(r);
+    const id = r.jobs.latest!;
+    await r.jobs.requestChanges(id, r.jobs.job(id)!.artifacts[0].revisionId, "Make the CTA bolder and deploy it.");
+    let waited = false;
+    for (let i = 0; i < 6000 && !waited; i++) { r.step(0.05); waited = r.jobs.job(id)!.status === "waiting" && (r.status().unseen ?? []).length === 0; }
+    const mark = r.f.log.length;
+    await r.jobs.respond(id, r.jobs.job(id)!.attention!.requestId, { kind: "approval", approved: false });
+    settle(r);
+    const log = sinceMark(r.f.log, mark);
+    expect(log).toContain("say milo: Okay. Not deploying.");
+    expect(log).toContain("go milo PERCH_SPOT");
+    expect(log).toContain("collect toucan");
+    expect(log).toContain("deliver user");
+    expect(log).not.toMatch(/go pip|ARTIFACT_DOCK|exec pip:/);
+    expect(r.slots).toEqual(["0:ready"]); // no second result ever lit
+    expect(r.w.debug().owners.slice(-3)).toEqual(["milo", "toucan", "user"]);
+    expect(r.status()).toMatchObject({ phase: "complete" });
+    expect(r.jobs.job(id)).toMatchObject({ status: "ready", revision: 1 });
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("RE-ENTRY: a job that ran unwatched is staged in its current state — nothing replayed — and carries on live", async () => {
+    const r = rig();
+    for (let i = 0; i < 5; i++) r.step(0.05); // the cast is ready
+    const id = r.source.seedOffline(DEMO_COMMAND, (e) => e.type === "message" && e.kind === "note" && e.from === "milo");
+    r.f.log.length = 0;
+    await r.jobs.reconnect(id);
+    const job = r.jobs.job(id)!;
+    expect(job.agents).toMatchObject({ nova: { state: "idle" }, milo: { state: "working", role: "Dev" } });
+    expect(job.agents.pip).toBeUndefined();
+    expect(job.owner).toBe("milo");
+    expect(job.conversation.filter((c) => c.kind === "message").length).toBeGreaterThan(8);
+    // staged at once: one live start, Milo at his Build station, nobody walking a replay of the briefing
+    for (let i = 0; i < 3; i++) r.step(0.05);
+    const log = r.f.log.join("\n");
+    expect(r.f.log.filter((l) => l === "startLive")).toHaveLength(1);
+    expect(r.f.cast.isAt("milo", "BUILD_01")).toBe(true);
+    expect(log).not.toMatch(/BRIEFING|receive nova|handoff nova>milo/);
+    expect(r.f.cast.agents.get("milo")!.body.exec).toBe("working");
+    expect(r.stationLog).toContain("BUILD_01:working");
+    expect(r.w.debug()).toMatchObject({ bird: "atLab", owner: "milo", owners: ["milo"] });
+    expect(r.status().unseen).toEqual([]);
+    // … and the rest of the job continues from there, live
+    settle(r);
+    expect(r.jobs.job(id)!.status).toBe("ready");
+    expect(r.w.debug().owners).toEqual(["milo", "pip", "artifact", "toucan", "user"]);
+  });
+
+  it("Reset during a revision clears the job, the thread, revisions and the scene", async () => {
+    const r = rig();
+    r.start();
+    settle(r);
+    const id = r.jobs.latest!;
+    await r.jobs.requestChanges(id, r.jobs.job(id)!.artifacts[0].revisionId, "More playful, please.");
+    for (let i = 0; i < 600; i++) r.step(0.05);
+    expect(r.jobs.job(id)!.status).toBe("active");
+    r.jobs.reset(); r.w.reset();
+    expect(r.jobs.latest).toBeNull();
+    expect(r.jobs.job(id)).toBeNull();
+    expect(r.source.running).toBe(false);
+    expect(r.status()).toMatchObject({ phase: "idle", delivered: false, result: null, jobId: null, unseen: [] });
+    expect(r.w.debug()).toMatchObject({ jobId: null, revision: 1, owner: null, owners: [], slots: [], queue: [] });
+    expect(r.stationLog.at(-1)).toBe("reset");
+    for (let i = 0; i < 400; i++) r.step(0.05);
+    expect(r.jobs.latest).toBeNull(); // nothing comes back
   });
 });
 
@@ -215,6 +430,9 @@ describe("Phase 4 data: stations by role, residents, routes", () => {
     leg("pip", "HANDOFF_MILO_PIP_RECV", "QA_01", true);
     for (const d of ["ARTIFACT_DOCK_1", "ARTIFACT_DOCK_2", "ARTIFACT_DOCK_3"]) leg("pip", "QA_01", d, true);
     leg("pip", "ARTIFACT_DOCK_1", "PERCH_SPOT", false);
+    // revisions: an agent called from home straight to the perch, a copy-only result docked by its designer
+    for (const id of ["nova", "milo", "pip"]) leg(id, LAB_RESIDENTS[id].home, "PERCH_SPOT", false);
+    for (const d of ["ARTIFACT_DOCK_2", "ARTIFACT_DOCK_3"]) leg("nova", "DESIGN_01", d, true);
     // every floor station a future agent could be given is reachable carrying work
     for (const st of STATIONS.filter((s) => s.at.y === 0 && s.state !== "future")) leg("milo", "PERCH_SPOT", st.id, true);
   });

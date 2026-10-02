@@ -14,8 +14,8 @@ import type { ToucanSummonState } from "../../components/OfficeMap/toucanSummon"
 function runMock(seconds: number, step = 0.1): OrchestrationEvent[] {
   const src = new MockOrchestrationSource();
   const out: OrchestrationEvent[] = [];
-  src.subscribe((e) => out.push(e));
-  src.submit(DEMO_COMMAND);
+  src.subscribe((r) => out.push(r.event));
+  src.sendSync({ type: "submit", request: DEMO_COMMAND });
   for (let t = 0; t < seconds; t += step) src.tick(step);
   return out;
 }
@@ -40,7 +40,7 @@ describe("MockOrchestrationSource", () => {
   });
 
   it("speaks the demo lines, acknowledgement first — every one short enough for the overhead bubble", () => {
-    const lines = runMock(120).filter((e) => e.type === "message").map((e) => (e as { from: string; to: string; text: string }));
+    const lines = runMock(120).filter((e) => e.type === "message" && e.kind === "speech").map((e) => (e as { from: string; to: string; text: string }));
     expect(lines[0]).toMatchObject({ from: "toucan", to: "user", text: "Got it. Taking it to the Lab." });
     expect(lines.map((l) => l.from)).toEqual(["toucan", "toucan", "toucan", "toucan", "nova", "nova", "milo", "milo", "pip", "pip", "toucan", "toucan", "toucan"]);
     // the bubble clamps to three lines of ~11 characters (Vo3dOverheads .bubbleText 7.6em): never an ellipsis
@@ -72,8 +72,8 @@ describe("MockOrchestrationSource", () => {
   it("stops dead on cancel", () => {
     const src = new MockOrchestrationSource();
     const out: OrchestrationEvent[] = [];
-    src.subscribe((e) => out.push(e));
-    src.submit(DEMO_COMMAND);
+    src.subscribe((r) => out.push(r.event));
+    src.sendSync({ type: "submit", request: DEMO_COMMAND });
     src.tick(2);
     const n = out.length;
     src.cancel();

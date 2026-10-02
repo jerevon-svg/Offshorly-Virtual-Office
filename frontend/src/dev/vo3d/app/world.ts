@@ -70,6 +70,8 @@ import { MonkeyPlayground } from "../playground/monkeyPlayground";
 import { AiLabDemo, type AiLabDemoStatus } from "./aiLabDemo";
 import { LabWorkforce } from "./labWorkforce";
 import { MockOrchestrationSource } from "../world/agentOrchestrationMock";
+import { JobClient } from "../world/jobStore";
+import { DEMO_COMMAND } from "../world/agentOrchestration";
 import { aiLabStandTest as aiLabStandTestV1, inAiLabZone as inAiLabZoneV1 } from "../world/ailab";
 import { LAB_VARIANT } from "../world/labVariant";
 import { aiLabV2StandTest, inAiLabV2Zone, buildLabV2Graph, LAB2_FLOOR_Y } from "../world/ailabV2";
@@ -527,8 +529,13 @@ export interface Vo3dWorld {
   /** MONKEYAGENT — agent pill rows for the existing overhead layer, and where each one hangs. Null unless
    *  agents exist (`?monkeyagent=1` today). Rows are pushed on every execution-state change. */
   agentPills: { subscribe(fn: (rows: readonly AgentPillRow[]) => void): () => void; anchor(key: string): Vo3dScreenAnchor | null } | null;
-  /** AI-WORKFORCE DEMO (`?aidemo=1`): run / reset the one predefined command, and its HUD status. */
-  aiDemo: { start(): void; reset(): void; subscribe(fn: (s: AiLabDemoStatus) => void): () => void } | null;
+  /** AI-WORKFORCE DEMO (`?aidemo=1`): run / reset the one predefined command, and its HUD status. On the V2 Lab
+   *  it also carries the job system itself (`jobs`: truth + commands — the task conversation and the result UI
+   *  use it, never the scene) and the re-entry proof (`reenter`: a job that ran while VO was "closed"). */
+  aiDemo: {
+    start(): void; reset(): void; subscribe(fn: (s: AiLabDemoStatus) => void): () => void;
+    jobs?: JobClient; reenter?: () => Promise<void>;
+  } | null;
 }
 
 /** PHASE 7G — CALLING THE BIRD.
@@ -4064,6 +4071,17 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     R.camParams = { ...R.camParams, pitch: DEMO_CAM_PITCH };
     R.placeCamera();
   }
+  /** THE DELIVERY BEAT'S CAMERA: the demo's own view, whatever the view became since the job began — a camera
+   *  left in OFFICE or PLAYER (or switched there mid-job) may not contain the user, and the hand-over must be seen.
+   *  The view the user had before the job is still the one restore() hands back. */
+  function demoCamEnsure(): void {
+    if (demoCamReturn === null) { demoCamEnter(); return; }
+    if (playerMode.active || params.cameraMode !== "explore") {
+      setCameraMode("explore");
+      R.camParams = { ...R.camParams, pitch: DEMO_CAM_PITCH };
+      R.placeCamera();
+    }
+  }
   function demoCamStep(dt: number): void {
     if (!demoCamFollow || camTween) return;
     const p = demoCamFollow();
@@ -4106,14 +4124,19 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   const BEAK = new THREE.Vector3(0, -3.2, 2.4);
   const HANDS = new THREE.Vector3(0, 15, 8.5), handM = new THREE.Matrix4();
   const beakM = new THREE.Matrix4();
-  labWorkforceRef.current = aiDemoRequested && labCast && aiLabV2 ? new LabWorkforce({
-    source: new MockOrchestrationSource(),
+  // THE JOB SYSTEM (Phase 5): the mock "backend" behind the one client-side facade. The job's truth lives in the
+  // client's store whether or not the scene, the chat or the result viewer exist; the presenter below is fed by it.
+  const labSource = aiDemoRequested && labCast && aiLabV2 ? new MockOrchestrationSource() : null;
+  const labJobs = labSource ? new JobClient(labSource) : null;
+  labWorkforceRef.current = labJobs && labCast && aiLabV2 ? new LabWorkforce({
+    jobs: labJobs,
     cast: labCast,
     lab: aiLabV2,
     toucan: {
       setTarget: (at) => { toucanDirected = at ? { x: at.x, z: at.z } : null; },
       setFace: (at) => toucan.setFaceOverride(at),
       setLanding: (at) => toucan.setLanding(at),
+      settle: (centre, landing) => { toucanDirected = { x: centre.x, z: centre.z }; toucan.settleAt(centre, landing); },
       setPace: (k) => toucan.setErrandPace(k),
       state: () => toucan.summonState,
       landed: () => toucan.landed,
@@ -4138,6 +4161,12 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
         demoCamFollow = get;
       },
       frame: (rect) => { demoCamEnter(); demoCamFollow = null; easeExploreFrame(rect, 0.9); },
+      deliver: (get, half) => {
+        demoCamEnsure();
+        const p = get();
+        easeExploreFrame({ x: p.x - half.w, z: p.z - half.d, w: half.w * 2, d: half.d * 2 }, 0.9);
+        demoCamFollow = get;
+      },
       restore: () => {
         demoCamFollow = null;
         const back = demoCamReturn;
@@ -4148,6 +4177,27 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     available: () => onGroundFloor(),
   }) : null;
   const labWorkforce = labWorkforceRef.current;
+  /** THE DEMO CONTROLLER: the chip's Ask Toucan / Reset / re-entry. A command goes to the job system; the scene only
+   *  reacts to what comes back. Reset is the demo's own: every job forgotten, the scene back to rest. */
+  const labDemo = labWorkforce && labJobs && labSource ? {
+    start: () => {
+      if (!labWorkforce.available()) { labWorkforce.notice("The AI Lab is on Floor 1"); return; }
+      labJobs.reset(); labWorkforce.reset();
+      void labJobs.submit(DEMO_COMMAND);
+    },
+    reset: () => { labJobs.reset(); labWorkforce.reset(); },
+    subscribe: (fn: (s: AiLabDemoStatus) => void) => labWorkforce.subscribe(fn),
+    jobs: labJobs,
+    /** RE-ENTRY PROOF: a job that ran 35 minutes while nobody watched (Nova finished Design, Milo is building),
+     *  then VO "reconnects": the job is rebuilt from the source's snapshot + history and the Lab is staged in its
+     *  CURRENT state — nothing replayed. The rest of the job then continues live. */
+    reenter: async () => {
+      if (!labWorkforce.available()) { labWorkforce.notice("The AI Lab is on Floor 1"); return; }
+      labJobs.reset(); labWorkforce.reset();
+      const id = labSource.seedOffline(DEMO_COMMAND, (e) => e.type === "message" && e.kind === "note" && e.from === "milo");
+      await labJobs.reconnect(id);
+    },
+  } : null;
   // Every automatic door the building has. Registered by ENTITY ID, so the sound comes from where the door
   // actually is and a door that is rebuilt (the Design Room's, under the geometry sliders) is still found.
   registerDoorSfx(DOOR_ID, () => door);
@@ -5701,7 +5751,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     aiDemo?.update(dt / 1000); // dev-only (`?aidemo=1`): ticks the mock source and the presenter
     monkeyAgents?.update(dt / 1000, R.activeCamera, R.renderer.domElement.clientHeight); // dev-only; a no-op while hidden or absent
     monkeyPlay?.advance(dt / 1000, R.activeCamera, R.renderer.domElement.clientHeight); // dev-only (`?monkeyplay=1`)
-    labWorkforce?.update(dt / 1000); // dev-only (`?ailab=v2&aidemo=1`): ticks the mock source and the physical presenter
+    labJobs?.tick(dt / 1000); // dev-only (`?ailab=v2&aidemo=1`): the mock "backend" — the job runs whatever is on screen
+    labWorkforce?.update(dt / 1000); // ... and the physical presenter catches up with it
     // a live job keeps its clock while the Lab is off screen (nothing is posed); the proof only runs while seen
     if (labCast && (labCast.root.visible || labWorkforce)) {
       labCast.advance(dt / 1000, R.activeCamera, R.renderer.domElement.clientHeight, labCast.root.visible); // dev-only (`?ailab=v2`)
@@ -6640,6 +6691,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     labV2: aiLabV2,
     labCast,
     labWorkforce,
+    labDemo,
     /** dev-only: the floor the body is on, and a RESTORE onto a floor (the Cave's own placement; ground by default) */
     floor: () => currentFloor,
     restoreFloor: (id: Vo3dFloorId = GROUND_FLOOR_ID) => currentFloor === id || !!floorTransition?.restoreOn(id),
@@ -6897,6 +6949,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     monkey?.dispose();
     aiDemo?.reset();
     aiDemo?.dispose();
+    labJobs?.reset(); labJobs?.dispose();
     labWorkforce?.reset();
     labWorkforce?.dispose();
     monkeyAgents?.dispose();
@@ -7264,7 +7317,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     zoneAt: (x, z) => zoneOf({ x, z }),
     toucanAnchor,
     aiDemo: aiDemo ? { start: () => aiDemo.start(), reset: () => aiDemo.reset(), subscribe: (fn: (s: AiLabDemoStatus) => void) => aiDemo.subscribe(fn) }
-      : labWorkforce ? { start: () => labWorkforce.start(), reset: () => labWorkforce.reset(), subscribe: (fn: (s: AiLabDemoStatus) => void) => labWorkforce.subscribe(fn) } : null,
+      : labDemo,
     // the agents' pills ride the employee overhead layer: the V1 hall's cast, or the V2 Lab's
     agentPills: monkeyAgents ? {
       subscribe: (fn: (rows: readonly AgentPillRow[]) => void) => monkeyAgents.subscribe(fn),
