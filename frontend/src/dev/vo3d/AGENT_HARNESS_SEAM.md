@@ -1,6 +1,6 @@
 # Connecting Agent Harness to the AI workforce
 
-This note describes where Agent Harness plugs into the AI workforce (`?ailab=v2&aidemo=1`) and what it must provide. Today a deterministic mock runs every job. Harness is not connected, and its API is not known yet, so this note names no endpoints and assumes no transport.
+This note describes where Agent Harness plugs into the AI workforce (normal VO since Phase 6B, shown as a labelled Preview) and what it must provide. Today a deterministic mock runs every job. Harness is not connected, and its API is not known yet, so this note names no endpoints and assumes no transport.
 
 ## Data flow
 
@@ -82,7 +82,7 @@ Example: the user opens VO at 10:35 for a job they started at 10:00.
    - Every READY revision has its gallery slot.
 3. Live records then continue from `lastSeq + 1`.
 
-To try it in the demo, click **Re-enter a job already in progress** on the chip. Behind it, `MockOrchestrationSource.seedOffline` runs a job unwatched, and then `reconnect` loads it.
+To try it, open VO with `?aidemo=1` and click **Dev · Re-enter a job already in progress**. Behind it, `MockOrchestrationSource.seedOffline` runs a job unwatched, and then `reconnect` loads it.
 
 Closing VO must never cancel a job. That holds once a persistent backend owns execution. Today the mock is in memory, so it stops when the page closes. That is a limit of the mock only.
 
@@ -100,8 +100,8 @@ None of these files should need to change:
 These parts change:
 
 - **Add** `world/agentHarnessSource.ts`, which implements `OrchestrationSource`.
-- **Change** the one line in `app/world.ts` that creates `new MockOrchestrationSource()`. Point it at the adapter, behind a flag, and call `labJobs.reconnect()` once the world is ready.
-- **Remove or isolate** the demo controller's `labDemo.start` / `reset` / `reenter`. These are demo affordances: a real Reset must not delete server jobs.
+- **Change** `createOrchestrationSource()` in `world/orchestrationSource.ts`, the only place that knows the source is the mock. Return the adapter there, behind a flag, with `seedOffline: null`. Then call `labJobs.reconnect()` in `app/world.ts` once the world is ready.
+- The developer tools (`aiWorkforce.dev`: Reset and re-entry, `?aidemo=1` only) are already isolated from the production entry (`aiWorkforce.startSample` / `watch`). A real Reset must never delete server jobs.
 
 ## Known boundaries
 

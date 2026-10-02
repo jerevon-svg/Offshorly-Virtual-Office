@@ -177,11 +177,13 @@ import type { OfficePerson } from "../../../services/office/floorMerge";
 import { openCompanyHub } from "../../../services/hub/companyHubStore";
 import styles from "./Vo3dOverlay.module.css";
 import demoStyles from "./AiLabDemoChip.module.css";
-import type { AiLabDemoStatus } from "./aiLabDemo";
+import type { AiWorkforceStatus } from "./aiWorkforceStatus";
 import { AiLabResultPreview } from "./AiLabResultPreview";
 import { AiLabTaskChat } from "./AiLabTaskChat";
-import taskChatStyles from "./AiLabTaskChat.module.css";
-import { latestDelivered, nameOf } from "../world/agentJob";
+import { TOUCAN_BUSY_LABEL } from "./toucanActivity";
+import { TOUCAN_AVATAR_GLYPH } from "../../../services/chat/toucanSender";
+import { latestDelivered, type ConversationEntry } from "../world/agentJob";
+import { stepFor } from "../world/jobStatusLine";
 import { MEETING_ROOMS } from "../rooms/floor2Meeting";
 /** Every Meeting Floor room's meeting id (`mf-<slug>`) — participation in one of these is IN MEETING. */
 const ROOM_MEETING_IDS: ReadonlySet<string> = new Set(MEETING_ROOMS.map((r) => r.meetingId));
@@ -223,6 +225,13 @@ export interface Vo3dOverlayProps {
 
 /** How long a transient message stays up, ms — V1's own character-menu toast timings. */
 const TOAST_MS = 2400;
+/** PHASE 6B — an AI Workforce task conversation's window key (one per job) */
+const taskWindowKey = (jobId: string): string => `task:${jobId}`;
+/** what raises a task chat head's unread count: the team's and Toucan's messages, a result, a request for you —
+ *  never your own lines, and never the derived status rows */
+function meaningfulTaskEntry(c: ConversationEntry): boolean {
+  return c.kind === "message" ? c.from !== "user" : c.kind === "artifact" || c.kind === "attention";
+}
 
 /** HOW LONG ANY MESSAGE HANGS OVER ITS SENDER'S HEAD, ms. V1's own spatial bubble life, and the ONE
  *  figure for both kinds of bubble — a meeting message and a spatial message are the same thing
@@ -477,7 +486,10 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
    *  focuses it instead of duplicating it. */
   type RemoteWindow =
     | { kind: "dm"; key: string; peerEmail: string; minimized: boolean }
-    | { kind: "group"; key: string; conversationId: string; participantIds: string[]; title: string | null; minimized: boolean };
+    | { kind: "group"; key: string; conversationId: string; participantIds: string[]; title: string | null; minimized: boolean }
+    // PHASE 6B — an AI Workforce task conversation: one job, one window, one chat head (keyed by job, so a future
+    // second job gets its own). Its messages are the job's own records; this entry is only where the window sits.
+    | { kind: "task"; key: string; jobId: string; minimized: boolean };
   const [remoteWindows, setRemoteWindows] = useState<RemoteWindow[]>([]);
   /** At most three expanded windows at a time, oldest minimized first — V1's own cap. */
   const MAX_EXPANDED_REMOTE = 3;
@@ -1458,7 +1470,7 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
   }, [spatialSessions]);
 
   /** MONKEYAGENT — agent pill rows (identity + role · execution state), pushed by the world on every
-   *  execution-state change. Empty unless agents exist (`?monkeyagent=1`). */
+   *  execution-state change (the AI Lab's cast). */
   const [agentRows, setAgentRows] = useState<readonly Vo3dOverhead[]>([]);
   useEffect(() => {
     const world = worldRef.current;
@@ -1466,34 +1478,85 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     return world.agentPills.subscribe((rows) => setAgentRows(rows));
   }, [ready, worldRef]);
 
-  /** AI-WORKFORCE DEMO (`?aidemo=1`) — the one predefined command and its live status. Null without the flag. */
-  const [aiDemo, setAiDemo] = useState<AiLabDemoStatus | null>(null);
-  /** PHASE 5 (V2 Lab) — the job system itself: the job's truth lives in its store, not in this component. The
-   *  thread and the result viewer read the job AS SEEN — its truth minus the records the Lab has not shown yet
-   *  (the presenter's `unseen`), so neither runs ahead of the scene beside it. */
-  const aiJobs = ready ? worldRef.current?.aiDemo?.jobs ?? null : null;
+  /** THE AI WORKFORCE (V2 Lab; normal VO since Phase 6B, a labelled PREVIEW). The job system is the truth. While the
+   *  employee is present the world shows the job live, and the task conversation shows the job AS THE WORLD HAS SHOWN
+   *  IT (the presenter's `unseen` records are held), so chat and world never tell two stories; away, nothing is held
+   *  and the conversation is the truth at once (see jobView). */
+  const aiWorkforce = ready ? worldRef.current?.aiWorkforce ?? null : null;
+  const aiJobs = aiWorkforce?.jobs ?? null;
+  /** the physical presenter's status (its narration while watched, the job's truth otherwise) */
+  const [aiStatus, setAiStatus] = useState<AiWorkforceStatus | null>(null);
+  useEffect(() => aiWorkforce?.subscribe((st) => setAiStatus(st)), [aiWorkforce]);
   const [jobsTick, setJobsTick] = useState(0);
-  useEffect(() => aiJobs?.store.subscribe(() => setJobsTick((t) => t + 1)), [aiJobs]);
-  const aiJobId = aiJobs?.latest ?? null;
-  const aiUnseen = aiDemo?.unseen;
-  const aiJob = useMemo(
-    () => (aiJobs && aiJobId ? aiJobs.store.seen(aiJobId, new Set(aiDemo?.jobId === aiJobId ? aiUnseen ?? [] : [])) : null),
+  // ONE JOB = ONE TASK CONVERSATION: the moment Toucan delegates (a job appears), its own window opens — through the
+  // SAME Global Chat lifecycle as a DM (focusRemote), so it stacks, minimizes to the rail and restores like one.
+  /** every job whose window has already been opened once — kept across re-subscriptions, so a window the employee
+   *  closed is never reopened by a later record of the same job (only a NEW job opens one) */
+  const openedTaskJobs = useRef(new Set<string>());
+  useEffect(() => {
+    if (!aiJobs) return;
+    return aiJobs.store.subscribe((jobId) => {
+      setJobsTick((t) => t + 1);
+      if (!jobId || openedTaskJobs.current.has(jobId)) return;
+      openedTaskJobs.current.add(jobId);
+      focusRemote({ kind: "task", key: taskWindowKey(jobId), jobId, minimized: false });
+    });
+  }, [aiJobs, focusRemote]);
+  /** ONE JOB AS THE EMPLOYEE SEES IT: its truth minus whatever the live world is still about to show (Phase 5's
+   *  rule, now only while the employee is present — the presenter publishes no `unseen` when they are away) */
+  const aiUnseen = aiStatus?.unseen;
+  const aiShownJobId = aiStatus?.jobId ?? null;
+  const jobView = useCallback(
+    (jobId: string) => {
+      if (!aiJobs) return null;
+      return aiShownJobId === jobId && aiUnseen && aiUnseen.length > 0 ? aiJobs.store.seen(jobId, new Set(aiUnseen)) : aiJobs.job(jobId);
+    },
     // jobsTick: the store's own change signal
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [aiJobs, aiJobId, aiUnseen, aiDemo?.jobId, jobsTick],
+    [aiJobs, aiShownJobId, aiUnseen, jobsTick],
   );
-  const [taskChatOpen, setTaskChatOpen] = useState(false);
-  /** which revision the result viewer is open on (null = closed) */
-  const [resultRev, setResultRev] = useState<string | null>(null);
-  const closeResult = useCallback(() => setResultRev(null), []);
-  useEffect(() => { if (!aiJob) { setResultRev(null); setTaskChatOpen(false); } }, [aiJob]);
+  const aiJobId = aiJobs?.latest ?? null;
+  const aiJob = useMemo(() => (aiJobId ? jobView(aiJobId) : null), [aiJobId, jobView]);
+  /** which job + revision the result viewer is open on (null = closed) */
+  const [resultTarget, setResultTarget] = useState<{ jobId: string; revisionId: string } | null>(null);
+  const closeResult = useCallback(() => setResultTarget(null), []);
+  const resultJob = resultTarget ? jobView(resultTarget.jobId) : null;
+  useEffect(() => { if (resultTarget && !resultJob) setResultTarget(null); }, [resultJob, resultTarget]);
   const aiDelivered = aiJob ? latestDelivered(aiJob) : null;
-  const aiLastLine = aiJob ? [...aiJob.conversation].reverse().find((c) => c.kind === "message") : undefined;
+  /** READ STATE, per task conversation: the last record the employee has had in front of them. A visible (open, not
+   *  minimized) task window is read as it fills — so no unread is ever invented for what is on screen. */
+  const [taskRead, setTaskRead] = useState<Readonly<Record<string, number>>>({});
   useEffect(() => {
-    const world = worldRef.current;
-    if (!ready || !world?.aiDemo) return;
-    return world.aiDemo.subscribe((st) => setAiDemo(st));
-  }, [ready, worldRef]);
+    if (!aiJobs) return;
+    setTaskRead((prev) => {
+      let next = prev;
+      for (const w of remoteWindows) {
+        if (w.kind !== "task" || w.minimized) continue;
+        const j = jobView(w.jobId);
+        if (j && (prev[w.jobId] ?? 0) < j.lastSeq) { if (next === prev) next = { ...prev }; next = { ...next, [w.jobId]: j.lastSeq }; }
+      }
+      return next;
+    });
+  }, [aiJobs, remoteWindows, jobView]);
+  const taskUnread = useCallback((jobId: string): number => {
+    const j = jobView(jobId);
+    if (!j) return 0;
+    const read = taskRead[jobId] ?? 0;
+    return j.conversation.filter((c) => c.seq > read && meaningfulTaskEntry(c)).length;
+  }, [jobView, taskRead]);
+  // A dev Reset forgets every job: a window whose job is gone closes with it
+  useEffect(() => {
+    if (!aiJobs) return;
+    setRemoteWindows((prev) => (prev.some((w) => w.kind === "task" && !aiJobs.job(w.jobId)) ? prev.filter((w) => w.kind !== "task" || !!aiJobs.job(w.jobId)) : prev));
+  }, [aiJobs, jobsTick]);
+  /** the status card for a finished job can be put away; it comes back with the next job */
+  const [workforceCardDismissed, setWorkforceCardDismissed] = useState<string | null>(null);
+  const aiJobOpen = !!aiJob && aiJob.status !== "approved" && aiJob.status !== "failed";
+  const startSampleTask = useCallback(() => {
+    if (!aiWorkforce) return;
+    void aiWorkforce.startSample().then((res) => { if (!res.ok) showToast(res.error); });
+  }, [aiWorkforce, showToast]);
+  const openTaskWindow = useCallback((jobId: string) => focusRemote({ kind: "task", key: taskWindowKey(jobId), jobId, minimized: false }), [focusRemote]);
 
   const overheads = useMemo<Vo3dOverhead[]>(() => {
     const drawn = drawnEmails.map((e) => emailKey(e));
@@ -1620,7 +1683,8 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
   // TRUE while >=1 remote DM/group window is open and NOT minimized — V2's `remoteWindows` is the exact
   // twin of V1's `remoteChatWindows`. The SPATIAL window (openChat / openGroupConv) deliberately never
   // counts, in V2 as in V1: standing with somebody is not Global Chat.
-  const selfGlobalChatActive = remoteWindows.some((w) => !w.minimized);
+  // (an AI Workforce task window is not a conversation with a colleague: it never changes what peers see)
+  const selfGlobalChatActive = remoteWindows.some((w) => !w.minimized && w.kind !== "task");
   // Edge-triggered, exactly as V1 does it: the client refcounts per socket, so repeated identical values
   // must not be emitted, and the ref is what makes an unchanged render silent.
   const selfGlobalChatActiveRef = useRef(false);
@@ -1945,6 +2009,13 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     setToucanTyping(false);
   }, [worldRef]);
 
+  /** PHASE 6B — the bird is busy with an AI Workforce job away from you: the panel must not say it is beside you */
+  const [toucanBusy, setToucanBusy] = useState(false);
+  useEffect(() => {
+    const world = worldRef.current;
+    if (!ready || !world?.toucanSummon?.subscribeBusy) return;
+    return world.toucanSummon.subscribeBusy(setToucanBusy);
+  }, [ready, worldRef]);
   /** WHERE THE BIRD IS, pushed by the world on every real change and once on subscribe. */
   useEffect(() => {
     const world = worldRef.current;
@@ -2235,7 +2306,24 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
           subscriptions and its read receipts are all untouched by minimizing. V1's own rule, and the
           reason restoring one is instant rather than a reload. */}
       {remoteWindows.map((w) =>
-        w.kind === "dm" ? (
+        w.kind === "task" ? (() => {
+          // THE TASK CONVERSATION — the same mounted-while-minimized rule: the job carries on whatever the window does
+          const job = jobView(w.jobId);
+          if (!job || !aiJobs) return null;
+          return (
+            <div key={w.key} className={styles.chatSlot} hidden={w.minimized} style={slotStyle(w.key)} data-testid={`vo3d-task-window-${w.jobId}`}>
+              <AiLabTaskChat
+                job={job}
+                minimized={w.minimized}
+                onMinimizeToggle={() => toggleRemote(w.key)}
+                onClose={() => closeRemote(w.key)}
+                onSend={(text) => { void aiJobs.message(job.jobId, text); }}
+                onOpenResult={(rev) => setResultTarget({ jobId: job.jobId, revisionId: rev })}
+                onRespond={(requestId, response) => { void aiJobs.respond(job.jobId, requestId, response); }}
+              />
+            </div>
+          );
+        })() : w.kind === "dm" ? (
           <div key={w.key} className={styles.chatSlot} hidden={w.minimized} style={slotStyle(w.key)}>
             <ConversationView
               peer={peerLayerFor(w.peerEmail)}
@@ -2278,79 +2366,70 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
           </div>
         ),
       )}
-      {/* AI-WORKFORCE DEMO — the predefined Toucan command (`?aidemo=1` only). The job itself comes from
-          the orchestration source; this chip only submits the command and mirrors the presenter's status. */}
-      {aiDemo && !overlayToolOpen && (
-        <div className={demoStyles.chip} role="region" aria-label="Toucan command">
-          {aiDemo.phase === "running" ? (
-            <>
-              <div className={demoStyles.status}><span className={demoStyles.dot} />{aiDemo.step}</div>
-              {aiDemo.title && <div className={demoStyles.title}>{aiDemo.title}{aiJob && aiJob.revision > 1 ? ` · Revision ${aiJob.revision}` : ""}</div>}
-              {!aiJobs && aiDemo.transcript.length > 0 && (
-                <ol className={demoStyles.transcript} aria-label="Team conversation" aria-live="polite">
-                  {aiDemo.transcript.map((l, i) => (
-                    <li key={`${i}-${l.who}-${l.text.length}`}><b>{l.who}</b> {l.text}</li>
-                  ))}
-                </ol>
+      {/* THE AI WORKFORCE STATUS CARD (Phase 6B) — compact job controls, NOT a second conversation: the task's thread
+          is its own VO chat window. The current job, who has it, its revision, WATCH IN LAB and View Result. */}
+      {aiWorkforce && aiJob && !overlayToolOpen && (aiJobOpen || workforceCardDismissed !== aiJob.jobId) && (() => {
+        const watching = !!aiStatus?.watching && aiStatus.jobId === aiJob.jobId;
+        const step = aiStatus?.jobId === aiJob.jobId && aiStatus.step ? aiStatus.step : stepFor(aiJob);
+        const taskWin = remoteWindows.find((w) => w.kind === "task" && w.jobId === aiJob.jobId);
+        const unread = taskUnread(aiJob.jobId);
+        const canWatch = aiJobOpen && aiWorkforce.canWatch();
+        return (
+          <div className={demoStyles.workforce} role="region" aria-label="AI Workforce task" data-testid="ai-workforce-card">
+            <div className={demoStyles.workforceHead}>
+              <span className={demoStyles.kicker}>AI Workforce · Preview</span>
+              {!aiJobOpen && (
+                <button type="button" className={demoStyles.dismiss} onClick={() => setWorkforceCardDismissed(aiJob.jobId)} aria-label="Hide AI Workforce status">×</button>
               )}
-            </>
-          ) : (
-            <>
-              {aiDemo.phase === "complete" && <div className={demoStyles.status}><span className={`${demoStyles.dot} ${demoStyles.done}`} />{aiJob?.status === "approved" ? "Approved" : aiDemo.step}</div>}
-              {aiDemo.phase === "idle" && aiDemo.step && <div className={demoStyles.status}>{aiDemo.step}</div>}
-            </>
-          )}
-          {/* THE TASK CONVERSATION: one job, one thread — opening or closing it never touches the job */}
-          {aiJob && (
-            <button type="button" className={demoStyles.thread} onClick={() => setTaskChatOpen((o) => !o)} aria-expanded={taskChatOpen} data-testid="ailab-open-thread">
-              <span className={demoStyles.threadHead}><b>Task conversation</b><span>{aiJob.conversation.filter((c) => c.kind === "message").length} messages</span></span>
-              {aiLastLine && aiLastLine.kind === "message" && <span className={demoStyles.threadLine}><b>{nameOf(aiLastLine.from)}</b> {aiLastLine.text}</span>}
-            </button>
-          )}
-          {aiDelivered && (aiDemo.phase !== "idle") && (
-            <button type="button" className={demoStyles.result} onClick={() => setResultRev(aiDelivered.revisionId)} data-testid="ailab-view-result">
-              <span className={demoStyles.resultIcon} aria-hidden="true" />
-              <span className={demoStyles.resultText}><b>View Result</b><span>{aiDelivered.revision > 1 ? `Revision ${aiDelivered.revision} · ` : ""}{aiDelivered.title}</span></span>
-            </button>
-          )}
-          {aiDemo.phase === "running" ? (
-            <button type="button" className={demoStyles.secondary} onClick={() => { setTaskChatOpen(false); setResultRev(null); worldRef.current?.aiDemo?.reset(); }}>Reset</button>
-          ) : (
-            <>
-              <button type="button" className={demoStyles.command} onClick={() => { setTaskChatOpen(false); setResultRev(null); worldRef.current?.aiDemo?.start(); }}>
-                <span className={demoStyles.label}>{aiDemo.phase === "complete" ? "Run again" : "Ask Toucan"}</span>
-                <span className={demoStyles.quote}>“Toucan, handle what Alex asked us to build.”</span>
-              </button>
-              {aiJobs && aiDemo.phase === "idle" && worldRef.current?.aiDemo?.reenter && (
-                <button type="button" className={demoStyles.link} onClick={() => { void worldRef.current?.aiDemo?.reenter?.(); }} data-testid="ailab-reenter">
-                  Re-enter a job already in progress
+            </div>
+            <div className={demoStyles.title}>{aiJob.title}{aiJob.revision > 1 ? ` · Revision ${aiJob.revision}` : ""}</div>
+            <div className={demoStyles.status} data-testid="ai-workforce-step">
+              <span className={aiJobOpen && aiJob.status !== "ready" ? demoStyles.dot : `${demoStyles.dot} ${demoStyles.done}`} />{step}
+            </div>
+            <div className={demoStyles.actions}>
+              {aiJobOpen && (watching ? (
+                <button type="button" className={demoStyles.secondary} onClick={() => aiWorkforce.watch(false)} data-testid="ai-workforce-stop-watch">Stop watching</button>
+              ) : (
+                <button type="button" className={demoStyles.watch} disabled={!canWatch} onClick={() => { if (!aiWorkforce.watch(true)) showToast("Watch in Lab is available on Floor 1"); }}
+                  title={canWatch ? "Follow the team in the AI Lab" : "Available on Floor 1, outside the elevator and the Cave"} data-testid="ai-workforce-watch">Watch in Lab</button>
+              ))}
+              {(!taskWin || taskWin.minimized) && (
+                <button type="button" className={demoStyles.link} onClick={() => openTaskWindow(aiJob.jobId)} data-testid="ai-workforce-open-chat">
+                  Conversation{unread > 0 ? ` (${unread})` : ""}
                 </button>
               )}
-              {aiDemo.phase === "complete" && <button type="button" className={demoStyles.link} onClick={() => { setTaskChatOpen(false); setResultRev(null); worldRef.current?.aiDemo?.reset(); }}>Reset</button>}
-            </>
-          )}
-          <div className={demoStyles.mock}>Demo · mock orchestration</div>
-        </div>
+            </div>
+            {aiDelivered && (
+              <button type="button" className={demoStyles.result} onClick={() => setResultTarget({ jobId: aiJob.jobId, revisionId: aiDelivered.revisionId })} data-testid="ailab-view-result">
+                <span className={demoStyles.resultIcon} aria-hidden="true" />
+                <span className={demoStyles.resultText}><b>View Result</b><span>{aiDelivered.revision > 1 ? `Revision ${aiDelivered.revision} · ` : ""}{aiDelivered.title}</span></span>
+              </button>
+            )}
+            {aiWorkforce.dev && (
+              <div className={demoStyles.devRow} data-testid="ai-workforce-dev">
+                <span>Dev</span>
+                <button type="button" className={demoStyles.link} onClick={() => { setResultTarget(null); aiWorkforce.dev?.reset(); }}>Reset</button>
+              </div>
+            )}
+            <div className={demoStyles.mock}>Preview — scripted sample, not real AI work</div>
+          </div>
+        );
+      })()}
+      {/* dev re-entry proof (`?aidemo=1`): a job that ran while VO was "closed", reconnected and staged as it is now */}
+      {aiWorkforce?.dev?.reenter && !aiJobOpen && !overlayToolOpen && (
+        <button type="button" className={demoStyles.devReenter} onClick={() => { void aiWorkforce.dev?.reenter?.(); }} data-testid="ailab-reenter">
+          Dev · Re-enter a job already in progress
+        </button>
       )}
-      {aiJobs && aiJob && taskChatOpen && !overlayToolOpen && (
-        <div className={taskChatStyles.slot}>
-          <AiLabTaskChat
-            job={aiJob}
-            onClose={() => setTaskChatOpen(false)}
-            onSend={(text) => { void aiJobs.message(aiJob.jobId, text); }}
-            onOpenResult={(rev) => setResultRev(rev)}
-            onRespond={(requestId, response) => { void aiJobs.respond(aiJob.jobId, requestId, response); }}
-          />
-        </div>
-      )}
-      {aiJobs && aiJob && resultRev && (
+      {aiJobs && resultJob && resultTarget && (
         <AiLabResultPreview
-          job={aiJob}
-          revisionId={resultRev}
-          onSelect={setResultRev}
+          job={resultJob}
+          revisionId={resultTarget.revisionId}
+          onSelect={(rev) => setResultTarget({ jobId: resultJob.jobId, revisionId: rev })}
           onClose={closeResult}
-          onApprove={(rev) => { void aiJobs.approve(aiJob.jobId, rev); setResultRev(null); }}
-          onRequestChanges={(rev, feedback) => { void aiJobs.requestChanges(aiJob.jobId, rev, feedback); setResultRev(null); }}
+          onApprove={(rev) => { void aiJobs.approve(resultJob.jobId, rev); setResultTarget(null); }}
+          onRequestChanges={(rev, feedback) => { void aiJobs.requestChanges(resultJob.jobId, rev, feedback); setResultTarget(null); openTaskWindow(resultJob.jobId); }}
+          demoTools={!!aiWorkforce?.dev}
         />
       )}
       {/* THE RAIL — V1's minimized conversations, as circular employee avatars stacked above the Toucan
@@ -2363,6 +2442,31 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
       {minimizedRemote.length > 0 && !overlayToolOpen && (
         <div className={styles.bubbleRail} aria-label="Minimized conversations">
           {minimizedRemote.map((w) => {
+            if (w.kind === "task") {
+              // ONE JOB = ONE CHAT HEAD (never one per agent): the job's own identity, a task glyph, its unread count
+              const job = jobView(w.jobId);
+              const title = job?.title || "AI Workforce task";
+              const unread = taskUnread(w.jobId);
+              return (
+                <div key={w.key} className={styles.bubbleWrap}>
+                  <button
+                    type="button"
+                    className={`${styles.bubble} ${styles.taskBubble}`}
+                    onClick={() => toggleRemote(w.key)}
+                    aria-label={`Restore AI Workforce task ${title}${unread > 0 ? `, ${unread} unread` : ""}`}
+                    title={`${title} · AI Workforce task`}
+                    data-testid={`vo3d-chat-bubble-${w.key}`}
+                  >
+                    <span className={styles.taskBubbleGlyph} aria-hidden="true">{TOUCAN_AVATAR_GLYPH}</span>
+                    <span className={styles.taskBubbleTag} aria-hidden="true">Task</span>
+                    {unread > 0 && <span className={styles.bubbleBadge} data-testid="vo3d-task-unread">{unread > 99 ? "99+" : unread}</span>}
+                  </button>
+                  <button type="button" className={styles.bubbleClose} onClick={() => closeRemote(w.key)} aria-label={`Close AI Workforce task ${title}`} title="Close">
+                    ×
+                  </button>
+                </div>
+              );
+            }
             const name =
               w.kind === "dm"
                 ? resolveDisplayName(w.peerEmail)
@@ -2518,7 +2622,24 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
           style={{ ...slotStyle(TOUCAN_WINDOW_KEY), ...(toucanBoardContext ? { zIndex: 1300 } : {}) }}
           data-testid="vo3d-toucan"
         >
+          {/* PHASE 6B — THE AI WORKFORCE ENTRY, beside the personal Toucan conversation (the shared panel is untouched).
+              Toucan delegates; the job gets its OWN task conversation — nothing of the team's work lands in this chat. */}
+          {aiWorkforce && (
+            <div className={demoStyles.delegate} data-testid="ai-workforce-entry">
+              <div className={demoStyles.delegateText}>
+                <span className={demoStyles.kicker}>AI Workforce · Preview</span>
+                <span>{aiJobOpen ? "Toucan has a task with the team — its conversation is open beside this one." : "Toucan can hand work to the AI Lab team."}</span>
+              </div>
+              {aiJobOpen ? (
+                aiJob && <button type="button" className={demoStyles.secondary} onClick={() => openTaskWindow(aiJob.jobId)}>Open task</button>
+              ) : (
+                <button type="button" className={demoStyles.watch} onClick={startSampleTask} data-testid="ai-workforce-start">Preview a sample task</button>
+              )}
+              <span className={demoStyles.mock}>Preview — scripted sample, not real AI work</span>
+            </div>
+          )}
           <ToucanAssistantPanel
+            presenceLabel={toucanBusy ? TOUCAN_BUSY_LABEL : undefined}
             onRelease={releaseToucan}
             onTypingChange={setToucanTyping}
             // A BOOLEAN, and the bird's pill is built from it — see the overhead row below and V1's own

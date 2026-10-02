@@ -16,7 +16,7 @@ import { buildLabV2Graph } from "./world/ailabV2";
 import { buildPlan } from "./world/monkeyTraversal";
 import { personaFor } from "./world/monkeyPersona";
 import { DEMO_COMMAND } from "./world/agentOrchestration";
-import type { AiLabDemoStatus } from "./app/aiLabDemo";
+import type { AiWorkforceStatus } from "./app/aiWorkforceStatus";
 
 /** A fake cast: every walk takes `walk` seconds, a handoff transfers 1.15 s after both have arrived. It keeps
  *  the packet's holder the way the runner does (external → glide → agent, agent → agent, agent → rest). */
@@ -79,7 +79,8 @@ function rig() {
   const bird = new THREE.Vector3(1400, 34, 1200);
   const player = { x: 1400, z: 1200 };
   let target: { x: number; z: number } | null = null, landing: { x: number; y: number; z: number } | null = null;
-  const cam = { restores: 0, follows: 0, frames: 0, delivers: 0 };
+  const cam = { restores: 0, follows: 0, frames: 0, delivers: 0, releases: 0 };
+  const ctx = { available: true, direct: true, present: true };
   const source = new MockOrchestrationSource();
   const jobs = new JobClient(source);
   const w = new LabWorkforce({
@@ -94,8 +95,10 @@ function rig() {
     },
     player: () => player,
     userCarry: () => null,
-    camera: { follow: () => { cam.follows++; }, frame: () => { cam.frames++; }, deliver: () => { cam.delivers++; }, restore: () => { cam.restores++; } },
-    available: () => true,
+    camera: { follow: () => { cam.follows++; }, frame: () => { cam.frames++; }, deliver: () => { cam.delivers++; }, restore: () => { cam.restores++; }, release: () => { cam.releases++; } },
+    available: () => ctx.available,
+    present: () => ctx.present,
+    canDirectCamera: () => ctx.direct,
   });
   /** the bird flies to wherever it is sent in 3 s (to the perch: it lands; to the player: it parks) */
   let flying = 0;
@@ -109,10 +112,14 @@ function rig() {
     jobs.tick(dt);
     w.update(dt);
   };
-  /** the demo controller's Ask Toucan (world.ts labDemo.start): a command to the job system, nothing to the scene */
-  const start = () => { jobs.reset(); w.reset(); return source.sendSync({ type: "submit", request: DEMO_COMMAND }); };
-  const status = () => { let s: AiLabDemoStatus = { phase: "idle", step: "", source: "mock", transcript: [] }; w.subscribe((x) => { s = x; })(); return s; };
-  return { w, f, jobs, source, stationLog, slots, cam, step, bird, player, start, status };
+  /** a command to the job system, nothing to the scene — the employee present, so the world plays it; then WATCH IN
+   *  LAB (camera only — these suites also count the framing the cinematic asks for) */
+  const start = () => { const res = startBackground(); r0(); w.watch(true); return res; };
+  /** one frame, so the presenter takes the employee's presence and stages the new job before a Watch frames it */
+  const r0 = () => { jobs.tick(0); w.update(0); };
+  const startBackground = () => { jobs.reset(); w.reset(); return source.sendSync({ type: "submit", request: DEMO_COMMAND }); };
+  const status = () => { let s: AiWorkforceStatus = { phase: "idle", step: "", source: "mock", transcript: [] }; w.subscribe((x) => { s = x; })(); return s; };
+  return { w, f, jobs, source, stationLog, slots, cam, ctx, step, bird, player, start, startBackground, status, target: () => target, landing: () => landing };
 }
 
 describe("LabWorkforce — the physical presenter", () => {
@@ -255,6 +262,8 @@ describe("Phase 5 — the job system and the scene", () => {
     const r1Copy = structuredClone(r1);
     const mark = r.f.log.length;
     expect((await r.jobs.requestChanges(id, r1.revisionId, "The hero feels too corporate. Make it more playful and give the CTA more emphasis.")).ok).toBe(true);
+    expect(r.w.watching).toBe(false); // the delivered Watch ended; the employee watches the revision again
+    expect(r.w.watch(true)).toBe(true);
     settle(r);
     const job = r.jobs.job(id)!;
     expect(r.jobs.latest).toBe(id); // the same job, not a new one
@@ -269,8 +278,10 @@ describe("Phase 5 — the job system and the scene", () => {
     expect(rev).not.toMatch(/go \w+ BRIEFING/);
     expect(rev).toContain("go nova DESIGN_01");
     expect(rev).toContain("go pip ARTIFACT_DOCK_2");
-    expect(r.slots).toEqual(["0:ready", "1:ready"]);
-    expect(r.w.debug().owners).toEqual(["toucan", "nova", "milo", "pip", "artifact", "toucan", "user", "toucan", "nova", "milo", "pip", "artifact", "toucan", "user"]);
+    // (a re-staging re-lights a slot that is already READY — idempotent; no third result ever appears)
+    expect([...new Set(r.slots)]).toEqual(["0:ready", "1:ready"]);
+    // the watched revision's chain (the Watch began from the staged state, so the history starts there)
+    expect(r.w.debug().owners.slice(-7)).toEqual(["toucan", "nova", "milo", "pip", "artifact", "toucan", "user"]);
     expect(r.cam.delivers).toBe(2); // every delivery is framed
   });
 
@@ -281,13 +292,14 @@ describe("Phase 5 — the job system and the scene", () => {
     const id = r.jobs.latest!;
     const mark = r.f.log.length;
     await r.jobs.requestChanges(id, r.jobs.job(id)!.artifacts[0].revisionId, "Fix the typo in the headline copy.");
+    r.w.watch(true);
     settle(r);
     const rev = sinceMark(r.f.log, mark);
     expect(rev).toContain("exec nova:working");
     expect(rev).not.toMatch(/exec (milo|pip):(assigned|working|reviewing)/);
     expect(rev).toContain("go nova ARTIFACT_DOCK_2");
     expect(r.jobs.job(id)!.artifacts[1].result?.stages.map((s) => s.role)).toEqual(["Design"]);
-    expect(r.w.debug().owners.slice(7)).toEqual(["toucan", "nova", "artifact", "toucan", "user"]);
+    expect(r.w.debug().owners.slice(-5)).toEqual(["toucan", "nova", "artifact", "toucan", "user"]);
   });
 
   it("a worker waiting for the human shows WAITING (no fake work) until answered, then carries on", async () => {
@@ -297,6 +309,7 @@ describe("Phase 5 — the job system and the scene", () => {
     settle(r);
     const id = r.jobs.latest!;
     await r.jobs.requestChanges(id, r.jobs.job(id)!.artifacts[0].revisionId, "Make the CTA bolder and deploy it.");
+    r.w.watch(true);
     let waited = false;
     for (let i = 0; i < 6000 && !waited; i++) { r.step(0.05); waited = r.jobs.job(id)!.status === "waiting" && (r.status().unseen ?? []).length === 0; }
     expect(waited).toBe(true);
@@ -324,6 +337,7 @@ describe("Phase 5 — the job system and the scene", () => {
     settle(r);
     const id = r.jobs.latest!;
     await r.jobs.requestChanges(id, r.jobs.job(id)!.artifacts[0].revisionId, "Make the CTA bolder and deploy it.");
+    r.w.watch(true);
     let waited = false;
     for (let i = 0; i < 6000 && !waited; i++) { r.step(0.05); waited = r.jobs.job(id)!.status === "waiting" && (r.status().unseen ?? []).length === 0; }
     const mark = r.f.log.length;
@@ -335,7 +349,7 @@ describe("Phase 5 — the job system and the scene", () => {
     expect(log).toContain("collect toucan");
     expect(log).toContain("deliver user");
     expect(log).not.toMatch(/go pip|ARTIFACT_DOCK|exec pip:/);
-    expect(r.slots).toEqual(["0:ready"]); // no second result ever lit
+    expect([...new Set(r.slots)]).toEqual(["0:ready"]); // no second result ever lit
     expect(r.w.debug().owners.slice(-3)).toEqual(["milo", "toucan", "user"]);
     expect(r.status()).toMatchObject({ phase: "complete" });
     expect(r.jobs.job(id)).toMatchObject({ status: "ready", revision: 1 });
@@ -349,6 +363,8 @@ describe("Phase 5 — the job system and the scene", () => {
     const id = r.source.seedOffline(DEMO_COMMAND, (e) => e.type === "message" && e.kind === "note" && e.from === "milo");
     r.f.log.length = 0;
     await r.jobs.reconnect(id);
+    // staged in the background on hydration; WATCH IN LAB then stages the same current state for the cinematic
+    expect(r.w.watch(true)).toBe(true);
     const job = r.jobs.job(id)!;
     expect(job.agents).toMatchObject({ nova: { state: "idle" }, milo: { state: "working", role: "Dev" } });
     expect(job.agents.pip).toBeUndefined();
@@ -357,7 +373,7 @@ describe("Phase 5 — the job system and the scene", () => {
     // staged at once: one live start, Milo at his Build station, nobody walking a replay of the briefing
     for (let i = 0; i < 3; i++) r.step(0.05);
     const log = r.f.log.join("\n");
-    expect(r.f.log.filter((l) => l === "startLive")).toHaveLength(1);
+    expect(r.f.log.filter((l) => l === "startLive")).toHaveLength(1); // staged once; a Watch only frames it
     expect(r.f.cast.isAt("milo", "BUILD_01")).toBe(true);
     expect(log).not.toMatch(/BRIEFING|receive nova|handoff nova>milo/);
     expect(r.f.cast.agents.get("milo")!.body.exec).toBe("working");
@@ -387,6 +403,231 @@ describe("Phase 5 — the job system and the scene", () => {
     expect(r.stationLog.at(-1)).toBe("reset");
     for (let i = 0; i < 400; i++) r.step(0.05);
     expect(r.jobs.latest).toBeNull(); // nothing comes back
+  });
+});
+
+describe("Phase 6B — the world does the work; Watch in Lab only points the camera", () => {
+  const camCalls = (r: ReturnType<typeof rig>) => r.cam.follows + r.cam.frames + r.cam.delivers + r.cam.restores + r.cam.releases;
+  const runToReady = (r: ReturnType<typeof rig>) => {
+    for (let i = 0; i < 8000; i++) { r.step(0.05); const j = r.jobs.job(r.jobs.latest!); if (j && j.status === "ready" && !r.source.running && r.status().phase === "complete") return; }
+  };
+
+  it("with no job the bird is free: the presenter never aims it at the employee", () => {
+    const r = rig();
+    for (let i = 0; i < 40; i++) r.step(0.05);
+    expect(r.target()).toBeNull();
+    expect(r.w.watching).toBe(false);
+  });
+
+  it("PRESENT, NOT WATCHING: the whole physical workflow runs in the world — with ZERO camera requests", () => {
+    const r = rig();
+    r.startBackground();
+    runToReady(r);
+    expect(r.jobs.job(r.jobs.latest!)!.status).toBe("ready");
+    const log = r.f.log.join("\n");
+    // the same journey the watched cinematic shows: the briefing, three stations, three handoffs, the delivery
+    for (const id of ["nova", "milo", "pip"]) expect(log).toContain(`go ${id} ${LAB_RESIDENTS[id].brief}`);
+    const order = ["receive nova", "handoff nova>milo", "handoff milo>pip", "go pip ARTIFACT_DOCK_1", "collect toucan", "deliver user"].map((k) => log.indexOf(k));
+    expect(order.every((x) => x >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(r.w.debug().owners).toEqual(["toucan", "nova", "milo", "pip", "artifact", "toucan", "user"]);
+    expect(camCalls(r)).toBe(0);
+    expect(r.status()).toMatchObject({ phase: "complete", delivered: true, watching: false });
+    // the closing line said, the bird is free again
+    r.step(0.05);
+    expect(r.target()).toBeNull();
+  });
+
+  it("PRESENT: the conversation never runs ahead of the world (the world's unseen records are held), and catches up", () => {
+    const r = rig();
+    r.startBackground();
+    let ahead = 0;
+    for (let i = 0; i < 8000; i++) {
+      r.step(0.05);
+      const id = r.jobs.latest!, unseen = r.status().unseen ?? [];
+      const shown = r.jobs.store.seen(id, new Set(unseen))!, truth = r.jobs.job(id)!;
+      if (shown.lastSeq < truth.lastSeq) ahead++;
+      // while the bird has not even left you, the thread does not show the Lab's work
+      if (["toUser", "atUser"].includes(r.w.debug().bird) && r.jobs.job(id)!.revision === 1) expect(shown.conversation.some((c) => c.kind === "message" && c.from === "milo")).toBe(false);
+      if (truth.status === "ready" && !r.source.running && r.status().phase === "complete") break;
+    }
+    expect(ahead).toBeGreaterThan(0); // the truth really was ahead of the world at times …
+    expect(r.status().unseen ?? []).toEqual([]); // … and the world caught up
+  });
+
+  it("AWAY: nothing is held back — the Lab adopts the truth, no queue, no camera", () => {
+    const r = rig();
+    r.ctx.present = false; r.ctx.available = false;
+    r.startBackground();
+    let perched = false;
+    for (let i = 0; i < 8000; i++) {
+      r.step(0.05);
+      const j = r.jobs.job(r.jobs.latest!)!;
+      if (["nova", "milo", "pip"].includes(j.owner ?? "") && r.w.debug().bird === "atLab") perched = true;
+      if (j.status === "ready" && !r.source.running) break;
+    }
+    expect(r.jobs.job(r.jobs.latest!)!.status).toBe("ready");
+    expect(perched).toBe(true);
+    expect(r.w.debug().queue).toEqual([]);
+    expect(r.status().unseen ?? []).toEqual([]);
+    expect(camCalls(r)).toBe(0);
+    expect(r.status()).toMatchObject({ phase: "complete", step: "Result ready for review" });
+    expect(r.target()).toBeNull();
+  });
+
+  it("COMING BACK mid-job: the current state is staged (nothing missed is replayed) and the work carries on live", () => {
+    const r = rig();
+    r.ctx.present = false;
+    r.startBackground();
+    for (let i = 0; i < 6000 && r.jobs.job(r.jobs.latest!)!.agents.milo?.state !== "working"; i++) r.step(0.05);
+    const mark = r.f.log.length;
+    r.ctx.present = true;
+    for (let i = 0; i < 3; i++) r.step(0.05);
+    expect(r.w.live).toBe(true);
+    expect(sinceMark(r.f.log, mark)).not.toMatch(/BRIEFING|receive nova|handoff nova>milo/);
+    expect(r.f.cast.isAt("milo", "BUILD_01")).toBe(true);
+    runToReady(r);
+    expect(r.w.debug().owners).toEqual(["milo", "pip", "artifact", "toucan", "user"]);
+    expect(camCalls(r)).toBe(0);
+  });
+
+  it("WATCH IN LAB starts nothing and changes nothing physical: it only frames, and stopping hands the view back", () => {
+    const a = rig(), b = rig();
+    a.startBackground(); b.startBackground();
+    for (let i = 0; i < 300; i++) { a.step(0.05); b.step(0.05); }
+    expect(b.w.watch(true)).toBe(true);
+    expect(b.cam.follows + b.cam.frames).toBeGreaterThan(0); // framed at once, on the step already under way
+    for (let i = 0; i < 300; i++) { a.step(0.05); b.step(0.05); }
+    expect(b.w.watch(false)).toBe(true);
+    expect(b.cam.restores).toBe(1);
+    runToReady(a); runToReady(b);
+    // the very same physical story, watched or not
+    expect(b.f.log).toEqual(a.f.log);
+    expect(b.w.debug().owners).toEqual(a.w.debug().owners);
+  });
+
+  it("while watching, the camera is never directed when the world says it may not be (an elevator ride)", () => {
+    const r = rig();
+    r.ctx.direct = false;
+    r.start();
+    settle(r);
+    expect(r.jobs.job(r.jobs.latest!)!.status).toBe("ready");
+    expect(r.cam.follows + r.cam.frames + r.cam.delivers + r.cam.restores).toBe(0);
+  });
+
+  it("a Watch cannot start without a running job, or where it cannot be shown; leaving ends it", () => {
+    const r = rig();
+    for (let i = 0; i < 5; i++) r.step(0.05);
+    expect(r.w.watch(true)).toBe(false);
+    r.ctx.available = false; r.ctx.present = false;
+    r.startBackground();
+    r.step(0.05);
+    expect(r.w.watch(true)).toBe(false);
+    r.ctx.available = true; r.ctx.present = true;
+    r.step(0.05);
+    expect(r.w.watch(true)).toBe(true);
+    r.ctx.available = false; r.ctx.present = false;
+    r.step(0.05);
+    expect(r.w.watching).toBe(false);
+    expect(r.cam.releases).toBe(1); // let go, not switched back: the ride/portal already owns the view
+  });
+});
+
+describe("Phase 6B — a hidden browser tab is AWAY: no frames, the truth moves on, the Lab catches up on return", () => {
+  const camCalls = (r: ReturnType<typeof rig>) => r.cam.follows + r.cam.frames + r.cam.delivers + r.cam.restores + r.cam.releases;
+  /** the tab is hidden: the world re-reads presence at once (visibilitychange) — and then NO frame runs */
+  const hide = (r: ReturnType<typeof rig>) => { r.ctx.present = false; r.ctx.available = false; r.w.syncPresence(); };
+  /** …while the execution source's clock keeps real time (the world ticks it by elapsed wall time on return) */
+  const away = (r: ReturnType<typeof rig>, seconds: number) => r.jobs.tick(seconds);
+  const show = (r: ReturnType<typeof rig>) => { r.ctx.present = true; r.ctx.available = true; for (let i = 0; i < 3; i++) r.step(0.05); };
+  const stepUntil = (r: ReturnType<typeof rig>, ok: () => boolean, max = 6000) => { for (let i = 0; i < max && !ok(); i++) r.step(0.05); };
+  const replay = /BRIEFING|receive nova|handoff nova>milo|handoff milo>pip|collect toucan|deliver user/;
+  const shownIsTruth = (r: ReturnType<typeof rig>) => {
+    const id = r.jobs.latest!;
+    return r.jobs.store.seen(id, new Set(r.status().unseen ?? []))!.lastSeq === r.jobs.job(id)!.lastSeq;
+  };
+
+  it("hidden DURING THE DELEGATION FLIGHT, back after the job finished: the flight is not resumed — the finished state is staged", () => {
+    const r = rig();
+    r.startBackground();
+    stepUntil(r, () => r.w.debug().bird === "toLab");
+    expect(r.w.debug().bird).toBe("toLab");
+    hide(r);
+    expect(r.w.live).toBe(false);
+    expect(r.w.debug().queue).toEqual([]);
+    away(r, 300);
+    expect(r.jobs.job(r.jobs.latest!)).toMatchObject({ status: "ready" });
+    expect(shownIsTruth(r)).toBe(true); // the conversation is the whole truth while away
+    const mark = r.f.log.length, cams = camCalls(r);
+    show(r);
+    expect(r.w.live).toBe(true);
+    expect(r.w.debug().bird).not.toBe("toLab"); // no stale delegation flight
+    expect(sinceMark(r.f.log, mark)).not.toMatch(replay); // nothing missed is replayed
+    expect(r.status()).toMatchObject({ phase: "complete", delivered: true });
+    expect(r.w.debug().owner).toBe("user");
+    expect(r.slots).toContain("0:ready");
+    expect(shownIsTruth(r)).toBe(true);
+    expect(camCalls(r)).toBe(cams); // the camera is untouched on return
+    r.step(0.05);
+    expect(r.target()).toBeNull(); // the bird is free, not finishing an old errand
+  });
+
+  it("hidden DURING AGENT WORK, back while the job is still running: the current worker is staged at its station and the job carries on live", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const r = rig();
+    r.startBackground();
+    stepUntil(r, () => r.jobs.job(r.jobs.latest!)!.agents.nova?.state === "working");
+    hide(r);
+    away(r, 3); // the work goes on — the world sees none of it
+    const j = r.jobs.job(r.jobs.latest!)!;
+    expect(j.status).toBe("active");
+    const worker = Object.entries(j.agents).find(([, a]) => a.state === "working" || a.state === "reviewing")?.[0] ?? j.owner!;
+    const mark = r.f.log.length;
+    show(r);
+    expect(sinceMark(r.f.log, mark)).not.toMatch(replay);
+    expect(r.w.debug().owner).toBe(j.owner);
+    const st = { nova: "DESIGN_01", milo: "BUILD_01", pip: "QA_01" }[worker as "nova" | "milo" | "pip"];
+    if (j.agents[worker]?.state === "working" || j.agents[worker]?.state === "reviewing") expect(r.f.cast.isAt(worker, st)).toBe(true);
+    expect(r.w.debug().bird).toBe("atLab");
+    expect(shownIsTruth(r)).toBe(true);
+    // … and from there the work goes on live, to the end, without a single forced gate
+    for (let i = 0; i < 8000; i++) { r.step(0.05); const k = r.jobs.job(r.jobs.latest!)!; if (k.status === "ready" && !r.source.running && r.status().phase === "complete") break; }
+    expect(r.status()).toMatchObject({ phase: "complete", delivered: true });
+    expect(r.w.debug().owners.at(-1)).toBe("user");
+    expect(r.w.debug().owners[0]).toBe(j.owner);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("hidden WHILE WATCHING: the Watch is let go (no camera switch); on return nothing is resumed or stolen; Watch again joins the current state", () => {
+    const r = rig();
+    r.start(); // watching
+    // hidden once the team has the work (the briefing is behind it)
+    stepUntil(r, () => r.w.debug().bird === "atLab" && r.jobs.job(r.jobs.latest!)!.owner === "nova");
+    expect(r.w.watching).toBe(true);
+    const restores = r.cam.restores;
+    hide(r);
+    expect(r.w.watching).toBe(false);
+    expect(r.cam.releases).toBe(1);
+    expect(r.cam.restores).toBe(restores);
+    away(r, 6);
+    const cams = camCalls(r), mark = r.f.log.length;
+    show(r);
+    for (let i = 0; i < 40; i++) r.step(0.05);
+    expect(r.w.watching).toBe(false); // not resumed by itself
+    expect(camCalls(r)).toBe(cams); // the camera stays the employee's
+    expect(r.status().watching).toBe(false);
+    expect(r.w.watch(true)).toBe(true); // chosen again: it frames what is under way NOW
+    expect(camCalls(r)).toBeGreaterThan(cams);
+    expect(sinceMark(r.f.log, mark)).not.toMatch(/BRIEFING|receive nova/);
+  });
+
+  it("a visible tab is untouched by all this: no extra staging, the same choreography as ever", () => {
+    const a = rig(), b = rig();
+    a.startBackground(); b.startBackground();
+    for (let i = 0; i < 400; i++) { a.step(0.05); b.step(0.05); b.w.syncPresence(); } // visibilitychange while visible: a no-op
+    expect(b.f.log).toEqual(a.f.log);
+    expect(b.f.log.filter((l) => l === "startLive").length).toBe(a.f.log.filter((l) => l === "startLive").length);
   });
 });
 

@@ -26,7 +26,7 @@ import { surfaceDeviation } from "./world/meshDeviation";
 import { CHARACTER_ANIM_STATES } from "../../render3d/characterAnimationState";
 import { BON_STANDING_HEIGHT } from "./adapters/v1Avatar";
 import { SELF_OVERHEAD_KEY, TOUCAN_OVERHEAD_KEY } from "./app/Vo3dOverheads";
-import { DEMO_ASSIGNMENTS, DEMO_IDENTITIES } from "./avatar/MonkeyAgentProof";
+import { FOUNDER_IDENTITIES } from "./world/monkeyIdentities";
 import { MONKEY_ACCESSORY_BUILDERS, MONKEY_GARMENT_URLS } from "./avatar/MonkeyAgentBody";
 
 const MASTER = "public/avatars/monkey-base-v1/monkey-master.glb";
@@ -248,21 +248,17 @@ describe("MonkeyAgent garments", () => {
   }
 });
 
-describe("the P3 demo cast — identities are data on the ONE base", () => {
+describe("the founders — identities are data on the ONE base", () => {
   it("is three distinct permanent identities, each using only shipped garments and accessories", () => {
-    expect(DEMO_IDENTITIES.map((i) => i.id)).toEqual(["milo", "nova", "pip"]);
-    expect(new Set(DEMO_IDENTITIES.map((i) => i.look.iris)).size).toBe(3);
-    expect(new Set(DEMO_IDENTITIES.map((i) => i.look.fur ?? -1)).size).toBe(3);
-    for (const i of DEMO_IDENTITIES) {
+    expect(FOUNDER_IDENTITIES.map((i) => i.id)).toEqual(["milo", "nova", "pip"]);
+    expect(new Set(FOUNDER_IDENTITIES.map((i) => i.look.iris)).size).toBe(3);
+    expect(new Set(FOUNDER_IDENTITIES.map((i) => i.look.fur ?? -1)).size).toBe(3);
+    for (const i of FOUNDER_IDENTITIES) {
       for (const g of i.look.garments) expect(MONKEY_GARMENT_URLS).toHaveProperty(g);
       for (const a of i.look.accessories) { expect(MONKEY_ACCESSORY_BUILDERS).toHaveProperty(a.item); expect(MONKEY_SOCKETS).toHaveProperty(a.socket); }
     }
   });
-  it("keeps roles OUT of identity — assignments are separate runtime records", () => {
-    for (const i of DEMO_IDENTITIES) {
-      expect(JSON.stringify(i)).not.toMatch(/dev|design|review/i);
-      expect(DEMO_ASSIGNMENTS[i.id].agentId).toBe(i.id);
-    }
-    expect(Object.values(DEMO_ASSIGNMENTS).map((a) => a.role)).toEqual(["Dev", "Design", "Review"]);
+  it("keeps roles OUT of identity — a role is a job's runtime record, never part of who an agent is", () => {
+    for (const i of FOUNDER_IDENTITIES) expect(JSON.stringify(i)).not.toMatch(/dev|design|review/i);
   });
 });

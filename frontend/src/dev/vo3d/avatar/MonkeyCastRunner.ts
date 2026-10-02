@@ -11,7 +11,7 @@
 // rules, so a live run is exactly a scenario that is being written while it plays.
 import * as THREE from "three";
 import { MonkeyAgentBody } from "./MonkeyAgentBody";
-import { DEMO_IDENTITIES } from "./MonkeyAgentProof";
+import { FOUNDER_IDENTITIES } from "../world/monkeyIdentities";
 import { MonkeyLocomotion, WorkPacket, HANDOFF_S } from "./MonkeyLocomotion";
 import { personaFor } from "../world/monkeyPersona";
 import type { TraversalGraph } from "../world/monkeyTraversal";
@@ -85,7 +85,7 @@ export class MonkeyCastRunner {
   }
 
   async load(ids = ["milo", "nova", "pip"]): Promise<void> {
-    for (const identity of DEMO_IDENTITIES.filter((i) => ids.includes(i.id))) {
+    for (const identity of FOUNDER_IDENTITIES.filter((i) => ids.includes(i.id))) {
       const body = new MonkeyAgentBody(identity);
       await body.load();
       const loco = new MonkeyLocomotion(body, this.graph, personaFor(identity.id).profile, this.graph.nodes[0].id);
@@ -169,7 +169,18 @@ export class MonkeyCastRunner {
   advance(dt: number, camera: THREE.Camera | null = null, viewportH = 900, draw = true): void {
     if (!this.paused) this.t += dt;
     if (draw) this.frame(dt, camera, viewportH);
-    else this.placePackets(false);
+    else { this.track(); this.placePackets(false); }
+  }
+  /** NOT DRAWN, STILL TRUE: every present agent's pose is sampled (pure maths — no skinning, no animation), so a live
+   *  job shown with the Lab off screen (Office View, an indoor view) reads real positions in its physical gates and
+   *  the residence's comings and goings still happen. */
+  private track(): void {
+    const t = this.t;
+    for (const a of this.agents.values()) {
+      if (!this.present.has(a.id)) continue;
+      a.loco.pose(t);
+      if (this.retiring.get(a.id) === a.loco.nodeAt(t) && a.loco.freeAt <= t) { this.retiring.delete(a.id); this.present.delete(a.id); a.body.root.visible = false; this.pills.emit(); }
+    }
   }
 
   // ============================== LIVE MODE ====================================================================

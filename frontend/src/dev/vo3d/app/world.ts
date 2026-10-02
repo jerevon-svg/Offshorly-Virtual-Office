@@ -61,28 +61,25 @@ import { compareToV1, summariseReport, verdictFor } from "../nav/diagnostics";
 import { MEETING_ROOM, MEETING_CHAIR_IDS, DOOR_NORTH_ID as MEETING_DOOR_NORTH_ID, DOOR_SOUTH_ID as MEETING_DOOR_SOUTH_ID, KIOSK_INTERACTION_ID as MEETING_KIOSK_INTERACTION_ID, KIOSK_SCANNER_ID as MEETING_KIOSK_SCANNER_ID, KIOSK_ZONE as MEETING_KIOSK_ZONE } from "../rooms/meeting";
 import { PROJECT_ROOM, CONSOLE_INTERACTION_ID, DOOR_NORTH_ID as PROJECT_DOOR_NORTH_ID, DOOR_SOUTH_ID as PROJECT_DOOR_SOUTH_ID, SOFA_SEAT_IDS, TUB_SEAT_IDS, TV_INTERACTION_ID } from "../rooms/project";
 import { buildExterior } from "../build/exterior";
-import { buildAiLab } from "../build/ailab";
 import { ConstructionCrew } from "../avatar/ConstructionCrew";
 import { AI_LAB_SITE } from "../world/construction";
-import { MonkeyAvatar } from "../avatar/MonkeyAvatar";
-import { MonkeyAgentProof, type AgentPillRow } from "../avatar/MonkeyAgentProof";
+import type { AgentPillRow } from "../avatar/agentPills";
 import { MonkeyPlayground } from "../playground/monkeyPlayground";
-import { AiLabDemo, type AiLabDemoStatus } from "./aiLabDemo";
+import type { AiWorkforceStatus } from "./aiWorkforceStatus";
 import { LabWorkforce } from "./labWorkforce";
-import { MockOrchestrationSource } from "../world/agentOrchestrationMock";
+import { createOrchestrationSource } from "../world/orchestrationSource";
 import { JobClient } from "../world/jobStore";
-import { DEMO_COMMAND } from "../world/agentOrchestration";
-import { aiLabStandTest as aiLabStandTestV1, inAiLabZone as inAiLabZoneV1 } from "../world/ailab";
-import { LAB_VARIANT } from "../world/labVariant";
+import { DEMO_COMMAND, type JobCommandResult } from "../world/agentOrchestration";
+import { LAB_FLAGS } from "../world/labFlags";
+import { LAB_RESIDENTS } from "../world/labPopulation";
 import { aiLabV2StandTest, inAiLabV2Zone, buildLabV2Graph, LAB2_FLOOR_Y } from "../world/ailabV2";
 import { buildAiLabV2 } from "../build/ailabV2";
 import { MonkeyCastRunner } from "../avatar/MonkeyCastRunner";
 import { LAB_V2_SCENARIOS } from "../world/labV2Scenarios";
 import { offsetGraph } from "../world/monkeyTraversal";
-/** THE AI LAB VARIANT (world/labVariant): V2, the treehouse Lab blockout, answers the Lab's stand test only
- *  behind `?ailab=v2`; otherwise these are V1's own functions, unchanged. */
-const aiLabStandTest = LAB_VARIANT === "v2" ? aiLabV2StandTest : aiLabStandTestV1;
-const inAiLabZone = LAB_VARIANT === "v2" ? inAiLabV2Zone : inAiLabZoneV1;
+/** THE AI LAB's walkability: the treehouse Lab's own stand test (the only Lab since Phase 6B.8) */
+const aiLabStandTest = aiLabV2StandTest;
+const inAiLabZone = inAiLabV2Zone;
 import { FACADE_WALL_T, RIDE_PROFILE, SURFACE_SPEED, WALK_PROFILE, exteriorGround, speedClassOf, type TraversalState } from "../world/exteriorGround";
 import { Environment, type EnvPresentation } from "../env/Environment";
 import { createSeasonLayer, type BuiltSeasonLayer } from "../season/SeasonLayer";
@@ -98,6 +95,7 @@ import { PlayerMode, PLAYER_SPRINT_SPEED, PLAYER_WALK_SPEED, SPRINT_MULTIPLIER, 
 import { EnvironmentalAudio } from "../audio/EnvironmentalAudio";
 import { EdgeTracker, Footsteps } from "../audio/events";
 import { CALL_RANGE, Toucan } from "../world/Toucan";
+import { toucanBusyWithJob } from "./toucanActivity";
 import type { ToucanSummonState } from "../../../components/OfficeMap/toucanSummon";
 import { spatial } from "../audio/sfx";
 import { makeStandTest } from "../player/standTest";
@@ -526,15 +524,21 @@ export interface Vo3dWorld {
   /** Where the bird is on screen right now, for the world-space pill over it. Null while it is not being
    *  drawn (its ambient lap is hidden in the OFFICE presentation) or while it is behind the camera. */
   toucanAnchor(): Vo3dScreenAnchor | null;
-  /** MONKEYAGENT — agent pill rows for the existing overhead layer, and where each one hangs. Null unless
-   *  agents exist (`?monkeyagent=1` today). Rows are pushed on every execution-state change. */
+  /** MONKEYAGENT — the AI Lab cast's pill rows for the existing overhead layer, and where each one hangs. Rows are
+   *  pushed on every execution-state change. */
   agentPills: { subscribe(fn: (rows: readonly AgentPillRow[]) => void): () => void; anchor(key: string): Vo3dScreenAnchor | null } | null;
-  /** AI-WORKFORCE DEMO (`?aidemo=1`): run / reset the one predefined command, and its HUD status. On the V2 Lab
-   *  it also carries the job system itself (`jobs`: truth + commands — the task conversation and the result UI
-   *  use it, never the scene) and the re-entry proof (`reenter`: a job that ran while VO was "closed"). */
-  aiDemo: {
-    start(): void; reset(): void; subscribe(fn: (s: AiLabDemoStatus) => void): () => void;
-    jobs?: JobClient; reenter?: () => Promise<void>;
+  /** THE AI WORKFORCE (V2 Lab, normal VO since Phase 6B, a labelled PREVIEW while execution is scripted). `jobs` is
+   *  the job system itself (truth + commands — the task conversation and the result UI use it, never the scene);
+   *  the presenter's status is `subscribe`; `startSample` is the Preview's one sample task (one open job at a time);
+   *  `watch` is WATCH IN LAB. `dev` is the developer/demo tooling, present only with `?aidemo=1`. */
+  aiWorkforce: {
+    jobs: JobClient;
+    subscribe(fn: (s: AiWorkforceStatus) => void): () => void;
+    startSample(): Promise<JobCommandResult>;
+    canStart(): boolean;
+    watch(on: boolean): boolean;
+    canWatch(): boolean;
+    dev: { reset(): void; reenter: (() => Promise<void>) | null } | null;
   } | null;
 }
 
@@ -563,6 +567,8 @@ export interface Vo3dToucanSummon {
   release(): void;
   /** V1's own coarse state. Pushed on every real change and once immediately on subscribe. */
   subscribe(listener: (state: ToucanSummonState) => void): () => void;
+  /** PHASE 6B — is the bird busy with an AI Workforce job away from you (pushed on change, and once on subscribe) */
+  subscribeBusy?(listener: (busy: boolean) => void): () => void;
   state(): ToucanSummonState;
 }
 
@@ -585,7 +591,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // The three things a top-level module body never had to think about, because the document outlived it.
   //
   // `disposed` is the guard EVERY asynchronous continuation checks before it touches anything. The world
-  // fires several fire-and-forget loads (the boss statues, the monkey, Bon's GLB, the toucan) whose
+  // fires several fire-and-forget loads (the boss statues, Bon's GLB, the toucan) whose
   // `.then()` runs whenever the network and the Draco decoder get round to it — which may be long after
   // a mount was thrown away. Without the guard those callbacks add meshes to a dead scene and call
   // invalidateShadows() on a renderer whose context has been force-lost.
@@ -923,14 +929,14 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // so a doll-house building with no drawn roof stays dry inside at every camera angle without the rain ever
   // inspecting the scene. GRADE is where rain lands. Neither is a layout change — both are read from data
   // that already existed.
-  // AI LAB V2 (`?ailab=v2`) is open-air and graded exactly like the campus, so the Environment's five scenery
-  // calls are forwarded to it as well — recorded here, so the Lab (built a moment later) starts in the current
-  // state. Without the flag nothing is wrapped.
+  // THE AI LAB (the treehouse Lab) is open-air and graded exactly like the campus, so the
+  // Environment's five scenery calls are forwarded to it as well — recorded here, so the Lab (built a moment later)
+  // starts in the current state.
   const labEnvCalls = ["applyTint", "applyPracticals", "applyWetness", "applyWind", "windTick"] as const;
   type LabEnvCall = (typeof labEnvCalls)[number];
   const labEnvLast: Partial<Record<LabEnvCall, number>> = {};
   let labEnv: Record<LabEnvCall, (v: number) => void> | null = null;
-  if (LAB_VARIANT === "v2") for (const k of labEnvCalls) { const f = scenery[k].bind(scenery); scenery[k] = (v: number) => { f(v); labEnvLast[k] = v; labEnv?.[k](v); }; }
+  for (const k of labEnvCalls) { const f = scenery[k].bind(scenery); scenery[k] = (v: number) => { f(v); labEnvLast[k] = v; labEnv?.[k](v); }; }
   const env = new Environment(R, scenery, plan.frame, GRADE);
   // THE CONSTRUCTION CREW (avatar/ConstructionCrew): five workers on Bon's rig at the AI Lab's site. Lives
   // under the exterior root, so it follows the shared exterior's anchor and its visibility; its body is
@@ -946,63 +952,36 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // its OWN geometry (world/ailab), composed into the player's stand test beside the office's and the
   // CAVE's — the same off-grid pattern, for the same reason: the V1 lattice does not reach out here.
   // It is hidden in OFFICE mode, which is the one framing whose cost is the product experience.
-  // AI LAB V2 (`?ailab=v2`): the treehouse Lab STRUCTURAL BLOCKOUT replaces the production Lab's geometry
-  // and stand test; everything else about how the Lab sits in the world (anchoring, visibility) is shared.
-  // `?aidemo=1` on the V2 Lab: the LIVE Lab — stations in standby and an empty result gallery until a job's
-  // orchestration reaches them (app/labWorkforce). Without it, the approved Phase 3 presentation.
-  const aiDemoRequested = flags.get("aidemo") === "1";
-  const aiLabV2 = LAB_VARIANT === "v2" ? buildAiLabV2({ live: aiDemoRequested }) : null;
-  const aiLab: { group: THREE.Group; tick(t: number, camera?: THREE.Camera, viewportH?: number): void } = aiLabV2 ?? buildAiLab();
-  if (aiLabV2) { labEnv = aiLabV2.env; for (const k of labEnvCalls) { const v = labEnvLast[k]; if (v !== undefined) labEnv[k](v); } }
+  // THE AI LAB (Phase 6B.8: the treehouse Lab is the only Lab) — the LIVE Lab: stations in standby and an empty
+  // result gallery until a job's orchestration reaches them (app/labWorkforce).
+  const aiLabV2 = buildAiLabV2({ live: true });
+  const aiLab: { group: THREE.Group; tick(t: number, camera?: THREE.Camera, viewportH?: number): void } = aiLabV2;
+  labEnv = aiLabV2.env; for (const k of labEnvCalls) { const v = labEnvLast[k]; if (v !== undefined) labEnv[k](v); }
   R.scene.add(aiLab.group);
   aiLab.group.visible = false;
-  // ... and its real MonkeyAgents, on the V2 traversal graph, running the traversal proof (no orchestration)
+  // ... and its MonkeyAgents — THE PRODUCTION POPULATION (Phase 6B): the founders at home in the treehouse, put to
+  // work by the AI Workforce presenter. The traversal proof only plays on request (`?labscenario=`, dev).
   /** the live workforce presenter, created further down (it needs the toucan); read by the cast's loader */
   const labWorkforceRef: { current: LabWorkforce | null } = { current: null };
-  const labCast = LAB_VARIANT === "v2" ? new MonkeyCastRunner(offsetGraph(buildLabV2Graph(), { x: 0, y: LAB2_FLOOR_Y, z: 0 }), LAB_V2_SCENARIOS) : null;
-  if (labCast) {
+  const labCast: MonkeyCastRunner | null = new MonkeyCastRunner(offsetGraph(buildLabV2Graph(), { x: 0, y: LAB2_FLOOR_Y, z: 0 }), LAB_V2_SCENARIOS);
+  const labScenario = flags.get("labscenario");
+  /** LAZY: the cast's models (≈3.4 MB) are fetched the first time the Lab is actually drawn on Floor 1 (or a job's
+   *  Watch needs them) — never at boot, never for OFFICE framing (see ensureLabCast's callers). */
+  let labCastRequested = false;
+  function ensureLabCast(): void {
+    if (!labCast || labCastRequested) return;
+    labCastRequested = true;
     R.scene.add(labCast.root, labCast.packetRoot);
     void labCast.load().then(() => {
       if (disposed) return;
-      // the live workforce resets the cast to everyone at home; otherwise the traversal proof plays
-      if (labWorkforceRef.current) labWorkforceRef.current.reset();
-      else labCast.play(flags.get("labscenario") ?? "proof");
+      // the founders at home; the proof only on request. The live workforce stages ITSELF on its first frame with a
+      // cast — the founders at home, plus any job already running (resetting it here would drop that job)
+      if (labScenario) labCast.play(labScenario);
+      else if (labWorkforceRef.current) { /* LabWorkforce.update: first ready frame */ }
+      else labCast.startLive(Object.fromEntries(Object.entries(LAB_RESIDENTS).filter(([, r]) => !r.hidden).map(([id, r]) => [id, { node: labCast.nodeOf(r.home) }])));
       labCast.root.visible = aiLab.group.visible && onGroundFloor();
       labCast.packetRoot.visible = onGroundFloor();
-    });
-  }
-  // THE AI LAB MONKEY — DEV-ONLY, OFF BY DEFAULT. `?monkey=1` constructs it; without
-  // the flag nothing is created, nothing is fetched and the render loop's hook is a
-  // null-guarded no-op, so the normal office is byte-for-byte the scene it was.
-  // It follows the Lab's own visibility, so it is hidden in OFFICE framing too.
-  const monkey = flags.get("monkey") === "1" ? new MonkeyAvatar() : null;
-  if (monkey) {
-    R.scene.add(monkey.root);
-    void monkey.load().then((ok) => {
-      if (disposed) return; // LIFECYCLE: the world was unmounted while this was in flight
-      if (ok) {
-        monkey.visible = aiLab.group.visible;
-        // THE TOUCAN AI SCIENTIST OUTFIT — its own flag, so the bare approved
-        // master stays one URL away: `?monkey=1` undressed, `&outfit=1` dressed.
-        if (flags.get("outfit") === "1") monkey.dress();
-        // warm-ivory sclera correction; `?eyes=0` keeps the shipped grey texture
-        if (flags.get("eyes") !== "0") void monkey.warmEyes();
-        R.invalidateShadows();
-      }
-    });
-  }
-  // MONKEYAGENT DEMO CAST — DEV-ONLY, OFF BY DEFAULT. `?monkeyagent=1` builds MILO, NOVA and PIP on the
-  // one production base (MonkeyAgent_Base_V1), each with a pill on the existing overhead layer. Same
-  // visibility rule as the reference monkey; absent without the flag.
-  // `?aidemo=1` (the Wednesday AI-workforce demo) needs the cast too, so it implies `?monkeyagent=1`.
-  // (the V1 demo cast and the AI-workforce presenter are V1-Lab features: off while the V2 blockout is built)
-  const aiDemoFlag = aiDemoRequested && LAB_VARIANT !== "v2";
-  const monkeyAgents = (flags.get("monkeyagent") === "1" && LAB_VARIANT !== "v2") || aiDemoFlag ? new MonkeyAgentProof() : null;
-  if (monkeyAgents) {
-    R.scene.add(monkeyAgents.root);
-    void monkeyAgents.load().then((ok) => {
-      if (disposed || !ok) return;
-      monkeyAgents.visible = aiLab.group.visible && onGroundFloor();
+      R.invalidateShadows();
     });
   }
   // MONKEYAGENT TRAVERSAL PLAYGROUND — DEV-ONLY, OFF BY DEFAULT, TEMPORARY. `?monkeyplay=1` drops the
@@ -3388,9 +3367,6 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     applyWorldVisibility();
     anchorExterior();
     aiLab.group.visible = labWanted(params.cameraMode);
-    // the dev-only monkey walks the Lab in ground-floor world coordinates; it stays downstairs
-    if (monkey) monkey.visible = aiLab.group.visible && onGroundFloor();
-    if (monkeyAgents) monkeyAgents.visible = aiLab.group.visible && onGroundFloor();
     if (labCast) { labCast.root.visible = aiLab.group.visible && onGroundFloor(); labCast.packetRoot.visible = onGroundFloor(); }
     if (env.setPresentation(wantedPresentation(params.cameraMode))) R.invalidateShadows();
     // OFFICE is a bounded viewport over ONE plate; the fence moves with the floor being looked at, so an
@@ -4030,8 +4006,27 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   let toucanCalled = false;
   let toucanReported: ToucanSummonState = "roaming";
   const toucanListeners = new Set<(state: ToucanSummonState) => void>();
+  /** AI WORKFORCE — a summon centre the workforce presenter aims the bird at (you, then the AI Lab). When set it
+   *  outranks the player's own call; null hands the bird straight back to that call or its lap. */
+  let toucanDirected: Vec2 | null = null;
+  /** PHASE 6B — THE BIRD IS BUSY WITH A JOB somewhere that is not beside you (the Lab's perch, a result dock). */
+  const toucanBusyElsewhere = (): boolean =>
+    toucanDirected !== null && Math.hypot(toucanDirected.x - avatar.position.x, toucanDirected.z - avatar.position.z) > 200;
+  /** WHAT THE HOST IS TOLD. Calling a bird that is busy with an AI Workforce job is answered AT ONCE — the assistant
+   *  opens and stays usable — and the bird is NOT pulled off its job (its directed flight keeps outranking the
+   *  call). The conversation never needed the bird beside you; only the summon ceremony did. */
+  const reportedToucanState = (): ToucanSummonState => (toucanCalled && toucanBusyElsewhere() ? "attending" : toucan.summonState);
+  /** WHAT THE PANEL MAY SAY: busy with a job (at the Lab, or still on its way back) is not "beside you" */
+  const toucanBusyNow = (): boolean => {
+    const b = toucan.worldPosition;
+    return toucanBusyWithJob(toucanDirected, { x: avatar.position.x, z: avatar.position.z }, { x: b.x, z: b.z });
+  };
+  let toucanBusyReported = false;
+  const toucanBusyListeners = new Set<(busy: boolean) => void>();
   function publishToucanState(): void {
-    const next = toucan.summonState;
+    const busy = toucanBusyNow();
+    if (busy !== toucanBusyReported) { toucanBusyReported = busy; for (const l of toucanBusyListeners) l(busy); }
+    const next = reportedToucanState();
     if (next === toucanReported) return;
     toucanReported = next;
     for (const listener of toucanListeners) listener(next);
@@ -4040,23 +4035,16 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     toucanCalled = true;
     // Told at once rather than on the next frame, so a click that lands on an already-parked bird
     // re-reports `attending` immediately and the panel opens from the gesture that asked for it.
-    toucan.setSummonTarget({ x: avatar.position.x, z: avatar.position.z });
+    toucan.setSummonTarget(toucanDirected ?? { x: avatar.position.x, z: avatar.position.z });
     publishToucanState();
   }
   function releaseToucan(): void {
     toucanCalled = false;
     toucan.setSummonTarget(null);
   }
-  /** AI-WORKFORCE DEMO — a summon centre the demo presenter aims the bird at (you, then the AI Lab). When
-   *  set it outranks the player's own call; null hands the bird straight back to that call or its lap. */
-  let toucanDirected: Vec2 | null = null;
 
-  // ---- THE AI-WORKFORCE DEMO (`?aidemo=1`) -----------------------------------------------------------
-  // The MOCK orchestration source (world/agentOrchestrationMock — the only place a timer decides
-  // anything) feeds the presenter (app/aiLabDemo), which drives what already exists: the bird's summon
-  // flight, the cast's external state API, the overhead bubbles and the explore camera. Absent without
-  // the flag, so production VO is untouched.
-  /** THE DEMO CAMERA: follow the bird in 3D EXPLORE, frame the team, then hand back the view you had. */
+  // ---- THE AI WORKFORCE's CAMERA (WATCH IN LAB only — app/labWorkforce never directs it otherwise) ----------
+  /** follow the bird in 3D EXPLORE, frame the team, then hand back the view you had */
   let demoCamFollow: (() => Vec2) | null = null;
   let demoCamReturn: CameraModeId | null = null;
   const DEMO_FOLLOW_HALF = { w: 260, d: 170 };
@@ -4091,43 +4079,27 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     R.controls.target.x += dx; R.controls.target.z += dz;
     R.camera.position.x += dx; R.camera.position.z += dz;
   }
-  const aiDemo = aiDemoFlag && monkeyAgents ? new AiLabDemo({
-    source: new MockOrchestrationSource(),
-    cast: monkeyAgents,
-    toucan: {
-      setTarget: (at) => { toucanDirected = at ? { x: at.x, z: at.z } : null; },
-      setFace: (at) => toucan.setFaceOverride(at),
-      state: () => toucan.summonState,
-      position: () => toucan.worldPosition,
-    },
-    player: () => ({ x: avatar.position.x, z: avatar.position.z }),
-    camera: {
-      follow: (get) => {
-        demoCamEnter();
-        const p = get();
-        easeExploreFrame({ x: p.x - DEMO_FOLLOW_HALF.w, z: p.z - DEMO_FOLLOW_HALF.d, w: DEMO_FOLLOW_HALF.w * 2, d: DEMO_FOLLOW_HALF.d * 2 }, 0.9);
-        demoCamFollow = get;
-      },
-      frame: (rect) => { demoCamEnter(); demoCamFollow = null; easeExploreFrame(rect, 0.9); },
-      restore: () => {
-        demoCamFollow = null;
-        const back = demoCamReturn;
-        demoCamReturn = null;
-        if (back && (back !== params.cameraMode || (back === "player") !== playerMode.active)) setCameraMode(back);
-      },
-    },
-  }) : null;
-  // ---- PHASE 4: THE PHYSICAL AI WORKFORCE (`?ailab=v2&aidemo=1`) -------------------------------------
-  // The same mock source and the same toucan / camera seams as the V1 hall's presenter, driving the V2 Lab:
+  // ---- THE AI WORKFORCE (Phase 4/5; normal VO since Phase 6B, as a labelled PREVIEW) ----------------------
+  // The toucan / camera seams driving the Lab:
   // the bird lands on the briefing perch, the cast walks the treehouse graph, stations and the result gallery
   // follow the job. The bird carries the job's packet from its beak (the same body frame it flies in).
   const BEAK = new THREE.Vector3(0, -3.2, 2.4);
   const HANDS = new THREE.Vector3(0, 15, 8.5), handM = new THREE.Matrix4();
   const beakM = new THREE.Matrix4();
-  // THE JOB SYSTEM (Phase 5): the mock "backend" behind the one client-side facade. The job's truth lives in the
+  // THE JOB SYSTEM (Phase 5): the execution source behind the one client-side facade. The job's truth lives in the
   // client's store whether or not the scene, the chat or the result viewer exist; the presenter below is fed by it.
-  const labSource = aiDemoRequested && labCast && aiLabV2 ? new MockOrchestrationSource() : null;
-  const labJobs = labSource ? new JobClient(labSource) : null;
+  // world/orchestrationSource is the ONLY place that knows the source is the scripted mock (Harness swaps in there).
+  const labSource = labCast ? createOrchestrationSource() : null;
+  const labJobs = labSource ? new JobClient(labSource.source) : null;
+  /** A HIDDEN TAB IS AWAY: the browser stops drawing it, so nothing physical can be shown in real time there */
+  const tabVisible = (): boolean => typeof document === "undefined" || document.visibilityState !== "hidden";
+  /** PHASE 6B — WHERE THE JOB CAN BE SHOWN: a visible tab, Floor 1, not riding the elevator, not in (or passing through) the Cave.
+   *  There the world choreographs the job live and WATCH IN LAB (camera only) is offered; leaving ends a Watch and the
+   *  Lab adopts the job's truth until the employee is back. */
+  const watchContextOk = (): boolean =>
+    tabVisible() && onGroundFloor() && !(floorTransition?.busy ?? false) && pendingFloor === null && !(caveTransition?.busy ?? false) && !(caveTransition?.inside ?? false);
+  /** ... and the camera is never directed while a floor ride or a Cave transition owns it */
+  const workforceMayDirectCamera = (): boolean => !(floorTransition?.busy ?? false) && !(caveTransition?.busy ?? false);
   labWorkforceRef.current = labJobs && labCast && aiLabV2 ? new LabWorkforce({
     jobs: labJobs,
     cast: labCast,
@@ -4173,30 +4145,51 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
         demoCamReturn = null;
         if (back && (back !== params.cameraMode || (back === "player") !== playerMode.active)) setCameraMode(back);
       },
+      // the view stays exactly as it is now (the employee, or a floor ride, already chose it)
+      release: () => { demoCamFollow = null; demoCamReturn = null; },
     },
-    available: () => onGroundFloor(),
+    available: watchContextOk,
+    // PRESENT is the same place: there the world choreographs the job live (whatever the camera); away, it adopts
+    present: watchContextOk,
+    canDirectCamera: workforceMayDirectCamera,
   }) : null;
   const labWorkforce = labWorkforceRef.current;
-  /** THE DEMO CONTROLLER: the chip's Ask Toucan / Reset / re-entry. A command goes to the job system; the scene only
-   *  reacts to what comes back. Reset is the demo's own: every job forgotten, the scene back to rest. */
-  const labDemo = labWorkforce && labJobs && labSource ? {
-    start: () => {
-      if (!labWorkforce.available()) { labWorkforce.notice("The AI Lab is on Floor 1"); return; }
-      labJobs.reset(); labWorkforce.reset();
-      void labJobs.submit(DEMO_COMMAND);
-    },
-    reset: () => { labJobs.reset(); labWorkforce.reset(); },
-    subscribe: (fn: (s: AiLabDemoStatus) => void) => labWorkforce.subscribe(fn),
+  /** a job the employee still has a say in (running, waiting on them, or delivered and awaiting review) */
+  const jobOpen = (id: string | null): boolean => {
+    const j = id && labJobs ? labJobs.job(id) : null;
+    return !!j && j.status !== "approved" && j.status !== "failed";
+  };
+  /** THE PRODUCTION ENTRY (Phase 6B): the Preview's one scripted sample task. It runs in the BACKGROUND wherever the
+   *  employee is — nothing about starting it moves the camera. ONE open job at a time: the physical presenter shows
+   *  one job (the job system itself keeps every job and its history). */
+  const aiWorkforce = labWorkforce && labJobs ? {
     jobs: labJobs,
-    /** RE-ENTRY PROOF: a job that ran 35 minutes while nobody watched (Nova finished Design, Milo is building),
-     *  then VO "reconnects": the job is rebuilt from the source's snapshot + history and the Lab is staged in its
-     *  CURRENT state — nothing replayed. The rest of the job then continues live. */
-    reenter: async () => {
-      if (!labWorkforce.available()) { labWorkforce.notice("The AI Lab is on Floor 1"); return; }
-      labJobs.reset(); labWorkforce.reset();
-      const id = labSource.seedOffline(DEMO_COMMAND, (e) => e.type === "message" && e.kind === "note" && e.from === "milo");
-      await labJobs.reconnect(id);
+    subscribe: (fn: (s: AiWorkforceStatus) => void) => labWorkforce.subscribe(fn),
+    startSample: async (): Promise<JobCommandResult> => {
+      if (jobOpen(labJobs.latest)) return { ok: false, error: "Finish the current AI Workforce task first" };
+      ensureLabCast();
+      return labJobs.submit(DEMO_COMMAND);
     },
+    canStart: () => !jobOpen(labJobs.latest),
+    /** WATCH IN LAB: only by the employee's choice, only where it can be shown */
+    watch: (on: boolean): boolean => {
+      if (on) { ensureLabCast(); if (!watchContextOk()) return false; }
+      return labWorkforce.watch(on);
+    },
+    canWatch: () => watchContextOk() && labWorkforce.watchable,
+  } : null;
+  /** DEVELOPER/DEMO TOOLS (`?aidemo=1` only): Reset forgets every job (a real Reset must never delete server jobs);
+   *  re-entry runs a job unwatched, then reconnects to it — the Harness reconnect path, proven on the mock. */
+  const labDemo = aiWorkforce && labJobs && labWorkforce && labSource && LAB_FLAGS.demoTools ? {
+    reset: () => { labWorkforce.watch(false); labJobs.reset(); labWorkforce.reset(); },
+    reenter: labSource.seedOffline ? async () => {
+      const seed = labSource.seedOffline;
+      if (!seed) return;
+      labWorkforce.watch(false); labJobs.reset(); labWorkforce.reset();
+      ensureLabCast();
+      const id = seed(DEMO_COMMAND, (e) => e.type === "message" && e.kind === "note" && e.from === "milo");
+      await labJobs.reconnect(id);
+    } : null,
   } : null;
   // Every automatic door the building has. Registered by ENTITY ID, so the sound comes from where the door
   // actually is and a door that is rebuilt (the Design Room's, under the geometry sliders) is still found.
@@ -4750,10 +4743,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // would teleport a player mid-stride. Same rule as the click-to-walk path above.
       selfMovedByUser = true;
       // The Lab is part of the ONE shared exterior (see anchorExterior): drawn wherever the campus is,
-      // which upstairs means one storey below the windows. The dev monkey stays on the ground floor.
+      // which upstairs means one storey below the windows. The cast stays on the ground floor.
       aiLab.group.visible = labWanted("player");
-      if (monkey) monkey.visible = aiLab.group.visible && onGroundFloor();
-    if (monkeyAgents) monkeyAgents.visible = aiLab.group.visible && onGroundFloor();
     if (labCast) { labCast.root.visible = aiLab.group.visible && onGroundFloor(); labCast.packetRoot.visible = onGroundFloor(); }
       if (env.setPresentation(wantedPresentation("player"))) R.invalidateShadows();
       R.invalidateShadows();
@@ -4767,8 +4758,6 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // projectObject, SSAO's normal pass and the shadow pass in one boolean, so the default experience
     // pays nothing at all for it. EXPLORE is where it is meant to be discovered.
     aiLab.group.visible = labWanted(m);
-    if (monkey) monkey.visible = aiLab.group.visible && onGroundFloor();
-    if (monkeyAgents) monkeyAgents.visible = aiLab.group.visible && onGroundFloor();
     if (labCast) { labCast.root.visible = aiLab.group.visible && onGroundFloor(); labCast.packetRoot.visible = onGroundFloor(); }
     if (env.setPresentation(wantedPresentation(m))) R.invalidateShadows();
     syncCam(cameraModes.set(m));
@@ -4787,6 +4776,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *       FALLBACK_VIEW_MODE), which is the view closest to what the person was doing. */
   function requestViewMode(m: CameraModeId): void {
     if (floorTransition?.busy) { refresh(); return; }
+    // the employee picked a view themselves: an AI Workforce Watch ends, and the view they asked for stands
+    if (labWorkforceRef.current?.watching) labWorkforceRef.current.watch(false, false);
     const want: CameraModeId = supportsViewMode(currentFloor, m as Vo3dViewMode) ? m : FALLBACK_VIEW_MODE;
     if (params.cameraMode !== want) setCameraMode(want);
     else refresh();
@@ -4925,43 +4916,6 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   toucanGui.add({ f: () => releaseToucan() }, "f").name("▶ release it");
   toucanGui.add({ f: () => toucan.reset() }, "f").name("▶ restart its lap");
 
-  // ---- the AI Lab monkey (dev-only; the folder only exists with ?monkey=1) ----
-  if (monkey) {
-    const mk = gui.addFolder("AI Lab monkey (dev, ?monkey=1)");
-    mk.add(monkey.state, "status").name("status").listen().disable();
-    mk.add(monkey.state, "clip").name("clip playing").listen().disable();
-    mk.add(monkey.state, "triangles").name("triangles").listen().disable();
-    mk.add(monkey.state, "joints").name("joints").listen().disable();
-    mk.add(monkey.state, "nativeHeight").name("source height (units)").listen().disable();
-    const moving = { walking: false };
-    mk.add(moving, "walking").name("walking (else restpose)").onChange((v: boolean) => monkey.setMoving(v));
-    mk.add(monkey.state, "outfitTriangles").name("outfit triangles").listen().disable();
-    const eyes = { warm: flags.get("eyes") !== "0" };
-    mk.add(eyes, "warm").name("warm ivory eyes").onChange((v: boolean) => {
-      if (v) void monkey.warmEyes(); else monkey.restoreEyes();
-      R.invalidateShadows();
-    });
-    const dressed = { on: flags.get("outfit") === "1" };
-    mk.add(dressed, "on").name("Toucan AI Scientist outfit").onChange((v: boolean) => {
-      if (v) monkey.dress(); else monkey.undress();
-      R.invalidateShadows();
-    });
-  }
-  // ---- MonkeyAgent P1 proof (dev; the folder only exists with ?monkeyagent=1) ----
-  if (monkeyAgents) {
-    const ma = gui.addFolder("MonkeyAgent cast (dev, ?monkeyagent=1)");
-    const EXEC = ["idle", "assigned", "working", "reviewing", "awaiting-approval", "changes-requested", "done", "blocked"];
-    const ctl = { agent: "milo", exec: "idle", clip: "(from state)", face: "(from state)", speaking: false, lod: "(auto)" };
-    const sel = () => monkeyAgents.body(ctl.agent);
-    ma.add(ctl, "agent", ["milo", "nova", "pip"]).name("agent");
-    ma.add(ctl, "exec", EXEC).name("exec state (backend input)").onChange((v: string) => monkeyAgents.setExec(ctl.agent, v as never));
-    ma.add(ctl, "clip", ["(from state)", "idle-9", "walking", "running", "agree-gesture", "listening-gesture", "sit-on-chair-arms", "sitting-answering"])
-      .name("clip override (verify only)").onChange((v: string) => sel()?.setClipOverride(v === "(from state)" ? null : v));
-    ma.add(ctl, "face", ["(from state)", "neutral", "happy", "focused", "surprised", "sleepy"]).name("face override")
-      .onChange((v: string) => { const b = sel(); if (b && v !== "(from state)") b.setExpression(v as never); });
-    ma.add(ctl, "speaking").name("talking").onChange((v: boolean) => { const b = sel(); if (b) b.speaking = v; });
-    ma.add(ctl, "lod", ["(auto)", "0", "1", "2"]).name("LOD override").onChange((v: string) => { for (const id of monkeyAgents.ids) { const b = monkeyAgents.body(id); if (b) b.lodOverride = v === "(auto)" ? null : Number(v); } });
-  }
   const geo = gui.addFolder("Geometry");
   const rebuild = () => {
     seat.reset(); // the room is rebuilt (and re-shadowed) below, so the chair snap-back is covered
@@ -5480,6 +5434,18 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // measuring nothing, so the window is thrown away — the current quality is kept, only the evidence is.
   onWindow("resize", () => graphics.resetMeasurement(performance.now()));
   onDocument("visibilitychange", () => graphics.resetMeasurement(performance.now()));
+  // AI WORKFORCE: hidden = away, at once (no frame will run to notice) — a Watch is let go, nothing is choreographed
+  // in the dark. Visible again: FIRST the source catches up by the real time that passed (so the job's truth is
+  // current), THEN the Lab stages that current state — in this order, or the missed records would arrive after
+  // the staging and be played out as if live.
+  onDocument("visibilitychange", () => {
+    if (tabVisible()) {
+      const now = performance.now();
+      labJobs?.tick(Math.max(0, now - lastSourceTick) / 1000);
+      lastSourceTick = now;
+    }
+    labWorkforce?.syncPresence();
+  });
 
   // The dev READOUT for it. Read-only: the real control surface is the product's Settings → Graphics &
   // Display panel, which writes the same persisted preference this controller is already listening to.
@@ -5624,6 +5590,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // ---- loop --------------------------------------------------------------------------------------------
   const clock = new THREE.Timer();
   let lastFrame = performance.now();
+  /** the AI Workforce source's own clock (see its tick in the frame below) */
+  let lastSourceTick = lastFrame;
   let overlayTick = 0;
   /** True while anything that casts a shadow is still moving. Compared against the last frame rather than
    *  asking each controller, so a new interaction can never forget to opt in. */
@@ -5747,15 +5715,21 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     mirror.foliage.update(); // blade batches follow the sway pivots; a no-op while sway is off
     mirror.ambient.update(t, dt / 1000); // powered-surface idle animation (screens, sensors, status strips)
     if (aiLab.group.visible) aiLab.tick(t, R.activeCamera, R.renderer.domElement.clientHeight); // the agents' status pulse — one sin() and six float writes
-    monkey?.update(dt / 1000); // dev-only; a no-op while the monkey is hidden or absent
-    aiDemo?.update(dt / 1000); // dev-only (`?aidemo=1`): ticks the mock source and the presenter
-    monkeyAgents?.update(dt / 1000, R.activeCamera, R.renderer.domElement.clientHeight); // dev-only; a no-op while hidden or absent
     monkeyPlay?.advance(dt / 1000, R.activeCamera, R.renderer.domElement.clientHeight); // dev-only (`?monkeyplay=1`)
-    labJobs?.tick(dt / 1000); // dev-only (`?ailab=v2&aidemo=1`): the mock "backend" — the job runs whatever is on screen
-    labWorkforce?.update(dt / 1000); // ... and the physical presenter catches up with it
-    // a live job keeps its clock while the Lab is off screen (nothing is posed); the proof only runs while seen
-    if (labCast && (labCast.root.visible || labWorkforce)) {
-      labCast.advance(dt / 1000, R.activeCamera, R.renderer.domElement.clientHeight, labCast.root.visible); // dev-only (`?ailab=v2`)
+    // the execution source's clock, in REAL elapsed time (not the frame's clamped dt): a tab hidden for five minutes
+    // comes back to a job five minutes on — the scripted mock catches up in one go; a real backend ignores it
+    labJobs?.tick(Math.max(0, now - lastSourceTick) / 1000);
+    lastSourceTick = now;
+    // PHASE 6B: a Watch ends the moment its context does (another floor, the elevator, the Cave) — and the view is
+    // left exactly as the ride or the portal set it
+    if (labWorkforce?.watching && !watchContextOk()) labWorkforce.watch(false, false);
+    labWorkforce?.update(dt / 1000); // ... and the physical presenter (background staging, or the watched cinematic)
+    // LAZY CAST: the MonkeyAgents' models are fetched the first time the Lab is drawn on Floor 1 — never for OFFICE
+    if (labCast && !labCastRequested && aiLab.group.visible && onGroundFloor()) ensureLabCast();
+    // IDLE GUARD: the cast is advanced while it is seen, or while a job (or a Watch) needs its clock — an idle,
+    // hidden Lab costs nothing; the proof only runs while seen
+    if (labCast && labCastRequested && (labCast.root.visible || (labWorkforce?.needsClock ?? false))) {
+      labCast.advance(dt / 1000, R.activeCamera, R.renderer.domElement.clientHeight, labCast.root.visible);
       // which stations an agent is AT right now (arrived, still there): their screens work. (The live
       // workforce drives its stations from the job instead — app/labWorkforce setStationActivity.)
       if (aiLabV2 && !labWorkforce) {
@@ -6672,25 +6646,16 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       travelling: () => env.travelling,
       setRainInOffice: (on: boolean) => { params.envRainInOffice = on; env.rainInOffice = on; refresh(); },
     },
-    // dev-only; null unless ?monkey=1
-    monkey: monkey ? {
-      avatar: monkey, state: monkey.state, root: monkey.root,
-      visible: () => monkey.visible,
-      setMoving: (v: boolean) => monkey.setMoving(v),
-      hasClip: (n: string) => monkey.hasClip(n),
-      dress: () => monkey.dress(), undress: () => monkey.undress(), dressed: () => monkey.dressed,
-      warmEyes: () => monkey.warmEyes(), restoreEyes: () => monkey.restoreEyes(),
-      position: () => ({ x: monkey.root.position.x, y: monkey.root.position.y, z: monkey.root.position.z }),
-    } : null,
-    // dev-only; null unless ?monkeyagent=1 / ?aidemo=1
-    monkeyAgents,
     // dev-only; null unless ?monkeyplay=1 (the MonkeyAgent traversal playground)
     monkeyPlay,
-    // dev-only: the Lab variant, and the V2 blockout's MonkeyAgent cast (null unless ?ailab=v2)
-    labVariant: LAB_VARIANT,
+    // dev-only: the Lab's MonkeyAgent cast, the AI Workforce
+    labFlags: LAB_FLAGS,
     labV2: aiLabV2,
     labCast,
+    labCastLoaded: () => labCastRequested,
     labWorkforce,
+    labJobs,
+    aiWorkforce,
     labDemo,
     /** dev-only: the floor the body is on, and a RESTORE onto a floor (the Cave's own placement; ground by default) */
     floor: () => currentFloor,
@@ -6699,7 +6664,6 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     labGroup: aiLab.group,
     /** dev: take the lift (verification harnesses — the Floor 2 window view of the Lab) */
     elevator: (to?: Vo3dFloorId) => callElevator(to ?? otherFloor()),
-    aiDemo,
     setCameraMode,
     /** dev-only camera helper: frame an arbitrary world rect (used to look at the Lab) */
     focusRect: (rect: { x: number; z: number; w: number; d: number }, fill = 0.9) => focusOn(rect, fill),
@@ -6942,17 +6906,14 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // The season's own groups, geometry and materials. It owns everything it made and nothing it did
     // not, so this is a removal rather than a restore — see season/SeasonLayer.dispose.
     seasonLayer?.dispose();
-    // Dev-only bodies, present only when a stress scenario or `?monkey=1` asked for them.
+    // Dev-only bodies, present only when a stress scenario asked for them.
     crowd?.clear(); // Crowd's teardown is clear(): it disposes every member's clone, textures included
     R.removeDynamicCaster(coworkers.group);
     coworkers.dispose(); // bodies, mixers and nameplate canvases; the shared prototypes outlive the world
-    monkey?.dispose();
-    aiDemo?.reset();
-    aiDemo?.dispose();
+    labWorkforce?.watch(false, false);
     labJobs?.reset(); labJobs?.dispose();
     labWorkforce?.reset();
     labWorkforce?.dispose();
-    monkeyAgents?.dispose();
     crew.dispose();
     avatar.dispose();
     toucan.dispose();
@@ -7316,13 +7277,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     selfAnchor: () => (avatar.root.visible ? selfAnchor() : null),
     zoneAt: (x, z) => zoneOf({ x, z }),
     toucanAnchor,
-    aiDemo: aiDemo ? { start: () => aiDemo.start(), reset: () => aiDemo.reset(), subscribe: (fn: (s: AiLabDemoStatus) => void) => aiDemo.subscribe(fn) }
-      : labDemo,
-    // the agents' pills ride the employee overhead layer: the V1 hall's cast, or the V2 Lab's
-    agentPills: monkeyAgents ? {
-      subscribe: (fn: (rows: readonly AgentPillRow[]) => void) => monkeyAgents.subscribe(fn),
-      anchor: (key: string) => { const p = monkeyAgents.pillPoint(key, AGENT_PILL); return p ? anchorForWorldPoint(p) : null; },
-    } : labCast ? {
+    aiWorkforce: aiWorkforce ? { ...aiWorkforce, dev: labDemo } : null,
+    // the agents' pills ride the employee overhead layer
+    agentPills: labCast ? {
       subscribe: (fn: (rows: readonly AgentPillRow[]) => void) => labCast.pills.subscribe(fn),
       anchor: (key: string) => { const p = labCast.pills.point(key, AGENT_PILL); return p ? anchorForWorldPoint(p) : null; },
     } : null,
@@ -7331,10 +7288,15 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     toucanSummon: {
       call: callToucan,
       release: releaseToucan,
-      state: () => toucan.summonState,
+      state: reportedToucanState,
+      subscribeBusy: (listener: (busy: boolean) => void) => {
+        toucanBusyListeners.add(listener);
+        listener(toucanBusyReported);
+        return () => { toucanBusyListeners.delete(listener); };
+      },
       subscribe: (listener: (state: ToucanSummonState) => void) => {
         toucanListeners.add(listener);
-        listener(toucan.summonState); // once immediately, so a subscriber never has to guess
+        listener(reportedToucanState()); // once immediately, so a subscriber never has to guess
         return () => { toucanListeners.delete(listener); };
       },
     },

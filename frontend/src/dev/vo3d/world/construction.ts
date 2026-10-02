@@ -94,7 +94,7 @@ export type ConstructionSite = {
  *  the terrace still passes in front of it (33 clear). */
 export const AI_LAB_SITE: ConstructionSite = {
   id: "ai-lab",
-  title: "AI LAB — UNDER CONSTRUCTION",
+  title: "AI LAB — EXPANSION IN PROGRESS",
   subtitle: "Offshorly R&D · Phase 2 works in progress",
   yard: { x: 404, z: -320, w: 272, d: 120 },
   groundY: GRADE,

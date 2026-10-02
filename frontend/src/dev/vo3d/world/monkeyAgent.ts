@@ -1,4 +1,5 @@
-// vo3d world — THE AI LAB MONKEY, as data. DEV-ONLY, OFF BY DEFAULT (`?monkey=1`).
+// vo3d world — THE AI LAB MONKEY's reference master, as data (its `?monkey=1` dev viewer was retired in Phase 6B.8;
+// the asset spec stays, checked by monkey.test.ts).
 //
 // WHY THIS FILE EXISTS SEPARATELY FROM adapters/v1Avatar.ts. The shipped employee
 // cast is a 24-joint Meshy skeleton with seven fixed clip names (`idle-9`,

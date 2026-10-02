@@ -1,7 +1,7 @@
 // vo3d build — THE STOREY BELOW FLOOR 2.
 //
 // What you see through floor 2's windows is NOT built here any more. It is the ground floor's own
-// exterior (build/exterior) and the real AI Lab (build/ailab), re-anchored one storey below this plate by
+// exterior (build/exterior) and the real AI Lab (build/ailabV2), re-anchored one storey below this plate by
 // Environment.anchorExterior / app/world.ts applyFloor — one campus, one Lab, never a copy.
 //
 // The one thing that re-anchoring cannot supply is the building itself: the ground floor's office is a

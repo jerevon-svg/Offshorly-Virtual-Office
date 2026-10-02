@@ -1,4 +1,4 @@
-// vo3d world — AI LAB V2: THE TREEHOUSE LAB, as data. STRUCTURAL BLOCKOUT, behind `?ailab=v2` (world/labVariant).
+// vo3d world — AI LAB V2: THE TREEHOUSE LAB, as data — the AI Lab since Phase 6B.8 (world/labVariant).
 //
 //   TREEHOUSE = HOME · LAB FLOOR = WORK · PHYSICAL MOVEMENT = WORKFLOW
 //

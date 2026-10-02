@@ -1,5 +1,5 @@
 // vo3d app — THE PHYSICAL AI WORKFORCE (Phase 4/5): job records in, a physical Lab out.
-// DEV-ONLY, behind `?ailab=v2&aidemo=1` (see world.ts).
+// Normal VO since Phase 6B (see world.ts); the scripted Preview until the Agent Harness replaces the source.
 //
 //   Human = intent + judgment · Toucan = knowledge + communication + orchestration · MonkeyAgents = execution
 //
@@ -37,16 +37,29 @@
 // scene physically catches up (a flight, a walk, a hand-over). Held events replay with the source's own
 // spacing, so reported work still reads as its reported length. A walk is never cut short and a state is never
 // invented. Every physical request is a DESTINATION (traversal graph names, station ids), never a coordinate.
+//
+// PHASE 6B — THE WORLD DOES THE WORK; WATCH IN LAB ONLY POINTS THE CAMERA AT IT.
+//   live (employee PRESENT: Floor 1, not riding the elevator, not in the Cave — any camera view) → the job is
+//            choreographed in the world from the moment it starts: the bird acknowledges, flies to the Lab, briefs,
+//            the agents walk, work and hand over, the bird brings the result back. The camera is NOT touched. The
+//            task conversation shows the job as the world has shown it (`unseen`), so the two never disagree.
+//   away     (Floor 2, the Cave, the elevator) → nothing can be shown, so nothing is held back: the job's truth is
+//            shown at once and, whenever it physically changes, the Lab simply ADOPTS it. Coming back adopts the
+//            CURRENT state (nothing missed is replayed) and the choreography carries on live from there.
+//   WATCH IN LAB → camera only: it frames the step already under way and follows the choreography (never during
+//            an elevator ride or a Cave transition). It starts nothing, unblocks nothing; stopping it hands the view
+//            back and the work simply goes on.
 import * as THREE from "three";
 import type { JobRecord, OrchestrationEvent } from "../world/agentOrchestration";
 import { conversationOnly, latestDelivered, type JobSnapshot } from "../world/agentJob";
+import { stepFor } from "../world/jobStatusLine";
 import type { JobClient } from "../world/jobStore";
 import type { Carrier, MonkeyCastRunner } from "../avatar/MonkeyCastRunner";
 import { HANDOFF_S } from "../avatar/MonkeyLocomotion";
 import type { ToucanSummonState } from "../../../components/OfficeMap/toucanSummon";
 import { parkPointFor } from "../../../components/OfficeMap/toucanSummon";
 import type { Rect } from "../core/coords";
-import type { AiLabDemoStatus } from "./aiLabDemo";
+import type { AiWorkforceStatus } from "./aiWorkforceStatus";
 import { ARTIFACT, HANDOFFS, LAB2_FLOOR_Y, PERCH_SPOT, TOUCAN_PERCH } from "../world/ailabV2";
 import { STATIONS, assignStation, stationTemplate, toWorld, workForRole, type StationDef } from "../world/labStations";
 import { LAB_RESIDENTS, residentFor } from "../world/labPopulation";
@@ -87,10 +100,18 @@ export type LabWorkforceDeps = {
      *  began (a camera that cannot see the user would miss the hand-over) */
     deliver(get: () => { x: number; z: number }, half: { w: number; d: number }): void;
     restore(): void;
+    /** stop directing WITHOUT switching the view back (the employee, or a floor ride, already chose the view) */
+    release(): void;
   };
-  /** can the job be shown now (the Lab is on Floor 1) */
+  /** can the employee WATCH IN LAB now (Floor 1, not riding the elevator, not in the Cave) */
   available(): boolean;
+  /** is the employee PRESENT where the job can be shown (the world choreographs it live); otherwise the Lab adopts */
+  present(): boolean;
+  /** may the camera be directed this frame (false while an elevator floor transition or a Cave transition runs) */
+  canDirectCamera(): boolean;
 };
+/** the camera when the scene may not direct it: every request is dropped */
+const NO_CAMERA: LabWorkforceDeps["camera"] = { follow: () => {}, frame: () => {}, deliver: () => {}, restore: () => {}, release: () => {} };
 
 /** the one physical work packet a job travels in */
 const PACKET = "job";
@@ -165,15 +186,23 @@ export class LabWorkforce {
   private pendingAdopt: JobSnapshot | null = null;
   private pending: { at: number; run: () => void }[] = [];
   private firstStation = true;
-  private status: AiLabDemoStatus;
-  private listeners = new Set<(s: AiLabDemoStatus) => void>();
+  private status: AiWorkforceStatus;
+  /** WATCH IN LAB (Phase 6B): camera only — off by default, and the camera is then never touched */
+  private watchingOn = false;
+  /** LIVE: the employee is present, so the job is choreographed in the world (else the Lab adopts its truth) */
+  private liveOn = false;
+  /** background: the job's physical truth changed since it was last staged */
+  private dirty = false;
+  /** background: what was last staged (agents' states, owner, artifacts, status) — re-staged only when it changes */
+  private stagedKey = "";
+  private listeners = new Set<(s: AiWorkforceStatus) => void>();
   private unsub: () => void;
   private readonly deps: LabWorkforceDeps;
   private ready = false;
 
   constructor(deps: LabWorkforceDeps) {
     this.deps = deps;
-    this.status = { phase: "idle", step: "", source: deps.jobs.kind, transcript: [], jobId: null, unseen: [] };
+    this.status = { phase: "idle", step: "", source: deps.jobs.kind, transcript: [], jobId: null, unseen: [], watching: false };
     this.unsub = deps.jobs.feed({ record: (r) => this.receive(r), hydrated: (j) => this.adopt(j) });
   }
 
@@ -183,6 +212,13 @@ export class LabWorkforce {
     const e = r.event;
     if (e.type === "job.created" && this.jobId !== e.jobId) { if (this.jobId) this.reset(); this.jobId = e.jobId; this.setStatus({ jobId: e.jobId }); }
     if (e.jobId !== this.jobId || conversationOnly(e)) return;
+    if (!this.liveOn) {
+      // AWAY: nothing is queued or choreographed — the truth is staged on the next frame; a spoken line from
+      // an agent still bubbles over it (the SAME domain message the task conversation shows)
+      this.dirty = true;
+      if (e.type === "message" && e.kind === "speech" && e.from !== "toucan" && this.ready && this.deps.cast.isPresent(e.from)) this.speak(e.from, e.to, e.text);
+      return;
+    }
     // a new command after everything was shown and the bird is back with you: nothing earlier is still being
     // replayed, so no earlier lag carries over into it
     if (this.queue.length === 0 && WITH_USER.has(this.bird)) this.lag = 0;
@@ -195,18 +231,82 @@ export class LabWorkforce {
     if (unseen.length !== cur.length || unseen.some((s, i) => s !== cur[i])) this.setStatus({ unseen });
   }
 
-  // ---- the HUD's side (the same chip and status shape as the V1 hall's presenter) -------------------------
-  subscribe(fn: (s: AiLabDemoStatus) => void): () => void {
+  // ---- the HUD's side (app/aiWorkforceStatus) ---------------------------------------------------------------
+  subscribe(fn: (s: AiWorkforceStatus) => void): () => void {
     this.listeners.add(fn); fn(this.status);
     return () => { this.listeners.delete(fn); };
   }
-  private setStatus(patch: Partial<AiLabDemoStatus>): void {
+  private setStatus(patch: Partial<AiWorkforceStatus>): void {
     this.status = { ...this.status, ...patch };
     for (const fn of this.listeners) fn(this.status);
   }
 
-  /** can a job be shown here now (the Lab is on Floor 1) */
+  /** can the employee WATCH IN LAB now */
   available(): boolean { return this.deps.available(); }
+  /** the camera this scene may use right now: the world's while watching (and the world allows it), else nothing */
+  private get cam(): LabWorkforceDeps["camera"] { return this.watchingOn && this.deps.canDirectCamera() ? this.deps.camera : NO_CAMERA; }
+  get watching(): boolean { return this.watchingOn; }
+  /** does the cast's clock need to run while the Lab is not drawn (a running job, a Watch, unshown records) */
+  get needsClock(): boolean { return this.queue.length > 0 || this.watchable; }
+  /** is the job being choreographed live in the world right now */
+  get live(): boolean { return this.liveOn; }
+  /** is there a job a Watch could show: still running — or finished in truth while the world is still playing it out */
+  get watchable(): boolean {
+    const job = this.jobId ? this.deps.jobs.job(this.jobId) : null;
+    return !!job && (!finished(job) || (this.liveOn && this.status.phase === "running"));
+  }
+
+  /** WATCH IN LAB — CAMERA ONLY. On: frame the step the world is already showing and follow the choreography from
+   *  there. Off: the view is handed back (`restore`) or simply let go (the employee, or a floor ride, already chose
+   *  the view). Neither changes what the world does. False when there is nothing live to watch. */
+  watch(on: boolean, restore = true): boolean {
+    if (on === this.watchingOn) return true;
+    if (on) {
+      if (!this.watchable || !this.ready || !this.liveOn || !this.deps.available()) return false;
+      this.watchingOn = true;
+      this.reframe();
+      this.setStatus({ watching: true });
+      return true;
+    }
+    this.watchingOn = false;
+    if (restore && this.deps.canDirectCamera()) this.deps.camera.restore(); else this.deps.camera.release();
+    this.setStatus({ watching: false });
+    return true;
+  }
+  /** point the camera at whatever the choreography is doing NOW (a Watch that begins mid-job) */
+  private reframe(): void {
+    const owner = this.owner;
+    switch (this.bird) {
+      case "toLab": case "leaving": this.followBird(); return;
+      case "atLab":
+        if (owner && this.deps.cast.agents.has(owner)) this.follow(owner, CAM.agent);
+        else this.cam.frame(this.gathered ? BRIEFING_FRAME : TREEHOUSE);
+        return;
+      default: this.cam.follow(() => this.deps.player(), CAM.agent);
+    }
+  }
+  /** RE-READ PRESENCE NOW — for the moments no frame will run to notice (the tab was just hidden: the browser stops
+   *  drawing, so a Watch is released and the Lab goes AWAY at once; on return the next frame stages the current truth) */
+  syncPresence(): void {
+    const present = this.deps.present();
+    if (present !== this.liveOn) this.setLive(present);
+  }
+  /** PRESENT ⇄ AWAY. Arriving: the job's CURRENT state is staged and the choreography carries on live from there.
+   *  Leaving: whatever was still to be shown is let go (the conversation then shows the truth) and the Lab adopts. */
+  private setLive(on: boolean): void {
+    this.liveOn = on;
+    this.queue = [];
+    this.endLine();
+    if (on) {
+      this.dirty = false;
+      const job = this.ready && this.jobId ? this.deps.jobs.job(this.jobId) : null;
+      if (job) this.adopt(job);
+      return;
+    }
+    if (this.watchingOn) this.watch(false, false);
+    this.dirty = true; this.stagedKey = "";
+    this.setStatus({ unseen: [] });
+  }
   /** say why nothing can be shown (the demo controller's refusal) */
   notice(step: string): void { this.setStatus({ phase: "idle", step }); }
 
@@ -217,7 +317,8 @@ export class LabWorkforce {
     const { cast, lab, toucan } = this.deps;
     this.jobId = null; this.revision = 1; this.pendingAdopt = null;
     this.queue = []; this.hold = 0; this.speaking = null; this.lag = 0;
-    if (this.bird !== "standby" && this.bird !== "atUser") this.deps.camera.restore();
+    if (this.status.watching && this.bird !== "standby" && this.bird !== "atUser") this.cam.restore();
+    this.dirty = false; this.stagedKey = "";
     this.bird = "standby"; this.birdT = 0;
     this.team = []; this.woke = false; this.gathered = false; this.briefFramed = false; this.firstStation = true;
     this.jobs.clear(); this.occupied.clear(); this.releases = []; this.filledSlots.clear(); this.pending = [];
@@ -279,27 +380,42 @@ export class LabWorkforce {
 
   // ---- the camera: soft follow and framing, never a locked cutscene ----------------------------------------
   private follow(id: string, half: { w: number; d: number } = CAM.agent): void {
-    this.deps.camera.follow(() => { const p = this.deps.cast.positionOf(id, v); return p ? { x: p.x, z: p.z } : { x: PERCH.x, z: PERCH.z }; }, half);
+    this.cam.follow(() => { const p = this.deps.cast.positionOf(id, v); return p ? { x: p.x, z: p.z } : { x: PERCH.x, z: PERCH.z }; }, half);
   }
   private followPair(a: string, b: string): void {
     const pa = new THREE.Vector3(), pb = new THREE.Vector3();
-    this.deps.camera.follow(() => {
+    this.cam.follow(() => {
       const A = this.deps.cast.positionOf(a, pa), B = this.deps.cast.positionOf(b, pb);
       if (A && B) return { x: (A.x + B.x) / 2, z: (A.z + B.z) / 2 };
       const one = A ?? B; return one ? { x: one.x, z: one.z } : { x: PERCH.x, z: PERCH.z };
     }, CAM.pair);
   }
   private followBird(): void {
-    this.deps.camera.follow(() => { const p = this.deps.toucan.position(); return { x: p.x, z: p.z }; }, CAM.flight);
+    this.cam.follow(() => { const p = this.deps.toucan.position(); return { x: p.x, z: p.z }; }, CAM.flight);
   }
 
   // ---- the frame ---------------------------------------------------------------------------------------
   update(dt: number): void {
-    if (!this.ready) { if (this.deps.cast.agents.size > 0) this.reset(); else return; }
+    if (!this.ready) {
+      if (this.deps.cast.agents.size === 0) return;
+      // the cast has just arrived (it loads lazily): rest, then stage whatever the job already is
+      const current = this.jobId;
+      this.reset();
+      const job = current ? this.deps.jobs.job(current) : null;
+      if (job) this.adopt(job);
+    }
+    const present = this.deps.present();
+    if (present !== this.liveOn) this.setLive(present);
     if (this.pendingAdopt) this.adopt(this.pendingAdopt);
     this.clock += dt;
     this.birdTravel(dt);
     this.timers();
+    if (!this.liveOn) {
+      // AWAY: bubbles time out; the Lab adopts the job's truth when it physically changed — never a camera
+      if (this.hold > 0) { this.hold -= dt; if (this.hold <= 0) this.endLine(); }
+      if (this.dirty) { this.dirty = false; this.stageTruth(); }
+      return;
+    }
     if (this.hold > 0) {
       this.hold -= dt;
       if (this.hold > 0) return;
@@ -332,6 +448,8 @@ export class LabWorkforce {
     if (!this.ready) { this.pendingAdopt = job; return; }
     const { cast, lab, toucan } = this.deps;
     this.reset(false);
+    this.stagedKey = physicalKey(job);
+    const background = !this.liveOn;
     this.jobId = job.jobId; this.revision = job.revision; this.team = [...job.team];
     this.woke = true; this.gathered = true; this.briefFramed = true; this.firstStation = false;
     job.artifacts.forEach((a, i) => { this.filledSlots.add(i); this.slotOf.set(a.revisionId, i); lab.setArtifactSlot(i, "ready"); });
@@ -371,29 +489,55 @@ export class LabWorkforce {
       const d = ARTIFACT.docks[restSlot];
       cast.issue({ a: resting.by, op: "carry", packet: PACKET });
       cast.issue({ a: resting.by, op: "place", packet: PACKET, at: [d.x, ARTIFACT.counter.h + LAB2_FLOOR_Y + 0.86, d.z], yaw: Math.PI });
+    } else if (background) {
+      // the work is with the bird or with you, outside the Lab: nothing is carried about the campus unwatched
     } else if (owner === "toucan") cast.holdExternally(PACKET, (out) => toucan.carry(out));
     else if (owner === "user") cast.holdExternally(PACKET, this.deps.userCarry);
     this.owner = owner; this.owners = owner ? [owner] : [];
     // the bird: in the Lab while the work is there; on its way back with a finished result; with you otherwise
-    const workInLab = owner === "artifact" || (!!owner && cast.agents.has(owner)) || (owner === "toucan" && job.status === "active" && Object.keys(job.agents).length > 0);
+    // has the CURRENT revision been taken to the Lab yet (a requested revision is "active" before it is dispatched)
+    const dispatched = this.dispatched(job);
+    const workInLab = owner === "artifact" || (!!owner && cast.agents.has(owner)) || (owner === "toucan" && job.status === "active" && dispatched && Object.keys(job.agents).length > 0);
     const done = job.status === "ready" || job.status === "approved" || job.status === "halted" || job.status === "failed";
     const last = latestDelivered(job);
     if (workInLab) {
       this.labSpot = PERCH;
       toucan.settle(this.centreFor(PERCH), PERCH);
       this.enterBird("atLab");
-      if (owner && cast.agents.has(owner)) this.follow(owner, CAM.agent); else this.deps.camera.frame(TREEHOUSE);
+      if (owner && cast.agents.has(owner)) this.follow(owner, CAM.agent); else this.cam.frame(TREEHOUSE);
+    } else if (background) {
+      // not in the Lab and nobody watching: the bird is free
+      this.enterBird("standby");
     } else if (owner === "toucan" && done) {
       toucan.setPace(ERRAND_PACE); this.enterBird("leaving"); this.followBird();
-    } else if (owner === "toucan" && job.status === "active") {
+    } else if (owner === "toucan" && job.status === "active" && dispatched) {
       toucan.setPace(ERRAND_PACE); this.enterBird("toLab"); this.woke = false; this.followBird();
+    } else if (owner === "toucan" && (job.status === "created" || job.status === "accepted" || job.status === "active")) {
+      // WATCHED before the dispatch (a new job, or a revision you just asked for): the bird is still with you
+      this.enterBird("toUser");
     } else this.enterBird(last ? "back" : "standby");
     const running = !(done && WITH_USER.has(this.bird));
     this.setStatus({
       phase: running ? "running" : "complete", title: job.title, jobId: job.jobId, unseen: [],
-      step: running ? "Picking up where the team is" : last ? "Result delivered" : "Result ready",
+      step: background || running ? stepFor(job) : last ? "Result delivered" : "Result ready",
       result: last?.result ?? null, delivered: !!last,
     });
+  }
+
+  /** has the job's current revision been dispatched to the Lab (from its own records; a hydrated job without the
+   *  dispatch record in hand counts as dispatched once it has a team) */
+  private dispatched(job: JobSnapshot): boolean {
+    let last = 0;
+    for (const r of this.deps.jobs.store.records(job.jobId)) if (r.event.type === "job.dispatched") last = Math.max(last, r.event.revision);
+    return last > 0 ? last >= job.revision : job.team.length > 0;
+  }
+
+  /** BACKGROUND: stage the job's truth — only when something physical changed since the last staging */
+  private stageTruth(): void {
+    const job = this.jobId ? this.deps.jobs.job(this.jobId) : null;
+    if (!job) return;
+    if (physicalKey(job) === this.stagedKey) { this.setStatus({ step: stepFor(job) }); return; }
+    this.adopt(job);
   }
 
   private timers(): void {
@@ -412,7 +556,9 @@ export class LabWorkforce {
     const p = t.position();
     switch (this.bird) {
       case "standby": case "atUser": case "back":
-        t.setTarget(this.deps.player());
+        // a job being shown live keeps the bird with you until its closing line; otherwise it is free (its own life,
+        // or the employee's call)
+        t.setTarget(this.liveOn && this.jobId && this.status.phase === "running" ? this.deps.player() : null);
         return;
       case "toUser":
         t.setTarget(this.deps.player());
@@ -429,7 +575,7 @@ export class LabWorkforce {
           t.setPace(1);
           if (!this.woke) this.wake();
           // the treehouse reveal: the homes, the routes down, the ring
-          this.deps.camera.frame(TREEHOUSE);
+          this.cam.frame(TREEHOUSE);
           this.setStatus({ step: "Toucan is at the AI Lab" });
         }
         return;
@@ -444,7 +590,7 @@ export class LabWorkforce {
         // the camera comes down to the ring once the first of them is there
         if (!this.briefFramed && this.team.some((id) => this.near(id, PERCH.x, PERCH.z + 50, 110))) {
           this.briefFramed = true;
-          this.deps.camera.frame(BRIEFING_FRAME);
+          this.cam.frame(BRIEFING_FRAME);
         }
         return;
       case "leaving": {
@@ -455,7 +601,7 @@ export class LabWorkforce {
           this.enterBird("back");
           this.deps.toucan.setPace(1);
           // close on you for the hand-over
-          this.deps.camera.follow(() => this.deps.player(), CAM.agent);
+          this.cam.follow(() => this.deps.player(), CAM.agent);
           // the camera stays on the bird through its report to you; it is handed back once the job is complete
           this.setStatus({ step: "Toucan is back with you" });
         }
@@ -553,7 +699,7 @@ export class LabWorkforce {
       if (!this.near(e.from, PERCH_SPOT.x, PERCH_SPOT.z, 40)) {
         this.go(e.from, "PERCH_SPOT");
         this.look(e.from, new THREE.Vector3(PERCH.x, PERCH.y, PERCH.z), true);
-        this.deps.camera.frame(BRIEFING_FRAME);
+        this.cam.frame(BRIEFING_FRAME);
       }
     }
   }
@@ -599,7 +745,7 @@ export class LabWorkforce {
           if (this.bird !== "back") return false;
           if (item.t1 === undefined) {
             const bird = this.deps.toucan;
-            this.deps.camera.deliver(() => { const p = this.deps.player(), b = bird.position(); return { x: (p.x + b.x) / 2, z: (p.z + b.z) / 2 }; }, CAM.agent);
+            this.cam.deliver(() => { const p = this.deps.player(), b = bird.position(); return { x: (p.x + b.x) / 2, z: (p.z + b.z) / 2 }; }, CAM.agent);
             item.t1 = cast.passExternal(PACKET, this.deps.userCarry, 1.3);
           }
           return cast.t >= item.t1;
@@ -642,7 +788,7 @@ export class LabWorkforce {
           this.deps.toucan.setFace({ x: me.x, z: me.z });
           // ALWAYS SEEN: the hand-over is framed in the demo's own view, between the bird and you
           const bird = this.deps.toucan;
-          this.deps.camera.deliver(() => { const p = this.deps.player(), b = bird.position(); return { x: (p.x + b.x) / 2, z: (p.z + b.z) / 2 }; }, CAM.agent);
+          this.cam.deliver(() => { const p = this.deps.player(), b = bird.position(); return { x: (p.x + b.x) / 2, z: (p.z + b.z) / 2 }; }, CAM.agent);
           item.t1 = cast.passExternal(PACKET, this.deps.userCarry, 1.3);
         }
         return cast.t >= item.t1;
@@ -683,6 +829,8 @@ export class LabWorkforce {
       case "revision.requested":
         // THE SAME JOB CONTINUES: the bird already knows it; nothing is reset
         this.revision = e.revision;
+        // the bird (free since the last delivery) comes back to you for the changes
+        if (this.bird === "back" || this.bird === "standby") this.enterBird("toUser");
         this.setStatus({ phase: "running", step: `Toucan is taking Revision ${e.revision} to the team`, delivered: false });
         return;
       case "job.approved":
@@ -852,9 +1000,10 @@ export class LabWorkforce {
     // the closing line to you completes the showing — once the job itself is waiting on you (its truth, not ours)
     const truth = this.jobId ? this.deps.jobs.job(this.jobId) : null;
     const settled = !!truth && (truth.status === "ready" || truth.status === "approved" || truth.status === "halted" || truth.status === "failed");
-    if (this.bird === "back" && this.queue.length === 0 && this.status.phase === "running" && settled) {
-      this.deps.camera.restore();
+    if (this.liveOn && this.bird === "back" && this.queue.length === 0 && this.status.phase === "running" && settled) {
       this.setStatus({ phase: "complete", step: this.status.delivered ? "Result delivered" : "Result ready" });
+      // the showing is over: a Watch hands the camera back (the bird is free again from the next frame)
+      if (this.watchingOn) this.watch(false);
     }
   }
 
@@ -877,5 +1026,14 @@ export class LabWorkforce {
   }
 }
 
+/** a job the human has the last word on (nothing more will happen in the Lab until they act) */
+function finished(job: JobSnapshot): boolean {
+  return job.status === "ready" || job.status === "approved" || job.status === "halted" || job.status === "failed";
+}
+/** what the Lab shows of a job, as one comparable string: re-staging only happens when this changes */
+function physicalKey(job: JobSnapshot): string {
+  const agents = Object.entries(job.agents).map(([id, a]) => `${id}:${a.role ?? ""}:${a.state}`).sort().join(",");
+  return `${job.jobId}|${job.status}|${job.owner ?? ""}|${job.revision}|${job.artifacts.length}|${agents}`;
+}
 /** every floor station the presenter may wake (tests read this to check nothing outside the registry is used) */
 export const LIVE_STATIONS: readonly string[] = STATIONS.filter((s) => s.at.y === 0 && s.state !== "future").map((s) => s.id);

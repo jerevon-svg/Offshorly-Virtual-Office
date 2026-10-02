@@ -39,7 +39,7 @@ import {
   DECK_Y, LAB_CHEEKS, LAB_CHEEK_POTS, LAB_TERRACE_BENCHES, LAKE_SPUR, LAKE_TERRACE, PAVED, PORCH, WALL_T,
   labEntranceTreads, lakeStepTreads,
 } from "./ailab";
-// the plinth, wall and terrace planting the ground model reads follow the BUILT Lab variant (world/labVariant)
+// the plinth, wall and terrace planting the ground model reads are the BUILT Lab's (world/labVariant)
 import { LAB_FP } from "./labVariant";
 const LAB_PLINTH = LAB_FP.plinth, WALL_SEGS = LAB_FP.wallSegs, LAB_TERRACE_SHRUBS = LAB_FP.terraceShrubs;
 import { scooterStations } from "./scooters";

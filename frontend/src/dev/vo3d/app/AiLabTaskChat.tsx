@@ -1,4 +1,7 @@
-// vo3d app — THE TASK CONVERSATION (AI-workforce demo, `?ailab=v2&aidemo=1`): one job = one thread.
+// vo3d app — THE TASK CONVERSATION (AI Workforce, Phase 6B: a real VO chat window): one job = one thread = one
+// window = one chat head. It is NOT the employee's personal Toucan conversation: Toucan delegated the work, and the
+// job's own workspace conversation (you, Toucan, and every agent that joins) lives here. The window is mounted by the
+// overlay's Global Chat lifecycle (focus / minimize to the rail / restore / close) — none of which touches the job.
 //
 // It renders ONE JobSnapshot's conversation (world/agentJob) — the human, Toucan and every agent that joined the
 // job — in VO's own chat chrome: the shared window header, the Messenger bubbles, the system-record rows and the
@@ -21,6 +24,9 @@ import styles from "./AiLabTaskChat.module.css";
 
 export interface AiLabTaskChatProps {
   job: JobSnapshot;
+  /** the window is minimized to its chat head (it stays mounted, exactly like a DM window) */
+  minimized?: boolean;
+  onMinimizeToggle?: () => void;
   onClose: () => void;
   onSend: (text: string) => void;
   onOpenResult: (revisionId: string) => void;
@@ -32,7 +38,7 @@ const STATUS_LABEL: Record<JobSnapshot["status"], string> = {
 };
 const time = (at: number) => new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 
-export function AiLabTaskChat({ job, onClose, onSend, onOpenResult, onRespond }: AiLabTaskChatProps) {
+export function AiLabTaskChat({ job, minimized, onMinimizeToggle, onClose, onSend, onOpenResult, onRespond }: AiLabTaskChatProps) {
   const [draft, setDraft] = useState("");
   const mention = useMentionComposer([]);
   const endRef = useRef<HTMLDivElement | null>(null);
@@ -53,8 +59,10 @@ export function AiLabTaskChat({ job, onClose, onSend, onOpenResult, onRespond }:
     <div className={chat.panel} data-testid="ailab-task-chat" role="dialog" aria-label={`Task conversation: ${job.title}`}>
       <ChatWindowHeader
         name={job.title || "Task"}
-        subtitle={`Task · You, ${people} · ${STATUS_LABEL[job.status]}${job.revision > 1 ? ` · Revision ${job.revision}` : ""}`}
-        headerExtra={<span className={styles.taskBadge}>Task</span>}
+        subtitle={`AI Workforce task · You, ${people} · ${STATUS_LABEL[job.status]}${job.revision > 1 ? ` · Revision ${job.revision}` : ""}`}
+        headerExtra={<span className={styles.taskBadge}>Preview</span>}
+        minimized={minimized}
+        onMinimizeToggle={onMinimizeToggle}
         onClose={onClose}
       />
       <div className={chat.messages} data-testid="ailab-task-thread">
@@ -69,7 +77,7 @@ export function AiLabTaskChat({ job, onClose, onSend, onOpenResult, onRespond }:
         onDraftInput={(text, caret) => { setDraft(text); mention.onDraftChanged(text, caret); }}
         onSend={send}
       />
-      <div className={styles.mockLine}>{job.title ? "Mock orchestration — not Agent Harness" : ""}</div>
+      <div className={styles.mockLine}>{job.title ? "Preview — scripted sample, not real AI work" : ""}</div>
     </div>
   );
 }

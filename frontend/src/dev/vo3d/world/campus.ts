@@ -344,10 +344,9 @@ export const TREE_LINES: TreeLine[] = [
   { id: "line-east-verge", kind: "tall", axis: "z", at: 2508, from: -560, to: 1360, spacing: 268 },
 ];
 
-/** AI LAB V2 (`?ailab=v2`, world/labVariant): its wider plinth needs the four Lab flank groves moved ~300
- *  outward. Read from the URL here, not imported, so the campus stays free of any Lab module dependency. Only the
- *  grove CENTRES move — the scatter stream consumes the same draws, so every other tree is identical. */
-const V2 = (() => { try { return typeof location !== "undefined" && new URLSearchParams(location.search).get("ailab") === "v2"; } catch { return false; } })();
+/* THE AI LAB's wide treehouse plinth (the only Lab since Phase 6B.8) puts the four Lab flank groves ~300 further out
+ * than the original Lab's; only the grove CENTRES differ — the scatter consumes the same draws, so every other tree
+ * is the approved layout. */
 
 export const GROVES: Grove[] = [
   // ---- THE REAR CAMPUS: the planting that HIDES THE AI LAB, and then gives it back ----------------
@@ -373,10 +372,10 @@ export const GROVES: Grove[] = [
   { id: "grove-lab-screen-east", kind: "broad", x: 1010, z: -338, rx: 160, rz: 30, count: 8 },
   //   4. FLANKS — heavy planting down both sides of the Lab, so it is only ever seen from the front or
   //      from directly above. This is what hides it from the east approach until you are past it.
-  { id: "grove-lab-flank-west", kind: "broad", x: V2 ? -112 : 180, z: -700, rx: 125, rz: 235, count: 10 },
-  { id: "grove-lab-flank-west-n", kind: "conifer", x: V2 ? -150 : 275, z: V2 ? -1000 : -985, rx: 145, rz: 85, count: 5 },
-  { id: "grove-lab-flank-east", kind: "round", x: V2 ? 1610 : 1300, z: -620, rx: 140, rz: 205, count: 9 },
-  { id: "grove-lab-flank-east-n", kind: "broad", x: V2 ? 1595 : 1215, z: V2 ? -960 : -940, rx: 130, rz: 95, count: 6 },
+  { id: "grove-lab-flank-west", kind: "broad", x: -112, z: -700, rx: 125, rz: 235, count: 10 },
+  { id: "grove-lab-flank-west-n", kind: "conifer", x: -150, z: -1000, rx: 145, rz: 85, count: 5 },
+  { id: "grove-lab-flank-east", kind: "round", x: 1610, z: -620, rx: 140, rz: 205, count: 9 },
+  { id: "grove-lab-flank-east-n", kind: "broad", x: 1595, z: -960, rx: 130, rz: 95, count: 6 },
   //   5. THE LAKE SHORE — dense round the west, east and far side, and DELIBERATELY OPEN on the Lab's
   //      side, so the water is the view from inside the Lab and the tree line closes the world beyond it.
   { id: "grove-lake-west", kind: "round", x: -10, z: -1360, rx: 155, rz: 285, count: 10 },

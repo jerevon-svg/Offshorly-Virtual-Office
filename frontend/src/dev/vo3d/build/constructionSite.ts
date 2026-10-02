@@ -390,7 +390,7 @@ function signCanvas(s: ConstructionSite): HTMLCanvasElement | null {
   g.textAlign = "center";
   g.fillStyle = "#f4f1e8";
   g.font = "700 76px system-ui, -apple-system, Segoe UI, sans-serif";
-  g.fillText(s.title, 512, 130);
+  g.fillText(s.title, 512, 130, 968); // held inside the board (a longer title is condensed, never clipped)
   g.fillStyle = "#b9d1c1";
   g.font = "400 38px system-ui, -apple-system, Segoe UI, sans-serif";
   g.fillText(s.subtitle, 512, 196);

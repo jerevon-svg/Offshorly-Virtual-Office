@@ -1,6 +1,5 @@
 // vo3d avatar — ONE MONKEYAGENT BODY: the shared production base + one identity's appearance + one
-// runtime record. DEV-ONLY today: constructed only by avatar/MonkeyAgentProof (the cast) behind
-// `?monkeyagent=1`.
+// runtime record. Constructed by the AI Lab's cast (avatar/MonkeyCastRunner).
 //
 // THE BASE IS MonkeyAgent_Base_V1 (scripts/avatar-pipeline/monkey-agent/build-monkey-base.mjs): the
 // established master technically rebuilt — LOD0/1/2 in ONE file sharing one skin, one texture and the

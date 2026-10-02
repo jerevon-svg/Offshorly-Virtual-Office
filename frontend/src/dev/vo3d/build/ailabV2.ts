@@ -1,4 +1,4 @@
-// vo3d build — AI LAB V2: THE TREEHOUSE LAB. Behind `?ailab=v2` (world/labVariant).
+// vo3d build — AI LAB V2: THE TREEHOUSE LAB — the AI Lab since Phase 6B.8 (world/labVariant).
 //
 //   TREEHOUSE = HOME · LAB FLOOR = WORK · PHYSICAL MOVEMENT = WORKFLOW
 //
