@@ -1,0 +1,20 @@
+{
+ "_doc": "HumanBase canonical chibi head profile \u2014 measured from production Alex (alex-v2-lod0) by chibify.measureHead, approved with mounted Bon 2026-10-03. Locked: re-measure only with --remeasure-canon and re-approve.",
+ "ratios": {
+  "faceLength": 0.7905488893299587,
+  "projection": 1.0830092388940393,
+  "eyeW": 0.24282224870841138,
+  "jaw": 1.120574247129265,
+  "cheek": 1.6094457454815663,
+  "lip": 0.916051032809274
+ },
+ "chin": 0.8091569542884827,
+ "ears": {
+  "half": 0.4300648421049118,
+  "z": -0.04768100640515691
+ },
+ "eyes": {
+  "y": 1.1491442375543848
+ },
+ "eyeHalfW": 0.10442931205034256
+}

@@ -1,0 +1,4 @@
+# HumanBase Pipeline V1: full-resolution chibify WORKING heads stay local (rebuilt from the local Meshy raws; see
+# scripts/avatar-pipeline/human-base/PIPELINE_V1.md). Production loads the optimised candidates in production/.
+identity/*-meshy-chibi-v1.glb
+hair/bon-meshy-hair-v1.glb
