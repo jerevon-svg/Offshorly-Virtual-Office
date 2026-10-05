@@ -107,6 +107,8 @@ export async function writeModule(path, base, meshes, extras = {}, { compress = 
   for (const j of jointNodes) skin.addJoint(j);
   if (extraJoints.length) extras = { ...extras, moduleJoints: extraJoints.map((j) => ({ name: j.name, parent: j.parent })) };
   let usesWebp = false;
+  // meshes passing the SAME texture buffer (an identity's head and its hair layers) share one texture + material
+  const texOf = new Map(), matOf = new Map();
   for (const m of meshes) {
     const prim = doc.createPrimitive()
       .setAttribute("POSITION", acc("VEC3", new Float32Array(m.P)))
@@ -117,12 +119,18 @@ export async function writeModule(path, base, meshes, extras = {}, { compress = 
     if (m.UV) prim.setAttribute("TEXCOORD_0", acc("VEC2", new Float32Array(m.UV)));
     // COLOR_0 is linear in glTF; the builds sample sRGB textures, so convert here (once, for every module)
     if (m.COLOR) prim.setAttribute("COLOR_0", acc("VEC3", new Float32Array(m.COLOR).map((c) => Math.pow(Math.min(1, Math.max(0, c)), 2.2))));
-    for (const [k, v] of Object.entries(m.extraAttrs ?? {})) prim.setAttribute(k, acc(v.type, v.array));
-    const mat = doc.createMaterial(m.material.name).setRoughnessFactor(m.material.roughness ?? 0.9).setMetallicFactor(m.material.metallic ?? 0)
-      .setDoubleSided(m.material.doubleSided ?? false).setBaseColorFactor(m.material.color ?? [1, 1, 1, 1]);
-    if (m.material.texture) {
-      const tex = doc.createTexture(`${m.name}_tex`).setImage(m.material.texture).setMimeType("image/webp");
-      mat.setBaseColorTexture(tex); usesWebp = true;
+    for (const [k, v] of Object.entries(m.extraAttrs ?? {})) prim.setAttribute(k, acc(v.type, v.array).setNormalized(!!v.normalized));
+    const shareKey = m.material.texture && m.material.share ? m.material.texture : null;
+    let mat = shareKey ? matOf.get(shareKey) : null;
+    if (!mat) {
+      mat = doc.createMaterial(m.material.name).setRoughnessFactor(m.material.roughness ?? 0.9).setMetallicFactor(m.material.metallic ?? 0)
+        .setDoubleSided(m.material.doubleSided ?? false).setBaseColorFactor(m.material.color ?? [1, 1, 1, 1]);
+      if (m.material.texture) {
+        let tex = texOf.get(m.material.texture);
+        if (!tex) { tex = doc.createTexture(`${m.name}_tex`).setImage(m.material.texture).setMimeType("image/webp"); texOf.set(m.material.texture, tex); }
+        mat.setBaseColorTexture(tex); usesWebp = true;
+      }
+      if (shareKey) matOf.set(shareKey, mat);
     }
     prim.setMaterial(mat);
     const mesh = doc.createMesh(m.name).addPrimitive(prim);
@@ -328,4 +336,17 @@ export function transferMorphs(srcP, srcMorphs, P, k = 8) {
       out[n][v * 3] = ax; out[n][v * 3 + 1] = ay; out[n][v * 3 + 2] = az; }
   }
   return out;
+}
+
+/** An identity's whole SURFACE (V1.1 layered heads: identity_head + identity_hair_* meshes, one shared texture), merged:
+ *  positions, normals, UVs, indices, and per-vertex `layer` (the mesh name). `filter(name)` picks meshes (default all
+ *  identity_* meshes). Accessory builders fit to this instead of identity_head alone. */
+export async function readIdentitySurface(doc, filter = (n) => n.startsWith("identity_")) {
+  const P = [], N = [], UV = [], I = [], layer = []; let tex = null;
+  for (const m of doc.getRoot().listMeshes()) { if (!filter(m.getName())) continue; const p = m.listPrimitives()[0], o = P.length / 3;
+    const a = p.getAttribute("POSITION").getArray(), nn = p.getAttribute("NORMAL")?.getArray(), uv = p.getAttribute("TEXCOORD_0")?.getArray(), ii = p.getIndices().getArray();
+    for (let i = 0; i < a.length / 3; i++) { P.push(a[i * 3], a[i * 3 + 1], a[i * 3 + 2]); N.push(nn?.[i * 3] ?? 0, nn?.[i * 3 + 1] ?? 0, nn?.[i * 3 + 2] ?? 1); UV.push(uv?.[i * 2] ?? 0, uv?.[i * 2 + 1] ?? 0); layer.push(m.getName()); }
+    for (const v of ii) I.push(v + o);
+    tex ??= p.getMaterial()?.getBaseColorTexture()?.getImage() ?? null; }
+  return { P: Float32Array.from(P), N: Float32Array.from(N), UV: Float32Array.from(UV), I: Uint32Array.from(I), layer, texture: tex ? Buffer.from(tex) : null };
 }

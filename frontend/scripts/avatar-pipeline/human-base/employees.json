@@ -1,0 +1,102 @@
+{
+ "_doc": "HumanBase production recipe (V1.1): one entry per employee, rebuilt by build-employees.mjs from the local raw Meshy heads (zero credits). Paths relative to frontend/. ruleset v2 = the ruleset Bon and Micah were approved with.",
+ "raw": "scripts/avatar-pipeline/output/meshy-employees/{who}-head-v1/raw-untouched/{who}-head-v1-raw-model.glb",
+ "ref": "scripts/avatar-pipeline/output/human-base/meshy-ref/{who}",
+ "sharedAccessories": [
+  {
+   "build": "glasses",
+   "style": "glasses-styles/rect-classic.json",
+   "id": "glasses-rect",
+   "previewOn": "bon"
+  },
+  {
+   "build": "glasses",
+   "style": "glasses-styles/classic.json",
+   "id": "glasses-classic",
+   "previewOn": "bon"
+  }
+ ],
+ "employees": {
+  "bon": {
+   "ruleset": "v2",
+   "hair": "natural",
+   "headTris": 120000,
+   "accessories": [
+    {
+     "build": "glasses",
+     "style": "glasses-styles/bon-frames.json",
+     "id": "bon-glasses"
+    }
+   ],
+   "repairs": {
+    "rimTuck": true,
+    "napeSkin": false
+   }
+  },
+  "micah": {
+   "ruleset": "v2",
+   "hair": "shoulder",
+   "headTris": 80000,
+   "accessories": [
+    {
+     "build": "glasses",
+     "style": "glasses-styles/micah-round.json",
+     "id": "micah-glasses"
+    }
+   ],
+   "repairs": {
+    "rimTuck": false,
+    "napeSkin": false
+   }
+  },
+  "angelo": {
+   "ruleset": "v3",
+   "hair": "natural",
+   "headTris": 60000,
+   "accessories": [],
+   "repairs": {
+    "rimTuck": true,
+    "napeSkin": false
+   }
+  },
+  "clang": {
+   "ruleset": "v3",
+   "hair": "shoulder",
+   "headTris": 60000,
+   "accessories": [
+    {
+     "build": "flower",
+     "id": "clang-flower",
+     "prep": "{ref}/clang-prep.json",
+     "sprite": "{ref}/clang-ref-original.png"
+    }
+   ],
+   "repairs": {
+    "rimTuck": true,
+    "napeSkin": false
+   }
+  },
+  "france": {
+   "ruleset": "v3",
+   "hair": "upperBack",
+   "motion": "long",
+   "tie": "high",
+   "headTris": 150000,
+   "accessories": [
+    {
+     "build": "tail",
+     "id": "france-hair-tail",
+     "tie": "high",
+     "style": "bun",
+     "length": "upperBack",
+     "volume": 1.25
+    }
+   ],
+   "repairs": {
+    "rimTuck": true,
+    "napeSkin": false
+   }
+  }
+ },
+ "_repairs": "CONDITIONAL REPAIRS (KNOWN FAILURE ≠ MANDATORY REPAIR): only the repairs listed per employee run; everything else keeps that employee's own geometry. Decided from the 2026-10-05 visual QA (A/B under-jaw + side views). napeSkin is an available recipe and is enabled for nobody (it regressed all five)."
+}

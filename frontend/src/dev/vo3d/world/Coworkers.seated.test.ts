@@ -15,6 +15,8 @@ import { FACING_YAW, type Vec2 } from "../core/coords";
 import type { Vo3dCoworker } from "../app/coworkers";
 
 const clips = [CLIP_IDLE, CLIP_SIT, CLIP_WALK].map((name) => new THREE.AnimationClip(name, 1, []));
+// these exercise the LEGACY prototype pipeline with "bon" as a stock character; HumanBase peers: Coworkers.human.test
+vi.mock("../avatar/humanBody", async (orig) => ({ ...(await orig<typeof import("../avatar/humanBody")>()), humanBodyFor: () => null }));
 vi.mock("../avatar/CastPrototypes", () => ({
   prototypeFor: (id: string) =>
     Promise.resolve({ id, gltf: {} as never, scene: new THREE.Group(), clips: [CLIP_IDLE, CLIP_SIT, CLIP_WALK].map((name) => new THREE.AnimationClip(name, 1, [])), triangles: 100, headY: 36 }),

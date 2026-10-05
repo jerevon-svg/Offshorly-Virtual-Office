@@ -1,0 +1,9 @@
+{
+ "_source": "The V1 catalogue 'Classic frames' (fitted once to the canonical Alex head), re-measured in units of that head's eye separation (0.304): lens 0.204 × 0.133, centre x 0.16 → a universal fit-space style (HumanBase V1.1).",
+ "lens": { "halfW": 0.335, "halfH": 0.22, "dx": 0.026, "dy": -0.02, "roundness": 3.2 },
+ "rim": { "width": 0.05, "depth": 0.045 },
+ "bridge": { "dy": 0.08, "arch": 0.02, "thick": 0.018 },
+ "temple": { "yFrac": 0.5, "length": 1.3, "thick": 0.016 },
+ "standoff": 0.03, "wrap": 0.6,
+ "colour": "#1a1a1d"
+}

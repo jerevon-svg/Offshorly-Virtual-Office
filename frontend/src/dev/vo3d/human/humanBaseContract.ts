@@ -234,13 +234,24 @@ export type AppearanceAsset = {
  *  lives elsewhere and is referenced by `employeeId`; changing any slot here never touches it, the rig or the
  *  animation library. This is what a future Profile → Edit Avatar writes. */
 export type BodyPreset = "standard" | "feminine";
+
+/** HEAD MOUNT — how an identity head sits on the shared body: a uniform scale and a pitch about the bind Head joint
+ *  (the jaw/neck cut, so the seam stays put). Applied to the SKIN BINDING of the Head subtree (body + every module),
+ *  never to the animated bone and never to the GLB — clips, aimHead and the asset are untouched, and everything riding
+ *  the head (face, hair, glasses, hair accessories, head sockets) follows. Omitted = 1 / 0°. */
+export type HeadMount = {
+  /** uniform head scale (1 = as authored) */
+  scale?: number;
+  /** pitch in degrees, + = chin up (corrects a head authored tilted forward) */
+  pitchDeg?: number;
+};
 export type EmployeeAvatar = {
   employeeId: string;
   base: typeof HUMAN_BASE_VERSION;
   /** bumped on every saved change (optimistic concurrency for the future editor) */
   version: number;
   /** the head (the shared canonical head for every new employee) + this employee's identity parameters on it */
-  identity: { headAssetId: string; skinTone?: string; params?: IdentityParams };
+  identity: { headAssetId: string; skinTone?: string; params?: IdentityParams; mount?: HeadMount };
   hair: { assetId: string | null; color?: string };
   idleProfile: IdleProfile;
   /** the HumanBase BODY PRESET (same skeleton, clips, sockets and contract — only the body surface differs) */

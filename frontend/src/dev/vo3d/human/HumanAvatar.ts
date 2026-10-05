@@ -18,13 +18,15 @@ import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { clone as cloneSkinned } from "three/examples/jsm/utils/SkeletonUtils.js";
 import {
   HUMAN_SOCKETS, HUMAN_WORLD_SCALE, NEUTRAL_IDENTITY, SHAPE_CONTROLS, changedSlots, clampIdentity, idleClip, regionMask,
-  type AppearanceAsset, type AppearanceSlot, type BodyRegion, type EmployeeAvatar, type IdentityLandmarks, type IdentityParams, type SocketName,
+  type AppearanceAsset, type AppearanceSlot, type BodyRegion, type EmployeeAvatar, type HeadMount, type IdentityLandmarks, type IdentityParams, type SocketName,
 } from "./humanBaseContract";
 import { HUMAN_BODY_PRESET_URLS } from "./humanCatalogue";
 import { presetDisplace } from "./humanBodyPresets";
 import { HumanFace } from "./humanFace";
 import { bakedEyeMaterial, bodySkinMaterial, decalLightFor, canonicalHeadMaterial, faceMaterial, garmentMaterial, hairMaterial, headPaintUniforms, identityHeadMaterial, vertexColourMaterial, type Fabric, type GarmentUniforms, type HeadPaintUniforms, type SkinUniforms } from "./humanMaterials";
 import { HairDynamics, type HairChain, type HairMotionPreset } from "./humanHair";
+import { fitGlassesPositions, type GlassesAttach, type GlassesDesign, type GlassesFitData } from "./humanGlasses";
+import { placeAccessory, type AttachData, type AttachSpec } from "./humanAccessoryFit";
 import { HumanRig } from "./humanRig";
 import { BodyClearance } from "./humanClearance";
 
@@ -47,6 +49,35 @@ export function loadGlb(url: string): Promise<GLTF> {
 /** fallback for the base's own skin luminance (the base GLB publishes the measured value in its extras) */
 const BASE_SKIN_LUM = 0.56;
 
+/** Area-weighted vertex normals averaged over every vertex sharing a position (UV seams split vertices; their own normals
+ *  left the shared base body faceted on hands and limbs). In place, once per geometry. */
+function smoothSeamNormals(g: THREE.BufferGeometry): void {
+  if (g.userData.seamNormals) return; g.userData.seamNormals = true;
+  const pos = g.getAttribute("position"), idx = g.getIndex(); if (!pos || !idx) return;
+  const key = (i: number) => `${Math.round(pos.getX(i) * 1e4)},${Math.round(pos.getY(i) * 1e4)},${Math.round(pos.getZ(i) * 1e4)}`;
+  const grp = new Map<string, number>(), gid = new Int32Array(pos.count); for (let i = 0; i < pos.count; i++) { const k = key(i); if (!grp.has(k)) grp.set(k, grp.size); gid[i] = grp.get(k)!; }
+  const acc = new Float32Array(grp.size * 3), a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  for (let t = 0; t < idx.count; t += 3) { const i0 = idx.getX(t), i1 = idx.getX(t + 1), i2 = idx.getX(t + 2); a.fromBufferAttribute(pos, i0); b.fromBufferAttribute(pos, i1).sub(a); c.fromBufferAttribute(pos, i2).sub(a); b.cross(c);
+    for (const i of [i0, i1, i2]) { acc[gid[i] * 3] += b.x; acc[gid[i] * 3 + 1] += b.y; acc[gid[i] * 3 + 2] += b.z; } }
+  const n = new Float32Array(pos.count * 3); for (let i = 0; i < pos.count; i++) { const g3 = gid[i] * 3, l = Math.hypot(acc[g3], acc[g3 + 1], acc[g3 + 2]) || 1; n[i * 3] = acc[g3] / l; n[i * 3 + 1] = acc[g3 + 1] / l; n[i * 3 + 2] = acc[g3 + 2] / l; }
+  g.setAttribute("normal", new THREE.BufferAttribute(n, 3));
+  // …and ONE skin binding per position: split vertices with different weights drift apart when posed — hairline cracks that
+  // show the background (white specks on knuckles, a zig-zag at the wrist)
+  const si = g.getAttribute("skinIndex"), sw = g.getAttribute("skinWeight"); if (!si || !sw) return;
+  const first = new Int32Array(grp.size).fill(-1); for (let i = 0; i < pos.count; i++) { const f = first[gid[i]]; if (f < 0) { first[gid[i]] = i; continue; }
+    for (let k = 0; k < 4; k++) { si.setComponent(i, k, si.getComponent(f, k)); sw.setComponent(i, k, sw.getComponent(f, k)); } }
+  si.needsUpdate = true; sw.needsUpdate = true;
+}
+/** body region → the clearance capsule a garment over it thickens */
+const REGION_CAPSULE: Partial<Record<BodyRegion, string>> = { CHEST: "torso", BELLY: "torso", PELVIS: "pelvis", THIGH_L: "thighL", THIGH_R: "thighR", UPPERARM_L: "upperArmL", UPPERARM_R: "upperArmR", FOREARM_L: "forearmL", FOREARM_R: "forearmR" };
+/** the bind-space head-mount transform: T(pivot) · Rx(−pitch) · S(scale) · T(−pivot), or null when it is the identity */
+export function headMountMatrix(mount: HeadMount | undefined, pivot: THREE.Vector3): THREE.Matrix4 | null {
+  const s = mount?.scale ?? 1, pitch = ((mount?.pitchDeg ?? 0) * Math.PI) / 180;
+  if (s === 1 && pitch === 0) return null;
+  // (bind space is +y up, +z forward: a rotation of −pitch about +x lifts the face)
+  return new THREE.Matrix4().makeTranslation(pivot.x, pivot.y, pivot.z).multiply(new THREE.Matrix4().makeRotationX(-pitch))
+    .multiply(new THREE.Matrix4().makeScale(s, s, s)).multiply(new THREE.Matrix4().makeTranslation(-pivot.x, -pivot.y, -pivot.z));
+}
 type Piece = { asset: AppearanceAsset; meshes: THREE.Object3D[]; hides: readonly BodyRegion[]; garment?: GarmentUniforms; meta: Record<string, unknown>;
   /** joints the module owns (hair chains), created under the avatar's bones on equip, removed with it */
   ownedBones?: THREE.Bone[]; paint?: HeadPaintUniforms; hairColor?: { value: THREE.Color }; layerId?: string };
@@ -109,16 +140,44 @@ export class HumanAvatar {
     scene.updateMatrixWorld(true);
     const src = this.body.material as THREE.MeshStandardMaterial;
     const lum = (this.body.userData?.humanBase as { skinLum?: number } | undefined)?.skinLum ?? BASE_SKIN_LUM;
+    smoothSeamNormals(this.body.geometry);   // V1.2: no faceting across split (UV-seam) vertices
     const { material, uniforms } = bodySkinMaterial(src.map ?? null, "#feba83", lum);
     this.skin = uniforms;
     this.body.material = material;
     this.body.castShadow = true; this.body.receiveShadow = true; this.body.frustumCulled = false;
     this.mixer = new THREE.AnimationMixer(scene);
     for (const clip of gltf.animations) this.actions[clip.name] = this.mixer.clipAction(clip);
+    this.clips = gltf.animations;
     this.rig = new HumanRig(this.model, this.body, this.bones);
     this.clearance = new BodyClearance(this.rig, this.body, HUMAN_WORLD_SCALE);
     this.addLayer(this.clearance.layer());
+    // HEAD MOUNT: this avatar's own inverse binds (the cloned skeleton shares the cached array) — taken AFTER the rig's
+    // rest pose and the clearance envelopes are measured, so neither ever sees a mount
+    this.ownBinds(this.body, this.body.skeleton.boneInverses);
   }
+  /** the authored inverse binds per skinned mesh (read-only, possibly the page-wide cached array) */
+  private readonly baseBinds = new WeakMap<THREE.SkinnedMesh, readonly THREE.Matrix4[]>();
+  private ownBinds(mesh: THREE.SkinnedMesh, authored: readonly THREE.Matrix4[]): void {
+    this.baseBinds.set(mesh, authored);
+    mesh.skeleton.boneInverses = authored.map((m) => m.clone());
+  }
+  /** re-derive every Head-subtree inverse bind (body + all worn modules) from the authored ones and the configured
+   *  mount — idempotent, so it runs after every equip and every applied configuration */
+  private applyHeadMount(): void {
+    const head = this.bones.get("Head"), base = this.baseBinds.get(this.body);
+    if (!head || !base) return;
+    const pivot = new THREE.Vector3().setFromMatrixPosition(base[this.body.skeleton.bones.indexOf(head)].clone().invert());
+    const M = headMountMatrix(this.config.identity.mount, pivot);
+    const inHead = (b: THREE.Object3D | null): boolean => { for (let o = b; o; o = o.parent) if (o === head) return true; return false; };
+    const meshes: THREE.SkinnedMesh[] = [this.body];
+    for (const p of this.pieces.values()) for (const m of p.meshes) if ((m as THREE.SkinnedMesh).isSkinnedMesh) meshes.push(m as THREE.SkinnedMesh);
+    for (const m of meshes) {
+      const authored = this.baseBinds.get(m); if (!authored) continue;
+      m.skeleton.bones.forEach((b, i) => { const ib = m.skeleton.boneInverses[i].copy(authored[i]); if (M && inHead(b)) ib.multiply(M); });
+    }
+  }
+  /** the head mount actually applied (tests / QA read it) */
+  get headMount(): Readonly<HeadMount> { return this.config.identity.mount ?? {}; }
   /** the body's self-clearance (anatomical envelopes + worn garment thickness) */
   clearance!: BodyClearance;
 
@@ -129,6 +188,8 @@ export class HumanAvatar {
     if (cfg.employeeId !== this.config.employeeId) throw new Error("an avatar configuration belongs to one employee");
     const slots = changedSlots(this.config, cfg);
     await this.applySlots(cfg, slots);
+    // slots load concurrently: whatever finished last, every wearable ends fitted to the identity now worn (idempotent)
+    this.fitGlasses(); this.fitAttached();
     if (cfg.idleProfile !== this.config.idleProfile && this.current?.startsWith("idle-")) this.play(idleClip(cfg.idleProfile), 0.3);
     this.config = cfg;
     return slots;
@@ -152,6 +213,7 @@ export class HumanAvatar {
       for (const a of cfg.accessories) if (!this.pieces.has(`accessory:${a.assetId}`)) await this.equip("accessory", a.assetId);
     }
     this.config = { ...cfg };
+    this.applyHeadMount();
     this.timing.lastEquipMs = performance.now() - t0;
   }
 
@@ -169,7 +231,10 @@ export class HumanAvatar {
     this.updateHideMask();
     if (slot === "identity") this.adoptIdentity(piece);
     if (slot === "hair" && piece.hairColor) piece.hairColor.value.set(this.config.hair.color ?? "#161415");
+    if (slot === "glasses" || slot === "identity") this.fitGlasses();
+    if (slot === "accessory" || slot === "identity") this.fitAttached();
     this.applyShape();
+    this.applyHeadMount();
   }
 
   unequip(key: string): void {
@@ -193,6 +258,11 @@ export class HumanAvatar {
     let garment: GarmentUniforms | undefined;
     const sources: THREE.SkinnedMesh[] = [];
     gltf.scene.traverse((o) => { const s = o as THREE.SkinnedMesh; if (s.isSkinnedMesh) sources.push(s); });
+    // THIS AVATAR'S geometry per source mesh. The parsed GLB is cached page-wide and shared by every avatar wearing the
+    // module, so a per-avatar edit (body-preset displacement, glasses refit) goes on an own copy kept HERE — never written
+    // back onto the cached source, where the next avatar would inherit (and re-apply) it.
+    const own = new Map<THREE.SkinnedMesh, THREE.BufferGeometry>();
+    const geomOf = (s: THREE.SkinnedMesh) => own.get(s) ?? s.geometry;
     // MODULE-OWNED JOINTS (hair chains): created under their parent on THIS avatar. The base skeleton, the mixer and
     // every shared clip are untouched; local = IBM(parent) · IBM(joint)⁻¹, both from the module's own skeleton.
     const ownedBones: THREE.Bone[] = [];
@@ -213,13 +283,14 @@ export class HumanAvatar {
     const preset = this.config.bodyPreset;
     // (head-mounted accessories ride the head, not the body field)
     if (preset && preset !== "standard" && ["top", "bottom", "shoes", "accessory"].includes(asset.slot) && !(asset.socket ?? "").startsWith("head") && asset.socket !== "identity-face") for (const s of sources) {
-      const g = s.geometry = s.geometry.clone(), pos = g.getAttribute("position"), ji = g.getAttribute("skinIndex"), wi = g.getAttribute("skinWeight");
+      const g = s.geometry.clone(), pos = g.getAttribute("position"), ji = g.getAttribute("skinIndex"), wi = g.getAttribute("skinWeight");
       const names = s.skeleton.bones.map((b) => b.name), wp = (n: string) => new THREE.Vector3().setFromMatrixPosition(s.skeleton.boneInverses[names.indexOf(n)].clone().invert()).toArray() as [number, number, number];
       const J = { spineZ: wp("Spine02")[2], armL: wp("LeftArm"), handL: wp("LeftHand"), armR: wp("RightArm"), handR: wp("RightHand") };
       const p: [number, number, number] = [0, 0, 0];
       void ji; void wi;
       for (let i = 0; i < pos.count; i++) { p[0] = pos.getX(i); p[1] = pos.getY(i); p[2] = pos.getZ(i); if (presetDisplace(preset, p, null, J)) pos.setXYZ(i, p[0], p[1], p[2]); }
       g.computeVertexNormals();
+      own.set(s, g);
     }
     for (const s of sources) {
       // REBIND BY JOINT NAME onto THIS avatar's bones — the module's own skeleton is never animated
@@ -232,7 +303,7 @@ export class HumanAvatar {
         const lm = info.landmarks as IdentityLandmarks & { nose: { c: number[] } };
         paint = headPaintUniforms({ eye: [lm.eyes.l[0], lm.eyes.l[1], lm.eyes.halfW, lm.eyes.halfH], noseY: lm.nose.c[1], mouthY: lm.mouth.c[1] });
         mat = canonicalHeadMaterial(paint);
-      } else if (name === "identity_head") { mat = identityHeadMaterial(srcMat.map ?? null); mat.side = srcMat.side; }
+      } else if (name === "identity_head" || name.startsWith("identity_face_") || name.startsWith("identity_hair_")) { mat = identityHeadMaterial(srcMat.map ?? null, name.startsWith("identity_hair_")); mat.side = srcMat.side; }   // V1.1 layered hair shares the identity texture
       else if (name === "face_eyes" || name === "face_mouth") mat = new THREE.MeshBasicMaterial({ map: srcMat.map ?? null }); // replaced by adoptIdentity
       else if (name.startsWith("hair_") && info.class) { const h = hairMaterial(this.config.hair.color ?? "#161415"); mat = h.material; hairColor = h.uniforms.uHair; }
       else if (name.startsWith("hair_")) mat = vertexColourMaterial(0.55, true);
@@ -242,23 +313,32 @@ export class HumanAvatar {
       // a module part whose look is fully authored in the file (texture and/or vertex colours) keeps its own material
       // HumanBase-owned skin carried by a module (the neck extension hidden inside an identity head): the body's own material
       else if (name.startsWith("bodyskin_")) mat = this.body.material as THREE.Material;
-      else if (name.startsWith("baked_")) mat = new THREE.MeshStandardMaterial({ map: srcMat.map ?? null, vertexColors: !!s.geometry.getAttribute("color"), roughness: srcMat.roughness ?? 0.8, metalness: 0, side: srcMat.side });
+      else if (name.startsWith("baked_")) mat = new THREE.MeshStandardMaterial({ map: srcMat.map ?? null, vertexColors: !!geomOf(s).getAttribute("color"), roughness: srcMat.roughness ?? 0.8, metalness: 0, side: srcMat.side });
       else {
         const look = { ...(info.look as { main: string; trim?: string; accent?: string }), ...(colorway ? asset.colorways?.[colorway] : {}) };
-        const g = garmentMaterial((info.fabric as Fabric) ?? "jersey", look, srcMat.map ?? null, (info.fabric as string) === "clog" ? 0.5 : 0.92, info.decalTint === true);
+        const g = garmentMaterial((info.fabric as Fabric) ?? "jersey", look, srcMat.map ?? null, (info.fabric as string) === "clog" || (info.fabric as string) === "sneaker" ? 0.5 : 0.92, info.decalTint === true);
         mat = g.material; garment = g.uniforms; garment.uSkinG.value.copy(this.skin.uSkin.value);
       }
-      const mesh = new THREE.SkinnedMesh(s.geometry, mat);
+      // FIT-SPACE GLASSES (V1.1): the module is refitted to whichever identity wears it (fitGlasses) — own geometry copy
+      const gDesign = asset.slot === "glasses" && info.fit && geomOf(s).getAttribute("_gfit") ? (info.fit as GlassesDesign) : null;
+      const mesh = new THREE.SkinnedMesh(gDesign ? geomOf(s).clone() : geomOf(s), mat);
+      if (gDesign) mesh.userData.glassesDesign = gDesign;
+      // ATTACHMENT CONTRACT (V1.1): a module with a semantic `attach` and local-frame geometry is placed on the wearer's
+      // own anchors (humanAccessoryFit) — own geometry copy, refitted on every identity change
+      if (info.attach && geomOf(s).getAttribute("_alocal")) { mesh.geometry = geomOf(s).clone(); mesh.userData.attachSpec = info.attach as AttachSpec; }
       mesh.name = `${asset.slot}:${asset.id}:${name}`;
       mesh.castShadow = !name.startsWith("face_"); mesh.receiveShadow = true; mesh.frustumCulled = false;
       this.body.parent!.add(mesh);
       mesh.position.copy(this.body.position); mesh.quaternion.copy(this.body.quaternion); mesh.scale.copy(this.body.scale);
       mesh.bind(new THREE.Skeleton(bones as THREE.Bone[], s.skeleton.boneInverses), this.body.bindMatrix);
+      this.ownBinds(mesh, s.skeleton.boneInverses);   // own inverse binds: the head mount edits these, never the cached source
       // identity shape controls: the module's morph dictionary travels with the geometry
       if (s.morphTargetDictionary) { mesh.morphTargetDictionary = { ...s.morphTargetDictionary }; mesh.morphTargetInfluences = new Array(Object.keys(s.morphTargetDictionary).length).fill(0); }
       meshes.push(mesh);
     }
-    const piece: Piece = { asset, meshes, hides, garment, meta: info, ownedBones, paint, hairColor };
+    // a garment's measured standoff per covered capsule (V1.2): baggy cloth keeps the hands out by its real volume
+    const standoff = garment && this.clearance && sources[0] && hides.length ? this.clearance.garmentStandoff({ skeleton: sources[0].skeleton, geometry: geomOf(sources[0]) }, [...new Set(hides.map((r) => REGION_CAPSULE[r]).filter((c): c is string => !!c))]) : undefined;
+    const piece: Piece = { asset, meshes, hides, garment, meta: standoff ? { ...info, standoff } : info, ownedBones, paint, hairColor };
     const chains = info.chains as HairChain[] | undefined;
     if (chains?.length && sources[0]) {
       const sk = sources[0].skeleton;
@@ -283,10 +363,38 @@ export class HumanAvatar {
       if (mesh.name.endsWith(":face_mouth")) mesh.material = faceMaterial(face.uniforms, false);
       // the face shell sits a hair above the sculpted head: it must not receive the head relief's own shadow (iris/lash ghosts)
       if (mesh.name.endsWith(":face_eyes")) { mesh.renderOrder = 2; mesh.receiveShadow = false; mesh.castShadow = false; }
+      // the mirrored twin patch lies 1 mm in front of the face under it: it must not shadow its own rim (dotted seam)
+      if (mesh.name.endsWith(":identity_face_twin")) mesh.castShadow = false;
     }
+    // the hairstyle's flow highlights: strength + tint from the identity (lighter variation of its own hair)
+    const hh = (lm as IdentityLandmarks & { hairHighlight?: { strength: number; color: [number, number, number] } }).hairHighlight;
+    for (const m of p.meshes) { const u = ((m as THREE.Mesh).material as THREE.Material).userData?.hairHL as { uHL: { value: THREE.Color }; uHLs: { value: number } } | undefined; if (!u) continue;
+      u.uHLs.value = hh?.strength ?? 0; if (hh) u.uHL.value.setRGB(...hh.color); }
     this.face = face;
     if (p.paint) this.setIdentity(this.config.identity.params ?? NEUTRAL_IDENTITY);
     else this.setSkinTone(this.config.identity.skinTone ?? lm.skin);
+  }
+
+  /** fit the worn glasses (fit-space modules only) to the worn identity's published glassesFit — a no-op otherwise */
+  private fitGlasses(): void {
+    const g = this.pieces.get("glasses"), lm = this.landmarks as (IdentityLandmarks & { glassesFit?: GlassesFitData }) | null;
+    if (!g || !lm?.glassesFit) return;
+    for (const m of g.meshes) { const mesh = m as THREE.SkinnedMesh, design = mesh.userData.glassesDesign as GlassesDesign | undefined; if (!design) continue;
+      const geo = mesh.geometry, gf = geo.getAttribute("_gfit"); if (!gf) continue;
+      // (attributes may arrive interleaved: read element-wise, write a fresh position attribute)
+      const G = new Float32Array(gf.count * 4); for (let i = 0; i < gf.count; i++) { G[i * 4] = gf.getX(i); G[i * 4 + 1] = gf.getY(i); G[i * 4 + 2] = gf.getZ(i); G[i * 4 + 3] = gf.getW(i); }
+      geo.setAttribute("position", new THREE.BufferAttribute(fitGlassesPositions(G, design, lm.eyes, lm.glassesFit, (lm as { attach?: GlassesAttach }).attach), 3));
+      geo.computeVertexNormals(); geo.computeBoundingSphere(); }
+  }
+
+  /** seat every attach-spec accessory on the current identity's semantic anchors (landmarks.attach) */
+  private fitAttached(): void {
+    const at = (this.landmarks as { attach?: AttachData } | null)?.attach; if (!at) return;
+    for (const [key, piece] of this.pieces) { if (!key.startsWith("accessory:")) continue;
+      for (const m of piece.meshes) { const mesh = m as THREE.SkinnedMesh, spec = mesh.userData.attachSpec as AttachSpec | undefined, la = mesh.geometry.getAttribute("_alocal"); if (!spec || !la) continue;
+        const M = placeAccessory(at, spec), v = new THREE.Vector3(), out = new Float32Array(la.count * 3);
+        for (let i = 0; i < la.count; i++) { v.set(la.getX(i), la.getY(i), la.getZ(i)).applyMatrix4(M); out[i * 3] = v.x; out[i * 3 + 1] = v.y; out[i * 3 + 2] = v.z; }
+        mesh.geometry.setAttribute("position", new THREE.BufferAttribute(out, 3)); mesh.geometry.computeVertexNormals(); mesh.geometry.computeBoundingSphere(); } }
   }
 
   /** hair dynamics of the worn hairstyle (null for rigid hair) */
@@ -385,9 +493,9 @@ export class HumanAvatar {
   private updateHideMask(): void {
     this.skin.uHide.value = regionMask([...this.pieces.values()].flatMap((p) => p.hides)) | 0;
     // garments thicken the envelopes of the regions they cover
-    const CAP: Partial<Record<BodyRegion, string>> = { CHEST: "torso", BELLY: "torso", PELVIS: "pelvis", THIGH_L: "thighL", THIGH_R: "thighR", UPPERARM_L: "upperArmL", UPPERARM_R: "upperArmR", FOREARM_L: "forearmL", FOREARM_R: "forearmR" };
-    const extra: Record<string, number> = {};
-    for (const p of this.pieces.values()) for (const r of p.hides) { const c = CAP[r]; if (c) extra[c] = Math.max(extra[c] ?? 0, p.asset.thickness ?? 0); }
+    const CAP = REGION_CAPSULE, extra: Record<string, number> = {};
+    // (thickness = the larger of the catalogue value and the garment's MEASURED standoff over that region — V1.2)
+    for (const p of this.pieces.values()) { const so = (p.meta.standoff ?? {}) as Record<string, number>; for (const r of p.hides) { const c = CAP[r]; if (c) extra[c] = Math.max(extra[c] ?? 0, p.asset.thickness ?? 0, so[c] ?? 0); } }
     if (this.clearance) this.clearance.extra = extra;
   }
   get hideMask(): number { return this.skin.uHide.value; }
@@ -414,6 +522,10 @@ export class HumanAvatar {
   setTimeScale(s: number): void { if (this.current) this.actions[this.current].timeScale = s; }
   get clip(): string | null { return this.current; }
   get clipNames(): string[] { return Object.keys(this.actions); }
+  /** the mixer action bound to a library clip (read access for host runtimes: time scale, freeze, debug) */
+  actionFor(name: string): THREE.AnimationAction | undefined { return this.actions[name]; }
+  /** the shared clip library as loaded (read-only; host runtimes read hip tracks from it — vo3d interact/seatContact) */
+  clips: readonly THREE.AnimationClip[] = [];
 
   addLayer(l: Layer): void { this.layers = [...this.layers.filter((x) => x.id !== l.id), l].sort((a, b) => a.order - b.order); }
   removeLayer(id: string): void { this.layers = this.layers.filter((x) => x.id !== id); }

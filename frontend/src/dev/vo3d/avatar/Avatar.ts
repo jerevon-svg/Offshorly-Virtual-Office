@@ -10,6 +10,9 @@ import { BON_LODS, CLIP_IDLE, CLIP_SIT, CLIP_SIT_ANSWER, DRACO_PATH, type Avatar
 import type { Vec2 } from "../core/coords";
 import { RiderPose } from "./riderPose";
 import { RIDER_GRIPS } from "../world/scooters";
+import type { HumanAvatar } from "../human/HumanAvatar";
+import { createHumanBody, type HumanBody } from "./humanBody";
+import { idleClip, type AppearanceAsset, type EmployeeAvatar } from "../human/humanBaseContract";
 
 let loader: GLTFLoader | null = null;
 function gltfLoader(): GLTFLoader {
@@ -45,17 +48,50 @@ export class Avatar {
   /** THE SCOOTER RIDER'S POSE (avatar/riderPose): a post-mixer layer on the model group, idle until mounted */
   private readonly rider: RiderPose;
 
-  constructor(opts: { height: number; lit: boolean; lods?: Record<AvatarLod, string> }) {
+  /** HUMANBASE BODY (production integration, avatar/humanBody): when set, `load` builds this appearance on the
+   *  shared HumanBase runtime instead of fetching the legacy GLB. Everything outside this class — controllers,
+   *  seats, scooter, lift, camera, nameplate, multiplayer — keeps talking to the same Avatar API. A HumanBase
+   *  load failure falls back to the legacy GLB (`lods`), so the player is never left without a body. */
+  private readonly humanCfg: { config: EmployeeAvatar; catalogue: ReadonlyMap<string, AppearanceAsset> } | null;
+  /** the live HumanBase body, or null on the legacy path */
+  human: HumanAvatar | null = null;
+  /** which runtime is actually drawing this body: "humanbase" | "legacy-glb" | "none" (diagnostic) */
+  get runtime(): "humanbase" | "legacy-glb" | "none" { return this.human ? "humanbase" : this.gltf ? "legacy-glb" : "none"; }
+
+  constructor(opts: { height: number; lit: boolean; lods?: Record<AvatarLod, string>; human?: { config: EmployeeAvatar; catalogue: ReadonlyMap<string, AppearanceAsset> } | null }) {
     this.height = opts.height;
     this.lit = opts.lit;
     this.lods = opts.lods ?? BON_LODS;
+    this.humanCfg = opts.human ?? null;
     this.root.name = "avatar";
     this.root.add(this.model);
     this.rider = new RiderPose(this.model, RIDER_GRIPS);
   }
 
   async load(lod: AvatarLod): Promise<void> {
+    if (this.humanCfg) {
+      if (this.human) return;   // one HumanBase body per Avatar (it has no LODs yet — the LOD selector is a no-op)
+      try { this.adoptHuman(await createHumanBody(this.humanCfg.config, this.humanCfg.catalogue)); return; }
+      catch (e) { console.warn("[vo3d] HumanBase body failed to load — falling back to the legacy GLB", e); }
+    }
     this.adopt(await gltfLoader().loadAsync(this.lods[lod]));
+  }
+  /** Take a built HumanBase body. Already in world units (HUMAN_STANDING_HEIGHT = 36 = BON_STANDING_HEIGHT), feet on
+   *  y = 0; no re-normalisation. VO's clip names map 1:1 onto the shared library except the idle (resolveClip). */
+  private adoptHuman(body: HumanBody): void {
+    const h = body.human;
+    this.dispose();
+    this.human = h;
+    this.model.add(h.root);
+    // the seat contract (interact/seatContact) reads the rig's clips by VO's names: the idle is aliased under CLIP_IDLE
+    this.gltf = { scene: h.scene, animations: body.clips } as unknown as GLTF;
+    this.nativeHeight = this.height;
+    this.triangles = h.stats().triangles;
+    // the scooter rider is a HumanBase layer (the same contract the HumanBase QA viewer drives)
+    this.rider.setScene(h.scene);
+    h.addLayer({ id: "vo-scooter-rider", order: 30, update: (dt) => this.rider.update(dt) });
+    this.current = null;
+    this.play(this.requested ?? CLIP_IDLE, 0);
   }
   /** Take a loaded character package as this body: normalise it, dress it, bind its clips. `load` is the
    *  fetch in front of this; tests hand it a roster GLB decoded in node (avatar/rosterGlb.testutil). */
@@ -96,6 +132,7 @@ export class Avatar {
   }
   setLit(lit: boolean): void {
     this.lit = lit;
+    if (this.human) return;   // HumanBase materials are its own (skin / garment / face shaders) — always lit
     for (const [m, mat] of lit ? this.litMaterials : this.unlitMaterials) m.material = mat;
   }
   get loaded(): boolean { return this.gltf !== null; }
@@ -142,7 +179,7 @@ export class Avatar {
    *  without the clip falls back to the sit rather than freezing. */
   private resolveClip(name: string): string {
     if (name !== CLIP_SIT || !this.globalChatActive) return name;
-    return this.actions[CLIP_SIT_ANSWER] ? CLIP_SIT_ANSWER : name;
+    return this.actions[CLIP_SIT_ANSWER] || this.human?.clipNames.includes(CLIP_SIT_ANSWER) ? CLIP_SIT_ANSWER : name;
   }
   /** Enter/leave the seated answering pose. Only a body that is actually ASKING for the seated clip
    *  changes anything: a walking or standing avatar simply remembers it for the next sit. */
@@ -154,6 +191,12 @@ export class Avatar {
   play(name: string, fade = 0.25): void {
     this.requested = name;
     const resolved = this.resolveClip(name);
+    if (this.human) {   // HumanBase: the shared library's own names; VO's idle-9 is this employee's idle profile
+      const hn = resolved === CLIP_IDLE ? idleClip(this.human.config.idleProfile) : resolved;
+      if (this.current === hn) return;
+      if (!this.human.clipNames.includes(hn)) return;
+      this.human.play(hn, fade); this.current = hn; return;
+    }
     if (this.current === resolved) return;
     const next = this.actions[resolved];
     if (!next) return;
@@ -163,7 +206,13 @@ export class Avatar {
     else if (prev) prev.stop();
     this.current = resolved;
   }
-  setClipTimeScale(name: string, scale: number): void { const a = this.actions[name]; if (a) a.timeScale = scale; }
+  /** the mixer action behind a VO clip name, on either runtime */
+  private action(name: string): THREE.AnimationAction | undefined {
+    if (!this.human) return this.actions[name];
+    const hn = name === CLIP_IDLE ? idleClip(this.human.config.idleProfile) : name;
+    return this.human.actionFor(hn);
+  }
+  setClipTimeScale(name: string, scale: number): void { const a = this.action(name); if (a) a.timeScale = scale; }
   /** HOLD A CLIP STILL AT ONE POSE — the whole of the procedural airborne pose (player/PlayerMode).
    *
    *  No shipped character package carries a jump clip (only bon-v3 even has `running`), and generating
@@ -174,7 +223,7 @@ export class Avatar {
    *  `phase` is 0..1 of the clip's own duration, so it is resolution-independent. A no-op for a clip the
    *  loaded GLB does not carry, exactly like play(); the caller restores the time scale on landing. */
   freezeClipAt(name: string, phase: number): void {
-    const a = this.actions[name];
+    const a = this.action(name);
     if (!a) return;
     this.play(name, 0.12);
     a.timeScale = 0;
@@ -182,16 +231,17 @@ export class Avatar {
   }
   /** does the loaded GLB carry this clip? Lets a caller fall back rather than silently freeze on the
    *  clip it was already playing (play() returns quietly for an unknown name). */
-  hasClip(name: string): boolean { return this.actions[name] !== undefined; }
+  hasClip(name: string): boolean { return this.action(name) !== undefined; }
   get currentClip(): string | null { return this.current; }
   /** DIAGNOSTIC: what the mixer is really doing with a clip — is it bound, running, and at what weight.
    *  `currentClip` alone cannot tell "the pose is playing" from "the pose was asked for and the GLB had
    *  no such clip", which is exactly the distinction a missing local gesture turns on. */
   clipDebug(name: string): { bound: boolean; running: boolean; weight: number } {
-    const a = this.actions[name];
+    const a = this.action(name);
     return { bound: a !== undefined, running: a?.isRunning() ?? false, weight: a?.getEffectiveWeight() ?? 0 };
   }
   update(dt: number): void {
+    if (this.human) { this.human.update(dt); return; }   // mixer + behaviour layers (clearance, face, hair, rider)
     this.mixer?.update(dt);
     this.rider.update(dt);
   }
@@ -210,6 +260,7 @@ export class Avatar {
 
   dispose(): void {
     this.rider.setScene(null);
+    if (this.human) { this.human.dispose(); this.human = null; this.gltf = null; this.current = null; return; }
     if (this.gltf) {
       this.mixer?.stopAllAction();
       this.model.remove(this.gltf.scene);

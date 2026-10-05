@@ -101,10 +101,10 @@ const BODY_PRESET = new URLSearchParams(location.search).get("body") === "femini
 const HEAD_PARAM = new URLSearchParams(location.search).get("head");
 // ?avatar=micah runs the playground as Micah (her full configuration)
 const START = ({ micah: MICAH_AVATAR, angelo: ANGELO_AVATAR, clang: CLANG_AVATAR, france: FRANCE_AVATAR } as Record<string, EmployeeAvatar>)[new URLSearchParams(location.search).get("avatar") ?? ""] ?? BON_AVATAR;
-// ?optim=<file under output/human-base/> mounts an OPTIMISED identity candidate with the employee's full configuration
+// ?optim=<file under output/human-base/> (or production/<file> = the committed public/avatars/human-base-v1/production/) mounts an OPTIMISED identity candidate with the employee's full configuration
 // (dev QA of production candidates through every behaviour)
 const OPTIM_PARAM = import.meta.env.DEV ? new URLSearchParams(location.search).get("optim") : null;
-if (OPTIM_PARAM) (CATALOGUE_BY_ID as Map<string, AppearanceAsset>).set(`optim:${OPTIM_PARAM}`, { id: `optim:${OPTIM_PARAM}`, slot: "identity", label: OPTIM_PARAM, url: `${import.meta.env.BASE_URL}scripts/avatar-pipeline/output/human-base/${OPTIM_PARAM}`, hides: [] });
+if (OPTIM_PARAM) (CATALOGUE_BY_ID as Map<string, AppearanceAsset>).set(`optim:${OPTIM_PARAM}`, { id: `optim:${OPTIM_PARAM}`, slot: "identity", label: OPTIM_PARAM, url: OPTIM_PARAM.startsWith("production/") ? `${import.meta.env.BASE_URL}avatars/human-base-v1/${OPTIM_PARAM}` : `${import.meta.env.BASE_URL}scripts/avatar-pipeline/output/human-base/${OPTIM_PARAM}`, hides: [] });
 const avatar = await HumanAvatar.create({ ...structuredClone(START), ...(START === BON_AVATAR ? { bodyPreset: BODY_PRESET } : {}), ...(OPTIM_PARAM ? { identity: { headAssetId: `optim:${OPTIM_PARAM}` }, ...(START === BON_AVATAR ? { hair: { assetId: null }, glasses: { assetId: null } } : {}) } : {}), ...(HEAD_PARAM ? { identity: { headAssetId: HEAD_PARAM }, hair: { assetId: null }, glasses: { assetId: null }, top: { assetId: "tee-offshorly", colorway: "white" } } : {}) } as EmployeeAvatar, CATALOGUE_BY_ID);
 const firstComposeMs = performance.now() - t0;
 scene.add(avatar.root);
@@ -183,7 +183,10 @@ avatar.addLayer({ id: "page-attention", order: 45, update: (dt) => {
 // ---- the panel ------------------------------------------------------------------------------------------------
 const panel = document.getElementById("panel")!;
 const h = (tag: string, text = "", cls = "") => { const e = document.createElement(tag); e.textContent = text; if (cls) e.className = cls; return e; };
-panel.append(h("h1", "HumanBase_V1 · Bon (Phase 3A)"), h("p", "The shared canonical head + Bon's identity read from ONE front photo, a modular medium-curtain hairstyle, a modular outfit. Every control below changes parameters or one slot — no rebuild, rerig or reanimation.", "sub"));
+// the viewer says which asset it shows: a production candidate is labelled as such (never mistaken for Phase 3A Bon)
+const VIEW_TITLE = OPTIM_PARAM ? `${OPTIM_PARAM.startsWith("production/") ? "PRODUCTION CANDIDATE" : "Optimised candidate"} · ${OPTIM_PARAM}` : "HumanBase_V1 · Bon (Phase 3A)";
+if (OPTIM_PARAM) { const b = document.createElement("div"); b.id = "hb-optim-banner"; b.textContent = VIEW_TITLE; Object.assign(b.style, { position: "fixed", top: "8px", left: "50%", transform: "translateX(-50%)", zIndex: "10", padding: "6px 14px", borderRadius: "6px", background: "#14161a", color: "#7ee0b0", font: "600 14px system-ui, sans-serif", pointerEvents: "none" }); document.body.append(b); }
+panel.append(h("h1", VIEW_TITLE), h("p", "The shared canonical head + Bon's identity read from ONE front photo, a modular medium-curtain hairstyle, a modular outfit. Every control below changes parameters or one slot — no rebuild, rerig or reanimation.", "sub"));
 type Btn = { label: string; on?: () => boolean; act: () => unknown };
 const groups: { row: HTMLElement; btns: { b: HTMLButtonElement; d: Btn }[] }[] = [];
 function row(label: string, btns: Btn[]): void {
@@ -224,7 +227,7 @@ row("Hair col.", [
   { label: "black", act: () => avatar.setHairColor("#141213") }, { label: "brown", act: () => avatar.setHairColor("#4a3022") }, { label: "ash", act: () => avatar.setHairColor("#8a857f") },
 ]);
 row("Glasses", [
-  { label: "On", on: () => !!cfg().glasses.assetId, act: () => set({ glasses: { assetId: "glasses-classic" } }) },
+  { label: "On", on: () => !!cfg().glasses.assetId, act: () => set({ glasses: { assetId: (avatar.identityLandmarks as { glassesFit?: unknown } | null)?.glassesFit ? "glasses-rect" : "glasses-classic" } }) },   // fit-space frames on any V1.1 identity
   { label: "Off", on: () => !cfg().glasses.assetId, act: () => set({ glasses: { assetId: null } }) },
 ]);
 row("Accessory", [
@@ -338,7 +341,7 @@ async function toggleCompare(): Promise<void> {
 // the approved ILLUSTRATED Bon — the identity blueprint (served from the gitignored pipeline output)
 const illus = document.createElement("img");
 illus.src = `${import.meta.env.BASE_URL}scripts/avatar-pipeline/output/human-base/bon-illustrated.png`;
-Object.assign(illus.style, { position: "fixed", left: "12px", bottom: "12px", width: "300px", borderRadius: "10px", background: "#fff", boxShadow: "0 4px 18px rgba(0,0,0,0.25)", display: "block" });
+Object.assign(illus.style, { position: "fixed", left: "12px", bottom: "12px", width: "300px", borderRadius: "10px", background: "#fff", boxShadow: "0 4px 18px rgba(0,0,0,0.25)", display: OPTIM_PARAM ? "none" : "block" });
 document.body.append(illus);
 const photo = document.createElement("img");
 photo.src = `${import.meta.env.BASE_URL}scripts/avatar-pipeline/output/human-base/bon-real.jpeg`;

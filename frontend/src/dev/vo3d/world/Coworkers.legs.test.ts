@@ -13,6 +13,8 @@ import type { Vec2 } from "../core/coords";
 import type { Vo3dCoworker } from "../app/coworkers";
 
 const clip = (name: string) => new THREE.AnimationClip(name, 1, [new THREE.NumberKeyframeTrack(".position[y]", [0, 1], [0, 0])]);
+// these exercise the LEGACY prototype pipeline with "bon" as a stock character; HumanBase peers: Coworkers.human.test
+vi.mock("../avatar/humanBody", async (orig) => ({ ...(await orig<typeof import("../avatar/humanBody")>()), humanBodyFor: () => null }));
 vi.mock("../avatar/CastPrototypes", () => ({
   prototypeFor: (id: string) => {
     const mk = (n: string) => new THREE.AnimationClip(n, 1, [new THREE.NumberKeyframeTrack(".position[y]", [0, 1], [0, 0])]);

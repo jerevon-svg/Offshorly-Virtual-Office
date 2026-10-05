@@ -5,9 +5,9 @@ import * as THREE from "three";
 // @ts-expect-error node:fs is untyped under tsconfig.app.json (types: ["vite/client"] only).
 import fs from "node:fs";
 import { HUMAN_WORLD_SCALE as W, type EmployeeAvatar } from "./humanBaseContract";
-import { BON_AVATAR, BON_IDENTITY_V2, CATALOGUE_BY_ID, HUMAN_BASE_URL } from "./humanCatalogue";
+import { BON_AVATAR, BON_IDENTITY_V2, CATALOGUE_BY_ID, HUMAN_BASE_URL, OFFSHORLY_UNIFORM } from "./humanCatalogue";
 import { NEUTRAL_IDENTITY } from "./humanBaseContract";
-import { HumanAvatar, setGlbFetcher } from "./HumanAvatar";
+import { HumanAvatar, loadGlb, setGlbFetcher } from "./HumanAvatar";
 import { BLINK_S } from "./humanFace";
 import { DeskWork, HandContacts, PacketCarry, Spot, makePacketProp } from "./humanBehavior";
 import { WORKSTATION, buildWorkstation } from "./humanInteraction";
@@ -175,4 +175,47 @@ describe.skipIf(!fs.existsSync(publicPath(HUMAN_BASE_URL)))("HumanAvatar (Bon, c
     expect(desk.phase).toBe("idle");
     expect(a.clip).toBe("idle-masculine");
   }, 120_000);
+
+  it("MANY AVATARS, ONE CACHED MODULE: a body-preset garment is displaced on the wearer's own copy, never on the shared source", async () => {
+    const dressed = (bodyPreset: "standard" | "feminine") => HumanAvatar.create({ ...structuredClone(BON_AVATAR), ...OFFSHORLY_UNIFORM, bodyPreset, hair: { assetId: null } } as EmployeeAvatar, CATALOGUE_BY_ID);
+    const src = await loadGlb(CATALOGUE_BY_ID.get("tee-offshorly")!.url);
+    let srcGeo: THREE.BufferGeometry | null = null;
+    src.scene.traverse((o) => { if (!srcGeo && (o as THREE.SkinnedMesh).isSkinnedMesh) srcGeo = (o as THREE.SkinnedMesh).geometry; });
+    const before = Float32Array.from((srcGeo! as THREE.BufferGeometry).getAttribute("position").array as Float32Array);
+    const f1 = await dressed("feminine"), f2 = await dressed("feminine"), std = await dressed("standard");
+    const tee = (a: HumanAvatar) => ((a.piece("top")!.meshes[0] as THREE.SkinnedMesh).geometry.getAttribute("position").array as Float32Array);
+    expect(Array.from(tee(f2))).toEqual(Array.from(tee(f1)));          // the second wearer is not displaced twice
+    expect(Array.from(tee(std))).toEqual(Array.from(before));          // a standard body never inherits the feminine fit
+    expect(Array.from(tee(f1))).not.toEqual(Array.from(before));
+    expect(Array.from((srcGeo! as THREE.BufferGeometry).getAttribute("position").array as Float32Array)).toEqual(Array.from(before));
+  }, 180_000);
+
+  it("HEAD MOUNT: a per-identity scale/pitch about the Head joint, on this avatar's skin binding only — never the bone, the clip or the cached source", async () => {
+    const cfg = (mount?: { scale?: number; pitchDeg?: number }) => { const c = structuredClone(BON_AVATAR) as EmployeeAvatar; c.identity = { ...c.identity, mount }; return c; };
+    const srcTop = await loadGlb(CATALOGUE_BY_ID.get(BON_AVATAR.top.assetId)!.url);
+    let srcSkin: THREE.SkinnedMesh | null = null; srcTop.scene.traverse((o) => { if (!srcSkin && (o as THREE.SkinnedMesh).isSkinnedMesh) srcSkin = o as THREE.SkinnedMesh; });
+    const srcBinds = srcSkin!.skeleton.boneInverses.map((m) => m.clone());
+    const plain = await HumanAvatar.create(cfg(), CATALOGUE_BY_ID), small = await HumanAvatar.create(cfg({ scale: 0.9 }), CATALOGUE_BY_ID), up = await HumanAvatar.create(cfg({ pitchDeg: 10 }), CATALOGUE_BY_ID);
+    const reach = (a: HumanAvatar, s: "headTop" | "face") => { a.root.updateMatrixWorld(true); return a.socketWorld(s).sub(a.bones.get("Head")!.getWorldPosition(new THREE.Vector3())); };
+    // the whole head (and every head socket) shrinks about the Head joint — and stays shrunk through the clips
+    expect(reach(small, "headTop").length() / reach(plain, "headTop").length()).toBeCloseTo(0.9, 3);
+    run(plain, 0.7); run(small, 0.7);
+    expect(reach(small, "headTop").length() / reach(plain, "headTop").length()).toBeCloseTo(0.9, 3);
+    expect(small.bones.get("Head")!.scale.toArray()).toEqual([1, 1, 1]);   // the animated bone is never scaled
+    // + pitch lifts the face
+    expect(reach(up, "face").normalize().y).toBeGreaterThan(reach(plain, "face").normalize().y + 0.05);
+    // body + every module share the SAME Head binding; joints outside the Head subtree keep the authored one
+    const binds = (a: HumanAvatar, slot: string) => (a.piece(slot)!.meshes[0] as THREE.SkinnedMesh).skeleton;
+    const at = (sk: THREE.Skeleton, n: string) => sk.boneInverses[sk.bones.findIndex((b) => b.name === n)];
+    for (const slot of ["identity", "top", "bottom"]) {
+      expect(at(binds(small, slot), "Head").equals(at(small.body.skeleton, "Head"))).toBe(true);
+      expect(at(binds(small, slot), "Spine02").equals(at(binds(plain, slot), "Spine02"))).toBe(true);
+    }
+    expect(at(small.body.skeleton, "Head").equals(at(plain.body.skeleton, "Head"))).toBe(false);
+    // the page-wide cached module is untouched, and clearing the mount restores the authored binding exactly
+    srcSkin!.skeleton.boneInverses.forEach((m, i) => expect(m.equals(srcBinds[i])).toBe(true));
+    await small.apply(cfg());
+    expect(at(small.body.skeleton, "Head").equals(at(plain.body.skeleton, "Head"))).toBe(true);
+    expect(at(binds(small, "identity"), "Head").equals(at(binds(plain, "identity"), "Head"))).toBe(true);
+  }, 180_000);
 });

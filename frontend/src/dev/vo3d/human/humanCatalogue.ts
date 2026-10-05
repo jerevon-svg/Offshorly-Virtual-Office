@@ -46,11 +46,15 @@ export const PROOF_CATALOGUE: readonly AppearanceAsset[] = [
   // Bon's Meshy-generated hair, extracted from the fused raw mesh and fitted around the Alex skull (modular hair slot)
   { id: "bon-meshy-hair-v1", slot: "hair", label: "Bon · Meshy hair", url: `${BASE}hair/bon-meshy-hair-v1.glb` },
   { id: "medium-curtain", slot: "hair", label: "Medium curtain · middle part", url: `${BASE}hair/medium-curtain.glb` },
-  // Micah's large round light frames, from her approved illustration, fitted to her identity head (build-glasses.mjs)
+  // GLASSES (V1.1 accessory contract): every style is a FIT-SPACE module — one approved style, refitted to whichever identity
+  // wears it from that identity's own anchors (humanGlasses.ts / humanAccessoryFit.ts); never a per-employee copy.
+  // Micah's large round light frames (style measured from her approved illustration)
   { id: "micah-glasses", slot: "glasses", label: "Micah · round light frames", url: `${BASE}accessories/micah-glasses.glb`, socket: "identity-face" },
   { id: "glasses-classic", slot: "glasses", label: "Classic frames", url: `${BASE}accessories/glasses-classic.glb`, socket: "identity-face" },
+  { id: "glasses-rect", slot: "glasses", label: "Rectangular frames", url: `${BASE}accessories/glasses-rect.glb`, socket: "identity-face" },
   { id: "bon-long", slot: "hair", label: "Bon · longer", url: `${BASE}hair/bon-long.glb` },
   { id: "bon-short", slot: "hair", label: "Bon · original", url: `${BASE}hair/bon-short.glb` },
+  // Bon's frames: the style measured from his approved V1 frames (glasses-styles/bon-frames.json), fit space like every style
   { id: "bon-glasses", slot: "glasses", label: "Bon's frames", url: `${BASE}accessories/bon-glasses.glb`, socket: "identity-face" },
   {
     id: "hoodie-crrn", slot: "top", label: "CRRN IVRSE hoodie", url: `${BASE}garments/hoodie-crrn.glb`, thickness: 0.036,
@@ -58,7 +62,7 @@ export const PROOF_CATALOGUE: readonly AppearanceAsset[] = [
     colorways: { black: { main: "#17171a", trim: "#101012", accent: "#efebe2" }, heather: { main: "#5b5d63", trim: "#4a4c51", accent: "#efebe2" }, bone: { main: "#e6e0d3", trim: "#d7d0c1", accent: "#1c1c20" } },
   },
   {
-    id: "tee-offshorly", slot: "top", label: "Offshorly tee", url: `${BASE}garments/tee-offshorly.glb`, thickness: 0.016,
+    id: "tee-offshorly", slot: "top", label: "Offshorly tee", url: `${BASE}garments/tee-offshorly.glb`, thickness: 0.022,
     hides: ["CHEST", "BELLY", "UPPERARM_L", "UPPERARM_R"],
     colorways: { mint: { main: "#5dd9b3", trim: "#4cc4a0" }, ...TEE_COLORWAYS },
   },
@@ -67,10 +71,16 @@ export const PROOF_CATALOGUE: readonly AppearanceAsset[] = [
     colorways: { mid: { main: "#3d5a86", trim: "#c88a3c", accent: "#9fb4d1" }, light: { main: "#7b97bf", trim: "#c88a3c", accent: "#b9c9df" }, black: { main: "#2a2c33", trim: "#8a8a8a", accent: "#4a4d56" } },
   },
   {
+    // the default employee uniform's bottom (V1.1): relaxed fleece joggers, gathered ankle cuff, rib waistband
+    id: "joggers-offshorly", slot: "bottom", label: "Offshorly joggers", url: `${BASE}garments/joggers-offshorly.glb`, thickness: 0.04, hides: ["PELVIS", "THIGH_L", "THIGH_R", "SHIN_L", "SHIN_R"],
+    colorways: { black: { main: "#1f1f24", trim: "#16161a", accent: "#5dd9b3" }, charcoal: { main: "#3a3b41", trim: "#2c2d32", accent: "#5dd9b3" }, navy: { main: "#232c42", trim: "#1a2234", accent: "#5dd9b3" } },
+  },
+  {
     id: "clogs", slot: "shoes", label: "Clogs", url: `${BASE}garments/clogs.glb`, hides: ["FOOT_L", "FOOT_R"],
     colorways: { chalk: { main: "#ece7dc", trim: "#d9d3c5", accent: "#bdb6a6" }, black: { main: "#232327", trim: "#18181b", accent: "#3a3a40" }, sage: { main: "#9fb39a", trim: "#879b82", accent: "#e9e5da" } },
   },
-  { id: "sneakers", slot: "shoes", label: "Sneakers", url: `${BASE}garments/sneakers.glb`, hides: ["FOOT_L", "FOOT_R"] },
+  { id: "sneakers", slot: "shoes", label: "Sneakers", url: `${BASE}garments/sneakers.glb`, hides: ["FOOT_L", "FOOT_R"],
+    colorways: { white: { main: "#f4f3ef", trim: "#ebe8e1", accent: "#f7f6f2" }, black: { main: "#26262b", trim: "#efede7", accent: "#26262b" }, grey: { main: "#b9bbc0", trim: "#efede7", accent: "#f7f6f2" } } },
   // generalisation batch: identity heads from the unchanged universal pipeline, plus Clang's modular hair flower
   { id: "angelo-meshy-chibi-v1", slot: "identity", label: "Angelo · Meshy auto-chibi", url: `${BASE}identity/angelo-meshy-chibi-v1.glb`, hides: [], ownerEmployeeId: "angelo" },
   { id: "clang-meshy-chibi-v1", slot: "identity", label: "Clang · Meshy auto-chibi", url: `${BASE}identity/clang-meshy-chibi-v1.glb`, hides: [], ownerEmployeeId: "clang" },
@@ -127,19 +137,24 @@ export const BON_PHASE2_AVATAR: EmployeeAvatar = {
   glasses: { assetId: "bon-glasses" },
 };
 
+/** THE DEFAULT EMPLOYEE UNIFORM (V1.1): black Offshorly tee + black baggy Offshorly joggers + clean white sneakers. A default, not
+ *  a lock — every slot stays editable and the whole wardrobe stays in the catalogue (Bon keeps his approved outfit). */
+export const OFFSHORLY_UNIFORM = {
+  top: { assetId: "tee-offshorly", colorway: "ink" }, bottom: { assetId: "joggers-offshorly", colorway: "black" }, shoes: { assetId: "sneakers", colorway: "white" },
+} as const satisfies Pick<EmployeeAvatar, "top" | "bottom" | "shoes">;
+
 /** Micah — employee #2: Meshy identity through the universal pipeline, feminine body preset, her own glasses */
 export const MICAH_AVATAR: EmployeeAvatar = {
   employeeId: "micah", base: HUMAN_BASE_VERSION, version: 1, bodyPreset: "feminine",
   identity: { headAssetId: "micah-meshy-chibi-v1" }, hair: { assetId: null }, idleProfile: "feminine",
-  top: { assetId: "tee-offshorly", colorway: teeColorwayFor("micah") }, bottom: { assetId: "shorts-denim", colorway: "mid" },
-  shoes: { assetId: "clogs", colorway: "chalk" }, glasses: { assetId: "micah-glasses" }, accessories: [],
+  ...OFFSHORLY_UNIFORM,
+  glasses: { assetId: "micah-glasses" }, accessories: [],
 };
 
 /** the generalisation batch (body preset from each person's production idle profile, deterministic tee) */
 const batchAvatar = (id: string, bodyPreset: "standard" | "feminine", accessories: { assetId: string }[] = []): EmployeeAvatar => ({
   employeeId: id, base: HUMAN_BASE_VERSION, version: 1, bodyPreset, identity: { headAssetId: `${id}-meshy-chibi-v1` }, hair: { assetId: null },
-  idleProfile: bodyPreset === "feminine" ? "feminine" : "masculine", top: { assetId: "tee-offshorly", colorway: teeColorwayFor(id) },
-  bottom: { assetId: "shorts-denim", colorway: "mid" }, shoes: { assetId: "clogs", colorway: "chalk" }, glasses: { assetId: null }, accessories,
+  idleProfile: bodyPreset === "feminine" ? "feminine" : "masculine", ...OFFSHORLY_UNIFORM, glasses: { assetId: null }, accessories,
 });
 export const ANGELO_AVATAR = batchAvatar("angelo", "standard");
 export const CLANG_AVATAR = batchAvatar("clang", "feminine", [{ assetId: "clang-flower" }]);

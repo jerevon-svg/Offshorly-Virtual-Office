@@ -82,6 +82,18 @@ export class BodyClearance {
     this.rig = rig; this.scale = worldScale; this.caps = measureEnvelopes(body);
   }
   get envelopes(): readonly Capsule[] { return this.caps; }
+  /** V1.2 MEASURED GARMENT STANDOFF: how far a worn garment really stands off each capsule it covers — the same percentile
+   *  of the garment's own bind-pose distances to that capsule's bone segment (each vertex to its nearest covered capsule),
+   *  minus the body's radius. A typed thickness under-states baggy cloth (joggers): the hands then sank into the thighs. */
+  garmentStandoff(src: Pick<THREE.SkinnedMesh, "skeleton" | "geometry">, capIds: readonly string[]): Record<string, number> {
+    const sk = src.skeleton, bind = (n: string) => { const i = sk.bones.findIndex((b) => b.name === n); return i < 0 ? null : new THREE.Vector3().setFromMatrixPosition(sk.boneInverses[i].clone().invert()); };
+    const caps = this.caps.filter((c) => capIds.includes(c.id)).map((c) => ({ c, a: bind(c.a), b: bind(c.b), d: [] as number[] })).filter((q) => q.a && q.b);
+    const pos = src.geometry.getAttribute("position"), v = new THREE.Vector3(), out: Record<string, number> = {};
+    if (!caps.length || !pos) return out;
+    for (let i = 0; i < pos.count; i++) { v.fromBufferAttribute(pos, i); let best = Infinity, bq: (typeof caps)[number] | null = null; for (const q of caps) { const d = segDist(v, q.a!, q.b!); if (d < best) { best = d; bq = q; } } bq?.d.push(best); }
+    for (const q of caps) { if (q.d.length < 20) continue; q.d.sort((x, y) => x - y); out[q.c.id] = Math.max(0, q.d[Math.floor(q.d.length * (q.c.pct ?? 0.9))] - q.c.r); }
+    return out;
+  }
   radius(id: string): number { const c = this.caps.find((q) => q.id === id); return c ? (c.r + (this.extra[c.id] ?? 0)) * this.scale : 0; }
   private ends(id: string): [THREE.Vector3, THREE.Vector3] {
     const c = this.caps.find((q) => q.id === id)!;

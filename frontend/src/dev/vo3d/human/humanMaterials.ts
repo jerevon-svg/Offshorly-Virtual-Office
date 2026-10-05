@@ -29,7 +29,9 @@ export function bodySkinMaterial(map: THREE.Texture | null, skin: THREE.ColorRep
   if (((uHide >> region) & 1) == 1) discard;`)
       .replace("#include <map_fragment>", `#include <map_fragment>
   float lum = dot(diffuseColor.rgb, vec3(0.2126, 0.7152, 0.0722));
-  diffuseColor.rgb = uSkin * clamp(lum / uLumRef, 0.55, 1.25);`);
+  // V1.2 CLEAN SKIN CONTRACT: the base texture only carries gentle large-scale variation (±10%) — a wide clamp turned every
+  // stray texel into a dark speck and every UV-seam bleed into a white crack line on hands, arms and legs
+  diffuseColor.rgb = uSkin * clamp(lum / uLumRef, 0.9, 1.1);`);
   };
   m.customProgramCacheKey = () => "humanbase-skin";
   return { material: m, uniforms };
@@ -37,21 +39,47 @@ export function bodySkinMaterial(map: THREE.Texture | null, skin: THREE.ColorRep
 
 /** Identity head: the identity's own texture, the `_paint` layer over it (rebuilt surfaces). `_paint` is stored
  *  sRGB (sampled from the same texture), so it is linearised in the vertex stage. */
-export function identityHeadMaterial(map: THREE.Texture | null): THREE.MeshStandardMaterial {
+/** `hair` (V1.1 layered hair meshes): the INSIDE of a hair shell (seen from below / behind) is shaded as the hair's own
+ *  shadowed underside, so an open shell reads as intended hair volume rather than a flat copy of its outside */
+/** `hair` (V1.1 layered hair meshes): the INSIDE of a hair shell (seen from below / behind) is shaded as the hair's own
+ *  shadowed underside, and the hairstyle's FLOW HIGHLIGHTS are drawn: an anisotropic (Kajiya-Kay style) highlight along
+ *  the per-vertex flow tangent (`_flow`, root → tip, from the identity build), masked to a few broad lock lanes (`_clump`),
+ *  tinted as a lighter variation of the person's hair (`m.userData.hairHL`, set from landmarks.hairHighlight). Assets
+ *  without flow data render exactly as before. */
+export function identityHeadMaterial(map: THREE.Texture | null, hair = false): THREE.MeshStandardMaterial {
   const m = new THREE.MeshStandardMaterial({ map, roughness: 0.9, metalness: 0 });
   if (m.map) m.map.anisotropy = 8;
+  const hl = { uHL: { value: new THREE.Color(0.36, 0.37, 0.4) }, uHLs: { value: 0 } };
+  if (hair) m.userData.hairHL = hl;
   m.onBeforeCompile = (shader) => {
-    shader.vertexShader = `attribute vec4 _paint;\nvarying vec4 vPaint;\n${shader.vertexShader}`
+    if (hair) Object.assign(shader.uniforms, hl);
+    shader.vertexShader = `attribute vec4 _paint;\nvarying vec4 vPaint;\n${hair ? "attribute vec3 _flow;\nattribute float _clump;\nvarying vec3 vFlow;\nvarying float vClump;\n" : ""}${shader.vertexShader}`
       .replace("#include <begin_vertex>", "#include <begin_vertex>\n  vPaint = vec4(pow(_paint.rgb, vec3(2.2)), _paint.a);");
-    shader.fragmentShader = `varying vec4 vPaint;\n${shader.fragmentShader}`
-      .replace("#include <map_fragment>", "#include <map_fragment>\n  diffuseColor.rgb = mix(diffuseColor.rgb, vPaint.rgb, vPaint.a);");
+    if (hair) shader.vertexShader = shader.vertexShader.replace("#include <defaultnormal_vertex>", `#include <defaultnormal_vertex>
+  vec3 hbF = _flow;
+  #ifdef USE_SKINNING
+    hbF = (skinMatrix * vec4(hbF, 0.0)).xyz;
+  #endif
+  vFlow = normalMatrix * hbF; vClump = _clump;`);
+    shader.fragmentShader = `varying vec4 vPaint;\n${hair ? "varying vec3 vFlow;\nvarying float vClump;\nuniform vec3 uHL;\nuniform float uHLs;\n" : ""}${shader.fragmentShader}`
+      .replace("#include <map_fragment>", `#include <map_fragment>\n  diffuseColor.rgb = mix(diffuseColor.rgb, vPaint.rgb, vPaint.a);${hair ? "\n  if (!gl_FrontFacing) diffuseColor.rgb *= 0.55;" : ""}`);
+    if (hair) shader.fragmentShader = shader.fragmentShader.replace("#include <lights_fragment_end>", `#include <lights_fragment_end>
+  #if NUM_DIR_LIGHTS > 0
+  if (uHLs > 0.0 && length(vFlow) > 0.5 && gl_FrontFacing) {
+    vec3 hbT = normalize(vFlow), hbV = normalize(vViewPosition), hbL = normalize(directionalLights[0].direction), hbH = normalize(hbL + hbV);
+    float hbC = dot(hbT, hbH), hbS = sqrt(max(0.0, 1.0 - hbC * hbC));
+    float hbSpec = pow(hbS, 40.0) * 0.6 + pow(hbS, 10.0) * 0.1;
+    float hbLane = smoothstep(0.2, 0.8, vClump), hbLit = clamp(dot(normal, hbL) * 0.6 + 0.4, 0.0, 1.0);
+    reflectedLight.directSpecular += uHL * hbSpec * hbLane * hbLit * uHLs * directionalLights[0].color * 0.12;
+  }
+  #endif`);
   };
-  m.customProgramCacheKey = () => "humanbase-identity-head";
+  m.customProgramCacheKey = () => (hair ? "humanbase-identity-hair-v2" : "humanbase-identity-head");
   return m;
 }
 
-export type Fabric = "fleece" | "jersey" | "denim" | "clog";
-const FABRIC_ID: Readonly<Record<Fabric, number>> = { fleece: 0, jersey: 1, denim: 2, clog: 3 };
+export type Fabric = "fleece" | "jersey" | "denim" | "clog" | "sneaker";
+const FABRIC_ID: Readonly<Record<Fabric, number>> = { fleece: 0, jersey: 1, denim: 2, clog: 3, sneaker: 4 };
 export type GarmentUniforms = {
   uMain: { value: THREE.Color }; uTrim: { value: THREE.Color }; uAccent: { value: THREE.Color };
   uDecal: { value: THREE.Texture | null }; uHasDecal: { value: number }; uFabric: { value: number }; uDecalTint: { value: number }; uDecalLight: { value: number };
@@ -75,11 +103,11 @@ export function garmentMaterial(fabric: Fabric, look: GarmentLook, decal: THREE.
   const m = new THREE.MeshStandardMaterial({ roughness, metalness: 0, side: THREE.DoubleSide });
   m.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, uniforms);
-    shader.vertexShader = `attribute float _band;\nvarying float vBand;\nvarying vec3 vObj;\nvarying vec3 vObjN;\nvarying vec2 vDecalUv;\n${shader.vertexShader}`
+    shader.vertexShader = `attribute float _band;\nvarying float vBand;\nvarying vec3 vObj;\nvarying vec3 vObjN;\nvarying vec2 vDecalUv;\nvarying float vDecalOk;\n${shader.vertexShader}`
       .replace("#include <begin_vertex>", `#include <begin_vertex>
-  vBand = _band; vObj = position; vObjN = normal; vDecalUv = uv;`);
+  vBand = _band; vObj = position; vObjN = normal; vDecalUv = uv; vDecalOk = uv.x < -0.5 ? 0.0 : 1.0;`);
     shader.fragmentShader = `uniform vec3 uMain; uniform vec3 uTrim; uniform vec3 uAccent; uniform sampler2D uDecal; uniform int uHasDecal; uniform int uFabric; uniform int uDecalTint; uniform int uDecalLight; uniform vec3 uSkinG;
-varying float vBand; varying vec3 vObj; varying vec3 vObjN; varying vec2 vDecalUv;
+varying float vBand; varying vec3 vObj; varying vec3 vObjN; varying vec2 vDecalUv; varying float vDecalOk;
 float hb_hash(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
 ${shader.fragmentShader}`.replace("vec4 diffuseColor = vec4( diffuse, opacity );", `
   vec3 col = uMain;
@@ -91,7 +119,7 @@ ${shader.fragmentShader}`.replace("vec4 diffuseColor = vec4( diffuse, opacity );
     if (vBand > 0.75 && vBand < 1.5) { float rib = 0.5 + 0.5 * sin((vObj.x * 0.8 + vObj.z) * 520.0); col = uTrim * (0.9 + 0.1 * rib); }
     if (vBand > 1.5 && vBand < 2.5) col = uTrim * 0.9;
     if (vBand > 2.5) col = uAccent;
-    if (uHasDecal == 1 && vDecalUv.x >= 0.0 && vDecalUv.x <= 1.0 && vDecalUv.y >= 0.0 && vDecalUv.y <= 1.0) {
+    if (uHasDecal == 1 && vDecalOk > 0.999 && vDecalUv.x >= 0.0 && vDecalUv.x <= 1.0 && vDecalUv.y >= 0.0 && vDecalUv.y <= 1.0) {
       vec4 d = texture2D(uDecal, vDecalUv);
       // light print on dark fabric: the artwork's dark ink (e.g. a wordmark) turns light; coloured marks are kept
       vec3 dc = d.rgb; if (uDecalLight == 1 && dot(dc, vec3(0.3, 0.59, 0.11)) < 0.3) dc = vec3(0.95, 0.94, 0.91);
@@ -105,6 +133,14 @@ ${shader.fragmentShader}`.replace("vec4 diffuseColor = vec4( diffuse, opacity );
     col = mix(col, uAccent, 0.32 * wear);
     if (vBand > 0.5 && vBand < 1.5) col = mix(uAccent, uMain, 0.35) * (0.93 + 0.1 * tw);
     if (vBand > 1.5) col = uTrim;
+  } else if (uFabric == 4) {
+    // sneaker: smooth leather upper, overlay panels (toe cap / heel counter) a shade off, a rubber midsole with a
+    // foxing line and tread underneath, laces, a darker lining inside the collar
+    col = uMain * (0.975 + 0.03 * grain);
+    if (vBand > 0.5 && vBand < 1.5) { col = uTrim; if (vObjN.y < -0.6) col = uTrim * (0.8 + 0.06 * step(0.5, fract(vObj.z * 140.0))); else if (abs(vObj.y - 0.0135) < 0.0011) col = uTrim * 0.8; }
+    if (vBand > 1.5 && vBand < 2.5) col = uMain * 0.955;
+    if (vBand > 2.5 && vBand < 3.5) col = uAccent * 0.97;
+    if (vBand > 3.5 && vBand < 4.5) col = uMain * 0.62;
   } else {
     // clog: moulded foam, vent holes over the toe box, a darker sole, the strap and its rivets
     col = uMain * (0.97 + 0.03 * grain);
@@ -230,7 +266,10 @@ const MOUTH_FRAG = /* glsl */ `
  *  face uniforms drive blink (a skin lid with a lash edge descends), squint (lower lid) and gaze (the painted iris
  *  slides over the sclera). `lookUV`: the iris travel per unit of uLook, in the atlas' UV. */
 export function bakedEyeMaterial(u: FaceUniforms, map: THREE.Texture, sclera: string, lookUV: [number, number]): THREE.MeshStandardMaterial {
-  const m = new THREE.MeshStandardMaterial({ map, roughness: 0.35, metalness: 0, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+  // V1.1: a CONSTANT depth bias only. The shell is already geometrically lifted off the face; a slope-scaled offset
+  // (polygonOffsetFactor) grows without bound at grazing angles and pulled the eye through bangs, brows and the nose
+  // bridge in ¾ and side views
+  const m = new THREE.MeshStandardMaterial({ map, roughness: 0.35, metalness: 0, transparent: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: 0, polygonOffsetUnits: -4 });
   map.colorSpace = THREE.SRGBColorSpace; map.minFilter = THREE.LinearFilter; map.generateMipmaps = false;
   const extra = { uSclera: { value: new THREE.Color(sclera) }, uLookUV: { value: new THREE.Vector2(...lookUV) } };
   m.onBeforeCompile = (shader) => {
@@ -250,6 +289,9 @@ ${shader.fragmentShader}`.replace("#include <map_fragment>", `
   // coded alpha, read UNFILTERED: ≤1 outside · 2 lid region · 8/9 opening (+iris flag) · 10 painted flick (kept as painted)
   ivec2 tsz = textureSize(map, 0);
   vec2 tp = vMapUv * vec2(tsz);
+  // the top 9 atlas rows are DATA (alpha = numbers, not codes): the grid's top edge samples exactly at their boundary — never
+  // decode them as eye texels (V1 drew a dashed line along the top of every eye box)
+  if (tp.y >= float(tsz.y) - 9.0) discard;
   float ai = floor(texelFetch(map, ivec2(tp), 0).a * 255.0 + 0.5);
   if (ai < 1.5) discard;
   float cls = floor(ai / 2.0);
@@ -300,7 +342,10 @@ ${shader.fragmentShader}`.replace("#include <map_fragment>", `
   // meets the surrounding skin with no edge
   diffuseColor.a = cls > 3.5 ? 1.0 : smoothstep(0.0, 1.0, vEdge);
   diffuseColor.rgb = col;`).replace("#include <roughnessmap_fragment>", "#include <roughnessmap_fragment>\n  roughnessFactor = mix(roughnessFactor, 0.9, hbSkinW);")
-      .replace("#include <normal_fragment_maps>", "#include <normal_fragment_maps>\n  if (hbLidN > 0.0 && dot(vLidN, vLidN) > 0.0) normal = normalize(mix(normal, normalize(vLidN), hbLidN));");
+      // V1.1: the OPEN EYE (sclera + iris) shades with the shell's SMOOTHED surface — the generated head's eye relief (bumps,
+      // ridges, a lumpy iris bulge) no longer reads as a rough eyeball from oblique angles. The lid keeps the head's own
+      // shading at rest (so it matches the socket around it) and blends to the smooth lid as it closes (hbLidN)
+      .replace("#include <normal_fragment_maps>", "#include <normal_fragment_maps>\n  float hbN = max(hbLidN, cls > 3.5 ? 0.8 * smoothstep(0.0, 1.0, vEdge) : 0.0);\n  if (hbN > 0.0 && dot(vLidN, vLidN) > 0.0) normal = normalize(mix(normal, normalize(vLidN), hbN));");
   };
   m.customProgramCacheKey = () => "humanbase-baked-eyes-lid3";
   return m;

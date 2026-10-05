@@ -1,9 +1,13 @@
 // regress-identity.mjs — vertex-level regression of a rebuilt identity head against its frozen approved baseline.
 //   node scripts/avatar-pipeline/human-base/regress-identity.mjs <approved.glb> <rebuilt.glb>
-// Vertices are matched by UV (same raw source → the same UV identifies the same source vertex). Reports position
-// deviation (native units) for all matched vertices and for the face, plus vertices present in only one of the two.
+// Vertices are matched by UV (same raw source → the same UV identifies the same source vertex). V1.1 layered heads are
+// compared as the union of identity_head + hair layers (the FRINGE copy is foreground and deliberately lifted — reported
+// on its own), matched on their pre-atlas source UVs (_SRCUV) when present. Reports position deviation (native units) for
+// all matched vertices, the face, and vertices present in only one of the two.
 import { io } from "./lib.mjs";
-const read = async (f) => { const ms = (await io.read(f)).getRoot().listMeshes(); const p = (ms.find((m) => m.getName() === "identity_head") ?? ms[0]).listPrimitives()[0]; return { P: p.getAttribute("POSITION").getArray(), UV: p.getAttribute("TEXCOORD_0").getArray() }; };
+const read = async (f, skip = ["identity_hair_fringe", "identity_hair_base"]) => { const ms = (await io.read(f)).getRoot().listMeshes(); const P = [], UV = [];
+  for (const m of ms) { const n = m.getName(); if (!n.startsWith("identity_") || skip.includes(n)) continue; const p = m.listPrimitives()[0], a = p.getAttribute("POSITION").getArray(), u = (p.getAttribute("_SRCUV") ?? p.getAttribute("TEXCOORD_0")).getArray(); for (const x of a) P.push(x); for (const x of u) UV.push(x); }
+  return { P, UV }; };
 const [fa, fb] = process.argv.slice(2), A = await read(fa), B = await read(fb);
 const key = (uv, i) => `${Math.round(uv[i * 2] * 1e6)},${Math.round(uv[i * 2 + 1] * 1e6)}`;
 const mA = new Map(); for (let i = 0; i < A.P.length / 3; i++) mA.set(key(A.UV, i), i);

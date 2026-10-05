@@ -19,6 +19,8 @@ const DT = 1 / 60;
 // with REAL AnimationClips, because the airborne pose is a statement about the mixer: it freezes one
 // clip at one phase, and a stub with no clips could not tell that apart from doing nothing.
 const rig = vi.hoisted(() => ({ clips: ["idle-9", "walking", "sit-on-chair-arms"] }));
+// these exercise the LEGACY prototype pipeline with "bon" as a stock character; HumanBase peers: Coworkers.human.test
+vi.mock("./avatar/humanBody", async (orig) => ({ ...(await orig<typeof import("./avatar/humanBody")>()), humanBodyFor: () => null }));
 vi.mock("./avatar/CastPrototypes", async () => {
   const T = await import("three");
   return {

@@ -253,6 +253,8 @@ const pending: { resolve: () => void }[] = [];
 let autoResolve = true;
 const loadCalls: string[] = [];
 
+// these exercise the LEGACY prototype pipeline with "bon" as a stock character; HumanBase peers: Coworkers.human.test
+vi.mock("../avatar/humanBody", async (orig) => ({ ...(await orig<typeof import("../avatar/humanBody")>()), humanBodyFor: () => null }));
 vi.mock("../avatar/CastPrototypes", () => ({
   prototypeFor: (id: string) => {
     loadCalls.push(id);
@@ -343,7 +345,7 @@ describe("Coworkers.sync — the cache is invisible from the scene graph", () =>
     flushPending();
     await slow;
     const here = coworkers.positions().find((p) => p.name === base[1].displayName);
-    expect(here).toEqual({ name: base[1].displayName, x: 400 + 4 * 6 + 5, z: 260 - 3, yaw: 0, source: "live", movementId: null, clip: "", seat: null, airborne: false });
+    expect(here).toEqual({ name: base[1].displayName, x: 400 + 4 * 6 + 5, z: 260 - 3, yaw: 0, source: "live", movementId: null, clip: "", avatarId: base[1].avatarId, runtime: "legacy-glb", seat: null, airborne: false });
     expect(coworkers.size).toBe(4);
   });
 

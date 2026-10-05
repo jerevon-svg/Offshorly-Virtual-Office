@@ -58,6 +58,7 @@ import * as THREE from "three";
 import { clone as cloneSkinned } from "three/examples/jsm/utils/SkeletonUtils.js";
 import { BON_STANDING_HEIGHT, CLIP_IDLE, CLIP_RUN, CLIP_WALK, type AvatarLod, CLIP_SIT, CLIP_SIT_ANSWER } from "../adapters/v1Avatar";
 import { castLabelTexture, prototypeFor, type CastPrototype } from "../avatar/CastPrototypes";
+import { createHumanBody, humanBodyFor, type HumanBody } from "../avatar/humanBody";
 import { dist, FACING_YAW, stepAngle, wrapAngle, type Facing, type Vec2 } from "../core/coords";
 import { standablePointNear, type StandTest } from "../player/PlayerBody";
 import { AIRBORNE_POSE_PHASE, JUMP_DURATION_MS, PlayerJump } from "../player/PlayerJump";
@@ -325,12 +326,34 @@ type LiveSpot = { x: number; z: number; pos: Vec2 | null };
  *  replaying. Locomotion is modelled on devtools/Crowd.ts's member, which has walked cast bodies around
  *  this world since the stress harness: same clip pair, same crossfade, same turn-toward-travel. What is
  *  different is where the route comes from — V1's wire rather than a random roam target. */
+/** WHAT A COWORKER BODY IS BUILT FROM. A legacy character is the shared parsed prototype, cloned per body; a
+ *  HumanBase employee is their OWN body, built by the same factory the local player's avatar uses
+ *  (avatar/humanBody createHumanBody), so a peer's Bon is the viewer's own Bon. */
+type HumanSource = { readonly id: string; readonly human: HumanBody };
+type BodySource = CastPrototype | HumanSource;
+const isHuman = (s: BodySource): s is HumanSource => "human" in s;
+
+/** avatarId → appearance → HumanBase or legacy body: the one resolver (avatar/humanBody) the local player uses
+ *  too. A HumanBase load failure falls back to the legacy character, never to an absent person. */
+function bodySourceFor(avatarId: string, lod: AvatarLod): Promise<BodySource> {
+  const cfg = humanBodyFor(avatarId);
+  if (!cfg) return prototypeFor(avatarId, lod);
+  return createHumanBody(cfg).then(
+    (human): BodySource => ({ id: avatarId, human }),
+    (e: unknown) => { console.warn(`vo3d: HumanBase body for ${avatarId} failed — falling back to the legacy GLB`, e); return prototypeFor(avatarId, lod); },
+  );
+}
+/** a built source that never became a body (the person left, a newer roster won) */
+function discardSource(s: BodySource | null): void { if (s && isHuman(s)) s.human.human.dispose(); }
+
 class CoworkerBody {
   readonly root = new THREE.Group();
   readonly avatarId: string;
   readonly displayName: string;
   readonly triangles: number;
-  private readonly mixer: THREE.AnimationMixer;
+  private readonly mixer: THREE.AnimationMixer | null;
+  /** a HumanBase employee's own runtime (its mixer, behaviour layers and face), or null for a legacy clone */
+  private readonly human: HumanBody["human"] | null;
   private readonly actions: Record<string, THREE.AnimationAction> = {};
   private current = "";
   private label: THREE.Sprite | null = null;
@@ -384,23 +407,37 @@ class CoworkerBody {
   /** the ground under a point (the world's exterior ground model; 0 indoors), or null for a flat world */
   private readonly ground: ((p: Vec2) => number) | null;
 
-  constructor(proto: CastPrototype, name: string, at: Vec2, yaw: number, phase: number, ground: ((p: Vec2) => number) | null = null) {
+  constructor(source: BodySource, name: string, at: Vec2, yaw: number, phase: number, ground: ((p: Vec2) => number) | null = null) {
     this.ground = ground;
-    this.avatarId = proto.id;
+    this.avatarId = source.id;
     this.displayName = name;
-    this.triangles = proto.triangles;
-    this.rig = sceneRig(proto.scene, proto.clips);
-    const body = cloneSkinned(proto.scene) as THREE.Group;
     this.root.name = `coworker:${name}`;
-    this.root.add(body);
     this.root.position.set(at.x, 0, at.z);
     this.yaw = yaw;
     this.root.rotation.set(0, yaw, 0);
-    this.mixer = new THREE.AnimationMixer(body);
-    // EVERY clip the prototype carries, bound once. The prototypes are the same consolidated GLBs the
-    // hero avatar and the stress crowd use, so `walking` is there; hasClip is still asked before it is
-    // played, because an older asset without it must fall back rather than freeze mid-pose.
-    for (const clip of proto.clips) this.actions[clip.name] = this.mixer.clipAction(clip);
+    if (isHuman(source)) {
+      // HUMANBASE: the body is already in world units (36 = BON_STANDING_HEIGHT, feet at 0). Its actions are
+      // keyed here by VO's clip names (CLIP_IDLE → the employee's idle profile), so everything below — play,
+      // freeze, seat formula, locomotion — runs unchanged on either kind of body.
+      const h = source.human;
+      this.human = h.human;
+      this.mixer = null;
+      this.triangles = h.human.stats().triangles;
+      this.rig = sceneRig(h.human.scene, h.clips);
+      this.root.add(h.human.root);
+      for (const clip of h.clips) { const a = h.action(clip.name); if (a) this.actions[clip.name] = a; }
+    } else {
+      this.human = null;
+      this.triangles = source.triangles;
+      this.rig = sceneRig(source.scene, source.clips);
+      const body = cloneSkinned(source.scene) as THREE.Group;
+      this.root.add(body);
+      this.mixer = new THREE.AnimationMixer(body);
+      // EVERY clip the prototype carries, bound once. The prototypes are the same consolidated GLBs the
+      // hero avatar and the stress crowd use, so `walking` is there; hasClip is still asked before it is
+      // played, because an older asset without it must fall back rather than freeze mid-pose.
+      for (const clip of source.clips) this.actions[clip.name] = this.mixer.clipAction(clip);
+    }
     this.play(CLIP_IDLE, 0);
     const idle = this.actions[CLIP_IDLE];
     // Stagger the idle phase, or a roomful of people breathe in perfect lockstep — and, more to the
@@ -695,7 +732,7 @@ class CoworkerBody {
   update(dt: number): boolean {
     if (this.seatedIn !== null) {
       // Seated: the clip breathes, the root does not move. Nothing below may play idle over the sit.
-      this.mixer.update(dt);
+      this.tick(dt);
       return false;
     }
     let moved = false;
@@ -782,8 +819,16 @@ class CoworkerBody {
       this.root.rotation.set(0, this.yaw, 0);
       moved = true;
     }
-    this.mixer.update(dt);
+    this.tick(dt);
     return moved;
+  }
+
+  get runtime(): "humanbase" | "legacy-glb" { return this.human ? "humanbase" : "legacy-glb"; }
+
+  /** advance the animation: a legacy clone's own mixer, or the HumanBase runtime (pose restore → mixer → layers → face) */
+  private tick(dt: number): void {
+    if (this.human) this.human.update(dt);
+    else this.mixer?.update(dt);
   }
 
   /** Stop replaying without moving the body — for a walk whose person left the roster mid-stride. */
@@ -809,8 +854,8 @@ class CoworkerBody {
       this.root.remove(this.label);
       this.label = null;
     }
-    this.mixer.stopAllAction();
-    this.mixer.uncacheRoot(this.root);
+    if (this.human) this.human.dispose();
+    else if (this.mixer) { this.mixer.stopAllAction(); this.mixer.uncacheRoot(this.root); }
     this.root.removeFromParent();
     this.root.clear();
   }
@@ -849,6 +894,9 @@ export type CoworkerPosition = {
   movementId: string | null;
   /** the clip playing — idle, walking, running or seated — for telling a position stutter from an animation one */
   clip: string;
+  /** the character and which body runtime draws it (HumanBase Phase 2: a peer's Bon must read "humanbase") */
+  avatarId: string;
+  runtime: "humanbase" | "legacy-glb";
   /** PHASE 6C — the seat anchor this body is seated in, or null */
   seat: string | null;
   /** is this body in the air right now (a relayed jump) — for telling a replicated jump from a
@@ -957,8 +1005,8 @@ export class Coworkers {
   async addRider(email: string, avatarId: string, displayName: string, at: Vec2, yaw: number): Promise<boolean> {
     const gen = this.riderGen;
     if (this.riders.has(email)) return false;
-    const proto = await prototypeFor(avatarId, this.deps.lod ?? 1).catch(() => null);
-    if (!proto || this.disposed || gen !== this.riderGen || this.riders.has(email)) return false;
+    const proto = await bodySourceFor(avatarId, this.deps.lod ?? 1).catch(() => null);
+    if (!proto || this.disposed || gen !== this.riderGen || this.riders.has(email)) { discardSource(proto); return false; }
     // FLAT: the rider group travels with the lift car, so its bodies stand in the car's frame, not the campus's
     const body = new CoworkerBody(proto, displayName, at, yaw, phaseFor(email));
     body.setLabelVisible(false);
@@ -1027,6 +1075,8 @@ export class Coworkers {
         yaw: Math.round(body.facingYaw * 1000) / 1000,
         movementId: body.movementId?.slice(0, 8) ?? null,
         clip: body.clip,
+        avatarId: body.avatarId,
+        runtime: body.runtime,
         source: this.wanted.get(email)?.coworker.posSource ?? "desk",
         seat: body.seatedIn,
         airborne: body.airborne,
@@ -1107,7 +1157,7 @@ export class Coworkers {
         // A character whose GLB will not load must not take the world down with it, or one bad asset
         // costs every other coworker too. The failure is swallowed to a null and that person is simply
         // absent, which is the same honest absence a missing registry entry produces.
-        prototypeFor(p.coworker.avatarId, lod).catch((e: unknown) => {
+        bodySourceFor(p.coworker.avatarId, lod).catch((e: unknown) => {
           console.warn(`vo3d: could not load the 3D character for ${p.coworker.displayName}`, e);
           return null;
         }),
@@ -1115,7 +1165,7 @@ export class Coworkers {
     );
     // The world may have been disposed, or a newer POPULATION roster may have arrived, while those were
     // in flight. The newer batch owns `loading` now, so this one clears nothing on its way out.
-    if (this.disposed || generation !== this.generation) return;
+    if (this.disposed || generation !== this.generation) { protos.forEach(discardSource); return; }
 
     let added = false;
     for (let i = 0; i < additions.length; i++) {
@@ -1125,7 +1175,7 @@ export class Coworkers {
       // THE NEWEST SPOT, not the one this batch captured: position syncs have been running freely while
       // this downloaded. A person who dropped off the roster in the meantime has no entry and is skipped.
       const spot = this.wanted.get(email);
-      if (!spot || this.bodies.has(email)) continue;
+      if (!spot || this.bodies.has(email)) { discardSource(proto); continue; }
       const { coworker, pos } = spot;
       // Deterministic per person rather than random: the same viewer reloading, and two viewers looking
       // at the same room, see the same stagger instead of a fresh shuffle.
