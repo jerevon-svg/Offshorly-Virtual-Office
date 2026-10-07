@@ -34,14 +34,34 @@ export interface Vo3dFloorSpec {
    *  space has no exterior, no campus and no sky around it, so free orbit would show it as a slab
    *  floating in the void — 3D EXPLORE is therefore not offered above the ground floor. */
   viewModes: readonly Vo3dViewMode[];
+  /** storeys above the ground (0 = ground). Drives nothing but how far BELOW this floor the shared
+   *  exterior is presented — see STOREY_H. */
+  level: number;
 }
 
 export const GROUND_FLOOR_ID: Vo3dFloorId = "floor-1";
 
 export const FLOORS: Record<Vo3dFloorId, Vo3dFloorSpec> = {
-  "floor-1": { id: "floor-1", placeId: null, name: "Office", indicator: "01", viewModes: ["office", "explore", "player"] },
-  "floor-2": { id: "floor-2", placeId: "floor-2", name: "Meetings", indicator: "02", viewModes: ["office", "player"] },
+  "floor-1": { id: "floor-1", placeId: null, name: "Office", indicator: "01", viewModes: ["office", "explore", "player"], level: 0 },
+  "floor-2": { id: "floor-2", placeId: "floor-2", name: "Meetings", indicator: "02", viewModes: ["office", "player"], level: 1 },
 };
+
+/** THE BUILDING'S FLOOR-TO-FLOOR HEIGHT, in world units — how far below an upper storey the ONE shared
+ *  exterior (build/exterior + the AI Lab) is presented. Floors are still separated in x/z for routing;
+ *  this is presentation only, and it never reaches a region, a stand test or the movement wire.
+ *
+ *  WHY 96 (chosen from live 2F captures at 62 / 84 / 96 / 104). A storey is at least its wall plus the
+ *  structure under the storey above: floor 2's curtain wall is 60 (the building's WALL_H) and its slab +
+ *  plinth hang 10 below its floor, so under 70 floor 2's structure would stand inside the ground floor.
+ *  At 62 (the old floor2Context value) the north windows looked straight into the rear tree canopies and
+ *  hid the AI Lab. At 84 the Lab cleared the trees but the street-lamp heads (the tallest thing outside,
+ *  ~132 above grade) still sat above the eye line. At 96 every exterior landmark — cars (~30), trees
+ *  (<= ~125), lamps, the lake and the Lab — sits below a standing eye (~136 above grade): a ~4.6 m
+ *  premium office storey against 36-unit people. 104 added nothing visible; more would read as a tower. */
+export const STOREY_H = 96;
+
+/** how far below this floor's plate the shared exterior stands (0 on the ground floor) */
+export const exteriorDrop = (id: Vo3dFloorId, storey: number = STOREY_H): number => FLOORS[id].level * storey;
 
 /** Bottom to top. The elevator reads this to know what it can offer and in which direction it travels. */
 export const FLOOR_ORDER: readonly Vo3dFloorId[] = ["floor-1", "floor-2"];

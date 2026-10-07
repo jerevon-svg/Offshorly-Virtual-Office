@@ -53,6 +53,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Vo3dCoworkerSelection, Vo3dScreenAnchor } from "./interactions";
 import type { Vo3dWorld } from "./world";
+import { physicallyInMeeting } from "./meetingArrival";
 import { CoworkerActionMenu, type Vo3dCoworkerAction } from "./CoworkerActionMenu";
 import type { Vo3dCoworker } from "./coworkers";
 import { resolveEmployeeLocations, type EmployeeLocation } from "./employeeLocation";
@@ -98,6 +99,7 @@ import { useAutoStatusDetection } from "../../../services/presence/useAutoStatus
 import { isConnectedToMedia } from "../../../services/call/callStore";
 import type { ChatMessage } from "../../../services/chat";
 import { isAuthoredMessage } from "../../../services/chat/types";
+import { messageSpeechText } from "../../../services/chat/stickers";
 import { officePeopleToLayers } from "../../../data/rosterLayers";
 import { ACTIVE_DETAIL_STATUSES, resolvePeerStatus, STATUS_META, type OfficeStatus } from "../../../services/presence/status";
 import { useDndEmails, useSelfDndPublication } from "../../../services/presence/dndClient";
@@ -124,6 +126,9 @@ import { SpatialCallControls } from "../../../components/OfficeMap/SpatialCallCo
 import { CallOverlay } from "../../../components/OfficeMap/CallOverlay";
 import { Vo3dCallBar } from "./Vo3dCallBar";
 import { Vo3dMeetingChat } from "./Vo3dMeetingChat";
+import { Vo3dTravelChat } from "./Vo3dTravelChat";
+import { inTravelChat } from "./travelChat";
+import { clearTravelChat, sendTravelChat, useTravelParty } from "../../../services/party/travelPartyStore";
 import {
   expireReactions,
   joinMeetingChat,
@@ -171,6 +176,19 @@ import type { AssetLayer } from "../../../types/office";
 import type { OfficePerson } from "../../../services/office/floorMerge";
 import { openCompanyHub } from "../../../services/hub/companyHubStore";
 import styles from "./Vo3dOverlay.module.css";
+import demoStyles from "./AiLabDemoChip.module.css";
+import type { AiWorkforceStatus } from "./aiWorkforceStatus";
+import { AiLabResultPreview } from "./AiLabResultPreview";
+import { AiLabTaskChat } from "./AiLabTaskChat";
+import { TOUCAN_BUSY_LABEL } from "./toucanActivity";
+import { TOUCAN_AVATAR_GLYPH } from "../../../services/chat/toucanSender";
+import { jobOpen, latestDelivered, readThrough, type ConversationEntry } from "../world/agentJob";
+import { stepFor } from "../world/jobStatusLine";
+import { MEETING_ROOMS } from "../rooms/floor2Meeting";
+/** Every Meeting Floor room's meeting id (`mf-<slug>`) — participation in one of these is IN MEETING. */
+const ROOM_MEETING_IDS: ReadonlySet<string> = new Set(MEETING_ROOMS.map((r) => r.meetingId));
+const roomIdOfMeeting = (meetingId: string): string | null => MEETING_ROOMS.find((r) => r.meetingId === meetingId)?.id ?? null;
+
 
 export interface Vo3dOverlayProps {
   /** The live world, or null until it has been built. Held as a ref by the host for the same reason it
@@ -207,6 +225,13 @@ export interface Vo3dOverlayProps {
 
 /** How long a transient message stays up, ms — V1's own character-menu toast timings. */
 const TOAST_MS = 2400;
+/** PHASE 6B — an AI Workforce task conversation's window key (one per job) */
+const taskWindowKey = (jobId: string): string => `task:${jobId}`;
+/** what raises a task chat head's unread count: the team's and Toucan's messages, a result, a request for you —
+ *  never your own lines, and never the derived status rows */
+function meaningfulTaskEntry(c: ConversationEntry): boolean {
+  return c.kind === "message" ? c.from !== "user" : c.kind === "artifact" || c.kind === "attention";
+}
 
 /** HOW LONG ANY MESSAGE HANGS OVER ITS SENDER'S HEAD, ms. V1's own spatial bubble life, and the ONE
  *  figure for both kinds of bubble — a meeting message and a spatial message are the same thing
@@ -461,7 +486,10 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
    *  focuses it instead of duplicating it. */
   type RemoteWindow =
     | { kind: "dm"; key: string; peerEmail: string; minimized: boolean }
-    | { kind: "group"; key: string; conversationId: string; participantIds: string[]; title: string | null; minimized: boolean };
+    | { kind: "group"; key: string; conversationId: string; participantIds: string[]; title: string | null; minimized: boolean }
+    // PHASE 6B — an AI Workforce task conversation: one job, one window, one chat head (keyed by job, so a future
+    // second job gets its own). Its messages are the job's own records; this entry is only where the window sits.
+    | { kind: "task"; key: string; jobId: string; minimized: boolean };
   const [remoteWindows, setRemoteWindows] = useState<RemoteWindow[]>([]);
   /** At most three expanded windows at a time, oldest minimized first — V1's own cap. */
   const MAX_EXPANDED_REMOTE = 3;
@@ -630,14 +658,35 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
   // PEER STATUS — V1's own rule (status.ts resolvePeerStatus): the read-only Atlas row, overlaid with the
   // app's DND registry that Atlas never hears about. Without the overlay a person reads DND on their own
   // screen and whatever Atlas says (OFFLINE, for somebody Atlas is not tracking) on everybody else's.
+  // …and IN MEETING only for somebody who is BOTH participating (the SERVER's meeting_presence list) AND
+  // physically in that meeting's room (app/meetingArrival.ts physicallyInMeeting). Accepting or travelling is
+  // not being in the meeting. Bodies move without React hearing, so this is looked at again once a second.
+  const [inRoomMeetingEmails, setInRoomMeetingEmails] = useState<ReadonlySet<string>>(() => new Set());
+  const [selfPhysicalRoom, setSelfPhysicalRoom] = useState<string | null>(null);
+  const meetingsRef = useRef(callState.meetings);
+  meetingsRef.current = callState.meetings;
+  useEffect(() => {
+    if (!ready) return;
+    const look = () => {
+      const w = worldRef.current;
+      const roomOf = (e: string) => w?.meetingRoomOf?.(e) ?? null;
+      const next = physicallyInMeeting(meetingsRef.current ?? [], roomIdOfMeeting, roomOf);
+      setInRoomMeetingEmails((prev) => (prev.size === next.size && [...next].every((e) => prev.has(e)) ? prev : next));
+      const mine = w?.meetingRoomOf?.(null) ?? null;
+      setSelfPhysicalRoom((prev) => (prev === mine ? prev : mine));
+    };
+    look();
+    const id = window.setInterval(look, 1000);
+    return () => window.clearInterval(id);
+  }, [ready, worldRef, callState.meetings]);
   const statusByEmail = useMemo(() => {
     const map: Record<string, OfficeStatus> = {};
     for (const person of people) {
       const key = emailKey(person.email);
-      map[key] = resolvePeerStatus(person.status, dndEmails.has(key));
+      map[key] = resolvePeerStatus(person.status, dndEmails.has(key), inRoomMeetingEmails.has(key));
     }
     return map;
-  }, [dndEmails, people]);
+  }, [dndEmails, people, inRoomMeetingEmails]);
 
   const chatAttention = useMemo(
     () => buildChatAttentionByLayerId({ conversations, selfEmail: self, selfLayerId: self }),
@@ -680,6 +729,9 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     // uncovers whatever the person had chosen for themselves.
     away: outsideBuilding,
     inCall: isConnectedToMedia(callState),
+    // SELF in a Meeting Floor room's meeting: connected to that room's call AND physically in that room.
+    inMeeting: isConnectedToMedia(callState) && callState.connectedMeetingId !== null
+      && ROOM_MEETING_IDS.has(callState.connectedMeetingId) && selfPhysicalRoom === roomIdOfMeeting(callState.connectedMeetingId),
   });
 
   const activeSpatialSession = useMemo(
@@ -773,7 +825,7 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     // over the caller's body in the V2 world, through the overhead layer Phase 7A/7B built.
     if (!isAuthoredMessage(msg)) return;
     const email = emailKey(msg.senderId) === self ? SELF_OVERHEAD_KEY : emailKey(msg.senderId);
-    spatialBubbles.show(email, msg.text);
+    spatialBubbles.show(email, messageSpeechText(msg));
   }, [self, spatialBubbles]);
 
   // ---- the world subscription -----------------------------------------------------------------------
@@ -1187,6 +1239,41 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     meeting.clearAll();
   }, [inMeeting, meeting]);
 
+  // ---- GO TOGETHER PHASE 5: TALKING ON THE WAY -------------------------------------------------------
+  // ONE ROUTING RULE FOR `/`: an active meeting owns it (its existing chat), otherwise an active Go Together
+  // journey this tab is travelling in owns it (the Travel Chat), otherwise neither does. The meeting wins
+  // outright, so the two ephemeral contexts never compete and nothing is carried from one to the other.
+  const travelParty = useTravelParty();
+  const travelling = inTravelChat(
+    travelParty.party,
+    self,
+    travelParty.controllerSid !== null && travelParty.controllerSid === travelParty.socketId,
+  );
+  const chatContext: "meeting" | "travel" | null = inMeeting ? "meeting" : travelling ? "travel" : null;
+  const travelChatLines = travelParty.chat;
+  /** The same world-space bubble a meeting or spatial message uses, for what a fellow traveller just said. */
+  const travel = useOverheadBubbles(OVERHEAD_BUBBLE_MS);
+  const travelBubbles = travel.texts;
+  const seenTravelRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (chatContext !== "travel") return;
+    const now = Date.now();
+    for (const m of travelChatLines) {
+      if (seenTravelRef.current.has(m.id)) continue;
+      seenTravelRef.current.add(m.id);
+      if (now - m.atMs > OVERHEAD_BUBBLE_MS) continue;
+      travel.show(m.email === self ? SELF_OVERHEAD_KEY : m.email, bubbleText(m.text));
+    }
+  }, [chatContext, travelChatLines, travel, self]);
+  // NO LONGER TRAVELLING (arrived, paused, left, or a meeting took over): the conversation is over for this
+  // person — its lines, its bubbles and its seen-ids all go. A later journey starts from nothing.
+  useEffect(() => {
+    if (chatContext === "travel") return;
+    clearTravelChat();
+    seenTravelRef.current = new Set();
+    travel.clearAll();
+  }, [chatContext, travel]);
+
   const meetingReactions = useMemo(() => {
     const out: Record<string, string> = {};
     for (const r of meetingChat.reactions) {
@@ -1382,13 +1469,103 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     return ids;
   }, [spatialSessions]);
 
+  /** MONKEYAGENT — agent pill rows (identity + role · execution state), pushed by the world on every
+   *  execution-state change (the AI Lab's cast). */
+  const [agentRows, setAgentRows] = useState<readonly Vo3dOverhead[]>([]);
+  useEffect(() => {
+    const world = worldRef.current;
+    if (!ready || !world?.agentPills) return;
+    return world.agentPills.subscribe((rows) => setAgentRows(rows));
+  }, [ready, worldRef]);
+
+  /** THE AI WORKFORCE (V2 Lab; normal VO since Phase 6B, a labelled PREVIEW). The job system is the truth. While the
+   *  employee is present the world shows the job live, and the task conversation shows the job AS THE WORLD HAS SHOWN
+   *  IT (the presenter's `unseen` records are held), so chat and world never tell two stories; away, nothing is held
+   *  and the conversation is the truth at once (see jobView). */
+  const aiWorkforce = ready ? worldRef.current?.aiWorkforce ?? null : null;
+  const aiJobs = aiWorkforce?.jobs ?? null;
+  /** the physical presenter's status (its narration while watched, the job's truth otherwise) */
+  const [aiStatus, setAiStatus] = useState<AiWorkforceStatus | null>(null);
+  useEffect(() => aiWorkforce?.subscribe((st) => setAiStatus(st)), [aiWorkforce]);
+  const [jobsTick, setJobsTick] = useState(0);
+  // ONE JOB = ONE TASK CONVERSATION: the moment Toucan delegates (a job appears), its own window opens — through the
+  // SAME Global Chat lifecycle as a DM (focusRemote), so it stacks, minimizes to the rail and restores like one.
+  /** every job whose window has already been opened once — kept across re-subscriptions, so a window the employee
+   *  closed is never reopened by a later record of the same job (only a NEW job opens one) */
+  const openedTaskJobs = useRef(new Set<string>());
+  useEffect(() => {
+    if (!aiJobs) return;
+    return aiJobs.store.subscribe((jobId) => {
+      setJobsTick((t) => t + 1);
+      if (!jobId || openedTaskJobs.current.has(jobId)) return;
+      openedTaskJobs.current.add(jobId);
+      focusRemote({ kind: "task", key: taskWindowKey(jobId), jobId, minimized: false });
+    });
+  }, [aiJobs, focusRemote]);
+  /** ONE JOB AS THE EMPLOYEE SEES IT: its truth minus whatever the live world is still about to show (Phase 5's
+   *  rule, now only while the employee is present — the presenter publishes no `unseen` when they are away) */
+  const aiUnseen = aiStatus?.unseen;
+  const aiShownJobId = aiStatus?.jobId ?? null;
+  const jobView = useCallback(
+    (jobId: string) => {
+      if (!aiJobs) return null;
+      return aiShownJobId === jobId && aiUnseen && aiUnseen.length > 0 ? aiJobs.store.seen(jobId, new Set(aiUnseen)) : aiJobs.job(jobId);
+    },
+    // jobsTick: the store's own change signal
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [aiJobs, aiShownJobId, aiUnseen, jobsTick],
+  );
+  const aiJobId = aiJobs?.latest ?? null;
+  const aiJob = useMemo(() => (aiJobId ? jobView(aiJobId) : null), [aiJobId, jobView]);
+  /** which job + revision the result viewer is open on (null = closed) */
+  const [resultTarget, setResultTarget] = useState<{ jobId: string; revisionId: string } | null>(null);
+  const closeResult = useCallback(() => setResultTarget(null), []);
+  const resultJob = resultTarget ? jobView(resultTarget.jobId) : null;
+  useEffect(() => { if (resultTarget && !resultJob) setResultTarget(null); }, [resultJob, resultTarget]);
+  const aiDelivered = aiJob ? latestDelivered(aiJob) : null;
+  /** READ STATE, per task conversation: the last record the employee has had in front of them. A visible (open, not
+   *  minimized) task window is read as it fills — so no unread is ever invented for what is on screen. */
+  const [taskRead, setTaskRead] = useState<Readonly<Record<string, number>>>({});
+  useEffect(() => {
+    if (!aiJobs) return;
+    setTaskRead((prev) => {
+      let next = prev;
+      for (const w of remoteWindows) {
+        if (w.kind !== "task" || w.minimized) continue;
+        const j = jobView(w.jobId);
+        const to = j ? readThrough(j, aiShownJobId === w.jobId ? aiUnseen ?? [] : []) : 0;
+        if (j && (prev[w.jobId] ?? 0) < to) { if (next === prev) next = { ...prev }; next = { ...next, [w.jobId]: to }; }
+      }
+      return next;
+    });
+  }, [aiJobs, remoteWindows, jobView, aiShownJobId, aiUnseen]);
+  const taskUnread = useCallback((jobId: string): number => {
+    const j = jobView(jobId);
+    if (!j) return 0;
+    const read = taskRead[jobId] ?? 0;
+    return j.conversation.filter((c) => c.seq > read && meaningfulTaskEntry(c)).length;
+  }, [jobView, taskRead]);
+  // A dev Reset forgets every job: a window whose job is gone closes with it
+  useEffect(() => {
+    if (!aiJobs) return;
+    setRemoteWindows((prev) => (prev.some((w) => w.kind === "task" && !aiJobs.job(w.jobId)) ? prev.filter((w) => w.kind !== "task" || !!aiJobs.job(w.jobId)) : prev));
+  }, [aiJobs, jobsTick]);
+  /** the status card for a finished job can be put away; it comes back with the next job */
+  const [workforceCardDismissed, setWorkforceCardDismissed] = useState<string | null>(null);
+  const aiJobOpen = jobOpen(aiJob);
+  const startSampleTask = useCallback(() => {
+    if (!aiWorkforce) return;
+    void aiWorkforce.startSample().then((res) => { if (!res.ok) showToast(res.error); });
+  }, [aiWorkforce, showToast]);
+  const openTaskWindow = useCallback((jobId: string) => focusRemote({ kind: "task", key: taskWindowKey(jobId), jobId, minimized: false }), [focusRemote]);
+
   const overheads = useMemo<Vo3dOverhead[]>(() => {
     const drawn = drawnEmails.map((e) => emailKey(e));
     const out: Vo3dOverhead[] = [];
     for (const email of drawn) {
       // PHASE 7D — a meeting message outranks a spatial one for the same person: it is the newer
       // thing they said, and in a meeting it is the conversation everybody is in.
-      const sentText = meetingBubbles[email] ?? talkingTextById[email];
+      const sentText = meetingBubbles[email] ?? travelBubbles[email] ?? talkingTextById[email];
       const typing = typingIds.has(email);
       const attention = chatAttention[email];
       // IN CONVERSATION, from V1's OWN signal. V1 reads a peer's presence off Atlas, which the mock rig
@@ -1436,7 +1613,7 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     // own effective status (the same selfStatusStore the availability picker writes). Self is not in
     // `drawnEmails` — resolveVo3dCoworkers excludes them by design — so the row is added here, with the
     // reserved key the overhead layer anchors to the player's body rather than to a coworker's.
-    const selfText = meetingBubbles[SELF_OVERHEAD_KEY] ?? talkingTextById[SELF_OVERHEAD_KEY];
+    const selfText = meetingBubbles[SELF_OVERHEAD_KEY] ?? travelBubbles[SELF_OVERHEAD_KEY] ?? talkingTextById[SELF_OVERHEAD_KEY];
     const selfReaction = meetingReactions[SELF_OVERHEAD_KEY];
     // THE VIEWER'S OWN CAMERA rides the same map under the viewer's own identity — callStore puts the
     // local camera in videoByIdentity deliberately, "so self video needs no separate field". Anchored to
@@ -1468,11 +1645,14 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     // one fixed string, shown while a reply is being prepared. V1 draws exactly this line and for exactly
     // this reason — the meaningful answer belongs in the panel, and a bird in an office behaves like a
     // bird.
-    if (toucanPending) {
+    // (the AI-workforce demo may be giving the bird its own line on the same key — that one wins)
+    if (toucanPending && !agentRows.some((r) => r.email === TOUCAN_OVERHEAD_KEY)) {
       out.push({ email: TOUCAN_OVERHEAD_KEY, displayName: "Toucan", sentText: "Squawk squawk…" });
     }
+    // MONKEYAGENT — the same pill, line one the identity, line two role · execution state.
+    out.push(...agentRows);
     return out;
-  }, [callState.videoByIdentity, chatAttention, drawnEmails, inConversationEmails, insideCave, layersByEmail, meetingBubbles, meetingReactions, self, selfStatus, statusByEmail, talkingTextById, toucanPending, typingIds]);
+  }, [agentRows, callState.videoByIdentity, chatAttention, drawnEmails, inConversationEmails, insideCave, layersByEmail, meetingBubbles, meetingReactions, self, travelBubbles, selfStatus, statusByEmail, talkingTextById, toucanPending, typingIds]);
 
   // THE CONVERSATION POSES. Resolved by V1's OWN resolveCharacterAnimState, not by a rule invented here,
   // and pushed into the world the same way the roster and the occupancy are. Only the two conversation
@@ -1504,7 +1684,8 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
   // TRUE while >=1 remote DM/group window is open and NOT minimized — V2's `remoteWindows` is the exact
   // twin of V1's `remoteChatWindows`. The SPATIAL window (openChat / openGroupConv) deliberately never
   // counts, in V2 as in V1: standing with somebody is not Global Chat.
-  const selfGlobalChatActive = remoteWindows.some((w) => !w.minimized);
+  // (an AI Workforce task window is not a conversation with a colleague: it never changes what peers see)
+  const selfGlobalChatActive = remoteWindows.some((w) => !w.minimized && w.kind !== "task");
   // Edge-triggered, exactly as V1 does it: the client refcounts per socket, so repeated identical values
   // must not be emitted, and the ref is what makes an unchanged render silent.
   const selfGlobalChatActiveRef = useRef(false);
@@ -1829,6 +2010,13 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     setToucanTyping(false);
   }, [worldRef]);
 
+  /** PHASE 6B — the bird is busy with an AI Workforce job away from you: the panel must not say it is beside you */
+  const [toucanBusy, setToucanBusy] = useState(false);
+  useEffect(() => {
+    const world = worldRef.current;
+    if (!ready || !world?.toucanSummon?.subscribeBusy) return;
+    return world.toucanSummon.subscribeBusy(setToucanBusy);
+  }, [ready, worldRef]);
   /** WHERE THE BIRD IS, pushed by the world on every real change and once on subscribe. */
   useEffect(() => {
     const world = worldRef.current;
@@ -2064,9 +2252,15 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
         // PHASE 7D. Only the V2 world can join a meeting, so only it offers the invitation. The join
         // is the world's own one entry point (app/world.ts caveMeeting.start), the same one the Cave
         // panel's button uses — there is no second path into a meeting.
-        onAcceptMeeting={() => {
+        onAcceptMeeting={(meetingId) => {
           const meeting = worldRef.current?.caveMeeting;
           if (!meeting) return;
+          // THE MEETING THE INVITATION NAMES. One started in a Meeting Floor room belongs to that room: the
+          // world joins its call and walks the accepter there. Only the Cave's own meeting is the Cave.
+          if (meeting.acceptInvite) {
+            void meeting.acceptInvite(meetingId, self);
+            return;
+          }
           // WALK IN FIRST, then join. A meeting is a thing you do in a place: joining the media without
           // moving the body left the accepter connected but standing outside the Cave, with no panel,
           // no screen and no way to leave. Entering is the real portal transition, the same one the
@@ -2086,11 +2280,20 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
       {/* PHASE 7D — the meeting's own chat. Collapsed by default, never over the curved screen, and
           quieter still while somebody is sharing. Gated on genuinely being IN the meeting. */}
       <Vo3dMeetingChat
-        active={inMeeting}
+        active={chatContext === "meeting"}
         selfId={self}
         resolveDisplayName={resolveDisplayName}
         presenting={Boolean(callState.screenShare)}
         // Enter hands the mouse back from its own keypress — the one moment a browser grants a lock.
+        onResumePointer={() => worldRef.current?.requestPointerLock()}
+      />
+      {/* GO TOGETHER PHASE 5 — the journey's own temporary conversation, only while no meeting owns `/`. */}
+      <Vo3dTravelChat
+        active={chatContext === "travel"}
+        selfId={self}
+        lines={travelChatLines}
+        resolveDisplayName={resolveDisplayName}
+        onSend={sendTravelChat}
         onResumePointer={() => worldRef.current?.requestPointerLock()}
       />
       <CallOverlay
@@ -2104,7 +2307,24 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
           subscriptions and its read receipts are all untouched by minimizing. V1's own rule, and the
           reason restoring one is instant rather than a reload. */}
       {remoteWindows.map((w) =>
-        w.kind === "dm" ? (
+        w.kind === "task" ? (() => {
+          // THE TASK CONVERSATION — the same mounted-while-minimized rule: the job carries on whatever the window does
+          const job = jobView(w.jobId);
+          if (!job || !aiJobs) return null;
+          return (
+            <div key={w.key} className={styles.chatSlot} hidden={w.minimized} style={slotStyle(w.key)} data-testid={`vo3d-task-window-${w.jobId}`}>
+              <AiLabTaskChat
+                job={job}
+                minimized={w.minimized}
+                onMinimizeToggle={() => toggleRemote(w.key)}
+                onClose={() => closeRemote(w.key)}
+                onSend={(text) => { void aiJobs.message(job.jobId, text); }}
+                onOpenResult={(rev) => setResultTarget({ jobId: job.jobId, revisionId: rev })}
+                onRespond={(requestId, response) => { void aiJobs.respond(job.jobId, requestId, response); }}
+              />
+            </div>
+          );
+        })() : w.kind === "dm" ? (
           <div key={w.key} className={styles.chatSlot} hidden={w.minimized} style={slotStyle(w.key)}>
             <ConversationView
               peer={peerLayerFor(w.peerEmail)}
@@ -2147,6 +2367,72 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
           </div>
         ),
       )}
+      {/* THE AI WORKFORCE STATUS CARD (Phase 6B) — compact job controls, NOT a second conversation: the task's thread
+          is its own VO chat window. The current job, who has it, its revision, WATCH IN LAB and View Result. */}
+      {aiWorkforce && aiJob && !overlayToolOpen && (aiJobOpen || workforceCardDismissed !== aiJob.jobId) && (() => {
+        const watching = !!aiStatus?.watching && aiStatus.jobId === aiJob.jobId;
+        const step = aiStatus?.jobId === aiJob.jobId && aiStatus.step ? aiStatus.step : stepFor(aiJob);
+        const taskWin = remoteWindows.find((w) => w.kind === "task" && w.jobId === aiJob.jobId);
+        const unread = taskUnread(aiJob.jobId);
+        const canWatch = aiJobOpen && aiWorkforce.canWatch();
+        return (
+          <div className={demoStyles.workforce} role="region" aria-label="AI Workforce task" data-testid="ai-workforce-card">
+            <div className={demoStyles.workforceHead}>
+              <span className={demoStyles.kicker}>AI Workforce · Preview</span>
+              {!aiJobOpen && (
+                <button type="button" className={demoStyles.dismiss} onClick={() => setWorkforceCardDismissed(aiJob.jobId)} aria-label="Hide AI Workforce status">×</button>
+              )}
+            </div>
+            <div className={demoStyles.title}>{aiJob.title}{aiJob.revision > 1 ? ` · Revision ${aiJob.revision}` : ""}</div>
+            <div className={demoStyles.status} data-testid="ai-workforce-step">
+              <span className={aiJobOpen && aiJob.status !== "ready" ? demoStyles.dot : `${demoStyles.dot} ${demoStyles.done}`} />{step}
+            </div>
+            <div className={demoStyles.actions}>
+              {aiJobOpen && (watching ? (
+                <button type="button" className={demoStyles.secondary} onClick={() => aiWorkforce.watch(false)} data-testid="ai-workforce-stop-watch">Stop watching</button>
+              ) : (
+                <button type="button" className={demoStyles.watch} disabled={!canWatch} onClick={() => { if (!aiWorkforce.watch(true)) showToast("Watch in Lab is available on Floor 1"); }}
+                  title={canWatch ? "Follow the team in the AI Lab" : "Available on Floor 1, outside the elevator and the Cave"} data-testid="ai-workforce-watch">Watch in Lab</button>
+              ))}
+              {(!taskWin || taskWin.minimized) && (
+                <button type="button" className={demoStyles.link} onClick={() => openTaskWindow(aiJob.jobId)} data-testid="ai-workforce-open-chat">
+                  Conversation{unread > 0 ? ` (${unread})` : ""}
+                </button>
+              )}
+            </div>
+            {aiDelivered && (
+              <button type="button" className={demoStyles.result} onClick={() => setResultTarget({ jobId: aiJob.jobId, revisionId: aiDelivered.revisionId })} data-testid="ailab-view-result">
+                <span className={demoStyles.resultIcon} aria-hidden="true" />
+                <span className={demoStyles.resultText}><b>View Result</b><span>{aiDelivered.revision > 1 ? `Revision ${aiDelivered.revision} · ` : ""}{aiDelivered.title}</span></span>
+              </button>
+            )}
+            {aiWorkforce.dev && (
+              <div className={demoStyles.devRow} data-testid="ai-workforce-dev">
+                <span>Dev</span>
+                <button type="button" className={demoStyles.link} onClick={() => { setResultTarget(null); aiWorkforce.dev?.reset(); }}>Reset</button>
+              </div>
+            )}
+            <div className={demoStyles.mock}>Preview — scripted sample, not real AI work</div>
+          </div>
+        );
+      })()}
+      {/* dev re-entry proof (`?aidemo=1`): a job that ran while VO was "closed", reconnected and staged as it is now */}
+      {aiWorkforce?.dev?.reenter && !aiJobOpen && !overlayToolOpen && (
+        <button type="button" className={demoStyles.devReenter} onClick={() => { void aiWorkforce.dev?.reenter?.(); }} data-testid="ailab-reenter">
+          Dev · Re-enter a job already in progress
+        </button>
+      )}
+      {aiJobs && resultJob && resultTarget && (
+        <AiLabResultPreview
+          job={resultJob}
+          revisionId={resultTarget.revisionId}
+          onSelect={(rev) => setResultTarget({ jobId: resultJob.jobId, revisionId: rev })}
+          onClose={closeResult}
+          onApprove={(rev) => { void aiJobs.approve(resultJob.jobId, rev); setResultTarget(null); }}
+          onRequestChanges={(rev, feedback) => { void aiJobs.requestChanges(resultJob.jobId, rev, feedback); setResultTarget(null); openTaskWindow(resultJob.jobId); }}
+          demoTools={!!aiWorkforce?.dev}
+        />
+      )}
       {/* THE RAIL — V1's minimized conversations, as circular employee avatars stacked above the Toucan
           button. Each one carries its own unread count and its own close, because minimizing and closing
           are different decisions: the bubble RESTORES (the very same toggle the window header's minus
@@ -2157,6 +2443,31 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
       {minimizedRemote.length > 0 && !overlayToolOpen && (
         <div className={styles.bubbleRail} aria-label="Minimized conversations">
           {minimizedRemote.map((w) => {
+            if (w.kind === "task") {
+              // ONE JOB = ONE CHAT HEAD (never one per agent): the job's own identity, a task glyph, its unread count
+              const job = jobView(w.jobId);
+              const title = job?.title || "AI Workforce task";
+              const unread = taskUnread(w.jobId);
+              return (
+                <div key={w.key} className={styles.bubbleWrap}>
+                  <button
+                    type="button"
+                    className={`${styles.bubble} ${styles.taskBubble}`}
+                    onClick={() => toggleRemote(w.key)}
+                    aria-label={`Restore AI Workforce task ${title}${unread > 0 ? `, ${unread} unread` : ""}`}
+                    title={`${title} · AI Workforce task`}
+                    data-testid={`vo3d-chat-bubble-${w.key}`}
+                  >
+                    <span className={styles.taskBubbleGlyph} aria-hidden="true">{TOUCAN_AVATAR_GLYPH}</span>
+                    <span className={styles.taskBubbleTag} aria-hidden="true">Task</span>
+                    {unread > 0 && <span className={styles.bubbleBadge} data-testid="vo3d-task-unread">{unread > 99 ? "99+" : unread}</span>}
+                  </button>
+                  <button type="button" className={styles.bubbleClose} onClick={() => closeRemote(w.key)} aria-label={`Close AI Workforce task ${title}`} title="Close">
+                    ×
+                  </button>
+                </div>
+              );
+            }
             const name =
               w.kind === "dm"
                 ? resolveDisplayName(w.peerEmail)
@@ -2312,7 +2623,24 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
           style={{ ...slotStyle(TOUCAN_WINDOW_KEY), ...(toucanBoardContext ? { zIndex: 1300 } : {}) }}
           data-testid="vo3d-toucan"
         >
+          {/* PHASE 6B — THE AI WORKFORCE ENTRY, beside the personal Toucan conversation (the shared panel is untouched).
+              Toucan delegates; the job gets its OWN task conversation — nothing of the team's work lands in this chat. */}
+          {aiWorkforce && (
+            <div className={demoStyles.delegate} data-testid="ai-workforce-entry">
+              <div className={demoStyles.delegateText}>
+                <span className={demoStyles.kicker}>AI Workforce · Preview</span>
+                <span>{aiJobOpen ? "Toucan has a task with the team — its conversation is open beside this one." : "Toucan can hand work to the AI Lab team."}</span>
+              </div>
+              {aiJobOpen ? (
+                aiJob && <button type="button" className={demoStyles.secondary} onClick={() => openTaskWindow(aiJob.jobId)}>Open task</button>
+              ) : (
+                <button type="button" className={demoStyles.watch} onClick={startSampleTask} data-testid="ai-workforce-start">Preview a sample task</button>
+              )}
+              <span className={demoStyles.mock}>Preview — scripted sample, not real AI work</span>
+            </div>
+          )}
           <ToucanAssistantPanel
+            presenceLabel={toucanBusy ? TOUCAN_BUSY_LABEL : undefined}
             onRelease={releaseToucan}
             onTypingChange={setToucanTyping}
             // A BOOLEAN, and the bird's pill is built from it — see the overhead row below and V1's own

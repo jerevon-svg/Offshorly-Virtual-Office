@@ -57,7 +57,12 @@ export const THEME = {
 
 // ============================= THE VOLUME =======================================================
 /** North-west corner of the INTERIOR floor, in world space. Everything below is measured from here. */
-export const ORIGIN: Vec2 = { x: 2600, z: 380 };
+// PHASE 4 — MOVED OFF THE WALKABLE WORLD. It stood at x 2600 inside the east parcel, where Phase 3B's free
+// roam met its (inward-facing, so invisible) shell as an invisible wall. The room is sealed — floor,
+// ceiling, four walls — so nothing outside it is ever seen from inside; out here it is ~9,700 from the
+// world's centre, beyond the terrain, the horizon belts and the hills, and clear of floor 2 (x 5940+).
+// Every Cave position derives from this one origin (FLOOR_RECT, OUTER_RECT, toWorld, the threshold).
+export const ORIGIN: Vec2 = { x: -9000, z: 380 };
 
 /** THE ROOM, in interior units. Bon is 36 units tall (≈1.8 m), so one unit ≈ 5 cm:
  *

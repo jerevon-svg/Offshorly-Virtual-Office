@@ -16,6 +16,10 @@ frontend/.env.local
 # Network stress harness output (frontend/scripts/netstress) — captures, not source
 frontend/scripts/netstress/results/
 
+# MonkeyAgent stage-1 build intermediates (build-monkey-fullres.mjs → ~15 MB full-res GLB + raw garments).
+# Regenerable from the locked master; only stage 2's output in public/avatars/monkey-agent-base-v1/ ships.
+frontend/scripts/avatar-pipeline/monkey-agent/work/
+
 # Chat backend (backend/)
 backend/node_modules
 backend/dist

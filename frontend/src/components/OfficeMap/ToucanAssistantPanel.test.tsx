@@ -95,6 +95,15 @@ describe("ToucanAssistantPanel", () => {
     askSpy.mockRestore();
   });
 
+  it("PHASE 6B — says where the bird is: 'Perched beside you' by default, the host's line while it is busy elsewhere", async () => {
+    const view = render(<ToucanAssistantPanel onRelease={vi.fn()} onPendingChange={vi.fn()} />);
+    await flushRestore();
+    expect(screen.getByText("Perched beside you")).toBeTruthy();
+    view.rerender(<ToucanAssistantPanel onRelease={vi.fn()} onPendingChange={vi.fn()} presenceLabel="Working with the AI team" />);
+    expect(screen.getByText("Working with the AI team")).toBeTruthy();
+    expect(screen.queryByText("Perched beside you")).toBeNull();
+  });
+
   it("opens with the toucan's greeting as a received message", async () => {
     await setup();
     expect(screen.getByRole("dialog", { name: "Toucan Assistant" })).toBeInTheDocument();

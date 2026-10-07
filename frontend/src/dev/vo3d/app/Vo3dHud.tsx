@@ -74,11 +74,14 @@ import { HudDock, type HudDockEntry } from "../../../components/OfficeMap/HudDoc
 import { Vo3dViewSwitcher } from "./Vo3dViewSwitcher";
 import { Vo3dViewIndicator } from "./Vo3dViewIndicator";
 import { Vo3dCaveMeeting } from "./Vo3dCaveMeeting";
+import { Vo3dMeetingTravel } from "./Vo3dMeetingTravel";
+import { useCallState } from "../../../services/call/callStore";
 import { isPointerLocked, isTypingTarget } from "./keyGuard";
 import type { ToucanSummonState } from "../../../components/OfficeMap/toucanSummon";
 import { HudSettings } from "../../../components/OfficeMap/HudSettings";
 import { Vo3dEnvironmentPanel } from "./Vo3dEnvironmentPanel";
 import { PlayerHud } from "../../../components/OfficeMap/PlayerHud";
+import { ClaimHud } from "../../../components/OfficeMap/ClaimHud";
 import { StatusPicker } from "../../../components/OfficeMap/StatusPicker";
 import { TasksPanel, type TasksTab } from "../../../components/OfficeMap/TasksPanel";
 import { RewardsPanel } from "../../../components/OfficeMap/RewardsPanel";
@@ -105,6 +108,14 @@ import {
   subscribeExperience,
   type DefaultViewPreference,
 } from "../../../services/settings/experiencePreferences";
+import { MeetingsPanel } from "../../../components/Meetings/MeetingsPanel";
+import { useScheduleBridge } from "./useScheduleBridge";
+import { Vo3dMeetingReminder } from "./Vo3dMeetingReminder";
+import { Vo3dGoTogether } from "./Vo3dGoTogether";
+import { INSTANT_MEETING_CONTEXT, MEETING_CONTEXT, scheduledTarget, useMeetingPartyGuard, type GoTogetherTarget } from "./useMeetingParty";
+import { useScheduledMeetings } from "../../../services/meetings/scheduledMeetingsStore";
+import { inviteToParty, useTravelParty } from "../../../services/party/travelPartyStore";
+import type { ScheduledMeeting } from "../../../services/meetings/scheduledMeetingsClient";
 import styles from "./Vo3dHud.module.css";
 
 // Global Team Map — React.lazy so MapLibre (~250 KB) only loads when someone opens the map. V1's own rule.
@@ -215,6 +226,14 @@ export function Vo3dHud({
   const [tasksOpen, setTasksOpen] = useState(false);
   const [tasksTab, setTasksTab] = useState<TasksTab>("quests");
   const [rewardsOpen, setRewardsOpen] = useState(false);
+  // SCHEDULED MEETINGS — Upcoming Meetings + Schedule, one screen-owning panel.
+  const [meetingsOpen, setMeetingsOpen] = useState(false);
+  /** the meeting a notification or the reminder asked the panel to show */
+  const [meetingsFocus, setMeetingsFocus] = useState<string | null>(null);
+  const openMeetings = useCallback((focus: string | null = null) => {
+    setMeetingsFocus(focus);
+    setMeetingsOpen(true);
+  }, []);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [boardsOpen, setBoardsOpen] = useState(false);
@@ -224,6 +243,18 @@ export function Vo3dHud({
   // value: that one is gated on chatMode === "real" and its confirm opens a conversation, neither of
   // which is true here. Same modal component, different question.
   const [invitePickerOpen, setInvitePickerOpen] = useState(false);
+  // who is IN the meeting this client is connected to (the server's meeting_presence) — not re-invited
+  const hudCall = useCallState();
+  const inMeetingNow = useMemo(() => {
+    const m = (hudCall.meetings ?? []).find((x) => x.meetingId === hudCall.connectedMeetingId);
+    return new Set((m?.participants ?? []).map((e) => e.trim().toLowerCase()));
+  }, [hudCall.meetings, hudCall.connectedMeetingId]);
+  /** GO TOGETHER — the journey (destination + who may be invited) the picker is offering, or null */
+  const [goTogetherFor, setGoTogetherFor] = useState<GoTogetherTarget | null>(null);
+  const openGoTogetherForScheduled = useCallback((m: ScheduledMeeting) => {
+    const live = (hudCall.meetings ?? []).find((x) => x.meetingId === `mf-${m.roomId.split("/")[1]}`);
+    setGoTogetherFor(scheduledTarget(m, selfId, live));
+  }, [hudCall.meetings, selfId]);
   const companyHub = useCompanyHub();
   const claimableCount = useClaimableCount();
 
@@ -295,6 +326,7 @@ export function Vo3dHud({
     companyHub.isOpen ||
     tasksOpen ||
     rewardsOpen ||
+    meetingsOpen ||
     settingsOpen ||
     notificationsOpen ||
     boardsOpen ||
@@ -350,7 +382,41 @@ export function Vo3dHud({
   }, [dockVisible]);
 
   /** The z-index 60 modal family the dock must step BELOW rather than merely behind. */
-  const anyModalOpen = companyHub.isOpen || tasksOpen || rewardsOpen || teamMapOpen || overlayToolOpen;
+  const anyModalOpen = companyHub.isOpen || tasksOpen || rewardsOpen || meetingsOpen || teamMapOpen || overlayToolOpen;
+  // THE SCHEDULE, pushed into the world's door signs, room access and in-room panel — and the one
+  // number the dock tile shows: meetings still waiting for this viewer's reply.
+  const awaitingReply = useScheduleBridge(worldRef, ready, selfId);
+  // GO TOGETHER — the party (if any), and the leader's meeting guard (cancelled / moved while travelling).
+  const travelParty = useTravelParty();
+  useMeetingPartyGuard(selfId);
+  // PHYSICAL MEETINGS — travelling with a party to a meeting IS the intent to attend it: whoever arrives with the
+  // party joins that meeting's call on arrival (app/meetingArrival.ts), never before, and only while it runs.
+  const hudSchedule = useScheduledMeetings();
+  useEffect(() => {
+    const cm = worldRef.current?.caveMeeting;
+    const dest = travelParty.party?.destination;
+    const ctx = dest?.context;
+    if (!ready || !cm?.intend || !dest?.roomId || !ctx) return;
+    const meetingId = `mf-${dest.roomId.split("/")[1]}`;
+    if (cm.intent?.().intent?.meetingId === meetingId) return;
+    if (ctx.kind === INSTANT_MEETING_CONTEXT) cm.intend({ meetingId, roomId: dest.roomId, kind: "instant" }, selfId);
+    else if (ctx.kind === MEETING_CONTEXT) {
+      const m = hudSchedule.mine.find((x) => x.id === ctx.id);
+      if (m) cm.intend({ meetingId, roomId: dest.roomId, kind: "scheduled", bookingStartsAt: m.startsAt }, selfId);
+    }
+  }, [ready, worldRef, travelParty.party, hudSchedule.mine, selfId]);
+  // The meetings whose journey Go Together already owns for this person (a party headed there, or an
+  // invitation still waiting for an answer) — the reminder steps aside for exactly those.
+  const travelDecided = useMemo(() => {
+    const ids = new Set<string>();
+    const add = (ctx: { kind: string; id: string } | undefined) => { if (ctx?.kind === MEETING_CONTEXT) ids.add(ctx.id); };
+    add(travelParty.party?.destination.context);
+    for (const i of travelParty.invites) add(i.party.destination.context);
+    // …and a meeting this person's party has already ARRIVED at: the journey is done, so the reminder does not
+    // come back offering a second one (Walk There / Go together) while they wait at the room.
+    for (const id of travelParty.arrivedFor) ids.add(id);
+    return ids;
+  }, [travelParty.party, travelParty.invites, travelParty.arrivedFor]);
 
   const navigate = useCallback((destination: NotificationDestination): boolean => {
     switch (destination.kind) {
@@ -377,6 +443,10 @@ export function Vo3dHud({
       case "hub":
         openCompanyHub("manual");
         return true;
+      case "meeting":
+        // By id only: the panel shows the meeting as it is NOW (or says it is no longer scheduled).
+        openMeetings(destination.meetingId);
+        return true;
       case "conversation":
         // V1'S OWN BRANCH, through V1's own gate: outside real mode there is no conversation to open, so
         // this refuses rather than half-performing. The opener itself is the host's existing
@@ -392,7 +462,7 @@ export function Vo3dHud({
       default:
         return false;
     }
-  }, [onOpenConversation, onOpenProfile, self]);
+  }, [onOpenConversation, onOpenProfile, self, openMeetings]);
 
   /** Search's row actions, all three routed into work that already exists. */
   const locate = useCallback((layer: AssetLayer) => {
@@ -418,6 +488,12 @@ export function Vo3dHud({
         .map((p) => ({ email: p.email, displayName: p.displayName ?? p.email })),
     [people, selfId],
   );
+  const nameByEmail = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const p of people) m.set(p.email.trim().toLowerCase(), p.displayName ?? p.email);
+    return m;
+  }, [people]);
+  const nameOf = useCallback((email: string) => nameByEmail.get(email.trim().toLowerCase()) ?? email.split("@")[0], [nameByEmail]);
 
   // V1'S OWN THREE LABELS, word for word. A bird in the air is not a broken button: it says so, and it
   // refuses the second press rather than re-issuing a summon that is already under way.
@@ -489,6 +565,9 @@ export function Vo3dHud({
           ),
         }]
       : []),
+    // SCHEDULED MEETINGS. One tile for the whole feature: Upcoming Meetings, with Schedule inside it.
+    { kind: "action", key: "meetings", icon: <HudIcon name="clock" />, label: "Meetings",
+      ariaLabel: "Open meetings", active: meetingsOpen, badge: awaitingReply, onClick: () => openMeetings() },
     { kind: "action", key: "rewards", icon: <HudIcon name="rewards" />, label: "Rewards",
       ariaLabel: "Open Rewards", active: rewardsOpen, onClick: () => setRewardsOpen(true) },
     ...(chatMode === "real"
@@ -542,6 +621,11 @@ export function Vo3dHud({
 
   return (
     <>
+      {/* V1's claim-time progression strip, mounted exactly as V1 mounts it. Tasks slides this dock
+          off screen (hidden, not unmounted), so without the strip every claim's Coins/XP flew
+          below the viewport and counted up out of sight. It shows only while a claim runs, and
+          rewardFx's findHudTargets skips the hidden dock's inert targets for its visible ones. */}
+      <ClaimHud />
       <HudDock
         // HIDDEN, not unmounted — see the header. Search's spotlight owns the screen the same way it does
         // in V1, so the dock steps out of its way too.
@@ -592,21 +676,55 @@ export function Vo3dHud({
           onInvite={() => setInvitePickerOpen(true)}
         />
       )}
+      {/* SCHEDULED MEETINGS — the 5-minute reminder with Walk There. Steps aside with the rest of the HUD
+          whenever a tool owns the screen. */}
+      {!officeToolOpen && (
+        <Vo3dMeetingReminder worldRef={worldRef} ready={ready} selfId={selfId} onOpen={(id) => openMeetings(id)}
+          onGoTogether={openGoTogetherForScheduled} inParty={travelParty.party !== null || travelParty.invites.length > 0}
+          travelDecided={travelDecided} />
+      )}
+      {/* HOW TO GET THERE after ACCEPTING a room's instant meeting from elsewhere — Go together / Walk there /
+          Teleport. Accepting never joins and never moves anybody; the call is joined on arrival. */}
+      {!officeToolOpen && <Vo3dMeetingTravel worldRef={worldRef} ready={ready} selfId={selfId} onGoTogether={setGoTogetherFor} />}
+      {/* GO TOGETHER — the invitation card and the party chip. Not hidden behind a tool: an invitation
+          expires, and the chip is the escape hatch (Leave / End) while travelling. */}
+      <Vo3dGoTogether worldRef={worldRef} ready={ready} selfId={selfId} nameOf={nameOf} />
+      {goTogetherFor && (
+        // THE SAME PICKER, multi-select from one person, offering only this meeting's still-travelling people.
+        <EmployeePickerModal
+          mode="multi"
+          title="Go together with…"
+          people={pickerPeople.filter((p) => goTogetherFor.candidates.has(p.email.trim().toLowerCase()))}
+          minSelected={1}
+          showGroupName={false}
+          confirmLabel={(n) => (n === 1 ? "Invite 1 person" : `Invite ${n} people`)}
+          onClose={() => setGoTogetherFor(null)}
+          onConfirm={(emails) => {
+            const target = goTogetherFor;
+            setGoTogetherFor(null);
+            const floor = worldRef.current?.goTogether?.self().floor;
+            if (floor && emails.length > 0) inviteToParty(emails, target.destination, floor);
+          }}
+        />
+      )}
       {invitePickerOpen && (
         // THE SAME PICKER New Message uses, asked a different question. Single mode: one person per
         // invitation, exactly as the server mints them. The roster is V1's own (pickerPeople, already
         // built above and already minus the viewer), so only real employees can be offered a meeting.
         <EmployeePickerModal
-          mode="single"
-          title="Invite to the Cave meeting"
-          people={pickerPeople}
+          mode="multi"
+          title="Invite to this meeting"
+          // Nobody already IN it is offered again (the server also refuses a duplicate or a repeat ring).
+          people={pickerPeople.filter((p) => !inMeetingNow.has(p.email.trim().toLowerCase()))}
+          minSelected={1}
+          showGroupName={false}
+          confirmLabel={(n) => (n === 1 ? "Invite 1 person" : `Invite ${n} people`)}
           onClose={() => setInvitePickerOpen(false)}
           onConfirm={(emails) => {
             setInvitePickerOpen(false);
-            // Straight to the world's own meeting bridge — the MEETING invitation, never the spatial
-            // ring. What the inviter sees next is the existing notice card, driven by the store's
-            // outgoing-invitation state; this deliberately raises no toast of its own.
-            if (emails[0]) worldRef.current?.caveMeeting?.invite(emails[0]);
+            // One MEETING invitation per person, all to the SAME meeting — the server mints them one by
+            // one and a second never replaces the first. Each invitee then chooses how to get there.
+            for (const e of emails) worldRef.current?.caveMeeting?.invite(e);
           }}
         />
       )}
@@ -701,6 +819,15 @@ export function Vo3dHud({
       {companyHub.isOpen && <CompanyHub />}
       {tasksOpen && <TasksPanel tab={tasksTab} onTabChange={setTasksTab} onClose={() => setTasksOpen(false)} />}
       {rewardsOpen && <RewardsPanel onClose={() => setRewardsOpen(false)} />}
+      {meetingsOpen && (
+        <MeetingsPanel
+          selfId={selfId}
+          people={pickerPeople}
+          resolveDisplayName={resolveDisplayName}
+          focusMeetingId={meetingsFocus}
+          onClose={() => setMeetingsOpen(false)}
+        />
+      )}
       {settingsOpen && (
         <HudSettings
           onClose={() => setSettingsOpen(false)}

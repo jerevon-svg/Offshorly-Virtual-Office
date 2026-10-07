@@ -67,3 +67,47 @@
 
 .note { margin: 0; font-size: 12px; color: rgba(36, 31, 48, 0.6); }
 .problem { color: #a3352f; }
+
+/* THE FOCUSED PRESENTATION — the live share over the whole viewport, exit top-right */
+.focus {
+  position: fixed;
+  inset: 0;
+  /* above the HUD dock and the view hints: a focused presentation owns the screen until it is exited */
+  z-index: 10000;
+  background: rgba(6, 9, 14, 0.94);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.focusStage {
+  width: min(96vw, calc(92vh * 16 / 9));
+  aspect-ratio: 16 / 9;
+}
+.focusExit {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(20, 26, 36, 0.9);
+  color: #fff;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font: 600 13px system-ui, sans-serif;
+  cursor: pointer;
+}
+
+/* SCHEDULED MEETINGS — the viewer's own booking of this room, above the live controls. */
+.scheduled {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  margin: -2px -4px 0;
+  border-radius: 12px;
+  background: #eef4ec;
+  border: 1px solid rgba(47, 107, 69, 0.16);
+}
+.scheduled[data-phase="occupied"] { background: #fbf1e3; border-color: rgba(165, 109, 18, 0.2); }
+.scheduledTitle { font-size: 15px; font-weight: 800; letter-spacing: -0.01em; }
+.scheduledPrivate { color: #b8453a; font-size: 12px; font-weight: 800; }
+.scheduledNote { font-size: 12px; font-weight: 600; color: #7a5410; margin-top: 2px; }

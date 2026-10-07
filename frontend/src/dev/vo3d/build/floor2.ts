@@ -1,22 +1,20 @@
-// vo3d build — FLOOR 2's shell: a slab, a glazed perimeter, architectural lighting, and nothing else.
-//
-// STILL INTENTIONALLY EMPTY. No meeting rooms, no boardroom, no huddle rooms, no furniture pass, and
-// nothing that anticipates the Meeting Floor's own design. What is here is the minimum that makes a
-// storey read as a storey you have just arrived on:
+// vo3d build — FLOOR 2's shell: a slab, a glazed perimeter and a perimeter cove, with the Meeting
+// Floor's district (build/floor2Meeting.ts) standing on it. The shell is what makes a storey read as a
+// storey you have just arrived on:
 //
 //   • the plate, in the same world-phased tile the ground floor is laid in;
 //   • a CURTAIN WALL on all four sides — a low spandrel, a tall run of glass, a head band — because the
 //     first live ride arrived into a dim grey box and nothing about it said "one floor up";
-//   • a PERIMETER COVE and a grid of ceiling light strips, so the floor is lit by its own architecture;
+//   • a PERIMETER COVE, so the floor is lit by its own architecture;
 //   • no ceiling slab, for the same reason no room downstairs has one: Office View looks down at it.
 //
-// The view THROUGH the glass is build/floor2Context.ts — the elevated exterior that makes this read as
-// the storey above the office rather than a plate somewhere else in the world.
+// The view THROUGH the glass is the ground floor's own campus and AI Lab, re-anchored one storey below
+// this plate (app/world.ts anchorExterior); build/floor2Context.ts supplies only the storey beneath it.
 import * as THREE from "three";
 import { rbox, shadowed } from "./helpers";
-import { tiledFloor } from "./tile";
-import { emissiveMat, facadeGlassMat, floorMat, mat, plastic } from "../render/Materials";
+import { TILE, TILE_PHASE, emissiveMat, facadeGlassMat, floorMat, mat, plastic, tileMat } from "../render/Materials";
 import { FLOOR_RECT, FRAME, WALL_H, WALL_T, WALLS } from "../rooms/floor2";
+import { MEETING_ROOMS } from "../rooms/floor2Meeting";
 
 const SLAB_DROP = 0.05;
 /** the curtain wall's three bands: solid spandrel, glazing, solid head */
@@ -28,6 +26,33 @@ const MULLION_W = 3;
 /** how far below the wall head the cove and the ceiling strips hang */
 const COVE_DROP = 8;
 
+/** THE HALL FLOOR: the office's own polished tile, top face at 0 exactly like a room's, phased to the WORLD
+ *  so its grout runs on unbroken into every room — and built AROUND the meeting rooms' floors rather than
+ *  under them. That is the ground floor's rule (the hall has a hole where each reconstructed room's tile
+ *  lies): two floors are never stacked, so nothing can fight for the same pixels at any zoom or angle.
+ *  One mesh with world-space UVs, so the whole hall is one draw. */
+function hallFloor(): THREE.Mesh {
+  // ONE CONTINUOUS SURFACE WITH HOLES, not strips: strips meeting at T-junctions left hairline cracks that
+  // sparkled along every band edge. Shape +y maps to world −z once rotated flat, so z is negated in.
+  const F = FLOOR_RECT;
+  const shape = new THREE.Shape();
+  shape.moveTo(F.x, -F.z); shape.lineTo(F.x + F.w, -F.z); shape.lineTo(F.x + F.w, -(F.z + F.d)); shape.lineTo(F.x, -(F.z + F.d)); shape.closePath();
+  for (const h of MEETING_ROOMS.map((r) => r.interior)) {
+    const hole = new THREE.Path();
+    hole.moveTo(h.x, -h.z); hole.lineTo(h.x, -(h.z + h.d)); hole.lineTo(h.x + h.w, -(h.z + h.d)); hole.lineTo(h.x + h.w, -h.z); hole.closePath();
+    shape.holes.push(hole);
+  }
+  const geo = new THREE.ShapeGeometry(shape);
+  geo.rotateX(-Math.PI / 2);
+  const pos = geo.attributes.position as THREE.BufferAttribute, uv = geo.attributes.uv as THREE.BufferAttribute;
+  for (let k = 0; k < pos.count; k++) uv.setXY(k, (pos.getX(k) - TILE_PHASE.x) / TILE, (pos.getZ(k) - TILE_PHASE.z) / TILE);
+  const mesh = new THREE.Mesh(geo, tileMat("hallTile"));
+  mesh.name = "floor-2-hall";
+  mesh.castShadow = false;
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
 export function buildFloor2(): THREE.Group {
   const g = new THREE.Group();
   g.name = "floor-2";
@@ -38,12 +63,7 @@ export function buildFloor2(): THREE.Group {
   const slab = rbox(F.w, 3, F.d, floorMat("exterior", 1), F.x + F.w / 2, -3 - SLAB_DROP, F.z + F.d / 2, 1);
   slab.castShadow = false;
   g.add(slab);
-  // THE SURFACE: the hall's own tile, phased to the WORLD exactly as the ground floor's is, so the two
-  // floors are visibly the same material laid in the same grid.
-  const tile = tiledFloor(FLOOR_RECT, 0.9, "hallTile");
-  tile.position.y = -0.47;
-  tile.castShadow = false;
-  g.add(tile);
+  g.add(hallFloor());
 
   // ---- the curtain wall --------------------------------------------------------------------------
   const wallM = mat("wall", 0.96);
@@ -75,10 +95,9 @@ export function buildFloor2(): THREE.Group {
   }
 
   // ---- architectural lighting --------------------------------------------------------------------
-  // A PERIMETER COVE and a grid of linear ceiling strips. Emissive rather than real lights, for the same
-  // reason the lift car's downlights are: this renderer carries one key and one fill for the whole world
-  // and a per-room light would recompile every material in it. There is no ceiling slab to hang them
-  // from — Office View looks down at this floor — so the strips are slim and read as a lighting grid.
+  // A PERIMETER COVE. Emissive rather than a real light, for the same reason the lift car's downlights
+  // are: this renderer carries one key and one fill for the whole world and a per-room light would
+  // recompile every material in it. There is no ceiling slab — Office View looks down at this floor.
   const coveM = emissiveMat("white", 1.0, 0.3);
   const inset = WALL_T + 1.4;
   for (const [x, z, w, d] of [
@@ -91,15 +110,12 @@ export function buildFloor2(): THREE.Group {
     strip.castShadow = false;
     g.add(strip);
   }
-  const lampM = emissiveMat("white", 1.5, 0.3);
-  const cols = 6, rows = 5;
-  for (let i = 0; i < cols; i++)
-    for (let j = 0; j < rows; j++) {
-      const x = FLOOR_RECT.x + (FLOOR_RECT.w * (i + 0.5)) / cols;
-      const z = FLOOR_RECT.z + (FLOOR_RECT.d * (j + 0.5)) / rows;
-      const strip = rbox(96, 1.4, 5, lampM, x, WALL_H - COVE_DROP - 2, z, 0.5);
-      strip.castShadow = false;
-      g.add(strip);
-    }
+  // THE DISTRICT (build/floor2Meeting) is built by app/world.ts beside this shell, because its doors,
+  // displays and signs are driven live and the world needs the handles.
+  // THE BUILDING'S ENVELOPE CASTS NOTHING INTO THE FLOOR. Its spandrel, head band and mullion grid are
+  // 60 tall on every edge of a roofless plate: at a low sun they raked the whole floor in parallel bands
+  // (the stripes across Summit and Vista). The envelope receives light and shadow; the district's own
+  // architecture is what casts.
+  g.traverse((o) => { if ((o as THREE.Mesh).isMesh) o.castShadow = false; });
   return g;
 }

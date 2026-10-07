@@ -17,6 +17,8 @@ import type { Vo3dViewMode } from "./viewMode";
 import { resetCurrentUserForTests, setCurrentUserFromMeResponse } from "../../../auth/currentUserStore";
 import type { AssetLayer } from "../../../types/office";
 import type { NotificationDestination } from "../../../components/OfficeMap/NotificationCenter";
+import { beginClaimSession, endClaimSession, resetClaimHudForTests } from "../../../services/quests/claimHudStore";
+import { findHudTargets } from "../../../components/OfficeMap/rewardFx";
 import {
   __resetExperiencePreferencesForTests,
   setExperiencePreference,
@@ -276,6 +278,35 @@ describe("the dock", () => {
     await screen.findByTestId("hud-dock");
     fireEvent.click(screen.getByRole("button", { name: "Open my profile" }));
     await waitFor(() => expect(onOpenProfile).toHaveBeenCalledWith(SELF));
+  });
+});
+
+// V1 PARITY — CLAIM-TIME STRIP. Tasks slides this dock off screen (hidden, still mounted), so a claim
+// needs V1's compact Coins + XP strip as its visible destination. The dock itself must STAY hidden.
+describe("claiming from Tasks", () => {
+  afterEach(() => resetClaimHudForTests());
+
+  it("shows only the compact Coins + XP strip, and the reward FX aims at it, not the hidden dock", async () => {
+    mount();
+    await screen.findByTestId("hud-dock");
+    expect(screen.queryByTestId("claim-hud")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open Tasks" }));
+    await waitFor(() => expect(screen.getByTestId("hud-dock").className).toMatch(/hidden/i));
+
+    act(() => beginClaimSession());
+    const strip = screen.getByTestId("claim-hud");
+    // The whole dock is NOT restored while claiming — only the strip appears.
+    expect(screen.getByTestId("hud-dock").className).toMatch(/hidden/i);
+
+    const dock = screen.getByTestId("hud-dock");
+    const targets = findHudTargets();
+    expect(strip.contains(targets.coins)).toBe(true);
+    expect(strip.contains(targets.xp)).toBe(true);
+    expect(dock.contains(targets.coins)).toBe(false);
+    expect(dock.contains(targets.xp)).toBe(false);
+
+    act(() => endClaimSession());
   });
 });
 
@@ -669,9 +700,12 @@ describe("inviting somebody to the Cave meeting", () => {
     fireEvent.click(await screen.findByTestId("cave-meeting-invite"));
 
     const dialog = await screen.findByRole("dialog");
-    expect(dialog).toHaveTextContent("Invite to the Cave meeting");
+    expect(dialog).toHaveTextContent("Invite to this meeting");
 
+    // MULTI-INVITE: pick, then confirm — one MEETING invitation per person picked, same meeting.
     fireEvent.click(screen.getByText("Alex Cruz"));
+    expect(caveInvite).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText("Invite 1 person"));
     expect(caveInvite).toHaveBeenCalledWith(ALEX);
     // A spatial ring is a different offer and must never be sent from here.
     expect(onCoworkerAction).not.toHaveBeenCalled();

@@ -1480,6 +1480,35 @@ describe("callStore standalone meeting", () => {
     expect(FakeRoom.instances[0].micCalls).toEqual([true]);
   });
 
+  it("PHASE 6B: keeps the connected meeting's capture_state, sends capture verbs for it, clears on leave", async () => {
+    const { startOrJoinMeeting, startMeetingCapture, decideMeetingCapture, leaveCall } = await import("./callStore");
+    const { getCaptureState } = await import("../meetings/meetingCapture");
+    await startOrJoinMeeting("cave-all-hands");
+
+    const state = {
+      meetingId: "cave-all-hands",
+      sessionId: "s-1",
+      capture: { captureId: "c-1", active: true, startedBy: "host@example.com", source: "fake" },
+      myConsent: "pending",
+      canControl: false,
+    };
+    lastSocket?.trigger("capture_state", { ...state, meetingId: "mf-foxtrot" }); // not this client's meeting
+    expect(getCaptureState()).toBeNull();
+    lastSocket?.trigger("capture_state", state);
+    expect(getCaptureState()?.myConsent).toBe("pending");
+
+    void startMeetingCapture();
+    void decideMeetingCapture("c-1", false);
+    const sent = lastSocket?.emitted.filter((e) => e.event.startsWith("capture_")) ?? [];
+    expect(sent).toEqual([
+      { event: "capture_start", payload: { meetingId: "cave-all-hands" } },
+      { event: "capture_consent", payload: { meetingId: "cave-all-hands", captureId: "c-1", decision: "decline" } },
+    ]);
+
+    leaveCall();
+    expect(getCaptureState()).toBeNull();
+  });
+
   it("is idempotent for the same meeting and never opens a second Room", async () => {
     const { startOrJoinMeeting } = await import("./callStore");
 

@@ -200,6 +200,21 @@ export const PALETTE = {
   caveCove: 0x4a7fd6, //      THE ROOM'S ONE ARCHITECTURAL LIGHT: the cool perimeter/threshold line
   caveCushion: 0x23242c, //   the low floor cushions along the back wall
   caveBronze: 0xb8925c, //    the monument's own bronze, carried into the portal threshold
+
+  // ---- THE MEETING FLOOR (floor 2) ---------------------------------------------------------------
+  // Routed through rooms/floor2Meeting.ts, never named directly by a room. RESTRAINED ON PURPOSE: two
+  // neutral room floors, a stone runner, charcoal frames, five upholsteries — the glass, the timber and
+  // the layouts carry each room's identity, not a floor colour.
+  mfFrame: 0x474b51, //        glazing frames, posts, shoe and head
+  mfRunner: 0xd6cabb, //       the stone runner down the streets, a step darker than hallTile
+  mfFloorStone: 0xcfc6ba, //   a room's woven floor: warm greige
+  mfFloorGraphite: 0x9c968f, // the boardroom / project / lounge rooms' deeper version of it
+  mfRug: 0xb9b0a4, //          the Commons' lounge rugs
+  mfCharcoal: 0x3a3c41,
+  mfStone: 0xa9a49c,
+  mfOat: 0xd8cdb8,
+  mfCognac: 0x9a6440,
+  mfOlive: 0x6f7646,
 };
 
 // ---- shared materials -------------------------------------------------------------------

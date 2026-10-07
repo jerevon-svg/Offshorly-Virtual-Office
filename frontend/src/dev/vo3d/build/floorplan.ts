@@ -9,6 +9,7 @@ import { tiledFloor } from "./tile";
 import { floorMat, mat } from "../render/Materials";
 import type { Facing, Rect } from "../core/coords";
 import { roomSouthZ, type FloorRoom, type GroundFloor } from "../rooms/ground-floor";
+import { GRADE, PODIUM_PLINTH_H } from "../world/campus";
 
 const PLINTH_MARGIN = 48;
 /** how far the shared hall slab sits below the rooms' tiled floors, so neither needs a depth bias */
@@ -23,7 +24,7 @@ export function buildGroundFloor(plan: GroundFloor): THREE.Group {
   const g = new THREE.Group();
   g.name = "ground-floor";
   const F = plan.frame;
-  const plinth = rbox(F.w + 2 * PLINTH_MARGIN, 5, F.d + 2 * PLINTH_MARGIN, floorMat("plinth", 1), F.x + F.w / 2, -8, F.z + F.d / 2, 2);
+  const plinth = rbox(F.w + 2 * PLINTH_MARGIN, PODIUM_PLINTH_H, F.d + 2 * PLINTH_MARGIN, floorMat("plinth", 1), F.x + F.w / 2, GRADE, F.z + F.d / 2, 2);
   plinth.castShadow = false;
   g.add(plinth);
   // The hall floor: the V1 floor.png tone (measured 219,202,187 ≈ PALETTE.exterior). Its top face sits

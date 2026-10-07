@@ -22,6 +22,9 @@ import type { Zone } from "./access";
 /** The place id the self-movement feed publishes on stepping out to the Lab (app/world.ts's
  *  setDepartureDestination). Kept beside the Cave's so the two names this module keys on sit together. */
 export const AI_LAB_PLACE_ID = "ai-lab";
+/** PHASE 3 FREE ROAM — the place a ground-floor body publishes while it is out on the campus beyond V1's
+ *  frame and in no other named place. Outside the Office, and never the Lab: "In AI Lab" is the Lab's floor. */
+export const CAMPUS_PLACE_ID = "campus";
 
 export type EmployeeLocationKind = "room" | "aiLab" | "cave" | "outside" | "office" | "unknown";
 
@@ -84,6 +87,7 @@ export function resolveEmployeeLocation(
   const reachable = !deps.viewerInsideCave;
 
   if (place === AI_LAB_PLACE_ID) return { label: "In AI Lab", kind: "aiLab", locatable: reachable };
+  if (place === CAMPUS_PLACE_ID) return { label: "Outside the Office", kind: "outside", locatable: reachable };
 
   // THE EXTERIOR, from the world's own zone test and nothing else. `place` cannot answer this: a room id
   // is only rewritten when a boundary is crossed, so somebody who walked out of Reception still carries

@@ -315,6 +315,28 @@ describe("vo3d weather — the rain field", () => {
     r.dispose();
   });
 
+  it("RELOCATES to an upper storey: that storey stays dry and streaks land on the moved grade", () => {
+    const r = new Rain(dry, GRADE);
+    r.visible = true;
+    r.setParams(RAIN_PARAMS.heavy_rain);
+    const up = { x: 6000, z: 0, w: 1440, d: 1244 };
+    const upGround = GRADE - 84;
+    r.relocate(up, upGround);
+    const c = new THREE.Vector3(up.x + 300, 60, up.z + 500);
+    r.follow(c, 900);
+    const u = uni(r);
+    expect(u.uGround.value).toBe(upGround);
+    expect(u.uTop.value).toBeGreaterThan(upGround);
+    expect(r.stats.instances).toBeGreaterThan(0);
+    const pad = 12;
+    for (let i = 0; i < 400; i++) {
+      const p = place(r, (i * 0.618) % 1, (i * 0.377) % 1);
+      const inside = p.x > up.x - pad + 0.01 && p.x < up.x + up.w + pad - 0.01 && p.z > up.z - pad + 0.01 && p.z < up.z + up.d + pad - 0.01;
+      expect(inside).toBe(false);
+    }
+    r.dispose();
+  });
+
   it("stops the clock entirely while it is not drawn", () => {
     const r = new Rain(dry, GRADE);
     r.setParams(RAIN_PARAMS.rain); // raining, but no presentation has asked for it

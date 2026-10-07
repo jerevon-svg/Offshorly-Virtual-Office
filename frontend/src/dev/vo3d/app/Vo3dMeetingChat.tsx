@@ -15,13 +15,13 @@
 // AND THE KEY IS `/`. Press it anywhere in the Cave during a meeting: the pointer is released and the
 // field takes focus in one gesture. Enter sends and asks for the pointer back FROM THAT KEYPRESS, which
 // is the only moment a browser will grant it. Esc leaves without sending. That is the whole interaction.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useMemo } from "react";
 import {
   sendMeetingChat,
   sendMeetingReaction,
   useMeetingChat,
 } from "../../../services/meeting/meetingChatClient";
-import { isTypingTarget } from "./keyGuard";
+import { useSlashComposer } from "./useSlashComposer";
 import styles from "./Vo3dMeetingChat.module.css";
 
 export interface Vo3dMeetingChatProps {
@@ -60,47 +60,8 @@ export function Vo3dMeetingChat({
   onResumePointer,
 }: Vo3dMeetingChatProps) {
   const chat = useMeetingChat();
-  const [draft, setDraft] = useState("");
-  /** True while the composer has focus — "the person is in the chat right now". Drives how much
-   *  history is kept and how gently the older lines fade; nothing else. */
-  const [composing, setComposing] = useState(false);
-  const inputRef = useRef<HTMLInputElement | null>(null);
-
-  /** `/` ANYWHERE IN THE MEETING: release the pointer and focus the field, in one gesture.
-   *
-   *  Guarded by the world's own typing test, so `/` inside any field — including this one — is a
-   *  slash, and by `active`, so it is never taken outside a meeting, in another view, or in a dialog. */
-  useEffect(() => {
-    if (!active) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
-      if (isTypingTarget(e)) return;
-      e.preventDefault();
-      // A locked pointer delivers no DOM events at all, so the field could never be clicked into
-      // while PLAYER holds the mouse. Releasing is what makes `/` the way in rather than a dead key.
-      if (document.pointerLockElement != null) document.exitPointerLock();
-      inputRef.current?.focus();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [active]);
-
-  // Leaving the meeting takes the draft with it.
-  useEffect(() => {
-    if (active) return;
-    setDraft("");
-  }, [active]);
-
-  const send = useCallback(() => {
-    const text = draft.trim();
-    if (text) sendMeetingChat(text);
-    setDraft("");
-    inputRef.current?.blur();
-    // ASK FOR THE POINTER BACK FROM THIS KEYPRESS. Only a user gesture may take a pointer lock, and
-    // Enter is one — so the person goes straight back to walking. If the browser refuses, PlayerInput
-    // turns on unlocked mouse-look and a world click remains the way to the real thing.
-    onResumePointer?.();
-  }, [draft, onResumePointer]);
+  // THE SHARED `/` COMPOSER (useSlashComposer): the same keys, pointer and Esc rules as the Travel Chat.
+  const { composing, inputProps } = useSlashComposer({ active, onSend: sendMeetingChat, onResumePointer });
 
   /** The newest lines, oldest first, with an age index the stylesheet fades by. */
   const rows = useMemo(() => {
@@ -142,32 +103,11 @@ export function Vo3dMeetingChat({
 
       <div className={styles.composer}>
         <input
-          ref={inputRef}
+          {...inputProps}
           className={styles.input}
-          value={draft}
           maxLength={400}
           placeholder="Press / to chat..."
           data-testid="meeting-chat-input"
-          onChange={(e) => setDraft(e.target.value)}
-          onFocus={() => setComposing(true)}
-          onBlur={() => setComposing(false)}
-          // Every keystroke stops here. The world binds WASD, Shift, E, V, C and `/`; a key meant for
-          // this field must never also walk the avatar or switch the camera.
-          onKeyDown={(e) => {
-            e.stopPropagation();
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              send();
-              return;
-            }
-            if (e.key === "Escape") {
-              // OUT WITHOUT SENDING, and the draft goes with it.
-              e.preventDefault();
-              setDraft("");
-              inputRef.current?.blur();
-            }
-          }}
-          onKeyUp={(e) => e.stopPropagation()}
         />
         {REACTIONS.map((token) => (
           <button

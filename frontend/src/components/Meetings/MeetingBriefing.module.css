@@ -1,0 +1,68 @@
+/* Pre-Meeting Briefing — a calm, scannable card stack in the Receipt family: small uppercase section labels,
+   one tappable line per recorded item, a date gutter, and the palette's meaning kept (green = a human reviewed
+   it, warm = VO's suggestion, amber = an earlier transcript). */
+
+.intro {
+  margin: 0; padding: 10px 14px; border-radius: 14px;
+  background: linear-gradient(135deg, rgba(75, 185, 106, 0.1), rgba(61, 90, 138, 0.07));
+  border: 1px solid rgba(47, 107, 69, 0.14);
+  font-size: 13px; font-weight: 700; color: rgba(36, 31, 48, 0.72);
+}
+.changeCount { color: #3d5a8a; }
+
+.section { display: flex; flex-direction: column; gap: 6px; }
+.sectionTitle {
+  margin: 0; font-size: 12px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase;
+  color: rgba(36, 31, 48, 0.5);
+}
+.note { margin: -2px 0 2px; font-size: 11.5px; font-style: italic; color: rgba(36, 31, 48, 0.5); }
+.subhead { margin: 2px 0 0; font-size: 11px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: #3d5a8a; }
+.lines, .sources { display: flex; flex-direction: column; gap: 6px; }
+
+.line, .source {
+  all: unset; box-sizing: border-box; cursor: pointer; display: flex; align-items: flex-start; gap: 10px;
+  padding: 9px 12px; border-radius: 12px; background: #fffefc; border: 1px solid rgba(24, 20, 34, 0.08);
+  border-left: 3px solid rgba(24, 20, 34, 0.12);
+  transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+.line:hover, .source:hover { box-shadow: 0 4px 12px rgba(24, 20, 34, 0.06); transform: translateY(-1px); }
+.line:focus-visible, .source:focus-visible { outline: 2px solid #4bb96a; outline-offset: 2px; }
+.line_decision { border-left-color: #4bb96a; }
+.line_commitment { border-left-color: #6d8cc4; }
+.line_open { border-left-color: #d2a95a; }
+.line_context { border-left-color: rgba(36, 31, 48, 0.2); }
+.mine { background: linear-gradient(90deg, rgba(109, 140, 196, 0.1), #fffefc 60%); }
+
+.date {
+  flex: none; min-width: 44px; padding-top: 1px; font-size: 11.5px; font-weight: 800; color: rgba(36, 31, 48, 0.45);
+  white-space: nowrap;
+}
+.lineBody { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.text { font-size: 13.5px; line-height: 1.4; color: #241f30; }
+.textSuggested { color: rgba(36, 31, 48, 0.72); }
+.meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-size: 11.5px; font-weight: 600; color: rgba(36, 31, 48, 0.55); }
+.change {
+  padding: 1px 7px; border-radius: 999px; font-size: 10.5px; font-weight: 800; letter-spacing: 0.03em;
+  color: #3d5a8a; background: rgba(109, 140, 196, 0.14);
+}
+.edited { color: #2f6b45; font-weight: 700; }
+.suggested { color: #8a7143; font-weight: 700; }
+.stale { color: #a56d12; font-weight: 700; }
+.chevron { flex: none; align-self: center; font-size: 18px; line-height: 1; color: rgba(36, 31, 48, 0.28); }
+
+.source { align-items: center; border-left-color: rgba(47, 107, 69, 0.3); padding: 8px 12px; }
+.sourceWhen { flex: none; font-size: 13px; font-weight: 800; color: #241f30; white-space: nowrap; }
+.sourceMeta { flex: 1; min-width: 0; font-size: 11.5px; font-weight: 600; color: rgba(36, 31, 48, 0.5); }
+.attended { color: #2f6b45; font-weight: 700; }
+.shared { font-style: italic; }
+.review_reviewed { color: #2f6b45; font-weight: 700; }
+.review_partly { color: #2f6b45; }
+.review_suggested { color: #8a7143; font-weight: 700; }
+.quiet { color: rgba(36, 31, 48, 0.45); font-weight: 700; }
+
+.footnote { margin: 0; text-align: center; font-size: 11px; color: rgba(36, 31, 48, 0.4); }
+
+@media (prefers-reduced-motion: reduce) {
+  .line, .source { transition: none; }
+  .line:hover, .source:hover { transform: none; }
+}

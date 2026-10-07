@@ -109,6 +109,21 @@ describe("the anchor a card hangs off", () => {
     expect(after.x).not.toBeCloseTo(before.x, 1);
     expect(cw.headPoint(ALEX)!.x).toBeCloseTo(after.x, 5);
   });
+
+  it("hangs over the lift RIDER while one stands in for the hidden body, and returns to the body after", async () => {
+    await cw.sync([row(ALEX, "Alex", 100, 100)]);
+    const real = cw.headPoint(ALEX)!;
+    expect(await cw.addRider(ALEX, "alex", "Alex", { x: 6100, z: 640 }, 0)).toBe(true);
+    const onRider = cw.headPoint(ALEX)!;
+    expect(onRider.x).toBeCloseTo(6100, 5);
+    expect(onRider.z).toBeCloseTo(640, 5);
+    expect(onRider.y).toBeCloseTo(real.y, 5);
+    cw.placeRider(ALEX, { x: 6120, z: 600 }, 0);
+    expect(cw.headPoint(ALEX)!.x).toBeCloseTo(6120, 5);
+    cw.removeRider(ALEX);
+    expect(cw.headPoint(ALEX)!.x).toBeCloseTo(real.x, 5);
+    expect(cw.headPoint(ALEX)!.z).toBeCloseTo(real.z, 5);
+  });
 });
 
 describe("who is near enough to target", () => {

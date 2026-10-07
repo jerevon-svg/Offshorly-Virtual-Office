@@ -1,0 +1,69 @@
+/* Meeting Continuity — a quiet vertical story inside the Receipt: a thin rail, one dot per meeting, this
+   meeting's dot filled. Receipt typography and palette (green = a human, warm = VO's suggestion). */
+
+.section { display: flex; flex-direction: column; gap: 8px; }
+.title {
+  margin: 0; display: flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: rgba(36, 31, 48, 0.5);
+}
+.count { font-size: 11px; font-weight: 700; letter-spacing: 0; text-transform: none; color: rgba(36, 31, 48, 0.4); }
+
+.timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+
+.stop { position: relative; display: flex; gap: 12px; padding: 0 0 12px 0; }
+.stop:last-child { padding-bottom: 0; }
+/* the rail: from this dot down to the next one */
+.stop:not(:last-child)::before {
+  content: ""; position: absolute; left: 5px; top: 14px; bottom: -2px; width: 2px; border-radius: 2px;
+  background: rgba(47, 107, 69, 0.16);
+}
+.dot {
+  flex: none; position: relative; margin-top: 5px; width: 12px; height: 12px; border-radius: 50%; box-sizing: border-box;
+  background: #fffefc; border: 2px solid rgba(47, 107, 69, 0.4);
+}
+.current .dot { background: #4bb96a; border-color: #2f6b45; box-shadow: 0 0 0 4px rgba(75, 185, 106, 0.16); }
+
+.body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.current .body {
+  padding: 8px 12px 10px; margin: -6px 0 0 -4px; border-radius: 14px;
+  background: #fffefc; border: 1px solid rgba(47, 107, 69, 0.2); box-shadow: 0 4px 12px rgba(47, 107, 69, 0.06);
+}
+
+.head, .headButton { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.headButton {
+  all: unset; box-sizing: border-box; cursor: pointer; display: flex; align-items: baseline; gap: 8px;
+  border-radius: 8px;
+}
+.headButton:hover .when { color: #2f6b45; }
+.headButton:focus-visible { outline: 2px solid #4bb96a; outline-offset: 2px; }
+.when { font-size: 13.5px; font-weight: 800; color: #241f30; white-space: nowrap; }
+.here {
+  font-size: 11px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: #2f6b45;
+}
+.otherTitle { font-size: 12.5px; color: rgba(36, 31, 48, 0.6); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chevron { font-size: 18px; line-height: 1; color: rgba(36, 31, 48, 0.3); }
+
+.meta { font-size: 11.5px; font-weight: 600; color: rgba(36, 31, 48, 0.5); }
+.attended { color: #2f6b45; font-weight: 700; }
+.shared { font-style: italic; }
+.review_reviewed { color: #2f6b45; font-weight: 700; }
+.review_partly { color: #2f6b45; }
+.review_suggested { color: #8a7143; font-weight: 700; }
+.stale { color: #a56d12; font-weight: 700; }
+.noReceipt { color: rgba(36, 31, 48, 0.45); font-weight: 700; }
+
+.line {
+  all: unset; box-sizing: border-box; cursor: pointer; display: flex; align-items: baseline; gap: 8px; min-width: 0;
+  font-size: 13px; line-height: 1.4; color: rgba(36, 31, 48, 0.85); border-radius: 8px; padding: 1px 0;
+}
+.line:hover .lineText { text-decoration: underline; text-decoration-color: rgba(36, 31, 48, 0.25); text-underline-offset: 2px; }
+.line:focus-visible { outline: 2px solid #4bb96a; outline-offset: 2px; }
+.lineSuggested { color: rgba(36, 31, 48, 0.66); }
+.lineText { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.owner { color: rgba(36, 31, 48, 0.55); }
+.tag { flex: none; font-size: 10.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
+.tag_decided { color: #2f6b45; }
+.tag_committed { color: #3d5a8a; }
+.tag_open { color: #8a7143; }
+.tag_raised { color: #a56d12; }
+.suggestedMark { flex: none; color: #8a7143; font-weight: 800; }

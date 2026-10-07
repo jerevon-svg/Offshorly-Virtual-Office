@@ -198,3 +198,26 @@
     transform: none;
   }
 }
+
+/* PHASE 6B — an AI Workforce task conversation's chat head: the job's identity (Toucan's glyph and a Task tag),
+   never an agent's face — one job, one head. */
+.taskBubble {
+  background: linear-gradient(135deg, #f7c65a, #f2b134);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.taskBubbleGlyph { font-size: 24px; line-height: 1; }
+.taskBubbleTag {
+  position: absolute;
+  bottom: -5px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: #241f30;
+  color: #fdfcfa;
+  font: 700 8px/1.3 system-ui, sans-serif;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}

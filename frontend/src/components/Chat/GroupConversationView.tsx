@@ -3,6 +3,7 @@ import { chatMode, chatService } from "../../services/chat";
 import { TOUCAN_AVATAR_GLYPH, TOUCAN_DISPLAY_NAME, isToucanSender } from "../../services/chat/toucanSender";
 import { applyReactionUpdate } from "../../services/chat/reactions";
 import { isAuthoredMessage } from "../../services/chat/types";
+import { isStickerMessage, stickerIdOf } from "../../services/chat/stickers";
 import type { ChatMessage, ConnectionState } from "../../services/chat";
 import type { DeliveryReceiptUpdate, ReadReceiptUpdate } from "../../services/chat/types";
 import { ChatComposer } from "./ChatComposer";
@@ -10,6 +11,7 @@ import { ChatWindowHeader } from "./ChatWindowHeader";
 import { profileImageFor } from "../../data/portraits";
 import { WhiteboardActionIcon } from "./ChatHeaderIcons";
 import { renderMessageText } from "./MentionText";
+import { StickerView } from "./StickerView";
 import { MessageReactions } from "./MessageReactions";
 import { useMentionComposer } from "./useMentionComposer";
 import styles from "./ConversationView.module.css";
@@ -219,7 +221,8 @@ export function GroupConversationView({
   const [draft, setDraft] = useState("");
   const [isOpening, setIsOpening] = useState(true);
   const [sendError, setSendError] = useState<string | null>(null);
-  const [failedText, setFailedText] = useState<string | null>(null);
+  // Rich Chat Phase 1: a failed sticker send is retried the same way, so the whole payload is kept.
+  const [failedSend, setFailedSend] = useState<{ text: string; stickerId?: string } | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>(
     chatService.getConnectionState?.() ?? "connected",
   );
@@ -350,17 +353,22 @@ export function GroupConversationView({
     }, TYPING_IDLE_MS);
   }
 
-  function sendText(text: string) {
+  function sendText(text: string, stickerId?: string) {
     window.clearTimeout(typingTimerRef.current);
     onTypingChange?.(false);
     chatService.sendTyping?.({ conversationId, isTyping: false });
     setSendError(null);
-    setFailedText(null);
-    const mentionedEmails = mention.mentionsForSend(text);
-    chatService.sendMessage({ conversationId, senderId: selfId, text, mentionedEmails }).catch((err: Error) => {
+    setFailedSend(null);
+    const mentionedEmails = stickerId ? [] : mention.mentionsForSend(text);
+    chatService.sendMessage({ conversationId, senderId: selfId, text, mentionedEmails, stickerId }).catch((err: Error) => {
       setSendError(err?.message || "Failed to send message.");
-      setFailedText(text);
+      setFailedSend({ text, stickerId });
     });
+  }
+
+  // A sticker is sent immediately and never touches the draft — whatever is typed stays typed.
+  function handleSendSticker(stickerId: string) {
+    sendText("", stickerId);
   }
 
   function handleSend() {
@@ -372,8 +380,8 @@ export function GroupConversationView({
   }
 
   function handleRetry() {
-    if (!failedText) return;
-    sendText(failedText);
+    if (!failedSend) return;
+    sendText(failedSend.text, failedSend.stickerId);
   }
 
   function handleReconnect() {
@@ -487,9 +495,15 @@ export function GroupConversationView({
                           glyph={fromToucan ? TOUCAN_AVATAR_GLYPH : undefined}
                         />
                       )}
-                      <div className={isOwn ? `${styles.message} ${styles.own}` : `${styles.message} ${styles.peer}`}>
-                        {renderMessageText(msg.text, msg.mentionedEmails, resolveDisplayName, selfId)}
-                      </div>
+                      {isStickerMessage(msg) ? (
+                        <div className={styles.stickerMessage}>
+                          <StickerView stickerId={stickerIdOf(msg)} />
+                        </div>
+                      ) : (
+                        <div className={isOwn ? `${styles.message} ${styles.own}` : `${styles.message} ${styles.peer}`}>
+                          {renderMessageText(msg.text, msg.mentionedEmails, resolveDisplayName, selfId)}
+                        </div>
+                      )}
                     </div>
                     <div className={styles.meta}>
                       <span className={isOwn ? `${styles.timestamp} ${styles.timestampRight}` : styles.timestamp}>
@@ -537,6 +551,7 @@ export function GroupConversationView({
           mention.onDraftChanged(text, caret);
         }}
         onSend={handleSend}
+        onSendSticker={handleSendSticker}
       />
       </>
       )}

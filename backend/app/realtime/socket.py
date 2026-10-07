@@ -4,6 +4,7 @@ import asyncio
 import logging
 import math
 import re
+import secrets
 from datetime import datetime, timezone
 
 from app.auth.atlas import AtlasAuthError, verify_atlas_token
@@ -37,17 +38,34 @@ from app.realtime.state import (
     global_chat_activity,
     is_room_locked,
     offline_lineup,
+    party_invites,
     room_presence,
     sio,
     spatial_sessions,
+    travel_parties,
     user_room,
     whiteboard_rooms,
 )
 from app.services.call_invites import INVITE_TTL_SECONDS
 from app.services.call_registry import MEETING_KEY_PREFIX
 from app.services import meeting_chat as meeting_chat_service
+from app.services import meeting_capture
+from app.services import meeting_sessions
+from app.services import scheduled_meetings
 from app.routers.calls import meeting_room_key, _MEETING_ID
 from app.services.call_invites import wire as invite_wire
+from app.services.travel_party import (
+    CHAT_MAX_CHARS as TRAVEL_CHAT_MAX_CHARS,
+    GATHER_DEADLINE_SECONDS as PARTY_GATHER_DEADLINE_SECONDS,
+    LEG_DEADLINE_SECONDS as PARTY_LEG_DEADLINE_SECONDS,
+    READY_BEAT_SECONDS as PARTY_READY_BEAT_SECONDS,
+    MAX_PARTY_MEMBERS,
+    PARTY_INVITE_TTL_SECONDS,
+    PARTY_MAX_LIFETIME_SECONDS,
+    RECONNECT_GRACE_SECONDS as PARTY_RECONNECT_GRACE_SECONDS,
+    sanitize_destination as sanitize_party_destination,
+    wire as party_wire,
+)
 from app.services.chat_assistant import detect_toucan_invocation, schedule_reply
 from app.services.chat_delegation import schedule_delegation_reply
 from app.services.delegation_lifecycle import mark_owner_returned, schedule_owner_returned
@@ -272,28 +290,70 @@ async def _broadcast_spatial_calls() -> None:
     await sio.emit("spatial_calls", {"calls": call_registry.snapshot()})
 
 
-def _meeting_presence_payload() -> dict:
+def _is_private_meeting(key: str) -> bool:
+    """PHASE 6A. A live meeting is private if the occurrence was private when it went live, or its
+    governing booking is private now — either is enough, so a mid-meeting edit can never widen it."""
+    wire = scheduled_meetings.live_booking_wire(key) or {}
+    return meeting_sessions.is_private(key) or bool(wire.get("isPrivate"))
+
+
+def _meeting_presence_payload(viewer: str) -> dict:
     """PHASE 7D. Standalone meetings, with their host. A SEPARATE event from `spatial_calls` on
     purpose: that one describes conversations and its entries are matched against conversation ids by
     the frontend, so a meeting key must never appear in it (see call_registry.snapshot()).
 
     `meetingId` is the bare id the client asked for, not the registry key — the "meeting:" namespace is
-    a server-side collision guard and nothing outside this process needs to know about it."""
+    a server-side collision guard and nothing outside this process needs to know about it.
+
+    PHASE 6A — PER VIEWER. A PRIVATE meeting's participants and host go only to people that occurrence
+    authorizes (meeting_sessions.may_see_live: its participants, organizer, invitees, explicitly invited);
+    everybody else learns only that the room's meeting is `live` — which door signs and Start/Join need —
+    never who is in it. Normal meetings are unchanged. `sessionId`, the durable Meeting Session id, goes
+    to the meeting's own PARTICIPANTS only, so it can never become a way to discover meetings."""
+    viewer = viewer.strip().lower()
     out = []
     for entry in call_registry.meeting_snapshot():
         key = entry["sessionId"]
-        out.append(
-            {
-                "meetingId": key[len(MEETING_KEY_PREFIX):],
-                "participants": entry["participants"],
-                "host": meeting_hosts.host_of(key) or "",
-            }
-        )
+        participants = entry["participants"]
+        visible = not _is_private_meeting(key) or meeting_sessions.may_see_live(key, viewer, participants)
+        item = {
+            "meetingId": key[len(MEETING_KEY_PREFIX):],
+            "live": True,
+            "participants": participants if visible else [],
+            "host": (meeting_hosts.host_of(key) or "") if visible else "",
+            # SCHEDULED MEETINGS — which booking this live room belongs to (public window facts
+            # only), so every client can tell "the booked meeting is running" from "an earlier or
+            # ad-hoc meeting is still in there". None for anything unbooked.
+            "booking": scheduled_meetings.live_booking_wire(key),
+        }
+        # PHASE 6B (physical meetings): who else this occurrence expects — authorized viewers only.
+        invited = meeting_sessions.invited_for(key, viewer, participants)
+        if invited is not None:
+            item["invited"] = invited
+        if viewer in participants:
+            session_id = meeting_sessions.session_id_for(key)
+            if session_id:
+                item["sessionId"] = session_id
+        out.append(item)
     return {"meetings": out}
 
 
+def _connected_emails() -> list[str]:
+    """Everybody with a live socket, read off the user rooms every socket joins at connect."""
+    prefix = user_room("")
+    rooms = sio.manager.rooms.get("/", {})
+    return [r[len(prefix):] for r, members in rooms.items() if isinstance(r, str) and r.startswith(prefix) and members]
+
+
 async def _broadcast_meeting_presence() -> None:
-    await sio.emit("meeting_presence", _meeting_presence_payload())
+    """PHASE 6A: one payload per connected person (see _meeting_presence_payload). Every payload is built
+    synchronously first and the emits are handed to one gather, so each emit enqueues its packets in the
+    order the payloads were built — a later broadcast can never be overtaken by an earlier one."""
+    payloads = [(email, _meeting_presence_payload(email)) for email in _connected_emails()]
+    if payloads:
+        await asyncio.gather(
+            *(sio.emit("meeting_presence", payload, room=user_room(email)) for email, payload in payloads)
+        )
 
 
 def _meeting_key_from_payload(payload: dict) -> str | None:
@@ -327,6 +387,15 @@ def _release_meeting_host_for(key: str) -> None:
     meeting_hosts.release(key, remaining)
     if not remaining:
         meeting_chat.end(key)
+        scheduled_meetings.release_live(key)
+
+
+async def _record_meeting_departure(key: str, email: str) -> None:
+    """PHASE 6A. `email` is no longer connected to `key` at all (their LAST tab left) — close their
+    attendance interval, and start the session's reconnect grace if nobody is left. Called right after
+    _release_meeting_host_for, which has already applied every live consequence."""
+    emptied = not call_registry.participants(key)
+    await meeting_sessions.record_leave(key, email.strip().lower(), emptied=emptied, now=datetime.now(timezone.utc))
 
 
 async def _broadcast_dnd_status() -> None:
@@ -592,7 +661,7 @@ async def connect(sid: str, environ: dict, auth: dict | None) -> None:
     # PHASE 7D, same reasoning for standalone meetings: a client walking into the Cave must know
     # whether a meeting is already running BEFORE it connects to anything, or its button cannot say
     # Join rather than Start. Without this the panel is wrong until the next join or leave.
-    await sio.emit("meeting_presence", _meeting_presence_payload(), to=sid)
+    await sio.emit("meeting_presence", _meeting_presence_payload(email), to=sid)
 
     # Same reasoning for in-flight call invites: a reconnecting/reloading client must get its own
     # pending ring back (either direction) rather than losing the Calling…/incoming prompt. Scoped
@@ -607,6 +676,22 @@ async def connect(sid: str, environ: dict, auth: dict | None) -> None:
     await sio.emit(
         "meeting_invites",
         {"invites": [invite_wire(i) for i in meeting_invites.pending_for(email)]},
+        to=sid,
+    )
+
+    # GO TOGETHER — same reasoning: a reload restores the party (and whether THIS tab may drive the body;
+    # a reloaded driver re-claims with party_claim) and any invitation still waiting for an answer.
+    party = travel_parties.party_of(email)
+    await sio.emit("travel_party", _party_payload(party, email) if party else {"party": None}, to=sid)
+    await sio.emit(
+        "party_invites",
+        {
+            "invites": [
+                {**invite_wire(i), "party": party_wire(p)}
+                for i in party_invites.pending_for(email)
+                if i["to_email"] == email and (p := travel_parties.get(i["party_id"])) is not None
+            ]
+        },
         to=sid,
     )
 
@@ -660,6 +745,7 @@ async def disconnect(sid: str) -> None:
         # runs off the registry's own remaining membership, not off how the person left.
         if was_meeting is not None:
             _release_meeting_host_for(was_meeting)
+            await _record_meeting_departure(was_meeting, email)
             await _broadcast_meeting_presence()
         else:
             await _broadcast_spatial_calls()
@@ -668,6 +754,7 @@ async def disconnect(sid: str) -> None:
     # PHASE 7D: the meeting inviter's tab went away. Terminate their invitation so the recipient's
     # prompt clears. Nothing durable is written — an unanswered meeting invitation is not a missed call.
     meeting_chat.clear_sid(sid)
+    travel_parties.clear_chat_sid(sid)
     for invite in meeting_invites.clear_sid(sid):
         await _emit_meeting_invite_terminal(invite, "meeting_invite_cancelled", {"reason": "caller_left"})
     for invite in call_invites.clear_sid(sid):
@@ -675,6 +762,11 @@ async def disconnect(sid: str) -> None:
         # from a hang-up, and it is still a call they did not get to answer.
         await _record_missed_call(invite, reason="caller_left")
         await _emit_invite_terminal(invite, "call_invite_cancelled", {"reason": "caller_left"})
+    # GO TOGETHER: by sid — the socket that was driving somebody's body. Marked lost, not removed, so a
+    # refresh survives; after the grace a leader who never came back ends the party, a member leaves it.
+    # Party invitations are deliberately NOT cleared by sid: the party, not the tab, owns them.
+    for party_id, lost_email in travel_parties.orphan_sid(sid):
+        asyncio.create_task(_drop_lost_later(party_id, lost_email))
     # Whiteboard W3: by sid — this socket's board membership only. Closing the room's last
     # member triggers the final (tombstone-free) DB write inside _leave_whiteboard.
     await _leave_whiteboard(sid)
@@ -843,8 +935,35 @@ async def call_joined(sid: str, payload: dict | None) -> None:
         # exactly one host — see meeting_hosts.py for the full argument.
         meeting_key = _meeting_key_from_payload(payload)
         if meeting_key is not None:
+            # SCHEDULED MEETINGS — a private Meeting Floor booking admits only its invitees, here as at
+            # the token endpoint, so a client cannot register itself into a private room's meeting (its
+            # host, chat and reactions) without media. The DB read is awaited BEFORE the atomic part.
+            meeting_id = meeting_key[len(MEETING_KEY_PREFIX):]
+            booking_id = None
+            if scheduled_meetings.is_meeting_floor_meeting(meeting_id):
+                async with async_session_maker() as db:
+                    allowed, booking_id = await scheduled_meetings.admit(db, meeting_id, email)
+                    if allowed and booking_id is None and not call_registry.participants(meeting_key):
+                        early = await scheduled_meetings.early_booking(db, meeting_id, email)
+                        booking_id = early.id if early else None
+                if not allowed:
+                    return
+            now = datetime.now(timezone.utc)
+            fresh = not call_registry.participants(meeting_key)
             changed = call_registry.join(meeting_key, email, sid)
             meeting_hosts.ensure_host(meeting_key, email)
+            scheduled_meetings.bind_live(meeting_key, booking_id, fresh=fresh)
+            # PHASE 6A — still inside the atomic step: which Meeting Session this join belongs to (a NEW
+            # one for a fresh activation, the live one otherwise). Persisted just below.
+            live, created = meeting_sessions.reserve(meeting_key, email, booking_id, now=now)
+            await meeting_sessions.record_join(
+                meeting_key, live, created=created, email=email.strip().lower(), joined=changed, now=now
+            )
+            # PHASE 6B — a late joiner (or rejoiner) of a meeting whose capture is active: enrolled as
+            # PENDING if new, their earlier decision kept if not, and told the capture state either way.
+            capture_session = await meeting_capture.on_join(meeting_key, email.strip().lower())
+            if capture_session is not None:
+                await _emit_capture_state(meeting_key, capture_session, [email.strip().lower()])
             if changed:
                 await _broadcast_meeting_presence()
             return
@@ -875,6 +994,7 @@ async def call_left(sid: str, _payload: dict | None = None) -> None:
         if call_registry.leave(email, sid):
             if was_meeting is not None:
                 _release_meeting_host_for(was_meeting)
+                await _record_meeting_departure(was_meeting, email)
                 await _broadcast_meeting_presence()
             else:
                 await _broadcast_spatial_calls()
@@ -1141,6 +1261,170 @@ async def _emit_meeting_invite_terminal(invite: dict, event: str, extra: dict | 
         await sio.emit(event, payload, room=user_room(email))
 
 
+@sio.on("meeting_end")
+async def meeting_end(sid: str, payload: dict | None) -> None:
+    """END MEETING — for everyone, by its host (or, for a scheduled room meeting, its organizer). Distinct
+    from Leave, which only ever takes the leaver out. Every connected client leaves on `meeting_ended`;
+    a scheduled occurrence the session was bound to is persisted as ended (scheduled_meetings.end_live),
+    so it is never pending again for its original time."""
+    try:
+        meeting_key = _meeting_key_from_payload(payload or {})
+        if meeting_key is None or not call_registry.participants(meeting_key):
+            return
+        session_data = await sio.get_session(sid)
+        email = session_data["email"].strip().lower()
+        meeting_id = meeting_key[len(MEETING_KEY_PREFIX):]
+        is_host = (meeting_hosts.host_of(meeting_key) or "").strip().lower() == email
+        # PHASE 6A: read before end_live, which stops the booking describing the room.
+        private = _is_private_meeting(meeting_key)
+        ended = None
+        if scheduled_meetings.is_meeting_floor_meeting(meeting_id):
+            async with async_session_maker() as db:
+                booking = await scheduled_meetings.live_booking(db, meeting_key)
+                if not is_host and not (booking is not None and booking.organizer_email == email):
+                    return
+                ended = await scheduled_meetings.end_live(db, meeting_key)
+        elif not is_host:
+            return
+        # PHASE 6A: the Meeting Session closes here, immediately — whoever joins this room next is a new one.
+        # PHASE 6B: its active capture (if any) stopped in the same write; participants are told before
+        # they leave.
+        closed = await meeting_sessions.end(meeting_key, now=datetime.now(timezone.utc))
+        if closed is not None:
+            await _emit_capture_state(meeting_key, closed, call_registry.participants(meeting_key))
+        if private:
+            # Who ended a PRIVATE meeting is that meeting's business: only its participants hear it (they
+            # are the only clients that act on it — callStore leaves when it is their connected meeting).
+            await asyncio.gather(
+                *(
+                    sio.emit("meeting_ended", {"meetingId": meeting_id, "by": email}, room=user_room(p))
+                    for p in call_registry.participants(meeting_key)
+                )
+            )
+        else:
+            await sio.emit("meeting_ended", {"meetingId": meeting_id, "by": email})
+        if ended is not None:
+            await sio.emit("scheduled_meetings_changed", {})
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+# ---- PHASE 6B: capture + consent (services/meeting_capture.py owns every rule) ---------------------------
+#
+# Each handler ACKS its caller ({"ok": true, …} or {"ok": false, "code": …}) and pushes `capture_state` to
+# the meeting's PARTICIPANTS only — each in their own user room, with only their own consent — never as a
+# broadcast. Identity is always the socket's authenticated email.
+
+
+async def _emit_capture_state(key: str, session_id: str, emails: list[str]) -> None:
+    host = meeting_hosts.host_of(key)
+    meeting_id = key[len(MEETING_KEY_PREFIX):]
+    for email in dict.fromkeys(e.strip().lower() for e in emails):
+        try:
+            state = await meeting_capture.state_for(session_id, email, host=host)
+            await sio.emit("capture_state", {"meetingId": meeting_id, **state}, room=user_room(email))
+        except Exception:  # noqa: BLE001 — a failed state push must not break the operation that caused it
+            _logger.warning("capture_state push failed for %s", key, exc_info=True)
+
+
+async def _capture_op(sid: str, payload: dict | None, op) -> dict:
+    try:
+        payload = payload or {}
+        key = _meeting_key_from_payload(payload)
+        if key is None:
+            return {"ok": False, "code": "bad_request"}
+        email = (await sio.get_session(sid))["email"].strip().lower()
+        try:
+            return await op(key, email, payload)
+        except meeting_capture.CaptureError as err:
+            return {"ok": False, "code": err.code}
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+        return {"ok": False, "code": "internal_error"}
+
+
+@sio.on("capture_start")
+async def capture_start(sid: str, payload: dict | None) -> dict:
+    """Start capture on the caller's live meeting: its host (or a scheduled meeting's organizer), in the call."""
+
+    async def op(key: str, email: str, _payload: dict) -> dict:
+        capture_id = await meeting_capture.start(
+            key, email, participants=call_registry.participants(key), host=meeting_hosts.host_of(key),
+            now=datetime.now(timezone.utc),
+        )
+        session_id = meeting_sessions.session_id_for(key)
+        if session_id:
+            await _emit_capture_state(key, session_id, call_registry.participants(key))
+        return {"ok": True, "captureId": capture_id}
+
+    return await _capture_op(sid, payload, op)
+
+
+@sio.on("capture_stop")
+async def capture_stop(sid: str, payload: dict | None) -> dict:
+    async def op(key: str, email: str, _payload: dict) -> dict:
+        capture_id = await meeting_capture.stop(
+            key, email, host=meeting_hosts.host_of(key), now=datetime.now(timezone.utc)
+        )
+        session_id = meeting_sessions.session_id_for(key)
+        if session_id:
+            await _emit_capture_state(key, session_id, call_registry.participants(key))
+        return {"ok": True, "captureId": capture_id}
+
+    return await _capture_op(sid, payload, op)
+
+
+@sio.on("capture_consent")
+async def capture_consent(sid: str, payload: dict | None) -> dict:
+    """The caller's OWN decision: {"meetingId", "captureId", "decision": "grant" | "decline"}. Declining
+    changes nothing about their place in the meeting — only what ingestion will accept from them."""
+
+    async def op(key: str, email: str, body: dict) -> dict:
+        decision = body.get("decision")
+        if decision not in ("grant", "decline"):
+            return {"ok": False, "code": "bad_request"}
+        state = await meeting_capture.decide(
+            key, email, str(body.get("captureId") or ""), grant=decision == "grant", now=datetime.now(timezone.utc)
+        )
+        session_id = meeting_sessions.session_id_for(key)
+        if session_id:
+            await _emit_capture_state(key, session_id, [email])
+        return {"ok": True, "consent": state}
+
+    return await _capture_op(sid, payload, op)
+
+
+@sio.on("capture_dev_segment")
+async def capture_dev_segment(sid: str, payload: dict | None) -> dict:
+    """DEVELOPMENT ONLY — the fake transcript source. Stands in for a real adapter's authenticated stream
+    ownership with the one identity this server has already verified: the socket's. A `speakerEmail` in the
+    payload is never used as identity; if it names anybody else the segment is refused outright."""
+    if not settings.is_development:
+        return {"ok": False, "code": "disabled"}
+
+    async def op(_key: str, email: str, body: dict) -> dict:
+        claimed = body.get("speakerEmail")
+        if claimed is not None and (not isinstance(claimed, str) or claimed.strip().lower() != email):
+            return {"ok": False, "code": "speaker_mismatch"}
+        segment = meeting_capture.SegmentIn(
+            start_offset_ms=body.get("startOffsetMs"),
+            end_offset_ms=body.get("endOffsetMs"),
+            text=body.get("text"),
+            confidence=body.get("confidence"),
+            source_segment_ref=body.get("segmentRef"),
+            revision=body.get("revision", 1),
+        )
+        segment_id = await meeting_capture.ingest_segment(
+            str(body.get("captureId") or ""),
+            meeting_capture.SourceIdentity(email=email, source=meeting_capture.SOURCE_FAKE),
+            segment,
+            now=datetime.now(timezone.utc),
+        )
+        return {"ok": True, "segmentId": segment_id}
+
+    return await _capture_op(sid, payload, op)
+
+
 @sio.on("meeting_invite")
 async def meeting_invite(sid: str, payload: dict | None) -> None:
     """Invite one person to a standalone meeting. Mints no token and touches no media — the
@@ -1169,6 +1453,15 @@ async def meeting_invite(sid: str, payload: dict | None) -> None:
         if dnd_registry.is_dnd(to_email):
             await sio.emit("meeting_invite_failed", fail("dnd"), to=sid)
             return
+        # SCHEDULED MEETINGS — the ring is not a way round a private room: under a private booking
+        # both ends must be its invitees. The reason says "private" and nothing about the meeting.
+        if scheduled_meetings.is_meeting_floor_meeting(meeting_id):
+            async with async_session_maker() as db:
+                inviter_ok, _ = await scheduled_meetings.admit(db, meeting_id, email)
+                invitee_ok, _ = await scheduled_meetings.admit(db, meeting_id, to_email)
+            if not (inviter_ok and invitee_ok):
+                await sio.emit("meeting_invite_failed", fail("private"), to=sid)
+                return
         if to_email in call_registry.participants(meeting_key):
             await sio.emit("meeting_invite_failed", fail("already_in"), to=sid)
             return
@@ -1184,6 +1477,13 @@ async def meeting_invite(sid: str, payload: dict | None) -> None:
         invite = meeting_invites.create(
             from_email=email, from_sid=sid, to_email=to_email, extra={"meeting_id": meeting_id}
         )
+        # PHASE 6A: an explicit invitation from a participant authorizes the invitee for THIS occurrence,
+        # durably — the invitation itself is memory-only and gone once it resolves.
+        await meeting_sessions.grant_invited(
+            meeting_key, inviter=email, to_email=to_email, participants=call_registry.participants(meeting_key)
+        )
+        # …and everybody that occurrence authorizes now sees who else is expected (Go Together's candidates).
+        await _broadcast_meeting_presence()
         await sio.emit("meeting_invite_incoming", invite_wire(invite), room=user_room(to_email))
         await sio.emit("meeting_invite_ringing", invite_wire(invite), room=user_room(email))
         asyncio.create_task(_expire_meeting_invite_later(invite["inviteId"]))
@@ -1245,6 +1545,429 @@ async def _resolve_invite(sid: str, payload: dict | None, *, role: str, event: s
             await _record_missed_call(invite, reason="cancelled")
         extra = {"reason": "declined"} if event == "call_invite_declined" else None
         await _emit_invite_terminal(invite, event, extra)
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+# ---- GO TOGETHER V1 — temporary travel parties ------------------------------------------------------
+# Membership, leadership, destination and the journey's stages (gather → legs → arrived). NO movement
+# passes through here: bodies move on walk_started / walk_arrived, and every elevator ride is the rider's
+# own local one. See app/services/travel_party.py.
+
+
+def _party_pending(party: dict) -> list[dict]:
+    """This party's still-open invitations (all of them are the leader's)."""
+    return [i for i in party_invites.pending_for(party["leader_email"]) if i.get("party_id") == party["partyId"]]
+
+
+def _party_payload(party: dict, email: str) -> dict:
+    """Per recipient: the party, plus WHICH SOCKET drives this recipient's own body, so exactly one of
+    their tabs runs the follow loop (a second tab only shows the state)."""
+    wire = party_wire(party, pending=[i["to_email"] for i in _party_pending(party)])
+    return {"party": wire, "controllerSid": travel_parties.controller_sid(party, email)}
+
+
+async def _emit_party_updated(party: dict) -> None:
+    for email in travel_parties.people(party):
+        await sio.emit("party_updated", _party_payload(party, email), room=user_room(email))
+
+
+async def _emit_party_invite_terminal(invite: dict, outcome: str) -> None:
+    payload = {**invite_wire(invite), "outcome": outcome}
+    for email in (invite["from_email"], invite["to_email"]):
+        await sio.emit("party_invite_resolved", payload, room=user_room(email))
+
+
+async def _end_party(party_id: str, reason: str) -> None:
+    """Single-shot. Everyone in it is told, and every open invitation is withdrawn."""
+    party = travel_parties.end(party_id)
+    if party is None:
+        return
+    for invite in _party_pending(party):
+        if party_invites.resolve(invite["inviteId"]) is not None:
+            await _emit_party_invite_terminal(invite, "cancelled")
+    for email in travel_parties.people(party):
+        await sio.emit("party_ended", {"partyId": party_id, "reason": reason}, room=user_room(email))
+
+
+async def _end_if_nobody_joined(party_id: str) -> None:
+    """A party nobody accepted and nobody can still accept is not a party."""
+    party = travel_parties.get(party_id)
+    if party is not None and not party["members"] and not _party_pending(party):
+        await _end_party(party_id, "nobody_joined")
+
+
+async def _expire_party_invite_later(invite_id: str, party_id: str) -> None:
+    await asyncio.sleep(PARTY_INVITE_TTL_SECONDS)
+    invite = party_invites.resolve(invite_id)
+    if invite is None:
+        return
+    await _emit_party_invite_terminal(invite, "expired")
+    party = travel_parties.get(party_id)
+    if party is not None:
+        await _emit_party_updated(party)
+    await _end_if_nobody_joined(party_id)
+
+
+async def _expire_party_later(party_id: str) -> None:
+    await asyncio.sleep(PARTY_MAX_LIFETIME_SECONDS)
+    await _end_party(party_id, "expired")
+
+
+async def _drop_lost_later(party_id: str, email: str) -> None:
+    """After the grace: a leader who never came back ends the party (no leadership transfer in V1);
+    a member who never came back simply leaves it."""
+    await asyncio.sleep(PARTY_RECONNECT_GRACE_SECONDS)
+    if not travel_parties.still_lost(party_id, email):
+        return
+    party = travel_parties.get(party_id)
+    if party is None:
+        return
+    if email == party["leader_email"]:
+        await _end_party(party_id, "leader_left")
+        return
+    travel_parties.remove_member(party_id, email)
+    await sio.emit("party_ended", {"partyId": party_id, "reason": "disconnected"}, room=user_room(email))
+    await _progress(party)
+
+
+async def _progress(party: dict, *, force: bool = False) -> None:
+    """THE ONE PLACE A PARTY MOVES ON: the gathering to READY (and, a beat later, the first leg), a leg to
+    the next, the last leg to arrival. Called after anything that can complete a barrier — a ready, a pause,
+    somebody leaving — and by the deadlines with force. Always tells the party where it now stands."""
+    pid = party["partyId"]
+    if party["stage"] == "gathering":
+        if travel_parties.finish_gathering(pid, force=force) is not None:
+            asyncio.create_task(_begin_journey_later(pid))
+    elif party["stage"] in ("to_lift", "ride", "to_room"):
+        step = travel_parties.advance(pid, force=force)
+        if step is not None and step["arrived"]:
+            await _end_party(pid, "arrived")
+            return
+        if step is not None:
+            asyncio.create_task(_leg_deadline_later(pid, step["leg"]["stageId"], step["leg"]["kind"]))
+    await _emit_party_updated(party)
+
+
+async def _gather_deadline_later(party_id: str, stage_id: str) -> None:
+    """A stuck or unreachable body never holds the party: at the deadline whoever is not there is paused
+    and the party is READY without them."""
+    await asyncio.sleep(PARTY_GATHER_DEADLINE_SECONDS)
+    party = travel_parties.get(party_id)
+    if party is not None and travel_parties.current_stage_id(party) == stage_id:
+        await _progress(party, force=True)
+
+
+async def _begin_journey_later(party_id: str) -> None:
+    """READY, then — after the "Everyone's here" beat — the first leg, for everybody at the same moment."""
+    await asyncio.sleep(PARTY_READY_BEAT_SECONDS)
+    party = travel_parties.get(party_id)
+    leg = travel_parties.begin_journey(party_id) if party is not None else None
+    if leg is None:
+        return
+    asyncio.create_task(_leg_deadline_later(party_id, leg["stageId"], leg["kind"]))
+    # A leg nobody has to walk (everyone it concerns is already there) completes at once.
+    await _progress(party)
+
+
+async def _leg_deadline_later(party_id: str, stage_id: str, kind: str) -> None:
+    await asyncio.sleep(PARTY_LEG_DEADLINE_SECONDS.get(kind, 45))
+    party = travel_parties.get(party_id)
+    if party is not None and travel_parties.current_stage_id(party) == stage_id:
+        await _progress(party, force=True)
+
+
+def _is_driver(party: dict | None, email: str, sid: str) -> bool:
+    """Only the socket that drives this person's body may speak for where it is."""
+    return party is not None and travel_parties.controller_sid(party, email) == sid
+
+
+async def _party_session(sid: str) -> tuple[str, dict | None]:
+    session_data = await sio.get_session(sid)
+    email = session_data["email"].strip().lower()
+    return email, travel_parties.party_of(email)
+
+
+def _leader_driver(party: dict | None, email: str, sid: str) -> bool:
+    return party is not None and party["leader_email"] == email and travel_parties.controller_sid(party, email) == sid
+
+
+@sio.on("party_invite")
+async def party_invite(sid: str, payload: dict | None) -> None:
+    """Invite people to go somewhere together. Creates the party on first use (the inviter leads it);
+    a leader may invite more people later. Every refusal is reported per person to the inviter."""
+    try:
+        payload = payload or {}
+        raw_emails = payload.get("emails")
+        if not isinstance(raw_emails, list) or not raw_emails:
+            return
+        email, party = await _party_session(sid)
+        if party is not None and party["leader_email"] != email:
+            await sio.emit("party_invite_result", {"results": [], "error": "in_party"}, to=sid)
+            return
+        created = False
+        if party is None:
+            destination = sanitize_party_destination(payload.get("destination"))
+            floor = payload.get("floor")
+            if destination is None or not isinstance(floor, str) or not 0 < len(floor) <= 32:
+                return
+            party = travel_parties.create(leader_email=email, leader_sid=sid, destination=destination, leader_floor=floor)
+            created = True
+
+        results: list[dict] = []
+        invited = 0
+        seen: set[str] = set()
+        for raw in raw_emails:
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            to_email = raw.strip().lower()
+            if to_email == email or to_email in seen:
+                continue
+            seen.add(to_email)
+            reason: str | None = None
+            if not _is_online(to_email):
+                reason = "offline"
+            elif dnd_registry.is_dnd(to_email):
+                reason = "dnd"  # an invitation is an interruption; DND stays absolute
+            elif party["stage"] != "forming":
+                reason = "started"  # Start Walking closed the invite list
+            elif travel_parties.party_of(to_email) is not None:
+                reason = "in_party"
+            elif party_invites.pending_between(email, to_email) is not None:
+                reason = "already_invited"
+            elif len(party["members"]) + len(_party_pending(party)) >= MAX_PARTY_MEMBERS:
+                reason = "full"
+            if reason is not None:
+                results.append({"email": to_email, "ok": False, "reason": reason})
+                continue
+            invite = party_invites.create(
+                from_email=email, from_sid=sid, to_email=to_email, extra={"party_id": party["partyId"]}
+            )
+            invited += 1
+            results.append({"email": to_email, "ok": True})
+            await sio.emit(
+                "party_invite_incoming",
+                {**invite_wire(invite), "party": party_wire(party)},
+                room=user_room(to_email),
+            )
+            asyncio.create_task(_expire_party_invite_later(invite["inviteId"], party["partyId"]))
+
+        if created and invited == 0:
+            # Nobody could be invited: no party is left behind for the inviter to be stuck in.
+            travel_parties.end(party["partyId"])
+            await sio.emit("party_invite_result", {"results": results, "partyId": None}, to=sid)
+            return
+        if created:
+            asyncio.create_task(_expire_party_later(party["partyId"]))
+        await sio.emit("party_invite_result", {"results": results, "partyId": party["partyId"]}, to=sid)
+        await _emit_party_updated(party)
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("party_invite_accept")
+async def party_invite_accept(sid: str, payload: dict | None) -> None:
+    """Join. The accepting socket becomes the one that drives this person's body while following."""
+    try:
+        invite_id = (payload or {}).get("inviteId")
+        if not isinstance(invite_id, str) or not invite_id:
+            return
+        email, current = await _party_session(sid)
+        invite = party_invites.resolve(invite_id, actor_email=email, role="recipient")
+        if invite is None:
+            return
+        party = travel_parties.get(invite["party_id"])
+        if party is None or current is not None or not travel_parties.add_member(party["partyId"], email, sid):
+            # Ended meanwhile, full, or already travelling with somebody else.
+            await _emit_party_invite_terminal(invite, "cancelled")
+            return
+        await _emit_party_invite_terminal(invite, "accepted")
+        await _emit_party_updated(party)
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("party_invite_decline")
+async def party_invite_decline(sid: str, payload: dict | None) -> None:
+    try:
+        invite_id = (payload or {}).get("inviteId")
+        if not isinstance(invite_id, str) or not invite_id:
+            return
+        email, _ = await _party_session(sid)
+        invite = party_invites.resolve(invite_id, actor_email=email, role="recipient")
+        if invite is None:
+            return
+        await _emit_party_invite_terminal(invite, "declined")
+        party = travel_parties.get(invite["party_id"])
+        if party is not None:
+            travel_parties.note_declined(party["partyId"], email)
+            await _emit_party_updated(party)
+            await _end_if_nobody_joined(party["partyId"])
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("party_leave")
+async def party_leave(sid: str, _payload: dict | None = None) -> None:
+    """Leave (a member) or End (the leader — V1 dissolves rather than transferring leadership)."""
+    try:
+        email, party = await _party_session(sid)
+        if party is None:
+            return
+        if party["leader_email"] == email:
+            await _end_party(party["partyId"], "ended")
+            return
+        travel_parties.remove_member(party["partyId"], email)
+        await sio.emit("party_ended", {"partyId": party["partyId"], "reason": "left"}, room=user_room(email))
+        await _progress(party)
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("party_claim")
+async def party_claim(sid: str, _payload: dict | None = None) -> None:
+    """A reloaded tab takes back driving its own body (only while the previous driver is gone)."""
+    try:
+        email, party = await _party_session(sid)
+        if party is not None and travel_parties.claim(party["partyId"], email, sid):
+            await _emit_party_updated(party)
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("party_follow_state")
+async def party_follow_state(sid: str, payload: dict | None) -> None:
+    """A member paused (took manual control) or resumed. Edge-triggered by the client. Lets the leader's
+    gathering skip people who are not coming instead of waiting out the timeout for them."""
+    try:
+        following = (payload or {}).get("following")
+        if not isinstance(following, bool):
+            return
+        email, party = await _party_session(sid)
+        if party is None or travel_parties.controller_sid(party, email) != sid:
+            return
+        if travel_parties.set_following(party["partyId"], email, following):
+            await _progress(party)  # a pause may leave everyone else there
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+def _finite(v: object) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+@sio.on("party_where")
+async def party_where(sid: str, payload: dict | None) -> None:
+    """PHASE 2 — this body's OWN place, from the tab that drives it (never a peer's guess from delayed
+    coworker rendering). Kept only while forming: it is what Start Walking decides the rendezvous from."""
+    try:
+        payload = payload or {}
+        floor, room_id, pos = payload.get("floor"), payload.get("roomId"), payload.get("position")
+        if not isinstance(floor, str) or not 0 < len(floor) <= 32:
+            return
+        if room_id is not None and (not isinstance(room_id, str) or not 0 < len(room_id) <= 64):
+            return
+        if not isinstance(pos, dict) or not (_finite(pos.get("x")) and _finite(pos.get("z"))):
+            return
+        email, party = await _party_session(sid)
+        if _is_driver(party, email, sid):
+            travel_parties.report_where(
+                party["partyId"], email, floor=floor, room_id=room_id,
+                point={"x": float(pos["x"]), "z": float(pos["z"])},
+            )
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("party_start")
+async def party_start(sid: str, _payload: dict | None = None) -> None:
+    """START WALKING — the leader sets out with whoever has accepted so far. Invitations still unanswered
+    are withdrawn (a late accept can never join a gathering already under way), and the rendezvous is
+    chosen from the participants' own reports."""
+    try:
+        email, party = await _party_session(sid)
+        if not _leader_driver(party, email, sid):
+            return
+        rv = travel_parties.start(party["partyId"])
+        if rv is None:
+            return
+        for invite in _party_pending(party):
+            if party_invites.resolve(invite["inviteId"]) is not None:
+                await _emit_party_invite_terminal(invite, "cancelled")
+        if party["stage"] == "ready":
+            # nobody to gather (everyone already on the destination floor): the walk to the room, a beat later
+            asyncio.create_task(_begin_journey_later(party["partyId"]))
+        else:
+            asyncio.create_task(_gather_deadline_later(party["partyId"], rv["stageId"]))
+        await _emit_party_updated(party)
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("party_ready")
+async def party_ready(sid: str, payload: dict | None) -> None:
+    """This body reached its own slot for the current stage (the rendezvous, the lift lobby, off the lift at
+    the destination, the room) — said by the tab that drives it, about itself only."""
+    try:
+        payload = payload or {}
+        stage_id, floor = payload.get("stageId"), payload.get("floor")
+        if not isinstance(stage_id, str) or not stage_id:
+            return
+        if floor is not None and (not isinstance(floor, str) or not 0 < len(floor) <= 32):
+            floor = None
+        email, party = await _party_session(sid)
+        if not _is_driver(party, email, sid) or not travel_parties.mark_ready(party["partyId"], email, stage_id, floor=floor):
+            return
+        await _progress(party)
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("party_chat_send")
+async def party_chat_send(sid: str, payload: dict | None) -> None:
+    """TRAVEL CHAT (Phase 5): say something to the people walking with you. Relay-only — nothing is stored,
+    nothing reaches the DM system, the inbox, unread counts, Toucan or quests. The party is found from the
+    sender's own session (a client never names a party or a recipient), only the socket driving the sender's
+    body may speak, and the recipients are the party's CURRENT travelling members (chat_members), each at the
+    socket driving their body — the sender included, so every screen draws one message from one source."""
+    try:
+        text = (payload or {}).get("text")
+        if not isinstance(text, str):
+            return
+        clean = text.strip()[:TRAVEL_CHAT_MAX_CHARS]
+        if not clean:
+            return
+        email, party = await _party_session(sid)
+        if not _is_driver(party, email, sid):
+            return
+        members = travel_parties.chat_members(party)
+        if email not in members or not travel_parties.may_chat(sid, now=asyncio.get_running_loop().time()):
+            return
+        message = {
+            "partyId": party["partyId"],
+            "id": secrets.token_urlsafe(9),
+            "email": email,
+            "text": clean,
+            "atMs": meeting_chat_service.now_ms(),
+        }
+        for member in members:
+            target = travel_parties.controller_sid(party, member)
+            if target is not None:
+                await sio.emit("party_chat", message, to=target)
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("party_destination")
+async def party_destination(sid: str, payload: dict | None) -> None:
+    """The leader's destination changed underneath them (e.g. the meeting moved rooms)."""
+    try:
+        destination = sanitize_party_destination((payload or {}).get("destination"))
+        if destination is None:
+            return
+        email, party = await _party_session(sid)
+        if _leader_driver(party, email, sid) and travel_parties.set_destination(party["partyId"], destination):
+            await _emit_party_updated(party)
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 
@@ -1582,6 +2305,9 @@ async def send_message(sid: str, payload: dict | None) -> None:
         text = text if isinstance(text, str) else ""
         raw_mentions = payload.get("mentionedEmails")
         mentioned_emails = [e for e in raw_mentions if isinstance(e, str)] if isinstance(raw_mentions, list) else None
+        # Rich Chat Phase 1 — present only for a sticker send; its shape is validated by the seam.
+        raw_sticker = payload.get("stickerId")
+        sticker_id = raw_sticker if isinstance(raw_sticker, str) else None
 
         # Sender is ALWAYS the server-verified session email — a client-sent sender id is
         # never trusted, even implicitly.
@@ -1602,6 +2328,7 @@ async def send_message(sid: str, payload: dict | None) -> None:
                     mentioned_emails=mentioned_emails,
                     origin_sid=sid,
                     client_temp_id=client_temp_id,
+                    sticker_id=sticker_id,
                 )
         except ChatSendError as err:
             await sio.emit("chat_error", {"code": err.code, "message": err.message}, to=sid)
@@ -1610,7 +2337,8 @@ async def send_message(sid: str, payload: dict | None) -> None:
         # A1.4.2 — only AFTER the human message is committed and fanned out: an "@Toucan" token
         # schedules Toucan's in-chat reply as a background task, so nothing about the reply can
         # delay or fail this send. The reply re-checks membership itself.
-        prompt = detect_toucan_invocation(text)
+        # A sticker has no text, so it can never invoke Toucan (the saved text is "").
+        prompt = detect_toucan_invocation(saved.get("text") or "")
         if prompt is not None:
             schedule_reply(conversation_id, email, prompt, saved["id"])
         # A2.1 — same ordering guarantee: only after the human message is committed and fanned

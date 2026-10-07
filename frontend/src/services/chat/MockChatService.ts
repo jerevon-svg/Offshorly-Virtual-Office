@@ -110,6 +110,7 @@ export class MockChatService implements ChatService {
     senderId: string;
     text: string;
     mentionedEmails?: string[];
+    stickerId?: string;
   }): Promise<ChatMessage> {
     const message = this.appendMessage({
       id: nextMessageId(),
@@ -119,7 +120,8 @@ export class MockChatService implements ChatService {
       sentAt: new Date().toISOString(),
       // PHASE 7D: the mock rig emits the same shape real mode does. Missed calls are a REAL-mode
       // feature (the server writes them), so the mock only ever produces authored messages.
-      kind: "text",
+      kind: input.stickerId ? "sticker" : "text",
+      meta: input.stickerId ? { stickerId: input.stickerId } : null,
       // Mock mode has no server-side receipt tracking — always empty, never populated.
       deliveredTo: [],
       readBy: [],

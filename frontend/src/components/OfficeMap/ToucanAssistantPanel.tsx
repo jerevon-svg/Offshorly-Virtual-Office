@@ -328,6 +328,10 @@ type ToucanAssistantPanelProps = {
   // Dismiss/release — closes the panel AND sends the bird back to roaming
   // (the caller owns both, see OfficeMap's releaseToucan).
   onRelease: () => void;
+  // Where the bird is, as the header's subtitle. Omitted (Classic, and V2
+  // whenever the bird really is beside you) it reads "Perched beside you";
+  // the V2 world passes its own line while the bird is busy elsewhere.
+  presenceLabel?: string;
   // Reports ONLY whether a reply is being prepared. The bird's bubble is
   // driven from this boolean, never from response text.
   onPendingChange?: (pending: boolean) => void;
@@ -416,6 +420,7 @@ function DictateIcon() {
 
 export function ToucanAssistantPanel({
   onRelease,
+  presenceLabel = "Perched beside you",
   onPendingChange,
   onTypingChange,
   onRequestAttachment,
@@ -1265,7 +1270,7 @@ export function ToucanAssistantPanel({
                 a claim about this build rather than a development artifact. */}
             {toucanMode === "mock" && <span className={styles.demoBadge}>Demo</span>}
           </div>
-          <span className={chat.subtitle}>Perched beside you</span>
+          <span className={chat.subtitle}>{presenceLabel}</span>
         </div>
         <div className={chat.headerActions}>
           {/* History, memory and "start over", all in the existing header action

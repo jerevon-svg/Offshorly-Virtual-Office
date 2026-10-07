@@ -393,6 +393,7 @@ export class RealChatService implements ChatService {
     senderId: string;
     text: string;
     mentionedEmails?: string[];
+    stickerId?: string;
   }): Promise<ChatMessage> {
     const clientTempId = nextClientTempId();
     const socket = this.socket();
@@ -423,6 +424,7 @@ export class RealChatService implements ChatService {
           text: input.text,
           clientTempId,
           mentionedEmails: input.mentionedEmails?.length ? input.mentionedEmails : undefined,
+          stickerId: input.stickerId,
         });
       });
     };

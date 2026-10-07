@@ -39,7 +39,7 @@ import { seatCentroidKey } from "../../../data/emptySeats";
 import type { WalkDirection } from "../../../data/bonWalkFrames";
 import { ROOM_WORLD_SHIFT_Z } from "../rooms/ground-floor";
 import { v1FramePoint } from "../app/spawn";
-import { groundFloorSeatAnchors, type Vo3dSeatAnchor } from "../app/seats";
+import { groundFloorSeatAnchors, meetingFloorSeatAnchors, type Vo3dSeatAnchor } from "../app/seats";
 import { v1Rooms } from "./v1Floor";
 import type { Vec2 } from "../core/coords";
 
@@ -183,12 +183,14 @@ export function seatMapping(): Vo3dSeatMapping {
 /** The V1 seat a V2 anchor IS, or null for an unsupported (V2-only) chair. */
 export const v1SeatForAnchor = (anchorId: string): V1SeatIdentity | null => seatMapping().byAnchor.get(anchorId) ?? null;
 /** The V2 anchor a wire seat key IS — a V1 centroid key through the mapping, or a `v2:` key naming an
- *  anchor that exists on this floor — or null when V2 has no chair for it. */
+ *  anchor that exists on the ground floor or the Meeting Floor — or null when V2 has no chair for it. */
 export function anchorForSeatKey(seatKey: string | null | undefined): Vo3dSeatAnchor | null {
   if (!seatKey) return null;
   if (isV2SeatKey(seatKey)) {
     const id = seatKey.slice(V2_SEAT_KEY_PREFIX.length);
-    return groundFloorSeatAnchors().find((a) => a.id === id) ?? null;
+    // …on the ground floor, or upstairs: a Meeting Floor chair is V2-only by construction, and without this
+    // every peer drew somebody seated upstairs standing beside the chair (and occupancy never saw it).
+    return groundFloorSeatAnchors().find((a) => a.id === id) ?? meetingFloorSeatAnchors().find((a) => a.id === id) ?? null;
   }
   return seatMapping().byKey.get(seatKey) ?? null;
 }

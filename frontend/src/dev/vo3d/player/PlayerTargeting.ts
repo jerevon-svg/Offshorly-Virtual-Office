@@ -20,7 +20,8 @@ import type { EntityId, WorldState } from "../world/WorldState";
  *  candidates are not static — people walk — so they are supplied per frame rather than harvested once
  *  (see PlayerDeps.dynamicCandidates), and the one kind whose activation does not move this body: it
  *  opens the interaction menu, which is the host's business. */
-export type InteractKind = "seat" | "lounge" | "approach" | "person";
+/** "ride" — a docked shared e-scooter (world/scooters): activated like a person, without handing the avatar away */
+export type InteractKind = "seat" | "lounge" | "approach" | "person" | "ride";
 export type Candidate = { id: EntityId; kind: InteractKind; pos: Vec2; label: string; roomId: string };
 export type Target = Candidate & { distance: number };
 
