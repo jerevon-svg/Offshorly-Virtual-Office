@@ -368,14 +368,8 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
       // that prior submission rather than an error panel — and record it
       // locally, since this branch is reached exactly when local state has
       // drifted from the server (cleared storage, another browser).
-      // HR-7 investigation: a 409 with entries_created: 0 would mean nothing
-      // was ever logged, so treating it as success here would be a false
-      // checkout. Left unchanged — the Atlas backend contract lives in a
-      // separate repo not available from here, so whether entries_created:0
-      // can legitimately occur on a genuine duplicate (vs. always meaning
-      // "no entries exist") could not be confirmed. AtlasZohoService already
-      // defaults entries_created to 0 rather than throwing on a missing
-      // field, so this path silently accepts a zero count today.
+      // AtlasZohoService only raises this after validating a prior submission
+      // ID and a positive entry count; an unconfirmed 409 stays a failure.
       if (isAlreadySubmittedError(err)) {
         const recovered: SubmitTimeLogsResult = {
           success: true,

@@ -181,6 +181,26 @@ describe("AtlasZohoService.submitTimeLogs", () => {
     await expect(result).rejects.toThrow(/already been submitted/i);
   });
 
+  it.each([
+    {},
+    null,
+    { detail: "Conflict" },
+    { detail: { submission_id: "", entries_created: 1 } },
+    { detail: { submission_id: "   ", entries_created: 1 } },
+    { detail: { submission_id: 123, entries_created: 1 } },
+    { detail: { submission_id: "vo-earlier" } },
+    { detail: { submission_id: "vo-earlier", entries_created: "1" } },
+    { detail: { submission_id: "vo-earlier", entries_created: 0 } },
+    { detail: { submission_id: "vo-earlier", entries_created: -1 } },
+    { detail: { submission_id: "vo-earlier", entries_created: 1.5 } },
+  ])("fails closed for an unconfirmed 409 body: %j", async (body) => {
+    await expect(submit(jsonResponse(body, 409))).resolves.toMatchObject({
+      success: false,
+      kind: "unknown",
+      error: "Couldn't confirm a prior submission through Atlas.",
+    });
+  });
+
   it("reports a partial failure as NOT successful, kind entry-rejection", async () => {
     // The regression this guards: recomputing success from entries_created
     // would render a success card for a half-logged day.

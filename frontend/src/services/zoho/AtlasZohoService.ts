@@ -174,12 +174,22 @@ export class AtlasZohoService implements ZohoTimeLoggingService {
 
       if (response.status === 409) {
         const body = (await response.json()) as {
-          detail?: { submission_id?: string; entries_created?: number };
-        };
-        throw new AlreadySubmittedError(
-          body.detail?.submission_id ?? "",
-          body.detail?.entries_created ?? 0,
-        );
+          detail?: { submission_id?: unknown; entries_created?: unknown };
+        } | null;
+        const submissionId = body?.detail?.submission_id;
+        const entriesCreated = body?.detail?.entries_created;
+        if (
+          typeof submissionId !== "string" || !submissionId.trim() ||
+          typeof entriesCreated !== "number" || !Number.isSafeInteger(entriesCreated) ||
+          entriesCreated <= 0
+        ) {
+          return {
+            success: false,
+            kind: "unknown",
+            error: "Couldn't confirm a prior submission through Atlas.",
+          };
+        }
+        throw new AlreadySubmittedError(submissionId, entriesCreated);
       }
 
       if (!response.ok) {

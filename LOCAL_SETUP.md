@@ -97,10 +97,24 @@ The development settings above are not a release configuration.
 
 ## Standalone visual work
 
-For visuals without Atlas, use `npm run dev:mock` and open
-`http://localhost:5174/virtual-office/`. Check the mock-mode environment before
-using it; `VITE_AUTH_GATE=off` is only for standalone development. It skips
-identity resolution and cannot validate real login, roster or persistence.
+The standalone mock rig needs both the VO backend and frontend, but no Atlas.
+With backend dependencies installed as above, start its isolated backend:
+
+```bash
+cd Offshorly-Virtual-Office/backend
+bash run-mock-hub-backend.sh
+```
+
+The script migrates `backend/dev_hub_playground.db`, enables development Hub
+seeding, and serves the API on port 8002. In another terminal, run
+`npm run dev:mock` from `frontend/` and open
+`http://localhost:5174/virtual-office/`.
+
+`frontend/.env.mock` uses mock identity, roster and Zoho integration, with
+`VITE_AUTH_GATE=off` for standalone development only. Chat, attendance and
+Toucan use real services at port 8002 and persist data in the rig's SQLite
+database. Mock identity does not mean disposable or browser-only data; this
+rig cannot validate Atlas login or the real Atlas roster/Zoho integration.
 
 ## Checks
 
