@@ -197,8 +197,37 @@ describe("AtlasZohoService.submitTimeLogs", () => {
     await expect(submit(jsonResponse(body, 409))).resolves.toMatchObject({
       success: false,
       kind: "unknown",
-      error: "Couldn't confirm a prior submission through Atlas.",
+      error: expect.stringContaining("This work date was already attempted. Editing will not make it retryable until the Atlas team"),
     });
+  });
+
+  it.each([0, 1, 2, 3])("recovers a two-entry duplicate only when all entries are confirmed (count %i)", async (entriesCreated) => {
+    const result = submit(jsonResponse({
+      detail: { submission_id: "vo-earlier", entries_created: entriesCreated },
+    }, 409), ["task-a", "task-b"].map((taskId) => ({
+      projectId: "proj-1", taskId, category: null, timeSpentMinutes: 30, workDescription: "Did work",
+    })));
+    if (entriesCreated >= 2) {
+      await expect(result).rejects.toMatchObject({
+        name: "AlreadySubmittedError", submissionId: "vo-earlier", entriesCreated,
+      });
+    } else {
+      const failure = await result;
+      expect(failure).toMatchObject({ success: false, kind: "unknown" });
+      expect(failure.error).toContain("Contact the Atlas team before retrying.");
+      expect(failure.error).toContain("clears the earlier attempt");
+      if (entriesCreated === 1) {
+        expect(failure.entriesCreated).toBe(1);
+        expect(failure.error).toContain("Only 1 of 2 entries are confirmed in Zoho.");
+      }
+    }
+  });
+
+  it("keeps the attempted-date warning when a 409 body is not JSON", async () => {
+    const result = await submit(new Response("Conflict", { status: 409 }));
+    expect(result).toMatchObject({ success: false, kind: "unknown" });
+    expect(result.error).toContain("This work date was already attempted.");
+    expect(result.error).toContain("Contact the Atlas team before retrying.");
   });
 
   it("reports a partial failure as NOT successful, kind entry-rejection", async () => {

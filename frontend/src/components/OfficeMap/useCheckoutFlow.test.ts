@@ -59,6 +59,25 @@ function currentWorkDate(): string {
 }
 
 describe("useCheckoutFlow — submission failure resilience", () => {
+  it.each([0, 1])("an unconfirmed duplicate with %i entries keeps the full draft and does not check out", async (entriesCreated) => {
+    submitTimeLogs.mockResolvedValue({
+      success: false, kind: "unknown", entriesCreated,
+      error: "Contact the Atlas team before retrying.",
+    });
+    const timeInMs = Date.now() - 60 * 60_000;
+    const { result } = renderHook(() => useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs }));
+    await driveToReviewing(result);
+    act(() => result.current.updateEntry(0, { timeSpentMinutes: 30 }));
+    act(() => result.current.addEntry());
+    act(() => result.current.updateEntry(1, { category: "Meetings", timeSpentMinutes: 30, workDescription: "Rest of work" }));
+    await act(async () => { await result.current.submit(); });
+    expect(submitTimeLogs).toHaveBeenCalledTimes(1);
+    expect(result.current.state).toBe("SUBMISSION_FAILED");
+    expect(result.current.error).toBe("Contact the Atlas team before retrying.");
+    expect(loadDraft(EMPLOYEE_ID, currentWorkDate())?.entries).toEqual(result.current.entries);
+    expect(loadResult(EMPLOYEE_ID, currentWorkDate())).toBeNull();
+  });
+
   it.each(["submit", "retrySubmit"] as const)("%s blocks 1441 minutes and preserves the draft", async (method) => {
     submitTimeLogs.mockResolvedValue({ success: false, error: "network down" });
     const timeInMs = Date.now() - 1441 * 60_000;

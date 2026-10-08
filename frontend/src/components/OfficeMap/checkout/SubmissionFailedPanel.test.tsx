@@ -3,6 +3,23 @@ import { describe, expect, it } from "vitest";
 import { SubmissionFailedPanel } from "./SubmissionFailedPanel";
 
 describe("SubmissionFailedPanel — failure-kind copy", () => {
+  it.each([0, 1])("shows the blocked-date guidance for an unconfirmed duplicate with %i entries", (entriesCreated) => {
+    const error = `${entriesCreated ? "Only 1 of 2 entries are confirmed in Zoho. " : ""}This work date was already attempted. Editing will not make it retryable until the Atlas team reconciles Zoho writes and clears the earlier attempt. Contact the Atlas team before retrying.`;
+    render(<SubmissionFailedPanel visible error={error} onTryAgain={() => {}} onSaveAndReturnLater={() => {}}
+      result={{ success: false, kind: "unknown", entriesCreated }} />);
+    expect(screen.getByText(error)).toBeTruthy();
+    expect(screen.getByText(/draft.*not been checked out/s)).toBeTruthy();
+    expect(screen.queryByText(/remove the ones that succeeded/)).toBeNull();
+  });
+
+  it("keeps the task ID and upstream diagnostic text verbatim", () => {
+    const taskId = "task-123";
+    const error = 'Zoho rejected: PATTERN_NOT_MATCHED {"field":"notes","value":"a < b & c"}';
+    render(<SubmissionFailedPanel visible error={null} onTryAgain={() => {}} onSaveAndReturnLater={() => {}}
+      result={{ success: false, kind: "entry-rejection", failures: [{ taskId, error }] }} />);
+    expect(screen.getByRole("listitem").textContent).toBe(`${taskId}: Atlas could not log this entry — ${error}`);
+  });
+
   it("entry-rejection: neutral per-entry wording, never asserts a Zoho rejection", () => {
     render(
       <SubmissionFailedPanel

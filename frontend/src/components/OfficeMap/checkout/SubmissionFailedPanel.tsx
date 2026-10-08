@@ -35,7 +35,7 @@ export function SubmissionFailedPanel({
       <div className={styles.panel}>
         <div className={styles.title}>
           {partial
-            ? "Some entries reached Zoho Projects, others didn't"
+            ? "Some entries are confirmed in Zoho Projects"
             : outcomeUnknown
               ? "Couldn't confirm submission through Atlas"
               : "We couldn't submit your work log to Zoho Projects"}
@@ -43,10 +43,10 @@ export function SubmissionFailedPanel({
         <div className={styles.body}>
           {partial ? (
             <>
-              {created} {created === 1 ? "entry" : "entries"} were logged
-              successfully. Zoho has no way to undo those, so retrying will
-              log them a second time — remove the ones that succeeded before
-              trying again.
+              {created} {created === 1 ? "entry is" : "entries are"} confirmed in Zoho.
+              Your draft is saved and you have not been checked out.
+              Contact the Atlas team to reconcile the earlier attempt before
+              retrying; editing or removing entries does not clear that attempt.
             </>
           ) : (
             <>

@@ -369,7 +369,7 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
       // locally, since this branch is reached exactly when local state has
       // drifted from the server (cleared storage, another browser).
       // AtlasZohoService only raises this after validating a prior submission
-      // ID and a positive entry count; an unconfirmed 409 stays a failure.
+      // ID and enough confirmed entries for this attempt; an unconfirmed 409 stays a failure.
       if (isAlreadySubmittedError(err)) {
         const recovered: SubmitTimeLogsResult = {
           success: true,

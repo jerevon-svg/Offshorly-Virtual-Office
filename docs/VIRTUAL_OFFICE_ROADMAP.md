@@ -313,7 +313,7 @@ Zero references to LiveKit, WebRTC media, calendars, or meeting scheduling exist
 | HR-4 | Attendance & time logs (client-side worked time, Zoho time entries) | Partially implemented | Functional but needs polish | Automated tests only | Merged but deployment unverified |
 | HR-5 | Approval notifications | Not started | Not applicable yet | Needs validation | Not deployed |
 | HR-6 | Zoho Projects integration (via Atlas `my-tasks` / `my-timelogs`) | Implemented | Functional but needs polish | Automated tests only | Merged but deployment unverified |
-| HR-7 | External Atlas/Zoho timelog HTTP 500 and current safe fallback | Blocked | Known defects | Validation failed | Unknown |
+| HR-7 | Atlas/Zoho timelog failures and retry safety | VO failure classification shipped (`ab4195d`); Atlas fixes pending | Known upstream defects | Automated VO tests; end-to-end write unverified | Unknown |
 
 | ID | Works | Incomplete | Known defects | Polish | Scope | Deps / blockers | Testing required | Next action | Pri | Diff |
 |---|---|---|---|---|---|---|---|---|---|---|
@@ -323,7 +323,7 @@ Zero references to LiveKit, WebRTC media, calendars, or meeting scheduling exist
 | HR-4 | Worked-time computation, break minutes, per-day draft, Zoho entries | No server-side attendance record; no history view | — | — | FE (BE later) | CO-3 decision | `workedTime.test`, `checkoutStorage.test` | Persist check-in/out server-side | P2 | Medium |
 | HR-5 | — | — | — | — | FE, BE | NT-1, HR-2 | — | — | P3 | Small |
 | HR-6 | Project/task grouping from flat task list, promise cache, billable default | Real mode off by default; `mcp` mode retained only to fail loudly | — | — | FE, INT | Render env, Atlas | `AtlasZohoService.test` | Confirm prod env | P1 | Small |
-| HR-7 | Fallback today: `mock` default renders sample projects; real-mode failures show `SubmissionFailedPanel` with retry and duplicate detection; UI hidden entirely when not real mode | Atlas `/api/v1/office/my-timelogs` returned HTTP 500 (external); status **today is unverified** | External | Distinguish "Atlas down" from "Zoho rejected" in the panel | INT, FE | Atlas team | Re-run a real submission once Atlas confirms fix | Chase Atlas; add a health probe for `my-tasks` at checkout start | P0 | Small (ours) |
+| HR-7 | Failure classification, timeout, duplicate-risk warnings, stale-result clearing and 1440-minute guards shipped in `ab4195d` | Atlas-side `PATTERN_NOT_MATCHED` root cause, retry/reservation contract and field-level error detail | Failed/partial Atlas reservations can block retries | — | INT | Atlas team | Authorized end-to-end write and failed/partial retry recovery | Resolve Atlas blockers; reconcile existing Zoho writes before clearing attempts | P0 | Atlas-side |
 
 ### 5.9 Avatar and 3D pipeline
 
