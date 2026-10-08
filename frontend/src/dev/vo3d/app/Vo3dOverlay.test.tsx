@@ -1692,6 +1692,18 @@ async function reachTimeLog() {
   return screen.findByRole("button", { name: /review log/i });
 }
 
+async function reachReview() {
+  checkedInAt = new Date(Date.now() - 60 * 60_000).toISOString();
+  saveSessionStart(getCurrentUserId(), manilaWorkDate(), checkedInAt);
+  mount();
+  await reachTimeLog();
+  fireEvent.change(screen.getAllByRole("combobox")[1], { target: { value: "Internal work" } });
+  fireEvent.change(screen.getByRole("spinbutton", { name: "Hours" }), { target: { value: "1" } });
+  fireEvent.change(screen.getAllByRole("textbox")[0], { target: { value: "Tested checkout" } });
+  fireEvent.click(screen.getByRole("button", { name: /review log/i }));
+  return screen.findByRole("button", { name: /submit/i });
+}
+
 describe("checkout navigation", () => {
   it("the summary offers a cancel that ends nothing", async () => {
     mount();
@@ -1746,10 +1758,7 @@ describe("checkout navigation", () => {
   });
 
   it("the REVIEW step offers both Back and Cancel", async () => {
-    mount();
-    await reachTimeLog();
-    fireEvent.click(screen.getByRole("button", { name: /review log/i }));
-    await screen.findByRole("button", { name: /submit/i });
+    await reachReview();
     expect(screen.getByRole("button", { name: /^Back$|back to/i })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /cancel checkout/i }));
     await waitFor(() => expect(hudHidden()).toBe(false));
@@ -1772,10 +1781,10 @@ describe("checkout navigation", () => {
     // unallocated log in the first place, so there is no half-filled request to abandon.
     mount();
     await reachTimeLog();
-    fireEvent.click(screen.getByRole("button", { name: /review log/i }));
-    const submit = await screen.findByRole("button", { name: /submit/i });
-    expect((submit as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(submit);
+    const review = screen.getByRole("button", { name: /review log/i });
+    expect((review as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(review);
+    expect(screen.queryByRole("button", { name: /submit/i })).toBeNull();
     expect(submitTimeLogs).not.toHaveBeenCalled();
     expect(checkOut).not.toHaveBeenCalled();
   });
@@ -1817,12 +1826,10 @@ describe("what a confirmed checkout does, and what it never does", () => {
   });
 
   it("a FAILED submission reaches none of it and leaves the employee checked in", async () => {
-    submitTimeLogs.mockImplementation(async () => ({ success: false, submissionId: "", entriesCreated: 0, submittedAt: "" }));
-    mount();
-    await reachTimeLog();
-    // The flow cannot leave REVIEWING without a successful submission, so the departure is unreachable.
-    fireEvent.click(screen.getByRole("button", { name: /review log/i }));
-    await screen.findByRole("button", { name: /submit/i });
+    submitTimeLogs.mockResolvedValueOnce({ success: false, submissionId: "", entriesCreated: 0, submittedAt: "" });
+    fireEvent.click(await reachReview());
+    await screen.findByRole("button", { name: /try again/i });
+    expect(submitTimeLogs).toHaveBeenCalledTimes(1);
     expect(checkOut).not.toHaveBeenCalled();
     expect(setExitAuthorized).not.toHaveBeenCalled();
     expect(attendanceApply).not.toHaveBeenCalled();

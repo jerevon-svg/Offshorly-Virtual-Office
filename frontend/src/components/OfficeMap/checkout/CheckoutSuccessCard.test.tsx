@@ -26,8 +26,8 @@ function workDate(): string {
 // same canOfferCheckIn() gate the reception menu uses. Attendance is held CHECKED_OUT here —
 // dismissing the card never touches it.
 let latest: ReturnType<typeof useCheckoutFlow> | null = null;
-function Harness() {
-  const flow = useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs: null });
+function Harness({ timeInMs = null }: { timeInMs?: number | null }) {
+  const flow = useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs });
   latest = flow;
   const attendance = "CHECKED_OUT" as const;
   const [dismissed, setDismissed] = useState(false);
@@ -80,18 +80,20 @@ describe("CheckoutSuccessCard dismissal", () => {
 
   it("a newly completed checkout shows the card again after an earlier dismissal", async () => {
     saveResult(EMPLOYEE_ID, workDate(), { success: true, submissionId: "hist-1", submittedAt: new Date(Date.now() - 3_600_000).toISOString() });
-    render(<Harness />);
+    const timeInMs = Date.now() - 60_000;
+    render(<Harness timeInMs={timeInMs} />);
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(screen.queryByText("You're checked out! 🎉")).toBeNull();
 
     // New session, then a full checkout to CHECKED_OUT.
-    act(() => latest!.beginNewSession(new Date().toISOString()));
+    act(() => latest!.beginNewSession(new Date(timeInMs).toISOString()));
     expect(screen.getByTestId("state").textContent).toBe("IDLE");
     submitTimeLogs.mockResolvedValue({ success: true, submissionId: "s2", submittedAt: new Date().toISOString(), entriesCreated: 1 });
     act(() => latest!.startCheckout());
     act(() => latest!.confirmStartCheckout());
     act(() => latest!.arrivedAtReception());
     act(() => latest!.continueToTimeLog());
+    act(() => latest!.updateEntry(0, { category: "Internal work", timeSpentMinutes: 1, workDescription: "Completed work" }));
     act(() => latest!.goToReview());
     await act(async () => {
       await latest!.submit();
