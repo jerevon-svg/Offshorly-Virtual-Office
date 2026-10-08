@@ -29,7 +29,9 @@ export type NotificationDestination =
   | { kind: "missions" }
   | { kind: "achievements" }
   | { kind: "hub" }
-  | { kind: "checkout" };
+  | { kind: "checkout" }
+  /** Scheduled Meetings — by id only; the Meetings panel resolves the meeting as it is NOW. */
+  | { kind: "meeting"; meetingId: string };
 
 export interface NotificationCenterProps {
   /** Performs the destination. Return false (or leave it undefined) when the destination could
@@ -58,7 +60,7 @@ export interface NotificationCenterProps {
  *  bell. No emoji, no generated art. */
 export function iconFor(notification: AppNotification): "kudos" | "clock" | "notifications" {
   if (notification.type.startsWith("kudos")) return "kudos";
-  if (notification.type === "work_hours_reached") return "clock";
+  if (notification.type === "work_hours_reached" || notification.type.startsWith("meeting_")) return "clock";
   return "notifications";
 }
 
@@ -127,6 +129,10 @@ export function destinationFor(notification: AppNotification): NotificationDesti
       return { kind: "hub" };
     case "checkout":
       return { kind: "checkout" };
+    case "meeting": {
+      const meetingId = str(payload, "meetingId");
+      return meetingId ? { kind: "meeting", meetingId } : null;
+    }
     default:
       return null;
   }

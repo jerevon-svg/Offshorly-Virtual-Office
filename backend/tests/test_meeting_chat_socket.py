@@ -34,6 +34,7 @@ async def server():
         await conn.run_sync(Base.metadata.create_all)
     socket_module.call_registry.reset()
     socket_module.meeting_hosts.reset()
+    socket_module.meeting_sessions.reset()
     socket_module.meeting_chat.reset()
 
     config = uvicorn.Config(combined_app, host="127.0.0.1", port=0, log_level="warning", lifespan="off")
@@ -46,6 +47,7 @@ async def server():
     await task
     socket_module.call_registry.reset()
     socket_module.meeting_hosts.reset()
+    socket_module.meeting_sessions.reset()
     socket_module.meeting_chat.reset()
     settings.APP_ENV = original_env
 

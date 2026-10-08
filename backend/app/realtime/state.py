@@ -15,6 +15,7 @@ from app.services.global_chat_activity import GlobalChatActivityRegistry
 from app.services.offline_lineup import OfflineLineup
 from app.services.room_presence import RoomPresenceRegistry
 from app.services.spatial_session import SpatialSessionRegistry
+from app.services.travel_party import TravelPartyRegistry
 from app.services.whiteboard_rooms import WhiteboardRoomRegistry
 
 # CONSTRUCTION SEAM for realtime shared state. This module owns the Socket.IO server and every
@@ -100,6 +101,11 @@ call_invites = CallInviteRegistry()
 #     state with spatial rings. A meeting invitation and a call to a person must never resolve each other.
 meeting_hosts = MeetingHostRegistry()
 meeting_invites = CallInviteRegistry()
+
+# GO TOGETHER V1 — temporary travel parties (see travel_party.py) and their invitations: a THIRD instance
+# of the ring registry, carrying `party_id`, sharing no state with calls or meetings.
+travel_parties = TravelPartyRegistry()
+party_invites = CallInviteRegistry()
 
 # PHASE 7D — WHAT IS SAID INSIDE A MEETING. Ephemeral and in-memory by design: a meeting's chat ends
 # with the meeting, writes nothing, and is deliberately NOT the DM system (see meeting_chat.py).

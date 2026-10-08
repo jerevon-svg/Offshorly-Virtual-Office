@@ -68,7 +68,7 @@ export interface Vo3dSelfMovementSink {
    *  NOT to be confused with the feed's own `placed()` below, which means the opposite: that one is a
    *  SILENT placement ("the body was put here, publish nothing"). This one publishes.
    *
-   *  The CAVE is at x 2600, outside V1's frame entirely (see `inRange` below), so a body inside it has no
+   *  The CAVE is at x −9000, outside V1's frame entirely (see `inRange` below), so a body inside it has no
    *  position the movement wire can carry. Before this, crossing that boundary published nothing at all
    *  and every peer left the employee standing at the last in-frame point — the hub, just outside the
    *  portal — which is exactly what "their pill is outside the Cave and their avatar is nowhere" was.
@@ -89,6 +89,11 @@ export interface Vo3dSelfMovementSink {
    *  movement, in `room`'s frame. Published as an ordinary started/arrived pair so peers replay it
    *  through the interpolation every office walk already uses. */
   movedInPlace(anchor: Vec2, from: Vec2, to: readonly Vec2[], yaw: number, room: string): void;
+  /** THE BODY SAT DOWN INSIDE A NAMED PLACE (a Meeting Floor chair). The in-place pair movedInPlace uses —
+   *  V1 keeps holding `anchor` — resolved as SITTING in `seat` at `at`, so peers seat the body in that very
+   *  chair and the backend's seat arbitration (and `seat_rejected`) covers upstairs chairs too. OPTIONAL:
+   *  a sink without it publishes an upstairs sit as nothing, exactly as before. */
+  satInPlace?(anchor: Vec2, at: Vec2, yaw: number, room: string, seat: string): void;
   /** THIS EMPLOYEE JUST JUMPED. A transient, cosmetic relay and NOT a movement: it carries no
    *  position, no duration and no id, it pairs with nothing, it resolves nothing in flight, and the
    *  feed above never calls it — the world does, straight from the takeoff.
@@ -230,6 +235,10 @@ export class SelfMovementFeed {
   private anchor: Vec2 | null = null;
   /** Where the last local leg ended, so the next one starts from a real previous position. */
   private localLast: Vec2 | null = null;
+  /** THE LIFT — the body is inside the car (boardedLift → alightedLift): nothing it does is movement, and
+   *  `liftAnchor` is the in-frame point it boarded from, the anchor a floor above the frame is named at. */
+  private inLift = false;
+  private liftAnchor: Vec2 | null = null;
 
   constructor(sink: Vo3dSelfMovementSink, inRange: InRangeTest = () => true) {
     this.sink = sink;
@@ -242,8 +251,14 @@ export class SelfMovementFeed {
    *  A planned walk SUPERSEDES whatever was happening: a previous planned walk is redirected exactly as
    *  V1 redirects one (the new walk_started outranks it; no arrival is sent for the abandoned one), and
    *  an accumulating free leg is dropped rather than published, because this walk's origin is the body's
-   *  real current position and peers snap to it at the start of the replay. */
-  planned(origin: Vec2, path: readonly Vec2[], durationMs: number): void {
+   *  real current position and peers snap to it at the start of the replay.
+   *
+   *  `pacing` is how peers should replay it. Absent — an ordinary click-to-walk — they use V1's eased
+   *  curve, as V1's own walks do. GO TOGETHER's guided walks pass "linear", because that is how the body
+   *  really moves (NavigationController is constant-speed) and a party walking side by side compares
+   *  positions: on the eased curve every peer was drawn up to ~130 units behind and then ~190 AHEAD of
+   *  where they really were, so on every screen the local employee looked like the one trailing. */
+  planned(origin: Vec2, path: readonly Vec2[], durationMs: number, pacing?: SelfWalkPacing): void {
     // A path with no distance in it is not a movement worth a revision bump — V1's own funnel emits
     // NEITHER event for one (useSelfMovement.ts's zero-length-path rule), and this is the same refusal.
     // Clicking the cell you already stand on is the case that produces it.
@@ -251,7 +266,8 @@ export class SelfMovementFeed {
     this.flushPending();
     this.mode = { kind: "planned" };
     this.last = origin;
-    this.sink.started(origin, path, durationMs);
+    if (pacing) this.sink.started(origin, path, durationMs, pacing);
+    else this.sink.started(origin, path, durationMs);
   }
 
   /** RESOLVE WHATEVER IS IN FLIGHT, HERE, NOW — because something outside the movement system is about to
@@ -327,6 +343,16 @@ export class SelfMovementFeed {
    *  Then the feed holds in `seated` until stood(): see Mode. */
   seated(pos: Vec2, yaw: number, seat: string): void {
     if (this.mode.kind === "seated") return;
+    // UPSTAIRS (a named place beyond V1's frame): the in-place seated pair, never a V1 walk that would be
+    // refused whole. The next local leg after standing starts from the chair.
+    if (!this.wasInRange && this.place && this.anchor && this.sink.satInPlace) {
+      this.sink.satInPlace(this.anchor, pos, wrapAngle(yaw), this.place, seat);
+      this.mode = { kind: "seated" };
+      this.last = pos;
+      this.localLast = pos;
+      this.lastYaw = yaw;
+      return;
+    }
     const facing = facingForYaw(yaw);
     const wrapped = wrapAngle(yaw);
     if (this.mode.kind === "planned") {
@@ -347,6 +373,57 @@ export class SelfMovementFeed {
     this.lastYaw = yaw;
   }
 
+  /** TELEPORTED — the body is simply somewhere else now (a meeting room, possibly on another floor). A snap,
+   *  never a walk: upstairs it is the named-place snap every floor arrival already is (V1 keeps holding the
+   *  last in-frame point); inside the frame, the minimum-duration pair. Whatever was in flight is resolved
+   *  first, and the boundary crossing is settled here so the next frame does not publish it again. */
+  teleported(pos: Vec2, yaw: number): void {
+    if (this.inLift) return;
+    this.flushPending();
+    const wrapped = wrapAngle(yaw);
+    if (!this.inRange(pos)) {
+      if (this.wasInRange && this.last && this.inRange(this.last)) this.anchor = this.last;
+      this.wasInRange = false;
+      this.mode = { kind: "idle" };
+      if (this.place && this.anchor) this.sink.enteredPlace(this.anchor, wrapped, this.place, pos);
+      this.localLast = pos;
+    } else {
+      this.wasInRange = true;
+      this.mode = { kind: "idle" };
+      this.sink.started(this.last ?? pos, [pos], MIN_DURATION_MS);
+      this.sink.arrived(pos, facingForYaw(yaw), wrapped);
+    }
+    this.last = pos;
+    this.lastYaw = yaw;
+  }
+
+  /** THE BODY TURNED ON THE SPOT to face something (a presenter squaring up to the room beside the TV).
+   *  V1's wire has no "I turned", and a pure turn is never sampled as movement — so every other browser kept
+   *  the yaw the walk arrived with (the presenter's back to the room) and the last sampled point, a few units
+   *  short. Published as the honest fact: here, facing this way. Upstairs, the in-place leg every upstairs
+   *  move is; in the frame, the planned walk resolved with this yaw, or a minimum-duration snap. */
+  faced(pos: Vec2, yaw: number): void {
+    if (this.inLift || this.mode.kind === "seated") return;
+    const wrapped = wrapAngle(yaw);
+    if (!this.wasInRange) {
+      if (this.place && this.anchor) {
+        this.sink.movedInPlace(this.anchor, this.localLast ?? pos, [pos], wrapped, this.place);
+        this.localLast = pos;
+      }
+      this.last = pos;
+      this.lastYaw = yaw;
+      return;
+    }
+    if (this.mode.kind === "planned") { this.frame(0, pos, yaw, false); return; }
+    if (this.mode.kind === "free") this.closeFreeLeg(pos, yaw);
+    this.flushPending();
+    this.sink.started(this.last ?? pos, [pos], MIN_DURATION_MS);
+    this.sink.arrived(pos, facingForYaw(yaw), wrapped);
+    this.mode = { kind: "idle" };
+    this.last = pos;
+    this.lastYaw = yaw;
+  }
+
   /** PHASE 6C — THE BODY HAS LEFT ITS CHAIR. Ends the seated hold; from here the chair rolling out, the
    *  stand-up glide and the walk away are ordinary free legs, and the first walk_started among them is
    *  what releases the seat on V1's side (the backend clears the seat key on every walk_started). No
@@ -355,6 +432,7 @@ export class SelfMovementFeed {
     if (this.mode.kind !== "seated") return;
     this.flushPending();
     this.mode = { kind: "idle" };
+    if (!this.wasInRange) this.localLast = pos;
     this.last = pos;
     this.lastYaw = yaw;
   }
@@ -389,6 +467,48 @@ export class SelfMovementFeed {
     this.sink.movedInPlace(anchor, from, [pos], wrapAngle(yaw), this.place!);
   }
 
+  /** THE LIFT'S DOORS HAVE SHUT BEHIND THE BODY and it has been stepped into the car (FloorTransition's
+   *  board). Whatever walk brought it into the lift bay is closed HERE, at the last real position — the bay
+   *  — so peers see them walk in; the step into the car itself is silent (it is the seal, not a movement).
+   *
+   *  WHY THIS EXISTS: the car stands outside V1's frame, so boarding crosses the frame boundary BEFORE the
+   *  ride names the destination (onWhere fires at the floor swap, mid-ride). Treated as an ordinary
+   *  crossing, the floor above was never named at all, and nothing anybody did up there was published —
+   *  nobody on the Meeting Floor could see anybody else. alightedLift names it, on the existing wire. */
+  boardedLift(pos: Vec2): void {
+    const bay = this.last;
+    if (bay) this.interrupt(bay, this.lastYaw);
+    this.liftAnchor = bay && this.inRange(bay) ? bay : this.anchor;
+    this.inLift = true;
+    this.last = pos;
+    this.localLast = null;
+  }
+
+  /** THE CAR HAS REACHED ITS FLOOR and the body is back in that floor's lift bay (FloorTransition's
+   *  alight), with `entering` already told which place that floor is. Publishes the one honest fact — "they
+   *  are here now" — through the same `enteredPlace` a walked-in crossing uses: named at the in-frame point
+   *  they boarded from for a floor beyond the frame, or a plain snap back into the frame for the ground
+   *  floor. The walk out of the bay that follows is published as ordinary movement. */
+  alightedLift(pos: Vec2, yaw: number): void {
+    if (!this.inLift) return;
+    this.inLift = false;
+    this.mode = { kind: "idle" };
+    this.last = pos;
+    this.lastYaw = yaw;
+    this.wasInRange = this.inRange(pos);
+    if (this.wasInRange) {
+      this.sink.enteredPlace(pos, wrapAngle(yaw), null);
+      this.place = null;
+      this.anchor = null;
+      this.localLast = null;
+    } else if (this.place && this.liftAnchor) {
+      this.anchor = this.liftAnchor;
+      this.localLast = pos;
+      this.sink.enteredPlace(this.anchor, wrapAngle(yaw), this.place, pos);
+    }
+    this.liftAnchor = null;
+  }
+
   /** PHASE 7D — NAME THE PLACE BEYOND THE FRAME the body is entering, before it gets there, or null on
    *  the way back. Called by the portal itself, which is the only thing that knows; the boundary crossing
    *  in frame() is what actually publishes it, so a portal that is refused publishes nothing. */
@@ -409,6 +529,11 @@ export class SelfMovementFeed {
    */
   frame(dtMs: number, pos: Vec2, yaw: number, navMoving: boolean): void {
     this.lastYaw = yaw;
+    // IN THE LIFT: the car's own sequence moves the body (aligning, the shot) and none of it is movement.
+    if (this.inLift) {
+      this.last = pos;
+      return;
+    }
     if (this.pending) {
       this.pending.dueInMs -= dtMs;
       if (this.pending.dueInMs <= 0) this.flushPending();

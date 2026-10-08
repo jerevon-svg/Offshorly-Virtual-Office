@@ -1,0 +1,142 @@
+/* THE AI WORKFORCE CARD and its parts (the Preview entry, the job card, View Result, the dev row). Same card language
+   as the overlay's own floating cards (Vo3dOverlay.module.css): warm white, hairline border, soft double shadow,
+   system type. */
+.status { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.title { color: rgba(36, 31, 48, 0.62); font-size: 12px; }
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #2376e5;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.done { background: #3cae6b; animation: none; }
+.secondary {
+  align-self: flex-start;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(24, 20, 34, 0.14);
+  background: transparent;
+  color: inherit;
+  font: 600 12px/1.3 system-ui, sans-serif;
+  cursor: pointer;
+}
+/* the delivered result: the payoff, so it carries the gold */
+.result {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #f7c65a, #f2b134);
+  color: #241f30;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  box-shadow: 0 6px 16px rgba(242, 177, 52, 0.38);
+  animation: resultIn 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.result:hover { filter: brightness(1.04); }
+.result:focus-visible { outline: 2px solid #2376e5; outline-offset: 2px; }
+.resultIcon { flex: none; width: 26px; height: 20px; border-radius: 5px; background: #241f30; box-shadow: inset 0 -6px 0 rgba(242, 177, 52, 0.75); }
+.resultText { display: flex; flex-direction: column; font-size: 12px; }
+.resultText b { font-size: 13px; }
+@keyframes resultIn { from { opacity: 0; transform: translateY(6px) scale(0.97); } }
+.mock { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: rgba(36, 31, 48, 0.45); }
+@keyframes pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .dot, .result { animation: none; } }
+
+/* PHASE 5 — the job's thread, and quiet secondary actions */
+.thread {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid rgba(24, 20, 34, 0.1);
+  border-radius: 10px;
+  background: #fff;
+  color: #241f30;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.thread:hover { border-color: rgba(24, 20, 34, 0.22); }
+.thread:focus-visible, .link:focus-visible { outline: 2px solid #2376e5; outline-offset: 2px; }
+.threadHead { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+.threadHead span { color: rgba(36, 31, 48, 0.5); font-weight: 500; }
+.threadLine { font-size: 12px; color: rgba(36, 31, 48, 0.72); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.link { align-self: flex-start; padding: 0; border: 0; background: none; color: #2376e5; font: 600 12px/1.3 system-ui, sans-serif; cursor: pointer; }
+
+/* PHASE 6B — THE AI WORKFORCE STATUS CARD: compact job controls (the conversation is its own VO chat window). Top
+   left, clear of the chat row, the rail, the Toucan button and the meeting reminder (top right). */
+.workforce {
+  position: fixed;
+  left: 16px;
+  top: 76px;
+  z-index: 140;
+  width: min(280px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 14px;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.08);
+  box-shadow: 0 12px 32px rgba(18, 16, 28, 0.18), 0 2px 6px rgba(18, 16, 28, 0.08);
+  color: #241f30;
+  font: 500 13px/1.35 system-ui, sans-serif;
+}
+.workforceHead { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.kicker { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #b07d14; }
+.dismiss { border: 0; background: none; padding: 0 2px; font: 600 16px/1 system-ui, sans-serif; color: rgba(36, 31, 48, 0.5); cursor: pointer; }
+.dismiss:hover { color: #241f30; }
+.actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.watch {
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: #241f30;
+  color: #fdfcfa;
+  font: 600 12px/1.3 system-ui, sans-serif;
+  cursor: pointer;
+}
+.watch:hover:not(:disabled) { background: #3a3350; }
+.watch:disabled { opacity: 0.45; cursor: default; }
+.watch:focus-visible, .dismiss:focus-visible { outline: 2px solid #2376e5; outline-offset: 2px; }
+.devRow { display: flex; align-items: center; gap: 10px; padding-top: 6px; border-top: 1px dashed rgba(24, 20, 34, 0.14); font-size: 11px; color: rgba(36, 31, 48, 0.5); }
+.devReenter {
+  position: fixed;
+  left: 16px;
+  top: 76px;
+  z-index: 139;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px dashed rgba(24, 20, 34, 0.3);
+  background: rgba(253, 252, 250, 0.92);
+  color: #241f30;
+  font: 600 11px/1.3 system-ui, sans-serif;
+  cursor: pointer;
+}
+/* the entry beside the personal Toucan conversation (inside its window slot, above the shared panel) */
+.delegate {
+  box-sizing: border-box;
+  /* exactly the Toucan panel's width, never wider: a card that widened the slot would push the slot's box over the
+     neighbouring chat window and swallow its clicks (width 0 contributes nothing; min-width stretches it) */
+  width: 0;
+  min-width: 100%;
+  margin-bottom: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: #fdfcfa;
+  border: 1px solid rgba(24, 20, 34, 0.08);
+  box-shadow: 0 8px 24px rgba(18, 16, 28, 0.14);
+  color: #241f30;
+  font: 500 12px/1.35 system-ui, sans-serif;
+}
+.delegateText { flex: 1 1 180px; display: flex; flex-direction: column; gap: 2px; }
+.delegate .mock { flex-basis: 100%; }

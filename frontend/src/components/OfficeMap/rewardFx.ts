@@ -18,26 +18,43 @@ import type { ClaimResult } from "../../services/quests/questsClient";
 
 export const HUD_TARGET_ATTR = "data-hud-target";
 
+type Kind = "coins" | "xp";
+
 export function reducedMotion(): boolean {
   return typeof window !== "undefined" && typeof window.matchMedia === "function"
     ? window.matchMedia("(prefers-reduced-motion: reduce)").matches
     : false;
 }
 
+/** A target the viewer can actually see. A HUD that has stepped aside (V2 keeps HudDock mounted
+ * but slides it below the viewport with `inert` + aria-hidden while Tasks is open) must never
+ * win, or the particles fly off screen. Zero-size rects pass so layout-less environments (jsdom)
+ * keep working; a laid-out rect must overlap the viewport. */
+export function isVisibleHudTarget(el: Element): boolean {
+  if (el.closest('[inert], [aria-hidden="true"]')) return false;
+  const r = el.getBoundingClientRect();
+  if (r.width === 0 && r.height === 0) return true;
+  const vw = window.innerWidth || document.documentElement.clientWidth;
+  const vh = window.innerHeight || document.documentElement.clientHeight;
+  return r.right > 0 && r.bottom > 0 && r.left < vw && r.top < vh;
+}
+
+function firstVisibleTarget(kind: Kind): Element | null {
+  for (const el of document.querySelectorAll(`[${HUD_TARGET_ATTR}="${kind}"]`)) {
+    if (isVisibleHudTarget(el)) return el;
+  }
+  return null;
+}
+
 export function findHudTargets(): { coins: Element | null; xp: Element | null } {
   if (typeof document === "undefined") return { coins: null, xp: null };
-  return {
-    coins: document.querySelector(`[${HUD_TARGET_ATTR}="coins"]`),
-    xp: document.querySelector(`[${HUD_TARGET_ATTR}="xp"]`),
-  };
+  return { coins: firstVisibleTarget("coins"), xp: firstVisibleTarget("xp") };
 }
 
 const BURST_MS = 380;
 const TRAVEL_MS = 640;
 const STAGGER_MS = 70;
 const SAFETY_MS = 4000;
-
-type Kind = "coins" | "xp";
 
 interface Particle {
   el: HTMLElement;

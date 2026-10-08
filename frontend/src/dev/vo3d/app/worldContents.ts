@@ -47,6 +47,7 @@ import {
   VESTIBULE_RECT as CAVE_VESTIBULE_RECT, caveEntities,
 } from "../rooms/cave";
 import { ELEVATOR as FLOOR2_ELEVATOR, FLOOR2_ROOM, OUTER_RECT as FLOOR2_OUTER, floor2Regions } from "../rooms/floor2";
+import { MEETING_ROOM_DEFS, meetingFloorEntities, meetingRoomRegions } from "../rooms/floor2Meeting";
 import { GROUND_ELEVATOR, elevatorCallEntity, elevatorFrameRect, elevatorRegions, type ElevatorSpec } from "../rooms/elevator";
 import { FLOOR_ORDER, GROUND_FLOOR_ID, type Vo3dFloorId } from "./floors";
 import type { Rect } from "../core/coords";
@@ -116,6 +117,11 @@ export function buildWorldContents(): Vo3dWorldContents {
   // navigation is provably unaffected.
   world.addRoom(FLOOR2_ROOM);
   for (const r of elevatorRegions(ELEVATORS["floor-2"])) world.addRegion(r);
+  // THE MEETING ROOMS: each a room of its own, owning its seats and its display walk-up; the Commons'
+  // soft seating belongs to the plate. Their floors are regions BEFORE the plate's (priority = order).
+  for (const room of MEETING_ROOM_DEFS) world.addRoom(room);
+  for (const e of meetingFloorEntities()) world.addEntity(e);
+  for (const r of meetingRoomRegions()) world.addRegion(r);
   for (const r of floor2Regions()) world.addRegion(r);
 
   // ---- the Championship Cave: a second interior volume, outside the V1 frame --------------------

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { ComposerPicker, rememberRecentEmoji } from "./ComposerPicker";
 import { MentionAutocomplete } from "./MentionAutocomplete";
-import { REACTION_EMOJIS } from "./MessageReactions";
 import type { useMentionComposer } from "./useMentionComposer";
 import styles from "./ConversationView.module.css";
 
@@ -29,6 +29,9 @@ type ChatComposerProps = {
   // mention.onDraftChanged off it, exactly as their inline onChange did.
   onDraftInput: (text: string, caret: number) => void;
   onSend: () => void;
+  // Rich Chat Phase 1 — sends a sticker message immediately (a sticker never enters the draft).
+  // Omit to offer emoji only.
+  onSendSticker?: (stickerId: string) => void;
   mention: MentionController;
   // Overrides the shared "Message" default — used for transient states like
   // "Connecting…"; every surface's resting placeholder is defined here.
@@ -96,9 +99,20 @@ function EmojiIcon() {
   );
 }
 
-export function ChatComposer({ draft, setDraft, onDraftInput, onSend, mention, placeholder = "Message" }: ChatComposerProps) {
+export function ChatComposer({
+  draft,
+  setDraft,
+  onDraftInput,
+  onSend,
+  onSendSticker,
+  mention,
+  placeholder = "Message",
+}: ChatComposerProps) {
   const [emojiOpen, setEmojiOpen] = useState(false);
   const emojiPopoverRef = useRef<HTMLDivElement | null>(null);
+  // The textarea's selection at the moment the picker opened. The picker's search box takes focus,
+  // so the insert point is captured up front rather than read off a blurred textarea later.
+  const selectionRef = useRef<{ start: number; end: number } | null>(null);
   // Messenger-style collapse: while the draft has text, the three media
   // buttons fold into ONE "+" button (which reveals them in a popover), giving
   // the textarea the freed horizontal room. Empty draft expands them again.
@@ -152,7 +166,7 @@ export function ChatComposer({ draft, setDraft, onDraftInput, onSend, mention, p
   useEffect(() => {
     if (!emojiOpen && !mediaMenuOpen) return;
     function onPointerDown(e: PointerEvent) {
-      if (!emojiPopoverRef.current?.contains(e.target as Node)) setEmojiOpen(false);
+      if (!emojiPopoverRef.current?.contains(e.target as Node)) closePicker();
       if (!mediaMenuRef.current?.contains(e.target as Node)) setMediaMenuOpen(false);
     }
     window.addEventListener("pointerdown", onPointerDown);
@@ -164,13 +178,16 @@ export function ChatComposer({ draft, setDraft, onDraftInput, onSend, mention, p
   // re-parsing behave exactly as if it had been typed.
   function insertEmoji(emoji: string) {
     const el = mention.textareaRef.current;
-    const start = el?.selectionStart ?? draft.length;
-    const end = el?.selectionEnd ?? draft.length;
+    const saved = selectionRef.current;
+    // Clamp: the draft can't have changed while the picker was open, but never slice past it.
+    const start = Math.min(saved?.start ?? el?.selectionStart ?? draft.length, draft.length);
+    const end = Math.min(Math.max(saved?.end ?? el?.selectionEnd ?? draft.length, start), draft.length);
+    rememberRecentEmoji(emoji);
     const text = draft.slice(0, start) + emoji + draft.slice(end);
     const caret = start + emoji.length;
     setDraft(text);
     onDraftInput(text, caret);
-    setEmojiOpen(false);
+    closePicker();
     // Re-focus + place the caret after the emoji on the next tick — the
     // re-render will have reset the DOM value by then (same pattern as
     // useMentionComposer.selectCandidate).
@@ -178,6 +195,23 @@ export function ChatComposer({ draft, setDraft, onDraftInput, onSend, mention, p
       el?.focus();
       el?.setSelectionRange(caret, caret);
     });
+  }
+
+  function openPicker() {
+    const el = mention.textareaRef.current;
+    selectionRef.current = el ? { start: el.selectionStart, end: el.selectionEnd } : null;
+    setEmojiOpen(true);
+  }
+
+  function closePicker() {
+    selectionRef.current = null;
+    setEmojiOpen(false);
+  }
+
+  function sendSticker(stickerId: string) {
+    closePicker();
+    onSendSticker?.(stickerId);
+    requestAnimationFrame(() => mention.textareaRef.current?.focus());
   }
 
   return (
@@ -258,7 +292,19 @@ export function ChatComposer({ draft, setDraft, onDraftInput, onSend, mention, p
           }
         }}
       />
-      <div className={styles.popoverGroup} ref={emojiPopoverRef}>
+      <div
+        className={styles.popoverGroup}
+        ref={emojiPopoverRef}
+        onKeyDown={(e) => {
+          // Escape closes the picker and hands focus back to the draft. Stopped here so a chat
+          // window's own Escape handling never also fires for the same press.
+          if (e.key !== "Escape" || !emojiOpen) return;
+          e.preventDefault();
+          e.stopPropagation();
+          closePicker();
+          mention.textareaRef.current?.focus();
+        }}
+      >
         <button
           type="button"
           className={
@@ -266,28 +312,15 @@ export function ChatComposer({ draft, setDraft, onDraftInput, onSend, mention, p
               ? `${styles.iconButton} ${styles.emojiToggle} ${styles.iconButtonActive}`
               : `${styles.iconButton} ${styles.emojiToggle}`
           }
-          onClick={() => setEmojiOpen((open) => !open)}
-          aria-label="Insert emoji"
+          onClick={() => (emojiOpen ? closePicker() : openPicker())}
+          aria-label={onSendSticker ? "Emoji and stickers" : "Insert emoji"}
           aria-expanded={emojiOpen}
-          title="Insert emoji"
+          aria-haspopup="dialog"
+          title={onSendSticker ? "Emoji and stickers" : "Insert emoji"}
         >
           <EmojiIcon />
         </button>
-        {emojiOpen && (
-          <div className={styles.emojiPopover} role="menu" aria-label="Emoji">
-            {REACTION_EMOJIS.map((emoji) => (
-              <button
-                key={emoji}
-                type="button"
-                className={styles.emojiOption}
-                onClick={() => insertEmoji(emoji)}
-                aria-label={`Insert ${emoji}`}
-              >
-                {emoji}
-              </button>
-            ))}
-          </div>
-        )}
+        {emojiOpen && <ComposerPicker onEmoji={insertEmoji} onSticker={onSendSticker ? sendSticker : undefined} />}
       </div>
       </div>
       <div className={styles.composerActions}>

@@ -732,3 +732,91 @@ async def test_a_socket_session_claiming_the_toucan_identity_is_refused(server):
 
     await fake.disconnect()
     await b.disconnect()
+
+
+# --- Rich Chat Phase 1: stickers ride the same send seam as text ------------------------------
+
+
+async def _first_event(client: socketio.AsyncClient, event: str) -> asyncio.Future:
+    fut: asyncio.Future = asyncio.get_event_loop().create_future()
+
+    @client.on(event)
+    async def _handler(data):
+        if not fut.done():
+            fut.set_result(data)
+
+    return fut
+
+
+async def test_sticker_send_persists_kind_and_meta_and_reaches_peer_live(server):
+    conv_id = await _seeded_conversation()
+    a = await _connect_as(server, "a@example.com")
+    b = await _connect_as(server, "b@example.com")
+    await asyncio.sleep(0.2)
+    saved_f = await _first_event(a, "message_saved")
+    incoming_f = await _first_event(b, "incoming_message")
+    unread_f = await _first_event(b, "unread_count")
+
+    await a.emit(
+        "send_message", {"conversationId": conv_id, "text": "", "stickerId": "wave", "clientTempId": "tmp-s1"}
+    )
+
+    saved = await asyncio.wait_for(saved_f, timeout=2)
+    incoming = await asyncio.wait_for(incoming_f, timeout=2)
+    unread = await asyncio.wait_for(unread_f, timeout=2)
+    for msg in (saved["message"], incoming["message"]):
+        assert msg["kind"] == "sticker"
+        assert msg["meta"] == {"stickerId": "wave"}
+        assert msg["text"] == ""
+        assert msg["mentionedEmails"] == []
+    assert unread["count"] >= 1
+
+    async with async_session_maker() as session:
+        history = await chat_repo.list_messages(session, conv_id)
+    stored = next(m for m in history if m.id == saved["message"]["id"])
+    assert stored.kind == "sticker"
+    assert stored.meta == {"stickerId": "wave"}
+
+    await a.disconnect()
+    await b.disconnect()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"text": "", "stickerId": "<img src=x>"},
+        {"text": "", "stickerId": "/avatars/evil.png"},
+        {"text": "", "stickerId": ""},
+        {"text": "hello", "stickerId": "wave"},
+    ],
+)
+async def test_malformed_sticker_sends_are_rejected_and_nothing_is_stored(server, payload):
+    conv_id = await _seeded_conversation()
+    a = await _connect_as(server, "a@example.com")
+    err_f = await _first_event(a, "chat_error")
+    async with async_session_maker() as session:
+        before = len(await chat_repo.list_messages(session, conv_id))
+
+    await a.emit("send_message", {"conversationId": conv_id, "clientTempId": "tmp-bad", **payload})
+
+    err = await asyncio.wait_for(err_f, timeout=2)
+    assert err["code"] == "invalid_message"
+    async with async_session_maker() as session:
+        assert len(await chat_repo.list_messages(session, conv_id)) == before
+
+    await a.disconnect()
+
+
+async def test_text_send_is_unchanged_by_the_sticker_path(server):
+    conv_id = await _seeded_conversation()
+    a = await _connect_as(server, "a@example.com")
+    saved_f = await _first_event(a, "message_saved")
+
+    await a.emit("send_message", {"conversationId": conv_id, "text": " plain ", "clientTempId": "tmp-t"})
+
+    saved = await asyncio.wait_for(saved_f, timeout=2)
+    assert saved["message"]["kind"] == "text"
+    assert saved["message"]["meta"] is None
+    assert saved["message"]["text"] == "plain"
+
+    await a.disconnect()

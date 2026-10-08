@@ -22,9 +22,10 @@
 // ENTERING THE CAVE STILL STARTS NOTHING. Everything below is behind an explicit press; walking in
 // connects to nothing, publishes nothing, and asks for no token. Start and Join then behave exactly as
 // every other call in this app does, microphone included (V1's mic-on-connect, deliberately unchanged).
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Vo3dWorld, Vo3dCaveMeetingState } from "./world";
 import styles from "./Vo3dCaveMeeting.module.css";
+import { formatTime, formatTimeRange } from "../../../services/meetings/meetingTime";
 
 export interface Vo3dCaveMeetingProps {
   worldRef: { current: Vo3dWorld | null };
@@ -48,6 +49,9 @@ const EMPTY: Vo3dCaveMeetingState = {
 export function Vo3dCaveMeeting({ worldRef, ready, selfId, onInvite }: Vo3dCaveMeetingProps) {
   const [state, setState] = useState<Vo3dCaveMeetingState>(EMPTY);
   const [busy, setBusy] = useState(false);
+  const [focused, setFocused] = useState(false);
+  // the focused view closes itself the moment the share it shows stops
+  useEffect(() => { if (!state.presenter) setFocused(false); }, [state.presenter]);
 
   useEffect(() => {
     const world = worldRef.current;
@@ -62,9 +66,11 @@ export function Vo3dCaveMeeting({ worldRef, ready, selfId, onInvite }: Vo3dCaveM
   //
   // Idempotent: connect() returns immediately once the store is loaded, so re-entering costs nothing.
   useEffect(() => {
-    if (!state.inside || !selfId) return;
+    // …and so does stepping into a Meeting Floor room: without it a room whose meeting is already running
+    // offered "Start meeting" to the second person in, because nothing had heard the server yet.
+    if ((!state.inside && !state.room) || !selfId) return;
     void worldRef.current?.caveMeeting?.observe(selfId);
-  }, [state.inside, selfId, worldRef]);
+  }, [state.inside, state.room, selfId, worldRef]);
 
   const run = useCallback(async (fn: () => Promise<void> | void) => {
     setBusy(true);
@@ -78,16 +84,43 @@ export function Vo3dCaveMeeting({ worldRef, ready, selfId, onInvite }: Vo3dCaveM
   // Outside the Cave there is nothing to offer. A meeting that is still connected while its attendee
   // walks out is not torn down here — leaving the room is not leaving the call, exactly as it is not in
   // V1 — so the panel simply stops being the thing on screen.
-  if (!state.inside) return null;
+  // THE SAME PANEL SERVES A MEETING FLOOR ROOM: `room` names it once the viewer has walked up to that
+  // room's display. Same verbs, same call store; the world routes them to the room's own meeting id.
+  const room = state.room ?? "";
+  if (!state.inside && !room) return null;
 
   const meeting = worldRef.current?.caveMeeting;
   const connected = state.status === "connected";
   const connecting = state.status === "connecting";
+  // SCHEDULED MEETINGS — the viewer's own booking of this room, when one is in reach. Context only: the
+  // button below is still the call store's Start / Join. "occupied" means an earlier or ad-hoc meeting
+  // still has the room; it is theirs until it empties, so this panel never offers to Start over it.
+  const scheduled = room ? state.scheduled ?? null : null;
+  const occupied = scheduled?.phase === "occupied";
 
   return (
     <div className={styles.panel} data-testid="vo3d-cave-meeting" data-status={state.status}>
+      {scheduled && (
+        <div className={styles.scheduled} data-testid="cave-meeting-scheduled" data-phase={scheduled.phase}>
+          <span className={styles.scheduledTitle}>
+            {scheduled.title}
+            {scheduled.isPrivate && <span className={styles.scheduledPrivate}> · Private</span>}
+          </span>
+          <span className={styles.sub}>
+            {scheduled.startedEarly ? "Started early" : "Scheduled"} · {formatTimeRange(scheduled.startsAt, scheduled.endsAt)} · Room {room}
+          </span>
+          {occupied && (
+            <span className={styles.scheduledNote} data-testid="cave-meeting-occupied">
+              An earlier meeting is still in this room. Yours can start once it ends.
+            </span>
+          )}
+          {scheduled.phase === "upcoming" && (
+            <span className={styles.scheduledNote}>Starts at {formatTime(scheduled.startsAt)}.</span>
+          )}
+        </div>
+      )}
       <div className={styles.head}>
-        <span className={styles.title}>Championship Cave</span>
+        <span className={styles.title}>{scheduled ? "Meeting room" : room || "Championship Cave"}</span>
         <span className={styles.sub} data-testid="cave-meeting-sub">
           {connected
             ? describeRoom(state.people, state.cameras)
@@ -107,7 +140,7 @@ export function Vo3dCaveMeeting({ worldRef, ready, selfId, onInvite }: Vo3dCaveM
           data-testid="cave-meeting-start"
           onClick={() => meeting && void run(() => meeting.start(selfId))}
         >
-          {connecting ? "Connecting…" : state.live ? "Join meeting" : "Start meeting"}
+          {connecting ? "Connecting…" : state.live ? (occupied ? "Join the meeting in progress" : "Join meeting") : "Start meeting"}
         </button>
       ) : (
         <div className={styles.controls}>
@@ -166,6 +199,19 @@ export function Vo3dCaveMeeting({ worldRef, ready, selfId, onInvite }: Vo3dCaveM
           >
             Leave meeting
           </button>
+          {/* END is the host's, and ends it for EVERYONE (a scheduled occurrence is then complete) —
+              Leave above only ever takes you out. */}
+          {state.isHost && meeting?.end && (
+            <button
+              type="button"
+              className={`${styles.control} ${styles.leave}`}
+              disabled={busy}
+              data-testid="cave-meeting-end"
+              onClick={() => void run(() => meeting.end!())}
+            >
+              End meeting
+            </button>
+          )}
         </div>
       )}
 
@@ -179,11 +225,44 @@ export function Vo3dCaveMeeting({ worldRef, ready, selfId, onInvite }: Vo3dCaveM
           {state.sharing ? "You are sharing your screen." : `${state.presenter} is sharing a screen.`}
         </p>
       )}
+      {connected && state.presenter && worldRef.current?.caveMeeting?.presentation && (
+        <button type="button" className={styles.control} data-testid="cave-meeting-focus" onClick={() => setFocused(true)}>
+          ⛶ Full screen
+        </button>
+      )}
+      {focused && <FocusedPresentation worldRef={worldRef} onExit={() => setFocused(false)} />}
       {state.note && (
         <p className={`${styles.note} ${styles.problem}`} data-testid="cave-meeting-note">
           {state.note}
         </p>
       )}
+    </div>
+  );
+}
+
+/** THE FOCUSED PRESENTATION: the meeting's live share, full screen, over the office — the very <video>
+ *  element the room's display samples, so there is one decode. Esc or Exit returns to the office. */
+function FocusedPresentation({ worldRef, onExit }: { worldRef: { current: Vo3dWorld | null }; onExit: () => void }) {
+  const host = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const video = worldRef.current?.caveMeeting?.presentation?.() ?? null;
+    const el = host.current;
+    if (!video || !el) { onExit(); return; }
+    const prev = { style: video.getAttribute("style") };
+    video.setAttribute("style", "width:100%;height:100%;object-fit:contain;background:#000");
+    el.appendChild(video);
+    const onKey = (e: KeyboardEvent): void => { if (e.key === "Escape") onExit(); };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      if (video.parentElement === el) el.removeChild(video);
+      if (prev.style === null) video.removeAttribute("style"); else video.setAttribute("style", prev.style);
+    };
+  }, [worldRef, onExit]);
+  return (
+    <div className={styles.focus} data-testid="cave-meeting-focused" role="dialog" aria-label="Presentation">
+      <div ref={host} className={styles.focusStage} />
+      <button type="button" className={styles.focusExit} onClick={onExit}>Exit full screen</button>
     </div>
   );
 }

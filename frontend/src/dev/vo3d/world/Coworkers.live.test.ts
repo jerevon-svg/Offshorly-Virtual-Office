@@ -77,7 +77,7 @@ function walkLocally(origin: Vec2, path: Vec2[], speed = 70, turnRate = 7): { ya
   const root = new THREE.Object3D();
   root.position.set(origin.x, 0, origin.z);
   const body = { yaw: 0 };
-  const avatar = { root, get yaw() { return body.yaw; }, setYaw(y: number) { body.yaw = y; root.rotation.set(0, y, 0); } } as unknown as Avatar;
+  const avatar = { root, get yaw() { return body.yaw; }, setYaw(y: number) { body.yaw = y; root.rotation.set(0, y, 0); }, settleOnGround() {} } as unknown as Avatar;
   const queue = path.map((p) => ({ ...p }));
   let ms = 0;
   while (queue.length > 0 && ms < 60_000) { stepAlong(avatar, queue, speed, turnRate, 0.016); ms += 16; }

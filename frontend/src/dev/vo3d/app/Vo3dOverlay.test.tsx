@@ -21,6 +21,7 @@ import { readFileSync } from "node:fs";
 import { isTypingTarget } from "./keyGuard";
 import { manilaWorkDate } from "../../../components/OfficeMap/useCheckoutFlow";
 import { saveSessionStart } from "../../../data/checkoutStorage";
+import { __setTravelPartySnapshotForTests, resetTravelPartyStoreForTests } from "../../../services/party/travelPartyStore";
 import { closeCompanyHub, getCompanyHubSnapshot, openCompanyHub, resetCompanyHubForTests } from "../../../services/hub/companyHubStore";
 
 const SELF = "bon@offshorly.com";
@@ -1050,6 +1051,57 @@ describe("call cameras inside the Cave", () => {
 // nothing schedules a render at expiry — so the bubble hung over its sender's head until some
 // unrelated render happened to knock it off. These pin the actual clock, which is the very same one
 // the spatial bubbles above run on (useOverheadBubbles).
+describe("contextual `/` routing (Go Together Phase 5)", () => {
+  const travellingParty = (stage: "forming" | "to_lift" = "to_lift") => ({
+    partyId: "p1",
+    leaderEmail: SELF,
+    leaderFollowing: true,
+    destination: { floor: "floor-2", label: "Foxtrot" },
+    members: [{ email: "alex@offshorly.com", following: true, connected: true }],
+    pending: [],
+    declined: [],
+    stage,
+    rendezvous: { stageId: "p1:rv", kind: "hub" as const, participants: [SELF, "alex@offshorly.com"], ready: [] },
+    leg: null,
+    roles: {},
+  });
+  const travel = (stage: "forming" | "to_lift" = "to_lift", chat: Array<{ id: string; email: string; text: string; atMs: number }> = []) =>
+    act(() => __setTravelPartySnapshotForTests({ party: travellingParty(stage), controllerSid: "s1", socketId: "s1", chat }));
+
+  afterEach(() => {
+    callStatus = "idle";
+    callMeetingId = null;
+    meetingMessages = [];
+    resetTravelPartyStoreForTests();
+  });
+
+  it("routes `/` to the Travel Chat on a journey, and to the meeting's own chat once a meeting takes over", async () => {
+    mount();
+    expect(screen.queryByTestId("vo3d-travel-chat")).toBeNull();
+    travel("forming");
+    expect(screen.queryByTestId("vo3d-travel-chat")).toBeNull(); // forming is not a journey
+    travel("to_lift", [{ id: "t1", email: "alex@offshorly.com", text: "Are we presenting?", atMs: Date.now() }]);
+    expect(screen.getByTestId("vo3d-travel-chat")).toBeTruthy();
+    expect(screen.queryByTestId("vo3d-meeting-chat")).toBeNull();
+    expect(screen.getByTestId("travel-chat-line").textContent).toContain("Are we presenting?");
+
+    callStatus = "connected";
+    callMeetingId = "meeting:cave";
+    travel("to_lift");
+    await waitFor(() => expect(screen.getByTestId("vo3d-meeting-chat")).toBeTruthy());
+    expect(screen.queryByTestId("vo3d-travel-chat")).toBeNull();
+  });
+
+  it("the journey ending takes the strip and its lines with it", async () => {
+    mount();
+    travel("to_lift", [{ id: "t1", email: SELF, text: "on my way", atMs: Date.now() }]);
+    expect(screen.getByTestId("overhead-text-__self__").textContent).toBe("on my way");
+    act(() => __setTravelPartySnapshotForTests({ party: null, controllerSid: null }));
+    expect(screen.queryByTestId("vo3d-travel-chat")).toBeNull();
+    await waitFor(() => expect(screen.queryByTestId("overhead-text-__self__")).toBeNull());
+  });
+});
+
 describe("meeting bubbles expire", () => {
   /** Put the viewer in a connected meeting and hand back a pusher for its feed.
    *

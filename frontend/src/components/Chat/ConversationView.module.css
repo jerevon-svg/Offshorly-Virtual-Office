@@ -306,6 +306,11 @@
   white-space: pre-wrap;
 }
 
+/* Rich Chat Phase 1 — a sticker sits in the bubble line without a bubble fill. */
+.stickerMessage {
+  display: flex;
+}
+
 .own {
   background: #2f6b45;
   color: #fff;
@@ -351,7 +356,7 @@
 }
 
 .composer {
-  position: relative; /* anchors MentionAutocomplete's + .emojiPopover's absolute positioning */
+  position: relative; /* anchors MentionAutocomplete's + ComposerPicker's absolute positioning */
   display: flex;
   /* Bottom-anchored, not centered: the textarea auto-grows upward (see
      ChatComposer), so the action buttons and Send stay pinned to the bottom
@@ -458,33 +463,6 @@
 
 .iconButton:disabled:hover {
   background: none;
-}
-
-.emojiPopover {
-  position: absolute;
-  right: 12px;
-  bottom: calc(100% + 6px);
-  display: flex;
-  gap: 2px;
-  padding: 4px 8px;
-  background: #fdfcfa;
-  border: 1px solid rgba(24, 20, 34, 0.1);
-  border-radius: 9999px;
-  box-shadow: 0 8px 22px rgba(18, 16, 28, 0.18);
-  z-index: 10;
-}
-
-.emojiOption {
-  all: unset;
-  cursor: pointer;
-  font-size: 18px;
-  line-height: 1;
-  padding: 5px;
-  border-radius: 50%;
-}
-
-.emojiOption:hover {
-  background: rgba(24, 20, 34, 0.05);
 }
 
 /* @mentions V1 — subtle highlight; the current viewer's own mention is slightly more noticeable

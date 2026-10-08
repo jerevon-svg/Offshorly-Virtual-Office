@@ -33,6 +33,7 @@ import { cmsRoomEntities } from "../rooms/cms";
 import { aiRoomEntities } from "../rooms/ai";
 import { devRoomEntities } from "../rooms/dev";
 import { qaRoomEntities } from "../rooms/qa";
+import { meetingFloorEntities } from "../rooms/floor2Meeting";
 import type { Entity } from "../world/WorldState";
 import type { Vec2 } from "../core/coords";
 import seatFacingConfig from "../data/seatFacing.json";
@@ -110,6 +111,14 @@ let anchorsMemo: Vo3dSeatAnchor[] | null = null;
 export function groundFloorSeatAnchors(): Vo3dSeatAnchor[] {
   if (!anchorsMemo) anchorsMemo = collectSeatAnchors(groundFloorEntities());
   return anchorsMemo;
+}
+
+let upstairsMemo: Vo3dSeatAnchor[] | null = null;
+/** Every sittable spot on the MEETING FLOOR (floor 2) — all V2-only by construction (V1 has no floor 2), so
+ *  they travel as `v2:<anchor>` keys and are resolved here, never through the V1 seat mapping. */
+export function meetingFloorSeatAnchors(): Vo3dSeatAnchor[] {
+  if (!upstairsMemo) upstairsMemo = collectSeatAnchors(meetingFloorEntities());
+  return upstairsMemo;
 }
 
 // ---- SEAT FACING — the configured direction a body faces in each seat ------------------------------

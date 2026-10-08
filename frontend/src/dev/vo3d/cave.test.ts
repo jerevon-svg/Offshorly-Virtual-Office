@@ -11,6 +11,7 @@
 //      panel at true 16:9 or faces stretch, and the wings have to continue it rather than restart it.
 //      That is arithmetic, and arithmetic is testable without a GPU.
 import { describe, expect, it } from "vitest";
+import { inWalkableWorld } from "./world/exteriorGround";
 import * as THREE from "three";
 import { WorldState } from "./world/WorldState";
 import { registerGroundFloor } from "./rooms/ground-floor";
@@ -65,10 +66,13 @@ function rig(withCave: boolean) {
 
 describe("the CAVE cannot touch the office", () => {
   it("stands entirely outside the V1 frame, so no grid cell can ever fall inside it", () => {
-    const frameEast = FRAME.x + FRAME.w;
-    expect(CAVE_OUTER_RECT.x).toBeGreaterThan(frameEast);
-    // and the gap is not a rounding accident — it is over a thousand units of clear ground
-    expect(CAVE_OUTER_RECT.x - frameEast).toBeGreaterThan(1000);
+    // clear of the frame on either side (Phase 4 moved it west, off the walkable exterior), and the gap is
+    // not a rounding accident — it is over a thousand units
+    const gap = Math.max(CAVE_OUTER_RECT.x - (FRAME.x + FRAME.w), FRAME.x - (CAVE_OUTER_RECT.x + CAVE_OUTER_RECT.w));
+    expect(gap).toBeGreaterThan(1000);
+    // PHASE 4 — and off the walkable exterior entirely, so free roam can never meet its (inward-facing) shell
+    for (const [x, z] of [[CAVE_OUTER_RECT.x, CAVE_OUTER_RECT.z], [CAVE_OUTER_RECT.x + CAVE_OUTER_RECT.w, CAVE_OUTER_RECT.z + CAVE_OUTER_RECT.d]])
+      expect(inWalkableWorld({ x, z })).toBe(false);
     for (let cy = 0; cy < ROWS; cy++)
       for (let cx = 0; cx < COLS; cx++)
         expect(inCave(cellCentre({ cx, cy }))).toBe(false);
@@ -379,7 +383,7 @@ describe("the built volume", () => {
     expect(box.min.x).toBeGreaterThanOrEqual(CAVE_OUTER_RECT.x - 1);
     expect(box.max.x).toBeLessThanOrEqual(CAVE_OUTER_RECT.x + CAVE_OUTER_RECT.w + 1);
     expect(box.max.y).toBeLessThanOrEqual(ROOM.ceiling + ROOM.wallT + 1);
-    expect(box.min.x).toBeGreaterThan(FRAME.x + FRAME.w);
+    expect(box.min.x > FRAME.x + FRAME.w || box.max.x < FRAME.x).toBe(true); // nowhere near the office
   });
 
   it("draws the whole theatre in a handful of meshes — one of them the entire 270° screen", () => {

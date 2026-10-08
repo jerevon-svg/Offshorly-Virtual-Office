@@ -144,6 +144,12 @@ export const GAPS: ArcSeg[] = [
   { from: 249.6, to: 290.4 }, // west
 ];
 
+/** GO TOGETHER'S RENDEZVOUS (Phase 2): the open floor NORTH of the island, on its axis — between the
+ *  bench ring (outer edge z ≈ 500 here, the north gap straight behind) and the hub's north edge, clear of
+ *  the café tables (x ≤ 632) and the armchair row (x ≥ 797). A party gathers in a ring round this point,
+ *  in full view of the monument, before it walks the office together. */
+export const RENDEZVOUS: Vec2 = { x: ISLAND.centre.x, z: RECT.z + 36 };
+
 // ============================= HERO — THE BOXING CHAMPIONSHIP MONUMENT ==========================
 /** The production centrepiece: a commemorative boxing ring on the medallion, with the two sculpted "boss"
  *  statues squaring up inside it and a plaque set into the floor in front. THE HERO OF THE CENTRAL HUB.

@@ -960,7 +960,7 @@ describe("vo3d — FIXED lounge seating vs MOVABLE desk-chair seating", () => {
     const furniture = new THREE.Object3D();
     furniture.position.set(475, 0, 1019);
     const before = furniture.position.clone();
-    const avatar = { root: new THREE.Object3D(), yaw: 0, setYaw() {}, play() {}, setClipTimeScale() {}, gltf: null, position: { x: 0, z: 0 } } as never;
+    const avatar = { root: new THREE.Object3D(), yaw: 0, setYaw() {}, settleOnGround() {}, play() {}, setClipTimeScale() {}, gltf: null, position: { x: 0, z: 0 } } as never;
     const stack = { acquire: () => true, release: () => {}, owner: "Idle" } as never;
     const seat = new LoungeSeatInteraction(avatar, stack, furniture, slot(), () => ({ ok: true, path: [slot().approach], destination: slot().approach, cell: { cx: 0, cy: 0 } }) as never);
     seat.sit();

@@ -8,6 +8,8 @@ import { GLTFLoader, type GLTF } from "three/examples/jsm/loaders/GLTFLoader.js"
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { BON_LODS, CLIP_IDLE, CLIP_SIT, CLIP_SIT_ANSWER, DRACO_PATH, type AvatarLod } from "../adapters/v1Avatar";
 import type { Vec2 } from "../core/coords";
+import { RiderPose } from "./riderPose";
+import { RIDER_GRIPS } from "../world/scooters";
 
 let loader: GLTFLoader | null = null;
 function gltfLoader(): GLTFLoader {
@@ -40,16 +42,24 @@ export class Avatar {
    *  is what makes the standalone dev page — and every existing caller — behave exactly as before. */
   private readonly lods: Record<AvatarLod, string>;
 
+  /** THE SCOOTER RIDER'S POSE (avatar/riderPose): a post-mixer layer on the model group, idle until mounted */
+  private readonly rider: RiderPose;
+
   constructor(opts: { height: number; lit: boolean; lods?: Record<AvatarLod, string> }) {
     this.height = opts.height;
     this.lit = opts.lit;
     this.lods = opts.lods ?? BON_LODS;
     this.root.name = "avatar";
     this.root.add(this.model);
+    this.rider = new RiderPose(this.model, RIDER_GRIPS);
   }
 
   async load(lod: AvatarLod): Promise<void> {
-    const gltf = await gltfLoader().loadAsync(this.lods[lod]);
+    this.adopt(await gltfLoader().loadAsync(this.lods[lod]));
+  }
+  /** Take a loaded character package as this body: normalise it, dress it, bind its clips. `load` is the
+   *  fetch in front of this; tests hand it a roster GLB decoded in node (avatar/rosterGlb.testutil). */
+  adopt(gltf: GLTF): void {
     this.dispose();
     this.gltf = gltf;
     const scene = gltf.scene;
@@ -76,6 +86,7 @@ export class Avatar {
       m.material = this.lit ? this.litMaterials.get(m)! : this.unlitMaterials.get(m)!;
     });
     this.model.add(scene);
+    this.rider.setScene(scene);
     this.mixer = new THREE.AnimationMixer(scene);
     for (const clip of gltf.animations) this.actions[clip.name] = this.mixer.clipAction(clip);
     this.current = null;
@@ -91,7 +102,17 @@ export class Avatar {
 
   // ---- transform (the ONLY orientation writers) ----
   get position(): Vec2 { return { x: this.root.position.x, z: this.root.position.z }; }
-  setPosition(p: Vec2, y = 0): void { this.root.position.set(p.x, y, p.z); }
+  /** THE GROUND UNDER A POINT (the world's exterior ground model; 0 indoors), or null for a flat world. Used
+   *  whenever a caller places the body without saying how high — navigation walks, interactions, teleports —
+   *  but never while the body rides a carrier (a seat, the lift car), whose frame is not the world's. */
+  ground: ((p: Vec2) => number) | null = null;
+  private carried = false;
+  /** the ground height at `p`, or 0 when there is no ground provider or the body is carried */
+  groundAt(p: Vec2): number { return this.ground && !this.carried ? this.ground(p) : 0; }
+  /** stand on the ground where the body already is (a walk step); a no-op when carried or flat */
+  settleOnGround(): void { if (this.ground && !this.carried) this.root.position.y = this.ground(this.root.position); }
+  /** place the body; `y` is absolute — omitted, it stands on the ground */
+  setPosition(p: Vec2, y?: number): void { this.root.position.set(p.x, y ?? this.groundAt(p), p.z); }
   /** full rotation write — pure yaw about +y relative to the current parent */
   setYaw(yaw: number): void { this.yaw = yaw; this.root.rotation.set(0, yaw, 0); }
   /** world-space yaw when the parent may be rotated (carrier) */
@@ -101,8 +122,8 @@ export class Avatar {
     this.root.rotation.set(0, yaw - parentYaw, 0);
   }
   /** re-parent into a carrier keeping world pose, then re-express orientation as pure yaw (guards the Euler residue) */
-  attachTo(carrier: THREE.Object3D): void { carrier.attach(this.root); this.setWorldYaw(this.yaw); }
-  detachTo(parent: THREE.Object3D): void { parent.attach(this.root); this.setWorldYaw(this.yaw); }
+  attachTo(carrier: THREE.Object3D): void { carrier.attach(this.root); this.carried = true; this.setWorldYaw(this.yaw); }
+  detachTo(parent: THREE.Object3D): void { parent.attach(this.root); this.carried = false; this.setWorldYaw(this.yaw); }
   worldPosition(): THREE.Vector3 { return this.root.getWorldPosition(new THREE.Vector3()); }
 
   // ---- animation ----
@@ -170,9 +191,25 @@ export class Avatar {
     const a = this.actions[name];
     return { bound: a !== undefined, running: a?.isRunning() ?? false, weight: a?.getEffectiveWeight() ?? 0 };
   }
-  update(dt: number): void { this.mixer?.update(dt); }
+  update(dt: number): void {
+    this.mixer?.update(dt);
+    this.rider.update(dt);
+  }
+
+  // ---- the scooter rider (avatar/riderPose) ----
+  /** mount (true) or dismount (false): hands to the grips and the body onto the deck, blended either way */
+  setRiding(on: boolean): void { this.rider.set(on); }
+  /** the deck's roll this frame (world/scooters' lean), so the body leans with the scooter */
+  setRideLean(lean: number): void { this.rider.setLean(lean); }
+  /** the deck's pitch this frame (nose up +), so the body climbs and descends with the scooter */
+  setRidePitch(pitch: number): void { this.rider.setPitch(pitch); }
+  /** 0 = not riding at all, 1 = fully on the grips; the blend in between */
+  get ridingWeight(): number { return this.rider.weight; }
+  /** DIAGNOSTIC: the rider solve's last stance and palm-to-grip distances */
+  get riderStats(): RiderPose["stats"] { return this.rider.stats; }
 
   dispose(): void {
+    this.rider.setScene(null);
     if (this.gltf) {
       this.mixer?.stopAllAction();
       this.model.remove(this.gltf.scene);

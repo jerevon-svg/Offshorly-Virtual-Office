@@ -4,8 +4,11 @@
  *
  *  Always present on the wire (the column defaults to "text", so pre-7D rows arrive as "text" too), but
  *  optional here so the mock service and any hand-built fixture stay valid without it — readers should
- *  treat a missing value as "text". */
-export type ChatMessageKind = "text" | "call_missed";
+ *  treat a missing value as "text".
+ *
+ *  Rich Chat Phase 1: "sticker" is the one AUTHORED non-text kind — a real message somebody sent, whose
+ *  body is `meta.stickerId` (resolved through services/chat/stickers.ts) instead of `text` (always ""). */
+export type ChatMessageKind = "text" | "sticker" | "call_missed";
 
 export interface ChatMessage {
   id: string;
@@ -23,7 +26,7 @@ export interface ChatMessage {
   kind?: ChatMessageKind;
   /** Structured detail for a system row — for "call_missed", { callType, reason }. Null/absent for
    *  every ordinary message, exactly as `meta` is null on the column. */
-  meta?: { callType?: string; reason?: string } | null;
+  meta?: { callType?: string; reason?: string; stickerId?: string } | null;
   // @mentions V1 — server-validated (real conversation participant) emails mentioned in this
   // message. Always an array, never undefined/null on the wire (see backend's
   // serialize_message_dict) — empty for both "no mentions" and pre-mentions-feature rows.
@@ -169,6 +172,9 @@ export interface ChatService {
     // server-side re-validated against actual membership (see insert_message), never trusted
     // as-is. Omitted/empty means no mentions.
     mentionedEmails?: string[];
+    // Rich Chat Phase 1 — send a sticker instead of text (text must then be ""). A registry id from
+    // services/chat/stickers.ts; the server stores it as kind "sticker", meta { stickerId }.
+    stickerId?: string;
   }): Promise<ChatMessage>;
   openConversationWith(peerId: string, selfId: string): Promise<Conversation>;
   onMessage(cb: MessageListener): () => void;
@@ -221,7 +227,9 @@ export interface ChatService {
 /** THE ONE TEST for "is this a row somebody actually wrote". Every consumer the Phase 7D audit found —
  *  the conversation views, both offices' avatar speech-bubble handlers, the reaction affordance — asks
  *  this rather than comparing to a literal, so adding a second system kind later cannot miss one of them.
- *  An absent `kind` is "text": pre-7D rows and mock fixtures both arrive that way. */
+ *  An absent `kind` is "text": pre-7D rows and mock fixtures both arrive that way. A sticker IS authored
+ *  (bubble, avatar, reactions, receipts) — surfaces that can only show text use messageSpeechText. */
 export function isAuthoredMessage(msg: Pick<ChatMessage, "kind">): boolean {
-  return (msg.kind ?? "text") === "text";
+  const kind = msg.kind ?? "text";
+  return kind === "text" || kind === "sticker";
 }

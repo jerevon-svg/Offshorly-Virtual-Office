@@ -13,7 +13,13 @@
 // 36-unit body and 46-unit walls) is a hop, not a platforming move, and nothing in the world is reachable
 // by it.
 //
-// AND IT ALWAYS COMES DOWN. `y` is clamped at 0 on the frame the arc crosses it and the state is cleared
+// TRAVERSAL (exterior free roam). Outdoors the arc is in ABSOLUTE height and PlayerMode hands PlayerBody the
+// feet with every airborne step: the ground model (world/exteriorGround TraversalState) then lets the body
+// pass over any EDGE its feet clear and lands it on the highest ground under it — a ledge above the takeoff
+// or a lawn below it. What it clears is only ever an edge: solids, walls, water and the world's rim are
+// judged at every height exactly as before, so nothing above stops being true for them.
+//
+// AND IT ALWAYS COMES DOWN. `y` is clamped at the floor on the frame the arc crosses it and the state is cleared
 // there, so there is no accumulating float to drift; `reset()` puts the body back on the floor for every
 // way out of the mode (exit, an interaction taking the avatar, a blur).
 
@@ -45,33 +51,61 @@ export const JUMP_DURATION_MS = (2 * TAKEOFF_SPEED / GRAVITY) * 1000;
  *  jumper and the people watching them hold the SAME pose. */
 export const AIRBORNE_POSE_PHASE = 0.5;
 
+/** A jump's own arc: takeoff speed and gravity (u/s, u/s²). The walk's is the default; the scooter has its own. */
+export type JumpTuning = { takeoff: number; gravity: number };
+export const WALK_JUMP: JumpTuning = { takeoff: TAKEOFF_SPEED, gravity: GRAVITY };
+
 export class PlayerJump {
+  /** the feet's height, ABSOLUTE (the world's y), while airborne */
   private y = 0;
   private vy = 0;
   private inAir = false;
+  /** the height the jump left from — `height` is measured above it */
+  private base = 0;
+  private readonly tune: JumpTuning;
 
-  /** Height above the floor, world units. 0 whenever the body is grounded. */
-  get height(): number { return this.y; }
+  constructor(tune: JumpTuning = WALK_JUMP) {
+    this.tune = tune;
+  }
+
+  /** Height above the takeoff floor, world units. 0 whenever the body is grounded. */
+  get height(): number { return this.inAir ? this.y - this.base : 0; }
+  /** The feet's absolute height while airborne (the takeoff floor's when grounded). */
+  get feet(): number { return this.inAir ? this.y : this.base; }
+  /** Vertical speed, u/s (positive = rising); 0 when grounded. */
+  get verticalSpeed(): number { return this.vy; }
   /** Is the body off the floor? The grounded test, and the no-double-jump test, are the same question. */
   get airborne(): boolean { return this.inAir; }
 
-  /** Ask for a jump. Refused — and nothing changes — unless the body is on the floor, which is what
-   *  makes a held Space a single jump and a second press mid-air a no-op. Returns whether it took. */
-  start(): boolean {
+  /** Ask for a jump from a floor at `from` (absolute; 0 = the datum). Refused — and nothing changes —
+   *  unless the body is on the floor, which is what makes a held Space or a second press a no-op. */
+  start(from = 0): boolean {
     if (this.inAir) return false;
     this.inAir = true;
-    this.vy = TAKEOFF_SPEED;
+    this.base = this.y = from;
+    this.vy = this.tune.takeoff;
     return true;
   }
 
-  /** Step by dt seconds. Returns TRUE on the one frame the body lands, so the caller can put the right
-   *  locomotion clip back exactly once rather than testing for it. */
-  update(dt: number): boolean {
+  /** LEAVE AN EDGE without jumping: airborne at `from` with no upward speed (a body that walked or rolled
+   *  off a drop deeper than it steps down). A no-op in mid-air. */
+  fall(from: number): void {
+    if (this.inAir) return;
+    this.inAir = true;
+    this.base = this.y = from;
+    this.vy = 0;
+  }
+
+  /** Step by dt seconds over a floor at `floor` (absolute — the highest ground under the body now; the
+   *  takeoff floor by default, which is the flat-floor jump). Returns TRUE on the one frame the body lands,
+   *  so the caller can put the right clip back. It lands only while descending, so a jump taken beside a
+   *  step rises past it rather than snagging on it, and it lands ON the floor — never below it. */
+  update(dt: number, floor = this.base): boolean {
     if (!this.inAir) return false;
-    this.vy -= GRAVITY * dt;
+    this.vy -= this.tune.gravity * dt;
     this.y += this.vy * dt;
-    if (this.y > 0) return false;
-    this.y = 0;
+    if (this.vy > 0 || this.y > floor) return false;
+    this.base = this.y = floor;
     this.vy = 0;
     this.inAir = false;
     return true;
@@ -79,7 +113,7 @@ export class PlayerJump {
 
   /** Back on the floor, now, with no landing reported: the mode is being handed over or torn down. */
   reset(): void {
-    this.y = 0;
+    this.y = this.base;
     this.vy = 0;
     this.inAir = false;
   }

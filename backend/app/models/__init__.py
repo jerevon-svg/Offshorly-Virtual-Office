@@ -6,6 +6,9 @@ from app.models.conversation import Conversation, ConversationParticipant
 from app.models.employee_permission import EmployeePermission
 from app.models.feed import FeedComment, FeedPost, FeedReaction
 from app.models.hub import HubItem, HubItemState
+from app.models.meeting_capture import CaptureConsent, CaptureSession, TranscriptSegment
+from app.models.meeting_intelligence import MeetingIntelligenceEvidence, MeetingIntelligenceItem, MeetingIntelligenceRun
+from app.models.meeting_session import MeetingSession, MeetingSessionAttendance, MeetingSessionGrant
 from app.models.message import Message
 from app.models.mission import MissionAssignment
 from app.models.notification import Notification
@@ -17,6 +20,7 @@ from app.models.redemption import RewardRedemption
 from app.models.reward import RewardGrant
 from app.models.request import ConversationRequest
 from app.models.room_request import RoomEntryRequest
+from app.models.scheduled_meeting import ScheduledMeeting, ScheduledMeetingInvitee
 from app.models.talk_request import TalkRequest
 from app.models.toucan import (
     ToucanAttentionCursor,
@@ -47,6 +51,15 @@ __all__ = [
     "FeedReaction",
     "HubItem",
     "HubItemState",
+    "CaptureConsent",
+    "CaptureSession",
+    "TranscriptSegment",
+    "MeetingIntelligenceEvidence",
+    "MeetingIntelligenceItem",
+    "MeetingIntelligenceRun",
+    "MeetingSession",
+    "MeetingSessionAttendance",
+    "MeetingSessionGrant",
     "Message",
     "MessageReaction",
     "MissionAssignment",
@@ -57,6 +70,8 @@ __all__ = [
     "RewardGrant",
     "RewardRedemption",
     "RoomEntryRequest",
+    "ScheduledMeeting",
+    "ScheduledMeetingInvitee",
     "TalkRequest",
     "ToucanAttentionCursor",
     "ToucanConversation",

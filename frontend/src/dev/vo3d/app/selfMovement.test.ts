@@ -524,6 +524,14 @@ describe("Phase 6B — the actual resting yaw goes out with every arrival; legs 
     feed.planned({ x: 0, z: 0 }, [{ x: 100, z: 0 }], 1428);
     expect(pacings[0]).toBeUndefined();
   });
+
+  it("marks a GUIDED planned walk linear when asked: a party compares where everybody is, so the replay must match the body", () => {
+    const { sink, calls, pacings } = recorder();
+    const feed = new SelfMovementFeed(sink);
+    feed.planned({ x: 0, z: 0 }, [{ x: 100, z: 0 }], 1428, "linear");
+    expect(calls[0]).toMatchObject({ call: "started", durationMs: 1428 });
+    expect(pacings[0]).toBe("linear");
+  });
 });
 
 // PHASE 7D — TELLING PEERS WHERE YOU WENT WHEN V1 HAS NO WORD FOR IT.
@@ -637,6 +645,51 @@ describe("a named place beyond the frame", () => {
     feed.frame(16, { x: 2660, z: 400 }, 0, false);
     feed.frame(16, { x: 2720, z: 400 }, 0, false);
 
+    expect(calls).toEqual([]);
+  });
+});
+
+// GO TOGETHER V1 prerequisite — THE LIFT. Boarding crosses V1's frame before the ride names the floor, so
+// before boardedLift/alightedLift existed nothing done on a floor above the frame was ever published.
+describe("the lift — boardedLift / alightedLift", () => {
+  const inFrame = (p: Vec2) => p.x < 2000;
+  const BAY = { x: 58, z: 925 };
+  const CAR = { x: 9032, z: 425 };
+  const UP_BAY = { x: 6058, z: 610 };
+
+  it("names the floor above on arrival, anchored where the body boarded, and publishes the walk out", () => {
+    const { sink, calls } = recorder();
+    const feed = new SelfMovementFeed(sink, inFrame);
+    feed.placed(BAY);
+    feed.boardedLift(CAR);
+    feed.frame(16, { x: CAR.x + 3, z: CAR.z }, 0, false); // the car's own motion
+    expect(calls).toEqual([]);
+    feed.entering("floor-2"); // the ride's swap
+    feed.alightedLift(UP_BAY, 0);
+    expect(calls).toEqual([{ call: "placed", at: BAY, room: "floor-2", localAt: UP_BAY }]);
+    drive(feed, UP_BAY, 1, 0, 1000, 70);
+    const legs = calls.filter((c) => c.call === "inPlace");
+    expect(legs.length).toBeGreaterThan(0);
+    expect(legs.every((c) => c.call === "inPlace" && c.room === "floor-2" && c.anchor === BAY)).toBe(true);
+  });
+
+  it("riding back down snaps into the frame and clears the place", () => {
+    const { sink, calls } = recorder();
+    const feed = new SelfMovementFeed(sink, inFrame);
+    feed.placed(BAY);
+    feed.boardedLift(CAR);
+    feed.entering("floor-2");
+    feed.alightedLift(UP_BAY, 0);
+    feed.boardedLift(CAR);
+    feed.entering(null);
+    feed.alightedLift(BAY, 0);
+    expect(calls.at(-1)).toEqual({ call: "placed", at: BAY, room: null });
+  });
+
+  it("an unmatched alight publishes nothing", () => {
+    const { sink, calls } = recorder();
+    const feed = new SelfMovementFeed(sink, inFrame);
+    feed.alightedLift(UP_BAY, 0);
     expect(calls).toEqual([]);
   });
 });
