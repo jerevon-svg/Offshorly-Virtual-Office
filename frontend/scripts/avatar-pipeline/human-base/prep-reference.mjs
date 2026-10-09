@@ -7,7 +7,7 @@
 //   2. FLAT LIGHT: the directional face shadow (a uniform multiply of the lit skin) is divided out on the shadow side
 //      of each row's terminator.
 //   3. COMPOSITION: crop above the clothing, square, 1024×1024, transparent.
-//   node prep-reference.mjs <src.png> <outDir> <name> [--frame=r,g,b] [--clothTop=y]
+//   node prep-reference.mjs <src.png> <outDir> <name> [--frame=r,g,b] [--frameTol=d] [--frameBox=x0,y0,x1,y1] [--clothTop=y] [--accessories=off] [--relight=skin]
 import fs from "node:fs";
 import sharp from "sharp";
 
@@ -48,6 +48,13 @@ const overlayOfSkin = (c) => { const a = [1, 2].map((k) => (c[k] - skinLit[k]) /
 if (!frameC) frameC = mode((i) => { const c = c3(i), y = (i / W) | 0; return y > H * 0.25 && y < H * 0.65 && lum(c) > 215 && c[0] - c[2] < 45 && dist(c, skinLit) > 18 && !overlayOfSkin(c); });
 const isFrame = (i) => D[i * 4 + 3] > 200 && dist(c3(i), frameC) < 4;   // exact frame colour; its anti-aliased edge is covered by dilation
 let F = new Uint8Array(N); let fN = 0; for (let i = 0; i < N; i++) if (isFrame(i)) { F[i] = 1; fN++; }
+// --frameTol=d: a multi-tone (dark) frame — outline/highlight tones within d of the frame colour also count, but only
+// inside the box of the exact-colour frame (the head outline elsewhere is never taken for frame)
+// --frameBox=x0,y0,x1,y1: the glasses' measured box when the frame colour also draws the head outline (clips F to it)
+if (arg("frameBox")) { const [bx0, by0, bx1, by1] = arg("frameBox").split(",").map(Number); for (let i = 0; i < N; i++) { const x = i % W, y = (i / W) | 0; if (F[i] && (x < bx0 || x > bx1 || y < by0 || y > by1)) { F[i] = 0; fN--; } } }
+if (arg("frameTol")) { const tol = +arg("frameTol"); let x0 = W, x1 = -1, y0 = H, y1 = -1; for (let i = 0; i < N; i++) if (F[i]) { const x = i % W, y = (i / W) | 0; x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+  for (let y = Math.max(0, y0 - 3); y <= Math.min(H - 1, y1 + 3); y++) for (let x = Math.max(0, x0 - 3); x <= Math.min(W - 1, x1 + 3); x++) { const i = y * W + x; if (!F[i] && D[i * 4 + 3] > 200 && dist(c3(i), frameC) < tol) { F[i] = 1; fN++; } }
+  log.frameTol = { tol, box: [x0, y0, x1, y1] }; }
 log.frame = { colour: frameC, pixels: fN };
 const dil = (M, r) => { let m = M; for (let k = 0; k < r; k++) { const nx = m.slice(); for (let i = 0; i < N; i++) if (m[i]) { const x = i % W; if (x > 0) nx[i - 1] = 1; if (x < W - 1) nx[i + 1] = 1; if (i >= W) nx[i - W] = 1; if (i < N - W) nx[i + W] = 1; } m = nx; } return m; };
 const glasses = fN > N * 0.003;
@@ -65,7 +72,8 @@ if (glasses) {
   log.lenses = lensComps.map((m) => m.length);
   // lens alpha: lit skin seen through the lens vs open lit skin (white overlay)
   const lensSkin = mode((i) => lens[i] && isWarm(c3(i)) && overlayOfSkin(c3(i)));
-  const a = [0, 1, 2].map((k) => (lensSkin[k] - skinLit[k]) / Math.max(1, 255 - skinLit[k])).filter((v) => v > 0.02 && v < 0.9);
+  // no white overlay found = a CLEAR lens (alpha 0, nothing to un-blend)
+  const a = !lensSkin ? [] : [0, 1, 2].map((k) => (lensSkin[k] - skinLit[k]) / Math.max(1, 255 - skinLit[k])).filter((v) => v > 0.02 && v < 0.9);
   const alpha = a.length ? a.reduce((s, v) => s + v, 0) / a.length : 0;
   log.lens = { seenSkin: lensSkin, alpha: +alpha.toFixed(3) };
   for (let i = 0; i < N; i++) if (lens[i]) for (let k = 0; k < 3; k++) D[i * 4 + k] = Math.max(0, Math.min(255, Math.round((D[i * 4 + k] - alpha * 255) / (1 - alpha))));
@@ -111,7 +119,8 @@ if (glasses) {
 }
 // ---------------- 1b. HEAD ACCESSORIES (flowers, clips, bands): strongly saturated, non-skin regions that sit ON the
 // hair (most of their outline touches dark hair) — removed for generation, kept for modular reconstruction ----------
-{ const sat = (c) => { const mx = Math.max(...c), mn = Math.min(...c); return mx ? (mx - mn) / mx : 0; };
+// --accessories=off: for saturated/dyed hair that the detector would otherwise take for an accessory
+if (arg("accessories") !== "off") { const sat = (c) => { const mx = Math.max(...c), mn = Math.min(...c); return mx ? (mx - mn) / mx : 0; };
   const cand = new Uint8Array(N); for (let i = 0; i < N; i++) { const c = c3(i); if (D[i * 4 + 3] > 200 && sat(c) > 0.45 && lum(c) > 35 && dist(c, skinLit) > 60) cand[i] = 1; }
   const seen = new Uint8Array(N), acc = new Uint8Array(N), found = [];
   for (let s0 = 0; s0 < N; s0++) { if (!cand[s0] || seen[s0]) continue; const m = [], q = [s0]; seen[s0] = 1; let edge = 0, edgeHair = 0, x0 = W, x1 = 0, y0 = H, y1 = 0;
@@ -140,10 +149,11 @@ if (skinSh) {
   let relit = 0;
   for (let y = 0; y < H; y++) { let term = -1; for (let x = 0; x < W; x++) { const i = y * W + x; if (isSh(i)) { if (left) term = Math.max(term, x); else if (term < 0) term = x; } }
     if (term < 0) continue;
-    for (let x = 0; x < W; x++) { if (left ? x > term + 1 : x < term - 1) continue; const i = y * W + x; if (D[i * 4 + 3] < 200) continue; const c = c3(i); if (lum(c) < 55 || dist(c, skinLit) < 24 || lum(c) >= lum(skinLit) - 4) continue;   // outlines, hair, irises and already-lit pixels stay
+    for (let x = 0; x < W; x++) { if (left ? x > term + 1 : x < term - 1) continue; const i = y * W + x; if (D[i * 4 + 3] < 200) continue; const c = c3(i); if (lum(c) < 55 || dist(c, skinLit) < 24 || lum(c) >= lum(skinLit) - 4) continue;
+      if (arg("relight") === "skin" && Math.max(...[0, 1, 2].map((k) => c[k] / skinSh[k])) - Math.min(...[0, 1, 2].map((k) => c[k] / skinSh[k])) > 0.15) continue;   // --relight=skin: light (dyed) hair keeps its own shading   // outlines, hair, irises and already-lit pixels stay
       const seg = [0, 1, 2].map((k) => skinLit[k] - skinSh[k]), sl2 = seg.reduce((a2, v) => a2 + v * v, 0), t = Math.max(0, Math.min(1, ((c[0] - skinSh[0]) * seg[0] + (c[1] - skinSh[1]) * seg[1] + (c[2] - skinSh[2]) * seg[2]) / sl2));
       if (Math.hypot(c[0] - skinSh[0] - t * seg[0], c[1] - skinSh[1] - t * seg[1], c[2] - skinSh[2] - t * seg[2]) < 22) { for (let k = 0; k < 3; k++) D[i * 4 + k] = skinLit[k]; relit++; continue; }   // a shadow↔lit blend
-      for (let k = 0; k < 3; k++) D[i * 4 + k] = Math.min(skinLit[k] + 8, Math.round(c[k] * K[k])); relit++; } }
+      for (let k = 0; k < 3; k++) D[i * 4 + k] = Math.min(255, skinLit[k] + 8, Math.round(c[k] * K[k])); relit++; } }   // 255 cap: a Buffer wraps 262 → 6 (teal hair)
   log.relit = relit;
 }
 // ---------------- 3. COMPOSITION ----------------

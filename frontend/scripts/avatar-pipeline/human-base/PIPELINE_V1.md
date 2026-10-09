@@ -346,3 +346,30 @@ EVERYTHING THAT ALREADY PASSES.
   first five (Bon 0.33 needed it, Micah 0.48 did not) and is diagnostic only.
 - Rule for employee #6+: build once with conditional repairs off, run `check-identity.mjs` + the QA sheets, enable only the recipes
   whose failure is actually visible, rebuild that employee only. A repair that changes regions it was not enabled for is a bug.
+
+## V2 — FAIL-CLOSED BUILD + FAILURE REGISTRY (2026-10-06, supersedes the V1.4 build flow)
+
+`build-employees.mjs --only=<who> [--promote]` now: clean raw → pass 1 (no build-loop repairs) → evidence (build record +
+optimised artifact + the MOUNTED, DRESSED final avatar on the production runtime) → `failure-registry.mjs` decides repairs
+from its detectors → pass 2 from the SAME raw with exactly those repairs → `gate.mjs`. A candidate stays in
+`output/human-base/candidates/<who>/` (with `report.json`) unless every automated class passes AND every sign-off class has a
+visual approval bound to the artifact hash (`approvals/<who>.json`). `promoteCandidate()` is the only path into `production/`
+and refuses a failing gate, a gate without mounted evidence, a file changed after the gate, and the frozen approved five.
+Every build is stamped (pipeline version, source, config, artifact hashes). Repairs are never per-employee switches.
+Regression fixtures: `fixtures/` (approved five pass; batch-2 broken states fail their classes; repaired states pass) —
+`npx vitest run scripts/avatar-pipeline/human-base/pipeline-contract.test.mjs`. The V1.4 face-only narrowing was REJECTED.
+
+### V2 learned classes (2026-10-06, all detector-gated, no employee switches)
+- FC-NECK-HAIR → `neckHairClear` · FC-COLLAR-AS-HAIR → `collarCull` · FC-HAIR-AS-SKIN → `hairAsSkinRelabel`.
+- FC-JAW-RIM split: topology A ragged open rim → `rimTuck`; topology B closure hanging below a head with no open rim →
+  `jawClosureClip` (the old clip only ran when the tuck found a rim).
+- FC-BALD-POCKET → `crownSkinRelabel` (skin-labelled hair-shell pieces the base cap under the hair cannot cover); ears are
+  never pocket cells.
+- FC-CLOSURE-EXPOSED (short / no hair) → `keepOwnUnderside`: the identity keeps its own skin below the canonical underside
+  down to the neck attachment — structurally complete with zero hair. napeSkin stays withdrawn (gated on Lui it passed the
+  closure metric and grew skin fins → FC-SKIN-FLAP, a fail-closed detector, now catches that).
+- Long faces: bounded long-face retention (bracketed boost to the approved growth band, no native eye-line ceiling) +
+  AUTOMATIC head mount (face size vs Bon, ×0.98 feminine, held in the approved chin→eye/body band) + hair-independent
+  mounted envelope (skull width / height and cheek vs body). Outside the envelope = fail closed, never distortion.
+- Open debt: FC-EAR-BOUNDARY, FC-NAPE-ROUGH (rough cut line under the hair), FC-HAIR-SPIKE (visual sign-off); mount pitch
+  (Micah's +7°) is not derived automatically.

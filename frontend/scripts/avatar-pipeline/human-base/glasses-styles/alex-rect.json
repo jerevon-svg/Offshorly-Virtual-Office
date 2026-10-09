@@ -1,0 +1,9 @@
+{
+ "_source": "alex.pdf (vector master of Alex_Sprite.png) → SVG, frame = element 56 (fill #170912), lens tint = 58: eye centres x 249.5 / 434.5 y 259.5 (sep 185); frame outer box per lens x 146–318 / 365–538, y 220–326; bridge x 318–365 at y 230–243; rim stroke ≈ 6–7 px. Colour = the sprite's frame #1a1919. All values below are in units of eye separation.",
+ "lens": { "halfW": 0.465, "halfH": 0.286, "dx": 0.094, "dy": -0.073, "roundness": 4.5 },
+ "rim": { "width": 0.036, "depth": 0.04 },
+ "bridge": { "dy": 0.127, "arch": 0.0, "thick": 0.022 },
+ "temple": { "yFrac": 0.55, "length": 1.3, "thick": 0.016 },
+ "standoff": 0.03, "wrap": 0.6,
+ "colour": "#1a1919"
+}

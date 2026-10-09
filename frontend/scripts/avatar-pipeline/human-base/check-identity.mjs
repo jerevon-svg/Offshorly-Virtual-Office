@@ -23,8 +23,8 @@ import { canonicalSkull } from "./head-closure.mjs";
 import { BASE_OUT, io } from "./lib.mjs";
 
 const WHO = process.argv.slice(2).length ? process.argv.slice(2) : ["bon", "micah", "angelo", "clang", "france"];
-const R = JSON.parse(fs.readFileSync(new URL("./employees.json", import.meta.url), "utf8"));
-const canon = JSON.parse(fs.readFileSync(new URL("./canonical-profile.json", import.meta.url), "utf8"));
+const R = JSON.parse(fs.readFileSync("scripts/avatar-pipeline/human-base/employees.json", "utf8"));
+const canon = JSON.parse(fs.readFileSync("scripts/avatar-pipeline/human-base/canonical-profile.json", "utf8"));
 const AP = (await io.read(`${BASE_OUT}/identity/alex-neutral-head-v1.glb`)).getRoot().listMeshes()[0].listPrimitives()[0].getAttribute("POSITION").getArray();
 const skull = canonicalSkull(AP, [0, 1.25, canon.ears.z]);
 const prim = (doc, n) => doc.getRoot().listMeshes().find((m) => m.getName() === n)?.listPrimitives()[0] ?? null;
@@ -37,9 +37,13 @@ function frontRaster(parts, G) { const Z = new Float32Array(G.nx * G.ny).fill(Na
         const w0 = ((q[1][0] - x) * (q[2][1] - y) - (q[2][0] - x) * (q[1][1] - y)) / ar, w1 = ((q[2][0] - x) * (q[0][1] - y) - (q[0][0] - x) * (q[2][1] - y)) / ar, w2 = 1 - w0 - w1;
         if (w0 < -1e-3 || w1 < -1e-3 || w2 < -1e-3) continue; const z = w0 * q[0][2] + w1 * q[1][2] + w2 * q[2][2], k = y * G.nx + x; if (!(z <= Z[k])) Z[k] = z; } }
   return Z; }
-const rows = [];
-for (const who of WHO) {
-  const doc = await io.read(process.env.HB_SRC === "identity" ? `${BASE_OUT}/identity/${who}-meshy-chibi-v1.glb` : `${BASE_OUT}/production/${who}-v1.glb`), lm = doc.getRoot().listScenes()[0].getExtras().humanIdentity.landmarks;
+/** Every structural metric of ONE identity file (the importable core of this checker — the failure registry's artifact
+ *  detectors read these numbers; the verdict is the registry's, not this function's).
+ *  @param who      employee id (accessory list lookup only)
+ *  @param file     the identity GLB to measure (default: that employee's production file)
+ *  @param record   the build's chibify record (skull contract), default output/human-base/<who>-meshy-chibi-v1-chibify.json */
+export async function identityMetrics(who, { file = `${BASE_OUT}/production/${who}-v1.glb`, record = `scripts/avatar-pipeline/output/human-base/${who}-meshy-chibi-v1-chibify.json`, accessories = R.employees[who]?.accessories ?? [] } = {}) {
+  const doc = await io.read(file), lm = doc.getRoot().listScenes()[0].getExtras().humanIdentity.landmarks;
   const parts = Object.fromEntries(doc.getRoot().listMeshes().map((m) => { const p = m.listPrimitives()[0]; return [m.getName(), { P: arr(p, "POSITION"), I: p.getIndices().getArray() }]; }));
   const r = { who };
   // ---- closure: a spherical visibility map from the head centre ----
@@ -82,9 +86,9 @@ for (const who of WHO) {
     { const C = [0, 1.3, earZ], NT = 64, NP = 128, Rm = new Float32Array(NT * NP), L = new Uint8Array(NT * NP);
       for (const [n, g] of Object.entries(parts)) { const cls = n === "identity_head" || n === "identity_face_twin" ? 1 : n.startsWith("identity_hair_") || n.startsWith("accessory") ? 2 : 0; if (!cls) continue;
         for (let v = 0; v < g.P.length / 3; v++) { const x = g.P[v * 3] - C[0], y = g.P[v * 3 + 1] - C[1], z = g.P[v * 3 + 2] - C[2], rr = Math.hypot(x, y, z); if (rr < 1e-4) continue; const t = Math.min(NT - 1, Math.floor(Math.acos(y / rr) / Math.PI * NT)), p = Math.min(NP - 1, Math.floor((Math.atan2(z, x) + Math.PI) / (2 * Math.PI) * NP)), k = t * NP + p; if (rr > Rm[k]) { Rm[k] = rr; L[k] = cls; } } }
-      let pockets = 0; for (let t = 4; t < NT / 2 + 4; t++) { for (let p = 0; p < NP; p++) { const k = t * NP + p; if (L[k] !== 1) continue; const ph = ((p + 0.5) / NP) * 2 * Math.PI - Math.PI, zf = Math.sin(ph), xf = Math.cos(ph); if (zf > -0.15 || Math.abs(xf) < 0.2 && zf > -0.9) { if (zf > -0.15) continue; }
-          let l = 0, rgt = 0; for (let d = 1; d <= 10; d++) { if (!l && L[t * NP + (p - d + NP) % NP] === 2) l = 1; if (!rgt && L[t * NP + (p + d) % NP] === 2) rgt = 1; } if (l && rgt) pockets++; } }
-      r.baldPocketCells = pockets; } }
+      let pockets = 0, earPocket = 0; for (let t = 4; t < NT / 2 + 4; t++) { for (let p = 0; p < NP; p++) { const k = t * NP + p; if (L[k] !== 1) continue; const ph = ((p + 0.5) / NP) * 2 * Math.PI - Math.PI, zf = Math.sin(ph), xf = Math.cos(ph); if (zf > -0.15 || Math.abs(xf) < 0.2 && zf > -0.9) { if (zf > -0.15) continue; }
+          let l = 0, rgt = 0; for (let d = 1; d <= 10; d++) { if (!l && L[t * NP + (p - d + NP) % NP] === 2) l = 1; if (!rgt && L[t * NP + (p + d) % NP] === 2) rgt = 1; } if (l && rgt) { const th = ((t + 0.5) / NT) * Math.PI, rr = Rm[k], px = C[0] + Math.sin(th) * xf * rr, py = C[1] + Math.cos(th) * rr, pz = C[2] + Math.sin(th) * zf * rr; if (Math.abs(px) > 0.3 && Math.abs(py - (lm.eyes.l[1] ?? 1.2)) < 0.16 && Math.abs(pz - earZ) < 0.16) earPocket++; else { pockets++; if (process.env.HB_POCKETS) (r.pocketAt ??= []).push([+px.toFixed(3), +py.toFixed(3), +pz.toFixed(3)]); } } } }
+      r.baldPocketCells = pockets; r.earPocketCells = earPocket; } }
   // ---- (e) EXPOSED INTERIOR from OUTSIDE (V1.4): orthographic z-buffers from 48 underside / low-rear / low-side directions;
   //      % of head pixels whose FIRST surface is closure geometry (baked_interior / baked_skullbase) BELOW the eye line — must be ~0
   { const nk2 = (() => { const g = parts.bodyskin_neckext; if (!g) return { cx: 0, cz: canon.ears.z, r: 0.12 }; let cx = 0, cz = 0; const n2 = g.P.length / 3; for (let v = 0; v < n2; v++) { cx += g.P[v * 3] / n2; cz += g.P[v * 3 + 2] / n2; } let r2 = 0; for (let v = 0; v < n2; v++) r2 = Math.max(r2, Math.hypot(g.P[v * 3] - cx, g.P[v * 3 + 2] - cz)); return { cx, cz, r: r2 * 1.05 }; })();
@@ -141,14 +145,20 @@ for (const who of WHO) {
     r.attached[a.id] = { insideSkull: inside, check: checkAccessory(PP, ap.getIndices()?.getArray() ?? null, lm.attach, "hair") }; }
   // ---- hair accessories inside the canonical skull ----
   r.hairAccessories = {};
-  for (const a of (R.employees[who]?.accessories ?? []).filter((a) => a.build === "tail" || a.build === "flower")) { const f = `${BASE_OUT}/accessories/${a.id}.glb`; if (!fs.existsSync(f)) continue;
+  for (const a of accessories.filter((a) => a.build === "tail" || a.build === "flower")) { const f = `${BASE_OUT}/accessories/${a.id}.glb`; if (!fs.existsSync(f)) continue;
     const P = (await io.read(f)).getRoot().listMeshes()[0].listPrimitives()[0].getAttribute("POSITION").getArray(); let inside = 0; for (let v = 0; v < P.length / 3; v++) if (skull.excess(P[v * 3], P[v * 3 + 1], P[v * 3 + 2]) < -0.004) inside++; r.hairAccessories[a.id] = { insideSkull: inside }; }
   // ---- skull contract (the build's own measurement) + budget ----
-  { const j = JSON.parse(fs.readFileSync(`scripts/avatar-pipeline/output/human-base/${who}-meshy-chibi-v1-chibify.json`, "utf8")); r.skullWidth = +(j.abs.after.ears.half / canon.ears.half).toFixed(4); }
+  if (record && fs.existsSync(record)) { const j = JSON.parse(fs.readFileSync(record, "utf8")); r.skullWidth = +(j.abs.after.ears.half / canon.ears.half).toFixed(4); }
   r.tris = Object.fromEntries(Object.entries(parts).map(([n, g]) => [n, g.I.length / 3])); r.totalTris = Object.values(r.tris).reduce((a, b) => a + b, 0);
-  r.pass = r.featuresOnHairJoints === 0 && r.closureBelowJaw < 40 && /* exposedInterior*: informational (hidden-angle metric; visual QA decides) */ true &&   /* faceHoleVerts: informational (generated heads carry legitimate open edges) */ r.baldPocketCells < 20 && r.openDirections < 0.5 && (!r.fringe || (r.fringe.intoFace === 0 && r.fringe.eyeCutsHair === 0)) && Object.values(r.glasses).every((g) => typeof g === "object" && g.inFace === 0 && g.templeInsideSkull === 0 && g.check.ok) && Object.values(r.hairAccessories).every((h) => h.insideSkull === 0) && Object.values(r.attached).every((h) => typeof h === "object" && h.insideSkull === 0 && h.check.ok) && Math.abs(r.skullWidth - 1) <= 0.015;
-  rows.push(r); console.log(JSON.stringify(r));
+  r.pass = legacyPass(r);
+  return r;
 }
+/** the V1.4 checker's own verdict (kept for the CLI; the failure registry is the build's gate) */
+export const legacyPass = (r) => {  return r.featuresOnHairJoints === 0 && r.closureBelowJaw < 40 && /* exposedInterior*: informational (hidden-angle metric; visual QA decides) */ true &&   /* faceHoleVerts: informational (generated heads carry legitimate open edges) */ r.baldPocketCells < 20 && r.openDirections < 0.5 && (!r.fringe || (r.fringe.intoFace === 0 && r.fringe.eyeCutsHair === 0)) && Object.values(r.glasses).every((g) => typeof g === "object" && g.inFace === 0 && g.templeInsideSkull === 0 && g.check.ok) && Object.values(r.hairAccessories).every((h) => h.insideSkull === 0) && Object.values(r.attached).every((h) => typeof h === "object" && h.insideSkull === 0 && h.check.ok) && Math.abs(r.skullWidth - 1) <= 0.015; };
+
+if (process.argv[1]?.endsWith("check-identity.mjs")) {
+const rows = [];
+for (const who of WHO) { const r = { ...(await identityMetrics(who, process.env.HB_SRC === "identity" ? { file: `${BASE_OUT}/identity/${who}-meshy-chibi-v1.glb` } : {})) }; rows.push(r); console.log(JSON.stringify(r)); }
 // ---- GARMENTS (static): open boundary loops, loose pieces ("threads"), degenerate triangles, spikes ----
 const garments = {};
 for (const f of fs.readdirSync(`${BASE_OUT}/garments`).filter((x) => x.endsWith(".glb"))) {
@@ -172,3 +182,4 @@ console.log("garments:", JSON.stringify(garments));
 fs.mkdirSync("scripts/avatar-pipeline/output/human-base/v1.2-release", { recursive: true });
 fs.writeFileSync("scripts/avatar-pipeline/output/human-base/v1.2-release/invariants.json", JSON.stringify({ identities: rows, garments }, null, 1));
 console.log(rows.map((r) => `${r.who.padEnd(7)} ${r.pass ? "PASS" : "FAIL"}`).join("\n"));
+}

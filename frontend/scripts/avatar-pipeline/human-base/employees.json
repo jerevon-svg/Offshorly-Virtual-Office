@@ -28,7 +28,7 @@
      "id": "bon-glasses"
     }
    ],
-   "repairs": {
+   "historyRepairs": {
     "rimTuck": true,
     "napeSkin": false
    }
@@ -44,7 +44,7 @@
      "id": "micah-glasses"
     }
    ],
-   "repairs": {
+   "historyRepairs": {
     "rimTuck": false,
     "napeSkin": false
    }
@@ -54,7 +54,7 @@
    "hair": "natural",
    "headTris": 60000,
    "accessories": [],
-   "repairs": {
+   "historyRepairs": {
     "rimTuck": true,
     "napeSkin": false
    }
@@ -71,7 +71,7 @@
      "sprite": "{ref}/clang-ref-original.png"
     }
    ],
-   "repairs": {
+   "historyRepairs": {
     "rimTuck": true,
     "napeSkin": false
    }
@@ -92,11 +92,58 @@
      "volume": 1.25
     }
    ],
-   "repairs": {
+   "historyRepairs": {
     "rimTuck": true,
     "napeSkin": false
    }
+  },
+  "jona": {
+   "ruleset": "v3",
+   "hair": "upperBack",
+   "motion": "long",
+   "headTris": 80000,
+   "accessories": []
+  },
+  "kael": {
+   "ruleset": "v3",
+   "hair": "natural",
+   "headTris": 60000,
+   "accessories": []
+  },
+  "nicole": {
+   "ruleset": "v3",
+   "hair": "upperBack",
+   "motion": "long",
+   "headTris": 80000,
+   "accessories": []
+  },
+  "lui": {
+   "ruleset": "v3",
+   "hair": "natural",
+   "headTris": 60000,
+   "accessories": []
   }
  },
- "_repairs": "CONDITIONAL REPAIRS (KNOWN FAILURE ≠ MANDATORY REPAIR): only the repairs listed per employee run; everything else keeps that employee's own geometry. Decided from the 2026-10-05 visual QA (A/B under-jaw + side views). napeSkin is an available recipe and is enabled for nobody (it regressed all five)."
+ "_repairs": "V2 (2026-10-06): repairs are decided by failure-registry.mjs detectors on each build's evidence — never by this file. `historyRepairs` records what the frozen approved five were built with (history only; build-employees.mjs never reads it).",
+ "_rejected": {
+  "alex": {
+   "why": "2026-10-06 Bon REJECTED the Meshy Alex head (reads too old/realistic, not the established Alex). Alex is adapted from his existing approved character instead (no Meshy). Raw kept in output/meshy-employees/alex-head-v1 + output/human-base/batch2-review/rejected-meshy-alex as a comparison/debug artifact only.",
+   "recipe": {
+    "ruleset": "v3",
+    "hair": "natural",
+    "headTris": 60000,
+    "accessories": [
+     {
+      "build": "glasses",
+      "style": "glasses-styles/alex-rect.json",
+      "id": "alex-glasses"
+     }
+    ],
+    "repairs": {
+     "rimTuck": true,
+     "napeSkin": true
+    }
+   }
+  }
+ }
 }
