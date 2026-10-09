@@ -42,8 +42,10 @@ export class Avatar {
   /** THE THREE GLB URLS THIS INSTANCE LOADS FROM, one per LOD. Per-instance rather than the module
    *  constant it used to read directly, so a world can put the player in the body of whoever is actually
    *  signed in (app/world.ts passes adapters/v1Avatar's castLods(avatarId)). Defaults to BON_LODS, which
-   *  is what makes the standalone dev page — and every existing caller — behave exactly as before. */
-  private readonly lods: Record<AvatarLod, string>;
+   *  is what makes the standalone dev page — and every existing caller — behave exactly as before. NULL = this
+   *  employee has NO legacy body (a HumanBase-only employee): a HumanBase failure then leaves the body empty
+   *  (runtime "none") rather than dressing them in Bon's. */
+  private readonly lods: Record<AvatarLod, string> | null;
 
   /** THE SCOOTER RIDER'S POSE (avatar/riderPose): a post-mixer layer on the model group, idle until mounted */
   private readonly rider: RiderPose;
@@ -58,10 +60,10 @@ export class Avatar {
   /** which runtime is actually drawing this body: "humanbase" | "legacy-glb" | "none" (diagnostic) */
   get runtime(): "humanbase" | "legacy-glb" | "none" { return this.human ? "humanbase" : this.gltf ? "legacy-glb" : "none"; }
 
-  constructor(opts: { height: number; lit: boolean; lods?: Record<AvatarLod, string>; human?: { config: EmployeeAvatar; catalogue: ReadonlyMap<string, AppearanceAsset> } | null }) {
+  constructor(opts: { height: number; lit: boolean; lods?: Record<AvatarLod, string> | null; human?: { config: EmployeeAvatar; catalogue: ReadonlyMap<string, AppearanceAsset> } | null }) {
     this.height = opts.height;
     this.lit = opts.lit;
-    this.lods = opts.lods ?? BON_LODS;
+    this.lods = opts.lods === null ? null : opts.lods ?? BON_LODS;
     this.humanCfg = opts.human ?? null;
     this.root.name = "avatar";
     this.root.add(this.model);
@@ -72,8 +74,9 @@ export class Avatar {
     if (this.humanCfg) {
       if (this.human) return;   // one HumanBase body per Avatar (it has no LODs yet — the LOD selector is a no-op)
       try { this.adoptHuman(await createHumanBody(this.humanCfg.config, this.humanCfg.catalogue)); return; }
-      catch (e) { console.warn("[vo3d] HumanBase body failed to load — falling back to the legacy GLB", e); }
+      catch (e) { if (!this.lods) throw e; console.warn("[vo3d] HumanBase body failed to load — falling back to the legacy GLB", e); }
     }
+    if (!this.lods) throw new Error("no legacy body for this employee");
     this.adopt(await gltfLoader().loadAsync(this.lods[lod]));
   }
   /** Take a built HumanBase body. Already in world units (HUMAN_STANDING_HEIGHT = 36 = BON_STANDING_HEIGHT), feet on

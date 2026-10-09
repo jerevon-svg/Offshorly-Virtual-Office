@@ -8,6 +8,7 @@ import { getCurrentUser } from "../../../auth/currentUserStore";
 import { getCurrentUserId } from "../../../auth/useAuthGate";
 import { avatarIdForEmail } from "../../../data/avatarIdentity";
 import { hasCastLods } from "./v1Avatar";
+import { hasHumanBody } from "../avatar/humanBodyRoster";
 import type { Vo3dIdentity } from "../app/identity";
 
 /** The value getCurrentUserId() returns when it could NOT read a real id.
@@ -42,7 +43,8 @@ function isDevBypass(): boolean {
  *  of no character for them at all, or because the one it knows is 2D-only. Never somebody else's. */
 function live3dAvatarId(email: string): string | null {
   const id = avatarIdForEmail(email);
-  return id && hasCastLods(id) ? id : null;
+  // a body = a legacy GLB OR a HumanBase appearance (an employee with no legacy GLB at all, e.g. Lui)
+  return id && (hasCastLods(id) || hasHumanBody(id)) ? id : null;
 }
 
 export function resolveVo3dIdentity(): Vo3dIdentity | null {

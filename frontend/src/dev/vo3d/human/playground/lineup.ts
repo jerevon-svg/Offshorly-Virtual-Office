@@ -1,9 +1,14 @@
-// vo3d human — FIVE-PERSON PRODUCTION LINEUP (human-base-lineup.html?humanbase=1). DEV-ONLY, isolated: nothing in
+// vo3d human — PERMANENT PRODUCTION LINEUP (human-base-lineup.html?humanbase=1). DEV-ONLY, isolated: nothing in
 // the app imports this. Every body is built through the PRODUCTION path — avatar/humanBody humanBodyFor() →
 // createHumanBody() — the one local (avatar/Avatar) and remote (world/Coworkers) bodies take, so what this page shows
 // is exactly the production appearance, head mounts included. One ground plane, one camera, so relative scale is
 // judged honestly.
 //
+//   ?set=<name>     first (default: the approved five) | batch2 (the second batch, Bon in the middle as the
+//                   canonical reference) | all (the whole HumanBase roster)
+//   ?ids=a,b,c      an explicit row instead of a set (e.g. a candidate between approved references)
+//   ?candidate=<id>:<path>  that employee wears a CANDIDATE identity file (served from frontend/, e.g. the fail-closed
+//                   build's scripts/avatar-pipeline/output/human-base/candidates/<id>/pass2/<id>-v1.glb) — for visual sign-off
 //   ?mount=0        the heads as authored (no group proportion normalization) — the A/B "before"
 //   ?view=<name>    front (default) | front34 | side | rear | vo | orthoFront | orthoSide | faces
 //   ?mode=<clip>    idle (default) | walk | run | sit
@@ -12,7 +17,7 @@
 //   ?capture=1      hides the panel
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { createHumanBody, humanBodyFor, type HumanBody } from "../../avatar/humanBody";
+import { appearanceFor, createHumanBody, HUMANBASE_CATALOGUE, humanBodyFor, type HumanBody } from "../../avatar/humanBody";
 import { CLIP_IDLE, CLIP_RUN, CLIP_SIT, CLIP_WALK } from "../../adapters/v1Avatar";
 import { HUMAN_STANDING_HEIGHT as H } from "../humanBaseContract";
 
@@ -20,9 +25,19 @@ const Q = new URLSearchParams(location.search);
 if (Q.get("humanbase") !== "1") { document.getElementById("gate")!.style.display = "flex"; document.getElementById("panel")!.style.display = "none"; throw new Error("gated behind ?humanbase=1"); }
 if (Q.get("capture") === "1") document.body.classList.add("capture");
 
-/** the review order, screen-left → screen-right from the front */
-const ORDER = ["angelo", "micah", "bon", "france", "clang"] as const;
+/** the review sets, screen-left → screen-right from the front */
+const SETS: Record<string, readonly string[]> = {
+  first: ["angelo", "micah", "bon", "france", "clang"],
+  batch2: ["kael", "jona", "bon", "nicole", "lui"],
+  all: ["angelo", "micah", "france", "clang", "bon", "kael", "jona", "nicole", "lui"],
+};
+const SET = SETS[Q.get("set") ?? ""] ? Q.get("set")! : "first";
+const IDS = Q.get("ids")?.split(",").filter(Boolean);
+const ORDER: readonly string[] = IDS?.length ? IDS : SETS[SET];
+const CANDIDATE = new Map((Q.get("candidate") ?? "").split(",").filter(Boolean).map((c) => { const i = c.indexOf(":"); return [c.slice(0, i), c.slice(i + 1)] as const; }));
 const SPACING = 24;
+/** wider rows push every camera back so the whole row stays framed (the first five = 1) */
+const ROW_K = Math.max(1, ORDER.length / 5);
 const MOUNTS = Q.get("mount") !== "0";
 
 // ---- renderer + scene (the QA viewer's VO look) ----
@@ -41,8 +56,9 @@ const fill = new THREE.DirectionalLight(0xe8eef6, 0.6); fill.position.set(60, -4
 const ground = new THREE.Mesh(new THREE.CircleGeometry(220, 64), new THREE.MeshStandardMaterial({ color: 0xc9cfd6, roughness: 0.95 }));
 ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
 // height rules every 6 units behind the row (relative scale at a glance)
+const RULE_X = ((ORDER.length - 1) / 2) * SPACING + 22;
 for (let y = 6; y <= 48; y += 6) {
-  const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-70, y, -14), new THREE.Vector3(70, y, -14)]);
+  const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-RULE_X, y, -14), new THREE.Vector3(RULE_X, y, -14)]);
   scene.add(new THREE.Line(g, new THREE.LineBasicMaterial({ color: y === H ? 0x5dd9b3 : 0xaab3be })));
 }
 
@@ -69,23 +85,30 @@ const VIEWS: Record<string, () => void> = {
 };
 let currentView = VIEWS[Q.get("view") ?? ""] ? Q.get("view")! : "front";
 function setPersp(fov: number, pos: THREE.Vector3, target: THREE.Vector3): void {
+  pos = target.clone().addScaledVector(pos.clone().sub(target), ROW_K);
   camera = persp; persp.fov = fov; persp.updateProjectionMatrix(); persp.position.copy(pos); controls.target.copy(target); controls.enabled = true; controls.update();
 }
 function setOrtho(pos: THREE.Vector3, target: THREE.Vector3, halfH: number): void {
+  if (pos.x === target.x) halfH *= ROW_K;   // a front-on ortho view must fit the whole row's width
   camera = ortho; fitOrtho(halfH); ortho.position.copy(pos); ortho.lookAt(target); controls.enabled = false;
 }
 function view(name: string): void { if (!VIEWS[name]) return; currentView = name; VIEWS[name](); }
 let turnDeg = Number(Q.get("turn") ?? 0) || 0;
 function turn(deg: number): void { turnDeg = deg; for (const { body } of bodies) body.human.root.rotation.y = (deg * Math.PI) / 180; }
 
-// ---- the five, through the production resolver ----
+// ---- the set, through the production resolver ----
 const bodies: { id: string; body: HumanBody }[] = [];
 for (const [i, id] of ORDER.entries()) {
-  const cfg = humanBodyFor(id, "?humanbase=1");
+  // a candidate is reviewed in its production appearance even while not enabled, wearing EXACTLY the mount its final gate
+  // validated (the build's report.json next to the candidate: validatedMount + bindingHash) — the runtime's own appearanceFor path
+  const rep = CANDIDATE.has(id) ? await fetch(`${import.meta.env.BASE_URL}${CANDIDATE.get(id)!.replace(/\/(corr-)?pass\d\/[^/]+$/, (_m: string, c?: string) => (c ? "/report.corrected.json" : "/report.json"))}`).then((r) => (r.ok ? r.json() : null)).catch(() => null) : null;
+  if (CANDIDATE.has(id) && !rep?.validatedMount) throw new Error(`${id}: candidate has no gate-validated mount (report.json) — rebuild it`);
+  const cfg = CANDIDATE.has(id) ? appearanceFor(id, { [id]: { artifactHash: rep.artifactHash, pipelineVersion: rep.pipelineVersion, mount: rep.validatedMount, bindingHash: rep.bindingHash, validatedAt: rep.builtAt } }) : humanBodyFor(id, "?humanbase=1");
   if (!cfg) throw new Error(`${id} is not a HumanBase employee`);
   if (!MOUNTS) delete cfg.identity.mount;
-  const body = await createHumanBody(cfg);
-  body.human.root.position.set((i - 2) * SPACING, 0, 0);
+  const cand = CANDIDATE.get(id), head = HUMANBASE_CATALOGUE.get(cfg.identity.headAssetId);
+  const body = await createHumanBody(cfg, cand && head ? new Map(HUMANBASE_CATALOGUE).set(head.id, { ...head, url: `${import.meta.env.BASE_URL}${cand}` }) : undefined);
+  body.human.root.position.set((i - (ORDER.length - 1) / 2) * SPACING, 0, 0);
   scene.add(body.human.root);
   bodies.push({ id, body });
 }
@@ -129,11 +152,13 @@ function group(title: string, items: [string, () => unknown, () => boolean][]): 
   for (const [label, act, on] of items) { const b = el("button", label) as HTMLButtonElement; b.onclick = () => { act(); for (const x of rows) x.b.classList.toggle("on", x.on()); }; r.append(b); rows.push({ b, on }); }
   panel.append(r);
 }
-panel.append(el("h1", "HumanBase · five-person lineup"), el("p", `${ORDER.join(" · ")} — the production appearance (humanBodyFor → createHumanBody). Head mounts ${MOUNTS ? "ON" : "OFF (?mount=0)"}. Green rule = ${H} units (standing height).`, "sub"));
+panel.append(el("h1", `HumanBase · lineup (${IDS?.length ? "custom" : SET}${CANDIDATE.size ? ` · candidate: ${[...CANDIDATE.keys()].join(", ")}` : ""})`), el("p", `${ORDER.join(" · ")} — the production appearance (humanBodyFor → createHumanBody). Head mounts ${MOUNTS ? "ON" : "OFF (?mount=0)"}. Green rule = ${H} units (standing height).`, "sub"));
+const go = (patch: Record<string, string | null>) => { const q = new URLSearchParams(location.search); for (const [k, v] of Object.entries(patch)) { if (v === null) q.delete(k); else q.set(k, v); } location.search = q.toString(); };
+group("Set", Object.keys(SETS).map((n) => [n, () => go({ set: n }), () => SET === n]));
 group("View", Object.keys(VIEWS).map((n) => [n, () => view(n), () => currentView === n]));
 group("Turn all in place", [0, 45, 90, 135, 180, -90].map((d) => [`${d}°`, () => turn(d), () => turnDeg === d]));
 group("Behaviour", Object.keys(MODES).map((m) => [m, () => setMode(m), () => mode === m]));
-group("Head mounts", [["on", () => { location.search = "?humanbase=1"; }, () => MOUNTS], ["off (as authored)", () => { location.search = "?humanbase=1&mount=0"; }, () => !MOUNTS]]);
+group("Head mounts", [["on", () => go({ mount: null }), () => MOUNTS], ["off (as authored)", () => go({ mount: "0" }), () => !MOUNTS]]);
 const st = el("div"); st.id = "stats"; panel.append(st);
 group("Measure", [["proportions (this pose)", () => { st.textContent = JSON.stringify(measure(), null, 1); }, () => false]]);
 for (const x of rows) x.b.classList.toggle("on", x.on());

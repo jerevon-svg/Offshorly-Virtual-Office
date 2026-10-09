@@ -87,6 +87,13 @@ export const PROOF_CATALOGUE: readonly AppearanceAsset[] = [
   { id: "france-meshy-chibi-v1", slot: "identity", label: "France · Meshy auto-chibi", url: `${BASE}identity/france-meshy-chibi-v1.glb`, hides: [], ownerEmployeeId: "france" },
   { id: "france-hair-tail", slot: "accessory", label: "France · tied-back hair (low ponytail)", url: `${BASE}accessories/france-hair-tail.glb`, socket: "headTop" },
   { id: "clang-flower", slot: "accessory", label: "Clang · hair flower", url: `${BASE}accessories/clang-flower.glb`, socket: "headTop" },
+  // batch 2: identity heads from the unchanged universal pipeline, plus Alex's frames (style measured from his vector master;
+  // his identity head is pending — the Meshy candidate was rejected, his own legacy head is being adapted)
+  { id: "jona-meshy-chibi-v1", slot: "identity", label: "Jona · Meshy auto-chibi", url: `${BASE}identity/jona-meshy-chibi-v1.glb`, hides: [], ownerEmployeeId: "jona" },
+  { id: "kael-meshy-chibi-v1", slot: "identity", label: "Kael · Meshy auto-chibi", url: `${BASE}identity/kael-meshy-chibi-v1.glb`, hides: [], ownerEmployeeId: "kael" },
+  { id: "nicole-meshy-chibi-v1", slot: "identity", label: "Nicole · Meshy auto-chibi", url: `${BASE}identity/nicole-meshy-chibi-v1.glb`, hides: [], ownerEmployeeId: "nicole" },
+  { id: "lui-meshy-chibi-v1", slot: "identity", label: "Lui · Meshy auto-chibi", url: `${BASE}identity/lui-meshy-chibi-v1.glb`, hides: [], ownerEmployeeId: "lui" },
+  { id: "alex-glasses", slot: "glasses", label: "Alex · black rectangular frames", url: `${BASE}accessories/alex-glasses.glb`, socket: "identity-face" },
   { id: "offshorly-badge", slot: "accessory", label: "Offshorly badge", url: "procedural:badge", socket: "chest" },
 ];
 export const CATALOGUE_BY_ID: ReadonlyMap<string, AppearanceAsset> = new Map(PROOF_CATALOGUE.map((a) => [a.id, a]));
@@ -159,3 +166,8 @@ const batchAvatar = (id: string, bodyPreset: "standard" | "feminine", accessorie
 export const ANGELO_AVATAR = batchAvatar("angelo", "standard");
 export const CLANG_AVATAR = batchAvatar("clang", "feminine", [{ assetId: "clang-flower" }]);
 export const FRANCE_AVATAR = batchAvatar("france", "feminine", [{ assetId: "france-hair-tail" }]);
+/** batch 2 (same recipe: body preset by person, the Offshorly uniform, each person's own extras) */
+export const JONA_AVATAR = batchAvatar("jona", "feminine");
+export const KAEL_AVATAR = batchAvatar("kael", "standard");
+export const NICOLE_AVATAR = batchAvatar("nicole", "feminine");
+export const LUI_AVATAR = batchAvatar("lui", "standard");

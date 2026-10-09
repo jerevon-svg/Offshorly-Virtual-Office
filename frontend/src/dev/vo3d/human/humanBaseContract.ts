@@ -178,6 +178,11 @@ export const HEAD_ENVELOPE = {
   neckCutY: 0.755,
   /** eye line band — production Alex's eyes sit at 1.178 (the canonical skull, alex-neutral-head-v1) */
   eyeY: [0.98, 1.22] as const,
+  /** SOURCE-DRIVEN LONG FACE (V2): an identity whose build measured width:length growth beyond the approved band keeps more
+   *  of its own face length and may lift its eye line above eyeY[1] (recorded as mount.longFace.extended). There is no native
+   *  ceiling: the head is rigid on Head and scaled about it by its automatic mount; the MOUNTED envelope (skull height / width
+   *  and face size vs body, from the approved five) is the hard limit — failing it fails the build closed. */
+  eyeYLongFaceFloor: 0.98,
   eyeFrontZ: [0.25, 0.5] as const,
   maxHalfWidth: 0.47,
 } as const;

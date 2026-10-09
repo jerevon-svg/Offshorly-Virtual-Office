@@ -100,9 +100,18 @@ describe("an avatar id V2 cannot draw", () => {
     // "lui" is a real V1 avatar — a full sprite set in data/avatarRegistry — with no consolidated GLB in
     // render3d/live3dCharacters. V1 renders them; V2 has no body for them, and says so rather than
     // handing the world an id its registry will not answer for (which threw, and blanked the preview).
+    // Lui's only body is HumanBase, so this holds under the `?humanbase=0` rollback.
+    window.history.replaceState({}, "", "/?humanbase=0");
+    try {
+      signIn("lui@offshorly.com", "Lui");
+      const id = resolveVo3dIdentity()!;
+      expect(id.displayName).toBe("Lui");
+      expect(id.avatarId).toBeNull();
+    } finally { window.history.replaceState({}, "", "/"); }
+  });
+
+  it("a HumanBase-only employee whose HumanBase body is not enabled (fail-closed) resolves to null, never someone else", () => {
     signIn("lui@offshorly.com", "Lui");
-    const id = resolveVo3dIdentity()!;
-    expect(id.displayName).toBe("Lui");
-    expect(id.avatarId).toBeNull();
+    expect(resolveVo3dIdentity()!.avatarId).toBeNull();
   });
 });

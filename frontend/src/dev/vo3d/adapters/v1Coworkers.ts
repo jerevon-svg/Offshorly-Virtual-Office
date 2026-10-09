@@ -25,6 +25,7 @@ import { getCurrentUser } from "../../../auth/currentUserStore";
 import { officePeopleToLayers } from "../../../data/rosterLayers";
 import type { OfficePerson } from "../../../services/office/floorMerge";
 import { hasCastLods } from "./v1Avatar";
+import { hasHumanBody } from "../avatar/humanBodyRoster";
 import { FACING_BY_DIRECTION } from "./v1Facing";
 import { EMPTY_COWORKER_SET, type Vo3dCoworker, type Vo3dCoworkerSet } from "../app/coworkers";
 
@@ -87,7 +88,8 @@ export function resolveVo3dCoworkers(
     // mapping for; a NON-null id can still name a 2D-only sprite set with no consolidated GLB. V2 draws
     // nothing but GLBs, so hasCastLods is what tells the two apart — and asking castLods directly would
     // throw on the missing registry row and take the whole world down with it.
-    if (!avatarId || !hasCastLods(avatarId)) {
+    // A HumanBase appearance is a body too (Lui has no legacy GLB at all; `?humanbase=0` returns him here).
+    if (!avatarId || !(hasCastLods(avatarId) || hasHumanBody(avatarId))) {
       missingAvatar.push(displayName);
       continue;
     }

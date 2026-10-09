@@ -10,10 +10,13 @@
 //   · removing the id from HUMANBASE_ENABLED (config, one line).
 // Anything not enabled — or a HumanBase load failure (avatar/Avatar falls back) — keeps the legacy body.
 import * as THREE from "three";
-import { CATALOGUE_BY_ID, BON_AVATAR, MICAH_AVATAR, ANGELO_AVATAR, CLANG_AVATAR, FRANCE_AVATAR, OFFSHORLY_UNIFORM } from "../human/humanCatalogue";
+import { CATALOGUE_BY_ID, BON_AVATAR, MICAH_AVATAR, ANGELO_AVATAR, CLANG_AVATAR, FRANCE_AVATAR, JONA_AVATAR, KAEL_AVATAR, NICOLE_AVATAR, LUI_AVATAR, OFFSHORLY_UNIFORM } from "../human/humanCatalogue";
 import { idleClip, type AppearanceAsset, type EmployeeAvatar, type HeadMount } from "../human/humanBaseContract";
 import { HumanAvatar } from "../human/HumanAvatar";
 import { CLIP_IDLE } from "../adapters/v1Avatar";
+import { HUMANBASE_ENABLED, humanBaseOn, VALIDATED_HEADS, type ValidatedHead } from "./humanBodyRoster";
+
+export { HUMANBASE_ENABLED, humanBaseOn, hasHumanBody, VALIDATED_HEADS, type ValidatedHead } from "./humanBodyRoster";
 
 const BASE = `${import.meta.env?.BASE_URL ?? "/"}avatars/human-base-v1/`;
 
@@ -22,6 +25,8 @@ const BASE = `${import.meta.env?.BASE_URL ?? "/"}avatars/human-base-v1/`;
  *  never on the hair volume, which every hairstyle keeps as authored; Micah's head is also authored pitched forward. */
 export const HEAD_MOUNT: Readonly<Record<string, HeadMount>> = {
   micah: { scale: 0.89, pitchDeg: 7 }, angelo: { scale: 0.95 }, clang: { scale: 0.91 }, france: { scale: 0.935 },
+  // the FROZEN approved five only. Every later identity's mount is PIPELINE OUTPUT (VALIDATED_HEADS, written by the gate's
+  // promotion with the artifact it was measured on) — there are no per-employee mount constants for them.
 };
 
 /** The approved V1.4 production appearance per cast id (identity head = the optimised production candidate). */
@@ -34,10 +39,13 @@ const APPEARANCE: Readonly<Record<string, EmployeeAvatar>> = {
   angelo: { ...ANGELO_AVATAR, identity: { headAssetId: "humanbase:angelo", mount: HEAD_MOUNT.angelo } },
   clang: { ...CLANG_AVATAR, identity: { headAssetId: "humanbase:clang", mount: HEAD_MOUNT.clang } },
   france: { ...FRANCE_AVATAR, identity: { headAssetId: "humanbase:france", mount: HEAD_MOUNT.france } },
+  // batch 2 — same recipe, data only; NO mount here (it comes from the validated head, see appearanceFor)
+  jona: { ...JONA_AVATAR, identity: { headAssetId: "humanbase:jona" } },
+  kael: { ...KAEL_AVATAR, identity: { headAssetId: "humanbase:kael" } },
+  nicole: { ...NICOLE_AVATAR, identity: { headAssetId: "humanbase:nicole" } },
+  lui: { ...LUI_AVATAR, identity: { headAssetId: "humanbase:lui" } },
 };
 
-/** PHASE 3: the five approved V1.4 employees. A further employee is an id here plus an APPEARANCE entry — nothing else. */
-export const HUMANBASE_ENABLED: ReadonlySet<string> = new Set(["bon", "micah", "angelo", "clang", "france"]);
 
 /** The production catalogue: every shared module plus each employee's approved optimised identity head. */
 export const HUMANBASE_CATALOGUE: ReadonlyMap<string, AppearanceAsset> = (() => {
@@ -46,16 +54,22 @@ export const HUMANBASE_CATALOGUE: ReadonlyMap<string, AppearanceAsset> = (() => 
   return m;
 })();
 
-/** Is the HumanBase body switched on for this page? (`?humanbase=0` turns it off for the session.) */
-export function humanBaseOn(search: string = typeof location !== "undefined" ? location.search : ""): boolean {
-  return new URLSearchParams(search).get("humanbase") !== "0";
+
+/** The production APPEARANCE recipe for a cast id regardless of enablement (preset, uniform, accessories, mount) — what the
+ *  fail-closed build's mounted gate and candidate review wear a candidate identity with. Never used to decide what renders. */
+/** THE ONE PLACE a runtime appearance gets its head mount: a frozen approved identity keeps its approved HEAD_MOUNT; any
+ *  other identity wears the mount its validated head record carries (production: VALIDATED_HEADS; the gate's parity check
+ *  passes the record it is about to promote) — and NO mount at all without one (then it is not enabled either). */
+export function appearanceFor(castId: string, validated: Readonly<Record<string, ValidatedHead>> = VALIDATED_HEADS): EmployeeAvatar | null {
+  const a = APPEARANCE[castId]; if (!a) return null; const c = structuredClone(a) as EmployeeAvatar;
+  const v = HEAD_MOUNT[castId] ? null : validated[castId]; if (v) c.identity = { ...c.identity, mount: { scale: v.mount.scale, pitchDeg: v.mount.pitchDeg } };
+  return c;
 }
 
 /** The HumanBase appearance for a cast id, or null when that employee keeps the legacy body. */
 export function humanBodyFor(castId: string | null | undefined, search?: string): EmployeeAvatar | null {
   if (!castId || !HUMANBASE_ENABLED.has(castId) || !humanBaseOn(search)) return null;
-  const a = APPEARANCE[castId];
-  return a ? structuredClone(a) : null;
+  return appearanceFor(castId);
 }
 
 /** ONE BUILT HUMANBASE BODY, already speaking VO's clip vocabulary — the single construction path both the

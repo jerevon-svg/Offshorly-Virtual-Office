@@ -143,7 +143,7 @@ import { setSSAODepthReuse, ssaoDepthReuseEnabled } from "../render/SSAOFromDept
 import { createGraphicsEngine } from "../render/GraphicsEngine";
 import { GraphicsController } from "../../../services/render/graphicsController";
 import { Avatar } from "../avatar/Avatar";
-import { HUMANBASE_CATALOGUE, humanBodyFor } from "../avatar/humanBody";
+import { HUMANBASE_CATALOGUE, hasHumanBody, humanBodyFor } from "../avatar/humanBody";
 import { ControllerStack, NavigationController } from "../avatar/Controller";
 import { SeatInteraction } from "../interact/Seat";
 import { EditSession, SNAP_DEGREES, SNAP_STEP } from "../editor/EditSession";
@@ -1144,15 +1144,18 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   const avatarLods: Record<AvatarLod, string> | null | undefined =
     identity === undefined ? (devAvatar && hasCastLods(devAvatar) ? castLods(devAvatar) : undefined)
     : identity.avatarId && hasCastLods(identity.avatarId) ? castLods(identity.avatarId) : null;
+  // HUMANBASE-ONLY EMPLOYEE (no legacy GLB at all, e.g. Lui): no legacy LODs, but a HumanBase body — so not
+  // missing, and the Avatar gets `lods: null` (a HumanBase failure leaves the body empty, never Bon's).
+  const humanOnly = identity !== undefined && avatarLods === null && hasHumanBody(identity.avatarId);
   /** True when this world knows WHO the player is but has no character to put them in. */
-  const avatarMissing = avatarLods === null;
+  const avatarMissing = avatarLods === null && !humanOnly;
   // HUMANBASE BODY (production integration, Phase 1): an employee enabled in avatar/humanBody wears the shared
   // HumanBase runtime — same Avatar API, so every controller / interaction below is unchanged. Identity stays the
   // session's; only the appearance comes from humanBody. Rollback: `?humanbase=0`, or the HUMANBASE_ENABLED set.
   // (The standalone page, no identity, opts in with `?humanbase=1`.)
   const humanCastId = identity === undefined ? (flags.get("humanbase") === "1" ? (devAvatar ?? "bon") : null) : (avatarMissing ? null : identity.avatarId ?? null);
   const humanConfig = humanBodyFor(humanCastId);
-  const avatar = new Avatar({ height: BON_STANDING_HEIGHT, lit: params.avatarLit, lods: avatarLods ?? undefined, human: humanConfig ? { config: humanConfig, catalogue: HUMANBASE_CATALOGUE } : null });
+  const avatar = new Avatar({ height: BON_STANDING_HEIGHT, lit: params.avatarLit, lods: humanOnly ? null : avatarLods ?? undefined, human: humanConfig ? { config: humanConfig, catalogue: HUMANBASE_CATALOGUE } : null });
   R.scene.add(avatar.root);
   // Bon is a DYNAMIC shadow caster: his body is composited over the cached static shadow depth every frame
   // he moves, instead of dragging the whole ground floor through the shadow pass with him. See Renderer.

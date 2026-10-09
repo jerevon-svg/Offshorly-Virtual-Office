@@ -81,7 +81,8 @@ describe.skipIf(!fs.existsSync(BASE))("HumanBase_V1 assets", () => {
       expect([...(info.hides ?? [])].sort(), a.id).toEqual([...(a.hides ?? [])].sort());
       if (a.slot === "identity") {
         const e = info.landmarks!.eyes;
-        for (const p of [e.l, e.r]) { expect(p[1]).toBeGreaterThan(HEAD_ENVELOPE.eyeY[0]); expect(p[1]).toBeLessThan(HEAD_ENVELOPE.eyeY[1]); }
+        const longFace = !!(info as unknown as { mount?: { longFace?: { extended?: boolean } } }).mount?.longFace?.extended;   // the bounded long-face extension, recorded by the build
+        for (const p of [e.l, e.r]) { expect(p[1]).toBeGreaterThan(HEAD_ENVELOPE.eyeY[0]); if (!longFace) expect(p[1]).toBeLessThan(HEAD_ENVELOPE.eyeY[1]); }   // a long-face identity is bounded by the mounted envelope, not a native ceiling
         expect(e.l[0]).toBeCloseTo(-e.r[0], 4);
       }
     }

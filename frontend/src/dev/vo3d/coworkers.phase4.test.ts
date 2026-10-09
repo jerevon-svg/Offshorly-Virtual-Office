@@ -64,7 +64,17 @@ describe("resolveVo3dCoworkers", () => {
   });
 
   it("buckets an employee with no consolidated GLB instead of substituting somebody else's body", () => {
-    // Lui is the real case: a real employee with a real V1 sprite set and no 3D character.
+    // Lui is the real case: a real employee with a real V1 sprite set and no legacy 3D character. His only body is
+    // HumanBase, so the `?humanbase=0` rollback returns him to the honest missing-avatar state.
+    window.history.replaceState({}, "", "/?humanbase=0");
+    try {
+      const { coworkers, missingAvatar } = resolveVo3dCoworkers([ALEX, LUI], NOBODY_OFFLINE, "");
+      expect(coworkers.map((c) => c.email)).toEqual(["alex@offshorly.com"]);
+      expect(missingAvatar).toEqual(["Lui"]);
+    } finally { window.history.replaceState({}, "", "/"); }
+  });
+
+  it("a HumanBase-only employee whose HumanBase body is NOT enabled (fail-closed) stays missing, never someone else's body", () => {
     const { coworkers, missingAvatar } = resolveVo3dCoworkers([ALEX, LUI], NOBODY_OFFLINE, "");
     expect(coworkers.map((c) => c.email)).toEqual(["alex@offshorly.com"]);
     expect(missingAvatar).toEqual(["Lui"]);

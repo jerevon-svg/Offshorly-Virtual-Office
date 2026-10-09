@@ -170,13 +170,17 @@ describe("Vo3dHost coworkers (Phase 4A)", () => {
   }, TEST_TIMEOUT);
 
   it("reports an employee V1 lists but V2 cannot draw, rather than shrinking the office silently", async () => {
-    people = [ALEX, LUI];
-    render(<Vo3dHost />);
-    await waitFor(() => expect(worlds).toHaveLength(1), { timeout: WORLD_IMPORT_TIMEOUT });
-    const readout = await screen.findByTestId("vo3d-coworkers");
-    expect(readout.getAttribute("data-count")).toBe("1");
-    expect(readout.getAttribute("data-missing-avatar")).toBe("1");
-    expect(lastPush().missingAvatar).toEqual(["Lui"]);
+    // Lui's only body is HumanBase: under the `?humanbase=0` rollback V2 cannot draw him
+    window.history.replaceState({}, "", "/?humanbase=0");
+    try {
+      people = [ALEX, LUI];
+      render(<Vo3dHost />);
+      await waitFor(() => expect(worlds).toHaveLength(1), { timeout: WORLD_IMPORT_TIMEOUT });
+      const readout = await screen.findByTestId("vo3d-coworkers");
+      expect(readout.getAttribute("data-count")).toBe("1");
+      expect(readout.getAttribute("data-missing-avatar")).toBe("1");
+      expect(lastPush().missingAvatar).toEqual(["Lui"]);
+    } finally { window.history.replaceState({}, "", "/"); }
   }, TEST_TIMEOUT);
 
   it("STILL OPENS THE WORLD when the roster fails — an outage is not a broken preview", async () => {

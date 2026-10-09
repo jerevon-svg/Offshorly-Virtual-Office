@@ -5,7 +5,7 @@
 // waist, seat, hands, ankles), eye states, gaze, behaviours (idle / walk / turn / sit / typing / scooter / gestures),
 // layer debug, and a pose-time garment ↔ skin check (`__qa.garmentCheck()`).
 //
-//   ?who=bon|micah|angelo|clang|france   the employee (default bon)
+//   ?who=bon|micah|angelo|clang|france|jona|kael|nicole|lui   the employee (default bon)
 //   ?src=production (default)            public/avatars/human-base-v1/{production,accessories}/ — the candidates
 //   ?src=v1                              the frozen V1 snapshot (output/human-base/v1-release/snapshot/) for A/B
 //   ?head=<path under human-base-v1/>    dev: a working (unoptimised) identity for ?who
@@ -16,7 +16,7 @@ import { RiderPose } from "../../avatar/riderPose";
 import { RIDER_GRIPS, DECK_TOP } from "../../world/scooters";
 import { vehicleGeos } from "../../build/vehicles";
 import { HUMAN_WORLD_SCALE as W, idleClip, type AppearanceAsset, type EmployeeAvatar } from "../humanBaseContract";
-import { ANGELO_AVATAR, BON_AVATAR, CATALOGUE_BY_ID, CLANG_AVATAR, FRANCE_AVATAR, MICAH_AVATAR } from "../humanCatalogue";
+import { ANGELO_AVATAR, BON_AVATAR, CATALOGUE_BY_ID, CLANG_AVATAR, FRANCE_AVATAR, JONA_AVATAR, KAEL_AVATAR, LUI_AVATAR, MICAH_AVATAR, NICOLE_AVATAR } from "../humanCatalogue";
 import { HumanAvatar } from "../HumanAvatar";
 import { checkAccessory, fitEnvelopePositions, placeAccessory, type AttachData } from "../humanAccessoryFit";
 import { DeskWork, HandContacts } from "../humanBehavior";
@@ -27,12 +27,13 @@ const Q = new URLSearchParams(location.search);
 if (Q.get("humanbase") !== "1") { document.getElementById("gate")!.style.display = "flex"; document.getElementById("panel")!.style.display = "none"; throw new Error("gated behind ?humanbase=1"); }
 if (Q.get("capture") === "1") document.body.classList.add("capture");
 
-// ---- the five production configurations (identity = the optimised production candidate) ----
-const WHO = ["bon", "micah", "angelo", "clang", "france"] as const;
+// ---- the production configurations (identity = the optimised production candidate) ----
+const WHO = ["bon", "micah", "angelo", "clang", "france", "jona", "kael", "nicole", "lui"] as const;
 type Who = (typeof WHO)[number];
 const CONFIG: Record<Who, EmployeeAvatar> = {
   bon: { ...BON_AVATAR, employeeId: "bon", idleProfile: "masculine", hair: { assetId: null }, glasses: { assetId: null } },
   micah: MICAH_AVATAR, angelo: ANGELO_AVATAR, clang: CLANG_AVATAR, france: FRANCE_AVATAR,
+  jona: JONA_AVATAR, kael: KAEL_AVATAR, nicole: NICOLE_AVATAR, lui: LUI_AVATAR,
 };
 const SRC = Q.get("src") === "v1" ? "v1" : "production";
 const B = import.meta.env.BASE_URL;
@@ -279,7 +280,7 @@ renderer.setAnimationLoop(() => {
   controls.update(); renderer.render(scene, camera);
 });
 await load(who);
-Object.assign(window, { __qa: { load, cam, camCustom: (v: { az: number; el: number; d: number; aim?: Aim }) => { QA_VIEWS.__custom = v; cam("__custom"); },
+Object.assign(window, { __qa: { scene, load, cam, camCustom: (v: { az: number; el: number; d: number; aim?: Aim }) => { QA_VIEWS.__custom = v; cam("__custom"); },
   pick: (px: number, py: number) => { const rc = new THREE.Raycaster(), ndc = new THREE.Vector2((px / window.innerWidth) * 2 - 1, -(py / window.innerHeight) * 2 + 1); rc.setFromCamera(ndc, camera);
     const vis: THREE.Object3D[] = []; avatar?.root.traverse((o) => { if ((o as THREE.Mesh).isMesh && o.visible) vis.push(o); }); const h = rc.intersectObjects(vis, false).slice(0, 3);
     return h.map((x) => ({ mesh: x.object.name, face: x.faceIndex, point: x.point.toArray().map((q) => +q.toFixed(3)), dist: +x.distance.toFixed(2) })); }, views: Object.keys(QA_VIEWS), setFace: (s: string, g = "center") => { faceState = s; gaze = g; applyFace(); }, setAnimate: (a: boolean) => { animate = a; avatar?.setTimeScale(a ? 1 : 0); },
