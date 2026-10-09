@@ -360,10 +360,11 @@ async def test_a_ring_that_times_out_records_a_missed_call(server):
 
     invite = socket_module.call_invites.create(from_email=A, from_sid="sid-a", to_email=B)
 
-    async def _no_wait(_seconds):
-        return None
-
     real_sleep = asyncio.sleep
+
+    async def _no_wait(_seconds):
+        await real_sleep(0)
+
     asyncio.sleep = _no_wait
     try:
         await socket_module._expire_invite_later(invite["inviteId"])
