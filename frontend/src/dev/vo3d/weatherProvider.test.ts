@@ -49,8 +49,7 @@ describe("vo3d weather — AUTO reads real weather through our own backend", () 
     vi.stubGlobal("fetch", ok(live({ state: "thunderstorm" })));
     const w = new Weather(new OfficeWeatherProvider(URL), 0);
     w.state(0);
-    await settle();
-    expect(w.state(1)).toBe("thunderstorm"); // real weather reached AUTO
+    await vi.waitFor(() => expect(w.observed).toBe("thunderstorm")); // real weather reached AUTO
     expect(w.overridden).toBe(false);
   });
 });
@@ -123,14 +122,17 @@ describe("vo3d weather — nothing about the endpoint can break the office", () 
 
   it("keeps the LAST GOOD reading when the endpoint later fails — no flicker back to clear", async () => {
     vi.stubGlobal("fetch", ok(live({ state: "heavy_rain" })));
-    const w = new Weather(new OfficeWeatherProvider(URL), 0);
+    const provider = new OfficeWeatherProvider(URL);
+    const readSpy = vi.spyOn(provider, "read");
+    const w = new Weather(provider, 0);
     w.state(0);
-    await settle();
-    expect(w.state(1)).toBe("heavy_rain");
+    await vi.waitFor(() => expect(w.observed).toBe("heavy_rain"));
 
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("down"); }));
     w.invalidate();
     w.state(2);
+    expect(readSpy).toHaveBeenCalledTimes(2);
+    await expect(readSpy.mock.results[1].value).rejects.toThrow("down");
     await settle();
     expect(w.state(3)).toBe("heavy_rain"); // the storm did not blink out mid-outage
   });

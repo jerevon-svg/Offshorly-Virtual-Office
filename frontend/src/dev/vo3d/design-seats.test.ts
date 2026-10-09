@@ -97,11 +97,11 @@ describe("Design Room seating", () => {
       expect(t?.id, `${id}#${s.id} not E-key targetable from its approach`).toBe(id);
       const anchor = seatAnchorId(id, s.id);
       expect(anchors.has(anchor)).toBe(true);
-      // every one is a V1 seat with V1's own word: the sofa's sitters look east ("right"), the beanbag south ("front")
+      // All are V1 seats; the sofa keeps V1's "right", while the configured beanbag faces "left".
       expect(m.byAnchor.get(anchor), anchor).toBeDefined();
-      expect(seatFacingFor(anchor)).toBe(m.byAnchor.get(anchor)!.direction);
+      expect(seatFacingFor(anchor)).toBe(anchor === `${DESIGN_BEANBAG_ID}#beanbag-seat` ? "left" : m.byAnchor.get(anchor)!.direction);
     }
     expect(seatFacingFor(`${DESIGN_SOFA_ID}#sofa-north`)).toBe("right");
-    expect(seatFacingFor(`${DESIGN_BEANBAG_ID}#beanbag-seat`)).toBe("front");
+    expect(seatFacingFor(`${DESIGN_BEANBAG_ID}#beanbag-seat`)).toBe("left");
   });
 });

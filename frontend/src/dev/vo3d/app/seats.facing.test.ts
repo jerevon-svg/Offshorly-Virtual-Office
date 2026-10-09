@@ -44,9 +44,9 @@ describe("the project file", () => {
     for (const id of Object.keys(table)) expect(ids.has(id), `${id} in seatFacing.json is not an anchor`).toBe(true);
   });
 
-  it("agrees with V1's own per-seat direction table for every mapped seat (the seed rule)", () => {
+  it("agrees with the V1 seed except for the configured design beanbag override", () => {
     const m = seatMapping();
-    for (const [id, seat] of m.byAnchor) expect(seatFacingFor(id), id).toBe(seat.direction);
+    for (const [id, seat] of m.byAnchor) expect(seatFacingFor(id), id).toBe(id === "design-room/design-side-beanbag#beanbag-seat" ? "left" : seat.direction);
     // and covers all four directions across the floor
     expect(new Set(Object.values(seatFacingConfig as Record<string, string>)).size).toBe(4);
   });
