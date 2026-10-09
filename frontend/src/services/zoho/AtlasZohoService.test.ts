@@ -223,6 +223,42 @@ describe("AtlasZohoService.submitTimeLogs", () => {
     }
   });
 
+  it.each([{}, { entries_requested: 1 }])("trusts complete status over the edited draft count: %j", async (counts) => {
+    await expect(submit(jsonResponse({
+      detail: { submission_id: "vo-earlier", entries_created: 1, status: "complete", ...counts },
+    }, 409), [ONE_ENTRY[0], ONE_ENTRY[0]])).rejects.toMatchObject({
+      name: "AlreadySubmittedError", submissionId: "vo-earlier", entriesCreated: 1,
+    });
+  });
+
+  it.each(["incomplete", "unknown"])("never recovers %s status even when the edited draft count fits", async (status) => {
+    await expect(submit(jsonResponse({
+      detail: { submission_id: "vo-earlier", entries_created: 1, entries_requested: 2, status },
+    }, 409))).resolves.toMatchObject({
+      success: false,
+      kind: "unknown",
+      error: expect.stringContaining("Couldn't confirm a completed prior submission through Atlas."),
+    });
+  });
+
+  it.each([null, "", "COMPLETE", "failed", true, 1, {}, []])("fails closed for malformed completion status: %j", async (status) => {
+    await expect(submit(jsonResponse({
+      detail: { submission_id: "vo-earlier", entries_created: 1, status },
+    }, 409))).resolves.toMatchObject({ success: false, kind: "unknown" });
+  });
+
+  it.each([null, 0, -1, 1.5, 2, "1", true])("fails closed for complete status with mismatched original count: %j", async (entriesRequested) => {
+    await expect(submit(jsonResponse({
+      detail: { submission_id: "vo-earlier", entries_created: 1, entries_requested: entriesRequested, status: "complete" },
+    }, 409))).resolves.toMatchObject({ success: false, kind: "unknown" });
+  });
+
+  it("keeps the old-server rule when status is absent, even with original-count metadata", async () => {
+    await expect(submit(jsonResponse({
+      detail: { submission_id: "vo-earlier", entries_created: 1, entries_requested: 2 },
+    }, 409))).rejects.toMatchObject({ name: "AlreadySubmittedError", entriesCreated: 1 });
+  });
+
   it("keeps the attempted-date warning when a 409 body is not JSON", async () => {
     const result = await submit(new Response("Conflict", { status: 409 }));
     expect(result).toMatchObject({ success: false, kind: "unknown" });

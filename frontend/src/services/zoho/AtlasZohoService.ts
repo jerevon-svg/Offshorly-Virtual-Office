@@ -174,15 +174,25 @@ export class AtlasZohoService implements ZohoTimeLoggingService {
 
       if (response.status === 409) {
         const body = (await response.json().catch(() => null)) as {
-          detail?: { submission_id?: unknown; entries_created?: unknown };
+          detail?: {
+            submission_id?: unknown;
+            entries_created?: unknown;
+            entries_requested?: unknown;
+            status?: unknown;
+          };
         } | null;
         const submissionId = body?.detail?.submission_id;
         const entriesCreated = body?.detail?.entries_created;
+        const completionStatus = body?.detail?.status;
+        const entriesRequested = body?.detail?.entries_requested;
         const retryAdvice = "This work date was already attempted. Editing will not make it retryable until the Atlas team reconciles Zoho writes and clears the earlier attempt. Contact the Atlas team before retrying.";
         if (
           typeof submissionId !== "string" || !submissionId.trim() ||
           typeof entriesCreated !== "number" || !Number.isSafeInteger(entriesCreated) ||
-          entriesCreated <= 0
+          entriesCreated <= 0 ||
+          (completionStatus !== undefined && completionStatus !== "complete") ||
+          (completionStatus === "complete" && entriesRequested !== undefined &&
+            entriesCreated !== entriesRequested)
         ) {
           return {
             success: false,
@@ -190,8 +200,8 @@ export class AtlasZohoService implements ZohoTimeLoggingService {
             error: `Couldn't confirm a completed prior submission through Atlas. ${retryAdvice}`,
           };
         }
-        // shortcut: count is the completion proxy until Atlas returns an explicit completion status.
-        if (entriesCreated < request.entries.length) {
+        // Older Atlas servers have no status; preserve their count-based recovery.
+        if (completionStatus === undefined && entriesCreated < request.entries.length) {
           return {
             success: false,
             kind: "unknown",
