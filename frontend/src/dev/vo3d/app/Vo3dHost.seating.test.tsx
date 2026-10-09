@@ -24,6 +24,7 @@ vi.mock("./world", async () => ({
     const occupied: string[][] = [];
     const world = {
       dispose: vi.fn(),
+      selfAnchor: vi.fn(() => null),
       setCoworkers: vi.fn(),
       setOfficeAccess: vi.fn(),
       setOccupiedSeats: (ids: readonly string[]) => { occupied.push([...ids]); },

@@ -20,6 +20,9 @@ vi.mock("./world", async () => ({
     const pushes: Push[] = [];
     const world = {
       dispose: vi.fn(),
+      selfAnchor: vi.fn(() => null),
+      coworkerAnchors: vi.fn(() => ({})),
+      zoneAt: vi.fn(() => "office"),
       restoreSelf: vi.fn(() => false),
       setOfficeAccess: vi.fn(),
       setOccupiedSeats: vi.fn(),
