@@ -1,3 +1,5 @@
+import { needsSessionRecovery } from "../../data/workedTime";
+import { StaleSessionRecovery } from "./checkout/StaleSessionRecovery";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, lazy, Suspense } from "react";
 import HudIcon from "../HudIcon";
 import {
@@ -1941,7 +1943,7 @@ export function OfficeMap() {
       return;
     }
     const parsed = attendanceCheckedInAt ? Date.parse(attendanceCheckedInAt) : NaN;
-    setTimeInMs(Number.isFinite(parsed) ? parsed : Date.now());
+    setTimeInMs(parsed);
   }, [attendance, attendanceCheckedInAt]);
 
   // Debug-only override: lets the dev debug panel set a synthetic "hours
@@ -1964,8 +1966,11 @@ export function OfficeMap() {
   // that failed earlier), the local checkout is the truth — re-send it instead of resurrecting
   // the session. That is the only reconcile left; it can never re-post a checkout that predates
   // a newer check-in.
+  const attendanceGenerationRef = useRef(0);
   function applyAttendance(record: AttendanceRecord, opts?: { newSession?: boolean }) {
-    if (record.status === "CHECKED_IN" && !opts?.newSession && checkoutFlow.state === "CHECKED_OUT") {
+    attendanceGenerationRef.current++;
+    const stale = needsSessionRecovery(Date.parse(record.checkedInAt ?? ""));
+    if (!stale && record.status === "CHECKED_IN" && !opts?.newSession && checkoutFlow.state === "CHECKED_OUT") {
       const submitted = Date.parse(checkoutFlow.submissionResult?.submittedAt ?? "");
       const checkedIn = Date.parse(record.checkedInAt ?? "");
       if (Number.isFinite(submitted) && Number.isFinite(checkedIn) && submitted > checkedIn) {
@@ -1976,9 +1981,13 @@ export function OfficeMap() {
         return;
       }
     }
+    if (record.status === "CHECKED_OUT" && needsSessionRecovery(timeInMs)) {
+      checkoutFlow.finishSessionRecovery();
+      setFrozenCheckoutAtMs(null);
+    }
     setAttendance(record.status);
     setAttendanceCheckedInAt(record.checkedInAt);
-    if (record.status === "CHECKED_IN" && (opts?.newSession || checkoutFlow.state === "CHECKED_OUT")) {
+    if (!stale && record.status === "CHECKED_IN" && (opts?.newSession || checkoutFlow.state === "CHECKED_OUT")) {
       checkoutFlow.beginNewSession(record.checkedInAt ?? new Date().toISOString());
     }
   }
@@ -2002,6 +2011,23 @@ export function OfficeMap() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selfChatId]);
+
+  const applyAttendanceRef = useRef(applyAttendance);
+  applyAttendanceRef.current = applyAttendance;
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      const generation = attendanceGenerationRef.current;
+      void attendanceService.getMine(getCurrentUserId()).then((record) => {
+        if (!cancelled && generation === attendanceGenerationRef.current) applyAttendanceRef.current(record);
+      }).catch(() => {});
+    };
+    window.addEventListener("focus", refresh);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", refresh);
+    };
+  }, []);
 
   // Presence/status system (see services/presence/status.ts). Idle (Away)
   // detection runs once here; inConversation now comes from the server-broadcast
@@ -2080,8 +2106,8 @@ export function OfficeMap() {
       // dnd_set(false) so any room this person was protecting unlocks).
       endDnd();
       emitGoOffline();
-      // Explicit checkout is the ONLY thing that ends the server-side work
-      // session — reached solely through the existing Log Time → submit →
+      // Normal checkout closes the session after a timelog; stale recovery
+      // has its own endpoint. This watcher only handles Log Time → submit →
       // exit-walk path that lands in CHECKED_OUT.
       attendanceService
         .checkOut(getCurrentUserId())
@@ -2092,7 +2118,7 @@ export function OfficeMap() {
         });
     } else if (prev === "CHECKED_OUT" && checkoutFlow.state !== "CHECKED_OUT") {
       reconciledLineupSlotRef.current = null;
-      emitComeOnline();
+      if (hasCheckedIn) emitComeOnline();
       // No walkBackToDesk() here any more: this transition now also fires on a same-day
       // re-check-in (beginNewSession), where the check-in walk itself owns the movement, and
       // on the dev reset the viewer is checked out and belongs outside.
@@ -5210,7 +5236,24 @@ export function OfficeMap() {
           />
         </Suspense>
       )}
-      {(import.meta.env.DEV || isRealZohoMode()) && (
+      {attendance === "CHECKED_IN" && attendanceCheckedInAt && checkoutFlow.needsSessionRecovery && (
+        <StaleSessionRecovery
+          employeeId={getCurrentUserId()}
+          checkedInAt={attendanceCheckedInAt}
+          onRecovered={(record) => {
+            checkoutFlow.finishSessionRecovery();
+            setFrozenCheckoutAtMs(null);
+            applyAttendance(record);
+            endDnd();
+            emitGoOffline();
+          }}
+          onRefresh={(record) => {
+            if (record.status === "CHECKED_OUT") checkoutFlow.finishSessionRecovery();
+            applyAttendance(record, { newSession: record.status === "CHECKED_IN" });
+          }}
+        />
+      )}
+      {!checkoutFlow.needsSessionRecovery && (import.meta.env.DEV || isRealZohoMode()) && (
         <>
           {/* WorkingStatusIndicator moved into the dock's working-time group (see dockEntries). */}
       <CheckoutReminderToast

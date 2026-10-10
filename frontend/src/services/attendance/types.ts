@@ -2,7 +2,7 @@
 // server-authoritative (backend employee_attendance, routers/attendance.py) and
 // deliberately independent of both connection state (sockets, tabs, refresh)
 // and avatar location (employee_positions). Only a confirmed check-in or the
-// existing explicit Log Time → Check Out flow changes it.
+// explicit Log Time → Check Out flow or stale-session recovery changes it.
 export type AttendanceStatus = "CHECKED_IN" | "CHECKED_OUT";
 
 export interface AttendanceRecord {
@@ -23,4 +23,5 @@ export interface AttendanceService {
   /** Ends the active work session. Only called from the existing checkout
    * flow once Log Time has completed. Idempotent. */
   checkOut(employeeId: string): Promise<AttendanceRecord>;
+  recoverStaleSession(employeeId: string, expectedCheckedInAt: string): Promise<AttendanceRecord>;
 }

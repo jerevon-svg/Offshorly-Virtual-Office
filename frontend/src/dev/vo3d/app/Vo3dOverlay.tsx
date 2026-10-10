@@ -1,3 +1,5 @@
+import { needsSessionRecovery } from "../../../data/workedTime";
+import { StaleSessionRecovery } from "../../../components/OfficeMap/checkout/StaleSessionRecovery";
 // vo3d app — THE V2 OVERLAY: every piece of DOM that sits over the 3D world.
 //
 // PHASE 6D: WHAT A SELECTED COWORKER MEANS.
@@ -86,7 +88,7 @@ import {
   CHAT_BUBBLE_SIZE,
 } from "../../../components/OfficeMap/chatWindowLayout";
 import type { ToucanSummonState } from "../../../components/OfficeMap/toucanSummon";
-import { useSelfStatus } from "../../../services/presence/selfStatusStore";
+import { endDnd, useSelfStatus } from "../../../services/presence/selfStatusStore";
 import {
   applyPeerTypingUpdate,
   deriveAnyTypingCharacterIds,
@@ -380,7 +382,7 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
   const liveTimeInMs = useMemo(() => {
     if (attendance.record?.status !== "CHECKED_IN") return null;
     const parsed = attendance.record.checkedInAt ? Date.parse(attendance.record.checkedInAt) : NaN;
-    return Number.isFinite(parsed) ? parsed : Date.now();
+    return parsed;
   }, [attendance.record]);
   /** THE SESSION THAT JUST ENDED STILL HAS A LENGTH.
    *
@@ -426,13 +428,23 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
   // throw away an employee's unsent time-log entries on a page refresh.
   useEffect(() => {
     const startedAt = attendance.record?.status === "CHECKED_IN" ? attendance.record.checkedInAt : null;
-    if (!startedAt) return;
+    if (!startedAt || needsSessionRecovery(Date.parse(startedAt))) return;
     if (loadSessionStart(employeeId, manilaWorkDate())?.startedAt === startedAt) return;
     checkoutFlow.beginNewSession(startedAt);
     setSuccessCardDismissed(false);
     setFrozenCheckoutAtMs(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attendance.record?.status, attendance.record?.checkedInAt, employeeId]);
+
+  useEffect(() => {
+    if (attendance.record?.status !== "CHECKED_OUT" || !needsSessionRecovery(lastSessionStartRef.current)) return;
+    // Another tab can recover this session through the same attendance broadcast.
+    lastSessionStartRef.current = null;
+    checkoutFlow.finishSessionRecovery();
+    setFrozenCheckoutAtMs(null);
+    setSuccessCardDismissed(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attendance.record?.status]);
 
   useEffect(() => {
     if (checkoutFlow.submissionResult?.submittedAt) setFrozenCheckoutAtMs(new Date(checkoutFlow.submissionResult.submittedAt).getTime());
@@ -444,8 +456,10 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
   // walking to the door.
   /** IS A CHECKOUT PANEL OWNING THE SCREEN RIGHT NOW? One derivation, read by three things: the busy guard
    *  below, the HUD's own "a tool owns the screen" line, and the wrapper that makes it a real modal. */
-  const checkoutPanelOpen = CHECKOUT_PANEL_STATES.has(checkoutFlow.state) || (checkoutFlow.state === "CHECKED_OUT" && !successCardDismissed);
-  checkoutBusyRef.current = CHECKOUT_PANEL_STATES.has(checkoutFlow.state);
+  const recoverySessionStart = attendance.record?.status === "CHECKED_IN" && checkoutFlow.needsSessionRecovery
+    ? attendance.record.checkedInAt : null;
+  const checkoutPanelOpen = !!recoverySessionStart || CHECKOUT_PANEL_STATES.has(checkoutFlow.state) || (checkoutFlow.state === "CHECKED_OUT" && !successCardDismissed);
+  checkoutBusyRef.current = !!recoverySessionStart || CHECKOUT_PANEL_STATES.has(checkoutFlow.state);
 
   // PLAYER's "[E] …" line is drawn dead centre, which is exactly where a checkout panel's primary button
   // sits — the two were overlapping. Driven from the SAME `checkoutPanelOpen` the dock and the modal role
@@ -1057,10 +1071,10 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
    *  untouched. Escape and an outside press land here too. */
   const cancelExit = useCallback(() => setExitOpen(false), []);
 
-  // THE ONE PLACE V2 ENDS A WORK SESSION, and it is downstream of everything.
+  // Normal checkout completion. Explicit stale recovery uses its own endpoint.
   //
-  // V1's rule, restated with V2's consequences: an explicit checkout is the ONLY thing that ends the
-  // server-side session, and it is reached solely through Log Time → submit → exit. `useCheckoutFlow` gets
+  // This path ends the server-side session through Log Time → submit → exit.
+  // Stale recovery never enters this watcher. `useCheckoutFlow` gets
   // to CHECKED_OUT only after a successful Zoho submission, so the POST below cannot run before the time
   // log is safely recorded — which is also why it is keyed on the flow's transition rather than on a
   // button. A failed or abandoned submission never reaches this state, so attendance is left alone.
@@ -2179,7 +2193,31 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
           workedLabel={timeInMs === null ? undefined : checkoutFlow.workedLabel}
         />
       )}
-      {checkoutOffered && (
+      {recoverySessionStart && (
+        <StaleSessionRecovery
+          employeeId={employeeId}
+          checkedInAt={recoverySessionStart}
+          onRecovered={(record) => {
+            lastSessionStartRef.current = null;
+            checkoutFlow.finishSessionRecovery();
+            setFrozenCheckoutAtMs(null);
+            setSuccessCardDismissed(true);
+            endDnd();
+            worldRef.current?.setExitAuthorized(true);
+            attendance.apply(record);
+          }}
+          onRefresh={(record) => {
+            if (record.status === "CHECKED_OUT") {
+              lastSessionStartRef.current = null;
+              checkoutFlow.finishSessionRecovery();
+              setFrozenCheckoutAtMs(null);
+              setSuccessCardDismissed(true);
+            }
+            attendance.apply(record);
+          }}
+        />
+      )}
+      {!checkoutFlow.needsSessionRecovery && checkoutOffered && (
         // THE V2 PRESENTATION WRAPPER. Two jobs and no logic:
         //
         //   • it carries the V2 theme, as CUSTOM PROPERTIES the shared checkout stylesheet already reads

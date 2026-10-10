@@ -115,3 +115,11 @@ export function composeDuration(hours: number, minutes: number): number {
   const m = Number.isFinite(minutes) ? Math.min(59, Math.max(0, Math.floor(minutes))) : 0;
   return h * 60 + m;
 }
+
+
+// Recovery requires both a previous Manila date and a full 24 hours.
+export function needsSessionRecovery(timeInMs: number | null, nowMs = Date.now()): boolean {
+  if (timeInMs === null || !Number.isFinite(timeInMs) || !Number.isFinite(nowMs)) return false;
+  const manilaDay = (ms: number) => Math.floor((ms + 8 * 3600_000) / 86400_000);
+  return nowMs - timeInMs >= 86400_000 && manilaDay(timeInMs) < manilaDay(nowMs);
+}

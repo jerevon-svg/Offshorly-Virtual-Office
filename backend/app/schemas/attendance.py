@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_serializer
 
 from app.schemas.chat import to_iso_z
 
@@ -24,6 +24,9 @@ class AttendanceOut(BaseModel):
 
     @field_serializer("checked_in_at", "checked_out_at")
     def _ser_dt(self, value: datetime | None) -> str | None:
+        # Recovery compares the exact stored session identity, including sub-millisecond precision.
+        if value is not None and value.microsecond % 1000:
+            return value.replace(tzinfo=value.tzinfo or timezone.utc).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
         return to_iso_z(value) if value is not None else None
 
     @classmethod
@@ -34,3 +37,7 @@ class AttendanceOut(BaseModel):
             checked_in_at=data["checked_in_at"],
             checked_out_at=data["checked_out_at"],
         )
+
+
+class RecoverStaleIn(BaseModel):
+    expected_checked_in_at: AwareDatetime = Field(alias="expectedCheckedInAt")

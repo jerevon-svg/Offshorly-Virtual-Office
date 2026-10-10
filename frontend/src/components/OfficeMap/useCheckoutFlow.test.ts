@@ -80,42 +80,36 @@ describe("useCheckoutFlow — submission failure resilience", () => {
 
   it.each(["submit", "retrySubmit"] as const)("%s blocks 1441 minutes and preserves the draft", async (method) => {
     submitTimeLogs.mockResolvedValue({ success: false, error: "network down" });
-    const timeInMs = Date.now() - 1441 * 60_000;
+    const timeInMs = Date.now() - 60 * 60_000;
     const { result } = renderHook(() => useCheckoutFlow({
       employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs,
     }));
     await driveToReviewing(result);
     if (method === "retrySubmit") {
-      act(() => result.current.updateEntry(0, { timeSpentMinutes: 1440 }));
-      act(() => result.current.addEntry());
-      act(() => result.current.updateEntry(1, {
-        category: "Meetings", timeSpentMinutes: 1, workDescription: "rest",
-      }));
       await act(async () => { await result.current.submit(); });
       expect(result.current.state).toBe("SUBMISSION_FAILED");
       expect(submitTimeLogs).toHaveBeenCalledTimes(1);
       submitTimeLogs.mockClear();
-      act(() => result.current.removeEntry(1));
-      act(() => result.current.updateEntry(0, { timeSpentMinutes: 1441 }));
     }
+    act(() => result.current.updateEntry(0, { timeSpentMinutes: 1441 }));
     const draft = loadDraft(EMPLOYEE_ID, currentWorkDate());
     await act(async () => { await result.current[method](); });
     expect(submitTimeLogs).not.toHaveBeenCalled();
     expect(result.current.state).toBe("EDITING_TIME_LOG");
-    expect(result.current.error).toBe("Entry 1: max 24h per entry; add another entry for the rest");
+    expect(result.current.error).toContain("Entry 1: max 24h per entry; add another entry for the rest");
     expect(result.current.submissionResult).toBeNull();
     expect(loadDraft(EMPLOYEE_ID, currentWorkDate())).toEqual(draft);
     expect(loadResult(EMPLOYEE_ID, currentWorkDate())).toBeNull();
   });
 
-  it("submits a fully allocated 95h43m session split into capped entries", async () => {
+  it("submits a fully allocated 23h43m session split into capped entries", async () => {
     submitTimeLogs.mockResolvedValue({ success: true, entriesCreated: 4 });
-    const timeInMs = Date.now() - 5743 * 60_000;
+    const timeInMs = Date.now() - 1423 * 60_000;
     const { result } = renderHook(() => useCheckoutFlow({
       employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs,
     }));
     await driveToReviewing(result);
-    for (const [index, minutes] of [1440, 1440, 1440, 1423].entries()) {
+    for (const [index, minutes] of [360, 360, 360, 343].entries()) {
       if (index > 0) act(() => result.current.addEntry());
       act(() => result.current.updateEntry(index, {
         category: "Meetings", timeSpentMinutes: minutes, workDescription: "did work",
@@ -124,7 +118,7 @@ describe("useCheckoutFlow — submission failure resilience", () => {
     await act(async () => { await result.current.submit(); });
     expect(submitTimeLogs).toHaveBeenCalledTimes(1);
     expect(submitTimeLogs.mock.calls[0][0].entries.map((entry: { timeSpentMinutes: number }) => entry.timeSpentMinutes))
-      .toEqual([1440, 1440, 1440, 1423]);
+      .toEqual([360, 360, 360, 343]);
     expect(result.current.state).toBe("CHECKOUT_SUCCESS");
   });
 
@@ -379,9 +373,9 @@ describe("useCheckoutFlow — same-day new session", () => {
     expect(result.current.state).toBe("IDLE");
     expect(result.current.submissionResult).toBeNull();
     expect(result.current.entries).toEqual([]);
-    // History preserved; stale draft dropped so already-logged entries are not inherited.
+    // History and stored draft preserved; completed entries are not inherited in memory.
     expect(loadResult(EMPLOYEE_ID, workDate)?.submissionId).toBe("session-1");
-    expect(loadDraft(EMPLOYEE_ID, workDate)).toBeNull();
+    expect(loadDraft(EMPLOYEE_ID, workDate)?.entries[0].workDescription).toBe("old");
 
     // A refresh (fresh hook) now starts the new session in IDLE, not CHECKED_OUT.
     const { result: reloaded } = renderHook(() =>
@@ -389,4 +383,58 @@ describe("useCheckoutFlow — same-day new session", () => {
     );
     expect(reloaded.current.state).toBe("IDLE");
   });
+});
+
+
+describe("stale attendance guard", () => {
+  it("blocks review, retry and cached success without touching the draft", async () => {
+    const start = Date.now() - 15 * 86400_000;
+    const draft = { entries: Array.from({ length: 15 }, () => ({ projectId: null, taskId: null, category: "Meetings" as const, timeSpentMinutes: 1440, workDescription: "Preserve me" })), breakMinutes: 0, savedAt: "2026-10-01T00:00:00Z" };
+    saveDraft(EMPLOYEE_ID, currentWorkDate(), draft);
+    const { result, rerender } = renderHook(({ timeInMs }) => useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs }), { initialProps: { timeInMs: start as number | null } });
+    expect(result.current.needsSessionRecovery).toBe(true);
+    expect(result.current.allocation.isFullyAllocated).toBe(true);
+    expect(result.current.reminderVisible).toBe(false);
+    act(() => result.current.goToReview());
+    expect(result.current.state).toBe("IDLE");
+    saveResult(EMPLOYEE_ID, currentWorkDate(), { success: true, submissionId: "old", entriesCreated: 1 });
+    await act(async () => { await result.current.submit(); await result.current.retrySubmit(); });
+    expect(submitTimeLogs).not.toHaveBeenCalled();
+    expect(result.current.state).toBe("IDLE");
+    expect(loadDraft(EMPLOYEE_ID, currentWorkDate())).toEqual(draft);
+    act(() => result.current.finishSessionRecovery());
+    rerender({ timeInMs: null });
+    expect(result.current.submissionResult).toBeNull();
+    expect(loadDraft(EMPLOYEE_ID, currentWorkDate())).toEqual(draft);
+    const fresh = Date.now();
+    act(() => result.current.beginNewSession(new Date(fresh).toISOString()));
+    rerender({ timeInMs: fresh });
+    expect(result.current.needsSessionRecovery).toBe(false);
+    expect(result.current.workedMinutes).toBe(0);
+    expect(result.current.state).toBe("IDLE");
+    expect(result.current.submissionResult).toBeNull();
+    expect(loadDraft(EMPLOYEE_ID, currentWorkDate())).toEqual(draft);
+  });
+
+  it("rechecks wall time at submit even before the minute tick", async () => {
+    const clock = vi.spyOn(Date, "now");
+    const now = Date.now();
+    const { result } = renderHook(() => useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs: now - 86400_000 + 1000 }));
+    clock.mockReturnValue(now + 1001);
+    try {
+      await act(async () => { await result.current.submit(); });
+      expect(submitTimeLogs).not.toHaveBeenCalled();
+      expect(result.current.state).not.toBe("CHECKOUT_SUCCESS");
+    } finally {
+      clock.mockRestore();
+    }
+  });
+});
+
+
+it.each([null, NaN, Date.now() + 86400_000])("blocks checkout with an invalid/missing/future start %s", async (timeInMs) => {
+  const { result } = renderHook(() => useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs }));
+  await act(async () => result.current.submit());
+  expect(submitTimeLogs).not.toHaveBeenCalled();
+  expect(result.current.state).toBe("IDLE");
 });

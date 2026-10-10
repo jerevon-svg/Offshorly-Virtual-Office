@@ -20,7 +20,7 @@ import { getCurrentUserId } from "../../../auth/useAuthGate";
 import { readFileSync } from "node:fs";
 import { isTypingTarget } from "./keyGuard";
 import { manilaWorkDate } from "../../../components/OfficeMap/useCheckoutFlow";
-import { saveSessionStart } from "../../../data/checkoutStorage";
+import { saveDraft, loadDraft, loadResult, loadSessionStart, saveSessionStart } from "../../../data/checkoutStorage";
 import { __setTravelPartySnapshotForTests, resetTravelPartyStoreForTests } from "../../../services/party/travelPartyStore";
 import { closeCompanyHub, getCompanyHubSnapshot, openCompanyHub, resetCompanyHubForTests } from "../../../services/hub/companyHubStore";
 
@@ -172,8 +172,7 @@ vi.mock("../../../services/presence/roomPresenceClient", () => ({
 
 // V1's OWN attendance answer, as the host resolves it and hands it down.
 let attendance: OfficeAccess = "permitted";
-/** The SERVER's check-in time, which is the only clock the 8-hour reminder is measured from. Null (no
- *  session length at all) everywhere it always was; the reminder tests set it back nine hours. */
+/** A valid fresh server session by default; reminder and recovery tests set older starts. */
 let checkedInAt: string | null = null;
 const attendanceProp = (): V1Attendance => ({
   access: attendance,
@@ -366,9 +365,10 @@ type Rec = { email: string; status: string; checkedInAt: string | null; checkedO
 const CHECKED_IN_RECORD: Rec = { email: SELF, status: "CHECKED_IN", checkedInAt: "2026-09-20T01:00:00Z", checkedOutAt: null };
 const CHECKED_OUT_RECORD: Rec = { email: SELF, status: "CHECKED_OUT", checkedInAt: null, checkedOutAt: "2026-09-20T09:00:00Z" };
 const checkIn = vi.fn(async (_employeeId?: string): Promise<Rec> => CHECKED_IN_RECORD);
+const recoverStaleSession = vi.fn();
 const checkOut = vi.fn(async (_employeeId?: string): Promise<Rec> => CHECKED_OUT_RECORD);
 vi.mock("../../../services/attendance", () => ({
-  attendanceService: { getMine: vi.fn(), checkIn: (id: string) => checkIn(id), checkOut: (id: string) => checkOut(id) },
+  attendanceService: { recoverStaleSession: (...args: unknown[]) => recoverStaleSession(...args), getMine: vi.fn(), checkIn: (id: string) => checkIn(id), checkOut: (id: string) => checkOut(id) },
   attendanceMode: "mock",
 }));
 // THE COMPANY HUB'S FEED, at the client boundary. The STORE is the real one — what the welcome tests
@@ -577,7 +577,8 @@ beforeEach(() => {
   dndEmits.length = 0;
   sessions = [];
   attendance = "permitted";
-  checkedInAt = null;
+  checkedInAt = new Date().toISOString();
+  CHECKED_IN_RECORD.checkedInAt = checkedInAt;
   currentRoomId = "design-room";
   viewMode = "office";
   viewModeSubs = [];
@@ -3292,5 +3293,72 @@ describe("DND room lock — entrant wiring", () => {
     await waitFor(() => expect(handlers).not.toBeNull());
     intercept("central-hub");
     expect(screen.queryByText(/knock to ask for entry/)).toBeNull();
+  });
+});
+
+
+describe("stale session recovery", () => {
+  it("releases pointer lock and keeps the recovery dialog in the existing modal guards", async () => {
+    checkedInAt = new Date(Date.now() - 15 * 86400_000).toISOString();
+    const oldLock = Object.getOwnPropertyDescriptor(document, "pointerLockElement");
+    const oldExit = Object.getOwnPropertyDescriptor(document, "exitPointerLock");
+    const exit = vi.fn(() => {
+      Object.defineProperty(document, "pointerLockElement", { value: null, configurable: true });
+      document.dispatchEvent(new Event("pointerlockchange"));
+    });
+    Object.defineProperty(document, "pointerLockElement", { value: document.createElement("canvas"), configurable: true });
+    Object.defineProperty(document, "exitPointerLock", { value: exit, configurable: true });
+    const view = mount();
+    try {
+      const button = await screen.findByRole("button", { name: "End old session without time log" });
+      expect(exit).toHaveBeenCalledTimes(1);
+      expect(document.pointerLockElement).toBeNull();
+      expect(hudHidden()).toBe(true);
+      expect(setInteractionPromptHidden).toHaveBeenLastCalledWith(true);
+      expect(isTypingTarget({ target: button } as unknown as Event)).toBe(true);
+      act(() => handlers!.onExitAbandoned!());
+      expect(button).toBeInTheDocument();
+
+      checkedInAt = new Date().toISOString();
+      view.rerender(<Vo3dOverlay worldRef={worldRef} ready people={people} drawnEmails={[ALEX]} attendance={attendanceProp()} />);
+      await waitFor(() => expect(hudHidden()).toBe(false));
+      expect(setInteractionPromptHidden).toHaveBeenLastCalledWith(false);
+      expect(button).not.toBeInTheDocument();
+    } finally {
+      view.unmount();
+      if (oldLock) Object.defineProperty(document, "pointerLockElement", oldLock);
+      else Reflect.deleteProperty(document, "pointerLockElement");
+      if (oldExit) Object.defineProperty(document, "exitPointerLock", oldExit);
+      else Reflect.deleteProperty(document, "exitPointerLock");
+    }
+  });
+
+
+  it("keeps the draft on adoption and closes attendance without Zoho or checkout success", async () => {
+    checkedInAt = new Date(Date.now() - 15 * 86400_000).toISOString();
+    const employeeId = getCurrentUserId();
+    const day = manilaWorkDate();
+    const draft = { entries: [{ projectId: null, taskId: null, category: "Meetings" as const, timeSpentMinutes: 60, workDescription: "Keep this draft" }], breakMinutes: 0, savedAt: "2026-09-25T18:55:49Z" };
+    saveDraft(employeeId, day, draft);
+    const record = { email: SELF, status: "CHECKED_OUT" as const, checkedInAt, checkedOutAt: new Date().toISOString() };
+    recoverStaleSession.mockResolvedValue(record);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const view = mount();
+    try {
+      const button = await screen.findByRole("button", { name: "End old session without time log" });
+      expect(loadDraft(employeeId, day)).toEqual(draft);
+      expect(loadSessionStart(employeeId, day)).toBeNull();
+      fireEvent.click(button);
+      await waitFor(() => expect(attendanceApply).toHaveBeenCalledWith(record));
+      attendance = "denied";
+      view.rerender(<Vo3dOverlay worldRef={worldRef} ready people={people} drawnEmails={[ALEX]} attendance={attendanceProp()} />);
+      expect(screen.queryByRole("button", { name: "End old session without time log" })).toBeNull();
+      expect(checkOut).not.toHaveBeenCalled();
+      expect(submitTimeLogs).not.toHaveBeenCalled();
+      expect(loadResult(employeeId, day)).toBeNull();
+      expect(loadDraft(employeeId, day)).toEqual(draft);
+    } finally {
+      confirm.mockRestore();
+    }
   });
 });

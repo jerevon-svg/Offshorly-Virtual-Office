@@ -1,3 +1,4 @@
+import { manilaWorkDate } from "./useCheckoutFlow";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, fireEvent, within, act, waitFor } from "@testing-library/react";
 import { OfficeMap } from "./OfficeMap";
@@ -13,7 +14,7 @@ import type { ConversationUpgradedListener, TypingListener } from "../../service
 import { resetCurrentUserForTests, setCurrentUserFromMeResponse } from "../../auth/currentUserStore";
 import { BON_SPRITE_SET, characterSprite } from "../../data/bonWalkFrames";
 import type { PeerMovementState } from "../../services/presence/movementSync";
-import { clearAll as clearCheckoutStorage, saveResult as saveCheckoutResult } from "../../data/checkoutStorage";
+import { loadDraft, loadResult, saveDraft, clearAll as clearCheckoutStorage, saveResult as saveCheckoutResult } from "../../data/checkoutStorage";
 import { getCurrentUserId } from "../../auth/useAuthGate";
 import { mockAttendanceService, resetMockAttendanceForTests } from "../../services/attendance";
 import { FRAME_HEIGHT, FRAME_WIDTH, bonLayer, officeAssetLayers } from "../../data/office-layout";
@@ -1256,5 +1257,41 @@ describe("OfficeMap", () => {
         expect(positions[0].y).toBeCloseTo(bonLayer.y, 3);
       });
     });
+  });
+});
+
+
+describe("stale attendance recovery", () => {
+  it("preserves the draft and closes attendance without an ordinary checkout", async () => {
+    const employeeId = getCurrentUserId();
+    const workDate = manilaWorkDate();
+    clearCheckoutStorage(employeeId, workDate);
+    const start = new Date(Date.now() - 15 * 86400_000).toISOString();
+    localStorage.setItem(`attendance:${employeeId}`, JSON.stringify({
+      email: employeeId, status: "CHECKED_IN", checkedInAt: start, checkedOutAt: null,
+    }));
+    const draft = { entries: [{ projectId: null, taskId: null, category: "Meetings" as const, timeSpentMinutes: 60, workDescription: "Keep my draft" }], breakMinutes: 0, savedAt: start };
+    saveDraft(employeeId, workDate, draft);
+    const checkout = vi.spyOn(mockAttendanceService, "checkOut");
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const view = render(<OfficeMap />);
+    try {
+      const title = await view.findByText("Recover an old work session");
+      const dialog = title.closest('[role="dialog"]') as HTMLElement;
+      await act(async () => {
+        fireEvent.click(within(dialog).getByRole("button", { name: "End old session without time log" }));
+      });
+      expect((await mockAttendanceService.getMine(employeeId)).status).toBe("CHECKED_OUT");
+      expect(dialog).not.toBeInTheDocument();
+      expect(checkout).not.toHaveBeenCalled();
+      expect(loadResult(employeeId, workDate)).toBeNull();
+      expect(loadDraft(employeeId, workDate)).toEqual(draft);
+    } finally {
+      view.unmount();
+      checkout.mockRestore();
+      confirm.mockRestore();
+      clearCheckoutStorage(employeeId, workDate);
+      resetMockAttendanceForTests(employeeId);
+    }
   });
 });

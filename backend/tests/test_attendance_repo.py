@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
-
 from app.repositories import attendance as attendance_repo
 
 # Repository coverage for the server-authoritative attendance record — see
@@ -71,3 +70,42 @@ async def test_list_checked_out_emails_excludes_active_and_never_checked_in(db_s
     await attendance_repo.check_out(db_session, "gone@example.com", now=T0 + timedelta(hours=1))
     await attendance_repo.check_out(db_session, "never@example.com", now=T0 + timedelta(hours=2))
     assert await attendance_repo.list_checked_out_emails(db_session) == ["gone@example.com", "never@example.com"]
+
+
+@pytest.mark.parametrize("age_hours", [0, 8, 23.999, 24, 48, 360])
+async def test_recovery_requires_a_full_day_and_preserves_start(db_session, age_hours):
+    now = datetime(2026, 10, 10, 0, tzinfo=timezone.utc)
+    start = now - timedelta(hours=age_hours)
+    before = await attendance_repo.check_in(db_session, "a@example.com", now=start)
+    record = await attendance_repo.recover_stale_session(db_session, " A@example.com ", start, now=now)
+    if age_hours < 24:
+        assert record is None
+        assert (await attendance_repo.get_status(db_session, "a@example.com"))["status"] == "CHECKED_IN"
+    else:
+        assert record["status"] == "CHECKED_OUT"
+        assert record["checked_in_at"] == before["checked_in_at"]
+        again = await attendance_repo.recover_stale_session(db_session, "a@example.com", start, now=now + timedelta(hours=1))
+        assert again["checked_out_at"] == record["checked_out_at"]
+
+
+async def test_recovery_never_closes_replacement_or_other_employee(db_session):
+    now = T0 + timedelta(days=3)
+    await attendance_repo.check_in(db_session, "a@example.com", now=T0)
+    await attendance_repo.check_in(db_session, "other@example.com", now=T0)
+    await attendance_repo.check_out(db_session, "a@example.com", now=T0 + timedelta(days=1))
+    replacement = await attendance_repo.check_in(db_session, "a@example.com", now=T0 + timedelta(days=2))
+    assert await attendance_repo.recover_stale_session(db_session, "a@example.com", T0, now=now) is None
+    assert await attendance_repo.get_status(db_session, "a@example.com") == replacement
+    assert (await attendance_repo.get_status(db_session, "other@example.com"))["status"] == "CHECKED_IN"
+    assert await attendance_repo.recover_stale_session(db_session, "missing@example.com", T0, now=now) is None
+    assert (await attendance_repo.get_status(db_session, "missing@example.com"))["checked_out_at"] is None
+
+
+async def test_incident_and_naive_utc_recovery(db_session):
+    start = datetime(2026, 9, 25, 18, 55, 49, tzinfo=timezone.utc).replace(tzinfo=None)
+    await attendance_repo.check_in(db_session, "a@example.com", now=start)
+    record = await attendance_repo.recover_stale_session(
+        db_session, "a@example.com", start, now=datetime(2026, 10, 10, tzinfo=timezone.utc),
+    )
+    assert record["status"] == "CHECKED_OUT"
+    assert record["checked_in_at"].replace(tzinfo=None) == start

@@ -37,6 +37,11 @@ function renderForm(entries: TimeLogEntry[], onUpdateEntry = vi.fn(), workedMinu
 }
 
 describe("TimeLogForm time spent (HH:MM)", () => {
+  it.each([480, 15 * 1440])("keeps the Hours max at 24 for a %i-minute session", (minutes) => {
+    renderForm([entry()], vi.fn(), minutes);
+    expect(screen.getByLabelText("Hours")).toHaveAttribute("max", "24");
+  });
+
   it("combines 24h + 1m, shows the entry error, and clamps minutes above 59", () => {
     const onUpdate = vi.fn();
     function Form() {

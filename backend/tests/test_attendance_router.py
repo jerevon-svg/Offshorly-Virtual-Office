@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import httpx
 import pytest
-
 from app.database import Base, engine
 from app.main import fastapi_app
 from app.models.attendance import EmployeeAttendance
@@ -82,3 +81,58 @@ async def test_second_browser_sees_active_session():
     async with _client() as other_browser:
         me = await other_browser.get("/attendance/me", headers=_as("bon@example.com"))
     assert me.json()["status"] == "CHECKED_IN"
+
+
+
+async def test_recover_stale_commits_before_lineup_without_quest(monkeypatch):
+    from datetime import datetime, timezone
+    from unittest.mock import AsyncMock
+
+    from app.repositories import attendance as repo
+    from app.routers import attendance as routes
+
+    start = datetime(2026, 9, 25, 18, 55, 49, 123456, tzinfo=timezone.utc)
+    monkeypatch.setattr(repo, "_now", lambda: start)
+    async with _client() as client:
+        checked_in = (await client.post("/attendance/check-in", headers=_as("bon@example.com"))).json()
+        monkeypatch.setattr(repo, "_now", lambda: datetime(2026, 10, 10, tzinfo=timezone.utc))
+        quest = AsyncMock()
+        monkeypatch.setattr(routes, "record_quest_event", quest)
+        async def broadcast():
+            me = await client.get("/attendance/me", headers=_as("bon@example.com"))
+            assert me.json()["status"] == "CHECKED_OUT"
+        monkeypatch.setattr(routes, "_broadcast_lineup", broadcast)
+        response = await client.post("/attendance/recover-stale", headers=_as("bon@example.com"),
+                                     json={"expectedCheckedInAt": checked_in["checkedInAt"]})
+    assert response.status_code == 200
+    assert response.json()["checkedInAt"] == "2026-09-25T18:55:49.123456Z"
+    assert offline_lineup.snapshot() == [{"email": "bon@example.com", "slot": 0}]
+    quest.assert_not_awaited()
+
+
+async def test_recover_requires_identity_and_rejects_current_or_mismatched_session():
+    async with _client() as client:
+        body = {"expectedCheckedInAt": "2026-09-25T18:55:49Z"}
+        assert (await client.post("/attendance/recover-stale", json=body)).status_code == 401
+        current = (await client.post("/attendance/check-in", headers=_as("bon@example.com"))).json()
+        for expected in (body["expectedCheckedInAt"], current["checkedInAt"]):
+            response = await client.post("/attendance/recover-stale", headers=_as("bon@example.com"),
+                                         json={"expectedCheckedInAt": expected})
+            assert response.status_code == 409
+        assert (await client.get("/attendance/me", headers=_as("bon@example.com"))).json() == current
+    assert offline_lineup.snapshot() == []
+
+
+async def test_normal_checkout_still_records_the_checkout_quest(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app.routers import attendance as routes
+
+    async with _client() as client:
+        await client.post("/attendance/check-in", headers=_as("bon@example.com"))
+        quest = AsyncMock()
+        monkeypatch.setattr(routes, "record_quest_event", quest)
+        response = await client.post("/attendance/check-out", headers=_as("bon@example.com"))
+    assert response.status_code == 200
+    quest.assert_awaited_once()
+    assert quest.call_args.kwargs["event_type"] == routes.EVENT_CHECK_OUT
