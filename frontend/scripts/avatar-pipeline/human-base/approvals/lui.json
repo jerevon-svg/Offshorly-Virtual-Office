@@ -1,0 +1,18 @@
+{
+ "who": "lui",
+ "tag": "base-v5",
+ "artifactHash": "ed36bb81c472092314ec64b598c04fad7547b84f9bae82159490f9071b9e960f",
+ "validatedMount": {
+  "scale": 0.885,
+  "pitchDeg": 0
+ },
+ "bindingHash": "44f492282182a0cd76724878063d8ac46a41a7fc126706b65352b264cb1e92f4",
+ "pipelineVersion": "621e13c83da7553f",
+ "classes": [
+  "FC-EAR-BOUNDARY",
+  "FC-HAIR-SPIKE",
+  "FC-NAPE-ROUGH"
+ ],
+ "reviewer": "Bon",
+ "timestamp": "2026-10-19T06:47:02.546Z"
+}

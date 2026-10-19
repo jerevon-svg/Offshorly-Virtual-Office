@@ -71,8 +71,9 @@ describe("HumanBase production body selection (the approved five + batch 2)", ()
   it("everyone else keeps the legacy body (config, not code)", () => {
     // Alex: the Meshy identity was rejected — his own legacy head is being adapted; Jan is deferred
     // FAIL-CLOSED: batch 2 (pre-audit, known-broken artifacts) stays disabled until a V2 candidate passes the final gate
-    for (const id of ["alex", "jan", "jona", "kael", "nicole", "lui", "unknown"]) expect(humanBodyFor(id, "")).toBeNull();
-    expect([...HUMANBASE_ENABLED]).toEqual(["bon", "micah", "angelo", "clang", "france"]);
+    // …unless a V2 candidate passed the whole gate and was promoted (humanMounts.generated.json): the five ∪ validated heads, nothing else
+    for (const id of ["alex", "jan", "jona", "kael", "nicole", "lui", "unknown"]) if (!VALIDATED_HEADS[id]) expect(humanBodyFor(id, "")).toBeNull();
+    expect([...HUMANBASE_ENABLED]).toEqual(["bon", "micah", "angelo", "clang", "france", ...Object.keys(VALIDATED_HEADS)]);
     for (const id of ["jona", "kael", "nicole", "lui"]) expect(appearanceFor(id)).not.toBeNull();
   });
   it("`?humanbase=0` rolls the session back to the legacy body", () => {
