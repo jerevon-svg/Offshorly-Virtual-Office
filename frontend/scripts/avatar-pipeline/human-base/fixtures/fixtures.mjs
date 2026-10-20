@@ -27,3 +27,10 @@ export const REPAIRED = [
   { name: "jona-repaired", appearanceId: "jona", fixes: ["FC-HAIR-AS-SKIN", "FC-JAW-RIM", "FC-BALD-POCKET", "FC-SKIN-FLAP"] },
   { name: "lui-repaired", appearanceId: "lui", automatedParity: true, fixes: ["FC-JAW-RIM", "FC-FACE-ASPECT-GROWTH", "FC-CLOSURE-EXPOSED"] },   // topology-B jaw closure clip + bounded long-face retention + own-underside keep
 ].map((f) => ({ ...f, identityFile: `${F}/${f.name}.glb`, recordFile: `${F}/${f.name}.chibify.json` }));
+/** KNOWN-GOOD (2026-10-12): development builds with the welded underside (guarded map weld, rigid / short hair) — the nape closure in
+ *  motion an accepted avatar shows (0.37–0.55 % overall at the automatic mount). Frozen copies; each must PASS FC-CLOSURE-EXPOSED-IN-MOTION. */
+const G = "scripts/avatar-pipeline/human-base/fixtures/good";
+export const GOOD = [
+  { name: "lui-welded-good", appearanceId: "lui", passes: ["FC-CLOSURE-EXPOSED-IN-MOTION"] },
+  { name: "angelo-welded-good", appearanceId: "angelo", passes: ["FC-CLOSURE-EXPOSED-IN-MOTION"] },
+].map((f) => ({ ...f, identityFile: `${G}/${f.name}.glb`, recordFile: `${G}/${f.name}.chibify.json` }));

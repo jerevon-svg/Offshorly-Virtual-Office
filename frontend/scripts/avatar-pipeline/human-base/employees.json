@@ -122,6 +122,19 @@
    "hair": "natural",
    "headTris": 60000,
    "accessories": []
+  },
+  "luie2e": {
+   "ruleset": "v3",
+   "hair": "natural",
+   "headTris": 60000,
+   "accessories": []
+  },
+  "bonphoto": {
+   "ruleset": "v3",
+   "hair": "natural",
+   "body": "standard",
+   "headTris": 60000,
+   "accessories": []
   }
  },
  "_repairs": "V2 (2026-10-06): repairs are decided by failure-registry.mjs detectors on each build's evidence — never by this file. `historyRepairs` records what the frozen approved five were built with (history only; build-employees.mjs never reads it).",

@@ -1,5 +1,7 @@
 // prep-reference.mjs — FREE, LOCAL preparation of an approved flat-colour employee illustration for Meshy head
 // generation. Reads the source READ-ONLY, writes copies. Steps (automatic; measured from the image itself):
+//   0. ART CLASS (art-class.mjs): flat-colour sprite or SOFT-shaded render. Soft art skips steps 1, 1b and 2 (they read flat
+//      colours) and composes only the head's own region.
 //   1. GLASSES (if present): frame = the light, near-opaque frame colour (auto: densest very-light low-chroma colour in
 //      the face band, or --frame=r,g,b); LENS interiors = regions the frame encloses (flood fill from the border);
 //      lens tint is a translucent white overlay — its alpha is measured (lens-skin vs open-skin mode) and UN-BLENDED;
@@ -10,6 +12,7 @@
 //   node prep-reference.mjs <src.png> <outDir> <name> [--frame=r,g,b] [--frameTol=d] [--frameBox=x0,y0,x1,y1] [--clothTop=y] [--accessories=off] [--relight=skin]
 import fs from "node:fs";
 import sharp from "sharp";
+import { artClass, keepLargestRegion } from "./art-class.mjs";
 
 const [SRC, OUT, NAME] = process.argv.slice(2);
 const arg = (k) => process.argv.find((a) => a.startsWith(`--${k}=`))?.split("=")[1];
@@ -25,6 +28,9 @@ const log = {};
 const isWarm = (c) => c[0] > c[2] + 25 && lum(c) > 120;
 const skinLit = mode((i) => { const x = i % W, y = (i / W) | 0; return x > W / 3 && x < (2 * W) / 3 && y > H * 0.15 && y < H * 0.75 && isWarm(c3(i)); });
 log.skinLit = skinLit;
+// SOFT-SHADED art (a soft-3D render, not flat colour): the glasses, accessory and flat-light steps read flat colours and do not
+// apply — on such art they took dyed hair for a frame and an accessory, and its shading is the depth cue Meshy needs
+const ART = artClass(D0); log.art = ART.soft ? "soft-shaded" : "flat"; log.flatness = ART.flatness;
 
 // SHORTEST-BRIDGE fill: each unknown pixel looks along 8 directions for the first known pixel; of the opposite pair
 // with the shortest total crossing it takes the NEARER end — thin bands are bridged straight across, and region
@@ -57,8 +63,8 @@ if (arg("frameTol")) { const tol = +arg("frameTol"); let x0 = W, x1 = -1, y0 = H
   log.frameTol = { tol, box: [x0, y0, x1, y1] }; }
 log.frame = { colour: frameC, pixels: fN };
 const dil = (M, r) => { let m = M; for (let k = 0; k < r; k++) { const nx = m.slice(); for (let i = 0; i < N; i++) if (m[i]) { const x = i % W; if (x > 0) nx[i - 1] = 1; if (x < W - 1) nx[i + 1] = 1; if (i >= W) nx[i - W] = 1; if (i < N - W) nx[i + W] = 1; } m = nx; } return m; };
-const glasses = fN > N * 0.003;
-log.glasses = glasses;
+const glasses = !ART.soft && fN > N * 0.003;
+log.glasses = ART.soft ? "not assessed (soft-shaded art)" : glasses;
 if (glasses) {
   const Fd = dil(F, 2);
   // lens interiors: not reachable from the border without crossing the (dilated) frame
@@ -120,7 +126,8 @@ if (glasses) {
 // ---------------- 1b. HEAD ACCESSORIES (flowers, clips, bands): strongly saturated, non-skin regions that sit ON the
 // hair (most of their outline touches dark hair) — removed for generation, kept for modular reconstruction ----------
 // --accessories=off: for saturated/dyed hair that the detector would otherwise take for an accessory
-if (arg("accessories") !== "off") { const sat = (c) => { const mx = Math.max(...c), mn = Math.min(...c); return mx ? (mx - mn) / mx : 0; };
+if (ART.soft) log.accessories = "not assessed (soft-shaded art)";
+else if (arg("accessories") !== "off") { const sat = (c) => { const mx = Math.max(...c), mn = Math.min(...c); return mx ? (mx - mn) / mx : 0; };
   const cand = new Uint8Array(N); for (let i = 0; i < N; i++) { const c = c3(i); if (D[i * 4 + 3] > 200 && sat(c) > 0.45 && lum(c) > 35 && dist(c, skinLit) > 60) cand[i] = 1; }
   const seen = new Uint8Array(N), acc = new Uint8Array(N), found = [];
   for (let s0 = 0; s0 < N; s0++) { if (!cand[s0] || seen[s0]) continue; const m = [], q = [s0]; seen[s0] = 1; let edge = 0, edgeHair = 0, x0 = W, x1 = 0, y0 = H, y1 = 0;
@@ -136,7 +143,8 @@ const noGlasses = Buffer.from(D);
 // ---------------- 2. FLAT LIGHT ----------------
 const skinSh = mode((i) => { const c = c3(i); if (!isWarm(c) && !(c[0] > c[2] + 25 && lum(c) > 90)) return false; const r = [0, 1, 2].map((k) => c[k] / skinLit[k]); return r[0] < 0.88 && r[0] > 0.55 && Math.abs(r[0] - r[1]) < 0.06 && Math.abs(r[1] - r[2]) < 0.06; });
 log.skinShadow = skinSh;
-if (skinSh) {
+if (skinSh && ART.soft) log.light = "kept (soft-shaded art)";
+else if (skinSh) {
   const K = [0, 1, 2].map((k) => skinLit[k] / skinSh[k]);
   const isSh0 = (i) => D[i * 4 + 3] > 200 && dist(c3(i), skinSh) < 12;
   // the face shadow = the large connected shadow-tone regions (stray specks elsewhere do not count)
@@ -163,12 +171,32 @@ if (!arg("clothTop")) { // scanning down the centre: face/neck skin, then the fi
   const skinish = (c) => c[0] > c[2] + 18 && c[0] > c[1] + 18 && lum(c) > 95; let seen = false, run = 0;
   for (let y = Math.floor(H * 0.45); y < H; y++) { let sk = 0, tot = 0; for (let x = Math.floor(W * 0.47); x < W * 0.53; x++) { const i = y * W + x; if (D[i * 4 + 3] < 200) continue; tot++; if (skinish(c3(i))) sk++; }
     const isSk = tot && sk / tot > 0.5; if (isSk) { seen = true; run = 0; } else if (seen) { if (++run >= Math.round(H * 0.05)) { clothTop = y - run + 1; break; } } } }   // a mouth / teeth run is short; clothing runs on
-const CUT = clothTop - 6; log.crop = { clothTop, cut: CUT };
+let CUT = clothTop - 6; log.crop = { clothTop, cut: CUT };
+// soft-shaded FULL FIGURES (a T-pose): a head-only reference never includes shoulders, arms or chest. The silhouette narrows
+// from the head to the neck and then flares wider than the head where the shoulders/arms begin; the crop ends at the neck (the
+// narrowest row before that flare). A front pose with the arms down never flares (a chibi torso is narrower than its head), so
+// its crop is the clothing one.
+if (ART.soft) { let wMax = 0, necked = false, neckW = Infinity, neckY = -1;
+  for (let y = 0; y < CUT; y++) { let l = -1, r = -1; for (let x = 0; x < W; x++) if (D[(y * W + x) * 4 + 3] > 10) { if (l < 0) l = x; r = x; } const w = l < 0 ? 0 : r - l + 1;
+    if (!necked) { wMax = Math.max(wMax, w); if (wMax > 0 && w < 0.8 * wMax) necked = true; }
+    if (!necked) continue;
+    if (w > 0 && w < neckW) { neckW = w; neckY = y; }   // the narrowest row so far: the neck
+    // (2026-10-13) the crop ENDS AT THE NECK — the narrowest row before the flare — not at the flare: the rows between them are
+    // chest / shoulder skin and collar, which Meshy read as a torso and completed into a whole body (Jona, head v2)
+    if (w > 1.15 * wMax) { CUT = Math.max(0, neckY); log.crop = { clothTop, neckRow: neckY, neckWidth: neckW, shoulderLine: y, headWidth: wMax, cut: CUT }; break; } } }
 { const skinish = (c) => c[0] > c[2] + 18 && c[0] > c[1] + 18 && lum(c) > 95;
   // the chin: scanning down from mid-face, the first row whose skin extent narrows below 65% of the widest face row
   // (face → neck), whatever the jaw outline, mouth or hair crossing the face look like
   let chinY = -1; { let widest = 0; for (let y = Math.floor(H * 0.35); y < CUT; y++) { let l = W, r = -1; for (let x = 0; x < W; x++) if (D[(y * W + x) * 4 + 3] > 200 && skinish(c3(y * W + x))) { if (x < l) l = x; r = x; }
       const ext = r - l; if (ext > widest) widest = ext; else if (widest > W * 0.2 && ext > 0 && ext < widest * 0.65) { chinY = y; break; } } }
+  // OPEN NECKLINE (2026-10-19): a V-neck / open collar keeps skin in the centre column down to the frame edge, so the clothing scan
+  // above never fires and the reference keeps chest + collar (Meshy then builds a bust on a hair slab — Nicole head v1). Below the
+  // chin the skin narrows to the neck and widens again only where the chest opens: the crop ends where the skin extent first exceeds
+  // 1.35 × the narrowest neck row, after at least 2 % of the image of neck. A closed collar is cut by the clothing scan first.
+  if (chinY > 0) { let neckW = Infinity, rows = 0;
+    for (let y = chinY; y < CUT; y++) { let l = W, r = -1; for (let x = 0; x < W; x++) if (D[(y * W + x) * 4 + 3] > 200 && skinish(c3(y * W + x))) { if (x < l) l = x; r = x; }
+      const ext = r - l; if (ext <= 0) continue; rows++; neckW = Math.min(neckW, ext);
+      if (rows > H * 0.02 && ext > 1.35 * neckW) { log.crop = { ...log.crop, neckline: y, neckWidth: neckW, cut: y }; CUT = y; break; } } }
   if (chinY > 0) { const Mk = new Uint8Array(N); for (let y = chinY; y < CUT; y++) for (let x = 0; x < W; x++) { const i = y * W + x; if (D[i * 4 + 3] > 200 && !skinish(c3(i))) Mk[i] = 1; }
     // erode (outlines are not masses)
     let E = Mk; for (let r = 0; r < 3; r++) { const nx = E.slice(); for (let i = 0; i < N; i++) if (E[i]) { const x = i % W; for (const j of [x > 0 ? i - 1 : -1, x < W - 1 ? i + 1 : -1, i - W, i + W]) if (j < 0 || j >= N || !E[j]) { nx[i] = 0; break; } } E = nx; }
@@ -186,6 +214,8 @@ const CUT = clothTop - 6; log.crop = { clothTop, cut: CUT };
     const nW = (() => { const y = CUT - 2, c0 = Math.floor(W / 2); let l = c0, r = c0; while (l > 0 && skinish(c3(y * W + l - 1))) l--; while (r < W - 1 && skinish(c3(y * W + r + 1))) r++; return [l - W * 0.02, r + W * 0.02]; })();
     for (let y = chinY + 1; y < CUT; y++) for (let x = 0; x < W; x++) { const i = y * W + x; if (D[i * 4 + 3] > 0 && !KM[i] && !skinish(c3(i)) && (x < nW[0] || x > nW[1])) D[i * 4 + 3] = 0; }   // incl. anti-aliased stroke pixels
     log.clothingRemoved = { chinY, px: removed }; } }
+// soft-shaded full figures: only the head's own region is composed (a T-pose's arms are islands once the shirt is gone)
+if (ART.soft) log.islandsCleared = keepLargestRegion(D, W, CUT);
 let x0 = W, x1 = 0, y0 = H; for (let y = 0; y < CUT; y++) for (let x = 0; x < W; x++) if (D[(y * W + x) * 4 + 3] > 10) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); }
 const compose = async (buf, file) => { const cw = x1 - x0 + 1, ch = CUT - y0; const crop = await sharp(buf, { raw: info }).extract({ left: x0, top: y0, width: cw, height: ch }).png().toBuffer();
   const s = (1024 * 0.88) / Math.max(cw, ch), w = Math.round(cw * s), h = Math.round(ch * s); const r = await sharp(crop).resize(w, h, { kernel: "lanczos3" }).png().toBuffer();

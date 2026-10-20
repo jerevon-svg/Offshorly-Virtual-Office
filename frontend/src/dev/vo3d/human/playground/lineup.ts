@@ -9,6 +9,8 @@
 //   ?ids=a,b,c      an explicit row instead of a set (e.g. a candidate between approved references)
 //   ?candidate=<id>:<path>  that employee wears a CANDIDATE identity file (served from frontend/, e.g. the fail-closed
 //                   build's scripts/avatar-pipeline/output/human-base/candidates/<id>/pass2/<id>-v1.glb) — for visual sign-off
+//                   An id may carry a version label — `jona@base`, `jona@corr-v1` — so several versions of ONE employee stand in one
+//                   row, each with its own candidate file (the label never reaches the appearance: it is the employee's own)
 //   ?mount=0        the heads as authored (no group proportion normalization) — the A/B "before"
 //   ?view=<name>    front (default) | front34 | side | rear | vo | orthoFront | orthoSide | faces
 //   ?mode=<clip>    idle (default) | walk | run | sit
@@ -17,7 +19,7 @@
 //   ?capture=1      hides the panel
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { appearanceFor, createHumanBody, HUMANBASE_CATALOGUE, humanBodyFor, type HumanBody } from "../../avatar/humanBody";
+import { candidateAppearance, createHumanBody, HUMANBASE_CATALOGUE, humanBodyFor, identityHeadAsset, type HumanBody } from "../../avatar/humanBody";
 import { CLIP_IDLE, CLIP_RUN, CLIP_SIT, CLIP_WALK } from "../../adapters/v1Avatar";
 import { HUMAN_STANDING_HEIGHT as H } from "../humanBaseContract";
 
@@ -99,14 +101,17 @@ function turn(deg: number): void { turnDeg = deg; for (const { body } of bodies)
 // ---- the set, through the production resolver ----
 const bodies: { id: string; body: HumanBody }[] = [];
 for (const [i, id] of ORDER.entries()) {
+  const castId = id.split("@")[0];   // `<employee>@<version label>`: the label only tells the row's slots apart
   // a candidate is reviewed in its production appearance even while not enabled, wearing EXACTLY the mount its final gate
   // validated (the build's report.json next to the candidate: validatedMount + bindingHash) — the runtime's own appearanceFor path
-  const rep = CANDIDATE.has(id) ? await fetch(`${import.meta.env.BASE_URL}${CANDIDATE.get(id)!.replace(/\/(corr-)?pass\d\/[^/]+$/, (_m: string, c?: string) => (c ? "/report.corrected.json" : "/report.json"))}`).then((r) => (r.ok ? r.json() : null)).catch(() => null) : null;
+  // (the report of a candidate's VERSION — scripts/avatar-pipeline/human-base/candidate-versions.mjs reportFor: legacy pass / corr-pass,
+  // or <tag>-passN → report.<tag>.json)
+  const rep = CANDIDATE.has(id) ? await fetch(`${import.meta.env.BASE_URL}${CANDIDATE.get(id)!.replace(/\/(?:([^/]+)-)?pass\d\/[^/]+$/, (_m: string, t?: string) => (t === undefined ? "/report.json" : t === "corr" ? "/report.corrected.json" : `/report.${t}.json`))}`).then((r) => (r.ok ? r.json() : null)).catch(() => null) : null;
   if (CANDIDATE.has(id) && !rep?.validatedMount) throw new Error(`${id}: candidate has no gate-validated mount (report.json) — rebuild it`);
-  const cfg = CANDIDATE.has(id) ? appearanceFor(id, { [id]: { artifactHash: rep.artifactHash, pipelineVersion: rep.pipelineVersion, mount: rep.validatedMount, bindingHash: rep.bindingHash, validatedAt: rep.builtAt } }) : humanBodyFor(id, "?humanbase=1");
+  const cfg = CANDIDATE.has(id) ? candidateAppearance(castId, { [castId]: { artifactHash: rep.artifactHash, pipelineVersion: rep.pipelineVersion, mount: rep.validatedMount, bindingHash: rep.bindingHash, validatedAt: rep.builtAt, bodyPreset: rep.bodyPreset === "feminine" ? "feminine" : "standard" } }, rep.bodyPreset === "feminine" ? "feminine" : "standard") : humanBodyFor(castId, "?humanbase=1");
   if (!cfg) throw new Error(`${id} is not a HumanBase employee`);
   if (!MOUNTS) delete cfg.identity.mount;
-  const cand = CANDIDATE.get(id), head = HUMANBASE_CATALOGUE.get(cfg.identity.headAssetId);
+  const cand = CANDIDATE.get(id), head = HUMANBASE_CATALOGUE.get(cfg.identity.headAssetId) ?? (cand ? identityHeadAsset(castId, "") : undefined);
   const body = await createHumanBody(cfg, cand && head ? new Map(HUMANBASE_CATALOGUE).set(head.id, { ...head, url: `${import.meta.env.BASE_URL}${cand}` }) : undefined);
   body.human.root.position.set((i - (ORDER.length - 1) / 2) * SPACING, 0, 0);
   scene.add(body.human.root);

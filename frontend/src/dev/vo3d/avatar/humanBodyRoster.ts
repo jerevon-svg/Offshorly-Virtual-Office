@@ -3,11 +3,12 @@
 // adapters/v1Coworkers) read this file directly so "does this person have a body?" never drags the 3D runtime in.
 
 import GENERATED_MOUNTS from "./humanMounts.generated.json";
+import { runtimeAvatar } from "./characterRuntime";
 
 /** One PIPELINE-VALIDATED identity (written ONLY by build-employees.mjs promoteCandidate after a passing final gate): the
  *  exact artifact hash and the exact head mount the mounted gate measured, bound together by bindingHash. The runtime
  *  renders that artifact with THAT mount — never a hand-entered constant. */
-export type ValidatedHead = { artifactHash: string; pipelineVersion: string; mount: { scale: number; pitchDeg: number }; bindingHash: string; validatedAt: string };
+export type ValidatedHead = { artifactHash: string; pipelineVersion: string; mount: { scale: number; pitchDeg: number }; bindingHash: string; validatedAt: string; bodyPreset?: "standard" | "feminine" };   // bodyPreset: from the recipe, for a promoted NEW employee
 export const VALIDATED_HEADS: Readonly<Record<string, ValidatedHead>> = GENERATED_MOUNTS as Record<string, ValidatedHead>;
 
 /** The approved HumanBase employees: the frozen first five (hand-approved V1.4) + every gate-promoted identity. */
@@ -24,5 +25,6 @@ export function humanBaseOn(search: string = typeof location !== "undefined" ? l
  *  (adapters/v1Avatar hasCastLods): an employee with NO legacy GLB at all (Lui) has a body only through this, and
  *  `?humanbase=0` returns them to the honest missing-avatar state — never to somebody else's character. */
 export function hasHumanBody(castId: string | null | undefined, search?: string): boolean {
-  return !!castId && HUMANBASE_ENABLED.has(castId) && humanBaseOn(search);
+  // …or an approved, unpromoted head Character Studio delivered at runtime (dev-only; empty in production — avatar/characterRuntime)
+  return !!castId && (HUMANBASE_ENABLED.has(castId) || runtimeAvatar(castId) !== null) && humanBaseOn(search);
 }

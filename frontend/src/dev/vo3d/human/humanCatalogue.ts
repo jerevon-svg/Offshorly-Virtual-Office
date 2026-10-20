@@ -171,3 +171,6 @@ export const JONA_AVATAR = batchAvatar("jona", "feminine");
 export const KAEL_AVATAR = batchAvatar("kael", "standard");
 export const NICOLE_AVATAR = batchAvatar("nicole", "feminine");
 export const LUI_AVATAR = batchAvatar("lui", "standard");
+/** a NEW employee (no hand-written appearance yet): the same generic recipe — body preset from the person's pipeline recipe, the
+ *  Offshorly uniform, no extras — wearing their own HumanBase identity head (asset id humanbase:<id>) */
+export const newEmployeeAvatar = (id: string, bodyPreset: "standard" | "feminine" = "standard"): EmployeeAvatar => ({ ...batchAvatar(id, bodyPreset), identity: { headAssetId: `humanbase:${id}` } });

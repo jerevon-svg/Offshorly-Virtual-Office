@@ -7,12 +7,12 @@ import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { identityMetrics } from "./check-identity.mjs";
 import { collarHair, neckHair, skinFlaps, hairAsSkin, hairSlivers, earResidue, earHairFragments, faceAspectGrowth, readIdentity } from "./failure-detectors.mjs";
-import { evaluate } from "./failure-registry.mjs";
+import { evaluate, reportOnly } from "./failure-registry.mjs";
 
 const canon = JSON.parse(fs.readFileSync("scripts/avatar-pipeline/human-base/canonical-profile.json", "utf8"));
 const recipe = JSON.parse(fs.readFileSync("scripts/avatar-pipeline/human-base/employees.json", "utf8"));
 /** the pipeline version = a hash of every source file that shapes an identity (code drift is visible in every manifest) */
-export const PIPELINE_FILES = ["build-employees.mjs", "chibify.mjs", "hair-layers.mjs", "head-closure.mjs", "eye-socket.mjs", "skin-clean.mjs", "lib.mjs", "optimize-identity.mjs", "build-glasses.mjs", "build-hair-flower.mjs", "build-hair-tail.mjs", "failure-registry.mjs", "failure-detectors.mjs", "gate.mjs", "check-identity.mjs", "mounted-gate.run.ts", "canonical-profile.json"].map((f) => `scripts/avatar-pipeline/human-base/${f}`);
+export const PIPELINE_FILES = ["build-employees.mjs", "chibify.mjs", "eye-catchlight.mjs", "hair-layers.mjs", "head-closure.mjs", "eye-socket.mjs", "skin-clean.mjs", "lib.mjs", "optimize-identity.mjs", "scalp-backing.mjs", "closure-attachment.mjs", "visibility.mjs", "hair-debris.mjs", "boundary-fairing.mjs", "underside-sheet.mjs", "underside-weld.mjs", "underside-texture.mjs", "fringe-exact.mjs", "build-glasses.mjs", "build-hair-flower.mjs", "build-hair-tail.mjs", "failure-registry.mjs", "failure-detectors.mjs", "gate.mjs", "check-identity.mjs", "mounted-gate.run.ts", "canonical-profile.json"].map((f) => `scripts/avatar-pipeline/human-base/${f}`);
 export const pipelineVersion = () => { const h = crypto.createHash("sha256"); for (const f of PIPELINE_FILES) h.update(f).update(fs.readFileSync(f)); return h.digest("hex").slice(0, 16); };
 export const sha256 = (f) => crypto.createHash("sha256").update(fs.readFileSync(f)).digest("hex");
 /** the artifact and the mount it was VALIDATED with are one thing: change either and this hash — and every approval and
@@ -46,13 +46,14 @@ export async function gate({ appearanceId, identityFile, recordFile, approvalFil
   const ev = await gatherEvidence({ appearanceId, identityFile, recordFile, mounted, mountSpec }), artifactHash = sha256(identityFile);
   const approval = approvalFile && fs.existsSync(approvalFile) ? JSON.parse(fs.readFileSync(approvalFile, "utf8")) : null;
   const version = pipelineVersion(), validatedMount = canonicalMount(ev.mounted?.mount), bindingHash = bindingHashOf(artifactHash, validatedMount);
-  return { appearanceId, identityFile, artifactHash, pipelineVersion: version, validatedMount, bindingHash, ...evaluate(ev, { approval, artifactHash, pipelineVersion: version, bindingHash }), evidence: ev };
+  return { appearanceId, identityFile, artifactHash, pipelineVersion: version, validatedMount, bindingHash, ...evaluate(ev, { approval, artifactHash, pipelineVersion: version, bindingHash }), reportOnly: reportOnly(ev), evidence: ev };   // reportOnly never touches the verdict
 }
 
 if (process.argv[1]?.endsWith("gate.mjs")) {
   const [id, file, rec, appr] = process.argv.slice(2);
   const r = await gate({ appearanceId: id, identityFile: file, recordFile: rec, approvalFile: appr });
   for (const c of r.classes) console.log(`${c.status.padEnd(16)} ${c.id.padEnd(24)} ${JSON.stringify(c.value)?.slice(0, 120)}`);
+  for (const c of r.reportOnly) console.log(`REPORT ${c.status.padEnd(9)} ${c.id.padEnd(24)} ${JSON.stringify(c.value)?.slice(0, 120)}`);
   console.log(`GATE ${r.pass ? "PASS" : "FAIL"} · failed: ${r.failed.join(", ") || "—"} · sign-off required: ${r.signoffRequired.join(", ") || "—"}`);
   process.exitCode = r.pass ? 0 : 1;
 }

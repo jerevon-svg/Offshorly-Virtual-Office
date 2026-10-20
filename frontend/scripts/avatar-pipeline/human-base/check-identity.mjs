@@ -14,6 +14,8 @@
 //              vertices inside the face (front) or inside the head side (temples) — must be 0
 //   hair acc.  tied-hair / clip accessories: vertices inside the canonical skull (must be 0)
 //   skull      canonical head-size contract: ear half-width vs canonical (±1.5%)
+import { fringeIntoFaceExact } from "./fringe-exact.mjs";
+import { weldFoldBacks } from "./underside-weld.mjs";
 import fs from "node:fs";
 import sharp from "sharp";
 import { checkGlasses, fitGlassesPositions, glassesFrame } from "../../../src/dev/vo3d/human/humanGlasses.ts";
@@ -116,8 +118,10 @@ export async function identityMetrics(who, { file = `${BASE_OUT}/production/${wh
     let cut = 0; for (let e = 0; e < 2; e++) { const o = e * per, x0 = E[o * 3], y0 = E[o * 3 + 1], x1 = E[(o + Gs - 1) * 3], y1 = E[(o + per - 1) * 3 + 1];
       for (let v = 0; v < fr.P.length / 3; v++) { const fx = (fr.P[v * 3] - x0) / (x1 - x0) * (Gs - 1), fy = (fr.P[v * 3 + 1] - y0) / (y1 - y0) * (Gs - 1); if (fx < 0 || fy < 0 || fx > Gs - 1 || fy > Gs - 1) continue;
         const v00 = o + Math.min(Gs - 2, Math.floor(fy)) * Gs + Math.min(Gs - 2, Math.floor(fx)); if (!vis(v00)) continue; const z = E[v00 * 3 + 2]; if (fr.P[v * 3 + 2] < z + 0.002 && fr.P[v * 3 + 2] > z - 0.03) cut++; } }
-    r.fringe = { verts: fr.P.length / 3, intoFace: behind, eyeCutsHair: cut }; }
+    r.fringe = { verts: fr.P.length / 3, intoFace: behind, eyeCutsHair: cut };
+    r.fringeExact = fringeIntoFaceExact({ fringe: fr, face: twinP ? [head, twinP] : [head] }); }   // REPORT-ONLY (fringe-exact.mjs): never part of the verdict
   else r.fringe = null;
+  r.undersideFold = weldFoldBacks(Object.entries(parts).map(([name, g]) => ({ name, ...g })));   // REPORT-ONLY (underside-weld.mjs): never part of the verdict
   // ---- glasses: the recipe's + the universal frames, runtime-fitted ----
   // V1.1 ACCESSORY CONTRACT: EVERY glasses module of the recipe on EVERY identity (one style must fit all wearers)
   { const ids = [...new Set([...Object.values(R.employees).flatMap((e) => (e.accessories ?? []).filter((a) => a.build === "glasses").map((a) => a.id)), ...(R.sharedAccessories ?? []).filter((a) => a.build === "glasses").map((a) => a.id)])];

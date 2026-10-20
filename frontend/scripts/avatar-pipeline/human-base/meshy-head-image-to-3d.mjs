@@ -19,6 +19,11 @@ const IMAGE = POS[1] ?? "scripts/avatar-pipeline/output/human-base/meshy-ref/bon
 const OUT = `scripts/avatar-pipeline/output/meshy-employees/${NAME}`;
 const API = "https://api.meshy.ai/openapi";
 const DRY = process.argv.includes("--dry-run");
+// NEVER OVERWRITE A PAID HEAD (2026-10-13): the target folder must hold no download, task record or filed raw head — a new head is a
+// new version folder (head-version.mjs). Checked before anything else, the dry run included.
+const taken = fs.existsSync(OUT) ? fs.readdirSync(OUT).filter((f) => f.startsWith(`${NAME}-raw-`) || f.endsWith(".task.json") || f === "raw-untouched") : [];
+if (taken.length) { console.error(`[head] REFUSED: ${OUT} already holds a paid head (${taken.slice(0, 3).join(", ")}) — a new head needs a new version folder`); process.exit(1); }
+console.log(`[head] target ${OUT} holds no paid head — nothing can be overwritten`);
 
 // the request, exactly as approved — NO pose_mode key
 const SETTINGS = {

@@ -38,7 +38,12 @@ export function interiorShell(alex, surfaces, { centre, margin = 0.01, alexInset
     for (let t = 0; t < I.length; t += 3) { const a = I[t] * 3, b = I[t + 1] * 3, c = I[t + 2] * 3; for (const [u, v] of [[1 / 3, 1 / 3], [0.6, 0.2], [0.2, 0.6], [0.2, 0.2]]) splat(P[a] + (P[b] - P[a]) * u + (P[c] - P[a]) * v, P[a + 1] + (P[b + 1] - P[a + 1]) * u + (P[c + 1] - P[a + 1]) * v, P[a + 2] + (P[b + 2] - P[a + 2]) * u + (P[c + 2] - P[a + 2]) * v); } }
   // conservative: each direction takes the minimum of its 5×5 neighbourhood (a thin gap in the splat never lets the
   // shell out through the identity surface)
-  const M2 = MR.slice(); for (let t = 0; t < NT; t++) for (let p = 0; p < NP; p++) { let m = 9; for (let dt = -2; dt <= 2; dt++) for (let dp = -2; dp <= 2; dp++) { const tt = t + dt; if (tt < 0 || tt >= NT) continue; m = Math.min(m, MR[tt * NP + ((p + dp) % NP + NP) % NP]); } M2[t * NP + p] = m; }
+  const M1 = MR.slice(); for (let t = 0; t < NT; t++) for (let p = 0; p < NP; p++) { let m = 9; for (let dt = -2; dt <= 2; dt++) for (let dp = -2; dp <= 2; dp++) { const tt = t + dt; if (tt < 0 || tt >= NT) continue; m = Math.min(m, MR[tt * NP + ((p + dp) % NP + NP) % NP]); } M1[t * NP + p] = m; }
+  // SMOOTH UNDER THE CONSTRAINT (2026-10-10): the min filter above leaves flat terraces with steps wherever the identity surfaces are
+  // ragged (cut rims, flaps) — the closure copied them as faceted shingles where it shows (nape). A blur no wider than the min filter
+  // keeps every value at or below the raw splat of every direction it covers (each blurred sample is a minimum over a window that
+  // contains that direction), so the shell stays inside every identity surface while becoming smooth.
+  const M2 = M1.slice(); for (let t = 0; t < NT; t++) for (let p = 0; p < NP; p++) { let sum = 0, cnt = 0; for (let dt = -2; dt <= 2; dt++) for (let dp = -2; dp <= 2; dp++) { const tt = t + dt; if (tt < 0 || tt >= NT) continue; sum += M1[tt * NP + ((p + dp) % NP + NP) % NP]; cnt++; } M2[t * NP + p] = sum / cnt; }
   const P = Float32Array.from(alex.P), AN = computeNormals(Float32Array.from(alex.P), alex.I); let pulled = 0, open = 0;
   for (let i = 0; i < P.length / 3; i++) {
     const x = P[i * 3], y = P[i * 3 + 1], z = P[i * 3 + 2], [t, p, r] = dir(x, y, z), idR = M2[t * NP + p];

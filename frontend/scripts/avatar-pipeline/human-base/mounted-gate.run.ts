@@ -11,8 +11,11 @@ import fs from "node:fs";
 import { GLTFLoader, type GLTF } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { HumanAvatar, setGlbFetcher } from "../../../src/dev/vo3d/human/HumanAvatar";
 import { nodeIO, publicPath } from "../../../src/dev/vo3d/human/humanGlb.testutil";
-import { appearanceFor, HUMANBASE_CATALOGUE } from "../../../src/dev/vo3d/avatar/humanBody";
-import { mountedMetrics } from "../../../src/dev/vo3d/human/gate/mountedGate";
+import { appearanceFor, candidateAppearance, HUMANBASE_CATALOGUE, identityHeadAsset } from "../../../src/dev/vo3d/avatar/humanBody";
+// a NEW employee has no production appearance yet: the pipeline recipe (employees.json) names their body preset; no recipe = fail closed
+const recipeOf = (id: string): { body?: string } | null => { try { return JSON.parse(fs.readFileSync("scripts/avatar-pipeline/human-base/employees.json", "utf8")).employees?.[id] ?? null; } catch { return null; } };
+import { closureWallEvidence, motionEvidence, mountedMetrics } from "../../../src/dev/vo3d/human/gate/mountedGate";
+import { idleClip } from "../../../src/dev/vo3d/human/humanBaseContract";
 
 const args = process.argv.slice(2).filter((a) => a !== "--");
 setGlbFetcher(async (url: string): Promise<GLTF> => {
@@ -36,12 +39,13 @@ for (let i = 0; i < args.length; i += 3) {
   try {
     if (!fs.existsSync(file)) throw new Error(`identity file missing: ${file}`);
     // "mounts:<file>" = the PRODUCTION path (appearanceFor with a validated-head record, as VALIDATED_HEADS feeds the runtime)
-    const cfg = mountSpec.startsWith("mounts:") ? appearanceFor(id, JSON.parse(fs.readFileSync(mountSpec.slice(7), "utf8"))) : appearanceFor(id); if (!cfg) throw new Error(`no production appearance for "${id}"`);
+    const rec = recipeOf(id), cfg = mountSpec.startsWith("mounts:") ? appearanceFor(id, JSON.parse(fs.readFileSync(mountSpec.slice(7), "utf8"))) : appearanceFor(id) ?? (rec ? candidateAppearance(id, undefined, rec.body === "feminine" ? "feminine" : "standard") : null);
+    if (!cfg) throw new Error(`no production appearance for "${id}" and no pipeline recipe`);
     if (mountSpec.startsWith("mounts:") && !cfg.identity.mount) throw new Error(`no validated mount for "${id}" in ${mountSpec.slice(7)}`);
-    if (mountSpec === "auto") { bonRef ??= await faceMeasures("public/avatars/human-base-v1/production/bon-v1.glb"); const m = await faceMeasures(file);
+    if (mountSpec === "auto" || mountSpec === "auto-head") { bonRef ??= await faceMeasures("public/avatars/human-base-v1/production/bon-v1.glb"); const m = await faceMeasures(file);
       const face = Math.exp(m.reduce((a, v, k) => a + Math.log(v / bonRef![k]), 0) / m.length), scale = Math.round(((1 / face) * (cfg.bodyPreset === "feminine" ? 0.98 : 1)) / 0.005) * 0.005;
       cfg.identity.mount = { scale: +scale.toFixed(3), pitchDeg: 0 }; }
-    const cat = new Map(HUMANBASE_CATALOGUE); const head = cat.get(cfg.identity.headAssetId)!; cat.set(head.id, { ...head, url: `file:${file}` });
+    const cat = new Map(HUMANBASE_CATALOGUE); const head = cat.get(cfg.identity.headAssetId) ?? identityHeadAsset(id, ""); cat.set(head.id, { ...head, url: `file:${file}` });
     let h = await HumanAvatar.create(cfg, cat);
     // automatic normalization, step 2 (the rule the approved batch-2 mounts were set with): hold the mounted chin→eye / body
     // inside the approved five's band — face length scales exactly with the mount (it scales about the Head joint)
@@ -53,7 +57,14 @@ for (let i = 0; i < args.length; i += 3) {
       let s = s0; const a = at(s0); if (a.fl > 0.482) s = s0 * 0.482 / a.fl; else if (a.fl < 0.451) s = s0 * 0.451 / a.fl;
       const b = at(s); if (b.sw < 0.46) { const sn = s * 0.46 / b.sw, c = at(sn); if (c.fl <= 0.5 && c.sh <= 1.09) s = sn; } else if (b.sw > 0.6) { const sn = s * 0.6 / b.sw, c = at(sn); if (c.fl >= 0.43 && c.sh >= 0.81) s = sn; }
       s = Math.round(s / 0.005) * 0.005; if (Math.abs(s - s0) > 1e-6) { cfg.identity.mount = { scale: +s.toFixed(3), pitchDeg: 0 }; h.dispose(); h = await HumanAvatar.create(cfg, cat); } }
-    out[`${id}|${file}`] = { ok: true, mountSpec, mount: cfg.identity.mount ? { scale: cfg.identity.mount.scale ?? 1, pitchDeg: cfg.identity.mount.pitchDeg ?? 0 } : null, preset: cfg.bodyPreset ?? "standard", worn: [cfg.glasses.assetId].filter(Boolean), wornAccessories: cfg.accessories.map((a) => a.assetId), ...mountedMetrics(h) };
+    // INTEGRATION MODE (opt-in, build-employees --integrate): the generated head is never reshaped, so its size is ONE uniform mount
+    // scale that puts the hair-independent skull height / body at the centre of the approved five's band (0.873–1.016). Every
+    // band — face length included — is then judged by the gate exactly as for any build; nothing is moved to satisfy it.
+    if (mountSpec === "auto-head") { const m0 = mountedMetrics(h), s0 = cfg.identity.mount!.scale!, s = Math.round((s0 * ((0.873 + 1.016) / 2) / m0.skullHToBody) / 0.005) * 0.005;
+      if (Math.abs(s - s0) > 1e-6) { cfg.identity.mount = { scale: +s.toFixed(3), pitchDeg: 0 }; h.dispose(); h = await HumanAvatar.create(cfg, cat); } }
+    out[`${id}|${file}`] = { ok: true, mountSpec, mount: cfg.identity.mount ? { scale: cfg.identity.mount.scale ?? 1, pitchDeg: cfg.identity.mount.pitchDeg ?? 0 } : null, preset: cfg.bodyPreset ?? "standard", worn: [cfg.glasses.assetId].filter(Boolean), wornAccessories: cfg.accessories.map((a) => a.assetId), ...mountedMetrics(h),
+      closureWalls: closureWallEvidence(h, idleClip(cfg.idleProfile)),   // report-only (failure-registry REPORT_ONLY); leaves the avatar holding its idle
+      motion: motionEvidence(h, idleClip(cfg.idleProfile)) };   // report-only; measured last — it leaves the avatar mid-walk
     h.dispose();
   } catch (e) { out[`${id}|${file}`] = { ok: false, error: String((e as Error)?.message ?? e) }; }   // a detector that cannot run is a FAILURE, never a skip
 }

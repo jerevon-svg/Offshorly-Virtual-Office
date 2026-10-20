@@ -19,14 +19,28 @@ import sharp from "sharp";
 import * as THREE from "three";
 import * as C from "../../../src/dev/vo3d/human/humanBaseContract.ts";
 import { BASE_OUT, adjacency, computeNormals, io, loadBase, taubin, weldNormals, writeModule } from "./lib.mjs";
+import { craniumMax, craniumRatio } from "./cranium.mjs";
 import { seatEyes } from "./eye-socket.mjs";
 import { delightSkin, featureMask, relaxUnderside, repaintHairTexels, smoothSkin } from "./skin-clean.mjs";
 import { HAIR_LAYER, HAIR_LAYER_NAMES, combSidesToTie, flowField, hairBaseCap, hairRootWeights, flattenEyeSculpt, gatherToTie, hairRelief, hairSideCeiling, liftFringe, splitHair, rebuildFaceTexels, fringeTexturePage, transplantTwinGeometry, buildTwinPatch, weldSeams, napeSkin } from "./hair-layers.mjs";
 import { canonicalSkull, interiorShell } from "./head-closure.mjs";
 import { decodeRGB, repackAtlas } from "./atlas-repack.mjs";
+import { CATCHLIGHT, catchlightPolish } from "./eye-catchlight.mjs";
 import { computeAttach } from "./attach-anchors.mjs";
+import { dropUnattachedHairDebris } from "./hair-debris.mjs";
+import { fairSkinBoundaries } from "./boundary-fairing.mjs";
+import { keepUndersideSheet } from "./underside-sheet.mjs";
+import { weldUnderside, tubeWall } from "./underside-weld.mjs";
+import { bakeUndersideTexture } from "./underside-texture.mjs";
 
 // ================================ 1. UNIVERSAL CHIBI RULES ===========================================================
+/** CANONICAL CRANIUM (2026-10-13, cranium.mjs): a head whose cranium is taller for its face than every approved head's is compressed
+ *  above a rigid band (the eye line + `band` of the head above it); `blend` = the one-sided C1 onset; never below `minK`; accepted
+ *  within `tol` of the approved maximum. Kept apart from CHIBI_RULES (which every head's file records) so a head inside the approved
+ *  family is written byte for byte as before. */
+export const CRANIUM_RULE = { enabled: false, band: 0.3, blend: 0.08, minK: 0.5, tol: 0.02 };
+// DISABLED by default (2026-10-13): the one bounded trial fixed Nicole v2's skull height (gate 1.135 → 0.948, no new failure class) but
+// gave Jona's accepted v1 head a NEW FC-BALD-POCKET (corr-v2 → xcorr-v1 diagnostic) — opt-in only (--cranium) until that is solved
 export const CHIBI_RULES = {
   /** skull width is the canonical head's (measured on Alex): the ears' outer skin span sets the scale */
   skullFromEars: true,
@@ -77,6 +91,14 @@ export const CHIBI_RULES = {
   longFace: { maxGrowth: 1.42 },
   rimTuck: false,   // recipe-gated (employees.json repairs) — the logged rim jaggedness did NOT separate need on the first five (diagnostic only)
   napeSkin: false,   // withdrawn (regressed all five) — no detector may enable it
+  weldedUnderside: true,   // DEVELOPMENT DEFAULT (2026-10-12, underside-weld.mjs): one welded underside where the geometry allows it, the existing construction exactly as before where it does not (fail-closed) — and never under hair that swings into it (weldMotionClasses); approved production assets are files and do not change
+  weldMotionClasses: ["rigid", "short"],   // the welded underside only under hair that does not swing below the chin: a medium / long motion class swings through the head's underside while walking and the weld's larger surface catches more of it (measured on a long style: 256 → 269 moving-hair triangles through the head bottom) — those keep the existing closure
+  fairDiagnose: false,   // DIAGNOSTIC (2026-10-13, boundary-fairing.mjs): report which safeguard trimmed each skin-curve vertex's smoothing, per ear / nape / other region — never changes geometry; opt-in only (--repairs=fairDiagnose:1)
+  fairLocalScale: false,   // EXPERIMENTAL (2026-10-13, boundary-fairing.mjs localScale): the fairing's median-edge cap is taken along each curve (its own edges within a few steps), not over the whole region, so the coarse lower hairline smooths at its own scale; every other safeguard unchanged; opt-in only (--repairs=fairLocalScale:1); NOT for integration (2026-10-13: breaks Angelo's map weld, drags the nape texture — see boundary-fairing.mjs)
+  rimBridge: false,   // EXPERIMENTAL (2026-10-12, rim-bridge.mjs) — with mapWeld: two nested rims bounding a slot are bridged rim to rim (never to the neck ring); refused on any crossing / fold / fin; opt-in only (--repairs=rimBridge:1)
+  undersideLit: true,   // ON since 2026-10-19 (validated 2026-10-13 on Lui: weld, gate and geometry identical, dark band gone; normals only, only where a weld forms) — underside-weld.mjs litNormals: the welded underside's normals turn smoothly, by depth from the rim, from the rim's skin normal to the neck wall's outward normal — the down-facing surface no longer renders as a darker band between skin and neck; geometry, texture and weld untouched; opt-in (--repairs=undersideLit:1) until A/B-validated
+  capEarOutline: false,   // EXPERIMENTAL (2026-10-13, hair-layers.mjs hairBaseCap): no hair base cap inside the ear's OUTLINE — the convex hull (per side, + 1 cell) of the ear's protruding skin cells on the cap grid, seeded in the ear box — and the cap's new edge there dives like its hairline; replaces the v21 per-direction ear heuristic (left a concha notch); opt-in (--repairs=capEarOutline:1) until validated
+  mapWeld: true,   // DEVELOPMENT DEFAULT (2026-10-12, coverage-map.mjs): with weldedUnderside, the canonical head's open angles drive the weld (a tucked sleeve bounds nothing, an angle with no opening gets no surface)
   collarCull: false,   // BUILD-LOOP repair for FC-COLLAR-AS-HAIR (failure-registry.mjs) — set only by the build when its detector fires
   hairAsSkinRelabel: false,   // BUILD-LOOP repair for FC-HAIR-AS-SKIN — set only by the build when its detector fires
   neckHairClear: false,   // BUILD-LOOP repair for FC-NECK-HAIR — set only by the build when its detector fires
@@ -100,6 +122,8 @@ export const CHIBI_RULES = {
   interior: { margin: 0.01, alexInset: 0.008 },
   /** V1.1 SEAM-SAFE ATLAS (atlas-repack.mjs): every UV island gets its own gutter (no dark seam lines) */
   atlas: { pad: 6 },
+  /** 2026-10-19 MISSING CATCHLIGHT (eye-catchlight.mjs): a soft highlight on an iris that has none (detector-gated, never on one that has) */
+  catchlight: CATCHLIGHT,
   /** V1.1 CANONICAL SKULL WIDTH: the OUTPUT's ear width must match the canonical within this (else the CLI refits) */
   skullWidthTol: 0.015,
   attach: { belowChin: -0.005, skirt: 0.02, wallMargin: 1.08, wallNormalY: 0.65, headTopFrac: 0.45, keepHairOutside: 1.15, socketLift: 0.045, skullFlare: 1.3, neckOverlap: 0.02, neckIntoHead: 0.06, filletOver: 0, filletRise: 0.035,   /* V1.4: fillet OFF — it flared the neck out past the jaw */ neckInset: 0.985, underTol: 0.006, capLoops: false, skullBaseInset: 0.004 },
@@ -115,10 +139,13 @@ const lum = (c) => 0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2];
 //   every vertex is then labelled by nearest learned cluster in CIELAB (lightness half-weighted, so shading and
 //   highlights stay in their cluster), with per-head thresholds from each seed's own spread, and isolated labels
 //   are cleaned by a neighbour vote. Eye white = very light, near-neutral (checked spatially by the eye finder).
+/** the welded underside's motion-class guard: welded only when enabled AND the hairstyle's motion class (mount.hairMotion.preset —
+ *  the recipe's own or derived from the hair's length against the canonical chin) is one that does not swing into the underside */
+export const weldEligible = (rules, motionPreset) => !!rules.weldedUnderside && (rules.weldMotionClasses ?? ["rigid", "short"]).includes(motionPreset ?? "rigid");
 export const LABEL = { OTHER: 0, SKIN: 1, HAIR: 2 };
 /** crown↔skin colour distance below which the crown is bald scalp (bald production heads measure 0.6–5) */
 export const BALD_DE = 8;
-const lab = (r, g, b) => { const f = (u) => { u /= 255; return u > 0.04045 ? ((u + 0.055) / 1.055) ** 2.4 : u / 12.92; }; const R = f(r), G = f(g), B = f(b);
+export const lab = (r, g, b) => { const f = (u) => { u /= 255; return u > 0.04045 ? ((u + 0.055) / 1.055) ** 2.4 : u / 12.92; }; const R = f(r), G = f(g), B = f(b);
   const X = (0.4124 * R + 0.3576 * G + 0.1805 * B) / 0.95047, Y = 0.2126 * R + 0.7152 * G + 0.0722 * B, Z = (0.0193 * R + 0.1192 * G + 0.9505 * B) / 1.08883;
   const g3 = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116); return [116 * g3(Y) - 16, 500 * (g3(X) - g3(Y)), 200 * (g3(Y) - g3(Z))]; };
 const dEw = (a, b) => Math.hypot(0.5 * (a[0] - b[0]), a[1] - b[1], a[2] - b[2]);
@@ -138,7 +165,14 @@ export function classifyHead(h, sel = () => true, nb = null) {
   const A = new Float32Array(n); { const I = h.I; for (let t = 0; t < I.length; t += 3) { const a = I[t], b = I[t + 1], c = I[t + 2];
     const e1 = [0, 1, 2].map((q) => P[b * 3 + q] - P[a * 3 + q]), e2 = [0, 1, 2].map((q) => P[c * 3 + q] - P[a * 3 + q]);
     const ar = Math.hypot(e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]) / 6; A[a] += ar; A[b] += ar; A[c] += ar; } }
-  const H = y1 - y0; let tipY = 0; for (let i = 0; i < n; i++) if (sel(i) && P[i * 3 + 1] > y1 - 0.75 * H && P[i * 3 + 1] < y1 - 0.3 * H && P[i * 3 + 2] > zF) { zF = P[i * 3 + 2]; tipY = P[i * 3 + 1]; }
+  const H = y1 - y0; let tipY = 0, tipI = -1; for (let i = 0; i < n; i++) if (sel(i) && P[i * 3 + 1] > y1 - 0.75 * H && P[i * 3 + 1] < y1 - 0.3 * H && P[i * 3 + 2] > zF) { zF = P[i * 3 + 2]; tipY = P[i * 3 + 1]; tipI = i; }
+  // the probes' ANCHOR must be face (2026-10-13): when the front-most point of the face band is not skin-like (hair worn in front of
+  // the face — a bob's locks ahead of the nose), the front-most skin-like point anchors them instead. Skin-like = light enough and of
+  // skin's modest chroma (5–45: grey/black/white hair is below, saturated dyed hair above); a head whose front-most point is already
+  // skin — every raw head on disk but Jona v2's isolated one — is anchored exactly as before
+  const skinLikeAt = (i) => { const c = [LAB[i * 3], LAB[i * 3 + 1], LAB[i * 3 + 2]], ch = Math.hypot(c[1], c[2]); return c[0] > 30 && ch >= 5 && ch <= 45; };
+  let anchor = null; if (tipI >= 0 && !skinLikeAt(tipI)) { let z2 = -9, y2 = 0; for (let i = 0; i < n; i++) if (sel(i) && P[i * 3 + 1] > y1 - 0.75 * H && P[i * 3 + 1] < y1 - 0.3 * H && skinLikeAt(i) && P[i * 3 + 2] > z2) { z2 = P[i * 3 + 2]; y2 = P[i * 3 + 1]; }
+    if (z2 > -9) { anchor = { frontmostNotSkin: +zF.toFixed(4), skinAnchor: +z2.toFixed(4) }; zF = z2; tipY = y2; } }
   for (let i = 0; i < n; i++) if (sel(i) && P[i * 3 + 2] > zF - 0.05 * H) { xs += P[i * 3]; xn++; } const xc = xs / Math.max(1, xn);
   // SKIN is learned from several geometric PROBES around the frontmost point — nose, both cheeks, forehead, both
   // ears — each giving its dominant colour by area; skin is the colour most probes agree on. A beard, a fringe or a
@@ -171,7 +205,7 @@ export function classifyHead(h, sel = () => true, nb = null) {
     sclera[i] = c[0] > 76 && Math.hypot(c[1], c[2]) < 10 ? 1 : 0; }
   // neighbour vote: a vertex whose label disagrees with ≥ 80% of its (welded) neighbours takes theirs
   if (nb) { const nx = label.slice(); for (let i = 0; i < n; i++) { const ns = nb[i]; if (!ns || ns.length < 3) continue; const cnt = [0, 0, 0]; for (const j of ns) cnt[label[j]]++; const m = cnt.indexOf(Math.max(...cnt)); if (m !== label[i] && cnt[m] >= 0.8 * ns.length) nx[i] = m; } label.set(nx); }
-  return { label, sclera, skinC, hairC: bald ? null : hairC0, bald, dCrown, probes, Ts, Th, seeds: { skin: skinSeed.length, hair: hairSeed.length } };
+  return { label, sclera, skinC, hairC: bald ? null : hairC0, bald, dCrown, probes, Ts, Th, seeds: { skin: skinSeed.length, hair: hairSeed.length }, ...(anchor ? { anchor } : {}) };
 }
 
 export async function readTexturedHead(file) {
@@ -293,7 +327,7 @@ export function measureHead(h, sel = () => true) {
 export const ratios = (m) => ({ faceLength: m.faceLength / m.ears.half, projection: m.projection / m.ears.half, eyeW: m.eyeHalfW / m.ears.half, jaw: m.jawWidth / m.ears.half, cheek: m.cheekWidth / m.ears.half, lip: m.lipProjection / m.ears.half });
 
 // ================================ 3. THE TRANSFORM ====================================================================
-export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, remeasureCanon = false, hairLength = "natural", hairMotion = null, depthK = 1, depthInfo = null, skullK = 1, skullInfo = null, tie = null, faceLenBoost = 1 }) {
+export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, remeasureCanon = false, hairLength = "natural", hairMotion = null, depthK = 1, depthInfo = null, skullK = 1, skullInfo = null, tie = null, faceLenBoost = 1, craniumK = 1, integrate = false }) {
   const base = await loadBase();
   // ---- canonical targets, measured on production Alex (head vertices only) ----
   const alexH = remeasureCanon ? await readTexturedHead("public/avatars/alex-v2-hq-idle9/alex-v2-lod0.glb") : null;
@@ -348,12 +382,12 @@ export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, 
   const free = new Uint8Array(n).map((_, i) => (w[i] > 0.02 ? 1 : 0));
   const L1 = Float32Array.from(P); taubin(L1, nb, rep, free, rules.bands.fineIter, 0.5, -0.505);
   const L2 = Float32Array.from(L1); taubin(L2, nb, rep, free, rules.bands.midIter, 0.5, -0.505);
-  for (let i = 0; i < n; i++) { if (!free[i]) continue; for (let k = 0; k < 3; k++) { const q = i * 3 + k, simple = L2[q] + rules.bands.keepMid * (L1[q] - L2[q]) + rules.bands.keepFine * (P[q] - L1[q]); P[q] += (simple - P[q]) * w[i]; } }
+  if (!integrate) for (let i = 0; i < n; i++) { if (!free[i]) continue; for (let k = 0; k < 3; k++) { const q = i * 3 + k, simple = L2[q] + rules.bands.keepMid * (L1[q] - L2[q]) + rules.bands.keepFine * (P[q] - L1[q]); P[q] += (simple - P[q]) * w[i]; } }
 
   // (c) eyes: bounded enlargement about each measured eye centre (shape kept — the painted eye scales with its lids).
   // A vertex slid sideways over a curved face would sink or float, so each one keeps its OWN offset from the smooth
   // underlying face (the low band L2, rasterised as a front height field) and is re-seated on that face where it lands.
-  const eyeTarget = target("eyeW"), eScale = Math.min(rules.eyeScaleMax, Math.max(1, eyeTarget / src.eyeHalfW));
+  const eyeTarget = target("eyeW"), eScale = integrate ? 1 : Math.min(rules.eyeScaleMax, Math.max(1, eyeTarget / src.eyeHalfW));
   const HF = { x0: src.eyes.cx - src.ears.half, y0: src.chin, s: 0.002 }; HF.nx = Math.ceil(2 * src.ears.half / HF.s); HF.ny = Math.ceil((src.eyes.y + sep * 0.8 - src.chin) / HF.s);
   const hz = new Float32Array(HF.nx * HF.ny).fill(-9);
   for (let t = 0; t < h.I.length; t += 3) { const q = [h.I[t], h.I[t + 1], h.I[t + 2]].map((v) => [(L2[v * 3] - HF.x0) / HF.s, (L2[v * 3 + 1] - HF.y0) / HF.s, L2[v * 3 + 2]]);
@@ -365,7 +399,7 @@ export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, 
         if (w0 < -1e-4 || w1 < -1e-4 || w2 < -1e-4) continue; const z = w0 * q[0][2] + w1 * q[1][2] + w2 * q[2][2], kk = y * HF.nx + x; if (z > hz[kk]) hz[kk] = z; } }
   const baseZ = (x, y) => { const fx = Math.min(HF.nx - 1.001, Math.max(0, (x - HF.x0) / HF.s)), fy = Math.min(HF.ny - 1.001, Math.max(0, (y - HF.y0) / HF.s)), x0 = Math.floor(fx), y0 = Math.floor(fy), tx = fx - x0, ty = fy - y0, g = (i, j) => hz[j * HF.nx + i];
     const v = [g(x0, y0), g(x0 + 1, y0), g(x0, y0 + 1), g(x0 + 1, y0 + 1)]; if (v.some((z) => z < -8)) return null; return (v[0] * (1 - tx) + v[1] * tx) * (1 - ty) + (v[2] * (1 - tx) + v[3] * tx) * ty; };
-  for (const e of [src.eyes.l, src.eyes.r]) {
+  if (!integrate) for (const e of [src.eyes.l, src.eyes.r]) {
     const R = e.halfW * 1.2, R2 = e.halfW * 2.0, cxe = e.c[0], cye = e.c[1];
     for (let i = 0; i < n; i++) { if (P[i * 3 + 2] < src.ears.z + sep * 0.25) continue; const dx = P[i * 3] - cxe, dy = P[i * 3 + 1] - cye, d = Math.hypot(dx, dy * (dy > 0 ? 2.0 : 1.4)); if (d >= R2) continue;   // tight above (the brows stay), softer below   // everything on the eye (lids, lashes, iris, brows' edge)
       const f = d <= R ? 1 : 1 - (d - R) / (R2 - R), s = 1 + (eScale - 1) * f * f * (3 - 2 * f);
@@ -375,8 +409,8 @@ export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, 
   }
 
   // (d) facial projection toward canonical: front of the face compressed toward the ear plane (smooth, whole head)
-  const projT = target("projection"), pScale = Math.min(1, projT / src.projection), z0 = src.ears.z + sep * 0.35;
-  for (let i = 0; i < n; i++) { const z = P[i * 3 + 2]; if (z <= z0) continue; const t = Math.min(1, (z - z0) / (sep * 0.25)), sm = t * t * (3 - 2 * t); P[i * 3 + 2] = z0 + (z - z0) * (1 + (pScale - 1) * sm); }
+  const projT = target("projection"), pScale = integrate ? 1 : Math.min(1, projT / src.projection), z0 = src.ears.z + sep * 0.35;
+  if (!integrate) for (let i = 0; i < n; i++) { const z = P[i * 3 + 2]; if (z <= z0) continue; const t = Math.min(1, (z - z0) / (sep * 0.25)), sm = t * t * (3 - 2 * t); P[i * 3 + 2] = z0 + (z - z0) * (1 + (pScale - 1) * sm); }
 
   // (e) shorter lower face: chin→eye compressed about the chin; above the eyes the head stretches back to its own top
   // the identity-retained face length may not push the eye line past the HEAD CONTRACT (HEAD_ENVELOPE.eyeY max) — the
@@ -390,7 +424,7 @@ export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, 
   // the head is scaled about the Head joint by its (automatic) mount, and the MOUNTED envelope (skull height / width vs body,
   // face vs body) is the hard limit; outside it the gate fails the build closed
   const capStd = C.HEAD_ENVELOPE.eyeY[1] - rules.eyeLineMargin - src.chin, capExt = Infinity, flWant = target("faceLength") * faceLenBoost;
-  const flT = Math.min(flWant, faceLenBoost > 1 ? capExt : capStd) || target("faceLength"), k = Math.min(1, flT / src.faceLength), eyeY2 = src.chin + src.faceLength * k;
+  const flT = Math.min(flWant, faceLenBoost > 1 ? capExt : capStd) || target("faceLength"), k = integrate ? 1 : Math.min(1, flT / src.faceLength), eyeY2 = src.chin + src.faceLength * k;
   const longFace = { boost: +faceLenBoost.toFixed(4), extended: faceLenBoost > 1 && flT > capStd + 1e-6, capped: faceLenBoost > 1 && flWant > capExt + 1e-6, eyeY: +eyeY2.toFixed(4) };
   let top = -9; for (let i = 0; i < n; i++) top = Math.max(top, P[i * 3 + 1]);
   // ABOVE THE EYES: ruleset v2 stretched the forehead so the head top stayed put (a taller forehead the more the face
@@ -404,8 +438,8 @@ export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, 
       for (let i = 0; i < n; i++) { if (Math.abs(P[i * 3] - x0) > half * 0.05 || P[i * 3 + 1] < src.eyes.y + sep * 0.1 || h.N[i * 3 + 2] < 0.2) continue; if (isSkin(i)) { top2 = Math.max(top2, P[i * 3 + 1]); const b = Math.round(P[i * 3 + 1] / 0.01); skinZ.set(b, Math.max(skinZ.get(b) ?? -9, P[i * 3 + 2])); } }
       let fr = 9; for (let i = 0; i < n; i++) { if (Math.abs(P[i * 3] - x0) > half * 0.05 || !isHair(i) || h.N[i * 3 + 2] < 0.2) continue; const y = P[i * 3 + 1], sz = skinZ.get(Math.round(y / 0.01)); if (y < top2 - sep * 0.08 && sz !== undefined && P[i * 3 + 2] > sz + 0.005) fr = Math.min(fr, y); }
       out.push({ top: top2, fringe: fr < 8 }); } return out; };
-  const fhCols = rules.hairline === "preserve" ? foreheadCols() : null;
-  for (let i = 0; i < n; i++) { const y = P[i * 3 + 1]; if (y <= src.chin) continue; P[i * 3 + 1] = y < src.eyes.y ? src.chin + (y - src.chin) * k : eyeY2 + (y - src.eyes.y) * m; }
+  const fhCols = !integrate && rules.hairline === "preserve" ? foreheadCols() : null;
+  if (!integrate) for (let i = 0; i < n; i++) { const y = P[i * 3 + 1]; if (y <= src.chin) continue; P[i * 3 + 1] = y < src.eyes.y ? src.chin + (y - src.chin) * k : eyeY2 + (y - src.eyes.y) * m; }
   // HAIRLINE PRESERVATION (universal): the face was shortened by k but the forehead kept its height (v3) or grew (v2) —
   // the exposed forehead then reads taller than the generated one. The forehead (above a rigid brow band) is compressed
   // so hairline-above-eyes : chin-to-eyes matches the generated head again, the cranium above stretches so the head top
@@ -432,6 +466,14 @@ export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, 
     else hairlineInfo = { fringeCoverage: +cov.toFixed(2), note: "fringe covers the forehead — unchanged" };
     console.log(`hairline: ${JSON.stringify(hairlineInfo)}`); }
 
+  // (e2) CANONICAL CRANIUM (CRANIUM_RULE): compress the head ABOVE the rigid band — eye line + band of the head above it, so lids,
+  // brows and ear tops stay exactly where they are — with a one-sided C1 onset: nothing at or below the band moves, the face is
+  // untouched. craniumK comes from the CLI's measurement loop; 1 (every head inside the approved family) skips this entirely.
+  let craniumBand = null;
+  if (craniumK < 1) { let topNow = -Infinity; for (let i = 0; i < n; i++) topNow = Math.max(topNow, P[i * 3 + 1]);
+    const B = eyeY2 + CRANIUM_RULE.band * (topNow - eyeY2), ramp = 2 * CRANIUM_RULE.blend * (topNow - eyeY2);
+    for (let i = 0; i < n; i++) { const y = P[i * 3 + 1]; if (y <= B) continue; const t = Math.min(1, (y - B) / ramp), w = t * t * (3 - 2 * t); P[i * 3 + 1] = y - w * (1 - craniumK) * (y - B); }
+    craniumBand = { k: +craniumK.toFixed(4), bandY: +B.toFixed(4), topBefore: +topNow.toFixed(4), rule: CRANIUM_RULE }; }
   // (f) HEAD-ONLY + MOUNT: HumanBase owns the neck. The generated neck/bust/stand are cut at the canonical attachment
   // line (Alex's chin height, measured); the short collar left under the jaw tapers to sit just OUTSIDE the base neck
   // there and laps over it by a hidden skirt — no gap, no double neck, nothing poking through the jaw.
@@ -498,7 +540,8 @@ export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, 
   const AN = computeNormals(Float32Array.from(AP), AI);
   const UG = { x0: -0.7, z0: -0.8, c: 0.005 }; UG.nx = Math.ceil(1.4 / UG.c); UG.nz = Math.ceil(1.6 / UG.c);
   const ug = new Float32Array(UG.nx * UG.nz).fill(9);
-  for (let t = 0; t < AI.length; t += 3) { const v = [AI[t], AI[t + 1], AI[t + 2]]; if ((AN[v[0] * 3 + 1] + AN[v[1] * 3 + 1] + AN[v[2] * 3 + 1]) / 3 > -0.3) continue;   // truly downward-facing (jaw underside, skull base) — not the face's lower slopes
+  const DOWN = -0.3;   // truly downward-facing (jaw underside, skull base) — not the face's lower slopes
+  for (let t = 0; t < AI.length; t += 3) { const v = [AI[t], AI[t + 1], AI[t + 2]]; if ((AN[v[0] * 3 + 1] + AN[v[1] * 3 + 1] + AN[v[2] * 3 + 1]) / 3 > DOWN) continue;
     const q = v.map((k) => [(AP[k * 3] - UG.x0) / UG.c, (AP[k * 3 + 2] - UG.z0) / UG.c, AP[k * 3 + 1]]);
     const ar = (q[1][0] - q[0][0]) * (q[2][1] - q[0][1]) - (q[2][0] - q[0][0]) * (q[1][1] - q[0][1]); if (Math.abs(ar) < 1e-9) continue;
     for (let zz = Math.max(0, Math.floor(Math.min(q[0][1], q[1][1], q[2][1]))); zz <= Math.min(UG.nz - 1, Math.ceil(Math.max(q[0][1], q[1][1], q[2][1]))); zz++)
@@ -507,6 +550,8 @@ export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, 
         if (w0 < -1e-3 || w1 < -1e-3 || w2 < -1e-3) continue; const y = w0 * q[0][2] + w1 * q[1][2] + w2 * q[2][2], k = zz * UG.nx + xx; if (y < ug[k]) ug[k] = y; } }
   // only the NECK OPENING (inside the neck column) is filled from its rim; outside Alex's underside nothing is cut
   const inOpening = (xx, zz) => { const x = UG.x0 + xx * UG.c, z = UG.z0 + zz * UG.c; return ((x - baseNeck.cx) / baseNeck.hx) ** 2 + ((z - baseNeck.cz) / baseNeck.hz) ** 2 < 1.6 * 1.6; };
+  // the underside is ONE sheet around the neck (underside-sheet.mjs): the canonical ears' own downward faces are not the head's bottom
+  const undersideSheet = keepUndersideSheet(ug, UG, inOpening, DOWN); console.log(`canonical underside: ${JSON.stringify(undersideSheet)} cells (patches off the sheet — the canonical ears — replaced by the sheet continued under them)`);
   for (let it = 0; it < 200; it++) { let changed = 0; const nx2 = ug.slice(); for (let zz = 0; zz < UG.nz; zz++) for (let xx = 0; xx < UG.nx; xx++) { const k = zz * UG.nx + xx; if (ug[k] < 8 || !inOpening(xx, zz)) continue; let sum = 0, c = 0;
       for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const x2 = xx + dx, z2 = zz + dz; if (x2 < 0 || z2 < 0 || x2 >= UG.nx || z2 >= UG.nz) continue; const v2 = ug[z2 * UG.nx + x2]; if (v2 < 8) { sum += v2; c++; } }
       if (c) { nx2[k] = sum / c; changed++; } } ug.set(nx2); if (!changed) break; }
@@ -562,10 +607,13 @@ export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, 
     // hair colour (then colour separates them); when they match (a dark shirt under dark hair), the shoulder line ends it
     if (isHair(i) && ed(i) > A.keepHairOutside && (y > shoulderY || (clothDistinct && y > cutY - 0.6))) { longHair++; return 1; }
     bust++; return 0; });
-  // connectivity: kept geometry must reach the head (anything above the attachment line) through kept vertices
-  let detached = 0; { const reach = new Uint8Array(n), st = []; for (let i = 0; i < n; i++) if (keep[i] && rep[i] === i && P[i * 3 + 1] > attachY) { reach[i] = 1; st.push(i); }
+  // connectivity: kept geometry must reach the head (anything above the attachment line) through kept vertices — an INVARIANT of
+  // every cut: it runs again after the collar / neck-column cuts below, which can sever pieces that only reached the head through
+  // the vertices they removed (2026-10-10: generated-collar remnants left floating at the tee collar)
+  const dropDetached = () => { let d = 0; const reach = new Uint8Array(n), st = []; for (let i = 0; i < n; i++) if (keep[i] && rep[i] === i && P[i * 3 + 1] > attachY) { reach[i] = 1; st.push(i); }
     while (st.length) { const v = st.pop(); for (const w2 of nb[v]) if (!reach[w2] && keep[w2]) { reach[w2] = 1; st.push(w2); } }
-    for (let i = 0; i < n; i++) if (keep[i] && !reach[rep[i]]) { keep[i] = 0; detached++; } }
+    for (let i = 0; i < n; i++) if (keep[i] && !reach[rep[i]]) { keep[i] = 0; d++; } return d; };
+  let detached = dropDetached();
   // FC-COLLAR-AS-HAIR repair (BUILD-LOOP, detector-gated: failure-registry.mjs): a generated shirt collar the colour of the
   // hair survives as "hair" below the chin. Any below-chin kept-hair component reaching the collar zone (in front of the
   // neck axis, near the midline — where hanging hair never is) is dropped whole.
@@ -581,6 +629,7 @@ export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, 
   // generated neck / collar painted dark — dropped (the same column and band the detector measures; hanging hair stands off it)
   if (rules.neckHairClear) { let cleared = 0; for (let i = 0; i < n; i++) { if (!keep[i] || !isHair(i)) continue; const y = P[i * 3 + 1]; if (y < 0.78 || y > 0.96) continue; if (Math.hypot(P[i * 3], P[i * 3 + 2] + 0.013) < 0.17) { keep[i] = 0; cleared++; } }
     console.log(`neck hair clear: ${cleared} hair vertices inside the neck column dropped`); }
+  if (rules.collarCull || rules.neckHairClear) { const d2 = dropDetached(); detached += d2; console.log(`connectivity after the collar / neck cuts: ${d2} severed vertices dropped`); }
   // HAIR LENGTH + CLEARANCE (per-avatar preset; "natural" = no-op): hanging hair below the chin is compressed so its
   // lowest point sits at the preset height, then pushed outside the HumanBase body envelope
   const hairTarget = rules.hairLengths[hairLength] ?? null; let hairK = 1, hairPushed = 0, hairLowBefore = 9;
@@ -685,7 +734,7 @@ export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, 
         const dy = Math.max(...[a, b, c].map((q) => Math.abs(OP[q * 3 + 1] - P_PRE[q * 3 + 1]))); globalThis.__jdy = Math.max(globalThis.__jdy ?? 0, dy); } }
     console.log("DIAG jaw flips by kind", JSON.stringify(globalThis.__jf ?? {}), "max press", (globalThis.__jdy ?? 0).toFixed(3)); globalThis.__jf = {}; globalThis.__jdy = 0;
     console.log(`DIAG jaw contract: pressed ${jawPressed} verts, ${touched} tris touched, ${collapsed} collapsed (<5% area), ${flipped} flipped`); }
-  const mount = { detections, longFace, jawContract: jawPressed, attachY, cutY, headTop, baseNeck, generatedNeck: own, measuredNeck, neckSource, skinNeck, geomNeck, neckWallRemoved: wall, napeRemoved: nape, bodyVsHair: { clothC: clothC.map((v) => +v.toFixed(1)), clothDistinct, clothing, shoulderY: +shoulderY.toFixed(3), detached }, hair: { length: hairLength, target: hairTarget, lowestBefore: +hairLowBefore.toFixed(3), k: +hairK.toFixed(3), pushed: hairPushed }, faceTrim, canonicalUnderside: true, skullBase: { min: Math.min(...skullBase), max: Math.max(...skullBase) }, holesClosed, bustRemoved: bust, longHairKept: longHair, socketLoops: loopsCapped, socketTris: socket.I.length / 3 };
+  const mount = { detections, longFace, ...(craniumBand ? { craniumBand } : {}), jawContract: jawPressed, attachY, cutY, headTop, baseNeck, undersideSheet, generatedNeck: own, measuredNeck, neckSource, skinNeck, geomNeck, neckWallRemoved: wall, napeRemoved: nape, bodyVsHair: { clothC: clothC.map((v) => +v.toFixed(1)), clothDistinct, clothing, shoulderY: +shoulderY.toFixed(3), detached }, hair: { length: hairLength, target: hairTarget, lowestBefore: +hairLowBefore.toFixed(3), k: +hairK.toFixed(3), pushed: hairPushed }, faceTrim, canonicalUnderside: true, skullBase: { min: Math.min(...skullBase), max: Math.max(...skullBase) }, holesClosed, bustRemoved: bust, longHairKept: longHair, socketLoops: loopsCapped, socketTris: socket.I.length / 3 };
   // normals recomputed for the deformed surface (area-weighted, welded)
   const ON = weldNormals(OP, computeNormals(OP, I));
 
@@ -876,7 +925,7 @@ export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, 
       mount.crownSkinRelabelled = rel4; console.log(`crown skin relabel: ${rel4} hair-shell vertices labelled skin → hair`); }
     console.log(`skin-painted hair geometry relabelled: ${rel}`); }
   // a TIED style gathers the back hair toward its tie first (the tied piece is the accessory build-hair-tail.mjs)
-  if (tie) { const PG = Float32Array.from(OP); const g = gatherToTie({ P: OP, label: outH.cls.label, LABEL, after, lm, skull: skullMap.excess, skullCentre: skullMap.CC }, tie, rules);
+  if (tie && !integrate) { const PG = Float32Array.from(OP); const g = gatherToTie({ P: OP, label: outH.cls.label, LABEL, after, lm, skull: skullMap.excess, skullCentre: skullMap.CC }, tie, rules);
     const cs = combSidesToTie({ P: OP, label: outH.cls.label, LABEL, after, lm, skull: skullMap.excess, skullCentre: skullMap.CC }, tie, rules); mount.tie = { style: tie, ...g, sidesCombed: cs.moved }; console.log(`tied (${tie}): ${JSON.stringify(mount.tie)}`);
     { const L = outH.cls.label, wR = hairRootWeights(PG, I, (v) => L[v] === LABEL.HAIR, rules.layers.rootRamp); let anchored = 0;
       for (let v = 0; v < wR.length; v++) { if (L[v] !== LABEL.HAIR || wR[v] >= 1) continue; anchored++; for (let k = 0; k < 3; k++) OP[v * 3 + k] = PG[v * 3 + k] + (OP[v * 3 + k] - PG[v * 3 + k]) * wR[v]; }
@@ -894,11 +943,11 @@ export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, 
       if (torn) { I.length = 0; for (const q of keepI) I.push(q); } mount.tie.tornRemoved = torn; console.log(`stretch invariant: ${torn} torn triangles removed`); }
     const NN = weldNormals(OP, computeNormals(OP, I)); ON.set(NN); }
   // HAIR RELIEF: painted flow → a few sculpted clumps (before the split, so every layer shares the same surface)
-  if (rules.layers?.reliefAmp) { const hr = hairRelief({ P: OP, N: ON, I, label: outH.cls.label, LABEL, COL: outH.COL }, rules); mount.hairRelief = hr; console.log(`hair relief: ${JSON.stringify(hr)}`);
+  if (!integrate && rules.layers?.reliefAmp) { const hr = hairRelief({ P: OP, N: ON, I, label: outH.cls.label, LABEL, COL: outH.COL }, rules); mount.hairRelief = hr; console.log(`hair relief: ${JSON.stringify(hr)}`);
     if (hr.moved) { const NN = weldNormals(OP, computeNormals(OP, I)); ON.set(NN); } }
-  if (rules.layers?.sideMax) { const hv = hairSideCeiling({ P: OP, label: outH.cls.label, LABEL, lm, skull: skullMap.excess, skullCentre: skullMap.CC }, rules); mount.hairSideCeiling = hv; console.log(`hair side ceiling: ${JSON.stringify(hv)}`);
+  if (!integrate && rules.layers?.sideMax) { const hv = hairSideCeiling({ P: OP, label: outH.cls.label, LABEL, lm, skull: skullMap.excess, skullCentre: skullMap.CC }, rules); mount.hairSideCeiling = hv; console.log(`hair side ceiling: ${JSON.stringify(hv)}`);
     if (hv.moved) { const NN = weldNormals(OP, computeNormals(OP, I)); ON.set(NN); } }
-  const split = rules.layers ? await splitHair({ P: OP, N: ON, UV: OUV, J: OJ, W: OW, I, label: outH.cls.label, COL: outH.COL, LABEL, lm, after, skull: skullMap.excess, minUnderlayY: canon.chin + 0.04 }, rules) : null;
+  const split = rules.layers && !integrate ? await splitHair({ P: OP, N: ON, UV: OUV, J: OJ, W: OW, I, label: outH.cls.label, COL: outH.COL, LABEL, lm, after, skull: skullMap.excess, minUnderlayY: canon.chin + 0.04 }, rules) : null;
   // the head's own triangles from here on: everything except fringe locks that were lifted off real face (fused locks
   // stay in the head as their underlay)
   const IH = split ? I.filter((_, q) => { const t = (q / 3) | 0; return (split.layer[t] !== HAIR_LAYER.FRINGE || split.under[t]) && !split.drop[t]; }) : I;
@@ -1338,6 +1387,8 @@ export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, 
       if (side !== hiddenSide) eyeShells.push({ x0, y0, w, hh, NX, NY, A, ZD: Zdome.map((z, k) => Zfill[k] + (rules.eyeSocket ? 0.001 : lm.eyes.halfH * 0.02) + (z + LIFT[k] - Zfill[k] - (rules.eyeSocket ? 0.001 : lm.eyes.halfH * 0.02)) * RAMPW[k]), ZF: Zfill });
     });
     if (eyeImgs[0].NY !== eyeImgs[1].NY || eyeImgs[0].NX !== eyeImgs[1].NX) throw new Error("eye boxes differ in size");
+    const catchlights = rules.catchlight ? eyeImgs.map((e) => catchlightPolish(e.img, e.NX, e.NY, rules.catchlight)) : null;
+    if (catchlights) console.log(`catchlight: ${catchlights.map((c, i) => `${i ? "R" : "L"} ${c.before === null ? "no iris" : (1000 * c.before).toFixed(1) + "‰"}${c.added ? ` → ${(1000 * c.after).toFixed(1)}‰ (added)` : ""}`).join(" · ")}`);
     // + 8 DATA ROWS on top: per column (alpha only — alpha is never colour-converted): opening bottom (int, frac), height (int, frac), lash ×4, rim + 1, closed line (int, frac); row 0's RGB = the eye's own lash colour
     // atlas: [eyeL | eyeR | lidL | lidR | scleraL | scleraR]; row 8 of the data rows = per-eye iris parameters (+ iris colour)
     const NX1 = eyeImgs[0].NX, NXa = 6 * NX1, NYb = eyeImgs[0].NY, NYa = NYb + 9, atlas = Buffer.alloc(NXa * NYa * 4);
@@ -1370,6 +1421,7 @@ export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, 
       mount.eyeRegionCleanup = { pieces, vertices: flattened, skinUntouched: skinKept, keptLarge: kept }; console.log(`eye-region cleanup: ${pieces} non-skin spike piece(s), ${flattened} verts pressed · skin relief untouched: ${skinKept} verts · large kept: ${kept.length}`); }
     mount.eyeStrandsRemoved = eyeStrands;
     lm.eyeBake = { sclera: scl[3] ? "#" + scl.slice(0, 3).map((v) => Math.round(v / scl[3]).toString(16).padStart(2, "0")).join("") : "#eeeae4", look: [0.25 * 0.22 / BW, 0.13 / BH], lid: 3 };   // subtle gaze travel
+    if (catchlights) lm.eyeBake.catchlight = catchlights.map((c) => ({ before: c.before, added: c.added, after: c.after }));
     // the LIP LINE (where a talking mouth opens): the darkest midline row between the nose tip and the chin
     { const bins = new Map(), nz = after.nose.y; for (let v = 0; v < mm; v++) { const y = OP[v * 3 + 1]; if (Math.abs(OP[v * 3]) > after.eyes.sep * 0.06 || y <= after.chin + 0.01 || y >= after.chin + 0.6 * (nz - after.chin) || OP[v * 3 + 2] < after.ears.z + after.eyes.sep * 0.3) continue;
         const b = Math.round(y / 0.004), e = bins.get(b) ?? [0, 0]; e[0] += lum([outH.COL[v * 3], outH.COL[v * 3 + 1], outH.COL[v * 3 + 2]]); e[1]++; bins.set(b, e); }
@@ -1499,9 +1551,22 @@ export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, 
       const NN = weldNormals(OP, computeNormals(OP, IA)); for (const v of moved) for (let c = 0; c < 3; c++) ON[v * 3 + c] = NN[v * 3 + c];
       mount.rimTuck = { loops, rimVerts: rimV, verts: moved.size, jaggedness: +rimJag.toFixed(3) }; console.log(`head rim tuck: ${JSON.stringify(mount.rimTuck)}`); }
     console.log(`rim detector: jaggedness ${rimJag.toFixed(3)} → ${D.size ? "REPAIRED" : "not required (preserved)"}`); }
+  // SKIN BOUNDARY FAIRING (boundary-fairing.mjs, universal): the skin layer's boundary curves behind the face (ears, sides, nape) are
+  // staircases of whole triangles — smoothed along themselves, tangentially, while hair and skin still share their interface vertices
+  if (split) { const iodL = Math.abs(lm.eyes.r[0] - lm.eyes.l[0]), zBack = lm.eyes.l[2] - 0.6 * iodL, yTop = lm.eyes.l[1] + 0.6 * iodL;
+    const bf = fairSkinBoundaries({ P: OP, N: ON, I, isHeadTri: (t) => split.layer[t] === HAIR_LAYER.HEAD || split.under[t] === 1, live: (t) => !split.drop[t] && (split.layer[t] !== HAIR_LAYER.FRINGE || split.under[t] === 1), active: (v) => OP[v * 3 + 2] < zBack && OP[v * 3 + 1] < yTop, clear: rules.layers.clear,
+      ...(rules.fairLocalScale ? { localScale: true } : {}),
+      ...(rules.fairDiagnose ? { diagnose: true, region: (v) => { const x = OP[v * 3], y = OP[v * 3 + 1], z = OP[v * 3 + 2], ey = lm.eyes.l[1], ez = after.ears.z; return Math.abs(x) > 0.25 && Math.abs(z - ez) < 0.15 && y > ey - 0.2 && y < ey + 0.1 ? "ear" : z < ez - 0.1 && y < ey - 0.05 ? "nape" : "other"; } } : {}) });
+    if (bf.moved) { const NN = weldNormals(OP, computeNormals(OP, I)); for (const v of bf.movedVerts) for (let c = 0; c < 3; c++) ON[v * 3 + c] = NN[v * 3 + c]; }
+    const { movedVerts, ...bfInfo } = bf; void movedVerts; mount.boundaryFairing = bfInfo; console.log(`skin boundary fairing: ${JSON.stringify(bfInfo)}`); }
   const headParts = split
     ? HAIR_LAYER_NAMES.map((name, k) => k === HAIR_LAYER.FRINGE ? null : { name, ...sub((t) => !split.drop[t] && (split.layer[t] === k || (k === HAIR_LAYER.HEAD && split.under[t] === 1)), k === HAIR_LAYER.HEAD) }).filter((p2) => p2 && p2.I.length)
-    : [{ name: "identity_head", ...sub(() => true, true) }];
+    : integrate
+      // INTEGRATION MODE: the generated surface exactly as made, split ONLY by its classified paint — hair (≥ 2 hair corners) is one
+      // part the hair checks see (identity_hair_main), the rest is the head; no layers, no repaint (both with the head's attributes)
+      ? (() => { const isHairTri = (t) => { let c = 0; for (let q = 0; q < 3; q++) if (outH.cls.label[I[t * 3 + q]] === LABEL.HAIR) c++; return c >= 2; };
+        return [{ name: "identity_head", ...sub((t) => !isHairTri(t), true) }, { name: "identity_hair_main", ...sub(isHairTri, true) }].filter((p2) => p2.I.length); })()
+      : [{ name: "identity_head", ...sub(() => true, true) }];
   // the mirrored twin patch: face skin (identity_face_twin, the head's material) + painted features (identity_hair_twinfeature,
   // hair shading like the twin brow it copies) — same texture coordinates as their twin source
   if (twin) for (const [name, li] of [["identity_face_twin", [...twin.skinI, ...twin.featI]]]) { if (!li.length) continue;   // features too: face paint, never hair shading
@@ -1584,6 +1649,35 @@ export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, 
     const med = hl[hl.length >> 1] ?? 20, frac = hl.filter((l) => l > med + 28).length / Math.max(1, hl.length), strength = +Math.min(1, Math.max(0.25, 1 - frac / 0.04)).toFixed(2);   // painted highlights present (Bon) → restrained: never a double highlight
     const lum0 = 0.3 * hairRGB[0] + 0.59 * hairRGB[1] + 0.11 * hairRGB[2], lift = lum0 < 60 ? [92, 95, 102] : hairRGB.map((c) => Math.min(255, Math.round(c + (255 - c) * 0.35)));
     lm.hairHighlight = { strength, color: lift.map((c) => +(c / 255).toFixed(3)), paintHighlightFrac: +frac.toFixed(3) }; console.log(`hair flow highlight: ${JSON.stringify(lm.hairHighlight)}`); }
+  // ONE WELDED UNDERSIDE (EXPERIMENTAL, opt-in — underside-weld.mjs): the opening round the neck closed by one surface welded to the
+  // skin's own rim and ending on the neck tube; it replaces the skull-base filler ONLY when a reliable weld is found — otherwise the
+  // existing construction stays exactly as it is. Built before the interior, so the interior shell stays inside it.
+  if (rules.weldedUnderside && !weldEligible(rules, mount.hairMotion?.preset)) { mount.weldedUnderside = { welded: false, guard: true, reason: `hair motion class "${mount.hairMotion?.preset}" swings into the underside — the existing closure is kept` }; console.log(`welded underside: ${JSON.stringify(mount.weldedUnderside)}`); }
+  if (weldEligible(rules, mount.hairMotion?.preset)) {
+    const S3 = neckExt.ring.length, tubePts = neckExt.ring.map((q, sx) => { const t = ((sx + 0.5) / S3) * 2 * Math.PI - Math.PI, r = q.r * A.neckInset; return [neckExt.cx + Math.cos(t) * r, neckExt.cz + Math.sin(t) * r]; });
+    const sheetAt = (x, z) => { const fx = (x - UG.x0) / UG.c, fz = (z - UG.z0) / UG.c, ix = Math.floor(fx), iz = Math.floor(fz), tx = fx - ix, tz = fz - iz; let s2 = 0, w2 = 0;   // the one-sheet canonical underside, bilinear
+      for (const [dx, dz, ww] of [[0, 0, (1 - tx) * (1 - tz)], [1, 0, tx * (1 - tz)], [0, 1, (1 - tx) * tz], [1, 1, tx * tz]]) { const X = ix + dx, Z = iz + dz; if (X < 0 || Z < 0 || X >= UG.nx || Z >= UG.nz) continue; const v = ug[Z * UG.nx + X]; if (v > 8) continue; s2 += v * ww; w2 += ww; } return w2 > 1e-6 ? s2 / w2 : NaN; };
+    // the skin's own colour at a rim point: the generated colours of the output surface within 6 mm-eq, averaged (sRGB 0..1, as every baked part)
+    const cg = new Map(), cgk = (x, y, z) => `${Math.floor(x / 0.006)},${Math.floor(y / 0.006)},${Math.floor(z / 0.006)}`; for (let v = 0; v < mm; v++) { const k = cgk(OP[v * 3], OP[v * 3 + 1], OP[v * 3 + 2]); (cg.get(k) ?? cg.set(k, []).get(k)).push(v); }
+    const colourOf = (x, y, z) => { const sum = [0, 0, 0]; let n2 = 0; for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) for (const v of cg.get(`${Math.floor(x / 0.006) + dx},${Math.floor(y / 0.006) + dy},${Math.floor(z / 0.006) + dz}`) ?? []) {
+      if (outH.cls.label[v] === LABEL.HAIR || Math.hypot(OP[v * 3] - x, OP[v * 3 + 1] - y, OP[v * 3 + 2] - z) > 0.006) continue; for (let q = 0; q < 3; q++) sum[q] += outH.COL[v * 3 + q] / 255; n2++; } return n2 ? sum.map((c) => c / n2) : skinRGB.slice(); };
+    // (map-driven, opt-in: where the head is actually open — the canonical head against the identity's own surfaces, per angle)
+    let mapOpt = {}; if (rules.mapWeld) { const { identityParts } = await import("./visibility.mjs"), { coverageMap } = await import("./coverage-map.mjs"), aDoc = await io.read(`${BASE_OUT}/identity/alex-neutral-head-v1.glb`);
+      const tmpl = identityParts(aDoc).find((p2) => p2.name === "identity_head"), aEyes = aDoc.getRoot().listScenes()[0].getExtras().humanIdentity.landmarks.eyes, U = Math.abs(aEyes.r[0] - aEyes.l[0]);
+      const cm = coverageMap({ parts: [...headParts, ...faceParts], template: { P: tmpl.P, I: tmpl.I }, neck: { cx: neckExt.cx, cz: neckExt.cz, wall: tubeWall(tubePts, neckExt.cx, neckExt.cz), y1: neckExt.y1 }, eyeY: (lm.eyes.l[1] + lm.eyes.r[1]) / 2, U });
+      mapOpt = { openArea: cm.openArea, U }; mount.coverage = Object.fromEntries(Object.entries(cm.area).map(([k, v]) => [k, +v.toFixed(3)])); console.log(`coverage map: ${JSON.stringify(mount.coverage)}`); }
+    const wu = weldUnderside({ ...mapOpt, parts: [...headParts, ...faceParts], neck: { cx: neckExt.cx, cz: neckExt.cz, wall: tubeWall(tubePts, neckExt.cx, neckExt.cz), y0: neckExt.y0, y1: neckExt.y1 }, sheet: sheetAt,
+      eyeY: (lm.eyes.l[1] + lm.eyes.r[1]) / 2, iod: Math.abs(lm.eyes.r[0] - lm.eyes.l[0]), headJoint: base.JI.Head, colourOf, hairColour: hairRGB ? hairRGB.map((c) => c / 255) : null, clear: rules.layers.clear, rimBridge: !!rules.rimBridge, litNormals: !!rules.undersideLit });
+    mount.weldedUnderside = wu.info; console.log(`welded underside: ${JSON.stringify(wu.info)}`);
+    if (wu.part) { let part = wu.part;
+      // THE SKIN'S OWN TEXTURE (underside-texture.mjs): baked from the finished head texture; on any error the vertex colours stay
+      try { const { data, info: ti } = await sharp(headTex).raw().toBuffer({ resolveWithObject: true }), skinParts = headParts.filter((p2) => p2.name === "identity_head" || p2.name === "identity_face_twin");
+        const bk = bakeUndersideTexture({ part, strip: wu.strip, skin: skinParts, tex: { data, width: ti.width, height: ti.height, channels: ti.channels }, hairColour: hairRGB ? hairRGB.map((c) => c / 255) : null, neckTone: skinRGB, ringEdge: wu.info.ringEdge });
+        const img = await sharp(Buffer.from(bk.image.data), { raw: { width: bk.image.width, height: bk.image.height, channels: 3 } }).webp({ lossless: true }).toBuffer();
+        part = { ...bk.part, material: { name: "baked_underside", texture: img, roughness: 0.9 } }; mount.weldedUnderside.texture = bk.info; }
+      catch (err) { mount.weldedUnderside.texture = { error: err.message }; }
+      console.log(`welded underside texture: ${JSON.stringify(mount.weldedUnderside.texture)}`);
+      headParts.push(part); skullBasePart.I = []; } }
   // INTERIOR CLOSURE: the canonical head shrunk inside everything above (head-closure.mjs)
   const interior = rules.interior ? interiorShell({ P: AP, I: AI, J: AJ, W: AW }, [...headParts, skullBasePart], { centre: [0, 1.25, canon.ears.z], margin: rules.interior.margin, alexInset: rules.interior.alexInset, colour: skinRGB.map((c) => c * 0.92), headJoint: base.JI.Head }) : null;   // the skull base's own tone: one continuous underside, never a darker "cavity"
   if (interior) { mount.interior = interior.info; console.log(`interior closure: ${JSON.stringify(interior.info)}`); }
@@ -1634,6 +1728,10 @@ export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, 
     const side = { y: [eyY - 0.03, eyY + 0.02, eyY + 0.07].map((v) => +v.toFixed(4)), z0: +(lm.eyes.l[2]).toFixed(4), dz: -0.025, n: 18, x: [] };
     for (const yq of side.y) { const row = []; for (let k = 0; k < side.n; k++) { const zq = side.z0 + k * side.dz; let m2 = 0; for (let v = 0; v < HPp.length / 3; v++) if (Math.abs(HPp[v * 3 + 1] - yq) < 0.015 && Math.abs(HPp[v * 3 + 2] - zq) < 0.0125) m2 = Math.max(m2, Math.abs(HPp[v * 3])); row.push(m2 ? +m2.toFixed(4) : null); } side.x.push(row); }
     lm.glassesFit = { v: 1, grid, faceHalfW: +fhw.toFixed(4), side, ear: [+after.ears.half.toFixed(4), +eyY.toFixed(4), +after.ears.z.toFixed(4)] }; }
+  // HANGING HAIR MUST BE ATTACHED (hair-debris.mjs, universal): after the LAST cut, hair welded to nothing inside the collar zone
+  // (the neck-hair column + the hanging-hair clearance) is generated-collar debris — removed before the anchors / envelope are measured
+  if (integrate) mount.hairDebris = "kept (integration mode: the generated hair is not edited)";
+  else { const hd = dropUnattachedHairDebris(headParts, { clearance: rules.hairClearance, onSurface: rules.layers.clear }); mount.hairDebris = hd; console.log(`hair debris: ${JSON.stringify(hd)}`); }
   // ACCESSORY ATTACHMENT CONTRACT (V1.1, universal): SEMANTIC anchors measured on this identity's own fitted geometry, so
   // any approved accessory module adapts to the wearer (humanAccessoryFit.ts) — never per-employee XYZ:
   //   ears {l, r}: root / top / lobe / back (skin), nose: bridge / tip, crown, forehead,
@@ -1642,7 +1740,7 @@ export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, 
   { lm.attach = computeAttach({ parts: headParts, eyes: lm.eyes, mouthY: lm.mouth.c[1], earHalf: after.ears.half, earZ: after.ears.z, centre: skullMap.CC });
     console.log(`attach anchors: ears L ${JSON.stringify(lm.attach.ears.l.lobe)} R ${JSON.stringify(lm.attach.ears.r.lobe)} · nose ${JSON.stringify(lm.attach.nose)} · crown ${JSON.stringify(lm.attach.crown)}`); }
   const bytes = await writeModule(out, base, [neckExt.part, ...(skullBaseShip && skullBaseShip.I.length ? [skullBaseShip] : []), ...(holeFill ? [holeFill] : []), ...(interior ? [interior.part] : []), ...faceParts, ...headParts, ...sockParts],
-    { humanIdentity: { id, base: C.HUMAN_BASE_VERSION, source: rawFile, chibify: { alpha, ruleset: rules.upperHead === "stretch" ? "v2" : "v3", rules, S, T, eScale, pScale, faceK: k }, landmarks: lm, hides: [], mount, hairFused: true, chains, hairMotion: mount.hairMotion.preset } }, { compress: false, extraJoints });
+    { humanIdentity: { id, base: C.HUMAN_BASE_VERSION, source: rawFile, chibify: { alpha, ruleset: rules.upperHead === "stretch" ? "v2" : "v3", ...(integrate ? { mode: "integration" } : {}), rules, S, T, eScale, pScale, faceK: k }, landmarks: lm, hides: [], mount, hairFused: true, chains, hairMotion: mount.hairMotion.preset } }, { compress: false, extraJoints });
   return { skinHex: lm.skin, cls: { skinC: h.cls.skinC, hairC: h.cls.hairC, bald: h.cls.bald, Ts: h.cls.Ts, Th: h.cls.Th, seeds: h.cls.seeds }, mount, canon, src, after, cr, sr, ar: ratios(after), params: { S, T, eScale, pScale, faceK: k, alpha }, out, bytes, verts: mm, tris: I.length / 3 };
 }
 
@@ -1653,6 +1751,9 @@ if (process.argv[1]?.endsWith("chibify.mjs")) {
   // per-employee conditional repairs (detector/recipe gated): --repairs=rimTuck:1,napeSkin:0
   { const rp = process.argv.find((x) => x.startsWith("--repairs="))?.slice(10); if (rp) { RULESETS[ruleset] = { ...RULESETS[ruleset] }; for (const kv of rp.split(",")) { const [k, v] = kv.split(":"); if (k) RULESETS[ruleset][k] = v === "1" || v === "true"; } console.log(`conditional repairs: ${rp}`); } }
   const opts = { id, rules: RULESETS[ruleset], alpha: a && !a.startsWith("--") ? Number(a) : 0.35, remeasureCanon: process.argv.includes("--remeasure-canon"), hairLength: process.argv.find((x) => x.startsWith("--hair="))?.slice(7) ?? "natural", hairMotion: process.argv.find((x) => x.startsWith("--motion="))?.slice(9) ?? null, tie: process.argv.find((x) => x.startsWith("--tie="))?.slice(6) ?? null };
+  // INTEGRATION MODE (--integrate, opt-in development experiment, 2026-10-13): the generated head is kept as made — no face
+  // reshaping, eye enlargement, depth / face-length loops, cranium rule or hair-layer rebuild; hair rigid on the Head joint
+  if (process.argv.includes("--integrate")) { opts.integrate = true; opts.hairMotion = "rigid"; console.log("INTEGRATION MODE: generated geometry kept; fit, neck seal, closure and checks only"); }
   // CANONICAL DEPTH BAND (universal): eye-plane depth in front of the canonical ear plane must lie within ±5% of the
   // canonical skull's (Alex: alex-neutral-head-v1). Outside it, the fit is rerun with a depth scale that brings it to the
   // nearest band edge (minimal change); inside it, nothing changes.
@@ -1676,7 +1777,7 @@ if (process.argv[1]?.endsWith("chibify.mjs")) {
     console.log(`canonical skull width: output ear half-width ${(w0 * 100).toFixed(1)}% of canonical → ${(r.after.ears.half / r.canon.ears.half * 100).toFixed(1)}% (skull scale ×${k.toFixed(4)}${k === 1 ? ", inside tolerance — unchanged" : ""})`); }
   const eyeZ = (q) => (q.after.eyes.l.c[2] + q.after.eyes.r.c[2]) / 2, d0 = alexLm.eyes.l[2] - r.canon.ears.z;
   { let k = 1, ratio = (eyeZ(r) - r.canon.ears.z) / d0; const first = ratio;
-    for (let pass = 0; pass < 3 && Math.abs(ratio - 1) > DEPTH_TOL + 0.005; pass++) { k *= (1 + Math.sign(ratio - 1) * DEPTH_TOL) / ratio; opts.depthK = k; opts.depthInfo = { measured: +first.toFixed(4), k: +k.toFixed(4), band: DEPTH_TOL }; r = await chibify(raw, opts); ratio = (eyeZ(r) - r.canon.ears.z) / d0; }
+    for (let pass = 0; pass < 3 && !opts.integrate && Math.abs(ratio - 1) > DEPTH_TOL + 0.005; pass++) { k *= (1 + Math.sign(ratio - 1) * DEPTH_TOL) / ratio; opts.depthK = k; opts.depthInfo = { measured: +first.toFixed(4), k: +k.toFixed(4), band: DEPTH_TOL }; r = await chibify(raw, opts); ratio = (eyeZ(r) - r.canon.ears.z) / d0; }
     console.log(`canonical depth: eye-plane depth ${(first * 100).toFixed(1)}% of canonical → ${(ratio * 100).toFixed(1)}% (depth scale ${k.toFixed(4)}${k === 1 ? ", inside the ±5% band — unchanged" : ""})`); }
   // BOUNDED LONG-FACE RETENTION (detector-gated loop): width:length growth vs THIS employee's source above the approved band
   // (≤ 1.42) → keep more of the face's length (bounded by the mounted envelope); never touches a head inside the band
@@ -1684,12 +1785,21 @@ if (process.argv[1]?.endsWith("chibify.mjs")) {
     // bracketed search on the boost (the response is not linear once the style cap no longer binds): first step from the
     // measured growth, then bisect toward the band edge — never overshoot into a longer face than the band needs
     if (FLB > 0) { b = FLB; console.log(`identity face length: boost ×${FLB} from the Stage 0 target (growth band not consulted)`); }
-    else if (g0 > lim + 0.005) { let lo = 1, hi = null, best = null; b = g0 / lim;
+    else if (!opts.integrate && g0 > lim + 0.005) { let lo = 1, hi = null, best = null; b = g0 / lim;
       for (let pass = 0; pass < 5; pass++) { opts.faceLenBoost = b; r = await chibify(raw, opts); const g = growth(r);
         if (g <= lim + 0.005) { hi = b; best = { b, r }; if (g >= lim - 0.03) break; } else lo = b;
         b = hi === null ? b * g / lim : (lo + hi) / 2; }
       if (best) { b = best.b; r = best.r; } }
     console.log(`long-face retention: growth ${g0.toFixed(3)} (band ≤ ${lim}) → ${growth(r).toFixed(3)}${b === 1 ? " — inside the band, unchanged" : ` (face length ×${b.toFixed(4)}, eye line ${r.mount.longFace.eyeY}${r.mount.longFace.capped ? ", CAPPED at the long-face envelope" : ""})`}`); }
+  // CANONICAL CRANIUM (detector-gated loop, 2026-10-13): the built head's cranium : face relation (cranium.mjs — the gate's own skull
+  // height ÷ face length) above the approved family's maximum (cranium-calibration.json, measured on the approved heads) → compress
+  // the upper cranium back toward it: at most 3 re-runs, never below CRANIUM_RULE.minK; a head inside the family is never touched
+  if (!opts.integrate && (CRANIUM_RULE.enabled || process.argv.includes("--cranium"))) { const Rmax = craniumMax(), R0 = craniumRatio(await io.read(r.out)).R, cr = CRANIUM_RULE; let k = 1, Rk = R0;
+    if (R0 > Rmax + cr.tol) { const pts = [[1, R0]]; k = 1 - (R0 - Rmax) / ((R0 - 1) * (1 - cr.band));
+      for (let pass = 0; pass < 3; pass++) { k = Math.max(cr.minK, Math.min(1, k)); opts.craniumK = k; r = await chibify(raw, opts); Rk = craniumRatio(await io.read(r.out)).R; pts.push([k, Rk]);
+        if (Rk <= Rmax + cr.tol || k <= cr.minK) break; const [[k1, R1], [k2, R2]] = pts.slice(-2); k = R2 !== R1 ? k2 + ((Rmax - R2) * (k2 - k1)) / (R2 - R1) : k2 - 0.05; } }
+    r.mount.cranium = { R0, Rmax, k: +k.toFixed(4), R: Rk, inside: Rk <= Rmax + cr.tol };
+    console.log(`cranium : face rule: ${R0} (approved max ${Rmax})${k === 1 ? " — inside the approved family, unchanged" : ` → ${Rk} (upper cranium ×${k.toFixed(3)} above the rigid band${Rk > Rmax + cr.tol ? ", STILL ABOVE the approved family — the gate decides" : ""})`}`); }
   const f = (v) => (typeof v === "number" ? +v.toFixed(3) : v);
   const row = (k, c, s, x) => console.log(`${k.padEnd(22)} canon ${String(f(c)).padEnd(8)} source ${String(f(s)).padEnd(8)} after ${f(x)}`);
   console.log(`eye strands repainted: ${r.mount.eyeStrandsRemoved ?? 0} · long hair kept ${r.mount.longHairKept}`);
@@ -1706,5 +1816,5 @@ if (process.argv[1]?.endsWith("chibify.mjs")) {
   console.log(`body vs hair: ${JSON.stringify(r.mount.bodyVsHair)} · hair: ${JSON.stringify(r.mount.hair)}`);
   console.log(`mount: head base y ${f(r.mount.headTop)} · skull base y ${f(r.mount.skullBase.min)}–${f(r.mount.skullBase.max)} · neck extension y ${f(r.mount.neckExtension.from)}→${f(r.mount.neckExtension.to)} (base neck top ${f(r.mount.neckExtension.baseNeckTop)}) · below-Alex anatomy removed ${r.mount.napeRemoved} (front/jaw ${r.mount.faceTrim}) · holes closed ${r.mount.holesClosed} · bust removed ${r.mount.bustRemoved} · socket loops ${r.mount.socketLoops} (${r.mount.socketTris} tris) · attach y ${f(r.mount.attachY)} · cut y ${f(r.mount.cutY)} · base neck ${f(r.mount.baseNeck.hx * 2)}×${f(r.mount.baseNeck.hz * 2)} @z${f(r.mount.baseNeck.cz)} · generated neck ${f(r.mount.generatedNeck.hx * 2)}×${f(r.mount.generatedNeck.hz * 2)} @z${f(r.mount.generatedNeck.cz)}`);
   console.log(`${r.out} · ${r.verts} verts ${r.tris} tris · ${(r.bytes / 1048576).toFixed(1)} MB`);
-  fs.writeFileSync(`scripts/avatar-pipeline/output/human-base/${process.argv[3]}-chibify.json`, JSON.stringify({ params: r.params, canon: r.cr, source: r.sr, after: r.ar, abs: { canon: r.canon, src: r.src, after: r.after }, detections: r.mount.detections, longFace: r.mount.longFace, repairs: { rimTuck: !!opts.rules.rimTuck, collarCull: !!opts.rules.collarCull, hairAsSkinRelabel: !!opts.rules.hairAsSkinRelabel, neckHairClear: !!opts.rules.neckHairClear, jawClosureClip: !!opts.rules.jawClosureClip, crownSkinRelabel: !!opts.rules.crownSkinRelabel, keepOwnUnderside: !!opts.rules.keepOwnUnderside }, bodyVsHair: r.mount.bodyVsHair, hair: r.mount.hair }, null, 1));
+  fs.writeFileSync(`scripts/avatar-pipeline/output/human-base/${process.argv[3]}-chibify.json`, JSON.stringify({ params: r.params, canon: r.cr, source: r.sr, after: r.ar, abs: { canon: r.canon, src: r.src, after: r.after }, detections: r.mount.detections, longFace: r.mount.longFace, cranium: r.mount.cranium ?? null, repairs: { rimTuck: !!opts.rules.rimTuck, collarCull: !!opts.rules.collarCull, hairAsSkinRelabel: !!opts.rules.hairAsSkinRelabel, neckHairClear: !!opts.rules.neckHairClear, jawClosureClip: !!opts.rules.jawClosureClip, crownSkinRelabel: !!opts.rules.crownSkinRelabel, keepOwnUnderside: !!opts.rules.keepOwnUnderside }, bodyVsHair: r.mount.bodyVsHair, hair: r.mount.hair }, null, 1));
 }

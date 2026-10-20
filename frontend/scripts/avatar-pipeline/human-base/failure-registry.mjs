@@ -17,6 +17,24 @@
 /** @typedef {{ pass: boolean, value: unknown, threshold: string }} Verdict */
 const v = (pass, value, threshold) => ({ pass: !!pass, value, threshold });
 
+/** the nape closure in motion: the worst sample over the bind pose + idle + walk (pct overall, worst view) — one definition, gate + tests */
+export const closureInMotion = (e) => { const M = e.mounted.motion; if (!M) throw new Error("no motion evidence"); let pct = 0, worst = 0, at = null; for (const [pose, x] of Object.entries(M)) { pct = Math.max(pct, x.pct); if (x.worstPct > worst) { worst = x.worstPct; at = `${pose}/${x.worstView}`; } } return { pct, worstPct: worst, at }; };
+/** PRODUCTION MOTION BAND (Option A, Bon 2026-10-19): the approved five's own measured maxima on closureInMotion (bon 6.67 / 16.87,
+ *  micah 4.91 / 23.42, angelo 5.21 / 11.27, clang 3.9 / 16.32, france 6.99 / 20.85). Inside it the measure does NOT separate production
+ *  quality from visually rejected napes (kael-visible-shred 6.99 / 13.72, kael-ear-nape 4.35 / 9.49 sit in it too), so a head there is
+ *  never passed automatically: it goes to VISUAL REVIEW (a hash-bound sign-off of this class). Above it = FAIL (lui-visible-shred,
+ *  lui-ears-closure, jona-hair-cage). The welded tier (≤ 1 % / ≤ 5 %) passes automatically as before. */
+export const PRODUCTION_MOTION_BAND = Object.freeze({ pct: 6.99, worstPct: 23.42 });
+/** EXACT-ASSET GRANDFATHERING: the five approved production files — signed off before a `grandfather` class existed — keep that
+ *  sign-off for such classes by their EXACT bytes (sha256 of the file) only. A rebuild, a modified copy or a new employee has other bytes
+ *  and is gated in full; no other class is ever waived. */
+export const GRANDFATHERED = Object.freeze({
+  cc44556c73a3cc34f688a429f0db78b3de4354b0c40a5a6b6b58a0e2c81dc1f7: "production/bon-v1.glb",
+  ac1f9eadbd7cdc5b268b13cf5267e769f2ee4a5cd6093aad66eda16f20213668: "production/micah-v1.glb",
+  c5e6cc2858fc5f8dec31bd95a92422a52361c46f84083d40b2ae797b7cdea685: "production/angelo-v1.glb",
+  "8e8ae9b47af76b49cd6c307e8dc32ecc6023a0b945ab71f8c4dca991382f95f2": "production/clang-v1.glb",
+  "0123b638cab51a430a916338e6796d646062c14ed51ab6d97471d4104a39a355": "production/france-v1.glb",
+});
 export const REGISTRY = [
   // ---------------- recovered: automatic in-stage repairs (V1.1–V1.4) — validated on the artifact ----------------
   { id: "FC-FRINGE-EYE", desc: "fringe mistaken for eye paint / hair into the face / an eye cutting through hair", source: "artifact",
@@ -91,17 +109,71 @@ export const REGISTRY = [
     contraindications: "natural wide faces are wide in the source too and pass", validate: (e) => v(e.record.aspectGrowth <= 1.45, e.record.aspectGrowth, "≤ 1.45 (approved 1.19–1.42)"), history: ["nicole", "lui"] },
   // ---------------- no reliable automatic detector yet: mandatory, hash-bound visual sign-off ----------------
   { id: "FC-EAR-BOUNDARY", desc: "dirty skin / hair fragments / cut-outs around the ears", source: "signoff",
-    detector: "NONE reliable — five measures calibrated against the approved five and rejected (visible dark residue, glued hair, hair cut-edge length, detached skin islands, ear-through-hair-shell depth: approved Bon / France score worse than rejected Kael)", repair: "—", autoSafe: false, contraindications: "—", signoff: true, history: ["kael", "lui"] },
+    detector: "NONE reliable — 2026-10-12 separation matrix: hair through ear skin (visible: approved 84–319 vs rejected 202–335), closure visible near the ears (approved 7–365 vs rejected 5–678), ear-edge raggedness of visible skin / hair (approved 0.62–0.80 vs rejected 0.58–0.71) all overlap; before that five measures calibrated against the approved five and rejected (visible dark residue, glued hair, hair cut-edge length, detached skin islands, ear-through-hair-shell depth: approved Bon / France score worse than rejected Kael)", repair: "—", autoSafe: false, contraindications: "—", signoff: true, history: ["kael", "lui"] },
   { id: "FC-HAIR-SPIKE", desc: "shredded / spiking strand cages, stretched slivers in hair", source: "signoff",
-    detector: "NONE reliable (sliver counts overlap the approved fixtures; Jona's cage was skin-layer hair → FC-HAIR-AS-SKIN)", repair: "—", autoSafe: false, contraindications: "—", signoff: true, history: ["jona"] },
+    detector: "NONE reliable — 2026-10-12: VISIBLE stretched slivers (longest edge > 4× the layer median, aspect > 10) read approved 16.8–53.1 ‰ vs the only real hair reject (Jona's cage, already FC-HAIR-AS-SKIN) 17.0 ‰ and welded builds up to 79.5 ‰; a labelled SYNTHETIC spike case (30 vertices pulled 0.25 eye spacings out) moved Angelo only 19.2 → 21.4 ‰ — no real separation and no real spike fixture, so no detector (earlier: sliver counts overlap the approved fixtures)", repair: "—", autoSafe: false, contraindications: "—", signoff: true, history: ["jona"] },
   { id: "FC-NAPE-ROUGH", desc: "ragged / blotchy low-rear nape skin", source: "signoff",
-    detector: "partly FC-CLOSURE-EXPOSED + FC-NECK-HAIR (the dark collar band); skin roughness itself has no reliable detector", repair: "—", autoSafe: false, contraindications: "—", signoff: true, history: ["micah", "angelo", "clang", "france", "lui"] },
+    detector: "the closure part is AUTOMATIC since 2026-10-12 (FC-CLOSURE-EXPOSED-IN-MOTION, blocking; every visually rejected nape fixture fails it) + FC-NECK-HAIR (the dark collar band); the ragged / blotchy SKIN itself has no separating measure (nape-window raggedness of visible skin / hair edges and identity-space closure overlap approved vs rejected) — sign-off retained for it", repair: "—", autoSafe: false, contraindications: "—", signoff: true, history: ["micah", "angelo", "clang", "france", "lui"] },
+  // NAPE CLOSURE IN MOTION (blocking since 2026-10-12, was report-only): FC-CLOSURE-EXPOSED's own measure in the poses VO shows. The
+  // separation matrix (approved / visually rejected / repaired / welded): every visually rejected nape fixture 4.35–22.34 % / 9.49–37.37 %,
+  // every welded build 0.27–0.53 % / 0.86–2.38 % — the thresholds sit in a 4–8× gap. The approved five (old closure, signed off before this
+  // class existed) read 3.9–7.0 % / 11.3–23.4 %: GRANDFATHERED by their exact bytes only, never a rebuild, a modified copy or a new employee
+  { id: "FC-CLOSURE-EXPOSED-IN-MOTION", desc: "closure (interior / skull-base filler) seen first from the gate's low / rear / neck views while the avatar IDLES and WALKS, hair dynamics swinging — FC-CLOSURE-EXPOSED's own measure in the poses VO shows (the bind pose holds the hair at rest over the nape): the visible gap between the hair's lower edge and the nape that the visual rejections named", source: "mounted",
+    detector: "mounted-gate motionEvidence: the idle and walking clips played frame by frame (one cycle of warm-up), three samples each, closureExposure per sample over the twelve gate views",
+    validate: (e) => { const m = closureInMotion(e), B = PRODUCTION_MOTION_BAND, T = `≤ 1 % / ≤ 5 % automatic; ≤ ${B.pct} % / ≤ ${B.worstPct} % (the approved five's band) = visual review; above = fail`;
+      if (!(m.pct > 1 || m.worstPct > 5)) return v(true, { ...m, tier: "welded" }, T);
+      return m.pct <= B.pct && m.worstPct <= B.worstPct ? { ...v(true, { ...m, tier: "production-band" }, T), review: true } : v(false, { ...m, tier: "above-band" }, T); },
+    reviewBand: true,
+    calibration: "2026-10-12 separation matrix (mounted, as the contract tests mount): rejected kael-visible-shred 6.99 / 13.72, lui-visible-shred 14.95 / 23.94, kael-ear-nape 4.35 / 9.49, lui-ears-closure 22.34 / 37.37, jona-hair-cage 6.38 / 26.36 · welded lui 0.53 / 2.38, angelo 0.36 / 1.09, france 0.27 / 0.86 · approved (grandfathered) bon 6.67 / 16.87, micah 4.91 / 23.42, angelo 5.21 / 11.27, clang 3.9 / 16.32, france 6.99 / 20.85",
+    fired: (e) => { const m = closureInMotion(e); return m.pct > 1 || m.worstPct > 5; }, repairFlag: "keepOwnUnderside",
+    repair: "keepOwnUnderside (BUILD-LOOP, detector-gated, 2026-10-13): the identity's own underside skin is kept so the welded underside (development default for rigid / short hair) can still form after the automatic identity correction — on the first unattended new-employee run the corrected rim folded back without it and the weld fell back; the gate re-validates every class after the repair", autoSafe: true, contraindications: "—", grandfather: true, history: ["bon", "kael", "clang", "lui", "france", "micah", "angelo", "jona", "nicole", "luie2e"] },
 ];
 
 /** the classes a visual sign-off may approve (no reliable detector yet) — migrate a class OUT when a detector exists */
 export const SIGNOFF_CLASSES = REGISTRY.filter((c) => c.signoff).map((c) => c.id);
+/** what a reviewer may approve: the sign-off classes + automated classes whose measure has an ambiguous REVIEW band (approval counts
+ *  only while the measurement sits in that band — never over a FAIL) */
+export const APPROVABLE_CLASSES = REGISTRY.filter((c) => c.signoff || c.reviewBand).map((c) => c.id);
 
 export const FROZEN = new Set(["bon", "micah", "angelo", "clang", "france"]);   // approved artifacts: never rebuilt into production
+
+/** REPORT-ONLY DETECTORS (2026-10-10): measured on every build and written to its report, NEVER part of the verdict (they cannot fail,
+ *  pass or approve anything). A detector lives here once it separates the approved five (clear) from the visually rejected fixtures
+ *  (fired) with margin; it moves into REGISTRY as an automated class when enough independent cases back it. A candidate measure that
+ *  misses its negatives never gets here (2026-10-10: floating skin pieces — the approved heads show small separate skin / closure
+ *  pieces as large as the rejected ones, in area, in 3D welding and in image-space detachment; the visible difference is not measured yet). */
+export const REPORT_ONLY = [
+  { id: "FC-CLOSURE-THROUGH-HAIR", desc: "closure (skin-toned skull filler) showing through a gap in the haircut: a visible closure patch walled in by hair, in the poses VO shows — the gap between the scalp hair's lower edge and the nape opens in MOTION, so the bind-pose gate never saw it", source: "mounted",
+    detector: "mounted-gate closureWalls: orthographic label renders over the level / neck / under-hairline / front views, bind pose + idle clip at three phases; per closure patch, the hair share of its border",
+    measure: (e) => { const P = e.mounted.closureWalls; if (!P) throw new Error("no closure-wall evidence"); let worst = 0, at = null, bind = 0;
+      for (const [pose, V] of Object.entries(P)) for (const [view, x] of Object.entries(V)) { const w = Math.max(0, ...x.walled.filter((p) => p[1] >= 0.8).map((p) => (1000 * p[0]) / Math.max(1, x.headPx)));
+        if (w > worst) { worst = w; at = `${pose}/${view}`; } if (pose === "bind") bind = Math.max(bind, w); }
+      return { worstPermille: +worst.toFixed(1), at, bindPermille: +bind.toFixed(1) }; },
+    fired: (m) => m.worstPermille >= 15, threshold: "largest visible closure patch with ≥ 80 % hair border < 15 ‰ of the view's head",
+    calibration: "approved five ≤ 2.5 ‰ · visually rejected short-haircut states 54–58 ‰ (0 ‰ in the bind pose) · a broken bob fixture 80 ‰", repair: "— (next: close the scalp-hair / nape gap that opens in motion)", history: ["lui"] },
+  { id: "FC-FRINGE-INTO-FACE-EXACT", desc: "a fringe strand SUNK into the face — FC-FRINGE-EYE's into-face test measured exactly (ray-cast face depth at each point, whole sunk triangles by area), so compression / grid sampling cannot flip it (France flipped 0 ↔ 1 on identical fringe geometry, 2026-10-12)", source: "artifact",
+    detector: "fringe-exact.mjs fringeIntoFaceExact: FC-FRINGE-EYE's window (5–30 mm behind the face), frontal zone and silhouette rule on the exact surface; area of fringe triangles with all three corners inside",
+    measure: (e) => { const m = e.artifact.fringeExact; if (!m) throw new Error("no exact fringe measure"); return { sunkArea: m.sunkArea, sunkTris: m.sunkTris, inside: m.inside }; },
+    fired: (m) => m.sunkArea > 0, threshold: "no fringe triangle sunk whole inside the face",
+    calibration: "approved five 0 · France fair6 / v10 / v11 0 · France v8 (uncapped fairing) 1.9e-5 · negative fixtures (fixtures/report-only) 3.6e-4, 6.5e-4 · blind spot: a strand sunk AT the face outline (FC-FRINGE-EYE catches it)", repair: "— (report-only)", history: ["france"] },
+  { id: "FC-UNDERSIDE-FOLD", desc: "the welded underside folds BACK over the skin at the weld (≥ 90° to the skin triangle across a rim edge) or into a FIN (two of its own triangles > 120° apart): a lip / pleat at the collar that no texture hides", source: "artifact",
+    detector: "underside-weld.mjs weldFoldBacks on the shipped file: rim edges matched to the skin by position (nearest within 0.2 mm-eq, compression moves less), oriented normals; fins by position-matched neighbour edges",
+    measure: (e) => { const m = e.artifact.undersideFold; if (!m) throw new Error("no underside fold measure"); return m; },
+    fired: (m) => m.foldBacks > 0 || m.fins > 0, threshold: "no fold-back at the weld, no fin",
+    calibration: "fires on the v15 France weld (fixtures/report-only/france-v15-underside-fold.glb: 33 fold-backs, 11 fins) and the shipped v14 Lui / Bon welds (12 / 31, 5 / 26); 0 where no welded underside exists (the approved five)", repair: "— (report-only)", history: ["lui", "bon", "france"] },
+  { id: "FC-HAIR-THROUGH-UNDERSIDE", desc: "MOVING hair passing THROUGH the welded underside or the closure while the avatar idles / walks (exact triangle tests on the skinned, dynamics-driven mesh); moving hair through the skin is reported alongside", source: "mounted",
+    detector: "mounted-gate motionEvidence hairThrough: every identity hair layer but the rigid base cap / scalp against baked_underside, baked_interior / skullbase and identity_head / face_twin",
+    measure: (e) => { const M = e.mounted.motion; if (!M) throw new Error("no motion evidence"); let u = 0, c = 0, sk = 0, at = null; for (const [pose, x] of Object.entries(M)) { const h = x.hairThrough; if (h.underside + h.closure > u + c) at = pose; u = Math.max(u, h.underside); c = Math.max(c, h.closure); sk = Math.max(sk, h.skin); } return { underside: u, closure: c, skin: sk, at }; },
+    fired: (m) => m.underside > 0 || m.closure > 0, threshold: "no moving-hair triangle through the underside or the closure",
+    calibration: "2026-10-12 walking: through the closure Clang 26, France 256, Micah 7, Jona 9, Nicole 156 (fallbacks); France v15 weld 179 underside + 116 closure; Bon, Kael, Lui, Angelo 0 · through the skin 657–5095 everywhere (roots seated in the scalp by design — reported, never fired)", repair: "— (report-only)", history: ["clang", "france", "micah", "jona", "nicole"] },
+];
+
+/** the report-only findings for one candidate (never part of the verdict); a measure that cannot run says so */
+export function reportOnly(evidence) {
+  return REPORT_ONLY.map((d) => { if (!evidence?.[d.source]) return { id: d.id, status: "NOT-MEASURED", value: `no ${d.source} evidence`, threshold: d.threshold };
+    try { const value = d.measure(evidence); return { id: d.id, status: d.fired(value) ? "FIRED" : "CLEAR", value, threshold: d.threshold, calibration: d.calibration }; }
+    catch (err) { return { id: d.id, status: "NOT-MEASURED", value: `measure error: ${err.message}`, threshold: d.threshold }; } });
+}
 
 /** the build-loop repairs a set of evidence asks for (detector-gated, auto-safe only) */
 export function repairsFor(evidence) { const fired = (c) => { try { return !!c.fired?.(evidence); } catch { return false; } };   // a detector that cannot run selects no repair — the gate fails that class closed
@@ -112,7 +184,7 @@ export function repairsFor(evidence) { const fired = (c) => { try { return !!c.f
 /** a visual approval counts for ONE sign-off class only when it is bound to this exact artifact AND pipeline version, names
  *  that class explicitly, and carries a reviewer + timestamp. It can never pass an automated class. */
 export function approvalCovers(approval, classId, { artifactHash, pipelineVersion, bindingHash }) {
-  if (!approval || !REGISTRY.find((c) => c.id === classId)?.signoff) return false;
+  const c = REGISTRY.find((x) => x.id === classId); if (!approval || !(c?.signoff || c?.reviewBand)) return false;
   return approval.artifactHash === artifactHash && approval.pipelineVersion === pipelineVersion && !!bindingHash && approval.bindingHash === bindingHash && Array.isArray(approval.classes) && approval.classes.includes(classId)
     && typeof approval.reviewer === "string" && approval.reviewer.trim().length > 0 && !Number.isNaN(Date.parse(approval.timestamp ?? ""));
 }
@@ -124,6 +196,9 @@ export function evaluate(evidence, { approval = null, artifactHash = null, pipel
       classes.push({ id: c.id, status: ok ? "PASS" : "SIGNOFF-REQUIRED", value: ok ? { reviewer: approval.reviewer, at: approval.timestamp } : null, threshold: "visual sign-off bound to artifact hash + validated mount + pipeline version + this class" }); continue; }
     if (!evidence[c.source]) { classes.push({ id: c.id, status: "FAIL", value: `no ${c.source} evidence`, threshold: "evidence required" }); continue; }
     let r; try { r = c.validate(evidence); } catch (err) { classes.push({ id: c.id, status: "FAIL", value: `validator error: ${err.message}`, threshold: "validator must run" }); continue; }
+    if ((!r.pass || r.review) && c.grandfather && artifactHash && GRANDFATHERED[artifactHash]) { classes.push({ id: c.id, status: "GRANDFATHERED", value: { asset: GRANDFATHERED[artifactHash], measured: r.value }, threshold: r.threshold }); continue; }
+    if (r.pass && r.review) { const ok = approvalCovers(approval, c.id, { artifactHash, pipelineVersion, bindingHash });   // the ambiguous band: a visual decision, never automatic
+      classes.push({ id: c.id, status: ok ? "PASS" : "SIGNOFF-REQUIRED", value: ok ? { ...r.value, reviewer: approval.reviewer, at: approval.timestamp } : r.value, threshold: r.threshold }); continue; }
     classes.push({ id: c.id, status: r.pass ? "PASS" : "FAIL", value: r.value, threshold: r.threshold, repair: c.repair, autoSafe: c.autoSafe });
   }
   const failed = classes.filter((c) => c.status === "FAIL"), signoff = classes.filter((c) => c.status === "SIGNOFF-REQUIRED");

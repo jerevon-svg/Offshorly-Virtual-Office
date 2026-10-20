@@ -373,3 +373,44 @@ Regression fixtures: `fixtures/` (approved five pass; batch-2 broken states fail
   mounted envelope (skull width / height and cheek vs body). Outside the envelope = fail closed, never distortion.
 - Open debt: FC-EAR-BOUNDARY, FC-NAPE-ROUGH (rough cut line under the hair), FC-HAIR-SPIKE (visual sign-off); mount pitch
   (Micah's +7°) is not derived automatically.
+
+## V3 — the production-five path restored (2026-10-19)
+
+Recovered from the files (not recollection): every approved head came from a **FLAT house-style headshot** (the Stage A
+`{Name}_Sprite.png` corpus → `prep-reference` → `meshy-ref/<who>/<who>-ref-final.png`) → ONE Meshy image-to-3D head
+(`meshy-employees/<who>-head-v1/raw-untouched/`) → `chibify` (ruleset v2 for Bon/Micah, v3 for Angelo/Clang/France) → accessories →
+`optimize-identity`. **No identity warp was ever applied to them.** Manual inputs then: the sprite itself, the recipe (hair length,
+tie, accessories, tri budget), `rimTuck` chosen by eye (now detector-gated), hand `HEAD_MOUNT` values (now the automatic mount),
+Micah's +7° pitch (still not derived), and the visual sign-off.
+
+What diverged later and is now reverted to the proven path:
+- **Input art.** The photo step fed the soft-3D OffshorlyChibi (Stage B) prompt; Meshy turns a soft render into an anime chibi
+  outside the family (Nicole / Jona head v2). `studio/photo-illustration.mjs` now uses the Stage A prompt verbatim with the
+  approved sprites as style references, and `studio/illustration-qa.mjs` refuses a soft render (`art-class.mjs`, flatness
+  ≥ 0.12: the five's sprites 0.26–0.91, the v2 soft renders 0.016–0.049).
+- **Build kind.** Studio built `--correct` (identity warp — the 2026-10-13 face regressions). `candidate-versions.mjs`
+  `PRODUCTION_KIND = "base"`; Studio, approvals, exports, runtime delivery and the pipeline sheet select it. `--correct` and
+  `--integrate` remain opt-in experiments.
+- **Convergence pass.** A repair can expose a class pass 1 never showed (Kael: `rimTuck` → closure seen in motion). When pass 2's
+  detectors ask for a repair not applied yet, ONE pass 3 from the same raw with the union runs (`<tag>-pass3/`). Bounded.
+
+**Motion closure — Option A (Bon, 2026-10-19).** `FC-CLOSURE-EXPOSED-IN-MOTION` has three tiers: ≤ 1 % / ≤ 5 % (welded) passes
+automatically; inside the approved five's own maxima (`PRODUCTION_MOTION_BAND` ≤ 6.99 % / ≤ 23.42 %) the measure does not separate
+production napes from visually rejected ones, so the head goes to VISUAL REVIEW (a hash-bound approval of that class, `approve.mjs`,
+only while it reads in band); above = FAIL. No employee exemption — the approved five stay exempt by exact bytes only.
+
+**Polish added 2026-10-19 (all detector-gated, measured, reversible):**
+- `eye-catchlight.mjs` (rule `catchlight`): an iris with < 5 ‰ bright interior gets one soft highlight at the approved five's
+  measured position; the five read 29–177 ‰ and are never touched (tested on their shipped atlases). Kael 0 → 29 ‰, Jona 0 → 17–31 ‰.
+- `undersideLit` ON (validated 2026-10-13: normals only, only where a weld forms).
+- `prep-reference.mjs` OPEN NECKLINE: below the chin the crop ends where skin widens past 1.35 × the neck (a V-neck kept chest +
+  collar in Nicole's reference → Meshy bust). Byte-identical for Angelo, France, Micah, Lui, Jona; Clang / Kael lose a collar sliver.
+- Kept OFF: `rimBridge` (unvalidated), `capEarOutline` / ear caps (failed), identity warp, integration mode.
+- CAP-FREE FINISHING (`build-employees.mjs` `capFreeVerdict`, `<tag>-pass4/`): every passing build is gated again without
+  `identity_hair_base` (the sole cause of the dark strips across the ears); kept only when no class and no closure / pocket
+  measure gets worse. Kept on Lui, Kael, Jona, bonphoto (closure ≤ +0.08 % overall). Never applied to the frozen five.
+
+**Known classifier limit (Nicole v3):** a hair curtain hugging one cheek marks that side "contaminated"
+(`hair-layers.mjs` symmetry), and on a contaminated side every hair-coloured feature becomes lock — a fully visible eye and brow
+are smeared. An "eye covered" guard was tried and does not separate (Nicole 0.20 vs Clang 0.11 / France 0.19, whose locks do
+cross the eye) — reverted. Needs a better lock-vs-paint measure before Nicole (or any cheek-curtain hairstyle) can pass.

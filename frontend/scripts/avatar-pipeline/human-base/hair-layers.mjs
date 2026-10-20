@@ -469,9 +469,9 @@ export function combSidesToTie(m, tie, rules) {
  *  the nape reads as a deliberate hairline. Returns a part { P, I, N, J, W } (rigid on Head) or null. */
 export function hairBaseCap(m, rules) {
   const { P, label, LABEL, skullMap, after, headJoint, lm, tie } = m, R = rules.layers, n = P.length / 3, CC = skullMap.CC, eyeY = lm.eyes.l[1];
-  const NT = 128, NP = 256, hairMin = new Float32Array(NT * NP).fill(9), skinMin = new Float32Array(NT * NP).fill(9);
+  const NT = 128, NP = 256, hairMin = new Float32Array(NT * NP).fill(9), skinMin = new Float32Array(NT * NP).fill(9), skinMax = new Float32Array(NT * NP).fill(-1);
   const dirOf = (x, y, z) => { const dx = x - CC[0], dy = y - CC[1], dz = z - CC[2], r = Math.hypot(dx, dy, dz) || 1e-9; return [Math.min(NT - 1, Math.floor(Math.acos(Math.max(-1, Math.min(1, dy / r))) / Math.PI * NT)), Math.min(NP - 1, Math.floor((Math.atan2(dz, dx) + Math.PI) / (2 * Math.PI) * NP)), r]; };
-  for (let v = 0; v < n; v++) { const [t, p, r] = dirOf(P[v * 3], P[v * 3 + 1], P[v * 3 + 2]), k = t * NP + p; if (label[v] === LABEL.HAIR) { if (r < hairMin[k]) hairMin[k] = r; } else if (r < skinMin[k]) skinMin[k] = r; }
+  for (let v = 0; v < n; v++) { const [t, p, r] = dirOf(P[v * 3], P[v * 3 + 1], P[v * 3 + 2]), k = t * NP + p; if (label[v] === LABEL.HAIR) { if (r < hairMin[k]) hairMin[k] = r; } else { if (r < skinMin[k]) skinMin[k] = r; if (r > skinMax[k]) skinMax[k] = r; } }
   const dirVec = (t, p) => { const th = ((t + 0.5) / NT) * Math.PI, ph = ((p + 0.5) / NP) * 2 * Math.PI - Math.PI; return [Math.sin(th) * Math.cos(ph), Math.cos(th), Math.sin(th) * Math.sin(ph)]; };
   const skullR = (d) => 1 - skullMap.excess(CC[0] + d[0], CC[1] + d[1], CC[2] + d[2]);   // excess at unit radius → skull radius
   // the hairline per azimuth: the lowest polar row reached by hair continuously from the crown, blurred round the head
@@ -492,8 +492,32 @@ export function hairBaseCap(m, rules) {
   // the radius field: just inside the innermost hair, a little off the skull, over exposed scalp skin, behind protruding
   // ears — then min-filtered and blurred (no per-bin steps; conservatively never in front of the hair)
   const Rr = new Float32Array(NT * NP).fill(NaN);
+  // EAR OUTLINE (capEarOutline, opt-in, 2026-10-13): the cap never covers an ear. Removing the cap made the ears clean, and every
+  // per-direction skin test (the v21 heuristic) still left a notch — a shallow concha / cymba stands off the skull less than the cap's
+  // own offset and cannot be told from scalp one direction at a time. The ear is found from its PROTRUDING geometry instead (skin
+  // standing off the skull by more than capEar: helix / antihelix), seeded in the ear box (standing-off skin elsewhere is scalp residue)
+  // and followed through protruding skin in the ear's neighbourhood; its outline on the cap grid is the CONVEX HULL of those cells per
+  // side, grown by EAR_MARGIN cells — the concha always lies inside its rim's hull, whatever its own depth. No cap is built (or
+  // pocket-filled) inside the outline; at that new edge the cap dives into the head exactly like its hairline (0.03, squared ramp, two cells).
+  const EAR_MARGIN = 1, earOut = new Uint8Array(NT * NP), earDist = new Float32Array(NT * NP).fill(9);
+  if (rules.capEarOutline) { const prot = (t, p) => { const k = t * NP + p; return skinMax[k] > 0 && skinMax[k] > skullR(dirVec(t, p)) + R.capEar; };
+    const near = (d) => Math.abs(CC[1] + d[1] * 0.42 - eyeY + 0.01) < 0.3 && Math.abs(d[0]) > 0.45 && Math.abs(CC[2] + d[2] * 0.42 - after.ears.z) < 0.2;
+    const inBox = (d) => Math.abs(CC[1] + d[1] * 0.42 - eyeY + 0.01) < 0.11 && Math.abs(d[0]) > 0.62 && Math.abs(CC[2] + d[2] * 0.42 - after.ears.z) < 0.09;
+    const ear = new Uint8Array(NT * NP), q = []; for (let t = 0; t < NT; t++) for (let p = 0; p < NP; p++) if (inBox(dirVec(t, p)) && prot(t, p)) { ear[t * NP + p] = 1; q.push(t * NP + p); }
+    while (q.length) { const k = q.pop(), t = Math.floor(k / NP), p = k % NP; for (const [dt, dp] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const tt = t + dt; if (tt < 0 || tt >= NT) continue; const pp = (p + dp + NP) % NP, kk = tt * NP + pp; if (!ear[kk] && near(dirVec(tt, pp)) && prot(tt, pp)) { ear[kk] = 1; q.push(kk); } } }
+    const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    const hull = (pts) => { const P = [...pts].sort((a, b) => a[0] - b[0] || a[1] - b[1]), lo = [], up = []; for (const x of P) { while (lo.length > 1 && cross(lo[lo.length - 2], lo[lo.length - 1], x) <= 0) lo.pop(); lo.push(x); }
+      for (let i = P.length - 1; i >= 0; i--) { const x = P[i]; while (up.length > 1 && cross(up[up.length - 2], up[up.length - 1], x) <= 0) up.pop(); up.push(x); } return lo.slice(0, -1).concat(up.slice(0, -1)); };   // CCW in (t, u)
+    for (const side of [1, -1]) { const U = (p) => (side > 0 ? p : (p + NP / 2) % NP), pts = [];   // u: azimuth unwrapped so this side's ear never straddles the seam
+      for (let k = 0; k < NT * NP; k++) if (ear[k]) { const t = Math.floor(k / NP), p = k % NP; if (Math.sign(dirVec(t, p)[0]) === side) pts.push([t, U(p)]); }
+      if (pts.length < 6) continue; const H = hull(pts); if (H.length < 3) continue;
+      const E = H.map((a, i) => { const b = H[(i + 1) % H.length], e = [b[0] - a[0], b[1] - a[1]], l = Math.hypot(...e); return [a, [e[1] / l, -e[0] / l]]; });   // each edge's outward normal
+      const T0 = Math.max(0, Math.min(...H.map((h) => h[0])) - 4), T1 = Math.min(NT - 1, Math.max(...H.map((h) => h[0])) + 4), u0 = Math.min(...H.map((h) => h[1])) - 4, u1 = Math.max(...H.map((h) => h[1])) + 4;
+      for (let t = T0; t <= T1; t++) for (let u = u0; u <= u1; u++) { const sd = Math.max(...E.map(([a, n]) => (t - a[0]) * n[0] + (u - a[1]) * n[1])) - EAR_MARGIN, uu = ((u % NP) + NP) % NP, p = side > 0 ? uu : (uu + NP / 2) % NP, k = t * NP + p;
+        if (sd <= 0) earOut[k] = 1; else earDist[k] = Math.min(earDist[k], sd); } } }
   for (let t = 0; t < NT; t++) for (let p = 0; p < NP; p++) { const lim = line[p]; if (lim < 0 || t > lim + 2) continue; const d = dirVec(t, p);
     if (CC[2] + d[2] * 0.42 > after.ears.z + R.capFront) continue;   // never over the face / temples
+    if (earOut[t * NP + p]) continue;   // capEarOutline: never over an ear
     const rs = skullR(d), hm = hairMin[t * NP + p], sk = skinMin[t * NP + p], y = CC[1] + d[1] * 0.42, earZone = Math.abs(y - eyeY + 0.01) < 0.11 && Math.abs(d[0]) > 0.62 && Math.abs(CC[2] + d[2] * 0.42 - after.ears.z) < 0.09;   // the real ear box (skin standing off elsewhere is scalp residue: covered)
     let r = rs + R.capOffset; if (hm < 8) r = Math.min(r, hm - R.capGap);
     if (sk < 8 && earZone && sk > rs + R.capEar) r = Math.min(r, sk - R.capGap); else if (sk < 8 && sk > rs - 0.03) r = Math.max(r, sk + R.capGap);
@@ -505,7 +529,7 @@ export function hairBaseCap(m, rules) {
   let pockets = 0;
   { const isCov = (t, p) => !Number.isNaN(Rr[t * NP + p]) || hairMin[t * NP + p] < 8;
     const cellOK = (t, p) => { const d = dirVec(t, p), x = d[0] * 0.42, y = CC[1] + d[1] * 0.42, z = CC[2] + d[2] * 0.42; if (y < eyeY - 0.04 || z > after.ears.z + (R.capPocket ?? 0.18) || Math.abs(x) < 0.2) return false;
-      return !(Math.abs(y - eyeY + 0.01) < 0.11 && Math.abs(d[0]) > 0.62 && Math.abs(z - after.ears.z) < 0.09); };
+      return !(Math.abs(y - eyeY + 0.01) < 0.11 && Math.abs(d[0]) > 0.62 && Math.abs(z - after.ears.z) < 0.09) && !earOut[t * NP + p]; };
     const fillCell = (t, p) => { const k = t * NP + p; if (!Number.isNaN(Rr[k])) return; const d = dirVec(t, p), rs = skullR(d), sk = skinMin[k]; let r = rs + R.capOffset; if (sk < 8 && sk > rs - 0.03) r = Math.max(r, sk + R.capGap); Rr[k] = Math.max(r, rs + 0.002); pockets++; };
     const MAXP = Math.round(NP / 8), MAXT = 14, todo = [];
     for (let t = 0; t < NT; t++) { let p0 = -1; for (let q = 0; q < 2 * NP; q++) { const p = q % NP; if (isCov(t, p)) { if (p0 >= 0 && q - p0 - 1 > 0 && q - p0 - 1 <= MAXP) { const run = []; for (let qq = p0 + 1; qq < q; qq++) run.push([t, qq % NP]); if (run.every(([a, b]) => cellOK(a, b))) todo.push(...run); } p0 = q; } } }
@@ -518,9 +542,12 @@ export function hairBaseCap(m, rules) {
   let Rf = filt(filt(Rr, "min"), "min"); for (let i = 0; i < 4; i++) Rf = filt(Rf, "avg");
   const P2 = [], idx = new Int32Array(NT * NP).fill(-1); let cnt = 0;
   for (let t = 0; t < NT; t++) for (let p = 0; p < NP; p++) { const k = t * NP + p; if (Number.isNaN(Rf[k])) continue; const d = dirVec(t, p), lim = line[p];
-    const edge = Math.max(0, Math.min(1, (t - lim) / 2)), r = Rf[k] - edge * edge * 0.03;   // at the hairline the cap dives into the head
+    const edge = Math.max(0, Math.min(1, (t - lim) / 2)), fe = earDist[k] < 2 ? 1 - earDist[k] / 2 : 0, r = Rf[k] - Math.max(edge * edge, fe * fe) * 0.03;   // at the hairline (and, with capEarOutline, the ear outline) the cap dives into the head
     idx[k] = cnt++; P2.push(CC[0] + d[0] * r, CC[1] + d[1] * r, CC[2] + d[2] * r); }
   if (cnt < 50) return null;
+  if (process.env.HB_CAPDIAG) { const cells = []; for (let t = 0; t < NT; t++) for (let p = 0; p < NP; p++) { const k = t * NP + p, d = dirVec(t, p); if (Math.abs(d[0]) < 0.4) continue;   // DIAGNOSTIC ONLY (env): per-cell cap inputs at the sides of the head
+      cells.push([t, p, +skullR(d).toFixed(4), skinMin[k] < 8 ? +skinMin[k].toFixed(4) : null, skinMax[k] > 0 ? +skinMax[k].toFixed(4) : null, hairMin[k] < 8 ? +hairMin[k].toFixed(4) : null, Number.isNaN(Rf[k]) ? null : +Rf[k].toFixed(4), +(CC[1] + d[1] * 0.42).toFixed(4), +(CC[2] + d[2] * 0.42).toFixed(4), +d[0].toFixed(3)]); }
+    process.getBuiltinModule("node:fs").writeFileSync(process.env.HB_CAPDIAG, JSON.stringify({ NT, NP, eyeY, earsZ: after.ears.z, capFront: R.capFront, cols: ["t", "p", "rs", "skMin", "skMax", "hairMin", "Rf", "y42", "z42", "dx"], line: Array.from(line), cells })); }
   const I2 = []; for (let t = 0; t < NT - 1; t++) for (let p = 0; p < NP; p++) { const a = idx[t * NP + p], b = idx[t * NP + (p + 1) % NP], c = idx[(t + 1) * NP + p], dd = idx[(t + 1) * NP + (p + 1) % NP]; if (a < 0 || b < 0 || c < 0 || dd < 0) continue; I2.push(a, b, c, b, dd, c); }
   const Pf = Float32Array.from(P2), N = new Float32Array(Pf.length);
   for (let i = 0; i < Pf.length / 3; i++) { const dx = Pf[i * 3] - CC[0], dy = Pf[i * 3 + 1] - CC[1], dz = Pf[i * 3 + 2] - CC[2], l = Math.hypot(dx, dy, dz) || 1; N[i * 3] = dx / l; N[i * 3 + 1] = dy / l; N[i * 3 + 2] = dz / l; }

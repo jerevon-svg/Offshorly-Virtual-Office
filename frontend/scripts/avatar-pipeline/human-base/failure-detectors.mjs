@@ -113,12 +113,12 @@ export function neckHair(doc, { r = 0.17, y0 = 0.78, y1 = 0.96, cz = -0.013 } = 
   return { verts, perLayer: per };
 }
 
-/** FC-SKIN-FLAP: head-layer skin (incl. any generated nape skin) standing far OUT of the canonical skull below the eye line,
+/** FC-SKIN-FLAP: head-layer skin (incl. any generated nape skin or welded underside) standing far OUT of the canonical skull below the eye line,
  *  behind the ear plane, away from the ears — a skin fin / panel no head has (the universal napeSkin's failure: it passed
  *  every closure metric while growing fins behind the neck). Count of vertices more than `out` outside the skull. */
 export async function skinFlaps(doc, { out = 0.08, neckTop = 0.84 } = {}) {
   const root = doc.getRoot(), lm = root.listScenes()[0].getExtras().humanIdentity.landmarks, sk = await skull(), eyeY = lm.eyes.l[1], ears = [lm.attach.ears.l.root, lm.attach.ears.r.root]; let verts = 0, max = 0;
-  for (const m of root.listMeshes()) { if (!/^identity_head|^identity_nape|^baked_nape/.test(m.getName())) continue; const P = m.listPrimitives()[0].getAttribute("POSITION").getArray();
+  for (const m of root.listMeshes()) { if (!/^identity_head|^identity_nape|^baked_nape|^baked_underside/.test(m.getName())) continue; const P = m.listPrimitives()[0].getAttribute("POSITION").getArray();
     for (let i = 0; i < P.length; i += 3) { const x = P[i], y = P[i + 1], z = P[i + 2]; if (y > eyeY - 0.1 || y < neckTop || z > canon.ears.z + 0.02) continue; if (ears.some((e) => Math.hypot(x - e[0], y - e[1], z - e[2]) < 0.12)) continue;
       const e = sk.excess(x, y, z); if (e > max) max = e; if (e > out) verts++; } }
   return { verts, maxExcess: +max.toFixed(3) };

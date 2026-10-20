@@ -91,6 +91,97 @@ export function surfaceIslands(soup: Soup[], region: { yMin: number; centre: THR
   return { islandsPerView: per, islandPx: perPx, worst, worstPx, total, capPct: cap, capWorstPct: capWorst };
 }
 
+// ---- REPORT-ONLY EVIDENCE (2026-10-10) — measured on every build, never part of the verdict (failure-registry REPORT_ONLY) ----
+
+/** the level ring, the neck views and the shallow ring just under the hairline (between the gate's +6° and −30° sets), plus eye-level
+ *  front / three-quarter views — where a gap between the haircut and the nape shows in play. The steep views below (−30° and lower)
+ *  are left out on purpose: from there a hanging hair curtain legitimately walls in the skull base of every long haircut. */
+export const WALL_VIEWS: Readonly<Record<string, { az: number; el: number }>> = { rear: GATE_VIEWS.rear, rear34L: GATE_VIEWS.rear34L, rear34R: GATE_VIEWS.rear34R, sideL: GATE_VIEWS.sideL, sideR: GATE_VIEWS.sideR,
+  neckFront: GATE_VIEWS.neckFront, neckBack: GATE_VIEWS.neckBack, rearUnder: { az: 180, el: -8 }, rearUnderLow: { az: 180, el: -16 }, rear34LUnder: { az: 150, el: -8 }, rear34RUnder: { az: -150, el: -8 },
+  rear34LUnderLow: { az: 140, el: -16 }, rear34RUnderLow: { az: -140, el: -16 }, sideLUnder: { az: 90, el: -12 }, sideRUnder: { az: -90, el: -12 }, front: { az: 0, el: 4 }, front34L: { az: 45, el: 4 }, front34R: { az: -45, el: 4 } };
+
+/** CLOSURE WALLED IN BY HAIR in ONE pose, per view of WALL_VIEWS: the view's head px (skin / hair / closure / cap) and every visible
+ *  closure patch (≥ 2 px) as [px, share of its border that is HAIR (layers or base cap)]. Closure walled in by hair is bare scalp
+ *  showing through the haircut; the nape underside every approved head shows borders skin, the neck, the body or the sky instead. */
+export function closureWalls(soup: Soup[], region: { yMin: number; centre: THREE.Vector3; half: number }, res = 320): Record<string, { headPx: number; walled: number[][] }> {
+  const out: Record<string, { headPx: number; walled: number[][] }> = {};
+  for (const [name, { az, el }] of Object.entries(WALL_VIEWS)) {
+    const a = (az * Math.PI) / 180, e = (el * Math.PI) / 180, d = new THREE.Vector3(Math.sin(a) * Math.cos(e), Math.sin(e), Math.cos(a) * Math.cos(e));
+    const right = new THREE.Vector3(0, 1, 0).cross(d); if (right.lengthSq() < 1e-6) right.set(1, 0, 0); right.normalize(); const up = d.clone().cross(right).normalize();
+    const Z = new Float32Array(res * res).fill(-Infinity), K = new Int8Array(res * res).fill(-1);
+    const proj = (P: Float32Array, i: number): [number, number, number, number] => { const x = P[i * 3] - region.centre.x, y = P[i * 3 + 1] - region.centre.y, z = P[i * 3 + 2] - region.centre.z;
+      return [((x * right.x + y * right.y + z * right.z) / region.half * 0.5 + 0.5) * res, ((x * up.x + y * up.y + z * up.z) / region.half * 0.5 + 0.5) * res, x * d.x + y * d.y + z * d.z, P[i * 3 + 1]]; };
+    for (const s of soup) { const code = s.kind === "occluder" ? 3 : s.kind === "closure" ? 2 : s.part === "identity_hair_base" ? 4 : /^identity_hair_/.test(s.part) ? 1 : 0;
+      for (let t = 0; t < s.I.length; t += 3) { const A = proj(s.P, s.I[t]), B = proj(s.P, s.I[t + 1]), C = proj(s.P, s.I[t + 2]);
+        if (Math.max(A[3], B[3], C[3]) < region.yMin) continue;
+        const x0 = Math.max(0, Math.floor(Math.min(A[0], B[0], C[0]))), x1 = Math.min(res - 1, Math.ceil(Math.max(A[0], B[0], C[0]))), y0 = Math.max(0, Math.floor(Math.min(A[1], B[1], C[1]))), y1 = Math.min(res - 1, Math.ceil(Math.max(A[1], B[1], C[1])));
+        const ar = (B[0] - A[0]) * (C[1] - A[1]) - (C[0] - A[0]) * (B[1] - A[1]); if (Math.abs(ar) < 1e-9) continue;
+        for (let py = y0; py <= y1; py++) for (let px = x0; px <= x1; px++) { const qx = px + 0.5, qy = py + 0.5;
+          const w0 = ((B[0] - qx) * (C[1] - qy) - (C[0] - qx) * (B[1] - qy)) / ar, w1 = ((C[0] - qx) * (A[1] - qy) - (A[0] - qx) * (C[1] - qy)) / ar, w2 = 1 - w0 - w1;
+          if (w0 < 0 || w1 < 0 || w2 < 0) continue; const z = w0 * A[2] + w1 * B[2] + w2 * C[2], k = py * res + px; if (z > Z[k]) { Z[k] = z; K[k] = code; } } } }
+    let headPx = 0; for (let k = 0; k < res * res; k++) if (K[k] >= 0 && K[k] !== 3) headPx++;
+    const seen = new Uint8Array(res * res), walled: number[][] = [];
+    for (let s0 = 0; s0 < res * res; s0++) { if (K[s0] !== 2 || seen[s0]) continue; const q = [s0]; seen[s0] = 1; let area = 0, hairB = 0, allB = 0;
+      while (q.length) { const k = q.pop()!; area++; const x = k % res, y = (k / res) | 0;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const X = x + dx, Y = y + dy; if (X < 0 || Y < 0 || X >= res || Y >= res) { allB++; continue; }
+          const j = Y * res + X; if (K[j] === 2) { if (!seen[j]) { seen[j] = 1; q.push(j); } } else { allB++; if (K[j] === 1 || K[j] === 4) hairB++; } } }
+      if (area >= 2) walled.push([area, +(hairB / Math.max(1, allB)).toFixed(2)]); }
+    out[name] = { headPx, walled: walled.sort((x, y) => y[0] - x[0]).slice(0, 12) }; }
+  return out;
+}
+
+/** closure walls in the poses VO shows: the bind pose and the employee's idle clip held at three phases — a gap between the haircut and
+ *  the nape that only opens in MOTION is invisible to a bind-pose measurement (2026-10-10: Lui 0 ‰ bound, 58 ‰ idling). Leaves the
+ *  avatar holding its idle, so it is measured last. */
+export function closureWallEvidence(h: HumanAvatar, idle: string): Record<string, ReturnType<typeof closureWalls>> {
+  h.root.updateMatrixWorld(true);
+  const lm = h.identityLandmarks as unknown as { eyes: { l: number[] } } | null; if (!lm) throw new Error("mounted gate: identity has no landmarks");
+  if (!h.clipNames.includes(idle)) throw new Error(`mounted gate: no idle clip "${idle}" to measure the pose VO shows`);
+  const eye = new THREE.Vector3(lm.eyes.l[0], lm.eyes.l[1], lm.eyes.l[2]).applyMatrix4(h.rig.bindMatrixOf("Head", new THREE.Matrix4())), neckTop = h.bones.get("Head")!.getWorldPosition(new THREE.Vector3());
+  const region = { yMin: neckTop.y - 3, centre: new THREE.Vector3(0, eye.y, neckTop.z), half: 18 }, poses: Record<string, ReturnType<typeof closureWalls>> = { bind: closureWalls(worldSoup(h.root), region) };
+  for (const ph of [0.15, 0.5, 0.85]) { h.hold(idle, ph, 0); h.update(1e-4); poses[`idle${ph}`] = closureWalls(worldSoup(h.root), region); }
+  return poses;
+}
+
+/** MOVING HAIR THROUGH the head: in one pose, how many triangles of the MOVING hair layers (every identity hair layer but the rigid base
+ *  cap and scalp) pass through the welded underside, the closure and the skin — exact triangle-against-triangle tests */
+export function hairThrough(soup: Soup[]): Record<"underside" | "closure" | "skin", number> {
+  const cls = (p: string) => (p === "baked_underside" ? "underside" : /^baked_(interior|skullbase)/.test(p) ? "closure" : /^identity_(head|face_twin)$/.test(p) ? "skin" : null);
+  const moving = soup.filter((s) => s.kind !== "occluder" && /^identity_hair_/.test(s.part) && !/^identity_hair_(base|scalp)$/.test(s.part));
+  const cell = 1, grid = new Map<string, [number, Soup, number][]>();
+  const tv = (s: Soup, t: number) => [0, 1, 2].map((q) => [s.P[s.I[t + q] * 3], s.P[s.I[t + q] * 3 + 1], s.P[s.I[t + q] * 3 + 2]]);
+  const cells = (V: number[][], f: (k: string) => void) => { const lo = [0, 1, 2].map((k) => Math.floor(Math.min(V[0][k], V[1][k], V[2][k]) / cell)), hi = [0, 1, 2].map((k) => Math.floor(Math.max(V[0][k], V[1][k], V[2][k]) / cell));
+    for (let x = lo[0]; x <= hi[0]; x++) for (let y = lo[1]; y <= hi[1]; y++) for (let z = lo[2]; z <= hi[2]; z++) f(`${x},${y},${z}`); };
+  for (const s of soup) { const c = cls(s.part); if (!c || s.kind === "occluder") continue; for (let t = 0; t < s.I.length; t += 3) cells(tv(s, t), (k) => { const L = grid.get(k) ?? []; if (!grid.has(k)) grid.set(k, L); L.push([c === "underside" ? 0 : c === "closure" ? 1 : 2, s, t]); }); }
+  const sub = (a: number[], b: number[]) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]], cross = (a: number[], b: number[]) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]], dot = (a: number[], b: number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const seg = (p0: number[], p1: number[], A: number[], B: number[], C: number[]) => { const d = sub(p1, p0), e1 = sub(B, A), e2 = sub(C, A), h = cross(d, e2), det = dot(e1, h); if (Math.abs(det) < 1e-12) return false;
+    const f = 1 / det, s0 = sub(p0, A), u = f * dot(s0, h); if (u <= 1e-6 || u >= 1 - 1e-6) return false; const q = cross(s0, e1), w = f * dot(d, q); if (w <= 1e-6 || u + w >= 1 - 1e-6) return false; const t = f * dot(e2, q); return t > 1e-6 && t < 1 - 1e-6; };
+  const hits = (X: number[][], Y: number[][]) => [[0, 1], [1, 2], [2, 0]].some(([i, j]) => seg(X[i], X[j], Y[0], Y[1], Y[2]) || seg(Y[i], Y[j], X[0], X[1], X[2]));
+  const out = { underside: 0, closure: 0, skin: 0 }, names = ["underside", "closure", "skin"] as const;
+  for (const s of moving) for (let t = 0; t < s.I.length; t += 3) { const V = tv(s, t), found = [false, false, false]; const seen = new Set<string>();
+    cells(V, (k) => { for (const [c, o, u] of grid.get(k) ?? []) { if (found[c]) continue; const id = `${o.part}:${u}`; if (seen.has(id)) continue; seen.add(id); if (hits(V, tv(o, u))) found[c] = true; } });
+    found.forEach((f, c) => { if (f) out[names[c]]++; }); }
+  return out;
+}
+
+/** IN MOTION (report-only evidence): the idle clip and the walk PLAYED (frame by frame, so the hair dynamics swing — a held pose shows
+ *  the hair at rest), sampled after a second of warm-up: in each sample the closure seen first from the gate's twelve views (exactly
+ *  closureExposure, so the bind-pose thresholds compare) and the moving hair through the underside / closure / skin. The bind-pose
+ *  measurements were blind to both: the hair lifts off the nape only in motion. Leaves the avatar mid-walk: measured last. */
+export function motionEvidence(h: HumanAvatar, idle: string, walk = "walking"): Record<string, { pct: number; worstPct: number; worstView: string; wholeHeadWorstPct: number; hairThrough: ReturnType<typeof hairThrough> }> {
+  h.root.updateMatrixWorld(true);
+  const lm = h.identityLandmarks as unknown as { eyes: { l: number[] } } | null; if (!lm) throw new Error("mounted gate: identity has no landmarks");
+  const eye = new THREE.Vector3(lm.eyes.l[0], lm.eyes.l[1], lm.eyes.l[2]).applyMatrix4(h.rig.bindMatrixOf("Head", new THREE.Matrix4())), neckTop = h.bones.get("Head")!.getWorldPosition(new THREE.Vector3());
+  const region = { yMin: neckTop.y - 3, eyeY: eye.y, centre: new THREE.Vector3(0, (neckTop.y + eye.y) / 2 + 2, neckTop.z), half: 16 }, out: ReturnType<typeof motionEvidence> = {};
+  { const soup = worldSoup(h.root), c = closureExposure(soup, region), wv = Object.entries(c.views).sort((a, b) => b[1] - a[1])[0];   // at rest first: contact by design (roots in the scalp) reads here too
+    out.bind = { pct: c.pct, worstPct: c.worstPct, worstView: wv?.[0] ?? "", wholeHeadWorstPct: c.wholeHead.worstPct, hairThrough: hairThrough(soup) }; }
+  for (const [clip, label, cycle] of [[idle, "idle", 90], [walk, "walk", 30]] as const) { if (!h.clipNames.includes(clip)) throw new Error(`mounted gate: no "${clip}" clip to play`);
+    for (let f = 0; f <= 2 * cycle; f++) { h.hold(clip, (f / cycle) % 1, 0); h.update(1 / 30);
+      if (f >= cycle && (f - cycle) % Math.round(cycle / 3) === 0) { const soup = worldSoup(h.root), c = closureExposure(soup, region), wv = Object.entries(c.views).sort((a, b) => b[1] - a[1])[0];
+        out[`${label}${((f / cycle) % 1).toFixed(2)}`] = { pct: c.pct, worstPct: c.worstPct, worstView: wv?.[0] ?? "", wholeHeadWorstPct: c.wholeHead.worstPct, hairThrough: hairThrough(soup) }; } } }
+  return out;
+}
+
 export type MountedMetrics = {
   neckTopY: number; eyeY: number; chinY: number;
   faceLenToBody: number; cheekWToShoulder: number; headWToShoulder: number; cheekWToHeadW: number;

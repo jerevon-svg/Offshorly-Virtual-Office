@@ -12,6 +12,9 @@ import { simplifyPrimitive, weld, textureCompress, draco, prune } from "@gltf-tr
 import { MeshoptSimplifier } from "meshoptimizer";
 import sharp from "sharp";
 import { io } from "./lib.mjs";
+import { backScalpUnderHair } from "./scalp-backing.mjs";
+import { dropDetachedClosure } from "./closure-attachment.mjs";
+import { weldFoldBacks } from "./underside-weld.mjs";
 
 const [src, outDir] = process.argv.slice(2);
 const PREFIX = process.env.PREFIX ?? src.split("/").pop().replace(/-meshy-chibi.*$|\.approved.*$|\.glb$/g, "");
@@ -83,18 +86,33 @@ for (const target of TARGETS) for (const tex of TEXS) {
   // (Bon: 254k face + 920k hair → face at ~10% → faceted cheeks, nose and jaw). The budget is now spent by geometric
   // error: one error bound ε for every layer (what a joint simplification would do), the face held to FACE_K·ε (smooth
   // skin shows facets in its shading; hair hides them); ε is found by bisection so the total meets the target.
+  let skinEps = 0.001;   // the face skin's error bound (set below by the error-balanced budget)
   if (ratio < 1) { const FACE_K = 0.35, parts = layered.map((p) => ({ p, isFace: p === head || p === twinFace, pos: p.getAttribute("POSITION").getArray(), idx: Uint32Array.from(p.getIndices().getArray()) }));
     const count = (eps) => parts.reduce((a, q) => a + MeshoptSimplifier.simplify(q.idx, q.pos, 3, 0, q.isFace ? eps * FACE_K : eps, ["LockBorder"])[0].length / 3, 0);
     let lo = 1e-5, hi = 0.05; for (let it = 0; it < 18; it++) { const mid = Math.sqrt(lo * hi); if (count(mid) > target) lo = mid; else hi = mid; }
-    for (const q of parts) simplifyPrimitive(q.p, { simplifier: MeshoptSimplifier, ratio: 0, error: q.isFace ? hi * FACE_K : hi, lockBorder: true });
+    for (const q of parts) simplifyPrimitive(q.p, { simplifier: MeshoptSimplifier, ratio: 0, error: q.isFace ? hi * FACE_K : hi, lockBorder: true }); skinEps = hi * FACE_K;
     console.log(`error-balanced budget: ε ${hi.toExponential(2)} (face ×${FACE_K}) → ${parts.map((q) => `${q.p.getAttribute("POSITION") ? "" : ""}${q.p.getIndices().getCount() / 3}`).join(" / ")} tris`); }
   const fr = mesh("identity_hair_fringe"); if (fr && ratio < 1) simplifyPrimitive(fr, { simplifier: MeshoptSimplifier, ratio: Math.min(1, ratio * 2), error: 0.004, lockBorder: true });
   const inn = mesh("baked_interior"); if (inn) simplifyPrimitive(inn, { simplifier: MeshoptSimplifier, ratio: 0.3, error: 0.01, lockBorder: true });
+  // EXPERIMENTAL welded underside (underside-weld.mjs, opt-in): smooth by construction — simplified to the face skin's own error bound;
+  // its border IS the weld (and the neck-tube ring), so it is locked
+  // …at the face's own bound, unless that folds it: simplification can pleat the collar into a fin, so the bound is halved until the fold
+  // check (underside-weld weldFoldBacks, as FC-UNDERSIDE-FOLD reads the shipped file) is clean on the candidate — or it is left whole
+  const und = mesh("baked_underside"); if (und) { const n0 = und.getIndices().getCount() / 3, P0 = und.getAttribute("POSITION").getArray(), I0 = Uint32Array.from(und.getIndices().getArray());
+    const skinParts = doc.getRoot().listMeshes().filter((m) => /^identity_(head|face_twin|hair_base)$/.test(m.getName())).map((m) => { const p = m.listPrimitives()[0]; return { name: m.getName(), P: p.getAttribute("POSITION").getArray(), I: p.getIndices().getArray() }; });
+    let eps = skinEps, tries = 0; for (; tries < 5; tries++) { const [idx] = MeshoptSimplifier.simplify(I0, P0, 3, 0, eps, ["LockBorder"]), m = weldFoldBacks([...skinParts, { name: "baked_underside", P: P0, I: idx }]); if (!m.foldBacks && !m.fins) break; eps /= 2; }
+    if (tries < 5) simplifyPrimitive(und, { simplifier: MeshoptSimplifier, ratio: 0, error: eps, lockBorder: true });
+    console.log(`welded underside: ${n0} → ${und.getIndices().getCount() / 3} tris (ε ${tries < 5 ? eps.toExponential(2) : "— left whole, every bound folded it"}${tries ? `, halved ${Math.min(tries, 5)}× to stay fold-free` : ""}, border locked)`); }
   // simplification may move head vertices FORWARD through the (unsimplified) living-eye shell: wherever the shell is
   // visible (lid region / opening / kept paint), the head stays just behind it — as in chibify's eye-region cleanup
   if (ratio < 1) { await keepBehindEyeShell(doc, head); if (twinFace) await keepBehindEyeShell(doc, twinFace); }
   if (fr && ratio < 1) await keepFringeInFront(doc, fr);
   for (const p of doc.getRoot().listMeshes().flatMap((m) => m.listPrimitives())) if (p.getAttribute("_SRCUV")) { const a = p.getAttribute("_SRCUV"); p.setAttribute("_SRCUV", null); a.dispose(); }
+  // SCALP UNDER THE HAIRCUT (scalp-backing.mjs, universal): closure the moving hair can uncover joins the hair base cap — after every
+  // decimation (triangles MOVE, none are added: no budget change), before compression
+  // CLOSURE ON THE HEAD (closure-attachment.mjs, universal): skull-base pieces that do not lie on the head they close are removed first
+  { const ca = dropDetachedClosure(doc); console.log(`closure attachment: ${JSON.stringify(ca)}`); }
+  { const sb = backScalpUnderHair(doc); console.log(`scalp backing: ${sb.moved ? `${sb.moved} closure triangles under the haircut → hair base cap` : `nothing to do (${sb.reason})`}`); }
   await doc.transform(prune(), textureCompress({ encoder: sharp, targetFormat: "webp", resize: [tex, tex], quality: 90, pattern: /^(?!identity_hair_fringe)/ }), textureCompress({ encoder: sharp, targetFormat: "webp", quality: 90, pattern: /^identity_hair_fringe/ }), draco({ quantizePosition: 14, quantizeTexcoord: 12, quantizeNormal: 10 }));
   // the living-eye atlas goes back exactly as baked (its alpha codes and data rows must survive bit-exact)
   { const srcTex = base.getRoot().listTextures().find((t) => t.getName() === "face_eyes_tex"), dst = doc.getRoot().listTextures().find((t) => t.getName() === "face_eyes_tex"); if (srcTex && dst) dst.setImage(srcTex.getImage()).setMimeType(srcTex.getMimeType()); }
