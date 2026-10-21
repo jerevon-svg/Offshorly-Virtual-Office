@@ -10,7 +10,13 @@
 // palm, fingertip): a penetrating point rotates its upper arm out about the shoulder by exactly the angle that clears
 // it (a few iterations). Legs are kept from collapsing into each other (knees, ankles and thighs keep a minimum gap).
 // INTENTIONAL contacts are never undone: a hand owned by a behaviour (packet, keyboard, scooter grips) is skipped.
-// Nothing accumulates — the avatar restores the clip pose every frame before its layers run.
+// Nothing accumulates in the bones — the avatar restores the clip pose every frame before its layers run.
+//
+// EASED, NOT RE-DECIDED. The solve picks one worst point / obstacle / push axis per iteration, so as an idle sways
+// the push it asks for jumps (on/off, or to another axis) between frames — read on screen as twitching hands. The arm
+// therefore EASES toward the solve's correction (kept as a rotation relative to the clip pose, in the arm's own frame),
+// and a hard guard at the bare envelope (no margin) still pushes whatever the ease has not yet cleared — so the hands
+// never sink into the body, and the margin itself is reached smoothly.
 import * as THREE from "three";
 import { BODY_REGIONS, SIDE_PREFIX, type BodyRegion, type Side } from "./humanBaseContract";
 import { rotateWorld, type HumanRig } from "./humanRig";
@@ -73,7 +79,11 @@ export class BodyClearance {
   enabled = true;
   /** clearance margin beyond the envelope (native units) */
   margin = 0.004;
+  /** how fast the arm eases toward the solve's correction (1/s) */
+  easeRate = 14;
   readonly stats: ClearanceStats = { pushes: 0, maxPenetration: 0, legSpread: 0 };
+  /** per arm: last frame's applied correction, relative to the clip pose in the upper arm's own frame */
+  private readonly eased: Record<Side, THREE.Quaternion> = { L: new THREE.Quaternion(), R: new THREE.Quaternion() };
   lastMs = 0;
   private readonly rig: HumanRig;
   private readonly scale: number;
@@ -100,13 +110,24 @@ export class BodyClearance {
     return [this.rig.bone(c.a).getWorldPosition(new THREE.Vector3()), this.rig.bone(c.b).getWorldPosition(new THREE.Vector3())];
   }
 
-  layer(): { id: string; order: number; update: () => void } { return { id: "body-clearance", order: 60, update: () => this.update() }; }
+  layer(): { id: string; order: number; update: (dt: number) => void } { return { id: "body-clearance", order: 60, update: (dt) => this.update(dt) }; }
 
-  update(): void {
-    if (!this.enabled) return;
+  /** `dt` omitted = no easing (the correction is applied at once, as a single solve) */
+  update(dt?: number): void {
+    if (!this.enabled) { this.eased.L.identity(); this.eased.R.identity(); return; }
     const t0 = performance.now();
     this.stats.pushes = 0; this.stats.maxPenetration = 0;
-    for (const s of ["L", "R"] as const) if (!this.intentional(s)) this.clearArm(s);
+    for (const s of ["L", "R"] as const) {
+      if (this.intentional(s)) { this.eased[s].identity(); continue; }
+      const arm = this.rig.bone(`${SIDE_PREFIX[s]}Arm`), clip = arm.quaternion.clone();
+      this.clearArm(s, this.margin);                                       // the solve's correction this frame…
+      const target = clip.clone().invert().multiply(arm.quaternion);
+      const k = dt === undefined ? 1 : 1 - Math.exp(-this.easeRate * Math.max(0, dt));
+      arm.quaternion.copy(clip).multiply(this.eased[s].slerp(target, k)); // …eased toward…
+      arm.updateMatrixWorld(true);
+      this.clearArm(s, 0);                                                 // …never inside the bare envelope
+      this.eased[s].copy(clip.invert().multiply(arm.quaternion));
+    }
     this.clearLegs();
     this.lastMs = performance.now() - t0;
   }
@@ -126,29 +147,34 @@ export class BodyClearance {
     return [fore.clone().lerp(wrist, 0.5), wrist, this.rig.handFrame(s, "palm"), this.rig.handFrame(s, "tip")];
   }
 
-  private clearArm(s: Side): void {
+  private clearArm(s: Side, margin: number): void {
     const other: Side = s === "L" ? "R" : "L";
     const obstacles = ["torso", "pelvis", `thigh${s}`, `thigh${other}`];
     const arm = this.rig.bone(`${SIDE_PREFIX[s]}Arm`);
     const handR = this.radius(`hand${s}`) * 0.6, foreR = this.radius(`forearm${s}`) * 0.8;
+    // CONTINUOUS: each step blends every penetrating point's own clearing rotation (weighted by depth²) rather than
+    // taking the single worst one, so the push changes smoothly as the pose does instead of hopping between points
     for (let it = 0; it < 4; it++) {
-      let worst = 0, wp: THREE.Vector3 | null = null, wn: THREE.Vector3 | null = null;
-      const pts = this.armPoints(s);
-      pts.forEach((pt, k) => {
+      let worst = 0, wsum = 0;
+      const S = arm.getWorldPosition(new THREE.Vector3()), rot = new THREE.Vector3();
+      this.armPoints(s).forEach((pt, k) => {
         const own = k === 0 ? foreR : handR;
         for (const id of obstacles) {
           const [a, b] = this.ends(id), c = new THREE.Vector3();
-          const d = segDist(pt, a, b, c), need = this.radius(id) + own + this.margin * this.scale;
-          const pen = need - d;
-          if (pen > worst) { worst = pen; wp = pt.clone(); wn = pt.clone().sub(c).setY(0); if (wn.lengthSq() < 1e-8) wn.set(s === "L" ? 1 : -1, 0, 0); wn.normalize(); }
+          const pen = this.radius(id) + own + margin * this.scale - segDist(pt, a, b, c);
+          if (pen <= 0) continue;
+          const n = pt.clone().sub(c).setY(0); if (n.lengthSq() < 1e-8) n.set(s === "L" ? 1 : -1, 0, 0); n.normalize();
+          const lever = pt.clone().sub(S), axis = new THREE.Vector3().crossVectors(lever, n);
+          if (axis.lengthSq() < 1e-10) continue;
+          const w = pen * pen; wsum += w; worst = Math.max(worst, pen);
+          rot.addScaledVector(axis.normalize(), w * Math.min(0.6, (pen * 1.08) / lever.length()));
         }
       });
-      if (!wp || !wn || worst <= 0) break;
+      if (worst <= 0 || wsum <= 0) break;
       this.stats.maxPenetration = Math.max(this.stats.maxPenetration, worst / this.scale);
-      const S = arm.getWorldPosition(new THREE.Vector3()), lever = (wp as THREE.Vector3).clone().sub(S);
-      const axis = new THREE.Vector3().crossVectors(lever, wn as THREE.Vector3);
-      if (axis.lengthSq() < 1e-10) break;
-      rotateWorld(arm, new THREE.Quaternion().setFromAxisAngle(axis.normalize(), Math.min(0.6, (worst * 1.08) / lever.length())));
+      const angle = rot.length() / wsum;
+      if (angle < 1e-6) break;
+      rotateWorld(arm, new THREE.Quaternion().setFromAxisAngle(rot.normalize(), angle));
       this.stats.pushes++;
     }
   }

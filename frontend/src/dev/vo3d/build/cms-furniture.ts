@@ -24,7 +24,7 @@ import type { Facing } from "../core/coords";
 import { Baker, cyl, lathe, placed, localSize, rbox, rnd, sphereGeo } from "./helpers";
 import { contactShadowMat, fabric, mat, plastic, type MatKey } from "../render/Materials";
 import { leafAnchor } from "./plants";
-import { book, laptop, monitor } from "./props";
+import { book, laptop, monitorAt } from "./props";
 import { SOFA_CUSHION_GAP, SOFA_CUSHION_MARGIN, SOFA_ARM_W, sofaCushionZ } from "./furniture";
 
 /** The entity kinds this module builds. build/registry.ts routes them here. */
@@ -117,8 +117,9 @@ function memberDesk(e: Entity): THREE.Group {
   sc.add(rbox(w - 1, 0.9, 3.0, frameMat(), 0, h - 1.2 + scH - 0.9, scZ, 0.3)); // capping rail
   stickyNotes(sc, 6, -w / 2 + 5, w / 2 - 5, h + 3.5, scZ + 1.4, 2.6);
   sc.bakeInto(g, "cms-member-screen");
-  // DRESSING, straight off the asset
-  g.add(laptop(-1.0, h, 1.4));
+  // DRESSING, straight off the asset — the laptop at the sitter's (local +z) front, where a seated HumanBase body
+  // types on it
+  g.add(laptop(-1.0, h, d / 2 - 3.6));
   deskPot(g, -w / 2 + 5.5, h, -d / 2 + 6.5, 2.0);
   const kit = new Baker();
   kit.add(rbox(3.4, 2.2, 1.8, mat("charcoal", 0.6), -w / 2 + 4.0, h, d / 2 - 4.2, 0.3)); //   desk clock
@@ -158,8 +159,14 @@ function leadDesk(e: Entity): THREE.Group {
   g1.add(bow(w / 2 + 1.0, 2.4, top, h - 2.4, lobeZ, (d * 0.42 + 1.0) / (w / 2 + 1.0)));
   for (const m of g1.children) (m as THREE.Mesh).castShadow = true;
   g.add(g1);
-  // DRESSING, straight off the asset: monitor centred, black task lamp and pen cup left, notebook right
-  g.add(monitor(0, h, -d / 2 + 8.0, 17, 9.5));
+  // DRESSING, straight off the asset: monitor centred, black task lamp and pen cup left, notebook right — and the
+  // monitor's keyboard + mouse at the bow (the sitter's front), within a seated HumanBase body's reach
+  g.add(monitorAt(0, h, -d / 2 + 8.0, Math.PI, 17, 9.5)); // screen turned to the sitter (local +z)
+  const kbd = new Baker();
+  kbd.add(rbox(13.0, 0.9, 4.4, mat("charcoal", 0.6), 0, h, d / 2 - 3.6, 0.3));
+  kbd.add(rbox(11.8, 0.25, 3.4, mat("charcoal", 0.85), 0, h + 0.9, d / 2 - 3.6, 0.15)); // key field
+  kbd.add(rbox(2.4, 1.1, 3.8, mat("charcoal", 0.6), 9.0, h, d / 2 - 3.8, 1.0)); //          mouse, sitter's right
+  kbd.bakeInto(g, "cms-lead-kit");
   taskLamp(g, -w / 2 + 7.0, h, -d / 2 + 7.0);
   g.add(cyl(2.0, 4.6, blueDeep(), -w / 2 + 8.5, h, -d / 2 + 15.0, 1.9)); //   pen cup
   for (let i = 0; i < 5; i++) {

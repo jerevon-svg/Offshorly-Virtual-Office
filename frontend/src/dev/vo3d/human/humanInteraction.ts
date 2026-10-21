@@ -127,6 +127,19 @@ export const EXAMPLE_INTERACTABLES: readonly Interactable[] = [
   },
 ];
 
+/** The workstation keyboard's key tops (station-local), split by the hand that types them — the proof's real key grid,
+ *  and the invisible one VO's seated typing types on (human/seatedWork). `each` sees every key cap's x/z. */
+export function workstationKeys(each?: (x: number, z: number) => void): Record<Side, THREE.Vector3[]> {
+  const kb = DESK.keyboard, keys: Record<Side, THREE.Vector3[]> = { L: [], R: [] };
+  const kw = kb.w / 12.6, kd = kb.d / 4.6;
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 12; c++) {
+    const x = -kb.w / 2 + kw * (c + 0.8) + (r % 2) * kw * 0.3, z = kb.z - kb.d / 2 + kd * (r + 0.8);
+    each?.(x, z);
+    if (r < 3) (c < 6 ? keys.L : keys.R).push(new THREE.Vector3(x, DESK.topY + kb.h * 1.1, z));
+  }
+  return keys;
+}
+
 /** The workstation's geometry for the proof: desk, chair, keyboard (real key grid), mouse, monitor. */
 export function buildWorkstation(): { root: THREE.Group; keys: Record<Side, THREE.Vector3[]>; mouse: THREE.Object3D } {
   const root = new THREE.Group(); root.name = "proof-workstation";
@@ -139,14 +152,8 @@ export function buildWorkstation(): { root: THREE.Group; keys: Record<Side, THRE
   // keyboard: a base and a real 4 × 12 key grid (the fingertip targets are these keys)
   const kb = DESK.keyboard;
   box(kb.w, kb.h * 0.6, kb.d, dark, 0, DESK.topY + kb.h * 0.3, kb.z);
-  const keys: Record<Side, THREE.Vector3[]> = { L: [], R: [] };
   const kw = kb.w / 12.6, kd = kb.d / 4.6;
-  for (let r = 0; r < 4; r++) for (let c = 0; c < 12; c++) {
-    const x = -kb.w / 2 + kw * (c + 0.8) + (r % 2) * kw * 0.3, z = kb.z - kb.d / 2 + kd * (r + 0.8);
-    box(kw * 0.84, kb.h * 0.5, kd * 0.82, keyMat, x, DESK.topY + kb.h * 0.85, z);
-    const top = new THREE.Vector3(x, DESK.topY + kb.h * 1.1, z);
-    if (r < 3) (c < 6 ? keys.L : keys.R).push(top);
-  }
+  const keys = workstationKeys((x, z) => box(kw * 0.84, kb.h * 0.5, kd * 0.82, keyMat, x, DESK.topY + kb.h * 0.85, z));
   // mouse
   const mouse = new THREE.Mesh(new THREE.CapsuleGeometry(0.022 * W, 0.03 * W, 6, 12), mat(0xf1efe9, 0.4));
   mouse.rotation.x = Math.PI / 2; mouse.scale.set(1, 1, 0.55);

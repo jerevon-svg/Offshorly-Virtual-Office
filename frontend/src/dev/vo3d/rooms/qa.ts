@@ -304,7 +304,7 @@ function deskChairSeat(
 /** The LEAD chair, approached from the credenza's apron 26 west of it — the north lane is blocked at the
  *  chair's own x by the chair, so the body walks up beside the workstation rather than into it. */
 export const LEAD_SEAT: SeatCapability =
-  deskChairSeat(LEAD_CHAIR, { x: 134, z: NORTH_LANE_Z }, "z", -1, LEAD_PULL, QA_LEAD_CHAIR, FACING_YAW.south);
+  { ...deskChairSeat(LEAD_CHAIR, { x: 134, z: NORTH_LANE_Z }, "z", -1, LEAD_PULL, QA_LEAD_CHAIR, FACING_YAW.south), workstation: true };
 
 /** The two VISITOR chairs, approached from the ends of the middle lane for the same reason. */
 export const VISITOR_SEATS: SeatCapability[] = [
@@ -313,9 +313,10 @@ export const VISITOR_SEATS: SeatCapability[] = [
 ];
 
 /** The four BENCH chairs, each approached from the aisle it backs onto, at its own z. */
-export const BENCH_SEATS: SeatCapability[] = BENCH_CHAIRS.map((c) =>
-  deskChairSeat(c, { x: c.dir === -1 ? WEST_LANE : EAST_LANE, z: c.z }, "x", c.dir, BENCH_PULL, QA_TASK_CHAIR,
-    c.dir === -1 ? FACING_YAW.east : FACING_YAW.west));
+export const BENCH_SEATS: SeatCapability[] = BENCH_CHAIRS.map((c) => ({
+  ...deskChairSeat(c, { x: c.dir === -1 ? WEST_LANE : EAST_LANE, z: c.z }, "x", c.dir, BENCH_PULL, QA_TASK_CHAIR, c.dir === -1 ? FACING_YAW.east : FACING_YAW.west),
+  workstation: true,
+}));
 
 export const LEAD_CHAIR_ID = `${QA_ROOM_ID}/${LEAD_CHAIR.id}`;
 export const VISITOR_CHAIR_IDS = VISITOR_CHAIRS.map((c) => `${QA_ROOM_ID}/${c.id}`);

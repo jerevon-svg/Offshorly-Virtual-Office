@@ -46,6 +46,17 @@ export function loadGlb(url: string): Promise<GLTF> {
   return p;
 }
 
+/** the shared library's locomotion clips (they share foot timing — HumanAvatar.play keeps the phase across them) */
+const LOCOMOTION = new Set(["walking", "running"]);
+/** GAIT POSTURE (see HumanAvatar.gaitPosture): per locomotion clip, [joint, how far its mean posture moves onto the idle's
+ *  (0..1), how much of the clip's own swing it keeps (below 1 calms it, above 1 lengthens it — the walk's stride)]. Clavicles fully upright; arms upright with a relaxed swing;
+ *  the mid-spine and neck most of the way (a walk keeps a little lean, a run more). */
+const GAIT_POSTURE: Record<string, readonly (readonly [string, number, number])[]> = {
+  walking: [["LeftShoulder", 1, 0.5], ["RightShoulder", 1, 0.5], ["LeftArm", 1, 0.5], ["RightArm", 1, 0.5], ["LeftForeArm", 0.7, 0.6], ["RightForeArm", 0.7, 0.6], ["Spine01", 0.65, 1], ["neck", 0.65, 1],
+    ["LeftUpLeg", 0, 1.3], ["RightUpLeg", 0, 1.3], ["LeftLeg", 0, 1.1], ["RightLeg", 0, 1.1]],
+  running: [["LeftShoulder", 1, 0.6], ["RightShoulder", 1, 0.6], ["LeftArm", 0.75, 0.65], ["RightArm", 0.75, 0.65], ["Spine01", 0.35, 1], ["neck", 0.35, 1]],
+};
+const _q1 = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _q3 = new THREE.Quaternion();
 /** fallback for the base's own skin luminance (the base GLB publishes the measured value in its extras) */
 const BASE_SKIN_LUM = 0.56;
 
@@ -151,6 +162,7 @@ export class HumanAvatar {
     this.rig = new HumanRig(this.model, this.body, this.bones);
     this.clearance = new BodyClearance(this.rig, this.body, HUMAN_WORLD_SCALE);
     this.addLayer(this.clearance.layer());
+    this.addLayer({ id: "gait-posture", order: 20, update: () => this.gaitPosture() });
     // HEAD MOUNT: this avatar's own inverse binds (the cloned skeleton shares the cached array) — taken AFTER the rig's
     // rest pose and the clearance envelopes are measured, so neither ever sees a mount
     this.ownBinds(this.body, this.body.skeleton.boneInverses);
@@ -508,6 +520,8 @@ export class HumanAvatar {
     if (!next || this.current === name) return;
     const prev = this.current ? this.actions[this.current] : null;
     next.reset().setEffectiveTimeScale(1).setEffectiveWeight(1).play();
+    // walk ↔ run keeps the stride's phase (the two clips share their foot timing): the feet carry on rather than restart
+    if (prev && LOCOMOTION.has(name) && this.current && LOCOMOTION.has(this.current)) next.time = (prev.time / prev.getClip().duration) * next.getClip().duration;
     if (prev && fade > 0) prev.crossFadeTo(next, fade, false); else prev?.stop();
     this.current = name;
   }
@@ -526,6 +540,46 @@ export class HumanAvatar {
   actionFor(name: string): THREE.AnimationAction | undefined { return this.actions[name]; }
   /** the shared clip library as loaded (read-only; host runtimes read hip tracks from it — vo3d interact/seatContact) */
   clips: readonly THREE.AnimationClip[] = [];
+
+  // GAIT POSTURE. The shared walk/run clips carry their own upper-body posture: the clavicles roll ~35° forward-down
+  // (the shoulder joints drop ~2.6 u), the upper arms hang ~50° off the idle's, the mid-spine hunches ~17° — and the
+  // hands swing further fore-aft (~12 u) than the feet travel. Measured with no layer running, so it is the CLIP, not
+  // blending or clearance. While a locomotion clip plays, each listed joint is RE-CENTRED onto this employee's own idle
+  // pose (its cycle mean) and keeps only part of the clip's swing around it: q = slerp(clipMean, idleMean, recentre) ·
+  // (clipMean⁻¹ · q)^keep, blended in by the clip's mixer weight — so idle ↔ walk eases, never pops. THE BRISK STRIDE: the
+  // legs are not re-centred, only their swing is LENGTHENED (keep > 1 at the hips, a little at the knees), so the walk
+  // covers more ground per step and an office-pace walk needs less cadence (avatar/gait measures the result).
+  private readonly clipMeans = new Map<string, Map<string, THREE.Quaternion>>();
+  private gaitPosture(): void {
+    const idle = this.clipMean(idleClip(this.config.idleProfile));
+    for (const [clip, bones] of Object.entries(GAIT_POSTURE)) {
+      const act = this.actions[clip], w = act?.isScheduled() ? act.getEffectiveWeight() : 0;
+      if (w < 1e-3) continue;
+      const mean = this.clipMean(clip);
+      for (const [name, recentre, keep] of bones) {
+        const b = this.bones.get(name), m = mean.get(name), home = idle.get(name);
+        if (!b || !m || !home) continue;
+        const swing = _q1.copy(m).invert().multiply(b.quaternion);                    // the clip's own oscillation, bone frame
+        const target = _q2.copy(m).slerp(home, recentre).multiply(_q3.identity().slerp(swing, keep));   // …around the chosen centre
+        b.quaternion.slerp(target, w);
+      }
+    }
+  }
+  /** each joint's mean local rotation over a clip (its key values, hemisphere-aligned) */
+  private clipMean(clip: string): Map<string, THREE.Quaternion> {
+    let m = this.clipMeans.get(clip);
+    if (m) return m;
+    m = new Map();
+    for (const t of this.actions[clip]?.getClip().tracks ?? []) {
+      if (!t.name.endsWith(".quaternion")) continue;
+      const v = t.values, sum = new THREE.Vector4(), q0 = new THREE.Vector4(v[0], v[1], v[2], v[3]);
+      for (let i = 0; i < v.length; i += 4) { const q = new THREE.Vector4(v[i], v[i + 1], v[i + 2], v[i + 3]); sum.addScaledVector(q, q.dot(q0) < 0 ? -1 : 1); }
+      sum.normalize();
+      m.set(t.name.slice(0, -".quaternion".length), new THREE.Quaternion(sum.x, sum.y, sum.z, sum.w));
+    }
+    this.clipMeans.set(clip, m);
+    return m;
+  }
 
   addLayer(l: Layer): void { this.layers = [...this.layers.filter((x) => x.id !== l.id), l].sort((a, b) => a.order - b.order); }
   removeLayer(id: string): void { this.layers = this.layers.filter((x) => x.id !== id); }

@@ -64,10 +64,11 @@ import { standablePointNear, type StandTest } from "../player/PlayerBody";
 import { AIRBORNE_POSE_PHASE, JUMP_DURATION_MS, PlayerJump } from "../player/PlayerJump";
 import type { Vo3dCoworker, Vo3dWalkPacing } from "../app/coworkers";
 import { DOOR_LOOKAHEAD, PLAYER_SPRINT_SPEED, PLAYER_WALK_SPEED } from "../player/PlayerMode";
-import { locomotionClip, locomotionRate } from "../avatar/gait";
+import { gaitRate, locomotion } from "../avatar/gait";
+import { SeatedWork } from "../human/seatedWork";
 import type { DoorBody } from "../interact/Door";
 import { ReplayWalk } from "./coworkerWalk";
-import { deskSeatedRootForRig, sceneRig, seatedRootForRig, type SeatedRig } from "../interact/seatContact";
+import { deskSeatedRootForRig, HUMANBASE_PELVIS_BELOW_HIPS, sceneRig, seatedRootForRig, type SeatedRig } from "../interact/seatContact";
 
 /** How fast a coworker turns toward their direction of travel, rad/s. The navigation controller's rate,
  *  which is also what devtools/Crowd.ts turns its bodies at — one figure for every walking body in V2. */
@@ -354,6 +355,8 @@ class CoworkerBody {
   private readonly mixer: THREE.AnimationMixer | null;
   /** a HumanBase employee's own runtime (its mixer, behaviour layers and face), or null for a legacy clone */
   private readonly human: HumanBody["human"] | null;
+  /** a seated HumanBase peer's hands: typing at a workstation, resting elsewhere (human/seatedWork) */
+  private readonly seatedWork: SeatedWork | null = null;
   private readonly actions: Record<string, THREE.AnimationAction> = {};
   private current = "";
   private label: THREE.Sprite | null = null;
@@ -421,9 +424,10 @@ class CoworkerBody {
       // freeze, seat formula, locomotion — runs unchanged on either kind of body.
       const h = source.human;
       this.human = h.human;
+      this.seatedWork = new SeatedWork(h.human);
       this.mixer = null;
       this.triangles = h.human.stats().triangles;
-      this.rig = sceneRig(h.human.scene, h.clips);
+      this.rig = { ...sceneRig(h.human.scene, h.clips), pelvisBelowHips: HUMANBASE_PELVIS_BELOW_HIPS };
       this.root.add(h.human.root);
       for (const clip of h.clips) { const a = h.action(clip.name); if (a) this.actions[clip.name] = a; }
     } else {
@@ -588,7 +592,7 @@ class CoworkerBody {
     this.coastMs = 0;
     // The clip is a property of the MOVEMENT — its mean speed — chosen once, so an eased walk does not
     // break into a run at the peak of its own curve. A prototype without a run clip walks faster instead.
-    this.locomotion = locomotionClip(this.replay.meanSpeed >= RUN_FROM_SPEED, this.actions[CLIP_RUN] !== undefined);
+    this.locomotion = locomotion(this.runtime, this.replay.meanSpeed, this.replay.meanSpeed >= RUN_FROM_SPEED, this.actions[CLIP_RUN] !== undefined, null).clip;
     const at = this.replay.position;
     this.root.position.set(at.x, 0, at.z);
   }
@@ -611,6 +615,7 @@ class CoworkerBody {
     this.targetYaw = null;
     this.coastMs = 0;
     this.seatedIn = anchor;
+    if (this.seatedWork) this.seatedWork.atWorkstation = pose.kind === "seat" ? pose.workstation === true : false;
     this.root.position.copy(root);
     this.yaw = pose.yaw;
     this.root.rotation.set(0, pose.yaw, 0);
@@ -762,7 +767,7 @@ class CoworkerBody {
         const action = this.actions[this.locomotion];
         // Rate from the ground ACTUALLY covered this frame, against the speed THIS clip was authored for,
         // so a replay that is slower or faster than the clip still lands its feet instead of skating.
-        if (action) action.timeScale = locomotionRate(this.locomotion, step.travelled / Math.max(dt, 1e-4));
+        if (action) action.timeScale = gaitRate(this.runtime, this.locomotion, step.travelled / Math.max(dt, 1e-4), this.actions[CLIP_RUN] !== undefined);
       }
       if (this.replay.done) {
         // The route has run out. A reconciliation glide already knew its yaw; a peer walk waits for the
@@ -827,7 +832,7 @@ class CoworkerBody {
 
   /** advance the animation: a legacy clone's own mixer, or the HumanBase runtime (pose restore → mixer → layers → face) */
   private tick(dt: number): void {
-    if (this.human) this.human.update(dt);
+    if (this.human) { this.seatedWork?.update(dt, this.seatedIn !== null && this.current === CLIP_SIT); this.human.update(dt); }
     else this.mixer?.update(dt);
   }
 
@@ -854,7 +859,7 @@ class CoworkerBody {
       this.root.remove(this.label);
       this.label = null;
     }
-    if (this.human) this.human.dispose();
+    if (this.human) { this.seatedWork?.dispose(); this.human.dispose(); }
     else if (this.mixer) { this.mixer.stopAllAction(); this.mixer.uncacheRoot(this.root); }
     this.root.removeFromParent();
     this.root.clear();
@@ -908,7 +913,8 @@ export type CoworkerPosition = {
  *  `contact` is the cushion point in world space; `yaw` the chair's own seated rotation; `kind` selects
  *  the pose formula (a movable desk chair and fixed lounge seating land the pelvis differently — see
  *  interact/seatContact); `sink` is the lounge cushion's compression. */
-export type SeatAnchorPose = { contact: THREE.Vector3; yaw: number; kind: "seat" | "lounge"; sink?: number };
+/** `workstation`: the seat is a work desk's chair (a seated HumanBase body types there) */
+export type SeatAnchorPose = { contact: THREE.Vector3; yaw: number; kind: "seat" | "lounge"; sink?: number; workstation?: boolean };
 
 export interface CoworkersDeps {
   parent: THREE.Object3D;
@@ -924,7 +930,8 @@ export interface CoworkersDeps {
   /** PHASE 6C — resolve a seat anchor id to the pose a body takes in it, or null for an anchor this world
    *  has no chair for. The world implements it over its own chair views (and tucks the chair in while it
    *  is occupied, as the local sit does); this module only asks. Absent = nobody can be drawn seated. */
-  seatAnchor?: (id: string) => SeatAnchorPose | null;
+  /** `humanBase`: the body sitting is the shared HumanBase body (a work desk's chair is pulled up for it) */
+  seatAnchor?: (id: string, humanBase?: boolean) => SeatAnchorPose | null;
   /** PHASE 6C — the anchor is no longer occupied by the body that held it; the world returns the chair. */
   releaseSeat?: (id: string) => void;
   /** WHAT KIND of change a sync produced, because the two cost the renderer different things.
@@ -1202,7 +1209,7 @@ export class Coworkers {
       } else if (coworker.seat) {
         // PHASE 6C — a newcomer may already be SEATED (the first sync of a session finds most people
         // wherever V1 last saw them, chairs included).
-        const pose = seatedPose(this.deps.seatAnchor?.(coworker.seat) ?? null, coworker.yaw);
+        const pose = seatedPose(this.deps.seatAnchor?.(coworker.seat, body.runtime === "humanbase") ?? null, coworker.yaw);
         if (pose) body.sitAt(coworker.seat, pose);
       }
       this.group.add(body.root);
@@ -1257,7 +1264,7 @@ export class Coworkers {
       // cushion is used. An anchor this world cannot resolve falls through to the standing rule.
       const seat = spot.coworker.seat;
       if (seat) {
-        const pose = seatedPose(this.deps.seatAnchor?.(seat) ?? null, spot.coworker.yaw);
+        const pose = seatedPose(this.deps.seatAnchor?.(seat, body.runtime === "humanbase") ?? null, spot.coworker.yaw);
         if (pose) {
           if (body.seatedIn !== seat || Math.abs(wrapAngle(body.facingYaw - pose.yaw)) > YAW_EPSILON) {
             if (body.seatedIn !== null) this.deps.releaseSeat?.(body.seatedIn);
@@ -1289,7 +1296,7 @@ export class Coworkers {
     let moved = false;
     for (const body of this.bodies.values()) {
       if (body.seatedIn === null || (anchor !== undefined && body.seatedIn !== anchor)) continue;
-      const pose = this.deps.seatAnchor?.(body.seatedIn) ?? null;
+      const pose = this.deps.seatAnchor?.(body.seatedIn, body.runtime === "humanbase") ?? null;
       if (pose && body.sitAt(body.seatedIn, pose)) moved = true;
     }
     if (moved) this.deps.onChanged?.("position");

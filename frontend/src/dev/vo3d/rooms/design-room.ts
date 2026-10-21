@@ -243,6 +243,7 @@ export function designChairSeat(pos: Vec2, facing: Facing, sideSign: 1 | -1): Se
     // the yaw whose body forward IS `facing` (+z model): the authored fallback; data/seatFacing.json decides
     seatedYaw: headingFor(f.x, f.z),
     timings: T.timings,
+    workstation: true, // every Design Room desk chair is a work desk
   };
 }
 export const DESIGN_SEAT_IDS = [CHAIR_4_ID, ...Object.keys(DESIGN_CHAIR_SIDE).map((id) => `${DESIGN_ROOM_ID}/${id}`)];
@@ -316,6 +317,7 @@ export function designRoomEntities(): Entity[] {
       sitDepth: 3.5,
       seatedYaw: Math.PI,
       timings: { pullMs: 900, sitMs: 650, slideMs: 1000, standMs: 650, returnMs: 900 },
+      workstation: true,
     },
   };
   const sofa = furniture.find((e) => e.id === DESIGN_SOFA_ID);

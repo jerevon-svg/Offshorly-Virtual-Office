@@ -2,7 +2,7 @@
 // Desk succulents are anchors turned into three InstancedMeshes by finalizeSucculents().
 import * as THREE from "three";
 import { cyl, lathe, rbox, rnd, shadowed } from "./helpers";
-import { mat, metal, plastic, screenMat, type MatKey } from "../render/Materials";
+import { mat, metal, plastic, workScreenMat, type MatKey } from "../render/Materials";
 import { foliage, leafGeometry } from "./plants";
 
 export function pot(r: number, h: number, m: THREE.Material, cx: number, y0: number, cz: number): THREE.Group {
@@ -22,8 +22,24 @@ export function laptop(cx: number, y0: number, cz: number): THREE.Group {
   lid.position.set(cx, y0 + 0.7, cz - 3.2);
   lid.rotation.x = -0.22;
   lid.add(rbox(9.5, 6.4, 0.45, mat("charcoal", 0.5), 0, 0, 0, 0.35));
-  lid.add(rbox(8.6, 5.4, 0.12, screenMat(), 0, 0.5, 0.25, 0.15));
+  lid.add(rbox(8.6, 5.4, 0.12, workScreenMat(), 0, 0.5, 0.25, 0.15));
   g.add(lid);
+  return g;
+}
+/** A laptop TURNED IN PLACE: `laptop` builds its parts at absolute (cx, cz) inside a group at the origin, so turning that
+ *  group swings the laptop round the desk's centre. This builds it at the origin, turns it by `yaw` (0 = its user side
+ *  toward +z) and then sets it down at (cx, cz). */
+export function laptopAt(cx: number, y0: number, cz: number, yaw: number): THREE.Group {
+  const g = laptop(0, y0, 0);
+  g.rotation.y = yaw;
+  g.position.set(cx, 0, cz);
+  return g;
+}
+/** A monitor TURNED IN PLACE (see laptopAt): `yaw` 0 = the screen faces −z, π = +z, −π/2 = +x, +π/2 = −x. */
+export function monitorAt(cx: number, y0: number, cz: number, yaw: number, w = 15, h = 8.5, opts: MonitorOpts = {}): THREE.Group {
+  const g = monitor(0, y0, 0, w, h, opts);
+  g.rotation.y = yaw;
+  g.position.set(cx, 0, cz);
   return g;
 }
 /** Phase 5B: the desk monitor gained a small options bag so a GAMING station can use the same builder.
@@ -41,7 +57,7 @@ export type MonitorOpts = {
 };
 export function monitor(cx: number, y0: number, cz: number, w = 15, h = 8.5, opts: MonitorOpts = {}): THREE.Group {
   const g = new THREE.Group();
-  const screen = opts.screen ?? screenMat();
+  const screen = opts.screen ?? workScreenMat();
   const bezel = opts.slim ? 0.7 : 1.2;
   const standH = opts.slim ? 3.2 : 4;
   // THE STAND, AS A STAND. A tapered cylinder on a box column is a monitor-shaped placeholder: a real

@@ -13,6 +13,8 @@ import { RIDER_GRIPS } from "../world/scooters";
 import type { HumanAvatar } from "../human/HumanAvatar";
 import { createHumanBody, type HumanBody } from "./humanBody";
 import { idleClip, type AppearanceAsset, type EmployeeAvatar } from "../human/humanBaseContract";
+import { SeatedWork } from "../human/seatedWork";
+import { ArmPerch } from "../human/armPerch";
 
 let loader: GLTFLoader | null = null;
 function gltfLoader(): GLTFLoader {
@@ -57,6 +59,12 @@ export class Avatar {
   private readonly humanCfg: { config: EmployeeAvatar; catalogue: ReadonlyMap<string, AppearanceAsset> } | null;
   /** the live HumanBase body, or null on the legacy path */
   human: HumanAvatar | null = null;
+  /** what a seated HumanBase body does with its hands: types at a workstation, rests on its lap elsewhere (human/seatedWork) */
+  seatedWork: SeatedWork | null = null;
+  /** the seat this body sits in is a work desk's chair (true), something else (false) or unknown — app/world says */
+  atWorkstation: boolean | undefined = undefined;
+  /** the forearm a summoned Toucan lands on (human/armPerch); app/world raises and lowers it */
+  armPerch: ArmPerch | null = null;
   /** which runtime is actually drawing this body: "humanbase" | "legacy-glb" | "none" (diagnostic) */
   get runtime(): "humanbase" | "legacy-glb" | "none" { return this.human ? "humanbase" : this.gltf ? "legacy-glb" : "none"; }
 
@@ -85,6 +93,9 @@ export class Avatar {
     const h = body.human;
     this.dispose();
     this.human = h;
+    this.seatedWork = new SeatedWork(h);
+    this.armPerch = new ArmPerch(h);
+    h.addLayer(this.armPerch.layer());
     this.model.add(h.root);
     // the seat contract (interact/seatContact) reads the rig's clips by VO's names: the idle is aliased under CLIP_IDLE
     this.gltf = { scene: h.scene, animations: body.clips } as unknown as GLTF;
@@ -244,7 +255,12 @@ export class Avatar {
     return { bound: a !== undefined, running: a?.isRunning() ?? false, weight: a?.getEffectiveWeight() ?? 0 };
   }
   update(dt: number): void {
-    if (this.human) { this.human.update(dt); return; }   // mixer + behaviour layers (clearance, face, hair, rider)
+    if (this.human) {   // seated hands, then mixer + behaviour layers (clearance, contacts, face, hair, rider)
+      if (this.seatedWork) this.seatedWork.atWorkstation = this.atWorkstation;
+      this.seatedWork?.update(dt, this.current === CLIP_SIT);
+      this.human.update(dt);
+      return;
+    }
     this.mixer?.update(dt);
     this.rider.update(dt);
   }
@@ -263,7 +279,7 @@ export class Avatar {
 
   dispose(): void {
     this.rider.setScene(null);
-    if (this.human) { this.human.dispose(); this.human = null; this.gltf = null; this.current = null; return; }
+    if (this.human) { this.seatedWork?.dispose(); this.seatedWork = null; this.armPerch = null; this.human.dispose(); this.human = null; this.gltf = null; this.current = null; return; }
     if (this.gltf) {
       this.mixer?.stopAllAction();
       this.model.remove(this.gltf.scene);

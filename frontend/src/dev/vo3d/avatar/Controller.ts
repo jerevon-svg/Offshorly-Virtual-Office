@@ -13,7 +13,8 @@
 //   Interaction a state machine (seat) that moves/attaches the root itself
 // Acquire/release are explicit; a lower-priority owner cannot take the avatar from a higher one.
 import { dist, headingFor, stepAngle, type Vec2 } from "../core/coords";
-import { CLIP_IDLE, CLIP_WALK } from "../adapters/v1Avatar";
+import { CLIP_IDLE, CLIP_RUN } from "../adapters/v1Avatar";
+import { locomotion } from "./gait";
 import type { Avatar } from "./Avatar";
 
 export type Owner = "Idle" | "Navigation" | "Interaction" | "Editor" | "Player" | "Guided";
@@ -82,8 +83,10 @@ export class NavigationController {
       this.stack.release("Navigation");
       this.onArrive?.();
     } else {
-      this.avatar.play(CLIP_WALK);
-      this.avatar.setClipTimeScale(CLIP_WALK, this.speed / 30);
+      // legacy bodies: the walk at speed/30, as always; a HumanBase body jogs at office speed (avatar/gait)
+      const g = locomotion(this.avatar.runtime, this.speed, false, this.avatar.hasClip(CLIP_RUN), this.avatar.currentClip);
+      this.avatar.play(g.clip);
+      this.avatar.setClipTimeScale(g.clip, g.rate);
     }
   }
 }

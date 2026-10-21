@@ -4,7 +4,7 @@ import * as THREE from "three";
 import type { Facing, Rect } from "../core/coords";
 import { Baker, cyl, lathe, localSize, placed, rbox, shadowed, slab, sphereGeo } from "./helpers";
 import { contactShadowMat, emissiveMat, fabric, mat, metal, plastic, wood, type MatKey } from "../render/Materials";
-import { book, laptop, monitor, mug, smallPot } from "./props";
+import { book, laptop, mug, smallPot, monitorAt } from "./props";
 
 export type FurnitureKind =
   | "lead-desk" | "member-desk" | "desk-panel" | "curve-desk" | "side-desk"
@@ -116,7 +116,11 @@ function leadDesk(item: FurnitureItem): THREE.Group {
     const z = hd * k * (0.92 - 0.12 * t * t) + 0.35;
     g.add(rbox(1.1, DESK_H - TOP_T - 2.4, 0.9, mat("greenDark", 0.9), x, 1.2, z, 0.35));
   }
-  g.add(monitor(0, DESK_H, 0));
+  g.add(monitorAt(0, DESK_H, 0, Math.PI)); // screen turned to the sitter (local +z)
+  // the monitor's keyboard + mouse at the bow (the sitter's front: local +z), within a seated HumanBase body's reach
+  g.add(rbox(13.0, 0.9, 4.4, mat("charcoal", 0.6), 0, DESK_H, hd * 0.9 - 3.6, 0.3));
+  g.add(rbox(11.8, 0.25, 3.4, mat("charcoal", 0.85), 0, DESK_H + 0.9, hd * 0.9 - 3.6, 0.15));
+  g.add(rbox(2.4, 1.1, 3.8, plastic("white"), 9.5, DESK_H, hd * 0.9 - 3.8, 1.0));
   g.add(book(-w * 0.32, DESK_H, -1, 6.5, 8.5, "greenDark", 0.08));
   g.add(rbox(6, 0.35, 7.5, plastic("white"), w * 0.24, DESK_H, 2.5, 0.2));
   g.add(smallPot(w * 0.38, DESK_H, -2.5, 1.7));
@@ -150,7 +154,8 @@ function deskPanel(item: FurnitureItem): THREE.Group {
   g.add(pedestal(w * 0.22, d * 0.78, -w * 0.37, 0.5));
   g.add(pedestal(w * 0.22, d * 0.78, w * 0.37, 0.5));
   g.add(rbox(w * 0.98, DESK_H - TOP_T - 6, 1.1, fabric("green"), 0, 5, -d / 2 + 0.7, 0.5)); // modesty panel
-  g.add(laptop(0, DESK_H, 1.5));
+  // the laptop at the sitter's (local +z) front, where a seated HumanBase body types on it
+  g.add(laptop(0, DESK_H, d / 2 - 3.6));
   g.add(smallPot(-w * 0.27, DESK_H, -d * 0.25, 1.5));
   g.add(smallPot(-w * 0.27, DESK_H, d * 0.27, 1.5));
   g.add(smallPot(w * 0.3, DESK_H, d * 0.27, 1.5));

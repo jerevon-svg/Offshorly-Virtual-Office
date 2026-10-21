@@ -21,7 +21,7 @@ import * as THREE from "three";
 import type { Avatar } from "../avatar/Avatar";
 import type { ControllerStack } from "../avatar/Controller";
 import { CLIP_IDLE, CLIP_RUN, CLIP_WALK } from "../adapters/v1Avatar";
-import { locomotionClip, locomotionRate } from "../avatar/gait";
+import { locomotion } from "../avatar/gait";
 import { headingFor, stepAngle, type Vec2 } from "../core/coords";
 import type { WorldState } from "../world/WorldState";
 import { PlayerBody, type MoveHeights, type StandTest } from "./PlayerBody";
@@ -60,7 +60,9 @@ const RIDE_LOOK_HOLD = 1.2;
 export const DOOR_LOOKAHEAD = 46;
 /** THE TWO GROUND SPEEDS, in units/s, and the single place either of them is stated.
  *
- *  70 / 100 replaces the original 30 / 54. The old pair was inherited from the click-to-walk router,
+ *  2026-10-21: the WALK is a brisk 42 (a foot-locked WALK, never a jog, for the HumanBase cast — avatar/gait); the
+ *  sprint stays 100, so Shift is the brisk way across the office (SPRINT_MULTIPLIER is derived). Before that:
+ *  70 / 100 replaced the original 30 / 54. The old pair was inherited from the click-to-walk router,
  *  where a stroll is the right read because the camera is watching the office; driving a body yourself at
  *  that speed makes an office the size of this one feel like a corridor to be endured. Nothing else about
  *  movement changes: the same WASD, the same camera-relative basis, the same PlayerBody.move, the same
@@ -70,7 +72,7 @@ export const DOOR_LOOKAHEAD = 46;
  *  into sub-steps no longer than a quarter of the body radius (2 units at NAV_RADIUS 8) regardless of how
  *  long the step is, so the resolution of the sweep does not depend on speed at all — 100 u/s on a
  *  stalled-tab 250 ms frame is 25 units, resolved as 13 sub-steps, exactly as 54 u/s was resolved as 7. */
-export const PLAYER_WALK_SPEED = 70;
+export const PLAYER_WALK_SPEED = 42;
 export const PLAYER_SPRINT_SPEED = 100;
 /** SPRINT. A multiplier on the walk speed and nothing else — no stamina, no state, no second movement
  *  path. Holding Shift scales the per-frame delta; the delta still goes through PlayerBody.move, which
@@ -467,12 +469,12 @@ export class PlayerMode {
     // an interaction is driving Bon: keep the camera on him, move nothing, and take him back when it ends
     if (owner !== "Player") {
       if (this.input.axis.x || this.input.axis.z) this.d.onManualOverride?.(owner);
-      // GUIDED TRAVEL: the system walks the body, the person keeps the camera. Taken only when allowed, so
-      // a seat or a ride that stages its own shot sees exactly what it always did.
-      if (this.d.freeLook?.()) {
-        const look = this.input.takeLook();
-        if (look.dx || look.dy) this.camera.look(look.dx, look.dy);
-      }
+      // GUIDED TRAVEL AND SEATS: the system walks or seats the body, the person keeps the camera. Taken only when
+      // allowed, so the lift or the portal, which stage their own shot, see exactly what they always did.
+      // Drained either way: a look the camera may not take now is DROPPED, not banked — a lift ride or a portal used to
+      // hand the camera every mouse movement made during it in one jump when it ended.
+      const look = this.input.takeLook();
+      if (this.d.freeLook?.() && (look.dx || look.dy)) this.camera.look(look.dx, look.dy);
       this.state.sprinting = false;
       this.state.travelled = 0;
       // Somebody else is driving the body; a jump cannot continue through a seat or an approach, and
@@ -550,11 +552,11 @@ export class PlayerMode {
       // with no run clip in the GLB falls back to a faster walk rather than freezing on whatever was
       // already playing, so an older avatar build still behaves — avatar/gait owns that rule and the
       // rate that makes the fallback keep its feet on the ground instead of skating.
-      const clip = locomotionClip(sprinting, this.d.avatar.hasClip(CLIP_RUN));
-      this.d.avatar.play(clip);
       // rate from the ground ACTUALLY covered, not from the input: a player scraping along a wall slows
-      // his own stride down instead of moonwalking on the spot
-      this.d.avatar.setClipTimeScale(clip, locomotionRate(clip, travelled / dt));
+      // his own stride down instead of moonwalking on the spot (a HumanBase body also picks walk/run by it)
+      const g = locomotion(this.d.avatar.runtime, travelled / dt, sprinting, this.d.avatar.hasClip(CLIP_RUN), this.d.avatar.currentClip);
+      this.d.avatar.play(g.clip);
+      this.d.avatar.setClipTimeScale(g.clip, g.rate);
     } else {
       this.d.avatar.play(this.restingClip);
     }

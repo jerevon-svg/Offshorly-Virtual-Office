@@ -526,9 +526,9 @@ describe("vo3d audio — the beds themselves", () => {
 
 // ---- movement speed --------------------------------------------------------------------------------
 
-describe("vo3d player — the approved 70 / 100 speed tuning", () => {
+describe("vo3d player — the approved 42 / 100 speed tuning (brisk HumanBase walk, 2026-10-21)", () => {
   it("states the two ground speeds once, and derives the sprint from them", () => {
-    expect(PLAYER_WALK_SPEED).toBe(70);
+    expect(PLAYER_WALK_SPEED).toBe(42);
     expect(PLAYER_SPRINT_SPEED).toBe(100);
     expect(PLAYER_WALK_SPEED * SPRINT_MULTIPLIER).toBeCloseTo(100, 10);
     expect(SPRINT_MULTIPLIER).toBeGreaterThan(1); // sprint is still meaningfully faster than a walk

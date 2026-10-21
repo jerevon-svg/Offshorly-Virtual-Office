@@ -257,6 +257,7 @@ function deskChairSeat(chair: { x: number; z: number }, approach: Vec2, preSeatZ
     sitDepth: 3.5,
     seatedYaw: FACING_YAW.south, // every desk in this room is south of its chair
     timings: { pullMs: 860, sitMs: 650, slideMs: 760, standMs: 650, returnMs: 860 },
+    workstation: true, // every desk chair here is a work desk (the sofas are lounge seating)
   };
 }
 

@@ -31,7 +31,7 @@ import type { Facing } from "../core/coords";
 import { Baker, cyl, lathe, placed, localSize, rbox, rnd, sphereGeo } from "./helpers";
 import { contactShadowMat, emissiveMat, fabric, glowMat, mat, metal, plastic, type MatKey } from "../render/Materials";
 import { leafAnchor } from "./plants";
-import { laptop, monitor, mug } from "./props";
+import { laptop, mug, monitorAt, laptopAt } from "./props";
 
 /** The entity kinds this module builds. build/registry.ts routes them here. */
 export const AI_KINDS = ["ai-bench-desk", "ai-lead-desk", "ai-task-chair", "ai-lead-chair", "ai-visitor-chair"] as const;
@@ -95,13 +95,16 @@ function deskPot(g: THREE.Group, cx: number, y0: number, cz: number, r: number):
   g.add(p);
 }
 
-/** the black keyboard + mouse pair the bench art lays out at every place */
-function peripherals(b: Baker, x: number, y: number, z: number, faceSign: 1 | -1): void {
-  b.add(rbox(13.5, 0.9, 4.6, carbon("aiCarbon"), x, y, z + faceSign * 2.4, 0.3));
-  b.add(rbox(12.4, 0.25, 3.6, carbon(), x, y + 0.9, z + faceSign * 2.4, 0.15)); //  key field
-  const m = rbox(2.4, 1.1, 3.8, carbon("aiCarbon"), x + 9.4, y, z + faceSign * 2.2, 1.0);
-  b.add(m);
+/** the black keyboard + mouse pair the bench art lays out at every place, for a sitter on the bench's `side` (±1 = local
+ *  ±x, facing across the bench): at the deck's FRONT where a seated HumanBase body reaches it, the keys running along
+ *  the bench, the mouse to the sitter's right. `x` is the keyboard's centre. */
+function peripherals(b: Baker, x: number, y: number, z: number, side: 1 | -1): void {
+  b.add(rbox(4.6, 0.9, 13.5, carbon("aiCarbon"), x, y, z, 0.3));
+  b.add(rbox(3.6, 0.25, 12.4, carbon(), x, y + 0.9, z, 0.15)); //  key field
+  b.add(rbox(3.8, 1.1, 2.4, carbon("aiCarbon"), x + side * 0.2, y, z - side * 9.4, 1.0)); // mouse
 }
+/** how far in from a desk's front edge a keyboard's centre sits — the seated HumanBase reach (the Dev Room's figure) */
+const KEYBOARD_EDGE_INSET = 3.6;
 
 // ---- desks -----------------------------------------------------------------------------------------
 /** BENCH DESK (ai-member-desk-1.png). A 116-long charcoal slab with soft-radiused corners, split down the
@@ -141,19 +144,13 @@ function benchDesk(e: Entity): THREE.Group {
   places.forEach((lz, i) => {
     for (const s of [-1, 1] as const) {
       const deck = new Baker();
-      peripherals(deck, 0, h, lz, s);
+      peripherals(deck, s * (w / 2 - KEYBOARD_EDGE_INSET), h, lz, s);
       deck.bakeInto(g, `ai-bench-kit-${i}-${s > 0 ? "e" : "w"}`);
-      if (i === 1) continue; // the centre place carries the shared plant instead
-      if (i === 0) {
-        const mon = monitor(0, h + 1.2, lz + s * 0.2, 14, 8.2);
-        mon.rotation.y = s > 0 ? 0 : Math.PI;
-        mon.position.x = s * 3.2;
-        g.add(mon);
-      } else {
-        const lap = laptop(s * 5.4, h, lz);
-        lap.rotation.y = s > 0 ? 0 : Math.PI;
-        g.add(lap);
-      }
+      // the art's layout: a monitor on the spine at the two END places, a laptop at the MIDDLE one (beside the shared
+      // plant) — every place has a screen, each turned in place to face its own sitter across the bench (side s = ±x)
+      // (the laptop stands 7 along the bench, clear of the plant, the mugs and the front keyboard)
+      if (i === 1) g.add(laptopAt(s * 5.7, h, lz - s * 7, s * Math.PI / 2));
+      else g.add(monitorAt(s * 3.2, h + 1.2, lz, -s * Math.PI / 2, 14, 8.2));
     }
   });
   deskPot(g, 0, h + 1.0, 0, 2.2);
@@ -161,8 +158,9 @@ function benchDesk(e: Entity): THREE.Group {
   g.add(mug(w * 0.26, h, -d * 0.12));
   // the headphone cradle and the speaker puck the art puts on the west deck
   const kit = new Baker();
-  kit.add(rbox(4.4, 1.0, 4.4, carbon("aiCarbon"), -w * 0.27, h, -d * 0.06, 0.5));
-  kit.add(cyl(2.0, 1.6, carbon("aiCarbon"), w * 0.27, h, d * 0.06, 2.0));
+  // (between the places, clear of the front keyboards and mice)
+  kit.add(rbox(4.4, 1.0, 4.4, carbon("aiCarbon"), -w * 0.27, h, -d * 0.145, 0.5));
+  kit.add(cyl(2.0, 1.6, carbon("aiCarbon"), w * 0.27, h, d * 0.145, 2.0));
   kit.bakeInto(g, "ai-bench-props");
   return g;
 }
@@ -192,8 +190,9 @@ function leadDesk(e: Entity): THREE.Group {
   const wash = rbox(w - 4, 0.02, d - 6, glowMat(led, 0.16), 0, 0.12, 0, 1.0);
   wash.castShadow = wash.receiveShadow = false;
   g.add(wash);
-  // DRESSING, straight off the asset: laptop centred, mug and plant to the sitter's right
-  g.add(laptop(-2.0, h, -d / 2 + 12.0));
+  // DRESSING, straight off the asset: laptop centred, mug and plant to the sitter's right — the laptop at the sitter's
+  // (local +z) front, where a seated HumanBase body types on it
+  g.add(laptop(-2.0, h, d / 2 - 3.6));
   g.add(mug(w * 0.18, h, -d / 2 + 12.0));
   deskPot(g, w * 0.34, h, -d / 2 + 12.0, 2.2);
   return g;

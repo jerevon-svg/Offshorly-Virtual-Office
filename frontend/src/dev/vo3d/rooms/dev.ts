@@ -345,6 +345,7 @@ export const SEATED_TUCK = 3;
 function deskChairSeat(
   chair: { x: number; z: number }, approach: Vec2, dir: -1 | 1, pull: number,
   metrics: { cushionTop: number; cushionLocalZ: number },
+  deskEdgeZ?: number,
 ): SeatCapability {
   const preSeat: Vec2 = { x: chair.x, z: chair.z - dir * 4 };
   return {
@@ -359,13 +360,22 @@ function deskChairSeat(
     sitDepth: 3.5,
     seatedYaw: dir === -1 ? FACING_YAW.south : FACING_YAW.north,
     timings: { pullMs: 860, sitMs: 650, slideMs: 760, standMs: 650, returnMs: 860 },
+    // a WORK desk's chair is pulled up to the desk under a HumanBase body (see HUMAN_SEAT_TO_EDGE)
+    ...(deskEdgeZ !== undefined ? { humanTuck: HUMAN_SEAT_TO_EDGE - Math.abs(deskEdgeZ - chair.z), workstation: true } : {}),
   };
 }
+
+/** WHERE A HUMANBASE BODY'S CHAIR PARKS AT A WORK DESK, as rest-to-desk-edge gap minus this (world units): the shared
+ *  chibi body's arm is ~8 u long, so the chair is pulled in until the seated hips are ~6 behind the desk's near edge —
+ *  the upright typing torso then clears the edge by ~1.4, the chin clears the top, and the keyboard at the front
+ *  (build/dev-furniture KEYBOARD_EDGE_INSET) is in natural reach. Measured on the real desks and chairs
+ *  (human/seatedWork.devdesk.test.ts). Legacy bodies keep seatedTuck. */
+const HUMAN_SEAT_TO_EDGE = 3.0;
 
 /** The two LEAD chairs, approached from the north lane 24 west of the chair — V1 authored 's' cells either
  *  side of each ('o' cells at cols 75 and 83, row 4), and the west one of each pair is taken. */
 export const LEAD_SEATS: SeatCapability[] = LEAD_CHAIRS.map((c) =>
-  deskChairSeat(c, { x: c.x - 24, z: NORTH_LANE_Z }, -1, LEAD_PULL, DEV_EXEC_CHAIR));
+  deskChairSeat(c, { x: c.x - 24, z: NORTH_LANE_Z }, -1, LEAD_PULL, DEV_EXEC_CHAIR, LEAD_DESK_Z0));
 
 /** The four VISITOR chairs, approached from the middle lane, offset to the side so the body never stands
  *  in the gap the chair rolls into. */
@@ -375,12 +385,12 @@ export const VISITOR_SEATS: SeatCapability[] = VISITOR_CHAIRS.map((c, i) =>
 /** The eight ROW 1 bay chairs (facing south into their bench, rolling back north into the middle lane). */
 export const BAY_ROW1_CHAIRS = BAY_ROW1_XS.map((x, i) => ({ id: `bay-chair-n${i + 1}`, x, z: BAY_ROW1_Z }));
 export const BAY_ROW1_SEATS: SeatCapability[] = BAY_ROW1_CHAIRS.map((c) =>
-  deskChairSeat(c, { x: c.x, z: MIDDLE_LANE_Z }, -1, BAY_PULL, DEV_EXEC_CHAIR));
+  deskChairSeat(c, { x: c.x, z: MIDDLE_LANE_Z }, -1, BAY_PULL, DEV_EXEC_CHAIR, BAY_Z - BAY_D / 2));
 
 /** The eight ROW 2 bay chairs (facing north into their bench, rolling back south into the south lane). */
 export const BAY_ROW2_CHAIRS = BAY_ROW2_XS.map((x, i) => ({ id: `bay-chair-s${i + 1}`, x, z: BAY_ROW2_Z }));
 export const BAY_ROW2_SEATS: SeatCapability[] = BAY_ROW2_CHAIRS.map((c) =>
-  deskChairSeat(c, { x: c.x, z: SOUTH_LANE_Z }, 1, BAY_PULL, DEV_TASK_CHAIR));
+  deskChairSeat(c, { x: c.x, z: SOUTH_LANE_Z }, 1, BAY_PULL, DEV_TASK_CHAIR, BAY_Z + BAY_D / 2));
 
 export const LEAD_CHAIR_IDS = LEAD_CHAIRS.map((c) => `${DEV_ROOM_ID}/${c.id}`);
 export const VISITOR_CHAIR_IDS = VISITOR_CHAIRS.map((c) => `${DEV_ROOM_ID}/${c.id}`);
@@ -513,6 +523,9 @@ function approachEntity(id: string, pick: string, approach: ApproachCapability):
 
 /** The room's furniture as world entities. The architecture, the north run, the two wall units and the
  *  pantry counter are static (build/dev.ts) and appear here only as footprint-only solids. */
+/** a bay bench's four places on one side, desk-local x: the chairs of that row that stand along this bench */
+const bayPlaces = (rowXs: readonly number[], deskX: number): string =>
+  rowXs.filter((x) => Math.abs(x - deskX) < BAY_W / 2).map((x) => (x - deskX).toFixed(2)).join(",");
 export function devRoomEntities(): Entity[] {
   const out: Entity[] = [];
   // floor dressing first: the lounge rug is walked straight over (kindFootprint gives it solid: false)
@@ -525,7 +538,9 @@ export function devRoomEntities(): Entity[] {
   // the two bay benches, four places a side
   for (const d of BAY_DESKS)
     out.push(furniture(d.id, "dev-bay-desk", d.x, BAY_Z, BAY_W, BAY_D, "north",
-      { color: THEME.walnut, accent: THEME.ink, neon: THEME.neon, h: BAY_H, places: 4 }));
+      { color: THEME.walnut, accent: THEME.ink, neon: THEME.neon, h: BAY_H, places: 4,
+        // each place's kit and monitor in front of its own chair (north side = row 1, south = row 2)
+        placesN: bayPlaces(BAY_ROW1_XS, d.x), placesS: bayPlaces(BAY_ROW2_XS, d.x) }));
   // the lounge side table
   out.push(furniture("side-desk", "dev-side-desk", SIDE_DESK.x + SIDE_DESK.w / 2, SIDE_DESK.z + SIDE_DESK.d / 2,
     SIDE_DESK.w, SIDE_DESK.d, "east", { color: THEME.walnut, h: SIDE_DESK.h }));

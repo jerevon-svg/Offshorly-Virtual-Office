@@ -92,10 +92,12 @@ import { ManualWeatherProvider } from "../env/providers/manual";
 import { WEATHER_ATTRIBUTION, officeWeatherProvider } from "../env/providers/office";
 import { GRADE } from "../world/campus";
 import { CAMERA_MODES, CameraModes, type CameraModeId } from "../render/CameraModes";
+import { gaitRate } from "../avatar/gait";
 import { PlayerMode, PLAYER_SPRINT_SPEED, PLAYER_WALK_SPEED, SPRINT_MULTIPLIER, type RideGround } from "../player/PlayerMode";
 import { EnvironmentalAudio } from "../audio/EnvironmentalAudio";
 import { EdgeTracker, Footsteps } from "../audio/events";
 import { CALL_RANGE, Toucan } from "../world/Toucan";
+import { ToucanPerch } from "../world/toucanPerch";
 import { toucanBusyWithJob } from "./toucanActivity";
 import type { ToucanSummonState } from "../../../components/OfficeMap/toucanSummon";
 import { spatial } from "../audio/sfx";
@@ -174,7 +176,7 @@ import { coworkerEmailOf, personCandidateId, REACH as TARGET_REACH, type Candida
 import { standablePointNear } from "../player/PlayerBody";
 import { markSeatFacingSaved, parseSeatAnchorId, SEAT_FACINGS, seatAnchorId, seatFacingFor, seatFacingTable, seatedYawFor, setSeatFacingOverride, subscribeSeatFacing, unsavedSeatFacingCount, type SeatFacing } from "./seats";
 import type { LoungeSeatSlot, SeatCapability } from "../world/WorldState";
-import { deskSeatContact } from "../interact/seatContact";
+import { deskSeatContact, seatedTuckFor } from "../interact/seatContact";
 import { FACING_YAW, circleOverlapsRect, pointInRect, stepAngle, wrapAngle, type Facing, type Rect, type Vec2 } from "../core/coords";
 
 /** PHASE 7C — THE CAVE MEETING, as the HUD sees it.
@@ -2488,7 +2490,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  `seatedTuck` the local sit parks it at, so the peer sits where the local would and the chair reads as
    *  taken; the rest transform is kept and put back on release. Fixed seating is never written to. */
   const peerSeatRest = new Map<string, { pos: THREE.Vector3; quat: THREE.Quaternion }>();
-  function peerSeatAnchor(id: string): SeatAnchorPose | null {
+  function peerSeatAnchor(id: string, humanBase = false): SeatAnchorPose | null {
     const { entityId, slotId } = parseSeatAnchorId(id);
     if (!world.entities.has(entityId) || !mirror.hasView(entityId)) return null;
     const e = world.get(entityId);
@@ -2497,11 +2499,12 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       const spec = e.capabilities.seat;
       if (!spec) return null;
       if (!peerSeatRest.has(id)) {
-        peerSeatRest.set(id, { pos: view.position.clone(), quat: view.quaternion.clone() });
-        view.position.addScaledVector(new THREE.Vector3(spec.pullDir.x, 0, spec.pullDir.z), spec.seatedTuck);
+        const rest = { pos: view.position.clone(), quat: view.quaternion.clone() };
+        peerSeatRest.set(id, rest);
+        view.position.addScaledVector(new THREE.Vector3(spec.pullDir.x, 0, spec.pullDir.z), seatedTuckFor(spec, humanBase, { view, restPos: rest.pos, restQuat: rest.quat, yaw: seatedYawFor(id, spec.seatedYaw) }));
         R.invalidateShadows(); // a static caster moved
       }
-      return { contact: deskSeatContact(view, spec), yaw: seatedYawFor(id, spec.seatedYaw), kind: "seat" };
+      return { contact: deskSeatContact(view, spec), yaw: seatedYawFor(id, spec.seatedYaw), kind: "seat", workstation: spec.workstation === true };
     }
     const slot = e.capabilities.lounge?.slots.find((s2) => s2.id === slotId);
     if (!slot) return null;
@@ -2550,7 +2553,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // camera except while the lift or the portal is staging its own shot.
     guided: () => stack.guided,
     targetsSuppressed: () => guidedHolds.meeting,
-    freeLook: () => (stack.guided || stack.owner === "Navigation") && !floorTransition?.busy && !caveTransition?.busy,
+    // SEATED TOO: a seat (or a sofa) owns the body from the walk up to the stand-up, but it never stages a shot of its
+    // own, so the mouse keeps the camera the whole time — sitting no longer freezes the view at its last angle.
+    freeLook: () => (stack.guided || stack.owner === "Navigation" || seatEngaged()) && !floorTransition?.busy && !caveTransition?.busy,
     onManualOverride: (owner) => {
       if (floorTransition?.busy) return; // the ride itself is not interruptible (see FloorTransition)
       // A GUIDED JOURNEY IS NOT FOUGHT BY THE KEYS: they are ignored until Esc hands the body back.
@@ -3423,7 +3428,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
         playerMode.camera.yaw = cameraYawFor(next);
       }
       if (r.arrived) avatar.play(CLIP_IDLE);
-      else { avatar.play(CLIP_WALK); avatar.setClipTimeScale(CLIP_WALK, ELEVATOR_RIDE.walkSpeed / 30); }
+      else { avatar.play(CLIP_WALK); avatar.setClipTimeScale(CLIP_WALK, gaitRate(avatar.runtime, CLIP_WALK, ELEVATOR_RIDE.walkSpeed)); }
       return r.arrived;
     },
     setYaw: (yaw, snap) => {
@@ -4064,6 +4069,21 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     toucanCalled = false;
     toucan.setSummonTarget(null);
   }
+  /** THE ARM PERCH (world/toucanPerch decides; this feeds it). A bird called to a HumanBase body standing free lands on
+   *  its presented fist (human/armPerch: the falconer's arm, straight ahead and a little raised) instead of hovering beside
+   *  the shoulder. The arm comes up as the bird closes in; the bird's own landing glides it onto the fist, drawn at
+   *  PERCH_SCALE (a companion size: a chibi's arm is ~8 u long and its head ~18 u tall — measured clear of face and hair
+   *  at this size), folds its wings and turns to face the employee, who looks back at it. Released, it opens its wings on the arm and
+   *  lifts off, and only then does the arm come down. Walking off or sitting lowers the arm and hands the bird back to
+   *  V1's hover. Never while the bird is on an AI Workforce job (that flow owns the landing). */
+  const toucanPerch = new ToucanPerch(toucan);
+  function perchToucan(): void {
+    toucanPerch.update(avatar.armPerch, {
+      free: (stack.owns("Idle") || stack.owns("Player")) && !seatedNow(),
+      pos: avatar.worldPosition(),
+      forward: new THREE.Vector3(0, 0, 1).applyQuaternion(avatar.root.getWorldQuaternion(new THREE.Quaternion())).setY(0).normalize(),
+    }, toucanCalled, toucanDirected !== null);
+  }
 
   // ---- THE AI WORKFORCE's CAMERA (WATCH IN LAB only — app/labWorkforce never directs it otherwise) ----------
   /** follow the bird in 3D EXPLORE, frame the team, then hand back the view you had */
@@ -4235,6 +4255,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // THE PARK ANCHOR, every frame while the bird is called — this body, wherever it has walked to. Null
     // is the release, and the bird reads both through the same one setter (world/Toucan setSummonTarget).
     toucan.setSummonTarget(toucanDirected ?? (toucanCalled ? { x: body.x, z: body.z } : null));
+    perchToucan();
     const wantsCall = toucan.update(dt, env.weather, env.phase ?? "day", outdoors);
     // ARRIVAL IS AN EVENT THE HOST WAITS FOR. Published after the step that could have changed it, and
     // only on a real transition — this runs at 60 Hz.
@@ -5881,6 +5902,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // the body stayed frozen in the gesture it happened to be in. `avatar.play` is guarded on the
       // current clip, so re-asserting it every frame costs nothing.
       if (stack.owner === "Idle" && !seatedNow()) avatar.play(selfConversationClip ?? CLIP_IDLE);
+      // the seat says whether it is a work desk (typing) or not (lounge, café, meeting table: hands at rest)
+      avatar.atWorkstation = currentSeatAnchor !== null && world.entities.has(parseSeatAnchorId(currentSeatAnchor).entityId)
+        ? world.get(parseSeatAnchorId(currentSeatAnchor).entityId).capabilities.seat?.workstation === true && parseSeatAnchorId(currentSeatAnchor).slotId === undefined
+        : undefined;
       selfFeed?.frame(dt, { x: bp.x, z: bp.z }, avatar.yaw, navCtl.path.length > 0 || coworkerApproach?.turning === true || directedTurn !== null);
       // PRESENCE'S zone: the Meeting Floor and the lift are inside the office (app/access presenceZoneAt),
       // so riding up is never read as leaving the building — and never as Away.

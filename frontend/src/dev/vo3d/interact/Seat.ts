@@ -5,12 +5,13 @@
 // stand-up are code-driven cross-fades while the root glides and is lifted from clip Hips data.
 import * as THREE from "three";
 import type { Avatar } from "../avatar/Avatar";
+import { gaitRate } from "../avatar/gait";
 import { stepAlong, type ControllerStack } from "../avatar/Controller";
 import { CLIP_IDLE, CLIP_SIT } from "../adapters/v1Avatar";
 import { headingFor, stepAngle, type Vec2 } from "../core/coords";
 import type { NavResult } from "../nav/planner";
 import type { SeatCapability } from "../world/WorldState";
-import { avatarRig, deskSeatContact, deskSeatedRootForRig } from "./seatContact";
+import { avatarRig, deskSeatContact, deskSeatedRootForRig, seatedTuckFor } from "./seatContact";
 
 export type SeatState =
   | "idle" | "approaching" | "pullingOut" | "enteringGap" | "sitting" | "slidingIn"
@@ -56,7 +57,7 @@ export class SeatInteraction {
     this.restQuat.copy(chair.quaternion);
     const dir = new THREE.Vector3(spec.pullDir.x, 0, spec.pullDir.z);
     this.pulledPos.copy(this.restPos).addScaledVector(dir, spec.pullDistance);
-    this.tuckedPos.copy(this.restPos).addScaledVector(dir, spec.seatedTuck);
+    this.tucked();
   }
   get ownsAvatar(): boolean { return this.state !== "idle"; }
 
@@ -110,7 +111,7 @@ export class SeatInteraction {
     if (!this.stack.acquire("Interaction")) { this.status = "avatar owned elsewhere"; return false; }
     this.moved = true;
     this.walk = [];
-    this.chair.position.copy(this.tuckedPos);
+    this.chair.position.copy(this.tucked());
     this.chair.quaternion.copy(this.restQuat);
     const a = this.avatar;
     this.sceneParent = a.root.parent;
@@ -138,7 +139,7 @@ export class SeatInteraction {
   private walkStep(dt: number): boolean {
     stepAlong(this.avatar, this.walk, this.walkSpeed(), 7, dt);
     this.avatar.play(this.walk.length ? "walking" : CLIP_IDLE);
-    this.avatar.setClipTimeScale("walking", this.walkSpeed() / 30);
+    this.avatar.setClipTimeScale("walking", gaitRate(this.avatar.runtime, "walking", this.walkSpeed()));
     return this.walk.length === 0;
   }
 
@@ -150,6 +151,12 @@ export class SeatInteraction {
     this.prevChairQuat.copy(this.chair.quaternion);
     this.step(dt);
     this.moved = !this.chair.position.equals(this.prevChairPos) || !this.chair.quaternion.equals(this.prevChairQuat);
+  }
+  /** where the occupied chair parks — under a HumanBase body a work desk's chair is pulled up to the desk (the shared
+   *  rule a peer's seat reads too: interact/seatContact seatedTuckFor); asked each time, as the body may load late */
+  private tucked(): THREE.Vector3 {
+    const tuck = seatedTuckFor(this.spec, this.avatar.human !== null, { view: this.chair, restPos: this.restPos, restQuat: this.restQuat });
+    return this.tuckedPos.copy(this.restPos).addScaledVector(new THREE.Vector3(this.spec.pullDir.x, 0, this.spec.pullDir.z), tuck);
   }
   private step(dt: number): void {
     const a = this.avatar, sp = this.spec, T = sp.timings;
@@ -180,8 +187,8 @@ export class SeatInteraction {
         return;
       }
       case "slidingIn":
-        this.chair.position.lerpVectors(this.pulledPos, this.tuckedPos, easeInOut(this.t));
-        if (this.tick(T.slideMs, dt)) { this.chair.position.copy(this.tuckedPos); this.setState("seated"); }
+        this.chair.position.lerpVectors(this.pulledPos, this.tucked(), easeInOut(this.t));
+        if (this.tick(T.slideMs, dt)) { this.chair.position.copy(this.tucked()); this.setState("seated"); }
         return;
       case "slidingOut":
         this.chair.position.lerpVectors(this.tuckedPos, this.pulledPos, easeInOut(this.t));

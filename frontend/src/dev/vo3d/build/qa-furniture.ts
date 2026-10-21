@@ -31,7 +31,7 @@ import type { Facing } from "../core/coords";
 import { Baker, cyl, lathe, placed, localSize, rbox, rnd, sphereGeo } from "./helpers";
 import { contactShadowMat, fabric, mat, plastic, type MatKey } from "../render/Materials";
 import { leafAnchor } from "./plants";
-import { laptop, mug } from "./props";
+import { laptop, mug, laptopAt } from "./props";
 import { SOFA_ARM_W, SOFA_CUSHION_GAP, SOFA_CUSHION_MARGIN, sofaCushionZ } from "./furniture";
 
 /** The entity kinds this module builds. build/registry.ts routes them here. */
@@ -142,11 +142,11 @@ function benchDesk(e: Entity): THREE.Group {
   for (let i = 0; i < places; i++) {
     const lz = -d / 2 + (d * (i + 0.5)) / places;
     const deck = new Baker();
-    placeKit(deck, g, topCx - screenSide * 3.0, h, lz + (i % 2 ? 6 : -6), key(e, "accent", "qaTeal"));
+    placeKit(deck, g, topCx - screenSide * 3.0, h, lz + (i % 2 ? 12 : -12), key(e, "accent", "qaTeal"));
     deck.bakeInto(g, `qa-bench-kit-${i}`);
-    const lap = laptop(topCx + screenSide * 2.0, h, lz + (i % 2 ? -5 : 5));
-    lap.rotation.y = screenSide > 0 ? -Math.PI / 2 : Math.PI / 2;
-    g.add(lap);
+    // the laptop at the SITTER's edge (away from the screen), centred on the place, where a seated HumanBase body
+    // types on it
+    g.add(laptopAt(topCx - screenSide * (topW / 2 - 3.6), h, lz, screenSide > 0 ? -Math.PI / 2 : Math.PI / 2));
     deskPot(g, topCx + screenSide * (topW / 2 - 5), h, lz, 2.2);
     if (i === 0) g.add(mug(topCx - screenSide * (topW / 2 - 5), h, lz + 8));
   }
@@ -176,8 +176,8 @@ function leadDesk(e: Entity): THREE.Group {
   const plate = rbox(w * 0.24, 1.6, 1.0, teal(), 0, h - 2.2, d / 2 - 1.2, 0.4);
   g.add(plate);
   // DRESSING, straight off the reference: laptop centred, teal folder right, plant left, mug beside it
-  const lap = laptop(-w * 0.06, h, -d * 0.10);
-  lap.rotation.y = Math.PI;
+  // (at the sitter's — local +z — front and facing them, where a seated HumanBase body types on it)
+  const lap = laptop(-w * 0.06, h, d / 2 - 3.6);
   g.add(lap);
   const folder = rbox(11.0, 1.4, 14.0, teal(), w * 0.26, h, -d * 0.04, 0.6);
   folder.rotation.y = -0.08;

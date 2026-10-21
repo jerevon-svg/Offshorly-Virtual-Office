@@ -33,7 +33,7 @@ import type { Facing } from "../core/coords";
 import { Baker, cyl, lathe, placed, localSize, rbox, rnd, sphereGeo } from "./helpers";
 import { contactShadowMat, emissiveMat, fabric, glowMat, mat, metal, plastic, type MatKey } from "../render/Materials";
 import { leafAnchor } from "./plants";
-import { laptop, monitor, mug } from "./props";
+import { monitor, mug, monitorAt, laptopAt } from "./props";
 import { SOFA_ARM_W, SOFA_CUSHION_GAP, SOFA_CUSHION_MARGIN, sofaCushionZ } from "./furniture";
 
 /** The entity kinds this module builds. build/registry.ts routes them here. */
@@ -119,11 +119,15 @@ function deskPot(g: THREE.Group, cx: number, y0: number, cz: number, r: number):
   g.add(p);
 }
 
-/** the black keyboard + mouse pair every dev place is laid out with */
+/** how far in from a desk's front edge the keyboard's centre sits: within a seated HumanBase body's reach (its ~8 u arm, the
+ *  torso upright at the edge — measured, human/seatedWork.test.ts), the key field ~1.4 in from the edge */
+export const KEYBOARD_EDGE_INSET = 3.6;
+/** the black keyboard + mouse pair every dev place is laid out with; `z` is the keyboard's centre, `faceSign` the side
+ *  the sitter is on (local ±z). The mouse sits to the SITTER's right. */
 function peripherals(b: Baker, x: number, y: number, z: number, faceSign: 1 | -1): void {
-  b.add(rbox(13.0, 0.9, 4.4, ink(), x, y, z + faceSign * 2.6, 0.3));
-  b.add(rbox(11.8, 0.25, 3.4, ink("devInkDeep"), x, y + 0.9, z + faceSign * 2.6, 0.15)); // key field
-  b.add(rbox(2.4, 1.1, 3.8, ink(), x + 9.0, y, z + faceSign * 2.4, 1.0)); //               mouse
+  b.add(rbox(13.0, 0.9, 4.4, ink(), x, y, z, 0.3));
+  b.add(rbox(11.8, 0.25, 3.4, ink("devInkDeep"), x, y + 0.9, z, 0.15)); // key field
+  b.add(rbox(2.4, 1.1, 3.8, ink(), x + faceSign * 9.0, y, z - faceSign * 0.2, 1.0)); //   mouse
 }
 
 /** the headphone hoop and water bottle the bay art stands beside every second place */
@@ -168,19 +172,27 @@ function bayDesk(e: Entity): THREE.Group {
   const wash = rbox(w - 6, 0.02, d - 6, glowMat(neon, 0.18), 0, 0.12, 0, 1.2);
   wash.castShadow = wash.receiveShadow = false;
   g.add(wash);
-  // DRESSING: `places` places a side, each a monitor on the trough lip with a keyboard in front of it
+  // DRESSING: `places` places a side, each a monitor on the trough lip with a keyboard in front of it — the keyboard and
+  // mouse at the deck's FRONT, where a seated sitter reaches them (KEYBOARD_EDGE_INSET); the kit and the mug behind
+  // each side's places at its own CHAIRS (props placesN / placesS, desk-local x — the room passes them, so a sitter has
+  // its keyboard, mouse and monitor straight ahead), else evenly spaced
+  const placeXs = (s: -1 | 1): number[] => {
+    const raw = e.props[s < 0 ? "placesN" : "placesS"];
+    const xs = typeof raw === "string" ? raw.split(",").map(Number).filter(Number.isFinite) : [];
+    return xs.length === places ? xs : Array.from({ length: places }, (_, i) => -w / 2 + (w * (i + 0.5)) / places);
+  };
+  const sideXs = { [-1]: placeXs(-1), [1]: placeXs(1) } as Record<-1 | 1, number[]>;
   for (let i = 0; i < places; i++) {
-    const lx = -w / 2 + (w * (i + 0.5)) / places;
     for (const s of [-1, 1] as const) {
+      const lx = sideXs[s][i];
       const lz = s * (TROUGH_W / 2 + deckD * 0.55);
       const deck = new Baker();
-      peripherals(deck, lx, h, lz, s);
+      peripherals(deck, lx, h, s * (TROUGH_W / 2 + deckD - KEYBOARD_EDGE_INSET), s);
       if (i % 2 === 0) deskKit(deck, lx - 9.0, h, lz - s * 3.0);
       deck.bakeInto(g, `dev-bay-kit-${i}-${s > 0 ? "s" : "n"}`);
-      const mon = monitor(lx, h + 1.2, s * (TROUGH_W / 2 + 1.6), 15, 8.6);
-      mon.rotation.y = s > 0 ? 0 : Math.PI;
-      g.add(mon);
-      if (i === places - 1) g.add(mug(lx + 7.0, h, lz + s * 6.0));
+      // on its own side's trough lip, screen turned to its own sitter (built in place: see props monitorAt)
+      g.add(monitorAt(lx, h + 1.2, s * (TROUGH_W / 2 + 4.0), s > 0 ? Math.PI : 0, 15, 8.6)); // its stand on the deck, as before
+      if (i === places - 1) g.add(mug(lx + 7.0, h, lz));
     }
   }
   return g;
@@ -211,15 +223,17 @@ function leadDesk(e: Entity): THREE.Group {
   ultra.rotation.y = Math.PI;
   g.add(ultra);
   for (const s of [-1, 1] as const) {
-    const lap = laptop(s * (w * 0.28), h, d * 0.02);
-    lap.rotation.y = Math.PI;
-    g.add(lap);
+    g.add(laptopAt(s * (w * 0.28), h, d * 0.02, 0)); // turned in place to face the lead (local +z)
   }
   const lamp = new Baker();
   lamp.add(cyl(2.6, 0.8, ink(), -w * 0.40, h, -d * 0.22));
   lamp.add(cyl(0.6, 11.0, ink(), -w * 0.40, h + 0.8, -d * 0.22));
   lamp.add(rbox(4.4, 1.6, 2.6, ink("devInk"), -w * 0.36, h + 11.0, -d * 0.16, 0.7));
   lamp.bakeInto(g, "dev-lead-lamp");
+  // the workstation's own keyboard + mouse, front and centre before the ultrawide (the laptops stay either side)
+  const kit = new Baker();
+  peripherals(kit, 0, h, d / 2 - KEYBOARD_EDGE_INSET, 1);
+  kit.bakeInto(g, "dev-lead-kit");
   deskPot(g, w * 0.40, h, -d * 0.20, 2.3);
   deskPot(g, -w * 0.22, h, d * 0.22, 2.0);
   g.add(mug(w * 0.30, h, d * 0.20));

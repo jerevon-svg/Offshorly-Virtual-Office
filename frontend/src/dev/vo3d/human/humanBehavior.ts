@@ -277,6 +277,13 @@ export class DeskWork {
     this.a.play(idleClip(this.a.config.idleProfile), 0.45);
     if (this.a.face) this.a.face.expression = "neutral";
   }
+  /** HOSTED (VO): the host has already seated the body — type at the station where it is, with no approach/sit/stand
+   *  of DeskWork's own. `release` eases the hands, look and lean back out; the host owns whatever the body does next. */
+  workInPlace(): void { this.phase = "work"; this.t = 0; this.beginWork(); }
+  release(): void {
+    this.contacts.want.L = this.contacts.want.R = 0; this.contacts.look.want = 0; this.contacts.lean.want = 0;
+    if (this.a.face) this.a.face.expression = "neutral";
+  }
   private finish(): void {
     this.phase = "idle";
     this.contacts.goal.L = this.contacts.goal.R = null; this.contacts.look.target = null;

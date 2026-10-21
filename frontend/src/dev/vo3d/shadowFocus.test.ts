@@ -131,9 +131,10 @@ describe("shadow focus — static-pass rate at the approved speeds", () => {
     expect(walk({ quantum: PLAYER_QUANTUM, speed: PLAYER_SPRINT_SPEED, seconds: 30, fps: FPS, heading: DIAGONAL }).snaps)
       .toBeLessThan(walk({ quantum: PLAYER_QUANTUM, speed: PLAYER_SPRINT_SPEED, seconds: 30, fps: FPS, heading: AXIS }).snaps);
     // THE NUMBERS THE BUDGET WAS SIGNED OFF ON, pinned so a tuning change has to restate them: 48 and 68
-    // re-centres over 30 s — 1.6/s walking, 2.3/s sprinting. At 60 fps that is 2.7% and 3.8% of frames, so
+    // re-centres over 30 s — 1.6/s walking, 2.3/s sprinting — at the 70 u/s walk; the brisk 42 u/s walk
+    // (2026-10-21) needs only 29 (1.0/s). At 60 fps that is 2.7% and 3.8% of frames, so
     // the 5% / 8% budgets are only reached if the frame rate itself falls below ~32 fps / ~26 fps.
-    expect(worstWalk).toBe(48);
+    expect(worstWalk).toBe(29);
     expect(worstSprint).toBe(68);
   });
 

@@ -47,6 +47,41 @@ export function locomotionClip(running: boolean, hasRun: boolean): string {
   return running && hasRun ? CLIP_RUN : CLIP_WALK;
 }
 
+// HUMANBASE BODIES SPEAK A DIFFERENT CLIP LIBRARY. The shared HumanBase_V1 clips cover (stance-foot speed against the
+// root at rate 1, AS DRAWN — with HumanAvatar's gait-posture layer, which lengthens the walk's stride from the clip's own
+// ~15.3 u/s; pinned by avatar/gait.humanbase.test.ts): `walking` ~21.2 u/s (1.067 s cycle, legs ~8 u long) and `running`
+// ~36 u/s (0.667 s). The legacy table's 30 made a HumanBase walk skate. Each clip is paced from its own measured speed;
+// the office's brisk walk (PLAYER_WALK_SPEED 42) plays the walk at ~2x, foot-locked — and the run is the INTENTIONAL gait (Shift, a sprinting replay). A body travelling well past any walk with no
+// such intent (a fast replay) still switches to the run rather than skate, with hysteresis. Legacy GLB bodies keep the
+// table above untouched.
+export const HUMANBASE_CLIP_GROUND_SPEED: Record<string, number> = { [CLIP_WALK]: 21.2, [CLIP_RUN]: 36 };
+const HB_MAX_CLIP_RATE: Record<string, number> = { [CLIP_WALK]: 2.6, [CLIP_RUN]: 3 };
+/** HumanBase walk → run at this ground speed (u/s) without a run intent, and back below HB_WALK_BELOW */
+export const HB_RUN_FROM = 55;
+const HB_WALK_BELOW = 45;
+
+export type GaitRuntime = "humanbase" | "legacy-glb" | "none";
+/**
+ * THE CLIP AND RATE FOR ONE BODY THIS FRAME, by the runtime drawing it. `running` is the movement's own ask
+ * (Shift, a replay's mean speed); `current` is the clip already playing (the HumanBase hysteresis). A legacy body
+ * is exactly locomotionClip + locomotionRate.
+ */
+export function locomotion(runtime: GaitRuntime, groundSpeed: number, running: boolean, hasRun: boolean, current: string | null): { clip: string; rate: number } {
+  if (runtime !== "humanbase") { const clip = locomotionClip(running, hasRun); return { clip, rate: locomotionRate(clip, groundSpeed) }; }
+  const fast = groundSpeed >= (current === CLIP_RUN ? HB_WALK_BELOW : HB_RUN_FROM);
+  const clip = (running || fast) && hasRun ? CLIP_RUN : CLIP_WALK;
+  return { clip, rate: gaitRate(runtime, clip, groundSpeed, hasRun) };
+}
+/** the playback rate alone, for a clip already chosen (a peer picks its clip once per movement) */
+export function gaitRate(runtime: GaitRuntime, clip: string, groundSpeed: number, hasRun = true): number {
+  if (runtime !== "humanbase") return locomotionRate(clip, groundSpeed);
+  const authored = HUMANBASE_CLIP_GROUND_SPEED[clip];
+  if (!authored) return 1;
+  // a package with no run clip must still cover a sprint with the walk (the legacy ceiling's reason)
+  const ceiling = clip === CLIP_WALK && !hasRun ? MAX_CLIP_RATE[CLIP_WALK] : HB_MAX_CLIP_RATE[clip];
+  return Math.min(ceiling, Math.max(MIN_CLIP_RATE, groundSpeed / authored));
+}
+
 /**
  * HOW FAST TO PLAY IT, from the ground ACTUALLY covered rather than from the input: a player scraping
  * along a wall slows his own stride down instead of moonwalking on the spot, and a replay that runs a

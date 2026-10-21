@@ -9,6 +9,7 @@ import { Coworkers } from "./Coworkers";
 import { applyLivePositions } from "../adapters/v1CoworkerPositions";
 import { applyArrived, applySnapshot, applyStarted, type PeerMovementState, type Pt } from "../../../services/presence/movementSync";
 import { CLIP_IDLE, CLIP_RUN, CLIP_WALK } from "../adapters/v1Avatar";
+import { PLAYER_WALK_SPEED } from "../player/PlayerMode";
 import type { Vec2 } from "../core/coords";
 import type { Vo3dCoworker } from "../app/coworkers";
 
@@ -140,7 +141,7 @@ describe("a continuous run, published as consecutive linear legs", () => {
   it("walk → run → idle: the clip follows each movement's mean speed, and stops when the run does", async () => {
     snapshot({ x: 600, z: 500 });
     await push();
-    const end1 = startLeg("m1", { x: 600, z: 500 }, 70);
+    const end1 = startLeg("m1", { x: 600, z: 500 }, PLAYER_WALK_SPEED);   // the office walk (30 u/s since 2026-10-21)
     await push();
     expect(frames(LEG_MS).every((s) => s.clip === CLIP_WALK)).toBe(true);
     arriveLeg("m1", end1);

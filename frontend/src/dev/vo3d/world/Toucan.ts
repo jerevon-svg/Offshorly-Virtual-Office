@@ -163,6 +163,11 @@ const PITCH = { flight: 0.8, attend: 0.15, rate: 2.2 } as const;
  *  radius, which applies to the PARK point (V1's own ARRIVE_RADIUS_PX, still enforced by decideSummon):
  *  this one only ends the two legs nobody is watching closely, the flight home and the rejoin. */
 const LEG_ARRIVE = 14;
+/** wings folding once the feet are down, opening before a take-off, and how long the bird stays on the arm while they
+ *  open (seconds) */
+const FOLD_S = 0.45, UNFOLD_S = 0.25, LIFTOFF_S = 0.35;
+/** a summoned leg aimed at a landing is re-aimed only when the landing has moved this far (world units) */
+const LANDING_REAIM = 3;
 
 /** WHAT THE BIRD IS DOING. The three V1 names mean exactly what they mean in V1; the last three are the
  *  way home and are reported to callers as "roaming", because the only thing a caller acts on is whether
@@ -312,6 +317,7 @@ export class Toucan {
       const centre = new THREE.Vector3();
       box.getCenter(centre);
       m.position.sub(centre.multiplyScalar(scale));
+      this.footOffset = (size.y * scale) / 2;
       m.traverse((o) => {
         const mesh = o as THREE.Mesh;
         if (mesh.isMesh) { mesh.castShadow = false; mesh.receiveShadow = false; mesh.frustumCulled = true; }
@@ -319,6 +325,7 @@ export class Toucan {
         if (/^(left|right)arm$/i.test(o.name.replace(/[_\s]/g, ""))) this.wings.push(o);
       });
       this.model = m;
+      this.prepareFold(m);
       // THE FORWARD FIX (see MODEL_YAW). A node of its own rather than a rotation written onto `m`: the
       // re-centring above is expressed in model space, and rotating a parent turns the centred model
       // about that centre instead of swinging it around an offset pivot. One node, no arithmetic to get
@@ -336,6 +343,50 @@ export class Toucan {
       return false;
     }
   }
+
+  // ---- THE PERCH: folded wings, a perched scale, a hold on the arm, a listening head ---------------------------
+  // THE BIND POSE IS SPREAD. This Meshy biped rig carries its wings on the arm chains straight out along ±x (the asset is
+  // 1.70 wide, 1.26 long), so "spread 0" (V1's perched rhythm) is still open wings. A FOLD is computed once from the rig:
+  // each wing is rolled so its plate stands vertical, leading edge up, and its span swept back, a little down and in toward
+  // the tail — a wing laid against the flank. It blends in as the feet settle on a landing and out before a take-off.
+  private foldQ: THREE.Quaternion[] = [];
+  private foldW = 0;
+  private headBone: { bone: THREE.Object3D; parentQ: THREE.Quaternion; worldQ: THREE.Quaternion } | null = null;
+  private liftoff = 0;
+  private latched = false;
+  private landScale = 1;
+  private scaleNow = 1;
+  /** each wing bone's bind x/y (Euler): the flap writes the WHOLE rotation from these every frame. Writing only `.z`
+   *  left whatever x/y the last fold's quaternion decomposed into — after a perch the bird flew on with its wings swept
+   *  back. */
+  private wingBind: [number, number][] = [];
+  private prepareFold(m: THREE.Object3D): void {
+    this.wingBind = this.wings.map((w) => [w.rotation.x, w.rotation.y]);
+    m.updateMatrixWorld(true);
+    const wq = (o: THREE.Object3D) => o.getWorldQuaternion(new THREE.Quaternion()), wp = (o: THREE.Object3D) => o.getWorldPosition(new THREE.Vector3());
+    const roll = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 1, 0));   // chord front → up
+    this.foldQ = this.wings.map((w) => {
+      const z = w.rotation.z; w.rotation.z = 0; w.updateMatrixWorld(true);   // the perched rhythm's pose (stroke 0)
+      const fore = w.children.find((c) => /forearm/i.test(c.name)), hand = fore?.children.find((c) => /hand/i.test(c.name));
+      const span = (hand ? wp(hand) : fore ? wp(fore) : wp(w).add(new THREE.Vector3(1, 0, 0))).sub(wp(w)).normalize();
+      const swept = span.clone().applyQuaternion(roll);
+      const R = new THREE.Quaternion().setFromUnitVectors(swept, new THREE.Vector3(-Math.sign(span.x) * 0.12, -0.3, -1).normalize()).multiply(roll);
+      const local = wq(w.parent!).invert().multiply(R.multiply(wq(w)));
+      w.rotation.z = z; w.updateMatrixWorld(true);
+      return local;
+    });
+    let head: THREE.Object3D | undefined;
+    m.traverse((o) => { if (!head && o.name === "Head") head = o; });
+    if (head?.parent) this.headBone = { bone: head, parentQ: wq(head.parent), worldQ: wq(head) };
+  }
+  /** wings fully folded on a landing (0..1) — tests and the dev panel */
+  get wingFold(): number { return this.foldW; }
+  /** released off an arm: wings opening, still on the arm, about to lift */
+  get liftingOff(): boolean { return this.liftoff > 0; }
+
+  /** from the bird's origin (its centre) down to its feet, world units — a landing point names where the FEET go
+   *  (an arm perch), so the host raises it by this much */
+  footOffset = 5;
 
   get flying(): boolean {
     return this.root.visible && this.model !== null;
@@ -375,8 +426,10 @@ export class Toucan {
    *  the Lab's briefing perch. Exact height, no breathing hover, wings folded — a landing, not a hover. Null
    *  hands the park back to V1's own hover. Presentation only; the summon itself is unchanged. */
   private landing: { x: number; y: number; z: number } | null = null;
-  setLanding(point: { x: number; y: number; z: number } | null): void {
+  setLanding(point: { x: number; y: number; z: number } | null, scale = 1): void {
     this.landing = point ? { ...point } : null;
+    this.landScale = point ? scale : 1;
+    if (!point) this.latched = false;
   }
   /** AI-WORKFORCE RE-ENTRY — be parked on `landing` NOW, summoned to `centre` (the summon centre whose park point
    *  is the landing): VO reopened on a job whose orchestrator is already in the Lab shows it there, it does not
@@ -429,6 +482,19 @@ export class Toucan {
   private advanceSummon(dt: number): void {
     const target = this.summonTarget;
     if (target) {
+      // A LANDING IS WHERE THE SUMMON GOES. With one (an employee's offered arm, the Lab's perch) the bird flies straight
+      // to it rather than to V1's hover point beside the shoulder and only then across: aimed at the landing, re-aimed
+      // only when it has really moved (an arm still rising), attending once the leg is flown — the holding glide in
+      // flySummon then settles it exactly on the point. For the Lab the landing IS the park point, so nothing changes
+      // there. Without a landing, V1's own decisions below, untouched.
+      const land = this.landing;
+      if (land) {
+        if (this.phase === "attending") return;
+        const aimed = this.phase === "approaching" && Math.hypot(this.legTo.x - land.x, this.legTo.y - land.z) <= LANDING_REAIM;
+        if (!aimed) { this.beginLeg({ x: land.x, y: land.z }, land.y); this.phase = "approaching"; this.facePoint = null; this.latched = false; }
+        else if (this.legT >= 1) { this.phase = "attending"; this.legT = 1; }
+        return;
+      }
       const decision = decideSummon({
         center: { x: target.x, y: target.z },
         phase: v1Phase(this.phase),
@@ -454,6 +520,9 @@ export class Toucan {
     // Hub already declares for it — so it flies home, sits a while, and only then rejoins its lap. That
     // is what makes a release read as the bird leaving rather than as the bird being deleted.
     if (this.phase === "approaching" || this.phase === "attending") {
+      // off an arm: open the wings first, then go (flySummon holds the leg while `liftoff` runs)
+      if (this.landed) this.liftoff = LIFTOFF_S;
+      this.latched = false;
       this.facePoint = null;
       if (this.perch) {
         this.beginLeg({ x: this.perch.x, y: this.perch.z }, this.perch.y);
@@ -592,6 +661,9 @@ export class Toucan {
       const k = Math.min(1, dt * CLIMB_RATE * 2);
       const sitting = this.phase === "perched" && this.perch;
       const land = this.phase === "attending" ? this.landing : null;
+      // ON AN ARM the bird is held exactly where the feet go once it has settled — it turns and moves with the body
+      if (land && (this.latched || Math.hypot(p.x - land.x, p.y - land.y, p.z - land.z) < 0.6)) this.latched = true;
+      else if (!land) this.latched = false;
       const hx = land ? land.x : sitting ? this.perch!.x : this.legTo.x;
       const hz = land ? land.z : sitting ? this.perch!.z : this.legTo.y;
       p.x += (hx - p.x) * k;
@@ -601,6 +673,9 @@ export class Toucan {
       const bob = Math.sin(this.t * HOVER.hz * Math.PI * 2) * HOVER.amplitude;
       const wantY = land ? land.y : sitting ? this.perch!.y : (this.phase === "visiting" ? INDOOR.visitY : PARK_Y) + bob;
       p.y += (wantY - p.y) * Math.min(1, dt * HOVER_TRACK);
+      if (land && this.latched) p.set(land.x, land.y, land.z);
+    } else if (this.liftoff > 0) {
+      this.liftoff -= dt;                 // wings opening on the arm; the leg starts once they are open
     } else {
       this.legT = Math.min(1, this.legT + dt / this.legDuration);
       const e = easeInOutCubic(this.legT);
@@ -624,7 +699,7 @@ export class Toucan {
     if (this.aim.distanceToSquared(p) > 1e-4) {
       this.look.lookAt(p, this.aim, this.up);
       this.quat.setFromRotationMatrix(this.look);
-      this.root.quaternion.slerp(this.quat, Math.min(1, dt * SETTLE));
+      this.root.quaternion.slerp(this.quat, Math.min(1, dt * (this.latched ? SETTLE * 3 : SETTLE)));
     }
     // No banking beside somebody's shoulder. Decayed rather than zeroed so the ambient lap is handed
     // back a roll it can keep easing from.
@@ -699,9 +774,27 @@ export class Toucan {
     this.posture.rotation.x = this.pitch;
 
     advanceWingRhythm(this.wing, dt, this.phase !== "perched" && !this.landed);
+    // FOLD on a landing (feet down → wings laid back over ~0.4 s), OPEN before any flight (faster, so a take-off is
+    // never flown with folded wings — see `liftoff`)
+    const folded = this.landed && this.liftoff <= 0;
+    this.foldW = folded ? Math.min(1, this.foldW + dt / FOLD_S) : Math.max(0, this.foldW - dt / UNFOLD_S);
     if (this.wings.length) {
-      const beat = wingStrokeAngle(this.wing);
-      for (let i = 0; i < this.wings.length; i++) this.wings[i].rotation.z = (i === 0 ? 1 : -1) * beat;
+      const beat = wingStrokeAngle(this.wing), f = this.foldW * this.foldW * (3 - 2 * this.foldW);
+      for (let i = 0; i < this.wings.length; i++) {
+        const [bx, by] = this.wingBind[i] ?? [this.wings[i].rotation.x, this.wings[i].rotation.y];
+        this.wings[i].rotation.set(bx, by, (i === 0 ? 1 : -1) * beat);   // the flight pose, whole — never a fold's leftovers
+        if (f > 0 && this.foldQ[i]) this.wings[i].quaternion.slerp(this.foldQ[i], f);
+      }
+    }
+    // a perched (arm) landing is drawn at the scale the host asked for; everywhere else the bird is its own size
+    const wantScale = this.phase === "attending" && this.landing ? this.landScale : 1;
+    this.scaleNow += (wantScale - this.scaleNow) * Math.min(1, dt * 1.6);   // gently, across the approach glide
+    this.root.scale.setScalar(this.scaleNow);
+    // LISTENING while folded: small, slow head tilts and nods, never while flying
+    const hb = this.headBone;
+    if (hb) {
+      const k = this.foldW, r = new THREE.Quaternion().setFromEuler(new THREE.Euler(k * (0.07 * Math.sin(this.t * 1.1)), 0, k * (0.2 * Math.sin(this.t * 0.6) + 0.07 * Math.sin(this.t * 1.7 + 1))));
+      hb.bone.quaternion.copy(hb.parentQ).invert().multiply(r.multiply(hb.worldQ));
     }
 
     // THE CALL. A cooldown, thinned by time of day and weather — night and storms silence it entirely.

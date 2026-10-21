@@ -15,6 +15,7 @@
 // carries its own contact point, facing, approach and occupancy id.
 import * as THREE from "three";
 import type { Avatar } from "../avatar/Avatar";
+import { gaitRate } from "../avatar/gait";
 import { stepAlong, type ControllerStack } from "../avatar/Controller";
 import { CLIP_IDLE, CLIP_SIT } from "../adapters/v1Avatar";
 import { stepAngle, type Vec2 } from "../core/coords";
@@ -136,7 +137,7 @@ export class LoungeSeatInteraction {
   private walkStep(dt: number): boolean {
     stepAlong(this.avatar, this.walk, this.walkSpeed(), 7, dt);
     this.avatar.play(this.walk.length ? "walking" : CLIP_IDLE);
-    this.avatar.setClipTimeScale("walking", this.walkSpeed() / 30);
+    this.avatar.setClipTimeScale("walking", gaitRate(this.avatar.runtime, "walking", this.walkSpeed()));
     return this.walk.length === 0;
   }
 

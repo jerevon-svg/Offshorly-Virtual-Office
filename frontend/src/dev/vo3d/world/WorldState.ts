@@ -37,6 +37,13 @@ export type SeatCapability = {
   pullDir: Vec2;
   pullDistance: number;
   seatedTuck: number; // chair parks this far short of rest while occupied
+  /** where the chair parks under a HumanBase body instead (negative = further in than rest): the shared chibi body is
+   *  short-armed, so at a WORK desk it sits pulled up to the desk's edge (interact/seatContact seatedTuckFor). Absent =
+   *  seatedTuck for every body. */
+  humanTuck?: number;
+  /** a WORK desk's chair (not a meeting table, café or visitor seat): a seated HumanBase body types here, and its chair
+   *  is pulled up to the desk — by `humanTuck` when given, else measured off the room's own geometry (seatContact) */
+  workstation?: boolean;
   cushionTopY: number;
   cushionLocal: Vec2; // seat centre offset in chair-local x/z
   sitDepth: number; // pelvis offset toward the backrest (chair-local +z)
