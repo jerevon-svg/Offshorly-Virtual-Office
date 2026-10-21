@@ -68,6 +68,10 @@ import { gaitRate, locomotion } from "../avatar/gait";
 import { SeatedWork } from "../human/seatedWork";
 import type { DoorBody } from "../interact/Door";
 import { ReplayWalk } from "./coworkerWalk";
+import { RiderPose } from "../avatar/riderPose";
+import { CrashPose, type CrashBodyFrame } from "../avatar/crashPose";
+import { CRASH } from "./accidentMotion";
+import { RIDER_GRIPS } from "./scooters";
 import { deskSeatedRootForRig, HUMANBASE_PELVIS_BELOW_HIPS, sceneRig, seatedRootForRig, type SeatedRig } from "../interact/seatContact";
 
 /** How fast a coworker turns toward their direction of travel, rad/s. The navigation controller's rate,
@@ -347,8 +351,32 @@ function bodySourceFor(avatarId: string, lod: AvatarLod): Promise<BodySource> {
 /** a built source that never became a body (the person left, a newer roster won) */
 function discardSource(s: BodySource | null): void { if (s && isHuman(s)) s.human.human.dispose(); }
 
+/** S2 — a remote rider's body on a scooter, as the world places it each frame from the pose stream (the
+ *  local ride's own numbers: avatar/Avatar root at the deck's height, yaw π − heading, lean and pitch) */
+export interface CoworkerScooterRide {
+  x: number; z: number; y: number; yaw: number; lean: number; pitch: number;
+  /** S6 — a crash frame (avatar/crashPose): the skeleton falls, tumbles and gets up; the root stays upright
+   *  under the hips at (x, y, z) */
+  crash?: CrashBodyFrame | null;
+  /** S6 — hands on the grips? false while falling off (default true) */
+  rider?: boolean;
+}
+
 class CoworkerBody {
   readonly root = new THREE.Group();
+  /** THE MODEL FRAME, between the root (where the body stands) and the mesh: the scooter rider pose leans
+   *  this, exactly as it leans Avatar's own model group, so the root's position is never fought over */
+  private readonly model = new THREE.Group();
+  /** S2 — the hands-on-the-grips pose (avatar/riderPose), made on this body's FIRST ride: measuring a rig is
+   *  not free, and most bodies never ride */
+  private riderPose: RiderPose | null = null;
+  /** S6 — the crash on the skeleton, made with the rider pose (a crash only ever follows a ride) */
+  private crashPose: CrashPose | null = null;
+  /** S2 — on a scooter: the pose stream owns where this body is, and nothing else may move it */
+  private scooterRide: CoworkerScooterRide | null = null;
+  /** S2 — the movement that arrived while the ride still held the body: the rider's own step off, which can
+   *  overtake the scooter's release (two sockets, no common order). Played, aged, the moment the ride ends. */
+  private afterRide: { kind: "walk"; args: [string, Vec2[], number, number, Vo3dWalkPacing]; at: number } | { kind: "glide"; at: Vec2; yaw: number } | null = null;
   readonly avatarId: string;
   readonly displayName: string;
   readonly triangles: number;
@@ -428,14 +456,16 @@ class CoworkerBody {
       this.mixer = null;
       this.triangles = h.human.stats().triangles;
       this.rig = { ...sceneRig(h.human.scene, h.clips), pelvisBelowHips: HUMANBASE_PELVIS_BELOW_HIPS };
-      this.root.add(h.human.root);
+      this.model.add(h.human.root);
+      this.root.add(this.model);
       for (const clip of h.clips) { const a = h.action(clip.name); if (a) this.actions[clip.name] = a; }
     } else {
       this.human = null;
       this.triangles = source.triangles;
       this.rig = sceneRig(source.scene, source.clips);
       const body = cloneSkinned(source.scene) as THREE.Group;
-      this.root.add(body);
+      this.model.add(body);
+      this.root.add(this.model);
       this.mixer = new THREE.AnimationMixer(body);
       // EVERY clip the prototype carries, bound once. The prototypes are the same consolidated GLBs the
       // hero avatar and the stress crowd use, so `walking` is there; hasClip is still asked before it is
@@ -454,7 +484,7 @@ class CoworkerBody {
    *  air (a duplicate relay, a retry) or seated, which is the whole of the duplicate rule: the same
    *  no-double-jump test the local body applies, applied here. Returns whether it took. */
   jump(): boolean {
-    if (this.seatedIn !== null) return false;
+    if (this.seatedIn !== null || this.scooterRide) return false;
     return this.vertical.start();
   }
 
@@ -580,6 +610,9 @@ class CoworkerBody {
    *  movement. The body is not first snapped back to the origin: the replay's own fast-forward puts it
    *  where the walk currently is, which for a redirect is about where the body already stood. */
   beginWalk(movementId: string, worldPath: readonly Vec2[], durationMs: number, elapsedMs: number, pacing: Vo3dWalkPacing = "eased"): void {
+    // ON A SCOOTER the pose stream is the truth; a walk that turns up meanwhile is the step off, held for
+    // the moment the ride ends (afterRide)
+    if (this.scooterRide) { this.afterRide = { kind: "walk", args: [movementId, [...worldPath], durationMs, elapsedMs, pacing], at: performance.now() }; return; }
     // A walk stands a seated body up first — V1 clears the seat on every walk_started, and so does this.
     if (this.seatedIn !== null) this.standUp();
     this.replay = new ReplayWalk(movementId, worldPath, durationMs, elapsedMs, pacing);
@@ -603,6 +636,7 @@ class CoworkerBody {
    *  and the seated clip plays. Any replay, queued turn or leg grace is dropped: the seated arrival is the
    *  authoritative account of where this person is. Returns true when anything changed. */
   sitAt(anchor: string, pose: SeatAnchorPose): boolean {
+    if (this.scooterRide) return false;
     const root = pose.kind === "seat"
       ? deskSeatedRootForRig(this.rig, pose.contact, pose.yaw)
       : seatedRootForRig(this.rig, pose.contact, pose.yaw, pose.sink ?? 0);
@@ -654,6 +688,7 @@ class CoworkerBody {
    *    seam, short way — glide, and take the yaw when the glide lands.
    *    anything else   — snap. An interrupted walk, a reconnect correction, or an ordinary placement. */
   reconcileTo(at: Vec2, yaw: number): boolean {
+    if (this.scooterRide) { this.afterRide = { kind: "glide", at: { ...at }, yaw }; return false; }
     const d = dist(this.pos, at);
     const resolvesWalk = this.playedId !== null || this.settling;
     if (d <= RECONCILE_EPSILON) return this.settle(at, yaw, resolvesWalk);
@@ -734,7 +769,72 @@ class CoworkerBody {
    *  Crowd's member uses. Returns TRUE when the body's transform changed, which is what the caller turns
    *  into a cheap dynamic shadow invalidation (a walking coworker costs the composite pass, never the
    *  static redraw). */
+  /** S2 — MOUNT / PLACE / DISMOUNT. A pose puts the body on the deck for this frame (idle frozen, hands on
+   *  the grips, leaning with it — the local rider's own recipe, player/PlayerMode startRide); null gets it
+   *  off, back to its resting clip where it stands, for the rider's own movement feed to take it from there. */
+  setScooterRide(ride: CoworkerScooterRide | null): void {
+    if (ride && !this.scooterRide) {
+      if (this.seatedIn !== null) this.standUp();
+      this.replay = null; this.settling = false; this.coastMs = 0; this.targetYaw = null; this.settleYaw = null; this.travelHeading = null;
+      this.land();
+      this.freezeAt(CLIP_IDLE, 0);
+      if (!this.riderPose) {
+        this.riderPose = new RiderPose(this.model, RIDER_GRIPS);
+        if (this.human) {
+          this.riderPose.setScene(this.human.scene);
+          const pose = this.riderPose;
+          this.human.addLayer({ id: "vo-scooter-rider", order: 30, update: (dt) => pose.update(dt) });
+        } else this.riderPose.setScene(this.model.children[0] ?? null);
+        const rider = this.riderPose;
+        this.crashPose = new CrashPose(this.model, () => rider.drop());
+        if (this.human) {
+          const crash = this.crashPose;
+          crash.setScene(this.human.scene);
+          this.human.addLayer({ id: "vo-scooter-crash", order: 40, update: (dt) => crash.update(dt) });
+        } else this.crashPose.setScene(this.model.children[0] ?? null);
+      }
+      this.riderPose.set(ride.rider !== false);
+    } else if (!ride && this.scooterRide) {
+      this.riderPose?.set(false);
+      this.riderPose?.setLean(0);
+      this.riderPose?.setPitch(0);
+      this.crashPose?.set(null);
+      const idle = this.actions[CLIP_IDLE];
+      if (idle) idle.timeScale = 1;
+      this.root.position.y = this.groundY();
+      this.root.rotation.set(0, this.yaw, 0); // upright again (a fall tipped it)
+      this.play(this.restingClip);
+      this.scooterRide = null;
+      const next = this.afterRide;
+      this.afterRide = null;
+      if (next?.kind === "walk") { const [id, path, ms, el, pacing] = next.args; this.beginWalk(id, path, ms, el + (performance.now() - next.at), pacing); }
+      else if (next?.kind === "glide") this.reconcileTo(next.at, next.yaw);
+      return;
+    }
+    if (ride && !this.scooterRide) this.afterRide = null;
+    if (ride && this.scooterRide) this.riderPose?.set(ride.rider !== false); // riding → falling off, same body
+    this.scooterRide = ride ? { ...ride } : null;
+  }
+
+  get ridingScooter(): boolean { return this.scooterRide !== null; }
+
   update(dt: number): boolean {
+    if (this.scooterRide) {
+      const r = this.scooterRide;
+      this.root.position.set(r.x, r.y, r.z);
+      this.yaw = r.yaw;
+      this.root.rotation.set(0, r.yaw, 0);
+      this.crashPose?.set(r.crash ?? null);
+      // a body without the standard chain: the whole of it tipped about its hips
+      if (r.crash && !this.crashPose?.rigged) {
+        this.root.quaternion.copy(r.crash.q);
+        this.root.position.set(r.crash.hip.x, r.crash.hip.y, r.crash.hip.z).sub(new THREE.Vector3(0, CRASH.HIP, 0).applyQuaternion(r.crash.q));
+      }
+      this.riderPose?.setLean(r.lean);
+      this.riderPose?.setPitch(r.pitch);
+      this.tick(dt);
+      return true;
+    }
     if (this.seatedIn !== null) {
       // Seated: the clip breathes, the root does not move. Nothing below may play idle over the sit.
       this.tick(dt);
@@ -833,7 +933,7 @@ class CoworkerBody {
   /** advance the animation: a legacy clone's own mixer, or the HumanBase runtime (pose restore → mixer → layers → face) */
   private tick(dt: number): void {
     if (this.human) { this.seatedWork?.update(dt, this.seatedIn !== null && this.current === CLIP_SIT); this.human.update(dt); }
-    else this.mixer?.update(dt);
+    else { this.mixer?.update(dt); this.riderPose?.update(dt); this.crashPose?.update(dt); }
   }
 
   /** Stop replaying without moving the body — for a walk whose person left the roster mid-stride. */
@@ -1034,6 +1134,15 @@ export class Coworkers {
   realPointOf(email: string): Vec2 | null {
     const body = this.bodies.get(email);
     return body ? { ...body.pos } : null;
+  }
+
+  /** S2 — put this person's REAL body on a scooter for this frame (or, with null, take it off). Returns
+   *  whether there is a body to drive — none when they are not drawn here (another floor, the Cave). */
+  setScooterRide(email: string, ride: CoworkerScooterRide | null): boolean {
+    const body = this.bodies.get(email);
+    if (!body) return false;
+    body.setScooterRide(ride);
+    return true;
   }
 
   /** Stand a rider somewhere else at once (the seal: cabin → destination lift bay). */

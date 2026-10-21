@@ -66,6 +66,11 @@ export class PlayerInput {
   /** Set while a request we made is in flight, so `lockchange` can tell "granted" from "the user
    *  pressed Esc" and we never re-ask on our own. */
   private requesting = false;
+  /** AN INTERACTION MENU IS OPEN over the world (a coworker's menu, the exit card, the kiosk, the lift's
+   *  floor panel — app/menuPointer.ts). The menu owns the pointer and the keys it answers: no look, no
+   *  click into the world, no interact / jump / view verb. Movement keys stay live — walking away from
+   *  a fixture is how its card has always been dismissed. */
+  private menuHold = false;
 
   constructor(canvas: HTMLCanvasElement, handlers: PlayerInputHandlers) {
     this.canvas = canvas;
@@ -133,8 +138,11 @@ export class PlayerInput {
    *  Called at most once per gesture and never on a timer — the browser rate-limits repeated requests
    *  and a loop of them is worse than none. If it is refused, unlocked look turns on immediately so the
    *  mode is still usable, and the owner is told so it can show a recovery hint. */
-  requestLock(): void {
+  requestLock(opts: { fallback?: boolean } = {}): void {
     if (!this.attached || this.locked || this.requesting) return;
+    // QUIET (fallback: false) — a menu handing the mouse back. Refused, it changes NOTHING: no unlocked
+    // look, no recovery hint; the next deliberate click on the canvas locks, as it always has.
+    const fallback = opts.fallback !== false;
     this.requesting = true;
     let settled = false;
     const granted = () => {
@@ -148,6 +156,7 @@ export class PlayerInput {
       if (settled) return;
       settled = true;
       this.requesting = false;
+      if (!fallback) return;
       // USABLE ANYWAY. The camera moves with the mouse; only the 360° wrap is lost.
       this.unlockedLook = true;
       this.lastClient = null;
@@ -175,9 +184,25 @@ export class PlayerInput {
 
   get usingUnlockedLook(): boolean { return this.unlockedLook; }
 
+  /** S3 — is Space being HELD (not merely pressed)? The hop is its edge; a drift is its hold. Never while a
+   *  menu is up: opening one lets go of a drift. */
+  get jumpHeld(): boolean { return !this.menuHold && this.held.has(JUMP_KEY); }
+
+  get menuOpen(): boolean { return this.menuHold; }
+  set menuOpen(on: boolean) {
+    if (on === this.menuHold) return;
+    this.menuHold = on;
+    // whatever the mouse did on the way to the menu is not a look
+    this.dx = this.dy = 0;
+    this.lastClient = null;
+    if (on) this.held.delete(JUMP_KEY);
+  }
+
   private readonly onKeyDown = (e: KeyboardEvent): void => {
     if (isUiTarget(e) || e.metaKey || e.ctrlKey || e.altKey) return;
     if (MOVE_KEYS[e.code]) { this.held.add(e.code); e.preventDefault(); return; }
+    // A MENU IS OPEN: nothing but movement (and Shift with it) reaches the world
+    if (this.menuHold && !SPRINT_KEYS.has(e.code)) return;
     // Shift rides in the same held set as the movement keys, so the blur handler's "clear everything"
     // covers it too: tabbing away mid-sprint cannot leave the player running when they come back.
     if (SPRINT_KEYS.has(e.code)) { this.held.add(e.code); return; }
@@ -212,12 +237,15 @@ export class PlayerInput {
 
   private readonly onMouseDown = (e: MouseEvent): void => {
     if (e.button !== 0 || isUiTarget(e)) return;
+    // the press that dismisses a menu is not a click into the world, and does not take the pointer
+    if (this.menuHold) return;
     // A WORLD CLICK REMAINS THE RECAPTURE ROUTE, for the case the browser refused the switch's own
     // request. It is a fallback now rather than the only way in.
     if (!this.locked) { this.requestLock(); return; }
     this.h.onInteract(); // a click while locked is the same verb as E
   };
   private readonly onMouseMove = (e: MouseEvent): void => {
+    if (this.menuHold) { this.lastClient = null; return; }
     if (this.locked) {
       this.dx += e.movementX;
       this.dy += e.movementY;

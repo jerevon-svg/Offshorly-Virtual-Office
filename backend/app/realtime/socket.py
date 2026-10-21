@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
+import time
 import logging
 import math
 import re
@@ -29,6 +31,9 @@ from app.repositories import whiteboards as wb_repo
 # Re-exported from this module unchanged so existing `from app.realtime.socket import ...`
 # call sites and tests keep working.
 from app.realtime.state import (
+    scooters,
+    scooter_accidents,
+    traffic_holds,
     call_invites,
     meeting_chat,
     meeting_hosts,
@@ -55,6 +60,9 @@ from app.services import meeting_sessions
 from app.services import scheduled_meetings
 from app.routers.calls import meeting_room_key, _MEETING_ID
 from app.services.call_invites import wire as invite_wire
+from app.services.traffic_holds import valid_obstacle as valid_traffic_obstacle
+from app.services.scooter_accidents import LIFT_UPRIGHT_S as ACCIDENT_LIFT_UPRIGHT_S, valid_accident
+from app.services.scooter_registry import RECONNECT_GRACE_SECONDS as SCOOTER_RECONNECT_GRACE_SECONDS, valid_at as valid_scooter_at, valid_pose as valid_scooter_pose
 from app.services.travel_party import (
     CHAT_MAX_CHARS as TRAVEL_CHAT_MAX_CHARS,
     GATHER_DEADLINE_SECONDS as PARTY_GATHER_DEADLINE_SECONDS,
@@ -684,6 +692,13 @@ async def connect(sid: str, environ: dict, auth: dict | None) -> None:
     # a reloaded driver re-claims with party_claim) and any invitation still waiting for an answer.
     party = travel_parties.party_of(email)
     await sio.emit("travel_party", _party_payload(party, email) if party else {"party": None}, to=sid)
+
+    # CAMPUS SCOOTERS — every rack's truth on (re)connect, so a newcomer never sees a scooter that is gone
+    await sio.emit("scooters", _scooters_payload(), to=sid)
+    # S4 — and every car that is stopped (or making up time), so a newcomer draws the same traffic
+    await sio.emit("traffic_holds", _traffic_payload(), to=sid)
+    # S5 — and every accident still in progress (its scooter is in the `scooters` snapshot, fallen)
+    await sio.emit("scooter_accidents", _accidents_payload(), to=sid)
     await sio.emit(
         "party_invites",
         {
@@ -769,6 +784,15 @@ async def disconnect(sid: str) -> None:
     # Party invitations are deliberately NOT cleared by sid: the party, not the tab, owns them.
     for party_id, lost_email in travel_parties.orphan_sid(sid):
         asyncio.create_task(_drop_lost_later(party_id, lost_email))
+    # a rider's socket going away LOSES their scooter for the grace (a refresh keeps it), then docks it
+    for scooter_id in scooters.orphan_sid(sid):
+        asyncio.create_task(_dock_lost_scooter_later(scooter_id))
+    # S4 — nobody this socket reported is in a car's way any more: those cars go again
+    if traffic_holds.orphan_sid(sid):
+        await _broadcast_traffic()
+    # S5 — a rider who leaves mid-accident takes the accident with them: scooter home, car free to go
+    for accident_id in scooter_accidents.orphan_sid(sid):
+        await _resolve_accident(accident_id, "rider_left")
     # Whiteboard W3: by sid — this socket's board membership only. Closing the room's last
     # member triggers the final (tombstone-free) DB write inside _leave_whiteboard.
     await _leave_whiteboard(sid)
@@ -1616,6 +1640,389 @@ async def _expire_party_invite_later(invite_id: str, party_id: str) -> None:
 async def _expire_party_later(party_id: str) -> None:
     await asyncio.sleep(PARTY_MAX_LIFETIME_SECONDS)
     await _end_party(party_id, "expired")
+
+
+# ---- CAMPUS SCOOTERS (app/services/scooter_registry.py) ----------------------------------------------
+# The browser that wants to ride asks; the registry answers; the answer goes back to the asker and the
+# changed scooter to everyone. Riding itself is the browser's business and never comes through here.
+
+def _scooters_payload() -> dict:
+    return {"scooters": scooters.snapshot(), "serverTime": int(time.time() * 1000)}
+
+
+async def _broadcast_scooter(scooter: dict) -> None:
+    await sio.emit("scooter_state", {"scooter": scooters.wire(scooter), "serverTime": int(time.time() * 1000)})
+
+
+def _scooter_request(payload) -> tuple[str | None, str | None]:
+    if not isinstance(payload, dict):
+        return None, None
+    scooter_id = payload.get("scooterId")
+    request_id = payload.get("requestId")
+    scooter_id = scooter_id if isinstance(scooter_id, str) and 0 < len(scooter_id) <= 32 else None
+    request_id = request_id if isinstance(request_id, str) and 0 < len(request_id) <= 64 else None
+    return scooter_id, request_id
+
+
+@sio.on("scooter_claim")
+async def scooter_claim(sid: str, payload: dict | None) -> None:
+    """MAY I RIDE IT? Granted at most once per scooter: the second asker is told `taken`."""
+    try:
+        scooter_id, request_id = _scooter_request(payload)
+        if scooter_id is None:
+            return
+        session_data = await sio.get_session(sid)
+        email = session_data["email"].strip().lower()
+        current = scooters.get(scooter_id)
+        if current is not None and current["state"] == "fallen":
+            await _remount(sid, email, scooter_id, request_id, payload)
+            return
+        scooter, reason = scooters.claim(scooter_id, email, sid)
+        result = {"requestId": request_id, "scooterId": scooter_id, "ok": scooter is not None}
+        if scooter is None:
+            result["reason"] = reason
+            current = scooters.get(scooter_id)
+            if current is not None:
+                result["scooter"] = scooters.wire(current)
+        else:
+            result["scooter"] = scooters.wire(scooter)
+        await sio.emit("scooter_claim_result", result, to=sid)
+        if scooter is not None:
+            await _broadcast_scooter(scooter)
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+async def _remount(sid: str, email: str, scooter_id: str, request_id: str | None, payload: dict | None) -> None:
+    """S7 — RIDING THE SCOOTER I LIFTED, from where it stands: the accident is over. Its car goes back to the
+    ordinary rule — it waits while I am still in its way (my ride reports it), then goes."""
+    now = time.time()
+    at = _recovery_at(payload)
+    accident, why = (None, "position") if at is None else (None, "body_unconfirmed") if not _body_is_there(email, "walk", at[0], at[1], now) else scooter_accidents.remountable(scooter_id, email, sid, at[0], at[1], now=now)
+    scooter = scooters.remount(scooter_id, accident["id"], email, sid, now=now) if accident is not None else None
+    if scooter is None:
+        current = scooters.get(scooter_id)
+        await sio.emit("scooter_claim_result", {"requestId": request_id, "scooterId": scooter_id, "ok": False, "reason": why or "fallen", **({"scooter": scooters.wire(current)} if current else {})}, to=sid)
+        return
+    scooter_accidents.resolve(accident["id"], now=now)
+    released = traffic_holds.release_accident(accident["loop"], accident["vehicle"], accident["id"], now=now)
+    await sio.emit("scooter_claim_result", {"requestId": request_id, "scooterId": scooter_id, "ok": True, "scooter": scooters.wire(scooter)}, to=sid)
+    await sio.emit("scooter_accident_resolved", {"id": accident["id"], "reason": "recovered", "serverTime": int(now * 1000)})
+    await _broadcast_scooter(scooter)
+    if released:
+        await _broadcast_traffic()
+
+
+@sio.on("scooter_release")
+async def scooter_release(sid: str, payload: dict | None) -> None:
+    """THE RIDER GOT OFF: home to the rack (or, with `at`, left standing there). Only the rider may."""
+    try:
+        scooter_id, _ = _scooter_request(payload)
+        if scooter_id is None:
+            return
+        session_data = await sio.get_session(sid)
+        email = session_data["email"].strip().lower()
+        raw_at = (payload or {}).get("at")
+        at = valid_scooter_at(raw_at) if raw_at is not None else None
+        if raw_at is not None and at is None:
+            return
+        scooter, reason = scooters.release(scooter_id, email, sid, at=at)
+        if scooter is None:
+            await sio.emit("scooter_release_result", {"scooterId": scooter_id, "ok": False, "reason": reason}, to=sid)
+            return
+        await _broadcast_scooter(scooter)
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("scooter_pose")
+async def scooter_pose(sid: str, payload: dict | None) -> None:
+    """S2 — THE RIDER'S POSE, ~10 a second, relayed to everybody else. Only the scooter's current rider, on
+    the socket holding the ride, in order and not too fast (scooter_registry.accept_pose): anything else is
+    dropped silently. The relay names the rider from the SESSION, never from the payload."""
+    try:
+        sample = valid_scooter_pose(payload)
+        if sample is None:
+            return
+        session_data = await sio.get_session(sid)
+        email = session_data["email"].strip().lower()
+        # stored WITH the sender's clock and number, so a late joiner's first sample is timed like the rest
+        stored = {**sample["pose"], "t": sample["t"], "seq": sample["seq"]}
+        if scooters.accept_pose(sample["scooterId"], email, sid, sample["seq"], stored) is not None:
+            return
+        await sio.emit(
+            "scooter_pose",
+            {"scooterId": sample["scooterId"], "rider": email, "seq": sample["seq"], "t": sample["t"],
+             "serverTime": int(time.time() * 1000), **sample["pose"]},
+            skip_sid=sid,
+        )
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+# ---- S4: CAMPUS TRAFFIC HOLDS (app/services/traffic_holds.py) ------------------------------------------
+# A browser reports only its own employee in a car's way; the registry checks it against its own copy of that car
+# and against where the server last knew the employee to be, keeps one hold per car, and the new state goes to
+# everybody — a handful of numbers per stopped car, sent only when something changes.
+
+def _traffic_payload() -> dict:
+    return {"vehicles": traffic_holds.snapshot(), "serverTime": int(time.time() * 1000)}
+
+
+async def _broadcast_traffic() -> None:
+    await sio.emit("traffic_holds", _traffic_payload())
+
+
+# a body this far from where the server last knew it is not believed (walk legs lag a little; rides do not)
+_RIDE_TOLERANCE = 60
+_WALK_TOLERANCE = 140
+_RIDE_POSE_MAX_AGE_S = 1.5
+
+
+def _seg_dist(px: float, pz: float, ax: float, az: float, bx: float, bz: float) -> float:
+    dx, dz = bx - ax, bz - az
+    L = dx * dx + dz * dz
+    u = 0.0 if L <= 0 else max(0.0, min(1.0, ((px - ax) * dx + (pz - az) * dz) / L))
+    return ((px - ax - u * dx) ** 2 + (pz - az - u * dz) ** 2) ** 0.5
+
+
+def _body_is_there(email: str, kind: str, x: float, z: float, now: float) -> bool:
+    """Is this employee where they say they are? A rider by their scooter's last pose (fresh); a walker by the
+    campus walk the server last relayed for them (anywhere along it — legs lag) or where they last stopped."""
+    if kind == "ride":
+        s = scooters.ridden_by(email)
+        pose = s["pose"] if s else None
+        if not pose or now - s["pose_at"] > _RIDE_POSE_MAX_AGE_S:
+            return False
+        return ((pose["x"] - x) ** 2 + (pose["z"] - z) ** 2) ** 0.5 <= _RIDE_TOLERANCE
+    entry = position_registry.get(email)
+    if entry is None:
+        return False
+    if entry.active and entry.active.local_origin and entry.active.local_path:
+        pts = [entry.active.local_origin, *entry.active.local_path]
+        for a, b in itertools.pairwise(pts):
+            if _seg_dist(x, z, a["x"], a["y"], b["x"], b["y"]) <= _WALK_TOLERANCE:
+                return True
+    st = entry.stable
+    if st is not None and st.local_x is not None and st.local_y is not None:
+        return ((st.local_x - x) ** 2 + (st.local_y - z) ** 2) ** 0.5 <= _WALK_TOLERANCE
+    return False
+
+
+def _known_body(email: str, kind: str) -> dict | None:
+    """where the server last had this employee, for their own refusal message"""
+    if kind == "ride":
+        s = scooters.ridden_by(email)
+        return {"ride": s["pose"] if s else None}
+    entry = position_registry.get(email)
+    if entry is None:
+        return None
+    st = entry.stable
+    return {
+        "stable": None if st is None else {"x": st.x, "y": st.y, "localX": st.local_x, "localY": st.local_y, "room": st.room_id},
+        "active": None if not entry.active else {"origin": entry.active.local_origin, "path": (entry.active.local_path or [])[-3:], "room": entry.active.room_id},
+    }
+
+
+_traffic_sweeper: asyncio.Task | None = None
+
+
+async def _sweep_traffic_while_needed() -> None:
+    """Runs only while somebody is in a car's way: drops obstacles nobody has confirmed lately (a frozen tab, a
+    lost socket the server has not noticed yet) so their cars go again."""
+    global _traffic_sweeper
+    try:
+        while traffic_holds.active_obstacles() > 0:
+            await asyncio.sleep(0.5)
+            if traffic_holds.sweep():
+                await _broadcast_traffic()
+    finally:
+        _traffic_sweeper = None
+
+
+def _ensure_traffic_sweeper() -> None:
+    global _traffic_sweeper
+    if _traffic_sweeper is None and traffic_holds.active_obstacles() > 0:
+        _traffic_sweeper = asyncio.create_task(_sweep_traffic_while_needed())
+
+
+@sio.on("traffic_obstacle")
+async def traffic_obstacle(sid: str, payload: dict | None) -> None:
+    """I AM IN CAR (loop, vehicle)'S WAY — or, with `clear`, no longer. Judged here, never taken on trust: a real
+    car, a body the server agrees is there, standing in that car's lane ahead of it."""
+    try:
+        report = valid_traffic_obstacle(payload)
+        if report is None:
+            return
+        session_data = await sio.get_session(sid)
+        email = session_data["email"].strip().lower()
+        now = time.time()
+        if report["clear"]:
+            if traffic_holds.clear(email, report["loop"], report["vehicle"], now=now):
+                await _broadcast_traffic()
+            return
+        if not _body_is_there(email, report["kind"], report["x"], report["z"], now):
+            # told to the reporter ONLY (like scooter_release_result): why its own report was not believed,
+            # and where the server last had it — its own position, nobody else's
+            await sio.emit("traffic_obstacle_result", {"ok": False, "reason": "body_unconfirmed", "known": _known_body(email, report["kind"])}, to=sid)
+            return
+        changed, why = traffic_holds.report(email, sid, report["loop"], report["vehicle"], report["x"], report["z"], report["kind"], now=now)
+        if why is not None:
+            await sio.emit("traffic_obstacle_result", {"ok": False, "reason": why}, to=sid)
+        if changed:
+            await _broadcast_traffic()
+        _ensure_traffic_sweeper()
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+# ---- S5: SCOOTER ACCIDENTS (app/services/scooter_accidents.py) -------------------------------------------
+# The rider's browser reports a hard contact; the registry judges it against the server's own car and the
+# rider's own pose; a confirmed one makes the scooter FALL where it happened, HOLDS the car for it, and goes to
+# everybody with the server's timestamps. Until S7 adds recovery it ends on its own (TEMP_RESOLVE_S).
+
+def _accidents_payload() -> dict:
+    return {"accidents": scooter_accidents.snapshot(), "serverTime": int(time.time() * 1000)}
+
+
+@sio.on("scooter_accident")
+async def scooter_accident(sid: str, payload: dict | None) -> None:
+    """I HIT A CAR. Judged here: the rider, their scooter, a fresh time, where they were, and a real crash into
+    that car as the server has it. Answered to the reporter either way; broadcast only when confirmed."""
+    try:
+        report = valid_accident(payload)
+        request_id = payload.get("requestId") if isinstance(payload, dict) and isinstance(payload.get("requestId"), str) else None
+        if report is None:
+            return
+        session_data = await sio.get_session(sid)
+        email = session_data["email"].strip().lower()
+        now = time.time()
+        accident, why = scooter_accidents.create(email, sid, report, scooters.get(report["scooterId"]), traffic_holds.car_state(report["loop"], report["vehicle"]), now=now)
+        if accident is None:
+            await sio.emit("scooter_accident_result", {"requestId": request_id, "ok": False, "reason": why}, to=sid)
+            return
+        # S6 — it lies where it comes to REST after its slide (everybody animates it there; S7 lifts it there)
+        fallen = scooters.fall(report["scooterId"], email, {"x": accident["restX"], "z": accident["restZ"], "yaw": report["heading"]}, accident["id"], now=now)
+        traffic_holds.hold_for_accident(report["loop"], report["vehicle"], accident["id"], now=now)
+        await sio.emit("scooter_accident_result", {"requestId": request_id, "ok": True, "id": accident["id"]}, to=sid)
+        await sio.emit("scooter_accident", {"accident": scooter_accidents.wire(accident), "serverTime": int(now * 1000)})
+        if fallen is not None:
+            await _broadcast_scooter(fallen)
+        await _broadcast_traffic()
+        _ensure_accident_watchdog()
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("scooter_accident_reach")
+async def scooter_accident_reach(sid: str, payload: dict | None) -> None:
+    """S6 — THE RIDER'S WORLD SAYS HOW FAR THE THROWS MAY GO (its walls, the car): once, shorter only. The
+    scooter's resting place follows, and everybody gets the accident again with it."""
+    try:
+        if not isinstance(payload, dict) or not isinstance(payload.get("id"), str):
+            return
+        session_data = await sio.get_session(sid)
+        email = session_data["email"].strip().lower()
+        accident, _why = scooter_accidents.set_reach(payload["id"], email, sid, payload.get("reach"))
+        if accident is None:
+            return
+        now = time.time()
+        rested = scooters.rest(accident["scooterId"], accident["id"], {"x": accident["restX"], "z": accident["restZ"], "yaw": accident["heading"]}, now=now)
+        await sio.emit("scooter_accident", {"accident": scooter_accidents.wire(accident), "serverTime": int(now * 1000)})
+        if rested is not None:
+            await _broadcast_scooter(rested)
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+async def _resolve_accident(accident_id: str, reason: str) -> None:
+    accident = scooter_accidents.resolve(accident_id)
+    if accident is None:
+        return
+    home = scooters.recover(accident["scooterId"], accident_id)
+    traffic_holds.release_accident(accident["loop"], accident["vehicle"], accident_id)
+    await sio.emit("scooter_accident_resolved", {"id": accident_id, "reason": reason, "serverTime": int(time.time() * 1000)})
+    if home is not None:
+        await _broadcast_scooter(home)
+    await _broadcast_traffic()
+
+
+_accident_watchdog: asyncio.Task | None = None
+# how often the watchdog looks (an abandoned accident ends within this of its deadline)
+ACCIDENT_WATCH_S = 1.0
+
+
+async def _watch_accidents() -> None:
+    """S7 — runs only while there are accidents: one nobody has moved on for ABANDON_S (the rider gone quiet, the
+    scooter somewhere they cannot reach) ends — the scooter goes home, the car may go once clear. Somebody
+    recovering pushes their deadline on with every step, so this never resets an active recovery."""
+    global _accident_watchdog
+    try:
+        while scooter_accidents.snapshot():
+            await asyncio.sleep(ACCIDENT_WATCH_S)
+            for accident_id in scooter_accidents.due():
+                await _resolve_accident(accident_id, "abandoned")
+    finally:
+        _accident_watchdog = None
+
+
+def _ensure_accident_watchdog() -> None:
+    global _accident_watchdog
+    if _accident_watchdog is None:
+        _accident_watchdog = asyncio.create_task(_watch_accidents())
+
+
+def _recovery_at(payload: dict | None) -> tuple[float, float] | None:
+    """where the rider says they stand (an S7 lift or remount), if it is a real position"""
+    if not isinstance(payload, dict):
+        return None
+    x, z = payload.get("x"), payload.get("z")
+    if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and abs(v) < 1e5 for v in (x, z)):
+        return None
+    return float(x), float(z)
+
+
+@sio.on("scooter_accident_lift")
+async def scooter_accident_lift(sid: str, payload: dict | None) -> None:
+    """S7 — E BESIDE MY FALLEN SCOOTER. Judged here: my own accident, on my socket, the crash over, standing where
+    the server has me, beside the scooter. Answered to me either way; the lift goes to everybody with its time."""
+    try:
+        request_id = payload.get("requestId") if isinstance(payload, dict) and isinstance(payload.get("requestId"), str) else None
+        at = _recovery_at(payload)
+        if at is None or not isinstance(payload.get("id"), str):
+            return
+        session_data = await sio.get_session(sid)
+        email = session_data["email"].strip().lower()
+        now = time.time()
+        accident, why = (None, "body_unconfirmed") if not _body_is_there(email, "walk", at[0], at[1], now) else scooter_accidents.lift(payload["id"], email, sid, at[0], at[1], now=now)
+        await sio.emit("scooter_accident_lift_result", {"requestId": request_id, "ok": accident is not None, **({"reason": why} if accident is None else {})}, to=sid)
+        if accident is None:
+            return
+        await sio.emit("scooter_accident", {"accident": scooter_accidents.wire(accident), "serverTime": int(now * 1000)})
+        asyncio.create_task(_accident_upright_later(accident["id"], accident["liftAt"]))
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+async def _accident_upright_later(accident_id: str, lift_at: float) -> None:
+    """S7 — the scooter is standing again. If it stands clear of the held car's lane the car goes back to the
+    ordinary rule (it still waits for the rider if THEY are in its way); standing in the lane, it waits for the ride."""
+    await asyncio.sleep(max(0.0, lift_at + ACCIDENT_LIFT_UPRIGHT_S - time.time()))
+    accident = scooter_accidents.get(accident_id)
+    if accident is None or accident["liftAt"] != lift_at:
+        return
+    now = time.time()
+    clear = traffic_holds.obstacle_arc(accident["loop"], accident["vehicle"], accident["restX"], accident["restZ"], now) is None
+    if clear and traffic_holds.release_accident(accident["loop"], accident["vehicle"], accident_id, now=now):
+        await _broadcast_traffic()
+    await sio.emit("scooter_accident", {"accident": scooter_accidents.wire(accident), "serverTime": int(now * 1000)})
+
+
+async def _dock_lost_scooter_later(scooter_id: str) -> None:
+    await asyncio.sleep(SCOOTER_RECONNECT_GRACE_SECONDS)
+    scooter = scooters.expire_lost(scooter_id, grace=SCOOTER_RECONNECT_GRACE_SECONDS)
+    if scooter is not None:
+        await _broadcast_scooter(scooter)
 
 
 async def _drop_lost_later(party_id: str, email: str) -> None:

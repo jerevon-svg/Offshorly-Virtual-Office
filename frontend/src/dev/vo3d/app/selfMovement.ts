@@ -238,6 +238,12 @@ export class SelfMovementFeed {
   /** THE LIFT — the body is inside the car (boardedLift → alightedLift): nothing it does is movement, and
    *  `liftAnchor` is the in-frame point it boarded from, the anchor a floor above the frame is named at. */
   private inLift = false;
+  /** S2 — ON A SCOOTER with the server streaming the ride (scooter_pose): no walk is published meanwhile */
+  private inRide = false;
+  /** the last position this body held INSIDE V1's frame — where a late-named place is entered from */
+  private lastInRange: Vec2 | null = null;
+  /** out beyond the frame with an anchor but no place named yet to publish it under (entering() does) */
+  private unannounced = false;
   private liftAnchor: Vec2 | null = null;
 
   constructor(sink: Vo3dSelfMovementSink, inRange: InRangeTest = () => true) {
@@ -383,9 +389,15 @@ export class SelfMovementFeed {
     const wrapped = wrapAngle(yaw);
     if (!this.inRange(pos)) {
       if (this.wasInRange && this.last && this.inRange(this.last)) this.anchor = this.last;
+      // CARRIED OUT UNANNOUNCED: a streamed scooter ride (or a crash after one) crossed V1's edge while this
+      // feed was quiet, so the step before this one is already out here — the anchor is the last point the
+      // body really held inside the frame. Without it nothing out here was ever published, the server kept
+      // them at their desk, and every car refused to believe they were in its lane.
+      else if (!this.anchor) this.anchor = this.lastInRange;
       this.wasInRange = false;
       this.mode = { kind: "idle" };
       if (this.place && this.anchor) this.sink.enteredPlace(this.anchor, wrapped, this.place, pos);
+      this.unannounced = !this.place && this.anchor !== null;
       this.localLast = pos;
     } else {
       this.wasInRange = true;
@@ -484,6 +496,26 @@ export class SelfMovementFeed {
     this.localLast = null;
   }
 
+  /** S2 — STEPPED ONTO A SCOOTER whose ride the server streams (app/riderStream). Whatever walk was under
+   *  way is closed HERE, where they stepped on; from now until they step off, the pose stream is the only
+   *  account of where they are, and a walk published beside it would be a second, conflicting one. */
+  mountedScooter(pos: Vec2, yaw: number): void {
+    if (this.inRide) return;
+    this.interrupt(pos, yaw);
+    this.inRide = true;
+    this.last = pos;
+  }
+
+  /** S2 — STEPPED OFF. One honest "they are here now" — the same relocation a teleport publishes, in the
+   *  frame or out on the campus — and ordinary movement from there. */
+  dismountedScooter(pos: Vec2, yaw: number): void {
+    if (!this.inRide) return;
+    this.inRide = false;
+    this.teleported(pos, yaw);
+  }
+
+  get ridingScooter(): boolean { return this.inRide; }
+
   /** THE CAR HAS REACHED ITS FLOOR and the body is back in that floor's lift bay (FloorTransition's
    *  alight), with `entering` already told which place that floor is. Publishes the one honest fact — "they
    *  are here now" — through the same `enteredPlace` a walked-in crossing uses: named at the in-frame point
@@ -513,7 +545,24 @@ export class SelfMovementFeed {
    *  the way back. Called by the portal itself, which is the only thing that knows; the boundary crossing
    *  in frame() is what actually publishes it, so a portal that is refused publishes nothing. */
   entering(place: string | null): void {
+    const was = this.place;
     this.place = place;
+    // NAMED A FRAME LATE. The world names the campus from the body's position AFTER this feed has seen the
+    // frame it crossed V1's edge on, so that crossing found no place to name, set no anchor — and every step
+    // out there afterwards was published as nothing (peers saw them stop at the façade; the server could not
+    // say where they were). Naming it now says the same thing the crossing would have: entered `place` at
+    // the last point inside the frame, standing where they really are. Once, and only for a body that is
+    // out there unannounced (never in the lift or on a streamed ride, which announce themselves).
+    if (place && !was && !this.anchor && !this.wasInRange && !this.inLift && !this.inRide && this.lastInRange && this.last) {
+      this.anchor = this.lastInRange;
+      this.localLast = this.last;
+      this.sink.enteredPlace(this.lastInRange, wrapAngle(this.lastYaw), place, this.last);
+    } else if (place && this.unannounced && this.anchor && this.last && !this.wasInRange && !this.inLift && !this.inRide) {
+      // relocated out here (a teleport, a dismount) before the world had named the place: name it now
+      this.localLast = this.last;
+      this.sink.enteredPlace(this.anchor, wrapAngle(this.lastYaw), place, this.last);
+    }
+    if (place && !this.inRide) this.unannounced = false;
   }
 
   /** Is the feed holding a seated body? Read by the world's readout and by tests. */
@@ -530,7 +579,11 @@ export class SelfMovementFeed {
   frame(dtMs: number, pos: Vec2, yaw: number, navMoving: boolean): void {
     this.lastYaw = yaw;
     // IN THE LIFT: the car's own sequence moves the body (aligning, the shot) and none of it is movement.
-    if (this.inLift) {
+    // ON A STREAMED SCOOTER RIDE likewise: the pose stream carries the body (mountedScooter).
+    if (this.inLift || this.inRide) {
+      // a ride through V1's frame: where it last was inside is where the campus is entered from after it
+      // (an anchor from before the ride no longer is)
+      if (this.inRide && this.inRange(pos)) { this.lastInRange = pos; this.anchor = null; }
       this.last = pos;
       return;
     }
@@ -559,6 +612,7 @@ export class SelfMovementFeed {
     // only honest statement left is "they are here now", and a minimum-duration movement is how this
     // protocol says that. Normal legs resume from there.
     const nowInRange = this.inRange(pos);
+    if (nowInRange) this.lastInRange = pos;
     if (this.wasInRange !== nowInRange) {
       this.wasInRange = nowInRange;
       if (!nowInRange) {
@@ -590,6 +644,7 @@ export class SelfMovementFeed {
       this.place = null;
       this.anchor = null;
       this.localLast = null;
+      this.unannounced = false;
       return;
     }
     if (!nowInRange) {

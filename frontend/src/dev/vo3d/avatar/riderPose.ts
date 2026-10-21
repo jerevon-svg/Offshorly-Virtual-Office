@@ -160,6 +160,8 @@ export class RiderPose {
   setLean(lean: number): void { this.lean = Number.isFinite(lean) ? lean : 0; }
   /** the deck's pitch, radians, nose up + (a ramp, a kerb): the body pitches with it about the same pivot */
   setPitch(pitch: number): void { this.pitch = Number.isFinite(pitch) ? pitch : 0; }
+  /** S6 — off AT ONCE (a crash takes the body from this very pose; avatar/crashPose blends from it) */
+  drop(): void { this.on = false; this.w = 0; this.stats.weight = 0; this.release(); }
   get weight(): number { return this.w; }
   get mounted(): boolean { return this.on; }
 

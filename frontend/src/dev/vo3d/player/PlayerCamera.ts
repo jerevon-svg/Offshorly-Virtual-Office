@@ -44,7 +44,14 @@ const AIM_RATE = 16;
 
 const damp = (rate: number, dt: number): number => 1 - Math.exp(-rate * dt);
 
+/** S6 — how long an impact's camera nudge lasts */
+const KICK_S = 0.35;
+
 export class PlayerCamera {
+  private kickLeft = 0;
+  private kickAmp = 0;
+  /** S6 — A SUBTLE RESPONSE TO AN IMPACT: a small sway that dies away in KICK_S (amplitude in world units) */
+  kick(amplitude = 1.2): void { this.kickLeft = KICK_S; this.kickAmp = amplitude; }
   readonly camera: THREE.PerspectiveCamera;
   view: PlayerView = "third";
   /** shared look angles; yaw is the world heading the camera looks ALONG */
@@ -128,6 +135,13 @@ export class PlayerCamera {
       this.aim.lerp(focus, damp(AIM_RATE, dt));
     }
     this.camera.position.copy(this.smoothed);
+    // S6 — an impact's nudge: a short, decaying sway, never a cut
+    if (this.kickLeft > 0) {
+      this.kickLeft = Math.max(0, this.kickLeft - dt);
+      const k = this.kickLeft / KICK_S, w = (KICK_S - this.kickLeft) * 38;
+      this.camera.position.x += Math.sin(w) * this.kickAmp * k;
+      this.camera.position.y += Math.cos(w * 1.3) * this.kickAmp * 0.6 * k;
+    }
     this.camera.lookAt(this.aim);
   }
 

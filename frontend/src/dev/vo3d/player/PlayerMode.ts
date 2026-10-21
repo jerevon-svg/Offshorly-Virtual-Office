@@ -31,6 +31,7 @@ import { PlayerInput } from "./PlayerInput";
 import { AIRBORNE_POSE_PHASE, PlayerJump } from "./PlayerJump";
 import { collectCandidates, pickTarget, type Candidate, type Target } from "./PlayerTargeting";
 import { ScooterMotion, SCOOTER, SCOOTER_JUMP } from "./ScooterMotion";
+import { DRIFT, ScooterDrift } from "./ScooterDrift";
 import { ScooterHud } from "./ScooterHud";
 
 /** Shared empty list, so a frame with no dynamic candidates allocates nothing. */
@@ -144,7 +145,9 @@ export type PlayerDeps = {
  *  something else takes the avatar or Player View is left. */
 export type RideHooks = {
   canStand: StandTest;
-  place(pos: Vec2, heading: number, lean: number, speed: number, y?: number, pitch?: number): void;
+  /** `heading` is the deck as DRAWN — the ride's heading plus a drift's slip into the turn; `fx` is the drift
+   *  (player/ScooterDrift) for the pose stream and the effects: the travel heading is `heading − fx.slip` */
+  place(pos: Vec2, heading: number, lean: number, speed: number, y?: number, pitch?: number, fx?: ScooterDrift["fx"]): void;
   /** THE GROUND UNDER THE DECK at a rider position and heading: where the scooter's origin stands (y), its
    *  nose-up pitch from its two wheels, and the surface's speed share and class (world/exteriorGround).
    *  Omitted = the flat datum at full speed (the V1 corridor's world). */
@@ -199,7 +202,9 @@ export class PlayerMode {
    *  same swept/sliding collision) and the world's hooks */
   private ride: { motion: ScooterMotion; body: PlayerBody; hooks: RideHooks; lookHold: number; last: Vec2; ground: RideGround; y: number; pitch: number;
     /** the hop (Space while riding), and the landing's dip and the camera's height */
-    jump: PlayerJump; squash: number; camY: number } | null = null;
+    jump: PlayerJump; squash: number; camY: number;
+    /** S3 — Space HELD through a landing: the drift and its mini-boost */
+    drift: ScooterDrift } | null = null;
   /** the surface class under the deck this frame, or null on foot (QA and the HUD) */
   get rideSurface(): RideGround["surface"] | null { return this.ride?.ground.surface ?? null; }
   get riding(): boolean { return this.ride !== null; }
@@ -219,7 +224,7 @@ export class PlayerMode {
     this.landNow();
     const ground = hooks.ground?.(this.body.pos, heading) ?? FLAT_GROUND;
     this.ride = { motion: new ScooterMotion(heading), body: new PlayerBody(this.body.pos, this.d.radius, hooks.canStand), hooks, lookHold: 0, last: { ...this.body.pos }, ground, y: ground.y, pitch: ground.pitch,
-      jump: new PlayerJump(SCOOTER_JUMP), squash: 0, camY: ground.y };
+      jump: new PlayerJump(SCOOTER_JUMP), squash: 0, camY: ground.y, drift: new ScooterDrift() };
     // MOUNTED: the idle held on its neutral frame (no sway, no walk cycle) under the rider pose
     this.d.avatar.freezeClipAt(CLIP_IDLE, RIDE_IDLE_PHASE);
     this.d.avatar.setRiding(true);
@@ -232,6 +237,13 @@ export class PlayerMode {
   }
   /** QA ONLY (the dev rig's way to a test spot): the riding deck set down at `p`, facing `heading`, at rest on
    *  the ground there (rolling at `speed`). Refused where a deck may not stand. */
+  /** S5 — A CRASH WAS REPORTED: the deck stops dead and any drift is over, until the server says what happened */
+  haltRide(): void {
+    if (!this.ride) return;
+    this.ride.motion.speed = 0;
+    this.ride.drift.reset();
+  }
+
   warpRide(p: Vec2, heading: number, speed = 0): boolean {
     const ride = this.ride;
     if (!ride || !ride.hooks.canStand(p)) return false;
@@ -590,7 +602,16 @@ export class PlayerMode {
     // IN THE AIR the wheels have nothing to push on: no drive or brake, light steering (ScooterMotion)
     const sup = ride.hooks.support;
     const air = ride.jump.airborne;
-    const { dx, dz } = ride.motion.step({ throttle: -axis.z, steer: axis.x, boost: this.input.sprinting, cap: ride.ground.cap, airborne: air }, dt);
+    // S3 — THE DRIFT: Space held through the landing, steering (player/ScooterDrift). It reads LAST frame's
+    // hit: a graze along a kerb is not a crash, so only a hit that cost most of the step counts
+    const drift = ride.drift;
+    const hardHit = this.state.blocked && this.state.travelled < 0.5 * Math.abs(ride.motion.speed) * dt;
+    drift.update({ held: this.input.jumpHeld, steer: axis.x, airborne: air, speed: ride.motion.speed, cap: ride.ground.cap, allowed: this.d.stack.owner === "Player" && !this.input.menuOpen, hardHit }, dt * 1000);
+    const { dx, dz } = ride.motion.step({
+      throttle: -axis.z, steer: axis.x, boost: this.input.sprinting, cap: ride.ground.cap, airborne: air,
+      drift: drift.active ? { dir: drift.dir as -1 | 1, turnRate: drift.turnRate, lean: DRIFT.lean, drag: DRIFT.drag } : null,
+      surge: drift.boostSpeed,
+    }, dt);
     // the deck's feet go with every sub-step: a kerb rolls, a deeper edge stops it, an airborne deck clears
     // what its wheels clear — and a roll off an edge at speed leaves the ground
     const fallDrop = Math.abs(ride.motion.speed) > RIDE_LAUNCH_SPEED ? RIDE_LAUNCH_DROP : ride.hooks.dropMax;
@@ -638,12 +659,15 @@ export class PlayerMode {
     this.state.feet = deckY;
     this.d.avatar.setPosition(this.body.pos, deckY + ride.hooks.deckTop);
     this.d.avatar.setRidePitch(ride.pitch);
-    this.d.avatar.setYaw(Math.PI - ride.motion.heading);
+    // the deck as DRAWN points a drift's slip INTO the turn; the ride itself carries on round it
+    const drawn = ride.motion.heading + drift.slip;
+    this.d.avatar.setYaw(Math.PI - drawn);
     this.d.avatar.freezeClipAt(CLIP_IDLE, RIDE_IDLE_PHASE);
     this.d.avatar.setRideLean(ride.motion.lean);
     // the card reads the deck's own state: BOOST only while boost is actually driving it forward
-    this.scooterHud?.update(ride.motion.speed, this.input.sprinting && -axis.z > 0 && ride.motion.speed > 20, dt, ride.ground.surface);
-    ride.hooks.place(this.body.pos, ride.motion.heading, ride.motion.lean, ride.motion.speed, deckY, ride.pitch);
+    this.scooterHud?.update(ride.motion.speed, (this.input.sprinting && -axis.z > 0 && ride.motion.speed > 20) || drift.boosting, dt, ride.ground.surface);
+    this.scooterHud?.setDrift(drift.active, drift.charge, drift.tier);
+    ride.hooks.place(this.body.pos, drawn, ride.motion.lean, ride.motion.speed, deckY, ride.pitch, drift.fx);
     // CHASE CAMERA: settles in behind the deck unless the rider is looking round with the mouse
     if (ride.lookHold <= 0 && this.camera.view === "third") {
       const rate = RIDE_CAMERA_FOLLOW * (0.35 + 0.65 * Math.min(1, Math.abs(ride.motion.speed) / 120));
@@ -757,6 +781,12 @@ export class PlayerMode {
 
   /** PHASE 7D — take the pointer from the caller's own gesture (the C key, or chat's Enter). */
   requestPointerLock(): void { this.input.requestLock(); }
+  /** AN INTERACTION MENU OPENED / CLOSED over the world (app/menuPointer): the menu owns the mouse and its
+   *  keys while it is up (player/PlayerInput menuOpen) */
+  setMenuOpen(on: boolean): void { this.input.menuOpen = on; }
+  /** HAND THE MOUSE BACK after a menu — QUIETLY: refused (no user gesture, browser cooldown), nothing
+   *  changes and the next deliberate click on the canvas locks, exactly as it always has */
+  resumePointerLock(): void { if (this.active) this.input.requestLock({ fallback: false }); }
   get pointerLocked(): boolean { return this.input.locked; }
   get unlockedLook(): boolean { return this.input.usingUnlockedLook; }
 }

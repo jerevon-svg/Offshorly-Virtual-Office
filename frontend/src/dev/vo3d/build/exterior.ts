@@ -395,6 +395,9 @@ export type ExteriorScenery = {
   /** PLACE THE MOVING TRAFFIC for a moment in time (world/traffic). Pass WALL-CLOCK seconds so every client
    *  sees the same vehicles in the same places. The caller skips it while the exterior is not drawn. */
   trafficTick(timeSec: number): void;
+  /** S4 — WHO SAYS WHERE A CAR IS: the deterministic loop alone by default; the world hands in its traffic
+   *  timeline (world/trafficHolds — server holds and queueing) once it has one. null restores the default. */
+  setTrafficPoser(poser: ((loop: number, vehicle: number, timeSec: number, out: { x: number; z: number; yaw: number; heading: number; speed: number }) => void) | null): void;
   /** THE SHARED SCOOTERS (world/scooters): hide a docked one while it is being ridden, and place the one
    *  under the rider. Present only when the builder was given stations. */
   scooters: {
@@ -403,6 +406,10 @@ export type ExteriorScenery = {
     /** the ridden scooter: origin on the ground at (x, y, z), yawed, pitched nose-up by `pitch` about its own
      *  lateral axis, then leaned by `lean` about its forward axis */
     placeRidden(x: number, z: number, yaw: number, lean: number, y?: number, pitch?: number): void;
+    /** S2 — ANOTHER EMPLOYEE'S ridden scooter, keyed by scooter id: one slot per scooter in the fleet, in the
+     *  same batches (no new draws). Same placement contract as placeRidden. */
+    placeRemote(key: string, x: number, z: number, yaw: number, lean: number, y?: number, pitch?: number): void;
+    hideRemote(key: string): void;
   } | null;
   /** 0 = no rain, 1 = the heaviest: rings on the lake (wetness says how wet things ARE; this is whether
    *  drops are falling NOW, so the rings stop when the rain does even while the ground stays wet) */
@@ -810,9 +817,10 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
   //     additive pool on the road ahead driven by the same practicals level as the street lamps.
   const paths = TRAFFIC_LOOPS.map(buildLoopPath);
   const movers = paths.flatMap((path, li) => path.loop.vehicles.map((v, vi) => ({ path, li, vi, v })));
-  // one spare slot at the end of every traffic batch is the RIDDEN scooter (it moves, so it casts no shadow
-  // either, and stands on the same contact disc)
-  const rideSlot = docks.length ? 1 : 0;
+  // spare slots at the end of every traffic batch are the RIDDEN scooters (they move, so they cast no shadow
+  // either, and stand on the same contact disc): this browser's own rider's, and one per scooter in the
+  // fleet for everybody else's (S2)
+  const rideSlot = docks.length ? 1 + docks.length : 0;
   const moving = makeBatches(movers.length + rideSlot, "traffic", false);
   const lampsBatch = new THREE.BatchedMesh(movers.length + rideSlot, verts((g) => [g.lights]), 0, new THREE.MeshBasicMaterial({ vertexColors: true }));
   lampsBatch.name = "traffic-lamps";
@@ -856,10 +864,13 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
   instanced += 5; instances += movers.length * 6;
   const pose = { x: 0, z: 0, yaw: 0, heading: 0, speed: 0 };
   const bs = new THREE.Vector3(), bp = new THREE.Vector3();
+  type Poser = (loop: number, vehicle: number, timeSec: number, out: typeof pose) => void;
+  const loopPose: Poser = (li, vi, t, out) => poseAt(paths[li], vi, t, out);
+  let poser: Poser = loopPose;
   const trafficTick = (timeSec: number): void => {
     for (let k = 0; k < movers.length; k++) {
       const mv = movers[k], sl = slot[k];
-      poseAt(mv.path, mv.vi, timeSec, pose);
+      poser(mv.li, mv.vi, timeSec, pose);
       vq.setFromAxisAngle(UP, pose.yaw);
       vm.compose(vp.set(pose.x, ROAD_Y, pose.z), vq, vs);
       moving.gloss.setMatrixAt(sl.paint, vm).setMatrixAt(sl.detail, vm);
@@ -875,33 +886,25 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
   };
   trafficTick(0);
 
-  // THE RIDDEN SCOOTER: hidden until somebody mounts one
+  // THE RIDDEN SCOOTERS: hidden until somebody mounts one
   let scooters: ExteriorScenery["scooters"] = null;
   if (rideSlot) {
     const id = moving.ids.get("scooter")!;
-    const r = { paint: moving.gloss.addInstance(id.paint), detail: moving.gloss.addInstance(id.gloss), matte: moving.matte.addInstance(id.matte), lamp: lampsBatch.addInstance(lampIds.get("scooter")!) };
-    moving.gloss.setColorAt(r.paint, vc.setHex(SCOOTER_COLOUR));
-    moving.gloss.setColorAt(r.detail, white);
-    moving.matte.setColorAt(r.matte, white);
-    lampsBatch.setColorAt(r.lamp, white);
-    const k = movers.length;
     const hide = new THREE.Matrix4().makeScale(0, 0, 0);
     const roll = new THREE.Quaternion(), FWD = new THREE.Vector3(0, 0, -1), tilt = new THREE.Quaternion(), SIDE = new THREE.Vector3(1, 0, 0);
-    const setVisible = (on: boolean) => {
-      moving.gloss.setVisibleAt(r.paint, on); moving.gloss.setVisibleAt(r.detail, on);
-      moving.matte.setVisibleAt(r.matte, on); lampsBatch.setVisibleAt(r.lamp, on);
-      if (!on) { blobs.setMatrixAt(k, hide); pools.setMatrixAt(k, hide); blobs.instanceMatrix.needsUpdate = true; pools.instanceMatrix.needsUpdate = true; }
-    };
-    setVisible(false);
-    scooters = {
-      setDocked(dockId, docked) {
-        const ids = dockInstances.get(dockId);
-        if (!ids) return;
-        for (let i = 0; i < 3; i++) parked.gloss.setVisibleAt(ids[i], docked);
-        parked.matte.setVisibleAt(ids[3], docked);
-      },
-      showRidden: setVisible,
-      placeRidden(x, z, yaw, lean, y = 0, pitch = 0) {
+    /** one ridden-scooter slot: its four batch instances and its contact-disc / headlight-pool index */
+    const makeSlot = (k: number) => {
+      const r = { paint: moving.gloss.addInstance(id.paint), detail: moving.gloss.addInstance(id.gloss), matte: moving.matte.addInstance(id.matte), lamp: lampsBatch.addInstance(lampIds.get("scooter")!) };
+      moving.gloss.setColorAt(r.paint, vc.setHex(SCOOTER_COLOUR));
+      moving.gloss.setColorAt(r.detail, white);
+      moving.matte.setColorAt(r.matte, white);
+      lampsBatch.setColorAt(r.lamp, white);
+      const setVisible = (on: boolean) => {
+        moving.gloss.setVisibleAt(r.paint, on); moving.gloss.setVisibleAt(r.detail, on);
+        moving.matte.setVisibleAt(r.matte, on); lampsBatch.setVisibleAt(r.lamp, on);
+        if (!on) { blobs.setMatrixAt(k, hide); pools.setMatrixAt(k, hide); blobs.instanceMatrix.needsUpdate = true; pools.instanceMatrix.needsUpdate = true; }
+      };
+      const place = (x: number, z: number, yaw: number, lean: number, y = 0, pitch = 0) => {
         // yaw about up, then the pitch about the deck's lateral axis (nose up +), then the lean as a roll
         // about its forward axis
         vq.setFromAxisAngle(UP, yaw).multiply(tilt.setFromAxisAngle(SIDE, pitch)).multiply(roll.setFromAxisAngle(FWD, lean));
@@ -914,6 +917,39 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
         pools.setMatrixAt(k, vm.compose(bp.set(x + Math.sin(yaw) * -38, y + 0.35, z + Math.cos(yaw) * -38), vq, bs.set(12, 1, 22)));
         blobs.instanceMatrix.needsUpdate = true;
         pools.instanceMatrix.needsUpdate = true;
+      };
+      setVisible(false);
+      return { setVisible, place };
+    };
+    const own = makeSlot(movers.length);
+    // the others' slots, leased by scooter id while that scooter is being ridden and drawn here
+    const free = Array.from({ length: rideSlot - 1 }, (_, i) => makeSlot(movers.length + 1 + i));
+    const leased = new Map<string, ReturnType<typeof makeSlot>>();
+    scooters = {
+      setDocked(dockId, docked) {
+        const ids = dockInstances.get(dockId);
+        if (!ids) return;
+        for (let i = 0; i < 3; i++) parked.gloss.setVisibleAt(ids[i], docked);
+        parked.matte.setVisibleAt(ids[3], docked);
+      },
+      showRidden: own.setVisible,
+      placeRidden: own.place,
+      placeRemote(key, x, z, yaw, lean, y = 0, pitch = 0) {
+        let slot = leased.get(key);
+        if (!slot) {
+          slot = free.pop();
+          if (!slot) return; // more riders than scooters cannot happen; never steal a slot
+          leased.set(key, slot);
+          slot.setVisible(true);
+        }
+        slot.place(x, z, yaw, lean, y, pitch);
+      },
+      hideRemote(key) {
+        const slot = leased.get(key);
+        if (!slot) return;
+        leased.delete(key);
+        slot.setVisible(false);
+        free.push(slot);
       },
     };
   }
@@ -1010,6 +1046,7 @@ export function buildExterior(opts: { scooterStations?: readonly ScooterStation[
   return {
     root,
     trafficTick,
+    setTrafficPoser: (p) => { poser = p ?? loopPose; },
     scooters,
     stats: {
       draws, instanced, instances, trees: treeCount, vehicles: VEHICLES.length, traffic: movers.length, docks: docks.length,

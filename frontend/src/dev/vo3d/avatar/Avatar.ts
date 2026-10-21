@@ -9,6 +9,8 @@ import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { BON_LODS, CLIP_IDLE, CLIP_SIT, CLIP_SIT_ANSWER, DRACO_PATH, type AvatarLod } from "../adapters/v1Avatar";
 import type { Vec2 } from "../core/coords";
 import { RiderPose } from "./riderPose";
+import { CrashPose, type CrashBodyFrame } from "./crashPose";
+import { CRASH } from "../world/accidentMotion";
 import { RIDER_GRIPS } from "../world/scooters";
 import type { HumanAvatar } from "../human/HumanAvatar";
 import { createHumanBody, type HumanBody } from "./humanBody";
@@ -51,6 +53,9 @@ export class Avatar {
 
   /** THE SCOOTER RIDER'S POSE (avatar/riderPose): a post-mixer layer on the model group, idle until mounted */
   private readonly rider: RiderPose;
+  /** S6 — THE CRASH on the skeleton (avatar/crashPose): a post-mixer layer after the rider's, idle until a fall */
+  private readonly crash: CrashPose;
+  private crashing = false;
 
   /** HUMANBASE BODY (production integration, avatar/humanBody): when set, `load` builds this appearance on the
    *  shared HumanBase runtime instead of fetching the legacy GLB. Everything outside this class — controllers,
@@ -76,6 +81,7 @@ export class Avatar {
     this.root.name = "avatar";
     this.root.add(this.model);
     this.rider = new RiderPose(this.model, RIDER_GRIPS);
+    this.crash = new CrashPose(this.model, () => this.rider.drop());
   }
 
   async load(lod: AvatarLod): Promise<void> {
@@ -104,6 +110,8 @@ export class Avatar {
     // the scooter rider is a HumanBase layer (the same contract the HumanBase QA viewer drives)
     this.rider.setScene(h.scene);
     h.addLayer({ id: "vo-scooter-rider", order: 30, update: (dt) => this.rider.update(dt) });
+    this.crash.setScene(h.scene);
+    h.addLayer({ id: "vo-scooter-crash", order: 40, update: (dt) => this.crash.update(dt) });
     this.current = null;
     this.play(this.requested ?? CLIP_IDLE, 0);
   }
@@ -137,6 +145,7 @@ export class Avatar {
     });
     this.model.add(scene);
     this.rider.setScene(scene);
+    this.crash.setScene(scene);
     this.mixer = new THREE.AnimationMixer(scene);
     for (const clip of gltf.animations) this.actions[clip.name] = this.mixer.clipAction(clip);
     this.current = null;
@@ -166,6 +175,27 @@ export class Avatar {
   setPosition(p: Vec2, y?: number): void { this.root.position.set(p.x, y ?? this.groundAt(p), p.z); }
   /** full rotation write — pure yaw about +y relative to the current parent */
   setYaw(yaw: number): void { this.yaw = yaw; this.root.rotation.set(0, yaw, 0); }
+  /** S6 — ONE FRAME OF A CRASH (world/accidentMotion via app/world), or null: the body is its own again. While
+   *  it plays, the clip is held on the idle's first frame and every other clip request waits (nothing walks or
+   *  idles over the fall); the root stays where the caller put it (upright, under the hips). A body without the
+   *  standard chain is tipped whole about its hips instead. */
+  setCrash(f: CrashBodyFrame | null): void {
+    if (f && !this.crashing) { this.freezeClipAt(CLIP_IDLE, 0); this.crashing = true; }
+    if (!f && this.crashing) {
+      this.crashing = false;
+      this.setClipTimeScale(CLIP_IDLE, 1);
+      this.current = null;
+      this.play(CLIP_IDLE, 0.2);
+    }
+    this.crash.set(f);
+    if (f && !this.crash.rigged) {
+      this.root.quaternion.copy(f.q);
+      this.root.position.set(f.hip.x, f.hip.y, f.hip.z).sub(new THREE.Vector3(0, CRASH.HIP, 0).applyQuaternion(f.q));
+    }
+  }
+  get inCrash(): boolean { return this.crashing; }
+  /** DIAGNOSTIC: the crash layer's ground contact */
+  get crashStats(): CrashPose["stats"] { return this.crash.stats; }
   /** world-space yaw when the parent may be rotated (carrier) */
   setWorldYaw(yaw: number): void {
     const parentYaw = this.root.parent ? new THREE.Euler().setFromQuaternion(this.root.parent.getWorldQuaternion(new THREE.Quaternion()), "YXZ").y : 0;
@@ -204,6 +234,7 @@ export class Avatar {
   }
   play(name: string, fade = 0.25): void {
     this.requested = name;
+    if (this.crashing) return;   // S6: the crash owns the body until setCrash(null)
     const resolved = this.resolveClip(name);
     if (this.human) {   // HumanBase: the shared library's own names; VO's idle-9 is this employee's idle profile
       const hn = resolved === CLIP_IDLE ? idleClip(this.human.config.idleProfile) : resolved;
@@ -263,6 +294,7 @@ export class Avatar {
     }
     this.mixer?.update(dt);
     this.rider.update(dt);
+    this.crash.update(dt);
   }
 
   // ---- the scooter rider (avatar/riderPose) ----

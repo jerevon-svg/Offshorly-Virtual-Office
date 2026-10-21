@@ -46,6 +46,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { OfficeExperience } from "../../../services/settings/officeExperience";
 import { seasonForExperience } from "../season/season";
 import { resolveVo3dCoworkers, selfEmailKey } from "../adapters/v1Coworkers";
+import { useScooterAuthority } from "./useScooterAuthority";
 import { applyLivePositions, countLivePositions, countSeated, countWalking } from "../adapters/v1CoworkerPositions";
 import { createV1SelfMovementSink, resolveV1SelfPosition } from "../adapters/v1SelfMovement";
 import { anchorForSeatKey } from "../adapters/v1Seats";
@@ -469,6 +470,18 @@ export function Vo3dHost({ experience }: Vo3dHostProps = {}) {
   // arrive shows the office anyway instead of covering it forever.
   const identityResolved = phase.kind === "ready" ? phase.identity : null;
   const worldReady = phase.kind === "ready";
+  // S0 — THE CAMPUS TRAFFIC ON THE SERVER'S CLOCK. The movement feed already measures server − local on
+  // every snapshot; the world's traffic clock takes it and slews toward any change (world/trafficClock), so
+  // reading it every couple of seconds is plenty and a re-measure never makes a car jump.
+  useEffect(() => {
+    if (!worldReady) return;
+    const push = () => worldRef.current?.setServerClockOffset?.(getServerClockOffsetMs());
+    push();
+    const id = window.setInterval(push, 2000);
+    return () => window.clearInterval(id);
+  }, [worldReady]);
+  // S1 — WHO HAS WHICH SCOOTER: the server decides; the world asks before it rides (app/useScooterAuthority)
+  useScooterAuthority(worldRef, worldReady, selfEmailKey());
   useEffect(() => {
     setStartupSignal("transform", worldReady);
   }, [worldReady]);

@@ -26,6 +26,7 @@ import { setDevIdentity as setWardrobeClientDevIdentity } from "../services/avat
 import { setDevIdentity as setMeetingChatDevIdentity } from "../services/meeting/meetingChatClient";
 import { setDevIdentity as setScheduledMeetingsDevIdentity } from "../services/meetings/scheduledMeetingsStore";
 import { setDevIdentity as setTravelPartyDevIdentity } from "../services/party/travelPartyStore";
+import { setDevIdentity as setScooterStoreDevIdentity } from "../services/scooters/scooterStore";
 
 // Boot-time permission gate for the Virtual Office. Calls Atlas's
 // GET /api/v1/auth/me and checks the can_view_virtual_office flag.
@@ -274,6 +275,8 @@ function seedDevBypassIdentity(): void {
   setScheduledMeetingsDevIdentity(email);
   // Go Together — its own socket, same identity.
   setTravelPartyDevIdentity(email);
+  // Campus scooters — the server's registry, its own socket, same identity.
+  setScooterStoreDevIdentity(email);
   setFeedClientDevIdentity(email);
   setQuestsClientDevIdentity(email);
   // Seeds the notifications REST client AND its socket identity in one call.

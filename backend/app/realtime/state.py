@@ -18,6 +18,9 @@ from app.services.room_presence import RoomPresenceRegistry
 from app.services.spatial_session import SpatialSessionRegistry
 from app.services.travel_party import TravelPartyRegistry
 from app.services.whiteboard_rooms import WhiteboardRoomRegistry
+from app.services.scooter_registry import ScooterRegistry
+from app.services.traffic_holds import TrafficHoldRegistry
+from app.services.scooter_accidents import AccidentRegistry
 
 # CONSTRUCTION SEAM for realtime shared state. This module owns the Socket.IO server and every
 # ephemeral registry singleton; it is the only place they are instantiated.
@@ -107,6 +110,15 @@ meeting_invites = CallInviteRegistry()
 # of the ring registry, carrying `party_id`, sharing no state with calls or meetings.
 travel_parties = TravelPartyRegistry()
 party_invites = CallInviteRegistry()
+
+# CAMPUS SCOOTERS — who rides which of the six (see scooter_registry.py). In-memory: a restart re-docks all.
+scooters = ScooterRegistry()
+
+# CAMPUS TRAFFIC HOLDS (S4) — the one place a car is told to stop and to go again (see traffic_holds.py)
+traffic_holds = TrafficHoldRegistry()
+
+# SCOOTER ACCIDENTS (S5) — one confirmed event per real crash (see scooter_accidents.py)
+scooter_accidents = AccidentRegistry()
 
 # PHASE 7D — WHAT IS SAID INSIDE A MEETING. Ephemeral and in-memory by design: a meeting's chat ends
 # with the meeting, writes nothing, and is deliberately NOT the DM system (see meeting_chat.py).
