@@ -5,7 +5,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { acceptHead, acceptRefusals, generateRefusals, recordFile } from "./prepare-head-version.mjs";
+import { REF_LIMITS, acceptHead, acceptRefusals, generateRefusals, prepareVersion, recordFile, referenceRefusals } from "./prepare-head-version.mjs";
+import { approvedSource, spriteFile } from "./studio/approved-source.mjs";
 import { layout } from "./candidate-versions.mjs";
 import { sha256File } from "./studio/provenance.mjs";
 
@@ -78,5 +79,40 @@ describe("accepting a head (the recipe's accepted head is never a failed one)", 
     expect(() => acceptHead("zz", "v2", { approvedBy: "", file, root })).toThrow(/REFUSED/);
     expect(acceptHead("zz", "v2", { approvedBy: "Bon", file, root })).toBe("v2");
     expect(JSON.parse(fs.readFileSync(file, "utf8")).employees).toEqual({ zz: { hair: "x", head: "v2" }, other: { hair: "y" } });
+  });
+});
+
+describe("a FIRST head (2026-10-20): a person with no head yet is prepared as v1, the version every recipe reads", () => {
+  it("no v1 Meshy folder and no v1 reference → v1; otherwise the next free version, and v1 is never reused", () => {
+    const M = scratch("phv-fm-"), R = scratch("phv-fr-");
+    expect(prepareVersion("zz", null, { M, R })).toBe("v1");
+    expect(prepareVersion("zz", "v1", { M, R })).toBe("v1");
+    fs.mkdirSync(`${R}/zz`);   // a v1 reference already prepared: its version is taken
+    expect(prepareVersion("zz", null, { M, R })).toBe("v2");
+    expect(() => prepareVersion("zz", "v1", { M, R })).toThrow(/v1 is the original head/);
+    const M2 = scratch("phv-fm2-"), R2 = scratch("phv-fr2-"); fs.mkdirSync(`${M2}/zz-head-v1`);   // a paid v1 head exists
+    expect(prepareVersion("zz", null, { M: M2, R: R2 })).toBe("v2");
+    expect(() => prepareVersion("zz", "v1", { M: M2, R: R2 })).toThrow(/v1 is the original head/);
+  });
+});
+
+describe("the prepared reference fails closed before any spend", () => {
+  it("passes the approved references' own range and refuses a rebuilt (non-sprite) reference", () => {
+    expect(referenceRefusals({ frame: { pixels: 17765 }, inpainted: 110652 })).toEqual([]);   // Micah (glasses removed): the largest approved values
+    expect(referenceRefusals({ frame: { pixels: 49 }, inpainted: 58472 })).toEqual([]);   // Esson's Stage A sprite
+    const canonical = referenceRefusals({ frame: { pixels: 853718 }, inpainted: 1087728 });   // Esson's population trace crop
+    expect(canonical).toHaveLength(2); expect(canonical.join()).toMatch(/Stage A sprite/);
+    expect(referenceRefusals({ frame: { pixels: REF_LIMITS.framePx + 1 } }).join()).toMatch(/backdrop/);
+  });
+});
+
+describe("approvedSource: the Stage A illustration a head is made from", () => {
+  it("a Studio upload wins, else the roster sprite (bon ↔ Jerevon), else null — never the population crop", () => {
+    const S = scratch("as-s-"), dir = scratch("as-d-"); fs.mkdirSync(`${S}/uploads`);
+    expect(spriteFile("esson", dir)).toBe(path.join(dir, "Esson_Sprite.png")); expect(spriteFile("bon", dir)).toBe(path.join(dir, "Jerevon_Sprite.png"));
+    expect(approvedSource("esson", { S, dir })).toBeNull();
+    fs.writeFileSync(spriteFile("esson", dir), "sprite"); expect(approvedSource("esson", { S, dir })).toBe(spriteFile("esson", dir));
+    fs.writeFileSync(`${S}/uploads/esson.png`, "upload"); expect(approvedSource("esson", { S, dir })).toBe(`${S}/uploads/esson.png`);
+    expect(approvedSource("../x", { S, dir })).toBeNull();
   });
 });

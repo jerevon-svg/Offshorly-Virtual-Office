@@ -1,11 +1,13 @@
 // studio/meshy-resume.mjs — RESUME an already-submitted Meshy head task after an interruption: READ-ONLY GETs (status polls + downloads),
 // never a new submission, never credits. The task id is in the job log / task record.
-//   node scripts/avatar-pipeline/human-base/studio/meshy-resume.mjs <who> <taskId>
+//   node scripts/avatar-pipeline/human-base/studio/meshy-resume.mjs <who> <taskId> [v<N>]   (default v1)
 import fs from "node:fs";
 import path from "node:path";
 import { loadEnvKey } from "../../generate-production-v2.mjs";
-const [who, taskId] = process.argv.slice(2), NAME = `${who}-head-v1`, OUT = `scripts/avatar-pipeline/output/meshy-employees/${NAME}/raw-untouched`, API = "https://api.meshy.ai/openapi";
-if (!who || !taskId) { console.error("usage: meshy-resume.mjs <who> <taskId>"); process.exit(2); }
+import { headName, headVersion, rawHeadDir } from "../head-version.mjs";
+const [who, taskId] = process.argv.slice(2), V = headVersion({ head: process.argv[4] ?? "v1" }), NAME = headName(who, V), OUT = `${rawHeadDir(who, V)}/raw-untouched`, API = "https://api.meshy.ai/openapi";
+if (!who || !taskId) { console.error("usage: meshy-resume.mjs <who> <taskId> [v<N>]"); process.exit(2); }
+if (fs.existsSync(path.join(OUT, `${NAME}-raw-model.glb`))) { console.error(`refused: ${NAME} is already filed — a paid head is never overwritten`); process.exit(1); }
 const KEY = loadEnvKey(path.resolve(".env"), "MESHY_API_KEY"), get = async (p) => { const r = await fetch(`${API}${p}`, { headers: { Authorization: `Bearer ${KEY}` } }); const j = await r.json(); if (!r.ok) throw new Error(`GET ${p}: ${r.status} ${j.message ?? ""}`); return j; };
 let task; const deadline = Date.now() + 20 * 60_000;
 while (Date.now() < deadline) { try { task = await get(`/v1/image-to-3d/${taskId}`); console.log(`[resume] ${task.status} ${task.progress ?? ""}`); if (["SUCCEEDED", "FAILED", "CANCELED"].includes(task.status)) break; } catch (e) { console.log(`[resume] poll error (read-only): ${e.message}`); } await new Promise((r) => setTimeout(r, 10_000)); }

@@ -1,18 +1,22 @@
 // studio/pipeline-sheet.mjs — ONE REVIEW SHEET per employee: reference → Stage 0 trace → raw Meshy head → chibified head BEFORE the
 // identity correction → AFTER it (clay, same cameras) → the complete avatar on the production HumanBase body (idle front / 3/4 / walk),
 // before vs after. Zero credits. Needs the Vite dev server (:5173). From frontend/:
-//   node scripts/avatar-pipeline/human-base/studio/pipeline-sheet.mjs <who>
+//   node scripts/avatar-pipeline/human-base/studio/pipeline-sheet.mjs <who> [tag]
+// VERSIONED (candidate-versions.mjs): AFTER = the newest corrected version (or the tag named), BEFORE = the newest uncorrected one; the
+// sheet goes into that version's export folder under a NEW name — an earlier sheet is never overwritten.
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
+import { productionCandidate, freshFile, resolveVersion } from "../candidate-versions.mjs";
+import { headName, rawHeadDir, recipeHeadVersion } from "../head-version.mjs";
 const require = createRequire(`${process.cwd()}/package.json`), sharp = require("sharp"), puppeteer = require("puppeteer");
-const who = process.argv[2], O = "scripts/avatar-pipeline/output/human-base", C = `${O}/candidates/${who}`, X = `${O}/exports/${who}`, V = "http://localhost:5173/virtual-office";
-fs.mkdirSync(X, { recursive: true });
-const pick = (tags) => tags.map((t) => `${C}/${t}/${who}-v1.glb`).find((f) => fs.existsSync(f)) ?? null;
-const before = pick(["pass2", "pass1"]), after = pick(["corr-pass2", "corr-pass1"]); if (!after) { console.error("no corrected candidate — run the build step first"); process.exit(1); }
-const raw = `scripts/avatar-pipeline/output/meshy-employees/${who}-head-v1/raw-untouched`, pop = `${O}/stage1-proof/population`, key = fs.existsSync(`${pop}/${who}-canonical.png`) ? who : who === "bon" ? "jerevon" : who;
+const who = process.argv[2], O = "scripts/avatar-pipeline/output/human-base", V = "http://localhost:5173/virtual-office";
+const A = process.argv[3] ? resolveVersion(who, process.argv[3]) : productionCandidate(who); if (!A?.file) { console.error("no production candidate — run the build step first"); process.exit(1); }
+const before = null,   // the production-five path has no identity warp to compare against (2026-10-19)
+      after = A.file, X = A.exportDir; fs.mkdirSync(X, { recursive: true });
+const hv = recipeHeadVersion(who), raw = `${rawHeadDir(who, hv)}/raw-untouched`, pop = `${O}/stage1-proof/population`, key = fs.existsSync(`${pop}/${who}-canonical.png`) ? who : who === "bon" ? "jerevon" : who;
 const trace = `${O}/studio/${who}-trace.png`; if (!fs.existsSync(trace)) execFileSync("node", ["scripts/avatar-pipeline/human-base/studio/trace-sheet.mjs", who], { stdio: "inherit" });
-const T = 420, browser = await puppeteer.launch({ headless: true, executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", userDataDir: `${process.env.TMPDIR ?? "/tmp"}/hb-studio`, args: ["--disable-background-timer-throttling", "--use-angle=swiftshader"] });
+const T = 420, browser = await puppeteer.launch({ headless: true, executablePath: [process.env.HB_CHROME, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"].find((f) => f && fs.existsSync(f)) ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", userDataDir: `${process.env.TMPDIR ?? "/tmp"}/hb-studio`, args: ["--disable-background-timer-throttling", "--use-angle=swiftshader"] });
 const tiles = {};
 try {
   // clay heads (same cameras) — before / after correction
@@ -33,12 +37,13 @@ try {
     await p.close(); }
 } finally { await browser.close(); }
 const img = async (f) => (f && fs.existsSync(f) ? sharp(f).resize(T, T, { fit: "contain", background: "#e9ebef" }).png().toBuffer() : sharp({ create: { width: T, height: T, channels: 3, background: "#e9ebef" } }).png().toBuffer());
-const cells = [["1 · reference (approved illustration)", await img(`${pop}/${key}-canonical.png`)], ["2 · Stage 0 trace (identity analysis)", await img(trace)], ["3 · raw Meshy head (front)", await img(`${raw}/${who}-head-v1-raw-thumb-front.png`)], ["3 · raw Meshy head (side)", await img(`${raw}/${who}-head-v1-raw-thumb-left.png`)],
-  ["4 · chibified, BEFORE correction · front", tiles["before-front"] ?? (await img(null))], ["5 · AFTER identity correction · front", tiles["after-front"]], ["4 · BEFORE · 3/4", tiles["before-3/4"] ?? (await img(null))], ["5 · AFTER · 3/4", tiles["after-3/4"]],
-  ["6 · avatar BEFORE · face (textured)", tiles["before-face"] ?? (await img(null))], ["6 · avatar AFTER · face (textured)", tiles["after-face"]], ["6 · full avatar BEFORE (idle)", tiles["before-body"] ?? (await img(null))], ["6 · full avatar AFTER (idle)", tiles["after-body"]],
+const refImg = [`${pop}/${key}-canonical.png`, `${O}/studio/stage0/${who}/${who}-canonical.png`, `${O}/studio/uploads/${who}.png`].find((f) => fs.existsSync(f)) ?? null;   // an UPLOADED person: their own Stage 0 canonical / upload
+const cells = [["1 · reference (approved illustration)", await img(refImg)], ["2 · Stage 0 trace (identity analysis)", await img(trace)], ["3 · raw Meshy head (front)", await img(`${raw}/${headName(who, hv)}-raw-thumb-front.png`)], ["3 · raw Meshy head (side)", await img(`${raw}/${who}-head-v1-raw-thumb-left.png`)],
+  ["4 · chibified, BEFORE correction · front", tiles["before-front"] ?? (await img(null))], ["5 · chibified head (production path) · front", tiles["after-front"]], ["4 · BEFORE · 3/4", tiles["before-3/4"] ?? (await img(null))], ["5 · chibified head · 3/4", tiles["after-3/4"]],
+  ["6 · avatar BEFORE · face (textured)", tiles["before-face"] ?? (await img(null))], ["6 · avatar · face (textured)", tiles["after-face"]], ["6 · full avatar BEFORE (idle)", tiles["before-body"] ?? (await img(null))], ["6 · full avatar (idle)", tiles["after-body"]],
   ["6 · AFTER · 3/4", tiles["after-body34"]], ["6 · AFTER · walking", tiles["after-walk"]]].map(([l, b]) => [l, b]);
-const rep = JSON.parse(fs.readFileSync(`${C}/report.corrected.json`, "utf8")), ic = rep.identityCorrection ?? {}, LH = 30, cols = 4, rows = Math.ceil(cells.length / cols), HEAD = 70, W = cols * T, Hh = HEAD + rows * (T + LH);
+const rep = A.report, ic = rep.identityCorrection ?? {}, LH = 30, cols = 4, rows = Math.ceil(cells.length / cols), HEAD = 70, W = cols * T, Hh = HEAD + rows * (T + LH);
 const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
-const head = `<svg width="${W}" height="${HEAD}"><rect width="100%" height="100%" fill="#0d0f12"/><text x="14" y="30" font-family="Helvetica" font-size="22" fill="#eef1f6">${esc(who)} · upload → identity → Meshy → Offshorly correction → HumanBase avatar</text><text x="14" y="56" font-family="Helvetica" font-size="15" fill="#9aa3b2">${esc(`gate: automated ${rep.automatedPass ? "PASS" : "FAIL"}${rep.failed?.length ? " (" + rep.failed.join(", ") + ")" : ""} · sign-off ${rep.signoffRequired?.join(", ") || "—"} · face length ×${ic.length?.apply ? ic.length.mul : 1} · widths ${JSON.stringify((ic.plan ?? []).filter((l) => l[0] !== "eye").map((l) => [l[0], l[1]]))}`)}</text></svg>`;
-const comp = [{ input: Buffer.from(head), left: 0, top: 0 }]; cells.forEach(([l, b], k) => { const x = (k % cols) * T, y = HEAD + Math.floor(k / cols) * (T + LH); comp.push({ input: Buffer.from(`<svg width="${T}" height="${LH}"><rect width="100%" height="100%" fill="#14161a"/><text x="8" y="20" font-family="Menlo, monospace" font-size="13" fill="#7ee0b0">${esc(l)}</text></svg>`), left: x, top: y }, { input: b, left: x, top: y + LH }); });
-await sharp({ create: { width: W, height: Hh, channels: 3, background: "#0d0f12" } }).composite(comp).png().toFile(`${X}/${who}-pipeline-sheet.png`); console.log(`${X}/${who}-pipeline-sheet.png`);
+const head = `<svg width="${W}" height="${HEAD}"><rect width="100%" height="100%" fill="#0d0f12"/><text x="14" y="30" font-family="Helvetica" font-size="22" fill="#eef1f6">${esc(who)} (${esc(A.tag)}) · upload → identity → Meshy → Offshorly correction → HumanBase avatar</text><text x="14" y="56" font-family="Helvetica" font-size="15" fill="#9aa3b2">${esc(`gate: automated ${rep.automatedPass ? "PASS" : "FAIL"}${rep.failed?.length ? " (" + rep.failed.join(", ") + ")" : ""} · sign-off ${rep.signoffRequired?.join(", ") || "—"} · face length ×${ic.length?.apply ? ic.length.mul : 1} · widths ${JSON.stringify((ic.plan ?? []).filter((l) => l[0] !== "eye").map((l) => [l[0], l[1]]))}`)}</text></svg>`;
+const comp = [{ input: Buffer.from(head), left: 0, top: 0 }], SHEET = freshFile(`${X}/${who}-pipeline-sheet.png`); cells.forEach(([l, b], k) => { const x = (k % cols) * T, y = HEAD + Math.floor(k / cols) * (T + LH); comp.push({ input: Buffer.from(`<svg width="${T}" height="${LH}"><rect width="100%" height="100%" fill="#14161a"/><text x="8" y="20" font-family="Menlo, monospace" font-size="13" fill="#7ee0b0">${esc(l)}</text></svg>`), left: x, top: y }, { input: b, left: x, top: y + LH }); });
+await sharp({ create: { width: W, height: Hh, channels: 3, background: "#0d0f12" } }).composite(comp).png().toFile(SHEET); console.log(SHEET);

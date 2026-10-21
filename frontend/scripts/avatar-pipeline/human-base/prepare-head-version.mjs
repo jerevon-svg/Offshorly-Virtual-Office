@@ -1,7 +1,8 @@
 // prepare-head-version.mjs — A NEW, VERSIONED MESHY HEAD for a person, from a stronger reference (2026-10-13). Run from frontend/.
 //
 //   PREPARE (free):   node scripts/avatar-pipeline/human-base/prepare-head-version.mjs <who> <illustration.png> [--version=vN]
-//     The next free version (head-version.mjs) gets the illustration prepared by prep-reference.mjs exactly as the automated flow
+//     A person with no head yet gets their FIRST head as v1; anyone else the next free version (head-version.mjs). It gets the
+//     illustration prepared by prep-reference.mjs exactly as the automated flow
 //     prepares one (no per-person flags) into meshy-ref/<who>/head-vN/, a record <who>-head-vN.json (sources + hashes), and the
 //     Meshy script's own --dry-run of the paid request. Nothing is sent and nothing is spent.
 //   GENERATE (PAID, one image-to-3D call): node … prepare-head-version.mjs <who> --generate=vN --approved-by="<name>"
@@ -25,16 +26,36 @@ const H = "scripts/avatar-pipeline/human-base", LEDGER = "scripts/avatar-pipelin
 const read = (f) => { try { return JSON.parse(fs.readFileSync(f, "utf8")); } catch { return null; } };
 export const recordFile = (who, v, R = REF_ROOT) => `${headRefDir(who, v, R)}/${headName(who, v)}.json`;
 
-/** FREE: prepare version v (the next free one unless given) of who's head from an illustration — refuses any version in use */
+/** which version a prepare writes: a person with NO head yet (no v1 Meshy folder, no v1 reference) gets their FIRST head as v1 —
+ *  the version every recipe reads by default; anyone else gets the next free version above v1. Refuses any version in use. */
+export function prepareVersion(who, version = null, { M = MESHY_DIR, R = REF_ROOT, exists = fs.existsSync } = {}) {
+  const first = !exists(rawHeadDir(who, "v1", M)) && !exists(headRefDir(who, "v1", R));
+  const v = version ? headVersion({ head: version }) : first ? "v1" : nextHeadVersion(who, { M, R, exists });
+  if (v === "v1" && !first) throw new Error("v1 is the original head — a rebuild is v2 or later");
+  if (exists(rawHeadDir(who, v, M)) || exists(headRefDir(who, v, R))) throw new Error(`${headName(who, v)} is already in use — never overwritten`);
+  return v;
+}
+/** FAIL CLOSED before any spend: a prepared reference that prep-reference had to rebuild is not a Stage A sprite (2026-10-20: the
+ *  Stage 0 population CANONICAL crop read as a 0.85 Mpx "frame" + glasses and was inpainted over 1 Mpx — a destroyed face). The
+ *  approved Meshy references of the five and later heads stay under 18k frame px and 111k inpainted px. */
+export const REF_LIMITS = { framePx: 100000, inpaintedPx: 300000 };
+export function referenceRefusals(prep) {
+  const no = [], frame = prep?.frame?.pixels ?? 0, inp = prep?.inpainted ?? 0;
+  if (frame > REF_LIMITS.framePx) no.push(`prep-reference found a ${frame} px backdrop/frame (limit ${REF_LIMITS.framePx}) — use the original Stage A sprite, not a crop or composite`);
+  if (inp > REF_LIMITS.inpaintedPx) no.push(`prep-reference inpainted ${inp} px (limit ${REF_LIMITS.inpaintedPx}) — the reference would not be the illustration`);
+  return no;
+}
+
+/** FREE: prepare version v (a first head is v1, else the next free one, unless given) of who's head from an illustration */
 export function prepare(who, illustration, { version = null, run = execFileSync } = {}) {
   if (!fs.existsSync(illustration)) throw new Error(`no illustration at ${illustration}`);
-  const v = version ? headVersion({ head: version }) : nextHeadVersion(who);
-  if (v === "v1") throw new Error("v1 is the original head — a rebuild is v2 or later");
-  if (fs.existsSync(rawHeadDir(who, v)) || fs.existsSync(headRefDir(who, v))) throw new Error(`${headName(who, v)} is already in use — never overwritten`);
+  const v = prepareVersion(who, version);
   const dir = headRefDir(who, v), name = headName(who, v);
   run("node", [`${H}/prep-reference.mjs`, illustration, dir, name], { stdio: ["ignore", "pipe", "inherit"] });
   const ref = `${dir}/${name}-ref-final.png`, prep = read(`${dir}/${name}-prep.json`);
   if (!fs.existsSync(ref) || !prep) throw new Error("prep-reference produced no reference");
+  const bad = referenceRefusals(prep);
+  if (bad.length) { fs.rmSync(dir, { recursive: true, force: true }); throw new Error(`REFUSED — ${bad.join("; ")}`); }   // this call made dir (it was free before): nothing else lives there
   const copy = `${dir}/${name}-source${path.extname(illustration).toLowerCase() || ".png"}`; fs.copyFileSync(illustration, copy);   // the version is self-contained
   let previous = null; try { const pv = recipeHeadVersion(who); previous = { version: pv, raw: fs.existsSync(rawHeadFile(who, pv)) ? rawHeadFile(who, pv) : null }; } catch { /* invalid recipe */ }
   const rec = { who, version: v, status: "prepared", preparedAt: new Date().toISOString(),
@@ -99,7 +120,7 @@ if (process.argv[1]?.endsWith("prepare-head-version.mjs")) {
   if (!/^[a-z0-9-]{1,40}$/.test(who)) { console.error("usage: prepare-head-version.mjs <who> <illustration.png> [--version=vN] | <who> --generate=vN --approved-by=<name>"); process.exit(2); }
   try {
     if (opt("generate")) { const r = await generate(who, headVersion({ head: opt("generate") }), { approvedBy: opt("approved-by") });
-      console.log(`${headName(who, r.version)}: ${r.status}${r.consumedCredits != null ? ` · ${r.consumedCredits} credits` : ""}${r.status === "generated" ? ` · EXPERIMENTAL until accepted — next: build-employees.mjs --only=${who} --head=${r.version} --correct` : ""}`);
+      console.log(`${headName(who, r.version)}: ${r.status}${r.consumedCredits != null ? ` · ${r.consumedCredits} credits` : ""}${r.status === "generated" ? r.version === "v1" ? ` · first head — next: build-employees.mjs --only=${who}` : ` · EXPERIMENTAL until accepted — next: build-employees.mjs --only=${who} --head=${r.version}` : ""}`);
       process.exit(r.status === "generated" ? 0 : 1); }
     if (opt("accept")) { const v = acceptHead(who, headVersion({ head: opt("accept") }), { approvedBy: opt("approved-by") }); console.log(`${who}: accepted head ${v}`); process.exit(0); }
     const r = prepare(who, ill, { version: opt("version") });
