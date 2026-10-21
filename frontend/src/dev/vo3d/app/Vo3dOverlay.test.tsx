@@ -34,6 +34,8 @@ vi.mock("../../../services/presence/dndClient", async () => {
   const React = await import("react");
   const emitDndSet = (on: boolean) => { dndEmits.push(on); };
   return {
+    usePeerStatuses: () => new Map(),
+    useSelfStatusPublication: () => {},
     useDndEmails: () => dndEmails,
     emitDndSet,
     // The SHARED publisher's contract, restated over the mocked emit so what reaches the wire is visible:

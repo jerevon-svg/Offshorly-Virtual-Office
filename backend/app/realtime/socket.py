@@ -35,6 +35,7 @@ from app.realtime.state import (
     meeting_invites,
     call_registry,
     dnd_registry,
+    peer_status,
     global_chat_activity,
     is_room_locked,
     offline_lineup,
@@ -698,6 +699,7 @@ async def connect(sid: str, environ: dict, auth: dict | None) -> None:
     # Same reasoning again for the DND-room-lock feature's two ephemeral registries: a client
     # connecting after others are already DND/in-room must see current lock state immediately.
     await sio.emit("dnd_status", {"emails": dnd_registry.snapshot()}, to=sid)
+    await sio.emit("peer_status", {"statuses": peer_status.snapshot()}, to=sid)
     await sio.emit("room_presence", {"rooms": room_presence.snapshot()}, to=sid)
 
     # Same reasoning for Global Chat activity: a late joiner / reconnecting client must see who
@@ -773,6 +775,8 @@ async def disconnect(sid: str) -> None:
     if dnd_registry.clear(email):
         await _broadcast_dnd_status()
         await _cancel_stale_talk_requests(email)
+    if peer_status.clear(email):
+        await sio.emit("peer_status", {"statuses": peer_status.snapshot()})
     # Per-socket refcount: only broadcasts when this was the email's LAST active socket, so a
     # second tab keeps the person active through one tab closing.
     if global_chat_activity.clear_sid(email, sid):
@@ -2011,6 +2015,22 @@ async def dnd_set(sid: str, payload: dict | None) -> None:
         if not is_dnd:
             await _cancel_stale_room_requests(room_presence.room_of(email))
             await _cancel_stale_talk_requests(email)
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+@sio.on("status_set")
+async def status_set(sid: str, payload: dict | None) -> None:
+    """The sender's own effective office status (their client's resolveCurrentStatus), relayed to every
+    client as the `peer_status` snapshot — see peer_status_registry.py. Same contract as dnd_set: sent once
+    per real transition plus once per (re)connect, never on a poll; unknown values are ignored."""
+    try:
+        status = (payload or {}).get("status")
+        if not isinstance(status, str):
+            return
+        session_data = await sio.get_session(sid)
+        if peer_status.set_status(session_data["email"], status):
+            await sio.emit("peer_status", {"statuses": peer_status.snapshot()})
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 

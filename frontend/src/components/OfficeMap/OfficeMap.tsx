@@ -177,7 +177,7 @@ import { DndRequestQueue } from "./DndRequestQueue";
 import { TalkRequestToast } from "./TalkRequestToast";
 import { useTalkPermissionGate } from "./useTalkPermissionGate";
 import { RoomLockedToast } from "./RoomLockedToast";
-import { useDndEmails, useSelfDndPublication } from "../../services/presence/dndClient";
+import { useDndEmails, usePeerStatuses, useSelfDndPublication, useSelfStatusPublication } from "../../services/presence/dndClient";
 import { emitGlobalChatActive, useGlobalChatActiveEmails } from "../../services/presence/globalChatActivityClient";
 import {
   emitRoomPresenceEnter,
@@ -2121,6 +2121,7 @@ export function OfficeMap() {
   // to derive isRoomLocked() at the door-approach gates in walkToSeat/approachCharacter/
   // handleMapRightClick below. See dndClient.ts/roomPresenceClient.ts/data/roomLock.ts.
   const dndEmails = useDndEmails();
+  const peerStatuses = usePeerStatuses();   // each connected peer's own effective status (dndClient.ts)
   const roomPresenceEntries = useRoomPresence();
 
   function roomNameFor(roomId: string): string {
@@ -2133,6 +2134,7 @@ export function OfficeMap() {
   // previously client-side/localStorage-only (no realtime channel); this is what makes it visible to
   // other clients, which room-lock derivation and peer status (resolvePeerStatus) need.
   useSelfDndPublication(selfOfficeStatus === "DND");
+  useSelfStatusPublication(selfOfficeStatus);   // the full effective status for peers (dndClient.ts)
 
   // Edge-triggered self room-occupancy broadcast — fires once per real "crossed into/out of a
   // flat room" transition, reusing the exact same flatRoomIdAt() geometry the door-choreography
@@ -2254,10 +2256,11 @@ export function OfficeMap() {
   const statusByLayerId = useMemo<Record<string, OfficeStatus>>(() => {
     const map: Record<string, OfficeStatus> = {};
     for (const person of roster.people) {
-      map[person.email] = resolvePeerStatus(person.status, dndEmails.has(person.email.trim().toLowerCase()));
+      const key = person.email.trim().toLowerCase();
+      map[person.email] = resolvePeerStatus(person.status, dndEmails.has(key), false, peerStatuses.get(key) ?? null);
     }
     return map;
-  }, [roster.people, dndEmails]);
+  }, [roster.people, dndEmails, peerStatuses]);
 
   // Dev-only preview affordance: ?checkedOut=1 jumps straight into
   // CHECKED_OUT on load, so Bon can preview "avatar standing on the

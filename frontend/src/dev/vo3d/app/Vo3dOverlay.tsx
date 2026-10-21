@@ -102,7 +102,7 @@ import { isAuthoredMessage } from "../../../services/chat/types";
 import { messageSpeechText } from "../../../services/chat/stickers";
 import { officePeopleToLayers } from "../../../data/rosterLayers";
 import { ACTIVE_DETAIL_STATUSES, resolvePeerStatus, STATUS_META, type OfficeStatus } from "../../../services/presence/status";
-import { useDndEmails, useSelfDndPublication } from "../../../services/presence/dndClient";
+import { useDndEmails, usePeerStatuses, useSelfDndPublication, useSelfStatusPublication } from "../../../services/presence/dndClient";
 import {
   emitGlobalChatActive,
   useGlobalChatActiveEmails,
@@ -547,6 +547,7 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
   const toastTimerRef = useRef<number | undefined>(undefined);
 
   const dndEmails = useDndEmails();
+  const peerStatuses = usePeerStatuses();   // each connected peer's own effective status (dndClient.ts)
 
   // ---- DND ROOM LOCKS (V1 parity: feature spec sections 2/3/6/7/8/11) ------------------------------
   // WHICH ROOMS ARE LOCKED is V1's rule over V1's feeds — data/roomLock.ts's isRoomLocked over the same
@@ -683,10 +684,10 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     const map: Record<string, OfficeStatus> = {};
     for (const person of people) {
       const key = emailKey(person.email);
-      map[key] = resolvePeerStatus(person.status, dndEmails.has(key), inRoomMeetingEmails.has(key));
+      map[key] = resolvePeerStatus(person.status, dndEmails.has(key), inRoomMeetingEmails.has(key), peerStatuses.get(key) ?? null);
     }
     return map;
-  }, [dndEmails, people, inRoomMeetingEmails]);
+  }, [dndEmails, people, inRoomMeetingEmails, peerStatuses]);
 
   const chatAttention = useMemo(
     () => buildChatAttentionByLayerId({ conversations, selfEmail: self, selfLayerId: self }),
@@ -1732,6 +1733,8 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
   // edge-trigger contract above lives there once, plus the one case it adds: a mount that already finds
   // a restored DND session publishes TRUE, because the server forgot it when the previous socket left.
   useSelfDndPublication(selfStatus === "DND");
+  // …and the full effective status, so peers see Available / Busy / Break / Lunch / Away / Offline as this client does
+  useSelfStatusPublication(selfStatus);
   // CLEANUP — V1 has no unmount rule here and neither does this: DND is a durable, persisted session
   // (localStorage + expiry), not a window that is open or closed, so leaving the route must NOT tell
   // peers the employee is available again. The server's own disconnect handling owns that.

@@ -11,6 +11,7 @@ from app.services.call_registry import CallRegistry
 from app.services.meeting_chat import MeetingChatRegistry
 from app.services.meeting_hosts import MeetingHostRegistry
 from app.services.dnd_registry import DndRegistry
+from app.services.peer_status_registry import PeerStatusRegistry
 from app.services.global_chat_activity import GlobalChatActivityRegistry
 from app.services.offline_lineup import OfflineLineup
 from app.services.room_presence import RoomPresenceRegistry
@@ -114,6 +115,8 @@ meeting_chat = MeetingChatRegistry()
 # Ephemeral DND-room-lock feature state — see dnd_registry.py/room_presence.py module
 # docstrings. Same in-memory/single-process assumption as the registries above.
 dnd_registry = DndRegistry()
+# Each connected person's own effective status, relayed to peers — see peer_status_registry.py.
+peer_status = PeerStatusRegistry()
 room_presence = RoomPresenceRegistry()
 # Ephemeral "has an active Global Chat window" presence — see global_chat_activity.py. Same
 # in-memory/single-process assumption as the registries above; refcounted per socket so

@@ -183,3 +183,18 @@ describe("IN_MEETING — a Meeting Floor room's live meeting", () => {
     expect(resolvePeerStatus("ONLINE", false)).toBe("AVAILABLE");
   });
 });
+
+describe("resolvePeerStatus — the peer's own live status (peer_status relay)", () => {
+  it("a connected peer's live status outranks the presence row (mock seed / Atlas)", () => {
+    expect(resolvePeerStatus("AWAY", false, false, "AVAILABLE")).toBe("AVAILABLE");     // Lui's mock seed said Away
+    expect(resolvePeerStatus("OFFLINE", false, false, "BUSY")).toBe("BUSY");            // Bon's mock seed said Offline
+    expect(resolvePeerStatus("ONLINE", false, false, "BREAK")).toBe("BREAK");
+    expect(resolvePeerStatus("ONLINE", false, false, "OFFLINE")).toBe("OFFLINE");       // checked out: their own client says so
+  });
+  it("keeps DND and the server's meeting presence first, and falls back to the row when the peer is not connected", () => {
+    expect(resolvePeerStatus("ONLINE", true, false, "AVAILABLE")).toBe("DND");
+    expect(resolvePeerStatus("ONLINE", false, true, "AVAILABLE")).toBe("IN_MEETING");
+    expect(resolvePeerStatus("AWAY", false, false, null)).toBe(mapAtlasToOfficeStatus("AWAY"));
+  });
+});
+
