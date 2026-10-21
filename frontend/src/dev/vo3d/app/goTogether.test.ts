@@ -267,6 +267,19 @@ describe("the journey — one party, no chase", () => {
     expect(plans[0].plan.self).toBe(plans[1].plan.riders.find((x: { email: string }) => x.email === LEAD).slot);
   });
 
+  it("RIDE TO ANY FLOOR: every rider is carried to the party's chosen floor (Floor 4), the same plan everywhere", () => {
+    const dest = { destination: { floor: "floor-4", label: "Gaming & Social Hub" } };
+    for (const [i, who] of [LEAD, BOB, CAT].entries()) {
+      const r = rig();
+      r.self.pos = lobby(i);
+      as(r, who, party({ ...dest, ...leg("ride", { toFloor: "floor-4" }) }));
+      r.ctl.tick();
+      const [to, plan] = (r.port.ride as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(to).toBe("floor-4");
+      expect(plan).toEqual(partyLiftPlan([LEAD, BOB, CAT], [LEAD, BOB, CAT], who));
+    }
+  });
+
   it("RIDE: not while riding; ready once off the lift upstairs; never a second ride", () => {
     const r = rig();
     as(r, BOB, party(leg("ride")));

@@ -8,7 +8,8 @@
 //    boarding  the avatar walks in and stands on the mark — THE ROOM IS STILL THERE through the doors
 //    aligning  it turns and faces them; the room is still visible past it
 //    closing   the leaves shut
-//    riding    the car travels. The read-out steps 01 -> 02 in plain sight and NOTHING ELSE CHANGES.
+//    riding    the car travels. The read-out counts every floor it passes — 01 -> 02 -> 03 -> 04 — in plain
+//              sight, and NOTHING ELSE CHANGES. A longer journey is a longer ride (ridePlan, below).
 //    settle    it arrives and stands for a beat
 //    arriving  the leaves part — and the DESTINATION FLOOR is there, already complete, through them
 //    leaving   the avatar walks out, control comes back, the destination's view is restored
@@ -34,7 +35,7 @@
 import { headingFor, stepAngle, type Vec2 } from "../core/coords";
 import { CABIN, RIDE, toCabin, type ElevatorSpec } from "../rooms/elevator";
 import type { ElevatorCoreBuild, LiftBuild } from "../build/elevator";
-import type { Vo3dFloorId } from "../app/floors";
+import { FLOOR_ORDER, type Vo3dFloorId } from "../app/floors";
 import { exitPath, lobbyPoint, slotIndexOf, type LiftRiderSlot } from "../app/liftRiders";
 
 export type FloorPhase =
@@ -44,10 +45,35 @@ export type FloorPhase =
 const WALK_TIMEOUT_MS = 8000;
 const TURN_TIMEOUT_MS = 2500;
 const TURN_RATE = 6;
-/** how far through the ride the floor is swapped, and how far through the read-out steps — deliberately
- *  different moments, so a number changing never coincides with anything else happening */
+/** how far through a ONE-FLOOR ride the floor is swapped, and how far through it the read-out steps —
+ *  deliberately different moments, so a number changing never coincides with anything else happening */
 const SWAP_AT = 0.4;
 const INDICATOR_AT = 0.64;
+/** THE SWAP, at the same moment of every ride however long — before the read-out moves at all */
+const SWAP_MS = SWAP_AT * RIDE.travelMs;
+
+export interface RidePlan {
+  /** how long the car travels */
+  travelMs: number;
+  /** every floor the read-out shows after the one it leaves from, in order, and when it turns over to it */
+  steps: { atMs: number; floor: Vo3dFloorId }[];
+}
+
+/** THE RIDE'S TIMELINE, from nothing but where it starts and ends — the same on every browser, so a party's
+ *  members, who all ride the same journey, see the same count at the same moments.
+ *
+ *  A ONE-FLOOR RIDE IS EXACTLY THE RIDE IT ALWAYS WAS: 3200 ms, the read-out stepping once at 64 %. Each
+ *  further floor adds one RIDE.floorMs beat: the read-out's first step keeps its moment, each next floor
+ *  follows one beat later, and the last one leaves the same tail before arrival a one-floor ride has. The
+ *  intermediate floors are NUMBERS ON THE READ-OUT ONLY — nothing about them is loaded, entered or stopped at. */
+export function ridePlan(from: Vo3dFloorId, to: Vo3dFloorId, order: readonly Vo3dFloorId[] = FLOOR_ORDER): RidePlan {
+  const a = order.indexOf(from), b = order.indexOf(to);
+  const dir = b >= a ? 1 : -1;
+  const n = Math.max(1, Math.abs(b - a));
+  const lead = INDICATOR_AT * RIDE.travelMs;
+  const steps = Array.from({ length: n }, (_, i) => ({ atMs: lead + i * RIDE.floorMs, floor: order[a + dir * (i + 1)] ?? to }));
+  return { travelMs: RIDE.travelMs + (n - 1) * RIDE.floorMs, steps };
+}
 
 export interface FloorTransitionDeps {
   specOf(floor: Vo3dFloorId): ElevatorSpec;
@@ -91,7 +117,11 @@ export class FloorTransition {
   private to: Vo3dFloorId;
   private elapsed = 0;
   private swapped = false;
-  private stepped = false;
+  /** this journey's timeline (ridePlan) and how far through its read-out steps it is */
+  private plan: RidePlan = { travelMs: RIDE.travelMs, steps: [] };
+  private stepIndex = 0;
+  /** the read-out turning over: from, to, which way, and for how long so far */
+  private roll: { from: string; to: string; dir: "up" | "down"; ms: number } | null = null;
   private refused = false;
   /** true while the body is in the cabin rather than in a floor's vestibule */
   private inCabin = false;
@@ -131,7 +161,9 @@ export class FloorTransition {
     this.from = this._floor;
     this.to = to;
     this.swapped = false;
-    this.stepped = false;
+    this.plan = ridePlan(this.from, to);
+    this.stepIndex = 0;
+    this.roll = null;
     this.refused = false;
     this.inCabin = false;
     this.slot = slot;
@@ -152,6 +184,42 @@ export class FloorTransition {
     this.d.setBoom(true);
     this.enter("framing");
     return true;
+  }
+
+  /** THE READ-OUT, ONE FLOOR AT A TIME (ridePlan): each step turns the number over (rollIndicator, where
+   *  the build has one) on the car and on both lobbies' faces; a build without it just changes. */
+  private turnReadout(dtMs: number): void {
+    if (this.roll) {
+      this.roll.ms += dtMs;
+      if (this.roll.ms >= RIDE.rollMs) this.finishRoll();
+      else this.showRoll(this.roll.ms / RIDE.rollMs);
+    }
+    const step = this.plan.steps[this.stepIndex];
+    if (!step || this.elapsed < step.atMs) return;
+    this.finishRoll();
+    this.stepIndex++;
+    const prev = this.stepIndex > 1 ? this.plan.steps[this.stepIndex - 2].floor : this.from;
+    const from = this.d.indicatorOf(prev), to = this.d.indicatorOf(step.floor);
+    const dir = FLOOR_ORDER.indexOf(this.to) >= FLOOR_ORDER.indexOf(this.from) ? "up" : "down";
+    if (this.d.cabin.rollIndicator) { this.roll = { from, to, dir, ms: 0 }; this.showRoll(0); }
+    else this.setReadout(to);
+  }
+  private showRoll(p: number): void {
+    const r = this.roll!;
+    for (const b of [this.d.cabin, this.d.coreOf(this.from), this.d.coreOf(this.to)]) {
+      if (b.rollIndicator) b.rollIndicator(r.from, r.to, r.dir, p);
+      else b.setIndicator(r.to);
+    }
+  }
+  private finishRoll(): void {
+    if (!this.roll) return;
+    const to = this.roll.to;
+    this.roll = null;
+    this.setReadout(to);
+  }
+  private setReadout(text: string): void {
+    this.d.cabin.setIndicator(text);
+    for (const f of [this.from, this.to]) this.d.coreOf(f).setIndicator(text);
   }
 
   toggle(other: Vo3dFloorId, home: Vo3dFloorId): boolean {
@@ -248,16 +316,16 @@ export class FloorTransition {
         }
         break;
       case "riding": {
-        const t = this.elapsed / RIDE.travelMs;
         if (this.elapsed >= 420) this.d.setBoom(true);
-        if (!this.swapped && t >= SWAP_AT && !this.swap()) return;
-        if (!this.stepped && t >= INDICATOR_AT) {
-          this.stepped = true;
-          const text = this.d.indicatorOf(this.to);
-          this.d.cabin.setIndicator(text);
-          for (const f of [this.from, this.to]) this.d.coreOf(f).setIndicator(text);
+        if (!this.swapped && this.elapsed >= SWAP_MS && !this.swap()) return;
+        this.turnReadout(dtMs);
+        if (this.elapsed >= this.plan.travelMs) {
+          // ARRIVAL READS THE DESTINATION, whatever a long frame skipped on the way
+          this.roll = null;
+          this.stepIndex = this.plan.steps.length;
+          this.setReadout(this.d.indicatorOf(this.to));
+          this.enter("settle");
         }
-        if (this.elapsed >= RIDE.travelMs) this.enter("settle");
         break;
       }
       case "settle":

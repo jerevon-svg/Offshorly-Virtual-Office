@@ -20,7 +20,8 @@
 //   a room        owns its own RoomDef and its own entities            (rooms/<room>.ts)
 //   the building  owns the vertical core: one RoomDef, one call control and one set of regions PER
 //                 FLOOR, all of it in the loop below and nowhere else  (rooms/elevator.ts supplies them)
-//   a floor       owns its plate and its bounds, and NOT the core standing on it (rooms/floor2.ts)
+//   a floor       owns its plate and its bounds, and NOT the core standing on it (app/floorPlates.ts
+//                 UPPER_PLATES, one row per floor above the ground one)
 //
 // The lift core is the building's, not the floor's. That is the distinction the bug was: a floor that
 // hands back "the entities on me" will sooner or later hand back something the building already placed.
@@ -46,19 +47,13 @@ import {
   CAVE_ID, CAVE_ROOM, FLOOR_RECT as CAVE_FLOOR_RECT, OUTER_RECT as CAVE_OUTER_RECT,
   VESTIBULE_RECT as CAVE_VESTIBULE_RECT, caveEntities,
 } from "../rooms/cave";
-import { ELEVATOR as FLOOR2_ELEVATOR, FLOOR2_ROOM, OUTER_RECT as FLOOR2_OUTER, floor2Regions } from "../rooms/floor2";
-import { MEETING_ROOM_DEFS, meetingFloorEntities, meetingRoomRegions } from "../rooms/floor2Meeting";
-import { GROUND_ELEVATOR, elevatorCallEntity, elevatorFrameRect, elevatorRegions, type ElevatorSpec } from "../rooms/elevator";
+import { elevatorCallEntity, elevatorFrameRect, elevatorRegions, type ElevatorSpec } from "../rooms/elevator";
 import { FLOOR_ORDER, GROUND_FLOOR_ID, type Vo3dFloorId } from "./floors";
+import { ELEVATORS, UPPER_PLATES } from "./floorPlates";
 import type { Rect } from "../core/coords";
 
-/** THE ONE PLACE A LIFT CORE IS CREATED, per floor. Both specs are created by the room files that own
- *  the floor they stand on — the ground floor's by rooms/elevator.ts (the Meeting Room's own walls
- *  declare it as solid, so the two must be the same object), floor 2's by rooms/floor2.ts. */
-export const ELEVATORS: Record<Vo3dFloorId, ElevatorSpec> = {
-  "floor-1": GROUND_ELEVATOR,
-  "floor-2": FLOOR2_ELEVATOR,
-};
+/** THE LIFT ENTRANCE PER FLOOR — app/floorPlates.ts names them; re-exported for the world and its tests. */
+export { ELEVATORS };
 
 /** The lift cores' room ids, for the handful of places that have to know a region is a lift rather than a
  *  room (Room Discovery, the Toucan's stops, Room Details). Derived, never listed. */
@@ -111,18 +106,17 @@ export function buildWorldContents(): Vo3dWorldContents {
   // every V1 room footprint, the shared floor, the sidewalk and the hand-painted door openings
   const plan = registerGroundFloor(world);
 
-  // ---- FLOOR 2: the same two steps, in the same order ------------------------------------------
-  // A second storey in its own world space, registered on exactly the terms the Cave is. It cannot touch
-  // a cell of the read-only V1 grid — it is 4,560 units east of the frame — so the ground floor's
-  // navigation is provably unaffected.
-  world.addRoom(FLOOR2_ROOM);
-  for (const r of elevatorRegions(ELEVATORS["floor-2"])) world.addRegion(r);
-  // THE MEETING ROOMS: each a room of its own, owning its seats and its display walk-up; the Commons'
-  // soft seating belongs to the plate. Their floors are regions BEFORE the plate's (priority = order).
-  for (const room of MEETING_ROOM_DEFS) world.addRoom(room);
-  for (const e of meetingFloorEntities()) world.addEntity(e);
-  for (const r of meetingRoomRegions()) world.addRegion(r);
-  for (const r of floor2Regions()) world.addRegion(r);
+  // ---- EVERY FLOOR ABOVE: the same steps, in the same order, per plate ---------------------------
+  // Each upper storey stands in its own world space, registered on exactly the terms the Cave is. None
+  // can touch a cell of the read-only V1 grid (floor 2 is 4,560 units east of the frame), so the ground
+  // floor's navigation is provably unaffected. Core regions, then what stands on the plate (floor 2's
+  // meeting rooms), then the plate's own floor — priority is registration order.
+  for (const plate of UPPER_PLATES) {
+    world.addRoom(plate.room);
+    for (const r of elevatorRegions(ELEVATORS[plate.id])) world.addRegion(r);
+    plate.registerContents?.(world);
+    for (const r of plate.regions()) world.addRegion(r);
+  }
 
   // ---- the Championship Cave: a second interior volume, outside the V1 frame --------------------
   // The immersive theatre reached through the hub monument's portal, 1,146 units clear of the frame.
@@ -139,7 +133,7 @@ export function buildWorldContents(): Vo3dWorldContents {
   // looks at a region, so a volume the bounds do not reach is a volume nothing can stand in. Growing them
   // changes nothing inside the office: a point that belongs to no region is still not walkable, it is now
   // merely asked.
-  world.bounds = coveringBounds([plan.frame, CAVE_OUTER_RECT, FLOOR2_OUTER]);
+  world.bounds = coveringBounds([plan.frame, CAVE_OUTER_RECT, ...UPPER_PLATES.map((p) => p.outer)]);
 
   return { world, plan, elevators: ELEVATORS, elevatorRoomIds: ELEVATOR_ROOM_IDS };
 }

@@ -67,6 +67,9 @@ import { Vo3dKioskCard, type Vo3dKioskState } from "./Vo3dKioskCard";
 import { attendanceService } from "../../../services/attendance";
 import { getCurrentUserId } from "../../../auth/useAuthGate";
 import { Vo3dExitCard } from "./Vo3dExitCard";
+import { Vo3dFloorPicker } from "./Vo3dFloorPicker";
+import { useMenuPointer } from "./menuPointer";
+import { FLOORS, FLOOR_ORDER, elevatorFloorRows, type Vo3dFloorId } from "./floors";
 import { Vo3dCheckoutPanels } from "./Vo3dCheckoutPanels";
 import panelStyles from "./Vo3dCheckoutPanels.module.css";
 import { manilaWorkDate, useCheckoutFlow } from "../../../components/OfficeMap/useCheckoutFlow";
@@ -399,6 +402,8 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
   const timeInMs = liveTimeInMs ?? (checkoutFlow.state === "IDLE" ? null : lastSessionStartRef.current);
   const [exitOpen, setExitOpen] = useState(false);
   const [exitAnchor, setExitAnchor] = useState<Vo3dScreenAnchor | null>(null);
+  /** THE ELEVATOR'S FLOOR PANEL, open on the floor it was asked from (world requestElevator) */
+  const [floorPicker, setFloorPicker] = useState<{ from: Vo3dFloorId } | null>(null);
   const [successCardDismissed, setSuccessCardDismissed] = useState(false);
   /** Is V1's checkout flow mid-journey? Read inside the world's own callback, which is bound once and must
    *  not close over a stale value. */
@@ -853,6 +858,9 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
       },
       // PHASE 7E — they walked up to the exit and the world stopped them. Ask what leaving means.
       onExitIntercepted: () => setExitOpen(true),
+      // THE LIFT ASKS WHERE TO (more than one other floor, or ?liftpicker=1). The panel answers through
+      // useElevator(to) — the world's one ride path — and closing it moves nothing.
+      onElevatorPicker: ({ from }) => setFloorPicker({ from: from as Vo3dFloorId }),
       // …and they walked off without answering. Close the card: the question was about leaving, and they
       // are not leaving. NOTHING is authorised by this, exactly as Cancel authorises nothing — walking
       // back up to the doors asks again.
@@ -1019,9 +1027,11 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
       });
   }, [attendance]);
 
-  // The exit card follows the body, through the same loop and for the same reason as the kiosk card.
+  // The exit card follows the body, through the same loop and for the same reason as the kiosk card —
+  // and so does the elevator's floor panel, which is the same kind of question asked at a fixture.
+  const selfCardOpen = exitOpen || floorPicker !== null;
   useEffect(() => {
-    if (!exitOpen) {
+    if (!selfCardOpen) {
       setExitAnchor(null);
       return;
     }
@@ -1037,7 +1047,18 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [exitOpen, worldRef]);
+  }, [selfCardOpen, worldRef]);
+
+  // A floor change answers the panel's question for it (a Go Together ride, a restore): close it.
+  useEffect(() => {
+    const world = worldRef.current;
+    if (!ready || !world || !floorPicker) return;
+    let first = true;
+    return world.subscribeFloor(() => {
+      if (first) { first = false; return; }
+      setFloorPicker(null);
+    });
+  }, [ready, worldRef, floorPicker]);
 
   /** THE AI LAB. An authorised departure and nothing else: the exit opens for this one trip, the world is
    *  told where they are going so peers see them arrive there rather than stop at the façade, and the work
@@ -2146,6 +2167,10 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
 
   const menuVisible = selection !== null && anchor !== null && anchor.visible;
   const targetSession = selection ? sessionForEmail(selection.email) : undefined;
+  // THE INTERACTION MENUS, ONE MOUSE RULE (app/menuPointer): while any is up, PLAYER's look, clicks and
+  // verbs stand down and a locked pointer is released so the menu can be clicked at once; closing gives
+  // the pointer back when it was ours to give.
+  useMenuPointer(menuVisible || exitOpen || kioskOpen || floorPicker !== null, worldRef);
 
   return (
     <>
@@ -2173,6 +2198,17 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
           anchor={{ clientX: kioskAnchor.clientX, clientY: kioskAnchor.clientY }}
           onCheckIn={runCheckIn}
           onClose={() => setKioskOpen(false)}
+        />
+      )}
+      {floorPicker && (
+        <Vo3dFloorPicker
+          rows={elevatorFloorRows(floorPicker.from, FLOOR_ORDER, FLOORS)}
+          anchor={exitAnchor?.visible ? { clientX: exitAnchor.clientX, clientY: exitAnchor.clientY } : null}
+          onSelect={(to) => {
+            setFloorPicker(null);
+            worldRef.current?.useElevator(to as Vo3dFloorId);
+          }}
+          onClose={() => setFloorPicker(null)}
         />
       )}
       {exitOpen && exitAnchor?.visible && (

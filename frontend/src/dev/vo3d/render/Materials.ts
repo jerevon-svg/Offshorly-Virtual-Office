@@ -35,6 +35,10 @@ export const PALETTE = {
   //                     darker than a room's so the circulation zone reads as circulation. The transition
   //                     is a tone change on a continuous floor, which is how a real building does it —
   //                     not two unrelated filled shapes meeting at a line.
+  // THE EMPTY UPPER STOREYS' hall tone — the same polished tile, the same world-phased grout, one quiet step
+  // off hallTile so each floor reads as its own the moment the doors open (rooms/plainFloor.ts)
+  hallTileCompass: 0xdfe4d6, // floor 3, Compass University: a pale sage, Offshorly's green at a whisper
+  hallTileSocial: 0xe2dce6, //  floor 4, Gaming & Social Hub: a soft cool lilac-grey
   grout: 0xc4b7a6,
   bronze: 0xa98a63, // the arc counter's champagne/bronze visitor-facing fascia (measured 135,103,71 lit)
   bronzeDark: 0x6f5738,

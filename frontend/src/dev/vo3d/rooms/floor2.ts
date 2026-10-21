@@ -23,7 +23,7 @@
 // walkable floor is that footprint inset by the perimeter wall, which is what a storey of a building is.
 import { growRect, pointInRect, type Rect, type Vec2 } from "../core/coords";
 import type { RoomDef, WorldRegion } from "../world/WorldState";
-import { CORE_LOCAL, clearsElevator, defineElevator, type ElevatorSpec } from "./elevator";
+import { CORE_LOCAL, clearsClosedElevator, defineElevator, type ElevatorSpec } from "./elevator";
 import { AXIS_Z, clearsMeetingFloor } from "./floor2Meeting";
 
 export const FLOOR2_ID = "floor-2";
@@ -79,7 +79,8 @@ export const onFloor2 = (p: Vec2): boolean => pointInRect(p, OUTER_RECT);
  *  is decided. */
 export function floor2StandTest(p: Vec2, radius: number): boolean {
   if (!pointInRect(p, growRect(FLOOR_RECT, -radius))) return false;
-  return clearsElevator(ELEVATOR, p, radius) && clearsMeetingFloor(p, radius);
+  // the lift entrance with its doors SHUT — rooms/elevator clearsClosedElevator; a ride is asked first
+  return clearsClosedElevator(ELEVATOR, p, radius) && clearsMeetingFloor(p, radius);
 }
 
 export const FLOOR2_ROOM: RoomDef = {

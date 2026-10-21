@@ -100,6 +100,12 @@ export interface Vo3dCoworkerInteractions {
    *  fires for somebody V1 has not confirmed as checked in: there is nothing to decide, and their exit was
    *  never held. */
   onExitIntercepted?(): void;
+  /** THE ELEVATOR'S FLOOR PANEL — the employee used the lift (its call control, the interact key, a click)
+   *  and the building has more than one other floor, so the lift asks where to. `from` is the floor id
+   *  they are on (app/floors). The overlay shows the panel and answers through `useElevator(to)`; closing
+   *  it answers nothing and nothing moves. Never raised while the building has two floors (that call is
+   *  still the one-click ride), unless `?liftpicker=1` forces it. */
+  onElevatorPicker?(request: { from: string }): void;
   /** PHASE 7E — THEY WALKED AWAY FROM THE EXIT without answering.
    *
    *  Walking off is an answer in itself, and the same one Cancel gives: the question was about leaving, and

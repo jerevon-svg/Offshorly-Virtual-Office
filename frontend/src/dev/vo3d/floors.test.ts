@@ -43,8 +43,9 @@ import {
   floor2Regions, floor2StandTest, onFloor2,
 } from "./rooms/floor2";
 import { OUTER_RECT as CAVE_OUTER } from "./rooms/cave";
-import { FALLBACK_VIEW_MODE, FLOORS, GROUND_FLOOR_ID, STOREY_H, exteriorDrop, arrivalViewMode, coworkersOnFloor, floorOfPlace, supportsViewMode } from "./app/floors";
-import { FloorTransition, walkLegs, type FloorPhase } from "./interact/FloorTransition";
+import { ELEVATORS } from "./app/floorPlates";
+import { FALLBACK_VIEW_MODE, FLOORS, FLOOR_ORDER, GROUND_FLOOR_ID, STOREY_H, exteriorDrop, arrivalViewMode, coworkersOnFloor, floorOfPlace, supportsViewMode, type Vo3dFloorId } from "./app/floors";
+import { FloorTransition, walkLegs, type FloorPhase, ridePlan } from "./interact/FloorTransition";
 
 const overlaps = (a: Rect, b: Rect): boolean => a.x < b.x + b.w && b.x < a.x + a.w && a.z < b.z + b.d && b.z < a.z + a.d;
 
@@ -324,15 +325,18 @@ describe("the floor registry — view rules and floor identity", () => {
 });
 
 describe("the cinematic — ordering, the seal, and the invisible swap", () => {
-  function harness(opts: { placeFails?: boolean } = {}) {
+  function harness(opts: { placeFails?: boolean; roll?: boolean } = {}) {
     const log: string[] = [];
-    const door: Record<string, number> = { "floor-1": 0, "floor-2": 0, cabin: 0 };
-    const ind: Record<string, string> = { "floor-1": "01", "floor-2": "02", cabin: "01" };
+    const readouts: string[] = [];
+    const rolls: { a: string; b: string; dir: string; p: number; phase: FloorPhase; sealed: boolean; door: number }[] = [];
+    const door: Record<string, number> = { cabin: 0 };
+    const ind: Record<string, string> = { cabin: "01" };
+    for (const f of FLOOR_ORDER) { door[f] = 0; ind[f] = FLOORS[f].indicator; }
     let owned = false, cabinVisible = false, boom = "near";
     let pos: Vec2 = { ...GROUND_ELEVATOR.boarding };
     let yaw = 0;
-    let floor: "floor-1" | "floor-2" = GROUND_FLOOR_ID as "floor-1";
-    const specOf = (f: string) => (f === FLOOR2_ID ? FLOOR2_ELEVATOR : GROUND_ELEVATOR);
+    let floor: Vo3dFloorId = GROUND_FLOOR_ID;
+    const specOf = (f: Vo3dFloorId) => ELEVATORS[f];
     const t = new FloorTransition({
       specOf: (f) => specOf(f),
       coreOf: (f) => ({
@@ -341,7 +345,10 @@ describe("the cinematic — ordering, the seal, and the invisible swap", () => {
       }),
       cabin: {
         group: { get visible() { return cabinVisible; }, set visible(v: boolean) { cabinVisible = v; } } as never,
-        setOpen: (v) => { door.cabin = v; }, setIndicator: (x) => { ind.cabin = x; }, setLight: () => {},
+        setOpen: (v) => { door.cabin = v; },
+        setIndicator: (x) => { ind.cabin = x; if (readouts[readouts.length - 1] !== x) readouts.push(x); },
+        ...(opts.roll ? { rollIndicator: (a: string, b: string, dir: "up" | "down", p: number) => { rolls.push({ a, b, dir, p, phase: t.currentPhase, sealed: t.sealed, door: door.cabin }); } } : {}),
+        setLight: () => {},
         dispose: () => {},
       },
       indicatorOf: (f) => FLOORS[f].indicator,
@@ -366,7 +373,7 @@ describe("the cinematic — ordering, the seal, and the invisible swap", () => {
       invalidateShadows: () => {},
     }, GROUND_FLOOR_ID);
     const run = (ms: number, step = 16): void => { for (let e = 0; e < ms; e += step) t.update(step); };
-    return { t, run, log, door, ind, pos: () => pos, floor: () => floor, owned: () => owned, cabinVisible: () => cabinVisible, boom: () => boom };
+    return { t, run, log, door, ind, readouts, rolls, pos: () => pos, floor: () => floor, owned: () => owned, cabinVisible: () => cabinVisible, boom: () => boom };
   }
 
   it("refuses to start from anywhere but the lift, and frames before it takes the avatar", () => {
@@ -375,6 +382,110 @@ describe("the cinematic — ordering, the seal, and the invisible swap", () => {
     expect(h.t.canBoardFrom(GROUND_ELEVATOR.boarding)).toBe(true);
     expect(h.t.start(FLOOR2_ID)).toBe(true);
     expect(h.log.slice(0, 2)).toEqual(["begin", "take"]);
+  });
+
+  it("FOUR FLOORS: every ride runs the same twelve phases, sealed, and lands at the CHOSEN floor's lift", () => {
+    const PHASES = ["framing", "approach", "opening", "boarding", "aligning", "closing", "riding", "settle", "arriving", "leaving", "shutting", "idle"];
+    for (const [from, to] of [["floor-1", "floor-4"], ["floor-4", "floor-2"], ["floor-2", "floor-3"], ["floor-3", "floor-1"]] as [Vo3dFloorId, Vo3dFloorId][]) {
+      const h = harness();
+      if (from !== GROUND_FLOOR_ID) expect(h.t.restoreOn(from)).toBe(true);
+      expect(h.t.start(to)).toBe(true);
+      const seen: FloorPhase[] = [];
+      for (let e = 0; e < 40000; e += 16) {
+        h.t.update(16);
+        if (seen[seen.length - 1] !== h.t.currentPhase) seen.push(h.t.currentPhase);
+        if (h.t.sealed) for (const f of [...FLOOR_ORDER, "cabin"]) expect(h.door[f], `${from}->${to} ${f}`).toBe(0);
+        if (h.t.currentPhase === "idle" && e > 100) break;
+      }
+      expect(seen, `${from}->${to}`).toEqual(PHASES);
+      expect(h.floor()).toBe(to);
+      expect(h.log).toContain(`apply:${to}`);
+      expect(h.log).toContain(`where:${to}`);
+      // the read-out shows the DESTINATION, in the car and on both lobbies
+      expect(h.ind.cabin).toBe(FLOORS[to].indicator);
+      expect(h.ind[to]).toBe(FLOORS[to].indicator);
+      // out of the destination's own lift, on its apron
+      const b = ELEVATORS[to].boarding;
+      expect(Math.hypot(h.pos().x - b.x, h.pos().z - b.z), `${from}->${to}`).toBeLessThan(2);
+    }
+  });
+
+  it("COUNTS EVERY FLOOR IT PASSES, in order, both ways — from the departure floor to the destination", () => {
+    const cases: [Vo3dFloorId, Vo3dFloorId, string[]][] = [
+      ["floor-1", "floor-4", ["01", "02", "03", "04"]],
+      ["floor-4", "floor-1", ["04", "03", "02", "01"]],
+      ["floor-2", "floor-4", ["02", "03", "04"]],
+      ["floor-3", "floor-1", ["03", "02", "01"]],
+      ["floor-1", "floor-2", ["01", "02"]],
+    ];
+    for (const roll of [false, true]) for (const [from, to, want] of cases) {
+      const h = harness({ roll });
+      if (from !== GROUND_FLOOR_ID) h.t.restoreOn(from);
+      h.readouts.length = 0;
+      h.t.start(to);
+      let openedOn: string | null = null;
+      for (let e = 0; e < 40000; e += 16) {
+        h.t.update(16);
+        // the doors open only on the DESTINATION'S number, never part-way through a count
+        if (openedOn === null && h.t.currentPhase === "arriving" && h.door[to] > 0) openedOn = h.ind.cabin;
+        if (h.t.currentPhase === "idle" && e > 100) break;
+      }
+      expect(h.readouts, `${from}->${to} roll=${roll}`).toEqual(want);
+      expect(openedOn, `${from}->${to}`).toBe(FLOORS[to].indicator);
+      if (roll) {
+        // every turn-over happens sealed, doors shut, mid-ride, in the journey's direction, start to finish
+        const dir = FLOOR_ORDER.indexOf(to) > FLOOR_ORDER.indexOf(from) ? "up" : "down";
+        expect(h.rolls.length).toBeGreaterThan(0);
+        for (const r of h.rolls) {
+          expect([r.phase, r.sealed, r.door, r.dir]).toEqual(["riding", true, 0, dir]);
+          expect(r.p).toBeGreaterThanOrEqual(0);
+          expect(r.p).toBeLessThanOrEqual(1);
+        }
+        const pairs = [...new Set(h.rolls.map((r) => `${r.a}>${r.b}`))];
+        expect(pairs).toEqual(want.slice(1).map((n, i) => `${want[i]}>${n}`));
+      }
+    }
+  });
+
+  it("the ride's timeline: one floor is the ride it always was; each further floor adds one beat", () => {
+    const one = ridePlan("floor-1", "floor-2");
+    expect(one.travelMs).toBe(RIDE.travelMs);
+    expect(one.steps).toEqual([{ atMs: 0.64 * RIDE.travelMs, floor: "floor-2" }]);
+    const up3 = ridePlan("floor-1", "floor-4");
+    expect(up3.travelMs).toBe(RIDE.travelMs + 2 * RIDE.floorMs);
+    expect(up3.steps.map((s) => s.floor)).toEqual(["floor-2", "floor-3", "floor-4"]);
+    expect(up3.steps.map((s) => s.atMs)).toEqual([0, 1, 2].map((i) => 0.64 * RIDE.travelMs + i * RIDE.floorMs));
+    expect(ridePlan("floor-4", "floor-1").steps.map((s) => s.floor)).toEqual(["floor-3", "floor-2", "floor-1"]);
+    // longer journeys are longer, never tedious, and every count lands before arrival with the same tail
+    const ms = [ridePlan("floor-1", "floor-2"), ridePlan("floor-1", "floor-3"), up3].map((p) => p.travelMs);
+    expect(ms[0]).toBeLessThan(ms[1]);
+    expect(ms[1]).toBeLessThan(ms[2]);
+    expect(ms[2]).toBeLessThanOrEqual(6000);
+    for (const p of [one, up3, ridePlan("floor-3", "floor-1")]) {
+      const last = p.steps[p.steps.length - 1];
+      expect(p.travelMs - last.atMs).toBeCloseTo(RIDE.travelMs * 0.36);
+      expect(last.atMs + RIDE.rollMs).toBeLessThan(p.travelMs);
+    }
+  });
+
+  it("a longer ride is longer in the car — and the floor swap still happens sealed, before any count", () => {
+    for (const [to, plan] of [["floor-2", ridePlan("floor-1", "floor-2")], ["floor-4", ridePlan("floor-1", "floor-4")]] as const) {
+      const h = harness();
+      h.readouts.length = 0;
+      h.t.start(to);
+      let ridingMs = 0, swapAt = -1, firstStepAt = -1;
+      for (let e = 0; e < 40000; e += 16) {
+        const before = h.floor(), shown = h.readouts.length;
+        h.t.update(16);
+        if (h.t.currentPhase === "riding") ridingMs += 16;
+        if (before !== h.floor()) { swapAt = ridingMs; expect(h.t.sealed).toBe(true); }
+        if (firstStepAt < 0 && h.readouts.length > shown && h.t.currentPhase === "riding") firstStepAt = ridingMs;
+        if (h.t.currentPhase === "idle" && e > 100) break;
+      }
+      expect(Math.abs(ridingMs - plan.travelMs), to).toBeLessThanOrEqual(32);
+      expect(swapAt).toBeGreaterThan(0);
+      expect(swapAt).toBeLessThan(firstStepAt);
+    }
   });
 
   it("runs the phases in the order the brief describes", () => {
@@ -528,7 +639,10 @@ describe("app/world.ts wires the floors in", () => {
   it("keeps the CABIN out of the floor swap, and never hides a floor to cover one", () => {
     const vis = src.slice(src.indexOf("function applyWorldVisibility"), src.indexOf("function applyFloor"));
     expect(vis).toContain("mirror.root.visible");
-    expect(vis).toContain("floor2Root.visible");
+    // every upper floor's root and every floor's lift entrance, from the registry — not one named floor
+    expect(vis).toContain("for (const [f, root] of floorRoots) root.visible = currentFloor === f;");
+    expect(vis).toContain("for (const f of FLOOR_ORDER) coreOf(f).group.visible = currentFloor === f;");
+    expect(vis).not.toContain("floor2Root");
     expect(vis).not.toContain("cabinBuild");
     // the seal is geometry, not a visibility trick: nothing in here switches the world off for a ride
     expect(src).not.toContain("setWorldHidden");
