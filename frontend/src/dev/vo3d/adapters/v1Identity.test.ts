@@ -111,7 +111,8 @@ describe("an avatar id V2 cannot draw", () => {
   });
 
   it("a HumanBase-only employee whose HumanBase body is not enabled (fail-closed) resolves to null, never someone else", () => {
-    signIn("lui@offshorly.com", "Lui");
+    // Esson: HumanBase-only and not promoted (this used Lui until his promotion on 2026-10-19 enabled his body)
+    signIn("esson@offshorly.com", "Esson");
     expect(resolveVo3dIdentity()!.avatarId).toBeNull();
   });
 });

@@ -62,7 +62,10 @@ const mockPeople = [
   },
   {
     layerId: "lui",
-    email: "lui@offshorly.com",
+    // Lui's REAL login (Atlas / VO auth) — like Bon's jerevon@ above. Keyed by the old sprite id (lui@) the roster
+    // never matched the signed-in louiejie@ session: other browsers drew a stale "Lui" from lui@'s saved position and
+    // never the live player, and Lui saw that ghost as a second copy of himself (2026-10-21)
+    email: "louiejie@offshorly.com",
     displayName: displayNameFor("lui"),
     status: statusFor(3),
     departmentName: "Dev",
@@ -149,6 +152,15 @@ const mockPeople = [
     layerId: "kael",
     email: "kael@offshorly.com",
     displayName: displayNameFor("kael"),
+    status: "ONLINE" as PresenceStatusValue,
+    departmentName: "Dev",
+  },
+  {
+    // esson (2026-10-21): his verified login; resolves to "esson" by the localpart convention. No sprite layer, so the
+    // display name is explicit. Like everyone here he is drawn only once the rig's own attendance says he checked in.
+    layerId: "esson",
+    email: "esson@offshorly.com",
+    displayName: "Esson",
     status: "ONLINE" as PresenceStatusValue,
     departmentName: "Dev",
   },

@@ -75,9 +75,12 @@ describe("resolveVo3dCoworkers", () => {
   });
 
   it("a HumanBase-only employee whose HumanBase body is NOT enabled (fail-closed) stays missing, never someone else's body", () => {
-    const { coworkers, missingAvatar } = resolveVo3dCoworkers([ALEX, LUI], NOBODY_OFFLINE, "");
+    // Esson: his only body is a HumanBase head that is approved for local preview but NOT promoted (not in HUMANBASE_ENABLED).
+    // (This used Lui until his promotion on 2026-10-19 made his body enabled.)
+    const ESSON = person("esson@offshorly.com", { avatarId: "esson", displayName: "Esson", roomId: "dev-team" });
+    const { coworkers, missingAvatar } = resolveVo3dCoworkers([ALEX, ESSON], NOBODY_OFFLINE, "");
     expect(coworkers.map((c) => c.email)).toEqual(["alex@offshorly.com"]);
-    expect(missingAvatar).toEqual(["Lui"]);
+    expect(missingAvatar).toEqual(["Esson"]);
   });
 
   it("buckets an employee with no registry mapping at all", () => {

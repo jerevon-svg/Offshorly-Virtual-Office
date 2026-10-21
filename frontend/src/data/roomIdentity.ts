@@ -115,6 +115,8 @@ const EMAIL_TO_ROOM_ID: Record<string, string> = {
   "jerevon@offshorly.com": "design-team",
   "micah@offshorly.com": "design-team",
   "lui@offshorly.com": "dev-team",
+  "louiejie@offshorly.com": "dev-team",   // Lui's real login (avatarRegistry maps it to "lui")
+  "esson@offshorly.com": "dev-team",      // Esson — his own client has no department in dev-bypass sessions (peers already seat him in Dev)
   "alex@offshorly.com": "executive-team",
 };
 

@@ -138,7 +138,7 @@ describe("angelo's mock presence baseline", () => {
     expect(byEmail["jerevon@offshorly.com"]).toBe("OFFLINE");
     expect(byEmail["micah@offshorly.com"]).toBe("ONLINE");
     expect(byEmail["alex@offshorly.com"]).toBe("ONLINE");
-    expect(byEmail["lui@offshorly.com"]).toBe("AWAY");
+    expect(byEmail["louiejie@offshorly.com"]).toBe("AWAY");   // Lui is keyed by his real login (MockOfficeService)
   });
 });
 
