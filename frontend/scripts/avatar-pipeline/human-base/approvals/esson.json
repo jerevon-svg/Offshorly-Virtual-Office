@@ -1,0 +1,18 @@
+{
+ "who": "esson",
+ "tag": "xbase-v2",
+ "artifactHash": "925cf871cb8c8a4cc2c9499685b405ed241a918aa9447ee6d6b3102bcfd53c14",
+ "validatedMount": {
+  "scale": 0.895,
+  "pitchDeg": 0
+ },
+ "bindingHash": "36546ae7806f9c057ff3f79459fbd9e0711fb9c10062fa4c14599d64056a3fc9",
+ "pipelineVersion": "4e1e8b8cf09862f4",
+ "classes": [
+  "FC-EAR-BOUNDARY",
+  "FC-HAIR-SPIKE",
+  "FC-NAPE-ROUGH"
+ ],
+ "reviewer": "Bon",
+ "timestamp": "2026-10-21T01:58:10.040Z"
+}

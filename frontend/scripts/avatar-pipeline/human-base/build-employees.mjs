@@ -5,6 +5,9 @@
 //   --experimental does the same for the accepted head (a diagnostic build that must not become the current candidate).
 //   --integrate (opt-in development experiment): the generated head kept as made — fit, neck seal, closure, uniform head-size mount
 //   (auto-head) and the same strict checks; always experimental, never identity-corrected.
+//   --meshy-first (opt-in development experiment, 2026-10-20): the FULL chibify path — hair layers, eye seating, skin stage, rigid
+//   features, hair motion, every repair pass and cap-free finishing — with only the identity-reshaping steps neutralised (chibify
+//   --meshy-first: α = 1, smoothing bands kept, no depth normalisation); always experimental, never promoted.
 //
 // NON-DESTRUCTIVE (2026-10-10): every build writes a NEW version (candidate-versions.mjs: <kind>-v<N>-pass1|2/ + report.<tag>.json,
 // the next free version unless --tag names one) and refuses to start when that version already exists — no earlier candidate,
@@ -51,7 +54,7 @@ const accessory = (dir, who, a) => { const idf = `${ID}/${who}-meshy-chibi-v1.gl
   if (a.build === "tail") run(dir, a.id, `${H}/build-hair-tail.mjs`, [idf, a.id, `--tie=${a.tie ?? "low"}`, `--length=${a.length ?? "upperBack"}`, `--volume=${a.volume ?? 1}`, `--style=${a.style ?? "pony"}`]); };
 
 /** ONE deterministic build pass from the clean raw into a NEW pass folder (refused if it exists) → candidate file + record */
-export function buildPass(who, repairs, dir, { correct = false, head = null, integrate = false } = {}) {
+export function buildPass(who, repairs, dir, { correct = false, head = null, integrate = false, meshyFirst = false } = {}) {
   const e = R.employees[who]; assertFresh([dir]); fs.mkdirSync(dir, { recursive: true });
   // the head version (head-version.mjs): the recipe's ACCEPTED head unless an experimental build names another; v1 = the original
   // raw template, a newer paid head is its own version folder
@@ -63,7 +66,7 @@ export function buildPass(who, repairs, dir, { correct = false, head = null, int
   const src = iso.fullBody ? iso.out : raw;
   const rp = ["rimTuck", "jawClosureClip", "collarCull", "hairAsSkinRelabel", "neckHairClear", "crownSkinRelabel", "keepOwnUnderside"].map((k) => `${k}:${repairs.includes(k) ? 1 : 0}`).join(",");
   // INTEGRATION MODE (opt-in experiment): chibify keeps the generated head as made (--integrate: rigid hair, no tie / motion chains)
-  const chibArgs = [src, `${who}-meshy-chibi-v1`, `--ruleset=${e.ruleset}`, `--hair=${e.hair}`, ...(integrate ? ["--integrate"] : [...(e.motion ? [`--motion=${e.motion}`] : []), ...(e.tie ? [`--tie=${e.tie}`] : [])]), `--repairs=${rp}`];
+  const chibArgs = [src, `${who}-meshy-chibi-v1`, `--ruleset=${e.ruleset}`, `--hair=${e.hair}`, ...(integrate ? ["--integrate"] : [...(e.motion ? [`--motion=${e.motion}`] : []), ...(e.tie ? [`--tie=${e.tie}`] : [])]), ...(meshyFirst ? ["--meshy-first"] : []), `--repairs=${rp}`];
   run(dir, "chibify", `${H}/chibify.mjs`, chibArgs);
   // AUTOMATIC IDENTITY CORRECTION (identity-correct.mjs, opt-in --correct): the chibified Meshy head measured with the calibration's own
   // definitions vs the person's style-translated Stage 0 target; ONE smooth warp of every head part where a relation is out of tolerance
@@ -122,27 +125,28 @@ export function promoteCandidate({ who, file, gateResult, prodDir = PROD, manife
   return true;
 }
 
-export async function buildEmployee(who, { promote = false, correct = false, tag = null, head = null, experiment = false, integrate = false } = {}) {
+export async function buildEmployee(who, { promote = false, correct = false, tag = null, head = null, experiment = false, integrate = false, meshyFirst = false } = {}) {
   if (!R.employees[who]) throw new Error(`no recipe for ${who}`);
   // EXPERIMENTAL (head = a version other than the recipe's accepted one): its own candidate kinds (xbase / xcorr), never selected as
   // current, never promoted, and the recipe is not touched — accepting a head is a separate, gated step (prepare-head-version --accept)
-  const accepted = headVersion(R.employees[who]), hv = head ? headVersion({ head }) : accepted, experimental = hv !== accepted || experiment || integrate;
+  const accepted = headVersion(R.employees[who]), hv = head ? headVersion({ head }) : accepted, experimental = hv !== accepted || experiment || integrate || meshyFirst;
   if (integrate && correct) throw new Error("refused: integration mode keeps the generated head — it is never identity-corrected (drop --correct)");
+  if (meshyFirst && (correct || integrate)) throw new Error("refused: --meshy-first is its own experiment (the full chibify path with the identity-reshaping steps neutralised) — drop --correct / --integrate");
   if (experimental && promote) throw new Error(`refused: an experimental build (head ${hv}, accepted ${accepted}) is never promoted`);
   // a NEW version for every build (the next free one unless a tag is named); refused before any work if any of its files exist
   const kind = `${experimental ? "x" : ""}${correct ? "corr" : "base"}`, L = layout(who, tag ?? nextTag(who, kind)); if (L.kind !== kind) throw new Error(`tag ${L.tag} is not a ${kind} build`);
   assertFresh([...L.passes, L.report]); const [T1, T2, T3, T4] = L.passes, REPORT = L.report;
   console.log(`\n== ${who}${FROZEN.has(who) ? " (FROZEN approved fixture — candidate only, never promoted)" : ""}`);
   const mountSpec = integrate ? "auto-head" : "auto";   // integration: ONE uniform scale toward the approved skull height / body
-  const p1 = buildPass(who, [], T1, { correct, head: hv, integrate }); const g1 = await gate({ appearanceId: who, identityFile: p1.file, recordFile: p1.record, approvalFile: `${H}/approvals/${who}.json`, mountSpec });
+  const p1 = buildPass(who, [], T1, { correct, head: hv, integrate, meshyFirst }); const g1 = await gate({ appearanceId: who, identityFile: p1.file, recordFile: p1.record, approvalFile: `${H}/approvals/${who}.json`, mountSpec });
   const ev1 = g1.evidence; let repairs = repairsFor(ev1), final = { ...p1, g: g1 };
   console.log(`  pass 1: automated ${g1.automatedPass ? "PASS" : "FAIL"} (${g1.failed.join(", ") || "—"}) · repairs its detectors ask for: ${repairs.join(", ") || "none"}`);
-  if (repairs.length) { const p2 = buildPass(who, repairs, T2, { correct, head: hv, integrate }); const g2 = await gate({ appearanceId: who, identityFile: p2.file, recordFile: p2.record, approvalFile: `${H}/approvals/${who}.json`, mountSpec }); final = { ...p2, g: g2 };
+  if (repairs.length) { const p2 = buildPass(who, repairs, T2, { correct, head: hv, integrate, meshyFirst }); const g2 = await gate({ appearanceId: who, identityFile: p2.file, recordFile: p2.record, approvalFile: `${H}/approvals/${who}.json`, mountSpec }); final = { ...p2, g: g2 };
     console.log(`  pass 2 (${repairs.join(", ")}): automated ${g2.automatedPass ? "PASS" : "FAIL"} (${g2.failed.join(", ") || "—"})`);
     // CONVERGENCE (2026-10-19): a repair can expose a class pass 1 never showed (Kael: rimTuck → closure seen in motion). When pass 2's
     // own detectors ask for repairs not applied yet, ONE more pass from the same raw with the union — bounded, never a loop
     const more = repairsFor(g2.evidence).filter((r) => !repairs.includes(r));
-    if (more.length && T3) { repairs = [...repairs, ...more]; const p3 = buildPass(who, repairs, T3, { correct, head: hv, integrate }); const g3 = await gate({ appearanceId: who, identityFile: p3.file, recordFile: p3.record, approvalFile: `${H}/approvals/${who}.json`, mountSpec }); final = { ...p3, g: g3 };
+    if (more.length && T3) { repairs = [...repairs, ...more]; const p3 = buildPass(who, repairs, T3, { correct, head: hv, integrate, meshyFirst }); const g3 = await gate({ appearanceId: who, identityFile: p3.file, recordFile: p3.record, approvalFile: `${H}/approvals/${who}.json`, mountSpec }); final = { ...p3, g: g3 };
       console.log(`  pass 3 (+${more.join(", ")}): automated ${g3.automatedPass ? "PASS" : "FAIL"} (${g3.failed.join(", ") || "—"})`); } }
   // CAP-FREE FINISHING (2026-10-19): the hair base cap (identity_hair_base) is the sole cause of the dark strips across the ears
   // (2026-10-13: removed, Lui's ears were clean and every closure check passed). It stays only where it is load-bearing: a passing
@@ -166,6 +170,6 @@ export async function buildEmployee(who, { promote = false, correct = false, tag
 
 if (process.argv[1]?.endsWith("build-employees.mjs")) {
   const only = opt("only")?.split(",").filter(Boolean); if (!only?.length) { console.error("--only=<who,…> is required (no implicit rebuild of the whole roster)"); process.exit(2); }
-  let bad = 0; for (const who of only) { try { const r = await buildEmployee(who, { promote: args.includes("--promote"), correct: args.includes("--correct"), tag: opt("tag") ?? null, head: opt("head") ?? null, experiment: args.includes("--experimental"), integrate: args.includes("--integrate") }); if (!r.pass) bad++; } catch (e) { bad++; console.error(`  BUILD ERROR ${who}: ${e.message}`); } }
+  let bad = 0; for (const who of only) { try { const r = await buildEmployee(who, { promote: args.includes("--promote"), correct: args.includes("--correct"), tag: opt("tag") ?? null, head: opt("head") ?? null, experiment: args.includes("--experimental"), integrate: args.includes("--integrate"), meshyFirst: args.includes("--meshy-first") }); if (!r.pass) bad++; } catch (e) { bad++; console.error(`  BUILD ERROR ${who}: ${e.message}`); } }
   process.exitCode = bad ? 1 : 0;
 }

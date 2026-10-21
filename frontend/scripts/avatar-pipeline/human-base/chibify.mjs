@@ -148,6 +148,38 @@ export const BALD_DE = 8;
 export const lab = (r, g, b) => { const f = (u) => { u /= 255; return u > 0.04045 ? ((u + 0.055) / 1.055) ** 2.4 : u / 12.92; }; const R = f(r), G = f(g), B = f(b);
   const X = (0.4124 * R + 0.3576 * G + 0.1805 * B) / 0.95047, Y = 0.2126 * R + 0.7152 * G + 0.0722 * B, Z = (0.0193 * R + 0.1192 * G + 0.9505 * B) / 1.08883;
   const g3 = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116); return [116 * g3(Y) - 16, 500 * (g3(X) - g3(Y)), 200 * (g3(Y) - g3(Z))]; };
+/** EYE-BOX FIT (2026-10-20, detector-gated): the living-eye bake box is sized from the SCLERA (lm.eyes.halfW, measured from eye
+ *  white). An eye whose iris runs into a corner (natural, narrow Meshy eyes kept as made) has no white past the iris, so the box can
+ *  END INSIDE THE IRIS: those columns never join the opening, the flick rule keeps them "as painted" and a closed lid shows them
+ *  (black notches). Detector, on the baked raster: at a box BORDER column, a TALL dark run (≥ runMin × the eye's median opening
+ *  height, inside the eye's vertical band) whose rows reach eye white by moving inward through dark pixels = the iris is cut.
+ *  A thin eyeliner wing at a corner is not tall; an eye whose iris is inside the box never reaches the border. */
+export const EYE_BOX_FIT = { runMin: 0.6, dark: 40, steps: [1.25, 1.5, 1.75, 2] };
+/** LID-EDGE LEAK: a column's shell reach is filled from its neighbours (±window) only when it is ≥ minGap texels short of BOTH and the
+ *  strip it leaves holds baked paint darker than `dark` (what a closed lid would show through the notch) */
+export const LID_LEAK = { window: 6, minGap: 2, dark: 100 };
+export function lidLeakReach({ LT, B0, H0, xa, xz, NY, lum }, R = LID_LEAK) {
+  const reach = Float32Array.from(LT); let filled = 0;
+  for (let x = xa + 1; x < xz; x++) { let l = 0, r = 0; for (let d = 1; d <= R.window; d++) { if (x - d >= xa) l = Math.max(l, LT[x - d]); if (x + d <= xz) r = Math.max(r, LT[x + d]); }
+    const fill = Math.min(l, r); if (fill < LT[x] + R.minGap) continue; const top = B0[x] + H0[x]; let dark = false;
+    for (let y = top + Math.ceil(LT[x]) + 1; y <= Math.min(NY - 1, top + Math.ceil(fill) + 3); y++) if (lum(x, y) < R.dark) dark = true;
+    if (dark) { reach[x] = fill; filled++; } }
+  return { reach, filled };
+}
+export function irisOverflow({ RGB, Z, HO, NX, NY }, { band = NY * 0.48, runMin = EYE_BOX_FIT.runMin, dark = EYE_BOX_FIT.dark } = {}) {
+  const L = new Float32Array(NX * NY), C = new Float32Array(NX * NY), ok = (k) => Z[k] > -8 && !(HO && HO[k]);
+  for (let k = 0; k < NX * NY; k++) { const c = lab(RGB[k * 3], RGB[k * 3 + 1], RGB[k * 3 + 2]); L[k] = c[0]; C[k] = Math.hypot(c[1], c[2]); }
+  const white = (k) => ok(k) && L[k] > 70 && C[k] < 12, cy = NY / 2, y0 = Math.max(0, Math.floor(cy - band)), y1 = Math.min(NY - 1, Math.ceil(cy + band));
+  const hs = []; for (let x = 0; x < NX; x++) { let b = -1, t = -1; for (let y = y0; y <= y1; y++) if (white(y * NX + x)) { if (b < 0) b = y; t = y; } if (b >= 0) hs.push(t - b + 1); }
+  if (!hs.length) return { left: false, right: false, opening: 0, runs: [0, 0] };
+  hs.sort((a, b) => a - b); const opening = hs[hs.length >> 1];
+  const side = (x0, dx) => { let run = 0, best = 0, reach = 0;
+    for (let y = y0; y <= y1; y++) { const k = y * NX + x0, d = ok(k) && L[k] < dark; run = d ? run + 1 : 0; best = Math.max(best, run);
+      if (d) { let x = x0; while (x >= 0 && x < NX && ok(y * NX + x) && L[y * NX + x] < dark) x += dx; if (x >= 0 && x < NX && white(y * NX + x)) reach++; } }
+    return { best, reach }; };
+  const l = side(0, 1), r = side(NX - 1, -1), fires = (q) => q.best >= runMin * opening && q.best >= 3 && q.reach >= 0.5 * q.best;
+  return { left: fires(l), right: fires(r), opening, runs: [l.best, r.best] };
+}
 const dEw = (a, b) => Math.hypot(0.5 * (a[0] - b[0]), a[1] - b[1], a[2] - b[2]);
 function modeColour(ids, LAB, A) {   // the dominant colour by SURFACE AREA among the seed vertices (coarse Lab histogram)
   const bins = new Map(); for (const i of ids) { const k = [0, 1, 2].map((q) => Math.round(LAB[i * 3 + q] / (q ? 6 : 10))).join(","); bins.set(k, (bins.get(k) ?? 0) + A[i]); }
@@ -1139,8 +1171,9 @@ export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, 
     // V1.1 pass 1 (both eyes): raster + colour. An eye partly under a FUSED lock (its paint replaced by the underlay's skin)
     // is COMPLETED from its twin: the mirrored texel of the other eye wherever that one is uncovered — faces are near-
     // symmetric and the eye system needs the whole opening (the lock itself is foreground geometry in front of it)
-    const eyePrep = eyesC.map((ec, side) => {
-      const w = lm.eyes.halfW * 2 * BW, hh = lm.eyes.halfH * 2 * BH, x0 = ec[0] - w / 2, y0 = ec[1] - hh / 2, NX = RES, NY = Math.round(RES * hh / w);
+    // k / dir: the EYE-BOX FIT (irisOverflow) — 1 / 0 for every head it does not fire on, i.e. exactly the box as before
+    const prepEye = (ec, side, k = 1, dir = 0) => {
+      const w0 = lm.eyes.halfW * 2 * BW, w = w0 * k, hh = lm.eyes.halfH * 2 * BH, x0 = ec[0] - w / 2 + (dir * (w - w0)) / 2, y0 = ec[1] - hh / 2, NX = Math.round(RES * k), NY = Math.round(RES * hh / w0);
       const { Z, U, HO, AZ, PA } = raster(x0, y0, w, hh, NX, NY); for (let k = 0; k < NX * NY; k++) if (Z[k] > -8 && Z[k] < ec[2] - 0.6 * w) HO[k] = 1;   /* far behind the eye: beyond the face silhouette (back of the head) — not face */
       // HO is only true where the surface really leaves the face: dark paint ON the face (a liner the classifier calls hair)
       // has nothing non-hair behind it but sits at face depth — it stays face (covered by the lid)
@@ -1157,7 +1190,24 @@ export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, 
       for (let k = 0; k < NX * NY; k++) if (Z[k] > -8) { const c = texAt(U[k * 2], U[k * 2 + 1]), a = PA ? PA[k * 4 + 3] / 255 : 0;
         if (a > 0) { for (let q = 0; q < 3; q++) c[q] = Math.round(c[q] * (1 - a) + PA[k * 4 + q] * a); if (a > 0.5) COV[k] = 1; } RGB.set(c, k * 3); }
       return { w, hh, x0, y0, NX, NY, Z, U, HO, AZ, RGB, M, COV };
-    });
+    };
+    let eyePrep = eyesC.map((ec, side) => prepEye(ec, side)), eyeBoxK = 1; const lidLeak = [0, 0];
+    // EYE-BOX FIT (detector-gated): an iris cut by the box border → both boxes widened by the same factor (atlas symmetry + twin
+    // completion need equal, mirrored boxes) and shifted toward the cut side, the opposite edge fixed; texel density kept (NX ∝ k)
+    // regression fixtures (opt-in, HB_EYEBOX_FIXTURES=<dir>): the unfitted bake raster of each eye as one PNG — RGB = the bake colour,
+    // alpha = 255 face · 128 hair standing off the face (HO) · 0 no surface — exactly what irisOverflow reads (eye-box-fit.test.mjs)
+    if (process.env.HB_EYEBOX_FIXTURES) { fs.mkdirSync(process.env.HB_EYEBOX_FIXTURES, { recursive: true });
+      for (const [side, e] of eyePrep.entries()) { const px = Buffer.alloc(e.NX * e.NY * 4); for (let k = 0; k < e.NX * e.NY; k++) { px[k * 4] = e.RGB[k * 3]; px[k * 4 + 1] = e.RGB[k * 3 + 1]; px[k * 4 + 2] = e.RGB[k * 3 + 2]; px[k * 4 + 3] = e.Z[k] <= -8 ? 0 : e.HO[k] ? 128 : 255; }
+        await sharp(px, { raw: { width: e.NX, height: e.NY, channels: 4 } }).png().toFile(`${process.env.HB_EYEBOX_FIXTURES}/${id}-${side ? "r" : "l"}.png`); } }
+    { const det = () => eyePrep.map((e) => irisOverflow(e)); let ov = det(); const first = ov.map((o) => ({ left: o.left, right: o.right, runs: o.runs, opening: o.opening }));
+      if (ov.some((o) => o.left || o.right)) { let inner = 0, outer = 0;   // side 0 = the eye at −x: its inner corner is its +x border
+        for (let step = 0; step <= EYE_BOX_FIT.steps.length; step++) {
+          ov.forEach((o, side) => { if (side === 0) { inner |= o.right; outer |= o.left; } else { inner |= o.left; outer |= o.right; } });
+          if (step === EYE_BOX_FIT.steps.length || !ov.some((o) => o.left || o.right)) break;
+          const k = EYE_BOX_FIT.steps[step], d0 = inner && !outer ? 1 : outer && !inner ? -1 : 0;
+          eyePrep = eyesC.map((ec, side) => prepEye(ec, side, k, side === 0 ? d0 : -d0)); eyeBoxK = k; ov = det(); }
+        mount.eyeBoxFit = { k: eyeBoxK, inner: !!inner, outer: !!outer, before: first, after: ov.map((o) => ({ left: o.left, right: o.right, runs: o.runs })) };
+        console.log(`eye-box fit: iris cut by the bake box → boxes ×${eyeBoxK} toward the ${inner && !outer ? "inner" : outer && !inner ? "outer" : "both"} corner${ov.some((o) => o.left || o.right) ? " (STILL CUT at the largest step)" : ""} · ${JSON.stringify(mount.eyeBoxFit)}`); } }
     let eyeCompleted = [0, 0];
     if (eyePrep[0].NX === eyePrep[1].NX && eyePrep[0].NY === eyePrep[1].NY) for (const s2 of [0, 1]) { const e = eyePrep[s2], o = eyePrep[1 - s2], NX = e.NX;
       for (let k = 0; k < NX * e.NY; k++) { if (!e.COV[k]) continue; const x = k % NX, y = (k / NX) | 0, k2 = y * NX + (NX - 1 - x); if (o.COV[k2] || o.Z[k2] < -8) continue; e.RGB[k * 3] = o.RGB[k2 * 3]; e.RGB[k * 3 + 1] = o.RGB[k2 * 3 + 1]; e.RGB[k * 3 + 2] = o.RGB[k2 * 3 + 2]; eyeCompleted[s2]++; } }
@@ -1250,7 +1300,13 @@ export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, 
       // 3. the SHELL: opening + lash band + rim, plus painted flicks beyond the corners (dark texels 8-connected to it within
       //    12% of the box width — kept exactly as painted), grown by 3 px so the old paint's soft fringe is covered too
       const inR = new Uint8Array(NX * NY), FIX = new Uint8Array(NX * NY), SH = new Uint8Array(NX * NY);
-      if (hasEye) for (let x = xa; x <= xz; x++) for (let y = Math.max(0, B0[x] - Math.ceil(RB[x]) - 1); y <= Math.min(NY - 1, B0[x] + H0[x] + Math.ceil(LT[x])); y++) inR[y * NX + x] = 1;
+      // LID-EDGE LEAK (2026-10-21, OPT-IN via HB_LIDLEAK=1 — NOT adopted: it also changed Micah's and Clang's rebuilt outputs; Bon kept D2 as is): the shell reaches above the opening by the column's painted lash band (LT). A column
+      // whose band reads far thinner than BOTH sides (a dropout — e.g. where the iris top meets the lash line) notches the shell's feathered
+      // top edge, and a closing lid shows the head's own dark paint through the notch (a pinpoint dot). Only where the strip the dropout
+      // leaves uncovered holds DARK baked paint, that column's REACH (not its lash stroke) takes its neighbours' — nothing else changes.
+      const { reach: LTr, filled: lidLeakCols } = hasEye && process.env.HB_LIDLEAK === "1" ? lidLeakReach({ LT, B0, H0, xa, xz, NY, lum: (x, y) => lumK(y * NX + x) }) : { reach: LT, filled: 0 };
+      if (lidLeakCols) { lidLeak[side] = lidLeakCols; }
+      if (hasEye) for (let x = xa; x <= xz; x++) for (let y = Math.max(0, B0[x] - Math.ceil(RB[x]) - 1); y <= Math.min(NY - 1, B0[x] + H0[x] + Math.ceil(LTr[x])); y++) inR[y * NX + x] = 1;
       { const st = []; for (let k = 0; k < NX * NY; k++) if (inR[k]) st.push(k); const reach = Math.round(NX * 0.12);
         while (st.length) { const k = st.pop(), x = k % NX, y = (k / NX) | 0; for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const xx = x + dx, yy = y + dy;
           if (xx < 0 || yy < 0 || xx >= NX || yy >= NY || (xx >= xa && xx <= xz) || xx < xa - reach || xx > xz + reach) continue; const k2 = yy * NX + xx; if (!FIX[k2] && !inR[k2] && lumK(k2) < 100) { FIX[k2] = 1; st.push(k2); } } } }
@@ -1420,7 +1476,8 @@ export async function chibify(rawFile, { id, alpha = 0.35, rules = CHIBI_RULES, 
         if (c2.length <= 64 && pr <= lm.eyes.halfH) { for (const u2 of c2) OP[u2 * 3 + 2] = Math.min(OP[u2 * 3 + 2], poke.get(u2)); flattened += c2.length; pieces++; } else kept.push({ n: c2.length, protrude: +pr.toFixed(4) }); }
       mount.eyeRegionCleanup = { pieces, vertices: flattened, skinUntouched: skinKept, keptLarge: kept }; console.log(`eye-region cleanup: ${pieces} non-skin spike piece(s), ${flattened} verts pressed · skin relief untouched: ${skinKept} verts · large kept: ${kept.length}`); }
     mount.eyeStrandsRemoved = eyeStrands;
-    lm.eyeBake = { sclera: scl[3] ? "#" + scl.slice(0, 3).map((v) => Math.round(v / scl[3]).toString(16).padStart(2, "0")).join("") : "#eeeae4", look: [0.25 * 0.22 / BW, 0.13 / BH], lid: 3 };   // subtle gaze travel
+    lm.eyeBake = { sclera: scl[3] ? "#" + scl.slice(0, 3).map((v) => Math.round(v / scl[3]).toString(16).padStart(2, "0")).join("") : "#eeeae4", look: [0.25 * 0.22 / (BW * eyeBoxK), 0.13 / BH], lid: 3 };   // subtle gaze travel
+    if (lidLeak[0] + lidLeak[1]) { lm.eyeBake.lidLeak = lidLeak.slice(); console.log(`lid-edge leak: shell reach filled at ${lidLeak[0]} (L) / ${lidLeak[1]} (R) dropout columns over dark paint`); }
     if (catchlights) lm.eyeBake.catchlight = catchlights.map((c) => ({ before: c.before, added: c.added, after: c.after }));
     // the LIP LINE (where a talking mouth opens): the darkest midline row between the nose tip and the chin
     { const bins = new Map(), nz = after.nose.y; for (let v = 0; v < mm; v++) { const y = OP[v * 3 + 1]; if (Math.abs(OP[v * 3]) > after.eyes.sep * 0.06 || y <= after.chin + 0.01 || y >= after.chin + 0.6 * (nz - after.chin) || OP[v * 3 + 2] < after.ears.z + after.eyes.sep * 0.3) continue;
@@ -1754,6 +1811,12 @@ if (process.argv[1]?.endsWith("chibify.mjs")) {
   // INTEGRATION MODE (--integrate, opt-in development experiment, 2026-10-13): the generated head is kept as made — no face
   // reshaping, eye enlargement, depth / face-length loops, cranium rule or hair-layer rebuild; hair rigid on the Head joint
   if (process.argv.includes("--integrate")) { opts.integrate = true; opts.hairMotion = "rigid"; console.log("INTEGRATION MODE: generated geometry kept; fit, neck seal, closure and checks only"); }
+  // MESHY-FIRST (--meshy-first, opt-in development experiment, 2026-10-20): the FULL path (hair layers, eye seating, skin stage, rigid
+  // features, hair motion) with only the identity-reshaping steps neutralised by their own dials: α = 1 (the canonical targets ARE the
+  // source: no eye enlargement, projection or face-length change), smoothing bands kept, and no depth normalisation loop below
+  if (process.argv.includes("--meshy-first")) { if (opts.integrate) throw new Error("--meshy-first and --integrate are different experiments");
+    opts.alpha = 1; opts.rules = { ...opts.rules, bands: { ...opts.rules.bands, keepMid: 1, keepFine: 1 } }; opts.meshyFirst = true;
+    console.log("MESHY-FIRST: α = 1 (targets = the source), smoothing bands kept, no depth normalisation"); }
   // CANONICAL DEPTH BAND (universal): eye-plane depth in front of the canonical ear plane must lie within ±5% of the
   // canonical skull's (Alex: alex-neutral-head-v1). Outside it, the fit is rerun with a depth scale that brings it to the
   // nearest band edge (minimal change); inside it, nothing changes.
@@ -1777,8 +1840,8 @@ if (process.argv[1]?.endsWith("chibify.mjs")) {
     console.log(`canonical skull width: output ear half-width ${(w0 * 100).toFixed(1)}% of canonical → ${(r.after.ears.half / r.canon.ears.half * 100).toFixed(1)}% (skull scale ×${k.toFixed(4)}${k === 1 ? ", inside tolerance — unchanged" : ""})`); }
   const eyeZ = (q) => (q.after.eyes.l.c[2] + q.after.eyes.r.c[2]) / 2, d0 = alexLm.eyes.l[2] - r.canon.ears.z;
   { let k = 1, ratio = (eyeZ(r) - r.canon.ears.z) / d0; const first = ratio;
-    for (let pass = 0; pass < 3 && !opts.integrate && Math.abs(ratio - 1) > DEPTH_TOL + 0.005; pass++) { k *= (1 + Math.sign(ratio - 1) * DEPTH_TOL) / ratio; opts.depthK = k; opts.depthInfo = { measured: +first.toFixed(4), k: +k.toFixed(4), band: DEPTH_TOL }; r = await chibify(raw, opts); ratio = (eyeZ(r) - r.canon.ears.z) / d0; }
-    console.log(`canonical depth: eye-plane depth ${(first * 100).toFixed(1)}% of canonical → ${(ratio * 100).toFixed(1)}% (depth scale ${k.toFixed(4)}${k === 1 ? ", inside the ±5% band — unchanged" : ""})`); }
+    for (let pass = 0; pass < 3 && !opts.integrate && !opts.meshyFirst && Math.abs(ratio - 1) > DEPTH_TOL + 0.005; pass++) { k *= (1 + Math.sign(ratio - 1) * DEPTH_TOL) / ratio; opts.depthK = k; opts.depthInfo = { measured: +first.toFixed(4), k: +k.toFixed(4), band: DEPTH_TOL }; r = await chibify(raw, opts); ratio = (eyeZ(r) - r.canon.ears.z) / d0; }
+    console.log(`canonical depth: eye-plane depth ${(first * 100).toFixed(1)}% of canonical → ${(ratio * 100).toFixed(1)}% (depth scale ${k.toFixed(4)}${k === 1 ? (opts.meshyFirst ? ", not normalised (--meshy-first keeps the generated depth)" : ", inside the ±5% band — unchanged") : ""})`); }
   // BOUNDED LONG-FACE RETENTION (detector-gated loop): width:length growth vs THIS employee's source above the approved band
   // (≤ 1.42) → keep more of the face's length (bounded by the mounted envelope); never touches a head inside the band
   { const growth = (q) => (q.ar.cheek / q.ar.faceLength) / (q.sr.cheek / q.sr.faceLength), lim = opts.rules.longFace.maxGrowth, g0 = growth(r); let b = 1;

@@ -54,6 +54,15 @@ export function latest(who, kind, root = ROOT) { const L = versions(who, kind, r
 export const PRODUCTION_KIND = "base";
 /** the person's current production candidate (current() of PRODUCTION_KIND) */
 export const productionCandidate = (who, root = ROOT) => current(who, PRODUCTION_KIND, root);
+/** WHAT DELIVERY SELECTS (2026-10-21): the exact version a recorded HUMAN APPROVAL names — approve.mjs --tag=<tag> binds a
+ *  sign-off to that version's artifact, so an approved experimental build (e.g. a --meshy-first xbase) can be delivered without a
+ *  rebuild — and only while the approval's artifact hash still matches that version's report; otherwise (no approval, no tag, a
+ *  stale approval) the production candidate, exactly as before. It never weakens a check: delivery still requires every sign-off
+ *  the report needs to be bound to this artifact (runtime-avatars.mjs / promoteCandidate). */
+export function deliveryCandidate(who, approval, root = ROOT) {
+  if (approval?.tag) { const v = resolveVersion(who, approval.tag, root); if (v?.report?.artifactHash && v.report.artifactHash === approval.artifactHash) return v; }
+  return productionCandidate(who, root);
+}
 
 /** the CURRENT candidate of an accepted kind (base | corr): the newest finished build made from the person's ACCEPTED head (the
  *  recipe's "head", v1 by default) and not marked experimental — what the Studio, runtime delivery, approvals and exports select.
