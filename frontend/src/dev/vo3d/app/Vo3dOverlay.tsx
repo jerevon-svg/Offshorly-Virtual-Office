@@ -185,6 +185,7 @@ import { TOUCAN_AVATAR_GLYPH } from "../../../services/chat/toucanSender";
 import { jobOpen, latestDelivered, readThrough, type ConversationEntry } from "../world/agentJob";
 import { stepFor } from "../world/jobStatusLine";
 import { MEETING_ROOMS } from "../rooms/floor2Meeting";
+import { useFirstTimeCharacterRouting } from "../../../components/OfficeMap/CharacterStudio/useFirstTimeCharacterRouting";
 /** Every Meeting Floor room's meeting id (`mf-<slug>`) — participation in one of these is IN MEETING. */
 const ROOM_MEETING_IDS: ReadonlySet<string> = new Set(MEETING_ROOMS.map((r) => r.meetingId));
 const roomIdOfMeeting = (meetingId: string): string | null => MEETING_ROOMS.find((r) => r.meetingId === meetingId)?.id ?? null;
@@ -534,6 +535,8 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     setProfileLanding(landing ?? { tab: "profile", postId: null });
     setProfileEmail(email);
   }, []);
+  // CHARACTER STUDIO (dev-only): someone with no character at all lands on their own Profile, whose panel opens in CREATE
+  useFirstTimeCharacterRouting(self, ready, openProfile);
   /** ROOM DETAILS — the selected room, as the V1 MANIFEST room layer id the world reports. One at a time,
    *  exactly like the selected coworker, and null means the panel is closed. */
   const [roomDetailsId, setRoomDetailsId] = useState<string | null>(null);

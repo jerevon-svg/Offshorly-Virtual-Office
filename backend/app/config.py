@@ -128,6 +128,26 @@ class Settings(BaseSettings):
     # connects to Redis when it is set — see state.py's _build_client_manager.
     REALTIME_REDIS_URL: str = ""
 
+    # HUMANBASE AVATAR GENERATION — the paid-step authority (app/services/avatar_generation_policy.py, 2026-10-13).
+    #
+    # AUTO-SPEND IS OFF, in every environment, until it is deliberately switched on. Off means no paid stage is ever
+    # authorized without a NAMED human approver; every other safeguard below applies to human approvals too.
+    AVATAR_AUTOSPEND_ENABLED: bool = False
+    # Who may have a character generated at all: the verified session email's domain (comma-separated).
+    AVATAR_ELIGIBLE_DOMAINS: str = "offshorly.com"
+    # ONE paid attempt per stage per input. A further attempt (a reroll) needs a named human approver; never automatic.
+    AVATAR_MAX_PAID_ATTEMPTS_PER_STAGE: int = 1
+    # Distinct photos per employee per calendar month (UTC) that may incur any paid generation.
+    AVATAR_MAX_RUNS_PER_USER_MONTHLY: int = 2
+    # Company budgets per calendar month (UTC), summed over authorized + settled spend.
+    AVATAR_BUDGET_MESHY_CREDITS_MONTHLY: float = 150.0
+    AVATAR_BUDGET_USD_MONTHLY: float = 10.0
+    # Never spend Meshy credits that would leave the account below this balance (low-balance stop).
+    AVATAR_MESHY_RESERVE_CREDITS: float = 100.0
+    # Shared secret for the generation EXECUTOR (HumanBase Studio today, a backend worker later). Empty = the executor
+    # endpoints are disabled (503) — nothing can authorize, settle or report a generation.
+    AVATAR_EXECUTOR_KEY: str = ""
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",")]

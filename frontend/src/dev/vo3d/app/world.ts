@@ -143,7 +143,8 @@ import { setSSAODepthReuse, ssaoDepthReuseEnabled } from "../render/SSAOFromDept
 import { createGraphicsEngine } from "../render/GraphicsEngine";
 import { GraphicsController } from "../../../services/render/graphicsController";
 import { Avatar } from "../avatar/Avatar";
-import { HUMANBASE_CATALOGUE, hasHumanBody, humanBodyFor } from "../avatar/humanBody";
+import { hasHumanBody, humanBodyFor, humanCatalogue } from "../avatar/humanBody";
+import { validOutfitItem, OUTFIT_SLOTS } from "../avatar/characterRuntime";
 import { ControllerStack, NavigationController } from "../avatar/Controller";
 import { SeatInteraction } from "../interact/Seat";
 import { EditSession, SNAP_DEGREES, SNAP_STEP } from "../editor/EditSession";
@@ -1155,7 +1156,17 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // (The standalone page, no identity, opts in with `?humanbase=1`.)
   const humanCastId = identity === undefined ? (flags.get("humanbase") === "1" ? (devAvatar ?? "bon") : null) : (avatarMissing ? null : identity.avatarId ?? null);
   const humanConfig = humanBodyFor(humanCastId);
-  const avatar = new Avatar({ height: BON_STANDING_HEIGHT, lit: params.avatarLit, lods: humanOnly ? null : avatarLods ?? undefined, human: humanConfig ? { config: humanConfig, catalogue: HUMANBASE_CATALOGUE } : null });
+  const avatar = new Avatar({ height: BON_STANDING_HEIGHT, lit: params.avatarLit, lods: humanOnly ? null : avatarLods ?? undefined, human: humanConfig ? { config: humanConfig, catalogue: humanCatalogue() } : null });
+  // CHARACTER STUDIO (dev-only): this employee saved a new outfit — re-dress the body in place (HumanAvatar.equip swaps garments
+  // only: never the head, the skeleton or the mixer). Anyone else's body is not this one, and every other viewer picks the
+  // outfit up the next time they build this employee (it is in avatar/characterRuntime already).
+  onWindow("vo:character-outfit", (e) => {
+    if (disposed || !humanCastId || e.detail.castId !== humanCastId || !avatar.human) return;
+    for (const slot of OUTFIT_SLOTS) {
+      const it = e.detail.outfit[slot];
+      if (validOutfitItem(slot, it)) void avatar.human.equip(slot, it.assetId, it.colorway).catch((err: unknown) => console.warn(`[vo3d] outfit ${slot} not applied`, err));
+    }
+  });
   R.scene.add(avatar.root);
   // Bon is a DYNAMIC shadow caster: his body is composited over the cached static shadow depth every frame
   // he moves, instead of dragging the whole ground floor through the shadow pass with him. See Renderer.

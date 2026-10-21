@@ -26,6 +26,7 @@ import { officePeopleToLayers } from "../../../data/rosterLayers";
 import type { OfficePerson } from "../../../services/office/floorMerge";
 import { hasCastLods } from "./v1Avatar";
 import { hasHumanBody } from "../avatar/humanBodyRoster";
+import { runtimeCastIdForEmail } from "../avatar/characterRuntime";
 import { FACING_BY_DIRECTION } from "./v1Facing";
 import { EMPTY_COWORKER_SET, type Vo3dCoworker, type Vo3dCoworkerSet } from "../app/coworkers";
 
@@ -83,7 +84,8 @@ export function resolveVo3dCoworkers(
     if (offlineEmails.has(email)) continue;
 
     const displayName = layer.name?.trim() || email.split("@")[0] || email;
-    const avatarId = layer.avatarId ?? null;
+    // no registry id → the character Character Studio delivered at runtime for exactly this email (dev-only; null otherwise)
+    const avatarId = layer.avatarId ?? runtimeCastIdForEmail(email);
     // Two different absences, one honest answer. `avatarId` is null for anyone V1 has no registry
     // mapping for; a NON-null id can still name a 2D-only sprite set with no consolidated GLB. V2 draws
     // nothing but GLBs, so hasCastLods is what tells the two apart — and asking castLods directly would

@@ -72,6 +72,7 @@ import { LoadingCover } from "../../../components/LoadingCover/LoadingCover";
 import { setStartupSignal } from "../../../startup/startupReadiness";
 import { openClassicOffice } from "../../../services/settings/officeExperience";
 import type { Vo3dIdentity } from "./identity";
+import { prepareCharacterRuntime, useCharacterRuntimeVersion } from "../../../services/humanbase/characterRuntimeLoader";
 import type { Vo3dHomeDesk } from "./spawn";
 import type { Vo3dWorld } from "./world";
 
@@ -188,9 +189,13 @@ export function Vo3dHost({ experience }: Vo3dHostProps = {}) {
   // Resolved OUTSIDE the mount effect so a roster change re-runs this and nothing else — the world is
   // never rebuilt for it. Self is excluded by email here, which is why the viewer never gets a second
   // body: their own avatar is already the one the world spawned at their desk in Phase 3.
+  // CHARACTER STUDIO (dev-only): the runtime registry (approved, unpromoted heads + saved outfits) can land after the roster —
+  // re-resolving on its version lets a coworker whose character arrived at runtime be drawn instead of counted as missing.
+  const characterRuntimeVersion = useCharacterRuntimeVersion();
   const rosterSet = useMemo(
     () => (roster.people.length > 0 ? resolveVo3dCoworkers(roster.people, offlineEmails, selfEmailKey()) : EMPTY_COWORKER_SET),
-    [roster.people, offlineEmails],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the version is the signal; the resolver reads the registry itself
+    [roster.people, offlineEmails, characterRuntimeVersion],
   );
 
   // THE LIVE OVERLAY, AND THE ORDER IT RUNS IN. Positions are applied to the roster set AFTER
@@ -307,9 +312,9 @@ export function Vo3dHost({ experience }: Vo3dHostProps = {}) {
     // known and synchronous — there is no loading state to model; and StrictMode's mount -> cleanup ->
     // mount re-runs this effect, which must re-read rather than reuse a value captured at import time.
     // `null` is a legitimate answer (V1 could not parse an identity) and is passed through as "no
-    // identity" — NOT as a guess that this is Bon.
-    const identity = resolveVo3dIdentity();
-    // Phase 3, and read exactly like the identity above: a synchronous look at data V1 already had —
+    // identity" — NOT as a guess that this is Bon. (Read just before the world is built, below — after the
+    // dev-only character runtime has loaded, so a character delivered at runtime is part of the answer.)
+    // Phase 3, and read exactly like the identity: a synchronous look at data V1 already had —
     // the painted seats, the room table, the signed-in user — and not a request, a socket or a session.
     // Null means V1 knows of no desk for this person, and the world then keeps its own default spawn.
     //
@@ -325,11 +330,16 @@ export function Vo3dHost({ experience }: Vo3dHostProps = {}) {
     const selfMovement = createV1SelfMovementSink();
     setSelfPublishing(selfMovement !== null);
 
-    void loadWorld()
-      .then(({ createVo3dWorld }) => {
+    // CHARACTER STUDIO (dev-only, bounded, never rejects): approved heads delivered at runtime and saved outfits are loaded
+    // alongside the world module, so the bodies below are built from them. Off (every production build) it resolves at once.
+    void Promise.all([loadWorld(), prepareCharacterRuntime()])
+      .then(([{ createVo3dWorld }]) => {
         // The unmount may have already run — StrictMode's cleanup fires within the same tick that this
         // import was started in. Building a world now would be building one nobody will ever dispose.
         if (cancelled) return;
+        // Re-read now that the runtime registry is known: a person whose approved character arrived at runtime resolves to it.
+        // Without Character Studio this is the same answer as above.
+        const identity = resolveVo3dIdentity();
         world = createVo3dWorld(canvas, identity ?? undefined, homeDesk ?? undefined, selfMovement ?? undefined, seasonRef.current);
         worldRef.current = world;
         // V1's snapshot may have resolved while the world module was loading — apply it now, or this

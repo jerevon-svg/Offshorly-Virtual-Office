@@ -9,6 +9,7 @@ import { getCurrentUserId } from "../../../auth/useAuthGate";
 import { avatarIdForEmail } from "../../../data/avatarIdentity";
 import { hasCastLods } from "./v1Avatar";
 import { hasHumanBody } from "../avatar/humanBodyRoster";
+import { runtimeCastIdForEmail } from "../avatar/characterRuntime";
 import type { Vo3dIdentity } from "../app/identity";
 
 /** The value getCurrentUserId() returns when it could NOT read a real id.
@@ -42,7 +43,9 @@ function isDevBypass(): boolean {
 /** The employee's own 3D character, or null when V2 has no body to put them in — either because V1 knows
  *  of no character for them at all, or because the one it knows is 2D-only. Never somebody else's. */
 function live3dAvatarId(email: string): string | null {
-  const id = avatarIdForEmail(email);
+  // …or, with no registry id at all, the character Character Studio delivered at runtime for exactly this email (dev-only;
+  // avatar/characterRuntime holds one id per email, from the Studio's owner ledger — never a guess)
+  const id = avatarIdForEmail(email) ?? runtimeCastIdForEmail(email);
   // a body = a legacy GLB OR a HumanBase appearance (an employee with no legacy GLB at all, e.g. Lui)
   return id && (hasCastLods(id) || hasHumanBody(id)) ? id : null;
 }

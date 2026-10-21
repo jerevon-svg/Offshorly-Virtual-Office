@@ -13,6 +13,8 @@ from app.models.message import Message
 from app.models.mission import MissionAssignment
 from app.models.notification import Notification
 from app.models.office_experience import CompanySetting, OfficeExperiencePublication
+from app.models.avatar_wardrobe import AvatarWardrobe
+from app.models.avatar_generation import AvatarGenerationConsent, AvatarGenerationRun, AvatarSpendRecord
 from app.models.position import EmployeePosition
 from app.models.quest import QuestEvent, QuestProgress
 from app.models.reaction import MessageReaction
@@ -35,6 +37,10 @@ from app.models.whiteboard import Whiteboard
 from app.models.working_today import WorkingTodayShare
 
 __all__ = [
+    "AvatarWardrobe",
+    "AvatarGenerationConsent",
+    "AvatarGenerationRun",
+    "AvatarSpendRecord",
     "ActivityEvent",
     "Avatar",
     "BadgeAward",

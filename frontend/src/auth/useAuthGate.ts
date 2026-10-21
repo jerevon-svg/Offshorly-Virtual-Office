@@ -22,6 +22,7 @@ import { setDevIdentity as setToucanDevIdentity } from "../services/toucan";
 import { setDevIdentity as setAttendanceDevIdentity } from "../services/attendance";
 import { setDevIdentity as setTeamMapDevIdentity } from "../services/teamMap";
 import { setDevIdentity as setExperienceCatalogDevIdentity } from "../services/office/experienceCatalog";
+import { setDevIdentity as setWardrobeClientDevIdentity } from "../services/avatar/wardrobeClient";
 import { setDevIdentity as setMeetingChatDevIdentity } from "../services/meeting/meetingChatClient";
 import { setDevIdentity as setScheduledMeetingsDevIdentity } from "../services/meetings/scheduledMeetingsStore";
 import { setDevIdentity as setTravelPartyDevIdentity } from "../services/party/travelPartyStore";
@@ -266,6 +267,8 @@ function seedDevBypassIdentity(): void {
   // Phase 9A — the Office Experience catalog is a VO-backend client like the rest, so the local rig
   // reaches it the same way: no bearer token exists when the gate is bypassed.
   setExperienceCatalogDevIdentity(email);
+  // Character Studio EDIT — the saved-outfit client (backend/app/routers/avatar_wardrobe.py), same header, same rule.
+  setWardrobeClientDevIdentity(email);
   setMeetingChatDevIdentity(email);
   // Scheduled Meetings — REST client and its own socket, seeded together.
   setScheduledMeetingsDevIdentity(email);

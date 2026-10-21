@@ -1,8 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./ProfileCharacter.module.css";
 import { CharacterCanvas } from "../../render3d/CharacterCanvas";
 import { LIVE_3D_CHARACTERS, isLive3dEligible, resolveWidthCapacity } from "../../render3d/live3dCharacters";
 import { avatarIdForEmail } from "../../data/avatarIdentity";
+import { hasHumanBody } from "../../dev/vo3d/avatar/humanBody";
+import { HumanBasePreview } from "./CharacterStudio/HumanBasePreview";
+import { CharacterCreate } from "./CharacterStudio/CharacterCreate";
+import { CharacterEdit } from "./CharacterStudio/CharacterEdit";
+import studio from "./CharacterStudio/CharacterStudio.module.css";
+import { characterStudioAvailable, getCharacterStatus, type CharacterStatus } from "../../services/humanbase/characterStudio";
+import { refreshCharacterRuntime, useCharacterRuntimeVersion } from "../../services/humanbase/characterRuntimeLoader";
 
 // CHARACTER — the profile's showcase tab.
 //
@@ -15,6 +22,14 @@ import { avatarIdForEmail } from "../../data/avatarIdentity";
 // resolveCharacterAnimState() reads (see characterAnimationState.ts). There is deliberately no
 // "Wave": the rig has no wave clip, and inventing a label for a clip that does not exist would
 // show the wrong animation.
+//
+// CHARACTER STUDIO (DEV-ONLY until validated, 2026-10-13) — one panel, three modes, all on the person's OWN records (the local
+// HumanBase Studio resolves who is asking from VO's backend session; this panel also requires that person to be the one shown):
+//   VIEW   — everything above, unchanged. A HumanBase-only employee (no legacy GLB) shows their approved HumanBase character in
+//            the same stage and controls instead of the 2D portrait.
+//   CREATE — first time: no character at all (no live-3D model, no approved HumanBase) → photo → real pipeline → reveal.
+//   EDIT   — nickname + outfit on the HumanBase body; the head is never regenerated.
+// A production build has none of this: characterStudioAvailable() is false and VIEW is exactly what it was.
 type Pose = "idle" | "agree" | "listening" | "walking";
 
 const POSES: ReadonlyArray<{ id: Pose; label: string }> = [
@@ -44,12 +59,53 @@ export interface ProfileCharacterProps {
   /** Falls back to the viewer's 2D portrait when this person has no live-3D model. */
   fallbackSrc: string;
   name: string;
+  /** The viewer is this person — the only case Character Studio (CREATE / EDIT) can open, and only in a dev build. */
+  isSelf?: boolean;
 }
 
-export function ProfileCharacter({ email, fallbackSrc, name }: ProfileCharacterProps) {
+type Mode = "view" | "create" | "edit";
+
+export function ProfileCharacter({ email, fallbackSrc, name, isSelf = false }: ProfileCharacterProps) {
   const avatarId = avatarIdForEmail(email);
   const eligible = isLive3dEligible(avatarId);
   const asset = eligible && avatarId ? LIVE_3D_CHARACTERS[avatarId] : undefined;
+
+  const studioOn = isSelf && characterStudioAvailable();
+  const [mode, setMode] = useState<Mode>("view");
+  const [studioStatus, setStudioStatus] = useState<CharacterStatus | null>(null);
+  const [humanFailed, setHumanFailed] = useState(false);
+  // re-render when the runtime registry changes (an approved head delivered at runtime — hasHumanBody below reads it)
+  useCharacterRuntimeVersion();
+
+  const loadStudio = useCallback(() => {
+    if (!studioOn) return () => {};
+    let off = false;
+    getCharacterStatus()
+      .then((s) => {
+        // the Studio acts on whoever VO's backend says this session is — it must be the person this profile shows, never another
+        if (off || s.email.toLowerCase() !== email.trim().toLowerCase()) return;
+        setStudioStatus(s);
+        // FIRST TIME: nothing to show at all (no live-3D model, no approved HumanBase character) → CREATE
+        if (!asset && !s.approvedAvatar) setMode("create");
+      })
+      .catch(() => {
+        /* Studio not running or not signed in: VIEW stays exactly as it was */
+      });
+    return () => {
+      off = true;
+    };
+  }, [studioOn, email, asset]);
+  useEffect(() => loadStudio(), [loadStudio]);
+
+  // VIEW for a HumanBase-only employee (dev until validated): the character the office renders for them
+  const humanId =
+    !asset && characterStudioAvailable()
+      ? avatarId && hasHumanBody(avatarId)
+        ? avatarId
+        : studioStatus?.approvedAvatar && hasHumanBody(studioStatus.personId)
+          ? studioStatus.personId
+          : null
+      : null;
 
   const [pose, setPose] = useState<Pose>("idle");
   const [heading, setHeading] = useState(0);
@@ -60,7 +116,7 @@ export function ProfileCharacter({ email, fallbackSrc, name }: ProfileCharacterP
   // Auto-rotate ticks the same `headingDegrees` prop a drag writes, so the two share one source
   // of truth and a drag simply takes over mid-spin.
   useEffect(() => {
-    if (!autoRotate || failed) return;
+    if (!autoRotate || failed || mode !== "view") return;
     let raf = 0;
     let last = performance.now();
     const tick = (now: number) => {
@@ -71,7 +127,7 @@ export function ProfileCharacter({ email, fallbackSrc, name }: ProfileCharacterP
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [autoRotate, failed]);
+  }, [autoRotate, failed, mode]);
 
   function onPointerDown(e: React.PointerEvent<HTMLDivElement>) {
     dragRef.current = { x: e.clientX, heading };
@@ -93,13 +149,37 @@ export function ProfileCharacter({ email, fallbackSrc, name }: ProfileCharacterP
     if (e.currentTarget.hasPointerCapture?.(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
   }
 
-  const live = Boolean(asset) && !failed;
+  const human = !asset && Boolean(humanId) && !humanFailed;
+  const live = (Boolean(asset) && !failed) || human;
+
+  if (studioOn && mode === "create") {
+    return (
+      <CharacterCreate
+        name={name}
+        onApproved={() => {
+          // the head was approved while this page was open: fetch it first, so VIEW draws the character, never a placeholder
+          void refreshCharacterRuntime().finally(() => {
+            setMode("view");
+            loadStudio();
+          });
+        }}
+      />
+    );
+  }
+  if (studioOn && mode === "edit" && studioStatus) {
+    return <CharacterEdit status={studioStatus} name={name} onClose={() => setMode("view")} />;
+  }
 
   return (
     <div className={styles.wrap} data-testid="profile-character">
-      <header className={styles.head}>
+      <header className={styles.head} style={studioOn && studioStatus ? { position: "relative" } : undefined}>
         <h3 className={styles.title}>Your character</h3>
         <p className={styles.subtitle}>A little you, in the office.</p>
+        {studioOn && studioStatus && (
+          <button type="button" className={studio.editButton} onClick={() => setMode(studioStatus.approvedAvatar || asset ? "edit" : "create")}>
+            {studioStatus.approvedAvatar || asset ? "Edit" : "Create"}
+          </button>
+        )}
       </header>
 
       <div
@@ -121,6 +201,16 @@ export function ProfileCharacter({ email, fallbackSrc, name }: ProfileCharacterP
               headingDegrees={heading}
               onError={() => setFailed(true)}
               {...flagsFor(pose)}
+            />
+          ) : human && humanId ? (
+            <HumanBasePreview
+              subject={{ kind: "approved", personId: humanId }}
+              width={400}
+              height={362}
+              framing="profile"
+              headingDegrees={heading}
+              pose={pose}
+              onError={() => setHumanFailed(true)}
             />
           ) : (
             // No live-3D model for this person (or the GLB failed): the existing 2D portrait,
