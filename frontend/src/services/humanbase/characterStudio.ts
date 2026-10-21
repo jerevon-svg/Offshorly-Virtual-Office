@@ -21,6 +21,11 @@ export type RuntimeAvatarRecord = { castId: string; email: string | null; file: 
 /** the Character Studio exists only in a dev build, and only when switched on (VITE_CHARACTER_STUDIO=1 — it talks to the local
  *  HumanBase Studio, which other developers do not run). Off, the Profile is exactly the production one. */
 export const characterStudioAvailable = (): boolean => import.meta.env.DEV === true && import.meta.env.VITE_CHARACTER_STUDIO === "1";
+/** APPROVED-AVATAR DELIVERY ONLY (no Character Studio UI, no outfits): the normal mock VO (`npm run dev:mock`) draws approved,
+ *  unpromoted heads from the local runtime-only Studio (`npm run hb:runtime`). Mock mode in a dev build only — never real mode or a
+ *  production build; VITE_HUMANBASE_RUNTIME=0 switches it off. With the Studio not running the list is just empty. */
+export const runtimeAvatarsAvailable = (): boolean =>
+  characterStudioAvailable() || (import.meta.env.DEV === true && import.meta.env.MODE === "mock" && import.meta.env.VITE_HUMANBASE_RUNTIME !== "0");
 
 const BASE = "/hb-studio/api/self";
 function headers(extra: Record<string, string> = {}): Record<string, string> {

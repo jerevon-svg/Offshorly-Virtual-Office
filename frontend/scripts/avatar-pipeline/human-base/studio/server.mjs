@@ -231,8 +231,12 @@ async function selfRoute(req, res, u) {
 // Any verified VO session may read it — every employee sees these characters in the office anyway. The owner email comes from the
 // owner ledger (a verified self-API session claimed the id) or the app's own registry; otherwise it is null and the office keys
 // the head by cast id alone.
+// RUNTIME-ONLY (HB_STUDIO_RUNTIME_ONLY=1, `npm run hb:runtime`): the normal mock VO's approved-avatar delivery and NOTHING else — no
+// page, uploads, pipeline, paid steps or Character Studio self routes. The list is what every employee sees in the office anyway and
+// the server listens on 127.0.0.1 only, so it needs no session (the mock VO runs with VITE_AUTH_GATE=off and has none).
+const RUNTIME_ONLY = process.env.HB_STUDIO_RUNTIME_ONLY === "1";
 async function runtimeRoute(req, res) {
-  const me = await resolveSelf({ authorization: req.headers.authorization, voApi: req.headers["x-vo-api"] }, SELF); if (me.error) return send(res, me.status, { error: me.error });
+  const me = RUNTIME_ONLY ? {} : await resolveSelf({ authorization: req.headers.authorization, voApi: req.headers["x-vo-api"] }, SELF); if (me.error) return send(res, me.status, { error: me.error });
   const ledger = read(`${S}/owners.json`) ?? {}, byId = Object.fromEntries(Object.entries(SELF.registry).map(([e, id]) => [id, e]));
   const out = runtimeAvatars(people().map((p) => p.id), { versionOf: (w) => deliveryCandidate(w, read(`${H}/approvals/${w}.json`)), approvalOf: (w) => read(`${H}/approvals/${w}.json`), simulatedOf: (w) => simulatedStages(w),
     promoted: read("src/dev/vo3d/avatar/humanMounts.generated.json") ?? {}, emailOf: (w) => ledger[w] ?? byId[w] ?? null });
@@ -241,6 +245,7 @@ const send = (res, code, body, type = "application/json") => { res.writeHead(cod
 const MIME = { ".png": "image/png", ".jpg": "image/jpeg", ".json": "application/json", ".glb": "model/gltf-binary", ".log": "text/plain", ".html": "text/html" };
 http.createServer(async (req, res) => { const u = new URL(req.url, `http://localhost:${PORT}`);
   try {
+    if (RUNTIME_ONLY) return u.pathname === "/api/runtime/avatars" && req.method === "GET" ? await runtimeRoute(req, res) : send(res, 404, { error: "runtime-only Studio: approved-avatar delivery only" });
     if (u.pathname === "/") return send(res, 200, fs.readFileSync(`${H}/studio/index.html`), "text/html");
     if (u.pathname === "/api/people") return send(res, 200, people());
     if (u.pathname === "/file") { const f = path.resolve(ROOT, u.searchParams.get("path") ?? ""); if (!f.startsWith(path.resolve(ROOT, "scripts/avatar-pipeline/output")) || !fs.existsSync(f)) return send(res, 404, { error: "not found" }); return send(res, 200, fs.readFileSync(f), MIME[path.extname(f)] ?? "application/octet-stream"); }
@@ -280,6 +285,7 @@ http.createServer(async (req, res) => { const u = new URL(req.url, `http://local
       return send(res, 200, await STEPS[step](who, p, body)); }
     send(res, 404, { error: "not found" });
   } catch (e) { send(res, 500, { error: String(e?.message ?? e) }); }
-}).listen(PORT, "127.0.0.1", () => { console.log(`HumanBase Studio → http://localhost:${PORT}  (preview needs the Vite dev server on :5173)`);
+}).listen(PORT, "127.0.0.1", () => { if (RUNTIME_ONLY) return console.log(`HumanBase runtime avatars (RUNTIME-ONLY: approved-avatar delivery, nothing else) → http://127.0.0.1:${PORT}/api/runtime/avatars — the mock VO (npm run dev:mock) reads it via /hb-studio`);
+  console.log(`HumanBase Studio → http://localhost:${PORT}  (preview needs the Vite dev server on :5173)`);
   console.log(AUTH ? `spend authority: ${AUTH.url} (executor key loaded; auto-spend is decided by the backend policy)` : "spend authority: not configured — every paid step needs a named human approver (local spend rules apply)");
   if (SELF.devUser) console.warn(`⚠ DEV-USER MODE: every Character Studio request acts as ${SELF.devUser} (HB_STUDIO_DEV_USER) — local testing only`); });

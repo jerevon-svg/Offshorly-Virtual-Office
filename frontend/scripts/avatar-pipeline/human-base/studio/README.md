@@ -9,6 +9,20 @@ From `frontend/`, start two things:
 1. The app dev server, if it isn't already running: `npm run dev` (serves the previews on http://localhost:5173).
 2. The studio: `node scripts/avatar-pipeline/human-base/studio/server.mjs`, then open **http://localhost:8094**.
 
+### Approved avatars in the normal mock VO (no Studio page, no preview port)
+
+The frozen five and promoted heads (Lui) ship in the app bundle and need nothing extra. An approved but **unpromoted** head (Esson D2) is
+delivered at runtime, so the mock VO needs the Studio running in **runtime-only** mode. From `frontend/`, in two terminals:
+
+1. `npm run dev:mock`: the mock VO on http://localhost:5174 (with its backend on :8002, as usual).
+2. `npm run hb:runtime`: the Studio on 127.0.0.1:8094, serving `GET /api/runtime/avatars` and nothing else. It has no page, uploads,
+   pipeline, paid steps or Character Studio routes (all 404). The mock VO reaches it same-origin through Vite's `/hb-studio` proxy.
+
+Start order does not matter, but the list is read once per page load, so reload the office after starting `hb:runtime`. Without it
+running, the office still works and the runtime list is just empty: everyone with a bundled head looks the same, and an unpromoted
+head shows the usual placeholder. This is mock mode in a dev build only. Real mode (`npm run dev`) and production builds never ask, and
+`VITE_HUMANBASE_RUNTIME=0` switches it off. Saved outfits and the Character Studio UI stay behind `VITE_CHARACTER_STUDIO=1`.
+
 ## The six steps (one card each on the page)
 
 | Step | What happens | Cost |

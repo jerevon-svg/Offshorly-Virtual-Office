@@ -41,4 +41,16 @@ describe("prepareCharacterRuntime", () => {
     await expect(prepareCharacterRuntime()).resolves.toBeUndefined();
     expect(runtimeAvatar("newhire")).toBeNull();
   });
+  it("the normal mock VO (mode mock, no Character Studio) draws approved heads but never loads outfits; real mode and =0 stay off", async () => {
+    vi.stubEnv("VITE_CHARACTER_STUDIO", ""); vi.stubEnv("MODE", "mock");
+    studio.getRuntimeAvatars.mockResolvedValue([rec("newhire", "newhire@offshorly.com")]);
+    await prepareCharacterRuntime();
+    expect(runtimeAvatar("newhire")?.url).toMatch(/newhire-v1\.glb$/); expect(wardrobe.getAllOutfits).not.toHaveBeenCalled();
+    for (const [mode, flag] of [["development", undefined], ["mock", "0"]] as const) {
+      resetCharacterRuntimeLoaderForTests(); resetCharacterRuntimeForTests(); studio.getRuntimeAvatars.mockClear();
+      vi.stubEnv("MODE", mode); if (flag) vi.stubEnv("VITE_HUMANBASE_RUNTIME", flag);
+      await prepareCharacterRuntime();
+      expect(studio.getRuntimeAvatars).not.toHaveBeenCalled(); expect(runtimeAvatar("newhire")).toBeNull();
+    }
+  });
 });

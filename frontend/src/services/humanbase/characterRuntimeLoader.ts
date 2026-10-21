@@ -4,7 +4,7 @@
 // Character Studio off (every production build) it resolves at once and changes nothing — the office is exactly what it was.
 import { useSyncExternalStore } from "react";
 import { avatarIdForEmail } from "../../data/avatarIdentity";
-import { characterStudioAvailable, candidateUrl, getRuntimeAvatars } from "./characterStudio";
+import { characterStudioAvailable, candidateUrl, getRuntimeAvatars, runtimeAvatarsAvailable } from "./characterStudio";
 import { getAllOutfits } from "../avatar/wardrobeClient";
 import { HUMANBASE_ENABLED } from "../../dev/vo3d/avatar/humanBodyRoster";
 import {
@@ -26,9 +26,14 @@ export const castIdForEmail = (email: string | null | undefined): string | null 
 let prepared: Promise<void> | null = null;
 /** load once per page; later calls share the same promise */
 export function prepareCharacterRuntime(): Promise<void> {
-  if (!characterStudioAvailable()) return Promise.resolve();
+  if (!runtimeAvatarsAvailable()) return Promise.resolve();
   prepared ??= (async () => {
-    const [avatars, outfits] = await Promise.all([within(getRuntimeAvatars(), []), within(getAllOutfits(), {} as Record<string, Outfit>)]);
+    // saved outfits are Character Studio customization: loaded only with it on (approved-avatar delivery alone wears the defaults)
+    const outfitsOn = characterStudioAvailable();
+    const [avatars, outfits] = await Promise.all([
+      within(getRuntimeAvatars(), []),
+      outfitsOn ? within(getAllOutfits(), {} as Record<string, Outfit>) : Promise.resolve({} as Record<string, Outfit>),
+    ]);
     registerRuntimeAvatars(
       avatars
         // an owner whose own app identity is SOMEONE ELSE'S character is never handed this one (no cross-employee heads)

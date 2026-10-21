@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "dev:mock": "vite --port 5174 --strictPort --mode mock",
+    "hb:runtime": "HB_STUDIO_RUNTIME_ONLY=1 node scripts/avatar-pipeline/human-base/studio/server.mjs",
     "gen-server": "node scripts/avatar-pipeline/gen-server.mjs",
     "walkgrid": "node scripts/parse-walkable.cjs",
     "build": "tsc -b && vite build",
