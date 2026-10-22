@@ -13,11 +13,14 @@ import {
   clearAll,
   clearDraft,
   isAlreadyCheckedOut,
+  loadCompletion,
   loadDraft,
-  loadResult,
+  loadRecovery,
   saveDraft,
+  saveRecovery,
   saveResult,
   saveSessionStart,
+  type CheckoutRecovery,
 } from "../../data/checkoutStorage";
 import {
   computeWorkedMinutes,
@@ -76,6 +79,8 @@ export interface UseCheckoutFlowResult {
   allocation: ReturnType<typeof validateAllocation>;
   submissionResult: SubmitTimeLogsResult | null;
   error: string | null;
+  /** V3a — entries kept after an unconfirmed submission when the employee checked out anyway. */
+  recovery: CheckoutRecovery | null;
 
   dismissReminderForLater: () => void;
   startCheckout: () => void;
@@ -93,6 +98,9 @@ export interface UseCheckoutFlowResult {
   submit: (opts?: MockSubmitOptions) => Promise<void>;
   retrySubmit: (opts?: MockSubmitOptions) => Promise<void>;
   saveAndReturnLater: () => void;
+  /** V3a — SUBMISSION_FAILED → CHECKED_OUT without a confirmed submission, on the employee's explicit
+   *  confirmation. The host's existing CHECKED_OUT effect posts the attendance checkout. */
+  checkOutWithoutConfirmedHours: () => void;
   cancelWalkToReception: () => void;
   startExitWalk: () => void;
   finishExit: () => void;
@@ -100,6 +108,10 @@ export interface UseCheckoutFlowResult {
   forceCheckedOut: () => void;
   beginNewSession: (startedAt: string) => void;
 }
+
+// V3a — what an Atlas 409 means to the employee: not saved, not lost.
+export const SUBMISSION_CONFLICT_MESSAGE =
+  "Your project hours could not be confirmed as saved. Atlas reported a submission conflict. Your entries have been kept.";
 
 const EMPTY_ENTRY: TimeLogEntry = {
   projectId: null,
@@ -135,8 +147,9 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
   const [entries, setEntries] = useState<TimeLogEntry[]>([]);
   const [breakMinutes, setBreakMinutes] = useState<number>(0);
   const [submissionResult, setSubmissionResult] = useState<SubmitTimeLogsResult | null>(
-    () => (isAlreadyCheckedOut(employeeId, workDate) ? loadResult(employeeId, workDate) : null),
+    () => loadCompletion(employeeId, workDate),
   );
+  const [recovery, setRecovery] = useState<CheckoutRecovery | null>(() => loadRecovery(employeeId, workDate));
   const [error, setError] = useState<string | null>(null);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
@@ -313,8 +326,8 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
   // service's internal call sites. Ignored by McpZohoService (cast below);
   // MockZohoService already declared support for this in Pass A.
   async function submit(opts?: MockSubmitOptions): Promise<void> {
-    if (isAlreadyCheckedOut(employeeId, workDate)) {
-      const existing = loadResult(employeeId, workDate);
+    const existing = loadCompletion(employeeId, workDate);
+    if (existing?.success === true) {
       setSubmissionResult(existing);
       goTo("CHECKOUT_SUCCESS");
       return;
@@ -362,34 +375,54 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
         goTo("SUBMISSION_FAILED");
       }
     } catch (err) {
-      // A duplicate is a normal outcome, not a failure: the server rejected
-      // a second submission for this date because one already exists. Show
-      // that prior submission rather than an error panel — and record it
-      // locally, since this branch is reached exactly when local state has
-      // drifted from the server (cleared storage, another browser).
-      if (isAlreadySubmittedError(err)) {
-        const recovered: SubmitTimeLogsResult = {
-          success: true,
-          submissionId: err.submissionId,
-          entriesCreated: err.entriesCreated,
-          // Stamped locally so the session-aware resume (isAlreadyCheckedOut) can
-          // tell this recovery apart from an earlier session's history.
-          submittedAt: new Date().toISOString(),
-        };
-        saveResult(employeeId, workDate, recovered);
-        setSubmissionResult(recovered);
-        goTo("CHECKOUT_SUCCESS");
-        return;
-      }
-
       saveDraft(employeeId, workDate, {
         entries,
         breakMinutes,
         savedAt: new Date().toISOString(),
       });
+      // V3a — A 409 IS NOT A SUCCESS. Atlas allows one submission per employee per work date and
+      // answers 409 to any other, so all it proves is that SOME submission exists for today — an
+      // earlier session's, most often — and nothing about THESE entries. It used to be shown as a
+      // success card and then drove the attendance checkout; now it is an unresolved conflict: the
+      // draft is kept, nothing is marked submitted, nothing is retried, attendance is untouched. The
+      // count Atlas sends belongs to the earlier submission, so it is deliberately not carried (the
+      // failure panel would read it as "some of yours landed").
+      if (isAlreadySubmittedError(err)) {
+        setSubmissionResult({ success: false, conflict: true, error: SUBMISSION_CONFLICT_MESSAGE });
+        setError(SUBMISSION_CONFLICT_MESSAGE);
+        goTo("SUBMISSION_FAILED");
+        return;
+      }
+
+      // A thrown error (network, timeout) is ambiguous — the request may or may not have landed — so
+      // it carries no result at all, and the panel warns before any manual retry.
+      setSubmissionResult(null);
       setError(err instanceof Error ? err.message : "Submission failed.");
       goTo("SUBMISSION_FAILED");
     }
+  }
+
+  /** V3a — "Check out anyway — hours not confirmed", after the employee's explicit confirmation in
+   *  the failure panel. Keeps the entries as a recovery copy (its own key, so an earlier CONFIRMED
+   *  result is never overwritten) and the ordinary draft, records NO submission, and moves to
+   *  CHECKED_OUT — where each host's existing effect posts the attendance checkout and reports its
+   *  failure exactly as for a normal checkout. Legal only from SUBMISSION_FAILED. */
+  function checkOutWithoutConfirmedHours() {
+    // Checked against the rendered state BEFORE anything is stored, so an illegal call writes nothing.
+    assertTransition(state, "CHECKED_OUT");
+    const at = new Date().toISOString();
+    const kept: CheckoutRecovery = {
+      entries,
+      breakMinutes,
+      savedAt: at,
+      checkedOutAt: at,
+      reason: submissionResult?.conflict ? "conflict" : "failed",
+    };
+    goTo("CHECKED_OUT");
+    saveDraft(employeeId, workDate, { entries, breakMinutes, savedAt: at });
+    saveRecovery(employeeId, workDate, kept);
+    setRecovery(kept);
+    setSubmissionResult({ success: false, hoursNotConfirmed: true, submittedAt: at });
   }
 
   async function retrySubmit(opts?: MockSubmitOptions): Promise<void> {
@@ -448,6 +481,7 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
   // "reset from anywhere" isn't a real product transition.
   function resetToday() {
     clearAll(employeeId, workDate);
+    setRecovery(null);
     setEntries([]);
     setBreakMinutes(0);
     setSubmissionResult(null);
@@ -486,6 +520,7 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
     allocation,
     submissionResult,
     error,
+    recovery,
 
     dismissReminderForLater,
     startCheckout,
@@ -503,6 +538,7 @@ export function useCheckoutFlow(params: UseCheckoutFlowParams): UseCheckoutFlowR
     submit,
     retrySubmit,
     saveAndReturnLater,
+    checkOutWithoutConfirmedHours,
     cancelWalkToReception,
     startExitWalk,
     finishExit,

@@ -43,7 +43,9 @@ const TRANSITIONS: Record<CheckoutState, CheckoutState[]> = {
   // which made useCheckoutFlow.saveAndReturnLater() throw
   // "Illegal checkout state transition: SUBMISSION_FAILED -> IDLE" the
   // moment a real submission failure occurred (its only call site).
-  SUBMISSION_FAILED: ["EDITING_TIME_LOG", "REVIEWING", "IDLE"],
+  // V3a — CHECKED_OUT is "Check out anyway — hours not confirmed": attendance-only, on the employee's
+  // explicit confirmation, deliberately NOT through CHECKOUT_SUCCESS (nothing was confirmed saved).
+  SUBMISSION_FAILED: ["EDITING_TIME_LOG", "REVIEWING", "IDLE", "CHECKED_OUT"],
   CHECKOUT_SUCCESS: ["WALKING_TO_EXIT"],
   WALKING_TO_EXIT: ["CHECKED_OUT"],
   // Same-day re-check-in (useCheckoutFlow.beginNewSession, driven by a confirmed

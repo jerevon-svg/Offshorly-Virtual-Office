@@ -5287,6 +5287,7 @@ export function OfficeMap() {
         result={checkoutFlow.submissionResult}
         onTryAgain={() => void checkoutFlow.retrySubmit()}
         onSaveAndReturnLater={checkoutFlow.saveAndReturnLater}
+        onCheckOutAnyway={checkoutFlow.checkOutWithoutConfirmedHours}
       />
           {!successCardDismissed && (
             <CheckoutSuccessCard
@@ -5294,6 +5295,7 @@ export function OfficeMap() {
               workedLabel={checkoutFlow.workedLabel}
               entries={checkoutFlow.entries}
               submissionResult={checkoutFlow.submissionResult}
+              recovery={checkoutFlow.recovery}
               onDismiss={() => setSuccessCardDismissed(true)}
             />
           )}

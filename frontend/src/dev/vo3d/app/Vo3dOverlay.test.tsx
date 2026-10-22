@@ -386,7 +386,7 @@ vi.mock("../../../services/hub/hubClient", () => ({
 const submitTimeLogs = vi.fn(async () => ({ success: true, submissionId: "sub-1", entriesCreated: 1, submittedAt: "2026-09-20T09:00:00Z" }));
 vi.mock("../../../services/zoho", () => ({
   isRealZohoMode: () => true,
-  isAlreadySubmittedError: () => false,
+  isAlreadySubmittedError: (e: unknown) => e instanceof Error && e.name === "AlreadySubmittedError",
   zohoService: {
     getProjects: async () => [{ id: "p1", name: "Project One" }],
     getTasks: async () => [{ id: "t1", projectId: "p1", name: "Task One" }],
@@ -1866,6 +1866,59 @@ describe("checkout navigation", () => {
     const request = (submitTimeLogs.mock.calls[0] as unknown[])[0] as { entries: { taskId: string; timeSpentMinutes: number }[] };
     expect(request.entries).toHaveLength(1);
     expect(request.entries[0]).toMatchObject({ taskId: "t1", timeSpentMinutes: 480 });
+  });
+
+  async function reachConflict() {
+    checkedInAt = new Date(Date.now() - 240 * 60_000).toISOString();
+    submitTimeLogs.mockImplementation(async () => {
+      throw Object.assign(new Error("already submitted"), { name: "AlreadySubmittedError" });
+    });
+    mount();
+    await reachTimeLog();
+    fireEvent.change(screen.getAllByRole("combobox")[0], { target: { value: "p1" } });
+    await screen.findByRole("option", { name: "Task One" });
+    fireEvent.change(screen.getAllByRole("combobox")[1], { target: { value: "t1" } });
+    fireEvent.change(screen.getByLabelText("Hours"), { target: { value: "3" } });
+    fireEvent.change(screen.getAllByRole("textbox")[0], { target: { value: "evening work" } });
+    fireEvent.click(screen.getByRole("button", { name: /review log/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /submit log and check out/i }));
+    await screen.findByText("Your project hours could not be confirmed as saved");
+  }
+
+  it("V3a — a 409 shows the conflict, never the success card, and never checks anybody out", async () => {
+    await reachConflict();
+    expect(screen.queryByText("You're checked out! 🎉")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(submitTimeLogs).toHaveBeenCalledTimes(1);
+    expect(checkOut).not.toHaveBeenCalled();
+    expect(attendanceApply).not.toHaveBeenCalled();
+  });
+
+  it("V3a — 'Check out anyway' (confirmed) posts the attendance checkout and shows 'hours not confirmed'", async () => {
+    await reachConflict();
+    fireEvent.click(screen.getByRole("button", { name: /Check out anyway — hours not confirmed/ }));
+    expect(checkOut).not.toHaveBeenCalled(); // a second, explicit confirmation is required
+    fireEvent.click(screen.getByRole("button", { name: /Yes, check out — hours not confirmed/ }));
+    await waitFor(() => expect(checkOut).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(attendanceApply).toHaveBeenCalledWith(expect.objectContaining({ status: "CHECKED_OUT" })));
+    expect(await screen.findByText("You're checked out — project hours not confirmed")).toBeTruthy();
+    expect(screen.queryByText("You're checked out! 🎉")).toBeNull();
+    expect(submitTimeLogs).toHaveBeenCalledTimes(1); // nothing resubmitted
+  });
+
+  it("V3a — if the attendance-only checkout fails, the failure is reported and the entries are kept", async () => {
+    checkOut.mockImplementationOnce(async () => {
+      throw new Error("network");
+    });
+    await reachConflict();
+    fireEvent.click(screen.getByRole("button", { name: /Check out anyway — hours not confirmed/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Yes, check out — hours not confirmed/ }));
+    await waitFor(() => expect(checkOut).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText(/couldn't save it/)).toBeTruthy();
+    expect(attendanceApply).not.toHaveBeenCalled();
+    const kept = Object.keys(localStorage).filter((k) => k.endsWith(":recovery"));
+    expect(kept).toHaveLength(1);
+    expect(localStorage.getItem(kept[0])).toContain("evening work");
   });
 
   it("no screen offers an escape that the state machine does not have", async () => {

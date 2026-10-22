@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useCheckoutFlow } from "./useCheckoutFlow";
-import { loadDraft, loadResult, clearAll, saveDraft, saveResult } from "../../data/checkoutStorage";
+import { loadDraft, loadRecovery, loadResult, clearAll, saveDraft, saveResult } from "../../data/checkoutStorage";
 
 // zohoService is mocked at the module boundary so each test controls
 // submitTimeLogs' outcome directly (HTTP-500-equivalent failure, success,
@@ -184,31 +184,19 @@ describe("useCheckoutFlow — submission failure resilience", () => {
     expect(loadResult(EMPLOYEE_ID, currentWorkDate())?.success).not.toBe(true);
   });
 
-  it("a duplicate-submission (AlreadySubmittedError) is treated as success and recorded, not as a failure", async () => {
-    class AlreadySubmittedError extends Error {
-      submissionId = "vo-earlier";
-      entriesCreated = 2;
-      constructor() {
-        super("already submitted");
-        this.name = "AlreadySubmittedError";
-      }
-    }
-    submitTimeLogs.mockRejectedValue(new AlreadySubmittedError());
-
+  it("a thrown network error is ambiguous: no result, no success, draft kept", async () => {
+    submitTimeLogs.mockRejectedValue(new Error("Failed to fetch"));
     const { result } = renderHook(() =>
       useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs: Date.now() - 1 * 60 * 60 * 1000 }),
     );
-
     await driveToReviewing(result);
     await act(async () => {
       await result.current.submit();
     });
-
-    expect(result.current.state).toBe("CHECKOUT_SUCCESS");
-    expect(loadResult(EMPLOYEE_ID, currentWorkDate())?.success).toBe(true);
-    // A 409 sent nothing new, so the recovered result must not carry a "sent to Zoho" summary of the
-    // entries typed in this session (see the integrity note in the checkout allocation report).
-    expect(loadResult(EMPLOYEE_ID, currentWorkDate())?.checkoutSummary).toBeUndefined();
+    expect(result.current.state).toBe("SUBMISSION_FAILED");
+    expect(result.current.submissionResult).toBeNull();
+    expect(loadResult(EMPLOYEE_ID, currentWorkDate())).toBeNull();
+    expect(loadDraft(EMPLOYEE_ID, currentWorkDate())).not.toBeNull();
   });
 });
 
@@ -312,5 +300,118 @@ describe("useCheckoutFlow — same-day new session", () => {
       useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs: Date.now() }),
     );
     expect(reloaded.current.state).toBe("IDLE");
+  });
+});
+
+// ---- V3a — an Atlas 409 is never a success ------------------------------------------------------------
+
+class AlreadySubmittedError extends Error {
+  submissionId = "vo-morning";
+  entriesCreated = 2;
+  constructor() {
+    super("already submitted");
+    this.name = "AlreadySubmittedError";
+  }
+}
+
+const EVENING_ENTRY = { projectId: "p1", taskId: "t1", timeSpentMinutes: 240, workDescription: "evening work" };
+
+async function reviewEveningEntry(hookResult: { current: ReturnType<typeof useCheckoutFlow> }) {
+  act(() => hookResult.current.startCheckout());
+  act(() => hookResult.current.confirmStartCheckout());
+  act(() => hookResult.current.arrivedAtReception());
+  act(() => hookResult.current.continueToTimeLog());
+  act(() => hookResult.current.updateEntry(0, EVENING_ENTRY));
+  act(() => hookResult.current.goToReview());
+}
+
+describe("useCheckoutFlow — V3a submission conflicts", () => {
+  const MORNING = { success: true, submissionId: "vo-morning", entriesCreated: 2, submittedAt: "" };
+
+  // Morning: a confirmed submission. Evening: a new session the same day, then a 409.
+  async function eveningConflict() {
+    const morningAt = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+    saveResult(EMPLOYEE_ID, currentWorkDate(), { ...MORNING, submittedAt: morningAt });
+    const hook = renderHook(() =>
+      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 20, timeInMs: Date.now() - 4 * 60 * 60 * 1000 }),
+    );
+    act(() => hook.result.current.beginNewSession(new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString()));
+    submitTimeLogs.mockRejectedValue(new AlreadySubmittedError());
+    await reviewEveningEntry(hook.result);
+    await act(async () => {
+      await hook.result.current.submit();
+    });
+    return { ...hook, morningAt };
+  }
+
+  it("a normal confirmed submission still succeeds", async () => {
+    submitTimeLogs.mockResolvedValue({ success: true, submissionId: "s-ok", submittedAt: new Date().toISOString(), entriesCreated: 1 });
+    const { result } = renderHook(() =>
+      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs: Date.now() - 5 * 60 * 60 * 1000 }),
+    );
+    await reviewEveningEntry(result);
+    await act(async () => {
+      await result.current.submit();
+    });
+    expect(result.current.state).toBe("CHECKOUT_SUCCESS");
+    expect(loadResult(EMPLOYEE_ID, currentWorkDate())?.submissionId).toBe("s-ok");
+  });
+
+  it("a same-day 409 is an unresolved conflict: no success, no retry, draft kept, earlier result untouched", async () => {
+    const { result, morningAt } = await eveningConflict();
+    expect(result.current.state).toBe("SUBMISSION_FAILED");
+    expect(result.current.submissionResult).toEqual(expect.objectContaining({ success: false, conflict: true }));
+    expect(result.current.submissionResult?.entriesCreated).toBeUndefined(); // Atlas's count is the morning's
+    expect(result.current.error).toMatch(/could not be confirmed as saved/);
+    expect(submitTimeLogs).toHaveBeenCalledTimes(1); // never retried automatically
+    expect(loadDraft(EMPLOYEE_ID, currentWorkDate())?.entries[0]).toMatchObject(EVENING_ENTRY);
+    expect(loadResult(EMPLOYEE_ID, currentWorkDate())).toEqual({ ...MORNING, submittedAt: morningAt });
+  });
+
+  it("after a refresh the entries are restored and the employee is still checked in", async () => {
+    const first = await eveningConflict();
+    first.unmount();
+    const { result } = renderHook(() =>
+      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 20, timeInMs: Date.now() - 4 * 60 * 60 * 1000 }),
+    );
+    expect(result.current.state).toBe("IDLE");
+    expect(result.current.entries[0]).toMatchObject(EVENING_ENTRY);
+  });
+
+  it("staying checked in keeps the draft and reports nothing as saved", async () => {
+    const { result } = await eveningConflict();
+    act(() => result.current.saveAndReturnLater());
+    expect(result.current.state).toBe("IDLE");
+    expect(loadDraft(EMPLOYEE_ID, currentWorkDate())?.entries[0]).toMatchObject(EVENING_ENTRY);
+    expect(loadRecovery(EMPLOYEE_ID, currentWorkDate())).toBeNull();
+  });
+
+  it("checking out anyway records no submission, keeps a recovery copy, and resumes as 'not confirmed' after a reload", async () => {
+    const first = await eveningConflict();
+    act(() => first.result.current.checkOutWithoutConfirmedHours());
+    expect(first.result.current.state).toBe("CHECKED_OUT");
+    expect(first.result.current.submissionResult).toEqual(expect.objectContaining({ success: false, hoursNotConfirmed: true }));
+    expect(first.result.current.recovery?.reason).toBe("conflict");
+    expect(first.result.current.recovery?.entries[0]).toMatchObject(EVENING_ENTRY);
+    // The morning's confirmed result is not overwritten by the attendance-only checkout.
+    expect(loadResult(EMPLOYEE_ID, currentWorkDate())).toEqual({ ...MORNING, submittedAt: first.morningAt });
+
+    first.unmount();
+    const { result } = renderHook(() =>
+      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 20, timeInMs: Date.now() - 4 * 60 * 60 * 1000 }),
+    );
+    expect(result.current.state).toBe("CHECKED_OUT");
+    expect(result.current.submissionResult?.hoursNotConfirmed).toBe(true);
+    expect(result.current.submissionResult?.success).toBe(false);
+    expect(result.current.recovery?.entries[0]).toMatchObject(EVENING_ENTRY);
+  });
+
+  it("checking out anyway is only reachable from a failed submission", async () => {
+    const { result } = renderHook(() =>
+      useCheckoutFlow({ employeeId: EMPLOYEE_ID, hourDecimal: 10, timeInMs: Date.now() - 60 * 60 * 1000 }),
+    );
+    await reviewEveningEntry(result);
+    expect(() => act(() => result.current.checkOutWithoutConfirmedHours())).toThrow(/Illegal checkout state transition/);
+    expect(loadRecovery(EMPLOYEE_ID, currentWorkDate())).toBeNull();
   });
 });
