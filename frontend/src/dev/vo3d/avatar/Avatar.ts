@@ -18,7 +18,7 @@ import { createHumanBody, type HumanBody } from "./humanBody";
 import { idleClip, type AppearanceAsset, type EmployeeAvatar } from "../human/humanBaseContract";
 import { SeatedWork } from "../human/seatedWork";
 import { ArmPerch } from "../human/armPerch";
-import { ParkourPose, type ParkourMove } from "./parkourPose";
+import { ParkourPose, type GripProfile, type ParkourMove } from "./parkourPose";
 
 let loader: GLTFLoader | null = null;
 function gltfLoader(): GLTFLoader {
@@ -304,7 +304,13 @@ export class Avatar {
   // ---- PARKOUR V1: the articulated flip, landing roll and landing absorb (avatar/parkourPose) ----
   private readonly parkour: ParkourPose;
   /** start a midair flip, a landing roll or a landing absorb */
-  tumble(move: ParkourMove, durationMs?: number): void { this.parkour.start(move, durationMs); }
+  tumble(move: ParkourMove, durationMs?: number, atMs?: number): void { this.parkour.start(move, durationMs, atMs); }
+  /** PARKOUR V3 — the zipline handle the hands hold (world), its axis and half-span; null lets go */
+  setGrip(cable: THREE.Vector3 | null, axis?: THREE.Vector3, hang?: number, weight?: number): void { this.parkour.setGrip(cable, axis, hang, weight); }
+  /** PARKOUR V3 — where this rig holds a zipline handle (its trolley is built to it) */
+  gripProfile(): GripProfile { return this.parkour.gripProfile(); }
+  /** PARKOUR V3 — where the hands are (world), for QA */
+  hands(): [THREE.Vector3, THREE.Vector3] | null { return this.parkour.hands(); }
   /** a flip still turning when the feet land finishes over a short tail */
   hurryTumble(): void { this.parkour.hurry(); }
   /** stop any parkour move and give the body back to its clip now */

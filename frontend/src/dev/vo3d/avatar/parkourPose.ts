@@ -37,11 +37,21 @@ import { about, findRig, rotateWorld, type Rig } from "./gaitPose";
 //           lead knee brought up onto the top · stand up over the feet.
 // Their HEIGHT and travel are the body's (player/traversal moves it); the wrapper only banks and pitches it.
 
-export type ParkourMove = "flip" | "roll" | "land" | "vault" | "mantle";
+// PARKOUR V3 adds the LONG moves, driven by elapsed time rather than a fixed timeline: the LADDER (hand over hand —
+// one hand reaches for the next rung as the opposite knee lifts, then the other pair, the torso upright and close to
+// the rungs) and the ZIPLINE (both hands overhead on the handle, the arms carrying the hang, the knees drawn a little,
+// the legs swinging with the ride, a lean back as it pulls away and forward as it brakes, then the release). And the
+// HARD landing: a fall too big for a roll, taken in a deep crouch with the lead hand to the floor, then up.
+
+export type ParkourMove = "flip" | "roll" | "land" | "vault" | "mantle" | "ladder" | "zipline" | "hard";
 
 /** How long each lasts, ms. The flip fits inside a double jump's remaining air time (~0.8 s); the roll reads
  *  as a quick, controlled tumble; the absorb is a beat. */
-export const PARKOUR_MS: Readonly<Record<ParkourMove, number>> = { flip: 720, roll: 820, land: 280, vault: 650, mantle: 850 };
+export const PARKOUR_MS: Readonly<Record<ParkourMove, number>> = { flip: 720, roll: 820, land: 280, vault: 650, mantle: 850, ladder: 2000, zipline: 4000, hard: 900 };
+/** PARKOUR V3 — a fall from at least this high is a HARD landing (never a roll); below it, the V1 absorb or roll */
+export const HARD_FALL = 64;
+/** PARKOUR V3 — a route's duration is the route's own (world/traversalRoutes), within these bounds */
+export const ROUTE_MS_RANGE = { min: 400, max: 20000 } as const;
 /** a roll's duration is set by its impact and speed (player/PlayerMode), within these bounds */
 export const ROLL_MS_RANGE = { min: 680, max: 1000 } as const;
 /** a vault's or a mantle's duration is its plan's (player/traversal), within these bounds */
@@ -156,7 +166,15 @@ type Limbs = {
 };
 const L0: Limbs = { hipL: 0, hipT: 0, kneeL: 0, kneeT: 0, spine: 0, side: 0, chin: 0, armL: 0, armT: 0, inL: 0, inT: 0, elbowL: 0, elbowT: 0, bank: 0, pitch: 0 };
 const K = (t: number, v: Partial<Limbs>): { t: number; v: Limbs } => ({ t, v: { ...L0, ...v } });
-const TRAVERSE_KEYS: Readonly<Record<"vault" | "mantle", readonly { t: number; v: Limbs }[]>> = {
+const TRAVERSE_KEYS: Readonly<Record<"vault" | "mantle" | "hard", readonly { t: number; v: Limbs }[]>> = {
+  hard: [
+    K(0, {}),
+    // impact: down into a deep crouch over the feet, the lead hand to the floor, the trail arm back for balance
+    K(0.22, { hipL: 1.85, hipT: 1.85, kneeL: 2.2, kneeT: 2.2, spine: 0.62, chin: 0.22, armL: 1.35, armT: -0.35, inT: -0.3, elbowL: 0.25, elbowT: 0.5, pitch: 0.12 }),
+    K(0.58, { hipL: 1.75, hipT: 1.75, kneeL: 2.1, kneeT: 2.1, spine: 0.55, chin: 0.15, armL: 1.25, armT: -0.25, inT: -0.25, elbowL: 0.3, elbowT: 0.45, pitch: 0.1 }),
+    // up over the feet
+    K(1, {}),
+  ],
   vault: [
     K(0, {}),
     // takeoff: a dip at the knees, the torso over them, both hands reaching forward-down for the top
@@ -184,13 +202,98 @@ const TRAVERSE_KEYS: Readonly<Record<"vault" | "mantle", readonly { t: number; v
   ],
 };
 /** the feet are planted (the body lowers over them) during these spans */
-const TRAVERSE_PLANTED: Readonly<Record<"vault" | "mantle", (t: number) => boolean>> = {
+const TRAVERSE_PLANTED: Readonly<Record<"vault" | "mantle" | "hard", (t: number) => boolean>> = {
+  hard: () => true,
   vault: (t) => t < 0.14 || t > 0.8,
   mantle: (t) => t > 0.84,
 };
-/** where the traversal's bank and pitch turn: about the hips */
+/** where the traversal's bank and pitch turn: about the hips — or, for a body hanging from a zipline, its hands */
 const TRAVERSE_PIVOT = 0.5;
-function limbsAt(move: "vault" | "mantle", t: number): Limbs {
+/** PARKOUR V3 — THE LADDER at `ms` into the climb (of `total`): hand over hand, the opposite knee with each hand */
+const CLIMB_CYCLE_MS = 560;
+function ladderLimbs(ms: number, total: number): Limbs {
+  const w = Math.min(1, ms / 220, Math.max(0, (total - ms) / 260)); // eased in on the first rung, out on the last
+  const c = Math.sin((2 * Math.PI * ms) / CLIMB_CYCLE_MS);
+  const k = (v: number) => v * w;
+  return {
+    ...L0,
+    armL: k(2.3 + 0.45 * c), armT: k(2.3 - 0.45 * c), elbowL: k(0.75 - 0.45 * c), elbowT: k(0.75 + 0.45 * c), inL: k(0.12), inT: k(0.12),
+    hipT: k(0.85 + 0.5 * c), kneeT: k(1.1 + 0.6 * c), hipL: k(0.85 - 0.5 * c), kneeL: k(1.1 - 0.6 * c),
+    spine: k(0.12), chin: k(-0.12), pitch: k(0.06),
+  };
+}
+// ---- the two-bone ARM solve (the zipline grip) -----------------------------------------------------------------
+/** how a rig holds a zipline handle (see ParkourPose.gripProfile) */
+export type GripProfile = { halfSpan: number; handY: number };
+const DEFAULT_GRIP: GripProfile = { halfSpan: 10.5, handY: 20 };
+/** the arms' rise from level when holding the grips: low enough that a chibi's hands are clear of its head's sides */
+const GRIP_ELEVATION = (30 * Math.PI) / 180;
+/** the elbows are kept this far off straight (a fraction of the arm), so the sway about the hands stays in reach */
+const GRIP_SLACK = 0.9;
+const _im = new THREE.Matrix4();
+const _t = new THREE.Vector3(), _s = new THREE.Vector3(), _e = new THREE.Vector3(), _w = new THREE.Vector3();
+const _n = new THREE.Vector3(), _a1 = new THREE.Vector3(), _a2 = new THREE.Vector3(), _qq = new THREE.Quaternion();
+const wpos = (o: THREE.Object3D, out = new THREE.Vector3()): THREE.Vector3 => { o.updateMatrixWorld(true); return o.getWorldPosition(out); };
+/** the wrist: the forearm's hand bone, or the forearm carried on by its own length when a rig has none */
+function handOf(rig: Rig, i: number, out = new THREE.Vector3()): THREE.Vector3 {
+  const fore = rig.fores[i];
+  const hand = fore.children.find((c) => /hand/i.test(c.name));
+  if (hand) return wpos(hand, out);
+  const e = wpos(fore, out), s = wpos(rig.arms[i], _a1);
+  return e.add(_a2.copy(e).sub(s));
+}
+/** THE PALM — where a hand closes on a grip: past the wrist along the forearm (the wrist bone is where the hand starts;
+ *  the fist that is seen holding something is beyond it) */
+const PALM = 0.55;
+const _pe = new THREE.Vector3(), _pd = new THREE.Vector3();
+function palmOf(rig: Rig, i: number, out = new THREE.Vector3()): THREE.Vector3 {
+  const w = handOf(rig, i, out), e = wpos(rig.fores[i], _pe);
+  return w.addScaledVector(_pd.copy(w).sub(e), PALM);
+}
+function armLen(rig: Rig, i: number): number {
+  const s = wpos(rig.arms[i], _a1), e = wpos(rig.fores[i], _a2);
+  return s.distanceTo(e) + (1 + PALM) * e.distanceTo(handOf(rig, i, _w));
+}
+/** put arm `i`'s wrist at `target` (blended by `w` from where the posture had it): open or close the elbow to the
+ *  right distance, then swing the upper arm to point the chain at the target */
+function solveArm(rig: Rig, i: number, target: THREE.Vector3, w: number): void {
+  const arm = rig.arms[i], fore = rig.fores[i];
+  // the chain ends at the PALM (the forearm carried on by the hand), so it is the palm that lands on the target
+  const S = wpos(arm, _s), E = wpos(fore, _e), W = palmOf(rig, i, _w);
+  const T = new THREE.Vector3().copy(W).lerp(target, w);
+  const a = S.distanceTo(E), b = E.distanceTo(W);
+  const d = Math.min(a + b - 1e-3, Math.max(Math.abs(a - b) + 1e-3, S.distanceTo(T)));
+  // the elbow: from its current opening to the one that spans `d`
+  const cur = _a1.copy(S).sub(E).angleTo(_a2.copy(W).sub(E));
+  const want = Math.acos(Math.min(1, Math.max(-1, (a * a + b * b - d * d) / (2 * a * b))));
+  _n.copy(_a1).cross(_a2);
+  if (_n.lengthSq() < 1e-8) _n.set(1, 0, 0); else _n.normalize();
+  rotateWorld(fore, about(_n, cur - want));
+  if (Math.abs(wpos(arm, _s).distanceTo(palmOf(rig, i, _w)) - d) > 0.05) rotateWorld(fore, about(_n, 2 * (want - cur)));
+  // the shoulder: the whole chain onto the target
+  const Sx = wpos(arm, _s), Wx = palmOf(rig, i, _w);
+  _qq.setFromUnitVectors(_a1.copy(Wx).sub(Sx).normalize(), _a2.copy(T).sub(Sx).normalize());
+  rotateWorld(arm, _qq);
+}
+
+/** PARKOUR V3 — THE ZIPLINE at `ms` into the ride (of `total`) */
+function ziplineLimbs(ms: number, total: number): Limbs {
+  const u = ms / Math.max(1, total);
+  const grip = Math.min(1, ms / 260), release = smooth(0.9, 1, u);
+  const hang = grip * (1 - release);
+  const sway = Math.sin((2 * Math.PI * ms) / 900) * (1 - release);
+  const lean = -0.1 * fall(0, 0.25, u) + 0.12 * rise(0.72, 0.88, u) * (1 - release);
+  return {
+    ...L0,
+    armL: 2.7 * hang + 0.5 * release, armT: 2.7 * hang + 0.5 * release, elbowL: 0.35 * hang + 0.4 * release, elbowT: 0.35 * hang + 0.4 * release,
+    inL: 0.16 * hang, inT: 0.16 * hang,
+    hipL: 0.55 * hang + 0.22 * sway + 0.9 * release, hipT: 0.55 * hang + 0.22 * sway + 0.9 * release,
+    kneeL: 0.8 * hang + 1.3 * release, kneeT: 0.8 * hang + 1.3 * release,
+    spine: -0.08 * hang + 0.25 * release, chin: -0.1 * hang, pitch: lean,
+  };
+}
+
+function limbsAt(move: "vault" | "mantle" | "hard", t: number): Limbs {
   const keys = TRAVERSE_KEYS[move];
   let i = 0;
   while (i < keys.length - 2 && t > keys[i + 1].t) i++;
@@ -227,10 +330,52 @@ export class ParkourPose {
     this.node.name = "tumble";
   }
 
+  // ---- PARKOUR V3: THE ZIPLINE GRIP — the hands ON the handle's grips, wherever the trolley is -----------------------
+  /** the trolley's point on the cable (world), the handle's axis, how far the cable runs above the rider's feet line, and
+   *  how much of the body the handle carries (0 reaching … 1 hanging … 0 let go); null lets go */
+  private grip: THREE.Vector3 | null = null;
+  private readonly gripAxis = new THREE.Vector3(1, 0, 0);
+  private gripHang = 55;
+  private gripWeight = 1;
+  setGrip(cable: THREE.Vector3 | null, axis?: THREE.Vector3, hang = 55, weight = 1): void {
+    if (!cable) { this.grip = null; return; }
+    (this.grip ??= new THREE.Vector3()).copy(cable);
+    if (axis) this.gripAxis.copy(axis).normalize();
+    this.gripHang = hang;
+    this.gripWeight = Math.min(1, Math.max(0, weight));
+  }
+  /** WHERE THIS RIG'S HANDS HOLD A ZIPLINE HANDLE, from its own skeleton: out to either side of the head and a little up
+   *  (arms raised GRIP_ELEVATION from level, the elbows just off straight) — `halfSpan` from the body's middle and `handY`
+   *  above its feet. A chibi's hands cannot clear its head upward (the arms are far shorter than the head is tall), so
+   *  they hold grips hanging beside it; the trolley's handle is built to these numbers (world/ziplineRig). */
+  gripProfile(): GripProfile {
+    const rig = this.rig;
+    if (!rig) return DEFAULT_GRIP;
+    // measured ONCE per skeleton, from its standing shoulders (the trolley's grips are built to it, so it must not
+    // wobble with the posture), in the body's own frame
+    if (!this.profile) {
+      this.node.updateMatrixWorld(true);
+      const inv = _im.copy(this.node.matrixWorld).invert();
+      const sL = wpos(rig.arms[0]).applyMatrix4(inv), sR = wpos(rig.arms[1]).applyMatrix4(inv);
+      const len = GRIP_SLACK * (armLen(rig, 0) + armLen(rig, 1)) / 2;
+      const half = Math.abs(sL.x - sR.x) / 2, sy = (sL.y + sR.y) / 2;
+      this.profile = { halfSpan: half + len * Math.cos(GRIP_ELEVATION), handY: sy + len * Math.sin(GRIP_ELEVATION) };
+    }
+    return this.profile;
+  }
+  private profile: GripProfile | null = null;
+  /** the hands' world positions (left, right), for the tests and the dev surface — null without a rig */
+  hands(): [THREE.Vector3, THREE.Vector3] | null {
+    const rig = this.rig;
+    if (!rig) return null;
+    return [0, 1].map((i) => palmOf(rig, i)) as [THREE.Vector3, THREE.Vector3];
+  }
+
   /** the body's skeleton (null while it has none, or for a body without the standard chain — the root motion
    *  still plays, the posture does not) */
   setScene(scene: THREE.Object3D | null): void {
     this.release();
+    this.profile = null;
     this.rig = scene ? findRig(scene) : null;
   }
 
@@ -242,7 +387,7 @@ export class ParkourPose {
    *  arrived late, so the pose stays in step with the line and height already that far along). */
   start(move: ParkourMove, durationMs?: number, atMs = 0): void {
     this.move = move;
-    const range = move === "roll" ? ROLL_MS_RANGE : move === "vault" || move === "mantle" ? TRAVERSE_MS_RANGE : null;
+    const range = move === "roll" ? ROLL_MS_RANGE : move === "vault" || move === "mantle" ? TRAVERSE_MS_RANGE : move === "ladder" || move === "zipline" ? ROUTE_MS_RANGE : null;
     this.duration = range && durationMs !== undefined && Number.isFinite(durationMs)
       ? Math.min(range.max, Math.max(range.min, durationMs))
       : PARKOUR_MS[move];
@@ -277,7 +422,14 @@ export class ParkourPose {
     const move = this.move;
     if (t >= 1) { this.cancel(); return; }
     if (move === "roll") { this.updateRoll(t); return; }
-    if (move === "vault" || move === "mantle") { this.updateTraverse(move, t); return; }
+    if (move === "vault" || move === "mantle" || move === "hard") { this.updateTraverse(move, limbsAt(move, t), TRAVERSE_PLANTED[move](t), TRAVERSE_PIVOT); return; }
+    if (move === "ladder") { this.updateTraverse(move, ladderLimbs(this.elapsed, this.duration), false, TRAVERSE_PIVOT); return; }
+    if (move === "zipline") {
+      // the body swings about its HANDS (the grips' height), not about a point over its head
+      this.updateTraverse(move, ziplineLimbs(this.elapsed, this.duration), false, this.gripProfile().handY / this.height);
+      this.holdGrip();
+      return;
+    }
     const f = frameAt(move, t);
 
     // 1. the clip's pose back (or saved), exactly as gaitPose does
@@ -386,18 +538,17 @@ export class ParkourPose {
     this.wrote = true;
   }
 
-  /** PARKOUR V2 — A VAULT OR A MANTLE, one frame (see TRAVERSE_KEYS). */
-  private updateTraverse(move: "vault" | "mantle", t: number): void {
-    const f = limbsAt(move, t);
+  /** PARKOUR V2/V3 — A KEYFRAMED OR CYCLIC MOVE, one frame: the root banks and pitches about `pivot` (a fraction of the
+   *  height — the hips, or the hands for a hanging body), the limbs take `f`, and the feet stay put if `planted`. */
+  private updateTraverse(_move: ParkourMove, f: Limbs, planted: boolean, pivotAt: number): void {
     const rig = this.rig;
     if (rig) this.restoreClip(rig);
     // root: bank onto the lead side and pitch forward, about the hips
     this.node.quaternion.setFromAxisAngle(RIGHT, f.pitch).premultiply(_qb.setFromAxisAngle(FWD, -f.bank));
-    const pivot = _v.set(0, this.height * TRAVERSE_PIVOT, 0);
+    const pivot = _v.set(0, this.height * pivotAt, 0);
     this.node.position.copy(pivot).sub(pivot.clone().applyQuaternion(this.node.quaternion));
     this.node.updateMatrixWorld(true);
     if (!rig) return;
-    const planted = TRAVERSE_PLANTED[move](t);
     const footBefore = planted ? this.lowestFoot(rig) : NaN;
     this.node.getWorldQuaternion(_wq);
     _X.copy(RIGHT).applyQuaternion(_wq);
@@ -426,6 +577,26 @@ export class ParkourPose {
       const footAfter = this.lowestFoot(rig);
       if (Number.isFinite(footBefore) && Number.isFinite(footAfter)) this.node.position.y += footBefore - footAfter;
       this.node.updateMatrixWorld(true);
+    }
+    for (let i = 0; i < rig.bones.length; i++) this.written[i].copy(rig.bones[i].quaternion);
+    this.wrote = true;
+  }
+
+  /** HOLDING THE HANDLE: each hand onto its grip — the grip hanging from the trolley's handle at the height and span this
+   *  rig holds it (gripProfile), on the side of its own shoulder — solved as a two-bone arm (shoulder → elbow → wrist).
+   *  Both the grips and the hands are put from the same trolley point every frame, so they cannot drift apart; under
+   *  the trolley the grips are exactly where this body's own hands reach, so it hangs at its natural height and the
+   *  posture's sway and leg swing stay its own. Reaching for it (stepping up) and letting go blend by the weight. */
+  private holdGrip(): void {
+    const rig = this.rig, g = this.grip;
+    if (!rig || !g) return;
+    const w = Math.min(1, this.gripWeight * 3);
+    if (w <= 0) return;
+    const prof = this.gripProfile();
+    for (const i of [0, 1]) {
+      const side = i === 0 ? 1 : -1;
+      const target = _t.copy(g).addScaledVector(UP, -(this.gripHang - prof.handY)).addScaledVector(this.gripAxis, side * prof.halfSpan);
+      solveArm(rig, i, target, w);
     }
     for (let i = 0; i < rig.bones.length; i++) this.written[i].copy(rig.bones[i].quaternion);
     this.wrote = true;

@@ -73,14 +73,17 @@ import { JobClient } from "../world/jobStore";
 import { DEMO_COMMAND, type JobCommandResult } from "../world/agentOrchestration";
 import { LAB_FLAGS } from "../world/labFlags";
 import { LAB_RESIDENTS } from "../world/labPopulation";
-import { aiLabV2StandTest, inAiLabV2Zone, buildLabV2Graph, LAB2_FLOOR_Y, L1, L2, l1Rim, l2Rim } from "../world/ailabV2";
-import { CAMPUS_BENCH_TOP, StandableIndex, insidePolygon, standableFromBox, standableFromEntity, standableFromRect } from "../world/standables";
+import { aiLabV3StandTest, inAiLabV2Zone, buildLabV2Graph, LAB2_FLOOR_Y, LAB_ROUTES, labV2Surfaces } from "../world/ailabV2";
+import { ziplineHold } from "../world/traversalRoutes";
+import { ZiplineTrolley } from "../world/ziplineRig";
+import { CAMPUS_BENCH_TOP, StandableIndex, standableFromBox, standableFromEntity, standableFromRect } from "../world/standables";
 import { buildAiLabV2 } from "../build/ailabV2";
 import { MonkeyCastRunner } from "../avatar/MonkeyCastRunner";
 import { LAB_V2_SCENARIOS } from "../world/labV2Scenarios";
 import { offsetGraph } from "../world/monkeyTraversal";
 /** THE AI LAB's walkability: the treehouse Lab's own stand test (the only Lab since Phase 6B.8) */
-const aiLabStandTest = aiLabV2StandTest;
+// PARKOUR V3 — height-aware (decks, the ramp, rails); asked without a height it is the Lab floor's test it always was
+const aiLabStandTest = aiLabV3StandTest;
 const inAiLabZone = inAiLabV2Zone;
 import { FACADE_WALL_T, RIDE_PROFILE, SURFACE_SPEED, WALK_PROFILE, exteriorGround, speedClassOf, type TraversalState } from "../world/exteriorGround";
 import { Environment, type EnvPresentation } from "../env/Environment";
@@ -339,6 +342,9 @@ export interface Vo3dWorld {
   peerJumped(email: string, ageMs?: number, at?: number, seq?: number): boolean;
   /** PARKOUR V1 — a peer double-jumped (with its flip) or rolled on landing; same staleness and ordering as a jump */
   peerParkour(email: string, kind: "double" | "roll" | "vault" | "mantle", ageMs?: number, at?: number, seq?: number, ms?: number, rise?: number, apex?: number): boolean;
+  /** PARKOUR V3 — a peer started a declared route (a ladder, the zipline) `p0` of the way along, or cut it short */
+  peerRoute(email: string, route: string, dir: "a" | "b", ageMs?: number, at?: number, seq?: number, p0?: number): boolean;
+  peerRouteHalt(email: string, end: "start" | "exit", at?: number, seq?: number): boolean;
   /** PHASE 5 — V1'S ANSWER ABOUT THIS EMPLOYEE'S WORK SESSION, pushed in from outside.
    *
    *  The world never asks: app/Vo3dHost.tsx owns the read (adapters/v1Attendance over V1's own
@@ -2355,12 +2361,15 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     ...UPPER_PLATES.flatMap((plate) => plate.standables?.() ?? []),
     // PARKOUR V2 — the Reception rail sections approved for vaulting (rooms/reception): vault-only, never a top
     ...RECEPTION_VAULT_RAILS.map((r) => standableFromRect(r.id, r.top, r.rect, { stand: false, vault: true })),
+    // PARKOUR V3 — the AI Lab's treehouse: both decks, the ramp, the jump stump (world/ailabV2, its own declared data)
+    ...labV2Surfaces(),
   ]);
   /** how close to a piece's outline a body's centre must be to stand on it: well inside the body radius, so a body
    *  beside a piece (held NAV_RADIUS off it at floor level) is never mistaken for one on top of it */
   const STAND_TOP_R = 3;
-  /** the highest standable top under a body at `p` (−Infinity when none) */
-  const topUnder = (p: Vec2): number => standables.topUnder(p, STAND_TOP_R);
+  /** the highest standable top under a body at `p` (−Infinity when none) — PARKOUR V3: with `feet`, only tops at or a
+   *  step above them, which is how stacked decks are told apart (a body on L1 stands on L1 beneath L2) */
+  const topUnder = (p: Vec2, feet?: number): number => standables.topUnder(p, STAND_TOP_R, feet === undefined ? Infinity : feet + WALK_PROFILE.stepUp);
   /** the pieces a body moving with known feet has cleared: with a step up on the floor, with the air clearance in
    *  the air. Only these stop being obstacles to it; everything else blocks exactly as it always did. */
   const clearedBy = (p: Vec2, motion?: TraversalState): ReadonlySet<string> | undefined => {
@@ -2376,11 +2385,12 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   const withExcuse = (a: ReadonlySet<string> | undefined, b: ReadonlySet<string> | undefined): ReadonlySet<string> | undefined =>
     !b ? a : !a ? b : new Set([...a, ...b]);
   const playerStand = (p: Vec2, motion?: TraversalState, excuse?: ReadonlySet<string>): boolean =>
-    inCave(p) ? caveStandTest(p, NAV_RADIUS)
+    inCave(p) ? caveStandTest(p, NAV_RADIUS, motion, excuse)
     : liftActive() && inCabin(p) ? cabinStandTest(p, NAV_RADIUS)
     : vestibuleOf(p) !== null ? vestibuleStandTest(vestibuleOf(p)!, p, NAV_RADIUS)
     : onUpperFloor(p) ? upperFloorStand(p, NAV_RADIUS, withExcuse(clearedBy(p, motion), excuse))
-    : inLabDomain(p) ? aiLabStandTest(p, NAV_RADIUS)
+    // PARKOUR V3 — the Lab judges its own bands from the feet (world/heightSolids), with a vault's excuse
+    : inLabDomain(p) ? aiLabStandTest(p, NAV_RADIUS, motion, excuse)
     : inOfficeDomain(p) ? officeStand(p, undefined, withExcuse(clearedBy(p, motion), excuse))
     : ground.canOccupy(p, WALK_PROFILE.footRadius, WALK_PROFILE, foreignOwner, withExcuse(clearedBy(p, motion), excuse), motion);
   /** is `p` judged by the campus ground model (not a floor of the building, the Lab's, the Cave or the lift)? */
@@ -2395,19 +2405,17 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   avatar.ground = groundYAt;
   /** TRAVERSAL — the floor a walker's footprint rests on: the campus's highest ground under it, a floor's own
    *  height everywhere else */
-  const playerSupport = (p: Vec2): number => Math.max(onCampus(p) ? ground.support(p, WALK_PROFILE.footRadius) : groundYAt(p), topUnder(p));
+  const playerSupport = (p: Vec2, feet?: number): number => Math.max(onCampus(p) ? ground.support(p, WALK_PROFILE.footRadius) : groundYAt(p), topUnder(p, feet));
   /** PARKOUR V1 — the floor the player STANDS on at a point: the avatar's own ground, or a standable top under it */
-  const playerGround = (p: Vec2): number => Math.max(avatar.groundAt(p), topUnder(p));
+  const playerGround = (p: Vec2, feet?: number): number => Math.max(avatar.groundAt(p), topUnder(p, feet));
   /** PARKOUR V1 — HEADROOM: the highest the FEET may rise at a point (a ceiling or a deck above, less the body and a
    *  hand's breadth). Open sky everywhere else — every storey of the building is far taller than a double jump. */
   const HEAD_CLEAR = BON_STANDING_HEIGHT + 1;
-  const deckL1 = l1Rim(), deckL2 = l2Rim();
-  const headroomAt = (p: Vec2): number => {
+  //  PARKOUR V3: no deck is named here any more — any PLATFORM in the index over the head (world/standables
+  //  ceilingAbove) is a ceiling, judged from where the feet are, so a body on L1 has L2 over it and one on L2 has sky.
+  const headroomAt = (p: Vec2, feet?: number): number => {
     if (liftActive() && inCabin(p)) return CEILING_H - HEAD_CLEAR;
-    // under the treehouse decks (the AI Lab's hero tree): the deck's underside
-    if (insidePolygon(p, deckL1)) return L1.y - L1.t - HEAD_CLEAR;
-    if (insidePolygon(p, deckL2)) return L2.y - L2.t - HEAD_CLEAR;
-    return Infinity;
+    return standables.ceilingAbove(p, NAV_RADIUS - 1, feet ?? playerGround(p)) - HEAD_CLEAR;
   };
   /** outside, the camera is stopped by what is really there — the building's mass and the tall solids —
    *  never by lawn or a lower path; the ground model's walkability is not the camera's business */
@@ -2701,6 +2709,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   const playerMode = new PlayerMode({
     avatar, stack, world, canStand: (p: Vec2, motion?: TraversalState) => playerStand(p, motion) && !(carBlocks?.(p, NAV_RADIUS) ?? false), cameraProbe: playerCameraProbe,
     support: playerSupport, dropMax: WALK_PROFILE.dropMax, groundAt: playerGround, headroom: headroomAt,
+    // PARKOUR V3 — the declared routes (world/traversalRoutes): the treehouse's ladders and zipline today
+    routes: LAB_ROUTES,
     // PARKOUR V2 — the vault and the mantle (player/traversal): the same stand test (cars included) with at most the
     // one vaulted obstacle excused, the index's vault obstacles, and the office boundary — no confirmed check-in, no
     // traversal that lands inside the working office (the Reception rail is never a way round the gates)
@@ -2756,6 +2766,28 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // would have to be smuggled into a leg that may not exist (a standing jump publishes nothing at all)
   // or into one that started 300 ms ago. One call, one relay, no state. The standalone dev page's sink
   // is absent and one there stays local, exactly as everything else does.
+  // PARKOUR V3 — A ROUTE IS RELAYED AS WHAT IT IS: the route's id, the way it is taken, how far along it started — every
+  // peer replays the same declared line and pace from the server's clock (world/Coworkers.ride), and a late joiner gets
+  // it from the snapshot part-way through. The movement feed keeps publishing the body's real position meanwhile.
+  const zipRoute = LAB_ROUTES.find((r) => r.kind === "zipline")!;
+  const zipParked = { hold: ziplineHold(zipRoute, "a", 0)!, hang: zipRoute.grip ?? 55, grip: avatar.gripProfile() };
+  const trolleys: ZiplineTrolley[] = [];
+  function placeZiplineTrolleys(): void {
+    const mine = playerMode.ziplineHoldNow;
+    const holds = [...(mine ? [{ hold: mine, hang: zipRoute.grip ?? 55, grip: avatar.gripProfile() }] : []), ...coworkers.ziplineHolds()];
+    // nobody riding: the trolley waits at the top, its grips sized for this employee (the next rider, most likely)
+    if (holds.length === 0) holds.push({ ...zipParked, grip: avatar.gripProfile() });
+    while (trolleys.length < holds.length) { const t = new ZiplineTrolley(); R.scene.add(t.group); trolleys.push(t); }
+    trolleys.forEach((t, i) => {
+      const h = holds[i];
+      t.group.visible = h !== undefined;
+      if (h) t.place(h.hold.cable, h.hold.yaw, h.hold.pitch, h.hang, h.grip);
+    });
+  }
+  playerMode.onRouteEvent = (ev) => {
+    if (ev.type === "start") selfMovement?.routed?.({ kind: "route", route: ev.route.id, dir: ev.dir, p0: Math.round(ev.p0 * 1000) / 1000, ms: ev.ms });
+    else selfMovement?.routed?.({ kind: "halt", route: ev.route.id, end: ev.end });
+  };
   playerMode.onJumped = (kind, roll, traverse) => {
     // PARKOUR V2 — A VAULT OR A MANTLE MOVES THE BODY TOO: its line goes out as an ordinary walk of its own duration
     // (late joiners and the snapshot get the end position from it), the height it ends at first — so the walk says
@@ -3363,6 +3395,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     groundY: groundYAt,
     // PARKOUR V1 — a peer's published feet height lifts them only onto a real standable top under them
     topAt: (p, feet) => standables.topMatching(p, STAND_TOP_R, feet),
+    // PARKOUR V3 — each peer's own vertical continuity (stacked decks, the ramp, falls), and the routes they can take
+    supportAt: (p, maxTop) => standables.topUnder(p, STAND_TOP_R, maxTop),
+    routes: (id) => LAB_ROUTES.find((r) => r.id === id),
     toWorld: (p) => homeDeskWorldPoint(p, v1Rooms(), ROOM_WORLD_SHIFT_Z),
     lod: 1,
     // PHASE 6C — seated peers sit on this world's own chairs; see peerSeatAnchor.
@@ -6584,7 +6619,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // the same per-frame guards the loop applies: a door held shut, a locked room, the exit gate
       applyExitGate({ x: bp.x, z: bp.z });
       applyRoomLocks({ x: bp.x, z: bp.z });
-      selfFeed?.frame(step, { x: bp.x, z: bp.z }, avatar.yaw, navCtl.path.length > 0 || coworkerApproach?.turning === true || directedTurn !== null || playerMode.rolling || playerMode.traversing);
+      selfFeed?.frame(step, { x: bp.x, z: bp.z }, avatar.yaw, navCtl.path.length > 0 || coworkerApproach?.turning === true || directedTurn !== null || playerMode.rolling || playerMode.traversing || playerMode.onRoute);
       left -= step;
     }
   }
@@ -6692,9 +6727,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // PARKOUR V1 — tell the publisher how high the feet stand (a furniture top) so peers and late joiners see it;
       // undefined on the floor, in the air, or whenever Player View does not own the body (a seat, a walk)
       // (PARKOUR V2: while a vault or a mantle runs, the height it ends at was noted when it started — left as is)
-      if (selfMovement?.noteFeet && !playerMode.traversing) {
+      if (selfMovement?.noteFeet && !playerMode.traversing && !playerMode.onRoute) {
         const fp = avatar.worldPosition();
-        const top = topUnder(fp);
+        const top = topUnder(fp, playerMode.state.feet);
         const owns = playerMode.active && stack.owns("Player") && !playerMode.airborne;
         selfMovement.noteFeet(owns && top > avatar.groundAt(fp) + 0.5 ? top : undefined);
       }
@@ -6767,7 +6802,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       driftFx.update(dt / 1000);
       // a sprint's skid goes out as a braking leg (peers replay it slowing down, the pose with it)
       selfFeed?.setBraking(playerMode.active ? playerMode.state.braking : 0);
-      selfFeed?.frame(dt, { x: bp.x, z: bp.z }, avatar.yaw, navCtl.path.length > 0 || coworkerApproach?.turning === true || directedTurn !== null || playerMode.rolling || playerMode.traversing);
+      selfFeed?.frame(dt, { x: bp.x, z: bp.z }, avatar.yaw, navCtl.path.length > 0 || coworkerApproach?.turning === true || directedTurn !== null || playerMode.rolling || playerMode.traversing || playerMode.onRoute);
       // PRESENCE'S zone: the Meeting Floor and the lift are inside the office (app/access presenceZoneAt),
       // so riding up is never read as leaving the building — and never as Away.
       const zoneNow = presenceZoneAt({ x: bp.x, z: bp.z }, accessGeom, onDetachedBuildingFloor);
@@ -6969,6 +7004,9 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // registered dynamic caster and is hidden before the static pass draws.
     updateLiftRiders();
     coworkersMoved = coworkers.update(dt / 1000);
+    // PARKOUR V3 — THE ZIPLINE TROLLEYS: one parked at the top while nobody rides, one per rider on the cable (this
+    // employee's and every peer's), each where its rider's hold has it — the handle the hands are on
+    placeZiplineTrolleys();
     // The shadow map is only redrawn when something that casts one has moved (Renderer.invalidateShadows).
     // Anything the avatar does counts: walking, sitting, and the doors/chairs its interactions drive. Plant
     // sway is deliberately NOT a trigger — a frozen leaf shadow is invisible and it would defeat the point.
@@ -7330,6 +7368,10 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       airborne: () => coworkers.airborneCount,
       /** DEV: drive a peer jump locally, without a second browser. Same entry point the relay uses. */
       jump: (email: string) => coworkers.jump(email),
+      /** DEV (PARKOUR V3): drive a peer onto a declared route, `ageMs` into it (a late joiner's view), without a second
+       *  browser — the same entry point the relay uses; and where that peer's trolley and hands are */
+      route: (email: string, id: string, dir: "a" | "b" = "a", ageMs = 0) => coworkers.route(email, id, dir, ageMs),
+      ziplines: () => coworkers.ziplineHolds(),
       moving: () => coworkers.moving,
       /** PHASE 6C — how many peers sit in a chair this world identified; `positions()` names the anchor. */
       seated: () => coworkers.getStats().seated,
@@ -7676,6 +7718,13 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       move: (dx: number, dz: number) => playerMode.body.move(dx, dz),
       position: () => ({ ...playerMode.body.pos }),
       teleport: (x: number, z: number) => { const ok = playerMode.body.placeNear({ x, z }); avatar.setPosition(playerMode.body.pos); playerMode.camera.snap(); return ok; },
+      /** PARKOUR V3 — the declared routes, the one in progress, and taking one from an end exactly as E would */
+      routes: {
+        list: () => LAB_ROUTES.map((r) => ({ id: r.id, kind: r.kind, a: r.path[0], b: r.path[r.path.length - 1] })), state: () => playerMode.routeState, enter: (id: string, dir: "a" | "b") => playerMode.enterRoute(id, dir),
+        /** the zipline: this rider's hold (trolley, handle) and where the hands are — the grip verification reads both */
+        hold: () => playerMode.ziplineHoldNow, hands: () => avatar.hands()?.map((v) => ({ x: v.x, y: v.y, z: v.z })) ?? null, grip: () => avatar.gripProfile(),
+        peerHands: (email: string) => coworkers.handsOf(email)?.map((v) => ({ x: v.x, y: v.y, z: v.z })) ?? null, trolleys: () => trolleys.filter((t) => t.group.visible).length,
+      },
       /** SHARED SCOOTERS — the QA rig: stations, ride area, mount/dismount and the live ride numbers */
       scooters: { stations: SCOOTER_STATIONS, state: scooterState, surface: () => playerMode.rideSurface, canRide: rideStand, mount: mountScooter, dismount: () => dismountScooter("qa"), ride: () => playerMode.rideState, riding: () => playerMode.riding, candidates: () => scooterCandidates().map((c) => c.id),
         hud: () => playerMode.scooterHudState,
@@ -8055,6 +8104,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     },
     peerJumped: (email, ageMs = 0, at, seq) => coworkers.jump(email, ageMs, at, seq),
     peerParkour: (email, kind, ageMs = 0, at, seq, ms, rise, apex) => coworkers.parkour(email, kind, ageMs, at, seq, ms, rise, apex),
+    peerRoute: (email, route, dir, ageMs = 0, at, seq, p0 = 0) => coworkers.route(email, route, dir, ageMs, at, seq, p0),
+    peerRouteHalt: (email, end, at, seq) => coworkers.routeHalt(email, end, at, seq),
     setConversationPoses: (byEmail, self) => {
       hostConversationClips = byEmail;
       pushCoworkerClips();

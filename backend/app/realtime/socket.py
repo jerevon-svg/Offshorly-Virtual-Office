@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import json
+import os
 import time
 import logging
 import math
@@ -19,6 +21,9 @@ from app.repositories import toucan_activity as toucan_activity_repo
 from sqlalchemy import select
 
 from app.models.attendance import EmployeeAttendance
+from app.realtime import office_zone
+from app.repositories import attendance as attendance_repo
+from app.repositories.attendance import CHECKED_IN as ATTENDANCE_CHECKED_IN
 from app.models.message import KIND_CALL_MISSED as MESSAGE_KIND_CALL_MISSED
 from app.schemas.chat import serialize_message_dict, to_iso_z
 from app.services.chat_send import ensure_participant_sockets_in_room
@@ -2514,6 +2519,12 @@ async def walk_started(sid: str, payload: dict | None) -> None:
         movement_id = payload["movementId"]
         origin = {"x": payload["origin"]["x"], "y": payload["origin"]["y"]}
         path = [{"x": p["x"], "y": p["y"]} for p in payload["path"]]
+        # PARKOUR V3 — THE OFFICE BOUNDARY, SERVER SIDE: a walk that crosses from outside the working office into it is
+        # refused for anybody who is not checked in (app/realtime/office_zone — conservative; the client's gates
+        # remain the first line). The sender alone is told; nobody else ever sees it.
+        if office_zone.enters_office(origin, path) and not await _checked_in(email):
+            await sio.emit("movement_rejected", {"movementId": movement_id, "reason": "office-access"}, to=sid)
+            return
         room_id = payload.get("roomId")
         local_origin = payload.get("localOrigin")
         local_path = payload.get("localPath")
@@ -2582,6 +2593,11 @@ async def walk_arrived(sid: str, payload: dict | None) -> None:
         raw_yaw = payload.get("yaw")
         yaw = float(raw_yaw) if raw_yaw is not None else None  # validated finite above
         local_at = payload.get("localAt")
+        # PARKOUR V3 — and an ARRIVAL inside the working office for a movement that began certainly outside it
+        entry = position_registry.get(email)
+        if entry is not None and entry.active is not None and entry.active.movement_id == movement_id and office_zone.enters_office(entry.active.origin, [at]) and not await _checked_in(email):
+            await sio.emit("movement_rejected", {"movementId": movement_id, "reason": "office-access"}, to=sid)
+            return
 
         # SEAT OCCUPANCY (Phase 6C). A `sitting` arrival onto a seat another employee already holds is
         # accepted as STANDING at the same position — the position is true, the pose is not granted —
@@ -2728,7 +2744,7 @@ async def jump(sid: str, payload: dict | None = None) -> None:
 # started (`rise` to the end, `apex` the peak), bounded here. They are a description for peers to replay, nothing
 # more — receivers honour an end height only where a real standable top is, and no position travels on this event
 # (the traversal's path is the walk published with it, under the walk's own revision ordering).
-_PARKOUR_KINDS = ("double", "roll", "vault", "mantle")
+_PARKOUR_KINDS = ("double", "roll", "vault", "mantle", "route", "halt")
 _TIMED_KINDS = ("roll", "vault", "mantle")
 _HEIGHT_KINDS = ("vault", "mantle")
 _RISE_MAX = 40.0
@@ -2751,6 +2767,77 @@ def _action_seq(payload) -> int | None:
     return seq
 
 
+# PARKOUR V3 — THE DECLARED ROUTES (a ladder, a zipline): the server's own copy, generated from the 3D world's route data
+# (frontend dev/vo3d/world/traversalRoutes routeTable; a frontend test keeps the two identical). A route relay names
+# one of these and nothing else; its duration and heights are the TABLE's, never the client's.
+with open(os.path.join(os.path.dirname(__file__), "traversal_routes.json"), encoding="utf-8") as _f:
+    TRAVERSAL_ROUTES: dict[str, dict] = json.load(_f)
+# how far from a route's end the sender's last published position may be (its legs are ~400 ms apart), and how
+# closely their published feet height must match an end above the floor
+_ROUTE_REACH = 40.0
+_ROUTE_FEET_TOL = 6.0
+# an end at or below this is on the place's floor (the Lab's is 0.75), where no feet height is published
+_FLOOR_Y = 2.0
+
+
+def _last_place_and_point(email: str) -> tuple[str | None, dict | None, float | None]:
+    """Where the registry last had this employee: the place (room id), their point in that place's own frame
+    (`localAt` / the end of `localPath` — the frame the 3D world's routes are declared in), and the feet height they
+    published there (None on the floor)."""
+    entry = position_registry.get(email)
+    if entry is None:
+        return None, None, None
+    if entry.active is not None:
+        lp = entry.active.local_path
+        return entry.active.room_id, (lp[-1] if lp else None), entry.active.feet
+    if entry.stable is not None:
+        st = entry.stable
+        pt = {"x": st.local_x, "y": st.local_y} if st.local_x is not None and st.local_y is not None else None
+        return st.room_id, pt, st.feet
+    return None, None, None
+
+
+def _at_end(pt: dict, feet: float | None, end: dict) -> bool:
+    """is a body last seen at `pt` with `feet` standing at this route end — near it, and at its HEIGHT?"""
+    if math.hypot(pt["x"] - end["x"], pt["y"] - end["z"]) > _ROUTE_REACH:
+        return False
+    if end["y"] <= _FLOOR_Y:
+        return feet is None or feet <= _FLOOR_Y + _ROUTE_FEET_TOL
+    return feet is not None and abs(feet - end["y"]) <= _ROUTE_FEET_TOL
+
+
+def _validate_route(email: str, payload: dict) -> dict | None:
+    """A route relay the server will stand behind, or None. Checked: the route is declared; it may be taken this way;
+    `p0` is a fraction; and the sender's LAST KNOWN place is the route's place and their last known point there is
+    at the end they start from — within reach of it AND at its height (the feet height they published; none on the
+    floor) — or, for a ladder climbed back from part-way, near it at a height between its ends."""
+    route_id, way = payload.get("route"), payload.get("dir")
+    r = TRAVERSAL_ROUTES.get(route_id) if isinstance(route_id, str) else None
+    if r is None or way not in ("a", "b") or (way == "b" and not r["twoWay"]):
+        return None
+    p0 = payload.get("p0", 0)
+    if not _is_bounded_number(p0, 0.0, 0.999):
+        return None
+    place, pt, feet = _last_place_and_point(email)
+    if place != r["place"] or pt is None:
+        return None
+    if p0 > 0:
+        # a ladder climbed back from part-way: somewhere on it — near either end, at a height between them
+        lo, hi = sorted((r["a"]["y"], r["b"]["y"]))
+        near = any(math.hypot(pt["x"] - e["x"], pt["y"] - e["z"]) <= _ROUTE_REACH for e in (r["a"], r["b"]))
+        if not near or (feet is not None and not lo - _ROUTE_FEET_TOL <= feet <= hi + _ROUTE_FEET_TOL):
+            return None
+    elif not _at_end(pt, feet, r["a"] if way == "a" else r["b"]):
+        return None
+    return {"route": route_id, "dir": way, "p0": float(p0), "ms": int(r["ms"])}
+
+
+async def _checked_in(email: str) -> bool:
+    async with async_session_maker() as session:
+        status = await attendance_repo.get_status(session, email)
+    return status.get("status") == ATTENDANCE_CHECKED_IN
+
+
 @sio.on("parkour")
 async def parkour(sid: str, payload: dict | None = None) -> None:
     try:
@@ -2760,6 +2847,9 @@ async def parkour(sid: str, payload: dict | None = None) -> None:
         session_data = await sio.get_session(sid)
         email = session_data["email"]
         now = _now_ms()
+        if kind in ("route", "halt"):
+            await _route_relay(sid, email, kind, payload, now)
+            return
         key = f"parkour_at:{kind}"
         last = session_data.get(key)
         if isinstance(last, int) and now - last < _PARKOUR_MIN_INTERVAL_MS:
@@ -2784,6 +2874,27 @@ async def parkour(sid: str, payload: dict | None = None) -> None:
         )
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
+
+
+async def _route_relay(sid: str, email: str, kind: str, payload: dict, now: int) -> None:
+    """PARKOUR V3 — `route` (a declared route started, validated by _validate_route) and `halt` (the sender's route in
+    progress was cut short at one of its two ends). Both are kept for late joiners in the registry, and relayed on
+    `peer_parkour` with the SERVER's figures. Anything that does not check out is dropped, silently, as every relay
+    here is."""
+    seq = _action_seq(payload)
+    if kind == "route":
+        valid = _validate_route(email, payload)
+        if valid is None:
+            return
+        position_registry.set_traversal(email, {**valid, "at": now, **({"seq": seq} if seq is not None else {})}, now + int(valid["ms"] * (1 - valid["p0"])) + 500)
+        await sio.emit("peer_parkour", {"email": email, "at": now, "kind": "route", **valid, **({"seq": seq} if seq is not None else {})}, skip_sid=sid)
+        return
+    end = payload.get("end")
+    current = position_registry.traversal(email, now)
+    if current is None or end not in ("start", "exit"):
+        return
+    position_registry.clear_traversal(email)
+    await sio.emit("peer_parkour", {"email": email, "at": now, "kind": "halt", "route": current["route"], "end": end, **({"seq": seq} if seq is not None else {})}, skip_sid=sid)
 
 
 @sio.on("join_conversation")

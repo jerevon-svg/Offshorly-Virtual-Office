@@ -62,7 +62,11 @@ import { createHumanBody, humanBodyFor, type HumanBody } from "../avatar/humanBo
 import { dist, FACING_YAW, stepAngle, wrapAngle, type Facing, type Vec2 } from "../core/coords";
 import { standablePointNear, type StandTest } from "../player/PlayerBody";
 import { AIRBORNE_POSE_PHASE, JUMP_DURATION_MS, PlayerJump } from "../player/PlayerJump";
-import { LAND_ABSORB_FALL, ParkourPose, PARKOUR_MS, type ParkourMove } from "../avatar/parkourPose";
+import { HARD_FALL, LAND_ABSORB_FALL, ParkourPose, PARKOUR_MS, type ParkourMove } from "../avatar/parkourPose";
+import { BODY } from "./heightSolids";
+import { routeDuration, routeExit, sampleRoute, ziplineHold, type RouteDir, type TraversalRoute } from "./traversalRoutes";
+import { ZiplineTrolley } from "./ziplineRig";
+import type { GripProfile } from "../avatar/parkourPose";
 import type { Vo3dCoworker, Vo3dWalkPacing } from "../app/coworkers";
 import { doorLookahead, PLAYER_SPRINT_SPEED } from "../player/PlayerMode";
 import { traverseHeight, traverseProgress, type TraverseKind } from "../player/traversal";
@@ -123,6 +127,11 @@ const ROLL_STALE_MS = PARKOUR_MS.roll;
 const ROLL_WAIT_MS = 900;
 /** PARKOUR V2 — how long after a traversal's relay its own walk may still arrive and be adopted as its line */
 const TRAVERSE_ADOPT_MS = 300;
+/** PARKOUR V3 — a published feet height that disagrees with where this body's own continuity has it standing is
+ *  adopted after this long (a lost relay, a missed fall), never at once (a stale leg) */
+const ELEVATION_ADOPT_MS = 650;
+/** PARKOUR V3 — a grounded body whose support drops away by more than this walks off the edge and FALLS */
+const FALL_DROP = 5;
 /** how fast a standing body eases onto a new floor height (a furniture top, a ramp), per second */
 const GROUND_EASE = 14;
 
@@ -477,10 +486,21 @@ class CoworkerBody {
   private readonly topAt: ((p: Vec2, feet: number) => number | null) | null;
   /** PARKOUR V1 — the feet height this person's session published (a furniture top), or null on the floor */
   elevation: number | null = null;
+  /** PARKOUR V3 — the highest real surface at a point at or below a height (CoworkersDeps.supportAt): what lets this
+   *  body stand on the deck it is on beneath the one overhead, walk up a ramp, and fall when it walks off an edge */
+  private readonly supportAt: ((p: Vec2, maxTop: number) => number) | null;
+  /** how long the published height has disagreed with this body's own continuity, ms; whether it has a height yet */
+  private disagreeMs = 0;
+  private anchored = false;
+  /** PARKOUR V3 — a ladder or zipline being replayed (the same route and pace as the traverser's), and the relay it
+   *  came from (a late joiner's snapshot names the same one — it is applied once) */
+  private routeRun: { r: TraversalRoute; dir: RouteDir; elapsed: number; ms: number } | null = null;
+  routeKey: string | null = null;
 
-  constructor(source: BodySource, name: string, at: Vec2, yaw: number, phase: number, ground: ((p: Vec2) => number) | null = null, topAt: ((p: Vec2, feet: number) => number | null) | null = null) {
+  constructor(source: BodySource, name: string, at: Vec2, yaw: number, phase: number, ground: ((p: Vec2) => number) | null = null, topAt: ((p: Vec2, feet: number) => number | null) | null = null, supportAt: ((p: Vec2, maxTop: number) => number) | null = null) {
     this.ground = ground;
     this.topAt = topAt;
+    this.supportAt = supportAt;
     this.avatarId = source.id;
     this.displayName = name;
     this.root.name = `coworker:${name}`;
@@ -580,6 +600,66 @@ class CoworkerBody {
   /** is a relayed vault or mantle playing on this body? */
   get traversing(): boolean { return this.trav !== null; }
 
+  /** PARKOUR V3 — A RELAYED LADDER OR ZIPLINE, `ageMs` after it started (`p0` of the way along when it started — a
+   *  ladder climbed back from part-way). A late joiner's snapshot arrives here too, mid-route: the body is put where
+   *  the route has it NOW and carries on, never waiting at an end. Refused while seated or riding. */
+  ride(r: TraversalRoute, dir: RouteDir, ageMs: number, p0 = 0): boolean {
+    if (this.seatedIn !== null || this.scooterRide) return false;
+    this.land();
+    const ms = routeDuration(r);
+    this.routeRun = { r, dir, elapsed: Math.min(ms, p0 * ms + Math.max(0, ageMs)), ms };
+    this.parkourFx.start(r.kind, ms, this.routeRun.elapsed);
+    this.stepRoute(0);
+    return true;
+  }
+  /** PARKOUR V3 — the traverser's route was cut short: this body goes to the same SAFE END (only ever one of the
+   *  route's own two ends — a relayed point is never trusted as a place to stand) */
+  haltRoute(end: "start" | "exit"): void {
+    const cur = this.routeRun;
+    if (!cur) return;
+    this.routeRun = null;
+    this.parkourFx.cancel();
+    this.parkourFx.setGrip(null);
+    this.ziplineHold = null;
+    const q = routeExit(cur.r, end === "exit" ? cur.dir : cur.dir === "a" ? "b" : "a");
+    this.root.position.set(q.x, q.y, q.z);
+  }
+  /** the hands (world) of this body's rig, or null */
+  hands(): [THREE.Vector3, THREE.Vector3] | null { return this.parkourFx.hands(); }
+  /** which route this body is on, and how far along (0..1) — the tests and the dev surface */
+  get routeState(): { id: string; u: number } | null { return this.routeRun ? { id: this.routeRun.r.id, u: Math.min(1, this.routeRun.elapsed / this.routeRun.ms) } : null; }
+
+  /** PARKOUR V3 — on a zipline: the trolley and the handle this frame (the world draws them), or null; the cable's
+   *  height over the feet line; and where this rig holds the grips */
+  ziplineHold: ReturnType<typeof ziplineHold> = null;
+  ziplineHang = 55;
+  gripProfile(): GripProfile { return this.parkourFx.gripProfile(); }
+  private stepRoute(dt: number): void {
+    const cur = this.routeRun!;
+    cur.elapsed += dt * 1000;
+    const u = Math.min(1, cur.elapsed / cur.ms);
+    const s = sampleRoute(cur.r, cur.dir, u);
+    // THE SAME HOLD the rider's own screen uses: the trolley, the handle, and these hands on it
+    const hold = ziplineHold(cur.r, cur.dir, u);
+    this.ziplineHold = u >= 1 ? null : hold;
+    this.parkourFx.setGrip(hold && u < 1 ? new THREE.Vector3(hold.cable.x, hold.cable.y, hold.cable.z) : null, hold ? ZiplineTrolley.axis(hold.yaw) : undefined, cur.r.grip, hold?.hang);
+    this.ziplineHang = cur.r.grip ?? 55;
+    this.root.position.set(s.p.x, s.p.y, s.p.z);
+    this.yaw = s.yaw;
+    this.root.rotation.set(0, s.yaw, 0);
+    this.freezeAt(CLIP_IDLE, 0);
+    if (u >= 1) {
+      this.routeRun = null;
+      if (this.parkourFx.active === cur.r.kind) this.parkourFx.cancel();
+      if (cur.r.kind === "zipline") this.parkourFx.start("land");
+      // standing at its far end: the height there is this body's own from now on
+      const end = routeExit(cur.r, cur.dir);
+      this.root.position.set(end.x, end.y, end.z);
+      this.elevation = end.y > (this.ground ? this.ground(end) : 0) + 0.5 ? end.y : null;
+      this.play(this.restingClip);
+    }
+  }
+
   /** a published height, honoured only as the ground or a real top under `at` */
   private validFeet(at: Vec2, feet: number): number {
     const base = this.ground ? this.ground(at) : 0;
@@ -621,8 +701,11 @@ class CoworkerBody {
    *  every transition out of "standing body" — see `vertical`. */
   private land(): void {
     this.parkourFx.cancel();
+    this.parkourFx.setGrip(null);
+    this.ziplineHold = null;
     this.pendingRoll = 0;
     this.trav = null;
+    this.routeRun = null;
     if (!this.vertical.airborne && this.root.position.y === 0) return;
     this.vertical.reset();
     this.root.position.y = 0;
@@ -703,12 +786,23 @@ class CoworkerBody {
   /** Which way this body is looking, radians. Read-only, and read by the dev surface alone. */
   get facingYaw(): number { return this.yaw; }
   get pos(): Vec2 { return { x: this.root.position.x, z: this.root.position.z }; }
-  private groundY(): number {
-    const base = this.ground ? this.ground(this.root.position) : 0;
-    // PARKOUR V1 — on a furniture top only where the published height names a real top under the body now
-    if (this.elevation === null || !this.topAt) return base;
-    const top = this.topAt(this.root.position, this.elevation);
-    return top !== null && top > base ? top : base;
+  private groundY(): number { return this.groundRead().y; }
+  /** THE GROUND THIS BODY STANDS ON, and whether the published height and its own continuity disagree about it.
+   *  PARKOUR V1: on a furniture top only where the published height names a real top under the body now. PARKOUR V3
+   *  (with `supportAt`): the highest real surface at or a step above where its feet ARE — so it stays on the deck it
+   *  is on, climbs a ramp, and is caught by the first surface it falls to; the published height wins only where it
+   *  agrees, on a body not yet placed, or once it has disagreed for ELEVATION_ADOPT_MS. */
+  private groundRead(): { y: number; disagree: boolean } {
+    const pos = this.root.position;
+    const base = this.ground ? this.ground(pos) : 0;
+    const top = this.elevation !== null && this.topAt ? this.topAt(pos, this.elevation) : null;
+    const published = top !== null && top > base ? top : base;
+    if (!this.supportAt) return { y: published, disagree: false };
+    const feet = this.vertical.airborne ? this.vertical.feet : pos.y;
+    const s = this.supportAt(pos, feet + (this.vertical.airborne ? BODY.airClear : BODY.stepUp));
+    const own = s > base ? s : base;
+    if (!this.anchored || Math.abs(published - own) < 0.5) return { y: published, disagree: false };
+    return { y: this.disagreeMs >= ELEVATION_ADOPT_MS ? published : own, disagree: true };
   }
 
   /** WHAT THE AUTOMATIC DOORS SEE OF THIS BODY: where it stands, and the route it is about to take.
@@ -763,7 +857,8 @@ class CoworkerBody {
     // break into a run at the peak of its own curve. A prototype without a run clip walks faster instead.
     this.locomotion = locomotion(this.runtime, this.replay.meanSpeed, this.replay.meanSpeed >= RUN_FROM_SPEED, this.actions[CLIP_RUN] !== undefined, null).clip;
     const at = this.replay.position;
-    this.root.position.set(at.x, 0, at.z);
+    // (PARKOUR V3: the height is kept — the body's own continuity decides it; a placement re-anchors, see snapTo)
+    this.root.position.set(at.x, this.root.position.y, at.z);
     // PARKOUR V2 — a walk arriving just after a traversal's relay is ITS OWN walk, ADOPTED as its line (the relay may
     // have found the previous leg still replaying, so whatever line it took is replaced). The traverser's keys are
     // locked for the whole move (≥ 450 ms), so nothing newer can come from them that soon. Any later walk is newer
@@ -775,7 +870,14 @@ class CoworkerBody {
         tr.to = this.replay.end;
         tr.endY = this.validFeet(this.replay.end, tr.want);
         tr.apex = Math.max(tr.apex, tr.endY);
-      } else { this.trav = null; this.parkourFx.cancel(); }
+      } else {
+        this.trav = null;
+        this.parkourFx.cancel();
+        // cut off mid-move: down from where it was — a real fall where this world knows its surfaces (PARKOUR V3), the
+        // ground at once where it does not (V2's rule)
+        if (this.supportAt) this.vertical.fall(this.root.position.y);
+        else this.root.position.y = this.groundY();
+      }
     }
   }
 
@@ -884,7 +986,7 @@ class CoworkerBody {
   /** Position only. True when it changed. */
   private moveTo(at: Vec2): boolean {
     if (this.root.position.x === at.x && this.root.position.z === at.z) return false;
-    this.root.position.set(at.x, 0, at.z);
+    this.root.position.set(at.x, this.root.position.y, at.z);
     return true;
   }
 
@@ -898,6 +1000,8 @@ class CoworkerBody {
   private snapTo(at: Vec2, yaw: number): boolean {
     if (this.root.position.x === at.x && this.root.position.z === at.z && this.yaw === yaw) return false;
     this.root.position.set(at.x, 0, at.z);
+    // PARKOUR V3 — a PLACEMENT, not a step: the height is taken afresh from what was published for this spot
+    this.anchored = false;
     this.yaw = yaw;
     this.root.rotation.set(0, yaw, 0);
     return true;
@@ -993,6 +1097,14 @@ class CoworkerBody {
       this.tick(dt);
       return false;
     }
+    // PARKOUR V3 — A LADDER OR A ZIPLINE, replayed: the route owns the body (its walk keeps advancing underneath, so
+    // whatever was published meanwhile is current when the route lets go)
+    if (this.routeRun) {
+      if (this.replay) this.replay.advance(dt * 1000);
+      this.stepRoute(dt);
+      this.tick(dt);
+      return true;
+    }
     let moved = false;
     // THE VERTICAL HALF, stepped before the horizontal one and written after it. Everything below
     // keeps setting the root's x/z (and a y of 0) exactly as it did; the single write at the bottom is
@@ -1005,6 +1117,8 @@ class CoworkerBody {
     }
     if (landed && this.parkourFx.active === "flip") this.parkourFx.hurry();
     // the same landing the jumper's own screen plays: knees and hips give after a real fall (a double jump, a drop)
+    // PARKOUR V3 — a fall too big for a roll is a HARD landing on every screen, decided from this body's own arc
+    if (landed && this.vertical.lastFall >= HARD_FALL) this.parkourFx.start("hard");
     if (landed && !this.parkourFx.active && this.vertical.lastFall >= LAND_ABSORB_FALL) this.parkourFx.start("land");
     if (landed) {
       // Landing restores the frozen clip's rate ONCE, before the branches below choose what to play —
@@ -1015,7 +1129,7 @@ class CoworkerBody {
     if (this.replay) {
       const step = this.replay.advance(dt * 1000);
       moved = step.travelled > 1e-6;
-      this.root.position.set(step.pos.x, 0, step.pos.z);
+      this.root.position.set(step.pos.x, this.root.position.y, step.pos.z);
       if (step.heading !== null) {
         this.travelHeading = step.heading;
         this.yaw = stepAngle(this.yaw, step.heading, TURN_RATE * dt);
@@ -1097,14 +1211,21 @@ class CoworkerBody {
       // ON THE GROUND the replay has put them on — flat indoors, the campus's own heights outside, a furniture
       // top they are standing on — so a peer on the lawn stands on the lawn rather than on the office floor's
       // datum. A small change is eased (a step onto a top, a ramp); the landing frame and a relocation snap.
-      const y = this.groundY();
+      const read = this.groundRead();
+      this.disagreeMs = read.disagree ? this.disagreeMs + dt * 1000 : 0;
+      const y = read.y;
       const was = this.root.position.y;
-      if (was !== y) {
+      if (this.supportAt && this.anchored && was - y > FALL_DROP && travY === null) {
+        // PARKOUR V3 — WALKED OFF AN EDGE: a real fall, down to whatever catches it (a lower deck, the floor)
+        this.vertical.fall(was);
+        moved = true;
+      } else if (was !== y) {
         const d = y - was;
         this.root.position.y = landed || Math.abs(d) < 0.01 || Math.abs(d) > 40 ? y : was + d * Math.min(1, dt * GROUND_EASE);
         moved = true;
       }
     }
+    this.anchored = true;
     if (this.parkourFx.active) moved = true;
     if (this.targetYaw !== null) {
       // The last beat of a walk: onto the yaw the arrival asked for, at the rate the body turns.
@@ -1218,6 +1339,11 @@ export interface CoworkersDeps {
   /** PARKOUR V1 — the real standable top at a world point that matches a published feet height (world/standables),
    *  or null. The only way a relayed `feet` hint ever lifts anybody: it must name a top that is really there. */
   topAt?: (p: Vec2, feet: number) => number | null;
+  /** PARKOUR V3 — the highest real surface at a point at or below a height (world/standables topUnder). With it every
+   *  body keeps its own vertical continuity: stacked decks, ramps, falling off an edge. Absent = V1's rule exactly. */
+  supportAt?: (p: Vec2, maxTop: number) => number;
+  /** PARKOUR V3 — the declared traversal route with this id (world/traversalRoutes), or undefined */
+  routes?: (id: string) => TraversalRoute | undefined;
   /** V1 frame point -> built V2 world point, room shifts applied */
   toWorld: (p: Vec2) => Vec2;
   lod?: AvatarLod;
@@ -1490,8 +1616,12 @@ export class Coworkers {
       // Deterministic per person rather than random: the same viewer reloading, and two viewers looking
       // at the same room, see the same stagger instead of a fresh shuffle.
       const phase = phaseFor(coworker.email);
-      const body = new CoworkerBody(proto, coworker.displayName, pos, coworker.yaw ?? FACING_YAW[coworker.facing], phase, this.deps.groundY ?? null, this.deps.topAt ?? null);
+      const body = new CoworkerBody(proto, coworker.displayName, pos, coworker.yaw ?? FACING_YAW[coworker.facing], phase, this.deps.groundY ?? null, this.deps.topAt ?? null, this.deps.supportAt ?? null);
       body.elevation = coworker.feet ?? null;
+      // PARKOUR V3 — somebody already on a route when this viewer first draws them: picked up where it has them now
+      const tr = coworker.traversal;
+      const tr0 = tr ? this.deps.routes?.(tr.routeId) : undefined;
+      if (tr && tr0) { body.routeKey = tr.key; body.ride(tr0, tr.dir, tr.elapsedMs, tr.p0); }
       // A body cloned after the host took over the nameplates must not bring a sprite one back with it.
       body.setLabelVisible(this.labelsVisible);
       body.setConversationClip(this.conversationClips.get(email) ?? null);
@@ -1554,6 +1684,13 @@ export class Coworkers {
       const spot = this.wanted.get(email);
       if (!spot) continue;
       body.elevation = spot.coworker.feet ?? null;
+      // PARKOUR V3 — A LATE JOINER (or a reconnect) sees a route in progress where it is now, once per relay
+      const tr = spot.coworker.traversal;
+      if (tr && body.routeKey !== tr.key) {
+        body.routeKey = tr.key;
+        const r = this.deps.routes?.(tr.routeId);
+        if (r) { body.ride(r, tr.dir, tr.elapsedMs, tr.p0); moved = true; }
+      }
       const walk = spot.coworker.walk;
       if (walk) {
         if (body.movementId !== walk.movementId) {
@@ -1809,6 +1946,45 @@ export class Coworkers {
       : body.traverse(kind, ms ?? PARKOUR_MS[kind], rise, apex, ageMs);
     if (took) this.deps.onChanged?.("position");
     return took;
+  }
+
+  /** PARKOUR V3 — SOMEBODY STARTED A ROUTE (a ladder, the zipline): same ordering and identity as every parkour relay;
+   *  the route must be one this world declares, and a relay older than the route's own remaining length is over
+   *  everywhere else and dropped. `p0`: how far along it started. */
+  route(email: string, routeId: string, dir: RouteDir, ageMs = 0, at?: number, seq?: number, p0 = 0): boolean {
+    const r = this.deps.routes?.(routeId);
+    if (!r || (dir === "b" && !r.twoWay)) return false;
+    if (ageMs > routeDuration(r) * (1 - p0) + 250) return false;
+    const key = email.trim().toLowerCase();
+    // the same relay a late joiner's snapshot already applied (it carries the relay's own identity) is not replayed
+    const rk = `${at ?? 0}:${seq ?? 0}`;
+    if (this.bodies.get(key)?.routeKey === rk) return false;
+    if (!this.inOrder(key, at, seq)) return false;
+    const body = this.bodies.get(key);
+    if (!body) return false;
+    body.routeKey = rk;
+    const took = body.ride(r, dir, ageMs, p0);
+    if (took) this.deps.onChanged?.("position");
+    return took;
+  }
+  /** PARKOUR V3 — every peer riding a zipline right now, with their trolley's hold (the world draws the trolleys) */
+  ziplineHolds(): { hold: NonNullable<ReturnType<typeof ziplineHold>>; hang: number; grip: GripProfile }[] {
+    const out: { hold: NonNullable<ReturnType<typeof ziplineHold>>; hang: number; grip: GripProfile }[] = [];
+    for (const b of this.bodies.values()) if (b.ziplineHold) out.push({ hold: b.ziplineHold, hang: b.ziplineHang, grip: b.gripProfile() });
+    return out;
+  }
+  /** the hands of a peer's body (world), for QA */
+  handsOf(email: string): [THREE.Vector3, THREE.Vector3] | null { return this.bodies.get(email.trim().toLowerCase())?.hands() ?? null; }
+
+  /** PARKOUR V3 — the traverser's route was cut short; they are at its start or its exit */
+  routeHalt(email: string, end: "start" | "exit", at?: number, seq?: number): boolean {
+    const key = email.trim().toLowerCase();
+    if (!this.inOrder(key, at, seq)) return false;
+    const body = this.bodies.get(key);
+    if (!body?.routeState) return false;
+    body.haltRoute(end);
+    this.deps.onChanged?.("position");
+    return true;
   }
 
   /** the last relayed action applied per sender: server time, then the sender's own sequence */

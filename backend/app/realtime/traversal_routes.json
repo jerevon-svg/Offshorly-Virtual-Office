@@ -1,0 +1,53 @@
+{
+  "lab/trunk-ladder": {
+    "kind": "ladder",
+    "place": "ai-lab",
+    "twoWay": true,
+    "ms": 3587,
+    "enterRadius": 16,
+    "a": {
+      "x": 757.79,
+      "y": 0.75,
+      "z": -686.14
+    },
+    "b": {
+      "x": 725.23,
+      "y": 48.75,
+      "z": -684.93
+    }
+  },
+  "lab/ship-stair": {
+    "kind": "ladder",
+    "place": "ai-lab",
+    "twoWay": true,
+    "ms": 3282,
+    "enterRadius": 16,
+    "a": {
+      "x": 675.32,
+      "y": 48.75,
+      "z": -808.92
+    },
+    "b": {
+      "x": 698.55,
+      "y": 96.75,
+      "z": -779.19
+    }
+  },
+  "lab/zipline": {
+    "kind": "zipline",
+    "place": "ai-lab",
+    "twoWay": false,
+    "ms": 4042,
+    "enterRadius": 16,
+    "a": {
+      "x": 826,
+      "y": 96.75,
+      "z": -721
+    },
+    "b": {
+      "x": 1192.75,
+      "y": 0.75,
+      "z": -685.62
+    }
+  }
+}

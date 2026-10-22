@@ -21,6 +21,12 @@
 // top, never "cleared" by a jump — so a double jump can never carry anybody over it; only player/traversal's
 // vault planner, with its access check, may name it.
 //
+// PARKOUR V3 — PLATFORMS, SLOPES AND STACKS. A standable may be a PLATFORM (`thickness`: a slab, so a body whose
+// head is below its underside passes beneath it — a treehouse deck), and may be SLOPED (`heightAt`: a ramp). Stacked
+// platforms are told apart by the FEET: `topUnder(p, r, maxTop)` is the highest top at or below a height, so a body on
+// the lower deck stands on the lower deck even where the upper one is overhead, a falling body is caught by the first
+// surface it reaches, and `ceilingAbove` is the underside of the nearest platform over the head (headroom).
+//
 // PURE: no THREE, no scene. Each standable carries its own distance function (0 inside its outline), so the
 // index never needs to know which world the outline came from.
 
@@ -57,7 +63,16 @@ export type Standable = {
   stand?: boolean;
   /** PARKOUR V2 — an eligible vault obstacle (default false) */
   vault?: boolean;
+  /** PARKOUR V3 — a PLATFORM's slab depth: solid only from `top − thickness` to `top`, open beneath. Absent = solid
+   *  from the floor up (furniture). */
+  thickness?: number;
+  /** PARKOUR V3 — a SLOPED top (a ramp): its height at a point, between `top` (the highest) and `low` (the lowest). */
+  heightAt?: (p: Vec2) => number;
+  low?: number;
 };
+
+/** the top of `s` at `p` (a sloped surface's own height there, else its flat top) */
+export const topOf = (s: Standable, p: Vec2): number => (s.heightAt ? s.heightAt(p) : s.top);
 
 /** PARKOUR V2 — traversal flags for a declared piece */
 export type TraversalFlags = { stand?: boolean; vault?: boolean };
@@ -95,6 +110,58 @@ export function standableFromRect(id: string, top: number, r: { x: number; z: nu
     dist: (p) => Math.hypot(Math.max(0, r.x - p.x, p.x - (r.x + r.w)), Math.max(0, r.z - p.z, p.z - (r.z + r.d))),
     bounds: { x0: r.x, z0: r.z, x1: r.x + r.w, z1: r.z + r.d },
   };
+}
+
+/** PARKOUR V3 — a flat PLATFORM over a polygon outline, minus any holes (a treehouse deck and its climb slot) */
+export function standableFromPolygon(id: string, top: number, poly: readonly Vec2[], holes: readonly (readonly Vec2[])[], thickness: number, flags: TraversalFlags = {}): Standable {
+  const edge = (q: Vec2, ring: readonly Vec2[]): number => {
+    let d = Infinity;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) d = Math.min(d, segDist(q, ring[j], ring[i]));
+    return d;
+  };
+  let x0 = Infinity, z0 = Infinity, x1 = -Infinity, z1 = -Infinity;
+  for (const q of poly) { x0 = Math.min(x0, q.x); z0 = Math.min(z0, q.z); x1 = Math.max(x1, q.x); z1 = Math.max(z1, q.z); }
+  return {
+    id, top, thickness, ...flags,
+    dist: (q) => {
+      if (!insidePolygon(q, poly)) return edge(q, poly);
+      for (const h of holes) if (insidePolygon(q, h)) return edge(q, h);
+      return 0;
+    },
+    bounds: { x0, z0, x1, z1 },
+  };
+}
+
+/** PARKOUR V3 — a SLOPED walkway along a polyline of (x, y, z) points, `halfWidth` either side (a ramp) */
+export function standableFromPath(id: string, path: readonly { x: number; y: number; z: number }[], halfWidth: number, thickness: number, flags: TraversalFlags = {}): Standable {
+  const project = (q: Vec2): { d: number; y: number } => {
+    let best = { d: Infinity, y: path[0].y };
+    for (let i = 1; i < path.length; i++) {
+      const a = path[i - 1], b = path[i];
+      const dx = b.x - a.x, dz = b.z - a.z, L2 = dx * dx + dz * dz;
+      const t = L2 < 1e-9 ? 0 : Math.max(0, Math.min(1, ((q.x - a.x) * dx + (q.z - a.z) * dz) / L2));
+      const d = Math.hypot(q.x - (a.x + dx * t), q.z - (a.z + dz * t));
+      if (d < best.d) best = { d, y: a.y + (b.y - a.y) * t };
+    }
+    return best;
+  };
+  const ys = path.map((q) => q.y);
+  return {
+    id, top: Math.max(...ys), low: Math.min(...ys), thickness, ...flags,
+    dist: (q) => Math.max(0, project(q).d - halfWidth),
+    heightAt: (q) => project(q).y,
+    bounds: {
+      x0: Math.min(...path.map((q) => q.x)) - halfWidth, z0: Math.min(...path.map((q) => q.z)) - halfWidth,
+      x1: Math.max(...path.map((q) => q.x)) + halfWidth, z1: Math.max(...path.map((q) => q.z)) + halfWidth,
+    },
+  };
+}
+
+/** distance from `q` to the segment a–b */
+export function segDist(q: Vec2, a: Vec2, b: Vec2): number {
+  const dx = b.x - a.x, dz = b.z - a.z, L2 = dx * dx + dz * dz;
+  const t = L2 < 1e-9 ? 0 : Math.max(0, Math.min(1, ((q.x - a.x) * dx + (q.z - a.z) * dz) / L2));
+  return Math.hypot(q.x - (a.x + dx * t), q.z - (a.z + dz * t));
 }
 
 /** PARKOUR V2 — a disc (a café table's pedestal footprint) as a traversal item */
@@ -154,10 +221,27 @@ export class StandableIndex {
     return out;
   }
 
-  /** THE TOP UNDER A BODY: the highest standable top a disc of radius `r` at `p` rests on, or −Infinity. */
-  topUnder(p: Vec2, r: number): number {
+  /** THE TOP UNDER A BODY: the highest standable top a disc of radius `r` at `p` rests on, or −Infinity.
+   *  `maxTop` (PARKOUR V3): only tops at or below it — the feet plus a step — so stacked platforms are told apart. */
+  topUnder(p: Vec2, r: number, maxTop = Infinity): number {
     let best = -Infinity;
-    for (const s of this.near(p, r)) if (canStandOn(s) && s.top > best) best = s.top;
+    for (const s of this.near(p, r)) {
+      if (!canStandOn(s)) continue;
+      const t = topOf(s, p);
+      if (t <= maxTop && t > best) best = t;
+    }
+    return best;
+  }
+
+  /** PARKOUR V3 — HEADROOM: the lowest PLATFORM UNDERSIDE over a body at `p` whose feet are at `feet` (a slab more than
+   *  `clear` above them), or Infinity under open sky. */
+  ceilingAbove(p: Vec2, r: number, feet: number, clear = 1): number {
+    let best = Infinity;
+    for (const s of this.near(p, r)) {
+      if (s.thickness === undefined) continue;
+      const under = topOf(s, p) - s.thickness;
+      if (under > feet + clear && under < best) best = under;
+    }
     return best;
   }
 
@@ -165,7 +249,14 @@ export class StandableIndex {
    *  This is how a relayed height is honoured — it can only select a surface that is really there. */
   topMatching(p: Vec2, r: number, feet: number, tol = 2.5): number | null {
     let best: number | null = null;
-    for (const s of this.near(p, r)) if (canStandOn(s) && Math.abs(s.top - feet) <= tol && (best === null || s.top > best)) best = s.top;
+    for (const s of this.near(p, r)) {
+      if (!canStandOn(s)) continue;
+      // a SLOPE (PARKOUR V3) matches a published height anywhere within its own rise — a walk carries the highest the
+      // feet stood during it — and is then its own height here; a flat top must match the height itself
+      const t = topOf(s, p);
+      const ok = s.heightAt ? feet >= (s.low ?? t) - tol && feet <= s.top + tol : Math.abs(t - feet) <= tol;
+      if (ok && (best === null || t > best)) best = t;
+    }
     return best;
   }
 
@@ -174,7 +265,7 @@ export class StandableIndex {
    *  the only obstacles a stand test may stop treating as solid for this body, at this height. */
   cleared(p: Vec2, r: number, reach: number): ReadonlySet<string> {
     let out: Set<string> | null = null;
-    for (const s of this.near(p, r)) if (canStandOn(s) && s.top <= reach) (out ??= new Set()).add(s.id);
+    for (const s of this.near(p, r)) if (canStandOn(s) && topOf(s, p) <= reach) (out ??= new Set()).add(s.id);
     return out ?? NONE;
   }
 

@@ -276,3 +276,95 @@ describe.each(RIGS)("parkour V2 pose on %s", (id) => {
     }
   });
 });
+
+// PARKOUR V3 — THE LADDER, THE ZIPLINE AND THE HARD LANDING, on the same real rigs.
+describe.each(RIGS)("parkour V3 pose on %s", (id) => {
+  it("THE LADDER: hand over hand — the arms and the opposite knees alternate as it climbs, the body upright", () => {
+    const h = holder(id);
+    h.pose.start("ladder", 3000);
+    const lead: number[] = [], trail: number[] = [], kneeL: number[] = [], kneeT: number[] = [];
+    for (let ms = 0; ms < 1400; ms += 1000 / 60) {
+      h.pose.update(1 / 60);
+      if (ms > 300) { lead.push(turned(h, h.rig.arms[0])); trail.push(turned(h, h.rig.arms[1])); kneeL.push(bendOf(h.rig, 0)); kneeT.push(bendOf(h.rig, 1)); }
+    }
+    // each arm reaches well up, and they take turns (one up while the other comes down)
+    expect(Math.max(...lead)).toBeGreaterThan(1.8);
+    const diff = lead.map((v, i) => v - trail[i]);
+    expect(Math.max(...diff)).toBeGreaterThan(0.4);
+    expect(Math.min(...diff)).toBeLessThan(-0.4);
+    // the knees alternate too, the TRAIL knee up with the LEAD hand (a diagonal climb)
+    const kd = kneeL.map((v, i) => v - kneeT[i]);
+    expect(Math.max(...kd) - Math.min(...kd)).toBeGreaterThan(0.8);
+    expect(turnOf(h.pose)).toBeLessThan(0.2); // no whole-body spin
+  });
+
+  it("THE ZIPLINE: both hands overhead carrying the hang, the legs swinging with the ride, then the release", () => {
+    const h = holder(id);
+    h.pose.start("zipline", 4000);
+    let swingMin = Infinity, swingMax = -Infinity, overhead = 0;
+    for (let ms = 0; ms < 3400; ms += 1000 / 60) {
+      h.pose.update(1 / 60);
+      if (ms > 400) {
+        overhead = Math.max(overhead, Math.min(turned(h, h.rig.arms[0]), turned(h, h.rig.arms[1])));
+        const b = turned(h, h.rig.thighs[0]); // the legs swing at the hips with the ride
+        swingMin = Math.min(swingMin, b); swingMax = Math.max(swingMax, b);
+      }
+    }
+    expect(overhead).toBeGreaterThan(2.2);
+    expect(swingMax - swingMin).toBeGreaterThan(0.08);
+    while (h.pose.active) h.pose.update(1 / 60);
+    expect(restored(h)).toBe(true);
+  });
+
+  it("THE HARD LANDING: a deep crouch over planted feet with the lead hand down, then up — never a roll or a spin", () => {
+    const h = holder(id);
+    const restHip = wp(hips(h.rig)).y, restFoot = lowestFoot(h.rig);
+    playTo(h.pose, "hard", PARKOUR_MS.hard, 0.4);
+    expect(wp(hips(h.rig)).y).toBeLessThan(restHip - H * 0.12);
+    expect(Math.abs(lowestFoot(h.rig) - restFoot)).toBeLessThan(H * 0.02);
+    expect(turned(h, h.rig.arms[0]) - turned(h, h.rig.arms[1])).toBeGreaterThan(0.4); // the lead hand, not both
+    expect(turnOf(h.pose)).toBeLessThan(0.3);
+    while (h.pose.active) h.pose.update(1 / 60);
+    expect(restored(h)).toBe(true);
+  });
+});
+
+// PARKOUR V3 — THE ZIPLINE GRIP: both hands ON the handle's grips while the trolley runs down the cable — at the start,
+// the middle and the end of the ride — on HumanBase and the legacy rigs, each holding them at its own reach (a chibi
+// beside its head: its arms are far shorter than its head is tall).
+describe.each(RIGS)("zipline grip on %s", (id) => {
+  it("keeps both hands on the moving grips through the ride, clear of the head, and lets go at the end", () => {
+    const h = holder(id);
+    const yaw = 0.8, axis = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw)), HANG = 55;
+    h.root.rotation.y = yaw;
+    const total = 4000;
+    h.pose.start("zipline", total);
+    const prof = h.pose.gripProfile();
+    // a chibi's grips are outside its head (half-width ~9); every rig's are above its shoulders
+    if (id !== "humanbase") expect(prof.halfSpan).toBeGreaterThan(9.5);
+    expect(prof.handY).toBeGreaterThan(wp(h.rig.arms[0]).y - h.root.position.y);
+    const cable = new THREE.Vector3();
+    const gaps: number[] = [];
+    const checks = [0.1, 0.5, 0.85];
+    for (let ms = 0; ms < total * 0.88; ms += 1000 / 60) {
+      const u = ms / total;
+      // the trolley runs along and down the cable; the rider (root) runs beneath it
+      h.root.position.set(120 + 30 * u, 40 - 30 * u, -40);
+      h.root.updateMatrixWorld(true);
+      cable.set(h.root.position.x, h.root.position.y + HANG, h.root.position.z);
+      h.pose.setGrip(cable, axis, HANG, 1);
+      h.pose.update(1 / 60);
+      if (checks.length && u >= checks[0]) {
+        checks.shift();
+        const [l, r] = h.pose.hands()!;
+        const at = (side: number) => cable.clone().addScaledVector(new THREE.Vector3(0, 1, 0), -(HANG - prof.handY)).addScaledVector(axis, side * prof.halfSpan);
+        gaps.push(Math.max(l.distanceTo(at(1)), r.distanceTo(at(-1))));
+      }
+    }
+    expect(gaps.length).toBe(3);
+    for (const d of gaps) expect(d).toBeLessThan(0.25); // ON the grips, not near them
+    h.pose.setGrip(null);
+    while (h.pose.active) h.pose.update(1 / 60);
+    expect(restored(h)).toBe(true);
+  });
+});

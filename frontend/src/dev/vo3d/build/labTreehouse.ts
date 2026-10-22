@@ -15,8 +15,8 @@ import { shrubGeometry, tube, BARK } from "./exteriorFoliage";
 import { pool, cellUV, type Cell, type ScreenBank } from "./labMaterials";
 import { openShelf } from "./labShell";
 import {
-  CLIMB, HANG, JUMP_PAD, L1, L1_POSTS, L2, L2_POSTS, POLE, RAMP, RESIDENCE, STAIR, SW_BRANCH, TOUCAN_LIMB, TREE, TRUNK, WEST_LIMB,
-  IDLE_SPOTS, JOB_BOARD, l1Rim, l1Slot, l2Rim, polar,
+  CLIMB, HANG, JUMP_PAD, L1, L1_POSTS, L2, L2_POSTS, POLE, RAMP, RESIDENCE, STAIR, TOUCAN_LIMB, TREE, TRUNK,
+  IDLE_SPOTS, JOB_BOARD, l1Rim, l1Slot, l2Rim, polar, L1_RAIL_OPENINGS, L2_RAIL_OPENINGS, LAB_ROUTES, ZIPLINE, ziplineCable,
 } from "../world/ailabV2";
 import type { Vec2 } from "../core/coords";
 import type { V3 } from "../world/monkeyTraversal";
@@ -261,10 +261,9 @@ export function buildTreehouse(screens: ScreenBank): TreehouseParts {
   planks(T, rim1, [slot], L1.y, 0.35, rnd);
   fascia(T, rim1, L1.y);
   fascia(T, slot, L1.y, 3.2);
-  // the south prow is OPEN — a low curb and planter boxes instead of a rail (the stage the Lab looks up at)
-  const prowOpen = [polar(78, 100), polar(92, 104), polar(104, 101), polar(62, 98)].map((q) => ({ x: q.x, z: q.z }));
-  const routeGaps = [RAMP.path[1], WEST_LIMB.path[1], SW_BRANCH.path[1], { x: 846, y: 0, z: -780 }].map((q) => ({ x: q.x, z: q.z }));
-  rail(T, M, rim1, L1.y, [...prowOpen, ...routeGaps]);
+  // the south prow is OPEN — a low curb and planter boxes instead of a rail (the stage the Lab looks up at) — and so
+  // are the routes off L1. The openings are world/ailabV2's, which is also where the rails are made solid.
+  rail(T, M, rim1, L1.y, L1_RAIL_OPENINGS);
   // the slot: a rail along its north-east side and across its outer end; its south-west LIP is the mantle edge
   rail(T, M, [slot[0], slot[1], slot[2]], L1.y, [], false, 12);
   for (const a of [70, 84, 98]) { const q = polar(a, 101); T.box(16, 6, 8, q.x, L1.y, q.z, 0x8c6644); p.leaves.push(shrubGeometry(30 + a).clone().scale(0.6, 0.5, 0.6).translate(q.x, L1.y + 6, q.z)); }
@@ -283,8 +282,7 @@ export function buildTreehouse(screens: ScreenBank): TreehouseParts {
   deckSlab(D, rim2, [], L2.y, 3.2);
   planks(T, rim2, [], L2.y, -0.25, rnd);
   fascia(T, rim2, L2.y);
-  const resFront = [{ x: 700, z: -862 }, { x: 760, z: -872 }, { x: 830, z: -862 }];
-  rail(T, M, rim2, L2.y, [{ x: STAIR.top.x, z: STAIR.top.z }, { x: POLE.ledge.x, z: POLE.ledge.z }, ...resFront], true, 13);
+  rail(T, M, rim2, L2.y, L2_RAIL_OPENINGS, true, 13);
   for (const q of L2_POSTS) T.cyl(2.8, L2.y - L1.y - 4, q.x, L1.y, q.z, 0x9a7350, 10);
   // timber knee braces off the trunk carrying L2 (none across the south face, where the climb and the homes are seen)
   for (const a of [160, 215, 250, 290, 320]) T.tube(polar(a, TRUNK.rMid - 2, L2.y - 36), { x: L2.cx + (polar(a, 60).x - TREE.x), y: L2.y - 4, z: L2.cz + (polar(a, 60).z - TREE.z) }, 2.2, T_EDGE, 7);
@@ -327,6 +325,27 @@ export function buildTreehouse(screens: ScreenBank): TreehouseParts {
     if (a.y > 8) for (const sg of [-1, 1]) T.cyl(1.8, a.y - 2.5, a.x + sd.x * sg, 0, a.z + sd.z * sg, 0x9a7350, 8);
   }
   for (const q of [RAMP.path[2], RAMP.path[3]]) { LN.box(2.4, 3.2, 2.4, q.x, q.y + 13, q.z, 0xffe0a8); SP.add(pool(12, 0xffc070), new THREE.Matrix4().makeTranslation(q.x, q.y + 0.4, q.z)); }
+  // ---- PARKOUR V3: the TRUNK LADDER in the climb slot — timber rungs on two steel standoffs up the trunk's face ----
+  {
+    const c = polar(CLIMB.deg, TRUNK.r + 3), side = { x: -Math.sin((CLIMB.deg * Math.PI) / 180) * 7, z: Math.cos((CLIMB.deg * Math.PI) / 180) * 7 };
+    for (const sg of [-1, 1]) M.tube({ x: c.x + side.x * sg, y: 0, z: c.z + side.z * sg }, { x: c.x + side.x * sg, y: L1.y + 6, z: c.z + side.z * sg }, 0.7, STEEL, 5);
+    for (let y = 6; y <= L1.y + 2; y += 7) T.tube({ x: c.x - side.x * 1.2, y, z: c.z - side.z * 1.2 }, { x: c.x + side.x * 1.2, y, z: c.z + side.z * 1.2 }, 0.9, T_EDGE, 6);
+  }
+  // ---- PARKOUR V3: the ZIPLINE — a mast on L2's east edge, the cable down to a post on the work floor, a mat ----
+  {
+    const m = ZIPLINE.mast;
+    M.cyl(1.8, m.top - L2.y, m.x, L2.y, m.z, STEEL, 10);
+    M.tube({ x: m.x, y: m.top - 1, z: m.z }, { x: ZIPLINE.from.x, y: ZIPLINE.from.y + 1, z: ZIPLINE.from.z }, 0.9, STEEL, 6);
+    const pts: THREE.Vector3[] = [];
+    for (let i = 0; i <= 24; i++) { const q = ziplineCable(i / 24); pts.push(V(q.x, q.y, q.z)); }
+    for (let i = 1; i < pts.length; i++) M.tube(pts[i - 1], pts[i], 0.35, 0x2b2f35, 4);
+    // (the TROLLEY and its handle are not baked: they move — world/ziplineRig draws one parked at the top and one
+    // per rider, travelling the cable with them)
+    T.cyl(3, ZIPLINE.to.y, ZIPLINE.to.x, 0, ZIPLINE.to.z, 0x9a7350, 12);
+    const land = LAB_ROUTES.find((r) => r.id === "lab/zipline")!.path.at(-1)!;
+    D.cyl(13, 0.35, land.x, 0, land.z, 0x4f5f58, 24);
+    M.add(new THREE.TorusGeometry(8, 0.5, 3, 28).rotateX(Math.PI / 2), new THREE.Matrix4().makeTranslation(land.x, 0.36, land.z), 0xe6b45a);
+  }
   // ---- the JUMP STUMP, with a landing mat beyond it ----
   tube(p.bark, [V(JUMP_PAD.x, -1, JUMP_PAD.z), V(JUMP_PAD.x, JUMP_PAD.y * 0.5, JUMP_PAD.z), V(JUMP_PAD.x, JUMP_PAD.y, JUMP_PAD.z)], [JUMP_PAD.r * 1.25, JUMP_PAD.r * 1.04, JUMP_PAD.r], 14, { grooves: 6, depth: 0.12, flare: { n: 5, amp: 0.35, phase: 1 }, cap: false });
   T.cyl(JUMP_PAD.r - 0.6, 0.8, JUMP_PAD.x, JUMP_PAD.y - 0.3, JUMP_PAD.z, 0xd8b98a, 18);

@@ -48,8 +48,8 @@ export type TraversalWorld = {
   vaultables(p: Vec2, r: number): readonly Standable[];
   /** the floor a body stands on at `p` (ground, or a standable top under it) */
   ground(p: Vec2): number;
-  /** the highest the FEET may rise at `p` (Infinity = open sky) */
-  headroom(p: Vec2): number;
+  /** the highest the FEET may rise at `p` for a body whose feet are at `feet` (Infinity = open sky) */
+  headroom(p: Vec2, feet?: number): number;
   /** may a body that is at `from` end up at `to`? (the office boundary: a confirmed check-in to enter) */
   mayEnter(from: Vec2, to: Vec2): boolean;
 };
@@ -122,7 +122,7 @@ export function planVault(w: TraversalWorld, pos: Vec2, dir: Vec2, feet: number,
     if (over) {
       if (entered < 0) entered = d;
       // over the obstacle: only it is excused, and there is room above it for the body going over
-      if (!w.stand(q, undefined, excuse) || w.headroom(q) < ob.top + VAULT.clear) return null;
+      if (!w.stand(q, undefined, excuse) || w.headroom(q, feet) < ob.top + VAULT.clear) return null;
       if (d - entered > VAULT.maxDepth + 2 * radius) return null;
     } else if (entered >= 0) {
       // past it: an ordinary stand point on the same level, or keep going while only the obstacle's rim is in the way
@@ -166,7 +166,7 @@ export function planMantle(w: TraversalWorld, pos: Vec2, dir: Vec2, feet: number
     const q = along(pos, dir, d);
     // the line onto the top, judged with the feet at the top's height: furniture under it is cleared, walls are not
     if (!w.stand(q, ctxAt(prev, true))) return null;
-    if (d >= edge + MANTLE.inset && Math.abs(w.ground(q) - top) <= MANTLE.levelTol && w.stand(q, ctxAt(q, false)) && w.headroom(q) >= top) {
+    if (d >= edge + MANTLE.inset && Math.abs(w.ground(q) - top) <= MANTLE.levelTol && w.stand(q, ctxAt(q, false)) && w.headroom(q, top) >= top) {
       if (!w.mayEnter(pos, q)) return null;
       const rise = top - feet;
       const ms = Math.round(Math.min(MANTLE.ms.max, Math.max(MANTLE.ms.min, 560 + rise * 16)));

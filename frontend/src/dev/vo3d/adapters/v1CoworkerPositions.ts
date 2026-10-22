@@ -185,8 +185,12 @@ export function applyLivePositions(
     // knows the chair. A V1 sitter in a chair V2 cannot identify keeps the standing placement below.
     const anchor = !walk && peer.stable.state === "sitting" ? anchorForSeatKey(peer.stable.seatKey) : null;
     const feet = walk ? peer.active?.feet : peer.stable.feet;
+    // PARKOUR V3 — a route in progress, aged on the server's clock (a late joiner picks it up part-way through)
+    const tr = peer.traversal;
+    const traversal = tr ? { routeId: tr.route, dir: tr.dir, p0: tr.p0, elapsedMs: Math.max(0, Date.now() + serverClockOffsetMs - tr.at), key: `${tr.at}:${tr.seq ?? 0}` } : undefined;
     return {
       ...coworker,
+      ...(traversal ? { traversal } : {}),
       // The conversion, in one place: their own box's halves, and nothing else.
       point: toCentre(peer.stable.pos, coworker.box),
       // V1's recorded arrival facing replaces the seat's own direction — they are not at the seat any

@@ -21,7 +21,8 @@ import type { EntityId, WorldState } from "../world/WorldState";
  *  (see PlayerDeps.dynamicCandidates), and the one kind whose activation does not move this body: it
  *  opens the interaction menu, which is the host's business. */
 /** "ride" — a docked shared e-scooter (world/scooters): activated like a person, without handing the avatar away */
-export type InteractKind = "seat" | "lounge" | "approach" | "person" | "ride";
+/** "route" (PARKOUR V3) — the end of a ladder or a zipline (world/traversalRoutes): entered by PlayerMode itself */
+export type InteractKind = "seat" | "lounge" | "approach" | "person" | "ride" | "route";
 /** INTERACTION V2 — `anchors` are WHERE YOU STAND to use the thing (a seat's stand cell, a cushion's, a fixture's
  *  walk-up point). Reach is measured to the nearer of the object and its anchors, so standing at a chair's own
  *  stand cell always reaches it; the facing test is still made against the object, which is what a player aims at. */

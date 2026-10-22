@@ -145,6 +145,13 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
       if (kind === "jump") emitJump(actionSeq);
       else emitParkour(kind, actionSeq, ms, heights);
     },
+    /** PARKOUR V3 — a declared route started or cut short: on the parkour relay, in the same per-page sequence */
+    routed(ev) {
+      note(ev.kind === "route" ? `route ${ev.route} ${ev.dir} p0=${ev.p0}` : `halt ${ev.route} ${ev.end}`);
+      actionSeq += 1;
+      if (ev.kind === "route") emitParkour("route", actionSeq, ev.ms, undefined, { route: ev.route, dir: ev.dir, p0: ev.p0 });
+      else emitParkour("halt", actionSeq, undefined, undefined, { route: ev.route, end: ev.end });
+    },
     noteFeet(feet) {
       feetNow = feet !== undefined && Number.isFinite(feet) && feet > 0.5 ? Math.round(feet * 100) / 100 : undefined;
       if (feetNow !== undefined && (feetPeak === undefined || feetNow > feetPeak)) feetPeak = feetNow;

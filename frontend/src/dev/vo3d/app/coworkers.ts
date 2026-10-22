@@ -140,7 +140,11 @@ export interface Vo3dCoworker {
   /** PARKOUR V1 — how high this person's feet stand (a furniture top), as their V2 session published it: the
    *  walk's own when one is in flight, else where they came to rest. A HINT ONLY — the world honours it solely
    *  where it matches a real standable top at the body's position (world/standables); absent = the floor. */
-  feet?: number;
+feet?: number;
+  /** PARKOUR V3 — a ladder or zipline this person is on RIGHT NOW (the snapshot a late joiner receives, and the live
+   *  relay): the route, which way, how far along it started, how long ago it started (server clock), and the relay's
+   *  identity so it is applied once. Absent = none. */
+  traversal?: { routeId: string; dir: "a" | "b"; p0: number; elapsedMs: number; key: string };
   /** PHASE 6C — the V2 SEAT ANCHOR this person is sitting in (app/seats.ts ids), when V1's stable state
    *  says "sitting" with a seat key the mapping (adapters/v1Seats) identifies, and no walk is in flight.
    *  Absent for everybody standing, and for a sitter in a chair V2 cannot identify — who is then drawn

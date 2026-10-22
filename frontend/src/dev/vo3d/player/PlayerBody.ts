@@ -33,7 +33,7 @@ export type StandContext = { feet: number; airborne: boolean; from: Vec2 };
 /** HEIGHTS FOR ONE MOVE (PlayerMode supplies them outdoors): the feet now, airborne or not, and — while
  *  grounded — the floor under any point (`support`) so the feet follow each sub-step, and the drop past
  *  which a grounded body leaves the edge instead of stepping down it (`fallDrop`). */
-export type MoveHeights = { feet: number; airborne: boolean; support?: (p: Vec2) => number; fallDrop?: number };
+export type MoveHeights = { feet: number; airborne: boolean; support?: (p: Vec2, feet?: number) => number; fallDrop?: number };
 
 /** sub-step length as a fraction of the body radius; a quarter of a body cannot skip a solid */
 const SUBSTEP_FRACTION = 0.25;
@@ -78,7 +78,9 @@ export class PlayerBody {
     const took = (q: Vec2): boolean => {
       this.pos = q;
       if (!h || h.airborne || !h.support) return true;
-      const y = h.support(q);
+      // (PARKOUR V3: the support is asked from where the feet are now, so a body on a lower deck is not lifted onto
+      // the one overhead)
+      const y = h.support(q, feet);
       if (h.fallDrop !== undefined && feet - y > h.fallDrop) { fell = true; return false; }
       feet = y;
       return true;

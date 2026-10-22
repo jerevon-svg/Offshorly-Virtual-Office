@@ -95,4 +95,27 @@ describe("movementSync — the parkour relay", () => {
     expect(emit.mock.calls.at(-1)).toEqual(["parkour", { kind: "vault", seq: 10, ms: 640, rise: 0, apex: 25 }]);
     mod.__resetForTests();
   });
+
+  it("PARKOUR V3: a route relay carries the declared route, its way and how far along; a halt its end; a snapshot its traversal", async () => {
+    const { mod, handlers, emit } = await socket();
+    const seen: unknown[] = [];
+    mod.subscribePeerParkour((e) => seen.push(e));
+    const fire = handlers.get("peer_parkour")!;
+    fire({ email: "a@b.c", at: 30, kind: "route", seq: 1, ms: 4078, route: "lab/zipline", dir: "a", p0: 0 });
+    fire({ email: "a@b.c", at: 31, kind: "route", seq: 2, route: "lab/zipline" });               // no way: dropped
+    fire({ email: "a@b.c", at: 32, kind: "route", seq: 3, route: "<script>", dir: "a" });        // not a route id: dropped
+    fire({ email: "a@b.c", at: 33, kind: "halt", seq: 4, route: "lab/zipline", end: "exit" });
+    expect(seen).toEqual([
+      { email: "a@b.c", at: 30, kind: "route", seq: 1, ms: 4078, route: "lab/zipline", dir: "a", p0: 0 },
+      { email: "a@b.c", at: 33, kind: "halt", seq: 4, route: "lab/zipline", end: "exit" },
+    ]);
+    mod.emitParkour("route", 9, 3587, undefined, { route: "lab/trunk-ladder", dir: "b", p0: 0.4 });
+    expect(emit.mock.calls.at(-1)).toEqual(["parkour", { kind: "route", seq: 9, ms: 3587, route: "lab/trunk-ladder", dir: "b", p0: 0.4 }]);
+    const m = applySnapshot(new Map(), {
+      serverTime: 5,
+      entries: [{ email: "a@x.com", revision: 3, pos: pt, facing: "front", state: "standing", seatKey: null, roomId: "ai-lab", updatedAt: 1, active: null, traversal: { route: "lab/zipline", dir: "a", p0: 0, at: 100, ms: 4078, seq: 2 } }],
+    } as never);
+    expect(m.get("a@x.com")!.traversal).toEqual({ route: "lab/zipline", dir: "a", p0: 0, at: 100, ms: 4078, seq: 2 });
+    mod.__resetForTests();
+  });
 });

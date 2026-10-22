@@ -32,8 +32,10 @@ import { PlayerInput } from "./PlayerInput";
 import { AIRBORNE_POSE_PHASE, PlayerJump, WALK_JUMP } from "./PlayerJump";
 import { collectCandidates, cycleTarget, nearbyFixture, pickTarget, rankTargets, REACH, type Candidate, type Target } from "./PlayerTargeting";
 import { ScooterMotion, SCOOTER, SCOOTER_JUMP } from "./ScooterMotion";
-import { LAND_ABSORB_FALL, ROLL_MS_RANGE } from "../avatar/parkourPose";
-import { planMantle, planVault, traverseHeight, traverseProgress, VAULT, type TraversalWorld, type TraversePlan } from "./traversal";
+import { HARD_FALL, LAND_ABSORB_FALL, PARKOUR_MS, ROLL_MS_RANGE } from "../avatar/parkourPose";
+import { routeDuration, routeEntriesAt, routeExit, sampleRoute, ziplineHold, type RouteDir, type TraversalRoute } from "../world/traversalRoutes";
+import { ZiplineTrolley } from "../world/ziplineRig";
+import { MANTLE, planMantle, planVault, traverseHeight, traverseProgress, VAULT, type TraversalWorld, type TraversePlan } from "./traversal";
 import { DRIFT, ScooterDrift } from "./ScooterDrift";
 import { ScooterHud } from "./ScooterHud";
 
@@ -68,8 +70,17 @@ const ROLL_SLOPE_MAX = 1.5;
 /** speed handed back to the run when the roll ends, units/s — a roll is a way of keeping going */
 const ROLL_EXIT_SPEED = 40;
 
+/** PARKOUR V3 — the tallest top a body is stepped down off when something else takes it (furniture); above this it is a
+ *  deck, a floor of its own, and the body is left standing on it */
+const STEP_OFF_MAX = 30;
 /** PARKOUR V2 — the speed a vault hands back to the run as the feet come down, units/s */
 const VAULT_EXIT_SPEED = 46;
+
+const _grip = new THREE.Vector3(), _gripAxis = new THREE.Vector3();
+/** PARKOUR V3 — what the world is told about a route: started (with how far along), or cut short at a safe end */
+export type RouteEvent =
+  | { type: "start"; route: TraversalRoute; dir: RouteDir; ms: number; p0: number }
+  | { type: "halt"; route: TraversalRoute; at: Vec2; feet: number; end: "start" | "exit" };
 
 /** a planned roll: from where the feet landed, along the travel direction, `dist` units over `ms` */
 export type RollPlan = { from: Vec2; to: Vec2; dir: Vec2; dist: number; ms: number };
@@ -137,7 +148,7 @@ export type PlayerDeps = {
   /** walking speed, read live so the GUI slider still applies */
   speed: () => number;
   /** hand an entity id to V2's existing interaction starters; returns false if it could not be started */
-  activate: (id: string, kind: Candidate["kind"]) => boolean;
+  activate: (id: string, kind: Exclude<Candidate["kind"], "route">) => boolean;
   /** PHASE 6D — candidates that MOVE, re-read every frame instead of harvested once at construction:
    *  the coworkers. Absent (the standalone dev page, and every phase before 6D) means there are none and
    *  this costs a single undefined check per frame. The scoring itself is untouched — the same pickTarget
@@ -163,14 +174,17 @@ export type PlayerDeps = {
    *  and the deepest drop it steps down. With it the stand test is handed the body's feet every step, so
    *  a jump clears what its feet clear and lands on whatever is under it; absent (the dev page, indoor-only
    *  tests) the jump is the flat-floor hop it always was. */
-  support?: (p: Vec2) => number;
+  support?: (p: Vec2, feet?: number) => number;
   dropMax?: number;
   /** PARKOUR V1 — the floor the body STANDS on at a point (the avatar's own ground, plus any furniture top under
    *  it — world/standables). Absent = the avatar's ground. */
-  groundAt?: (p: Vec2) => number;
+  groundAt?: (p: Vec2, feet?: number) => number;
   /** PARKOUR V1 — HEADROOM: the highest the FEET may rise at a point (a ceiling or a deck above, less the body).
    *  Absent = open sky. */
-  headroom?: (p: Vec2) => number;
+  headroom?: (p: Vec2, feet?: number) => number;
+  /** PARKOUR V3 — the declared TRAVERSAL ROUTES (world/traversalRoutes: ladders, a zipline) this body may take. Their
+   *  ends are offered as targets ("[E] Climb the ladder"); E starts one. Absent = none. */
+  routes?: readonly TraversalRoute[];
   /** PARKOUR V2 — CONTEXTUAL TRAVERSAL (player/traversal): the world's vault obstacles, its stand test with one
    *  vaulted obstacle excused, and its office-boundary rule. Absent = no vault and no mantle (Space only jumps). */
   traversal?: Pick<TraversalWorld, "stand" | "vaultables" | "mayEnter">;
@@ -402,11 +416,20 @@ export class PlayerMode {
     // A GUIDED JOURNEY KEEPS THE BODY: entering PLAYER mid-journey changes the camera, never the walk.
     const guided = this.d.guided?.() ?? false;
     if (!guided) this.d.yieldAvatar();
-    if (!this.body.placeNear(this.d.avatar.position)) return false;
+    // PARKOUR V3 — ENTERED ON A DECK (a restore, a re-entry after Office View): the body is placed and followed from the
+    // height it actually stands at, never dropped to the floor beneath it
+    const y = this.d.avatar.root.position.y, elevated = y > this.d.avatar.groundAt(this.d.avatar.position) + 0.5;
+    const placed = elevated
+      ? standablePointNear(this.d.avatar.position, this.body.radius, (q) => this.d.canStand(q, { feet: y, airborne: false, from: q }))
+      : this.body.placeNear(this.d.avatar.position) ? this.body.pos : null;
+    if (!placed) return false;
+    this.body.pos = placed;
+    if (elevated) this.baseY = y;
     if (!guided && !this.d.stack.acquire("Player")) return false;
     this._active = true;
     this.state.active = true;
-    this.d.avatar.setPosition(this.body.pos, this.followGround(0, true));
+    // (elevated: kept at its own height — the first frame stands it on what is under it, or lets it fall)
+    this.d.avatar.setPosition(this.body.pos, elevated ? this.baseY : this.followGround(0, true));
     this.heading = this.d.avatar.yaw;
     this.camera.yaw = this.heading;
     this.camera.snap();
@@ -440,9 +463,13 @@ export class PlayerMode {
     this.roll = null;
     // PARKOUR V2 — a vault or a mantle left half-done finishes at its landing (endTraverse), then steps off any top
     if (this.traverse) { this.endTraverse(); this.d.avatar.setPosition(this.body.pos, this.baseY); }
+    // PARKOUR V3 — and a ladder or a zipline ends at a safe end
+    if (this.route) this.haltRoute();
+    this.recovering = 0;
     this.d.avatar.cancelTumble();
     this.stepOffTop();
-    this.d.avatar.setPosition(this.d.avatar.position);
+    // (PARKOUR V3: at the height the body stands at — a deck's, if it is on one)
+    this.d.avatar.setPosition(this.d.avatar.position, this.groundAt(this.body.pos, this.baseY));
     this.d.avatar.setClipTimeScale(CLIP_WALK, 1);
     this.d.avatar.root.visible = true;
     this.d.avatar.play(CLIP_IDLE);
@@ -501,8 +528,9 @@ export class PlayerMode {
     // ON A SCOOTER, Space is the deck's hop: rider and deck leave together (updateRide), once per landing.
     // Not relayed — there is no scooter multiplayer yet, and a walking hop relayed from a deck would be a lie.
     if (this.ride) { this.ride.jump.start(this.ride.y); return; }
-    // PARKOUR V2 — a vault or a mantle in progress owns the body until it ends; Space waits for it
-    if (this.traverse) return;
+    // PARKOUR V2 — a vault or a mantle in progress owns the body until it ends; Space waits for it (V3: so it does on a
+    // ladder or a zipline, and through a hard landing's recovery)
+    if (this.traverse || this.route || this.recovering > 0) return;
     // PARKOUR V2 — CONTEXTUAL TRAVERSAL OUTRANKS THE HOP, on the floor: running at a low eligible obstacle vaults
     // it; facing a ledge within reach mantles onto it; anything else is the jump it always was.
     if (!this.vertical.airborne) {
@@ -537,14 +565,16 @@ export class PlayerMode {
   private traversalWorld(): TraversalWorld | null {
     const t = this.d.traversal;
     if (!t) return null;
-    return { ...t, ground: (p) => this.groundAt(p), headroom: (p) => this.d.headroom?.(p) ?? Infinity };
+    // a ledge is looked for up to a mantle's reach above the feet (and never on a deck overhead beyond it)
+    const feet = this.feetNow;
+    return { ...t, ground: (p) => this.groundAt(p, feet + MANTLE.maxRise), headroom: (p, f = feet) => this.d.headroom?.(p, f) ?? Infinity };
   }
 
   /** On the floor: a vault when running at an eligible obstacle, else a mantle onto a ledge ahead, else null. */
   private planGrounded(): TraversePlan | null {
     const w = this.traversalWorld();
     if (!w) return null;
-    const p = this.body.pos, feet = this.groundAt(p);
+    const p = this.body.pos, feet = this.baseY;
     // headingFor's convention: the unit vector of heading h is (sin h, cos h)
     const dir = { x: Math.sin(this.heading), z: Math.cos(this.heading) };
     if (this.momentum.speed >= VAULT.minSpeed) {
@@ -599,6 +629,136 @@ export class PlayerMode {
     if (t.kind === "vault") { this.momentum.vx = t.dir.x * VAULT_EXIT_SPEED; this.momentum.vz = t.dir.z * VAULT_EXIT_SPEED; }
   }
 
+  // ---- PARKOUR V3: ROUTES — ladders and the zipline (world/traversalRoutes declares them; this runs them) ----------
+  /** the route in progress: its record, the way it is being taken, and how far along (ms of `ms`) */
+  private route: { r: TraversalRoute; dir: RouteDir; elapsed: number; ms: number } | null = null;
+  /** a hard landing's recovery still to run, ms (the keys wait for it) */
+  private recovering = 0;
+  /** is a ladder or a zipline carrying the body right now? */
+  get onRoute(): boolean { return this.route !== null; }
+  /** PARKOUR V3 — on a zipline: where the trolley and the handle are this frame (the world draws them there; the hands
+   *  are posed onto the same handle), or null */
+  ziplineHoldNow: ReturnType<typeof ziplineHold> = null;
+  /** QA and the dev surface: which route, which way, how far (0..1) */
+  get routeState(): { id: string; dir: RouteDir; u: number } | null {
+    const r = this.route;
+    return r ? { id: r.r.id, dir: r.dir, u: Math.min(1, r.elapsed / r.ms) } : null;
+  }
+  /** Told when a route starts (`p0`: how far along it starts — a ladder climbed back from part-way) or is cut short at
+   *  a safe end; the world relays both (world/Coworkers replays the same route on every peer's screen). */
+  onRouteEvent: ((ev: RouteEvent) => void) | null = null;
+
+  /** the ends of the routes this body may enter from where it stands, as targets */
+  private routeCandidates(): readonly Candidate[] {
+    const routes = this.d.routes;
+    if (!routes || routes.length === 0 || this.route || this.vertical.airborne) return EMPTY_CANDIDATES;
+    return routeEntriesAt(routes, this.body.pos, this.baseY).map(({ route, dir, at }) => {
+      const path = dir === "a" ? route.path : [...route.path].reverse();
+      return { id: `route:${route.id}:${dir}`, kind: "route" as const, pos: { x: path[1].x, z: path[1].z }, label: dir === "a" ? route.label.a : route.label.b ?? route.label.a, roomId: "", anchors: [{ x: at.x, z: at.z }] };
+    });
+  }
+
+  /** QA AND THE DEV SURFACE: take route `id` from its end `dir` exactly as E on its prompt would (refused unless the body
+   *  is standing at that end, level with it, with the far end free) */
+  enterRoute(id: string, dir: RouteDir): boolean { return this._active && this.d.stack.owns("Player") && this.startRouteFrom(`route:${id}:${dir}`); }
+
+  /** E on a route's end: re-checked here (the body may have moved since it was offered), then started. */
+  private startRouteFrom(candidateId: string): boolean {
+    const m = /^route:(.+):([ab])$/.exec(candidateId);
+    if (!m || this.route || this.ride || this.vertical.airborne || this.traverse || this.roll) return false;
+    const entry = routeEntriesAt(this.d.routes ?? [], this.body.pos, this.baseY).find((e) => e.route.id === m[1] && e.dir === m[2]);
+    if (!entry) return false;
+    // ITS FAR END MUST BE A PLACE TO STAND right now (the stand test, at that end's own height)
+    const exit = routeExit(entry.route, entry.dir);
+    if (!this.d.canStand({ x: exit.x, z: exit.z }, { feet: exit.y, airborne: false, from: { x: exit.x, z: exit.z } })) return false;
+    this.beginRoute(entry.route, entry.dir, 0);
+    return true;
+  }
+
+  private beginRoute(r: TraversalRoute, dir: RouteDir, p0: number): void {
+    this.landNow();
+    this.momentum.reset();
+    const ms = routeDuration(r);
+    this.route = { r, dir, elapsed: p0 * ms, ms };
+    this.d.avatar.setGait(null);
+    this.d.avatar.tumble(r.kind, ms, p0 * ms);
+    this.target = null;
+    this.onRouteEvent?.({ type: "start", route: r, dir, ms, p0 });
+  }
+
+  /** E on a ladder: back down (or up) the way it came, from where the body is now */
+  private reverseRoute(): void {
+    const cur = this.route;
+    if (!cur || cur.r.kind !== "ladder" || !cur.r.twoWay) return;
+    const u = Math.min(1, cur.elapsed / cur.ms);
+    this.route = null;
+    this.beginRoute(cur.r, cur.dir === "a" ? "b" : "a", 1 - u);
+  }
+
+  /** CUT SHORT (Player View left, an interaction or a walk took the body): the body goes to a SAFE END at once — a
+   *  ladder's nearer end, a zipline's landing (it has no other) — and the peers are told where. */
+  private haltRoute(): void {
+    const cur = this.route;
+    if (!cur) return;
+    this.route = null;
+    const u = Math.min(1, cur.elapsed / cur.ms);
+    const back = cur.r.kind === "ladder" && u < 0.5;
+    const end = back ? routeExit(cur.r, cur.dir === "a" ? "b" : "a") : routeExit(cur.r, cur.dir);
+    this.body.pos = { x: end.x, z: end.z };
+    this.baseY = end.y;
+    this.d.avatar.setPosition(this.body.pos, end.y);
+    if (this.d.avatar.tumbling) this.d.avatar.cancelTumble();
+    this.d.avatar.setGrip(null);
+    this.ziplineHoldNow = null;
+    this.onRouteEvent?.({ type: "halt", route: cur.r, at: { ...this.body.pos }, feet: end.y, end: back ? "start" : "exit" });
+  }
+
+  /** ONE ROUTE FRAME: along the declared line at its own pace, facing the rungs (or along the cable); the camera
+   *  follows the body's height as it climbs or rides. */
+  private updateRoute(dt: number): Vec2 {
+    const cur = this.route!;
+    const look = this.input.takeLook();
+    if (look.dx || look.dy) this.camera.look(look.dx, look.dy);
+    cur.elapsed += dt * 1000;
+    const u = Math.min(1, cur.elapsed / cur.ms);
+    const s = sampleRoute(cur.r, cur.dir, u);
+    // THE ZIPLINE'S HOLD: the trolley on the cable, the handle under it — and the hands put on that handle
+    const hold = ziplineHold(cur.r, cur.dir, u);
+    this.ziplineHoldNow = hold;
+    this.d.avatar.setGrip(hold ? _grip.set(hold.cable.x, hold.cable.y, hold.cable.z) : null, hold ? ZiplineTrolley.axis(hold.yaw, _gripAxis) : undefined, cur.r.grip, hold?.hang);
+    const prev = this.body.pos;
+    this.body.pos = { x: s.p.x, z: s.p.z };
+    this.baseY = s.p.y;
+    this.d.avatar.setPosition(this.body.pos, s.p.y);
+    if (this.camera.view !== "first") this.d.avatar.setYaw(s.yaw);
+    this.d.avatar.setGait(null);
+    this.d.avatar.freezeClipAt(CLIP_IDLE, 0);
+    this.state.travelled = Math.hypot(this.body.pos.x - prev.x, this.body.pos.z - prev.z);
+    this.state.airborne = false; this.state.height = 0; this.state.feet = s.p.y; this.state.speed = 0; this.state.braking = 0; this.state.sprinting = false;
+    this.moving = this.state.travelled > 1e-4;
+    this.doorIntent.length = 0;
+    if (u >= 1) {
+      // THE FAR END: an ordinary stand point (proved by the route's own tests, re-checked when it was entered)
+      const end = routeExit(cur.r, cur.dir);
+      this.route = null;
+      this.body.pos = { x: end.x, z: end.z };
+      this.baseY = end.y;
+      this.d.avatar.setPosition(this.body.pos, end.y);
+      if (this.d.avatar.tumbling === cur.r.kind) this.d.avatar.cancelTumble();
+      // a zipline lets go a little above the floor: the knees take it (the trolley stays where it was let go)
+      if (cur.r.kind === "zipline") this.d.avatar.tumble("land");
+      this.d.avatar.setGrip(null);
+      this.ziplineHoldNow = null;
+      this.d.avatar.play(this.restingClip);
+    }
+    this.camera.update(this.body.pos, dt, this.baseY);
+    const climbing = this.route !== null && cur.r.kind === "ladder";
+    this.hud?.setTarget(climbing ? "Climb back" : null, null);
+    this.state.target = climbing ? "climb back" : "—";
+    this.state.pos = `${this.body.pos.x.toFixed(0)}, ${this.body.pos.z.toFixed(0)}`;
+    return this.body.pos;
+  }
+
   /** Told when this body really jumped, double-jumped (with its flip) or rolled on landing, so the world can
    *  relay it to the other browsers. A roll also carries its planned travel, which the world publishes as an
    *  ordinary walk so every peer moves the body along the same path. Null on the standalone dev page and in every
@@ -611,9 +771,12 @@ export class PlayerMode {
   get rolling(): boolean { return this.roll !== null; }
 
   /** the highest the feet may rise where the body is now */
-  private ceiling(): number { return this.d.headroom?.(this.body.pos) ?? Infinity; }
-  /** the floor the body stands on at a point — furniture tops included (PARKOUR V1) */
-  private groundAt(p: Vec2): number { return this.d.groundAt ? this.d.groundAt(p) : this.d.avatar.groundAt(p); }
+  private ceiling(): number { return this.d.headroom?.(this.body.pos, this.feetNow) ?? Infinity; }
+  /** PARKOUR V3 — where the feet are right now: the arc's in the air, else the floor followed under them */
+  private get feetNow(): number { return this.vertical.airborne ? this.vertical.feet : this.baseY; }
+  /** the floor the body stands on at a point — furniture tops included (PARKOUR V1) — judged from `feet` (PARKOUR V3:
+   *  the highest surface at or a step above them, so a body on a lower deck stands on it beneath the upper one) */
+  private groundAt(p: Vec2, feet = this.feetNow): number { return this.d.groundAt ? this.d.groundAt(p, feet) : this.d.avatar.groundAt(p); }
 
   /** PARKOUR V1 — PLAN A LANDING ROLL from the landing itself, or null for a crouched landing instead.
    *
@@ -625,7 +788,8 @@ export class PlayerMode {
    *  the world's own edge rules before any landing happens. */
   private planRoll(feet: number): RollPlan | null {
     const fall = this.vertical.lastFall, speed = this.momentum.speed;
-    if (fall < ROLL_MIN_FALL || speed < ROLL_MIN_SPEED) return null;
+    // (PARKOUR V3: a fall past HARD_FALL is never a roll — the roll does not make a big drop harmless)
+    if (fall < ROLL_MIN_FALL || fall >= HARD_FALL || speed < ROLL_MIN_SPEED) return null;
     const impact = Math.sqrt(2 * WALK_JUMP.gravity * fall);
     const dist = Math.min(ROLL_DIST.max, Math.max(ROLL_DIST.min, 8 + speed * 0.22 + impact * 0.12));
     const ms = Math.min(ROLL_MS_RANGE.max, Math.max(ROLL_MS_RANGE.min, 620 + impact * 1.4 + speed * 0.4));
@@ -666,7 +830,11 @@ export class PlayerMode {
    *  (leaving Player View, an interaction taking it): the nearest point beside it a floor-level body may stand. */
   private stepOffTop(): void {
     const p = this.body.pos;
-    if (this.groundAt(p) <= this.d.avatar.groundAt(p) + 0.5) return;
+    const top = this.groundAt(p), floor = this.d.avatar.groundAt(p);
+    if (top <= floor + 0.5) return;
+    // PARKOUR V3 — A DECK IS A FLOOR OF ITS OWN: stepping "beside" a treehouse deck would be a drop to the ground
+    // beneath it, so a body this high up is left standing where it is (only furniture-height tops are stepped off)
+    if (top - floor > STEP_OFF_MAX) return;
     const free = standablePointNear(p, this.body.radius, (q) => this.d.canStand(q));
     if (!free) return;
     this.body.pos = free;
@@ -682,6 +850,9 @@ export class PlayerMode {
     if (!this._active) return;
     if (this.ride) { if (!this.ride.jump.airborne) this.ride.hooks.forceEnd("dismount"); return; } // no stepping off in mid-air
     if (this.d.canStandUp()) { this.d.standUp(); return; }
+    // PARKOUR V3 — E on a ladder climbs back the way it came (the start is the one safe place to go); a zipline has no
+    // safe exit before its end, so E does nothing on one
+    if (this.route) { this.reverseRoute(); return; }
     const t = this.target;
     if (!t) return;
     // GUIDED TRAVEL: the journey owns the body, so nothing that would walk it somewhere else starts. A
@@ -691,6 +862,7 @@ export class PlayerMode {
     // nothing, so the avatar is never released here. Releasing and re-acquiring it (what every other kind
     // does, because the starters route with A* and take "Interaction") would drop Bon into an idle clip
     // for a frame for a menu that has not even been answered yet.
+    if (t.kind === "route") { this.startRouteFrom(t.id); return; }
     if (t.kind === "person" || t.kind === "ride") { this.d.activate(t.id, t.kind); return; }
     // release FIRST: the starters route with A* and acquire "Interaction", and Player outranks Navigation
     this.d.stack.release("Player");
@@ -711,6 +883,8 @@ export class PlayerMode {
     // scooter does not follow it anywhere; the ride ends where the body now is
     if (this.ride && Math.hypot(this.body.pos.x - this.ride.last.x, this.body.pos.z - this.ride.last.z) > 30) this.ride.hooks.forceEnd("relocated");
     if (this.ride) return this.updateRide(dt);
+    // PARKOUR V3 — a ladder or a zipline carries the body (it is handed back at an end if anything takes it)
+    if (this.route && owner === "Player") return this.updateRoute(dt);
     // an interaction is driving Bon: keep the camera on him, move nothing, and take him back when it ends
     if (owner !== "Player") {
       if (this.input.axis.x || this.input.axis.z) this.d.onManualOverride?.(owner);
@@ -756,7 +930,8 @@ export class PlayerMode {
     // a landing roll owns the body's travel until it ends (stepRoll below); the keys wait for it — and so do they
     // for a vault or a mantle (PARKOUR V2), which also owns the height
     const pushed = want;
-    if (this.roll || this.traverse) want = null;
+    if (this.recovering > 0) this.recovering = Math.max(0, this.recovering - dt * 1000);
+    if (this.roll || this.traverse || this.recovering > 0) want = null;
     const m: MomentumStep = this.momentum.step(want, speed * (want ? Math.min(1, Math.hypot(axis.x, axis.z)) : 0), sprinting, dt);
     let traverseY: number | null = null;
     if (this.traverse) {
@@ -801,7 +976,10 @@ export class PlayerMode {
     // ledge above its takeoff or a lawn below it (player/PlayerJump), the feet resolve onto that height,
     // and a landing hanging off an edge is set back onto the edge it caught.
     const sup = this.d.support;
-    const landed = this.vertical.update(dt, sup ? sup(this.body.pos) : undefined, this.ceiling());
+    // PARKOUR V3 — THE SUPPORT WENT AWAY without a step off an edge (entered over open air, a surface below it only):
+    // that is a fall, from where the feet are, never a snap down to whatever is under them
+    if (sup && !this.vertical.airborne && !this.traverse && !this.roll && this.d.dropMax !== undefined && sup(this.body.pos, this.baseY) < this.baseY - this.d.dropMax) this.vertical.fall(this.baseY);
+    const landed = this.vertical.update(dt, sup ? sup(this.body.pos, this.vertical.feet) : undefined, this.ceiling());
     // PARKOUR V2 — THE AUTOMATIC GRAB: falling into a ledge while pushing toward it hauls the body up onto it
     if (!landed && this.vertical.airborne && this.vertical.verticalSpeed < 0 && pushed && this.state.blocked && !this.traverse) {
       const grab = this.planGrab(Math.atan2(pushed.x, pushed.z));
@@ -820,6 +998,13 @@ export class PlayerMode {
         this.momentum.reset();
         this.d.avatar.tumble("roll", plan.ms);
         this.onJumped?.("roll", plan);
+      } else if (this.vertical.lastFall >= HARD_FALL) {
+        // PARKOUR V3 — A HARD LANDING: too far for a roll to make it nothing. The body takes it low — a deep crouch, a
+        // hand to the floor — and gets up before it goes anywhere (no injury system; just a controlled recovery)
+        if (this.d.avatar.tumbling) this.d.avatar.cancelTumble();
+        this.d.avatar.tumble("hard");
+        this.recovering = PARKOUR_MS.hard;
+        this.momentum.reset();
       } else if (!this.d.avatar.tumbling && this.vertical.lastFall >= LAND_ABSORB_FALL) {
         // a real fall without a roll: the knees and hips give (every viewer plays the same from its own arc)
         this.d.avatar.tumble("land");
@@ -843,7 +1028,8 @@ export class PlayerMode {
     // THE GAIT'S SHAPE (avatar/gaitPose): the sprint's lean, stride and arm pump grow with the speed it is
     // actually doing; a skid plants a foot and leans back; a turn at speed banks. Off in the air.
     const sprintAmount = Math.max(0, Math.min(1, (this.momentum.speed - 80) / (PLAYER_SPRINT_SPEED - 80)));
-    const tumbling = this.d.avatar.tumbling === "flip" || this.d.avatar.tumbling === "roll" || this.d.avatar.tumbling === "vault" || this.d.avatar.tumbling === "mantle";
+    const tb = this.d.avatar.tumbling;
+    const tumbling = tb === "flip" || tb === "roll" || tb === "vault" || tb === "mantle" || tb === "hard";
     this.d.avatar.setGait(this.vertical.airborne || tumbling ? null : { sprint: skidding ? 0 : sprintAmount, bank: m.bank, brake: m.brake, lead: this.skidLead });
 
     if (tumbling) {
@@ -885,7 +1071,9 @@ export class PlayerMode {
     } else {
       this.doorIntent.length = 0;
     }
-    this.camera.update(this.body.pos, dt, this.baseY);
+    // (PARKOUR V3: the camera follows a FALL down as it happens — a hop up leaves it where it is — so a drop from a deck
+    // is a smooth descent, not a long hang and a swoop after the landing)
+    this.camera.update(this.body.pos, dt, this.vertical.airborne ? Math.min(this.baseY, this.vertical.feet) : this.baseY);
     this.updateTarget();
     this.state.pos = `${this.body.pos.x.toFixed(0)}, ${this.body.pos.z.toFixed(0)}`;
     return this.body.pos;
@@ -993,7 +1181,7 @@ export class PlayerMode {
     const sup = this.d.support;
     if (!sup) return undefined;
     const air = this.vertical.airborne;
-    return { feet: air ? this.vertical.feet : sup(this.body.pos), airborne: air, support: sup, fallDrop: this.d.dropMax };
+    return { feet: air ? this.vertical.feet : sup(this.body.pos, this.baseY), airborne: air, support: sup, fallDrop: this.d.dropMax };
   }
 
   /** A LANDING THAT CAUGHT AN EDGE: the footprint rests on the higher side while its centre hangs over the
@@ -1031,6 +1219,8 @@ export class PlayerMode {
   }
 
   private landNow(): void {
+    // PARKOUR V3 — a route cut short ends at a SAFE END (see haltRoute), never in mid-air
+    if (this.route) this.haltRoute();
     // PARKOUR V2 — a vault or a mantle cut short finishes at its landing (see endTraverse). The one place this
     // writes x/z: the body must never be handed over standing inside the obstacle it was crossing.
     if (this.traverse) {
@@ -1055,11 +1245,17 @@ export class PlayerMode {
   private scoringSet(): { all: readonly Candidate[] | undefined; facing: Vec2 } {
     const room = this.d.world.regionAt(this.body.pos)?.roomId;
     const list = room ? this.candidates.get(room) : undefined;
-    const facing = this.camera.view === "first" ? this.camera.forward : { x: Math.sin(this.d.avatar.yaw), z: -Math.cos(this.d.avatar.yaw) };
+    // THIRD PERSON faces the body's own yaw, in headingFor's convention (core/coords: yaw h looks along (sin h, cos h)).
+    // This was (sin h, −cos h) — mirrored along z, the same slip as the V1 door lookahead: a body facing north was
+    // offered what stood behind it (PARKOUR V3 fix).
+    const facing = this.camera.view === "first" ? this.camera.forward : { x: Math.sin(this.d.avatar.yaw), z: Math.cos(this.d.avatar.yaw) };
     // PHASE 6D — the static room bucket PLUS whoever is standing here right now. People are added
     // regardless of which room the body is in (they are not in any bucket, and a coworker in the hall is
     // still a person you are looking at); pickTarget's reach, cone and line of sight are what bound them.
-    const dynamic = this.d.dynamicCandidates?.() ?? EMPTY_CANDIDATES;
+    const people = this.d.dynamicCandidates?.() ?? EMPTY_CANDIDATES;
+    // PARKOUR V3 — the ends of the routes this body is standing at, level with them
+    const routes = this.routeCandidates();
+    const dynamic = routes.length === 0 ? people : people.length === 0 ? routes : [...people, ...routes];
     const all = dynamic.length === 0 ? list : list ? [...list, ...dynamic] : dynamic;
     return { all, facing };
   }

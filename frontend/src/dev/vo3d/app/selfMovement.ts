@@ -104,6 +104,8 @@ export interface Vo3dSelfMovementSink {
    *  not implement it, and a jump there simply stays local, exactly as everything else there does. */
   /** a jump took (PARKOUR V1: or a double jump with its flip, or a landing roll) — relayed, never persisted */
   jumped?(kind?: "jump" | "double" | "roll" | "vault" | "mantle", ms?: number, heights?: { rise: number; apex: number }): void;
+  /** PARKOUR V3 — a declared route was started (`p0` of the way along) or cut short at one of its ends — relayed */
+  routed?(ev: { kind: "route"; route: string; dir: "a" | "b"; p0: number; ms: number } | { kind: "halt"; route: string; end: "start" | "exit" }): void;
   /** PARKOUR V1 — how high the feet stand above the floor's datum right now (a furniture top), or undefined on
    *  the floor. Carried on the next walk events as `feet`; see adapters/v1SelfMovement. */
   noteFeet?(feet: number | undefined): void;

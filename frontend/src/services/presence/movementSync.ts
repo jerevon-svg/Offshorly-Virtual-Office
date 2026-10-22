@@ -65,6 +65,8 @@ export interface PeerMovementState {
   revision: number;
   stable: StableMovementState;
   active: ActiveMovement | null;
+  /** PARKOUR V3 — a declared route this person was on when the snapshot was taken (see PeerTraversal) */
+  traversal?: PeerTraversal;
 }
 
 export interface WalkStartedPayload {
@@ -173,8 +175,28 @@ const riseField = (v: unknown): { rise: number } | Record<string, never> =>
   typeof v === "number" && Number.isFinite(v) && v >= -40 && v <= 40 ? { rise: Math.round(v * 100) / 100 } : {};
 const apexField = (v: unknown): { apex: number } | Record<string, never> =>
   typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 40 ? { apex: Math.round(v * 100) / 100 } : {};
-export type ParkourRelayKind = "double" | "roll" | "vault" | "mantle";
-const PARKOUR_KINDS: readonly ParkourRelayKind[] = ["double", "roll", "vault", "mantle"];
+export type ParkourRelayKind = "double" | "roll" | "vault" | "mantle" | "route" | "halt";
+const PARKOUR_KINDS: readonly ParkourRelayKind[] = ["double", "roll", "vault", "mantle", "route", "halt"];
+/** PARKOUR V3 — a declared route's id, which way, how far along it started; a halt's end. Shape only: the server has
+ *  already checked the route against its own table and the sender's place, and the 3D world looks the id up again. */
+const routeFields = (p: { route?: unknown; dir?: unknown; p0?: unknown; end?: unknown }): Partial<Pick<PeerParkourEvent, "route" | "dir" | "p0" | "end">> => ({
+  ...(typeof p.route === "string" && /^[a-z0-9/_-]{1,64}$/.test(p.route) ? { route: p.route } : {}),
+  ...(p.dir === "a" || p.dir === "b" ? { dir: p.dir } : {}),
+  ...(typeof p.p0 === "number" && Number.isFinite(p.p0) && p.p0 >= 0 && p.p0 < 1 ? { p0: p.p0 } : {}),
+  ...(p.end === "start" || p.end === "exit" ? { end: p.end } : {}),
+});
+/** PARKOUR V3 — a route's duration (a ladder or a zipline is seconds long): whole ms, 300 … 20000, or absent */
+const routeMsField = (v: unknown): { ms: number } | Record<string, never> =>
+  typeof v === "number" && Number.isFinite(v) && v >= 300 && v <= 20000 ? { ms: Math.round(v) } : {};
+/** PARKOUR V3 — a route in progress on a snapshot entry (a late joiner sees the rider where the route has them now) */
+export interface PeerTraversal { route: string; dir: "a" | "b"; p0: number; at: number; ms: number; seq?: number }
+const traversalField = (v: unknown): { traversal: PeerTraversal } | Record<string, never> => {
+  const t = v as Partial<PeerTraversal> | null | undefined;
+  if (!t || typeof t !== "object") return {};
+  const r = routeFields(t);
+  if (!r.route || !r.dir || typeof t.at !== "number" || !Number.isFinite(t.at) || typeof t.ms !== "number" || !(t.ms > 0 && t.ms <= 20000)) return {};
+  return { traversal: { route: r.route, dir: r.dir, p0: r.p0 ?? 0, at: t.at, ms: t.ms, ...seqField(t.seq) } };
+};
 const msField = (v: unknown): { ms: number } | Record<string, never> =>
   typeof v === "number" && Number.isFinite(v) && v >= 300 && v <= 1500 ? { ms: Math.round(v) } : {};
 const feetField = (v: unknown): { feet: number } | Record<string, never> =>
@@ -228,6 +250,11 @@ export interface PeerParkourEvent {
   /** PARKOUR V2 — a vault's or mantle's end height and peak, relative to where it started */
   rise?: number;
   apex?: number;
+  /** PARKOUR V3 — a route relay: the declared route, which way, how far along it started; a halt's end */
+  route?: string;
+  dir?: "a" | "b";
+  p0?: number;
+  end?: "start" | "exit";
 }
 
 function socketBase(): string {
@@ -347,6 +374,7 @@ export function applySnapshot(
             serverTime: event.serverTime,
           }
         : null,
+      ...traversalField((entry as { traversal?: unknown }).traversal),
     });
   }
   return next;
@@ -490,9 +518,12 @@ function ensureSocket(): Socket | null {
     if (typeof payload.at !== "number" || !Number.isFinite(payload.at)) return;
     if (!PARKOUR_KINDS.includes(payload.kind)) return;
     const event: PeerParkourEvent = {
-      email: payload.email.toLowerCase(), at: payload.at, kind: payload.kind, ...seqField(payload.seq), ...msField(payload.ms),
+      email: payload.email.toLowerCase(), at: payload.at, kind: payload.kind, ...seqField(payload.seq), ...(payload.kind === "route" ? routeMsField(payload.ms) : msField(payload.ms)),
       ...(payload.kind === "vault" || payload.kind === "mantle" ? { ...riseField(payload.rise), ...apexField(payload.apex) } : {}),
+      ...(payload.kind === "route" || payload.kind === "halt" ? routeFields(payload) : {}),
     };
+    if (event.kind === "route" && (!event.route || !event.dir)) return;
+    if (event.kind === "halt" && (!event.route || !event.end)) return;
     for (const listener of peerParkourListeners) listener(event);
   });
 
@@ -533,8 +564,8 @@ export function emitJump(seq?: number): void {
 
 /** PARKOUR V1 — THIS USER JUST DOUBLE-JUMPED (with its flip) OR ROLLED ON LANDING. Fire and forget, like
  *  emitJump: the server stamps who and when, peers play it from their own physics. */
-export function emitParkour(kind: ParkourRelayKind, seq?: number, ms?: number, heights?: { rise: number; apex: number }): void {
-  ensureSocket()?.emit("parkour", { kind, ...seqField(seq), ...msField(ms), ...(heights ? { ...riseField(heights.rise), ...apexField(heights.apex) } : {}) });
+export function emitParkour(kind: ParkourRelayKind, seq?: number, ms?: number, heights?: { rise: number; apex: number }, route?: { route: string; dir?: "a" | "b"; p0?: number; end?: "start" | "exit" }): void {
+  ensureSocket()?.emit("parkour", { kind, ...seqField(seq), ...(kind === "route" ? routeMsField(ms) : msField(ms)), ...(heights ? { ...riseField(heights.rise), ...apexField(heights.apex) } : {}), ...(route ? routeFields(route) : {}) });
 }
 
 /** Subscribe to `peer_parkour`. Same shape and lifetime as subscribePeerJump. */

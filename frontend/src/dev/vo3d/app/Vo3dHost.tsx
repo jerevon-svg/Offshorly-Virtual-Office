@@ -429,7 +429,11 @@ export function Vo3dHost({ experience }: Vo3dHostProps = {}) {
     // PARKOUR V1 — the double jump (with its flip) and the landing roll, on the same clock and the same ordering
     const offParkour = subscribePeerParkour((e) => {
       const nowOnServer = Date.now() + getServerClockOffsetMs();
-      worldRef.current?.peerParkour(e.email, e.kind, Math.max(0, nowOnServer - e.at), e.at, e.seq, e.ms, e.rise, e.apex);
+      const age = Math.max(0, nowOnServer - e.at);
+      // PARKOUR V3 — a route (a ladder, the zipline) or its halt; everything else is a body action
+      if (e.kind === "route") { if (e.route && e.dir) worldRef.current?.peerRoute(e.email, e.route, e.dir, age, e.at, e.seq, e.p0 ?? 0); return; }
+      if (e.kind === "halt") { if (e.end) worldRef.current?.peerRouteHalt(e.email, e.end, e.at, e.seq); return; }
+      worldRef.current?.peerParkour(e.email, e.kind, age, e.at, e.seq, e.ms, e.rise, e.apex);
     });
     return () => {
       offJump();
