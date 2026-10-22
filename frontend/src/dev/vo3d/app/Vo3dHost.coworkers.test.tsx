@@ -96,6 +96,13 @@ vi.mock("../../../services/presence/movementSync", async () => {
         movementSubscribers.jumps -= 1;
       };
     },
+    // PARKOUR V1 — the double jump / roll relay, counted with the jumps for the same no-leak reason
+    subscribePeerParkour: () => {
+      movementSubscribers.jumps += 1;
+      return () => {
+        movementSubscribers.jumps -= 1;
+      };
+    },
     // Phase 6A: the host reads V1's last-snapshot clock offset to say how far into a walk a peer is.
     // Zero here, so a test's `startedAt` is measured against the test's own clock.
     getServerClockOffsetMs: () => 0,

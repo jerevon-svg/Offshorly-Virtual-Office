@@ -39,7 +39,10 @@ import {
   emitWalkArrived,
   emitWalkStarted,
   emitJump,
+  emitParkour,
   type PeerMovementState,
+  type WalkArrivedPayload,
+  type WalkStartedPayload,
   type Pt,
 } from "../../../services/presence/movementSync";
 import { isUsablePosition } from "./v1CoworkerPositions";
@@ -105,6 +108,20 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
   const state = { started: 0, arrived: 0, refused: 0, wire: [] as string[], movementId: null as string | null, seated: 0, v2OnlySeat: 0, jumps: 0 };
   /** Append to the bounded wire log. SHAPES ONLY — never a position: this array is read from the dev
    *  console and the verification harness, and one employee's coordinates do not belong in either. */
+  // PARKOUR V1 — HOW HIGH THE FEET STAND (a furniture top), told every frame by the world (noteFeet) and carried
+  // on the walk events as `feet`: a walk carries the highest it stood during the leg, an arrival where it rests.
+  // Absent whenever the feet are on the floor, which is what every walk that existed before this sends. Peers
+  // honour it only where it matches a real standable top (dev/vo3d/world/standables), so it places nobody.
+  let feetNow: number | undefined;
+  let feetPeak: number | undefined;
+  const emitStarted = (p: WalkStartedPayload): void => {
+    const f = feetPeak;
+    feetPeak = feetNow;
+    emitWalkStarted(f !== undefined ? { ...p, feet: f } : p);
+  };
+  const emitArrived = (p: WalkArrivedPayload): void => emitWalkArrived(feetNow !== undefined ? { ...p, feet: feetNow } : p);
+  /** PARKOUR V1 — the sender's own action sequence for this page: receivers drop duplicates and reordering by it */
+  let actionSeq = 0;
   const note = (line: string): void => {
     state.wire.push(line);
     if (state.wire.length > 24) state.wire.shift();
@@ -121,10 +138,16 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
      *  is persisted: the server stamps the identity and the time and relays it, peers draw an arc from
      *  their own physics, and the employee's V1 position is untouched throughout. Deliberately NOT run
      *  through isUsablePosition — there is no position in it to judge. */
-    jumped() {
+    jumped(kind = "jump", ms) {
       state.jumps = (state.jumps ?? 0) + 1;
-      note("jump");
-      emitJump();
+      note(kind);
+      actionSeq += 1;
+      if (kind === "jump") emitJump(actionSeq);
+      else emitParkour(kind, actionSeq, ms);
+    },
+    noteFeet(feet) {
+      feetNow = feet !== undefined && Number.isFinite(feet) && feet > 0.5 ? Math.round(feet * 100) / 100 : undefined;
+      if (feetNow !== undefined && (feetPeak === undefined || feetNow > feetPeak)) feetPeak = feetNow;
     },
     started(origin, path, durationMs, pacing) {
       const originTopLeft = toTopLeft(origin, box);
@@ -146,7 +169,7 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
       state.movementId = movementId;
       note(`started id=${movementId.slice(0, 8)} pts=${path.length} ms=${Math.round(durationMs)} room=${roomId ?? "-"}${pacing ? ` ${pacing}` : ""}${superseded}`);
       // capPath and the duration round+clamp both live inside this call, in V1's module.
-      emitWalkStarted({ movementId, origin: originTopLeft, path: pathTopLeft, roomId, durationMs, ...(pacing ? { pacing } : {}) });
+      emitStarted({ movementId, origin: originTopLeft, path: pathTopLeft, roomId, durationMs, ...(pacing ? { pacing } : {}) });
     },
     /** PHASE 7D — "THEY ARE IN THE CAVE NOW." The same minimum-duration pair a snap always uses, with the
      *  room stated OUTRIGHT instead of derived from the point: the point is the portal they stepped
@@ -171,7 +194,7 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
       state.arrived++;
       state.movementId = movementId;
       note(`inplace id=${movementId.slice(0, 8)} room=${room} pts=${to.length}`);
-      emitWalkStarted({
+      emitStarted({
         movementId,
         origin: anchorTopLeft,
         path: [anchorTopLeft],
@@ -184,7 +207,7 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
         localOrigin: { x: from.x, y: from.z },
         localPath: to.map((p) => ({ x: p.x, y: p.z })),
       });
-      emitWalkArrived({
+      emitArrived({
         movementId,
         at: anchorTopLeft,
         facing: DIRECTION_BY_FACING[facingForYaw(yaw)],
@@ -215,11 +238,11 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
       state.movementId = movementId;
       const seatFacing = seatFacingFor(seat) ?? DIRECTION_BY_FACING[facingForYaw(yaw)];
       note(`sat-inplace id=${movementId.slice(0, 8)} room=${room} facing=${seatFacing}`);
-      emitWalkStarted({
+      emitStarted({
         movementId, origin: anchorTopLeft, path: [anchorTopLeft], roomId: room, durationMs: SNAP_DURATION_MS,
         localOrigin: { x: at.x, y: at.z }, localPath: [{ x: at.x, y: at.z }],
       });
-      emitWalkArrived({
+      emitArrived({
         movementId,
         at: anchorTopLeft,
         facing: seatFacing,
@@ -243,11 +266,11 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
       state.arrived++;
       state.movementId = movementId;
       note(`entered id=${movementId.slice(0, 8)} room=${room ?? "-"} yaw=${yaw.toFixed(3)}`);
-      emitWalkStarted({
+      emitStarted({
         movementId, origin: atTopLeft, path: [atTopLeft], roomId: room, durationMs: SNAP_DURATION_MS,
         ...(localAt ? { localOrigin: { x: localAt.x, y: localAt.z }, localPath: [{ x: localAt.x, y: localAt.z }] } : {}),
       });
-      emitWalkArrived({
+      emitArrived({
         movementId,
         at: atTopLeft,
         facing: DIRECTION_BY_FACING[facingForYaw(yaw)],
@@ -278,7 +301,7 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
         // table does not know. Both offices then show the sitter facing the same way.
         const seatFacing = seatFacingFor(seat!) ?? v1Seat.direction;
         note(`arrived id=${current.movementId.slice(0, 8)} sitting facing=${seatFacing} yaw=${yaw.toFixed(3)}`);
-        emitWalkArrived({
+        emitArrived({
           movementId: current.movementId,
           at: toTopLeft({ x: v1Seat.x, z: v1Seat.y }, box),
           facing: seatFacing,
@@ -302,7 +325,7 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
         state.v2OnlySeat++;
         const seatFacing = seatFacingFor(seat) ?? DIRECTION_BY_FACING[facing];
         note(`arrived id=${current.movementId.slice(0, 8)} sitting v2-only facing=${seatFacing} yaw=${yaw.toFixed(3)}`);
-        emitWalkArrived({
+        emitArrived({
           movementId: current.movementId,
           at: atTopLeft,
           facing: seatFacing,
@@ -324,7 +347,7 @@ export function createV1SelfMovementSink(): Vo3dSelfMovementSink | null {
       state.arrived++;
       // The yaw is an orientation, not a place, so it may sit in the wire log beside the facing word.
       note(`arrived id=${current.movementId.slice(0, 8)} facing=${DIRECTION_BY_FACING[facing]} yaw=${yaw.toFixed(3)}`);
-      emitWalkArrived({
+      emitArrived({
         movementId: current.movementId,
         at: atTopLeft,
         facing: DIRECTION_BY_FACING[facing],

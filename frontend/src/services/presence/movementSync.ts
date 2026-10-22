@@ -38,6 +38,8 @@ export interface ActiveMovement {
   durationMs: number;
   startedAt: number; // server epoch ms
   pacing?: WalkPacing;
+  /** PARKOUR V1 — the highest the feet stand during this walk (see feetField) */
+  feet?: number;
   serverTime?: number; // serverTime the snapshot that carried this active movement was stamped with (snapshot-sourced actives only)
 }
 
@@ -51,6 +53,8 @@ export interface StableMovementState {
   /** The V2 3D office's exact resting yaw in radians, beside V1's four-word `facing`. Present only when
    *  the arriving client published one (a V2 session) and it came through finite; a V1 arrival has none. */
   yaw?: number;
+  /** PARKOUR V1 — the feet height at rest (a furniture top), when the arriving session published one */
+  feet?: number;
   state: MovementState;
   seatKey: string | null;
   roomId: string | null;
@@ -76,6 +80,8 @@ export interface WalkStartedPayload {
    *  additive — a client that sends neither is the client that existed before this. */
   localOrigin?: Pt;
   localPath?: Pt[];
+  /** PARKOUR V1 — the highest the feet stand during this walk, when above the floor */
+  feet?: number;
 }
 
 export interface WalkArrivedPayload {
@@ -89,6 +95,8 @@ export interface WalkArrivedPayload {
   roomId: string | null;
   /** radians, finite — see StableMovementState.yaw */
   yaw?: number;
+  /** PARKOUR V1 — the feet height at rest, when above the floor */
+  feet?: number;
 }
 
 interface PeerWalkStartedEvent {
@@ -103,6 +111,7 @@ interface PeerWalkStartedEvent {
   pacing?: WalkPacing | null;
   localOrigin?: Pt | null;
   localPath?: Pt[] | null;
+  feet?: number | null;
 }
 
 interface PeerWalkArrivedEvent {
@@ -116,6 +125,7 @@ interface PeerWalkArrivedEvent {
   roomId: string | null;
   yaw?: number | null;
   localAt?: Pt | null;
+  feet?: number | null;
 }
 
 interface PositionsSnapshotEntry {
@@ -129,6 +139,7 @@ interface PositionsSnapshotEntry {
   updatedAt: number;
   yaw?: number | null;
   localAt?: Pt | null;
+  feet?: number | null;
   active: {
     movementId: string;
     origin: Pt;
@@ -139,6 +150,7 @@ interface PositionsSnapshotEntry {
     pacing?: WalkPacing | null;
     localOrigin?: Pt | null;
     localPath?: Pt[] | null;
+    feet?: number | null;
   } | null;
 }
 
@@ -149,6 +161,16 @@ const yawField = (v: unknown): { yaw: number } | Record<string, never> =>
   typeof v === "number" && Number.isFinite(v) ? { yaw: v } : {};
 const pacingField = (v: unknown): { pacing: WalkPacing } | Record<string, never> =>
   v === "eased" || v === "linear" || v === "decel" ? { pacing: v } : {};
+/** PARKOUR V1 — the sender's per-page action sequence: a non-negative 31-bit integer or absent */
+const seqField = (v: unknown): { seq: number } | Record<string, never> =>
+  typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 2147483647 ? { seq: v } : {};
+/** PARKOUR V1 — the feet height a V2 session stands at (a furniture top). Finite and in range or absent; the
+ *  3D world only ever honours it where it matches a real standable top (dev/vo3d/world/standables). */
+/** PARKOUR V1 — a roll's duration: a whole number of ms in the range a roll can last, or absent */
+const msField = (v: unknown): { ms: number } | Record<string, never> =>
+  typeof v === "number" && Number.isFinite(v) && v >= 300 && v <= 1500 ? { ms: Math.round(v) } : {};
+const feetField = (v: unknown): { feet: number } | Record<string, never> =>
+  typeof v === "number" && Number.isFinite(v) && v > 0 && v <= 200 ? { feet: v } : {};
 
 interface PositionsSnapshotEvent {
   entries: PositionsSnapshotEntry[];
@@ -180,6 +202,20 @@ export interface PeerJumpEvent {
   email: string;
   /** server epoch ms the jump was relayed at, for the receiver's staleness window */
   at: number;
+  /** PARKOUR V1 — the sender's own per-page action sequence, for dropping duplicates and reordering */
+  seq?: number;
+}
+
+/** PARKOUR V1 — `peer_parkour`: somebody double-jumped (with its flip) or rolled on landing. The same contract as
+ *  `peer_jump` — who, when (server clock), their per-page sequence and the kind, nothing else — on its own event
+ *  so a client that predates it never mistakes a roll for a jump. */
+export interface PeerParkourEvent {
+  email: string;
+  at: number;
+  kind: "double" | "roll";
+  seq?: number;
+  /** a roll's duration, ms, so peers play it for exactly as long as its published travel takes */
+  ms?: number;
 }
 
 function socketBase(): string {
@@ -195,6 +231,7 @@ function socketBase(): string {
 let socketInstance: Socket | null = null;
 const seatRejectedListeners = new Set<(e: SeatRejectedEvent) => void>();
 const peerJumpListeners = new Set<(e: PeerJumpEvent) => void>();
+const peerParkourListeners = new Set<(e: PeerParkourEvent) => void>();
 const peers = new Map<string, PeerMovementState>();
 let peersSnapshot: PeerMovementState[] = [];
 const listeners = new Set<() => void>();
@@ -281,6 +318,7 @@ export function applySnapshot(
         roomId: entry.roomId,
         ...(entry.localAt ? { localPos: entry.localAt } : {}),
         ...yawField(entry.yaw),
+        ...feetField(entry.feet),
       },
       active: entry.active
         ? {
@@ -293,6 +331,7 @@ export function applySnapshot(
             ...(entry.active.localOrigin ? { localOrigin: entry.active.localOrigin } : {}),
             ...(entry.active.localPath ? { localPath: entry.active.localPath } : {}),
             ...pacingField(entry.active.pacing),
+            ...feetField(entry.active.feet),
             serverTime: event.serverTime,
           }
         : null,
@@ -336,6 +375,7 @@ export function applyStarted(
       ...(event.localOrigin ? { localOrigin: event.localOrigin } : {}),
       ...(event.localPath ? { localPath: event.localPath } : {}),
       ...pacingField(event.pacing),
+      ...feetField(event.feet),
     },
   });
   return next;
@@ -365,6 +405,7 @@ export function applyArrived(
       seatKey: event.seatKey,
       roomId: event.roomId,
       ...yawField(event.yaw),
+      ...feetField(event.feet),
     },
     active: null,
   });
@@ -428,8 +469,16 @@ function ensureSocket(): Socket | null {
     // rather than passed on as a NaN nobody can compare against.
     if (typeof payload?.email !== "string" || !payload.email) return;
     if (typeof payload.at !== "number" || !Number.isFinite(payload.at)) return;
-    const event: PeerJumpEvent = { email: payload.email.toLowerCase(), at: payload.at };
+    const event: PeerJumpEvent = { email: payload.email.toLowerCase(), at: payload.at, ...seqField(payload.seq) };
     for (const listener of peerJumpListeners) listener(event);
+  });
+
+  socket.on("peer_parkour", (payload?: PeerParkourEvent) => {
+    if (typeof payload?.email !== "string" || !payload.email) return;
+    if (typeof payload.at !== "number" || !Number.isFinite(payload.at)) return;
+    if (payload.kind !== "double" && payload.kind !== "roll") return;
+    const event: PeerParkourEvent = { email: payload.email.toLowerCase(), at: payload.at, kind: payload.kind, ...seqField(payload.seq), ...msField(payload.ms) };
+    for (const listener of peerParkourListeners) listener(event);
   });
 
   socketInstance = socket;
@@ -461,8 +510,25 @@ export function subscribePeerJump(listener: (e: PeerJumpEvent) => void): () => v
 /** THIS USER JUST JUMPED. Fire and forget: no id, no position, no duration, no acknowledgement — the
  *  server stamps the identity and the time, and peers reconstruct the arc themselves. A no-op when the
  *  connection cannot be opened (not signed in), exactly like the two emitters below. */
-export function emitJump(): void {
-  ensureSocket()?.emit("jump");
+export function emitJump(seq?: number): void {
+  // with no sequence the event is exactly what it always was: "jump" and nothing else
+  if (seq === undefined) ensureSocket()?.emit("jump");
+  else ensureSocket()?.emit("jump", seqField(seq));
+}
+
+/** PARKOUR V1 — THIS USER JUST DOUBLE-JUMPED (with its flip) OR ROLLED ON LANDING. Fire and forget, like
+ *  emitJump: the server stamps who and when, peers play it from their own physics. */
+export function emitParkour(kind: "double" | "roll", seq?: number, ms?: number): void {
+  ensureSocket()?.emit("parkour", { kind, ...seqField(seq), ...msField(ms) });
+}
+
+/** Subscribe to `peer_parkour`. Same shape and lifetime as subscribePeerJump. */
+export function subscribePeerParkour(listener: (e: PeerParkourEvent) => void): () => void {
+  ensureSocket();
+  peerParkourListeners.add(listener);
+  return () => {
+    peerParkourListeners.delete(listener);
+  };
 }
 
 /** Tells the server this user has started walking a path. No-op if the
@@ -495,6 +561,7 @@ export function emitWalkStarted(payload: WalkStartedPayload): void {
     ...(payload.localOrigin ? { localOrigin: payload.localOrigin } : {}),
     ...(payload.localPath?.length ? { localPath: capPath(payload.localPath) } : {}),
     ...pacingField(payload.pacing),
+    ...feetField(payload.feet),
   });
 }
 
@@ -510,6 +577,7 @@ export function emitWalkArrived(payload: WalkArrivedPayload): void {
     roomId: payload.roomId,
     ...(payload.localAt ? { localAt: payload.localAt } : {}),
     ...yawField(payload.yaw),
+    ...feetField(payload.feet),
   });
 }
 
@@ -559,5 +627,6 @@ export function __resetForTests(): void {
   devEmail = null;
   seatRejectedListeners.clear();
   peerJumpListeners.clear();
+  peerParkourListeners.clear();
   notify();
 }

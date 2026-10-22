@@ -24,8 +24,12 @@ export type StandTestDeps = {
   allowExterior?: boolean;
 };
 
-export function makeStandTest({ world, walkability, derived, radius, allowExterior = false }: StandTestDeps): StandTest {
-  return (p: Vec2): boolean => {
+/** The office's stand test. `ignore` (PARKOUR V1): entity ids of standable tops this body's feet have cleared —
+ *  see world/standables. Absent, every footprint blocks exactly as before. */
+export type OfficeStandTest = (p: Vec2, ctx?: Parameters<StandTest>[1], ignore?: ReadonlySet<string>) => boolean;
+
+export function makeStandTest({ world, walkability, derived, radius, allowExterior = false }: StandTestDeps): OfficeStandTest {
+  return (p: Vec2, _ctx?: Parameters<StandTest>[1], ignore?: ReadonlySet<string>): boolean => {
     // 1. is this office floor at all? Registered regions already encode "reconstructed room floor",
     //    "shared hall", "unreconstructed footprint (not walkable)" and "exterior sidewalk".
     const region = world.regionAt(p);
@@ -42,7 +46,7 @@ export function makeStandTest({ world, walkability, derived, radius, allowExteri
     // (the lanes are perfectly clear floor), so no geometric layer can answer for it.
     if (walkability.isReserved(c.cx, c.cy)) return false;
     if (derived.governs(c.cx, c.cy)) {
-      if (derived.clearanceAtPoint(p) < radius) return false;
+      if (derived.clearanceAtPoint(p, ignore) < radius) return false;
     } else if (!walkability.walkable(c.cx, c.cy)) return false;
     // 3. the rim. Inside a derived room the centre test already covered the full radius, so a rim sample
     //    only has to be OUT of a solid (asking for the whole radius again would double-count and shut
@@ -55,7 +59,7 @@ export function makeStandTest({ world, walkability, derived, radius, allowExteri
       // put a shoulder through. Same rule, same reason as the centre above.
       if (walkability.isReserved(qc.cx, qc.cy)) return false;
       if (derived.governs(qc.cx, qc.cy)) {
-        if (derived.clearanceAtPoint(q) <= 0) return false;
+        if (derived.clearanceAtPoint(q, ignore) <= 0) return false;
       } else if (!walkability.walkable(qc.cx, qc.cy)) return false;
     }
     return true;

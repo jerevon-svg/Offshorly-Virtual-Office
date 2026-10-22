@@ -62,6 +62,7 @@ import { createHumanBody, humanBodyFor, type HumanBody } from "../avatar/humanBo
 import { dist, FACING_YAW, stepAngle, wrapAngle, type Facing, type Vec2 } from "../core/coords";
 import { standablePointNear, type StandTest } from "../player/PlayerBody";
 import { AIRBORNE_POSE_PHASE, JUMP_DURATION_MS, PlayerJump } from "../player/PlayerJump";
+import { LAND_ABSORB_FALL, ParkourPose, PARKOUR_MS, type ParkourMove } from "../avatar/parkourPose";
 import type { Vo3dCoworker, Vo3dWalkPacing } from "../app/coworkers";
 import { DOOR_LOOKAHEAD, PLAYER_SPRINT_SPEED } from "../player/PlayerMode";
 import { gaitRate, locomotion, sprintStride } from "../avatar/gait";
@@ -112,6 +113,15 @@ export const facingTrace = (): ArrivalDecision[] => arrivals.map((d) => ({ ...d 
 /** HOW LATE A RELAYED JUMP MAY BE AND STILL BE WORTH DRAWING, ms. One whole arc: any later and the
  *  jump it describes has already finished everywhere else. See Coworkers.jump. */
 const JUMP_STALE_MS = JUMP_DURATION_MS;
+/** PARKOUR V1 — the same rule for the two follow-ups: a double jump older than the rest of a doubled arc, or a
+ *  roll older than the roll itself, has finished everywhere else and is dropped rather than drawn late. */
+const DOUBLE_STALE_MS = 900;
+const ROLL_STALE_MS = PARKOUR_MS.roll;
+/** a relayed roll that finds the body still in the air waits for its landing — but no longer than the longest arc
+ *  there is (a double jump's), so it is never held for a landing that is not coming */
+const ROLL_WAIT_MS = 900;
+/** how fast a standing body eases onto a new floor height (a furniture top, a ramp), per second */
+const GROUND_EASE = 14;
 
 /** A standing body's route: shared, so a room of stationary people allocates nothing per frame. */
 const EMPTY_ROUTE: readonly Vec2[] = [];
@@ -240,10 +250,13 @@ export class CoworkerPlacer {
   private readonly canStand: StandTest;
   private readonly radius: number;
 
-  constructor(toWorld: (p: Vec2) => Vec2, canStand: StandTest, radius: number) {
+  private readonly topAt: ((p: Vec2, feet: number) => number | null) | null;
+
+  constructor(toWorld: (p: Vec2) => Vec2, canStand: StandTest, radius: number, topAt: ((p: Vec2, feet: number) => number | null) | null = null) {
     this.toWorld = toWorld;
     this.canStand = canStand;
     this.radius = radius;
+    this.topAt = topAt;
   }
 
   /** Byte-for-byte placeCoworkers, minus the work that cannot have changed. */
@@ -272,8 +285,12 @@ export class CoworkerPlacer {
         const hit = this.liveSpots.get(coworker.email);
         // Keyed on the V1-frame point, before toWorld: the transform is a constant of this placer, so two
         // equal inputs to it have equal outputs, and skipping the call is part of the saving.
-        pos = hit && hit.x === x && hit.z === z ? hit.pos : standablePointNear(this.toWorld(coworker.point), this.radius, this.canStand);
-        liveSpots.set(coworker.email, { x, z, pos });
+        const feet = coworker.feet;
+        // PARKOUR V1 — STANDING ON A TOP: the published point is inside the piece's outline, which the floor-level
+        // stand test refuses, so it is kept as-is — but only when a real standable top is there at that height.
+        const onTop = (w: Vec2): Vec2 | null => (feet !== undefined && this.topAt?.(w, feet) != null ? w : null);
+        pos = hit && hit.x === x && hit.z === z && hit.feet === feet ? hit.pos : onTop(this.toWorld(coworker.point)) ?? standablePointNear(this.toWorld(coworker.point), this.radius, this.canStand);
+        liveSpots.set(coworker.email, { x, z, feet, pos });
       } else {
         pos = deskSpots[d++];
       }
@@ -327,7 +344,7 @@ export class CoworkerPlacer {
 const HEAD_ANCHOR_Y = BON_STANDING_HEIGHT + 6;
 
 /** One memoised live answer: the V1-frame point it was computed for, and what it came out as. */
-type LiveSpot = { x: number; z: number; pos: Vec2 | null };
+type LiveSpot = { x: number; z: number; feet?: number; pos: Vec2 | null };
 
 /** One coworker's body: a clone, a mixer, its clips, a nameplate — and, Phase 6A, a walk it may be
  *  replaying. Locomotion is modelled on devtools/Crowd.ts's member, which has walked cast bodies around
@@ -436,6 +453,11 @@ class CoworkerBody {
    *  sitting, standing up, a walk being dropped, disposal — and it terminates on its own besides, so
    *  there is no path that leaves somebody hanging in the air. */
   private readonly vertical = new PlayerJump();
+  /** PARKOUR V1 — root → parkour wrapper → model, exactly as avatar/Avatar: the articulated flip, landing roll and
+   *  landing absorb (avatar/parkourPose), the same curves the jumper's own screen plays */
+  private readonly parkourFx = new ParkourPose(BON_STANDING_HEIGHT);
+  /** a relayed roll that arrived while this body was still in the air: played on its landing, if soon enough */
+  private pendingRoll = 0;
   /** PHASE 6C — the seat anchor this body is seated in, or null while standing/walking. */
   seatedIn: string | null = null;
   /** The clips-and-scale reading the seated pose is computed from — the shared prototype's, which is the
@@ -444,9 +466,14 @@ class CoworkerBody {
 
   /** the ground under a point (the world's exterior ground model; 0 indoors), or null for a flat world */
   private readonly ground: ((p: Vec2) => number) | null;
+  /** PARKOUR V1 — the validator for a published feet height (CoworkersDeps.topAt) */
+  private readonly topAt: ((p: Vec2, feet: number) => number | null) | null;
+  /** PARKOUR V1 — the feet height this person's session published (a furniture top), or null on the floor */
+  elevation: number | null = null;
 
-  constructor(source: BodySource, name: string, at: Vec2, yaw: number, phase: number, ground: ((p: Vec2) => number) | null = null) {
+  constructor(source: BodySource, name: string, at: Vec2, yaw: number, phase: number, ground: ((p: Vec2) => number) | null = null, topAt: ((p: Vec2, feet: number) => number | null) | null = null) {
     this.ground = ground;
+    this.topAt = topAt;
     this.avatarId = source.id;
     this.displayName = name;
     this.root.name = `coworker:${name}`;
@@ -464,21 +491,27 @@ class CoworkerBody {
       this.triangles = h.human.stats().triangles;
       this.rig = { ...sceneRig(h.human.scene, h.clips), pelvisBelowHips: HUMANBASE_PELVIS_BELOW_HIPS };
       this.model.add(h.human.root);
-      this.root.add(this.model);
+      this.parkourFx.node.add(this.model);
+      this.root.add(this.parkourFx.node);
       for (const clip of h.clips) { const a = h.action(clip.name); if (a) this.actions[clip.name] = a; }
       this.gait = new GaitPose(this.model);
       this.gait.setScene(h.human.scene);
       const gait = this.gait;
       h.human.addLayer({ id: "vo-gait-shape", order: 25, update: (dt) => gait.update(dt) });
+      const parkour = this.parkourFx;
+      parkour.setScene(h.human.scene);
+      h.human.addLayer({ id: "vo-parkour", order: 45, update: (dt) => parkour.update(dt) });
     } else {
       this.human = null;
       this.triangles = source.triangles;
       this.rig = sceneRig(source.scene, source.clips);
       const body = cloneSkinned(source.scene) as THREE.Group;
       this.model.add(body);
-      this.root.add(this.model);
+      this.parkourFx.node.add(this.model);
+      this.root.add(this.parkourFx.node);
       this.gait = new GaitPose(this.model);
       this.gait.setScene(body);
+      this.parkourFx.setScene(body);
       this.mixer = new THREE.AnimationMixer(body);
       // EVERY clip the prototype carries, bound once. The prototypes are the same consolidated GLBs the
       // hero avatar and the stress crowd use, so `walking` is there; hasClip is still asked before it is
@@ -498,8 +531,33 @@ class CoworkerBody {
    *  no-double-jump test the local body applies, applied here. Returns whether it took. */
   jump(): boolean {
     if (this.seatedIn !== null || this.scooterRide) return false;
-    return this.vertical.start();
+    return this.vertical.start(this.groundY());
   }
+
+  /** PARKOUR V1 — A RELAYED DOUBLE JUMP. In the air from this body's own first jump: the second takeoff and one
+   *  flip. With no arc to build on (its jump was lost or arrived late): one ordinary arc and NO flip — never a
+   *  second hop, never a flip from the floor, never floating. Refused while seated or riding. */
+  doubleJump(): boolean {
+    if (this.seatedIn !== null || this.scooterRide) return false;
+    if (this.vertical.airJump()) { this.parkourFx.start("flip"); return true; }
+    if (this.vertical.airborne) return false;
+    return this.vertical.start(this.groundY());
+  }
+
+  /** PARKOUR V1 — A RELAYED LANDING ROLL: now if this body is down, or on its own landing if it is still in the
+   *  air (only for a short while — a roll is never held for a landing that is not coming). */
+  roll(ms?: number): boolean {
+    if (this.seatedIn !== null || this.scooterRide) return false;
+    this.rollMs = ms;
+    if (this.vertical.airborne) { this.pendingRoll = ROLL_WAIT_MS; return true; }
+    this.parkourFx.start("roll", ms);
+    return true;
+  }
+  /** the relayed roll's own duration (its published travel takes exactly this long) */
+  private rollMs: number | undefined;
+
+  /** which tumble is playing on this body, for the tests and the dev surface */
+  get tumbling(): ParkourMove | null { return this.parkourFx.active; }
 
   /** Is this body in the air? Read by the dev surface and the tests. */
   get airborne(): boolean { return this.vertical.airborne; }
@@ -507,6 +565,8 @@ class CoworkerBody {
   /** Back on the floor NOW, with no landing frame, and the frozen pose released with it. Called from
    *  every transition out of "standing body" — see `vertical`. */
   private land(): void {
+    this.parkourFx.cancel();
+    this.pendingRoll = 0;
     if (!this.vertical.airborne && this.root.position.y === 0) return;
     this.vertical.reset();
     this.root.position.y = 0;
@@ -587,7 +647,13 @@ class CoworkerBody {
   /** Which way this body is looking, radians. Read-only, and read by the dev surface alone. */
   get facingYaw(): number { return this.yaw; }
   get pos(): Vec2 { return { x: this.root.position.x, z: this.root.position.z }; }
-  private groundY(): number { return this.ground ? this.ground(this.root.position) : 0; }
+  private groundY(): number {
+    const base = this.ground ? this.ground(this.root.position) : 0;
+    // PARKOUR V1 — on a furniture top only where the published height names a real top under the body now
+    if (this.elevation === null || !this.topAt) return base;
+    const top = this.topAt(this.root.position, this.elevation);
+    return top !== null && top > base ? top : base;
+  }
 
   /** WHAT THE AUTOMATIC DOORS SEE OF THIS BODY: where it stands, and the route it is about to take.
    *
@@ -853,6 +919,7 @@ class CoworkerBody {
     this.gait.set(null);
     if (this.seatedIn !== null) {
       // Seated: the clip breathes, the root does not move. Nothing below may play idle over the sit.
+      if (this.parkourFx.active) this.parkourFx.cancel();
       this.tick(dt);
       return false;
     }
@@ -860,8 +927,15 @@ class CoworkerBody {
     // THE VERTICAL HALF, stepped before the horizontal one and written after it. Everything below
     // keeps setting the root's x/z (and a y of 0) exactly as it did; the single write at the bottom is
     // what puts this body back in the air afterwards, so no branch here has to know a jump exists.
-    const landed = this.vertical.update(dt);
+    const landed = this.vertical.update(dt, this.groundY());
     const airborne = this.vertical.airborne;
+    if (this.pendingRoll > 0) {
+      if (landed) { this.pendingRoll = 0; this.parkourFx.start("roll", this.rollMs); }
+      else if ((this.pendingRoll -= dt * 1000) <= 0) this.pendingRoll = 0;
+    }
+    if (landed && this.parkourFx.active === "flip") this.parkourFx.hurry();
+    // the same landing the jumper's own screen plays: knees and hips give after a real fall (a double jump, a drop)
+    if (landed && !this.parkourFx.active && this.vertical.lastFall >= LAND_ABSORB_FALL) this.parkourFx.start("land");
     if (landed) {
       // Landing restores the frozen clip's rate ONCE, before the branches below choose what to play —
       // the locomotion branch overwrites it anyway, the resting branch does not.
@@ -929,19 +1003,32 @@ class CoworkerBody {
       // applied. `play` is guarded on the current clip, so re-asserting it per frame costs nothing.
       if (!airborne) this.play(this.restingClip);
     }
+    // PARKOUR V1 — a flip or a roll is posed over the NEUTRAL stance (the idle's first frame), so the tuck is
+    // symmetric rather than built on a frozen stride; the layer gives the clip back when it ends
+    const tumbling = this.parkourFx.active === "flip" || this.parkourFx.active === "roll";
+    if (tumbling) this.freezeAt(CLIP_IDLE, 0);
     if (airborne) {
       // IN THE AIR, over whatever the branches above decided the body was doing horizontally — the
       // walk replay keeps advancing x/z underneath, which is what makes a jump mid-walk read as a
       // jump mid-walk rather than a hop from a standstill.
-      this.freezeAt(CLIP_WALK, AIRBORNE_POSE_PHASE);
-      this.root.position.y = this.groundY() + this.vertical.height;
+      if (!tumbling) this.freezeAt(CLIP_WALK, AIRBORNE_POSE_PHASE);
+      // ABSOLUTE (PARKOUR V1): the arc's own feet, so a jump onto a sofa rises from the floor and lands on the
+      // cushion instead of popping up by the cushion's height the moment its outline is crossed
+      this.root.position.y = this.vertical.feet;
       moved = true;
     } else {
-      // ON THE GROUND the replay has put them on — flat indoors, the campus's own heights outside — so a
-      // peer on the lawn stands on the lawn rather than on the office floor's datum
+      // ON THE GROUND the replay has put them on — flat indoors, the campus's own heights outside, a furniture
+      // top they are standing on — so a peer on the lawn stands on the lawn rather than on the office floor's
+      // datum. A small change is eased (a step onto a top, a ramp); the landing frame and a relocation snap.
       const y = this.groundY();
-      if (this.root.position.y !== y) { this.root.position.y = y; moved = true; } // also the landing frame
+      const was = this.root.position.y;
+      if (was !== y) {
+        const d = y - was;
+        this.root.position.y = landed || Math.abs(d) < 0.01 || Math.abs(d) > 40 ? y : was + d * Math.min(1, dt * GROUND_EASE);
+        moved = true;
+      }
     }
+    if (this.parkourFx.active) moved = true;
     if (this.targetYaw !== null) {
       // The last beat of a walk: onto the yaw the arrival asked for, at the rate the body turns.
       const next = stepAngle(this.yaw, this.targetYaw, TURN_RATE * dt);
@@ -960,7 +1047,7 @@ class CoworkerBody {
   /** advance the animation: a legacy clone's own mixer, or the HumanBase runtime (pose restore → mixer → layers → face) */
   private tick(dt: number): void {
     if (this.human) { this.seatedWork?.update(dt, this.seatedIn !== null && this.current === CLIP_SIT); this.human.update(dt); }
-    else { this.mixer?.update(dt); this.gait.update(dt); this.riderPose?.update(dt); this.crashPose?.update(dt); }
+    else { this.mixer?.update(dt); this.gait.update(dt); this.riderPose?.update(dt); this.crashPose?.update(dt); this.parkourFx.update(dt); }
   }
 
   /** Stop replaying without moving the body — for a walk whose person left the roster mid-stride. */
@@ -1051,6 +1138,9 @@ export interface CoworkersDeps {
   radius: number;
   /** the ground under a world point (world/exteriorGround outside, 0 indoors); omitted = a flat world */
   groundY?: (p: Vec2) => number;
+  /** PARKOUR V1 — the real standable top at a world point that matches a published feet height (world/standables),
+   *  or null. The only way a relayed `feet` hint ever lifts anybody: it must name a top that is really there. */
+  topAt?: (p: Vec2, feet: number) => number | null;
   /** V1 frame point -> built V2 world point, room shifts applied */
   toWorld: (p: Vec2) => Vec2;
   lod?: AvatarLod;
@@ -1125,7 +1215,7 @@ export class Coworkers {
 
   constructor(deps: CoworkersDeps) {
     this.deps = deps;
-    this.placer = new CoworkerPlacer(deps.toWorld, deps.canStand, deps.radius);
+    this.placer = new CoworkerPlacer(deps.toWorld, deps.canStand, deps.radius, deps.topAt ?? null);
     this.group.name = "coworkers";
     deps.parent.add(this.group);
     this.riderGroup.name = "lift-riders";
@@ -1323,7 +1413,8 @@ export class Coworkers {
       // Deterministic per person rather than random: the same viewer reloading, and two viewers looking
       // at the same room, see the same stagger instead of a fresh shuffle.
       const phase = phaseFor(coworker.email);
-      const body = new CoworkerBody(proto, coworker.displayName, pos, coworker.yaw ?? FACING_YAW[coworker.facing], phase, this.deps.groundY ?? null);
+      const body = new CoworkerBody(proto, coworker.displayName, pos, coworker.yaw ?? FACING_YAW[coworker.facing], phase, this.deps.groundY ?? null, this.deps.topAt ?? null);
+      body.elevation = coworker.feet ?? null;
       // A body cloned after the host took over the nameplates must not bring a sprite one back with it.
       body.setLabelVisible(this.labelsVisible);
       body.setConversationClip(this.conversationClips.get(email) ?? null);
@@ -1385,6 +1476,7 @@ export class Coworkers {
     for (const [email, body] of this.bodies) {
       const spot = this.wanted.get(email);
       if (!spot) continue;
+      body.elevation = spot.coworker.feet ?? null;
       const walk = spot.coworker.walk;
       if (walk) {
         if (body.movementId !== walk.movementId) {
@@ -1612,13 +1704,43 @@ export class Coworkers {
    *  Returns true when a body actually took off — false for somebody this world has no body for (not
    *  rendered, still loading, or off the roster), for a stale relay, for a duplicate while they are
    *  already in the air, and for a seated body. */
-  jump(email: string, ageMs = 0): boolean {
+  jump(email: string, ageMs = 0, at?: number, seq?: number): boolean {
     if (ageMs > JUMP_STALE_MS) return false;
-    const body = this.bodies.get(email.trim().toLowerCase());
+    const key = email.trim().toLowerCase();
+    if (!this.inOrder(key, at, seq)) return false;
+    const body = this.bodies.get(key);
     if (!body) return false;
     const took = body.jump();
     if (took) this.deps.onChanged?.("position");
     return took;
+  }
+
+  /** PARKOUR V1 — SOMEBODY DOUBLE-JUMPED (with its flip) OR ROLLED ON LANDING. Same staleness rule as `jump`,
+   *  each against its own length, and the same per-sender order: a relay older than the last one applied for
+   *  that person, or the same one again, is dropped — so a late first jump can never add a hop after its
+   *  double, and nothing plays twice. A reconnect replays none of these (they are never in a snapshot). */
+  parkour(email: string, kind: "double" | "roll", ageMs = 0, at?: number, seq?: number, ms?: number): boolean {
+    if (ageMs > (kind === "double" ? DOUBLE_STALE_MS : ms ?? ROLL_STALE_MS)) return false;
+    const key = email.trim().toLowerCase();
+    if (!this.inOrder(key, at, seq)) return false;
+    const body = this.bodies.get(key);
+    if (!body) return false;
+    const took = kind === "double" ? body.doubleJump() : body.roll(ms);
+    if (took) this.deps.onChanged?.("position");
+    return took;
+  }
+
+  /** the last relayed action applied per sender: server time, then the sender's own sequence */
+  private readonly lastAction = new Map<string, { at: number; seq: number }>();
+  /** Is this relay newer than the last one applied for this sender? Relays without a server time (the dev
+   *  surface, older callers) are always taken, exactly as before. */
+  private inOrder(key: string, at?: number, seq?: number): boolean {
+    if (typeof at !== "number" || !Number.isFinite(at)) return true;
+    const s = typeof seq === "number" && Number.isFinite(seq) ? seq : 0;
+    const last = this.lastAction.get(key);
+    if (last && (at < last.at || (at === last.at && s <= last.seq))) return false;
+    this.lastAction.set(key, { at, seq: s });
+    return true;
   }
 
   /** How many bodies are in the air right now. A count, never who — the same redaction the rest of

@@ -57,6 +57,7 @@ import { useOfflineLineup } from "../../../services/presence/offlineLineupClient
 import {
   getServerClockOffsetMs,
   subscribePeerJump,
+  subscribePeerParkour,
   subscribeSeatRejected,
   useMovementSnapshotReady,
   usePeerMovements,
@@ -421,10 +422,19 @@ export function Vo3dHost({ experience }: Vo3dHostProps = {}) {
   // every session that has a socket at all, publishing or not: watching other people jump does not
   // require being able to jump yourself.
   useEffect(() => {
-    return subscribePeerJump((e) => {
+    const offJump = subscribePeerJump((e) => {
       const nowOnServer = Date.now() + getServerClockOffsetMs();
-      worldRef.current?.peerJumped(e.email, Math.max(0, nowOnServer - e.at));
+      worldRef.current?.peerJumped(e.email, Math.max(0, nowOnServer - e.at), e.at, e.seq);
     });
+    // PARKOUR V1 — the double jump (with its flip) and the landing roll, on the same clock and the same ordering
+    const offParkour = subscribePeerParkour((e) => {
+      const nowOnServer = Date.now() + getServerClockOffsetMs();
+      worldRef.current?.peerParkour(e.email, e.kind, Math.max(0, nowOnServer - e.at), e.at, e.seq, e.ms);
+    });
+    return () => {
+      offJump();
+      offParkour();
+    };
   }, []);
 
   // THE ACCESS PUSH. Same shape as the two writes above — React owns the read, the world owns the gate —

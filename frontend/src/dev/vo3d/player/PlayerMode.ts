@@ -25,13 +25,14 @@ import { CLIP_IDLE, CLIP_RUN, CLIP_WALK } from "../adapters/v1Avatar";
 import { locomotion, sprintStride } from "../avatar/gait";
 import { headingFor, stepAngle, type Vec2 } from "../core/coords";
 import type { WorldState } from "../world/WorldState";
-import { PlayerBody, type MoveHeights, type StandTest } from "./PlayerBody";
+import { PlayerBody, standablePointNear, type MoveHeights, type StandTest } from "./PlayerBody";
 import { PlayerCamera, type PlayerView } from "./PlayerCamera";
 import { PlayerHud } from "./PlayerHud";
 import { PlayerInput } from "./PlayerInput";
-import { AIRBORNE_POSE_PHASE, PlayerJump } from "./PlayerJump";
+import { AIRBORNE_POSE_PHASE, PlayerJump, WALK_JUMP } from "./PlayerJump";
 import { collectCandidates, cycleTarget, nearbyFixture, pickTarget, rankTargets, REACH, type Candidate, type Target } from "./PlayerTargeting";
 import { ScooterMotion, SCOOTER, SCOOTER_JUMP } from "./ScooterMotion";
+import { LAND_ABSORB_FALL, ROLL_MS_RANGE } from "../avatar/parkourPose";
 import { DRIFT, ScooterDrift } from "./ScooterDrift";
 import { ScooterHud } from "./ScooterHud";
 
@@ -48,8 +49,26 @@ const RIDE_IDLE_PHASE = 0;
 /** GROUND FOLLOWING (world/exteriorGround via Avatar.groundAt): how fast the body settles onto a new
  *  surface height, per second — a 1.5 tread in ~0.1 s reads as a step, not a snap or a float — and the
  *  change beyond which it is a relocation, not a step, and is taken at once. */
+/** PARKOUR V1 — what a relayed body action is (app/selfMovement carries it; world/Coworkers plays it) */
+export type ParkourKind = "jump" | "double" | "roll";
+
 const GROUND_FOLLOW = 24;
 const GROUND_SNAP = 6;
+/** PARKOUR V1 — A LANDING ROLL needs a real fall (a double jump's peak, a table, a ledge — not an ordinary hop's
+ *  11.7), some way on, and a clear path ahead on the same surface; anything less is a crouched landing. */
+const ROLL_MIN_FALL = 18;
+const ROLL_MIN_SPEED = 24;
+/** how far a roll travels, units: scaled by the landing's speed and its forward momentum, inside these bounds */
+const ROLL_DIST = { min: 18, max: 42 } as const;
+/** the path is checked this often, units — a quarter of the body, so nothing thinner than that can hide in it */
+const ROLL_PATH_STEP = 4;
+/** the landing surface may rise or fall this much along the roll (a gentle slope) — more, and it is no place to roll */
+const ROLL_SLOPE_MAX = 1.5;
+/** speed handed back to the run when the roll ends, units/s — a roll is a way of keeping going */
+const ROLL_EXIT_SPEED = 40;
+
+/** a planned roll: from where the feet landed, along the travel direction, `dist` units over `ms` */
+export type RollPlan = { from: Vec2; to: Vec2; dir: Vec2; dist: number; ms: number };
 const RIDE_CAMERA_FOLLOW = 3.2;
 const RIDE_LOOK_HOLD = 1.2;
 /** how far ahead of a moving player a door is told to expect him. One stride: enough for the leaf to be
@@ -139,6 +158,12 @@ export type PlayerDeps = {
    *  tests) the jump is the flat-floor hop it always was. */
   support?: (p: Vec2) => number;
   dropMax?: number;
+  /** PARKOUR V1 — the floor the body STANDS on at a point (the avatar's own ground, plus any furniture top under
+   *  it — world/standables). Absent = the avatar's ground. */
+  groundAt?: (p: Vec2) => number;
+  /** PARKOUR V1 — HEADROOM: the highest the FEET may rise at a point (a ceiling or a deck above, less the body).
+   *  Absent = open sky. */
+  headroom?: (p: Vec2) => number;
   /** DIRECTED MEETING — the meeting owns the chair, so no seat or walk-up is offered (E would be refused);
    *  a person is still a menu that moves nobody. Absent means never. */
   targetsSuppressed?: () => boolean;
@@ -402,6 +427,9 @@ export class PlayerMode {
     this.vertical.reset();
     this.state.airborne = false;
     this.state.height = 0;
+    this.roll = null;
+    this.d.avatar.cancelTumble();
+    this.stepOffTop();
     this.d.avatar.setPosition(this.d.avatar.position);
     this.d.avatar.setClipTimeScale(CLIP_WALK, 1);
     this.d.avatar.root.visible = true;
@@ -464,12 +492,89 @@ export class PlayerMode {
     // ONLY A JUMP THAT ACTUALLY TOOK IS PUBLISHED. `start` refuses one in mid-air, so a held Space, a
     // key repeat and a second press all produce exactly one relay — the traffic is bounded by the arc,
     // not by the keyboard.
-    if (this.vertical.start(this.d.support ? this.baseY : 0)) this.onJumped?.();
+    if (this.vertical.start(this.d.support ? this.baseY : 0)) { this.onJumped?.("jump"); return; }
+    // PARKOUR V1 — THE DOUBLE JUMP: Space again while airborne, once per arc (PlayerJump refuses a third, and a
+    // fall off an edge grants none), and only with headroom above. Its one flip plays on the tumble wrapper.
+    if (this.vertical.airJump(this.ceiling())) {
+      this.d.avatar.tumble("flip");
+      this.onJumped?.("double");
+    }
   }
 
-  /** Told when this body really left the floor, so the world can relay it to the other browsers. Null
-   *  on the standalone dev page and in every test that does not care, exactly like `onLockState`. */
-  onJumped: (() => void) | null = null;
+  /** Told when this body really jumped, double-jumped (with its flip) or rolled on landing, so the world can
+   *  relay it to the other browsers. A roll also carries its planned travel, which the world publishes as an
+   *  ordinary walk so every peer moves the body along the same path. Null on the standalone dev page and in every
+   *  test that does not care, exactly like `onLockState`. */
+  onJumped: ((kind: ParkourKind, roll?: RollPlan) => void) | null = null;
+
+  /** PARKOUR V1 — the roll in progress: the body travels its plan on the same decel curve peers replay it on */
+  private roll: (RollPlan & { elapsed: number }) | null = null;
+  /** is a landing roll carrying the body right now? (the world reports it to the movement feed as movement) */
+  get rolling(): boolean { return this.roll !== null; }
+
+  /** the highest the feet may rise where the body is now */
+  private ceiling(): number { return this.d.headroom?.(this.body.pos) ?? Infinity; }
+  /** the floor the body stands on at a point — furniture tops included (PARKOUR V1) */
+  private groundAt(p: Vec2): number { return this.d.groundAt ? this.d.groundAt(p) : this.d.avatar.groundAt(p); }
+
+  /** PARKOUR V1 — PLAN A LANDING ROLL from the landing itself, or null for a crouched landing instead.
+   *
+   *  Driven by what actually happened: the fall (and the speed it lands with, √(2·g·fall)), the forward momentum
+   *  and the direction of travel. The roll's length and duration scale with both, inside fixed bounds. Its whole
+   *  path is checked BEFORE it starts — every few units, a floor-level body may stand there on the same surface
+   *  (a gentle slope at most), stepping from the sample before — so it can never carry the body through or onto
+   *  anything. An ordinary hop never rolls, and a roll is never a licence to survive a fall: falls are bounded by
+   *  the world's own edge rules before any landing happens. */
+  private planRoll(feet: number): RollPlan | null {
+    const fall = this.vertical.lastFall, speed = this.momentum.speed;
+    if (fall < ROLL_MIN_FALL || speed < ROLL_MIN_SPEED) return null;
+    const impact = Math.sqrt(2 * WALK_JUMP.gravity * fall);
+    const dist = Math.min(ROLL_DIST.max, Math.max(ROLL_DIST.min, 8 + speed * 0.22 + impact * 0.12));
+    const ms = Math.min(ROLL_MS_RANGE.max, Math.max(ROLL_MS_RANGE.min, 620 + impact * 1.4 + speed * 0.4));
+    const p = { x: this.body.pos.x, z: this.body.pos.z };
+    // THE DIRECTION OF TRAVEL, in headingFor's own convention (core/coords: heading = atan2(dx, dz), so the unit
+    // vector is (sin h, cos h)). Writing −cos here mirrored every roll along z: a body running north rolled south,
+    // turned to face that way, and its forward roll read as a BACKWARD one against the run.
+    const dir = { x: Math.sin(this.heading), z: Math.cos(this.heading) };
+    let prev = p;
+    for (let d = ROLL_PATH_STEP; d <= dist + this.body.radius; d += ROLL_PATH_STEP) {
+      const q = { x: p.x + dir.x * d, z: p.z + dir.z * d };
+      if (!this.d.canStand(q, { feet, airborne: false, from: prev }) || Math.abs(this.groundAt(q) - feet) > ROLL_SLOPE_MAX) return null;
+      prev = q;
+    }
+    return { from: p, to: { x: p.x + dir.x * dist, z: p.z + dir.z * dist }, dir, dist, ms };
+  }
+
+  /** one frame of the roll's travel: the body moves through the ordinary swept stand test (so nothing it was not
+   *  checked against can be crossed), on the decel curve the published walk replays on */
+  private stepRoll(dt: number): number {
+    const r = this.roll!;
+    r.elapsed += dt * 1000;
+    const u = Math.min(1, r.elapsed / r.ms);
+    const s = 1 - (1 - u) * (1 - u);
+    const p = this.body.pos;
+    const res = this.body.move(r.from.x + r.dir.x * r.dist * s - p.x, r.from.z + r.dir.z * r.dist * s - p.z, this.walkHeights());
+    this.heading = headingFor(r.dir.x, r.dir.z);
+    if (u >= 1 || res.blocked) {
+      // out of the roll and on the way: a little speed back in the direction it rolled
+      this.roll = null;
+      this.momentum.vx = r.dir.x * ROLL_EXIT_SPEED;
+      this.momentum.vz = r.dir.z * ROLL_EXIT_SPEED;
+    }
+    return res.travelled;
+  }
+
+  /** PARKOUR V1 — STEP DOWN OFF A FURNITURE TOP when the body is handed to something that walks on the floor
+   *  (leaving Player View, an interaction taking it): the nearest point beside it a floor-level body may stand. */
+  private stepOffTop(): void {
+    const p = this.body.pos;
+    if (this.groundAt(p) <= this.d.avatar.groundAt(p) + 0.5) return;
+    const free = standablePointNear(p, this.body.radius, (q) => this.d.canStand(q));
+    if (!free) return;
+    this.body.pos = free;
+    this.baseY = this.d.avatar.groundAt(free);
+    this.d.avatar.setPosition(free, this.baseY);
+  }
 
   /** Is the body off the floor? Read by the dev surface and the tests. */
   get airborne(): boolean { return this.vertical.airborne; }
@@ -528,6 +633,7 @@ export class PlayerMode {
       this.landNow();
       const a = this.d.avatar.worldPosition();
       this.body.pos = { x: a.x, z: a.z };
+      this.stepOffTop();
       if (owner === "Idle" && this.d.stack.acquire("Player")) { this.body.placeNear(this.body.pos); this.d.avatar.setPosition(this.body.pos, this.followGround(0, true)); }
       this.camera.update(this.body.pos, dt, this.d.avatar.groundAt(this.body.pos));
       this.updateTarget();
@@ -549,8 +655,13 @@ export class PlayerMode {
       const wx = f.x * -axis.z + r.x * axis.x, wz = f.z * -axis.z + r.z * axis.x, wl = Math.hypot(wx, wz);
       if (wl > 1e-9) want = { x: wx / wl, z: wz / wl };
     }
+    // a landing roll owns the body's travel until it ends (stepRoll below); the keys wait for it
+    if (this.roll) want = null;
     const m: MomentumStep = this.momentum.step(want, speed * (want ? Math.min(1, Math.hypot(axis.x, axis.z)) : 0), sprinting, dt);
-    if (m.dx || m.dz) {
+    if (this.roll) {
+      travelled = this.stepRoll(dt);
+      this.state.blocked = false;
+    } else if (m.dx || m.dz) {
       const from = { x: p.x, z: p.z };
       const res = this.body.move(m.dx, m.dz, this.walkHeights());
       // WALKED OFF AN EDGE deeper than a step down (only ever one it was already straddling — see
@@ -583,10 +694,24 @@ export class PlayerMode {
     // ledge above its takeoff or a lawn below it (player/PlayerJump), the feet resolve onto that height,
     // and a landing hanging off an edge is set back onto the edge it caught.
     const sup = this.d.support;
-    const landed = this.vertical.update(dt, sup ? sup(this.body.pos) : undefined);
+    const landed = this.vertical.update(dt, sup ? sup(this.body.pos) : undefined, this.ceiling());
     if (landed && sup) {
       this.settleLanding(this.body, this.vertical.feet, this.d.dropMax ?? Infinity);
       this.baseY = this.vertical.feet;
+    }
+    if (landed) {
+      // a flip still turning finishes over a short tail; a real fall with room ahead becomes a roll
+      if (this.d.avatar.tumbling === "flip") this.d.avatar.hurryTumble();
+      const plan = this.planRoll(this.vertical.feet);
+      if (plan) {
+        this.roll = { ...plan, elapsed: 0 };
+        this.momentum.reset();
+        this.d.avatar.tumble("roll", plan.ms);
+        this.onJumped?.("roll", plan);
+      } else if (!this.d.avatar.tumbling && this.vertical.lastFall >= LAND_ABSORB_FALL) {
+        // a real fall without a roll: the knees and hips give (every viewer plays the same from its own arc)
+        this.d.avatar.tumble("land");
+      }
     }
     this.state.airborne = this.vertical.airborne;
     this.state.height = this.vertical.height;
@@ -606,9 +731,14 @@ export class PlayerMode {
     // THE GAIT'S SHAPE (avatar/gaitPose): the sprint's lean, stride and arm pump grow with the speed it is
     // actually doing; a skid plants a foot and leans back; a turn at speed banks. Off in the air.
     const sprintAmount = Math.max(0, Math.min(1, (this.momentum.speed - 80) / (PLAYER_SPRINT_SPEED - 80)));
-    this.d.avatar.setGait(this.vertical.airborne ? null : { sprint: skidding ? 0 : sprintAmount, bank: m.bank, brake: m.brake, lead: this.skidLead });
+    const tumbling = this.d.avatar.tumbling === "flip" || this.d.avatar.tumbling === "roll";
+    this.d.avatar.setGait(this.vertical.airborne || tumbling ? null : { sprint: skidding ? 0 : sprintAmount, bank: m.bank, brake: m.brake, lead: this.skidLead });
 
-    if (this.vertical.airborne) {
+    if (tumbling) {
+      // PARKOUR V1 — A FLIP OR A ROLL is articulated by avatar/parkourPose over the NEUTRAL stance (the idle's first
+      // frame), so the tuck is symmetric rather than built on a frozen stride; the clip comes back when it ends.
+      this.d.avatar.freezeClipAt(CLIP_IDLE, 0);
+    } else if (this.vertical.airborne) {
       // IN THE AIR. The pose is held (avatar/Avatar.freezeClipAt) rather than animated: no shipped
       // character package carries a jump clip, and the arc itself is what sells the motion. Takeoff and
       // landing are the crossfades into and out of it.
@@ -758,7 +888,8 @@ export class PlayerMode {
    *  and that the stand test allows; with none, it stays, and the stand test still lets it walk or roll off
    *  (it never refuses a move that straddles no worse). */
   private settleLanding(body: PlayerBody, feet: number, dropMax: number): void {
-    const centre = (q: Vec2): number => this.d.avatar.groundAt(q);
+    // the walker stands on furniture tops too (PARKOUR V1); a scooter's deck keeps the plain ground it always had
+    const centre = (q: Vec2): number => (body === this.body ? this.groundAt(q) : this.d.avatar.groundAt(q));
     const p = body.pos;
     if (centre(p) >= feet - Math.min(dropMax, 1)) return;
     const ctx = { feet, airborne: false, from: p };
@@ -776,7 +907,7 @@ export class PlayerMode {
   /** THE GROUND UNDER THE BODY, followed: eased onto a new surface height, taken at once after a relocation */
   private baseY = 0;
   private followGround(dt: number, snap = false): number {
-    const t = this.d.avatar.groundAt(this.body.pos);
+    const t = this.groundAt(this.body.pos);
     if (snap || Math.abs(t - this.baseY) > GROUND_SNAP) this.baseY = t;
     else {
       this.baseY += (t - this.baseY) * Math.min(1, dt * GROUND_FOLLOW);
@@ -786,6 +917,8 @@ export class PlayerMode {
   }
 
   private landNow(): void {
+    this.roll = null;
+    if (this.d.avatar.tumbling) this.d.avatar.cancelTumble();
     if (!this.vertical.airborne && this.state.height === 0) return;
     this.vertical.reset();
     this.state.airborne = false;

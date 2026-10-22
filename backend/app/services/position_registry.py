@@ -55,6 +55,10 @@ class StableState:
     # neither gains a column nor changes a value.
     local_x: float | None = None
     local_y: float | None = None
+    # PARKOUR V1 — how high the feet rest (on a furniture top), when a V2 client published it. Ephemeral like
+    # `local_*`: in memory and on the wire only, never persisted. Receivers honour it only where it matches a
+    # real standable top at the position (dev/vo3d/world/standables) — it can never place anyone anywhere.
+    feet: float | None = None
 
 
 @dataclass
@@ -74,6 +78,8 @@ class ActiveMovement:
     # one. `origin`/`path` above stay V1's, so a V1 peer replays exactly the walk it always did.
     local_origin: dict[str, float] | None = None
     local_path: list[dict[str, float]] | None = None
+    # PARKOUR V1 — the highest the feet stand during this walk (a furniture top), when published. See StableState.
+    feet: float | None = None
     # "eased" | "linear" | None (== eased). How peers replay it — see socket.py's _PACINGS. Not
     # persisted: an in-flight movement never is.
     pacing: str | None = None
@@ -115,6 +121,7 @@ class PositionRegistry:
         pacing: str | None = None,
         local_origin: dict[str, float] | None = None,
         local_path: list[dict[str, float]] | None = None,
+        feet: float | None = None,
     ) -> int:
         """Store the new active movement (superseding any prior one) and fold the
         walking-supersedes-sitting transition into the same revision bump: stable.state becomes
@@ -150,6 +157,7 @@ class PositionRegistry:
             pacing=pacing,
             local_origin=local_origin,
             local_path=local_path,
+            feet=feet,
         )
         return rev
 
@@ -166,6 +174,7 @@ class PositionRegistry:
         now_ms: int,
         yaw: float | None = None,
         local_at: dict[str, float] | None = None,
+        feet: float | None = None,
     ) -> StableState | None:
         """Accept only if there is an active movement for `email` whose movementId matches.
         Returns the new StableState on acceptance, or None when the arrival is stale/reordered
@@ -186,6 +195,7 @@ class PositionRegistry:
             yaw=yaw,
             local_x=local_at["x"] if local_at else None,
             local_y=local_at["y"] if local_at else None,
+            feet=feet,
         )
         entry.stable = stable
         entry.active = None
@@ -274,6 +284,7 @@ class PositionRegistry:
                     "durationMs": entry.active.duration_ms,
                     "startedAt": entry.active.started_at,
                     "pacing": entry.active.pacing,
+                    **({"feet": entry.active.feet} if entry.active.feet is not None else {}),
                 }
             entries.append(
                 {
@@ -287,6 +298,7 @@ class PositionRegistry:
                     **({"localAt": {"x": stable.local_x, "y": stable.local_y}} if stable.local_x is not None and stable.local_y is not None else {}),
                     "updatedAt": stable.updated_at,
                     "yaw": stable.yaw,
+                    **({"feet": stable.feet} if stable.feet is not None else {}),
                     "active": active_wire,
                 }
             )

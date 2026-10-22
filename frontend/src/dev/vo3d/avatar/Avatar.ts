@@ -18,6 +18,7 @@ import { createHumanBody, type HumanBody } from "./humanBody";
 import { idleClip, type AppearanceAsset, type EmployeeAvatar } from "../human/humanBaseContract";
 import { SeatedWork } from "../human/seatedWork";
 import { ArmPerch } from "../human/armPerch";
+import { ParkourPose, type ParkourMove } from "./parkourPose";
 
 let loader: GLTFLoader | null = null;
 function gltfLoader(): GLTFLoader {
@@ -82,7 +83,12 @@ export class Avatar {
     this.lods = opts.lods === null ? null : opts.lods ?? BON_LODS;
     this.humanCfg = opts.human ?? null;
     this.root.name = "avatar";
-    this.root.add(this.model);
+    // PARKOUR V1 — root → parkour wrapper → model. The wrapper is the identity except while a flip, a landing roll
+    // or a landing absorb plays (avatar/parkourPose), so everything that reads the model or the root sees what it
+    // always did.
+    this.parkour = new ParkourPose(opts.height);
+    this.root.add(this.parkour.node);
+    this.parkour.node.add(this.model);
     this.rider = new RiderPose(this.model, RIDER_GRIPS);
     this.crash = new CrashPose(this.model, () => this.rider.drop());
     this.gait = new GaitPose(this.model);
@@ -118,6 +124,8 @@ export class Avatar {
     h.addLayer({ id: "vo-scooter-rider", order: 30, update: (dt) => this.rider.update(dt) });
     this.crash.setScene(h.scene);
     h.addLayer({ id: "vo-scooter-crash", order: 40, update: (dt) => this.crash.update(dt) });
+    this.parkour.setScene(h.scene);
+    h.addLayer({ id: "vo-parkour", order: 45, update: (dt) => this.parkour.update(dt) });
     this.current = null;
     this.play(this.requested ?? CLIP_IDLE, 0);
   }
@@ -153,6 +161,7 @@ export class Avatar {
     this.rider.setScene(scene);
     this.crash.setScene(scene);
     this.gait.setScene(scene);
+    this.parkour.setScene(scene);
     this.mixer = new THREE.AnimationMixer(scene);
     for (const clip of gltf.animations) this.actions[clip.name] = this.mixer.clipAction(clip);
     this.current = null;
@@ -292,6 +301,16 @@ export class Avatar {
     const a = this.action(name);
     return { bound: a !== undefined, running: a?.isRunning() ?? false, weight: a?.getEffectiveWeight() ?? 0 };
   }
+  // ---- PARKOUR V1: the articulated flip, landing roll and landing absorb (avatar/parkourPose) ----
+  private readonly parkour: ParkourPose;
+  /** start a midair flip, a landing roll or a landing absorb */
+  tumble(move: ParkourMove, durationMs?: number): void { this.parkour.start(move, durationMs); }
+  /** a flip still turning when the feet land finishes over a short tail */
+  hurryTumble(): void { this.parkour.hurry(); }
+  /** stop any parkour move and give the body back to its clip now */
+  cancelTumble(): void { this.parkour.cancel(); }
+  get tumbling(): ParkourMove | null { return this.parkour.active; }
+
   update(dt: number): void {
     if (this.human) {   // seated hands, then mixer + behaviour layers (clearance, contacts, face, hair, rider)
       if (this.seatedWork) this.seatedWork.atWorkstation = this.atWorkstation;
@@ -303,6 +322,7 @@ export class Avatar {
     this.gait.update(dt);
     this.rider.update(dt);
     this.crash.update(dt);
+    this.parkour.update(dt); // last: it poses on top of everything the clip and the other layers wrote
   }
 
   // ---- the scooter rider (avatar/riderPose) ----

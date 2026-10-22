@@ -181,13 +181,13 @@ export type ExteriorGround = {
   /** may a body of `radius` stand at `p` under `profile`? — with the reason when it may not */
   /** `ignoreSolid`: a solid this body does not collide with (the ridden scooter's own empty dock) */
   /** `motion`: judge the heights as a moving body (TraversalState); omitted, the static spread rule */
-  occupancy(p: Vec2, radius: number, profile: GroundProfile, foreign?: ForeignOwner, ignoreSolid?: string, motion?: TraversalState): Occupancy;
-  canOccupy(p: Vec2, radius: number, profile: GroundProfile, foreign?: ForeignOwner, ignoreSolid?: string, motion?: TraversalState): boolean;
+  occupancy(p: Vec2, radius: number, profile: GroundProfile, foreign?: ForeignOwner, ignoreSolid?: string | ReadonlySet<string>, motion?: TraversalState): Occupancy;
+  canOccupy(p: Vec2, radius: number, profile: GroundProfile, foreign?: ForeignOwner, ignoreSolid?: string | ReadonlySet<string>, motion?: TraversalState): boolean;
   /** THE HEIGHT A FOOTPRINT RESTS AT: the highest ground under its centre and rim — what a body there
    *  stands on, and what a falling one lands on */
   support(p: Vec2, radius: number): number;
   /** does a disc overlap a solid (other than `ignore`)? returns its id or null */
-  solidNear(p: Vec2, radius: number, ignore?: string): string | null;
+  solidNear(p: Vec2, radius: number, ignore?: string | ReadonlySet<string>): string | null;
   /** sizes, for the debug overlay and budgets */
   stats(): { surfaces: number; solids: number; surfaceBuckets: number; maxSurfacesPerBucket: number; solidBuckets: number; maxSolidsPerBucket: number };
 };
@@ -521,10 +521,15 @@ export function buildExteriorGround(): ExteriorGround {
     }
     return best ? { id: best.id, kind: best.kind, y: bestY, inCampus: inCampus(p) } : { ...TERRAIN, inCampus: inCampus(p) };
   }
-  function solidNear(p: Vec2, radius: number, ignore?: string): string | null {
+  /** `ignore`: one solid (the ridden scooter) or, PARKOUR V1, the standable tops a body's feet have cleared */
+  function solidNear(p: Vec2, radius: number, ignore?: string | ReadonlySet<string>): string | null {
     const idx = solidB.at(p);
     if (!idx) return null;
-    for (const i of idx) if (solids[i].id !== ignore && solidOverlaps(solids[i], p, radius)) return solids[i].id;
+    for (const i of idx) {
+      const id = solids[i].id;
+      if (typeof ignore === "string" ? id === ignore : ignore?.has(id)) continue;
+      if (solidOverlaps(solids[i], p, radius)) return id;
+    }
     return null;
   }
   const solidAt = (p: Vec2, radius: number): string | null => solidNear(p, radius);
@@ -541,7 +546,7 @@ export function buildExteriorGround(): ExteriorGround {
   /** how far a grounded footprint breaks the step rules for feet at `feet` (0 = it does not) */
   const excess = (lo: number, hi: number, feet: number, profile: GroundProfile): number =>
     Math.max(0, hi - feet - profile.stepUp) + Math.max(0, feet - lo - profile.dropMax) + Math.max(0, hi - lo - Math.max(profile.stepUp, profile.dropMax));
-  function occupancy(p: Vec2, radius: number, profile: GroundProfile, foreign?: ForeignOwner, ignoreSolid?: string, motion?: TraversalState): Occupancy {
+  function occupancy(p: Vec2, radius: number, profile: GroundProfile, foreign?: ForeignOwner, ignoreSolid?: string | ReadonlySet<string>, motion?: TraversalState): Occupancy {
     let lo = Infinity, hi = -Infinity;
     for (let k = -1; k < RIM.length; k++) {
       const q = k < 0 ? p : { x: p.x + RIM[k][0] * radius, z: p.z + RIM[k][1] * radius };

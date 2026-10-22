@@ -102,7 +102,11 @@ export interface Vo3dSelfMovementSink {
    *  It lives on this interface anyway because this interface is the one seam between V2's world and
    *  V1's socket, and the alternative was a second one. OPTIONAL: the standalone dev page's sink does
    *  not implement it, and a jump there simply stays local, exactly as everything else there does. */
-  jumped?(): void;
+  /** a jump took (PARKOUR V1: or a double jump with its flip, or a landing roll) — relayed, never persisted */
+  jumped?(kind?: "jump" | "double" | "roll", ms?: number): void;
+  /** PARKOUR V1 — how high the feet stand above the floor's datum right now (a furniture top), or undefined on
+   *  the floor. Carried on the next walk events as `feet`; see adapters/v1SelfMovement. */
+  noteFeet?(feet: number | undefined): void;
   /** Counters for the dev readout — how many movements went out, and how many were refused because they
    *  were not expressible as a V1 position. Numbers only, never a coordinate.
    *

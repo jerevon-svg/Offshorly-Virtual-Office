@@ -184,6 +184,7 @@ export function applyLivePositions(
     // occupiedCentroidKeys: no walk in flight, state "sitting", a seat key) plus one of V2's: the mapping
     // knows the chair. A V1 sitter in a chair V2 cannot identify keeps the standing placement below.
     const anchor = !walk && peer.stable.state === "sitting" ? anchorForSeatKey(peer.stable.seatKey) : null;
+    const feet = walk ? peer.active?.feet : peer.stable.feet;
     return {
       ...coworker,
       // The conversion, in one place: their own box's halves, and nothing else.
@@ -205,6 +206,8 @@ export function applyLivePositions(
       ...(peer.stable.localPos ? { localPoint: { x: peer.stable.localPos.x, z: peer.stable.localPos.y } } : {}),
       ...(walk ? { walk } : {}),
       ...(anchor ? { seat: anchor.id } : {}),
+      // PARKOUR V1 — the published feet height, straight through (the store already admitted only a sane number)
+      ...(feet !== undefined ? { feet } : {}),
     };
   });
 

@@ -137,6 +137,10 @@ export interface Vo3dCoworker {
    *  replacement for the stable fact — which is what makes a late, lost or superseded arrival recoverable
    *  rather than a body stranded wherever the replay happened to run out. */
   walk?: Vo3dCoworkerWalk;
+  /** PARKOUR V1 — how high this person's feet stand (a furniture top), as their V2 session published it: the
+   *  walk's own when one is in flight, else where they came to rest. A HINT ONLY — the world honours it solely
+   *  where it matches a real standable top at the body's position (world/standables); absent = the floor. */
+  feet?: number;
   /** PHASE 6C — the V2 SEAT ANCHOR this person is sitting in (app/seats.ts ids), when V1's stable state
    *  says "sitting" with a seat key the mapping (adapters/v1Seats) identifies, and no walk is in flight.
    *  Absent for everybody standing, and for a sitter in a chair V2 cannot identify — who is then drawn

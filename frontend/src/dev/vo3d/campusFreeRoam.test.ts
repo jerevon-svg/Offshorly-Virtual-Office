@@ -150,7 +150,8 @@ describe("campus presence", () => {
 
 describe("app/world.ts campus wiring", () => {
   it("the player stands on the campus through the shared WALK profile, owners judging their own space", () => {
-    expect(src).toContain(": ground.canOccupy(p, WALK_PROFILE.footRadius, WALK_PROFILE, foreignOwner, undefined, motion);");
+    // PARKOUR V1 — the cleared standable tops (world/standables) ride in the ignore slot; undefined when there are none
+    expect(src).toContain(": ground.canOccupy(p, WALK_PROFILE.footRadius, WALK_PROFILE, foreignOwner, clearedBy(p, motion), motion);");
     expect(src).toContain('const inLabDomain = (p: Vec2): boolean => ground.groundAt(p).kind === "lab-interior";');
     expect(src).toMatch(/const inOfficeDomain = \(p: Vec2\): boolean => pointInRect\(p, FRAME\) && \(p\.z < FACADE_Z \+ FACADE_WALL_T \|\| pointInRect\(p, ENTRY_ZONE\)\);/);
   });

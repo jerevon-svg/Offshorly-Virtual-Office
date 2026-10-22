@@ -48,14 +48,15 @@ export const GAIT_POSE = {
   MEAN_S: 0.35,
 } as const;
 
-type Rig = {
+/** the standard chain, found by name on any rig (shared with avatar/parkourPose) */
+export type Rig = {
   scene: THREE.Object3D;
   spines: THREE.Bone[]; neck: THREE.Bone | null;
   arms: THREE.Bone[]; fores: THREE.Bone[]; thighs: THREE.Bone[]; shins: THREE.Bone[]; feet: THREE.Bone[];
   bones: THREE.Bone[];
 };
 
-function findRig(scene: THREE.Object3D): Rig | null {
+export function findRig(scene: THREE.Object3D): Rig | null {
   const b = (n: string) => (scene.getObjectByName(n) as THREE.Bone | undefined) ?? null;
   const two = (l: string, r: string) => { const x = b(l), y = b(r); return x && y ? [x, y] : null; };
   // THE WHOLE SPINE, hips to neck, whatever its joints are called (HumanBase counts them down: Spine02 is the
@@ -74,12 +75,14 @@ function findRig(scene: THREE.Object3D): Rig | null {
 const _rp = new THREE.Quaternion(), _rb = new THREE.Quaternion(), _r = new THREE.Quaternion(), _fq = new THREE.Quaternion(), _d = new THREE.Quaternion();
 const _X = new THREE.Vector3(), _Z = new THREE.Vector3(), _v = new THREE.Vector3(), _ax = new THREE.Vector3();
 const X = new THREE.Vector3(1, 0, 0), Z = new THREE.Vector3(0, 0, 1);
-function rotateWorld(bone: THREE.Object3D, r: THREE.Quaternion): void {
+/** rotate a bone by a WORLD-space rotation, carried into its parent's space (shared with avatar/parkourPose) */
+export function rotateWorld(bone: THREE.Object3D, r: THREE.Quaternion): void {
   const parentQ = bone.parent!.getWorldQuaternion(_rp).invert();
   bone.quaternion.copy(parentQ.multiply(r).multiply(bone.getWorldQuaternion(_rb)));
   bone.updateMatrixWorld(true);
 }
-const about = (axis: THREE.Vector3, angle: number) => _r.setFromAxisAngle(axis, angle);
+/** a rotation of `angle` about `axis` — a shared scratch quaternion, use it at once */
+export const about = (axis: THREE.Vector3, angle: number) => _r.setFromAxisAngle(axis, angle);
 /** take a local rotation `k` times as far from `ref` as it already is (k > 1 opens the swing up) */
 function amplify(q: THREE.Quaternion, ref: THREE.Quaternion, k: number): void {
   _d.copy(ref).invert().multiply(q);

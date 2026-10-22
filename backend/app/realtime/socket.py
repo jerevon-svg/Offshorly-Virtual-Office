@@ -522,6 +522,19 @@ _MOVE_STATES = {"standing", "sitting"}
 _PACINGS = {"eased", "linear", "decel"}
 
 
+# PARKOUR V1 — the feet height a V2 client stands at (a furniture top), optional. Bounded to the tallest
+# thing a body can legitimately stand on with room to spare; receivers validate it against real tops anyway.
+_FEET_MAX = 200.0
+
+
+def _is_optional_feet(v) -> bool:
+    if v is None:
+        return True
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return False
+    return v == v and 0 <= v <= _FEET_MAX
+
+
 def _is_optional_yaw(v) -> bool:
     """The V2 3D office's actual resting yaw in radians, optional. V1's four-word `facing` stays the
     compatibility vocabulary; this is the exact value beside it. Absent/None is legal (every V1 client);
@@ -575,6 +588,8 @@ def _valid_walk_started_payload(payload) -> bool:
         return False
     if not _is_optional_path(payload.get("localPath")):
         return False
+    if not _is_optional_feet(payload.get("feet")):
+        return False
     duration_ms = payload.get("durationMs")
     if not isinstance(duration_ms, int) or isinstance(duration_ms, bool):
         return False
@@ -604,6 +619,8 @@ def _valid_walk_arrived_payload(payload) -> bool:
     if not _is_optional_point(payload.get("localAt")):
         return False
     if not _is_optional_yaw(payload.get("yaw")):
+        return False
+    if not _is_optional_feet(payload.get("feet")):
         return False
     return True
 
@@ -2500,6 +2517,7 @@ async def walk_started(sid: str, payload: dict | None) -> None:
         room_id = payload.get("roomId")
         local_origin = payload.get("localOrigin")
         local_path = payload.get("localPath")
+        feet = payload.get("feet")
         duration_ms = payload["durationMs"]
         pacing = payload.get("pacing")  # None for every V1 client — see _PACINGS
         started_at = _now_ms()
@@ -2515,6 +2533,7 @@ async def walk_started(sid: str, payload: dict | None) -> None:
             pacing=pacing,
             local_origin=local_origin,
             local_path=local_path,
+            feet=feet,
         )
 
         await sio.emit(
@@ -2533,6 +2552,7 @@ async def walk_started(sid: str, payload: dict | None) -> None:
                 # every client saw before this existed, so an older peer is unaffected.
                 **({"localOrigin": local_origin} if local_origin else {}),
                 **({"localPath": local_path} if local_path else {}),
+                **({"feet": feet} if feet is not None else {}),
             },
             skip_sid=sid,
         )
@@ -2598,6 +2618,7 @@ async def walk_arrived(sid: str, payload: dict | None) -> None:
             now_ms=_now_ms(),
             yaw=yaw,
             local_at=local_at,
+            feet=payload.get("feet"),
         )
         if stable is None:
             return  # stale/wrong movementId — ignore silently
@@ -2644,6 +2665,7 @@ async def walk_arrived(sid: str, payload: dict | None) -> None:
                 "roomId": stable.room_id,
                 "yaw": stable.yaw,
                 **({"localAt": local_at} if local_at else {}),
+                **({"feet": stable.feet} if stable.feet is not None else {}),
             },
             skip_sid=sid,
         )
@@ -2689,7 +2711,56 @@ async def jump(sid: str, payload: dict | None = None) -> None:
         if isinstance(last, int) and now - last < _JUMP_MIN_INTERVAL_MS:
             return  # silent drop, this file's convention for input it will not act on
         await sio.save_session(sid, {**session_data, "jump_at": now})
-        await sio.emit("peer_jump", {"email": email, "at": now}, skip_sid=sid)
+        seq = _action_seq(payload)
+        await sio.emit("peer_jump", {"email": email, "at": now, **({"seq": seq} if seq is not None else {})}, skip_sid=sid)
+    except Exception as exc:  # noqa: BLE001
+        await _emit_unexpected(sid, exc)
+
+
+# PARKOUR V1 — THE OTHER TWO BODY ACTIONS: a double jump (with its flip) and a landing roll. The same contract
+# as `jump`, on their own event so a client that predates them never mistakes one for a jump:
+#   • an explicit allow-list of kinds — anything else is dropped;
+#   • the identity is the session's, the time is the server's; the client adds only `kind` and its own
+#     per-page `seq`, which receivers use (with `at`) to drop duplicates and anything out of order;
+#   • no state, no persistence, no snapshot — a reconnect replays nothing — and a per-kind floor on how often
+#     one connection may send each, as `jump` has.
+_PARKOUR_KINDS = ("double", "roll")
+_PARKOUR_MIN_INTERVAL_MS = 300
+_SEQ_MAX = 2**31 - 1
+_ROLL_MS_MIN = 300
+_ROLL_MS_MAX = 1500
+
+
+def _action_seq(payload) -> int | None:
+    seq = payload.get("seq") if isinstance(payload, dict) else None
+    if isinstance(seq, bool) or not isinstance(seq, int) or not 0 <= seq <= _SEQ_MAX:
+        return None
+    return seq
+
+
+@sio.on("parkour")
+async def parkour(sid: str, payload: dict | None = None) -> None:
+    try:
+        kind = payload.get("kind") if isinstance(payload, dict) else None
+        if kind not in _PARKOUR_KINDS:
+            return
+        session_data = await sio.get_session(sid)
+        email = session_data["email"]
+        now = _now_ms()
+        key = f"parkour_at:{kind}"
+        last = session_data.get(key)
+        if isinstance(last, int) and now - last < _PARKOUR_MIN_INTERVAL_MS:
+            return
+        await sio.save_session(sid, {**session_data, key: now})
+        seq = _action_seq(payload)
+        # a roll's duration, so peers play it exactly as long as its published travel takes; bounded, else absent
+        ms = payload.get("ms")
+        ms = ms if kind == "roll" and isinstance(ms, int) and not isinstance(ms, bool) and _ROLL_MS_MIN <= ms <= _ROLL_MS_MAX else None
+        await sio.emit(
+            "peer_parkour",
+            {"email": email, "at": now, "kind": kind, **({"seq": seq} if seq is not None else {}), **({"ms": ms} if ms is not None else {})},
+            skip_sid=sid,
+        )
     except Exception as exc:  # noqa: BLE001
         await _emit_unexpected(sid, exc)
 
