@@ -51,7 +51,8 @@
 // have to be the SAME Chat and Call the interaction card dispatches, not a second pair that drifts. See
 // Vo3dHud.tsx for what the dock itself carries and what it deliberately leaves out.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Vo3dCoworkerSelection, Vo3dScreenAnchor } from "./interactions";
+import type { Vo3dCoworkerSelection, Vo3dObjectSelection, Vo3dScreenAnchor } from "./interactions";
+import { WorldActionMenu } from "../../../components/OfficeMap/WorldActionMenu";
 import type { Vo3dWorld } from "./world";
 import { physicallyInMeeting } from "./meetingArrival";
 import { CoworkerActionMenu, type Vo3dCoworkerAction } from "./CoworkerActionMenu";
@@ -352,6 +353,10 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
   // Cave portal are. `kioskPhase` is THIS CLIENT'S request state and nothing more — what is TRUE about
   // the work session is `attendance`, which comes from V1 and is never inferred from a button press.
   const [kioskOpen, setKioskOpen] = useState(false);
+  // INTERACTION V2 — THE OBJECT CARD (Office View): a clicked chair, desk, lift or fixture, and where it is on
+  // screen right now (it follows the object through a pan, as a person's card follows them)
+  const [objectSel, setObjectSel] = useState<Vo3dObjectSelection | null>(null);
+  const [objectAnchor, setObjectAnchor] = useState<Vo3dScreenAnchor | null>(null);
   const [kioskAnchor, setKioskAnchor] = useState<Vo3dScreenAnchor | null>(null);
   const [kioskPhase, setKioskPhase] = useState<"idle" | "submitting" | "failed">("idle");
   /** THE DOUBLE-SUBMIT GUARD, a ref and not state for the reason V1's own `checkinRequestPendingRef` is
@@ -891,6 +896,7 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
       // was picked (a manifest room id, or null for the hall / a person / a fixture / outside); what that
       // room CONTAINS is resolved here from V1's roster, in app/roomDetails.ts.
       onRoomSelected: (roomId) => setRoomDetailsId(roomId),
+      onObjectSelected: (sel) => setObjectSel(sel),
     });
     return () => world.setCoworkerInteractions(null);
   }, [ready, roomNameFor, worldRef]);
@@ -960,6 +966,30 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [selection?.email, worldRef]);
+
+  // THE OBJECT CARD FOLLOWS ITS OBJECT, through the same loop shape as the person's card above.
+  useEffect(() => {
+    if (!objectSel) {
+      setObjectAnchor(null);
+      return;
+    }
+    let raf = 0;
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      const next = worldRef.current?.objectAnchor(objectSel.id) ?? null;
+      setObjectAnchor((prev) => {
+        if (!next) return prev === null ? prev : null;
+        if (prev && prev.visible === next.visible && Math.abs(prev.clientX - next.clientX) < 0.5 && Math.abs(prev.clientY - next.clientY) < 0.5) return prev;
+        return next;
+      });
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [objectSel, worldRef]);
+  const closeObjectMenu = useCallback(() => {
+    setObjectSel(null);
+    worldRef.current?.clearObjectSelection();
+  }, [worldRef]);
 
   // THE KIOSK CARD FOLLOWS THE BODY, for the same reason and through the same loop shape. The employee is
   // standing AT the kiosk when this opens, so their own anchor is the kiosk's position on screen — and it
@@ -2170,7 +2200,8 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
   // THE INTERACTION MENUS, ONE MOUSE RULE (app/menuPointer): while any is up, PLAYER's look, clicks and
   // verbs stand down and a locked pointer is released so the menu can be clicked at once; closing gives
   // the pointer back when it was ours to give.
-  useMenuPointer(menuVisible || exitOpen || kioskOpen || floorPicker !== null, worldRef);
+  const objectMenuVisible = objectSel !== null && objectAnchor !== null && objectAnchor.visible;
+  useMenuPointer(menuVisible || objectMenuVisible || exitOpen || kioskOpen || floorPicker !== null, worldRef);
 
   return (
     <>
@@ -2190,6 +2221,24 @@ export function Vo3dOverlay({ worldRef, ready, people, drawnEmails, coworkers = 
           canAskToJoin={Boolean(targetSession && targetSession.members.length >= 2 && !targetSession.members.includes(self))}
           // Label only. The row still dispatches "call", into the one join path above.
           targetInActiveCall={callParticipantsFor(callState, activeSpatialSession?.sessionId ?? null).includes(selection.email)}
+        />
+      )}
+      {objectMenuVisible && objectSel && objectAnchor && (
+        <WorldActionMenu
+          anchor={{ clientX: objectAnchor.clientX, clientY: objectAnchor.clientY }}
+          onClose={closeObjectMenu}
+          ariaLabel={`Actions for ${objectSel.title}`}
+          title={objectSel.title}
+          subtitle={objectSel.subtitle}
+          items={objectSel.actions.map((a) => ({
+            key: a.key,
+            label: a.label,
+            onSelect: () => {
+              const id = objectSel.id;
+              setObjectSel(null);
+              worldRef.current?.runObjectAction(id, a.key);
+            },
+          }))}
         />
       )}
       {kioskOpen && kioskAnchor?.visible && (

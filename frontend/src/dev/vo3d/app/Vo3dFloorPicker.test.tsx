@@ -135,7 +135,9 @@ describe("the panel is wired through the existing ride path", () => {
 
   it("routes every undirected call (interact key, click, GUI, dev) through requestElevator", () => {
     expect(world).toContain("if (ELEVATOR_CALL_IDS.has(id)) return requestElevator();");
-    expect(world).toContain('ELEVATOR_ROOM_IDS.has(world.get(picked).roomId)) requestElevator();');
+    // INTERACTION V2 — the click's card (or a host-less click) runs the call plate's row through the same call
+    expect(world).toContain('id.endsWith("/call") && ELEVATOR_ROOM_IDS.has(world.get(id).roomId)');
+    expect(world).toContain("else if (isElevatorCall(id)) requestElevator();");
     expect(world).toContain("liftGui.add({ go: () => requestElevator() }");
     expect(world).not.toMatch(/callElevator\(\)/);
   });

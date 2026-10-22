@@ -78,6 +78,17 @@ export function locomotion(runtime: GaitRuntime, groundSpeed: number, running: b
   // a stride opened up by the sprint (avatar/gaitPose) covers that much more ground per cycle: the cadence gives it back
   return { clip, rate: gaitRate(runtime, clip, groundSpeed / stride, hasRun) };
 }
+/** INTERACTION V2 — OFFICE VIEW'S FAST-FORWARD TRAVEL is the WALK, played fast — V1's quick click-to-walk, a video
+ *  on fast-forward — never the run or the sprint (no lean, no momentum: those stay Player View's). Up to this
+ *  cadence, a HumanBase walk's feet keep up with the ground; past it the travel glides a little rather than flailing. */
+export const FAST_FORWARD_MAX_RATE = 5;
+/** the walk's playback rate for a body travelling at `groundSpeed`: exactly gaitRate up to the ordinary walk,
+ *  and above it the fast-forward cadence (HumanBase only — a legacy body keeps its own table) */
+export function walkRate(runtime: GaitRuntime, groundSpeed: number, hasRun = true): number {
+  const r = gaitRate(runtime, CLIP_WALK, groundSpeed, hasRun);
+  if (runtime !== "humanbase") return r;
+  return Math.max(r, Math.min(FAST_FORWARD_MAX_RATE, groundSpeed / HUMANBASE_CLIP_GROUND_SPEED[CLIP_WALK]));
+}
 /** how much further a stride reaches at this much of a sprint (avatar/gaitPose GAIT_POSE.STRIDE) */
 export const sprintStride = (sprint: number): number => 1 + 0.5 * Math.max(0, Math.min(1, sprint));
 /** the playback rate alone, for a clip already chosen (a peer picks its clip once per movement) */

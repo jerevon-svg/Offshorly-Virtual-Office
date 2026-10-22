@@ -59,6 +59,8 @@ describe("app/world.ts seating wiring", () => {
   it("peers sit on this world's chairs, and an Office View chair click sits", () => {
     expect(src).toContain("seatAnchor: peerSeatAnchor");
     expect(src).toContain("releaseSeat: releasePeerSeat");
-    expect(src).toContain('else if (ent.capabilities.seat) activateInteractable(picked, "seat");');
+    // INTERACTION V2 — the click opens the object's card; its Sit row (or a host-less click) runs the same bridge
+    expect(src).toContain('else if (ent.capabilities.seat) activateInteractable(id, "seat");');
+    expect(src).toContain('if (!coworkerInteractions?.onObjectSelected) { runObjectAction(id, "primary", near); return; }');
   });
 });

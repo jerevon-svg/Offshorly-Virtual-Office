@@ -5,7 +5,7 @@
 // stand-up are code-driven cross-fades while the root glides and is lifted from clip Hips data.
 import * as THREE from "three";
 import type { Avatar } from "../avatar/Avatar";
-import { gaitRate } from "../avatar/gait";
+import { walkRate } from "../avatar/gait";
 import { stepAlong, type ControllerStack } from "../avatar/Controller";
 import { CLIP_IDLE, CLIP_SIT } from "../adapters/v1Avatar";
 import { headingFor, stepAngle, type Vec2 } from "../core/coords";
@@ -139,7 +139,7 @@ export class SeatInteraction {
   private walkStep(dt: number): boolean {
     stepAlong(this.avatar, this.walk, this.walkSpeed(), 7, dt);
     this.avatar.play(this.walk.length ? "walking" : CLIP_IDLE);
-    this.avatar.setClipTimeScale("walking", gaitRate(this.avatar.runtime, "walking", this.walkSpeed()));
+    this.avatar.setClipTimeScale("walking", walkRate(this.avatar.runtime, this.walkSpeed()));
     return this.walk.length === 0;
   }
 

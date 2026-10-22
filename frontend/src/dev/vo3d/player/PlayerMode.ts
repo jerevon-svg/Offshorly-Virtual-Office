@@ -30,7 +30,7 @@ import { PlayerCamera, type PlayerView } from "./PlayerCamera";
 import { PlayerHud } from "./PlayerHud";
 import { PlayerInput } from "./PlayerInput";
 import { AIRBORNE_POSE_PHASE, PlayerJump } from "./PlayerJump";
-import { collectCandidates, pickTarget, type Candidate, type Target } from "./PlayerTargeting";
+import { collectCandidates, cycleTarget, nearbyFixture, pickTarget, rankTargets, REACH, type Candidate, type Target } from "./PlayerTargeting";
 import { ScooterMotion, SCOOTER, SCOOTER_JUMP } from "./ScooterMotion";
 import { DRIFT, ScooterDrift } from "./ScooterDrift";
 import { ScooterHud } from "./ScooterHud";
@@ -142,6 +142,11 @@ export type PlayerDeps = {
   /** DIRECTED MEETING — the meeting owns the chair, so no seat or walk-up is offered (E would be refused);
    *  a person is still a menu that moves nobody. Absent means never. */
   targetsSuppressed?: () => boolean;
+  /** INTERACTION V2 — LINE OF SIGHT from the body to a candidate: nothing is offered through a wall or a closed
+   *  barrier. Absent (the dev page, the pure tests) = always clear. */
+  sight?: (from: Vec2, to: Vec2) => boolean;
+  /** ...and a clear view along the floor, for the "walk to the marker" hint (furniture blocks it). Absent = clear. */
+  clearView?: (from: Vec2, to: Vec2) => boolean;
 };
 
 /** A SCOOTER RIDE, as PlayerMode sees it (app/world.ts starts one; world/scooters defines the area).
@@ -200,6 +205,12 @@ export class PlayerMode {
   private promptHidden = false;
   private _active = false;
   private target: Target | null = null;
+  /** INTERACTION V2 — a target chosen with Tab is HELD while it stays eligible and the aim has not swung far off
+   *  the heading it was chosen at; aiming elsewhere hands selection back to the cone */
+  private cycled: { id: string; heading: number } | null = null;
+  /** every walk-up fixture in the building (the lift's call plate, kiosks, the Cave's way out): the
+   *  "walk to the marker" hint is offered across a room boundary, which the room buckets never are */
+  private readonly fixtures: Candidate[];
   /** the heading Bon is walking, kept separate from the camera yaw so third person can turn the body only */
   private heading = 0;
   private moving = false;
@@ -327,10 +338,12 @@ export class PlayerMode {
     this.camera = new PlayerCamera(deps.camera, deps.avatarHeight, deps.cameraProbe);
     this.body = new PlayerBody(deps.avatar.position, deps.radius, deps.canStand);
     this.candidates = collectCandidates(deps.world);
+    this.fixtures = [...this.candidates.values()].flat().filter((c) => c.kind === "approach");
     this.input = new PlayerInput(deps.canvas, {
       onInteract: () => this.interact(),
       onToggleView: () => this.setView(this.camera.view === "third" ? "first" : "third"),
       onJump: () => this.jump(),
+      onCycle: () => this.cycle(),
       onLockChange: (locked) => {
         this.state.locked = locked;
         this.hud?.setLocked(locked);
@@ -785,17 +798,30 @@ export class PlayerMode {
   }
 
   /** Room-scoped candidate scan. No scene traversal, no raycast: the candidate list was built once. */
-  private updateTarget(): void {
+  private scoringSet(): { all: readonly Candidate[] | undefined; facing: Vec2 } {
     const room = this.d.world.regionAt(this.body.pos)?.roomId;
     const list = room ? this.candidates.get(room) : undefined;
     const facing = this.camera.view === "first" ? this.camera.forward : { x: Math.sin(this.d.avatar.yaw), z: -Math.cos(this.d.avatar.yaw) };
     // PHASE 6D — the static room bucket PLUS whoever is standing here right now. People are added
     // regardless of which room the body is in (they are not in any bucket, and a coworker in the hall is
-    // still a person you are looking at); pickTarget's reach and cone are what bound them, as for
-    // everything else.
+    // still a person you are looking at); pickTarget's reach, cone and line of sight are what bound them.
     const dynamic = this.d.dynamicCandidates?.() ?? EMPTY_CANDIDATES;
     const all = dynamic.length === 0 ? list : list ? [...list, ...dynamic] : dynamic;
-    this.target = all && all.length > 0 ? pickTarget(all, this.body.pos, facing) : null;
+    return { all, facing };
+  }
+
+  private updateTarget(): void {
+    const { all, facing } = this.scoringSet();
+    // INTERACTION V2 — STABLE SELECTION: the target held last frame survives a near-tie (pickTarget's
+    // hysteresis); one chosen with Tab is held outright while it stays eligible and the aim stays near it.
+    const heading = Math.atan2(facing.x, -facing.z);
+    let held: Target | null = null;
+    if (this.cycled && all) {
+      const swung = Math.abs(Math.atan2(Math.sin(heading - this.cycled.heading), Math.cos(heading - this.cycled.heading)));
+      held = swung < 0.8 ? rankTargets(all, this.body.pos, facing, this.d.sight).find((t) => t.id === this.cycled!.id) ?? null : null;
+      if (!held) this.cycled = null;
+    }
+    this.target = held ?? (all && all.length > 0 ? pickTarget(all, this.body.pos, facing, { current: this.target?.id ?? null, sight: this.d.sight }) : null);
     if (this.target && this.target.kind !== "person" && this.d.targetsSuppressed?.()) this.target = null;
     this.state.target = this.target ? this.target.label : "—";
     if (this.d.canStandUp()) {
@@ -803,8 +829,24 @@ export class PlayerMode {
       this.state.target = "stand up";
       return;
     }
-    this.hud?.setTarget(this.target?.label ?? null, this.target ? this.target.pos : null);
-    if (!this.target) this.refreshHint();
+    // more than one thing here: say how to pick between them (Tab), once, on the prompt itself
+    const more = this.target && all ? rankTargets(all, this.body.pos, facing, this.d.sight).length > 1 : false;
+    // WHERE TO STAND: the ring goes on the object; a walk-up fixture also marks its stand spot
+    const stand = this.target?.kind === "approach" ? this.target.anchors?.[0] ?? null : null;
+    this.hud?.setTarget(this.target?.label ?? null, this.target ? this.target.pos : null, more, stand);
+    if (!this.target) this.refreshHint(facing);
+  }
+
+  /** TAB — the next eligible target in a crowded spot. Silent when there is one or none. */
+  private cycle(): boolean {
+    if (!this._active || this.d.canStandUp()) return false;
+    const { all, facing } = this.scoringSet();
+    if (!all) return false;
+    const next = cycleTarget(all, this.body.pos, facing, this.target?.id ?? null, this.d.sight);
+    if (!next) return false;
+    this.cycled = { id: next.id, heading: Math.atan2(facing.x, -facing.z) };
+    this.updateTarget();
+    return true;
   }
 
   /** PHASE 7D — THE PERSISTENT CENTRE-SCREEN PILL IS GONE.
@@ -817,8 +859,11 @@ export class PlayerMode {
    *  What replaced it: the view-switch indicator, which says PLAYER VIEW and its controls once, briefly,
    *  on entry (app/Vo3dViewIndicator) — and a contextual recovery hint shown only when the browser
    *  actually refused the lock. A permanent instruction for a state that is usually fine is chrome. */
-  private refreshHint(): void {
-    this.hud?.setHint("");
+  private refreshHint(facing?: Vec2): void {
+    // INTERACTION V2 — JUST OUT OF REACH: a walk-up fixture ahead (the lift's call plate behind a crowd, a kiosk
+    // across the lobby) is named, and its stand spot marked on the floor, until the body is close enough to use it
+    const near = facing ? nearbyFixture(this.fixtures, this.body.pos, facing, REACH * 2, this.d.clearView) : null;
+    this.hud?.setHint(near ? `Walk to the marker to ${near.label.charAt(0).toLowerCase()}${near.label.slice(1)}` : "", near?.anchors?.[0] ?? null);
   }
 
   /** PHASE 7D — the browser refused our last request, so a recovery hint is warranted. */

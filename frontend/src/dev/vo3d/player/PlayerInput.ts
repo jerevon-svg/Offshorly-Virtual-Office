@@ -33,6 +33,9 @@ export type PlayerInputHandlers = {
   /** Space went down, once per press. The owner decides whether a jump is possible; this only reports
    *  the press. */
   onJump: () => void;
+  /** INTERACTION V2 — Tab: the next eligible target. Returns true when it took the key (more than one target),
+   *  so a lone Tab keeps its browser meaning (focus) everywhere else. */
+  onCycle?: () => boolean;
   onLockChange: (locked: boolean) => void;
   /** PHASE 7D — a pointer-lock request was made from a real gesture and the browser refused it. The
    *  owner shows a recovery hint; mouse-look keeps working unlocked in the meantime. */
@@ -227,6 +230,7 @@ export class PlayerInput {
       return;
     }
     if (e.code === "KeyE") { this.h.onInteract(); e.preventDefault(); return; }
+    if (e.code === "Tab" && !e.altKey && !e.metaKey && !e.ctrlKey) { if (this.h.onCycle?.()) e.preventDefault(); return; }
     if (e.code === "KeyV") { this.h.onToggleView(); e.preventDefault(); }
     // Esc is deliberately NOT handled: the browser's own pointer-lock escape is the one users expect,
     // and intercepting it would take the only guaranteed way out of a locked pointer.

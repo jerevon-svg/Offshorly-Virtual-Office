@@ -13,8 +13,8 @@
 //   Interaction a state machine (seat) that moves/attaches the root itself
 // Acquire/release are explicit; a lower-priority owner cannot take the avatar from a higher one.
 import { dist, headingFor, stepAngle, type Vec2 } from "../core/coords";
-import { CLIP_IDLE, CLIP_RUN } from "../adapters/v1Avatar";
-import { locomotion } from "./gait";
+import { CLIP_IDLE, CLIP_RUN, CLIP_WALK } from "../adapters/v1Avatar";
+import { locomotion, walkRate } from "./gait";
 import type { Avatar } from "./Avatar";
 
 export type Owner = "Idle" | "Navigation" | "Interaction" | "Editor" | "Player" | "Guided";
@@ -53,6 +53,9 @@ export class NavigationController {
   path: Vec2[] = [];
   speed = 30; // units/s — the walk clip stride is authored for this speed
   turnRate = 7; // rad/s (~0.14 s for a 90° turn)
+  /** INTERACTION V2 — OFFICE VIEW'S FAST-FORWARD TRAVEL: the walk clip at a fast cadence (avatar/gait walkRate)
+   *  instead of the gait the speed alone would pick (a HumanBase body would break into the run) */
+  fastForward = false;
   onArrive: (() => void) | null = null;
   /** THE CLIP A BODY THIS WALKER HOLDS STANDS IN between walks — idle, or a presenter's explaining gesture
    *  (Directed Meeting). Null means the ordinary idle. */
@@ -84,6 +87,11 @@ export class NavigationController {
       this.onArrive?.();
     } else {
       // legacy bodies: the walk at speed/30, as always; a HumanBase body jogs at office speed (avatar/gait)
+      if (this.fastForward) {
+        this.avatar.play(CLIP_WALK);
+        this.avatar.setClipTimeScale(CLIP_WALK, walkRate(this.avatar.runtime, this.speed, this.avatar.hasClip(CLIP_RUN)));
+        return;
+      }
       const g = locomotion(this.avatar.runtime, this.speed, false, this.avatar.hasClip(CLIP_RUN), this.avatar.currentClip);
       this.avatar.play(g.clip);
       this.avatar.setClipTimeScale(g.clip, g.rate);

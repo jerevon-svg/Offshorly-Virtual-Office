@@ -32,6 +32,19 @@ export interface Vo3dCoworkerSelection {
  *  moment the camera moves or that person takes a step, and both happen constantly (a replayed peer walk
  *  moves them; PLAYER mode moves the camera every frame). `visible` is false when the body is behind the
  *  camera or off the viewport — the host hides the card rather than pinning it to an edge. */
+/** INTERACTION V2 — what an Office View object card's row does. `primary` is the object's own verb (sit, call
+ *  the lift, the fixture's action); `walk` walks to its stand spot and does nothing else. */
+export type Vo3dObjectActionKey = "primary" | "walk";
+export type Vo3dObjectAction = { key: Vo3dObjectActionKey; label: string };
+/** WHAT THE CARD SHOWS for a clicked object (built by app/interactables from the entity's own capabilities) */
+export interface Vo3dObjectSelection {
+  id: string;
+  title: string;
+  /** a short state line ("Occupied") — omitted when there is nothing to say */
+  subtitle?: string;
+  actions: Vo3dObjectAction[];
+}
+
 export interface Vo3dScreenAnchor {
   clientX: number;
   clientY: number;
@@ -73,6 +86,10 @@ export interface Vo3dCoworkerInteractions {
    *  room; it reports which of its own floor regions was picked and stops there. Optional, so the
    *  standalone dev page and every existing test double stay valid without stubbing it. */
   onRoomSelected?(roomId: string | null): void;
+  /** INTERACTION V2 — AN OBJECT WAS CLICKED in Office View (a chair, a desk, the lift's call plate, a kiosk, a
+   *  fixture), or the selection was dropped. The host shows its card (app/interactables' rows) and answers
+   *  through Vo3dWorld.runObjectAction. Optional: a host without it keeps the old one-click verb. */
+  onObjectSelected?(selection: Vo3dObjectSelection | null): void;
   /** PHASE 7E — A WALK-UP TO A PLACE, not to a person: the body finished walking to an entity's declared
    *  approach point AND finished turning to face it. `entityId` is the world entity's own id (for example
    *  Reception's `reception-room/kiosk-interaction`), which is all the world has and all the host needs to

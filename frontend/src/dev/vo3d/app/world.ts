@@ -181,7 +181,8 @@ import { gateRects, mayEnterOffice, presenceZoneAt, routeEntersOffice, zoneAt, t
 import { Coworkers, facingTrace, type SeatAnchorPose } from "../world/Coworkers";
 import type { Vo3dCoworker } from "./coworkers";
 import { CAVE_PLACE_ID as CAVE_PLACE, coworkersInSameVolume } from "./coworkers";
-import type { Vo3dCoworkerInteractions, Vo3dCoworkerSelection, Vo3dScreenAnchor } from "./interactions";
+import type { Vo3dCoworkerInteractions, Vo3dCoworkerSelection, Vo3dObjectActionKey, Vo3dObjectSelection, Vo3dScreenAnchor } from "./interactions";
+import { describeInteractable, objectSelectionFor } from "./interactables";
 import { exploreFrameZoom, roomFrameMode, roomFrameRect, roomLabelRects, ROOM_FRAME_FILL } from "./roomFocus";
 import type { Vo3dViewMode } from "./viewMode";
 import { coworkerEmailOf, personCandidateId, REACH as TARGET_REACH, type Candidate } from "../player/PlayerTargeting";
@@ -514,6 +515,12 @@ export interface Vo3dWorld {
    *  world so the two agree on who is selected: without it the world would still hold the last person and
    *  a second click on the SAME body would be recognised as "already selected" and open nothing. */
   clearCoworkerSelection(): void;
+  /** INTERACTION V2 — WHERE A SELECTED OBJECT IS ON SCREEN (its card follows it, like a person's) */
+  objectAnchor(id: string): Vo3dScreenAnchor | null;
+  /** ...run one row of its menu (app/interactables), through the same starters PLAYER's E reaches */
+  runObjectAction(id: string, key: Vo3dObjectActionKey): void;
+  /** ...and the host closed the card (Escape, an outside press): resync, tell nobody */
+  clearObjectSelection(): void;
   /** ROOM DISCOVERY — EVERY ROOM THAT CAN CARRY A LABEL, by V1 manifest room id, in a stable order.
    *  Read ONCE by the label layer to build its DOM; the positions come from roomLabelAnchors below. */
   roomLabelIds(): string[];
@@ -1238,6 +1245,23 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   // the controller's own class default is the figure the walk clip was authored for, and would otherwise
   // leave the panel reading 70 while a planned walk still ambled at 30.
   navCtl.speed = params.walkSpeed;
+  /** INTERACTION V2 — OFFICE VIEW TRAVELS FAST-FORWARD. A routed walk started from Office View (right-click, Approach,
+   *  Sit, the lift, a fixture) moves at OFFICE_TRAVEL_SPEED with the walk played fast (avatar/gait walkRate) —
+   *  V1's quick click-to-walk. Player View keeps its own walk, sprint and momentum, untouched; a guided journey
+   *  (Go Together) keeps the ordinary walk, because its party is paced and compared side by side. */
+  const OFFICE_TRAVEL_SPEED = 150;
+  // read through a seam: PLAYER mode is constructed further down, and a walk planned before it exists (a restore,
+  // a tour) is an Office View walk
+  let playerViewActive = (): boolean => false;
+  const travelSpeed = (): number => (playerViewActive() || stack.guided ? params.walkSpeed : OFFICE_TRAVEL_SPEED);
+  /** set the walker's pace from the view NOW and return it — called where a walk is planned, so the duration
+   *  published to peers is the one the body will really take */
+  function syncTravelSpeed(): number {
+    const v = travelSpeed();
+    navCtl.speed = v;
+    navCtl.fastForward = v > params.walkSpeed;
+    return v;
+  }
   /** The player label for the dev readout: who this world thinks you are, and which character it drew.
    *  Name and character id only — never the email, the id or anything from the session. */
   const who = identity
@@ -1733,7 +1757,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
         const origin = avatar.position;
         if (navCtl.setPath(toDoor.path)) {
           selfMovedByUser = true;
-          selfFeed?.planned(origin, toDoor.path, plannedDurationMs(origin, toDoor.path, navCtl.speed), guidedPacing());
+          selfFeed?.planned(origin, toDoor.path, plannedDurationMs(origin, toDoor.path, syncTravelSpeed()), guidedPacing());
         }
       }
       return refused;
@@ -1756,7 +1780,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       const origin = avatar.position;
       if (navCtl.setPath(result.path)) {
         selfMovedByUser = true;
-        selfFeed?.planned(origin, result.path, plannedDurationMs(origin, result.path, navCtl.speed), guidedPacing());
+        selfFeed?.planned(origin, result.path, plannedDurationMs(origin, result.path, syncTravelSpeed()), guidedPacing());
       }
     }
     return result;
@@ -1851,7 +1875,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     return { ...spec, seatedYaw: seatedYawFor(entityId, spec.seatedYaw) };
   };
   const slotFor = (entityId: string, slot: LoungeSeatSlot): LoungeSeatSlot => ({ ...slot, seatedYaw: seatedYawFor(seatAnchorId(entityId, slot.id), slot.seatedYaw) });
-  let seat = new SeatInteraction(avatar, stack, mirror.view(CHAIR_4_ID), seatSpecFor(CHAIR_4_ID), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+  let seat = new SeatInteraction(avatar, stack, mirror.view(CHAIR_4_ID), seatSpecFor(CHAIR_4_ID), (to) => planWalk(avatar.position, to, walkability, inBounds), () => travelSpeed());
   const seatState = { state: "idle", chairRestError: 0 };
   // the automatic east door: reacts to Bon's route, owns only its own leaf (navigation keeps owning Bon)
   const doorEntity = world.get(DOOR_ID);
@@ -2001,7 +2025,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     approachCtl.cancel();
     clearSeats();
     currentSeatAnchor = id;
-    otherSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), planFor, () => params.walkSpeed);
+    otherSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), planFor, () => travelSpeed());
     otherSeat.sit();
   }
   /** The chair's own seated yaw for an anchor — what the seated arrival publishes, rather than the body's
@@ -2025,7 +2049,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     R.invalidateShadows(); // SEE clearSeats: a reset SNAPS a chair back and nothing else will report it
     const id = GAMING_CHAIR_IDS[index];
     currentSeatAnchor = id;
-    gamingSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    gamingSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => travelSpeed());
     gamingState.chair = `station ${index}`;
     gamingSeat.sit();
   }
@@ -2065,7 +2089,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     clearSeats();
     const id = CAFE_CHAIR_IDS[index];
     currentSeatAnchor = id;
-    hubSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    hubSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => travelSpeed());
     hubState.chair = id.split("/")[1];
     hubSeat.sit();
   }
@@ -2077,7 +2101,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     clearSeats();
     const id = EXECUTIVE_SEAT_IDS[index];
     currentSeatAnchor = id;
-    execSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    execSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => travelSpeed());
     execState.chair = id.split("/")[1];
     execSeat.sit();
   }
@@ -2089,7 +2113,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     clearSeats();
     const id = CMS_SEAT_IDS[index];
     currentSeatAnchor = id;
-    cmsSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    cmsSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => travelSpeed());
     cmsState.chair = id.split("/")[1];
     cmsSeat.sit();
   }
@@ -2102,7 +2126,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     clearSeats();
     const id = AI_SEAT_IDS[index];
     currentSeatAnchor = id;
-    aiSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    aiSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => travelSpeed());
     aiState.chair = id.split("/")[1];
     aiSeat.sit();
   }
@@ -2115,7 +2139,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     clearSeats();
     const id = DEV_SEAT_IDS[index];
     currentSeatAnchor = id;
-    devSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    devSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => travelSpeed());
     devState.chair = id.split("/")[1];
     devSeat.sit();
   }
@@ -2128,7 +2152,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     clearSeats();
     const id = QA_SEAT_IDS[index];
     currentSeatAnchor = id;
-    qaSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    qaSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => travelSpeed());
     qaState.chair = id.split("/")[1];
     qaSeat.sit();
   }
@@ -2137,7 +2161,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     clearSeats();
     const id = MEETING_CHAIR_IDS[index];
     currentSeatAnchor = id;
-    meetingSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    meetingSeat = new SeatInteraction(avatar, stack, mirror.view(id), seatSpecFor(id), (to) => planWalk(avatar.position, to, walkability, inBounds), () => travelSpeed());
     meetingState.chair = id.split("/")[1];
     meetingSeat.sit();
   }
@@ -2162,7 +2186,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // reception desk, the monument — was set on the walker but never announced, so every other browser
       // saw this body frozen where it started while it walked (Go Together: the leader "stuck" at the Hub).
       const origin = avatar.position;
-      if (navCtl.setPath(r.path)) selfFeed?.planned(origin, r.path, plannedDurationMs(origin, r.path, navCtl.speed), guidedPacing());
+      if (navCtl.setPath(r.path)) selfFeed?.planned(origin, r.path, plannedDurationMs(origin, r.path, syncTravelSpeed()), guidedPacing());
     }
     return r.ok;
   }
@@ -2177,7 +2201,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     devSeat = null;
     const s = loungeSeats[index];
     currentSeatAnchor = seatAnchorId(s.id, s.slot.id);
-    loungeSeat = new LoungeSeatInteraction(avatar, stack, s.view, slotFor(s.id, s.slot), planFor, () => params.walkSpeed);
+    loungeSeat = new LoungeSeatInteraction(avatar, stack, s.view, slotFor(s.id, s.slot), planFor, () => travelSpeed());
     receptionState.focus = s.label;
     loungeSeat.sit();
   }
@@ -2333,6 +2357,24 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
    *  never by lawn or a lower path; the ground model's walkability is not the camera's business */
   const CAMERA_SOLIDS = ["lab-wall", "lab-cheek", "vehicle", "monument-sign", "lot-marker", "cave-shell", "tree", "lamp", "rack"];
   const campusCameraClear = (p: Vec2): boolean => { const hit = ground.solidAt(p, 2); return !hit || !CAMERA_SOLIDS.some((k) => hit.startsWith(k)); };
+  /** INTERACTION V2 — ONE SPACE: both points in the same room region (or both in shared, room-less floor), or
+   *  within a doorway's width of each other. What stops a coworker on the far side of a wall being offered. */
+  function sameSpace(from: Vec2, to: Vec2): boolean {
+    if (Math.hypot(to.x - from.x, to.z - from.z) <= 24) return true;
+    return (world.regionAt(from)?.roomId ?? "") === (world.regionAt(to)?.roomId ?? "");
+  }
+  /** INTERACTION V2 — A CLEAR VIEW along the floor between two points, sampled every 6 units against the camera
+   *  probe (walls, closed barriers, furniture, unbuilt space). The ends are not sampled: both stand in a footprint. */
+  function lineOfSight(from: Vec2, to: Vec2): boolean {
+    const d = Math.hypot(to.x - from.x, to.z - from.z);
+    const n = Math.floor(d / 6);
+    for (let i = 1; i < n; i++) {
+      const t = i / n;
+      if (t < 0.12 || t > 0.85) continue;
+      if (!playerCameraProbe({ x: from.x + (to.x - from.x) * t, z: from.z + (to.z - from.z) * t })) return false;
+    }
+    return true;
+  }
   const playerCameraProbe = (p: Vec2): boolean =>
     inCave(p) ? caveStandTest(p, 2)
     : liftActive() && inCabin(p) ? cabinStandTest(p, 2)
@@ -2627,6 +2669,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // camera except while the lift or the portal is staging its own shot.
     guided: () => stack.guided,
     targetsSuppressed: () => guidedHolds.meeting,
+    // INTERACTION V2 — nothing is offered through a wall. Fixtures and seats are already scoped to the room the
+    // body stands in; a PERSON (who belongs to no bucket) must share that space, or be close enough to be
+    // across one doorway from it. The "walk to the marker" hint looks along the floor itself.
+    sight: sameSpace,
+    clearView: lineOfSight,
     // SEATED TOO: a seat (or a sofa) owns the body from the walk up to the stand-up, but it never stages a shot of its
     // own, so the mouse keeps the camera the whole time — sitting no longer freezes the view at its last angle.
     freeLook: () => (stack.guided || stack.owner === "Navigation" || seatEngaged()) && !floorTransition?.busy && !caveTransition?.busy,
@@ -2639,6 +2686,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       partyHooks?.onUserMove();
     },
   });
+  playerViewActive = () => playerMode.active;
   // THE LOCAL TAKEOFF, STRAIGHT OUT TO THE OTHER BROWSERS. Not through SelfMovementFeed: that funnel
   // turns continuous motion into V1 movements, and a jump is neither continuous nor a movement — it
   // would have to be smuggled into a leg that may not exist (a standing jump publishes nothing at all)
@@ -3598,6 +3646,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   const projected = new THREE.Vector3();
   const projectedUp = new THREE.Vector3();
   const SELF_HEAD = new THREE.Vector3();
+  const OBJECT_ANCHOR = new THREE.Vector3();
   /** The same head height the coworker bodies hang their nameplates at, for the viewer's own avatar. */
   const HEAD_ANCHOR_Y_SELF = BON_STANDING_HEIGHT + 6;
   function coworkerAnchor(email: string): Vo3dScreenAnchor | null {
@@ -3687,7 +3736,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       id: personCandidateId(c.email),
       kind: "person" as const,
       pos: c.pos,
-      label: c.displayName,
+      // INTERACTION V2 — the prompt is a verb, like every other: "[E] Talk to Alex"
+      label: `Talk to ${c.displayName}`,
       // People belong to no room bucket; PLAYER mode adds them to whichever bucket it is scoring, so this
       // is only ever read back as a label. The room the person is standing in is V1's question, not ours.
       roomId: "",
@@ -5053,6 +5103,158 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     }
     return null;
   }
+  // ---- INTERACTION V2: OFFICE VIEW SELECTION + HOVER -------------------------------------------------
+  /** WHAT IS UNDER THE POINTER, weighed the way the click always was: a person standing IN FRONT of a piece
+   *  of furniture wins it, one behind it loses (both picks are the same ray, so hit distance is honest). */
+  function pointerTarget(cx: number, cy: number): { person: { email: string; displayName: string } } | { object: string } | null {
+    const person = pickCoworkerAt(cx, cy);
+    const hit = pickInteractionHit(cx, cy);
+    if (person && (!hit || person.distance <= hit.distance)) return { person };
+    return hit ? { object: hit.id } : null;
+  }
+  const isElevatorCall = (id: string): boolean => id.endsWith("/call") && ELEVATOR_ROOM_IDS.has(world.get(id).roomId);
+  /** the shared contract's menu for one object (app/interactables) — occupancy read off the seat mapping */
+  function selectionOf(id: string): Vo3dObjectSelection | null {
+    if (!world.entities.has(id)) return null;
+    const e = world.get(id);
+    const occupied = e.capabilities.seat ? occupiedSeatIds.has(id)
+      : e.capabilities.lounge ? loungeSeats.filter((s2) => s2.id === id).every((s2) => occupiedSeatIds.has(seatAnchorId(s2.id, s2.slot.id)))
+      : false;
+    return objectSelectionFor(e, { elevatorCall: isElevatorCall(id), occupied });
+  }
+  let selectedObject: string | null = null;
+  /** the point a sofa was clicked at, so "Sit" picks the cushion nearest it — exactly as the direct click did */
+  let selectedObjectNear: Vec2 | undefined;
+  /** Tell the host which object's card to show, or none. A host with no object menu (the standalone dev page,
+   *  test doubles) keeps the old one-click behaviour: the object's own verb runs at once. */
+  function selectObject(id: string | null, near?: Vec2): void {
+    if (id === null) {
+      if (selectedObject === null) return;
+      selectedObject = null;
+      coworkerInteractions?.onObjectSelected?.(null);
+      return;
+    }
+    const sel = selectionOf(id);
+    if (!sel) return;
+    if (!coworkerInteractions?.onObjectSelected) { runObjectAction(id, "primary", near); return; }
+    selectedObject = id;
+    selectedObjectNear = near;
+    coworkerInteractions.onObjectSelected(sel);
+  }
+  /** ONE CLICK'S SELECTION (left button, or a right click that landed on somebody or something). True when it
+   *  picked a person or an object — the caller then does nothing else with the click. */
+  function selectUnderPointer(cx: number, cy: number): boolean {
+    const t = pointerTarget(cx, cy);
+    if (!t) return false;
+    // ONE WORLD SELECTION AT A TIME: a person, an object and a room panel never stand open together — V1 closes
+    // its room sidebar on a character, seat, reception or HR-desk click
+    selectRoom(null);
+    if ("person" in t) {
+      selectObject(null);
+      selectCoworker({ email: t.person.email, displayName: t.person.displayName });
+      return true;
+    }
+    selectCoworker(null);
+    selectObject(t.object, floorPoint(cx, cy) ?? undefined);
+    return true;
+  }
+  /** RUN ONE MENU ROW — the SAME starters PLAYER's E key reaches (activateInteractable's bridge), so a chair,
+   *  the lift and the portal mean the same thing from either camera. */
+  function runObjectAction(id: string, key: Vo3dObjectActionKey, near?: Vec2): void {
+    if (!world.entities.has(id)) return;
+    const ent = world.get(id);
+    selectedObject = null;
+    // GO TOGETHER — walking up to a chair, a kiosk or a portal is the person taking their own body.
+    userTookBody();
+    if (key === "walk") {
+      const d = describeInteractable(ent, { elevatorCall: isElevatorCall(id) });
+      if (d) { approachCtl.cancel(); walkToGround(d.anchor.x, d.anchor.z); }
+      return;
+    }
+    // the portal is a transition, not a walk-up: it has to mean the same thing pressing E on it means
+    if (id === CHAMPIONSHIP_ENTRANCE_ID || id === CAVE_EXIT_ID || id === CAVE_SCREEN_ID) activateInteractable(id, "approach");
+    // THE CALL PLATE, for the same reason: the one control that moves you between floors
+    else if (isElevatorCall(id)) requestElevator();
+    // PHASE 6C — a chair SITS, through the same bridge PLAYER mode's E key uses (occupancy refusal included)
+    else if (ent.capabilities.seat) activateInteractable(id, "seat");
+    else if (ent.capabilities.lounge) activateInteractable(id, "lounge", near);
+    else startApproach(id);
+  }
+
+  // HOVER: what a click would pick, shown before it is clicked — a soft ring on the floor at it (the same ring
+  // language PLAYER's target uses), a pointer cursor and a one-line name beside the cursor. Resolved at most
+  // every HOVER_MS from the last pointer position, never while a button is held (a drag is the camera's).
+  const HOVER_MS = 90;
+  let hoverAt: { x: number; y: number } | null = null;
+  let hoverDirty = false;
+  let hoverResolvedAt = 0;
+  let hoverKey = "";
+  const hoverRing = (() => {
+    const g = new THREE.RingGeometry(10, 12.5, 40);
+    g.rotateX(-Math.PI / 2);
+    const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: 0x8fd8ff, transparent: true, opacity: 0.6, depthWrite: false, toneMapped: false }));
+    m.name = "office-hover-ring";
+    m.visible = false;
+    m.renderOrder = 5;
+    R.scene.add(m);
+    return m;
+  })();
+  const hoverTip = document.createElement("div");
+  hoverTip.style.cssText =
+    "position:fixed;left:0;top:0;pointer-events:none;z-index:6;padding:4px 10px;border-radius:12px;" +
+    "background:rgba(20,18,16,0.72);color:#fff;font:600 12px/1.4 system-ui,sans-serif;white-space:nowrap;" +
+    "opacity:0;transition:opacity 120ms;";
+  document.body.appendChild(hoverTip);
+  function clearHover(): void {
+    if (!hoverKey) return;
+    hoverKey = "";
+    hoverRing.visible = false;
+    hoverTip.style.opacity = "0";
+    canvas.style.cursor = "";
+  }
+  /** a person's ring follows their body (they walk); an object's sits where its contract says to look */
+  function hoverRingPoint(): Vec2 | null {
+    if (hoverKey.startsWith("person:")) return coworkers.pointOf(hoverKey.slice(7));
+    const id = hoverKey.slice(7);
+    if (!world.entities.has(id)) return null;
+    const e = world.get(id);
+    const d = describeInteractable(e, { elevatorCall: isElevatorCall(id) });
+    // a walk-up fixture is marked where you will stand (the lift's plate is up a wall); furniture at itself
+    return d?.kind === "approach" ? d.anchor : e.transform.pos;
+  }
+  function updateHover(now: number): void {
+    if (playerMode.active || edit.editMode || !hoverAt) { clearHover(); return; }
+    if (hoverKey) { const p = hoverRingPoint(); if (p) hoverRing.position.set(p.x, 0.6, p.z); }
+    if (!hoverDirty || now - hoverResolvedAt < HOVER_MS) return;
+    hoverDirty = false;
+    hoverResolvedAt = now;
+    const t = pointerTarget(hoverAt.x, hoverAt.y);
+    let key = "", text = "";
+    if (t && "person" in t) { key = `person:${t.person.email}`; text = t.person.displayName; }
+    else if (t) {
+      const sel = selectionOf(t.object);
+      if (sel) { key = `object:${t.object}`; text = sel.subtitle ? `${sel.title} · ${sel.subtitle}` : `${sel.title} · ${sel.actions[0].label}`; }
+    }
+    if (!key) { clearHover(); return; }
+    if (key !== hoverKey) {
+      hoverKey = key;
+      hoverTip.textContent = text;
+      canvas.style.cursor = "pointer";
+      hoverTip.style.opacity = "1";
+      const p = hoverRingPoint();
+      hoverRing.visible = p !== null;
+      if (p) hoverRing.position.set(p.x, 0.6, p.z);
+    }
+    hoverTip.style.transform = `translate(${hoverAt.x + 14}px, ${hoverAt.y + 16}px)`;
+  }
+  onCanvas("pointermove", (e) => {
+    if (e.buttons !== 0) { hoverAt = null; clearHover(); return; }
+    hoverAt = { x: e.clientX, y: e.clientY };
+    hoverDirty = true;
+    if (hoverKey) hoverTip.style.transform = `translate(${e.clientX + 14}px, ${e.clientY + 16}px)`;
+  });
+  onCanvas("pointerleave", () => { hoverAt = null; clearHover(); });
+
   onCanvas("pointerdown", (e) => {
     if (e.button !== 0 || playerMode.active) return; // PLAYER owns the canvas: see player/PlayerInput
     if (edit.editMode && (editMode2 === "surface" || editMode2 === "lighting")) {
@@ -5123,7 +5325,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     rightDownAt = null;
     if (!down || playerMode.active || edit.editMode || params.cameraMode !== "office") return;
     if (Math.hypot(e.clientX - down.x, e.clientY - down.y) > 6) return; // a drag is not a destination
+    // INTERACTION V2 — A RIGHT CLICK ON SOMEBODY OR SOMETHING IS NOT A CLICK ON THE FLOOR UNDER THEM: it opens
+    // the same card the left button does, and walks nobody into the furniture's footprint.
+    if (selectUnderPointer(e.clientX, e.clientY)) return;
     approachCtl.cancel();
+    selectObject(null);
     const p = floorPoint(e.clientX, e.clientY);
     if (p) { userTookBody(); walkToGround(p.x, p.z); }
   });
@@ -5154,42 +5360,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       callToucan();
       return;
     }
-    const person = pickCoworkerAt(e.clientX, e.clientY);
-    const hit = pickInteractionHit(e.clientX, e.clientY);
-    if (person && (!hit || person.distance <= hit.distance)) {
-      // Selecting a PERSON drops the room selection, exactly as V1's handleCharacterClick clears its room
-      // sidebar: one world selection at a time, and the card that opens is about them, not about the floor.
-      selectRoom(null);
-      selectCoworker({ email: person.email, displayName: person.displayName });
-      return;
-    }
-    // Anything else is a dismissal: selecting a chair, a door or a patch of floor is not selecting a
-    // person, and leaving the card up over a world that has moved on is how it ends up pointing at nobody.
+    if (selectUnderPointer(e.clientX, e.clientY)) return;
+    // Anything else is a dismissal: a patch of floor is not a person or an object, and leaving a card up over a
+    // world that has moved on is how it ends up pointing at nobody.
     selectCoworker(null);
-    const picked = hit?.id ?? null;
-    if (picked) {
-      // Same rule as a person: a chair, a door or the portal is its own interaction, and V1 closes the
-      // room panel for every one of them (seat, reception and HR-desk clicks all setRoomSidebar(null)).
-      selectRoom(null);
-      const ent = world.get(picked);
-      // GO TOGETHER — walking up to a chair, a kiosk or a portal is the person taking their own body.
-      userTookBody();
-      // the portal is a transition, not a walk-up: clicking it has to mean the same thing pressing E on
-      // it means, or the one interaction in the world that moves you between volumes would behave
-      // differently depending on which camera you happened to be in
-      if (picked === CHAMPIONSHIP_ENTRANCE_ID || picked === CAVE_EXIT_ID || picked === CAVE_SCREEN_ID) activateInteractable(picked, "approach");
-      // THE CALL PLATE, for the same reason the portal is here: clicking it has to mean exactly what
-      // pressing E on it means, or the one control that moves you between floors would behave
-      // differently depending on which camera you happened to be in.
-      else if (picked.endsWith("/call") && ELEVATOR_ROOM_IDS.has(world.get(picked).roomId)) requestElevator();
-      // PHASE 6C — a chair click SITS, through the same bridge PLAYER mode's E key uses (occupancy refusal
-      // included). Before this, Office View walked up to a desk chair and faced it, and a non-Reception
-      // sofa indexed a list it was not in.
-      else if (ent.capabilities.seat) activateInteractable(picked, "seat");
-      else if (ent.capabilities.lounge) activateInteractable(picked, "lounge", floorPoint(e.clientX, e.clientY) ?? undefined);
-      else startApproach(picked);
-      return;
-    }
+    selectObject(null);
     // PART 3 — A LEFT CLICK SELECTS; IT DOES NOT WALK. V1's left button picks a character, a seat or a
     // room and its right button is what moves the avatar, and OFFICE now matches that.
     //
@@ -5480,7 +5655,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     if (g) { surfaces.collect(DESIGN_ROOM.id, g); leds.collect(DESIGN_ROOM.id, g); }
     if (edit.selectedSurface?.startsWith(DESIGN_ROOM.id)) edit.selectSurface(null);
     door = new SlidingDoor(mirror.view(DOOR_ID), doorEntity.capabilities.door!, doorEntity.transform.pos);
-    seat = new SeatInteraction(avatar, stack, mirror.view(CHAIR_4_ID), seatSpecFor(CHAIR_4_ID), (to) => planWalk(avatar.position, to, walkability, inBounds), () => params.walkSpeed);
+    seat = new SeatInteraction(avatar, stack, mirror.view(CHAIR_4_ID), seatSpecFor(CHAIR_4_ID), (to) => planWalk(avatar.position, to, walkability, inBounds), () => travelSpeed());
   };
   geo.add(params, "wallHeight", 20, 110, 1).onFinishChange(rebuild); geo.add(params, "frontWall", ["low", "full", "hidden"]).onChange(rebuild);
   geo.add(params, "sway").name("plant sway").onChange((v: boolean) => (mirror.sway.enabled = v));
@@ -5489,7 +5664,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
   av.add(params, "avatar").name("show avatar").onChange((v: boolean) => (avatar.root.visible = v));
   av.add(params, "avatarLod", [0, 1, 2]).name("LOD").onChange(loadAvatar);
   av.add(params, "avatarLit").name("lit (off = production unlit)").onChange((v: boolean) => avatar.setLit(v));
-  av.add(params, "walkSpeed", 8, 120, 1).name(`speed (units/s) — sprint x${SPRINT_MULTIPLIER.toFixed(2)}`).onChange((v: number) => (navCtl.speed = v));
+  av.add(params, "walkSpeed", 8, 120, 1).name(`speed (units/s) — sprint x${SPRINT_MULTIPLIER.toFixed(2)}`).onChange(() => syncTravelSpeed());
   // ---- the roster's coworkers, as the world actually built them (Phase 4A) -------------------------
   // The DOM readout in app/Vo3dHost.tsx reports what V1's ROSTER said; this one reports what the WORLD
   // did with it, and the two are not the same question. A person can be resolved and still not be
@@ -6230,6 +6405,122 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       || (hubSeat?.moved ?? false) || (execSeat?.moved ?? false) || (cmsSeat?.moved ?? false)
       || (aiSeat?.moved ?? false) || (devSeat?.moved ?? false) || (qaSeat?.moved ?? false);
   }
+  /** INTERACTION V2 — THE EMPLOYEE'S OWN MOVEMENT, ONE STEP: every seat and walk-up controller, the walker, the
+   *  body, the seated hand-off and the last turn of an approach. Called by the frame loop, and — with nothing
+   *  drawn — by the hidden-tab catch-up (see advanceHiddenSelf), which is why it is a function: one copy of the
+   *  rules, whichever clock is driving them. `dt` in milliseconds, as the loop's. */
+  function stepSelfCore(dt: number): void {
+    seat.update(dt / 1000);
+    meetingSeat?.update(dt / 1000);
+    gamingSeat?.update(dt / 1000);
+    hubSeat?.update(dt / 1000);
+    // EVERY movable-seat controller has to be ticked here. One that is constructed, acquires the
+    // "Interaction" stack lock in sit(), and is then never updated leaves the avatar owned forever: the
+    // sequence stops in "approaching", Player movement stays locked and only a reload recovers. There is
+    // no self-healing path — SeatInteraction advances on nothing but this call. executive.test.ts asserts
+    // that every SeatInteraction declared in this file appears in this block.
+    execSeat?.update(dt / 1000);
+    cmsSeat?.update(dt / 1000);
+    aiSeat?.update(dt / 1000);
+    devSeat?.update(dt / 1000);
+    qaSeat?.update(dt / 1000);
+    restoredSeat?.update(dt / 1000);
+    otherSeat?.update(dt / 1000);
+    loungeSeat?.update(dt / 1000);
+    restoredLounge?.update(dt / 1000);
+    approachCtl.update(dt / 1000);
+    syncTravelSpeed(); // a switch of view mid-walk retakes the pace on the next frame
+    navCtl.update(dt / 1000);
+    avatar.update(dt / 1000);
+    const bp = avatar.worldPosition();
+    // PHASE 6C — THE SEATED HAND-OFF. One transition each way, read from the interactions' own states:
+    // the frame the body commits to a chair the feed resolves the movement that brought it there as a
+    // seated arrival in that chair (the chair's own yaw, not the body's mid-turn one); the frame it
+    // leaves, the feed resumes publishing the ordinary legs that walk it away.
+    if (standWhenSeated) {
+      const e = engagedSeat();
+      if (e) { e.stand(); standWhenSeated = false; } else if (!seatEngaged()) standWhenSeated = false;
+    }
+    const nowSeated = seatedNow();
+    if (nowSeated !== selfSeatedPublished) {
+      selfSeatedPublished = nowSeated;
+      if (nowSeated && currentSeatAnchor) selfFeed?.seated({ x: bp.x, z: bp.z }, seatedYawOf(currentSeatAnchor) ?? avatar.yaw, currentSeatAnchor);
+      else if (!nowSeated) {
+        selfFeed?.stood({ x: bp.x, z: bp.z }, avatar.yaw);
+        // CLEARED ONLY WHEN NO SIT IS UNDER WAY. Choosing another chair while seated resets the old
+        // interaction and starts the new one in the same call — the frame after, the body is not
+        // seated (it is approaching), and clearing here wiped the NEW anchor, so that sit was never
+        // published as seated: every browser but this one saw the person standing at the chair.
+        if (!seatEngaged()) currentSeatAnchor = null;
+      }
+    }
+    if (coworkerApproach?.turning) {
+      const next = stepAngle(avatar.yaw, coworkerApproach.yaw, APPROACH_TURN_RATE * (dt / 1000));
+      avatar.setYaw(next);
+      if (Math.abs(wrapAngle(coworkerApproach.yaw - next)) < 0.02) {
+        avatar.setYaw(coworkerApproach.yaw);
+        const arrived = coworkerApproach.email;
+        coworkerApproach = null;
+        // Published FIRST (the line below sees `turning` false and resolves the walk with this exact
+        // yaw), reported to the host after — V1's quest signal must never outrun the movement that
+        // earned it.
+        selfFeed?.frame(0, { x: bp.x, z: bp.z }, avatar.yaw, false);
+        coworkerInteractions?.onApproachArrived(arrived);
+      }
+    }
+  }
+  // ---- INTERACTION V2: A HIDDEN TAB KEEPS WALKING ------------------------------------------------------
+  // A backgrounded tab gets no animation frames at all, and the loop's own `dt` is clamped to 250 ms, so a walk
+  // started in Office View used to stand still behind another tab and then crawl on at a quarter of a second per
+  // frame on return. The walk was never the problem — it is an already-validated path at a known speed — only the
+  // clock driving it was. So while the tab is hidden the SAME step (stepSelfCore) is driven from a 1 s timer (the
+  // browser throttles timers there; never a busy loop), in REAL elapsed time, cut into short sub-steps so a seat's
+  // walk → glide → sit and an approach's last turn run exactly as they do on screen; and on return the remainder is
+  // caught up before the first frame is drawn. Only while something is actually moving the body: an idle body
+  // costs one comparison a second. Nothing is drawn, the camera is not touched, and peers are told exactly what a
+  // visible tab would tell them (the movement feed's own arrival and seated events) — their replay of the walk is
+  // already running on the published duration, so they see one coherent journey either way.
+  const HIDDEN_TICK_MS = 1000;
+  const HIDDEN_SUBSTEP_MS = 100;
+  /** a tab away for longer than this resumes from here: a body with nothing left to do stops stepping anyway */
+  const HIDDEN_CATCHUP_MAX_MS = 15 * 60_000;
+  let lastSelfStepAt = performance.now();
+  let hiddenTimer: ReturnType<typeof setInterval> | null = null;
+  /** is anything driving the employee's own body that a clock must advance? (PLAYER never: no keys arrive hidden) */
+  const selfInMotion = (): boolean =>
+    params.avatar && !playerMode.active && !(floorTransition?.busy ?? false) && !(caveTransition?.busy ?? false)
+    && (navCtl.moving || approachCtl.state === "walking" || approachCtl.state === "turning" || coworkerApproach?.turning === true || (seatEngaged() && !seatedNow()));
+  /** advance the body by `ms` of real time, in sub-steps, through the one movement step and the one feed */
+  function advanceHiddenSelf(ms: number): void {
+    let left = Math.min(ms, HIDDEN_CATCHUP_MAX_MS);
+    while (left > 0 && selfInMotion()) {
+      const step = Math.min(HIDDEN_SUBSTEP_MS, left);
+      stepSelfCore(step);
+      const bp = avatar.worldPosition();
+      // the same per-frame guards the loop applies: a door held shut, a locked room, the exit gate
+      applyExitGate({ x: bp.x, z: bp.z });
+      applyRoomLocks({ x: bp.x, z: bp.z });
+      selfFeed?.frame(step, { x: bp.x, z: bp.z }, avatar.yaw, navCtl.path.length > 0 || coworkerApproach?.turning === true || directedTurn !== null);
+      left -= step;
+    }
+  }
+  const hiddenTabTick = (): void => {
+    const now = performance.now();
+    advanceHiddenSelf(now - lastSelfStepAt);
+    lastSelfStepAt = now;
+  };
+  onDocument("visibilitychange", () => {
+    if (disposed) return;
+    if (document.visibilityState === "hidden") {
+      lastSelfStepAt = performance.now();
+      if (hiddenTimer === null) hiddenTimer = setInterval(hiddenTabTick, HIDDEN_TICK_MS);
+      return;
+    }
+    if (hiddenTimer !== null) { clearInterval(hiddenTimer); hiddenTimer = null; }
+    // BACK: catch up the remainder, then hand the loop a fresh clock so its first frame does not add it again
+    hiddenTabTick();
+    lastFrame = performance.now();
+  });
   // THE ONE FLUSH dispose() CANNOT DO. A reload, a tab close or a back navigation tears the document down
   // WITHOUT unmounting React, so app/Vo3dHost.tsx's cleanup — and therefore dispose() — never runs. The
   // leg in flight would then never be resolved, and the employee's durable position would stay one leg
@@ -6302,6 +6593,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // world actually moved. applyEnvPhase above RETARGETS, this is what travels.
     env.tick(dt / 1000);
     env.follow(dt / 1000); // the sky dome rides the orbit target; the rain field rides the active camera
+    updateHover(now); // INTERACTION V2 — Office View's hover, throttled; a no-op in PLAYER and the editor
     if (scenery.root.visible) {
       if (!crewRequested) { crewRequested = true; void crew.load(2); }
       crew.update(Date.now() / 1000, dt / 1000, scenery.root.worldToLocal(R.activeCamera.getWorldPosition(crewCam)));
@@ -6313,51 +6605,11 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // PLAYER steps FIRST: it writes the avatar transform for this frame and yields silently whenever an
       // interaction owns Bon, so the controllers below still run exactly as they always have.
       if (playerMode.active) playerMode.update(dt / 1000);
-      seat.update(dt / 1000);
-      meetingSeat?.update(dt / 1000);
-      gamingSeat?.update(dt / 1000);
-      hubSeat?.update(dt / 1000);
-      // EVERY movable-seat controller has to be ticked here. One that is constructed, acquires the
-      // "Interaction" stack lock in sit(), and is then never updated leaves the avatar owned forever: the
-      // sequence stops in "approaching", Player movement stays locked and only a reload recovers. There is
-      // no self-healing path — SeatInteraction advances on nothing but this call. executive.test.ts asserts
-      // that every SeatInteraction declared in this file appears in this block.
-      execSeat?.update(dt / 1000);
-      cmsSeat?.update(dt / 1000);
-      aiSeat?.update(dt / 1000);
-      devSeat?.update(dt / 1000);
-      qaSeat?.update(dt / 1000);
-      restoredSeat?.update(dt / 1000);
-      otherSeat?.update(dt / 1000);
-      loungeSeat?.update(dt / 1000);
-      restoredLounge?.update(dt / 1000);
-      approachCtl.update(dt / 1000);
-      navCtl.update(dt / 1000);
-      avatar.update(dt / 1000);
+      stepSelfCore(dt);
+      lastSelfStepAt = now;
       const bp = avatar.worldPosition();
-      // PHASE 6C — THE SEATED HAND-OFF. One transition each way, read from the interactions' own states:
-      // the frame the body commits to a chair the feed resolves the movement that brought it there as a
-      // seated arrival in that chair (the chair's own yaw, not the body's mid-turn one); the frame it
-      // leaves, the feed resumes publishing the ordinary legs that walk it away.
-      if (standWhenSeated) {
-        const e = engagedSeat();
-        if (e) { e.stand(); standWhenSeated = false; } else if (!seatEngaged()) standWhenSeated = false;
-      }
-      const nowSeated = seatedNow();
-      if (nowSeated !== selfSeatedPublished) {
-        selfSeatedPublished = nowSeated;
-        if (nowSeated && currentSeatAnchor) selfFeed?.seated({ x: bp.x, z: bp.z }, seatedYawOf(currentSeatAnchor) ?? avatar.yaw, currentSeatAnchor);
-        else if (!nowSeated) {
-          selfFeed?.stood({ x: bp.x, z: bp.z }, avatar.yaw);
-          // CLEARED ONLY WHEN NO SIT IS UNDER WAY. Choosing another chair while seated resets the old
-          // interaction and starts the new one in the same call — the frame after, the body is not
-          // seated (it is approaching), and clearing here wiped the NEW anchor, so that sit was never
-          // published as seated: every browser but this one saw the person standing at the chair.
-          if (!seatEngaged()) currentSeatAnchor = null;
-        }
-      }
       seatSyncState.anchor = currentSeatAnchor ?? "none";
-      seatSyncState.seated = nowSeated ? "yes" : "no";
+      seatSyncState.seated = selfSeatedPublished ? "yes" : "no";
       facingState.anchor = currentSeatAnchor ?? "none (sit in a seat)";
       facingState.unsaved = unsavedSeatFacingCount();
       if (currentSeatAnchor) { const f = seatFacingFor(currentSeatAnchor); if (f && f !== facingState.facing) { facingState.facing = f; facingCtl.updateDisplay(); } }
@@ -6395,20 +6647,6 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // body from the call's own presenter (see syncPresenterClip) — no new wire.
       navCtl.restClip = meetingDirector.state.phase === "presenting" && directedTurn === null ? PRESENTER_CLIP : null;
       syncPresenterClip();
-      if (coworkerApproach?.turning) {
-        const next = stepAngle(avatar.yaw, coworkerApproach.yaw, APPROACH_TURN_RATE * (dt / 1000));
-        avatar.setYaw(next);
-        if (Math.abs(wrapAngle(coworkerApproach.yaw - next)) < 0.02) {
-          avatar.setYaw(coworkerApproach.yaw);
-          const arrived = coworkerApproach.email;
-          coworkerApproach = null;
-          // Published FIRST (the line below sees `turning` false and resolves the walk with this exact
-          // yaw), reported to the host after — V1's quest signal must never outrun the movement that
-          // earned it.
-          selfFeed?.frame(0, { x: bp.x, z: bp.z }, avatar.yaw, false);
-          coworkerInteractions?.onApproachArrived(arrived);
-        }
-      }
       // THE CONVERSATION POSE, applied where every other clip decision has already been made this frame.
       // Gated on an idle ControllerStack so walking, seating, an interaction and PLAYER mode all outrank
       // it — the same ordering V1's own resolveCharacterAnimState uses.
@@ -7483,6 +7721,7 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     disposed = true;               // every async continuation above checks this before touching anything
     roomLocks.clear();
     cancelAnimationFrame(rafHandle); // the frame already asked for; the guard in loop() stops it re-arming
+    if (hiddenTimer !== null) { clearInterval(hiddenTimer); hiddenTimer = null; } // INTERACTION V2 — the hidden-tab clock
 
     // PHASE 5 FIRST, and before anything is torn down: the movement socket is V1's module-level singleton
     // and OUTLIVES this world, so this is the last chance to resolve a movement still in flight. Without
@@ -7493,6 +7732,8 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     // PLAYER first: it owns window/document key + pointer-lock listeners and a document.body HUD, none of
     // which belong to the canvas and so none of which die with the context.
     playerMode.dispose();
+    // INTERACTION V2 — Office View's hover name is a document.body child too
+    hoverTip.remove();
     // The editor's panel is another document.body child, and the gizmo is scene-side.
     editPanel?.dispose();
     editPanel = null;
@@ -7660,14 +7901,14 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
     if (slotId === undefined) {
       const spec = e.capabilities.seat;
       if (!spec) return false;
-      const si = new SeatInteraction(avatar, stack, mirror.view(entityId), seatSpecFor(entityId), planner, () => params.walkSpeed);
+      const si = new SeatInteraction(avatar, stack, mirror.view(entityId), seatSpecFor(entityId), planner, () => travelSpeed());
       if (!si.restoreSeated()) return false;
       restoredSeat = si;
       return true;
     }
     const slot = e.capabilities.lounge?.slots.find((s2) => s2.id === slotId);
     if (!slot) return false;
-    const li = new LoungeSeatInteraction(avatar, stack, mirror.view(entityId), slotFor(entityId, slot), planner, () => params.walkSpeed);
+    const li = new LoungeSeatInteraction(avatar, stack, mirror.view(entityId), slotFor(entityId, slot), planner, () => travelSpeed());
     if (!li.restoreSeated()) return false;
     restoredLounge = li;
     return true;
@@ -7925,6 +8166,13 @@ export function createVo3dWorld(canvas: HTMLCanvasElement, identity?: Vo3dIdenti
       // what is selected. Same one-way shape as every other host->world write on this interface.
       selectedCoworker = null;
     },
+    objectAnchor: (id) => {
+      if (!world.entities.has(id)) return null;
+      const p = world.get(id).transform.pos;
+      return anchorForWorldPoint(OBJECT_ANCHOR.set(p.x, 30, p.z));
+    },
+    runObjectAction: (id, key) => runObjectAction(id, key, selectedObject === id ? selectedObjectNear : undefined),
+    clearObjectSelection: () => { selectedObject = null; },
     approachCoworker,
   };
 }
